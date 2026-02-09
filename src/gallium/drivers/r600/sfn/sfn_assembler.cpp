@@ -118,13 +118,10 @@ Assembler::lower(Shader *shader)
 
    ass.finalize();
 
-   /* TERAKAN_ISA_DUMP=1: bypass SfnLog (text path is wired through a
-    * stderr_streambuf that does not surface for the Terakan compute path,
-    * so R600_NIR_DEBUG=ass produces no ALU output for compute shaders).
-    * Direct fprintf via r600_bytecode_disasm dumps the post-assembly
-    * bytecode unconditionally.  Kept guarded by env var so default
-    * builds remain quiet.  See steinmarder findings
-    * 2026-04-19-next-session-isa-clamp-audit-handoff.md for context. */
+   /* TERAKAN_ISA_DUMP routes the post-assembly bytecode directly through
+    * r600_bytecode_disasm for Terakan compute shaders whose diagnostic
+    * path does not surface through the normal SFN log stream.
+    */
    if (ass.m_result && getenv("TERAKAN_ISA_DUMP")) {
       fprintf(stderr, "=== TERAKAN_ISA_ALU dump (post Assembler::lower) ===\n");
       r600_bytecode_disasm(&m_sh->bc);
@@ -369,12 +366,13 @@ AssemblerVisitor::visit(const TexInstr& tex_instr)
 void
 AssemblerVisitor::visit(const ExportInstr& exi)
 {
+   clear_states(sf_all);
+
    if (unlikely(ps_alpha_to_one_and_coverage && exi.export_type() == ExportInstr::pixel &&
                 exi.location() == 0)) {
       m_result &= emit_bytecode_export_alpha_to_coverage(m_bc, exi);
    }
 
-   clear_states(sf_all);
    m_result &= emit_bytecode_export(m_bc, exi, ps_alpha_to_one);
 }
 
