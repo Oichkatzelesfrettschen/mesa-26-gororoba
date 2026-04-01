@@ -137,6 +137,23 @@ vk_sync_binary_export_sync_file(struct vk_device *device,
    return result;
 }
 
+static VkResult
+vk_sync_binary_move(struct vk_device *device,
+                    struct vk_sync *dst,
+                    struct vk_sync *src)
+{
+   struct vk_sync_binary *dst_binary = to_vk_sync_binary(dst);
+   struct vk_sync_binary *src_binary = to_vk_sync_binary(src);
+
+   dst_binary->next_point = src_binary->next_point;
+   src_binary->next_point = false;
+
+   if (dst_binary->timeline.type->move)
+      return dst_binary->timeline.type->move(device, &dst_binary->timeline, &src_binary->timeline);
+
+   return VK_SUCCESS;
+}
+
 struct vk_sync_binary_type
 vk_sync_binary_get_type(const struct vk_sync_type *timeline_type)
 {
@@ -157,6 +174,7 @@ vk_sync_binary_get_type(const struct vk_sync_type *timeline_type)
          .finish = vk_sync_binary_finish,
          .reset = vk_sync_binary_reset,
          .signal = vk_sync_binary_signal,
+         .move = vk_sync_binary_move,
          .wait_many = vk_sync_binary_wait_many,
          .import_sync_file = vk_sync_binary_import_sync_file,
          .export_sync_file = vk_sync_binary_export_sync_file,

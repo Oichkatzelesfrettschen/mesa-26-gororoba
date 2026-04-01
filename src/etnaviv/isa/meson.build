@@ -120,31 +120,31 @@ if with_tools.contains('etnaviv')
   )
 
   dep_indexmap = dependency('indexmap',
-    version : '>= 2.2.6',
+    version : '>= 2.13.0',
     fallback : ['indexmap-2-rs', 'dep_indexmap'],
     required : true,
   )
 
   dep_roxmltree = dependency('roxmltree',
-    version : '>= 0.20.roxmltree',
+    version : '>= 0.21.1',
     fallback : ['roxmltree-0.20-rs', 'dep_roxmltree'],
     required : true,
   )
 
   dep_syn = dependency('syn',
-    version : '>= 2.0.15',
+    version : '>= 2.0.117',
     fallback : ['syn-2-rs', 'dep_syn'],
     required : true,
   )
 
   dep_pest_generator = dependency('pest_generator',
-    version: '>= 2.7.6',
+    version: '>= 2.8.6',
     fallback: ['pest_generator-2-rs', 'dep_pest_generator'],
     required: true,
   )
 
   dep_pest = dependency('pest',
-    version: '>= 2.7.6',
+    version: '>= 2.8.6',
     fallback: ['pest-2-rs', 'dep_pest'],
     required: true,
   )

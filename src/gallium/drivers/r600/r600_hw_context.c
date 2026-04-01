@@ -255,6 +255,9 @@ void r600_context_gfx_flush(void *context, unsigned flags,
 	struct radeon_cmdbuf *cs = &ctx->b.gfx.cs;
 	struct radeon_winsys *ws = ctx->b.ws;
 
+	fprintf(stderr, "GFX_FLUSH_TRACE: cdw=%u prev_dw=%u initial=%u emitted=%d\n",
+		cs->current.cdw, cs->prev_dw, ctx->b.initial_gfx_cs_size,
+		radeon_emitted(cs, ctx->b.initial_gfx_cs_size));
 	if (!radeon_emitted(cs, ctx->b.initial_gfx_cs_size))
 		return;
 

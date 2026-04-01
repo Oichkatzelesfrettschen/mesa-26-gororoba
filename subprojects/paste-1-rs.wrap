@@ -1,6 +1,6 @@
 [wrap-file]
-directory = paste-1.0.14
-source_url = https://crates.io/api/v1/crates/paste/1.0.14/download
-source_filename = paste-1.0.14.tar.gz
-source_hash = de3145af08024dea9fa9914f381a17b8fc6034dfb00f3a84013f7ff43f29ed4c
+directory = paste-1.0.15
+source_url = https://crates.io/api/v1/crates/paste/1.0.15/download
+source_filename = paste-1.0.15.tar.gz
+source_hash = 57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a
 patch_directory = paste-1-rs

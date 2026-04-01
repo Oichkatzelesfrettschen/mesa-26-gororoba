@@ -4,13 +4,13 @@
 inc_virtgpu_kumquat_ffi = include_directories('include')
 
 dep_rust_log = dependency('rust-log',
-  version: '>= 0.4.22',
+  version: '>= 0.4.29',
   fallback: ['log-0.4-rs', 'dep_log'],
   required: true,
 )
 
 dep_rust_libc = dependency('rust-libc',
-  version: '>= 0.2.168',
+  version: '>= 0.2.183',
   fallback: ['libc-0.2-rs', 'dep_libc'],
   required: true,
 )

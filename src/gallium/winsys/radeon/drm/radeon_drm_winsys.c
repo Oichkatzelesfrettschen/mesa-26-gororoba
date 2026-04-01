@@ -431,6 +431,24 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
                         &ws->info.max_gpu_freq_mhz);
    ws->info.max_gpu_freq_mhz /= 1000;
 
+   /* Fallback: if DRM didnt report SCLK, try sysfs */
+   if (ws->info.max_gpu_freq_mhz == 0) {
+      FILE *f = fopen("/sys/class/drm/card0/device/pp_dpm_sclk", "r");
+      if (!f) f = fopen("/sys/class/drm/card0/gt_max_freq_mhz", "r");
+      if (f) {
+         unsigned freq = 0;
+         /* Read last line (highest clock) */
+         char buf[256];
+         while (fgets(buf, sizeof(buf), f)) {
+            unsigned f_mhz;
+            if (sscanf(buf, "%*d: %uMhz", &f_mhz) == 1 || sscanf(buf, "%u", &f_mhz) == 1)
+               freq = f_mhz;
+         }
+         fclose(f);
+         if (freq > 0) ws->info.max_gpu_freq_mhz = freq;
+      }
+   }
+
    ws->num_cpus = util_get_cpu_caps()->nr_cpus;
 
    /* Generation-specific queries. */

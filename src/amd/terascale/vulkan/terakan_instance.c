@@ -1,0 +1,284 @@
+/*
+ * Copyright © 2024 Vitaliy Triang3l Kuzmin
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ */
+
+#include "terakan_instance.h"
+
+#include "terakan_descriptor.h"
+#include "terakan_entrypoints.h"
+#include "terakan_physical_device.h"
+
+#include "util/log.h"
+#include "util/macros.h"
+#include "util/u_debug.h"
+#include "util/u_math.h"
+#include "vk_alloc.h"
+#include "vk_log.h"
+#include "wsi_common.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#if defined(_WIN32)
+#define TERAKAN_INSTANCE_HAS_WINSYS_WDDM
+#else
+#define TERAKAN_INSTANCE_HAS_WINSYS_DRM_RADEON
+#endif
+
+#if defined(TERAKAN_INSTANCE_HAS_WINSYS_DRM_RADEON)
+#include "winsys/drm_radeon/terakan_instance_drm_radeon.h"
+#elif defined(TERAKAN_INSTANCE_HAS_WINSYS_WDDM)
+#include "winsys/wddm/terakan_instance_wddm.h"
+#endif
+
+static struct debug_control const terakan_debug_flags[] = {
+   {"startup",  TERAKAN_DEBUG_STARTUP},
+   {"shaders",  TERAKAN_DEBUG_SHADERS},
+   {"perf",     TERAKAN_DEBUG_PERF},
+   {"cs",       TERAKAN_DEBUG_CS_DUMP},
+   {"pipeline", TERAKAN_DEBUG_PIPELINE},
+   {NULL, 0}
+};
+
+#ifdef TERAKAN_DEVTEST
+static struct debug_control const terakan_devtest_flags[] = {
+   {"split_indirect_buffer_at_query_begin_end",
+    TERAKAN_DEVTEST_SPLIT_INDIRECT_BUFFER_AT_QUERY_BEGIN_END},
+   {NULL, 0}};
+#endif
+
+static struct vk_instance_extension_table const terakan_instance_extensions_supported = {
+   .EXT_debug_report = true,
+   .EXT_debug_utils = true,
+   .KHR_external_memory_capabilities = true,
+   .KHR_get_physical_device_properties2 = true,
+
+#if defined(TERAKAN_USE_WSI_PLATFORM)
+   .KHR_surface = true,
+   .EXT_headless_surface = true,
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+   .KHR_wayland_surface = true,
+#endif
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+   .KHR_xcb_surface = true,
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+   .KHR_xlib_surface = true,
+#endif
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+   .KHR_win32_surface = true,
+#endif
+#endif
+};
+
+VKAPI_ATTR VkResult VKAPI_CALL
+terakan_EnumerateInstanceExtensionProperties(char const * const pLayerName,
+                                             uint32_t * const pPropertyCount,
+                                             VkExtensionProperties * const pProperties)
+{
+   if (pLayerName != NULL) {
+      return vk_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
+   }
+
+   return vk_enumerate_instance_extension_properties(&terakan_instance_extensions_supported,
+                                                     pPropertyCount, pProperties);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+terakan_EnumerateInstanceLayerProperties(uint32_t * const pPropertyCount,
+                                         VkLayerProperties * const pProperties)
+{
+   if (pProperties == NULL) {
+      *pPropertyCount = 0;
+      return VK_SUCCESS;
+   }
+
+   /* None supported at this time. */
+   return vk_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+terakan_EnumerateInstanceVersion(uint32_t * const pApiVersion)
+{
+   *pApiVersion = TERAKAN_API_VERSION;
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+terakan_GetInstanceProcAddr(VkInstance const instanceHandle, char const * const pName)
+{
+   struct vk_instance const * const instance = vk_instance_from_handle(instanceHandle);
+   return vk_instance_get_proc_addr(instance, &terakan_instance_entrypoints, pName);
+}
+
+void
+terakan_instance_finish(struct terakan_instance * const instance)
+{
+   vk_instance_finish(&instance->vk);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+terakan_DestroyInstance(VkInstance const instanceHandle,
+                        UNUSED VkAllocationCallbacks const * const pAllocator)
+{
+   struct terakan_instance * const instance = terakan_instance_from_handle(instanceHandle);
+
+   if (instance == NULL) {
+      return;
+   }
+
+   instance->destroy_fn(instance);
+}
+
+VkResult
+terakan_instance_init(struct terakan_instance * instance,
+                      VkInstanceCreateInfo const * const create_info,
+                      terakan_instance_destroy_fn const destroy_fn,
+                      VkAllocationCallbacks const * allocator)
+{
+   VkResult result;
+
+   struct vk_instance_dispatch_table dispatch_table;
+   vk_instance_dispatch_table_from_entrypoints(&dispatch_table, &terakan_instance_entrypoints,
+                                               true);
+   vk_instance_dispatch_table_from_entrypoints(&dispatch_table, &wsi_instance_entrypoints, false);
+
+   result = vk_instance_init(&instance->vk, &terakan_instance_extensions_supported, &dispatch_table,
+                             create_info, allocator);
+   if (result != VK_SUCCESS) {
+      return vk_error(NULL, result);
+   }
+
+   instance->vk.physical_devices.destroy = terakan_physical_device_destroy;
+
+   instance->destroy_fn = destroy_fn;
+
+   instance->debug_flags = parse_debug_string(getenv("TERAKAN_DEBUG"), terakan_debug_flags);
+
+#ifdef TERAKAN_DEVTEST
+   instance->devtest_flags = parse_debug_string(getenv("TERAKAN_DEVTEST"), terakan_devtest_flags);
+   instance->devtest_split_indirect_buffer_after_actions =
+      debug_get_num_option("TERAKAN_DEVTEST_SPLIT_INDIRECT_BUFFER_AFTER_ACTIONS", 0);
+   if (instance->devtest_flags || instance->devtest_split_indirect_buffer_after_actions > 0) {
+      /* Report that development testing options have been activated successfully, and therefore the
+       * driver was in fact compiled with them enabled.
+       */
+      mesa_logi("terakan: Development testing options are active.\n");
+   }
+#endif
+
+   /* Allocate binding spaces. */
+   /* TODO(Triang3l): Binding space allocation configuration via environment variables or
+    * application-specific workarounds.
+    */
+
+   /* Vulkan requires at least 4 storage buffers and 4 storage images.
+    *
+    * Direct3D 11.0 provides 8 Unordered Access Views (UAVs) in compute shaders and 8 combined RTVs
+    * and UAVs in pixel shaders.
+    *
+    * By default, expose 4 storage buffers and 8 storage images.
+    *
+    * The RATionale is that all Direct3D 11 UAV types, including structured and raw buffers, can be
+    * implemented as Vulkan storage images, so there need to be at least as many storage image
+    * bindings as Direct3D 11.0 UAVs.
+    *
+    * Each UAV in Direct3D 11 can also have a 32-bit counter. Vulkan doesn't have a similar concept,
+    * a separate storage buffer/image binding is generally used for the counter. Unfortunately,
+    * there are not enough hardware UAVs to make it possible to do that. However, there are 4
+    * storage buffer slots, and the translation layer may use one of them to store counters of all
+    * of the bound UAVs.
+    */
+   instance->max_per_stage_storage_buffers = 4;
+
+   /* Direct3D 11 limit. */
+   instance->max_per_stage_uniform_buffers = 15;
+   /* 4 is the Vulkan minimum, but use all space not usable by vertex stages. */
+   instance->max_per_stage_input_attachments =
+      MAX2(TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL -
+              TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL,
+           4);
+   /* Give all remaining resource bindings to sampled images.
+    * The sum of maxPerStageDescriptorStorageBuffers and maxPerStageDescriptorStorageImages is
+    * TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT.
+    * In pixel shaders, it's limited by maxFragmentCombinedOutputResources regardless of how each
+    * storage buffer/image is accessed, however.
+    */
+   instance->max_per_stage_sampled_images =
+      MIN2(TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL - TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT -
+              instance->max_per_stage_uniform_buffers,
+           TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL - TERAKAN_COLOR_UAV_COUNT_PIXEL -
+              instance->max_per_stage_uniform_buffers - instance->max_per_stage_input_attachments);
+
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+terakan_CreateInstance(VkInstanceCreateInfo const * const pCreateInfo,
+                       VkAllocationCallbacks const * pAllocator, VkInstance * const pInstance)
+{
+   VkResult result;
+
+   if (pAllocator == NULL) {
+      pAllocator = vk_default_allocator();
+   }
+
+   struct terakan_instance * instance;
+#if defined(TERAKAN_INSTANCE_HAS_WINSYS_DRM_RADEON)
+   result = terakan_instance_drm_radeon_create(pCreateInfo, pAllocator, &instance);
+#elif defined(TERAKAN_INSTANCE_HAS_WINSYS_WDDM)
+   result = terakan_instance_wddm_create(pCreateInfo, pAllocator, &instance);
+#else
+#error "No instance creation function for the target platform"
+#endif
+   if (result != VK_SUCCESS) {
+      return result;
+   }
+
+   if (instance->debug_flags & TERAKAN_DEBUG_STARTUP) {
+      fputs("terakan: info: Created an instance.\n", stderr);
+   }
+
+   *pInstance = terakan_instance_to_handle(instance);
+   return VK_SUCCESS;
+}
+
+/* Windows will use a DLL definition file to avoid build errors. */
+#if defined(_WIN32)
+#undef PUBLIC
+#define PUBLIC
+#endif
+
+/* The loader wants us to expose a second GetInstanceProcAddr function
+ * to work around certain LD_PRELOAD issues seen in apps.
+ */
+PUBLIC
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+vk_icdGetInstanceProcAddr(VkInstance const instanceHandle, char const * const pName)
+{
+   PFN_vkVoidFunction fn = terakan_GetInstanceProcAddr(instanceHandle, pName);
+   if (!fn)
+      fprintf(stderr, "TERAKAN ICD: %s = NULL\n", pName);
+   return fn;
+}

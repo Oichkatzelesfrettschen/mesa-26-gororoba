@@ -8,7 +8,7 @@ prog_cbindgen = find_program(
 )
 
 dep_paste = dependency('paste',
-  version : '>= 1.0.14',
+  version : '>= 1.0.15',
   fallback : ['paste-1-rs', 'dep_paste'],
   required : true,
 )

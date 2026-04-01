@@ -381,6 +381,12 @@ static void compute_emit_cs(struct r600_context *rctx,
 	radeon_compute_set_context_reg(cs, R_028238_CB_TARGET_MASK,
 						rat_mask);
 
+	/* Emit RAT surface state (CB_COLOR0_BASE + pool_bo reloc).
+	 * r600_begin_new_cs marks cb_state.atom dirty but compute_emit_cs
+	 * starts a fresh CS with CB_COLOR0 at reset (0). Without this emit,
+	 * RAT writes go to GPU address 0 instead of pool_bo. */
+	r600_emit_atom(rctx, &rctx->cb_state.atom);
+
 	r600_emit_atom(rctx, &rctx->b.render_cond_atom);
 
 	/* Emit constant buffer state */
@@ -470,6 +476,9 @@ static void evergreen_launch_grid(struct pipe_context *ctx,
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
 	COMPUTE_DBG(rctx->screen, "*** evergreen_launch_grid\n");
+	fprintf(stderr, "LAUNCH_TRACE: grid(%u,%u,%u) block(%u,%u,%u)\n",
+		info->grid[0], info->grid[1], info->grid[2],
+		info->block[0], info->block[1], info->block[2]);
 
 	compute_emit_cs(rctx, info);
 }
@@ -755,6 +764,11 @@ void *r600_compute_global_transfer_map(struct pipe_context *ctx,
 		buffer->chunk->status |= ITEM_MAPPED_FOR_WRITING;
 
 	if (is_item_in_pool(item)) {
+		/* Rusticl calls r600_memory_barrier(PIPE_BARRIER_GLOBAL_BUFFER) before
+		 * invoking transfer_map for read. That barrier emits CS_PARTIAL_FLUSH
+		 * (drains in-flight compute exports) then CB_FLUSH_AND_INV, flushes the
+		 * CS, and fence_waits for GPU completion. By the time we reach here, the
+		 * GPU is done and pool_bo contains the correct compute output. */
 		compute_memory_demote_item(pool, item, ctx);
 	}
 	else {

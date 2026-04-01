@@ -93,6 +93,22 @@ static void r600_memory_barrier(struct pipe_context *ctx, unsigned flags)
 			R600_CONTEXT_INV_TEX_CACHE;
 	}
 
+	if (flags & PIPE_BARRIER_GLOBAL_BUFFER) {
+		struct radeon_cmdbuf *cs = &rctx->b.gfx.cs;
+		struct pipe_fence_handle *fence = NULL;
+
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_CS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+		rctx->b.flags |= R600_CONTEXT_FLUSH_AND_INV_CB;
+		rctx->b.gfx.flush(rctx, 0, &fence);
+		if (fence) {
+			rctx->b.ws->fence_wait(rctx->b.ws, fence, OS_TIMEOUT_INFINITE);
+			rctx->b.ws->fence_reference(rctx->b.ws, &fence, NULL);
+		} else if (rctx->b.last_gfx_fence) {
+			rctx->b.ws->fence_wait(rctx->b.ws, rctx->b.last_gfx_fence, OS_TIMEOUT_INFINITE);
+		}
+	}
+
 	if (flags & (PIPE_BARRIER_FRAMEBUFFER |
 		     PIPE_BARRIER_IMAGE))
 		rctx->b.flags |= R600_CONTEXT_FLUSH_AND_INV;

@@ -106,7 +106,12 @@ static int store_shader(struct pipe_context *ctx,
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	uint32_t *ptr, i;
 
-	if (shader->bo == NULL) {
+	
+	if (shader->selector->type == MESA_SHADER_COMPUTE) {
+		fprintf(stderr, "COMPUTE_TRACE: kernel ISA (%d dwords):\n", shader->shader.bc.ndw);
+		r600_bytecode_disasm(&shader->shader.bc);
+	}
+if (shader->bo == NULL) {
 		shader->bo = r600_as_resource(pipe_buffer_create(ctx->screen, 0, PIPE_USAGE_IMMUTABLE, shader->shader.bc.ndw * 4));
 		if (shader->bo == NULL) {
 			return -ENOMEM;
@@ -133,6 +138,19 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 			    struct r600_pipe_shader *shader,
 			    union r600_shader_key key)
 {
+	fprintf(stderr, "COMPUTE_TRACE: r600_pipe_shader_create type=%d\n", shader->selector->type);
+	if (shader->selector->type == MESA_SHADER_COMPUTE) {
+		if (shader->shader.bc.bytecode && shader->shader.bc.ndw > 0) {
+			fprintf(stderr, "COMPUTE_TRACE: kernel bytecode (%d dwords):\n", shader->shader.bc.ndw);
+			for (int _i = 0; _i < shader->shader.bc.ndw; _i += 2) {
+				fprintf(stderr, "  %04X %08X", _i*4, shader->shader.bc.bytecode[_i]);
+				if (_i+1 < shader->shader.bc.ndw) fprintf(stderr, " %08X", shader->shader.bc.bytecode[_i+1]);
+				fprintf(stderr, "\n");
+			}
+		}
+	}
+
+
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct r600_pipe_shader_selector *sel = shader->selector;
 	int r;

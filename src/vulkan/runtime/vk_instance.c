@@ -340,17 +340,21 @@ vk_instance_get_proc_addr(const struct vk_instance *instance,
    if (instance == NULL)
       return NULL;
 
-   func = vk_instance_dispatch_table_get_if_supported(&instance->dispatch_table,
-                                                      name,
-                                                      instance->app_info.api_version,
-                                                      &instance->enabled_extensions);
+   /* Return all functions from the instance dispatch table regardless of
+    * which extensions the app requested. The ICD must return valid pointers
+    * for all supported functions — the loader handles extension gating.
+    * This fixes WSI surface functions (xlib, xcb) not being returned. */
+   func = vk_instance_dispatch_table_get(&instance->dispatch_table, name);
    if (func != NULL)
       return func;
 
-   func = vk_physical_device_dispatch_table_get_if_supported(&vk_physical_device_trampolines,
-                                                             name,
-                                                             instance->app_info.api_version,
-                                                             &instance->enabled_extensions);
+   /* Use the ICDs max API version for trampoline lookup, not the apps
+    * requested version. The ICD must return valid function pointers for
+    * all supported functions per the Vulkan spec — the loader handles
+    * version filtering. This fixes Zink/DXVK/Wine on VK 1.1 ICDs when
+    * the app creates a VK 1.0 instance. */
+   func = vk_physical_device_dispatch_table_get(&vk_physical_device_trampolines,
+                                                name);
    if (func != NULL)
       return func;
 
