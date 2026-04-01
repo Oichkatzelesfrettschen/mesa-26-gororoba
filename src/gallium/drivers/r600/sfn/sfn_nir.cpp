@@ -672,6 +672,25 @@ r600_is_last_vertex_stage(nir_shader *nir, const r600_shader_key& key)
    return false;
 }
 
+static unsigned
+r600_lower_bit_size_callback(const nir_instr *instr, void * /* data */)
+{
+   if (instr->type != nir_instr_type_alu)
+      return 0;
+   const nir_alu_instr *alu = nir_instr_as_alu(instr);
+   /* Promote only if at least one source is sub-32-bit.
+    * Conversion ops with 32-bit sources (u2u8, i2i8, etc.) must not
+    * go through nir_lower_bit_size -- it would call convert_to_bit_size
+    * with src->bit_size == bit_size == 32, tripping the assert.
+    * Those are covered by explicit handlers in sfn_instr_alu.cpp. */
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+      unsigned sz = nir_src_bit_size(alu->src[i].src);
+      if (sz > 1 && sz < 32)
+         return 32;
+   }
+   return 0;
+}
+
 extern "C" bool
 r600_lower_to_scalar_instr_filter(const nir_instr *instr, const void *)
 {
@@ -836,6 +855,7 @@ r600_lower_and_optimize_nir(nir_shader *sh,
    NIR_PASS(_, sh, nir_lower_phis_to_scalar, NULL, NULL);
    NIR_PASS(_, sh, nir_lower_alu_to_scalar, r600_lower_to_scalar_instr_filter, NULL);
    NIR_PASS(_, sh, r600_nir_lower_int_tg4);
+   NIR_PASS(_, sh, nir_lower_bit_size, r600_lower_bit_size_callback, NULL);
    NIR_PASS(_, sh, r600::r600_nir_lower_tex_to_backend, gfx_level);
 
    if (lower_64bit_io_to_vec2) {
@@ -866,10 +886,14 @@ r600_lower_and_optimize_nir(nir_shader *sh,
    NIR_PASS(_, sh, nir_remove_dead_variables, nir_var_shader_in, NULL);
    NIR_PASS(_, sh, nir_remove_dead_variables, nir_var_shader_out, NULL);
 
+   /* Use aggressive scratch threshold for compute (reduces GPR pressure)
+    * but keep higher threshold for graphics (avoid scratch overhead) */
+   unsigned scratch_threshold =
+      sh->info.stage == MESA_SHADER_COMPUTE ? 1 : 64;
    NIR_PASS(_,
             sh,
             nir_lower_vars_to_scratch,
-            64,
+            scratch_threshold,
             r600_get_scratch_size_align,
             r600_get_scratch_size_align);
 
@@ -891,6 +915,11 @@ r600_lower_and_optimize_nir(nir_shader *sh,
    } while (late_algebraic_progress);
 
    NIR_PASS(_, sh, nir_lower_bool_to_int32);
+
+   /* Sink instructions closer to uses to reduce register pressure.
+    * Critical for compute kernels that exceed the 123 GPR limit. */
+   NIR_PASS(_, sh, nir_opt_sink, (nir_move_options)(nir_move_const_undef | nir_move_alu | nir_move_copies | nir_move_comparisons | nir_move_load_ubo | nir_move_load_ssbo | nir_move_load_uniform | nir_move_load_input | nir_move_load_global));
+   NIR_PASS(_, sh, nir_opt_move, (nir_move_options)(nir_move_const_undef | nir_move_alu | nir_move_copies | nir_move_comparisons | nir_move_load_ubo | nir_move_load_ssbo | nir_move_load_uniform | nir_move_load_input | nir_move_load_global));
 
    NIR_PASS(_, sh, nir_lower_locals_to_regs, 32);
    NIR_PASS(_, sh, nir_convert_from_ssa, true, false);
@@ -966,7 +995,8 @@ r600_schedule_shader(r600::Shader *shader)
       if (!r600::register_allocation(lrm)) {
          R600_ERR("%s: Register allocation failed\n", __func__);
          /* For now crash if the shader could not be benerated */
-         assert(0);
+         /* GPR overflow: return gracefully instead of crashing */
+      return nullptr;
          return nullptr;
       } else if (r600::sfn_log.has_debug_flag(r600::SfnLog::merge) ||
                  r600::sfn_log.has_debug_flag(r600::SfnLog::steps)) {

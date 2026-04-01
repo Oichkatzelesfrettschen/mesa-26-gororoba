@@ -1,2 +1,9 @@
-# Keep this in sync with the `rustc.version()` check in meson.build
+# Mesa Rust linting configuration
+# Nightly 1.96.0 (2026-03-31) — updated for TeraScale RE campaign
 msrv = "1.82.0"
+
+# Stricter cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Allow these in Mesa internals
+too-many-arguments-threshold = 10

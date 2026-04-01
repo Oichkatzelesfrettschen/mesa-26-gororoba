@@ -1,6 +1,6 @@
 [wrap-file]
-directory = log-0.4.27
-source_url = https://crates.io/api/v1/crates/log/0.4.27/download
-source_filename = log-0.4.27.tar.gz
-source_hash = 13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94
+directory = log-0.4.29
+source_url = https://crates.io/api/v1/crates/log/0.4.29/download
+source_filename = log-0.4.29.tar.gz
+source_hash = 5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897
 patch_directory = log-0.4-rs

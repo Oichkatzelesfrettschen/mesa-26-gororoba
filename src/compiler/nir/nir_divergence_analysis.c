@@ -600,6 +600,8 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
                      src_divergent(instr->src[1], state);
       break;
 
+   case nir_intrinsic_load_texture_resource_r600:
+   case nir_intrinsic_load_kcache_r600:
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_load_ssbo_ir3:
    case nir_intrinsic_load_uav_ir3:

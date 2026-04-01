@@ -30,6 +30,10 @@ struct nir_instr;
 
 namespace r600 {
 
+struct ShaderBindingLayout {
+   uint8_t texture_resource_offset = 0;
+};
+
 class ShaderIO {
 public:
    void print(std::ostream& os) const;
@@ -230,6 +234,9 @@ public:
    void set_flag(Flags f) { m_flags.set(f); }
    bool has_flag(Flags f) const { return m_flags.test(f); }
 
+   const ShaderBindingLayout& binding_layout() const { return m_binding_layout; }
+   void set_binding_layout(const ShaderBindingLayout& bl) { m_binding_layout = bl; }
+
    int atomic_file_count() const { return m_atomic_file_count; }
 
    PRegister atomic_update();
@@ -278,6 +285,9 @@ protected:
    const ShaderInput& input(int base) const;
 
    bool emit_simple_mov(nir_def& def, int chan, PVirtualValue src, Pin pin = pin_free);
+   bool emit_load_buffer_resource(nir_intrinsic_instr *instr);
+   bool emit_load_texture_resource(nir_intrinsic_instr *instr);
+   bool emit_load_kcache(nir_intrinsic_instr *instr);
 
    template <typename T>
    using IOMap = std::map<int, T, std::less<int>, Allocator<std::pair<const int, T>>>;
@@ -342,6 +352,7 @@ private:
    IOMap<ShaderOutput> m_outputs;
    IOMap<ShaderInput> m_inputs;
    r600_chip_class m_chip_class;
+   ShaderBindingLayout m_binding_layout;
    radeon_family m_chip_family{CHIP_CEDAR};
 
    int m_scratch_size;

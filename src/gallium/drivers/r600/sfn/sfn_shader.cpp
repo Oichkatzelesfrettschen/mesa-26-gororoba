@@ -5,7 +5,10 @@
  */
 
 #include "sfn_shader.h"
+#include "../r600_formats.h"
 
+#define R600_NIR_LOAD_BUFFER_RESOURCE_FLAG_USE_VERTEX_CACHE (1u << 0)
+#define R600_NIR_LOAD_BUFFER_RESOURCE_FLAG_IS_MINI_FETCH (1u << 1)
 #include "gallium/drivers/r600/r600_shader.h"
 #include "nir.h"
 #include "nir_intrinsics.h"
@@ -910,6 +913,12 @@ Shader::process_intrinsic(nir_intrinsic_instr *intr)
    case nir_intrinsic_load_global:
    case nir_intrinsic_load_global_constant:
       return emit_load_global(intr);
+   case nir_intrinsic_load_buffer_resource_r600:
+      return emit_load_buffer_resource(intr);
+   case nir_intrinsic_load_texture_resource_r600:
+      return emit_load_texture_resource(intr);
+   case nir_intrinsic_load_kcache_r600:
+      return emit_load_kcache(intr);
    case nir_intrinsic_load_local_shared_r600:
       return emit_local_load(intr);
    case nir_intrinsic_load_tcs_in_param_base_r600:
@@ -1302,20 +1311,55 @@ Shader::emit_load_scratch(nir_intrinsic_instr *intr)
 
 bool Shader::emit_load_global(nir_intrinsic_instr *intr)
 {
-   auto dest = value_factory().dest_vec4(intr->def, pin_group);
-
+   /* WIDE_VECTOR_LOAD_GLOBAL_FIX */
+   /* For scalar (float/int): one VFETCH with fmt_32.
+    * For wide vectors (float4, float16, ...): one VFETCH per 4-component
+    * group using fmt_32_32_32_32.  Each group must register its components
+    * in the value factory so ssa_src() can find them later. */
    auto src_value = value_factory().src(intr->src[0], 0);
    auto src = src_value->as_register();
    if (!src) {
       src = value_factory().temp_register();
       emit_instruction(new AluInstr(op1_mov, src, src_value, AluInstr::write));
    }
-   auto load = new LoadFromBuffer(dest, {0,7,7,7}, src, 0, 1, NULL, fmt_32);
-   load->set_mfc(4);
-   load->set_num_format(vtx_nf_int);
-   load->reset_fetch_flag(FetchInstr::format_comp_signed);
 
-   emit_instruction(load);
+   int num_components = intr->def.num_components;
+
+   if (num_components == 1) {
+      auto dest = value_factory().dest_vec4(intr->def, pin_group);
+      auto load = new LoadFromBuffer(dest, {0,7,7,7}, src, 0, 1, NULL, fmt_32);
+      load->set_mfc(4);
+      load->set_num_format(vtx_nf_int);
+      load->reset_fetch_flag(FetchInstr::format_comp_signed);
+      emit_instruction(load);
+   } else {
+      /* Wide vector: emit ceil(num_components/4) vec4 VFETCH loads.
+       * RegisterVec4 requires all 4 PRegisters to share the same sel, so
+       * we use temp_vec4() for the VFETCH dest (guarantees same sel), then
+       * MOV each live component to its SSA def slot (pin_free -> each gets
+       * its own sel, satisfying ssa_src() lookups later).
+       * addr_offset is in bytes; each float/int component is 4 bytes. */
+      for (int comp_base = 0; comp_base < num_components; comp_base += 4) {
+         int group_size = MIN2(4, num_components - comp_base);
+
+         /* Fresh temp vec4: all 4 channels share one sel -- valid RegisterVec4. */
+         auto grp_temp = value_factory().temp_vec4(pin_group);
+         auto load = new LoadFromBuffer(grp_temp, {0,1,2,3}, src,
+                                        (uint32_t)(comp_base * 4),
+                                        1, NULL, fmt_32_32_32_32);
+         load->set_mfc(15);
+         load->set_num_format(vtx_nf_int);
+         load->reset_fetch_flag(FetchInstr::format_comp_signed);
+         emit_instruction(load);
+
+         /* MOV each live component to its SSA dest (pin_free = independent sel). */
+         for (int i = 0; i < group_size; i++) {
+            auto dst_reg = value_factory().dest(intr->def, comp_base + i, pin_free);
+            emit_instruction(new AluInstr(op1_mov, dst_reg,
+                                          grp_temp[i], AluInstr::write));
+         }
+      }
+   }
    return true;
 }
 
@@ -1885,4 +1929,203 @@ Shader::do_finalize()
 {
 }
 
+
+bool
+Shader::emit_load_buffer_resource(nir_intrinsic_instr *instr)
+{
+   ValueFactory& vf = value_factory();
+
+   RegisterVec4 dest = vf.dest_vec4(instr->def, pin_group);
+
+   unsigned fetch_format = FMT_INVALID;
+   unsigned fetch_num_format = 0;
+   unsigned fetch_format_comp = 0;
+   unsigned fetch_endian = ENDIAN_NONE;
+   RegisterVec4::Swizzle fetch_swizzle{7, 7, 7, 7};
+
+   unsigned first_component = nir_intrinsic_component(instr);
+   assert(first_component + instr->def.num_components <= 4);
+
+   pipe_format format = nir_intrinsic_format(instr);
+   if (format != PIPE_FORMAT_NONE) {
+      r600_vertex_data_type(format,
+                            &fetch_format,
+                            &fetch_num_format,
+                            &fetch_format_comp,
+                            &fetch_endian);
+      assert(fetch_format != FMT_INVALID);
+      const struct util_format_description& format_description =
+         *util_format_description(format);
+      for (unsigned i = 0; i < instr->def.num_components; ++i) {
+         uint8_t& fetch_component = fetch_swizzle[i];
+         auto format_component =
+            static_cast<pipe_swizzle>(format_description.swizzle[first_component + i]);
+         if (format_component == PIPE_SWIZZLE_NONE) {
+            fetch_component = i == 3 ? 5 : 4;
+         } else if (format_component >= PIPE_SWIZZLE_X &&
+                    format_component <= PIPE_SWIZZLE_W) {
+            fetch_component = static_cast<unsigned>(format_component) -
+                              static_cast<unsigned>(PIPE_SWIZZLE_X);
+         } else {
+            fetch_component = format_component == PIPE_SWIZZLE_1 ? 5 : 4;
+         }
+      }
+   } else {
+      for (unsigned i = 0; i < instr->def.num_components; ++i) {
+         fetch_swizzle[i] = first_component + i;
+      }
+   }
+
+   auto coord = vf.src(instr->src[1], 0)->as_register();
+
+   unsigned resource_base = nir_intrinsic_id_base(instr);
+   PRegister resource_offset = nullptr;
+   const nir_const_value *resource_offset_const = nir_src_as_const_value(instr->src[0]);
+   if (resource_offset_const != nullptr) {
+      resource_base += resource_offset_const->u32;
+   } else {
+      resource_offset = vf.src(instr->src[0], 0)->as_register();
+   }
+
+   auto fetch = new FetchInstr(vc_fetch,
+                               dest,
+                               fetch_swizzle,
+                               coord,
+                               nir_intrinsic_base(instr),
+                               no_index_offset,
+                               static_cast<EVTXDataFormat>(fetch_format),
+                               static_cast<EVFetchNumFormat>(fetch_num_format),
+                               static_cast<EVFetchEndianSwap>(fetch_endian),
+                               resource_base,
+                               resource_offset);
+
+   gl_access_qualifier access = nir_intrinsic_access(instr);
+
+   if (access & ACCESS_INCLUDE_HELPERS) {
+      fetch->set_instr_flag(Instr::helper);
+   }
+
+   const unsigned instr_flags = nir_intrinsic_flags(instr);
+
+   if (!(instr_flags & R600_NIR_LOAD_BUFFER_RESOURCE_FLAG_USE_VERTEX_CACHE)) {
+      fetch->set_fetch_flag(FetchInstr::use_tc);
+   }
+
+   if (fetch_format != FMT_INVALID) {
+      if (fetch_format_comp) {
+         fetch->set_fetch_flag(FetchInstr::format_comp_signed);
+      }
+   } else {
+      fetch->set_fetch_flag(FetchInstr::use_const_field);
+   }
+
+   unsigned mega_fetch_count = nir_intrinsic_mega_fetch_count_r600(instr);
+   if (mega_fetch_count == 0) {
+      if (format != PIPE_FORMAT_NONE) {
+         mega_fetch_count = util_format_get_blocksize(format);
+      }
+      if (mega_fetch_count == 0) {
+         /* Format not known (specified in the fetch constant), assume dwords
+          * if the expected mega-fetch count is not specified explicitly.
+          */
+         mega_fetch_count =
+            sizeof(uint32_t) * (first_component + instr->def.num_components);
+      }
+   }
+   mega_fetch_count = CLAMP(mega_fetch_count, 1u, 64u);
+   fetch->set_mfc(mega_fetch_count - 1);
+   if (instr_flags & R600_NIR_LOAD_BUFFER_RESOURCE_FLAG_IS_MINI_FETCH) {
+      /* The mega-fetch count is still specified as the hardware may convert
+       * the instruction into a mega-fetch.
+       */
+      fetch->reset_fetch_flag(FetchInstr::is_mega_fetch);
+   } else {
+      fetch->set_fetch_flag(FetchInstr::is_mega_fetch);
+   }
+
+   if (!(access & ACCESS_CAN_REORDER)) {
+      /* Need write-read coherence within the invocation. */
+      chain_ssbo_read(fetch);
+   }
+
+   emit_instruction(fetch);
+
+   return true;
+}
+bool
+Shader::emit_load_texture_resource(nir_intrinsic_instr *instr)
+{
+   ValueFactory& vf = value_factory();
+
+   RegisterVec4 dest = vf.dest_vec4(instr->def, pin_group);
+   RegisterVec4::Swizzle dest_swizzle{7, 7, 7, 7};
+   unsigned first_component = nir_intrinsic_component(instr);
+   assert(first_component + instr->def.num_components <= 4);
+   for (unsigned i = 0; i < instr->def.num_components; ++i) {
+      dest_swizzle[i] = first_component + i;
+   }
+
+   auto coord = vf.src_vec4(instr->src[1], pin_group);
+
+   unsigned resource_base = nir_intrinsic_id_base(instr);
+   PRegister resource_offset = nullptr;
+   const nir_const_value *resource_offset_const = nir_src_as_const_value(instr->src[0]);
+   if (resource_offset_const != nullptr) {
+      resource_base += resource_offset_const->u32;
+   } else {
+      resource_offset = vf.src(instr->src[0], 0)->as_register();
+   }
+
+   auto tex = new TexInstr(TexInstr::ld,
+                           dest,
+                           dest_swizzle,
+                           coord,
+                           resource_base,
+                           resource_offset);
+
+   if (nir_intrinsic_access(instr) & ACCESS_INCLUDE_HELPERS) {
+      tex->set_instr_flag(Instr::helper);
+   }
+
+   emit_instruction(tex);
+
+   return true;
+}
+bool
+Shader::emit_load_kcache(nir_intrinsic_instr *instr)
+{
+   ValueFactory& vf = value_factory();
+
+   unsigned bank_base = nir_intrinsic_id_base(instr);
+   PVirtualValue bank_offset = nullptr;
+   const nir_const_value *bank_offset_const = nir_src_as_const_value(instr->src[0]);
+   if (bank_offset_const != nullptr) {
+      bank_base += bank_offset_const->u32;
+   } else {
+      bank_offset = vf.src(instr->src[0], 0);
+   }
+
+   unsigned element_index = static_cast<unsigned>(nir_intrinsic_base(instr));
+   assert(element_index < R600_MAX_CONST_BUFFER_SIZE / (sizeof(float) * 4));
+
+   unsigned first_component = nir_intrinsic_component(instr);
+   assert(first_component + instr->def.num_components <= 4);
+
+   AluInstr *alu = nullptr;
+   for (unsigned i = 0; i < instr->def.num_components; ++i) {
+      alu = new AluInstr(op1_mov,
+                         vf.dest(instr->def, i, pin_none),
+                         new UniformValue(512 + element_index,
+                                          first_component + i,
+                                          bank_offset,
+                                          bank_base),
+                         AluInstr::write);
+      emit_instruction(alu);
+   }
+   if (alu != nullptr) {
+      alu->set_alu_flag(alu_last_instr);
+   }
+
+   return true;
+}
 } // namespace r600

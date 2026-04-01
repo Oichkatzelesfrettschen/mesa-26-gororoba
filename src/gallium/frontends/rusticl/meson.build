@@ -70,7 +70,7 @@ rusticl_args = [
   rust_global_args,
   rust_2024_lint_args,
 
-  # Should be ran manually before moving to the 2024 edition
+  # Keep this lint disabled until the remaining tail-expression drop-order cases are audited.
   # '-Dtail_expr_drop_order',
 
   # we want to add asserts in control flow

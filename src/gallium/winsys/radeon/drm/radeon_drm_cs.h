@@ -47,6 +47,10 @@ struct radeon_cs_context {
    struct radeon_bo_item       *slab_buffers;
 
    int                         reloc_indices_hashlist[4096];
+
+   /* Selective hash clear: track which slots were written */
+   unsigned                    num_used_hash_slots;
+   uint16_t                    used_hash_slots[512]; /* max unique BOs per CS */
 };
 
 struct radeon_drm_cs {

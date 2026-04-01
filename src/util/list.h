@@ -202,7 +202,7 @@ static inline void list_move_to(struct list_head *item, struct list_head *loc) {
  * 'sample' MUST be initialized, or else the result is undefined!
  */
 #define list_container_of(ptr, sample, member)				\
-    (void *)((char *)(ptr)						\
+    (__typeof__(sample))((char *)(ptr)						\
 	     - ((char *)&(sample)->member - (char *)(sample)))
 
 #define list_first_entry(ptr, type, member) \

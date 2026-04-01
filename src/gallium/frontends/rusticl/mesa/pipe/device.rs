@@ -69,6 +69,8 @@ fn get_enabled_devs() -> HashMap<String, u32> {
         "asahi",
         #[cfg(rusticl_enable_freedreno)]
         "freedreno",
+        #[cfg(any(rusticl_enable_r600, rusticl_enable_auto))]
+        "r600",
         #[cfg(rusticl_enable_radeonsi)]
         "radeonsi",
     ];

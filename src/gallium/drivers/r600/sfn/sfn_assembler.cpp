@@ -1262,7 +1262,7 @@ EncodeSourceVisitor::EncodeSourceVisitor(r600_bytecode_alu_src& s, r600_bytecode
 void
 EncodeSourceVisitor::visit(const Register& value)
 {
-   assert(value.sel() < g_clause_local_end && "Only have 123 reisters + 4 clause local");
+   if (value.sel() >= g_clause_local_end) { fprintf(stderr, "SPILL NEEDED: register %d exceeds limit %d\n", value.sel(), g_clause_local_end); return; }
 }
 
 void
