@@ -2965,3 +2965,34 @@ intrinsic("load_sampler_handle_kk", [1], 1, [],
           flags=[CAN_ELIMINATE, CAN_REORDER],
           bit_sizes=[16])
 store("clip_distance_kk", [], [BASE])
+
+# Terakan / r600 TeraScale Vulkan-specific indices and intrinsics
+# (r600 Gallium intrinsics like tcs_*_r600, load_local_shared_r600 already exist above)
+
+index("unsigned", "id_base")
+index("unsigned", "mega_fetch_count_r600")
+index("unsigned", "uav_op_r600")
+index("unsigned", "uav_return_id_base_r600")
+
+system_value("shader_engine_id_r600", 1)
+system_value("hw_wave_id_r600", 1)
+
+load("buffer_resource_r600", src_comp=[1, 1],
+     indices=[ACCESS, ID_BASE, BASE, COMPONENT, FORMAT, MEGA_FETCH_COUNT_R600, FLAGS],
+     flags=[CAN_ELIMINATE, CAN_REORDER])
+
+load("texture_resource_r600", src_comp=[1, 4],
+     indices=[ACCESS, ID_BASE, COMPONENT], flags=[CAN_ELIMINATE, CAN_REORDER])
+
+load("kcache_r600", src_comp=[1], indices=[ACCESS, ID_BASE, BASE, COMPONENT],
+     flags=[CAN_ELIMINATE, CAN_REORDER])
+
+load("r600_indirect_per_vertex_input", [1, 1],
+     [BASE, RANGE, COMPONENT, DEST_TYPE, IO_SEMANTICS], [CAN_ELIMINATE, CAN_REORDER])
+
+intrinsic("uav_instr_r600", src_comp=[1, -1, -1, 1], bit_sizes=[32, 32, 32, 32],
+          indices=[UAV_OP_R600, ACCESS, ID_BASE])
+
+intrinsic("uav_returning_instr_r600", dest_comp=0, src_comp=[1, -1, -1, 1, 1],
+          bit_sizes=[32, 32, 32, 32, 32, 32],
+          indices=[UAV_OP_R600, ACCESS, ID_BASE, UAV_RETURN_ID_BASE_R600, MEGA_FETCH_COUNT_R600])

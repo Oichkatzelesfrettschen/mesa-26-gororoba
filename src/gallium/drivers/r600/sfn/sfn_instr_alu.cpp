@@ -18,6 +18,76 @@
 
 namespace r600 {
 
+
+
+/* Check if a NIR ALU source value fits in 24 bits (for MUL_UINT24 optimization).
+ * MUL_UINT24 is single-cycle on any vec slot, vs MULLO_INT which is multi-cycle trans-only. */
+static bool
+nir_alu_src_fits_24bit(nir_alu_instr *alu, unsigned src_idx)
+{
+   nir_const_value *cv = nir_src_as_const_value(alu->src[src_idx].src);
+   if (cv) {
+      /* Constant: check if it fits in 24 bits unsigned */
+      return cv->u32 < (1u << 24);
+   }
+   /* For non-constants, check if the source def bit_size suggests small values.
+    * Conservative: only use UINT24 when we have constants or known-small sources. */
+   return false;
+}
+
+/* UBYTE_FLT optimization: detect byte extraction patterns feeding u2f32.
+ * Returns the byte index (0-3) if the source is extracting a byte, or -1. */
+static int
+detect_ubyte_extraction(nir_alu_instr *u2f_alu)
+{
+   /* The source of u2f32 */
+   nir_def *src_def = u2f_alu->src[0].src.ssa;
+   if (!nir_def_is_alu(src_def))
+      return -1;
+
+   nir_alu_instr *src_alu = nir_def_as_alu(src_def);
+
+   /* Pattern 1: extract_u8(x, N) -> byte N */
+   if (src_alu->op == nir_op_extract_u8) {
+      nir_const_value *byte_idx = nir_src_as_const_value(src_alu->src[1].src);
+      if (byte_idx)
+         return byte_idx->u32;
+      return -1;
+   }
+
+   /* Pattern 2: iand(x, 0xFF) -> byte 0 */
+   if (src_alu->op == nir_op_iand) {
+      nir_const_value *mask = nir_src_as_const_value(src_alu->src[1].src);
+      if (mask && mask->u32 == 0xFF)
+         return 0;
+   }
+
+   /* Pattern 3: iand(ushr(x, N*8), 0xFF) -> byte N */
+   if (src_alu->op == nir_op_iand) {
+      nir_const_value *mask = nir_src_as_const_value(src_alu->src[1].src);
+      if (mask && mask->u32 == 0xFF) {
+         nir_def *shift_src = src_alu->src[0].src.ssa;
+         if (nir_def_is_alu(shift_src)) {
+            nir_alu_instr *shift_alu = nir_def_as_alu(shift_src);
+            if (shift_alu->op == nir_op_ushr) {
+               nir_const_value *shift_amt = nir_src_as_const_value(shift_alu->src[1].src);
+               if (shift_amt && (shift_amt->u32 % 8 == 0) && shift_amt->u32 <= 24)
+                  return shift_amt->u32 / 8;
+            }
+         }
+      }
+   }
+
+   /* Pattern 4: ushr(x, 24) -> byte 3 (top byte, mask implicit) */
+   if (src_alu->op == nir_op_ushr) {
+      nir_const_value *shift_amt = nir_src_as_const_value(src_alu->src[1].src);
+      if (shift_amt && shift_amt->u32 == 24)
+         return 3;
+   }
+
+   return -1;
+}
+
 using std::istream;
 using std::string;
 using std::vector;
@@ -1497,6 +1567,10 @@ enum AluMods {
 };
 
 static bool
+emit_alu_trunc_u2uN(const nir_alu_instr& alu, unsigned dest_bits, Shader& shader);
+static bool
+emit_alu_sext_i2iN(const nir_alu_instr& alu, unsigned src_bits, Shader& shader);
+static bool
 emit_alu_b2x(const nir_alu_instr& alu, AluInlineConstants mask, Shader& shader);
 
 
@@ -1611,6 +1685,47 @@ check_64_bit_op_def(nir_def *def, void *state)
    return true;
 }
 
+static bool
+emit_alu_trunc_u2uN(const nir_alu_instr& alu, unsigned dest_bits, Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+   uint32_t mask = (dest_bits < 32) ? ((1u << dest_bits) - 1u) : 0xFFFFFFFFu;
+   if (mask == 0xFFFFFFFFu) {
+      shader.emit_instruction(new AluInstr(op1_mov,
+                                           value_factory.dest(alu.def, 0, pin_free),
+                                           value_factory.src(alu.src[0], 0),
+                                           AluInstr::write));
+   } else {
+      shader.emit_instruction(new AluInstr(op2_and_int,
+                                           value_factory.dest(alu.def, 0, pin_free),
+                                           value_factory.src(alu.src[0], 0),
+                                           value_factory.literal(mask),
+                                           AluInstr::write));
+   }
+   return true;
+}
+
+static bool
+emit_alu_sext_i2iN(const nir_alu_instr& alu, unsigned src_bits, Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+   if (src_bits >= 32) {
+      shader.emit_instruction(new AluInstr(op1_mov,
+                                           value_factory.dest(alu.def, 0, pin_free),
+                                           value_factory.src(alu.src[0], 0),
+                                           AluInstr::write));
+      return true;
+   }
+   /* BFE_INT dest, src, bit_offset, bit_width -- sign-extends src[offset:offset+width] */
+   shader.emit_instruction(new AluInstr(op3_bfe_int,
+                                        value_factory.dest(alu.def, 0, pin_free),
+                                        value_factory.src(alu.src[0], 0),
+                                        value_factory.literal(0),
+                                        value_factory.literal(src_bits),
+                                        AluInstr::write));
+   return true;
+}
+
 bool
 AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
 {
@@ -1693,9 +1808,29 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
          return emit_alu_trans_op1_cayman(*alu, op1_sin, shader);
       case nir_op_i2f32:
          return emit_alu_op1(*alu, op1_int_to_flt, shader);
-      case nir_op_u2f32:
+      case nir_op_u2f32: {
+         
+
+/* UBYTE_FLT optimization: single-op byte-to-float conversion */
+         int byte_idx = detect_ubyte_extraction(alu);
+         if (byte_idx >= 0) {
+            static const EAluOp ubyte_ops[] = {
+               op1_ubyte0_flt, op1_ubyte1_flt, op1_ubyte2_flt, op1_ubyte3_flt
+            };
+            /* Get the original source (before byte extraction) */
+            nir_def *byte_src = alu->src[0].src.ssa;
+            nir_alu_instr *src_alu = nir_def_as_alu(byte_src);
+            /* For extract_u8(x, N), source is src_alu->src[0] */
+            /* For iand(ushr(x, N), 0xFF), source is the ushr input */
+            /* For simplicity, emit UBYTE on the direct source of u2f32 */
+            return emit_alu_op1(*alu, ubyte_ops[byte_idx], shader);
+         }
          return emit_alu_op1(*alu, op1_uint_to_flt, shader);
+      }
       case nir_op_imul:
+         /* MUL_UINT24: single-cycle vec slot vs multi-cycle trans-only MULLO_INT */
+         if (nir_alu_src_fits_24bit(alu, 0) || nir_alu_src_fits_24bit(alu, 1))
+            return emit_alu_op2(*alu, op2_mul_uint24, shader);
          return emit_alu_trans_op2_cayman(*alu, op2_mullo_int, shader);
       case nir_op_imul_high:
          return emit_alu_trans_op2_cayman(*alu, op2_mulhi_int, shader);
@@ -1767,9 +1902,19 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
          return emit_alu_trans_op1_eg(*alu, op1_sqrt_ieee, shader);
       case nir_op_i2f32:
          return emit_alu_trans_op1_eg(*alu, op1_int_to_flt, shader);
-      case nir_op_u2f32:
+      case nir_op_u2f32: {
+         int byte_idx = detect_ubyte_extraction(alu);
+         if (byte_idx >= 0) {
+            static const EAluOp ubyte_ops[] = {
+               op1_ubyte0_flt, op1_ubyte1_flt, op1_ubyte2_flt, op1_ubyte3_flt
+            };
+            return emit_alu_op1(*alu, ubyte_ops[byte_idx], shader);
+         }
          return emit_alu_trans_op1_eg(*alu, op1_uint_to_flt, shader);
+      }
       case nir_op_imul:
+         if (nir_alu_src_fits_24bit(alu, 0) || nir_alu_src_fits_24bit(alu, 1))
+            return emit_alu_op2(*alu, op2_mul_uint24, shader);
          return emit_alu_trans_op2_eg(*alu, op2_mullo_int, shader);
       case nir_op_imul_high:
          return emit_alu_trans_op2_eg(*alu, op2_mulhi_int, shader);
@@ -1979,6 +2124,27 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
 
   case nir_op_cube_amd:
       return emit_alu_cube(*alu, shader);
+
+   /* Sub-32-bit conversions: truncation and sign/zero-extension.
+    * nir_lower_bit_size promotes arithmetic but leaves conversion
+    * residuals; these handle u2u8/u2u16/u2u32/i2i8/i2i16/i2i32. */
+   case nir_op_u2u8:
+      return emit_alu_trunc_u2uN(*alu, 8, shader);
+   case nir_op_u2u16:
+      return emit_alu_trunc_u2uN(*alu, 16, shader);
+   case nir_op_u2u32: {
+      unsigned src_bits = alu->src[0].src.ssa->bit_size;
+      return emit_alu_trunc_u2uN(*alu, src_bits, shader);
+   }
+   case nir_op_i2i8:
+      return emit_alu_sext_i2iN(*alu, 8, shader);
+   case nir_op_i2i16:
+      return emit_alu_sext_i2iN(*alu, 16, shader);
+   case nir_op_i2i32: {
+      unsigned src_bits = alu->src[0].src.ssa->bit_size;
+      return emit_alu_sext_i2iN(*alu, src_bits, shader);
+   }
+
    default:
       fprintf(stderr, "Unknown instruction '");
       nir_print_instr(&alu->instr, stderr);

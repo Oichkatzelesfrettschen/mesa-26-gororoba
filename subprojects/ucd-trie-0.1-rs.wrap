@@ -1,6 +1,6 @@
 [wrap-file]
-directory = ucd-trie-0.1.6
-source_url = https://crates.io/api/v1/crates/ucd-trie/0.1.6/download
-source_filename = ucd-trie-0.1.6.tar.gz
-source_hash = ed646292ffc8188ef8ea4d1e0e0150fb15a5c2e12ad9b8fc191ae7a8a7f3c4b9
+directory = ucd-trie-0.1.7
+source_url = https://crates.io/api/v1/crates/ucd-trie/0.1.7/download
+source_filename = ucd-trie-0.1.7.tar.gz
+source_hash = 2896d95c02a80c6d6a5d6e953d479f5ddf2dfdb6a244441010e373ac0fb88971
 patch_directory = ucd-trie-0.1-rs

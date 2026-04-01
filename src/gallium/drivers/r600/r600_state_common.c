@@ -80,6 +80,7 @@ void r600_emit_alphatest_state(struct r600_context *rctx, struct r600_atom *atom
 
 static void r600_memory_barrier(struct pipe_context *ctx, unsigned flags)
 {
+	fprintf(stderr, "BARRIER_TRACE: flags=0x%x\n", flags);
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
 	if (!(flags & ~PIPE_BARRIER_UPDATE))
@@ -96,6 +97,33 @@ static void r600_memory_barrier(struct pipe_context *ctx, unsigned flags)
 		     PIPE_BARRIER_GLOBAL_BUFFER)) {
 		rctx->b.flags |= R600_CONTEXT_INV_VERTEX_CACHE|
 			R600_CONTEXT_INV_TEX_CACHE;
+	}
+
+	/* For compute global buffer barriers: the dispatch CS has already been
+	 * built (dispatch packets are in the current CS). Sequence required:
+	 * 1. CS_PARTIAL_FLUSH: stalls until all in-flight compute shader exports
+	 *    complete. Without this, the SX blocks trying to push RAT writes to CB
+	 *    while CB is simultaneously being flushed/invalidated -- SX never drains,
+	 *    CB never finishes -> GPU hangs at 100% SX, radeon_fence_default_wait
+	 *    blocks forever, ttm_bo_delayed_delete deadlocks (RCA confirmed).
+	 * 2. FLUSH_AND_INV_CB: makes RAT writes visible to subsequent CPU reads.
+	 * 3. Submit CS and fence_wait for full GPU completion. */
+	if (flags & PIPE_BARRIER_GLOBAL_BUFFER) {
+		struct radeon_cmdbuf *cs = &rctx->b.gfx.cs;
+		struct pipe_fence_handle *fence = NULL;
+		/* Step 1: drain all in-flight compute exports before CB flush */
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_CS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+		/* Step 2: CB_FLUSH is now safe -- shader has finished all RAT writes */
+		rctx->b.flags |= R600_CONTEXT_FLUSH_AND_INV_CB;
+		/* Step 3: submit and wait */
+		rctx->b.gfx.flush(rctx, 0, &fence);
+		if (fence) {
+			rctx->b.ws->fence_wait(rctx->b.ws, fence, OS_TIMEOUT_INFINITE);
+			rctx->b.ws->fence_reference(rctx->b.ws, &fence, NULL);
+		} else if (rctx->b.last_gfx_fence) {
+			rctx->b.ws->fence_wait(rctx->b.ws, rctx->b.last_gfx_fence, OS_TIMEOUT_INFINITE);
+		}
 	}
 
 	if (flags & (PIPE_BARRIER_FRAMEBUFFER|

@@ -12,8 +12,8 @@ project(
     'b_ndebug=if-release',
     'c_std=c11',
     'cpp_std=c++17',
-    'rust_std=2021',
-    'build.rust_std=2021',
+    'rust_std=2024',
+    'build.rust_std=2024',
   ],
 )
 
@@ -254,7 +254,7 @@ if _vulkan_drivers.contains('auto')
   # TODO: handle swrat driver if llvm is auto/disabled
   if system_has_kms_drm
     if host_machine.cpu_family().startswith('x86')
-      _vulkan_drivers = ['amd', 'intel', 'intel_hasvk', 'nouveau', 'swrast']
+      _vulkan_drivers = ['amd', 'amd_terascale', 'intel', 'intel_hasvk', 'nouveau', 'swrast']
     elif ['aarch64'].contains(host_machine.cpu_family())
       _vulkan_drivers = ['swrast', 'intel', 'panfrost', 'freedreno', 'asahi']
     elif ['arm'].contains(host_machine.cpu_family())
@@ -276,7 +276,7 @@ if _vulkan_drivers.contains('auto')
   endif
 elif _vulkan_drivers.contains('all')
    # Build every vulkan driver regardless of architecture.
-   _vulkan_drivers = ['amd', 'intel', 'intel_hasvk', 'swrast',
+   _vulkan_drivers = ['amd', 'amd_terascale', 'intel', 'intel_hasvk', 'swrast',
                       'freedreno', 'panfrost', 'virtio', 'broadcom',
                       'imagination', 'microsoft-experimental',
                       'nouveau', 'asahi', 'gfxstream', 'kosmickrisp']
@@ -285,6 +285,7 @@ endif
 with_intel_vk = _vulkan_drivers.contains('intel')
 with_intel_hasvk = _vulkan_drivers.contains('intel_hasvk')
 with_amd_vk = _vulkan_drivers.contains('amd')
+with_amd_terascale_vk = _vulkan_drivers.contains('amd_terascale')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_panfrost_vk = _vulkan_drivers.contains('panfrost')
 with_swrast_vk = _vulkan_drivers.contains('swrast')

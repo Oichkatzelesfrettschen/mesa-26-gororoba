@@ -1127,7 +1127,11 @@ static void evergreen_set_color_surface_buffer(struct r600_context *rctx,
 	color->attrib = S_028C74_NON_DISP_TILING_ORDER(1);
 	color->ntype = ntype;
 	color->export_16bpc = false;
-	color->dim = width_elements - 1;
+	{
+		unsigned bpe = util_format_get_blocksize(pformat);
+		unsigned n_texels = (bpe > 0) ? (last_element - first_element) / bpe : width_elements;
+		color->dim = S_028C78_WIDTH_MAX(n_texels > 0 ? n_texels - 1 : 0);
+	}
 	color->slice = 0; /* (width_elements / 64) - 1;*/
 	color->view = 0;
 	color->offset = (res->gpu_address + first_element) >> 8;
@@ -1991,6 +1995,8 @@ static void evergreen_emit_framebuffer_state(struct r600_context *rctx, struct r
 		}
 
 		radeon_set_context_reg_seq(cs, R_028C60_CB_COLOR0_BASE + i * 0x3C, 13);
+		fprintf(stderr, "FB_STATE_TRACE: slot=%u base=0x%08x info=0x%08x dim=0x%08x reloc=%u\n",
+			i, cb->cb_color_base, cb->cb_color_info, cb->cb_color_dim, reloc);
 		radeon_emit(cs, cb->cb_color_base);	/* R_028C60_CB_COLOR0_BASE */
 		radeon_emit(cs, cb->cb_color_pitch);	/* R_028C64_CB_COLOR0_PITCH */
 		radeon_emit(cs, cb->cb_color_slice);	/* R_028C68_CB_COLOR0_SLICE */

@@ -280,7 +280,7 @@ r600_nir_lower_cube_to_2darray_impl(nir_builder *b, nir_instr *instr, void *_opt
    return NIR_LOWER_INSTR_PROGRESS;
 }
 
-bool
+extern "C" bool
 r600_nir_lower_cube_to_2darray(nir_shader *shader)
 {
    return nir_shader_lower_instructions(shader,

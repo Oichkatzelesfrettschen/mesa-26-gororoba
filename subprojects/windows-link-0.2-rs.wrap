@@ -1,6 +1,6 @@
 [wrap-file]
-directory = windows-link-0.2.0
-source_url = https://crates.io/api/v1/crates/windows-link/0.2.0/download
-source_filename = windows-link-0.2.0.tar.gz
-source_hash = 45e46c0661abb7180e7b9c281db115305d49ca1709ab8242adf09666d2173c65
+directory = windows-link-0.2.1
+source_url = https://crates.io/api/v1/crates/windows-link/0.2.1/download
+source_filename = windows-link-0.2.1.tar.gz
+source_hash = f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5
 patch_directory = windows-link-0.2-rs

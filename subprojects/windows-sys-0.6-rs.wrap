@@ -1,6 +1,6 @@
 [wrap-file]
-directory = windows-sys-0.61.1
-source_url = https://crates.io/api/v1/crates/windows-sys/0.61.1/download
-source_filename = windows-sys-0.61.1.tar.gz
-source_hash = 6f109e41dd4a3c848907eb83d5a42ea98b3769495597450cf6d153507b166f0f
+directory = windows-sys-0.61.2
+source_url = https://crates.io/api/v1/crates/windows-sys/0.61.2/download
+source_filename = windows-sys-0.61.2.tar.gz
+source_hash = ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc
 patch_directory = windows-sys-0.6-rs

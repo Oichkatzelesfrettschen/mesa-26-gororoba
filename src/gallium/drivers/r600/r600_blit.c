@@ -44,7 +44,7 @@ static void r600_blitter_begin(struct pipe_context *ctx, enum r600_blitter_op op
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
 	if (rctx->cmd_buf_is_compute) {
-		rctx->b.gfx.flush(rctx, PIPE_FLUSH_ASYNC, NULL);
+		rctx->b.gfx.flush(rctx, 0, NULL);
 		rctx->cmd_buf_is_compute = false;
 	}
 

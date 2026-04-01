@@ -1,6 +1,6 @@
 [wrap-file]
-directory = pest_derive-2.8.0
-source_url = https://crates.io/api/v1/crates/pest_derive/2.8.0/download
-source_filename = pest_derive-2.8.0.tar.gz
-source_hash = d725d9cfd79e87dccc9341a2ef39d1b6f6353d68c4b33c177febbe1a402c97c5
+directory = pest_derive-2.8.6
+source_url = https://crates.io/api/v1/crates/pest_derive/2.8.6/download
+source_filename = pest_derive-2.8.6.tar.gz
+source_hash = 11f486f1ea21e6c10ed15d5a7c77165d0ee443402f0780849d1768e7d9d6fe77
 patch_directory = pest_derive-2-rs

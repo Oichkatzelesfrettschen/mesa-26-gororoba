@@ -3085,6 +3085,10 @@ init_driver_workarounds(struct zink_screen *screen)
    if (zink_driver_is_venus(screen))
       screen->driver_workarounds.can_do_invalid_linear_modifier = true;
 
+   /* Terakan (AMD TeraScale legacy Vulkan) can handle linear modifier swap */
+   if (screen->info.props.deviceName[0] && strstr(screen->info.props.deviceName, "Terakan"))
+      screen->driver_workarounds.can_do_invalid_linear_modifier = true;
+
    /* these drivers have no difference between unoptimized and optimized shader compilation */
    switch (zink_driverid(screen)) {
    case VK_DRIVER_ID_MESA_LLVMPIPE:

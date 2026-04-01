@@ -128,9 +128,8 @@ static bool radeon_init_cs_context(struct radeon_cs_context *csc,
 
    csc->cs.chunks = (uint64_t)(uintptr_t)csc->chunk_array;
 
-   for (i = 0; i < ARRAY_SIZE(csc->reloc_indices_hashlist); i++) {
-      csc->reloc_indices_hashlist[i] = -1;
-   }
+   /* Use memset for bulk init */
+   memset(csc->reloc_indices_hashlist, 0xff, sizeof(csc->reloc_indices_hashlist));
    return true;
 }
 
@@ -154,9 +153,12 @@ static void radeon_cs_context_cleanup(struct radeon_winsys *rws,
    csc->chunks[0].length_dw = 0;
    csc->chunks[1].length_dw = 0;
 
-   for (i = 0; i < ARRAY_SIZE(csc->reloc_indices_hashlist); i++) {
-      csc->reloc_indices_hashlist[i] = -1;
+   /* Selective hash clear: only reset entries that were actually used.
+    * For typical frames with 3-10 BOs, this clears ~10 entries instead of 4096. */
+   for (i = 0; i < csc->num_used_hash_slots; i++) {
+      csc->reloc_indices_hashlist[csc->used_hash_slots[i]] = -1;
    }
+   csc->num_used_hash_slots = 0;
 }
 
 static void radeon_destroy_cs_context(struct radeon_winsys *rws, struct radeon_cs_context *csc)
@@ -303,6 +305,8 @@ static unsigned radeon_lookup_or_add_real_buffer(struct radeon_drm_cs *cs,
    reloc->flags = 0;
 
    csc->reloc_indices_hashlist[hash] = csc->num_relocs;
+   if (csc->num_used_hash_slots < ARRAY_SIZE(csc->used_hash_slots))
+      csc->used_hash_slots[csc->num_used_hash_slots++] = hash;
 
    csc->chunks[1].length_dw += RELOC_DWORDS;
 
@@ -482,6 +486,7 @@ void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
    unsigned i;
    int r;
 
+   fprintf(stderr, "WINSYS_TRACE: CS_SUBMIT cdw=%u relocs=%u ring=%u\n", csc->chunks[0].length_dw, csc->num_relocs, csc->flags[1]);
    r = drmCommandWriteRead(csc->fd, DRM_RADEON_CS,
                            &csc->cs, sizeof(struct drm_radeon_cs));
    if (r) {

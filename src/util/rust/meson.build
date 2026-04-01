@@ -2,25 +2,25 @@
 # SPDX-License-Identifier: MIT
 
 dep_cfg_if = dependency('cfg-if',
-  version: '>= 1.0.0',
+  version: '>= 1.0.4',
   fallback: ['cfg-if-1-rs', 'dep_cfg_if'],
   required: true,
 )
 
 dep_thiserror = dependency('thiserror',
-  version: '>= 2.0.11',
+  version: '>= 2.0.18',
   fallback: ['thiserror-2-rs', 'dep_thiserror'],
   required: true,
 )
 
 dep_remain = dependency('remain',
-  version: '>= 0.2.12',
+  version: '>= 0.2.15',
   fallback: ['remain-0.2-rs', 'dep_remain'],
   required: true,
 )
 
 dep_zerocopy = dependency('zerocopy',
-  version: '>= 0.8.13',
+  version: '>= 0.8.48',
   fallback: ['zerocopy-0.8-rs', 'dep_zerocopy'],
   required: true,
 )
@@ -32,7 +32,7 @@ supported_host_machine = host_machine.system() in supported_systems
 
 if supported_host_machine
   dep_rustix = dependency('rustix',
-    version: '>= 0.38.31',
+    version: '>= 1.1.4',
     fallback: ['rustix-1-rs', 'dep_rustix'],
     required: true,
   )
