@@ -314,6 +314,56 @@ struct terakan_nir_lower_bindings_state {
    uint32_t * driver_push_constants_used;
 };
 
+static void
+terakan_nir_build_uav_instr_r600(nir_builder * const b, nir_def * const uav_array_index,
+                                 nir_def * const coord, nir_def * const value,
+                                 nir_def * const compare_value, unsigned const uav_op,
+                                 enum gl_access_qualifier const access,
+                                 unsigned const id_base)
+{
+   nir_intrinsic_instr * const intrin =
+      nir_intrinsic_instr_create(b->shader, nir_intrinsic_uav_instr_r600);
+   intrin->src[0] = nir_src_for_ssa(uav_array_index);
+   intrin->src[1] = nir_src_for_ssa(coord);
+   intrin->src[2] = nir_src_for_ssa(value);
+   intrin->src[3] = nir_src_for_ssa(compare_value);
+   nir_intrinsic_set_uav_op_r600(intrin, uav_op);
+   nir_intrinsic_set_access(intrin, access);
+   nir_intrinsic_set_id_base(intrin, id_base);
+   nir_builder_instr_insert(b, &intrin->instr);
+}
+
+static nir_def *
+terakan_nir_build_uav_returning_instr_r600(nir_builder * const b,
+                                           unsigned const num_components,
+                                           unsigned const bit_size,
+                                           nir_def * const uav_array_index,
+                                           nir_def * const coord, nir_def * const value,
+                                           nir_def * const compare_value,
+                                           nir_def * const immed_index,
+                                           unsigned const uav_op,
+                                           enum gl_access_qualifier const access,
+                                           unsigned const id_base,
+                                           unsigned const uav_return_id_base_r600)
+{
+   nir_intrinsic_instr * const intrin =
+      nir_intrinsic_instr_create(b->shader, nir_intrinsic_uav_returning_instr_r600);
+   intrin->num_components = (uint8_t)num_components;
+   nir_def_init(&intrin->instr, &intrin->def, intrin->num_components, bit_size);
+   intrin->src[0] = nir_src_for_ssa(uav_array_index);
+   intrin->src[1] = nir_src_for_ssa(coord);
+   intrin->src[2] = nir_src_for_ssa(value);
+   intrin->src[3] = nir_src_for_ssa(compare_value);
+   intrin->src[4] = nir_src_for_ssa(immed_index);
+   nir_intrinsic_set_uav_op_r600(intrin, uav_op);
+   nir_intrinsic_set_access(intrin, access);
+   nir_intrinsic_set_id_base(intrin, id_base);
+   nir_intrinsic_set_uav_return_id_base_r600(intrin, uav_return_id_base_r600);
+   nir_intrinsic_set_mega_fetch_count_r600(intrin, 0);
+   nir_builder_instr_insert(b, &intrin->instr);
+   return &intrin->def;
+}
+
 /* Section 8.2 "Dataflow in Memory Hierarchy" of Evergreen Family Instruction Set Architecture says:
  *
  *     "Buffer objects are generally read and written directly by the work-items. Data is accessed
@@ -912,10 +962,10 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
 
    /* No point in vectorizing, the hardware instruction stores only one channel. */
    assert(nir_intrinsic_write_mask(intrin) == 0b1);
-   nir_uav_instr_r600(b, uav_array_index, coord,
-                      nir_u2u32(b, nir_channel(b, intrin->src[0].ssa, 0)), nir_undef(b, 1, 32),
-                      .uav_op_r600 = uav_op, .access = access,
-                      .id_base = state->uav_base + uav_index_zero_based);
+   terakan_nir_build_uav_instr_r600(
+      b, uav_array_index, coord, nir_u2u32(b, nir_channel(b, intrin->src[0].ssa, 0)),
+      nir_undef(b, 1, 32), uav_op, access,
+      state->uav_base + uav_index_zero_based);
    nir_instr_remove(&intrin->instr);
 }
 
@@ -990,20 +1040,20 @@ terakan_nir_lower_bindings_instr_ssbo_atomic(nir_builder * const b,
          &intrin->def,
          nir_u2uN(
             b,
-            nir_uav_returning_instr_r600(
+            terakan_nir_build_uav_returning_instr_r600(
                b, intrin->def.num_components, 32, uav_array_index, coord, value, compare_value,
                terakan_nir_uav_immed_index(b, &container_of(state->layout->vk.base.device->physical,
                                                             struct terakan_physical_device const, vk)
                                                   ->chip_info),
-               .uav_op_r600 = uav_op, .access = access, .id_base = uav_id_base,
-               .uav_return_id_base_r600 = (b->shader->info.stage == MESA_SHADER_FRAGMENT
-                                              ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
-                                              : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
-                                          uav_index_zero_based),
+               uav_op, access, uav_id_base,
+               (b->shader->info.stage == MESA_SHADER_FRAGMENT
+                   ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
+                   : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
+               uav_index_zero_based),
             intrin->def.bit_size));
    } else {
-      nir_uav_instr_r600(b, uav_array_index, coord, value, compare_value, .uav_op_r600 = uav_op,
-                         .access = access, .id_base = uav_id_base);
+      terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, value, compare_value, uav_op,
+                                       access, uav_id_base);
       nir_def_rewrite_uses(&intrin->def,
                            nir_undef(b, intrin->def.num_components, intrin->def.bit_size));
    }
@@ -1109,15 +1159,15 @@ terakan_nir_lower_bindings_instr_image_deref_load(
       &intrin->def,
       nir_u2uN(
          b,
-         nir_uav_returning_instr_r600(
+         terakan_nir_build_uav_returning_instr_r600(
             b, intrin->def.num_components, 32, uav_array_index,
             terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim, image_is_array), undef,
-            undef, immed_index, .uav_op_r600 = V_RAT_INST_NOP_RTN, .access = access,
-            .id_base = state->uav_base + uav_index_zero_based,
-            .uav_return_id_base_r600 = (b->shader->info.stage == MESA_SHADER_FRAGMENT
-                                           ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
-                                           : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
-                                       uav_index_zero_based),
+            undef, immed_index, V_RAT_INST_NOP_RTN, access,
+            state->uav_base + uav_index_zero_based,
+            (b->shader->info.stage == MESA_SHADER_FRAGMENT
+                ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
+                : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
+            uav_index_zero_based),
          intrin->def.bit_size));
    nir_instr_remove(&intrin->instr);
 }
@@ -1166,9 +1216,9 @@ terakan_nir_lower_bindings_instr_image_deref_store(
    nir_def * const undef = nir_undef(b, 1, 32);
 
    /* TODO(Triang3l): Proper bit size conversion depending on the source type? */
-   nir_uav_instr_r600(b, uav_array_index, coord, nir_u2u32(b, intrin->src[3].ssa), undef,
-                      .uav_op_r600 = V_RAT_INST_STORE_TYPED, .access = access,
-                      .id_base = state->uav_base + uav_index_zero_based);
+   terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, nir_u2u32(b, intrin->src[3].ssa),
+                                    undef, V_RAT_INST_STORE_TYPED, access,
+                                    state->uav_base + uav_index_zero_based);
    nir_instr_remove(&intrin->instr);
 }
 
@@ -1247,20 +1297,20 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
          &intrin->def,
          nir_u2uN(
             b,
-            nir_uav_returning_instr_r600(
+            terakan_nir_build_uav_returning_instr_r600(
                b, intrin->def.num_components, 32, uav_array_index, coord, value, compare_value,
                terakan_nir_uav_immed_index(b, &container_of(state->layout->vk.base.device->physical,
                                                             struct terakan_physical_device const, vk)
                                                   ->chip_info),
-               .uav_op_r600 = uav_op, .access = access, .id_base = uav_id_base,
-               .uav_return_id_base_r600 = (b->shader->info.stage == MESA_SHADER_FRAGMENT
-                                              ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
-                                              : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
-                                          uav_index_zero_based),
+               uav_op, access, uav_id_base,
+               (b->shader->info.stage == MESA_SHADER_FRAGMENT
+                   ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
+                   : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
+               uav_index_zero_based),
             intrin->def.bit_size));
    } else {
-      nir_uav_instr_r600(b, uav_array_index, coord, value, compare_value, .uav_op_r600 = uav_op,
-                         .access = access, .id_base = uav_id_base);
+      terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, value, compare_value, uav_op,
+                                       access, uav_id_base);
       nir_def_rewrite_uses(&intrin->def,
                            nir_undef(b, intrin->def.num_components, intrin->def.bit_size));
    }
