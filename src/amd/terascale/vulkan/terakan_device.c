@@ -131,7 +131,7 @@ terakan_device_init(struct terakan_device * const device,
    device->vk.command_dispatch_table = &device->command_dispatch_table;
 
    device->vk.command_buffer_ops = &terakan_command_buffer_ops;
-
+   device->vk.shader_ops = &terakan_device_shader_ops;
 
    device->winsys_fn = winsys_fn_static;
 
@@ -374,3 +374,4 @@ terakan_CreateDevice(VkPhysicalDevice const physicalDevice,
    *pDevice = terakan_device_to_handle(device);
    return VK_SUCCESS;
 }
+
