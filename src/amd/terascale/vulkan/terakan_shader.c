@@ -37,13 +37,20 @@
 #include "spirv/nir_spirv.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
+#include "util/mesa-blake3.h"
+
+#include <stdio.h>
+#include "util/ralloc.h"
+#include "vk_log.h"
 #include "vk_nir.h"
+#include "vk_shader.h"
 
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 struct terakan_shader_ring const terakan_shader_rings[TERAKAN_SHADER_RING_INDEX_COUNT] = {
    [TERAKAN_SHADER_RING_INDEX_LSTMP] =
@@ -116,22 +123,26 @@ terakan_nir_shared_type_info(struct glsl_type const * const type, unsigned * con
    *align = comp_size * (length == 3 ? 4 : length);
 }
 
-nir_shader *
-terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const spirv_size_bytes,
-                            uint32_t const * const spirv, mesa_shader_stage const stage,
-                            char const * const entrypoint,
-                            VkSpecializationInfo const * const specialization_info)
+static const struct nir_shader_compiler_options *
+terakan_get_nir_options(struct vk_physical_device * const vk_physical_device,
+                        mesa_shader_stage const stage,
+                        UNUSED const struct vk_pipeline_robustness_state * const rs)
 {
-   struct terakan_physical_device const * const physical_device =
-      terakan_device_physical_device(device);
+   struct terakan_physical_device * const physical_device =
+      container_of(vk_physical_device, struct terakan_physical_device, vk);
+   return stage == MESA_SHADER_FRAGMENT ? &physical_device->nir_options_fs
+                                        : &physical_device->nir_options_non_fs;
+}
 
-   static struct spirv_to_nir_options const spirv_options = {
+static struct spirv_to_nir_options
+terakan_get_spirv_options(UNUSED struct vk_physical_device * const vk_physical_device,
+                          UNUSED mesa_shader_stage const stage,
+                          UNUSED const struct vk_pipeline_robustness_state * const rs)
+{
+   return (struct spirv_to_nir_options){
       .environment = NIR_SPIRV_VULKAN,
 
-      /* TODO(Triang3l): Possibly the subgroup size is properly
-       * exposed.
-       */
-
+      /* TODO(Triang3l): Possibly the subgroup size is properly exposed. */
       /* TODO(Triang3l): Capabilities when supported and tested. */
 
       .ubo_addr_format = nir_address_format_32bit_index_offset,
@@ -142,12 +153,88 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
       .min_ubo_alignment = TERAKAN_KCACHE_HW_LINE_BYTES,
       .min_ssbo_alignment = sizeof(uint32_t),
    };
+}
+
+static void
+terakan_hash_shader_state(UNUSED struct vk_physical_device * const vk_physical_device,
+                          const struct vk_graphics_pipeline_state * const state,
+                          const struct vk_features * const enabled_features,
+                          VkShaderStageFlags const stages,
+                          blake3_hash blake3_out)
+{
+   struct mesa_blake3 blake3_ctx;
+   _mesa_blake3_init(&blake3_ctx);
+   _mesa_blake3_update(&blake3_ctx, &stages, sizeof(stages));
+   if (enabled_features != NULL) {
+      _mesa_blake3_update(&blake3_ctx, enabled_features, sizeof(*enabled_features));
+   }
+   if (state != NULL && state->rp != NULL) {
+      _mesa_blake3_update(&blake3_ctx, &state->rp->view_mask, sizeof(state->rp->view_mask));
+   }
+   _mesa_blake3_final(&blake3_ctx, blake3_out);
+}
+
+static VkResult
+terakan_compile_shaders(struct vk_device * const device, uint32_t const shader_count,
+                        struct vk_shader_compile_info * const infos,
+                        UNUSED const struct vk_graphics_pipeline_state * const state,
+                        UNUSED const struct vk_features * const enabled_features,
+                        const VkAllocationCallbacks * const allocator,
+                        struct vk_shader ** const shaders_out)
+{
+   for (uint32_t shader_index = 0; shader_index < shader_count; ++shader_index) {
+      if (infos[shader_index].nir != NULL) {
+         ralloc_free(infos[shader_index].nir);
+         infos[shader_index].nir = NULL;
+      }
+   }
+
+   memset(shaders_out, 0, shader_count * sizeof(*shaders_out));
+
+   fprintf(stderr, "TERAKAN: compute/common pipeline compile bridge missing; shader_count=%u. Need vk_shader wrapper + serialize/deserialize + pipeline cache integration. Returning VK_ERROR_FEATURE_NOT_PRESENT instead of crashing.\n", shader_count);
+
+   return vk_errorf(
+      device, VK_ERROR_FEATURE_NOT_PRESENT,
+      "Terakan compute and common Vulkan shader pipelines are not wired yet: "
+      "device->vk.shader_ops is now present to prevent common runtime segfaults, "
+      "but compile() still needs a vk_shader wrapper around terakan_shader_impl_compile, "
+      "plus shader serialization/deserialization and cache-stable pipeline integration. "
+      "This is a graceful stop, not a driver crash. Missing bridge surfaced while creating %u shader stage(s).",
+      shader_count);
+}
+
+static VkResult
+terakan_deserialize_shader(struct vk_device * const device, UNUSED struct blob_reader * const blob,
+                           UNUSED uint32_t const binary_version,
+                           UNUSED const VkAllocationCallbacks * const allocator,
+                           struct vk_shader ** const shader_out)
+{
+   *shader_out = NULL;
+   return vk_errorf(device, VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT,
+                    "Terakan shader binary deserialization is not implemented yet.");
+}
+
+const struct vk_device_shader_ops terakan_device_shader_ops = {
+   .get_nir_options = terakan_get_nir_options,
+   .get_spirv_options = terakan_get_spirv_options,
+   .hash_state = terakan_hash_shader_state,
+   .compile = terakan_compile_shaders,
+   .deserialize = terakan_deserialize_shader,
+};
+
+nir_shader *
+terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const spirv_size_bytes,
+                            uint32_t const * const spirv, mesa_shader_stage const stage,
+                            char const * const entrypoint,
+                            VkSpecializationInfo const * const specialization_info)
+{
+   struct spirv_to_nir_options const spirv_options =
+      terakan_get_spirv_options(device->vk.physical, stage, NULL);
 
    nir_shader * nir =
       vk_spirv_to_nir(&device->vk, spirv, spirv_size_bytes, stage, entrypoint,
                       specialization_info, &spirv_options,
-                      stage == MESA_SHADER_FRAGMENT ? &physical_device->nir_options_fs
-                                                    : &physical_device->nir_options_non_fs,
+                      terakan_get_nir_options(device->vk.physical, stage, NULL),
                       false, NULL);
 
    /* SFN expects certain fragment shader system values to be accessed via load_input rather than
@@ -420,3 +507,4 @@ terakan_shader_impl_finish(struct terakan_shader_impl * const shader,
 
    terakan_bo_free(shader->static_state.program_bo, allocator);
 }
+
