@@ -343,7 +343,7 @@ static void compute_emit_cs(struct r600_context *rctx,
 	else
 		global_atomic_count = evergreen_emit_atomic_buffer_setup_count(rctx, current, combined_atomics, global_atomic_count);
 
-	r600_need_cs_space(rctx, 0, true, global_atomic_count);
+	r600_need_cs_space(rctx, 23 /* RAT CB_COLOR0 emit: 15 SET_CTX_REG + 8 NOP_reloc */, true, global_atomic_count);
 
 	if (need_buf_const) {
 		eg_setup_buffer_constants(rctx, MESA_SHADER_COMPUTE);
@@ -366,7 +366,13 @@ static void compute_emit_cs(struct r600_context *rctx,
 		radeon_set_config_reg(cs, R_008D8C_SQ_DYN_GPR_CNTL_PS_FLUSH_REQ, (1 << 8));
 	}
 
-	rctx->b.flags |= R600_CONTEXT_WAIT_3D_IDLE | R600_CONTEXT_FLUSH_AND_INV;
+	/* Invalidate vertex/const/tex caches to ensure fresh pool_bo data.
+	 * The promote copy (CP_DMA) writes new input to pool_bo, but the
+	 * caches may still hold stale data from the previous dispatch. */
+	rctx->b.flags |= R600_CONTEXT_WAIT_3D_IDLE | R600_CONTEXT_FLUSH_AND_INV |
+		      R600_CONTEXT_INV_CONST_CACHE |
+		      R600_CONTEXT_INV_VERTEX_CACHE |
+		      R600_CONTEXT_INV_TEX_CACHE;
 	r600_flush_emit(rctx);
 
 	evergreen_emit_atomic_buffer_setup(rctx, true, combined_atomics, global_atomic_count);
@@ -377,15 +383,58 @@ static void compute_emit_cs(struct r600_context *rctx,
 
 	uint32_t rat_mask;
 
-	rat_mask = evergreen_construct_rat_mask(rctx, &rctx->cb_misc_state, 0);
+	/* Use compute_cb_target_mask (set by evergreen_set_rat) instead of
+	 * evergreen_construct_rat_mask which only sees image/buffer RAT enabled
+	 * masks (set via set_shader_images) — not the global pool RAT. */
+	rat_mask = rctx->compute_cb_target_mask;
 	radeon_compute_set_context_reg(cs, R_028238_CB_TARGET_MASK,
 						rat_mask);
 
-	/* Emit RAT surface state (CB_COLOR0_BASE + pool_bo reloc).
-	 * r600_begin_new_cs marks cb_state.atom dirty but compute_emit_cs
-	 * starts a fresh CS with CB_COLOR0 at reset (0). Without this emit,
-	 * RAT writes go to GPU address 0 instead of pool_bo. */
-	r600_emit_atom(rctx, &rctx->cb_state.atom);
+	/* Emit RAT0 surface state (CB_COLOR0_BASE + pool_bo reloc) directly.
+	 * We cannot use r600_emit_atom(cb_state.atom) here because
+	 * evergreen_emit_framebuffer_state calls r600_as_texture() on pool_bo
+	 * (which is a buffer, not a texture), producing garbage for
+	 * CB_COLOR0_INFO and CB_COLOR0_CMASK.  Instead emit the 13 CB_COLORn
+	 * registers from the r600_cb_surface struct that
+	 * evergreen_init_color_surface_rat already filled in correctly, using
+	 * the compute-mode packet so the register write is not ignored. */
+	if (rctx->framebuffer.state.nr_cbufs > 0 &&
+	    rctx->framebuffer.state.cbufs[0].texture) {
+		struct r600_resource *rat_bo =
+			r600_as_resource(rctx->framebuffer.state.cbufs[0].texture);
+		struct r600_cb_surface *rat_cb = &rctx->b.framebuffer.cbufs[0];
+		unsigned rat_reloc = radeon_add_to_buffer_list(&rctx->b,
+							       &rctx->b.gfx,
+							       rat_bo,
+							       RADEON_USAGE_READWRITE |
+							       RADEON_PRIO_COLOR_BUFFER);
+		radeon_compute_set_context_reg_seq(cs, R_028C60_CB_COLOR0_BASE, 13);
+		radeon_emit(cs, rat_cb->cb_color_base);        /* R_028C60_CB_COLOR0_BASE */
+		radeon_emit(cs, rat_cb->cb_color_pitch);       /* R_028C64_CB_COLOR0_PITCH */
+		radeon_emit(cs, rat_cb->cb_color_slice);       /* R_028C68_CB_COLOR0_SLICE */
+		radeon_emit(cs, rat_cb->cb_color_view);        /* R_028C6C_CB_COLOR0_VIEW */
+		radeon_emit(cs, rat_cb->cb_color_info);        /* R_028C70_CB_COLOR0_INFO */
+		radeon_emit(cs, rat_cb->cb_color_attrib);      /* R_028C74_CB_COLOR0_ATTRIB */
+		radeon_emit(cs, rat_cb->cb_color_dim);         /* R_028C78_CB_COLOR0_DIM */
+		radeon_emit(cs, rat_cb->cb_color_base);        /* R_028C7C_CB_COLOR0_CMASK (use base, no separate cmask) */
+		radeon_emit(cs, 0);                            /* R_028C80_CB_COLOR0_CMASK_SLICE */
+		radeon_emit(cs, rat_cb->cb_color_fmask);       /* R_028C84_CB_COLOR0_FMASK */
+		radeon_emit(cs, rat_cb->cb_color_fmask_slice); /* R_028C88_CB_COLOR0_FMASK_SLICE */
+		radeon_emit(cs, 0);                            /* R_028C8C_CB_COLOR0_CLEAR_WORD0 */
+		radeon_emit(cs, 0);                            /* R_028C90_CB_COLOR0_CLEAR_WORD1 */
+		/* Reloc for CB_COLOR0_BASE — kernel patches this DW with gpu_address>>8 */
+		radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+		radeon_emit(cs, rat_reloc);
+		/* Reloc for CB_COLOR0_ATTRIB */
+		radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+		radeon_emit(cs, rat_reloc);
+		/* Reloc for CB_COLOR0_CMASK */
+		radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+		radeon_emit(cs, rat_reloc);
+		/* Reloc for CB_COLOR0_FMASK */
+		radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+		radeon_emit(cs, rat_reloc);
+	}
 
 	r600_emit_atom(rctx, &rctx->b.render_cond_atom);
 
@@ -403,6 +452,13 @@ static void compute_emit_cs(struct r600_context *rctx,
 
 	/* Emit buffers state */
 	r600_emit_atom(rctx, &rctx->compute_buffers.atom);
+
+	/* Emit vertex buffer state for pool_bo (global memory read via VFETCH).
+	 * cs_vertex_buffer_state is not restored in r600_begin_new_cs, so we must
+	 * re-mark it dirty here to ensure pool_bo vertex resources (RID:1, etc.)
+	 * are present in every compute dispatch CS. */
+	rctx->cs_vertex_buffer_state.dirty_mask = rctx->cs_vertex_buffer_state.enabled_mask;
+	r600_emit_atom(rctx, &rctx->cs_vertex_buffer_state.atom);
 
 	/* Emit shader state */
 	r600_emit_atom(rctx, &rctx->cs_shader_state.atom);
@@ -476,9 +532,6 @@ static void evergreen_launch_grid(struct pipe_context *ctx,
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
 	COMPUTE_DBG(rctx->screen, "*** evergreen_launch_grid\n");
-	fprintf(stderr, "LAUNCH_TRACE: grid(%u,%u,%u) block(%u,%u,%u)\n",
-		info->grid[0], info->grid[1], info->grid[2],
-		info->block[0], info->block[1], info->block[2]);
 
 	compute_emit_cs(rctx, info);
 }
