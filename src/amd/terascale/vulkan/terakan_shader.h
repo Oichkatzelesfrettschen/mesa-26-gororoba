@@ -340,11 +340,8 @@ VkResult terakan_shader_impl_compile(struct terakan_shader_impl * shader,
                                      union r600_shader_key const * key, nir_shader * nir,
                                      VkAllocationCallbacks const * allocator);
 
-extern const struct vk_device_shader_ops terakan_device_shader_ops;
-
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* TERAKAN_SHADER_H */
-

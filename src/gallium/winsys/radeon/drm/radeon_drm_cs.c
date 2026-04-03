@@ -489,6 +489,18 @@ void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
    fprintf(stderr, "WINSYS_TRACE: CS_SUBMIT cdw=%u relocs=%u ring=%u\n", csc->chunks[0].length_dw, csc->num_relocs, csc->flags[1]);
    r = drmCommandWriteRead(csc->fd, DRM_RADEON_CS,
                            &csc->cs, sizeof(struct drm_radeon_cs));
+
+   /* Post-reloc IB dump: after the kernel patches relocations,
+    * csc->buf contains the actual GPU-visible register values.
+    * Enable with RADEON_DUMP_PATCHED_IB=1 */
+   if (!r && debug_get_bool_option("RADEON_DUMP_PATCHED_IB", false)) {
+      unsigned _j;
+      fprintf(stderr, "PATCHED_IB cdw=%u relocs=%u ring=%u\n",
+              csc->chunks[0].length_dw, csc->num_relocs, csc->flags[1]);
+      for (_j = 0; _j < csc->chunks[0].length_dw; _j++)
+         fprintf(stderr, "PIB %u 0x%08x\n", _j, csc->buf[_j]);
+   }
+
    if (r) {
       if (r == -ENOMEM)
          fprintf(stderr, "radeon: Not enough memory for command submission.\n");
