@@ -476,7 +476,7 @@ impl PipeContext {
                 stream,
                 0,
                 data.len() as u32,
-                size_of::<[u64; 16]>() as u32,
+                256u32 /* ALU_CONST_CACHE needs 256-byte alignment (addr >> 8) */,
                 data.as_ptr().cast(),
                 &mut cb.buffer_offset,
                 &mut cb.buffer,
