@@ -752,6 +752,13 @@ r600_finalize_nir_common(nir_shader *nir, enum amd_gfx_level gfx_level)
    if (gfx_level == CAYMAN)
       NIR_PASS(_, nir, r600_legalize_image_load_store);
 
+   /* Promote sub-32-bit ALU operands to 32-bit for r600 backend.
+    * OpenCL (Rusticl) kernels with uchar/ushort types reach this path via
+    * r600_finalize_nir -> r600_finalize_nir_common. The GLSL path gets this
+    * via r600_lower_and_optimize_nir instead. Without this, INT8/INT16 ops
+    * are emitted un-promoted and the backend produces NaN outputs. */
+   NIR_PASS(_, nir, nir_lower_bit_size, r600_lower_bit_size_callback, NULL);
+
    while (optimize_once(nir))
       ;
 }
