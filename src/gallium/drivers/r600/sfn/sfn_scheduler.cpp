@@ -618,6 +618,17 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
 
    while (free_slots && has_alu_ready) {
 
+      /* T-slot anchor: when transcendental ops are pending, place them
+       * in the T-slot FIRST before filling vec slots. This exposes the
+       * remaining X,Y,Z,W slots for independent vec ops, preventing
+       * 1-slot trans-only bundles during serial dependency chains like
+       * pow(x,n) = EXP(n * LOG(x)). */
+      if ((free_slots & 0x10) && !has_lds_ready && !alu_trans_ready.empty()) {
+         sfn_log << SfnLog::schedule << "Try T-slot anchor (trans-first)\n";
+         success |= schedule_alu_to_group_trans(group, alu_trans_ready);
+         free_slots = group->free_slot_mask();
+      }
+
       if (!alu_multi_slot_ready.empty()) {
          success |= schedule_alu_multislot_to_group_vec(group);
          free_slots = group->free_slot_mask();
@@ -629,13 +640,10 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
       if (group->has_kill_op())
          break;
 
-      /* Apparently one can't schedule a t-slot if there is already
-       * and LDS instruction scheduled.
-       * TODO: check whether this is only relevant for actual LDS instructions
-       * or also for instructions that read from the LDS return value queue */
-
-      if (free_slots & 0x10 && !has_lds_ready) {
-         sfn_log << SfnLog::schedule << "Try schedule TRANS channel\n";
+      /* T-slot scavenge: if T is still free after vec packing, try
+       * filling it with remaining trans ops or T-eligible vec ops. */
+      if ((free_slots & 0x10) && !has_lds_ready) {
+         sfn_log << SfnLog::schedule << "Try T-slot scavenge\n";
          if (!alu_trans_ready.empty())
             success |= schedule_alu_to_group_trans(group, alu_trans_ready);
          if (!alu_vec_ready.empty())
@@ -1329,7 +1337,7 @@ BlockScheduler::collect_ready_alu_vec(std::list<AluInstr *>& ready,
             auto opinfo = alu_ops.find((*i)->opcode());
             assert(opinfo != alu_ops.end());
             if (opinfo->second.can_channel(AluOp::t, m_chip_class))
-               priority = -1;
+               priority -= 1; /* T-eligible: tie-breaker, not absolute demotion */
          }
 
          priority += 100 * (*i)->register_priority();
