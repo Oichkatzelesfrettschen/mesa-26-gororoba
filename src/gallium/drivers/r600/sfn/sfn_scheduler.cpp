@@ -673,6 +673,13 @@ BlockScheduler::fill_alu_group(Shader::ShaderBlocks& out_blocks,
 
    while (free_slots && alu_ctx.has_alu_ready) {
 
+      if ((free_slots & AluOp::t) && !alu_ctx.has_lds_ready && !alu_trans_ready.empty()) {
+         sfn_log << SfnLog::schedule << "Try T-slot anchor\n";
+         if (schedule_alu_to_group_trans(group, alu_trans_ready, alu_ctx))
+            result = AluGroupFillResult::scheduled;
+         free_slots = group.free_slot_mask();
+      }
+
       if (!alu_multi_slot_ready.empty()) {
          if (schedule_alu_multislot_to_group_vec(group, alu_ctx))
             result = AluGroupFillResult::scheduled;
@@ -1545,7 +1552,7 @@ BlockScheduler::collect_ready_alu_vec(std::list<AluInstr *>& ready,
             auto opinfo = alu_ops.find((*i)->opcode());
             assert(opinfo != alu_ops.end());
             if (opinfo->second.can_channel(AluOp::t, m_chip_class))
-               priority = -1;
+               priority -= 1; /* T-eligible: tie-breaker, not absolute demotion */
          }
 
          priority += 100 * (*i)->register_priority();
