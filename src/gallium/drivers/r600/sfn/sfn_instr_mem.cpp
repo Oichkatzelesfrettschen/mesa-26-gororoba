@@ -563,6 +563,10 @@ RatInstr::emit(nir_intrinsic_instr *intr, Shader& shader)
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
       return emit_ssbo_atomic_op(intr, shader);
+   case nir_intrinsic_global_atomic:
+      return emit_global_atomic_op(intr, shader);
+   case nir_intrinsic_global_atomic_swap:
+      return emit_global_atomic_op(intr, shader);
    case nir_intrinsic_store_global:
       return emit_global_store(intr, shader);
    case nir_intrinsic_image_store:
@@ -660,6 +664,84 @@ RatInstr::emit_global_store(nir_intrinsic_instr *intr, Shader& shader)
                              mask,
                              0);
    shader.emit_instruction(store);
+   return true;
+}
+
+bool
+RatInstr::emit_global_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
+{
+   auto& vf = shader.value_factory();
+
+   bool read_result = !list_is_empty(&intr->def.uses);
+   auto opcode = read_result ? get_rat_opcode(nir_intrinsic_atomic_op(intr))
+                             : get_rat_opcode_wo(nir_intrinsic_atomic_op(intr));
+
+   auto coord_orig = vf.src(intr->src[0], 0);
+   auto coord = vf.temp_register(0);
+
+   auto data_vec4 = vf.temp_vec4(pin_chgr, {0, 1, 2, 3});
+
+   shader.emit_instruction(
+      new AluInstr(op2_lshr_int, coord, coord_orig, vf.literal(2), AluInstr::write));
+
+   shader.emit_instruction(
+      new AluInstr(op1_mov, data_vec4[1], shader.rat_return_address(), AluInstr::write));
+
+   if (intr->intrinsic == nir_intrinsic_global_atomic_swap) {
+      shader.emit_instruction(
+         new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
+      shader.emit_instruction(
+         new AluInstr(op1_mov,
+                      data_vec4[shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3],
+                      vf.src(intr->src[1], 0),
+                      AluInstr::write));
+   } else {
+      shader.emit_instruction(
+         new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[1], 0), AluInstr::write));
+   }
+
+   RegisterVec4 out_vec(coord, coord, coord, coord, pin_chgr);
+
+   auto atomic = new RatInstr(cf_mem_rat,
+                               opcode,
+                               data_vec4,
+                               out_vec,
+                               shader.ssbo_image_offset(),
+                               nullptr,
+                               1,
+                               0xf,
+                               0);
+   shader.emit_instruction(atomic);
+
+   atomic->set_ack();
+   if (read_result) {
+      atomic->set_instr_flag(ack_rat_return_write);
+      auto dest = vf.dest_vec4(intr->def, pin_group);
+
+      auto wait = new ControlFlowInstr(ControlFlowInstr::cf_wait_ack);
+      wait->add_required_instr(atomic);
+      shader.emit_instruction(wait);
+
+      auto fetch = new FetchInstr(vc_fetch,
+                                  dest,
+                                  {0, 1, 2, 3},
+                                  shader.rat_return_address(),
+                                  0,
+                                  no_index_offset,
+                                  fmt_32,
+                                  vtx_nf_int,
+                                  vtx_es_none,
+                                  R600_IMAGE_IMMED_RESOURCE_OFFSET + shader.ssbo_image_offset(),
+                                  nullptr);
+      fetch->set_mfc(15);
+      fetch->set_fetch_flag(FetchInstr::srf_mode);
+      fetch->set_fetch_flag(FetchInstr::use_tc);
+      fetch->set_fetch_flag(FetchInstr::vpm);
+      fetch->add_required_instr(wait);
+      shader.chain_ssbo_read(fetch);
+      shader.emit_instruction(fetch);
+   }
+
    return true;
 }
 

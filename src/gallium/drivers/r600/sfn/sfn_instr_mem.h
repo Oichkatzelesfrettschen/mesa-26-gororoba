@@ -154,6 +154,7 @@ public:
 
 private:
    static bool emit_global_store(nir_intrinsic_instr *intr, Shader& shader);
+   static bool emit_global_atomic_op(nir_intrinsic_instr *intr, Shader& shader);
 
    static bool emit_ssbo_load(nir_intrinsic_instr *intr, Shader& shader);
    static bool emit_ssbo_store(nir_intrinsic_instr *intr, Shader& shader);

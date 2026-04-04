@@ -630,6 +630,8 @@ Shader::scan_instruction(nir_instr *instr)
 
    // handle unhandled instructions
    switch (intr->intrinsic) {
+   case nir_intrinsic_global_atomic:
+   case nir_intrinsic_global_atomic_swap:
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
    case nir_intrinsic_image_load:
