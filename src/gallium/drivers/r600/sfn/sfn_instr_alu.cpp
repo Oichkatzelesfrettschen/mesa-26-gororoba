@@ -85,6 +85,14 @@ detect_ubyte_extraction(nir_alu_instr *u2f_alu)
          return 3;
    }
 
+   /* Pattern 5: ubfe(x, N*8, 8) or ubitfield_extract(x, N*8, 8) -> byte N */
+   if (src_alu->op == nir_op_ubfe || src_alu->op == nir_op_ubitfield_extract) {
+      nir_const_value *offset = nir_src_as_const_value(src_alu->src[1].src);
+      nir_const_value *bits = nir_src_as_const_value(src_alu->src[2].src);
+      if (offset && bits && bits->u32 == 8 && (offset->u32 % 8 == 0) && offset->u32 <= 24)
+         return offset->u32 / 8;
+   }
+
    return -1;
 }
 
