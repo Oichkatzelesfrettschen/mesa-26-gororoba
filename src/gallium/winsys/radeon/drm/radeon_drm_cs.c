@@ -486,7 +486,6 @@ void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
    unsigned i;
    int r;
 
-   fprintf(stderr, "WINSYS_TRACE: CS_SUBMIT cdw=%u relocs=%u ring=%u\n", csc->chunks[0].length_dw, csc->num_relocs, csc->flags[1]);
    r = drmCommandWriteRead(csc->fd, DRM_RADEON_CS,
                            &csc->cs, sizeof(struct drm_radeon_cs));
 
