@@ -155,6 +155,93 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
             }
          }
 
+         /* KCACHE binding for UBOs (dual-bind pattern).
+          *
+          * Every Vulkan UBO is bound to BOTH SQ_TEX_RESOURCE (for dynamic
+          * offset fallback via VFETCH) AND KCACHE (for the 1-cycle fast path).
+          * The resource binding above handles SQ_TEX_RESOURCE. Here we program
+          * ALU_CONST_CACHE + ALU_CONST_BUFFER_SIZE for the corresponding KCACHE
+          * bank so the shader can access UBO data as inline ALU constants.
+          *
+          * CRITICAL: We iterate the descriptor set layout BINDINGS (not resource
+          * ranges) and filter by VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER[_DYNAMIC].
+          * The KCACHE bank index comes from binding->first_shader_uniform_buffers
+          * which exactly mirrors the pipeline layout's sequential UBO assignment.
+          * Using resource ranges would incorrectly assign KCACHE banks to
+          * non-UBO resources (SSBOs, images), causing data corruption.
+          */
+         {
+            terakan_hw_state_sqc_set_kcache_function const kcache_setter =
+               (shader_stage == MESA_SHADER_COMPUTE)
+                  ? terakan_hw_state_sqc_set_kcache_for_stage[MESA_SHADER_FRAGMENT]
+                  : terakan_hw_state_sqc_set_kcache_for_stage[shader_stage];
+            uint8_t const kcache_bank_set_base =
+               layout_set->first_shader_uniform_buffers[shader_stage];
+
+            for (uint32_t binding_index = 0;
+                 binding_index < set_layout->binding_count;
+                 ++binding_index) {
+               struct terakan_descriptor_set_layout_binding const * const layout_binding =
+                  &set_layout->bindings[binding_index];
+
+               /* Only process UBO-type bindings for KCACHE. */
+               if (layout_binding->descriptor_type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+                   layout_binding->descriptor_type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+                  continue;
+               if (layout_binding->descriptor_count == 0)
+                  continue;
+               if (!(layout_binding->stage_flags & (1u << shader_stage)))
+                  continue;
+
+               /* The binding's KCACHE bank offset within this set. */
+               uint8_t const binding_kcache_base =
+                  layout_binding->first_shader_uniform_buffers[shader_stage];
+
+               /* Get the resources for this binding from the descriptor set. */
+               struct terakan_descriptor_set_resource const * const binding_resources =
+                  set_resources + layout_binding->first_set_resource;
+
+               for (uint16_t desc_idx = 0;
+                    desc_idx < layout_binding->descriptor_count;
+                    ++desc_idx) {
+                  struct terakan_descriptor_set_resource const * const resource =
+                     &binding_resources[desc_idx];
+
+                  if (resource->bo == NULL)
+                     continue;
+
+                  uint32_t const buf_size_bytes = resource->resource[1] + 1;
+                  if (buf_size_bytes > TERAKAN_KCACHE_HW_MAX_BUFFER_SIZE_BYTES)
+                     continue;
+
+                  uint8_t const kcache_bank =
+                     kcache_bank_set_base + binding_kcache_base + desc_idx;
+                  if (kcache_bank >= TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS)
+                     continue;
+
+                  uint64_t va = resource->resource[0] |
+                     ((uint64_t)G_030008_BASE_ADDRESS_HI(resource->resource[2]) << 32);
+
+                  /* Handle dynamic offsets for UNIFORM_BUFFER_DYNAMIC. */
+                  if (layout_binding->descriptor_type ==
+                        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC &&
+                      layout_binding->first_immutable_sampler_or_dynamic_offset != UINT16_MAX) {
+                     va += set_dynamic_offsets[
+                        layout_binding->first_immutable_sampler_or_dynamic_offset + desc_idx];
+                  }
+
+                  uint32_t const va_lines =
+                     (uint32_t)(va >> TERAKAN_KCACHE_HW_LINE_BYTES_LOG2);
+                  uint32_t const size_lines =
+                     (buf_size_bytes + TERAKAN_KCACHE_HW_LINE_BYTES - 1) >>
+                     TERAKAN_KCACHE_HW_LINE_BYTES_LOG2;
+
+                  kcache_setter(&command_writer->hw_state_sqc, kcache_bank,
+                                size_lines, resource->bo, va_lines);
+               }
+            }
+         }
+
          /* Samplers. */
 
          terakan_hw_state_sqc_set_sampler_function const graphics_sampler_setter =

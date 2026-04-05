@@ -26,6 +26,8 @@
 #include "terakan_command_buffer.h"
 #include "terakan_device.h"
 #include "terakan_entrypoints.h"
+#include "terakan_pipeline_compute.h"
+#include "terakan_pipeline_compute.h"
 #include "terakan_pipeline_graphics.h"
 
 #include "util/macros.h"
@@ -48,7 +50,11 @@ terakan_CmdBindPipeline(VkCommandBuffer const commandBuffer,
       terakan_pipeline_graphics_bind(
          command_writer, container_of(pipeline, struct terakan_pipeline_graphics const, base));
    }
-   /* TODO(Triang3l): Compute pipeline binding. */
+   if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE) {
+      command_writer->bound_compute_pipeline =
+         container_of(pipeline, struct terakan_pipeline_compute const, base);
+      command_writer->compute_pipeline_dirty = true;
+   }
 }
 
 void
@@ -68,7 +74,9 @@ terakan_DestroyPipeline(UNUSED VkDevice const deviceHandle, VkPipeline const pip
    }
 
    if (pipeline->is_compute) {
-      /* TODO(Triang3l): Implement compute pipelines. */
+      terakan_pipeline_compute_destroy(
+         container_of(pipeline, struct terakan_pipeline_compute, base), pAllocator);
+      return;
    } else {
       terakan_pipeline_graphics_destroy(
          container_of(pipeline, struct terakan_pipeline_graphics, base), pAllocator);

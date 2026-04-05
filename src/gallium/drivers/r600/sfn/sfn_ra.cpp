@@ -8,6 +8,11 @@
 
 #include "sfn_alu_defines.h"
 #include "sfn_debug.h"
+#include "sfn_instr_controlflow.h"
+#include "sfn_instr_export.h"
+#include "sfn_instr_fetch.h"
+#include "sfn_liverangeevaluator.h"
+#include "sfn_shader.h"
 
 #include <cassert>
 #include <queue>
@@ -404,5 +409,225 @@ register_allocation(LiveRangeMap& lrm)
 
    return true;
 }
+
+
+/* ---- GPR Spill-to-Scratch Infrastructure ---- */
+
+struct SpillCandidate {
+   int component;       /* 0-3: which channel */
+   int lr_index;        /* index into LiveRangeMap::component(comp) */
+   int range_length;    /* m_end - m_start */
+   int interference;    /* number of interfering LRs */
+   float benefit;       /* spill heuristic score */
+   Register *reg;
+};
+
+static SpillCandidate
+select_spill_candidate(LiveRangeMap& lrm, const Interference& ifg)
+{
+   SpillCandidate best{-1, -1, 0, 0, -1.0f, nullptr};
+
+   for (int comp = 0; comp < 4; ++comp) {
+      auto& live_ranges = lrm.component(comp);
+      for (size_t i = 0; i < live_ranges.size(); ++i) {
+         auto& lr = live_ranges[i];
+
+         /* Skip dead, already-colored, or system registers */
+         if (lr.m_start == -1 && lr.m_end == -1)
+            continue;
+         if (lr.m_color != g_registers_unused)
+            continue;
+
+         auto pin = lr.m_register->pin();
+         /* Don't spill pinned/system/array registers */
+         if (pin == pin_fully || pin == pin_array)
+            continue;
+
+         int range_len = lr.m_end - lr.m_start;
+         if (range_len < 4)  /* thrashing guard: don't spill tiny ranges */
+            continue;
+
+         int ifc = (int)ifg.row(comp, lr.m_register->index()).size();
+
+         /* Spill benefit = range * interference.
+          * Higher = better spill candidate. */
+         float benefit = (float)(range_len * ifc);
+
+         if (benefit > best.benefit) {
+            best = SpillCandidate{comp, (int)i, range_len, ifc, benefit, lr.m_register};
+         }
+      }
+   }
+
+   return best;
+}
+
+bool
+register_allocation_with_spill(LiveRangeMap& lrm,
+                                Shader& shader,
+                                int max_spill_iterations)
+{
+   /* First try without spilling */
+   if (register_allocation(lrm))
+      return true;
+
+   sfn_log << SfnLog::merge << "RA failed, attempting spill (up to "
+           << max_spill_iterations << " iterations)\n";
+
+   int scratch_slot = 0;
+
+   for (int iter = 0; iter < max_spill_iterations; ++iter) {
+      /* Re-evaluate liveness after any prior spill modifications */
+      auto fresh_lrm = LiveRangeEvaluator().run(shader);
+
+      /* Build interference for fresh LRM */
+      Interference ifg(fresh_lrm);
+
+      /* Select best spill candidate */
+      auto candidate = select_spill_candidate(fresh_lrm, ifg);
+      if (candidate.component < 0) {
+         R600_ERR("Spill iteration %d: no viable candidate found\n", iter);
+         return false;
+      }
+
+      sfn_log << SfnLog::merge << "Spill iter " << iter
+              << ": spilling " << *candidate.reg
+              << " (range=" << candidate.range_length
+              << ", ifg=" << candidate.interference
+              << ", benefit=" << candidate.benefit
+              << ") to scratch slot " << scratch_slot << "\n";
+
+      /* Insert spill store + reload into the shader IR.
+       *
+       * Simplified approach for Phase 1:
+       * Find the first and second ALU blocks. Insert the store at end
+       * of the first block (after the def), insert a reload at start
+       * of the second block (before the use), and replace all uses of
+       * the original register with the reloaded value. */
+
+      auto& vf = shader.value_factory();
+
+      /* Create the scratch write (CF instruction -- cheap) */
+      RegisterVec4::Swizzle store_swz = {7, 7, 7, 7};
+      store_swz[candidate.component] = candidate.component;
+
+      auto store_value = vf.temp_vec4(pin_group, store_swz);
+
+      /* MOV the spilled value into the temp vec4 */
+      auto mov_to_scratch = new AluInstr(op1_mov,
+                                         store_value[candidate.component],
+                                         candidate.reg,
+                                         AluInstr::write);
+      mov_to_scratch->set_alu_flag(alu_no_schedule_bias);
+
+      auto scratch_write = new ScratchIOInstr(
+         store_value, scratch_slot, 16, 0, 1 << candidate.component);
+
+      /* Create the scratch read */
+      RegisterVec4::Swizzle load_swz = {7, 7, 7, 7};
+      load_swz[candidate.component] = candidate.component;
+
+      auto reload_dest = vf.temp_vec4(pin_group, load_swz);
+
+      bool inserted_store = false;
+      bool inserted_load = false;
+
+      if (shader.chip_class() >= ISA_CC_R700) {
+         /* Evergreen+: use LoadFromScratch (VTX fetch) for reads */
+         auto wait = new ControlFlowInstr(ControlFlowInstr::cf_wait_ack);
+         auto *fetch = new LoadFromScratch(
+            reload_dest, load_swz,
+            vf.literal(scratch_slot),
+            scratch_slot + 1);
+         fetch->add_required_instr(wait);
+
+         for (auto block : shader.func()) {
+            if (block->type() != Block::alu)
+               continue;
+
+            if (!inserted_store) {
+               block->push_back(mov_to_scratch);
+               block->push_back(scratch_write);
+               inserted_store = true;
+               continue;
+            }
+
+            if (!inserted_load) {
+               /* Insert wait + fetch before the block's instructions */
+               shader.emit_instruction(wait);
+               shader.emit_instruction(fetch);
+               shader.chain_scratch_read(wait);
+               shader.chain_scratch_read(fetch);
+
+               /* Replace uses of spilled reg with reload dest */
+               for (auto& instr : *block) {
+                  auto alu = instr->as_alu();
+                  if (alu) {
+                     alu->replace_source(candidate.reg,
+                                        reload_dest[candidate.component]);
+                  }
+               }
+               inserted_load = true;
+               break;
+            }
+         }
+      } else {
+         /* Pre-R700: use ScratchIOInstr for reads */
+         auto scratch_read = new ScratchIOInstr(
+            reload_dest, scratch_slot, 16, 0, 0xf, true);
+
+         for (auto block : shader.func()) {
+            if (block->type() != Block::alu)
+               continue;
+
+            if (!inserted_store) {
+               block->push_back(mov_to_scratch);
+               block->push_back(scratch_write);
+               inserted_store = true;
+               continue;
+            }
+
+            if (!inserted_load) {
+               block->insert(block->begin(), scratch_read);
+               for (auto& instr : *block) {
+                  auto alu = instr->as_alu();
+                  if (alu) {
+                     alu->replace_source(candidate.reg,
+                                        reload_dest[candidate.component]);
+                  }
+               }
+               inserted_load = true;
+               break;
+            }
+         }
+      }
+
+      if (!inserted_store || !inserted_load) {
+         sfn_log << SfnLog::merge << "Spill insertion failed\n";
+         return false;
+      }
+
+      shader.set_flag(Shader::sh_needs_scratch_space);
+      scratch_slot++;
+
+      /* Retry RA with the modified shader */
+      auto retry_lrm = LiveRangeEvaluator().run(shader);
+      if (register_allocation(retry_lrm)) {
+         sfn_log << SfnLog::merge << "Spill succeeded after "
+                 << (iter + 1) << " iteration(s), "
+                 << scratch_slot << " scratch slot(s)\n";
+         lrm = std::move(retry_lrm);
+         return true;
+      }
+
+      sfn_log << SfnLog::merge << "RA still fails after spill iter "
+              << iter << ", continuing...\n";
+   }
+
+   R600_ERR("Register allocation failed after %d spill iterations\n",
+            max_spill_iterations);
+   return false;
+}
+
 
 } // namespace r600

@@ -78,7 +78,8 @@ bool terakan_nir_lower_bindings(nir_shader * shader, struct terakan_pipeline_lay
                                 BITSET_WORD * resources_needed_accum,
                                 uint32_t * samplers_needed_accum, unsigned uav_base,
                                 BITSET_WORD * uavs_for_mutable_resources_needed_out_opt,
-                                uint32_t * driver_push_constants_used_accum);
+                                uint32_t * driver_push_constants_used_accum,
+                                uint16_t * kcache_needed_accum_out);
 
 bool terakan_nir_lower_sin_cos(nir_shader * shader);
 

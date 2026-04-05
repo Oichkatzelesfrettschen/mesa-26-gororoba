@@ -312,9 +312,6 @@ struct terakan_nir_lower_bindings_state {
    BITSET_WORD * uavs_for_mutable_resources_needed;
 
    uint32_t * driver_push_constants_used;
-
-   /* Bitmask of KCACHE banks (0-15) referenced by this shader. */
-   uint16_t * kcache_needed;
 };
 
 static void
@@ -844,59 +841,18 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
 
    mesa_shader_stage const stage = b->shader->info.stage;
 
-   /* KCACHE fast path for static UBO offsets (1-cycle ALU-inline constant).
-    * Dynamic offsets fall back to VFETCH (~20-40 cycles through texture cache).
-    * Both paths work because CmdBindDescriptorSets dual-binds every UBO to
-    * both SQ_TEX_RESOURCE (VFETCH) and KCACHE banks. */
+   /* TODO(Triang3l): Load from the constant cache. */
 
-   uint8_t const kcache_bank_base = binding.set->first_shader_uniform_buffers[stage] +
-                                    binding.set_binding->first_shader_uniform_buffers[stage];
-
-   nir_const_value *offset_const = nir_src_as_const_value(intrin->src[1]);
-
-   if (offset_const != NULL && kcache_bank_base < TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS) {
-      /* Static offset: direct KCACHE read. */
-      uint32_t byte_offset = offset_const->u32;
-      uint32_t vec4_index = byte_offset / 16;
-      uint32_t first_component = (byte_offset % 16) / 4;
-
-      /* Mark this KCACHE bank as needed for hw_state emission. */
-      if (binding.array_index_range_first == binding.array_index_range_last) {
-         *state->kcache_needed |= (uint16_t)1 << (kcache_bank_base + binding.array_index_range_first);
-      } else {
-         for (unsigned ai = binding.array_index_range_first; ai <= binding.array_index_range_last; ++ai) {
-            if (kcache_bank_base + ai < 16)
-               *state->kcache_needed |= (uint16_t)1 << (kcache_bank_base + ai);
-         }
-      }
-
-      nir_def *result = nir_load_kcache_r600(
-         b, intrin->num_components, 32, binding.array_index,
-         .access = nir_intrinsic_access(intrin) | ACCESS_CAN_REORDER,
-         .id_base = kcache_bank_base,
-         .base = vec4_index,
-         .component = first_component);
-
-      if (intrin->def.bit_size != 32) {
-         result = nir_u2uN(b, result, intrin->def.bit_size);
-      }
-
-      nir_def_rewrite_uses(&intrin->def, result);
-      nir_instr_remove(&intrin->instr);
-   } else {
-      /* Dynamic offset or bank overflow: VFETCH fallback. */
-      uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
-                                          binding.set_binding->first_shader_resources[stage];
-      BITSET_SET_RANGE(state->resources_needed,
-                       resource_index_base + binding.array_index_range_first,
-                       resource_index_base + binding.array_index_range_last);
-      nir_def_rewrite_uses(&intrin->def,
-                           terakan_nir_load_raw_resource_buffer(
-                              b, intrin->num_components, intrin->def.bit_size,
-                              nir_intrinsic_access(intrin) | ACCESS_CAN_REORDER,
-                              resource_index_base, binding.array_index, 0, intrin->src[1].ssa));
-      nir_instr_remove(&intrin->instr);
-   }
+   uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
+                                       binding.set_binding->first_shader_resources[stage];
+   BITSET_SET_RANGE(state->resources_needed, resource_index_base + binding.array_index_range_first,
+                    resource_index_base + binding.array_index_range_last);
+   nir_def_rewrite_uses(&intrin->def,
+                        terakan_nir_load_raw_resource_buffer(
+                           b, intrin->num_components, intrin->def.bit_size,
+                           nir_intrinsic_access(intrin) | ACCESS_CAN_REORDER, resource_index_base,
+                           binding.array_index, 0, intrin->src[1].ssa));
+   nir_instr_remove(&intrin->instr);
 }
 
 static void
@@ -912,43 +868,16 @@ terakan_nir_lower_bindings_instr_load_push_constant(
     * check.
     */
 
-   /* KCACHE bank 15 for push constants (static offset = 1-cycle). */
-   uint32_t static_base = TERAKAN_PUSH_CONSTANTS_APP_BASE_BYTES +
-                           nir_intrinsic_base(intrin);
+   /* TODO(Triang3l): Load from the constant cache. */
 
-   nir_const_value *dyn_offset_const = nir_src_as_const_value(intrin->src[0]);
-
-   if (dyn_offset_const != NULL) {
-      uint32_t byte_offset = static_base + dyn_offset_const->u32;
-      uint32_t vec4_index = byte_offset / 16;
-      uint32_t first_component = (byte_offset % 16) / 4;
-
-      /* Mark push constant bank as needed. */
-      *state->kcache_needed |= (uint16_t)1 << TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS;
-
-      nir_def *result = nir_load_kcache_r600(
-         b, intrin->num_components, 32, nir_imm_zero(b, 1, 32),
-         .access = ACCESS_CAN_REORDER,
-         .id_base = TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS,
-         .base = vec4_index,
-         .component = first_component);
-
-      if (intrin->def.bit_size != 32) {
-         result = nir_u2uN(b, result, intrin->def.bit_size);
-      }
-
-      nir_def_rewrite_uses(&intrin->def, result);
-      nir_instr_remove(&intrin->instr);
-   } else {
-      BITSET_SET(state->resources_needed, TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS);
-      nir_def_rewrite_uses(
-         &intrin->def,
-         terakan_nir_load_raw_resource_buffer(
-            b, intrin->num_components, intrin->def.bit_size, ACCESS_CAN_REORDER,
-            TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS, nir_imm_int(b, 0),
-            static_base, intrin->src[0].ssa));
-      nir_instr_remove(&intrin->instr);
-   }
+   BITSET_SET(state->resources_needed, TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS);
+   nir_def_rewrite_uses(
+      &intrin->def,
+      terakan_nir_load_raw_resource_buffer(
+         b, intrin->num_components, intrin->def.bit_size, ACCESS_CAN_REORDER,
+         TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS, nir_imm_int(b, 0),
+         TERAKAN_PUSH_CONSTANTS_APP_BASE_BYTES + nir_intrinsic_base(intrin), intrin->src[0].ssa));
+   nir_instr_remove(&intrin->instr);
 }
 
 static void
@@ -1025,27 +954,11 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
    /* TODO(Triang3l): VK_EXT_pipeline_robustness. */
    nir_def * coord;
    if (b->shader->info.stage == MESA_SHADER_COMPUTE) {
-      /* Compute store_ssbo via store_global + KCACHE base address.
-       *
-       * terakan_emit_compute_kcache programs KC0[0].x with the SSBO base
-       * byte address. We load it via KCACHE, add the store offset, and emit
-       * store_global. SFN lowers this to MEM_RAT_CACHELESS STORE_RAW. */
-
-      nir_def *ssbo_base = nir_load_kcache_r600(
-         b, 1, 32, nir_imm_zero(b, 1, 32),
-         .access = ACCESS_CAN_REORDER,
-         .id_base = 0,
-         .base = 0,
-         .component = 0);
-
-      nir_def *global_addr = nir_iadd(b, ssbo_base, intrin->src[2].ssa);
-
-      nir_store_global(b, nir_channel(b, intrin->src[0].ssa, 0), global_addr,
-                       .write_mask = nir_intrinsic_write_mask(intrin),
-                       .access = nir_intrinsic_access(intrin));
-
-      nir_instr_remove(&intrin->instr);
-      return;
+      /* For compute shaders, skip the buffer_uav_base_granularity_offset
+       * load from push constants (VFETCH). The push constants resource
+       * is not yet bound for compute dispatch, and the base offset is 0
+       * for directly-bound SSBOs. Use the raw byte offset directly. */
+      coord = intrin->src[2].ssa;
    } else {
       coord = terakan_nir_buffer_uav_coord(
          b, intrin->src[2].ssa, uav_index_zero_based, uav_array_index,
@@ -1468,10 +1381,8 @@ terakan_nir_lower_bindings(nir_shader * const shader,
                            BITSET_WORD * const resources_needed_accum,
                            uint32_t * const samplers_needed_accum, unsigned const uav_base,
                            BITSET_WORD * const uavs_for_mutable_resources_needed_out_opt,
-                           uint32_t * const driver_push_constants_used_accum,
-                           uint16_t * const kcache_needed_accum_out)
+                           uint32_t * const driver_push_constants_used_accum)
 {
-   uint16_t kcache_needed_accum = 0;
    bool progress = false;
 
    /* TODO(Triang3l): Lower 64-bit buffer access. */
@@ -1512,7 +1423,6 @@ terakan_nir_lower_bindings(nir_shader * const shader,
       .samplers_needed = samplers_needed_accum,
       .uav_base = uav_base,
       .driver_push_constants_used = driver_push_constants_used_accum,
-      .kcache_needed = &kcache_needed_accum,
    };
 
    if (uavs_for_mutable_resources_needed_out_opt != NULL) {
@@ -1538,6 +1448,5 @@ terakan_nir_lower_bindings(nir_shader * const shader,
                                             nir_metadata_none, &state);
 
    nir_shader_preserve_all_metadata(shader);
-   *kcache_needed_accum_out = kcache_needed_accum;
    return progress;
 }
