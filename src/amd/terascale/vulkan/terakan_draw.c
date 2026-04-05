@@ -180,3 +180,143 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
    *packet++ = S_0287F0_SOURCE_SELECT(V_0287F0_DI_SRC_SEL_DMA);
    terakan_gfx_command_writer_emit_done(command_writer, packet);
 }
+/*
+ * GPU-driven indirect draw/dispatch for Terakan (TeraScale-2/Evergreen).
+ *
+ * Emits EG_PKT3_DRAW_INDIRECT / EG_PKT3_DRAW_INDEX_INDIRECT / PKT3_DISPATCH_INDIRECT
+ * packets that instruct the Command Processor (CP) to fetch draw/dispatch parameters
+ * directly from a GPU-resident buffer, eliminating CPU intervention from the inner loop.
+ *
+ * CRITICAL: A SURFACE_SYNC barrier must be emitted between any compute shader that
+ * populates the indirect buffer and the indirect draw/dispatch that consumes it.
+ * Without this, the CP may read stale cache data → GPU hang with garbage parameters.
+ *
+ * Barrier flags for compute → indirect handover:
+ *   TC_ACTION_ENA (flush texture cache — compute UAV writes go through TC)
+ *   SH_ACTION_ENA (flush shader export cache)
+ *   VC_ACTION_ENA (invalidate vertex cache — CP reads indirect params via VC)
+ */
+
+/* --- vkCmdDrawIndirect --- */
+
+VKAPI_ATTR void VKAPI_CALL
+terakan_CmdDrawIndirect(VkCommandBuffer const commandBuffer,
+                        VkBuffer const bufferHandle,
+                        VkDeviceSize const offset,
+                        uint32_t const drawCount,
+                        uint32_t const stride)
+{
+   if (unlikely(drawCount == 0)) {
+      return;
+   }
+
+   struct terakan_command_buffer * const cmd =
+      terakan_command_buffer_from_handle(commandBuffer);
+   struct terakan_gfx_command_writer * const command_writer = cmd->command_writer.gfx;
+   struct terakan_buffer const * const buffer = terakan_buffer_from_handle(bufferHandle);
+
+   uint64_t const buffer_va = buffer->va + offset;
+   struct terakan_bo * const bo = (struct terakan_bo *)buffer->bo;
+
+   terakan_before_draw(command_writer);
+
+   /* For each draw in the multi-draw, emit:
+    * 1. Set VGT_DMA_BASE / VGT_DMA_BASE_HI to the indirect buffer address
+    * 2. EG_PKT3_DRAW_INDIRECT with the byte offset for this draw's parameters
+    *
+    * VkDrawIndirectCommand layout (16 bytes):
+    *   uint32_t vertexCount, instanceCount, firstVertex, firstInstance
+    */
+   for (uint32_t i = 0; i < drawCount; i++) {
+      uint64_t const draw_va = buffer_va + (uint64_t)i * stride;
+
+      /* Set VGT_DMA_BASE_HI + VGT_DMA_BASE (config regs at 0x287E4, 0x287E8) */
+      uint32_t * packet = terakan_gfx_command_writer_emit_with_bo(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 4 + 3, 1, 0, 1);
+      if (unlikely(packet == NULL)) {
+         return;
+      }
+
+      /* SET_CONFIG_REG for VGT_DMA_BASE_HI and VGT_DMA_BASE */
+      *packet++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+      *packet++ = (R_0287E4_VGT_DMA_BASE_HI - 0x8000) >> 2;
+      uint32_t const * const packet_base_hi = packet;
+      *packet++ = (uint32_t)(draw_va >> 32) & 0xFF;  /* VGT_DMA_BASE_HI */
+      uint32_t const * const packet_base_lo = packet;
+      *packet++ = (uint32_t)draw_va;                   /* VGT_DMA_BASE */
+
+      /* DRAW_INDIRECT packet */
+      *packet++ = PKT3(EG_PKT3_DRAW_INDIRECT, 2, 0);
+      *packet++ = 0; /* data_offset (0 since address is already set) */
+      *packet++ = S_0287F0_SOURCE_SELECT(V_0287F0_DI_SRC_SEL_AUTO_INDEX);
+
+      /* Register BO relocation for the indirect buffer address */
+      terakan_gfx_command_writer_add_relocation_for_40_bits(
+         command_writer, &packet, packet_base_lo, packet_base_hi,
+         0, 0, /* WDDM patch IDs — 0 for DRM path */
+         terakan_bo_reference_writer_add_reference(
+            &command_writer->base.bo_reference_writer,
+            bo, true, false, TERAKAN_BO_PRIORITY_DRAW_INDIRECT));
+
+      terakan_gfx_command_writer_emit_done(command_writer, packet);
+   }
+}
+
+/* --- vkCmdDrawIndexedIndirect --- */
+
+VKAPI_ATTR void VKAPI_CALL
+terakan_CmdDrawIndexedIndirect(VkCommandBuffer const commandBuffer,
+                               VkBuffer const bufferHandle,
+                               VkDeviceSize const offset,
+                               uint32_t const drawCount,
+                               uint32_t const stride)
+{
+   if (unlikely(drawCount == 0)) {
+      return;
+   }
+
+   struct terakan_command_buffer * const cmd =
+      terakan_command_buffer_from_handle(commandBuffer);
+   struct terakan_gfx_command_writer * const command_writer = cmd->command_writer.gfx;
+   struct terakan_buffer const * const buffer = terakan_buffer_from_handle(bufferHandle);
+
+   uint64_t const buffer_va = buffer->va + offset;
+   struct terakan_bo * const bo = (struct terakan_bo *)buffer->bo;
+
+   terakan_before_draw(command_writer);
+
+   /* VkDrawIndexedIndirectCommand layout (20 bytes):
+    *   uint32_t indexCount, instanceCount, firstIndex, vertexOffset, firstInstance
+    */
+   for (uint32_t i = 0; i < drawCount; i++) {
+      uint64_t const draw_va = buffer_va + (uint64_t)i * stride;
+
+      uint32_t * packet = terakan_gfx_command_writer_emit_with_bo(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 4 + 3, 1, 0, 1);
+      if (unlikely(packet == NULL)) {
+         return;
+      }
+
+      /* SET_CONFIG_REG for VGT_DMA_BASE_HI and VGT_DMA_BASE */
+      *packet++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+      *packet++ = (R_0287E4_VGT_DMA_BASE_HI - 0x8000) >> 2;
+      uint32_t const * const packet_base_hi = packet;
+      *packet++ = (uint32_t)(draw_va >> 32) & 0xFF;
+      uint32_t const * const packet_base_lo = packet;
+      *packet++ = (uint32_t)draw_va;
+
+      /* DRAW_INDEX_INDIRECT packet */
+      *packet++ = PKT3(EG_PKT3_DRAW_INDEX_INDIRECT, 2, 0);
+      *packet++ = 0; /* data_offset */
+      *packet++ = S_0287F0_SOURCE_SELECT(V_0287F0_DI_SRC_SEL_DMA);
+
+      terakan_gfx_command_writer_add_relocation_for_40_bits(
+         command_writer, &packet, packet_base_lo, packet_base_hi,
+         0, 0,
+         terakan_bo_reference_writer_add_reference(
+            &command_writer->base.bo_reference_writer,
+            bo, true, false, TERAKAN_BO_PRIORITY_DRAW_INDIRECT));
+
+      terakan_gfx_command_writer_emit_done(command_writer, packet);
+   }
+}

@@ -190,25 +190,24 @@ radeon_drm_cs_create(struct radeon_cmdbuf *rcs,
    cs->flush_cs = flush;
    cs->flush_data = flush_ctx;
 
-   for (int i = 0; i < 3; i++) {
-      if (!radeon_init_cs_context(&cs->csc[i], cs->ws)) {
-         for (int j = 0; j < i; j++)
-            radeon_destroy_cs_context(&ws->base, &cs->csc[j]);
-         FREE(cs);
-         return false;
-      }
+   if (!radeon_init_cs_context(&cs->csc1, cs->ws)) {
+      FREE(cs);
+      return false;
+   }
+   if (!radeon_init_cs_context(&cs->csc2, cs->ws)) {
+      radeon_destroy_cs_context(&ws->base, &cs->csc1);
+      FREE(cs);
+      return false;
    }
 
-   /* Triple-buffer: start filling csc[0], cst points to csc[1].
-    * csc[2] is the extra buffer that eliminates the fence stall. */
-   cs->csc_fill_idx = 0;
-   cs->csc_cur = &cs->csc[0];
-   cs->cst = &cs->csc[1];
+   /* Set the first command buffer as current. */
+   cs->csc = &cs->csc1;
+   cs->cst = &cs->csc2;
    cs->ip_type = ip_type;
 
    memset(rcs, 0, sizeof(*rcs));
-   rcs->current.buf = cs->csc_cur->buf;
-   rcs->current.max_dw = ARRAY_SIZE(cs->csc_cur->buf);
+   rcs->current.buf = cs->csc->buf;
+   rcs->current.max_dw = ARRAY_SIZE(cs->csc->buf);
    rcs->priv = cs;
 
    p_atomic_inc(&ws->num_cs);
@@ -387,12 +386,12 @@ static unsigned radeon_drm_cs_add_buffer(struct radeon_cmdbuf *rcs,
       if (index < 0)
          return 0;
 
-      index = cs->csc_cur->slab_buffers[index].u.slab.real_idx;
+      index = cs->csc->slab_buffers[index].u.slab.real_idx;
    } else {
       index = radeon_lookup_or_add_real_buffer(cs, bo);
    }
 
-   reloc = &cs->csc_cur->relocs[index];
+   reloc = &cs->csc->relocs[index];
    added_domains = (rd | wd) & ~(reloc->read_domains | reloc->write_domain);
    reloc->read_domains |= rd;
    reloc->write_domain |= wd;
@@ -401,7 +400,7 @@ static unsigned radeon_drm_cs_add_buffer(struct radeon_cmdbuf *rcs,
    unsigned priority = usage & RADEON_ALL_PRIORITIES;
    unsigned bo_priority = util_last_bit(priority) / 2;
    reloc->flags = MAX2(reloc->flags, bo_priority);
-   cs->csc_cur->relocs_bo[index].u.real.priority_usage |= priority;
+   cs->csc->relocs_bo[index].u.real.priority_usage |= priority;
 
    if (added_domains & RADEON_DOMAIN_VRAM)
       rcs->used_vram_kb += bo->base.size / 1024;
@@ -427,21 +426,21 @@ static bool radeon_drm_cs_validate(struct radeon_cmdbuf *rcs)
          rcs->used_vram_kb < cs->ws->info.vram_size_kb * 0.8;
 
    if (status) {
-      cs->csc_cur->num_validated_relocs = cs->csc_cur->num_relocs;
+      cs->csc->num_validated_relocs = cs->csc->num_relocs;
    } else {
       /* Remove lately-added buffers. The validation failed with them
        * and the CS is about to be flushed because of that. Keep only
        * the already-validated buffers. */
       unsigned i;
 
-      for (i = cs->csc_cur->num_validated_relocs; i < cs->csc_cur->num_relocs; i++) {
-         p_atomic_dec(&cs->csc_cur->relocs_bo[i].bo->num_cs_references);
-         radeon_ws_bo_reference(&cs->ws->base, &cs->csc_cur->relocs_bo[i].bo, NULL);
+      for (i = cs->csc->num_validated_relocs; i < cs->csc->num_relocs; i++) {
+         p_atomic_dec(&cs->csc->relocs_bo[i].bo->num_cs_references);
+         radeon_ws_bo_reference(&cs->ws->base, &cs->csc->relocs_bo[i].bo, NULL);
       }
-      cs->csc_cur->num_relocs = cs->csc_cur->num_validated_relocs;
+      cs->csc->num_relocs = cs->csc->num_validated_relocs;
 
       /* Flush if there are any relocs. Clean up otherwise. */
-      if (cs->csc_cur->num_relocs) {
+      if (cs->csc->num_relocs) {
          cs->flush_cs(cs->flush_data,
                       RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
       } else {
@@ -471,13 +470,13 @@ static unsigned radeon_drm_cs_get_buffer_list(struct radeon_cmdbuf *rcs,
    int i;
 
    if (list) {
-      for (i = 0; i < cs->csc_cur->num_relocs; i++) {
-         list[i].bo_size = cs->csc_cur->relocs_bo[i].bo->base.size;
-         list[i].vm_address = cs->csc_cur->relocs_bo[i].bo->va;
-         list[i].priority_usage = cs->csc_cur->relocs_bo[i].u.real.priority_usage;
+      for (i = 0; i < cs->csc->num_relocs; i++) {
+         list[i].bo_size = cs->csc->relocs_bo[i].bo->base.size;
+         list[i].vm_address = cs->csc->relocs_bo[i].bo->va;
+         list[i].priority_usage = cs->csc->relocs_bo[i].u.real.priority_usage;
       }
    }
-   return cs->csc_cur->num_relocs;
+   return cs->csc->num_relocs;
 }
 
 void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
@@ -630,7 +629,7 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
       fprintf(stderr, "radeon: command stream overflowed\n");
    }
 
-   if (pfence || cs->csc_cur->num_slab_buffers) {
+   if (pfence || cs->csc->num_slab_buffers) {
       struct pipe_fence_handle *fence;
 
       if (cs->next_fence) {
@@ -645,8 +644,8 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
             radeon_fence_reference(&cs->ws->base, pfence, fence);
 
          mtx_lock(&cs->ws->bo_fence_lock);
-         for (unsigned i = 0; i < cs->csc_cur->num_slab_buffers; ++i) {
-            struct radeon_bo *bo = cs->csc_cur->slab_buffers[i].bo;
+         for (unsigned i = 0; i < cs->csc->num_slab_buffers; ++i) {
+            struct radeon_bo *bo = cs->csc->slab_buffers[i].bo;
             p_atomic_inc(&bo->num_active_ioctls);
             radeon_bo_slab_fence(&cs->ws->base, bo, (struct radeon_bo *)fence);
          }
@@ -658,27 +657,12 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
       radeon_fence_reference(&cs->ws->base, &cs->next_fence, NULL);
    }
 
-   /* Triple-buffer rotation: wait on the buffer we're about to
-    * overwrite, NOT on the one we just submitted. This gives the
-    * GPU an extra buffer of latency to work with, eliminating the
-    * synchronous fence stall that consumed 81% of CPU time. */
-   {
-      uint8_t submit_idx = cs->csc_fill_idx;
-      uint8_t next_fill = (submit_idx + 1) % 3;
+   radeon_drm_cs_sync_flush(rcs);
 
-      /* The buffer at next_fill may still be in-flight from TWO
-       * submissions ago. We must wait for that one to complete
-       * before we can reuse it. But we do NOT need to wait for
-       * the buffer we just filled (submit_idx) -- that one is
-       * being handed to the submit thread right now. */
-      radeon_drm_cs_sync_flush(rcs);
-
-      /* Rotate: what we just filled becomes the submit target,
-       * and we advance to the next buffer for filling. */
-      cs->cst = &cs->csc[submit_idx];
-      cs->csc_fill_idx = next_fill;
-      cs->csc_cur = &cs->csc[next_fill];
-   }
+   /* Swap command streams. */
+   tmp = cs->csc;
+   cs->csc = cs->cst;
+   cs->cst = tmp;
 
    /* If the CS is not empty or overflowed, emit it in a separate thread. */
    if (rcs->current.cdw && rcs->current.cdw <= rcs->current.max_dw &&
@@ -751,7 +735,7 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
    }
 
    /* Prepare a new CS. */
-   rcs->current.buf = cs->csc_cur->buf;
+   rcs->current.buf = cs->csc->buf;
    rcs->current.cdw = 0;
    rcs->used_vram_kb = 0;
    rcs->used_gart_kb = 0;
@@ -772,11 +756,11 @@ static void radeon_drm_cs_destroy(struct radeon_cmdbuf *rcs)
 
    radeon_drm_cs_sync_flush(rcs);
    util_queue_fence_destroy(&cs->flush_completed);
-   for (int i = 0; i < 3; i++)
-      radeon_cs_context_cleanup(&cs->ws->base, &cs->csc[i]);
+   radeon_cs_context_cleanup(&cs->ws->base, &cs->csc1);
+   radeon_cs_context_cleanup(&cs->ws->base, &cs->csc2);
    p_atomic_dec(&cs->ws->num_cs);
-   for (int i = 0; i < 3; i++)
-      radeon_destroy_cs_context(&cs->ws->base, &cs->csc[i]);
+   radeon_destroy_cs_context(&cs->ws->base, &cs->csc1);
+   radeon_destroy_cs_context(&cs->ws->base, &cs->csc2);
    radeon_fence_reference(&cs->ws->base, &cs->next_fence, NULL);
    FREE(cs);
 }
@@ -797,11 +781,11 @@ static bool radeon_bo_is_referenced(struct radeon_cmdbuf *rcs,
       return false;
 
    if (!bo->handle)
-      index = cs->csc_cur->slab_buffers[index].u.slab.real_idx;
+      index = cs->csc->slab_buffers[index].u.slab.real_idx;
 
-   if ((usage & RADEON_USAGE_WRITE) && cs->csc_cur->relocs[index].write_domain)
+   if ((usage & RADEON_USAGE_WRITE) && cs->csc->relocs[index].write_domain)
       return true;
-   if ((usage & RADEON_USAGE_READ) && cs->csc_cur->relocs[index].read_domains)
+   if ((usage & RADEON_USAGE_READ) && cs->csc->relocs[index].read_domains)
       return true;
 
    return false;

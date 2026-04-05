@@ -999,11 +999,8 @@ r600_schedule_shader(r600::Shader *shader)
       r600::sfn_log << r600::SfnLog::trans << "Merge registers\n";
       auto lrm = r600::LiveRangeEvaluator().run(*scheduled_shader);
 
-      if (!r600::register_allocation(lrm)) {
-         R600_ERR("%s: Register allocation failed\n", __func__);
-         /* For now crash if the shader could not be benerated */
-         /* GPR overflow: return gracefully instead of crashing */
-      return nullptr;
+      if (!r600::register_allocation_with_spill(lrm, *scheduled_shader)) {
+         R600_ERR("%s: Register allocation failed (even after spill attempts)\n", __func__);
          return nullptr;
       } else if (r600::sfn_log.has_debug_flag(r600::SfnLog::merge) ||
                  r600::sfn_log.has_debug_flag(r600::SfnLog::steps)) {

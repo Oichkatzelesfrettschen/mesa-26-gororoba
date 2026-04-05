@@ -575,6 +575,8 @@ RatInstr::emit(nir_intrinsic_instr *intr, Shader& shader)
    case nir_intrinsic_image_atomic:
    case nir_intrinsic_image_atomic_swap:
       return emit_image_load_or_atomic(intr, shader);
+   case nir_intrinsic_uav_instr_r600:
+      return emit_uav_store_r600(intr, shader);
    case nir_intrinsic_image_size:
       return emit_image_size(intr, shader);
    case nir_intrinsic_image_samples:
@@ -742,6 +744,59 @@ RatInstr::emit_global_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
       shader.emit_instruction(fetch);
    }
 
+   return true;
+}
+
+bool
+RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
+{
+   /* uav_instr_r600 source layout:
+    *   src[0] = uav_array_index (scalar, selects RAT slot)
+    *   src[1] = coord (address, variable components)
+    *   src[2] = value (data to write, variable components)
+    *   src[3] = compare_value (for CAS, unused for stores)
+    *   index: UAV_OP_R600 = operation type, ID_BASE = base resource
+    */
+   auto& vf = shader.value_factory();
+
+   /* Address: src[1] contains the byte address, shift right by 2 for dword offset.
+    * INDEX_GPR.x = byte_address >> 2 for MEM_RAT dword addressing. */
+   auto coord_orig = vf.src(intr->src[1], 0);
+   auto addr_base = vf.temp_register(0);
+   shader.emit_instruction(
+      new AluInstr(op2_lshr_int, addr_base, coord_orig, vf.literal(2), AluInstr::write));
+
+   auto addr_vec = vf.temp_vec4(pin_group, {0, 1, 2, 7});
+   shader.emit_instruction(
+      new AluInstr(op1_mov, addr_vec[0], addr_base, AluInstr::write));
+
+   /* Value: src[2] component 0 */
+   auto value = vf.src(intr->src[2], 0);
+   PRegister v = vf.temp_register(0);
+   shader.emit_instruction(new AluInstr(op1_mov, v, value, AluInstr::write));
+   auto value_vec = RegisterVec4(v, nullptr, nullptr, nullptr, pin_chan);
+
+   /* RAT resource: id_base + ssbo_image_offset */
+   unsigned id_base = nir_intrinsic_id_base(intr);
+   unsigned rat_id = id_base + shader.ssbo_image_offset();
+   fprintf(stderr, "SFN: emit_uav_store id_base=%u ssbo_offset=%u rat_id=%u\n", id_base, shader.ssbo_image_offset(), rat_id);
+
+   /* Use MEM_RAT_CACHELESS + STORE_RAW for compute SSBO writes.
+    * This bypasses the CB cache entirely (ISA opcode 0x57 vs 0x56),
+    * writing directly to VRAM through write-combining buffers.
+    * Eliminates the SURFACE_SYNC lockup that occurs with cached MEM_RAT
+    * when CB_COLOR0_BASE address is wrong or when the CB cache flush
+    * targets unmapped memory. Matches Gallium/LLVM R600 backend pattern. */
+   auto store = new RatInstr(cf_mem_rat_cacheless,
+                             RatInstr::STORE_RAW,
+                             value_vec,
+                             addr_vec,
+                             rat_id,
+                             nullptr,
+                             1,
+                             1,
+                             0);
+   shader.emit_instruction(store);
    return true;
 }
 

@@ -148,7 +148,6 @@ public:
    void run(Shader *shader);
 
    void finalize();
-   void report_pv_chain_stats();
 
 private:
    void schedule_block(Block& in_block, Shader::ShaderBlocks& out_blocks);
@@ -186,11 +185,11 @@ private:
 
    void maybe_split_alu_block(Shader::ShaderBlocks& out_blocks);
 
-   int apply_pv_ps_to_group(AluGroup& group, AluGroup& prev_group);
-   int apply_pv_ps_to_instr(AluGroup& group,
-                            AluInstr *prev,
-                            AluInlineConstants reg,
-                            int chan);
+   void apply_pv_ps_to_group(AluGroup& group, AluGroup& prev_group);
+   void apply_pv_ps_to_instr(AluGroup& group,
+                             AluInstr *prev,
+                             AluInlineConstants reg,
+                             int chan);
 
    template <typename I> bool schedule(std::list<I *>& ready_list);
 
@@ -243,13 +242,6 @@ private:
    ArrayCheckSet m_last_direct_array_write;
 
    ValueFactory *m_vf{nullptr};
-
-   /* PV-chain length tracking (reported via R600_DEBUG=sfn) */
-   int m_pv_current_chain{0};
-   int m_pv_max_chain{0};
-   int m_pv_total_groups{0};
-   int m_pv_groups_with_pv{0};
-   int m_pv_total_substitutions{0};
 };
 
 Shader *
@@ -274,7 +266,6 @@ schedule(Shader *original)
 
    s.run(scheduled_shader);
    s.finalize();
-   s.report_pv_chain_stats();
 
    sfn_log << SfnLog::schedule << "Scheduled shader\n";
    if (sfn_log.has_debug_flag(SfnLog::schedule)) {
@@ -542,25 +533,6 @@ BlockScheduler::finalize()
       m_last_pixel->set_is_last_export(true);
    if (m_last_param)
       m_last_param->set_is_last_export(true);
-}
-
-void
-BlockScheduler::report_pv_chain_stats()
-{
-   if (m_pv_total_groups == 0)
-      return;
-
-   float pv_ratio = m_pv_total_groups > 0
-      ? 100.0f * m_pv_groups_with_pv / m_pv_total_groups
-      : 0.0f;
-
-   sfn_log << SfnLog::schedule
-           << "PV-chain stats: "
-           << m_pv_total_groups << " groups, "
-           << m_pv_groups_with_pv << " with PV/PS ("
-           << pv_ratio << "%), "
-           << m_pv_total_substitutions << " substitutions, "
-           << "max chain=" << m_pv_max_chain << "\n";
 }
 
 bool
@@ -882,19 +854,7 @@ void BlockScheduler::maybe_split_alu_block(Shader::ShaderBlocks& out_blocks)
       }
 
       if (prev_group) {
-         int subs = apply_pv_ps_to_group(*group, *prev_group);
-         m_pv_total_groups++;
-         m_pv_total_substitutions += subs;
-         if (subs > 0) {
-            m_pv_groups_with_pv++;
-            m_pv_current_chain++;
-            if (m_pv_current_chain > m_pv_max_chain)
-               m_pv_max_chain = m_pv_current_chain;
-         } else {
-            m_pv_current_chain = 0;
-         }
-      } else {
-         m_pv_current_chain = 0;
+         apply_pv_ps_to_group(*group, *prev_group);
       }
 
       sub_block->push_back(group);
@@ -912,10 +872,9 @@ void BlockScheduler::maybe_split_alu_block(Shader::ShaderBlocks& out_blocks)
       out_blocks.push_back(sub_block);
 }
 
-int
+void
 BlockScheduler::apply_pv_ps_to_group(AluGroup& group, AluGroup& prev_group)
 {
-   int substitutions = 0;
    bool need_force_pvx = false;
 
    if ((prev_group.free_slot_mask() & 0xf) == 0x0 &&
@@ -932,13 +891,13 @@ BlockScheduler::apply_pv_ps_to_group(AluGroup& group, AluGroup& prev_group)
    }
 
    for (int i = 0; i < 4; ++i)
-      substitutions += apply_pv_ps_to_instr(group,
+      apply_pv_ps_to_instr(group,
                            prev_group[i],
                            ALU_SRC_PV,
                            unlikely(need_force_pvx) ? 0 : i);
 
    if (prev_group.has_t())
-      substitutions += apply_pv_ps_to_instr(group, prev_group[4], ALU_SRC_PS, 0);
+      apply_pv_ps_to_instr(group, prev_group[4], ALU_SRC_PS, 0);
 
    for (auto instr : prev_group) {
       if (!instr)
@@ -949,19 +908,17 @@ BlockScheduler::apply_pv_ps_to_group(AluGroup& group, AluGroup& prev_group)
          instr->override_or_clear_dest(m_vf->dummy_dest(instr->dest()->chan()));
       }
    }
-   return substitutions;
 }
 
-int
+void
 BlockScheduler::apply_pv_ps_to_instr(AluGroup& group,
                                      AluInstr *prev,
                                      AluInlineConstants reg,
                                      int chan)
 {
    if (!prev || !prev->has_alu_flag(alu_write))
-      return 0;
+      return;
 
-   int count = 0;
    PRegister d = prev->dest();
    if (d) {
       auto ps = m_vf->inline_const(reg, chan);
@@ -970,11 +927,9 @@ BlockScheduler::apply_pv_ps_to_instr(AluGroup& group,
          if (!instr)
             continue;
 
-         if (instr->replace_source(d, ps))
-            ++count;
+         instr->replace_source(d, ps);
       }
    }
-   return count;
 }
 
 template <typename I>

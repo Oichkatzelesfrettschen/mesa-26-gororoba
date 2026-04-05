@@ -56,16 +56,14 @@ struct radeon_cs_context {
 struct radeon_drm_cs {
    enum amd_ip_type          ip_type;
 
-   /* Triple-buffered CS: while one is being consumed by the kernel
-    * in the submit thread and one is pending, the third is being
-    * filled by the pipe driver. This eliminates the 81% CPU stall
-    * from synchronous fence waits in the double-buffer design. */
-   struct radeon_cs_context csc[3];
-   /* Index of the CS currently being filled by the CPU. */
-   uint8_t csc_fill_idx;
-   /* The currently-used CS (being filled). */
-   struct radeon_cs_context *csc_cur;
-   /* The CS most recently submitted to the GPU (owned by submit thread). */
+   /* We flip between these two CS. While one is being consumed
+    * by the kernel in another thread, the other one is being filled
+    * by the pipe driver. */
+   struct radeon_cs_context csc1;
+   struct radeon_cs_context csc2;
+   /* The currently-used CS. */
+   struct radeon_cs_context *csc;
+   /* The CS being currently-owned by the other thread. */
    struct radeon_cs_context *cst;
 
    /* The winsys. */
@@ -94,7 +92,7 @@ radeon_bo_is_referenced_by_cs(struct radeon_drm_cs *cs,
 {
    int num_refs = bo->num_cs_references;
    return num_refs == bo->rws->num_cs ||
-         (num_refs && radeon_lookup_buffer(&cs->ws->base, cs->csc_cur, bo) != -1);
+         (num_refs && radeon_lookup_buffer(&cs->ws->base, cs->csc, bo) != -1);
 }
 
 static inline bool
@@ -106,14 +104,14 @@ radeon_bo_is_referenced_by_cs_for_write(struct radeon_drm_cs *cs,
    if (!bo->num_cs_references)
       return false;
 
-   index = radeon_lookup_buffer(&cs->ws->base, cs->csc_cur, bo);
+   index = radeon_lookup_buffer(&cs->ws->base, cs->csc, bo);
    if (index == -1)
       return false;
 
    if (!bo->handle)
-      index = cs->csc_cur->slab_buffers[index].u.slab.real_idx;
+      index = cs->csc->slab_buffers[index].u.slab.real_idx;
 
-   return cs->csc_cur->relocs[index].write_domain != 0;
+   return cs->csc->relocs[index].write_domain != 0;
 }
 
 static inline bool

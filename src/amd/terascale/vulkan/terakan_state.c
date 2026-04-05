@@ -148,7 +148,7 @@ terakan_state_draw_apply_sq_pgm_ls_hs_es_gs_vs(
                                         TERAKAN_STATE_DRAW_INDEX_SQ_TMP_LS_HS_ES_GS_VS);
       }
 
-      terakan_hw_state_sqc_set_needed_by_vs(&command_writer->hw_state_sqc, 0, vs->resources_needed,
+      terakan_hw_state_sqc_set_needed_by_vs(&command_writer->hw_state_sqc, vs->kcache_needed, vs->resources_needed,
                                             vs->samplers_needed, VK_SHADER_STAGE_FRAGMENT_BIT);
 
       if (!terakan_push_constants_usage_empty(vs->push_constants_usage)) {
@@ -311,7 +311,8 @@ terakan_state_draw_apply_sq_pgm_ps(struct terakan_gfx_command_writer * const com
                                      TERAKAN_STATE_DRAW_INDEX_SQ_TMP_PS);
    }
 
-   terakan_hw_state_sqc_set_needed_by_fs(&command_writer->hw_state_sqc, 0,
+   terakan_hw_state_sqc_set_needed_by_fs(&command_writer->hw_state_sqc,
+                                         fs != NULL ? fs->kcache_needed : 0,
                                          fs != NULL ? fs->resources_needed : NULL,
                                          fs != NULL ? fs->samplers_needed : 0b0);
 

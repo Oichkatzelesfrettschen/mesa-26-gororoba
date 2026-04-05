@@ -639,6 +639,7 @@ Shader::scan_instruction(nir_instr *instr)
    case nir_intrinsic_image_atomic_swap:
       m_flags.set(sh_needs_sbo_ret_address);
       FALLTHROUGH;
+   case nir_intrinsic_uav_instr_r600:
    case nir_intrinsic_image_store:
    case nir_intrinsic_store_ssbo:
       m_flags.set(sh_writes_memory);

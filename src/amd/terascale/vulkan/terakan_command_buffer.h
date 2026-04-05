@@ -32,6 +32,8 @@
 #include "terakan_instance.h"
 #include "terakan_physical_device.h"
 #include "terakan_push_constants.h"
+
+struct terakan_pipeline_compute;
 #include "terakan_query.h"
 #include "terakan_queue.h"
 #include "terakan_shader.h"
@@ -354,6 +356,19 @@ struct terakan_gfx_command_writer {
 
    /* Modifies hw_state_draw, hw_state_sqc, and push_constants_state. */
    struct terakan_state_draw state_draw;
+
+   /* ---- Compute pipeline state (isolated from graphics) ---- */
+
+   /* The currently bound compute pipeline, or NULL if none.
+    * Set by vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE).
+    * Vulkan guarantees compute and graphics pipelines are independently
+    * bound and do not stomp each other. */
+   struct terakan_pipeline_compute const *bound_compute_pipeline;
+
+   /* Dirty bit: set when bound_compute_pipeline changes, cleared after
+    * the SQ_PGM_START_CS / SQ_PGM_RESOURCES_CS / SPI_COMPUTE_NUM_THREAD
+    * packets are emitted at dispatch time. */
+   bool compute_pipeline_dirty;
 };
 
 TERAKAN_DEVICE_DEFINE_OBJECT_SHORTCUTS(gfx_command_writer,
