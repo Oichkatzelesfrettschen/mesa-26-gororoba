@@ -75,7 +75,8 @@ struct radeon_drm_cs {
    void (*flush_cs)(void *ctx, unsigned flags, struct pipe_fence_handle **fence);
    void *flush_data;
 
-   struct util_queue_fence flush_completed;
+   /* Per-context fences: wait on [next_fill] not the global fence. */
+   struct util_queue_fence flush_completed[3];
    struct pipe_fence_handle *next_fence;
 };
 
