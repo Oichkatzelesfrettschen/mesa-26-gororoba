@@ -118,6 +118,7 @@ terakan_wsi_init_image_hw_wait(VkDevice const device_h, struct wsi_image * const
    image->hw_wait_state = hw_wait;
    image->hw_wait_current_value = 0;
    image->hw_wait_queued_value = 0;
+   image->hw_wait_queued_is_wsi = false;
    return VK_SUCCESS;
 }
 
@@ -135,6 +136,7 @@ terakan_wsi_destroy_image_hw_wait(VkDevice const device_h, struct wsi_image * co
    image->hw_wait_state = NULL;
    image->hw_wait_current_value = UINT32_MAX;
    image->hw_wait_queued_value = UINT32_MAX;
+   image->hw_wait_queued_is_wsi = false;
    terakan_wsi_hw_wait_unref(hw_wait);
 }
 
@@ -175,7 +177,7 @@ terakan_wsi_create_image_hw_wait_sync(VkDevice const device_h,
       container_of(sync_base, struct terakan_sync_completion, vk);
    sync->pending_value = current_value;
    sync->current_value = current_value;
-   if (target_value != 0 && current_value < target_value) {
+   if (image->hw_wait_queued_is_wsi && target_value != 0 && current_value < target_value) {
       terakan_wsi_hw_wait_ref(hw_wait);
       sync->presentation_wait_state = hw_wait;
       sync->presentation_wait_bo = hw_wait->bo;

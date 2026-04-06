@@ -1083,7 +1083,15 @@ struct x11_image_pending_completion {
    uint32_t serial;
    uint64_t signal_present_id;
    uint32_t hw_wait_value;
+   bool hw_wait_is_wsi;
 };
+
+static bool
+x11_present_mode_uses_hw_wait(VkPresentModeKHR present_mode)
+{
+   return present_mode == VK_PRESENT_MODE_FIFO_KHR ||
+          present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+}
 
 struct x11_image {
    struct wsi_image                          base;
@@ -1178,6 +1186,7 @@ static void x11_present_complete(struct x11_swapchain *swapchain,
    }
 
    image->base.hw_wait_current_value = image->pending_completions[index].hw_wait_value;
+   image->base.hw_wait_queued_is_wsi = image->pending_completions[index].hw_wait_is_wsi;
    if (swapchain->base.wsi->signal_image_hw_wait) {
       swapchain->base.wsi->signal_image_hw_wait(swapchain->base.device, &image->base);
    }
@@ -1455,7 +1464,9 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
          .signal_present_id = image->present_id,
          .serial = serial,
          .hw_wait_value = ++image->base.hw_wait_queued_value,
+         .hw_wait_is_wsi = x11_present_mode_uses_hw_wait(present_mode),
       };
+   image->base.hw_wait_queued_is_wsi = x11_present_mode_uses_hw_wait(present_mode);
 
    xcb_void_cookie_t cookie;
 #ifdef HAVE_DRI3_EXPLICIT_SYNC
