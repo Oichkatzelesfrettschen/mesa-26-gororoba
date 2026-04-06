@@ -162,6 +162,7 @@ struct wsi_image {
    void *hw_wait_state;
    uint32_t hw_wait_current_value;
    uint32_t hw_wait_queued_value;
+   bool hw_wait_queued_is_wsi;
 
    struct {
       VkBuffer buffer;
