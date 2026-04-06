@@ -184,7 +184,8 @@ radeon_drm_cs_create(struct radeon_cmdbuf *rcs,
    if (!cs) {
       return false;
    }
-   util_queue_fence_init(&cs->flush_completed);
+   for (int i = 0; i < 3; i++)
+      util_queue_fence_init(&cs->flush_completed[i]);
 
    cs->ws = ws;
    cs->flush_cs = flush;
@@ -526,15 +527,16 @@ void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
 }
 
 /*
- * Make sure previous submission of this cs are completed
+ * Drain all in-flight ioctls across the triple-buffer ring.
  */
 void radeon_drm_cs_sync_flush(struct radeon_cmdbuf *rcs)
 {
    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
 
-   /* Wait for any pending ioctl of this CS to complete. */
-   if (util_queue_is_initialized(&cs->ws->cs_queue))
-      util_queue_fence_wait(&cs->flush_completed);
+   if (util_queue_is_initialized(&cs->ws->cs_queue)) {
+      for (int i = 0; i < 3; i++)
+         util_queue_fence_wait(&cs->flush_completed[i]);
+   }
 }
 
 /* Add the given fence to a slab buffer fence list.
@@ -658,23 +660,20 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
       radeon_fence_reference(&cs->ws->base, &cs->next_fence, NULL);
    }
 
-   /* Triple-buffer rotation: wait on the buffer we're about to
-    * overwrite, NOT on the one we just submitted. This gives the
-    * GPU an extra buffer of latency to work with, eliminating the
-    * synchronous fence stall that consumed 81% of CPU time. */
+   /* Triple-buffer rotation: wait ONLY on the buffer we are about to
+    * reuse (from 2 submissions ago), NOT the one we just filled.
+    * This is the key to actual pipeline overlap. */
+   uint8_t submit_idx = cs->csc_fill_idx;
    {
-      uint8_t submit_idx = cs->csc_fill_idx;
       uint8_t next_fill = (submit_idx + 1) % 3;
 
-      /* The buffer at next_fill may still be in-flight from TWO
-       * submissions ago. We must wait for that one to complete
-       * before we can reuse it. But we do NOT need to wait for
-       * the buffer we just filled (submit_idx) -- that one is
-       * being handed to the submit thread right now. */
-      radeon_drm_cs_sync_flush(rcs);
+      /* Wait for csc[next_fill]'s ioctl to complete -- it may still
+       * be in-flight from two submissions ago.  We do NOT wait for
+       * csc[submit_idx] (just filled), allowing the GPU to execute
+       * it concurrently while we build the next IB. */
+      if (util_queue_is_initialized(&cs->ws->cs_queue))
+         util_queue_fence_wait(&cs->flush_completed[next_fill]);
 
-      /* Rotate: what we just filled becomes the submit target,
-       * and we advance to the next buffer for filling. */
       cs->cst = &cs->csc[submit_idx];
       cs->csc_fill_idx = next_fill;
       cs->csc_cur = &cs->csc[next_fill];
@@ -739,7 +738,7 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
       }
 
       if (util_queue_is_initialized(&cs->ws->cs_queue)) {
-         util_queue_add_job(&cs->ws->cs_queue, cs, &cs->flush_completed,
+         util_queue_add_job(&cs->ws->cs_queue, cs, &cs->flush_completed[submit_idx],
                             radeon_drm_cs_emit_ioctl_oneshot, NULL, 0);
          if (!(flags & PIPE_FLUSH_ASYNC))
             radeon_drm_cs_sync_flush(rcs);
@@ -771,7 +770,8 @@ static void radeon_drm_cs_destroy(struct radeon_cmdbuf *rcs)
       return;
 
    radeon_drm_cs_sync_flush(rcs);
-   util_queue_fence_destroy(&cs->flush_completed);
+   for (int i = 0; i < 3; i++)
+      util_queue_fence_destroy(&cs->flush_completed[i]);
    for (int i = 0; i < 3; i++)
       radeon_cs_context_cleanup(&cs->ws->base, &cs->csc[i]);
    p_atomic_dec(&cs->ws->num_cs);
