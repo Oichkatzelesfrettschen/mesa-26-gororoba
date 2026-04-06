@@ -26,9 +26,18 @@
 
 #include "terakan_physical_device.h"
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+struct terakan_bo;
+struct terakan_wsi_hw_wait;
+
+uint32_t terakan_wsi_hw_wait_load_value(struct terakan_wsi_hw_wait const * hw_wait);
+void terakan_wsi_hw_wait_ref(struct terakan_wsi_hw_wait * hw_wait);
+void terakan_wsi_hw_wait_unref(struct terakan_wsi_hw_wait * hw_wait);
 
 void terakan_wsi_finish(struct terakan_physical_device * physical_device);
 

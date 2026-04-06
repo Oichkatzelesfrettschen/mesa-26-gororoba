@@ -26,11 +26,16 @@
 
 #include "vk_sync.h"
 
+#include <stdbool.h>
+
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+struct terakan_bo;
+struct terakan_wsi_hw_wait;
 
 struct terakan_sync_completion {
    struct vk_sync vk;
@@ -41,6 +46,11 @@ struct terakan_sync_completion {
     */
    uint64_t pending_value;
    uint64_t current_value;
+
+   struct terakan_wsi_hw_wait * presentation_wait_state;
+   struct terakan_bo * presentation_wait_bo;
+   uint32_t presentation_wait_value;
+   bool presentation_wait_is_wsi;
 };
 
 extern struct vk_sync_type const terakan_sync_completion_type;
