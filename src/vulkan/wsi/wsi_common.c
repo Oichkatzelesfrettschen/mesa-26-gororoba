@@ -1236,6 +1236,13 @@ wsi_signal_semaphore_for_image(struct vk_device *device,
 
    vk_semaphore_reset_temporary(device, semaphore);
 
+   if (chain->image_info.explicit_sync && chain->wsi->create_image_hw_wait_sync) {
+      VkResult result = chain->wsi->create_image_hw_wait_sync(vk_device_to_handle(device), image,
+                                                              &semaphore->temporary);
+      if (result != VK_ERROR_FEATURE_NOT_PRESENT)
+         return result;
+   }
+
 #ifdef HAVE_LIBDRM
    VkResult result = chain->image_info.explicit_sync ?
       wsi_create_sync_for_image_syncobj(chain, image,
@@ -1265,6 +1272,13 @@ wsi_signal_fence_for_image(struct vk_device *device,
    VK_FROM_HANDLE(vk_fence, fence, _fence);
 
    vk_fence_reset_temporary(device, fence);
+
+   if (chain->image_info.explicit_sync && chain->wsi->create_image_hw_wait_sync) {
+      VkResult result = chain->wsi->create_image_hw_wait_sync(vk_device_to_handle(device), image,
+                                                              &fence->temporary);
+      if (result != VK_ERROR_FEATURE_NOT_PRESENT)
+         return result;
+   }
 
 #ifdef HAVE_LIBDRM
    VkResult result = chain->image_info.explicit_sync ?

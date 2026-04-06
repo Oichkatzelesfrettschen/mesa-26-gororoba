@@ -49,6 +49,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifndef WAIT_REG_MEM_PFP
+#define WAIT_REG_MEM_PFP (1 << 8)
+#endif
+
 static int
 terakan_queue_completion_thread_func(void * queue_ptr)
 {
@@ -129,6 +133,143 @@ terakan_queue_replace_relocation_offset_for_32_bits(
    default:
       break;
    }
+}
+
+struct terakan_queue_wsi_wait {
+   struct terakan_bo * bo;
+   uint32_t value;
+};
+
+static VkResult
+terakan_queue_handle_wait_result(struct terakan_device * const device,
+                                 VkResult const wait_result,
+                                 char const * const description)
+{
+   if (wait_result == VK_SUCCESS) {
+      return VK_SUCCESS;
+   }
+   if (wait_result == VK_ERROR_OUT_OF_HOST_MEMORY ||
+       wait_result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+      return vk_error(device, wait_result);
+   }
+
+   vk_device_set_lost(&device->vk, "Failed to await %s with result %s", description,
+                      vk_Result_to_str(wait_result));
+   mtx_lock(&device->completion_mutex);
+   device->completion_lost = true;
+   mtx_unlock(&device->completion_mutex);
+   cnd_broadcast(&device->completion_condition);
+   return VK_ERROR_DEVICE_LOST;
+}
+
+static VkResult
+terakan_queue_submit_wsi_wait_indirect_buffer(
+   struct terakan_queue * const queue, uint32_t const wait_count,
+   struct terakan_queue_wsi_wait const * const waits, uint32_t const poll_interval)
+{
+   if (wait_count == 0) {
+      return VK_SUCCESS;
+   }
+
+   struct terakan_device * const device =
+      container_of(queue->vk.base.device, struct terakan_device, vk);
+   struct terakan_physical_device const * const physical_device =
+      terakan_device_physical_device(device);
+   if (physical_device->submission_info_gfx.base.relocation_type !=
+       TERAKAN_QUEUE_RELOCATION_TYPE_DRM_NOP) {
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
+
+   size_t const bo_references_storage_size =
+      (size_t)device->bo_reference_size * wait_count + device->bo_reference_alignment - 1;
+   void * const bo_references_storage = alloca(bo_references_storage_size);
+   void * const bo_references =
+      (void *)ALIGN_POT((uintptr_t)bo_references_storage, device->bo_reference_alignment);
+
+   uint32_t const indirect_buffer_max_dwords =
+      wait_count * 9 + TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1;
+   uint32_t * const indirect_buffer = alloca(sizeof(*indirect_buffer) * indirect_buffer_max_dwords);
+   uint32_t indirect_buffer_size_dwords = 0;
+
+   for (uint32_t wait_index = 0; wait_index < wait_count; ++wait_index) {
+      void * const bo_reference =
+         (char *)bo_references + (size_t)device->bo_reference_size * wait_index;
+      device->winsys_fn->queue->create_bo_reference(bo_reference, waits[wait_index].bo, true, false,
+                                                    TERAKAN_BO_PRIORITY_SYNC);
+
+      indirect_buffer[indirect_buffer_size_dwords++] = PKT3(PKT3_WAIT_REG_MEM, 5, 0);
+      indirect_buffer[indirect_buffer_size_dwords++] =
+         WAIT_REG_MEM_GEQUAL | WAIT_REG_MEM_MEMORY | WAIT_REG_MEM_PFP;
+      indirect_buffer[indirect_buffer_size_dwords++] = 0;
+      indirect_buffer[indirect_buffer_size_dwords++] = 0;
+      indirect_buffer[indirect_buffer_size_dwords++] = waits[wait_index].value;
+      indirect_buffer[indirect_buffer_size_dwords++] = UINT32_MAX;
+      indirect_buffer[indirect_buffer_size_dwords++] = poll_interval;
+      indirect_buffer[indirect_buffer_size_dwords++] = PKT3(PKT3_NOP, 0, 0);
+      indirect_buffer[indirect_buffer_size_dwords++] = 4 * wait_index;
+   }
+
+   while (indirect_buffer_size_dwords &
+          (TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1)) {
+      indirect_buffer[indirect_buffer_size_dwords++] = PKT_TYPE_S(2);
+   }
+
+   return device->winsys_fn->queue->submit(queue->submission_context, wait_count, bo_references,
+                                           indirect_buffer_size_dwords, indirect_buffer, 0, NULL);
+}
+
+static VkResult
+terakan_queue_ensure_wsi_hw_wait_supported(struct terakan_queue * const queue,
+                                           bool * const supported_out)
+{
+   if (queue->wsi_hw_wait_probe_state > 0) {
+      *supported_out = true;
+      return VK_SUCCESS;
+   }
+   if (queue->wsi_hw_wait_probe_state < 0) {
+      *supported_out = false;
+      return VK_SUCCESS;
+   }
+
+   struct terakan_device * const device =
+      container_of(queue->vk.base.device, struct terakan_device, vk);
+   struct terakan_physical_device const * const physical_device =
+      terakan_device_physical_device(device);
+   if (physical_device->submission_info_gfx.base.relocation_type !=
+       TERAKAN_QUEUE_RELOCATION_TYPE_DRM_NOP) {
+      queue->wsi_hw_wait_probe_state = -1;
+      *supported_out = false;
+      return VK_SUCCESS;
+   }
+
+   struct terakan_bo * probe_bo;
+   VkResult result = device->winsys_fn->bo->allocate_device_memory(
+      device, 16, 16, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0, NULL,
+      VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &probe_bo);
+   if (result != VK_SUCCESS) {
+      return vk_error(device, result);
+   }
+
+   uint32_t * const probe_mapping = terakan_bo_map(probe_bo);
+   if (probe_mapping == NULL) {
+      terakan_bo_free(probe_bo, NULL);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   __atomic_store_n(probe_mapping, 1u, __ATOMIC_RELEASE);
+   __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
+   struct terakan_queue_wsi_wait probe_wait = {
+      .bo = probe_bo,
+      .value = 1,
+   };
+   result = terakan_queue_submit_wsi_wait_indirect_buffer(queue, 1, &probe_wait, 0xFF);
+
+   terakan_bo_free(probe_bo, NULL);
+
+   queue->wsi_hw_wait_probe_state = result == VK_SUCCESS ? 1 : -1;
+   *supported_out = result == VK_SUCCESS;
+   return VK_SUCCESS;
 }
 
 #define TERAKAN_QUEUE_SIGNAL_INDIRECT_BUFFER_MAX_DWORDS ((uint32_t)1 << 5)
@@ -304,6 +445,93 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
       container_of(queue->vk.base.device, struct terakan_device, vk);
    struct terakan_physical_device const * const physical_device =
       terakan_device_physical_device(device);
+
+   if (submit->wait_count != 0) {
+      struct vk_sync_wait * const cpu_waits = alloca(sizeof(*cpu_waits) * submit->wait_count);
+      struct vk_sync_wait * const wsi_waits = alloca(sizeof(*wsi_waits) * submit->wait_count);
+      uint32_t cpu_wait_count = 0;
+      uint32_t wsi_wait_count = 0;
+
+      for (uint32_t wait_index = 0; wait_index < submit->wait_count; ++wait_index) {
+         struct vk_sync_wait const * const wait = &submit->waits[wait_index];
+         bool is_wsi_wait = false;
+         if (wait->sync->type == &terakan_sync_completion_type) {
+            struct terakan_sync_completion const * const sync =
+               container_of(wait->sync, struct terakan_sync_completion const, vk);
+            is_wsi_wait = sync->presentation_wait_is_wsi;
+         }
+         if (is_wsi_wait) {
+            wsi_waits[wsi_wait_count++] = *wait;
+         } else {
+            cpu_waits[cpu_wait_count++] = *wait;
+         }
+      }
+
+      VkResult result = VK_SUCCESS;
+      if (cpu_wait_count != 0) {
+         result = vk_sync_wait_many(&device->vk, cpu_wait_count, cpu_waits,
+                                    VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+         result = terakan_queue_handle_wait_result(device, result, "submission CPU waits");
+         if (result != VK_SUCCESS) {
+            return result;
+         }
+      }
+
+      if (wsi_wait_count != 0) {
+         bool wsi_hw_wait_supported;
+         result = terakan_queue_ensure_wsi_hw_wait_supported(queue, &wsi_hw_wait_supported);
+         if (result != VK_SUCCESS) {
+            return result;
+         }
+
+         if (!wsi_hw_wait_supported) {
+            result = vk_sync_wait_many(&device->vk, wsi_wait_count, wsi_waits,
+                                       VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+            result = terakan_queue_handle_wait_result(device, result, "WSI acquire waits");
+            if (result != VK_SUCCESS) {
+               return result;
+            }
+         } else {
+            struct terakan_queue_wsi_wait * const unique_wsi_waits =
+               alloca(sizeof(*unique_wsi_waits) * wsi_wait_count);
+            uint32_t unique_wsi_wait_count = 0;
+            for (uint32_t wait_index = 0; wait_index < wsi_wait_count; ++wait_index) {
+               struct terakan_sync_completion const * const sync =
+                  container_of(wsi_waits[wait_index].sync, struct terakan_sync_completion const, vk);
+               assert(sync->presentation_wait_bo != NULL);
+               uint32_t unique_wait_index;
+               for (unique_wait_index = 0; unique_wait_index < unique_wsi_wait_count;
+                    ++unique_wait_index) {
+                  if (unique_wsi_waits[unique_wait_index].bo == sync->presentation_wait_bo) {
+                     unique_wsi_waits[unique_wait_index].value =
+                        MAX2(unique_wsi_waits[unique_wait_index].value,
+                             sync->presentation_wait_value);
+                     break;
+                  }
+               }
+               if (unique_wait_index == unique_wsi_wait_count) {
+                  unique_wsi_waits[unique_wsi_wait_count++] = (struct terakan_queue_wsi_wait) {
+                     .bo = sync->presentation_wait_bo,
+                     .value = sync->presentation_wait_value,
+                  };
+               }
+            }
+
+            result = terakan_queue_submit_wsi_wait_indirect_buffer(
+               queue, unique_wsi_wait_count, unique_wsi_waits, 0xFF);
+            if (result != VK_SUCCESS) {
+               vk_device_set_lost(&device->vk,
+                                  "WSI hardware wait submission failed with result %s",
+                                  vk_Result_to_str(result));
+               mtx_lock(&device->completion_mutex);
+               device->completion_lost = true;
+               mtx_unlock(&device->completion_mutex);
+               cnd_broadcast(&device->completion_condition);
+               return VK_ERROR_DEVICE_LOST;
+            }
+         }
+      }
+   }
 
    /* Update submission-time allocations. */
 
@@ -801,6 +1029,7 @@ terakan_queue_create(struct terakan_device * const device,
       goto fail_completion_thread;
    }
    queue->internal_bo_timeline_next_value = 1;
+   queue->wsi_hw_wait_probe_state = 0;
 
    queue->shader_rings_bytes_shr8 = 0;
    queue->shader_rings = NULL;

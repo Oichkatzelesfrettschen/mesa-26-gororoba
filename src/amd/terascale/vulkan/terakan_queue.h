@@ -202,6 +202,8 @@ struct terakan_queue {
    struct vk_sync * internal_bo_timeline;
    uint64_t internal_bo_timeline_next_value;
 
+   int wsi_hw_wait_probe_state;
+
    uint32_t shader_rings_bytes_shr8;
    struct terakan_bo * shader_rings;
    uint64_t shader_rings_last_usage;

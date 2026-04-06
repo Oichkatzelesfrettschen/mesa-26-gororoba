@@ -1072,6 +1072,7 @@ wsi_CreateXlibSurfaceKHR(VkInstance _instance,
 struct x11_image_pending_completion {
    uint32_t serial;
    uint64_t signal_present_id;
+   uint32_t hw_wait_value;
 };
 
 struct x11_image {
@@ -1164,6 +1165,11 @@ static void x11_present_complete(struct x11_swapchain *swapchain,
          u_cnd_monotonic_broadcast(&swapchain->present_progress_cond);
       }
       mtx_unlock(&swapchain->present_progress_mutex);
+   }
+
+   image->base.hw_wait_current_value = image->pending_completions[index].hw_wait_value;
+   if (swapchain->base.wsi->signal_image_hw_wait) {
+      swapchain->base.wsi->signal_image_hw_wait(swapchain->base.device, &image->base);
    }
 
    image->present_queued_count--;
@@ -1437,6 +1443,7 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
       (struct x11_image_pending_completion) {
          .signal_present_id = image->present_id,
          .serial = serial,
+         .hw_wait_value = ++image->base.hw_wait_queued_value,
       };
 
    xcb_void_cookie_t cookie;
@@ -2095,6 +2102,18 @@ x11_image_init(VkDevice device_h, struct x11_swapchain *chain,
    if (result != VK_SUCCESS)
       return result;
 
+   image->base.hw_wait_state = NULL;
+   image->base.hw_wait_current_value = 0;
+   image->base.hw_wait_queued_value = 0;
+
+   if (chain->base.image_info.explicit_sync && chain->base.wsi->init_image_hw_wait) {
+      result = chain->base.wsi->init_image_hw_wait(device_h, &image->base);
+      if (result != VK_SUCCESS) {
+         wsi_destroy_image(&chain->base, &image->base);
+         return result;
+      }
+   }
+
    image->update_region = None;
    if (chain->base.wsi->sw && !chain->has_mit_shm)
       return VK_SUCCESS;
@@ -2235,6 +2254,8 @@ fail_pixmap:
    xcb_discard_reply(chain->conn, cookie.sequence);
 
 fail_image:
+   if (chain->base.wsi->destroy_image_hw_wait && image->base.hw_wait_state)
+      chain->base.wsi->destroy_image_hw_wait(device_h, &image->base);
    wsi_destroy_image(&chain->base, &image->base);
 
 #else
@@ -2270,6 +2291,10 @@ x11_image_finish(struct x11_swapchain *chain,
          }
       }
 #endif
+   }
+
+   if (chain->base.wsi->destroy_image_hw_wait && image->base.hw_wait_state) {
+      chain->base.wsi->destroy_image_hw_wait(chain->base.device, &image->base);
    }
 
    wsi_destroy_image(&chain->base, &image->base);

@@ -48,7 +48,9 @@ extern const struct vk_device_entrypoint_table wsi_device_entrypoints;
 
 struct wsi_interface;
 struct vk_instance;
+struct vk_sync;
 struct vk_queue;
+struct wsi_image;
 
 struct driOptionCache;
 
@@ -191,6 +193,16 @@ struct wsi_device {
     * buffer blits.
     */
    struct vk_queue *(*get_blit_queue)(VkDevice device);
+
+   /* Optional internal per-image acquire-wait hooks for drivers that need to
+    * materialize explicit-sync acquire payloads without sync-file import.
+    */
+   VkResult (*init_image_hw_wait)(VkDevice device, struct wsi_image *image);
+   void (*destroy_image_hw_wait)(VkDevice device, struct wsi_image *image);
+   void (*signal_image_hw_wait)(VkDevice device, struct wsi_image *image);
+   VkResult (*create_image_hw_wait_sync)(VkDevice device,
+                                         const struct wsi_image *image,
+                                         struct vk_sync **sync_out);
 
 #define WSI_CB(cb) PFN_vk##cb cb
    WSI_CB(AllocateMemory);

@@ -159,6 +159,10 @@ struct wsi_image {
    VkImage image;
    VkDeviceMemory memory;
 
+   void *hw_wait_state;
+   uint32_t hw_wait_current_value;
+   uint32_t hw_wait_queued_value;
+
    struct {
       VkBuffer buffer;
       VkImage image;

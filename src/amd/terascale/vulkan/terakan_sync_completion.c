@@ -24,6 +24,7 @@
 #include "terakan_sync_completion.h"
 
 #include "terakan_device.h"
+#include "terakan_wsi.h"
 
 #include "util/macros.h"
 #include "util/os_time.h"
@@ -34,6 +35,25 @@
 #include <stdbool.h>
 #include <time.h>
 
+static uint64_t
+terakan_sync_completion_get_wait_value(struct terakan_sync_completion const * const sync,
+                                       uint64_t const wait_value)
+{
+   return sync->presentation_wait_is_wsi ? sync->presentation_wait_value : wait_value;
+}
+
+static uint64_t
+terakan_sync_completion_get_current_value(struct terakan_sync_completion const * const sync,
+                                          enum vk_sync_wait_flags const wait_flags)
+{
+   if (sync->presentation_wait_is_wsi) {
+      return terakan_wsi_hw_wait_load_value(sync->presentation_wait_state);
+   }
+
+   return p_atomic_read(wait_flags & VK_SYNC_WAIT_PENDING ? &sync->pending_value :
+                                                        &sync->current_value);
+}
+
 static VkResult
 terakan_sync_completion_move(UNUSED struct vk_device * const device,
                              struct vk_sync * const dst_base, struct vk_sync * const src_base)
@@ -43,11 +63,23 @@ terakan_sync_completion_move(UNUSED struct vk_device * const device,
    struct terakan_sync_completion * const src =
       container_of(src_base, struct terakan_sync_completion, vk);
 
+   if (dst->presentation_wait_state != NULL) {
+      terakan_wsi_hw_wait_unref(dst->presentation_wait_state);
+   }
+
    dst->pending_value = src->pending_value;
    dst->current_value = src->current_value;
+   dst->presentation_wait_state = src->presentation_wait_state;
+   dst->presentation_wait_bo = src->presentation_wait_bo;
+   dst->presentation_wait_value = src->presentation_wait_value;
+   dst->presentation_wait_is_wsi = src->presentation_wait_is_wsi;
 
    src->pending_value = 0;
    src->current_value = 0;
+   src->presentation_wait_state = NULL;
+   src->presentation_wait_bo = NULL;
+   src->presentation_wait_value = 0;
+   src->presentation_wait_is_wsi = false;
 
    return VK_SUCCESS;
 }
@@ -77,7 +109,7 @@ terakan_sync_completion_get_value(struct vk_device * const device, struct vk_syn
 {
    struct terakan_sync_completion const * const sync =
       container_of(sync_base, struct terakan_sync_completion, vk);
-   *value_out = p_atomic_read(&sync->current_value);
+   *value_out = terakan_sync_completion_get_current_value(sync, 0);
    return VK_SUCCESS;
 }
 
@@ -96,9 +128,9 @@ terakan_sync_completion_wait_many(struct vk_device * const device_base, uint32_t
          struct vk_sync_wait const * const wait = &waits[wait_index];
          struct terakan_sync_completion const * const sync =
             container_of(wait->sync, struct terakan_sync_completion const, vk);
-         uint64_t const sync_value = p_atomic_read(
-            wait_flags & VK_SYNC_WAIT_PENDING ? &sync->pending_value : &sync->current_value);
-         if ((sync_value >= wait->wait_value) == wait_any) {
+         uint64_t const sync_value = terakan_sync_completion_get_current_value(sync, wait_flags);
+         uint64_t const wait_value = terakan_sync_completion_get_wait_value(sync, wait->wait_value);
+         if ((sync_value >= wait_value) == wait_any) {
             /* Awaited if wait-any, timed out if wait-all. */
             break;
          }
@@ -123,9 +155,9 @@ terakan_sync_completion_wait_many(struct vk_device * const device_base, uint32_t
          struct vk_sync_wait const * const wait = &waits[wait_index];
          struct terakan_sync_completion const * const sync =
             container_of(wait->sync, struct terakan_sync_completion const, vk);
-         uint64_t const sync_value =
-            wait_flags & VK_SYNC_WAIT_PENDING ? sync->pending_value : sync->current_value;
-         if ((sync_value >= wait->wait_value) == wait_any) {
+         uint64_t const sync_value = terakan_sync_completion_get_current_value(sync, wait_flags);
+         uint64_t const wait_value = terakan_sync_completion_get_wait_value(sync, wait->wait_value);
+         if ((sync_value >= wait_value) == wait_any) {
             /* Awaited if wait-any, timed out if wait-all. */
             break;
          }
@@ -190,8 +222,14 @@ terakan_sync_completion_wait_many(struct vk_device * const device_base, uint32_t
 }
 
 static void
-terakan_sync_completion_finish(struct vk_device * const device, struct vk_sync * const sync)
+terakan_sync_completion_finish(UNUSED struct vk_device * const device, struct vk_sync * const sync_base)
 {
+   struct terakan_sync_completion * const sync =
+      container_of(sync_base, struct terakan_sync_completion, vk);
+   if (sync->presentation_wait_state != NULL) {
+      terakan_wsi_hw_wait_unref(sync->presentation_wait_state);
+      sync->presentation_wait_state = NULL;
+   }
 }
 
 static VkResult
@@ -203,6 +241,10 @@ terakan_sync_completion_init(struct vk_device * const device, struct vk_sync * c
 
    sync->pending_value = initial_value;
    sync->current_value = initial_value;
+   sync->presentation_wait_state = NULL;
+   sync->presentation_wait_bo = NULL;
+   sync->presentation_wait_value = 0;
+   sync->presentation_wait_is_wsi = false;
 
    return VK_SUCCESS;
 }
