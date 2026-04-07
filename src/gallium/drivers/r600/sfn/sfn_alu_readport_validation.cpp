@@ -127,6 +127,11 @@ AluReadportReservation::schedule_vec_instruction(const AluInstr& alu, AluBankSwi
          continue;
       alu.src(i).accept(visitor);
    }
+
+   if (!visitor.success && m_last_error.empty()) {
+      set_last_error("vec readport reservation failed without explicit reason");
+   }
+
    return visitor.success;
 }
 
@@ -142,8 +147,12 @@ AluReadportReservation::schedule_trans_instruction(const AluInstr& alu,
       visitor1.cycle = cycle_trans(swz, i);
       alu.src(i).accept(visitor1);
    }
-   if (!visitor1.success)
+   if (!visitor1.success) {
+      if (m_last_error.empty()) {
+         set_last_error("trans readport pass1 failed without explicit reason");
+      }
       return false;
+   }
 
    ReserveReadportTransPass2 visitor2(*this);
    visitor2.n_consts = visitor1.n_consts;
@@ -153,6 +162,11 @@ AluReadportReservation::schedule_trans_instruction(const AluInstr& alu,
 
       alu.src(i).accept(visitor2);
    }
+
+   if (!visitor2.success && m_last_error.empty()) {
+      set_last_error("trans readport pass2 failed without explicit reason");
+   }
+
    return visitor2.success;
 }
 
@@ -362,6 +376,7 @@ ReserveReadportTransPass1::visit(const InlineConstant& value)
 {
    (void)value;
    if (n_consts >= max_const_readports) {
+      reserver.set_last_error("trans inline const budget exhausted");
       success = false;
       return;
    }
@@ -372,6 +387,7 @@ void
 ReserveReadportTransPass1::visit(const LiteralConstant& value)
 {
    if (n_consts >= max_const_readports) {
+      reserver.set_last_error("trans literal budget exhausted");
       success = false;
       return;
    }
@@ -395,6 +411,8 @@ void
 ReserveReadportTransPass2::visit(const LocalArrayValue& value)
 {
    if (cycle < n_consts) {
+      reserver.set_last_error("trans local-array cycle blocked by const reservation: cycle " + std::to_string(cycle) +
+                              " n_consts " + std::to_string(n_consts));
       success = false;
       return;
    }

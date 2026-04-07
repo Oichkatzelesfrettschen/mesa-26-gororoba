@@ -14,6 +14,26 @@
 
 namespace r600 {
 
+namespace {
+
+bool
+should_trace_vec_reject(const AluInstr *instr, const std::array<AluInstr *, 5>& slots)
+{
+   return (slots[4] && slots[4]->has_alu_flag(alu_is_trans)) ||
+          instr->opcode() == op3_muladd_ieee;
+}
+
+int
+vec_occupied_mask(const std::array<AluInstr *, 5>& slots)
+{
+   int mask = 0;
+   for (int i = 0; i < 4; ++i)
+      mask |= slots[i] ? (1 << i) : 0;
+   return mask;
+}
+
+} // namespace
+
 AluGroup::AluGroup()
 {
    std::fill(m_slots.begin(), m_slots.end(), nullptr);
@@ -173,6 +193,25 @@ AluGroup::add_vec_instructions(AluInstr *instr)
       return false;
 
    int preferred_chan = instr->dest_chan();
+   const int available_mask = m_free_slots & 0xf;
+   const bool trace_reject = should_trace_vec_reject(instr, m_slots);
+   auto log_topology_reject = [&](const char *reason,
+                                  int allowed_mask,
+                                  int intersection_mask) {
+      if (!trace_reject)
+         return;
+
+      sfn_log << SfnLog::err
+              << "DEBUG_TOPO_REJECT: reason=" << reason
+              << " vec=" << *instr
+              << " pref_chan=" << preferred_chan
+              << " occupied_mask=" << vec_occupied_mask(m_slots)
+              << " available_mask=" << available_mask
+              << " allowed_mask=" << allowed_mask
+              << " intersection_mask=" << intersection_mask
+              << "\n";
+   };
+
    if (!m_slots[preferred_chan]) {
       if (instr->bank_swizzle() != alu_vec_unknown) {
          if (try_readport(instr, instr->bank_swizzle())) {
@@ -187,39 +226,57 @@ AluGroup::add_vec_instructions(AluInstr *instr)
    } else {
 
       auto dest = instr->dest();
-      if (dest && (dest->pin() == pin_free || dest->pin() == pin_group)) {
+      if (!(dest && (dest->pin() == pin_free || dest->pin() == pin_group))) {
+         log_topology_reject("preferred slot occupied and destination pinning disallows repin",
+                             0,
+                             0);
+         return false;
+      }
 
-         int free_mask = 0xf;
-         for (auto p : dest->parents()) {
-            auto alu = p->as_alu();
-            if (alu)
-               free_mask &= alu->allowed_dest_chan_mask();
+      int free_mask = 0xf;
+      for (auto p : dest->parents()) {
+         auto alu = p->as_alu();
+         if (alu)
+            free_mask &= alu->allowed_dest_chan_mask();
+      }
+
+      for (auto u : dest->uses()) {
+         free_mask &= u->allowed_src_chan_mask();
+         if (!free_mask) {
+            log_topology_reject("destination constraints collapsed allowed mask", free_mask, 0);
+            return false;
          }
+      }
 
-         for (auto u : dest->uses()) {
-            free_mask &= u->allowed_src_chan_mask();
-            if (!free_mask)
-               return false;
-         }
+      const int intersection_mask = available_mask & free_mask;
+      if (!intersection_mask) {
+         log_topology_reject("A_intersect_P empty (no free channel satisfies constraints)",
+                             free_mask,
+                             intersection_mask);
+         return false;
+      }
 
-         int free_chan = 0;
-         while (free_chan < 4 && (m_slots[free_chan] || !(free_mask & (1 << free_chan))))
-            free_chan++;
+      int free_chan = 0;
+      while (free_chan < 4 && (m_slots[free_chan] || !(free_mask & (1 << free_chan))))
+         free_chan++;
 
-         if (free_chan < 4) {
-            sfn_log << SfnLog::schedule << "V: Try force channel " << free_chan << "\n";
-            dest->set_chan(free_chan);
-            if (instr->bank_swizzle() != alu_vec_unknown) {
-               if (try_readport(instr, instr->bank_swizzle()))
+      if (free_chan < 4) {
+         sfn_log << SfnLog::schedule << "V: Try force channel " << free_chan << "\n";
+         dest->set_chan(free_chan);
+         if (instr->bank_swizzle() != alu_vec_unknown) {
+            if (try_readport(instr, instr->bank_swizzle()))
+               return true;
+         } else {
+            for (AluBankSwizzle i = alu_vec_012; i != alu_vec_unknown; ++i) {
+               if (try_readport(instr, i))
                   return true;
-            } else {
-               for (AluBankSwizzle i = alu_vec_012; i != alu_vec_unknown; ++i) {
-                  if (try_readport(instr, i))
-                     return true;
-               }
             }
          }
       }
+
+      log_topology_reject("repin candidate exhausted swizzles after topological pass",
+                          free_mask,
+                          intersection_mask);
    }
    return false;
 }
