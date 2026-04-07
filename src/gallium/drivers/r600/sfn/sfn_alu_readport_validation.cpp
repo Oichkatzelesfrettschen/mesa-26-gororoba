@@ -117,6 +117,7 @@ AluReadportReservation::schedule_vec_src(const std::array<PVirtualValue, 3>& src
 bool
 AluReadportReservation::schedule_vec_instruction(const AluInstr& alu, AluBankSwizzle swz)
 {
+   reset_last_error();
    ReserveReadportVec visitor(*this);
 
    for (unsigned i = 0; i < alu.n_sources() && visitor.success; ++i) {
@@ -133,6 +134,7 @@ bool
 AluReadportReservation::schedule_trans_instruction(const AluInstr& alu,
                                                    AluBankSwizzle swz)
 {
+   reset_last_error();
 
    ReserveReadportTransPass1 visitor1(*this);
 
@@ -192,6 +194,10 @@ AluReadportReservation::reserve_gpr(int sel, int chan, int cycle)
    if (m_hw_gpr[cycle][chan] == -1) {
       m_hw_gpr[cycle][chan] = sel;
    } else if (m_hw_gpr[cycle][chan] != sel) {
+      set_last_error("gpr conflict: cycle " + std::to_string(cycle) +
+                     " chan " + std::to_string(chan) +
+                     " existing sel " + std::to_string(m_hw_gpr[cycle][chan]) +
+                     " new sel " + std::to_string(sel));
       return false;
    }
    return true;
@@ -218,6 +224,9 @@ AluReadportReservation::reserve_const(const UniformValue& value)
          (m_hw_const_bank[empty] = value.kcache_bank());
          m_hw_const_chan[empty] = value.chan() >> 1;
       } else {
+         set_last_error("const readport exhausted for sel " + std::to_string(value.sel()) +
+                        " bank " + std::to_string(value.kcache_bank()) +
+                        " chan_pair " + std::to_string(value.chan() >> 1));
          return false;
       }
    }
@@ -235,6 +244,7 @@ AluReadportReservation::add_literal(uint32_t value)
       m_literals[m_nliterals++] = value;
       return true;
    }
+   set_last_error("literal budget exhausted for value " + std::to_string(value));
    return false;
 }
 
@@ -339,6 +349,7 @@ void
 ReserveReadportTransPass1::visit(const UniformValue& value)
 {
    if (n_consts >= max_const_readports) {
+      reserver.set_last_error("trans const budget exhausted");
       success = false;
       return;
    }
@@ -372,6 +383,8 @@ void
 ReserveReadportTransPass2::visit(const Register& value)
 {
    if (cycle < n_consts) {
+      reserver.set_last_error("trans gpr cycle blocked by const reservation: cycle " + std::to_string(cycle) +
+                              " n_consts " + std::to_string(n_consts));
       success = false;
       return;
    }
