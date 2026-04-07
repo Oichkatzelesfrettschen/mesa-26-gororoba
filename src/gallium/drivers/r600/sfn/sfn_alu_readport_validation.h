@@ -9,6 +9,8 @@
 
 #include "sfn_instr_alu.h"
 
+#include <string>
+
 namespace r600 {
 
 class AluReadportReservation {
@@ -32,6 +34,10 @@ public:
 
    bool add_literal(uint32_t value);
 
+   void reset_last_error() { m_last_error.clear(); }
+   const std::string& last_error() const { return m_last_error; }
+   void set_last_error(const std::string& error) { m_last_error = error; }
+
    static int cycle_vec(AluBankSwizzle swz, int src);
    static int cycle_trans(AluBankSwizzle swz, int src);
 
@@ -46,6 +52,7 @@ public:
    std::array<int, max_chan_channels> m_hw_const_bank;
    std::array<uint32_t, max_chan_channels> m_literals;
    uint32_t m_nliterals{0};
+   std::string m_last_error;
 };
 
 inline std::ostream&

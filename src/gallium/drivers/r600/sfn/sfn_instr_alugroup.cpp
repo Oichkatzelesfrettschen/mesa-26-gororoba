@@ -299,8 +299,12 @@ AluGroup::try_readport(AluInstr *instr, AluBankSwizzle cycle)
 {
    int preferred_chan = instr->dest_chan();
    AluReadportReservation readports_evaluator = m_readports_reserver;
-   if (readports_evaluator.schedule_vec_instruction(*instr, cycle) &&
-       update_indirect_access(instr)) {
+   bool readport_ok = readports_evaluator.schedule_vec_instruction(*instr, cycle);
+   bool indirect_ok = false;
+   if (readport_ok)
+      indirect_ok = update_indirect_access(instr);
+
+   if (readport_ok && indirect_ok) {
       m_readports_reserver = readports_evaluator;
       m_slots[preferred_chan] = instr;
       m_free_slots &= ~(1 << preferred_chan);
@@ -317,6 +321,21 @@ AluGroup::try_readport(AluInstr *instr, AluBankSwizzle cycle)
       m_has_pred_update |= instr->has_alu_flag(alu_update_exec);
       m_slot_assignemnt_order[m_next_slot_assignemnt++] = preferred_chan;
       return true;
+   }
+
+   if ((m_slots[4] && m_slots[4]->has_alu_flag(alu_is_trans)) ||
+       instr->opcode() == op3_muladd_ieee) {
+      sfn_log << SfnLog::err;
+      if (m_slots[4] && m_slots[4]->has_alu_flag(alu_is_trans))
+         sfn_log << "DEBUG_REJECT: trans anchor " << *m_slots[4];
+      else
+         sfn_log << "DEBUG_REJECT_PRETRANS: no-trans-anchor";
+      sfn_log << " blocked vec " << *instr
+              << " at chan " << preferred_chan
+              << " swz " << cycle
+              << "; reason="
+              << (readport_ok ? "indirect access conflict" : readports_evaluator.last_error())
+              << "\n";
    }
    return false;
 }
