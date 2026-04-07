@@ -73,11 +73,12 @@ u_driconf_fill_st_options(struct st_config_options *options,
    query_bool_option(transcode_etc);
    query_bool_option(transcode_astc);
    query_bool_option(allow_compressed_fallback);
+   query_string_option(force_explicit_uniform_loc_zero);
    query_string_option(force_gl_vendor);
    query_string_option(force_gl_renderer);
    query_string_option(mesa_extension_override);
    query_bool_option(allow_multisampled_copyteximage);
    query_bool_option(vertex_program_default_out);
 
-   driComputeOptionsSha1(optionCache, options->config_options_sha1);
+   driComputeOptionsBlake3(optionCache, options->config_options_blake3);
 }

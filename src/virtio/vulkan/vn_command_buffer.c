@@ -925,6 +925,7 @@ struct vn_command_buffer_begin_info {
    VkCommandBufferInheritanceInfo inheritance;
    VkCommandBufferInheritanceConditionalRenderingInfoEXT conditional_rendering;
    VkRenderingInputAttachmentIndexInfo riai;
+   VkCommandBufferInheritanceDescriptorHeapInfoEXT desc_heap;
 
    bool has_inherited_pass;
    bool in_render_pass;
@@ -1003,6 +1004,10 @@ vn_fix_command_buffer_begin_info(struct vn_command_buffer *cmd,
          memcpy(&local->riai, src,
                 sizeof(VkRenderingInputAttachmentIndexInfo));
          pnext = &local->riai;
+         break;
+      case VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_DESCRIPTOR_HEAP_INFO_EXT:
+         memcpy(&local->desc_heap, src, sizeof(local->desc_heap));
+         pnext = &local->desc_heap;
          break;
       case VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO:
       case VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_LOCATION_INFO:
@@ -1488,7 +1493,7 @@ vn_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
     */
    if (buf->wsi.mem) {
       assert(img->wsi.is_prime_blit_src);
-      assert(!img->wsi.blit_mem);
+      assert(!img->wsi.blit_mem || img->wsi.blit_mem == buf->wsi.mem);
       img->wsi.blit_mem = buf->wsi.mem;
    }
 
@@ -2812,4 +2817,25 @@ vn_CmdDrawMeshTasksIndirectCountEXT(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdDrawMeshTasksIndirectCountEXT, commandBuffer, buffer,
                   offset, countBuffer, countBufferOffset, maxDrawCount,
                   stride);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+vn_CmdBindResourceHeapEXT(VkCommandBuffer commandBuffer,
+                          const VkBindHeapInfoEXT *pBindInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdBindResourceHeapEXT, commandBuffer, pBindInfo);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+vn_CmdBindSamplerHeapEXT(VkCommandBuffer commandBuffer,
+                         const VkBindHeapInfoEXT *pBindInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdBindSamplerHeapEXT, commandBuffer, pBindInfo);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+vn_CmdPushDataEXT(VkCommandBuffer commandBuffer,
+                  const VkPushDataInfoEXT *pPushDataInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdPushDataEXT, commandBuffer, pPushDataInfo);
 }

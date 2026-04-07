@@ -35,8 +35,13 @@ struct vk_pipeline_robustness_state;
 
 #define anv_drv_const_offset(field) \
    (offsetof(struct anv_push_constants, field))
+#define anv_drv_const_dword(field) \
+   (offsetof(struct anv_push_constants, field) / 4)
 #define anv_drv_const_size(field) \
    (sizeof(((struct anv_push_constants *)0)->field))
+#define anv_drv_const_includes_offset(field, offset) \
+   ((offset) >= anv_drv_const_offset(field) && \
+    (offset) < (anv_drv_const_offset(field) + anv_drv_const_size(field)))
 
 #define anv_load_driver_uniform(b, components, field)                   \
    nir_load_push_data_intel(b, components,                              \
@@ -118,6 +123,8 @@ struct anv_nir_push_layout_info {
    bool mesh_dynamic;
 };
 
+bool anv_nir_shrink_push_constant_ranges(nir_shader *nir);
+
 bool anv_nir_compute_push_layout(nir_shader *nir,
                                  const struct anv_physical_device *pdevice,
                                  enum brw_robustness_flags robust_flags,
@@ -125,14 +132,16 @@ bool anv_nir_compute_push_layout(nir_shader *nir,
                                  struct brw_base_prog_key *prog_key,
                                  struct brw_stage_prog_data *prog_data,
                                  struct anv_pipeline_bind_map *map,
-                                 const struct anv_pipeline_push_map *push_map,
-                                 void *mem_ctx);
+                                 const struct anv_pipeline_push_map *push_map);
 
 void anv_nir_validate_push_layout(const struct anv_physical_device *pdevice,
                                   struct brw_stage_prog_data *prog_data,
                                   struct anv_pipeline_bind_map *map);
 
 bool anv_nir_update_resource_intel_block(nir_shader *shader);
+
+bool anv_nir_lower_desc_address(nir_shader *shader,
+                                const struct anv_pipeline_bind_map *map);
 
 bool anv_nir_lower_unaligned_dispatch(nir_shader *shader);
 
@@ -159,6 +168,42 @@ uint32_t anv_nir_push_desc_ubo_fully_promoted(nir_shader *nir,
 void anv_apply_per_prim_attr_wa(struct nir_shader *ms_nir,
                                 struct nir_shader *fs_nir,
                                 struct anv_device *device);
+
+static inline bool
+anv_nir_is_promotable_ubo_binding(nir_src src)
+{
+   nir_intrinsic_instr *intrin = nir_src_as_intrinsic(src);
+
+   return intrin && intrin->intrinsic == nir_intrinsic_resource_intel &&
+      (nir_intrinsic_resource_access_intel(intrin) &
+       nir_resource_intel_pushable);
+}
+
+static inline bool
+anv_nir_is_internal_ubo(nir_src src)
+{
+   nir_intrinsic_instr *intrin = nir_src_as_intrinsic(src);
+
+   return intrin && intrin->intrinsic == nir_intrinsic_resource_intel &&
+      (nir_intrinsic_resource_access_intel(intrin) &
+       nir_resource_intel_internal);
+}
+
+static inline unsigned
+anv_nir_get_ubo_binding_push_block(nir_src src)
+{
+   nir_intrinsic_instr *intrin = nir_src_as_intrinsic(src);
+   assert(intrin && intrin->intrinsic == nir_intrinsic_resource_intel);
+
+   return nir_intrinsic_resource_block_intel(intrin);
+}
+
+void anv_nir_analyze_push_constants_ranges(nir_shader *nir,
+                                           const struct intel_device_info *devinfo,
+                                           const struct anv_pipeline_push_map *push_map,
+                                           struct anv_push_range out_ranges[4]);
+
+enum anv_pipeline_behavior anv_nir_clear_shader_analysis(nir_shader *shader);
 
 #ifdef __cplusplus
 }

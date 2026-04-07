@@ -45,7 +45,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include "sha1/sha1.h"
+#include "mesa-blake3.h"
 #include "simple_mtx.h"
 
 /* Max number of DBs our implementation can read from at once */
@@ -72,7 +72,7 @@ struct foz_payload_header {
 
 struct foz_db_entry {
    uint8_t file_idx;
-   uint8_t key[SHA1_DIGEST_LENGTH];
+   uint8_t key[BLAKE3_KEY_LEN];
    uint64_t offset;
    struct foz_payload_header header;
 };

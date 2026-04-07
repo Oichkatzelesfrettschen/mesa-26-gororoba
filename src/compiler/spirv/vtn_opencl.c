@@ -1,27 +1,6 @@
 /*
  * Copyright © 2018 Red Hat
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
- * Authors:
- *    Rob Clark (robdclark@gmail.com)
+ * SPDX-License-Identifier: MIT
  */
 
 #include "math.h"
@@ -278,6 +257,19 @@ handle_instr(struct vtn_builder *b, uint32_t opcode,
    } else {
       vtn_assert(dest_type == NULL);
    }
+}
+
+static void
+handle_alu_instr(struct vtn_builder *b, uint32_t opcode,
+                 const uint32_t *w_src, unsigned num_srcs, const uint32_t *w_dest, nir_handler handler)
+{
+   assert(w_dest);
+
+   vtn_handle_fp_fast_math(b, vtn_untyped_value(b, w_dest[2]), vtn_untyped_value(b, w_src[0]));
+
+   handle_instr(b, opcode, w_src, num_srcs, w_dest, handler);
+
+   b->nb.fp_math_ctrl = nir_fp_fast_math;
 }
 
 static nir_op
@@ -699,7 +691,7 @@ handle_special(struct vtn_builder *b, uint32_t opcode,
    case OpenCLstd_Native_tan:
       return nir_ftan(nb, srcs[0]);
    case OpenCLstd_Ldexp:
-      if (nb->shader->options->lower_ldexp)
+      if (!nb->shader->options->has_ldexp)
          break;
       return nir_ldexp(nb, srcs[0], srcs[1]);
    case OpenCLstd_Fma: {
@@ -770,7 +762,7 @@ handle_core(struct vtn_builder *b, uint32_t opcode,
        * pointers.  Fortunately, the whole function is just a barrier.
        */
       nir_barrier(&b->nb, .execution_scope = SCOPE_WORKGROUP,
-                          .memory_scope = SCOPE_WORKGROUP,
+                          .memory_scope = SCOPE_DEVICE,
                           .memory_semantics = NIR_MEMORY_ACQUIRE |
                                               NIR_MEMORY_RELEASE,
                           .memory_modes = nir_var_mem_shared |
@@ -1124,7 +1116,7 @@ vtn_handle_opencl_instruction(struct vtn_builder *b, SpvOp ext_opcode,
    case OpenCLstd_Half_recip:
    case OpenCLstd_FMin_common:
    case OpenCLstd_FMax_common:
-      handle_instr(b, ext_opcode, w + 5, count - 5, w + 1, handle_alu);
+      handle_alu_instr(b, ext_opcode, w + 5, count - 5, w + 1, handle_alu);
       return true;
    case OpenCLstd_SAbs_diff:
    case OpenCLstd_UAbs_diff:
@@ -1231,7 +1223,7 @@ vtn_handle_opencl_instruction(struct vtn_builder *b, SpvOp ext_opcode,
    case OpenCLstd_Half_powr:
    case OpenCLstd_Half_sin:
    case OpenCLstd_Half_tan:
-      handle_instr(b, ext_opcode, w + 5, count - 5, w + 1, handle_special);
+      handle_alu_instr(b, ext_opcode, w + 5, count - 5, w + 1, handle_special);
       return true;
    case OpenCLstd_Vloadn:
    case OpenCLstd_Vload_half:

@@ -212,6 +212,7 @@ llvmpipe_init_screen_caps(struct pipe_screen *screen)
 #if defined(HAVE_LIBDRM) && defined(HAVE_LINUX_UDMABUF_H)
    caps->native_fence_fd = lscreen->dummy_sync_fd != -1;
 #endif
+   caps->prefer_real_buffer_in_constbuf0 = true;
    caps->npot_textures = true;
    caps->mixed_framebuffer_sizes = true;
    caps->mixed_color_depth_bits = true;
@@ -269,7 +270,7 @@ llvmpipe_init_screen_caps(struct pipe_screen *screen)
    caps->vertex_color_unclamped = true;
    caps->vertex_color_clamped = true;
    caps->glsl_feature_level_compatibility =
-   caps->glsl_feature_level = 450;
+   caps->glsl_feature_level = 460;
    caps->compute = true;
    caps->user_vertex_buffers = true;
    caps->tgsi_texcoord = true;
@@ -394,6 +395,43 @@ llvmpipe_init_screen_caps(struct pipe_screen *screen)
 
    caps->shader_subgroup_supported_stages = BITFIELD_MASK(MESA_SHADER_MESH_STAGES);
    caps->shader_subgroup_supported_features = PIPE_SHADER_SUBGROUP_FEATURE_MASK;
+
+   caps->mesh_shader = true;
+
+   caps->mesh.max_task_work_group_total_count = 4194304;
+   caps->mesh.max_mesh_work_group_total_count = 4194304;
+   caps->mesh.max_mesh_work_group_invocations = 1024;
+   caps->mesh.max_task_work_group_invocations = 1024;
+   caps->mesh.max_task_payload_size = 16384;
+   caps->mesh.max_task_shared_memory_size = 32768;
+   caps->mesh.max_mesh_shared_memory_size = 28672;
+   caps->mesh.max_task_payload_and_shared_memory_size = 32768;
+   caps->mesh.max_mesh_payload_and_shared_memory_size = 32768;
+   caps->mesh.max_mesh_output_memory_size = 32768;
+   caps->mesh.max_mesh_payload_and_output_memory_size = 16384 * 28672;
+   caps->mesh.max_mesh_output_vertices = 256;
+   caps->mesh.max_mesh_output_primitives = 256;
+   caps->mesh.max_mesh_output_components = 128;
+   caps->mesh.max_mesh_output_layers = 9;
+   caps->mesh.max_mesh_multiview_view_count = 1;
+   caps->mesh.mesh_output_per_vertex_granularity = 1;
+   caps->mesh.mesh_output_per_primitive_granularity = 1;
+
+   caps->mesh.max_preferred_task_work_group_invocations = 64;
+   caps->mesh.max_preferred_mesh_work_group_invocations = 128;
+   caps->mesh.mesh_prefers_local_invocation_vertex_output = true;
+   caps->mesh.mesh_prefers_local_invocation_primitive_output = true;
+   caps->mesh.mesh_prefers_compact_vertex_output = true;
+   caps->mesh.mesh_prefers_compact_primitive_output = false;
+
+   for (unsigned i = 0; i < 3; i++) {
+      caps->mesh.max_task_work_group_count[i] = 65536;
+      caps->mesh.max_mesh_work_group_count[i] = 65536;
+      caps->mesh.max_task_work_group_size[i] = 1024;
+      caps->mesh.max_mesh_work_group_size[i] = 1024;
+   }
+
+   caps->mesh.pipeline_statistic_queries = true;
 }
 
 
@@ -460,7 +498,6 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_uadd_sat = true,
    .lower_usub_sat = true,
    .lower_iadd_sat = true,
-   .lower_ldexp = true,
    .lower_pack_snorm_2x16 = true,
    .lower_pack_snorm_4x8 = true,
    .lower_pack_unorm_2x16 = true,
@@ -486,7 +523,6 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .max_unroll_iterations = 32,
    .lower_to_scalar = true,
    .lower_uniforms_to_ubo = true,
-   .lower_vector_cmp = true,
    .lower_device_index_to_zero = true,
    .support_16bit_alu = true,
    .lower_fisnormal = true,
@@ -833,36 +869,36 @@ llvmpipe_fence_finish(struct pipe_screen *screen,
 
 
 static void
-update_cache_sha1_cpu(struct mesa_sha1 *ctx)
+update_cache_blake3_cpu(blake3_hasher *ctx)
 {
    const struct util_cpu_caps_t *cpu_caps = util_get_cpu_caps();
    /*
     * Don't need the cpu cache affinity stuff. The rest
-    * is contained in first 4 dwords.
+    * is contained in first 5 dwords.
     */
    STATIC_ASSERT(offsetof(struct util_cpu_caps_t, num_L3_caches)
-                 == 4 * sizeof(uint32_t));
-   _mesa_sha1_update(ctx, cpu_caps, 4 * sizeof(uint32_t));
+                 == 5 * sizeof(uint32_t));
+   _mesa_blake3_update(ctx, cpu_caps, 5 * sizeof(uint32_t));
 }
 
 
 static void
 lp_disk_cache_create(struct llvmpipe_screen *screen)
 {
-   struct mesa_sha1 ctx;
+   blake3_hasher ctx;
    unsigned gallivm_perf = gallivm_get_perf_flags();
-   unsigned char sha1[SHA1_DIGEST_LENGTH];
-   char cache_id[SHA1_DIGEST_STRING_LENGTH];
-   _mesa_sha1_init(&ctx);
+   unsigned char blake3[BLAKE3_KEY_LEN];
+   char cache_id[BLAKE3_HEX_LEN];
+   _mesa_blake3_init(&ctx);
 
    if (!disk_cache_get_function_identifier(lp_disk_cache_create, &ctx) ||
        !disk_cache_get_function_identifier(LLVMLinkInMCJIT, &ctx))
       return;
 
-   _mesa_sha1_update(&ctx, &gallivm_perf, sizeof(gallivm_perf));
-   update_cache_sha1_cpu(&ctx);
-   _mesa_sha1_final(&ctx, sha1);
-   mesa_bytes_to_hex(cache_id, sha1, SHA1_DIGEST_LENGTH);
+   _mesa_blake3_update(&ctx, &gallivm_perf, sizeof(gallivm_perf));
+   update_cache_blake3_cpu(&ctx);
+   _mesa_blake3_final(&ctx, blake3);
+   mesa_bytes_to_hex(cache_id, blake3, BLAKE3_KEY_LEN);
 
    screen->disk_shader_cache = disk_cache_create("llvmpipe", cache_id, 0);
 }
@@ -892,18 +928,18 @@ llvmpipe_screen_get_fd(struct pipe_screen *_screen)
 void
 lp_disk_cache_find_shader(struct llvmpipe_screen *screen,
                           struct lp_cached_code *cache,
-                          unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH])
+                          unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN])
 {
-   unsigned char sha1[CACHE_KEY_SIZE];
+   unsigned char blake3[CACHE_KEY_SIZE];
 
    if (!screen->disk_shader_cache)
       return;
-   disk_cache_compute_key(screen->disk_shader_cache, ir_sha1_cache_key,
-                          20, sha1);
+   disk_cache_compute_key(screen->disk_shader_cache, ir_blake3_cache_key,
+                          20, blake3);
 
    size_t binary_size;
    uint8_t *buffer = disk_cache_get(screen->disk_shader_cache,
-                                    sha1, &binary_size);
+                                    blake3, &binary_size);
    if (!buffer) {
       cache->data_size = 0;
       return;
@@ -916,15 +952,15 @@ lp_disk_cache_find_shader(struct llvmpipe_screen *screen,
 void
 lp_disk_cache_insert_shader(struct llvmpipe_screen *screen,
                             struct lp_cached_code *cache,
-                            unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH])
+                            unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN])
 {
-   unsigned char sha1[CACHE_KEY_SIZE];
+   unsigned char blake3[CACHE_KEY_SIZE];
 
    if (!screen->disk_shader_cache || !cache->data_size || cache->dont_cache)
       return;
-   disk_cache_compute_key(screen->disk_shader_cache, ir_sha1_cache_key,
-                          20, sha1);
-   disk_cache_put(screen->disk_shader_cache, sha1, cache->data,
+   disk_cache_compute_key(screen->disk_shader_cache, ir_blake3_cache_key,
+                          20, blake3);
+   disk_cache_put(screen->disk_shader_cache, blake3, cache->data,
                   cache->data_size, NULL);
 }
 

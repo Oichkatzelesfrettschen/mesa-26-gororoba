@@ -24,7 +24,7 @@
 #include "anv_nir.h"
 #include "nir_builder.h"
 #include "compiler/elk/elk_nir.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 
 #define sizeof_field(type, field) sizeof(((type *)0)->field)
 
@@ -245,9 +245,9 @@ anv_nir_compute_push_layout(nir_shader *nir,
     * bind map, hash it.  This lets us quickly determine if the actual
     * mapping has changed and not just a no-op pipeline change.
     */
-   _mesa_sha1_compute(map->push_ranges,
+   _mesa_blake3_compute(map->push_ranges,
                       sizeof(map->push_ranges),
-                      map->push_sha1);
+                      map->push_blake3);
    return has_push_intrinsic;
 }
 

@@ -136,6 +136,19 @@ vk_spirv_to_nir(struct vk_device *device,
    spirv_options_local.debug.func = spirv_nir_debug;
    spirv_options_local.debug.private_data = (void *)device;
 
+   spirv_options_local.sampler_descriptor_size =
+      device->physical->properties.samplerDescriptorSize;
+   spirv_options_local.sampler_descriptor_alignment =
+      device->physical->properties.samplerDescriptorAlignment;
+   spirv_options_local.image_descriptor_size =
+      device->physical->properties.imageDescriptorSize;
+   spirv_options_local.image_descriptor_alignment =
+      device->physical->properties.imageDescriptorAlignment;
+   spirv_options_local.buffer_descriptor_size =
+      device->physical->properties.bufferDescriptorSize;
+   spirv_options_local.buffer_descriptor_alignment =
+      device->physical->properties.bufferDescriptorAlignment;
+
    uint32_t num_spec_entries = 0;
    struct nir_spirv_specialization *spec_entries =
       vk_spec_info_to_nir_spirv(spec_info, &num_spec_entries);
@@ -168,7 +181,7 @@ vk_spirv_to_nir(struct vk_device *device,
    NIR_PASS(_, nir, nir_opt_deref);
 
    /* Pick off the single entrypoint that we want */
-   nir_remove_non_entrypoints(nir);
+   nir_remove_non_cmat_call_entrypoints(nir);
 
    /* Now that we've deleted all but the main function, we can go ahead and
     * lower the rest of the constant initializers.  We do this here so that

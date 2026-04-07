@@ -170,6 +170,7 @@ update_instr_type(struct hash_table *types, nir_instr *instr, ti_type type)
       case nir_intrinsic_store_scratch:
       case nir_intrinsic_load_shared:
       case nir_intrinsic_store_shared:
+      case nir_intrinsic_load_frag_coord:
          return false;
       case nir_intrinsic_store_global:
          set_type(types, &intr->src[0], type);
@@ -276,6 +277,10 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
       set_type(types, &instr->def, ty);
       break;
    }
+   case nir_intrinsic_load_sample_pos_from_id:
+      set_type(types, &instr->def, TYPE_FLOAT);
+      set_type(types, &instr->src[0], TYPE_UINT);
+      break;
    case nir_intrinsic_load_global_constant:
       set_type(types, &instr->def, TYPE_GENERIC_DATA);
       set_type(types, &instr->src[0], TYPE_UINT);
@@ -356,6 +361,7 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
       set_type(types, &instr->def, TYPE_UINT);
       break;
    case nir_intrinsic_load_vulkan_descriptor:
+   case nir_intrinsic_load_barycentric_at_sample:
       set_type(types, &instr->src[0], TYPE_UINT);
       set_type(types, &instr->def, TYPE_UINT);
       break;
@@ -380,10 +386,13 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
    case nir_intrinsic_ddy_coarse:
    case nir_intrinsic_ddx_fine:
    case nir_intrinsic_ddy_fine:
+   case nir_intrinsic_load_barycentric_at_offset:
       set_type(types, &instr->src[0], TYPE_FLOAT);
       set_type(types, &instr->def, TYPE_FLOAT);
       break;
    case nir_intrinsic_load_point_coord:
+   case nir_intrinsic_load_sample_pos:
+   case nir_intrinsic_load_frag_coord:
       set_type(types, &instr->def, TYPE_FLOAT);
       break;
    case nir_intrinsic_load_front_face:

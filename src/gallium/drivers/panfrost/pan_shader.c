@@ -11,13 +11,13 @@
 #include "nir/tgsi_to_nir.h"
 #include "util/u_memory.h"
 #include "util/u_prim.h"
-#include "util/perf/cpu_trace.h"
 #include "nir_builder.h"
 #include "nir_serialize.h"
 #include "pan_bo.h"
 #include "pan_context.h"
 #include "pan_compiler.h"
 #include "pan_nir.h"
+#include "pan_trace.h"
 #include "shader_enums.h"
 
 static struct panfrost_uncompiled_shader *
@@ -39,7 +39,7 @@ panfrost_alloc_shader(const nir_shader *nir)
    struct blob blob;
    blob_init(&blob);
    nir_serialize(&blob, nir, true);
-   _mesa_sha1_compute(blob.data, blob.size, so->nir_sha1);
+   _mesa_blake3_compute(blob.data, blob.size, so->nir_blake3);
    blob_finish(&blob);
 
    return so;
@@ -90,21 +90,13 @@ lower_sample_mask_writes(nir_builder *b, nir_intrinsic_instr *intrin,
    return true;
 }
 
-static bool
-panfrost_use_ld_var_buf(const nir_shader *ir)
-{
-   const uint64_t allowed = VARYING_BIT_POS | VARYING_BIT_PSIZ |
-      BITFIELD64_MASK(16) << VARYING_SLOT_VAR0;
-   return (ir->info.inputs_read & ~allowed) == 0;
-}
-
 static void
 panfrost_shader_compile(struct panfrost_screen *screen, const nir_shader *ir,
                         struct util_debug_callback *dbg,
                         struct panfrost_shader_key *key, unsigned req_local_mem,
                         struct panfrost_shader_binary *out)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_SHADER);
 
    struct panfrost_device *dev = pan_device(&screen->base);
 
@@ -128,14 +120,9 @@ panfrost_shader_compile(struct panfrost_screen *screen, const nir_shader *ir,
    };
 
    /* Lower this early so the backends don't have to worry about it */
-   if (s->info.stage == MESA_SHADER_FRAGMENT) {
-      inputs.fixed_varying_mask =
-         pan_get_fixed_varying_mask(s->info.inputs_read);
-   } else if (s->info.stage == MESA_SHADER_VERTEX) {
+   if (s->info.stage == MESA_SHADER_VERTEX) {
       /* No IDVS for internal XFB shaders */
       inputs.no_idvs = s->info.has_transform_feedback_varyings;
-      inputs.fixed_varying_mask =
-         pan_get_fixed_varying_mask(s->info.outputs_written);
 
       if (s->info.has_transform_feedback_varyings) {
          NIR_PASS(_, s, nir_opt_constant_folding);
@@ -156,13 +143,13 @@ panfrost_shader_compile(struct panfrost_screen *screen, const nir_shader *ir,
          NIR_PASS(_, s, nir_lower_texcoord_replace_late,
                   key->fs.sprite_coord_enable,
                   true /* point coord is sysval */);
+         /* Lower load_point_coord if present */
+         NIR_PASS(_, s, pan_nir_lower_var_special_pan);
       }
 
       if (key->fs.clip_plane_enable) {
          NIR_PASS(_, s, nir_lower_clip_fs, key->fs.clip_plane_enable,
                   false, true);
-         inputs.fixed_varying_mask =
-            pan_get_fixed_varying_mask(s->info.inputs_read);
       }
 
       if (key->fs.line_smooth) {
@@ -209,8 +196,20 @@ panfrost_shader_compile(struct panfrost_screen *screen, const nir_shader *ir,
    NIR_PASS(_, s, panfrost_nir_lower_res_indices, &inputs);
    pan_nir_lower_texture_late(s, inputs.gpu_id);
 
+   /* nir_opt_varyings is replacing all flat highp types with float32, we need
+    * to figure out the varying types ourselves */
+   inputs.trust_varying_flat_highp_types = false;
+   struct pan_varying_layout varyings_layout;
+   /* TODO: wire up VS layout in FS when linked together */
+   if (s->info.stage == MESA_SHADER_VERTEX) {
+      pan_varying_collect_formats(&varyings_layout, s,
+                                  inputs.gpu_id,
+                                  inputs.trust_varying_flat_highp_types, false);
+      pan_build_varying_layout_compact(&varyings_layout, s, inputs.gpu_id);
+      inputs.varying_layout = &varyings_layout;
+   }
+
    if (dev->arch >= 9) {
-      inputs.valhall.use_ld_var_buf = panfrost_use_ld_var_buf(s);
       /* Always enable this for GL, it avoids crashes when using unbound
        * resources. */
       inputs.robust_descriptors = true;
@@ -471,7 +470,7 @@ static void *
 panfrost_create_shader_state(struct pipe_context *pctx,
                              const struct pipe_shader_state *cso)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_SHADER);
 
    nir_shader *nir = (cso->type == PIPE_SHADER_IR_TGSI)
                         ? tgsi_to_nir(cso->tokens, pctx->screen, false)
@@ -537,6 +536,8 @@ panfrost_create_shader_state(struct pipe_context *pctx,
    pan_preprocess_nir(nir, panfrost_device_gpu_id(dev));
    pan_nir_lower_texture_early(nir, panfrost_device_gpu_id(dev));
 
+   NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+            nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
    NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
             glsl_type_size, nir_lower_io_use_interpolated_input_intrinsics);
 

@@ -1449,7 +1449,7 @@ impl SM20Op for OpF2F {
         e.set_field(23..25, (self.src_type.bits() / 8).ilog2());
         e.set_rnd_mode(49..51, self.rnd_mode);
         e.set_bit(55, self.ftz);
-        e.set_bit(56, self.high);
+        e.set_bit(56, self.src.src_swizzle == SrcSwizzle::Yy);
     }
 }
 
@@ -1468,7 +1468,7 @@ impl SM20Op for OpF2I {
         e.set_field(23..25, (self.src_type.bits() / 8).ilog2());
         e.set_rnd_mode(49..51, self.rnd_mode);
         e.set_bit(55, self.ftz);
-        e.set_bit(56, false); // .high
+        e.set_bit(56, self.src.src_swizzle == SrcSwizzle::Yy);
     }
 }
 
@@ -2309,6 +2309,8 @@ impl SM20Op for OpLd {
     }
 
     fn encode(&self, e: &mut SM20Encoder<'_>) {
+        assert_eq!(self.stride, OffsetStride::X1);
+        assert!(self.pred.is_true());
         match self.access.space {
             MemSpace::Global(addr_type) => {
                 e.set_opcode(SM20Unit::Mem, 0x20);
@@ -2388,6 +2390,7 @@ impl SM20Op for OpSt {
     }
 
     fn encode(&self, e: &mut SM20Encoder<'_>) {
+        assert_eq!(self.stride, OffsetStride::X1);
         match self.access.space {
             MemSpace::Global(addr_type) => {
                 e.set_opcode(SM20Unit::Mem, 0x24);
@@ -2472,6 +2475,7 @@ impl SM20Op for OpAtom {
             panic!("SM20 only supports global atomics");
         };
         assert!(addr_type == MemAddrType::A64);
+        assert_eq!(self.addr_stride, OffsetStride::X1);
 
         if self.dst.is_none() {
             e.set_opcode(SM20Unit::Mem, 0x1);

@@ -106,7 +106,7 @@ class Format(IntEnum):
          return [('uint32_t', 'imm', '0')]
       elif self == Format.SMEM:
          return [('memory_sync_info', 'sync', 'memory_sync_info()'),
-                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0, 0}}')]
+                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0}}')]
       elif self == Format.DS:
          return [('uint16_t', 'offset0', '0'),
                  ('uint8_t', 'offset1', '0'),
@@ -124,7 +124,7 @@ class Format(IntEnum):
                  ('bool', 'offen', None),
                  ('bool', 'idxen', 'false'),
                  ('bool', 'disable_wqm', 'false'),
-                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0, 0}}'),
+                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0}}'),
                  ('bool', 'tfe', 'false')]
       elif self == Format.MUBUF:
          return [('unsigned', 'offset', None),
@@ -132,7 +132,7 @@ class Format(IntEnum):
                  ('bool', 'idxen', 'false'),
                  ('bool', 'addr64', 'false'),
                  ('bool', 'disable_wqm', 'false'),
-                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0, 0}}'),
+                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0}}'),
                  ('bool', 'tfe', 'false'),
                  ('bool', 'lds', 'false')]
       elif self == Format.MIMG:
@@ -140,7 +140,7 @@ class Format(IntEnum):
                  ('bool', 'da', 'false'),
                  ('bool', 'unrm', 'false'),
                  ('bool', 'disable_wqm', 'false'),
-                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0, 0}}'),
+                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0}}'),
                  ('bool', 'tfe', 'false'),
                  ('bool', 'lwe', 'false'),
                  ('bool', 'r128', 'false'),
@@ -190,7 +190,7 @@ class Format(IntEnum):
       elif self in [Format.FLAT, Format.GLOBAL, Format.SCRATCH]:
          return [('int32_t', 'offset', 0),
                  ('memory_sync_info', 'sync', 'memory_sync_info()'),
-                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0, 0}}'),
+                 ('ac_hw_cache_flags', 'cache', '{{0, 0, 0, 0}}'),
                  ('bool', 'lds', 'false'),
                  ('bool', 'nv', 'false')]
       else:
@@ -1238,7 +1238,7 @@ VOPP = {
    ("v_dot8_i32_iu4",      dst(U32), src(PkU16, PkU16, U32), op(gfx11=0x18)),
    ("v_dot8_i32_i4",       dst(U32), src(PkU16, PkU16, U32), op(gfx9=0x2a, gfx10=0x18, gfx11=-1)),
    ("v_dot8_u32_u4",       dst(U32), src(PkU16, PkU16, U32), op(gfx9=0x2b, gfx10=0x19)),
-   ("v_dot2_f32_f16",      dst(noMods(F32)), noMods(src(PkF16, PkF16, F32)), op(gfx9=0x23, gfx10=0x13)),
+   ("v_dot2_f32_f16",      dst(noMods(F32)), src(PkF16, PkF16, F32), op(gfx9=0x23, gfx10=0x13)),
    ("v_dot2_f32_bf16",     dst(noMods(F32)), noMods(src(PkBF16, PkBF16, F32)), op(gfx11=0x1a)),
    ("v_dot4_f32_fp8_bf8",  dst(noMods(F32)), noMods(src(Pk4F8, Pk4BF8, F32)), op(gfx12=0x24)),
    ("v_dot4_f32_bf8_fp8",  dst(noMods(F32)), noMods(src(Pk4BF8, Pk4F8, F32)), op(gfx12=0x25)),
@@ -1435,7 +1435,7 @@ VOP3 = {
    ("v_minmax_u32",            dst(U32), src(U32, U32, U32), op(gfx11=0x263)),
    ("v_maxmin_i32",            dst(U32), src(U32, U32, U32), op(gfx11=0x264)),
    ("v_minmax_i32",            dst(U32), src(U32, U32, U32), op(gfx11=0x265)),
-   ("v_dot2_f16_f16",          dst(noMods(F16)), noMods(src(PkF16, PkF16, F16)), op(gfx11=0x266)),
+   ("v_dot2_f16_f16",          dst(noMods(F16)), src(PkF16, PkF16, F16), op(gfx11=0x266)),
    ("v_dot2_bf16_bf16",        dst(noMods(BF16)), noMods(src(PkBF16, PkBF16, BF16)), op(gfx11=0x267)),
    ("v_cvt_pk_i16_f32",        dst(PkU16), src(F32, F32), op(gfx11=0x306)),
    ("v_cvt_pk_u16_f32",        dst(PkU16), src(F32, F32), op(gfx11=0x307)),

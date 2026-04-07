@@ -69,20 +69,15 @@ struct kk_meta_save {
    struct vk_vertex_input_state _dynamic_vi;
    struct vk_sample_locations_state _dynamic_sl;
    struct vk_dynamic_graphics_state dynamic;
+   struct kk_shader *shaders[MESA_SHADER_STAGES];
    struct {
       union {
          struct {
             mtl_render_pipeline_state *ps;
             mtl_depth_stencil_state *ds;
-            uint32_t attribs_read;
-            enum mtl_primitive_type primitive_type;
             enum mtl_visibility_result_mode occlusion;
             bool is_ds_dynamic;
          } gfx;
-         struct {
-            mtl_compute_pipeline_state *pipeline_state;
-            struct mtl_size local_size;
-         } cs;
       };
    } pipeline;
    struct kk_descriptor_set *desc0;
@@ -104,10 +99,12 @@ kk_meta_begin(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
       save->dynamic = cmd->vk.dynamic_graphics_state;
       save->_dynamic_vi = cmd->state.gfx._dynamic_vi;
       save->_dynamic_sl = cmd->state.gfx._dynamic_sl;
-      save->pipeline.gfx.ps = cmd->state.gfx.pipeline_state;
+
+      for (uint32_t stage = 0u; stage < MESA_SHADER_COMPUTE; ++stage) {
+         save->shaders[stage] = cmd->state.shaders[stage];
+      }
+
       save->pipeline.gfx.ds = cmd->state.gfx.depth_stencil_state;
-      save->pipeline.gfx.attribs_read = cmd->state.gfx.vb.attribs_read;
-      save->pipeline.gfx.primitive_type = cmd->state.gfx.primitive_type;
       save->pipeline.gfx.occlusion = cmd->state.gfx.occlusion.mode;
       save->pipeline.gfx.is_ds_dynamic =
          cmd->state.gfx.is_depth_stencil_dynamic;
@@ -118,8 +115,8 @@ kk_meta_begin(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
       cmd->state.gfx.dirty |= KK_DIRTY_OCCLUSION;
       desc->root_dirty = true;
    } else {
-      save->pipeline.cs.pipeline_state = cmd->state.cs.pipeline_state;
-      save->pipeline.cs.local_size = cmd->state.cs.local_size;
+      save->shaders[MESA_SHADER_COMPUTE] =
+         cmd->state.shaders[MESA_SHADER_COMPUTE];
    }
 
    save->vb0_handle = cmd->state.gfx.vb.handles[0];
@@ -163,15 +160,16 @@ kk_meta_end(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
              cmd->vk.dynamic_graphics_state.set,
              sizeof(cmd->vk.dynamic_graphics_state.set));
 
+      for (uint32_t stage = 0u; stage < MESA_SHADER_COMPUTE; ++stage) {
+         cmd->state.shaders[stage] = save->shaders[stage];
+      }
+      cmd->state.dirty_shaders |= BITFIELD_MASK(MESA_SHADER_COMPUTE);
+
       if (cmd->state.gfx.is_depth_stencil_dynamic)
          mtl_release(cmd->state.gfx.depth_stencil_state);
-      cmd->state.gfx.pipeline_state = save->pipeline.gfx.ps;
       cmd->state.gfx.depth_stencil_state = save->pipeline.gfx.ds;
-      cmd->state.gfx.primitive_type = save->pipeline.gfx.primitive_type;
-      cmd->state.gfx.vb.attribs_read = save->pipeline.gfx.attribs_read;
       cmd->state.gfx.is_depth_stencil_dynamic =
          save->pipeline.gfx.is_ds_dynamic;
-      cmd->state.gfx.dirty |= KK_DIRTY_PIPELINE;
 
       cmd->state.gfx.vb.addr_range[0] = save->vb0;
       cmd->state.gfx.vb.handles[0] = save->vb0_handle;
@@ -182,8 +180,7 @@ kk_meta_end(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
 
       desc->root_dirty = true;
    } else {
-      cmd->state.cs.local_size = save->pipeline.cs.local_size;
-      cmd->state.cs.pipeline_state = save->pipeline.cs.pipeline_state;
+      kk_cmd_bind_compute_shader(cmd, save->shaders[MESA_SHADER_COMPUTE]);
    }
 
    memcpy(desc->root.push, save->push, sizeof(save->push));

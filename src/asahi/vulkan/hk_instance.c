@@ -13,7 +13,7 @@
 
 #include "util/build_id.h"
 #include "util/driconf.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 
 VKAPI_ATTR VkResult VKAPI_CALL
 hk_EnumerateInstanceVersion(uint32_t *pApiVersion)
@@ -176,7 +176,7 @@ hk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       goto fail_init;
    }
 
-   static_assert(sizeof(instance->driver_build_sha) == SHA1_DIGEST_LENGTH);
+   static_assert(sizeof(instance->driver_build_sha) == BLAKE3_KEY_LEN);
    copy_build_id_to_sha1(instance->driver_build_sha, note);
 
    *pInstance = hk_instance_to_handle(instance);

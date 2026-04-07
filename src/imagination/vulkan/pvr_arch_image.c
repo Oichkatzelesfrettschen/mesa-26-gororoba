@@ -10,15 +10,19 @@
 #include <stdint.h>
 
 #include "vk_log.h"
+#include "vk_ycbcr_conversion.h"
 
 #include "pvr_buffer.h"
+#include "pvr_csb.h"
 #include "pvr_device.h"
 #include "pvr_entrypoints.h"
 #include "pvr_macros.h"
 #include "pvr_physical_device.h"
 #include "pvr_tex_state.h"
+#include "pvr_ycbcr.h"
 
 static void pvr_adjust_non_compressed_view(const struct pvr_image *image,
+                                           const struct pvr_image_plane *plane,
                                            struct pvr_texture_state_info *info)
 {
    const uint32_t base_level = info->base_level;
@@ -37,8 +41,28 @@ static void pvr_adjust_non_compressed_view(const struct pvr_image *image,
    info->extent.height = u_minify(info->extent.height, base_level);
    info->extent.depth = u_minify(info->extent.depth, base_level);
    info->extent = vk_image_extent_to_elements(&image->vk, info->extent);
-   info->offset += image->mip_levels[base_level].offset;
+   info->offset += plane->mip_levels[base_level].offset;
    info->base_level = 0;
+}
+
+static unsigned int pvr_ycbcr_csc_index(struct vk_ycbcr_conversion *conversion)
+{
+#define MAPPING(vk, slot_full, slot_narrow)     \
+   [VK_SAMPLER_YCBCR_MODEL_CONVERSION_##vk] = { \
+      PVR_YCBCR_SLOT_##slot_full,               \
+      PVR_YCBCR_SLOT_##slot_narrow              \
+   }
+
+   static unsigned int mapping[][2] = {
+      MAPPING(RGB_IDENTITY, RGB_IDENTITY, RGB_IDENTITY),
+      MAPPING(YCBCR_IDENTITY, YCBCR_IDENTITY_FULL, YCBCR_IDENTITY),
+      MAPPING(YCBCR_709, YCBCR_709_FULL, YCBCR_709),
+      MAPPING(YCBCR_601, YCBCR_601_FULL, YCBCR_601),
+      MAPPING(YCBCR_2020, YCBCR_2020_FULL, YCBCR_2020),
+   };
+   return mapping[conversion->state.ycbcr_model][conversion->state.ycbcr_range];
+
+#undef MAPPING
 }
 
 VkResult PVR_PER_ARCH(CreateImageView)(VkDevice _device,
@@ -62,6 +86,17 @@ VkResult PVR_PER_ARCH(CreateImageView)(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    image = pvr_image_view_get_image(iview);
+   const struct pvr_image_plane *plane;
+
+   const struct vk_format_ycbcr_info *ycbcr_image =
+      vk_format_get_ycbcr_info(image->vk.format);
+   const struct vk_format_ycbcr_info *ycbcr_iview =
+      vk_format_get_ycbcr_info(iview->vk.format);
+   if (ycbcr_image && !ycbcr_iview) {
+      plane = pvr_plane_from_aspect_const(image, iview->vk.aspects);
+   } else {
+      plane = &image->planes[0];
+   }
 
    if (image->vk.image_type == VK_IMAGE_TYPE_3D &&
        (iview->vk.view_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY ||
@@ -77,9 +112,9 @@ VkResult PVR_PER_ARCH(CreateImageView)(VkDevice _device,
    info.is_cube = (info.type == VK_IMAGE_VIEW_TYPE_CUBE ||
                    info.type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY);
    info.array_size = iview->vk.layer_count;
-   info.offset = iview->vk.base_array_layer * image->layer_size;
+   info.offset = iview->vk.base_array_layer * plane->layer_size;
    info.mipmaps_present = (image->vk.mip_levels > 1) ? true : false;
-   info.stride = image->physical_extent.width;
+   info.stride = plane->physical_extent.width;
    info.tex_state_type = PVR_TEXTURE_STATE_SAMPLE;
    info.mem_layout = image->memlayout;
    info.flags = 0;
@@ -87,16 +122,49 @@ VkResult PVR_PER_ARCH(CreateImageView)(VkDevice _device,
    info.addr = image->dev_addr;
 
    info.format = pCreateInfo->format;
-   info.layer_size = image->layer_size;
+   info.layer_size = plane->layer_size;
 
    if (image->vk.create_flags & VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT) {
       info.offset = 0;
       info.z_slice = iview->vk.base_array_layer;
    }
 
-   pvr_adjust_non_compressed_view(image, &info);
+   pvr_adjust_non_compressed_view(image, plane, &info);
 
-   vk_component_mapping_to_pipe_swizzle(iview->vk.swizzle, input_swizzle);
+   if (ycbcr_iview) {
+      const VkSamplerYcbcrConversionInfo *pConversion =
+         vk_find_struct_const(pCreateInfo->pNext,
+                              SAMPLER_YCBCR_CONVERSION_INFO);
+      VK_FROM_HANDLE(vk_ycbcr_conversion, conversion, pConversion->conversion);
+      assert(conversion);
+
+      /* UV swizzle is handled by chroma swap instead */
+      input_swizzle[0] = PIPE_SWIZZLE_X;
+      input_swizzle[1] = PIPE_SWIZZLE_Y;
+      input_swizzle[2] = PIPE_SWIZZLE_Z;
+      input_swizzle[3] = PIPE_SWIZZLE_1;
+
+      if (conversion->state.mapping[3] == VK_COMPONENT_SWIZZLE_ZERO) {
+         input_swizzle[3] = PIPE_SWIZZLE_0;
+      }
+
+      info.swap_chroma = conversion->state.mapping[0] == VK_COMPONENT_SWIZZLE_B;
+
+      info.csc_coeff_index = pvr_ycbcr_csc_index(conversion);
+
+      pvr_csb_pack (&iview->sampler_words[0], TEXSTATE_SAMPLER_WORD0, cfg) {
+         cfg.texaddr_plane2_lo =
+            PVR_DEV_ADDR_OFFSET(image->dev_addr, image->planes[1].offset);
+      }
+      pvr_csb_pack (&iview->sampler_words[1], TEXSTATE_SAMPLER_WORD1, cfg) {
+         cfg.texaddr_plane2_hi =
+            PVR_DEV_ADDR_OFFSET(image->dev_addr, image->planes[1].offset);
+         cfg.texaddr_plane3 =
+            PVR_DEV_ADDR_OFFSET(image->dev_addr, image->planes[2].offset);
+      }
+   } else {
+      vk_component_mapping_to_pipe_swizzle(iview->vk.swizzle, input_swizzle);
+   }
 
    enum pipe_format pipe_format =
       vk_format_to_pipe_format(iview->vk.view_format);
@@ -155,7 +223,7 @@ VkResult PVR_PER_ARCH(CreateImageView)(VkDevice _device,
 
       info.mip_levels = 1;
       info.mipmaps_present = false;
-      info.stride = u_minify(image->physical_extent.width, info.base_level);
+      info.stride = u_minify(plane->physical_extent.width, info.base_level);
       info.base_level = 0;
       info.tex_state_type = PVR_TEXTURE_STATE_ATTACHMENT;
 

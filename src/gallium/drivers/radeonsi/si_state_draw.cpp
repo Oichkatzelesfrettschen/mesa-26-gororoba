@@ -42,6 +42,45 @@
 #define SI_VERTEX_PIPELINE_STATE_DIRTY_MASK \
    (BITFIELD_MASK(MESA_SHADER_FRAGMENT + 1) | SI_SQTT_STATE_DIRTY_BIT)
 
+static inline uint32_t hash_shader_for_sqtt(XXH64_state_t* xh, struct si_shader *shader)
+{
+   /* Hash the key. */
+   XXH64_update(xh, &shader->key, sizeof(shader->key));
+   /* Hash the main part binary. */
+   XXH64_update(xh, shader->binary.code_buffer, shader->binary.code_size);
+
+   return align_uintptr(shader->binary.uploaded_code_size, 256);
+}
+
+static inline uint32_t upload_shader_for_sqtt(struct si_context *sctx,
+                                              struct si_sqtt_fake_pipeline *pipeline,
+                                              struct si_shader *shader,
+                                              uint32_t offset,
+                                              uint64_t scratch_va)
+{
+   struct si_resource *original_bo = shader->bo;
+
+   /* Temp override for si_shader_binary_upload_at to work. */
+   shader->bo = pipeline->bo;
+
+   int size = si_shader_binary_upload_at(sctx->screen, shader, scratch_va, offset);
+
+   shader->bo = original_bo;
+
+   assert(size == (int)shader->binary.uploaded_code_size);
+
+   struct si_pm4_state *pm4 = &shader->pm4;
+
+   /* Patch the SPI_SHADER_PGM_LO_* register to point to the new bo address,
+    * with the proper offset.
+    */
+   uint64_t va_low = shader->gpu_address >> 8;
+   uint32_t reg = pm4->base.spi_shader_pgm_lo_reg;
+   ac_pm4_set_reg(&pipeline->pm4.base, reg, va_low);
+
+   return align(size, 256);
+}
+
 template <amd_gfx_level GFX_VERSION, si_has_tess HAS_TESS, si_has_gs HAS_GS, si_has_ms HAS_MS, si_has_ngg NGG>
 static bool si_update_shaders_shared_by_vertex_and_mesh_pipe(struct si_context *sctx,
                                                              struct si_shader *old_vs,
@@ -269,6 +308,116 @@ static bool si_update_shaders_shared_by_vertex_and_mesh_pipe(struct si_context *
       }
    }
 
+   if (GFX_VERSION >= GFX9 && unlikely(sctx->sqtt)) {
+      /* Pretend the bound shaders form a vk pipeline. Include the scratch size in
+       * the hash calculation to force re-emitting the pipeline if the scratch bo
+       * changes.
+       */
+      uint64_t scratch_bo_size = sctx->scratch_buffer ? sctx->scratch_buffer->bo_size : 0;
+      uint32_t total_size = 0;
+
+      /* Compute pipeline code hash. */
+      XXH64_state_t* xh = XXH64_createState();
+      XXH64_reset(xh, scratch_bo_size);
+
+      if (HAS_MS) {
+         if (sctx->ts_shader_state.program) {
+            struct si_shader *shader = &sctx->ts_shader_state.program->shader;
+            total_size += hash_shader_for_sqtt(xh, shader);
+         }
+
+         struct si_shader *shader = sctx->ms_shader_state.current;
+         total_size += hash_shader_for_sqtt(xh, shader);
+
+         shader = sctx->shader.ps.current;
+         if (sctx->shader.ps.cso && shader)
+            total_size += hash_shader_for_sqtt(xh, shader);
+      } else {
+         for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; i++) {
+            struct si_shader *shader = sctx->shaders[i].current;
+            if (sctx->shaders[i].cso && shader)
+               total_size += hash_shader_for_sqtt(xh, shader);
+         }
+      }
+
+      XXH64_hash_t pipeline_code_hash = XXH64_digest(xh);
+      XXH64_freeState(xh);
+
+      struct si_sqtt_fake_pipeline *pipeline = NULL;
+      if (!si_sqtt_pipeline_is_registered(sctx->sqtt, pipeline_code_hash)) {
+         /* This is a new pipeline. Allocate a new bo to hold all the shaders. Without
+          * this, shader code export process creates huge rgp files because RGP assumes
+          * the shaders live sequentially in memory (shader N address = shader 0 + offset N)
+          */
+         struct si_resource *bo = si_aligned_buffer_create(
+            &sctx->screen->b,
+            SI_RESOURCE_FLAG_DRIVER_INTERNAL | SI_RESOURCE_FLAG_32BIT,
+            PIPE_USAGE_IMMUTABLE, align(total_size, SI_CPDMA_ALIGNMENT), 256);
+
+         char *ptr = (char *) (bo ? sctx->screen->ws->buffer_map(sctx->screen->ws,
+               bo->buf, NULL,
+               (enum pipe_map_flags)(PIPE_MAP_READ_WRITE | PIPE_MAP_UNSYNCHRONIZED | RADEON_MAP_TEMPORARY)) :
+             NULL);
+
+         if (ptr) {
+            pipeline = (struct si_sqtt_fake_pipeline *)
+               CALLOC(1, sizeof(struct si_sqtt_fake_pipeline));
+
+            pipeline->code_hash = pipeline_code_hash;
+            pipeline->bo = bo;
+
+            /* Re-upload all gfx shaders and init PM4. */
+            si_pm4_clear_state(&pipeline->pm4, sctx->screen, false);
+
+            uint32_t offset = 0;
+            uint64_t scratch_va = sctx->scratch_buffer ? sctx->scratch_buffer->gpu_address : 0;
+            uint32_t gfx_sh_offsets[SI_NUM_SHADERS] = { 0 };
+            if (HAS_MS) {
+               if (sctx->ts_shader_state.program) {
+                  struct si_shader *shader = &sctx->ts_shader_state.program->shader;
+                  gfx_sh_offsets[MESA_SHADER_TASK] = offset;
+                  offset += upload_shader_for_sqtt(sctx, pipeline, shader, offset, scratch_va);
+               }
+
+               gfx_sh_offsets[MESA_SHADER_MESH] = offset;
+               struct si_shader *shader = sctx->ms_shader_state.current;
+               offset += upload_shader_for_sqtt(sctx, pipeline, shader, offset, scratch_va);
+
+               shader = sctx->shader.ps.current;
+               if (sctx->shader.ps.cso && shader) {
+                  gfx_sh_offsets[MESA_SHADER_FRAGMENT] = offset;
+                  offset += upload_shader_for_sqtt(sctx, pipeline, shader, offset, scratch_va);
+               }
+            } else {
+               for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; i++) {
+                  struct si_shader *shader = sctx->shaders[i].current;
+                  if (sctx->shaders[i].cso && shader) {
+                     gfx_sh_offsets[i] = offset;
+                     offset += upload_shader_for_sqtt(sctx, pipeline, shader, offset, scratch_va);
+                  }
+               }
+            }
+            ac_pm4_finalize(&pipeline->pm4.base);
+            sctx->screen->ws->buffer_unmap(sctx->screen->ws, bo->buf);
+
+            _mesa_hash_table_u64_insert(sctx->sqtt->pipeline_bos,
+                                        pipeline_code_hash, pipeline);
+
+            si_sqtt_register_pipeline(sctx, pipeline, gfx_sh_offsets);
+         } else {
+            if (bo)
+               si_resource_reference(&bo, NULL);
+         }
+      } else {
+         pipeline = (struct si_sqtt_fake_pipeline *)_mesa_hash_table_u64_search(
+             sctx->sqtt->pipeline_bos, pipeline_code_hash);
+      }
+      assert(pipeline);
+
+      si_sqtt_describe_pipeline_bind(sctx, pipeline_code_hash, 0);
+      si_pm4_bind_state(sctx, sqtt_pipeline, pipeline);
+   }
+
    return true;
 }
 
@@ -443,111 +592,6 @@ static bool si_update_shaders(struct si_context *sctx)
 
    if (!si_update_shaders_shared_by_vertex_and_mesh_pipe<GFX_VERSION, HAS_TESS, HAS_GS, MS_OFF, NGG>(sctx, old_vs, hw_vs))
       return false;
-
-   if (GFX_VERSION >= GFX9 && unlikely(sctx->sqtt)) {
-      /* Pretend the bound shaders form a vk pipeline. Include the scratch size in
-       * the hash calculation to force re-emitting the pipeline if the scratch bo
-       * changes.
-       */
-      uint64_t scratch_bo_size = sctx->scratch_buffer ? sctx->scratch_buffer->bo_size : 0;
-      uint32_t total_size = 0;
-
-      /* Compute pipeline code hash. */
-      XXH64_state_t* xh = XXH64_createState();
-      XXH64_reset(xh, scratch_bo_size);
-
-      for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; i++) {
-         struct si_shader *shader = sctx->shaders[i].current;
-         if (sctx->shaders[i].cso && shader) {
-            /* Hash the key. */
-            XXH64_update(xh, &shader->key, sizeof(shader->key));
-            /* Hash the main part binary. */
-            XXH64_update(xh, shader->binary.code_buffer, shader->binary.code_size);
-
-            total_size += (uint32_t)align_uintptr(shader->binary.uploaded_code_size, 256);
-         }
-      }
-
-      XXH64_hash_t pipeline_code_hash = XXH64_digest(xh);
-      XXH64_freeState(xh);
-
-      struct si_sqtt_fake_pipeline *pipeline = NULL;
-      if (!si_sqtt_pipeline_is_registered(sctx->sqtt, pipeline_code_hash)) {
-         /* This is a new pipeline. Allocate a new bo to hold all the shaders. Without
-          * this, shader code export process creates huge rgp files because RGP assumes
-          * the shaders live sequentially in memory (shader N address = shader 0 + offset N)
-          */
-         struct si_resource *bo = si_aligned_buffer_create(
-            &sctx->screen->b,
-            SI_RESOURCE_FLAG_DRIVER_INTERNAL | SI_RESOURCE_FLAG_32BIT,
-            PIPE_USAGE_IMMUTABLE, align(total_size, SI_CPDMA_ALIGNMENT), 256);
-
-         char *ptr = (char *) (bo ? sctx->screen->ws->buffer_map(sctx->screen->ws,
-               bo->buf, NULL,
-               (enum pipe_map_flags)(PIPE_MAP_READ_WRITE | PIPE_MAP_UNSYNCHRONIZED | RADEON_MAP_TEMPORARY)) :
-             NULL);
-
-         uint32_t offset = 0;
-         uint64_t scratch_va = sctx->scratch_buffer ? sctx->scratch_buffer->gpu_address : 0;
-
-         if (ptr) {
-            pipeline = (struct si_sqtt_fake_pipeline *)
-               CALLOC(1, sizeof(struct si_sqtt_fake_pipeline));
-
-            pipeline->code_hash = pipeline_code_hash;
-            pipeline->bo = bo;
-
-            /* Re-upload all gfx shaders and init PM4. */
-            si_pm4_clear_state(&pipeline->pm4, sctx->screen, false);
-
-            uint32_t gfx_sh_offsets[SI_NUM_GRAPHICS_SHADERS] = { 0 };
-            for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; i++) {
-               struct si_shader *shader = sctx->shaders[i].current;
-               if (sctx->shaders[i].cso && shader) {
-                  struct si_resource *original_bo = shader->bo;
-
-                  /* Temp override for si_shader_binary_upload_at to work. */
-                  shader->bo = pipeline->bo;
-
-                  int size = si_shader_binary_upload_at(sctx->screen, shader, scratch_va, offset);
-
-                  shader->bo = original_bo;
-
-                  assert(size == (int)shader->binary.uploaded_code_size);
-
-                  gfx_sh_offsets[i] = offset;
-                  offset += align(size, 256);
-
-                  struct si_pm4_state *pm4 = &shader->pm4;
-
-                  /* Patch the SPI_SHADER_PGM_LO_* register to point to the new bo address,
-                   * with the proper offset.
-                   */
-                  uint64_t va_low = shader->gpu_address >> 8;
-                  uint32_t reg = pm4->base.spi_shader_pgm_lo_reg;
-                  ac_pm4_set_reg(&pipeline->pm4.base, reg, va_low);
-               }
-            }
-            ac_pm4_finalize(&pipeline->pm4.base);
-            sctx->screen->ws->buffer_unmap(sctx->screen->ws, bo->buf);
-
-            _mesa_hash_table_u64_insert(sctx->sqtt->pipeline_bos,
-                                        pipeline_code_hash, pipeline);
-
-            si_sqtt_register_pipeline(sctx, pipeline, gfx_sh_offsets);
-         } else {
-            if (bo)
-               si_resource_reference(&bo, NULL);
-         }
-      } else {
-         pipeline = (struct si_sqtt_fake_pipeline *)_mesa_hash_table_u64_search(
-             sctx->sqtt->pipeline_bos, pipeline_code_hash);
-      }
-      assert(pipeline);
-
-      si_sqtt_describe_pipeline_bind(sctx, pipeline_code_hash, 0);
-      si_pm4_bind_state(sctx, sqtt_pipeline, pipeline);
-   }
 
    /* si_shader_select_with_key can clear the ngg_culling in the shader key if the shader
     * compilation hasn't finished. Set it to the same value in si_context.
@@ -1566,8 +1610,8 @@ static void si_emit_draw_packets(struct si_context *sctx, const struct pipe_draw
          radeon_emit((sh_base_reg + SI_SGPR_BASE_VERTEX * 4 - SI_SH_REG_OFFSET) >> 2);
          radeon_emit((sh_base_reg + SI_SGPR_START_INSTANCE * 4 - SI_SH_REG_OFFSET) >> 2);
          radeon_emit(((sh_base_reg + SI_SGPR_DRAWID * 4 - SI_SH_REG_OFFSET) >> 2) |
-                     S_2C3_DRAW_INDEX_ENABLE(sctx->vs_uses_draw_id) |
-                     S_2C3_COUNT_INDIRECT_ENABLE(!!indirect->indirect_draw_count));
+                     S_2C_4_DRAW_INDEX_ENABLE(sctx->vs_uses_draw_id) |
+                     S_2C_4_COUNT_INDIRECT_ENABLE(!!indirect->indirect_draw_count));
          radeon_emit(indirect->draw_count);
          radeon_emit(count_va);
          radeon_emit(count_va >> 32);
@@ -1923,6 +1967,76 @@ static unsigned get_vb_descriptor_sgpr_ptr_offset(void)
    return dw_offset * 4;
 }
 
+template <amd_gfx_level GFX_VERSION, si_is_draw_vertex_state IS_DRAW_VERTEX_STATE,
+          util_popcnt POPCNT> ALWAYS_INLINE
+static unsigned si_emit_VB_descriptors(struct si_context *sctx, struct si_vertex_state *vstate,
+                                       uint32_t *partial_velem_mask, struct si_vertex_elements *velems,
+                                       unsigned sh_base, unsigned count_in_user_sgprs)
+{
+   unsigned i = 0;
+
+   /* There will be future work here and this will be the else statement of that. */
+   {
+      /* Layout in user SGPRs:
+       *
+       * GFX6-8 (4-dword descriptor):
+       *    user_sgpr[12:15] = vertex buffer 0
+       *
+       * GFX9-12 (4-dword descriptors):
+       *    user_sgpr[12:15] = vertex buffer 0
+       *    user_sgpr[16:19] = vertex buffer 1
+       *    user_sgpr[20:23] = vertex buffer 2
+       *    user_sgpr[24:27] = vertex buffer 3
+       *    user_sgpr[28:31] = vertex buffer 4
+       */
+      radeon_begin(&sctx->gfx_cs);
+      radeon_set_sh_reg_seq(sh_base + SI_SGPR_VS_VB_DESCRIPTOR_FIRST * 4, count_in_user_sgprs * 4);
+
+      /* The first iteration always executes. */
+      do {
+         if (IS_DRAW_VERTEX_STATE) {
+            unsigned velem_index = get_next_vertex_state_elem<POPCNT>(&vstate->b, partial_velem_mask);
+
+            radeon_emit_array(&vstate->descriptors[velem_index * 4], 4);
+         } else {
+            unsigned vbo_index = velems->vertex_buffer_index[i];
+            const struct pipe_vertex_buffer *vb = &sctx->vertex_buffer[vbo_index];
+            uint32_t *ib_desc;
+
+            radeon_emit_array_get_ptr(4, &ib_desc);
+
+            si_set_vb_descriptor<GFX_VERSION>(velems, vb, i, ib_desc);
+         }
+      } while (++i < count_in_user_sgprs);
+      radeon_end();
+   }
+
+   return i;
+}
+
+template <amd_gfx_level GFX_VERSION, si_is_draw_vertex_state IS_DRAW_VERTEX_STATE,
+          util_popcnt POPCNT> ALWAYS_INLINE
+static void si_upload_VB_descriptors(struct si_context *sctx, struct si_vertex_state *vstate,
+                                     uint32_t *partial_velem_mask, struct si_vertex_elements *velems,
+                                     uint32_t *ptr, unsigned i, unsigned count)
+{
+   /* There will be future work here and this will be the else statement of that. */
+   {
+      /* The first iteration always executes. */
+      do {
+         if (IS_DRAW_VERTEX_STATE) {
+            unsigned velem_index = get_next_vertex_state_elem<POPCNT>(&vstate->b, partial_velem_mask);
+            memcpy(ptr, &vstate->descriptors[velem_index * 4], 16);
+         } else {
+            unsigned vbo_index = velems->vertex_buffer_index[i];
+            si_set_vb_descriptor<GFX_VERSION>(velems, &sctx->vertex_buffer[vbo_index], i, ptr);
+         }
+         ptr += 4;
+         i++;
+      } while (IS_DRAW_VERTEX_STATE ? *partial_velem_mask : i < count);
+   }
+}
+
 template <amd_gfx_level GFX_VERSION, si_has_tess HAS_TESS, si_has_gs HAS_GS, si_has_ngg NGG,
           si_is_draw_vertex_state IS_DRAW_VERTEX_STATE, si_has_sh_pairs_packed HAS_SH_PAIRS_PACKED,
           util_popcnt POPCNT> ALWAYS_INLINE
@@ -1935,6 +2049,8 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx,
                                            sctx->num_vertex_elements;
    unsigned sh_base = si_get_user_data_base(GFX_VERSION, HAS_TESS, HAS_GS, NGG,
                                             MESA_SHADER_VERTEX);
+   unsigned vb_desc_ptr_offset =
+      sh_base + get_vb_descriptor_sgpr_ptr_offset<GFX_VERSION, HAS_TESS, HAS_GS, NGG>();
    unsigned num_vbos_in_user_sgprs = si_num_vbos_in_user_sgprs_inline(GFX_VERSION);
 
    assert(count <= SI_MAX_ATTRIBS);
@@ -1950,7 +2066,7 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx,
       uint64_t vb_descriptors_address = 0;
       uint32_t *ptr;
 
-      if (alloc_size) {
+      if (alloc_size && (!IS_DRAW_VERTEX_STATE || count > num_vbos_in_user_sgprs)) {
          struct pipe_resource *upload_buf, *release_buf;
          unsigned offset;
 
@@ -1969,48 +2085,28 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx,
          vb_descriptors_address = si_resource(upload_buf)->gpu_address + offset;
 
          /* GFX6 doesn't support the L2 prefetch. */
-         if (GFX_VERSION >= GFX7) {
-            uint64_t address = si_resource(upload_buf)->gpu_address + offset;
-            si_cp_dma_prefetch_inline<GFX_VERSION>(&sctx->gfx_cs, address, alloc_size);
-         }
+         if (GFX_VERSION >= GFX7)
+            si_cp_dma_prefetch_inline<GFX_VERSION>(&sctx->gfx_cs, vb_descriptors_address, alloc_size);
       }
 
       unsigned count_in_user_sgprs = MIN2(count, num_vbos_in_user_sgprs);
       unsigned i = 0;
 
-      if (IS_DRAW_VERTEX_STATE) {
+      if (count_in_user_sgprs) {
+         i = si_emit_VB_descriptors<GFX_VERSION, IS_DRAW_VERTEX_STATE, POPCNT>(
+                  sctx, vstate, &partial_velem_mask, velems, sh_base, count_in_user_sgprs);
+      }
+
+      if (IS_DRAW_VERTEX_STATE ? partial_velem_mask : alloc_size) {
          radeon_begin(&sctx->gfx_cs);
-
-         if (count_in_user_sgprs) {
-            radeon_set_sh_reg_seq(sh_base + SI_SGPR_VS_VB_DESCRIPTOR_FIRST * 4, count_in_user_sgprs * 4);
-
-            /* the first iteration always executes */
-            do {
-               unsigned velem_index = get_next_vertex_state_elem<POPCNT>(state, &partial_velem_mask);
-
-               radeon_emit_array(&vstate->descriptors[velem_index * 4], 4);
-            } while (++i < count_in_user_sgprs);
-         }
-
-         if (partial_velem_mask) {
-            assert(alloc_size);
-
-            unsigned vb_desc_offset =
-               sh_base + get_vb_descriptor_sgpr_ptr_offset<GFX_VERSION, HAS_TESS, HAS_GS, NGG>();
-
-            radeon_set_or_push_gfx_sh_reg(vb_desc_offset, vb_descriptors_address);
-
-            /* the first iteration always executes */
-            do {
-               unsigned velem_index = get_next_vertex_state_elem<POPCNT>(state, &partial_velem_mask);
-               uint32_t *desc = &ptr[(i - num_vbos_in_user_sgprs) * 4];
-
-               memcpy(desc, &vstate->descriptors[velem_index * 4], 16);
-               i++;
-            } while (partial_velem_mask);
-         }
+         radeon_set_or_push_gfx_sh_reg(vb_desc_ptr_offset, vb_descriptors_address);
          radeon_end();
 
+         si_upload_VB_descriptors<GFX_VERSION, IS_DRAW_VERTEX_STATE, POPCNT>(
+                  sctx, vstate, &partial_velem_mask, velems, ptr, i, count);
+      }
+
+      if (IS_DRAW_VERTEX_STATE) {
          if (vstate->b.input.vbuffer.buffer.resource != vstate->b.input.indexbuf) {
             radeon_add_to_buffer_list(sctx, &sctx->gfx_cs,
                                       si_resource(vstate->b.input.vbuffer.buffer.resource),
@@ -2020,42 +2116,6 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx,
          /* The next draw_vbo should recompute and rebind vertex buffer descriptors. */
          sctx->vertex_buffers_dirty = sctx->num_vertex_elements > 0;
       } else {
-         if (count_in_user_sgprs) {
-            radeon_begin(&sctx->gfx_cs);
-            radeon_set_sh_reg_seq(sh_base + SI_SGPR_VS_VB_DESCRIPTOR_FIRST * 4,
-                                  count_in_user_sgprs * 4);
-
-            /* the first iteration always executes */
-            do {
-               unsigned vbo_index = velems->vertex_buffer_index[i];
-               const struct pipe_vertex_buffer *vb = &sctx->vertex_buffer[vbo_index];
-               uint32_t *desc;
-
-               radeon_emit_array_get_ptr(4, &desc);
-
-               si_set_vb_descriptor<GFX_VERSION>(velems, vb, i, desc);
-            } while (++i < count_in_user_sgprs);
-
-            radeon_end();
-         }
-
-         if (alloc_size) {
-            /* the first iteration always executes */
-            do {
-               unsigned vbo_index = velems->vertex_buffer_index[i];
-               const struct pipe_vertex_buffer *vb = &sctx->vertex_buffer[vbo_index];
-               uint32_t *desc = &ptr[(i - num_vbos_in_user_sgprs) * 4];
-
-               si_set_vb_descriptor<GFX_VERSION>(velems, vb, i, desc);
-            } while (++i < count);
-
-            unsigned vb_desc_ptr_offset =
-               sh_base + get_vb_descriptor_sgpr_ptr_offset<GFX_VERSION, HAS_TESS, HAS_GS, NGG>();
-            radeon_begin(&sctx->gfx_cs);
-            radeon_set_or_push_gfx_sh_reg(vb_desc_ptr_offset, vb_descriptors_address);
-            radeon_end();
-         }
-
          sctx->vertex_buffers_dirty = false;
       }
    }
@@ -2598,9 +2658,8 @@ static void si_draw_rectangle(struct blitter_context *blitter, void *vertex_elem
    uint32_t attribute_ring_address_lo =
       sctx->gfx_level >= GFX11 ? sctx->screen->attribute_pos_prim_ring->gpu_address : 0;
 
-   if (MAX2(abs(x1), abs(x2)) > INT16_MAX || MAX2(abs(y1), abs(y2)) > INT16_MAX) {
-      /* Fallback when coordinates can't fit in int16. */
-      util_blitter_save_vertex_elements(sctx->blitter, sctx->vertex_elements);
+   if (!util_is_uint16(x1) || !util_is_uint16(x2) || !util_is_uint16(y1) || !util_is_uint16(y2)) {
+      /* Fallback when coordinates can't fit in uint16. */
       util_blitter_draw_rectangle(blitter, vertex_elements_cso, get_vs, x1, y1, x2, y2,
                                   depth, num_instances, type, attrib);
       return;

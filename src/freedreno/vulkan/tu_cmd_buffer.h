@@ -19,6 +19,7 @@
 #include "tu_pass.h"
 #include "tu_pipeline.h"
 #include "tu_image.h"
+#include "tu_tile_config.h"
 
 enum tu_draw_state_group_id
 {
@@ -45,6 +46,9 @@ enum tu_draw_state_group_id
    /* dynamic state related draw states */
    TU_DRAW_STATE_DYNAMIC,
    TU_DRAW_STATE_COUNT = TU_DRAW_STATE_DYNAMIC + TU_DYNAMIC_STATE_COUNT,
+
+   /* autotune preemption delay tracking draw state */
+   TU_DRAW_STATE_AT_WRITE_RP_HASH = TU_DRAW_STATE_COUNT + 1,
 };
 
 struct tu_descriptor_state
@@ -344,6 +348,7 @@ struct tu_render_pass_state
 
    const char *lrz_disable_reason;
    uint32_t lrz_disabled_at_draw;
+   const char *lrz_write_disable_reason;
    uint32_t lrz_write_disabled_at_draw;
 
    const char *gmem_disable_reason;
@@ -440,7 +445,7 @@ enum tu_suspend_resume_state
    SR_IN_CHAIN_AFTER_PRE_CHAIN,
 };
 
-typedef char tu_sha1_str[SHA1_DIGEST_STRING_LENGTH];
+typedef char tu_blake3_str[BLAKE3_HEX_LEN];
 
 struct tu_cmd_state
 {
@@ -453,6 +458,7 @@ struct tu_cmd_state
    struct tu_render_pass_state rp;
 
    struct vk_render_pass_state vk_rp;
+   struct vk_multiview_state vk_mv;
    struct vk_vertex_input_state vi;
    struct vk_sample_locations_state sl;
 
@@ -526,13 +532,15 @@ struct tu_cmd_state
    /* Decides which GMEM layout to use from the tu_pass, based on whether the CCU
     * might get used by tu_store_gmem_attachment().
     */
-   enum tu_gmem_layout gmem_layout;
+   tu_gmem_layout gmem_layout;
+   uint32_t gmem_layout_divisor;
 
    const struct tu_render_pass *pass;
    const struct tu_subpass *subpass;
-   const struct tu_framebuffer *framebuffer;
+   struct tu_framebuffer *framebuffer;
    const struct tu_tiling_config *tiling;
-   VkRect2D render_area;
+   VkRect2D render_areas[MAX_VIEWS];
+   bool per_layer_render_area;
 
    const struct tu_image_view **attachments;
    VkClearValue *clear_values;
@@ -545,9 +553,12 @@ struct tu_cmd_state
    struct {
       const struct tu_render_pass *pass;
       const struct tu_subpass *subpass;
-      const struct tu_framebuffer *framebuffer;
-      VkRect2D render_area;
+      struct tu_framebuffer *framebuffer;
+      VkRect2D render_areas[MAX_VIEWS];
+      bool per_layer_render_area;
+      bool fdm_subsampled;
       enum tu_gmem_layout gmem_layout;
+      uint32_t gmem_layout_divisor;
 
       const struct tu_image_view **attachments;
       VkClearValue *clear_values;
@@ -556,6 +567,7 @@ struct tu_cmd_state
    } suspended_pass;
 
    bool fdm_enabled;
+   bool fdm_subsampled;
 
    bool tessfactor_addr_set;
    bool predication_active;
@@ -646,8 +658,7 @@ struct tu_cmd_buffer
    struct u_trace_iterator trace_renderpass_start;
    struct u_trace trace, rp_trace;
 
-   struct list_head renderpass_autotune_results;
-   struct tu_autotune_results_buffer* autotune_buffer;
+   tu_autotune::cmd_buf_ctx autotune_ctx;
 
    void *patchpoints_ctx;
    struct util_dynarray fdm_bin_patchpoints;
@@ -846,10 +857,16 @@ void tu6_emit_window_scissor(struct tu_cs *cs, uint32_t x1, uint32_t y1, uint32_
 
 void tu6_emit_window_offset(struct tu_cs *cs, uint32_t x1, uint32_t y1);
 
+void tu6_emit_blit_scissor(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
+                           unsigned view, bool align);
+
 void tu_disable_draw_states(struct tu_cmd_buffer *cmd, struct tu_cs *cs);
 
 void tu6_apply_depth_bounds_workaround(struct tu_device *device,
                                        uint32_t *rb_depth_cntl);
+
+void
+tu_cs_emit_draw_state(struct tu_cs *cs, uint32_t id, struct tu_draw_state state);
 
 bool tu_enable_fdm_offset(struct tu_cmd_buffer *cmd);
 
@@ -859,7 +876,7 @@ typedef void (*tu_fdm_bin_apply_t)(struct tu_cmd_buffer *cmd,
                                    VkOffset2D common_bin_offset,
                                    const VkOffset2D *hw_viewport_offsets,
                                    unsigned views,
-                                   const VkExtent2D *frag_areas,
+                                   const struct tu_tile_config *tile_config,
                                    const VkRect2D *bins,
                                    bool binning);
 
@@ -918,18 +935,18 @@ _tu_create_fdm_bin_patchpoint(struct tu_cmd_buffer *cmd,
     * sysmem is required, and uses up the dwords that have been reserved.
     */
    unsigned num_views = MAX2(cmd->state.pass->num_views, 1);
-   VkExtent2D unscaled_frag_areas[num_views];
+   struct tu_tile_config dummy_config = {};
    VkOffset2D hw_viewport_offsets[num_views];
    VkRect2D bins[num_views];
    for (unsigned i = 0; i < num_views; i++) {
-      unscaled_frag_areas[i] = (VkExtent2D) { 1, 1 };
+      dummy_config.frag_areas[i] = (VkExtent2D) { 1, 1 };
       bins[i] = (VkRect2D) {
          { 0, 0 },
          { MAX_VIEWPORT_SIZE, MAX_VIEWPORT_SIZE },
       };
       hw_viewport_offsets[i] = (VkOffset2D) { 0, 0 };
    }
-   apply(cmd, cs, state, (VkOffset2D) {0, 0}, hw_viewport_offsets, num_views, unscaled_frag_areas, bins, false);
+   apply(cmd, cs, state, (VkOffset2D) {0, 0}, hw_viewport_offsets, num_views, &dummy_config, bins, false);
    assert(tu_cs_get_cur_iova(cs) == patch.iova + patch.size * sizeof(uint32_t));
 
    util_dynarray_append(&cmd->fdm_bin_patchpoints, patch);
@@ -940,9 +957,51 @@ _tu_create_fdm_bin_patchpoint(struct tu_cmd_buffer *cmd,
 
 VkResult tu_init_bin_preamble(struct tu_device *device);
 
+template <chip CHIP>
+void tu_init_hw_rp(struct tu_cs *cs);
+
 void
 tu7_set_thread_br_patchpoint(struct tu_cmd_buffer *cmd,
                              struct tu_cs *cs,
                              bool force_disable_cb);
+
+/* For bin offsetting we want to do "Euclidean division," where the remainder
+ * (i.e. the offset of the bin) is always positive. Unfortunately C/C++
+ * remainder and division don't do this, so we have to implement it ourselves.
+ *
+ * For example, we should have:
+ *
+ * euclid_rem(-3, 4) = 1
+ * euclid_rem(-4, 4) = 0
+ * euclid_rem(-4, 4) = 3
+ */
+
+static inline int32_t
+euclid_rem(int32_t divisor, int32_t divisend)
+{
+   if (divisor >= 0)
+      return divisor % divisend;
+   int32_t tmp = divisend - (-divisor % divisend);
+   return tmp == divisend ? 0 : tmp;
+}
+
+/* Calculate how much the bins for a given view should be shifted to the left
+ * and upwards, given the application-provided FDM offset.
+ */
+static inline VkOffset2D
+tu_bin_offset(VkOffset2D fdm_offset, const struct tu_tiling_config *tiling)
+{
+   return (VkOffset2D) {
+      euclid_rem(-fdm_offset.x, tiling->tile0.width),
+      euclid_rem(-fdm_offset.y, tiling->tile0.height),
+   };
+}
+
+static inline uint32_t
+tu_fdm_num_layers(const struct tu_cmd_buffer *cmd)
+{
+   return cmd->state.pass->num_views ? cmd->state.pass->num_views : 
+      (cmd->state.fdm_per_layer ? cmd->state.framebuffer->layers : 1);
+}
 
 #endif /* TU_CMD_BUFFER_H */

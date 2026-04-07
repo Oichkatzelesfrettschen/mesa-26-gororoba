@@ -45,6 +45,7 @@
 
 #include "dev/intel_debug.h"
 #include "dev/intel_device_info.h"
+#include "dev/virtio/intel_virtio.h"
 
 #include "perf/i915/intel_perf.h"
 #include "perf/xe/intel_perf.h"
@@ -60,7 +61,7 @@
 
 #include "util/bitscan.h"
 #include "util/macros.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
 
@@ -691,6 +692,10 @@ oa_metrics_available(struct intel_perf_config *perf, int fd,
    perf_register_oa_queries_t oa_register = get_register_queries_function(devinfo);
    bool oa_metrics_available = false;
 
+   /* TODO: Support performance metrics */
+   if (devinfo->is_virtio)
+      return false;
+
    perf->devinfo = devinfo;
 
    /* Consider an invalid as supported. */
@@ -792,30 +797,30 @@ intel_perf_store_configuration(struct intel_perf_config *perf_cfg, int fd,
    if (guid)
       return kmd_add_config(perf_cfg, fd, config, guid);
 
-   struct mesa_sha1 sha1_ctx;
-   _mesa_sha1_init(&sha1_ctx);
+   blake3_hasher blake3_ctx;
+   _mesa_blake3_init(&blake3_ctx);
 
    if (config->flex_regs) {
-      _mesa_sha1_update(&sha1_ctx, config->flex_regs,
+      _mesa_blake3_update(&blake3_ctx, config->flex_regs,
                         sizeof(config->flex_regs[0]) *
                         config->n_flex_regs);
    }
    if (config->mux_regs) {
-      _mesa_sha1_update(&sha1_ctx, config->mux_regs,
+      _mesa_blake3_update(&blake3_ctx, config->mux_regs,
                         sizeof(config->mux_regs[0]) *
                         config->n_mux_regs);
    }
    if (config->b_counter_regs) {
-      _mesa_sha1_update(&sha1_ctx, config->b_counter_regs,
+      _mesa_blake3_update(&blake3_ctx, config->b_counter_regs,
                         sizeof(config->b_counter_regs[0]) *
                         config->n_b_counter_regs);
    }
 
-   uint8_t hash[SHA1_DIGEST_LENGTH];
-   _mesa_sha1_final(&sha1_ctx, hash);
+   uint8_t hash[BLAKE3_KEY_LEN];
+   _mesa_blake3_final(&blake3_ctx, hash);
 
-   char formatted_hash[SHA1_DIGEST_STRING_LENGTH];
-   _mesa_sha1_format(formatted_hash, hash);
+   char formatted_hash[BLAKE3_HEX_LEN];
+   _mesa_blake3_format(formatted_hash, hash);
 
    char generated_guid[37];
    snprintf(generated_guid, sizeof(generated_guid),
@@ -1710,7 +1715,8 @@ intel_perf_eustall_stream_read_samples(struct intel_device_info *devinfo,
 void
 intel_perf_eustall_accumulate_results(struct intel_perf_query_eustall_result *result,
                                       const void *start, const void *end,
-                                      size_t record_size)
+                                      size_t record_size,
+                                      int ver)
 {
-   return xe_perf_eustall_accumulate_results(result, start, end, record_size);
+   return xe_perf_eustall_accumulate_results(result, start, end, record_size, ver);
 }

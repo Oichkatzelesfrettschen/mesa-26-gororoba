@@ -1,24 +1,6 @@
 /*
  * Copyright © 2010 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "brw_analysis.h"
@@ -38,262 +20,24 @@
 #include "util/u_math.h"
 
 void
-brw_shader::emit_urb_writes(const brw_reg &gs_vertex_count)
+brw_assign_urb_setup(brw_shader &s)
 {
-   int slot, urb_offset, length;
-   int starting_urb_offset = 0;
-   const struct brw_vue_prog_data *vue_prog_data =
-      brw_vue_prog_data(this->prog_data);
-   const struct intel_vue_map *vue_map = &vue_prog_data->vue_map;
-   bool flush;
-   brw_reg sources[8];
-   brw_reg urb_handle;
+   struct brw_vue_prog_data *vue_prog_data = brw_vue_prog_data(s.prog_data);
+   const unsigned verts =
+      s.stage == MESA_SHADER_GEOMETRY ? s.nir->info.gs.vertices_in : 1;
 
-   switch (stage) {
-   case MESA_SHADER_VERTEX:
-      urb_handle = vs_payload().urb_handles;
-      break;
-   case MESA_SHADER_TESS_EVAL:
-      urb_handle = tes_payload().urb_output;
-      break;
-   case MESA_SHADER_GEOMETRY:
-      urb_handle = gs_payload().urb_handles;
-      break;
-   default:
-      UNREACHABLE("invalid stage");
+   s.first_non_payload_grf += 8 * vue_prog_data->urb_read_length * verts;
+
+   /* Rewrite all ATTR file references to HW_REGs. */
+   foreach_block_and_inst(block, brw_inst, inst, s.cfg) {
+      s.convert_attr_sources_to_hw_regs(inst);
    }
+}
 
-   const brw_builder bld = brw_builder(this);
-
-   brw_reg per_slot_offsets;
-
-   if (stage == MESA_SHADER_GEOMETRY) {
-      const struct brw_gs_prog_data *gs_prog_data =
-         brw_gs_prog_data(this->prog_data);
-
-      /* We need to increment the Global Offset to skip over the control data
-       * header and the extra "Vertex Count" field (1 HWord) at the beginning
-       * of the VUE.  We're counting in OWords, so the units are doubled.
-       */
-      starting_urb_offset = 2 * gs_prog_data->control_data_header_size_hwords;
-      if (gs_prog_data->static_vertex_count == -1)
-         starting_urb_offset += 2;
-
-      /* The URB offset is in 128-bit units, so we need to multiply by 2 */
-      const int output_vertex_size_owords =
-         gs_prog_data->output_vertex_size_hwords * 2;
-
-      /* On Xe2+ platform, LSC can operate on the Dword data element with byte
-       * offset granularity, so convert per slot offset in bytes since it's in
-       * Owords (16-bytes) unit else keep per slot offset in oword unit for
-       * previous platforms.
-       */
-      const int output_vertex_size = devinfo->ver >= 20 ?
-                                     output_vertex_size_owords * 16 :
-                                     output_vertex_size_owords;
-      if (gs_vertex_count.file == IMM) {
-         per_slot_offsets = brw_imm_ud(output_vertex_size *
-                                       gs_vertex_count.ud);
-      } else {
-         per_slot_offsets = bld.vgrf(BRW_TYPE_UD);
-         bld.MUL(per_slot_offsets, gs_vertex_count,
-                 brw_imm_ud(output_vertex_size));
-      }
-   }
-
-   length = 0;
-   urb_offset = starting_urb_offset;
-   flush = false;
-
-   /* SSO shaders can have VUE slots allocated which are never actually
-    * written to, so ignore them when looking for the last (written) slot.
-    */
-   int last_slot = vue_map->num_slots - 1;
-   while (last_slot > 0 &&
-          (vue_map->slot_to_varying[last_slot] == BRW_VARYING_SLOT_PAD ||
-           outputs[vue_map->slot_to_varying[last_slot]].file == BAD_FILE)) {
-      last_slot--;
-   }
-
-   bool urb_written = false;
-   for (slot = 0; slot < vue_map->num_slots; slot++) {
-      int varying = vue_map->slot_to_varying[slot];
-      switch (varying) {
-      case VARYING_SLOT_PSIZ: {
-         /* The point size varying slot is the vue header and is always in the
-          * vue map. If anything in the header is going to be read back by HW,
-          * we need to initialize it, in particular the viewport & layer
-          * values.
-          *
-          * SKL PRMs, Volume 7: 3D-Media-GPGPU, Vertex URB Entry (VUE)
-          * Formats:
-          *
-          *    "VUEs are written in two ways:
-          *
-          *       - At the top of the 3D Geometry pipeline, the VF's
-          *         InputAssembly function creates VUEs and initializes them
-          *         from data extracted from Vertex Buffers as well as
-          *         internally generated data.
-          *
-          *       - VS, GS, HS and DS threads can compute, format, and write
-          *         new VUEs as thread output."
-          *
-          *    "Software must ensure that any VUEs subject to readback by the
-          *     3D pipeline start with a valid Vertex Header. This extends to
-          *     all VUEs with the following exceptions:
-          *
-          *       - If the VS function is enabled, the VF-written VUEs are not
-          *         required to have Vertex Headers, as the VS-incoming
-          *         vertices are guaranteed to be consumed by the VS (i.e.,
-          *         the VS thread is responsible for overwriting the input
-          *         vertex data).
-          *
-          *       - If the GS FF is enabled, neither VF-written VUEs nor VS
-          *         thread-generated VUEs are required to have Vertex Headers,
-          *         as the GS will consume all incoming vertices.
-          *
-          *       - If Rendering is disabled, VertexHeaders are not required
-          *         anywhere."
-          */
-         brw_reg zero =
-            retype(brw_allocate_vgrf_units(*this, dispatch_width / 8), BRW_TYPE_UD);
-         bld.MOV(zero, brw_imm_ud(0u));
-
-         if (vue_map->slots_valid & VARYING_BIT_PRIMITIVE_SHADING_RATE &&
-             this->outputs[VARYING_SLOT_PRIMITIVE_SHADING_RATE].file != BAD_FILE) {
-            sources[length++] = this->outputs[VARYING_SLOT_PRIMITIVE_SHADING_RATE];
-         } else if (devinfo->has_coarse_pixel_primitive_and_cb) {
-            uint32_t one_fp16 = 0x3C00;
-            brw_reg one_by_one_fp16 =
-               retype(brw_allocate_vgrf_units(*this, dispatch_width / 8), BRW_TYPE_UD);
-            bld.MOV(one_by_one_fp16, brw_imm_ud((one_fp16 << 16) | one_fp16));
-            sources[length++] = one_by_one_fp16;
-         } else {
-            sources[length++] = zero;
-         }
-
-         if (vue_map->slots_valid & VARYING_BIT_LAYER)
-            sources[length++] = this->outputs[VARYING_SLOT_LAYER];
-         else
-            sources[length++] = zero;
-
-         if (vue_map->slots_valid & VARYING_BIT_VIEWPORT)
-            sources[length++] = this->outputs[VARYING_SLOT_VIEWPORT];
-         else
-            sources[length++] = zero;
-
-         if (vue_map->slots_valid & VARYING_BIT_PSIZ)
-            sources[length++] = this->outputs[VARYING_SLOT_PSIZ];
-         else
-            sources[length++] = zero;
-         break;
-      }
-      case VARYING_SLOT_EDGE:
-         UNREACHABLE("unexpected scalar vs output");
-         break;
-
-      default:
-         /* gl_Position is always in the vue map, but isn't always written by
-          * the shader.  Other varyings (clip distances) get added to the vue
-          * map but don't always get written.  In those cases, the
-          * corresponding this->output[] slot will be invalid we and can skip
-          * the urb write for the varying.  If we've already queued up a vue
-          * slot for writing we flush a mlen 5 urb write, otherwise we just
-          * advance the urb_offset.
-          */
-         if (varying == BRW_VARYING_SLOT_PAD ||
-             this->outputs[varying].file == BAD_FILE) {
-            if (length > 0)
-               flush = true;
-            else
-               urb_offset++;
-            break;
-         }
-
-         int slot_offset = 0;
-
-         /* When using Primitive Replication, there may be multiple slots
-          * assigned to POS.
-          */
-         if (varying == VARYING_SLOT_POS)
-            slot_offset = slot - vue_map->varying_to_slot[VARYING_SLOT_POS];
-
-         for (unsigned i = 0; i < 4; i++) {
-            sources[length++] = offset(this->outputs[varying], bld,
-                                       i + (slot_offset * 4));
-         }
-         break;
-      }
-
-      const brw_builder abld = bld.annotate("URB write");
-
-      /* If we've queued up 8 registers of payload (2 VUE slots), if this is
-       * the last slot or if we need to flush (see BAD_FILE varying case
-       * above), emit a URB write send now to flush out the data.
-       */
-      if (length == 8 || (length > 0 && slot == last_slot))
-         flush = true;
-      if (flush) {
-         brw_reg srcs[URB_LOGICAL_NUM_SRCS];
-
-         srcs[URB_LOGICAL_SRC_HANDLE] = urb_handle;
-         srcs[URB_LOGICAL_SRC_PER_SLOT_OFFSETS] = per_slot_offsets;
-         srcs[URB_LOGICAL_SRC_DATA] =
-            retype(brw_allocate_vgrf_units(*this, (dispatch_width / 8) * length), BRW_TYPE_F);
-         abld.LOAD_PAYLOAD(srcs[URB_LOGICAL_SRC_DATA], sources, length, 0);
-
-         brw_urb_inst *urb = abld.URB_WRITE(srcs, ARRAY_SIZE(srcs));
-         urb->components = length;
-
-         /* For Wa_1805992985 one needs additional write in the end. */
-         if (intel_needs_workaround(devinfo, 1805992985) && stage == MESA_SHADER_TESS_EVAL)
-            urb->eot = false;
-         else
-            urb->eot = slot == last_slot && stage != MESA_SHADER_GEOMETRY;
-
-         urb->offset = urb_offset * (devinfo->ver >= 20 ? 16 : 1);
-         urb_offset = starting_urb_offset + slot + 1;
-         length = 0;
-         flush = false;
-         urb_written = true;
-      }
-   }
-
-   /* If we don't have any valid slots to write, just do a minimal urb write
-    * send to terminate the shader.  This includes 1 slot of undefined data,
-    * because it's invalid to write 0 data:
-    *
-    * From the Broadwell PRM, Volume 7: 3D Media GPGPU, Shared Functions -
-    * Unified Return Buffer (URB) > URB_SIMD8_Write and URB_SIMD8_Read >
-    * Write Data Payload:
-    *
-    *    "The write data payload can be between 1 and 8 message phases long."
-    */
-   if (!urb_written) {
-      /* For GS, just turn EmitVertex() into a no-op.  We don't want it to
-       * end the thread, and emit_gs_thread_end() already emits a SEND with
-       * EOT at the end of the program for us.
-       */
-      if (stage == MESA_SHADER_GEOMETRY)
-         return;
-
-      brw_reg uniform_urb_handle =
-         retype(brw_allocate_vgrf_units(*this, dispatch_width / 8), BRW_TYPE_UD);
-      brw_reg payload =
-         retype(brw_allocate_vgrf_units(*this, dispatch_width / 8), BRW_TYPE_UD);
-
-      bld.exec_all().MOV(uniform_urb_handle, urb_handle);
-
-      brw_reg srcs[URB_LOGICAL_NUM_SRCS];
-      srcs[URB_LOGICAL_SRC_HANDLE] = uniform_urb_handle;
-      srcs[URB_LOGICAL_SRC_DATA] = payload;
-
-      brw_urb_inst *urb = bld.URB_WRITE(srcs, ARRAY_SIZE(srcs));
-      urb->eot = true;
-      urb->offset = devinfo->ver >= 20 ? 16 : 1;
-      urb->components = 1;
-      return;
-   }
+void
+brw_shader::emit_tes_terminate()
+{
+   assert(stage == MESA_SHADER_TESS_EVAL);
 
    /* Wa_1805992985:
     *
@@ -301,8 +45,10 @@ brw_shader::emit_urb_writes(const brw_reg &gs_vertex_count)
     * send cycle, which is a urb write with an eot must be 4 phases long and
     * all 8 lanes must valid.
     */
-   if (intel_needs_workaround(devinfo, 1805992985) && stage == MESA_SHADER_TESS_EVAL) {
+   if (intel_needs_workaround(devinfo, 1805992985)) {
       assert(dispatch_width == 8);
+      const brw_builder bld = brw_builder(this);
+      brw_reg urb_handle = tes_payload().urb_output;
       brw_reg uniform_urb_handle = retype(brw_allocate_vgrf_units(*this, 1), BRW_TYPE_UD);
       brw_reg uniform_mask = retype(brw_allocate_vgrf_units(*this, 1), BRW_TYPE_UD);
       brw_reg payload = retype(brw_allocate_vgrf_units(*this, 4), BRW_TYPE_UD);
@@ -343,6 +89,9 @@ brw_shader::emit_urb_writes(const brw_reg &gs_vertex_count)
       urb->eot = true;
       urb->offset = 0;
       urb->components = 4;
+   } else {
+      ASSERTED bool eot = mark_last_urb_write_with_eot();
+      assert(eot);
    }
 }
 
@@ -422,7 +171,6 @@ brw_shader::brw_shader(const brw_shader_params *params)
    this->fail_msg = NULL;
 
    this->payload_ = NULL;
-   this->source_depth_to_render_target = false;
    this->first_non_payload_grf = 0;
 
    this->last_scratch = 0;
@@ -530,7 +278,7 @@ brw_shader::limit_dispatch_width(unsigned n, const char *msg)
 }
 
 enum intel_barycentric_mode
-brw_barycentric_mode(const struct brw_wm_prog_key *key,
+brw_barycentric_mode(const struct brw_fs_prog_key *key,
                      nir_intrinsic_instr *intr)
 {
    const glsl_interp_mode mode =
@@ -577,47 +325,12 @@ brw_barycentric_mode(const struct brw_wm_prog_key *key,
 bool
 brw_shader::mark_last_urb_write_with_eot()
 {
-   brw_inst *limit = NULL;
-   foreach_block_reverse(block, cfg) {
-      foreach_inst_in_block_reverse(brw_inst, inst, block) {
-         if (inst->opcode == SHADER_OPCODE_URB_WRITE_LOGICAL) {
-            inst->eot = true;
-            limit = inst;
-            break;
-         } else if (inst->is_control_flow() || inst->has_side_effects()) {
-            limit = inst;
-            break;
-         }
-      }
-
-      if (limit)
-         break;
+   brw_inst *inst = cfg->last_block()->end();
+   if (inst && inst->opcode == SHADER_OPCODE_URB_WRITE_LOGICAL) {
+      inst->eot = true;
+      return true;
    }
-
-   if (!limit || !limit->eot)
-      return false;
-
-   brw_analysis_dependency_class dep = BRW_DEPENDENCY_INSTRUCTION_DETAIL;
-
-   /* Delete now dead instructions. */
-   bool done = false;
-   foreach_block_reverse(block, cfg) {
-      foreach_inst_in_block_reverse_safe(brw_inst, dead, block) {
-         if (dead == limit) {
-            done = true;
-            break;
-         }
-
-         dep = dep | BRW_DEPENDENCY_INSTRUCTION_IDENTITY;
-         dead->remove();
-      }
-
-      if (done)
-         break;
-   }
-
-   invalidate_analysis(dep);
-   return true;
+   return false;
 }
 
 void
@@ -627,127 +340,12 @@ brw_shader::assign_curb_setup()
    this->push_data_size = 0;
    for (uint32_t i = 0; i < 4; i++) {
       ranges_start[i] = this->push_data_size / REG_SIZE;
-      this->push_data_size += align(prog_data->push_sizes[i], REG_SIZE);
-   }
-
-   uint64_t used = 0;
-   const bool pull_constants =
-      devinfo->verx10 >= 125 &&
-      (mesa_shader_stage_is_compute(stage) ||
-       mesa_shader_stage_is_mesh(stage)) &&
-      this->push_data_size > 0;
-
-   if (pull_constants) {
-      const bool pull_constants_a64 =
-         (mesa_shader_stage_is_rt(stage) &&
-          brw_bs_prog_data(prog_data)->uses_inline_push_addr) ||
-         ((mesa_shader_stage_is_compute(stage) ||
-           mesa_shader_stage_is_mesh(stage)) &&
-          brw_cs_prog_data(prog_data)->uses_inline_push_addr);
-      assert(devinfo->has_lsc);
-      brw_builder ubld = brw_builder(this, 1).exec_all().at_start(cfg->first_block());
-
-      brw_reg base_addr;
-      if (pull_constants_a64) {
-         /* The address of the push constants is at offset 0 in the inline
-          * parameter.
-          */
-         base_addr =
-            mesa_shader_stage_is_rt(stage) ?
-            retype(bs_payload().inline_parameter, BRW_TYPE_UQ) :
-            retype(cs_payload().inline_parameter, BRW_TYPE_UQ);
-      } else {
-         /* The base offset for our push data is passed in as R0.0[31:6]. We
-          * have to mask off the bottom 6 bits.
-          */
-         base_addr = ubld.AND(retype(brw_vec1_grf(0, 0), BRW_TYPE_UD),
-                              brw_imm_ud(INTEL_MASK(31, 6)));
-      }
-
-      brw_analysis_dependency_class dirty_bits = BRW_DEPENDENCY_INSTRUCTIONS;
-
-      /* On Gfx12-HP we load constants at the start of the program using A32
-       * stateless messages.
-       */
-      const unsigned n_push_data_regs = reg_unit(devinfo) *
-         DIV_ROUND_UP(this->push_data_size, reg_unit(devinfo) * REG_SIZE);
-      for (unsigned i = 0; i < this->push_data_size / REG_SIZE;) {
-         /* Limit ourselves to LSC HW limit of 8 GRFs (256bytes D32V64). */
-         unsigned num_regs = MIN2(this->push_data_size / REG_SIZE - i, 8);
-         assert(num_regs > 0);
-         num_regs = 1 << util_logbase2(num_regs);
-
-         brw_reg addr;
-
-         if (i != 0 && devinfo->ver < 20) {
-            if (pull_constants_a64) {
-               dirty_bits |= BRW_DEPENDENCY_VARIABLES;
-               /* We need to do the carry manually as when this pass is run,
-                * we're not expecting any 64bit ALUs. Unfortunately all the
-                * 64bit lowering is done in NIR.
-                */
-               addr = ubld.vgrf(BRW_TYPE_UQ);
-               brw_reg addr_ldw = subscript(addr, BRW_TYPE_UD, 0);
-               brw_reg addr_udw = subscript(addr, BRW_TYPE_UD, 1);
-               brw_reg base_addr_ldw = subscript(base_addr, BRW_TYPE_UD, 0);
-               brw_reg base_addr_udw = subscript(base_addr, BRW_TYPE_UD, 1);
-               ubld.ADD(addr_ldw, base_addr_ldw, brw_imm_ud(i * REG_SIZE));
-               ubld.CMP(ubld.null_reg_d(), addr_ldw, base_addr_ldw, BRW_CONDITIONAL_L);
-               set_predicate(BRW_PREDICATE_NORMAL,
-                             ubld.ADD(addr_udw, base_addr_udw, brw_imm_ud(1)));
-               set_predicate_inv(BRW_PREDICATE_NORMAL, true,
-                                 ubld.MOV(addr_udw, base_addr_udw));
-            } else {
-               addr = ubld.ADD(base_addr, brw_imm_ud(i * REG_SIZE));
-            }
-         } else {
-            addr = base_addr;
-         }
-
-         brw_send_inst *send = ubld.SEND();
-         send->dst = retype(brw_vec8_grf(payload().num_regs + i, 0),
-                            BRW_TYPE_UD);
-
-         send->src[SEND_SRC_DESC]     = brw_imm_ud(0);
-         send->src[SEND_SRC_EX_DESC]  = devinfo->ver >= 20 ?
-                                        brw_imm_ud(lsc_flat_ex_desc(devinfo,
-                                                                    i * REG_SIZE)) :
-                                        brw_imm_ud(0);
-         send->src[SEND_SRC_PAYLOAD1] = addr;
-         send->src[SEND_SRC_PAYLOAD2] = brw_reg();
-
-         send->sfid = BRW_SFID_UGM;
-         uint32_t desc = lsc_msg_desc(devinfo, LSC_OP_LOAD,
-                                      LSC_ADDR_SURFTYPE_FLAT,
-                                      pull_constants_a64 ?
-                                      LSC_ADDR_SIZE_A64 : LSC_ADDR_SIZE_A32,
-                                      LSC_DATA_SIZE_D32,
-                                      num_regs * 8 /* num_channels */,
-                                      true /* transpose */,
-                                      LSC_CACHE(devinfo, LOAD, L1STATE_L3MOCS));
-         send->header_size = 0;
-         send->mlen = lsc_msg_addr_len(
-            devinfo, pull_constants_a64 ?
-            LSC_ADDR_SIZE_A64 : LSC_ADDR_SIZE_A32, 1);
-         send->size_written =
-            lsc_msg_dest_len(devinfo, LSC_DATA_SIZE_D32, num_regs * 8) * REG_SIZE;
-         assert((payload().num_regs + i + send->size_written / REG_SIZE) <=
-                (payload().num_regs + n_push_data_regs));
-         send->is_volatile = true;
-
-         send->src[SEND_SRC_DESC] =
-            brw_imm_ud(desc | brw_message_desc(devinfo,
-                                               send->mlen,
-                                               send->size_written / REG_SIZE,
-                                               send->header_size));
-
-         i += num_regs;
-      }
-
-      invalidate_analysis(dirty_bits);
+      assert(prog_data->push_sizes[i] == align(prog_data->push_sizes[i], REG_SIZE));
+      this->push_data_size += prog_data->push_sizes[i];
    }
 
    /* Map the offsets in the UNIFORM file to fixed HW regs. */
+   uint64_t used = 0;
    foreach_block_and_inst(block, brw_inst, inst, cfg) {
       for (unsigned int i = 0; i < inst->sources; i++) {
 	 if (inst->src[i].file != UNIFORM)
@@ -852,7 +450,15 @@ brw_shader::assign_curb_setup()
             ubld_mask.CMP(mask_reg, byte_offset(mask, i), offset_reg, BRW_CONDITIONAL_G);
 
             for (unsigned and_length; grf < mask_end; grf += and_length) {
-               and_length = 1u << (util_last_bit(MIN2(grf_end - grf, max_grf_writes)) - 1);
+               /* We can't have a destination/source register spanning more
+                * than 2 GRFs which would be the case on Xe2+ if we try to
+                * mask a payload register not aligned to 64B with a SIMD32
+                * instruction. In such case just reduce the SIMDness for the
+                * unaligned masking.
+                */
+               unsigned max_write = grf % reg_unit(devinfo) != 0 ? max_grf_writes / 2 : max_grf_writes;
+
+               and_length = 1u << (util_last_bit(MIN2(grf_end - grf, max_write)) - 1);
 
                if (!(want_zero & BITFIELD64_RANGE(grf - grf_start, and_length)))
                   continue;
@@ -891,7 +497,7 @@ brw_shader::assign_curb_setup()
  * on each upload.
  */
 void
-brw_compute_urb_setup_index(struct brw_wm_prog_data *wm_prog_data)
+brw_compute_urb_setup_index(struct brw_fs_prog_data *fs_prog_data)
 {
    /* TODO(mesh): Review usage of this in the context of Mesh, we may want to
     * skip per-primitive attributes here.
@@ -901,11 +507,11 @@ brw_compute_urb_setup_index(struct brw_wm_prog_data *wm_prog_data)
    STATIC_ASSERT(VARYING_SLOT_MAX <= 0xff);
    uint8_t index = 0;
    for (uint8_t attr = 0; attr < VARYING_SLOT_MAX; attr++) {
-      if (wm_prog_data->urb_setup[attr] >= 0) {
-         wm_prog_data->urb_setup_attribs[index++] = attr;
+      if (fs_prog_data->urb_setup[attr] >= 0) {
+         fs_prog_data->urb_setup_attribs[index++] = attr;
       }
    }
-   wm_prog_data->urb_setup_attribs_count = index;
+   fs_prog_data->urb_setup_attribs_count = index;
 }
 
 void
@@ -953,7 +559,7 @@ brw_shader::convert_attr_sources_to_hw_regs(brw_inst *inst)
 
 uint32_t
 brw_fb_write_msg_control(const brw_inst *inst,
-                         const struct brw_wm_prog_data *prog_data)
+                         const struct brw_fs_prog_data *prog_data)
 {
    uint32_t mctl;
 
@@ -1239,6 +845,17 @@ brw_allocate_registers(brw_shader &s, bool allow_spilling)
       if (OPT(brw_opt_cmod_propagation))
          OPT(brw_opt_dead_code_eliminate);
 
+      if (OPT(brw_opt_cmp_flag_destination,
+               /* We want something like
+                * brw_wm_prog_data(s.prog_data)->uses_kill, but there are
+                * other things that can cause the sample_mask_flag_subreg to
+                * be used.
+                */
+              s.stage == MESA_SHADER_FRAGMENT)) {
+         OPT(brw_opt_cmod_propagation);
+         OPT(brw_opt_dead_code_eliminate);
+      }
+
       allocated = brw_assign_regs(s, allow_spilling, spill_all);
    }
 
@@ -1299,6 +916,15 @@ brw_allocate_registers(brw_shader &s, bool allow_spilling)
     */
    OPT(brw_opt_cmod_propagation);
 
+   if (OPT(brw_opt_cmp_flag_destination,
+           /* We want something like brw_wm_prog_data(s.prog_data)->uses_kill,
+            * but there are other things that can cause the
+            * sample_mask_flag_subreg to be used.
+            */
+           s.stage == MESA_SHADER_FRAGMENT)) {
+      OPT(brw_opt_cmod_propagation);
+   }
+
    if (s.devinfo->ver >= 30)
       OPT(brw_lower_send_gather);
 
@@ -1335,21 +961,18 @@ brw_allocate_registers(brw_shader &s, bool allow_spilling)
 
 #ifndef NDEBUG
 void
-brw_debug_archive_nir(debug_archiver *archiver, nir_shader *nir,
-                      unsigned dispatch_width, const char *step)
+brw_pass_tracker_archive(brw_pass_tracker *pt, const char *pass_name)
 {
-   if (!archiver)
+   if (!pt->archiver)
       return;
 
-   const bool prefix_dispatch_width =
-      dispatch_width > 0 && mesa_shader_stage_uses_workgroup(nir->info.stage);
-   const char *filename = prefix_dispatch_width ?
-         ralloc_asprintf(archiver, "NIR%d/%s", dispatch_width, step) :
-         ralloc_asprintf(archiver, "NIR/%s", step);
+   const char *filename =
+      ralloc_asprintf(pt->archiver, "NIR%d/%03d-%s",
+                      pt->dispatch_width, pt->pass_num, pass_name);
 
-   FILE *f = debug_archiver_start_file(archiver, filename);
-   nir_print_shader(nir, f);
-   debug_archiver_finish_file(archiver);
+   FILE *f = debug_archiver_start_file(pt->archiver, filename);
+   nir_print_shader(pt->nir, f);
+   debug_archiver_finish_file(pt->archiver);
 }
 #endif
 

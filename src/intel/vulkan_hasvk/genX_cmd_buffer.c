@@ -2297,7 +2297,9 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                             "descriptor does not have NonReadable "
                             "set and the image does not have a "
                             "corresponding SPIR-V format enum.");
-                  vk_debug_report(&cmd_buffer->device->physical->instance->vk,
+                  struct vk_instance *instance =
+                     &cmd_buffer->device->physical->instance->vk;
+                  vk_debug_report(&instance->debug_report,
                                   VK_DEBUG_REPORT_ERROR_BIT_EXT,
                                   &desc->image_view->vk.base,
                                   __LINE__, 0, "anv",
@@ -5920,7 +5922,7 @@ void genX(CmdBindIndexBuffer2KHR)(
    cmd_buffer->state.gfx.index_buffer = buffer;
    cmd_buffer->state.gfx.index_type = vk_to_intel_index_type(indexType);
    cmd_buffer->state.gfx.index_offset = offset;
-   cmd_buffer->state.gfx.index_size = vk_buffer_range(&buffer->vk, offset, size);
+   cmd_buffer->state.gfx.index_size = buffer ? vk_buffer_range(&buffer->vk, offset, size) : 0;
    cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_INDEX_BUFFER;
 }
 

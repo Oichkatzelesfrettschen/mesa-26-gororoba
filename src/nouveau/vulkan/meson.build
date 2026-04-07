@@ -67,6 +67,8 @@ nvk_files = files(
   'nvk_upload_queue.h',
   'nvk_wsi.c',
   'nvk_wsi.h',
+  'layers/nvk_app_workarounds.c',
+  'layers/nvk_app_workarounds.h',
   'nvkmd/nouveau/nvkmd_nouveau.h',
   'nvkmd/nouveau/nvkmd_nouveau_ctx.c',
   'nvkmd/nouveau/nvkmd_nouveau_dev.c',
@@ -79,6 +81,7 @@ nvk_files = files(
 
 nvkcl_files = files(
   'cl/nvk_query.cl',
+  'cl/nvk_copy_indirect.cl',
 )
 
 nvk_entrypoints = custom_target(
@@ -94,16 +97,19 @@ nvk_entrypoints = custom_target(
 )
 
 nvkcl_spv = custom_target(
-  input : nvkcl_files,
+  input : [nvkcl_files, libnvidia_headers],
   output : 'nvkcl.spv',
   command : [
     prog_mesa_clc, '-o', '@OUTPUT@', '--depfile', '@DEPFILE@', nvkcl_files, '--',
     '-I' + join_paths(meson.project_source_root(), 'src/compiler/libcl'),
     '-I' + join_paths(meson.current_source_dir(), '.'),
     '-I' + join_paths(meson.project_source_root(), 'src'),
+    '-I' + join_paths(meson.project_source_root(), 'src/nouveau/headers'),
+    '-I' + join_paths(meson.project_source_root(), 'src/nouveau/headers/nvidia/classes'),
+    '-I' + join_paths(meson.project_build_root(), 'src/nouveau/headers'),
     cl_args,
     ],
-  depfile : '@PLAINNAME@.d',
+  depfile : 'nvkcl.spv.d',
 )
 
 nvkcl = custom_target(
@@ -205,6 +211,7 @@ if with_tests and not with_platform_android
       files('test_nvk_mme.c'),
       dependencies : [nvk_deps],
       link_with : [libnvk],
-    )
+    ),
+    suite : ['nouveau'],
   )
 endif

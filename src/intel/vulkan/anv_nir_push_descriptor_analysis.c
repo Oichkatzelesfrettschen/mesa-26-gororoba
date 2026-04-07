@@ -137,8 +137,7 @@ anv_nir_loads_push_desc_buffer(nir_shader *nir,
 
             const struct anv_pipeline_binding *binding =
                &bind_map->surface_to_descriptor[bt_idx];
-            if ((binding->set == ANV_DESCRIPTOR_SET_DESCRIPTORS ||
-                 binding->set == ANV_DESCRIPTOR_SET_DESCRIPTORS_BUFFER) &&
+            if (binding->set == ANV_DESCRIPTOR_SET_DESCRIPTORS &&
                 binding->index == push_set) {
                return BITFIELD_BIT(push_set);
             }
@@ -202,6 +201,10 @@ anv_nir_push_desc_ubo_fully_promoted(nir_shader *nir,
 
             /* Skip load_ubo not loading from the push descriptor */
             if (nir_intrinsic_desc_set(resource) != push_set)
+               continue;
+
+            /* Skip load_ubo loading the descriptor buffer (not a binding) */
+            if (nir_intrinsic_binding(resource) == UINT32_MAX)
                continue;
 
             uint32_t binding = nir_intrinsic_binding(resource);

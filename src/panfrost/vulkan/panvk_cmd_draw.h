@@ -23,6 +23,7 @@
 #include "vk_format.h"
 #include "util/u_tristate.h"
 
+#include "pan_fb.h"
 #include "pan_props.h"
 
 #define MAX_VBS 16
@@ -55,9 +56,6 @@ struct panvk_rendering_state {
       struct panvk_resolve_attachment resolve[MAX_RTS];
    } color_attachments;
 
-   struct pan_image_view zs_pview;
-   struct pan_image_view s_pview;
-
    struct {
       struct panvk_image_view *iview;
       /* If non-null, preload_iview overrides iview for preloads. */
@@ -66,9 +64,20 @@ struct panvk_rendering_state {
       struct panvk_resolve_attachment resolve;
    } z_attachment, s_attachment;
 
+   /* Used for separate Z/S images */
    struct {
-      struct pan_fb_info info;
-      bool crc_valid[MAX_RTS];
+      struct pan_image_view load, spill, store, resolve;
+   } z_pview, s_pview;
+
+   struct {
+      struct pan_fb_layout layout;
+      struct pan_fb_load load;
+      struct pan_fb_resolve resolve;
+      struct pan_fb_store store;
+      struct {
+         struct pan_fb_load load;
+         struct pan_fb_store store;
+      } spill;
 
       /* nr_samples to be used before framebuffer / tiler descriptor are emitted */
       uint32_t nr_samples;
@@ -76,6 +85,8 @@ struct panvk_rendering_state {
 #if PAN_ARCH < 9
       uint32_t bo_count;
       struct pan_kmod_bo *bos[(MAX_RTS * PANVK_MAX_PLANES) + 2];
+      bool needs_load;
+      bool needs_store;
 #endif
    } fb;
 
@@ -240,6 +251,12 @@ panvk_depth_range(const struct panvk_cmd_graphics_state *state,
                   const struct vk_viewport_state *vp,
                   float *z_min, float *z_max)
 {
+   if (vp->depth_clamp_mode == VK_DEPTH_CLAMP_MODE_USER_DEFINED_RANGE_EXT) {
+      *z_min = vp->depth_clamp_range.minDepthClamp;
+      *z_max = vp->depth_clamp_range.maxDepthClamp;
+      return;
+   }
+
    float a = vp->depth_clip_negative_one_to_one ?
       state->sysvals.viewport.offset.z - state->sysvals.viewport.scale.z :
       state->sysvals.viewport.offset.z;
@@ -257,8 +274,8 @@ panvk_select_tiler_hierarchy_mask(const struct panvk_physical_device *phys_dev,
       pan_query_tiler_features(&phys_dev->kmod.dev->props);
 
    uint32_t hierarchy_mask = GENX(pan_select_tiler_hierarchy_mask)(
-      state->render.fb.info.width, state->render.fb.info.height,
-      tiler_features.max_levels, state->render.fb.info.tile_size,
+      state->render.fb.layout.width_px, state->render.fb.layout.height_px,
+      tiler_features.max_levels, state->render.fb.layout.tile_size_px,
       bin_ptr_mem_budget);
 
    return hierarchy_mask;
@@ -367,14 +384,6 @@ panvk_per_arch(device_draw_context_cleanup)(struct panvk_device *dev);
 void
 panvk_per_arch(cmd_init_render_state)(struct panvk_cmd_buffer *cmdbuf,
                                       const VkRenderingInfo *pRenderingInfo);
-
-void
-panvk_per_arch(cmd_force_fb_preload)(struct panvk_cmd_buffer *cmdbuf,
-                                     const VkRenderingInfo *render_info);
-
-void
-panvk_per_arch(cmd_preload_render_area_border)(struct panvk_cmd_buffer *cmdbuf,
-                                               const VkRenderingInfo *render_info);
 
 void panvk_per_arch(cmd_select_tile_size)(struct panvk_cmd_buffer *cmdbuf);
 

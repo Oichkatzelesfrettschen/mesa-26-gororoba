@@ -49,11 +49,6 @@
  */
 #define PVR_GLOBAL_FREE_LIST_GROW_THRESHOLD 13U
 
-/* Amount of padding required for VkBuffers to ensure we don't read beyond
- * a page boundary.
- */
-#define PVR_BUFFER_MEMORY_PADDING_SIZE 4
-
 /* Default size in bytes used by pvr_CreateDevice() for setting up the
  * suballoc_general, suballoc_pds and suballoc_usc suballocators.
  *
@@ -109,7 +104,7 @@ uint32_t pvr_arch_calc_fscommon_size_and_tiles_in_flight(
 
       num_allocs *= MIN2(min_tiles_in_flight, max_tiles_in_flight);
 
-      if (!PVR_HAS_ERN(dev_info, 38748)) {
+      if (!PVR_HAS_ENHANCEMENT(dev_info, 38748)) {
          /* Hardware needs space for one extra shared allocation. */
          num_allocs += 1;
       }
@@ -126,7 +121,7 @@ uint32_t pvr_arch_calc_fscommon_size_and_tiles_in_flight(
 
    num_tile_in_flight = available_shareds / (fs_common_size * 2);
 
-   if (!PVR_HAS_ERN(dev_info, 38748))
+   if (!PVR_HAS_ENHANCEMENT(dev_info, 38748))
       num_tile_in_flight -= 1;
 
    num_tile_in_flight /= num_allocs;
@@ -137,7 +132,7 @@ uint32_t pvr_arch_calc_fscommon_size_and_tiles_in_flight(
    assert(num_tile_in_flight >= MIN2(num_tile_in_flight, max_tiles_in_flight));
    num_allocs *= num_tile_in_flight;
 
-   if (!PVR_HAS_ERN(dev_info, 38748)) {
+   if (!PVR_HAS_ENHANCEMENT(dev_info, 38748)) {
       /* Hardware needs space for one extra shared allocation. */
       num_allocs += 1;
    }
@@ -703,7 +698,7 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
 
    result = pvr_winsys_create(pdevice->render_path,
-                              pdevice->display_path,
+                              pdevice->display_path, false,
                               pAllocator ? pAllocator : &instance->vk.alloc,
                               &ws);
    if (result != VK_SUCCESS)

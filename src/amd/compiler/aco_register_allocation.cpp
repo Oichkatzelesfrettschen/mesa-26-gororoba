@@ -58,6 +58,7 @@ struct assignment {
          bool assigned : 1;
          bool precolor_affinity : 1;
          bool renamed : 1;
+         uint8_t weight : 2;
       };
       uint8_t _ = 0;
    };
@@ -82,6 +83,7 @@ struct assignment {
    {
       set_precolor_affinity(other.reg.advance(offset));
    }
+   void update_weight(assignment& other) { weight = MAX2(weight, other.weight); }
 };
 
 /* Iterator type for making PhysRegInterval compatible with range-based for */
@@ -165,6 +167,7 @@ struct ra_ctx {
    PhysRegIterator rr_vgpr_it;
    BITSET_DECLARE(preserved, 512) = {};
 
+   uint16_t sgpr_start;
    uint16_t sgpr_bounds;
    uint16_t vgpr_bounds;
    uint16_t num_linear_vgprs;
@@ -183,6 +186,7 @@ struct ra_ctx {
       if (program->is_callee)
          program->callee_abi.preservedRegisters(preserved);
 
+      sgpr_start = program->preserve_s2 ? 4 : 0;
       sgpr_bounds = program->max_reg_demand.sgpr;
       vgpr_bounds = program->max_reg_demand.vgpr;
       num_linear_vgprs = 0;
@@ -256,7 +260,7 @@ get_reg_bounds(ra_ctx& ctx, RegType type, bool linear_vgpr)
    } else if (type == RegType::vgpr) {
       return PhysRegInterval{PhysReg(256), linear_vgpr_start};
    } else {
-      return PhysRegInterval{PhysReg(0), ctx.sgpr_bounds};
+      return PhysRegInterval{PhysReg(ctx.sgpr_start), ctx.sgpr_bounds};
    }
 }
 
@@ -1210,14 +1214,9 @@ find_vars(ra_ctx& ctx, const RegisterFile& reg_file, const PhysRegInterval reg_i
    return vars;
 }
 
-/* collect variables from a register area and clear reg_file
- * variables are sorted in decreasing size and
- * increasing assigned register
- */
-std::vector<unsigned>
-collect_vars(ra_ctx& ctx, RegisterFile& reg_file, const PhysRegInterval reg_interval)
+void
+collect_vars(ra_ctx& ctx, RegisterFile& reg_file, std::vector<unsigned>& ids)
 {
-   std::vector<unsigned> ids = find_vars(ctx, reg_file, reg_interval);
    std::sort(ids.begin(), ids.end(),
              [&](unsigned a, unsigned b)
              {
@@ -1231,6 +1230,17 @@ collect_vars(ra_ctx& ctx, RegisterFile& reg_file, const PhysRegInterval reg_inte
       assignment& var = ctx.assignments[id];
       reg_file.clear(var.reg, var.rc);
    }
+}
+
+/* collect variables from a register area and clear reg_file
+ * variables are sorted in decreasing size and
+ * increasing assigned register
+ */
+std::vector<unsigned>
+collect_vars(ra_ctx& ctx, RegisterFile& reg_file, const PhysRegInterval reg_interval)
+{
+   std::vector<unsigned> ids = find_vars(ctx, reg_file, reg_interval);
+   collect_vars(ctx, reg_file, ids);
    return ids;
 }
 
@@ -1978,6 +1988,49 @@ should_compact_linear_vgprs(ra_ctx& ctx, const RegisterFile& reg_file)
    return max_vgpr_usage > get_reg_bounds(ctx, RegType::vgpr, false).size;
 }
 
+std::optional<PhysReg>
+get_reg_affinity(ra_ctx& ctx, const RegisterFile& reg_file, Temp temp,
+                 std::vector<parallelcopy>& parallelcopies, aco_ptr<Instruction>& instr,
+                 int operand_index, assignment& affinity)
+{
+   /* check if the target register is blocked */
+   if (operand_index == -1 && reg_file.test(affinity.reg, temp.bytes())) {
+      /* It is cheaper to just assign a different register. */
+      if (ctx.assignments[temp.id()].weight == 0)
+         return {};
+
+      const PhysRegInterval def_regs{PhysReg(affinity.reg.reg()), temp.size()};
+      std::vector<unsigned> vars = find_vars(ctx, reg_file, def_regs);
+
+      /* Bail if the cost of moving the blocking var is likely more expensive
+       * than assigning a different register.
+       */
+      if (std::any_of(vars.begin(), vars.end(), [&](unsigned id) -> bool
+                      { return ctx.assignments[id].weight >= ctx.assignments[temp.id()].weight; }))
+         return {};
+
+      RegisterFile tmp_file(reg_file);
+      collect_vars(ctx, tmp_file, vars);
+
+      /* re-enable the killed operands, so that we don't move the blocking vars there */
+      if (!is_phi(instr))
+         tmp_file.fill_killed_operands(instr.get());
+
+      /* create parallelcopy to move blocking vars */
+      std::vector<parallelcopy> pc;
+      if (get_reg_specified(ctx, tmp_file, temp.regClass(), instr, affinity.reg, operand_index) &&
+          get_regs_for_copies(ctx, tmp_file, pc, vars, instr, def_regs)) {
+         parallelcopies.insert(parallelcopies.end(), pc.begin(), pc.end());
+         return affinity.reg;
+      }
+   } else if (get_reg_specified(ctx, reg_file, temp.regClass(), instr, affinity.reg,
+                                operand_index)) {
+      return affinity.reg;
+   }
+
+   return {};
+}
+
 PhysReg
 get_reg(ra_ctx& ctx, const RegisterFile& reg_file, Temp temp,
         std::vector<parallelcopy>& parallelcopies, aco_ptr<Instruction>& instr,
@@ -2004,11 +2057,15 @@ get_reg(ra_ctx& ctx, const RegisterFile& reg_file, Temp temp,
       }
    }
 
+   std::optional<PhysReg> res;
+
    if (ctx.assignments[temp.id()].affinity) {
       assignment& affinity = ctx.assignments[ctx.assignments[temp.id()].affinity];
       if (affinity.assigned) {
-         if (get_reg_specified(ctx, reg_file, temp.regClass(), instr, affinity.reg, operand_index))
-            return affinity.reg;
+         res =
+            get_reg_affinity(ctx, reg_file, temp, parallelcopies, instr, operand_index, affinity);
+         if (res)
+            return *res;
       }
    }
    if (ctx.assignments[temp.id()].precolor_affinity) {
@@ -2016,8 +2073,6 @@ get_reg(ra_ctx& ctx, const RegisterFile& reg_file, Temp temp,
                             operand_index, false))
          return ctx.assignments[temp.id()].reg;
    }
-
-   std::optional<PhysReg> res;
 
    if (ctx.vectors.find(temp.id()) != ctx.vectors.end()) {
       res = get_reg_vector(ctx, reg_file, temp, instr, operand_index);
@@ -2731,17 +2786,16 @@ get_regs_for_phis(ra_ctx& ctx, Block& block, RegisterFile& register_file,
       if (definition.isFixed())
          continue;
 
-      /* use affinity if available */
+      /* Preferring the more expensive to copy operands doesn't do much for logical phis on GFX11+
+       * because it creates a waitcnt anyway. */
+      bool avoid_heavy_copies =
+         ctx.program->gfx_level < GFX11 || phi->opcode == aco_opcode::p_linear_phi;
+      small_vec<std::tuple<unsigned, unsigned, PhysReg>, 4> affinities;
+
       if (ctx.assignments[definition.tempId()].affinity &&
           ctx.assignments[ctx.assignments[definition.tempId()].affinity].assigned) {
          assignment& affinity = ctx.assignments[ctx.assignments[definition.tempId()].affinity];
-         assert(affinity.rc == definition.regClass());
-         if (get_reg_specified(ctx, register_file, definition.regClass(), phi, affinity.reg, -1)) {
-            definition.setFixed(affinity.reg);
-            register_file.fill(definition);
-            ctx.assignments[definition.tempId()].set(definition);
-            continue;
-         }
+         affinities.emplace_back(0, UINT_MAX, affinity.reg);
       }
 
       /* by going backwards, we aim to avoid copies in else-blocks */
@@ -2749,8 +2803,18 @@ get_regs_for_phis(ra_ctx& ctx, Block& block, RegisterFile& register_file,
          const Operand& op = phi->operands[i];
          if (!op.isTemp() || !op.isFixed())
             continue;
+         unsigned weight = ctx.assignments[op.tempId()].weight;
+         /* For non-zero weight, prefer larger SSA IDs (which often correlate with more recent
+          * writes), since those are more likely to have no been used on yet. */
+         affinities.emplace_back(weight, weight > 0 ? op.tempId() : i, op.physReg());
+      }
 
-         PhysReg reg = op.physReg();
+      /* If avoid_heavy_copies=false, then this is already sorted how we want it to be. */
+      if (avoid_heavy_copies)
+         std::sort(affinities.begin(), affinities.end(), std::greater());
+
+      for (auto pair : affinities) {
+         PhysReg reg = std::get<2>(pair);
          if (get_reg_specified(ctx, register_file, definition.regClass(), phi, reg, -1)) {
             definition.setFixed(reg);
             register_file.fill(definition);
@@ -2774,6 +2838,14 @@ get_regs_for_phis(ra_ctx& ctx, Block& block, RegisterFile& register_file,
 
       register_file.fill(definition);
       ctx.assignments[definition.tempId()].set(definition);
+   }
+
+   for (aco_ptr<Instruction>& phi : instructions) {
+      for (Operand op : phi->operands) {
+         if (!op.isTemp() || !op.isFixed() || op.physReg() != phi->definitions[0].physReg())
+            continue;
+         ctx.assignments[phi->definitions[0].tempId()].update_weight(ctx.assignments[op.tempId()]);
+      }
    }
 
    /* Provide a scratch register in case we need to preserve SCC */
@@ -3055,11 +3127,16 @@ vop3_can_use_vop2acc(ra_ctx& ctx, Instruction* instr)
       if (!ctx.program->dev.has_fmac_legacy32)
          return false;
       break;
+   case aco_opcode::v_dot2_f32_f16:
+      if (ctx.program->gfx_level < GFX10 || ctx.program->gfx_level >= GFX12)
+         return false;
+      break;
    default: return false;
    }
 
    if (!instr->operands[2].isOfType(RegType::vgpr) || !instr->operands[2].isKillBeforeDef() ||
-       (!instr->operands[0].isOfType(RegType::vgpr) && !instr->operands[1].isOfType(RegType::vgpr)))
+       ((!instr->operands[0].isOfType(RegType::vgpr) || instr->isDPP()) &&
+        !instr->operands[1].isOfType(RegType::vgpr)))
       return false;
 
    if (instr->isVOP3P()) {
@@ -3088,6 +3165,30 @@ vop3_can_use_vop2acc(ra_ctx& ctx, Instruction* instr)
    if (instr->valu().omod || instr->valu().clamp || (instr->valu().abs & ~im_mask) ||
        (instr->valu().neg & ~im_mask))
       return false;
+
+   return true;
+}
+
+bool
+dot2_can_use_vopd(ra_ctx& ctx, Instruction* instr)
+{
+   if (instr->opcode != aco_opcode::v_dot2_f32_f16 && instr->opcode != aco_opcode::v_dot2_f32_bf16)
+      return false;
+   if (instr->format != Format::VOP3P || ctx.program->wave_size == 64 ||
+       ctx.program->gfx_level < GFX11 || instr->valu().clamp)
+      return false;
+
+   if (!instr->operands[2].isOfType(RegType::vgpr) || !instr->operands[2].isKillBeforeDef() ||
+       (!instr->operands[0].isOfType(RegType::vgpr) && !instr->operands[1].isOfType(RegType::vgpr)))
+      return false;
+
+   for (unsigned i = 0; i < 3; i++) {
+      if (instr->operands[i].isConstant())
+         continue;
+      if (instr->valu().neg_lo[i] || instr->valu().neg_hi[i] || instr->valu().opsel_lo[i] ||
+          !instr->valu().opsel_hi[i])
+         return false;
+   }
 
    return true;
 }
@@ -3264,7 +3365,8 @@ get_affinities(ra_ctx& ctx)
                op = instr->operands[i];
             } else if (i < tied_defs.size()) {
                op = instr->operands[tied_defs[i]];
-            } else if (vop3_can_use_vop2acc(ctx, instr.get())) {
+            } else if (vop3_can_use_vop2acc(ctx, instr.get()) ||
+                       dot2_can_use_vopd(ctx, instr.get())) {
                op = instr->operands[2];
             } else if (i == 0 && sop2_can_use_sopk(ctx, instr.get())) {
                op = instr->operands[instr->operands[0].isLiteral()];
@@ -3369,6 +3471,72 @@ get_affinities(ra_ctx& ctx)
             ctx.vectors[vec[0].id()] = it->second;
       }
    }
+
+   /* If split definitions have affinities with other temporaries, try to allocate those temporaries
+    * as a vector. */
+   for (std::pair<uint32_t, Instruction*> pair : ctx.split_vectors) {
+      Instruction* split = pair.second;
+
+      vector_info info;
+      info.num_parts = split->definitions.size();
+
+      unsigned num_temps = 0;
+      for (unsigned i = 0; i < split->definitions.size(); i++) {
+         Definition def = split->definitions[i];
+         uint32_t id = ctx.assignments[def.tempId()].affinity;
+         if (!id || def.regClass().type() != split->operands[0].regClass().type())
+            continue;
+
+         if (!info.parts) {
+            info.parts =
+               (Operand*)ctx.memory.allocate(sizeof(Operand) * info.num_parts, alignof(Operand));
+            for (unsigned j = 0; j < split->definitions.size(); j++)
+               info.parts[j] = Operand(split->definitions[j].regClass());
+         }
+
+         info.parts[i] = Operand(Temp(id, ctx.program->temp_rc[id]));
+         num_temps++;
+      }
+      if (!num_temps)
+         continue;
+
+      for (unsigned i = 0; i < split->definitions.size(); i++) {
+         uint32_t id = info.parts[i].tempId();
+         if (!id)
+            continue;
+
+         /* If the new vector affinities only includes one temporary, only overwrite the old one if
+          * the new one is stronger. */
+         auto vec_it = ctx.vectors.find(id);
+         if (num_temps == 1 && vec_it != ctx.vectors.end() &&
+             (!vec_it->second.is_weak || info.is_weak))
+            continue;
+
+         info.index = i;
+         ctx.vectors[id] = info;
+      }
+   }
+}
+
+bool
+affinity_blocks_tied_def0(const ra_ctx& ctx, const RegisterFile& register_file,
+                          const Instruction* instr, unsigned op_idx)
+{
+   unsigned def_id = instr->definitions[0].tempId();
+   if (ctx.assignments[def_id].affinity) {
+      const assignment& affinity = ctx.assignments[ctx.assignments[def_id].affinity];
+      if (affinity.assigned && affinity.reg != instr->operands[op_idx].physReg() &&
+          (!register_file.test(affinity.reg, instr->operands[op_idx].bytes()) ||
+           std::any_of(instr->operands.begin(), instr->operands.end(), [&](Operand op)
+                       { return op.isKillBeforeDef() && op.physReg() == affinity.reg; })))
+         return true;
+   } else if (ctx.assignments[def_id].precolor_affinity) {
+      if (ctx.assignments[def_id].reg != instr->operands[op_idx].physReg())
+         return true;
+   } else if (BITSET_TEST(ctx.preserved, instr->operands[op_idx].physReg())) {
+      return true;
+   }
+   return false;
 }
 
 void
@@ -3382,18 +3550,8 @@ optimize_encoding_vop2(ra_ctx& ctx, RegisterFile& register_file, aco_ptr<Instruc
          return;
    }
 
-   unsigned def_id = instr->definitions[0].tempId();
-   if (ctx.assignments[def_id].affinity) {
-      assignment& affinity = ctx.assignments[ctx.assignments[def_id].affinity];
-      if (affinity.assigned && affinity.reg != instr->operands[2].physReg() &&
-          (!register_file.test(affinity.reg, instr->operands[2].bytes()) ||
-           std::any_of(instr->operands.begin(), instr->operands.end(), [&](Operand op)
-                       { return op.isKillBeforeDef() && op.physReg() == affinity.reg; })))
-         return;
-   } else if (ctx.assignments[def_id].precolor_affinity) {
-      if (ctx.assignments[def_id].reg != instr->operands[2].physReg())
-         return;
-   }
+   if (affinity_blocks_tied_def0(ctx, register_file, instr.get(), 2))
+      return;
 
    if (!instr->operands[1].isOfType(RegType::vgpr))
       instr->valu().swapOperands(0, 1);
@@ -3419,6 +3577,7 @@ optimize_encoding_vop2(ra_ctx& ctx, RegisterFile& register_file, aco_ptr<Instruc
    case aco_opcode::v_dot4_i32_i8: instr->opcode = aco_opcode::v_dot4c_i32_i8; break;
    case aco_opcode::v_mad_legacy_f32: instr->opcode = aco_opcode::v_mac_legacy_f32; break;
    case aco_opcode::v_fma_legacy_f32: instr->opcode = aco_opcode::v_fmac_legacy_f32; break;
+   case aco_opcode::v_dot2_f32_f16: instr->opcode = aco_opcode::v_dot2c_f32_f16; break;
    default: break;
    }
 }
@@ -3435,18 +3594,8 @@ optimize_encoding_sopk(ra_ctx& ctx, RegisterFile& register_file, aco_ptr<Instruc
    if (!is_sgpr_writable_without_side_effects(ctx.program->gfx_level, op_reg))
       return;
 
-   unsigned def_id = instr->definitions[0].tempId();
-   if (ctx.assignments[def_id].affinity) {
-      assignment& affinity = ctx.assignments[ctx.assignments[def_id].affinity];
-      if (affinity.assigned && affinity.reg != op_reg &&
-          (!register_file.test(affinity.reg, instr->operands[!literal_idx].bytes()) ||
-           std::any_of(instr->operands.begin(), instr->operands.end(), [&](Operand op)
-                       { return op.isKillBeforeDef() && op.physReg() == affinity.reg; })))
-         return;
-   } else if (ctx.assignments[def_id].precolor_affinity) {
-      if (ctx.assignments[def_id].reg != op_reg)
-         return;
-   }
+   if (affinity_blocks_tied_def0(ctx, register_file, instr.get(), !literal_idx))
+      return;
 
    instr->format = Format::SOPK;
    instr->salu().imm = instr->operands[literal_idx].constantValue() & 0xffff;
@@ -3828,6 +3977,17 @@ handle_call(ra_ctx& ctx, aco_ptr<Instruction>& instr, BITSET_DECLARE(call_clobbe
    }
 }
 
+void
+assign_weights(ra_ctx& ctx, const aco_ptr<Instruction>& instr)
+{
+   if ((instr->isVMEM() || instr->isFlatLike()) && !instr->definitions.empty())
+      ctx.assignments[instr->definitions[0].tempId()].weight = 3;
+   if (instr->isSMEM() && !instr->definitions.empty())
+      ctx.assignments[instr->definitions[0].tempId()].weight = 2;
+   if (instr->isDS() && !instr->definitions.empty())
+      ctx.assignments[instr->definitions[0].tempId()].weight = 1;
+}
+
 } /* end namespace */
 
 void
@@ -3924,6 +4084,8 @@ register_allocation(Program* program, ra_test_policy policy)
          bool temp_in_scc = register_file[scc];
 
          optimize_encoding(ctx, register_file, instr);
+
+         assign_weights(ctx, instr);
 
          auto tied_defs = get_tied_defs(instr.get());
          handle_operands_tied_to_definitions(ctx, parallelcopy, instr, register_file, tied_defs);
@@ -4034,6 +4196,8 @@ register_allocation(Program* program, ra_test_policy policy)
                if (get_reg_specified(ctx, register_file, rc, instr, reg, -1, false)) {
                   definition->setFixed(reg);
                   clear_preserved = false;
+                  ctx.assignments[definition->tempId()].update_weight(
+                     ctx.assignments[instr->operands[0].tempId()]);
                } else if (i == 0) {
                   RegClass vec_rc = RegClass::get(rc.type(), instr->operands[0].bytes());
                   DefInfo info(ctx, ctx.pseudo_dummy, vec_rc, -1);
@@ -4063,12 +4227,22 @@ register_allocation(Program* program, ra_test_policy policy)
                                      false)) {
                   definition->setFixed(reg);
                   clear_preserved = false;
+                  ctx.assignments[definition->tempId()].update_weight(
+                     ctx.assignments[instr->operands[0].tempId()]);
                }
             } else if (instr->opcode == aco_opcode::p_create_vector) {
                PhysReg reg = get_reg_create_vector(ctx, register_file, definition->getTemp(),
                                                    parallelcopy, instr);
                update_renames(ctx, register_file, parallelcopy, instr);
                definition->setFixed(reg);
+
+               unsigned offset = 0;
+               for (const Operand& op : instr->operands) {
+                  if (op.isTemp() && op.physReg() == reg.advance(offset))
+                     ctx.assignments[definition->tempId()].update_weight(
+                        ctx.assignments[op.tempId()]);
+                  offset += op.bytes();
+               }
             } else if (instr_info.classes[(int)instr->opcode] == instr_class::wmma &&
                        instr->operands[2].isTemp() && instr->operands[2].isKill() &&
                        instr->operands[2].regClass() == definition->regClass()) {
@@ -4076,6 +4250,9 @@ register_allocation(Program* program, ra_test_policy policy)
                 * Here we set a policy of forcing them the same if operands[2] gets killed (and
                 * otherwise they don't overlap). This may not be optimal if RA would select a
                 * different location due to affinity, but that gets complicated very quickly. */
+               definition->setFixed(instr->operands[2].physReg());
+            } else if (dot2_can_use_vopd(ctx, instr.get()) &&
+                       !affinity_blocks_tied_def0(ctx, register_file, instr.get(), 2)) {
                definition->setFixed(instr->operands[2].physReg());
             }
 

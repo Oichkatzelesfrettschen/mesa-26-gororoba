@@ -20,6 +20,7 @@ radv-stoney-angle:
     DEQP_SUITE: radv-stoney-angle
     GPU_VERSION: angle-radv-stoney
     DEQP_FRACTION: 3
+    vk_require_astc: 'true'
 
 radv-stoney-angle-full:
   extends:
@@ -163,36 +164,36 @@ radv-cezanne-vkcts-asan:
 
 # VKCTS never finishes on gfx7 due to all the GPU resets and hangs.
 # Hence, disable it for now.
-.radv-kabini-vkcts:
+.radv-kabini-vkcts-full:
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .kabini-test-valve
     - .radv-valve-manual-rules  # Make sure this job is *always* run manually
   timeout: 12h
   variables:
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 710
 
-radv-tahiti-vkcts:
+radv-tahiti-vkcts-full:
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .tahiti-test-valve
     - .radv-valve-manual-rules  # Make sure this job is *always* run manually
   timeout: 1h
   variables:
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 50
 
-radv-hawaii-vkcts:
+radv-hawaii-vkcts-full:
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .hawaii-test-valve
     - .radv-valve-manual-rules
   timeout: 1h
   variables:
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 50
 
-radv-polaris10-vkcts:
+radv-polaris10-vkcts-full:
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .polaris10-test-valve-kws
     - .radv-valve-manual-rules
   timeout: 1h 35m
@@ -200,38 +201,38 @@ radv-polaris10-vkcts:
     CI_TRON_TIMEOUT__BOOT_CYCLE__RETRIES: 4
     CI_TRON_TIMEOUT__BOOT_CYCLE__MINUTES: 70
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 90
-    RADV_PERFTEST: video_decode,video_encode
+    RADV_EXPERIMENTAL: video_decode,video_encode
     radv_enable_float16_gfx8: true
 
-radv-vega10-vkcts:
+radv-vega10-vkcts-full:
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .vega10-test-valve
     - .radv-valve-manual-rules
   timeout: 1h 15m
   variables:
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 70
-    RADV_PERFTEST: transfer_queue,video_decode,video_encode
+    RADV_EXPERIMENTAL: transfer_queue,video_decode,video_encode
 
-radv-renoir-vkcts:
+radv-renoir-vkcts-full:
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .renoir-test-valve
     - .radv-valve-manual-rules
   timeout: 2h 15m
   variables:
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 130
-    RADV_PERFTEST: transfer_queue
+    RADV_EXPERIMENTAL: transfer_queue
     FDO_CI_CONCURRENT: 12  # HACK: Reduce the memory pressure
 
-radv-navi10-vkcts:
+radv-navi10-vkcts-full:
   parallel: 2
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .navi10-test-valve-kws
     - .radv-valve-manual-rules
   variables:
-    RADV_PERFTEST: transfer_queue,hic
+    RADV_EXPERIMENTAL: transfer_queue,hic
 
 radv-navi21-vkcts:
   timeout: 35m
@@ -242,17 +243,27 @@ radv-navi21-vkcts:
     - .radv-valve-rules
   variables:
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 30
-    RADV_PERFTEST: transfer_queue,hic
+    RADV_EXPERIMENTAL: transfer_queue,hic
 
-radv-vangogh-vkcts:
+radv-navi21-vkcts-full:
+  timeout: 50m
+  extends:
+    - .ci-tron-test-radv-vk-nightly
+    - .navi21-test-valve
+    - .radv-valve-manual-rules
+  variables:
+    CI_TRON_TIMEOUT__OVERALL__MINUTES: 45
+    RADV_EXPERIMENTAL: transfer_queue,hic
+
+radv-vangogh-vkcts-full:
   parallel: 2
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .vangogh-test-valve
     - .radv-valve-manual-rules
   timeout: 90m
   variables:
-    RADV_PERFTEST: transfer_queue,hic
+    RADV_EXPERIMENTAL: transfer_queue,hic
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 89
 
 radeonsi-vangogh-glcts:
@@ -278,15 +289,15 @@ radeonsi-vangogh-glcts-full:
     DEQP_FRACTION: 1
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 89
 
-radv-raphael-vkcts:
+radv-raphael-vkcts-full:
   extends:
-    - .ci-tron-test-radv-vk
+    - .ci-tron-test-radv-vk-nightly
     - .raphael-test-valve
     - .radv-valve-manual-rules
   timeout: 45m
   variables:
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 40
-    RADV_PERFTEST: transfer_queue,hic
+    RADV_EXPERIMENTAL: transfer_queue,hic
 
 radv-navi31-vkcts:
   timeout: 25m
@@ -297,9 +308,18 @@ radv-navi31-vkcts:
     - .radv-valve-rules
   variables:
     RADV_DEBUG: nomeshshader # Disable mesh shaders until task shaders stop hanging
-    RADV_PERFTEST: transfer_queue,hic
+    RADV_EXPERIMENTAL: transfer_queue,hic
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 20
 
+radv-navi31-vkcts-full:
+  timeout: 30m
+  extends:
+    - .ci-tron-test-radv-vk-nightly
+    - .navi31-test-valve
+    - .radv-valve-manual-rules
+  variables:
+    RADV_EXPERIMENTAL: transfer_queue,hic
+    CI_TRON_TIMEOUT__OVERALL__MINUTES: 25
 
 radv-gfx1201-vkcts:
   timeout: 25m
@@ -311,8 +331,30 @@ radv-gfx1201-vkcts:
   variables:
     # TODO: Verify that task shaders don't hang.
     RADV_DEBUG: nomeshshader
-    RADV_PERFTEST: transfer_queue,hic
+    RADV_EXPERIMENTAL: transfer_queue,hic
     CI_TRON_TIMEOUT__OVERALL__MINUTES: 20
+
+radv-gfx1201-vkcts-full:
+  timeout: 35m
+  extends:
+    - .ci-tron-test-radv-vk-nightly
+    - .gfx1201-test-valve
+    - .radv-valve-manual-rules
+  variables:
+    RADV_EXPERIMENTAL: transfer_queue,hic
+    CI_TRON_TIMEOUT__OVERALL__MINUTES: 30
+
+radv-gfx1201-fluster:
+  extends:
+    - .ci-tron-x86_64-test-video
+    - .ci-tron-test-radv
+    - .gfx1201-test-valve
+    - .radv-valve-manual-rules
+    - .test-fluster
+  timeout: 10m
+  variables:
+    CI_TRON_TIMEOUT__OVERALL__MINUTES: 8  # normal runtime: 50-60sec, but let's leave room for more tests
+    DEQP_SUITE: radv-fluster
 
 ############### Fossilize
 radv-fossils:

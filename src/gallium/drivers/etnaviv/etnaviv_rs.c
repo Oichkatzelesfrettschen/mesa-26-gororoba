@@ -476,7 +476,9 @@ etna_blit_clear_zs_rs(struct pipe_context *pctx, struct pipe_surface *dst,
 }
 
 static void
-etna_clear_rs(struct pipe_context *pctx, unsigned buffers, const struct pipe_scissor_state *scissor_state,
+etna_clear_rs(struct pipe_context *pctx, unsigned buffers,
+           uint32_t color_clear_mask, uint8_t stencil_clear_mask,
+           const struct pipe_scissor_state *scissor_state,
            const union pipe_color_union *color, double depth, unsigned stencil)
 {
    struct etna_context *ctx = etna_context(pctx);
@@ -881,7 +883,8 @@ etna_try_rs_blit(struct pipe_context *pctx,
       .dest_padded_height = dst_lev->padded_height,
       .downsample_x = downsample_x,
       .downsample_y = downsample_y,
-      .swap_rb = translate_rb_src_dst_swap(src->base.format, dst->base.format),
+      .swap_rb = ctx->in_transfer_blit &&
+                 translate_pe_format_rb_swap(blit_info->src.format),
       .dither = {0xffffffff, 0xffffffff}, // XXX dither when going from 24 to 16 bit?
       .clear_mode = VIVS_RS_CLEAR_CONTROL_MODE_DISABLED,
       .width = width,

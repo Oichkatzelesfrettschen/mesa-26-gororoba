@@ -115,41 +115,19 @@ class VarSet(object):
     def lock(self):
         self.immutable = True
 
-
-class SearchExpression(object):
-    def __init__(self, expr):
-        self.opcode = expr[0]
-        self.sources = expr[1:]
-        self.ignore_exact = False
-
-        assert '{' not in self.opcode, \
-            'Malformed opcode name \"{}\".'.format(self.opcode)
-
-    @staticmethod
-    def create(val):
-        if isinstance(val, tuple):
-            return SearchExpression(val)
-        else:
-            assert (isinstance(val, SearchExpression))
-            return val
-
-    def __repr__(self):
-        l = [self.opcode, *self.sources]
-        if self.ignore_exact:
-            l.append('ignore_exact')
-        return repr((*l,))
-
+class ForceFpCtrl(Enum):
+    NoForce = 1,
+    Inexact = 2,
+    Contract = 3
 
 class Value(object):
     @staticmethod
-    def create(val, name_base, varset, algebraic_pass):
+    def create(val, name_base, varset, algebraic_pass, fp_ctrl = ForceFpCtrl.NoForce):
         if isinstance(val, bytes):
             val = val.decode('utf-8')
 
-        if isinstance(val, tuple) or isinstance(val, SearchExpression):
-            return Expression(val, name_base, varset, algebraic_pass)
-        elif isinstance(val, Expression):
-            return val
+        if isinstance(val, tuple):
+            return Expression(val, name_base, varset, algebraic_pass, fp_ctrl)
         elif isinstance(val, str):
             return Variable(val, name_base, varset, algebraic_pass)
         elif isinstance(val, (bool, float, int)):
@@ -224,17 +202,11 @@ class Value(object):
 % elif isinstance(val, Variable):
       ${val.index}, /* ${val.var_name} */
       ${'true' if val.is_constant else 'false'},
-      ${val.type() or 'nir_type_invalid' },
       ${val.cond_index},
       ${val.swizzle()},
 % elif isinstance(val, Expression):
-      ${'true' if val.inexact else 'false'},
-      ${'true' if val.exact else 'false'},
-      ${'true' if val.ignore_exact else 'false'},
-      ${'true' if val.nsz else 'false'},
-      ${'true' if val.nnan else 'false'},
-      ${'true' if val.ninf else 'false'},
-      ${'true' if val.contract else 'false'},
+      ${val.fp_math_ctrl_exclude()},
+      ${val.fp_math_ctrl_add()},
       ${'true' if len(val.sources) > 1 and isinstance(val.sources[1], Constant) else 'false'},
       ${val.swizzle},
       ${val.c_opcode()},
@@ -322,7 +294,7 @@ class Constant(Value):
 # The $ at the end forces there to be an error if any part of the string
 # doesn't match one of the field patterns.
 _var_name_re = re.compile(r"(?P<const>#)?(?P<name>\w+)"
-                          r"(?:@(?P<type>int|uint|bool|float)?(?P<bits>\d+)?)?"
+                          r"(?P<bits>@\d+)?"
                           r"(?P<cond>\([^\)]+\))?"
                           r"(?P<swiz>\.[xyzwabcdefghijklmnop]+)?"
                           r"$")
@@ -355,28 +327,10 @@ class Variable(Value):
         self.cond = m.group('cond')
         self.cond_index = get_cond_index(
             algebraic_pass.variable_cond, m.group('cond'))
-        self.required_type = m.group('type')
-        self._bit_size = int(m.group('bits')) if m.group('bits') else None
+        self._bit_size = int(m.group('bits')[1:]) if m.group('bits') else None
         self.swiz = m.group('swiz')
 
-        if self.required_type == 'bool':
-            if self._bit_size is not None:
-                assert self._bit_size in type_sizes(self.required_type)
-            else:
-                self._bit_size = 1
-
-        if self.required_type is not None:
-            assert self.required_type in ('float', 'bool', 'int', 'uint')
-
         self.index = varset[self.var_name]
-
-    def type(self):
-        if self.required_type == 'bool':
-            return "nir_type_bool"
-        elif self.required_type in ('int', 'uint'):
-            return "nir_type_int"
-        elif self.required_type == 'float':
-            return "nir_type_float"
 
     def equivalent(self, other):
         """Check that two variables are equivalent.
@@ -398,23 +352,21 @@ class Variable(Value):
 
 
 _opcode_re = re.compile(r"(?P<inexact>~)?(?P<exact>!)?(?P<opcode>\w+)(?:@(?P<bits>\d+))?"
-                        r"(?P<cond>\([^\)]+\))?(?P<swizzle>\.[xyzwabcdefghijklmnop])?")
+                        r"(?P<cond>\([^\)]+\))?(?P<swizzle>\.[xyzwabcdefghijklmnop])?"
+                        r"$")
 
 
 class Expression(Value):
-    def __init__(self, expr, name_base, varset, algebraic_pass):
+    def __init__(self, expr, name_base, varset, algebraic_pass, fp_ctrl):
         Value.__init__(self, expr, name_base, "expression")
 
-        expr = SearchExpression.create(expr)
-
-        m = _opcode_re.match(expr.opcode)
+        m = _opcode_re.match(expr[0])
         assert m and m.group('opcode') is not None
 
         self.opcode = m.group('opcode')
         self._bit_size = int(m.group('bits')) if m.group('bits') else None
-        self.inexact = m.group('inexact') is not None
+        self.inexact = m.group('inexact') is not None or fp_ctrl == ForceFpCtrl.Inexact
         self.exact = m.group('exact') is not None
-        self.ignore_exact = expr.ignore_exact
         self.cond = m.group('cond')
 
         assert not self.inexact or not self.exact, \
@@ -430,7 +382,15 @@ class Expression(Value):
         self.nsz = cond.pop('nsz', False)
         self.nnan = cond.pop('nnan', False)
         self.ninf = cond.pop('ninf', False)
-        self.contract = cond.pop('contract', False)
+        self.contract = cond.pop('contract', False) or fp_ctrl == ForceFpCtrl.Contract
+        self.preserve_nan_inf = cond.pop('preserve_nan_inf', False)
+        self.preserve_sz = cond.pop('preserve_sz', False)
+        if cond.pop('preserve_nan_inf_sz', False):
+           self.preserve_nan_inf = True
+           self.preserve_sz = True
+
+        # Single component index of the swizzle of the output of this
+        # expression, or -1 if no swizzle (all components)
         self.swizzle = - \
             1 if m.group('swizzle') is None else swizzles[m.group(
                 'swizzle').removeprefix('.')]
@@ -443,8 +403,14 @@ class Expression(Value):
         self.cond_index = get_cond_index(
             algebraic_pass.expression_cond, self.cond)
 
-        self.sources = [Value.create(src, "{0}_{1}".format(name_base, i), varset, algebraic_pass)
-                        for (i, src) in enumerate(expr.sources)]
+        new_fp_ctrl = ForceFpCtrl.NoForce
+        if self.inexact:
+            new_fp_ctrl = ForceFpCtrl.Inexact
+        elif self.contract:
+            new_fp_ctrl = ForceFpCtrl.Contract
+
+        self.sources = [Value.create(src, "{0}_{1}".format(name_base, i), varset, algebraic_pass, new_fp_ctrl)
+                        for (i, src) in enumerate(expr[1:])]
 
         # nir_search_expression::srcs is hard-coded to 4
         assert len(self.sources) <= 4
@@ -509,6 +475,46 @@ class Expression(Value):
     def render(self, cache):
         srcs = "".join(src.render(cache) for src in self.sources)
         return srcs + super(Expression, self).render(cache)
+
+    def fp_math_ctrl_exclude(self):
+        exclude = set()
+        if self.inexact:
+            exclude.add("nir_fp_exact")
+
+        if self.contract:
+            exclude.add("nir_fp_exact")
+
+        if self.nsz:
+            exclude.add("nir_fp_preserve_signed_zero")
+
+        if self.ninf:
+            exclude.add("nir_fp_preserve_inf")
+
+        if self.nnan:
+            exclude.add("nir_fp_preserve_nan")
+
+        if not exclude:
+            return "nir_fp_fast_math"
+
+        return ' | '.join(sorted(list(exclude)))
+
+    def fp_math_ctrl_add(self):
+        add = set()
+
+        if self.exact:
+            add.add("nir_fp_exact")
+
+        if self.preserve_nan_inf:
+            add.add("nir_fp_preserve_nan")
+            add.add("nir_fp_preserve_inf")
+
+        if self.preserve_sz:
+            add.add("nir_fp_preserve_signed_zero")
+
+        if not add:
+            return "nir_fp_fast_math"
+
+        return ' | '.join(sorted(list(add)))
 
 
 class BitSizeValidator(object):
@@ -797,9 +803,6 @@ class BitSizeValidator(object):
             assert val.cond_index == -1, \
                 'Replacement variables must not have a condition.'
 
-            assert not val.required_type, \
-                'Replacement variables must not have a required type.'
-
     def validate(self, search, replace):
         self.is_search = True
         self.merge_variables(search)
@@ -855,7 +858,7 @@ class SearchAndReplace(object):
             self.search = search
         else:
             self.search = Expression(search, "search{0}".format(
-                self.id), varset, algebraic_pass)
+                self.id), varset, algebraic_pass, ForceFpCtrl.NoForce)
 
         varset.lock()
 
@@ -1292,14 +1295,21 @@ TEST_F(${pass_name}_pattern_test, ${test_name})
 {
    b->shader->info.name = "${verbose_name}";
 % if expected_result == test_status.XFAIL:
-   expected_result = XFAIL;
+   expected_result = FAIL;
 % elif expected_result == test_status.UNSUPPORTED:
    expected_result = UNSUPPORTED;
 % endif
 % for xform_def in xform_defs:
    ${xform_def}
 % endfor
-   nir_unit_test_assert_eq(b, ${search_def}, ${replace_def});
+<%
+   # Note that fdot_replicated replacements will generate more channels than the search
+   # side, and that's OK -- nir_opt_algebraic allows that in patterns.  But
+   # nir_unit_test_assert_eq wants equality.
+%>
+   unsigned mask = BITFIELD_MASK(MIN2(${search_def}->num_components, ${replace_def}->num_components));
+   nir_unit_test_assert_eq(b, nir_channels(b, ${search_def}, mask),
+                              nir_channels(b, ${replace_def}, mask));
 % for cond in expr_conds:
    ${cond}
 % endfor
@@ -1335,18 +1345,9 @@ def expression_is_unsupported(expr):
     if any(expression_is_unsupported(src) for src in expr.sources):
         return True
 
-    if expr.swizzle != -1:
-        return True
-
     broken_opcodes = [
         # medium precision means that the compiler can do whatever it wants which makes it unsuitable for testing.
         "f2fmp", "i2imp", "f2imp", "f2ump", "i2fmp", "u2fmp",
-        # _replicated OPs do not have nir_builder functions.
-        "fdot2_replicated", "fdot3_replicated", "fdot4_replicated", "fdph_replicated",
-
-        # The tests do not validate patterns with those opcodes correctly.
-        "imad24_ir3", "imul24_relaxed", "umad24_relaxed", "umul24_relaxed",
-        "udiv_aligned_4",
     ]
 
     if expr.opcode in broken_opcodes:
@@ -1413,12 +1414,8 @@ def get_expression_def(expr, name, value_comps, variable_map, defs, expr_conds, 
             def_name = f"{name}{len(defs)}"
             num_components = value_comps[expr.index]
 
-            if expr.required_type == "bool":
-                defs.append(
-                    f"nir_def *{def_name} = nir_b2b{bit_size}(b, nir_unit_test_uniform_input(b, {num_components}, 1, {expr.index}));")
-            else:
-                defs.append(
-                    f"nir_def *{def_name} = nir_unit_test_uniform_input(b, {num_components}, {bit_size}, {expr.index});")
+            defs.append(
+                f"nir_def *{def_name} = nir_unit_test_uniform_input(b, {num_components}, {bit_size}, {expr.index});")
 
             variable_map[expr.index] = def_name
         else:
@@ -1478,6 +1475,14 @@ def get_expression_def(expr, name, value_comps, variable_map, defs, expr_conds, 
         fp_math_ctrl.add("nir_fp_preserve_inf")
 
     defs.append(f"nir_def *{def_name} = nir_{opcode}(b, {', '.join(srcs)});")
+
+    expr_exclude = expr.fp_math_ctrl_exclude();
+    if expr_exclude != "nir_fp_fast_math":
+        defs.append(f"if (nir_def_is_alu({def_name}))")
+        defs.append(f"   nir_def_as_alu({def_name})->fp_math_ctrl &= ~({expr_exclude});")
+
+    if expr.swizzle != -1:
+        def_name = f"nir_channel(b, {def_name}, {expr.swizzle})"
 
     if expr.cond != None and isinstance(expr, Expression):
         # These do not matter for correctness
@@ -1612,12 +1617,17 @@ class AlgebraicPass(object):
                     xform_defs.append(
                         f"  nir_def *replace_{bits} = nir_u2u{bits}(b, {replace_def});")
                     replace_def = f"replace_{bits}"
-            if xform.search.cond == "is_only_used_as_float":
+            if xform.search.cond == "is_only_used_as_float" or xform.search.cond == "is_only_used_as_float_nsz":
+                zero = "-0.0"
+                if xform.search.cond == "is_only_used_as_float_nsz":
+                    xform_defs.append("  b->fp_math_ctrl &= ~nir_fp_preserve_signed_zero;")
+                    zero = "+0.0"
+
                 xform_defs.append(
-                    f"  nir_def *search_float = nir_fadd_imm(b, {search_def}, 0.0);")
+                    f"  nir_def *search_float = nir_fadd_imm(b, {search_def}, {zero});")
                 search_def = "search_float"
                 xform_defs.append(
-                    f"  nir_def *replace_float = nir_fadd_imm(b, {replace_def}, 0.0);")
+                    f"  nir_def *replace_float = nir_fadd_imm(b, {replace_def}, {zero});")
                 replace_def = "replace_float"
 
             verbose_name = f"{str(xform.search)} -> {str(xform.replace)}"
@@ -1657,11 +1667,3 @@ class AlgebraicPass(object):
             variable_cond=sorted(
                 self.variable_cond.items(), key=lambda kv: kv[1])
         )
-
-# The replacement expression isn't necessarily exact if the search expression is exact.
-
-
-def ignore_exact(*expr):
-    expr = SearchExpression.create(expr)
-    expr.ignore_exact = True
-    return expr

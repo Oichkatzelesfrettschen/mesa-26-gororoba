@@ -1,24 +1,6 @@
 /*
  * Copyright © 2010 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 /** @file elk_fs.cpp
@@ -1337,37 +1319,33 @@ elk_fs_visitor::assign_curb_setup()
  * on each upload.
  */
 void
-elk_compute_urb_setup_index(struct elk_wm_prog_data *wm_prog_data)
+elk_compute_urb_setup_index(struct elk_fs_prog_data *fs_prog_data)
 {
    /* Make sure uint8_t is sufficient */
    STATIC_ASSERT(VARYING_SLOT_MAX <= 0xff);
    uint8_t index = 0;
    for (uint8_t attr = 0; attr < VARYING_SLOT_MAX; attr++) {
-      if (wm_prog_data->urb_setup[attr] >= 0) {
-         wm_prog_data->urb_setup_attribs[index++] = attr;
+      if (fs_prog_data->urb_setup[attr] >= 0) {
+         fs_prog_data->urb_setup_attribs[index++] = attr;
       }
    }
-   wm_prog_data->urb_setup_attribs_count = index;
+   fs_prog_data->urb_setup_attribs_count = index;
 }
 
 static void
 calculate_urb_setup(const struct intel_device_info *devinfo,
-                    const struct elk_wm_prog_key *key,
-                    struct elk_wm_prog_data *prog_data,
+                    const struct elk_fs_prog_key *key,
+                    struct elk_fs_prog_data *prog_data,
                     const nir_shader *nir)
 {
    memset(prog_data->urb_setup, -1, sizeof(prog_data->urb_setup));
-   memset(prog_data->urb_setup_channel, 0, sizeof(prog_data->urb_setup_channel));
 
    int urb_next = 0; /* in vec4s */
 
-   const uint64_t inputs_read =
-      nir->info.inputs_read & ~nir->info.per_primitive_inputs;
+   const uint64_t inputs_read = nir->info.inputs_read;
 
    /* Figure out where each of the incoming setup attributes lands. */
    if (devinfo->ver >= 6) {
-      assert(!nir->info.per_primitive_inputs);
-
       uint64_t vue_header_bits =
          VARYING_BIT_PSIZ | VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT;
 
@@ -1474,7 +1452,7 @@ calculate_urb_setup(const struct intel_device_info *devinfo,
          prog_data->urb_setup[VARYING_SLOT_PNTC] = urb_next++;
    }
 
-   prog_data->num_varying_inputs = urb_next - prog_data->num_per_primitive_inputs;
+   prog_data->num_varying_inputs = urb_next;
    prog_data->inputs = inputs_read;
 
    elk_compute_urb_setup_index(prog_data);
@@ -1484,7 +1462,7 @@ void
 elk_fs_visitor::assign_urb_setup()
 {
    assert(stage == MESA_SHADER_FRAGMENT);
-   struct elk_wm_prog_data *prog_data = elk_wm_prog_data(this->prog_data);
+   struct elk_fs_prog_data *prog_data = elk_fs_prog_data(this->prog_data);
 
    int urb_start = payload().num_regs + prog_data->base.curb_read_length;
 
@@ -1516,31 +1494,17 @@ elk_fs_visitor::assign_urb_setup()
             const unsigned chan_sz = 4;
             struct elk_reg reg;
 
-            /* Calculate the base register on the thread payload of
-             * either the block of vertex setup data or the block of
-             * per-primitive constant data depending on whether we're
-             * accessing a primitive or vertex input.  Also calculate
-             * the index of the input within that block.
-             */
-            const bool per_prim = inst->src[i].nr < prog_data->num_per_primitive_inputs;
-            const unsigned base = urb_start +
-               (per_prim ? 0 :
-                align(prog_data->num_per_primitive_inputs / 2,
-                      reg_unit(devinfo)));
-            const unsigned idx = per_prim ? inst->src[i].nr :
-               inst->src[i].nr - prog_data->num_per_primitive_inputs;
-
             /* Translate the offset within the param_width-wide
              * representation described above into an offset and a
              * grf, which contains the plane parameters for the first
              * polygon processed by the thread.
              *
-             * Earlier platforms and per-primitive block pack 2 logical
-             * input components per 32B register.
+             * Earlier platforms pack 2 logical input components per
+             * 32B register.
              */
-            const unsigned grf = base + idx / 2;
+            const unsigned grf = urb_start + inst->src[i].nr / 2;
             assert(inst->src[i].offset / param_width < REG_SIZE / 2);
-            const unsigned delta = (idx % 2) * (REG_SIZE / 2) +
+            const unsigned delta = (inst->src[i].nr % 2) * (REG_SIZE / 2) +
                inst->src[i].offset / (param_width * chan_sz) * chan_sz +
                inst->src[i].offset % chan_sz;
             reg = byte_offset(retype(elk_vec8_grf(grf, 0), inst->src[i].type),
@@ -1563,12 +1527,6 @@ elk_fs_visitor::assign_urb_setup()
     * dispatch.
     */
    this->first_non_payload_grf += prog_data->num_varying_inputs * 2;
-
-   /* Unlike regular attributes, per-primitive attributes have all 4 channels
-    * in the same slot, so each GRF can store two slots.
-    */
-   assert(prog_data->num_per_primitive_inputs % 2 == 0);
-   this->first_non_payload_grf += prog_data->num_per_primitive_inputs / 2;
 }
 
 void
@@ -2922,7 +2880,7 @@ out:
 void
 elk_fs_visitor::emit_repclear_shader()
 {
-   elk_wm_prog_key *key = (elk_wm_prog_key*) this->key;
+   elk_fs_prog_key *key = (elk_fs_prog_key*) this->key;
    elk_fs_inst *write = NULL;
 
    assert(uniforms == 0);
@@ -4108,7 +4066,7 @@ elk_sample_mask_reg(const fs_builder &bld)
 
    if (s.stage != MESA_SHADER_FRAGMENT) {
       return elk_imm_ud(0xffffffff);
-   } else if (elk_wm_prog_data(s.stage_prog_data)->uses_kill) {
+   } else if (elk_fs_prog_data(s.stage_prog_data)->uses_kill) {
       assert(bld.dispatch_width() <= 16);
       return elk_flag_subreg(sample_mask_flag_subreg(s) + bld.group() / 16);
    } else {
@@ -4120,7 +4078,7 @@ elk_sample_mask_reg(const fs_builder &bld)
 
 uint32_t
 elk_fb_write_msg_control(const elk_fs_inst *inst,
-                         const struct elk_wm_prog_data *prog_data)
+                         const struct elk_fs_prog_data *prog_data)
 {
    uint32_t mctl;
 
@@ -4164,7 +4122,7 @@ elk_emit_predicate_on_sample_mask(const fs_builder &bld, elk_fs_inst *inst)
    const elk_fs_reg sample_mask = elk_sample_mask_reg(bld);
    const unsigned subreg = sample_mask_flag_subreg(s);
 
-   if (elk_wm_prog_data(s.stage_prog_data)->uses_kill) {
+   if (elk_fs_prog_data(s.stage_prog_data)->uses_kill) {
       assert(sample_mask.file == ARF &&
              sample_mask.nr == elk_flag_subreg(subreg).nr &&
              sample_mask.subnr == elk_flag_subreg(
@@ -5219,7 +5177,7 @@ elk_fs_visitor::lower_find_live_channel()
       elk_stage_has_packed_dispatch(devinfo, stage, stage_prog_data);
    bool vmask =
       stage == MESA_SHADER_FRAGMENT &&
-      elk_wm_prog_data(stage_prog_data)->uses_vmask;
+      elk_fs_prog_data(stage_prog_data)->uses_vmask;
 
    foreach_block_and_inst_safe(block, elk_fs_inst, inst, cfg) {
       if (inst->opcode != ELK_SHADER_OPCODE_FIND_LIVE_CHANNEL &&
@@ -6214,8 +6172,8 @@ elk_fs_visitor::run_gs()
 bool
 elk_fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
 {
-   struct elk_wm_prog_data *wm_prog_data = elk_wm_prog_data(this->prog_data);
-   elk_wm_prog_key *wm_key = (elk_wm_prog_key *) this->key;
+   struct elk_fs_prog_data *fs_prog_data = elk_fs_prog_data(this->prog_data);
+   elk_fs_prog_key *wm_key = (elk_fs_prog_key *) this->key;
    const fs_builder bld = fs_builder(this).at_end();
 
    assert(stage == MESA_SHADER_FRAGMENT);
@@ -6241,7 +6199,7 @@ elk_fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
       /* We handle discards by keeping track of the still-live pixels in f0.1.
        * Initialize it with the dispatched pixels.
        */
-      if (wm_prog_data->uses_kill) {
+      if (fs_prog_data->uses_kill) {
          const unsigned lower_width = MIN2(dispatch_width, 16);
          for (unsigned i = 0; i < dispatch_width / lower_width; i++) {
             /* According to the "PS Thread Payload for Normal
@@ -6258,7 +6216,7 @@ elk_fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
       }
 
       if (nir->info.writes_memory)
-         wm_prog_data->has_side_effects = true;
+         fs_prog_data->has_side_effects = true;
 
       nir_to_elk(this);
 
@@ -6375,7 +6333,7 @@ elk_compute_barycentric_interp_modes(const struct intel_device_info *devinfo,
 }
 
 static void
-elk_compute_flat_inputs(struct elk_wm_prog_data *prog_data,
+elk_compute_flat_inputs(struct elk_fs_prog_data *prog_data,
                         const nir_shader *shader)
 {
    prog_data->flat_inputs = 0;
@@ -6383,9 +6341,6 @@ elk_compute_flat_inputs(struct elk_wm_prog_data *prog_data,
    nir_foreach_shader_in_variable(var, shader) {
       /* flat shading */
       if (var->data.interpolation != INTERP_MODE_FLAT)
-         continue;
-
-      if (var->data.per_primitive)
          continue;
 
       unsigned slots = glsl_count_attribute_slots(var->type, false);
@@ -6494,10 +6449,10 @@ elk_nir_move_interpolation_to_top(nir_shader *nir)
 }
 
 static void
-elk_nir_populate_wm_prog_data(nir_shader *shader,
+elk_nir_populate_fs_prog_data(nir_shader *shader,
                               const struct intel_device_info *devinfo,
-                              const struct elk_wm_prog_key *key,
-                              struct elk_wm_prog_data *prog_data)
+                              const struct elk_fs_prog_key *key,
+                              struct elk_fs_prog_data *prog_data)
 {
    /* key->alpha_test_func means simulating alpha testing via discards,
     * so the shader definitely kills pixels.
@@ -6637,8 +6592,8 @@ elk_compile_fs(const struct elk_compiler *compiler,
                struct elk_compile_fs_params *params)
 {
    struct nir_shader *nir = params->base.nir;
-   const struct elk_wm_prog_key *key = params->key;
-   struct elk_wm_prog_data *prog_data = params->prog_data;
+   const struct elk_fs_prog_key *key = params->key;
+   struct elk_fs_prog_data *prog_data = params->prog_data;
    bool allow_spilling = params->allow_spilling;
    const bool debug_enabled =
       elk_should_print_shader(nir, params->base.debug_flag ?
@@ -6674,7 +6629,7 @@ elk_compile_fs(const struct elk_compiler *compiler,
    elk_postprocess_nir(nir, compiler, debug_enabled,
                        key->base.robust_flags);
 
-   elk_nir_populate_wm_prog_data(nir, compiler->devinfo, key, prog_data);
+   elk_nir_populate_fs_prog_data(nir, compiler->devinfo, key, prog_data);
 
    std::unique_ptr<elk_fs_visitor> v8, v16, v32, vmulti;
    elk_cfg_t *simd8_cfg = NULL, *simd16_cfg = NULL, *simd32_cfg = NULL;
@@ -7144,7 +7099,7 @@ elk_fs_test_dispatch_packing(const fs_builder &bld)
    const mesa_shader_stage stage = shader->stage;
    const bool uses_vmask =
       stage == MESA_SHADER_FRAGMENT &&
-      elk_wm_prog_data(shader->stage_prog_data)->uses_vmask;
+      elk_fs_prog_data(shader->stage_prog_data)->uses_vmask;
 
    if (elk_stage_has_packed_dispatch(shader->devinfo, stage,
                                      shader->stage_prog_data)) {
@@ -7231,12 +7186,12 @@ namespace elk {
    }
 
    void
-   check_dynamic_msaa_flag(const fs_builder &bld,
-                           const struct elk_wm_prog_data *wm_prog_data,
-                           enum intel_msaa_flags flag)
+   check_dynamic_fs_config(const fs_builder &bld,
+                           const struct elk_fs_prog_data *fs_prog_data,
+                           enum intel_fs_config flag)
    {
       elk_fs_inst *inst = bld.AND(bld.null_reg_ud(),
-                              dynamic_msaa_flags(wm_prog_data),
+                              dynamic_fs_config(fs_prog_data),
                               elk_imm_ud(flag));
       inst->conditional_mod = ELK_CONDITIONAL_NZ;
    }

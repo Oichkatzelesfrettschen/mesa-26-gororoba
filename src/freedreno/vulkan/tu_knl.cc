@@ -61,6 +61,9 @@ tu_bo_init_new_explicit_iova(struct tu_device *dev,
 
    (*out_bo)->dump = flags & TU_BO_ALLOC_ALLOW_DUMP;
 
+   if (!(*out_bo)->unique_id)
+      (*out_bo)->unique_id = (*out_bo)->gem_handle;
+
    return VK_SUCCESS;
 }
 
@@ -68,10 +71,12 @@ VkResult
 tu_bo_init_dmabuf(struct tu_device *dev,
                   struct tu_bo **bo,
                   uint64_t size,
+                  enum tu_bo_alloc_flags flags,
                   int fd)
 {
+   assert(!(flags & ~TU_BO_ALLOC_REPLAYABLE));
    size = align64(size, os_page_size);
-   VkResult result = dev->instance->knl->bo_init_dmabuf(dev, bo, size, fd);
+   VkResult result = dev->instance->knl->bo_init_dmabuf(dev, bo, size, flags, fd);
    if (result != VK_SUCCESS)
       return result;
 
@@ -82,6 +87,9 @@ tu_bo_init_dmabuf(struct tu_device *dev,
     */
    if (dev->physical_device->has_cached_non_coherent_memory)
       (*bo)->cached_non_coherent = true;
+
+   if (!(*bo)->unique_id)
+      (*bo)->unique_id = (*bo)->gem_handle;
 
    return VK_SUCCESS;
 }

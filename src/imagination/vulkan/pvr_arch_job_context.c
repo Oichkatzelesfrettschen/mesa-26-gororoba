@@ -398,7 +398,7 @@ static VkResult pvr_pds_compute_ctx_sr_program_create_and_upload(
    uint32_t code_offset;
 
    pvr_pds_ctx_sr_program_setup(device->pdevice->dev_runtime_info.core_count,
-                                PVR_HAS_ERN(dev_info, 35421),
+                                PVR_HAS_ENHANCEMENT(dev_info, 35421),
                                 usc_program_upload_offset,
                                 usc_temps,
                                 sr_addr,
@@ -771,7 +771,7 @@ pvr_rogue_get_geom_state_stream_out_words(struct pvr_pds_upload *pds_program,
 
 static void pvr_render_ctx_ws_static_state_init(
    struct pvr_render_ctx *ctx,
-   struct pvr_winsys_render_ctx_static_state *static_state)
+   struct PVR_PER_ARCH(winsys_render_ctx_static_state) * static_state)
 {
    uint64_t *q_dst;
    uint32_t *d_dst;
@@ -850,7 +850,11 @@ static void pvr_render_ctx_ws_create_info_init(
    create_info->priority = priority;
    create_info->vdm_callstack_addr = ctx->vdm_callstack_bo->vma->dev_addr;
 
-   pvr_render_ctx_ws_static_state_init(ctx, &create_info->static_state);
+#if defined(PVR_BUILD_ARCH_ROGUE)
+   pvr_render_ctx_ws_static_state_init(ctx, &create_info->static_state.rogue);
+#else
+#   error "Missing arch"
+#endif
 }
 
 VkResult pvr_arch_render_ctx_create(struct pvr_device *device,
@@ -988,7 +992,7 @@ static VkResult pvr_pds_sr_fence_terminate_program_create_and_upload(
 static void pvr_compute_ctx_ws_static_state_init(
    const struct pvr_device_info *const dev_info,
    const struct pvr_compute_ctx *const ctx,
-   struct pvr_winsys_compute_ctx_static_state *const static_state)
+   struct PVR_PER_ARCH(winsys_compute_ctx_static_state) *const static_state)
 {
    const struct pvr_compute_ctx_switch *const ctx_switch = &ctx->ctx_switch;
 
@@ -1098,9 +1102,13 @@ static void pvr_compute_ctx_ws_create_info_init(
 {
    create_info->priority = priority;
 
+#if defined(PVR_BUILD_ARCH_ROGUE)
    pvr_compute_ctx_ws_static_state_init(&ctx->device->pdevice->dev_info,
                                         ctx,
-                                        &create_info->static_state);
+                                        &create_info->static_state.rogue);
+#else
+#   error "Missing arch"
+#endif
 }
 
 VkResult pvr_arch_compute_ctx_create(struct pvr_device *const device,

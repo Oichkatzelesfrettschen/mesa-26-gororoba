@@ -103,3 +103,17 @@ dEQP-VK.sparse_resources.shader_intrinsics.2d_sparse_read.r12x4g12x4_unorm_2pack
 dEQP-VK.sparse_resources.shader_intrinsics.2d_sparse_read.r12x4g12x4_unorm_2pack16.128_128_1,Crash
 dEQP-VK.sparse_resources.shader_intrinsics.2d_sparse_read.r12x4g12x4_unorm_2pack16.503_137_1,Crash
 dEQP-VK.sparse_resources.shader_intrinsics.2d_sparse_read.r12x4g12x4_unorm_2pack16.512_256_1,Crash
+
+
+dEQP-VK.wsi.direct_drm.colorspace.basic,Fail
+dEQP-VK.wsi.direct_drm.colorspace.hdr,Fail
+dEQP-VK.wsi.direct_drm.swapchain.create.image_swapchain_create_info_concurrent,Crash
+dEQP-VK.wsi.direct_drm.swapchain.create.image_swapchain_create_info,Crash
+dEQP-VK.wsi.direct_drm.swapchain.simulate_oom.image_swapchain_create_info_concurrent,Crash
+dEQP-VK.wsi.direct_drm.swapchain.simulate_oom.image_swapchain_create_info,Crash
+dEQP-VK.wsi.direct.colorspace.basic,Fail
+dEQP-VK.wsi.direct.colorspace.hdr,Fail
+dEQP-VK.wsi.direct.swapchain.create.image_swapchain_create_info_concurrent,Crash
+dEQP-VK.wsi.direct.swapchain.create.image_swapchain_create_info,Crash
+dEQP-VK.wsi.direct.swapchain.simulate_oom.image_swapchain_create_info_concurrent,Crash
+dEQP-VK.wsi.direct.swapchain.simulate_oom.image_swapchain_create_info,Crash

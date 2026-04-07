@@ -13,7 +13,7 @@
 #include <stdio.h>
 
 #include "git_sha1.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/os_misc.h"
 #include "venus-protocol/vn_protocol_driver_device.h"
 #include "vk_android.h"
@@ -193,6 +193,7 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
       VkPhysicalDeviceRobustness2FeaturesKHR robustness_2;
       VkPhysicalDeviceShaderBfloat16FeaturesKHR shader_bfloat16;
       VkPhysicalDeviceShaderClockFeaturesKHR shader_clock;
+      VkPhysicalDeviceShaderFmaFeaturesKHR shader_fma;
       VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR
          shader_maximal_reconvergence;
       VkPhysicalDeviceShaderQuadControlFeaturesKHR shader_quad_control;
@@ -220,6 +221,7 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
       VkPhysicalDeviceDepthClampControlFeaturesEXT depth_clamp_control;
       VkPhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control;
       VkPhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable;
+      VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptor_heap;
       VkPhysicalDeviceDynamicRenderingUnusedAttachmentsFeaturesEXT
          dynamic_rendering_unused_attachments;
       VkPhysicalDeviceExtendedDynamicState3FeaturesEXT
@@ -364,6 +366,7 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
    VN_ADD_PNEXT_EXT(feats2, ROBUSTNESS_2_FEATURES_KHR, local_feats.robustness_2, exts->KHR_robustness2 || exts->EXT_robustness2);
    VN_ADD_PNEXT_EXT(feats2, SHADER_BFLOAT16_FEATURES_KHR, local_feats.shader_bfloat16, exts->KHR_shader_bfloat16);
    VN_ADD_PNEXT_EXT(feats2, SHADER_CLOCK_FEATURES_KHR, local_feats.shader_clock, exts->KHR_shader_clock);
+   VN_ADD_PNEXT_EXT(feats2, SHADER_FMA_FEATURES_KHR, local_feats.shader_fma, exts->KHR_shader_fma);
    VN_ADD_PNEXT_EXT(feats2, SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR, local_feats.shader_maximal_reconvergence, exts->KHR_shader_maximal_reconvergence);
    VN_ADD_PNEXT_EXT(feats2, SHADER_RELAXED_EXTENDED_INSTRUCTION_FEATURES_KHR, local_feats.shader_relaxed_extended_instruction, exts->KHR_shader_relaxed_extended_instruction);
    VN_ADD_PNEXT_EXT(feats2, SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_FEATURES_KHR, local_feats.shader_subgroup_uniform_control_flow, exts->KHR_shader_subgroup_uniform_control_flow);
@@ -384,6 +387,7 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
    VN_ADD_PNEXT_EXT(feats2, DEPTH_CLAMP_CONTROL_FEATURES_EXT, local_feats.depth_clamp_control, exts->EXT_depth_clamp_control);
    VN_ADD_PNEXT_EXT(feats2, DEPTH_CLIP_CONTROL_FEATURES_EXT, local_feats.depth_clip_control, exts->EXT_depth_clip_control);
    VN_ADD_PNEXT_EXT(feats2, DEPTH_CLIP_ENABLE_FEATURES_EXT, local_feats.depth_clip_enable, exts->EXT_depth_clip_enable);
+   VN_ADD_PNEXT_EXT(feats2, DESCRIPTOR_HEAP_FEATURES_EXT, local_feats.descriptor_heap, exts->EXT_descriptor_heap);
    VN_ADD_PNEXT_EXT(feats2, DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_FEATURES_EXT, local_feats.dynamic_rendering_unused_attachments, exts->EXT_dynamic_rendering_unused_attachments);
    VN_ADD_PNEXT_EXT(feats2, EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT, local_feats.extended_dynamic_state_3, exts->EXT_extended_dynamic_state3);
    VN_ADD_PNEXT_EXT(feats2, FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT, local_feats.fragment_shader_interlock, exts->EXT_fragment_shader_interlock);
@@ -468,31 +472,31 @@ static void
 vn_physical_device_init_uuids(struct vn_physical_device *physical_dev)
 {
    struct vk_properties *props = &physical_dev->base.vk.properties;
-   struct mesa_sha1 sha1_ctx;
-   uint8_t sha1[SHA1_DIGEST_LENGTH];
+   blake3_hasher blake3_ctx;
+   uint8_t blake3[BLAKE3_KEY_LEN];
 
-   static_assert(VK_UUID_SIZE <= SHA1_DIGEST_LENGTH, "");
+   static_assert(VK_UUID_SIZE <= BLAKE3_KEY_LEN, "");
 
-   _mesa_sha1_init(&sha1_ctx);
-   _mesa_sha1_update(&sha1_ctx, &props->pipelineCacheUUID,
+   _mesa_blake3_init(&blake3_ctx);
+   _mesa_blake3_update(&blake3_ctx, &props->pipelineCacheUUID,
                      sizeof(props->pipelineCacheUUID));
-   _mesa_sha1_final(&sha1_ctx, sha1);
+   _mesa_blake3_final(&blake3_ctx, blake3);
 
-   memcpy(props->pipelineCacheUUID, sha1, VK_UUID_SIZE);
+   memcpy(props->pipelineCacheUUID, blake3, VK_UUID_SIZE);
 
-   _mesa_sha1_init(&sha1_ctx);
-   _mesa_sha1_update(&sha1_ctx, &props->vendorID, sizeof(props->vendorID));
-   _mesa_sha1_update(&sha1_ctx, &props->deviceID, sizeof(props->deviceID));
-   _mesa_sha1_final(&sha1_ctx, sha1);
+   _mesa_blake3_init(&blake3_ctx);
+   _mesa_blake3_update(&blake3_ctx, &props->vendorID, sizeof(props->vendorID));
+   _mesa_blake3_update(&blake3_ctx, &props->deviceID, sizeof(props->deviceID));
+   _mesa_blake3_final(&blake3_ctx, blake3);
 
-   memcpy(props->deviceUUID, sha1, VK_UUID_SIZE);
+   memcpy(props->deviceUUID, blake3, VK_UUID_SIZE);
 
-   _mesa_sha1_init(&sha1_ctx);
-   _mesa_sha1_update(&sha1_ctx, props->driverName, strlen(props->driverName));
-   _mesa_sha1_update(&sha1_ctx, props->driverInfo, strlen(props->driverInfo));
-   _mesa_sha1_final(&sha1_ctx, sha1);
+   _mesa_blake3_init(&blake3_ctx);
+   _mesa_blake3_update(&blake3_ctx, props->driverName, strlen(props->driverName));
+   _mesa_blake3_update(&blake3_ctx, props->driverInfo, strlen(props->driverInfo));
+   _mesa_blake3_final(&blake3_ctx, blake3);
 
-   memcpy(props->driverUUID, sha1, VK_UUID_SIZE);
+   memcpy(props->driverUUID, blake3, VK_UUID_SIZE);
 
    const struct vn_renderer *renderer = physical_dev->instance->renderer;
    if (renderer->info.id.has_luid) {
@@ -650,6 +654,7 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
       VkPhysicalDeviceConservativeRasterizationPropertiesEXT
          conservative_rasterization;
       VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color;
+      VkPhysicalDeviceDescriptorHeapPropertiesEXT descriptor_heap;
       VkPhysicalDeviceExtendedDynamicState3PropertiesEXT
          extended_dynamic_state_3;
       VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT
@@ -744,6 +749,7 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
    VN_ADD_PNEXT_EXT(props2, BLEND_OPERATION_ADVANCED_PROPERTIES_EXT, local_props.blend_operation_advanced, exts->EXT_blend_operation_advanced);
    VN_ADD_PNEXT_EXT(props2, CONSERVATIVE_RASTERIZATION_PROPERTIES_EXT, local_props.conservative_rasterization, exts->EXT_conservative_rasterization);
    VN_ADD_PNEXT_EXT(props2, CUSTOM_BORDER_COLOR_PROPERTIES_EXT, local_props.custom_border_color, exts->EXT_custom_border_color);
+   VN_ADD_PNEXT_EXT(props2, DESCRIPTOR_HEAP_PROPERTIES_EXT, local_props.descriptor_heap, exts->EXT_descriptor_heap);
    VN_ADD_PNEXT_EXT(props2, EXTENDED_DYNAMIC_STATE_3_PROPERTIES_EXT, local_props.extended_dynamic_state_3, exts->EXT_extended_dynamic_state3);
    VN_ADD_PNEXT_EXT(props2, GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT, local_props.graphics_pipeline_library, exts->EXT_graphics_pipeline_library);
    VN_ADD_PNEXT_EXT(props2, LEGACY_VERTEX_ATTRIBUTES_PROPERTIES_EXT, local_props.legacy_vertex_attributes, exts->EXT_legacy_vertex_attributes);
@@ -827,6 +833,7 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
    VN_SET_VK_PROPS_EXT(props, &local_props.blend_operation_advanced, exts->EXT_blend_operation_advanced);
    VN_SET_VK_PROPS_EXT(props, &local_props.conservative_rasterization, exts->EXT_conservative_rasterization);
    VN_SET_VK_PROPS_EXT(props, &local_props.custom_border_color, exts->EXT_custom_border_color);
+   VN_SET_VK_PROPS_EXT(props, &local_props.descriptor_heap, exts->EXT_descriptor_heap);
    VN_SET_VK_PROPS_EXT(props, &local_props.extended_dynamic_state_3, exts->EXT_extended_dynamic_state3);
    VN_SET_VK_PROPS_EXT(props, &local_props.graphics_pipeline_library, exts->EXT_graphics_pipeline_library);
    VN_SET_VK_PROPS_EXT(props, &local_props.legacy_vertex_attributes, exts->EXT_legacy_vertex_attributes);
@@ -1380,6 +1387,7 @@ vn_physical_device_get_passthrough_extensions(
       .KHR_robustness2 = true,
       .KHR_shader_bfloat16 = true,
       .KHR_shader_clock = true,
+      .KHR_shader_fma = true,
       .KHR_shader_maximal_reconvergence = true,
       .KHR_shader_quad_control = true,
       .KHR_shader_relaxed_extended_instruction = true,
@@ -1404,6 +1412,7 @@ vn_physical_device_get_passthrough_extensions(
       .EXT_depth_clip_control = true,
       .EXT_depth_clip_enable = true,
       .EXT_depth_range_unrestricted = true,
+      .EXT_descriptor_heap = !VN_DEBUG(NO_DESC_HEAP),
       .EXT_extended_dynamic_state3 = true,
       .EXT_dynamic_rendering_unused_attachments = true,
       .EXT_external_memory_acquire_unmodified = true,
@@ -1558,12 +1567,6 @@ vn_physical_device_init_renderer_extensions(
 
    vk_free(alloc, exts);
 
-   /* VK_KHR_external_memory_fd is required for venus memory mapping */
-   if (!physical_dev->renderer_extensions.KHR_external_memory_fd) {
-      vk_free(alloc, physical_dev->extension_spec_versions);
-      return VK_ERROR_INCOMPATIBLE_DRIVER;
-   }
-
    return VK_SUCCESS;
 }
 
@@ -1683,6 +1686,10 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
    const VkAllocationCallbacks *alloc = &instance->base.vk.alloc;
    VkResult result;
 
+   result = vn_physical_device_init_renderer_extensions(physical_dev);
+   if (result != VK_SUCCESS)
+      return result;
+
    vn_physical_device_init_external_memory(physical_dev);
    vn_physical_device_init_external_fence_handles(physical_dev);
    vn_physical_device_init_external_semaphore_handles(physical_dev);
@@ -1705,7 +1712,7 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
    if (result != VK_SUCCESS)
       goto fail;
 
-   simple_mtx_init(&physical_dev->format_update_mutex, mtx_plain);
+   simple_mtx_init(&physical_dev->mutex, mtx_plain);
    util_sparse_array_init(&physical_dev->format_properties,
                           sizeof(struct vn_format_properties_entry), 64);
 
@@ -1714,6 +1721,7 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
    return VK_SUCCESS;
 
 fail:
+   vk_free(alloc, physical_dev->extension_spec_versions);
    vk_free(alloc, physical_dev->queue_family_properties);
    return result;
 }
@@ -1726,7 +1734,7 @@ vn_physical_device_fini(struct vn_physical_device *physical_dev)
 
    vn_image_format_cache_fini(physical_dev);
 
-   simple_mtx_destroy(&physical_dev->format_update_mutex);
+   simple_mtx_destroy(&physical_dev->mutex);
    util_sparse_array_finish(&physical_dev->format_properties);
 
    vn_wsi_fini(physical_dev);
@@ -1922,12 +1930,6 @@ filter_physical_devices(struct vn_physical_device *physical_devs,
       /* init renderer version and discard unsupported devices */
       VkResult result =
          vn_physical_device_init_renderer_version(physical_dev);
-      if (result != VK_SUCCESS) {
-         vn_physical_device_base_fini(&physical_dev->base);
-         continue;
-      }
-
-      result = vn_physical_device_init_renderer_extensions(physical_dev);
       if (result != VK_SUCCESS) {
          vn_physical_device_base_fini(&physical_dev->base);
          continue;
@@ -2282,7 +2284,7 @@ vn_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
                                                 pFormatProperties);
    vn_sanitize_format_properties(format, props, props3);
 
-   simple_mtx_lock(&physical_dev->format_update_mutex);
+   simple_mtx_lock(&physical_dev->mutex);
    if (entry && !entry->valid) {
       assert(cacheable);
       entry->props = *props;
@@ -2292,7 +2294,7 @@ vn_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
          entry->srpq = *srpq;
       entry->valid = true;
    }
-   simple_mtx_unlock(&physical_dev->format_update_mutex);
+   simple_mtx_unlock(&physical_dev->mutex);
 }
 
 struct vn_physical_device_image_format_info {
@@ -2361,12 +2363,12 @@ vn_image_get_image_format_key(
    const VkImageFormatProperties2 *format_props,
    uint8_t *key)
 {
-   struct mesa_sha1 sha1_ctx;
+   blake3_hasher blake3_ctx;
 
    if (!physical_dev->image_format_cache.ht)
       return false;
 
-   _mesa_sha1_init(&sha1_ctx);
+   _mesa_blake3_init(&blake3_ctx);
 
    /* VUID-VkPhysicalDeviceImageFormatInfo2-pNext-pNext
     * Each pNext member of any structure (including this one) in the pNext
@@ -2385,10 +2387,10 @@ vn_image_get_image_format_key(
          case VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT: {
             VkImageCompressionControlEXT *compression_control =
                (VkImageCompressionControlEXT *)src;
-            _mesa_sha1_update(&sha1_ctx, &compression_control->flags,
+            _mesa_blake3_update(&blake3_ctx, &compression_control->flags,
                               sizeof(VkImageCompressionFlagsEXT));
-            _mesa_sha1_update(
-               &sha1_ctx, compression_control->pFixedRateFlags,
+            _mesa_blake3_update(
+               &blake3_ctx, compression_control->pFixedRateFlags,
                sizeof(uint32_t) *
                   compression_control->compressionControlPlaneCount);
             break;
@@ -2396,8 +2398,8 @@ vn_image_get_image_format_key(
          case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO: {
             VkImageFormatListCreateInfo *format_list =
                (VkImageFormatListCreateInfo *)src;
-            _mesa_sha1_update(
-               &sha1_ctx, format_list->pViewFormats,
+            _mesa_blake3_update(
+               &blake3_ctx, format_list->pViewFormats,
                sizeof(VkFormat) * format_list->viewFormatCount);
 
             break;
@@ -2405,25 +2407,25 @@ vn_image_get_image_format_key(
          case VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO: {
             VkImageStencilUsageCreateInfo *stencil_usage =
                (VkImageStencilUsageCreateInfo *)src;
-            _mesa_sha1_update(&sha1_ctx, &stencil_usage->stencilUsage,
+            _mesa_blake3_update(&blake3_ctx, &stencil_usage->stencilUsage,
                               sizeof(VkImageUsageFlags));
             break;
          }
          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO: {
             VkPhysicalDeviceExternalImageFormatInfo *ext_image =
                (VkPhysicalDeviceExternalImageFormatInfo *)src;
-            _mesa_sha1_update(&sha1_ctx, &ext_image->handleType,
+            _mesa_blake3_update(&blake3_ctx, &ext_image->handleType,
                               sizeof(VkExternalMemoryHandleTypeFlagBits));
             break;
          }
          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT: {
             VkPhysicalDeviceImageDrmFormatModifierInfoEXT *modifier_info =
                (VkPhysicalDeviceImageDrmFormatModifierInfoEXT *)src;
-            _mesa_sha1_update(&sha1_ctx, &modifier_info->drmFormatModifier,
+            _mesa_blake3_update(&blake3_ctx, &modifier_info->drmFormatModifier,
                               sizeof(uint64_t));
             if (modifier_info->sharingMode == VK_SHARING_MODE_CONCURRENT) {
-               _mesa_sha1_update(
-                  &sha1_ctx, modifier_info->pQueueFamilyIndices,
+               _mesa_blake3_update(
+                  &blake3_ctx, modifier_info->pQueueFamilyIndices,
                   sizeof(uint32_t) * modifier_info->queueFamilyIndexCount);
             }
             break;
@@ -2431,7 +2433,7 @@ vn_image_get_image_format_key(
          case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_IMAGE_FORMAT_INFO_EXT: {
             VkPhysicalDeviceImageViewImageFormatInfoEXT *view_image =
                (VkPhysicalDeviceImageViewImageFormatInfoEXT *)src;
-            _mesa_sha1_update(&sha1_ctx, &view_image->imageViewType,
+            _mesa_blake3_update(&blake3_ctx, &view_image->imageViewType,
                               sizeof(VkImageViewType));
             break;
          }
@@ -2468,7 +2470,7 @@ vn_image_get_image_format_key(
          case VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_PROPERTIES_EXT:
          case VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES:
          case VK_STRUCTURE_TYPE_FILTER_CUBIC_IMAGE_VIEW_IMAGE_FORMAT_PROPERTIES_EXT:
-            _mesa_sha1_update(&sha1_ctx, &src->sType,
+            _mesa_blake3_update(&blake3_ctx, &src->sType,
                               sizeof(VkStructureType));
             break;
          default:
@@ -2482,9 +2484,9 @@ vn_image_get_image_format_key(
       sizeof(VkFormat) + sizeof(VkImageType) + sizeof(VkImageTiling) +
       sizeof(VkImageUsageFlags) + sizeof(VkImageCreateFlags);
 
-   _mesa_sha1_update(&sha1_ctx, &format_info->format,
+   _mesa_blake3_update(&blake3_ctx, &format_info->format,
                      format_info_2_hash_block_size);
-   _mesa_sha1_final(&sha1_ctx, key);
+   _mesa_blake3_final(&blake3_ctx, key);
 
    return true;
 }
@@ -2655,7 +2657,7 @@ vn_image_store_format_in_cache(
    cache_entry->properties.format = *pImageFormatProperties;
    cache_entry->properties.cached_result = cached_result;
 
-   memcpy(cache_entry->key, key, SHA1_DIGEST_LENGTH);
+   memcpy(cache_entry->key, key, BLAKE3_KEY_LEN);
 
    _mesa_hash_table_insert(cache->ht, cache_entry->key, cache_entry);
    list_add(&cache_entry->head, &cache->lru);
@@ -2849,7 +2851,7 @@ vn_GetPhysicalDeviceImageFormatProperties2(
    }
 
    /* Check if image format props is in the cache. */
-   uint8_t key[SHA1_DIGEST_LENGTH] = { 0 };
+   uint8_t key[BLAKE3_KEY_LEN] = { 0 };
    const bool cacheable = vn_image_get_image_format_key(
       physical_dev, pImageFormatInfo, pImageFormatProperties, key);
 
@@ -3058,4 +3060,47 @@ vn_GetPhysicalDeviceMultisamplePropertiesEXT(
    /* TODO per-device cache */
    vn_call_vkGetPhysicalDeviceMultisamplePropertiesEXT(
       ring, physicalDevice, samples, pMultisampleProperties);
+}
+
+VKAPI_ATTR VkDeviceSize VKAPI_CALL
+vn_GetPhysicalDeviceDescriptorSizeEXT(VkPhysicalDevice physicalDevice,
+                                      VkDescriptorType descriptorType)
+{
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
+
+   const VkDescriptorType vn_descriptor_heap_types[] = {
+      /* clang-format off */
+      VK_DESCRIPTOR_TYPE_SAMPLER,
+      VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+      VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+      VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+      VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,
+      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,
+      VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+      /* clang-format on */
+   };
+
+   /* lock free query */
+   if (!physical_dev->descriptor_sizes_initialized) {
+      simple_mtx_lock(&physical_dev->mutex);
+      if (!physical_dev->descriptor_sizes_initialized) {
+         struct vn_ring *ring = physical_dev->instance->ring.ring;
+
+         for (uint32_t i = 0; i < ARRAY_SIZE(vn_descriptor_heap_types); i++) {
+            const enum vn_descriptor_type type =
+               vn_descriptor_type(vn_descriptor_heap_types[i]);
+            physical_dev->descriptor_sizes[type] =
+               vn_call_vkGetPhysicalDeviceDescriptorSizeEXT(
+                  ring, physicalDevice, vn_descriptor_heap_types[i]);
+         }
+
+         physical_dev->descriptor_sizes_initialized = true;
+      }
+      simple_mtx_unlock(&physical_dev->mutex);
+   }
+
+   return physical_dev->descriptor_sizes[vn_descriptor_type(descriptorType)];
 }

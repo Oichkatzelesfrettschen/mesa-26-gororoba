@@ -72,8 +72,9 @@ select_rt_prolog(Program* program, ac_shader_config* config,
    }
    if (options->gfx_level < GFX11)
       in_scratch_offset = get_arg_reg(in_args, in_args->scratch_offset);
-   struct ac_arg arg_id = options->gfx_level >= GFX11 ? in_args->local_invocation_ids_packed
-                                                      : in_args->local_invocation_id_x;
+   struct ac_arg arg_id = options->compiler_info->local_invocation_ids_packed
+                             ? in_args->local_invocation_ids_packed
+                             : in_args->local_invocation_id_x;
    PhysReg in_local_id = get_arg_reg(in_args, arg_id);
 
    /* Outputs:
@@ -447,6 +448,7 @@ select_rt_prolog(Program* program, ac_shader_config* config,
    program->config->float_mode = program->blocks[0].fp_mode.val;
    program->config->num_vgprs = get_vgpr_alloc(program, num_vgprs);
    program->config->num_sgprs = get_sgpr_alloc(program, num_sgprs);
+   program->progress = CompilationProgress::after_lower_to_hw;
 }
 
 } // namespace aco

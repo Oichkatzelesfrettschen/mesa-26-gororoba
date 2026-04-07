@@ -29,11 +29,12 @@
 #include "vk_descriptor_set_layout.h"
 #include "vk_device.h"
 #include "vk_nir.h"
+#include "vk_nir_lower_descriptor_heaps.h"
 #include "vk_physical_device.h"
 #include "vk_physical_device_features.h"
 #include "vk_pipeline.h"
 
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 
 #include "nir.h"
 
@@ -245,9 +246,11 @@ cmp_stage_idx(const void *_a, const void *_b)
 static nir_shader *
 vk_shader_to_nir(struct vk_device *device,
                  const VkShaderCreateInfoEXT *info,
-                 const struct vk_pipeline_robustness_state *rs)
+                 const struct vk_pipeline_robustness_state *rs,
+                 struct vk_sampler_state_array *embedded_samplers_out)
 {
    const struct vk_device_shader_ops *ops = device->shader_ops;
+   const struct vk_properties *properties = &device->physical->properties;
 
    const mesa_shader_stage stage = vk_to_mesa_shader_stage(info->stage);
    const nir_shader_compiler_options *nir_options =
@@ -265,14 +268,27 @@ vk_shader_to_nir(struct vk_device *device,
       return NULL;
 
    vk_set_subgroup_size(
-      device, nir,
-      vk_spirv_version(info->pCode, info->codeSize),
+      nir, properties->subgroupSize, properties->minSubgroupSize,
+      properties->maxSubgroupSize, vk_spirv_version(info->pCode, info->codeSize),
       info->pNext,
       info->flags & VK_SHADER_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT_EXT,
       info->flags & VK_SHADER_CREATE_REQUIRE_FULL_SUBGROUPS_BIT_EXT);
 
    if (ops->preprocess_nir != NULL)
       ops->preprocess_nir(device->physical, nir, rs);
+
+   const VkShaderDescriptorSetAndBindingMappingInfoEXT *desc_map =
+      vk_find_struct_const(info->pNext,
+                           SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT);
+
+   bool heaps_progress = false;
+   NIR_PASS(heaps_progress, nir, vk_nir_lower_descriptor_heaps,
+            desc_map, embedded_samplers_out);
+   if (heaps_progress) {
+      NIR_PASS(_, nir, nir_remove_dead_variables,
+               nir_var_uniform | nir_var_image, NULL);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
 
    return nir;
 }
@@ -286,6 +302,7 @@ vk_shader_compile_info_init(struct vk_shader_compile_info *info,
                             struct set_layouts *set_layouts,
                             const VkShaderCreateInfoEXT *vk_info,
                             const struct vk_pipeline_robustness_state *rs,
+                            const struct vk_sampler_state_array *es,
                             nir_shader *nir)
 {
    for (uint32_t sl = 0; sl < vk_info->setLayoutCount; sl++) {
@@ -301,6 +318,8 @@ vk_shader_compile_info_init(struct vk_shader_compile_info *info,
       .robustness = rs,
       .set_layout_count = vk_info->setLayoutCount,
       .set_layouts = set_layouts->set_layouts,
+      .embedded_sampler_count = es->sampler_count,
+      .embedded_samplers = es->samplers,
       .push_constant_range_count = vk_info->pushConstantRangeCount,
       .push_constant_ranges = vk_info->pPushConstantRanges,
    };
@@ -314,7 +333,7 @@ struct vk_shader_bin_header {
    uint8_t uuid[VK_UUID_SIZE];
    uint32_t version;
    uint64_t size;
-   uint8_t sha1[SHA1_DIGEST_LENGTH];
+   uint8_t blake3[BLAKE3_KEY_LEN];
 };
 PRAGMA_DIAGNOSTIC_POP
 static_assert(sizeof(struct vk_shader_bin_header) == 80,
@@ -353,17 +372,17 @@ vk_shader_serialize(struct vk_device *device,
    if (blob->data != NULL) {
       assert(sizeof(header) <= blob->size);
 
-      struct mesa_sha1 sha1_ctx;
-      _mesa_sha1_init(&sha1_ctx);
+      blake3_hasher blake3_ctx;
+      _mesa_blake3_init(&blake3_ctx);
 
-      /* Hash the header with a zero SHA1 */
-      _mesa_sha1_update(&sha1_ctx, &header, sizeof(header));
+      /* Hash the header with a zero BLAKE3 */
+      _mesa_blake3_update(&blake3_ctx, &header, sizeof(header));
 
       /* Hash the serialized data */
-      _mesa_sha1_update(&sha1_ctx, blob->data + sizeof(header),
+      _mesa_blake3_update(&blake3_ctx, blob->data + sizeof(header),
                         blob->size - sizeof(header));
 
-      _mesa_sha1_final(&sha1_ctx, header.sha1);
+      _mesa_blake3_final(&blake3_ctx, header.blake3);
 
       blob_overwrite_bytes(blob, header_offset, &header, sizeof(header));
    }
@@ -426,24 +445,24 @@ vk_shader_deserialize(struct vk_device *device,
    assert(blob.current == (uint8_t *)data + sizeof(header));
    blob.end = (uint8_t *)data + data_size;
 
-   struct mesa_sha1 sha1_ctx;
-   _mesa_sha1_init(&sha1_ctx);
+   blake3_hasher blake3_ctx;
+   _mesa_blake3_init(&blake3_ctx);
 
-   /* Hash the header with a zero SHA1 */
-   struct vk_shader_bin_header sha1_header = header;
-   memset(sha1_header.sha1, 0, sizeof(sha1_header.sha1));
-   _mesa_sha1_update(&sha1_ctx, &sha1_header, sizeof(sha1_header));
+   /* Hash the header with a zero BLAKE3 */
+   struct vk_shader_bin_header blake3_header = header;
+   memset(blake3_header.blake3, 0, sizeof(blake3_header.blake3));
+   _mesa_blake3_update(&blake3_ctx, &blake3_header, sizeof(blake3_header));
 
    /* Hash the serialized data */
-   _mesa_sha1_update(&sha1_ctx, (uint8_t *)data + sizeof(header),
+   _mesa_blake3_update(&blake3_ctx, (uint8_t *)data + sizeof(header),
                      data_size - sizeof(header));
 
-   _mesa_sha1_final(&sha1_ctx, ref_header.sha1);
-   if (memcmp(header.sha1, ref_header.sha1, sizeof(header.sha1)))
+   _mesa_blake3_final(&blake3_ctx, ref_header.blake3);
+   if (memcmp(header.blake3, ref_header.blake3, sizeof(header.blake3)))
       return vk_error(device, VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT);
 
    /* We've now verified that the header matches and that the data has the
-    * right SHA1 hash so it's safe to call into the driver.
+    * right BLAKE3 hash so it's safe to call into the driver.
     */
    return ops->deserialize(device, &blob, header.version,
                            pAllocator, shader_out);
@@ -600,8 +619,10 @@ vk_common_CreateShadersEXT(VkDevice _device,
                .idx = i,
             };
          } else {
+            struct vk_sampler_state_array embedded_samplers = {0};
             nir_shader *nir = vk_shader_to_nir(device, vk_info,
-                                               &vk_robustness_disabled);
+                                               &vk_robustness_disabled,
+                                               &embedded_samplers);
             if (nir == NULL) {
                result = vk_errorf(device, VK_ERROR_UNKNOWN,
                                   "Failed to compile shader to NIR");
@@ -611,12 +632,16 @@ vk_common_CreateShadersEXT(VkDevice _device,
             struct vk_shader_compile_info info;
             struct set_layouts set_layouts;
             vk_shader_compile_info_init(&info, &set_layouts,
-                                        vk_info, &vk_robustness_disabled, nir);
+                                        vk_info, &vk_robustness_disabled,
+                                        &embedded_samplers, nir);
 
             struct vk_shader *shader;
             result = vk_compile_shaders(device, 1, &info,
                                         NULL /* state */, NULL /* features */,
                                         pAllocator, &shader);
+
+            vk_sampler_state_array_finish(&embedded_samplers);
+
             if (result != VK_SUCCESS)
                break;
 
@@ -636,6 +661,7 @@ vk_common_CreateShadersEXT(VkDevice _device,
    if (linked_count > 0) {
       struct set_layouts set_layouts[VK_MAX_LINKED_SHADER_STAGES];
       struct vk_shader_compile_info infos[VK_MAX_LINKED_SHADER_STAGES];
+      struct vk_sampler_state_array embedded_samplers[VK_MAX_LINKED_SHADER_STAGES];
       VkResult result = VK_SUCCESS;
 
       /* Sort so we guarantee the driver always gets them in-order */
@@ -643,12 +669,14 @@ vk_common_CreateShadersEXT(VkDevice _device,
 
       /* Memset for easy error handling */
       memset(infos, 0, sizeof(infos));
+      memset(embedded_samplers, 0, sizeof(embedded_samplers));
 
       for (uint32_t l = 0; l < linked_count; l++) {
          const VkShaderCreateInfoEXT *vk_info = &pCreateInfos[linked[l].idx];
 
          nir_shader *nir = vk_shader_to_nir(device, vk_info,
-                                            &vk_robustness_disabled);
+                                            &vk_robustness_disabled,
+                                            &embedded_samplers[l]);
          if (nir == NULL) {
             result = vk_errorf(device, VK_ERROR_UNKNOWN,
                                "Failed to compile shader to NIR");
@@ -656,7 +684,8 @@ vk_common_CreateShadersEXT(VkDevice _device,
          }
 
          vk_shader_compile_info_init(&infos[l], &set_layouts[l],
-                                     vk_info, &vk_robustness_disabled, nir);
+                                     vk_info, &vk_robustness_disabled,
+                                     &embedded_samplers[l], nir);
       }
 
       if (result == VK_SUCCESS) {
@@ -674,6 +703,9 @@ vk_common_CreateShadersEXT(VkDevice _device,
             ralloc_free(infos[l].nir);
          }
       }
+
+      for (uint32_t l = 0; l < linked_count; l++)
+         vk_sampler_state_array_finish(&embedded_samplers[l]);
 
       if (first_fail_or_success == VK_SUCCESS)
          first_fail_or_success = result;

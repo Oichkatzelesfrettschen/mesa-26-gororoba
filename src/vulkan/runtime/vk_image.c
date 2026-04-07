@@ -113,6 +113,13 @@ vk_image_init(struct vk_device *device,
       image->android_buffer_type = ANDROID_BUFFER_NATIVE;
    }
 
+   const VkImageSwapchainCreateInfoKHR *swapchain_info =
+      vk_find_struct_const(pCreateInfo->pNext, IMAGE_SWAPCHAIN_CREATE_INFO_KHR);
+   if (swapchain_info && swapchain_info->swapchain != VK_NULL_HANDLE) {
+      assert(image->android_buffer_type == ANDROID_BUFFER_NONE);
+      image->android_buffer_type = ANDROID_BUFFER_NATIVE_ALIAS;
+   }
+
    const VkExternalFormatANDROID *ext_format =
       vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_FORMAT_ANDROID);
    if (ext_format && ext_format->externalFormat != 0) {
@@ -346,6 +353,38 @@ vk_image_buffer_copy_layout(const struct vk_image *image,
                                region->bufferRowLength : extent.width;
    const uint32_t image_height = region->bufferImageHeight ?
                                  region->bufferImageHeight : extent.height;
+
+   const VkImageAspectFlags aspect = region->imageSubresource.aspectMask;
+   VkFormat format = vk_format_get_aspect_format(image->format, aspect);
+   const struct util_format_description *fmt = vk_format_description(format);
+
+   assert(fmt->block.bits % 8 == 0);
+   const uint32_t element_size_B = fmt->block.bits / 8;
+
+   const uint32_t row_stride_B =
+      DIV_ROUND_UP(row_length, fmt->block.width) * element_size_B;
+   const uint64_t image_stride_B =
+      DIV_ROUND_UP(image_height, fmt->block.height) * (uint64_t)row_stride_B;
+
+   return (struct vk_image_buffer_layout) {
+      .row_length = row_length,
+      .image_height = image_height,
+      .element_size_B = element_size_B,
+      .row_stride_B = row_stride_B,
+      .image_stride_B = image_stride_B,
+   };
+}
+
+struct vk_image_buffer_layout
+vk_image_memory_copy_layout(const struct vk_image *image,
+                            const VkDeviceMemoryImageCopyKHR* region)
+{
+   VkExtent3D extent = vk_image_sanitize_extent(image, region->imageExtent);
+
+   const uint32_t row_length = region->addressRowLength ?
+                               region->addressRowLength : extent.width;
+   const uint32_t image_height = region->addressImageHeight ?
+                                 region->addressImageHeight : extent.height;
 
    const VkImageAspectFlags aspect = region->imageSubresource.aspectMask;
    VkFormat format = vk_format_get_aspect_format(image->format, aspect);
@@ -775,6 +814,44 @@ vk_image_layout_is_depth_only(VkImageLayout layout)
 
    default:
       return false;
+   }
+}
+
+VkImageLayout
+vk_image_layout_depth_only(VkImageLayout layout)
+{
+   switch (layout) {
+   case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL:
+   case VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL:
+      return VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+
+   case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
+   case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL:
+      return VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+
+   default:
+      return layout;
+   }
+}
+
+VkImageLayout
+vk_image_layout_stencil_only(VkImageLayout layout)
+{
+   switch (layout) {
+   case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL:
+      return VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL;
+
+   case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
+   case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL:
+   case VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL:
+      return VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL;
+
+   default:
+      return layout;
    }
 }
 

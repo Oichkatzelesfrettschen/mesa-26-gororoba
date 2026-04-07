@@ -6,7 +6,9 @@
 #include "nir_algebraic_pattern_test.h"
 #include "nir_builder.h"
 #include "nir_constant_expressions.h"
+#include "nir_range_analysis.h"
 
+#include "util/compiler.h"
 #include "util/memstream.h"
 
 #include <float.h>
@@ -15,12 +17,13 @@
 nir_algebraic_pattern_test::nir_algebraic_pattern_test(const char *name)
     : nir_test(name)
 {
+   b->fp_math_ctrl = nir_fp_no_fast_math;
 }
 
-static nir_const_value *
-tmp_value(nir_algebraic_pattern_test *test, nir_def *def)
+nir_const_value *
+nir_algebraic_pattern_test::tmp_value(nir_def *def)
 {
-   return &test->tmp_values[def->index * NIR_MAX_VEC_COMPONENTS];
+   return &tmp_values[def->index * NIR_MAX_VEC_COMPONENTS];
 }
 
 static bool
@@ -36,11 +39,11 @@ def_annotate_value(nir_def *def, void *data)
 
    FILE *output = u_memstream_get(&mem);
 
-   nir_const_value *value = tmp_value(test, def);
+   nir_const_value *value = test->tmp_value(def);
 
    fprintf(output, "// ");
    if (def->num_components == 1) {
-      fprintf(output, "0x%0" PRIx64, value->u64);
+      fprintf(output, "0x%0" PRIx64, nir_const_value_as_uint(value[0], def->bit_size));
       if (def->bit_size >= 16)
          fprintf(output, " = %f", nir_const_value_as_float(value[0], def->bit_size));
 
@@ -49,7 +52,7 @@ def_annotate_value(nir_def *def, void *data)
       for (uint32_t comp = 0; comp < def->num_components; comp++) {
          if (comp > 0)
             fprintf(output, ", ");
-         fprintf(output, "0x%0" PRIx64, value[comp].u64);
+         fprintf(output, "0x%0" PRIx64, nir_const_value_as_uint(value[comp], def->bit_size));
       }
       fprintf(output, ")");
       if (def->bit_size >= 16) {
@@ -85,17 +88,6 @@ nir_algebraic_pattern_test::~nir_algebraic_pattern_test()
       annotations = _mesa_pointer_hash_table_create(nullptr);
       nir_shader_instructions_pass(b->shader, instr_annotate_value, nir_metadata_all, this);
    }
-}
-
-static bool
-count_input(nir_builder *b, nir_intrinsic_instr *intrinsic, void *data)
-{
-   nir_algebraic_pattern_test *test = (nir_algebraic_pattern_test *)data;
-
-   if (intrinsic->intrinsic == nir_intrinsic_unit_test_uniform_input)
-      test->input_count = MAX2(test->input_count, (uint32_t)nir_intrinsic_base(intrinsic) + 1);
-
-   return false;
 }
 
 static bool
@@ -169,7 +161,7 @@ map_input(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       ty = INT;
    test->inputs.push_back(nir_algebraic_pattern_test_input(nir_instr_as_load_const(nir_def_instr(load)),
                                                            ty, test->fuzzing_bits));
-   test->fuzzing_bits += get_seed_bit_size(ty);
+   test->fuzzing_bits += get_seed_bit_size(ty) * intr->def.num_components;
 
    nir_def_replace(&intr->def, load);
 
@@ -209,28 +201,47 @@ static const double float_inputs[INPUT_VALUE_COUNT] = {
    DBL_MIN,
 };
 
-static bool
-skip_test(nir_algebraic_pattern_test *test, nir_alu_instr *alu, uint32_t bit_size,
-          nir_const_value tmp, int32_t src_index, bool exact)
+void
+nir_algebraic_pattern_test::handle_signed_zero(nir_const_value *val, uint32_t bit_size)
+{
+   if (bit_size < 16 || nir_const_value_as_float(*val, bit_size) != 0.0)
+      return;
+
+   /* If we're preserving signed zeroes, no need to do any of this work. */
+   if (exact && (fp_math_ctrl & nir_fp_preserve_signed_zero))
+      return;
+
+   if (signed_zero_iter != 0) {
+      if (signed_zero_count < 32 &&
+          (1u << signed_zero_count) & signed_zero_iter) {
+         switch (bit_size) {
+         case 16:
+            val->u16 ^= 0x8000;
+            break;
+         case 32:
+            val->f32 = -val->f32;
+            break;
+         case 64:
+            val->f64 = -val->f64;
+            break;
+         default:
+            UNREACHABLE("bad bit size");
+         }
+      }
+   }
+   signed_zero_count++;
+}
+
+bool
+nir_algebraic_pattern_test::skip_test(nir_alu_instr *alu, uint32_t bit_size,
+                                      nir_const_value tmp, int32_t src_index)
 {
    /* Always pass the test for signed zero/nan/inf sources if they are not preserved. */
    if (bit_size >= 16) {
       double val = nir_const_value_as_float(tmp, bit_size);
-      if ((!exact || !(test->fp_math_ctrl & nir_fp_preserve_signed_zero)) && val == 0.0 && signbit(val)) {
-         /* TODO: Could be more permissive in covering input values -- right now
-          * we skip if either before or after ever consume or produce a -0.0,
-          * but if the result was unchanged by the 0.0 signs of the srcs, or if
-          * the two sides agreed about the sign of 0.0s produced, we could test
-          * that the rest of the expression evaluated correctly.
-          *
-          * Also, the fp preserve flags should probably not apply to non-float
-          * uses/outputs!
-          */
+      if ((!exact || !(fp_math_ctrl & nir_fp_preserve_nan)) && isnan(val))
          return true;
-      }
-      if ((!exact || !(test->fp_math_ctrl & nir_fp_preserve_nan)) && isnan(val))
-         return true;
-      if ((!exact || !(test->fp_math_ctrl & nir_fp_preserve_inf)) && isinf(val))
+      if ((!exact || !(fp_math_ctrl & nir_fp_preserve_inf)) && isinf(val))
          return true;
    }
 
@@ -274,19 +285,23 @@ compare_inexact(double a, double b, uint32_t bit_size)
  * (either assert_eq was true, or we hit some UB with these inputs and the test should
  * be skipped).
  */
-static bool
-evaluate_expression(nir_algebraic_pattern_test *test, nir_instr *instr)
+bool
+nir_algebraic_pattern_test::evaluate_expression(nir_instr *instr)
 {
    if (instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr *intrinsic = nir_instr_as_intrinsic(instr);
 
       if (intrinsic->intrinsic == nir_intrinsic_unit_test_assert_eq) {
-         nir_const_value *src0 = tmp_value(test, intrinsic->src[0].ssa);
-         nir_const_value *src1 = tmp_value(test, intrinsic->src[1].ssa);
+         nir_const_value *src0 = tmp_value(intrinsic->src[0].ssa);
+         nir_const_value *src1 = tmp_value(intrinsic->src[1].ssa);
 
          assert(intrinsic->src[0].ssa->bit_size == intrinsic->src[1].ssa->bit_size);
          uint32_t bit_size = intrinsic->src[0].ssa->bit_size;
 
+         /* Note: fdot*_replicates replacements generate more channels than the
+          * original pattern, but we care that the usable channels of the search
+          * expression match.
+          */
          assert(intrinsic->src[0].ssa->num_components == intrinsic->src[1].ssa->num_components);
          uint32_t num_components = intrinsic->src[0].ssa->num_components;
 
@@ -303,7 +318,7 @@ evaluate_expression(nir_algebraic_pattern_test *test, nir_instr *instr)
                if (bit_size >= 16) {
                   double af = nir_const_value_as_float(src0[comp], bit_size);
                   double bf = nir_const_value_as_float(src1[comp], bit_size);
-                  if (test->exact) {
+                  if (exact) {
                      if (!(is_float && isnan(af) && isnan(bf)))
                         return false;
                   } else {
@@ -331,7 +346,7 @@ evaluate_expression(nir_algebraic_pattern_test *test, nir_instr *instr)
       nir_load_const_instr *load_const = nir_instr_as_load_const(instr);
 
       for (uint32_t i = 0; i < load_const->def.num_components; i++)
-         tmp_value(test, &load_const->def)[i] = load_const->value[i];
+         tmp_value(&load_const->def)[i] = load_const->value[i];
 
       return false;
    }
@@ -349,10 +364,12 @@ evaluate_expression(nir_algebraic_pattern_test *test, nir_instr *instr)
          bit_size = alu->src[i].src.ssa->bit_size;
 
       for (uint32_t j = 0; j < nir_ssa_alu_instr_src_components(alu, i); j++) {
-         nir_const_value tmp = tmp_value(test, alu->src[i].src.ssa)[alu->src[i].swizzle[j]];
-         src[i][j] = tmp;
+         nir_const_value tmp = tmp_value(alu->src[i].src.ssa)[alu->src[i].swizzle[j]];
+         if (nir_alu_type_get_base_type(nir_op_infos[alu->op].input_types[i]) == nir_type_float)
+            handle_signed_zero(&tmp, alu->src[i].src.ssa->bit_size);
 
-         if (skip_test(test, alu, alu->src[i].src.ssa->bit_size, tmp, i, test->exact))
+         src[i][j] = tmp;
+         if (skip_test(alu, alu->src[i].src.ssa->bit_size, tmp, i))
             return true;
       }
    }
@@ -364,10 +381,10 @@ evaluate_expression(nir_algebraic_pattern_test *test, nir_instr *instr)
    for (uint32_t i = 0; i < nir_op_infos[alu->op].num_inputs; i++)
       srcs[i] = src[i];
 
-   nir_const_value *dest = tmp_value(test, &alu->def);
+   nir_const_value *dest = tmp_value(&alu->def);
 
    nir_component_mask_t poison;
-   nir_eval_const_opcode(alu->op, dest, &poison, alu->def.num_components, bit_size, srcs, test->b->shader->info.float_controls_execution_mode);
+   nir_eval_const_opcode(alu->op, dest, &poison, alu->def.num_components, bit_size, srcs, b->shader->info.float_controls_execution_mode);
 
    /* If the inputs we chose triggered UB, then skip this particular test
     * combination -- we can't assert equality of the results (and we don't have
@@ -378,7 +395,9 @@ evaluate_expression(nir_algebraic_pattern_test *test, nir_instr *instr)
       return true;
 
    for (uint32_t comp = 0; comp < alu->def.num_components; comp++) {
-      if (skip_test(test, alu, bit_size, dest[comp], -1, test->exact))
+      if (nir_alu_type_get_base_type(nir_op_infos[alu->op].output_type) == nir_type_float)
+         handle_signed_zero(&dest[comp], alu->def.bit_size);
+      if (skip_test(alu, bit_size, dest[comp], -1))
          return true;
    }
 
@@ -389,12 +408,12 @@ evaluate_expression(nir_algebraic_pattern_test *test, nir_instr *instr)
 void
 nir_algebraic_pattern_test::set_inputs(uint32_t seed)
 {
-   for (uint32_t i = 0; i < input_count; i++) {
-      nir_load_const_instr *load = inputs[i].instr;
-      uint32_t seed_bit_size = get_seed_bit_size(inputs[i].ty);
+   for (auto input : inputs) {
+      nir_load_const_instr *load = input.instr;
+      uint32_t seed_bit_size = get_seed_bit_size(input.ty);
 
       for (uint32_t comp = 0; comp < load->def.num_components; comp++) {
-         uint32_t val = seed >> ((inputs[i].fuzzing_start_bit + seed_bit_size * comp) % 32);
+         uint32_t val = seed >> ((input.fuzzing_start_bit + seed_bit_size * comp) % 32);
 
          if (load->def.bit_size == 1) {
             load->value[comp].b = val & 1;
@@ -404,7 +423,7 @@ nir_algebraic_pattern_test::set_inputs(uint32_t seed)
          /* Zero out the rest of the field. */
          load->value[comp].u64 = 0;
 
-         switch (inputs[i].ty) {
+         switch (input.ty) {
          case BOOL:
             /* Single path here sets the bit pattern for any size of bool. */
             load->value[comp].u64 = (val & 1) ? ~0llu : 0;
@@ -432,41 +451,47 @@ nir_algebraic_pattern_test::check_variable_conds()
    if (variable_conds.empty())
       return true;
 
+   nir_fp_analysis_state range_ht = nir_create_fp_analysis_state(b->impl);
    nir_search_state state = {
-      .range_ht = _mesa_pointer_hash_table_create(NULL),
+      .range_ht = &range_ht,
       .numlsb_ht = _mesa_pointer_hash_table_create(NULL),
    };
 
+   bool result = true;
    for (auto cond : variable_conds) {
       uint8_t swiz[NIR_MAX_VEC_COMPONENTS];
       int num_components = nir_ssa_alu_instr_src_components(cond.alu, cond.src_index);
       for (int i = 0; i < num_components; i++)
          swiz[i] = i;
-      if (!cond.cond(&state, cond.alu, cond.src_index, num_components, swiz))
-         return false;
+      if (!cond.cond(&state, cond.alu, cond.src_index, num_components, swiz)) {
+         result = false;
+         break;
+      }
    }
 
-   _mesa_hash_table_fini(state.numlsb_ht, NULL);
-   _mesa_hash_table_fini(state.range_ht, NULL);
+   _mesa_hash_table_destroy(state.numlsb_ht, NULL);
+   nir_free_fp_analysis_state(state.range_ht);
 
-   return true;
+   return result;
 }
 
 void
 nir_algebraic_pattern_test::validate_pattern()
 {
-   input_count = 0;
    fuzzing_bits = 0;
 
    nir_function_impl *impl = nir_shader_get_entrypoint(b->shader);
 
    nir_validate_shader(b->shader, "validate_pattern");
 
-   nir_shader_intrinsics_pass(b->shader, count_input, nir_metadata_all, this);
    nir_shader_intrinsics_pass(b->shader, map_input, nir_metadata_all, this);
 
    nir_index_ssa_defs(impl);
-   tmp_values.assign(NIR_MAX_VEC_COMPONENTS * impl->ssa_alloc, nir_const_value{ 0 });
+   /* Write an obvious dummy value -- In the event that all inputs are
+    * unexpectedly skipped, dummy values will show up in annotation after the
+    * skip point.
+    */
+   tmp_values.assign(NIR_MAX_VEC_COMPONENTS * impl->ssa_alloc, nir_const_value{ .u64 = 0xd0d0d0d0d0d0d0d0 });
 
    if (expected_result != UNSUPPORTED) {
       ASSERT_EQ(expression_cond_failed, (char *)NULL);
@@ -474,7 +499,7 @@ nir_algebraic_pattern_test::validate_pattern()
       return;
    }
 
-   bool result = true;
+   enum result result = UNSUPPORTED; /* Default state if all input values get skipped */
 
    bool overflow = fuzzing_bits > 16;
    if (overflow)
@@ -482,41 +507,77 @@ nir_algebraic_pattern_test::validate_pattern()
 
    nir_block *block = nir_impl_last_block(impl);
 
-   bool all_skipped = true;
    uint32_t iterations = 1 << fuzzing_bits;
    for (uint32_t i = 0; i < iterations; i++) {
       uint32_t seed;
-      if (overflow)
-         seed = _mesa_hash_u32(&i);
-      else
+      if (overflow) {
+         /* Make sure we have the same test inputs on big-endian, since the hash
+          * is byte-wise.
+          */
+         uint32_t hash_input = CPU_TO_LE32(i);
+         seed = _mesa_hash_u32(&hash_input);
+      } else {
          seed = i;
+      }
 
       set_inputs(seed);
       if (!check_variable_conds())
          continue;
 
-      bool passed_or_skipped = false;
-      nir_foreach_instr(instr, block) {
-         if (evaluate_expression(this, instr)) {
-            passed_or_skipped = true;
-            if (instr->type == nir_instr_type_intrinsic) {
-               if (nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_unit_test_assert_eq)
-                  all_skipped = false;
+      /* Loop over the set of 0.0 sign flips we want to try to see if the
+       * pattern works that way, given the NIR spec for
+       * !nir_fp_preserve_signed_zero of "any -0.0 or +0.0 output can have
+       * either sign, and any zero input can be treated as having opposite sign.
+       */
+      uint32_t saved_signed_zero_count = 0;
+      enum result seed_result = UNSUPPORTED;
+      for (signed_zero_iter = 0; signed_zero_iter < 1u << MIN2(4, saved_signed_zero_count); signed_zero_iter++) {
+         /* This will get incremented as we evaluate the instrs. */
+         signed_zero_count = 0;
+
+         /* Loop over the instructions evaluating them given the inputs and this set of signed zero flips. */
+         nir_foreach_instr(instr, block) {
+            bool is_assert = (instr->type == nir_instr_type_intrinsic &&
+                              nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_unit_test_assert_eq);
+
+            if (evaluate_expression(instr)) {
+               if (is_assert)
+                  seed_result = PASS;
+               break;
+            } else {
+               if (is_assert) {
+                  seed_result = FAIL;
+               }
             }
+         }
+
+         if (signed_zero_iter == 0)
+            saved_signed_zero_count = signed_zero_count;
+
+         if (seed_result == PASS)
+            break;
+      }
+
+      if (seed_result == PASS) {
+         result = PASS;
+         /* Don't break out of the loop that feeds us new inputs -- we want to continue to test the rest to find a failure. */
+      } else if (seed_result == UNSUPPORTED) {
+         /* The test skipped for these inputs, don't change the final result. */
+      } else {
+         bool sz_non_exhaustive = saved_signed_zero_count > 31 || signed_zero_iter < (1u << saved_signed_zero_count);
+         if (sz_non_exhaustive) {
+            /* We don't seem to trigger this case in practice. */
+            printf("Skipping test input due to too many signed zeroes to exhaustively test.\n");
+         } else {
+            /* We got a fail result with every combination of
+             * nir_fp_preserve_signed_zero bit flips applied. Break out so we
+             * can print the shader with the failing values.
+             */
+            result = FAIL;
             break;
          }
       }
+   }
 
-      if (!passed_or_skipped) {
-         result = false;
-         break;
-      }
-   }
-   /* If no values produced a passing reuslt, make sure the test is marked
-    * unsupported (and that nothing is marked unsupported that *was* supported).
-    */
-   ASSERT_EQ(all_skipped, expected_result == UNSUPPORTED);
-   if (expected_result != UNSUPPORTED) {
-      ASSERT_EQ(result, expected_result == PASS);
-   }
+   ASSERT_EQ(result, expected_result);
 }

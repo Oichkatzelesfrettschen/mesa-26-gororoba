@@ -51,9 +51,9 @@ lower_base_workgroup_id(nir_builder *b, nir_intrinsic_instr *intrin,
 static void
 check_sends(struct genisa_stats *stats, unsigned send_count)
 {
-   assert(stats->spill_count == 0);
-   assert(stats->fill_count == 0);
-   assert(stats->send_messages == send_count);
+   assert(stats->spills == 0);
+   assert(stats->fills == 0);
+   assert(stats->sends == send_count);
 }
 
 static struct anv_shader_internal *
@@ -167,26 +167,28 @@ compile_shader(struct anv_device *device,
             .stats = stats,
             .mem_ctx = temp_ctx,
          },
-         .key = &key.wm,
-         .prog_data = &prog_data.wm,
+         .key = &key.fs,
+         .prog_data = &prog_data.fs,
       };
+      prog_data.base.push_sizes[0] = align(prog_data.base.push_sizes[0], REG_SIZE);
       program = brw_compile_fs(compiler, &params);
 
       if (!INTEL_DEBUG(DEBUG_SHADER_PRINT)) {
          unsigned stat_idx = 0;
-         if (prog_data.wm.dispatch_8) {
+         if (prog_data.fs.dispatch_8) {
             check_sends(&stats[stat_idx++], sends_count_expectation);
          }
-         if (prog_data.wm.dispatch_16) {
+         if (prog_data.fs.dispatch_16) {
             check_sends(&stats[stat_idx++], sends_count_expectation);
          }
-         if (prog_data.wm.dispatch_32) {
+         if (prog_data.fs.dispatch_32) {
             check_sends(&stats[stat_idx++], sends_count_expectation *
                                             (device->info->ver < 20 ? 2 : 1));
          }
       }
    } else {
       brw_cs_fill_push_const_info(device->info, &prog_data.cs, -1);
+      prog_data.base.push_sizes[0] = align(prog_data.base.push_sizes[0], REG_SIZE);
 
       struct genisa_stats stats;
       struct brw_compile_cs_params params = {

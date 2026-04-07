@@ -21,7 +21,10 @@
  * IN THE SOFTWARE.
  */
 
-#include "v3dv_private.h"
+#include "v3dv_device.h"
+#include "v3dv_cmd_buffer.h"
+#include "v3dv_image.h"
+#include "v3dv_version_dispatch.h"
 #include "v3dv_format_table.h"
 #include "v3dvx_format_table.h"
 #include "broadcom/common/v3d_util.h"
@@ -97,12 +100,6 @@ v3dX(job_emit_binning_prolog)(struct v3dv_job *job,
 #if V3D_VERSION >= 71
       config.log2_tile_width = log2_tile_size(tiling->tile_width);
       config.log2_tile_height = log2_tile_size(tiling->tile_height);
-      /* FIXME: ideally we would like next assert on the packet header (as is
-       * general, so also applies to GL). We would need to expand
-       * gen_pack_header for that.
-       */
-      assert(config.log2_tile_width == config.log2_tile_height ||
-             config.log2_tile_width == config.log2_tile_height + 1);
 #endif
    }
 
@@ -977,12 +974,6 @@ v3dX(cmd_buffer_emit_render_pass_rcl)(struct v3dv_cmd_buffer *cmd_buffer)
 #if V3D_VERSION >= 71
       config.log2_tile_width = log2_tile_size(tiling->tile_width);
       config.log2_tile_height = log2_tile_size(tiling->tile_height);
-      /* FIXME: ideallly we would like next assert on the packet header (as is
-       * general, so also applies to GL). We would need to expand
-       * gen_pack_header for that.
-       */
-      assert(config.log2_tile_width == config.log2_tile_height ||
-             config.log2_tile_width == config.log2_tile_height + 1);
 #endif
 
       if (ds_attachment_idx != VK_ATTACHMENT_UNUSED) {

@@ -89,8 +89,7 @@ fd6_ifmt(enum a6xx_format fmt)
       return R2D_FLOAT16;
 
    default:
-      UNREACHABLE("bad format");
-      return (enum a6xx_2d_ifmt)0;
+      return R2D_NONE;
    }
 }
 
@@ -111,10 +110,8 @@ ok_dims(const struct pipe_resource *r, const struct pipe_box *b, int lvl)
 }
 
 static bool
-ok_format(enum pipe_format pfmt)
+ok_format(const struct fd_dev_info *info, enum pipe_format pfmt, bool check_a2d)
 {
-   enum a6xx_format fmt = fd6_color_format(pfmt, TILE6_LINEAR);
-
    if (util_format_is_compressed(pfmt))
       return true;
 
@@ -131,7 +128,15 @@ ok_format(enum pipe_format pfmt)
       break;
    }
 
+   if (!fd6_color_format_supported(info, pfmt, TILE6_LINEAR))
+      return false;
+
+   enum a6xx_format fmt = fd6_color_format(pfmt, TILE6_LINEAR);
+
    if (fmt == FMT6_NONE)
+      return false;
+
+   if (check_a2d && (fd6_ifmt(fmt) == R2D_NONE))
       return false;
 
    return true;
@@ -173,7 +178,7 @@ dump_blit_info(const struct pipe_blit_info *info)
 }
 
 static bool
-can_do_blit(const struct pipe_blit_info *info)
+can_do_blit(const struct fd_dev_info *dev_info, const struct pipe_blit_info *info)
 {
    /* I think we can do scaling, but not in z dimension since that would
     * require blending..
@@ -181,8 +186,8 @@ can_do_blit(const struct pipe_blit_info *info)
    fail_if(info->dst.box.depth != info->src.box.depth);
 
    /* Fail if unsupported format: */
-   fail_if(!ok_format(info->src.format));
-   fail_if(!ok_format(info->dst.format));
+   fail_if(!ok_format(dev_info, info->src.format, true));
+   fail_if(!ok_format(dev_info, info->dst.format, true));
 
    /* using the 2d path seems to canonicalize NaNs when the source format
     * is a 16-bit floating point format, likely because it implicitly
@@ -248,7 +253,9 @@ static bool
 can_do_clear(const struct pipe_resource *prsc, unsigned level,
              const struct pipe_box *box)
 {
-   return ok_format(prsc->format) &&
+   struct fd_screen *screen = fd_screen(prsc->screen);
+
+   return ok_format(screen->info, prsc->format, true) &&
           ok_dims(prsc, box, level) &&
           (fd_resource_nr_samples(prsc) == 1);
 
@@ -1244,7 +1251,7 @@ handle_rgba_blit(struct fd_context *ctx, const struct pipe_blit_info *info)
 
    assert(!(info->mask & PIPE_MASK_ZS));
 
-   if (!can_do_blit(info))
+   if (!can_do_blit(ctx->screen->info, info))
       return false;
 
    struct fd_resource *src = fd_resource(info->src.resource);
@@ -1539,7 +1546,7 @@ fd6_blitter_init(struct pipe_context *pctx)
 FD_GENX(fd6_blitter_init);
 
 unsigned
-fd6_tile_mode_for_format(enum pipe_format pfmt)
+fd6_tile_mode_for_format(const struct fd_dev_info *info, enum pipe_format pfmt)
 {
    if (!util_is_power_of_two_nonzero(util_format_get_blocksize(pfmt)))
       return TILE6_LINEAR;
@@ -1547,7 +1554,7 @@ fd6_tile_mode_for_format(enum pipe_format pfmt)
    /* basically just has to be a format we can blit, so uploads/downloads
     * via linear staging buffer works:
     */
-   if (ok_format(pfmt))
+   if (ok_format(info, pfmt, false))
       return TILE6_3;
 
    return TILE6_LINEAR;
@@ -1556,5 +1563,6 @@ fd6_tile_mode_for_format(enum pipe_format pfmt)
 unsigned
 fd6_tile_mode(const struct pipe_resource *tmpl)
 {
-   return fd6_tile_mode_for_format(tmpl->format);
+   struct fd_screen *screen = fd_screen(tmpl->screen);
+   return fd6_tile_mode_for_format(screen->info, tmpl->format);
 }

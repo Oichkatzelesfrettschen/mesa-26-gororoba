@@ -129,7 +129,15 @@ struct tu_shader_key {
    bool robust_uniform_access2;
    bool lower_view_index_to_device_index;
    bool custom_resolve;
+   bool emulate_alpha_to_coverage;
    enum ir3_wavesize_option api_wavesize, real_wavesize;
+};
+
+/* Information needed for tu_shader creation that is gathered during NIR
+ * lowering.
+ */
+struct tu_shader_info {
+   bool per_layer_viewport;
 };
 
 extern const struct vk_pipeline_cache_object_ops tu_shader_ops;
@@ -142,6 +150,9 @@ tu_nir_lower_multiview(nir_shader *nir, uint32_t mask, struct tu_device *dev);
 
 bool
 tu_nir_lower_ray_queries(nir_shader *nir);
+
+bool
+tu_nir_lower_demote_samples(nir_shader *nir);
 
 nir_shader *
 tu_spirv_to_nir(struct tu_device *dev,
@@ -187,11 +198,18 @@ template <chip CHIP>
 void
 tu6_emit_fs(struct tu_cs *cs, const struct ir3_shader_variant *fs);
 
+void
+tu_lower_nir(struct tu_device *dev,
+             nir_shader *nir,
+             const struct tu_shader_key *key,
+             struct tu_shader_info *info);
+
 VkResult
 tu_shader_create(struct tu_device *dev,
                  struct tu_shader **shader_out,
                  nir_shader *nir,
                  const struct tu_shader_key *key,
+                 const struct tu_shader_info *shader_info,
                  const struct ir3_shader_key *ir3_key,
                  const void *key_data,
                  size_t key_size,
@@ -216,7 +234,7 @@ tu_compile_shaders(struct tu_device *device,
                    nir_shader **nir,
                    const struct tu_shader_key *keys,
                    struct tu_pipeline_layout *layout,
-                   const unsigned char *pipeline_sha1,
+                   const unsigned char *pipeline_blake3,
                    struct tu_shader **shaders,
                    char **nir_initial_disasm,
                    void *nir_initial_disasm_mem_ctx,

@@ -14,12 +14,14 @@
 #include "nvk_shader.h"
 
 #include "util/bitpack_helpers.h"
+#include "util/compiler.h"
 #include "vk_format.h"
 #include "vk_render_pass.h"
 #include "vk_standard_sample_locations.h"
 
 #include "nv_push_cl902d.h"
 #include "nv_push_cl9097.h"
+#include "nv_push_cl9297.h"
 #include "nv_push_cl90b5.h"
 #include "nv_push_cl90c0.h"
 #include "nv_push_cla097.h"
@@ -30,6 +32,7 @@
 #include "nv_push_clc597.h"
 #include "nv_push_clcb97.h"
 #include "nv_push_clcd97.h"
+#include "clc7c0.h"
 #include "clcb97.h"
 #include "clcd97.h"
 #include "drf.h"
@@ -474,8 +477,15 @@ nvk_push_draw_state_init(struct nvk_queue *queue, struct nv_push *p)
    P_NV9097_SET_WINDOW_OFFSET_X(p, 0);
    P_NV9097_SET_WINDOW_OFFSET_Y(p, 0);
 
-   P_IMMD(p, NV9097, SET_ACTIVE_ZCULL_REGION, 0x3f);
-   P_IMMD(p, NV9097, SET_MME_SHADOW_SCRATCH(NVK_MME_SCRATCH_WINDOW_CLIP_ENABLED), 0);
+   P_IMMD(p, NV9097, SET_ZCULL_BOUNDS, {
+      .z_min_unbounded_enable = false,
+      .z_max_unbounded_enable = false,
+   });
+   P_IMMD(p, NV9097, SET_ZCULL, {
+      .z_enable = true,
+      .stencil_enable = false,
+   });
+
    P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_UPDATE_WINDOW_CLIP));
    P_INLINE_DATA(p, 1);
    P_IMMD(p, NV9097, SET_CLIP_ID_TEST, ENABLE_FALSE);
@@ -1011,13 +1021,39 @@ get_depth_stencil_plane_params(struct nvk_image_view *iview,
    *image_out = nil_image;
 }
 
+static struct nvk_zcull_plane*
+nvk_get_zcull_plane(struct nvk_rendering_state *render) {
+   if (render->depth_att.iview) {
+      struct nvk_image *img = (struct nvk_image*) render->depth_att.iview->vk.image;
+      if (img->zcull.nil.size_B > 0) {
+         return &img->zcull;
+      }
+   }
+   return NULL;
+}
+
+static uint32_t
+nvk_vk_format_to_zcull_format(VkFormat format) {
+   switch (format) {
+      case VK_FORMAT_D32_SFLOAT:
+      case VK_FORMAT_D32_SFLOAT_S8_UINT:
+         return NV9097_SET_ZCULL_DIR_FORMAT_ZFORMAT_ZF32_1;
+      case VK_FORMAT_D16_UNORM:
+      case VK_FORMAT_D24_UNORM_S8_UINT:
+      case VK_FORMAT_X8_D24_UNORM_PACK32:
+         return NV9097_SET_ZCULL_DIR_FORMAT_ZFORMAT_FP;
+      default:
+         assert(!"Unknown depth format");
+         return NV9097_SET_ZCULL_DIR_FORMAT_ZFORMAT_ZF32_1;
+   }
+}
 
 VKAPI_ATTR void VKAPI_CALL
 nvk_CmdBeginRendering(VkCommandBuffer commandBuffer,
                       const VkRenderingInfo *pRenderingInfo)
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
-   struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+   const struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
    const struct nvk_physical_device *pdev = nvk_device_physical(dev);
    struct nvk_rendering_state *render = &cmd->state.gfx.render;
 
@@ -1066,7 +1102,10 @@ nvk_CmdBeginRendering(VkCommandBuffer commandBuffer,
 
    nvk_cmd_buffer_dirty_render_pass(cmd);
 
-   struct nv_push *p = nvk_cmd_buffer_push(cmd, NVK_MAX_RTS * 12 + 44);
+   const size_t zcull_count = 51;
+   struct nv_push *p = nvk_cmd_buffer_push(
+      cmd, NVK_MAX_RTS * 12 + 44 + zcull_count
+   );
 
    P_IMMD(p, NV9097, SET_MME_SHADOW_SCRATCH(NVK_MME_SCRATCH_VIEW_MASK),
           render->view_mask);
@@ -1327,6 +1366,132 @@ nvk_CmdBeginRendering(VkCommandBuffer commandBuffer,
       P_IMMD(p, NV9097, SET_ZT_SELECT, 0 /* target_count */);
    }
 
+   /* TODO: zcull for depth-stencil */
+   struct nvk_zcull_plane *zcull_plane = nvk_get_zcull_plane(render);
+   bool use_zcull = pdev->info.has_zcull_info &&
+      pRenderingInfo->pDepthAttachment != NULL &&
+      pRenderingInfo->pDepthAttachment->imageView != VK_NULL_HANDLE &&
+      pRenderingInfo->pDepthAttachment->loadOp != VK_ATTACHMENT_LOAD_OP_NONE &&
+      (zcull_plane ||
+       pRenderingInfo->pDepthAttachment->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR);
+
+   if (use_zcull) {
+      uint32_t start_count = nv_push_dw_count(p);
+      struct nil_zcull zcull_info;
+      uint64_t addr_begin, addr_end;
+
+      if (zcull_plane) {
+         zcull_info = zcull_plane->nil;
+         addr_begin = zcull_plane->addr;
+         addr_end = zcull_plane->addr + zcull_plane->nil.size_B;
+      } else {
+         zcull_info = nil_zcull_new(
+            &pdev->info.zcull_info,
+            render->area.offset.x,
+            render->area.offset.y,
+            render->area.extent.width,
+            render->area.extent.height
+         );
+         addr_begin = 0;
+         addr_end = 0;
+      }
+
+      P_IMMD(p, NV9097, SET_ACTIVE_ZCULL_REGION, 0);
+
+      P_MTHD(p, NV9097, SET_ZCULL_REGION_LOCATION);
+      P_NV9097_SET_ZCULL_REGION_LOCATION(p, {
+         .start_aliquot = 0,
+         .aliquot_count = zcull_info.aliquot_count,
+      });
+      P_NV9097_SET_ZCULL_REGION_ALIQUOTS(p, zcull_info.aliquot_count);
+
+      P_MTHD(p, NV9097, SET_ZCULL_STORAGE_A);
+      P_NV9097_SET_ZCULL_STORAGE_A(p, addr_begin >> 32);
+      P_NV9097_SET_ZCULL_STORAGE_B(p, addr_begin & UINT32_MAX);
+      P_NV9097_SET_ZCULL_STORAGE_C(p, addr_end >> 32);
+      P_NV9097_SET_ZCULL_STORAGE_D(p, addr_end & UINT32_MAX);
+
+      P_IMMD(p, NV9097, SET_ZCULL_REGION_FORMAT, TYPE_Z_4X4);
+
+      P_MTHD(p, NV9097, SET_ZCULL_REGION_SIZE_A);
+      P_NV9097_SET_ZCULL_REGION_SIZE_A(p, zcull_info.width);
+      P_NV9097_SET_ZCULL_REGION_SIZE_B(p, zcull_info.height);
+      P_NV9097_SET_ZCULL_REGION_SIZE_C(p, 1);
+      P_NV9097_SET_ZCULL_REGION_PIXEL_OFFSET_C(p, 0);
+
+      P_MTHD(p, NV9097, SET_ZCULL_REGION_PIXEL_OFFSET_A);
+      P_NV9097_SET_ZCULL_REGION_PIXEL_OFFSET_A(p, zcull_info.x);
+      P_NV9097_SET_ZCULL_REGION_PIXEL_OFFSET_B(p, zcull_info.y);
+
+      P_IMMD(p, NV9297, SET_ZCULL_SUBREGION, {
+         .enable = true,
+         .normalized_aliquots = zcull_info.normalized_aliquots,
+      });
+
+      P_IMMD(p, NV9097, SET_ZCULL_CRITERION, {
+         .sfunc = SFUNC_NEVER,  /* stencil func */
+         .no_invalidate = false,
+         .force_match = false,
+         .sref = 0,
+         .smask = 0,
+      });
+
+      VkFormat fmt = render->depth_att.iview->vk.format;
+      P_IMMD(p, NV9097, SET_ZCULL_DIR_FORMAT, {
+         /* I've tried a variety of depthCompareOp values and depth clear
+          * values, but the blob seems to always use ZDIR_LESS
+          */
+         .zdir = ZDIR_LESS,
+         .zformat = nvk_vk_format_to_zcull_format(fmt),
+      });
+
+      P_0INC(p, NV9297, SET_ZCULL_SUBREGION_ALLOCATION);
+      for (int i = 0; i < zcull_info.subregion_count; i++) {
+         nv_push_val(p, NV9297_SET_ZCULL_SUBREGION_ALLOCATION,
+                     zcull_info.subregions[i]);
+      }
+
+      P_IMMD(p, NV9297, ASSIGN_ZCULL_SUBREGIONS,
+             zcull_info.subregion_algorithm);
+
+      P_IMMD(p, NV9297, SET_ZCULL_SUBREGION_REPORT_TYPE, {
+         .enable = true,
+         .type = TYPE_DEPTH_TEST,
+      });
+
+      float depth = 0.0f;
+      switch (pRenderingInfo->pDepthAttachment->loadOp) {
+         case VK_ATTACHMENT_LOAD_OP_CLEAR:
+            depth =
+               pRenderingInfo->pDepthAttachment->clearValue.depthStencil.depth;
+            FALLTHROUGH;
+         case VK_ATTACHMENT_LOAD_OP_DONT_CARE:
+            P_IMMD(p, NV9097, SET_Z_CLEAR_VALUE, fui(depth));
+
+            P_IMMD(p, NV9097, CLEAR_ZCULL_REGION, {
+               .z_enable = true,
+               .stencil_enable = false,
+               .use_clear_rect = false,
+               .use_rt_array_index = false,
+               .make_conservative = true,
+            });
+            break;
+
+         case VK_ATTACHMENT_LOAD_OP_LOAD:
+            assert(zcull_plane);
+            P_IMMD(p, NV9097, LOAD_ZCULL, 0);
+            break;
+
+         default:
+            assert(!"Unhandled loadOp");
+            break;
+      }
+      uint32_t end_count = nv_push_dw_count(p);
+      assert(end_count - start_count <= zcull_count);
+   } else {
+      P_IMMD(p, NV9097, SET_ACTIVE_ZCULL_REGION, 0x3f);
+   }
+
    if (nvk_cmd_buffer_3d_cls(cmd) < TURING_A) {
       assert(render->fsr_att.iview == NULL);
    } else if (render->fsr_att.iview != NULL) {
@@ -1495,6 +1660,13 @@ nvk_CmdEndRendering2KHR(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    struct nvk_rendering_state *render = &cmd->state.gfx.render;
 
+   struct nvk_zcull_plane* zcull_plane = nvk_get_zcull_plane(render);
+   if (zcull_plane &&
+       render->depth_att.store_op == VK_ATTACHMENT_STORE_OP_STORE) {
+      struct nv_push *p = nvk_cmd_buffer_push(cmd, 2);
+      P_IMMD(p, NV9097, STORE_ZCULL, 0);
+   }
+
    if (!(render->flags & VK_RENDERING_SUSPENDING_BIT)) {
       for (uint32_t i = 0; i < render->color_att_count; i++) {
          struct nvk_image_view *iview = render->color_att[i].iview;
@@ -1610,24 +1782,61 @@ nvk_cmd_bind_graphics_shader(struct nvk_cmd_buffer *cmd,
    cmd->state.gfx.shaders_dirty |= mesa_to_vk_shader_stage(stage);
 }
 
+#define NVK_MME_TESS_PARAMS(domain, spacing, prims) \
+   NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, DOMAIN_TYPE, domain) | \
+   NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, SPACING, spacing) | \
+   NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, OUTPUT_PRIMITIVES, prims)
+
+#define NVK_MME_TESS_STATE(domain, spacing, flags) \
+   NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, DOMAIN_TYPE, domain) | \
+   NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, SPACING, spacing) | \
+   flags
+
+#define NVK_MME_FULL_TESS_STATE(ctrl, eval) (ctrl << 8) | (eval)
+
+#define POINT_MODE_BIT 2
+#define CCW_BIT        3
+#define LOWER_LEFT_BIT 6
+
+#define POINT_MODE BITFIELD_BIT(POINT_MODE_BIT)
+#define CCW        BITFIELD_BIT(CCW_BIT)
+#define LOWER_LEFT BITFIELD_BIT(LOWER_LEFT_BIT)
+
 uint32_t
-nvk_mme_tess_params(enum nak_ts_domain domain,
+nvk_mme_tess_params(mesa_shader_stage stage,
+                    enum nak_ts_domain domain,
                     enum nak_ts_spacing spacing,
-                    enum nak_ts_prims prims)
+                    bool ccw, bool point_mode)
 {
    /* This is laid out the same as SET_TESSELLATION_PARAMETERS, only with an
     * extra bit for lower_left
     */
    uint16_t params = ((uint16_t)domain << 0) |
-                     ((uint16_t)spacing << 4) |
-                     ((uint16_t)prims << 8);
-   return nvk_mme_val_mask(params, 0x0fff);
+                     ((uint16_t)spacing << 4);
+   if (ccw)
+      params |= CCW;
+   if (point_mode)
+      params |= POINT_MODE;
+
+   uint16_t mask = DRF_SMASK(NV9097_SET_TESSELLATION_PARAMETERS_DOMAIN_TYPE) |
+                   DRF_SMASK(NV9097_SET_TESSELLATION_PARAMETERS_SPACING) |
+                   POINT_MODE | CCW;
+
+   if (stage == MESA_SHADER_TESS_CTRL) {
+      assert(domain == 0);
+      params <<= 8;
+      mask <<= 8;
+   } else {
+      assert(stage == MESA_SHADER_TESS_EVAL);
+   }
+
+   return nvk_mme_val_mask(params, mask);
 }
 
 static uint32_t
 nvk_mme_tess_lower_left(bool lower_left)
 {
-   return nvk_mme_val_mask((uint16_t)lower_left << 12, 1u << 12);
+   return nvk_mme_val_mask(lower_left ? LOWER_LEFT : 0, LOWER_LEFT);
 }
 
 void
@@ -1641,32 +1850,78 @@ nvk_mme_set_tess_params(struct mme_builder *b)
    mme_if(b, ine, params, old_params) {
       nvk_mme_store_scratch(b, TESS_PARAMS, params);
 
-      /* lower_left lives at bit 12 */
-      struct mme_value lower_left = mme_merge(b, mme_zero(), params, 0, 1, 12);
+      /* Merge tese and tesc state. The state space has been designed so we can
+       * just OR then together - unspecified inputs are zero and where they're
+       * both specifed we're guaranteed that they match by draw time.
+       */
+      struct mme_value tesc = mme_merge(b, mme_zero(), params, 0, 8, 8);
+      mme_or_to(b, params, params, tesc);
+      mme_free_reg(b, tesc);
 
-      /* Only the bottom 12 bits are valid to put in HW */
-      mme_merge_to(b, params, mme_zero(), params, 0, 12, 0);
+      /* Compute primitives value */
+      #define PRIMS(x) \
+         mme_imm(NV9097_SET_TESSELLATION_PARAMETERS_OUTPUT_PRIMITIVES_##x)
+
+      struct mme_value prims = mme_mov(b, PRIMS(TRIANGLES_CW));
 
       /* If we're using a lower-left orientation, we need to flip triangles
        * between CW and CCW.
        */
-      mme_if(b, ine, lower_left, mme_zero()) {
-         struct mme_value prims_cw = mme_imm(NAK_TS_PRIMS_TRIANGLES_CW);
-         struct mme_value prims_ccw = mme_imm(NAK_TS_PRIMS_TRIANGLES_CCW);
+      struct mme_value lower_left =
+         mme_merge(b, mme_zero(), params, 0, 1, LOWER_LEFT_BIT);
+      struct mme_value ccw =
+         mme_merge(b, mme_zero(), params, 0, 1, CCW_BIT);
 
-         struct mme_value prims = mme_merge(b, mme_zero(), params, 0, 4, 8);
-         mme_if(b, ieq, prims, prims_cw) {
-            mme_merge_to(b, params, params, prims_ccw, 8, 4, 0);
-         }
-         mme_if(b, ieq, prims, prims_ccw) {
-            mme_merge_to(b, params, params, prims_cw, 8, 4, 0);
-         }
-         mme_free_reg(b, prims);
-      }
+      mme_xor_to(b, ccw, ccw, lower_left);
       mme_free_reg(b, lower_left);
 
-      mme_mthd(b, NV9097_SET_TESSELLATION_PARAMETERS);
-      mme_emit(b, params);
+      mme_if(b, ine, ccw, mme_zero()) {
+         mme_mov_to(b, prims, PRIMS(TRIANGLES_CCW));
+      }
+      mme_free_reg(b, ccw);
+
+      /* Check for lines */
+      struct mme_value domain =
+         mme_merge(b, mme_zero(), params, 0,
+                   DRF_BITS(NV9097_SET_TESSELLATION_PARAMETERS_DOMAIN_TYPE),
+                   DRF_LO(NV9097_SET_TESSELLATION_PARAMETERS_DOMAIN_TYPE));
+      mme_if(b, ieq, domain, mme_imm(NV9097_SET_TESSELLATION_PARAMETERS_DOMAIN_TYPE_ISOLINE)) {
+         mme_mov_to(b, prims, PRIMS(LINES));
+      }
+      mme_free_reg(b, domain);
+
+      /* Point mode overrides prims */
+      struct mme_value point_mode =
+         mme_merge(b, mme_zero(), params, 0, 1, POINT_MODE_BIT);
+      mme_if(b, ine, point_mode, mme_zero()) {
+         mme_mov_to(b, prims, PRIMS(POINTS));
+      }
+      mme_free_reg(b, point_mode);
+
+      /* Mask off bits that are valid to put in HW */
+      mme_and_to(b, params, params, mme_imm(
+         DRF_SMASK(NV9097_SET_TESSELLATION_PARAMETERS_DOMAIN_TYPE) |
+         DRF_SMASK(NV9097_SET_TESSELLATION_PARAMETERS_SPACING)));
+      mme_merge_to(b, params, params, prims,
+         DRF_LO(NV9097_SET_TESSELLATION_PARAMETERS_OUTPUT_PRIMITIVES),
+         DRF_BITS(NV9097_SET_TESSELLATION_PARAMETERS_OUTPUT_PRIMITIVES), 0);
+      mme_free_reg(b, prims);
+
+      /* If the current state is never used in a draw, we can end up with
+       * temporary invalid values while binding different shaders. Check
+       * for this so we can avoid setting a state that will cause
+       * context loss. This happens when `spacing == 3`. The same cannot
+       * happen with `domain` because we never set it for TESS_CTRL.
+       */
+      struct mme_value spacing =
+         mme_merge(b, mme_zero(), params, 0,
+                   DRF_BITS(NV9097_SET_TESSELLATION_PARAMETERS_SPACING),
+                   DRF_LO(NV9097_SET_TESSELLATION_PARAMETERS_SPACING));
+
+      mme_if(b, ine, spacing, mme_imm(0x3)) {
+         mme_mthd(b, NV9097_SET_TESSELLATION_PARAMETERS);
+         mme_emit(b, params);
+      }
    }
 }
 
@@ -1676,44 +1931,165 @@ const struct nvk_mme_test_case nvk_mme_set_tess_params_tests[] = {{
       { NVK_SET_MME_SCRATCH(TESS_PARAMS), 0 },
       { }
    },
-   .params = (uint32_t[]) { 0xffff0000 },
+   .params = (uint32_t[]) { NVK_MME_VAL_MASK(0, 0xffff) },
    .expected = (struct nvk_mme_mthd_data[]) {
       { }
    },
 }, {
-   /* TRIANGLE, INTEGER, TRIANGLES_CW, lower_left = false */
    .init = (struct nvk_mme_mthd_data[]) {
       { NVK_SET_MME_SCRATCH(TESS_PARAMS), 0 },
       { }
    },
-   .params = (uint32_t[]) { 0xffff0201 },
+   .params = (uint32_t[]) {
+      NVK_MME_VAL_MASK(NVK_MME_TESS_STATE(TRIANGLE, INTEGER, 0), 0xffff)
+   },
    .expected = (struct nvk_mme_mthd_data[]) {
-      { NVK_SET_MME_SCRATCH(TESS_PARAMS), 0x0201 },
-      { NV9097_SET_TESSELLATION_PARAMETERS, 0x0201 },
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, 0)
+      },
+      {
+         NV9097_SET_TESSELLATION_PARAMETERS,
+         NVK_MME_TESS_PARAMS(TRIANGLE, INTEGER, TRIANGLES_CW)
+      },
       { }
    },
 }, {
-   /* TRIANGLE, INTEGER, TRIANGLES_CW, lower_left = true */
    .init = (struct nvk_mme_mthd_data[]) {
-      { NVK_SET_MME_SCRATCH(TESS_PARAMS), 0x0201 },
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, 0)
+      },
       { }
    },
-   .params = (uint32_t[]) { 0x10001000 },
+   .params = (uint32_t[]) { NVK_MME_VAL_MASK(LOWER_LEFT, LOWER_LEFT) },
    .expected = (struct nvk_mme_mthd_data[]) {
-      { NVK_SET_MME_SCRATCH(TESS_PARAMS), 0x1201 },
-      { NV9097_SET_TESSELLATION_PARAMETERS, 0x0301 },
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, LOWER_LEFT)
+      },
+      {
+         NV9097_SET_TESSELLATION_PARAMETERS,
+         NVK_MME_TESS_PARAMS(TRIANGLE, INTEGER, TRIANGLES_CCW)
+      },
       { }
    },
 }, {
-   /* TRIANGLE, INTEGER, TRIANGLES_CCW, lower_left = true */
    .init = (struct nvk_mme_mthd_data[]) {
-      { NVK_SET_MME_SCRATCH(TESS_PARAMS), 0x0301 },
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, CCW)
+      },
       { }
    },
-   .params = (uint32_t[]) { 0x10001000 },
+   .params = (uint32_t[]) { NVK_MME_VAL_MASK(LOWER_LEFT, LOWER_LEFT)},
    .expected = (struct nvk_mme_mthd_data[]) {
-      { NVK_SET_MME_SCRATCH(TESS_PARAMS), 0x1301 },
-      { NV9097_SET_TESSELLATION_PARAMETERS, 0x0201 },
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, LOWER_LEFT | CCW)
+      },
+      {
+         NV9097_SET_TESSELLATION_PARAMETERS,
+         NVK_MME_TESS_PARAMS(TRIANGLE, INTEGER, TRIANGLES_CW)
+      },
+      { }
+   },
+}, {
+   .init = (struct nvk_mme_mthd_data[]) {
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, CCW)
+      },
+      { }
+   },
+   .params = (uint32_t[]) { NVK_MME_VAL_MASK(POINT_MODE, POINT_MODE)},
+   .expected = (struct nvk_mme_mthd_data[]) {
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, CCW | POINT_MODE)
+      },
+      {
+         NV9097_SET_TESSELLATION_PARAMETERS,
+         NVK_MME_TESS_PARAMS(TRIANGLE, INTEGER, POINTS)
+      },
+      { }
+   },
+}, {
+   .init = (struct nvk_mme_mthd_data[]) {
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, 0)
+      },
+      { }
+   },
+   .params = (uint32_t[]) {
+      NVK_MME_VAL_MASK(NVK_MME_TESS_STATE(ISOLINE, INTEGER, 0), 0xffff)
+   },
+   .expected = (struct nvk_mme_mthd_data[]) {
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(ISOLINE, INTEGER, 0)
+      },
+      {
+         NV9097_SET_TESSELLATION_PARAMETERS,
+         NVK_MME_TESS_PARAMS(ISOLINE, INTEGER, LINES)
+      },
+      { }
+   },
+}, {
+   /* Test tese/tesc merge */
+   .init = (struct nvk_mme_mthd_data[]) {
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, 0)
+      },
+      { }
+   },
+   .params = (uint32_t[]) {
+      NVK_MME_VAL_MASK(NVK_MME_FULL_TESS_STATE(
+         NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, DOMAIN_TYPE, TRIANGLE),
+         NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, SPACING, FRACTIONAL_ODD)
+      ), 0xffff)
+   },
+   .expected = (struct nvk_mme_mthd_data[]) {
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_FULL_TESS_STATE(
+            NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, DOMAIN_TYPE, TRIANGLE),
+            NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, SPACING, FRACTIONAL_ODD)
+         )
+      },
+      {
+         NV9097_SET_TESSELLATION_PARAMETERS,
+         NVK_MME_TESS_PARAMS(TRIANGLE, FRACTIONAL_ODD, TRIANGLES_CW)
+      },
+      { }
+   },
+}, {
+   /* Test skipping invalid spacing */
+   .init = (struct nvk_mme_mthd_data[]) {
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_TESS_STATE(TRIANGLE, INTEGER, 0)
+      },
+      { }
+   },
+   .params = (uint32_t[]) {
+      NVK_MME_VAL_MASK(NVK_MME_FULL_TESS_STATE(
+         NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, DOMAIN_TYPE, TRIANGLE) |
+         NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, SPACING, FRACTIONAL_EVEN),
+         NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, SPACING, FRACTIONAL_ODD)
+      ), 0xffff)
+   },
+   .expected = (struct nvk_mme_mthd_data[]) {
+      {
+         NVK_SET_MME_SCRATCH(TESS_PARAMS),
+         NVK_MME_FULL_TESS_STATE(
+            NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, DOMAIN_TYPE, TRIANGLE) |
+            NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, SPACING, FRACTIONAL_EVEN),
+            NVDEF(NV9097, SET_TESSELLATION_PARAMETERS, SPACING, FRACTIONAL_ODD)
+         )
+      },
       { }
    },
 }, {}};
@@ -1964,17 +2340,9 @@ nvk_flush_ia_state(struct nvk_cmd_buffer *cmd)
       &cmd->vk.dynamic_graphics_state;
 
    if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
-      uint32_t begin;
-      V_NV9097_BEGIN(begin, {
-         .op = vk_to_nv9097_primitive_topology(dyn->ia.primitive_topology),
-         .primitive_id = NV9097_BEGIN_PRIMITIVE_ID_FIRST,
-         .instance_id = NV9097_BEGIN_INSTANCE_ID_FIRST,
-         .split_mode = SPLIT_MODE_NORMAL_BEGIN_NORMAL_END,
-      });
-
       struct nv_push *p = nvk_cmd_buffer_push(cmd, 2);
-      P_MTHD(p, NV9097, SET_MME_SHADOW_SCRATCH(NVK_MME_SCRATCH_DRAW_BEGIN));
-      P_INLINE_DATA(p, begin);
+      P_MTHD(p, NV9097, SET_MME_SHADOW_SCRATCH(NVK_MME_SCRATCH_DRAW_TOPOLOGY));
+      P_INLINE_DATA(p, vk_to_nv9097_primitive_topology(dyn->ia.primitive_topology));
    }
 
    if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_IA_PRIMITIVE_RESTART_ENABLE)) {
@@ -2006,102 +2374,157 @@ nvk_flush_ts_state(struct nvk_cmd_buffer *cmd)
 }
 
 static void
-nvk_flush_vp_state(struct nvk_cmd_buffer *cmd)
+nvk_emit_viewport(struct nvk_cmd_buffer *cmd, struct nv_push *p, const VkViewport *vp, int i)
 {
    struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
-   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
 
    const struct vk_dynamic_graphics_state *dyn =
       &cmd->vk.dynamic_graphics_state;
+   /* These exactly match the spec values.  Nvidia hardware oddities
+    * are accounted for later.
+    */
+   const float o_x = vp->x + 0.5f * vp->width;
+   const float o_y = vp->y + 0.5f * vp->height;
+   const float o_z = !dyn->vp.depth_clip_negative_one_to_one ?
+                     vp->minDepth :
+                     (vp->maxDepth + vp->minDepth) * 0.5f;
+
+   const float p_x = vp->width;
+   const float p_y = vp->height;
+   const float p_z = !dyn->vp.depth_clip_negative_one_to_one ?
+                     vp->maxDepth - vp->minDepth :
+                     (vp->maxDepth - vp->minDepth) * 0.5f;
+
+   P_MTHD(p, NV9097, SET_VIEWPORT_SCALE_X(i));
+   P_NV9097_SET_VIEWPORT_SCALE_X(p, i, fui(0.5f * p_x));
+   P_NV9097_SET_VIEWPORT_SCALE_Y(p, i, fui(0.5f * p_y));
+   P_NV9097_SET_VIEWPORT_SCALE_Z(p, i, fui(p_z));
+
+   P_NV9097_SET_VIEWPORT_OFFSET_X(p, i, fui(o_x));
+   P_NV9097_SET_VIEWPORT_OFFSET_Y(p, i, fui(o_y));
+   P_NV9097_SET_VIEWPORT_OFFSET_Z(p, i, fui(o_z));
+
+   const bool user_defined_range =
+      dyn->vp.depth_clamp_mode == VK_DEPTH_CLAMP_MODE_USER_DEFINED_RANGE_EXT;
+   float xmin = vp->x;
+   float xmax = vp->x + vp->width;
+   float ymin = MIN2(vp->y, vp->y + vp->height);
+   float ymax = MAX2(vp->y, vp->y + vp->height);
+   float zmin = user_defined_range ?
+                dyn->vp.depth_clamp_range.minDepthClamp :
+                MIN2(vp->minDepth, vp->maxDepth);
+   float zmax = user_defined_range ?
+                dyn->vp.depth_clamp_range.maxDepthClamp :
+                MAX2(vp->minDepth, vp->maxDepth);
+   assert(xmin <= xmax && ymin <= ymax && zmin <= zmax);
+
+   const float max_dim = (float)0xffff;
+   xmin = CLAMP(xmin, 0, max_dim);
+   xmax = CLAMP(xmax, 0, max_dim);
+   ymin = CLAMP(ymin, 0, max_dim);
+   ymax = CLAMP(ymax, 0, max_dim);
+
+   if (!dev->vk.enabled_extensions.EXT_depth_range_unrestricted) {
+      assert(0.0 <= zmin && zmin <= 1.0);
+      assert(0.0 <= zmax && zmax <= 1.0);
+   }
+
+   P_MTHD(p, NV9097, SET_VIEWPORT_CLIP_HORIZONTAL(i));
+   P_NV9097_SET_VIEWPORT_CLIP_HORIZONTAL(p, i, {
+      .x0      = xmin,
+      .width   = xmax - xmin,
+   });
+   P_NV9097_SET_VIEWPORT_CLIP_VERTICAL(p, i, {
+      .y0      = ymin,
+      .height  = ymax - ymin,
+   });
+
+   if (nvk_cmd_buffer_3d_cls(cmd) >= VOLTA_A) {
+      P_NV9097_SET_VIEWPORT_CLIP_MIN_Z(p, i, fui(zmin));
+      P_NV9097_SET_VIEWPORT_CLIP_MAX_Z(p, i, fui(zmax));
+   } else {
+      P_1INC(p, NVB197, CALL_MME_MACRO(NVK_MME_SET_VIEWPORT_MIN_MAX_Z));
+      P_INLINE_DATA(p, i);
+      P_INLINE_DATA(p, fui(zmin));
+      P_INLINE_DATA(p, fui(zmax));
+   }
+
+   if (nvk_cmd_buffer_3d_cls(cmd) >= MAXWELL_B) {
+      P_IMMD(p, NVB197, SET_VIEWPORT_COORDINATE_SWIZZLE(i), {
+         .x = X_POS_X,
+         .y = Y_POS_Y,
+         .z = Z_POS_Z,
+         .w = W_POS_W,
+      });
+   }
+}
+
+static void
+nvk_emit_scissor(struct nvk_cmd_buffer *cmd, struct nv_push *p, const VkRect2D *s, int i)
+{
+   struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+   const uint32_t sr_max =
+      nvk_image_max_dimension(&pdev->info, VK_IMAGE_TYPE_2D);
+
+   const uint32_t xmin = MIN2(sr_max, s->offset.x);
+   const uint32_t xmax = MIN2(sr_max, s->offset.x + s->extent.width);
+   const uint32_t ymin = MIN2(sr_max, s->offset.y);
+   const uint32_t ymax = MIN2(sr_max, s->offset.y + s->extent.height);
+
+   P_MTHD(p, NV9097, SET_SCISSOR_ENABLE(i));
+   P_NV9097_SET_SCISSOR_ENABLE(p, i, V_TRUE);
+   P_NV9097_SET_SCISSOR_HORIZONTAL(p, i, {
+      .xmin = xmin,
+      .xmax = xmax,
+   });
+   P_NV9097_SET_SCISSOR_VERTICAL(p, i, {
+      .ymin = ymin,
+      .ymax = ymax,
+   });
+}
+
+static void
+nvk_flush_vp_state(struct nvk_cmd_buffer *cmd)
+{
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd->vk.dynamic_graphics_state;
+
+   /* From the Vulkan 1.4.341 spec:
+   *
+   *    "If the pipeline requires pre-rasterization shader state and the
+   *     primitiveFragmentShadingRateWithMultipleViewports limit is not
+   *     supported VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT is not included in
+   *     pDynamicState->pDynamicStates, and
+   *     VkPipelineViewportStateCreateInfo::viewportCount is greater than 1,
+   *     entry points specified in pStages must not write to the
+   *     PrimitiveShadingRateKHR built-in"
+   *
+   * This means that, in Turing case of FSR, we expect only one viewport to be
+   * present. Therefore, to handle FSR, we need to replicate viewport and
+   * scissor 0.
+   */
+   const bool vp_broadcast_dirty = BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_FSR) &&
+                                   nvk_cmd_buffer_3d_cls(cmd) == TURING_A;
+   const bool need_turing_vp_broadcast = nvk_cmd_buffer_3d_cls(cmd) == TURING_A &&
+                                         !vk_fragment_shading_rate_is_disabled(&dyn->fsr);
+   const uint8_t viewport_count = need_turing_vp_broadcast ? NVK_MAX_VIEWPORTS :
+                                                             dyn->vp.viewport_count;
+   const uint8_t scissor_count = need_turing_vp_broadcast ? NVK_MAX_VIEWPORTS :
+                                                            dyn->vp.scissor_count;
 
    struct nv_push *p =
-      nvk_cmd_buffer_push(cmd, 18 * dyn->vp.viewport_count + 4 * NVK_MAX_VIEWPORTS);
+      nvk_cmd_buffer_push(cmd, 18 * viewport_count + 4 * NVK_MAX_VIEWPORTS);
 
    /* Nothing to do for MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT */
 
    if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_VIEWPORTS) ||
        BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE) ||
-       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_DEPTH_CLAMP_RANGE)) {
-      for (uint32_t i = 0; i < dyn->vp.viewport_count; i++) {
-         const VkViewport *vp = &dyn->vp.viewports[i];
-
-         /* These exactly match the spec values.  Nvidia hardware oddities
-          * are accounted for later.
-          */
-         const float o_x = vp->x + 0.5f * vp->width;
-         const float o_y = vp->y + 0.5f * vp->height;
-         const float o_z = !dyn->vp.depth_clip_negative_one_to_one ?
-                           vp->minDepth :
-                           (vp->maxDepth + vp->minDepth) * 0.5f;
-
-         const float p_x = vp->width;
-         const float p_y = vp->height;
-         const float p_z = !dyn->vp.depth_clip_negative_one_to_one ?
-                           vp->maxDepth - vp->minDepth :
-                           (vp->maxDepth - vp->minDepth) * 0.5f;
-
-         P_MTHD(p, NV9097, SET_VIEWPORT_SCALE_X(i));
-         P_NV9097_SET_VIEWPORT_SCALE_X(p, i, fui(0.5f * p_x));
-         P_NV9097_SET_VIEWPORT_SCALE_Y(p, i, fui(0.5f * p_y));
-         P_NV9097_SET_VIEWPORT_SCALE_Z(p, i, fui(p_z));
-
-         P_NV9097_SET_VIEWPORT_OFFSET_X(p, i, fui(o_x));
-         P_NV9097_SET_VIEWPORT_OFFSET_Y(p, i, fui(o_y));
-         P_NV9097_SET_VIEWPORT_OFFSET_Z(p, i, fui(o_z));
-
-         const bool user_defined_range =
-            dyn->vp.depth_clamp_mode == VK_DEPTH_CLAMP_MODE_USER_DEFINED_RANGE_EXT;
-         float xmin = vp->x;
-         float xmax = vp->x + vp->width;
-         float ymin = MIN2(vp->y, vp->y + vp->height);
-         float ymax = MAX2(vp->y, vp->y + vp->height);
-         float zmin = user_defined_range ?
-                      dyn->vp.depth_clamp_range.minDepthClamp :
-                      MIN2(vp->minDepth, vp->maxDepth);
-         float zmax = user_defined_range ?
-                      dyn->vp.depth_clamp_range.maxDepthClamp :
-                      MAX2(vp->minDepth, vp->maxDepth);
-         assert(xmin <= xmax && ymin <= ymax && zmin <= zmax);
-
-         const float max_dim = (float)0xffff;
-         xmin = CLAMP(xmin, 0, max_dim);
-         xmax = CLAMP(xmax, 0, max_dim);
-         ymin = CLAMP(ymin, 0, max_dim);
-         ymax = CLAMP(ymax, 0, max_dim);
-
-         if (!dev->vk.enabled_extensions.EXT_depth_range_unrestricted) {
-            assert(0.0 <= zmin && zmin <= 1.0);
-            assert(0.0 <= zmax && zmax <= 1.0);
-         }
-
-         P_MTHD(p, NV9097, SET_VIEWPORT_CLIP_HORIZONTAL(i));
-         P_NV9097_SET_VIEWPORT_CLIP_HORIZONTAL(p, i, {
-            .x0      = xmin,
-            .width   = xmax - xmin,
-         });
-         P_NV9097_SET_VIEWPORT_CLIP_VERTICAL(p, i, {
-            .y0      = ymin,
-            .height  = ymax - ymin,
-         });
-
-         if (nvk_cmd_buffer_3d_cls(cmd) >= VOLTA_A) {
-            P_NV9097_SET_VIEWPORT_CLIP_MIN_Z(p, i, fui(zmin));
-            P_NV9097_SET_VIEWPORT_CLIP_MAX_Z(p, i, fui(zmax));
-         } else {
-            P_1INC(p, NVB197, CALL_MME_MACRO(NVK_MME_SET_VIEWPORT_MIN_MAX_Z));
-            P_INLINE_DATA(p, i);
-            P_INLINE_DATA(p, fui(zmin));
-            P_INLINE_DATA(p, fui(zmax));
-         }
-
-         if (nvk_cmd_buffer_3d_cls(cmd) >= MAXWELL_B) {
-            P_IMMD(p, NVB197, SET_VIEWPORT_COORDINATE_SWIZZLE(i), {
-               .x = X_POS_X,
-               .y = Y_POS_Y,
-               .z = Z_POS_Z,
-               .w = W_POS_W,
-            });
-         }
+       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_DEPTH_CLAMP_RANGE) ||
+       vp_broadcast_dirty) {
+      for (uint32_t i = 0; i < viewport_count; i++) {
+         const VkViewport *vp = &dyn->vp.viewports[need_turing_vp_broadcast ? 0 : i];
+         nvk_emit_viewport(cmd, p, vp, i);
       }
    }
 
@@ -2112,33 +2535,15 @@ nvk_flush_vp_state(struct nvk_cmd_buffer *cmd)
              RANGE_ZERO_TO_POSITIVE_W);
    }
 
-   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSOR_COUNT)) {
-      for (unsigned i = dyn->vp.scissor_count; i < NVK_MAX_VIEWPORTS; i++)
+   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSOR_COUNT) || vp_broadcast_dirty) {
+      for (unsigned i = scissor_count; i < NVK_MAX_VIEWPORTS; i++)
          P_IMMD(p, NV9097, SET_SCISSOR_ENABLE(i), V_FALSE);
    }
 
-   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSORS)) {
-      const uint32_t sr_max =
-         nvk_image_max_dimension(&pdev->info, VK_IMAGE_TYPE_2D);
-
-      for (unsigned i = 0; i < dyn->vp.scissor_count; i++) {
-         const VkRect2D *s = &dyn->vp.scissors[i];
-
-         const uint32_t xmin = MIN2(sr_max, s->offset.x);
-         const uint32_t xmax = MIN2(sr_max, s->offset.x + s->extent.width);
-         const uint32_t ymin = MIN2(sr_max, s->offset.y);
-         const uint32_t ymax = MIN2(sr_max, s->offset.y + s->extent.height);
-
-         P_MTHD(p, NV9097, SET_SCISSOR_ENABLE(i));
-         P_NV9097_SET_SCISSOR_ENABLE(p, i, V_TRUE);
-         P_NV9097_SET_SCISSOR_HORIZONTAL(p, i, {
-            .xmin = xmin,
-            .xmax = xmax,
-         });
-         P_NV9097_SET_SCISSOR_VERTICAL(p, i, {
-            .ymin = ymin,
-            .ymax = ymax,
-         });
+   if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSORS) || vp_broadcast_dirty) {
+      for (unsigned i = 0; i < scissor_count; i++) {
+         const VkRect2D *s = &dyn->vp.scissors[need_turing_vp_broadcast ? 0 : i];
+         nvk_emit_scissor(cmd, p, s, i);
       }
    }
 }
@@ -3754,6 +4159,9 @@ nvk_cmd_flush_gfx_state(struct nvk_cmd_buffer *cmd)
    nvk_cmd_flush_gfx_dynamic_state(cmd);
    nvk_cmd_flush_gfx_shaders(cmd);
    nvk_cmd_flush_gfx_cbufs(cmd);
+
+   if (NAK_CAN_PRINTF)
+      nvk_cmd_buffer_flush_printf_buffer(cmd, &cmd->state.gfx.descriptors);
 }
 
 void
@@ -4101,32 +4509,49 @@ nvk_mme_build_draw_loop(struct mme_builder *b,
                         struct mme_value first_vertex,
                         struct mme_value vertex_count)
 {
-   struct mme_value begin = nvk_mme_load_scratch(b, DRAW_BEGIN);
 
-   if (b->devinfo->cls_eng3d < PASCAL_B) {
-      mme_start_loop(b, instance_count);
-   } else {
-      mme_mthd(b, NVC197_SET_INSTANCE_COUNT);
+   if (b->devinfo->cls_eng3d >= TURING_A) {
+      struct mme_value draw_control_a = nvk_mme_load_scratch(b, DRAW_TOPOLOGY);
+      mme_set_field_enum(b, draw_control_a, NVC597_SET_DRAW_CONTROL_A_INSTANCE_ITERATE_ENABLE, TRUE);
+
+      mme_mthd(b, NVC597_SET_DRAW_CONTROL_A);
+      mme_emit(b, draw_control_a);
       mme_emit(b, instance_count);
-      mme_set_field_enum(b, begin, NVC197_BEGIN_INSTANCE_ITERATE_ENABLE, TRUE);
+
+      mme_mthd(b, NVC597_DRAW_VERTEX_ARRAY_BEGIN_END_A);
+      mme_emit(b, first_vertex);
+      mme_emit(b, vertex_count);
+
+      mme_free_reg(b, draw_control_a);
+   } else {
+      struct mme_value begin = nvk_mme_load_scratch(b, DRAW_TOPOLOGY);
+
+      if (b->devinfo->cls_eng3d < PASCAL_B) {
+         mme_start_loop(b, instance_count);
+      } else {
+         mme_mthd(b, NVC197_SET_INSTANCE_COUNT);
+         mme_emit(b, instance_count);
+         mme_set_field_enum(b, begin, NVC197_BEGIN_INSTANCE_ITERATE_ENABLE, TRUE);
+      }
+
+      mme_mthd(b, NV9097_BEGIN);
+      mme_emit(b, begin);
+
+      mme_mthd(b, NV9097_SET_VERTEX_ARRAY_START);
+      mme_emit(b, first_vertex);
+      mme_emit(b, vertex_count);
+
+      mme_mthd(b, NV9097_END);
+      mme_emit(b, mme_zero());
+
+      if (b->devinfo->cls_eng3d < PASCAL_B) {
+         mme_set_field_enum(b, begin, NV9097_BEGIN_INSTANCE_ID, SUBSEQUENT);
+         mme_end_loop(b);
+      }
+
+      mme_free_reg(b, begin);
    }
 
-   mme_mthd(b, NV9097_BEGIN);
-   mme_emit(b, begin);
-
-   mme_mthd(b, NV9097_SET_VERTEX_ARRAY_START);
-   mme_emit(b, first_vertex);
-   mme_emit(b, vertex_count);
-
-   mme_mthd(b, NV9097_END);
-   mme_emit(b, mme_zero());
-
-   if (b->devinfo->cls_eng3d < PASCAL_B) {
-      mme_set_field_enum(b, begin, NV9097_BEGIN_INSTANCE_ID, SUBSEQUENT);
-      mme_end_loop(b);
-   }
-
-   mme_free_reg(b, begin);
 }
 
 static void
@@ -4204,6 +4629,9 @@ nvk_CmdDraw(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
 
+   if (unlikely(!vertexCount || !instanceCount))
+      return;
+
    nvk_cmd_flush_gfx_state(cmd);
 
    struct nv_push *p = nvk_cmd_buffer_push(cmd, 6);
@@ -4224,6 +4652,9 @@ nvk_CmdDrawMultiEXT(VkCommandBuffer commandBuffer,
                     uint32_t stride)
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
+
+   if (unlikely(!drawCount || !pVertexInfo->vertexCount || !instanceCount))
+      return;
 
    nvk_cmd_flush_gfx_state(cmd);
 
@@ -4246,32 +4677,46 @@ nvk_mme_build_draw_indexed_loop(struct mme_builder *b,
                                 struct mme_value first_index,
                                 struct mme_value index_count)
 {
-   struct mme_value begin = nvk_mme_load_scratch(b, DRAW_BEGIN);
 
-   if (b->devinfo->cls_eng3d < PASCAL_B) {
-      mme_start_loop(b, instance_count);
-   } else {
-      mme_mthd(b, NVC197_SET_INSTANCE_COUNT);
+   if (b->devinfo->cls_eng3d >= TURING_A) {
+      struct mme_value draw_control_a = nvk_mme_load_scratch(b, DRAW_TOPOLOGY);
+      mme_set_field_enum(b, draw_control_a, NVC597_SET_DRAW_CONTROL_A_INSTANCE_ITERATE_ENABLE, TRUE);
+
+      mme_mthd(b, NVC597_SET_DRAW_CONTROL_A);
+      mme_emit(b, draw_control_a);
       mme_emit(b, instance_count);
-      mme_set_field_enum(b, begin, NVC197_BEGIN_INSTANCE_ITERATE_ENABLE, TRUE);
+      mme_emit(b, first_index);
+      mme_emit(b, index_count);
+
+      mme_free_reg(b, draw_control_a);
+   } else {
+      struct mme_value begin = nvk_mme_load_scratch(b, DRAW_TOPOLOGY);
+
+      if (b->devinfo->cls_eng3d < PASCAL_B) {
+         mme_start_loop(b, instance_count);
+      } else {
+         mme_mthd(b, NVC197_SET_INSTANCE_COUNT);
+         mme_emit(b, instance_count);
+         mme_set_field_enum(b, begin, NVC197_BEGIN_INSTANCE_ITERATE_ENABLE, TRUE);
+      }
+
+      mme_mthd(b, NV9097_BEGIN);
+      mme_emit(b, begin);
+
+      mme_mthd(b, NV9097_SET_INDEX_BUFFER_F);
+      mme_emit(b, first_index);
+      mme_emit(b, index_count);
+
+      mme_mthd(b, NV9097_END);
+      mme_emit(b, mme_zero());
+
+      if (b->devinfo->cls_eng3d < PASCAL_B) {
+         mme_set_field_enum(b, begin, NV9097_BEGIN_INSTANCE_ID, SUBSEQUENT);
+         mme_end_loop(b);
+      }
+
+      mme_free_reg(b, begin);
    }
-
-   mme_mthd(b, NV9097_BEGIN);
-   mme_emit(b, begin);
-
-   mme_mthd(b, NV9097_SET_INDEX_BUFFER_F);
-   mme_emit(b, first_index);
-   mme_emit(b, index_count);
-
-   mme_mthd(b, NV9097_END);
-   mme_emit(b, mme_zero());
-
-   if (b->devinfo->cls_eng3d < PASCAL_B) {
-      mme_set_field_enum(b, begin, NV9097_BEGIN_INSTANCE_ID, SUBSEQUENT);
-      mme_end_loop(b);
-   }
-
-   mme_free_reg(b, begin);
 }
 
 static void
@@ -4353,6 +4798,9 @@ nvk_CmdDrawIndexed(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
 
+   if (unlikely(!indexCount || !instanceCount))
+      return;
+
    nvk_cmd_flush_gfx_state(cmd);
 
    struct nv_push *p = nvk_cmd_buffer_push(cmd, 7);
@@ -4375,6 +4823,9 @@ nvk_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer,
                            const int32_t *pVertexOffset)
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
+
+   if (unlikely(!drawCount || !pIndexInfo->indexCount || !instanceCount))
+      return;
 
    nvk_cmd_flush_gfx_state(cmd);
 
@@ -4443,6 +4894,9 @@ nvk_CmdDrawIndirect(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(nvk_buffer, buffer, _buffer);
+
+   if (unlikely(!drawCount))
+      return;
 
    /* From the Vulkan 1.3.238 spec:
     *
@@ -4724,7 +5178,7 @@ nvk_mme_xfb_draw_indirect_loop(struct mme_builder *b,
                                struct mme_value instance_count,
                                struct mme_value counter)
 {
-   struct mme_value begin = nvk_mme_load_scratch(b, DRAW_BEGIN);
+   struct mme_value begin = nvk_mme_load_scratch(b, DRAW_TOPOLOGY);
 
    /* NVC197_BEGIN_INSTANCE_ITERATE_ENABLE seems to be incompatible with xfb.
     * Always use an mme loop instead.
@@ -4808,6 +5262,9 @@ nvk_CmdDrawIndirectByteCountEXT(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(nvk_buffer, counter_buffer, counterBuffer);
+
+   if (unlikely(!instanceCount))
+      return;
 
    nvk_cmd_flush_gfx_state(cmd);
 
@@ -4973,11 +5430,10 @@ nvk_CmdEndTransformFeedbackEXT(VkCommandBuffer commandBuffer,
    }
 }
 
-VKAPI_ATTR void VKAPI_CALL
-nvk_CmdBeginConditionalRenderingEXT(VkCommandBuffer commandBuffer,
-                                    const VkConditionalRenderingBeginInfoEXT *pConditionalRenderingBegin)
+static void
+nvk_cmd_begin_cond_render_copy_engine(struct nvk_cmd_buffer *cmd,
+                                      const VkConditionalRenderingBeginInfoEXT *pConditionalRenderingBegin)
 {
-   VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(nvk_buffer, buffer, pConditionalRenderingBegin->buffer);
 
    const uint64_t addr =
@@ -5013,7 +5469,7 @@ nvk_CmdBeginConditionalRenderingEXT(VkCommandBuffer commandBuffer,
    /* Frustratingly, the u64s are not packed together */
    const uint64_t operand_a_addr = tmp_addr + 0;
 
-   struct nv_push *p = nvk_cmd_buffer_push(cmd, 19);
+   struct nv_push *p = nvk_cmd_buffer_push(cmd, 15);
 
    /* Copy value into operand A */
    P_MTHD(p, NV90B5, OFFSET_IN_UPPER);
@@ -5036,15 +5492,90 @@ nvk_CmdBeginConditionalRenderingEXT(VkCommandBuffer commandBuffer,
    });
 
    /* Compare the operands */
-   P_MTHD(p, NV9097, SET_RENDER_ENABLE_A);
-   P_NV9097_SET_RENDER_ENABLE_A(p, tmp_addr >> 32);
-   P_NV9097_SET_RENDER_ENABLE_B(p, tmp_addr & 0xfffffff0);
-   P_NV9097_SET_RENDER_ENABLE_C(p, inverted ? MODE_RENDER_IF_EQUAL : MODE_RENDER_IF_NOT_EQUAL);
+   if (nvk_cmd_buffer_last_subchannel(cmd) == SUBC_NV9097) {
+      P_MTHD(p, NV9097, SET_GLOBAL_RENDER_ENABLE_A);
+      P_NV9097_SET_GLOBAL_RENDER_ENABLE_A(p, tmp_addr >> 32);
+      P_NV9097_SET_GLOBAL_RENDER_ENABLE_B(p, tmp_addr & 0xfffffff0);
+      P_NV9097_SET_GLOBAL_RENDER_ENABLE_C(p, inverted ? MODE_RENDER_IF_EQUAL : MODE_RENDER_IF_NOT_EQUAL);
+   } else {
+      P_MTHD(p, NV90C0, SET_GLOBAL_RENDER_ENABLE_A);
+      P_NV90C0_SET_GLOBAL_RENDER_ENABLE_A(p, tmp_addr >> 32);
+      P_NV90C0_SET_GLOBAL_RENDER_ENABLE_B(p, tmp_addr & 0xfffffff0);
+      P_NV90C0_SET_GLOBAL_RENDER_ENABLE_C(p, inverted ? MODE_RENDER_IF_EQUAL : MODE_RENDER_IF_NOT_EQUAL);
+   }
+}
 
-   P_MTHD(p, NV90C0, SET_RENDER_ENABLE_A);
-   P_NV90C0_SET_RENDER_ENABLE_A(p, tmp_addr >> 32);
-   P_NV90C0_SET_RENDER_ENABLE_B(p, tmp_addr & 0xfffffff0);
-   P_NV90C0_SET_RENDER_ENABLE_C(p, inverted ? MODE_RENDER_IF_EQUAL : MODE_RENDER_IF_NOT_EQUAL);
+void
+nvk_mme_begin_cond_render(struct mme_builder *b)
+{
+   if (b->devinfo->cls_eng3d < TURING_A)
+      return;
+
+   struct mme_value64 cond_render_addr = mme_load_addr64(b);
+
+   struct mme_value inverted = mme_merge(b, mme_zero(), cond_render_addr.lo, 0, 1, 0);
+   mme_merge_to(b, cond_render_addr.lo, mme_zero(), cond_render_addr.lo, 1, 31, 1);
+
+   mme_tu104_read_fifoed(b, cond_render_addr, mme_imm(1));
+   struct mme_value read_value = mme_load(b);
+
+   struct mme_value enable = mme_mov(b, mme_zero());
+   mme_if(b, ine, read_value, mme_zero()) {
+      mme_mov_to(b, enable, mme_imm(1));
+   }
+   mme_xor_to(b, enable, enable, inverted);
+
+   mme_if(b, ieq, enable, mme_zero()) {
+      STATIC_ASSERT(NV9097_SET_GLOBAL_RENDER_ENABLE_A ==
+                    NV90C0_SET_GLOBAL_RENDER_ENABLE_A);
+      mme_mthd(b, NV9097_SET_GLOBAL_RENDER_ENABLE_A);
+      mme_emit(b, mme_zero());
+      mme_emit(b, mme_zero());
+      mme_emit(b, mme_imm(NV9097_SET_GLOBAL_RENDER_ENABLE_C_MODE_FALSE));
+   }
+}
+
+static void
+nvk_cmd_begin_cond_render_mme(struct nvk_cmd_buffer *cmd,
+                              const VkConditionalRenderingBeginInfoEXT *pConditionalRenderingBegin)
+{
+   VK_FROM_HANDLE(nvk_buffer, buffer, pConditionalRenderingBegin->buffer);
+   struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
+   uint64_t addr =
+      vk_buffer_address(&buffer->vk, pConditionalRenderingBegin->offset);
+   bool inverted = pConditionalRenderingBegin->flags &
+      VK_CONDITIONAL_RENDERING_INVERTED_BIT_EXT;
+
+   if (inverted)
+      addr |= 1;
+
+   struct nv_push *p = nvk_cmd_buffer_push(cmd, 4);
+
+   if (pdev->info.cls_compute >= AMPERE_COMPUTE_B &&
+       nvk_cmd_buffer_last_subchannel(cmd) != SUBC_NV9097)
+      P_1INC(p, NV90C0, CALL_MME_MACRO(NVK_MME_BEGIN_COND_RENDER));
+   else
+      P_1INC(p, NV9097, CALL_MME_MACRO(NVK_MME_BEGIN_COND_RENDER));
+
+   P_INLINE_DATA(p, addr >> 32);
+   P_INLINE_DATA(p, addr);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+nvk_CmdBeginConditionalRenderingEXT(VkCommandBuffer commandBuffer,
+                                    const VkConditionalRenderingBeginInfoEXT *pConditionalRenderingBegin)
+{
+   VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
+   struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
+
+   if (pdev->info.cls_eng3d >= TURING_A) {
+      nvk_cmd_begin_cond_render_mme(cmd, pConditionalRenderingBegin);
+   } else {
+      nvk_cmd_begin_cond_render_copy_engine(cmd, pConditionalRenderingBegin);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -5052,14 +5583,17 @@ nvk_CmdEndConditionalRenderingEXT(VkCommandBuffer commandBuffer)
 {
    VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
 
-   struct nv_push *p = nvk_cmd_buffer_push(cmd, 12);
-   P_MTHD(p, NV9097, SET_RENDER_ENABLE_A);
-   P_NV9097_SET_RENDER_ENABLE_A(p, 0);
-   P_NV9097_SET_RENDER_ENABLE_B(p, 0);
-   P_NV9097_SET_RENDER_ENABLE_C(p, MODE_TRUE);
-
-   P_MTHD(p, NV90C0, SET_RENDER_ENABLE_A);
-   P_NV90C0_SET_RENDER_ENABLE_A(p, 0);
-   P_NV90C0_SET_RENDER_ENABLE_B(p, 0);
-   P_NV90C0_SET_RENDER_ENABLE_C(p, MODE_TRUE);
+   struct nv_push *p = nvk_cmd_buffer_push(cmd, 4);
+   if (nvk_cmd_buffer_last_subchannel(cmd) == SUBC_NV9097) {
+      /* The GLOBAL variant sets render enable across both 3d and compute */
+      P_MTHD(p, NV9097, SET_GLOBAL_RENDER_ENABLE_A);
+      P_NV9097_SET_GLOBAL_RENDER_ENABLE_A(p, 0);
+      P_NV9097_SET_GLOBAL_RENDER_ENABLE_B(p, 0);
+      P_NV9097_SET_GLOBAL_RENDER_ENABLE_C(p, MODE_TRUE);
+   } else {
+      P_MTHD(p, NV90C0, SET_GLOBAL_RENDER_ENABLE_A);
+      P_NV90C0_SET_GLOBAL_RENDER_ENABLE_A(p, 0);
+      P_NV90C0_SET_GLOBAL_RENDER_ENABLE_B(p, 0);
+      P_NV90C0_SET_GLOBAL_RENDER_ENABLE_C(p, MODE_TRUE);
+   }
 }

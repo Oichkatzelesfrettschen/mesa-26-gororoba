@@ -131,19 +131,8 @@ struct pan_image_layout_constraints {
     */
    uint64_t offset_B;
 
-   /* Minimal aligment for an array layer. Used to implement sparse residency. */
-   uint32_t array_align_B;
-
    /* Row pitch in bytes. Non-zero if layout is explicit. */
    uint32_t wsi_row_pitch_B;
-
-   union {
-      struct {
-         /* Minimal alignment for a row of ordered blocks. Used to implement sparse
-         * residency. */
-         uint32_t row_align_B;
-      } u_tiled;
-   };
 
    /* When true, AFBC/AFRC imports are stricter than they were when those
     * modifiers where introduced. */
@@ -252,6 +241,22 @@ pan_u_interleaved_tile_size_el(enum pipe_format format)
          .width = 16 / util_format_get_blockwidth(format),
          .height = 16 / util_format_get_blockheight(format),
       };
+   }
+}
+
+/* Given a format, determine the tile size used for interleaved 64k. */
+static inline struct pan_image_block_size
+pan_interleaved_64k_tile_size_el(enum pipe_format format)
+{
+   switch (util_format_get_blocksize(format)) {
+   case 1: return (struct pan_image_block_size){256, 256};
+   case 2: return (struct pan_image_block_size){256, 128};
+   case 4: return (struct pan_image_block_size){128, 128};
+   case 8: return (struct pan_image_block_size){128, 64};
+   case 16: return (struct pan_image_block_size){64, 64};
+   default:
+      UNREACHABLE("unsupported format");
+      return (struct pan_image_block_size){0, 0};
    }
 }
 

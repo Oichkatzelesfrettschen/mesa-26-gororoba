@@ -198,20 +198,20 @@ cmd_dispatch(struct panvk_cmd_buffer *cmdbuf, struct panvk_dispatch_info *info)
    cs_update_compute_ctx(b) {
       if (compute_state_dirty(cmdbuf, CS) ||
           compute_state_dirty(cmdbuf, DESC_STATE))
-         cs_move64_to(b, cs_sr_reg64(b, COMPUTE, SRT_0),
+         cs_move64_to(b, cs_reg64(b, PANVK_COMPUTE_SRT),
                       cs_desc_state->res_table);
 
       if (compute_state_dirty(cmdbuf, PUSH_UNIFORMS)) {
          uint64_t fau_ptr = cmdbuf->state.compute.push_uniforms |
                             ((uint64_t)cs->fau.total_count << 56);
-         cs_move64_to(b, cs_sr_reg64(b, COMPUTE, FAU_0), fau_ptr);
+         cs_move64_to(b, cs_reg64(b, PANVK_COMPUTE_FAU), fau_ptr);
       }
 
       if (compute_state_dirty(cmdbuf, CS))
-         cs_move64_to(b, cs_sr_reg64(b, COMPUTE, SPD_0),
+         cs_move64_to(b, cs_reg64(b, PANVK_COMPUTE_SPD),
                       panvk_priv_mem_dev_addr(cs->spd));
 
-      cs_move64_to(b, cs_sr_reg64(b, COMPUTE, TSD_0), tsd);
+      cs_move64_to(b, cs_reg64(b, PANVK_COMPUTE_TSD), tsd);
 
       /* Global attribute offset */
       cs_move32_to(b, cs_sr_reg32(b, COMPUTE, GLOBAL_ATTRIBUTE_OFFSET),
@@ -280,26 +280,30 @@ cmd_dispatch(struct panvk_cmd_buffer *cmdbuf, struct panvk_dispatch_info *info)
    cs_next_iter_sb(cmdbuf, PANVK_SUBQUEUE_COMPUTE,
                    cs_scratch_reg_tuple(b, 0, 2));
 
-   if (indirect) {
-      /* Use run_compute with a set task axis instead of run_compute_indirect as
-       * run_compute_indirect has been found to cause intermittent hangs. This
-       * is safe, as the task increment will be clamped by the job size along
-       * the specified axis.
-       * The chosen task axis is potentially suboptimal, as choosing good
-       * increment/axis parameters requires knowledge of job dimensions, but
-       * this is somewhat offset by run_compute being a native instruction. */
-      unsigned task_axis = MALI_TASK_AXIS_X;
-      cs_trace_run_compute(b, tracing_ctx, cs_scratch_reg_tuple(b, 0, 4),
-                           wg_per_task, task_axis,
-                           cs_shader_res_sel(0, 0, 0, 0));
-   } else {
-      unsigned task_axis = MALI_TASK_AXIS_X;
-      unsigned task_increment = 0;
-      panvk_per_arch(calculate_task_axis_and_increment)(
-         cs, phys_dev, &dim, &task_axis, &task_increment);
-      cs_trace_run_compute(b, tracing_ctx, cs_scratch_reg_tuple(b, 0, 4),
-                           task_increment, task_axis,
-                           cs_shader_res_sel(0, 0, 0, 0));
+   panvk_cond_render(cmdbuf, b)
+   {
+      if (indirect) {
+         /* Use run_compute with a set task axis instead of
+          * run_compute_indirect as run_compute_indirect has been found to
+          * cause intermittent hangs. This is safe, as the task increment
+          * will be clamped by the job size along the specified axis.
+          * The chosen task axis is potentially suboptimal, as choosing good
+          * increment/axis parameters requires knowledge of job dimensions,
+          * but this is somewhat offset by run_compute being a native
+          * instruction. */
+         unsigned task_axis = MALI_TASK_AXIS_X;
+         cs_trace_run_compute(b, tracing_ctx, cs_scratch_reg_tuple(b, 0, 4),
+                              wg_per_task, task_axis,
+                              PANVK_COMPUTE_RES_SEL);
+      } else {
+         unsigned task_axis = MALI_TASK_AXIS_X;
+         unsigned task_increment = 0;
+         panvk_per_arch(calculate_task_axis_and_increment)(
+            cs, phys_dev, &dim, &task_axis, &task_increment);
+         cs_trace_run_compute(b, tracing_ctx, cs_scratch_reg_tuple(b, 0, 4),
+                              task_increment, task_axis,
+                              PANVK_COMPUTE_RES_SEL);
+      }
    }
 
 #if PAN_ARCH >= 11

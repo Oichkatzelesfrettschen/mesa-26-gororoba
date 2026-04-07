@@ -140,14 +140,6 @@ struct nak_xfb_info
 nak_xfb_from_nir(const struct nak_compiler *nak,
                  const struct nir_xfb_info *nir_xfb);
 
-struct nak_io_addr_offset {
-   nir_scalar base;
-   int32_t offset;
-};
-
-struct nak_io_addr_offset
-nak_get_io_addr_offset(nir_def *addr, uint8_t imm_bits);
-
 enum nak_nir_tex_ref_type {
    /** Indicates that this is a bindless texture */
    NAK_NIR_TEX_REF_TYPE_BINDLESS,
@@ -264,6 +256,21 @@ struct nak_nir_imadsp_flags {
 };
 
 bool nak_nir_lower_vtg_io(nir_shader *nir, const struct nak_compiler *nak);
+
+enum nak_isbe_access {
+   NAK_ISBE_ACCESS_MAP,
+   NAK_ISBE_ACCESS_PATCH,
+   NAK_ISBE_ACCESS_PRIM,
+   NAK_ISBE_ACCESS_ATTR,
+};
+
+struct nak_nir_isbe_flags {
+   enum nak_isbe_access access : 2;
+   bool output : 1;
+   bool skew : 1;
+   bool per_primitive : 1;
+   uint32_t pad : 27;
+};
 
 enum nak_interp_mode {
    NAK_INTERP_MODE_PERSPECTIVE,

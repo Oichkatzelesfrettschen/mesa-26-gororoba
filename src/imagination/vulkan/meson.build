@@ -34,6 +34,7 @@ pvr_files = files(
   'pvr_formats.c',
   'pvr_image.c',
   'pvr_instance.c',
+  'pvr_nir_lower_ycbcr.c',
   'pvr_physical_device.c',
   'pvr_transfer_frag_store.c',
   'pvr_query.c',
@@ -94,8 +95,6 @@ common_per_arch_files += files(
   'pvr_arch_sampler.c',
   'pvr_arch_spm.c',
   'pvr_arch_tex_state.c',
-  'winsys/powervr/pvr_arch_drm_job_compute.c',
-  'winsys/powervr/pvr_arch_drm_job_render.c',
 )
 
 if with_imagination_srv

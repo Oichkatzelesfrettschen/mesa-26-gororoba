@@ -49,7 +49,7 @@
 #include "frontend/sw_winsys.h"
 #include "nir/nir_to_tgsi_info.h"
 #include "nir/tgsi_to_nir.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "nir_serialize.h"
 
 #include "draw/draw_context.h"
@@ -1251,7 +1251,7 @@ lp_debug_cs_variant(const struct lp_compute_shader_variant *variant)
 
 static void
 lp_cs_get_ir_cache_key(struct lp_compute_shader_variant *variant,
-                       unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH])
+                       unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN])
 {
    struct blob blob = { 0 };
    unsigned ir_size;
@@ -1262,11 +1262,11 @@ lp_cs_get_ir_cache_key(struct lp_compute_shader_variant *variant,
    ir_binary = blob.data;
    ir_size = blob.size;
 
-   struct mesa_sha1 ctx;
-   _mesa_sha1_init(&ctx);
-   _mesa_sha1_update(&ctx, &variant->key, variant->shader->variant_key_size);
-   _mesa_sha1_update(&ctx, ir_binary, ir_size);
-   _mesa_sha1_final(&ctx, ir_sha1_cache_key);
+   blake3_hasher ctx;
+   _mesa_blake3_init(&ctx);
+   _mesa_blake3_update(&ctx, &variant->key, variant->shader->variant_key_size);
+   _mesa_blake3_update(&ctx, ir_binary, ir_size);
+   _mesa_blake3_final(&ctx, ir_blake3_cache_key);
 
    blob_finish(&blob);
 }
@@ -1296,13 +1296,13 @@ generate_variant(struct llvmpipe_context *lp,
    variant->shader = shader;
    memcpy(&variant->key, key, shader->variant_key_size);
 
-   unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH];
+   unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN];
    struct lp_cached_code cached = { 0 };
    bool needs_caching = false;
 
-   lp_cs_get_ir_cache_key(variant, ir_sha1_cache_key);
+   lp_cs_get_ir_cache_key(variant, ir_blake3_cache_key);
 
-   lp_disk_cache_find_shader(screen, &cached, ir_sha1_cache_key);
+   lp_disk_cache_find_shader(screen, &cached, ir_blake3_cache_key);
    if (!cached.data_size)
       needs_caching = true;
 
@@ -1349,7 +1349,7 @@ generate_variant(struct llvmpipe_context *lp,
       gallivm_jit_function(variant->gallivm, variant->function, variant->function_name);
 
    if (needs_caching) {
-      lp_disk_cache_insert_shader(screen, &cached, ir_sha1_cache_key);
+      lp_disk_cache_insert_shader(screen, &cached, ir_blake3_cache_key);
    }
    gallivm_free_ir(variant->gallivm);
    return variant;
@@ -2150,6 +2150,8 @@ llvmpipe_draw_mesh_tasks(struct pipe_context *pipe,
    }
 
    struct nir_shader *mhs_shader = lp->mhs->base.ir.nir;
+   struct nir_shader *tsk_shader = lp->tss ? lp->tss->base.ir.nir : NULL;
+   uint16_t *workgroup_size = tsk_shader ? tsk_shader->info.workgroup_size : mhs_shader->info.workgroup_size;
    int prim_out_idx = -1;
    int first_per_prim_idx = -1;
    int cull_prim_idx = -1;
@@ -2182,19 +2184,15 @@ llvmpipe_draw_mesh_tasks(struct pipe_context *pipe,
    for (unsigned dr = 0; dr < draw_count; dr++) {
       fill_grid_size(pipe, dr, info, job_info.grid_size);
 
-      job_info.grid_base[0] = info->grid_base[0];
-      job_info.grid_base[1] = info->grid_base[1];
-      job_info.grid_base[2] = info->grid_base[2];
-      job_info.block_size[0] = info->block[0];
-      job_info.block_size[1] = info->block[1];
-      job_info.block_size[2] = info->block[2];
+      job_info.block_size[0] = workgroup_size[0];
+      job_info.block_size[1] = workgroup_size[1];
+      job_info.block_size[2] = workgroup_size[2];
 
       void *payload = NULL;
       size_t payload_stride = 0;
       int num_tasks = job_info.grid_size[2] * job_info.grid_size[1] * job_info.grid_size[0];
       int num_mesh_invocs = 1;
       if (lp->tss) {
-         struct nir_shader *tsk_shader = lp->tss->base.ir.nir;
          payload_stride = tsk_shader->info.task_payload_size + 3 * sizeof(uint32_t);
 
          payload = calloc(num_tasks, payload_stride);
@@ -2217,7 +2215,7 @@ llvmpipe_draw_mesh_tasks(struct pipe_context *pipe,
             lp_cs_tpool_wait_for_task(screen->cs_tpool, &task);
          }
          if (!lp->queries_disabled)
-            lp->pipeline_statistics.ts_invocations += num_tasks * info->block[0] * info->block[1] * info->block[2];
+            lp->pipeline_statistics.ts_invocations += num_tasks * job_info.block_size[0] * job_info.block_size[1] * job_info.block_size[2];
          num_mesh_invocs = num_tasks;
       }
 

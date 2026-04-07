@@ -34,7 +34,8 @@ enum radv_ud_index {
    AC_UD_NEXT_STAGE_PC = 16,
    AC_UD_EPILOG_PC = 17,
    AC_UD_DYNAMIC_DESCRIPTORS = 18,
-   AC_UD_SHADER_START = 19,
+   AC_UD_DYNAMIC_DESCRIPTORS_OFFSET_ADDR = 19,
+   AC_UD_SHADER_START = 20,
    AC_UD_VS_VERTEX_BUFFERS = AC_UD_SHADER_START,
    AC_UD_VS_BASE_VERTEX_START_INSTANCE,
    AC_UD_VS_PROLOG_INPUTS,
@@ -121,7 +122,6 @@ struct radv_shader_args {
 
    bool explicit_scratch_args;
    bool remap_spi_ps_input;
-   bool load_grid_size_from_user_sgpr;
 };
 
 static inline struct radv_shader_args *

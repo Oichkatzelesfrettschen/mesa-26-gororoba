@@ -161,13 +161,13 @@ fn nir_options(dev: &nv_device_info) -> nir_shader_compiler_options {
             | nir_lower_conv64)
             | if dev.sm < 70 { nir_lower_vote_ieq64 } else { 0 }
             | if dev.sm < 32 { nir_lower_shift64 } else { 0 },
-        lower_ldexp: true,
         lower_fmod: true,
         lower_ffract: true,
         lower_fpow: true,
         lower_scmp: true,
         lower_uadd_carry: true,
         lower_usub_borrow: true,
+        has_rotate32: dev.sm >= 32,
         has_iadd3: dev.sm >= 70,
         has_imad32: dev.sm >= 70,
         has_sdot_4x8: dev.sm >= 70,
@@ -180,6 +180,8 @@ fn nir_options(dev: &nv_device_info) -> nir_shader_compiler_options {
         has_pack_half_2x16_rtz: true,
         has_bfm: dev.sm >= 70,
         discard_is_demote: true,
+        has_load_global_bounded: dev.sm >= 73,
+        vectorize_vec2_16bit: true,
 
         max_unroll_iterations: 32,
         max_samples: 8,
@@ -298,12 +300,30 @@ impl ShaderBin {
                         },
                     }
                 }
+                ShaderStageInfo::TessellationInit(ts_info) => {
+                    nak_shader_info__bindgen_ty_1 {
+                        ts: nak_shader_info__bindgen_ty_1__bindgen_ty_3 {
+                            domain: 0,
+                            spacing: ts_info
+                                .common
+                                .spacing
+                                .map_or(0, |x| x as u8),
+                            ccw: ts_info.common.ccw,
+                            point_mode: ts_info.common.point_mode,
+                            _pad: Default::default(),
+                        },
+                    }
+                }
                 ShaderStageInfo::Tessellation(ts_info) => {
                     nak_shader_info__bindgen_ty_1 {
                         ts: nak_shader_info__bindgen_ty_1__bindgen_ty_3 {
                             domain: ts_info.domain as u8,
-                            spacing: ts_info.spacing as u8,
-                            prims: ts_info.primitives as u8,
+                            spacing: ts_info
+                                .common
+                                .spacing
+                                .map_or(0, |x| x as u8),
+                            ccw: ts_info.common.ccw,
+                            point_mode: ts_info.common.point_mode,
                             _pad: Default::default(),
                         },
                     }

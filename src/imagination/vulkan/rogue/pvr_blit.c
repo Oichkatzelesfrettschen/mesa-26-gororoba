@@ -166,9 +166,33 @@ static void pvr_setup_transfer_surface(struct pvr_device *device,
                                        VkFormat format,
                                        VkImageAspectFlags aspect_mask)
 {
-   const uint32_t height = MAX2(image->vk.extent.height >> mip_level, 1U);
-   const uint32_t width = MAX2(image->vk.extent.width >> mip_level, 1U);
-   enum pipe_format image_pformat = vk_format_to_pipe_format(image->vk.format);
+   uint8_t plane;
+   switch (aspect_mask) {
+   case VK_IMAGE_ASPECT_PLANE_1_BIT:
+      plane = 1;
+      break;
+   case VK_IMAGE_ASPECT_PLANE_2_BIT:
+      plane = 2;
+      break;
+   default:
+      plane = 0;
+      break;
+   };
+
+   const uint32_t height =
+      MAX2(vk_format_get_plane_height(image->vk.format,
+                                      plane,
+                                      image->vk.extent.height) >>
+              mip_level,
+           1U);
+   const uint32_t width =
+      MAX2(vk_format_get_plane_width(image->vk.format,
+                                     plane,
+                                     image->vk.extent.width) >>
+              mip_level,
+           1U);
+   enum pipe_format image_pformat = vk_format_to_pipe_format(
+      vk_format_get_plane_aspect_format(image->vk.format, aspect_mask));
    enum pipe_format pformat = vk_format_to_pipe_format(format);
    const VkImageSubresource sub_resource = {
       .aspectMask = aspect_mask,
@@ -376,7 +400,9 @@ void pvr_rogue_CmdBlitImage2(VkCommandBuffer commandBuffer,
                                     &region->srcOffsets[0],
                                     &src_extent,
                                     initial_depth_offset,
-                                    src->vk.format,
+                                    vk_format_get_plane_aspect_format(
+                                       src->vk.format,
+                                       region->srcSubresource.aspectMask),
                                     region->srcSubresource.aspectMask);
 
          pvr_setup_transfer_surface(device,
@@ -388,7 +414,9 @@ void pvr_rogue_CmdBlitImage2(VkCommandBuffer commandBuffer,
                                     &dst_offset,
                                     &dst_extent,
                                     min_dst_z,
-                                    dst->vk.format,
+                                    vk_format_get_plane_aspect_format(
+                                       dst->vk.format,
+                                       region->dstSubresource.aspectMask),
                                     region->dstSubresource.aspectMask);
 
          for (uint32_t dst_z = min_dst_z; dst_z < max_dst_z; dst_z++) {
@@ -436,8 +464,11 @@ void pvr_rogue_CmdBlitImage2(VkCommandBuffer commandBuffer,
    }
 }
 
-static VkFormat pvr_get_copy_format(VkFormat format)
+static VkFormat pvr_get_copy_format(VkFormat format,
+                                    VkImageAspectFlagBits aspect)
 {
+   format = vk_format_get_plane_aspect_format(format, aspect);
+
    switch (format) {
    case VK_FORMAT_R8_SNORM:
       return VK_FORMAT_R8_SINT;
@@ -496,6 +527,17 @@ pvr_setup_surface_for_image(struct pvr_device *device,
    }
 }
 
+static VkFormat pvr_get_copy_or_resolve_format(VkFormat format,
+                                               VkImageAspectFlags aspects,
+                                               bool do_resolve)
+{
+   /* Resolve does filtering, never convert to SINT. */
+   if (do_resolve)
+      return vk_format_get_plane_aspect_format(format, aspects);
+
+   return pvr_get_copy_format(format, aspects);
+}
+
 static VkResult
 pvr_copy_or_resolve_image_region(struct pvr_cmd_buffer *cmd_buffer,
                                  enum pvr_resolve_op resolve_op,
@@ -504,8 +546,13 @@ pvr_copy_or_resolve_image_region(struct pvr_cmd_buffer *cmd_buffer,
                                  const VkImageCopy2 *region,
                                  struct pvr_transfer_cmd *ds_transfer_cmd)
 {
-   enum pipe_format src_pformat = vk_format_to_pipe_format(src->vk.format);
-   enum pipe_format dst_pformat = vk_format_to_pipe_format(dst->vk.format);
+   enum pipe_format src_pformat = vk_format_to_pipe_format(
+      vk_format_get_plane_aspect_format(src->vk.format,
+                                        region->srcSubresource.aspectMask));
+   enum pipe_format dst_pformat = vk_format_to_pipe_format(
+      vk_format_get_plane_aspect_format(dst->vk.format,
+                                        region->dstSubresource.aspectMask));
+   const bool do_resolve = src->vk.samples > 1U && dst->vk.samples < 2U;
    bool src_block_compressed = util_format_is_compressed(src_pformat);
    bool dst_block_compressed = util_format_is_compressed(dst_pformat);
    VkExtent3D src_extent;
@@ -516,35 +563,6 @@ pvr_copy_or_resolve_image_region(struct pvr_cmd_buffer *cmd_buffer,
    uint32_t src_layers;
    uint32_t max_slices;
    uint32_t flags = 0U;
-
-   if (src->vk.format == VK_FORMAT_D24_UNORM_S8_UINT &&
-       region->srcSubresource.aspectMask !=
-          (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-      /* Takes the stencil of the source and the depth of the destination and
-       * combines the two interleaved.
-       */
-      flags |= PVR_TRANSFER_CMD_FLAGS_DSMERGE;
-
-      if (region->srcSubresource.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) {
-         /* Takes the depth of the source and the stencil of the destination and
-          * combines the two interleaved.
-          */
-         flags |= PVR_TRANSFER_CMD_FLAGS_PICKD;
-      }
-   }
-
-   if (src->vk.samples > 1U && dst->vk.samples < 2U) {
-      /* Blend is not defined for integer formats */
-      if (resolve_op == PVR_RESOLVE_BLEND && vk_format_is_int(src->vk.format)) {
-         /* Override for either color or DS */
-         resolve_op = PVR_RESOLVE_SAMPLE0;
-      }
-   } else {
-      assert(!ds_transfer_cmd ||
-             ds_transfer_cmd->sources[0].resolve_op == PVR_RESOLVE_DEFAULT);
-      /* Override for either color or DS */
-      resolve_op = PVR_RESOLVE_DEFAULT;
-   }
 
    src_extent = region->extent;
    dst_extent = region->extent;
@@ -564,16 +582,63 @@ pvr_copy_or_resolve_image_region(struct pvr_cmd_buffer *cmd_buffer,
       dst_extent.height = MAX2(1U, src_extent.height * block_height);
    }
 
-   if (src->vk.samples > dst->vk.samples) {
-      /* Resolve op needs to know the actual format. */
+   src_format = pvr_get_copy_or_resolve_format(src->vk.format,
+                                               region->srcSubresource.aspectMask,
+                                               do_resolve);
+   if (pvr_vk_format_is_combined_ds(src->vk.format)) {
       dst_format = dst->vk.format;
+   } else if (src_block_compressed && !dst_block_compressed) {
+      src_format = dst_format =
+         pvr_get_copy_or_resolve_format(dst->vk.format,
+                                        region->srcSubresource.aspectMask,
+                                        do_resolve);
+   } else if (dst->vk.image_type == VK_IMAGE_TYPE_3D &&
+              dst_block_compressed) {
+      src_format = dst_format =
+         pvr_get_copy_or_resolve_format(dst->vk.format,
+                                        region->dstSubresource.aspectMask,
+                                        do_resolve);
+   } else if (src_block_compressed && dst_block_compressed) {
+      /* For compressed copies, only retain the size from the original
+       * source image format.
+       */
+      src_format = dst_format = pvr_get_raw_copy_format(src->vk.format);
    } else {
       /* We don't care what format dst is as it's guaranteed to be size
        * compatible with src.
        */
-      dst_format = pvr_get_raw_copy_format(src->vk.format);
+      dst_format = src_format;
    }
-   src_format = dst_format;
+
+   if (pvr_vk_format_is_combined_ds(src_format) &&
+       pvr_vk_format_is_combined_ds(dst_format) &&
+       region->srcSubresource.aspectMask !=
+          (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+      /* Takes the stencil of the source and the depth of the destination and
+       * combines the two interleaved.
+       */
+      flags |= PVR_TRANSFER_CMD_FLAGS_DSMERGE;
+
+      if (region->srcSubresource.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) {
+         /* Takes the depth of the source and the stencil of the destination and
+          * combines the two interleaved.
+          */
+         flags |= PVR_TRANSFER_CMD_FLAGS_PICKD;
+      }
+   }
+
+   if (do_resolve) {
+      /* Blend is not defined for integer formats */
+      if (resolve_op == PVR_RESOLVE_BLEND && vk_format_is_int(src_format)) {
+         /* Override for either color or DS */
+         resolve_op = PVR_RESOLVE_SAMPLE0;
+      }
+   } else {
+      assert(!ds_transfer_cmd ||
+             ds_transfer_cmd->sources[0].resolve_op == PVR_RESOLVE_DEFAULT);
+      /* Override for either color or DS */
+      resolve_op = PVR_RESOLVE_DEFAULT;
+   }
 
    src_layers =
       vk_image_subresource_layer_count(&src->vk, &region->srcSubresource);
@@ -752,8 +817,8 @@ void pvr_rogue_CmdCopyImage2(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(pvr_image, src, pCopyImageInfo->srcImage);
    VK_FROM_HANDLE(pvr_image, dst, pCopyImageInfo->dstImage);
 
-   const bool can_merge_ds = src->vk.format == VK_FORMAT_D24_UNORM_S8_UINT &&
-                             dst->vk.format == VK_FORMAT_D24_UNORM_S8_UINT;
+   const bool can_merge_ds = pvr_vk_format_is_combined_ds(src->vk.format) &&
+                             pvr_vk_format_is_combined_ds(dst->vk.format);
 
    PVR_CHECK_COMMAND_BUFFER_BUILDING_STATE(cmd_buffer);
 
@@ -872,7 +937,9 @@ pvr_copy_buffer_to_image_region_format(struct pvr_cmd_buffer *const cmd_buffer,
             buffer_dev_addr,
             buffer_offset,
             src_format,
-            image->vk.format,
+            vk_format_get_plane_aspect_format(
+               image->vk.format,
+               region->imageSubresource.aspectMask),
             region->imageExtent.width,
             region->imageExtent.height,
             row_length_in_texels);
@@ -938,7 +1005,8 @@ pvr_copy_buffer_to_image_region(struct pvr_cmd_buffer *const cmd_buffer,
 
       dst_format = image->vk.format;
    } else {
-      src_format = pvr_get_raw_copy_format(image->vk.format);
+      src_format = pvr_get_raw_copy_format(
+         vk_format_get_plane_aspect_format(image->vk.format, aspect_mask));
       dst_format = src_format;
    }
 
@@ -980,7 +1048,9 @@ pvr_copy_image_to_buffer_region_format(struct pvr_cmd_buffer *const cmd_buffer,
                                        const VkFormat src_format,
                                        const VkFormat dst_format)
 {
-   enum pipe_format pformat = vk_format_to_pipe_format(image->vk.format);
+   enum pipe_format pformat = vk_format_to_pipe_format(
+      vk_format_get_plane_aspect_format(image->vk.format,
+                                        region->imageSubresource.aspectMask));
    struct pvr_transfer_cmd_surface dst_surface = { 0 };
    VkImageSubresource sub_resource;
    uint32_t buffer_image_height;
@@ -1010,15 +1080,17 @@ pvr_copy_image_to_buffer_region_format(struct pvr_cmd_buffer *const cmd_buffer,
 
    max_depth_slice = region->imageExtent.depth + region->imageOffset.z;
 
-   pvr_setup_buffer_surface(&dst_surface,
-                            &dst_rect,
-                            buffer_dev_addr,
-                            region->bufferOffset,
-                            dst_format,
-                            image->vk.format,
-                            buffer_row_length,
-                            buffer_image_height,
-                            buffer_row_length);
+   pvr_setup_buffer_surface(
+      &dst_surface,
+      &dst_rect,
+      buffer_dev_addr,
+      region->bufferOffset,
+      dst_format,
+      vk_format_get_plane_aspect_format(image->vk.format,
+                                        region->imageSubresource.aspectMask),
+      buffer_row_length,
+      buffer_image_height,
+      buffer_row_length);
 
    dst_rect.extent.width = region->imageExtent.width;
    dst_rect.extent.height = region->imageExtent.height;
@@ -1110,7 +1182,7 @@ pvr_copy_image_to_buffer_region(struct pvr_cmd_buffer *const cmd_buffer,
 {
    const VkImageAspectFlags aspect_mask = region->imageSubresource.aspectMask;
 
-   VkFormat src_format = pvr_get_copy_format(image->vk.format);
+   VkFormat src_format = pvr_get_copy_format(image->vk.format, aspect_mask);
    VkFormat dst_format;
 
    /* From the Vulkan spec:
@@ -1119,10 +1191,10 @@ pvr_copy_image_to_buffer_region(struct pvr_cmd_buffer *const cmd_buffer,
     */
    assert(image->vk.samples == VK_SAMPLE_COUNT_1_BIT);
 
-   /* Color and depth aspect copies can nearly all be done using an appropriate
+   /* All but stencil aspect copies can nearly all be done using an appropriate
     * raw format.
     */
-   if (aspect_mask & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT)) {
+   if (aspect_mask & (~VK_IMAGE_ASPECT_STENCIL_BIT)) {
       if (src_format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
          dst_format = VK_FORMAT_D32_SFLOAT;
       } else {
@@ -1138,8 +1210,7 @@ pvr_copy_image_to_buffer_region(struct pvr_cmd_buffer *const cmd_buffer,
        */
       dst_format = VK_FORMAT_S8_UINT;
    } else {
-      /* YUV Planes require specific formats. */
-      dst_format = src_format;
+      UNREACHABLE("");
    }
 
    return pvr_copy_image_to_buffer_region_format(cmd_buffer,

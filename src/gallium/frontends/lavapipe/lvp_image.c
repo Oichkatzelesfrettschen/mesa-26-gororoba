@@ -30,23 +30,15 @@
 #include "frontend/winsys_handle.h"
 #include "vk_android.h"
 
-static VkResult
-lvp_image_create(VkDevice _device,
-                 const VkImageCreateInfo *pCreateInfo,
-                 const VkAllocationCallbacks* alloc,
-                 VkImage *pImage)
+VkResult
+lvp_image_init(struct lvp_device *device, struct lvp_image *image,
+               const VkImageCreateInfo *pCreateInfo)
 {
-   VK_FROM_HANDLE(lvp_device, device, _device);
-   struct lvp_image *image;
-   VkResult result = VK_SUCCESS;
 #ifdef HAVE_LIBDRM
    bool android_surface = false;
    const VkSubresourceLayout *layouts = NULL;
    uint64_t modifier;
-#endif
-   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
 
-#ifdef HAVE_LIBDRM
    enum pipe_format pipe_format = lvp_vk_format_to_pipe_format(pCreateInfo->format);
    const VkImageDrmFormatModifierExplicitCreateInfoEXT *modinfo = (void*)vk_find_struct_const(pCreateInfo->pNext,
                                                                   IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
@@ -59,10 +51,6 @@ lvp_image_create(VkDevice _device,
 
    modifier = DRM_FORMAT_MOD_LINEAR;
 #endif
-
-   image = vk_image_create(&device->vk, pCreateInfo, alloc, sizeof(*image));
-   if (image == NULL)
-      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    image->alignment = 64;
    if (image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT)
@@ -77,10 +65,10 @@ lvp_image_create(VkDevice _device,
    VkImageDrmFormatModifierExplicitCreateInfoEXT eci;
    VkSubresourceLayout a_plane_layouts[LVP_MAX_PLANE_COUNT];
    if (vk_image_is_android_native_buffer(&image->vk)) {
-      result = vk_android_get_anb_layout(
+      VkResult result = vk_android_get_anb_layout(
          pCreateInfo, &eci, a_plane_layouts, LVP_MAX_PLANE_COUNT);
       if (result != VK_SUCCESS)
-         goto fail;
+         return result;
 
       modifier = eci.drmFormatModifier;
       layouts = a_plane_layouts;
@@ -157,38 +145,74 @@ lvp_image_create(VkDevice _device,
 
 #ifdef HAVE_LIBDRM
       if (android_surface || (modinfo && pCreateInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)) {
-         struct winsys_handle whandle;
-         whandle.type = WINSYS_HANDLE_TYPE_UNBACKED;
-         whandle.layer = 0;
-         whandle.plane = p;
-         whandle.handle = 0;
-         whandle.stride = layouts[p].rowPitch;
-         whandle.array_stride = layouts[p].arrayPitch;
-         whandle.image_stride = layouts[p].depthPitch;
-         image->planes[p].plane_offset = layouts[p].offset;
-         whandle.format = pCreateInfo->format;
-         whandle.modifier = modifier;
-         image->planes[p].bo = device->pscreen->resource_from_handle(device->pscreen,
-                                                           &template,
-                                                           &whandle,
-                                                           PIPE_HANDLE_USAGE_EXPLICIT_FLUSH);
-         image->planes[p].size = whandle.size;
+         struct winsys_handle whandle = {
+            .type = WINSYS_HANDLE_TYPE_UNBACKED,
+            .plane = p,
+            .stride = layouts[p].rowPitch,
+            .array_stride = layouts[p].arrayPitch,
+            .image_stride = layouts[p].depthPitch,
+            .format = pCreateInfo->format,
+            .modifier = modifier,
+         };
+         struct pipe_resource *pres = device->pscreen->resource_from_handle(
+            device->pscreen, &template, &whandle,
+            PIPE_HANDLE_USAGE_EXPLICIT_FLUSH);
+         if (!pres)
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+         image->planes[p] = (struct lvp_image_plane){
+            .bo = pres,
+            .offset = layouts[p].offset,
+            .size = whandle.size,
+         };
       } else
 #endif
       {
-         image->planes[p].bo = device->pscreen->resource_create_unbacked(device->pscreen,
-                                                               &template,
-                                                               &image->planes[p].size);
-      }
-      if (!image->planes[p].bo) {
-         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-         goto fail;
-      }
+         uint64_t size_req;
+         struct pipe_resource *pres = device->pscreen->resource_create_unbacked(
+            device->pscreen, &template, &size_req);
+         if (!pres)
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-      image->planes[p].size = align64(image->planes[p].size, image->alignment);
+         image->planes[p] = (struct lvp_image_plane){
+            .bo = pres,
+            .offset = image->disjoint ? 0 : image->size,
+            .size = align64(size_req, image->alignment),
+         };
+      }
 
       image->size += image->planes[p].size;
    }
+
+   return VK_SUCCESS;
+}
+
+static VkResult
+lvp_image_create(VkDevice _device,
+                 const VkImageCreateInfo *pCreateInfo,
+                 const VkAllocationCallbacks* alloc,
+                 VkImage *pImage)
+{
+   VK_FROM_HANDLE(lvp_device, device, _device);
+   struct lvp_image *image;
+   VkResult result = VK_SUCCESS;
+   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+
+   image = vk_image_create(&device->vk, pCreateInfo, alloc, sizeof(*image));
+   if (image == NULL)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   /* Early return here for AHB and alised ANB:
+    * - aliased ANB image is initialized upon binding to memory
+    * - AHB image is initialized upon dedicated memory import
+    */
+   if (vk_image_is_android_native_buffer_alias(&image->vk) ||
+       vk_image_is_android_hardware_buffer(&image->vk))
+      goto out_success;
+
+   result = lvp_image_init(device, image, pCreateInfo);
+   if (result != VK_SUCCESS)
+      goto fail;
 
    /* This section is removed by the optimizer for non-ANDROID builds */
    if (vk_image_is_android_native_buffer(&image->vk)) {
@@ -200,6 +224,7 @@ lvp_image_create(VkDevice _device,
       }
    }
 
+out_success:
    *pImage = lvp_image_to_handle(image);
 
    return VK_SUCCESS;
@@ -498,7 +523,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetImageSubresourceLayout(
       pLayout->depthPitch = 0;
       pLayout->arrayPitch = value;
    }
-   pLayout->offset += plane->plane_offset;
+   pLayout->offset += plane->offset;
    pLayout->size = plane->size;
 }
 

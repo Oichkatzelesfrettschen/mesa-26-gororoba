@@ -738,7 +738,6 @@ llvmpipe_resource_from_handle(struct pipe_screen *_screen,
 
    lpr->base = *template;
    lpr->screen = screen;
-   lpr->dt_format = whandle->format;
    pipe_reference_init(&lpr->base.reference, 1);
    lpr->base.screen = _screen;
 
@@ -751,11 +750,20 @@ llvmpipe_resource_from_handle(struct pipe_screen *_screen,
    assert(lpr->base.height0 == height);
 #endif
 
-   unsigned nblocksy = util_format_get_nblocksy(template->format, align(template->height0, LP_RASTER_BLOCK_SIZE));
-   if (whandle->type == WINSYS_HANDLE_TYPE_UNBACKED && whandle->image_stride)
-      lpr->img_stride[0] = whandle->image_stride;
-   else
+   if (whandle->type == WINSYS_HANDLE_TYPE_UNBACKED) {
+      if (whandle->image_stride) {
+         lpr->img_stride[0] = whandle->image_stride;
+      } else {
+         unsigned nblocksy = util_format_get_nblocksy(template->format,
+                                                      template->height0);
+         lpr->img_stride[0] = whandle->stride * nblocksy;
+      }
+   } else {
+      unsigned nblocksy = util_format_get_nblocksy(template->format,
+                                                   align(template->height0,
+                                                         LP_RASTER_BLOCK_SIZE));
       lpr->img_stride[0] = whandle->stride * nblocksy;
+   }
    lpr->sample_stride = lpr->img_stride[0];
    lpr->size_required = lpr->sample_stride;
 
@@ -1710,11 +1718,20 @@ llvmpipe_resource_bind_backing(struct pipe_screen *pscreen,
             winsys->displaytarget_destroy(winsys, lpr->dt);
          }
          if (pmem) {
-            /* Round up the surface size to a multiple of the tile size to
-             * avoid tile clipping.
+            /* For import alloc with explicit layout, follow the provided
+             * attributes since the layout has been decided externally.
+             *
+             * For export alloc, round up the surface size to a multiple of the
+             * tile size to avoid tile clipping.
              */
-            const unsigned width = MAX2(1, align(lpr->base.width0, TILE_SIZE));
-            const unsigned height = MAX2(1, align(lpr->base.height0, TILE_SIZE));
+            unsigned width, height;
+            if (lpr->backable) {
+               width = lpr->base.width0;
+               height = lpr->base.height0;
+            } else {
+               width = MAX2(1, align(lpr->base.width0, TILE_SIZE));
+               height = MAX2(1, align(lpr->base.height0, TILE_SIZE));
+            }
 
             lpr->dt = winsys->displaytarget_create_mapped(winsys,
                                                           lpr->base.bind,

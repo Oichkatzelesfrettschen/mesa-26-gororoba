@@ -68,7 +68,7 @@ resize_qreg_array(struct vc4_compile *c,
         *size = MAX2(*size * 2, decl_size);
         *regs = reralloc(c, *regs, struct qreg, *size);
         if (!*regs) {
-                fprintf(stderr, "Malloc failure\n");
+                mesa_loge("Malloc failure");
                 abort();
         }
 
@@ -147,7 +147,7 @@ vc4_nir_get_swizzled_channel(nir_builder *b, nir_def **srcs, int swiz)
         switch (swiz) {
         default:
         case PIPE_SWIZZLE_NONE:
-                fprintf(stderr, "warning: unknown swizzle\n");
+                mesa_logw("unknown swizzle");
                 FALLTHROUGH;
         case PIPE_SWIZZLE_0:
                 return nir_imm_float(b, 0.0);
@@ -1193,7 +1193,7 @@ ntq_emit_alu(struct vc4_compile *c, nir_alu_instr *instr)
         case nir_op_ilt32:
         case nir_op_ult32:
                 if (!ntq_emit_comparison(c, &result, instr, instr)) {
-                        fprintf(stderr, "Bad comparison instruction\n");
+                        mesa_loge("Bad comparison instruction");
                 }
                 break;
 
@@ -1289,9 +1289,8 @@ ntq_emit_alu(struct vc4_compile *c, nir_alu_instr *instr)
                 break;
 
         default:
-                fprintf(stderr, "unknown NIR ALU inst: ");
-                nir_print_instr(&instr->instr, stderr);
-                fprintf(stderr, "\n");
+                mesa_loge("unknown NIR ALU inst: %s",
+                          nir_instr_as_str(&instr->instr, NULL));
                 abort();
         }
 
@@ -1842,9 +1841,8 @@ ntq_emit_intrinsic(struct vc4_compile *c, nir_intrinsic_instr *instr)
                 break;
 
         default:
-                fprintf(stderr, "Unknown intrinsic: ");
-                nir_print_instr(&instr->instr, stderr);
-                fprintf(stderr, "\n");
+                mesa_loge("Unknown intrinsic: %s",
+                          nir_instr_as_str(&instr->instr, NULL));
                 break;
         }
 }
@@ -1865,8 +1863,7 @@ static void
 ntq_emit_if(struct vc4_compile *c, nir_if *if_stmt)
 {
         if (!c->vc4->screen->has_control_flow) {
-                fprintf(stderr,
-                        "IF statement support requires updated kernel.\n");
+                mesa_loge("IF statement support requires updated kernel.");
                 return;
         }
 
@@ -1999,9 +1996,8 @@ ntq_emit_instr(struct vc4_compile *c, nir_instr *instr)
                 break;
 
         default:
-                fprintf(stderr, "Unknown NIR instr type: ");
-                nir_print_instr(instr, stderr);
-                fprintf(stderr, "\n");
+                mesa_loge("Unknown NIR instr type: %s",
+                          nir_instr_as_str(instr, NULL));
                 abort();
         }
 }
@@ -2021,8 +2017,7 @@ ntq_emit_loop(struct vc4_compile *c, nir_loop *loop)
 {
         assert(!nir_loop_has_continue_construct(loop));
         if (!c->vc4->screen->has_control_flow) {
-                fprintf(stderr,
-                        "loop support requires updated kernel.\n");
+                mesa_loge("loop support requires updated kernel.");
                 ntq_emit_cf_list(c, &loop->body);
                 return;
         }
@@ -2078,7 +2073,7 @@ ntq_emit_loop(struct vc4_compile *c, nir_loop *loop)
 static void
 ntq_emit_function(struct vc4_compile *c, nir_function_impl *func)
 {
-        fprintf(stderr, "FUNCTIONS not handled.\n");
+        mesa_loge("FUNCTIONS not handled.");
         abort();
 }
 
@@ -2104,7 +2099,7 @@ ntq_emit_cf_list(struct vc4_compile *c, struct exec_list *list)
                         break;
 
                 default:
-                        fprintf(stderr, "Unknown NIR node type\n");
+                        mesa_loge("Unknown NIR node type");
                         abort();
                 }
         }
@@ -2148,7 +2143,6 @@ static const nir_shader_compiler_options nir_options = {
         .lower_fpow = true,
         .lower_fsat = true,
         .lower_fsqrt = true,
-        .lower_ldexp = true,
         .lower_fneg = true,
         .lower_ineg = true,
         .lower_to_scalar = true,
@@ -2303,10 +2297,10 @@ vc4_shader_ntq(struct vc4_context *vc4, enum qstage stage,
         NIR_PASS(_, c->s, nir_trivialize_registers);
 
         if (VC4_DBG(NIR)) {
-                fprintf(stderr, "%s prog %d/%d NIR:\n",
-                        qir_get_stage_name(c->stage),
-                        c->program_id, c->variant_id);
-                nir_print_shader(c->s, stderr);
+                mesa_logi("%s prog %d/%d NIR:",
+                          qir_get_stage_name(c->stage),
+                          c->program_id, c->variant_id);
+                nir_log_shaderi(c->s);
         }
 
         nir_to_qir(c);
@@ -2337,11 +2331,10 @@ vc4_shader_ntq(struct vc4_context *vc4, enum qstage stage,
         }
 
         if (VC4_DBG(QIR)) {
-                fprintf(stderr, "%s prog %d/%d pre-opt QIR:\n",
-                        qir_get_stage_name(c->stage),
-                        c->program_id, c->variant_id);
-                qir_dump(c);
-                fprintf(stderr, "\n");
+                mesa_logi("%s prog %d/%d pre-opt QIR:",
+                          qir_get_stage_name(c->stage),
+                          c->program_id, c->variant_id);
+                qir_dumpi(c);
         }
 
         qir_optimize(c);
@@ -2351,11 +2344,10 @@ vc4_shader_ntq(struct vc4_context *vc4, enum qstage stage,
         qir_emit_uniform_stream_resets(c);
 
         if (VC4_DBG(QIR)) {
-                fprintf(stderr, "%s prog %d/%d QIR:\n",
-                        qir_get_stage_name(c->stage),
-                        c->program_id, c->variant_id);
-                qir_dump(c);
-                fprintf(stderr, "\n");
+                mesa_logi("%s prog %d/%d QIR:",
+                          qir_get_stage_name(c->stage),
+                          c->program_id, c->variant_id);
+                qir_dumpi(c);
         }
 
         qir_reorder_uniforms(c);
@@ -2465,6 +2457,17 @@ vc4_shader_precompile(struct vc4_context *vc4,
         }
 }
 
+static bool
+vc4_check_divergent_loops(nir_shader *s)
+{
+        nir_foreach_block(block, nir_shader_get_entrypoint(s)) {
+                nir_loop *loop = nir_block_get_following_loop(block);
+                if (loop && nir_loop_is_divergent(loop))
+                        return true;
+        }
+        return false;
+}
+
 static void *
 vc4_shader_state_create(struct pipe_context *pctx,
                         const struct pipe_shader_state *cso)
@@ -2487,16 +2490,14 @@ vc4_shader_state_create(struct pipe_context *pctx,
                 assert(cso->type == PIPE_SHADER_IR_TGSI);
 
                 if (VC4_DBG(TGSI)) {
-                        fprintf(stderr, "prog %d TGSI:\n",
-                                so->program_id);
+                        mesa_logd("prog %d TGSI:", so->program_id);
                         tgsi_dump(cso->tokens, 0);
-                        fprintf(stderr, "\n");
                 }
                 s = tgsi_to_nir(cso->tokens, pctx->screen, false);
         }
 
         if (s->info.stage == MESA_SHADER_VERTEX)
-                NIR_PASS(_, s, nir_lower_point_size, 1.0f, 0.0f, nir_type_invalid);
+                NIR_PASS(_, s, nir_lower_point_size, 1.0f, 0.0f);
 
         NIR_PASS(_, s, nir_lower_io,
                  nir_var_shader_in | nir_var_shader_out | nir_var_uniform,
@@ -2514,15 +2515,34 @@ vc4_shader_state_create(struct pipe_context *pctx,
         /* Garbage collect dead instructions */
         nir_sweep(s);
 
+        /* VC4 hardware doesn't have a dispatch mask for the VS. This means
+         * that, if we submit a divergent loop to the hardware, some execution
+         * channels can have undefined/garbage contents and cause infinite
+         * loops and GPU hangs.
+         *
+         * Instead of potentially hanging the GPU, refuse shader linking.
+         */
+        if (s->info.stage == MESA_SHADER_VERTEX) {
+                nir_divergence_analysis(s);
+
+                if (vc4_check_divergent_loops(s) && cso->report_compile_error) {
+                        ((struct pipe_shader_state *)cso)->error_message =
+                                strdup("Non-uniform loops are unsupported "
+                                       "in the vertex shader.");
+                        ralloc_free(s);
+                        free(so);
+                        return NULL;
+                }
+        }
+
         so->base.type = PIPE_SHADER_IR_NIR;
         so->base.ir.nir = s;
 
         if (VC4_DBG(NIR)) {
-                fprintf(stderr, "%s prog %d NIR:\n",
-                        mesa_shader_stage_name(s->info.stage),
-                        so->program_id);
-                nir_print_shader(s, stderr);
-                fprintf(stderr, "\n");
+                mesa_logi("%s prog %d NIR:",
+                          mesa_shader_stage_name(s->info.stage),
+                          so->program_id);
+                nir_log_shaderi(s);
         }
 
         if (VC4_DBG(SHADERDB)) {
@@ -2672,9 +2692,7 @@ vc4_get_compiled_shader(struct vc4_context *vc4, enum qstage stage,
         }
 
         shader->failed = c->failed;
-        if (c->failed) {
-                shader->failed = true;
-        } else {
+        if (!shader->failed) {
                 copy_uniform_state_to_shader(shader, c);
                 shader->bo = vc4_bo_alloc_shader(vc4->screen, c->qpu_insts,
                                                  c->qpu_inst_count *

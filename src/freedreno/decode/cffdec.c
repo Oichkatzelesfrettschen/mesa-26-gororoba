@@ -88,6 +88,9 @@ static int ib;
 static int draw_count;
 static int current_draw_count;
 
+/* Name of current pm4 packet being parsed: */
+static const char *current_pkt;
+
 /* query mode.. to handle symbolic register name queries, we need to
  * defer parsing query string until after gpu_id is know and rnn db
  * loaded:
@@ -117,6 +120,16 @@ printl(int lvl, const char *fmt, ...)
    va_start(args, fmt);
    vprintf(fmt, args);
    va_end(args);
+}
+
+static bool
+endswith(const char *name, const char *suffix)
+{
+   size_t slen = strlen(suffix);
+   size_t nlen = strlen(name);
+   if (slen > nlen)
+      return false;
+   return !strcmp(name + nlen - slen, suffix);
 }
 
 static const char *levels[] = {
@@ -152,6 +165,27 @@ static void disable_all_groups(void);
 static void dump_tex_samp(uint32_t *texsamp, enum state_src_t src, int num_unit,
                           int level);
 static void dump_tex_const(uint32_t *texsamp, int num_unit, int level);
+
+static struct shader_stats shader_stats[MESA_SHADER_STAGES];
+
+static void
+decode_shader_ir3(uint32_t *dwords, uint32_t sizedwords, int level,
+                  enum mesa_shader_stage stage)
+{
+   try_disasm_a3xx_stat(dwords, sizedwords, level, stdout,
+                        options->info->chip * 100,
+                        &shader_stats[stage]);
+}
+
+struct shader_stats *
+get_shader_stats(enum mesa_shader_stage stage)
+{
+   /* TODO in summary mode we might need to trigger silent shader disasm
+    * to have up to date stats?  Maybe we need to track whether the stats
+    * are valid?
+    */
+   return &shader_stats[stage];
+}
 
 static bool
 highlight_addr(uint32_t *hostaddr)
@@ -437,23 +471,36 @@ disasm_gpuaddr(const char *name, uint64_t gpuaddr, int level)
    buf = hostptr(gpuaddr);
    if (buf) {
       uint32_t sizedwords = hostlen(gpuaddr) / 4;
+      enum mesa_shader_stage stage = 0;
       const char *ext;
 
       dump_hex(buf, MIN2(64, sizedwords), level + 1);
-      try_disasm_a3xx(buf, sizedwords, level + 2, stdout, options->info->chip * 100);
 
       /* this is a bit ugly way, but oh well.. */
-      if (strstr(name, "SP_VS_OBJ")) {
+      if (strstr(name, "SP_VS")) {
          ext = "vo3";
-      } else if (strstr(name, "SP_FS_OBJ")) {
-         ext = "fo3";
-      } else if (strstr(name, "SP_GS_OBJ")) {
+         stage = MESA_SHADER_VERTEX;
+      } else if (strstr(name, "SP_HS")) {
+         ext = "ho3";
+         stage = MESA_SHADER_TESS_CTRL;
+      } else if (strstr(name, "SP_DS")) {
+         ext = "do3";
+         stage = MESA_SHADER_TESS_EVAL;
+      } else if (strstr(name, "SP_GS")) {
          ext = "go3";
-      } else if (strstr(name, "SP_CS_OBJ")) {
+         stage = MESA_SHADER_GEOMETRY;
+      } else if (strstr(name, "SP_FS") ||
+                 strstr(name, "SP_PS")) {
+         ext = "fo3";
+         stage = MESA_SHADER_FRAGMENT;
+      } else if (strstr(name, "SP_CS")) {
          ext = "co3";
+         stage = MESA_SHADER_COMPUTE;
       } else {
          ext = NULL;
       }
+
+      decode_shader_ir3(buf, sizedwords, level + 2, stage);
 
       if (ext)
          dump_shader(ext, buf, sizedwords * 4);
@@ -654,44 +701,25 @@ static struct {
       REG(CP_SCRATCH[0x5].REG, reg_dump_scratch),
       REG(CP_SCRATCH[0x6].REG, reg_dump_scratch),
       REG(CP_SCRATCH[0x7].REG, reg_dump_scratch),
-      REG(SP_VS_OBJ_START_LO, reg_gpuaddr_lo),
-      REG(SP_VS_OBJ_START_HI, reg_disasm_gpuaddr_hi),
-      REG(SP_HS_OBJ_START_LO, reg_gpuaddr_lo),
-      REG(SP_HS_OBJ_START_HI, reg_disasm_gpuaddr_hi),
-      REG(SP_DS_OBJ_START_LO, reg_gpuaddr_lo),
-      REG(SP_DS_OBJ_START_HI, reg_disasm_gpuaddr_hi),
-      REG(SP_GS_OBJ_START_LO, reg_gpuaddr_lo),
-      REG(SP_GS_OBJ_START_HI, reg_disasm_gpuaddr_hi),
-      REG(SP_FS_OBJ_START_LO, reg_gpuaddr_lo),
-      REG(SP_FS_OBJ_START_HI, reg_disasm_gpuaddr_hi),
-      REG(SP_CS_OBJ_START_LO, reg_gpuaddr_lo),
-      REG(SP_CS_OBJ_START_HI, reg_disasm_gpuaddr_hi),
-      REG(TPL1_VS_TEX_CONST_LO, reg_gpuaddr_lo),
-      REG(TPL1_VS_TEX_CONST_HI, reg_dump_tex_const_hi),
-      REG(TPL1_VS_TEX_SAMP_LO, reg_gpuaddr_lo),
-      REG(TPL1_VS_TEX_SAMP_HI, reg_dump_tex_samp_hi),
-      REG(TPL1_HS_TEX_CONST_LO, reg_gpuaddr_lo),
-      REG(TPL1_HS_TEX_CONST_HI, reg_dump_tex_const_hi),
-      REG(TPL1_HS_TEX_SAMP_LO, reg_gpuaddr_lo),
-      REG(TPL1_HS_TEX_SAMP_HI, reg_dump_tex_samp_hi),
-      REG(TPL1_DS_TEX_CONST_LO, reg_gpuaddr_lo),
-      REG(TPL1_DS_TEX_CONST_HI, reg_dump_tex_const_hi),
-      REG(TPL1_DS_TEX_SAMP_LO, reg_gpuaddr_lo),
-      REG(TPL1_DS_TEX_SAMP_HI, reg_dump_tex_samp_hi),
-      REG(TPL1_GS_TEX_CONST_LO, reg_gpuaddr_lo),
-      REG(TPL1_GS_TEX_CONST_HI, reg_dump_tex_const_hi),
-      REG(TPL1_GS_TEX_SAMP_LO, reg_gpuaddr_lo),
-      REG(TPL1_GS_TEX_SAMP_HI, reg_dump_tex_samp_hi),
-      REG(TPL1_FS_TEX_CONST_LO, reg_gpuaddr_lo),
-      REG(TPL1_FS_TEX_CONST_HI, reg_dump_tex_const_hi),
-      REG(TPL1_FS_TEX_SAMP_LO, reg_gpuaddr_lo),
-      REG(TPL1_FS_TEX_SAMP_HI, reg_dump_tex_samp_hi),
-      REG(TPL1_CS_TEX_CONST_LO, reg_gpuaddr_lo),
-      REG(TPL1_CS_TEX_CONST_HI, reg_dump_tex_const_hi),
-      REG(TPL1_CS_TEX_SAMP_LO, reg_gpuaddr_lo),
-      REG(TPL1_CS_TEX_SAMP_HI, reg_dump_tex_samp_hi),
-      REG(TPL1_TP_BORDER_COLOR_BASE_ADDR_LO, reg_gpuaddr_lo),
-      REG(TPL1_TP_BORDER_COLOR_BASE_ADDR_HI, reg_dump_gpuaddr_hi),
+      REG64(SP_VS_OBJ_START, reg_disasm_gpuaddr64),
+      REG64(SP_HS_OBJ_START, reg_disasm_gpuaddr64),
+      REG64(SP_DS_OBJ_START, reg_disasm_gpuaddr64),
+      REG64(SP_GS_OBJ_START, reg_disasm_gpuaddr64),
+      REG64(SP_FS_OBJ_START, reg_disasm_gpuaddr64),
+      REG64(SP_CS_OBJ_START, reg_disasm_gpuaddr64),
+      REG64(TPL1_VS_TEX_CONST, reg_disasm_gpuaddr64),
+      REG64(TPL1_VS_TEX_SAMP, reg_disasm_gpuaddr64),
+      REG64(TPL1_HS_TEX_CONST, reg_disasm_gpuaddr64),
+      REG64(TPL1_HS_TEX_SAMP, reg_disasm_gpuaddr64),
+      REG64(TPL1_DS_TEX_CONST, reg_disasm_gpuaddr64),
+      REG64(TPL1_DS_TEX_SAMP, reg_disasm_gpuaddr64),
+      REG64(TPL1_GS_TEX_CONST, reg_disasm_gpuaddr64),
+      REG64(TPL1_GS_TEX_SAMP, reg_disasm_gpuaddr64),
+      REG64(TPL1_FS_TEX_CONST, reg_disasm_gpuaddr64),
+      REG64(TPL1_FS_TEX_SAMP, reg_disasm_gpuaddr64),
+      REG64(TPL1_CS_TEX_CONST, reg_disasm_gpuaddr64),
+      REG64(TPL1_CS_TEX_SAMP, reg_disasm_gpuaddr64),
+      REG64(TPL1_TP_BORDER_COLOR_BASE_ADDR, reg_disasm_gpuaddr64),
 //      REG(RB_MRT_FLAG_BUFFER[0].ADDR_LO, reg_gpuaddr_lo),
 //      REG(RB_MRT_FLAG_BUFFER[0].ADDR_HI, reg_dump_gpuaddr_hi),
 //      REG(RB_MRT_FLAG_BUFFER[1].ADDR_LO, reg_gpuaddr_lo),
@@ -742,18 +770,21 @@ static struct {
       REG64(SP_PS_BASE, reg_disasm_gpuaddr64),
       REG64(SP_CS_BASE, reg_disasm_gpuaddr64),
 
-      REG64(SP_VS_TEXMEMOBJ_BASE, reg_dump_gpuaddr64),
-      REG64(SP_VS_SAMPLER_BASE, reg_dump_gpuaddr64),
-      REG64(SP_HS_TEXMEMOBJ_BASE, reg_dump_gpuaddr64),
-      REG64(SP_HS_SAMPLER_BASE, reg_dump_gpuaddr64),
-      REG64(SP_DS_TEXMEMOBJ_BASE, reg_dump_gpuaddr64),
-      REG64(SP_DS_SAMPLER_BASE, reg_dump_gpuaddr64),
-      REG64(SP_GS_TEXMEMOBJ_BASE, reg_dump_gpuaddr64),
-      REG64(SP_GS_SAMPLER_BASE, reg_dump_gpuaddr64),
-      REG64(SP_PS_TEXMEMOBJ_BASE, reg_dump_gpuaddr64),
-      REG64(SP_PS_SAMPLER_BASE, reg_dump_gpuaddr64),
-      REG64(SP_CS_TEXMEMOBJ_BASE, reg_dump_gpuaddr64),
-      REG64(SP_CS_SAMPLER_BASE, reg_dump_gpuaddr64),
+      REG64(SP_VS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_VS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_HS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_HS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_DS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_DS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_GS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_GS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_PS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_PS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_CS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_CS_SAMPLER_BASE, reg_dump_sampler64),
+
+      REG64(SP_GFX_UAV_BASE, reg_dump_uav64),
+      REG64(SP_CS_UAV_BASE, reg_dump_uav64),
 
       {NULL},
 }, reg_a7xx[] = {
@@ -763,6 +794,22 @@ static struct {
       REG64(SP_GS_BASE, reg_disasm_gpuaddr64),
       REG64(SP_PS_BASE, reg_disasm_gpuaddr64),
       REG64(SP_CS_BASE, reg_disasm_gpuaddr64),
+
+      REG64(SP_VS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_VS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_HS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_HS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_DS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_DS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_GS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_GS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_PS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_PS_SAMPLER_BASE, reg_dump_sampler64),
+      REG64(SP_CS_TEXMEMOBJ_BASE, reg_dump_texmemobj64),
+      REG64(SP_CS_SAMPLER_BASE, reg_dump_sampler64),
+
+      REG64(SP_GFX_UAV_BASE, reg_dump_uav64),
+      REG64(SP_CS_UAV_BASE, reg_dump_uav64),
 
       {NULL},
 }, reg_a8xx[] = {
@@ -794,10 +841,32 @@ static struct {
 
 static struct rnn *rnn;
 
+static bool
+reg_used(uint32_t regbase, const char *usage)
+{
+   struct rnndecaddrinfo *info = rnn_reginfo(rnn, regbase);
+   if (!info)
+      return false;
+   bool used = info->usage && strstr(info->usage, usage);
+   rnn_reginfo_free(info);
+   return used;
+}
+
+static bool
+has_query_val(int val)
+{
+   for (int i = 0; i < nqueryvals; i++)
+      if (queryvals[i] == val)
+         return true;
+   return false;
+}
+
 static void
 add_query_val(const char *querystr, int val)
 {
    printf("querystr: %s -> 0x%x\n", querystr, val);
+   if (has_query_val(val))
+      return;
    queryvals = realloc(queryvals, (nqueryvals + 1) * sizeof(!*queryvals));
    queryvals[nqueryvals] = val;
    nqueryvals++;
@@ -826,6 +895,10 @@ add_query(const char *querystr)
       const char *name = rnn_regname(rnn, off, false);
 
       if (!name)
+         continue;
+
+      /* Skip _HI regs if we are already watching the _LO: */
+      if (endswith(name, "_HI") && has_query_val(off - 1))
          continue;
 
       ret = regexec(&regex, name, 0, NULL, 0);
@@ -955,13 +1028,9 @@ enumval(const char *enumname, const char *enumval)
 }
 
 static int
-endswith(uint32_t regbase, const char *suffix)
+regname_endswith(uint32_t regbase, const char *suffix)
 {
-   const char *name = regname(regbase, 0);
-   const char *s = strstr(name, suffix);
-   if (!s)
-      return 0;
-   return (s - strlen(name) + strlen(suffix)) == name;
+   return endswith(regname(regbase, 0), suffix);
 }
 
 struct regacc
@@ -1000,7 +1069,7 @@ regacc_push(struct regacc *r, uint32_t regbase, uint32_t dword)
    r->has_dword_lo = (info->width == 64);
 
    /* Workaround for kernel devcore dump bugs: */
-   if ((info->width == 64) && endswith(regbase, "_HI")) {
+   if ((info->width == 64) && regname_endswith(regbase, "_HI")) {
       printf("WARNING: 64b discontinuity (no _LO dword for %x)\n", regbase);
       r->has_dword_lo = false;
    }
@@ -1037,9 +1106,9 @@ dump_register_val(struct regacc *r, int level)
           * We can remove this hack once a5xx.xml is converted to reg64
           * and address/waddess.
           */
-         if (endswith(r->regbase, "_HI") && endswith(r->regbase - 1, "_LO")) {
+         if (regname_endswith(r->regbase, "_HI") && regname_endswith(r->regbase - 1, "_LO")) {
             gpuaddr = (r->value << 32) | reg_val(r->regbase - 1);
-         } else if (endswith(r->regbase, "_LO") && endswith(r->regbase + 1, "_HI")) {
+         } else if (regname_endswith(r->regbase, "_LO") && regname_endswith(r->regbase + 1, "_HI")) {
             gpuaddr = (((uint64_t)reg_val(r->regbase + 1)) << 32) | r->value;
          }
       }
@@ -1234,12 +1303,22 @@ skip_query(void)
    return true;
 }
 
+static const char *
+deprefix(const char *str, const char *prefix)
+{
+   if (!str)
+      return "";
+   if (str == strstr(str, prefix))
+      str += strlen(prefix);
+   return str;
+}
+
 static void
 __do_query(const char *primtype, uint32_t num_indices)
 {
    int n = 0;
 
-   if ((5 <= options->info->chip) && (options->info->chip < 7)) {
+   if ((5 <= options->info->chip) && (options->info->chip < 9)) {
       uint32_t scissor_tl = reg_val(regbase("GRAS_SC_WINDOW_SCISSOR_TL"));
       uint32_t scissor_br = reg_val(regbase("GRAS_SC_WINDOW_SCISSOR_BR"));
 
@@ -1261,12 +1340,14 @@ __do_query(const char *primtype, uint32_t num_indices)
          if (regacc_push(&r, regbase + d, reg_val(regbase + d)))
             break;
 
-      printf("%4d: %s(%u,%u-%u,%u):%u:", draw_count, primtype, bin_x1,
-             bin_y1, bin_x2, bin_y2, num_indices);
+      printf("%4d: %s(%u,%u-%u,%u):%u:", draw_count,
+             deprefix(primtype, "DI_PT_"),
+             bin_x1, bin_y1, bin_x2, bin_y2,
+             num_indices);
       if (options->info->chip >= 5)
-         printf("%s:", render_mode);
+         printf("%s:", deprefix(render_mode, "RM6_"));
       if (thread)
-         printf("%s:", thread);
+         printf("%s:", deprefix(thread, "CP_SET_THREAD_"));
       printf("\t%08"PRIx64, r.value);
       if (r.value != lastvals[regbase]) {
          printf("!");
@@ -1595,6 +1676,61 @@ dump_tex_samp(uint32_t *texsamp, enum state_src_t src, int num_unit, int level)
    }
 }
 
+/* base=0 for bindful, N+1 for bindless .baseN
+ */
+static bool
+show_descriptor(uint32_t *desc, int sizedwords, int base, int idx,
+                const char *domain, const char *type)
+{
+   if (options->dump_all_bindless)
+      return true;
+
+   struct rnndomain *dom = rnn_finddomain(rnn->db, domain);
+
+   /* Earlier gens don't have bindless, or use descriptor variants.  And
+    * extracting info about used (or maybe used) descriptors from the
+    * shaders is not well tested for the pre-a6xx instruction encodings.
+    */
+   assert(options->info->chip >= 6);
+
+   if (!dom)
+      return false;
+
+   if (!script_show_descriptor)
+      return true;
+
+   rnn_varadd(rnn, "desctype", type);
+   bool ret = script_show_descriptor(desc, sizedwords, base, idx, type,
+                                     current_pkt, rnn, dom);
+   rnn_varadd(rnn, "desctype", "DESC_NONE");
+
+   return ret;
+}
+
+static void
+dump_tex_descriptor_type(uint32_t *texmemobj, int base, int idx, int level,
+                         const char *domain, const char *type)
+{
+   if (!show_descriptor(texmemobj, 16, base, idx, domain, type))
+      return;
+
+   printl(2, "%sSTORAGE/TEXEL/IMAGE[%u]: (%s)\n", levels[level + 1], idx, type);
+   rnn_varadd(rnn, "desctype", type);
+   dump_domain(texmemobj, 16, level + 2, domain);
+   rnn_varadd(rnn, "desctype", "DESC_NONE");
+}
+
+static void
+dump_tex_descriptor(uint32_t *texmemobj, int base, int idx, int level, const char *domain)
+{
+   dump_tex_descriptor_type(texmemobj, base, idx, level, domain, "DESC_SINGLE_PLANE");
+   dump_tex_descriptor_type(texmemobj, base, idx, level, domain, "DESC_MULTI_PLANE");
+   dump_tex_descriptor_type(texmemobj, base, idx, level, domain, "DESC_BUFFER");
+   /* Don't bother dumping weight descriptors if unsupported by GPU: */
+   if (options->info->props.has_image_processing)
+      dump_tex_descriptor_type(texmemobj, base, idx, level, domain, "DESC_WEIGHT");
+}
+
 static void
 dump_tex_const(uint32_t *texconst, int num_unit, int level)
 {
@@ -1628,7 +1764,7 @@ dump_tex_const(uint32_t *texconst, int num_unit, int level)
          dump_hex(texconst, 12, level + 1);
          texconst += 12;
       } else if ((6 <= options->info->chip) && (options->info->chip < 8)) {
-         dump_domain(texconst, 16, level + 2, "A6XX_TEX_CONST");
+         dump_tex_descriptor(texconst, 0, i, level, "A6XX_TEX_MEMOBJ");
          if (options->dump_textures) {
             uint64_t addr =
                (((uint64_t)texconst[5] & 0x1ffff) << 32) | texconst[4];
@@ -1637,10 +1773,10 @@ dump_tex_const(uint32_t *texconst, int num_unit, int level)
          dump_hex(texconst, 16, level + 1);
          texconst += 16;
       } else if ((8 <= options->info->chip) && (options->info->chip < 9)) {
-         dump_domain(texconst, 16, level + 2, "A8XX_TEX_MEMOBJ");
+         dump_tex_descriptor(texconst, 0, i, level, "A8XX_TEX_MEMOBJ");
          if (options->dump_textures) {
             uint64_t addr =
-               (((uint64_t)texconst[5] & 0x1ffff) << 32) | texconst[4];
+               (((uint64_t)texconst[1] & 0x1ffff) << 32) | texconst[0];
             dump_gpuaddr_size(addr, level - 2, hostlen(addr) / 4, 3);
          }
          dump_hex(texconst, 16, level + 1);
@@ -1652,7 +1788,8 @@ dump_tex_const(uint32_t *texconst, int num_unit, int level)
 static void
 dump_bindless_descriptors(bool is_compute, int level)
 {
-   if (!options->dump_bindless)
+   /* Skip for devices which do not support bindless: */
+   if (options->info->chip < 6)
       return;
 
    printl(2, "%sdraw[%i] bindless descriptors\n", levels[level], draw_count);
@@ -1668,7 +1805,7 @@ dump_bindless_descriptors(bool is_compute, int level)
       if (!reg)
          break;
 
-      printl(2, "%sset[%u]:\n", levels[level + 1], i);
+      printl(2, "%s    set[%u]:\n", levels[level], i);
 
       if (!reg_written(reg))
          continue;
@@ -1694,14 +1831,27 @@ dump_bindless_descriptors(bool is_compute, int level)
       unsigned desc_count = length / (16 * sizeof(uint32_t));
       for (unsigned desc_idx = 0; desc_idx < desc_count; desc_idx++) {
          if (memcmp(contents, empty_contents, sizeof(empty_contents))) {
-            printl(2, "%sUBO[%u]:\n", levels[level + 1], desc_idx);
-            dump_domain(contents, 2, level + 2, "A6XX_UBO");
 
-            printl(2, "%sSTORAGE/TEXEL/IMAGE[%u]:\n", levels[level + 1], desc_idx);
-            dump_tex_const(contents, 1, level);
+            if (show_descriptor(contents, 2, i + 1, desc_idx, "A6XX_UBO", "DESC_UBO")) {
+               printl(2, "%sUBO[%u]:\n", levels[level + 1], desc_idx);
+               dump_domain(contents, 2, level + 2, "A6XX_UBO");
+            }
 
-            printl(2, "%sSAMPLER[%u]:\n", levels[level + 1], desc_idx);
-            dump_tex_samp(contents, STATE_SRC_BINDLESS, 1, level);
+            if ((6 <= options->info->chip) && (options->info->chip < 8)) {
+               dump_tex_descriptor(contents, i + 1, desc_idx, level, "A6XX_TEX_MEMOBJ");
+
+               if (show_descriptor(contents, 16, i + 1, desc_idx, "A6XX_TEX_SAMP", "DESC_SAMPLER")) {
+                  printl(2, "%sSAMPLER[%u]:\n", levels[level + 1], desc_idx);
+                  dump_tex_samp(contents, STATE_SRC_BINDLESS, 1, level);
+               }
+            } else if ((8 <= options->info->chip) && (options->info->chip < 9)) {
+               dump_tex_descriptor(contents, i + 1, desc_idx, level, "A8XX_TEX_MEMOBJ");
+
+               if (show_descriptor(contents, 4, i + 1, desc_idx, "A8XX_TEX_SAMP", "DESC_SAMPLER")) {
+                  printl(2, "%sSAMPLER[%u]:\n", levels[level + 1], desc_idx);
+                  dump_tex_samp(contents, STATE_SRC_BINDLESS, 1, level);
+               }
+            }
          }
          contents += 16;
       }
@@ -1797,8 +1947,7 @@ cp_load_state(uint32_t *dwords, uint32_t sizedwords, int level)
       }
 
       if (contents)
-         try_disasm_a3xx(contents, num_unit * 2, level + 2, stdout,
-                         options->info->chip * 100);
+         decode_shader_ir3(contents, num_unit * 2, level + 2, stage);
 
       /* dump raw shader: */
       if (ext)
@@ -1859,7 +2008,7 @@ cp_load_state(uint32_t *dwords, uint32_t sizedwords, int level)
             dump_domain(ssboconst, 4, level + 2, "A5XX_SSBO_0");
          } else if ((6 <= options->info->chip) && (options->info->chip < 8)) {
             sz = 16;
-            dump_domain(ssboconst, 16, level + 2, "A6XX_TEX_CONST");
+            dump_domain(ssboconst, 16, level + 2, "A6XX_TEX_MEMOBJ");
          }
          dump_hex(ssboconst, sz, level + 1);
          ssboconst += sz;
@@ -2102,7 +2251,7 @@ cp_set_const(uint32_t *dwords, uint32_t sizedwords, int level)
    }
 }
 
-static void dump_register_summary(int level);
+static void dump_register_summary(int level, const char *usage);
 
 static void
 cp_event_write(uint32_t *dwords, uint32_t sizedwords, int level)
@@ -2116,13 +2265,13 @@ cp_event_write(uint32_t *dwords, uint32_t sizedwords, int level)
       if (!strcmp(name, "CCU_RESOLVE") || !strcmp(name, "LRZ_CLEAR")) {
          do_query(eventname, 0);
          print_mode(level);
-         dump_register_summary(level);
+         dump_register_summary(level, "resolve");
       }
    }
 }
 
 static void
-dump_register_summary(int level)
+dump_register_summary(int level, const char *usage)
 {
    uint32_t i;
    bool saved_summary = summary;
@@ -2137,21 +2286,25 @@ dump_register_summary(int level)
 
    bool changed = false;
    bool written = false;
+   bool used = false;
 
    for (i = 0; i < regcnt(); i++) {
       uint32_t regbase = i;
       uint32_t lastval = reg_val(regbase);
-      /* skip registers that haven't been updated since last draw/blit: */
-      if (!(options->allregs || reg_rewritten(regbase)))
-         continue;
       if (!reg_written(regbase))
+         continue;
+      if (reg_used(regbase, usage))
+         used |= true;
+      if (reg_rewritten(regbase))
+         written |= true;
+      /* skip registers that haven't been updated since last draw/blit
+       * and aren't used by the current usage:
+       */
+      if (!(options->allregs || written || used))
          continue;
       if (lastval != lastvals[regbase]) {
          changed |= true;
          lastvals[regbase] = lastval;
-      }
-      if (reg_rewritten(regbase)) {
-         written |= true;
       }
       if (!quiet(2)) {
          if (regacc_push(&r, regbase, lastval)) {
@@ -2165,10 +2318,18 @@ dump_register_summary(int level)
             } else {
                printl(2, " ");
             }
+            /* Older gens don't have register usage specified */
+            if (options->info->chip >= 6) {
+               if (used) {
+                  printl(2, " ");
+               } else {
+                  printl(2, "?");
+               }
+            }
             printl(2, "\t%08"PRIx64, r.value);
             dump_register(&r, level);
 
-            changed = written = false;
+            changed = written = used = false;
          }
       }
    }
@@ -2246,7 +2407,7 @@ cp_draw_indx(uint32_t *dwords, uint32_t sizedwords, int level)
    /* don't bother dumping registers for the dummy draw_indx's.. */
    if (num_indices > 0) {
       dump_bindless_descriptors(false, level);
-      dump_register_summary(level);
+      dump_register_summary(level, "draw");
    }
 
    needs_wfi = true;
@@ -2290,7 +2451,7 @@ cp_draw_indx_2(uint32_t *dwords, uint32_t sizedwords, int level)
    /* don't bother dumping registers for the dummy draw_indx's.. */
    if (num_indices > 0) {
       dump_bindless_descriptors(false, level);
-      dump_register_summary(level);
+      dump_register_summary(level, "draw");
    }
 }
 
@@ -2306,7 +2467,7 @@ cp_draw_indx_offset(uint32_t *dwords, uint32_t sizedwords, int level)
    /* don't bother dumping registers for the dummy draw_indx's.. */
    if (num_indices > 0) {
       dump_bindless_descriptors(false, level);
-      dump_register_summary(level);
+      dump_register_summary(level, "draw");
    }
 }
 
@@ -2332,7 +2493,7 @@ cp_draw_indx_indirect(uint32_t *dwords, uint32_t sizedwords, int level)
    dump_gpuaddr_size(addr, level, 0x10, 2);
 
    dump_bindless_descriptors(false, level);
-   dump_register_summary(level);
+   dump_register_summary(level, "draw");
 }
 
 static void
@@ -2348,7 +2509,7 @@ cp_draw_indirect(uint32_t *dwords, uint32_t sizedwords, int level)
    dump_gpuaddr_size(addr, level, 0x10, 2);
 
    dump_bindless_descriptors(false, level);
-   dump_register_summary(level);
+   dump_register_summary(level, "draw");
 }
 
 static void
@@ -2408,7 +2569,7 @@ cp_draw_indirect_multi(uint32_t *dwords, uint32_t sizedwords, int level)
    }
 
    dump_bindless_descriptors(false, level);
-   dump_register_summary(level);
+   dump_register_summary(level, "draw");
 }
 
 static void
@@ -2420,14 +2581,14 @@ cp_draw_auto(uint32_t *dwords, uint32_t sizedwords, int level)
    print_mode(level);
 
    dump_bindless_descriptors(false, level);
-   dump_register_summary(level);
+   dump_register_summary(level, "draw");
 }
 
 static void
 cp_run_cl(uint32_t *dwords, uint32_t sizedwords, int level)
 {
    do_query("COMPUTE", 1);
-   dump_register_summary(level);
+   dump_register_summary(level, "compute");
 }
 
 static void
@@ -2653,6 +2814,9 @@ cp_wfi(uint32_t *dwords, uint32_t sizedwords, int level)
 static void
 cp_mem_write(uint32_t *dwords, uint32_t sizedwords, int level)
 {
+   struct rnndomain *domain = rnn_finddomain(rnn->db, "CP_MEM_WRITE");
+   internal_packet(dwords, sizedwords, rnn, domain);
+
    if (quiet(2))
       return;
 
@@ -2679,7 +2843,6 @@ cp_rmw(uint32_t *dwords, uint32_t sizedwords, int level)
    domain = rnn_finddomain(rnn->db, "CP_REG_RMW");
    str = internal_packet(dwords, sizedwords, rnn, domain);
 
-   
    printl(3, "%srmw %s", levels[level], str);
    if (needs_wfi)
       printl(2, "NEEDS WFI: rmw %s", str);
@@ -2854,7 +3017,7 @@ cp_exec_cs(uint32_t *dwords, uint32_t sizedwords, int level)
    do_query("compute", 0);
    print_mode(level);
    dump_bindless_descriptors(true, level);
-   dump_register_summary(level);
+   dump_register_summary(level, "compute");
 }
 
 static void
@@ -2874,7 +3037,7 @@ cp_exec_cs_indirect(uint32_t *dwords, uint32_t sizedwords, int level)
    do_query("compute", 0);
    print_mode(level);
    dump_bindless_descriptors(true, level);
-   dump_register_summary(level);
+   dump_register_summary(level, "compute");
 }
 
 static void
@@ -3014,7 +3177,7 @@ cp_blit(uint32_t *dwords, uint32_t sizedwords, int level)
 {
    do_query(rnn_enumname(rnn, "cp_blit_cmd", dwords[0]), 0);
    print_mode(level);
-   dump_register_summary(level);
+   dump_register_summary(level, "blit");
 }
 
 static void
@@ -3200,7 +3363,9 @@ dump_commands(uint32_t *dwords, uint32_t sizedwords, int level)
          assert(val < regcnt());
          printl(3, "%swrite %s (%04x)\n", levels[level + 1], regname(val, 1),
                 val);
+         current_pkt = "PKT4";
          dump_registers(val, dwords + 1, count - 1, level + 2);
+         current_pkt = NULL;
          if (!quiet(3))
             dump_hex(dwords, count, level + 1);
 #if 0
@@ -3234,7 +3399,9 @@ dump_commands(uint32_t *dwords, uint32_t sizedwords, int level)
                name = "CP_LOAD_STATE6";
             dump_domain(dwords + 1, count - 1, level + 2, name);
          }
+         current_pkt = name;
          op->fxn(dwords + 1, count - 1, level + 1);
+         current_pkt = NULL;
          if (!quiet(2))
             dump_hex(dwords, count, level + 1);
       } else if (pkt_is_type2(dwords[0])) {

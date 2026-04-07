@@ -18,6 +18,7 @@
 struct pan_shader_info;
 
 bool pan_will_dump_shaders(unsigned arch);
+bool pan_want_debug_info(unsigned arch);
 
 const nir_shader_compiler_options *
 pan_get_nir_shader_compiler_options(unsigned arch);
@@ -81,6 +82,8 @@ enum { PAN_VERTEX_ID = 16, PAN_INSTANCE_ID = 17, PAN_MAX_ATTRIBUTE };
  */
 #define PAN_MAX_PUSH 128
 
+#define PAN_MAX_MULTIVIEW_VIEW_COUNT 8
+
 /* Architectural invariants (Midgard and Bifrost): UBO must be <= 2^16 bytes so
  * an offset to a word must be < 2^16. There are less than 2^8 UBOs */
 
@@ -107,7 +110,7 @@ struct pan_compile_inputs {
    bool no_idvs;
    uint32_t view_mask;
 
-   nir_variable_mode robust2_modes;
+   nir_variable_mode robust_modes;
    /* Whether or not descriptor accesses should add additional robustness
     * checks. */
    bool robust_descriptors;
@@ -115,15 +118,13 @@ struct pan_compile_inputs {
    /* Mask of UBOs that may be moved to push constants */
    uint32_t pushable_ubos;
 
-   /* Used on Valhall.
-    *
-    * Bit mask of special desktop-only varyings (e.g VARYING_SLOT_TEX0)
-    * written by the previous stage (fragment shader) or written by this
-    * stage (vertex shader). Bits are slots from gl_varying_slot.
-    *
-    * For modern APIs (GLES or VK), this should be 0.
+   /* Varying layout in memory, if known */
+   const struct pan_varying_layout *varying_layout;
+
+   /* Optimizations as nir_opt_varyings can erase all flat types to float, when
+    * this field is false, varying types are inferred from their usage.
     */
-   uint32_t fixed_varying_mask;
+   bool trust_varying_flat_highp_types;
 
    /* Settings to move constants into the FAU. */
    struct {
@@ -133,26 +134,158 @@ struct pan_compile_inputs {
       /* In multiples of 32bit. */
       uint32_t offset;
    } fau_consts;
-
-   union {
-      struct {
-         /* Use LD_VAR_BUF[_IMM] instead of LD_VAR[_IMM] to load varyings. */
-         bool use_ld_var_buf;
-      } valhall;
-   };
 };
+
+enum pan_varying_section {
+   PAN_VARYING_SECTION_POSITION,
+   PAN_VARYING_SECTION_ATTRIBS,
+   /* Varyings computed on-the-fly */
+   PAN_VARYING_SECTION_SPECIAL,
+   PAN_VARYING_SECTION_GENERIC,
+};
+
+/* Varyings which go in PAN_VARYING_SECTION_ATTRIBS */
+#define PAN_ATTRIB_VARYING_BITS                                   \
+   (VARYING_BIT_PSIZ | VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT | \
+    VARYING_BIT_PRIMITIVE_ID)
+
+/* Varyings which go in PAN_VARYING_SECTION_SPECIAL (Midgard only) */
+#define PAN_SPECIAL_VARYING_BITS                                  \
+   (VARYING_BIT_PNTC | VARYING_BIT_POS | VARYING_BIT_FACE)
+
+/* Varyings which DO NOT go in PAN_VARYING_SECTION_GENERIC */
+#define PAN_HARDWARE_VARYING_BITS                                  \
+   (VARYING_BIT_POS | PAN_ATTRIB_VARYING_BITS | PAN_SPECIAL_VARYING_BITS)
+
+struct pan_varying_slot {
+   /* GLSL/SPIR-V location of the varying slot */
+   gl_varying_slot location : 7;
+
+   /* Format of the varying slot in memory
+    * (really nir_alu_type, but the compiler screams at you if you don't lie) */
+   unsigned alu_type : 8;
+   unsigned ncomps : 3;
+
+   enum pan_varying_section section : 2;
+
+   /* Offset of the varying slot in the specified section of the varying
+    * buffer.  For special VS outputs (see PAN_ATTRIB_VARYING_BITS), this is
+    * relative to the start of the position header.  For all other varyings,
+    * this is relative to the start of the varying space.  The offset will be
+    * -1 if unknown (before the memory layout is built).
+    */
+   int offset : 12;
+};
+static_assert(sizeof(struct pan_varying_slot) == 4,
+              "This struct has no holes");
+
+static inline bool
+pan_varying_slot_is_empty(const struct pan_varying_slot *slot)
+{
+   return slot->alu_type == nir_type_invalid;
+}
+
+enum ENUM_PACKED pan_varying_knowledge {
+   PAN_VARYING_FORMAT_KNOWN = BITFIELD_BIT(0),
+   PAN_VARYING_LAYOUT_KNOWN = BITFIELD_BIT(1),
+};
+
+/* Contains information about varyings, both their format and the physical
+ * memory layout.  The format is not necessarily what is actually stored in
+ * memory, but what format is in the register before the store_output, or what
+ * the shader expects after a load_input.  The layout is optional and specifies
+ * the exact offset in memory of each varying, its section and the size of the
+ * generic buffer.  The layout is only built for the Vertex Shader and passed
+ * on to the Fragment Shader if they are linked together, since the struct is
+ * valid even without format or layout information, the "known" field tracks
+ * what information the structure has, before accessing any format information
+ * you should check with `pan_varying_layout_require_format` that it is built
+ * and before accessing any layout information you should check with
+ * pan_varying_layout_require_layout if it is present.
+ *
+ * The format and layout are not split into two different structures to avoid
+ * duplicating indexing information.
+ *
+ * The slots are valid only up to `count`, but can also contain holes if they
+ * have been dead-code-eliminated after `nir_assign_io_var_locations`.  Please
+ * use `pan_varying_slot_is_empty` to check if slots are empty.  Empty slots are
+ * ignored by finding functions.
+ */
+PRAGMA_DIAGNOSTIC_PUSH
+PRAGMA_DIAGNOSTIC_ERROR(-Wpadded)
+struct pan_varying_layout {
+   uint8_t count;
+   enum pan_varying_knowledge known;
+   /* Size of the generic section, in bytes */
+   uint16_t generic_size_B;
+
+   struct pan_varying_slot slots[PAN_MAX_VARYINGS];
+};
+PRAGMA_DIAGNOSTIC_POP
+
+static inline const struct pan_varying_slot *
+pan_varying_layout_find_slot(const struct pan_varying_layout *layout,
+                             gl_varying_slot location)
+{
+   for (unsigned i = 0; i < layout->count; i++) {
+      if (layout->slots[i].location != location)
+         continue;
+      const struct pan_varying_slot *slot = &layout->slots[i];
+      if (pan_varying_slot_is_empty(slot))
+         break;
+      return slot;
+   }
+
+   return NULL;
+}
+
+static inline const struct pan_varying_slot *
+pan_varying_layout_slot_at(const struct pan_varying_layout *layout,
+                           unsigned index)
+{
+   if (index >= layout->count)
+      return NULL;
+
+   const struct pan_varying_slot *slot = &layout->slots[index];
+   if (pan_varying_slot_is_empty(slot))
+      return NULL;
+
+   return slot;
+}
+
+static inline void
+pan_varying_layout_require_format(const struct pan_varying_layout *layout)
+{
+   assert(layout);
+   if (!(layout->known & PAN_VARYING_FORMAT_KNOWN))
+      assert(!"Format is required");
+}
+
+static inline void
+pan_varying_layout_require_layout(const struct pan_varying_layout *layout)
+{
+   assert(layout);
+   if (!(layout->known & PAN_VARYING_LAYOUT_KNOWN))
+      assert(!"Layout is required");
+}
+
+enum pipe_format
+pan_varying_format(nir_alu_type type, unsigned ncomps);
+
+void
+pan_build_varying_layout_compact(struct pan_varying_layout *layout,
+                                 nir_shader *nir, unsigned gpu_id);
+
+void
+pan_varying_collect_formats(struct pan_varying_layout *registry,
+                            nir_shader *nir, unsigned gpu_id,
+                            bool trust_varying_flat_highp_types,
+                            bool lower_mediump);
 
 struct pan_shader_varying {
    gl_varying_slot location;
    enum pipe_format format;
 };
-
-static inline unsigned
-pan_get_fixed_varying_mask(unsigned varyings_used)
-{
-   return (varyings_used & BITFIELD_MASK(VARYING_SLOT_VAR0)) &
-      ~VARYING_BIT_POS & ~VARYING_BIT_PSIZ;
-}
 
 struct bifrost_shader_blend_info {
    nir_alu_type type;
@@ -197,6 +330,13 @@ struct bifrost_shader_info {
     * values for flat varyings.
     */
    bool uses_flat_shading;
+
+   /* Whether there are any LD_VAR[_IMM] instructions that require varying
+    * descriptors.  LD_VAR_BUF[_IMM] do not count as they only need buffer
+    * descriptors to work correctly. For more details check out
+    * docs/drivers/panfrost/varyings.rst
+    */
+   bool uses_ld_var;
 };
 
 struct midgard_shader_info {
@@ -237,6 +377,13 @@ struct pan_shader_info {
          bool early_fragment_tests;
          bool can_early_z, can_fpk;
          bool untyped_color_outputs;
+         struct {
+            bool ld_tile;
+            bool wait_or_tile_access_before_atest_zsemit;
+            bool rasterizer_coverage_read;
+            bool centroid_interpolation;
+            bool varying_before_atest_zsemit;
+         } hsr;
          uint32_t outputs_read;
       } fs;
 
@@ -318,16 +465,10 @@ struct pan_shader_info {
    uint64_t images_used;
 
    struct {
-      unsigned input_count;
-      struct pan_shader_varying input[PAN_MAX_VARYINGS];
-      unsigned output_count;
-      struct pan_shader_varying output[PAN_MAX_VARYINGS];
-
       /* Bitfield of noperspective varyings, starting at VARYING_SLOT_VAR0 */
       uint32_t noperspective;
 
-      /* Bitfield of special varyings. */
-      uint32_t fixed_varyings;
+      struct pan_varying_layout formats;
    } varyings;
 
    /* UBOs to push to Register Mapped Uniforms (Midgard) or Fast Access
@@ -335,9 +476,6 @@ struct pan_shader_info {
    struct pan_ubo_push push;
 
    uint32_t ubo_mask;
-
-   /* Quirk for GPUs that does not support auto32 types. */
-   bool quirk_no_auto32;
 
    union {
       struct bifrost_shader_info bifrost;
@@ -372,6 +510,21 @@ pan_subgroup_size(unsigned arch)
       return 4;
    else
       return 1;
+}
+
+/*
+ * Helper returning the maximum offset in bytes (exclusive) that a LD_VAR_BUF*
+ * instruction can use.
+ */
+static inline unsigned
+pan_ld_var_buf_off_size(unsigned arch)
+{
+   if (arch >= 11)
+      return 2048;
+   else if (arch >= 9)
+      return 256;
+   else
+      return 0;
 }
 
 /*

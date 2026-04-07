@@ -1,28 +1,6 @@
 /*
  * Copyright © 2010 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
- * Authors:
- *    Eric Anholt <eric@anholt.net>
- *
+ * SPDX-License-Identifier: MIT
  */
 
 #pragma once
@@ -110,11 +88,11 @@ public:
    void fail(const char *msg, ...);
    void limit_dispatch_width(unsigned n, const char *msg);
 
-   void emit_urb_writes(const brw_reg &gs_vertex_count = brw_reg());
    void emit_gs_control_data_bits(const brw_reg &vertex_count);
    brw_reg gs_urb_channel_mask(const brw_reg &dword_index);
    brw_reg gs_urb_per_slot_dword_index(const brw_reg &vertex_count);
    bool mark_last_urb_write_with_eot();
+   void emit_tes_terminate();
    void emit_cs_terminate();
 
    const struct brw_compiler *compiler;
@@ -204,8 +182,6 @@ public:
    DEFINE_PAYLOAD_ACCESSOR(brw_bs_thread_payload, bs_payload,
                            stage >= MESA_SHADER_RAYGEN && stage <= MESA_SHADER_CALLABLE);
 
-   bool source_depth_to_render_target;
-
    brw_reg uw_pixel_x;
    brw_reg uw_pixel_y;
    brw_reg pixel_z;
@@ -220,7 +196,6 @@ public:
    brw_reg delta_xy[INTEL_BARYCENTRIC_MODE_COUNT];
    brw_reg final_gs_vertex_count;
    brw_reg control_data_bits;
-   brw_reg invocation_id;
 
    struct {
       unsigned control_data_bits_per_vertex;
@@ -272,13 +247,6 @@ void brw_print_instruction(const brw_shader &s, const brw_inst *inst,
 
 void brw_print_swsb(FILE *f, const struct intel_device_info *devinfo, const tgl_swsb swsb);
 
-static inline bool
-brw_can_coherent_fb_fetch(const struct intel_device_info *devinfo)
-{
-   /* Not functional after Gfx20 */
-   return devinfo->ver >= 9 && devinfo->ver < 20;
-}
-
 /**
  * Return the flag register used in fragment shaders to keep track of live
  * samples.  On Gfx7+ we use f1.0-f1.1 to allow discard jumps in SIMD32
@@ -292,30 +260,32 @@ sample_mask_flag_subreg(const brw_shader &s)
 }
 
 inline brw_reg
-brw_dynamic_msaa_flags(const struct brw_wm_prog_data *wm_prog_data)
+brw_dynamic_fs_config(const struct brw_fs_prog_data *fs_prog_data)
 {
    return byte_offset(
       brw_uniform_reg(
-         wm_prog_data->msaa_flags_param / REG_SIZE, BRW_TYPE_UD),
-      wm_prog_data->msaa_flags_param % REG_SIZE);
+         fs_prog_data->fs_config_param / REG_SIZE, BRW_TYPE_UD),
+      fs_prog_data->fs_config_param % REG_SIZE);
 }
 
 inline brw_reg
-brw_dynamic_per_primitive_remap(const struct brw_wm_prog_data *wm_prog_data)
+brw_dynamic_per_primitive_remap(const struct brw_fs_prog_data *fs_prog_data)
 {
    return byte_offset(
       brw_uniform_reg(
-         wm_prog_data->per_primitive_remap_param / REG_SIZE, BRW_TYPE_UD),
-      wm_prog_data->per_primitive_remap_param % REG_SIZE);
+         fs_prog_data->per_primitive_remap_param / REG_SIZE, BRW_TYPE_UW),
+      fs_prog_data->per_primitive_remap_param % REG_SIZE);
 }
 
-enum intel_barycentric_mode brw_barycentric_mode(const struct brw_wm_prog_key *key,
+enum intel_barycentric_mode brw_barycentric_mode(const struct brw_fs_prog_key *key,
                                                  nir_intrinsic_instr *intr);
 
 uint32_t brw_fb_write_msg_control(const brw_inst *inst,
-                                  const struct brw_wm_prog_data *prog_data);
+                                  const struct brw_fs_prog_data *prog_data);
 
-void brw_compute_urb_setup_index(struct brw_wm_prog_data *wm_prog_data);
+void brw_compute_urb_setup_index(struct brw_fs_prog_data *fs_prog_data);
+
+void brw_assign_urb_setup(brw_shader &s);
 
 void brw_from_nir(brw_shader *s);
 
@@ -386,6 +356,7 @@ bool brw_opt_address_reg_load(brw_shader &s);
 bool brw_opt_algebraic(brw_shader &s);
 bool brw_opt_bank_conflicts(brw_shader &s);
 bool brw_opt_cmod_propagation(brw_shader &s);
+bool brw_opt_cmp_flag_destination(brw_shader &s, bool uses_kill);
 bool brw_opt_combine_constants(brw_shader &s);
 bool brw_opt_combine_convergent_txf(brw_shader &s);
 bool brw_opt_compact_virtual_grfs(brw_shader &s);

@@ -19,7 +19,6 @@
 #include "util/u_screen.h"
 #include "util/u_video.h"
 #include "util/xmlconfig.h"
-#include "util/perf/cpu_trace.h"
 
 #include <fcntl.h>
 
@@ -36,6 +35,7 @@
 #include "pan_screen.h"
 #include "pan_compiler.h"
 #include "pan_util.h"
+#include "pan_trace.h"
 
 #include "pan_context.h"
 
@@ -117,6 +117,8 @@ pipe_to_pan_bind_flags(uint32_t pipe_bind_flags)
       pan_bind_flags |= PAN_BIND_VERTEX_BUFFER;
    if (pipe_bind_flags & PIPE_BIND_SAMPLER_VIEW)
       pan_bind_flags |= PAN_BIND_SAMPLER_VIEW;
+   if (pipe_bind_flags & PIPE_BIND_SHADER_IMAGE)
+      pan_bind_flags |= PAN_BIND_STORAGE_IMAGE;
 
    return pan_bind_flags;
 }
@@ -400,6 +402,13 @@ panfrost_walk_dmabuf_modifiers(struct pipe_screen *screen,
 
    for (unsigned i = 0; i < ARRAY_SIZE(native_mods); ++i) {
       uint64_t mod =  native_mods[i];
+
+      /* We don't implement the WSI interface for
+       * DRM_FORMAT_MOD_ARM_INTERLEAVED_64K so let's just not advertise images
+       * using this modifier, which will take care of it being advertised for
+       * WSI. */
+      if (mod == DRM_FORMAT_MOD_ARM_INTERLEAVED_64K)
+         continue;
 
       if ((dev->debug & PAN_DBG_NO_AFBC) && drm_is_afbc(mod))
          continue;
@@ -744,6 +753,8 @@ panfrost_init_screen_caps(struct panfrost_screen *screen)
    caps->buffer_sampler_view_rgba_only = true;
    caps->packed_uniforms = true;
    caps->image_load_formatted = true;
+   caps->image_store_formatted = true;
+   caps->image_atomic_inc_wrap = true;
    caps->cube_map_array = true;
    caps->compute = true;
    caps->int64 = true;
@@ -892,8 +903,6 @@ panfrost_init_screen_caps(struct panfrost_screen *screen)
    caps->supported_prim_modes =
    caps->supported_prim_modes_with_restart = modes;
 
-   caps->image_store_formatted = true;
-
    caps->native_fence_fd = true;
 
    caps->context_priority_mask = from_kmod_group_allow_priority_flags(
@@ -922,6 +931,9 @@ panfrost_init_screen_caps(struct panfrost_screen *screen)
 
    /* We hard-code this value as it is dictated by driver uAPI */
    caps->max_label_length = 4096;
+
+   /* Avoid emulating non-perspective interpolation when not needed */
+   caps->prefer_persp = true;
 }
 
 static void
@@ -1022,6 +1034,8 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
       debug_get_num_option("PAN_FAULT_INJECTION_RATE", 0);
    screen->max_afbc_packing_ratio = debug_get_num_option(
       "PAN_MAX_AFBC_PACKING_RATIO", DEFAULT_MAX_AFBC_PACKING_RATIO);
+
+   pan_trace_init();
 
    if (panfrost_open_device(screen, fd, dev)) {
       ralloc_free(screen);

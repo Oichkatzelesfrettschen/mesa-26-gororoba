@@ -107,7 +107,7 @@
 
 #include "lp_screen.h"
 #include "compiler/nir/nir_serialize.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 
 
 /** Fragment shader number (for debugging) */
@@ -1241,7 +1241,6 @@ generate_fs_loop(struct gallivm_state *gallivm,
       LLVMBuildStore(builder, out, ptr);
    }
 
-   bool has_cbuf0_write = false;
    /* Color write - per fragment sample */
    nir_foreach_shader_out_variable(var, nir) {
       if (var->data.location < FRAG_RESULT_DATA0)
@@ -1252,23 +1251,6 @@ generate_fs_loop(struct gallivm_state *gallivm,
          unsigned cbuf = get_cbuf_location(var, s);
          unsigned attrib = var->data.driver_location + s;
          if ((cbuf < key->nr_cbufs) || (cbuf == 1 && dual_source_blend)) {
-            if (cbuf == 0) {
-               /* XXX: there is an edge case with FB fetch where gl_FragColor and
-                * gl_LastFragData[0] are used together. This creates both
-                * FRAG_RESULT_COLOR and FRAG_RESULT_DATA* output variables. This
-                * loop then writes to cbuf 0 twice, owerwriting the correct value
-                * from gl_FragColor with some garbage. This case is excercised in
-                * one of deqp tests.  A similar bug can happen if
-                * gl_SecondaryFragColorEXT and gl_LastFragData[1] are mixed in
-                * the same fashion...  This workaround will break if
-                * gl_LastFragData[0] goes in outputs list before
-                * gl_FragColor. This doesn't seem to happen though.
-                */
-               if (has_cbuf0_write)
-                  continue;
-               has_cbuf0_write = true;
-            }
-
             for (unsigned chan = 0; chan < TGSI_NUM_CHANNELS; ++chan) {
                if (outputs[attrib][chan]) {
                   /* XXX: just initialize outputs to point at colors[] and
@@ -1589,7 +1571,7 @@ generate_fs_twiddle(struct gallivm_state *gallivm,
 
       for (unsigned i = 0; i < src_count; ++i) {
          dst[i] = lp_build_swizzle_aos_n(gallivm, dst[i], swizzles,
-                                         type.length, type.length);
+                                         type.length, 0, type.length);
       }
    }
 
@@ -2877,11 +2859,11 @@ generate_unswizzled_blend(struct gallivm_state *gallivm,
    if (pad_inline) {
       /* Use all 4 channels e.g. from RGBA RGBA to RGxx RGxx */
       blend_color = lp_build_swizzle_aos_n(gallivm, blend_color, swizzle,
-                                           TGSI_NUM_CHANNELS, row_type.length);
+                                           TGSI_NUM_CHANNELS, 0, row_type.length);
    } else {
       /* Only use dst_channels e.g. RGBA RGBA to RG RG xxxx */
       blend_color = lp_build_swizzle_aos_n(gallivm, blend_color, swizzle,
-                                           dst_channels, row_type.length);
+                                           dst_channels, 0, row_type.length);
    }
 
    /*
@@ -3811,7 +3793,7 @@ lp_debug_fs_variant(struct lp_fragment_shader_variant *variant)
 
 static void
 lp_fs_get_ir_cache_key(struct lp_fragment_shader_variant *variant,
-                       unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH])
+                       unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN])
 {
    struct blob blob = { 0 };
    unsigned ir_size;
@@ -3822,11 +3804,11 @@ lp_fs_get_ir_cache_key(struct lp_fragment_shader_variant *variant,
    ir_binary = blob.data;
    ir_size = blob.size;
 
-   struct mesa_sha1 ctx;
-   _mesa_sha1_init(&ctx);
-   _mesa_sha1_update(&ctx, &variant->key, variant->shader->variant_key_size);
-   _mesa_sha1_update(&ctx, ir_binary, ir_size);
-   _mesa_sha1_final(&ctx, ir_sha1_cache_key);
+   blake3_hasher ctx;
+   _mesa_blake3_init(&ctx);
+   _mesa_blake3_update(&ctx, &variant->key, variant->shader->variant_key_size);
+   _mesa_blake3_update(&ctx, ir_binary, ir_size);
+   _mesa_blake3_final(&ctx, ir_blake3_cache_key);
 
    blob_finish(&blob);
 }
@@ -3856,12 +3838,12 @@ generate_variant(struct llvmpipe_context *lp,
 
    struct llvmpipe_screen *screen = llvmpipe_screen(lp->pipe.screen);
    struct lp_cached_code cached = { 0 };
-   unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH];
+   unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN];
    bool needs_caching = false;
    if (shader->base.ir.nir) {
-      lp_fs_get_ir_cache_key(variant, ir_sha1_cache_key);
+      lp_fs_get_ir_cache_key(variant, ir_blake3_cache_key);
 
-      lp_disk_cache_find_shader(screen, &cached, ir_sha1_cache_key);
+      lp_disk_cache_find_shader(screen, &cached, ir_blake3_cache_key);
       if (!cached.data_size)
          needs_caching = true;
    }
@@ -4076,7 +4058,7 @@ generate_variant(struct llvmpipe_context *lp,
    }
 
    if (needs_caching) {
-      lp_disk_cache_insert_shader(screen, &cached, ir_sha1_cache_key);
+      lp_disk_cache_insert_shader(screen, &cached, ir_blake3_cache_key);
    }
 
    gallivm_free_ir(variant->gallivm);
@@ -4294,17 +4276,9 @@ llvmpipe_set_constant_buffer(struct pipe_context *pipe,
    /* note: reference counting */
    util_copy_constant_buffer(&llvmpipe->constants[shader][index], cb);
 
-   /* user_buffer is only valid until the next set_constant_buffer (at most,
-    * possibly until shader deletion), so we need to upload it now to make
-    * sure it doesn't get updated/freed out from under us.
-    */
-   if (constants->user_buffer) {
-      u_upload_data_ref(llvmpipe->pipe.const_uploader, 0, constants->buffer_size,
-                    16, constants->user_buffer, &constants->buffer_offset,
-                    &constants->buffer);
-   }
+   assert(!constants->user_buffer);
    if (constants->buffer) {
-       if (!(constants->buffer->bind & PIPE_BIND_CONSTANT_BUFFER)) {
+      if (!(constants->buffer->bind & PIPE_BIND_CONSTANT_BUFFER)) {
          debug_printf("Illegal set constant without bind flag\n");
          constants->buffer->bind |= PIPE_BIND_CONSTANT_BUFFER;
       }

@@ -31,9 +31,11 @@
 #include "vk_graphics_state.h"
 #include "vk_log.h"
 #include "vk_nir.h"
+#include "vk_nir_lower_descriptor_heaps.h"
 #include "vk_physical_device.h"
 #include "vk_physical_device_features.h"
 #include "vk_pipeline_layout.h"
+#include "vk_sampler.h"
 #include "vk_shader.h"
 #include "vk_shader_module.h"
 #include "vk_util.h"
@@ -43,7 +45,7 @@
 
 #include "shader_enums.h"
 
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 
 struct vk_pipeline_binary {
    struct vk_object_base base;
@@ -121,14 +123,15 @@ get_required_subgroup_size(const void *info_pNext)
 }
 
 void
-vk_set_subgroup_size(struct vk_device *device,
-                     nir_shader *shader,
+vk_set_subgroup_size(nir_shader *shader,
+                     uint32_t subgroup_size,
+                     uint32_t min_subgroup_size,
+                     uint32_t max_subgroup_size,
                      uint32_t spirv_version,
                      const void *info_pNext,
                      bool allow_varying,
                      bool require_full)
 {
-   struct vk_properties *properties = &device->physical->properties;
    uint32_t req_subgroup_size = get_required_subgroup_size(info_pNext);
    if (req_subgroup_size) {
       assert(util_is_power_of_two_nonzero(req_subgroup_size));
@@ -138,23 +141,23 @@ vk_set_subgroup_size(struct vk_device *device,
       shader->info.min_subgroup_size = req_subgroup_size;
    } else if (allow_varying || spirv_version >= 0x10600) {
       /* Starting with SPIR-V 1.6, varying subgroup size is the default */
-   } else if (properties->subgroupSize) {
-      shader->info.api_subgroup_size = properties->subgroupSize;
-      shader->info.max_subgroup_size = properties->subgroupSize;
+   } else if (subgroup_size) {
+      shader->info.api_subgroup_size = subgroup_size;
+      shader->info.max_subgroup_size = subgroup_size;
       if (require_full) {
          assert(shader->info.stage == MESA_SHADER_COMPUTE ||
                 shader->info.stage == MESA_SHADER_MESH ||
                 shader->info.stage == MESA_SHADER_TASK);
-         shader->info.min_subgroup_size = properties->subgroupSize;
+         shader->info.min_subgroup_size = subgroup_size;
       }
    }
 
-   if (properties->maxSubgroupSize) {
-      assert(properties->minSubgroupSize);
+   if (max_subgroup_size) {
+      assert(min_subgroup_size);
       shader->info.max_subgroup_size =
-         MIN2(shader->info.max_subgroup_size, properties->maxSubgroupSize);
+         MIN2(shader->info.max_subgroup_size, max_subgroup_size);
       shader->info.min_subgroup_size =
-         MAX2(shader->info.min_subgroup_size, properties->minSubgroupSize);
+         MAX2(shader->info.min_subgroup_size, min_subgroup_size);
    }
 
    assert(shader->info.max_subgroup_size >= shader->info.min_subgroup_size);
@@ -169,6 +172,7 @@ vk_pipeline_shader_stage_to_nir(struct vk_device *device,
                                 void *mem_ctx, nir_shader **nir_out)
 {
    VK_FROM_HANDLE(vk_shader_module, module, info->module);
+   const struct vk_properties *properties = &device->physical->properties;
    const mesa_shader_stage stage = vk_to_mesa_shader_stage(info->stage);
 
    assert(info->sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
@@ -214,8 +218,8 @@ vk_pipeline_shader_stage_to_nir(struct vk_device *device,
       return vk_errorf(device, VK_ERROR_UNKNOWN, "spirv_to_nir failed");
 
    vk_set_subgroup_size(
-      device, nir,
-      vk_spirv_version(spirv_data, spirv_size),
+      nir, properties->subgroupSize, properties->minSubgroupSize,
+      properties->maxSubgroupSize, vk_spirv_version(spirv_data, spirv_size),
       info->pNext,
       info->flags & VK_PIPELINE_SHADER_STAGE_CREATE_ALLOW_VARYING_SUBGROUP_SIZE_BIT,
       info->flags & VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT);
@@ -296,6 +300,16 @@ vk_pipeline_hash_shader_stage_blake3(VkPipelineCreateFlags2KHR pipeline_flags,
                           info->pSpecializationInfo->dataSize);
    }
 
+   const VkShaderDescriptorSetAndBindingMappingInfoEXT *desc_map =
+      vk_find_struct_const(info->pNext,
+                           SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT);
+   if (desc_map != NULL) {
+      blake3_hash desc_map_blake3;
+      vk_hash_descriptor_heap_mappings(desc_map, desc_map_blake3);
+
+      _mesa_blake3_update(&ctx, desc_map_blake3, sizeof(desc_map_blake3));
+   }
+
    uint32_t req_subgroup_size = get_required_subgroup_size(info);
    _mesa_blake3_update(&ctx, &req_subgroup_size, sizeof(req_subgroup_size));
 
@@ -306,12 +320,12 @@ void
 vk_pipeline_hash_shader_stage(VkPipelineCreateFlags2KHR pipeline_flags,
                               const VkPipelineShaderStageCreateInfo *info,
                               const struct vk_pipeline_robustness_state *rstate,
-                              unsigned char *stage_sha1)
+                              unsigned char *stage_blake3)
 {
    blake3_hash blake_hash;
 
    vk_pipeline_hash_shader_stage_blake3(pipeline_flags, info, rstate, blake_hash);
-   _mesa_sha1_compute(blake_hash, sizeof(blake_hash), stage_sha1);
+   _mesa_blake3_compute(blake_hash, sizeof(blake_hash), stage_blake3);
 }
 
 static VkPipelineRobustnessBufferBehaviorEXT
@@ -700,6 +714,9 @@ struct vk_pipeline_precomp_shader {
    /* Tessellation info if the shader is a tessellation shader */
    struct vk_pipeline_tess_info tess;
 
+   uint32_t embedded_sampler_count;
+   struct vk_sampler_state *embedded_samplers;
+
    struct blob nir_blob;
 };
 
@@ -730,7 +747,9 @@ static struct vk_pipeline_precomp_shader *
 vk_pipeline_precomp_shader_create(struct vk_device *device,
                                   const void *key_data, size_t key_size,
                                   const struct vk_pipeline_robustness_state *rs,
-                                  nir_shader *nir)
+                                  nir_shader *nir,
+                                  const uint32_t embedded_sampler_count,
+                                  const struct vk_sampler_state *embedded_samplers)
 {
    struct blob blob;
    blob_init(&blob);
@@ -740,10 +759,12 @@ vk_pipeline_precomp_shader_create(struct vk_device *device,
    if (blob.out_of_memory)
       goto fail_blob;
 
-   struct vk_pipeline_precomp_shader *shader =
-      vk_zalloc(&device->alloc, sizeof(*shader), 8,
-                VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
-   if (shader == NULL)
+   VK_MULTIALLOC(ma);
+   VK_MULTIALLOC_DECL(&ma, struct vk_pipeline_precomp_shader, shader, 1);
+   VK_MULTIALLOC_DECL(&ma, struct vk_sampler_state, samplers,
+                      embedded_sampler_count);
+   if (!vk_multialloc_zalloc(&ma, &device->alloc,
+                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
       goto fail_blob;
 
    assert(sizeof(shader->cache_key) == key_size);
@@ -758,6 +779,11 @@ vk_pipeline_precomp_shader_create(struct vk_device *device,
    shader->rs = *rs;
 
    vk_pipeline_gather_nir_tess_info(nir, &shader->tess);
+
+   shader->embedded_sampler_count = embedded_sampler_count;
+   shader->embedded_samplers = samplers;
+   for (uint32_t i = 0; i < embedded_sampler_count; i++)
+      shader->embedded_samplers[i] = embedded_samplers[i];
 
    shader->nir_blob = blob;
 
@@ -779,6 +805,10 @@ vk_pipeline_precomp_shader_serialize(struct vk_pipeline_cache_object *obj,
    blob_write_uint32(blob, shader->stage);
    blob_write_bytes(blob, &shader->rs, sizeof(shader->rs));
    blob_write_bytes(blob, &shader->tess, sizeof(shader->tess));
+   blob_write_uint32(blob, shader->embedded_sampler_count);
+   blob_write_bytes(blob, shader->embedded_samplers,
+                    shader->embedded_sampler_count *
+                    sizeof(*shader->embedded_samplers));
    blob_write_uint64(blob, shader->nir_blob.size);
    blob_write_bytes(blob, shader->nir_blob.data, shader->nir_blob.size);
 
@@ -790,10 +820,32 @@ vk_pipeline_precomp_shader_deserialize(struct vk_device *device,
                                        const void *key_data, size_t key_size,
                                        struct blob_reader *blob)
 {
-   struct vk_pipeline_precomp_shader *shader =
-      vk_zalloc(&device->alloc, sizeof(*shader), 8,
-                VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
-   if (shader == NULL)
+   const mesa_shader_stage stage = blob_read_uint32(blob);
+
+   struct vk_pipeline_robustness_state rs;
+   blob_copy_bytes(blob, &rs, sizeof(rs));
+
+   struct vk_pipeline_tess_info tess;
+   blob_copy_bytes(blob, &tess, sizeof(tess));
+
+   const uint32_t embedded_sampler_count = blob_read_uint32(blob);
+   const struct vk_sampler_state *embedded_samplers =
+      blob_read_bytes(blob, embedded_sampler_count * sizeof(*embedded_samplers));
+
+   uint64_t nir_size = blob_read_uint64(blob);
+   if (blob->overrun || nir_size > SIZE_MAX)
+      return NULL;
+
+   const void *nir_data = blob_read_bytes(blob, nir_size);
+   if (blob->overrun)
+      return NULL;
+
+   VK_MULTIALLOC(ma);
+   VK_MULTIALLOC_DECL(&ma, struct vk_pipeline_precomp_shader, shader, 1);
+   VK_MULTIALLOC_DECL(&ma, struct vk_sampler_state, samplers,
+                      embedded_sampler_count);
+   if (!vk_multialloc_zalloc(&ma, &device->alloc,
+                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
       return NULL;
 
    assert(sizeof(shader->cache_key) == key_size);
@@ -804,28 +856,23 @@ vk_pipeline_precomp_shader_deserialize(struct vk_device *device,
                                  shader->cache_key,
                                  sizeof(shader->cache_key));
 
-   shader->stage = blob_read_uint32(blob);
-   blob_copy_bytes(blob, &shader->rs, sizeof(shader->rs));
-   blob_copy_bytes(blob, &shader->tess, sizeof(shader->tess));
+   shader->stage = stage;
+   shader->rs = rs;
+   shader->tess = tess;
 
-   uint64_t nir_size = blob_read_uint64(blob);
-   if (blob->overrun || nir_size > SIZE_MAX)
-      goto fail_shader;
-
-   const void *nir_data = blob_read_bytes(blob, nir_size);
-   if (blob->overrun)
-      goto fail_shader;
+   shader->embedded_sampler_count = embedded_sampler_count;
+   shader->embedded_samplers = samplers;
+   for (uint32_t i = 0; i < embedded_sampler_count; i++)
+      shader->embedded_samplers[i] = embedded_samplers[i];
 
    blob_init(&shader->nir_blob);
    blob_write_bytes(&shader->nir_blob, nir_data, nir_size);
    if (shader->nir_blob.out_of_memory)
-      goto fail_nir_blob;
+      goto fail_cache_obj;
 
    return &shader->cache_obj;
 
-fail_nir_blob:
-   blob_finish(&shader->nir_blob);
-fail_shader:
+fail_cache_obj:
    vk_pipeline_cache_object_finish(&shader->cache_obj);
    vk_free(&device->alloc, shader);
 
@@ -957,10 +1004,27 @@ vk_pipeline_precompile_shader(struct vk_device *device,
    if (ops->preprocess_nir != NULL)
       ops->preprocess_nir(device->physical, nir, &rs);
 
+   const VkShaderDescriptorSetAndBindingMappingInfoEXT *desc_map =
+      vk_find_struct_const(info->pNext,
+                           SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT);
+   struct vk_sampler_state_array embedded_samplers;
+   bool heaps_progress = false;
+   NIR_PASS(heaps_progress, nir, vk_nir_lower_descriptor_heaps,
+            desc_map, &embedded_samplers);
+   if (heaps_progress) {
+      NIR_PASS(_, nir, nir_remove_dead_variables,
+               nir_var_uniform | nir_var_image, NULL);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
+
    stage->precomp =
       vk_pipeline_precomp_shader_create(device, stage->precomp_key,
                                         sizeof(stage->precomp_key),
-                                        &rs, nir);
+                                        &rs, nir,
+                                        embedded_samplers.sampler_count,
+                                        embedded_samplers.samplers);
+
+   vk_sampler_state_array_finish(&embedded_samplers);
    ralloc_free(nir);
    if (stage->precomp == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1227,6 +1291,9 @@ vk_pipeline_to_shader_flags(VkPipelineCreateFlags2KHR pipeline_flags,
    if (pipeline_flags & VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT)
       shader_flags |= VK_SHADER_CREATE_INDIRECT_BINDABLE_BIT_EXT;
 
+   if (pipeline_flags & VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT)
+      shader_flags |= VK_SHADER_CREATE_DESCRIPTOR_HEAP_BIT_EXT;
+
    if (stage == MESA_SHADER_FRAGMENT) {
       if (pipeline_flags & VK_PIPELINE_CREATE_2_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR)
          shader_flags |= VK_SHADER_CREATE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_EXT;
@@ -1363,6 +1430,7 @@ vk_get_graphics_pipeline_compile_info(struct vk_graphics_pipeline_compile_info *
    ASSERTED VkResult result = vk_graphics_pipeline_state_fill(device,
                                                      info->state,
                                                      pCreateInfo,
+                                                     NULL /* driver_mv */,
                                                      NULL /* driver_rp */,
                                                      0 /* driver_rp_flags */,
                                                      all_state,
@@ -1467,9 +1535,9 @@ vk_get_graphics_pipeline_compile_info(struct vk_graphics_pipeline_compile_info *
     * GPL optimized link.)
     */
    info->optimize =
-      libs_info == NULL ||
-      (pipeline_flags &
-       VK_PIPELINE_CREATE_2_LINK_TIME_OPTIMIZATION_BIT_EXT);
+      !device->disable_lto &&
+      (libs_info == NULL ||
+       (pipeline_flags & VK_PIPELINE_CREATE_2_LINK_TIME_OPTIMIZATION_BIT_EXT));
 
    /* Partition the shaders. Whenever pipelines are used,
     * vertex/geometry/fragment stages are always specified together, so should
@@ -1782,6 +1850,8 @@ vk_graphics_pipeline_compile_shaders(struct vk_device *device,
             .robustness = &stage->precomp->rs,
             .set_layout_count = compile_info->set_layout_count,
             .set_layouts = compile_info->set_layouts,
+            .embedded_sampler_count = stage->precomp->embedded_sampler_count,
+            .embedded_samplers = stage->precomp->embedded_samplers,
             .push_constant_range_count = push_range != NULL,
             .push_constant_ranges = push_range != NULL ? push_range : NULL,
          };
@@ -2348,11 +2418,13 @@ vk_get_compute_pipeline_compile_info(struct vk_pipeline_stage *stage,
                       features_blake3);
       _mesa_blake3_update(&blake3_ctx, features_blake3, sizeof(features_blake3));
 
-      for (uint32_t i = 0; i < pipeline_layout->set_count; i++) {
-         if (pipeline_layout->set_layouts[i] != NULL) {
-            _mesa_blake3_update(&blake3_ctx,
-                                pipeline_layout->set_layouts[i]->blake3,
-                                sizeof(pipeline_layout->set_layouts[i]->blake3));
+      if (pipeline_layout != NULL) {
+         for (uint32_t i = 0; i < pipeline_layout->set_count; i++) {
+            if (pipeline_layout->set_layouts[i] != NULL) {
+               _mesa_blake3_update(&blake3_ctx,
+                                   pipeline_layout->set_layouts[i]->blake3,
+                                   sizeof(pipeline_layout->set_layouts[i]->blake3));
+            }
          }
       }
       if (push_range != NULL)
@@ -2415,8 +2487,10 @@ vk_pipeline_compile_compute_stage(struct vk_device *device,
       .next_stage_mask = 0,
       .nir = nir,
       .robustness = &stage->precomp->rs,
-      .set_layout_count = pipeline_layout->set_count,
-      .set_layouts = pipeline_layout->set_layouts,
+      .set_layout_count = pipeline_layout ? pipeline_layout->set_count : 0,
+      .set_layouts = pipeline_layout ? pipeline_layout->set_layouts : NULL,
+      .embedded_sampler_count = stage->precomp->embedded_sampler_count,
+      .embedded_samplers = stage->precomp->embedded_samplers,
       .push_constant_range_count = push_range != NULL,
       .push_constant_ranges = push_range != NULL ? push_range : NULL,
    };
@@ -2798,11 +2872,13 @@ hash_rt_parameters(struct mesa_blake3 *blake3_ctx,
    _mesa_blake3_update(blake3_ctx, &shader_flags, sizeof(shader_flags));
    _mesa_blake3_update(blake3_ctx, &rt_flags, sizeof(rt_flags));
 
-   for (uint32_t i = 0; i < pipeline_layout->set_count; i++) {
-      if (pipeline_layout->set_layouts[i] != NULL) {
-         _mesa_blake3_update(blake3_ctx,
-                             pipeline_layout->set_layouts[i]->blake3,
-                             sizeof(pipeline_layout->set_layouts[i]->blake3));
+   if (pipeline_layout != NULL) {
+      for (uint32_t i = 0; i < pipeline_layout->set_count; i++) {
+         if (pipeline_layout->set_layouts[i] != NULL) {
+            _mesa_blake3_update(blake3_ctx,
+                                pipeline_layout->set_layouts[i]->blake3,
+                                sizeof(pipeline_layout->set_layouts[i]->blake3));
+         }
       }
    }
    if (push_range != NULL)
@@ -3027,12 +3103,19 @@ vk_get_rt_pipeline_compile_info(struct vk_rt_pipeline_compile_info *info,
       };
 
       if (bin_info == NULL || bin_info->binaryCount == 0) {
-         vk_pipeline_hash_precomp_shader_stage(device, pipeline_flags,
-                                               pCreateInfo->pNext, stage_info,
-                                               &info->stages[i]);
+         vk_pipeline_hash_precomp_shader_stage(
+            device,
+            pipeline_flags &
+            ~VK_PIPELINE_CREATE_2_RAY_TRACING_SHADER_GROUP_HANDLE_CAPTURE_REPLAY_BIT_KHR,
+            pCreateInfo->pNext, stage_info,
+            &info->stages[i]);
 
-         vk_pipeline_hash_rt_shader(device, pipeline_flags, pipeline_layout,
-                                    &info->stages[i]);
+         vk_pipeline_hash_rt_shader(
+            device,
+            pipeline_flags &
+            ~VK_PIPELINE_CREATE_2_RAY_TRACING_SHADER_GROUP_HANDLE_CAPTURE_REPLAY_BIT_KHR,
+            pipeline_layout,
+            &info->stages[i]);
       }
    }
 
@@ -3202,8 +3285,10 @@ vk_pipeline_compile_rt_shader(struct vk_device *device,
       .next_stage_mask = 0,
       .nir = nir,
       .robustness = &stage->precomp->rs,
-      .set_layout_count = pipeline_layout->set_count,
-      .set_layouts = pipeline_layout->set_layouts,
+      .set_layout_count = pipeline_layout != NULL ? pipeline_layout->set_count : 0,
+      .set_layouts = pipeline_layout != NULL ? pipeline_layout->set_layouts : NULL,
+      .embedded_sampler_count = stage->precomp->embedded_sampler_count,
+      .embedded_samplers = stage->precomp->embedded_samplers,
       .push_constant_range_count = push_range != NULL,
       .push_constant_ranges = push_range != NULL ? push_range : NULL,
    };
@@ -3312,8 +3397,10 @@ vk_pipeline_compile_rt_shader_group(struct vk_device *device,
          .next_stage_mask = 0,
          .nir = vk_pipeline_precomp_shader_get_nir(precomp, nir_options),
          .robustness = &precomp->rs,
-         .set_layout_count = pipeline_layout->set_count,
-         .set_layouts = pipeline_layout->set_layouts,
+         .set_layout_count = pipeline_layout != NULL ? pipeline_layout->set_count : 0,
+         .set_layouts = pipeline_layout != NULL ? pipeline_layout->set_layouts : NULL,
+         .embedded_sampler_count = precomp->embedded_sampler_count,
+         .embedded_samplers = precomp->embedded_samplers,
          .push_constant_range_count = push_range != NULL,
          .push_constant_ranges = push_range != NULL ? push_range : NULL,
       };
@@ -3673,6 +3760,19 @@ vk_create_rt_pipeline(struct vk_device *device,
          }
          group->stage_count++;
          assert(group->stages[s].shader != NULL);
+      }
+
+      /* Activate replay if needed */
+      if (pipeline_flags &
+          VK_PIPELINE_CREATE_RAY_TRACING_SHADER_GROUP_HANDLE_CAPTURE_REPLAY_BIT_KHR) {
+         const struct vk_device_shader_ops *ops = device->shader_ops;
+         struct vk_shader *shaders[3] = {0};
+         for (uint32_t s = 0; s < group->stage_count; s++)
+            shaders[s] = group->stages[s].shader;
+         ops->replay_rt_shader_group(
+            device, group_info->type,
+            group->stage_count, shaders,
+            group_info->pShaderGroupCaptureReplayHandle);
       }
 
       pipeline->group_count++;

@@ -198,7 +198,7 @@ anv_direct_descriptor_data_for_type(const struct anv_physical_device *device,
           * table. On previous generations, they are only reachable through
           * the binding table.
           */
-         if (device->uses_ex_bso) {
+         if (intel_has_extended_bindless(&device->info)) {
             data &= ~(ANV_DESCRIPTOR_BTI_SURFACE_STATE |
                       ANV_DESCRIPTOR_BTI_SAMPLER_STATE);
          }
@@ -414,7 +414,7 @@ anv_descriptor_data_supports_bindless(const struct anv_physical_device *pdevice,
        * bindless offset, all push descriptors have to go through the binding
        * tables.
        */
-      if (!pdevice->uses_ex_bso &&
+      if (!intel_has_extended_bindless(&pdevice->info) &&
           (set_flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR)) {
          return data & (ANV_DESCRIPTOR_INDIRECT_ADDRESS_RANGE |
                         ANV_DESCRIPTOR_INDIRECT_SAMPLED_IMAGE |
@@ -1134,6 +1134,8 @@ anv_descriptor_pool_heap_init(struct anv_device *device,
       ANV_DMR_BO_ALLOC(&pool->base, heap->bo, result);
       if (result != VK_SUCCESS)
          return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+      ANV_ADDR_BINDING_REPORT_BO_BIND(device, &pool->base, heap->bo);
    }
 
    util_vma_heap_init(&heap->heap, POOL_HEAP_OFFSET, heap->size);
@@ -1151,6 +1153,7 @@ anv_descriptor_pool_heap_fini(struct anv_device *device, struct anv_descriptor_p
    util_vma_heap_finish(&heap->heap);
 
    if (heap->bo) {
+      ANV_ADDR_BINDING_REPORT_BO_UNBIND(device, &pool->base, heap->bo);
       ANV_DMR_BO_FREE(&pool->base, heap->bo);
       anv_device_release_bo(device, heap->bo);
    }
@@ -1852,10 +1855,10 @@ anv_push_descriptor_set_init(struct anv_cmd_buffer *cmd_buffer,
       uint64_t push_base_address;
 
       if (layout->vk.flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT) {
-         push_stream = pdevice->uses_ex_bso ?
+         push_stream = intel_has_extended_bindless(&pdevice->info) ?
             &cmd_buffer->push_descriptor_buffer_stream :
             &cmd_buffer->surface_state_stream;
-         push_base_address = pdevice->uses_ex_bso ?
+         push_base_address = intel_has_extended_bindless(&pdevice->info) ?
             pdevice->va.push_descriptor_buffer_pool.addr :
             pdevice->va.internal_surface_state_pool.addr;
       } else {
@@ -1940,24 +1943,6 @@ anv_push_descriptor_set_finish(struct anv_push_descriptor_set *push_set)
    struct anv_descriptor_set *set = &push_set->set;
    if (set->layout) {
       vk_descriptor_set_layout_unref(set->base.device, &set->layout->vk);
-   }
-}
-
-static uint32_t
-anv_surface_state_to_handle(struct anv_physical_device *device,
-                            struct anv_state state)
-{
-   /* Bits 31:12 of the bindless surface offset in the extended message
-    * descriptor is bits 25:6 of the byte-based address.
-    */
-   assert(state.offset >= 0);
-   uint32_t offset = state.offset;
-   if (device->uses_ex_bso) {
-      assert(util_is_aligned(offset, 64));
-      return offset;
-   } else {
-      assert(util_is_aligned(offset, 64) && offset < (1 << 26));
-      return offset << 6;
    }
 }
 

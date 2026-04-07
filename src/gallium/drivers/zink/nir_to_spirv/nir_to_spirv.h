@@ -48,8 +48,10 @@ struct spirv_shader {
 struct ntv_info {
    bool have_vulkan_memory_model;
    bool have_workgroup_memory_explicit_layout;
+   bool have_float_controls2;
    bool broken_arbitary_type_const;
    bool has_demote_to_helper;
+   bool is_native_vulkan; //ignore zink-isms
    struct {
       uint8_t flush_denorms:3; // 16, 32, 64
       uint8_t preserve_denorms:3; // 16, 32, 64
@@ -68,6 +70,9 @@ nir_to_spirv(struct nir_shader *s, const struct ntv_info *sinfo);
 
 void
 spirv_shader_delete(struct spirv_shader *s);
+
+void
+ntv_shader_prepare(struct nir_shader *nir);
 
 static inline bool
 type_is_counter(const struct glsl_type *type)

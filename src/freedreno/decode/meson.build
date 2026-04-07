@@ -12,6 +12,13 @@ cffdump_pkt_handler_h = custom_target(
   command : [prog_python, '@INPUT@', '@OUTPUT@', '-n', 'cffdump_pkt_handler_lua_src'],
 )
 
+cffdump_desc_handler_h = custom_target(
+  'cffdump-desc-handler.h',
+  input : [files_xxd, 'cffdump-desc-handler.lua'],
+  output : 'cffdump-desc-handler.h',
+  command : [prog_python, '@INPUT@', '@OUTPUT@', '-n', 'cffdump_desc_handler_lua_src'],
+)
+
 # Shared cmdstream decoding:
 libfreedreno_cffdec = static_library(
   'freedreno_cffdec',
@@ -28,6 +35,7 @@ libfreedreno_cffdec = static_library(
     'script.h',
     'util.h',
     cffdump_pkt_handler_h,
+    cffdump_desc_handler_h,
     freedreno_pm4_xml_header_file,
   ],
   include_directories: [
@@ -224,6 +232,8 @@ if with_tests
     ['compute-a540', ['--once']],
     ['dEQP-GLES2.functional.texture.specification.basic_teximage2d.rgba16f_2d', ['--once']],
     ['dEQP-VK.draw.indirect_draw.indexed.indirect_draw_count.triangle_list', ['--frame', '0', '--once']],
+    ['dEQP-VK.ycbcr.plane_view.image_view.g8_b8_r8_3plane_420_unorm_plane_0-a840', ['--draw', '5']],
+    ['dEQP-VK.ycbcr.plane_view.image_view.g8_b8_r8_3plane_420_unorm_plane_0_fragment-a750', ['--draw', '5']],
     # Test a lua script to ensure we don't break scripting API
     ['shadow', ['--script', files('scripts/parse-submits.lua')]],
   ]
@@ -290,7 +300,6 @@ if with_tests
   crashdec_tests = [
     ['crash', ['-sf']],
     ['crash_prefetch', ['-sf']],
-    ['prefetch-test', ['-sf']],
   ]
   foreach crashdec_test: crashdec_tests
     name = crashdec_test[0]

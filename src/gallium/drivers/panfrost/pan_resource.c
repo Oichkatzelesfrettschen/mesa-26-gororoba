@@ -22,7 +22,6 @@
 #include "util/u_surface.h"
 #include "util/u_transfer.h"
 #include "util/u_transfer_helper.h"
-#include "util/perf/cpu_trace.h"
 #include "util/streaming-load-memcpy.h"
 
 #include "decode.h"
@@ -33,6 +32,7 @@
 #include "pan_resource.h"
 #include "pan_screen.h"
 #include "pan_tiling.h"
+#include "pan_trace.h"
 #include "pan_util.h"
 
 static void
@@ -42,6 +42,8 @@ panfrost_clear_depth_stencil(struct pipe_context *pipe,
                              unsigned dsty, unsigned width, unsigned height,
                              bool render_condition_enabled)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
+
    struct panfrost_context *ctx = pan_context(pipe);
 
    if (render_condition_enabled && !panfrost_render_condition_check(ctx))
@@ -65,6 +67,8 @@ panfrost_clear_render_target(struct pipe_context *pipe,
                              unsigned dsty, unsigned width, unsigned height,
                              bool render_condition_enabled)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
+
    struct panfrost_context *ctx = pan_context(pipe);
 
    if (render_condition_enabled && !panfrost_render_condition_check(ctx))
@@ -216,7 +220,7 @@ pan_resource_afbcp_stop(struct panfrost_resource *prsrc)
 static void
 panfrost_resource_destroy(struct pipe_screen *screen, struct pipe_resource *pt)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    struct panfrost_device *dev = pan_device(screen);
    struct panfrost_resource *rsrc = (struct panfrost_resource *)pt;
@@ -328,6 +332,8 @@ panfrost_resource_from_handle(struct pipe_screen *pscreen,
                               const struct pipe_resource *templat,
                               struct winsys_handle *whandle, unsigned usage)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
+
    struct panfrost_device *dev = pan_device(pscreen);
    struct panfrost_resource *rsc;
    struct pipe_resource *prsc;
@@ -1038,7 +1044,7 @@ panfrost_resource_create_with_modifier(struct pipe_screen *screen,
                                        const struct pipe_resource *template,
                                        uint64_t modifier, unsigned plane_idx)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    struct panfrost_device *dev = pan_device(screen);
 
@@ -1536,7 +1542,7 @@ panfrost_ptr_map(struct pipe_context *pctx, struct pipe_resource *resource,
                  const struct pipe_box *box,
                  struct pipe_transfer **out_transfer)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    struct panfrost_context *ctx = pan_context(pctx);
    struct panfrost_device *dev = pan_device(pctx->screen);
@@ -1780,7 +1786,7 @@ pan_resource_modifier_convert(struct panfrost_context *ctx,
                               struct panfrost_resource *rsrc, uint64_t modifier,
                               bool copy_resource, const char *reason)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    bool need_shadow = rsrc->modifier_constant;
 
@@ -1979,7 +1985,7 @@ static bool
 pan_resource_afbcp_get_payload_sizes(struct panfrost_context *ctx,
                                      struct panfrost_resource *prsrc)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    afbcp_debug(ctx,
                "AFBC-P prsrc=%p: Get payload sizes (reads=%u bo_size=%zu, gpu=%s)",
@@ -2080,7 +2086,7 @@ static void
 pan_resource_afbcp_get_payload_offsets(struct panfrost_context *ctx,
                                        struct panfrost_resource *prsrc)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    afbcp_debug(ctx,
                "AFBC-P prsrc=%p: Get payload offsets (reads=%u bo_size=%zu)",
@@ -2137,7 +2143,7 @@ static bool
 pan_resource_afbcp_pack(struct panfrost_context *ctx,
                         struct panfrost_resource *prsrc)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    afbcp_debug(ctx, "AFBC-P prsrc=%p: Pack (reads=%u bo_size=%zu ratio=%.2f)",
                prsrc, prsrc->afbcp->nr_consecutive_reads,
@@ -2184,7 +2190,7 @@ static void
 pan_resource_afbcp_commit(struct panfrost_context *ctx,
                           struct panfrost_resource *prsrc)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    afbcp_debug(ctx,
                "AFBC-P prsrc=%p: Commit (reads=%u bo_size=%zu ratio=%.2f)",
@@ -2287,7 +2293,7 @@ pan_resource_afbcp_update(struct panfrost_context *ctx,
 static void
 panfrost_ptr_unmap(struct pipe_context *pctx, struct pipe_transfer *transfer)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
 
    /* Gallium expects writeback here, so we tile */
 
@@ -2476,6 +2482,8 @@ panfrost_generate_mipmap(struct pipe_context *pctx, struct pipe_resource *prsrc,
                          unsigned last_level, unsigned first_layer,
                          unsigned last_layer)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_GL_RESOURCE);
+
    struct panfrost_resource *rsrc = pan_resource(prsrc);
 
    perf_debug(pan_context(pctx), "Unoptimized mipmap generation");

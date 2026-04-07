@@ -37,21 +37,12 @@ SKIP = set([
         "SHADDX.u64",
         "SHADDX.s64",
         "IMULD.u64",
-        "CLPER.s64",
-        "CLPER.u64",
         "LSHIFT_AND.i64",
         "RSHIFT_AND.i64",
         "LSHIFT_OR.i64",
         "RSHIFT_OR.i64",
         "LSHIFT_XOR.i64",
         "RSHIFT_XOR.i64",
-
-        # CLPER widens
-        "CLPER.s32",
-        "CLPER.v2s16",
-        "CLPER.v4s8",
-        "CLPER.v2u16",
-        "CLPER.v4u8",
 
         # VAR_TEX
         "VAR_TEX_SINGLE",
@@ -156,7 +147,10 @@ valhall_opcodes[BI_NUM_OPCODES] = {
 
 # Exact value to be ORed in to every opcode
 def exact_op(op):
-    return (op.opcode << 48) | (op.opcode2 << op.secondary_shift)
+    exact_op = 0
+    for subcode in op.opcode:
+        exact_op |= (subcode.value << subcode.start)
+    return exact_op
 
 try:
     print(Template(template).render(immediates = immediates, instructions = instructions, skip = SKIP, exact = exact_op, typesize = typesize))

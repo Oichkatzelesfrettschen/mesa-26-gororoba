@@ -16,6 +16,7 @@
 #include "pan_pool.h"
 #include "pan_shader.h"
 #include "pan_texture.h"
+#include "pan_trace.h"
 #include "compiler/pan_compiler.h"
 #include "compiler/pan_nir.h"
 
@@ -1222,7 +1223,7 @@ pan_preload_emit_pre_frame_dcd(struct pan_fb_preload_cache *cache,
 
       /* If we're dealing with a combined ZS resource and only one
        * component is cleared, we need to reload the whole surface
-       * because the zs_clean_pixel_write_enable flag is set in that
+       * because the zs_clean_tile_write_enable flag is set in that
        * case.
        */
       if (util_format_is_depth_and_stencil(fmt) &&
@@ -1317,6 +1318,8 @@ unsigned
 GENX(pan_preload_fb)(struct pan_fb_preload_cache *cache, struct pan_pool *pool,
                      struct pan_fb_info *fb, uint64_t tsd, struct pan_ptr *jobs)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_GL_FB_PRELOAD);
+
    bool preload_zs = pan_preload_needed(fb, true);
    bool preload_rts = pan_preload_needed(fb, false);
    uint64_t coords;

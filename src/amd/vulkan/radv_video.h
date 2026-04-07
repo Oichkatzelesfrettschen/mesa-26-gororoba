@@ -14,10 +14,7 @@
 #include "radv_event.h"
 #include "vk_video.h"
 
-#include "ac_vcn.h"
-
-#define VL_MACROBLOCK_WIDTH  16
-#define VL_MACROBLOCK_HEIGHT 16
+#include "ac_video_dec.h"
 
 struct radv_physical_device;
 struct rvcn_sq_var;
@@ -28,10 +25,10 @@ struct radv_cmd_stream;
 #define RADV_ENC_MAX_RATE_LAYER 4
 
 #define RADV_BIND_SESSION_CTX          0
-#define RADV_BIND_DECODER_CTX          1
 #define RADV_BIND_INTRA_ONLY           2
 #define RADV_BIND_ENCODE_QP_MAP        3
-#define RADV_BIND_ENCODE_AV1_CDF_STORE RADV_BIND_DECODER_CTX
+#define RADV_BIND_ENCODE_AV1_CDF_STORE 1
+#define RADV_BIND_ENCODE_CTX           4
 
 #define RADV_ENC_FEEDBACK_STATUS_IDX 10
 
@@ -46,18 +43,16 @@ struct radv_vid_mem {
 struct radv_video_session {
    struct vk_video_session vk;
 
-   uint32_t stream_handle;
-   unsigned stream_type;
    bool encode;
-   enum { DPB_MAX_RES = 0, DPB_DYNAMIC_TIER_1, DPB_DYNAMIC_TIER_2, DPB_DYNAMIC_TIER_3 } dpb_type;
-   unsigned db_alignment;
 
    struct radv_vid_mem sessionctx;
    struct radv_vid_mem ctx;
+   struct radv_vid_mem default_cdf;
    struct radv_vid_mem qp_map;
    struct radv_image *intra_only_dpb;
 
-   unsigned dbg_frame_cnt;
+   struct ac_video_dec *dec;
+
    uint32_t enc_standard;
    uint32_t enc_wa_flags;
    uint32_t enc_preset_mode;
@@ -90,7 +85,7 @@ void radv_vcn_write_memory(struct radv_cmd_buffer *cmd_buffer, uint64_t va, unsi
 void radv_init_physical_device_encoder(struct radv_physical_device *pdevice);
 void radv_probe_video_decode(struct radv_physical_device *pdev);
 void radv_probe_video_encode(struct radv_physical_device *pdev);
-void radv_video_enc_init_ctx(struct radv_device *device, struct radv_video_session *vid);
+void radv_video_enc_init_cdf(struct radv_device *device, struct radv_video_session *vid);
 void radv_video_enc_control_video_coding(struct radv_cmd_buffer *cmd_buffer,
                                          const VkVideoCodingControlInfoKHR *pCodingControlInfo);
 void radv_video_enc_begin_video_coding(struct radv_cmd_buffer *cmd_buffer, const VkVideoBeginCodingInfoKHR *pBeginInfo);
@@ -98,6 +93,8 @@ VkResult radv_video_get_encode_session_memory_requirements(struct radv_device *d
                                                            uint32_t *pMemoryRequirementsCount,
                                                            VkVideoSessionMemoryRequirementsKHR *pMemoryRequirements);
 void radv_video_patch_encode_session_parameters(struct radv_device *device, struct vk_video_session_parameters *params);
+void radv_video_get_uvd_dpb_image(struct radv_physical_device *pdev,
+                                  const struct VkVideoProfileListInfoKHR *profile_list, struct radv_image *image);
 void radv_video_get_enc_dpb_image(struct radv_device *device, const struct VkVideoProfileListInfoKHR *profile_list,
                                   struct radv_image *image, struct radv_image_create_info *create_info);
 bool radv_video_decode_vp9_supported(const struct radv_physical_device *pdev);

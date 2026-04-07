@@ -35,7 +35,7 @@ struct cffdec_options {
    int summary;
    int allregs;
    int dump_textures;
-   int dump_bindless;
+   int dump_all_bindless;
    int decode_markers;
    char *script;
 
@@ -115,6 +115,9 @@ void cffdec_init(const struct cffdec_options *options);
 void cffdec_finish(void);
 void dump_register_val(struct regacc *r, int level);
 void dump_commands(uint32_t *dwords, uint32_t sizedwords, int level);
+
+enum mesa_shader_stage;
+struct shader_stats *get_shader_stats(enum mesa_shader_stage stage);
 
 /*
  * Packets (mostly) fall into two categories, "write one or more registers"

@@ -843,6 +843,16 @@ x11_surface_get_capabilities2(VkIcdSurfaceBase *icd_surface,
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT: {
+         VkPresentTimingSurfaceCapabilitiesEXT *wait = (void *)ext;
+
+         wait->presentStageQueries = 0;
+         wait->presentTimingSupported = VK_FALSE;
+         wait->presentAtAbsoluteTimeSupported = VK_FALSE;
+         wait->presentAtRelativeTimeSupported = VK_FALSE;
+         break;
+      }
+
       default:
          /* Ignored */
          break;
@@ -1419,8 +1429,8 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
    int64_t divisor = 0;
    int64_t remainder = 0;
 
-   struct wsi_x11_connection *wsi_conn =
-      wsi_x11_get_connection((struct wsi_device*)chain->base.wsi, chain->conn);
+   struct wsi_device *wsi_device = (struct wsi_device*)chain->base.wsi;
+   struct wsi_x11_connection *wsi_conn = wsi_x11_get_connection(wsi_device, chain->conn);
    if (!wsi_conn)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -1434,7 +1444,8 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
       && chain->has_async_may_tear)
       options |= XCB_PRESENT_OPTION_ASYNC_MAY_TEAR;
 
-   if (chain->has_dri3_modifiers)
+   if (chain->has_dri3_modifiers &&
+       !wsi_device->x11.ignore_suboptimal)
       options |= XCB_PRESENT_OPTION_SUBOPTIMAL;
 
    xshmfence_reset(image->shm_fence);
@@ -2405,13 +2416,20 @@ wsi_x11_get_dri3_modifiers(struct wsi_x11_connection *wsi_conn,
 out:
    *num_tranches_in = 0;
 }
+
+static bool
+use_modifiers(const struct wsi_device *wsi_device)
+{
+   return wsi_device->supports_modifiers && !wsi_device->x11.ignore_suboptimal;
+}
+
 #ifdef HAVE_X11_DRM
 static bool
 wsi_x11_swapchain_query_dri3_modifiers_changed(struct x11_swapchain *chain)
 {
    const struct wsi_device *wsi_device = chain->base.wsi;
 
-   if (wsi_device->sw || !wsi_device->supports_modifiers)
+   if (wsi_device->sw || !use_modifiers(wsi_device))
       return false;
 
    struct wsi_drm_image_params drm_image_params;
@@ -2719,7 +2737,7 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
             false,
 #endif
       };
-      if (wsi_device->supports_modifiers) {
+      if (use_modifiers(wsi_device)) {
          wsi_x11_get_dri3_modifiers(wsi_conn, conn, window, bit_depth, 32,
                                     modifiers, num_modifiers,
                                     &drm_image_params.num_modifier_lists,
@@ -2842,15 +2860,15 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
     * occasionally use UINT32_MAX to signal the other thread that an error
     * has occurred and we don't want an overflow.
     */
-   ret = wsi_queue_init(&chain->present_queue, chain->base.image_count + 1);
-   if (ret) {
+   result = wsi_queue_init(&chain->present_queue, chain->base.image_count + 1);
+   if (result != VK_SUCCESS) {
       goto fail_init_images;
    }
 
    /* Acquire queue is only needed when using implicit sync */
    if (!chain->base.image_info.explicit_sync) {
-      ret = wsi_queue_init(&chain->acquire_queue, chain->base.image_count + 1);
-      if (ret) {
+      result = wsi_queue_init(&chain->acquire_queue, chain->base.image_count + 1);
+      if (result != VK_SUCCESS) {
          wsi_queue_destroy(&chain->present_queue);
          goto fail_init_images;
       }
@@ -2861,13 +2879,17 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
 
    ret = thrd_create(&chain->queue_manager,
                      x11_manage_present_queue, chain);
-   if (ret != thrd_success)
+   if (ret != thrd_success) {
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
       goto fail_init_fifo_queue;
+   }
 
    ret = thrd_create(&chain->event_manager,
                      x11_manage_event_queue, chain);
-   if (ret != thrd_success)
+   if (ret != thrd_success) {
+      result = VK_ERROR_OUT_OF_HOST_MEMORY;
       goto fail_init_event_queue;
+   }
 
    /* It is safe to set it here as only one swapchain can be associated with
     * the window, and swapchain creation does the association. At this point
@@ -2902,6 +2924,7 @@ fail_register:
 fail_alloc:
    vk_free(pAllocator, chain);
 
+   assert(result != VK_SUCCESS);
    return result;
 }
 

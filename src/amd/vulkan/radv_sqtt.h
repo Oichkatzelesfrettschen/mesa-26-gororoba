@@ -64,6 +64,12 @@ enum radv_sqtt_userdata_flags {
    RADV_SQTT_USERDATA_GANG_CS = 1u << 1,
 };
 
+struct radv_sqtt_gpu_timestamp {
+   struct radeon_winsys_bo *bo;
+   uint32_t offset;
+   void *ptr;
+};
+
 bool radv_is_instruction_timing_enabled(void);
 
 bool radv_sqtt_queue_events_enabled(void);
@@ -71,8 +77,11 @@ bool radv_sqtt_queue_events_enabled(void);
 void radv_emit_sqtt_userdata(const struct radv_cmd_buffer *cmd_buffer, const void *data, uint32_t num_dwords,
                              enum radv_sqtt_userdata_flags flags);
 
-VkResult radv_sqtt_acquire_gpu_timestamp(struct radv_device *device, struct radeon_winsys_bo **gpu_timestamp_bo,
-                                         uint32_t *gpu_timestamp_offset, void **gpu_timestamp_ptr);
+VkResult radv_sqtt_acquire_gpu_timestamp(struct radv_device *device, struct radv_sqtt_gpu_timestamp *timestamp);
+
+void radv_sqtt_write_gpu_timestamp(struct radv_cmd_buffer *cmd_buffer,
+                                   const struct radv_sqtt_gpu_timestamp *gpu_timestamp,
+                                   VkPipelineStageFlags2 timestamp_stage);
 
 bool radv_sqtt_init(struct radv_device *device);
 
@@ -97,10 +106,6 @@ VkResult radv_sqtt_allocate_buffer(VkDevice device, uint64_t size, uint32_t memo
                                    VkDeviceMemory *memory);
 
 void radv_sqtt_destroy_buffer(VkDevice device, VkBuffer buffer, VkDeviceMemory memory);
-
-VkResult radv_sqtt_get_timed_cmdbuf(struct radv_queue *queue, struct radeon_winsys_bo *timestamp_bo,
-                                    uint32_t timestamp_offset, VkPipelineStageFlags2 timestamp_stage,
-                                    VkCommandBuffer *pcmdbuf);
 
 void radv_sqtt_emit_relocated_shaders(struct radv_cmd_buffer *cmd_buffer, struct radv_graphics_pipeline *pipeline);
 

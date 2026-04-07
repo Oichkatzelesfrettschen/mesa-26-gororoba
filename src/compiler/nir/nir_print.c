@@ -34,9 +34,10 @@
 #include "util/memstream.h"
 #include "util/mesa-blake3.h"
 #include "util/ralloc.h"
-#include "vulkan/vulkan_core.h"
 #include "nir.h"
 #include "nir_builder.h"
+
+simple_mtx_t nir_print_lock = SIMPLE_MTX_INITIALIZER;
 
 static void
 print_indentation(unsigned levels, FILE *fp)
@@ -482,6 +483,41 @@ print_alu_src(nir_alu_instr *instr, unsigned src, print_state *state)
 }
 
 static void
+print_fp_math_ctrl(unsigned fp_math_ctrl, print_state *state)
+{
+   FILE *fp = state->fp;
+
+   if (fp_math_ctrl & nir_fp_exact) {
+      fprintf(fp, "exact");
+      if (fp_math_ctrl & ~nir_fp_exact)
+         fprintf(fp, ", ");
+   }
+
+   if (fp_math_ctrl & nir_fp_preserve_sz_inf_nan) {
+      fprintf(fp, "preserve:");
+
+      static const struct {
+         nir_fp_math_control bit;
+         const char *name;
+      } preserve_bits[] = {
+         { nir_fp_preserve_signed_zero, "sz" },
+         { nir_fp_preserve_inf, "inf" },
+         { nir_fp_preserve_nan, "nan" },
+      };
+
+      bool first = true;
+      for (unsigned i = 0; i < ARRAY_SIZE(preserve_bits); i++) {
+         if (fp_math_ctrl & preserve_bits[i].bit) {
+            if (!first)
+               fprintf(fp, ",");
+            first = false;
+            fprintf(fp, "%s", preserve_bits[i].name);
+         }
+      }
+   }
+}
+
+static void
 print_alu_instr(nir_alu_instr *instr, print_state *state)
 {
    FILE *fp = state->fp;
@@ -489,8 +525,6 @@ print_alu_instr(nir_alu_instr *instr, print_state *state)
    print_def(&instr->def, state);
 
    fprintf(fp, " = %s", nir_op_infos[instr->op].name);
-   if (nir_alu_instr_is_exact(instr))
-      fprintf(fp, "!");
    if (instr->no_signed_wrap)
       fprintf(fp, ".nsw");
    if (instr->no_unsigned_wrap)
@@ -502,6 +536,11 @@ print_alu_instr(nir_alu_instr *instr, print_state *state)
          fprintf(fp, ", ");
 
       print_alu_src(instr, i, state);
+   }
+
+   if (instr->fp_math_ctrl) {
+      fprintf(fp, " // ");
+      print_fp_math_ctrl(instr->fp_math_ctrl, state);
    }
 }
 
@@ -859,6 +898,9 @@ print_access(enum gl_access_qualifier access, print_state *state, const char *se
       { ACCESS_SKIP_HELPERS, "skip-helpers" },
       { ACCESS_ATOMIC, "atomic" },
       { ACCESS_FUSED_EU_DISABLE_INTEL, "fused-eu-disable-intel" },
+      { ACCESS_SPARSE, "sparse" },
+      { ACCESS_ISTREAM_PAN, "istream-pan" },
+      { ACCESS_ESTREAM_PAN, "estream-pan" },
    };
 
    bool first = true;
@@ -912,10 +954,11 @@ print_var_decl(nir_variable *var, print_state *state)
    const char *const inv = (var->data.invariant) ? "invariant " : "";
    const char *const per_view = (var->data.per_view) ? "per_view " : "";
    const char *const per_primitive = (var->data.per_primitive) ? "per_primitive " : "";
+   const char *const per_vertex = (var->data.per_vertex) ? "per_vertex " : "";
    const char *const ray_query = (var->data.ray_query) ? "ray_query " : "";
    const char *const fb_fetch = var->data.fb_fetch_output ? "fb_fetch_output " : "";
-   fprintf(fp, "%s%s%s%s%s%s%s%s%s%s %s ",
-           bindless, cent, samp, patch, inv, per_view, per_primitive,
+   fprintf(fp, "%s%s%s%s%s%s%s%s%s%s%s %s ",
+           bindless, cent, samp, patch, inv, per_view, per_primitive, per_vertex,
            ray_query, fb_fetch,
            get_variable_mode_str(var->data.mode, false),
            glsl_interp_mode_name(var->data.interpolation));
@@ -1159,34 +1202,41 @@ print_deref_instr(nir_deref_instr *instr, print_state *state)
 }
 
 static const char *
-vulkan_descriptor_type_name(VkDescriptorType type)
+nir_descriptor_type_name(nir_descriptor_type type)
 {
    switch (type) {
-   case VK_DESCRIPTOR_TYPE_SAMPLER:
+   case nir_descriptor_type_uniform_buffer:
+      return "UBO";
+   case nir_descriptor_type_storage_buffer:
+      return "SSBO";
+   case nir_descriptor_type_acceleration_structure:
+      return "accel-struct";
+   default:
+      return "unknown";
+   }
+}
+
+static const char *
+nir_resource_type_name(nir_resource_type type)
+{
+   switch (type) {
+   case nir_resource_type_sampler:
       return "sampler";
-   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-      return "texture+sampler";
-   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+   case nir_resource_type_sampled_image:
       return "texture";
-   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-      return "image";
-   case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-      return "texture-buffer";
-   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-      return "image-buffer";
-   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+   case nir_resource_type_read_only_image:
+      return "RO-image";
+   case nir_resource_type_read_write_image:
+      return "RW-image";
+   case nir_resource_type_combined_sampled_image:
+      return "texture+sampler";
+   case nir_resource_type_uniform_buffer:
       return "UBO";
-   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-      return "SSBO";
-   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-      return "UBO";
-   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-      return "SSBO";
-   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-      return "input-att";
-   case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
-      return "inline-UBO";
-   case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+   case nir_resource_type_read_only_storage_buffer:
+      return "RO-SSBO";
+   case nir_resource_type_read_write_storage_buffer:
+      return "RW-SSBO";
+   case nir_resource_type_acceleration_structure:
       return "accel-struct";
    default:
       return "unknown";
@@ -1229,6 +1279,7 @@ static const char *sampler_dim_name[] = {
    [GLSL_SAMPLER_DIM_CUBE] = "Cube",
    [GLSL_SAMPLER_DIM_RECT] = "Rect",
    [GLSL_SAMPLER_DIM_BUF] = "Buf",
+   [GLSL_SAMPLER_DIM_EXTERNAL] = "External",
    [GLSL_SAMPLER_DIM_MS] = "2D-MSAA",
    [GLSL_SAMPLER_DIM_SUBPASS] = "Subpass",
    [GLSL_SAMPLER_DIM_SUBPASS_MS] = "Subpass-MSAA",
@@ -1374,8 +1425,14 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
       }
 
       case NIR_INTRINSIC_DESC_TYPE: {
-         VkDescriptorType desc_type = nir_intrinsic_desc_type(instr);
-         fprintf(fp, "desc_type=%s", vulkan_descriptor_type_name(desc_type));
+         nir_descriptor_type desc_type = nir_intrinsic_desc_type(instr);
+         fprintf(fp, "desc_type=%s", nir_descriptor_type_name(desc_type));
+         break;
+      }
+
+      case NIR_INTRINSIC_RESOURCE_TYPE: {
+         nir_resource_type res_type = nir_intrinsic_resource_type(instr);
+         fprintf(fp, "resource_type=%s", nir_resource_type_name(res_type));
          break;
       }
 
@@ -1475,13 +1532,18 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
 
          case nir_intrinsic_load_output:
          case nir_intrinsic_load_per_vertex_output:
-         case nir_intrinsic_load_tile_pan:
-         case nir_intrinsic_load_tile_res_pan:
          case nir_intrinsic_load_per_primitive_output:
          case nir_intrinsic_store_output:
          case nir_intrinsic_store_per_primitive_output:
          case nir_intrinsic_store_per_vertex_output:
          case nir_intrinsic_store_per_view_output:
+         case nir_intrinsic_blend_pan:
+         case nir_intrinsic_blend2_pan:
+         case nir_intrinsic_load_blend_input_pan:
+         case nir_intrinsic_load_clear_value_pan:
+         case nir_intrinsic_load_tile_pan:
+         case nir_intrinsic_load_tile_res_pan:
+         case nir_intrinsic_store_tile_pan:
             mode = nir_var_shader_out;
             break;
 
@@ -1550,17 +1612,17 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
          if (io.no_validate)
             fprintf(fp, " no_validate");
 
+         if (io.no_signed_zero)
+            fprintf(fp, " no_signed_zero");
+
          break;
       }
 
-      case NIR_INTRINSIC_IO_XFB:
-      case NIR_INTRINSIC_IO_XFB2: {
-         /* This prints both IO_XFB and IO_XFB2. */
-         fprintf(fp, "xfb%s(", idx == NIR_INTRINSIC_IO_XFB ? "" : "2");
+      case NIR_INTRINSIC_IO_XFB: {
+         fprintf(fp, "xfb(");
          bool first = true;
-         for (unsigned i = 0; i < 2; i++) {
-            unsigned start_comp = (idx == NIR_INTRINSIC_IO_XFB ? 0 : 2) + i;
-            nir_io_xfb xfb = start_comp < 2 ? nir_intrinsic_io_xfb(instr) : nir_intrinsic_io_xfb2(instr);
+         for (unsigned i = 0; i < 4; i++) {
+            nir_io_xfb xfb = nir_intrinsic_io_xfb(instr);
 
             if (!xfb.out[i].num_components)
                continue;
@@ -1571,9 +1633,9 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
 
             if (xfb.out[i].num_components > 1) {
                fprintf(fp, "components=%u..%u",
-                       start_comp, start_comp + xfb.out[i].num_components - 1);
+                       i, i + xfb.out[i].num_components - 1);
             } else {
-               fprintf(fp, "component=%u", start_comp);
+               fprintf(fp, "component=%u", i);
             }
             fprintf(fp, " buffer=%u offset=%u",
                     xfb.out[i].buffer, (uint32_t)xfb.out[i].offset * 4);
@@ -1663,6 +1725,9 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
             case nir_resource_intel_sampler_embedded:
                fprintf(fp, "sampler-embedded");
                break;
+            case nir_resource_intel_internal:
+               fprintf(fp, "internal");
+               break;
             default:
                fprintf(fp, "unknown");
                break;
@@ -1751,6 +1816,15 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
          else
             UNREACHABLE("invalid class");
 
+         break;
+      }
+
+      case NIR_INTRINSIC_FP_MATH_CTRL: {
+         unsigned fp_math_ctrl = nir_intrinsic_fp_math_ctrl(instr);
+         if (fp_math_ctrl)
+            print_fp_math_ctrl(fp_math_ctrl, state);
+         else
+            fprintf(fp, "fp-fast-math");
          break;
       }
 
@@ -1903,6 +1977,21 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
    case nir_texop_sample_pos_nv:
       fprintf(fp, "sample_pos_nv ");
       break;
+   case nir_texop_sample_weighted_qcom:
+      fprintf(fp, "sample_weighted_qcom ");
+      break;
+   case nir_texop_box_filter_qcom:
+      fprintf(fp, "box_filter_qcom ");
+      break;
+   case nir_texop_block_match_sad_qcom:
+      fprintf(fp, "block_match_sad_qcom ");
+      break;
+   case nir_texop_block_match_ssd_qcom:
+      fprintf(fp, "block_match_ssd_qcom ");
+      break;
+   case nir_texop_resinfo_intel:
+      fprintf(fp, "resinfo_intel ");
+      break;
    default:
       UNREACHABLE("Invalid texture operation");
       break;
@@ -1926,6 +2015,9 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
          break;
       case nir_tex_src_coord:
          fprintf(fp, "(coord)");
+         break;
+      case nir_tex_src_ref_coord:
+         fprintf(fp, "(ref_coord)");
          break;
       case nir_tex_src_projector:
          fprintf(fp, "(projector)");
@@ -1975,9 +2067,15 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
          has_texture_deref = true;
          fprintf(fp, "(texture_deref)");
          break;
+      case nir_tex_src_texture_2_deref:
+         fprintf(fp, "(texture_2_deref)");
+         break;
       case nir_tex_src_sampler_deref:
          has_sampler_deref = true;
          fprintf(fp, "(sampler_deref)");
+         break;
+      case nir_tex_src_sampler_2_deref:
+         fprintf(fp, "(sampler_2_deref)");
          break;
       case nir_tex_src_texture_offset:
          fprintf(fp, "(texture_offset)");
@@ -1988,8 +2086,26 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
       case nir_tex_src_texture_handle:
          fprintf(fp, "(texture_handle)");
          break;
+      case nir_tex_src_texture_2_handle:
+         fprintf(fp, "(texture_2_handle)");
+         break;
       case nir_tex_src_sampler_handle:
          fprintf(fp, "(sampler_handle)");
+         break;
+      case nir_tex_src_sampler_2_handle:
+         fprintf(fp, "(ref_sampler_handle)");
+         break;
+      case nir_tex_src_block_size:
+         fprintf(fp, "(block_size)");
+         break;
+      case nir_tex_src_box_size:
+         fprintf(fp, "(box_size)");
+         break;
+      case nir_tex_src_texture_heap_offset:
+         fprintf(fp, "(texture_heap_offset)");
+         break;
+      case nir_tex_src_sampler_heap_offset:
+         fprintf(fp, "(sampler_heap_offset)");
          break;
       case nir_tex_src_plane:
          fprintf(fp, "(plane)");

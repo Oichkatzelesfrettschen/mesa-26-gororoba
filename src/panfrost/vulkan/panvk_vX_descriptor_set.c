@@ -10,7 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "vk_alloc.h"
 #include "vk_descriptor_update_template.h"
 #include "vk_descriptors.h"
@@ -184,7 +184,7 @@ write_buffer_desc(struct panvk_descriptor_set *set,
    if (type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
       struct panvk_ssbo_addr desc = {
          .base_addr = panvk_buffer_gpu_ptr(buffer, info->offset),
-         .size = range,
+         .size = align(range, 4),
       };
 
       write_desc(set, binding, elem, &desc, NO_SUBDESC);
@@ -202,11 +202,12 @@ write_buffer_desc(struct panvk_descriptor_set *set,
       write_desc(set, binding, elem, &padded_desc, NO_SUBDESC);
    }
 #else
+   const bool is_ssbo = type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
    struct mali_buffer_packed desc;
 
    pan_pack(&desc, BUFFER, cfg) {
       cfg.address = panvk_buffer_gpu_ptr(buffer, info->offset);
-      cfg.size = range;
+      cfg.size = align(range, is_ssbo ? 4 : 16);
    }
    write_desc(set, binding, elem, &desc, NO_SUBDESC);
 #endif
@@ -498,7 +499,7 @@ panvk_init_iub(struct panvk_descriptor_set *set, uint32_t binding,
 
    pan_pack(&desc, BUFFER, cfg) {
       cfg.address = iub_data_dev;
-      cfg.size = iub_size_dev;
+      cfg.size = align(iub_size_dev, 16);
    }
    write_desc(set, binding, 0, &desc, NO_SUBDESC);
 #endif
@@ -739,8 +740,10 @@ panvk_descriptor_set_copy(const VkCopyDescriptorSet *copy)
    const struct panvk_descriptor_set_binding_layout *src_binding_layout =
       &src_set->layout->bindings[copy->srcBinding];
 
-   const bool src_mutable = src_binding_layout->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT;
-   const bool dst_mutable = dst_binding_layout->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT;
+   ASSERTED const bool src_mutable =
+      src_binding_layout->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT;
+   ASSERTED const bool dst_mutable =
+      dst_binding_layout->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT;
    assert(dst_binding_layout->type == src_binding_layout->type || src_mutable || dst_mutable);
 
    switch (src_binding_layout->type) {

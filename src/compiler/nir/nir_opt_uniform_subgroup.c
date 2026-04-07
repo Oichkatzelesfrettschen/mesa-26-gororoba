@@ -107,7 +107,7 @@ ballot_bit_count(nir_builder *b, nir_def *ballot)
 {
    return ballot->num_components == 1
              ? nir_bit_count(b, ballot)
-             : nir_ballot_bit_count_reduce(b, ballot);
+             : nir_ballot_bit_count_reduce(b, nir_pad_vec4(b, ballot));
 }
 
 static nir_def *
@@ -211,7 +211,7 @@ opt_uniform_subgroup_instr(nir_builder *b, nir_intrinsic_instr *intrin, void *_s
 
       if (intrin->intrinsic == nir_intrinsic_vote_feq) {
          nir_def *x = intrin->src[0].ssa;
-         b->fp_math_ctrl = nir_fp_exact;
+         b->fp_math_ctrl = nir_fp_preserve_nan | nir_fp_preserve_inf;
          replacement = nir_feq(b, x, x);
          b->fp_math_ctrl = nir_fp_fast_math;
       } else if (intrin->intrinsic == nir_intrinsic_vote_ieq) {
@@ -219,6 +219,16 @@ opt_uniform_subgroup_instr(nir_builder *b, nir_intrinsic_instr *intrin, void *_s
       } else {
          replacement = intrin->src[0].ssa;
       }
+      break;
+
+   case nir_intrinsic_shuffle_up_intel:
+   case nir_intrinsic_shuffle_down_intel:
+      if (nir_src_is_divergent(&intrin->src[0]) ||
+          nir_src_is_divergent(&intrin->src[1]) ||
+          !nir_srcs_equal(intrin->src[0], intrin->src[1]))
+         return false;
+
+      replacement = intrin->src[0].ssa;
       break;
 
    case nir_intrinsic_ddx:
@@ -231,7 +241,7 @@ opt_uniform_subgroup_instr(nir_builder *b, nir_intrinsic_instr *intrin, void *_s
          return false;
 
       nir_def *x = intrin->src[0].ssa;
-      b->fp_math_ctrl = nir_fp_no_fast_math;
+      b->fp_math_ctrl = nir_intrinsic_fp_math_ctrl(intrin);
       replacement = nir_fsub(b, x, x);
       b->fp_math_ctrl = nir_fp_fast_math;
       break;

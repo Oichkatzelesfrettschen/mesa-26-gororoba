@@ -14,7 +14,6 @@
 #include "ac_gpu_info.h"
 #include "ac_perfcounter.h"
 
-#include "ac_uvd_dec.h"
 #include "ac_vcn_enc.h"
 #include "radv_constants.h"
 #include "radv_instance.h"
@@ -68,7 +67,7 @@ struct radv_physical_device_cache_key {
    uint32_t mitigate_smem_oob : 1;
    uint32_t rt_cps : 1;
 
-   uint32_t reserved : 7;
+   uint32_t reserved : 6;
 };
 
 enum radv_video_enc_hw_ver {
@@ -150,9 +149,6 @@ struct radv_physical_device {
    uint8_t ge_wave_size;
    uint8_t rt_wave_size;
 
-   /* Maximum compute shared memory size. */
-   uint32_t max_shared_size;
-
    /* Whether to use the LLVM compiler backend */
    bool use_llvm;
 
@@ -206,9 +202,6 @@ struct radv_physical_device {
       unsigned cntl;
    } vid_dec_reg;
    enum amd_ip_type vid_decode_ip;
-   uint32_t vid_addr_gfx_mode;
-   struct ac_uvd_stream_handle stream_handle;
-   uint32_t av1_version;
    rvcn_enc_cmd_t vcn_enc_cmds;
    enum radv_video_enc_hw_ver enc_hw_ver;
    uint32_t encoder_interface_version;
@@ -264,10 +257,6 @@ radv_has_pops(const struct radv_physical_device *pdev)
 static inline bool
 radv_has_uvd(struct radv_physical_device *pdev)
 {
-   enum radeon_family family = pdev->info.family;
-   /* Only support UVD on TONGA+ */
-   if (family < CHIP_TONGA)
-      return false;
    return pdev->info.ip[AMD_IP_UVD].num_queues > 0;
 }
 
@@ -281,16 +270,6 @@ vk_queue_to_radv(const struct radv_physical_device *pdev, int queue_family_index
 
    assert(queue_family_index < RADV_MAX_QUEUE_FAMILIES);
    return pdev->vk_queue_to_radv[queue_family_index];
-}
-
-/**
- * Helper used for debugging compiler issues by enabling/disabling LLVM for a
- * specific shader stage (developers only).
- */
-static inline bool
-radv_use_llvm_for_stage(const struct radv_physical_device *pdev, UNUSED mesa_shader_stage stage)
-{
-   return pdev->use_llvm;
 }
 
 bool radv_host_image_copy_enabled(const struct radv_physical_device *pdev);

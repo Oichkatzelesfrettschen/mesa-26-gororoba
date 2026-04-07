@@ -22,7 +22,12 @@
  */
 
 #include "broadcom/common/v3d_csd.h"
-#include "v3dv_private.h"
+#include "v3dv_device.h"
+#include "v3dv_cmd_buffer.h"
+#include "v3dv_image.h"
+#include "v3dv_entrypoints.h"
+#include "v3dv_version_dispatch.h"
+#include "vk_format.h"
 #include "util/perf/cpu_trace.h"
 #include "util/u_pack_color.h"
 #include "vk_common_entrypoints.h"
@@ -959,18 +964,14 @@ cmd_buffer_emit_resolve(struct v3dv_cmd_buffer *cmd_buffer,
 
    struct v3dv_image *src_image = (struct v3dv_image *) src_iview->vk.image;
    struct v3dv_image *dst_image = (struct v3dv_image *) dst_iview->vk.image;
-   VkResolveImageInfo2 resolve_info = {
-      .sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
-      .srcImage = v3dv_image_to_handle(src_image),
-      .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
-      .dstImage = v3dv_image_to_handle(dst_image),
-      .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
-      .regionCount = 1,
-      .pRegions = &region,
-   };
 
-   VkCommandBuffer cmd_buffer_handle = v3dv_cmd_buffer_to_handle(cmd_buffer);
-   v3dv_CmdResolveImage2(cmd_buffer_handle, &resolve_info);
+   /* Use view formats instead of image formats so that mutable resolve
+    * attachments (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) resolve correctly
+    * when the view format differs from the image creation format.
+    */
+   assert(src_iview->vk.format == dst_iview->vk.format);
+   v3dv_cmd_buffer_resolve_image(cmd_buffer, dst_image, src_image,
+                                 src_iview->vk.format, &region);
 }
 
 static void
@@ -3067,8 +3068,18 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
    if (BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_LINE_WIDTH))
       v3d_X((&device->devinfo), cmd_buffer_emit_line_width)(cmd_buffer);
 
-   if (dyn->ia.primitive_topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST &&
-       !job->emitted_default_point_size) {
+   /* There is a bug in V3D 4.2 hardware where a FIFO in the binner may
+    * overflow in some scenarios where geometry is dropped in the pipeline
+    * (for example, if using primitive discards). The work around requires the
+    * driver to emit any CLE command, which will trigger the binner to flush
+    * the FIFO. The recommendation is to emit a very small packet that is fast
+    * to process by the CLE hardware such as PointSize in between all draw
+    * calls to ensure this flush always happens and there is never a chance of
+    * overflowing the binner.
+    */
+   if ((dyn->ia.primitive_topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST &&
+       !job->emitted_default_point_size) ||
+       device->devinfo.ver == 42) {
       v3d_X((&device->devinfo), cmd_buffer_emit_default_point_size)(cmd_buffer);
    }
 

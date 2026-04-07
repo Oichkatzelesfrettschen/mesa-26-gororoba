@@ -105,31 +105,19 @@ lvp_write_buffer_cp(VkCommandBuffer cmdbuf, VkDeviceAddress addr,
 {
    VK_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, cmdbuf);
 
-   struct vk_cmd_queue_entry *entry =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct vk_cmd_queue_entry),
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   struct lvp_cmd_write_buffer_cp *entry =
+      linear_zalloc_child(cmd_buffer->vk.cmd_queue.ctx, sizeof(struct lvp_cmd_write_buffer_cp) + size);
    if (!entry)
       return;
 
-   entry->type = LVP_CMD_WRITE_BUFFER_CP;
+   entry->base.type = LVP_CMD_WRITE_BUFFER_CP;
+   entry->addr = addr;
+   entry->data = entry + 1;
+   entry->size = size;
 
-   struct lvp_cmd_write_buffer_cp *cmd =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct lvp_cmd_write_buffer_cp) + size,
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (!entry) {
-      vk_free(cmd_buffer->vk.cmd_queue.alloc, entry);
-      return;
-   }
+   memcpy(entry->data, data, size);
 
-   cmd->addr = addr;
-   cmd->data = cmd + 1;
-   cmd->size = size;
-
-   memcpy(cmd->data, data, size);
-
-   entry->driver_data = cmd;
-
-   list_addtail(&entry->cmd_link, &cmd_buffer->vk.cmd_queue.cmds);
+   list_addtail(&entry->base.cmd_link, &cmd_buffer->vk.cmd_queue.cmds);
 }
 
 static void
@@ -144,8 +132,7 @@ lvp_cmd_dispatch_unaligned(VkCommandBuffer cmdbuf, uint32_t invocations_x,
    VK_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, cmdbuf);
 
    struct vk_cmd_queue_entry *entry =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct vk_cmd_queue_entry),
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      linear_zalloc_child(cmd_buffer->vk.cmd_queue.ctx, sizeof(struct vk_cmd_queue_entry));
    if (!entry)
       return;
 
@@ -164,29 +151,17 @@ lvp_cmd_fill_buffer_addr(VkCommandBuffer cmdbuf, VkDeviceAddress addr,
 {
    VK_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, cmdbuf);
 
-   struct vk_cmd_queue_entry *entry =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct vk_cmd_queue_entry),
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   struct lvp_cmd_fill_buffer_addr *entry =
+      linear_zalloc_child(cmd_buffer->vk.cmd_queue.ctx, sizeof(struct lvp_cmd_write_buffer_cp));
    if (!entry)
       return;
 
-   entry->type = LVP_CMD_FILL_BUFFER_ADDR;
+   entry->base.type = LVP_CMD_FILL_BUFFER_ADDR;
+   entry->addr = addr;
+   entry->size = size;
+   entry->data = data;
 
-   struct lvp_cmd_fill_buffer_addr *cmd =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct lvp_cmd_write_buffer_cp),
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (!entry) {
-      vk_free(cmd_buffer->vk.cmd_queue.alloc, entry);
-      return;
-   }
-
-   cmd->addr = addr;
-   cmd->size = size;
-   cmd->data = data;
-
-   entry->driver_data = cmd;
-
-   list_addtail(&entry->cmd_link, &cmd_buffer->vk.cmd_queue.cmds);
+   list_addtail(&entry->base.cmd_link, &cmd_buffer->vk.cmd_queue.cmds);
 }
 
 static void
@@ -195,34 +170,23 @@ lvp_enqueue_encode_as(VkCommandBuffer commandBuffer, const struct vk_acceleratio
    VK_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(vk_acceleration_structure, dst, state->build_info->dstAccelerationStructure);
 
-   struct vk_cmd_queue_entry *entry =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct vk_cmd_queue_entry),
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   struct lvp_cmd_encode_as *entry =
+      linear_zalloc_child(cmd_buffer->vk.cmd_queue.ctx, sizeof(struct lvp_cmd_encode_as));
    if (!entry)
       return;
 
-   entry->type = LVP_CMD_ENCODE_AS;
-
-   struct lvp_cmd_encode_as *cmd =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct lvp_cmd_encode_as),
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (!entry) {
-      vk_free(cmd_buffer->vk.cmd_queue.alloc, entry);
-      return;
-   }
+   entry->base.type = LVP_CMD_ENCODE_AS;
 
    uint64_t intermediate_header_addr = state->build_info->scratchData.deviceAddress + state->scratch.header_offset;
    uint64_t intermediate_bvh_addr = state->build_info->scratchData.deviceAddress + state->scratch.ir_offset;
 
-   cmd->dst = dst;
-   cmd->intermediate_as_addr = intermediate_bvh_addr;
-   cmd->intermediate_header_addr = intermediate_header_addr;
-   cmd->leaf_count = state->leaf_node_count;
-   cmd->geometry_type = vk_get_as_geometry_type(state->build_info);
+   entry->dst = dst;
+   entry->intermediate_as_addr = intermediate_bvh_addr;
+   entry->intermediate_header_addr = intermediate_header_addr;
+   entry->leaf_count = state->leaf_node_count;
+   entry->geometry_type = vk_get_as_geometry_type(state->build_info);
 
-   entry->driver_data = cmd;
-
-   list_addtail(&entry->cmd_link, &cmd_buffer->vk.cmd_queue.cmds);
+   list_addtail(&entry->base.cmd_link, &cmd_buffer->vk.cmd_queue.cmds);
 }
 
 static uint32_t
@@ -656,14 +620,14 @@ lvp_CopyAccelerationStructureToMemoryKHR(VkDevice _device, VkDeferredOperationKH
 }
 
 static VkResult
-lvp_encode_bind_pipeline(VkCommandBuffer cmd_buffer, const struct vk_acceleration_structure_build_state *state)
+lvp_encode_prepare(VkCommandBuffer cmd_buffer, const struct vk_acceleration_structure_build_state *state)
 {
    return VK_SUCCESS;
 }
 
 const struct vk_acceleration_structure_build_ops accel_struct_ops = {
    .get_as_size = lvp_get_as_size,
-   .encode_bind_pipeline[0] = lvp_encode_bind_pipeline,
+   .encode_prepare[0] = lvp_encode_prepare,
    .encode_as[0] = lvp_enqueue_encode_as,
 };
 
@@ -698,8 +662,7 @@ lvp_enqueue_save_state(VkCommandBuffer cmdbuf)
    VK_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, cmdbuf);
 
    struct vk_cmd_queue_entry *entry =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct vk_cmd_queue_entry),
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      linear_zalloc_child(cmd_buffer->vk.cmd_queue.ctx, sizeof(struct vk_cmd_queue_entry));
    if (!entry)
       return;
 
@@ -714,8 +677,7 @@ lvp_enqueue_restore_state(VkCommandBuffer cmdbuf)
    VK_FROM_HANDLE(lvp_cmd_buffer, cmd_buffer, cmdbuf);
 
    struct vk_cmd_queue_entry *entry =
-      vk_zalloc(cmd_buffer->vk.cmd_queue.alloc, sizeof(struct vk_cmd_queue_entry),
-                8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      linear_zalloc_child(cmd_buffer->vk.cmd_queue.ctx, sizeof(struct vk_cmd_queue_entry));
    if (!entry)
       return;
 

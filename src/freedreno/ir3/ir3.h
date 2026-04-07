@@ -446,7 +446,6 @@ struct ir3_instruction {
          type_t src_type, dst_type;
          round_t round;
          reduce_op_t reduce_op;
-         bool sat;
          uint16_t r[2];
       } cat1;
       struct {
@@ -475,6 +474,10 @@ struct ir3_instruction {
          unsigned tex_base : 3;
          unsigned cluster_size : 4;
          type_t type;
+         enum {
+            IR3_MATCH_MODE_SAD = 0, /* Sum of Absolute Difference */
+            IR3_MATCH_MODE_SSD = 1, /* Sum of Squared Differences */
+         } match_mode; /* for block matching textures */
       } cat5;
       struct {
          type_t type;
@@ -749,7 +752,18 @@ struct ir3_block {
 
    uint16_t start_ip, end_ip;
 
+   /**
+    * Is the block a reconvergence point within a wave:
+    */
    bool reconvergence_point;
+
+   /**
+    * If the block is not a recoverngence point within a wave, it may
+    * still be a point where parallel waves recoverge.  This should
+    * be considered for (jp) marking and branchstack, but need not be
+    * considered for constructing physical edges for uGPR allocation.
+    */
+   bool wave_reconvergence_point;
 
    bool in_early_preamble;
 
@@ -2157,14 +2171,18 @@ is_sy_producer(struct ir3_instruction *instr)
       is_atomic(instr->opc);
 }
 
+static inline bool
+is_compute_or_frag(mesa_shader_stage type)
+{
+   return mesa_shader_stage_is_compute(type) || (type == MESA_SHADER_FRAGMENT);
+}
+
 static inline unsigned
 soft_sy_delay(struct ir3_instruction *instr, struct ir3 *shader)
 {
    /* TODO: this is just an optimistic guess, we can do better post-RA.
     */
-   bool double_wavesize =
-      shader->type == MESA_SHADER_FRAGMENT ||
-      shader->type == MESA_SHADER_COMPUTE;
+   bool double_wavesize = is_compute_or_frag(shader->type);
 
    unsigned components = reg_elems(instr->dsts[0]);
 

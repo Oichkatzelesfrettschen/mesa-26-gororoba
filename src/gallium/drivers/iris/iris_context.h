@@ -1,24 +1,6 @@
 /*
  * Copyright © 2017 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 #ifndef IRIS_CONTEXT_H
 #define IRIS_CONTEXT_H
@@ -43,11 +25,11 @@
 #include "iris_resource.h"
 #include "iris_screen.h"
 
+typedef struct intel_device_info intel_device_info;
 struct iris_bo;
 struct iris_context;
 struct blorp_batch;
 struct blorp_params;
-struct brw_ubo_range;
 
 #define IRIS_MAX_DRAW_BUFFERS 8
 #define IRIS_MAX_SOL_BINDINGS 64
@@ -64,18 +46,6 @@ enum {
    DRI_CONF_BO_REUSE_DISABLED,
    DRI_CONF_BO_REUSE_ALL
 };
-
-enum iris_param_domain {
-   ELK_PARAM_DOMAIN_BUILTIN = 0,
-   ELK_PARAM_DOMAIN_IMAGE,
-};
-
-#define ELK_PARAM(domain, val)   (ELK_PARAM_DOMAIN_##domain << 24 | (val))
-#define ELK_PARAM_DOMAIN(param)  ((uint32_t)(param) >> 24)
-#define ELK_PARAM_VALUE(param)   ((uint32_t)(param) & 0x00ffffff)
-#define ELK_PARAM_IMAGE(idx, offset) ELK_PARAM(IMAGE, ((idx) << 8) | (offset))
-#define ELK_PARAM_IMAGE_IDX(value)   (ELK_PARAM_VALUE(value) >> 8)
-#define ELK_PARAM_IMAGE_OFFSET(value)(ELK_PARAM_VALUE(value) & 0xf)
 
 /**
  * Dirty flags.  When state changes, we flag some combination of these
@@ -326,7 +296,7 @@ struct iris_fs_data {
    uint64_t inputs;
    unsigned num_varying_inputs;
 
-   unsigned msaa_flags_param;
+   unsigned fs_config_param;
    uint32_t flat_inputs;
 
    uint8_t computed_depth_mode;
@@ -575,8 +545,8 @@ struct iris_uncompiled_shader {
 
    struct pipe_stream_output_info stream_output;
 
-   /* A SHA1 of the serialized NIR for the disk cache. */
-   unsigned char nir_sha1[SHA1_DIGEST_LENGTH];
+   /* A BLAKE3 of the serialized NIR for the disk cache. */
+   unsigned char nir_blake3[BLAKE3_KEY_LEN];
 
    /* Hash value based on shader source program */
    unsigned source_hash;
@@ -643,6 +613,33 @@ struct iris_binding_table {
    /** Whether the first render target is a null fb surface */
    uint8_t use_null_rt;
 };
+
+#define IRIS_SYSVAL_CLIP_PLANE(plane, component) \
+   (IRIS_SYSVAL_CLIP_PLANE_START + ((plane) * 4) + (component))
+
+#define IRIS_SYSVALS_PER_IMAGE (4 * ISL_IMAGE_PARAM_SIZE)
+
+enum iris_sysval {
+   IRIS_SYSVAL_ZERO,
+   IRIS_SYSVAL_WORK_DIM,
+   IRIS_SYSVAL_WORK_GROUP_SIZE_X,
+   IRIS_SYSVAL_WORK_GROUP_SIZE_Y,
+   IRIS_SYSVAL_WORK_GROUP_SIZE_Z,
+   IRIS_SYSVAL_PATCH_VERTICES_IN,
+   IRIS_SYSVAL_TESS_LEVEL_INNER_X,
+   IRIS_SYSVAL_TESS_LEVEL_INNER_Y,
+   IRIS_SYSVAL_TESS_LEVEL_OUTER_X,
+   IRIS_SYSVAL_TESS_LEVEL_OUTER_Y,
+   IRIS_SYSVAL_TESS_LEVEL_OUTER_Z,
+   IRIS_SYSVAL_TESS_LEVEL_OUTER_W,
+   IRIS_SYSVAL_CLIP_PLANE_START,
+   IRIS_SYSVAL_CLIP_PLANE_LAST =
+      IRIS_SYSVAL_CLIP_PLANE(IRIS_MAX_CLIP_PLANES - 1, 3),
+   IRIS_SYSVAL_IMAGE_START,
+   IRIS_SYSVAL_IMAGE_LAST =
+      IRIS_SYSVAL_IMAGE_START + IRIS_MAX_IMAGES * IRIS_SYSVALS_PER_IMAGE,
+};
+
 
 /**
  * A compiled shader variant, containing a pointer to the GPU assembly,
@@ -1083,6 +1080,10 @@ struct iris_context {
       /** State for Wa_14024997852. */
       bool autostrip_state;
 
+      /** State for Wa_14024015672 */
+      bool intel_enable_wa_14024015672_msaa;
+      bool rhwo_disabled;
+
       /** Do we have integer RT in current framebuffer state? */
       bool has_integer_rt;
 
@@ -1339,6 +1340,14 @@ void iris_flush_all_caches(struct iris_batch *batch);
 
 void iris_init_flush_functions(struct pipe_context *ctx);
 
+/* iris_nir_analyze_ubo_ranges.c */
+void iris_nir_analyze_ubo_ranges(const intel_device_info *devinfo,
+                                 nir_shader *nir,
+                                 struct iris_ubo_range out_ranges[4]);
+
+bool iris_nir_lower_ubo_ranges(nir_shader *nir,
+                               struct iris_ubo_range ranges[4]);
+
 /* iris_program.c */
 void iris_compiler_init(struct iris_screen *screen);
 void iris_upload_ubo_ssbo_surf_state(struct iris_context *ice,
@@ -1360,7 +1369,7 @@ uint32_t iris_bti_to_group_index(const struct iris_binding_table *bt,
                                  uint32_t bti);
 void iris_apply_brw_prog_data(struct iris_compiled_shader *shader,
                               struct brw_stage_prog_data *prog_data,
-                              struct brw_ubo_range *ubo_ranges);
+                              struct iris_ubo_range *ubo_ranges);
 void iris_apply_elk_prog_data(struct iris_compiled_shader *shader,
                               struct elk_stage_prog_data *prog_data);
 struct intel_cs_dispatch_info
@@ -1372,9 +1381,7 @@ iris_cs_push_const_total_size(const struct iris_compiled_shader *shader,
                               unsigned threads);
 uint32_t
 iris_fs_barycentric_modes(const struct iris_compiled_shader *shader,
-                          enum intel_msaa_flags pushed_msaa_flags);
-bool iris_use_tcs_multi_patch(struct iris_screen *screen);
-bool iris_indirect_ubos_use_sampler(struct iris_screen *screen);
+                          enum intel_fs_config pushed_fs_config);
 const struct nir_shader_compiler_options *
 iris_get_compiler_options(struct pipe_screen *pscreen,
                           mesa_shader_stage pstage);
@@ -1549,6 +1556,9 @@ iris_execute_indirect_draw_supported(const struct iris_context *ice,
 #  include "iris_genx_protos.h"
 #  undef genX
 #  define genX(x) gfx30_##x
+#  include "iris_genx_protos.h"
+#  undef genX
+#  define genX(x) gfx35_##x
 #  include "iris_genx_protos.h"
 #  undef genX
 #endif

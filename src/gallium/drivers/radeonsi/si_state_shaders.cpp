@@ -15,7 +15,7 @@
 #include "util/crc32.h"
 #include "util/disk_cache.h"
 #include "util/hash_table.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/u_async_debug.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -130,7 +130,7 @@ static bool si_shader_uses_bindless_images(struct si_shader_selector *selector)
  * Return the IR key for the shader cache.
  */
 void si_get_ir_cache_key(struct si_shader_selector *sel, bool ngg, bool es,
-                         unsigned wave_size, unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH])
+                         unsigned wave_size, unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN])
 {
    struct blob blob = {};
    unsigned ir_size;
@@ -184,11 +184,11 @@ void si_get_ir_cache_key(struct si_shader_selector *sel, bool ngg, bool es,
    if (sel->screen->options.clear_lds)
       shader_variant_flags |= 1 << 12;
 
-   struct mesa_sha1 ctx;
-   _mesa_sha1_init(&ctx);
-   _mesa_sha1_update(&ctx, &shader_variant_flags, 4);
-   _mesa_sha1_update(&ctx, ir_binary, ir_size);
-   _mesa_sha1_final(&ctx, ir_sha1_cache_key);
+   blake3_hasher ctx;
+   _mesa_blake3_init(&ctx);
+   _mesa_blake3_update(&ctx, &shader_variant_flags, 4);
+   _mesa_blake3_update(&ctx, ir_binary, ir_size);
+   _mesa_blake3_final(&ctx, ir_blake3_cache_key);
 
    if (ir_binary == blob.data)
       blob_finish(&blob);
@@ -344,7 +344,7 @@ static bool si_load_shader_binary(struct si_shader *shader, void *binary)
  * Insert a shader into the cache. It's assumed the shader is not in the cache.
  * Use si_shader_cache_load_shader before calling this.
  */
-void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH],
+void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN],
                                    struct si_shader *shader, bool insert_into_disk_cache)
 {
    uint32_t *hw_binary;
@@ -355,7 +355,7 @@ void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_s
    if (!insert_into_disk_cache && memory_cache_full)
       return;
 
-   entry = _mesa_hash_table_search(sscreen->shader_cache, ir_sha1_cache_key);
+   entry = _mesa_hash_table_search(sscreen->shader_cache, ir_blake3_cache_key);
    if (entry)
       return; /* already added */
 
@@ -390,7 +390,7 @@ void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_s
 
    if (!memory_cache_full) {
       if (_mesa_hash_table_insert(sscreen->shader_cache,
-                                  mem_dup(ir_sha1_cache_key, 20),
+                                  mem_dup(ir_blake3_cache_key, 20),
                                   hw_binary) == NULL) {
           FREE(hw_binary);
           return;
@@ -400,7 +400,7 @@ void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_s
    }
 
    if (sscreen->disk_shader_cache && insert_into_disk_cache) {
-      disk_cache_compute_key(sscreen->disk_shader_cache, ir_sha1_cache_key, 20, key);
+      disk_cache_compute_key(sscreen->disk_shader_cache, ir_blake3_cache_key, 20, key);
       disk_cache_put(sscreen->disk_shader_cache, key, hw_binary, size, NULL);
    }
 
@@ -408,10 +408,10 @@ void si_shader_cache_insert_shader(struct si_screen *sscreen, unsigned char ir_s
       FREE(hw_binary);
 }
 
-bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH],
+bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN],
                                  struct si_shader *shader)
 {
-   struct hash_entry *entry = _mesa_hash_table_search(sscreen->shader_cache, ir_sha1_cache_key);
+   struct hash_entry *entry = _mesa_hash_table_search(sscreen->shader_cache, ir_blake3_cache_key);
 
    if (entry) {
       if (si_load_shader_binary(shader, entry->data)) {
@@ -424,11 +424,11 @@ bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha
    if (!sscreen->disk_shader_cache)
       return false;
 
-   unsigned char sha1[CACHE_KEY_SIZE];
-   disk_cache_compute_key(sscreen->disk_shader_cache, ir_sha1_cache_key, 20, sha1);
+   unsigned char blake3[CACHE_KEY_SIZE];
+   disk_cache_compute_key(sscreen->disk_shader_cache, ir_blake3_cache_key, 20, blake3);
 
    size_t total_size;
-   uint32_t *buffer = (uint32_t*)disk_cache_get(sscreen->disk_shader_cache, sha1, &total_size);
+   uint32_t *buffer = (uint32_t*)disk_cache_get(sscreen->disk_shader_cache, blake3, &total_size);
    if (buffer) {
       unsigned size = *buffer;
       unsigned gs_copy_binary_size = 0;
@@ -440,7 +440,7 @@ bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha
       if (total_size >= sizeof(uint32_t) && size + gs_copy_binary_size == total_size) {
          if (si_load_shader_binary(shader, buffer)) {
             free(buffer);
-            si_shader_cache_insert_shader(sscreen, ir_sha1_cache_key, shader, false);
+            si_shader_cache_insert_shader(sscreen, ir_blake3_cache_key, shader, false);
             p_atomic_inc(&sscreen->num_disk_shader_cache_hits);
             return true;
          }
@@ -449,7 +449,7 @@ bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha
           * rebuild/link from source.
           */
          assert(!"Invalid radeonsi shader disk cache item!");
-         disk_cache_remove(sscreen->disk_shader_cache, sha1);
+         disk_cache_remove(sscreen->disk_shader_cache, blake3);
       }
    }
 
@@ -460,13 +460,13 @@ bool si_shader_cache_load_shader(struct si_screen *sscreen, unsigned char ir_sha
 
 static uint32_t si_shader_cache_key_hash(const void *key)
 {
-   /* Take the first dword of SHA1. */
+   /* Take the first dword of BLAKE3. */
    return *(uint32_t *)key;
 }
 
 static bool si_shader_cache_key_equals(const void *a, const void *b)
 {
-   /* Compare SHA1s. */
+   /* Compare BLAKE3s. */
    return memcmp(a, b, 20) == 0;
 }
 
@@ -925,7 +925,7 @@ static void si_emit_shader_gs(struct si_context *sctx, unsigned index)
    radeon_end();
 }
 
-static void si_shader_gs(struct si_screen *sscreen, struct si_shader *shader)
+static void si_shader_gs_legacy(struct si_screen *sscreen, struct si_shader *shader)
 {
    struct si_shader_selector *sel = shader->selector;
    const uint8_t *num_components = shader->info.legacy_gs.num_components_per_stream;
@@ -1720,6 +1720,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
    bool ngg_wave_id_en =
       shader->info.num_streamout_vec4s != 0 || shader->info.uses_mesh_scratch_ring;
    if (sscreen->info.gfx_level >= GFX12) {
+      assert(sscreen->info.compiler_info.has_ngg_passthru_no_msg);
       shader->ngg.vgt_shader_stages_en =
          S_028A98_GS_EN(gs_stage == MESA_SHADER_GEOMETRY) |
          S_028A98_GS_FAST_LAUNCH(gs_stage == MESA_SHADER_MESH) |
@@ -1741,7 +1742,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
          S_028B54_PRIMGEN_EN(1) |
          S_028B54_PRIMGEN_PASSTHRU_EN(gfx10_is_ngg_passthrough(shader)) |
          S_028B54_PRIMGEN_PASSTHRU_NO_MSG(gfx10_is_ngg_passthrough(shader) &&
-                                          sscreen->info.family >= CHIP_NAVI23) |
+                                          sscreen->info.compiler_info.has_ngg_passthru_no_msg) |
          S_028B54_NGG_WAVE_ID_EN(ngg_wave_id_en) |
          S_028B54_GS_W32_EN(shader->wave_size == 32) |
          S_028B54_MAX_PRIMGRP_IN_WAVE(2);
@@ -1836,8 +1837,8 @@ static void si_emit_shader_vs(struct si_context *sctx, unsigned index)
  * If \p gs is non-NULL, it points to the geometry shader for which this shader
  * is the copy shader.
  */
-static void si_shader_vs(struct si_screen *sscreen, struct si_shader *shader,
-                         struct si_shader_selector *gs)
+static void si_shader_vs_legacy(struct si_screen *sscreen, struct si_shader *shader,
+                                struct si_shader_selector *gs)
 {
    const struct si_shader_info *info = &shader->selector->info;
    struct si_pm4_state *pm4;
@@ -1982,25 +1983,6 @@ static void si_shader_vs(struct si_screen *sscreen, struct si_shader *shader,
    ac_pm4_finalize(&pm4->base);
 }
 
-static unsigned si_get_spi_shader_col_format(struct si_shader *shader)
-{
-   unsigned spi_shader_col_format = shader->key.ps.part.epilog.spi_shader_col_format;
-   unsigned value = 0, num_mrts = 0;
-   unsigned i, num_targets = (util_last_bit(spi_shader_col_format) + 3) / 4;
-
-   /* Remove holes in spi_shader_col_format. */
-   for (i = 0; i < num_targets; i++) {
-      unsigned spi_format = (spi_shader_col_format >> (i * 4)) & 0xf;
-
-      if (spi_format) {
-         value |= spi_format << (num_mrts * 4);
-         num_mrts++;
-      }
-   }
-
-   return value;
-}
-
 static void gfx6_emit_shader_ps(struct si_context *sctx, unsigned index)
 {
    struct si_shader *shader = sctx->queued.named.ps;
@@ -2010,8 +1992,8 @@ static void gfx6_emit_shader_ps(struct si_context *sctx, unsigned index)
                                shader->ps.spi_ps_input_ena,
                                shader->ps.spi_ps_input_addr);
    radeon_opt_set_context_reg2(R_028710_SPI_SHADER_Z_FORMAT, AC_TRACKED_SPI_SHADER_Z_FORMAT,
-                               shader->ps.spi_shader_z_format,
-                               shader->ps.spi_shader_col_format);
+                               shader->info.spi_shader_z_format,
+                               shader->info.spi_shader_col_format);
    radeon_opt_set_context_reg(R_02823C_CB_SHADER_MASK, AC_TRACKED_CB_SHADER_MASK,
                               shader->ps.cb_shader_mask);
    radeon_end_update_context_roll();
@@ -2028,9 +2010,9 @@ static void gfx11_dgpu_emit_shader_ps(struct si_context *sctx, unsigned index)
    gfx11_opt_set_context_reg(R_0286D0_SPI_PS_INPUT_ADDR, AC_TRACKED_SPI_PS_INPUT_ADDR,
                              shader->ps.spi_ps_input_addr);
    gfx11_opt_set_context_reg(R_028710_SPI_SHADER_Z_FORMAT, AC_TRACKED_SPI_SHADER_Z_FORMAT,
-                             shader->ps.spi_shader_z_format);
+                             shader->info.spi_shader_z_format);
    gfx11_opt_set_context_reg(R_028714_SPI_SHADER_COL_FORMAT, AC_TRACKED_SPI_SHADER_COL_FORMAT,
-                             shader->ps.spi_shader_col_format);
+                             shader->info.spi_shader_col_format);
    gfx11_opt_set_context_reg(R_02823C_CB_SHADER_MASK, AC_TRACKED_CB_SHADER_MASK,
                              shader->ps.cb_shader_mask);
    gfx11_end_packed_context_regs();
@@ -2044,9 +2026,9 @@ static void gfx12_emit_shader_ps(struct si_context *sctx, unsigned index)
    radeon_begin(&sctx->gfx_cs);
    gfx12_begin_context_regs();
    gfx12_opt_set_context_reg(R_028650_SPI_SHADER_Z_FORMAT, AC_TRACKED_SPI_SHADER_Z_FORMAT,
-                             shader->ps.spi_shader_z_format);
+                             shader->info.spi_shader_z_format);
    gfx12_opt_set_context_reg(R_028654_SPI_SHADER_COL_FORMAT, AC_TRACKED_SPI_SHADER_COL_FORMAT,
-                             shader->ps.spi_shader_col_format);
+                             shader->info.spi_shader_col_format);
    gfx12_opt_set_context_reg(R_02865C_SPI_PS_INPUT_ENA, AC_TRACKED_SPI_PS_INPUT_ENA,
                              shader->ps.spi_ps_input_ena);
    gfx12_opt_set_context_reg(R_028660_SPI_PS_INPUT_ADDR, AC_TRACKED_SPI_PS_INPUT_ADDR,
@@ -2179,47 +2161,10 @@ static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
    if (sscreen->info.has_rbplus && !sscreen->info.rbplus_allowed)
       shader->ps.db_shader_control |= S_02880C_DUAL_QUAD_DISABLE(1);
 
-   shader->ps.spi_shader_col_format = si_get_spi_shader_col_format(shader);
    shader->ps.cb_shader_mask = ac_get_cb_shader_mask(shader->key.ps.part.epilog.spi_shader_col_format);
    shader->ps.spi_ps_input_ena = shader->config.spi_ps_input_ena;
    shader->ps.spi_ps_input_addr = shader->config.spi_ps_input_addr;
    shader->ps.num_interp = si_get_ps_num_interp(shader);
-   shader->ps.spi_shader_z_format =
-      ac_get_spi_shader_z_format(shader->info.writes_z, shader->info.writes_stencil,
-                                 shader->info.writes_sample_mask,
-                                 shader->key.ps.part.epilog.alpha_to_coverage_via_mrtz);
-
-   /* Ensure that some export memory is always allocated, for two reasons:
-    *
-    * 1) Correctness: The hardware ignores the EXEC mask if no export
-    *    memory is allocated, so KILL and alpha test do not work correctly
-    *    without this.
-    * 2) Performance: Every shader needs at least a NULL export, even when
-    *    it writes no color/depth output. The NULL export instruction
-    *    stalls without this setting.
-    *
-    * Don't add this to CB_SHADER_MASK.
-    *
-    * GFX10 supports pixel shaders without exports by setting both
-    * the color and Z formats to SPI_SHADER_ZERO. The hw will skip export
-    * instructions if any are present.
-    *
-    * RB+ depth-only rendering requires SPI_SHADER_32_R.
-    */
-   bool has_mrtz = shader->ps.spi_shader_z_format != V_028710_SPI_SHADER_ZERO;
-
-   if (!shader->ps.spi_shader_col_format) {
-      if (shader->key.ps.part.epilog.rbplus_depth_only_opt) {
-         shader->ps.spi_shader_col_format = V_028714_SPI_SHADER_32_R;
-      } else if (!has_mrtz) {
-         if (sscreen->info.gfx_level >= GFX10) {
-            if (G_02880C_KILL_ENABLE(shader->ps.db_shader_control))
-               shader->ps.spi_shader_col_format = V_028714_SPI_SHADER_32_R;
-         } else {
-            shader->ps.spi_shader_col_format = V_028714_SPI_SHADER_32_R;
-         }
-      }
-   }
 
    if (sscreen->info.gfx_level >= GFX12) {
       shader->ps.spi_ps_in_control = S_028640_PARAM_GEN(shader->key.ps.mono.point_smoothing) |
@@ -2309,7 +2254,7 @@ static void si_shader_init_pm4_state(struct si_screen *sscreen, struct si_shader
       else if (shader->key.ge.as_ngg)
          gfx10_shader_ngg(sscreen, shader);
       else
-         si_shader_vs(sscreen, shader, NULL);
+         si_shader_vs_legacy(sscreen, shader, NULL);
       break;
    case MESA_SHADER_TESS_CTRL:
       si_shader_hs(sscreen, shader);
@@ -2320,15 +2265,15 @@ static void si_shader_init_pm4_state(struct si_screen *sscreen, struct si_shader
       else if (shader->key.ge.as_ngg)
          gfx10_shader_ngg(sscreen, shader);
       else
-         si_shader_vs(sscreen, shader, NULL);
+         si_shader_vs_legacy(sscreen, shader, NULL);
       break;
    case MESA_SHADER_GEOMETRY:
       if (shader->key.ge.as_ngg) {
          gfx10_shader_ngg(sscreen, shader);
       } else {
          /* VS must be initialized first because GS uses its fields. */
-         si_shader_vs(sscreen, shader->gs_copy_shader, shader->selector);
-         si_shader_gs(sscreen, shader);
+         si_shader_vs_legacy(sscreen, shader->gs_copy_shader, shader->selector);
+         si_shader_gs_legacy(sscreen, shader);
       }
       break;
    case MESA_SHADER_FRAGMENT:
@@ -2600,35 +2545,6 @@ static void si_clear_vs_key_outputs(struct si_context *sctx, struct si_shader_se
    key->ge.mono.write_pos_to_clipvertex = 0;
 }
 
-void si_ps_key_update_framebuffer(struct si_context *sctx)
-{
-   struct si_shader_selector *sel = sctx->shader.ps.cso;
-   union si_shader_key *key = &sctx->shader.ps.key;
-
-   if (!sel)
-      return;
-
-   /* ps_uses_fbfetch is true only if the color buffer is bound. */
-   if (sctx->ps_uses_fbfetch) {
-      struct pipe_surface *cb0 = &sctx->framebuffer.state.cbufs[0];
-      struct pipe_resource *tex = cb0->texture;
-
-      /* 1D textures are allocated and used as 2D on GFX9. */
-      key->ps.mono.fbfetch_msaa = sctx->framebuffer.nr_samples > 1;
-      key->ps.mono.fbfetch_is_1D =
-         sctx->gfx_level != GFX9 &&
-         (tex->target == PIPE_TEXTURE_1D || tex->target == PIPE_TEXTURE_1D_ARRAY);
-      key->ps.mono.fbfetch_layered =
-         tex->target == PIPE_TEXTURE_1D_ARRAY || tex->target == PIPE_TEXTURE_2D_ARRAY ||
-         tex->target == PIPE_TEXTURE_CUBE || tex->target == PIPE_TEXTURE_CUBE_ARRAY ||
-         tex->target == PIPE_TEXTURE_3D;
-   } else {
-      key->ps.mono.fbfetch_msaa = 0;
-      key->ps.mono.fbfetch_is_1D = 0;
-      key->ps.mono.fbfetch_layered = 0;
-   }
-}
-
 void si_ps_key_update_framebuffer_blend_dsa_rasterizer(struct si_context *sctx)
 {
    struct si_shader_selector *sel = sctx->shader.ps.cso;
@@ -2697,9 +2613,9 @@ void si_ps_key_update_framebuffer_blend_dsa_rasterizer(struct si_context *sctx)
        sctx->framebuffer.spi_shader_col_format);
    key->ps.part.epilog.spi_shader_col_format &= blend->cb_target_enabled_4bit;
 
-   key->ps.part.epilog.dual_src_blend_swizzle = sctx->gfx_level >= GFX11 &&
-                                                blend->dual_src_blend &&
-                                                (sel->info.colors_written_4bit & 0xff) == 0xff;
+   key->ps.part.epilog.dual_src_blend =
+      blend->dual_src_blend && ((sctx->gfx_level >= GFX11 && sel->info.colors_written_4bit & 0xff) ||
+                                ((sel->info.colors_written_4bit & 0xff) == 0xf0));
 
    /* The output for dual source blending should have
     * the same format as the first output.
@@ -2719,13 +2635,13 @@ void si_ps_key_update_framebuffer_blend_dsa_rasterizer(struct si_context *sctx)
       key->ps.part.epilog.spi_shader_col_format |= V_028710_SPI_SHADER_32_AR;
 
    /* CB doesn't clamp outputs to less than 16 bits. */
-   if (sctx->screen->info.has_cb_lt16bit_int_clamp_bug) {
+   if (sctx->screen->info.compiler_info.has_cb_lt16bit_int_clamp_bug) {
       key->ps.part.epilog.color_is_int8 = sctx->framebuffer.color_is_int8;
       key->ps.part.epilog.color_is_int10 = sctx->framebuffer.color_is_int10;
    }
 
    /* Disable unwritten outputs (if WRITE_ALL_CBUFS isn't enabled). */
-   if (!sel->info.color0_writes_all_cbufs) {
+   if (!sel->info.color0_writes_all_cbufs && !blend->dual_src_blend) {
       key->ps.part.epilog.spi_shader_col_format &= sel->info.colors_written_4bit;
       key->ps.part.epilog.color_is_int8 &= sel->info.colors_written;
       key->ps.part.epilog.color_is_int10 &= sel->info.colors_written;
@@ -3442,7 +3358,7 @@ static void si_init_shader_selector_async(void *job, void *gdata, int thread_ind
     */
    if (!sscreen->use_monolithic_shaders) {
       struct si_shader *shader = CALLOC_STRUCT(si_shader);
-      unsigned char ir_sha1_cache_key[SHA1_DIGEST_LENGTH];
+      unsigned char ir_blake3_cache_key[BLAKE3_KEY_LEN];
 
       if (!shader) {
          mesa_loge("can't allocate a main shader part");
@@ -3474,15 +3390,15 @@ static void si_init_shader_selector_async(void *job, void *gdata, int thread_ind
 
       if (sel->stage <= MESA_SHADER_GEOMETRY || sel->stage == MESA_SHADER_MESH) {
          si_get_ir_cache_key(sel, shader->key.ge.as_ngg, shader->key.ge.as_es,
-                             shader->wave_size, ir_sha1_cache_key);
+                             shader->wave_size, ir_blake3_cache_key);
       } else {
-         si_get_ir_cache_key(sel, false, false, shader->wave_size, ir_sha1_cache_key);
+         si_get_ir_cache_key(sel, false, false, shader->wave_size, ir_blake3_cache_key);
       }
 
       /* Try to load the shader from the shader cache. */
       simple_mtx_lock(&sscreen->shader_cache_mutex);
 
-      if (si_shader_cache_load_shader(sscreen, ir_sha1_cache_key, shader)) {
+      if (si_shader_cache_load_shader(sscreen, ir_blake3_cache_key, shader)) {
          simple_mtx_unlock(&sscreen->shader_cache_mutex);
          si_shader_dump_stats_for_shader_db(sscreen, shader, debug);
       } else {
@@ -3499,7 +3415,7 @@ static void si_init_shader_selector_async(void *job, void *gdata, int thread_ind
          }
 
          simple_mtx_lock(&sscreen->shader_cache_mutex);
-         si_shader_cache_insert_shader(sscreen, ir_sha1_cache_key, shader, true);
+         si_shader_cache_insert_shader(sscreen, ir_blake3_cache_key, shader, true);
          simple_mtx_unlock(&sscreen->shader_cache_mutex);
       }
 
@@ -4589,6 +4505,7 @@ bool si_set_tcs_to_fixed_func_shader(struct si_context *sctx)
    }
 
    sctx->shader.tcs.cso = tcs;
+   sctx->shader.tcs.key.ge.use_aco = tcs->info.base.use_aco_amd;
    return true;
 }
 
@@ -4737,7 +4654,7 @@ void si_update_tess_io_layout_state(struct si_context *sctx)
    unsigned num_patches, lds_size;
 
    /* Compute NUM_PATCHES and LDS_SIZE. */
-   ac_nir_compute_tess_wg_info(&sctx->screen->info, &tcs->info.tess_io_info,
+   ac_nir_compute_tess_wg_info(&sctx->screen->info.compiler_info, &tcs->info.tess_io_info,
                                tcs->info.base.tess.tcs_vertices_out, ls_current->wave_size,
                                tess_uses_primid, num_tcs_input_cp, lds_input_vertex_size,
                                num_remapped_tess_level_outputs, &num_patches, &lds_size);

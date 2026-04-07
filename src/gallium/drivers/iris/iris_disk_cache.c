@@ -1,26 +1,7 @@
 /*
  * Copyright © 2018 Intel Corporation
+ * SPDX-License-Identifier: MIT
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included
- * in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
- */
-
-/**
  * @file iris_disk_cache.c
  *
  * Functions for interacting with the on-disk shader cache.
@@ -35,7 +16,7 @@
 #include "util/blob.h"
 #include "util/build_id.h"
 #include "util/disk_cache.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "intel/compiler/brw/brw_compiler.h"
 #ifdef INTEL_USE_ELK
 #include "intel/compiler/elk/elk_compiler.h"
@@ -63,11 +44,11 @@ iris_disk_cache_compute_key(struct disk_cache *cache,
    memcpy(&prog_key, orig_prog_key, prog_key_size);
    prog_key.base.program_string_id = 0;
 
-   uint8_t data[sizeof(prog_key) + sizeof(ish->nir_sha1)];
-   uint32_t data_size = prog_key_size + sizeof(ish->nir_sha1);
+   uint8_t data[sizeof(prog_key) + sizeof(ish->nir_blake3)];
+   uint32_t data_size = prog_key_size + sizeof(ish->nir_blake3);
 
-   memcpy(data, ish->nir_sha1, sizeof(ish->nir_sha1));
-   memcpy(data + sizeof(ish->nir_sha1), &prog_key, prog_key_size);
+   memcpy(data, ish->nir_blake3, sizeof(ish->nir_blake3));
+   memcpy(data + sizeof(ish->nir_blake3), &prog_key, prog_key_size);
 
    disk_cache_compute_key(cache, data, data_size, cache_key);
 }
@@ -102,9 +83,9 @@ iris_disk_cache_store(struct disk_cache *cache,
    iris_disk_cache_compute_key(cache, ish, prog_key, prog_key_size, cache_key);
 
    if (debug) {
-      char sha1[SHA1_DIGEST_STRING_LENGTH];
-      _mesa_sha1_format(sha1, cache_key);
-      fprintf(stderr, "[mesa disk cache] storing %s\n", sha1);
+      char blake3[BLAKE3_HEX_LEN];
+      _mesa_blake3_format(blake3, cache_key);
+      fprintf(stderr, "[mesa disk cache] storing %s\n", blake3);
    }
 
    struct blob blob;
@@ -201,9 +182,9 @@ iris_disk_cache_retrieve(struct iris_screen *screen,
    iris_disk_cache_compute_key(cache, ish, prog_key, key_size, cache_key);
 
    if (debug) {
-      char sha1[SHA1_DIGEST_STRING_LENGTH];
-      _mesa_sha1_format(sha1, cache_key);
-      fprintf(stderr, "[mesa disk cache] retrieving %s: ", sha1);
+      char blake3[BLAKE3_HEX_LEN];
+      _mesa_blake3_format(blake3, cache_key);
+      fprintf(stderr, "[mesa disk cache] retrieving %s: ", blake3);
    }
 
    size_t size;
@@ -350,12 +331,12 @@ iris_disk_cache_init(struct iris_screen *screen)
    if (INTEL_DEBUG(DEBUG_DISK_CACHE_DISABLE_MASK))
       return;
 
-   /* array length = strlen("iris_") + sha + nul char */
+   /* array length = strlen("iris_") + blake3 + nul char */
    char renderer[5 + 40 + 1] = {0};
 
    if (screen->brw) {
-      char device_info_sha[SHA1_DIGEST_STRING_LENGTH];
-      brw_device_sha1(device_info_sha, screen->devinfo);
+      char device_info_sha[BLAKE3_HEX_LEN];
+      brw_device_blake3(device_info_sha, screen->devinfo);
       memcpy(renderer, "iris_", 5);
       memcpy(renderer + 5, device_info_sha, 40);
    } else {
@@ -372,7 +353,7 @@ iris_disk_cache_init(struct iris_screen *screen)
    const uint8_t *id_sha1 = build_id_data(note);
    assert(id_sha1);
 
-   char timestamp[SHA1_DIGEST_STRING_LENGTH];
+   char timestamp[BLAKE3_HEX_LEN];
    _mesa_sha1_format(timestamp, id_sha1);
 
    const uint64_t driver_flags =

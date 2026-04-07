@@ -40,6 +40,11 @@
 #include "util/pb_slab.h"
 
 #include "util/blob.h"
+
+#ifdef HAVE_LIBDRM
+#include "renderonly/renderonly.h"
+#endif
+
 #include "util/disk_cache.h"
 #include "util/hash_table.h"
 #include "util/list.h"
@@ -257,6 +262,7 @@ enum zink_debug {
    ZINK_DEBUG_MSAAOPT = (1<<20),
    ZINK_DEBUG_RPLOADS = (1<<21),
    ZINK_DEBUG_NOGENERAL = (1<<22),
+   ZINK_DEBUG_RPSTORES = (1<<23),
 };
 
 enum zink_pv_emulation_primitive {
@@ -1294,6 +1300,7 @@ struct zink_resource {
    uint16_t sampler_bind_count[2]; //gfx, compute
    uint16_t image_bind_count[2]; //gfx, compute
    uint16_t write_bind_count[2]; //gfx, compute
+   VkPipelineStageFlagBits seen_sampler_bind_stages;
    union {
       uint16_t bindless[2]; //tex, img
       uint32_t all_bindless;
@@ -1321,6 +1328,10 @@ struct zink_resource {
 
    uint8_t modifiers_count;
    uint64_t *modifiers;
+
+#ifdef HAVE_LIBDRM
+   struct renderonly_scanout *ro_scanout;
+#endif
 };
 
 static inline struct zink_resource *
@@ -1396,6 +1407,9 @@ struct zink_screen {
 
    bool device_lost;
    int drm_fd;
+#ifdef HAVE_LIBDRM
+   struct renderonly *ro;
+#endif
 
    struct slab_parent_pool transfer_pool;
    struct disk_cache *disk_cache;
@@ -1804,6 +1818,7 @@ struct zink_context {
       VkRenderingInfo info;
       struct tc_renderpass_info tc_info;
       VkAttachmentFeedbackLoopInfoEXT fbfetch_att[PIPE_MAX_COLOR_BUFS + 2]; //+depth, +stencil
+      VkRenderingAttachmentFlagsInfoKHR flags[PIPE_MAX_COLOR_BUFS + 2]; //+depth, +stencil
    } dynamic_fb;
    uint32_t fb_layer_mismatch; //bitmask
    struct set rendering_state_cache[6]; //[util_logbase2_ceil(msrtss samplecount)]

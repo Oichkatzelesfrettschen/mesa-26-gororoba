@@ -43,6 +43,9 @@
 #include "vk_sync.h"
 #include "vk_sync_timeline.h"
 
+#define PVR_DRM_DRIVER_NAME "powervr"
+#define PVR_SRV_DRIVER_NAME "pvr"
+
 struct pvr_device_info;
 struct pvr_device_runtime_info;
 
@@ -187,19 +190,21 @@ struct pvr_winsys_render_ctx_create_info {
    enum pvr_winsys_ctx_priority priority;
    pvr_dev_addr_t vdm_callstack_addr;
 
-   struct pvr_winsys_render_ctx_static_state {
-      uint64_t vdm_ctx_state_base_addr;
-      uint64_t geom_ctx_state_base_addr;
+   union {
+      struct pvr_rogue_winsys_render_ctx_static_state {
+         uint64_t vdm_ctx_state_base_addr;
+         uint64_t geom_ctx_state_base_addr;
 
-      struct {
-         uint64_t vdm_ctx_store_task0;
-         uint32_t vdm_ctx_store_task1;
-         uint64_t vdm_ctx_store_task2;
+         struct {
+            uint64_t vdm_ctx_store_task0;
+            uint32_t vdm_ctx_store_task1;
+            uint64_t vdm_ctx_store_task2;
 
-         uint64_t vdm_ctx_resume_task0;
-         uint32_t vdm_ctx_resume_task1;
-         uint64_t vdm_ctx_resume_task2;
-      } geom_state[2];
+            uint64_t vdm_ctx_resume_task0;
+            uint32_t vdm_ctx_resume_task1;
+            uint64_t vdm_ctx_resume_task2;
+         } geom_state[2];
+      } rogue;
    } static_state;
 };
 
@@ -210,16 +215,18 @@ struct pvr_winsys_render_ctx {
 struct pvr_winsys_compute_ctx_create_info {
    enum pvr_winsys_ctx_priority priority;
 
-   struct pvr_winsys_compute_ctx_static_state {
-      uint64_t cdm_ctx_store_pds0;
-      uint64_t cdm_ctx_store_pds0_b;
-      uint32_t cdm_ctx_store_pds1;
+   union {
+      struct pvr_rogue_winsys_compute_ctx_static_state {
+         uint64_t cdm_ctx_store_pds0;
+         uint64_t cdm_ctx_store_pds0_b;
+         uint32_t cdm_ctx_store_pds1;
 
-      uint64_t cdm_ctx_terminate_pds;
-      uint32_t cdm_ctx_terminate_pds1;
+         uint64_t cdm_ctx_terminate_pds;
+         uint32_t cdm_ctx_terminate_pds1;
 
-      uint64_t cdm_ctx_resume_pds0;
-      uint64_t cdm_ctx_resume_pds0_b;
+         uint64_t cdm_ctx_resume_pds0;
+         uint64_t cdm_ctx_resume_pds0_b;
+      } rogue;
    } static_state;
 };
 
@@ -469,6 +476,7 @@ struct pvr_winsys {
 void pvr_winsys_destroy(struct pvr_winsys *ws);
 VkResult pvr_winsys_create(const char *render_path,
                            const char *display_path,
+                           bool keep_display_master,
                            const VkAllocationCallbacks *alloc,
                            struct pvr_winsys **ws_out);
 

@@ -84,11 +84,10 @@ prepare_tex_descs(struct panvk_image_view *view)
    struct panvk_image *image =
       container_of(view->vk.image, struct panvk_image, vk);
    struct panvk_device *dev = to_panvk_device(view->vk.base.device);
-   bool img_combined_ds =
-      vk_format_aspects(image->vk.format) ==
-      (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-   bool can_preload_other_aspect = img_combined_ds &&
-      (view->vk.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+#if PAN_ARCH >= 9
+   bool has_storage = (view->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
+                      !vk_format_is_compressed(view->vk.format);
+#endif
 
    if (util_format_is_depth_or_stencil(view->pview.format)) {
       /* Vulkan wants R001, where the depth/stencil is stored in the red
@@ -134,12 +133,12 @@ prepare_tex_descs(struct panvk_image_view *view)
       .alignment = pan_alignment(NULL_PLANE) * (plane_count > 1 ? 2 : 1),
 #endif
 
-      .size = tex_payload_size * (can_preload_other_aspect ? 2 : plane_count),
+      .size = tex_payload_size * plane_count,
    };
 
 #if PAN_ARCH >= 9
    uint32_t storage_payload_size = 0;
-   if (view->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
+   if (has_storage) {
       /* We'll need a second set of Texture Descriptors for storage use. */
       storage_payload_size = tex_payload_size * plane_count;
       alloc_info.size += storage_payload_size;
@@ -158,11 +157,10 @@ prepare_tex_descs(struct panvk_image_view *view)
 
 #if PAN_ARCH >= 9
       struct pan_ptr storage_ptr = ptr;
-      if (view->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
+      if (has_storage) {
          uint32_t storage_payload_offset =
             alloc_info.size - storage_payload_size;
-         storage_ptr.gpu += storage_payload_offset;
-         storage_ptr.cpu += storage_payload_offset;
+         storage_ptr = pan_ptr_offset(storage_ptr, storage_payload_offset);
       }
 #endif
 
@@ -180,51 +178,22 @@ prepare_tex_descs(struct panvk_image_view *view)
             GENX(pan_sampled_texture_emit)(&pview, &view->descs.tex[plane],
                                            &ptr);
 #if PAN_ARCH >= 9
-            if (view->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
+            if (has_storage) {
                GENX(pan_storage_texture_emit)(
                   &pview, &view->descs.storage_tex[plane], &storage_ptr);
-               storage_ptr.cpu += tex_payload_size;
-               storage_ptr.gpu += tex_payload_size;
+               storage_ptr = pan_ptr_offset(storage_ptr, tex_payload_size);
             }
 #endif
 
-            ptr.cpu += tex_payload_size;
-            ptr.gpu += tex_payload_size;
+            ptr = pan_ptr_offset(ptr, tex_payload_size);
          }
       } else {
          GENX(pan_sampled_texture_emit)(&pview, &view->descs.tex[0], &ptr);
 #if PAN_ARCH >= 9
-         if (view->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT)
+         if (has_storage)
             GENX(pan_storage_texture_emit)(&pview, &view->descs.storage_tex[0],
                                            &storage_ptr);
 #endif
-      }
-
-      if (can_preload_other_aspect) {
-         /* If the depth was present in the aspects mask, we've handled it
-          * already, so move on to the stencil. If it wasn't present, it's the
-          * stencil texture we create first, and we need t handle the depth here.
-          */
-         const VkImageAspectFlagBits other_aspect =
-            (view->vk.aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
-            ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
-         const uint8_t other_plane = panvk_plane_index(image, other_aspect);
-
-         pview.format = other_aspect == VK_IMAGE_ASPECT_DEPTH_BIT
-                           ? panvk_image_depth_only_pfmt(image)
-                           : panvk_image_stencil_only_pfmt(image);
-
-         memset(pview.planes, 0, sizeof(pview.planes));
-         pview.planes[0] = (struct pan_image_plane_ref) {
-            .image = &image->planes[other_plane].image,
-            .plane_idx = 0,
-         };
-
-         ptr.cpu += tex_payload_size;
-         ptr.gpu += tex_payload_size;
-
-         GENX(pan_sampled_texture_emit)(&pview,
-                                        &view->descs.zs.other_aspect_tex, &ptr);
       }
    }
 
@@ -251,25 +220,32 @@ prepare_attr_buf_descs(struct panvk_image_view *view)
                            (is_3d ? slayout->tiled_or_linear.surface_stride_B
                                   : plane_layout->array_stride_B));
 
+   unsigned nr_samples = image->planes[plane_idx].image.props.nr_samples;
+   nr_samples = (nr_samples > 0) ? nr_samples : 1;
+   unsigned log2_nr_samples = util_logbase2(nr_samples);
+
    pan_pack(&view->descs.img_attrib_buf[0], ATTRIBUTE_BUFFER, cfg) {
       /* The format is the only thing we lack to emit attribute descriptors
        * when copying from the set to the attribute tables. Instead of
        * making the descriptor size to store an extra format, we pack
        * the 22-bit format with the texel stride, which is expected to be
-       * fit in remaining 10 bits.
+       * fit in 7 bits, followed by 3 bits for log2(nr_samples), which we
+       * need in order to reconstruct the number of layers in multisampled
+       * arrays.
        */
       uint32_t fmt_blksize = util_format_get_blocksize(view->pview.format);
       uint32_t hw_fmt =
          GENX(pan_format_from_pipe_format)(view->pview.format)->hw;
 
-      assert(fmt_blksize < BITFIELD_MASK(10));
-      assert(hw_fmt < BITFIELD_MASK(22));
+      assert(fmt_blksize <= BITFIELD_MASK(7));
+      assert(log2_nr_samples <= BITFIELD_MASK(3));
+      assert(hw_fmt <= BITFIELD_MASK(22));
 
       cfg.type = image->vk.drm_format_mod == DRM_FORMAT_MOD_LINEAR
                     ? MALI_ATTRIBUTE_TYPE_3D_LINEAR
                     : MALI_ATTRIBUTE_TYPE_3D_INTERLEAVED;
       cfg.pointer = image->planes[plane_idx].plane.base + offset;
-      cfg.stride = fmt_blksize | (hw_fmt << 10);
+      cfg.stride = fmt_blksize | (log2_nr_samples << 7) | (hw_fmt << 10);
       cfg.size = pan_image_mip_level_size(&image->planes[plane_idx].image, 0,
                                           view->pview.first_level);
    }
@@ -285,10 +261,14 @@ prepare_attr_buf_descs(struct panvk_image_view *view)
             ? extent.depth
             : (view->pview.last_layer - view->pview.first_layer + 1);
       cfg.row_stride = slayout->tiled_or_linear.row_stride_B;
-      if (cfg.r_dimension > 1) {
+      if (cfg.r_dimension > 1 || nr_samples > 1) {
          cfg.slice_stride = view->pview.dim == MALI_TEXTURE_DIMENSION_3D
                                ? slayout->tiled_or_linear.surface_stride_B
                                : plane_layout->array_stride_B;
+      }
+      if (nr_samples > 1) {
+         cfg.r_dimension *= nr_samples;
+         cfg.slice_stride /= nr_samples;
       }
    }
 }
@@ -299,6 +279,10 @@ create_ms_views(struct panvk_device *dev, struct panvk_image_view *view,
                 const VkImageViewCreateInfo *pCreateInfo,
                 const VkAllocationCallbacks *pAllocator)
 {
+   /* Don't create extra views for internal views. */
+   if (pCreateInfo->flags & VK_IMAGE_VIEW_CREATE_DRIVER_INTERNAL_BIT_MESA)
+      return;
+
    struct panvk_image *source_img =
       panvk_image_from_handle(vk_image_to_handle(view->vk.image));
    const VkImage *target_images = source_img->ms_imgs;
@@ -350,9 +334,14 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
    }
 
    enum pipe_format pfmt = vk_format_to_pipe_format(view->vk.view_format);
+   const VkImageViewASTCDecodeModeEXT *astc_decode =
+      vk_find_struct_const(pCreateInfo->pNext, IMAGE_VIEW_ASTC_DECODE_MODE_EXT);
+
    view->pview = (struct pan_image_view){
       .format = pfmt,
       .astc.hdr = util_format_is_astc_hdr(pfmt),
+      .astc.narrow = astc_decode &&
+                     astc_decode->decodeMode == VK_FORMAT_R8G8B8A8_UNORM,
       .dim = panvk_view_type_to_mali_tex_dim(view->vk.view_type),
       .nr_samples = image->vk.samples,
       .first_level = view->vk.base_mip_level,
@@ -362,6 +351,7 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
          : view->vk.base_mip_level + view->vk.level_count - 1,
       .first_layer = view->vk.base_array_layer,
       .last_layer = view->vk.base_array_layer + view->vk.layer_count - 1,
+      .min_lod = view->vk.min_lod,
    };
    panvk_convert_swizzle(&view->vk.swizzle, view->pview.swizzle);
 
@@ -400,11 +390,7 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
    else if (view->vk.aspects == VK_IMAGE_ASPECT_DEPTH_BIT)
       view->pview.format = panvk_image_depth_only_pfmt(image);
 
-   /* Attachments need a texture for the FB preload logic. */
-   VkImageUsageFlags tex_usage_mask =
-      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+   VkImageUsageFlags tex_usage_mask = VK_IMAGE_USAGE_SAMPLED_BIT;
 
 #if PAN_ARCH >= 9
    /* Valhall passes a texture descriptor to LEA_TEX. */

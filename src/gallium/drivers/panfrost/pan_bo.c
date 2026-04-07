@@ -11,6 +11,7 @@
 
 #include "pan_bo.h"
 #include "pan_device.h"
+#include "pan_trace.h"
 #include "pan_util.h"
 #include "wrap.h"
 
@@ -18,7 +19,6 @@
 
 #include "util/u_inlines.h"
 #include "util/u_math.h"
-#include "util/perf/cpu_trace.h"
 
 /* This file implements a userspace BO cache. Allocating and freeing
  * GPU-visible buffers is very expensive, and even the extra kernel roundtrips
@@ -105,7 +105,7 @@ err_alloc:
 static void
 panfrost_bo_free(struct panfrost_bo *bo)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_BO);
 
    struct pan_kmod_bo *kmod_bo = bo->kmod_bo;
    struct pan_kmod_vm *vm = bo->dev->kmod.vm;
@@ -138,7 +138,7 @@ panfrost_bo_free(struct panfrost_bo *bo)
 bool
 panfrost_bo_wait(struct panfrost_bo *bo, int64_t timeout_ns, bool wait_readers)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_BO);
 
    /* If the BO has been exported or imported we can't rely on the cached
     * state, we need to call the WAIT_BO ioctl.
@@ -320,13 +320,13 @@ panfrost_bo_cache_evict_all(struct panfrost_device *dev)
 int
 panfrost_bo_mmap(struct panfrost_bo *bo)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_BO);
 
    if (bo->ptr.cpu)
       return 0;
 
-   bo->ptr.cpu = pan_kmod_bo_mmap(bo->kmod_bo, 0, panfrost_bo_size(bo),
-                                  PROT_READ | PROT_WRITE, MAP_SHARED, NULL);
+   bo->ptr.cpu =
+      pan_kmod_bo_mmap(bo->kmod_bo, PROT_READ | PROT_WRITE, MAP_SHARED, NULL);
    if (bo->ptr.cpu == MAP_FAILED) {
       bo->ptr.cpu = NULL;
       return -1;
@@ -338,7 +338,7 @@ panfrost_bo_mmap(struct panfrost_bo *bo)
 static void
 panfrost_bo_munmap(struct panfrost_bo *bo)
 {
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_BO);
 
    if (!bo->ptr.cpu)
       return;
@@ -356,7 +356,8 @@ panfrost_bo_create(struct panfrost_device *dev, size_t size, uint32_t flags,
                    const char *label)
 {
    assert(label);
-   MESA_TRACE_SCOPE("%s size=%zu label=\"%s\"", __func__, size, label);
+   PAN_TRACE_SCOPE(PAN_TRACE_GL_BO, "%s size=%zu label=\"%s\"", __func__,
+                   size, label);
 
    struct panfrost_bo *bo;
 
@@ -470,6 +471,8 @@ panfrost_bo_unreference(struct panfrost_bo *bo)
 struct panfrost_bo *
 panfrost_bo_import(struct panfrost_device *dev, int fd)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_GL_BO);
+
    struct panfrost_bo *bo;
    ASSERTED int ret;
    unsigned gem_handle;
@@ -482,7 +485,7 @@ panfrost_bo_import(struct panfrost_device *dev, int fd)
 
    if (!bo->dev) {
       bo->dev = dev;
-      bo->kmod_bo = pan_kmod_bo_import(dev->kmod.dev, fd, 0);
+      bo->kmod_bo = pan_kmod_bo_import(dev->kmod.dev, fd);
 
       struct pan_kmod_vm_op vm_op = {
          .type = PAN_KMOD_VM_OP_TYPE_MAP,
@@ -533,6 +536,8 @@ panfrost_bo_import(struct panfrost_device *dev, int fd)
 int
 panfrost_bo_export(struct panfrost_bo *bo)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_GL_BO);
+
    int ret = pan_kmod_bo_export(bo->kmod_bo);
    if (ret >= 0)
       bo->flags |= PAN_BO_SHARED;

@@ -17,7 +17,7 @@
 #include "nir/nir_serialize.h"
 #include "spirv/nir_spirv.h"
 #include "util/u_debug.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/shader_stats.h"
 #include "vk_nir.h"
 #include "vk_pipeline.h"
@@ -90,6 +90,8 @@ tu6_load_state_size(struct tu_pipeline *pipeline,
          case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+         case VK_DESCRIPTOR_TYPE_SAMPLE_WEIGHT_IMAGE_QCOM:
+         case VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM:
             /* Textures and UBO's needs a packet for each stage */
             count = stage_count;
             break;
@@ -219,7 +221,8 @@ tu6_emit_load_state(struct tu_device *device,
             }
             break;
          }
-         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
+         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_BLOCK_MATCH_IMAGE_QCOM: {
             tu_foreach_stage(stage, stages) {
                /* TODO: We could emit less CP_LOAD_STATE6 if we used
                 * struct-of-arrays instead of array-of-structs.
@@ -510,21 +513,19 @@ tu6_setup_streamout(struct tu_cs *cs,
 
    for (unsigned i = 0; i < info->num_outputs; i++) {
       const struct ir3_stream_output *out = &info->output[i];
-      unsigned k = out->register_index;
+      gl_varying_slot slot = (gl_varying_slot) out->location;
       unsigned idx;
-
-      /* Skip it, if it's an output that was never assigned a register. */
-      if (k >= v->outputs_count || v->outputs[k].regid == INVALID_REG)
-         continue;
 
       /* linkage map sorted by order frag shader wants things, so
        * a bit less ideal here..
        */
       for (idx = 0; idx < l->cnt; idx++)
-         if (l->var[idx].slot == v->outputs[k].slot)
+         if (l->var[idx].slot == slot)
             break;
 
-      assert(idx < l->cnt);
+      /* Skip it, if it's an output that was never assigned a register. */
+      if (idx >= l->cnt)
+         continue;
 
       for (unsigned j = 0; j < out->num_components; j++) {
          unsigned c   = j + out->start_component;
@@ -1054,6 +1055,7 @@ tu6_emit_vpc(struct tu_cs *cs,
          crb.add(PC_HS_CNTL(CHIP,
             .primitive_id = primid,
          ));
+         break;
       case MESA_SHADER_TESS_EVAL:
          crb.add(PC_DS_CNTL(CHIP,
             .stride_in_vpc = COND(last, linkage.max_loc),
@@ -1279,9 +1281,9 @@ tu6_emit_patch_control_points(struct tu_cs *cs,
                          tcs->variant->tess.tcs_vertices_out);
    }
 
-   uint32_t patches_per_wave =
-      MIN2(vs_hs_local_mem_size / (patch_local_mem_size_16b * 16),
-           max_patches_per_wave);
+   uint32_t patches_per_wave = patch_local_mem_size_16b == 0
+                                  ? 0
+                                  : MIN2(vs_hs_local_mem_size / (patch_local_mem_size_16b * 16), max_patches_per_wave);
 
    uint32_t wave_input_size = DIV_ROUND_UP(
       patches_per_wave * patch_local_mem_size_16b * 16, 256);
@@ -1523,7 +1525,7 @@ tu_append_executable(struct tu_pipeline *pipeline,
 }
 
 static void
-tu_hash_stage(struct mesa_sha1 *ctx,
+tu_hash_stage(blake3_hasher *ctx,
               VkPipelineCreateFlags2KHR pipeline_flags,
               const VkPipelineShaderStageCreateInfo *stage,
               const nir_shader *nir,
@@ -1534,14 +1536,14 @@ tu_hash_stage(struct mesa_sha1 *ctx,
       struct blob blob;
       blob_init(&blob);
       nir_serialize(&blob, nir, true);
-      _mesa_sha1_update(ctx, blob.data, blob.size);
+      _mesa_blake3_update(ctx, blob.data, blob.size);
       blob_finish(&blob);
    } else {
-      unsigned char stage_hash[SHA1_DIGEST_LENGTH];
+      unsigned char stage_hash[BLAKE3_KEY_LEN];
       vk_pipeline_hash_shader_stage(pipeline_flags, stage, NULL, stage_hash);
-      _mesa_sha1_update(ctx, stage_hash, sizeof(stage_hash));
+      _mesa_blake3_update(ctx, stage_hash, sizeof(stage_hash));
    }
-   _mesa_sha1_update(ctx, key, sizeof(*key));
+   _mesa_blake3_update(ctx, key, sizeof(*key));
 }
 
 static void
@@ -1553,22 +1555,22 @@ tu_hash_shaders(unsigned char *hash,
                 const struct tu_shader_key *keys,
                 VkGraphicsPipelineLibraryFlagsEXT state)
 {
-   struct mesa_sha1 ctx;
+   blake3_hasher ctx;
 
-   _mesa_sha1_init(&ctx);
+   _mesa_blake3_init(&ctx);
 
    if (layout)
-      _mesa_sha1_update(&ctx, layout->sha1, sizeof(layout->sha1));
+      _mesa_blake3_update(&ctx, layout->blake3, sizeof(layout->blake3));
 
    for (int i = 0; i < MESA_SHADER_STAGES; ++i) {
       if (stages[i] || nir[i]) {
          tu_hash_stage(&ctx, pipeline_flags, stages[i], nir[i], &keys[i]);
       }
    }
-   _mesa_sha1_update(&ctx, &state, sizeof(state));
+   _mesa_blake3_update(&ctx, &state, sizeof(state));
    enum ir3_shader_debug ir3_debug_key = ir3_shader_debug_hash_key();
-   _mesa_sha1_update(&ctx, &ir3_debug_key, sizeof(ir3_debug_key));
-   _mesa_sha1_final(&ctx, hash);
+   _mesa_blake3_update(&ctx, &ir3_debug_key, sizeof(ir3_debug_key));
+   _mesa_blake3_final(&ctx, hash);
 }
 
 static void
@@ -1578,18 +1580,18 @@ tu_hash_compute(unsigned char *hash,
                 const struct tu_pipeline_layout *layout,
                 const struct tu_shader_key *key)
 {
-   struct mesa_sha1 ctx;
+   blake3_hasher ctx;
 
-   _mesa_sha1_init(&ctx);
+   _mesa_blake3_init(&ctx);
 
    if (layout)
-      _mesa_sha1_update(&ctx, layout->sha1, sizeof(layout->sha1));
+      _mesa_blake3_update(&ctx, layout->blake3, sizeof(layout->blake3));
 
    tu_hash_stage(&ctx, pipeline_flags, stage, NULL, key);
    enum ir3_shader_debug ir3_debug_key = ir3_shader_debug_hash_key();
-   _mesa_sha1_update(&ctx, &ir3_debug_key, sizeof(ir3_debug_key));
+   _mesa_blake3_update(&ctx, &ir3_debug_key, sizeof(ir3_debug_key));
 
-   _mesa_sha1_final(&ctx, hash);
+   _mesa_blake3_final(&ctx, hash);
 }
 
 static struct tu_shader *
@@ -1848,6 +1850,18 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
        VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT) {
       keys[MESA_SHADER_FRAGMENT].custom_resolve =
          builder->graphics_state.rp->custom_resolve;
+
+      if (builder->device->physical_device->instance->emulate_alpha_to_coverage) {
+         keys[MESA_SHADER_FRAGMENT].emulate_alpha_to_coverage = true;
+
+         /* Don't emulate if we know it won't be enabled. */
+         if (builder->graphics_state.ms &&
+             !BITSET_TEST(builder->graphics_state.dynamic,
+                          MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE)) {
+            if (!builder->graphics_state.ms->alpha_to_coverage_enable)
+               keys[MESA_SHADER_FRAGMENT].emulate_alpha_to_coverage = false;
+         }
+      }
    }
 
    if (builder->create_flags &
@@ -1874,7 +1888,7 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
    if (builder->state &
        VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT) {
       keys[MESA_SHADER_VERTEX].multiview_mask =
-         builder->graphics_state.rp->view_mask;
+         builder->graphics_state.mv->view_mask;
 
       mesa_shader_stage last_pre_rast_stage = MESA_SHADER_VERTEX;
       for (int i = MESA_SHADER_GEOMETRY; i >= MESA_SHADER_VERTEX; i--) {
@@ -1889,7 +1903,7 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
 
    if (builder->state & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT) {
       keys[MESA_SHADER_FRAGMENT].multiview_mask =
-         builder->graphics_state.rp->view_mask;
+         builder->graphics_state.mv->view_mask;
       keys[MESA_SHADER_FRAGMENT].fragment_density_map =
          builder->fragment_density_map;
       keys[MESA_SHADER_FRAGMENT].fdm_per_layer =
@@ -1929,29 +1943,29 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
          !builder->rasterizer_discard && msaa_info && msaa_info->sampleShadingEnable;
    }
 
-   unsigned char pipeline_sha1[SHA1_DIGEST_LENGTH];
-   tu_hash_shaders(pipeline_sha1, builder->create_flags, stage_infos, nir,
+   unsigned char pipeline_blake3[BLAKE3_KEY_LEN];
+   tu_hash_shaders(pipeline_blake3, builder->create_flags, stage_infos, nir,
                    &builder->layout, keys, builder->state);
 
-   unsigned char nir_sha1[SHA1_DIGEST_LENGTH + 1];
-   memcpy(nir_sha1, pipeline_sha1, sizeof(pipeline_sha1));
-   nir_sha1[SHA1_DIGEST_LENGTH] = 'N';
+   unsigned char nir_blake3[BLAKE3_KEY_LEN + 1];
+   memcpy(nir_blake3, pipeline_blake3, sizeof(pipeline_blake3));
+   nir_blake3[BLAKE3_KEY_LEN] = 'N';
 
    if (!executable_info) {
       cache_hit = true;
       bool application_cache_hit = false;
 
-      unsigned char shader_sha1[SHA1_DIGEST_LENGTH + 1];
-      memcpy(shader_sha1, pipeline_sha1, sizeof(pipeline_sha1));
-      
+      unsigned char shader_blake3[BLAKE3_KEY_LEN + 1];
+      memcpy(shader_blake3, pipeline_blake3, sizeof(pipeline_blake3));
+
       for (mesa_shader_stage stage = MESA_SHADER_VERTEX; stage < ARRAY_SIZE(nir);
            stage = (mesa_shader_stage) (stage + 1)) {
          if (stage_infos[stage] || nir[stage]) {
             bool shader_application_cache_hit;
-            shader_sha1[SHA1_DIGEST_LENGTH] = (unsigned char) stage;
+            shader_blake3[BLAKE3_KEY_LEN] = (unsigned char) stage;
             shaders[stage] =
-               tu_pipeline_cache_lookup(builder->cache, &shader_sha1,
-                                        sizeof(shader_sha1),
+               tu_pipeline_cache_lookup(builder->cache, &shader_blake3,
+                                        sizeof(shader_blake3),
                                         &shader_application_cache_hit);
             if (!shaders[stage]) {
                cache_hit = false;
@@ -1970,8 +1984,8 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
            VK_PIPELINE_CREATE_2_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT)) {
          bool nir_application_cache_hit = false;
          nir_shaders =
-            tu_nir_cache_lookup(builder->cache, &nir_sha1,
-                                sizeof(nir_sha1),
+            tu_nir_cache_lookup(builder->cache, &nir_blake3,
+                                sizeof(nir_blake3),
                                 &nir_application_cache_hit);
 
          application_cache_hit &= nir_application_cache_hit;
@@ -1996,7 +2010,7 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
                                   nir,
                                   keys,
                                   &builder->layout,
-                                  pipeline_sha1,
+                                  pipeline_blake3,
                                   shaders,
                                   executable_info ? nir_initial_disasm : NULL,
                                   pipeline->executables_mem_ctx,
@@ -2008,7 +2022,7 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
 
       if (retain_nir) {
          nir_shaders =
-            tu_nir_shaders_init(builder->device, &nir_sha1, sizeof(nir_sha1));
+            tu_nir_shaders_init(builder->device, &nir_blake3, sizeof(nir_blake3));
          for (mesa_shader_stage stage = MESA_SHADER_VERTEX;
               stage < ARRAY_SIZE(nir); stage = (mesa_shader_stage) (stage + 1)) {
             if (!post_link_nir[stage])
@@ -2079,7 +2093,7 @@ done:
          }
       }
    }
-   
+
    /* In the case where we're building a library without link-time
     * optimization but with sub-libraries that retain LTO info, we should
     * retain it ourselves in case another pipeline includes us with LTO.
@@ -2293,7 +2307,7 @@ tu_emit_program_state(struct tu_cs *sub_cs,
 
    const struct ir3_shader_variant *variants[MESA_SHADER_STAGES];
    struct tu_draw_state draw_states[MESA_SHADER_STAGES];
-   
+
    for (mesa_shader_stage stage = MESA_SHADER_VERTEX;
         stage < ARRAY_SIZE(variants); stage = (mesa_shader_stage) (stage+1)) {
       variants[stage] = shaders[stage] ? shaders[stage]->variant : NULL;
@@ -2322,8 +2336,8 @@ tu_emit_program_state(struct tu_cs *sub_cs,
          }
 
          if (variants[stage]) {
-            memcpy(prog->stage_sha1[stage], variants[stage]->sha1_str,
-                   sizeof(variants[stage]->sha1_str));
+            memcpy(prog->stage_blake3[stage], variants[stage]->blake3_str,
+                   sizeof(variants[stage]->blake3_str));
          }
       }
    }
@@ -2400,7 +2414,7 @@ tu_emit_program_state(struct tu_cs *sub_cs,
    tu_cs_begin_sub_stream(sub_cs, 512, &prog_cs);
    tu6_emit_vpc<CHIP>(&prog_cs, vs, hs, ds, gs, fs);
    prog->vpc_state = tu_cs_end_draw_state(sub_cs, &prog_cs);
-   
+
    const struct ir3_shader_variant *last_variant;
    const struct tu_shader *last_shader;
    if (gs) {
@@ -2416,10 +2430,13 @@ tu_emit_program_state(struct tu_cs *sub_cs,
 
    prog->per_view_viewport =
       !last_variant->writes_viewport &&
-      shaders[MESA_SHADER_FRAGMENT]->fs.has_fdm &&
-      dev->physical_device->info->props.has_per_view_viewport;
+      (dev->vk.enabled_features.multiviewPerViewViewports ||
+       (shaders[MESA_SHADER_FRAGMENT]->fs.has_fdm &&
+       dev->physical_device->info->props.has_per_view_viewport));
    prog->per_layer_viewport = last_shader->per_layer_viewport;
-   prog->fake_single_viewport = prog->per_view_viewport ||
+   prog->fake_single_viewport =
+      (prog->per_view_viewport &&
+       !dev->vk.enabled_features.multiviewPerViewViewports) ||
       prog->per_layer_viewport;
    prog->writes_shading_rate = last_variant->writes_shading_rate;
    prog->reads_shading_rate = fs->reads_shading_rate;
@@ -2526,6 +2543,7 @@ static const enum mesa_vk_dynamic_graphics_state tu_viewport_state[] = {
    MESA_VK_DYNAMIC_VP_VIEWPORTS,
    MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT,
    MESA_VK_DYNAMIC_VP_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE,
+   MESA_VK_DYNAMIC_VP_DEPTH_CLAMP_RANGE,
    MESA_VK_DYNAMIC_RS_DEPTH_CLAMP_ENABLE,
 };
 
@@ -2631,12 +2649,17 @@ tu6_emit_viewport(struct tu_cs *cs,
 
    for (uint32_t i = 0; i < vp->viewport_count; i++) {
       const VkViewport *viewport = &vp->viewports[i];
-      float zmin = MIN2(viewport->minDepth, viewport->maxDepth);
-      float zmax = MAX2(viewport->minDepth, viewport->maxDepth);
+      float zmin, zmax;
 
-      if (zero_one_depth_clamp) {
+      if (vp->depth_clamp_mode == VK_DEPTH_CLAMP_MODE_USER_DEFINED_RANGE_EXT) {
+         zmin = vp->depth_clamp_range.minDepthClamp;
+         zmax = vp->depth_clamp_range.maxDepthClamp;
+      } else if (zero_one_depth_clamp) {
          zmin = 0.0f;
          zmax = 1.0f;
+      } else {
+         zmin = MIN2(viewport->minDepth, viewport->maxDepth);
+         zmax = MAX2(viewport->minDepth, viewport->maxDepth);
       }
 
       crb.add(GRAS_CL_VIEWPORT_ZCLAMP_MIN(CHIP, i, zmin));
@@ -2678,7 +2701,7 @@ struct apply_viewport_state {
  *
  * so that when we plug in the per-view bin start b_s and the common window
  * offset b_cs:
- * 
+ *
  * b_cs = s * b_s + o
  *
  * and we get:
@@ -2709,7 +2732,7 @@ fdm_apply_viewports(struct tu_cmd_buffer *cmd, struct tu_cs *cs, void *data,
                     VkOffset2D common_bin_offset,
                     const VkOffset2D *hw_viewport_offsets,
                     unsigned views,
-                    const VkExtent2D *frag_areas, const VkRect2D *bins,
+                    const struct tu_tile_config *tile, const VkRect2D *bins,
                     bool binning)
 {
    const struct apply_viewport_state *state =
@@ -2727,30 +2750,44 @@ fdm_apply_viewports(struct tu_cmd_buffer *cmd, struct tu_cs *cs, void *data,
        * renderpass, views will be 1 and we also have to replicate the 0'th
        * view to every view.
        */
-      VkExtent2D frag_area =
-         (state->share_scale || views == 1) ? frag_areas[0] : frag_areas[i];
-      VkRect2D bin =
-         (state->share_scale || views == 1) ? bins[0] : bins[i];
-      VkOffset2D hw_viewport_offset =
-         (state->share_scale || views == 1) ? hw_viewport_offsets[0] :
-         hw_viewport_offsets[i];
+      unsigned view = (state->share_scale || views == 1) ? 0 : i;
+      VkExtent2D frag_area = tile->frag_areas[view];
+      VkRect2D bin = bins[view];
+      VkOffset2D hw_viewport_offset = hw_viewport_offsets[view];
       /* Implement fake_single_viewport by replicating viewport 0 across all
        * views.
        */
       VkViewport viewport =
          state->fake_single_viewport ? state->vp.viewports[0] : state->vp.viewports[i];
-      if ((frag_area.width == 1 && frag_area.height == 1 &&
-           common_bin_offset.x == bin.offset.x &&
-           common_bin_offset.y == bin.offset.y) ||
-          /* When in a custom resolve operation (TODO: and using
-           * non-subsampled images) we switch to framebuffer coordinates so we
-           * shouldn't apply the transform.  However the binning pass isn't
-           * aware of this, so we have to keep applying the transform for
-           * binning.
-           */
-          (state->custom_resolve && !binning)) {
+      if (frag_area.width == 1 && frag_area.height == 1 &&
+          common_bin_offset.x == bin.offset.x &&
+          common_bin_offset.y == bin.offset.y) {
          vp.viewports[i] = viewport;
          continue;
+      }
+
+      /* When custom resolve is enabled, we need to apply the viewport
+       * transform so that we render to where we would've blitted the tile to.
+       * Without subsampled images, this the framebuffer space bin (so there
+       * is effectively no transform). With subsampled images, this is
+       * subsampled space, which may not be the same as rendering space if
+       * we had to shift the tile or with FDM offset.
+       */
+      VkOffset2D tile_start = common_bin_offset;
+      if (state->custom_resolve && !binning) {
+         if (tile->subsampled)
+            tile_start = tile->subsampled_pos[view].offset;
+         else
+            tile_start = bin.offset;
+      }
+
+      /* When in a custom resolve operation without subsampling we shouldn't
+       * scale the viewport down.  However the binning pass isn't aware of
+       * this, so we have to keep applying the transform for binning.
+       */
+      if (state->custom_resolve &&
+          !(tile->subsampled_views & (1u << view)) && !binning) {
+         frag_area = (VkExtent2D) {1, 1};
       }
 
       float scale_x = (float) 1.0f / frag_area.width;
@@ -2762,9 +2799,12 @@ fdm_apply_viewports(struct tu_cmd_buffer *cmd, struct tu_cs *cs, void *data,
       vp.viewports[i].height = viewport.height * scale_y;
 
       VkOffset2D offset = tu_fdm_per_bin_offset(frag_area, bin,
-                                                common_bin_offset);
-      offset.x -= hw_viewport_offset.x;
-      offset.y -= hw_viewport_offset.y;
+                                                tile_start);
+      /* FDM offsets are disabled with custom resolve. */
+      if (!state->custom_resolve) {
+         offset.x -= hw_viewport_offset.x;
+         offset.y -= hw_viewport_offset.y;
+      }
 
       vp.viewports[i].x = scale_x * viewport.x + offset.x;
       vp.viewports[i].y = scale_y * viewport.y + offset.y;
@@ -2847,7 +2887,7 @@ fdm_apply_scissors(struct tu_cmd_buffer *cmd, struct tu_cs *cs, void *data,
                    VkOffset2D common_bin_offset,
                    const VkOffset2D *hw_viewport_offsets,
                    unsigned views,
-                   const VkExtent2D *frag_areas, const VkRect2D *bins,
+                   const struct tu_tile_config *tile, const VkRect2D *bins,
                    bool binning)
 {
    const struct apply_viewport_state *state =
@@ -2856,15 +2896,33 @@ fdm_apply_scissors(struct tu_cmd_buffer *cmd, struct tu_cs *cs, void *data,
    struct vk_viewport_state vp = state->vp;
 
    for (unsigned i = 0; i < vp.scissor_count; i++) {
-      VkExtent2D frag_area =
-         (state->share_scale || views == 1) ? frag_areas[0] : frag_areas[i];
-      VkRect2D bin =
-         (state->share_scale || views == 1) ? bins[0] : bins[i];
+      unsigned view = (state->share_scale || views == 1) ? 0 : i;
+      VkExtent2D frag_area = tile->frag_areas[view];
+      VkRect2D bin = bins[view];
       VkRect2D scissor =
          state->fake_single_viewport ? state->vp.scissors[0] : state->vp.scissors[i];
-      VkOffset2D hw_viewport_offset =
-         (state->share_scale || views == 1) ? hw_viewport_offsets[0] :
-         hw_viewport_offsets[i];
+      VkOffset2D hw_viewport_offset = hw_viewport_offsets[view];
+
+      VkOffset2D tile_start = common_bin_offset;
+      if (state->custom_resolve && !binning) {
+         if (tile->subsampled)
+            tile_start = tile->subsampled_pos[view].offset;
+         else
+            tile_start = bin.offset;
+      }
+
+      /* Disable scaling when doing a custom resolve to a non-subsampled image
+       * and not in the binning pass, because we use framebuffer coordinates.
+       */
+      if (state->custom_resolve &&
+          !(tile->subsampled_views & (1u << view)) && !binning) {
+         frag_area = (VkExtent2D) {1, 1};
+      }
+
+      if (!state->custom_resolve) {
+         tile_start.x -= hw_viewport_offset.x;
+         tile_start.y -= hw_viewport_offset.y;
+      }
 
       /* Transform the scissor following the viewport. It's unclear how this
        * is supposed to handle cases where the scissor isn't aligned to the
@@ -2873,22 +2931,7 @@ fdm_apply_scissors(struct tu_cmd_buffer *cmd, struct tu_cs *cs, void *data,
        * isn't aligned to the fragment area.
        */
       VkOffset2D offset = tu_fdm_per_bin_offset(frag_area, bin,
-                                                common_bin_offset);
-      offset.x -= hw_viewport_offset.x;
-      offset.y -= hw_viewport_offset.y;
-
-      /* Disable scaling and offset when doing a custom resolve to a
-       * non-subsampled image and not in the binning pass, because we
-       * use framebuffer coordinates.
-       *
-       * TODO: When we support subsampled images, only do this for
-       * non-subsampled images.
-       */
-      if (state->custom_resolve && !binning) {
-         offset = (VkOffset2D) {};
-         frag_area = (VkExtent2D) {1, 1};
-      }
-
+                                                tile_start);
       VkOffset2D min = {
          scissor.offset.x / frag_area.width + offset.x,
          scissor.offset.y / frag_area.height + offset.y,
@@ -2899,26 +2942,17 @@ fdm_apply_scissors(struct tu_cmd_buffer *cmd, struct tu_cs *cs, void *data,
       };
 
       /* Intersect scissor with the scaled bin, this essentially replaces the
-       * window scissor. With custom resolve (TODO: and non-subsampled images)
-       * we have to use the unscaled bin instead.
+       * window scissor. With custom resolve we have to use the unscaled bin
+       * instead.
        */
       uint32_t scaled_width = bin.extent.width / frag_area.width;
       uint32_t scaled_height = bin.extent.height / frag_area.height;
-      int32_t bin_x;
-      int32_t bin_y;
-      if (state->custom_resolve && !binning) {
-         bin_x = bin.offset.x;
-         bin_y = bin.offset.y;
-      } else {
-         bin_x = common_bin_offset.x - hw_viewport_offset.x;
-         bin_y = common_bin_offset.y - hw_viewport_offset.y;
-      }
-      vp.scissors[i].offset.x = MAX2(min.x, bin_x);
-      vp.scissors[i].offset.y = MAX2(min.y, bin_y);
+      vp.scissors[i].offset.x = MAX2(min.x, tile_start.x);
+      vp.scissors[i].offset.y = MAX2(min.y, tile_start.y);
       vp.scissors[i].extent.width =
-         MIN2(max.x, bin_x + scaled_width) - vp.scissors[i].offset.x;
+         MIN2(max.x, tile_start.x + scaled_width) - vp.scissors[i].offset.x;
       vp.scissors[i].extent.height =
-         MIN2(max.y, bin_y + scaled_height) - vp.scissors[i].offset.y;
+         MIN2(max.y, tile_start.y + scaled_height) - vp.scissors[i].offset.y;
    }
 
    TU_CALLX(cs->device, tu6_emit_scissor)(cs, &vp);
@@ -3256,6 +3290,8 @@ tu6_emit_blend(struct tu_cs *cs,
 {
    bool rop_reads_dst = cb->logic_op_enable && tu_logic_op_reads_dst((VkLogicOp)cb->logic_op);
    enum a3xx_rop_code rop = tu6_rop((VkLogicOp)cb->logic_op);
+   if (cs->device->physical_device->instance->emulate_alpha_to_coverage)
+      alpha_to_coverage_enable = false;
 
    uint32_t blend_enable_mask = 0;
    for (unsigned i = 0; i < cb->attachment_count; i++) {
@@ -3970,7 +4006,7 @@ tu_pipeline_builder_emit_state(struct tu_pipeline_builder *builder,
                    pipeline_contains_all_shader_state(pipeline) &&
                       pipeline->disable_fs.valid,
                    builder->graphics_state.rs, builder->graphics_state.vp,
-                   builder->graphics_state.rp->view_mask != 0,
+                   builder->graphics_state.mv->view_mask != 0,
                    pipeline->program.per_view_viewport,
                    pipeline->disable_fs.disable_fs);
    DRAW_STATE_COND(ds, TU_DYNAMIC_STATE_DS,
@@ -4046,6 +4082,15 @@ tu_pipeline_builder_emit_state(struct tu_pipeline_builder *builder,
 
    /* Vertex buffer state needs to know the max valid binding */
    BITSET_SET(keep, MESA_VK_DYNAMIC_VI_BINDINGS_VALID);
+
+   /* We might re-emit TU_DYNAMIC_STATE_DS or TU_DYNAMIC_STATE_RB_DEPTH_CNTL
+    * depending on render pass attachments. Some of these overlap with the
+    * state needed by LRZ above.
+    */
+   for (unsigned i = 0; i < ARRAY_SIZE(tu_ds_state); i++)
+      BITSET_SET(keep, tu_ds_state[i]);
+   for (unsigned i = 0; i < ARRAY_SIZE(tu_rb_depth_cntl_state); i++)
+      BITSET_SET(keep, tu_rb_depth_cntl_state[i]);
 
    /* Remove state which has been emitted and we no longer need to set when
     * binding the pipeline by making it "dynamic".
@@ -4223,7 +4268,7 @@ tu_emit_draw_state(struct tu_cmd_buffer *cmd)
                                        TU_CMD_DIRTY_DISABLE_FS),
                    &cmd->vk.dynamic_graphics_state.rs,
                    &cmd->vk.dynamic_graphics_state.vp,
-                   cmd->state.vk_rp.view_mask != 0,
+                   cmd->state.vk_mv.view_mask != 0,
                    cmd->state.per_view_viewport,
                    cmd->state.disable_fs);
    DRAW_STATE_COND(ds, TU_DYNAMIC_STATE_DS,
@@ -4550,10 +4595,11 @@ tu_pipeline_builder_finish(struct tu_pipeline_builder *builder)
 
 void
 tu_fill_render_pass_state(struct vk_render_pass_state *rp,
+                          struct vk_multiview_state *mv,
                           const struct tu_render_pass *pass,
                           const struct tu_subpass *subpass)
 {
-   rp->view_mask = subpass->multiview_mask;
+   mv->view_mask = subpass->multiview_mask;
    rp->color_attachment_count = subpass->color_count;
 
    const uint32_t a = subpass->depth_stencil_attachment.attachment;
@@ -4605,11 +4651,11 @@ tu_pipeline_builder_init_graphics(
    };
 
    const VkGraphicsPipelineLibraryCreateInfoEXT *gpl_info =
-      vk_find_struct_const(builder->create_info->pNext, 
+      vk_find_struct_const(builder->create_info->pNext,
                            GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT);
 
    const VkPipelineLibraryCreateInfoKHR *library_info =
-      vk_find_struct_const(builder->create_info->pNext, 
+      vk_find_struct_const(builder->create_info->pNext,
                            PIPELINE_LIBRARY_CREATE_INFO_KHR);
 
    if (gpl_info) {
@@ -4656,10 +4702,14 @@ tu_pipeline_builder_init_graphics(
       builder->create_info->pRasterizationState->rasterizerDiscardEnable;
 
    struct vk_render_pass_state rp_state = {};
+   struct vk_multiview_state mv_state = {};
+   const struct vk_multiview_state *driver_mv = NULL;
    const struct vk_render_pass_state *driver_rp = NULL;
    VkPipelineCreateFlags2KHR rp_flags = 0;
 
    builder->unscaled_input_fragcoord = 0;
+
+
 
    /* Extract information we need from the turnip renderpass. This will be
     * filled out automatically if the app is using dynamic rendering or
@@ -4676,7 +4726,7 @@ tu_pipeline_builder_init_graphics(
       const struct tu_subpass *subpass =
          &pass->subpasses[create_info->subpass];
 
-      tu_fill_render_pass_state(&rp_state, pass, subpass);
+      tu_fill_render_pass_state(&rp_state, &mv_state, pass, subpass);
 
       if (subpass->feedback_loop_color) {
          rp_flags |=
@@ -4713,12 +4763,19 @@ tu_pipeline_builder_init_graphics(
             builder->unscaled_input_fragcoord |= 1u << i;
       }
 
+      if (builder->state &
+          (VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT |
+           VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT)) {
+         driver_mv = &mv_state;
+      }
+
       driver_rp = &rp_state;
    }
 
    vk_graphics_pipeline_state_fill(&dev->vk,
                                    &builder->graphics_state,
                                    builder->create_info,
+                                   driver_mv,
                                    driver_rp,
                                    rp_flags,
                                    &builder->all_state,
@@ -4876,8 +4933,8 @@ tu_compute_pipeline_create(VkDevice device,
 
    void *pipeline_mem_ctx = ralloc_context(NULL);
 
-   unsigned char pipeline_sha1[SHA1_DIGEST_LENGTH];
-   tu_hash_compute(pipeline_sha1, flags, stage_info, layout, &key);
+   unsigned char pipeline_blake3[BLAKE3_KEY_LEN];
+   tu_hash_compute(pipeline_blake3, flags, stage_info, layout, &key);
 
    struct tu_shader *shader = NULL;
 
@@ -4888,7 +4945,7 @@ tu_compute_pipeline_create(VkDevice device,
 
    if (!executable_info) {
       shader =
-         tu_pipeline_cache_lookup(cache, pipeline_sha1, sizeof(pipeline_sha1),
+         tu_pipeline_cache_lookup(cache, pipeline_blake3, sizeof(pipeline_blake3),
                                   &application_cache_hit);
    }
 
@@ -4914,8 +4971,10 @@ tu_compute_pipeline_create(VkDevice device,
       nir_initial_disasm = executable_info ?
          nir_shader_as_str(nir, pipeline->base.executables_mem_ctx) : NULL;
 
-      result = tu_shader_create(dev, &shader, nir, &key, &ir3_key,
-                                pipeline_sha1, sizeof(pipeline_sha1), layout,
+      struct tu_shader_info info = {};
+      tu_lower_nir(dev, nir, &key, &info);
+      result = tu_shader_create(dev, &shader, nir, &key, &info, &ir3_key,
+                                pipeline_blake3, sizeof(pipeline_blake3), layout,
                                 executable_info);
       if (!shader) {
          goto fail;
@@ -5067,7 +5126,7 @@ tu_GetPipelineExecutablePropertiesKHR(
          VK_COPY_STR(props->description, _mesa_shader_stage_to_string(stage));
 
          props->subgroupSize =
-            dev->compiler->threadsize_base * (exe->stats.double_threadsize ? 2 : 1);
+            dev->compiler->info->threadsize_base * (exe->stats.double_threadsize ? 2 : 1);
       }
    }
 

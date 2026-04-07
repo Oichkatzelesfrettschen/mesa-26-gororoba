@@ -61,17 +61,15 @@ Linux, FreeBSD, and other operating systems.
    :caption: User Topics
    :hidden:
 
-   shading
+   glsl
    egl
    opengles
    envvars
-   debugging
    perf
    gpu-perf-tracing
    extensions
    application-issues
    viewperf
-   xlibdriver
    teflon
 
 .. toctree::
@@ -96,6 +94,7 @@ Linux, FreeBSD, and other operating systems.
    drivers/venus
    drivers/virgl
    drivers/zink
+   xlibdriver
 
 .. toctree::
    :maxdepth: 1
@@ -112,6 +111,7 @@ Linux, FreeBSD, and other operating systems.
    rust
    releasing
    release-calendar
+   graphics-debugging/debugging-misrenderings-crashes
    dispatch
    gallium/index
    vulkan/index

@@ -100,7 +100,8 @@ struct amd_ip_info {
    uint32_t ib_pad_dw_mask;
 };
 
-struct ac_cu_info {
+struct ac_compiler_info {
+   enum amd_gfx_level gfx_level;
    uint32_t max_waves_per_simd;
    uint32_t num_physical_sgprs_per_simd;
    uint32_t num_physical_wave64_vgprs_per_simd;
@@ -112,34 +113,89 @@ struct ac_cu_info {
    uint32_t max_vgpr_alloc;
    uint32_t wave64_vgpr_alloc_granularity;
 
+   uint32_t hs_offchip_workgroup_dw_size;
+
    /* Flags */
-   bool has_lds_bank_count_16 : 1;
-   bool has_sram_ecc_enabled : 1;
+   uint32_t has_lds_bank_count_16 : 1;
+   uint32_t has_sram_ecc_enabled : 1;
    /* Whether image_sample* instructions can be either a sampler or no-sampler access.*/
-   bool has_point_sample_accel : 1;
-   bool has_fast_fma32 : 1;
+   uint32_t has_point_sample_accel : 1;
+   uint32_t has_fast_fma32 : 1;
    /* Whether chips support fused v_fma_mix* instructions.
     * Otherwise, unfused v_mad_mix* is available on GFX9.
     */
-   bool has_fma_mix : 1;
+   uint32_t has_fma_mix : 1;
    /* Whether chips support unfused multiply-add instructions. */
-   bool has_mad32 : 1;
+   uint32_t has_mad32 : 1;
    /* Whether chips support double rate packed math instructions. */
-   bool has_packed_math_16bit : 1;
+   uint32_t has_packed_math_16bit : 1;
    /* Whether chips support dot product instructions. A subset of these support a smaller
     * instruction encoding which accumulates with the destination.
     */
-   bool has_accelerated_dot_product : 1;
+   uint32_t has_accelerated_dot_product : 1;
    /* Device supports hardware-accelerated raytracing using
     * image_bvh*_intersect_ray instructions
     */
-   bool has_image_bvh_intersect_ray : 1;
+   uint32_t has_image_bvh_intersect_ray : 1;
+   /* Whether PRIMGEN_PASSTHRU_NO_MSG is supported. */
+   uint32_t has_ngg_passthru_no_msg : 1;
+   /* Whether local invocation IDs are packed in a single VGPR. */
+   uint32_t local_invocation_ids_packed : 1;
+   /* Whether the chip supports FMASK. */
+   uint32_t has_fmask : 1;
+   /* Whether 3D textures, cubemap textures, border colors, and mipmapping are supported. (CDNA) */
+   uint32_t has_3d_cube_border_color_mipmap : 1;
+
+   /* conformant_trunc_coord is equal to TA_CNTL2.TRUNCATE_COORD_MODE, which exists since gfx11.
+    *
+    * If TA_CNTL2.TRUNCATE_COORD_MODE == 0, coordinate truncation is the same as gfx10 and older.
+    *
+    * If TA_CNTL2.TRUNCATE_COORD_MODE == 1, coordinate truncation is adjusted to be D3D9/GL/Vulkan
+    * conformant if you also set TRUNC_COORD. Coordinate truncation uses D3D10+ behaviour if
+    * TRUNC_COORD is unset.
+    *
+    * Behavior if TA_CNTL2.TRUNCATE_COORD_MODE == 1:
+    *    truncate_coord_xy = TRUNC_COORD && (xy_filter == Point && !gather);
+    *    truncate_coord_z = TRUNC_COORD && (z_filter == Point);
+    *    truncate_coord_layer = false;
+    *
+    * Behavior if TA_CNTL2.TRUNCATE_COORD_MODE == 0:
+    *    truncate_coord_xy = TRUNC_COORD;
+    *    truncate_coord_z = TRUNC_COORD;
+    *    truncate_coord_layer = TRUNC_COORD;
+    *
+    * AnisoPoint is treated as Point.
+    */
+   uint32_t conformant_trunc_coord : 1;
+
+   uint32_t has_attr_ring : 1;
+   uint32_t mesh_fast_launch_2 : 1;
+
+   /* GFX6-7: limit TCS workgroup to 16 patches for better performance. */
+   uint32_t smaller_tcs_workgroups : 1;
+
    /* Some GFX6 GPUs have a bug where it only looks at the x writemask component. */
-   bool has_gfx6_mrt_export_bug : 1;
+   uint32_t has_gfx6_mrt_export_bug : 1;
    /* Pre-GFX9: A bug where the alpha component of 10_10_10_2 formats is always unsigned.*/
-   bool has_vtx_format_alpha_adjust_bug : 1;
+   uint32_t has_vtx_format_alpha_adjust_bug : 1;
    /* GFX6-7: SMEM accesses memory even when it's out of bounds */
-   bool has_smem_oob_access_bug : 1;
+   uint32_t has_smem_oob_access_bug : 1;
+   /* GFX10.3: WRITE_COMPRESS_ENABLE must be 0 for all image loads. */
+   uint32_t has_image_load_dcc_bug : 1;
+   /* GFX9: If there are no HS threads, SPI mistakenly loads the LS VGPRs starting at VGPR 0. */
+   uint32_t has_ls_vgpr_init_bug : 1;
+   /* GFX6-7: FS exports are not clamped correctly in certain situations. */
+   uint32_t has_cb_lt16bit_int_clamp_bug : 1;
+   /* GFX10.3: whether frag_pos.z needs adjusting when VRS is used. */
+   uint32_t has_vrs_frag_pos_z_bug : 1;
+   /* GFX10: hang when NGG exports zero vertices and primitives. */
+   uint32_t has_ngg_fully_culled_bug : 1;
+   /* GFX11-11.5: require wait between attribute stores and the final export. */
+   uint32_t has_attr_ring_wait_bug : 1;
+   /* GFX6: limit TCS workgroup to one patch if primitive ID is used. */
+   uint32_t has_primid_instancing_bug : 1;
+
+   uint32_t reserved : 5;
 };
 
 struct radeon_info {
@@ -204,11 +260,9 @@ struct radeon_info {
    bool has_htile_tc_z_clear_bug_without_stencil;
    bool has_htile_tc_z_clear_bug_with_stencil;
    bool has_small_prim_filter_sample_loc_bug;
-   bool has_ls_vgpr_init_bug;
    bool has_pops_missed_overlap_bug;
-   bool has_cb_lt16bit_int_clamp_bug;
    bool has_zero_index_buffer_bug;
-   bool has_image_load_dcc_bug;
+   bool has_db_force_stencil_valid_bug;
    bool has_two_planes_iterate256_bug;
    bool has_vgt_flush_ngg_legacy_bug;
    bool has_prim_restart_sync_bug;
@@ -216,19 +270,16 @@ struct radeon_info {
    bool has_async_compute_threadgroup_bug;
    bool has_async_compute_align32_bug;
    bool has_32bit_predication;
-   bool has_3d_cube_border_color_mipmap;
    bool has_image_opcodes;
    bool never_stop_sq_perf_counters;
    bool has_sqtt_rb_harvest_bug;
    bool has_sqtt_auto_flush_mode_bug;
    bool never_send_perfcounter_stop;
    bool discardable_allows_big_page;
-   bool has_ngg_fully_culled_bug;
-   bool has_ngg_passthru_no_msg;
    bool has_export_conflict_bug;
-   bool has_attr_ring_wait_bug;
    bool cp_dma_supports_sparse;
    bool has_vrs_ds_export_bug;
+   bool has_vrs_export_bug;
    bool has_taskmesh_indirect0_bug;
    bool sdma_supports_sparse;      /* Whether SDMA can safely access sparse resources. */
    bool sdma_supports_compression; /* Whether SDMA supports DCC and HTILE. */
@@ -241,27 +292,6 @@ struct radeon_info {
                              * the LLVM version doesn't work with multiparts shaders.
                              */
 
-   /* conformant_trunc_coord is equal to TA_CNTL2.TRUNCATE_COORD_MODE, which exists since gfx11.
-    *
-    * If TA_CNTL2.TRUNCATE_COORD_MODE == 0, coordinate truncation is the same as gfx10 and older.
-    *
-    * If TA_CNTL2.TRUNCATE_COORD_MODE == 1, coordinate truncation is adjusted to be D3D9/GL/Vulkan
-    * conformant if you also set TRUNC_COORD. Coordinate truncation uses D3D10+ behaviour if
-    * TRUNC_COORD is unset.
-    *
-    * Behavior if TA_CNTL2.TRUNCATE_COORD_MODE == 1:
-    *    truncate_coord_xy = TRUNC_COORD && (xy_filter == Point && !gather);
-    *    truncate_coord_z = TRUNC_COORD && (z_filter == Point);
-    *    truncate_coord_layer = false;
-    *
-    * Behavior if TA_CNTL2.TRUNCATE_COORD_MODE == 0:
-    *    truncate_coord_xy = TRUNC_COORD;
-    *    truncate_coord_z = TRUNC_COORD;
-    *    truncate_coord_layer = TRUNC_COORD;
-    *
-    * AnisoPoint is treated as Point.
-    */
-   bool conformant_trunc_coord;
    /* Support GS_FAST_LAUNCH(2) for mesh shaders. */
    bool mesh_fast_launch_2;
 
@@ -354,10 +384,7 @@ struct radeon_info {
    bool has_sparse_image_standard_3d;
    /* Mip levels do not need to be aligned to the sparse block size */
    bool has_sparse_unaligned_mip_size;
-   bool has_gang_submit;
    bool has_gpuvm_fault_query;
-   bool has_pcie_bandwidth_info;
-   bool has_stable_pstate;
    /* Whether SR-IOV is enabled or amdgpu.mcbp=1 was set on the kernel command line. */
    bool has_kernelq_reg_shadowing;
    bool has_default_zerovram_support;
@@ -381,8 +408,9 @@ struct radeon_info {
     */
    bool uses_kernel_cu_mask;
 
+   struct ac_compiler_info compiler_info;
+
    /* Shader cores. */
-   struct ac_cu_info cu_info;
    uint16_t cu_mask[AMD_MAX_SE][AMD_MAX_SA_PER_SE];
    uint32_t r600_max_quad_pipes; /* wave size / 16 */
    uint32_t max_good_cu_per_sa;
@@ -402,7 +430,6 @@ struct radeon_info {
    uint32_t pos_ring_offset;              /* GFX12+ */
    uint32_t prim_ring_offset;             /* GFX12+ */
    uint32_t total_attribute_pos_prim_ring_size; /* GFX11+ */
-   bool has_attr_ring;
 
    /* Tessellation rings. */
    uint32_t hs_offchip_param;
@@ -435,6 +462,11 @@ struct radeon_info {
    bool spi_cu_en_has_effect;
    uint32_t spi_cu_en;
 
+   /* Raster config. */
+   uint32_t pa_sc_raster_config;
+   uint32_t pa_sc_raster_config_1;
+   uint32_t se_tile_repeat;
+
    struct {
       uint32_t shadow_size;
       uint32_t shadow_alignment;
@@ -455,7 +487,7 @@ enum ac_query_gpu_info_result {
 
 enum ac_query_gpu_info_result ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
                                                 bool require_pci_bus_info);
-void ac_fill_cu_info(struct radeon_info *info, struct drm_amdgpu_info_device *device_info);
+void ac_fill_compiler_info(struct radeon_info *info, struct drm_amdgpu_info_device *device_info);
 
 void ac_compute_driver_uuid(char *uuid, size_t size);
 

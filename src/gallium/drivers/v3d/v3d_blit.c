@@ -113,7 +113,7 @@ v3d_render_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
                 };
                 tiled = ctx->screen->resource_create(ctx->screen, &tmpl);
                 if (!tiled) {
-                        fprintf(stderr, "Failed to create tiled blit temp\n");
+                        mesa_loge("Failed to create tiled blit temp");
                         return;
                 }
                 ctx->resource_copy_region(ctx,
@@ -126,9 +126,9 @@ v3d_render_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
         }
 
         if (!util_blitter_is_blit_supported(v3d->blitter, info)) {
-                fprintf(stderr, "blit unsupported %s -> %s\n",
-                    util_format_short_name(info->src.format),
-                    util_format_short_name(info->dst.format));
+                mesa_loge("Blit unsupported %s -> %s",
+                          util_format_short_name(info->src.format),
+                          util_format_short_name(info->dst.format));
                 return;
         }
 
@@ -151,7 +151,6 @@ v3d_set_blit_surface(struct pipe_surface *psurf,
                      int16_t layer)
 {
         memset(psurf, 0, sizeof(*psurf));
-        psurf->context = pctx;
         psurf->format = format;
         psurf->level = level;
         psurf->first_layer = layer;
@@ -452,23 +451,18 @@ v3d_tlb_blit_fast(struct pipe_context *pctx, struct pipe_blit_info *info)
                              info->dst.format, info->dst.level,
                              info->dst.box.z);
 
-        /* The job's RT setup must be compatible with the blit buffer. */
+        /* If the blit destination uses a different RT format the channel
+         * layout won't match and we would corrupt the data (e.g. storing
+         * 10-10-10-2 channels as 16-16). Since each RT format maps to a
+         * unique (internal_type, bpp) pair, this guarantees type and bpp
+         * compatibility.
+         */
         struct pipe_surface *spsurf = &job->cbufs[idx];
-        uint8_t sinternal_bpp, rinternal_bpp;
-        uint8_t sinternal_type;
-        v3d_format_get_internal_type_and_bpp(devinfo,
-                                             spsurf->format,
-                                             &sinternal_type,
-                                             &sinternal_bpp);
-        uint8_t rinternal_type;
-        v3d_format_get_internal_type_and_bpp(devinfo,
-                                             dbuf.format,
-                                             &rinternal_type,
-                                             &rinternal_bpp);
-        if (sinternal_bpp < rinternal_bpp)
+        if (v3d_get_rt_format(devinfo, spsurf->format) !=
+            v3d_get_rt_format(devinfo, dbuf.format)) {
+                pipe_resource_reference(&dbuf.texture, NULL);
                 return;
-        if (sinternal_type != rinternal_type)
-                return;
+        }
 
         /* If the blit destination uses a different RT format the channel
          * layout won't match and we would corrupt the data (e.g. storing

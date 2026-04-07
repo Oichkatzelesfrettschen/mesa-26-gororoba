@@ -95,6 +95,7 @@ nvk_create_cmd_buffer(struct vk_command_pool *vk_pool,
    list_inithead(&cmd->owned_gart_mem);
    list_inithead(&cmd->owned_qmd);
    cmd->pushes = UTIL_DYNARRAY_INIT;
+   cmd->copy_memory_indirect_temps = UTIL_DYNARRAY_INIT;
 
    cmd->prev_subc = ffs(nvk_cmd_buffer_subchannel_mask(cmd)) - 1;
 
@@ -126,6 +127,7 @@ nvk_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer,
    cmd->cond_render_mem = NULL;
 
    util_dynarray_clear(&cmd->pushes);
+   util_dynarray_clear(&cmd->copy_memory_indirect_temps);
 
    memset(&cmd->state, 0, sizeof(cmd->state));
 }
@@ -714,7 +716,7 @@ nvk_cmd_invalidate_deps(struct nvk_cmd_buffer *cmd,
        dev->vk.enabled_features.pipelineFragmentShadingRate)
       P_IMMD(p, NVC597, INVALIDATE_RASTER_CACHE_NO_WFI, 0);
 
-   if (barriers & (NVK_BARRIER_INVALIDATE_SHADER_DATA &
+   if (barriers & (NVK_BARRIER_INVALIDATE_SHADER_DATA |
                    NVK_BARRIER_INVALIDATE_CONSTANT)) {
       if (nvk_cmd_buffer_last_subchannel(cmd) == SUBC_NVA097) {
          P_IMMD(p, NVA097, INVALIDATE_SHADER_CACHES_NO_WFI, {
@@ -863,14 +865,9 @@ nvk_bind_descriptor_sets(struct nvk_cmd_buffer *cmd,
     * it changes set_dynamic_buffer_start[s], this binding is implicitly
     * invalidated.
     */
-   uint8_t dyn_buffer_end = 0u;
-   for (uint32_t i = 0u; i < info->firstSet; ++i) {
-      const struct nvk_descriptor_set_layout *set_layout =
-         vk_to_nvk_descriptor_set_layout(pipeline_layout->set_layouts[i]);
-      if (set_layout)
-         dyn_buffer_end += set_layout->dynamic_buffer_count;
-   }
-   const uint8_t dyn_buffer_start = dyn_buffer_end;
+   const uint8_t dyn_buffer_start =
+      pipeline_layout->dynamic_descriptor_offset[info->firstSet];
+   uint8_t dyn_buffer_end = dyn_buffer_start;
 
    uint32_t next_dyn_offset = 0;
    for (uint32_t i = 0; i < info->descriptorSetCount; ++i) {
@@ -898,8 +895,8 @@ nvk_bind_descriptor_sets(struct nvk_cmd_buffer *cmd,
          const struct nvk_descriptor_set_layout *set_layout =
             vk_to_nvk_descriptor_set_layout(pipeline_layout->set_layouts[s]);
 
-         if (set != NULL && set_layout->dynamic_buffer_count > 0) {
-            for (uint32_t j = 0; j < set_layout->dynamic_buffer_count; j++) {
+         if (set != NULL && set_layout->vk.dynamic_descriptor_count > 0) {
+            for (uint32_t j = 0; j < set_layout->vk.dynamic_descriptor_count; j++) {
                union nvk_buffer_descriptor db = set->dynamic_buffers[j];
                uint32_t offset = info->pDynamicOffsets[next_dyn_offset + j];
                if (BITSET_TEST(set_layout->dynamic_ubos, j) &&
@@ -915,10 +912,10 @@ nvk_bind_descriptor_sets(struct nvk_cmd_buffer *cmd,
                }
                dynamic_buffers[dyn_buffer_end + j] = db;
             }
-            next_dyn_offset += set->layout->dynamic_buffer_count;
+            next_dyn_offset += set->layout->vk.dynamic_descriptor_count;
          }
 
-         dyn_buffer_end += set_layout->dynamic_buffer_count;
+         dyn_buffer_end += set_layout->vk.dynamic_descriptor_count;
       } else {
          assert(set == NULL);
       }
@@ -1176,6 +1173,20 @@ nvk_cmd_buffer_flush_push_descriptors(struct nvk_cmd_buffer *cmd,
       };
       nvk_descriptor_state_set_root(cmd, desc, sets[set_idx], set_addr);
    }
+}
+
+void
+nvk_cmd_buffer_flush_printf_buffer(struct nvk_cmd_buffer *cmd,
+                                   struct nvk_descriptor_state *desc)
+{
+   struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
+
+   if (!NAK_CAN_PRINTF)
+      return;
+
+   struct nvkmd_mem *bo = (struct nvkmd_mem *) dev->printf.bo;
+   nvk_descriptor_state_set_root(cmd, desc, printf_buffer_addr,
+                                 bo->va->addr);
 }
 
 bool

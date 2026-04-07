@@ -51,6 +51,12 @@ meta_compute_start(struct panvk_cmd_buffer *cmdbuf,
    save_ctx->push_constants = cmdbuf->state.push_constants;
    save_ctx->cs.shader = cmdbuf->state.compute.shader;
    save_ctx->cs.desc = cmdbuf->state.compute.cs.desc;
+#if PAN_ARCH >= 10
+   save_ctx->cond_render_enabled = cmdbuf->state.cond_render.enabled;
+   save_ctx->cond_render_inherited = cmdbuf->state.cond_render.inherited;
+   cmdbuf->state.cond_render.enabled = false;
+   cmdbuf->state.cond_render.inherited = false;
+#endif
 
 #if PAN_ARCH >= 10
    panvk_per_arch(panvk_instr_begin_work)(PANVK_SUBQUEUE_COMPUTE, cmdbuf,
@@ -85,6 +91,10 @@ meta_compute_end(struct panvk_cmd_buffer *cmdbuf,
 
    cmdbuf->state.compute.shader = save_ctx->cs.shader;
    cmdbuf->state.compute.cs.desc = save_ctx->cs.desc;
+#if PAN_ARCH >= 10
+   cmdbuf->state.cond_render.enabled = save_ctx->cond_render_enabled;
+   cmdbuf->state.cond_render.inherited = save_ctx->cond_render_inherited;
+#endif
    compute_state_set_dirty(cmdbuf, CS);
    compute_state_set_dirty(cmdbuf, DESC_STATE);
 }
@@ -124,6 +134,12 @@ meta_gfx_start(struct panvk_cmd_buffer *cmdbuf,
    gfx_state_set_dirty(cmdbuf, OQ);
 
    cmdbuf->state.gfx.vk_meta = true;
+#if PAN_ARCH >= 10
+   save_ctx->cond_render_enabled = cmdbuf->state.cond_render.enabled;
+   save_ctx->cond_render_inherited = cmdbuf->state.cond_render.inherited;
+   cmdbuf->state.cond_render.enabled = false;
+   cmdbuf->state.cond_render.inherited = false;
+#endif
 
 #if PAN_ARCH >= 10
    panvk_per_arch(panvk_instr_begin_work)(PANVK_SUBQUEUE_VERTEX_TILER, cmdbuf,
@@ -195,6 +211,10 @@ meta_gfx_end(struct panvk_cmd_buffer *cmdbuf,
    gfx_state_set_dirty(cmdbuf, RENDER_STATE);
 
    cmdbuf->state.gfx.vk_meta = false;
+#if PAN_ARCH >= 10
+   cmdbuf->state.cond_render.enabled = save_ctx->cond_render_enabled;
+   cmdbuf->state.cond_render.inherited = save_ctx->cond_render_inherited;
+#endif
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -236,19 +256,31 @@ panvk_per_arch(CmdClearAttachments)(VkCommandBuffer commandBuffer,
    struct vk_meta_rendering_info render = {
       .view_mask = cmdbuf->state.gfx.render.view_mask,
       .samples = cmdbuf->state.gfx.render.fb.nr_samples,
-      .color_attachment_count = cmdbuf->state.gfx.render.fb.info.rt_count,
       .depth_attachment_format = cmdbuf->state.gfx.render.z_attachment.fmt,
       .stencil_attachment_format = cmdbuf->state.gfx.render.s_attachment.fmt,
    };
-   for (uint32_t i = 0; i < render.color_attachment_count; i++) {
-       render.color_attachment_formats[i] =
-          cmdbuf->state.gfx.render.color_attachments.fmts[i];
-       render.color_attachment_write_masks[i] =
-          VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+   for (uint32_t i = 0; i < MAX_RTS; i++) {
+      if (!(cmdbuf->state.gfx.render.bound_attachments &
+            MESA_VK_RP_ATTACHMENT_COLOR_BIT(i)))
+         continue;
+
+      render.color_attachment_count =
+         MAX2(render.color_attachment_count, i + 1);
+      render.color_attachment_formats[i] =
+         cmdbuf->state.gfx.render.color_attachments.fmts[i];
+      render.color_attachment_write_masks[i] =
+         VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
    }
 
    meta_gfx_start(cmdbuf, &save);
+#if PAN_ARCH >= 10
+   /* CmdClearAttachments IS affected by conditional rendering, so restore
+    * the state that meta_gfx_start disabled.
+    */
+   cmdbuf->state.cond_render.enabled = save.cond_render_enabled;
+   cmdbuf->state.cond_render.inherited = save.cond_render_inherited;
+#endif
    vk_meta_clear_attachments(&cmdbuf->vk, &dev->meta, &render, attachmentCount,
                              pAttachments, rectCount, pRects);
    meta_gfx_end(cmdbuf, &save);
@@ -646,7 +678,7 @@ panvk_per_arch(cmd_transition_image_layout)(
 void
 panvk_per_arch(cmd_meta_resolve_attachments)(struct panvk_cmd_buffer *cmdbuf)
 {
-   struct pan_fb_info *fbinfo = &cmdbuf->state.gfx.render.fb.info;
+   struct pan_fb_layout *fb = &cmdbuf->state.gfx.render.fb.layout;
    bool needs_resolve = false;
 
    unsigned bound_atts = cmdbuf->state.gfx.render.bound_attachments;
@@ -738,12 +770,12 @@ panvk_per_arch(cmd_meta_resolve_attachments)(struct panvk_cmd_buffer *cmdbuf)
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
       .renderArea =
          {
-            .offset.x = fbinfo->draw_extent.minx,
-            .offset.y = fbinfo->draw_extent.miny,
+            .offset.x = fb->render_area_px.min_x,
+            .offset.y = fb->render_area_px.min_y,
             .extent.width =
-               fbinfo->draw_extent.maxx - fbinfo->draw_extent.minx + 1,
+               fb->render_area_px.max_x - fb->render_area_px.min_x + 1,
             .extent.height =
-               fbinfo->draw_extent.maxy - fbinfo->draw_extent.miny + 1,
+               fb->render_area_px.max_y - fb->render_area_px.min_y + 1,
          },
       .layerCount = cmdbuf->state.gfx.render.layer_count,
       .viewMask = cmdbuf->state.gfx.render.view_mask,

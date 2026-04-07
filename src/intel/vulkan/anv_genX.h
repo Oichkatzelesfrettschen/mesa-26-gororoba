@@ -74,9 +74,28 @@ void genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
 
 void genX(cmd_buffer_apply_pipe_flushes)(struct anv_cmd_buffer *cmd_buffer);
 
+ALWAYS_INLINE static VkShaderStageFlags
+genX(push_constant_alloc_stages)(VkShaderStageFlags active_stages)
+{
+   /* In order to avoid thrash, we assume that vertex and fragment stages
+    * always exist. In the rare case where one is missing *and* the other uses
+    * push constants, this may be suboptimal. However, avoiding stalls seems
+    * more important.
+    */
+   VkShaderStageFlags stages = active_stages | VK_SHADER_STAGE_FRAGMENT_BIT;
+   if (!(stages & VK_SHADER_STAGE_MESH_BIT_EXT))
+      stages |= VK_SHADER_STAGE_VERTEX_BIT;
+
+   return stages;
+}
+
+void genX(batch_emit_push_constants)(struct anv_batch *batch,
+                                     struct anv_device *device,
+                                     VkShaderStageFlags stages);
+
 void
 genX(cmd_buffer_update_color_aux_op)(struct anv_cmd_buffer *cmd_buffer,
-                                     enum isl_aux_op aux_op);
+                                     enum anv_color_aux_op_class aux_op);
 
 void genX(cmd_buffer_emit_gfx12_depth_wa)(struct anv_cmd_buffer *cmd_buffer,
                                           const struct isl_surf *surf);
@@ -97,9 +116,11 @@ void genX(urb_workaround)(struct anv_cmd_buffer *cmd_buffer,
                           const struct intel_urb_config *urb_cfg);
 
 void genX(flush_pipeline_select_3d)(struct anv_cmd_buffer *cmd_buffer);
-void genX(flush_pipeline_select_gpgpu)(struct anv_cmd_buffer *cmd_buffer);
+void genX(flush_pipeline_select_gpgpu)(struct anv_cmd_buffer *cmd_buffer,
+                                       bool uses_systolic);
 void genX(emit_pipeline_select)(struct anv_batch *batch, uint32_t pipeline,
-                                const struct anv_device *device);
+                                const struct anv_device *device,
+                                bool uses_systolic);
 
 void genX(apply_task_urb_workaround)(struct anv_cmd_buffer *cmd_buffer);
 
@@ -298,7 +319,8 @@ void genX(batch_emit_fast_color_dummy_blit)(struct anv_batch *batch,
    (struct GENX(BINDLESS_SHADER_RECORD)) {                           \
       .OffsetToLocalArguments = (local_arg_offset) / 8,              \
       .BindlessShaderDispatchMode = RT_SIMD16,                       \
-      .KernelStartPointer = shader->kernel.offset,                   \
+      .KernelStartPointer = shader->replay_kernel.alloc_size != 0 ?  \
+         shader->replay_kernel.offset : shader->kernel.offset,       \
       .RegistersPerThread = ptl_register_blocks(prog_data->base.grf_used), \
    };                                                                \
 })
@@ -313,7 +335,8 @@ void genX(batch_emit_fast_color_dummy_blit)(struct anv_batch *batch,
       .OffsetToLocalArguments = (local_arg_offset) / 8,              \
       .BindlessShaderDispatchMode =                                  \
          prog_data->simd_size == 16 ? RT_SIMD16 : RT_SIMD8,          \
-      .KernelStartPointer = shader->kernel.offset,                   \
+      .KernelStartPointer = shader->replay_kernel.alloc_size != 0 ?  \
+         shader->replay_kernel.offset : shader->kernel.offset,       \
    };                                                                \
 })
 #endif
@@ -530,4 +553,17 @@ genX(cmd_buffer_post_dispatch_wa)(struct anv_cmd_buffer *cmd_buffer)
                                     ANV_PIPE_STATE_CACHE_INVALIDATE_BIT,
                                     "Wa_14025112257");
    }
+}
+
+static inline void
+genX(cmd_buffer_rhwo_wa_14024015672)(struct anv_cmd_buffer *cmd_buffer,
+                                     bool msaa_enabled)
+{
+   struct anv_device *device = cmd_buffer->device;
+   const bool rhwo_opt_enable =
+      !device->physical->instance->intel_enable_wa_14024015672_msaa &&
+      msaa_enabled;
+   if (intel_needs_workaround(device->info, 14024015672) &&
+       cmd_buffer->state.pending_rhwo_optimization_enabled != rhwo_opt_enable)
+      cmd_buffer->state.pending_rhwo_optimization_enabled = rhwo_opt_enable;
 }

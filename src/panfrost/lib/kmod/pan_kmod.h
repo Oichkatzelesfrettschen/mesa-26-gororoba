@@ -19,6 +19,7 @@
 #pragma once
 
 #include <fcntl.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <xf86drm.h>
 
@@ -34,9 +35,9 @@
 #include "util/sparse_array.h"
 #include "util/u_atomic.h"
 #include "util/u_dynarray.h"
-#include "util/perf/cpu_trace.h"
 
 #include "kmod/panthor_kmod.h"
+#include "pan_trace.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -421,7 +422,7 @@ struct pan_kmod_ops {
     * Return NULL if the import fails for any reason.
     */
    struct pan_kmod_bo *(*bo_import)(struct pan_kmod_dev *dev, uint32_t handle,
-                                    uint64_t size, uint32_t flags);
+                                    uint64_t size);
 
    /* Post export operations.
     * Return 0 on success, -1 otherwise.
@@ -554,7 +555,7 @@ struct pan_kmod_dev {
 
 #define pan_kmod_ioctl(fd, op, arg)                                          \
    ({                                                                        \
-      MESA_TRACE_SCOPE("pan_kmod_ioctl op=" #op);                            \
+      PAN_TRACE_SCOPE(PAN_TRACE_LIB_KMOD, "pan_kmod_ioctl op=" #op);         \
       drmIoctl(fd, op, arg);                                                 \
    })
 
@@ -628,12 +629,13 @@ pan_kmod_bo_get_user_priv(const struct pan_kmod_bo *bo)
    return bo->user_priv;
 }
 
-struct pan_kmod_bo *pan_kmod_bo_import(struct pan_kmod_dev *dev, int fd,
-                                       uint32_t flags);
+struct pan_kmod_bo *pan_kmod_bo_import(struct pan_kmod_dev *dev, int fd);
 
 static inline int
 pan_kmod_bo_export(struct pan_kmod_bo *bo)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_LIB_KMOD);
+
    int fd;
 
    if (drmPrimeHandleToFD(bo->dev->fd, bo->handle, DRM_CLOEXEC | DRM_RDWR,
@@ -655,6 +657,8 @@ static inline bool
 pan_kmod_bo_wait(struct pan_kmod_bo *bo, int64_t timeout_ns,
                  bool for_read_only_access)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_LIB_KMOD);
+
    return bo->dev->ops->bo_wait(bo, timeout_ns, for_read_only_access);
 }
 
@@ -675,27 +679,25 @@ pan_kmod_bo_make_unevictable(struct pan_kmod_bo *bo)
 }
 
 static inline void *
-pan_kmod_bo_mmap(struct pan_kmod_bo *bo, off_t bo_offset, size_t size, int prot,
-                 int flags, void *host_addr)
+pan_kmod_bo_mmap(struct pan_kmod_bo *bo, int prot, int flags, void *host_addr)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_LIB_KMOD);
+
    off_t mmap_offset;
 
    /* Don't bother trying an mmap() if it's not allowed. */
    if (bo->flags & PAN_KMOD_BO_FLAG_NO_MMAP)
       return MAP_FAILED;
 
-   if ((uint64_t)bo_offset + (uint64_t)size > bo->size)
-      return MAP_FAILED;
-
    mmap_offset = bo->dev->ops->bo_get_mmap_offset(bo);
    if (mmap_offset < 0)
       return MAP_FAILED;
 
-   host_addr = os_mmap(host_addr, size, prot, flags, bo->dev->fd,
-                       mmap_offset + bo_offset);
+   host_addr =
+      os_mmap(host_addr, bo->size, prot, flags, bo->dev->fd, mmap_offset);
    if (host_addr == MAP_FAILED)
-      mesa_loge("mmap(..., size=%zu, prot=%d, flags=0x%x) failed: %s",
-                size, prot, flags, strerror(errno));
+      mesa_loge("mmap(..., size=%" PRIu64 ", prot=%d, flags=0x%x) failed: %s",
+                bo->size, prot, flags, strerror(errno));
 
    return host_addr;
 }
@@ -716,6 +718,8 @@ void pan_kmod_flush_bo_map_syncs(struct pan_kmod_dev *dev);
 static inline void
 pan_kmod_set_bo_label(struct pan_kmod_dev *dev, struct pan_kmod_bo *bo, const char *label)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_LIB_KMOD);
+
    if (dev->ops->bo_set_label)
       dev->ops->bo_set_label(dev, bo, label);
 }
@@ -736,12 +740,16 @@ static inline struct pan_kmod_vm *
 pan_kmod_vm_create(struct pan_kmod_dev *dev, uint32_t flags, uint64_t va_start,
                    uint64_t va_range)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_LIB_KMOD);
+
    return dev->ops->vm_create(dev, flags, va_start, va_range);
 }
 
 static inline void
 pan_kmod_vm_destroy(struct pan_kmod_vm *vm)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_LIB_KMOD);
+
    vm->dev->ops->vm_destroy(vm);
 }
 
@@ -749,6 +757,8 @@ static inline int
 pan_kmod_vm_bind(struct pan_kmod_vm *vm, enum pan_kmod_vm_op_mode mode,
                  struct pan_kmod_vm_op *ops, uint32_t op_count)
 {
+   PAN_TRACE_FUNC(PAN_TRACE_LIB_KMOD);
+
    return vm->dev->ops->vm_bind(vm, mode, ops, op_count);
 }
 

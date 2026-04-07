@@ -1544,7 +1544,7 @@ lower_ubo_array_one_to_static(struct nir_builder *b,
    if (nir_src_is_const(index->src[0]) && nir_src_as_uint(index->src[0]) == 0)
       return false;
 
-   if (nir_intrinsic_desc_type(index) != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+   if (nir_intrinsic_desc_type(index) != nir_descriptor_type_uniform_buffer)
       return false;
 
    b->cursor = nir_instr_remove(&index->instr);
@@ -2113,10 +2113,11 @@ lower_subgroup_scan(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    nir_pop_if(b, if_active_thread);
 
    nir_store_var(b, loop_counter_var, nir_iadd_imm(b, loop_counter, 1), 1);
-   nir_jump(b, nir_jump_continue);
+
+   nir_push_else(b, nif);
+   nir_jump(b, nir_jump_break);
    nir_pop_if(b, nif);
 
-   nir_jump(b, nir_jump_break);
    nir_pop_loop(b, loop);
 
    result = nir_load_var(b, result_var);

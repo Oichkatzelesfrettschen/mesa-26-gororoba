@@ -54,7 +54,7 @@
 #include "util/blob.h"
 #include "util/hash_table.h"
 #include "util/macros.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/simple_mtx.h"
 #include "util/u_debug.h"
 #include "vulkan/vulkan_core.h"
@@ -153,6 +153,7 @@ hk_preprocess_nir_internal(struct vk_physical_device *vk_pdev, nir_shader *nir)
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       struct nir_lower_sysvals_to_varyings_options sysvals_opts = {
          .point_coord = true,
+         .primitive_id = nir->info.stage == MESA_SHADER_FRAGMENT,
       };
 
       nir_lower_sysvals_to_varyings(nir, &sysvals_opts);
@@ -284,7 +285,7 @@ hk_hash_graphics_state(struct vk_physical_device *device,
 
    if (state &&
        (stages & (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT))) {
-      const bool is_multiview = state->rp->view_mask != 0;
+      const bool is_multiview = state->mv->view_mask != 0;
       _mesa_blake3_update(&blake3_ctx, &is_multiview, sizeof(is_multiview));
    }
 
@@ -1048,7 +1049,7 @@ hk_lower_hw_vs(nir_shader *nir, struct hk_shader *shader, bool kill_psiz)
     *
     * Must be synced with pointSizeRange.
     */
-   NIR_PASS(_, nir, nir_lower_point_size, 1.0f, 511.95f, nir_type_invalid);
+   NIR_PASS(_, nir, nir_lower_point_size, 1.0f, 511.95f);
 
    if (kill_psiz) {
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, kill_psiz_write,
@@ -1498,7 +1499,7 @@ hk_compile_shader(struct hk_device *dev, struct vk_shader_compile_info *info,
 }
 
 static void
-nir_opts(nir_shader *nir)
+nir_opts(nir_shader *nir, void *data)
 {
    bool progress;
 
@@ -1547,7 +1548,7 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
    for (uint32_t i = 0; i < shader_count; i++) {
       const struct vk_shader_compile_info *info = &infos[i];
       /* TODO: Multiview with ESO */
-      const bool is_multiview = state && state->rp->view_mask != 0;
+      const bool is_multiview = state && state->mv->view_mask != 0;
       enum hk_feature_key hk_features = hk_make_feature_key(features);
       nir_shader *nir = info->nir;
 
@@ -1565,7 +1566,7 @@ hk_compile_shaders(struct vk_device *vk_dev, uint32_t shader_count,
    }
 
    nir_opt_varyings_bulk(shaders, shader_count, true, UINT32_MAX, UINT32_MAX,
-                         nir_opts);
+                         nir_opts, NULL);
 
    for (uint32_t i = 0; i < shader_count; i++) {
       VkResult result =

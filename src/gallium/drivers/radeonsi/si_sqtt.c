@@ -23,7 +23,6 @@ si_emit_spi_config_cntl(struct si_context *sctx,
 static bool si_sqtt_init_bo(struct si_context *sctx)
 {
    unsigned max_se = sctx->screen->info.max_se;
-   struct radeon_winsys *ws = sctx->ws;
    uint64_t size;
 
    /* The buffer size and address need to be aligned in HW regs. Align the
@@ -37,14 +36,16 @@ static bool si_sqtt_init_bo(struct si_context *sctx)
                   1ull << SQTT_BUFFER_ALIGN_SHIFT);
    size += sctx->sqtt->buffer_size * (uint64_t)max_se;
 
+   if (size > UINT32_MAX)
+      return false;
+
    sctx->sqtt->bo =
-      ws->buffer_create(ws, size, 4096, RADEON_DOMAIN_GTT,
-                        RADEON_FLAG_NO_INTERPROCESS_SHARING |
-                           RADEON_FLAG_GTT_WC | RADEON_FLAG_NO_SUBALLOC);
+      pipe_aligned_buffer_create(&sctx->screen->b, SI_RESOURCE_FLAG_DRIVER_INTERNAL,
+                                 PIPE_USAGE_DEFAULT, size, 4096);
    if (!sctx->sqtt->bo)
       return false;
 
-   sctx->sqtt->buffer_va = sctx->ws->buffer_get_virtual_address(sctx->sqtt->bo);
+   sctx->sqtt->buffer_va = si_resource(sctx->sqtt->bo)->gpu_address;
 
    return true;
 }
@@ -99,7 +100,6 @@ static void si_emit_sqtt_stop(struct si_context *sctx, struct radeon_cmdbuf *cs,
 
 static void si_sqtt_start(struct si_context *sctx, struct radeon_cmdbuf *cs)
 {
-   struct radeon_winsys *ws = sctx->ws;
    enum amd_ip_type ip_type = sctx->ws->cs_get_ip_type(cs);
 
    radeon_begin(cs);
@@ -107,8 +107,8 @@ static void si_sqtt_start(struct si_context *sctx, struct radeon_cmdbuf *cs)
    switch (ip_type) {
       case AMD_IP_GFX:
          radeon_emit(PKT3(PKT3_CONTEXT_CONTROL, 1, 0));
-         radeon_emit(CC0_UPDATE_LOAD_ENABLES(1));
-         radeon_emit(CC1_UPDATE_SHADOW_ENABLES(1));
+         radeon_emit(S_28_1_UPDATE_LOAD_ENABLES(1));
+         radeon_emit(S_28_2_UPDATE_SHADOW_ENABLES(1));
          break;
       case AMD_IP_COMPUTE:
          radeon_emit(PKT3(PKT3_NOP, 0, 0));
@@ -120,11 +120,9 @@ static void si_sqtt_start(struct si_context *sctx, struct radeon_cmdbuf *cs)
    }
    radeon_end();
 
-   ws->cs_add_buffer(cs, sctx->sqtt->bo, RADEON_USAGE_READWRITE,
-                     RADEON_DOMAIN_VRAM);
+   radeon_add_to_buffer_list(sctx, cs, si_resource(sctx->sqtt->bo), RADEON_USAGE_READWRITE);
    if (sctx->spm.bo)
-      ws->cs_add_buffer(cs, sctx->spm.bo, RADEON_USAGE_READWRITE,
-                        RADEON_DOMAIN_VRAM);
+      radeon_add_to_buffer_list(sctx, cs, si_resource(sctx->spm.bo), RADEON_USAGE_READWRITE);
 
    si_cp_dma_wait_for_idle(sctx, cs);
 
@@ -162,8 +160,8 @@ static void si_sqtt_stop(struct si_context *sctx, struct radeon_cmdbuf *cs)
    switch (ip_type) {
       case AMD_IP_GFX:
          radeon_emit(PKT3(PKT3_CONTEXT_CONTROL, 1, 0));
-         radeon_emit(CC0_UPDATE_LOAD_ENABLES(1));
-         radeon_emit(CC1_UPDATE_SHADOW_ENABLES(1));
+         radeon_emit(S_28_1_UPDATE_LOAD_ENABLES(1));
+         radeon_emit(S_28_2_UPDATE_SHADOW_ENABLES(1));
          break;
       case AMD_IP_COMPUTE:
          radeon_emit(PKT3(PKT3_NOP, 0, 0));
@@ -175,11 +173,11 @@ static void si_sqtt_stop(struct si_context *sctx, struct radeon_cmdbuf *cs)
    }
    radeon_end();
 
-   ws->cs_add_buffer(cs, sctx->sqtt->bo, RADEON_USAGE_READWRITE,
+   ws->cs_add_buffer(cs, si_resource(sctx->sqtt->bo)->buf, RADEON_USAGE_READWRITE,
                      RADEON_DOMAIN_VRAM);
 
    if (sctx->spm.bo)
-      ws->cs_add_buffer(cs, sctx->spm.bo, RADEON_USAGE_READWRITE,
+      ws->cs_add_buffer(cs, si_resource(sctx->spm.bo)->buf, RADEON_USAGE_READWRITE,
                         RADEON_DOMAIN_VRAM);
 
    si_cp_dma_wait_for_idle(sctx, cs);
@@ -258,19 +256,19 @@ static bool
 si_sqtt_resize_bo(struct si_context *sctx)
 {
    /* Destroy the previous thread trace BO. */
-   struct pb_buffer_lean *bo = sctx->sqtt->bo;
-   radeon_bo_reference(sctx->screen->ws, &bo, NULL);
+   struct pipe_resource *bo = sctx->sqtt->bo;
+   pipe_resource_reference(&bo, NULL);
    sctx->sqtt->bo = NULL;
 
    if (sctx->sqtt->buffer_size < UINT32_MAX / 2) {
       /* Double the size of the thread trace buffer per SE. */
       sctx->sqtt->buffer_size *= 2;
       mesa_loge("Failed to get the thread trace because the buffer "
-                "was too small, resizing to %d kB",
+                "was too small, resizing to %d kB per se",
                 sctx->sqtt->buffer_size / 1024);
    } else {
       mesa_loge("Failed to get the thread trace because the buffer "
-                "was too small (%d kB). Cancelling trace capture.",
+                "was too small (%d kB per se). Cancelling trace capture.",
                  sctx->sqtt->buffer_size / 1024);
       if (sctx->sqtt->instruction_timing_enabled)
          mesa_loge("Try again with AMD_THREAD_TRACE_INSTRUCTION_TIMING=false"
@@ -285,15 +283,19 @@ si_sqtt_resize_bo(struct si_context *sctx)
 static bool si_get_sqtt_trace(struct si_context *sctx,
                               struct ac_sqtt_trace *sqtt)
 {
+   struct pipe_transfer *transfer;
+   struct pipe_resource *bo = sctx->sqtt->bo;
+
    memset(sqtt, 0, sizeof(*sqtt));
 
-   sctx->sqtt->ptr =
-      sctx->ws->buffer_map(sctx->ws, sctx->sqtt->bo, NULL, PIPE_MAP_READ);
+   sctx->sqtt->ptr = pipe_buffer_map(&sctx->b, bo, PIPE_MAP_READ, &transfer);
 
    if (!sctx->sqtt->ptr)
       return false;
 
    if (!ac_sqtt_get_trace(sctx->sqtt, &sctx->screen->info, sqtt)) {
+      pipe_buffer_unmap(&sctx->b, transfer);
+
       if (!si_sqtt_resize_bo(sctx)) {
          mesa_loge("Failed to resize the SQTT buffer.");
       } else {
@@ -305,6 +307,8 @@ static bool si_get_sqtt_trace(struct si_context *sctx,
       }
       return false;
    }
+
+   pipe_buffer_unmap(&sctx->b, transfer);
    return true;
 }
 
@@ -341,8 +345,9 @@ bool si_init_sqtt(struct si_context *sctx)
 
    const char *trigger = os_get_option("AMD_THREAD_TRACE_TRIGGER");
    if (trigger) {
-      sctx->sqtt->start_frame = atoi(trigger);
-      if (sctx->sqtt->start_frame <= 0) {
+      char *endptr;
+      sctx->sqtt->start_frame = strtol(trigger, &endptr, 0);
+      if (trigger == endptr) {
          /* This isn't a frame number, must be a file */
          sctx->sqtt->trigger_file = strdup(trigger);
          sctx->sqtt->start_frame = -1;
@@ -373,8 +378,8 @@ bool si_init_sqtt(struct si_context *sctx)
 void si_destroy_sqtt(struct si_context *sctx)
 {
    struct si_screen *sscreen = sctx->screen;
-   struct pb_buffer_lean *bo = sctx->sqtt->bo;
-   radeon_bo_reference(sctx->screen->ws, &bo, NULL);
+   struct pipe_resource *bo = sctx->sqtt->bo;
+   pipe_resource_reference(&bo, NULL);
 
    free(sctx->sqtt->trigger_file);
 
@@ -455,8 +460,9 @@ void si_handle_sqtt(struct si_context *sctx, struct radeon_cmdbuf *rcs)
 
       if (frame_trigger || file_trigger) {
          /* Wait for last submission */
-         sctx->ws->fence_wait(sctx->ws, sctx->last_gfx_fence,
-                              OS_TIMEOUT_INFINITE);
+         if (sctx->last_gfx_fence)
+            sctx->ws->fence_wait(sctx->ws, sctx->last_gfx_fence,
+                                 OS_TIMEOUT_INFINITE);
 
          /* Start SQTT */
          si_begin_sqtt(sctx, rcs);
@@ -482,20 +488,23 @@ void si_handle_sqtt(struct si_context *sctx, struct radeon_cmdbuf *rcs)
       if (sctx->ws->fence_wait(sctx->ws, sctx->last_sqtt_fence,
                                OS_TIMEOUT_INFINITE) &&
           si_get_sqtt_trace(sctx, &sqtt_trace)) {
+         struct pipe_transfer *transfer;
          struct ac_spm_trace spm_trace;
 
          /* Map the SPM counter buffer */
-         if (sctx->spm.bo) {
-            sctx->spm.ptr = sctx->ws->buffer_map(
-               sctx->ws, sctx->spm.bo, NULL, PIPE_MAP_READ | RADEON_MAP_TEMPORARY);
-            ac_spm_get_trace(&sctx->spm, &spm_trace);
-         }
-
-         ac_dump_rgp_capture(&sctx->screen->info, &sqtt_trace,
-                             sctx->spm.bo ? &spm_trace : NULL);
+         if (sctx->spm.bo)
+            sctx->spm.ptr = pipe_buffer_map(&sctx->b, sctx->spm.bo, PIPE_MAP_READ, &transfer);
 
          if (sctx->spm.ptr)
-            sctx->ws->buffer_unmap(sctx->ws, sctx->spm.bo);
+            ac_spm_get_trace(&sctx->spm, &spm_trace);
+
+         ac_dump_rgp_capture(&sctx->screen->info, &sqtt_trace,
+                             sctx->spm.ptr ? &spm_trace : NULL, NULL);
+
+         if (sctx->spm.ptr) {
+            pipe_buffer_unmap(&sctx->b, transfer);
+            sctx->spm.ptr = NULL;
+         }
       } else if (sctx->sqtt->bo) {
          if (!sctx->sqtt->trigger_file) {
             sctx->sqtt->start_frame = num_frames + 10;
@@ -710,10 +719,12 @@ si_sqtt_pipe_to_rgp_shader_stage(union si_shader_key *key, mesa_shader_stage sta
          else
             return RGP_HW_STAGE_VS;
       case MESA_SHADER_GEOMETRY:
+      case MESA_SHADER_MESH:
          return RGP_HW_STAGE_GS;
       case MESA_SHADER_FRAGMENT:
          return RGP_HW_STAGE_PS;
       case MESA_SHADER_COMPUTE:
+      case MESA_SHADER_TASK:
          return RGP_HW_STAGE_CS;
       default:
          UNREACHABLE("invalid mesa shader stage");
@@ -752,6 +763,16 @@ si_sqtt_add_code_object(struct si_context *sctx,
             continue;
          shader = sctx->shaders[i].current;
          hw_stage = si_sqtt_pipe_to_rgp_shader_stage(&shader->key, i);
+      } else if (i == MESA_SHADER_MESH) {
+         if (!sctx->ms_shader_state.cso)
+            continue;
+         shader = sctx->ms_shader_state.current;
+         hw_stage = RGP_HW_STAGE_GS;
+      } else if (i == MESA_SHADER_TASK) {
+         if (!sctx->ts_shader_state.program)
+            continue;
+         shader = &sctx->ts_shader_state.program->shader;
+         hw_stage = RGP_HW_STAGE_CS;
       } else {
          continue;
       }

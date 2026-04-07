@@ -255,6 +255,8 @@ struct wsi_wl_swapchain {
       bool has_hdr_metadata;
    } color;
 
+   struct wsi_image_timing_request timing_request;
+
    struct wsi_wl_image images[0];
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(wsi_wl_swapchain, base.base, VkSwapchainKHR,
@@ -408,6 +410,8 @@ wsi_wl_display_add_drm_format_modifier(struct wsi_wl_display *display,
                                        uint32_t drm_format, uint64_t modifier)
 {
    VK_FROM_HANDLE(vk_physical_device, pdevice, display->wsi_wl->physical_device);
+   struct wsi_device *wsi_device = pdevice->wsi_device;
+
    /* From Vulkan 1.3 onwards, we can always try adding the 4444 formats.
     * If the format isn't supported or isn't renderable,
     * wsi_wl_display_add_vk_format() will reject it via
@@ -566,16 +570,34 @@ wsi_wl_display_add_drm_format_modifier(struct wsi_wl_display *display,
     * linear -> nonlinear SRGB colorspace conversion before the data is stored.
     * The inverse function is applied when sampling from SRGB images.
     * From Wayland's perspective nothing changes, the difference is just how
-    * Vulkan interprets the pixel data. */
+    * Vulkan interprets the pixel data.
+    *
+    * For bonus points, 24bpp VkFormats may appear as 32bpp, depending on the
+    * driver.
+    */
+   case DRM_FORMAT_BGR888:
+      if (!wsi_device->emulate_24as32) {
+         wsi_wl_display_add_vk_format_modifier(display, formats,
+                                               VK_FORMAT_R8G8B8_SRGB,
+                                               WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
+                                               modifier);
+         wsi_wl_display_add_vk_format_modifier(display, formats,
+                                               VK_FORMAT_R8G8B8_UNORM,
+                                               WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
+                                               modifier);
+      }
+      break;
    case DRM_FORMAT_XBGR8888:
-      wsi_wl_display_add_vk_format_modifier(display, formats,
-                                            VK_FORMAT_R8G8B8_SRGB,
-                                            WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
-                                            modifier);
-      wsi_wl_display_add_vk_format_modifier(display, formats,
-                                            VK_FORMAT_R8G8B8_UNORM,
-                                            WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
-                                            modifier);
+      if (wsi_device->emulate_24as32) {
+         wsi_wl_display_add_vk_format_modifier(display, formats,
+                                               VK_FORMAT_R8G8B8_SRGB,
+                                               WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
+                                               modifier);
+         wsi_wl_display_add_vk_format_modifier(display, formats,
+                                               VK_FORMAT_R8G8B8_UNORM,
+                                               WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
+                                               modifier);
+      }
       wsi_wl_display_add_vk_format_modifier(display, formats,
                                             VK_FORMAT_R8G8B8A8_SRGB,
                                             WSI_WL_FMT_OPAQUE, modifier);
@@ -591,15 +613,29 @@ wsi_wl_display_add_drm_format_modifier(struct wsi_wl_display *display,
                                             VK_FORMAT_R8G8B8A8_UNORM,
                                             WSI_WL_FMT_ALPHA, modifier);
       break;
+   case DRM_FORMAT_RGB888:
+      if (!wsi_device->emulate_24as32) {
+         wsi_wl_display_add_vk_format_modifier(display, formats,
+                                               VK_FORMAT_B8G8R8_SRGB,
+                                               WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
+                                               modifier);
+         wsi_wl_display_add_vk_format_modifier(display, formats,
+                                               VK_FORMAT_B8G8R8_UNORM,
+                                               WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
+                                               modifier);
+      }
+      break;
    case DRM_FORMAT_XRGB8888:
-      wsi_wl_display_add_vk_format_modifier(display, formats,
-                                            VK_FORMAT_B8G8R8_SRGB,
-                                            WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
-                                            modifier);
-      wsi_wl_display_add_vk_format_modifier(display, formats,
-                                            VK_FORMAT_B8G8R8_UNORM,
-                                            WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
-                                            modifier);
+      if (wsi_device->emulate_24as32) {
+         wsi_wl_display_add_vk_format_modifier(display, formats,
+                                               VK_FORMAT_B8G8R8_SRGB,
+                                               WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
+                                               modifier);
+         wsi_wl_display_add_vk_format_modifier(display, formats,
+                                               VK_FORMAT_B8G8R8_UNORM,
+                                               WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE,
+                                               modifier);
+      }
       wsi_wl_display_add_vk_format_modifier(display, formats,
                                             VK_FORMAT_B8G8R8A8_SRGB,
                                             WSI_WL_FMT_OPAQUE, modifier);
@@ -644,7 +680,8 @@ wsi_wl_display_add_wl_shm_format(struct wsi_wl_display *display,
 }
 
 static uint32_t
-wl_drm_format_for_vk_format(VkFormat vk_format, bool alpha)
+wl_drm_format_for_vk_format(struct wsi_device *wsi_device,
+                            VkFormat vk_format, bool alpha)
 {
    switch (vk_format) {
    case VK_FORMAT_A4R4G4B4_UNORM_PACK16:
@@ -677,13 +714,13 @@ wl_drm_format_for_vk_format(VkFormat vk_format, bool alpha)
 #endif
    case VK_FORMAT_R8G8B8_UNORM:
    case VK_FORMAT_R8G8B8_SRGB:
-      return DRM_FORMAT_XBGR8888;
+      return wsi_device->emulate_24as32 ? DRM_FORMAT_XBGR8888 : DRM_FORMAT_BGR888;
    case VK_FORMAT_R8G8B8A8_UNORM:
    case VK_FORMAT_R8G8B8A8_SRGB:
       return alpha ? DRM_FORMAT_ABGR8888 : DRM_FORMAT_XBGR8888;
    case VK_FORMAT_B8G8R8_UNORM:
    case VK_FORMAT_B8G8R8_SRGB:
-      return DRM_FORMAT_BGRX8888;
+      return wsi_device->emulate_24as32 ? DRM_FORMAT_XRGB8888 : DRM_FORMAT_RGB888;
    case VK_FORMAT_B8G8R8A8_UNORM:
    case VK_FORMAT_B8G8R8A8_SRGB:
       return alpha ? DRM_FORMAT_ARGB8888 : DRM_FORMAT_XRGB8888;
@@ -695,9 +732,12 @@ wl_drm_format_for_vk_format(VkFormat vk_format, bool alpha)
 }
 
 static enum wl_shm_format
-wl_shm_format_for_vk_format(VkFormat vk_format, bool alpha)
+wl_shm_format_for_vk_format(struct wsi_device *wsi_device,
+                            VkFormat vk_format, bool alpha)
 {
-   uint32_t drm_format = wl_drm_format_for_vk_format(vk_format, alpha);
+   uint32_t drm_format =
+      wl_drm_format_for_vk_format(wsi_device, vk_format, alpha);
+
    if (drm_format == DRM_FORMAT_INVALID) {
       return 0;
    }
@@ -1687,7 +1727,15 @@ wsi_GetPhysicalDeviceWaylandPresentationSupportKHR(VkPhysicalDevice physicalDevi
    struct wsi_wayland *wsi =
       (struct wsi_wayland *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_WAYLAND];
 
-   if (!(wsi_device->queue_supports_blit & BITFIELD64_BIT(queueFamilyIndex)))
+   /* These should overlap. */
+   uint64_t effective_queues = wsi_device->queue_supports_blit & wsi_device->queue_supports_timestamps;
+
+   /* If there are no queues that support both blits and timestamps,
+    * don't report support for queue timestamps. */
+   if (!effective_queues)
+      effective_queues = wsi_device->queue_supports_blit;
+
+   if (!(effective_queues & BITFIELD64_BIT(queueFamilyIndex)))
       return false;
 
    struct wsi_wl_display display;
@@ -1808,7 +1856,8 @@ wsi_wl_surface_get_capabilities(VkIcdSurfaceBase *icd_surface,
 static VkResult
 wsi_wl_surface_check_presentation(VkIcdSurfaceBase *icd_surface,
                                   struct wsi_device *wsi_device,
-                                  bool *has_wp_presentation)
+                                  bool *has_wp_presentation, clockid_t *clock_id,
+                                  bool *has_commit_timing, bool *has_fifo)
 {
    VkIcdSurfaceWayland *surface = (VkIcdSurfaceWayland *)icd_surface;
    struct wsi_wayland *wsi =
@@ -1819,7 +1868,17 @@ wsi_wl_surface_check_presentation(VkIcdSurfaceBase *icd_surface,
                            wsi_device->sw, "mesa check wp_presentation"))
       return VK_ERROR_SURFACE_LOST_KHR;
 
-   *has_wp_presentation = !!display.wp_presentation_notwrapped;
+   if (has_wp_presentation)
+      *has_wp_presentation = !!display.wp_presentation_notwrapped;
+
+   if (clock_id)
+      *clock_id = display.presentation_clock_id;
+
+   if (has_commit_timing)
+      *has_commit_timing = !!display.commit_timing_manager;
+
+   if (has_fifo)
+      *has_fifo = !!display.fifo_manager;
 
    wsi_wl_display_finish(&display);
 
@@ -1912,7 +1971,7 @@ wsi_wl_surface_get_capabilities2(VkIcdSurfaceBase *surface,
          bool has_feedback;
 
          result = wsi_wl_surface_check_presentation(surface, wsi_device,
-                                                    &has_feedback);
+                                                    &has_feedback, NULL, NULL, NULL);
          if (result != VK_SUCCESS)
             return result;
 
@@ -1925,11 +1984,55 @@ wsi_wl_surface_get_capabilities2(VkIcdSurfaceBase *surface,
          bool has_feedback;
 
          result = wsi_wl_surface_check_presentation(surface, wsi_device,
-                                                    &has_feedback);
+                                                    &has_feedback, NULL, NULL, NULL);
          if (result != VK_SUCCESS)
             return result;
 
          pwait2->presentWait2Supported = has_feedback;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT: {
+         VkPresentTimingSurfaceCapabilitiesEXT *wait = (void *)ext;
+         bool has_feedback, has_commit_timing, has_fifo;
+
+         wait->presentStageQueries = 0;
+         wait->presentTimingSupported = VK_FALSE;
+         wait->presentAtAbsoluteTimeSupported = VK_FALSE;
+         wait->presentAtRelativeTimeSupported = VK_FALSE;
+
+         clockid_t clock_id;
+
+         result = wsi_wl_surface_check_presentation(surface, wsi_device,
+                                                    &has_feedback, &clock_id,
+                                                    &has_commit_timing, &has_fifo);
+
+         if (result != VK_SUCCESS)
+            return result;
+
+         if (!has_feedback)
+            break;
+
+         /* We could deal with esoteric clock domains by exposing VK_TIME_DOMAIN_SWAPCHAIN or PRESENT_STAGE_LOCAL,
+          * but that requires a lot more scaffolding, and there's no need to add extra complexity if we can
+          * get away with this. */
+         if (clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_MONOTONIC_RAW)
+            break;
+
+         /* Presentation timing spec talks about the reported time targeting "pixel being visible".
+          * From presentation-time spec: "Note, that if the display path has a non-zero latency,
+          * the time instant specified by this counter may differ from the timestamp's."
+          * No compositor I know of reports where it takes display latency into account,
+          * so it's a little unclear if we should actually be reporting PIXEL_OUT or PIXEL_VISIBLE.
+          * Choose PIXEL_OUT for now since no known compositor out there actually implements
+          * PIXEL_VISIBLE as intended, and we don't want to promise something we cannot hold. */
+         wait->presentTimingSupported = VK_TRUE;
+         wait->presentStageQueries = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT;
+
+         /* We cannot reliably implement FIFO guarantee + absolute time without the FIFO barrier.
+          * Presentation timing is only defined to work with FIFO (and its variants like RELAXED and LATEST_READY). */
+         wait->presentAtAbsoluteTimeSupported = has_commit_timing && has_fifo;
+
          break;
       }
 
@@ -2423,6 +2526,7 @@ struct wsi_wl_present_id {
     * which uses frame callback to signal DRI3 COMPLETE. */
    struct wl_callback *frame;
    uint64_t present_id;
+   uint64_t timing_serial;
    struct mesa_trace_flow flow;
    uint64_t submission_time;
    const VkAllocationCallbacks *alloc;
@@ -2430,6 +2534,8 @@ struct wsi_wl_present_id {
    uint64_t target_time;
    uint64_t correction;
    struct wl_list link;
+   struct wsi_image *img;
+   bool user_target_time;
 };
 
 static struct wsi_image *
@@ -2458,6 +2564,14 @@ wsi_wl_swapchain_set_present_mode(struct wsi_swapchain *wsi_chain,
 {
    struct wsi_wl_swapchain *chain = (struct wsi_wl_swapchain *)wsi_chain;
    chain->base.present_mode = mode;
+}
+
+static void
+wsi_wl_swapchain_set_timing_request(struct wsi_swapchain *wsi_chain,
+                                    const struct wsi_image_timing_request *request)
+{
+   struct wsi_wl_swapchain *chain = (struct wsi_wl_swapchain *)wsi_chain;
+   chain->timing_request = *request;
 }
 
 static VkResult
@@ -2531,6 +2645,15 @@ dispatch_present_id_queue(struct wsi_swapchain *wsi_chain, struct timespec *end_
    if (ret == 0)
       return VK_TIMEOUT;
    return VK_SUCCESS;
+}
+
+static void
+wsi_wl_swapchain_poll_timing_request(struct wsi_swapchain *wsi_chain)
+{
+   /* Timing requests must complete in finite time, and if we're not calling present wait
+    * or queue present regularly, timing requests will never come back. */
+   struct timespec instant = {0};
+   dispatch_present_id_queue(wsi_chain, &instant);
 }
 
 static bool
@@ -2813,16 +2936,13 @@ wsi_wl_swapchain_acquire_next_image_implicit(struct wsi_swapchain *wsi_chain,
 }
 
 static void
-wsi_wl_presentation_update_present_id(struct wsi_wl_present_id *id)
+wsi_wl_presentation_update_present_id_locked(struct wsi_wl_present_id *id)
 {
-   mtx_lock(&id->chain->present_ids.lock);
    id->chain->present_ids.outstanding_count--;
    if (id->present_id > id->chain->present_ids.max_completed)
       id->chain->present_ids.max_completed = id->present_id;
 
    id->chain->present_ids.display_time_correction -= id->correction;
-   mtx_unlock(&id->chain->present_ids.lock);
-   vk_free(id->alloc, id);
 }
 
 static void
@@ -2833,6 +2953,20 @@ presentation_handle_presented(void *data,
    struct wsi_wl_present_id *id = data;
    struct wsi_wl_swapchain *chain = id->chain;
    uint64_t target_time = id->target_time;
+
+   /* In v1 of presentation time, we can know if we're likely running VRR, given refresh is 0.
+    * However, we cannot know what the base refresh rate is without some kind of external information.
+    * We also cannot know if we're actually driving the display in a VRR fashion.
+    * In v2, we should always know the "base refresh" rate, but that means we cannot know if we're driving
+    * the display VRR or FRR. We could try to deduce it based on timestamps, but that is too brittle.
+    * There is a v3 proposal that adds this information more formally so we don't have to guess.
+    * Knowing VRR or FRR is not mission critical for most use cases, so just report "Unknown" for now. */
+   wsi_swapchain_present_timing_update_refresh_rate(&chain->base, refresh, 0, 0);
+
+   /* Notify this before present wait to reduce latency of presentation timing requests
+    * if the application is driving its queries based off present waits. */
+   if (id->timing_serial)
+      wsi_swapchain_present_timing_notify_completion(&chain->base, id->timing_serial, presentation_time, id->img);
 
    mtx_lock(&chain->present_ids.lock);
    chain->present_ids.refresh_nsec = refresh;
@@ -2845,13 +2979,16 @@ presentation_handle_presented(void *data,
    if (presentation_time > chain->present_ids.displayed_time)
       chain->present_ids.displayed_time = presentation_time;
 
-   if (target_time && presentation_time > target_time)
+   /* If we have user-defined target time it can be arbitrarily early, and we don't
+    * want to start compensating for that error if application stops requesting specific time. */
+   if (!id->user_target_time && target_time && presentation_time > target_time)
       chain->present_ids.display_time_error = presentation_time - target_time;
    else
       chain->present_ids.display_time_error = 0;
-   mtx_unlock(&chain->present_ids.lock);
 
-   wsi_wl_presentation_update_present_id(id);
+   wsi_wl_presentation_update_present_id_locked(id);
+   mtx_unlock(&chain->present_ids.lock);
+   vk_free(id->alloc, id);
 }
 
 static void
@@ -2859,6 +2996,15 @@ presentation_handle_discarded(void *data)
 {
    struct wsi_wl_present_id *id = data;
    struct wsi_wl_swapchain *chain = id->chain;
+
+   /* From Vulkan spec:
+    * "Timing information for some present stages may have a time value of 0,
+    * indicating that results for that present stage are not available."
+    * Worst case we can simply take a timestamp of clock_id and pretend, but
+    * applications may start to latch onto that timestamp as ground truth, which
+    * is obviously not correct. */
+   if (id->timing_serial)
+      wsi_swapchain_present_timing_notify_completion(&chain->base, id->timing_serial, 0, id->img);
 
    mtx_lock(&chain->present_ids.lock);
    if (!chain->present_ids.valid_refresh_nsec) {
@@ -2868,9 +3014,10 @@ presentation_handle_discarded(void *data)
       chain->present_ids.refresh_nsec = 16666666;
       chain->present_ids.valid_refresh_nsec = true;
    }
-   mtx_unlock(&chain->present_ids.lock);
 
-   wsi_wl_presentation_update_present_id(id);
+   wsi_wl_presentation_update_present_id_locked(id);
+   mtx_unlock(&chain->present_ids.lock);
+   vk_free(id->alloc, id);
 }
 
 static void
@@ -2889,9 +3036,10 @@ presentation_frame_handle_done(void *data, struct wl_callback *callback, uint32_
 
    mtx_lock(&chain->present_ids.lock);
    wl_list_remove(&id->link);
-   mtx_unlock(&chain->present_ids.lock);
 
-   wsi_wl_presentation_update_present_id(id);
+   wsi_wl_presentation_update_present_id_locked(id);
+   mtx_unlock(&chain->present_ids.lock);
+   vk_free(id->alloc, id);
    wl_callback_destroy(callback);
 }
 
@@ -2914,6 +3062,29 @@ static const struct wl_callback_listener frame_listener = {
    frame_handle_done,
 };
 
+static bool
+set_application_driven_timestamp(struct wsi_wl_swapchain *chain,
+                                 uint64_t *timestamp,
+                                 uint64_t *correction)
+{
+   if (chain->timing_request.serial && chain->timing_request.time) {
+      /* Absolute time is requested before we have been able to report a reasonable refresh rate
+       * to application. This is valid, but we should not try to perform any rounding.
+       * NEAREST_REFRESH_CYCLE flag cannot be honored because it's impossible to know at this time. */
+      struct timespec target_ts;
+      timespec_from_nsec(&target_ts, chain->timing_request.time);
+      wp_commit_timer_v1_set_timestamp(chain->commit_timer,
+                                       (uint64_t)target_ts.tv_sec >> 32, target_ts.tv_sec,
+                                       target_ts.tv_nsec);
+      *timestamp = chain->timing_request.time;
+      *correction = 0;
+      chain->present_ids.last_target_time = chain->timing_request.time;
+      return true;
+   } else {
+      return false;
+   }
+}
+
 /* The present_ids lock must be held */
 static bool
 set_timestamp(struct wsi_wl_swapchain *chain,
@@ -2927,7 +3098,7 @@ set_timestamp(struct wsi_wl_swapchain *chain,
    int32_t error = 0;
 
    if (!chain->present_ids.valid_refresh_nsec)
-      return false;
+      return set_application_driven_timestamp(chain, timestamp, correction);
 
    displayed_time = chain->present_ids.displayed_time;
    refresh = chain->present_ids.refresh_nsec;
@@ -2937,7 +3108,7 @@ set_timestamp(struct wsi_wl_swapchain *chain,
     * timestamps at all, so bail out.
     */
    if (!refresh)
-      return false;
+      return set_application_driven_timestamp(chain, timestamp, correction);
 
    /* We assume we're being fed at the display's refresh rate, but
     * if that doesn't happen our timestamps fall into the past.
@@ -2955,6 +3126,10 @@ set_timestamp(struct wsi_wl_swapchain *chain,
       error = chain->present_ids.display_time_error -
               chain->present_ids.display_time_correction;
 
+   /* If we're driving timestamps from application, this is somewhat redundant
+    * but it will drain out any accumulated display_time_error over time.
+    * Accumulated errors are expected since application might not
+    * align the target time perfectly against a refresh cycle. */
    target = chain->present_ids.last_target_time;
    if (error > 0)  {
       target += (error / refresh) * refresh;
@@ -2964,19 +3139,41 @@ set_timestamp(struct wsi_wl_swapchain *chain,
    }
 
    chain->present_ids.display_time_correction += *correction;
-   target = next_phase_locked_time(displayed_time,
-                                   refresh,
-                                   target);
-  /* Take back 500 us as a safety margin, to ensure we don't miss our
-   * target due to round-off error.
-   */
-   timespec_from_nsec(&target_ts, target - 500000);
+
+   if (chain->timing_request.serial && chain->timing_request.time) {
+      target = chain->timing_request.time;
+      chain->present_ids.last_target_time = target;
+      *timestamp = target;
+
+      if (chain->timing_request.flags & VK_PRESENT_TIMING_INFO_PRESENT_AT_NEAREST_REFRESH_CYCLE_BIT_EXT)
+         target -= chain->present_ids.refresh_nsec / 2;
+
+      /* Without the flag, the application is supposed to deal with any safety margins on its own. */
+      timespec_from_nsec(&target_ts, target);
+
+      /* If we're using commit timing path, we always have FIFO protocol, so we don't have to
+       * consider scenarios where application is passing a very low present time.
+       * I.e., there is no need to max() the application timestamp against our estimated next refresh cycle.
+       * If the surface is occluded, it's possible to render at a higher rate than display refresh rate,
+       * but that's okay. Those presents will be discarded anyway, and we won't report odd timestamps to application. */
+   } else {
+      target = next_phase_locked_time(displayed_time,
+                                      refresh,
+                                      target);
+
+      chain->present_ids.last_target_time = target;
+      *timestamp = target;
+
+      /* Take back 500 us as a safety margin, to ensure we don't miss our
+       * target due to round-off error.
+       */
+      timespec_from_nsec(&target_ts, target - 500000);
+   }
+
    wp_commit_timer_v1_set_timestamp(chain->commit_timer,
                                     (uint64_t)target_ts.tv_sec >> 32, target_ts.tv_sec,
                                     target_ts.tv_nsec);
 
-   chain->present_ids.last_target_time = target;
-   *timestamp = target;
    return true;
 }
 
@@ -3078,13 +3275,16 @@ wsi_wl_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
    }
 
    if (present_id > 0 || (mode_fifo && chain->commit_timer) ||
-       util_perfetto_is_tracing_enabled()) {
+       util_perfetto_is_tracing_enabled() || chain->timing_request.serial) {
       struct wsi_wl_present_id *id =
          vk_zalloc(chain->wsi_wl_surface->display->wsi_wl->alloc, sizeof(*id), sizeof(uintptr_t),
                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
       id->chain = chain;
       id->present_id = present_id;
       id->alloc = chain->wsi_wl_surface->display->wsi_wl->alloc;
+      id->timing_serial = chain->timing_request.serial;
+      id->img = &chain->images[image_index].base;
+      id->user_target_time = chain->timing_request.time != 0;
 
       mtx_lock(&chain->present_ids.lock);
 
@@ -3211,6 +3411,8 @@ wsi_wl_swapchain_queue_present(struct wsi_swapchain *wsi_chain,
       wl_display_dispatch_queue_pending(wsi_wl_surface->display->wl_display,
                                         wsi_wl_surface->display->queue);
    }
+
+   memset(&chain->timing_request, 0, sizeof(chain->timing_request));
 
    return VK_SUCCESS;
 }
@@ -3382,7 +3584,8 @@ wsi_wl_swapchain_chain_free(struct wsi_wl_swapchain *chain,
     */
    struct wsi_wl_surface *wsi_wl_surface = chain->wsi_wl_surface;
    if (!chain->retired)
-      wl_display_flush(wsi_wl_surface->display->wl_display);
+      wl_display_roundtrip_queue(wsi_wl_surface->display->wl_display,
+                                 wsi_wl_surface->display->queue);
 
    if (chain->frame)
       wl_callback_destroy(chain->frame);
@@ -3444,6 +3647,20 @@ wsi_wl_swapchain_destroy(struct wsi_swapchain *wsi_chain,
    vk_free(pAllocator, chain);
 
    return VK_SUCCESS;
+}
+
+static VkTimeDomainKHR
+clock_id_to_vk_time_domain(clockid_t id)
+{
+   switch (id) {
+      case CLOCK_MONOTONIC:
+         return VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
+      case CLOCK_MONOTONIC_RAW:
+         return VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
+      default:
+         /* Default fallback. Will not be used. */
+         return VK_TIME_DOMAIN_DEVICE_KHR;
+   }
 }
 
 static VkResult
@@ -3624,6 +3841,12 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    chain->base.queue_present = wsi_wl_swapchain_queue_present;
    chain->base.release_images = wsi_wl_swapchain_release_images;
    chain->base.set_present_mode = wsi_wl_swapchain_set_present_mode;
+   chain->base.set_timing_request = wsi_wl_swapchain_set_timing_request;
+   chain->base.poll_timing_request = wsi_wl_swapchain_poll_timing_request;
+   if (pCreateInfo->flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) {
+      chain->base.present_timing.time_domain =
+            clock_id_to_vk_time_domain(wsi_wl_surface->display->presentation_clock_id);
+   }
    chain->base.wait_for_present = wsi_wl_swapchain_wait_for_present;
    chain->base.wait_for_present2 = wsi_wl_swapchain_wait_for_present2;
    chain->base.present_mode = present_mode;
@@ -3633,9 +3856,11 @@ wsi_wl_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
    chain->vk_format = pCreateInfo->imageFormat;
    chain->buffer_type = buffer_type;
    if (buffer_type == WSI_WL_BUFFER_NATIVE) {
-      chain->drm_format = wl_drm_format_for_vk_format(chain->vk_format, alpha);
+      chain->drm_format = wl_drm_format_for_vk_format(wsi_device,
+                                                      chain->vk_format, alpha);
    } else {
-      chain->shm_format = wl_shm_format_for_vk_format(chain->vk_format, alpha);
+      chain->shm_format = wl_shm_format_for_vk_format(wsi_device,
+                                                      chain->vk_format, alpha);
    }
    chain->num_drm_modifiers = num_drm_modifiers;
    if (num_drm_modifiers) {

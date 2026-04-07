@@ -52,12 +52,15 @@ struct blorp_compiler {
                                       struct nir_shader *nir,
                                       bool multisample_fbo,
                                       bool is_fast_clear,
-                                      bool use_repclear);
+                                      bool use_repclear,
+                                      const void *key, uint32_t key_size);
    struct blorp_program (*compile_vs)(struct blorp_context *blorp, void *mem_ctx,
-                                      struct nir_shader *nir);
+                                      struct nir_shader *nir,
+                                      const void *key, uint32_t key_size);
 
    struct blorp_program (*compile_cs)(struct blorp_context *blorp, void *mem_ctx,
-                                      struct nir_shader *nir);
+                                      struct nir_shader *nir,
+                                      const void *key, uint32_t key_size);
 
    bool (*ensure_sf_program)(struct blorp_batch *batch,
                              struct blorp_params *params);
@@ -87,9 +90,11 @@ struct blorp_surface_info
    struct isl_surf aux_surf;
    struct blorp_address aux_addr;
    enum isl_aux_usage aux_usage;
+   enum isl_format aux_format;
 
    union isl_color_value clear_color;
    struct blorp_address clear_color_addr;
+   bool has_replicated_pixel;
 
    struct isl_view view;
 
@@ -291,7 +296,7 @@ struct blorp_params
    /* These are pointers to struct {brw,elk}_stage_prog_data. */
    void *vs_prog_data;
    void *sf_prog_data;
-   void *wm_prog_data;
+   void *fs_prog_data;
    void *cs_prog_data;
 
    enum blorp_shader_type shader_type;
@@ -471,17 +476,19 @@ blorp_compile_fs(struct blorp_context *blorp, void *mem_ctx,
                  struct nir_shader *nir,
                  bool multisample_fbo,
                  bool is_fast_clear,
-                 bool use_repclear)
+                 bool use_repclear,
+                 const void *key, uint32_t key_size)
 {
    return blorp->compiler->compile_fs(blorp, mem_ctx, nir, multisample_fbo,
-                                      is_fast_clear, use_repclear);
+                                      is_fast_clear, use_repclear,
+                                      key, key_size);
 }
 
 static inline struct blorp_program
 blorp_compile_vs(struct blorp_context *blorp, void *mem_ctx,
-                 struct nir_shader *nir)
+                 struct nir_shader *nir, const void *key, uint32_t key_size)
 {
-   return blorp->compiler->compile_vs(blorp, mem_ctx, nir);
+   return blorp->compiler->compile_vs(blorp, mem_ctx, nir, key, key_size);
 }
 
 static inline bool
@@ -520,9 +527,9 @@ blorp_set_cs_dims(struct nir_shader *nir, uint8_t local_y)
 
 static inline struct blorp_program
 blorp_compile_cs(struct blorp_context *blorp, void *mem_ctx,
-                 struct nir_shader *nir)
+                 struct nir_shader *nir, const void *key, uint32_t key_size)
 {
-   return blorp->compiler->compile_cs(blorp, mem_ctx, nir);
+   return blorp->compiler->compile_cs(blorp, mem_ctx, nir, key, key_size);
 }
 
 static inline bool
@@ -554,13 +561,18 @@ blorp_op_type_is_clear(enum blorp_op op)
    case BLORP_OP_CCS_COLOR_CLEAR:
    case BLORP_OP_CCS_PARTIAL_RESOLVE:
    case BLORP_OP_CCS_RESOLVE:
+   case BLORP_OP_FAST_STENCIL_CLEAR:
    case BLORP_OP_HIZ_AMBIGUATE:
    case BLORP_OP_HIZ_CLEAR:
    case BLORP_OP_HIZ_RESOLVE:
+   case BLORP_OP_HIZ_STENCIL_CLEAR:
    case BLORP_OP_MCS_AMBIGUATE:
    case BLORP_OP_MCS_COLOR_CLEAR:
    case BLORP_OP_MCS_PARTIAL_RESOLVE:
+   case BLORP_OP_LINEAR_SURFACE_CLEAR:
    case BLORP_OP_SLOW_COLOR_CLEAR:
+   case BLORP_OP_SLOW_STENCIL_CLEAR:
+   case BLORP_OP_SLOW_DEPTH_STENCIL_CLEAR:
    case BLORP_OP_SLOW_DEPTH_CLEAR:
       return true;
    default:

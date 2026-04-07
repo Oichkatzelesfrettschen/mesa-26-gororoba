@@ -97,7 +97,7 @@ bo_init_new_dmaheap(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
                        "DMA_HEAP_IOCTL_ALLOC failed (%s)", strerror(errno));
    }
 
-   return tu_bo_init_dmabuf(dev, out_bo, -1, alloc.fd);
+   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
 }
 
 static VkResult
@@ -118,7 +118,7 @@ bo_init_new_ion(struct tu_device *dev, struct tu_bo **out_bo, uint64_t size,
                        "ION_IOC_NEW_ALLOC failed (%s)", strerror(errno));
    }
 
-   return tu_bo_init_dmabuf(dev, out_bo, -1, alloc.fd);
+   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, alloc.fd);
 }
 
 static VkResult
@@ -160,7 +160,7 @@ bo_init_new_ion_legacy(struct tu_device *dev, struct tu_bo **out_bo, uint64_t si
                        "ION_IOC_FREE failed (%s)", strerror(errno));
    }
 
-   return tu_bo_init_dmabuf(dev, out_bo, -1, share.fd);
+   return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, share.fd);
 }
 
 static VkResult
@@ -328,6 +328,7 @@ static VkResult
 kgsl_bo_init_dmabuf(struct tu_device *dev,
                     struct tu_bo **out_bo,
                     uint64_t size,
+                    enum tu_bo_alloc_flags flags,
                     int fd)
 {
    struct kgsl_gpuobj_import_dma_buf import_dmabuf = {
@@ -368,6 +369,13 @@ kgsl_bo_init_dmabuf(struct tu_device *dev,
       .refcnt = 1,
       .shared_fd = os_dupfd_cloexec(fd),
    };
+
+   struct stat st;
+   if (fstat(fd, &st) == 0)
+      /* Use the inode number as the unique ID, but set the MSB to avoid
+       * collisions with 32-bit KGSL handles (which are used for native BOs).
+       */
+      bo->unique_id = st.st_ino | (1ULL << 63);
 
    tu_dump_bo_init(dev, bo);
 
@@ -1882,6 +1890,8 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd)
       device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
       break;
    case KGSL_UBWC_4_0:
+   case KGSL_UBWC_5_0:
+   case KGSL_UBWC_6_0:
       device->ubwc_config.bank_swizzle_levels = 0x6;
       device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
       break;

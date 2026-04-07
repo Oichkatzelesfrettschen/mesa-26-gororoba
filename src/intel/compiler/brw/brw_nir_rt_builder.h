@@ -1,24 +1,6 @@
 /*
  * Copyright © 2020 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #pragma once
@@ -1174,21 +1156,7 @@ brw_nir_rt_acceleration_structure_to_root_node(nir_builder *b,
     *
     * But if the acceleration structure pointer is NULL, then we should return
     * NULL as root node pointer.
-    *
-    * TODO: we could optimize this by assuming that for a given version of the
-    * BVH, we can find the root node at a given offset.
     */
-   nir_def *root_node_ptr, *null_node_ptr;
-   nir_push_if(b, nir_ieq_imm(b, as_addr, 0));
-   {
-      null_node_ptr = nir_imm_int64(b, 0);
-   }
-   nir_push_else(b, NULL);
-   {
-      root_node_ptr =
-         nir_iadd(b, as_addr, brw_nir_rt_load(b, as_addr, 256, 1, 64));
-   }
-   nir_pop_if(b, NULL);
-
-   return nir_if_phi(b, null_node_ptr, root_node_ptr);
+   return nir_bcsel(b, nir_ieq_imm(b, as_addr, 0), nir_imm_int64(b, 0),
+                    nir_iadd_imm(b, as_addr, BRW_RT_ROOT_NODE_OFFSET));
 }

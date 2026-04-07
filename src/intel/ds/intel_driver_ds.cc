@@ -466,6 +466,7 @@ CREATE_DUAL_EVENT_CALLBACK(frame, INTEL_DS_QUEUE_STAGE_FRAME)
 CREATE_DUAL_EVENT_CALLBACK(batch, INTEL_DS_QUEUE_STAGE_CMD_BUFFER)
 CREATE_DUAL_EVENT_CALLBACK(cmd_buffer, INTEL_DS_QUEUE_STAGE_CMD_BUFFER)
 CREATE_DUAL_EVENT_CALLBACK(sba, INTEL_DS_QUEUE_STAGE_CMD_BUFFER)
+CREATE_DUAL_EVENT_CALLBACK(btp, INTEL_DS_QUEUE_STAGE_CMD_BUFFER)
 CREATE_DUAL_EVENT_CALLBACK(render_pass, INTEL_DS_QUEUE_STAGE_RENDER_PASS)
 CREATE_DUAL_EVENT_CALLBACK(blorp, INTEL_DS_QUEUE_STAGE_BLORP)
 CREATE_DUAL_EVENT_CALLBACK(draw, INTEL_DS_QUEUE_STAGE_DRAW)
@@ -639,6 +640,8 @@ intel_ds_end_submit(struct intel_ds_queue *queue,
       submit->set_duration_ns(end_ts - start_ts);
       submit->set_vk_queue((uintptr_t) queue);
       submit->set_submission_id(submission_id);
+      submit->set_pid(getpid());
+      submit->set_tid(gettid());
    });
 }
 

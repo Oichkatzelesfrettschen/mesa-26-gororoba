@@ -1,24 +1,6 @@
 /*
  * Copyright © 2010 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 /** @file
@@ -36,7 +18,7 @@
 #include "brw_generator.h"
 #include "brw_cfg.h"
 #include "dev/intel_debug.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/half_float.h"
 
 static uint32_t
@@ -130,32 +112,19 @@ brw_generator::generate_send(brw_send_inst *inst,
       assert(payload2.nr == BRW_ARF_NULL);
    }
 
-   if (ex_desc.file == IMM && ex_desc.ud == 0) {
-      /* An immediate extended descriptor value only happens when the extended
-       * descriptor is written indirectly (it already contains a SS/BSS
-       * surface handle)
-       */
-      assert(!inst->ex_desc_imm);
-      brw_send_indirect_message(p, inst->sfid, dst, payload, desc, inst->eot, gather);
-      if (inst->check_tdr)
-         brw_eu_inst_set_opcode(p->isa, brw_last_inst, BRW_OPCODE_SENDC);
-   } else {
-      /* If we have any sort of extended descriptor, then we need SENDS.  This
-       * also covers the dual-payload case because ex_mlen goes in ex_desc.
-       */
-      brw_send_indirect_split_message(p, inst->sfid, dst, payload, payload2,
-                                      desc, ex_desc,
-                                      inst->ex_desc_imm ? inst->offset : 0,
-                                      inst->ex_mlen, ex_bso,
-                                      inst->eot, gather);
-      if (inst->check_tdr)
-         brw_eu_inst_set_opcode(p->isa, brw_last_inst,
+   brw_SEND(p, inst->sfid, dst, payload, payload2,
+            desc, ex_desc,
+            inst->ex_desc_imm ? inst->offset : 0,
+            inst->ex_mlen, ex_bso,
+            inst->eot, gather);
+
+   if (inst->check_tdr)
+      brw_eu_inst_set_opcode(p->isa, brw_eu_last_inst(p),
                              devinfo->ver >= 12 ? BRW_OPCODE_SENDC : BRW_OPCODE_SENDSC);
-   }
 
    /* Serialize messages if needed */
    if (devinfo->ver == 12 && inst->fused_eu_disable)
-      brw_eu_inst_set_fusion_ctrl(devinfo, brw_last_inst, true);
+      brw_eu_inst_set_fusion_ctrl(devinfo, brw_eu_last_inst(p), true);
 }
 
 void
@@ -729,8 +698,8 @@ brw_generator::generate_code(const brw_shader &s,
        */
       if (devinfo->ver <= 9 &&
           p->nr_insn > 1 &&
-          brw_eu_inst_opcode(p->isa, brw_last_inst) == BRW_OPCODE_MATH &&
-          brw_eu_inst_math_function(devinfo, brw_last_inst) == BRW_MATH_FUNCTION_POW &&
+          brw_eu_inst_opcode(p->isa, brw_eu_last_inst(p)) == BRW_OPCODE_MATH &&
+          brw_eu_inst_math_function(devinfo, brw_eu_last_inst(p)) == BRW_MATH_FUNCTION_POW &&
           inst->dst.component_size(inst->exec_size) > REG_SIZE) {
          brw_NOP(p);
          last_insn_offset = p->next_insn_offset;
@@ -771,6 +740,7 @@ brw_generator::generate_code(const brw_shader &s,
       if (inst->eot && intel_needs_workaround(devinfo, 14013672992)) {
          if (tgl_swsb_src_dep(swsb).mode) {
             brw_set_default_exec_size(p, BRW_EXECUTE_1);
+            brw_set_default_group(p, 0);
             brw_set_default_mask_control(p, BRW_MASK_DISABLE);
             brw_set_default_predicate_control(p, BRW_PREDICATE_NONE);
             brw_set_default_flag_reg(p, 0, 0);
@@ -1027,7 +997,7 @@ brw_generator::generate_code(const brw_shader &s,
          generate_send(inst->as_send(), dst, src[SEND_SRC_DESC], src[SEND_SRC_EX_DESC],
                        src[SEND_SRC_PAYLOAD1], src[SEND_SRC_PAYLOAD2],
                        inst->as_send()->bindless_surface &&
-                       compiler->extended_bindless_surface_offset);
+                       intel_has_extended_bindless(devinfo));
          send_count++;
          break;
 
@@ -1036,7 +1006,7 @@ brw_generator::generate_code(const brw_shader &s,
                        src[SEND_GATHER_SRC_DESC], src[SEND_GATHER_SRC_EX_DESC],
                        src[SEND_GATHER_SRC_SCALAR], brw_null_reg(),
                        inst->as_send()->bindless_surface &&
-                       compiler->extended_bindless_surface_offset);
+                       intel_has_extended_bindless(devinfo));
          send_count++;
          break;
 
@@ -1361,25 +1331,25 @@ brw_generator::generate_code(const brw_shader &s,
    int after_size = p->next_insn_offset - start_offset;
 
    bool dump_shader_bin = brw_should_dump_shader_bin();
-   unsigned char sha1[SHA1_DIGEST_LENGTH + 1];
-   char sha1buf[SHA1_DIGEST_STRING_LENGTH];
+   unsigned char blake3[BLAKE3_KEY_LEN + 1];
+   char blake3buf[BLAKE3_HEX_LEN];
 
    auto override_path = debug_get_option_shader_bin_override_path();
    if (unlikely(debug_flag || dump_shader_bin || override_path != NULL ||
                 params->archiver)) {
-      _mesa_sha1_compute(p->store + start_offset / sizeof(brw_eu_inst),
-                         after_size, sha1);
-      _mesa_sha1_format(sha1buf, sha1);
+      _mesa_blake3_compute(p->store + start_offset / sizeof(brw_eu_inst),
+                         after_size, blake3);
+      _mesa_blake3_format(blake3buf, blake3);
    }
 
    if (unlikely(dump_shader_bin))
       brw_dump_shader_bin(p->store, start_offset, p->next_insn_offset,
-                          sha1buf);
+                          blake3buf);
 
    if (unlikely(override_path != NULL &&
                 brw_try_override_assembly(p, start_offset, override_path,
-                                          sha1buf))) {
-      fprintf(stderr, "Successfully overrode shader with sha1 %s\n", sha1buf);
+                                          blake3buf))) {
+      fprintf(stderr, "Successfully overrode shader with blake3 %s\n", blake3buf);
       /* disasm_info and stats are no longer valid as we gathered
        * them based on the original shader.
        */
@@ -1406,14 +1376,15 @@ brw_generator::generate_code(const brw_shader &s,
 
       for (unsigned i = 0; i < ARRAY_SIZE(files); i++) {
          if (!files[i]) continue;
-         fprintf(files[i], "Native code for %s (src_hash 0x%08x) (sha1 %s)\n"
+         fprintf(files[i], "Native code for %s (src_hash 0x%08x) (blake3 %s)\n"
                  "SIMD%d shader: %d instructions. %d loops. %u cycles. "
                  "%d:%d spills:fills, %u sends, "
                  "scheduled with mode %s. "
                  "Promoted %u constants. "
+                 "GRF registers: %u. "
                  "Non-SSA regs (after NIR): %u. "
                  "Compacted %d to %d bytes (%.0f%%)\n",
-                 shader_name, params->source_hash, sha1buf,
+                 shader_name, params->source_hash, blake3buf,
                  dispatch_width,
                  before_size / 16 - nop_count - sync_nop_count,
                  loop_count, perf.latency,
@@ -1422,6 +1393,7 @@ brw_generator::generate_code(const brw_shader &s,
                  send_count,
                  shader_stats.scheduler_mode,
                  shader_stats.promoted_constants,
+                 s.grf_used,
                  shader_stats.non_ssa_registers_after_nir,
                  before_size, after_size,
                  100.0f * (before_size - after_size) / before_size);
@@ -1442,8 +1414,6 @@ brw_generator::generate_code(const brw_shader &s,
             "Validation failed. Rerun with INTEL_DEBUG=shaders to get more information.\n");
    }
 #endif
-   assert(validated);
-
    brw_shader_debug_log(compiler, params->log_data,
                         "%s SIMD%d shader: %d inst, %d loops, %u cycles, "
                         "%d:%d spills:fills, %u sends, "
@@ -1460,19 +1430,23 @@ brw_generator::generate_code(const brw_shader &s,
                         shader_stats.scheduler_mode,
                         shader_stats.promoted_constants,
                         before_size, after_size);
+   assert(validated);
+
    if (stats) {
       stats->dispatch_width = dispatch_width;
       stats->max_polygons = s.max_polygons;
       stats->instrs = before_size / 16 - nop_count - sync_nop_count;
-      stats->send_messages = send_count;
-      stats->loop_count = loop_count;
-      stats->cycle_count = perf.latency;
-      stats->spill_count = shader_stats.spill_count;
-      stats->fill_count = shader_stats.fill_count;
+      stats->code_size = after_size;
+      stats->sends = send_count;
+      stats->loops = loop_count;
+      stats->cycles = perf.latency;
+      stats->spills = shader_stats.spill_count;
+      stats->fills = shader_stats.fill_count;
       stats->max_live_registers = shader_stats.max_register_pressure;
       stats->non_ssa_regs_after_nir = shader_stats.non_ssa_registers_after_nir;
       stats->source_hash = prog_data->source_hash;
-      stats->grf_registers = devinfo->ver >= 30 ? prog_data->grf_used : 0;
+      stats->grf_registers = devinfo->ver >= 30 ? s.grf_used : 0;
+      stats->scheduler_mode = shader_stats.scheduler_mode;
 
       /* Report the max dispatch width only on the smallest SIMD variant.
        *

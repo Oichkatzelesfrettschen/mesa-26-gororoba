@@ -28,7 +28,7 @@
 #define _API_H_
 
 #include "util/format/u_formats.h"
-#include "util/sha1/sha1.h"
+#include "util/mesa-blake3.h"
 
 struct st_context;
 
@@ -203,13 +203,14 @@ struct st_config_options
    bool transcode_etc;
    bool transcode_astc;
    bool allow_compressed_fallback;
+   char *force_explicit_uniform_loc_zero;
    char *force_gl_vendor;
    char *force_gl_renderer;
    char *mesa_extension_override;
    bool allow_multisampled_copyteximage;
    bool vertex_program_default_out;
 
-   unsigned char config_options_sha1[SHA1_DIGEST_LENGTH];
+   unsigned char config_options_blake3[BLAKE3_KEY_LEN];
 };
 
 struct pipe_frontend_screen;

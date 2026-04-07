@@ -170,6 +170,7 @@ static void print_token(FILE *file, int type, YYSTYPE value)
 %token <tok> T_OP_MOVMSK
 %token <tok> T_OP_MOVA1
 %token <tok> T_OP_MOVA
+%token <tok> T_OP_MOVA_R
 %token <tok> T_OP_MOV
 %token <tok> T_OP_COV
 %token <tok> T_OP_SWZ
@@ -303,6 +304,9 @@ static void print_token(FILE *file, int type, YYSTYPE value)
 %token <tok> T_OP_QSHUFFLE_V
 %token <tok> T_OP_QSHUFFLE_DIAG
 %token <tok> T_OP_TCINV
+%token <tok> T_OP_IMG_BINDLESS_HOF
+%token <tok> T_OP_IMG_BINDLESS_PCMN
+%token <tok> T_OP_IMG_BINDLESS
 
 /* category 6: */
 %token <tok> T_OP_LDG
@@ -425,6 +429,9 @@ static void print_token(FILE *file, int type, YYSTYPE value)
 %token <tok> T_2D
 %token <tok> T_3D
 %token <tok> T_4D
+
+%token <tok> T_SAD
+%token <tok> T_SSD
 
 /* condition qualifiers: */
 %token <tok> T_LT
@@ -605,7 +612,6 @@ iflag:             T_SY   { iflags.flags |= IR3_INSTR_SY; }
 |                  T_SS   { iflags.flags |= IR3_INSTR_SS; }
 |                  T_JP   { iflags.flags |= IR3_INSTR_JP; }
 |                  T_EQ_FLAG { iflags.flags |= IR3_INSTR_EQ; }
-|                  T_SAT  { iflags.flags |= IR3_INSTR_SAT; }
 |                  T_RPT  { iflags.repeat = $1; }
 |                  T_UL   { iflags.flags |= IR3_INSTR_UL; }
 |                  T_NOP  { iflags.nop = $1; }
@@ -726,14 +732,14 @@ cat1_mova:         T_OP_MOVA cat1_mova_flags T_A0 ',' {
                    } mova_src
 
 cat1_mova_dst_flags:
-|                  T_SAT { instr->cat1.sat = true; }
+|                  T_SAT { instr->flags |= IR3_INSTR_SAT; }
 
-cat1_mova_r:       T_OP_MOVA cat1_mova_flags '.' 'r' { new_instr(OPC_MOV); } cat1_mova_dst_flags T_A0 ',' mova_src ',' integer ',' integer {
+cat1_mova_r:       T_OP_MOVA_R cat1_mova_flags { new_instr(OPC_MOV); } cat1_mova_dst_flags T_A0 ',' mova_src ',' integer ',' integer {
                        instr->cat1.src_type = TYPE_S16;
                        instr->cat1.dst_type = TYPE_S16;
                        new_dst((61 << 3), IR3_REG_HALF);
-                       instr->cat1.r[0] = $11;
-                       instr->cat1.r[1] = $13;
+                       instr->cat1.r[0] = $9;
+                       instr->cat1.r[1] = $11;
                    }
 
 cat1_swz:          T_OP_SWZ '.' T_CAT1_TYPE_TYPE { parse_type_type(new_instr(OPC_SWZ), $3); } dst_reg ',' dst_reg ',' src_reg ',' src_reg
@@ -923,6 +929,12 @@ cat5_opc:          T_OP_ISAML     { new_instr(OPC_ISAML); }
 |                  T_OP_QSHUFFLE_H     { new_instr(OPC_QUAD_SHUFFLE_HORIZ); }
 |                  T_OP_QSHUFFLE_V     { new_instr(OPC_QUAD_SHUFFLE_VERT); }
 |                  T_OP_QSHUFFLE_DIAG  { new_instr(OPC_QUAD_SHUFFLE_DIAG); }
+|                  T_OP_IMG_BINDLESS_PCMN { new_instr(OPC_IMG_BINDLESS_PCMN); }
+|                  T_OP_IMG_BINDLESS_HOF      { new_instr(OPC_IMG_BINDLESS_HOF); }
+|                  T_OP_IMG_BINDLESS     { new_instr(OPC_IMG_BINDLESS); }
+
+cat5_matchmode:    '.' T_SAD   { instr->cat5.match_mode = IR3_MATCH_MODE_SAD; }
+|                  '.' T_SSD   { instr->cat5.match_mode = IR3_MATCH_MODE_SSD; }
 
 cat5_flag:         '.' T_3D       { instr->flags |= IR3_INSTR_3D; }
 |                  '.' 'a'        { instr->flags |= IR3_INSTR_A; }
@@ -937,6 +949,7 @@ cat5_flag:         '.' T_3D       { instr->flags |= IR3_INSTR_3D; }
 |                  '.' T_W        { instr->cat5.cluster_size = $2; }
 |                  '.' T_RCK      { instr->flags |= IR3_INSTR_RCK; }
 |                  '.' T_CLP      { instr->flags |= IR3_INSTR_CLP; }
+|                  cat5_matchmode
 cat5_flags:
 |                  cat5_flag cat5_flags
 
@@ -1337,7 +1350,7 @@ const:             T_CONSTANT     { $$ = new_src($1, IR3_REG_CONST); }
 dst_reg_flag:      T_EVEN         { instr->cat1.round = ROUND_EVEN; }
 |                  T_POS_INFINITY { instr->cat1.round = ROUND_POS_INF; }
 |                  T_NEG_INFINITY { instr->cat1.round = ROUND_NEG_INF; }
-|                  T_SAT          { instr->cat1.sat = true; }
+|                  T_SAT          { instr->flags |= IR3_INSTR_SAT; }
 |                  T_EI           { rflags.flags |= IR3_REG_EI; }
 |                  T_WRMASK       { rflags.wrmask = $1; }
 
@@ -1413,6 +1426,11 @@ immediate_cat1:    integer             { new_src(0, IR3_REG_IMMED)->iim_val = ty
 |                  '(' float ')'       { new_src(0, IR3_REG_IMMED)->fim_val = $2; }
 |                  'h' '(' integer ')' { new_src(0, IR3_REG_IMMED | IR3_REG_HALF)->iim_val = $3 & 0xffff; }
 |                  'h' '(' float ')'   { new_src(0, IR3_REG_IMMED | IR3_REG_HALF)->uim_val = _mesa_float_to_half($3); }
+|                  'h' T_FLUT_0_0      { new_src(0, IR3_REG_IMMED | IR3_REG_HALF)->uim_val = _mesa_float_to_half(0.0); }
+|                  'h' T_FLUT_0_5      { new_src(0, IR3_REG_IMMED | IR3_REG_HALF)->uim_val = _mesa_float_to_half(0.5); }
+|                  'h' T_FLUT_1_0      { new_src(0, IR3_REG_IMMED | IR3_REG_HALF)->uim_val = _mesa_float_to_half(1.0); }
+|                  'h' T_FLUT_2_0      { new_src(0, IR3_REG_IMMED | IR3_REG_HALF)->uim_val = _mesa_float_to_half(2.0); }
+|                  'h' T_FLUT_4_0      { new_src(0, IR3_REG_IMMED | IR3_REG_HALF)->uim_val = _mesa_float_to_half(4.0); }
 |                  '(' T_NAN ')'       { new_src(0, IR3_REG_IMMED)->fim_val = NAN; }
 |                  '(' T_INF ')'       { new_src(0, IR3_REG_IMMED)->fim_val = INFINITY; }
 |                  T_FLUT_0_0          { new_src(0, IR3_REG_IMMED)->fim_val = 0.0; }

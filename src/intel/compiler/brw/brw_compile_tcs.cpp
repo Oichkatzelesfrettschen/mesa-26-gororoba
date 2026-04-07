@@ -42,52 +42,6 @@ get_patch_count_threshold(int input_control_points)
 }
 
 static void
-brw_set_tcs_invocation_id(brw_shader &s)
-{
-   const struct intel_device_info *devinfo = s.devinfo;
-   struct brw_tcs_prog_data *tcs_prog_data = brw_tcs_prog_data(s.prog_data);
-   struct brw_vue_prog_data *vue_prog_data = &tcs_prog_data->base;
-   const brw_builder bld = brw_builder(&s);
-
-   const unsigned instance_id_mask =
-      (devinfo->verx10 >= 125) ? INTEL_MASK(7, 0) :
-      (devinfo->ver >= 11)     ? INTEL_MASK(22, 16) :
-                                 INTEL_MASK(23, 17);
-   const unsigned instance_id_shift =
-      (devinfo->verx10 >= 125) ? 0 : (devinfo->ver >= 11) ? 16 : 17;
-
-   /* Get instance number from g0.2 bits:
-    *  * 7:0 on DG2+
-    *  * 22:16 on gfx11+
-    *  * 23:17 otherwise
-    */
-   brw_reg t =
-      bld.AND(brw_reg(retype(brw_vec1_grf(0, 2), BRW_TYPE_UD)),
-              brw_imm_ud(instance_id_mask));
-
-   if (vue_prog_data->dispatch_mode == INTEL_DISPATCH_MODE_TCS_MULTI_PATCH) {
-      /* gl_InvocationID is just the thread number */
-      s.invocation_id = bld.SHR(t, brw_imm_ud(instance_id_shift));
-      return;
-   }
-
-   assert(vue_prog_data->dispatch_mode == INTEL_DISPATCH_MODE_TCS_SINGLE_PATCH);
-
-   brw_reg channels_uw = bld.vgrf(BRW_TYPE_UW);
-   brw_reg channels_ud = bld.vgrf(BRW_TYPE_UD);
-   bld.MOV(channels_uw, brw_reg(brw_imm_uv(0x76543210)));
-   bld.MOV(channels_ud, channels_uw);
-
-   if (tcs_prog_data->instances == 1) {
-      s.invocation_id = channels_ud;
-   } else {
-      /* instance_id = 8 * t + <76543210> */
-      s.invocation_id =
-         bld.ADD(bld.SHR(t, brw_imm_ud(instance_id_shift - 3)), channels_ud);
-   }
-}
-
-static void
 brw_emit_tcs_thread_end(brw_shader &s)
 {
    /* Try and tag the last URB write with EOT instead of emitting a whole
@@ -132,49 +86,19 @@ brw_emit_tcs_thread_end(brw_shader &s)
    urb->components = components;
 }
 
-static void
-brw_assign_tcs_urb_setup(brw_shader &s)
-{
-   assert(s.stage == MESA_SHADER_TESS_CTRL);
-
-   /* Rewrite all ATTR file references to HW_REGs. */
-   foreach_block_and_inst(block, brw_inst, inst, s.cfg) {
-      s.convert_attr_sources_to_hw_regs(inst);
-   }
-}
-
 static bool
 run_tcs(brw_shader &s)
 {
    assert(s.stage == MESA_SHADER_TESS_CTRL);
 
    struct brw_vue_prog_data *vue_prog_data = brw_vue_prog_data(s.prog_data);
-   const brw_builder bld = brw_builder(&s);
 
    assert(vue_prog_data->dispatch_mode == INTEL_DISPATCH_MODE_TCS_SINGLE_PATCH ||
           vue_prog_data->dispatch_mode == INTEL_DISPATCH_MODE_TCS_MULTI_PATCH);
 
    s.payload_ = new brw_tcs_thread_payload(s);
 
-   /* Initialize gl_InvocationID */
-   brw_set_tcs_invocation_id(s);
-
-   const bool fix_dispatch_mask =
-      vue_prog_data->dispatch_mode == INTEL_DISPATCH_MODE_TCS_SINGLE_PATCH &&
-      (s.nir->info.tess.tcs_vertices_out % 8) != 0;
-
-   /* Fix the disptach mask */
-   if (fix_dispatch_mask) {
-      bld.CMP(bld.null_reg_ud(), s.invocation_id,
-              brw_imm_ud(s.nir->info.tess.tcs_vertices_out), BRW_CONDITIONAL_L);
-      bld.IF(BRW_PREDICATE_NORMAL);
-   }
-
    brw_from_nir(&s);
-
-   if (fix_dispatch_mask) {
-      bld.emit(BRW_OPCODE_ENDIF);
-   }
 
    if (s.failed)
       return false;
@@ -186,7 +110,7 @@ run_tcs(brw_shader &s)
    brw_optimize(s);
 
    s.assign_curb_setup();
-   brw_assign_tcs_urb_setup(s);
+   brw_assign_urb_setup(s);
 
    brw_lower_3src_null_dest(s);
    brw_workaround_emit_dummy_mov_instruction(s);
@@ -196,6 +120,54 @@ run_tcs(brw_shader &s)
    brw_workaround_source_arf_before_eot(s);
 
    return !s.failed;
+}
+
+static bool
+fix_single_patch_thread_dispatch(nir_shader *nir)
+{
+   if ((nir->info.tess.tcs_vertices_out % 8) == 0)
+      return false;
+
+   /* Wrap shader inside if (InvocationID < VerticesOut) */
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+
+   if (nir_cf_list_is_empty_block(&impl->body))
+      return false;
+
+   nir_cf_list body;
+   nir_cf_list_extract(&body, &impl->body);
+
+   nir_builder b = nir_builder_at(nir_after_impl(impl));
+   nir_push_if(&b, nir_ilt_imm(&b, nir_load_invocation_id(&b),
+                               nir->info.tess.tcs_vertices_out));
+   nir_cf_reinsert(&body, b.cursor);
+   nir_pop_if(&b, NULL);
+
+   return true;
+}
+
+static bool
+lower_single_patch_invoc_id(nir_builder *b, nir_intrinsic_instr *intr, void *)
+{
+   /* brw_from_nir returns Instance ID (thread #) for load_invocation_id,
+    * which is correct for multi-patch.  For single patch, it should be
+    * 8 * InstanceID + <76543210>.
+    */
+   if (intr->intrinsic == nir_intrinsic_load_invocation_id) {
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def *invoc = nir_iadd(b, nir_imul_imm(b, &intr->def, 8),
+                                nir_load_subgroup_invocation(b));
+      nir_def_rewrite_uses_after(&intr->def, invoc);
+      return true;
+   }
+   return false;
+}
+
+static bool
+lower_single_patch_invocation_id(nir_shader *nir)
+{
+   return nir_shader_intrinsics_pass(nir, lower_single_patch_invoc_id,
+                                     nir_metadata_control_flow, NULL);
 }
 
 extern "C" const unsigned *
@@ -211,7 +183,15 @@ brw_compile_tcs(const struct brw_compiler *compiler,
 
    const bool debug_enabled = brw_should_print_shader(nir, DEBUG_TCS, params->base.source_hash);
 
-   brw_debug_archive_nir(params->base.archiver, nir, dispatch_width, "first");
+   brw_pass_tracker pt_ = {
+      .nir = nir,
+      .dispatch_width = dispatch_width,
+      .compiler = compiler,
+      .key = &key->base,
+      .archiver = params->base.archiver,
+   }, *pt = &pt_;
+
+   BRW_NIR_SNAPSHOT("first");
 
    brw_prog_data_init(&prog_data->base.base, &params->base);
 
@@ -229,15 +209,22 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                             nir->info.patch_outputs_written,
                             key->separate_tess_vue_layout);
 
-   brw_nir_apply_key(nir, compiler, &key->base, dispatch_width);
+   brw_nir_apply_key(pt, &key->base, dispatch_width);
    brw_nir_lower_tcs_inputs(nir, devinfo, &input_vue_map);
    brw_nir_lower_tcs_outputs(nir, devinfo, &vue_prog_data->vue_map,
                              key->_tes_primitive_mode);
-   intel_nir_lower_patch_vertices_in(nir, key->input_vertices);
+   BRW_NIR_SNAPSHOT("after_lower_io");
 
-   brw_postprocess_nir(nir, compiler, dispatch_width,
-                       params->base.archiver, debug_enabled,
-                       key->base.robust_flags);
+   brw_nir_opt_vectorize_urb(pt);
+   BRW_NIR_PASS(intel_nir_lower_patch_vertices_in, key->input_vertices);
+
+
+   if (!intel_use_tcs_multi_patch(devinfo)) {
+      BRW_NIR_PASS(fix_single_patch_thread_dispatch);
+      BRW_NIR_PASS(lower_single_patch_invocation_id);
+   }
+
+   brw_postprocess_nir(pt, debug_enabled);
 
    bool has_primitive_id =
       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
@@ -246,7 +233,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    prog_data->output_vertices = nir->info.tess.tcs_vertices_out;
    prog_data->patch_count_threshold = get_patch_count_threshold(key->input_vertices);
 
-   if (compiler->use_tcs_multi_patch) {
+   if (intel_use_tcs_multi_patch(devinfo)) {
       vue_prog_data->dispatch_mode = INTEL_DISPATCH_MODE_TCS_MULTI_PATCH;
       prog_data->instances = nir->info.tess.tcs_vertices_out;
       prog_data->include_primitive_id = has_primitive_id;

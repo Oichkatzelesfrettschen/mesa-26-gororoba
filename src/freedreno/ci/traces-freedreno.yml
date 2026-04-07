@@ -24,9 +24,9 @@ traces:
       checksum: 8f5929c82e7d990e8c3d2bea14688224
       label: [skip, slow]
     freedreno-a530:
-      checksum: c7b816feafeae42eef3ccd5357db4cd7
+      checksum: 5def334bb574b024198ddddb1a069529
     freedreno-a618:
-      checksum: 9ae80686beb903fe33818b089a2c628e
+      checksum: a1710b1977081218f518cf988c86c6e6
     zink-a618:
       checksum: 45bdbb33bf87ed114bd548248be13408
       label: [skip, broken]
@@ -52,9 +52,9 @@ traces:
       label: [skip, broken, slow]
       text: Broken minimap rendering since around !14643
     freedreno-a530:
-      checksum: e43b4355a88376d0422c41184bcb292a
+      checksum: bbe74b2171d62fc6738086740e1aa0d8
     freedreno-a618:
-      checksum: f1ffd33e22ee8fbdabb37a89f9c6d5c5
+      checksum: e7b57988348b2ce98b964d71b18c1771
     zink-a618:
       label: [skip, slow]
       checksum: ade41e6fe932552914c678155149babb
@@ -77,7 +77,7 @@ traces:
     freedreno-a530:
       label: [unsupported]
     freedreno-a618:
-      checksum: 17c6a6dd333514b125cc18282ce24ba8
+      checksum: b5fdea0f949c4c02c86b5785e0556dfe
     zink-a618:
       label: [skip, flakes]
       checksum: 96f7f231042f892c7d11c91defd7ecc1
@@ -192,7 +192,7 @@ traces:
     freedreno-a618:
       checksum: 709d72f86faa9b768495888b49cad086
     zink-a618:
-      checksum: ac00716889f247788292e838139bc2ac
+      checksum: f4e4216bfcf202d680b1cb6a20ef2dd5
 
 # gimark requires an environment var to work around a bug, disable for now
 #  gputest/gimark-v2.trace:
@@ -239,12 +239,12 @@ traces:
     freedreno-a306:
       label: [hang]
     freedreno-a530:
-      checksum: ef9cec3c226477e908d4bb2ffe9e8eb9
+      checksum: 57bb50e4a016bf870ee192057de3c19e
       text: Looks fine, but totally different shape from the rendering on i965.
     freedreno-a618:
-      checksum: e4da2cf366cb68833569105d37aaa50d
+      checksum: dbd6130eeae3eb6d5df73f3069beae28
     zink-a618:
-      checksum: e4da2cf366cb68833569105d37aaa50d
+      checksum: dbd6130eeae3eb6d5df73f3069beae28
 
   gputest/plot3d-v2.trace:
     freedreno-a306:
@@ -265,7 +265,7 @@ traces:
     freedreno-a618:
       checksum: 92312303aa8279214f0a300a625efa87
     zink-a618:
-      checksum: 92312303aa8279214f0a300a625efa87
+      checksum: 1fd6650d5f929fdac04430d0e22e0269
 
   gputest/triangle-v2.trace:
     freedreno-a306:

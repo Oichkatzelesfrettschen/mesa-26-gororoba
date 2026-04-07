@@ -60,16 +60,14 @@ struct lower_desc_ctx {
 };
 
 static nir_address_format
-addr_format_for_desc_type(VkDescriptorType desc_type,
+addr_format_for_desc_type(nir_descriptor_type desc_type,
                           const struct lower_desc_ctx *ctx)
 {
    switch (desc_type) {
-   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+   case nir_descriptor_type_uniform_buffer:
       return ctx->ubo_addr_format;
 
-   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+   case nir_descriptor_type_storage_buffer:
       return ctx->ssbo_addr_format;
 
    default:
@@ -435,7 +433,7 @@ lower_res_intrinsic(nir_builder *b, nir_intrinsic_instr *intrin,
 {
    b->cursor = nir_before_instr(&intrin->instr);
 
-   const VkDescriptorType desc_type = nir_intrinsic_desc_type(intrin);
+   const nir_descriptor_type desc_type = nir_intrinsic_desc_type(intrin);
    nir_address_format addr_format = addr_format_for_desc_type(desc_type, ctx);
 
    nir_def *res;
@@ -633,14 +631,12 @@ load_img_size(nir_builder *b, nir_deref_instr *deref, enum glsl_sampler_dim dim,
       nir_def *tex_sz = load_resource_deref_desc(
          b, deref, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 18, 3, 16, ctx);
 
-#if PAN_ARCH < 9
       if (is_array && dim == GLSL_SAMPLER_DIM_CUBE)
          tex_sz =
             nir_vector_insert_imm(b, tex_sz,
                                      nir_udiv_imm(b, nir_channel(b, tex_sz, 2),
                                                      6),
                                      2);
-#endif
 
       if (is_array && dim == GLSL_SAMPLER_DIM_1D)
          tex_sz =
@@ -651,7 +647,26 @@ load_img_size(nir_builder *b, nir_deref_instr *deref, enum glsl_sampler_dim dim,
       /* The sizes are provided as 16-bit values with 1 subtracted so
        * convert to 32-bit and add 1.
        */
-      return nir_iadd_imm(b, nir_u2u32(b, tex_sz), 1);
+      tex_sz = nir_iadd_imm(b, nir_u2u32(b, tex_sz), 1);
+
+      if (is_array && dim == GLSL_SAMPLER_DIM_MS) {
+         /* log2(sample_count) is placed into bits 7..9 of the pixel
+          * stride (see prepare_attr_buf_descs) which is stored at
+          * offset 8 in the attribute descriptor buffer
+          */
+         nir_def *sample_count = load_resource_deref_desc(
+            b, deref, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 8, 1, 32, ctx);
+         sample_count = nir_iand_imm(b, nir_ushr_imm(b, sample_count, 7),
+                                     BITFIELD_MASK(3));
+         /* the Z value was lowered by the number of samples so that
+          * we could make the multisampled array look like a 3D texture
+          * Undo that here so we get the correct size
+          */
+         nir_def *z_val = nir_channel(b, tex_sz, 2);
+         z_val = nir_ushr(b, z_val, sample_count);
+         tex_sz = nir_vector_insert_imm(b, tex_sz, z_val, 2);
+      }
+      return tex_sz;
    }
 }
 
@@ -706,12 +721,17 @@ load_img_samples(nir_builder *b, nir_deref_instr *deref,
 
    assert(dim != GLSL_SAMPLER_DIM_BUF);
 
-   /* Sample count is stored in the image depth field.
-    * FIXME: This won't work for 2DMSArray images, but those are already
-    * broken. */
+   /* log2(sample_count) is placed into bits 7..9 of the pixel
+    * stride (see prepare_attr_buf_descs) which is stored at
+    * offset 8 in the attribute descriptor buffer
+    */
+   nir_def *one = nir_imm_int(b, 1);
    nir_def *sample_count = load_resource_deref_desc(
-      b, deref, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 22, 1, 16, ctx);
-   return nir_iadd_imm(b, nir_u2u32(b, sample_count), 1);
+      b, deref, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 8, 1, 32, ctx);
+
+   sample_count = nir_iand_imm(b, nir_ushr_imm(b, sample_count, 7),
+                               BITFIELD_MASK(3));
+   return nir_ishl(b, one, sample_count);
 }
 
 static uint32_t
@@ -854,7 +874,7 @@ get_img_index(nir_builder *b, nir_deref_instr *deref,
    get_resource_deref_binding(deref, &set, &binding, &index_imm, &index_ssa,
                               &max_idx);
 
-   const struct panvk_descriptor_set_binding_layout *bind_layout =
+   ASSERTED const struct panvk_descriptor_set_binding_layout *bind_layout =
       get_binding_layout(set, binding, ctx);
    assert(bind_layout->type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
           bind_layout->type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER ||
@@ -898,7 +918,8 @@ lower_img_intrinsic(nir_builder *b, nir_intrinsic_instr *intr,
 
       nir_def_replace(&intr->def, res);
    } else {
-      nir_rewrite_image_intrinsic(intr, get_img_index(b, deref, ctx), false);
+      nir_rewrite_image_intrinsic(intr, get_img_index(b, deref, ctx),
+                                  nir_image_intrinsic_type_default);
    }
 
    return true;
@@ -947,9 +968,9 @@ record_binding(struct lower_desc_ctx *ctx, unsigned set, unsigned binding,
    const struct panvk_descriptor_set_layout *set_layout = ctx->set_layouts[set];
    const struct panvk_descriptor_set_binding_layout *binding_layout =
       &set_layout->bindings[binding];
-   uint32_t subdesc_idx = get_subdesc_idx(binding_layout, subdesc);
-   uint32_t desc_stride = panvk_get_desc_stride(binding_layout);
-   uint32_t max_desc_stride = MAX2(
+   ASSERTED uint32_t subdesc_idx = get_subdesc_idx(binding_layout, subdesc);
+   ASSERTED uint32_t desc_stride = panvk_get_desc_stride(binding_layout);
+   ASSERTED uint32_t max_desc_stride = MAX2(
       binding_layout->samplers_per_desc + binding_layout->textures_per_desc, 1);
 
    assert(desc_stride >= 1 && desc_stride <= max_desc_stride);

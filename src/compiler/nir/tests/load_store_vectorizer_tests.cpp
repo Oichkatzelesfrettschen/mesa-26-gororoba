@@ -171,7 +171,7 @@ nir_load_store_vectorize_test::get_resource(uint32_t binding, bool ssbo)
    res->num_components = 1;
    res->src[0] = nir_src_for_ssa(nir_imm_zero(b, 1, 32));
    nir_intrinsic_set_desc_type(
-      res, ssbo ? 7/*VK_DESCRIPTOR_TYPE_STORAGE_BUFFER*/ : 6/*VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER*/);
+      res, ssbo ? nir_descriptor_type_storage_buffer : nir_descriptor_type_uniform_buffer);
    nir_intrinsic_set_desc_set(res, 0);
    nir_intrinsic_set_binding(res, binding);
    nir_builder_instr_insert(b, &res->instr);
@@ -1014,15 +1014,9 @@ TEST_F(nir_load_store_vectorize_test, ssbo_load_adjacent_32_32_64_64)
    ASSERT_EQ(load->def.num_components, 3);
    ASSERT_EQ(nir_src_as_uint(load->src[1]), 0);
    EXPECT_INSTR_SWIZZLES(movs[0x3], load, "z");
+   EXPECT_INSTR_SWIZZLES(movs[0x2], load, "y");
 
-   nir_def *val = loads[0x2]->src.ssa;
-   ASSERT_EQ(val->bit_size, 64);
-   ASSERT_EQ(val->num_components, 1);
-   ASSERT_TRUE(test_alu(val, nir_op_mov));
-   nir_alu_instr *mov = nir_def_as_alu(val);
-   EXPECT_INSTR_SWIZZLES(mov, load, "y");
-
-   val = loads[0x1]->src.ssa;
+   nir_def *val = loads[0x1]->src.ssa;
    ASSERT_EQ(val->bit_size, 32);
    ASSERT_EQ(val->num_components, 2);
    ASSERT_TRUE(test_alu(val, nir_op_unpack_64_2x32));

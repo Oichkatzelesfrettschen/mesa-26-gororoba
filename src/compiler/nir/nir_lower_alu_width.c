@@ -279,10 +279,10 @@ lower_alu_instr_width(nir_builder *b, nir_instr *instr, void *_data)
       if (!b->shader->options->lower_unpack_half_2x16)
          return NULL;
 
-      nir_def *packed = nir_ssa_for_alu_src(b, alu, 0);
+      nir_def *unpacked = nir_unpack_32_2x16(b, nir_ssa_for_alu_src(b, alu, 0));
       return nir_vec2(b,
-                      nir_unpack_half_2x16_split_x(b, packed),
-                      nir_unpack_half_2x16_split_y(b, packed));
+                      nir_f2f32(b, nir_channel(b, unpacked, 0)),
+                      nir_f2f32(b, nir_channel(b, unpacked, 1)));
    }
 
    case nir_op_pack_uvec2_to_uint: {
@@ -404,8 +404,6 @@ lower_alu_instr_width(nir_builder *b, nir_instr *instr, void *_data)
       LOWER_REDUCTION(nir_op_b32all_iequal, nir_op_ieq32, nir_op_iand);
       LOWER_REDUCTION(nir_op_b32any_fnequal, nir_op_fneu32, nir_op_ior);
       LOWER_REDUCTION(nir_op_b32any_inequal, nir_op_ine32, nir_op_ior);
-      LOWER_REDUCTION(nir_op_fall_equal, nir_op_seq, nir_op_fmin);
-      LOWER_REDUCTION(nir_op_fany_nequal, nir_op_sne, nir_op_fmax);
 
    default:
       break;

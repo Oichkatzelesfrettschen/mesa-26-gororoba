@@ -20,6 +20,7 @@
 #include "pvr_common.h"
 #include "pvr_csb.h"
 #include "pvr_pds.h"
+#include "util/shader_stats.h"
 
 struct pvr_suballoc_bo;
 
@@ -111,6 +112,10 @@ struct pvr_compute_pipeline {
    uint32_t num_workgroups_data_patching_offset;
    uint32_t num_workgroups_indirect_src_patching_offset;
    uint32_t num_workgroups_indirect_src_dma_patching_offset;
+
+   /* Debug Info */
+   struct pvr_stats *cs_stats;
+   const char *cs_nir_str;
 };
 
 struct pvr_graphics_pipeline {
@@ -128,6 +133,13 @@ struct pvr_graphics_pipeline {
       struct pvr_vertex_shader_state vertex;
       struct pvr_fragment_shader_state fragment;
    } shader_state;
+
+   /* Debug Info */
+   struct pvr_stats *vs_stats;
+   struct pvr_stats *fs_stats;
+
+   const char *vs_nir_str;
+   const char *fs_nir_str;
 };
 
 struct pvr_private_compute_pipeline {

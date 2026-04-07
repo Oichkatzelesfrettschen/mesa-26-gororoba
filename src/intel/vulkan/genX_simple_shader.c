@@ -44,8 +44,8 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
 
    struct anv_batch *batch = state->batch;
    struct anv_device *device = state->device;
-   const struct brw_wm_prog_data *prog_data =
-      brw_wm_prog_data_const(state->kernel->prog_data);
+   const struct brw_fs_prog_data *prog_data =
+      brw_fs_prog_data_const(state->kernel->prog_data);
 
    uint32_t *dw = anv_batch_emitn(batch,
                                   1 + 2 * GENX(VERTEX_ELEMENT_STATE_length),
@@ -199,7 +199,7 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
    anv_batch_emit(batch, GENX(3DSTATE_PS), ps) {
       intel_set_ps_dispatch_state(&ps, device->info, prog_data,
                                   1 /* rasterization_samples */,
-                                  0 /* msaa_flags */);
+                                  0 /* fs_config */);
 
       ps.VectorMaskEnable       = prog_data->uses_vmask;
 
@@ -209,21 +209,21 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
 #endif
 
       ps.DispatchGRFStartRegisterForConstantSetupData0 =
-         brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
+         brw_fs_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
       ps.DispatchGRFStartRegisterForConstantSetupData1 =
-         brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 1);
+         brw_fs_prog_data_dispatch_grf_start_reg(prog_data, ps, 1);
 #if GFX_VER < 20
       ps.DispatchGRFStartRegisterForConstantSetupData2 =
-         brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 2);
+         brw_fs_prog_data_dispatch_grf_start_reg(prog_data, ps, 2);
 #endif
 
       ps.KernelStartPointer0 = state->kernel->kernel.offset +
-         brw_wm_prog_data_prog_offset(prog_data, ps, 0);
+         brw_fs_prog_data_prog_offset(prog_data, ps, 0);
       ps.KernelStartPointer1 = state->kernel->kernel.offset +
-         brw_wm_prog_data_prog_offset(prog_data, ps, 1);
+         brw_fs_prog_data_prog_offset(prog_data, ps, 1);
 #if GFX_VER < 20
       ps.KernelStartPointer2 = state->kernel->kernel.offset +
-         brw_wm_prog_data_prog_offset(prog_data, ps, 2);
+         brw_fs_prog_data_prog_offset(prog_data, ps, 2);
 #endif
 
 #if GFX_VER >= 30
@@ -273,14 +273,10 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
    anv_batch_emit(batch, GENX(3DSTATE_PRIMITIVE_REPLICATION), pr);
 #endif
 
-   anv_batch_emit(batch, GENX(3DSTATE_PUSH_CONSTANT_ALLOC_VS), alloc);
-   anv_batch_emit(batch, GENX(3DSTATE_PUSH_CONSTANT_ALLOC_HS), alloc);
-   anv_batch_emit(batch, GENX(3DSTATE_PUSH_CONSTANT_ALLOC_DS), alloc);
-   anv_batch_emit(batch, GENX(3DSTATE_PUSH_CONSTANT_ALLOC_GS), alloc);
-   anv_batch_emit(batch, GENX(3DSTATE_PUSH_CONSTANT_ALLOC_PS), alloc) {
-      alloc.ConstantBufferOffset = 0;
-      alloc.ConstantBufferSize   = device->info->max_constant_urb_size_kb;
-   }
+   VkShaderStageFlags push_stages =
+      genX(push_constant_alloc_stages)(VK_SHADER_STAGE_FRAGMENT_BIT);
+   genX(batch_emit_push_constants)(batch, device, push_stages);
+   state->cmd_buffer->state.gfx.push_constant_stages = push_stages;
 
 #if GFX_VERx10 == 125
    /* DG2: Wa_22011440098
@@ -300,16 +296,10 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
 #endif
 
 #if GFX_VER == 9
-   /* Allocate a binding table for Gfx9 for 2 reason :
-    *
-    *   1. we need a to emit a 3DSTATE_BINDING_TABLE_POINTERS_PS to make the
-    *      HW apply the preceding 3DSTATE_CONSTANT_PS
-    *
-    *   2. Emitting an empty 3DSTATE_BINDING_TABLE_POINTERS_PS would cause RT
-    *      writes (even though they're empty) to disturb later writes
-    *      (probably due to RT cache)
-    *
-    * Our binding table only has one entry to the null surface.
+   /* Allocate a binding table for Gfx9 because the HW does not have a null-rt
+    * bit in the render target write descriptor. Every FS thread needs to
+    * write a render target to end and so will produce some output that needs
+    * to be discard if there is no render target.
     */
    uint32_t bt_offset;
    state->bt_state =
@@ -334,7 +324,9 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
       device,
       device->null_surface_state).offset + bt_offset;
 
-   state->cmd_buffer->state.descriptors_dirty |= VK_SHADER_STAGE_FRAGMENT_BIT;
+   anv_cmd_buffer_dirty_descriptors(state->cmd_buffer,
+                                    VK_SHADER_STAGE_FRAGMENT_BIT,
+                                    "simple shader");
 #endif
 
 #if INTEL_WA_14018283232_GFX_VER
@@ -393,7 +385,6 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
    /* We're reprogramming push constants and also
     * Wa_22011440098/Wa_18022330953 force us to reprogram */
    state->cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_ALL_GRAPHICS;
-   state->cmd_buffer->state.gfx.push_constant_stages = VK_SHADER_STAGE_FRAGMENT_BIT;
 }
 
 static void

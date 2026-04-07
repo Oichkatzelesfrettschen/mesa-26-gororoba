@@ -19,6 +19,7 @@
 #include "pco_common.h"
 #include "pco_internal.h"
 #include "pco_usclib.h"
+#include "pvr_iface.h"
 #include "util/macros.h"
 
 #include <assert.h>
@@ -451,6 +452,7 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
    struct state *state = cb_data;
    pco_data *data = state->data;
    pco_ctx *ctx = state->ctx;
+   const struct pvr_device_info *dev_info = ctx->dev_info;
 
    unsigned tex_desc_set;
    unsigned tex_binding;
@@ -461,7 +463,10 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
    pco_unpack_desc(tex->sampler_index, &smp_desc_set, &smp_binding);
 
    bool hw_array_support = false;
-   bool hw_int_support = false;
+   bool hw_int_support =
+      PCO_DEBUG(INT_SMP)
+         ? PVR_HAS_FEATURE(dev_info, tpu_extended_integer_lookup)
+         : false;
 
    b->cursor = nir_before_instr(instr);
 
@@ -554,43 +559,11 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
       is_2d_view_of_3d = true;
    }
 
-   nir_def *float_coords;
-   nir_def *int_coords;
-   nir_def *float_array_index;
-   nir_def *int_array_index;
-   process_coords(b,
-                  tex->is_array && tex->op != nir_texop_lod,
-                  tex_src_is_float(tex, nir_tex_src_coord),
-                  tex_srcs[nir_tex_src_coord],
-                  &float_coords,
-                  &int_coords,
-                  &float_array_index,
-                  &int_array_index);
-
-   bool use_int_coords = !tex_src_is_float(tex, nir_tex_src_coord) &&
-                         hw_int_support;
-
-   params.int_mode = use_int_coords,
-
-   assert(BITSET_TEST(tex_src_set, nir_tex_src_coord));
-   if (BITSET_TEST(tex_src_set, nir_tex_src_coord)) {
-      params.coords = use_int_coords ? int_coords : float_coords;
-      BITSET_CLEAR(tex_src_set, nir_tex_src_coord);
-   }
-
-   nir_def *proj = NULL;
-   if (BITSET_TEST(tex_src_set, nir_tex_src_projector)) {
-      assert(tex_src_is_float(tex, nir_tex_src_projector));
-      proj = tex_srcs[nir_tex_src_projector];
-      params.proj = use_int_coords ? nir_f2i32(b, proj) : proj;
-      BITSET_CLEAR(tex_src_set, nir_tex_src_projector);
-   }
-
    assert((BITSET_TEST(tex_src_set, nir_tex_src_bias) +
            BITSET_TEST(tex_src_set, nir_tex_src_lod) +
            BITSET_TEST(tex_src_set, nir_tex_src_ddx)) < 2);
 
-   ASSERTED bool lod_set = false;
+   bool lod_set = false;
    if (BITSET_TEST(tex_src_set, nir_tex_src_bias)) {
       params.lod_bias = tex_src_is_float(tex, nir_tex_src_bias)
                            ? tex_srcs[nir_tex_src_bias]
@@ -628,6 +601,44 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
       BITSET_CLEAR(tex_src_set, nir_tex_src_ddy);
    }
 
+   /* Disable integer coordinate support if LOD is present due to lack of
+    * clamping in this scenario.
+    */
+   if (lod_set)
+      hw_int_support = false;
+
+   nir_def *float_coords;
+   nir_def *int_coords;
+   nir_def *float_array_index;
+   nir_def *int_array_index;
+   process_coords(b,
+                  tex->is_array && tex->op != nir_texop_lod,
+                  tex_src_is_float(tex, nir_tex_src_coord),
+                  tex_srcs[nir_tex_src_coord],
+                  &float_coords,
+                  &int_coords,
+                  &float_array_index,
+                  &int_array_index);
+
+   bool use_int_coords = !tex_src_is_float(tex, nir_tex_src_coord) &&
+                         hw_int_support;
+
+   params.int_mode = use_int_coords,
+
+   assert(BITSET_TEST(tex_src_set, nir_tex_src_coord));
+   if (BITSET_TEST(tex_src_set, nir_tex_src_coord)) {
+      params.coords = use_int_coords ? int_coords : float_coords;
+      BITSET_CLEAR(tex_src_set, nir_tex_src_coord);
+   }
+
+   nir_def *proj = NULL;
+   if (BITSET_TEST(tex_src_set, nir_tex_src_projector)) {
+      assert(tex_src_is_float(tex, nir_tex_src_projector));
+      proj = tex_srcs[nir_tex_src_projector];
+      params.proj = use_int_coords ? nir_f2i32(b, proj) : proj;
+      BITSET_CLEAR(tex_src_set, nir_tex_src_projector);
+   }
+
    if (tex->op == nir_texop_tg4) {
       assert(!lod_set);
       params.lod_replace = nir_imm_int(b, 0);
@@ -642,6 +653,7 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
    if (tex->is_array && tex->op != nir_texop_lod) {
       if (hw_array_support) {
          params.array_index = int_array_index;
+         UNREACHABLE("Hardware support for array indexing not implemented");
       } else {
          nir_def *array_index = int_array_index;
          assert(array_index);
@@ -711,7 +723,7 @@ static nir_def *lower_tex(nir_builder *b, nir_instr *instr, void *cb_data)
 
    case nir_texop_txf:
    case nir_texop_txf_ms:
-      params.nncoords = true;
+      params.nncoords = !use_int_coords;
       FALLTHROUGH;
 
    case nir_texop_tex:
@@ -829,8 +841,10 @@ static enum pipe_format nir_type_to_pipe_format(nir_alu_type nir_type,
 static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 {
    nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-   pco_data *data = cb_data;
-
+   struct state *state = cb_data;
+   pco_data *data = state->data;
+   pco_ctx *ctx = state->ctx;
+   const struct pvr_device_info *dev_info = ctx->dev_info;
    enum glsl_sampler_dim image_dim = nir_intrinsic_image_dim(intr);
    bool is_array = nir_intrinsic_image_array(intr);
    enum pipe_format format = nir_intrinsic_format(intr);
@@ -913,6 +927,10 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
                             : NULL;
 
    bool hw_array_support = false;
+   bool hw_int_support =
+      PCO_DEBUG(INT_SMP)
+         ? PVR_HAS_FEATURE(dev_info, tpu_extended_integer_lookup)
+         : false;
 
    if (write_data) {
       assert(intr->num_components == 4);
@@ -926,108 +944,11 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
             nir_type_to_pipe_format(type, desc->nr_channels);
 
          if (format != data_format) {
-            enum pco_pck_format pck_format = ~0;
             bool scale = false;
             bool roundzero = false;
             bool split = false;
-
-            switch (format) {
-            case PIPE_FORMAT_R8_UNORM:
-            case PIPE_FORMAT_R8G8_UNORM:
-            case PIPE_FORMAT_R8G8B8_UNORM:
-            case PIPE_FORMAT_R8G8B8A8_UNORM:
-               pck_format = PCO_PCK_FORMAT_U8888;
-               scale = true;
-               break;
-
-            case PIPE_FORMAT_R8_SNORM:
-            case PIPE_FORMAT_R8G8_SNORM:
-            case PIPE_FORMAT_R8G8B8_SNORM:
-            case PIPE_FORMAT_R8G8B8A8_SNORM:
-               pck_format = PCO_PCK_FORMAT_S8888;
-               scale = true;
-               break;
-
-            case PIPE_FORMAT_R11G11B10_FLOAT:
-               pck_format = PCO_PCK_FORMAT_F111110;
-               break;
-
-            case PIPE_FORMAT_R10G10B10A2_UNORM:
-               pck_format = PCO_PCK_FORMAT_U1010102;
-               scale = true;
-               break;
-
-            case PIPE_FORMAT_R10G10B10A2_SNORM:
-               pck_format = PCO_PCK_FORMAT_S1010102;
-               scale = true;
-               break;
-
-            case PIPE_FORMAT_R16_FLOAT:
-            case PIPE_FORMAT_R16G16_FLOAT:
-            case PIPE_FORMAT_R16G16B16_FLOAT:
-            case PIPE_FORMAT_R16G16B16A16_FLOAT:
-               pck_format = PCO_PCK_FORMAT_F16F16;
-               split = true;
-               break;
-
-            case PIPE_FORMAT_R16_UNORM:
-            case PIPE_FORMAT_R16G16_UNORM:
-            case PIPE_FORMAT_R16G16B16_UNORM:
-            case PIPE_FORMAT_R16G16B16A16_UNORM:
-               pck_format = PCO_PCK_FORMAT_U1616;
-               scale = true;
-               split = true;
-               break;
-
-            case PIPE_FORMAT_R16_SNORM:
-            case PIPE_FORMAT_R16G16_SNORM:
-            case PIPE_FORMAT_R16G16B16_SNORM:
-            case PIPE_FORMAT_R16G16B16A16_SNORM:
-               pck_format = PCO_PCK_FORMAT_S1616;
-               scale = true;
-               split = true;
-               break;
-
-            case PIPE_FORMAT_R8_UINT:
-            case PIPE_FORMAT_R8G8_UINT:
-            case PIPE_FORMAT_R8G8B8_UINT:
-            case PIPE_FORMAT_R8G8B8A8_UINT:
-
-            case PIPE_FORMAT_R8_SINT:
-            case PIPE_FORMAT_R8G8_SINT:
-            case PIPE_FORMAT_R8G8B8_SINT:
-            case PIPE_FORMAT_R8G8B8A8_SINT:
-
-            case PIPE_FORMAT_R10G10B10A2_UINT:
-            case PIPE_FORMAT_R10G10B10A2_SINT:
-
-            case PIPE_FORMAT_R16_UINT:
-            case PIPE_FORMAT_R16G16_UINT:
-            case PIPE_FORMAT_R16G16B16_UINT:
-            case PIPE_FORMAT_R16G16B16A16_UINT:
-
-            case PIPE_FORMAT_R16_SINT:
-            case PIPE_FORMAT_R16G16_SINT:
-            case PIPE_FORMAT_R16G16B16_SINT:
-            case PIPE_FORMAT_R16G16B16A16_SINT:
-
-            case PIPE_FORMAT_R32_UINT:
-            case PIPE_FORMAT_R32G32_UINT:
-            case PIPE_FORMAT_R32G32B32_UINT:
-            case PIPE_FORMAT_R32G32B32A32_UINT:
-
-            case PIPE_FORMAT_R32_SINT:
-            case PIPE_FORMAT_R32G32_SINT:
-            case PIPE_FORMAT_R32G32B32_SINT:
-            case PIPE_FORMAT_R32G32B32A32_SINT:
-               /* No conversion needed. */
-               break;
-
-            default:
-               printf("Unsupported image write pack format %s.\n",
-                      util_format_name(format));
-               UNREACHABLE("");
-            }
+            enum pco_pck_format pck_format =
+               pco_pipe_to_pck_format(format, &scale, &roundzero, &split);
 
             if (pck_format != ~0) {
                if (split) {
@@ -1067,13 +988,20 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
                                                    .binding = binding);
 
          nir_def *pck_info = nir_channel(b, tex_meta, PCO_IMAGE_META_PCK_INFO);
-         nir_def *pck_format = nir_ubitfield_extract_imm(b, pck_info, 0, 5);
-         nir_def *pck_skip = nir_ieq_imm(b, pck_format, 0b11111);
-         nir_def *pck_split = nir_ubitfield_extract_imm(b, pck_info, 5, 1);
+         nir_def *pck_format =
+            nir_ubitfield_extract_imm(b,
+                                      pck_info,
+                                      PVR_PCK_INFO_FORMAT_OFFSET,
+                                      PVR_PCK_INFO_FORMAT_LENGTH);
+         nir_def *pck_skip = nir_ieq_imm(b, pck_format, PVR_PCK_FORMAT_INVALID);
+         nir_def *pck_split =
+            nir_ubitfield_extract_imm(b, pck_info, PVR_PCK_INFO_SPLIT_OFFSET, 1);
          pck_split = nir_ine_imm(b, pck_split, 0);
-         nir_def *pck_scale = nir_ubitfield_extract_imm(b, pck_info, 6, 1);
+         nir_def *pck_scale =
+            nir_ubitfield_extract_imm(b, pck_info, PVR_PCK_INFO_SCALE_OFFSET, 1);
          pck_scale = nir_ine_imm(b, pck_scale, 0);
-         /* nir_def *pck_roundzero = nir_ubitfield_extract_imm(b, pck_info, 7,
+         /* nir_def *pck_roundzero = nir_ubitfield_extract_imm(b, pck_info,
+          * PVR_PCK_INFO_ROUNDZERO_OFFSET,
           * 1); */
          /* pck_roundzero = nir_ine_imm(b, pck_roundzero, 0); */
 
@@ -1353,10 +1281,13 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
                                    .num_slots = 1,
                                 });
 
-         nir_get_variable_with_location(b->shader,
-                                        nir_var_shader_in,
-                                        data->fs.view_index_slot,
-                                        glsl_uint_type());
+         nir_variable *view_index_var =
+            nir_get_variable_with_location(b->shader,
+                                           nir_var_shader_in,
+                                           data->fs.view_index_slot,
+                                           glsl_uint_type());
+
+         view_index_var->data.interpolation = INTERP_MODE_FLAT;
       }
 
       coords = nir_pad_vector(b, coords, 3);
@@ -1399,8 +1330,8 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
 
       .sampler_dim = image_dim,
 
-      .nncoords = true,
-      .coords = float_coords,
+      .nncoords = !hw_int_support,
+      .coords = hw_int_support ? int_coords : float_coords,
 
       .ms_index = sample_index,
 
@@ -1411,11 +1342,13 @@ static nir_def *lower_image(nir_builder *b, nir_instr *instr, void *cb_data)
       .sample_components = intr->intrinsic == nir_intrinsic_image_deref_load
                               ? intr->def.num_components
                               : 0,
+      .int_mode = hw_int_support,
    };
 
    if (is_array) {
       if (hw_array_support) {
          params.array_index = int_array_index;
+         UNREACHABLE("Hardware support for array indexing not implemented");
       } else {
          nir_def *array_index = int_array_index;
          assert(array_index);
@@ -1477,7 +1410,11 @@ static bool is_image(const nir_instr *instr, UNUSED const void *cb_data)
    return false;
 }
 
-bool pco_nir_lower_images(nir_shader *shader, pco_data *data)
+bool pco_nir_lower_images(nir_shader *shader, pco_data *data, pco_ctx *ctx)
 {
-   return nir_shader_lower_instructions(shader, is_image, lower_image, data);
+   struct state state = {
+      .data = data,
+      .ctx = ctx,
+   };
+   return nir_shader_lower_instructions(shader, is_image, lower_image, &state);
 }

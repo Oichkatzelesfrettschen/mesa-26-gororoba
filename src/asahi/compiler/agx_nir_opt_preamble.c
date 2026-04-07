@@ -196,8 +196,6 @@ alu_cost(nir_alu_instr *alu)
    case nir_op_fneg:
    case nir_op_fabs:
    case nir_op_f2f32:
-   case nir_op_unpack_half_2x16_split_x:
-   case nir_op_unpack_half_2x16_split_y:
       /* Float source modifiers will be propagated */
       return all_uses_float(&alu->def) ? 0.0 : 1.0;
 
@@ -402,7 +400,7 @@ lower_preamble(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
          if (ts) {
             nir_rewrite_image_intrinsic(pintr, nir_imm_intN_t(b, base / 2, 16),
-                                        false);
+                                        nir_image_intrinsic_type_default);
          } else if (new_ != NULL &&
                     pintr->intrinsic != nir_intrinsic_bindless_image_agx) {
             nir_src_rewrite(use, new_);

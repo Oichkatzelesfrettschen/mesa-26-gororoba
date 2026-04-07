@@ -440,17 +440,19 @@ static void ac_sqtt_fill_asic_info(const struct radeon_info *rad_info,
 
    chunk->device_id = rad_info->pci_id;
    chunk->device_revision_id = rad_info->pci_rev_id;
-   chunk->vgprs_per_simd = rad_info->cu_info.num_physical_wave64_vgprs_per_simd * (has_wave32 ? 2 : 1);
-   chunk->sgprs_per_simd = rad_info->cu_info.num_physical_sgprs_per_simd;
+   chunk->vgprs_per_simd =
+      rad_info->compiler_info.num_physical_wave64_vgprs_per_simd * (has_wave32 ? 2 : 1);
+   chunk->sgprs_per_simd = rad_info->compiler_info.num_physical_sgprs_per_simd;
    chunk->shader_engines = rad_info->max_se;
    chunk->compute_unit_per_shader_engine = rad_info->min_good_cu_per_sa * rad_info->max_sa_per_se;
-   chunk->simd_per_compute_unit = rad_info->cu_info.num_simd_per_compute_unit;
-   chunk->wavefronts_per_simd = rad_info->cu_info.max_waves_per_simd;
+   chunk->simd_per_compute_unit = rad_info->compiler_info.num_simd_per_compute_unit;
+   chunk->wavefronts_per_simd = rad_info->compiler_info.max_waves_per_simd;
 
-   chunk->minimum_vgpr_alloc = rad_info->cu_info.min_wave64_vgpr_alloc;
-   chunk->vgpr_alloc_granularity = rad_info->cu_info.wave64_vgpr_alloc_granularity * (has_wave32 ? 2 : 1);
-   chunk->minimum_sgpr_alloc = rad_info->cu_info.min_sgpr_alloc;
-   chunk->sgpr_alloc_granularity = rad_info->cu_info.sgpr_alloc_granularity;
+   chunk->minimum_vgpr_alloc = rad_info->compiler_info.min_wave64_vgpr_alloc;
+   chunk->vgpr_alloc_granularity =
+      rad_info->compiler_info.wave64_vgpr_alloc_granularity * (has_wave32 ? 2 : 1);
+   chunk->minimum_sgpr_alloc = rad_info->compiler_info.min_sgpr_alloc;
+   chunk->sgpr_alloc_granularity = rad_info->compiler_info.sgpr_alloc_granularity;
 
    chunk->hardware_contexts = 8;
    chunk->gpu_type =
@@ -1411,13 +1413,15 @@ ac_use_derived_spm_trace(const struct radeon_info *info,
 
 int
 ac_dump_rgp_capture(const struct radeon_info *info, struct ac_sqtt_trace *sqtt_trace,
-                    const struct ac_spm_trace *spm_trace)
+                    const struct ac_spm_trace *spm_trace,
+                    const struct ac_rgp_capture_info *capture_info)
 {
 #if !defined(USE_LIBELF)
    fprintf(stderr, "RGP capture can't be saved: libelf was not enabled during build\n");
    return -1;
 #else
    char filename[2048];
+   char info_str[64];
    struct tm now;
    time_t t;
    FILE *f;
@@ -1425,9 +1429,16 @@ ac_dump_rgp_capture(const struct radeon_info *info, struct ac_sqtt_trace *sqtt_t
    t = time(NULL);
    now = *localtime(&t);
 
-   snprintf(filename, sizeof(filename), "/tmp/%s_%04d.%02d.%02d_%02d.%02d.%02d.rgp",
+   if (capture_info) {
+      snprintf(info_str, sizeof(info_str), "_%s%d",
+               capture_info->mode == AC_RGP_CAPTURE_MODE_FRAME ? "frame" : "submit",
+               capture_info->mode == AC_RGP_CAPTURE_MODE_FRAME ? capture_info->frame_idx
+                                                               : capture_info->submit_idx);
+   }
+
+   snprintf(filename, sizeof(filename), "/tmp/%s_%04d.%02d.%02d_%02d.%02d.%02d%s.rgp",
             util_get_process_name(), 1900 + now.tm_year, now.tm_mon + 1, now.tm_mday, now.tm_hour,
-            now.tm_min, now.tm_sec);
+            now.tm_min, now.tm_sec, capture_info ? info_str : "");
 
    f = fopen(filename, "w+");
    if (!f)

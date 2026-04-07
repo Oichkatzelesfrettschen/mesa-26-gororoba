@@ -1121,7 +1121,7 @@ static uint64_t pvr_pbe_byte_mask(const struct pvr_device_info *dev_info,
 {
    uint32_t flags = pvr_get_blit_flags(transfer_cmd);
 
-   assert(PVR_HAS_ERN(dev_info, 42064));
+   assert(PVR_HAS_ENHANCEMENT(dev_info, 42064));
 
    if (flags & PVR_TRANSFER_CMD_FLAGS_DSMERGE) {
       uint32_t mask = 0U;
@@ -1277,7 +1277,7 @@ static VkResult pvr_pbe_setup(const struct pvr_transfer_cmd *transfer_cmd,
              .pbe_wordx_mrty[i * ROGUE_NUM_PBESTATE_REG_WORDS_FOR_TRANSFER];
       pbe_words = &pbe_setup_words[i * ROGUE_NUM_PBESTATE_STATE_WORDS];
 
-      if (PVR_HAS_ERN(dev_info, 42064))
+      if (PVR_HAS_ENHANCEMENT(dev_info, 42064))
          pbe_regs[2U] = 0UL;
 
       if (i == 0U) {
@@ -1306,7 +1306,7 @@ static VkResult pvr_pbe_setup(const struct pvr_transfer_cmd *transfer_cmd,
                               pbe_words,
                               pbe_regs);
 
-      if (PVR_HAS_ERN(dev_info, 42064)) {
+      if (PVR_HAS_ENHANCEMENT(dev_info, 42064)) {
          uint64_t temp_reg;
 
          pvr_csb_pack (&temp_reg, PBESTATE_REG_WORD2, reg) {
@@ -3410,7 +3410,7 @@ static void pvr_isp_prim_block_pds_state(const struct pvr_device_info *dev_info,
          ALIGN_POT(state->common_ptr,
                    ROGUE_TA_STATE_PDS_SIZEINFO2_USC_SHAREDSIZE_UNIT_SIZE) /
          ROGUE_TA_STATE_PDS_SIZEINFO2_USC_SHAREDSIZE_UNIT_SIZE;
-      info.pds_tri_merge_disable = !PVR_HAS_ERN(dev_info, 42307);
+      info.pds_tri_merge_disable = !PVR_HAS_ENHANCEMENT(dev_info, 42307);
       info.pds_batchnum = 0U;
    }
    cs_ptr++;
@@ -4526,7 +4526,7 @@ static VkResult pvr_isp_ctrl_stream(const struct pvr_device_info *dev_info,
          /* Fill blit count for custom mapping equals source blit count. While
           * normal blits use only one fill blit.
           */
-         if (state->custom_mapping.pass_count == 0 && source > num_sources) {
+         if (state->custom_mapping.pass_count == 0 || source >= num_sources) {
             fill_blit = false;
             source = 0;
          }
@@ -4854,62 +4854,72 @@ static bool pvr_double_stride(struct pvr_transfer_pass *pass, uint32_t stride)
       struct pvr_rect_mapping *mapping_a = &mappings[i];
       struct pvr_rect_mapping *mapping_b =
          &mappings[pass->sources[0].mapping_count + new_mapping];
-      int32_t mapping_a_src_rect_y1 =
-         mapping_a->src_rect.offset.y + mapping_a->src_rect.extent.height;
-      int32_t mapping_b_src_rect_y1 = mapping_a_src_rect_y1;
-      const bool dst_starts_odd_row = !!(mapping_a->dst_rect.offset.y & 1);
-      const bool dst_ends_odd_row =
-         !!((mapping_a->dst_rect.offset.y + mapping_a->dst_rect.extent.height) &
-            1);
-      const bool src_starts_odd_row = !!(mapping_a->src_rect.offset.y & 1);
-      const bool src_ends_odd_row =
-         !!((mapping_a->src_rect.offset.y + mapping_a->src_rect.extent.height) &
-            1);
+
+      int32_t a_src_rect_y0 = mapping_a->src_rect.offset.y;
+      int32_t a_src_rect_y1 = a_src_rect_y0 + mapping_a->src_rect.extent.height;
+      int32_t a_dst_rect_y0 = mapping_a->dst_rect.offset.y;
+      int32_t a_dst_rect_y1 = a_dst_rect_y0 + mapping_a->dst_rect.extent.height;
+
+      int32_t b_src_rect_y0 = a_src_rect_y0;
+      int32_t b_src_rect_y1 = a_src_rect_y1;
+      int32_t b_dst_rect_y0 = a_dst_rect_y0;
+      int32_t b_dst_rect_y1 = a_dst_rect_y1;
+
+      const bool dst_starts_odd_row = !!(a_dst_rect_y0 & 1);
+      const bool dst_ends_odd_row = !!(a_dst_rect_y1 & 1);
+      const bool src_starts_odd_row = !!(a_src_rect_y0 & 1);
+      const bool src_ends_odd_row = !!(a_src_rect_y1 & 1);
 
       assert(pass->sources[0].mapping_count + new_mapping <
              ARRAY_SIZE(pass->sources[0].mappings));
       *mapping_b = *mapping_a;
 
-      mapping_a->src_rect.offset.y = ALIGN_POT(mapping_a->src_rect.offset.y, 2);
+      a_src_rect_y0 = ALIGN_POT(a_src_rect_y0, 2);
       if (dst_starts_odd_row && !src_starts_odd_row)
-         mapping_a->src_rect.offset.y++;
+         a_src_rect_y0++;
       else if (!dst_starts_odd_row && src_starts_odd_row)
-         mapping_a->src_rect.offset.y--;
+         a_src_rect_y0--;
 
-      mapping_a_src_rect_y1 = ALIGN_POT(mapping_a_src_rect_y1, 2);
+      a_src_rect_y1 = ALIGN_POT(a_src_rect_y1, 2);
       if (dst_ends_odd_row && !src_ends_odd_row)
-         mapping_a_src_rect_y1++;
+         a_src_rect_y1++;
       else if (!dst_ends_odd_row && src_ends_odd_row)
-         mapping_a_src_rect_y1--;
+         a_src_rect_y1--;
 
-      mapping_a->src_rect.extent.height =
-         mapping_a_src_rect_y1 - mapping_a->src_rect.offset.y;
-
-      mapping_b->src_rect.offset.y = ALIGN_POT(mapping_b->src_rect.offset.y, 2);
+      b_src_rect_y0 = ALIGN_POT(b_src_rect_y0, 2);
       if (dst_starts_odd_row && src_starts_odd_row)
-         mapping_b->src_rect.offset.y--;
+         b_src_rect_y0--;
       else if (!dst_starts_odd_row && !src_starts_odd_row)
-         mapping_b->src_rect.offset.y++;
+         b_src_rect_y0++;
 
-      mapping_b_src_rect_y1 = ALIGN_POT(mapping_b_src_rect_y1, 2);
+      b_src_rect_y1 = ALIGN_POT(b_src_rect_y1, 2);
       if (dst_ends_odd_row && src_ends_odd_row)
-         mapping_b_src_rect_y1--;
+         b_src_rect_y1--;
       else if (!dst_ends_odd_row && !src_ends_odd_row)
-         mapping_b_src_rect_y1++;
-
-      mapping_b->src_rect.extent.height =
-         mapping_b_src_rect_y1 - mapping_b->src_rect.offset.y;
+         b_src_rect_y1++;
 
       /* Destination rectangles. */
-      mapping_a->dst_rect.offset.y = mapping_a->dst_rect.offset.y / 2;
-
+      a_dst_rect_y0 /= 2;
       if (dst_starts_odd_row)
-         mapping_a->dst_rect.offset.y++;
+         a_dst_rect_y0++;
+
+      a_dst_rect_y1 = (a_dst_rect_y1 + 1) / 2;
 
       mapping_b->dst_rect.offset.x += stride;
-      mapping_b->dst_rect.offset.y /= 2;
-      mapping_b->dst_rect.extent.height /= 2;
-      mapping_a->dst_rect.extent.height -= mapping_b->dst_rect.extent.height;
+      b_dst_rect_y0 /= 2;
+      b_dst_rect_y1 /= 2;
+
+      mapping_a->src_rect.offset.y = a_src_rect_y0;
+      mapping_a->src_rect.extent.height = a_src_rect_y1 - a_src_rect_y0;
+
+      mapping_a->dst_rect.offset.y = a_dst_rect_y0;
+      mapping_a->dst_rect.extent.height = a_dst_rect_y1 - a_dst_rect_y0;
+
+      mapping_b->src_rect.offset.y = b_src_rect_y0;
+      mapping_b->src_rect.extent.height = b_src_rect_y1 - b_src_rect_y0;
+
+      mapping_b->dst_rect.offset.y = b_dst_rect_y0;
+      mapping_b->dst_rect.extent.height = b_dst_rect_y1 - b_dst_rect_y0;
 
       if (!mapping_a->src_rect.extent.width ||
           !mapping_a->src_rect.extent.height) {
@@ -5715,7 +5725,7 @@ static VkResult pvr_3d_copy_blit(struct pvr_transfer_ctx *ctx,
       /* PBE byte mask could be used for DS merge with FastScale. Clearing the
        * other channel on a DS merge requires Clip blit.
        */
-      if (!PVR_HAS_ERN(dev_info, 42064) ||
+      if (!PVR_HAS_ENHANCEMENT(dev_info, 42064) ||
           ((transfer_cmd->flags & PVR_TRANSFER_CMD_FLAGS_FILL) != 0U)) {
          return pvr_reroute_to_clip(ctx,
                                     active_cmd,

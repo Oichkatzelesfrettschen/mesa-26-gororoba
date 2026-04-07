@@ -19,8 +19,8 @@ struct vn_info_extension {
 };
 
 /* sorted by extension names for bsearch */
-static const uint32_t _vn_info_extension_count = 185;
-static const struct vn_info_extension _vn_info_extensions[185] = {
+static const uint32_t _vn_info_extension_count = 187;
+static const struct vn_info_extension _vn_info_extensions[187] = {
    { "VK_ARM_rasterization_order_attachment_access", 343, 1 },
    { "VK_EXT_4444_formats", 341, 1 },
    { "VK_EXT_attachment_feedback_loop_dynamic_state", 525, 1 },
@@ -40,6 +40,7 @@ static const struct vn_info_extension _vn_info_extensions[185] = {
    { "VK_EXT_depth_clip_control", 356, 1 },
    { "VK_EXT_depth_clip_enable", 103, 1 },
    { "VK_EXT_depth_range_unrestricted", 14, 1 },
+   { "VK_EXT_descriptor_heap", 136, 1 },
    { "VK_EXT_descriptor_indexing", 162, 2 },
    { "VK_EXT_dynamic_rendering_unused_attachments", 500, 1 },
    { "VK_EXT_extended_dynamic_state", 268, 1 },
@@ -183,6 +184,7 @@ static const struct vn_info_extension _vn_info_extensions[185] = {
    { "VK_KHR_shader_float16_int8", 83, 1 },
    { "VK_KHR_shader_float_controls", 198, 4 },
    { "VK_KHR_shader_float_controls2", 529, 1 },
+   { "VK_KHR_shader_fma", 580, 1 },
    { "VK_KHR_shader_integer_dot_product", 281, 1 },
    { "VK_KHR_shader_maximal_reconvergence", 435, 1 },
    { "VK_KHR_shader_non_semantic_info", 294, 1 },
@@ -203,7 +205,7 @@ static const struct vn_info_extension _vn_info_extensions[185] = {
    { "VK_KHR_vulkan_memory_model", 212, 3 },
    { "VK_KHR_workgroup_memory_explicit_layout", 337, 1 },
    { "VK_KHR_zero_initialize_workgroup_memory", 326, 1 },
-   { "VK_MESA_venus_protocol", 385, 3 },
+   { "VK_MESA_venus_protocol", 385, 4 },
    { "VK_NV_compute_shader_derivatives", 202, 1 },
    { "VK_VALVE_mutable_descriptor_type", 352, 1 },
 };
@@ -217,7 +219,7 @@ vn_info_wire_format_version(void)
 static inline uint32_t
 vn_info_vk_xml_version(void)
 {
-    return VK_MAKE_API_VERSION(0, 1, 4, 334);
+    return VK_MAKE_API_VERSION(0, 1, 4, 343);
 }
 
 static inline int

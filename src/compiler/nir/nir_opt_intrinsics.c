@@ -66,17 +66,17 @@ try_opt_bcsel_of_shuffle(nir_builder *b, nir_alu_instr *alu,
    if (block_has_discard)
       return NULL;
 
-   if (!nir_alu_src_is_trivial_ssa(alu, 0))
+   if (!nir_alu_has_trivial_src(alu, 0))
       return NULL;
 
    nir_def *data1, *index1;
-   if (!nir_alu_src_is_trivial_ssa(alu, 1) ||
+   if (!nir_alu_has_trivial_src(alu, 1) ||
        nir_def_block(alu->src[1].src.ssa) != alu->instr.block ||
        !src_is_single_use_shuffle(alu->src[1].src, &data1, &index1))
       return NULL;
 
    nir_def *data2, *index2;
-   if (!nir_alu_src_is_trivial_ssa(alu, 2) ||
+   if (!nir_alu_has_trivial_src(alu, 2) ||
        nir_def_block(alu->src[2].src.ssa) != alu->instr.block ||
        !src_is_single_use_shuffle(alu->src[2].src, &data2, &index2))
       return NULL;
@@ -136,7 +136,7 @@ src_is_alu(nir_op op, nir_src src, nir_src srcs[2])
    if (alu == NULL || alu->op != op)
       return false;
 
-   if (!nir_alu_src_is_trivial_ssa(alu, 0) || !nir_alu_src_is_trivial_ssa(alu, 1))
+   if (!nir_alu_has_trivial_src(alu, 0) || !nir_alu_has_trivial_src(alu, 1))
       return false;
 
    srcs[0] = alu->src[0].src;
@@ -151,7 +151,7 @@ try_opt_quad_vote(nir_builder *b, nir_alu_instr *alu, bool block_has_discard)
    if (block_has_discard)
       return NULL;
 
-   if (!nir_alu_src_is_trivial_ssa(alu, 0) || !nir_alu_src_is_trivial_ssa(alu, 1))
+   if (!nir_alu_has_trivial_src(alu, 0) || !nir_alu_has_trivial_src(alu, 1))
       return NULL;
 
    nir_intrinsic_instr *quad_broadcasts[4];
@@ -231,6 +231,25 @@ try_opt_quad_vote(nir_builder *b, nir_alu_instr *alu, bool block_has_discard)
 }
 
 static bool
+try_opt_inot_inverse_ballot(nir_builder *b, nir_alu_instr *alu)
+{
+   if (alu->def.bit_size != 1 ||
+       !nir_src_is_intrinsic(alu->src[0].src) ||
+       !list_is_singular(&alu->src[0].src.ssa->uses))
+      return false;
+
+   nir_intrinsic_instr *intrin = nir_src_as_intrinsic(alu->src[0].src);
+   if (intrin->intrinsic != nir_intrinsic_inverse_ballot || !nir_src_is_const(intrin->src[0]))
+      return false;
+
+   alu->op = nir_op_mov;
+   b->cursor = nir_before_instr(&intrin->instr);
+   nir_src_rewrite(&intrin->src[0], nir_inot(b, intrin->src[0].ssa));
+
+   return true;
+}
+
+static bool
 opt_intrinsics_alu(nir_builder *b, nir_alu_instr *alu, bool block_has_discard)
 {
    nir_def *replacement = NULL;
@@ -245,6 +264,10 @@ opt_intrinsics_alu(nir_builder *b, nir_alu_instr *alu, bool block_has_discard)
    case nir_op_ior:
       if (alu->def.bit_size == 1 && b->shader->options->optimize_quad_vote_to_reduce)
          replacement = try_opt_quad_vote(b, alu, block_has_discard);
+      break;
+   case nir_op_inot:
+      if (try_opt_inot_inverse_ballot(b, alu))
+         return true;
       break;
    default:
       break;
@@ -325,28 +348,27 @@ try_opt_exclusive_scan_to_inclusive(nir_builder *b, nir_intrinsic_instr *intrin)
 }
 
 static bool
-try_opt_atomic_isub(nir_builder *b, nir_intrinsic_instr *intrin, unsigned data_idx)
+try_opt_atomic_isub(nir_builder *b, nir_intrinsic_instr *intrin)
 {
    if (nir_intrinsic_atomic_op(intrin) != nir_atomic_op_iadd || !b->shader->options->has_atomic_isub)
       return false;
 
-   nir_scalar data = nir_scalar_resolved(intrin->src[data_idx].ssa, 0);
+   nir_scalar data = nir_scalar_resolved(nir_get_io_data_src(intrin)->ssa, 0);
 
    if (!nir_scalar_is_alu(data) || nir_scalar_alu_op(data) != nir_op_ineg)
       return false;
 
    data = nir_scalar_chase_alu_src(data, 0);
 
-   nir_src_rewrite(&intrin->src[data_idx], nir_mov_scalar(b, data));
+   nir_src_rewrite(nir_get_io_data_src(intrin), nir_mov_scalar(b, data));
    nir_intrinsic_set_atomic_op(intrin, nir_atomic_op_isub);
    return true;
 }
 
 static bool
-try_opt_atomic_to_exchange(nir_builder *b, nir_intrinsic_instr *intrin,
-                           unsigned data_idx)
+try_opt_atomic_to_exchange(nir_builder *b, nir_intrinsic_instr *intrin)
 {
-   nir_scalar data = nir_scalar_resolved(intrin->src[data_idx].ssa, 0);
+   nir_scalar data = nir_scalar_resolved(nir_get_io_data_src(intrin)->ssa, 0);
    if (!nir_scalar_is_const(data))
       return false;
 
@@ -469,6 +491,18 @@ try_opt_atomic_exchange_to_store(nir_builder *b, nir_intrinsic_instr *intrin)
                                .access = nir_intrinsic_access(intrin) | ACCESS_ATOMIC | ACCESS_COHERENT,
                                .src_type = image_atomic_type(intrin));
       break;
+   case nir_intrinsic_image_heap_atomic:
+      nir_image_heap_store(b, intrin->src[0].ssa,
+                           intrin->src[1].ssa,
+                           intrin->src[2].ssa,
+                           intrin->src[3].ssa,
+                           nir_imm_int(b, 0),
+                           .image_dim = nir_intrinsic_image_dim(intrin),
+                           .image_array = nir_intrinsic_image_array(intrin),
+                           .format = nir_intrinsic_format(intrin),
+                           .access = nir_intrinsic_access(intrin) | ACCESS_ATOMIC | ACCESS_COHERENT,
+                           .src_type = image_atomic_type(intrin));
+      break;
    default:
       UNREACHABLE("unhandled atomic intrinsic");
    }
@@ -478,13 +512,12 @@ try_opt_atomic_exchange_to_store(nir_builder *b, nir_intrinsic_instr *intrin)
 }
 
 static bool
-try_opt_atomic_to_load(nir_builder *b, nir_intrinsic_instr *intrin,
-                       unsigned data_idx)
+try_opt_atomic_to_load(nir_builder *b, nir_intrinsic_instr *intrin)
 {
    if (!b->shader->options->has_atomic_load_store)
       return false;
 
-   nir_scalar data = nir_scalar_resolved(intrin->src[data_idx].ssa, 0);
+   nir_scalar data = nir_scalar_resolved(nir_get_io_data_src(intrin)->ssa, 0);
    if (!nir_scalar_is_const(data))
       return false;
 
@@ -585,6 +618,18 @@ try_opt_atomic_to_load(nir_builder *b, nir_intrinsic_instr *intrin,
                                     .access = nir_intrinsic_access(intrin) | ACCESS_ATOMIC | ACCESS_COHERENT,
                                     .dest_type = image_atomic_type(intrin));
       break;
+   case nir_intrinsic_image_heap_atomic:
+      def = nir_image_heap_load(b, 1, bit_size,
+                                intrin->src[0].ssa,
+                                intrin->src[1].ssa,
+                                intrin->src[2].ssa,
+                                nir_imm_int(b, 0),
+                                .image_dim = nir_intrinsic_image_dim(intrin),
+                                .image_array = nir_intrinsic_image_array(intrin),
+                                .format = nir_intrinsic_format(intrin),
+                                .access = nir_intrinsic_access(intrin) | ACCESS_ATOMIC | ACCESS_COHERENT,
+                                .dest_type = image_atomic_type(intrin));
+      break;
    default:
       UNREACHABLE("unhandled atomic intrinsic");
    }
@@ -652,24 +697,15 @@ opt_intrinsics_intrin(nir_builder *b, nir_intrinsic_instr *intrin)
    case nir_intrinsic_global_atomic:
    case nir_intrinsic_global_atomic_amd:
    case nir_intrinsic_deref_atomic:
-      progress |= try_opt_atomic_isub(b, intrin, 1);
-      progress |= try_opt_atomic_to_exchange(b, intrin, 1);
-      progress |= try_opt_atomic_exchange_to_store(b, intrin);
-      progress |= try_opt_atomic_to_load(b, intrin, 1);
-      return progress;
    case nir_intrinsic_ssbo_atomic:
-      progress |= try_opt_atomic_isub(b, intrin, 2);
-      progress |= try_opt_atomic_to_exchange(b, intrin, 2);
-      progress |= try_opt_atomic_exchange_to_store(b, intrin);
-      progress |= try_opt_atomic_to_load(b, intrin, 2);
-      return progress;
    case nir_intrinsic_image_deref_atomic:
    case nir_intrinsic_image_atomic:
    case nir_intrinsic_bindless_image_atomic:
-      progress |= try_opt_atomic_isub(b, intrin, 3);
-      progress |= try_opt_atomic_to_exchange(b, intrin, 3);
+   case nir_intrinsic_image_heap_atomic:
+      progress |= try_opt_atomic_isub(b, intrin);
+      progress |= try_opt_atomic_to_exchange(b, intrin);
       progress |= try_opt_atomic_exchange_to_store(b, intrin);
-      progress |= try_opt_atomic_to_load(b, intrin, 3);
+      progress |= try_opt_atomic_to_load(b, intrin);
       return progress;
    default:
       return false;

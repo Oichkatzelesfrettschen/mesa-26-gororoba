@@ -211,7 +211,7 @@ the branches:
    git push origin $VERSION-branchpoint
    git checkout $VERSION-branchpoint
    git push origin HEAD:refs/heads/$VERSION
-   git push origin HEAD:refs/heads/staging/$VERSION
+   git push origin HEAD:refs/heads/staging/$VERSION --push-option ci.skip
    git checkout staging/$VERSION
    git branch --set-upstream-to origin/staging/$VERSION
 
@@ -256,8 +256,8 @@ Create a new Merge Request, with ``staging/X.Y`` targeting the ``X.Y`` branch.
 Be sure to rename the merge request, something like ``merge staging/X.Y in to
 X.Y for the X.Y.Z release``. Ensure that ``delete source branch`` is **not**
 checked, and set the label to ``release-maintainer`` and ``mesa-release``.
-(this prevents the autotagger from running on this MR, which would otherwise
-spam labels with a PR that watches of those labels probably don't care about).
+(this prevents the auto-labeller from running on this MR, which would otherwise
+spam labels which a dev who watches those probably doesn't care about).
 Assign to ``@marge-bot`` immediately.
 
 
@@ -332,14 +332,14 @@ push:
 
       git push -u YOUR_FORK X.Y-release
 
-Finally, open a pull request against the main branch, assigning it to
+Finally, open a merge request against the main branch, assigning it to
 ``@marge-bot`` immediately.
 
 Update the website
 ------------------
 
 Create a fork of `Mesa3d.org <https://gitlab.freedesktop.org/mesa/mesa3d.org/>`__, and create
-a new pull request using the script:
+a new merge request using the script:
 
 .. code-block:: sh
 
@@ -350,7 +350,7 @@ a new pull request using the script:
 Where X.Y.Z is the same value as passed to post_version.py in the previous step.
 
 Create a merge request from this commit. After the commit to mesa is merged,
-merge this pull request.
+merge this MR.
 
 Announce the release
 --------------------

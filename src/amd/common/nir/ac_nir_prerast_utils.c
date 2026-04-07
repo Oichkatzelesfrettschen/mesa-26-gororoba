@@ -209,15 +209,15 @@ void ac_nir_gather_prerast_store_output_info(nir_builder *b, nir_intrinsic_instr
 }
 
 static nir_intrinsic_instr *
-export(nir_builder *b, nir_def *val, nir_def *row, unsigned base, unsigned flags,
+export(nir_builder *b, nir_def *val, nir_def *row, unsigned target, unsigned flags,
        unsigned write_mask)
 {
    if (row) {
-      return nir_export_row_amd(b, val, row, .base = base, .flags = flags,
-                                .write_mask = write_mask);
+      return nir_export_row_amd(b, val, row, .target = target, .flags = flags,
+                                .enabled_channels = write_mask);
    } else {
-      return nir_export_amd(b, val, .base = base, .flags = flags,
-                            .write_mask = write_mask);
+      return nir_export_amd(b, val, .target = target, .flags = flags,
+                            .enabled_channels = write_mask);
    }
 }
 
@@ -463,8 +463,8 @@ ac_nir_export_parameters(nir_builder *b,
 
       nir_export_amd(
          b, get_export_output(b, out->outputs[slot]),
-         .base = V_008DFC_SQ_EXP_PARAM + offset,
-         .write_mask = write_mask);
+         .target = V_008DFC_SQ_EXP_PARAM + offset,
+         .enabled_channels = write_mask);
       exported_params |= BITFIELD_BIT(offset);
    }
 }
@@ -824,17 +824,17 @@ ac_nir_ngg_alloc_vertices_fully_culled_workaround(nir_builder *b,
       {
          /* The vertex indices are 0, 0, 0. */
          nir_export_amd(b, nir_imm_zero(b, 4, 32),
-                        .base = V_008DFC_SQ_EXP_PRIM,
+                        .target = V_008DFC_SQ_EXP_PRIM,
                         .flags = AC_EXP_FLAG_DONE,
-                        .write_mask = 1);
+                        .enabled_channels = 1);
 
          /* The HW culls primitives with NaN. -1 is also NaN and can save
           * a dword in binary code by inlining constant.
           */
          nir_export_amd(b, nir_imm_ivec4(b, -1, -1, -1, -1),
-                        .base = V_008DFC_SQ_EXP_POS,
+                        .target = V_008DFC_SQ_EXP_POS,
                         .flags = AC_EXP_FLAG_DONE,
-                        .write_mask = 0xf);
+                        .enabled_channels = 0xf);
       }
       nir_pop_if(b, if_thread_0);
    }
@@ -1050,6 +1050,8 @@ ac_nir_ngg_build_streamout_buffer_info(nir_builder *b,
 
                nir_loop *loop = nir_push_loop(b);
                {
+                  nir_loop_add_continue_construct(loop);
+
                   for (unsigned i = 0; i < NUM_ATOMICS_IN_FLIGHT; i++) {
                      int issue_index = (NUM_ATOMICS_IN_FLIGHT - 1 + i) % NUM_ATOMICS_IN_FLIGHT;
                      int read_index = i;

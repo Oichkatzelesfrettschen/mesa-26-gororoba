@@ -9,7 +9,7 @@
 #include "util/disk_cache.h"
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/u_atomic.h"
 #include "util/u_debug.h"
 #include "radv_debug.h"
@@ -100,7 +100,7 @@ radv_GetPipelineKeyKHR(VkDevice _device, const VkPipelineCreateInfoKHR *pPipelin
    if (result != VK_SUCCESS)
       return result;
 
-   pPipelineKey->keySize = SHA1_DIGEST_LENGTH;
+   pPipelineKey->keySize = BLAKE3_KEY_LEN;
 
    return VK_SUCCESS;
 }
@@ -190,7 +190,7 @@ radv_create_pipeline_binary_from_shader(struct radv_device *device, const VkAllo
 VkResult
 radv_create_pipeline_binary_from_rt_shader(struct radv_device *device, const VkAllocationCallbacks *pAllocator,
                                            struct radv_shader *shader, bool is_traversal_shader,
-                                           const uint8_t stage_sha1[SHA1_DIGEST_LENGTH],
+                                           const uint8_t stage_blake3[BLAKE3_KEY_LEN],
                                            const struct radv_ray_tracing_stage_info *rt_stage_info, uint32_t stack_size,
                                            struct vk_pipeline_cache_object *nir,
                                            struct util_dynarray *pipeline_binaries, uint32_t *num_binaries)
@@ -209,7 +209,7 @@ radv_create_pipeline_binary_from_rt_shader(struct radv_device *device, const VkA
    }
 
    _mesa_blake3_init(&ctx);
-   _mesa_blake3_update(&ctx, stage_sha1, sizeof(*stage_sha1));
+   _mesa_blake3_update(&ctx, stage_blake3, sizeof(*stage_blake3));
    _mesa_blake3_final(&ctx, key);
 
    struct radv_ray_tracing_binary_header header = {
@@ -219,7 +219,7 @@ radv_create_pipeline_binary_from_rt_shader(struct radv_device *device, const VkA
       .stack_size = stack_size,
    };
 
-   memcpy(header.stage_sha1, stage_sha1, sizeof(header.stage_sha1));
+   memcpy(header.stage_blake3, stage_blake3, sizeof(header.stage_blake3));
    if (rt_stage_info)
       memcpy(&header.stage_info, rt_stage_info, sizeof(header.stage_info));
 
@@ -257,7 +257,7 @@ radv_create_pipeline_binary_from_pipeline(struct radv_device *device, const VkAl
          struct radv_ray_tracing_stage *rt_stage = &rt_pipeline->stages[i];
 
          result = radv_create_pipeline_binary_from_rt_shader(device, pAllocator, rt_stage->shader, false,
-                                                             rt_stage->sha1, &rt_stage->info, rt_stage->stack_size,
+                                                             rt_stage->blake3, &rt_stage->info, rt_stage->stack_size,
                                                              rt_stage->nir, pipeline_binaries, num_binaries);
          if (result != VK_SUCCESS)
             return result;
@@ -298,7 +298,7 @@ radv_create_pipeline_binary_from_cache(struct radv_device *device, const VkAlloc
                                        const VkPipelineCreateInfoKHR *pPipelineCreateInfo,
                                        struct util_dynarray *pipeline_binaries, uint32_t *num_binaries)
 {
-   unsigned char key[SHA1_DIGEST_LENGTH];
+   unsigned char key[BLAKE3_KEY_LEN];
    bool found_in_internal_cache;
    VkResult result;
 

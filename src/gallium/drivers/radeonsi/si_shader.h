@@ -119,6 +119,10 @@
 #include "util/u_queue.h"
 #include "si_pm4.h"
 #include "si_shader_info.h"
+#ifndef HAVE_GFX_COMPUTE
+#define __U_STUB__
+#endif
+#include "u_stub.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -548,7 +552,7 @@ struct si_ps_epilog_bits {
    unsigned alpha_to_one : 1;
    unsigned alpha_to_coverage_via_mrtz : 1;  /* gfx11+ or alpha_to_one */
    unsigned clamp_color : 1;
-   unsigned dual_src_blend_swizzle : 1;      /* gfx11+ */
+   unsigned dual_src_blend : 1;
    unsigned rbplus_depth_only_opt:1;
    unsigned kill_z:1;
    unsigned kill_stencil:1;
@@ -854,8 +858,6 @@ struct si_shader {
          unsigned spi_ps_input_ena;
          unsigned spi_ps_input_addr;
          unsigned spi_ps_in_control;
-         unsigned spi_shader_z_format;
-         unsigned spi_shader_col_format;
          unsigned cb_shader_mask;
          unsigned db_shader_control;
          unsigned num_interp;
@@ -904,8 +906,8 @@ void si_nir_gather_info(struct si_screen *sscreen, struct nir_shader *nir,
 /* si_shader_nir.c */
 void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool has_array_temps);
 void si_nir_late_opts(struct nir_shader *nir);
-void si_finalize_nir(struct pipe_screen *screen, struct nir_shader *nir,
-                     bool optimize);
+PROC void si_finalize_nir(struct pipe_screen *screen, struct nir_shader *nir,
+                          bool optimize) TAILV;
 
 /* si_state_shaders.cpp */
 unsigned si_shader_num_alloc_param_exports(struct si_shader *shader);
@@ -924,12 +926,12 @@ int si_shader_binary_upload_at(struct si_screen *sscreen, struct si_shader *shad
                                uint64_t scratch_va, int64_t bo_offset);
 void si_shader_dump_stats_for_shader_db(struct si_screen *screen, struct si_shader *shader,
                                         struct util_debug_callback *debug);
-void si_shader_binary_clean(struct si_shader_binary *binary);
+PROC void si_shader_binary_clean(struct si_shader_binary *binary) TAILV;
 const char *si_get_shader_name(const struct si_shader *shader);
-bool si_can_dump_shader(struct si_screen *sscreen, mesa_shader_stage stage,
-                        enum si_shader_dump_type dump_type);
-void si_shader_dump(struct si_screen *sscreen, struct si_shader *shader,
-                    struct util_debug_callback *debug, FILE *f, bool check_debug_option);
+PROC bool si_can_dump_shader(struct si_screen *sscreen, mesa_shader_stage stage,
+                             enum si_shader_dump_type dump_type) TAILB;
+PROC void si_shader_dump(struct si_screen *sscreen, struct si_shader *shader,
+                         struct util_debug_callback *debug, FILE *f, bool check_debug_option) TAILV;
 
 /* Inline helpers. */
 

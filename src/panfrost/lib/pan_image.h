@@ -52,6 +52,7 @@ struct pan_image_view {
    enum mali_texture_dimension dim;
    unsigned first_level, last_level;
    unsigned first_layer, last_layer;
+   float min_lod;
    unsigned char swizzle[4];
 
    /* planes 1 and 2 are NULL for single plane formats */
@@ -114,6 +115,19 @@ pan_image_view_get_nr_samples(const struct pan_image_view *iview)
       return 0;
 
    return pref.image->props.nr_samples;
+}
+
+static inline uint32_t
+pan_image_view_get_layer_count(const struct pan_image_view *iview)
+{
+   const struct pan_image_plane_ref pref = pan_image_view_get_first_plane(iview);
+
+   if (!pref.image)
+      return 0;
+
+   return iview->dim == MALI_TEXTURE_DIMENSION_3D
+                        ? pref.image->props.extent_px.depth
+                        : iview->last_layer - iview->first_layer + 1;
 }
 
 static inline const struct pan_image_plane_ref
@@ -254,6 +268,9 @@ bool pan_image_layout_init(
 struct pan_image_usage {
    /* PAN_BIND_xxx flags. */
    uint32_t bind;
+
+   /* Image needs to be mappable at standard sparse block granularity. */
+   bool standard_sparse_mapping_granularity;
 
    /* Image filled directly from the CPU. */
    bool host_copy;

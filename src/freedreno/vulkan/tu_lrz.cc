@@ -99,6 +99,7 @@ tu_lrz_disable_write_for_rp(struct tu_cmd_buffer *cmd, const char *reason)
 
    cmd->state.lrz.disable_write_for_rp = true;
    cmd->state.rp.lrz_write_disabled_at_draw = cmd->state.rp.drawcall_count;
+   cmd->state.rp.lrz_write_disable_reason = reason;
    perf_debug(
       cmd->device,
       "Disabling LRZ write for the rest of the RP because '%s' at draw %u",
@@ -251,7 +252,8 @@ tu_lrz_init_state(struct tu_cmd_buffer *cmd,
    cmd->state.lrz.valid = true;
    cmd->state.lrz.valid_at_start = true;
    cmd->state.lrz.disable_write_for_rp = false;
-   cmd->state.lrz.color_written_with_z_test = false;
+   /* We have to assume previous draws may have set color_written_with_z_test */
+   cmd->state.lrz.color_written_with_z_test = cmd->state.resuming;
    cmd->state.lrz.has_lrz_write_with_skipped_color_writes = false;
    cmd->state.lrz.prev_direction = TU_LRZ_UNKNOWN;
    /* Be optimistic and unconditionally enable fast-clear in
@@ -288,6 +290,9 @@ tu_lrz_init_secondary(struct tu_cmd_buffer *cmd,
    cmd->state.lrz.valid = true;
    cmd->state.lrz.valid_at_start = true;
    cmd->state.lrz.disable_write_for_rp = false;
+   /* We will disable LRZ via tu_lrz_flush_valid_at_secondary_rp_boundary
+    * if assumption about color_written_with_z_test is wrong.
+    */
    cmd->state.lrz.color_written_with_z_test = false;
    cmd->state.lrz.has_lrz_write_with_skipped_color_writes = false;
    cmd->state.lrz.prev_direction = TU_LRZ_UNKNOWN;
@@ -357,6 +362,7 @@ tu_lrz_begin_renderpass(struct tu_cmd_buffer *cmd)
 
    cmd->state.rp.lrz_disable_reason = NULL;
    cmd->state.rp.lrz_disabled_at_draw = 0;
+   cmd->state.rp.lrz_write_disable_reason = NULL;
    cmd->state.rp.lrz_write_disabled_at_draw = 0;
 
    int lrz_img_count = 0;
@@ -925,50 +931,6 @@ tu_disable_lrz(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
 }
 TU_GENX(tu_disable_lrz);
 
-/* Disable LRZ from the CPU, for host image copy */
-template <chip CHIP>
-void
-tu_disable_lrz_cpu(struct tu_device *device, struct tu_image *image)
-{
-   if (!device->physical_device->info->props.has_lrz_dir_tracking)
-      return;
-
-   if (!image->lrz_layout.lrz_total_size)
-      return;
-
-   const unsigned lrz_dir_offset = offsetof(fd_lrzfc_layout<CHIP>,
-                                            buffer[0].dir_track);
-   uint8_t *lrz_dir_tracking =
-      (uint8_t *)image->map + image->lrz_layout.lrz_fc_offset + lrz_dir_offset;
-
-   *lrz_dir_tracking = FD_LRZ_GPU_DIR_DISABLED;
-
-   if (image->mem->bo->cached_non_coherent) {
-      tu_bo_sync_cache(
-         device, image->mem->bo,
-         image->mem_offset + image->lrz_layout.lrz_offset + lrz_dir_offset, 1,
-         TU_MEM_SYNC_CACHE_TO_GPU);
-   }
-
-   if (CHIP >= A7XX) {
-      const unsigned lrz_dir_offset2 = offsetof(fd_lrzfc_layout<CHIP>,
-                                                buffer[1].dir_track);
-      uint8_t *lrz_dir_tracking2 =
-         (uint8_t *)image->map + image->lrz_layout.lrz_fc_offset + lrz_dir_offset2;
-
-      *lrz_dir_tracking2 = FD_LRZ_GPU_DIR_DISABLED;
-
-      if (image->mem->bo->cached_non_coherent) {
-         tu_bo_sync_cache(
-            device, image->mem->bo,
-            image->mem_offset + image->lrz_layout.lrz_offset + lrz_dir_offset2, 1,
-            TU_MEM_SYNC_CACHE_TO_GPU);
-      }
-   }
-
-}
-TU_GENX(tu_disable_lrz_cpu);
-
 /* Clear LRZ, used for out of renderpass depth clears. */
 template <chip CHIP>
 void
@@ -1040,17 +1002,27 @@ tu_lrz_disable_during_renderpass(struct tu_cmd_buffer *cmd,
 }
 TU_GENX(tu_lrz_disable_during_renderpass);
 
-template <chip CHIP>
 void
-tu_lrz_flush_valid_during_renderpass(struct tu_cmd_buffer *cmd,
-                                     struct tu_cs *cs)
+tu_lrz_flush_valid_at_secondary_rp_boundary(
+   struct tu_cmd_buffer *cmd,
+   const struct tu_lrz_state &secondary_lrz,
+   struct tu_cs *cs)
 {
+   const bool lrz_blending_skipped_color_writes =
+      cmd->state.lrz.color_written_with_z_test &&
+      secondary_lrz.has_lrz_write_with_skipped_color_writes;
    /* Even if state is valid, we cannot be sure that secondary
     * command buffer has the same sticky disable_write_for_rp.
     */
    if (cmd->state.lrz.valid && !cmd->state.lrz.disable_write_for_rp &&
-       !cmd->state.lrz.has_lrz_write_with_skipped_color_writes)
+       !lrz_blending_skipped_color_writes)
       return;
+
+   if (lrz_blending_skipped_color_writes) {
+      tu_lrz_disable_reason(cmd, "Depth write + no color writes with secondary cmdbuf");
+   } else if (cmd->state.lrz.disable_write_for_rp) {
+      tu_lrz_disable_reason(cmd, "Disabled LRZ write with secondary cmdbuf");
+   }
 
    tu6_write_lrz_reg(cmd, cs, A6XX_GRAS_LRZ_VIEW_INFO(
       .base_layer = 0b11111111111,
@@ -1058,7 +1030,23 @@ tu_lrz_flush_valid_during_renderpass(struct tu_cmd_buffer *cmd,
       .base_mip_level = 0b1111,
    ));
 }
-TU_GENX(tu_lrz_flush_valid_during_renderpass);
+
+void
+tu_lrz_flush_valid_at_suspending_rp_boundary(struct tu_cmd_buffer *cmd,
+                                             struct tu_cs *cs)
+{
+   if (cmd->state.lrz.valid && !cmd->state.lrz.disable_write_for_rp)
+      return;
+
+   if (cmd->state.lrz.disable_write_for_rp)
+      tu_lrz_disable_reason(cmd, "Disabled LRZ write at renderpass suspend");
+
+   tu6_write_lrz_reg(cmd, cs, A6XX_GRAS_LRZ_VIEW_INFO(
+      .base_layer = 0b11111111111,
+      .layer_count = 0b11111111111,
+      .base_mip_level = 0b1111,
+   ));
+}
 
 template <chip CHIP>
 static struct __GRAS_LRZ_CNTL

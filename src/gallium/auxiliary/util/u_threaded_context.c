@@ -465,14 +465,6 @@ tc_drop_resource_reference(struct pipe_resource *dst)
 
 /* Unreference dst but don't touch the dst pointer. */
 static inline void
-tc_drop_surface_reference(struct pipe_surface *dst)
-{
-   if (pipe_reference(&dst->reference, NULL)) /* only decrement refcount */
-      dst->context->surface_destroy(dst->context, dst);
-}
-
-/* Unreference dst but don't touch the dst pointer. */
-static inline void
 tc_drop_so_target_reference(struct pipe_stream_output_target *dst)
 {
    if (pipe_reference(&dst->reference, NULL)) /* only decrement refcount */
@@ -4825,6 +4817,8 @@ struct tc_clear {
    bool scissor_state_set;
    uint8_t stencil;
    uint16_t buffers;
+   uint32_t color_clear_mask;
+   uint8_t stencil_clear_mask;
    float depth;
    struct pipe_scissor_state scissor_state;
    union pipe_color_union color;
@@ -4835,12 +4829,14 @@ tc_call_clear(struct pipe_context *pipe, void *call)
 {
    struct tc_clear *p = to_call(call, tc_clear);
 
-   pipe->clear(pipe, p->buffers, p->scissor_state_set ? &p->scissor_state : NULL, &p->color, p->depth, p->stencil);
+   pipe->clear(pipe, p->buffers, p->color_clear_mask, p->stencil_clear_mask, p->scissor_state_set ? &p->scissor_state : NULL, &p->color, p->depth, p->stencil);
    return call_size(tc_clear);
 }
 
 static void
-tc_clear(struct pipe_context *_pipe, unsigned buffers, const struct pipe_scissor_state *scissor_state,
+tc_clear(struct pipe_context *_pipe, unsigned buffers,
+         uint32_t color_clear_mask, uint8_t stencil_clear_mask,
+         const struct pipe_scissor_state *scissor_state,
          const union pipe_color_union *color, double depth,
          unsigned stencil)
 {
@@ -4848,6 +4844,8 @@ tc_clear(struct pipe_context *_pipe, unsigned buffers, const struct pipe_scissor
    struct tc_clear *p = tc_add_call(tc, TC_CALL_clear, tc_clear);
 
    p->buffers = buffers;
+   p->color_clear_mask = color_clear_mask;
+   p->stencil_clear_mask = stencil_clear_mask;
    tc->seen_fb_state = true;
    if (scissor_state) {
       p->scissor_state = *scissor_state;

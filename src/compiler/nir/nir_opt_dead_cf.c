@@ -191,7 +191,8 @@ node_is_dead(nir_cf_node *node)
       }
 
       nir_foreach_instr(instr, block) {
-         if (instr->type == nir_instr_type_call)
+         if (instr->type == nir_instr_type_call ||
+             instr->type == nir_instr_type_cmat_call)
             return false;
 
          /* Return and halt instructions can cause us to skip over other
@@ -217,7 +218,10 @@ node_is_dead(nir_cf_node *node)
             case nir_intrinsic_load_deref:
             case nir_intrinsic_load_ssbo:
             case nir_intrinsic_load_global:
+            case nir_intrinsic_load_global_bounded:
+            case nir_intrinsic_load_global_nv:
             case nir_intrinsic_load_ssbo_intel:
+            case nir_intrinsic_load_ssbo_ir3:
                /* If there's a memory barrier after the loop, a load might be
                 * required to happen before some other instruction after the
                 * barrier, so it is not valid to eliminate it -- unless we
@@ -240,6 +244,7 @@ node_is_dead(nir_cf_node *node)
 
             case nir_intrinsic_load_shared:
             case nir_intrinsic_load_shared2_amd:
+            case nir_intrinsic_load_shared_nv:
             case nir_intrinsic_load_output:
             case nir_intrinsic_load_pixel_local:
             case nir_intrinsic_load_per_vertex_output:

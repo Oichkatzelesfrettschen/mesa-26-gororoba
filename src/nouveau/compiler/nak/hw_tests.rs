@@ -154,8 +154,10 @@ impl<'a> TestShaderBuilder<'a> {
         self.push_op(OpLd {
             dst: dst.clone().into(),
             addr: self.data_addr.clone().into(),
+            pred: true.into(),
             offset: offset.into(),
             access: access,
+            stride: OffsetStride::X1,
         });
         dst
     }
@@ -179,6 +181,7 @@ impl<'a> TestShaderBuilder<'a> {
             data: data.into(),
             offset: offset.into(),
             access: access,
+            stride: OffsetStride::X1,
         });
     }
 
@@ -975,6 +978,74 @@ fn test_op_shf() {
 }
 
 #[test]
+fn test_op_urol() {
+    let run = RunSingleton::get();
+    if run.sm.sm() < 32 {
+        return;
+    }
+
+    let mut b = TestShaderBuilder::new(&run.sm);
+    let invocations = 100;
+
+    let x = Src::from(b.ld_test_data(0, MemType::B32)[0]);
+    let y = Src::from(b.ld_test_data(4, MemType::B32)[0]);
+
+    let dst = b.urol(x, y);
+    b.st_test_data(8, MemType::B32, dst.into());
+
+    let bin = b.compile();
+
+    let mut a = Acorn::new();
+    let mut data = Vec::new();
+    for _ in 0..invocations {
+        data.push([a.get_u32(), a.get_u32() as u32, 0]);
+    }
+
+    run.run.run(&bin, &mut data).unwrap();
+
+    for d in &data {
+        let x = d[0];
+        let y = d[1];
+        let dst = x.rotate_left(y);
+        assert_eq!(d[2], dst as u32);
+    }
+}
+
+#[test]
+fn test_op_uror() {
+    let run = RunSingleton::get();
+    if run.sm.sm() < 32 {
+        return;
+    }
+
+    let mut b = TestShaderBuilder::new(&run.sm);
+    let invocations = 100;
+
+    let x = Src::from(b.ld_test_data(0, MemType::B32)[0]);
+    let y = Src::from(b.ld_test_data(4, MemType::B32)[0]);
+
+    let dst = b.uror(x, y);
+    b.st_test_data(8, MemType::B32, dst.into());
+
+    let bin = b.compile();
+
+    let mut a = Acorn::new();
+    let mut data = Vec::new();
+    for _ in 0..invocations {
+        data.push([a.get_u32(), a.get_u32() as u32, 0]);
+    }
+
+    run.run.run(&bin, &mut data).unwrap();
+
+    for d in &data {
+        let x = d[0];
+        let y = d[1];
+        let dst = x.rotate_right(y);
+        assert_eq!(d[2], dst as u32);
+    }
+}
+
+#[test]
 fn test_op_shr() {
     let sm = &RunSingleton::get().sm;
     if sm.sm() >= 70 {
@@ -1671,6 +1742,7 @@ fn test_op_ldsm() {
             order: MemOrder::Strong(MemScope::CTA),
             eviction_priority: MemEvictionPriority::Normal,
         },
+        stride: OffsetStride::X1,
     });
     b.push_op(OpMemBar {
         scope: MemScope::CTA,
@@ -1935,5 +2007,84 @@ fn test_op_sgxt() {
                 a.get_u32()
             }
         });
+    }
+}
+
+#[test]
+fn test_op_mufu_f16_down() {
+    let run = &RunSingleton::get();
+    if run.sm.sm() < 73 {
+        return;
+    }
+
+    for op in [
+        MuFuOp::Cos,
+        MuFuOp::Sin,
+        MuFuOp::Exp2,
+        MuFuOp::Log2,
+        MuFuOp::Rcp,
+        MuFuOp::Rsq,
+        MuFuOp::Sqrt,
+        MuFuOp::Tanh,
+    ] {
+        let mut b = TestShaderBuilder::new(&run.sm);
+        let src: Src = b.ld_test_data(0, MemType::B32).into();
+        let up_convert = b.alloc_ssa(RegFile::GPR);
+        let mufu = b.alloc_ssa(RegFile::GPR);
+        let dst = b.alloc_ssa(RegFile::GPR);
+        let dst16 = b.alloc_ssa(RegFile::GPR);
+
+        b.push_op(OpF2F {
+            dst: up_convert.into(),
+            src: src.clone(),
+            src_type: FloatType::F16,
+            dst_type: FloatType::F32,
+            ftz: false,
+            rnd_mode: FRndMode::NearestEven,
+            integer_rnd: false,
+        });
+        b.push_op(OpMuFu {
+            dst: mufu.into(),
+            src: up_convert.into(),
+            op: op,
+            op_type: FloatType::F32,
+        });
+        b.push_op(OpMuFu {
+            dst: dst16.into(),
+            src: src,
+            op: op,
+            op_type: FloatType::F16,
+        });
+        b.push_op(OpF2F {
+            dst: dst.into(),
+            src: mufu.into(),
+            src_type: FloatType::F32,
+            dst_type: FloatType::F16,
+            ftz: false,
+            rnd_mode: FRndMode::Zero,
+            integer_rnd: false,
+        });
+
+        b.st_test_data(4, MemType::B32, dst.into());
+        b.st_test_data(8, MemType::B32, dst16.into());
+
+        let bin = b.compile();
+
+        let mut data = Vec::new();
+        for i in 0..=u16::MAX {
+            data.push([u32::from(i), 0, 0]);
+        }
+
+        run.run.run(&bin, &mut data).unwrap();
+        for [_, fp32, fp16] in data {
+            // Around infinity we get a _slightly_ different result for Exp2 and Rcp
+            if fp16 == 0x7c00 && matches!(op, MuFuOp::Exp2 | MuFuOp::Rcp) {
+                assert!(fp32 == 0x7c00 || fp32 == 0x7bff);
+            } else if fp16 == 0xfc00 && matches!(op, MuFuOp::Rcp) {
+                assert!(fp32 == 0xfc00 || fp32 == 0xfbff);
+            } else {
+                assert_eq!(fp32, fp16);
+            }
+        }
     }
 }

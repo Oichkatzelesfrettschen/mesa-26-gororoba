@@ -27,8 +27,6 @@ kk_descriptor_state_fini(struct kk_cmd_buffer *cmd,
    for (unsigned i = 0; i < KK_MAX_SETS; i++) {
       vk_free(&pool->vk.alloc, desc->push[i]);
       desc->push[i] = NULL;
-      desc->sets[i] = NULL; /* We also need to set sets to NULL so state doesn't
-                               propagate if we reset it */
    }
 }
 
@@ -105,6 +103,8 @@ kk_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer,
 
    vk_command_buffer_reset(&cmd->vk);
    kk_cmd_release_resources(dev, cmd);
+
+   memset(&cmd->state, 0, sizeof(cmd->state));
 }
 
 const struct vk_command_buffer_ops kk_cmd_buffer_ops = {
@@ -181,18 +181,10 @@ kk_bind_descriptor_sets(struct kk_descriptor_state *desc,
     *
     * This means that, if some earlier set gets bound in such a way that
     * it changes set_dynamic_buffer_start[s], this binding is implicitly
-    * invalidated.  Therefore, we can always look at the current value
-    * of set_dynamic_buffer_start[s] as the base of our dynamic buffer
-    * range and it's only our responsibility to adjust all
-    * set_dynamic_buffer_start[p] for p > s as needed.
+    * invalidated.
     */
-   uint8_t dyn_buffer_start = 0u;
-   for (uint32_t i = 0u; i < info->firstSet; ++i) {
-      const struct kk_descriptor_set_layout *set_layout =
-         vk_to_kk_descriptor_set_layout(pipeline_layout->set_layouts[i]);
-      if (set_layout)
-         dyn_buffer_start += set_layout->dynamic_buffer_count;
-   }
+   uint8_t dyn_buffer_start =
+      pipeline_layout->dynamic_descriptor_offset[info->firstSet];
 
    uint32_t next_dyn_offset = 0;
    for (uint32_t i = 0; i < info->descriptorSetCount; ++i) {
@@ -217,16 +209,17 @@ kk_bind_descriptor_sets(struct kk_descriptor_state *desc,
          const struct kk_descriptor_set_layout *set_layout =
             vk_to_kk_descriptor_set_layout(pipeline_layout->set_layouts[s]);
 
-         if (set != NULL && set_layout->dynamic_buffer_count > 0) {
-            for (uint32_t j = 0; j < set_layout->dynamic_buffer_count; j++) {
+         if (set != NULL && set_layout->vk.dynamic_descriptor_count > 0) {
+            for (uint32_t j = 0; j < set_layout->vk.dynamic_descriptor_count;
+                 j++) {
                struct kk_buffer_address addr = set->dynamic_buffers[j];
                addr.base_addr += info->pDynamicOffsets[next_dyn_offset + j];
                desc->root.dynamic_buffers[dyn_buffer_start + j] = addr;
             }
-            next_dyn_offset += set->layout->dynamic_buffer_count;
+            next_dyn_offset += set->layout->vk.dynamic_descriptor_count;
          }
 
-         dyn_buffer_start += set_layout->dynamic_buffer_count;
+         dyn_buffer_start += set_layout->vk.dynamic_descriptor_count;
       } else {
          assert(set == NULL);
       }
@@ -270,10 +263,10 @@ kk_cmd_push_descriptors(struct kk_cmd_buffer *cmd,
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
          return NULL;
       }
-      desc->push[set]->layout = set_layout;
    }
 
    /* Pushing descriptors replaces whatever sets are bound */
+   desc->push[set]->layout = set_layout;
    desc->sets[set] = NULL;
    desc->push_dirty |= BITFIELD_BIT(set);
 
@@ -426,6 +419,31 @@ kk_cmd_buffer_flush_push_descriptors(struct kk_cmd_buffer *cmd,
 
    desc->root_dirty = true;
    desc->push_dirty = 0;
+}
+
+void
+kk_dispatch_precomp(struct kk_cmd_buffer *cmd, struct mtl_size grid,
+                    bool pre_gfx, enum libkk_program idx, void *data,
+                    size_t data_size)
+{
+   struct kk_device *dev = kk_cmd_buffer_device(cmd);
+   struct kk_precompiled_shader *prog = &dev->precompiled_cache.shaders[idx];
+
+   mtl_compute_encoder *encoder =
+      pre_gfx ? kk_encoder_pre_gfx_encoder(cmd) : kk_compute_encoder(cmd);
+
+   struct kk_bo *bo = kk_cmd_allocate_buffer(cmd, data_size, 4u);
+   memcpy(bo->cpu, data, data_size);
+
+   mtl_compute_set_buffer(encoder, bo->map, 0, 0);
+   mtl_compute_set_pipeline_state(encoder, prog->pipeline);
+
+   struct mtl_size local_size = {
+      .x = prog->info.workgroup_size[0],
+      .y = prog->info.workgroup_size[1],
+      .z = prog->info.workgroup_size[2],
+   };
+   mtl_dispatch_threads(encoder, grid, local_size);
 }
 
 void

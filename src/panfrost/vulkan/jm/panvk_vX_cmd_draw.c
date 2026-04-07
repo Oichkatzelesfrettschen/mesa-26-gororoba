@@ -241,7 +241,7 @@ panvk_draw_prepare_fs_rsd(struct panvk_cmd_buffer *cmdbuf,
    const struct panvk_shader_variant *fs =
       panvk_shader_only_variant(get_fs(cmdbuf));
    const struct pan_shader_info *fs_info = fs ? &fs->info : NULL;
-   uint32_t bd_count = MAX2(cmdbuf->state.gfx.render.fb.info.rt_count, 1);
+   uint32_t bd_count = cmdbuf->state.gfx.render.fb.layout.rt_count;
    bool test_s = has_stencil_att(cmdbuf) && ds->stencil.test_enable;
    bool test_z = has_depth_att(cmdbuf) && ds->depth.test_enable;
    bool writes_z = writes_depth(cmdbuf);
@@ -786,7 +786,8 @@ panvk_draw_prepare_viewport(struct panvk_cmd_buffer *cmdbuf,
        dyn_gfx_state_dirty(cmdbuf, VP_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE) ||
        dyn_gfx_state_dirty(cmdbuf, VP_SCISSORS) ||
        dyn_gfx_state_dirty(cmdbuf, RS_DEPTH_CLIP_ENABLE) ||
-       dyn_gfx_state_dirty(cmdbuf, RS_DEPTH_CLAMP_ENABLE)) {
+       dyn_gfx_state_dirty(cmdbuf, RS_DEPTH_CLAMP_ENABLE) ||
+       dyn_gfx_state_dirty(cmdbuf, VP_DEPTH_CLAMP_RANGE)) {
       struct pan_ptr vp = panvk_cmd_alloc_desc(cmdbuf, VIEWPORT);
       if (!vp.gpu)
          return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -1206,30 +1207,6 @@ panvk_draw_prepare_fs_copy_desc_job(struct panvk_cmd_buffer *cmdbuf,
    return VK_SUCCESS;
 }
 
-void
-panvk_per_arch(cmd_preload_fb_after_batch_split)(struct panvk_cmd_buffer *cmdbuf)
-{
-   for (unsigned i = 0; i < cmdbuf->state.gfx.render.fb.info.rt_count; i++) {
-      if (cmdbuf->state.gfx.render.fb.info.rts[i].view) {
-         cmdbuf->state.gfx.render.fb.info.rts[i].clear = false;
-         cmdbuf->state.gfx.render.fb.info.rts[i].preload = true;
-      }
-   }
-
-   if (cmdbuf->state.gfx.render.fb.info.zs.view.zs) {
-      cmdbuf->state.gfx.render.fb.info.zs.clear.z = false;
-      cmdbuf->state.gfx.render.fb.info.zs.preload.z = true;
-   }
-
-   if (cmdbuf->state.gfx.render.fb.info.zs.view.s ||
-       (cmdbuf->state.gfx.render.fb.info.zs.view.zs &&
-        util_format_is_depth_and_stencil(
-           cmdbuf->state.gfx.render.fb.info.zs.view.zs->format))) {
-      cmdbuf->state.gfx.render.fb.info.zs.clear.s = false;
-      cmdbuf->state.gfx.render.fb.info.zs.preload.s = true;
-   }
-}
-
 static VkResult
 panvk_cmd_prepare_draw_link_shaders(struct panvk_cmd_buffer *cmd)
 {
@@ -1275,7 +1252,6 @@ prepare_draw(struct panvk_cmd_buffer *cmdbuf, struct panvk_draw_data *draw)
    if (batch->vtc_jc.job_index + (4 * cmdbuf->state.gfx.render.layer_count) >=
        UINT16_MAX) {
       panvk_per_arch(cmd_close_batch)(cmdbuf);
-      panvk_per_arch(cmd_preload_fb_after_batch_split)(cmdbuf);
       batch = panvk_per_arch(cmd_open_batch)(cmdbuf);
    }
 
@@ -1297,7 +1273,8 @@ prepare_draw(struct panvk_cmd_buffer *cmdbuf, struct panvk_draw_data *draw)
    }
 
    if (!rs->rasterizer_discard_enable) {
-      const struct pan_fb_info *fbinfo = &cmdbuf->state.gfx.render.fb.info;
+      ASSERTED const struct pan_fb_layout *fb =
+         &cmdbuf->state.gfx.render.fb.layout;
       uint32_t *nr_samples = &cmdbuf->state.gfx.render.fb.nr_samples;
       uint32_t rasterization_samples =
          cmdbuf->vk.dynamic_graphics_state.ms.rasterization_samples;
@@ -1317,8 +1294,8 @@ prepare_draw(struct panvk_cmd_buffer *cmdbuf, struct panvk_draw_data *draw)
        * XXX: This currently can happen in case we resume a render pass with no
        * attachements and without any draw as the FBD is emitted when suspending.
        */
-      assert(fbinfo->nr_samples == 0 ||
-             fbinfo->nr_samples == cmdbuf->state.gfx.render.fb.nr_samples);
+      assert(fb->sample_count == 0 ||
+             fb->sample_count == cmdbuf->state.gfx.render.fb.nr_samples);
 
       result = panvk_per_arch(cmd_alloc_fb_desc)(cmdbuf);
       if (result != VK_SUCCESS)
@@ -1776,14 +1753,7 @@ panvk_cmd_draw_indirect(struct panvk_cmd_buffer *cmdbuf,
     * much as this will cause the TLS budget to go crazy.
     */
    if (batch->vtc_jc.job_index > (5 * 1024)) {
-      bool preload_fb =
-         cmdbuf->cur_batch && cmdbuf->cur_batch->vtc_jc.first_tiler;
-
       panvk_per_arch(cmd_close_batch)(cmdbuf);
-
-      if (preload_fb)
-         panvk_per_arch(cmd_preload_fb_after_batch_split)(cmdbuf);
-
       batch = panvk_per_arch(cmd_open_batch)(cmdbuf);
       cmdbuf->state.gfx.vs.indirect_varying_bufs_infos = 0;
    }
@@ -1961,16 +1931,11 @@ panvk_per_arch(CmdBeginRendering)(VkCommandBuffer commandBuffer,
          panvk_per_arch(cmd_close_batch)(cmdbuf);
 
       panvk_per_arch(cmd_init_render_state)(cmdbuf, pRenderingInfo);
-
-      if (resuming)
-         panvk_per_arch(cmd_preload_fb_after_batch_split)(cmdbuf);
+      cmdbuf->state.gfx.render.fb.needs_load = !resuming;
    }
 
    if (!cmdbuf->cur_batch)
       panvk_per_arch(cmd_open_batch)(cmdbuf);
-
-   if (!resuming)
-      panvk_per_arch(cmd_preload_render_area_border)(cmdbuf, pRenderingInfo);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1979,13 +1944,17 @@ panvk_per_arch(CmdEndRendering)(VkCommandBuffer commandBuffer)
    VK_FROM_HANDLE(panvk_cmd_buffer, cmdbuf, commandBuffer);
 
    if (!(cmdbuf->state.gfx.render.flags & VK_RENDERING_SUSPENDING_BIT)) {
-      struct pan_fb_info *fbinfo = &cmdbuf->state.gfx.render.fb.info;
-      bool clear = fbinfo->zs.clear.z | fbinfo->zs.clear.s;
-      for (unsigned i = 0; i < fbinfo->rt_count; i++)
-         clear |= fbinfo->rts[i].clear;
+      const struct pan_fb_load *fb_load = &cmdbuf->state.gfx.render.fb.load;
+      bool always_load = fb_load->z.always || fb_load->s.always;
+      for (unsigned rt = 0; rt < PAN_MAX_RTS; rt++) {
+         if (fb_load->rts[rt].always)
+            always_load = true;
+      }
 
-      if (clear)
+      if (always_load)
          panvk_per_arch(cmd_alloc_fb_desc)(cmdbuf);
+
+      cmdbuf->state.gfx.render.fb.needs_store = true;
 
       panvk_per_arch(cmd_close_batch)(cmdbuf);
       cmdbuf->cur_batch = NULL;

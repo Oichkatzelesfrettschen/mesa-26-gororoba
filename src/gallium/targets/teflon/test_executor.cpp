@@ -449,6 +449,9 @@ run_model(TfLiteModel *model, enum executor executor, void ***input, size_t *num
       std::ostringstream input_cache;
       input_cache << cache_dir << "/" << "input-" << i << ".data";
 
+      if (input_tensor->allocation_type != kTfLiteArenaRw)
+         continue;
+      
       if ((*input)[i] == NULL) {
          if (cache_is_enabled())
             (*input)[i] = read_buf(input_cache.str().c_str(), NULL);
@@ -519,8 +522,15 @@ run_model(TfLiteModel *model, enum executor executor, void ***input, size_t *num
       }
 
       switch (output_tensor->type) {
+      case kTfLiteInt32:
+      case kTfLiteUInt32:
       case kTfLiteFloat32: {
          (*output_sizes)[i] = output_tensor->bytes / 4;
+         break;
+      }
+      case kTfLiteInt16:
+      case kTfLiteUInt16: {
+         (*output_sizes)[i] = output_tensor->bytes / 2;
          break;
       }
       default: {

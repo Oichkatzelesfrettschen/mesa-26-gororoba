@@ -291,9 +291,6 @@ typedef struct nir_shader_compiler_options {
    /* lower {slt,sge,seq,sne} to {flt,fge,feq,fneu} + b2f: */
    bool lower_scmp;
 
-   /* lower b/fall_equalN/b/fany_nequalN (ex:fany_nequal4 to sne+fdot4+fsat) */
-   bool lower_vector_cmp;
-
    /** enable rules to avoid bit ops */
    bool lower_bitops;
 
@@ -345,8 +342,6 @@ typedef struct nir_shader_compiler_options {
     * hardware.
     */
    bool lower_fround_even;
-
-   bool lower_ldexp;
 
    bool lower_pack_half_2x16;
    bool lower_pack_unorm_2x16;
@@ -542,6 +537,9 @@ typedef struct nir_shader_compiler_options {
 
    /* Lowers when 32x32->64 bit multiplication is not supported */
    bool lower_mul_2x32_64;
+
+   /* Indicates that ldexp is supported. */
+   bool has_ldexp;
 
    /* Indicates that urol and uror are supported */
    bool has_rotate8;
@@ -861,6 +859,12 @@ typedef struct nir_shader_compiler_options {
    void (*lower_mediump_io)(struct nir_shader *nir);
 
    /**
+    * If driver wishes to control which @convert_alu_types to lower, it
+    * can implement this callback.
+    */
+   bool (*lower_convert_alu_types)(nir_intrinsic_instr *convert_alu_types);
+
+   /**
     * Return the maximum cost of an expression that's written to a shader
     * output that can be moved into the next shader to remove that output.
     *
@@ -871,7 +875,7 @@ typedef struct nir_shader_compiler_options {
     * outputs to inputs.
     *
     * Drivers can set the maximum cost based on the types of consecutive
-    * shaders or shader SHA1s.
+    * shaders or shader BLAKE3s.
     *
     * Drivers should also set "varying_estimate_instr_cost".
     */

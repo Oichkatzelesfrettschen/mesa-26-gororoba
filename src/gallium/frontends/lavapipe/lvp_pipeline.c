@@ -22,6 +22,7 @@
  */
 
 #include "lvp_private.h"
+#include "vk_blend.h"
 #include "vk_nir_convert_ycbcr.h"
 #include "vk_pipeline.h"
 #include "vk_render_pass.h"
@@ -129,6 +130,74 @@ shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
    unsigned length = glsl_get_vector_elements(type);
    *size = comp_size * length,
       *align = comp_size;
+}
+
+static bool
+lvp_needs_advanced_blend_lowering(struct lvp_pipeline *pipeline)
+{
+   const struct vk_color_blend_state *cb = pipeline->graphics_state.cb;
+   if (!cb)
+      return false;
+
+   for (uint32_t i = 0; i < cb->attachment_count; i++)
+      if (cb->attachments[i].color_blend_op >= VK_BLEND_OP_ZERO_EXT)
+         return true;
+
+   return false;
+}
+
+static int
+type_size_vec4(const struct glsl_type *type, bool bindless)
+{
+   return glsl_count_attribute_slots(type, false);
+}
+
+void
+lvp_nir_lower_blend(nir_shader *nir, const nir_lower_blend_options *opts)
+{
+   /* nir_lower_blend operates on IO intrinsics, so lower derefs to intrinsics
+    * first, run the blend lowering, then convert back to derefs for llvmpipe.
+    */
+   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4, 0);
+   NIR_PASS(_, nir, nir_opt_dce);
+   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_in | nir_var_shader_out, NULL);
+   NIR_PASS(_, nir, nir_lower_blend, opts);
+   NIR_PASS(_, nir, nir_unlower_io_to_vars, false);
+}
+
+static void
+lvp_lower_advanced_blend(struct lvp_pipeline *pipeline)
+{
+   const struct vk_color_blend_state *cb = pipeline->graphics_state.cb;
+   const struct vk_render_pass_state *rp = pipeline->graphics_state.rp;
+   nir_shader *nir = pipeline->shaders[MESA_SHADER_FRAGMENT].pipeline_nir->nir;
+   nir_lower_blend_options opts = { 0 };
+
+   for (unsigned rt = 0; rt < cb->attachment_count; rt++) {
+      const struct vk_color_blend_attachment_state *att = &cb->attachments[rt];
+
+      /* Advanced blend ops start at VK_BLEND_OP_ZERO_EXT */
+      if (att->color_blend_op < VK_BLEND_OP_ZERO_EXT)
+         continue;
+
+      const bool write_enable = cb->color_write_enables & BITFIELD_BIT(rt);
+      const unsigned write_mask = write_enable ? att->write_mask : 0;
+
+      opts.rt[rt] = (nir_lower_blend_rt){
+         .format = lvp_vk_format_to_pipe_format(rp->color_attachment_formats[rt]),
+         .advanced_blend = true,
+         .colormask = write_mask,
+         .blend_mode = vk_advanced_blend_op_to_pipe(att->color_blend_op),
+         .src_premultiplied = att->src_premultiplied,
+         .dst_premultiplied = att->dst_premultiplied,
+         .overlap = vk_blend_overlap_to_pipe(att->blend_overlap),
+      };
+
+      assert(att->clamp_results == false);
+      pipeline->advanced_blend_rts |= BITFIELD_BIT(rt);
+   }
+
+   lvp_nir_lower_blend(nir, &opts);
 }
 
 static bool
@@ -332,6 +401,7 @@ lvp_shader_lower(struct lvp_device *pdevice, nir_shader *nir, struct lvp_pipelin
       .frag_coord = true,
       .point_coord = true,
       .layer_id = true,
+      .primitive_id = nir->info.stage == MESA_SHADER_FRAGMENT,
    };
    NIR_PASS(_, nir, nir_lower_sysvals_to_varyings, &sysvals_to_varyings);
 
@@ -349,7 +419,25 @@ lvp_shader_lower(struct lvp_device *pdevice, nir_shader *nir, struct lvp_pipelin
    NIR_PASS(_, nir, nir_lower_system_values);
    NIR_PASS(_, nir, nir_lower_is_helper_invocation);
 
-   NIR_PASS(_, nir, lvp_nir_lower_cooperative_matrix);
+   bool progress = false;
+   NIR_PASS(progress, nir, nir_lower_cooperative_matrix_flexible_dimensions, 8, 8, 8);
+   if (progress) {
+      NIR_PASS(_, nir, nir_opt_deref);
+      NIR_PASS(_, nir, nir_opt_dce);
+      NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp | nir_var_shader_temp, NULL);
+   }
+   NIR_PASS(progress, nir, lvp_nir_lower_cooperative_matrix);
+   if (progress) {
+      NIR_PASS(_, nir, nir_opt_dce);
+      NIR_PASS(progress, nir, nir_inline_functions);
+      nir_remove_non_entrypoints(nir); /* remove the late inlined functions */
+      if (progress) {
+         NIR_PASS(_, nir, nir_opt_copy_prop_vars);
+         NIR_PASS(_, nir, nir_opt_copy_prop);
+         }
+      NIR_PASS(_, nir, nir_opt_deref);
+      NIR_PASS(_, nir, nir_opt_dce);
+   }
 
    const struct nir_lower_compute_system_values_options compute_system_values = {0};
    NIR_PASS(_, nir, nir_lower_compute_system_values, &compute_system_values);
@@ -379,7 +467,8 @@ lvp_shader_lower(struct lvp_device *pdevice, nir_shader *nir, struct lvp_pipelin
    NIR_PASS(_, nir, nir_vk_lower_ycbcr_tex, lvp_ycbcr_conversion_lookup, layout);
 
    nir_lower_non_uniform_access_options options = {
-      .types = nir_lower_non_uniform_ubo_access | nir_lower_non_uniform_texture_access | nir_lower_non_uniform_image_access,
+      .types = nir_lower_non_uniform_ubo_access | nir_lower_non_uniform_texture_access | nir_lower_non_uniform_image_access |
+               nir_lower_non_uniform_texture_query | nir_lower_non_uniform_image_query,
    };
    NIR_PASS(_, nir, nir_lower_non_uniform_access, &options);
 
@@ -409,7 +498,7 @@ lvp_shader_lower(struct lvp_device *pdevice, nir_shader *nir, struct lvp_pipelin
       NIR_PASS(_, nir, nir_lower_io_array_vars_to_elements_no_indirects, true);
    }
 
-   // TODO: also optimize the tex srcs. see radeonSI for reference */
+   /* TODO: also optimize the tex srcs. see radeonSI for reference */
    /* Skip if there are potentially conflicting rounding modes */
    struct nir_opt_16bit_tex_image_options opt_16bit_options = {
       .rounding_mode = nir_rounding_mode_undef,
@@ -426,7 +515,11 @@ lvp_shader_lower(struct lvp_device *pdevice, nir_shader *nir, struct lvp_pipelin
        * lvp_nir_lower_sparse_residency.
        */
       .lower_tg4_offsets = true,
-      .lower_txd = true,
+      /* The NIR derivative lowering doesn't do the elliptical derivative
+       * transform. It matters for accurate anisotropic filtering, so we'll
+       * implement explicit derivatives internally instead.
+       */
+      .lower_txd = false,
    };
    NIR_PASS(_, nir, nir_lower_tex, &tex_options);
    NIR_PASS(_, nir, nir_lower_int64);
@@ -823,7 +916,7 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
 
    result = vk_graphics_pipeline_state_fill(&device->vk,
                                             &pipeline->graphics_state,
-                                            pCreateInfo, NULL, 0, NULL, NULL,
+                                            pCreateInfo, NULL, NULL, 0, NULL, NULL,
                                             VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
                                             &pipeline->state_data);
    if (result != VK_SUCCESS)
@@ -897,6 +990,17 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
          pipeline->line_rectangular = true;
       lvp_pipeline_xfb_init(pipeline);
    }
+
+   if (pipeline->shaders[MESA_SHADER_FRAGMENT].pipeline_nir && pipeline->graphics_state.cb) {
+      if (lvp_needs_advanced_blend_lowering(pipeline)) {
+         /* Clone to avoid modifying shared library NIR. */
+         nir_shader *cloned = nir_shader_clone(NULL, pipeline->shaders[MESA_SHADER_FRAGMENT].pipeline_nir->nir);
+         lvp_pipeline_nir_ref(&pipeline->shaders[MESA_SHADER_FRAGMENT].pipeline_nir, NULL);
+         pipeline->shaders[MESA_SHADER_FRAGMENT].pipeline_nir = lvp_create_pipeline_nir(cloned);
+         lvp_lower_advanced_blend(pipeline);
+      }
+   }
+
    if (!libstate && !pipeline->library)
       lvp_pipeline_shaders_compile(pipeline, false);
 
@@ -1168,7 +1272,7 @@ create_shader_object(struct lvp_device *device, const VkShaderCreateInfoEXT *pCr
       nir->info.separate_shader = true;
    } else {
       assert(pCreateInfo->codeType == VK_SHADER_CODE_TYPE_BINARY_EXT);
-      if (pCreateInfo->codeSize < SHA1_DIGEST_LENGTH + VK_UUID_SIZE + 1)
+      if (pCreateInfo->codeSize < BLAKE3_KEY_LEN + VK_UUID_SIZE + 1)
          return VK_NULL_HANDLE;
       struct blob_reader blob;
       const uint8_t *data = pCreateInfo->pCode;
@@ -1176,17 +1280,17 @@ create_shader_object(struct lvp_device *device, const VkShaderCreateInfoEXT *pCr
       lvp_device_get_cache_uuid(uuid);
       if (memcmp(uuid, data, VK_UUID_SIZE))
          return VK_NULL_HANDLE;
-      size_t size = pCreateInfo->codeSize - SHA1_DIGEST_LENGTH - VK_UUID_SIZE;
-      unsigned char sha1[SHA1_DIGEST_LENGTH];
+      size_t size = pCreateInfo->codeSize - BLAKE3_KEY_LEN - VK_UUID_SIZE;
+      unsigned char blake3[BLAKE3_KEY_LEN];
 
-      struct mesa_sha1 sctx;
-      _mesa_sha1_init(&sctx);
-      _mesa_sha1_update(&sctx, data + SHA1_DIGEST_LENGTH + VK_UUID_SIZE, size);
-      _mesa_sha1_final(&sctx, sha1);
-      if (memcmp(sha1, data + VK_UUID_SIZE, SHA1_DIGEST_LENGTH))
+      blake3_hasher sctx;
+      _mesa_blake3_init(&sctx);
+      _mesa_blake3_update(&sctx, data + BLAKE3_KEY_LEN + VK_UUID_SIZE, size);
+      _mesa_blake3_final(&sctx, blake3);
+      if (memcmp(blake3, data + VK_UUID_SIZE, BLAKE3_KEY_LEN))
          return VK_NULL_HANDLE;
 
-      blob_reader_init(&blob, data + SHA1_DIGEST_LENGTH + VK_UUID_SIZE, size);
+      blob_reader_init(&blob, data + BLAKE3_KEY_LEN + VK_UUID_SIZE, size);
       nir = nir_deserialize(NULL, device->pscreen->nir_options[stage], &blob);
       if (!nir)
          goto fail;
@@ -1271,21 +1375,21 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_GetShaderBinaryDataEXT(
    VK_FROM_HANDLE(lvp_shader, shader, _shader);
    VkResult ret = VK_SUCCESS;
    if (pData) {
-      if (*pDataSize < shader->blob.size + SHA1_DIGEST_LENGTH + VK_UUID_SIZE) {
+      if (*pDataSize < shader->blob.size + BLAKE3_KEY_LEN + VK_UUID_SIZE) {
          ret = VK_INCOMPLETE;
          *pDataSize = 0;
       } else {
-         *pDataSize = MIN2(*pDataSize, shader->blob.size + SHA1_DIGEST_LENGTH + VK_UUID_SIZE);
+         *pDataSize = MIN2(*pDataSize, shader->blob.size + BLAKE3_KEY_LEN + VK_UUID_SIZE);
          uint8_t *data = pData;
          lvp_device_get_cache_uuid(data);
-         struct mesa_sha1 sctx;
-         _mesa_sha1_init(&sctx);
-         _mesa_sha1_update(&sctx, shader->blob.data, shader->blob.size);
-         _mesa_sha1_final(&sctx, data + VK_UUID_SIZE);
-         memcpy(data + SHA1_DIGEST_LENGTH + VK_UUID_SIZE, shader->blob.data, shader->blob.size);
+         blake3_hasher sctx;
+         _mesa_blake3_init(&sctx);
+         _mesa_blake3_update(&sctx, shader->blob.data, shader->blob.size);
+         _mesa_blake3_final(&sctx, data + VK_UUID_SIZE);
+         memcpy(data + BLAKE3_KEY_LEN + VK_UUID_SIZE, shader->blob.data, shader->blob.size);
       }
    } else {
-      *pDataSize = shader->blob.size + SHA1_DIGEST_LENGTH + VK_UUID_SIZE;
+      *pDataSize = shader->blob.size + BLAKE3_KEY_LEN + VK_UUID_SIZE;
    }
    return ret;
 }

@@ -282,6 +282,7 @@ __bitset_clear_range(BITSET_WORD *r, int start, int end)
 static inline unsigned
 __bitset_extract(const BITSET_WORD *r, unsigned start, unsigned count)
 {
+   assert(count <= BITSET_WORDBITS);
    unsigned shift = start % BITSET_WORDBITS;
    BITSET_WORD lower = r[BITSET_BITWORD(start)] >> shift;
    BITSET_WORD upper = shift ? r[BITSET_BITWORD(start + count - 1)] << (BITSET_WORDBITS - shift) : 0;
@@ -504,6 +505,12 @@ static inline BITSET_WORD *
 BITSET_RZALLOC(const void *memctx, unsigned size)
 {
    return (BITSET_WORD *)rzalloc_size(memctx, BITSET_BYTES(size));
+}
+
+static inline BITSET_WORD *
+BITSET_LINEAR_ZALLOC(linear_ctx *memctx, unsigned size)
+{
+   return (BITSET_WORD *)linear_zalloc_child(memctx, BITSET_BYTES(size));
 }
 
 #ifdef __cplusplus

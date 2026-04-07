@@ -1266,7 +1266,7 @@ radv_build_traversal(struct radv_device *device, struct radv_ray_tracing_pipelin
       .data = &data,
    };
 
-   if (radv_use_bvh8(pdev))
+   if (pdev->cache_key.bvh8)
       radv_build_ray_traversal_gfx12(device, b, &args);
    else
       radv_build_ray_traversal(device, b, &args);
@@ -1275,6 +1275,7 @@ radv_build_traversal(struct radv_device *device, struct radv_ray_tracing_pipelin
       radv_build_end_trace_token(b, &data, nir_load_var(b, iteration_instance_count));
 
    nir_progress(true, b->impl, nir_metadata_none);
+   nir_lower_continue_constructs(b->shader);
    radv_nir_lower_hit_attrib_derefs(b->shader);
 
    return data.trav_vars.result;
@@ -1296,7 +1297,8 @@ radv_build_traversal_shader(struct radv_device *device, struct radv_ray_tracing_
 
    /* Create the traversal shader as an intersection shader to prevent validation failures due to
     * invalid variable modes.*/
-   nir_builder b = radv_meta_nir_init_shader(device, MESA_SHADER_INTERSECTION, "rt_traversal");
+   nir_builder b = radv_meta_nir_init_shader(MESA_SHADER_INTERSECTION, "rt_traversal");
+   b.shader->options = &pdev->nir_options[MESA_SHADER_INTERSECTION];
    b.shader->info.workgroup_size[0] = pdev->rt_wave_size;
    b.shader->info.api_subgroup_size = pdev->rt_wave_size;
    b.shader->info.max_subgroup_size = pdev->rt_wave_size;

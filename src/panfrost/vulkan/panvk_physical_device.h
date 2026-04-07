@@ -63,6 +63,9 @@ struct panvk_physical_device {
 
       VkMemoryType types[4];
       uint32_t type_count;
+
+      uint64_t max_supported_va;
+      alignas(8) uint64_t heap_used;
    } memory;
 
    struct vk_sync_type drm_syncobj_type;

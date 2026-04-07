@@ -139,9 +139,7 @@ get_bool_cap(struct svga_winsys_screen *sws, SVGA3dDevCapIndex cap,
    .lower_int64_options = nir_lower_imul_2x32_64 | nir_lower_divmod64,        \
    .lower_fdph = true,                                                        \
    .lower_flrp64 = true,                                                      \
-   .lower_ldexp = true,                                                       \
    .lower_uniforms_to_ubo = true,                                             \
-   .lower_vector_cmp = true,                                                  \
    .lower_cs_local_index_to_id = true,                                        \
    .max_unroll_iterations = 32
 
@@ -430,6 +428,7 @@ svga_init_screen_caps(struct svga_screen *svgascreen)
 
    caps->fragment_shader_texture_lod = true;
    caps->fragment_shader_derivatives = true;
+   caps->fs_fine_derivative = sws->have_sm5;
 
    caps->depth_clip_disable =
    caps->indep_blend_enable =
@@ -439,6 +438,7 @@ svga_init_screen_caps(struct svga_screen *svgascreen)
    caps->vertex_element_instance_divisor =
    caps->seamless_cube_map =
    caps->fake_sw_msaa = sws->have_vgpu10;
+   caps->conditional_render_inverted = sws->have_set_predication_cmd;
 
    caps->max_stream_output_buffers = sws->have_vgpu10 ? SVGA3D_DX_MAX_SOTARGETS : 0;
    caps->max_stream_output_separate_components = sws->have_vgpu10 ? 4 : 0;
@@ -557,6 +557,7 @@ svga_init_screen_caps(struct svga_screen *svgascreen)
       get_uint_cap(sws, SVGA3D_DEVCAP_MAX_TEXTURE_ANISOTROPY, 4);
 
    caps->max_texture_lod_bias = 15.0;
+   caps->query_pipeline_statistics = sws->have_vgpu10;
 }
 
 static void

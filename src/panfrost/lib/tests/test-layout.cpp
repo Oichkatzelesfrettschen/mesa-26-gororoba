@@ -573,6 +573,8 @@ format_can_do_mod(unsigned arch, enum pipe_format format, unsigned plane_idx,
       return pan_afbc_format(arch, format, plane_idx) != PAN_AFBC_MODE_INVALID;
    } else if (drm_is_afrc(modifier)) {
       return arch >= 10 && pan_afrc_supports_format(format);
+   } else if (modifier == DRM_FORMAT_MOD_ARM_INTERLEAVED_64K) {
+      return false;
    } else {
       assert(modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED ||
              modifier == DRM_FORMAT_MOD_LINEAR);
@@ -692,7 +694,7 @@ default_wsi_row_pitch(unsigned arch, const struct pan_image_props *iprops,
 
       unsigned row_pitch_B =
          (width_px / util_format_get_blockwidth(format)) * fmt_blksz_B;
-      struct pan_image_block_size tile_size_el = {1, 1};
+      ASSERTED struct pan_image_block_size tile_size_el = {1, 1};
 
       if (modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED) {
          if (util_format_is_compressed(format)) {

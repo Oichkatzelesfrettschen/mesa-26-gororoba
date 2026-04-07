@@ -967,8 +967,8 @@ ttn_kill(nir_builder *b)
 static void
 ttn_kill_if(nir_builder *b, nir_def **src)
 {
-   /* flt must be exact, because NaN shouldn't discard. (apps rely on this) */
-   b->fp_math_ctrl = nir_fp_exact;
+   /* Apps rely on NaN not discarding. */
+   b->fp_math_ctrl = nir_fp_preserve_nan | nir_fp_preserve_inf;
    nir_def *cmp = nir_bany(b, nir_flt_imm(b, src[0], 0.0));
    b->fp_math_ctrl = nir_fp_fast_math;
 
@@ -1995,7 +1995,7 @@ ttn_emit_instruction(struct ttn_compile *c)
       break;
 
    case TGSI_OPCODE_BGNLOOP:
-      nir_push_loop(&c->build);
+      nir_loop_add_continue_construct(nir_push_loop(&c->build));
       break;
 
    case TGSI_OPCODE_BRK:
@@ -2537,6 +2537,7 @@ ttn_finalize_nir(struct ttn_compile *c, struct pipe_screen *screen)
 
    MESA_TRACE_FUNC();
 
+   NIR_PASS(_, nir, nir_lower_continue_constructs);
    NIR_PASS(_, nir, nir_lower_returns);
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    NIR_PASS(_, nir, nir_lower_reg_intrinsics_to_ssa);

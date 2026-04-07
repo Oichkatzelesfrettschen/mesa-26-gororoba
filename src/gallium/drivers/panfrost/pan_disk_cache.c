@@ -13,9 +13,10 @@
 #include "util/blob.h"
 #include "util/build_id.h"
 #include "util/disk_cache.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 
 #include "pan_context.h"
+#include "pan_trace.h"
 
 #ifdef ENABLE_SHADER_CACHE
 static bool debug = false;
@@ -33,10 +34,10 @@ panfrost_disk_cache_compute_key(
    const struct panfrost_uncompiled_shader *uncompiled,
    const struct panfrost_shader_key *shader_key, cache_key cache_key)
 {
-   uint8_t data[sizeof(uncompiled->nir_sha1) + sizeof(*shader_key)];
+   uint8_t data[sizeof(uncompiled->nir_blake3) + sizeof(*shader_key)];
 
-   memcpy(data, uncompiled->nir_sha1, sizeof(uncompiled->nir_sha1));
-   memcpy(data + sizeof(uncompiled->nir_sha1), shader_key, sizeof(*shader_key));
+   memcpy(data, uncompiled->nir_blake3, sizeof(uncompiled->nir_blake3));
+   memcpy(data + sizeof(uncompiled->nir_blake3), shader_key, sizeof(*shader_key));
 
    disk_cache_compute_key(cache, data, sizeof(data), cache_key);
 }
@@ -57,15 +58,15 @@ panfrost_disk_cache_store(struct disk_cache *cache,
    if (!cache)
       return;
 
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_DISK_CACHE);
 
    cache_key cache_key;
    panfrost_disk_cache_compute_key(cache, uncompiled, key, cache_key);
 
    if (debug) {
-      char sha1[SHA1_DIGEST_STRING_LENGTH];
-      _mesa_sha1_format(sha1, cache_key);
-      fprintf(stderr, "[mesa disk cache] storing %s\n", sha1);
+      char blake3[BLAKE3_HEX_LEN];
+      _mesa_blake3_format(blake3, cache_key);
+      fprintf(stderr, "[mesa disk cache] storing %s\n", blake3);
    }
 
    struct blob blob;
@@ -101,15 +102,15 @@ panfrost_disk_cache_retrieve(struct disk_cache *cache,
    if (!cache)
       return false;
 
-   MESA_TRACE_FUNC();
+   PAN_TRACE_FUNC(PAN_TRACE_GL_DISK_CACHE);
 
    cache_key cache_key;
    panfrost_disk_cache_compute_key(cache, uncompiled, key, cache_key);
 
    if (debug) {
-      char sha1[SHA1_DIGEST_STRING_LENGTH];
-      _mesa_sha1_format(sha1, cache_key);
-      fprintf(stderr, "[mesa disk cache] retrieving %s: ", sha1);
+      char blake3[BLAKE3_HEX_LEN];
+      _mesa_blake3_format(blake3, cache_key);
+      fprintf(stderr, "[mesa disk cache] retrieving %s: ", blake3);
    }
 
    size_t size;
@@ -157,7 +158,7 @@ panfrost_disk_cache_init(struct panfrost_screen *screen)
    const uint8_t *id_sha1 = build_id_data(note);
    assert(id_sha1);
 
-   char timestamp[SHA1_DIGEST_STRING_LENGTH];
+   char timestamp[BLAKE3_HEX_LEN];
    _mesa_sha1_format(timestamp, id_sha1);
 
    /* Consider any flags affecting the compile when caching */

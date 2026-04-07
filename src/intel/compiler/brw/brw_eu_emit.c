@@ -1,34 +1,10 @@
 /*
- Copyright (C) Intel Corp.  2006.  All Rights Reserved.
- Intel funded Tungsten Graphics to
- develop this 3D driver.
-
- Permission is hereby granted, free of charge, to any person obtaining
- a copy of this software and associated documentation files (the
- "Software"), to deal in the Software without restriction, including
- without limitation the rights to use, copy, modify, merge, publish,
- distribute, sublicense, and/or sell copies of the Software, and to
- permit persons to whom the Software is furnished to do so, subject to
- the following conditions:
-
- The above copyright notice and this permission notice (including the
- next paragraph) shall be included in all copies or substantial
- portions of the Software.
-
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- IN NO EVENT SHALL THE COPYRIGHT OWNER(S) AND/OR ITS SUPPLIERS BE
- LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
- OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
- WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
- **********************************************************************/
- /*
-  * Authors:
-  *   Keith Whitwell <keithw@vmware.com>
-  */
-
+ * Copyright © 2006 Intel Corporation
+ * SPDX-License-Identifier: MIT
+ *
+ * Intel funded Tungsten Graphics to develop this 3D driver.
+ * File originally authored by: Keith Whitwell <keithw@vmware.com>
+ */
 
 #include "brw_eu_defines.h"
 #include "brw_eu.h"
@@ -288,8 +264,15 @@ brw_set_src1(struct brw_codegen *p, brw_eu_inst *inst, struct brw_reg reg)
        *
        *    "Accumulator registers may be accessed explicitly as src0
        *    operands only."
+       *
+       * Bspec 47251 (r48459) says for [ACM, ACMPLUS, ATS, PVC, RLT, MAR, MTL,
+       * ARL]:
+       *
+       *    Accumulator registers may be accessed explicitly on src0 and src1
+       *    operand.
        */
-      assert(!brw_reg_is_arf(reg, BRW_ARF_ACCUMULATOR));
+      assert(devinfo->verx10 >= 125 ||
+             !brw_reg_is_arf(reg, BRW_ARF_ACCUMULATOR));
 
       brw_eu_inst_set_src1_file_type(devinfo, inst, phys_file(reg), reg.type);
       brw_eu_inst_set_src1_abs(devinfo, inst, reg.abs);
@@ -645,11 +628,7 @@ brw_alu3(struct brw_codegen *p, unsigned opcode, struct brw_reg dest,
                                         to_3src_align1_hstride(src1.hstride));
 
       brw_eu_inst_set_3src_a1_src1_subreg_nr(devinfo, inst, phys_subnr(devinfo, src1));
-      if (src1.file == ARF) {
-         brw_eu_inst_set_3src_src1_reg_nr(devinfo, inst, BRW_ARF_ACCUMULATOR);
-      } else {
-         brw_eu_inst_set_3src_src1_reg_nr(devinfo, inst, phys_nr(devinfo, src1));
-      }
+      brw_eu_inst_set_3src_src1_reg_nr(devinfo, inst, phys_nr(devinfo, src1));
       brw_eu_inst_set_3src_src1_abs(devinfo, inst, src1.abs);
       brw_eu_inst_set_3src_src1_negate(devinfo, inst, src1.negate);
 
@@ -664,13 +643,6 @@ brw_alu3(struct brw_codegen *p, unsigned opcode, struct brw_reg dest,
          brw_eu_inst_set_3src_src2_abs(devinfo, inst, src2.abs);
          brw_eu_inst_set_3src_src2_negate(devinfo, inst, src2.negate);
       }
-
-      assert(src0.file == FIXED_GRF ||
-             src0.file == IMM);
-      assert(src1.file == FIXED_GRF ||
-             brw_reg_is_arf(src1, BRW_ARF_ACCUMULATOR));
-      assert(src2.file == FIXED_GRF ||
-             src2.file == IMM);
 
       if (devinfo->ver >= 12) {
          if (src0.file == IMM) {
@@ -1300,54 +1272,18 @@ void gfx6_math(struct brw_codegen *p,
 }
 
 void
-brw_send_indirect_message(struct brw_codegen *p,
-                          unsigned sfid,
-                          struct brw_reg dst,
-                          struct brw_reg payload,
-                          struct brw_reg desc,
-                          bool eot,
-                          bool gather)
-{
-   const struct intel_device_info *devinfo = p->devinfo;
-   struct brw_eu_inst *send;
-
-   dst = retype(dst, BRW_TYPE_UW);
-
-   assert(desc.type == BRW_TYPE_UD);
-
-   if (desc.file == IMM) {
-      send = next_insn(p, BRW_OPCODE_SEND);
-      brw_set_src0(p, send, retype(payload, BRW_TYPE_UD));
-      brw_set_desc(p, send, desc.ud, gather);
-   } else {
-      assert(desc.file == ADDRESS);
-      assert(desc.subnr == 0);
-      send = next_insn(p, BRW_OPCODE_SEND);
-      brw_set_src0(p, send, retype(payload, BRW_TYPE_UD));
-      if (devinfo->ver >= 12)
-         brw_eu_inst_set_send_sel_reg32_desc(devinfo, send, true);
-      else
-         brw_set_src1(p, send, desc);
-   }
-
-   brw_set_dest(p, send, dst);
-   brw_eu_inst_set_sfid(devinfo, send, sfid);
-   brw_eu_inst_set_eot(devinfo, send, eot);
-}
-
-void
-brw_send_indirect_split_message(struct brw_codegen *p,
-                                unsigned sfid,
-                                struct brw_reg dst,
-                                struct brw_reg payload0,
-                                struct brw_reg payload1,
-                                struct brw_reg desc,
-                                struct brw_reg ex_desc,
-                                uint32_t ex_desc_imm_inst,
-                                unsigned ex_mlen,
-                                bool ex_bso,
-                                bool eot,
-                                bool gather)
+brw_SEND(struct brw_codegen *p,
+         unsigned sfid,
+         struct brw_reg dst,
+         struct brw_reg payload0,
+         struct brw_reg payload1,
+         struct brw_reg desc,
+         struct brw_reg ex_desc,
+         uint32_t ex_desc_imm_inst,
+         unsigned ex_mlen,
+         bool ex_bso,
+         bool eot,
+         bool gather)
 {
    const struct intel_device_info *devinfo = p->devinfo;
    struct brw_eu_inst *send;
@@ -1535,21 +1471,21 @@ void
 brw_barrier(struct brw_codegen *p, struct brw_reg src)
 {
    const struct intel_device_info *devinfo = p->devinfo;
-   struct brw_eu_inst *inst;
 
    brw_push_insn_state(p);
    brw_set_default_access_mode(p, BRW_ALIGN_1);
-   inst = next_insn(p, BRW_OPCODE_SEND);
-   brw_set_dest(p, inst, retype(brw_null_reg(), BRW_TYPE_UW));
-   brw_set_src0(p, inst, src);
-   brw_set_src1(p, inst, brw_null_reg());
-   brw_set_desc(p, inst, brw_message_desc(devinfo,
-                                          1 * reg_unit(devinfo), 0, false), false);
+   brw_SEND(p, BRW_SFID_MESSAGE_GATEWAY,
+            retype(brw_null_reg(), BRW_TYPE_UW), src,
+            brw_null_reg(),
+            brw_imm_ud(brw_message_desc(devinfo,
+                                        1 * reg_unit(devinfo), 0,
+                                        false)),
+            brw_imm_ud(0), 0, 0, false,
+            false, false);
 
-   brw_eu_inst_set_sfid(devinfo, inst, BRW_SFID_MESSAGE_GATEWAY);
+   brw_eu_inst *inst = brw_eu_last_inst(p);
    brw_eu_inst_set_gateway_subfuncid(devinfo, inst,
-                                  BRW_MESSAGE_GATEWAY_SFID_BARRIER_MSG);
-
+                                     BRW_MESSAGE_GATEWAY_SFID_BARRIER_MSG);
    brw_eu_inst_set_mask_control(devinfo, inst, BRW_MASK_DISABLE);
    brw_pop_insn_state(p);
 }

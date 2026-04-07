@@ -287,6 +287,7 @@ enum {
    PAN_SYSVAL_XFB = 17,
    PAN_SYSVAL_NUM_VERTICES = 18,
    PAN_SYSVAL_PRINTF_BUFFER = 19,
+   PAN_SYSVAL_IMAGE_SAMPLES = 20,
 };
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)                               \
@@ -396,8 +397,8 @@ struct panfrost_uncompiled_shader {
     */
    const nir_shader *nir;
 
-   /* A SHA1 of the serialized NIR for the disk cache. */
-   unsigned char nir_sha1[SHA1_DIGEST_LENGTH];
+   /* A BLAKE3 of the serialized NIR for the disk cache. */
+   unsigned char nir_blake3[BLAKE3_KEY_LEN];
 
    /* Stream output information */
    struct pipe_stream_output_info stream_output;

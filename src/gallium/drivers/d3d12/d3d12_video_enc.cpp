@@ -2435,7 +2435,6 @@ d3d12_video_encoder_create_command_objects(struct d3d12_video_encoder *pD3D12Enc
 
       // Initialize fence for the in flight resource pool slot
       inputResource.m_CompletionFence.reset(d3d12_create_fence_raw(pD3D12Enc->m_spFence.Get(), CompletionFenceValue));
-      inputResource.m_CompletionFence.reset(d3d12_create_fence_raw(pD3D12Enc->m_spLastSliceFence.Get(), CompletionFenceValue));
       CompletionFenceValue++;
    }
 
@@ -3025,7 +3024,7 @@ d3d12_video_encoder_calculate_max_slices_count_in_output(
       case D3D12_VIDEO_ENCODER_FRAME_SUBREGION_LAYOUT_MODE_BYTES_PER_SUBREGION:
       case D3D12_VIDEO_ENCODER_FRAME_SUBREGION_LAYOUT_MODE_AUTO:
       {
-         maxSlices = MaxSubregionsNumberFromCaps;
+         maxSlices = std::max(128u, MaxSubregionsNumberFromCaps);
       } break;
       case D3D12_VIDEO_ENCODER_FRAME_SUBREGION_LAYOUT_MODE_SQUARE_UNITS_PER_SUBREGION_ROW_UNALIGNED:
       {
@@ -3319,6 +3318,9 @@ d3d12_video_encoder_encode_bitstream(struct pipe_video_codec * codec,
                                              &slice_fences,
                                              &last_slice_completion_fence,
                                              feedback);
+   // Release local fence references to prevent leaking pipe fences + event handles each frame
+   if (last_slice_completion_fence)
+      d3d12_fence_reference((struct d3d12_fence **)&last_slice_completion_fence, NULL);
 }
 
 void
@@ -4100,7 +4102,11 @@ d3d12_video_encoder_encode_bitstream_impl(struct pipe_video_codec *codec,
          pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionOffsets.resize(num_slice_objects, {});
          pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences.resize(num_slice_objects, NULL);
          pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pSubregionPipeFences.resize(num_slice_objects);
-         pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].ppSubregionFenceValues.resize(num_slice_objects, pD3D12Enc->m_fenceValue);
+         pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].ppSubregionFenceValues.resize(num_slice_objects);
+         // m_SliceFenceValue is incremented per slice object and shared across all slices of the frame so the app can
+         // wait on a single fence but individual per frame, slice values
+         for (uint32_t i = 0; i < num_slice_objects; i++)
+            pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].ppSubregionFenceValues[i] = pD3D12Enc->m_SliceFenceValue++;
 
          pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].ppSubregionSizes.resize(num_slice_objects, NULL);
          pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].ppSubregionOffsets.resize(num_slice_objects, NULL);
@@ -4142,9 +4148,11 @@ d3d12_video_encoder_encode_bitstream_impl(struct pipe_video_codec *codec,
 
             pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].ppSubregionSizes[i] = pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionSizes[i].Get();
 
-            if (pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[i] == nullptr)
-               hr = pD3D12Enc->m_pD3D12Screen->dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[i]));
-            pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].ppSubregionFences[i] = pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[i].Get();
+            // Share a single ID3D12Fence object across all slices of this frame (per metadata slot)
+            if (pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[0] == nullptr)
+               hr = pD3D12Enc->m_pD3D12Screen->dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[0]));
+            pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[i] = pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[0];
+            pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].ppSubregionFences[i] = pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[0].Get();
 
             pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pSubregionPipeFences[i].reset(
                d3d12_create_fence_raw(pD3D12Enc->m_spEncodedFrameMetadata[current_metadata_slot].pspSubregionFences[i].Get(),

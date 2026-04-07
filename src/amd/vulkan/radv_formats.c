@@ -110,16 +110,12 @@ radv_is_atomic_format_supported(VkFormat format)
 bool
 radv_is_storage_image_format_supported(const struct radv_physical_device *pdev, VkFormat format)
 {
-   const struct radv_instance *instance = radv_physical_device_instance(pdev);
    const struct util_format_description *desc = radv_format_description(format);
    unsigned data_format, num_format;
    if (format == VK_FORMAT_UNDEFINED)
       return false;
 
-   if (vk_format_has_stencil(format))
-      return false;
-
-   if (instance->drirc.debug.disable_depth_storage && vk_format_has_depth(format))
+   if (vk_format_is_depth_or_stencil(format))
       return false;
 
    data_format = radv_translate_tex_dataformat(pdev, desc, vk_format_get_first_non_void_channel(format));
@@ -259,6 +255,24 @@ radv_is_filter_minmax_format_supported(const struct radv_physical_device *pdev, 
    return ac_is_reduction_mode_supported(&pdev->info, radv_format_to_pipe_format(format), false);
 }
 
+static bool
+radv_is_copy_image_indirect_format_supported(const struct radv_physical_device *pdev, VkFormat format)
+{
+   const struct util_format_description *desc = radv_format_description(format);
+
+   /* GFX9-GFX11.5 have issues with BCn formats and mipmaps which isn't really possible to support
+    * with indirect image copies.
+    */
+   if (vk_format_is_block_compressed(format) && (pdev->info.gfx_level >= GFX9 && pdev->info.gfx_level < GFX12))
+      return false;
+
+   /* No ASTC emulation with indirect image copies yet. */
+   if (desc->layout == UTIL_FORMAT_LAYOUT_ASTC)
+      return false;
+
+   return true;
+}
+
 bool
 radv_is_format_emulated(const struct radv_physical_device *pdev, VkFormat format)
 {
@@ -301,6 +315,12 @@ radv_physical_device_get_format_properties(struct radv_physical_device *pdev, Vk
          if (radv_is_filter_minmax_format_supported(pdev, emulation_format))
             tiled |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
       }
+
+      if (radv_is_copy_image_indirect_format_supported(pdev, format)) {
+         tiled |= VK_FORMAT_FEATURE_2_COPY_IMAGE_INDIRECT_DST_BIT_KHR;
+         linear |= VK_FORMAT_FEATURE_2_COPY_IMAGE_INDIRECT_DST_BIT_KHR;
+      }
+
       out_properties->linearTilingFeatures = linear;
       out_properties->optimalTilingFeatures = tiled;
       out_properties->bufferFeatures = buffer;
@@ -511,6 +531,11 @@ radv_physical_device_get_format_properties(struct radv_physical_device *pdev, Vk
       }
    }
 
+   if (radv_is_copy_image_indirect_format_supported(pdev, format)) {
+      tiled |= VK_FORMAT_FEATURE_2_COPY_IMAGE_INDIRECT_DST_BIT_KHR;
+      linear |= VK_FORMAT_FEATURE_2_COPY_IMAGE_INDIRECT_DST_BIT_KHR;
+   }
+
    out_properties->linearTilingFeatures = linear;
    out_properties->optimalTilingFeatures = tiled;
    out_properties->bufferFeatures = buffer;
@@ -641,6 +666,16 @@ radv_get_modifier_flags(struct radv_physical_device *pdev, VkFormat format, uint
 
    /* Unconditionally disable HOST_TRANSFER support for modifiers for now */
    features &= ~VK_FORMAT_FEATURE_2_HOST_IMAGE_TRANSFER_BIT_EXT;
+
+   /* Unconditionally disable COPY_IMAGE_INDIRECT_DST support for modifiers for now */
+   features &= ~VK_FORMAT_FEATURE_2_COPY_IMAGE_INDIRECT_DST_BIT_KHR;
+
+   if (!ac_modifier_supports_video(&pdev->info, modifier))
+      features &= ~(VK_FORMAT_FEATURE_2_VIDEO_DECODE_OUTPUT_BIT_KHR |
+                    VK_FORMAT_FEATURE_2_VIDEO_DECODE_DPB_BIT_KHR |
+                    VK_FORMAT_FEATURE_2_VIDEO_ENCODE_INPUT_BIT_KHR |
+                    VK_FORMAT_FEATURE_2_VIDEO_ENCODE_DPB_BIT_KHR |
+                    VK_FORMAT_FEATURE_2_VIDEO_ENCODE_QUANTIZATION_DELTA_MAP_BIT_KHR);
 
    if (ac_modifier_has_dcc(modifier)) {
       /* We don't enable DCC for multi-planar formats before GFX12 */

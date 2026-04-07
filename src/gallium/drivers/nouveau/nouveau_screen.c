@@ -175,18 +175,18 @@ nouveau_screen_bo_get_handle(struct pipe_screen *pscreen,
 static void
 nouveau_disk_cache_create(struct nouveau_screen *screen)
 {
-   struct mesa_sha1 ctx;
-   unsigned char sha1[SHA1_DIGEST_LENGTH];
-   char cache_id[SHA1_DIGEST_STRING_LENGTH];
+   blake3_hasher ctx;
+   unsigned char blake3[BLAKE3_KEY_LEN];
+   char cache_id[BLAKE3_HEX_LEN];
    uint64_t driver_flags = 0;
 
-   _mesa_sha1_init(&ctx);
+   _mesa_blake3_init(&ctx);
    if (!disk_cache_get_function_identifier(nouveau_disk_cache_create,
                                            &ctx))
       return;
 
-   _mesa_sha1_final(&ctx, sha1);
-   mesa_bytes_to_hex(cache_id, sha1, SHA1_DIGEST_LENGTH);
+   _mesa_blake3_final(&ctx, blake3);
+   mesa_bytes_to_hex(cache_id, blake3, BLAKE3_KEY_LEN);
 
    driver_flags |= NOUVEAU_SHADER_CACHE_FLAGS_IR_NIR;
 
@@ -275,13 +275,13 @@ static void
 nouveau_driver_uuid(struct pipe_screen *screen, char *uuid)
 {
    const char* driver = PACKAGE_VERSION MESA_GIT_SHA1;
-   struct mesa_sha1 sha1_ctx;
-   uint8_t sha1[SHA1_DIGEST_LENGTH];
+   blake3_hasher blake3_ctx;
+   uint8_t blake3[BLAKE3_KEY_LEN];
 
-   _mesa_sha1_init(&sha1_ctx);
-   _mesa_sha1_update(&sha1_ctx, driver, strlen(driver));
-   _mesa_sha1_final(&sha1_ctx, sha1);
-   memcpy(uuid, sha1, PIPE_UUID_SIZE);
+   _mesa_blake3_init(&blake3_ctx);
+   _mesa_blake3_update(&blake3_ctx, driver, strlen(driver));
+   _mesa_blake3_final(&blake3_ctx, blake3);
+   memcpy(uuid, blake3, PIPE_UUID_SIZE);
 }
 
 static void

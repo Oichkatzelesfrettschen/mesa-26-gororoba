@@ -60,7 +60,8 @@ struct pan_blend_shader_key {
 
 bool pan_blend_reads_dest(const struct pan_blend_equation eq);
 
-bool pan_blend_can_fixed_function(const struct pan_blend_equation equation,
+bool pan_blend_can_fixed_function(unsigned arch,
+                                  const struct pan_blend_equation equation,
                                   bool supports_2src);
 
 bool pan_blend_is_opaque(const struct pan_blend_equation eq);
@@ -114,6 +115,8 @@ enum mali_register_file_format pan_blend_type_from_nir(nir_alu_type nir_type);
 uint32_t pan_pack_blend(const struct pan_blend_equation equation);
 
 #ifdef PAN_ARCH
+
+enum pipe_format GENX(pan_blend_shader_fmt)(enum pipe_format format);
 
 nir_shader *GENX(pan_blend_create_shader)(const struct pan_blend_state *state,
                                           nir_alu_type src0_type,

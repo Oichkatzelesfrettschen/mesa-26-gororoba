@@ -13,7 +13,7 @@ section_start angle "Building ANGLE"
 # setting up the environment variables locally
 ci_tag_build_time_check "ANGLE_TAG"
 
-ANGLE_REV="b406401e42080c2f8fe479e6c5fa48dfae97c482"
+ANGLE_REV="599125448d7ad53b2868a7b5d2e3e8d3bfbc1717"
 DEPOT_REV="5982a1aeb33dc36382ed8c62eddf52a6135e7dd3"
 
 # Set ANGLE_ARCH based on DEBIAN_ARCH if it hasn't been explicitly defined
@@ -129,7 +129,24 @@ if [[ "$DEBIAN_ARCH" = "arm64" ]]; then
   # 'arm64' toolchain you get from Google infrastructure is a cross-compiler
   # from x86-64
   build/linux/sysroot_scripts/install-sysroot.py --arch=arm64
+
+  # The Bullseye sysroot is too old for Chromium's default PAC/BTI setup.
+  # Chromium forces -z force-bti on arm64, but our sysroot objects lack BTI
+  # notes, which breaks linking. Disable branch protection to keep the build
+  # sane. See:
+  # https://chromium.googlesource.com/chromium/src/build/+/7c4a6063/config/linux/BUILD.gn#87
+  # https://chromium.googlesource.com/chromium/src/build/+/7c4a6063/config/arm.gni#77
+  cat >> out/Release/args.gn <<EOF
+arm_control_flow_integrity="none"
+EOF
 fi
+
+# The Chromium build system hardcodes these flags, and they're not compatible
+# with our clang19 'unbundled' toolchain. See:
+# https://chromium.googlesource.com/chromium/src/build/+/39d42026/config/compiler/BUILD.gn#619
+# https://chromium.googlesource.com/chromium/src/build/+/39d42026/config/compiler/BUILD.gn#1882
+sed -i '/-fno-lifetime-dse/d' build/config/compiler/BUILD.gn
+sed -i '/-fsanitize-ignore-for-ubsan-feature=/d' build/config/compiler/BUILD.gn
 
 (
   # The 'unbundled' toolchain configuration requires clang, and it also needs to

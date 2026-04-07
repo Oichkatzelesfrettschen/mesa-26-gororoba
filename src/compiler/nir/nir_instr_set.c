@@ -242,7 +242,7 @@ hash_intrinsic(uint32_t hash, const nir_intrinsic_instr *instr)
       hash = XXH32(v, sizeof(v), hash);
    }
 
-   hash = XXH32(instr->const_index, info->num_indices * sizeof(instr->const_index[0]), hash);
+   hash = XXH32(instr->const_index, info->num_index_slots * sizeof(instr->const_index[0]), hash);
 
    for (unsigned i = 0; i < nir_intrinsic_infos[instr->intrinsic].num_srcs; i++)
       hash = hash_src(hash, &instr->src[i]);
@@ -278,6 +278,7 @@ pack_tex(const nir_tex_instr *instr)
    PACK(instr->skip_helpers, 1);
    PACK(instr->texture_non_uniform, 1);
    PACK(instr->sampler_non_uniform, 1);
+   PACK(instr->embedded_sampler, 1);
    PACK(instr->offset_non_uniform, 1);
 
 #undef PACK
@@ -747,7 +748,7 @@ nir_instrs_equal(const nir_instr *instr1, const nir_instr *instr2)
             return false;
       }
 
-      for (unsigned i = 0; i < info->num_indices; i++) {
+      for (unsigned i = 0; i < info->num_index_slots; i++) {
          if (intrinsic1->const_index[i] != intrinsic2->const_index[i])
             return false;
       }
@@ -755,6 +756,7 @@ nir_instrs_equal(const nir_instr *instr1, const nir_instr *instr2)
       return true;
    }
    case nir_instr_type_call:
+   case nir_instr_type_cmat_call:
    case nir_instr_type_jump:
    case nir_instr_type_undef:
    default:

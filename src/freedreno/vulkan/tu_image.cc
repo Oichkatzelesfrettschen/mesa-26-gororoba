@@ -29,6 +29,7 @@
 #include "tu_formats.h"
 #include "tu_lrz.h"
 #include "tu_rmv.h"
+#include "tu_subsampled_image.h"
 #include "tu_wsi.h"
 
 uint32_t
@@ -180,6 +181,8 @@ tu_image_view_init(struct tu_device *device,
       vk_find_struct_const(pCreateInfo->pNext, SAMPLER_YCBCR_CONVERSION_INFO);
    const struct vk_ycbcr_conversion *conversion = ycbcr_conversion ?
       vk_ycbcr_conversion_from_handle(ycbcr_conversion->conversion) : NULL;
+   const VkImageViewSampleWeightCreateInfoQCOM *sample_weights =
+      vk_find_struct_const(pCreateInfo->pNext, IMAGE_VIEW_SAMPLE_WEIGHT_CREATE_INFO_QCOM);
 
    vk_image_view_init(&device->vk, &iview->vk, pCreateInfo);
    assert(iview->vk.format != VK_FORMAT_UNDEFINED);
@@ -266,6 +269,14 @@ tu_image_view_init(struct tu_device *device,
    if (conversion) {
       args.chroma_offsets[0] = (enum fdl_chroma_location) conversion->state.chroma_offsets[0];
       args.chroma_offsets[1] = (enum fdl_chroma_location) conversion->state.chroma_offsets[1];
+   }
+
+   if (sample_weights) {
+      args.filter_width = sample_weights->filterSize.width;
+      args.filter_height = sample_weights->filterSize.height;
+      args.filter_center_x = sample_weights->filterCenter.x;
+      args.filter_center_y = sample_weights->filterCenter.y;
+      args.filter_num_phases = sample_weights->numPhases;
    }
 
    TU_CALLX(device, fdl6_view_init)(&iview->view, layouts, &args, device->use_z24uint_s8uint);
@@ -528,6 +539,15 @@ tu_image_update_layout(struct tu_device *device, struct tu_image *image,
          /* no UBWC for separate stencil */
          image->ubwc_enabled = false;
 
+      /* Subsampled images with FDM offset require extra space for adjusting
+       * the offset to make the tiles aligned.
+       */
+      if ((image->vk.create_flags & VK_IMAGE_CREATE_SUBSAMPLED_BIT_EXT) &&
+          (image->vk.create_flags & VK_IMAGE_CREATE_FRAGMENT_DENSITY_MAP_OFFSET_BIT_EXT)) {
+         width0 += device->physical_device->info->tile_align_w;
+         height0 += device->physical_device->info->tile_align_h;
+      }
+
       struct fdl_explicit_layout plane_layout;
 
       if (plane_layouts) {
@@ -561,6 +581,7 @@ tu_image_update_layout(struct tu_device *device, struct tu_image *image,
          .sparse = image->vk.create_flags &
             VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT,
          .force_disable_linear_fallback = image->force_disable_linear_fallback,
+         .plane = i,
       };
 
       if (!fdl6_layout_image(layout, &device->physical_device->dev_info,
@@ -621,6 +642,12 @@ tu_image_update_layout(struct tu_device *device, struct tu_image *image,
    } else {
       image->lrz_layout.lrz_height = 0;
       image->lrz_layout.lrz_total_size = 0;
+   }
+
+   if (image->vk.create_flags & VK_IMAGE_CREATE_SUBSAMPLED_BIT_EXT) {
+      image->subsampled_metadata_offset = align64(image->total_size, 16);
+      image->total_size = image->subsampled_metadata_offset +
+         image->vk.array_layers * sizeof(struct tu_subsampled_metadata);
    }
 
    return VK_SUCCESS;
@@ -1428,8 +1455,8 @@ tu_fragment_density_map_sample(const struct tu_image_view *fdm,
 {
    assert(fdm->image->layout[0].tile_mode == TILE6_LINEAR);
 
-   uint32_t fdm_shift_x = util_logbase2_ceil(DIV_ROUND_UP(width, fdm->vk.extent.width));
-   uint32_t fdm_shift_y = util_logbase2_ceil(DIV_ROUND_UP(height, fdm->vk.extent.height));
+   uint32_t fdm_shift_x = util_logbase2_ceil(width / fdm->vk.extent.width);
+   uint32_t fdm_shift_y = util_logbase2_ceil(height / fdm->vk.extent.height);
 
    fdm_shift_x = CLAMP(fdm_shift_x, MIN_FDM_TEXEL_SIZE_LOG2, MAX_FDM_TEXEL_SIZE_LOG2);
    fdm_shift_y = CLAMP(fdm_shift_y, MIN_FDM_TEXEL_SIZE_LOG2, MAX_FDM_TEXEL_SIZE_LOG2);

@@ -12,7 +12,7 @@ struct pipe_resource *
 rkt_fill_weights(struct rkt_ml_subgraph *subgraph,
                  const struct pipe_ml_operation *poperation)
 {
-   struct pipe_context *pcontext = subgraph->base.context;
+   struct pipe_context *pcontext = subgraph->context;
    unsigned weights_width = poperation->conv.weight_tensor->dims[1];
    unsigned weights_height = poperation->conv.weight_tensor->dims[2];
    unsigned input_channels = poperation->input_tensors[0]->dims[3];
@@ -21,10 +21,8 @@ rkt_fill_weights(struct rkt_ml_subgraph *subgraph,
    unsigned output_channels_real = poperation->output_tensors[0]->dims[3];
    unsigned weights_size;
    uint8_t zero_point = poperation->conv.weight_tensor->zero_point;
-   struct pipe_transfer *transfer_in, *transfer_out;
-   void *map =
-      pipe_buffer_map(pcontext, poperation->conv.weight_tensor->resource,
-                      PIPE_MAP_READ, &transfer_in);
+   struct pipe_transfer *transfer_out;
+   void *map = poperation->conv.weight_tensor->data;
    uint8_t(*weights_in)[weights_width][weights_height][input_channels] = map;
    struct pipe_resource *rsc;
    uint8_t *weights_out;
@@ -90,8 +88,6 @@ rkt_fill_weights(struct rkt_ml_subgraph *subgraph,
 
    pipe_buffer_unmap(pcontext, transfer_out);
 
-   pipe_buffer_unmap(pcontext, transfer_in);
-
    return rsc;
 }
 
@@ -134,16 +130,12 @@ rkt_fill_biases(struct rkt_ml_subgraph *subgraph,
                 const struct pipe_ml_operation *poperation,
                 unsigned *truncate_bits)
 {
-   struct pipe_context *pcontext = subgraph->base.context;
+   struct pipe_context *pcontext = subgraph->context;
    unsigned output_channels = poperation->output_tensors[0]->dims[3];
    unsigned weights_size = poperation->conv.weight_tensor->dims[1];
-   struct pipe_transfer *transfer_in, *transfer_out, *transfer_weights;
-   int32_t *biases_in =
-      pipe_buffer_map(pcontext, poperation->conv.bias_tensor->resource,
-                      PIPE_MAP_READ, &transfer_in);
-   void *weights =
-      pipe_buffer_map(pcontext, poperation->conv.weight_tensor->resource,
-                      PIPE_MAP_READ, &transfer_weights);
+   struct pipe_transfer *transfer_out;
+   int32_t *biases_in = (int32_t *)poperation->conv.bias_tensor->data;
+   void *weights = poperation->conv.weight_tensor->data;
    struct pipe_resource *rsc;
    uint32_t *biases;
 
@@ -218,10 +210,6 @@ rkt_fill_biases(struct rkt_ml_subgraph *subgraph,
    }
 
    pipe_buffer_unmap(pcontext, transfer_out);
-
-   pipe_buffer_unmap(pcontext, transfer_weights);
-
-   pipe_buffer_unmap(pcontext, transfer_in);
 
    return rsc;
 }

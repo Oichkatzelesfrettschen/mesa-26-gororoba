@@ -173,6 +173,9 @@ shrink_intrinsic_to_non_sparse(nir_intrinsic_instr *instr)
    case nir_intrinsic_image_deref_sparse_load:
       instr->intrinsic = nir_intrinsic_image_deref_load;
       break;
+   case nir_intrinsic_image_heap_sparse_load:
+      instr->intrinsic = nir_intrinsic_image_heap_load;
+      break;
    default:
       break;
    }
@@ -391,6 +394,7 @@ opt_shrink_vectors_intrinsic(nir_builder *b, nir_intrinsic_instr *instr,
    case nir_intrinsic_image_sparse_load:
    case nir_intrinsic_bindless_image_sparse_load:
    case nir_intrinsic_image_deref_sparse_load:
+   case nir_intrinsic_image_heap_sparse_load:
       return shrink_intrinsic_to_non_sparse(instr);
    default:
       return false;
@@ -523,7 +527,7 @@ opt_shrink_vectors_phi(nir_builder *b, nir_phi_instr *instr)
          if (src_idx != alu->src[src_idx].swizzle[0]) {
             mask |= src_read_mask;
          }
-      } else if (!nir_alu_src_is_trivial_ssa(alu, src_idx)) {
+      } else if (!nir_alu_has_trivial_src(alu, src_idx)) {
          mask |= src_read_mask;
       }
    }

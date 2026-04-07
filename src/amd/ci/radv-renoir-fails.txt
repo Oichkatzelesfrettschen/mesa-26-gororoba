@@ -1,4 +1,4 @@
-# RADV_PERFTEST=transfer_queue+vk_require_etc2=true regressions since 3d803d7a2e0e7d46c04381896168c344d59d88e4
+# RADV_EXPERIMENTAL=transfer_queue+vk_require_etc2=true regressions since 3d803d7a2e0e7d46c04381896168c344d59d88e4
 dEQP-VK.api.copy_and_blit.copy_commands2.image_to_buffer_transfer_queue.2d_images.mip_copies_eac_r11_snorm_block_64x192,Fail
 dEQP-VK.api.copy_and_blit.copy_commands2.image_to_buffer_transfer_queue.2d_images.mip_copies_eac_r11_snorm_block_64x192_2_layers,Fail
 dEQP-VK.api.copy_and_blit.copy_commands2.image_to_buffer_transfer_queue.2d_images.mip_copies_eac_r11_snorm_block_64x192_5_layers,Fail
@@ -168,3 +168,24 @@ dEQP-VK.sparse_resources.shader_intrinsics.2d_sparse_read.r12x4g12x4_unorm_2pack
 dEQP-VK.sparse_resources.shader_intrinsics.2d_sparse_read.r12x4g12x4_unorm_2pack16.128_128_1,Crash
 dEQP-VK.sparse_resources.shader_intrinsics.2d_sparse_read.r12x4g12x4_unorm_2pack16.503_137_1,Crash
 dEQP-VK.sparse_resources.shader_intrinsics.2d_sparse_read.r12x4g12x4_unorm_2pack16.512_256_1,Crash
+
+# Probably https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/6287
+dEQP-VK.wsi.direct_drm.present_timing.time_domain.present_stage_calibration,Fail
+dEQP-VK.wsi.direct.present_timing.time_domain.present_stage_calibration,Fail
+
+dEQP-VK.wsi.direct_drm.colorspace.basic,Fail
+dEQP-VK.wsi.direct_drm.colorspace.hdr,Fail
+dEQP-VK.wsi.direct_drm.swapchain.create.image_sharing_mode,Crash
+dEQP-VK.wsi.direct_drm.swapchain.create.image_swapchain_create_info_concurrent,Crash
+dEQP-VK.wsi.direct_drm.swapchain.create.image_swapchain_create_info,Crash
+dEQP-VK.wsi.direct_drm.swapchain.private_data.image_sharing_mode,Crash
+dEQP-VK.wsi.direct_drm.swapchain.simulate_oom.image_swapchain_create_info_concurrent,Crash
+dEQP-VK.wsi.direct_drm.swapchain.simulate_oom.image_swapchain_create_info,Crash
+dEQP-VK.wsi.direct.colorspace.basic,Fail
+dEQP-VK.wsi.direct.colorspace.hdr,Fail
+dEQP-VK.wsi.direct.swapchain.create.image_sharing_mode,Crash
+dEQP-VK.wsi.direct.swapchain.create.image_swapchain_create_info_concurrent,Crash
+dEQP-VK.wsi.direct.swapchain.create.image_swapchain_create_info,Crash
+dEQP-VK.wsi.direct.swapchain.private_data.image_sharing_mode,Crash
+dEQP-VK.wsi.direct.swapchain.simulate_oom.image_swapchain_create_info_concurrent,Crash
+dEQP-VK.wsi.direct.swapchain.simulate_oom.image_swapchain_create_info,Crash

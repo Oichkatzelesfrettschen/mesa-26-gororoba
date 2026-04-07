@@ -9,9 +9,8 @@
 #include "radeon_vce.h"
 
 #include "pipe/p_video_codec.h"
-#include "radeon_video.h"
 #include "radeon_bitstream.h"
-#include "radeonsi/si_pipe.h"
+#include "si_pipe.h"
 #include "util/u_memory.h"
 #include "util/u_video.h"
 #include "vl/vl_video_buffer.h"
@@ -804,7 +803,7 @@ static void rvce_begin_frame(struct pipe_video_codec *encoder, struct pipe_video
             RVID_ERR("Can't create DPB buffer.\n");
             return;
          }
-      } else if (!si_vid_resize_buffer(enc->base.context, &enc->dpb, dpb_size, NULL)) {
+      } else if (!si_vid_resize_buffer(enc->base.context, &enc->dpb, dpb_size)) {
          RVID_ERR("Can't resize DPB buffer.\n");
          return;
       }

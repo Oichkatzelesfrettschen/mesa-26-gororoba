@@ -29,14 +29,17 @@ fd6_emit_flushes(struct fd_context *ctx, fd_cs &cs, unsigned flushes)
    if (flushes & FD6_INVALIDATE_CCU_DEPTH)
       fd6_event_write<CHIP>(ctx, cs, FD_CCU_INVALIDATE_DEPTH);
 
-   if ((CHIP >= A7XX) && (flushes & FD6_INVALIDATE_CCHE))
-      fd_pkt7(cs, CP_CCHE_INVALIDATE, 0);
-
    if (flushes & FD6_FLUSH_CACHE)
       fd6_event_write<CHIP>(ctx, cs, FD_CACHE_CLEAN);
 
    if (flushes & FD6_INVALIDATE_CACHE)
       fd6_event_write<CHIP>(ctx, cs, FD_CACHE_INVALIDATE);
+
+   if ((CHIP >= A7XX) && (flushes & FD6_BLIT_CLEAN_CACHE))
+      fd6_event_write<CHIP>(ctx, cs, FD_CCU_CLEAN_BLIT_CACHE);
+
+   if ((CHIP >= A7XX) && (flushes & FD6_INVALIDATE_CCHE))
+      fd_pkt7(cs, CP_CCHE_INVALIDATE, 0);
 
    if (flushes & FD6_WAIT_MEM_WRITES)
       fd_pkt7(cs, CP_WAIT_MEM_WRITES, 0);
@@ -55,6 +58,8 @@ add_flushes(struct pipe_context *pctx, unsigned flushes)
 {
    struct fd_context *ctx = fd_context(pctx);
    struct fd_batch *batch = NULL;
+
+   DBG("flushes=0x%x", flushes);
 
    /* If there is an active compute/nondraw batch, that is the one
     * we want to add the flushes to.  Ie. last op was a launch_grid,
@@ -80,6 +85,8 @@ fd6_texture_barrier(struct pipe_context *pctx, unsigned flags)
    in_dt
 {
    unsigned flushes = 0;
+
+   DBG("flags=0x%x", flags);
 
    if (flags & PIPE_TEXTURE_BARRIER_SAMPLER) {
       /* If we are sampling from the fb, we could get away with treating
@@ -114,6 +121,8 @@ fd6_memory_barrier(struct pipe_context *pctx, unsigned flags)
    in_dt
 {
    unsigned flushes = 0;
+
+   DBG("flags=0x%x", flags);
 
    if (flags & (PIPE_BARRIER_SHADER_BUFFER |
                 PIPE_BARRIER_CONSTANT_BUFFER |

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+ * Copyright (C) 2018-2019 Alyssa Rosenzweig
  * Copyright (C) 2019-2020 Collabora, Ltd.
  * SPDX-License-Identifier: MIT
  */
@@ -387,14 +387,7 @@ midgard_postprocess_nir(nir_shader *nir, UNUSED unsigned gpu_id)
 
    if (nir->info.stage == MESA_SHADER_VERTEX) {
       NIR_PASS(_, nir, nir_lower_viewport_transform);
-      NIR_PASS(_, nir, nir_lower_point_size, 1.0, 0.0, nir_type_invalid);
-
-      /* nir_lower[_explicit]_io is lazy and emits mul+add chains even
-       * for offsets it could figure out are constant.  Do some
-       * constant folding before pan_nir_lower_store_component below.
-       */
-      NIR_PASS(_, nir, nir_opt_constant_folding);
-      NIR_PASS(_, nir, pan_nir_lower_store_component);
+      NIR_PASS(_, nir, nir_lower_point_size, 1.0, 0.0);
    }
 
    /* Could be eventually useful for Vulkan, but we don't expect it to have
@@ -1322,39 +1315,26 @@ emit_varying_read(compiler_context *ctx, unsigned dest, unsigned offset,
    ins.load_store.arg_reg = REGISTER_LDST_ZERO;
    ins.load_store.index_format = midgard_index_address_u32;
 
-   /* For flat shading, for GPUs supporting auto32, we always use .u32 and
-    * require 32-bit mode. For smooth shading, we use the appropriate
-    * floating-point type.
-    *
-    * This could be optimized, but it makes it easy to check correctness.
-    */
-   if (ctx->quirks & MIDGARD_NO_AUTO32) {
-      switch (type) {
-      case nir_type_uint32:
-      case nir_type_bool32:
-         ins.op = midgard_op_ld_vary_32u;
-         break;
-      case nir_type_int32:
-         ins.op = midgard_op_ld_vary_32i;
-         break;
-      case nir_type_float32:
-         ins.op = midgard_op_ld_vary_32;
-         break;
-      case nir_type_float16:
-         ins.op = midgard_op_ld_vary_16;
-         break;
-      default:
-         UNREACHABLE("Attempted to load unknown type");
-         break;
-      }
-   } else if (flat) {
-      assert(nir_alu_type_get_type_size(type) == 32);
-      ins.op = midgard_op_ld_vary_32u;
-   } else {
+   if (!flat) {
       assert(nir_alu_type_get_base_type(type) == nir_type_float);
-
-      ins.op = (nir_alu_type_get_type_size(type) == 32) ? midgard_op_ld_vary_32
-                                                        : midgard_op_ld_vary_16;
+   }
+   switch (type) {
+   case nir_type_uint32:
+   case nir_type_bool32:
+      ins.op = midgard_op_ld_vary_32u;
+      break;
+   case nir_type_int32:
+      ins.op = midgard_op_ld_vary_32i;
+      break;
+   case nir_type_float32:
+      ins.op = midgard_op_ld_vary_32;
+      break;
+   case nir_type_float16:
+      ins.op = midgard_op_ld_vary_16;
+      break;
+   default:
+      UNREACHABLE("Attempted to load unknown type");
+      break;
    }
 
    emit_mir_instruction(ctx, &ins);
@@ -1868,18 +1848,7 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
 
          unsigned dst_component = nir_intrinsic_component(instr);
          unsigned nr_comp = nir_src_num_components(instr->src[0]);
-
-         /* ABI: Format controlled by the attribute descriptor.
-          * This simplifies flat shading, although it prevents
-          * certain (unimplemented) 16-bit optimizations.
-          *
-          * In particular, it lets the driver handle internal
-          * TGSI shaders that set flat in the VS but smooth in
-          * the FS. This matches our handling on Bifrost.
-          */
-         bool auto32 = true;
-         assert(nir_alu_type_get_type_size(nir_intrinsic_src_type(instr)) ==
-                32);
+         bool auto32 = false;
 
          /* ABI: varyings in the secondary attribute table */
          bool secondary_table = true;
@@ -1908,6 +1877,26 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
             st.swizzle[0][i] = src_component;
             if (i >= dst_component && i < dst_component + nr_comp - 1)
                src_component++;
+         }
+
+         nir_alu_type type = nir_intrinsic_src_type(instr);
+         switch (type) {
+         case nir_type_uint32:
+         case nir_type_bool32:
+            st.op = midgard_op_st_vary_32u;
+            break;
+         case nir_type_int32:
+            st.op = midgard_op_st_vary_32i;
+            break;
+         case nir_type_float32:
+            st.op = midgard_op_st_vary_32;
+            break;
+         case nir_type_float16:
+            st.op = midgard_op_st_vary_16;
+            break;
+         default:
+            UNREACHABLE("Attempted to store unknown type");
+            break;
          }
 
          emit_mir_instruction(ctx, &st);
@@ -2981,8 +2970,23 @@ midgard_compile_shader_nir(nir_shader *nir,
    ctx->ssa_constants = _mesa_hash_table_u64_create(ctx);
 
    /* Collect varyings after lowering I/O */
-   info->quirk_no_auto32 = (ctx->quirks & MIDGARD_NO_AUTO32);
-   pan_nir_collect_varyings(nir, info, PAN_MEDIUMP_VARY_SMOOTH_16BIT);
+   if (nir->info.stage == MESA_SHADER_VERTEX) {
+      assert(inputs->varying_layout);
+      memcpy(&info->varyings.formats, inputs->varying_layout,
+             sizeof(*inputs->varying_layout));
+   } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      pan_varying_collect_formats(&info->varyings.formats,
+                                  nir, inputs->gpu_id,
+                                  inputs->trust_varying_flat_highp_types, false);
+      info->varyings.noperspective =
+         pan_nir_collect_noperspective_varyings_fs(nir);
+   }
+
+   if (nir->info.stage == MESA_SHADER_VERTEX) {
+      NIR_PASS(_, nir, pan_nir_lower_vs_outputs, inputs->gpu_id,
+               inputs->varying_layout, false /* has_idvs */,
+               NULL /* needs_extended_fifo */);
+   }
 
    /* Optimisation passes */
    optimise_nir(nir, ctx->quirks, inputs->is_blend);

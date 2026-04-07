@@ -160,9 +160,13 @@ radv_shader_object_init_graphics(struct radv_shader_object *shader_obj, struct r
    if (!pCreateInfo->nextStage) {
       struct radv_shader *shaders[MESA_VULKAN_SHADER_STAGES] = {NULL};
       struct radv_shader_binary *binaries[MESA_VULKAN_SHADER_STAGES] = {NULL};
+      struct radv_shader_debug_info debug[MESA_VULKAN_SHADER_STAGES] = {0};
+      struct radv_shader_debug_info gs_copy_debug = {0};
 
-      radv_graphics_shaders_compile(device, NULL, stages, &gfx_state, false, false, false, true, NULL, false, shaders,
-                                    binaries, &shader_obj->gs.copy_shader, &shader_obj->gs.copy_binary);
+      radv_graphics_shaders_compile(device, NULL, stages, &gfx_state, false, false, false, NULL, false, debug, binaries,
+                                    &gs_copy_debug, &shader_obj->gs.copy_binary);
+      radv_graphics_shaders_create(device, NULL, true, shaders, binaries, debug, &shader_obj->gs.copy_shader,
+                                   shader_obj->gs.copy_binary, &gs_copy_debug);
 
       shader = shaders[stage];
       binary = binaries[stage];
@@ -185,12 +189,16 @@ radv_shader_object_init_graphics(struct radv_shader_object *shader_obj, struct r
       radv_foreach_stage (next_stage, next_stages) {
          struct radv_shader *shaders[MESA_VULKAN_SHADER_STAGES] = {NULL};
          struct radv_shader_binary *binaries[MESA_VULKAN_SHADER_STAGES] = {NULL};
+         struct radv_shader_debug_info debug[MESA_VULKAN_SHADER_STAGES] = {0};
+         struct radv_shader_debug_info gs_copy_debug = {0};
 
          radv_shader_stage_init(pCreateInfo, &stages[stage]);
          stages[stage].next_stage = next_stage;
 
-         radv_graphics_shaders_compile(device, NULL, stages, &gfx_state, false, false, false, true, NULL, false,
-                                       shaders, binaries, &shader_obj->gs.copy_shader, &shader_obj->gs.copy_binary);
+         radv_graphics_shaders_compile(device, NULL, stages, &gfx_state, false, false, false, NULL, false, debug,
+                                       binaries, &gs_copy_debug, &shader_obj->gs.copy_binary);
+         radv_graphics_shaders_create(device, NULL, true, shaders, binaries, debug, &shader_obj->gs.copy_shader,
+                                      shader_obj->gs.copy_binary, &gs_copy_debug);
 
          shader = shaders[stage];
          binary = binaries[stage];
@@ -231,12 +239,13 @@ static VkResult
 radv_shader_object_init_compute(struct radv_shader_object *shader_obj, struct radv_device *device,
                                 const VkShaderCreateInfoEXT *pCreateInfo)
 {
-   struct radv_shader_binary *cs_binary;
    struct radv_shader_stage stage = {0};
 
    radv_shader_stage_init(pCreateInfo, &stage);
 
-   struct radv_shader *cs_shader = radv_compile_cs(device, NULL, &stage, false, false, false, true, &cs_binary);
+   struct radv_shader_debug_info cs_dbg = {0};
+   struct radv_shader_binary *cs_binary = radv_compile_cs(device, &stage, false, false, false, &cs_dbg);
+   struct radv_shader *cs_shader = radv_shader_create(device, NULL, cs_binary, true, &cs_dbg);
 
    ralloc_free(stage.nir);
 
@@ -250,16 +259,16 @@ static VkResult
 radv_shader_object_init_binary(struct radv_device *device, struct blob_reader *blob, struct radv_shader **shader_out,
                                struct radv_shader_binary **binary_out)
 {
-   const char *binary_sha1 = blob_read_bytes(blob, SHA1_DIGEST_LENGTH);
+   const char *binary_blake3 = blob_read_bytes(blob, BLAKE3_KEY_LEN);
    const uint32_t binary_size = blob_read_uint32(blob);
    const struct radv_shader_binary *binary = blob_read_bytes(blob, binary_size);
-   unsigned char sha1[SHA1_DIGEST_LENGTH];
+   unsigned char blake3[BLAKE3_KEY_LEN];
 
-   _mesa_sha1_compute(binary, binary->total_size, sha1);
-   if (memcmp(sha1, binary_sha1, SHA1_DIGEST_LENGTH))
+   _mesa_blake3_compute(binary, binary->total_size, blake3);
+   if (memcmp(blake3, binary_blake3, BLAKE3_KEY_LEN))
       return VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT;
 
-   *shader_out = radv_shader_create(device, NULL, binary, true);
+   *shader_out = radv_shader_create(device, NULL, binary, true, NULL);
    *binary_out = (struct radv_shader_binary *)binary;
 
    return VK_SUCCESS;
@@ -453,11 +462,15 @@ radv_shader_object_create_linked(VkDevice _device, uint32_t createInfoCount, con
 
    struct radv_shader *shaders[MESA_VULKAN_SHADER_STAGES] = {NULL};
    struct radv_shader_binary *binaries[MESA_VULKAN_SHADER_STAGES] = {NULL};
+   struct radv_shader_debug_info debug[MESA_VULKAN_SHADER_STAGES] = {0};
    struct radv_shader *gs_copy_shader = NULL;
    struct radv_shader_binary *gs_copy_binary = NULL;
+   struct radv_shader_debug_info gs_copy_debug = {0};
 
-   radv_graphics_shaders_compile(device, NULL, stages, &gfx_state, false, false, false, true, NULL, false, shaders,
-                                 binaries, &gs_copy_shader, &gs_copy_binary);
+   radv_graphics_shaders_compile(device, NULL, stages, &gfx_state, false, false, false, NULL, false, debug, binaries,
+                                 &gs_copy_debug, &gs_copy_binary);
+   radv_graphics_shaders_create(device, NULL, true, shaders, binaries, debug, &gs_copy_shader, gs_copy_binary,
+                                &gs_copy_debug);
 
    for (unsigned i = 0; i < createInfoCount; i++) {
       const VkShaderCreateInfoEXT *pCreateInfo = &pCreateInfos[i];
@@ -620,7 +633,7 @@ radv_get_shader_binary_size(const struct radv_shader_binary *binary)
    size_t size = sizeof(uint32_t); /* has_binary */
 
    if (binary)
-      size += SHA1_DIGEST_LENGTH + 4 + align(binary->total_size, 4);
+      size += BLAKE3_KEY_LEN + 4 + align(binary->total_size, 4);
 
    return size;
 }
@@ -647,14 +660,14 @@ radv_get_shader_object_size(const struct radv_shader_object *shader_obj)
 static void
 radv_write_shader_binary(struct blob *blob, const struct radv_shader_binary *binary)
 {
-   unsigned char binary_sha1[SHA1_DIGEST_LENGTH];
+   unsigned char binary_blake3[BLAKE3_KEY_LEN];
 
    blob_write_uint32(blob, !!binary);
 
    if (binary) {
-      _mesa_sha1_compute(binary, binary->total_size, binary_sha1);
+      _mesa_blake3_compute(binary, binary->total_size, binary_blake3);
 
-      blob_write_bytes(blob, binary_sha1, sizeof(binary_sha1));
+      blob_write_bytes(blob, binary_blake3, sizeof(binary_blake3));
       blob_write_uint32(blob, binary->total_size);
       blob_write_bytes(blob, binary, binary->total_size);
    }

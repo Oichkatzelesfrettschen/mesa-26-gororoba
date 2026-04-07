@@ -81,6 +81,8 @@ typedef void (*isl_emit_cpb_control_s_func)(const struct isl_device *dev, void *
          return isl_gfx20_##func;                                       \
       case 300:                                                         \
          return isl_gfx30_##func;                                       \
+      case 350:                                                         \
+         return isl_gfx35_##func;                                       \
       default:                                                          \
          UNREACHABLE("Unknown hardware generation");                    \
       }                                                                 \
@@ -284,6 +286,9 @@ _isl_notify_failure(const struct isl_surf_init_info *surf_info,
 #define notify_failure(surf_info, ...) \
    (_isl_notify_failure(surf_info, __FILE__, __LINE__, __VA_ARGS__), false)
 
+#define print_info(surf_info, ...) \
+   _isl_notify_failure(surf_info, __FILE__, __LINE__, __VA_ARGS__)
+
 
 /* This is useful for adding the isl_prefix to genX functions */
 #define isl_genX(x) CONCAT2(isl_, genX(x))
@@ -325,6 +330,9 @@ _isl_notify_failure(const struct isl_surf_init_info *surf_info,
 #  include "isl_genX_priv.h"
 #  undef genX
 #  define genX(x) gfx30_##x
+#  include "isl_genX_priv.h"
+#  undef genX
+#  define genX(x) gfx35_##x
 #  include "isl_genX_priv.h"
 #  undef genX
 #endif

@@ -73,6 +73,13 @@ validate_ir(Program* program)
          is_valid = false;
       }
    };
+   auto check_block = [&program, &is_valid](bool success, const char* msg, Block* block) -> void
+   {
+      if (!success) {
+         aco_err(program, "Error in BB%d: %s", block->index, msg);
+         is_valid = false;
+      }
+   };
 
    /* check reachability */
    if (program->progress < CompilationProgress::after_lower_to_hw) {
@@ -132,6 +139,8 @@ validate_ir(Program* program)
    }
 
    for (Block& block : program->blocks) {
+      int num_p_logical_start = 0;
+      int num_p_logical_end = 0;
       for (aco_ptr<Instruction>& instr : block.instructions) {
 
          /* Check that register assignment and register class are consistent. */
@@ -521,7 +530,7 @@ validate_ir(Program* program)
                   scalar_mask = 0x5;
 
                if (instr->isDPP())
-                  scalar_mask &= 0x4; /* TODO 0x6 for GFX11.5+ */
+                  scalar_mask &= program->gfx_level >= GFX11_5 ? 0x6 : 0x4;
 
                if (instr->isVOPC() || instr->opcode == aco_opcode::v_readfirstlane_b32 ||
                    instr->opcode == aco_opcode::v_readlane_b32 ||
@@ -630,8 +639,18 @@ validate_ir(Program* program)
 
          switch (instr->format) {
          case Format::PSEUDO: {
-            if (instr->opcode == aco_opcode::p_create_vector ||
-                instr->opcode == aco_opcode::p_start_linear_vgpr) {
+            if (instr->opcode == aco_opcode::p_logical_start) {
+               check(
+                  num_p_logical_end == 0 && instr->operands.empty() && instr->definitions.empty(),
+                  "Invalid p_logical_start", instr.get());
+               num_p_logical_start++;
+            } else if (instr->opcode == aco_opcode::p_logical_end) {
+               check(
+                  num_p_logical_start == 1 && instr->operands.empty() && instr->definitions.empty(),
+                  "Invalid p_logical_end", instr.get());
+               num_p_logical_end++;
+            } else if (instr->opcode == aco_opcode::p_create_vector ||
+                       instr->opcode == aco_opcode::p_start_linear_vgpr) {
                unsigned size = 0;
                for (const Operand& op : instr->operands) {
                   check(op.bytes() < 4 || size % 4 == 0, "Operand is not aligned", instr.get());
@@ -923,7 +942,7 @@ validate_ir(Program* program)
                   if (non_mask_ops > 4) {
                      if (program->gfx_level < GFX11) {
                         check(instr->operands[i].regClass() == v1 ||
-                                 instr->operands[i].regClass() == v1.as_linear(),
+                                 instr->operands[i].regClass() == lv1,
                               "GFX10 MIMG VADDR must be v1 if NSA is used", instr.get());
                      } else {
                         unsigned num_scalar = program->gfx_level >= GFX12 ? (non_mask_ops - 4) : 4;
@@ -933,7 +952,7 @@ validate_ir(Program* program)
                             instr->opcode != aco_opcode::image_bvh8_intersect_ray &&
                             i < 3 + num_scalar) {
                            check(instr->operands[i].regClass() == v1 ||
-                                 instr->operands[i].regClass() == v1.as_linear(),
+                                    instr->operands[i].regClass() == lv1,
                                  "first 4 GFX11 MIMG VADDR must be v1 if NSA is used", instr.get());
                         }
                      }
@@ -993,9 +1012,8 @@ validate_ir(Program* program)
             break;
          }
          case Format::LDSDIR: {
-            check(instr->definitions.size() == 1 &&
-                     (instr->definitions[0].regClass() == v1 ||
-                      instr->definitions[0].regClass() == v1.as_linear()),
+            check(instr->definitions.size() == 1 && (instr->definitions[0].regClass() == v1 ||
+                                                     instr->definitions[0].regClass() == lv1),
                   "LDSDIR must have an v1 definition", instr.get());
             check(instr->operands.size() == 1, "LDSDIR must have an operand", instr.get());
             if (!instr->operands.empty()) {
@@ -1064,6 +1082,20 @@ validate_ir(Program* program)
          }
          default: break;
          }
+      }
+
+      /* Check that we have exactly one p_logical_start and one p_logical_end in each logical block
+       * of the CFG. */
+      check_block(num_p_logical_start <= 1 && num_p_logical_end == num_p_logical_start,
+                  "There must be exactly one p_logical_start and p_logical_end", &block);
+      if (program->progress < CompilationProgress::after_lower_to_hw) {
+         // TODO: this check requires aco_tests to either insert p_logical_start/end or being
+         // skipped check_block(num_p_logical_start == 1 || (block.index != 0 &&
+         // block.logical_preds.empty()),
+         //             "Missing p_logical_start / p_logical_end in logical block", &block);
+         check_block(num_p_logical_start == 0 || block.index == 0 || !block.logical_preds.empty(),
+                     "p_logical_start and p_logical_end are only allowed in logical blocks",
+                     &block);
       }
    }
 
@@ -1139,14 +1171,14 @@ validate_cfg(Program* program)
                      "logical successors must be sorted", &block);
 
       /* critical edges are not allowed */
-      if (block.linear_preds.size() > 1) {
+      if (block.linear_preds.size() > 1)
          for (unsigned pred : block.linear_preds)
             check_block(program->blocks[pred].linear_succs.size() == 1,
                         "linear critical edges are not allowed", &program->blocks[pred]);
+      if (block.logical_preds.size() > 1)
          for (unsigned pred : block.logical_preds)
             check_block(program->blocks[pred].logical_succs.size() == 1,
                         "logical critical edges are not allowed", &program->blocks[pred]);
-      }
    }
 
    return is_valid;
@@ -1560,11 +1592,6 @@ validate_call(Program* program, std::array<unsigned, 2048>& regs,
    RegisterDemand limit = get_addr_regs_from_waves(program, program->min_waves);
    BITSET_DECLARE(preserved_regs, 512);
    instr->call().abi.preservedRegisters(preserved_regs, limit);
-
-   /* TODO: This is a hack. I think the return address should not be precolored to a preserved
-    * register. */
-   BITSET_CLEAR(preserved_regs, instr->definitions[0].physReg().reg());
-   BITSET_CLEAR(preserved_regs, instr->definitions[0].physReg().reg() + 1);
 
    for (unsigned i = 0; i < regs.size(); i++) {
       unsigned temp = regs[i];

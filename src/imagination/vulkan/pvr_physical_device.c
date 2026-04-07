@@ -148,13 +148,16 @@ static void pvr_physical_device_get_supported_extensions(
       .KHR_maintenance1 = true,
       .KHR_maintenance2 = true,
       .KHR_maintenance3 = true,
+      .KHR_maintenance4 = true,
       .KHR_map_memory2 = true,
       .KHR_multiview = true,
+      .KHR_pipeline_executable_properties = true,
       .KHR_present_id2 = PVR_USE_WSI_PLATFORM,
       .KHR_present_wait2 = PVR_USE_WSI_PLATFORM,
       .KHR_relaxed_block_layout = true,
       .KHR_robustness2 = true,
       .KHR_sampler_mirror_clamp_to_edge = true,
+      .KHR_sampler_ycbcr_conversion = true,
       .KHR_separate_depth_stencil_layouts = true,
       .KHR_shader_draw_parameters = true,
       .KHR_shader_expect_assume = false,
@@ -176,6 +179,7 @@ static void pvr_physical_device_get_supported_extensions(
       .EXT_custom_border_color = true,
       .EXT_depth_clamp_zero_one = true,
       .EXT_depth_clip_enable = true,
+      .EXT_image_drm_format_modifier = true,
       .EXT_extended_dynamic_state = true,
       .EXT_extended_dynamic_state2 = true,
       .EXT_extended_dynamic_state3 = true,
@@ -185,6 +189,7 @@ static void pvr_physical_device_get_supported_extensions(
       .EXT_index_type_uint8 = false,
       .EXT_line_rasterization = true,
       .EXT_map_memory_placed = true,
+      .EXT_non_seamless_cube_map = true,
       .EXT_physical_device_drm = true,
       .EXT_private_data = true,
       .EXT_provoking_vertex = true,
@@ -270,7 +275,7 @@ static void pvr_physical_device_get_supported_features(
       .storageInputOutput16 = false,
       .variablePointers = false,
       .protectedMemory = false,
-      .samplerYcbcrConversion = false,
+      .samplerYcbcrConversion = true,
 
       /* Vulkan 1.2 */
       .samplerMirrorClampToEdge = true,
@@ -324,6 +329,9 @@ static void pvr_physical_device_get_supported_features(
       .multiview = true,
       .multiviewGeometryShader = false,
       .multiviewTessellationShader = false,
+
+      /* Vulkan 1.3 / VK_KHR_maintenance4 */
+      .maintenance4 = true,
 
       /* Vulkan 1.1 / VK_KHR_shader_draw_parameters */
       .shaderDrawParameters = true,
@@ -404,6 +412,9 @@ static void pvr_physical_device_get_supported_features(
       .memoryMapRangePlaced = false,
       .memoryUnmapReserve = true,
 
+      /* VK_EXT_non_seamless_cube_map */
+      .nonSeamlessCubeMap = true,
+
       /* Vulkan 1.3 / VK_EXT_private_data */
       .privateData = true,
 
@@ -466,6 +477,9 @@ static void pvr_physical_device_get_supported_features(
 
       /* Vulkan 1.2 / VK_KHR_dynamic_rendering */
       .dynamicRendering = true,
+
+      /* VK_KHR_pipeline_executable_properties */
+      .pipelineExecutableInfo = true,
    };
 }
 
@@ -798,6 +812,9 @@ static bool pvr_physical_device_get_properties(
       .uniformTexelBufferOffsetAlignmentBytes = PVR_TEXEL_BUFFER_OFFSET_ALIGNMENT,
       .uniformTexelBufferOffsetSingleTexelAlignment = false,
 
+      /* Vulkan 1.3 / VK_KHR_maintenance4 */
+      .maxBufferSize = max_memory_alloc_size,
+
       /* Vulkan 1.4 / VK_EXT_vertex_attribute_divisor / VK_KHR_vertex_attribute_divisor */
       .maxVertexAttribDivisor = UINT32_MAX,
       .supportsNonZeroFirstInstance = true,
@@ -806,8 +823,8 @@ static bool pvr_physical_device_get_properties(
       .maxCustomBorderColorSamplers =
          get_custom_border_color_samplers(&pdevice->dev_info),
 
-      /* VkPhysicalDeviceDrmPropertiesEXT */
-      .drmHasPrimary = true,
+      /* VK_EXT_physical_device_drm */
+      .drmHasPrimary = pdevice->has_primary,
       .drmPrimaryMajor = (int64_t) major(pdevice->primary_devid),
       .drmPrimaryMinor = (int64_t) minor(pdevice->primary_devid),
       .drmHasRender = true,
@@ -849,11 +866,11 @@ static bool pvr_physical_device_setup_pipeline_cache(
 {
 #ifdef ENABLE_SHADER_CACHE
    const struct pvr_instance *instance = pdevice->instance;
-   char device_id[SHA1_DIGEST_LENGTH * 2 + 1];
-   char driver_id[SHA1_DIGEST_LENGTH * 2 + 1];
+   char device_id[BLAKE3_KEY_LEN * 2 + 1];
+   char driver_id[BLAKE3_KEY_LEN * 2 + 1];
 
-   _mesa_sha1_format(device_id, pdevice->device_uuid);
-   _mesa_sha1_format(driver_id, instance->driver_build_sha);
+   _mesa_blake3_format(device_id, pdevice->device_uuid);
+   _mesa_blake3_format(driver_id, instance->driver_build_sha);
 
    pdevice->vk.disk_cache = disk_cache_create(device_id, driver_id, 0U);
    return !!pdevice->vk.disk_cache;
@@ -864,35 +881,35 @@ static bool pvr_physical_device_setup_pipeline_cache(
 
 static void
 pvr_get_device_uuid(const struct pvr_device_info *dev_info,
-                    uint8_t uuid_out[const static SHA1_DIGEST_LENGTH])
+                    uint8_t uuid_out[const static BLAKE3_KEY_LEN])
 {
    uint64_t bvnc = pvr_get_packed_bvnc(dev_info);
    static const char *device_str = "pvr";
-   struct mesa_sha1 sha1_ctx;
+   blake3_hasher blake3_ctx;
 
-   _mesa_sha1_init(&sha1_ctx);
-   _mesa_sha1_update(&sha1_ctx, device_str, strlen(device_str));
-   _mesa_sha1_update(&sha1_ctx, &bvnc, sizeof(bvnc));
-   _mesa_sha1_final(&sha1_ctx, uuid_out);
+   _mesa_blake3_init(&blake3_ctx);
+   _mesa_blake3_update(&blake3_ctx, device_str, strlen(device_str));
+   _mesa_blake3_update(&blake3_ctx, &bvnc, sizeof(bvnc));
+   _mesa_blake3_final(&blake3_ctx, uuid_out);
 }
 
 static void
 pvr_get_cache_uuid(const struct pvr_physical_device *const pdevice,
-                   uint8_t uuid_out[const static SHA1_DIGEST_LENGTH])
+                   uint8_t uuid_out[const static BLAKE3_KEY_LEN])
 {
    const struct pvr_instance *instance = pdevice->instance;
    static const char *cache_str = "cache";
-   struct mesa_sha1 sha1_ctx;
+   blake3_hasher blake3_ctx;
 
-   _mesa_sha1_init(&sha1_ctx);
-   _mesa_sha1_update(&sha1_ctx, cache_str, strlen(cache_str));
-   _mesa_sha1_update(&sha1_ctx,
+   _mesa_blake3_init(&blake3_ctx);
+   _mesa_blake3_update(&blake3_ctx, cache_str, strlen(cache_str));
+   _mesa_blake3_update(&blake3_ctx,
                      pdevice->device_uuid,
                      sizeof(pdevice->device_uuid));
-   _mesa_sha1_update(&sha1_ctx,
+   _mesa_blake3_update(&blake3_ctx,
                      instance->driver_build_sha,
                      sizeof(instance->driver_build_sha));
-   _mesa_sha1_final(&sha1_ctx, uuid_out);
+   _mesa_blake3_final(&blake3_ctx, uuid_out);
 }
 
 static void
@@ -1001,14 +1018,12 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
    }
 
    primary_path = drm_render_device->nodes[DRM_NODE_PRIMARY];
-   if (stat(primary_path, &primary_stat) != 0) {
-      result = vk_errorf(instance,
-                         VK_ERROR_INITIALIZATION_FAILED,
-                         "failed to stat DRM primary node %s",
-                         primary_path);
-      goto err_vk_free_display_path;
+   pdevice->has_primary = false;
+   pdevice->primary_devid = 0;
+   if (!stat(primary_path, &primary_stat)) {
+      pdevice->has_primary = true;
+      pdevice->primary_devid = primary_stat.st_rdev;
    }
-   pdevice->primary_devid = primary_stat.st_rdev;
 
    if (stat(render_path, &render_stat) != 0) {
       result = vk_errorf(instance,
@@ -1020,7 +1035,8 @@ VkResult pvr_physical_device_init(struct pvr_physical_device *pdevice,
    pdevice->render_devid = render_stat.st_rdev;
 
    result =
-      pvr_winsys_create(render_path, display_path, &instance->vk.alloc, &ws);
+      pvr_winsys_create(render_path, display_path, true,
+                        &instance->vk.alloc, &ws);
    if (result != VK_SUCCESS)
       goto err_vk_free_display_path;
 

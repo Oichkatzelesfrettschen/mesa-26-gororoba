@@ -59,9 +59,6 @@ debian-x86_64-asan:
   variables:
     VULKAN_DRIVERS: "swrast,amd,intel"
     GALLIUM_DRIVERS: "llvmpipe,softpipe,zink,r300"
-    C_ARGS: >
-      -Wno-error=stringop-truncation
-      -Wno-error=deprecated-declarations
     EXTRA_OPTION: >
       -D intel-elk=false
       -D intel-rt=false
@@ -122,7 +119,6 @@ debian-x86_64-msan:
       -Wno-error=overloaded-virtual
       -Wno-error=tautological-constant-out-of-range-compare
       -Wno-error=unused-private-field
-      -Wno-error=vla-cxx-extension
       -Wno-error=deprecated-declarations
     RUN_MESON_TESTS: "false"  # just too slow
     # Do a host build for mesa-clc and precomp-compiler (msan complains about uninitialized
@@ -147,12 +143,6 @@ debian-x86_64-ubsan:
     - .meson-build-for-tests
     - .build-run-long
   variables:
-    C_ARGS: >
-      -Wno-error=stringop-overflow
-      -Wno-error=stringop-truncation
-      -Wno-error=deprecated-declarations
-    CPP_ARGS: >
-      -Wno-error=array-bounds
     GALLIUM_DRIVERS: "llvmpipe,softpipe"
     VULKAN_DRIVERS: "swrast"
     EXTRA_OPTION: >
@@ -194,7 +184,7 @@ debian-build-x86_64:
     GALLIUM_ST: >
       -D gallium-extra-hud=true
       -D gallium-va=enabled
-      -D gallium-rusticl=false
+      -D gallium-rusticl=true
       -D legacy-wayland=bind-wayland-display
     GALLIUM_DRIVERS: "i915,iris,nouveau,r300,r600,freedreno,llvmpipe,softpipe,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink,d3d12,asahi,crocus,radeonsi"
     VULKAN_DRIVERS: "intel_hasvk,imagination,microsoft-experimental,nouveau,swrast"
@@ -213,7 +203,6 @@ debian-release:
   variables:
     UNWIND: "enabled"
     C_ARGS: >
-      -Wno-error=stringop-overread
       -Wno-error=deprecated-declarations
     CPP_ARGS: >
       -Wno-error=deprecated-declarations
@@ -252,8 +241,6 @@ alpine-build-testing:
     C_ARGS: >
       -Wno-error=cpp
       -Wno-error=array-bounds
-      -Wno-error=stringop-overflow
-      -Wno-error=stringop-overread
       -Wno-error=deprecated-declarations
     DRI_LOADERS: >
       -D glx=disabled
@@ -289,14 +276,10 @@ fedora-release:
     # maybe-uninitialized is misfiring in nir_lower_gs_intrinsics.c, and
     # a "maybe" warning should never be an error anyway.
     C_ARGS: >
-      -Wno-error=stringop-overflow
-      -Wno-error=stringop-overread
       -Wno-error=array-bounds
       -Wno-error=maybe-uninitialized
       -Wno-error=deprecated-declarations
     CPP_ARGS: >
-      -Wno-error=dangling-reference
-      -Wno-error=overloaded-virtual
       -Wno-error=deprecated-declarations
     DRI_LOADERS: >
       -D glx=dri
@@ -339,13 +322,8 @@ debian-android:
       -Wno-error=enum-conversion
       -Wno-error=initializer-overrides
       -Wno-error=sometimes-uninitialized
-      -Wno-error=deprecated-declarations
     CPP_ARGS: >
       -Wno-error=c99-designator
-      -Wno-error=unused-variable
-      -Wno-error=unused-but-set-variable
-      -Wno-error=self-assign
-      -Wno-error=deprecated-declarations
     DRI_LOADERS: >
       -D glx=disabled
       -D gbm=disabled
@@ -363,6 +341,7 @@ debian-android:
       -D mesa-clc=system
       -D precomp-compiler=system
       -D perfetto=true
+      -D freedreno-kmds=msm,virtio
     GALLIUM_ST: >
       -D gallium-va=disabled
       -D gallium-rusticl=false
@@ -482,10 +461,6 @@ debian-arm64:
     - .ci-deqp-artifacts
     - .meson-build-for-tests
   variables:
-    C_ARGS: >
-      -Wno-error=array-bounds
-      -Wno-error=stringop-truncation
-      -Wno-error=deprecated-declarations
     GALLIUM_DRIVERS: "etnaviv,freedreno,lima,panfrost,v3d,vc4,zink"
     VULKAN_DRIVERS: "broadcom,freedreno,imagination,panfrost"
     DRI_LOADERS:
@@ -498,6 +473,7 @@ debian-arm64:
       -D perfetto=true
     GALLIUM_ST:
       -D gallium-rusticl=true
+      -D legacy-wayland=bind-wayland-display
     RUN_MESON_TESTS: "false"  # run by debian-arm64-build-testing
     S3_ARTIFACT_NAME: mesa-arm64-default-${BUILDTYPE}
 
@@ -509,8 +485,6 @@ debian-arm64-asan:
   variables:
     VULKAN_DRIVERS: "broadcom,freedreno,panfrost"
     GALLIUM_DRIVERS: "freedreno,vc4,v3d,panfrost"
-    C_ARGS: >
-      -Wno-error=deprecated-declarations
     DRI_LOADERS:
       -D glvnd=disabled
     EXTRA_OPTION: >
@@ -532,12 +506,6 @@ debian-arm64-ubsan:
     GALLIUM_DRIVERS: "v3d,vc4"
     C_ARGS: >
       -Wno-error=array-bounds
-      -Wno-error=stringop-overflow
-      -Wno-error=stringop-truncation
-      -Wno-error=deprecated-declarations
-    CPP_ARGS: >
-      -Wno-error=array-bounds
-      -fno-var-tracking-assignments
     DRI_LOADERS:
       -D glvnd=disabled
     EXTRA_OPTION: >
@@ -567,10 +535,6 @@ debian-arm64-release:
   variables:
     BUILDTYPE: release
     S3_ARTIFACT_NAME: mesa-arm64-default-${BUILDTYPE}
-    C_ARGS: >
-      -Wno-error=array-bounds
-      -Wno-error=stringop-overread
-      -Wno-error=deprecated-declarations
   script:
     - !reference [.meson-build-only, script]
     - 'if [ -n "$MESA_CI_PERFORMANCE_ENABLED" ]; then .gitlab-ci/prepare-artifacts.sh; fi'
@@ -583,15 +547,13 @@ debian-no-libdrm:
     VULKAN_DRIVERS: freedreno
     GALLIUM_DRIVERS: "zink,llvmpipe"
     BUILDTYPE: release
-    C_ARGS: >
-      -Wno-error=stringop-overread
-      -Wno-error=deprecated-declarations
     EXTRA_OPTION: >
       -D freedreno-kmds=kgsl
-      -D glx=disabled
+      -D glx=dri
       -D gbm=disabled
-      -D egl=disabled
+      -D egl=enabled
       -D perfetto=true
+      -D platforms=x11,wayland
 
 debian-clang:
   extends:

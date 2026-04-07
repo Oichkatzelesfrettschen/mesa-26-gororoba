@@ -13,7 +13,7 @@ variables:
   # 4. lava/health-check-docker - the slim container used for fastboot
   # Set image: directly instead of extending .set-image to avoid conflicts
   # with MESA_IMAGE_PATH and FDO_DISTRIBUTION_TAG between the containers.
-  image: registry.freedesktop.org/gfx-ci/lava-job-submitter/alpine/x86_64_lava-trigger:20251111.0
+  image: registry.freedesktop.org/gfx-ci/lava-job-submitter/alpine/x86_64_lava-trigger:20260302.0
   # Cancel job if a newer commit is pushed to the same branch
   interruptible: true
   # The jobs themselves shouldn't actually run for an hour, of course.
@@ -186,6 +186,24 @@ variables:
     KERNEL_IMAGE_NAME: Image
     KERNEL_IMAGE_TYPE: "image"
     BOOT_METHOD: u-boot
+
+.lava-arm64-test-android:
+  extends:
+    - .use-debian/arm64_test-android
+    - .lava-arm64-test
+    - .android-variables
+  variables:
+    HWCI_KERNEL_MODULES: vhost_vsock
+    HWCI_TEST_SCRIPT: install/cuttlefish-runner.sh
+    S3_ANDROID_ARTIFACT_NAME: mesa-arm64-android-debug
+  needs:
+    - job: debian/arm64_test-android
+      artifacts: false
+      optional: true
+    - job: debian-arm64  # The generic Linux build for the host will be downloaded later
+      artifacts: false
+    - job: debian-android  # The Android build for the guest will be downloaded later and installed via adb
+      artifacts: false
 
 .lava-arm64-test-gl:
   extends:

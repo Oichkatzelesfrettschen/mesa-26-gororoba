@@ -22,6 +22,8 @@ enum tu_gmem_layout
    TU_GMEM_LAYOUT_COUNT,
 };
 
+constexpr uint32_t TU_GMEM_LAYOUT_DIVISOR_MAX = 6; /* 1x (no divisor), 2 (1/2), 3 (1/3) */
+
 struct tu_subpass_barrier {
    VkPipelineStageFlags2 src_stage_mask;
    VkPipelineStageFlags2 dst_stage_mask;
@@ -103,6 +105,9 @@ struct tu_render_pass_attachment
     * determine which views to apply loadOp/storeOp to.
     */
    uint32_t used_views;
+   /* All views where this attachment is used as a resolve attachment.
+    */
+   uint32_t resolve_views;
    /* The internal MSRTSS attachment to clear when the user says to clear
     * this attachment. Clear values must be remapped to this attachment.
     */

@@ -96,7 +96,6 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
    set_layout->has_immutable_samplers = false;
    set_layout->size = 0;
 
-   uint32_t buffer_count = 0;
    uint32_t dynamic_offset_count = 0;
 
    uint32_t first_alignment = 32;
@@ -118,7 +117,6 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
          const VkDescriptorSetLayoutBinding *binding = bindings + j;
          uint32_t b = binding->binding;
          uint32_t alignment = radv_descriptor_alignment(binding->descriptorType);
-         unsigned binding_buffer_count = radv_descriptor_type_buffer_count(binding->descriptorType);
          uint32_t descriptor_count = binding->descriptorCount;
          uint32_t max_sampled_image_descriptors = 1;
          bool has_ycbcr_sampler = false;
@@ -193,7 +191,6 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
          set_layout->binding[b].type = binding->descriptorType;
          set_layout->binding[b].array_size = descriptor_count;
          set_layout->binding[b].offset = set_layout->size;
-         set_layout->binding[b].buffer_offset = buffer_count;
          set_layout->binding[b].dynamic_offset_offset = dynamic_offset_count;
          set_layout->binding[b].has_ycbcr_sampler = has_ycbcr_sampler;
 
@@ -232,14 +229,12 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
          }
 
          set_layout->size += descriptor_count * set_layout->binding[b].size;
-         buffer_count += descriptor_count * binding_buffer_count;
          dynamic_offset_count += descriptor_count * set_layout->binding[b].dynamic_offset_count;
       }
    }
 
    free(bindings);
 
-   set_layout->buffer_count = buffer_count;
    set_layout->dynamic_offset_count = dynamic_offset_count;
 
    /* Hash the entire set layout except vk_descriptor_set_layout. The rest of the set layout is
@@ -416,13 +411,7 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
       return VK_ERROR_OUT_OF_POOL_MEMORY;
 
    struct radv_descriptor_set *set;
-   uint32_t buffer_count = layout->buffer_count;
-   if (variable_count) {
-      unsigned stride = radv_descriptor_type_buffer_count(layout->binding[layout->binding_count - 1].type);
-      buffer_count = layout->binding[layout->binding_count - 1].buffer_offset + variable_count * stride;
-   }
-   unsigned range_offset =
-      offsetof(struct radv_descriptor_set, descriptors) + sizeof(struct radeon_winsys_bo *) * buffer_count;
+   unsigned range_offset = sizeof(struct radv_descriptor_set);
    const unsigned dynamic_offset_count = layout->dynamic_offset_count;
    unsigned mem_size = range_offset + sizeof(struct radv_descriptor_range) * dynamic_offset_count;
 
@@ -448,7 +437,6 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
    }
 
    set->header.layout = layout;
-   set->header.buffer_count = buffer_count;
    uint32_t layout_size = layout->size;
    if (variable_count) {
       uint32_t stride = layout->binding[layout->binding_count - 1].size;
@@ -575,7 +563,6 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
       const struct radv_descriptor_set_binding_layout *binding_layout =
          set->header.layout->binding + writeset->dstBinding;
       uint32_t *ptr = set->header.mapped_ptr;
-      struct radeon_winsys_bo **buffer_list = set->descriptors;
       /* Immutable samplers are not copied into push descriptors when they are
        * allocated, so if we are writing push descriptors we have to copy the
        * immutable samplers into them now.
@@ -587,15 +574,13 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
       ptr += binding_layout->offset / 4;
 
       if (writeset->descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-         radv_write_block_descriptor(device, cmd_buffer, (uint8_t *)ptr + writeset->dstArrayElement, writeset);
+         radv_write_block_descriptor((uint8_t *)ptr + writeset->dstArrayElement, writeset);
          continue;
       } else if (writeset->descriptorType == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
          accel_structs = vk_find_struct_const(writeset->pNext, WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR);
       }
 
       ptr += binding_layout->size * writeset->dstArrayElement / 4;
-      buffer_list += binding_layout->buffer_offset;
-      buffer_list += writeset->dstArrayElement * radv_descriptor_type_buffer_count(writeset->descriptorType);
       for (j = 0; j < writeset->descriptorCount; ++j) {
          switch (writeset->descriptorType) {
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
@@ -603,33 +588,32 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
             unsigned idx = writeset->dstArrayElement + j;
             idx += binding_layout->dynamic_offset_offset;
             assert(!(set->header.layout->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT));
-            radv_write_dynamic_buffer_descriptor(device, set->header.dynamic_descriptors + idx, buffer_list,
-                                                 writeset->pBufferInfo + j);
+            radv_write_dynamic_buffer_descriptor(set->header.dynamic_descriptors + idx, writeset->pBufferInfo + j);
             break;
          }
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-            radv_write_buffer_descriptor_impl(device, cmd_buffer, ptr, buffer_list, writeset->pBufferInfo + j);
+            radv_write_buffer_descriptor_impl(device, ptr, writeset->pBufferInfo + j);
             break;
          case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-            radv_write_texel_buffer_descriptor(device, cmd_buffer, ptr, buffer_list, writeset->pTexelBufferView[j]);
+            radv_write_texel_buffer_descriptor(ptr, writeset->pTexelBufferView[j]);
             break;
          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-            radv_write_image_descriptor_impl(device, cmd_buffer, RADV_STORAGE_IMAGE_DESC_SIZE, ptr, buffer_list,
-                                             writeset->descriptorType, writeset->pImageInfo + j);
+            radv_write_image_descriptor(ptr, RADV_STORAGE_IMAGE_DESC_SIZE, writeset->descriptorType,
+                                        writeset->pImageInfo + j);
             break;
          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-            radv_write_image_descriptor_impl(device, cmd_buffer, radv_get_sampled_image_desc_size(pdev), ptr,
-                                             buffer_list, writeset->descriptorType, writeset->pImageInfo + j);
+            radv_write_image_descriptor(ptr, radv_get_sampled_image_desc_size(pdev), writeset->descriptorType,
+                                        writeset->pImageInfo + j);
             break;
          case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
             if (binding_layout->has_ycbcr_sampler) {
-               radv_write_image_descriptor_ycbcr_impl(device, cmd_buffer, ptr, buffer_list, writeset->pImageInfo + j);
+               radv_write_image_descriptor_ycbcr(device, ptr, writeset->pImageInfo + j);
             } else {
-               radv_write_combined_image_sampler_descriptor(device, cmd_buffer, ptr, buffer_list,
-                                                            writeset->descriptorType, writeset->pImageInfo + j,
+               radv_write_combined_image_sampler_descriptor(device, ptr, writeset->descriptorType,
+                                                            writeset->pImageInfo + j,
                                                             !binding_layout->immutable_samplers_offset);
             }
 
@@ -661,7 +645,6 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
             break;
          }
          ptr += binding_layout->size / 4;
-         buffer_list += radv_descriptor_type_buffer_count(writeset->descriptorType);
       }
    }
 
@@ -675,8 +658,6 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
          dst_set->header.layout->binding + copyset->dstBinding;
       uint32_t *src_ptr = src_set->header.mapped_ptr;
       uint32_t *dst_ptr = dst_set->header.mapped_ptr;
-      struct radeon_winsys_bo **src_buffer_list = src_set->descriptors;
-      struct radeon_winsys_bo **dst_buffer_list = dst_set->descriptors;
 
       src_ptr += src_binding_layout->offset / 4;
       dst_ptr += dst_binding_layout->offset / 4;
@@ -691,12 +672,6 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
 
       src_ptr += src_binding_layout->size * copyset->srcArrayElement / 4;
       dst_ptr += dst_binding_layout->size * copyset->dstArrayElement / 4;
-
-      src_buffer_list += src_binding_layout->buffer_offset;
-      src_buffer_list += copyset->srcArrayElement;
-
-      dst_buffer_list += dst_binding_layout->buffer_offset;
-      dst_buffer_list += copyset->dstArrayElement;
 
       /* In case of copies between mutable descriptor types
        * and non-mutable descriptor types. */
@@ -718,18 +693,6 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
 
          src_ptr += src_binding_layout->size / 4;
          dst_ptr += dst_binding_layout->size / 4;
-
-         unsigned src_buffer_count = radv_descriptor_type_buffer_count(src_binding_layout->type);
-         unsigned dst_buffer_count = radv_descriptor_type_buffer_count(dst_binding_layout->type);
-         for (unsigned k = 0; k < dst_buffer_count; k++) {
-            if (k < src_buffer_count)
-               dst_buffer_list[k] = src_buffer_list[k];
-            else
-               dst_buffer_list[k] = NULL;
-         }
-
-         dst_buffer_list += dst_buffer_count;
-         src_buffer_list += src_buffer_count;
       }
    }
 }

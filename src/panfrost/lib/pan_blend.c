@@ -62,7 +62,8 @@ is_2srcdest(enum pipe_blend_func blend_func, enum pipe_blendfactor src_factor,
 }
 
 static bool
-can_fixed_function_equation(enum pipe_blend_func blend_func,
+can_fixed_function_equation(unsigned arch,
+                            enum pipe_blend_func blend_func,
                             enum pipe_blendfactor src_factor,
                             enum pipe_blendfactor dest_factor,
                             bool is_alpha, bool is_float,
@@ -96,6 +97,9 @@ can_fixed_function_equation(enum pipe_blend_func blend_func,
       enum pipe_blendfactor src = util_blendfactor_without_invert(src_factor);
       enum pipe_blendfactor dest = util_blendfactor_without_invert(dest_factor);
 
+      if (arch < 6 &&
+          (src == PIPE_BLENDFACTOR_DST_ALPHA))
+         return false;
       return (src == dest) || (src == PIPE_BLENDFACTOR_ONE) ||
              (dest == PIPE_BLENDFACTOR_ONE);
    }
@@ -278,15 +282,16 @@ pan_pack_blend_constant(enum pipe_format format, float cons)
 /* Determines if an equation can run in fixed function */
 
 bool
-pan_blend_can_fixed_function(const struct pan_blend_equation equation,
+pan_blend_can_fixed_function(unsigned arch,
+                             const struct pan_blend_equation equation,
                              bool supports_2src)
 {
    return !equation.blend_enable ||
-          (can_fixed_function_equation(
+          (can_fixed_function_equation(arch,
               equation.rgb_func, equation.rgb_src_factor,
               equation.rgb_dst_factor, false /* is_alpha */,
               equation.is_float, supports_2src) &&
-           can_fixed_function_equation(
+           can_fixed_function_equation(arch,
               equation.alpha_func, equation.alpha_src_factor,
               equation.alpha_dst_factor, true /* is_alpha */,
               equation.is_float, supports_2src));
@@ -328,10 +333,6 @@ to_mali_function(enum pipe_blend_func blend_func,
                  bool is_alpha, bool is_float,
                  struct MALI_BLEND_FUNCTION *function)
 {
-   assert(can_fixed_function_equation(blend_func, src_factor, dest_factor,
-                                      is_alpha, is_float,
-                                      true /* supports_2src */));
-
    /* We handle ZERO/ONE specially since it's the hardware has 0 and can invert
     * to 1 but Gallium has 0 as the uninverted version.
     */
@@ -773,6 +774,26 @@ get_equation_str(const struct pan_blend_rt_state *rt_state, char *str,
    }
 }
 
+enum pipe_format
+GENX(pan_blend_shader_fmt)(enum pipe_format format)
+{
+   switch (format) {
+#if PAN_ARCH < 6
+   case PIPE_FORMAT_A16_FLOAT:
+   case PIPE_FORMAT_I16_FLOAT:
+      return PIPE_FORMAT_R16G16B16A16_FLOAT;
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+   case PIPE_FORMAT_R10G10B10X2_UNORM:
+      return PIPE_FORMAT_R8G8B8A8_UNORM;
+#endif
+   case PIPE_FORMAT_A8_UNORM:
+   case PIPE_FORMAT_L8A8_UNORM:
+      return PIPE_FORMAT_R8G8B8A8_UNORM;
+   default:
+      return format;
+   }
+}
+
 nir_shader *
 GENX(pan_blend_create_shader)(const struct pan_blend_state *state,
                               nir_alu_type src0_type, nir_alu_type src1_type,
@@ -791,7 +812,7 @@ GENX(pan_blend_create_shader)(const struct pan_blend_state *state,
       state->logicop_enable ? logicop_str(state->logicop_func) : equation_str);
    nir_builder *b = &builder;
 
-   const enum pipe_format format = rt_state->format;
+   const enum pipe_format format = GENX(pan_blend_shader_fmt)(rt_state->format);
    const struct util_format_description *format_desc =
       util_format_description(format);
 

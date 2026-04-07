@@ -12,7 +12,6 @@
 #define RADV_SHADER_H
 
 #include "util/mesa-blake3.h"
-#include "util/sha1/sha1.h"
 #include "util/shader_stats.h"
 #include "util/u_math.h"
 #include "vulkan/vulkan.h"
@@ -104,6 +103,7 @@ struct radv_ps_epilog_key {
    uint8_t color_is_int8;
    uint8_t color_is_int10;
    uint8_t enable_mrt_output_nan_fixup;
+   uint8_t no_signed_zero;
 
    uint32_t colors_needed;
 
@@ -186,6 +186,10 @@ struct radv_graphics_pipeline_key {
 };
 
 struct radv_nir_compiler_options {
+   const struct ac_compiler_info *compiler_info;
+   enum amd_gfx_level gfx_level;
+   enum radeon_family family;
+   uint32_t address32_hi;
    bool robust_buffer_access_llvm;
    bool dump_shader;
    bool dump_ir;
@@ -196,7 +200,6 @@ struct radv_nir_compiler_options {
    bool check_ir;
    uint8_t enable_mrt_output_nan_fixup;
    bool wgp_mode;
-   const struct radeon_info *info;
 
    struct {
       void (*func)(void *private_data, enum aco_compiler_debug_level level, const char *message);
@@ -257,6 +260,8 @@ struct radv_shader_layout {
 
    uint32_t dynamic_offset_count;
    bool use_dynamic_descriptors;
+
+   bool independent_sets;
 };
 
 struct radv_shader_stage {
@@ -272,7 +277,7 @@ struct radv_shader_stage {
    const char *entrypoint;
    const VkSpecializationInfo *spec_info;
 
-   unsigned char shader_sha1[SHA1_DIGEST_LENGTH];
+   unsigned char shader_blake3[BLAKE3_KEY_LEN];
 
    nir_shader *nir;
    nir_shader *gs_copy_shader;
@@ -409,6 +414,19 @@ struct radv_serialized_shader_arena_block {
    uint32_t arena_size;
 };
 
+struct radv_shader_debug_info {
+   bool dump_shader;
+   uint32_t stages; /* mesa_shader_stage */
+   char *spirv;
+   uint32_t spirv_size;
+   char *nir_string;
+   char *disasm_string;
+   char *ir_string;
+   struct amd_stats *statistics;
+   struct ac_shader_debug_info *debug_info;
+   uint32_t debug_info_count;
+};
+
 struct radv_shader {
    struct vk_pipeline_cache_object base;
 
@@ -431,15 +449,7 @@ struct radv_shader {
    blake3_hash hash;
    void *code;
 
-   /* debug only */
-   char *spirv;
-   uint32_t spirv_size;
-   char *nir_string;
-   char *disasm_string;
-   char *ir_string;
-   struct amd_stats *statistics;
-   struct ac_shader_debug_info *debug_info;
-   uint32_t debug_info_count;
+   struct radv_shader_debug_info dbg;
 };
 
 struct radv_shader_part {
@@ -511,6 +521,9 @@ void radv_destroy_shader_upload_queue(struct radv_device *device);
 
 struct radv_shader_args;
 
+VkResult radv_parse_binary_debug_info(struct radv_device *device, const struct radv_shader_binary *binary,
+                                      struct radv_shader_debug_info *dbg);
+
 VkResult radv_shader_create_uncached(struct radv_device *device, const struct radv_shader_binary *binary,
                                      bool replayable, struct radv_serialized_shader_arena_block *replay_block,
                                      struct radv_shader **out_shader);
@@ -520,9 +533,8 @@ struct radv_shader_binary *radv_shader_nir_to_asm(struct radv_device *device, st
                                                   const struct radv_graphics_state_key *gfx_state,
                                                   bool keep_shader_info, bool keep_statistic_info);
 
-void radv_shader_dump_debug_info(struct radv_device *device, bool dump_shader, struct radv_shader_binary *binary,
-                                 struct radv_shader *shader, struct nir_shader *const *shaders, int shader_count,
-                                 struct radv_shader_info *info);
+void radv_shader_dump_asm(struct radv_device *device, const struct radv_shader_debug_info *debug,
+                          const struct radv_shader_info *info);
 
 struct radv_instance;
 char *radv_dump_nir_shaders(const struct radv_instance *instance, struct nir_shader *const *shaders, int shader_count);
@@ -579,8 +591,7 @@ unsigned radv_get_max_scratch_waves(const struct radv_device *device, struct rad
 
 const char *radv_get_shader_name(const struct radv_shader_info *info, mesa_shader_stage stage);
 
-unsigned radv_compute_spi_ps_input(const struct radv_physical_device *pdev,
-                                   const struct radv_graphics_state_key *gfx_state,
+unsigned radv_compute_spi_ps_input(enum amd_gfx_level gfx_level, const struct radv_graphics_state_key *gfx_state,
                                    const struct radv_shader_info *info);
 
 bool radv_is_traversal_shader(nir_shader *nir);
@@ -590,7 +601,7 @@ bool radv_can_dump_shader(struct radv_device *device, nir_shader *nir);
 bool radv_can_dump_shader_stats(struct radv_device *device, nir_shader *nir);
 
 VkResult radv_dump_shader_stats(struct radv_device *device, struct radv_pipeline *pipeline, struct radv_shader *shader,
-                                mesa_shader_stage stage, FILE *output);
+                                FILE *output);
 
 /* Returns true on success and false on failure */
 bool radv_shader_reupload(struct radv_device *device, struct radv_shader *shader);
@@ -691,6 +702,13 @@ static inline bool
 radv_shader_need_push_constants_upload(const struct radv_shader *shader)
 {
    const struct radv_userdata_info *loc = radv_get_user_sgpr_info(shader, AC_UD_PUSH_CONSTANTS);
+   return loc->sgpr_idx != -1;
+}
+
+static inline bool
+radv_shader_need_dynamic_descriptors_offset_addr(const struct radv_shader *shader)
+{
+   const struct radv_userdata_info *loc = radv_get_user_sgpr_info(shader, AC_UD_DYNAMIC_DESCRIPTORS_OFFSET_ADDR);
    return loc->sgpr_idx != -1;
 }
 

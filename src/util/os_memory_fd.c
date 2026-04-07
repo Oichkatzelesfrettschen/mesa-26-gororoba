@@ -42,7 +42,7 @@
 #include <sys/mman.h>
 
 #include "anon_file.h"
-#include "mesa-sha1.h"
+#include "mesa-blake3.h"
 #include "u_math.h"
 #include "u_overflow.h"
 #include "os_memory.h"
@@ -57,13 +57,13 @@ struct memory_header {
 };
 
 static void
-get_driver_id_sha1_hash(uint8_t sha1[SHA1_DIGEST_LENGTH], const char *driver_id) {
-   struct mesa_sha1 sha1_ctx;
-   _mesa_sha1_init(&sha1_ctx);
+get_driver_id_blake3_hash(uint8_t blake3[BLAKE3_KEY_LEN], const char *driver_id) {
+   blake3_hasher blake3_ctx;
+   _mesa_blake3_init(&blake3_ctx);
 
-   _mesa_sha1_update(&sha1_ctx, driver_id, strlen(driver_id));
+   _mesa_blake3_update(&blake3_ctx, driver_id, strlen(driver_id));
 
-   _mesa_sha1_final(&sha1_ctx, sha1);
+   _mesa_blake3_final(&blake3_ctx, blake3);
 }
 
 static bool
@@ -76,11 +76,11 @@ get_fd_header(int fd, struct memory_header *header, char const *driver_id)
 
    // Check the uuid we put after the sizes in order to verify that the fd
    // is a memfd that we created and not some random fd.
-   uint8_t sha1[SHA1_DIGEST_LENGTH];
-   get_driver_id_sha1_hash(sha1, driver_id);
+   uint8_t blake3[BLAKE3_KEY_LEN];
+   get_driver_id_blake3_hash(blake3, driver_id);
 
-   assert(SHA1_DIGEST_LENGTH >= UUID_SIZE);
-   return memcmp(header->uuid, sha1, UUID_SIZE) == 0;
+   assert(BLAKE3_KEY_LEN >= UUID_SIZE);
+   return memcmp(header->uuid, blake3, UUID_SIZE) == 0;
 }
 
 /**
@@ -181,11 +181,11 @@ os_malloc_aligned_fd(size_t size, size_t alignment, int *fd, char const *fd_name
 
    // Add the hash of the driver_id as a uuid to the header in order to identify the memory
    // when importing.
-   uint8_t sha1[SHA1_DIGEST_LENGTH];
-   get_driver_id_sha1_hash(sha1, driver_id);
+   uint8_t blake3[BLAKE3_KEY_LEN];
+   get_driver_id_blake3_hash(blake3, driver_id);
 
-   assert(SHA1_DIGEST_LENGTH >= UUID_SIZE);
-   memcpy(header->uuid, sha1, UUID_SIZE);
+   assert(BLAKE3_KEY_LEN >= UUID_SIZE);
+   memcpy(header->uuid, blake3, UUID_SIZE);
 
    *fd = mem_fd;
    return buf;

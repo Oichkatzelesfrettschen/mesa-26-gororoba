@@ -60,6 +60,8 @@
 #define AMDGPU_VRAM_TYPE_DDR5  10
 #define AMDGPU_VRAM_TYPE_LPDDR4 11
 #define AMDGPU_VRAM_TYPE_LPDDR5 12
+#define AMDGPU_VRAM_TYPE_HBM3E 13
+#define AMDGPU_VRAM_TYPE_HBM4 14
 
 #define AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG2 0
 #define AMDGPU_INFO_VIDEO_CAPS_CODEC_IDX_MPEG4 1
@@ -323,24 +325,9 @@ extern "C" {
 
 /* All functions are static inline stubs on Windows. */
 #ifdef _WIN32
-#define PROC static inline
-#define TAIL                                                                                       \
-   {                                                                                               \
-      return -1;                                                                                   \
-   }
-#define TAILV                                                                                      \
-   {                                                                                               \
-   }
-#define TAILPTR                                                                                    \
-   {                                                                                               \
-      return NULL;                                                                                 \
-   }
-#else
-#define PROC
-#define TAIL
-#define TAILV
-#define TAILPTR
+#define __U_STUB__
 #endif
+#include "u_stub.h"
 
 struct ac_drm_device;
 typedef struct ac_drm_device ac_drm_device;

@@ -69,6 +69,25 @@ convert_pointer_to_64_bit(nir_builder *b, apply_layout_state *state, nir_def *pt
 }
 
 static nir_def *
+get_dynamic_descriptors_offset(nir_builder *b, apply_layout_state *state, uint32_t desc_set, uint32_t binding)
+{
+   struct radv_descriptor_set_layout *layout = state->layout->set[desc_set].layout;
+   nir_def *dynamic_offset_start;
+
+   if (state->layout->independent_sets) {
+      nir_def *addr = get_scalar_arg(b, 1, state->args->ac.dynamic_descriptors_offset_addr);
+      addr = convert_pointer_to_64_bit(b, state, addr);
+      dynamic_offset_start = ac_nir_load_smem(b, 1, addr, nir_imm_int(b, desc_set * 4), 4, 0);
+   } else {
+      dynamic_offset_start = nir_imm_int(b, state->layout->set[desc_set].dynamic_offset_start);
+   }
+
+   nir_def *offset = nir_iadd_imm(b, dynamic_offset_start, layout->binding[binding].dynamic_offset_offset);
+
+   return nir_imul_imm(b, offset, 16);
+}
+
+static nir_def *
 load_desc_ptr(nir_builder *b, apply_layout_state *state, unsigned set)
 {
    const struct radv_userdata_locations *user_sgprs_locs = &state->info->user_sgprs_locs;
@@ -89,22 +108,21 @@ visit_vulkan_resource_index(nir_builder *b, apply_layout_state *state, nir_intri
    unsigned desc_set = nir_intrinsic_desc_set(intrin);
    unsigned binding = nir_intrinsic_binding(intrin);
    struct radv_descriptor_set_layout *layout = state->layout->set[desc_set].layout;
-   unsigned offset = layout->binding[binding].offset;
    unsigned stride;
 
-   nir_def *set_ptr;
+   nir_def *set_ptr, *offset;
    if (vk_descriptor_type_is_dynamic(layout->binding[binding].type)) {
-      unsigned idx = state->layout->set[desc_set].dynamic_offset_start + layout->binding[binding].dynamic_offset_offset;
       set_ptr = get_dynamic_descriptors_addr(b, state);
-      offset = idx * 16;
+      offset = get_dynamic_descriptors_offset(b, state, desc_set, binding);
       stride = 16;
    } else {
       set_ptr = load_desc_ptr(b, state, desc_set);
+      offset = nir_imm_int(b, layout->binding[binding].offset);
       stride = layout->binding[binding].size;
    }
 
    nir_def *binding_ptr = nir_imul_imm_nuw(b, intrin->src[0].ssa, stride);
-   binding_ptr = nir_iadd_imm_nuw(b, binding_ptr, offset);
+   binding_ptr = nir_iadd_nuw(b, binding_ptr, offset);
 
    if (layout->binding[binding].type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
       assert(stride == 16);
@@ -118,8 +136,8 @@ visit_vulkan_resource_index(nir_builder *b, apply_layout_state *state, nir_intri
 static void
 visit_vulkan_resource_reindex(nir_builder *b, apply_layout_state *state, nir_intrinsic_instr *intrin)
 {
-   VkDescriptorType desc_type = nir_intrinsic_desc_type(intrin);
-   if (desc_type == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
+   nir_descriptor_type desc_type = nir_intrinsic_desc_type(intrin);
+   if (desc_type == nir_descriptor_type_acceleration_structure) {
       nir_def *set_ptr = nir_unpack_64_2x32_split_x(b, intrin->src[0].ssa);
       nir_def *binding_ptr = nir_unpack_64_2x32_split_y(b, intrin->src[0].ssa);
 
@@ -129,7 +147,7 @@ visit_vulkan_resource_reindex(nir_builder *b, apply_layout_state *state, nir_int
 
       nir_def_rewrite_uses(&intrin->def, nir_pack_64_2x32_split(b, set_ptr, binding_ptr));
    } else {
-      assert(desc_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || desc_type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+      assert(desc_type == nir_descriptor_type_uniform_buffer || desc_type == nir_descriptor_type_storage_buffer);
 
       nir_def *binding_ptr = nir_channel(b, intrin->src[0].ssa, 1);
       nir_def *stride = nir_channel(b, intrin->src[0].ssa, 2);
@@ -145,7 +163,7 @@ visit_vulkan_resource_reindex(nir_builder *b, apply_layout_state *state, nir_int
 static void
 visit_load_vulkan_descriptor(nir_builder *b, apply_layout_state *state, nir_intrinsic_instr *intrin)
 {
-   if (nir_intrinsic_desc_type(intrin) == VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR) {
+   if (nir_intrinsic_desc_type(intrin) == nir_descriptor_type_acceleration_structure) {
       nir_def *addr = convert_pointer_to_64_bit(b, state,
                                                 nir_iadd(b, nir_unpack_64_2x32_split_x(b, intrin->src[0].ssa),
                                                          nir_unpack_64_2x32_split_y(b, intrin->src[0].ssa)));
@@ -317,7 +335,7 @@ update_image_intrinsic(nir_builder *b, apply_layout_state *state, nir_intrinsic_
    if (intrin->intrinsic == nir_intrinsic_image_deref_descriptor_amd) {
       nir_def_replace(&intrin->def, desc);
    } else {
-      nir_rewrite_image_intrinsic(intrin, desc, true);
+      nir_rewrite_image_intrinsic(intrin, desc, nir_image_intrinsic_type_bindless);
    }
 }
 
@@ -497,8 +515,7 @@ apply_layout_to_tex(nir_builder *b, apply_layout_state *state, nir_tex_instr *te
       sampler = get_sampler_desc(b, state, sampler_deref_instr, AC_DESC_SAMPLER, tex->sampler_non_uniform, tex, false);
    }
 
-   if (sampler && state->disable_aniso_single_level && tex->sampler_dim < GLSL_SAMPLER_DIM_RECT &&
-       state->gfx_level < GFX8) {
+   if (sampler && state->disable_aniso_single_level && tex->sampler_dim < GLSL_SAMPLER_DIM_RECT) {
       /* Disable anisotropic filtering if BASE_LEVEL == LAST_LEVEL.
        *
        * GFX6-GFX7:
@@ -551,16 +568,16 @@ radv_nir_apply_pipeline_layout(nir_shader *shader, struct radv_device *device, c
 {
    bool progress = false;
    const struct radv_physical_device *pdev = radv_device_physical(device);
-   const struct radv_instance *instance = radv_physical_device_instance(pdev);
 
    apply_layout_state state = {
       .gfx_level = pdev->info.gfx_level,
       .address32_hi = pdev->info.address32_hi,
       .combined_image_sampler_desc_size = radv_get_combined_image_sampler_desc_size(pdev),
       .combined_image_sampler_offset = radv_get_combined_image_sampler_offset(pdev),
-      .disable_aniso_single_level = instance->drirc.debug.disable_aniso_single_level,
-      .has_image_load_dcc_bug = pdev->info.has_image_load_dcc_bug,
-      .disable_tg4_trunc_coord = !pdev->info.conformant_trunc_coord && !instance->drirc.debug.disable_trunc_coord,
+      .disable_aniso_single_level = pdev->cache_key.disable_aniso_single_level,
+      .has_image_load_dcc_bug = pdev->info.compiler_info.has_image_load_dcc_bug,
+      .disable_tg4_trunc_coord =
+         !pdev->info.compiler_info.conformant_trunc_coord && !pdev->cache_key.disable_trunc_coord,
       .args = &stage->args,
       .info = &stage->info,
       .layout = &stage->layout,

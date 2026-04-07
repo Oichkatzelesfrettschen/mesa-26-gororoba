@@ -43,7 +43,7 @@
 #include <windows.h>
 
 bool
-disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
+disk_cache_get_function_identifier(void *ptr, blake3_hasher *ctx)
 {
    HMODULE mod = NULL;
    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -72,7 +72,7 @@ disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
    FILETIME time;
    bool ret = GetFileTime(mod_as_file, NULL, NULL, &time);
    if (ret)
-      _mesa_sha1_update(ctx, &time, sizeof(time));
+      _mesa_blake3_update(ctx, &time, sizeof(time));
    CloseHandle(mod_as_file);
    return ret;
 }
@@ -441,9 +441,9 @@ static void
 make_cache_file_directory(struct disk_cache *cache, const cache_key key)
 {
    char *dir;
-   char buf[SHA1_DIGEST_STRING_LENGTH];
+   char buf[BLAKE3_HEX_LEN];
 
-   _mesa_sha1_format(buf, key);
+   _mesa_blake3_format(buf, key);
    if (asprintf(&dir, "%s/%c%c", cache->path, buf[0], buf[1]) == -1)
       return;
 
@@ -678,13 +678,13 @@ disk_cache_load_item(struct disk_cache *cache, char *filename, size_t *size)
 char *
 disk_cache_get_cache_filename(struct disk_cache *cache, const cache_key key)
 {
-   char buf[SHA1_DIGEST_STRING_LENGTH];
+   char buf[BLAKE3_HEX_LEN];
    char *filename;
 
    if (cache->path_init_failed)
       return NULL;
 
-   _mesa_sha1_format(buf, key);
+   _mesa_blake3_format(buf, key);
    if (asprintf(&filename, "%s/%c%c/%s", cache->path, buf[0],
                 buf[1], buf + 2) == -1)
       return NULL;

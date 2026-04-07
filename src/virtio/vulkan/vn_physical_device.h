@@ -15,6 +15,7 @@
 
 #include "util/sparse_array.h"
 
+#include "vn_descriptor.h"
 #include "vn_wsi.h"
 
 struct vn_format_properties_entry {
@@ -37,7 +38,7 @@ struct vn_image_format_properties {
 
 struct vn_image_format_cache_entry {
    struct vn_image_format_properties properties;
-   uint8_t key[SHA1_DIGEST_LENGTH];
+   uint8_t key[BLAKE3_KEY_LEN];
    struct list_head head;
 };
 
@@ -129,10 +130,13 @@ struct vn_physical_device {
 
    struct wsi_device wsi_device;
 
-   simple_mtx_t format_update_mutex;
+   simple_mtx_t mutex;
    struct util_sparse_array format_properties;
 
    struct vn_image_format_properties_cache image_format_cache;
+
+   bool descriptor_sizes_initialized;
+   VkDeviceSize descriptor_sizes[VN_NUM_DESCRIPTOR_TYPES];
 };
 VK_DEFINE_HANDLE_CASTS(vn_physical_device,
                        base.vk.base,

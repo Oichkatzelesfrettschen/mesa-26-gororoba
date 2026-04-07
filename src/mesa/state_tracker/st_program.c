@@ -629,7 +629,6 @@ static const struct nir_shader_compiler_options draw_nir_options = {
    .lower_uadd_sat = true,
    .lower_usub_sat = true,
    .lower_iadd_sat = true,
-   .lower_ldexp = true,
    .lower_pack_snorm_2x16 = true,
    .lower_pack_snorm_4x8 = true,
    .lower_pack_unorm_2x16 = true,
@@ -654,7 +653,6 @@ static const struct nir_shader_compiler_options draw_nir_options = {
    .max_unroll_iterations = 32,
    .lower_to_scalar = true,
    .lower_uniforms_to_ubo = true,
-   .lower_vector_cmp = true,
    .lower_device_index_to_zero = true,
    .support_16bit_alu = true,
    .lower_fisnormal = true,
@@ -1254,6 +1252,9 @@ st_create_fp_variant(struct st_context *st,
       NIR_PASS(_, state.ir.nir, nir_unlower_io_to_vars, false);
       gl_nir_opts(state.ir.nir);
       finalize = true;
+   } else {
+      NIR_PASS(_, state.ir.nir, nir_recompute_io_bases,
+               nir_var_shader_in | nir_var_shader_out);
    }
 
    if (finalize || !st->allow_st_finalize_nir_twice) {

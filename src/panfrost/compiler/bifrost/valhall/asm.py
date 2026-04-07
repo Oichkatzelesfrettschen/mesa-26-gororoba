@@ -76,10 +76,9 @@ def parse_int(s, minimum, maximum):
     return number
 
 def encode_source(op, fau):
-    if op[0] == '^':
-        die_if(op[1] != 'r', f"Expected register after discard {op}")
-        return parse_int(op[2:], 0, 63) | 0x40
-    elif op[0] == 'r':
+    if op[0] == 'r':
+        if (op[-1:] == '^'):
+            return parse_int(op[1:-1], 0, 63) | 0x40
         return parse_int(op[1:], 0, 63)
     elif op[0] == 'u':
         val = parse_int(op[1:], 0, 127)
@@ -215,7 +214,7 @@ def parse_asm(line):
 
         for mod in parts[1:]:
             # Encode the modifier
-            if mod in src.offset and src.bits[mod] == 1:
+            if mod in src.offset and src.mask[mod] == 0x1:
                 encoded |= (1 << src.offset[mod])
             elif src.halfswizzle and mod in enums[f'half_swizzles_{src.size}_bit'].bare_values:
                 die_if(swizzled, "Multiple swizzles specified")
@@ -315,12 +314,12 @@ def parse_asm(line):
     operands = operands[len(ins.immediates):]
 
     # Encode the operation itself
-    encoded |= (ins.opcode << 48)
-    encoded |= (ins.opcode2 << ins.secondary_shift)
+    for subcode in ins.opcode:
+        encoded |= (subcode.value << subcode.start)
 
     # Encode FAU page
     if fau.page:
-        encoded |= (fau.page << 57)
+        encoded |= (fau.page << ins.offset['fau_page'])
 
     # Encode modifiers
     has_flow = False
@@ -331,7 +330,7 @@ def parse_asm(line):
         if mod in enums['flow'].bare_values:
             die_if(has_flow, "Multiple flow control modifiers specified")
             has_flow = True
-            encoded |= (enums['flow'].bare_values.index(mod) << 59)
+            encoded |= (enums['flow'].bare_values.index(mod) << ins.offset['flow'])
         else:
             candidates = [c for c in ins.modifiers if mod in c.bare_values]
 

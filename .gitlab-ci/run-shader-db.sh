@@ -14,7 +14,7 @@ export LD_LIBRARY_PATH=$LIBDIR
 
 cd /usr/local/shader-db
 
-for driver in freedreno intel lima v3d vc4; do
+for driver in freedreno lima v3d vc4; do
     section_start shader-db-${driver} "Running shader-db for $driver"
     env LD_PRELOAD="$LIBDIR/lib${driver}_noop_drm_shim.so" \
         ./run -j"${FDO_CI_CONCURRENT:-4}" ./shaders \
@@ -23,7 +23,7 @@ for driver in freedreno intel lima v3d vc4; do
 done
 
 # Run shader-db over a number of supported platforms for crocus/iris
-for platform in hsw bdw skl mtl; do
+for platform in hsw bdw skl mtl lnl ptl; do
     section_start "shader-db-intel-${platform}" "Running shader-db for intel - ${platform}"
     env LD_PRELOAD="$LIBDIR/libintel_noop_drm_shim.so" \
         INTEL_STUB_GPU_PLATFORM="${platform}" \

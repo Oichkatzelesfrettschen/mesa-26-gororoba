@@ -95,7 +95,7 @@ load_dynamic_buffer_start(nir_builder *b, uint32_t set,
          break;
       }
 
-      dynamic_buffer_start_imm += ctx->set_layouts[s]->dynamic_buffer_count;
+      dynamic_buffer_start_imm += ctx->set_layouts[s]->vk.dynamic_descriptor_count;
    }
 
    if (dynamic_buffer_start_imm >= 0) {
@@ -219,13 +219,13 @@ static bool
 try_lower_load_vulkan_descriptor(nir_builder *b, nir_intrinsic_instr *intrin,
                                  const struct lower_descriptors_ctx *ctx)
 {
-   ASSERTED const VkDescriptorType desc_type = nir_intrinsic_desc_type(intrin);
+   ASSERTED const nir_descriptor_type desc_type =
+      nir_intrinsic_desc_type(intrin);
    b->cursor = nir_before_instr(&intrin->instr);
 
    nir_intrinsic_instr *idx_intrin = nir_src_as_intrinsic(intrin->src[0]);
    if (idx_intrin == NULL || !is_idx_intrin(idx_intrin)) {
-      assert(desc_type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
-             desc_type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC);
+      assert(desc_type == nir_descriptor_type_storage_buffer);
       return false;
    }
 
@@ -347,8 +347,9 @@ lower_image_intrin(nir_builder *b, nir_intrinsic_instr *intr,
       offs = offsetof(struct hk_storage_image_descriptor, tex);
    }
 
-   nir_rewrite_image_intrinsic(
-      intr, load_image_handle(b, ctx, intr->src[0], offs), true);
+   nir_rewrite_image_intrinsic(intr,
+                               load_image_handle(b, ctx, intr->src[0], offs),
+                               nir_image_intrinsic_type_bindless);
 
    return true;
 }
@@ -749,9 +750,8 @@ static bool
 lower_ssbo_resource_index(nir_builder *b, nir_intrinsic_instr *intrin,
                           const struct lower_descriptors_ctx *ctx)
 {
-   const VkDescriptorType desc_type = nir_intrinsic_desc_type(intrin);
-   if (desc_type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
-       desc_type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+   const nir_descriptor_type desc_type = nir_intrinsic_desc_type(intrin);
+   if (desc_type != nir_descriptor_type_storage_buffer)
       return false;
 
    b->cursor = nir_instr_remove(&intrin->instr);
@@ -820,9 +820,8 @@ static bool
 lower_ssbo_resource_reindex(nir_builder *b, nir_intrinsic_instr *intrin,
                             const struct lower_descriptors_ctx *ctx)
 {
-   const VkDescriptorType desc_type = nir_intrinsic_desc_type(intrin);
-   if (desc_type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
-       desc_type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+   const nir_descriptor_type desc_type = nir_intrinsic_desc_type(intrin);
+   if (desc_type != nir_descriptor_type_storage_buffer)
       return false;
 
    b->cursor = nir_instr_remove(&intrin->instr);
@@ -845,9 +844,8 @@ static bool
 lower_load_ssbo_descriptor(nir_builder *b, nir_intrinsic_instr *intrin,
                            const struct lower_descriptors_ctx *ctx)
 {
-   const VkDescriptorType desc_type = nir_intrinsic_desc_type(intrin);
-   if (desc_type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
-       desc_type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+   const nir_descriptor_type desc_type = nir_intrinsic_desc_type(intrin);
+   if (desc_type != nir_descriptor_type_storage_buffer)
       return false;
 
    b->cursor = nir_instr_remove(&intrin->instr);

@@ -46,11 +46,19 @@ struct vk_features;
 struct vk_physical_device;
 struct vk_pipeline;
 struct vk_pipeline_robustness_state;
+struct vk_sampler_state;
 
 bool vk_validate_shader_binaries(void);
 
 int vk_shader_cmp_graphics_stages(mesa_shader_stage a, mesa_shader_stage b);
 int vk_shader_cmp_rt_stages(mesa_shader_stage a, mesa_shader_stage b);
+
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+#define MESA_VK_PIPELINE_RAY_TRACING_FLAGS_BETA ( \
+      VK_PIPELINE_CREATE_2_RAY_TRACING_DISPLACEMENT_MICROMAP_BIT_NV)
+#else
+#define MESA_VK_PIPELINE_RAY_TRACING_FLAGS_BETA (0)
+#endif
 
 #define MESA_VK_PIPELINE_RAY_TRACING_FLAGS ( \
    VK_PIPELINE_CREATE_2_RAY_TRACING_SKIP_BUILT_IN_PRIMITIVES_BIT_KHR | \
@@ -63,9 +71,8 @@ int vk_shader_cmp_rt_stages(mesa_shader_stage a, mesa_shader_stage b);
    VK_PIPELINE_CREATE_2_RAY_TRACING_NO_NULL_INTERSECTION_SHADERS_BIT_KHR | \
    VK_PIPELINE_CREATE_2_RAY_TRACING_SHADER_GROUP_HANDLE_CAPTURE_REPLAY_BIT_KHR | \
    VK_PIPELINE_CREATE_2_RAY_TRACING_ALLOW_MOTION_BIT_NV | \
-   VK_PIPELINE_CREATE_2_RAY_TRACING_OPACITY_MICROMAP_BIT_EXT | \
-   VK_PIPELINE_CREATE_2_RAY_TRACING_DISPLACEMENT_MICROMAP_BIT_NV | \
-   VK_PIPELINE_CREATE_2_DISALLOW_OPACITY_MICROMAP_BIT_ARM)
+   VK_PIPELINE_CREATE_2_DISALLOW_OPACITY_MICROMAP_BIT_ARM | \
+   MESA_VK_PIPELINE_RAY_TRACING_FLAGS_BETA)
 
 struct vk_shader_compile_info {
    mesa_shader_stage stage;
@@ -93,6 +100,9 @@ struct vk_shader_compile_info {
 
    uint32_t set_layout_count;
    struct vk_descriptor_set_layout * const *set_layouts;
+
+   uint32_t embedded_sampler_count;
+   const struct vk_sampler_state* embedded_samplers;
 
    uint32_t push_constant_range_count;
    const VkPushConstantRange *push_constant_ranges;
@@ -312,6 +322,18 @@ struct vk_device_shader_ops {
                                                const struct vk_shader **shaders,
                                                uint32_t shader_count,
                                                void *output);
+
+   /** Enable a RT shader for replay
+    *
+    * The @replay_data pointer is the pointer handed to
+    * VkRayTracingShaderGroupCreateInfoKHR::pShaderGroupCaptureReplayHandle on
+    * replay or NULL on capture.
+    */
+   void (*replay_rt_shader_group)(struct vk_device *vk_device,
+                                  VkRayTracingShaderGroupTypeKHR type,
+                                  uint32_t shader_count,
+                                  struct vk_shader **vk_shaders,
+                                  const void *replay_data);
 
    /** Bind a set of shaders
     *

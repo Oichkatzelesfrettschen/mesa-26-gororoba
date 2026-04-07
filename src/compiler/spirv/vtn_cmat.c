@@ -319,8 +319,10 @@ vtn_handle_cooperative_alu(struct vtn_builder *b, struct vtn_value *dest_val,
          struct vtn_type *dst_type = vtn_get_type(b, w[1]);
          nir_deref_instr *src = vtn_get_cmat_deref(b, w[3]);
 
-         bool ignored = false;
-         nir_op op = vtn_nir_alu_op_for_spirv_opcode(b, opcode, &ignored, &ignored, 0, 0);
+         bool swap = false;
+         unsigned extra_fp_math_ctrl = nir_fp_fast_math;
+         nir_op op = vtn_nir_alu_op_for_spirv_opcode(b, opcode, &swap, &extra_fp_math_ctrl);
+         b->nb.fp_math_ctrl |= extra_fp_math_ctrl;
 
          nir_deref_instr *dst = vtn_create_cmat_temporary(b, dst_type->type, "cmat_unary");
          nir_cmat_unary_op(&b->nb, &dst->def, &src->def,
@@ -338,13 +340,15 @@ vtn_handle_cooperative_alu(struct vtn_builder *b, struct vtn_value *dest_val,
       case SpvOpIMul:
       case SpvOpSDiv:
       case SpvOpUDiv: {
-         bool ignored = false;
+         bool swap = false;
+         unsigned extra_fp_math_ctrl = nir_fp_fast_math;
 
          struct vtn_type *dst_type = vtn_get_type(b, w[1]);
          nir_deref_instr *mat_a = vtn_get_cmat_deref(b, w[3]);
          nir_deref_instr *mat_b = vtn_get_cmat_deref(b, w[4]);
 
-         nir_op op = vtn_nir_alu_op_for_spirv_opcode(b, opcode, &ignored, &ignored, 0, 0);
+         nir_op op = vtn_nir_alu_op_for_spirv_opcode(b, opcode, &swap, &extra_fp_math_ctrl);
+         b->nb.fp_math_ctrl |= extra_fp_math_ctrl;
 
          nir_deref_instr *dst = vtn_create_cmat_temporary(b, dst_type->type, "cmat_binary");
          nir_cmat_binary_op(&b->nb, &dst->def, &mat_a->def, &mat_b->def,

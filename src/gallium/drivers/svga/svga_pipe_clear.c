@@ -229,6 +229,8 @@ try_clear(struct svga_context *svga,
 static void
 svga_clear(struct pipe_context *pipe,
            unsigned buffers,
+           uint32_t color_clear_mask,
+           uint8_t stencil_clear_mask,
            const struct pipe_scissor_state *scissor_state,
            const union pipe_color_union *color,
            double depth, unsigned stencil)
@@ -313,7 +315,7 @@ svga_clear_texture(struct pipe_context *pipe,
          svga_validate_surface_view(svga, svga_surface_dst);
 
       if (!dsv) {
-         pipe_surface_reference(&surface, NULL);
+         svga_surface_destroy(pipe, surface);
          return;
       }
 
@@ -353,7 +355,7 @@ svga_clear_texture(struct pipe_context *pipe,
          svga_validate_surface_view(svga, svga_surface_dst);
 
       if (!rtv) {
-         pipe_surface_reference(&surface, NULL);
+         svga_surface_destroy(pipe, surface);
          return;
       }
 
@@ -428,7 +430,7 @@ svga_clear_texture(struct pipe_context *pipe,
          }
       }
    }
-   pipe_surface_reference(&surface, NULL);
+   svga_surface_destroy(pipe, surface);
 }
 
 

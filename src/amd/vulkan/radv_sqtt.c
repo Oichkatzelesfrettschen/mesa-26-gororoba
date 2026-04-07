@@ -16,6 +16,7 @@
 #include "sid.h"
 
 #include "ac_pm4.h"
+#include "ac_rgp.h"
 
 #include "vk_command_pool.h"
 #include "vk_common_entrypoints.h"
@@ -145,8 +146,7 @@ radv_emit_sqtt_userdata(const struct radv_cmd_buffer *cmd_buffer, const void *da
 }
 
 VkResult
-radv_sqtt_acquire_gpu_timestamp(struct radv_device *device, struct radeon_winsys_bo **gpu_timestamp_bo,
-                                uint32_t *gpu_timestamp_offset, void **gpu_timestamp_ptr)
+radv_sqtt_acquire_gpu_timestamp(struct radv_device *device, struct radv_sqtt_gpu_timestamp *timestamp)
 {
    simple_mtx_lock(&device->sqtt_timestamp_mtx);
 
@@ -193,9 +193,9 @@ radv_sqtt_acquire_gpu_timestamp(struct radv_device *device, struct radeon_winsys
       device->sqtt_timestamp.map = map;
    }
 
-   *gpu_timestamp_bo = device->sqtt_timestamp.bo;
-   *gpu_timestamp_offset = device->sqtt_timestamp.offset;
-   *gpu_timestamp_ptr = device->sqtt_timestamp.map + device->sqtt_timestamp.offset;
+   timestamp->bo = device->sqtt_timestamp.bo;
+   timestamp->offset = device->sqtt_timestamp.offset;
+   timestamp->ptr = device->sqtt_timestamp.map + device->sqtt_timestamp.offset;
 
    device->sqtt_timestamp.offset += 8;
 
@@ -823,6 +823,7 @@ radv_sqtt_stop_capturing(struct radv_queue *queue)
 {
    struct radv_device *device = radv_queue_device(queue);
    const struct radv_physical_device *pdev = radv_device_physical(device);
+   const struct radv_instance *instance = radv_physical_device_instance(pdev);
    struct ac_sqtt_trace sqtt_trace = {0};
    struct ac_spm_trace spm_trace;
    bool captured = true;
@@ -836,7 +837,17 @@ radv_sqtt_stop_capturing(struct radv_queue *queue)
    device->ws->unreserve_vmid(device->ws);
 
    if (radv_get_sqtt_trace(queue, &sqtt_trace) && (!device->spm.bo || radv_get_spm_trace(queue, &spm_trace))) {
-      ac_dump_rgp_capture(&pdev->info, &sqtt_trace, device->spm.bo ? &spm_trace : NULL);
+      struct ac_rgp_capture_info capture_info = {
+         .mode = instance->vk.trace_per_submit ? AC_RGP_CAPTURE_MODE_SUBMIT : AC_RGP_CAPTURE_MODE_FRAME,
+      };
+
+      if (instance->vk.trace_per_submit) {
+         capture_info.submit_idx = device->rgp_num_submits;
+      } else {
+         capture_info.frame_idx = device->vk.current_frame;
+      }
+
+      ac_dump_rgp_capture(&pdev->info, &sqtt_trace, device->spm.bo ? &spm_trace : NULL, &capture_info);
    } else {
       /* Failed to capture because the buffer was too small. */
       captured = false;
@@ -989,47 +1000,18 @@ radv_sqtt_free_cmdbuf(struct radv_device *device, enum radv_queue_family queue_f
    simple_mtx_unlock(&device->sqtt_command_pool_mtx);
 }
 
-VkResult
-radv_sqtt_get_timed_cmdbuf(struct radv_queue *queue, struct radeon_winsys_bo *timestamp_bo, uint32_t timestamp_offset,
-                           VkPipelineStageFlags2 timestamp_stage, VkCommandBuffer *pcmdbuf)
+void
+radv_sqtt_write_gpu_timestamp(struct radv_cmd_buffer *cmd_buffer, const struct radv_sqtt_gpu_timestamp *gpu_timestamp,
+                              VkPipelineStageFlags2 timestamp_stage)
 {
-   struct radv_device *device = radv_queue_device(queue);
-   enum radv_queue_family queue_family = queue->state.qf;
-   VkCommandBuffer cmdbuf;
-   uint64_t timestamp_va;
-   VkResult result;
-
-   assert(queue_family == RADV_QUEUE_GENERAL || queue_family == RADV_QUEUE_COMPUTE);
-
-   result = radv_sqtt_allocate_cmdbuf(device, queue_family, &cmdbuf);
-   if (result != VK_SUCCESS)
-      return result;
-
-   const VkCommandBufferBeginInfo begin_info = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-   };
-
-   result = radv_BeginCommandBuffer(cmdbuf, &begin_info);
-   if (result != VK_SUCCESS)
-      return result;
-
-   struct radv_cmd_buffer *cmd_buffer = radv_cmd_buffer_from_handle(cmdbuf);
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    struct radv_cmd_stream *cs = cmd_buffer->cs;
 
    radeon_check_space(device->ws, cs->b, 28);
 
-   timestamp_va = radv_buffer_get_va(timestamp_bo) + timestamp_offset;
+   uint64_t timestamp_va = radv_buffer_get_va(gpu_timestamp->bo) + gpu_timestamp->offset;
 
-   radv_cs_add_buffer(device->ws, cs->b, timestamp_bo);
+   radv_cs_add_buffer(device->ws, cs->b, gpu_timestamp->bo);
 
-   radv_write_timestamp(radv_cmd_buffer_from_handle(cmdbuf), timestamp_va, timestamp_stage);
-
-   result = radv_EndCommandBuffer(cmdbuf);
-   if (result != VK_SUCCESS)
-      return result;
-
-   *pcmdbuf = cmdbuf;
-
-   return result;
+   radv_write_timestamp(cmd_buffer, timestamp_va, timestamp_stage);
 }

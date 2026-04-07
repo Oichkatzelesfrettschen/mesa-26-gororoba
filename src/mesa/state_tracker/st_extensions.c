@@ -1223,7 +1223,7 @@ void st_init_extensions(struct pipe_screen *screen,
 
    consts->AllowGLSLBuiltinVariableRedeclaration = options->allow_glsl_builtin_variable_redeclaration;
 
-   consts->dri_config_options_sha1 = options->config_options_sha1;
+   consts->dri_config_options_blake3 = options->config_options_blake3;
 
    consts->AllowGLSLCrossStageInterpolationMismatch = options->allow_glsl_cross_stage_interpolation_mismatch;
 
@@ -1341,6 +1341,7 @@ void st_init_extensions(struct pipe_screen *screen,
 
    consts->ForceIntegerTexNearest = options->force_integer_tex_nearest;
 
+   consts->ForceExplicitUniformLocZero = options->force_explicit_uniform_loc_zero;
    consts->VendorOverride = options->force_gl_vendor;
    consts->RendererOverride = options->force_gl_renderer;
 

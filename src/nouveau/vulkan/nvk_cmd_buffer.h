@@ -60,13 +60,19 @@ struct nvk_root_descriptor_table {
    /* Dynamic buffer bindings */
    union nvk_buffer_descriptor dynamic_buffers[NVK_MAX_DYNAMIC_BUFFERS];
 
+   uint64_t printf_buffer_addr;
+
    /* enfore alignment to 0x100 as needed pre pascal */
-   uint8_t __padding[0xb8];
+   uint8_t __padding[0xb0];
 };
 
 /* helper macro for computing root descriptor byte offsets */
 #define nvk_root_descriptor_offset(member)\
    offsetof(struct nvk_root_descriptor_table, member)
+
+/* Push constants should be aligned properly */
+static_assert(nvk_root_descriptor_offset(push) % 8 == 0,
+              "Push constants should be aligned properly");
 
 enum ENUM_PACKED nvk_descriptor_set_type {
    NVK_DESCRIPTOR_SET_TYPE_NONE,
@@ -224,6 +230,8 @@ struct nvk_cmd_buffer {
    uint32_t upload_offset;
 
    struct nvk_cmd_mem *cond_render_mem;
+   /** Array of struct nvk_cmd_mem* */
+   struct util_dynarray copy_memory_indirect_temps;
 
    struct nvk_cmd_mem *push_mem;
    uint32_t *push_mem_limit;
@@ -235,8 +243,6 @@ struct nvk_cmd_buffer {
     * buffer to use as a pushbuf.
     */
    struct util_dynarray pushes;
-
-   uint64_t tls_space_needed;
 
    uint8_t prev_subc;
 };
@@ -380,6 +386,10 @@ void nvk_cmd_invalidate_deps(struct nvk_cmd_buffer *cmd,
 void
 nvk_cmd_buffer_flush_push_descriptors(struct nvk_cmd_buffer *cmd,
                                       struct nvk_descriptor_state *desc);
+
+void
+nvk_cmd_buffer_flush_printf_buffer(struct nvk_cmd_buffer *cmd,
+                                   struct nvk_descriptor_state *desc);
 
 bool
 nvk_cmd_buffer_get_cbuf_addr(struct nvk_cmd_buffer *cmd,

@@ -231,7 +231,6 @@ llvmpipe_create_surface(struct pipe_context *pipe,
    if (ps) {
       pipe_reference_init(&ps->reference, 1);
       pipe_resource_reference(&ps->texture, pt);
-      ps->context = pipe;
       ps->format = surf_tmpl->format;
       assert(surf_tmpl->level <= pt->last_level);
       assert(surf_tmpl->first_layer <= surf_tmpl->last_layer);
@@ -514,8 +513,6 @@ llvmpipe_init_surface_functions(struct llvmpipe_context *lp)
 {
    lp->pipe.clear_render_target = llvmpipe_clear_render_target;
    lp->pipe.clear_depth_stencil = llvmpipe_clear_depth_stencil;
-   lp->pipe.create_surface = llvmpipe_create_surface;
-   lp->pipe.surface_destroy = llvmpipe_surface_destroy;
    /* These are not actually functions dealing with surfaces */
    lp->pipe.clear_texture = llvmpipe_clear_texture;
    lp->pipe.clear_buffer = llvmpipe_clear_buffer;

@@ -3379,19 +3379,21 @@ static void
 apply_explicit_location(const struct ast_type_qualifier *qual,
                         ir_variable *var,
                         struct _mesa_glsl_parse_state *state,
-                        YYLTYPE *loc)
+                        YYLTYPE *loc, bool force_explict_uniform_loc_zero)
 {
    bool fail = false;
 
-   unsigned qual_location;
+   unsigned qual_location = 0;
    if (!process_qualifier_constant(state, loc, "location", qual->location,
-                                   &qual_location)) {
+                                   &qual_location) &&
+       !force_explict_uniform_loc_zero) {
       return;
    }
 
    /* Checks for GL_ARB_explicit_uniform_location. */
    if (qual->flags.q.uniform) {
-      if (!state->check_explicit_uniform_location_allowed(loc, var))
+      if (!force_explict_uniform_loc_zero &&
+          !state->check_explicit_uniform_location_allowed(loc, var))
          return;
 
       const struct gl_constants *consts = state->consts;
@@ -3919,8 +3921,13 @@ apply_layout_qualifier_to_variable(const struct ast_type_qualifier *qual,
                        qual_string);
    }
 
-   if (qual->flags.q.explicit_location) {
-      apply_explicit_location(qual, var, state, loc);
+   bool force_explict_uniform_loc_zero =
+      state->ctx->Const.ForceExplicitUniformLocZero && qual->flags.q.uniform &&
+      strcmp(state->ctx->Const.ForceExplicitUniformLocZero, var->name) == 0;
+
+   if (qual->flags.q.explicit_location || force_explict_uniform_loc_zero) {
+      apply_explicit_location(qual, var, state, loc,
+                              force_explict_uniform_loc_zero);
 
       if (qual->flags.q.explicit_component) {
          unsigned qual_component;
@@ -6806,23 +6813,6 @@ ast_jump_statement::hir(ir_exec_list *instructions,
          _mesa_glsl_error(& loc, state,
                           "break may only appear in a loop or a switch");
       } else {
-         /* For a loop, inline the for loop expression again, since we don't
-          * know where near the end of the loop body the normal copy of it is
-          * going to be placed.  Same goes for the condition for a do-while
-          * loop.
-          */
-         if (state->loop_nesting_ast != NULL &&
-             mode == ast_continue && !state->switch_state.is_switch_innermost) {
-            if (state->loop_nesting_ast->rest_expression) {
-               clone_ir_list(linalloc, instructions,
-                             &state->loop_nesting_ast->rest_instructions);
-            }
-            if (state->loop_nesting_ast->mode ==
-                ast_iteration_statement::ast_do_while) {
-               state->loop_nesting_ast->condition_to_hir(instructions, state);
-            }
-         }
-
          if (state->switch_state.is_switch_innermost &&
              mode == ast_continue) {
             /* Set 'continue_inside' to true. */
@@ -7061,16 +7051,6 @@ ast_switch_statement::hir(ir_exec_list *instructions,
       ir_if *irif = new(linalloc) ir_if(deref_continue_inside);
       ir_loop_jump *jump = new(linalloc) ir_loop_jump(ir_loop_jump::jump_continue);
 
-      if (state->loop_nesting_ast != NULL) {
-         if (state->loop_nesting_ast->rest_expression) {
-            clone_ir_list(linalloc, &irif->then_instructions,
-                          &state->loop_nesting_ast->rest_instructions);
-         }
-         if (state->loop_nesting_ast->mode ==
-             ast_iteration_statement::ast_do_while) {
-            state->loop_nesting_ast->condition_to_hir(&irif->then_instructions, state);
-         }
-      }
       irif->then_instructions.push_tail(jump);
       instructions->push_tail(irif);
    }
@@ -7419,27 +7399,24 @@ ast_iteration_statement::hir(ir_exec_list *instructions,
    bool saved_is_switch_innermost = state->switch_state.is_switch_innermost;
    state->switch_state.is_switch_innermost = false;
 
+   if (rest_expression != NULL)
+      rest_expression->hir(&stmt->continue_instructions, state);
+
    if (mode != ast_do_while)
       condition_to_hir(&stmt->body_instructions, state);
-
-   if (rest_expression != NULL)
-      rest_expression->hir(&rest_instructions, state);
 
    if (body != NULL) {
       if (mode == ast_do_while)
          state->symbols->push_scope();
 
-      body->hir(& stmt->body_instructions, state);
+      body->hir(&stmt->body_instructions, state);
 
       if (mode == ast_do_while)
          state->symbols->pop_scope();
    }
 
-   if (rest_expression != NULL)
-      stmt->body_instructions.append_list(&rest_instructions);
-
    if (mode == ast_do_while)
-      condition_to_hir(&stmt->body_instructions, state);
+      condition_to_hir(&stmt->continue_instructions, state);
 
    if (mode != ast_do_while)
       state->symbols->pop_scope();

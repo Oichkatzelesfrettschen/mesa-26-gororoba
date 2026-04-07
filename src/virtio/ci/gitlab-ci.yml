@@ -69,6 +69,7 @@ android-angle-venus-anv-cml-cts:
     GPU_VERSION: android-angle-venus-anv
     HWCI_KERNEL_MODULES: "i915,vhost_vsock"
     DEVICE_HANGING_TIMEOUT_SEC: 5400  # Android CTS might not print anything for minutes
+  timeout: 2h
 
 android-angle-venus-anv-tgl:
   extends:
@@ -79,7 +80,6 @@ android-angle-venus-anv-tgl:
     DEQP_SUITE: android-angle-venus-anv
     GPU_VERSION: android-angle-venus-anv
     HWCI_KERNEL_MODULES: "i915,vhost_vsock"
-    DEVICE_HANGING_TIMEOUT_SEC: 5400  # Job is too slow and might not print anything for minutes
   timeout: 1h 30m
 
 android-angle-venus-anv-adl:
@@ -91,4 +91,13 @@ android-angle-venus-anv-adl:
     DEQP_SUITE: android-angle-venus-anv
     GPU_VERSION: android-angle-venus-anv
     HWCI_KERNEL_MODULES: "xe,vhost_vsock"
-    DEVICE_HANGING_TIMEOUT_SEC: 5400  # Job is too slow and might not print anything for minutes
+
+android-angle-venus-tu-a618:
+  extends:
+    - .android-angle-venus-tu-test
+    - .lava-sc7180-trogdor-kingoftown:arm64
+    - .venus-tu-manual-rules
+  variables:
+    DEQP_SUITE: android-angle-venus-tu
+    GPU_VERSION: android-angle-venus-tu
+    FDO_CI_CONCURRENT: 6  # We get OOMkills if we go too wide since VKCTS 1.4.4.0

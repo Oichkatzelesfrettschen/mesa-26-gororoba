@@ -100,10 +100,11 @@ struct radv_ray_tracing_stage {
    struct radv_shader *shader;
    mesa_shader_stage stage;
    uint32_t stack_size;
+   bool needs_nir;
 
    struct radv_ray_tracing_stage_info info;
 
-   uint8_t sha1[SHA1_DIGEST_LENGTH];
+   uint8_t blake3[BLAKE3_KEY_LEN];
 };
 
 struct radv_ray_tracing_state_key {
@@ -132,7 +133,7 @@ struct radv_ray_tracing_binary_header {
    uint32_t is_traversal_shader : 1;
    uint32_t has_shader : 1;
    uint32_t has_nir : 1;
-   uint8_t stage_sha1[SHA1_DIGEST_LENGTH];
+   uint8_t stage_blake3[BLAKE3_KEY_LEN];
    uint32_t stack_size;
    struct radv_ray_tracing_stage_info stage_info;
 };

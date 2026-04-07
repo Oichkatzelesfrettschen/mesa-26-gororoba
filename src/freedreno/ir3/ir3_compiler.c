@@ -6,6 +6,7 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
+#include "util/u_call_once.h"
 #include "util/ralloc.h"
 
 #include "freedreno_dev_info.h"
@@ -62,6 +63,57 @@ ir3_compiler_destroy(struct ir3_compiler *compiler)
    ralloc_free(compiler);
 }
 
+static bool
+ir3_nir_lower_convert_alu_types(nir_intrinsic_instr *conv)
+{
+   assert(conv->intrinsic == nir_intrinsic_convert_alu_types);
+
+   /* Lower anything with const src for better constant folding: */
+   if (nir_src_is_const(conv->src[0]))
+      return true;
+
+   nir_alu_type src_type = nir_intrinsic_src_type(conv);
+   nir_alu_type dest_type = nir_intrinsic_dest_type(conv);
+   nir_rounding_mode rounding = nir_intrinsic_rounding_mode(conv);
+
+   /* If rounding mode is undef, and no saturation, then lower.  In this
+    * case, the @convert_alu_types will be lowered trivially to a single
+    * alu opc, so no need to preserve the @convert_alu_types for backend.
+    */
+   if (rounding == nir_rounding_mode_undef &&
+       !nir_intrinsic_saturate(conv))
+      return true;
+
+   nir_alu_type src_base_type = nir_alu_type_get_base_type(src_type);
+   nir_alu_type dest_base_type = nir_alu_type_get_base_type(dest_type);
+   unsigned src_bit_size = nir_alu_type_get_type_size(src_type);
+   unsigned dest_bit_size = nir_alu_type_get_type_size(dest_type);
+
+   /* Int->int conversion don't round: */
+   if ((src_base_type != nir_type_float) && (dest_base_type != nir_type_float))
+      return true;
+
+   /* Float widening does not round: */
+   if ((src_base_type == nir_type_float) && (dest_base_type == nir_type_float) &&
+       (dest_bit_size > src_bit_size))
+      return true;
+
+   /* int64 needs nir_lower_int64, as hw does not natively support this: */
+   if ((dest_bit_size > 32) || (src_bit_size > 32))
+      return true;
+
+   /* Conversions [u]int8 <-> float need some special handling, but we
+    * can just let the lowering and normal create_cov() path handle it:
+    */
+   if ((dest_bit_size < 16) || (src_bit_size < 16))
+      return true;
+
+   /* Everything else maps to single ir3 instructions, so preserve for
+    * backend to handle:
+    */
+   return false;
+}
+
 static const nir_shader_compiler_options ir3_base_options = {
    .compact_arrays = true,
    .lower_fpow = true,
@@ -73,11 +125,22 @@ static const nir_shader_compiler_options ir3_base_options = {
    .lower_fmod = true,
    .lower_fdiv = true,
    .lower_isign = true,
-   .lower_ldexp = true,
    .lower_uadd_carry = true,
    .lower_usub_borrow = true,
    .lower_mul_high = true,
    .lower_mul_2x32_64 = true,
+   /* ir3's mad is an unfused mul-add instruction, so we need to flag fma
+    * lowering so that CL can implement fused fma in software.  GLSL,
+    * SPIRV, and NIR don't require either fused or unfused behavior from
+    * fma, and we'll turn mul+adds back into nir_op_ffma (again, implemented
+    * as unfused) during nir_opt_algebraic_late() (assuming it's not
+    * decorated with GLSL's precise, or SPIRV's NoContraction), or
+    * ir3_nir_opt_algebraic_late (if it is, since ir3's unfused mul-add is
+    * precise).
+    */
+   .lower_ffma16 = true,
+   .lower_ffma32 = true,
+   .lower_ffma64 = true,
    .fuse_ffma16 = true,
    .fuse_ffma32 = true,
    .fuse_ffma64 = true,
@@ -137,15 +200,16 @@ static const nir_shader_compiler_options ir3_base_options = {
 
    .per_view_unique_driver_locations = true,
    .compact_view_index = true,
+
+   .io_options = nir_io_has_intrinsics,
+
+   .lower_convert_alu_types = ir3_nir_lower_convert_alu_types,
 };
 
-struct ir3_compiler *
-ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
-                    const struct fd_dev_info *dev_info,
-                    const struct ir3_compiler_options *options)
-{
-   struct ir3_compiler *compiler = rzalloc(NULL, struct ir3_compiler);
 
+static void
+__debug_init(void)
+{
    ir3_shader_debug = debug_get_option_ir3_shader_debug();
    ir3_shader_override_path =
       __normal_user() ? debug_get_option_ir3_shader_override_path() : NULL;
@@ -155,21 +219,36 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
    }
 
    ir3_shader_bisect_init();
+}
+
+static void
+ir3_compiler_debug_init(void)
+{
+   static util_once_flag once = UTIL_ONCE_FLAG_INIT;
+   util_call_once(&once, __debug_init);
+}
+
+struct ir3_compiler *
+ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
+                    const struct fd_dev_info *dev_info,
+                    const struct ir3_compiler_options *options)
+{
+   struct ir3_compiler *compiler = rzalloc(NULL, struct ir3_compiler);
+
+   ir3_compiler_debug_init();
 
    compiler->dev = dev;
    compiler->dev_id = dev_id;
    compiler->gen = fd_dev_gen(dev_id);
    compiler->is_64bit = fd_dev_64b(dev_id);
    compiler->options = *options;
+   compiler->info = dev_info;
 
    /* TODO see if older GPU's were different here */
-   compiler->branchstack_size = 64;
-   compiler->wave_granularity = dev_info->wave_granularity;
-   compiler->max_waves = dev_info->max_waves;
+   compiler->branchstack_size = dev_info->props.has_dual_wave_dispatch ? 512 : 256;
+   compiler->max_branchstack = 64;
 
    compiler->max_variable_workgroup_size = 1024;
-
-   compiler->local_mem_size = dev_info->cs_shared_mem_size;
 
    compiler->num_predicates = 1;
    compiler->bitops_can_write_predicates = false;
@@ -225,16 +304,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
 
       compiler->has_preamble = true;
 
-      compiler->tess_use_shared = dev_info->props.tess_use_shared;
-
-      compiler->has_getfiberid = dev_info->props.has_getfiberid;
-      compiler->mov_half_shared_quirk = dev_info->props.mov_half_shared_quirk;
-      compiler->has_movs = dev_info->props.has_movs;
-
-      compiler->has_dp2acc = dev_info->props.has_dp2acc;
-      compiler->has_dp4acc = dev_info->props.has_dp4acc;
-      compiler->has_compliant_dp4acc = dev_info->props.has_compliant_dp4acc;
-
       if (compiler->gen == 6 && options->shared_push_consts) {
          compiler->shared_consts_base_offset = 504;
          compiler->shared_consts_size = 8;
@@ -245,32 +314,13 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
          compiler->geom_shared_consts_size_quirk = 0;
       }
 
-      compiler->has_fs_tex_prefetch = dev_info->props.has_fs_tex_prefetch;
-      compiler->stsc_duplication_quirk = dev_info->props.stsc_duplication_quirk;
-      compiler->load_shader_consts_via_preamble = dev_info->props.load_shader_consts_via_preamble;
-      compiler->load_inline_uniforms_via_preamble_ldgk = dev_info->props.load_inline_uniforms_via_preamble_ldgk;
       compiler->num_predicates = 4;
       compiler->bitops_can_write_predicates = true;
       compiler->has_branch_and_or = true;
       compiler->has_predication = true;
-      compiler->predtf_nop_quirk = dev_info->props.predtf_nop_quirk;
-      compiler->prede_nop_quirk = dev_info->props.prede_nop_quirk;
-      compiler->has_salu_int_narrowing_quirk = dev_info->props.has_salu_int_narrowing_quirk;
-      compiler->has_scalar_alu = dev_info->props.has_scalar_alu;
-      compiler->has_scalar_predicates = dev_info->props.has_scalar_predicates;
-      compiler->has_isam_v = dev_info->props.has_isam_v;
-      compiler->has_ssbo_imm_offsets = dev_info->props.has_ssbo_imm_offsets;
-      compiler->fs_must_have_non_zero_constlen_quirk = dev_info->props.fs_must_have_non_zero_constlen_quirk;
-      compiler->has_early_preamble = dev_info->props.has_early_preamble;
       compiler->has_rpt_bary_f = true;
       compiler->has_shfl = true;
-      compiler->reading_shading_rate_requires_smask_quirk =
-         dev_info->props.reading_shading_rate_requires_smask_quirk;
-      compiler->shading_rate_matches_vk = dev_info->props.shading_rate_matches_vk;
-      compiler->has_alias_rt = dev_info->props.has_alias_rt;
       compiler->mergedregs = true;
-      compiler->has_sel_b_fneg = dev_info->props.has_sel_b_fneg;
-      compiler->has_eolm_eogm = dev_info->props.has_eolm_eogm;
 
       compiler->has_alias_tex = (compiler->gen >= 7);
 
@@ -289,11 +339,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
        * earlier gen's.
        */
       compiler->max_const_safe = 256;
-
-      compiler->has_scalar_alu = false;
-      compiler->has_isam_v = false;
-      compiler->has_ssbo_imm_offsets = false;
-      compiler->has_early_preamble = false;
    }
 
    if (dev_info->compute_lb_size) {
@@ -301,7 +346,7 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
    } else {
       compiler->compute_lb_size =
          compiler->max_const_compute * 16 /* bytes/vec4 */ *
-         compiler->wave_granularity + compiler->local_mem_size;
+         compiler->info->wave_granularity + compiler->info->cs_shared_mem_size;
    }
 
    /* This is just a guess for a4xx. */
@@ -322,8 +367,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
       /* TODO: confirm this */
       compiler->reg_size_vec4 = 96;
    }
-
-   compiler->threadsize_base = dev_info->threadsize_base;
 
    if (compiler->gen >= 4) {
       /* need special handling for "flat" */
@@ -381,6 +424,17 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
       compiler->nir_options.force_indirect_unrolling = nir_var_all;
    }
 
+   if (compiler->gen >= 5) {
+      /* keep in sync with vk_properties */
+      compiler->nir_options.max_workgroup_count[0] =
+         compiler->nir_options.max_workgroup_count[1] =
+         compiler->nir_options.max_workgroup_count[2] = 65535;
+      compiler->nir_options.max_workgroup_invocations =
+         dev_info->threadsize_base * dev_info->max_waves;
+      if ((compiler->gen >= 6) && dev_info->props.supports_double_threadsize)
+         compiler->nir_options.max_workgroup_invocations *= 2;
+   }
+
    if (options->lower_base_vertex) {
       compiler->nir_options.lower_base_vertex = true;
    }
@@ -393,7 +447,7 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
 
    compiler->nir_options.support_indirect_inputs =
       BITFIELD_BIT(MESA_SHADER_TESS_CTRL) |
-      BITFIELD_BIT(MESA_SHADER_TESS_EVAL) | BITFIELD_BIT(MESA_SHADER_FRAGMENT);
+      BITFIELD_BIT(MESA_SHADER_TESS_EVAL);
    compiler->nir_options.support_indirect_outputs = (uint8_t)BITFIELD_MASK(MESA_SHADER_STAGES);
    compiler->nir_options.max_offset_shift = ir3_nir_max_offset_shift;
 

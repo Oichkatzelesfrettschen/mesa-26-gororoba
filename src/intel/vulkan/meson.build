@@ -24,6 +24,7 @@ anv_entrypoints = custom_target(
     '--device-prefix', 'gfx125',
     '--device-prefix', 'gfx20',
     '--device-prefix', 'gfx30',
+    '--device-prefix', 'gfx35',
     '--device-prefix', 'anv_doom64',
     '--device-prefix', 'anv_furmark',
     '--device-prefix', 'anv_hitman3',
@@ -108,7 +109,7 @@ if with_intel_vk_rt
   )
 endif
 
-foreach _gfx_ver : ['90', '110', '120', '125', '200', '300']
+foreach _gfx_ver : ['90', '110', '120', '125', '200', '300', '350']
   libanv_per_hw_ver_libs += static_library(
     'anv_per_hw_ver@0@'.format(_gfx_ver),
     [anv_per_hw_ver_files, anv_entrypoints[0]] + bvh_spv,
@@ -175,12 +176,14 @@ libanv_files = files(
   'anv_measure.h',
   'anv_nir.h',
   'anv_nir_apply_pipeline_layout.c',
+  'anv_nir_clear_shader_analysis.c',
   'anv_nir_compute_push_layout.c',
   'anv_nir_lower_driver_values.c',
   'anv_nir_lower_multiview.c',
   'anv_nir_lower_ubo_loads.c',
   'anv_nir_lower_resource_intel.c',
   'anv_nir_lower_unaligned_dispatch.c',
+  'anv_nir_push_constants_analysis.c',
   'anv_nir_push_descriptor_analysis.c',
   'anv_perf.c',
   'anv_physical_device.c',

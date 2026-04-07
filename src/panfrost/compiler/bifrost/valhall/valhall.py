@@ -21,6 +21,9 @@ def xmlbool(s):
     assert(s.lower() in ["false", "true"])
     return False if s.lower() == "false" else True
 
+def bitmask(size):
+    return (1 << size) - 1
+
 class EnumValue:
     def __init__(self, value, default):
         self.value = value
@@ -92,32 +95,46 @@ class Source:
         self.name = name
 
         self.offset = {}
-        self.bits = {}
+        self.mask = {}
+
+        self.offset['mode'] = self.start + 6
+        self.mask['mode'] = bitmask(2)
+        self.offset['value'] = self.start
+        self.mask['value'] = bitmask(6)
+
         if absneg:
             self.offset['neg'] = 32 + 2 + ((2 - index) * 2)
             self.offset['abs'] = 33 + 2 + ((2 - index) * 2)
-            self.bits['neg'] = 1
-            self.bits['abs'] = 1
+            self.mask['neg'] = bitmask(1)
+            self.mask['abs'] = bitmask(1)
         if notted:
             self.offset['not'] = 35
-            self.bits['not'] = 1
+            self.mask['not'] = bitmask(1)
         if widen or lanes or halfswizzle:
             self.offset['widen'] = 26 if index == 1 else 36
-            self.bits['widen'] = 4 # XXX: too much?
+            self.mask['widen'] = bitmask(4)
         if lane:
             self.offset['lane'] = self.lane
-            self.bits['lane'] = 2 if size in (8, 32) else 1
+            self.mask['lane'] = bitmask(2) if size in (8, 32) else bitmask(1)
         if swizzle:
             assert(size in [16, 32])
             self.offset['swizzle'] = 24 + ((2 - index) * 2)
-            self.bits['swizzle'] = 2
+            self.mask['swizzle'] = bitmask(2)
         if combine:
             self.offset['combine'] = 37
-            self.bits['combine'] = 3
+            self.mask['combine'] = bitmask(3)
 
 class Dest:
     def __init__(self, name = ""):
         self.name = name
+        self.start = 40
+        self.offset = {}
+        self.mask = {}
+
+        self.offset['mode'] = self.start + 6
+        self.mask['mode'] = bitmask(2)
+        self.offset['value'] = self.start
+        self.mask['value'] = bitmask(6)
 
 class Staging:
     def __init__(self, read = False, write = False, count = 0, flags = 'true', name = ""):
@@ -127,9 +144,13 @@ class Staging:
         self.count = count
         self.flags = (flags != 'false')
         self.start = 40
-
         if write and not self.flags:
             self.start = 16
+        self.offset = {}
+        self.mask = {}
+
+        self.offset['value'] = self.start
+        self.mask['value'] = bitmask(6)
 
         # For compatibility
         self.absneg = False
@@ -157,43 +178,36 @@ class Immediate:
         self.size = size
         self.signed = signed
 
+class Opcode:
+    def __init__(self, value, start, mask):
+        self.value = value
+        self.start = start
+        self.mask = mask
+
 class Instruction:
-    def __init__(self, name, opcode, opcode2, srcs = [], dests = [], immediates = [], modifiers = [], staging = None, unit = None):
+    def __init__(self, name, opcode, srcs = [], dests = [], immediates = [], modifiers = [], staging = None, unit = None):
         self.name = name
         self.srcs = srcs
         self.dests = dests
         self.opcode = opcode
-        self.opcode2 = opcode2 or 0
         self.immediates = immediates
         self.modifiers = modifiers
         self.staging = staging
         self.unit = unit
         self.is_signed = len(name.split(".")) > 1 and ('s' in name.split(".")[1])
 
+        self.offset = {}
+        self.mask = {}
+
+        self.offset['flow'] = 59
+        self.mask['flow'] = bitmask(4)
+        self.offset['fau_page'] = 57
+        self.mask['fau_page'] = bitmask(2)
+
         # Message-passing instruction <===> not ALU instruction
         self.message = unit not in ["FMA", "CVT", "SFU"]
 
-        self.secondary_shift = max(len(self.srcs) * 8, 16)
-        self.secondary_mask = 0xF if opcode2 is not None else 0x0
-        if "left" in [x.name for x in self.modifiers]:
-            self.secondary_mask |= 0x100
-        if len(srcs) == 3 and (srcs[1].widen or srcs[1].lanes or srcs[1].swizzle):
-            self.secondary_mask &= ~0xC # conflicts
-        if opcode == 0x90:
-            # XXX: XMLify this, but disambiguates sign of conversions
-            self.secondary_mask |= 0x10
-        if name.startswith("LOAD.i") or name.startswith("STORE.i") or name.startswith("LD_PKA.i"):
-            self.secondary_shift = 27 # Alias with memory_size
-            self.secondary_mask = 0x7
-        if "descriptor_type" in [x.name for x in self.modifiers]:
-            self.secondary_mask = 0x3
-            self.secondary_shift = 37
-        elif "memory_width" in [x.name for x in self.modifiers]:
-            self.secondary_mask = 0x7
-            self.secondary_shift = 27
-
         assert(len(dests) == 0 or not staging)
-        assert(not opcode2 or (opcode2 & self.secondary_mask) == opcode2)
 
     def __str__(self):
         return self.name
@@ -238,15 +252,27 @@ def build_modifier(el):
 
     return Modifier(name, start, size, implied)
 
+def build_opcode(el, name):
+    op_arr = []
+    opcode = el.find(name)
+    if opcode is None:
+        return None
+
+    for subcode in opcode:
+        value = int(subcode.get('val'), base=0)
+        start = int(subcode.get('start'))
+        mask = int(subcode.get('mask'), base=0)
+        assert((value & mask) == value)
+        op_arr.append(Opcode(value, start, mask))
+
+    return op_arr
+
 # Build a single instruction from XML and group based overrides
 def build_instr(el, overrides = {}):
     # Get overridables
     name = overrides.get('name') or el.attrib.get('name')
-    opcode = overrides.get('opcode') or el.attrib.get('opcode')
-    opcode2 = overrides.get('opcode2') or el.attrib.get('opcode2')
+    opcode = overrides.get('opcode') or build_opcode(el, 'opcode')
     unit = overrides.get('unit') or el.attrib.get('unit')
-    opcode = int(opcode, base=0)
-    opcode2 = int(opcode2, base=0) if opcode2 else None
 
     # Get explicit sources/dests
     tsize = typesize(name)
@@ -285,7 +311,7 @@ def build_instr(el, overrides = {}):
         elif mod.tag =='va_mod':
             modifiers.append(build_modifier(mod))
 
-    instr = Instruction(name, opcode, opcode2, srcs = sources, dests = dests, immediates = imms, modifiers = modifiers, staging = staging, unit = unit)
+    instr = Instruction(name, opcode, srcs = sources, dests = dests, immediates = imms, modifiers = modifiers, staging = staging, unit = unit)
 
     instructions.append(instr)
 
@@ -295,8 +321,7 @@ def build_group(el):
     for ins in el.findall('ins'):
         build_instr(el, overrides = {
             'name': ins.attrib['name'],
-            'opcode': ins.attrib.get('opcode'),
-            'opcode2': ins.attrib.get('opcode2'),
+            'opcode': build_opcode(ins, 'opcode'),
             'unit': ins.attrib.get('unit'),
         })
 
@@ -335,16 +360,16 @@ def safe_name(name):
     return name.lower()
 
 # Parses out the size part of an opcode name
-def typesize(opcode):
-    if opcode[-3:] == '128':
+def typesize(name):
+    if name[-3:] == '128':
         return 128
-    if opcode[-2:] == '48':
+    if name[-2:] == '48':
         return 48
-    elif opcode[-1] == '8':
+    elif name[-1] == '8':
         return 8
     else:
         try:
-            return int(opcode[-2:])
+            return int(name[-2:])
         except:
             return 32
 

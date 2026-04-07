@@ -409,28 +409,28 @@ patch_fb_read_gmem(struct fd_batch *batch)
       if (CHIP <= A7XX) {
          uint64_t base = screen->gmem_base + gmem->cbuf_base[buf];
          uint32_t descriptor[FDL6_TEX_CONST_DWORDS] = {
-               A6XX_TEX_CONST_0_FMT(fd6_texture_format(
+               A6XX_TEX_MEMOBJ_0_FMT(fd6_texture_format(
                      format, (enum a6xx_tile_mode)rsc->layout.tile_mode, false)) |
-               A6XX_TEX_CONST_0_SAMPLES(fd_msaa_samples(prsc->nr_samples)) |
-               A6XX_TEX_CONST_0_SWAP(WZYX) |
-               A6XX_TEX_CONST_0_TILE_MODE(TILE6_2) |
-               COND(util_format_is_srgb(format), A6XX_TEX_CONST_0_SRGB) |
-               A6XX_TEX_CONST_0_SWIZ_X(fdl6_swiz(swiz[0])) |
-               A6XX_TEX_CONST_0_SWIZ_Y(fdl6_swiz(swiz[1])) |
-               A6XX_TEX_CONST_0_SWIZ_Z(fdl6_swiz(swiz[2])) |
-               A6XX_TEX_CONST_0_SWIZ_W(fdl6_swiz(swiz[3])),
+               A6XX_TEX_MEMOBJ_0_SAMPLES(fd_msaa_samples(prsc->nr_samples)) |
+               A6XX_TEX_MEMOBJ_0_SWAP(WZYX) |
+               A6XX_TEX_MEMOBJ_0_TILE_MODE(TILE6_2) |
+               COND(util_format_is_srgb(format), A6XX_TEX_MEMOBJ_0_SRGB) |
+               A6XX_TEX_MEMOBJ_0_SWIZ_X(fdl6_swiz(swiz[0])) |
+               A6XX_TEX_MEMOBJ_0_SWIZ_Y(fdl6_swiz(swiz[1])) |
+               A6XX_TEX_MEMOBJ_0_SWIZ_Z(fdl6_swiz(swiz[2])) |
+               A6XX_TEX_MEMOBJ_0_SWIZ_W(fdl6_swiz(swiz[3])),
 
-            A6XX_TEX_CONST_1_WIDTH(pfb->width) |
-               A6XX_TEX_CONST_1_HEIGHT(pfb->height),
+            A6XX_TEX_MEMOBJ_1_WIDTH(pfb->width) |
+               A6XX_TEX_MEMOBJ_1_HEIGHT(pfb->height),
 
-            A6XX_TEX_CONST_2_PITCH(gmem->bin_w * gmem->cbuf_cpp[buf]) |
-               A6XX_TEX_CONST_2_TYPE(A6XX_TEX_2D),
+            A6XX_TEX_MEMOBJ_2_PITCH(gmem->bin_w * gmem->cbuf_cpp[buf]) |
+               A6XX_TEX_MEMOBJ_2_TYPE(A6XX_TEX_2D),
 
-            A6XX_TEX_CONST_3_ARRAY_PITCH(rsc->layout.layer_size),
-            A6XX_TEX_CONST_4_BASE_LO(base),
+            A6XX_TEX_MEMOBJ_3_ARRAY_PITCH(rsc->layout.layer_size),
+            A6XX_TEX_MEMOBJ_4_BASE_LO(base),
 
-            A6XX_TEX_CONST_5_BASE_HI(base >> 32) |
-               A6XX_TEX_CONST_5_DEPTH(prsc->array_size)
+            A6XX_TEX_MEMOBJ_5_BASE_HI(base >> 32) |
+               A6XX_TEX_MEMOBJ_5_DEPTH(prsc->array_size)
          };
 
          memcpy(patch->cs, descriptor, FDL6_TEX_CONST_DWORDS * 4);
@@ -1974,9 +1974,6 @@ fd6_emit_tile_gmem2mem(struct fd_batch *batch, const struct fd_tile *tile)
 {
    fd_cs cs(batch->gmem);
 
-   if (batch->epilogue)
-      fd6_emit_ib<CHIP>(cs, batch->epilogue);
-
    if (use_hw_binning(batch)) {
       fd6_set_render_mode<CHIP>(cs, {.mode = RM6_BIN_END_OF_DRAWS, .uses_gmem = true});
    }
@@ -2006,6 +2003,9 @@ fd6_emit_tile_fini(struct fd_batch *batch)
    fd_cs cs(batch->gmem);
 
    emit_common_fini<CHIP>(cs, batch);
+
+   if (batch->epilogue)
+      fd6_emit_ib<CHIP>(cs, batch->epilogue);
 
    fd_pkt4(cs, 1)
       .add(GRAS_LRZ_CNTL(CHIP, .enable = true));
@@ -2224,6 +2224,15 @@ fd6_emit_sysmem_fini(struct fd_batch *batch) assert_dt
 {
    fd_cs cs(batch->gmem);
 
+   batch->barrier |= FD6_FLUSH_CCU_COLOR |
+                     FD6_INVALIDATE_CCU_COLOR |
+                     FD6_INVALIDATE_CCHE |
+                     FD6_FLUSH_CACHE |
+                     FD6_WAIT_FOR_IDLE;
+
+   if (!batch->nondraw)
+      batch->barrier |= FD6_FLUSH_CCU_DEPTH | FD6_INVALIDATE_CCU_DEPTH;
+
    emit_common_fini<CHIP>(cs, batch);
 
    if (batch->tile_epilogue)
@@ -2235,15 +2244,8 @@ fd6_emit_sysmem_fini(struct fd_batch *batch) assert_dt
    fd_pkt7(cs, CP_SKIP_IB2_ENABLE_GLOBAL, 1)
       .add(0x0);
 
-   fd6_event_write<CHIP>(batch->ctx, cs, FD_LRZ_FLUSH);
-
-   fd6_emit_flushes<CHIP>(batch->ctx, cs,
-                          FD6_FLUSH_CCU_COLOR |
-                          FD6_INVALIDATE_CCU_COLOR |
-                          FD6_FLUSH_CCU_DEPTH |
-                          FD6_INVALIDATE_CCU_DEPTH |
-                          FD6_INVALIDATE_CCHE |
-                          FD6_WAIT_FOR_IDLE);
+   if (!batch->nondraw)
+      fd6_event_write<CHIP>(batch->ctx, cs, FD_LRZ_FLUSH);
 }
 
 template <chip CHIP>

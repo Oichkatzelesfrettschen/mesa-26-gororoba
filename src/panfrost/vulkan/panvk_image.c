@@ -107,6 +107,8 @@ get_iusage(struct panvk_image *image, const VkImageCreateInfo *create_info)
    if (image->vk.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
       iusage.bind |= PAN_BIND_RENDER_TARGET;
 
+   iusage.standard_sparse_mapping_granularity =
+      !!(image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT);
    iusage.host_copy =
       !!(image->vk.usage & VK_IMAGE_USAGE_HOST_TRANSFER_BIT_EXT);
    iusage.legacy_scanout = wsi_info && wsi_info->scanout;
@@ -239,17 +241,16 @@ panvk_image_can_use_mod(struct panvk_image *image,
           (image->vk.create_flags & VK_IMAGE_CREATE_DISJOINT_BIT))
          return false;
 
-      /* No ms with AFBC, but we need to create multisampled images in the
-       * background for which the view formats need to be compatible to avoid
-       * headaches when copying --> disable afbc for the base image as well.
-       * When copying the depth plane block sizes aren't matching between
-       * utiled and afbc, thus the views created for the ms images are
-       * invalid.
+      /* On v6 and earlier, we can't reliably resolve directly to AFBC images
+       * (see avoid_direct_resolve_to() in panvk_vX_cmd_draw.c).  For MS2SS,
+       * this means we know a priori that the single-sampled image is going to
+       * be a resolve target.  It's better to leave it uncompressed than to
+       * eat the separate resolves.
        */
-      if (image->vk.create_flags &
-          VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT) {
+      if ((image->vk.create_flags &
+           VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT) &&
+          arch < 7)
          return false;
-      }
    }
 
    if (mod == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED) {
@@ -270,8 +271,8 @@ panvk_image_can_use_mod(struct panvk_image *image,
        * sampled/storage image, frag_coord patching for color attachments). Let's
        * keep things simple for now and make all compressed images that
        * have VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT set linear. */
-      return !(image->vk.create_flags &
-               VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
+      if (image->vk.create_flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT)
+         return false;
    }
 
    /* Defer the rest of the checks to the mod handler. */
@@ -420,10 +421,6 @@ panvk_image_init_layouts(struct panvk_image *image,
    struct pan_image_layout_constraints plane_layout = {
       .offset_B = 0,
    };
-   if (pCreateInfo->flags & VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT) {
-      plane_layout.array_align_B = panvk_get_sparse_block_desc(pCreateInfo->imageType, pCreateInfo->format).size_B;
-      plane_layout.u_tiled.row_align_B = panvk_get_gpu_page_size(dev);
-   }
    for (uint8_t plane = 0; plane < image->plane_count; plane++) {
       enum pipe_format pfmt =
          select_plane_pfmt(image, image->vk.drm_format_mod, plane);
@@ -517,7 +514,12 @@ panvk_image_pre_mod_select_meta_adjustments(struct panvk_image *image)
         (VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) &&
        vk_format_is_compressed(image->vk.format)) {
       /* We need to be able to create RGBA views of compressed formats for
-       * vk_meta copies. */
+       * vk_meta copies.
+       *
+       * FIXME: this might cause LINEAR to be used instead of a better modifier.
+       * See https://gitlab.freedesktop.org/panfrost/mesa/-/issues/271 for
+       * details.
+       */
       image->vk.create_flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
                                 VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT;
    }
@@ -644,10 +646,6 @@ create_ms_images(struct panvk_device *dev, struct panvk_image *img,
       struct panvk_image *res = panvk_image_from_handle(img->ms_imgs[msaa_idx]);
       assert(res->vk.format == img->vk.format);
       assert(res->plane_count == img->plane_count);
-      for (uint32_t i = 0; i < res->plane_count; ++i) {
-         assert(res->planes[i].image.props.format ==
-                img->planes[i].image.props.format);
-      }
    }
 }
 
@@ -698,8 +696,9 @@ panvk_CreateImage(VkDevice device, const VkImageCreateInfo *pCreateInfo,
    if (image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) {
       uint64_t va_range = panvk_image_get_sparse_size(image);
 
-      image->sparse.device_address = panvk_as_alloc(dev, va_range,
-         pan_choose_gpu_va_alignment(dev->kmod.vm, va_range));
+      image->sparse.device_address =
+         panvk_as_alloc(dev, &dev->as.heap, va_range,
+                        pan_choose_gpu_va_alignment(dev->kmod.vm, va_range));
       if (!image->sparse.device_address) {
          result = panvk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          goto err_destroy_image;
@@ -733,7 +732,7 @@ panvk_CreateImage(VkDevice device, const VkImageCreateInfo *pCreateInfo,
 
 err_free_va:
    if (image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT)
-      panvk_as_free(dev, image->sparse.device_address,
+      panvk_as_free(dev, &dev->as.heap, image->sparse.device_address,
                     panvk_image_get_sparse_size(image));
 
 err_destroy_image:
@@ -772,7 +771,8 @@ panvk_DestroyImage(VkDevice _device, VkImage _image,
          device->kmod.vm, PAN_KMOD_VM_OP_MODE_IMMEDIATE, &unmap, 1);
       assert(!ret);
 
-      panvk_as_free(device, image->sparse.device_address, va_range);
+      panvk_as_free(device, &device->as.heap, image->sparse.device_address,
+                    va_range);
    }
 
    vk_image_destroy(&device->vk, pAllocator, &image->vk);
@@ -1025,7 +1025,8 @@ panvk_get_sparse_block_desc(VkImageType type, VkFormat format)
    uint32_t texel_block_size_B = fmt_desc->block.bits / 8;
 
    switch (type) {
-   case VK_IMAGE_TYPE_2D: {
+   case VK_IMAGE_TYPE_2D:
+   case VK_IMAGE_TYPE_3D: {
       if (!util_is_power_of_two_nonzero(texel_block_size_B))
          break;
 
@@ -1043,7 +1044,7 @@ panvk_get_sparse_block_desc(VkImageType type, VkFormat format)
       return (struct panvk_sparse_block_desc){
          .extent = extent,
          .size_B = STANDARD_SPARSE_BLOCK_SIZE_B,
-         .standard = true,
+         .standard = type == VK_IMAGE_TYPE_2D,
       };
    }
 
@@ -1215,7 +1216,7 @@ bind_ms_images(struct panvk_device *dev, const VkBindImageMemoryInfo *bind_info)
          .memoryOffset = sub_image_offset,
       };
 
-      const VkResult res = panvk_image_bind(dev, &sub_bind_info);
+      ASSERTED const VkResult res = panvk_image_bind(dev, &sub_bind_info);
       assert(res == VK_SUCCESS);
 
       sub_image_offset += sub_sz[i];

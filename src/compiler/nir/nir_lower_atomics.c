@@ -71,7 +71,7 @@ build_atomic(nir_builder *b, nir_intrinsic_instr *intr)
       UNREACHABLE("unsupported atomic type");
    }
 
-   nir_def *data = intr->intrinsic == nir_intrinsic_ssbo_atomic ? intr->src[2].ssa : intr->src[1].ssa;
+   nir_def *data = nir_get_io_data_src(intr)->ssa;
    nir_loop *loop = nir_push_loop(b);
    nir_def *xchg;
    {
@@ -82,7 +82,7 @@ build_atomic(nir_builder *b, nir_intrinsic_instr *intr)
       nir_def *expected = nir_build_alu2(
          b, nir_atomic_op_to_alu(nir_intrinsic_atomic_op(intr)), before, data);
       nir_alu_instr *op = nir_def_as_alu(expected);
-      op->fp_math_ctrl = nir_fp_no_fast_math;
+      op->fp_math_ctrl = nir_op_valid_fp_math_ctrl(op->op, nir_fp_no_fast_math);
       switch (intr->intrinsic) {
       case nir_intrinsic_ssbo_atomic:
          xchg = nir_ssbo_atomic_swap(b, intr->def.bit_size,

@@ -4,6 +4,7 @@
  */
 
 #include "util/u_memory.h"
+#include "bi_debug.h"
 #include "bi_builder.h"
 #include "compiler.h"
 #include "nodearray.h"
@@ -918,13 +919,12 @@ bi_coalesce_tied(bi_context *ctx)
       bi_builder b = bi_init_builder(ctx, bi_before_instr(I));
       unsigned n = bi_count_read_registers(I, 0);
 
+      bi_index dst = I->dest[0], src = I->src[0];
+      assert(dst.offset == 0);
       for (unsigned i = 0; i < n; ++i) {
-         bi_index dst = I->dest[0], src = I->src[0];
-
-         assert(dst.offset == 0 && src.offset == 0);
-         dst.offset = src.offset = i;
-
          bi_mov_i32_to(&b, dst, src);
+         dst.offset++;
+         src.offset++;
       }
 
       bi_replace_src(I, 0, I->dest[0]);
@@ -1206,7 +1206,7 @@ bi_register_allocate(bi_context *ctx)
 
       bi_compute_liveness_ssa(ctx);
       if (verbose) {
-         bi_print_shader(ctx, stdout);
+         bi_print_shader(ctx, stderr);
       }
       unsigned register_demand = bi_calc_register_demand(ctx);
       if (register_demand > regs_to_use) {
@@ -1214,7 +1214,9 @@ bi_register_allocate(bi_context *ctx)
          if (ctx->inputs->is_blend)
             UNREACHABLE("Blend shaders may not spill");
 
-         spill_count = bi_spill_ssa(ctx, regs_to_use, spill_count);
+         bi_spill_ssa(ctx, regs_to_use);
+         spill_count += bi_lower_spill(ctx, spill_count);
+
          /* By default, we use packed TLS addressing on Valhall.
           * We cannot cross 16 byte boundaries with packed TLS
           * addressing. Align to ensure this doesn't happen. This
@@ -1223,8 +1225,8 @@ bi_register_allocate(bi_context *ctx)
          if (ctx->arch >= 9)
             spill_count = ALIGN_POT(spill_count, 16);
          if (verbose) {
-            printf("\nspill_registers=%d\n", spill_count);
-            bi_print_shader(ctx, stdout);
+            fprintf(stderr, "\nspill_registers=%d\n", spill_count);
+            bi_print_shader(ctx, stderr);
          }
       }
    }

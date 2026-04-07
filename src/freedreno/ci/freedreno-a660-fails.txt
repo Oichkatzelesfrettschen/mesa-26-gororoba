@@ -1,4 +1,3 @@
-KHR-GL46.shader_image_load_store.basic-allTargets-store,Fail
 KHR-GL46.shader_subroutine.control_flow_and_returned_subroutine_values_used_as_subroutine_input,Fail
 
 #glcts update
@@ -44,10 +43,7 @@ nobin-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_1
 dEQP-VK.binding_model.descriptor_buffer.traditional_buffer.capture_replay.sparse_buffer_descriptor_data_consistency_and_usage,Fail
 dEQP-VK.binding_model.descriptor_buffer.traditional_buffer.capture_replay.sparse_buffer_descriptor_data_consistency,Fail
 dEQP-VK.pipeline.monolithic.misc.identically_defined_layout,Fail
-dEQP-VK.renderpasses.dynamic_rendering.primary_cmd_buff.basic.partial_binding_depth_stencil,Fail
 dEQP-VK.tessellation.misc_draw.tess_factor_barrier_bug,Crash
-bypass-dEQP-VK.renderpasses.dynamic_rendering.primary_cmd_buff.basic.partial_binding_depth_stencil,Fail
-gmem-dEQP-VK.renderpasses.dynamic_rendering.primary_cmd_buff.basic.partial_binding_depth_stencil,Fail
 gmem-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_16,Fail
 gmem-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_508,Fail
 gmem-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
@@ -117,6 +113,9 @@ api@clgetdeviceinfo,Fail
 
 # CL_QUEUE_SIZE Unexpected CL error: CL_INVALID_COMMAND_QUEUE -36
 api@clgetcommandqueueinfo,Fail
+
+# Piglit doesn't check subbuffer alignment requirements
+api@clgetmemobjectinfo,Fail
 
 # broken piglit test (doesn't account for FTZ)
 program@execute@builtin@builtin-float-nextafter-1.0.generated,Fail

@@ -1,30 +1,13 @@
 /*
  * Copyright © 2020 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "intel_nir.h"
 #include "brw_nir_rt.h"
 #include "brw_nir_rt_builder.h"
 #include "intel_nir.h"
+#include "brw_private.h"
 
 static bool
 resize_deref(nir_builder *b, nir_deref_instr *deref,
@@ -399,7 +382,9 @@ build_load_uniform(nir_builder *b, unsigned offset,
                    unsigned num_components, unsigned bit_size)
 {
    return nir_load_inline_data_intel(b, num_components, bit_size,
-                                     .base = offset);
+                                     nir_imm_int(b, 0),
+                                     .base = offset,
+                                     .range = num_components * bit_size / 8);
 }
 
 #define load_trampoline_param(b, name, num_components, bit_size) \
@@ -517,7 +502,12 @@ brw_nir_create_raygen_trampoline(const struct brw_compiler *compiler,
 
    NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, devinfo, NULL);
 
-   brw_nir_optimize(nir, devinfo);
+   brw_pass_tracker pt = {
+      .nir = nir,
+      .compiler = compiler,
+   };
+
+   brw_nir_optimize(&pt);
    /* brw_nir_optimize undoes late lowerings. */
    NIR_PASS(_, nir, nir_opt_algebraic_late);
 

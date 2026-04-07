@@ -40,7 +40,7 @@ static void
 create_tensor(struct rkt_ml_subgraph *subgraph, unsigned idx,
               unsigned size)
 {
-   struct pipe_context *context = subgraph->base.context;
+   struct pipe_context *context = subgraph->context;
    struct pipe_resource **tensors = util_dynarray_begin(&subgraph->tensors);
 
    assert(idx < util_dynarray_num_elements(&subgraph->tensors,
@@ -90,7 +90,7 @@ static void
 compile_operation(struct rkt_ml_subgraph *subgraph,
                   struct rkt_operation *operation)
 {
-   struct pipe_context *pcontext = subgraph->base.context;
+   struct pipe_context *pcontext = subgraph->context;
    unsigned regcfg_total_size = 0;
    struct util_dynarray *regcfgs;
    struct pipe_transfer *transfer = NULL;
@@ -171,7 +171,10 @@ lower_convolution(struct rkt_ml_subgraph *subgraph,
    operation->tasks = UTIL_DYNARRAY_INIT;
 
    operation->depthwise = rkt_is_depthwise(poperation);
-   operation->padding_same = poperation->conv.padding_same;
+   operation->padding_top = poperation->conv.padding_top;
+   operation->padding_bottom = poperation->conv.padding_bottom;
+   operation->padding_left = poperation->conv.padding_left;
+   operation->padding_right = poperation->conv.padding_right;
    operation->stride = poperation->conv.stride_x;
 
    operation->input_index = poperation->input_tensors[0]->index;
@@ -261,7 +264,7 @@ tensor_quantization_supported(struct pipe_tensor *tensor)
 }
 
 bool
-rkt_ml_operation_supported(struct pipe_context *pcontext,
+rkt_ml_operation_supported(struct pipe_ml_device *pdevice,
                            const struct pipe_ml_operation *operation)
 {
    bool supported = false;
@@ -285,8 +288,8 @@ rkt_ml_operation_supported(struct pipe_context *pcontext,
       break;
    }
    case PIPE_ML_OPERATION_TYPE_ADD:
-      supported = operation->input_tensors[0]->resource == NULL &&
-                  operation->input_tensors[1]->resource == NULL;
+      supported = operation->input_tensors[0]->data == NULL &&
+                  operation->input_tensors[1]->data == NULL;
       break;
    default:
       supported = false;
@@ -296,15 +299,21 @@ rkt_ml_operation_supported(struct pipe_context *pcontext,
 }
 
 struct pipe_ml_subgraph *
-rkt_ml_subgraph_create(struct pipe_context *pcontext,
+rkt_ml_subgraph_create(struct pipe_ml_device *pdevice,
                        const struct pipe_ml_operation *poperations,
                        unsigned count)
 {
+   struct rkt_screen *screen = rkt_ml_device_screen(pdevice);
+   struct rkt_ml_device *dev = rkt_ml_device(pdevice);
    struct rkt_ml_subgraph *subgraph;
    unsigned tensor_count;
 
+   if (!dev->context)
+      dev->context = screen->pscreen.context_create(&screen->pscreen, NULL, 0);
+
    subgraph = calloc(1, sizeof(*subgraph));
-   subgraph->base.context = pcontext;
+   subgraph->base.device = pdevice;
+   subgraph->context = dev->context;
 
    tensor_count = count_tensors(poperations, count);
    subgraph->tensors = UTIL_DYNARRAY_INIT;
@@ -611,7 +620,7 @@ free_operation(struct rkt_operation *operation)
 }
 
 void
-rkt_ml_subgraph_destroy(struct pipe_context *context,
+rkt_ml_subgraph_destroy(struct pipe_ml_device *pdevice,
                         struct pipe_ml_subgraph *psubgraph)
 {
    struct rkt_ml_subgraph *subgraph = (struct rkt_ml_subgraph *)(psubgraph);

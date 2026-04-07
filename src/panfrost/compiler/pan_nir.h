@@ -45,15 +45,23 @@ pan_nir_tile_default_coverage(nir_builder *b)
    return nir_iand_imm(b, nir_load_cumulative_coverage_pan(b), 0x1f);
 }
 
-bool pan_nir_lower_store_component(nir_shader *shader);
+bool pan_nir_lower_bool_to_bitsize(nir_shader *shader);
 
 bool pan_nir_lower_vertex_id(nir_shader *shader);
 
 bool pan_nir_lower_image_ms(nir_shader *shader);
 
-bool pan_nir_lower_frag_coord_zw(nir_shader *shader);
+bool pan_nir_lower_var_special_pan(nir_shader *shader);
 bool pan_nir_lower_noperspective_vs(nir_shader *shader);
 bool pan_nir_lower_noperspective_fs(nir_shader *shader);
+
+bool pan_nir_lower_vs_outputs(nir_shader *shader, unsigned gpu_id,
+                              const struct pan_varying_layout *varying_layout,
+                              bool has_idvs, bool *needs_extended_fifo);
+
+bool pan_nir_lower_fs_inputs(nir_shader *shader, unsigned gpu_id,
+                             const struct pan_varying_layout *varying_layout,
+                             struct pan_shader_info *info);
 
 bool pan_nir_lower_helper_invocation(nir_shader *shader);
 bool pan_nir_lower_sample_pos(nir_shader *shader);
@@ -80,16 +88,7 @@ bool pan_nir_lower_fs_outputs(nir_shader *shader, bool skip_atest);
 
 uint32_t pan_nir_collect_noperspective_varyings_fs(nir_shader *s);
 
-/* Specify the mediump lowering behavior for pan_nir_collect_varyings */
-enum pan_mediump_vary {
-   /* Always assign a 32-bit format to mediump varyings */
-   PAN_MEDIUMP_VARY_32BIT,
-   /* Assign a 16-bit format to varyings with smooth interpolation, and a
-    * 32-bit format to varyings with flat interpolation */
-   PAN_MEDIUMP_VARY_SMOOTH_16BIT,
-};
-
-void pan_nir_collect_varyings(nir_shader *s, struct pan_shader_info *info,
-                              enum pan_mediump_vary mediump);
+bool pan_nir_resize_varying_io(nir_shader *nir,
+                               const struct pan_varying_layout *varying_layout);
 
 #endif /* __PAN_NIR_H__ */

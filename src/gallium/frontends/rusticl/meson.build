@@ -136,6 +136,8 @@ rusticl_opencl_bindings_rs = rust.bindgen(
     'rusticl_opencl_bindings.h',
     opencl_headers,
   ],
+  # required by 'CL_intel/cl_ext_private.h'
+  language : 'cpp',
   output : 'rusticl_opencl_bindings.rs',
   include_directories : [
     inc_include,
@@ -272,8 +274,8 @@ rusticl_mesa_bindings = rust.bindgen(
     '--allowlist-function',     'mesa_.*',
     '--allowlist-var',          'OS_.*',
     '--allowlist-function',     'rz?alloc_.*',
-    '--allowlist-function',     'SHA1.*',
-    '--allowlist-var',          'SHA1_.*',
+    '--allowlist-var',          'BLAKE3_.*',
+    '--allowlist-function',     '_mesa_blake3_.*',
     '--allowlist-function',     'u_.*',
     '--allowlist-function',     'util_format_.*',
     '--allowlist-function',     'util_queue_.*',

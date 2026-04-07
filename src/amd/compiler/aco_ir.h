@@ -379,6 +379,8 @@ static constexpr RegClass v3b{RegClass::v3b};
 static constexpr RegClass v4b{RegClass::v4b};
 static constexpr RegClass v6b{RegClass::v6b};
 static constexpr RegClass v8b{RegClass::v8b};
+static constexpr RegClass lv1{RegClass::v1_linear};
+static constexpr RegClass lv2{RegClass::v2_linear};
 
 /**
  * Temp Class
@@ -1171,6 +1173,11 @@ struct ABI {
       clobbered_regs.sgpr += std::max((int)(reg_limit.sgpr % stride) - clobbered_start, 0);
 
       return clobbered_regs;
+   }
+
+   RegisterDemand numPreserved(RegisterDemand reg_limit) const
+   {
+      return reg_limit - numClobbered(reg_limit);
    }
 };
 
@@ -2042,7 +2049,6 @@ uint8_t get_gfx11_true16_mask(aco_opcode op);
 bool can_use_SDWA(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool pre_ra);
 bool opcode_supports_dpp(amd_gfx_level gfx_level, aco_opcode opcode, bool vop3p);
 bool can_use_DPP(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool dpp8);
-bool can_use_DPP(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool dpp8);
 bool can_write_m0(const aco_ptr<Instruction>& instr);
 /* updates "instr" and returns the old instruction (or NULL if no update was needed) */
 aco_ptr<Instruction> convert_to_SDWA(amd_gfx_level gfx_level, aco_ptr<Instruction>& instr);
@@ -2139,6 +2145,7 @@ enum block_kind {
    block_kind_export_end = 1 << 13,
    block_kind_end_with_regs = 1 << 14,
    block_kind_contains_call = 1 << 15,
+   block_kind_loop_latch = 1 << 16,
 };
 
 /* CFG */
@@ -2326,7 +2333,6 @@ public:
    /* Private segment buffers and scratch offsets. One entry per start/resume block */
    aco::small_vec<Temp, 2> private_segment_buffers;
    aco::small_vec<Temp, 2> scratch_offsets;
-   Temp static_scratch_rsrc;
    Temp stack_ptr;
 
    uint16_t num_waves = 0;
@@ -2335,6 +2341,7 @@ public:
    bool wgp_mode;
 
    bool needs_vcc = false;
+   bool preserve_s2 = false;
 
    CompilationProgress progress;
 

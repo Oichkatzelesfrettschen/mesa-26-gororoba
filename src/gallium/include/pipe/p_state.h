@@ -145,6 +145,12 @@ struct pipe_rasterizer_state
    unsigned rasterizer_discard:1;
 
    /**
+    * Which vertex stream to rasterize (0-3).
+    * Only meaningful with geometry shaders and stream output.
+    */
+   unsigned rasterization_stream:2;
+
+   /**
     * Exposed by pipe_caps.tile_raster_order.  When true,
     * tile_raster_order_increasing_* indicate the order that the rasterizer
     * should render tiles, to meet the requirements of
@@ -418,7 +424,6 @@ struct pipe_surface
    unsigned level;
 
    struct pipe_resource *texture; /**< resource into which this is a view  */
-   struct pipe_context *context; /**< context this surface belongs to */
 };
 
 /**
@@ -1007,9 +1012,9 @@ struct pipe_grid_info
  */
 struct pipe_tensor {
    /**
-    * Memory-backing for this tensor (use pipe_buffer_*).
+    * Memory-backing for this tensor.
     */
-   struct pipe_resource *resource;
+   uint8_t *data;
    /**
     * Index of this tensor in the subgraph that contains it.
     */
@@ -1038,6 +1043,7 @@ struct pipe_tensor {
     * Whether the tensor contains data in INT8 or UINT8 format.
     */
    bool is_signed;
+   uint8_t type_size;
 };
 
 /**
@@ -1111,9 +1117,14 @@ struct pipe_ml_operation
          unsigned stride_y;
 
          /**
-          * Whether to use padding of type same when accessing the input tensor.
+          * Explicit per-side padding. Frontends always compute these
+          * from their own padding representation (e.g. TFLite same/valid,
+          * PyTorch (pad_h, pad_w)). Drivers use them directly.
           */
-         bool padding_same;
+         unsigned padding_top;
+         unsigned padding_bottom;
+         unsigned padding_left;
+         unsigned padding_right;
 
          /**
           * Whether this is a pointwise (1x1 kernels) convolution.
@@ -1161,9 +1172,13 @@ struct pipe_ml_operation
          unsigned filter_height;
 
          /**
-          * Whether to use padding of type same when accessing the input tensor.
+          * Explicit per-side padding. Frontends always compute these
+          * from their own padding representation.
           */
-         bool padding_same;
+         unsigned padding_top;
+         unsigned padding_bottom;
+         unsigned padding_left;
+         unsigned padding_right;
       } pooling;
       struct {
          /**
@@ -1215,6 +1230,13 @@ struct pipe_ml_operation
 
       struct {
          /**
+          * Whether a ReLU activation should be applied to the output.
+          */
+         bool relu;
+      } add;
+
+      struct {
+         /**
           * Dimension along which the tensors are concatenated.
           */
          int axis;
@@ -1253,9 +1275,69 @@ struct pipe_ml_operation
 struct pipe_ml_subgraph
 {
    /**
-    * pipe_context that owns this subgraph.
+    * pipe_ml_device that owns this subgraph.
     */
-   struct pipe_context *context;
+   struct pipe_ml_device *device;
+};
+
+/**
+ * ML device providing ahead-of-time operations: operation support queries,
+ * subgraph compilation/serialization, and subgraph destruction.
+ */
+struct pipe_ml_device {
+   const char *id;
+
+   /**
+    * Checks whether an operation can be accelerated by this device.
+    *
+    * \param device      pipe_ml_device to be used
+    * \param operation   pipe_ml_operation to be checked
+    * \return            whether the device can accelerate this operation
+    */
+    bool (*ml_operation_supported)(struct pipe_ml_device *device,
+                                  const struct pipe_ml_operation *operation);
+
+   /**
+    * Compiles a ML subgraph, to be executed later. The returned pipe_ml_subgraph
+    * should contain all information needed to execute the subgraph with as
+    * little effort as strictly needed.
+    *
+    * \param device      pipe_ml_device to be used
+    * \param operations  array containing the definitions of the operations in the graph
+    * \param count       number of operations
+    * \return            a newly allocated pipe_ml_subgraph
+    */
+   struct pipe_ml_subgraph *(*ml_subgraph_create)(struct pipe_ml_device *device,
+                                                  const struct pipe_ml_operation *operations,
+                                                  unsigned count);
+
+   /**
+    * Serialize a compiled subgraph into a byte buffer.
+    *
+    * \param device      pipe_ml_device to be used
+    * \param subgraph    previously-compiled subgraph
+    * \param size        output: size of the returned buffer
+    * \return            malloc'd buffer (caller frees), or NULL on failure
+    */
+   uint8_t *(*ml_subgraph_serialize)(struct pipe_ml_device *device,
+                                     struct pipe_ml_subgraph *subgraph,
+                                     size_t *size);
+
+   /**
+    * Release all resources allocated by the implementation of ml_subgraph_create
+    *
+    * \param device      pipe_ml_device to be used
+    * \param subgraph    subgraph to release
+    */
+   void (*ml_subgraph_destroy)(struct pipe_ml_device *device,
+                               struct pipe_ml_subgraph *subgraph);
+
+   /**
+    * Destroy the device and free all associated resources.
+    *
+    * \param device      pipe_ml_device to destroy
+    */
+   void (*ml_device_destroy)(struct pipe_ml_device *device);
 };
 
 struct pipe_compute_state

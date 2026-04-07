@@ -1,24 +1,6 @@
 /*
  * Copyright © 2015 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef _VTN_PRIVATE_H_
@@ -43,6 +25,7 @@ extern uint32_t mesa_spirv_debug;
 #define MESA_SPIRV_DEBUG_VALUES         (1u << 1)
 #define MESA_SPIRV_DEBUG_ASM            (1u << 2)
 #define MESA_SPIRV_DEBUG_COLOR          (1u << 3)
+#define MESA_SPIRV_DEBUG_OFFSETS        (1u << 4)
 
 struct vtn_builder;
 struct vtn_decoration;
@@ -296,6 +279,7 @@ enum vtn_base_type {
    vtn_base_type_function,
    vtn_base_type_event,
    vtn_base_type_cooperative_matrix,
+   vtn_base_type_buffer,
 };
 
 struct vtn_type {
@@ -363,7 +347,7 @@ struct vtn_type {
          bool packed:1;
       };
 
-      /* Members for pointer types */
+      /* Members for pointer and buffer types */
       struct {
          /* For regular pointers, the vtn_type of the object pointed to;
           * for untyped pointers it must be NULL.
@@ -707,12 +691,7 @@ struct vtn_builder {
    /* Current function parameter index */
    unsigned func_param_idx;
 
-   /* false by default, set to true by the ContractionOff execution mode */
-   bool exact;
-
-   unsigned fp_math_ctrl_fp16;
-   unsigned fp_math_ctrl_fp32;
-   unsigned fp_math_ctrl_fp64;
+   unsigned fp_math_ctrl[6];
 
    /* when a physical memory model is choosen */
    bool physical_ptrs;
@@ -979,9 +958,8 @@ nir_alu_type vtn_convert_op_src_type(SpvOp opcode);
 nir_alu_type vtn_convert_op_dst_type(SpvOp opcode);
 
 nir_op vtn_nir_alu_op_for_spirv_opcode(struct vtn_builder *b,
-                                       SpvOp opcode, bool *swap, bool *exact,
-                                       unsigned conv_src_bit_size,
-                                       unsigned conv_dst_bit_size);
+                                       SpvOp opcode, bool *swap,
+                                       unsigned *extra_fp_math_ctrl);
 
 void vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
                     const uint32_t *w, unsigned count);
@@ -992,7 +970,9 @@ void vtn_handle_integer_dot(struct vtn_builder *b, SpvOp opcode,
 void vtn_handle_bitcast(struct vtn_builder *b, const uint32_t *w,
                         unsigned count);
 
-void vtn_handle_fp_fast_math(struct vtn_builder *b, struct vtn_value *val);
+unsigned *vtn_fp_math_ctrl_for_base_type(struct vtn_builder *b, enum glsl_base_type base_type);
+
+void vtn_handle_fp_fast_math(struct vtn_builder *b, struct vtn_value *dest_val, struct vtn_value *src0_val);
 
 void vtn_handle_subgroup(struct vtn_builder *b, SpvOp opcode,
                          const uint32_t *w, unsigned count);

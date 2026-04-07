@@ -58,7 +58,7 @@ ulimit -n 32768
 VSOCK_BASE=10000 # greater than all the default vsock ports
 VSOCK_CID=$((VSOCK_BASE + (CI_JOB_ID & 0xfff)))
 
-HOME=/cuttlefish launch_cvd \
+HOME=/cuttlefish timeout 5m launch_cvd \
   -daemon \
   -verbosity=INFO \
   -file_verbosity=VERBOSE \
@@ -67,6 +67,7 @@ HOME=/cuttlefish launch_cvd \
   -enable_bootanimation=false \
   -enable_minimal_mode=true \
   -enable_modem_simulator=false \
+  -enable_wifi=false \
   -guest_enforce_security=false \
   -report_anonymous_usage_stats=no \
   -gpu_mode="$CUTTLEFISH_GPU_MODE" \

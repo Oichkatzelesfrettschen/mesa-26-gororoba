@@ -1,24 +1,6 @@
 /*
  * Copyright © 2021 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include <list>
@@ -108,21 +90,23 @@ brw_nir_lower_launch_mesh_workgroups(nir_shader *nir)
 #define BRW_PER_TASK_DATA_START_DW 8
 
 static void
-brw_nir_lower_tue_outputs(nir_shader *nir, brw_tue_map *map)
+brw_nir_lower_tue_outputs(brw_pass_tracker *pt, brw_tue_map *map)
 {
+   nir_shader *nir = pt->nir;
+
    memset(map, 0, sizeof(*map));
 
-   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_out,
-            type_size_scalar_dwords, nir_lower_io_lower_64bit_to_32);
+   BRW_NIR_PASS(nir_lower_io, nir_var_shader_out,
+                type_size_scalar_dwords, nir_lower_io_lower_64bit_to_32);
 
    /* Lowering to explicit types will start offsets from task_payload_size, so
     * set it to start after the header.
     */
    nir->info.task_payload_size = BRW_PER_TASK_DATA_START_DW * 4;
-   NIR_PASS(_, nir, nir_lower_vars_to_explicit_types,
-            nir_var_mem_task_payload, shared_type_info);
-   NIR_PASS(_, nir, nir_lower_explicit_io,
-            nir_var_mem_task_payload, nir_address_format_32bit_offset);
+   BRW_NIR_PASS(nir_lower_vars_to_explicit_types,
+                nir_var_mem_task_payload, shared_type_info);
+   BRW_NIR_PASS(nir_lower_explicit_io,
+                nir_var_mem_task_payload, nir_address_format_32bit_offset);
 
    map->size_dw = align(DIV_ROUND_UP(nir->info.task_payload_size, 4), 8);
 }
@@ -297,11 +281,19 @@ brw_compile_task(const struct brw_compiler *compiler,
    struct brw_task_prog_data *prog_data = params->prog_data;
    const bool debug_enabled = brw_should_print_shader(nir, DEBUG_TASK, params->base.source_hash);
 
-   brw_debug_archive_nir(params->base.archiver, nir, 0, "first");
+   brw_pass_tracker pt_ = {
+      .nir = nir,
+      .dispatch_width = 0,
+      .compiler = compiler,
+      .key = &key->base,
+      .archiver = params->base.archiver,
+   }, *pt = &pt_;
 
-   brw_nir_lower_tue_outputs(nir, &prog_data->map);
+   BRW_NIR_SNAPSHOT("first");
 
-   NIR_PASS(_, nir, brw_nir_align_launch_mesh_workgroups);
+   brw_nir_lower_tue_outputs(pt, &prog_data->map);
+
+   BRW_NIR_PASS(brw_nir_align_launch_mesh_workgroups);
 
    nir_lower_task_shader_options lower_ts_opt = {
       .payload_to_shared_for_atomics = true,
@@ -311,9 +303,12 @@ brw_compile_task(const struct brw_compiler *compiler,
        */
       .payload_offset_in_bytes = BRW_PER_TASK_DATA_START_DW * 4,
    };
-   NIR_PASS(_, nir, nir_lower_task_shader, lower_ts_opt);
+   BRW_NIR_PASS(nir_lower_task_shader, lower_ts_opt);
 
-   NIR_PASS(_, nir, brw_nir_lower_launch_mesh_workgroups);
+   BRW_NIR_PASS(brw_nir_lower_launch_mesh_workgroups);
+
+   NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, compiler->devinfo,
+            NULL);
 
    NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, compiler->devinfo,
             NULL);
@@ -330,7 +325,7 @@ brw_compile_task(const struct brw_compiler *compiler,
    prog_data->base.uses_inline_data = brw_nir_uses_inline_data(nir) ||
                                       key->base.uses_inline_push_addr;
 
-   brw_postprocess_nir_opts(nir, compiler, key->base.robust_flags);
+   brw_postprocess_nir_opts(pt);
 
    brw_simd_selection_state simd_state{
       .devinfo = compiler->devinfo,
@@ -338,7 +333,7 @@ brw_compile_task(const struct brw_compiler *compiler,
       .required_width = brw_required_dispatch_width(&nir->info),
    };
 
-   brw_debug_archive_nir(params->base.archiver, nir, 0, "before-simd");
+   BRW_NIR_SNAPSHOT("before_simd");
 
    unsigned pressure[SIMD_COUNT];
    brw_nir_quick_pressure_estimate(nir, devinfo, pressure);
@@ -359,17 +354,23 @@ brw_compile_task(const struct brw_compiler *compiler,
       const unsigned dispatch_width = 8 << simd;
 
       nir_shader *shader = nir_shader_clone(params->base.mem_ctx, nir);
-      brw_nir_apply_key(shader, compiler, &key->base, dispatch_width);
 
-      brw_debug_archive_nir(params->base.archiver, shader, dispatch_width, "first");
+      pt_ = {
+         .nir = shader,
+         .dispatch_width = dispatch_width,
+         .compiler = compiler,
+         .archiver = params->base.archiver,
+      };
 
-      NIR_PASS(_, shader, brw_nir_lower_simd, dispatch_width);
+      BRW_NIR_SNAPSHOT("first");
+      brw_nir_apply_key(pt, &key->base, dispatch_width);
 
-      brw_nir_optimize(shader, devinfo);
+      BRW_NIR_PASS(brw_nir_lower_simd, dispatch_width);
+
+      brw_nir_optimize(pt);
       /* brw_nir_optimize undoes late lowerings. */
-      NIR_PASS(_, shader, nir_opt_algebraic_late);
-      brw_postprocess_nir_out_of_ssa(shader, dispatch_width,
-                                     params->base.archiver, debug_enabled);
+      BRW_NIR_PASS(nir_opt_algebraic_late);
+      brw_postprocess_nir_out_of_ssa(pt, debug_enabled);
 
       const brw_shader_params shader_params = {
          .compiler                = compiler,
@@ -434,7 +435,7 @@ brw_compile_task(const struct brw_compiler *compiler,
 }
 
 static void
-brw_nir_lower_tue_inputs(nir_shader *nir, const brw_tue_map *map)
+brw_nir_lower_tue_inputs(brw_pass_tracker *pt, const brw_tue_map *map)
 {
    /* See brw_nir_lower_tue_outputs. If a task payload is read by this shader,
     * task_payload_size will be used to start offsets, and that's always
@@ -442,12 +443,11 @@ brw_nir_lower_tue_inputs(nir_shader *nir, const brw_tue_map *map)
     * We can't always use map, as it may not be present if task and mesh
     * shaders are not compiled together. This is possible with shader objects.
     */
+   nir_shader *nir = pt->nir;
    nir->info.task_payload_size = BRW_PER_TASK_DATA_START_DW * 4;
 
-   bool progress = false;
-
-   NIR_PASS(progress, nir, nir_lower_vars_to_explicit_types,
-            nir_var_mem_task_payload, shared_type_info);
+   bool progress = BRW_NIR_PASS(nir_lower_vars_to_explicit_types,
+                                nir_var_mem_task_payload, shared_type_info);
 
    if (progress) {
       /* The types for Task Output and Mesh Input should match, so their sizes
@@ -462,8 +462,8 @@ brw_nir_lower_tue_inputs(nir_shader *nir, const brw_tue_map *map)
       nir->info.task_payload_size = 0;
    }
 
-   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_task_payload,
-            nir_address_format_32bit_offset);
+   BRW_NIR_PASS(nir_lower_explicit_io, nir_var_mem_task_payload,
+                nir_address_format_32bit_offset);
 }
 
 /* Attribute types. Flat attributes have to be a separate class because
@@ -630,11 +630,11 @@ brw_print_mue_map(FILE *fp, const struct brw_mue_map *map, struct nir_shader *ni
 }
 
 static void
-brw_nir_lower_mue_outputs(nir_shader *nir, const struct brw_mue_map *map)
+brw_nir_lower_mue_outputs(brw_pass_tracker *pt, const struct brw_mue_map *map)
 {
-   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_out,
-            type_size_vec4,
-            nir_lower_io_lower_64bit_to_32);
+   BRW_NIR_PASS(nir_lower_io, nir_var_shader_out,
+                type_size_vec4,
+                nir_lower_io_lower_64bit_to_32);
 }
 
 static bool
@@ -983,7 +983,15 @@ brw_compile_mesh(const struct brw_compiler *compiler,
    struct brw_mesh_prog_data *prog_data = params->prog_data;
    const bool debug_enabled = brw_should_print_shader(nir, DEBUG_MESH, params->base.source_hash);
 
-   brw_debug_archive_nir(params->base.archiver, nir, 0, "first");
+   brw_pass_tracker pt_ = {
+      .nir = nir,
+      .dispatch_width = 0,
+      .compiler = compiler,
+      .key = &key->base,
+      .archiver = params->base.archiver,
+   }, *pt = &pt_;
+
+   BRW_NIR_SNAPSHOT("first");
 
    brw_prog_data_init(&prog_data->base.base, &params->base);
 
@@ -1018,23 +1026,26 @@ brw_compile_mesh(const struct brw_compiler *compiler,
    prog_data->uses_drawid =
       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID);
 
-   brw_nir_lower_tue_inputs(nir, params->tue_map);
+   brw_nir_lower_tue_inputs(pt, params->tue_map);
 
-   NIR_PASS(_, nir, brw_nir_lower_mesh_primitive_count);
-   NIR_PASS(_, nir, nir_opt_dce);
-   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_out, NULL);
+   BRW_NIR_PASS(brw_nir_lower_mesh_primitive_count);
+   BRW_NIR_PASS(nir_opt_dce);
+   BRW_NIR_PASS(nir_remove_dead_variables, nir_var_shader_out, NULL);
 
    brw_compute_mue_map(compiler, nir, &prog_data->map,
                        prog_data->index_format,
                        key->base.vue_layout,
                        apply_wa_18019110168 ? wa_18019110168_mapping : NULL);
-   brw_nir_lower_mue_outputs(nir, &prog_data->map);
+   brw_nir_lower_mue_outputs(pt, &prog_data->map);
 
    /* When Primitive Header is enabled, we may not generates writes to all
     * fields, so let's initialize everything.
     */
    if (prog_data->map.has_per_primitive_header)
-      NIR_PASS(_, nir, brw_nir_initialize_mue, &prog_data->map);
+      BRW_NIR_PASS(brw_nir_initialize_mue, &prog_data->map);
+
+   NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, compiler->devinfo,
+            NULL);
 
    NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, compiler->devinfo,
             NULL);
@@ -1044,7 +1055,7 @@ brw_compile_mesh(const struct brw_compiler *compiler,
    prog_data->base.uses_inline_data = brw_nir_uses_inline_data(nir) ||
                                       key->base.uses_inline_push_addr;
 
-   brw_postprocess_nir_opts(nir, compiler, key->base.robust_flags);
+   brw_postprocess_nir_opts(pt);
 
    const struct brw_lower_urb_cb_data cb_data = {
       .devinfo = devinfo,
@@ -1057,9 +1068,10 @@ brw_compile_mesh(const struct brw_compiler *compiler,
          prog_data->map.per_primitive_indices_stride,
       .per_primitive_byte_offsets = prog_data->map.per_primitive_offsets,
    };
-   NIR_PASS(_, nir, brw_nir_lower_outputs_to_urb_intrinsics, &cb_data);
+   BRW_NIR_PASS(brw_nir_lower_outputs_to_urb_intrinsics, &cb_data);
+   brw_nir_opt_vectorize_urb(pt);
    struct nir_opt_offsets_options offset_options = {};
-   NIR_PASS(_, nir, nir_opt_offsets, &offset_options);
+   BRW_NIR_PASS(nir_opt_offsets, &offset_options);
 
    brw_simd_selection_state simd_state{
       .devinfo = compiler->devinfo,
@@ -1069,7 +1081,7 @@ brw_compile_mesh(const struct brw_compiler *compiler,
 
    std::unique_ptr<brw_shader> v[3];
 
-   brw_debug_archive_nir(params->base.archiver, nir, 0, "before-simd");
+   BRW_NIR_SNAPSHOT("before_simd");
 
    for (unsigned i = 0; i < 3; i++) {
       const unsigned simd = devinfo->ver >= 30 ? 2 - i : i;
@@ -1081,20 +1093,25 @@ brw_compile_mesh(const struct brw_compiler *compiler,
 
       nir_shader *shader = nir_shader_clone(params->base.mem_ctx, nir);
 
-      brw_debug_archive_nir(params->base.archiver, shader, dispatch_width, "first");
+      pt_ = {
+         .nir = shader,
+         .dispatch_width = dispatch_width,
+         .compiler = compiler,
+         .archiver = params->base.archiver,
+      };
 
-      brw_nir_apply_key(shader, compiler, &key->base, dispatch_width);
+      BRW_NIR_SNAPSHOT("first");
+      brw_nir_apply_key(pt, &key->base, dispatch_width);
 
       /* Load uniforms can do a better job for constants, so fold before it. */
-      NIR_PASS(_, shader, nir_opt_constant_folding);
+      BRW_NIR_PASS(nir_opt_constant_folding);
 
-      NIR_PASS(_, shader, brw_nir_lower_simd, dispatch_width);
+      BRW_NIR_PASS(brw_nir_lower_simd, dispatch_width);
 
-      brw_nir_optimize(shader, devinfo);
+      brw_nir_optimize(pt);
       /* brw_nir_optimize undoes late lowerings. */
-      NIR_PASS(_, shader, nir_opt_algebraic_late);
-      brw_postprocess_nir_out_of_ssa(shader, dispatch_width,
-                                     params->base.archiver, debug_enabled);
+      BRW_NIR_PASS(nir_opt_algebraic_late);
+      brw_postprocess_nir_out_of_ssa(pt, debug_enabled);
 
       const brw_shader_params shader_params = {
          .compiler                = compiler,

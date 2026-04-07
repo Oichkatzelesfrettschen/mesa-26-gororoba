@@ -257,6 +257,12 @@ print_instr_name(struct log_stream *stream, struct ir3_instruction *instr,
 
          mesa_log_stream_printf(stream, ".%s", type_name(instr->cat6.type));
          break;
+      case OPC_IMG_BINDLESS: {
+         mesa_log_stream_printf(
+            stream, ".%s",
+            instr->cat5.match_mode == IR3_MATCH_MODE_SSD ? "ssd" : "sad");
+         break;
+      }
       case OPC_ALIAS:
          switch (instr->cat7.alias_scope) {
          case ALIAS_TEX:
@@ -449,8 +455,6 @@ print_instr(struct log_stream *stream, struct ir3_instruction *instr, int lvl)
    }
 
    if (opc_cat(instr->opc) == 1) {
-      if (instr->cat1.sat)
-         mesa_log_stream_printf(stream, "(sat)");
       switch (instr->cat1.round) {
       case ROUND_ZERO:
          break;
@@ -465,6 +469,9 @@ print_instr(struct log_stream *stream, struct ir3_instruction *instr, int lvl)
          break;
       }
    }
+
+   if (instr->flags & IR3_INSTR_SAT)
+      mesa_log_stream_printf(stream, "(sat)");
 
    bool first = true;
    foreach_dst (reg, instr) {

@@ -133,29 +133,32 @@
       <isa name="GenISA">
          <stat name="Dispatch width" hidden="true">0 for vec4</stat>
          <stat name="Max polygons" hidden="true"/>
-         <stat name="Instruction Count" display="Instrs">
+         <stat name="Instructions" display="Instrs">
             Number of GEN instructions in the final generated shader executable.
          </stat>
-         <stat name="SEND Count" display="Send messages">
+         <stat name="Code size">
+            Code size in bytes
+         </stat>
+         <stat name="SENDs" display="Sends">
             Number of instructions in the final generated shader executable
             which access external units such as the constant cache or the sampler.
          </stat>
-         <stat name="Loop Count" display="Loop count">
+         <stat name="Loops">
             Number of loops (not unrolled) in the final generated shader
             executable.
          </stat>
-         <stat name="Cycle Count" display="Cycle count">
+         <stat name="Cycles">
             Estimate of the number of EU cycles required to execute the final
             generated executable. This is an estimate only and may vary greatly
             from actual run-time performance.
          </stat>
-         <stat name="Spill Count" display="Spill count">
+         <stat name="Spills">
             Number of scratch spill operations. This gives a rough estimate of
             the cost incurred due to spilling temporary values to memory. If
             this is non-zero, you may want to adjust your shader to reduce
             register pressure.
          </stat>
-         <stat name="Fill Count" display="Fill count">
+         <stat name="Fills">
             Number of scratch fill operations. This gives a rough estimate of
             the cost incurred due to spilling temporary values to memory. If
             this is non-zero, you may want to adjust your shader to reduce
@@ -185,6 +188,24 @@
          <stat name="Source hash" hash="true">
             Hash generated from shader source.
          </stat>
+         <stat name="Scheduler mode" type="str">
+            Scheduling mode selected for this binary.
+         </stat>
        </isa>
     </family>
+
+   <family name="PVR">
+      <isa name="Rogue">
+         <stat name="Code size">Binary size in bytes</stat>
+         <stat name="Scratch size">Scratch size per instance in bytes</stat>
+         <stat name="Spill count">Number of spilled registers per instance</stat>
+         <stat name="Temp count">Number of allocated temp registers</stat>
+         <stat name="Vtxin count">Number of used vertex input registers</stat>
+         <stat name="Loop count">Number of not unrolled loops in the shader</stat>
+         <stat name="Inst group count">Total number of instruction groups</stat>
+         <stat name="Main inst group count">Number of main instruction groups</stat>
+         <stat name="Bitwise inst group count">Number of bitwise instruction groups</stat>
+         <stat name="Control inst group count">Number of control instruction groups</stat>
+      </isa>
+   </family>
 </shaderdb>

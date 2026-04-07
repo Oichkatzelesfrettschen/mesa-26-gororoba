@@ -23,7 +23,6 @@ enum panvk_debug_flags {
    PANVK_DEBUG_NO_AFBC = 1 << 4,
    PANVK_DEBUG_LINEAR = 1 << 5,
    PANVK_DEBUG_DUMP = 1 << 6,
-   PANVK_DEBUG_NO_KNOWN_WARN = 1 << 7,
    PANVK_DEBUG_CS = 1 << 8,
    PANVK_DEBUG_COPY_GFX = 1 << 9,
    PANVK_DEBUG_FORCE_SIMULTANEOUS = 1 << 10,
@@ -33,6 +32,8 @@ enum panvk_debug_flags {
    PANVK_DEBUG_NO_WB_MMAP = 1 << 14,
    PANVK_DEBUG_NO_USER_MMAP_SYNC = 1 << 15,
    PANVK_DEBUG_COHERENT_BEFORE_CACHED = 1 << 16,
+   PANVK_DEBUG_NO_EXTENDED_VA_RANGE = 1 << 17,
+   PANVK_DEBUG_HSR_PREPASS = 1 << 17,
 };
 
 extern uint64_t panvk_debug;
@@ -52,7 +53,7 @@ struct panvk_instance {
    struct driOptionCache dri_options;
    struct driOptionCache available_dri_options;
 
-   uint8_t driver_build_sha[SHA1_DIGEST_LENGTH];
+   uint8_t driver_build_sha[BLAKE3_KEY_LEN];
    uint32_t force_vk_vendor;
 
    bool enable_vertex_pipeline_stores_atomics;

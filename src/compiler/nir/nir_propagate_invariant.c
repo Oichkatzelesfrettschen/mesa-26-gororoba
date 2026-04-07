@@ -84,7 +84,7 @@ propagate_invariant_instr(nir_instr *instr, struct set *invariants)
       if (!def_is_invariant(&alu->def, invariants))
          break;
 
-      alu->fp_math_ctrl |= nir_fp_exact;
+      alu->fp_math_ctrl |= nir_op_valid_fp_math_ctrl(alu->op, nir_fp_exact);
       nir_foreach_src(instr, add_src_cb, invariants);
       break;
    }
@@ -126,6 +126,7 @@ propagate_invariant_instr(nir_instr *instr, struct set *invariants)
    case nir_instr_type_jump:
    case nir_instr_type_undef:
    case nir_instr_type_load_const:
+   case nir_instr_type_cmat_call:
       break; /* Nothing to do */
 
    case nir_instr_type_phi: {

@@ -64,7 +64,6 @@ static const struct debug_control radv_debug_options[] = {
    {"shadowregs", RADV_DEBUG_SHADOW_REGS},
    {"extra_md", RADV_DEBUG_EXTRA_MD},
    {"nogpl", RADV_DEBUG_NO_GPL},
-   {"videoarraypath", RADV_DEBUG_VIDEO_ARRAY_PATH},
    {"nort", RADV_DEBUG_NO_RT},
    {"nomeshshader", RADV_DEBUG_NO_MESH_SHADER},
    {"noeso", RADV_DEBUG_NO_ESO},
@@ -87,10 +86,10 @@ static const struct debug_control radv_debug_options[] = {
    {"novideo", RADV_DEBUG_NO_VIDEO},
    {"validatevas", RADV_DEBUG_VALIDATE_VAS},
    {"bo_history", RADV_DEBUG_DUMP_BO_HISTORY},
-   {"nobolist", RADV_DEBUG_NO_BO_LIST},
    {"dumpibs", RADV_DEBUG_DUMP_IBS},
    {"vm", RADV_DEBUG_VM},
    {"nosmemmitigation", RADV_DEBUG_NO_SMEM_MITIGATION},
+   {"fullsync", RADV_DEBUG_FULL_SYNC},
    {NULL, 0},
 };
 
@@ -125,6 +124,20 @@ static const struct debug_control radv_perftest_options[] = {
    {"hic", RADV_PERFTEST_HIC},
    {"sparse", RADV_PERFTEST_SPARSE},
    {"rtcps", RADV_PERFTEST_RT_CPS},
+   {"bfloat16", RADV_PERFTEST_BFLOAT16},
+   {"lowlatencydec", RADV_PERFTEST_LOWLATENCYDEC},
+   {"lowlatencyenc", RADV_PERFTEST_LOWLATENCYENC},
+   {NULL, 0},
+};
+
+static const struct debug_control radv_experimental_options[] = {
+   {"emulate_rt", RADV_EXPERIMENTAL_EMULATE_RT},
+   {"video_decode", RADV_EXPERIMENTAL_VIDEO_DECODE},
+   {"transfer_queue", RADV_EXPERIMENTAL_TRANSFER_QUEUE},
+   {"video_encode", RADV_EXPERIMENTAL_VIDEO_ENCODE},
+   {"hic", RADV_EXPERIMENTAL_HIC},
+   {"sparse", RADV_EXPERIMENTAL_SPARSE},
+   {"bfloat16", RADV_EXPERIMENTAL_BFLOAT16},
    {NULL, 0},
 };
 
@@ -192,7 +205,6 @@ static const driOptionDescription radv_dri_options[] = {
       DRI_CONF_RADV_DISABLE_ANISO_SINGLE_LEVEL(false)
       DRI_CONF_RADV_DISABLE_TRUNC_COORD(false)
       DRI_CONF_RADV_DISABLE_SINKING_LOAD_INPUT_FS(false)
-      DRI_CONF_RADV_DISABLE_DEPTH_STORAGE(false)
       DRI_CONF_RADV_FLUSH_BEFORE_QUERY_COPY(false)
       DRI_CONF_RADV_ENABLE_UNIFIED_HEAP_ON_APU(false)
       DRI_CONF_RADV_TEX_NON_UNIFORM(false)
@@ -222,7 +234,6 @@ radv_init_dri_debug_options(struct radv_instance *instance)
    drirc->debug.disable_dcc = driQueryOptionb(&drirc->options, "radv_disable_dcc");
    drirc->debug.disable_dcc_mips = driQueryOptionb(&drirc->options, "radv_disable_dcc_mips");
    drirc->debug.disable_dcc_stores = driQueryOptionb(&drirc->options, "radv_disable_dcc_stores");
-   drirc->debug.disable_depth_storage = driQueryOptionb(&drirc->options, "radv_disable_depth_storage");
    drirc->debug.disable_shrink_image_store = driQueryOptionb(&drirc->options, "radv_disable_shrink_image_store");
    drirc->debug.disable_sinking_load_input_fs = driQueryOptionb(&drirc->options, "radv_disable_sinking_load_input_fs");
    drirc->debug.disable_tc_compat_htile_in_general =
@@ -378,6 +389,27 @@ radv_parse_pstate(const char *str)
    }
 }
 
+static void
+radv_convert_perftest_to_experimental(struct radv_instance *instance)
+{
+#define CONVERT(name, flag)                                                                                            \
+   if (instance->perftest_flags & RADV_PERFTEST_##flag) {                                                              \
+      fprintf(stderr, "radv: RADV_PERFTEST=" #name " is deprecated and will be removed in future Mesa releases. "      \
+                      "Please use RADV_EXPERIMENTAL=" #name " instead.\n");                                            \
+      instance->experimental_flags |= RADV_EXPERIMENTAL_##flag;                                                        \
+   }
+
+   CONVERT(emulate_rt, EMULATE_RT);
+   CONVERT(video_decode, VIDEO_DECODE);
+   CONVERT(video_encode, VIDEO_ENCODE);
+   CONVERT(transfer_queue, TRANSFER_QUEUE);
+   CONVERT(hic, HIC);
+   CONVERT(sparse, SPARSE);
+   CONVERT(bfloat16, BFLOAT16);
+
+#undef CONVERT
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationCallbacks *pAllocator,
                     VkInstance *pInstance)
@@ -415,6 +447,7 @@ radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationC
 
    instance->debug_flags = parse_debug_string(os_get_option("RADV_DEBUG"), radv_debug_options);
    instance->perftest_flags = parse_debug_string(os_get_option("RADV_PERFTEST"), radv_perftest_options);
+   instance->experimental_flags = parse_debug_string(os_get_option("RADV_EXPERIMENTAL"), radv_experimental_options);
    instance->trap_excp_flags = parse_debug_string(os_get_option("RADV_TRAP_HANDLER_EXCP"), radv_trap_excp_options);
    instance->profile_pstate = radv_parse_pstate(debug_get_option("RADV_PROFILE_PSTATE", "peak"));
 
@@ -453,6 +486,7 @@ radv_CreateInstance(const VkInstanceCreateInfo *pCreateInfo, const VkAllocationC
 
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
 
+   radv_convert_perftest_to_experimental(instance);
    radv_init_dri_options(instance);
 
    *pInstance = radv_instance_to_handle(instance);

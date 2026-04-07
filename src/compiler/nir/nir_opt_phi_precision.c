@@ -255,6 +255,7 @@ try_move_narrowing_dst(nir_builder *b, nir_phi_instr *phi)
        */
       nir_alu_instr *alu = nir_instr_as_alu(nir_src_parent_instr(use));
       alu->op = nir_op_mov;
+      alu->fp_math_ctrl = nir_op_valid_fp_math_ctrl(alu->op, alu->fp_math_ctrl);
    }
    nir_def_rewrite_uses(&phi->def, &new_phi->def);
 
@@ -337,6 +338,9 @@ find_widening_op(nir_phi_instr *phi, unsigned *bit_size)
 
    if ((op == INVALID_OP) || !has_load_const)
       return op;
+
+   if (*bit_size != 16)
+      return INVALID_OP;
 
    /* If we could otherwise move widening sources, but load_const is
     * one of the phi sources (and does not have a widening conversion,

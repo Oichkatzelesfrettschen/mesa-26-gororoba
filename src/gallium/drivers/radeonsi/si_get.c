@@ -10,7 +10,7 @@
 #include "ac_shader_util.h"
 #include "radeon_uvd_enc.h"
 #include "radeon_vce.h"
-#include "radeon_video.h"
+#include "si_video.h"
 #include "si_pipe.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_screen.h"
@@ -19,7 +19,6 @@
 #include <sys/utsname.h>
 #include "drm-uapi/drm.h"
 #include "aco_interface.h"
-#include "nir/nir_xfb_info.h"
 
 /* The capabilities reported by the kernel has priority
    over the existing logic in si_get_video_param */
@@ -742,25 +741,11 @@ static bool enable_mesh_shader(struct si_screen *sscreen)
 {
    return sscreen->use_ngg &&
       sscreen->info.gfx_level >= GFX10_3 &&
-      sscreen->info.has_gang_submit &&
       /* TODO: not support user queue for now */
       !(sscreen->info.userq_ip_mask & BITFIELD_BIT(AMD_IP_GFX)) &&
       /* don't support LLVM */
       aco_is_gpu_supported(&sscreen->info) &&
       !(sscreen->debug_flags & DBG(USE_LLVM));
-}
-
-static bool can_lower_mediump_io(mesa_shader_stage prev_stage, bool prev_stage_has_xfb,
-                                 mesa_shader_stage next_stage, bool config_option)
-{
-   /* This is the filter that determines when mediump IO is lowered.
-    *
-    * NOTE: LLVM fails to compile this test if VS inputs are 16-bit:
-    * dEQP-GLES31.functional.shaders.builtin_functions.integer.bitfieldinsert.uvec3_lowp_geometry
-    */
-   return (prev_stage == MESA_SHADER_VERTEX && next_stage == MESA_SHADER_FRAGMENT &&
-           !prev_stage_has_xfb && config_option) ||
-          prev_stage == MESA_SHADER_FRAGMENT;
 }
 
 static bool si_alu_to_scalar_packed_math_filter(const nir_instr *instr, const void *data)
@@ -780,41 +765,6 @@ static bool si_alu_to_scalar_packed_math_filter(const nir_instr *instr, const vo
    }
 
    return true;
-}
-
-static void lower_mediump_io(nir_shader *nir, bool config_option)
-{
-   nir_variable_mode modes = 0;
-
-   if (can_lower_mediump_io(nir->info.stage, nir->xfb_info != NULL, nir->info.next_stage,
-                            config_option))
-      modes |= nir_var_shader_out;
-
-   if (can_lower_mediump_io(nir->info.prev_stage, nir->info.prev_stage_has_xfb, nir->info.stage,
-                            config_option))
-      modes |= nir_var_shader_in;
-
-   if (modes) {
-      bool progress = false;
-
-      NIR_PASS(progress, nir, nir_lower_mediump_io, modes,
-               VARYING_BIT_PNTC | BITFIELD64_RANGE(VARYING_SLOT_VAR0, 32), true);
-
-      /* Update xfb info after mediump IO lowering. */
-      if (progress && nir->xfb_info)
-         nir_gather_xfb_info_from_intrinsics(nir);
-   }
-   NIR_PASS(_, nir, nir_clear_mediump_io_flag);
-}
-
-static void si_lower_mediump_io_default(nir_shader *nir)
-{
-   lower_mediump_io(nir, false);
-}
-
-static void si_lower_mediump_io_option(nir_shader *nir)
-{
-   lower_mediump_io(nir, true);
 }
 
 void si_init_screen_get_functions(struct si_screen *sscreen)
@@ -842,6 +792,10 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
    }
 
    si_init_renderer_string(sscreen);
+
+#ifndef HAVE_GFX_COMPUTE
+   return;
+#endif
 
    /*        |---------------------------------- Performance & Availability --------------------------------|
     *        |MAD/MAC/MADAK/MADMK|MAD_LEGACY|MAC_LEGACY|    FMA     |FMAC/FMAAK/FMAMK|FMA_LEGACY|PK_FMA_F16,|Best choice
@@ -871,7 +825,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
    bool has_16bit_io = sscreen->info.gfx_level >= GFX9;
 
    nir_shader_compiler_options *options = sscreen->nir_options;
-   ac_nir_set_options(&sscreen->info, !sscreen->use_aco, options);
+   ac_nir_set_options(&sscreen->info.compiler_info, !sscreen->use_aco, options);
 
    options->lower_ffma16 = sscreen->info.gfx_level < GFX9;
    options->lower_ffma32 = !use_fma32;
@@ -882,7 +836,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
    options->lower_uniforms_to_ubo = true;
    options->lower_to_scalar = true;
    options->lower_to_scalar_filter =
-      sscreen->info.cu_info.has_packed_math_16bit ? si_alu_to_scalar_packed_math_filter : NULL;
+      sscreen->info.compiler_info.has_packed_math_16bit ? si_alu_to_scalar_packed_math_filter : NULL;
    options->max_unroll_iterations = 128;
    options->max_unroll_iterations_aggressive = 128;
    /* For OpenGL, rounding mode is undefined. We want fast packing with v_cvt_pkrtz_f16,
@@ -899,8 +853,8 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
                           (sscreen->use_ngg_culling ?
                               nir_io_compaction_groups_tes_inputs_into_pos_and_var_groups : 0);
    if (has_16bit_io) {
-      options->lower_mediump_io = sscreen->options.mediump ? si_lower_mediump_io_option
-                                                           : si_lower_mediump_io_default;
+      options->lower_mediump_io = sscreen->options.mediump ? si_nir_lower_mediump_io_option
+                                                           : si_nir_lower_mediump_io_default;
    }
 
    /* HW supports indirect indexing for: | Enabled in driver
@@ -1119,7 +1073,6 @@ void si_init_screen_caps(struct si_screen *sscreen)
    caps->vertex_color_clamped = true;
    caps->fragment_color_clamped = true;
    caps->vs_instanceid = true;
-   caps->compute = true;
    caps->texture_buffer_objects = true;
    caps->vs_layer_viewport = true;
    caps->query_pipeline_statistics = true;
@@ -1198,6 +1151,7 @@ void si_init_screen_caps(struct si_screen *sscreen)
    caps->has_const_bw = true;
    caps->cl_gl_sharing = true;
    caps->call_finalize_nir_in_linker = true;
+   caps->blit_3d = true;
 
    /* Fixup dmabuf caps for the virtio + vpipe case (when fd=-1, u_init_pipe_screen_caps
     * fails to set this capability). */
@@ -1219,7 +1173,7 @@ void si_init_screen_caps(struct si_screen *sscreen)
    caps->draw_vertex_state = !(sscreen->debug_flags & DBG(NO_FAST_DISPLAY_LIST));
 
    caps->shader_samples_identical =
-      sscreen->info.gfx_level < GFX11 && !(sscreen->debug_flags & DBG(NO_FMASK));
+      sscreen->info.compiler_info.has_fmask && !(sscreen->debug_flags & DBG(NO_FMASK));
 
    caps->glsl_zero_init = 2;
 
@@ -1227,11 +1181,17 @@ void si_init_screen_caps(struct si_screen *sscreen)
    caps->seamless_cube_map =
    caps->seamless_cube_map_per_texture =
    caps->cube_map_array =
-      sscreen->info.has_3d_cube_border_color_mipmap;
+      sscreen->info.compiler_info.has_3d_cube_border_color_mipmap;
 
    caps->post_depth_coverage = sscreen->info.gfx_level >= GFX10;
 
+#ifdef HAVE_GFX_COMPUTE
    caps->graphics = sscreen->info.has_graphics;
+   caps->mesh_shader = enable_mesh_shader(sscreen);
+   caps->compute = true;
+#else
+   caps->graphics = caps->mesh_shader = caps->compute = false;
+#endif
 
    caps->resource_from_user_memory = !UTIL_ARCH_BIG_ENDIAN && sscreen->info.has_userptr;
 
@@ -1331,9 +1291,9 @@ void si_init_screen_caps(struct si_screen *sscreen)
    caps->max_vertex_attrib_stride = 2048;
 
    caps->max_texture_2d_size = sscreen->info.gfx_level >= GFX12 ? 65536 : 16384;
-   caps->max_texture_cube_levels = sscreen->info.has_3d_cube_border_color_mipmap ?
+   caps->max_texture_cube_levels = sscreen->info.compiler_info.has_3d_cube_border_color_mipmap ?
       (sscreen->info.gfx_level >= GFX12 ? 17 : 15) /* 64K : 16K */ : 0;
-   caps->max_texture_3d_levels = sscreen->info.has_3d_cube_border_color_mipmap ?
+   caps->max_texture_3d_levels = sscreen->info.compiler_info.has_3d_cube_border_color_mipmap ?
       /* This is limited by maximums that both the texture unit and layered rendering support. */
       (sscreen->info.gfx_level >= GFX12 ? 15 : /* 16K */
        (sscreen->info.gfx_level >= GFX10 ? 14 : 12)) /* 8K : 2K */ : 0;
@@ -1374,7 +1334,6 @@ void si_init_screen_caps(struct si_screen *sscreen)
    /* Conversion to nanos from cycles per millisecond */
    caps->timer_resolution = DIV_ROUND_UP(1000000, sscreen->info.clock_crystal_freq);
 
-   caps->mesh_shader = enable_mesh_shader(sscreen);
    if (caps->mesh_shader)
       si_init_mesh_caps(sscreen);
 
@@ -1408,4 +1367,8 @@ void si_init_screen_caps(struct si_screen *sscreen)
 
    if (sscreen->ws->va_range)
       sscreen->ws->va_range(sscreen->ws, &caps->min_vma, &caps->max_vma);
+
+   if (sscreen->info.has_timeline_syncobj &&
+       !(sscreen->info.userq_ip_mask & BITFIELD_BIT(AMD_IP_GFX)))
+      caps->max_timeline_semaphore_difference = UINT64_MAX;
 }

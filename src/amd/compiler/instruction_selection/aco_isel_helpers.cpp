@@ -117,42 +117,55 @@ emit_extract_vector(isel_context* ctx, Temp src, uint32_t idx, RegClass dst_rc)
    }
 
    assert(src.bytes() > (idx * dst_rc.bytes()));
-   Builder bld(ctx->program, ctx->block);
+
    auto it = ctx->allocated_vec.find(src.id());
-   if (it != ctx->allocated_vec.end() && dst_rc.bytes() == it->second[idx].regClass().bytes()) {
-      if (it->second[idx].regClass() == dst_rc) {
-         return it->second[idx];
-      } else {
-         assert(!dst_rc.is_subdword());
-         assert(dst_rc.type() == RegType::vgpr && it->second[idx].type() == RegType::sgpr);
-         return bld.copy(bld.def(dst_rc), it->second[idx]);
+   if (it != ctx->allocated_vec.end()) {
+      unsigned new_byte_offset = (idx * dst_rc.bytes()) % it->second[0].bytes();
+
+      if ((it->second[0].bytes() - new_byte_offset) >= dst_rc.bytes() &&
+          new_byte_offset % dst_rc.bytes() == 0) {
+         src = it->second[idx * dst_rc.bytes() / it->second[0].bytes()];
+         idx = new_byte_offset / dst_rc.bytes();
+         assert(src.id()); /* allocated_vec can contain undefs, but they must not be used. */
+         return emit_extract_vector(ctx, src, idx, dst_rc);
       }
    }
+
+   Builder bld(ctx->program, ctx->block);
 
    if (dst_rc.is_subdword())
       src = as_vgpr(ctx, src);
 
    if (src.bytes() == dst_rc.bytes()) {
       assert(idx == 0);
+      assert(dst_rc.type() == RegType::vgpr && src.type() == RegType::sgpr);
       return bld.copy(bld.def(dst_rc), src);
    } else {
-      Temp dst = bld.tmp(dst_rc);
-      bld.pseudo(aco_opcode::p_extract_vector, Definition(dst), src, Operand::c32(idx));
-      return dst;
+      return bld.pseudo(aco_opcode::p_extract_vector, bld.def(dst_rc), src, Operand::c32(idx));
    }
 }
 
 void
 emit_split_vector(isel_context* ctx, Temp vec_src, unsigned num_components)
 {
+   if (vec_src.size() == 1 && vec_src.type() == RegType::sgpr)
+      return;
+   unsigned comp_bytes = vec_src.bytes() / num_components;
+   assert(vec_src.bytes() % num_components == 0 && util_is_power_of_two_nonzero(comp_bytes));
    if (num_components == 1)
       return;
    if (ctx->allocated_vec.find(vec_src.id()) != ctx->allocated_vec.end())
       return;
-   if (num_components > vec_src.size() && vec_src.type() == RegType::sgpr) {
-      /* sub-dword split: should still help get_alu_src() */
-      emit_split_vector(ctx, vec_src, vec_src.size());
-      return;
+   if (comp_bytes < 4 && num_components > 2) {
+      /* sub-dword split: split into dwords/words first */
+      unsigned split_size = vec_src.size() == 1 ? 2 : 4;
+      if (vec_src.bytes() % split_size == 0) {
+         emit_split_vector(ctx, vec_src, vec_src.bytes() / split_size);
+         auto it = ctx->allocated_vec.find(vec_src.id());
+         for (unsigned i = 0; i < vec_src.bytes() / split_size; i++)
+            emit_split_vector(ctx, it->second[i], split_size / comp_bytes);
+         return;
+      }
    }
    RegClass rc = RegClass::get(vec_src.type(), vec_src.bytes() / num_components);
    aco_ptr<Instruction> split{
@@ -374,9 +387,9 @@ emit_interp_instr_gfx11(isel_context* ctx, unsigned idx, unsigned component, Tem
    Builder bld(ctx->program, ctx->block);
 
    if (ctx->cf_info.in_divergent_cf || ctx->cf_info.had_divergent_discard) {
-      bld.pseudo(aco_opcode::p_interp_gfx11, Definition(dst), Operand(v1.as_linear()),
-                 Operand::c32(idx), Operand::c32(component), Operand::c32(high_16bits), coord1,
-                 coord2, bld.m0(prim_mask));
+      bld.pseudo(aco_opcode::p_interp_gfx11, Definition(dst), Operand(lv1), Operand::c32(idx),
+                 Operand::c32(component), Operand::c32(high_16bits), coord1, coord2,
+                 bld.m0(prim_mask));
       return;
    }
 
@@ -450,9 +463,8 @@ emit_interp_mov_instr(isel_context* ctx, unsigned idx, unsigned component, unsig
    if (ctx->options->gfx_level >= GFX11) {
       uint16_t dpp_ctrl = dpp_quad_perm(vertex_id, vertex_id, vertex_id, vertex_id);
       if (ctx->cf_info.in_divergent_cf || ctx->cf_info.had_divergent_discard) {
-         bld.pseudo(aco_opcode::p_interp_gfx11, Definition(tmp), Operand(v1.as_linear()),
-                    Operand::c32(idx), Operand::c32(component), Operand::c32(dpp_ctrl),
-                    bld.m0(prim_mask));
+         bld.pseudo(aco_opcode::p_interp_gfx11, Definition(tmp), Operand(lv1), Operand::c32(idx),
+                    Operand::c32(component), Operand::c32(dpp_ctrl), bld.m0(prim_mask));
       } else {
          Temp p =
             bld.ldsdir(aco_opcode::lds_param_load, bld.def(v1), bld.m0(prim_mask), idx, component);
@@ -594,8 +606,8 @@ create_fs_dual_src_export_gfx11(isel_context* ctx, const struct aco_export_mrt* 
    aco_ptr<Instruction> exp{
       create_instruction(aco_opcode::p_dual_src_export_gfx11, Format::PSEUDO, 10, 6)};
    for (unsigned i = 0; i < 4; i++) {
-      exp->operands[i] = mrt0 ? mrt0->out[i] : Operand(v1);
-      exp->operands[i + 4] = mrt1 ? mrt1->out[i] : Operand(v1);
+      exp->operands[i] = mrt0->out[i];
+      exp->operands[i + 4] = mrt1->out[i];
    }
 
    instr_exact_mask(exp.get()) = Operand();
@@ -728,10 +740,7 @@ add_startpgm(struct isel_context* ctx, bool is_callee)
 
    if (is_callee) {
       unsigned def_idx = 0;
-      if (ctx->program->gfx_level >= GFX9)
-         ctx->program->stack_ptr = ctx->callee_info.stack_ptr.def.getTemp();
-      else
-         ctx->program->static_scratch_rsrc = ctx->callee_info.stack_ptr.def.getTemp();
+      ctx->program->stack_ptr = ctx->callee_info.stack_ptr.def.getTemp();
       startpgm->definitions[def_idx++] = ctx->callee_info.stack_ptr.def;
       startpgm->definitions[def_idx++] = ctx->callee_info.return_address.def;
 
@@ -1096,7 +1105,7 @@ get_callee_info(amd_gfx_level gfx_level, unsigned wave_size, const ABI& abi, uns
    return_def_info.provided_alignment = 2;
    return_def_info.rc = s2;
    return_def_info.dst_info = &info.return_address;
-   return_def_info.is_return_param = false;
+   return_def_info.is_return_param = true;
    return_def_info.is_system_param = true;
    return_def_info.force_reg = true;
    assignment_infos.push_back(return_def_info);
@@ -1220,12 +1229,8 @@ void
 emit_reload_preserved(isel_context* ctx)
 {
    Builder bld(ctx->program, ctx->block);
-   Operand stack_ptr_op;
-   if (ctx->program->gfx_level >= GFX9)
-      stack_ptr_op = Operand(ctx->program->stack_ptr);
-   else
-      stack_ptr_op = Operand(load_scratch_resource(ctx->program, bld, -1u, false));
-   bld.pseudo(aco_opcode::p_reload_preserved, bld.def(bld.lm), Operand(), stack_ptr_op);
+   bld.pseudo(aco_opcode::p_reload_preserved, bld.def(bld.lm), Operand(),
+              Operand(ctx->program->stack_ptr));
 }
 
 } // namespace aco

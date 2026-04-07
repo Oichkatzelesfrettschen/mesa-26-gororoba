@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2018-2019 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+ * Copyright (C) 2018-2019 Alyssa Rosenzweig
  * SPDX-License-Identifier: MIT
  */
 
@@ -18,7 +18,6 @@ struct bifrost_precompiled_kernel_sysvals {
    } num_workgroups;
    uint64_t printf_buffer_address;
 } __attribute__((aligned(8)));
-;
 
 #define BIFROST_PRECOMPILED_KERNEL_SYSVALS_SIZE                                \
    sizeof(struct bifrost_precompiled_kernel_sysvals)
@@ -69,8 +68,6 @@ void bifrost_postprocess_nir(nir_shader *nir, unsigned gpu_id);
 void bifrost_lower_texture_nir(nir_shader *nir, unsigned gpu_id);
 void bifrost_lower_texture_late_nir(nir_shader *nir, unsigned gpu_id);
 
-bool bifrost_will_dump_shaders(void);
-
 void bifrost_compile_shader_nir(nir_shader *nir,
                                 const struct pan_compile_inputs *inputs,
                                 struct util_dynarray *binary,
@@ -78,30 +75,6 @@ void bifrost_compile_shader_nir(nir_shader *nir,
 
 #define VALHAL_EX_FIFO_VARYING_BITS \
    (VARYING_BIT_PSIZ | VARYING_BIT_LAYER | VARYING_BIT_PRIMITIVE_ID)
-
-static inline bool
-valhal_writes_extended_fifo(uint64_t outputs_written,
-                            bool no_psiz, bool multiview)
-{
-   uint64_t ex_fifo_written = outputs_written & VALHAL_EX_FIFO_VARYING_BITS;
-   if (ex_fifo_written == 0)
-      return false;
-
-   /* Multiview shaders depend on the FIFO format for indexing per-view
-    * output writes. We don't currently patch these offsets in the no_psiz
-    * variant, so we need the extended format, regardless of point size.
-    */
-   if (multiview)
-      return true;
-
-   /* If we're not rendering in points mode, the no_psiz variant has point
-    * size write patched out for us.
-    */
-   if (no_psiz)
-      ex_fifo_written &= ~VARYING_BIT_PSIZ;
-
-   return ex_fifo_written != 0;
-}
 
 #define DEFINE_OPTIONS(arch)                                                   \
    static const nir_shader_compiler_options bifrost_nir_options_v##arch = {    \
@@ -147,6 +120,7 @@ valhal_writes_extended_fifo(uint64_t outputs_written,
       .lower_uadd_carry = true,                                                \
       .lower_usub_borrow = true,                                               \
                                                                                \
+      .has_ldexp = true,                                                       \
       .has_isub = true,                                                        \
       .vectorize_vec2_16bit = true,                                            \
       .fuse_ffma16 = true,                                                     \

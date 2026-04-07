@@ -41,53 +41,77 @@ msl_nir_fs_remove_depth_write(nir_builder *b, nir_intrinsic_instr *intrin,
    return false;
 }
 
+static bool
+fs_force_output_type(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
+{
+   if (intrin->intrinsic != nir_intrinsic_store_output)
+      return false;
+
+   nir_io_semantics io = nir_intrinsic_io_semantics(intrin);
+   if (io.location < FRAG_RESULT_DATA0 || FRAG_RESULT_DATA7 < io.location)
+      return false;
+
+   enum pipe_format *render_target_formats = (enum pipe_format *)data;
+   enum pipe_format format =
+      render_target_formats[io.location - FRAG_RESULT_DATA0];
+   nir_alu_type type = nir_intrinsic_src_type(intrin);
+   if (util_format_is_float(format) || util_format_is_unorm(format)) {
+      if (type & nir_type_uint) {
+         b->cursor = nir_before_instr(&intrin->instr);
+         nir_def *value =
+            nir_u2fN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+         nir_src_rewrite(&intrin->src[0], value);
+         type ^= (nir_type_float | nir_type_uint);
+         nir_intrinsic_set_src_type(intrin, type);
+         return true;
+      } else if (type & nir_type_int) {
+         b->cursor = nir_before_instr(&intrin->instr);
+         nir_def *value =
+            nir_u2fN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+         nir_src_rewrite(&intrin->src[0], value);
+         type ^= (nir_type_float | nir_type_int);
+         nir_intrinsic_set_src_type(intrin, type);
+         return true;
+      }
+   } else if (util_format_is_pure_sint(format)) {
+      if (type & nir_type_uint) {
+         type ^= (nir_type_uint | nir_type_int);
+         nir_intrinsic_set_src_type(intrin, type);
+         return true;
+      } else if (type & nir_type_float) {
+         b->cursor = nir_before_instr(&intrin->instr);
+         nir_def *value =
+            nir_f2uN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+         nir_src_rewrite(&intrin->src[0], value);
+         type ^= (nir_type_float | nir_type_int);
+         nir_intrinsic_set_src_type(intrin, type);
+         return true;
+      }
+   } else if (util_format_is_pure_uint(format)) {
+      if (type & nir_type_int) {
+         type ^= (nir_type_int | nir_type_uint);
+         nir_intrinsic_set_src_type(intrin, type);
+         return true;
+      } else if (type & nir_type_float) {
+         b->cursor = nir_before_instr(&intrin->instr);
+         nir_def *value =
+            nir_f2uN(b, intrin->src[0].ssa, nir_src_bit_size(intrin->src[0]));
+         nir_src_rewrite(&intrin->src[0], value);
+         type ^= (nir_type_float | nir_type_uint);
+         nir_intrinsic_set_src_type(intrin, type);
+         return true;
+      }
+   }
+   return false;
+}
+
 bool
 msl_nir_fs_force_output_signedness(
    nir_shader *nir, enum pipe_format render_target_formats[MAX_DRAW_BUFFERS])
 {
-   assert(nir->info.stage == MESA_SHADER_FRAGMENT);
-
-   bool update_derefs = false;
-   nir_foreach_variable_with_modes(var, nir, nir_var_shader_out) {
-      if (FRAG_RESULT_DATA0 <= var->data.location &&
-          var->data.location <= FRAG_RESULT_DATA7 &&
-          glsl_type_is_integer(var->type)) {
-         unsigned int slot = var->data.location - FRAG_RESULT_DATA0;
-
-         if (glsl_type_is_uint_16_32_64(var->type) &&
-             util_format_is_pure_sint(render_target_formats[slot])) {
-            var->type = glsl_ivec_type(var->type->vector_elements);
-            update_derefs = true;
-         } else if (glsl_type_is_int_16_32_64(var->type) &&
-                    util_format_is_pure_uint(render_target_formats[slot])) {
-            var->type = glsl_uvec_type(var->type->vector_elements);
-            update_derefs = true;
-         }
-      }
-   }
-
-   if (update_derefs) {
-      nir_foreach_function_impl(impl, nir) {
-         nir_foreach_block(block, impl) {
-            nir_foreach_instr(instr, block) {
-               switch (instr->type) {
-               case nir_instr_type_deref: {
-                  nir_deref_instr *deref = nir_instr_as_deref(instr);
-                  if (deref->deref_type == nir_deref_type_var) {
-                     deref->type = deref->var->type;
-                  }
-                  break;
-               }
-               default:
-                  break;
-               }
-            }
-         }
-         nir_progress(update_derefs, impl, nir_metadata_control_flow);
-      }
-   }
-
-   return update_derefs;
+   return nir_shader_intrinsics_pass(nir, fs_force_output_type,
+                                     nir_metadata_control_flow,
+                                     render_target_formats);
 }
 
 bool
@@ -131,8 +155,10 @@ msl_replace_load_sample_mask_in_for_static_sample_mask(
    if (intr->intrinsic != nir_intrinsic_load_sample_mask_in)
       return false;
 
-   nir_def *sample_mask = (nir_def *)data;
-   nir_def_rewrite_uses(&intr->def, sample_mask);
+   b->cursor = nir_after_instr(&intr->instr);
+   nir_def *static_sample_mask = (nir_def *)data;
+   nir_def *sample_mask = nir_iand(b, &intr->def, static_sample_mask);
+   nir_def_rewrite_uses_after(&intr->def, sample_mask);
    return true;
 }
 
@@ -150,14 +176,15 @@ msl_lower_static_sample_mask(nir_shader *nir, uint32_t sample_mask)
       .location = FRAG_RESULT_SAMPLE_MASK,
       .num_slots = 1u,
    };
-   nir_def *sample_mask_def = nir_imm_int(&b, sample_mask);
-   nir_store_output(&b, sample_mask_def, nir_imm_int(&b, 0u), .base = 0u,
-                    .range = 1u, .write_mask = 0x1, .component = 0u,
+   nir_def *static_sample_mask = nir_imm_int(&b, sample_mask);
+   nir_store_output(&b, nir_load_sample_mask_in(&b), nir_imm_int(&b, 0u),
+                    .base = 0u, .range = 1u, .write_mask = 0x1, .component = 0u,
                     .src_type = nir_type_uint32, .io_semantics = io_semantics);
+   BITSET_SET(nir->info.system_values_read, SYSTEM_VALUE_SAMPLE_MASK_IN);
 
-   return nir_shader_intrinsics_pass(
+   nir_shader_intrinsics_pass(
       nir, msl_replace_load_sample_mask_in_for_static_sample_mask,
-      nir_metadata_control_flow, sample_mask_def);
+      nir_metadata_control_flow, static_sample_mask);
 
    return true;
 }
@@ -307,6 +334,73 @@ msl_nir_fake_guard_for_discards(struct nir_shader *nir)
 
    return nir_shader_intrinsics_pass(nir, fake_guard_for_discards,
                                      nir_metadata_control_flow, NULL);
+}
+
+/* Returns true if gl_SampleID is required. */
+static bool
+gather_fs_input_interpolant_usage(nir_builder *b, nir_intrinsic_instr *intr,
+                                  void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_interpolated_input)
+      return false;
+
+   bool *uses_interpolant = (bool *)data;
+   struct nir_io_semantics io = nir_intrinsic_io_semantics(intr);
+   nir_intrinsic_instr *interpolation = nir_src_as_intrinsic(intr->src[0]);
+   bool at_sample =
+      interpolation->intrinsic == nir_intrinsic_load_barycentric_at_sample;
+   uses_interpolant[io.location] |=
+      at_sample ||
+      interpolation->intrinsic == nir_intrinsic_load_barycentric_at_offset;
+   return at_sample;
+}
+
+static bool
+lower_sample_shading(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic == nir_intrinsic_load_frag_coord) {
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def *offset =
+         nir_fadd(b, nir_load_sample_pos_from_id(b, 32u, nir_load_sample_id(b)),
+                  nir_imm_vec2(b, -0.5f, -0.5f));
+      nir_def *sample_position =
+         nir_fadd(b, &intr->def, nir_pad_vector_imm_int(b, offset, 0u, 4u));
+      nir_def_rewrite_uses_after(&intr->def, sample_position);
+      return true;
+   }
+
+   if (intr->intrinsic != nir_intrinsic_load_interpolated_input)
+      return false;
+
+   bool *uses_interpolant = (bool *)data;
+   struct nir_io_semantics io = nir_intrinsic_io_semantics(intr);
+   nir_intrinsic_instr *interpolation = nir_src_as_intrinsic(intr->src[0]);
+   if (!uses_interpolant[io.location] ||
+       interpolation->intrinsic != nir_intrinsic_load_barycentric_sample)
+      return false;
+
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *def = nir_load_barycentric_at_sample(
+      b, intr->def.bit_size, nir_load_sample_id(b),
+      .interp_mode = nir_intrinsic_interp_mode(interpolation));
+   nir_def_rewrite_uses_after(&interpolation->def, def);
+   nir_instr_remove(&interpolation->instr);
+   return false;
+}
+
+bool
+msl_nir_lower_sample_shading(nir_shader *nir)
+{
+   assert(nir->info.stage == MESA_SHADER_FRAGMENT);
+
+   bool uses_interpolant[NUM_TOTAL_VARYING_SLOTS] = {};
+
+   if (nir_shader_intrinsics_pass(nir, gather_fs_input_interpolant_usage,
+                                  nir_metadata_all, uses_interpolant))
+      BITSET_SET(nir->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID);
+
+   return nir_shader_intrinsics_pass(
+      nir, lower_sample_shading, nir_metadata_control_flow, uses_interpolant);
 }
 
 static bool

@@ -11,7 +11,7 @@
 #include "nir_intrinsics.h"
 
 /* Set NIR options shared by ACO, LLVM, RADV, and radeonsi. */
-void ac_nir_set_options(struct radeon_info *info, bool use_llvm,
+void ac_nir_set_options(const struct ac_compiler_info *info, bool use_llvm,
                         nir_shader_compiler_options *options)
 {
    /*        |---------------------------------- Performance & Availability --------------------------------|
@@ -65,7 +65,8 @@ void ac_nir_set_options(struct radeon_info *info, bool use_llvm,
    options->lower_iadd_sat = info->gfx_level <= GFX8;
    options->lower_hadd = true;
    options->lower_mul_32x16 = true;
-   options->lower_bfloat16_conversions = true,
+   options->lower_bfloat16_conversions = true;
+   options->has_ldexp = true;
    options->has_bfe = true;
    options->has_bfm = true;
    options->has_bitfield_select = true;
@@ -73,13 +74,13 @@ void ac_nir_set_options(struct radeon_info *info, bool use_llvm,
    options->has_ford_funord = true;
    options->has_fsub = true;
    options->has_isub = true;
-   options->has_sdot_4x8 = info->cu_info.has_accelerated_dot_product;
-   options->has_sudot_4x8 = info->cu_info.has_accelerated_dot_product && info->gfx_level >= GFX11;
-   options->has_udot_4x8 = info->cu_info.has_accelerated_dot_product;
-   options->has_sdot_4x8_sat = info->cu_info.has_accelerated_dot_product;
-   options->has_sudot_4x8_sat = info->cu_info.has_accelerated_dot_product && info->gfx_level >= GFX11;
-   options->has_udot_4x8_sat = info->cu_info.has_accelerated_dot_product;
-   options->has_dot_2x16 = info->cu_info.has_accelerated_dot_product && info->gfx_level < GFX11;
+   options->has_sdot_4x8 = info->has_accelerated_dot_product;
+   options->has_sudot_4x8 = info->has_accelerated_dot_product && info->gfx_level >= GFX11;
+   options->has_udot_4x8 = info->has_accelerated_dot_product;
+   options->has_sdot_4x8_sat = info->has_accelerated_dot_product;
+   options->has_sudot_4x8_sat = info->has_accelerated_dot_product && info->gfx_level >= GFX11;
+   options->has_udot_4x8_sat = info->has_accelerated_dot_product;
+   options->has_dot_2x16 = info->has_accelerated_dot_product && info->gfx_level < GFX11;
    options->has_bfdot2_bfadd = info->gfx_level >= GFX12;
    options->has_find_msb_rev = true;
    options->has_pack_32_4x8 = true;
@@ -103,7 +104,7 @@ void ac_nir_set_options(struct radeon_info *info, bool use_llvm,
    options->optimize_quad_vote_to_reduce = !use_llvm;
    options->lower_fisnormal = true;
    options->support_16bit_alu = info->gfx_level >= GFX8;
-   options->vectorize_vec2_16bit = info->cu_info.has_packed_math_16bit;
+   options->vectorize_vec2_16bit = info->has_packed_math_16bit;
    options->discard_is_demote = true;
    options->optimize_sample_mask_in = true;
    options->optimize_load_front_face_fsign = true;
@@ -218,8 +219,7 @@ ac_nir_unpack_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct a
 }
 
 bool
-ac_nir_lower_indirect_derefs(nir_shader *shader,
-                             enum amd_gfx_level gfx_level)
+ac_nir_lower_indirect_derefs(nir_shader *shader)
 {
    bool progress = false;
 

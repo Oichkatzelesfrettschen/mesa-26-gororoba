@@ -229,9 +229,8 @@ mmap_plane(struct panvk_image *img, uint8_t p, int prot,
    if (plane_ptrs[p])
       return VK_SUCCESS;
 
-   plane_ptrs[p] = pan_kmod_bo_mmap(img->planes[p].mem->bo, 0,
-                                    pan_kmod_bo_size(img->planes[p].mem->bo),
-                                    prot, MAP_SHARED, NULL);
+   plane_ptrs[p] =
+      pan_kmod_bo_mmap(img->planes[p].mem->bo, prot, MAP_SHARED, NULL);
 
    if (plane_ptrs[p] == MAP_FAILED) {
       plane_ptrs[p] = NULL;
@@ -424,7 +423,7 @@ panvk_copy_image_to_image(struct panvk_image *dst,
    enum pipe_format dst_pfmt = vk_format_to_pipe_format(dst_vkfmt);
    const struct util_format_description *src_fmt =
       util_format_description(src_pfmt);
-   const struct util_format_description *dst_fmt =
+   ASSERTED const struct util_format_description *dst_fmt =
       util_format_description(dst_pfmt);
 
    unsigned block_width_px = src_fmt->block.width;
@@ -443,7 +442,7 @@ panvk_copy_image_to_image(struct panvk_image *dst,
 
    unsigned src_layer_count =
       vk_image_subresource_layer_count(&src->vk, &src_subres);
-   unsigned dst_layer_count =
+   ASSERTED unsigned dst_layer_count =
       vk_image_subresource_layer_count(&dst->vk, &dst_subres);
    /* This also is not explicitly required in the spec */
    assert(src_layer_count == dst_layer_count);

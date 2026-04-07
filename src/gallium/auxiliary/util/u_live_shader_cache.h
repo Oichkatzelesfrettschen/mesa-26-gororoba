@@ -49,7 +49,7 @@
 #ifndef U_LIVE_SHADER_CACHE_H
 #define U_LIVE_SHADER_CACHE_H
 
-#include "util/sha1/sha1.h"
+#include "util/mesa-blake3.h"
 #include "util/simple_mtx.h"
 #include "pipe/p_state.h"
 
@@ -70,7 +70,7 @@ struct util_live_shader_cache {
 
 struct util_live_shader {
    struct pipe_reference reference;
-   unsigned char sha1[SHA1_DIGEST_LENGTH];
+   unsigned char blake3[BLAKE3_KEY_LEN];
 };
 
 void

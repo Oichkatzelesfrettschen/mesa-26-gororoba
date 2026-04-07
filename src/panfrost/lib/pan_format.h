@@ -44,6 +44,7 @@
       DRM_FORMAT_MOD_ARM_AFBC(AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |               \
                               AFBC_FORMAT_MOD_SPARSE),                         \
                                                                                \
+      DRM_FORMAT_MOD_ARM_INTERLEAVED_64K,                                      \
       DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED,                            \
       DRM_FORMAT_MOD_LINEAR,                                                   \
                                                                                \
@@ -335,6 +336,25 @@ GENX(pan_dithered_format_from_pipe_format)(enum pipe_format f, bool dithered)
    return pixfmt ?: GENX(pan_format_from_pipe_format)(f)->hw;
 }
 #endif
+
+static inline bool
+GENX(pan_format_supports_hw_blend)(enum pipe_format format)
+{
+   return GENX(pan_blendable_format_from_pipe_format)(format)->internal;
+}
+
+static inline bool
+GENX(pan_format_supports_msaa_average)(enum pipe_format format)
+{
+   if (!GENX(pan_format_supports_hw_blend)(format))
+      return false;
+
+   /* F16 formats are blendable on v10 but don't support averaging until v11 */
+   if (util_format_is_float16(format) && PAN_ARCH < 11)
+      return false;
+
+   return true;
+}
 #endif
 
 #endif

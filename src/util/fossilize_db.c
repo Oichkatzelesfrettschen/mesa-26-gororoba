@@ -49,7 +49,7 @@
 
 #include "crc32.h"
 #include "hash_table.h"
-#include "mesa-sha1.h"
+#include "mesa-blake3.h"
 #include "ralloc.h"
 
 #define FOZ_REF_MAGIC_SIZE 16
@@ -153,12 +153,12 @@ update_foz_index(struct foz_db *foz_db, FILE *db_idx, unsigned file_idx)
           header->payload_size != sizeof(uint64_t))
          break;
 
-      static_assert(FOSSILIZE_BLOB_HASH_LENGTH <= SHA1_DIGEST_STRING_LENGTH, "");
-      char hash_str[SHA1_DIGEST_STRING_LENGTH] = {0};
+      static_assert(FOSSILIZE_BLOB_HASH_LENGTH <= BLAKE3_HEX_LEN, "");
+      char hash_str[BLAKE3_HEX_LEN] = {0};
       memcpy(hash_str, bytes_to_read, FOSSILIZE_BLOB_HASH_LENGTH);
       /* Fill the rest of the key string with zeros. */
       memset(hash_str + FOSSILIZE_BLOB_HASH_LENGTH, '0',
-             SHA1_DIGEST_STRING_LENGTH - 1 - FOSSILIZE_BLOB_HASH_LENGTH);
+             BLAKE3_HEX_LEN - 1 - FOSSILIZE_BLOB_HASH_LENGTH);
 
       /* read cache item offset from index file */
       uint64_t cache_offset;
@@ -173,7 +173,7 @@ update_foz_index(struct foz_db *foz_db, FILE *db_idx, unsigned file_idx)
                                           struct foz_db_entry);
       entry->header = *header;
       entry->file_idx = file_idx;
-      _mesa_sha1_hex_to_sha1(entry->key, hash_str);
+      _mesa_blake3_hex_to_blake3(entry->key, hash_str);
 
       /* Truncate the entry's hash string to a 64bit hash for use with a
        * 64bit hash table for looking up file offsets.
@@ -697,8 +697,8 @@ foz_write_entry(struct foz_db *foz_db, const uint8_t *cache_key_160bit,
    fseek(foz_db->file[0], 0, SEEK_END);
 
    /* Write hash header to db */
-   char hash_str[SHA1_DIGEST_STRING_LENGTH];
-   _mesa_sha1_format(hash_str, cache_key_160bit);
+   char hash_str[BLAKE3_HEX_LEN];
+   _mesa_blake3_format(hash_str, cache_key_160bit);
    if (fwrite(hash_str, 1, FOSSILIZE_BLOB_HASH_LENGTH, foz_db->file[0]) !=
        FOSSILIZE_BLOB_HASH_LENGTH)
       goto fail;
@@ -741,7 +741,7 @@ foz_write_entry(struct foz_db *foz_db, const uint8_t *cache_key_160bit,
    entry->header = header;
    entry->offset = offset;
    entry->file_idx = 0;
-   _mesa_sha1_hex_to_sha1(entry->key, hash_str);
+   _mesa_blake3_hex_to_blake3(entry->key, hash_str);
    _mesa_hash_table_u64_insert(foz_db->index_db, hash, entry);
 
    simple_mtx_unlock(&foz_db->mtx);

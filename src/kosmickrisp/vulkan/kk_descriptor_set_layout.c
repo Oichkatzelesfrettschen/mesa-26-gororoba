@@ -65,7 +65,7 @@ kk_descriptor_stride_align_for_type(
 
    case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
       *stride = *alignment = 0;
-      if (type_list == NULL)
+      if (type_list == NULL || type_list->descriptorTypeCount == 0u)
          *stride = *alignment = KK_MAX_DESCRIPTOR_SIZE;
       for (unsigned i = 0; type_list && i < type_list->descriptorTypeCount;
            i++) {
@@ -284,7 +284,7 @@ kk_CreateDescriptorSetLayout(VkDevice device,
 
    layout->non_variable_descriptor_buffer_size = buffer_size;
    layout->max_buffer_size = buffer_size + max_variable_descriptor_size;
-   layout->dynamic_buffer_count = dynamic_buffer_count;
+   layout->vk.dynamic_descriptor_count = dynamic_buffer_count;
 
    struct mesa_blake3 blake3_ctx;
    _mesa_blake3_init(&blake3_ctx);
@@ -292,7 +292,7 @@ kk_CreateDescriptorSetLayout(VkDevice device,
 #define BLAKE3_UPDATE_VALUE(x)                                                 \
    _mesa_blake3_update(&blake3_ctx, &(x), sizeof(x));
    BLAKE3_UPDATE_VALUE(layout->non_variable_descriptor_buffer_size);
-   BLAKE3_UPDATE_VALUE(layout->dynamic_buffer_count);
+   BLAKE3_UPDATE_VALUE(layout->vk.dynamic_descriptor_count);
    BLAKE3_UPDATE_VALUE(layout->binding_count);
 
    for (uint32_t b = 0; b < num_bindings; b++) {
