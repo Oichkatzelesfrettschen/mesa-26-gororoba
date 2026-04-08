@@ -46,7 +46,8 @@ terakan_nir_lower_sin_cos_impl(nir_builder * const b, nir_instr * const instr,
     */
    nir_def * const src =
       nir_ffract(b, nir_fmul(b, nir_ssa_for_alu_src(b, sin_cos, 0), nir_imm_int(b, 0x3E22F983)));
-   return sin_cos->op == nir_op_fsin ? nir_fsin_amd(b, src) : nir_fcos_amd(b, src);
+   return sin_cos->op == nir_op_fsin ? nir_fsin_normalized_2_pi(b, src)
+                                     : nir_fcos_normalized_2_pi(b, src);
 }
 
 bool

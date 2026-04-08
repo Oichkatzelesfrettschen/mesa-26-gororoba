@@ -1149,7 +1149,7 @@ terakan_physical_device_init(
       .lower_fsign = true,
       .lower_iabs = true,
 
-      .lower_ldexp = true,
+      .has_ldexp = false,
 
       .lower_pack_unorm_2x16 = true,
       .lower_pack_snorm_2x16 = true,

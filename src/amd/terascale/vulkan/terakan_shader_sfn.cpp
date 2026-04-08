@@ -81,15 +81,13 @@ terakan_shader_debug_vliw_stats(struct r600_bytecode const * const bc,
    unsigned cur_bundle_size = 0;
    unsigned n_cf_alu = 0;   /* number of ALU CF clauses */
 
-   struct r600_bytecode_cf *cf;
-   LIST_FOR_EACH_ENTRY(cf, &bc->cf, list) {
+   list_for_each_entry(struct r600_bytecode_cf, cf, &bc->cf, list) {
       const struct cf_op_info *cfop = r600_isa_cf(cf->op);
       if (!(cfop->flags & CF_ALU))
          continue;
       ++n_cf_alu;
       cur_bundle_size = 0;
-      struct r600_bytecode_alu *alu;
-      LIST_FOR_EACH_ENTRY(alu, &cf->alu, list) {
+      list_for_each_entry(struct r600_bytecode_alu, alu, &cf->alu, list) {
          ++total_alu;
          ++cur_bundle_size;
          if (alu->last) {
@@ -177,11 +175,11 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
    r600::Shader * const unscheduled_sfn_shader = r600::Shader::translate_from_nir(
       nir, (const pipe_stream_output_info *)&so_info, static_cast<r600_shader*>(nullptr), *key, chip_info.is_r9xx ? ISA_CC_CAYMAN : ISA_CC_EVERGREEN,
       chip_info.chip_family);
-   unscheduled_sfn_shader->set_binding_layout(binding_layout);
    if (unscheduled_sfn_shader == nullptr) {
       r600::release_pool();
       return vk_errorf(device, VK_ERROR_UNKNOWN, "Failed to translate the shader from NIR");
    }
+   unscheduled_sfn_shader->set_binding_layout(binding_layout);
    r600_finalize_and_optimize_shader(unscheduled_sfn_shader);
    r600::Shader * const sfn_shader = r600_schedule_shader(unscheduled_sfn_shader);
    if (sfn_shader != unscheduled_sfn_shader) {
