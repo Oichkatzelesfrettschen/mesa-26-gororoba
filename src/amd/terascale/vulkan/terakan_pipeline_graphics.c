@@ -1118,13 +1118,17 @@ terakan_pipeline_graphics_init(struct terakan_device * const device,
                                VkAllocationCallbacks const * const allocator,
                                struct terakan_pipeline_graphics ** const pipeline_out)
 {
+   /* vk_zalloc2 atomically allocates and zero-initialises the whole pipeline
+    * struct.  Zeroing is an intrinsic guarantee of object creation, not a
+    * bandage applied by the caller — the teardown path relies on all pointer
+    * fields being NULL and all stage bitmasks being 0 until explicitly set
+    * by the compilation phase.  Do NOT replace with vk_alloc2 + memset. */
    struct terakan_pipeline_graphics * const pipeline =
-      vk_alloc2(&device->vk.alloc, allocator, sizeof(struct terakan_pipeline_graphics),
-                alignof(struct terakan_pipeline_graphics), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      vk_zalloc2(&device->vk.alloc, allocator, sizeof(struct terakan_pipeline_graphics),
+                 alignof(struct terakan_pipeline_graphics), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   memset(pipeline, 0, sizeof(*pipeline));
    terakan_pipeline_init(&pipeline->base, device, false);
 
    *pipeline_out = pipeline;
@@ -1135,12 +1139,18 @@ terakan_pipeline_graphics_init(struct terakan_device * const device,
  * Phase B: Per-stage SPIR-V → NIR → post-link lower → cache lookup → compile.
  *
  * Invariant 1 (Dual stage mask): declared_stages is precomputed from
- * create_info and used for cache key generation.  pipeline->shader_stages
- * accumulates only on successful compilation and is the cleanup mask.
+ * create_info and is loop-invariant.  pipeline->shader_stages accumulates
+ * only on successful commit and is the cleanup mask used by _destroy().
  *
- * Invariant 2 (Single cleanup owner): On failure, this function frees only
- * its local nir.  The orchestrator calls _destroy() which uses
- * pipeline->shader_stages to clean up completed stages.
+ * Invariant 2 (Ownership isolation): Each iteration compiles into a
+ * stack-local terakan_shader_impl.  On success, the local is committed to
+ * pipeline->shaders[stage_index] via struct copy and
+ * pipeline->shader_stages is updated in the same tick.  On failure, the
+ * local is finished() in-place and the pipeline slot is left untouched
+ * (still zeroed from vk_zalloc2 in _init()).  The orchestrator's _destroy()
+ * path only ever sees fully committed, validated state.  There is no
+ * window in which pipeline->shaders[stage_index] contains half-constructed
+ * allocations, so no "defensive NULL" of internal pointers is required.
  *
  * Invariant 3 (Cache hit ≡ miss): Pre-compile fields (resources_needed,
  * samplers_needed, kcache_needed, push_constants_usage, fragment_data,
@@ -1149,6 +1159,22 @@ terakan_pipeline_graphics_init(struct terakan_device * const device,
  *
  * Invariant 4 (Post-link ordering barrier): Cache key is computed only
  * AFTER terakan_shader_lower_and_optimize_post_link() completes.
+ *
+ * Invariant 5 (Cache key per-stage purity): Although declared_stages is a
+ * cross-pipeline bitmask, it flows into gfx_state_key and then through
+ * terakan_r600_shader_key_from_state() which projects down to the
+ * per-stage r600_shader_key by dropping all fields not relevant to the
+ * current stage (see terakan_pipeline_key.c).  The cache key hash
+ * (terakan_pipeline_cache_hash_shader) ingests only the projected
+ * shader_key plus the per-stage stage_key plus the per-stage SPIR-V hash.
+ * It does NOT ingest gfx_state_key directly.  Consequently, two pipelines
+ * with the same VS SPIR-V but different FS configurations produce the
+ * same VS cache key; two pipelines where one adds a GS produce different
+ * VS cache keys (because vs_as_es flips, which is a legitimate
+ * recompilation trigger).  This preserves per-stage caching while
+ * honouring cross-stage linkage requirements.  Do NOT hash gfx_state_key
+ * directly into the cache key — doing so would destroy per-stage
+ * hit rates across pipelines that reuse stages.
  */
 static VkResult
 terakan_pipeline_graphics_compile_shaders(
@@ -1163,10 +1189,16 @@ terakan_pipeline_graphics_compile_shaders(
    struct terakan_pipeline_layout const * const pipeline_layout =
       terakan_pipeline_layout_from_handle(create_info->layout);
 
-   /* Precompute declared_stages for deterministic key generation (RD-1). */
+   /* --- Loop-invariant cross-stage state (computed once, Invariant 5) ------
+    * declared_stages, pipeline_flags, and the cross-stage portion of
+    * gfx_state_key (everything except ps_nr_cbufs, which depends on the
+    * current fragment shader's output count) are loop-invariant. */
    VkShaderStageFlags declared_stages = 0;
    for (uint32_t i = 0; i < create_info->stageCount; ++i)
       declared_stages |= create_info->pStages[i].stage;
+
+   VkPipelineCreateFlags2KHR const pipeline_flags =
+      terakan_pipeline_create_flags(create_info->flags, create_info->pNext);
 
    pipeline->shader_stages = 0;
    for (uint32_t stage_info_index = 0; stage_info_index < create_info->stageCount;
@@ -1186,30 +1218,58 @@ terakan_pipeline_graphics_compile_shaders(
       if (nir == NULL)
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-      struct terakan_shader_impl * const shader = &pipeline->shaders[stage_index];
-      memset(shader, 0, sizeof(*shader));
+      /* Invariant 2: compile into an isolated stack-local.  The pipeline's
+       * stage slot is never touched until we commit on success. */
+      struct terakan_shader_impl local_shader;
+      memset(&local_shader, 0, sizeof(local_shader));
 
-      shader->push_constants_usage.app_extent_bytes =
+      local_shader.push_constants_usage.app_extent_bytes =
          pipeline_layout->shader_app_push_constants_extents_bytes[stage_index];
+
+      /* Compute the effective robustness flag for this stage.  Honour
+       * VK_EXT_pipeline_robustness per-pipeline and per-stage overrides if
+       * present; otherwise fall back to the device-level robustBufferAccess
+       * feature.  The flag is then threaded through post_link_lower into
+       * the NIR binding-lower pass, which injects ALU umin clamps.  See the
+       * hardware rationale in terakan_nir_buffer_uav_coord. */
+      struct vk_pipeline_robustness_state stage_rs;
+      vk_pipeline_robustness_state_fill(&device->vk, &stage_rs,
+                                        create_info->pNext, stage_info->pNext);
+      bool const stage_robust_buffer_access =
+         device->vk.enabled_features.robustBufferAccess ||
+         stage_rs.storage_buffers ==
+            VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT ||
+         stage_rs.storage_buffers ==
+            VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT ||
+         stage_rs.uniform_buffers ==
+            VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT ||
+         stage_rs.uniform_buffers ==
+            VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
 
       /* Post-link lowering populates pre-compile metadata (Invariant 3).
        * This runs BEFORE cache key construction (Invariant 4). */
       terakan_shader_lower_and_optimize_post_link(
-         nir, pipeline_layout, shader->resources_needed, &shader->samplers_needed,
-         shader->uavs_for_mutable_resources_needed, &shader->push_constants_usage.driver_constants,
-         &shader->kcache_needed,
-         &shader->fs.fragment_data_uncompacted_locations);
+         nir, pipeline_layout, local_shader.resources_needed,
+         &local_shader.samplers_needed,
+         local_shader.uavs_for_mutable_resources_needed,
+         &local_shader.push_constants_usage.driver_constants,
+         &local_shader.kcache_needed,
+         &local_shader.fs.fragment_data_uncompacted_locations,
+         stage_robust_buffer_access);
 
-      /* Build cache key — uses declared_stages for deterministic hashing (RD-1). */
-      VkPipelineCreateFlags2KHR const pipeline_flags =
-         terakan_pipeline_create_flags(create_info->flags, create_info->pNext);
-
+      /* --- Cache key construction (Invariant 5: per-stage purity) ------
+       * stage_key: per-stage compilation flags (opt, statistics, robustness)
+       * gfx_state_key: cross-stage intermediate, projected to shader_key
+       * shader_key: per-stage r600 projection, stage-irrelevant fields zero
+       *
+       * The cache hash ingests stage_key + shader_key + spirv_hash ONLY.
+       * gfx_state_key itself is never hashed.  See Invariant 5 above. */
       struct terakan_shader_stage_key stage_key;
       terakan_shader_stage_key_fill(&stage_key, device, stage_info, pipeline_flags);
 
       uint8_t ps_nr_cbufs = 0;
       if (stage_index == MESA_SHADER_FRAGMENT)
-         ps_nr_cbufs = util_bitcount(shader->fs.fragment_data_uncompacted_locations);
+         ps_nr_cbufs = util_bitcount(local_shader.fs.fragment_data_uncompacted_locations);
 
       struct terakan_graphics_state_key gfx_state_key;
       terakan_graphics_state_key_fill(&gfx_state_key, create_info,
@@ -1232,28 +1292,40 @@ terakan_pipeline_graphics_compile_shaders(
       struct terakan_cached_shader *cached =
          terakan_pipeline_cache_lookup(cache, cache_key);
       if (cached != NULL) {
-         result = terakan_cached_shader_restore(cached, shader, device, allocator);
+         result = terakan_cached_shader_restore(cached, &local_shader, device, allocator);
          vk_pipeline_cache_object_unref(&device->vk, &cached->base);
          ralloc_free(nir);
-         if (result != VK_SUCCESS)
+         if (result != VK_SUCCESS) {
+            /* Invariant 2: local owns whatever restore partially allocated;
+             * clean up in-place and leave pipeline->shaders untouched. */
+            terakan_shader_impl_finish(&local_shader, allocator);
             return result;
+         }
       } else {
-         result = terakan_shader_impl_compile(shader, device, &shader_key, nir, allocator);
-         size_t const program_size_bytes = sizeof(uint32_t) * shader->shader.bc.ndw;
+         result = terakan_shader_impl_compile(&local_shader, device, &shader_key, nir, allocator);
+         size_t const program_size_bytes =
+            sizeof(uint32_t) * local_shader.shader.bc.ndw;
          ralloc_free(nir);
          if (result != VK_SUCCESS) {
-            /* compile internally frees arrays on failure but doesn't NULL
-             * the pointer.  Defensive clear (graphics path is already safe
-             * because failed stage isn't added to shader_stages). */
-            shader->shader.arrays = NULL;
+            /* Invariant 2: compile may have partially populated local_shader;
+             * finish() cleans its own mess.  pipeline->shaders[stage_index]
+             * is still zeroed from vk_zalloc2 in _init() and will not be
+             * visited by _destroy() because shader_stages does not yet
+             * include this stage. */
+            terakan_shader_impl_finish(&local_shader, allocator);
             return result;
          }
 
-         terakan_pipeline_cache_insert(cache, cache_key, shader, stage_index,
+         terakan_pipeline_cache_insert(cache, cache_key, &local_shader, stage_index,
                                        program_size_bytes, device);
       }
 
-      /* Stage successfully compiled/restored — mark for cleanup tracking. */
+      /* Invariant 2 commit: transfer ownership of all locally allocated
+       * resources (BO, shader.arrays, etc.) to the pipeline via struct copy.
+       * After this assignment, local_shader is "moved-from"; do NOT call
+       * terakan_shader_impl_finish() on it.  C has no destructors, so the
+       * stack frame unwinding is a no-op. */
+      pipeline->shaders[stage_index] = local_shader;
       pipeline->shader_stages |= stage_info->stage;
    }
 

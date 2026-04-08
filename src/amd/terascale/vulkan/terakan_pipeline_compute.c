@@ -39,13 +39,14 @@ terakan_pipeline_compute_init(struct terakan_device * const device,
                               VkAllocationCallbacks const * const allocator,
                               struct terakan_pipeline_compute ** const pipeline_out)
 {
+   /* vk_zalloc2 atomically allocates and zero-initialises the whole pipeline
+    * struct.  See the matching comment in terakan_pipeline_graphics_init(). */
    struct terakan_pipeline_compute *pipeline =
-      vk_alloc2(&device->vk.alloc, allocator, sizeof(*pipeline), 8,
+      vk_zalloc2(&device->vk.alloc, allocator, sizeof(*pipeline), 8,
                  VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pipeline == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-   memset(pipeline, 0, sizeof(*pipeline));
    terakan_pipeline_init(&pipeline->base, device, true);
 
    *pipeline_out = pipeline;
@@ -55,9 +56,24 @@ terakan_pipeline_compute_init(struct terakan_device * const device,
 /*
  * Phase B: Compile compute shader with cache integration.
  *
- * Extracts local_size[3] and group_size from NIR BEFORE ralloc_free
- * (RD-4 — these cannot be reconstructed after NIR is freed, especially
- * on cache hit where we skip compilation entirely).
+ * Invariants (mirrors terakan_pipeline_graphics_compile_shaders):
+ *
+ * Invariant 2 (Ownership isolation): Compile into a stack-local
+ * terakan_shader_impl.  On success, commit via struct copy to
+ * pipeline->shader.  On failure, finish() the local in-place and leave
+ * pipeline->shader untouched (still zeroed from vk_zalloc2).
+ *
+ * Invariant 3 (Cache hit ≡ miss): Pre-compile fields are populated by
+ * post-link lowering BEFORE cache lookup.
+ *
+ * Invariant 4 (Post-link ordering barrier): Cache key construction
+ * follows terakan_shader_lower_and_optimize_post_link().
+ *
+ * RD-4 note: Extracts local_size[3] and group_size from NIR BEFORE
+ * ralloc_free because these are metadata on the NIR shader and cannot
+ * be reconstructed afterward.  They are written directly into the
+ * pipeline struct (not into local_shader) because they live on the
+ * parent pipeline_compute, not on the shader_impl.
  */
 static VkResult
 terakan_pipeline_compute_compile(
@@ -88,18 +104,39 @@ terakan_pipeline_compute_compile(
                           pipeline->local_size[1] *
                           pipeline->local_size[2];
 
+   /* Invariant 2: compile into a stack-local; commit on success. */
+   struct terakan_shader_impl local_shader;
+   memset(&local_shader, 0, sizeof(local_shader));
+
+   /* Compute the effective robustness flag for this stage.  See the matching
+    * comment in terakan_pipeline_graphics_compile_shaders. */
+   struct vk_pipeline_robustness_state stage_rs;
+   vk_pipeline_robustness_state_fill(&device->vk, &stage_rs,
+                                     create_info->pNext, stage_info->pNext);
+   bool const stage_robust_buffer_access =
+      device->vk.enabled_features.robustBufferAccess ||
+      stage_rs.storage_buffers ==
+         VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT ||
+      stage_rs.storage_buffers ==
+         VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT ||
+      stage_rs.uniform_buffers ==
+         VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT ||
+      stage_rs.uniform_buffers ==
+         VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
+
    /* Post-link lowering — populates pre-compile metadata (Invariant 3). */
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
          ? terakan_pipeline_layout_from_handle(create_info->layout)
          : NULL,
-      pipeline->shader.resources_needed,
-      &pipeline->shader.samplers_needed,
-      pipeline->shader.uavs_for_mutable_resources_needed,
-      &pipeline->shader.push_constants_usage.driver_constants,
-      &pipeline->shader.kcache_needed,
-      NULL);
+      local_shader.resources_needed,
+      &local_shader.samplers_needed,
+      local_shader.uavs_for_mutable_resources_needed,
+      &local_shader.push_constants_usage.driver_constants,
+      &local_shader.kcache_needed,
+      NULL,
+      stage_robust_buffer_access);
 
    /* Build cache key (Invariant 4: only after post-link lowering). */
    VkPipelineCreateFlags2KHR const pipeline_flags =
@@ -126,27 +163,33 @@ terakan_pipeline_compute_compile(
       terakan_pipeline_cache_lookup(cache, cache_key);
    VkResult result;
    if (cached != NULL) {
-      result = terakan_cached_shader_restore(cached, &pipeline->shader, device, allocator);
+      result = terakan_cached_shader_restore(cached, &local_shader, device, allocator);
       vk_pipeline_cache_object_unref(&device->vk, &cached->base);
       ralloc_free(nir);
-      if (result != VK_SUCCESS)
-         return result;
-   } else {
-      result = terakan_shader_impl_compile(
-         &pipeline->shader, device, &shader_key, nir, allocator);
-      size_t const program_size_bytes = sizeof(uint32_t) * pipeline->shader.shader.bc.ndw;
-      ralloc_free(nir);
       if (result != VK_SUCCESS) {
-         /* compile internally frees arrays on failure but doesn't NULL
-          * the pointer.  Clear it to prevent double-free in
-          * _destroy → shader_impl_finish. */
-         pipeline->shader.shader.arrays = NULL;
+         /* Invariant 2: clean local in-place; pipeline->shader untouched. */
+         terakan_shader_impl_finish(&local_shader, allocator);
          return result;
       }
-      terakan_pipeline_cache_insert(cache, cache_key, &pipeline->shader,
+   } else {
+      result = terakan_shader_impl_compile(
+         &local_shader, device, &shader_key, nir, allocator);
+      size_t const program_size_bytes =
+         sizeof(uint32_t) * local_shader.shader.bc.ndw;
+      ralloc_free(nir);
+      if (result != VK_SUCCESS) {
+         /* Invariant 2: finish() cleans whatever compile partially allocated
+          * on the local; pipeline->shader is still zeroed from vk_zalloc2. */
+         terakan_shader_impl_finish(&local_shader, allocator);
+         return result;
+      }
+      terakan_pipeline_cache_insert(cache, cache_key, &local_shader,
                                     MESA_SHADER_COMPUTE, program_size_bytes, device);
    }
 
+   /* Invariant 2 commit: transfer ownership via struct copy.  local_shader
+    * is now "moved-from" and must not be finished. */
+   pipeline->shader = local_shader;
    return VK_SUCCESS;
 }
 

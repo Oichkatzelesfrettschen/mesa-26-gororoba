@@ -315,6 +315,15 @@ struct terakan_nir_lower_bindings_state {
 
    /* Bitmask of KCACHE banks (0-15) referenced by this shader. */
    uint16_t * kcache_needed;
+
+   /* Effective robust-buffer-access flag for this stage.  Computed by the
+    * caller from (device feature robustBufferAccess) OR any per-pipeline
+    * VK_EXT_pipeline_robustness state.  When true, terakan_nir_buffer_uav_coord
+    * injects a nir_umin_imm clamp before the UAV coordinate.  This is a
+    * mandatory software fallback — Terascale silicon does not provide
+    * reliable native OOB handling, so this flag must never be replaced by
+    * silicon-trust heuristics. */
+   bool robust_buffer_access;
 };
 
 static void
@@ -689,6 +698,38 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
    return nir_vec(b, uav_coord_components, uav_coord_num_components);
 }
 
+/*
+ * terakan_nir_buffer_uav_coord
+ *
+ * Emits the UAV coordinate computation for storage-buffer and texel-buffer
+ * accesses.  When robust_access is true, injects a software ALU umin clamp
+ * (nir_umin_imm) that bounds the coordinate so that no possible base
+ * granularity offset can wrap it into an in-bounds address.
+ *
+ * --- MANDATORY SOFTWARE BOUNDS CLAMP (DO NOT BYPASS) ---
+ *
+ * Terascale silicon (Evergreen-class VLIW5, including the Brazos E-300
+ * target) does NOT provide deterministic hardware out-of-bounds handling
+ * for UAV writes, texel-buffer fetches, or byte-granular descriptor
+ * clamping.  Empirically observed failure modes include GPU ring lockups
+ * on raw buffer overruns via the texture fetch unit, and adjacent-block
+ * corruption when the rasterizer write mask is not byte-aligned.
+ *
+ * Consequently, the software ALU clamp below is the ONLY guarantee of
+ * deterministic Vulkan robustness semantics on this hardware.  Future
+ * revisions must not replace it with silicon-trust heuristics, hardware
+ * probes, or "fast paths" conditional on undocumented GPU behavior.  If
+ * a future probe demonstrates that hardware behavior is clean across the
+ * entire parameter space, the clamp may be dropped only under an explicit
+ * `TERAKAN_ROBUSTNESS_HW_VERIFIED` compile-time flag, never by default.
+ *
+ * The effective robust_access flag is threaded from the caller via
+ * terakan_nir_lower_bindings_state::robust_buffer_access, which the
+ * pipeline compiler computes as:
+ *     device->enabled_features.robustBufferAccess
+ *   OR
+ *     any per-stage/per-pipeline VK_EXT_pipeline_robustness state
+ */
 static nir_def *
 terakan_nir_buffer_uav_coord(nir_builder * const b, nir_def * coord,
                              uint32_t const uav_index_zero_based, nir_def * const uav_array_index,
@@ -698,18 +739,24 @@ terakan_nir_buffer_uav_coord(nir_builder * const b, nir_def * coord,
    /* Add the UAV base granularity offset. */
 
    if (robust_access) {
-      /* If the coordinate provided by the application is already near UINT32_MAX, adding the UAV
-       * base granularity offset may result in wrapping and turn an out-of-bounds address into a
-       * in-bounds address near zero.
-       * Clamp the coordinate so that no possible base granularity offset value will result in
-       * wrapping.
-       * For storage buffers, the offset is provided in bytes, but the UAV uses a format with 4
-       * bytes per element, for which terakan_color_descriptor_buffer_uav_base_granularity_log2 is
-       * the pipe interleave.
-       * For texel buffers, the offset is in elements, but for all possible element sizes,
-       * terakan_color_descriptor_buffer_uav_base_granularity_log2 divided by the element size never
-       * exceeds the pipe interleave. Moreover, texel buffers are fetched at a signed coordinate,
-       * not unsigned, so any address > INT32_MAX is out-of-bounds.
+      /* SOFTWARE ALU BOUNDS CLAMP — MANDATORY on Terascale.  See function
+       * header comment for the hardware-correctness rationale.
+       *
+       * If the coordinate provided by the application is already near
+       * UINT32_MAX, adding the UAV base granularity offset may wrap an
+       * out-of-bounds address into an in-bounds address near zero.
+       * Clamp the coordinate so that no possible base granularity offset
+       * value can wrap.
+       *
+       * For storage buffers, the offset is provided in bytes, but the UAV
+       * uses a format with 4 bytes per element, for which
+       * terakan_color_descriptor_buffer_uav_base_granularity_log2 is the
+       * pipe interleave.
+       * For texel buffers, the offset is in elements, but for all possible
+       * element sizes terakan_color_descriptor_buffer_uav_base_granularity_log2
+       * divided by the element size never exceeds the pipe interleave.
+       * Moreover, texel buffers are fetched at a signed coordinate, not
+       * unsigned, so any address > INT32_MAX is out-of-bounds.
        */
       struct terakan_physical_device const * const physical_device = container_of(
          state->layout->vk.base.device->physical, struct terakan_physical_device const, vk);
@@ -1022,7 +1069,10 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
 
    enum gl_access_qualifier const access = nir_intrinsic_access(intrin);
 
-   /* TODO(Triang3l): VK_EXT_pipeline_robustness. */
+   /* Robustness: the effective per-stage flag is threaded via
+    * state->robust_buffer_access (computed by the pipeline compiler from
+    * device feature + VK_EXT_pipeline_robustness).  See the mandatory
+    * ALU-clamp rationale in terakan_nir_buffer_uav_coord(). */
    nir_def * coord;
    if (b->shader->info.stage == MESA_SHADER_COMPUTE) {
       /* Compute store_ssbo via store_global + KCACHE base address.
@@ -1049,7 +1099,7 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
    } else {
       coord = terakan_nir_buffer_uav_coord(
          b, intrin->src[2].ssa, uav_index_zero_based, uav_array_index,
-         state->layout->vk.base.device->enabled_features.robustBufferAccess,
+         state->robust_buffer_access,
          (access & ACCESS_INCLUDE_HELPERS) != 0, state);
    }
    if (bytes_per_component > 1) {
@@ -1109,12 +1159,12 @@ terakan_nir_lower_bindings_instr_ssbo_atomic(nir_builder * const b,
 
    enum gl_access_qualifier const access = nir_intrinsic_access(intrin) & ~ACCESS_CAN_REORDER;
 
-   /* TODO(Triang3l): VK_EXT_pipeline_robustness. */
+   /* Robustness threaded via state->robust_buffer_access (see above). */
    nir_def * coord =
       nir_udiv_imm(b,
                    terakan_nir_buffer_uav_coord(
                       b, intrin->src[1].ssa, uav_index_zero_based, uav_array_index,
-                      state->layout->vk.base.device->enabled_features.robustBufferAccess,
+                      state->robust_buffer_access,
                       (access & ACCESS_INCLUDE_HELPERS) != 0, state),
                    4);
 
@@ -1469,7 +1519,8 @@ terakan_nir_lower_bindings(nir_shader * const shader,
                            uint32_t * const samplers_needed_accum, unsigned const uav_base,
                            BITSET_WORD * const uavs_for_mutable_resources_needed_out_opt,
                            uint32_t * const driver_push_constants_used_accum,
-                           uint16_t * const kcache_needed_accum_out)
+                           uint16_t * const kcache_needed_accum_out,
+                           bool const robust_buffer_access)
 {
    uint16_t kcache_needed_accum = 0;
    bool progress = false;
@@ -1513,6 +1564,7 @@ terakan_nir_lower_bindings(nir_shader * const shader,
       .uav_base = uav_base,
       .driver_push_constants_used = driver_push_constants_used_accum,
       .kcache_needed = &kcache_needed_accum,
+      .robust_buffer_access = robust_buffer_access,
    };
 
    if (uavs_for_mutable_resources_needed_out_opt != NULL) {

@@ -74,12 +74,22 @@ bool terakan_nir_compact_fragment_data_locations(nir_shader * shader,
  * are prefix sums, and thus new bits can't be set after this lowering, and it also may be omitted
  * by the caller if UAVs are not needed (such as if the stage doesn't support UAVs).
  */
+/*
+ * robust_buffer_access: if true, inject software ALU umin bounds clamps
+ * for storage-buffer / texel-buffer access.  This is NON-NEGOTIABLE on
+ * Terascale silicon — the hardware does not provide reliable OOB
+ * guarantees for UAV writes or byte-granular texture fetches.  The caller
+ * must compute the effective flag from the device feature plus any
+ * per-pipeline VK_EXT_pipeline_robustness state.  See
+ * terakan_nir_buffer_uav_coord() for the clamp implementation.
+ */
 bool terakan_nir_lower_bindings(nir_shader * shader, struct terakan_pipeline_layout const * layout,
                                 BITSET_WORD * resources_needed_accum,
                                 uint32_t * samplers_needed_accum, unsigned uav_base,
                                 BITSET_WORD * uavs_for_mutable_resources_needed_out_opt,
                                 uint32_t * driver_push_constants_used_accum,
-                                uint16_t * kcache_needed_accum_out);
+                                uint16_t * kcache_needed_accum_out,
+                                bool robust_buffer_access);
 
 bool terakan_nir_lower_sin_cos(nir_shader * shader);
 
