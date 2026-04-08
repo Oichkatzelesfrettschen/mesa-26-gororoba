@@ -1188,12 +1188,17 @@ llvm_mod_to_spirv(std::unique_ptr<::llvm::Module> mod,
 #if LLVM_VERSION_MAJOR >= 17
    if (args->use_llvm_spirv_target) {
       const char *triple = args->address_bits == 32 ? "spirv-unknown-unknown" : "spirv64-unknown-unknown";
+      llvm::Triple llvm_triple(triple);
       std::string error_msg("");
+#if LLVM_VERSION_MAJOR >= 22
+      auto target = TargetRegistry::lookupTarget(llvm_triple, error_msg);
+#else
       auto target = TargetRegistry::lookupTarget(triple, error_msg);
+#endif
       if (target) {
          auto TM = target->createTargetMachine(
 #if LLVM_VERSION_MAJOR >= 21
-            llvm::Triple(triple),
+            llvm_triple,
 #else
             triple,
 #endif

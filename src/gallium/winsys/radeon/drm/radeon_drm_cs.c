@@ -108,7 +108,6 @@ radeon_drm_ctx_query_reset_status(struct radeon_winsys_ctx *rctx, bool full_rese
 static bool radeon_init_cs_context(struct radeon_cs_context *csc,
                                    struct radeon_drm_winsys *ws)
 {
-   int i;
 
    csc->fd = ws->fd;
 
@@ -595,7 +594,6 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
                                struct pipe_fence_handle **pfence)
 {
    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
-   struct radeon_cs_context *tmp;
 
    switch (cs->ip_type) {
    case AMD_IP_SDMA:

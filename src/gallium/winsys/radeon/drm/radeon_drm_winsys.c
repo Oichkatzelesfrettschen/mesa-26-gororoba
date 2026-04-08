@@ -666,7 +666,9 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
 
    for (unsigned se = 0; se < ws->info.max_se; se++) {
       for (unsigned sa = 0; sa < ws->info.max_sa_per_se; sa++)
-         ws->info.cu_mask[se][sa] = BITFIELD_MASK(ws->info.max_good_cu_per_sa);
+         ws->info.cu_mask[se][sa] =
+            ws->info.max_good_cu_per_sa >= 16 ? 0xffff :
+            (uint16_t)BITFIELD_MASK(ws->info.max_good_cu_per_sa);
    }
 
    /* The maximum number of scratch waves. The number is only a function of the number of CUs.
