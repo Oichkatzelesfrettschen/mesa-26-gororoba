@@ -35,6 +35,9 @@
 #include "terakan_state_input_assembly.h"
 #include "terakan_state_rasterization.h"
 
+#include "terakan_pipeline_cache.h"
+#include "terakan_pipeline_key.h"
+
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600_shader_common.h"
 #include "util/bitscan.h"
@@ -44,6 +47,8 @@
 #include "vk_alloc.h"
 #include "vk_enum_to_str.h"
 #include "vk_graphics_state.h"
+#include "vk_pipeline.h"
+#include "vk_pipeline_cache.h"
 #include "vk_log.h"
 #include "vk_util.h"
 
@@ -1106,6 +1111,7 @@ terakan_pipeline_graphics_fragment_output_init(struct terakan_pipeline_graphics 
 static VkResult
 terakan_pipeline_graphics_create(struct terakan_device * const device,
                                  VkGraphicsPipelineCreateInfo const * const create_info,
+                                 struct vk_pipeline_cache * const cache,
                                  VkAllocationCallbacks const * const allocator,
                                  struct terakan_pipeline_graphics ** const pipeline_out)
 {
@@ -1155,18 +1161,56 @@ terakan_pipeline_graphics_create(struct terakan_device * const device,
          &shader->kcache_needed,
          &shader->fs.fragment_data_uncompacted_locations);
 
-      /* TODO(Triang3l): Construct the shader key from the NIR and, when available, the pipeline
-       * state.
-       */
-      union r600_shader_key shader_key = {};
-      if (stage_index == MESA_SHADER_FRAGMENT) {
-         shader_key.ps.nr_cbufs = util_bitcount(shader->fs.fragment_data_uncompacted_locations);
-      }
+      /* Build cache key components */
+      VkPipelineCreateFlags2KHR const pipeline_flags =
+         terakan_pipeline_create_flags(create_info->flags, create_info->pNext);
 
-      result = terakan_shader_impl_compile(shader, device, &shader_key, nir, allocator);
-      ralloc_free(nir);
-      if (result != VK_SUCCESS) {
-         goto fail_shaders;
+      struct terakan_shader_stage_key stage_key;
+      terakan_shader_stage_key_fill(&stage_key, device, stage_info, pipeline_flags);
+
+      uint8_t ps_nr_cbufs = 0;
+      if (stage_index == MESA_SHADER_FRAGMENT)
+         ps_nr_cbufs = util_bitcount(shader->fs.fragment_data_uncompacted_locations);
+
+      struct terakan_graphics_state_key gfx_state_key;
+      terakan_graphics_state_key_fill(&gfx_state_key, create_info,
+                                      pipeline->shader_stages | stage_info->stage,
+                                      ps_nr_cbufs);
+
+      union r600_shader_key shader_key;
+      terakan_r600_shader_key_from_state(&shader_key, &gfx_state_key, stage_index);
+
+      /* Compute SPIR-V content hash for cache lookup */
+      blake3_hash spirv_hash;
+      struct vk_pipeline_robustness_state rs;
+      vk_pipeline_robustness_state_fill(&device->vk, &rs,
+                                        create_info->pNext, stage_info->pNext);
+      vk_pipeline_hash_shader_stage(pipeline_flags, stage_info, &rs, spirv_hash);
+
+      /* Full cache key: build_id + pci_id + stage_key + shader_key + spirv_hash */
+      blake3_hash cache_key;
+      terakan_pipeline_cache_hash_shader(cache_key, device, &stage_key,
+                                         &shader_key, spirv_hash);
+
+      /* Cache lookup — skip compilation on hit */
+      struct terakan_cached_shader *cached =
+         terakan_pipeline_cache_lookup(cache, cache_key);
+      if (cached != NULL) {
+         result = terakan_cached_shader_restore(cached, shader, device, allocator);
+         vk_pipeline_cache_object_unref(&device->vk, &cached->base);
+         ralloc_free(nir);
+         if (result != VK_SUCCESS)
+            goto fail_shaders;
+      } else {
+         /* Cache miss — compile and insert */
+         result = terakan_shader_impl_compile(shader, device, &shader_key, nir, allocator);
+         size_t const program_size_bytes = sizeof(uint32_t) * shader->shader.bc.ndw;
+         ralloc_free(nir);
+         if (result != VK_SUCCESS)
+            goto fail_shaders;
+
+         terakan_pipeline_cache_insert(cache, cache_key, shader, stage_index,
+                                       program_size_bytes, device);
       }
 
       /* Fully initialized now, make sure it's fully cleaned up in case of failure. */
@@ -1189,7 +1233,7 @@ terakan_pipeline_graphics_create(struct terakan_device * const device,
    BITSET_ZERO(pipeline->static_state);
    struct vk_graphics_pipeline_all_state all_state;
    struct vk_graphics_pipeline_state state = {};
-   result = vk_graphics_pipeline_state_fill(&device->vk, &state, create_info, NULL, 0, &all_state,
+   result = vk_graphics_pipeline_state_fill(&device->vk, &state, create_info, NULL, NULL, 0, &all_state,
                                             NULL, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, NULL);
    if (result != VK_SUCCESS) {
       goto fail_shaders;
@@ -1242,8 +1286,11 @@ terakan_CreateGraphicsPipelines(VkDevice const deviceHandle, VkPipelineCache con
    for (pipeline_index = 0; pipeline_index < createInfoCount; ++pipeline_index) {
       struct terakan_pipeline_graphics * pipeline = NULL;
       VkGraphicsPipelineCreateInfo const * const create_info = &pCreateInfos[pipeline_index];
+      struct vk_pipeline_cache *cache =
+         pipelineCache != VK_NULL_HANDLE
+            ? vk_pipeline_cache_from_handle(pipelineCache) : NULL;
       VkResult const pipeline_result =
-         terakan_pipeline_graphics_create(device, create_info, pAllocator, &pipeline);
+         terakan_pipeline_graphics_create(device, create_info, cache, pAllocator, &pipeline);
       if (pipeline_result != VK_SUCCESS) {
          result = pipeline_result;
          if (terakan_pipeline_create_flags(create_info->flags, create_info->pNext) &

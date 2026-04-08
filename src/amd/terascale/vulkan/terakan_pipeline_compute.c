@@ -17,9 +17,14 @@
 #include "terakan_pipeline.h"
 #include "terakan_shader.h"
 
+#include "terakan_pipeline_cache.h"
+#include "terakan_pipeline_key.h"
+
 #include "gallium/drivers/r600/r600_shader_common.h"
 #include "util/macros.h"
 #include "vk_alloc.h"
+#include "vk_pipeline.h"
+#include "vk_pipeline_cache.h"
 #include "vk_shader_module.h"
 
 #include <assert.h>
@@ -27,7 +32,7 @@
 
 VkResult
 terakan_pipeline_compute_create(struct terakan_device * const device,
-                                UNUSED VkPipelineCache const cache,
+                                struct vk_pipeline_cache * const cache,
                                 VkComputePipelineCreateInfo const * const create_info,
                                 VkAllocationCallbacks const * const allocator,
                                 VkPipeline * const pipeline_out)
@@ -80,19 +85,54 @@ terakan_pipeline_compute_create(struct terakan_device * const device,
       &pipeline->shader.kcache_needed,
       NULL /* no fragment data locations for compute */);
 
-   /* NIR → r600 bytecode */
-   union r600_shader_key key;
-   memset(&key, 0, sizeof(key));
+   /* Build cache key components */
+   VkPipelineCreateFlags2KHR const pipeline_flags =
+      terakan_pipeline_create_flags(create_info->flags, create_info->pNext);
 
-   VkResult result = terakan_shader_impl_compile(
-      &pipeline->shader, device, &key, nir, allocator);
+   struct terakan_shader_stage_key stage_key;
+   terakan_shader_stage_key_fill(&stage_key, device, stage_info, pipeline_flags);
 
-   ralloc_free(nir);
+   union r600_shader_key shader_key;
+   memset(&shader_key, 0, sizeof(shader_key));
 
-   if (result != VK_SUCCESS) {
-      terakan_pipeline_finish(&pipeline->base);
-      vk_free2(&device->vk.alloc, allocator, pipeline);
-      return result;
+   /* Compute SPIR-V content hash */
+   blake3_hash spirv_hash;
+   struct vk_pipeline_robustness_state rs;
+   vk_pipeline_robustness_state_fill(&device->vk, &rs,
+                                     create_info->pNext, stage_info->pNext);
+   vk_pipeline_hash_shader_stage(pipeline_flags, stage_info, &rs, spirv_hash);
+
+   /* Full cache key */
+   blake3_hash cache_key;
+   terakan_pipeline_cache_hash_shader(cache_key, device, &stage_key,
+                                      &shader_key, spirv_hash);
+
+   /* Cache lookup — skip compilation on hit */
+   struct terakan_cached_shader *cached =
+      terakan_pipeline_cache_lookup(cache, cache_key);
+   VkResult result;
+   if (cached != NULL) {
+      result = terakan_cached_shader_restore(cached, &pipeline->shader, device, allocator);
+      vk_pipeline_cache_object_unref(&device->vk, &cached->base);
+      ralloc_free(nir);
+      if (result != VK_SUCCESS) {
+         terakan_pipeline_finish(&pipeline->base);
+         vk_free2(&device->vk.alloc, allocator, pipeline);
+         return result;
+      }
+   } else {
+      /* Cache miss — compile and insert */
+      result = terakan_shader_impl_compile(
+         &pipeline->shader, device, &shader_key, nir, allocator);
+      size_t const program_size_bytes = sizeof(uint32_t) * pipeline->shader.shader.bc.ndw;
+      ralloc_free(nir);
+      if (result != VK_SUCCESS) {
+         terakan_pipeline_finish(&pipeline->base);
+         vk_free2(&device->vk.alloc, allocator, pipeline);
+         return result;
+      }
+      terakan_pipeline_cache_insert(cache, cache_key, &pipeline->shader,
+                                    MESA_SHADER_COMPUTE, program_size_bytes, device);
    }
 
    /* Pre-compute HW register values from the compiled shader */
@@ -127,7 +167,7 @@ terakan_pipeline_compute_destroy(struct terakan_pipeline_compute * const pipelin
 
 VKAPI_ATTR VkResult VKAPI_CALL
 terakan_CreateComputePipelines(VkDevice const deviceHandle,
-                               UNUSED VkPipelineCache const pipelineCache,
+                               VkPipelineCache const pipelineCache,
                                uint32_t const createInfoCount,
                                VkComputePipelineCreateInfo const * const pCreateInfos,
                                VkAllocationCallbacks const * const pAllocator,
@@ -137,8 +177,11 @@ terakan_CreateComputePipelines(VkDevice const deviceHandle,
    VkResult overall_result = VK_SUCCESS;
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
+      struct vk_pipeline_cache *cache =
+         pipelineCache != VK_NULL_HANDLE
+            ? vk_pipeline_cache_from_handle(pipelineCache) : NULL;
       VkResult result = terakan_pipeline_compute_create(
-         device, pipelineCache, &pCreateInfos[i], pAllocator, &pPipelines[i]);
+         device, cache, &pCreateInfos[i], pAllocator, &pPipelines[i]);
       if (result != VK_SUCCESS) {
          pPipelines[i] = VK_NULL_HANDLE;
          overall_result = result;

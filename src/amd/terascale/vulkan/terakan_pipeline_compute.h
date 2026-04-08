@@ -32,9 +32,10 @@ struct terakan_pipeline_compute {
 };
 
 struct terakan_device;
+struct vk_pipeline_cache;
 
 VkResult terakan_pipeline_compute_create(struct terakan_device *device,
-                                         VkPipelineCache cache,
+                                         struct vk_pipeline_cache *cache,
                                          VkComputePipelineCreateInfo const *create_info,
                                          VkAllocationCallbacks const *allocator,
                                          VkPipeline *pipeline_out);
