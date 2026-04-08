@@ -25,16 +25,36 @@
 
 /* Register offsets for Evergreen compute dispatch.
  * Reference: AMD Evergreen Family ISA, Section 10 (Compute Setup). */
+#ifndef R_028D9C_SQ_PGM_START_CS
 #define R_028D9C_SQ_PGM_START_CS             0x28D9C
+#endif
+#ifndef R_028DA0_SQ_PGM_RESOURCES_CS
 #define R_028DA0_SQ_PGM_RESOURCES_CS         0x28DA0
+#endif
+#ifndef R_028DA4_SQ_PGM_RESOURCES_CS_2
 #define R_028DA4_SQ_PGM_RESOURCES_CS_2       0x28DA4
+#endif
+#ifndef R_0286EC_SPI_COMPUTE_NUM_THREAD_X
 #define R_0286EC_SPI_COMPUTE_NUM_THREAD_X    0x286EC
+#endif
+#ifndef R_0286F0_SPI_COMPUTE_NUM_THREAD_Y
 #define R_0286F0_SPI_COMPUTE_NUM_THREAD_Y    0x286F0
+#endif
+#ifndef R_0286F4_SPI_COMPUTE_NUM_THREAD_Z
 #define R_0286F4_SPI_COMPUTE_NUM_THREAD_Z    0x286F4
+#endif
+#ifndef R_0089AC_VGT_COMPUTE_THREAD_GROUP_SZ
 #define R_0089AC_VGT_COMPUTE_THREAD_GROUP_SZ 0x89AC
+#endif
+#ifndef R_008970_VGT_NUM_INDICES
 #define R_008970_VGT_NUM_INDICES             0x8970
+#endif
+#ifndef R_00899C_VGT_COMPUTE_START_X
 #define R_00899C_VGT_COMPUTE_START_X         0x899C
+#endif
+#ifndef R_0288E8_SQ_LDS_ALLOC
 #define R_0288E8_SQ_LDS_ALLOC                0x288E8
+#endif
 
 /* PM4 packet helpers (matching r600 driver conventions) */
 #ifndef PKT3
@@ -73,9 +93,15 @@
 
 /* Evergreen compute uses the Local Shader (LS) stage, not a dedicated CS.
  * Program registers: R_0288D0_SQ_PGM_START_LS, R_0288D4_SQ_PGM_RESOURCES_LS */
+#ifndef R_0288D0_SQ_PGM_START_LS
 #define R_0288D0_SQ_PGM_START_LS        0x288D0
+#endif
+#ifndef R_0288D4_SQ_PGM_RESOURCES_LS
 #define R_0288D4_SQ_PGM_RESOURCES_LS    0x288D4
+#endif
+#ifndef R_0288D8_SQ_PGM_RESOURCES_LS_2
 #define R_0288D8_SQ_PGM_RESOURCES_LS_2  0x288D8
+#endif
 
 /* S_0288D4 field macros (from r600d_common.h) */
 #ifndef S_0288D4_NUM_GPRS
@@ -107,8 +133,12 @@
 
 
 /* Register addresses for compute KCACHE (constant buffer for LS stage) */
+#ifndef R_028FC0_ALU_CONST_BUFFER_SIZE_LS_0
 #define R_028FC0_ALU_CONST_BUFFER_SIZE_LS_0  0x28FC0
+#endif
+#ifndef R_028F40_ALU_CONST_CACHE_LS_0
 #define R_028F40_ALU_CONST_CACHE_LS_0        0x28F40
+#endif
 #define EG_FETCH_CONSTANTS_OFFSET_CS         816
 
 /* Emit the KCACHE constant buffer setup for compute.

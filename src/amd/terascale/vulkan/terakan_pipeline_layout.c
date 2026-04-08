@@ -101,11 +101,13 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
            ++shader_stage) {
          struct terakan_descriptor_set_layout_shader const * const set_layout_shader =
             &set_layout->shaders[shader_stage];
+         mesa_shader_stage const sqc_stage =
+            shader_stage == MESA_SHADER_COMPUTE ? MESA_SHADER_FRAGMENT : shader_stage;
 
          /* Resources. */
 
          terakan_hw_state_sqc_set_resource_function const graphics_resource_setter =
-            terakan_hw_state_sqc_set_resource_for_stage[shader_stage];
+            terakan_hw_state_sqc_set_resource_for_stage[sqc_stage];
          uint8_t const shader_resource_set_base = layout_set->first_shader_resources[shader_stage];
          struct terakan_descriptor_set_layout_shader_range const * const resource_ranges =
             set_layout->shader_ranges + set_layout_shader->first_resource_range;
@@ -245,7 +247,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
          /* Samplers. */
 
          terakan_hw_state_sqc_set_sampler_function const graphics_sampler_setter =
-            terakan_hw_state_sqc_set_sampler_for_stage[shader_stage];
+            terakan_hw_state_sqc_set_sampler_for_stage[sqc_stage];
          uint8_t const shader_sampler_set_base = layout_set->first_shader_samplers[shader_stage];
          struct terakan_descriptor_set_layout_shader_range const * const sampler_ranges =
             set_layout->shader_ranges + set_layout_shader->first_sampler_range;
