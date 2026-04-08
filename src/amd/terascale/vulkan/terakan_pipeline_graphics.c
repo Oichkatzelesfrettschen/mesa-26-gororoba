@@ -1108,26 +1108,65 @@ terakan_pipeline_graphics_fragment_output_init(struct terakan_pipeline_graphics 
    }
 }
 
-static VkResult
-terakan_pipeline_graphics_create(struct terakan_device * const device,
-                                 VkGraphicsPipelineCreateInfo const * const create_info,
-                                 struct vk_pipeline_cache * const cache,
-                                 VkAllocationCallbacks const * const allocator,
-                                 struct terakan_pipeline_graphics ** const pipeline_out)
-{
-   VkResult result;
 
+/*
+ * Phase A: Allocate and initialize base pipeline object.
+ * Only allocation and base-object init — no compilation, no state parsing.
+ */
+static VkResult
+terakan_pipeline_graphics_init(struct terakan_device * const device,
+                               VkAllocationCallbacks const * const allocator,
+                               struct terakan_pipeline_graphics ** const pipeline_out)
+{
    struct terakan_pipeline_graphics * const pipeline =
       vk_alloc2(&device->vk.alloc, allocator, sizeof(struct terakan_pipeline_graphics),
                 alignof(struct terakan_pipeline_graphics), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (pipeline == NULL) {
+   if (pipeline == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-   }
 
+   memset(pipeline, 0, sizeof(*pipeline));
    terakan_pipeline_init(&pipeline->base, device, false);
+
+   *pipeline_out = pipeline;
+   return VK_SUCCESS;
+}
+
+/*
+ * Phase B: Per-stage SPIR-V → NIR → post-link lower → cache lookup → compile.
+ *
+ * Invariant 1 (Dual stage mask): declared_stages is precomputed from
+ * create_info and used for cache key generation.  pipeline->shader_stages
+ * accumulates only on successful compilation and is the cleanup mask.
+ *
+ * Invariant 2 (Single cleanup owner): On failure, this function frees only
+ * its local nir.  The orchestrator calls _destroy() which uses
+ * pipeline->shader_stages to clean up completed stages.
+ *
+ * Invariant 3 (Cache hit ≡ miss): Pre-compile fields (resources_needed,
+ * samplers_needed, kcache_needed, push_constants_usage, fragment_data,
+ * uavs_for_mutable) are populated by post-link lowering BEFORE cache
+ * lookup, so they exist identically on both paths.
+ *
+ * Invariant 4 (Post-link ordering barrier): Cache key is computed only
+ * AFTER terakan_shader_lower_and_optimize_post_link() completes.
+ */
+static VkResult
+terakan_pipeline_graphics_compile_shaders(
+   struct terakan_pipeline_graphics * const pipeline,
+   struct terakan_device * const device,
+   VkGraphicsPipelineCreateInfo const * const create_info,
+   struct vk_pipeline_cache * const cache,
+   VkAllocationCallbacks const * const allocator)
+{
+   VkResult result;
 
    struct terakan_pipeline_layout const * const pipeline_layout =
       terakan_pipeline_layout_from_handle(create_info->layout);
+
+   /* Precompute declared_stages for deterministic key generation (RD-1). */
+   VkShaderStageFlags declared_stages = 0;
+   for (uint32_t i = 0; i < create_info->stageCount; ++i)
+      declared_stages |= create_info->pStages[i].stage;
 
    pipeline->shader_stages = 0;
    for (uint32_t stage_info_index = 0; stage_info_index < create_info->stageCount;
@@ -1144,10 +1183,8 @@ terakan_pipeline_graphics_create(struct terakan_device * const device,
       nir_shader * nir =
          terakan_shader_spirv_to_nir(device, spirv_size_bytes, spirv, stage_index,
                                      stage_info->pName, stage_info->pSpecializationInfo);
-      if (nir == NULL) {
-         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-         goto fail_shaders;
-      }
+      if (nir == NULL)
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
       struct terakan_shader_impl * const shader = &pipeline->shaders[stage_index];
       memset(shader, 0, sizeof(*shader));
@@ -1155,13 +1192,15 @@ terakan_pipeline_graphics_create(struct terakan_device * const device,
       shader->push_constants_usage.app_extent_bytes =
          pipeline_layout->shader_app_push_constants_extents_bytes[stage_index];
 
+      /* Post-link lowering populates pre-compile metadata (Invariant 3).
+       * This runs BEFORE cache key construction (Invariant 4). */
       terakan_shader_lower_and_optimize_post_link(
          nir, pipeline_layout, shader->resources_needed, &shader->samplers_needed,
          shader->uavs_for_mutable_resources_needed, &shader->push_constants_usage.driver_constants,
          &shader->kcache_needed,
          &shader->fs.fragment_data_uncompacted_locations);
 
-      /* Build cache key components */
+      /* Build cache key — uses declared_stages for deterministic hashing (RD-1). */
       VkPipelineCreateFlags2KHR const pipeline_flags =
          terakan_pipeline_create_flags(create_info->flags, create_info->pNext);
 
@@ -1174,25 +1213,22 @@ terakan_pipeline_graphics_create(struct terakan_device * const device,
 
       struct terakan_graphics_state_key gfx_state_key;
       terakan_graphics_state_key_fill(&gfx_state_key, create_info,
-                                      pipeline->shader_stages | stage_info->stage,
-                                      ps_nr_cbufs);
+                                      declared_stages, ps_nr_cbufs);
 
       union r600_shader_key shader_key;
       terakan_r600_shader_key_from_state(&shader_key, &gfx_state_key, stage_index);
 
-      /* Compute SPIR-V content hash for cache lookup */
       blake3_hash spirv_hash;
       struct vk_pipeline_robustness_state rs;
       vk_pipeline_robustness_state_fill(&device->vk, &rs,
                                         create_info->pNext, stage_info->pNext);
       vk_pipeline_hash_shader_stage(pipeline_flags, stage_info, &rs, spirv_hash);
 
-      /* Full cache key: build_id + pci_id + stage_key + shader_key + spirv_hash */
       blake3_hash cache_key;
       terakan_pipeline_cache_hash_shader(cache_key, device, &stage_key,
                                          &shader_key, spirv_hash);
 
-      /* Cache lookup — skip compilation on hit */
+      /* Cache lookup — skip compilation on hit (Invariant 3). */
       struct terakan_cached_shader *cached =
          terakan_pipeline_cache_lookup(cache, cache_key);
       if (cached != NULL) {
@@ -1200,75 +1236,116 @@ terakan_pipeline_graphics_create(struct terakan_device * const device,
          vk_pipeline_cache_object_unref(&device->vk, &cached->base);
          ralloc_free(nir);
          if (result != VK_SUCCESS)
-            goto fail_shaders;
+            return result;
       } else {
-         /* Cache miss — compile and insert */
          result = terakan_shader_impl_compile(shader, device, &shader_key, nir, allocator);
          size_t const program_size_bytes = sizeof(uint32_t) * shader->shader.bc.ndw;
          ralloc_free(nir);
-         if (result != VK_SUCCESS)
-            goto fail_shaders;
+         if (result != VK_SUCCESS) {
+            /* compile internally frees arrays on failure but doesn't NULL
+             * the pointer.  Defensive clear (graphics path is already safe
+             * because failed stage isn't added to shader_stages). */
+            shader->shader.arrays = NULL;
+            return result;
+         }
 
          terakan_pipeline_cache_insert(cache, cache_key, shader, stage_index,
                                        program_size_bytes, device);
       }
 
-      /* Fully initialized now, make sure it's fully cleaned up in case of failure. */
+      /* Stage successfully compiled/restored — mark for cleanup tracking. */
       pipeline->shader_stages |= stage_info->stage;
    }
 
-   /* Vertex shader is mandatory if the pre-rasterization part is present. Fail to create the
-    * pipeline to let other places in the pipeline code assume this more consistently.
-    */
-   /* TODO(Triang3l): Don't do this for graphics pipeline libraries without the pre-rasterization
-    * part.
-    */
-   assert(pipeline->shader_stages & VK_SHADER_STAGE_VERTEX_BIT);
+   /* Vertex shader is mandatory if the pre-rasterization part is present.
+    * TODO(Triang3l): Skip for graphics pipeline libraries without pre-rasterization. */
+   assert(declared_stages & VK_SHADER_STAGE_VERTEX_BIT);
    if (unlikely(!(pipeline->shader_stages & VK_SHADER_STAGE_VERTEX_BIT))) {
-      result = vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
-                         "No vertex shader in the graphics pipeline");
-      goto fail_shaders;
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "No vertex shader in the graphics pipeline");
    }
 
+   return VK_SUCCESS;
+}
+
+/*
+ * Phase C: Parse VkGraphicsPipelineCreateInfo into hardware state registers.
+ *
+ * Invariant 5: Runs AFTER compile_shaders — depends on compiled VS data
+ * (vertex_attributes_needed) and FS data (fragment_data_locations).
+ * BITSET_ZERO is inside this function for self-containment (RD-5).
+ */
+static VkResult
+terakan_pipeline_graphics_fill_state(
+   struct terakan_pipeline_graphics * const pipeline,
+   struct terakan_device * const device,
+   VkGraphicsPipelineCreateInfo const * const create_info,
+   VkAllocationCallbacks const * const allocator)
+{
    BITSET_ZERO(pipeline->static_state);
+
    struct vk_graphics_pipeline_all_state all_state;
    struct vk_graphics_pipeline_state state = {};
-   result = vk_graphics_pipeline_state_fill(&device->vk, &state, create_info, NULL, NULL, 0, &all_state,
-                                            NULL, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, NULL);
-   if (result != VK_SUCCESS) {
-      goto fail_shaders;
-   }
+   VkResult result = vk_graphics_pipeline_state_fill(
+      &device->vk, &state, create_info, NULL, NULL, 0, &all_state,
+      NULL, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT, NULL);
+   if (result != VK_SUCCESS)
+      return result;
+
    result = terakan_pipeline_graphics_vertex_input_init(
       pipeline, &state, device,
       pipeline->shader_stages & VK_SHADER_STAGE_VERTEX_BIT
          ? pipeline->shaders[MESA_SHADER_VERTEX].vs.vertex_attributes_needed
          : NULL,
       allocator);
-   if (result != VK_SUCCESS) {
-      goto fail_shaders;
-   }
+   if (result != VK_SUCCESS)
+      return result;
+
    terakan_pipeline_graphics_pre_rasterization_init(
       pipeline, &state, device->vk.enabled_extensions.EXT_depth_range_unrestricted);
    terakan_pipeline_graphics_multisample_init(pipeline, &state);
    terakan_pipeline_graphics_fragment_shader_state_init(pipeline, &state);
    terakan_pipeline_graphics_fragment_output_init(pipeline, &state);
 
+   return VK_SUCCESS;
+}
+
+/*
+ * Orchestrator — thin caller with single destroy error path (Invariant 2).
+ * All sub-functions are static (Invariant 6).
+ */
+static VkResult
+terakan_pipeline_graphics_create(struct terakan_device * const device,
+                                 VkGraphicsPipelineCreateInfo const * const create_info,
+                                 struct vk_pipeline_cache * const cache,
+                                 VkAllocationCallbacks const * const allocator,
+                                 struct terakan_pipeline_graphics ** const pipeline_out)
+{
+   struct terakan_pipeline_graphics *pipeline;
+   VkResult result;
+
+   result = terakan_pipeline_graphics_init(device, allocator, &pipeline);
+   if (result != VK_SUCCESS)
+      return result;
+
+   result = terakan_pipeline_graphics_compile_shaders(
+      pipeline, device, create_info, cache, allocator);
+   if (result != VK_SUCCESS)
+      goto fail;
+
+   result = terakan_pipeline_graphics_fill_state(
+      pipeline, device, create_info, allocator);
+   if (result != VK_SUCCESS)
+      goto fail;
+
    *pipeline_out = pipeline;
    return VK_SUCCESS;
 
-fail_shaders: {
-   unsigned remaining_shader_stages = (unsigned)pipeline->shader_stages;
-   while (remaining_shader_stages) {
-      terakan_shader_impl_finish(
-         &pipeline->shaders[vk_to_mesa_shader_stage((
-            VkShaderStageFlagBits)((VkShaderStageFlags)1 << u_bit_scan(&remaining_shader_stages)))],
-         allocator);
-   }
-}
-   terakan_pipeline_finish(&pipeline->base);
-   vk_free2(&device->vk.alloc, allocator, pipeline);
+fail:
+   terakan_pipeline_graphics_destroy(pipeline, allocator);
    return result;
 }
+
 
 VKAPI_ATTR VkResult VKAPI_CALL
 terakan_CreateGraphicsPipelines(VkDevice const deviceHandle, VkPipelineCache const pipelineCache,
