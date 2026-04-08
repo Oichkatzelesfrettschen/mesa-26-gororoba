@@ -323,12 +323,25 @@ nir_shader * terakan_shader_spirv_to_nir(struct terakan_device * device, size_t 
                                          char const * entrypoint,
                                          VkSpecializationInfo const * specialization_info);
 
+/*
+ * robust_buffer_access: effective robustness flag for this stage.  Must be
+ * computed by the caller from (device feature robustBufferAccess) OR any
+ * per-pipeline or per-stage VK_EXT_pipeline_robustness state that requires
+ * software bounds checking.  The NIR lowering uses it to inject ALU
+ * bounds clamps (nir_umin_imm) on storage-buffer and texel-buffer
+ * coordinates.  This is a mandatory software fallback — the Terascale
+ * hardware does NOT provide reliable native OOB handling for UAV writes
+ * or byte-granular descriptor clamping, so ALU clamping must never be
+ * skipped in the name of silicon trust.  See terakan_nir_buffer_uav_coord
+ * for the clamp implementation and the rationale comment.
+ */
 void terakan_shader_lower_and_optimize_post_link(
    nir_shader * nir, struct terakan_pipeline_layout const * pipeline_layout,
    BITSET_WORD * resources_needed, uint32_t * samplers_needed,
    BITSET_WORD * uavs_for_mutable_resources_needed, uint32_t * driver_push_constants_used,
    uint16_t * kcache_needed,
-   uint8_t * fragment_data_uncompacted_locations_out);
+   uint8_t * fragment_data_uncompacted_locations_out,
+   bool robust_buffer_access);
 
 void terakan_shader_impl_finish(struct terakan_shader_impl * shader,
                                 VkAllocationCallbacks const * allocator);

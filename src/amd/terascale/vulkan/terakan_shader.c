@@ -301,7 +301,8 @@ terakan_shader_lower_and_optimize_post_link(
    BITSET_WORD * const uavs_for_mutable_resources_needed,
    uint32_t * const driver_push_constants_used,
    uint16_t * const kcache_needed,
-   uint8_t * const fragment_data_uncompacted_locations_out)
+   uint8_t * const fragment_data_uncompacted_locations_out,
+   bool const robust_buffer_access)
 {
    bool progress;
 
@@ -365,8 +366,10 @@ terakan_shader_lower_and_optimize_post_link(
       .modes = nir_var_mem_ubo | nir_var_mem_push_const | nir_var_mem_ssbo,
    };
    NIR_PASS(_, nir, nir_lower_io_to_scalar, load_store_vectorize_options.modes, NULL, NULL);
-   /* TODO(Triang3l): VK_EXT_pipeline_robustness. */
-   if (pipeline_layout->vk.base.device->enabled_features.robustBufferAccess) {
+   /* Use the effective per-stage robustness flag computed by the pipeline
+    * compiler (device feature OR VK_EXT_pipeline_robustness per-stage state).
+    * See terakan_nir_buffer_uav_coord for the hardware rationale. */
+   if (robust_buffer_access) {
       load_store_vectorize_options.robust_modes |= nir_var_mem_ubo | nir_var_mem_ssbo;
    }
    load_store_vectorize_options.cb_data = &load_store_vectorize_options.robust_modes;
@@ -375,14 +378,14 @@ terakan_shader_lower_and_optimize_post_link(
    /* Lower bindings according to the pipeline layout.
     * In fragment shaders, this is done after compacting the fragment data output locations as UAVs
     * must be placed above color attachments.
-    */
-
+    * robust_buffer_access is threaded here so that the UAV coord clamp in
+    * terakan_nir_buffer_uav_coord honours per-pipeline robustness state. */
    NIR_PASS(_, nir, terakan_nir_lower_bindings, pipeline_layout, resources_needed, samplers_needed,
             nir->info.stage == MESA_SHADER_FRAGMENT
                ? util_bitcount(fragment_data_uncompacted_locations)
                : 0,
             uavs_for_mutable_resources_needed, driver_push_constants_used,
-            kcache_needed);
+            kcache_needed, robust_buffer_access);
 
    /* Perform lowerings on the level of basic building blocks after the interface has been set up.
     */
