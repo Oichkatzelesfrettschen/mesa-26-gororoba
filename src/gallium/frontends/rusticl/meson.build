@@ -115,6 +115,7 @@ rusticl_bindgen_args = [
   '--with-derive-hash',
   '--with-derive-default',
   '--anon-fields-prefix', 'anon_',
+  '--no-layout-tests',
 ]
 
 rusticl_bindgen_c_args = [
@@ -305,26 +306,26 @@ rusticl_mesa_bindings = rust.bindgen(
     '--allowlist-function',     'nir_.*',
     '--allowlist-var',          'nir_debug',
     '--allowlist-var',          'NIR_DEBUG_.*',
+    '--allowlist-type',         'nir_lower_int64_options',
     '--bitfield-enum',          'nir_lower_int64_options',
+    '--allowlist-type',         'nir_opt_if_options',
     '--bitfield-enum',          'nir_opt_if_options',
+    '--allowlist-type',         'nir_variable_mode',
     '--bitfield-enum',          'nir_variable_mode',
     '--allowlist-function',     'should_.*_nir',
     '--allowlist-function',     'spirv_.*',
+    '--allowlist-type',         'nir_spirv_debug_level',
+    '--allowlist-type',         'spirv_to_nir_options',
 
     # gallium
     '--allowlist-function',     'pipe_.*',
+    '--allowlist-type',         'pipe_.*',
     '--allowlist-var',          'PIPE_.*',
-    '--allowlist-type',         'pipe_endian',
     '--bitfield-enum',          'pipe_map_flags',
-    '--allowlist-type',         'pipe_query_type',
     '--constified-enum-module', 'pipe_query_type',
-    '--allowlist-type',         'pipe_resource_usage',
     '--bitfield-enum',          'pipe_resource_usage',
-    '--allowlist-type',         'pipe_tex_filter',
     '--constified-enum-module', 'pipe_tex_filter',
-    '--allowlist-type',         'pipe_tex_wrap',
     '--constified-enum-module', 'pipe_tex_wrap',
-    '--allowlist-type',         'pipe_swizzle',
     '--constified-enum-module', 'pipe_swizzle',
 
     # rusticl C functions
@@ -338,6 +339,7 @@ rusticl_mesa_bindings = rust.bindgen(
     '--allowlist-var',          'PROT_.*',
 
     # winsys
+    '--allowlist-type',         'winsys_handle',
     '--allowlist-var',          'WINSYS_HANDLE_TYPE_.*',
   ],
 )
@@ -366,6 +368,7 @@ rusticl_c = static_library(
     pre_args,
     cl_c_args,
     cc.get_supported_arguments('-Wno-missing-prototypes'),
+    cc.get_supported_arguments('-Wno-duplicate-decl-specifier'),
   ],
   dependencies: [
     idep_nir_headers,
