@@ -316,9 +316,11 @@ class LowerGSArrayInput : public NirLowerInstruction {
                                             intr->num_components,
                                             intr->def.bit_size,
                                             new_addr,
-                                            .base = nir_intrinsic_base(intr),
-                                            .range = nir_intrinsic_range(intr),
-                                            .io_semantics = io_semantics);
+                                            nir_intrinsic_base(intr),
+                                            nir_intrinsic_range(intr),
+                                            0,
+                                            (nir_alu_type)0,
+                                            io_semantics);
    }
    nir_def *m_base_array{nullptr};
 };

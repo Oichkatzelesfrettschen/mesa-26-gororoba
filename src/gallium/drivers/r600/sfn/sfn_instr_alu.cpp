@@ -1580,6 +1580,8 @@ static bool
 emit_alu_sext_i2iN(const nir_alu_instr& alu, unsigned src_bits, Shader& shader);
 static bool
 emit_alu_b2x(const nir_alu_instr& alu, AluInlineConstants mask, Shader& shader);
+static bool
+emit_unpack_32_4x8(const nir_alu_instr& alu, Shader& shader);
 
 
 
@@ -1594,6 +1596,8 @@ static bool
 emit_alu_mov_64bit(const nir_alu_instr& alu, Shader& shader);
 static bool
 emit_alu_neg(const nir_alu_instr& alu, Shader& shader);
+static bool
+emit_alu_ineg(const nir_alu_instr& alu, Shader& shader);
 static bool
 emit_alu_op1_64bit_trans(const nir_alu_instr& alu, EAluOp opcode, Shader& shader);
 static bool
@@ -1820,12 +1824,6 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
             static const EAluOp ubyte_ops[] = {
                op1_ubyte0_flt, op1_ubyte1_flt, op1_ubyte2_flt, op1_ubyte3_flt
             };
-            /* Get the original source (before byte extraction) */
-            nir_def *byte_src = alu->src[0].src.ssa;
-            nir_alu_instr *src_alu = nir_def_as_alu(byte_src);
-            /* For extract_u8(x, N), source is src_alu->src[0] */
-            /* For iand(ushr(x, N), 0xFF), source is the ushr input */
-            /* For simplicity, emit UBYTE on the direct source of u2f32 */
             return emit_alu_op1(*alu, ubyte_ops[byte_idx], shader);
          }
          return emit_alu_op1(*alu, op1_uint_to_flt, shader);
@@ -2012,6 +2010,8 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
 
    case nir_op_fneg:
       return emit_alu_op1(*alu, op1_mov, shader, mod_src0_neg);
+   case nir_op_ineg:
+      return emit_alu_ineg(*alu, shader);
    case nir_op_fneu32:
       return emit_alu_op2(*alu, op2_setne_dx10, shader);
    case nir_op_fneu:
@@ -2105,6 +2105,9 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       return emit_unpack_64_2x32_split(*alu, 0, shader);
    case nir_op_unpack_64_2x32_split_y:
       return emit_unpack_64_2x32_split(*alu, 1, shader);
+   case nir_op_unpack_32_4x8:
+      fprintf(stderr, "SFN_DEBUG: hit nir_op_unpack_32_4x8\n");
+      return emit_unpack_32_4x8(*alu, shader);
 
    case nir_op_ffma:
       if (!shader.has_flag(Shader::sh_legacy_math_rules))
@@ -2131,8 +2134,10 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
     * nir_lower_bit_size promotes arithmetic but leaves conversion
     * residuals; these handle u2u8/u2u16/u2u32/i2i8/i2i16/i2i32. */
    case nir_op_u2u8:
+      fprintf(stderr, "SFN_DEBUG: hit nir_op_u2u8\n");
       return emit_alu_trunc_u2uN(*alu, 8, shader);
    case nir_op_u2u16:
+      fprintf(stderr, "SFN_DEBUG: hit nir_op_u2u16\n");
       return emit_alu_trunc_u2uN(*alu, 16, shader);
    case nir_op_u2u32: {
       unsigned src_bits = alu->src[0].src.ssa->bit_size;
@@ -2221,6 +2226,39 @@ emit_alu_neg(const nir_alu_instr& alu, Shader& shader)
          shader.emit_instruction(ir);
       }
       ir->set_source_mod(0, AluInstr::mod_neg);
+   }
+
+   return true;
+}
+
+static bool
+emit_alu_ineg(const nir_alu_instr& alu, Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+
+   for (unsigned i = 0; i < alu.def.num_components; ++i) {
+      shader.emit_instruction(new AluInstr(op2_sub_int,
+                                           value_factory.dest(alu.def, i, pin_free),
+                                           value_factory.literal(0),
+                                           value_factory.src(alu.src[0], i),
+                                           AluInstr::write));
+   }
+
+   return true;
+}
+
+static bool
+emit_unpack_32_4x8(const nir_alu_instr& alu, Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+
+   for (unsigned i = 0; i < alu.def.num_components; ++i) {
+      shader.emit_instruction(new AluInstr(op3_bfe_uint,
+                                           value_factory.dest(alu.def, i, pin_free),
+                                           value_factory.src(alu.src[0], 0),
+                                           value_factory.literal(i * 8),
+                                           value_factory.literal(8),
+                                           AluInstr::write));
    }
 
    return true;
