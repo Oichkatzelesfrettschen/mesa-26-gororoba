@@ -308,7 +308,7 @@ private:
    unordered_map_alloc<uint32_t, InlineConstant::Pointer> m_inline_constants;
    unordered_map_alloc<uint32_t, uint32_t> m_ssa_index_to_sel;
 
-   uint32_t m_nowrite_idx;
+   [[maybe_unused]] uint32_t m_nowrite_idx;
 
    RegisterVec4 m_dummy_dest_pinned{
       g_registers_unused, true, {0, 1, 2, 3},

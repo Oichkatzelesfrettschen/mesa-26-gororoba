@@ -140,6 +140,52 @@ struct ArrayChanHash
 
 using ArrayCheckSet = std::unordered_set<std::pair<int, int>, ArrayChanHash>;
 
+static int
+vec_channel_fit_score(const AluInstr *instr, unsigned free_vec_mask)
+{
+   const int dest_chan = instr->dest_chan();
+   if (free_vec_mask & (1u << dest_chan))
+      return 3;
+
+   auto dest = instr->dest();
+   if (!(dest && (dest->pin() == pin_free || dest->pin() == pin_group)))
+      return 0;
+
+   unsigned allowed_mask = 0xf;
+   for (auto p : dest->parents()) {
+      auto alu = p->as_alu();
+      if (alu)
+         allowed_mask &= alu->allowed_dest_chan_mask();
+   }
+
+   for (auto u : dest->uses()) {
+      allowed_mask &= u->allowed_src_chan_mask();
+      if (!allowed_mask)
+         return 0;
+   }
+
+   if (free_vec_mask & allowed_mask)
+      return 2;
+
+   return 1;
+}
+
+static void
+prioritize_vec_ready_for_group(std::list<AluInstr *>& ready, unsigned free_vec_mask)
+{
+   ready.sort([free_vec_mask](const AluInstr *lhs, const AluInstr *rhs) {
+      const int lhs_fit = vec_channel_fit_score(lhs, free_vec_mask);
+      const int rhs_fit = vec_channel_fit_score(rhs, free_vec_mask);
+      if (lhs_fit != rhs_fit)
+         return lhs_fit > rhs_fit;
+
+      if (lhs->priority() != rhs->priority())
+         return lhs->priority() > rhs->priority();
+
+      return lhs < rhs;
+   });
+}
+
 class BlockScheduler {
 public:
    BlockScheduler(r600_chip_class chip_class,
@@ -1167,57 +1213,70 @@ BlockScheduler::schedule_alu_to_group_vec(AluGroup& group, AluScheduleContext& a
    assert(!alu_vec_ready.empty());
 
    bool success = false;
-   auto i = alu_vec_ready.begin();
-   auto e = alu_vec_ready.end();
    bool group_has_kill = group.has_kill_op();
    bool group_has_update_pred = group.has_update_exec();
-   while (i != e) {
-      sfn_log << SfnLog::schedule << "Try schedule to vec " << **i;
 
-      bool is_kill = false;
-      bool does_update_pred = false;
-      if (!can_schedule_alu_vec_instr_to_group(**i,
-                                               group_has_kill,
-                                               group_has_update_pred,
-                                               is_kill,
-                                               does_update_pred)) {
-         ++i;
-         continue;
-      }
+   while (!alu_vec_ready.empty()) {
+      const unsigned free_vec_mask = group.free_slot_mask() & 0xf;
+      if (!free_vec_mask)
+         break;
 
-      std::array<KCacheLine, 4> kcache;
-      if (!try_reserve_vec_kcache_for_group(**i, alu_ctx, kcache)) {
-         sfn_log << SfnLog::schedule << " failed (kcache)\n";
-         ++i;
-         continue;
-      }
+      prioritize_vec_ready_for_group(alu_vec_ready, free_vec_mask);
 
-      if (group.add_vec_instructions(*i)) {
-         m_current_block->commit_kcache_reservation(kcache);
-         (*i)->pin_registers();
-         group_has_update_pred |= (*i)->has_alu_flag(alu_update_pred);
-         auto old_i = i;
-         ++i;
-         if ((*old_i)->has_alu_flag(alu_is_lds)) {
-            --m_lds_addr_count;
+      bool added_to_group = false;
+      auto i = alu_vec_ready.begin();
+      auto e = alu_vec_ready.end();
+      while (i != e) {
+         sfn_log << SfnLog::schedule << "Try schedule to vec " << **i;
+
+         bool is_kill = false;
+         bool does_update_pred = false;
+         if (!can_schedule_alu_vec_instr_to_group(**i,
+                                                  group_has_kill,
+                                                  group_has_update_pred,
+                                                  is_kill,
+                                                  does_update_pred)) {
+            ++i;
+            continue;
          }
 
-         if ((*old_i)->num_ar_uses())
-            m_current_block->set_expected_ar_uses((*old_i)->num_ar_uses());
-            
-         update_idx_load_state(**old_i);  
+         std::array<KCacheLine, 4> kcache;
+         if (!try_reserve_vec_kcache_for_group(**i, alu_ctx, kcache)) {
+            sfn_log << SfnLog::schedule << " failed (kcache)\n";
+            ++i;
+            continue;
+         }
 
-         alu_vec_ready.erase(old_i);
-         success = true;
+         if (group.add_vec_instructions(*i)) {
+            m_current_block->commit_kcache_reservation(kcache);
+            (*i)->pin_registers();
+            auto old_i = i;
+            ++i;
+            if ((*old_i)->has_alu_flag(alu_is_lds)) {
+               --m_lds_addr_count;
+            }
 
-         group_has_kill |= is_kill;
-         group_has_update_pred |= does_update_pred;
+            if ((*old_i)->num_ar_uses())
+               m_current_block->set_expected_ar_uses((*old_i)->num_ar_uses());
+            update_idx_load_state(**old_i);
 
-         sfn_log << SfnLog::schedule << " success\n";
-      } else {
-         ++i;
-         sfn_log << SfnLog::schedule << " failed\n";
+            alu_vec_ready.erase(old_i);
+            success = true;
+            added_to_group = true;
+
+            group_has_kill |= is_kill;
+            group_has_update_pred |= does_update_pred;
+
+            sfn_log << SfnLog::schedule << " success\n";
+            break;
+         } else {
+            ++i;
+            sfn_log << SfnLog::schedule << " failed\n";
+         }
       }
+
+      if (!added_to_group)
+         break;
    }
    return success;
 }
@@ -1743,6 +1802,8 @@ public:
 
 class UpdateArrayWrite : public CheckArrayAccessVisitor {
 public:
+   using CheckArrayAccessVisitor::visit;
+
    UpdateArrayWrite(ArrayCheckSet& indirect_arrays,
                     ArrayCheckSet& direct_arrays,
                     bool tdw):
@@ -1786,6 +1847,8 @@ void BlockScheduler::update_array_writes(const AluGroup& group)
 
 class CheckArrayRead : public CheckArrayAccessVisitor {
 public:
+   using CheckArrayAccessVisitor::visit;
+
    CheckArrayRead(const ArrayCheckSet& indirect_arrays,
                   const ArrayCheckSet& direct_arrays):
       last_indirect_array_write(indirect_arrays),
