@@ -404,22 +404,35 @@ terakan_shader_lower_and_optimize_post_link(
    nir_lower_idiv_options lower_idiv_options = {};
    NIR_PASS(_, nir, nir_lower_idiv, &lower_idiv_options);
 
-   /* Includes both mandatory lowerings and optimizations. */
-   NIR_PASS(_, nir, nir_opt_algebraic);
-
+   /* Lower flrp before optimization so algebraic / CSE can clean up the
+    * expansion.  This matches RADV's pipeline ordering. */
    if (!nir->info.flrp_lowered) {
       assert(nir->options->lower_flrp16 && nir->options->lower_flrp32 &&
              nir->options->lower_flrp64);
-      bool lower_flrp_progress = false;
-      NIR_PASS(lower_flrp_progress, nir, nir_lower_flrp, 16 | 32 | 64, false);
-      if (lower_flrp_progress) {
-         NIR_PASS(_, nir, nir_opt_constant_folding);
-      }
-      /* Nothing should rematerialize any flrps, so we only need to do this lowering once. */
+      NIR_PASS(_, nir, nir_lower_flrp, 16 | 32 | 64, false);
       nir->info.flrp_lowered = true;
    }
-}
 
+   /* -------------------------------------------------------------------
+    * Lightweight pre-SFN cleanup.
+    *
+    * Only run copy propagation, algebraic (mandatory lowerings), constant
+    * folding, and DCE here.  The heavy iterative convergence loop runs
+    * AFTER r600_lower_and_optimize_nir (in terakan_shader_impl_compile)
+    * so it can see the full IR including SFN's IF/ENDIF write guards,
+    * KCACHE bank-14 loads, and bounds-check ALU.
+    *
+    * VLIW5 constraint: no scalarization passes here (or in the post-SFN
+    * loop).  TeraScale physically thrives on vec4 ops; scalarizing strips
+    * the vector dependency graph that SFN's C4 Bundle Packer needs to
+    * fill X,Y,Z,W slots.  Phase 1 already ran nir_lower_alu_to_scalar
+    * with the architecture-specific filter; do not add more on top.
+    * ------------------------------------------------------------------- */
+   NIR_PASS(_, nir, nir_opt_copy_prop);
+   NIR_PASS(_, nir, nir_opt_algebraic);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   NIR_PASS(_, nir, nir_opt_dce);
+}
 /* =====================================================================
  * UINT24 peephole — convert imul → umul24 / iadd(umul24, c) → umad24.
  *
