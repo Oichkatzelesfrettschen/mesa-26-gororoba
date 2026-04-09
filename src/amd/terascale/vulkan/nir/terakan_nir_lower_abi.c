@@ -146,6 +146,60 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
    return nir_vec(b, uav_coord_components, uav_coord_num_components);
 }
 
+
+/*
+ * terakan_nir_emit_write_guard
+ *
+ * Emits a software bounds check before a MEM_RAT write (store or atomic).
+ * Returns an nir_def* that is true (non-zero) when the write is in-bounds,
+ * false when OOB.  The caller wraps the actual MEM_RAT instruction in an
+ * nir_push_if / nir_pop_if gated on this result.
+ *
+ * Hardware basis: MEM_RAT writes are NOT bounds-checked by Evergreen silicon
+ * (Phase 5 Probe 7).  OOB MEM_RAT writes corrupt adjacent VRAM.  This is
+ * the only defense.
+ *
+ * The UAV byte size is read from KCACHE bank 14 (robustness metadata buffer),
+ * which holds uint32_t buffer_uav_byte_size[12] at dword offsets [0..11].
+ *
+ * Guard condition:  (write_end_offset <= uav_byte_size)
+ *   where write_end_offset = byte_offset + write_size_bytes
+ *
+ * When the guard fails (OOB), the write is suppressed via IF/ENDIF.
+ * Future optimization: trash-page redirect for deep CF stacks (Tier 2).
+ */
+static nir_def *
+terakan_nir_emit_write_guard(nir_builder * const b,
+                             nir_def * const byte_offset,
+                             uint32_t const write_size_bytes,
+                             uint32_t const uav_index_zero_based,
+                             nir_def * const uav_array_index,
+                             struct terakan_nir_lower_bindings_state * const state)
+{
+   /* Mark KCACHE bank 14 (robustness metadata) as needed. */
+   *state->kcache_needed |= (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+
+   /* Load the exact byte size for this UAV from KCACHE bank 14.
+    * Layout: uint32_t buffer_uav_byte_size[12] starting at dword 0. */
+   uint32_t const size_vec4_index = uav_index_zero_based / 4;
+   uint32_t const size_component = uav_index_zero_based % 4;
+
+   nir_def *uav_byte_size = nir_load_kcache_r600(
+      b, 1, 32, uav_array_index,
+      .access = ACCESS_CAN_REORDER,
+      .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+      .base = size_vec4_index,
+      .component = size_component);
+
+   /* write_end = byte_offset + write_size_bytes (saturating add to prevent
+    * overflow: if byte_offset is near UINT32_MAX, the add would wrap to a
+    * small value and pass the bounds check). */
+   nir_def *write_end = nir_uadd_sat(b, byte_offset, nir_imm_int(b, write_size_bytes));
+
+   /* in_bounds = (write_end <= uav_byte_size) */
+   return nir_uge(b, uav_byte_size, write_end);
+}
+
 /*
  * terakan_nir_buffer_uav_coord
  *
@@ -614,10 +668,27 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
    /* No point in vectorizing, the hardware instruction stores only one channel. */
    assert(nir_intrinsic_write_mask(intrin) == 0b1);
 
+   /* Write guard: MEM_RAT stores are NOT bounds-checked by Evergreen
+    * hardware (Phase 5 Probe 7).  When robust_buffer_access is enabled,
+    * emit an IF/ENDIF that suppresses the write when the store offset
+    * exceeds the UAV's declared byte size. */
+   bool const guarded = state->robust_buffer_access;
+   if (guarded) {
+      nir_def *in_bounds = terakan_nir_emit_write_guard(
+         b, intrin->src[2].ssa, bytes_per_component,
+         uav_index_zero_based, uav_array_index, state);
+      nir_push_if(b, in_bounds);
+   }
+
    terakan_nir_build_uav_instr_r600(
       b, uav_array_index, coord, nir_u2u32(b, nir_channel(b, intrin->src[0].ssa, 0)),
       nir_undef(b, 1, 32), uav_op, access,
       state->uav_base + uav_index_zero_based);
+
+   if (guarded) {
+      nir_pop_if(b, NULL);
+   }
+
    nir_instr_remove(&intrin->instr);
 }
 
@@ -686,11 +757,20 @@ terakan_nir_lower_bindings_instr_ssbo_atomic(nir_builder * const b,
 
    unsigned const uav_id_base = state->uav_base + uav_index_zero_based;
 
+   /* Write guard: MEM_RAT atomics are NOT bounds-checked by Evergreen
+    * hardware.  Wrap the atomic in IF/ENDIF (or IF/ELSE for returning
+    * atomics that need zero on the OOB path). */
+   bool const guarded = state->robust_buffer_access;
+   if (guarded) {
+      nir_def *in_bounds = terakan_nir_emit_write_guard(
+         b, intrin->src[1].ssa, 4 /* atomic is always 4 bytes */,
+         uav_index_zero_based, uav_array_index, state);
+      nir_push_if(b, in_bounds);
+   }
+
    if (result_used) {
       /* TODO(Triang3l): Proper bit size conversion depending on the destination type? */
-      nir_def_rewrite_uses(
-         &intrin->def,
-         nir_u2uN(
+      nir_def *atomic_result = nir_u2uN(
             b,
             terakan_nir_build_uav_returning_instr_r600(
                b, intrin->def.num_components, 32, uav_array_index, coord, value, compare_value,
@@ -702,10 +782,22 @@ terakan_nir_lower_bindings_instr_ssbo_atomic(nir_builder * const b,
                    ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
                    : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
                uav_index_zero_based),
-            intrin->def.bit_size));
+            intrin->def.bit_size);
+      if (guarded) {
+         /* OOB path: return zero for the atomic result. */
+         nir_pop_if(b, NULL);
+         nir_def *zero = nir_imm_zero(b, intrin->def.num_components, intrin->def.bit_size);
+         nir_def *result = nir_if_phi(b, atomic_result, zero);
+         nir_def_rewrite_uses(&intrin->def, result);
+      } else {
+         nir_def_rewrite_uses(&intrin->def, atomic_result);
+      }
    } else {
       terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, value, compare_value, uav_op,
                                        access, uav_id_base);
+      if (guarded) {
+         nir_pop_if(b, NULL);
+      }
       nir_def_rewrite_uses(&intrin->def,
                            nir_undef(b, intrin->def.num_components, intrin->def.bit_size));
    }
@@ -943,11 +1035,20 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
 
    unsigned const uav_id_base = state->uav_base + uav_index_zero_based;
 
+   /* Write guard: MEM_RAT atomics are NOT bounds-checked by Evergreen
+    * hardware.  Wrap the atomic in IF/ENDIF (or IF/ELSE for returning
+    * atomics that need zero on the OOB path). */
+   bool const guarded = state->robust_buffer_access;
+   if (guarded) {
+      nir_def *in_bounds = terakan_nir_emit_write_guard(
+         b, intrin->src[1].ssa, 4 /* atomic is always 4 bytes */,
+         uav_index_zero_based, uav_array_index, state);
+      nir_push_if(b, in_bounds);
+   }
+
    if (result_used) {
       /* TODO(Triang3l): Proper bit size conversion depending on the destination type? */
-      nir_def_rewrite_uses(
-         &intrin->def,
-         nir_u2uN(
+      nir_def *atomic_result = nir_u2uN(
             b,
             terakan_nir_build_uav_returning_instr_r600(
                b, intrin->def.num_components, 32, uav_array_index, coord, value, compare_value,
@@ -959,10 +1060,22 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
                    ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
                    : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
                uav_index_zero_based),
-            intrin->def.bit_size));
+            intrin->def.bit_size);
+      if (guarded) {
+         /* OOB path: return zero for the atomic result. */
+         nir_pop_if(b, NULL);
+         nir_def *zero = nir_imm_zero(b, intrin->def.num_components, intrin->def.bit_size);
+         nir_def *result = nir_if_phi(b, atomic_result, zero);
+         nir_def_rewrite_uses(&intrin->def, result);
+      } else {
+         nir_def_rewrite_uses(&intrin->def, atomic_result);
+      }
    } else {
       terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, value, compare_value, uav_op,
                                        access, uav_id_base);
+      if (guarded) {
+         nir_pop_if(b, NULL);
+      }
       nir_def_rewrite_uses(&intrin->def,
                            nir_undef(b, intrin->def.num_components, intrin->def.bit_size));
    }
