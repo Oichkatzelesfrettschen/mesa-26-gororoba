@@ -342,6 +342,11 @@ private:
 
    ValueFactory *m_vf{nullptr};
 
+   /* Previously scheduled AluGroup destinations, indexed by slot
+    * (0-3 = vec, 4 = trans). Values are encoded as sel * 4 + chan, or -1
+    * when the slot has no writable destination. */
+   int m_prev_group_dest[5] = {-1, -1, -1, -1, -1};
+
    /* PV-chain length tracking (reported via R600_DEBUG=sfn) */
    int m_pv_current_chain{0};
    int m_pv_max_chain{0};
@@ -363,8 +368,8 @@ schedule(Shader *original)
       sfn_log << ss.str() << "\n\n";
    }
 
-   // TODO later it might be necessary to clone the shader
-   // to be able to re-start scheduling
+   /* Restartable scheduling needs a cloned shader because this pass mutates
+    * instruction order and register pinning in place. */
 
    auto scheduled_shader = original;
 
@@ -952,6 +957,18 @@ BlockScheduler::finalize_schedule_alu_group(Shader::ShaderBlocks& out_blocks,
 
    m_current_block->push_back(&group);
 
+   /* Record this group's destination slots so the next ready-vector pass can
+    * prioritize instructions that can use PV or PS forwarding. */
+   for (int s = 0; s < 5; ++s) {
+      m_prev_group_dest[s] = -1;
+      auto slot_instr = group[s];
+      if (slot_instr && slot_instr->has_alu_flag(alu_write)) {
+         auto d = slot_instr->dest();
+         if (d)
+            m_prev_group_dest[s] = d->sel() * 4 + d->chan();
+      }
+   }
+
    update_array_writes(group);
 
    m_idx0_pending |= m_idx0_loading;
@@ -1034,6 +1051,10 @@ BlockScheduler::schedule_gds(Shader::ShaderBlocks& out_blocks, std::list<I *>& r
 void
 BlockScheduler::start_new_block(Shader::ShaderBlocks& out_blocks, Block::Type type)
 {
+   /* PV/PS forwarding cannot cross CF block boundaries */
+   for (int s = 0; s < 5; ++s)
+      m_prev_group_dest[s] = -1;
+
    if (!m_current_block->empty()) {
       sfn_log << SfnLog::schedule << "Start new block\n";
       assert(!m_current_block->lds_group_active());
@@ -1660,6 +1681,27 @@ BlockScheduler::collect_ready_alu_vec(std::list<AluInstr *>& ready,
          }
 
          priority += 100 * (*i)->register_priority();
+
+         /* Promote instructions whose sources match the previous group's
+          * vector-slot destinations. The actual PV or PS register substitution
+          * remains post-scheduling in apply_pv_ps_to_group(). */
+         {
+            bool pv_candidate = false;
+            for (unsigned si = 0; si < (*i)->n_sources() && !pv_candidate; ++si) {
+               auto src = (*i)->psrc(si);
+               if (!src || !src->as_register())
+                  continue;
+               int src_key = src->sel() * 4 + src->chan();
+               for (int slot = 0; slot < 4; ++slot) {
+                  if (m_prev_group_dest[slot] == src_key) {
+                     pv_candidate = true;
+                     break;
+                  }
+               }
+            }
+            if (pv_candidate)
+               priority += 5000;
+         }
 
          (*i)->add_priority(priority);
          ready.push_back(*i);
