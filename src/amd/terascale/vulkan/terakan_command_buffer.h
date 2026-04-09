@@ -549,32 +549,34 @@ terakan_gfx_command_writer_emit_done(struct terakan_gfx_command_writer * const c
  *
  * Implemented:
  *   - UAV write guard (store_ssbo, ssbo_atomic): terakan_nir_emit_write_guard()
- *     in lower_abi.c emits IF/ENDIF bounds checks reading per-UAV byte sizes
- *     from KCACHE bank 14.  Phase 5 Probe 7 confirmed MEM_RAT writes are NOT
- *     bounds-checked by hardware.  Covers both graphics (MEM_RAT STORE_TYPED)
- *     and compute (store_global → MEM_RAT_CACHELESS STORE_RAW) paths.
+ *     in lower_abi.c emits bounds checks reading per-UAV byte sizes from
+ *     KCACHE bank 14.  Phase 5 Probe 7 confirmed MEM_RAT writes are NOT
+ *     bounds-checked by hardware.  Two tiers:
+ *       Tier 1 (IF/ENDIF): graphics UAV path — costs 1 CF stack entry.
+ *       Tier 2 (math predication): compute store_global path — costs 0
+ *         CF stack entries.  OOB writes redirected to driver trash page
+ *         via nir_bcsel(in_bounds, real_addr, trash_addr).
+ *   - Trash-page allocation (4KB, 256B-aligned) at vkCreateDevice.  GPU
+ *     VA >> 2 in KCACHE bank 14 metadata dword 12 (commit dcd98f706c3).
  *   - UAV coordinate clamp: terakan_nir_buffer_uav_coord() emits nir_umin_imm
  *     to prevent UINT32_MAX wraparound on UAV coordinates.
  *   - UBO reads: KCACHE Tier 1 (static) + VFETCH Tier 2 (dynamic, hw zero-fill).
  *   - SSBO reads: VTX SIZE_MINUS_ONE enforces dword-granular OOB zeroing.
  *   - TEX reads: TEX engine enforces byte-level OOB zeroing.
+ *   - Pipeline-level kcache_needed merge: OR of per-stage masks copied at
+ *     bind time; draw path skips bank 14 binding when no stage needs it.
  *
  * Remaining:
- *   - Math-predication fallback using trash page for deep CF stacks (>2).
  *   - Write guard batching optimization (collapse guards for adjacent stores).
  *   - Image UAV write robustness (needs per-view extent metadata — DEFERRED).
  *   - UBO Tier 3 (KCACHE + MIN clamp) blocked on SFN LOCK_LOOP_INDEX backend.
  *
  * Recently completed:
- *   - Trash-page allocation (4KB, 256B-aligned) at vkCreateDevice, GPU VA>>2
- *     populated into KCACHE bank 14 metadata dword 12 (commit dcd98f706c3).
- *   - Compute store_ssbo write guard: IF/ENDIF bounds check wrapping the
- *     store_global path (MEM_RAT_CACHELESS STORE_RAW).
- *   - Runtime KCACHE bank 14 population: terakan_robustness_metadata_apply()
- *     allocates push-buffer BO, populates per-UAV byte sizes with dynamic
- *     offset adjustment, binds to KCACHE bank 14 at draw/dispatch time.
- *   - 3-tier UBO routing: robust_buffer_access forces VFETCH (Tier 2) for
- *     all UBO loads (KCACHE has proven within-line data leak).
+ *   - Math-predicated compute write guard (Tier 2) using trash page
+ *     redirect: nir_bcsel(in_bounds, real_addr, trash_addr) — zero
+ *     CF stack cost (commit 0dad6b55ed3).
+ *   - Pipeline kcache_needed_merged OR-mask in graphics pipeline,
+ *     copied to gfx_command_writer at bind time (commit 36071faccba).
  */
 uint32_t * terakan_gfx_command_writer_emit_with_bo(
    struct terakan_gfx_command_writer * command_writer,
