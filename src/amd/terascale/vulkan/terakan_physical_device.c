@@ -494,17 +494,9 @@ terakan_physical_device_get_capabilities(
    extensions_out->EXT_pipeline_creation_cache_control = true;
    features_out->pipelineCreationCacheControl = true;
 
-   /* Re-enable logicOp — TeraScale-2 hardware supports it via CB_COLOR_CONTROL. */
-   features_out->logicOp = true;
-   features_out->dualSrcBlend = true;
    /* TODO(Triang3l): wideLines. */
    /* TODO(Triang3l): largePoints. */
    /* TODO(Triang3l): alphaToOne. */
-   features_out->multiViewport = true;
-   features_out->samplerAnisotropy = true;
-   features_out->textureCompressionBC = true;
-   features_out->occlusionQueryPrecise = true;
-   features_out->pipelineStatisticsQuery = true;
    /* vertexPipelineStoresAndAtomics are unconditionally used by meta shaders, primarily for query
     * operations, but can't be provided to applications because of the very small UAV binding count
     * limit in the hardware.
@@ -517,8 +509,6 @@ terakan_physical_device_get_capabilities(
    /* TODO(Triang3l): Possibly shaderImageGatherExtended. */
    /* TODO(Triang3l): Shader storage image format features. */
    /* TODO(Triang3l): Shader binding array dynamic indexing. */
-   /* TODO(Triang3l): shaderClipDistance. */
-   /* TODO(Triang3l): shaderCullDistance. */
    /* TODO(Triang3l): shaderFloat64. */
    /* TODO(Triang3l): shaderResourceMinLod. */
    /* TODO(Triang3l): variableMultisampleRate. */
@@ -676,6 +666,13 @@ terakan_physical_device_get_capabilities(
 
    /* TODO(Triang3l): Geometry shader limits. */
 
+   /* Clip and cull distance limits — PA_CL_VS_OUT_CNTL has 8 clip + 8 cull
+    * enable bits (CLIP_DIST_ENA_0..7, CULL_DIST_ENA_0..7).  The shader compiler
+    * already packs both into the register (terakan_shader_sfn.cpp). */
+   properties_out->maxClipDistances = 8;
+   properties_out->maxCullDistances = 8;
+   properties_out->maxCombinedClipAndCullDistances = 8;
+
    properties_out->maxFragmentInputComponents = 4 * TERAKAN_LIMITS_HW_PARAMETER_CACHE_VECTOR_COUNT;
 
    properties_out->maxFragmentOutputAttachments = TERAKAN_COLOR_HW_RTV_COUNT;
@@ -758,7 +755,9 @@ terakan_physical_device_get_capabilities(
       properties_out->timestampPeriod = (float)(1e9 / (double)clock_crystal_frequency_hz);
    }
 
-   /* TODO(Triang3l): Maximum clip and cull distances when enabled. */
+   /* Vulkan 1.2: integer color attachments do not support MSAA resolve on
+    * TeraScale-2, so only advertise single-sample. */
+   properties_out->framebufferIntegerColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
 
    properties_out->discreteQueuePriorities = 2;
 
@@ -776,6 +775,15 @@ terakan_physical_device_get_capabilities(
     * Otherwise sysconf(_SC_LEVEL1_DCACHE_LINESIZE) on Linux.
     */
    properties_out->nonCoherentAtomSize = 1;
+
+   /* Vulkan 1.1 properties (VkPhysicalDeviceVulkan11Properties). */
+   properties_out->pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
+   /* No multiview support on TeraScale-2. */
+   properties_out->maxMultiviewViewCount = 0;
+   properties_out->maxMultiviewInstanceIndex = 0;
+   properties_out->protectedNoFault = false;
+   properties_out->maxPerSetDescriptors = max_per_set_descriptors;
+   properties_out->maxMemoryAllocationSize = max_memory_allocation_size;
 
    /* VK_KHR_maintenance1 (#70, Vulkan 1.1).
     * Negative viewport height for D3D coordinate space.
@@ -895,14 +903,20 @@ terakan_physical_device_get_capabilities(
    extensions_out->EXT_color_write_enable = true;
    features_out->colorWriteEnable = true;
 
-   /* TODO(Triang3l): VK_KHR_maintenance4 (#414, Vulkan 1.3): maxBufferSize = UINT32_MAX. */
-   /* Addresses within buffers are limited to 32 bits in several places:
+   /* VK_KHR_maintenance4 (#414, Vulkan 1.3).
+    * GetDeviceBufferMemoryRequirements and GetDeviceImageMemoryRequirements
+    * are already implemented in terakan_buffer.c and terakan_image.c.
+    * GetDeviceImageSparseMemoryRequirements returns 0 (no sparse support).
+    * Addresses within buffers are limited to 32 bits in several places:
     * - Index buffer binding via INDEX_BASE.
     * - Wraparound in copying (most importantly image copying) not handled.
     * The DRM Radeon driver, however, limits addresses within device memory to 32 bits in various
     * areas as of 2.50.0, so there's no sufficient justification for making workarounds to support
     * more.
     */
+   extensions_out->KHR_maintenance4 = true;
+   features_out->maintenance4 = true;
+   properties_out->maxBufferSize = max_memory_allocation_size;
 
    /* VK_EXT_non_seamless_cube_map (#423). */
    extensions_out->EXT_non_seamless_cube_map = true;
@@ -1377,6 +1391,18 @@ terakan_GetPhysicalDeviceSparseImageFormatProperties(
 {
    /* No sparse support on TeraScale-2 */
    *pPropertyCount = 0;
+}
+
+/* VK_KHR_maintenance4 requires vkGetDeviceImageSparseMemoryRequirements.
+ * TeraScale-2 does not support sparse resources — return 0 requirements. */
+VKAPI_ATTR void VKAPI_CALL
+terakan_GetDeviceImageSparseMemoryRequirements(
+   VkDevice device,
+   const VkDeviceImageMemoryRequirements *pInfo,
+   uint32_t *pSparseMemoryRequirementCount,
+   VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+{
+   *pSparseMemoryRequirementCount = 0;
 }
 
 /* VkEvent implementation -- CPU-side atomic flag.
