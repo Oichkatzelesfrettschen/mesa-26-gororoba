@@ -169,6 +169,88 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
    r600_lower_and_optimize_nir(nir, key, gfx_level, &so_info);
 
+   /* -------------------------------------------------------------------
+    * Post-SFN iterative convergence loop.
+    *
+    * r600_lower_and_optimize_nir runs SFN's own optimize_once loop and
+    * then applies backend-specific lowerings (nir_lower_io, write guards,
+    * KCACHE bank-14 loads, bounds-check ALU, etc.).  Those lowerings
+    * introduce new IR that the pre-SFN lightweight cleanup never saw.
+    *
+    * This convergence loop cleans up the final IR so that translate_from_nir
+    * receives maximally simplified code.  The pass selection mirrors RADV
+    * but is tuned for TeraScale-2 constraints:
+    *
+    *  - indirect_load_ok=false: avoid speculating VFETCH (100-400 cycle
+    *    penalty doubles pending fetch traffic and GPR pressure).
+    *  - No loop unrolling: SFN already unrolled in optimize_once; late
+    *    unrolling after robustness insertion duplicates bounds-check guards
+    *    and risks exceeding the 4 KCACHE bank x line lock limit per clause.
+    *  - No shrink_vectors / scalarization: preserve vec2/3/4 topology
+    *    for VLIW5 bundle packing.  SFN's C4 packer relies on explicit
+    *    vector dependency graphs to fill X,Y,Z,W slots efficiently;
+    *    scalarized ops force costly heuristic reconstruction.
+    * ------------------------------------------------------------------- */
+   {
+      bool opt_progress;
+      do {
+         opt_progress = false;
+         NIR_PASS(opt_progress, nir, nir_opt_copy_prop);
+         NIR_PASS(opt_progress, nir, nir_opt_remove_phis);
+         NIR_PASS(opt_progress, nir, nir_opt_dce);
+         NIR_PASS(opt_progress, nir, nir_opt_dead_cf);
+         NIR_PASS(opt_progress, nir, nir_opt_cse);
+         NIR_PASS(opt_progress, nir, nir_opt_constant_folding);
+         NIR_PASS(opt_progress, nir, nir_opt_algebraic);
+         NIR_PASS(opt_progress, nir, nir_opt_if, nir_opt_if_optimize_phi_true_false);
+         nir_opt_peephole_select_options peephole_options = {
+            .limit = 8,
+            .indirect_load_ok = false,
+            .expensive_alu_ok = true,
+         };
+         NIR_PASS(opt_progress, nir, nir_opt_peephole_select, &peephole_options);
+         NIR_PASS(opt_progress, nir, nir_opt_undef);
+         if (nir_opt_loop(nir)) {
+            opt_progress = true;
+            NIR_PASS(_, nir, nir_opt_copy_prop);
+            NIR_PASS(_, nir, nir_opt_dce);
+         }
+      } while (opt_progress);
+   }
+
+   /* Late algebraic: turn add(a, neg(b)) back into sub, then clean up.
+    * TeraScale has native SUB_INT and ALU source negation, so the backend
+    * benefits from seeing sub directly rather than add+neg pairs. */
+   {
+      bool more_late_algebraic = true;
+      while (more_late_algebraic) {
+         more_late_algebraic = false;
+         NIR_PASS(more_late_algebraic, nir, nir_opt_algebraic_late);
+         NIR_PASS(_, nir, nir_opt_constant_folding);
+         NIR_PASS(_, nir, nir_opt_copy_prop);
+         NIR_PASS(_, nir, nir_opt_dce);
+         NIR_PASS(_, nir, nir_opt_cse);
+      }
+   }
+
+   /* Move discards to top AFTER SFN lowerings: SFN inserts IF/ENDIF write
+    * guards above UAV stores that would otherwise invalidate the relocation.
+    * On Evergreen early-Z is disabled by KILL anyway, but moving discard
+    * earlier still avoids wasted ALU/fetch work in killed fragments. */
+   if (nir->info.stage == MESA_SHADER_FRAGMENT && nir->info.fs.uses_discard) {
+      nir_opt_peephole_select_options discard_peephole = {
+         .limit = 0,
+         .discard_ok = true,
+      };
+      NIR_PASS(_, nir, nir_opt_peephole_select, &discard_peephole);
+      NIR_PASS(_, nir, nir_opt_move_discards_to_top);
+   }
+
+   /* Sink UBO/KCACHE loads toward their first use.  Post-SFN this operates
+    * on lowered KCACHE intrinsics, grouping fetches into the clause that
+    * consumes them and reducing KCACHE bank x line lock pressure. */
+   NIR_PASS(_, nir, nir_opt_move, nir_move_load_ubo);
+
    r600::ShaderBindingLayout binding_layout;
    binding_layout.texture_resource_offset = 0;
 
