@@ -446,6 +446,63 @@ terakan_nir_lower_bindings_instr_load_push_constant(
    }
 }
 
+
+/*
+ * Lower load_num_workgroups to a KCACHE read from the driver push constant
+ * prefix in bank 15.
+ *
+ * The SFN backend handles load_num_workgroups via a VFETCH from
+ * R600_BUFFER_INFO_CONST_BUFFER (gallium resource 15), but the Terakan Vulkan
+ * driver does not bind that gallium-convention buffer.  Instead, the dispatch
+ * code writes (group_count_x, group_count_y, group_count_z) into the driver
+ * push constants, and we read them here via the always-bound KCACHE bank 15.
+ *
+ * Layout: num_workgroups[3] is at byte offset
+ *   offsetof(terakan_push_constants_driver, num_workgroups) = 52
+ *   → vec4_index = 3, first_component = 1 (components .yzw of vec4[3])
+ */
+static void
+terakan_nir_lower_bindings_instr_load_num_workgroups(
+   nir_builder * const b, nir_intrinsic_instr * const intrin,
+   struct terakan_nir_lower_bindings_state * const state)
+{
+   assert(intrin->intrinsic == nir_intrinsic_load_num_workgroups);
+   assert(b->shader->info.stage == MESA_SHADER_COMPUTE);
+
+   b->cursor = nir_before_instr(&intrin->instr);
+
+   /* Byte offset of num_workgroups within terakan_push_constants_driver.
+    * 12 × uint32 (UAV offsets) + 1 × uint32 (draw_id) = 52 bytes. */
+   uint32_t const byte_offset =
+      offsetof(struct terakan_push_constants_driver, num_workgroups);
+   uint32_t const vec4_index = byte_offset / 16;
+   uint32_t const first_component = (byte_offset % 16) / 4;
+
+   /* Mark push constant KCACHE bank as needed. */
+   *state->kcache_needed |= (uint16_t)1 << TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS;
+
+   /* Mark the driver push constant slots as used so the dispatch code
+    * knows to populate them. */
+   *state->driver_push_constants_used |=
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_X) |
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Y) |
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Z);
+
+   nir_def *result = nir_load_kcache_r600(
+      b, 3, 32, nir_imm_zero(b, 1, 32),
+      .access = ACCESS_CAN_REORDER,
+      .id_base = TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS,
+      .base = vec4_index,
+      .component = first_component);
+
+   if (intrin->def.bit_size != 32) {
+      result = nir_u2uN(b, result, intrin->def.bit_size);
+   }
+
+   nir_def_rewrite_uses(&intrin->def, result);
+   nir_instr_remove(&intrin->instr);
+}
+
 static void
 terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
                                            nir_intrinsic_instr * const intrin,
@@ -926,6 +983,12 @@ terakan_nir_lower_bindings_instr(nir_builder * const b, nir_instr * const instr,
    if (instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr * const intrin = nir_instr_as_intrinsic(instr);
       switch (intrin->intrinsic) {
+      case nir_intrinsic_load_num_workgroups:
+         if (b->shader->info.stage == MESA_SHADER_COMPUTE) {
+            terakan_nir_lower_bindings_instr_load_num_workgroups(b, intrin, state);
+            return true;
+         }
+         return false;
       case nir_intrinsic_load_ubo:
          terakan_nir_lower_bindings_instr_load_ubo(b, intrin, state);
          return true;
