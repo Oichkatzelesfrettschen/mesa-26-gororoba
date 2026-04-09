@@ -350,20 +350,34 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      state_uav->color = *new_uav_color;
                   }
                   BITSET_SET(state_uavs_not_null, shader_uav_index);
-                  /* Record exact byte size for robustness write guard metadata.
+                  /* Record exact bound for robustness write guard metadata.
+                   * Route to the correct KCACHE bank 14 array based on type:
+                   *   SSBO → uav_byte_sizes[] (dwords 0..11, byte comparison)
+                   *   Texel buffer → texel_buffer_element_counts[] (dwords 16..27,
+                   *     element-index comparison)
+                   * Zero the complementary array for defense-in-depth.
                    * For STORAGE_BUFFER_DYNAMIC, adjust by the dynamic offset:
                    * the hardware base is shifted, so the writable range shrinks. */
                   {
-                     uint32_t byte_size = set_uav->buffer_byte_size;
-                     if (byte_size > 0 &&
+                     uint32_t bound = set_uav->buffer_byte_size;
+                     if (bound > 0 &&
                          range->first_dynamic_offset != UINT16_MAX) {
                         uint32_t const dyn_off =
                            set_dynamic_offsets[range->first_dynamic_offset + uav_index];
-                        byte_size = (dyn_off < byte_size) ? (byte_size - dyn_off) : 0;
+                        bound = (dyn_off < bound) ? (bound - dyn_off) : 0;
                      }
                      if (shader_uav_index < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
-                        command_writer->robustness_metadata.uav_byte_sizes[shader_uav_index] =
-                           byte_size;
+                        if (set_uav->is_texel_buffer) {
+                           command_writer->robustness_metadata
+                              .texel_buffer_element_counts[shader_uav_index] = bound;
+                           command_writer->robustness_metadata
+                              .uav_byte_sizes[shader_uav_index] = 0;
+                        } else {
+                           command_writer->robustness_metadata
+                              .uav_byte_sizes[shader_uav_index] = bound;
+                           command_writer->robustness_metadata
+                              .texel_buffer_element_counts[shader_uav_index] = 0;
+                        }
                         command_writer->robustness_metadata.dirty = true;
                      }
                   }
@@ -373,9 +387,11 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                                                     TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
                   }
                   BITSET_CLEAR(state_uavs_not_null, shader_uav_index);
-                  /* Unbound UAV: zero the byte size to disable writes. */
+                  /* Unbound UAV: zero both metadata arrays to disable writes. */
                   if (shader_uav_index < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
                      command_writer->robustness_metadata.uav_byte_sizes[shader_uav_index] = 0;
+                     command_writer->robustness_metadata
+                        .texel_buffer_element_counts[shader_uav_index] = 0;
                      command_writer->robustness_metadata.dirty = true;
                   }
                }

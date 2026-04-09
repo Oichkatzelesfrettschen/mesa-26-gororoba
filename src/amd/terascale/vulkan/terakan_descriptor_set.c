@@ -90,6 +90,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                dst_uav->bo = image_view->bo;
                memcpy(&dst_uav->color, &image_view->color, sizeof(struct terakan_color_descriptor));
                dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
+               dst_uav->is_texel_buffer = 0;
                terakan_color_descriptor_image_view_to_storage_image(&dst_uav->color);
             } else {
                dst_uav->bo = NULL;
@@ -141,8 +142,17 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                dst_uav->bo = buffer_view->bo;
                memcpy(&dst_uav->color, &buffer_view->color,
                       sizeof(struct terakan_color_descriptor));
+               /* Texel buffer UAV: store the VIEW element count (not byte
+                * size) for robustness write guards.  The image_deref_store
+                * and image_deref_atomic paths compare element indices against
+                * this value.  SSBOs use bytes; the two never share a UAV
+                * slot, so the dual semantics are safe. */
+               dst_uav->buffer_byte_size = (uint32_t)buffer_view->vk.elements;
+               dst_uav->is_texel_buffer = 1;
             } else {
                dst_uav->bo = NULL;
+               dst_uav->buffer_byte_size = 0;
+               dst_uav->is_texel_buffer = 1;
             }
          }
       }
@@ -194,6 +204,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                buf_info, dst_resource->resource, &dst_uav->color);
             dst_resource->bo = bo;
             dst_uav->bo = bo;
+            dst_uav->is_texel_buffer = 0;
             /* Store exact Vulkan byte range for robustness metadata.
              * vk_buffer_range() resolves VK_WHOLE_SIZE. */
             if (bo != NULL) {

@@ -71,12 +71,22 @@ terakan_descriptor_set_sampler_init(struct terakan_descriptor_set_sampler * cons
 struct terakan_descriptor_set_uav {
    struct terakan_bo const * bo;
    struct terakan_color_descriptor color;
-   /* Exact byte size from VkDescriptorBufferInfo.range (for buffer UAVs)
-    * or 0 (for image UAVs).  Used by robustness metadata (KCACHE bank 14)
-    * to populate per-UAV write guard bounds.  NOT ALIGN_POT'd — this is
-    * the raw Vulkan range so the write guard checks exact bounds. */
+   /* Robustness write-guard bound, uploaded to KCACHE bank 14 per-UAV.
+    *   STORAGE_BUFFER / STORAGE_BUFFER_DYNAMIC:
+    *     Exact byte size from VkDescriptorBufferInfo.range.
+    *     Routed to uav_byte_sizes[] (bank 14, dwords 0..11).
+    *   STORAGE_TEXEL_BUFFER:
+    *     Element count from VkBufferView (vk_buffer_view.elements).
+    *     Routed to texel_buffer_element_counts[] (bank 14, dwords 16..27).
+    *   STORAGE_IMAGE: 0 (non-buffer image robustness not yet supported).
+    * NOT ALIGN_POT'd — this is the raw Vulkan range / element count
+    * so the write guard checks exact bounds. */
    uint32_t buffer_byte_size;
-   uint32_t _pad;  /* maintain 8-byte alignment */
+   /* True for STORAGE_TEXEL_BUFFER: buffer_byte_size holds element count
+    * and must be routed to the texel_buffer_element_counts[] metadata array
+    * (not uav_byte_sizes[]).  Used by pipeline_layout.c to separate the two
+    * arrays in KCACHE bank 14 for defense-in-depth. */
+   uint32_t is_texel_buffer;
 };
 
 #define TERAKAN_DESCRIPTOR_SET_DESCRIPTOR_ALIGNMENT                                                \

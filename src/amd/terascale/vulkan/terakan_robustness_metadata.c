@@ -24,15 +24,19 @@
 /* Runtime population of KCACHE bank 14 robustness metadata.
  *
  * The write guard compiler code (in terakan_nir_lower_abi.c) emits KCACHE
- * reads from bank 14 to load per-UAV byte sizes for MEM_RAT write bounds
- * checking.  This module provides the runtime half: allocating a push-buffer
- * BO, populating it with the current per-slot UAV byte sizes, and binding
- * it to KCACHE bank 14 at draw/dispatch time.
+ * reads from bank 14 to load per-UAV bounds for MEM_RAT write checks.
+ * This module provides the runtime half: allocating a push-buffer BO,
+ * populating it with the current per-slot UAV bounds, and binding it to
+ * KCACHE bank 14 at draw/dispatch time.
  *
  * Layout (KCACHE bank 14, 1 line = 256 bytes):
- *   dword  0..11 : uint32_t buffer_uav_byte_size[12]
- *   dword 12     : uint32_t trash_page_addr (reserved, currently 0)
- *   dword 13..63 : reserved (zero)
+ *   dword  0..11 : uint32_t ssbo_byte_sizes[12]
+ *                   For STORAGE_BUFFER: exact byte count from Vulkan range.
+ *   dword 12     : uint32_t trash_page_addr (GPU VA >> 2)
+ *   dword 13..15 : reserved (zero)
+ *   dword 16..27 : uint32_t texel_buffer_element_counts[12]
+ *                   For STORAGE_TEXEL_BUFFER: element count from VkBufferView.
+ *   dword 28..63 : reserved (zero)
  */
 
 #include "terakan_command_buffer.h"
@@ -69,11 +73,16 @@ terakan_robustness_metadata_apply(
          return;
 
       /* Zero the entire KCACHE line (256 bytes = 64 dwords).
-       * Then fill the per-UAV byte sizes. */
+       * Then fill the per-UAV byte sizes and texel buffer element counts. */
       memset(mapping, 0, TERAKAN_KCACHE_HW_LINE_BYTES);
+      /* Dwords 0..11: SSBO byte sizes. */
       memcpy(mapping,
              command_writer->robustness_metadata.uav_byte_sizes,
              sizeof(command_writer->robustness_metadata.uav_byte_sizes));
+      /* Dwords 16..27: texel buffer element counts. */
+      memcpy(mapping + 16,
+             command_writer->robustness_metadata.texel_buffer_element_counts,
+             sizeof(command_writer->robustness_metadata.texel_buffer_element_counts));
       /* dword 12: trash_page_addr — GPU VA >> 2 of the driver-owned trash page.
        * Used by math-predication write guards to redirect OOB writes to a safe
        * garbage sink instead of offset 0 of the target buffer. */
