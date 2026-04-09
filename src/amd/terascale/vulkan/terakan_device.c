@@ -67,6 +67,8 @@ terakan_device_finish(struct terakan_device * const device)
 
    terakan_bo_free(device->uav_immediate_bo, NULL);
 
+   terakan_bo_free(device->robustness_trash_page_bo, NULL);
+
    terakan_bo_free(device->gfx_discard_bo, NULL);
 
    for (size_t reference_placeholder_bo_index = 0;
@@ -168,6 +170,23 @@ terakan_device_init(struct terakan_device * const device,
       goto fail_reference_placeholder_bos;
    }
 
+   /* Robustness trash page — absorbs redirected OOB writes from math
+    * predication write guards.  One 4KB page, 256-byte aligned (KCACHE line
+    * granularity).  GPU VA >> 2 is stored in KCACHE bank 14 metadata dword 12
+    * so the shader can load the redirect target address. */
+   result = device->winsys_fn->bo->allocate_device_memory(
+      device, 4096, 256,
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, NULL, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE,
+      &device->robustness_trash_page_bo);
+   if (result != VK_SUCCESS) {
+      result =
+         vk_errorf(physical_device->vk.instance, result,
+                   "Failed to allocate robustness trash page");
+      goto fail_gfx_discard_bo;
+   }
+   device->robustness_trash_page_va_shr2 =
+      (uint32_t)(device->robustness_trash_page_bo->va >> 2);
+
    uint32_t uav_immediate_bo_bytes_shr8 = 0;
    for (unsigned texel_bytes_log2 = 0; texel_bytes_log2 <= 4; ++texel_bytes_log2) {
       device->uav_immediate_va_shr8[texel_bytes_log2] = uav_immediate_bo_bytes_shr8;
@@ -183,7 +202,7 @@ terakan_device_init(struct terakan_device * const device,
       result =
          vk_errorf(physical_device->vk.instance, result,
                    "Failed to allocate memory for unordered access view operation return values");
-      goto fail_gfx_discard_bo;
+      goto fail_trash_page_bo;
    }
    uint32_t const uav_immediate_bo_va_shr8 = device->uav_immediate_bo->va >> 8;
    for (unsigned texel_bytes_log2 = 0; texel_bytes_log2 <= 4; ++texel_bytes_log2) {
@@ -346,6 +365,8 @@ fail_query_accumulator_bo:
    terakan_bo_free(device->query_accumulator_bo, NULL);
 fail_uav_immediate_bo:
    terakan_bo_free(device->uav_immediate_bo, NULL);
+fail_trash_page_bo:
+   terakan_bo_free(device->robustness_trash_page_bo, NULL);
 fail_gfx_discard_bo:
    terakan_bo_free(device->gfx_discard_bo, NULL);
 fail_reference_placeholder_bos:
