@@ -761,6 +761,15 @@ r600_finalize_nir_common(nir_shader *nir, enum amd_gfx_level gfx_level)
     * are emitted un-promoted and the backend produces NaN outputs. */
    NIR_PASS(_, nir, nir_lower_bit_size, r600_lower_bit_size_callback, NULL);
 
+   /* TeraScale-2 has no native Global Invocation ID register; decompose
+    * load_global_invocation_id into (workgroup_id * workgroup_size) +
+    * local_invocation_id.  Rusticl calls this in kernel.rs, but the GLSL
+    * compute path reaches here without compute system-value lowering. */
+   if (nir->info.stage == MESA_SHADER_COMPUTE || nir->info.stage == MESA_SHADER_KERNEL) {
+      nir_lower_compute_system_values_options opts = {0};
+      opts.global_id_is_32bit = true;
+      NIR_PASS(_, nir, nir_lower_compute_system_values, &opts);
+   }
    while (optimize_once(nir))
       ;
 }
