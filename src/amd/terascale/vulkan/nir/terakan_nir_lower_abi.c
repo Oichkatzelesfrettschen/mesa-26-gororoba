@@ -270,7 +270,11 @@ terakan_nir_buffer_uav_coord(nir_builder * const b, nir_def * coord,
 
    *state->driver_push_constants_used |=
       BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_BUFFER_UAV_BASE_GRANULARITY_OFFSET);
-   /* TODO(Triang3l): If the array index is constant, load via kcache rather than vertex fetch. */
+   /* TODO(Triang3l): If the array index is constant, load via kcache rather
+    * than vertex fetch.  This would save 20-40 cycles by reading the UAV base
+    * granularity offset from KCACHE bank 15 (push constants) at a static vec4
+    * index rather than VFETCH.  Requires the index to be constant-folded by
+    * NIR before this pass runs. */
    BITSET_SET(state->resources_needed, TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS);
    nir_def * const base_granularity_offset = nir_load_buffer_resource_r600(
       b, 1, 32, nir_imm_zero(b, 1, 32), nir_ishl_imm(b, uav_array_index, 2),

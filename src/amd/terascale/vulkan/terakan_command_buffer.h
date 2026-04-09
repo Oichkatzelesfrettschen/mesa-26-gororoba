@@ -511,9 +511,26 @@ terakan_gfx_command_writer_emit_done(struct terakan_gfx_command_writer * const c
  * are employed to quickly explain the reasoning behind the code that handles invalid usage cases by
  * referencing this comment.
  */
-/* TODO(Triang3l): Actually implement BO out-of-bounds access prevention mechanisms everywhere.
- * The part of the comment about memory integrity was written when a lot of logic not caring about
- * invalid usage has already been written.
+/* TODO(Triang3l): BO out-of-bounds access prevention — PARTIALLY IMPLEMENTED.
+ *
+ * Implemented:
+ *   - UAV write guard (store_ssbo, ssbo_atomic): terakan_nir_emit_write_guard()
+ *     in lower_abi.c emits IF/ENDIF bounds checks reading per-UAV byte sizes
+ *     from KCACHE bank 14.  Phase 5 Probe 7 confirmed MEM_RAT writes are NOT
+ *     bounds-checked by hardware.
+ *   - UAV coordinate clamp: terakan_nir_buffer_uav_coord() emits nir_umin_imm
+ *     to prevent UINT32_MAX wraparound on UAV coordinates.
+ *   - UBO reads: KCACHE Tier 1 (static) + VFETCH Tier 2 (dynamic, hw zero-fill).
+ *   - SSBO reads: VTX SIZE_MINUS_ONE enforces dword-granular OOB zeroing.
+ *   - TEX reads: TEX engine enforces byte-level OOB zeroing.
+ *
+ * Remaining:
+ *   - Runtime population of KCACHE bank 14 robustness metadata buffer
+ *     (per-UAV byte sizes + trash page address).
+ *   - Trash-page redirect for deep CF stacks (Tier 2 write guard).
+ *   - Compute store_ssbo path (uses store_global, not MEM_RAT UAV coord).
+ *   - Image UAV write robustness (needs per-view extent metadata — DEFERRED).
+ *   - UBO Tier 3 (KCACHE + MIN clamp) blocked on AR-relative KCACHE backend.
  */
 uint32_t * terakan_gfx_command_writer_emit_with_bo(
    struct terakan_gfx_command_writer * command_writer,
