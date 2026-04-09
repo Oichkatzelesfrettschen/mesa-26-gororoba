@@ -152,8 +152,20 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
  *
  * Emits a software bounds check before a MEM_RAT write (store or atomic).
  * Returns an nir_def* that is true (non-zero) when the write is in-bounds,
- * false when OOB.  The caller wraps the actual MEM_RAT instruction in an
- * nir_push_if / nir_pop_if gated on this result.
+ * false when OOB.
+ *
+ * Two tiers of caller usage:
+ *
+ *   Tier 1 (IF/ENDIF): caller wraps the MEM_RAT instruction in
+ *     nir_push_if / nir_pop_if gated on this result.  Used for
+ *     graphics UAV writes where the hardware descriptor determines the
+ *     destination — we cannot redirect the address from the shader.
+ *     Costs 1 CF stack entry (safe up to depth 3, ISA §3.6.5).
+ *
+ *   Tier 2 (math predication): caller uses nir_bcsel to select between
+ *     the real address and the trash page address based on this result.
+ *     Used for compute store_global where we control the destination.
+ *     Costs 0 CF stack entries — pure ALU.
  *
  * Hardware basis: MEM_RAT writes are NOT bounds-checked by Evergreen silicon
  * (Phase 5 Probe 7).  OOB MEM_RAT writes corrupt adjacent VRAM.  This is
@@ -164,9 +176,6 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
  *
  * Guard condition:  (write_end_offset <= uav_byte_size)
  *   where write_end_offset = byte_offset + write_size_bytes
- *
- * When the guard fails (OOB), the write is suppressed via IF/ENDIF.
- * Future optimization: trash-page redirect for deep CF stacks (Tier 2).
  */
 static nir_def *
 terakan_nir_emit_write_guard(nir_builder * const b,
@@ -670,18 +679,19 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
        * byte address. We load it via KCACHE, add the store offset, and emit
        * store_global. SFN lowers this to MEM_RAT_CACHELESS STORE_RAW.
        *
-       * Write guard: store_global becomes MEM_RAT_CACHELESS STORE_RAW which
-       * is NOT bounds-checked by hardware (Phase 5 Probe 7).  When
-       * robust_buffer_access is enabled, we emit the same IF/ENDIF guard
-       * as the graphics path, reading the UAV byte size from KCACHE bank 14. */
+       * Robustness: math-predicated address redirect (Tier 2).
+       *
+       * MEM_RAT writes are NOT bounds-checked by hardware (Probe 7).
+       * Since store_global gives us full address control, we use pure
+       * ALU math predication instead of IF/ENDIF — this costs ZERO CF
+       * stack entries (Evergreen ISA §3.6.5: CF_ALU_PUSH_BEFORE is
+       * unsafe above stack depth 3 on 64-wide hardware).
+       *
+       * Pattern: compute the real address AND the trash page address,
+       * then bcsel based on the bounds check.  OOB writes land in the
+       * driver's 4KB trash page instead of corrupting buffer offset 0. */
 
       bool const guarded = state->robust_buffer_access;
-      if (guarded) {
-         nir_def *in_bounds = terakan_nir_emit_write_guard(
-            b, intrin->src[2].ssa, bytes_per_component,
-            uav_index_zero_based, uav_array_index, state);
-         nir_push_if(b, in_bounds);
-      }
 
       nir_def *ssbo_base = nir_load_kcache_r600(
          b, 1, 32, nir_imm_zero(b, 1, 32),
@@ -690,15 +700,34 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
          .base = 0,
          .component = 0);
 
-      nir_def *global_addr = nir_iadd(b, ssbo_base, intrin->src[2].ssa);
+      nir_def *real_addr = nir_iadd(b, ssbo_base, intrin->src[2].ssa);
 
-      nir_store_global(b, nir_channel(b, intrin->src[0].ssa, 0), global_addr,
+      nir_def *final_addr;
+      if (guarded) {
+         nir_def *in_bounds = terakan_nir_emit_write_guard(
+            b, intrin->src[2].ssa, bytes_per_component,
+            uav_index_zero_based, uav_array_index, state);
+
+         /* Load trash page GPU VA >> 2 from KCACHE bank 14, dword 12
+          * (vec4 index 3, component 0).  Shift left by 2 to recover
+          * the byte address. */
+         nir_def *trash_addr_shr2 = nir_load_kcache_r600(
+            b, 1, 32, nir_imm_zero(b, 1, 32),
+            .access = ACCESS_CAN_REORDER,
+            .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+            .base = 3,
+            .component = 0);
+         nir_def *trash_addr = nir_ishl_imm(b, trash_addr_shr2, 2);
+
+         /* Select: in-bounds → real buffer address, OOB → trash page. */
+         final_addr = nir_bcsel(b, in_bounds, real_addr, trash_addr);
+      } else {
+         final_addr = real_addr;
+      }
+
+      nir_store_global(b, nir_channel(b, intrin->src[0].ssa, 0), final_addr,
                        .write_mask = nir_intrinsic_write_mask(intrin),
                        .access = nir_intrinsic_access(intrin));
-
-      if (guarded) {
-         nir_pop_if(b, NULL);
-      }
 
       nir_instr_remove(&intrin->instr);
       return;
