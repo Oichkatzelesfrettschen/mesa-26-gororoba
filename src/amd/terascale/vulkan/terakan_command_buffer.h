@@ -554,12 +554,17 @@ terakan_gfx_command_writer_emit_done(struct terakan_gfx_command_writer * const c
  *   - TEX reads: TEX engine enforces byte-level OOB zeroing.
  *
  * Remaining:
- *   - Runtime population of KCACHE bank 14 robustness metadata buffer
- *     (per-UAV byte sizes + trash page address).
- *   - Trash-page redirect for deep CF stacks (Tier 2 write guard).
+ *   - Trash-page allocation at vkCreateDevice and address in metadata dword 12.
  *   - Compute store_ssbo path (uses store_global, not MEM_RAT UAV coord).
  *   - Image UAV write robustness (needs per-view extent metadata — DEFERRED).
- *   - UBO Tier 3 (KCACHE + MIN clamp) blocked on AR-relative KCACHE backend.
+ *   - UBO Tier 3 (KCACHE + MIN clamp) blocked on SFN LOCK_LOOP_INDEX backend.
+ *
+ * Recently completed:
+ *   - Runtime KCACHE bank 14 population: terakan_robustness_metadata_apply()
+ *     allocates push-buffer BO, populates per-UAV byte sizes with dynamic
+ *     offset adjustment, binds to KCACHE bank 14 at draw/dispatch time.
+ *   - 3-tier UBO routing: robust_buffer_access forces VFETCH (Tier 2) for
+ *     all UBO loads (KCACHE has proven within-line data leak).
  */
 uint32_t * terakan_gfx_command_writer_emit_with_bo(
    struct terakan_gfx_command_writer * command_writer,

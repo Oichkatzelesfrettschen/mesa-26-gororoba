@@ -74,7 +74,14 @@ terakan_robustness_metadata_apply(
       memcpy(mapping,
              command_writer->robustness_metadata.uav_byte_sizes,
              sizeof(command_writer->robustness_metadata.uav_byte_sizes));
-      /* dword 12: trash_page_addr — reserved for future use. */
+      /* dword 12: trash_page_addr — GPU VA >> 2 of the driver-owned trash page.
+       * Used by math-predication write guards to redirect OOB writes to a safe
+       * garbage sink instead of offset 0 of the target buffer. */
+      {
+         struct terakan_device const * const device =
+            terakan_gfx_command_writer_device(command_writer);
+         ((uint32_t *)mapping)[12] = device->robustness_trash_page_va_shr2;
+      }
 
       command_writer->robustness_metadata.bo = bo;
       command_writer->robustness_metadata.va_kcache_lines = va_kcache_lines;

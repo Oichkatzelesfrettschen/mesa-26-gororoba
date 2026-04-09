@@ -74,6 +74,16 @@ struct terakan_device {
     */
    struct terakan_bo * gfx_discard_bo;
 
+   /* Driver-owned trash page for robustness write-guard math predication.
+    * When a write guard determines an OOB write and the CF stack is too deep
+    * for IF/ENDIF (>2 levels), math predication redirects the write address
+    * to this page instead of offset 0 of the target buffer.  This prevents
+    * corruption of the first dword of a valid SSBO. (ABI contract §10b Gap 3)
+    * Allocated at vkCreateDevice; 4096 bytes, 256-byte aligned.
+    */
+   struct terakan_bo * robustness_trash_page_bo;
+   uint32_t robustness_trash_page_va_shr2;   /* GPU VA >> 2 for KCACHE metadata */
+
    /* CB_IMMED buffers of chip family info `uav_immediate_size_texels` texels each for all possible
     * UAV texel sizes, because CB multiplies the invocation index by the texel size, so using the
     * same buffer with different texel sizes would cause collisions.
