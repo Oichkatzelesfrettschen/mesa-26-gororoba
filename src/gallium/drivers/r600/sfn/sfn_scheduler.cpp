@@ -278,6 +278,12 @@ private:
    bool schedule_alu_to_group_trans(AluGroup& group,
                                     std::list<AluInstr *>& readylist,
                                     AluScheduleContext& alu_ctx);
+   bool try_schedule_vec_candidate(AluGroup& group,
+                                   std::list<AluInstr *>::iterator& it,
+                                   std::list<AluInstr *>& ready,
+                                   AluScheduleContext& alu_ctx,
+                                   bool& group_has_kill,
+                                   bool& group_has_update_pred);
    bool can_schedule_alu_vec_instr_to_group(const AluInstr& instr,
                                             bool group_has_kill,
                                             bool group_has_update_pred,
@@ -1229,6 +1235,61 @@ BlockScheduler::schedule_cf(Shader::ShaderBlocks& out_blocks, std::list<I *>& re
 }
 
 bool
+BlockScheduler::try_schedule_vec_candidate(AluGroup& group,
+                                           std::list<AluInstr *>::iterator& it,
+                                           std::list<AluInstr *>& ready,
+                                           AluScheduleContext& alu_ctx,
+                                           bool& group_has_kill,
+                                           bool& group_has_update_pred)
+{
+   sfn_log << SfnLog::schedule << "Try schedule to vec " << **it;
+
+   bool is_kill = false;
+   bool does_update_pred = false;
+   if (!can_schedule_alu_vec_instr_to_group(**it,
+                                            group_has_kill,
+                                            group_has_update_pred,
+                                            is_kill,
+                                            does_update_pred)) {
+      ++it;
+      return false;
+   }
+
+   std::array<KCacheLine, 4> kcache;
+   if (!try_reserve_vec_kcache_for_group(**it, alu_ctx, kcache)) {
+      sfn_log << SfnLog::schedule << " failed (kcache)\n";
+      ++it;
+      return false;
+   }
+
+   if (!group.add_vec_instructions(*it)) {
+      sfn_log << SfnLog::schedule << " failed\n";
+      ++it;
+      return false;
+   }
+
+   m_current_block->commit_kcache_reservation(kcache);
+   (*it)->pin_registers();
+   auto old_it = it;
+   ++it;
+
+   if ((*old_it)->has_alu_flag(alu_is_lds))
+      --m_lds_addr_count;
+
+   if ((*old_it)->num_ar_uses())
+      m_current_block->set_expected_ar_uses((*old_it)->num_ar_uses());
+
+   update_idx_load_state(**old_it);
+
+   group_has_kill |= is_kill;
+   group_has_update_pred |= does_update_pred;
+
+   ready.erase(old_it);
+   sfn_log << SfnLog::schedule << " success\n";
+   return true;
+}
+
+bool
 BlockScheduler::schedule_alu_to_group_vec(AluGroup& group, AluScheduleContext& alu_ctx)
 {
    assert(!alu_vec_ready.empty());
@@ -1236,6 +1297,49 @@ BlockScheduler::schedule_alu_to_group_vec(AluGroup& group, AluScheduleContext& a
    bool success = false;
    bool group_has_kill = group.has_kill_op();
    bool group_has_update_pred = group.has_update_exec();
+
+   const unsigned seeker_vec_mask = group.free_slot_mask() & 0xf;
+   if (seeker_vec_mask) {
+      auto it = alu_vec_ready.begin();
+      while (it != alu_vec_ready.end()) {
+         bool is_pv_ps_consumer = false;
+         const char *match_name = nullptr;
+         for (unsigned si = 0; si < (*it)->n_sources() && !is_pv_ps_consumer; ++si) {
+            auto src = (*it)->psrc(si);
+            if (!src || !src->as_register())
+               continue;
+            int src_key = src->sel() * 4 + src->chan();
+            for (int slot = 0; slot < 5; ++slot) {
+               if (m_prev_group_dest[slot] == src_key) {
+                  is_pv_ps_consumer = true;
+                  static const char *slot_names[] = {"PV.x", "PV.y", "PV.z", "PV.w", "PS"};
+                  match_name = slot_names[slot];
+                  break;
+               }
+            }
+         }
+
+         if (!is_pv_ps_consumer) {
+            ++it;
+            continue;
+         }
+
+         sfn_log << SfnLog::schedule << "PV/PS candidate uses "
+                 << match_name << " " << **it;
+
+         auto kcache_save = m_current_block->kcache_snapshot();
+         bool had_kcache_failure = alu_ctx.had_kcache_failure_in_fill;
+         if (try_schedule_vec_candidate(group, it, alu_vec_ready, alu_ctx,
+                                        group_has_kill, group_has_update_pred)) {
+            success = true;
+            if (!(group.free_slot_mask() & 0xf))
+               break;
+            continue;
+         }
+         m_current_block->kcache_rollback(kcache_save);
+         alu_ctx.had_kcache_failure_in_fill = had_kcache_failure;
+      }
+   }
 
    while (!alu_vec_ready.empty()) {
       const unsigned free_vec_mask = group.free_slot_mask() & 0xf;
@@ -1246,53 +1350,12 @@ BlockScheduler::schedule_alu_to_group_vec(AluGroup& group, AluScheduleContext& a
 
       bool added_to_group = false;
       auto i = alu_vec_ready.begin();
-      auto e = alu_vec_ready.end();
-      while (i != e) {
-         sfn_log << SfnLog::schedule << "Try schedule to vec " << **i;
-
-         bool is_kill = false;
-         bool does_update_pred = false;
-         if (!can_schedule_alu_vec_instr_to_group(**i,
-                                                  group_has_kill,
-                                                  group_has_update_pred,
-                                                  is_kill,
-                                                  does_update_pred)) {
-            ++i;
-            continue;
-         }
-
-         std::array<KCacheLine, 4> kcache;
-         if (!try_reserve_vec_kcache_for_group(**i, alu_ctx, kcache)) {
-            sfn_log << SfnLog::schedule << " failed (kcache)\n";
-            ++i;
-            continue;
-         }
-
-         if (group.add_vec_instructions(*i)) {
-            m_current_block->commit_kcache_reservation(kcache);
-            (*i)->pin_registers();
-            auto old_i = i;
-            ++i;
-            if ((*old_i)->has_alu_flag(alu_is_lds)) {
-               --m_lds_addr_count;
-            }
-
-            if ((*old_i)->num_ar_uses())
-               m_current_block->set_expected_ar_uses((*old_i)->num_ar_uses());
-            update_idx_load_state(**old_i);
-
-            alu_vec_ready.erase(old_i);
+      while (i != alu_vec_ready.end()) {
+         if (try_schedule_vec_candidate(group, i, alu_vec_ready, alu_ctx,
+                                        group_has_kill, group_has_update_pred)) {
             success = true;
             added_to_group = true;
-
-            group_has_kill |= is_kill;
-            group_has_update_pred |= does_update_pred;
-
-            sfn_log << SfnLog::schedule << " success\n";
             break;
-         } else {
-            ++i;
-            sfn_log << SfnLog::schedule << " failed\n";
          }
       }
 
@@ -1468,11 +1531,90 @@ BlockScheduler::schedule_alu_to_group_trans(AluGroup& group,
                                             AluScheduleContext& alu_ctx)
 {
    bool success = false;
-   auto i = readylist.begin();
-   auto e = readylist.end();
 
    bool group_has_kill = group.has_kill_op();
    bool group_has_update_pred = group.has_update_exec();
+
+   /* Prefer trans-slot instructions that consume the previous group's PV or PS
+    * result, while keeping speculative kcache reservations rollbackable. */
+   {
+      auto it = readylist.begin();
+      while (it != readylist.end()) {
+         bool is_pv_ps_consumer = false;
+         const char *match_name = nullptr;
+         for (unsigned si = 0; si < (*it)->n_sources() && !is_pv_ps_consumer; ++si) {
+            auto src = (*it)->psrc(si);
+            if (!src || !src->as_register())
+               continue;
+            int src_key = src->sel() * 4 + src->chan();
+            for (int slot = 0; slot < 5; ++slot) {
+               if (m_prev_group_dest[slot] == src_key) {
+                  is_pv_ps_consumer = true;
+                  static const char *slot_names[] = {"PV.x", "PV.y", "PV.z", "PV.w", "PS"};
+                  match_name = slot_names[slot];
+                  break;
+               }
+            }
+         }
+
+         if (!is_pv_ps_consumer) {
+            ++it;
+            continue;
+         }
+
+         sfn_log << SfnLog::schedule << "PV/PS trans candidate uses "
+                 << match_name << " " << **it;
+
+         if (check_array_reads(**it)) {
+            ++it;
+            continue;
+         }
+
+         auto kcache_save = m_current_block->kcache_snapshot();
+         bool had_kcache_failure = alu_ctx.had_kcache_failure_in_fill;
+         auto [kcache, reserved] = m_current_block->try_reserve_kcache(**it);
+
+         if (!reserved) {
+            m_current_block->kcache_rollback(kcache_save);
+            alu_ctx.had_kcache_failure_in_fill = had_kcache_failure;
+            sfn_log << SfnLog::schedule << "PV/PS trans candidate rejected (kcache)\n";
+            ++it;
+            continue;
+         }
+
+         if ((group_has_kill && (*it)->has_alu_flag(alu_update_exec)) ||
+             (group_has_update_pred && (*it)->is_kill())) {
+            m_current_block->kcache_rollback(kcache_save);
+            alu_ctx.had_kcache_failure_in_fill = had_kcache_failure;
+            ++it;
+            continue;
+         }
+
+         if (group.add_trans_instructions(*it)) {
+            m_current_block->commit_kcache_reservation(kcache);
+            (*it)->pin_registers();
+            auto old_it = it;
+            ++it;
+            update_idx_load_state(**old_it);
+
+            readylist.erase(old_it);
+            success = true;
+            sfn_log << SfnLog::schedule << "PV/PS trans candidate scheduled\n";
+            break;
+         } else {
+            m_current_block->kcache_rollback(kcache_save);
+            alu_ctx.had_kcache_failure_in_fill = had_kcache_failure;
+            sfn_log << SfnLog::schedule << "PV/PS trans candidate rejected\n";
+            ++it;
+         }
+      }
+   }
+
+   if (success)
+      return success;
+
+   auto i = readylist.begin();
+   auto e = readylist.end();
 
    while (i != e) {
 

@@ -219,6 +219,11 @@ public:
 
    size_t size() const { return m_instructions.size(); }
 
+   bool kcache_reservation_failed() const { return m_kcache_alloc_failed; }
+
+   using KCacheState = std::array<KCacheLine, 4>;
+   KCacheState kcache_snapshot() const { return m_kcache; }
+   void kcache_rollback(const KCacheState& s) { m_kcache = s; m_kcache_alloc_failed = false; }
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
 
    void set_expected_ar_uses(uint32_t n) {m_expected_ar_uses = n;}
