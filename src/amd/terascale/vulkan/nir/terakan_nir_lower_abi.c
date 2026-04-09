@@ -668,7 +668,20 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
        *
        * terakan_emit_compute_kcache programs KC0[0].x with the SSBO base
        * byte address. We load it via KCACHE, add the store offset, and emit
-       * store_global. SFN lowers this to MEM_RAT_CACHELESS STORE_RAW. */
+       * store_global. SFN lowers this to MEM_RAT_CACHELESS STORE_RAW.
+       *
+       * Write guard: store_global becomes MEM_RAT_CACHELESS STORE_RAW which
+       * is NOT bounds-checked by hardware (Phase 5 Probe 7).  When
+       * robust_buffer_access is enabled, we emit the same IF/ENDIF guard
+       * as the graphics path, reading the UAV byte size from KCACHE bank 14. */
+
+      bool const guarded = state->robust_buffer_access;
+      if (guarded) {
+         nir_def *in_bounds = terakan_nir_emit_write_guard(
+            b, intrin->src[2].ssa, bytes_per_component,
+            uav_index_zero_based, uav_array_index, state);
+         nir_push_if(b, in_bounds);
+      }
 
       nir_def *ssbo_base = nir_load_kcache_r600(
          b, 1, 32, nir_imm_zero(b, 1, 32),
@@ -682,6 +695,10 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
       nir_store_global(b, nir_channel(b, intrin->src[0].ssa, 0), global_addr,
                        .write_mask = nir_intrinsic_write_mask(intrin),
                        .access = nir_intrinsic_access(intrin));
+
+      if (guarded) {
+         nir_pop_if(b, NULL);
+      }
 
       nir_instr_remove(&intrin->instr);
       return;
