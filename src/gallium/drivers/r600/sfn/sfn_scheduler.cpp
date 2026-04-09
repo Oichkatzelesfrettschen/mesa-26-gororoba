@@ -290,6 +290,12 @@ private:
 
    ValueFactory *m_vf{nullptr};
 
+   /* Law 1: Destinations from the previously-scheduled AluGroup, indexed by
+    * slot (0-3=vec, 4=trans). Encoded as (sel * 4 + chan), -1 if slot empty.
+    * Used by collect_ready_alu_vec() to boost scheduling priority for
+    * instructions whose sources match, promoting PV/PS chain formation. */
+   int m_prev_group_dest[5] = {-1, -1, -1, -1, -1};
+
    /* PV-chain length tracking (reported via R600_DEBUG=sfn) */
    int m_pv_current_chain{0};
    int m_pv_max_chain{0};
@@ -778,6 +784,19 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
 
    m_current_block->push_back(group);
 
+   /* Law 1: Record this group's vec-slot destinations so the next
+    * collect_ready_alu_vec() round can boost instructions that would
+    * benefit from PV (Previous Vector) forwarding. */
+   for (int s = 0; s < 5; ++s) {
+      m_prev_group_dest[s] = -1;
+      auto slot_instr = (*group)[s];
+      if (slot_instr && slot_instr->has_alu_flag(alu_write)) {
+         auto d = slot_instr->dest();
+         if (d)
+            m_prev_group_dest[s] = d->sel() * 4 + d->chan();
+      }
+   }
+
    update_array_writes(*group);
 
    m_idx0_pending |= m_idx0_loading;
@@ -861,6 +880,10 @@ BlockScheduler::schedule_gds(Shader::ShaderBlocks& out_blocks, std::list<I *>& r
 void
 BlockScheduler::start_new_block(Shader::ShaderBlocks& out_blocks, Block::Type type)
 {
+   /* PV/PS forwarding cannot cross CF block boundaries */
+   for (int s = 0; s < 5; ++s)
+      m_prev_group_dest[s] = -1;
+
    if (!m_current_block->empty()) {
       sfn_log << SfnLog::schedule << "Start new block\n";
       assert(!m_current_block->lds_group_active());
@@ -1446,6 +1469,30 @@ BlockScheduler::collect_ready_alu_vec(std::list<AluInstr *>& ready,
          }
 
          priority += 100 * (*i)->register_priority();
+
+         /* Law 1: PV-aware scheduling priority boost.
+          * Promote instructions whose sources match the previous group's
+          * vec-slot destinations (slots 0-3 -> PV.xyzw). This encourages
+          * PV chain formation, reducing GPR read-port pressure and improving
+          * VLIW packing density. The actual PV/PS register substitution
+          * remains post-scheduling in apply_pv_ps_to_group(). */
+         {
+            bool pv_candidate = false;
+            for (unsigned si = 0; si < (*i)->n_sources() && !pv_candidate; ++si) {
+               auto src = (*i)->psrc(si);
+               if (!src || !src->as_register())
+                  continue;
+               int src_key = src->sel() * 4 + src->chan();
+               for (int slot = 0; slot < 4; ++slot) {
+                  if (m_prev_group_dest[slot] == src_key) {
+                     pv_candidate = true;
+                     break;
+                  }
+               }
+            }
+            if (pv_candidate)
+               priority += 5000;
+         }
 
          (*i)->add_priority(priority);
          ready.push_back(*i);
