@@ -14,6 +14,7 @@
 #include "terakan_command_buffer.h"
 #include "terakan_buffer.h"
 #include "terakan_barrier.h"
+#include "terakan_push_constants.h"
 #include "terakan_device.h"
 #include "terakan_entrypoints.h"
 
@@ -504,6 +505,27 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
          terakan_emit_compute_kcache(command_writer, command_writer->hw_state_sqc.resource_bos.fs[2]);
       command_writer->compute_pipeline_dirty = false;
    }
+
+   /* Propagate compute shader push constant usage to the command writer state
+    * so that terakan_push_constants_apply knows which driver slots and app
+    * bytes to upload. */
+   command_writer->push_constants_state.usage_compute =
+      pipeline->shader.push_constants_usage;
+
+   /* Write dispatch group counts into the driver push constant prefix.
+    * The NIR lowering pass (terakan_nir_lower_bindings_instr_load_num_workgroups)
+    * emits KCACHE reads from these offsets for gl_NumWorkGroups. */
+   command_writer->push_constants_state.driver_constants.num_workgroups[0] = groupCountX;
+   command_writer->push_constants_state.driver_constants.num_workgroups[1] = groupCountY;
+   command_writer->push_constants_state.driver_constants.num_workgroups[2] = groupCountZ;
+   command_writer->push_constants_state.driver_constants_modified |=
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_X) |
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Y) |
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Z);
+
+   /* Upload push constants (driver prefix + app constants) to KCACHE bank 15.
+    * This is the compute equivalent of the graphics path in terakan_draw.c. */
+   terakan_push_constants_apply(command_writer, true);
 
    /* Emit PKT3_DISPATCH_DIRECT with the grid dimensions */
    uint32_t *p = terakan_gfx_command_writer_emit(

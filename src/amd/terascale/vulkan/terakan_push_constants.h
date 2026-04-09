@@ -44,6 +44,12 @@ enum terakan_push_constants_driver_index {
 
    TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_DRAW_ID,
 
+   /* Compute dispatch group counts — needed at runtime for shaders that read
+    * gl_NumWorkGroups.  Populated by vkCmdDispatch before launch. */
+   TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_X,
+   TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Y,
+   TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Z,
+
    TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_COUNT,
 };
 
@@ -59,7 +65,16 @@ struct terakan_push_constants_driver {
    uint32_t buffer_uav_base_granularity_offset[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
 
    uint32_t draw_id;
+
+   /* Compute dispatch group counts (X, Y, Z).  Populated per-dispatch by
+    * terakan_CmdDispatch / terakan_CmdDispatchBase.  The shader reads these
+    * via KCACHE bank 15 at the byte offset of this field.  See
+    * terakan_nir_lower_compute_sysvals(). */
+   uint32_t num_workgroups[3];
 };
+
+static_assert(sizeof(struct terakan_push_constants_driver) == 64,
+              "driver push constants must be exactly 64 bytes (APP_BASE_BYTES)");
 
 /* Aligned to vec4 to avoid placing vectors in different kcache lines more likely to be accessed in
  * separate ALU clauses if they end up at the boundary.
