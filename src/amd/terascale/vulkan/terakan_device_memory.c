@@ -160,9 +160,11 @@ terakan_FreeMemory(VkDevice const deviceHandle, VkDeviceMemory const deviceMemor
       return;
    }
 
+   struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
+
    terakan_bo_free(device_memory->bo, pAllocator);
 
-   vk_object_free(&terakan_device_from_handle(deviceHandle)->vk, pAllocator, device_memory);
+   vk_device_memory_destroy(&device->vk, pAllocator, &device_memory->vk);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

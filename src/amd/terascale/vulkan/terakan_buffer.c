@@ -120,16 +120,16 @@ terakan_GetPhysicalDeviceExternalBufferProperties(
       pExternalBufferInfo->handleType;
 }
 
-VKAPI_ATTR void VKAPI_CALL
-terakan_GetDeviceBufferMemoryRequirements(VkDevice const deviceHandle,
-                                          VkDeviceBufferMemoryRequirements const * const pInfo,
-                                          VkMemoryRequirements2 * const pMemoryRequirements)
+static void
+terakan_buffer_get_memory_requirements(struct terakan_device const * const device,
+                                       VkDeviceSize const size, VkBufferUsageFlags const usage,
+                                       VkMemoryRequirements2 * const pMemoryRequirements)
 {
-   pMemoryRequirements->memoryRequirements.size = pInfo->pCreateInfo->size;
+   struct terakan_physical_device const * const physical_device =
+      terakan_device_physical_device(device);
 
+   /* Compute alignment from the largest to the smallest based on usage. */
    VkDeviceSize alignment;
-   VkBufferUsageFlags const usage = pInfo->pCreateInfo->usage;
-   /* From the largest to the smallest alignment. */
    if (usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) {
       alignment = TERAKAN_KCACHE_HW_LINE_BYTES;
    } else if (usage &
@@ -149,10 +149,9 @@ terakan_GetDeviceBufferMemoryRequirements(VkDevice const deviceHandle,
        */
       alignment = sizeof(uint32_t);
    }
-   pMemoryRequirements->memoryRequirements.alignment = alignment;
 
-   struct terakan_physical_device const * const physical_device =
-      terakan_device_physical_device(terakan_device_from_handle(deviceHandle));
+   pMemoryRequirements->memoryRequirements.size = size;
+   pMemoryRequirements->memoryRequirements.alignment = alignment;
    pMemoryRequirements->memoryRequirements.memoryTypeBits =
       ((uint32_t)1 << physical_device->memory_properties.memoryTypeCount) - 1;
 
@@ -169,6 +168,16 @@ terakan_GetDeviceBufferMemoryRequirements(VkDevice const deviceHandle,
          break;
       }
    }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+terakan_GetDeviceBufferMemoryRequirements(VkDevice const deviceHandle,
+                                          VkDeviceBufferMemoryRequirements const * const pInfo,
+                                          VkMemoryRequirements2 * const pMemoryRequirements)
+{
+   terakan_buffer_get_memory_requirements(terakan_device_from_handle(deviceHandle),
+                                          pInfo->pCreateInfo->size, pInfo->pCreateInfo->usage,
+                                          pMemoryRequirements);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

@@ -809,6 +809,29 @@ terakan_image_surface_compute(VkImageCreateInfo const * const image_create_info,
    /* TODO(Triang3l): Attachment compression metadata. */
 }
 
+static void
+terakan_image_fill_memory_requirements_pnext(
+   struct terakan_physical_device const * const physical_device, bool const requires_dedicated,
+   VkMemoryRequirements2 * const pMemoryRequirements)
+{
+   pMemoryRequirements->memoryRequirements.memoryTypeBits =
+      ((uint32_t)1 << physical_device->memory_properties.memoryTypeCount) - 1;
+
+   vk_foreach_struct (ext, pMemoryRequirements->pNext) {
+      switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS: {
+         VkMemoryDedicatedRequirements * const dedicated_requirements =
+            (VkMemoryDedicatedRequirements *)ext;
+         dedicated_requirements->requiresDedicatedAllocation = requires_dedicated;
+         dedicated_requirements->prefersDedicatedAllocation = requires_dedicated;
+      } break;
+
+      default:
+         break;
+      }
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 terakan_GetDeviceImageMemoryRequirements(VkDevice const deviceHandle,
                                          VkDeviceImageMemoryRequirements const * const pInfo,
@@ -833,26 +856,12 @@ terakan_GetDeviceImageMemoryRequirements(VkDevice const deviceHandle,
       pMemoryRequirements->memoryRequirements.alignment = 1;
    }
 
-   pMemoryRequirements->memoryRequirements.memoryTypeBits =
-      ((uint32_t)1 << physical_device->memory_properties.memoryTypeCount) - 1;
-
-   vk_foreach_struct (ext, pMemoryRequirements->pNext) {
-      switch (ext->sType) {
-      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS: {
-         VkMemoryDedicatedRequirements * const dedicated_requirements =
-            (VkMemoryDedicatedRequirements *)ext;
-         VkExternalMemoryImageCreateInfo const * const external_memory_info =
-            vk_find_struct_const(pInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
-         dedicated_requirements->requiresDedicatedAllocation =
-            external_memory_info != NULL && external_memory_info->handleTypes != 0;
-         dedicated_requirements->prefersDedicatedAllocation =
-            dedicated_requirements->requiresDedicatedAllocation;
-      } break;
-
-      default:
-         break;
-      }
-   }
+   VkExternalMemoryImageCreateInfo const * const external_memory_info =
+      vk_find_struct_const(pInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+   bool const requires_dedicated =
+      external_memory_info != NULL && external_memory_info->handleTypes != 0;
+   terakan_image_fill_memory_requirements_pnext(physical_device, requires_dedicated,
+                                                pMemoryRequirements);
 }
 
 /* Skipping the translation into the surface structure as it has already been done. */
@@ -882,23 +891,8 @@ terakan_GetImageMemoryRequirements2(VkDevice const deviceHandle,
 
    struct terakan_physical_device const * const physical_device =
       terakan_device_physical_device(terakan_device_from_handle(deviceHandle));
-   pMemoryRequirements->memoryRequirements.memoryTypeBits =
-      ((uint32_t)1 << physical_device->memory_properties.memoryTypeCount) - 1;
-
-   vk_foreach_struct (ext, pMemoryRequirements->pNext) {
-      switch (ext->sType) {
-      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS: {
-         VkMemoryDedicatedRequirements * const dedicated_requirements =
-            (VkMemoryDedicatedRequirements *)ext;
-         dedicated_requirements->requiresDedicatedAllocation = image->vk.external_handle_types != 0;
-         dedicated_requirements->prefersDedicatedAllocation =
-            dedicated_requirements->requiresDedicatedAllocation;
-      } break;
-
-      default:
-         break;
-      }
-   }
+   terakan_image_fill_memory_requirements_pnext(
+      physical_device, image->vk.external_handle_types != 0, pMemoryRequirements);
 }
 
 VKAPI_ATTR void VKAPI_CALL
