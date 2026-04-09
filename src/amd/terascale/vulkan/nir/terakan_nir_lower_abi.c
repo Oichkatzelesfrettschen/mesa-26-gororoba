@@ -397,8 +397,26 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
 
    mesa_shader_stage const stage = b->shader->info.stage;
 
-   /* KCACHE fast path for static UBO offsets (1-cycle ALU-inline constant).
-    * Dynamic offsets fall back to VFETCH (~20-40 cycles through texture cache).
+   /* 3-tier UBO read routing (terakan_3tier_ubo_routing.h):
+    *
+    *   Tier 1 — KCACHE direct:  0 cycles, inline ALU operand.
+    *            Requires: static offset, bank available, robustness OFF.
+    *            KCACHE has a proven data leak within a 256-byte cache line
+    *            (Phase 6 Probe 9 on AMD PALM): static OOB within the same
+    *            locked line returns adjacent data instead of zero.  This is
+    *            acceptable when robustness is disabled (app accepts undefined
+    *            behavior) but violates robustBufferAccess which mandates zero.
+    *
+    *   Tier 2 — VFETCH bounded: 20-40 cycles, hardware OOB clamping.
+    *            VTX SIZE_MINUS_1 enforces descriptor-range clamping;
+    *            Phase 5 Probes confirmed OOB reads return exactly zero.
+    *            Used for: all robust loads, dynamic offsets, bank overflow.
+    *
+    *   Tier 3 — KCACHE + MIN clamp: DEFERRED.
+    *            Requires LOCK_LOOP_INDEX backend support (not available in
+    *            SFN) for general dynamic offsets.  Narrow <=256B variant is
+    *            a future optimization opportunity.
+    *
     * Both paths work because CmdBindDescriptorSets dual-binds every UBO to
     * both SQ_TEX_RESOURCE (VFETCH) and KCACHE banks. */
 
@@ -407,7 +425,13 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
 
    nir_const_value *offset_const = nir_src_as_const_value(intrin->src[1]);
 
-   if (offset_const != NULL && kcache_bank_base < TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS) {
+   /* Tier 1 eligibility: static offset, bank in range, AND robustness OFF.
+    * When robust_buffer_access is enabled, ALL UBO loads must go through
+    * VFETCH (Tier 2) to guarantee hardware-enforced zero-on-OOB.  KCACHE
+    * does not provide this guarantee (within-line leak). */
+   if (offset_const != NULL &&
+       kcache_bank_base < TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS &&
+       !state->robust_buffer_access) {
       /* Static offset: direct KCACHE read. */
       uint32_t byte_offset = offset_const->u32;
       uint32_t vec4_index = byte_offset / 16;
@@ -437,7 +461,9 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
       nir_def_rewrite_uses(&intrin->def, result);
       nir_instr_remove(&intrin->instr);
    } else {
-      /* Dynamic offset or bank overflow: VFETCH fallback. */
+      /* Tier 2 — VFETCH bounded: hardware-enforced OOB clamping.
+       * Covers: robust_buffer_access ON (all offsets), dynamic offsets,
+       * bank overflow.  VTX SIZE_MINUS_1 returns zero on OOB access. */
       uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
                                           binding.set_binding->first_shader_resources[stage];
       BITSET_SET_RANGE(state->resources_needed,
