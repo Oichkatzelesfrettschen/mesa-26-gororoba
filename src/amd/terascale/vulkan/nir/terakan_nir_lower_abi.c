@@ -167,6 +167,14 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
  *     Used for compute store_global where we control the destination.
  *     Costs 0 CF stack entries — pure ALU.
  *
+ * INVARIANT: Tier 2 math predication MUST NOT be used for atomic operations.
+ * Atomics are read-modify-write; redirecting an OOB atomic to the trash page
+ * causes all failing threads to contend on the same 4KB page, creating a
+ * catastrophic cache-coherency bottleneck.  Additionally, the atomic return
+ * value from the trash page is garbage.  Atomics MUST use Tier 1 (IF/ENDIF)
+ * so that OOB threads skip the instruction entirely.  If the CF stack is
+ * exhausted, the compiler must flatten earlier control flow to free a slot.
+ *
  * Hardware basis: MEM_RAT writes are NOT bounds-checked by Evergreen silicon
  * (Phase 5 Probe 7).  OOB MEM_RAT writes corrupt adjacent VRAM.  This is
  * the only defense.
@@ -1023,6 +1031,46 @@ terakan_nir_lower_bindings_instr_image_deref_store(
 
    enum gl_access_qualifier const access = nir_intrinsic_access(intrin);
 
+   /* Write guard: MEM_RAT STORE_TYPED is NOT bounds-checked by Evergreen
+    * hardware (Phase 5 Probe 7).  For buffer images (texel buffers), emit
+    * an IF/ENDIF guard comparing the raw element index against the view's
+    * element count from KCACHE bank 14.
+    *
+    * Non-buffer image stores (2D/3D/cube/array) are NOT guarded here:
+    * they require per-view width/height/depth extent metadata which is
+    * not yet available in the KCACHE bank 14 layout.  Deferred to a
+    * future image-robustness pass.
+    *
+    * The guard must use the RAW element index (intrin->src[1].x), BEFORE
+    * terakan_nir_buffer_uav_coord() applies the coordinate clamp and
+    * base granularity offset — a clamped OOB write would still corrupt
+    * the last valid element rather than being dropped. */
+   bool const guarded =
+      state->robust_buffer_access && image_dim == GLSL_SAMPLER_DIM_BUF;
+   if (guarded) {
+      nir_def * const raw_element_index =
+         nir_channel(b, intrin->src[1].ssa, 0);
+
+      *state->kcache_needed |=
+         (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+
+      /* Texel buffer element counts are in the dedicated array at
+       * KCACHE bank 14 dwords 16..27 (vec4 indices 4..6), separated
+       * from the SSBO byte sizes at dwords 0..11 for defense-in-depth. */
+      uint32_t const elem_vec4_index = 4 + uav_index_zero_based / 4;
+      uint32_t const elem_component = uav_index_zero_based % 4;
+
+      nir_def * const element_count = nir_load_kcache_r600(
+         b, 1, 32, uav_array_index,
+         .access = ACCESS_CAN_REORDER,
+         .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+         .base = elem_vec4_index,
+         .component = elem_component);
+
+      nir_def * const in_bounds = nir_ult(b, raw_element_index, element_count);
+      nir_push_if(b, in_bounds);
+   }
+
    nir_def * coord;
    if (image_dim == GLSL_SAMPLER_DIM_BUF) {
       coord = terakan_nir_buffer_uav_coord(b, nir_channel(b, intrin->src[1].ssa, 0),
@@ -1039,6 +1087,11 @@ terakan_nir_lower_bindings_instr_image_deref_store(
    terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, nir_u2u32(b, intrin->src[3].ssa),
                                     undef, V_RAT_INST_STORE_TYPED, access,
                                     state->uav_base + uav_index_zero_based);
+
+   if (guarded) {
+      nir_pop_if(b, NULL);
+   }
+
    nir_instr_remove(&intrin->instr);
 }
 
@@ -1112,13 +1165,38 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
    unsigned const uav_id_base = state->uav_base + uav_index_zero_based;
 
    /* Write guard: MEM_RAT atomics are NOT bounds-checked by Evergreen
-    * hardware.  Wrap the atomic in IF/ENDIF (or IF/ELSE for returning
-    * atomics that need zero on the OOB path). */
-   bool const guarded = state->robust_buffer_access;
+    * hardware.  For buffer images, emit IF/ENDIF gated on the raw element
+    * index being within the view's element count (from KCACHE bank 14).
+    * For returning atomics, the OOB path returns zero via nir_if_phi.
+    *
+    * Non-buffer image atomics (2D/3D/cube/array) are NOT guarded:
+    * they require per-view extent metadata not yet in the bank 14 layout.
+    *
+    * The element index is extracted from src[1].x BEFORE coord processing
+    * to avoid the coordinate clamp in terakan_nir_buffer_uav_coord(). */
+   bool const guarded =
+      state->robust_buffer_access && image_dim == GLSL_SAMPLER_DIM_BUF;
    if (guarded) {
-      nir_def *in_bounds = terakan_nir_emit_write_guard(
-         b, intrin->src[1].ssa, 4 /* atomic is always 4 bytes */,
-         uav_index_zero_based, uav_array_index, state);
+      nir_def * const raw_element_index =
+         nir_channel(b, intrin->src[1].ssa, 0);
+
+      *state->kcache_needed |=
+         (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+
+      /* Texel buffer element counts are in the dedicated array at
+       * KCACHE bank 14 dwords 16..27 (vec4 indices 4..6), separated
+       * from the SSBO byte sizes at dwords 0..11 for defense-in-depth. */
+      uint32_t const elem_vec4_index = 4 + uav_index_zero_based / 4;
+      uint32_t const elem_component = uav_index_zero_based % 4;
+
+      nir_def * const element_count = nir_load_kcache_r600(
+         b, 1, 32, uav_array_index,
+         .access = ACCESS_CAN_REORDER,
+         .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+         .base = elem_vec4_index,
+         .component = elem_component);
+
+      nir_def * const in_bounds = nir_ult(b, raw_element_index, element_count);
       nir_push_if(b, in_bounds);
    }
 

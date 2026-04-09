@@ -366,16 +366,26 @@ struct terakan_gfx_command_writer {
 
    /* Robustness metadata for UAV write guards (KCACHE bank 14).
     * Populated by terakan_pipeline_layout_bind_descriptor_sets() from the
-    * effective byte size of each bound buffer UAV.  Uploaded to GPU memory
+    * effective bound of each bound buffer UAV.  Uploaded to GPU memory
     * and bound to KCACHE bank 14 at draw/dispatch time by
     * terakan_robustness_metadata_apply().
     *
     * Index = physical CB_COLOR UAV slot (0-based relative to UAV base).
-    * Value = effective byte size after dynamic offset adjustment.
+    * Value = effective bound after dynamic offset adjustment:
+    *   STORAGE_BUFFER: byte count from VkDescriptorBufferInfo.range.
+    *   STORAGE_TEXEL_BUFFER: element count from VkBufferView.
+    *   (A slot is never both types simultaneously.)
     * Unbound / image-only slots are zero (disabling all writes via guard).
     */
    struct {
       uint32_t uav_byte_sizes[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
+      /* Texel buffer element counts — separate from uav_byte_sizes for
+       * defense-in-depth.  If a slot is STORAGE_TEXEL_BUFFER, the element
+       * count goes here (dwords 16..27 in bank 14); uav_byte_sizes for
+       * that slot is zeroed.  If STORAGE_BUFFER, this array is zeroed
+       * for that slot instead.  Prevents misinterpretation if a driver
+       * bug routes the wrong type to the wrong array. */
+      uint32_t texel_buffer_element_counts[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
       bool dirty;
       /* Cached allocation from the last upload — reused if not dirty. */
       struct terakan_bo const *bo;
@@ -545,7 +555,7 @@ terakan_gfx_command_writer_emit_done(struct terakan_gfx_command_writer * const c
  * are employed to quickly explain the reasoning behind the code that handles invalid usage cases by
  * referencing this comment.
  */
-/* TODO(Triang3l): BO out-of-bounds access prevention — PARTIALLY IMPLEMENTED.
+/* TODO(Triang3l): BO out-of-bounds access prevention — SUBSTANTIALLY IMPLEMENTED.
  *
  * Implemented:
  *   - UAV write guard (store_ssbo, ssbo_atomic): terakan_nir_emit_write_guard()
@@ -565,18 +575,24 @@ terakan_gfx_command_writer_emit_done(struct terakan_gfx_command_writer * const c
  *   - TEX reads: TEX engine enforces byte-level OOB zeroing.
  *   - Pipeline-level kcache_needed merge: OR of per-stage masks copied at
  *     bind time; draw path skips bank 14 binding when no stage needs it.
+ *   - Buffer image (texel buffer) write guard: image_deref_store and
+ *     image_deref_atomic for GLSL_SAMPLER_DIM_BUF emit element-index-based
+ *     IF/ENDIF guard.  KCACHE bank 14 dwords 0..11 hold element count
+ *     (from vk_buffer_view.elements) for texel buffer UAVs.  Atomic
+ *     return values laundered to zero on OOB via nir_if_phi.
  *
  * Remaining:
  *   - Write guard batching optimization (collapse guards for adjacent stores).
- *   - Image UAV write robustness (needs per-view extent metadata — DEFERRED).
+ *   - Non-buffer image UAV write robustness (2D/3D/cube/array storage images
+ *     need per-view width/height/depth extent metadata — DEFERRED).
  *   - UBO Tier 3 (KCACHE + MIN clamp) blocked on SFN LOCK_LOOP_INDEX backend.
  *
- * Recently completed:
- *   - Math-predicated compute write guard (Tier 2) using trash page
- *     redirect: nir_bcsel(in_bounds, real_addr, trash_addr) — zero
- *     CF stack cost (commit 0dad6b55ed3).
- *   - Pipeline kcache_needed_merged OR-mask in graphics pipeline,
- *     copied to gfx_command_writer at bind time (commit 36071faccba).
+ * Bank 14 metadata layout (separated arrays for defense-in-depth):
+ *   dwords 0..11:  SSBO byte sizes (store_ssbo / ssbo_atomic guards).
+ *   dword 12:      Trash page GPU VA >> 2.
+ *   dwords 13..15: Reserved (zero).
+ *   dwords 16..27: Texel buffer element counts (image_deref guards).
+ *   dwords 28..63: Reserved (zero).
  */
 uint32_t * terakan_gfx_command_writer_emit_with_bo(
    struct terakan_gfx_command_writer * command_writer,
