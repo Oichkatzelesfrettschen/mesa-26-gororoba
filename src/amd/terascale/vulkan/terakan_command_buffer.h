@@ -251,6 +251,16 @@ terakan_push_buffer_allocate_kcache(struct terakan_command_buffer * const comman
    return mapping;
 }
 
+/* Upload robustness metadata (per-UAV byte sizes) to a push-buffer BO and
+ * bind it to KCACHE bank 14 for the given shader stages.  Called at draw or
+ * dispatch time when the bound pipeline's kcache_needed includes bank 14.
+ *
+ * @param is_compute  true for compute dispatches (binds to MESA_SHADER_FRAGMENT
+ *                    SQC slot, matching the compute KCACHE convention).
+ */
+void terakan_robustness_metadata_apply(
+   struct terakan_gfx_command_writer * command_writer, bool is_compute);
+
 /* Must be allocated using ralloc (used as an allocation context for the hash table). */
 struct terakan_query_active_table {
    /* Within terakan_command_pool::active_query_tables_free. */
@@ -353,6 +363,25 @@ struct terakan_gfx_command_writer {
 
    /* Modifies hw_state_sqc. */
    struct terakan_push_constants_state push_constants_state;
+
+   /* Robustness metadata for UAV write guards (KCACHE bank 14).
+    * Populated by terakan_pipeline_layout_bind_descriptor_sets() from the
+    * effective byte size of each bound buffer UAV.  Uploaded to GPU memory
+    * and bound to KCACHE bank 14 at draw/dispatch time by
+    * terakan_robustness_metadata_apply().
+    *
+    * Index = physical CB_COLOR UAV slot (0-based relative to UAV base).
+    * Value = effective byte size after dynamic offset adjustment.
+    * Unbound / image-only slots are zero (disabling all writes via guard).
+    */
+   struct {
+      uint32_t uav_byte_sizes[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
+      bool dirty;
+      /* Cached allocation from the last upload — reused if not dirty. */
+      struct terakan_bo const *bo;
+      uint32_t va_kcache_lines;
+      VkShaderStageFlags bound_to_stages;
+   } robustness_metadata;
 
    /* Modifies hw_state_draw, hw_state_sqc, and push_constants_state. */
    struct terakan_state_draw state_draw;

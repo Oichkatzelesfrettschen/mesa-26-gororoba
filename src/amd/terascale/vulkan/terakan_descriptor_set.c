@@ -89,6 +89,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                 G_028C70_FORMAT(image_view->color.info) != TERASCALE_FORMAT_INDEX_INVALID) {
                dst_uav->bo = image_view->bo;
                memcpy(&dst_uav->color, &image_view->color, sizeof(struct terakan_color_descriptor));
+               dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
                terakan_color_descriptor_image_view_to_storage_image(&dst_uav->color);
             } else {
                dst_uav->bo = NULL;
@@ -187,11 +188,22 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
             struct terakan_descriptor_set_resource * const dst_resource =
                &dst_resources[descriptor_index];
             struct terakan_descriptor_set_uav * const dst_uav = &dst_uavs[descriptor_index];
+            VkDescriptorBufferInfo const * const buf_info =
+               &descriptor_write->pBufferInfo[descriptor_index];
             struct terakan_bo const * const bo = terakan_buffer_create_storage_buffer_descriptor(
-               &descriptor_write->pBufferInfo[descriptor_index], dst_resource->resource,
-               &dst_uav->color);
+               buf_info, dst_resource->resource, &dst_uav->color);
             dst_resource->bo = bo;
             dst_uav->bo = bo;
+            /* Store exact Vulkan byte range for robustness metadata.
+             * vk_buffer_range() resolves VK_WHOLE_SIZE. */
+            if (bo != NULL) {
+               struct terakan_buffer const * const buffer =
+                  terakan_buffer_from_handle(buf_info->buffer);
+               dst_uav->buffer_byte_size = (uint32_t)vk_buffer_range(
+                  &buffer->vk, buf_info->offset, buf_info->range);
+            } else {
+               dst_uav->buffer_byte_size = 0;
+            }
          }
       } break;
 

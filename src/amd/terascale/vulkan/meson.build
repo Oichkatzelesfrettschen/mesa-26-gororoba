@@ -99,6 +99,7 @@ libterakan_files = files(
   'terakan_pipeline_cache.c',
   'terakan_pipeline_cache.h',
   'terakan_push_constants.c',
+  'terakan_robustness_metadata.c',
   'terakan_push_constants.h',
   'terakan_render_pass.c',
   'terakan_query.c',

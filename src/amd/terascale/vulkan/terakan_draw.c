@@ -119,6 +119,16 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
 
    terakan_push_constants_apply(command_writer, false);
 
+   /* Bind robustness metadata to KCACHE bank 14 if any active shader stage
+    * needs it (i.e. the pipeline emits MEM_RAT write guards). */
+   /* TODO: Check per-stage kcache_needed bits from the bound graphics pipeline
+    * once the graphics pipeline exposes a merged kcache_needed mask.
+    * For now, always bind if metadata is available and dirty. */
+   if (command_writer->robustness_metadata.dirty ||
+       command_writer->robustness_metadata.bo != NULL) {
+      terakan_robustness_metadata_apply(command_writer, false);
+   }
+
    terakan_before_hw_draw(command_writer);
 }
 
