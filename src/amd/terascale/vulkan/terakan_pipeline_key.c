@@ -36,6 +36,9 @@ terakan_shader_stage_key_fill(struct terakan_shader_stage_key *key,
       key->uniform_robustness2 = 1;
    if (rs.vertex_inputs == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT)
       key->vertex_robustness1 = 1;
+
+   if (device->vk.enabled_features.robustBufferAccess)
+      key->robust_buffer_access = 1;
 }
 
 void

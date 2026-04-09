@@ -212,8 +212,11 @@ terakan_instance_init(struct terakan_instance * instance,
     */
    instance->max_per_stage_storage_buffers = 4;
 
-   /* Direct3D 11 limit. */
-   instance->max_per_stage_uniform_buffers = 15;
+   /* Banks 0-13 for application UBOs.  Banks 14 (robustness metadata) and
+    * 15 (push constants) are driver-reserved and cannot be dynamically
+    * indexed by hardware (KCACHE_BANK_INDEX_MODE ignores banks >= 14).
+    */
+   instance->max_per_stage_uniform_buffers = TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS;
    /* 4 is the Vulkan minimum, but use all space not usable by vertex stages. */
    instance->max_per_stage_input_attachments =
       MAX2(TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL -

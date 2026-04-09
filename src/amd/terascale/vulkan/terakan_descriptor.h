@@ -76,10 +76,20 @@ extern "C" {
  * index, place it near the end.
  */
 #define TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS (TERAKAN_KCACHE_HW_BUFFERS_PER_STAGE - 1)
-/* Number of kcache buffers starting from 0 allocated for uniform buffers from application pipeline
- * layouts.
+/* Bank 14: reserved for driver robustness metadata (UAV byte sizes, trash
+ * page address).  Not dynamically indexable (hardware ignores relative
+ * indexing for banks >= 14).  See TERAKAN_SHADER_ABI_CONTRACT.md.
  */
-#define TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS
+#define TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA (TERAKAN_KCACHE_HW_BUFFERS_PER_STAGE - 2)
+/* Number of kcache buffers starting from 0 allocated for uniform buffers
+ * from application pipeline layouts.
+ */
+/* Banks 0..13: application UBOs (dynamically indexable via KCACHE relative)
+ * Bank 14:    driver robustness metadata (reserved)
+ * Bank 15:    push constants (reserved)
+ * ISA basis:  KCACHE_BANK_INDEX_MODE ignores banks >= 14.
+ */
+#define TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA
 
 /* For easier writing of meta shaders.
  * offsetof doesn't produce a constant on MSVC 2022, so using dword offsets instead.
