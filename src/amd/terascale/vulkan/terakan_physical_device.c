@@ -41,6 +41,8 @@
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600_isa.h"
 #include "gallium/drivers/r600/sfn/sfn_nir.h"
+#include "util/disk_cache.h"
+#include "util/hex.h"
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "vk_alloc.h"
@@ -524,7 +526,24 @@ terakan_physical_device_get_capabilities(
    snprintf(properties_out->deviceName, sizeof(properties_out->deviceName),
             "AMD R%cxx %s (Terakan)", chip_info->is_r9xx ? '9' : '8',
             terakan_physical_device_chip_family_name(chip_info->chip_family));
-   /* TODO(Triang3l): pipelineCacheUUID when pipeline cache is implemented. */
+
+   /* Pipeline cache UUID — hash of driver build identity + PCI device ID.
+    * Used by vk_pipeline_cache and disk_cache to invalidate stale entries
+    * across driver rebuilds or GPU variant changes. */
+   {
+      struct mesa_blake3 uuid_ctx;
+      _mesa_blake3_init(&uuid_ctx);
+      disk_cache_get_function_identifier(
+         terakan_physical_device_get_capabilities, &uuid_ctx);
+      _mesa_blake3_update(&uuid_ctx, &chip_info->pci_device_id,
+                          sizeof(chip_info->pci_device_id));
+      uint8_t uuid_hash[BLAKE3_OUT_LEN];
+      _mesa_blake3_final(&uuid_ctx, uuid_hash);
+      static_assert(sizeof(properties_out->pipelineCacheUUID) <= BLAKE3_OUT_LEN,
+                    "UUID must fit in BLAKE3 output");
+      memcpy(properties_out->pipelineCacheUUID, uuid_hash,
+             sizeof(properties_out->pipelineCacheUUID));
+   }
 
    properties_out->maxImageDimension1D = TERAKAN_IMAGE_MAX_WIDTH_HEIGHT;
    properties_out->maxImageDimension2D = TERAKAN_IMAGE_MAX_WIDTH_HEIGHT;
@@ -1082,6 +1101,9 @@ terakan_physical_device_finish(struct terakan_physical_device * const device)
 {
    terakan_wsi_finish(device);
 
+   disk_cache_destroy(device->vk.disk_cache);
+   device->vk.disk_cache = NULL;
+
    vk_physical_device_finish(&device->vk);
 }
 
@@ -1288,6 +1310,17 @@ terakan_physical_device_init(
    }
 
    device->vk.supported_sync_types = supported_sync_types_static;
+
+   /* On-disk shader cache — Mesa's vk_pipeline_cache automatically uses
+    * disk_cache_get()/disk_cache_put() when device->vk.disk_cache is set.
+    * Cache key includes pipelineCacheUUID (driver build + PCI ID), so
+    * stale entries are automatically invalidated across rebuilds. */
+   {
+      char uuid_hex[VK_UUID_SIZE * 2 + 1];
+      mesa_bytes_to_hex(uuid_hex, properties.pipelineCacheUUID, VK_UUID_SIZE);
+      device->vk.disk_cache = disk_cache_create(properties.deviceName,
+                                                uuid_hex, 0);
+   }
 
    terakan_physical_device_init_memory_properties(device->chip_info.has_dedicated_vram,
                                                   gtt_allocation_granularity, gtt_size, vram_size,
