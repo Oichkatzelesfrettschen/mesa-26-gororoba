@@ -484,6 +484,16 @@ terakan_physical_device_get_capabilities(
    extensions_out->EXT_scalar_block_layout = true;
    features_out->scalarBlockLayout = true;
 
+   /* VK_EXT_pipeline_creation_cache_control (#298) — enables apps to query
+    * whether a pipeline can be satisfied from cache without compiling:
+    *   FAIL_ON_PIPELINE_COMPILE_REQUIRED → returns VK_PIPELINE_COMPILE_REQUIRED
+    *   EARLY_RETURN_ON_FAILURE → stops batch on first failure
+    *   EXTERNALLY_SYNCHRONIZED_BIT → handled by Mesa vk_pipeline_cache
+    * Combined with disk_cache, this lets apps pre-warm caches asynchronously
+    * on their own threads — critical for the dual-core E-300. */
+   extensions_out->EXT_pipeline_creation_cache_control = true;
+   features_out->pipelineCreationCacheControl = true;
+
    /* Re-enable logicOp — TeraScale-2 hardware supports it via CB_COLOR_CONTROL. */
    features_out->logicOp = true;
    features_out->dualSrcBlend = true;

@@ -1305,6 +1305,18 @@ terakan_pipeline_graphics_compile_shaders(
             return result;
          }
       } else {
+         /* Cache miss — compilation required.  If the app set
+          * FAIL_ON_PIPELINE_COMPILE_REQUIRED, bail out immediately so the
+          * app can schedule its own background compile and retry later.
+          * VK_PIPELINE_COMPILE_REQUIRED is a non-error success code (>0)
+          * but counts as non-VK_SUCCESS for EARLY_RETURN_ON_FAILURE. */
+         if (pipeline_flags &
+             VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR) {
+            ralloc_free(nir);
+            terakan_shader_impl_finish(&local_shader, allocator);
+            return VK_PIPELINE_COMPILE_REQUIRED;
+         }
+
          result = terakan_shader_impl_compile(&local_shader, device, &shader_key, nir, allocator);
          size_t const program_size_bytes =
             sizeof(uint32_t) * local_shader.shader.bc.ndw;

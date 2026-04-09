@@ -172,6 +172,17 @@ terakan_pipeline_compute_compile(
          return result;
       }
    } else {
+      /* Cache miss — compilation required.  If the app set
+       * FAIL_ON_PIPELINE_COMPILE_REQUIRED, bail out immediately.
+       * VK_PIPELINE_COMPILE_REQUIRED is a non-error success code (>0)
+       * but counts as non-VK_SUCCESS for EARLY_RETURN_ON_FAILURE. */
+      if (pipeline_flags &
+          VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR) {
+         ralloc_free(nir);
+         terakan_shader_impl_finish(&local_shader, allocator);
+         return VK_PIPELINE_COMPILE_REQUIRED;
+      }
+
       result = terakan_shader_impl_compile(
          &local_shader, device, &shader_key, nir, allocator);
       size_t const program_size_bytes =
@@ -277,7 +288,14 @@ terakan_CreateComputePipelines(VkDevice const deviceHandle,
       if (result != VK_SUCCESS) {
          pPipelines[i] = VK_NULL_HANDLE;
          overall_result = result;
-         /* VK spec: continue creating remaining pipelines */
+         if (terakan_pipeline_create_flags(pCreateInfos[i].flags,
+                                           pCreateInfos[i].pNext) &
+             VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR) {
+            /* Remaining pipelines must be VK_NULL_HANDLE per spec. */
+            for (++i; i < createInfoCount; i++)
+               pPipelines[i] = VK_NULL_HANDLE;
+            break;
+         }
       }
    }
 
