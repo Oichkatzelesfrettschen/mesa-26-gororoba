@@ -319,7 +319,7 @@ struct terakan_op_info {
    uint8_t       num_srcs;       /* Number of source operands (0-3) */
    uint8_t       category;       /* enum terakan_op_category */
    uint8_t       flags;          /* TERAKAN_OPFLAG_* bitmask */
-   uint8_t       vec_lanes;      /* Vec slots consumed (4=DOT4/CUBE/MAX4, 0=normal) */
+   uint8_t       vec_lanes;      /* Vec slots consumed (4=reduction, 2=FP64 paired, 0=normal) */
 };
 
 /*
@@ -355,9 +355,9 @@ static const struct terakan_op_info terakan_op2_table[] = {
    /* opcode 23 */ [23]  = { "LSHL_INT",           TERAKAN_SLOT_MASK_ANY, 2, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 25 */ [25]  = { "MOV",                TERAKAN_SLOT_MASK_ANY, 1, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 26 */ [26]  = { "NOP",                TERAKAN_SLOT_MASK_ANY, 0, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
-   /* opcode 27 */ [27]  = { "MUL_64",             TERAKAN_SLOT_MASK_ANY, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 28 */ [28]  = { "FLT64_TO_FLT32",     TERAKAN_SLOT_MASK_ANY, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 29 */ [29]  = { "FLT32_TO_FLT64",     TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
+   /* opcode 27 */ [27]  = { "MUL_64",             TERAKAN_SLOT_MASK_T,   2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_FP64, 0 },
+   /* opcode 28 */ [28]  = { "FLT64_TO_FLT32",     TERAKAN_SLOT_MASK_T,   1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_FP64, 0 },
+   /* opcode 29 */ [29]  = { "FLT32_TO_FLT64",     TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },  /* FP64: even-start pair (X→XY or Z→ZW) */
    /* opcode 30 */ [30]  = { "PRED_SETGT_UINT",    TERAKAN_SLOT_MASK_ANY, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET, 0 },
    /* opcode 31 */ [31]  = { "PRED_SETGE_UINT",    TERAKAN_SLOT_MASK_ANY, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET, 0 },
    /* opcode 32 */ [32]  = { "PRED_SETE",          TERAKAN_SLOT_MASK_ANY, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET | TERAKAN_OPFLAG_CAN_SRCMOD, 0 },
@@ -416,8 +416,8 @@ static const struct terakan_op_info terakan_op2_table[] = {
    /* opcode 85 */ [85]  = { "GROUP_SEQ_BEGIN",    TERAKAN_SLOT_MASK_ANY, 0, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 86 */ [86]  = { "GROUP_SEQ_END",      TERAKAN_SLOT_MASK_ANY, 0, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 87 */ [87]  = { "SET_MODE",           TERAKAN_SLOT_MASK_ANY, 2, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_NONE, 0 },
-   /* opcode 88 */ [88]  = { "SET_CF_IDX0",        TERAKAN_SLOT_MASK_ANY, 1, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_NONE, 0 },
-   /* opcode 89 */ [89]  = { "SET_CF_IDX1",        TERAKAN_SLOT_MASK_ANY, 1, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_NONE, 0 },
+   /* opcode 88 */ [88]  = { "SET_CF_IDX0",        TERAKAN_SLOT_MASK_X,   1, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_MOVA, 0 },  /* X-slot only, same co-issue restriction as MOVA */
+   /* opcode 89 */ [89]  = { "SET_CF_IDX1",        TERAKAN_SLOT_MASK_X,   1, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_MOVA, 0 },  /* X-slot only, same co-issue restriction as MOVA */
    /* opcode 90 */ [90]  = { "SET_LDS_SIZE",       TERAKAN_SLOT_MASK_ANY, 2, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_NONE, 0 },
 
    /* --- High opcodes (transcendental/scalar, starting at 129) --- */
@@ -470,24 +470,25 @@ static const struct terakan_op_info terakan_op2_table[] = {
    /* opcode 181 */ [181] = { "MUL_UINT24",        TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 182 */ [182] = { "BCNT_ACCUM_PREV_INT",TERAKAN_SLOT_MASK_VEC,1, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 183 */ [183] = { "MBCNT_32LO_ACCUM_PREV_INT",TERAKAN_SLOT_MASK_VEC,1,TERAKAN_CAT_ALU,TERAKAN_OPFLAG_NONE, 0 },
-   /* opcode 184 */ [184] = { "SETE_64",           TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 185 */ [185] = { "SETNE_64",          TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 186 */ [186] = { "SETGT_64",          TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 187 */ [187] = { "SETGE_64",          TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 188 */ [188] = { "MIN_64",            TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 189 */ [189] = { "MAX_64",            TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
+   /* opcode 184 */ [184] = { "SETE_64",           TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 185 */ [185] = { "SETNE_64",          TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 186 */ [186] = { "SETGT_64",          TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 187 */ [187] = { "SETGE_64",          TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 188 */ [188] = { "MIN_64",            TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 189 */ [189] = { "MAX_64",            TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
    /* opcode 190 */ [190] = { "DOT4",              TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_REDUCTION,TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_REDUCTION, 4 },
    /* opcode 191 */ [191] = { "DOT4_IEEE",         TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_REDUCTION,TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_REDUCTION, 4 },
    /* opcode 192 */ [192] = { "CUBE",              TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_REDUCTION,TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_REDUCTION, 4 },
    /* opcode 193 */ [193] = { "MAX4",              TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_REDUCTION,TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_REDUCTION, 4 },
-   /* opcode 196 */ [196] = { "FREXP_64",          TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 197 */ [197] = { "LDEXP_64",          TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 198 */ [198] = { "FRACT_64",          TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 199 */ [199] = { "PRED_SETGT_64",     TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET | TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 200 */ [200] = { "PRED_SETE_64",      TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET | TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 201 */ [201] = { "PRED_SETGE_64",     TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET | TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 202 */ [202] = { "MUL_64_VEC",        TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 203 */ [203] = { "ADD_64",            TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_FP64, 0 },
+   /* FP64 ops consume 2 contiguous vec slots (even-start pair: X→XY or Z→ZW) */
+   /* opcode 196 */ [196] = { "FREXP_64",          TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 197 */ [197] = { "LDEXP_64",          TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 198 */ [198] = { "FRACT_64",          TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 199 */ [199] = { "PRED_SETGT_64",     TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET | TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 200 */ [200] = { "PRED_SETE_64",      TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET | TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 201 */ [201] = { "PRED_SETGE_64",     TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_PRED,  TERAKAN_OPFLAG_PRED_SET | TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 202 */ [202] = { "MUL_64_VEC",        TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 203 */ [203] = { "ADD_64",            TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_FP64, 2 },
    /* opcode 204 */ [204] = { "MOVA_INT",          0x01,                  1, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_MOVA, 0 },         /* X-slot only (pseudo) */
    /* opcode 207 */ [207] = { "SAD_ACCUM_PREV_UINT",TERAKAN_SLOT_MASK_VEC,2, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 208 */ [208] = { "DOT",               TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_ALU,      TERAKAN_OPFLAG_CAN_SRCMOD, 0 },
@@ -502,9 +503,9 @@ static const struct terakan_op_info terakan_op2_table[] = {
    /* opcode 217 */ [217] = { "INTERP_Z",          TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_INTERP,TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 218 */ [218] = { "STORE_FLAGS",       TERAKAN_SLOT_MASK_VEC, 0, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 219 */ [219] = { "LOAD_STORE_FLAGS",  TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_SPECIAL,TERAKAN_OPFLAG_NONE, 0 },
-   /* opcode 220 */ [220] = { "LDS_1A",            TERAKAN_SLOT_MASK_VEC, 0, TERAKAN_CAT_LDS,   TERAKAN_OPFLAG_LDS, 0 },
-   /* opcode 221 */ [221] = { "LDS_1A1D",          TERAKAN_SLOT_MASK_VEC, 0, TERAKAN_CAT_LDS,   TERAKAN_OPFLAG_LDS, 0 },
-   /* opcode 223 */ [223] = { "LDS_2A",            TERAKAN_SLOT_MASK_VEC, 0, TERAKAN_CAT_LDS,   TERAKAN_OPFLAG_LDS, 0 },
+   /* opcode 220 */ [220] = { "LDS_1A",            TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_LDS,   TERAKAN_OPFLAG_LDS, 0 },
+   /* opcode 221 */ [221] = { "LDS_1A1D",          TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_LDS,   TERAKAN_OPFLAG_LDS, 0 },
+   /* opcode 223 */ [223] = { "LDS_2A",            TERAKAN_SLOT_MASK_VEC, 2, TERAKAN_CAT_LDS,   TERAKAN_OPFLAG_LDS, 0 },
    /* opcode 224 */ [224] = { "INTERP_LOAD_P0",    TERAKAN_SLOT_MASK_VEC, 1, TERAKAN_CAT_INTERP,TERAKAN_OPFLAG_NONE, 0 },
 };
 
@@ -514,8 +515,8 @@ static const struct terakan_op_info terakan_op3_table[] = {
    /* opcode  5 */ [5]  = { "BFE_INT",           TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode  6 */ [6]  = { "BFI_INT",           TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode  7 */ [7]  = { "FMA",               TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP, 0 },
-   /* opcode  9 */ [9]  = { "CNDNE_64",          TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 0 },
-   /* opcode 10 */ [10] = { "FMA_64",            TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_FP64, 0 },
+   /* opcode  9 */ [9]  = { "CNDNE_64",          TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_FP64, 2 },
+   /* opcode 10 */ [10] = { "FMA_64",            TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_DP64,  TERAKAN_OPFLAG_CAN_SRCMOD | TERAKAN_OPFLAG_CAN_CLAMP | TERAKAN_OPFLAG_FP64, 2 },
    /* opcode 11 */ [11] = { "LERP_UINT",         TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 12 */ [12] = { "BIT_ALIGN_INT",     TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
    /* opcode 13 */ [13] = { "BYTE_ALIGN_INT",    TERAKAN_SLOT_MASK_VEC, 3, TERAKAN_CAT_ALU,   TERAKAN_OPFLAG_NONE, 0 },
@@ -647,7 +648,7 @@ enum terakan_vec_bank_swizzle {
 
 /* BANK_SWIZZLE values for ALU.Trans — different interpretation */
 enum terakan_scl_bank_swizzle {
-   TERAKAN_SCL_210 = 0,   /* src0=C0, src1=C1, src2=C2 */
+   TERAKAN_SCL_210 = 0,   /* src0=C2, src1=C1, src2=C0 */
    TERAKAN_SCL_122 = 1,   /* src0=C1, src1=C2, src2=C2 */
    TERAKAN_SCL_212 = 2,   /* src0=C2, src1=C1, src2=C2 */
    TERAKAN_SCL_221 = 3,   /* src0=C2, src1=C2, src2=C1 */
@@ -668,7 +669,7 @@ static const uint8_t terakan_vec_swizzle_cycle[6][3] = {
 };
 
 static const uint8_t terakan_scl_swizzle_cycle[4][3] = {
-   /* SCL_210 */ { 0, 1, 2 },
+   /* SCL_210 */ { 2, 1, 0 },
    /* SCL_122 */ { 1, 2, 2 },
    /* SCL_212 */ { 2, 1, 2 },
    /* SCL_221 */ { 2, 2, 1 },
@@ -775,12 +776,25 @@ static const struct terakan_export_limits terakan_eg_export_limits = {
  */
 
 static inline bool
-terakan_ops_can_coissue(uint8_t flags_a, uint8_t flags_b)
+terakan_ops_can_coissue(const struct terakan_op_info *a,
+                        const struct terakan_op_info *b)
 {
+   if (!a || !b)
+      return false;
+
    /* PRED_SET and KILL are mutually exclusive with each other */
    const uint8_t exclusive_mask = TERAKAN_OPFLAG_PRED_SET | TERAKAN_OPFLAG_KILL;
-   if ((flags_a & exclusive_mask) && (flags_b & exclusive_mask))
+   if ((a->flags & exclusive_mask) && (b->flags & exclusive_mask))
       return false;
+
+   /* A reduction occupies all 4 vec slots — only a T-only op may co-issue */
+   if ((a->flags & TERAKAN_OPFLAG_REDUCTION) &&
+       (b->slot_mask_eg & TERAKAN_SLOT_MASK_VEC))
+      return false;
+   if ((b->flags & TERAKAN_OPFLAG_REDUCTION) &&
+       (a->slot_mask_eg & TERAKAN_SLOT_MASK_VEC))
+      return false;
+
    return true;
 }
 
@@ -822,10 +836,15 @@ terakan_op_is_trans_only(const struct terakan_op_info *info)
 }
 
 static inline bool
+terakan_op_is_x_only(const struct terakan_op_info *info)
+{
+   return info && info->slot_mask_eg == TERAKAN_SLOT_MASK_X;
+}
+
+static inline bool
 terakan_op_is_vec_only(const struct terakan_op_info *info)
 {
-   return info && (info->slot_mask_eg & TERAKAN_SLOT_MASK_T) == 0
-               && (info->slot_mask_eg & TERAKAN_SLOT_MASK_VEC) != 0;
+   return info && info->slot_mask_eg == TERAKAN_SLOT_MASK_VEC;
 }
 
 static inline bool
@@ -861,7 +880,8 @@ struct terakan_group_state {
    uint8_t  num_kill;             /* Number of KILL ops placed */
    uint8_t  num_mova;             /* Number of MOVA* ops placed */
    bool     has_reduction;        /* True if a reduction op is placed */
-   uint8_t  num_literals;         /* Literal constant slots used (0-2) */
+   bool     has_lds_op;           /* True if an LDS op is placed (max 1 per group) */
+   uint8_t  num_literals;         /* Literal dwords used (0-4; each of 2 literal slots holds 2 dwords) */
    uint8_t  num_kcache_banks;     /* Kcache banks in use */
 
    /*
@@ -881,6 +901,7 @@ terakan_group_state_init(struct terakan_group_state *gs)
    gs->num_kill      = 0;
    gs->num_mova      = 0;
    gs->has_reduction = false;
+   gs->has_lds_op    = false;
    gs->num_literals  = 0;
    gs->num_kcache_banks = 0;
    for (int c = 0; c < 3; c++)
