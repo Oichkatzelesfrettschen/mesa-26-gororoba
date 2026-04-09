@@ -45,12 +45,16 @@ struct terakan_shader_stage_key {
    uint32_t vertex_robustness1 : 1;
    uint32_t optimisations_disabled : 1;
    uint32_t keep_statistic_info : 1;
+   /* Device-level robustBufferAccess (v1).  Affects UAV coord clamping in
+    * lower_abi.  Must be in the key for disk-cache correctness across
+    * devices with different feature sets. */
+   uint32_t robust_buffer_access : 1;
    /*
     * Shader version counter — bump to force recompilation after driver
     * changes when using build-ID override.  3 bits = versions 0..7.
     */
    uint32_t version : 3;
-   uint32_t reserved : 24;
+   uint32_t reserved : 23;
 };
 
 static_assert(sizeof(struct terakan_shader_stage_key) == 4,
