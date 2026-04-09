@@ -420,6 +420,115 @@ terakan_shader_lower_and_optimize_post_link(
    }
 }
 
+/*
+ * Filter callback for nir_remove_dead_variables: returns true for VS output
+ * variables whose location is in the dead_varyings bitmask.
+ */
+static bool
+terakan_nir_is_dead_vs_output(nir_variable *var, void *data)
+{
+   uint64_t dead_mask = *(const uint64_t *)data;
+   return (dead_mask & BITFIELD64_BIT(var->data.location)) != 0;
+}
+
+void
+terakan_postprocess_nir(nir_shader *nir,
+                        mesa_shader_stage stage,
+                        bool remove_point_size,
+                        uint64_t fs_inputs_read)
+{
+   if (stage != MESA_SHADER_VERTEX)
+      return;
+
+   /* Compute the set of dead VS outputs to prune. */
+   uint64_t dead_varyings = 0;
+
+   /* --- Point size removal ---
+    * If topology is definitively not POINT_LIST AND VS is the true last
+    * vertex stage, the PA ignores gl_PointSize.  Strip it to save one
+    * PARAM export + the ALU that computes it.
+    * The caller guarantees remove_point_size is only set when safe
+    * (static non-point topology, not as_es, not as_ls). */
+   if (remove_point_size && (nir->info.outputs_written & VARYING_BIT_PSIZ))
+      dead_varyings |= VARYING_BIT_PSIZ;
+
+   /* --- Varying pruning (FS→VS feedback) ---
+    * Only prune PARAM exports — POS/CLIP/CULL/LAYER/VIEWPORT/EDGE are
+    * consumed by the PA/clipper hardware, not routed through SPI to FS.
+    * PSIZ is PA-consumed and handled separately above.
+    *
+    * ISA basis: SPI_VS_OUT_ID uses semantic ID matching against
+    * SPI_PS_INPUT_CNTL.  Dense-packing surviving PARAM exports after
+    * pruning is safe — the SFN backend assigns consecutive export_param
+    * indices to surviving outputs, and SPI finds them by semantic ID
+    * regardless of physical slot.  (Evergreen_3D_Registers_v2 §SPI) */
+   uint64_t const hw_consumed_outputs =
+      VARYING_BIT_POS | VARYING_BIT_PSIZ |
+      VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 |
+      VARYING_BIT_CULL_DIST0 | VARYING_BIT_CULL_DIST1 |
+      VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT | VARYING_BIT_EDGE;
+
+   uint64_t const param_outputs =
+      nir->info.outputs_written & ~hw_consumed_outputs;
+   uint64_t const dead_params = param_outputs & ~fs_inputs_read;
+   dead_varyings |= dead_params;
+
+   if (dead_varyings == 0)
+      return;
+
+   /* Strip store_output intrinsics targeting dead varyings.
+    * This is the actual codegen change — SFN will not see these outputs
+    * and will not emit PARAM exports for them. */
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+         if (intrin->intrinsic != nir_intrinsic_store_output)
+            continue;
+         nir_io_semantics sem = nir_intrinsic_io_semantics(intrin);
+         if (dead_varyings & BITFIELD64_BIT(sem.location))
+            nir_instr_remove(instr);
+      }
+   }
+
+   /* Manual nir_instr_remove invalidates all derived metadata (dominance,
+    * liveness, block indices).  Explicitly invalidate so subsequent passes
+    * (DCE, gather_info) rebuild from scratch rather than operating on
+    * stale cached data. */
+   impl->valid_metadata = nir_metadata_none;
+
+   /* Remove dead output variables via standard NIR infrastructure.
+    * Using nir_remove_dead_variables ensures all bookkeeping (variable
+    * lists, counts) is updated correctly. */
+   nir_remove_dead_variables_options dead_var_opts = {
+      .can_remove_var = terakan_nir_is_dead_vs_output,
+      .can_remove_var_data = &dead_varyings,
+   };
+   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_out,
+            &dead_var_opts);
+
+   /* Clear outputs_written bits for pruned varyings. */
+   nir->info.outputs_written &= ~dead_varyings;
+
+   /* DCE: remove ALU chains computing dead outputs.  Then re-gather
+    * shader info to ensure all metadata (inputs_read, outputs_written,
+    * system_values_read) is consistent with the modified NIR.
+    *
+    * Note: TeraScale-2 does not support transform feedback (no XFB
+    * extension advertised), so pruning based on fs_inputs_read alone
+    * is safe.  If XFB support is ever added, pruning must also check
+    * xfb_info to avoid stripping feedback-captured outputs. */
+   NIR_PASS(_, nir, nir_opt_dce);
+   nir_shader_gather_info(nir, impl);
+
+   /* Debug: verify the surgery was complete — no dead varyings should
+    * survive in outputs_written after gather_info rebuilds it from the
+    * actual instruction stream. */
+   assert((nir->info.outputs_written & dead_varyings) == 0);
+}
+
 void
 terakan_shader_impl_finish(struct terakan_shader_impl * const shader,
                            VkAllocationCallbacks const * const allocator)
