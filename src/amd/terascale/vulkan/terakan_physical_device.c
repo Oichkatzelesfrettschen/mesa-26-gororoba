@@ -446,6 +446,24 @@ terakan_physical_device_get_capabilities(
    features_out->robustBufferAccess2 = true;
    features_out->robustImageAccess2 = false;
    features_out->nullDescriptor = true;
+   /* robustBufferAccess2 properties — Tier 1 (DWORD-granularity) baseline.
+    *
+    * VTX hardware enforces bounds at DWORD (4-byte) granularity via the
+    * SIZE_MINUS_ONE field (Phase 5 Probe H1).  The descriptor range is
+    * rounded up via ALIGN_POT(range, 4) so the last partial DWORD is not
+    * dropped.  The spec permits sizeAlignment = 4, meaning the driver
+    * enforces OOB detection at 4-byte boundaries.
+    *
+    * If exact-byte robustness (sizeAlignment = 1) is ever needed, a
+    * targeted tail-byte ALU mask must be emitted in lower_abi for the
+    * single straddling component per load (see §11 of the ABI contract). */
+   properties_out->robustStorageBufferAccessSizeAlignment = 4;
+   /* UBO reads via KCACHE are line-locked at 256-byte granularity; via
+    * VFETCH (Tier 2 robust) they share the same DWORD-clamp behavior.
+    * Advertise 256 since KCACHE is the primary path and already enforces
+    * 256-byte alignment via minUniformBufferOffsetAlignment. */
+   properties_out->robustUniformBufferAccessSizeAlignment =
+      TERAKAN_KCACHE_HW_LINE_BYTES;
 
    /* VK_EXT_custom_border_color (#288) — Zink base requirement.
     * TeraScale-2 supports custom border colors via TD_PS_SAMPLER*_BORDER. */

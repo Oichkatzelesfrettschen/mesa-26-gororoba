@@ -623,6 +623,29 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
       binding.array_index = nir_imm_zero(b, 1, 32);
    }
 
+   /* SSBO read robustness — Tier 1 (DWORD-granularity, zero ALU cost).
+    *
+    * VTX hardware enforces descriptor bounds via SIZE_MINUS_ONE at DWORD
+    * granularity (Phase 5 Probe H1: all OOB VFETCH reads return 0).  The
+    * SSBO descriptor range is rounded up to a 4-byte boundary via
+    * ALIGN_POT(range, 4) in terakan_descriptor.c, so the last partial
+    * DWORD is never dropped by the hardware.
+    *
+    * Under robustBufferAccess2 with robustStorageBufferAccessSizeAlignment=4
+    * (advertised in physical_device.c), the spec permits OOB detection at
+    * 4-byte granularity.  Bytes within the rounded-up range that lie past
+    * the exact Vulkan buffer view boundary are considered in-bounds by the
+    * driver's advertised contract.  This is zero-cost: no ALU guards needed.
+    *
+    * Tier 2 (exact-byte, sizeAlignment=1) — DEFERRED.
+    * If exact-byte robustness is ever required:
+    *   1. Load exact_size from KCACHE bank 14 (dwords 0..11, same as write guard)
+    *   2. Gate on (exact_size & 3) != 0 — skip if buffer is already 4-aligned
+    *   3. At most ONE component per load can straddle the boundary
+    *   4. Zero the entire straddling component (robustBufferAccess2 = hard 0)
+    *   5. Cost: ~3 ALU ops per load (uadd_sat + uge + bcsel)
+    * See TERAKAN_SHADER_ABI_CONTRACT.md §11 for architecture details. */
+
    /* Vertex fetches are coherent with UAVs, do a vertex fetch unconditionally. */
    uint8_t const resource_index_base =
       binding.set->first_shader_resources[b->shader->info.stage] +
