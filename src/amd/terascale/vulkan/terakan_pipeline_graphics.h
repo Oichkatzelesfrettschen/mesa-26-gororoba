@@ -230,6 +230,11 @@ struct terakan_pipeline_graphics {
    VkShaderStageFlags shader_stages;
    struct terakan_shader_impl shaders[MESA_SHADER_FRAGMENT + 1];
 
+   /* OR-merge of per-stage kcache_needed masks.  Computed once after all
+    * stages are compiled.  Used at draw time to skip KCACHE bank 14
+    * (robustness metadata) binding when no stage emitted write guards. */
+   uint16_t kcache_needed_merged;
+
    BITSET_DECLARE(static_state, TERAKAN_PIPELINE_GRAPHICS_STATE_COUNT);
 
    /* Precompiling the state into register values rather than simply layering pipeline binding over
