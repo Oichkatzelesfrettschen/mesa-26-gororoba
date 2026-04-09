@@ -541,6 +541,9 @@ terakan_pipeline_graphics_bind(struct terakan_gfx_command_writer * const command
    command_writer->state_draw.cmd_set_depth_clamp_enable_sets_depth_clip_enable =
       pipeline->pre_rasterization.cmd_set_depth_clamp_enable_sets_depth_clip_enable;
 
+   /* Cache the pipeline-wide kcache_needed mask for draw-time bank 14 binding. */
+   command_writer->graphics_kcache_needed = pipeline->kcache_needed_merged;
+
    unsigned state_index;
    BITSET_FOREACH_SET (state_index, pipeline->static_state, TERAKAN_PIPELINE_GRAPHICS_STATE_COUNT) {
       terakan_pipeline_graphics_apply_state_functions[state_index](command_writer, pipeline);
@@ -1327,6 +1330,18 @@ terakan_pipeline_graphics_compile_shaders(
        * stack frame unwinding is a no-op. */
       pipeline->shaders[stage_index] = local_shader;
       pipeline->shader_stages |= stage_info->stage;
+   }
+
+   /* Merge per-stage kcache_needed masks into a single pipeline-wide mask.
+    * Draw-time KCACHE bank 14 binding checks this instead of always binding.
+    * ISA basis: bank 14 is NOT dynamically indexed (Evergreen ISA §4.6.4,
+    * banks >= 14 ignore BANK_INDEX_MODE), so a single binding serves all
+    * stages reading from the same robustness metadata buffer. */
+   pipeline->kcache_needed_merged = 0;
+   u_foreach_bit(s, pipeline->shader_stages) {
+      mesa_shader_stage const stage = vk_to_mesa_shader_stage((VkShaderStageFlagBits)(1u << s));
+      if (stage <= MESA_SHADER_FRAGMENT)
+         pipeline->kcache_needed_merged |= pipeline->shaders[stage].kcache_needed;
    }
 
    /* Vertex shader is mandatory if the pre-rasterization part is present.

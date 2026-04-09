@@ -383,6 +383,11 @@ struct terakan_gfx_command_writer {
       VkShaderStageFlags bound_to_stages;
    } robustness_metadata;
 
+   /* OR-merged kcache_needed mask from the currently bound graphics pipeline.
+    * Set during terakan_pipeline_graphics_bind().  Checked at draw time to
+    * skip KCACHE bank 14 binding when no stage emitted write guards. */
+   uint16_t graphics_kcache_needed;
+
    /* Modifies hw_state_draw, hw_state_sqc, and push_constants_state. */
    struct terakan_state_draw state_draw;
 
