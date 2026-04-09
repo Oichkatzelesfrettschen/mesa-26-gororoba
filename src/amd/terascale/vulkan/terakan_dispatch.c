@@ -527,6 +527,14 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
     * This is the compute equivalent of the graphics path in terakan_draw.c. */
    terakan_push_constants_apply(command_writer, true);
 
+   /* Bind robustness metadata (per-UAV byte sizes) to KCACHE bank 14 if
+    * the compute pipeline needs it for write guards. */
+   if (command_writer->bound_compute_pipeline != NULL &&
+       (command_writer->bound_compute_pipeline->shader.kcache_needed &
+        ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA))) {
+      terakan_robustness_metadata_apply(command_writer, true);
+   }
+
    /* Emit PKT3_DISPATCH_DIRECT with the grid dimensions */
    uint32_t *p = terakan_gfx_command_writer_emit(
       command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);

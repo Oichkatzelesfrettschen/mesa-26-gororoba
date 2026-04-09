@@ -350,12 +350,34 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      state_uav->color = *new_uav_color;
                   }
                   BITSET_SET(state_uavs_not_null, shader_uav_index);
+                  /* Record exact byte size for robustness write guard metadata.
+                   * For STORAGE_BUFFER_DYNAMIC, adjust by the dynamic offset:
+                   * the hardware base is shifted, so the writable range shrinks. */
+                  {
+                     uint32_t byte_size = set_uav->buffer_byte_size;
+                     if (byte_size > 0 &&
+                         range->first_dynamic_offset != UINT16_MAX) {
+                        uint32_t const dyn_off =
+                           set_dynamic_offsets[range->first_dynamic_offset + uav_index];
+                        byte_size = (dyn_off < byte_size) ? (byte_size - dyn_off) : 0;
+                     }
+                     if (shader_uav_index < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
+                        command_writer->robustness_metadata.uav_byte_sizes[shader_uav_index] =
+                           byte_size;
+                        command_writer->robustness_metadata.dirty = true;
+                     }
+                  }
                } else {
                   if (state_uav_used && BITSET_TEST(state_uavs_not_null, shader_uav_index)) {
                      terakan_state_draw_set_pending(&command_writer->state_draw,
                                                     TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
                   }
                   BITSET_CLEAR(state_uavs_not_null, shader_uav_index);
+                  /* Unbound UAV: zero the byte size to disable writes. */
+                  if (shader_uav_index < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
+                     command_writer->robustness_metadata.uav_byte_sizes[shader_uav_index] = 0;
+                     command_writer->robustness_metadata.dirty = true;
+                  }
                }
             }
          }
