@@ -420,6 +420,148 @@ terakan_shader_lower_and_optimize_post_link(
    }
 }
 
+/* =====================================================================
+ * UINT24 peephole — convert imul → umul24 / iadd(umul24, c) → umad24.
+ *
+ * ISA basis: Evergreen_ISA.pdf §2.5 — MUL_UINT24 performs an unsigned
+ * 24×24→32 multiply using the FP24 mantissa datapath.  It is single-
+ * cycle and executes on ANY vector ALU slot, whereas MULLO_INT is
+ * multi-cycle and restricted to the trans-only slot.  MULADD_UINT24
+ * fuses a 24-bit multiply with a 32-bit add in one op3 slot.
+ *
+ * The optimisation is valid when both multiply operands are provably
+ * in [0, 2^24).  The addend in umad24 has no range restriction.
+ *
+ * Running this at the NIR level (before SFN) enables the algebraic
+ * optimizer to further combine umul24 + iadd → umad24, and lets DCE
+ * clean up any dead intermediate instructions.
+ * =================================================================== */
+
+/* Conservative range proof: return true when |src| is provably in
+ * the unsigned range [0, 2^24).  Only 32-bit scalar/vector ALU defs
+ * are analysed; all other forms return false (safe default). */
+static bool
+terakan_nir_value_fits_24bit(nir_alu_src *alu_src)
+{
+   nir_def *def = alu_src->src.ssa;
+   if (def->bit_size != 32)
+      return false;
+
+   /* --- Constant --- */
+   nir_const_value *cv = nir_src_as_const_value(alu_src->src);
+   if (cv)
+      return cv->u32 < (1u << 24);
+
+   /* Remaining checks require the source to be an ALU instruction. */
+   nir_instr *parent = nir_def_instr(def);
+   if (parent->type != nir_instr_type_alu)
+      return false;
+
+   nir_alu_instr *src_alu = nir_instr_as_alu(parent);
+
+   switch (src_alu->op) {
+   /* extract_u8 → [0, 255], extract_u16 → [0, 65535] */
+   case nir_op_extract_u8:
+   case nir_op_extract_u16:
+      return true;
+
+   /* Zero-extend from ≤16-bit → always < 2^16 */
+   case nir_op_u2u32:
+      return src_alu->src[0].src.ssa->bit_size <= 16;
+
+   /* Bitwise AND: result ≤ mask.  If mask is constant < 2^24, the
+    * result is provably < 2^24 regardless of the other operand. */
+   case nir_op_iand: {
+      nir_const_value *mask0 =
+         nir_src_as_const_value(src_alu->src[0].src);
+      nir_const_value *mask1 =
+         nir_src_as_const_value(src_alu->src[1].src);
+      if (mask0 && mask0->u32 < (1u << 24))
+         return true;
+      if (mask1 && mask1->u32 < (1u << 24))
+         return true;
+      return false;
+   }
+
+   /* Logical right shift by constant ≥ 8 on a 32-bit value:
+    * result < 2^(32 − shift_amt).  For shift ≥ 8, that's < 2^24. */
+   case nir_op_ushr: {
+      nir_const_value *shift =
+         nir_src_as_const_value(src_alu->src[1].src);
+      if (shift && shift->u32 >= 8 && shift->u32 < 32)
+         return true;
+      return false;
+   }
+
+   default:
+      return false;
+   }
+}
+
+/* Instruction callback for nir_shader_instructions_pass: lower a single
+ * nir_op_imul to nir_op_umul24 when both sources fit in 24 bits, and
+ * fuse iadd(umul24, c) → umad24 when the umul24 has a single use. */
+static bool
+terakan_nir_opt_uint24_instr(nir_builder *b, nir_instr *instr,
+                             UNUSED void *cb_data)
+{
+   if (instr->type != nir_instr_type_alu)
+      return false;
+
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+
+   /* --- Phase 1: imul → umul24 when both sources fit 24 bits --- */
+   if (alu->op == nir_op_imul &&
+       alu->def.bit_size == 32 &&
+       terakan_nir_value_fits_24bit(&alu->src[0]) &&
+       terakan_nir_value_fits_24bit(&alu->src[1])) {
+      alu->op = nir_op_umul24;
+      return true;
+   }
+
+   /* --- Phase 2: iadd(umul24(a, b), c) → umad24(a, b, c) ---
+    * umad24 is a single op3-slot instruction that fuses multiply + add.
+    * The addend c has no 24-bit range restriction.
+    *
+    * Only fuse when the umul24 has exactly one use (this iadd), so that
+    * replacing the iadd with umad24 makes the umul24 dead (cleaned up
+    * by the subsequent DCE pass). */
+   if (alu->op == nir_op_iadd && alu->def.bit_size == 32) {
+      for (unsigned i = 0; i < 2; i++) {
+         nir_def *mul_def = alu->src[i].src.ssa;
+         nir_instr *mul_instr = nir_def_instr(mul_def);
+         if (mul_instr->type != nir_instr_type_alu)
+            continue;
+         nir_alu_instr *mul = nir_instr_as_alu(mul_instr);
+         if (mul->op != nir_op_umul24)
+            continue;
+         if (!list_is_singular(&mul_def->uses))
+            continue;
+
+         unsigned add_idx = 1 - i;
+         b->cursor = nir_before_instr(instr);
+         nir_def *mad = nir_build_alu3(b, nir_op_umad24,
+                                       mul->src[0].src.ssa,
+                                       mul->src[1].src.ssa,
+                                       alu->src[add_idx].src.ssa);
+         nir_def_rewrite_uses(&alu->def, mad);
+         nir_instr_remove(instr);
+         return true;
+      }
+   }
+
+   return false;
+}
+
+static bool
+terakan_nir_opt_uint24(nir_shader *nir)
+{
+   return nir_shader_instructions_pass(
+      nir, terakan_nir_opt_uint24_instr,
+      nir_metadata_control_flow,
+      NULL);
+}
+
 /*
  * Filter callback for nir_remove_dead_variables: returns true for VS output
  * variables whose location is in the dead_varyings bitmask.
@@ -437,96 +579,107 @@ terakan_postprocess_nir(nir_shader *nir,
                         bool remove_point_size,
                         uint64_t fs_inputs_read)
 {
-   if (stage != MESA_SHADER_VERTEX)
-      return;
+   bool progress = false;
 
-   /* Compute the set of dead VS outputs to prune. */
-   uint64_t dead_varyings = 0;
+   /* --- UINT24 peephole (all stages) ---
+    * Convert imul → umul24 for bounded operands, then fuse
+    * iadd(umul24, c) → umad24.  This runs for ALL shader stages
+    * because integer multiplies appear everywhere (array indexing,
+    * struct offsets, loop counters × strides). */
+   NIR_PASS(progress, nir, terakan_nir_opt_uint24);
 
-   /* --- Point size removal ---
-    * If topology is definitively not POINT_LIST AND VS is the true last
-    * vertex stage, the PA ignores gl_PointSize.  Strip it to save one
-    * PARAM export + the ALU that computes it.
-    * The caller guarantees remove_point_size is only set when safe
-    * (static non-point topology, not as_es, not as_ls). */
-   if (remove_point_size && (nir->info.outputs_written & VARYING_BIT_PSIZ))
-      dead_varyings |= VARYING_BIT_PSIZ;
+   /* --- VS-specific varying pruning --- */
+   if (stage == MESA_SHADER_VERTEX) {
+      /* Compute the set of dead VS outputs to prune. */
+      uint64_t dead_varyings = 0;
 
-   /* --- Varying pruning (FS→VS feedback) ---
-    * Only prune PARAM exports — POS/CLIP/CULL/LAYER/VIEWPORT/EDGE are
-    * consumed by the PA/clipper hardware, not routed through SPI to FS.
-    * PSIZ is PA-consumed and handled separately above.
-    *
-    * ISA basis: SPI_VS_OUT_ID uses semantic ID matching against
-    * SPI_PS_INPUT_CNTL.  Dense-packing surviving PARAM exports after
-    * pruning is safe — the SFN backend assigns consecutive export_param
-    * indices to surviving outputs, and SPI finds them by semantic ID
-    * regardless of physical slot.  (Evergreen_3D_Registers_v2 §SPI) */
-   uint64_t const hw_consumed_outputs =
-      VARYING_BIT_POS | VARYING_BIT_PSIZ |
-      VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 |
-      VARYING_BIT_CULL_DIST0 | VARYING_BIT_CULL_DIST1 |
-      VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT | VARYING_BIT_EDGE;
+      /* --- Point size removal ---
+       * If topology is definitively not POINT_LIST AND VS is the true last
+       * vertex stage, the PA ignores gl_PointSize.  Strip it to save one
+       * PARAM export + the ALU that computes it.
+       * The caller guarantees remove_point_size is only set when safe
+       * (static non-point topology, not as_es, not as_ls). */
+      if (remove_point_size && (nir->info.outputs_written & VARYING_BIT_PSIZ))
+         dead_varyings |= VARYING_BIT_PSIZ;
 
-   uint64_t const param_outputs =
-      nir->info.outputs_written & ~hw_consumed_outputs;
-   uint64_t const dead_params = param_outputs & ~fs_inputs_read;
-   dead_varyings |= dead_params;
+      /* --- Varying pruning (FS→VS feedback) ---
+       * Only prune PARAM exports — POS/CLIP/CULL/LAYER/VIEWPORT/EDGE are
+       * consumed by the PA/clipper hardware, not routed through SPI to FS.
+       * PSIZ is PA-consumed and handled separately above.
+       *
+       * ISA basis: SPI_VS_OUT_ID uses semantic ID matching against
+       * SPI_PS_INPUT_CNTL.  Dense-packing surviving PARAM exports after
+       * pruning is safe — the SFN backend assigns consecutive export_param
+       * indices to surviving outputs, and SPI finds them by semantic ID
+       * regardless of physical slot.  (Evergreen_3D_Registers_v2 §SPI) */
+      uint64_t const hw_consumed_outputs =
+         VARYING_BIT_POS | VARYING_BIT_PSIZ |
+         VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 |
+         VARYING_BIT_CULL_DIST0 | VARYING_BIT_CULL_DIST1 |
+         VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT | VARYING_BIT_EDGE;
 
-   if (dead_varyings == 0)
-      return;
+      uint64_t const param_outputs =
+         nir->info.outputs_written & ~hw_consumed_outputs;
+      uint64_t const dead_params = param_outputs & ~fs_inputs_read;
+      dead_varyings |= dead_params;
 
-   /* Strip store_output intrinsics targeting dead varyings.
-    * This is the actual codegen change — SFN will not see these outputs
-    * and will not emit PARAM exports for them. */
-   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr_safe(instr, block) {
-         if (instr->type != nir_instr_type_intrinsic)
-            continue;
-         nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-         if (intrin->intrinsic != nir_intrinsic_store_output)
-            continue;
-         nir_io_semantics sem = nir_intrinsic_io_semantics(intrin);
-         if (dead_varyings & BITFIELD64_BIT(sem.location))
-            nir_instr_remove(instr);
+      if (dead_varyings != 0) {
+         /* Strip store_output intrinsics targeting dead varyings.
+          * This is the actual codegen change — SFN will not see these
+          * outputs and will not emit PARAM exports for them. */
+         nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+         nir_foreach_block(block, impl) {
+            nir_foreach_instr_safe(instr, block) {
+               if (instr->type != nir_instr_type_intrinsic)
+                  continue;
+               nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+               if (intrin->intrinsic != nir_intrinsic_store_output)
+                  continue;
+               nir_io_semantics sem = nir_intrinsic_io_semantics(intrin);
+               if (dead_varyings & BITFIELD64_BIT(sem.location))
+                  nir_instr_remove(instr);
+            }
+         }
+
+         /* Manual nir_instr_remove invalidates all derived metadata
+          * (dominance, liveness, block indices).  Explicitly invalidate so
+          * subsequent passes (DCE, gather_info) rebuild from scratch rather
+          * than operating on stale cached data. */
+         impl->valid_metadata = nir_metadata_none;
+
+         /* Remove dead output variables via standard NIR infrastructure.
+          * Using nir_remove_dead_variables ensures all bookkeeping
+          * (variable lists, counts) is updated correctly. */
+         nir_remove_dead_variables_options dead_var_opts = {
+            .can_remove_var = terakan_nir_is_dead_vs_output,
+            .can_remove_var_data = &dead_varyings,
+         };
+         NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_out,
+                  &dead_var_opts);
+
+         /* Clear outputs_written bits for pruned varyings. */
+         nir->info.outputs_written &= ~dead_varyings;
+
+         progress = true;
+
+         /* Debug: verify below after DCE + gather_info. */
+         assert((nir->info.outputs_written & dead_varyings) == 0);
       }
    }
 
-   /* Manual nir_instr_remove invalidates all derived metadata (dominance,
-    * liveness, block indices).  Explicitly invalidate so subsequent passes
-    * (DCE, gather_info) rebuild from scratch rather than operating on
-    * stale cached data. */
-   impl->valid_metadata = nir_metadata_none;
-
-   /* Remove dead output variables via standard NIR infrastructure.
-    * Using nir_remove_dead_variables ensures all bookkeeping (variable
-    * lists, counts) is updated correctly. */
-   nir_remove_dead_variables_options dead_var_opts = {
-      .can_remove_var = terakan_nir_is_dead_vs_output,
-      .can_remove_var_data = &dead_varyings,
-   };
-   NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_out,
-            &dead_var_opts);
-
-   /* Clear outputs_written bits for pruned varyings. */
-   nir->info.outputs_written &= ~dead_varyings;
-
-   /* DCE: remove ALU chains computing dead outputs.  Then re-gather
-    * shader info to ensure all metadata (inputs_read, outputs_written,
-    * system_values_read) is consistent with the modified NIR.
+   /* --- Final cleanup (all stages) ---
+    * DCE removes ALU chains made dead by uint24 fusion or varying
+    * pruning.  Re-gather shader info to keep metadata consistent.
     *
     * Note: TeraScale-2 does not support transform feedback (no XFB
     * extension advertised), so pruning based on fs_inputs_read alone
     * is safe.  If XFB support is ever added, pruning must also check
     * xfb_info to avoid stripping feedback-captured outputs. */
-   NIR_PASS(_, nir, nir_opt_dce);
-   nir_shader_gather_info(nir, impl);
-
-   /* Debug: verify the surgery was complete — no dead varyings should
-    * survive in outputs_written after gather_info rebuilds it from the
-    * actual instruction stream. */
-   assert((nir->info.outputs_written & dead_varyings) == 0);
+   if (progress) {
+      nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+      NIR_PASS(_, nir, nir_opt_dce);
+      nir_shader_gather_info(nir, impl);
+   }
 }
 
 void
