@@ -156,7 +156,8 @@ terakan_pipeline_compute_compile(
 
    blake3_hash cache_key;
    terakan_pipeline_cache_hash_shader(cache_key, device, &stage_key,
-                                      &shader_key, spirv_hash);
+                                      &shader_key, spirv_hash,
+                                      NULL, 0);
 
    /* Cache lookup — skip compilation on hit (Invariant 3). */
    struct terakan_cached_shader *cached =

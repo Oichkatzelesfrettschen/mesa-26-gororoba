@@ -343,6 +343,42 @@ void terakan_shader_lower_and_optimize_post_link(
    uint8_t * fragment_data_uncompacted_locations_out,
    bool robust_buffer_access);
 
+/*
+ * Cross-stage NIR post-processing: Multi-Pass Post-Link Barrier.
+ *
+ * Runs AFTER terakan_shader_lower_and_optimize_post_link() on all stages,
+ * BEFORE cache key construction and SFN backend entry.
+ *
+ * VS optimizations:
+ * - Point size removal: strip gl_PointSize when topology is definitively
+ *   not POINT_LIST and VS is the true last vertex stage (saves ALU + one
+ *   PARAM export slot + PA_CL_VS_OUT_CNTL.USE_VTX_POINT_SIZE).
+ * - Varying pruning: strip VS outputs not consumed by the FS after DCE.
+ *   Uses FS inputs_read extracted by the Fragment Pass of the Multi-Pass
+ *   Barrier.  Only prunes PARAM exports — POS/CLIP/CULL/LAYER/VIEWPORT
+ *   are PA-consumed and never pruned.
+ *
+ * ISA basis: SPI routing uses semantic ID matching (SPI_VS_OUT_ID ↔
+ * SPI_PS_INPUT_CNTL), so dense-packing surviving PARAM exports after
+ * pruning is safe — the SFN backend naturally assigns consecutive
+ * export_param indices to surviving outputs.
+ *
+ * fs_inputs_read: bitmask of VARYING_SLOT_* bits actually read by the FS
+ *   after DCE.  Pass ~0ULL if no FS is present or VS is not the last
+ *   vertex stage (conservative: keep all outputs).
+ *
+ * Null Export safety (future): when color export elision strips ALL FS
+ * color outputs, the SFN backend must emit a CF_EXPORT with DONE=1,
+ * VALID_PIXEL_MODE=1, COMP_MASK=0 to satisfy the Evergreen rasterizer's
+ * pixel retirement sequencer.  See terakan_shader.h macros
+ * TERAKAN_SHADER_CF_PS_DUMMY_EXPORT_DONE_AND_END_R8XX/R9XX for the
+ * meta shader encoding.  Deferred to color export elision implementation.
+ */
+void terakan_postprocess_nir(nir_shader *nir,
+                             mesa_shader_stage stage,
+                             bool remove_point_size,
+                             uint64_t fs_inputs_read);
+
 void terakan_shader_impl_finish(struct terakan_shader_impl * shader,
                                 VkAllocationCallbacks const * allocator);
 

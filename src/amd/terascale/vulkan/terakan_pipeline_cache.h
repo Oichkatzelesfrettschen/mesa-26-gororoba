@@ -97,14 +97,22 @@ extern const struct vk_pipeline_cache_object_ops terakan_cached_shader_ops;
  * Compute BLAKE3 hash for a shader stage cache lookup.
  *
  * Combines: build ID, PCI device ID, per-stage key, r600_shader_key,
- * and the SPIR-V blake3 hash into a single 32-byte cache key.
+ * SPIR-V blake3 hash, and optional cross-stage postprocess context
+ * into a single 32-byte cache key.
+ *
+ * postprocess_ctx / postprocess_ctx_size: optional cross-stage context
+ * that affects codegen but is not captured in r600_shader_key.  For VS,
+ * this includes fs_inputs_read (varying pruning) and remove_point_size.
+ * Pass NULL/0 when no cross-stage context applies.
  */
 void
 terakan_pipeline_cache_hash_shader(blake3_hash hash_out,
                                    struct terakan_device const *device,
                                    struct terakan_shader_stage_key const *stage_key,
                                    union r600_shader_key const *shader_key,
-                                   blake3_hash const spirv_hash);
+                                   blake3_hash const spirv_hash,
+                                   void const *postprocess_ctx,
+                                   size_t postprocess_ctx_size);
 
 /*
  * Look up a cached shader binary in the pipeline cache.

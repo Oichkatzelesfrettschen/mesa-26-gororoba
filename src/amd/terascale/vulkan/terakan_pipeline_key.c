@@ -110,8 +110,27 @@ terakan_graphics_state_key_fill(struct terakan_graphics_state_key *key,
       }
    }
 
-   /* Point size removal — safe when topology is not points */
-   if (key->ia_topology != VK_PRIMITIVE_TOPOLOGY_POINT_LIST)
+   /* Point size removal — safe ONLY when ALL conditions hold:
+    * 1. Topology is statically known (not VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY)
+    * 2. Topology is not POINT_LIST
+    * 3. VS is the true last vertex stage (not feeding GS as ES, or TES as LS)
+    *
+    * If VS feeds GS/TES, the intermediate stage determines final point size.
+    * If topology is dynamic, it may become POINT_LIST at draw time.
+    * (Rubber-duck finding: dynamic topology + last-vertex-stage safety.) */
+   bool topology_is_dynamic = false;
+   if (create_info->pDynamicState != NULL) {
+      for (uint32_t i = 0; i < create_info->pDynamicState->dynamicStateCount; ++i) {
+         if (create_info->pDynamicState->pDynamicStates[i] ==
+             VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY) {
+            topology_is_dynamic = true;
+            break;
+         }
+      }
+   }
+   if (!topology_is_dynamic &&
+       key->ia_topology != VK_PRIMITIVE_TOPOLOGY_POINT_LIST &&
+       !key->vs_as_es && !key->vs_as_ls)
       key->enable_remove_point_size = 1;
 }
 

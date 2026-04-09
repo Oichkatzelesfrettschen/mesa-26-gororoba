@@ -1203,42 +1203,63 @@ terakan_pipeline_graphics_compile_shaders(
    VkPipelineCreateFlags2KHR const pipeline_flags =
       terakan_pipeline_create_flags(create_info->flags, create_info->pNext);
 
-   pipeline->shader_stages = 0;
-   for (uint32_t stage_info_index = 0; stage_info_index < create_info->stageCount;
-        ++stage_info_index) {
+   /* Per-stage context for the 4-pass Multi-Pass Post-Link Barrier.
+    *
+    * Unlike the original single-loop design, the barrier requires that
+    * FS is lowered first (to extract inputs_read), then VS is lowered
+    * with FS feedback (to prune dead outputs).  The application's
+    * pStages array order is irrelevant — the driver controls the
+    * compilation sequence.
+    *
+    * Pass 1 (Discovery):  SPIR-V → NIR for all stages.  No compilation.
+    * Pass 2 (Fragment):   Post-link lower FS, extract inputs_read.
+    * Pass 3 (Vertex+):    Post-link lower VS (with FS feedback) + others.
+    * Pass 4 (Compile):    Cache key → lookup → compile → commit.
+    */
+   struct {
+      bool present;
+      nir_shader *nir;
+      struct terakan_shader_impl local_shader;
+      bool robust_buffer_access;
+      VkPipelineShaderStageCreateInfo const *stage_info;
+   } stages[MESA_SHADER_STAGES];
+   memset(stages, 0, sizeof(stages));
+
+   /* =================================================================
+    * PASS 1 — Discovery: Convert all SPIR-V to NIR.  Determine per-stage
+    * robustness.  Do NOT compile or lower.
+    * ================================================================= */
+   for (uint32_t i = 0; i < create_info->stageCount; ++i) {
       VkPipelineShaderStageCreateInfo const * const stage_info =
-         &create_info->pStages[stage_info_index];
+         &create_info->pStages[i];
+
+      mesa_shader_stage const si = vk_to_mesa_shader_stage(stage_info->stage);
 
       size_t spirv_size_bytes;
-      uint32_t const * spirv = terakan_pipeline_stage_spirv(stage_info, &spirv_size_bytes);
+      uint32_t const *spirv =
+         terakan_pipeline_stage_spirv(stage_info, &spirv_size_bytes);
       assert(spirv != NULL);
 
-      mesa_shader_stage const stage_index = vk_to_mesa_shader_stage(stage_info->stage);
+      nir_shader *nir =
+         terakan_shader_spirv_to_nir(device, spirv_size_bytes, spirv, si,
+                                     stage_info->pName,
+                                     stage_info->pSpecializationInfo);
+      if (nir == NULL) {
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         goto cleanup;
+      }
 
-      nir_shader * nir =
-         terakan_shader_spirv_to_nir(device, spirv_size_bytes, spirv, stage_index,
-                                     stage_info->pName, stage_info->pSpecializationInfo);
-      if (nir == NULL)
-         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      stages[si].present = true;
+      stages[si].nir = nir;
+      stages[si].stage_info = stage_info;
 
-      /* Invariant 2: compile into an isolated stack-local.  The pipeline's
-       * stage slot is never touched until we commit on success. */
-      struct terakan_shader_impl local_shader;
-      memset(&local_shader, 0, sizeof(local_shader));
-
-      local_shader.push_constants_usage.app_extent_bytes =
-         pipeline_layout->shader_app_push_constants_extents_bytes[stage_index];
-
-      /* Compute the effective robustness flag for this stage.  Honour
-       * VK_EXT_pipeline_robustness per-pipeline and per-stage overrides if
-       * present; otherwise fall back to the device-level robustBufferAccess
-       * feature.  The flag is then threaded through post_link_lower into
-       * the NIR binding-lower pass, which injects ALU umin clamps.  See the
-       * hardware rationale in terakan_nir_buffer_uav_coord. */
+      /* Compute effective robustness for this stage.  Honour
+       * VK_EXT_pipeline_robustness per-pipeline and per-stage overrides;
+       * otherwise fall back to device-level robustBufferAccess. */
       struct vk_pipeline_robustness_state stage_rs;
       vk_pipeline_robustness_state_fill(&device->vk, &stage_rs,
                                         create_info->pNext, stage_info->pNext);
-      bool const stage_robust_buffer_access =
+      stages[si].robust_buffer_access =
          device->vk.enabled_features.robustBufferAccess ||
          stage_rs.storage_buffers ==
             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT ||
@@ -1249,61 +1270,186 @@ terakan_pipeline_graphics_compile_shaders(
          stage_rs.uniform_buffers ==
             VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
 
+      /* Invariant 2: compile into an isolated stack-local.  The pipeline's
+       * stage slot is never touched until we commit on success in Pass 4. */
+      memset(&stages[si].local_shader, 0, sizeof(stages[si].local_shader));
+      stages[si].local_shader.push_constants_usage.app_extent_bytes =
+         pipeline_layout->shader_app_push_constants_extents_bytes[si];
+   }
+
+   /* =================================================================
+    * PASS 2 — Fragment Pass: Post-link lower the FS, run DCE, extract
+    * inputs_read for cross-stage feedback to the VS.
+    *
+    * This is the foundation of the Multi-Pass Post-Link Barrier.
+    * After post-link DCE, inputs_read reflects the TRUE set of
+    * FS-consumed varyings (DCE-dead varyings excluded), which the VS
+    * can use to prune dead outputs in Pass 3.
+    * ================================================================= */
+   uint64_t fs_inputs_read = ~0ULL; /* Conservative: keep all VS outputs */
+
+   if (stages[MESA_SHADER_FRAGMENT].present) {
+      struct terakan_shader_impl *fs_local =
+         &stages[MESA_SHADER_FRAGMENT].local_shader;
+      nir_shader *fs_nir = stages[MESA_SHADER_FRAGMENT].nir;
+
       /* Post-link lowering populates pre-compile metadata (Invariant 3).
        * This runs BEFORE cache key construction (Invariant 4). */
       terakan_shader_lower_and_optimize_post_link(
-         nir, pipeline_layout, local_shader.resources_needed,
-         &local_shader.samplers_needed,
-         local_shader.uavs_for_mutable_resources_needed,
-         &local_shader.push_constants_usage.driver_constants,
-         &local_shader.kcache_needed,
-         &local_shader.fs.fragment_data_uncompacted_locations,
-         stage_robust_buffer_access);
+         fs_nir, pipeline_layout, fs_local->resources_needed,
+         &fs_local->samplers_needed,
+         fs_local->uavs_for_mutable_resources_needed,
+         &fs_local->push_constants_usage.driver_constants,
+         &fs_local->kcache_needed,
+         &fs_local->fs.fragment_data_uncompacted_locations,
+         stages[MESA_SHADER_FRAGMENT].robust_buffer_access);
+
+      fs_inputs_read = fs_nir->info.inputs_read;
+   }
+
+   /* Compute the graphics state key ONCE — used by both Pass 3 (postprocess
+    * decisions) and Pass 4 (cache key projection).  All inputs are from
+    * immutable create_info or from FS post-link results (ps_nr_cbufs).
+    * Computing once guarantees byte-identical keys across passes. */
+   uint8_t ps_nr_cbufs = 0;
+   if (stages[MESA_SHADER_FRAGMENT].present) {
+      ps_nr_cbufs = util_bitcount(
+         stages[MESA_SHADER_FRAGMENT].local_shader.fs
+            .fragment_data_uncompacted_locations);
+   }
+
+   struct terakan_graphics_state_key gfx_state_key;
+   terakan_graphics_state_key_fill(&gfx_state_key, create_info,
+                                   declared_stages, ps_nr_cbufs);
+
+   /* =================================================================
+    * PASS 3 — Vertex + Others: Post-link lower all non-FS stages.
+    * For VS: apply terakan_postprocess_nir with FS feedback (varying
+    * pruning, point size removal).  This is the core cross-stage
+    * optimization enabled by the Multi-Pass Barrier.
+    * ================================================================= */
+   {
+      for (mesa_shader_stage si = 0; si < MESA_SHADER_STAGES; si++) {
+         if (!stages[si].present || si == MESA_SHADER_FRAGMENT)
+            continue; /* FS already lowered in Pass 2 */
+
+         struct terakan_shader_impl *local = &stages[si].local_shader;
+         nir_shader *nir = stages[si].nir;
+
+         /* Post-link lowering populates pre-compile metadata (Invariant 3). */
+         terakan_shader_lower_and_optimize_post_link(
+            nir, pipeline_layout, local->resources_needed,
+            &local->samplers_needed,
+            local->uavs_for_mutable_resources_needed,
+            &local->push_constants_usage.driver_constants,
+            &local->kcache_needed,
+            NULL, /* Not FS: no fragment data locations */
+            stages[si].robust_buffer_access);
+
+         /* Cross-stage post-process: varying pruning + point size removal.
+          *
+          * For VS: if VS feeds GS/TES, enable_remove_point_size is already
+          * 0 (set in gfx_state_key_fill) and fs_inputs_read is conservative
+          * (~0ULL when not the last vertex stage).
+          *
+          * When VS IS the last vertex stage, fs_inputs_read from Pass 2
+          * drives varying pruning, and enable_remove_point_size from the
+          * static topology check drives point size removal.
+          *
+          * Must run AFTER post-link (for valid lowered NIR) and BEFORE
+          * cache key construction (so the hash reflects the pruned program).
+          */
+         uint64_t effective_fs_inputs =
+            (si == MESA_SHADER_VERTEX &&
+             !gfx_state_key.vs_as_es && !gfx_state_key.vs_as_ls)
+               ? fs_inputs_read : ~0ULL;
+
+         terakan_postprocess_nir(nir, si,
+                                 gfx_state_key.enable_remove_point_size,
+                                 effective_fs_inputs);
+      }
+   }
+
+   /* =================================================================
+    * PASS 4 — Compilation: Build cache keys, lookup or compile, commit.
+    *
+    * For VS, the cache key includes cross-stage postprocess context
+    * (fs_inputs_read + remove_point_size) to prevent aliasing between
+    * pruned and unpruned shader variants.  This avoids mutating the
+    * shared r600_shader_key union.
+    * ================================================================= */
+   pipeline->shader_stages = 0;
+
+   for (mesa_shader_stage si = 0; si < MESA_SHADER_STAGES; si++) {
+      if (!stages[si].present)
+         continue;
+
+      struct terakan_shader_impl *local = &stages[si].local_shader;
+      nir_shader *nir = stages[si].nir;
 
       /* --- Cache key construction (Invariant 5: per-stage purity) ------
        * stage_key: per-stage compilation flags (opt, statistics, robustness)
-       * gfx_state_key: cross-stage intermediate, projected to shader_key
+       * gfx_state_key: computed once before Pass 3, projected to shader_key
        * shader_key: per-stage r600 projection, stage-irrelevant fields zero
        *
-       * The cache hash ingests stage_key + shader_key + spirv_hash ONLY.
-       * gfx_state_key itself is never hashed.  See Invariant 5 above. */
+       * The cache hash ingests stage_key + shader_key + spirv_hash +
+       * optional postprocess_ctx.  gfx_state_key itself is never hashed
+       * directly.  See Invariant 5 above. */
       struct terakan_shader_stage_key stage_key;
-      terakan_shader_stage_key_fill(&stage_key, device, stage_info, pipeline_flags);
-
-      uint8_t ps_nr_cbufs = 0;
-      if (stage_index == MESA_SHADER_FRAGMENT)
-         ps_nr_cbufs = util_bitcount(local_shader.fs.fragment_data_uncompacted_locations);
-
-      struct terakan_graphics_state_key gfx_state_key;
-      terakan_graphics_state_key_fill(&gfx_state_key, create_info,
-                                      declared_stages, ps_nr_cbufs);
+      terakan_shader_stage_key_fill(&stage_key, device,
+                                    stages[si].stage_info, pipeline_flags);
 
       union r600_shader_key shader_key;
-      terakan_r600_shader_key_from_state(&shader_key, &gfx_state_key, stage_index);
+      terakan_r600_shader_key_from_state(&shader_key, &gfx_state_key, si);
 
       blake3_hash spirv_hash;
       struct vk_pipeline_robustness_state rs;
       vk_pipeline_robustness_state_fill(&device->vk, &rs,
-                                        create_info->pNext, stage_info->pNext);
-      vk_pipeline_hash_shader_stage(pipeline_flags, stage_info, &rs, spirv_hash);
+                                        create_info->pNext,
+                                        stages[si].stage_info->pNext);
+      vk_pipeline_hash_shader_stage(pipeline_flags,
+                                    stages[si].stage_info, &rs, spirv_hash);
+
+      /* For VS, include cross-stage postprocess decisions in the cache key
+       * to prevent aliasing between pruned and unpruned variants.
+       * Zero-initialized struct ensures deterministic BLAKE3 input. */
+      struct {
+         uint64_t fs_inputs_read;
+         uint32_t remove_point_size;
+         uint32_t pad0;
+      } vs_postprocess_ctx;
+
+      void const *postprocess_ctx = NULL;
+      size_t postprocess_ctx_size = 0;
+
+      if (si == MESA_SHADER_VERTEX) {
+         memset(&vs_postprocess_ctx, 0, sizeof(vs_postprocess_ctx));
+         vs_postprocess_ctx.fs_inputs_read =
+            (!gfx_state_key.vs_as_es && !gfx_state_key.vs_as_ls)
+               ? fs_inputs_read : ~0ULL;
+         vs_postprocess_ctx.remove_point_size =
+            gfx_state_key.enable_remove_point_size;
+         postprocess_ctx = &vs_postprocess_ctx;
+         postprocess_ctx_size = sizeof(vs_postprocess_ctx);
+      }
 
       blake3_hash cache_key;
       terakan_pipeline_cache_hash_shader(cache_key, device, &stage_key,
-                                         &shader_key, spirv_hash);
+                                         &shader_key, spirv_hash,
+                                         postprocess_ctx,
+                                         postprocess_ctx_size);
 
       /* Cache lookup — skip compilation on hit (Invariant 3). */
       struct terakan_cached_shader *cached =
          terakan_pipeline_cache_lookup(cache, cache_key);
       if (cached != NULL) {
-         result = terakan_cached_shader_restore(cached, &local_shader, device, allocator);
+         result = terakan_cached_shader_restore(cached, local, device,
+                                                allocator);
          vk_pipeline_cache_object_unref(&device->vk, &cached->base);
          ralloc_free(nir);
-         if (result != VK_SUCCESS) {
-            /* Invariant 2: local owns whatever restore partially allocated;
-             * clean up in-place and leave pipeline->shaders untouched. */
-            terakan_shader_impl_finish(&local_shader, allocator);
-            return result;
-         }
+         stages[si].nir = NULL;
+         if (result != VK_SUCCESS)
+            goto cleanup;
       } else {
          /* Cache miss — compilation required.  If the app set
           * FAIL_ON_PIPELINE_COMPILE_REQUIRED, bail out immediately so the
@@ -1312,36 +1458,29 @@ terakan_pipeline_graphics_compile_shaders(
           * but counts as non-VK_SUCCESS for EARLY_RETURN_ON_FAILURE. */
          if (pipeline_flags &
              VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR) {
-            ralloc_free(nir);
-            terakan_shader_impl_finish(&local_shader, allocator);
-            return VK_PIPELINE_COMPILE_REQUIRED;
+            result = VK_PIPELINE_COMPILE_REQUIRED;
+            goto cleanup;
          }
 
-         result = terakan_shader_impl_compile(&local_shader, device, &shader_key, nir, allocator);
+         result = terakan_shader_impl_compile(local, device, &shader_key,
+                                              nir, allocator);
          size_t const program_size_bytes =
-            sizeof(uint32_t) * local_shader.shader.bc.ndw;
+            sizeof(uint32_t) * local->shader.bc.ndw;
          ralloc_free(nir);
-         if (result != VK_SUCCESS) {
-            /* Invariant 2: compile may have partially populated local_shader;
-             * finish() cleans its own mess.  pipeline->shaders[stage_index]
-             * is still zeroed from vk_zalloc2 in _init() and will not be
-             * visited by _destroy() because shader_stages does not yet
-             * include this stage. */
-            terakan_shader_impl_finish(&local_shader, allocator);
-            return result;
-         }
+         stages[si].nir = NULL;
+         if (result != VK_SUCCESS)
+            goto cleanup;
 
-         terakan_pipeline_cache_insert(cache, cache_key, &local_shader, stage_index,
+         terakan_pipeline_cache_insert(cache, cache_key, local, si,
                                        program_size_bytes, device);
       }
 
       /* Invariant 2 commit: transfer ownership of all locally allocated
        * resources (BO, shader.arrays, etc.) to the pipeline via struct copy.
        * After this assignment, local_shader is "moved-from"; do NOT call
-       * terakan_shader_impl_finish() on it.  C has no destructors, so the
-       * stack frame unwinding is a no-op. */
-      pipeline->shaders[stage_index] = local_shader;
-      pipeline->shader_stages |= stage_info->stage;
+       * terakan_shader_impl_finish() on it. */
+      pipeline->shaders[si] = *local;
+      pipeline->shader_stages |= mesa_to_vk_shader_stage(si);
    }
 
    /* Merge per-stage kcache_needed masks into a single pipeline-wide mask.
@@ -1351,13 +1490,16 @@ terakan_pipeline_graphics_compile_shaders(
     * stages reading from the same robustness metadata buffer. */
    pipeline->kcache_needed_merged = 0;
    u_foreach_bit(s, pipeline->shader_stages) {
-      mesa_shader_stage const stage = vk_to_mesa_shader_stage((VkShaderStageFlagBits)(1u << s));
+      mesa_shader_stage const stage =
+         vk_to_mesa_shader_stage((VkShaderStageFlagBits)(1u << s));
       if (stage <= MESA_SHADER_FRAGMENT)
-         pipeline->kcache_needed_merged |= pipeline->shaders[stage].kcache_needed;
+         pipeline->kcache_needed_merged |=
+            pipeline->shaders[stage].kcache_needed;
    }
 
    /* Vertex shader is mandatory if the pre-rasterization part is present.
-    * TODO(Triang3l): Skip for graphics pipeline libraries without pre-rasterization. */
+    * TODO(Triang3l): Skip for graphics pipeline libraries without
+    * pre-rasterization. */
    assert(declared_stages & VK_SHADER_STAGE_VERTEX_BIT);
    if (unlikely(!(pipeline->shader_stages & VK_SHADER_STAGE_VERTEX_BIT))) {
       return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
@@ -1365,6 +1507,24 @@ terakan_pipeline_graphics_compile_shaders(
    }
 
    return VK_SUCCESS;
+
+cleanup:
+   /* Free remaining NIR allocations (ralloc_free(NULL) is safe).
+    * For stages committed to pipeline->shaders, the orchestrator's
+    * _destroy() handles cleanup via pipeline->shader_stages.
+    * For stages present but not committed, finish() cleans up any
+    * partial allocations (BO, arrays) from failed compile/restore.
+    * For stages with only post-link metadata (no heap resources),
+    * finish() is a safe no-op. */
+   for (int i = 0; i < MESA_SHADER_STAGES; i++) {
+      ralloc_free(stages[i].nir);
+      if (stages[i].present &&
+          !(pipeline->shader_stages &
+            mesa_to_vk_shader_stage((mesa_shader_stage)i))) {
+         terakan_shader_impl_finish(&stages[i].local_shader, allocator);
+      }
+   }
+   return result;
 }
 
 /*

@@ -191,7 +191,9 @@ terakan_pipeline_cache_hash_shader(blake3_hash hash_out,
                                    struct terakan_device const *device,
                                    struct terakan_shader_stage_key const *stage_key,
                                    union r600_shader_key const *shader_key,
-                                   blake3_hash const spirv_hash)
+                                   blake3_hash const spirv_hash,
+                                   void const *postprocess_ctx,
+                                   size_t postprocess_ctx_size)
 {
    struct terakan_physical_device const *pdev =
       terakan_device_physical_device(device);
@@ -214,6 +216,14 @@ terakan_pipeline_cache_hash_shader(blake3_hash hash_out,
 
    /* SPIR-V content hash */
    _mesa_blake3_update(&ctx, spirv_hash, sizeof(blake3_hash));
+
+   /* Optional cross-stage postprocess context.  For VS, this includes
+    * FS inputs_read and remove_point_size — codegen-affecting decisions
+    * that are not captured in the shared r600_shader_key.  Including them
+    * here ensures that pruned and unpruned shader variants produce
+    * distinct cache keys without mutating the shared Gallium key union. */
+   if (postprocess_ctx != NULL && postprocess_ctx_size > 0)
+      _mesa_blake3_update(&ctx, postprocess_ctx, postprocess_ctx_size);
 
    _mesa_blake3_final(&ctx, hash_out);
 }
