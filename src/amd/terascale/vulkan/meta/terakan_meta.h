@@ -43,6 +43,7 @@
 #include "util/bitset.h"
 #include "util/format/u_formats.h"
 #include "vk_format.h"
+#include "vk_graphics_state.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -406,6 +407,93 @@ void terakan_meta_query_accum(
 /* Initializes the offset constants for the pipeline statistics query result copy shaders. */
 void terakan_meta_query_copy_init_offsets(VkQueryPipelineStatisticFlags flags,
                                           int8_t * offsets_32_bit_out, int8_t * offsets_64_bit_out);
+
+
+/* ---- Meta state save / restore infrastructure (B2) ---- */
+
+/* Flags indicating which state categories to save before a meta operation.
+ * Passed to terakan_meta_save_state().
+ */
+enum terakan_meta_save_flags {
+   /* Save graphics pipeline state: shader bindings, SQC, KCACHE needs, render
+    * state categories touched by terakan_meta_begin / terakan_meta_set_vs/ps.
+    * Also saves Mesa's vk_dynamic_graphics_state from the base command buffer.
+    */
+   TERAKAN_META_SAVE_GRAPHICS_PIPELINE    = 1u << 0,
+   /* Save compute pipeline state: bound_compute_pipeline, compute_pipeline_dirty. */
+   TERAKAN_META_SAVE_COMPUTE_PIPELINE     = 1u << 1,
+   /* Save push constants allocation tracking (KCACHE bank 15). */
+   TERAKAN_META_SAVE_PUSH_CONSTANTS       = 1u << 2,
+   /* Save descriptor set binding tracking (SQC state). */
+   TERAKAN_META_SAVE_DESCRIPTOR_SETS      = 1u << 3,
+};
+
+struct terakan_pipeline_compute;
+
+/* Snapshot of command writer state captured before a meta operation.
+ * Stack-allocated by the caller -- not embedded in the command writer -- to
+ * allow nested meta operations (though currently none nest).
+ *
+ * Mesa's vk_dynamic_graphics_state is saved/restored to keep the common
+ * Vulkan runtime in sync.  Terakan currently drives re-emission through
+ * state_draw.state_pending (set by the meta helpers), so the Mesa struct is
+ * mostly a forward-looking placeholder.  When Terakan migrates its CmdSet*
+ * paths to populate vk_dynamic_graphics_state, this save/restore will
+ * automatically start carrying real data.
+ */
+struct terakan_meta_saved_state {
+   uint32_t flags;
+
+   /* Mesa dynamic graphics state snapshot.
+    *
+    * Invariant: Terakan does not currently support VK_EXT_vertex_input_dynamic_state
+    * or VK_EXT_sample_locations, so the vi and ms.sample_locations pointers must
+    * be NULL.  When that changes, the struct-copy here must be replaced with
+    * vk_dynamic_graphics_state_copy() backed by owned storage.
+    */
+   struct vk_dynamic_graphics_state vk_dynamic;
+
+   /* TERAKAN_META_SAVE_GRAPHICS_PIPELINE */
+   uint16_t graphics_kcache_needed;
+   VkShaderStageFlags robustness_metadata_bound_to_stages;
+
+   /* TERAKAN_META_SAVE_COMPUTE_PIPELINE */
+   struct terakan_pipeline_compute const * compute_pipeline;
+   bool compute_pipeline_dirty;
+
+   /* TERAKAN_META_SAVE_PUSH_CONSTANTS */
+   VkShaderStageFlags push_constants_bound_to_stages;
+};
+
+/* Save command writer state before a meta operation.
+ *
+ * `flags` is a bitmask of enum terakan_meta_save_flags indicating which state
+ * categories will be modified by the meta operation and thus need saving.
+ * `state_out` is caller-owned storage (typically on the stack).
+ *
+ * The existing meta helper functions (terakan_meta_modify_state_draw_dword,
+ * terakan_meta_set_vs/ps, terakan_meta_begin, etc.) continue to work as
+ * before -- they mark the per-register state_draw.state_pending bits that
+ * drive PM4 re-emission.  The save/restore layer tracks Mesa dynamic state
+ * and Terakan-specific ancillary state on top.
+ */
+void terakan_meta_save_state(struct terakan_gfx_command_writer * command_writer,
+                             uint32_t flags,
+                             struct terakan_meta_saved_state * state_out);
+
+/* Restore command writer state after a meta operation.
+ *
+ * Restores Mesa's vk_dynamic_graphics_state and marks it fully dirty so the
+ * driver will re-validate all dynamic state categories on the next draw.
+ * Terakan-specific ancillary state (KCACHE masks, compute pipeline binding,
+ * push constant tracking) is restored per the flags used during save.
+ *
+ * The per-register state_draw.state_pending bits are already set by the meta
+ * helpers during the operation -- no additional marking is needed here.
+ */
+void terakan_meta_restore_state(struct terakan_gfx_command_writer * command_writer,
+                                struct terakan_meta_saved_state const * saved);
+
 
 #ifdef __cplusplus
 }

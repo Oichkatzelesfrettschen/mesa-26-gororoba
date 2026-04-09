@@ -357,3 +357,81 @@ terakan_meta_begin_cb(struct terakan_gfx_command_writer * const command_writer,
       }
    }
 }
+
+/* ---- Meta state save / restore (B2 infrastructure) ---- */
+
+void
+terakan_meta_save_state(struct terakan_gfx_command_writer * const command_writer,
+                        uint32_t const flags,
+                        struct terakan_meta_saved_state * const state_out)
+{
+   state_out->flags = flags;
+
+   if (flags & TERAKAN_META_SAVE_GRAPHICS_PIPELINE) {
+      /* Save Mesa dynamic graphics state.
+       *
+       * Terakan does not currently populate vk_dynamic_graphics_state from its
+       * CmdSet* paths (state_draw is the authoritative source), so this is
+       * mostly saving defaults.  Struct-copy is safe here because the pointer
+       * members (vi, ms.sample_locations) are NULL -- Terakan does not support
+       * the extensions that allocate them.
+       */
+      struct vk_command_buffer * const vk_cmd =
+         &command_writer->base.command_buffer->vk;
+      assert(vk_cmd->dynamic_graphics_state.vi == NULL);
+      assert(vk_cmd->dynamic_graphics_state.ms.sample_locations == NULL);
+      state_out->vk_dynamic = vk_cmd->dynamic_graphics_state;
+
+      state_out->graphics_kcache_needed = command_writer->graphics_kcache_needed;
+      state_out->robustness_metadata_bound_to_stages =
+         command_writer->robustness_metadata.bound_to_stages;
+   }
+
+   if (flags & TERAKAN_META_SAVE_COMPUTE_PIPELINE) {
+      state_out->compute_pipeline = command_writer->bound_compute_pipeline;
+      state_out->compute_pipeline_dirty = command_writer->compute_pipeline_dirty;
+   }
+
+   if (flags & TERAKAN_META_SAVE_PUSH_CONSTANTS) {
+      state_out->push_constants_bound_to_stages =
+         command_writer->push_constants_state.up_to_date_push_constants_bound_to_stages;
+   }
+}
+
+void
+terakan_meta_restore_state(struct terakan_gfx_command_writer * const command_writer,
+                           struct terakan_meta_saved_state const * const saved)
+{
+   if (saved->flags & TERAKAN_META_SAVE_GRAPHICS_PIPELINE) {
+      /* Restore Mesa dynamic graphics state and mark it fully dirty.
+       *
+       * The struct-copy restores the exact pre-meta snapshot.  dirty_all()
+       * ensures any driver code consuming vk_dynamic_graphics_state will
+       * re-validate everything on the next draw.  Terakan currently drives
+       * re-emission through state_draw.state_pending (set by the meta
+       * helpers), so this is a forward-looking measure for when the CmdSet*
+       * paths are migrated.
+       */
+      struct vk_command_buffer * const vk_cmd =
+         &command_writer->base.command_buffer->vk;
+      vk_cmd->dynamic_graphics_state = saved->vk_dynamic;
+      vk_dynamic_graphics_state_dirty_all(&vk_cmd->dynamic_graphics_state);
+
+      command_writer->graphics_kcache_needed = saved->graphics_kcache_needed;
+      command_writer->robustness_metadata.bound_to_stages =
+         saved->robustness_metadata_bound_to_stages;
+   }
+
+   if (saved->flags & TERAKAN_META_SAVE_COMPUTE_PIPELINE) {
+      command_writer->bound_compute_pipeline = saved->compute_pipeline;
+      command_writer->compute_pipeline_dirty = saved->compute_pipeline_dirty;
+   }
+
+   if (saved->flags & TERAKAN_META_SAVE_PUSH_CONSTANTS) {
+      /* Invalidate the cached allocation so push constants are re-uploaded
+       * and re-bound on the next draw or dispatch.
+       */
+      command_writer->push_constants_state.allocation.mapping_if_up_to_date = NULL;
+      command_writer->push_constants_state.up_to_date_push_constants_bound_to_stages = 0;
+   }
+}

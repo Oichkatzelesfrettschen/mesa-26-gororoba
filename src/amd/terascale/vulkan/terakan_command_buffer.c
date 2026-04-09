@@ -1462,6 +1462,9 @@ terakan_BeginCommandBuffer(VkCommandBuffer const commandBuffer,
 
    terakan_push_constants_state_reset(&gfx_command_writer->push_constants_state);
 
+   memset(&gfx_command_writer->robustness_metadata, 0,
+          sizeof(gfx_command_writer->robustness_metadata));
+
    struct terakan_device const * const device = terakan_command_buffer_device(command_buffer);
 
    terakan_state_draw_reset(&gfx_command_writer->state_draw, device);
