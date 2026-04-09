@@ -94,6 +94,12 @@ AluGroup::add_trans_instructions(AluInstr *instr)
    if (instr->has_alu_flag(alu_is_lds))
       return false;
 
+   /* Law 5 (VLIW5 literal monopoly): when any vec-slot instruction uses an
+    * inline literal, the literal bus is monopolized and the T-slot becomes a
+    * literal pass-through — no trans instruction can execute in this group. */
+   if (m_readports_reserver.m_nliterals > 0)
+      return false;
+
    auto opinfo = alu_ops.find(instr->opcode());
    assert(opinfo != alu_ops.end());
 
@@ -354,6 +360,16 @@ AluGroup::update_readport_reserver_trans(AluReadportReservation& readports_evalu
 bool
 AluGroup::try_readport(AluInstr *instr, AluBankSwizzle cycle)
 {
+   /* Law 5 (VLIW5 literal monopoly): if the T-slot already holds an
+    * instruction, reject any vec instruction that uses a literal — its
+    * literal would monopolize the bus and evict the T-slot instruction. */
+   if (m_slots[4]) {
+      for (unsigned i = 0; i < instr->n_sources(); ++i) {
+         if (instr->psrc(i) && instr->psrc(i)->as_literal())
+            return false;
+      }
+   }
+
    int preferred_chan = instr->dest_chan();
    AluReadportReservation readports_evaluator = m_readports_reserver;
    bool readport_ok = readports_evaluator.schedule_vec_instruction(*instr, cycle);
