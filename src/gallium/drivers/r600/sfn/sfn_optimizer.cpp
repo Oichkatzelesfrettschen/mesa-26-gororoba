@@ -119,6 +119,13 @@ DCEVisitor::visit(AluInstr *instr)
       return;
    }
 
+   /* LDS operations have side effects and must never be DCE'd.
+    * Also, opcode() asserts !alu_is_lds (ISA uses separate lds_opcode). */
+   if (instr->has_alu_flag(alu_is_lds)) {
+      sfn_log << SfnLog::opt << " LDS op, never kill\n";
+      return;
+   }
+
    switch (instr->opcode()) {
    case op2_kille:
    case op2_killne:

@@ -72,6 +72,11 @@ AluGroup::add_instruction(AluInstr *instr)
       return true;
    }
 
+   /* LDS instructions must go in vec slot X; if add_vec failed, bail out.
+    * opcode() asserts !alu_is_lds — must not fall through to trans path. */
+   if (instr->has_alu_flag(alu_is_lds))
+      return false;
+
    auto opinfo = alu_ops.find(instr->opcode());
    assert(opinfo != alu_ops.end());
 
