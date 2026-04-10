@@ -284,6 +284,19 @@ terakan_queue_completion_submission_drm_radeon_alloc_and_init_winsys(
    return VK_SUCCESS;
 }
 
+static void
+terakan_queue_completion_submission_drm_radeon_create_bo_reference(
+   struct terakan_queue_completion_submission * const submission_base,
+   void * const bo_reference)
+{
+   struct terakan_queue_completion_submission_drm_radeon const * const submission = container_of(
+      submission_base, struct terakan_queue_completion_submission_drm_radeon const, base);
+   struct terakan_device * const device =
+      container_of(submission->base.queue->vk.base.device, struct terakan_device, vk);
+   device->winsys_fn->queue->create_bo_reference(bo_reference, &submission->bo->base, false,
+                                                 true, TERAKAN_BO_PRIORITY_SYNC);
+}
+
 struct terakan_queue_winsys_fn const terakan_queue_drm_radeon_fn = {
    .create_bo_reference = terakan_queue_drm_radeon_create_bo_reference,
    .update_bo_reference = terakan_queue_drm_radeon_update_bo_reference,
@@ -291,6 +304,8 @@ struct terakan_queue_winsys_fn const terakan_queue_drm_radeon_fn = {
    .acquire_submission_context = terakan_queue_drm_radeon_acquire_submission_context,
    .submit = terakan_queue_drm_radeon_submit,
    .completion_submission_submit = terakan_queue_completion_submission_drm_radeon_submit,
+   .completion_submission_create_bo_reference =
+      terakan_queue_completion_submission_drm_radeon_create_bo_reference,
    .completion_submission_await = terakan_queue_completion_submission_drm_radeon_await,
    .completion_submission_finish_winsys_and_free =
       terakan_queue_completion_submission_drm_radeon_finish_winsys_and_free,
