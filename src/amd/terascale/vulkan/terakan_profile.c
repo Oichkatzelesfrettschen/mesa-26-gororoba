@@ -21,13 +21,14 @@ terakan_profile_dump_and_reset(struct terakan_profile_counters *c)
 
    fprintf(stderr,
       "TERAKAN_PROFILE[%lu]: "
-      "draw=%lu(%luus) dispatch=%lu(%luus) submit=%lu(%luus,ib=%ludw) "
+      "draw=%lu(%luus) dispatch=%lu(%luus) submit=%lu(%luus,ib=%ludw,bo=%lu) "
       "compile=%lu(hit=%lu,%luus) state=%lu(%luus)\n",
       (unsigned long)c->frame_count,
       (unsigned long)c->draw_count, (unsigned long)draw_avg_us,
       (unsigned long)c->dispatch_count, (unsigned long)dispatch_avg_us,
       (unsigned long)c->submit_count, (unsigned long)submit_avg_us,
       (unsigned long)(c->submit_count ? c->submit_ib_dwords / c->submit_count : 0),
+      (unsigned long)(c->submit_count ? c->submit_bo_refs / c->submit_count : 0),
       (unsigned long)c->compile_count, (unsigned long)c->compile_cache_hit,
       (unsigned long)compile_avg_us,
       (unsigned long)c->state_emit_count, (unsigned long)state_avg_us);

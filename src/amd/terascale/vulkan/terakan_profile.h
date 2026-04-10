@@ -30,6 +30,7 @@ struct terakan_profile_counters {
    uint64_t submit_count;
    uint64_t submit_ns;
    uint64_t submit_ib_dwords;
+   uint64_t submit_bo_refs;
 
    /* Shader compile */
    uint64_t compile_count;

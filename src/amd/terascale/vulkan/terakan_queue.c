@@ -823,6 +823,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
                command_buffer_indirect_buffer->relocations);
             if (profiling) {
                device->profile.submit_ib_dwords += aligned_size;
+               device->profile.submit_bo_refs += combined_bo_count;
             }
          } else {
             command_buffer_submit_result = device->winsys_fn->queue->submit(
@@ -836,6 +837,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
             if (profiling) {
                device->profile.submit_ib_dwords +=
                   command_buffer_indirect_buffer->indirect_buffer_size_dwords;
+               device->profile.submit_bo_refs += command_buffer_indirect_buffer->bo_reference_count;
             }
          }
 
