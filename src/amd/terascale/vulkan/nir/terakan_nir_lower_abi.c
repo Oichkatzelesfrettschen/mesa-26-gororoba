@@ -287,19 +287,39 @@ terakan_nir_buffer_uav_coord(nir_builder * const b, nir_def * coord,
 
    *state->driver_push_constants_used |=
       BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_BUFFER_UAV_BASE_GRANULARITY_OFFSET);
-   /* TODO(Triang3l): If the array index is constant, load via kcache rather
-    * than vertex fetch.  This would save 20-40 cycles by reading the UAV base
-    * granularity offset from KCACHE bank 15 (push constants) at a static vec4
-    * index rather than VFETCH.  Requires the index to be constant-folded by
-    * NIR before this pass runs. */
-   BITSET_SET(state->resources_needed, TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS);
-   nir_def * const base_granularity_offset = nir_load_buffer_resource_r600(
-      b, 1, 32, nir_imm_zero(b, 1, 32), nir_ishl_imm(b, uav_array_index, 2),
-      .access = ACCESS_CAN_REORDER | (include_helpers ? ACCESS_INCLUDE_HELPERS : 0),
-      .id_base = TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS,
-      .base = offsetof(struct terakan_push_constants_driver, buffer_uav_base_granularity_offset) +
-              sizeof(uint32_t) * uav_index_zero_based,
-      .format = PIPE_FORMAT_R32_UINT);
+
+   nir_def *base_granularity_offset;
+   nir_const_value *const_array_idx =
+      nir_src_as_const_value(nir_src_for_ssa(uav_array_index));
+
+   if (const_array_idx != NULL) {
+      /* KCACHE fast-path: constant array index folds into a static vec4
+       * offset in bank 15 (push constants).  1-cycle ALU read instead of
+       * a 20-40 cycle VFETCH. */
+      uint32_t const byte_offset =
+         offsetof(struct terakan_push_constants_driver,
+                  buffer_uav_base_granularity_offset) +
+         sizeof(uint32_t) * (uav_index_zero_based + const_array_idx->u32);
+      *state->kcache_needed |= (uint16_t)1 << TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS;
+      base_granularity_offset = nir_load_kcache_r600(
+         b, 1, 32, nir_imm_zero(b, 1, 32),
+         .access = ACCESS_CAN_REORDER,
+         .id_base = TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS,
+         .base = byte_offset / 16,
+         .component = (byte_offset % 16) / 4);
+   } else {
+      /* Dynamic array index — fall back to VFETCH from push constant
+       * resource descriptor. */
+      BITSET_SET(state->resources_needed, TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS);
+      base_granularity_offset = nir_load_buffer_resource_r600(
+         b, 1, 32, nir_imm_zero(b, 1, 32), nir_ishl_imm(b, uav_array_index, 2),
+         .access = ACCESS_CAN_REORDER | (include_helpers ? ACCESS_INCLUDE_HELPERS : 0),
+         .id_base = TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS,
+         .base = offsetof(struct terakan_push_constants_driver,
+                          buffer_uav_base_granularity_offset) +
+                 sizeof(uint32_t) * uav_index_zero_based,
+         .format = PIPE_FORMAT_R32_UINT);
+   }
    return nir_iadd_nuw(b, coord, base_granularity_offset);
 }
 
