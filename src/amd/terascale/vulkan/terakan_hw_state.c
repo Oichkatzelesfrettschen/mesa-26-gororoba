@@ -2308,6 +2308,9 @@ terakan_hw_state_sqc_emit_kcache_vs(struct terakan_gfx_command_writer * const co
 {
    struct terakan_hw_state_sqc * const state = &command_writer->hw_state_sqc;
 
+   assert(terakan_gfx_command_writer_device(command_writer)
+             ->vk.enabled_features.tessellationShader ||
+          !state->needed.tcs_tes);
    if (state->needed.tcs_tes) {
       terakan_hw_state_sqc_emit_kcache_for_stage(
          command_writer, TERAKAN_CONTEXT_REG_OFFSET(R_028FC0_ALU_CONST_BUFFER_SIZE_LS_0),
@@ -2317,7 +2320,19 @@ terakan_hw_state_sqc_emit_kcache_vs(struct terakan_gfx_command_writer * const co
       return;
    }
 
-   /* TODO(Triang3l): Fast path for tessellation not enabled on the device. */
+   /* Fast path: tessellation not enabled on the device — emit VS directly. */
+   if (!terakan_gfx_command_writer_device(command_writer)
+          ->vk.enabled_features.tessellationShader) {
+      terakan_hw_state_sqc_emit_kcache_for_stage(
+         command_writer,
+         TERAKAN_CONTEXT_REG_OFFSET(R_028180_ALU_CONST_BUFFER_SIZE_VS_0),
+         TERAKAN_CONTEXT_REG_OFFSET(R_028980_ALU_CONST_CACHE_VS_0),
+         TERASCALE_WDDM_PATCH_IDS_SQ_ALU_CONST_CACHE_LS_VS,
+         TERAKAN_HW_STATE_SQC_NEEDED_STAGE_VS,
+         TERAKAN_HW_STATE_SQC_MODIFIED_STAGE_VS_IN_VSES);
+      return;
+   }
+
 
    uint16_t const bindings_modified =
       state->modified.kcache[TERAKAN_HW_STATE_SQC_MODIFIED_STAGE_VS_IN_VSES];
@@ -2388,6 +2403,9 @@ terakan_hw_state_sqc_emit_resources_vs(struct terakan_gfx_command_writer * const
 {
    struct terakan_hw_state_sqc * const state = &command_writer->hw_state_sqc;
 
+   assert(terakan_gfx_command_writer_device(command_writer)
+             ->vk.enabled_features.tessellationShader ||
+          !state->needed.tcs_tes);
    if (state->needed.tcs_tes) {
       terakan_hw_state_sqc_emit_resources_for_stage(
          command_writer, TERAKAN_RESOURCE_HW_OFFSET_LS, TERAKAN_RESOURCE_HW_COUNT_VERTEX,
@@ -2396,7 +2414,17 @@ terakan_hw_state_sqc_emit_resources_vs(struct terakan_gfx_command_writer * const
       return;
    }
 
-   /* TODO(Triang3l): Fast path for tessellation not enabled on the device. */
+   /* Fast path: tessellation not enabled on the device — emit VS directly. */
+   if (!terakan_gfx_command_writer_device(command_writer)
+          ->vk.enabled_features.tessellationShader) {
+      terakan_hw_state_sqc_emit_resources_for_stage(
+         command_writer, TERAKAN_RESOURCE_HW_OFFSET_VSES,
+         TERAKAN_RESOURCE_HW_COUNT_VERTEX, state->resources_not_null.vs,
+         state->resource_bos.vs, state->resource_descriptors.vs[0],
+         state->needed.resources.vs, state->modified.resources.vs_in_vses);
+      return;
+   }
+
 
    BITSET_DECLARE(update_bindings, TERAKAN_RESOURCE_HW_COUNT_VERTEX);
    for (unsigned word_index = 0; word_index < BITSET_WORDS(TERAKAN_RESOURCE_HW_COUNT_VERTEX);
@@ -2446,6 +2474,9 @@ terakan_hw_state_sqc_emit_samplers_vs(struct terakan_gfx_command_writer * const 
 {
    struct terakan_hw_state_sqc * const state = &command_writer->hw_state_sqc;
 
+   assert(terakan_gfx_command_writer_device(command_writer)
+             ->vk.enabled_features.tessellationShader ||
+          !state->needed.tcs_tes);
    if (state->needed.tcs_tes) {
       terakan_hw_state_sqc_emit_samplers_for_stage(command_writer, TERAKAN_SAMPLER_HW_OFFSET_LS,
                                                    TERAKAN_HW_STATE_SQC_NEEDED_STAGE_VS,
@@ -2453,7 +2484,16 @@ terakan_hw_state_sqc_emit_samplers_vs(struct terakan_gfx_command_writer * const 
       return;
    }
 
-   /* TODO(Triang3l): Fast path for tessellation not enabled on the device. */
+   /* Fast path: tessellation not enabled on the device — emit VS directly. */
+   if (!terakan_gfx_command_writer_device(command_writer)
+          ->vk.enabled_features.tessellationShader) {
+      terakan_hw_state_sqc_emit_samplers_for_stage(
+         command_writer, TERAKAN_SAMPLER_HW_OFFSET_VSES,
+         TERAKAN_HW_STATE_SQC_NEEDED_STAGE_VS,
+         TERAKAN_HW_STATE_SQC_MODIFIED_STAGE_VS_IN_VSES);
+      return;
+   }
+
 
    uint32_t const bindings_modified =
       state->modified.samplers[TERAKAN_HW_STATE_SQC_MODIFIED_STAGE_VS_IN_VSES];
@@ -2502,6 +2542,9 @@ terakan_hw_state_sqc_emit_sampler_border_colors_vs(
 {
    struct terakan_hw_state_sqc * const state = &command_writer->hw_state_sqc;
 
+   assert(terakan_gfx_command_writer_device(command_writer)
+             ->vk.enabled_features.tessellationShader ||
+          !state->needed.tcs_tes);
    if (state->needed.tcs_tes) {
       terakan_hw_state_sqc_emit_sampler_border_colors_for_stage(
          command_writer, TERAKAN_CONFIG_REG_OFFSET(R_00A450_TD_LS_SAMPLER0_BORDER_COLOR_INDEX),
@@ -2509,7 +2552,17 @@ terakan_hw_state_sqc_emit_sampler_border_colors_vs(
       return;
    }
 
-   /* TODO(Triang3l): Fast path for tessellation not enabled on the device. */
+   /* Fast path: tessellation not enabled on the device — emit VS directly. */
+   if (!terakan_gfx_command_writer_device(command_writer)
+          ->vk.enabled_features.tessellationShader) {
+      terakan_hw_state_sqc_emit_sampler_border_colors_for_stage(
+         command_writer,
+         TERAKAN_CONFIG_REG_OFFSET(R_00A414_TD_VS_SAMPLER0_BORDER_INDEX),
+         TERAKAN_HW_STATE_SQC_NEEDED_STAGE_VS,
+         TERAKAN_HW_STATE_SQC_MODIFIED_STAGE_VS_IN_VSES);
+      return;
+   }
+
 
    uint32_t const bindings_modified =
       state->modified.sampler_border_colors[TERAKAN_HW_STATE_SQC_MODIFIED_STAGE_VS_IN_VSES];
