@@ -164,10 +164,12 @@ GLfloat *_mesa_copy_map_points1f( GLenum target, GLint ustride, GLint uorder,
 
    buffer = malloc(uorder * size * sizeof(GLfloat));
 
-   if (buffer)
-      for (i = 0, p = buffer; i < uorder; i++, points += ustride)
-	for (k = 0; k < size; k++)
-	  *p++ = points[k];
+   if (buffer) {
+      for (i = 0, p = buffer; i < uorder; i++, points += ustride) {
+         for (k = 0; k < size; k++)
+            *p++ = points[k];
+      }
+   }
 
    return buffer;
 }
@@ -188,10 +190,12 @@ GLfloat *_mesa_copy_map_points1d( GLenum target, GLint ustride, GLint uorder,
 
    buffer = malloc(uorder * size * sizeof(GLfloat));
 
-   if (buffer)
-      for (i = 0, p = buffer; i < uorder; i++, points += ustride)
-	for (k = 0; k < size; k++)
-	  *p++ = (GLfloat) points[k];
+   if (buffer) {
+      for (i = 0, p = buffer; i < uorder; i++, points += ustride) {
+         for (k = 0; k < size; k++)
+            *p++ = (GLfloat) points[k];
+      }
+   }
 
    return buffer;
 }
