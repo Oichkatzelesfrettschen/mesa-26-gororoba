@@ -39,6 +39,11 @@ glsl_lexer_cpp = custom_target(
   command : [prog_flex_cpp, '-o', '@OUTPUT@', '@INPUT@'],
 )
 
+glsl_generated_cpp_args = cpp.get_supported_arguments([
+  '-Wno-parentheses-equality',
+  '-Wno-null-conversion',
+])
+
 ir_expression_operation_constant_h = custom_target(
   'ir_expression_operation_constant.h',
   input : 'ir_expression_operation.py',
@@ -210,7 +215,7 @@ libglsl = static_library(
    ir_expression_operation_strings_h, ir_expression_operation_constant_h,
    float64_glsl_h],
   c_args : [c_msvc_compat_args, no_override_init_args],
-  cpp_args : [cpp_msvc_compat_args],
+  cpp_args : [cpp_msvc_compat_args, glsl_generated_cpp_args],
   gnu_symbol_visibility : 'hidden',
   link_with : libglcpp,
   include_directories : [inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux],

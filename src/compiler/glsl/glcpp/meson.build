@@ -34,12 +34,14 @@ glcpp_header_gen_deps = declare_dependency(
   ],
 )
 
+glcpp_generated_args = cc.get_supported_arguments('-Wno-parentheses-equality')
+
 libglcpp = static_library(
   'glcpp',
   [glcpp_lex, glcpp_parse, files('glcpp.h', 'pp.c')],
   dependencies : [idep_mesautil, glcpp_header_gen_deps],
   include_directories : [inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux],
-  c_args : [no_override_init_args, c_msvc_compat_args],
+  c_args : [no_override_init_args, c_msvc_compat_args, glcpp_generated_args],
   cpp_args : [cpp_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
@@ -51,7 +53,7 @@ libglcpp_standalone = static_library(
   link_with : libglcpp,
   dependencies : idep_mesautil,
   include_directories : [inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux],
-  c_args : [no_override_init_args, c_msvc_compat_args],
+  c_args : [no_override_init_args, c_msvc_compat_args, glcpp_generated_args],
   cpp_args : [cpp_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
@@ -63,7 +65,7 @@ glcpp = executable(
   dependencies : [dep_m, idep_getopt, idep_mesautil],
   include_directories : [inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux],
   link_with : [libglcpp_standalone, libglsl_util],
-  c_args : [no_override_init_args, c_msvc_compat_args],
+  c_args : [no_override_init_args, c_msvc_compat_args, glcpp_generated_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : false,
 )
