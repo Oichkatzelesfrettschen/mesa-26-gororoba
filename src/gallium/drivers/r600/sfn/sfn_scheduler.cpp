@@ -172,10 +172,89 @@ vec_channel_fit_score(const AluInstr *instr, unsigned free_vec_mask)
    return 1;
 }
 
-static void
-prioritize_vec_ready_for_group(std::list<AluInstr *>& ready, unsigned free_vec_mask)
+
+/* KCACHE affinity V2: count unique constant readport tuples an instruction
+ * would ADD to a group's existing reservation.  Returns 0..2.
+ *
+ * A readport tuple is (sel, kcache_bank, chan>>1).  Two sources sharing the
+ * same tuple consume only one readport slot (ISA §4.7.5).
+ *
+ * When the group is unseeded (no constants locked), returns 0 — neutral.
+ * When seeded, returns the count of NEW unique tuples not already reserved.
+ */
+static int
+kcache_new_tuples(const AluInstr *instr,
+                  const AluReadportReservation& group_rp)
 {
-   ready.sort([free_vec_mask](const AluInstr *lhs, const AluInstr *rhs) {
+   /* Check if group has any constants locked */
+   bool group_seeded = (group_rp.m_hw_const_addr[0] != -1 ||
+                        group_rp.m_hw_const_addr[1] != -1);
+   if (!group_seeded)
+      return 0;  /* Neutral when unseeded — don't disturb baseline ordering */
+
+   /* Collect unique constant tuples from this instruction's sources.
+    * Max 3 sources per ALU op; max 2 unique tuples possible. */
+   struct tuple_t { int sel; int bank; int chan_pair; };
+   tuple_t unique_tuples[2];
+   int n_unique = 0;
+
+   for (unsigned s = 0; s < instr->n_sources(); ++s) {
+      const VirtualValue *src = instr->psrc(s);
+      if (!src)
+         continue;
+      /* Non-const cast needed: as_uniform() lacks const overload in SFN.
+       * This is read-only — we only call sel()/kcache_bank()/chan(). */
+      auto *uniform = const_cast<VirtualValue *>(src)->as_uniform();
+      if (!uniform)
+         continue;
+
+      int sel = uniform->sel();
+      int bank = uniform->kcache_bank();
+      int chan_pair = uniform->chan() >> 1;
+
+      /* Deduplicate: skip if we already have this tuple */
+      bool dup = false;
+      for (int t = 0; t < n_unique; ++t) {
+         if (unique_tuples[t].sel == sel &&
+             unique_tuples[t].bank == bank &&
+             unique_tuples[t].chan_pair == chan_pair) {
+            dup = true;
+            break;
+         }
+      }
+      if (dup)
+         continue;
+
+      /* Check if this tuple is already reserved in the group */
+      bool reserved = false;
+      for (int r = 0; r < 2; ++r) {  /* max_const_readports = 2 */
+         if (group_rp.m_hw_const_addr[r] == sel &&
+             group_rp.m_hw_const_bank[r] == bank &&
+             group_rp.m_hw_const_chan[r] == chan_pair) {
+            reserved = true;
+            break;
+         }
+      }
+      if (reserved)
+         continue;
+
+      /* New tuple — record it */
+      if (n_unique < 2) {
+         unique_tuples[n_unique] = {sel, bank, chan_pair};
+         n_unique++;
+      } else {
+         /* Already have 2 unique new tuples — can't get worse */
+         break;
+      }
+   }
+   return n_unique;
+}
+
+static void
+prioritize_vec_ready_for_group(std::list<AluInstr *>& ready, unsigned free_vec_mask,
+                               const AluReadportReservation& group_rp)
+{
+   ready.sort([free_vec_mask, &group_rp](const AluInstr *lhs, const AluInstr *rhs) {
       const int lhs_fit = vec_channel_fit_score(lhs, free_vec_mask);
       const int rhs_fit = vec_channel_fit_score(rhs, free_vec_mask);
       if (lhs_fit != rhs_fit)
@@ -183,6 +262,14 @@ prioritize_vec_ready_for_group(std::list<AluInstr *>& ready, unsigned free_vec_m
 
       if (lhs->priority() != rhs->priority())
          return lhs->priority() > rhs->priority();
+
+      /* KCACHE affinity V2: when group already has constants locked,
+       * prefer instructions that match existing reservations (fewer
+       * new readport tuples = lower cost = sorts first). */
+      const int lhs_kc = kcache_new_tuples(lhs, group_rp);
+      const int rhs_kc = kcache_new_tuples(rhs, group_rp);
+      if (lhs_kc != rhs_kc)
+         return lhs_kc < rhs_kc;
 
       return lhs < rhs;
    });
@@ -1224,7 +1311,8 @@ BlockScheduler::schedule_alu_to_group_vec(AluGroup *group)
       if (!free_vec_mask)
          break;
 
-      prioritize_vec_ready_for_group(alu_vec_ready, free_vec_mask);
+      prioritize_vec_ready_for_group(alu_vec_ready, free_vec_mask,
+                                       group->readport_reserver());
 
       bool added_to_group = false;
       auto i = alu_vec_ready.begin();
