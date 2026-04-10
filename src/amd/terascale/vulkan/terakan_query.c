@@ -151,9 +151,9 @@ terakan_CmdResetQueryPool(VkCommandBuffer const commandBuffer, VkQueryPool const
    }
    struct terakan_gfx_command_writer * const command_writer =
       terakan_command_buffer_from_handle(commandBuffer)->command_writer.gfx;
-   /* TODO(Triang3l): This must not be done while vkCmdCopyQueryPoolResults is still fetching the
-    * availability. VS_PARTIAL_FLUSH maybe if there's outstanding query copying.
-    */
+   /* Drain any outstanding CP DMA from a preceding vkCmdCopyQueryPoolResults
+    * that may still be reading the availability bits we are about to zero. */
+   terakan_cp_dma_sync_cp_me(command_writer);
    /* Mark as unavailable. */
    terakan_cp_dma_fill(
       command_writer, 0, query_pool->bo,
