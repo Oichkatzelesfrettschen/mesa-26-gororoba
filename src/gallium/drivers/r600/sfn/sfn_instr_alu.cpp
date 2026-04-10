@@ -1830,7 +1830,7 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       }
       case nir_op_imul:
          /* MUL_UINT24: single-cycle vec slot vs multi-cycle trans-only MULLO_INT */
-         if (nir_alu_src_fits_24bit(alu, 0) || nir_alu_src_fits_24bit(alu, 1))
+         if (nir_alu_src_fits_24bit(alu, 0) && nir_alu_src_fits_24bit(alu, 1))
             return emit_alu_op2(*alu, op2_mul_uint24, shader);
          return emit_alu_trans_op2_cayman(*alu, op2_mullo_int, shader);
       case nir_op_imul_high:
@@ -1914,7 +1914,7 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
          return emit_alu_trans_op1_eg(*alu, op1_uint_to_flt, shader);
       }
       case nir_op_imul:
-         if (nir_alu_src_fits_24bit(alu, 0) || nir_alu_src_fits_24bit(alu, 1))
+         if (nir_alu_src_fits_24bit(alu, 0) && nir_alu_src_fits_24bit(alu, 1))
             return emit_alu_op2(*alu, op2_mul_uint24, shader);
          return emit_alu_trans_op2_eg(*alu, op2_mullo_int, shader);
       case nir_op_imul_high:

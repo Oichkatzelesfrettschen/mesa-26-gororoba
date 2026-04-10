@@ -624,6 +624,9 @@ optimize_once(nir_shader *shader)
    NIR_PASS(progress, shader, nir_opt_copy_prop);
    NIR_PASS(progress, shader, nir_opt_dce);
    NIR_PASS(progress, shader, nir_opt_algebraic);
+   nir_opt_uub_options uub_options = {};
+   uub_options.opt_imul = true;
+   NIR_PASS(progress, shader, nir_opt_uub, &uub_options);
    if (shader->options->has_bitfield_select)
       NIR_PASS(progress, shader, nir_opt_generate_bfi);
    NIR_PASS(progress, shader, nir_opt_constant_folding);
