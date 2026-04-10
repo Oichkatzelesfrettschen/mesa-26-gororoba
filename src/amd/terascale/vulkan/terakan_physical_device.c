@@ -419,9 +419,9 @@ terakan_physical_device_get_capabilities(
    features_out->fullDrawIndexUint32 = true;
    features_out->imageCubeArray = true;
    features_out->independentBlend = true;
-   features_out->geometryShader = true; /* TeraScale-2: not yet implemented */
+   features_out->geometryShader = false; /* TeraScale-2: no GS hardware */
    features_out->tessellationShader = false;
-   features_out->sampleRateShading = true;
+   features_out->sampleRateShading = false; /* TeraScale-2: no per-sample shading */
    features_out->dualSrcBlend = true;
    features_out->logicOp = true;
    features_out->multiDrawIndirect = false;
@@ -696,7 +696,10 @@ terakan_physical_device_get_capabilities(
 
    properties_out->maxDrawIndexedIndexValue = UINT32_MAX;
 
-   /* TODO(Triang3l): maxDrawIndirectCount when indirect drawing is enabled. */
+   /* maxDrawIndirectCount: must be >= 1 even without multiDrawIndirect to avoid
+    * division-by-zero in tools like vkpeak. Indirect drawing itself is not yet
+    * implemented, but the limit must be truthful. */
+   properties_out->maxDrawIndirectCount = 1;
 
    properties_out->maxSamplerLodBias = 0x1.0p5f - 0x1.0p-8f;
    properties_out->maxSamplerAnisotropy = 0x1.0p4f;
@@ -809,8 +812,8 @@ terakan_physical_device_get_capabilities(
    features_out->samplerMirrorClampToEdge = true;
 
    /* VK_KHR_dynamic_rendering (#45, Vulkan 1.3). */
-   extensions_out->KHR_dynamic_rendering = true;
-   features_out->dynamicRendering = true;
+   extensions_out->KHR_dynamic_rendering = false; /* Tier 3: re-enable after renderpass2 + ds_resolve chain */
+   features_out->dynamicRendering = false;
 
    /* VK_KHR_external_memory_capabilities (#72, Vulkan 1.1, instance). */
    char const driver_uuid[] = "AMD-MESA-DRV";
