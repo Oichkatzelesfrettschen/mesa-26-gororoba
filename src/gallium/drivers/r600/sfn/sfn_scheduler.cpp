@@ -19,6 +19,8 @@
 #include "sfn_instr_mem.h"
 #include "sfn_instr_tex.h"
 
+#include <cstdio>
+
 #include <algorithm>
 #include <sstream>
 
@@ -744,11 +746,17 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
          // kcache constellations
          assert(!m_current_block->lds_group_active());
 
-         // AR is loaded but not all uses are done, we don't want
-         // to start a new CF here
-         // TODO this can explode, if kcache reservation fails with
-         // an instruction that also requires AR
-         assert(expected_ar_uses == 0);
+         // AR is loaded but not all uses are done — cannot start a
+         // new CF here because the address register value would be
+         // lost across clause boundaries.  This is a genuine
+         // scheduler limitation: bail out so the shader fails
+         // compilation rather than silently miscompiling.
+         if (expected_ar_uses > 0) {
+            fprintf(stderr, "r600/sfn: KCACHE reservation failed while AR in use "
+                            "(%d pending uses) -- cannot break clause\n",
+                            m_current_block->expected_ar_uses());
+            return false;
+         }
 
          // kcache reservation failed, so we have to start a new CF
          start_new_block(out_blocks, Block::alu);
