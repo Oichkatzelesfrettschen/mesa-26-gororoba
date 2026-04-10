@@ -826,17 +826,18 @@ BlockScheduler::handle_alu_group_fill_failure(Shader::ShaderBlocks& out_blocks,
                                               const AluScheduleContext& alu_ctx)
 {
    if (alu_ctx.had_kcache_failure_in_fill) {
-      // LDS read groups should not lead to impossible
-      // kcache constellations
+      /* LDS read groups should not lead to impossible kcache constellations. */
       assert(!m_current_block->lds_group_active());
 
-      // AR is loaded but not all uses are done, we don't want
-      // to start a new CF here
-      // TODO this can explode, if kcache reservation fails with
-      // an instruction that also requires AR
-      assert(alu_ctx.expected_ar_uses == 0);
+      if (alu_ctx.expected_ar_uses > 0) {
+         sfn_log << SfnLog::schedule
+                 << "KCACHE reservation failed with "
+                 << alu_ctx.expected_ar_uses
+                 << " pending AR uses; cannot break ALU clause\n";
+         return AluGroupFillResult::failed;
+      }
 
-      // kcache reservation failed, so we have to start a new CF
+      /* No AR value is live, so a new ALU clause can retry the kcache layout. */
       start_new_block(out_blocks, Block::alu);
       return AluGroupFillResult::retry;
    }
