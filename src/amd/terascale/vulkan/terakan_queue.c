@@ -700,6 +700,10 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
             command_buffer_indirect_buffer->indirect_buffer,
             command_buffer_indirect_buffer->relocation_count,
             command_buffer_indirect_buffer->relocations);
+         if (profiling) {
+            device->profile.submit_ib_dwords +=
+               command_buffer_indirect_buffer->indirect_buffer_size_dwords;
+         }
          if (command_buffer_submit_result != VK_SUCCESS) {
             /* Lose the device as the submission might have been done partially already, don't leave
              * it in an indeterminate state.
