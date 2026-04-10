@@ -58,6 +58,7 @@ static struct debug_control const terakan_debug_flags[] = {
    {"perf",     TERAKAN_DEBUG_PERF},
    {"cs",       TERAKAN_DEBUG_CS_DUMP},
    {"pipeline", TERAKAN_DEBUG_PIPELINE},
+   {"profile",  TERAKAN_DEBUG_PROFILE},
    {NULL, 0}
 };
 
