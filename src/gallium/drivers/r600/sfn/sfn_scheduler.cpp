@@ -917,7 +917,7 @@ void BlockScheduler::maybe_split_alu_block(Shader::ShaderBlocks& out_blocks)
    Instr *next_block_start = nullptr;
    for (auto cur_group : *m_current_block) {
 
-      if (used_slots + pending_slots + cur_group->slots() < 128) {
+      if (used_slots + pending_slots + cur_group->slots() <= 128) {
          if (cur_group->can_start_alu_block()) {
             next_block_start = cur_group;
             used_slots += pending_slots;
