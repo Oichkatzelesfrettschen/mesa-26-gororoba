@@ -451,10 +451,12 @@ if with_platform_windows
   ]
 endif
 
+mesa_generated_c_args = cc.get_supported_arguments('-Wno-parentheses-equality')
+
 libmesa = static_library(
   'mesa',
   files_libmesa,
-  c_args : [c_msvc_compat_args, _mesa_windows_args],
+  c_args : [c_msvc_compat_args, _mesa_windows_args, mesa_generated_c_args],
   cpp_args : [cpp_msvc_compat_args, _mesa_windows_args],
   gnu_symbol_visibility : 'hidden',
   include_directories : [
