@@ -204,6 +204,13 @@ struct terakan_queue {
 
    int wsi_hw_wait_probe_state;
 
+   /* Fence elision: completion submission whose BO is proactively referenced in draw IB
+    * submissions, so that when signals arrive (same or later vkQueueSubmit call), no
+    * separate DRM ioctl is needed — the completion thread can await the already-busy BO.
+    * Only accessed from terakan_queue_submit (externally synchronized per queue).
+    */
+   struct terakan_queue_completion_submission *pending_completion;
+
    uint32_t shader_rings_bytes_shr8;
    struct terakan_bo * shader_rings;
    uint64_t shader_rings_last_usage;
@@ -267,6 +274,11 @@ struct terakan_queue_winsys_fn {
    VkResult (*completion_submission_submit)(struct terakan_queue_completion_submission * submission,
                                             uint32_t signal_indirect_buffer_size_dwords,
                                             uint32_t const * signal_indirect_buffer);
+   /* Creates a BO reference for the completion submission's internal BO, suitable for
+    * inclusion in a draw IB's BO reference list (fence elision).
+    */
+   void (*completion_submission_create_bo_reference)(
+      struct terakan_queue_completion_submission * submission, void * bo_reference);
    /* Returns whether the wait was successful. In case of a GPU hang, must return in finite time. */
    bool (*completion_submission_await)(struct terakan_queue_completion_submission * submission);
    void (*completion_submission_finish_winsys_and_free)(
