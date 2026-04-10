@@ -257,7 +257,7 @@ int radeon_lookup_buffer(struct radeon_winsys *rws, struct radeon_cs_context *cs
 static unsigned radeon_lookup_or_add_real_buffer(struct radeon_drm_cs *cs,
                                                  struct radeon_bo *bo)
 {
-   struct radeon_cs_context *csc = cs->csc;
+   struct radeon_cs_context *csc = cs->csc_cur;
    struct drm_radeon_cs_reloc *reloc;
    unsigned hash = bo->hash & (ARRAY_SIZE(csc->reloc_indices_hashlist)-1);
    int i = -1;
@@ -317,7 +317,7 @@ static unsigned radeon_lookup_or_add_real_buffer(struct radeon_drm_cs *cs,
 static int radeon_lookup_or_add_slab_buffer(struct radeon_drm_cs *cs,
                                             struct radeon_bo *bo)
 {
-   struct radeon_cs_context *csc = cs->csc;
+   struct radeon_cs_context *csc = cs->csc_cur;
    unsigned hash;
    struct radeon_bo_item *item;
    int idx;
@@ -416,7 +416,7 @@ static int radeon_drm_cs_lookup_buffer(struct radeon_cmdbuf *rcs,
 {
    struct radeon_drm_cs *cs = radeon_drm_cs(rcs);
 
-   return radeon_lookup_buffer(&cs->ws->base, cs->csc, (struct radeon_bo*)buf);
+   return radeon_lookup_buffer(&cs->ws->base, cs->csc_cur, (struct radeon_bo*)buf);
 }
 
 static bool radeon_drm_cs_validate(struct radeon_cmdbuf *rcs)
@@ -445,7 +445,7 @@ static bool radeon_drm_cs_validate(struct radeon_cmdbuf *rcs)
          cs->flush_cs(cs->flush_data,
                       RADEON_FLUSH_ASYNC_START_NEXT_GFX_IB_NOW, NULL);
       } else {
-         radeon_cs_context_cleanup(&cs->ws->base, cs->csc);
+         radeon_cs_context_cleanup(&cs->ws->base, cs->csc_cur);
          rcs->used_vram_kb = 0;
          rcs->used_gart_kb = 0;
 
@@ -790,7 +790,7 @@ static bool radeon_bo_is_referenced(struct radeon_cmdbuf *rcs,
    if (!bo->num_cs_references)
       return false;
 
-   index = radeon_lookup_buffer(&cs->ws->base, cs->csc, bo);
+   index = radeon_lookup_buffer(&cs->ws->base, cs->csc_cur, bo);
    if (index == -1)
       return false;
 
