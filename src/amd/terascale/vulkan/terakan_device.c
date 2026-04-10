@@ -280,6 +280,7 @@ terakan_device_init(struct terakan_device * const device,
          *(empty_fetch_shader_mapping_next++) =
             util_cpu_to_le32(S_SQ_CF_WORD1_BARRIER(1) | EG_V_SQ_CF_WORD1_SQ_CF_INST_RETURN);
          memset(&device->empty_vertex_input, 0, sizeof(device->empty_vertex_input));
+         memset(&device->profile, 0, sizeof(device->profile));
          device->empty_vertex_input.program_bo = device->meta_shaders_bo;
       }
       /* Meta shaders. */

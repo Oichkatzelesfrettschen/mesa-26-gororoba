@@ -22,6 +22,8 @@
  */
 
 #include "terakan_shader.h"
+#include "terakan_profile.h"
+#include "terakan_instance.h"
 
 #include "nir/terakan_nir.h"
 #include "terakan_bo.h"
@@ -152,6 +154,12 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
    VkResult result;
 
    terakan_physical_device const & physical_device = *terakan_device_physical_device(device);
+   terakan_instance const * const inst =
+      reinterpret_cast<terakan_instance const *>(physical_device.vk.base.instance);
+   uint64_t compile_t0 = 0;
+   bool const profiling = inst->debug_flags & TERAKAN_DEBUG_PROFILE;
+   if (profiling)
+      compile_t0 = terakan_profile_now_ns();
    terakan_physical_device_chip_info const & chip_info = physical_device.chip_info;
    amd_gfx_level const gfx_level = chip_info.is_r9xx ? CAYMAN : EVERGREEN;
 
@@ -316,6 +324,12 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
          std::free(shader->shader.arrays);
       }
       return vk_errorf(device, VK_ERROR_UNKNOWN, "Failed to build the shader bytecode");
+   }
+
+   if (profiling) {
+      const_cast<terakan_device *>(device)->profile.compile_ns +=
+         terakan_profile_now_ns() - compile_t0;
+      const_cast<terakan_device *>(device)->profile.compile_count++;
    }
 
    /* --- TERAKAN_DEBUG: ISA + VLIW analysis (linked list still valid here) --- */

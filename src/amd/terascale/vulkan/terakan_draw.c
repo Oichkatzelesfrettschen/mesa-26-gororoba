@@ -22,6 +22,9 @@
  */
 
 #include "terakan_draw.h"
+#include "terakan_profile.h"
+#include "terakan_instance.h"
+#include "terakan_device.h"
 
 #include "terakan_buffer.h"
 #include "terakan_command_buffer.h"
@@ -115,6 +118,15 @@ terakan_before_hw_draw(struct terakan_gfx_command_writer * const command_writer)
 static void
 terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
 {
+   uint64_t t0 = 0;
+   struct terakan_device * const device = terakan_gfx_command_writer_device(command_writer);
+   struct terakan_instance const * const inst =
+      container_of(terakan_device_physical_device(device)->vk.base.instance,
+                   struct terakan_instance const, vk);
+   bool const profiling = inst->debug_flags & TERAKAN_DEBUG_PROFILE;
+   if (profiling)
+      t0 = terakan_profile_now_ns();
+
    terakan_state_draw_apply_pending(command_writer);
 
    terakan_push_constants_apply(command_writer, false);
@@ -129,6 +141,11 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
    }
 
    terakan_before_hw_draw(command_writer);
+
+   if (profiling) {
+      device->profile.draw_ns += terakan_profile_now_ns() - t0;
+      device->profile.draw_count++;
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL

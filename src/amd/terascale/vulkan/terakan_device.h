@@ -22,6 +22,7 @@
  */
 
 #ifndef TERAKAN_DEVICE_H
+#include "terakan_profile.h"
 #define TERAKAN_DEVICE_H
 
 #include "meta/terakan_meta.h"
@@ -124,6 +125,9 @@ struct terakan_device {
 
    /* Each queue is optional, if requested by the application. */
    struct terakan_queue * queue_graphics;
+
+   /* B0-INSTRUMENT: hot-path profiling (gated by TERAKAN_DEBUG_PROFILE) */
+   struct terakan_profile_counters profile;
 };
 
 VK_DEFINE_HANDLE_CASTS(terakan_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)

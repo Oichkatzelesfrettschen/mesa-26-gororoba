@@ -59,6 +59,9 @@ enum {
    /* Log pipeline creation (VS+PS GPR counts, ndw sizes).
     * Activate with TERAKAN_DEBUG=pipeline. */
    TERAKAN_DEBUG_PIPELINE = (uint64_t)1 << 4,
+   /* Per-frame hot-path CPU timing counters.
+    * Activate with TERAKAN_DEBUG=profile. */
+   TERAKAN_DEBUG_PROFILE  = (uint64_t)1 << 5,
 };
 
 /* "Development test" options are provided primarily for unit or regression testing of very specific

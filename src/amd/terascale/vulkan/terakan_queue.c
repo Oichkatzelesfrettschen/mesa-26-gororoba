@@ -22,6 +22,8 @@
  */
 
 #include "terakan_queue.h"
+#include "terakan_profile.h"
+#include "terakan_instance.h"
 
 #include "terakan_barrier.h"
 #include "terakan_bo.h"
@@ -445,6 +447,14 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
       container_of(queue->vk.base.device, struct terakan_device, vk);
    struct terakan_physical_device const * const physical_device =
       terakan_device_physical_device(device);
+
+   uint64_t submit_t0 = 0;
+   struct terakan_instance const * const inst =
+      container_of(physical_device->vk.base.instance,
+                   struct terakan_instance const, vk);
+   bool const profiling = inst->debug_flags & TERAKAN_DEBUG_PROFILE;
+   if (profiling)
+      submit_t0 = terakan_profile_now_ns();
 
    if (submit->wait_count != 0) {
       struct vk_sync_wait * const cpu_waits = alloca(sizeof(*cpu_waits) * submit->wait_count);
@@ -916,6 +926,12 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
 
    mtx_unlock(&device->completion_mutex);
    cnd_broadcast(&device->completion_condition);
+
+   if (profiling) {
+      device->profile.submit_ns += terakan_profile_now_ns() - submit_t0;
+      device->profile.submit_count++;
+      terakan_profile_dump_and_reset(&device->profile);
+   }
 
    return VK_SUCCESS;
 }
