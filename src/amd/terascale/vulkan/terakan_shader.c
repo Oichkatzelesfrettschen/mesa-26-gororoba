@@ -230,11 +230,16 @@ static bool
 terakan_nir_should_vectorize_load_store(unsigned const align_mul, unsigned const align_offset,
                                         unsigned const bit_size, unsigned const num_components,
                                         int64_t hole_size, nir_intrinsic_instr * const low,
-                                        UNUSED nir_intrinsic_instr * const high, void * const data)
+                                        nir_intrinsic_instr * const high, void * const data)
 {
-   /* TODO(Triang3l): Don't vectorize kcache loads, and also don't combine kcache and resource loads
-    * (such as when the constant address of `high` is above the maximum kcache buffer size).
-    */
+   /* Don't vectorize kcache loads — vectorizing breaks bank locality and
+    * wastes ALU clause capacity.  Also reject mixed kcache + resource loads
+    * (the constant address of `high` may exceed the kcache buffer window). */
+   if (low->intrinsic == nir_intrinsic_load_kcache_r600 ||
+       high->intrinsic == nir_intrinsic_load_kcache_r600 ||
+       low->intrinsic != high->intrinsic) {
+      return false;
+   }
 
    if (low->intrinsic == nir_intrinsic_store_ssbo) {
       /* Storage buffer UAVs always use TERASCALE_FORMAT_INDEX_32 or STORE_BYTE / STORE_SHORT. */
