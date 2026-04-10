@@ -70,6 +70,11 @@ public:
 void
 PeepholeVisitor::visit(AluInstr *instr)
 {
+   /* LDS instructions encode ALU_INST=17 (OP3_LDS_IDX_OP) which aliases
+    * OP2_TRUNC -- opcode() asserts !alu_is_lds.  LDS ops have no ALU
+    * peephole semantics, so skip them entirely. */
+   if (instr->has_alu_flag(alu_is_lds))
+      return;
    const auto opinfo = alu_ops.at(instr->opcode());
 
    switch (instr->opcode()) {
