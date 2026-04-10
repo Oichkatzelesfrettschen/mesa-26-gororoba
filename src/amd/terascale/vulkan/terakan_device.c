@@ -35,6 +35,7 @@
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "vk_alloc.h"
+#include "vk_pipeline_cache.h"
 #include "vk_sync.h"
 #include "vk_cmd_enqueue_entrypoints.h"
 #include "vk_common_entrypoints.h"
@@ -76,6 +77,9 @@ terakan_device_finish(struct terakan_device * const device)
         ++reference_placeholder_bo_index) {
       terakan_bo_free(device->reference_placeholder_bos[reference_placeholder_bo_index], NULL);
    }
+
+   if (device->vk.mem_cache)
+      vk_pipeline_cache_destroy(device->vk.mem_cache, NULL);
 
    vk_device_finish(&device->vk);
 }
@@ -123,6 +127,19 @@ terakan_device_init(struct terakan_device * const device,
       vk_device_init(&device->vk, &physical_device->vk, &dispatch_table, create_info, allocator);
    if (result != VK_SUCCESS) {
       return result;
+   }
+
+   /* Device-level memory cache — used as fallback when apps pass
+    * VK_NULL_HANDLE for the pipeline cache.  Backed by disk_cache
+    * (initialized on the physical device) for cross-run persistence. */
+   {
+      struct vk_pipeline_cache_create_info cache_info = { .weak_ref = true };
+      device->vk.mem_cache =
+         vk_pipeline_cache_create(&device->vk, &cache_info, NULL);
+      if (device->vk.mem_cache == NULL) {
+         vk_device_finish(&device->vk);
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      }
    }
 
    /* Populate the command dispatch table for secondary command buffer emulation. */

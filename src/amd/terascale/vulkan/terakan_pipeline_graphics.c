@@ -1624,7 +1624,7 @@ terakan_CreateGraphicsPipelines(VkDevice const deviceHandle, VkPipelineCache con
       VkGraphicsPipelineCreateInfo const * const create_info = &pCreateInfos[pipeline_index];
       struct vk_pipeline_cache *cache =
          pipelineCache != VK_NULL_HANDLE
-            ? vk_pipeline_cache_from_handle(pipelineCache) : NULL;
+            ? vk_pipeline_cache_from_handle(pipelineCache) : device->vk.mem_cache;
       VkResult const pipeline_result =
          terakan_pipeline_graphics_create(device, create_info, cache, pAllocator, &pipeline);
       if (pipeline_result != VK_SUCCESS) {

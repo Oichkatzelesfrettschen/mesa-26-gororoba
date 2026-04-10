@@ -283,7 +283,7 @@ terakan_CreateComputePipelines(VkDevice const deviceHandle,
    for (uint32_t i = 0; i < createInfoCount; i++) {
       struct vk_pipeline_cache *cache =
          pipelineCache != VK_NULL_HANDLE
-            ? vk_pipeline_cache_from_handle(pipelineCache) : NULL;
+            ? vk_pipeline_cache_from_handle(pipelineCache) : device->vk.mem_cache;
       VkResult result = terakan_pipeline_compute_create(
          device, cache, &pCreateInfos[i], pAllocator, &pPipelines[i]);
       if (result != VK_SUCCESS) {
