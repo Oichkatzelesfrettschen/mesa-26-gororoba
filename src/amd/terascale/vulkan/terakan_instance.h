@@ -37,7 +37,7 @@ extern "C" {
 #define TERAKAN_USE_WSI_PLATFORM
 #endif
 
-#define TERAKAN_API_VERSION VK_MAKE_API_VERSION(0, 1, 1, VK_HEADER_VERSION)
+#define TERAKAN_API_VERSION VK_MAKE_API_VERSION(0, 1, 0, VK_HEADER_VERSION)
 
 /* "Debug" options are intended to be potentially useful to both driver developers and users, mainly
  * for pinpointing the causes of issues (especially those observable in real applications), as well
