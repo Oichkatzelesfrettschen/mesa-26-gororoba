@@ -1322,13 +1322,14 @@ is_vertex_position(const struct gl_context *ctx, GLuint index)
 #define ATTR_UNION(A, N, T, C, V0, V1, V2, V3)                  \
 do {                                                            \
    struct vbo_save_context *save = &vbo_context(ctx)->save;     \
+   const GLuint _vbo_attr = (A);                                \
    int sz = (sizeof(C) / sizeof(GLfloat));                      \
                                                                 \
-   if (save->active_sz[A] != N) {                               \
+   if (save->active_sz[_vbo_attr] != N) {                       \
       bool had_dangling_ref = save->dangling_attr_ref;          \
-      if (fixup_vertex(ctx, A, N * sz, T) &&                    \
+      if (fixup_vertex(ctx, _vbo_attr, N * sz, T) &&            \
           !had_dangling_ref && save->dangling_attr_ref &&       \
-          A != VBO_ATTRIB_POS) {                                \
+          _vbo_attr != VBO_ATTRIB_POS) {                        \
          fi_type *dest = save->vertex_store->buffer_in_ram;     \
          /* Copy the new attr values to the already copied      \
           * vertices.                                           \
@@ -1337,7 +1338,7 @@ do {                                                            \
             GLbitfield64 enabled = save->enabled;               \
             while (enabled) {                                   \
                const int j = u_bit_scan64(&enabled);            \
-               if (j == A) {                                    \
+               if (j == _vbo_attr) {                            \
                   if (N>0) ((C*) dest)[0] = V0;                 \
                   if (N>1) ((C*) dest)[1] = V1;                 \
                   if (N>2) ((C*) dest)[2] = V2;                 \
@@ -1351,15 +1352,15 @@ do {                                                            \
    }                                                            \
                                                                 \
    {                                                            \
-      C *dest = (C *)save->attrptr[A];                          \
+      C *dest = (C *)save->attrptr[_vbo_attr];                  \
       if (N>0) dest[0] = V0;                                    \
       if (N>1) dest[1] = V1;                                    \
       if (N>2) dest[2] = V2;                                    \
       if (N>3) dest[3] = V3;                                    \
-      save->attrtype[A] = T;                                    \
+      save->attrtype[_vbo_attr] = T;                            \
    }                                                            \
                                                                 \
-   if ((A) == VBO_ATTRIB_POS) {                                 \
+   if (_vbo_attr == VBO_ATTRIB_POS) {                           \
       fi_type *buffer_ptr = save->vertex_store->buffer_in_ram + \
                             save->vertex_store->used;           \
                                                                 \

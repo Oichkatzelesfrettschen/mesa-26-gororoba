@@ -1332,10 +1332,11 @@ public:
               << ",index=" << pos.index
               << "): " << msg << "\n";
 
-      if (level == SPV_MSG_WARNING)
+      if (level == SPV_MSG_WARNING) {
          clc_warning(logger, "%s", message.str().c_str());
-      else
+      } else {
          clc_error(logger, "%s", message.str().c_str());
+      }
    }
 
 private:

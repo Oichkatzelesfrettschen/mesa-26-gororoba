@@ -146,7 +146,7 @@ bool trace_dump_is_triggered(void);
 
 #define trace_dump_array_impl(_type, _obj, _size, _prefix) \
    do { \
-      if (_obj) { \
+      if ((const void *)(_obj)) { \
          size_t idx; \
          trace_dump_array_begin(); \
          for(idx = 0; idx < (_size); ++idx) { \
@@ -168,7 +168,7 @@ bool trace_dump_is_triggered(void);
 
 #define trace_dump_struct_array(_type, _obj, _size) \
    do { \
-      if (_obj) { \
+      if ((const void *)(_obj)) { \
          size_t idx; \
          trace_dump_array_begin(); \
          for(idx = 0; idx < (_size); ++idx) { \

@@ -79,7 +79,8 @@ pp_jimenezmlaa_run(struct pp_queue_t *ppq, struct pipe_resource *in,
    assert(p);
    assert(ppq);
    assert(ppq->areamaptex);
-   assert(ppq->inner_tmp);
+   assert(ppq->inner_tmp[0]);
+   assert(ppq->inner_tmp[1]);
    assert(ppq->shaders[n]);
 
    w = p->framebuffer.width;
