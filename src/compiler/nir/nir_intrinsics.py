@@ -332,6 +332,18 @@ index("bool", "sign_extend")
 # Instruction specific flags
 index("unsigned", "flags")
 
+# R600/Terakan UAV operation selector.
+index("unsigned", "uav_op_r600")
+
+# R600/Terakan physical resource base for emitted fetch/RAT instructions.
+index("unsigned", "id_base")
+
+# R600/Terakan immediate UAV-return buffer base.
+index("unsigned", "uav_return_id_base_r600")
+
+# R600/Terakan explicit mega-fetch byte count, or 0 to infer from format.
+index("unsigned", "mega_fetch_count_r600")
+
 # Logical operation of an atomic intrinsic
 index("nir_atomic_op", "atomic_op")
 
@@ -1860,12 +1872,38 @@ system_value("tcs_in_param_base_r600", 4)
 system_value("tcs_out_param_base_r600", 4)
 system_value("tcs_rel_patch_id_r600", 1)
 system_value("tcs_tess_factor_base_r600", 1)
+system_value("hw_wave_id_r600", 1)
+system_value("shader_engine_id_r600", 1)
 
 # load as many components as needed giving per-component addresses
 intrinsic("load_local_shared_r600", src_comp=[0], dest_comp=0, indices = [], flags = [CAN_ELIMINATE])
 
 store("local_shared_r600", [1], [WRITE_MASK])
 store("tf_r600", [])
+
+# src[] = { resource_array_index, byte_address }
+intrinsic("load_buffer_resource_r600", src_comp=[1, 1], dest_comp=0,
+          indices=[ACCESS, ID_BASE, BASE, COMPONENT, FORMAT, FLAGS, MEGA_FETCH_COUNT_R600],
+          flags=[CAN_ELIMINATE])
+
+# src[] = { resource_array_index, coord }
+intrinsic("load_texture_resource_r600", src_comp=[1, 4], dest_comp=0,
+          indices=[ACCESS, ID_BASE, COMPONENT],
+          flags=[CAN_ELIMINATE])
+
+# src[] = { bank_array_index }
+intrinsic("load_kcache_r600", src_comp=[1], dest_comp=0,
+          indices=[ACCESS, ID_BASE, BASE, COMPONENT],
+          flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# src[] = { uav_array_index, coord, value, compare_value }
+intrinsic("uav_instr_r600", src_comp=[1, 0, 0, 0],
+          indices=[UAV_OP_R600, ACCESS, ID_BASE])
+
+# src[] = { uav_array_index, coord, value, compare_value, immediate_index }
+intrinsic("uav_returning_instr_r600", src_comp=[1, 0, 0, 0, 1], dest_comp=0,
+          indices=[UAV_OP_R600, ACCESS, ID_BASE, UAV_RETURN_ID_BASE_R600,
+                   MEGA_FETCH_COUNT_R600])
 
 # these two definitions are aimed at r600 indirect per_vertex_input accesses
 intrinsic("r600_indirect_vertex_at_index", dest_comp=1, src_comp=[1], flags=[CAN_ELIMINATE, CAN_REORDER])

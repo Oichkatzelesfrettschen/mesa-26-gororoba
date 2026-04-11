@@ -17,8 +17,11 @@
 #include "terakan_push_constants.h"
 #include "terakan_device.h"
 #include "terakan_entrypoints.h"
+#include "terakan_physical_device.h"
+#include "terakan_state.h"
 
 #include "amd/terascale/common/terascale_eg_sq.h"
+#include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600_opcodes.h"
 
 #include <assert.h>
@@ -111,6 +114,334 @@
 #define S_0288D4_DX10_CLAMP(x)   (((unsigned)(x) & 0x1) << 21)
 #endif
 
+
+/* ===================================================================
+ *  CONTEXT MULTIPLEXER — Single-Ring Compute on TeraScale 1/2/3
+ * ===================================================================
+ *
+ * EVERY TeraScale generation under the Linux radeon kernel runs compute
+ * on the shared GFX ring:
+ *   TS1: R600, RV6xx, RV7xx, R700             (HD 2000–4000)
+ *   TS2: Cedar, Palm, Juniper, Cypress,       (HD 5000–6300,
+ *        Redwood, Caicos, Turks, Barts              incl. E-300 Palm)
+ *   TS3: Cayman, Northern Islands              (HD 6800–6900, aka R9xx)
+ *
+ * The Linux radeon kernel driver only creates dedicated CP1/CP2 compute
+ * rings for CHIP_TAHITI and later (SI+).  Every TeraScale family —
+ * including R9xx/Cayman which has the hardware CP1/CP2 — has its
+ * RADEON_CS_RING_COMPUTE requests silently redirected to the GFX ring by
+ * drivers/gpu/drm/radeon/radeon_cs.c (around line 216).  This means
+ * every compute dispatch lands mid-stream inside the graphics command
+ * buffer, sharing the SQ, the VLIW ALUs, the CB_COLOR surfaces, and the
+ * shader caches with in-flight draws.
+ *
+ * Without explicit boundary packets a compute dispatch will:
+ *   1. race with in-flight pixel / vertex waves (PS still running when we
+ *      touch SQ_GPR_RESOURCE_MGMT, causing an SQ config hazard),
+ *   2. read stale texture / vertex / shader caches from the previous draw,
+ *   3. commandeer CB_COLOR0 as a RAT without flushing the prior render
+ *      target write path, corrupting framebuffer contents,
+ *   4. leave SQ GPR allocation biased toward LS on the way out, starving
+ *      the next draw's VS/PS stages,
+ *   5. leave dirty TC / CB caches that the next draw reads back wrong.
+ *
+ * The Context Multiplexer injects mandatory boundary packets around each
+ * compute dispatch:
+ *
+ *   BEGIN  (terakan_compute_multiplex_begin)
+ *     • PS_PARTIAL_FLUSH        — drain all in-flight pixel/vertex waves
+ *     • SURFACE_SYNC TC+VC+SH   — invalidate shader / vertex / texture
+ *                                 caches so the compute kernel reads
+ *                                 freshly-written uniforms and UBOs
+ *     • SQ_CONFIG               — raise LS/CS priority, keep VC/EXPORT_SRC
+ *     • SQ_GPR_RESOURCE_MGMT_3  — allocate GPRs to the LS (compute) stage
+ *     • SQ_THREAD_RESOURCE_MGMT_2 — allocate thread slots to LS
+ *
+ *   DISPATCH
+ *     • (existing: DB stub, compute state, SSBO RAT, KCACHE, push const,
+ *       robustness, DISPATCH_DIRECT / DISPATCH_INDIRECT)
+ *
+ *   END    (terakan_compute_multiplex_end)
+ *     • CS_PARTIAL_FLUSH        — wait for every compute wavefront to
+ *                                 drain BEFORE the next graphics state
+ *                                 overwrites SQ_PGM_START_LS — otherwise
+ *                                 a still-executing wave would switch
+ *                                 program mid-clause and hang the SQ
+ *     • SURFACE_SYNC CB+TC+SH   — flush MEM_RAT writes out of the CB
+ *                                 write cache, invalidate the texture /
+ *                                 shader cache so the next draw re-reads
+ *                                 descriptors that now point to compute
+ *                                 output buffers
+ *     • Mark 3D state pending   — the multiplexer has stomped every SQ
+ *                                 program slot, every CB_COLOR surface,
+ *                                 DB_Z_INFO, and the resource tables for
+ *                                 FS.  Force the next draw path to fully
+ *                                 re-emit them instead of trusting its
+ *                                 cached-as-clean state.
+ *
+ * This is the ONLY correct sequence for Evergreen.  Skipping CS_PARTIAL_FLUSH
+ * causes intermittent SQ hangs.  Skipping the post-dispatch dirty marking
+ * causes the next draw to render with compute-biased GPR allocation and
+ * corrupt shader output.  Skipping PS_PARTIAL_FLUSH at the begin boundary
+ * causes a hardware hazard when SQ_GPR_RESOURCE_MGMT is written while a
+ * pixel wave is still using those GPRs — documented in the Evergreen ISA
+ * spec section 10.1 ("Switching Between Graphics and Compute Mode").
+ */
+
+/* Emit one PM4 EVENT_WRITE packet for an ME event (CS_PARTIAL_FLUSH,
+ * PS_PARTIAL_FLUSH, etc.).  EVENT_INDEX(4) is the ME (micro-engine) index
+ * which is the path the CP uses to wait for shader engine draining. */
+static inline void
+terakan_compute_multiplex_emit_event(
+   struct terakan_gfx_command_writer * const command_writer,
+   uint32_t const event_type)
+{
+   uint32_t * p = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2);
+   if (unlikely(p == NULL)) return;
+   *p++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
+   *p++ = EVENT_TYPE(event_type) | EVENT_INDEX(4);
+   terakan_gfx_command_writer_emit_done(command_writer, p);
+}
+
+/* Emit a global SURFACE_SYNC that covers the entire address space.
+ * cp_coher_cntl is an OR of S_0085F0_*_ACTION_ENA bits.  Poll interval 10
+ * matches the convention in terakan_barrier.c and terakan_queue.c. */
+static inline void
+terakan_compute_multiplex_emit_surface_sync(
+   struct terakan_gfx_command_writer * const command_writer,
+   uint32_t const cp_coher_cntl)
+{
+   uint32_t * p = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+   if (unlikely(p == NULL)) return;
+   *p++ = PKT3(PKT3_SURFACE_SYNC, 3, 0);
+   *p++ = cp_coher_cntl | TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
+   *p++ = 0xFFFFFFFF; /* size: entire address space */
+   *p++ = 0;          /* base address */
+   *p++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+   terakan_gfx_command_writer_emit_done(command_writer, p);
+}
+
+/* BEGIN boundary: prepare the shared ring for compute execution.
+ *
+ * Must be called before any compute state emission (shader, resources,
+ * RAT, KCACHE, push constants).  Emits the fence-drain + cache-invalidate
+ * + SQ-reconfig sequence that isolates the compute dispatch from any
+ * prior graphics work.
+ *
+ * Runs on EVERY TeraScale generation under the Linux radeon kernel:
+ *   - TeraScale 1 (R600/R700, HD 2000–4000)       → GFX ring forced
+ *   - TeraScale 2 (Evergreen, HD 5000–6300 incl.  → GFX ring forced
+ *                  Palm / Cedar / Juniper / etc.)
+ *   - TeraScale 3 (Northern Islands / Cayman,     → GFX ring forced
+ *                  HD 6800/6900 aka R9xx)
+ * None of these expose dedicated compute rings via the Linux radeon
+ * kernel driver — it only creates CP1/CP2 rings for CHIP_TAHITI and
+ * later (see drivers/gpu/drm/radeon/radeon_cs.c RADEON_CS_RING_COMPUTE
+ * handler, which silently redirects to GFX for family < TAHITI).  So
+ * every TeraScale chip needs the same fence-boundary treatment.
+ *
+ * Where the generations DIFFER is in how the SQ allocates registers to
+ * the LS (compute) stage:
+ *   - TS1/TS2: static allocation via SQ_GPR_RESOURCE_MGMT_3.NUM_LS_GPRS
+ *              and SQ_THREAD_RESOURCE_MGMT_2.NUM_LS_THREADS.
+ *   - TS3/R9xx: dynamic GPR mode (SQ_DYN_GPR_ENABLE=1, set once at
+ *               command-buffer init in terakan_command_buffer.c).  The
+ *               SQ allocates GPRs per wave from SQ_PGM_RESOURCES_LS.
+ *               No static allocation is possible or needed.
+ *
+ * Steps 1–3 run on ALL TS generations.
+ * Steps 4–5 run only on TS1/TS2 (gated by !is_r9xx) because R9xx uses
+ * the dynamic GPR path and would reject these register writes or
+ * interpret the bit layout differently.
+ */
+static void
+terakan_compute_multiplex_begin(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   struct terakan_device const * const device =
+      terakan_gfx_command_writer_device(command_writer);
+   struct terakan_physical_device const * const phys_dev =
+      terakan_device_physical_device(device);
+   struct terakan_physical_device_chip_info const * const chip_info =
+      &phys_dev->chip_info;
+   bool const is_r9xx = chip_info->is_r9xx;
+
+   /* (1) Drain in-flight pixel and vertex waves.  PS_PARTIAL_FLUSH also
+    * covers VS because both stages share the same fence token on all
+    * TeraScale generations.  Writing SQ_GPR_RESOURCE_MGMT or enabling
+    * a dynamic GPR allocation while a wave is still executing with the
+    * old allocation is a documented hardware hazard (Evergreen ISA spec
+    * section 10.1 "Switching Between Graphics and Compute Mode").
+    *
+    * Runs on: TS1, TS2, TS3. */
+   terakan_compute_multiplex_emit_event(
+      command_writer, EVENT_TYPE_PS_PARTIAL_FLUSH);
+
+   /* (2) Invalidate shader I-cache (SH), vertex cache (VC) and texture
+    * cache (TC) so the compute kernel reads fresh descriptors, UBOs, and
+    * shader bytes.  We do NOT flush CB here: graphics writes to CB are
+    * allowed to stay live — the compute kernel writes through MEM_RAT
+    * which bypasses the CB write cache for the RAT path.  We only need
+    * the READ caches to be cold.
+    *
+    * Runs on: TS1, TS2, TS3. */
+   terakan_compute_multiplex_emit_surface_sync(
+      command_writer,
+      S_0085F0_SH_ACTION_ENA(1) |
+      S_0085F0_VC_ACTION_ENA(1) |
+      S_0085F0_TC_ACTION_ENA(1));
+
+   /* (3) Re-emit SQ_CONFIG with compute-biased priorities.  The draw path
+    * may have written SQ_CONFIG with PS_PRIO > CS_PRIO; compute runs on
+    * the LS stage so we want LS_PRIO and CS_PRIO at maximum.  We keep
+    * VC_ENABLE and EXPORT_SRC_C intact because compute still uses the
+    * vertex cache for KCACHE fetches and the export path for MEM_RAT.
+    *
+    * Runs on: TS1, TS2, TS3.  The SQ_CONFIG priority field layout
+    * (LS_PRIO, CS_PRIO, etc.) is identical on Evergreen and Cayman —
+    * verified against terascale_evergreend.h definitions at lines 319–347.
+    * Our command-buffer-init code at terakan_command_buffer.c:904 skipped
+    * the priority setup on R9xx with the comment "doesn't expose the
+    * compute rings at all" — but under the Linux radeon kernel, R9xx
+    * IS forced onto the GFX ring, so it needs these priorities too. */
+   {
+      uint32_t const sq_config =
+         S_008C00_VC_ENABLE(chip_info->has_vertex_cache) |
+         S_008C00_EXPORT_SRC_C(1) |
+         S_008C00_LS_PRIO(3) | S_008C00_HS_PRIO(0) |
+         S_008C00_ES_PRIO(0) | S_008C00_GS_PRIO(0) |
+         S_008C00_VS_PRIO(0) | S_008C00_PS_PRIO(0) |
+         S_008C00_CS_PRIO(3);
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008C00_SQ_CONFIG - 0x8000) >> 2;
+      *p++ = sq_config;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (4) Static LS GPR allocation — TS1/TS2 ONLY.
+    *
+    * On R600/R700/Evergreen, the SQ partitions the GPR file statically
+    * across stages via SQ_GPR_RESOURCE_MGMT_{1,2,3}.  The draw path
+    * partitions GPRs across PS/VS/GS; compute needs LS to own the pool.
+    * We write SQ_GPR_RESOURCE_MGMT_3 because _1 and _2 describe
+    * PS/VS/GS/ES slots which we want to keep at their draw-time values
+    * (they'll be clobbered by the next draw anyway thanks to the dirty
+    * marking in terakan_compute_multiplex_end).  NUM_LS_GPRS=0x70 gives
+    * LS 112 GPRs (the per-wave hardware maximum on Cedar/Palm).
+    *
+    * On Cayman (R9xx), GPR allocation uses the DYNAMIC GPR path — the
+    * SQ allocates GPRs per wave based on SQ_PGM_RESOURCES_LS.NUM_GPRS
+    * read out of the compute shader's prog_resources at dispatch time.
+    * terakan_command_buffer.c:947-956 enables this once at command
+    * buffer init via SQ_DYN_GPR_CNTL_PS_FLUSH_REQ.DYN_GPR_ENABLE=1.
+    * Writing SQ_GPR_RESOURCE_MGMT_3 on R9xx is either a no-op or
+    * interpreted with different bit layouts, so we skip it entirely. */
+   if (!is_r9xx) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008C0C_SQ_GPR_RESOURCE_MGMT_3 - 0x8000) >> 2;
+      *p++ = S_008C0C_NUM_HS_GPRS(0) | S_008C0C_NUM_LS_GPRS(0x70);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (5) Static LS thread slot allocation — TS1/TS2 ONLY.
+    *
+    * Same reasoning as step 4: TS1/TS2 partitions thread slots
+    * statically via SQ_THREAD_RESOURCE_MGMT_2, while R9xx uses dynamic
+    * per-wave allocation.  NUM_LS_THREADS=0xFF gives LS the maximum
+    * thread allocation; HS=0 (no tessellation in the compute path). */
+   if (!is_r9xx) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008C1C_SQ_THREAD_RESOURCE_MGMT_2 - 0x8000) >> 2;
+      *p++ = S_008C1C_NUM_HS_THREADS(0) | S_008C1C_NUM_LS_THREADS(0xFF);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+}
+
+/* END boundary: restore the shared ring to a safe post-compute state.
+ *
+ * Must be called AFTER the DISPATCH_DIRECT / DISPATCH_INDIRECT packet.
+ * Drains compute waves, flushes compute outputs, and marks every 3D state
+ * index that the dispatch sequence stomped so the next draw call will
+ * re-emit its own shader programs, resources, and CB surfaces.
+ *
+ * Failure to mark state pending here is the #1 cause of post-compute draw
+ * hangs and is exactly the silent-corruption case the Context Multiplexer
+ * exists to defeat. */
+static void
+terakan_compute_multiplex_end(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   /* (1) Wait for every compute wavefront to drain.  Without this the
+    * next graphics SET_CONTEXT_REG that touches SQ_PGM_START_LS can
+    * overwrite the program pointer while a wave is mid-clause, which
+    * hangs the SQ immediately and takes the whole ring down with it. */
+   terakan_compute_multiplex_emit_event(
+      command_writer, EVENT_TYPE_CS_PARTIAL_FLUSH);
+
+   /* (2) Flush MEM_RAT writes out of the CB write cache and invalidate
+    * read caches.  Compute SSBO writes on Evergreen go CB_COLOR0 ->
+    * CB write queue -> memory; without CB_ACTION_ENA the next draw (or
+    * the CPU after a buffer->host barrier) can read stale pre-compute
+    * data.  TC_ACTION_ENA + SH_ACTION_ENA cover the case where the next
+    * draw samples from a buffer that compute just wrote. */
+   terakan_compute_multiplex_emit_surface_sync(
+      command_writer,
+      S_0085F0_CB_ACTION_ENA(1) |
+      S_0085F0_TC_ACTION_ENA(1) |
+      S_0085F0_SH_ACTION_ENA(1) |
+      S_0085F0_VC_ACTION_ENA(1));
+
+   /* (3) Mark every draw-state index the compute path stomped as pending.
+    * The next draw call will hit terakan_state_draw_apply_pending() and
+    * re-emit the real graphics versions of these registers, overwriting
+    * whatever compute left behind.
+    *
+    * This list is the INTERSECTION of:
+    *   (a) everything terakan_emit_compute_state() writes,
+    *   (b) everything terakan_emit_compute_resources() writes,
+    *   (c) everything terakan_emit_compute_kcache() writes,
+    *   (d) everything terakan_compute_multiplex_begin() writes (SQ config
+    *       + GPR / thread resource management).
+    *
+    * Rather than listing ~15 individual indices and drifting out of date
+    * every time the compute emitters change, we mark the whole SQ / CB /
+    * DB family.  The cost is a few extra register writes on the very next
+    * draw, which is dwarfed by the dispatch + flush we just did. */
+   struct terakan_state_draw * const state = &command_writer->state_draw;
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_PGM_LS_HS_ES_GS_VS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_PGM_FS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_RESOURCES_FS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_PGM_PS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_TMP_LS_HS_ES_GS_VS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_TMP_PS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_DB_DEPTH_STENCIL_BUFFER);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_CB_COLOR_RTV);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_CB_TARGET_MASK);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_CB_COLOR_CONTROL);
+}
 
 /* Emit bound compute resources (SSBOs/UBOs) to hardware.
  * Compute resources are stored in hw_state_sqc.resource_descriptors.fs[]
@@ -496,7 +827,18 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
       return;
    }
 
-   /* Emit compute pipeline state if dirty (first bind or pipeline change) */
+   /* ========== Context Multiplexer: BEGIN ==========
+    * Drain graphics waves, invalidate read caches, and reconfigure SQ
+    * for the LS (compute) stage.  MUST happen before any compute state
+    * emission because SQ_GPR_RESOURCE_MGMT_3 and SQ_THREAD_RESOURCE_MGMT_2
+    * affect how the subsequent SQ_PGM_RESOURCES_LS is interpreted. */
+   terakan_compute_multiplex_begin(command_writer);
+
+   /* Emit compute pipeline state if dirty (first bind or pipeline change).
+    * After the multiplexer begin boundary the SQ is ready to accept LS
+    * program writes.  We unconditionally re-emit state on the first
+    * dispatch after every bind because the multiplexer's SQ reconfig
+    * invalidates any cached "compute state is still applied" assumption. */
    if (command_writer->compute_pipeline_dirty) {
       terakan_emit_compute_state(command_writer, pipeline);
       terakan_emit_compute_resources(command_writer);
@@ -548,6 +890,12 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
    *p++ = 1; /* VGT_DISPATCH_INITIATOR = COMPUTE_SHADER_EN */
    terakan_gfx_command_writer_emit_done(command_writer, p);
 
+   /* ========== Context Multiplexer: END ==========
+    * Drain compute waves, flush RAT writes, and mark 3D state pending
+    * so the next draw re-emits shader programs and CB/DB surfaces the
+    * compute dispatch stomped. */
+   terakan_compute_multiplex_end(command_writer);
+
 #if 0 /* SURFACE_SYNC removed — MEM_RAT_CACHELESS bypasses CB cache */
    /* SURFACE_SYNC: flush CB (RAT write) caches so CPU can read the results.
     * CB_ACTION_ENA flushes the render target (RAT) write cache.
@@ -596,20 +944,45 @@ terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
    uint64_t const buffer_va = buffer->va + offset;
    struct terakan_bo * const bo = (struct terakan_bo *)buffer->bo;
 
-   /* Compute-to-dispatch surface sync: flush TC (compute UAV writes),
-    * invalidate VC + SH (CP reads dispatch params via vertex/shader cache).
-    * This prevents the CP from reading stale pre-compute data. */
-   {
-      uint32_t * sync = terakan_gfx_command_writer_emit(
-         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
-      if (unlikely(sync == NULL)) return;
-      *sync++ = PKT3(PKT3_SURFACE_SYNC, 4 - 1, 0);
-      *sync++ = S_0085F0_TC_ACTION_ENA(1) | S_0085F0_VC_ACTION_ENA(1) |
-                S_0085F0_SH_ACTION_ENA(1) | TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
-      *sync++ = UINT32_MAX; /* size (entire address space) */
-      *sync++ = 0;          /* base address */
-      *sync++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
-      terakan_gfx_command_writer_emit_done(command_writer, sync);
+   struct terakan_pipeline_compute const * const pipeline =
+      command_writer->bound_compute_pipeline;
+   if (unlikely(pipeline == NULL)) {
+      assert(!"vkCmdDispatchIndirect called without a bound compute pipeline");
+      return;
+   }
+
+   /* ========== Context Multiplexer: BEGIN ==========
+    * Same invariant as CmdDispatch: drain graphics waves, invalidate
+    * read caches, reconfigure SQ for LS.  This REPLACES the previous
+    * ad-hoc SURFACE_SYNC that only invalidated TC/VC/SH — the old code
+    * missed PS_PARTIAL_FLUSH and SQ reconfig, both of which are required
+    * to avoid the post-draw -> dispatch hazard. */
+   terakan_compute_multiplex_begin(command_writer);
+
+   /* Emit compute pipeline state (same as direct dispatch path).
+    * Indirect dispatches go through the same state machine — the only
+    * difference is that the CP reads the grid dimensions from a BO
+    * instead of having them inlined in the packet. */
+   if (command_writer->compute_pipeline_dirty) {
+      terakan_emit_compute_state(command_writer, pipeline);
+      terakan_emit_compute_resources(command_writer);
+      if (command_writer->hw_state_sqc.resource_bos.fs[2])
+         terakan_emit_compute_kcache(
+            command_writer, command_writer->hw_state_sqc.resource_bos.fs[2]);
+      command_writer->compute_pipeline_dirty = false;
+   }
+
+   /* Upload push constants and robustness metadata to KCACHE banks 15/14.
+    * Indirect dispatch has no CPU-visible group counts, so we cannot
+    * populate num_workgroups driver constants here — the shader must
+    * fetch them from the indirect BO if it needs gl_NumWorkGroups. */
+   command_writer->push_constants_state.usage_compute =
+      pipeline->shader.push_constants_usage;
+   terakan_push_constants_apply(command_writer, true);
+   if (command_writer->bound_compute_pipeline != NULL &&
+       (command_writer->bound_compute_pipeline->shader.kcache_needed &
+        ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA))) {
+      terakan_robustness_metadata_apply(command_writer, true);
    }
 
    /* PKT3_DISPATCH_INDIRECT: CP fetches (X, Y, Z) group counts from buffer_va.
@@ -632,4 +1005,8 @@ terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
          bo, true, false, TERAKAN_BO_PRIORITY_DRAW_INDIRECT));
 
    terakan_gfx_command_writer_emit_done(command_writer, packet);
+
+   /* ========== Context Multiplexer: END ==========
+    * Drain compute waves, flush RAT writes, mark 3D state pending. */
+   terakan_compute_multiplex_end(command_writer);
 }

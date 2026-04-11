@@ -577,6 +577,8 @@ RatInstr::emit(nir_intrinsic_instr *intr, Shader& shader)
       return emit_image_load_or_atomic(intr, shader);
    case nir_intrinsic_uav_instr_r600:
       return emit_uav_store_r600(intr, shader);
+   case nir_intrinsic_uav_returning_instr_r600:
+      return emit_uav_returning_instr_r600(intr, shader);
    case nir_intrinsic_image_size:
       return emit_image_size(intr, shader);
    case nir_intrinsic_image_samples:
@@ -797,6 +799,99 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
                              1,
                              0);
    shader.emit_instruction(store);
+   return true;
+}
+
+bool
+RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shader)
+{
+   auto& vf = shader.value_factory();
+
+   unsigned rat_id = nir_intrinsic_id_base(intr);
+   unsigned return_id = nir_intrinsic_uav_return_id_base_r600(intr);
+   PRegister rat_id_offset = nullptr;
+   PRegister return_id_offset = nullptr;
+   const nir_const_value * const uav_offset_const = nir_src_as_const_value(intr->src[0]);
+   if (uav_offset_const != nullptr) {
+      rat_id += uav_offset_const->u32;
+      return_id += uav_offset_const->u32;
+   } else {
+      rat_id_offset = vf.src(intr->src[0], 0)->as_register();
+      return_id_offset = rat_id_offset;
+   }
+
+   auto coord = vf.temp_vec4(pin_chgr, {0, 1, 2, 3});
+   unsigned coord_components = nir_src_num_components(intr->src[1]);
+   coord_components = MIN2(coord_components, 4u);
+   for (unsigned i = 0; i < coord_components; ++i) {
+      shader.emit_instruction(
+         new AluInstr(op1_mov, coord[i], vf.src(intr->src[1], i), AluInstr::write));
+   }
+   for (unsigned i = coord_components; i < 4; ++i) {
+      shader.emit_instruction(new AluInstr(op1_mov, coord[i], vf.zero(), AluInstr::write));
+   }
+
+   auto data_vec4 = vf.temp_vec4(pin_chgr, {0, 1, 2, 3});
+   shader.emit_instruction(
+      new AluInstr(op1_mov, data_vec4[1], shader.rat_return_address(), AluInstr::write));
+
+   unsigned const uav_op = nir_intrinsic_uav_op_r600(intr);
+   unsigned const uav_op_base = uav_op & 0x1F;
+   if (uav_op_base == RatInstr::CMPXCHG_INT || uav_op_base == RatInstr::CMPXCHG_FLT ||
+       uav_op_base == RatInstr::CMPXCHG_FDENORM) {
+      shader.emit_instruction(
+         new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
+      shader.emit_instruction(
+         new AluInstr(op1_mov,
+                      data_vec4[shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3],
+                      vf.src(intr->src[3], 0),
+                      AluInstr::write));
+   } else if (uav_op_base != RatInstr::NOP) {
+      shader.emit_instruction(
+         new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
+      shader.emit_instruction(new AluInstr(op1_mov, data_vec4[2], vf.zero(), AluInstr::write));
+   }
+
+   auto rat = new RatInstr(cf_mem_rat,
+                           static_cast<RatInstr::ERatOp>(uav_op),
+                           data_vec4,
+                           coord,
+                           rat_id,
+                           rat_id_offset,
+                           1,
+                           0xf,
+                           0);
+   shader.emit_instruction(rat);
+   rat->set_ack();
+   rat->set_instr_flag(ack_rat_return_write);
+
+   auto dest = vf.dest_vec4(intr->def, pin_group);
+   auto wait = new ControlFlowInstr(ControlFlowInstr::cf_wait_ack);
+   wait->add_required_instr(rat);
+   shader.chain_ssbo_read(wait);
+   shader.emit_instruction(wait);
+
+   auto fetch = new FetchInstr(vc_fetch,
+                               dest,
+                               {0, 1, 2, 3},
+                               shader.rat_return_address(),
+                               0,
+                               no_index_offset,
+                               fmt_32_32_32_32,
+                               vtx_nf_int,
+                               vtx_es_none,
+                               return_id,
+                               return_id_offset);
+   unsigned mega_fetch_count = nir_intrinsic_mega_fetch_count_r600(intr);
+   if (mega_fetch_count == 0)
+      mega_fetch_count = sizeof(uint32_t) * intr->def.num_components;
+   fetch->set_mfc(CLAMP(mega_fetch_count, 1u, 16u) - 1);
+   fetch->set_fetch_flag(FetchInstr::use_tc);
+   fetch->set_fetch_flag(FetchInstr::vpm);
+   fetch->add_required_instr(wait);
+   shader.emit_instruction(fetch);
+   shader.chain_ssbo_read(fetch);
+
    return true;
 }
 
