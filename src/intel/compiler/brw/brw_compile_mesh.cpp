@@ -310,9 +310,6 @@ brw_compile_task(const struct brw_compiler *compiler,
    NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, compiler->devinfo,
             NULL);
 
-   NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, compiler->devinfo,
-            NULL);
-
    brw_prog_data_init(&prog_data->base.base, &params->base);
 
    prog_data->base.local_size[0] = nir->info.workgroup_size[0];
@@ -364,8 +361,6 @@ brw_compile_task(const struct brw_compiler *compiler,
 
       BRW_NIR_SNAPSHOT("first");
       brw_nir_apply_key(pt, &key->base, dispatch_width);
-
-      BRW_NIR_PASS(brw_nir_lower_simd, dispatch_width);
 
       brw_nir_optimize(pt);
       /* brw_nir_optimize undoes late lowerings. */
@@ -1047,9 +1042,6 @@ brw_compile_mesh(const struct brw_compiler *compiler,
    NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, compiler->devinfo,
             NULL);
 
-   NIR_PASS(_, nir, brw_nir_lower_cs_intrinsics, compiler->devinfo,
-            NULL);
-
    prog_data->autostrip_enable = brw_mesh_autostrip_enable(compiler, nir, &prog_data->map);
 
    prog_data->base.uses_inline_data = brw_nir_uses_inline_data(nir) ||
@@ -1105,8 +1097,6 @@ brw_compile_mesh(const struct brw_compiler *compiler,
 
       /* Load uniforms can do a better job for constants, so fold before it. */
       BRW_NIR_PASS(nir_opt_constant_folding);
-
-      BRW_NIR_PASS(brw_nir_lower_simd, dispatch_width);
 
       brw_nir_optimize(pt);
       /* brw_nir_optimize undoes late lowerings. */

@@ -205,6 +205,7 @@ ALU1(RNDE)
 ALU1(RNDU)
 ALU1(RNDZ)
 ALU2(MAC)
+ALU2(MACL)
 ALU2(MACH)
 ALU1(LZD)
 ALU2(DP4)
@@ -444,13 +445,6 @@ brw_dp_read_desc(const struct intel_device_info *devinfo,
 }
 
 static inline unsigned
-brw_dp_read_desc_msg_type(const struct intel_device_info *devinfo,
-                          uint32_t desc)
-{
-   return brw_dp_desc_msg_type(devinfo, desc);
-}
-
-static inline unsigned
 brw_dp_read_desc_msg_control(const struct intel_device_info *devinfo,
                              uint32_t desc)
 {
@@ -471,13 +465,6 @@ brw_dp_write_desc(const struct intel_device_info *devinfo,
    assert(!send_commit_msg);
    return brw_dp_desc(devinfo, binding_table_index, msg_type, msg_control) |
           SET_BITS(send_commit_msg, 17, 17);
-}
-
-static inline unsigned
-brw_dp_write_desc_msg_type(const struct intel_device_info *devinfo,
-                           uint32_t desc)
-{
-   return brw_dp_desc_msg_type(devinfo, desc);
 }
 
 static inline unsigned

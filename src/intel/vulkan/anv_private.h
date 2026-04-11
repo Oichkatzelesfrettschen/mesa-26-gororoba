@@ -1423,6 +1423,12 @@ struct anv_shader {
    uint32_t *cmd_data;
 };
 
+uint32_t anv_shader_get_scratch_surf(struct anv_batch *batch,
+                                     struct anv_device *device,
+                                     mesa_shader_stage stage,
+                                     uint32_t total_scratch,
+                                     bool protected);
+
 extern struct vk_device_shader_ops anv_device_shader_ops;
 
 void anv_write_rt_shader_group(struct vk_device *vk_device,
