@@ -1017,7 +1017,7 @@ dgc_emit_indirect_buffer(struct dgc_cmdbuf *cs, nir_def *va, nir_def *ib_offset,
       nir_imm_int(b, PKT3(PKT3_INDIRECT_BUFFER, 2, 0)),
       nir_iadd(b, load_param32(b, upload_addr), ib_offset),
       nir_imm_int(b, pdev->info.address32_hi),
-      nir_ior_imm(b, ib_cdw, S_3F2_CHAIN(1) | S_3F2_VALID(1) | S_3F2_PRE_ENA(false)),
+      nir_ior_imm(b, ib_cdw, S_3F3_CHAIN(1) | S_3F3_VALID(1) | S_3F3_PRE_ENA(false)),
    };
 
    nir_store_global(b, nir_vec(b, packet, 4), va, .access = ACCESS_NON_READABLE);
@@ -1277,7 +1277,7 @@ dgc_gfx12_emit_hiz_wa(struct dgc_cmdbuf *cs)
    if (pdev->gfx12_hiz_wa == RADV_GFX12_HIZ_WA_PARTIAL) {
       dgc_cs_begin(cs);
       dgc_cs_emit_imm(PKT3(PKT3_RELEASE_MEM, 6, 0));
-      dgc_cs_emit_imm(S_490_EVENT_TYPE(V_028A90_BOTTOM_OF_PIPE_TS) | S_490_EVENT_INDEX(5));
+      dgc_cs_emit_imm(S_491_EVENT_TYPE(V_028A90_BOTTOM_OF_PIPE_TS) | S_491_EVENT_INDEX(5));
       dgc_cs_emit_imm(0); /* DST_SEL, INT_SEL = no write confirm, DATA_SEL = no data */
       dgc_cs_emit_imm(0); /* ADDRESS_LO */
       dgc_cs_emit_imm(0); /* ADDRESS_HI */
@@ -1410,8 +1410,8 @@ dgc_emit_pkt3_draw_indirect(struct dgc_cmdbuf *cs, nir_def *has_drawid, bool ind
       dgc_cs_emit_imm(0);
       dgc_cs_emit(vertex_offset_reg);
       dgc_cs_emit(nir_bcsel(b, has_baseinstance, start_instance_reg, nir_imm_int(b, 0)));
-      dgc_cs_emit(nir_ior_imm(b, nir_ior(b, draw_id_reg, nir_imm_int(b, S_2C_4_DRAW_INDEX_ENABLE(1))),
-                              S_2C_4_THREAD_TRACE_MARKER_ENABLE(sqtt_en)));
+      dgc_cs_emit(nir_ior_imm(b, nir_ior(b, draw_id_reg, nir_imm_int(b, S_2C4_DRAW_INDEX_ENABLE(1))),
+                              S_2C4_THREAD_TRACE_MARKER_ENABLE(sqtt_en)));
       dgc_cs_emit_imm(1); /* draw count */
       dgc_cs_emit_imm(0); /* count va low */
       dgc_cs_emit_imm(0); /* count va high */
@@ -1542,7 +1542,7 @@ dgc_emit_draw_with_count(struct dgc_cmdbuf *cs, nir_def *stream_addr, nir_def *s
    nir_def *start_instance_reg =
       nir_bcsel(b, has_baseinstance, nir_iadd(b, vertex_offset_reg, start_instance_offset), nir_imm_int(b, 0));
    nir_def *draw_id_reg = nir_bcsel(
-      b, has_drawid, nir_ior_imm(b, nir_iadd(b, vertex_offset_reg, nir_imm_int(b, 1)), S_2C_4_DRAW_INDEX_ENABLE(1)),
+      b, has_drawid, nir_ior_imm(b, nir_iadd(b, vertex_offset_reg, nir_imm_int(b, 1)), S_2C4_DRAW_INDEX_ENABLE(1)),
       nir_imm_int(b, 0));
 
    nir_def *di_src_sel = nir_imm_int(b, indexed ? V_0287F0_DI_SRC_SEL_DMA : V_0287F0_DI_SRC_SEL_AUTO_INDEX);
@@ -1555,7 +1555,7 @@ dgc_emit_draw_with_count(struct dgc_cmdbuf *cs, nir_def *stream_addr, nir_def *s
    dgc_cs_emit_imm(0);
    dgc_cs_emit(vertex_offset_reg);
    dgc_cs_emit(start_instance_reg);
-   dgc_cs_emit(nir_ior_imm(b, draw_id_reg, S_2C_4_THREAD_TRACE_MARKER_ENABLE(sqtt_en)));
+   dgc_cs_emit(nir_ior_imm(b, draw_id_reg, S_2C4_THREAD_TRACE_MARKER_ENABLE(sqtt_en)));
    dgc_cs_emit(draw_count);
    dgc_cs_emit_imm(0);
    dgc_cs_emit_imm(0);

@@ -2134,7 +2134,7 @@ enum block_kind {
    block_kind_loop_preheader = 1 << 2,
    block_kind_loop_header = 1 << 3,
    block_kind_loop_exit = 1 << 4,
-   block_kind_continue = 1 << 5,
+   block_kind_loop_latch = 1 << 5,
    block_kind_break = 1 << 6,
    block_kind_branch = 1 << 7,
    block_kind_merge = 1 << 8,

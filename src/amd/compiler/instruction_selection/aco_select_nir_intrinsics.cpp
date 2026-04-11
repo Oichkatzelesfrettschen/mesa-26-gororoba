@@ -3713,8 +3713,7 @@ pops_await_overlapped_waves(isel_context* ctx)
    /* Check if there's an overlap in the current wave - otherwise, the wait may result in a hang. */
    const Temp did_overlap =
       bld.sopc(aco_opcode::s_bitcmp1_b32, bld.def(s1, scc), collision, Operand::c32(31));
-   if_context did_overlap_if_context;
-   begin_uniform_if_then(ctx, &did_overlap_if_context, did_overlap);
+   begin_uniform_if_then(ctx, did_overlap);
    bld.reset(ctx->block);
 
    /* Set the packer register - after this, pops_exiting_wave_id can be polled. */
@@ -3773,8 +3772,7 @@ pops_await_overlapped_waves(isel_context* ctx)
 
    /* Await the overlapped waves. */
 
-   loop_context wait_loop_context;
-   begin_loop(ctx, &wait_loop_context);
+   begin_loop(ctx);
    bld.reset(ctx->block);
 
    const Temp exiting_wave_id = bld.pseudo(aco_opcode::p_pops_gfx9_add_exiting_wave_id, bld.def(s1),
@@ -3785,24 +3783,22 @@ pops_await_overlapped_waves(isel_context* ctx)
     */
    const Temp newest_overlapped_wave_exited = bld.sopc(aco_opcode::s_cmp_lt_u32, bld.def(s1, scc),
                                                        newest_overlapped_wave_id, exiting_wave_id);
-   if_context newest_overlapped_wave_exited_if_context;
-   begin_uniform_if_then(ctx, &newest_overlapped_wave_exited_if_context,
-                         newest_overlapped_wave_exited);
+   begin_uniform_if_then(ctx, newest_overlapped_wave_exited);
    emit_loop_break(ctx);
-   end_uniform_if(ctx, &newest_overlapped_wave_exited_if_context);
+   end_uniform_if(ctx);
    bld.reset(ctx->block);
 
    /* Sleep before rechecking to let overlapped waves run for some time. */
    bld.sopp(aco_opcode::s_sleep, ctx->program->gfx_level >= GFX10 ? UINT16_MAX : 3);
 
-   end_loop(ctx, &wait_loop_context);
+   end_loop(ctx);
    bld.reset(ctx->block);
 
    /* Indicate the wait has been done to subsequent compilation stages. */
    bld.pseudo(aco_opcode::p_pops_gfx9_overlapped_wave_wait_done);
 
-   begin_uniform_if_else(ctx, &did_overlap_if_context);
-   end_uniform_if(ctx, &did_overlap_if_context);
+   begin_uniform_if_else(ctx);
+   end_uniform_if(ctx);
    bld.reset(ctx->block);
 }
 
@@ -3894,8 +3890,8 @@ load_scratch_param(isel_context* ctx, Builder& bld, const parameter_info& param,
       params.max_const_offset = ctx->program->dev.scratch_global_offset_max;
       emit_load(ctx, bld, info, params);
    } else {
-      info.resource = load_scratch_resource(
-         ctx->program, bld, ctx->program->private_segment_buffers.size() - 1, false);
+      info.resource = load_scratch_resource(ctx->program, bld,
+                                            ctx->program->private_segment_buffers.size() - 1, true);
       if (stack_ptr.id()) {
          info.soffset = bld.sop2(aco_opcode::s_add_u32, bld.def(s1), bld.def(s1, scc), stack_ptr,
                                  Operand::c32(-const_offset * ctx->program->wave_size));
@@ -3922,7 +3918,8 @@ store_scratch_param(isel_context* ctx, Builder& bld, const parameter_info& param
                       write_datas, offsets);
 
    if (ctx->program->gfx_level < GFX9) {
-      Temp scratch_rsrc = load_scratch_resource(ctx->program, bld, -1u, false);
+      Temp scratch_rsrc = load_scratch_resource(
+         ctx->program, bld, ctx->program->private_segment_buffers.size() - 1, true);
       for (unsigned i = 0; i < write_count; i++) {
          Temp soffset;
          if (stack_ptr.id()) {
@@ -4647,7 +4644,7 @@ visit_intrinsic(isel_context* ctx, nir_intrinsic_instr* instr)
    }
    case nir_intrinsic_terminate:
    case nir_intrinsic_terminate_if: {
-      assert(ctx->cf_info.parent_loop.exit == NULL && "Terminate must not appear in loops.");
+      assert(ctx->loop_stack.empty() && "Terminate must not appear in loops.");
       Operand cond = Operand::c32(-1u);
       if (instr->intrinsic == nir_intrinsic_terminate_if) {
          Temp src = get_ssa_temp(ctx, instr->src[0].ssa);
