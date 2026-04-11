@@ -810,11 +810,11 @@ static bool amdgpu_get_new_ib(struct amdgpu_winsys *aws,
 static void amdgpu_set_ib_size(struct radeon_cmdbuf *rcs, struct amdgpu_ib *ib)
 {
    if (ib->is_chained_ib) {
-      *ib->ptr_ib_size = rcs->current.cdw | S_3F2_CHAIN(1) | S_3F2_VALID(1);
+      *ib->ptr_ib_size = rcs->current.cdw | S_3F3_CHAIN(1) | S_3F3_VALID(1);
 
       struct amdgpu_cs *acs = amdgpu_cs(rcs);
       if (!rcs->gang && acs->preamble_ib_bo)
-         *ib->ptr_ib_size |= S_3F2_PRE_ENA(1);
+         *ib->ptr_ib_size |= S_3F3_PRE_ENA(1);
    } else {
       *ib->ptr_ib_size = rcs->current.cdw;
    }
@@ -1547,17 +1547,17 @@ static void amdgpu_cs_add_userq_packets(struct amdgpu_winsys *aws,
          amdgpu_pkt_add_dw(PKT3(PKT3_INDIRECT_BUFFER, 2, 0));
          amdgpu_pkt_add_dw(amdgpu_bo_get_va(userq->f32_shadowing_ib_bo));
          amdgpu_pkt_add_dw(amdgpu_bo_get_va(userq->f32_shadowing_ib_bo) >> 32);
-         amdgpu_pkt_add_dw(userq->f32_shadowing_ib_pm4_dw | S_3F_3_INHERIT_VMID_PFP(1));
+         amdgpu_pkt_add_dw(userq->f32_shadowing_ib_pm4_dw | S_3F3_INHERIT_VMID_PFP(1));
       }
 
       amdgpu_pkt_add_dw(PKT3(PKT3_INDIRECT_BUFFER, 2, 0));
       amdgpu_pkt_add_dw(csc->chunk_ib[IB_MAIN].va_start);
       amdgpu_pkt_add_dw(csc->chunk_ib[IB_MAIN].va_start >> 32);
       if (userq->ip_type == AMD_IP_GFX)
-         amdgpu_pkt_add_dw((csc->chunk_ib[IB_MAIN].ib_bytes / 4) | S_3F_3_INHERIT_VMID_PFP(1));
+         amdgpu_pkt_add_dw((csc->chunk_ib[IB_MAIN].ib_bytes / 4) | S_3F3_INHERIT_VMID_PFP(1));
       else
-         amdgpu_pkt_add_dw((csc->chunk_ib[IB_MAIN].ib_bytes / 4) | S_3F_3_VALID(1) |
-                              S_3F_3_INHERIT_VMID_MEC(1));
+         amdgpu_pkt_add_dw((csc->chunk_ib[IB_MAIN].ib_bytes / 4) | S_3F3_VALID(1) |
+                              S_3F3_INHERIT_VMID_MEC(1));
 
       /* Add 8 for release mem packet and 2 for protected fence signal packet.
        * Calculcating userq_fence_seq_num this way to match with kernel fence that is
@@ -1567,10 +1567,10 @@ static void amdgpu_cs_add_userq_packets(struct amdgpu_winsys *aws,
 
       /* add release mem for user fence */
       amdgpu_pkt_add_dw(PKT3(PKT3_RELEASE_MEM, 6, 0));
-      amdgpu_pkt_add_dw(S_490_EVENT_TYPE(V_028A90_CACHE_FLUSH_AND_INV_TS_EVENT) |
-                           S_490_EVENT_INDEX(5) |
-                           (aws->info.gfx_level >= GFX12 ? 0 : S_490_GLM_WB(1) | S_490_GLM_INV(1)) |
-                           S_490_GL2_WB(1) | S_490_SEQ(1) | S_490_CACHE_POLICY(3));
+      amdgpu_pkt_add_dw(S_491_EVENT_TYPE(V_028A90_CACHE_FLUSH_AND_INV_TS_EVENT) |
+                           S_491_EVENT_INDEX(5) |
+                           (aws->info.gfx_level >= GFX12 ? 0 : S_491_GLM_WB(1) | S_491_GLM_INV(1)) |
+                           S_491_GL2_WB(1) | S_491_SEQ(1) | S_491_CACHE_POLICY(3));
       amdgpu_pkt_add_dw(S_030358_DATA_SEL(2));
       amdgpu_pkt_add_dw(userq->user_fence_va);
       amdgpu_pkt_add_dw(userq->user_fence_va >> 32);
@@ -1601,7 +1601,7 @@ static void amdgpu_cs_add_userq_packets(struct amdgpu_winsys *aws,
          for (unsigned i = 0; i < 1 + DIV_ROUND_UP(num_fences, 4); i++)
             *cond_exec_skip_counts[i].count_dw_ptr = (amdgpu_pkt_get_next_wptr() -
                                                          cond_exec_skip_counts[i].start_wptr) |
-                                                         S_22_4_EXEC_USERQ_OVERRULE_CMD(1);
+                                                         S_224_EXEC_USERQ_OVERRULE_CMD(1);
       }
    } else {
       mesa_loge("amdgpu: unsupported userq ip submission = %d\n", userq->ip_type);

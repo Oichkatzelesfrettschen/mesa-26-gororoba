@@ -18,6 +18,7 @@
 #include "pan_compiler.h"
 #include "pan_nir.h"
 #include "pan_trace.h"
+#include "compiler/bifrost/bifrost_compile.h"
 #include "shader_enums.h"
 
 static struct panfrost_uncompiled_shader *
@@ -179,6 +180,10 @@ panfrost_shader_compile(struct panfrost_screen *screen, const nir_shader *ir,
                key->vs.noperspective_varyings);
    }
 
+   if (dev->arch >= 9 && mesa_shader_stage_is_compute(s->info.stage)) {
+      out->info.cs.allow_merging_workgroups = valhall_can_merge_workgroups(s);
+   }
+
    NIR_PASS(_, s, panfrost_nir_lower_sysvals, dev->arch, &out->sysvals);
 
    /* For now, we only allow pushing the default UBO 0, and the sysval UBO (if
@@ -219,7 +224,8 @@ panfrost_shader_compile(struct panfrost_screen *screen, const nir_shader *ir,
 
    /* Report stats only if we really got the shader compiled */
    if (out->binary.size > 0) {
-      if (s->info.stage == MESA_SHADER_VERTEX && out->info.vs.idvs) {
+      if (s->info.stage == MESA_SHADER_VERTEX &&
+          out->info.vs.secondary_offset) {
          pan_stats_util_debug(dbg, "MESA_SHADER_POSITION",
                               &out->info.stats);
          pan_stats_util_debug(dbg, "MESA_SHADER_VERTEX",

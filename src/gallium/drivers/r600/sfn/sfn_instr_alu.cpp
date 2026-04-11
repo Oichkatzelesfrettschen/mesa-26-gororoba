@@ -2106,7 +2106,6 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
    case nir_op_unpack_64_2x32_split_y:
       return emit_unpack_64_2x32_split(*alu, 1, shader);
    case nir_op_unpack_32_4x8:
-      fprintf(stderr, "SFN_DEBUG: hit nir_op_unpack_32_4x8\n");
       return emit_unpack_32_4x8(*alu, shader);
 
    case nir_op_ffma:
