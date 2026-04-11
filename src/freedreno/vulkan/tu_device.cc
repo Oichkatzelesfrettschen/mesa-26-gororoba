@@ -10,28 +10,24 @@
 #include "tu_device.h"
 
 #include "drm-uapi/drm_fourcc.h"
-#include "fdl/freedreno_layout.h"
-#include <fcntl.h>
-#include <poll.h>
-
 #include "git_sha1.h"
+
+#include "common/freedreno_stompable_regs.h"
+/* for fd_get_driver/device_uuid() */
 #include "util/cache_ops.h"
-#include "util/u_debug.h"
 #include "util/disk_cache.h"
-#include "util/hex.h"
 #include "util/driconf.h"
+#include "util/hex.h"
 #include "util/os_misc.h"
+#include "util/u_debug.h"
 #include "util/u_process.h"
 #include "vk_android.h"
 #include "vk_debug_utils.h"
 #include "vk_shader_module.h"
-#include "vk_sampler.h"
 #include "vk_util.h"
 
-/* for fd_get_driver/device_uuid() */
-#include "freedreno/common/freedreno_uuid.h"
-#include "freedreno/common/freedreno_stompable_regs.h"
-
+#include "common/freedreno_uuid.h"
+#include "fdl/freedreno_layout.h"
 #include "tu_acceleration_structure.h"
 #include "tu_clear_blit.h"
 #include "tu_cmd_buffer.h"
@@ -40,8 +36,8 @@
 #include "tu_dynamic_rendering.h"
 #include "tu_image.h"
 #include "tu_pass.h"
-#include "tu_queue.h"
 #include "tu_query_pool.h"
+#include "tu_queue.h"
 #include "tu_rmv.h"
 #include "tu_tracepoints.h"
 #include "tu_wsi.h"
@@ -216,7 +212,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .KHR_maintenance8 = tu_is_vk_1_1(device),
       .KHR_map_memory2 = true,
       .KHR_multiview = tu_has_multiview(device),
-      .KHR_performance_query = TU_DEBUG(PERFC) || TU_DEBUG(PERFCRAW),
+      .KHR_performance_query = (TU_DEBUG(PERFC) || TU_DEBUG(PERFCRAW)) && device->is_perf_cntr_selectable,
       .KHR_pipeline_executable_properties = true,
       .KHR_pipeline_library = true,
 #ifdef TU_USE_WSI_PLATFORM
@@ -447,7 +443,12 @@ tu_get_features(struct tu_physical_device *pdevice,
    features->storagePushConstant16               = false;
    features->storageInputOutput16                = false;
    features->multiview                           = true;
-   features->multiviewGeometryShader             = false;
+   /* Multiview + GS seems to hang on a6xx. We also don't yet support the
+    * required emulation of multiview masks with geometry shaders on early
+    * a6xx.
+    */
+   features->multiviewGeometryShader             =
+      pdevice->info->chip >= 7;
    features->multiviewTessellationShader         = false;
    features->variablePointersStorageBuffer       = true;
    features->variablePointers                    = true;
@@ -899,7 +900,7 @@ tu_get_physical_device_properties_1_1(struct tu_physical_device *pdevice,
 
    p->pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
    p->maxMultiviewViewCount =
-      tu_has_multiview(pdevice) ? MAX_VIEWPORTS : 1;
+      tu_has_multiview(pdevice) ? MAX_VIEWS : 1;
    p->maxMultiviewInstanceIndex = INT_MAX;
    p->protectedNoFault = false;
    /* Our largest descriptors are 2 texture descriptors, or a texture and

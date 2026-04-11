@@ -336,7 +336,8 @@ uint32_t
 tu_autotune::get_supported_mod_flags(tu_device *device) const
 {
    uint32_t supported_mod_flags = (uint32_t) mod_flag::BIG_GMEM | (uint32_t) mod_flag::TUNE_SMALL;
-   if (device->physical_device->info->props.max_draw_states > TU_DRAW_STATE_AT_WRITE_RP_HASH) {
+   if (device->physical_device->info->props.max_draw_states > TU_DRAW_STATE_AT_WRITE_RP_HASH &&
+       device->physical_device->is_perf_cntr_selectable) {
       supported_mod_flags |= (uint32_t) mod_flag::PREEMPT_OPTIMIZE;
    }
    return supported_mod_flags;
@@ -2181,11 +2182,11 @@ tu_autotune::emit_reset_rp_hash_draw_state(struct tu_cmd_buffer *cmd, struct tu_
    tu_cs_emit_qw(cs, reset_rp_hash_draw_state.iova);
 }
 
-void
+bool
 tu_autotune::emit_preempt_latency_tracking_setup(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
 {
    if (!cmd->autotune_ctx.tracks_preempt_latency())
-      return;
+      return false;
 
    tu_cs_emit_pkt7(cs, CP_MEM_WRITE, 4);
    tu_cs_emit_qw(cs, global_iova(cmd, max_preemption_latency));
@@ -2205,6 +2206,8 @@ tu_autotune::emit_preempt_latency_tracking_setup(struct tu_cmd_buffer *cmd, stru
 
    write_preempt_counters_to_iova(cs, true, true, global_iova(cmd, base_preemption_latency),
                                   global_iova(cmd, base_always_count), global_iova(cmd, base_aon));
+
+   return true;
 }
 
 tu_autotune::rp_key_opt

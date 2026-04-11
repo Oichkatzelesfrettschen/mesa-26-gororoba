@@ -14,6 +14,9 @@
 #include "vk_render_pass.h"
 #include "vk_util.h"
 
+#include "common/freedreno_gpu_event.h"
+#include "common/freedreno_lrz.h"
+#include "common/freedreno_vrs.h"
 #include "tu_autotune.h"
 #include "tu_buffer.h"
 #include "tu_clear_blit.h"
@@ -21,13 +24,9 @@
 #include "tu_event.h"
 #include "tu_image.h"
 #include "tu_knl.h"
+#include "tu_subsampled_image.h"
 #include "tu_tile_config.h"
 #include "tu_tracepoints.h"
-#include "tu_subsampled_image.h"
-
-#include "common/freedreno_gpu_event.h"
-#include "common/freedreno_lrz.h"
-#include "common/freedreno_vrs.h"
 
 enum tu_cmd_buffer_status {
    TU_CMD_BUFFER_STATUS_IDLE = 0,
@@ -2436,7 +2435,7 @@ tu_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
       tu7_set_thread_br_patchpoint(cmd, cs, false);
    }
 
-   dev->autotune->emit_preempt_latency_tracking_setup(cmd, cs);
+   bool track_preempt_latency = dev->autotune->emit_preempt_latency_tracking_setup(cmd, cs);
 
    tu_cs_emit_pkt7(cs, CP_SET_AMBLE, 3);
    tu_cs_emit_qw(cs, cmd->device->bin_preamble_entry.bo->iova +
@@ -2462,7 +2461,7 @@ tu_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
                             (1u << TU_PREDICATE_VTX_STATS_NOT_RUNNING));
    }
 
-   if (dev->switch_back_amble_entry.size > 0) {
+   if (dev->switch_back_amble_entry.size > 0 && track_preempt_latency) {
       tu_cs_emit_pkt7(cs, CP_SET_AMBLE, 3);
       tu_cs_emit_qw(cs, dev->switch_back_amble_entry.bo->iova + dev->switch_back_amble_entry.offset);
       tu_cs_emit(cs, CP_SET_AMBLE_2_DWORDS(dev->switch_back_amble_entry.size / sizeof(uint32_t)) |
@@ -2473,7 +2472,7 @@ tu_init_hw(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
       tu_cs_emit(cs, CP_SET_AMBLE_2_TYPE(PREAMBLE_AMBLE_TYPE));
    }
    
-   if (dev->switch_away_amble_entry.size > 0) {
+   if (dev->switch_away_amble_entry.size > 0 && track_preempt_latency) {
       tu_cs_emit_pkt7(cs, CP_SET_AMBLE, 3);
       tu_cs_emit_qw(cs, dev->switch_away_amble_entry.bo->iova + dev->switch_away_amble_entry.offset);
       tu_cs_emit(cs, CP_SET_AMBLE_2_DWORDS(dev->switch_away_amble_entry.size / sizeof(uint32_t)) |

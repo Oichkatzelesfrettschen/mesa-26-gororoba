@@ -222,12 +222,12 @@
     VK_DRIVER: freedreno
     LAVA_FIRMWARE: qcom-lava
 
-# Status: https://lava.collabora.dev/scheduler/device_type/sc7180-trogdor-lazor-limozeen
-.lava-sc7180-trogdor-lazor-limozeen:arm64:
+# Status: https://lava.collabora.dev/scheduler/device_type/sc7180-trogdor-wormdingler-rev1-boe
+.lava-sc7180-trogdor-wormdingler-rev1-boe:arm64:
   variables:
     BOOT_METHOD: depthcharge
-    DEVICE_TYPE: sc7180-trogdor-lazor-limozeen
-    DTB: sc7180-trogdor-lazor-limozeen-nots-r5
+    DEVICE_TYPE: sc7180-trogdor-wormdingler-rev1-boe
+    DTB: sc7180-trogdor-wormdingler-rev1-boe
     FDO_CI_CONCURRENT: 8
     # Increase the hangcheck timer for our spilling tests which bump up against
     # the .5s default.
@@ -235,7 +235,7 @@
     FARM: collabora
     GPU_VERSION: freedreno-a618
     KERNEL_IMAGE_TYPE: ""
-    RUNNER_TAG: mesa-ci-x86-64-lava-sc7180-trogdor-lazor-limozeen
+    RUNNER_TAG: mesa-ci-x86-64-lava-sc7180-trogdor-wormdingler-rev1-boe
     DRIVER_NAME: freedreno-a6xx
     VK_DRIVER: freedreno
     LAVA_FIRMWARE: qcom-lava

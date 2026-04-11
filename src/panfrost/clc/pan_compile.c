@@ -353,10 +353,10 @@ main(int argc, const char **argv)
             libfunc, MESA_SHADER_COMPUTE, v, get_compiler_options(target_arch),
             &opt, load_kernel_input);
 
-         unsigned gpu_prod_id = (target_arch & 0xf) << 12;
+         uint64_t target_gpu_id = (target_arch & 0xf) << 28;
 
          struct pan_compile_inputs inputs = {
-            .gpu_id = gpu_prod_id << 16,
+            .gpu_id = target_gpu_id,
             .gpu_variant = 0,
          };
 
@@ -439,6 +439,11 @@ main(int argc, const char **argv)
          struct util_dynarray shader_binary;
          struct pan_shader_info shader_info = {0};
          shader_binary = UTIL_DYNARRAY_INIT;
+
+         if (target_arch >= 9)
+            shader_info.cs.allow_merging_workgroups =
+               valhall_can_merge_workgroups(s);
+
          pan_shader_compile(clone, &inputs, &shader_binary, &shader_info);
 
          assert(shader_info.push.count * 4 <=
