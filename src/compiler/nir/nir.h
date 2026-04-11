@@ -45,6 +45,7 @@
 #include "util/set.h"
 #include "util/simple_mtx.h"
 #include "util/sparse_bitset.h"
+#include "util/u_dynarray.h"
 #include "util/u_math.h"
 #include "nir_defines.h"
 #include "nir_shader_compiler_options.h"
@@ -484,7 +485,7 @@ typedef struct nir_variable {
        *
        * :c:struct:`nir_variable_mode`
        */
-      unsigned mode : 24;
+      unsigned mode : 26;
 
       /**
        * Is the variable read-only?
@@ -2516,6 +2517,11 @@ typedef enum nir_texop {
    nir_texop_block_match_ssd_qcom,
    /** txs in .xyz and query_levels in .w */
    nir_texop_resinfo_intel,
+
+   /** Returns red data and a sparse residency code for sampling ops */
+   nir_texop_sparse_residency_intel,
+   /** Returns red data and a sparse residency code for texel fetches */
+   nir_texop_sparse_residency_txf_intel,
 } nir_texop;
 
 /** Represents a texture instruction */
@@ -3101,6 +3107,20 @@ NIR_DEFINE_SRC_AS_CONST(double, float)
 
 #undef NIR_DEFINE_SRC_AS_CONST
 
+static inline bool
+nir_src_is_zero(nir_src src)
+{
+   if (!nir_src_is_const(src))
+      return false;
+
+   for (unsigned i = 0; i < nir_src_num_components(src); i++) {
+      if (nir_src_comp_as_uint(src, i) != 0)
+         return false;
+   }
+
+   return true;
+}
+
 static inline nir_const_value
 nir_scalar_as_const_value(nir_scalar s)
 {
@@ -3123,6 +3143,12 @@ NIR_DEFINE_SCALAR_AS_CONST(bool, bool)
 NIR_DEFINE_SCALAR_AS_CONST(double, float)
 
 #undef NIR_DEFINE_SCALAR_AS_CONST
+
+static inline bool
+nir_scalar_is_zero(nir_scalar s)
+{
+   return nir_scalar_is_const(s) && nir_scalar_as_uint(s) == 0;
+}
 
 static inline nir_op
 nir_scalar_alu_op(nir_scalar s)
@@ -3196,6 +3222,13 @@ nir_alu_src_as_uint(nir_alu_src src)
    return nir_scalar_as_uint(scalar);
 }
 
+static inline uint64_t
+nir_alu_src_comp_as_uint(nir_alu_src src, unsigned comp)
+{
+   nir_scalar scalar = nir_scalar_resolved(src.src.ssa, src.swizzle[comp]);
+   return nir_scalar_as_uint(scalar);
+}
+
 typedef struct nir_binding {
    bool success;
 
@@ -3261,7 +3294,8 @@ typedef struct nir_block {
    nir_block *successors[2];
 
    /* Set of nir_block predecessors in the CFG */
-   struct set predecessors;
+   struct util_dynarray predecessors;
+   nir_block *_preds_storage[2];
 
    /*
     * this node's immediate dominator in the dominance tree - set to NULL for
@@ -3310,6 +3344,50 @@ typedef struct nir_block {
    struct u_sparse_bitset live_in;
    struct u_sparse_bitset live_out;
 } nir_block;
+
+static ALWAYS_INLINE nir_block **
+_nir_pred_iter_begin(const nir_block *block)
+{
+   return (nir_block **)util_dynarray_begin(&block->predecessors);
+}
+
+static ALWAYS_INLINE bool
+_nir_pred_iter_end(const nir_block *block, nir_block **iter, nir_block **pred)
+{
+   if (iter == (nir_block **)util_dynarray_end(&block->predecessors))
+      return false;
+   *pred = *iter;
+   return true;
+}
+
+#define nir_foreach_pred(pred, block)                                    \
+   for (nir_block * pred, **pred##_iter = _nir_pred_iter_begin((block)); \
+        _nir_pred_iter_end((block), pred##_iter, &pred);                 \
+        pred##_iter++)
+
+static inline size_t
+nir_block_num_preds(const nir_block *block)
+{
+   return util_dynarray_num_elements(&block->predecessors, nir_block *);
+}
+
+static inline bool
+nir_block_has_pred(const nir_block *block, const nir_block *pred)
+{
+   return pred->successors[0] == block || pred->successors[1] == block;
+}
+
+static inline void
+nir_block_add_pred(nir_block *block, nir_block *pred)
+{
+   util_dynarray_append(&block->predecessors, pred);
+}
+
+static inline void
+nir_block_remove_pred(nir_block *block, nir_block *pred)
+{
+   util_dynarray_delete_unordered(&block->predecessors, nir_block *, pred);
+}
 
 static inline bool
 nir_block_is_reachable(nir_block *b)
@@ -3862,6 +3940,8 @@ nir_loop_last_continue_block(nir_loop *loop)
    struct exec_node *tail = exec_list_get_tail(&loop->continue_list);
    return nir_cf_node_as_block(exec_node_data(nir_cf_node, tail, node));
 }
+
+bool nir_loop_has_back_edge(nir_loop *loop);
 
 /**
  * Return true if this list of cf_nodes contains a single empty block.

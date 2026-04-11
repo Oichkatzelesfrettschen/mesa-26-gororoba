@@ -383,6 +383,10 @@ index("bool", "explicit_coord")
 index("bool", "src_is_reg")
 index("bool", "dst_is_reg")
 
+# For an Intel render target store, whether this signals end-of-thread. Must be
+# the last instruction.
+index("bool", "eot")
+
 # The index of the format string used by a printf. (u_printf_info element of the shader)
 index("unsigned", "fmt_idx")
 # for NV coop matrix - num of matrix in load 1/2/4
@@ -981,6 +985,7 @@ system_value("pixel_coord", 2, bit_sizes=[16])
 # requires interpolation.
 system_value("frag_coord_z", 1)
 system_value("frag_coord_w", 1)
+system_value("frag_coord_w_rcp", 1)
 system_value("point_coord", 2)
 system_value("line_coord", 1)
 system_value("front_face", 1, bit_sizes=[1, 32])
@@ -1454,9 +1459,6 @@ intrinsic("cmat_insert", src_comp=[-1, 1, -1, 1])
 intrinsic("cmat_copy", src_comp=[-1, -1])
 intrinsic("cmat_transpose", src_comp=[-1, -1], indices=[FP_MATH_CTRL])
 
-# VK_EXT_descriptor_heap
-system_value("sampler_heap_ptr", 1, bit_sizes=[64])
-system_value("resource_heap_ptr", 1, bit_sizes=[64])
 # src[] = { deref }.
 load("buffer_ptr_deref", [-1], [ACCESS, RESOURCE_TYPE],
      flags=[CAN_ELIMINATE, CAN_REORDER])
@@ -1465,9 +1467,6 @@ load("heap_descriptor", [1], [RESOURCE_TYPE], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
 load("resource_heap_data", [1], [ALIGN_MUL, ALIGN_OFFSET],
      flags=[CAN_ELIMINATE, CAN_REORDER])
-# src[] = { addr }.
-intrinsic("global_addr_to_descriptor", src_comp=[1], dest_comp=0,
-          indices=[RESOURCE_TYPE], flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Select an output vertex in a poly GS. Takes the stream-local vertex ID.
 intrinsic("select_vertex_poly", src_comp=[1], indices=[STREAM_ID])
@@ -2598,6 +2597,9 @@ system_value("fs_start_intel", 2, bit_sizes=[32])
 system_value("fs_z_c_intel", 2, bit_sizes=[32])
 system_value("fs_z_c0_intel", 1, bit_sizes=[32])
 
+# Lower 16-bit has pixel X coord, upper 16-bit has pixel Y coord
+system_value("pixel_coord_intel", 1, bit_sizes=[32])
+
 # Read the attribute thread payload at a given byte offset
 # src[] = { offset }
 load("attribute_payload_intel", [1], flags=[CAN_ELIMINATE, CAN_REORDER])
@@ -2618,6 +2620,14 @@ system_value("indirect_address_intel", 1)
 # Load a relocatable 32-bit value
 intrinsic("load_reloc_const_intel", dest_comp=1, bit_sizes=[32],
           indices=[PARAM_IDX, BASE], flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# Write a render target
+# src[] = { payload, 2x32 descriptor, predicate }
+intrinsic("store_render_target_intel", [-1, 2, 1], indices=[EOT], bit_sizes=[32])
+
+# Shuffle with an offset in bytes instead of a lane index.
+# src[] = { payload, lane offset in bytes }
+intrinsic("shuffle_intel", src_comp=[1, 1], dest_comp=0, bit_sizes=src0, flags=SUBGROUP_FLAGS)
 
 # 1 component 32bit surface index that can be used for bindless or BTI heaps
 #
@@ -2665,6 +2675,13 @@ store("ssbo_block_intel", [-1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET])
 
 # src[] = { value, offset }.
 store("shared_block_intel", [1], [BASE, ALIGN_MUL, ALIGN_OFFSET])
+
+# These offsets are into per-subgroup scratch memory, rather than the per-lane
+# offsets the standard NIR intrinsics use.
+# src[] = { offset }.
+load("scratch_intel", [1], [ACCESS], [CAN_ELIMINATE])
+# src[] = { value, offset }.
+store("scratch_intel", [1], [])
 
 # src[] = { address }.
 load("global_constant_uniform_block_intel", [1],
@@ -3094,34 +3111,3 @@ intrinsic("load_sampler_handle_kk", [1], 1, [],
           flags=[CAN_ELIMINATE, CAN_REORDER],
           bit_sizes=[16])
 store("clip_distance_kk", [], [BASE])
-
-# Terakan / r600 TeraScale Vulkan-specific indices and intrinsics
-# (r600 Gallium intrinsics like tcs_*_r600, load_local_shared_r600 already exist above)
-
-index("unsigned", "id_base")
-index("unsigned", "mega_fetch_count_r600")
-index("unsigned", "uav_op_r600")
-index("unsigned", "uav_return_id_base_r600")
-
-system_value("shader_engine_id_r600", 1)
-system_value("hw_wave_id_r600", 1)
-
-load("buffer_resource_r600", src_comp=[1, 1],
-     indices=[ACCESS, ID_BASE, BASE, COMPONENT, FORMAT, MEGA_FETCH_COUNT_R600, FLAGS],
-     flags=[CAN_ELIMINATE, CAN_REORDER])
-
-load("texture_resource_r600", src_comp=[1, 4],
-     indices=[ACCESS, ID_BASE, COMPONENT], flags=[CAN_ELIMINATE, CAN_REORDER])
-
-load("kcache_r600", src_comp=[1], indices=[ACCESS, ID_BASE, BASE, COMPONENT],
-     flags=[CAN_ELIMINATE, CAN_REORDER])
-
-load("r600_indirect_per_vertex_input", [1, 1],
-     [BASE, RANGE, COMPONENT, DEST_TYPE, IO_SEMANTICS], [CAN_ELIMINATE, CAN_REORDER])
-
-intrinsic("uav_instr_r600", src_comp=[1, -1, -1, 1], bit_sizes=[32, 32, 32, 32],
-          indices=[UAV_OP_R600, ACCESS, ID_BASE])
-
-intrinsic("uav_returning_instr_r600", dest_comp=0, src_comp=[1, -1, -1, 1, 1],
-          bit_sizes=[32, 32, 32, 32, 32, 32],
-          indices=[UAV_OP_R600, ACCESS, ID_BASE, UAV_RETURN_ID_BASE_R600, MEGA_FETCH_COUNT_R600])
