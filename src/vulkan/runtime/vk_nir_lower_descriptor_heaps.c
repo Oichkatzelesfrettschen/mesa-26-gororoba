@@ -462,9 +462,8 @@ vk_build_descriptor_heap_address(nir_builder *b,
 static bool
 var_is_heap_ptr(nir_variable *var)
 {
-   return (var->data.mode == nir_var_uniform || var->data.mode == nir_var_image) &&
-          (var->data.location == SYSTEM_VALUE_SAMPLER_HEAP_PTR ||
-           var->data.location == SYSTEM_VALUE_RESOURCE_HEAP_PTR);
+   return var->data.mode == nir_var_resource_heap ||
+          var->data.mode == nir_var_sampler_heap;
 }
 
 static nir_deref_instr *
@@ -486,39 +485,6 @@ deref_get_root_cast(nir_deref_instr *deref)
    assert(deref->deref_type == nir_deref_type_cast);
 
    return deref;
-}
-
-static bool
-deref_cast_is_heap_ptr(nir_deref_instr *deref)
-{
-   assert(deref->deref_type == nir_deref_type_cast);
-   nir_intrinsic_instr *intrin = nir_src_as_intrinsic(deref->parent);
-   if (intrin == NULL) {
-      nir_deref_instr *parent_deref = nir_src_as_deref(deref->parent);
-      if (parent_deref != NULL && parent_deref->deref_type == nir_deref_type_var)
-         return var_is_heap_ptr(parent_deref->var);
-
-      return false;
-   }
-
-   switch (intrin->intrinsic) {
-   case nir_intrinsic_load_deref: {
-      nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
-      nir_variable *var = nir_deref_instr_get_variable(deref);
-      if (var == NULL || var->data.mode != nir_var_system_value)
-         return false;
-
-      return var->data.location == SYSTEM_VALUE_SAMPLER_HEAP_PTR ||
-             var->data.location == SYSTEM_VALUE_RESOURCE_HEAP_PTR;
-   }
-
-   case nir_intrinsic_load_sampler_heap_ptr:
-   case nir_intrinsic_load_resource_heap_ptr:
-      return true;
-
-   default:
-      return false;
-   }
 }
 
 static bool
@@ -663,9 +629,6 @@ build_deref_heap_offset(nir_builder *b, nir_deref_instr *deref,
       if (root_cast == NULL)
          return NULL;
 
-      if (!deref_cast_is_heap_ptr(root_cast))
-         return NULL;
-
       /* We're building an offset.  It starts at zero */
       b->cursor = nir_before_instr(&root_cast->instr);
       nir_def *base_addr = nir_imm_int(b, 0);
@@ -753,14 +716,18 @@ lower_heaps_tex(nir_builder *b, nir_tex_instr *tex,
 
 static bool
 lower_heaps_image(nir_builder *b, nir_intrinsic_instr *intrin,
-                  struct heap_mapping_ctx *ctx)
+                  struct heap_mapping_ctx *ctx, bool deref)
 {
    nir_deref_instr *image = nir_src_as_deref(intrin->src[0]);
    nir_def *heap_offset = build_deref_heap_offset(b, image, false, ctx);
    if (heap_offset == NULL)
       return false;
 
-   nir_rewrite_image_intrinsic(intrin, heap_offset, nir_image_intrinsic_type_heap);
+   if (deref) {
+      nir_rewrite_image_intrinsic(intrin, heap_offset, nir_image_intrinsic_type_heap);
+   } else {
+      nir_src_rewrite(&intrin->src[0], heap_offset);
+   }
 
    return true;
 }
@@ -889,7 +856,7 @@ lower_heaps_load_buffer_ptr(nir_builder *b, nir_intrinsic_instr *ptr_load,
    nir_deref_instr *deref = nir_src_as_deref(ptr_load->src[0]);
 
    nir_deref_instr *root_cast = deref_get_root_cast(deref);
-   if (!deref_cast_is_heap_ptr(root_cast))
+   if (root_cast == NULL)
       return false;
 
    /* We're building an offset.  It starts at zero */
@@ -932,42 +899,38 @@ lower_heaps_load_descriptor(nir_builder *b, nir_intrinsic_instr *desc_load,
    if (mapping == NULL)
       return false; /* Descriptor sets */
 
-   /* These have to be handled by try_lower_deref_access() */
+   b->cursor = nir_before_instr(&desc_load->instr);
+
    if (mapping->source == VK_DESCRIPTOR_MAPPING_SOURCE_PUSH_DATA_EXT ||
        mapping->source == VK_DESCRIPTOR_MAPPING_SOURCE_RESOURCE_HEAP_DATA_EXT) {
+      /* These have to be handled by try_lower_deref_access() */
       assert(resource_type == nir_resource_type_uniform_buffer);
       return false;
-   }
+   } else if (mapping->source == VK_DESCRIPTOR_MAPPING_SOURCE_PUSH_ADDRESS_EXT ||
+              mapping->source == VK_DESCRIPTOR_MAPPING_SOURCE_INDIRECT_ADDRESS_EXT ||
+              mapping->source == VK_DESCRIPTOR_MAPPING_SOURCE_SHADER_RECORD_DATA_EXT ||
+              mapping->source == VK_DESCRIPTOR_MAPPING_SOURCE_SHADER_RECORD_ADDRESS_EXT) {
+      /* Other resource types have to be handled by try_lower_deref_access() */
+      if (resource_type != nir_resource_type_acceleration_structure)
+         return false;
 
-   b->cursor = nir_before_instr(&desc_load->instr);
-   nir_def *index = build_buffer_resource_index(b, desc_load);
+      nir_def *addr = vk_build_descriptor_heap_address(b, mapping);
+      assert(addr);
+      nir_def_replace(&desc_load->def, addr);
+   } else {
+      nir_def *index = build_buffer_resource_index(b, desc_load);
 
-   /* There are a few mapping sources that are allowed for SSBOs and
-    * acceleration structures which use addresses.  If it's an acceleration
-    * structure or try_lower_deref_access() fails to catch it, we have to
-    * load the address and ask the driver to convert the address to a
-    * descriptor.
-    */
-   nir_def *addr = vk_build_descriptor_heap_address(b, mapping);
-   if (addr != NULL) {
-      nir_def *desc =
-         nir_global_addr_to_descriptor(b, desc_load->def.num_components,
-                                       desc_load->def.bit_size, addr,
-                                       .resource_type = resource_type);
+      /* Everything else is an offset */
+      nir_def *heap_offset =
+         vk_build_descriptor_heap_offset(b, mapping, resource_type, binding,
+                                         index, false /* is_sampler */);
+      nir_def *desc = nir_load_heap_descriptor(b, desc_load->def.num_components,
+                                               desc_load->def.bit_size,
+                                               heap_offset,
+                                               .resource_type = resource_type);
+
       nir_def_replace(&desc_load->def, desc);
-      return true;
    }
-
-   /* Everything else is an offset */
-   nir_def *heap_offset =
-      vk_build_descriptor_heap_offset(b, mapping, resource_type, binding,
-                                      index, false /* is_sampler */);
-   nir_def *desc = nir_load_heap_descriptor(b, desc_load->def.num_components,
-                                            desc_load->def.bit_size,
-                                            heap_offset,
-                                            .resource_type = resource_type);
-
-   nir_def_replace(&desc_load->def, desc);
 
    return true;
 }
@@ -988,7 +951,19 @@ lower_heaps_intrin(nir_builder *b, nir_intrinsic_instr *intrin,
    case nir_intrinsic_image_deref_store_raw_intel:
    case nir_intrinsic_image_deref_fragment_mask_load_amd:
    case nir_intrinsic_image_deref_store_block_agx:
-      return lower_heaps_image(b, intrin, ctx);
+      return lower_heaps_image(b, intrin, ctx, true);
+   case nir_intrinsic_image_heap_load:
+   case nir_intrinsic_image_heap_sparse_load:
+   case nir_intrinsic_image_heap_store:
+   case nir_intrinsic_image_heap_atomic:
+   case nir_intrinsic_image_heap_atomic_swap:
+   case nir_intrinsic_image_heap_size:
+   case nir_intrinsic_image_heap_samples:
+   case nir_intrinsic_image_heap_load_raw_intel:
+   case nir_intrinsic_image_heap_store_raw_intel:
+   case nir_intrinsic_image_heap_fragment_mask_load_amd:
+   case nir_intrinsic_image_heap_store_block_agx:
+      return lower_heaps_image(b, intrin, ctx, false);
 
    case nir_intrinsic_load_deref:
    case nir_intrinsic_store_deref:
