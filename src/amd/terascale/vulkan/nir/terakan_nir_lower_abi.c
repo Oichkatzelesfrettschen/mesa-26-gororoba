@@ -48,6 +48,44 @@ terakan_nir_resize_vector(nir_builder * const b, nir_def * const src,
              : nir_pad_vector(b, src, num_components);
 }
 
+static nir_def *
+terakan_nir_convert_32_to_type_bits(nir_builder * const b, nir_def * const value,
+                                    unsigned const bit_size, nir_alu_type const type)
+{
+   if (bit_size == 32) {
+      return value;
+   }
+   switch (nir_alu_type_get_base_type(type)) {
+   case nir_type_float:
+      return nir_f2fN(b, value, bit_size);
+   case nir_type_int:
+      return nir_i2iN(b, value, bit_size);
+   case nir_type_bool:
+   case nir_type_uint:
+   default:
+      return nir_u2uN(b, value, bit_size);
+   }
+}
+
+static nir_def *
+terakan_nir_convert_type_to_32_bits(nir_builder * const b, nir_def * const value,
+                                    nir_alu_type const type)
+{
+   if (value->bit_size == 32) {
+      return value;
+   }
+   switch (nir_alu_type_get_base_type(type)) {
+   case nir_type_float:
+      return nir_f2f32(b, value);
+   case nir_type_int:
+      return nir_i2i32(b, value);
+   case nir_type_bool:
+   case nir_type_uint:
+   default:
+      return nir_u2u32(b, value);
+   }
+}
+
 static void
 terakan_nir_build_uav_instr_r600(nir_builder * const b, nir_def * const uav_array_index,
                                  nir_def * const coord, nir_def * const value,
@@ -961,8 +999,8 @@ terakan_nir_lower_bindings_instr_ssbo_atomic(nir_builder * const b,
    }
 
    if (result_used) {
-      /* TODO(Triang3l): Proper bit size conversion depending on the destination type? */
-      nir_def *atomic_result = nir_u2uN(
+      nir_alu_type const result_type = nir_atomic_op_type(nir_intrinsic_atomic_op(intrin));
+      nir_def *atomic_result = terakan_nir_convert_32_to_type_bits(
             b,
             terakan_nir_build_uav_returning_instr_r600(
                b, intrin->def.num_components, 32, uav_array_index, coord, value, compare_value,
@@ -974,7 +1012,7 @@ terakan_nir_lower_bindings_instr_ssbo_atomic(nir_builder * const b,
                    ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
                    : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
                uav_index_zero_based),
-            intrin->def.bit_size);
+            intrin->def.bit_size, result_type);
       if (guarded) {
          /* OOB path: return zero for the atomic result. */
          nir_pop_if(b, NULL);
@@ -1091,10 +1129,11 @@ terakan_nir_lower_bindings_instr_image_deref_load(
                                                    struct terakan_physical_device const, vk)
                                          ->chip_info);
    nir_def * const undef = nir_undef(b, 1, 32);
-   /* TODO(Triang3l): Proper bit size conversion depending on the destination type? */
+   nir_alu_type const result_type =
+      nir_intrinsic_has_dest_type(intrin) ? nir_intrinsic_dest_type(intrin) : nir_type_uint32;
    nir_def_rewrite_uses(
       &intrin->def,
-      nir_u2uN(
+      terakan_nir_convert_32_to_type_bits(
          b,
          terakan_nir_build_uav_returning_instr_r600(
             b, intrin->def.num_components, 32, uav_array_index,
@@ -1105,7 +1144,7 @@ terakan_nir_lower_bindings_instr_image_deref_load(
                 ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
                 : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
             uav_index_zero_based),
-         intrin->def.bit_size));
+         intrin->def.bit_size, result_type));
    nir_instr_remove(&intrin->instr);
 }
 
@@ -1192,8 +1231,11 @@ terakan_nir_lower_bindings_instr_image_deref_store(
 
    nir_def * const undef = nir_undef(b, 1, 32);
 
-   /* TODO(Triang3l): Proper bit size conversion depending on the source type? */
-   terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, nir_u2u32(b, intrin->src[3].ssa),
+   nir_alu_type const store_type =
+      nir_intrinsic_has_src_type(intrin) ? nir_intrinsic_src_type(intrin) : nir_type_uint32;
+   nir_def * const store_value =
+      terakan_nir_convert_type_to_32_bits(b, intrin->src[3].ssa, store_type);
+   terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, store_value,
                                     undef, V_RAT_INST_STORE_TYPED, access,
                                     state->uav_base + uav_index_zero_based);
 
@@ -1310,8 +1352,8 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
    }
 
    if (result_used) {
-      /* TODO(Triang3l): Proper bit size conversion depending on the destination type? */
-      nir_def *atomic_result = nir_u2uN(
+      nir_alu_type const result_type = nir_atomic_op_type(nir_intrinsic_atomic_op(intrin));
+      nir_def *atomic_result = terakan_nir_convert_32_to_type_bits(
             b,
             terakan_nir_build_uav_returning_instr_r600(
                b, intrin->def.num_components, 32, uav_array_index, coord, value, compare_value,
@@ -1323,7 +1365,7 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
                    ? TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_PIXEL
                    : TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE) +
                uav_index_zero_based),
-            intrin->def.bit_size);
+            intrin->def.bit_size, result_type);
       if (guarded) {
          /* OOB path: return zero for the atomic result. */
          nir_pop_if(b, NULL);
