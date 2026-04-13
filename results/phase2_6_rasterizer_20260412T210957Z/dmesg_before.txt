@@ -1,0 +1,400 @@
+[    1.543701] usb usb2: SerialNumber: 0000:00:13.0
+[    1.544264] hub 2-0:1.0: USB hub found
+[    1.544359] hub 2-0:1.0: 5 ports detected
+[    1.545444] usbcore: registered new interface driver usbserial_generic
+[    1.545491] usbserial: USB Serial support registered for generic
+[    1.545657] i8042: PNP: PS/2 Controller [PNP0303:KBC0,PNP0f13:MSE0] at 0x60,0x64 irq 1,12
+[    1.547839] ehci-pci 0000:00:12.2: EHCI Host Controller
+[    1.547873] ehci-pci 0000:00:12.2: new USB bus registered, assigned bus number 3
+[    1.547890] ehci-pci 0000:00:12.2: applying AMD SB700/SB800/Hudson-2/3 EHCI dummy qh workaround
+[    1.547955] ehci-pci 0000:00:12.2: debug port 1
+[    1.548415] ehci-pci 0000:00:12.2: irq 17, io mem 0xf034a500
+[    1.549294] i8042: Detected active multiplexing controller, rev 1.1
+[    1.552596] serio: i8042 KBD port at 0x60,0x64 irq 1
+[    1.552621] serio: i8042 AUX0 port at 0x60,0x64 irq 12
+[    1.552631] serio: i8042 AUX1 port at 0x60,0x64 irq 12
+[    1.552638] serio: i8042 AUX2 port at 0x60,0x64 irq 12
+[    1.552645] serio: i8042 AUX3 port at 0x60,0x64 irq 12
+[    1.553835] rtc_cmos 00:01: RTC can wake from S4
+[    1.554851] rtc_cmos 00:01: registered as rtc0
+[    1.554947] rtc_cmos 00:01: setting system clock to 2026-04-12T18:38:33 UTC (1776019113)
+[    1.555093] rtc_cmos 00:01: alarms up to one month, 114 bytes nvram, hpet irqs
+[    1.555418] amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
+[    1.557177] simple-framebuffer simple-framebuffer.0: [drm] Registered 1 planes with drm panic
+[    1.557192] [drm] Initialized simpledrm 1.0.0 for simple-framebuffer.0 on minor 0
+[    1.559328] ehci-pci 0000:00:12.2: USB 2.0 started, EHCI 1.00
+[    1.559680] usb usb3: New USB device found, idVendor=1d6b, idProduct=0002, bcdDevice= 6.18
+[    1.559692] usb usb3: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.559698] usb usb3: Product: EHCI Host Controller
+[    1.559704] usb usb3: Manufacturer: Linux 6.18.22-x64v1-xanmod1 ehci_hcd
+[    1.559709] usb usb3: SerialNumber: 0000:00:12.2
+[    1.560309] hub 3-0:1.0: USB hub found
+[    1.560360] hub 3-0:1.0: 5 ports detected
+[    1.563616] Console: switching to colour frame buffer device 80x30
+[    1.565786] simple-framebuffer simple-framebuffer.0: [drm] fb0: simpledrmdrmfb frame buffer device
+[    1.567281] hid: raw HID events driver (C) Jiri Kosina
+[    1.567468] usbcore: registered new interface driver usbhid
+[    1.567476] usbhid: USB HID core driver
+[    1.567776] drop_monitor: Initializing network drop monitor service
+[    1.568645] NET: Registered PF_INET6 protocol family
+[    1.570320] Segment Routing with IPv6
+[    1.570337] RPL Segment Routing with IPv6
+[    1.570381] In-situ OAM (IOAM) with IPv6
+[    1.570469] NET: Registered PF_PACKET protocol family
+[    1.572076] microcode: Current revision: 0x05000119
+[    1.572097] microcode: Updated early from: 0x05000101
+[    1.573938] IPI shorthand broadcast: enabled
+[    1.579356] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input4
+[    1.587278] sched_clock: Marking stable (1584015639, 3128388)->(1592594391, -5450364)
+[    1.587984] registered taskstats version 1
+[    1.595885] Loading compiled-in X.509 certificates
+[    1.623568] hub 1-0:1.0: USB hub found
+[    1.623670] hub 1-0:1.0: 5 ports detected
+[    1.625202] ehci-pci 0000:00:13.2: EHCI Host Controller
+[    1.625233] ehci-pci 0000:00:13.2: new USB bus registered, assigned bus number 4
+[    1.625250] ehci-pci 0000:00:13.2: applying AMD SB700/SB800/Hudson-2/3 EHCI dummy qh workaround
+[    1.625315] ehci-pci 0000:00:13.2: debug port 1
+[    1.625708] ehci-pci 0000:00:13.2: irq 17, io mem 0xf034a400
+[    1.636145] ehci-pci 0000:00:13.2: USB 2.0 started, EHCI 1.00
+[    1.636452] usb usb4: New USB device found, idVendor=1d6b, idProduct=0002, bcdDevice= 6.18
+[    1.636464] usb usb4: New USB device strings: Mfr=3, Product=2, SerialNumber=1
+[    1.636471] usb usb4: Product: EHCI Host Controller
+[    1.636477] usb usb4: Manufacturer: Linux 6.18.22-x64v1-xanmod1 ehci_hcd
+[    1.636482] usb usb4: SerialNumber: 0000:00:13.2
+[    1.636980] hub 4-0:1.0: USB hub found
+[    1.637021] hub 4-0:1.0: 5 ports detected
+[    1.703577] hub 2-0:1.0: USB hub found
+[    1.703681] hub 2-0:1.0: 5 ports detected
+[    1.883252] usb 4-5: new high-speed USB device number 2 using ehci-pci
+[    1.891358] ata1: SATA link up 3.0 Gbps (SStatus 123 SControl 300)
+[    1.892378] ata1.00: supports DRM functions and may not be fully accessible
+[    1.892396] ata1.00: ATA-10: CT1000MX500SSD1, M3CR033, max UDMA/133
+[    1.892497] ata1.00: 1953525168 sectors, multi 1: LBA48 NCQ (depth 32), AA
+[    1.893986] ata1.00: Features: Trust Dev-Sleep DIPM
+[    1.894245] ata1.00: supports DRM functions and may not be fully accessible
+[    1.895117] ata1.00: configured for UDMA/133
+[    1.895617] scsi 0:0:0:0: Direct-Access     ATA      CT1000MX500SSD1  033  PQ: 0 ANSI: 5
+[    1.897355] sd 0:0:0:0: [sda] 1953525168 512-byte logical blocks: (1.00 TB/932 GiB)
+[    1.897369] sd 0:0:0:0: [sda] 4096-byte physical blocks
+[    1.897422] sd 0:0:0:0: [sda] Write Protect is off
+[    1.897433] sd 0:0:0:0: [sda] Mode Sense: 00 3a 00 00
+[    1.897523] sd 0:0:0:0: [sda] Write cache: enabled, read cache: enabled, doesn't support DPO or FUA
+[    1.897758] sd 0:0:0:0: [sda] Preferred minimum I/O size 4096 bytes
+[    1.922993]  sda: sda1 sda2 sda3
+[    1.927424] sd 0:0:0:0: [sda] supports TCG Opal
+[    1.927444] sd 0:0:0:0: [sda] Attached SCSI disk
+[    2.038869] usb 4-5: New USB device found, idVendor=04f2, idProduct=b2b9, bcdDevice=41.64
+[    2.038892] usb 4-5: New USB device strings: Mfr=1, Product=2, SerialNumber=0
+[    2.038899] usb 4-5: Product: Integrated Camera
+[    2.038905] usb 4-5: Manufacturer: Image Processor
+[    2.075314] usb 1-4: new full-speed USB device number 2 using ohci-pci
+[    2.235330] tsc: Refined TSC clocksource calibration: 1297.237 MHz
+[    2.235360] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x12b2ebef9b1, max_idle_ns: 440795214546 ns
+[    2.235423] clocksource: Switched to clocksource tsc
+[    2.263531] usb 1-4: New USB device found, idVendor=0a5c, idProduct=217f, bcdDevice= 7.48
+[    2.263552] usb 1-4: New USB device strings: Mfr=1, Product=2, SerialNumber=3
+[    2.263559] usb 1-4: Product: Broadcom Bluetooth Device
+[    2.263565] usb 1-4: Manufacturer: Broadcom Corp
+[    2.263571] usb 1-4: SerialNumber: 7CE9D3BAA4BC
+[    6.885155] Freeing initrd memory: 153648K
+[    6.915622] Loaded X.509 cert 'Build time autogenerated kernel key: 2abbf26058799da8cf061797c854846699428893'
+[    6.927062] Demotion targets for Node 0: null
+[    6.928443] Key type .fscrypt registered
+[    6.928459] Key type fscrypt-provisioning registered
+[    6.930843] Btrfs loaded, zoned=yes, fsverity=yes
+[    6.931046] Key type big_key registered
+[    6.933472] PM:   Magic number: 6:380:645
+[    6.940408] RAS: Correctable Errors collector initialized.
+[    6.973455] clk: Disabling unused clocks
+[    6.973472] PM: genpd: Disabling unused power domains
+[    6.981596] Freeing unused decrypted memory: 2028K
+[    6.985191] Freeing unused kernel image (initmem) memory: 3472K
+[    6.985339] Write protecting the kernel read-only data: 36864k
+[    6.987103] Freeing unused kernel image (text/rodata gap) memory: 868K
+[    6.989030] Freeing unused kernel image (rodata/data gap) memory: 1908K
+[    7.076708] x86/mm: Checked W+X mappings: passed, no W+X pages found.
+[    7.076729] rodata_test: all tests were successful
+[    7.076758] Run /init as init process
+[    7.076763]   with arguments:
+[    7.076767]     /init
+[    7.076771]   with environment:
+[    7.076774]     HOME=/
+[    7.076777]     TERM=linux
+[    8.312009] ACPI: video: Video Device [VGA1] (multi-head: yes  rom: no  post: no)
+[    8.312757] input: Video Bus as /devices/LNXSYSTM:00/LNXSYBUS:00/PNP0A08:00/LNXVIDEO:01/input/input9
+[    8.360286] ACPI Warning: SystemIO range 0x0000000000000B00-0x0000000000000B08 conflicts with OpRegion 0x0000000000000B00-0x0000000000000B0F (\_SB.PCI0.SMB.SMB0) (20250807/utaddress-204)
+[    8.360322] ACPI: OSL: Resource conflict; ACPI support missing from driver?
+[    8.390825] sp5100_tco: SP5100/SB800 TCO WatchDog Timer Driver
+[    8.393792] sp5100-tco sp5100-tco: Using 0xfed80b00 for watchdog MMIO address
+[    8.394300] sp5100-tco sp5100-tco: initialized. heartbeat=60 sec (nowayout=0)
+[    8.929723] atl1c 0000:02:00.0 enp2s0: renamed from eth0
+[    9.347652] [drm] radeon kernel modesetting enabled.
+[    9.384095] Console: switching to colour dummy device 80x25
+[    9.392393] radeon 0000:00:01.0: vgaarb: deactivate vga console
+[    9.393173] [drm] initializing kernel modesetting (PALM 0x1002:0x9802 0x17AA:0x21EC 0x00).
+[    9.393255] resource: resource sanity check: requesting [mem 0x00000000000c0000-0x00000000000dffff], which spans more than PCI Bus 0000:00 [mem 0x000a0000-0x000cdfff window]
+[    9.393270] caller radeon_read_bios+0x3f/0xd0 [radeon] mapping multiple BARs
+[    9.393928] ATOM BIOS: Lenovo
+[    9.394031] radeon 0000:00:01.0: VRAM: 384M 0x0000000000000000 - 0x0000000017FFFFFF (384M used)
+[    9.394049] radeon 0000:00:01.0: GTT: 1024M 0x0000000018000000 - 0x0000000057FFFFFF
+[    9.394070] [drm] Detected VRAM RAM=384M, BAR=256M
+[    9.394075] [drm] RAM width 32bits DDR
+[    9.394657] [drm] radeon: 384M of VRAM memory ready
+[    9.394678] [drm] radeon: 1024M of GTT memory ready.
+[    9.394753] [drm] Loading PALM Microcode
+[    9.395491] [drm] Internal thermal controller without fan control
+[    9.395637] [drm] radeon: power management initialized
+[    9.401011] [drm] GART: num cpu pages 262144, num gpu pages 262144
+[    9.413537] [drm] PCIE GART of 1024M enabled (table at 0x0000000000162000).
+[    9.413788] radeon 0000:00:01.0: WB enabled
+[    9.413799] radeon 0000:00:01.0: fence driver on ring 0 uses gpu addr 0x0000000018000c00
+[    9.413807] radeon 0000:00:01.0: fence driver on ring 3 uses gpu addr 0x0000000018000c0c
+[    9.414278] radeon 0000:00:01.0: fence driver on ring 5 uses gpu addr 0x0000000000072118
+[    9.415085] radeon 0000:00:01.0: radeon: MSI limited to 32-bit
+[    9.415301] radeon 0000:00:01.0: radeon: using MSI.
+[    9.415984] [drm] radeon: irq initialized.
+[    9.433202] [drm] ring test on 0 succeeded in 1 usecs
+[    9.433228] [drm] ring test on 3 succeeded in 3 usecs
+[    9.478951] [drm] ring test on 5 succeeded in 1 usecs
+[    9.498827] [drm] UVD initialized successfully.
+[    9.499764] [drm] ib test on ring 0 succeeded in 0 usecs
+[    9.499839] [drm] ib test on ring 3 succeeded in 0 usecs
+[    9.784273] psmouse serio4: synaptics: queried max coordinates: x [..5766], y [..5260]
+[    9.851101] psmouse serio4: synaptics: Touchpad model: 1, fw: 8.0, id: 0x1e2b1, caps: 0xd001a3/0x940300/0x123c00/0x0, board id: 1917, fw id: 864720
+[    9.851245] psmouse serio4: synaptics: serio: Synaptics pass-through port at isa0060/serio4/input0
+[    9.891837] input: SynPS/2 Synaptics TouchPad as /devices/platform/i8042/serio4/input/input13
+[   10.011513] [drm] ib test on ring 5 succeeded
+[   10.032589] radeon 0000:00:01.0: [drm] Skipping radeon atom DIG backlight registration
+[   10.037814] acpi device:37: registered as cooling_device2
+[   10.037850] [drm] Radeon Display Connectors
+[   10.037855] [drm] Connector 0:
+[   10.037858] [drm]   LVDS-1
+[   10.037861] [drm]   HPD1
+[   10.037864] [drm]   DDC: 0x6430 0x6430 0x6434 0x6434 0x6438 0x6438 0x643c 0x643c
+[   10.037871] [drm]   Encoders:
+[   10.037874] [drm]     LCD1: INTERNAL_UNIPHY
+[   10.037878] [drm] Connector 1:
+[   10.037881] [drm]   HDMI-A-1
+[   10.037883] [drm]   HPD2
+[   10.037886] [drm]   DDC: 0x6440 0x6440 0x6444 0x6444 0x6448 0x6448 0x644c 0x644c
+[   10.037891] [drm]   Encoders:
+[   10.037894] [drm]     DFP1: INTERNAL_UNIPHY
+[   10.037896] [drm] Connector 2:
+[   10.037899] [drm]   VGA-1
+[   10.037902] [drm]   DDC: 0x64d8 0x64d8 0x64dc 0x64dc 0x64e0 0x64e0 0x64e4 0x64e4
+[   10.037907] [drm]   Encoders:
+[   10.037909] [drm]     CRT1: INTERNAL_KLDSCP_DAC1
+[   10.040529] [drm] Initialized radeon 2.51.0 for 0000:00:01.0 on minor 0
+[   10.473353] [drm] fb mappable at 0xE0366000
+[   10.473370] [drm] vram apper at 0xE0000000
+[   10.473373] [drm] size 4325376
+[   10.473377] [drm] fb depth is 24
+[   10.473380] [drm]    pitch is 5632
+[   10.473857] fbcon: radeondrmfb (fb0) is primary device
+[   10.587281] psmouse serio5: trackpoint: IBM TrackPoint firmware: 0x0e, buttons: 3/3
+[   10.819866] input: TPPS/2 IBM TrackPoint as /devices/platform/i8042/serio4/serio5/input/input14
+[   11.031526] Console: switching to colour frame buffer device 170x48
+[   11.033784] radeon 0000:00:01.0: [drm] fb0: radeondrmfb frame buffer device
+[   42.071289] amdgpu: Virtual CRAT table created for CPU
+[   42.071390] amdgpu: Topology: Add CPU node
+[   42.281975] async_tx: api initialized (async)
+[   42.627786] PM: Image not found (code -22)
+[   42.937129] EXT4-fs (sda3): orphan cleanup on readonly fs
+[   42.938806] EXT4-fs (sda3): mounted filesystem 1d93df94-f6f2-4289-98ee-774f2f6a4bbd ro with ordered data mode. Quota mode: none.
+[   43.749956] systemd[1]: systemd 257.9-1~deb13u1 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF -XKBCOMMON -UTMP +SYSVINIT +LIBARCHIVE)
+[   43.749993] systemd[1]: Detected architecture x86-64.
+[   43.754855] systemd[1]: Hostname set to <x130e>.
+[   44.313590] systemd[1]: bpf-restrict-fs: LSM BPF program attached
+[   44.976778] systemd-sysv-generator[281]: SysV service '/etc/init.d/exim4' lacks a native systemd unit file, automatically generating a unit file for compatibility.
+[   44.976806] systemd-sysv-generator[281]: Please update package to include a native systemd unit file.
+[   44.976818] systemd-sysv-generator[281]: ! This compatibility logic is deprecated, expect removal soon. !
+[   44.988091] systemd-sysv-generator[281]: SysV service '/etc/init.d/preload' lacks a native systemd unit file, automatically generating a unit file for compatibility.
+[   44.988116] systemd-sysv-generator[281]: Please update package to include a native systemd unit file.
+[   44.988128] systemd-sysv-generator[281]: ! This compatibility logic is deprecated, expect removal soon. !
+[   45.327127] systemd[1]: Configuration file /etc/systemd/system/ssd-performance.service is marked world-inaccessible. This has no effect as configuration data is accessible via APIs without restrictions. Proceeding anyway.
+[   45.448116] systemd[1]: Configuration file /etc/systemd/system/network-performance.service is marked world-inaccessible. This has no effect as configuration data is accessible via APIs without restrictions. Proceeding anyway.
+[   45.459837] systemd[1]: Configuration file /etc/systemd/system/ksm-enable.service is marked world-inaccessible. This has no effect as configuration data is accessible via APIs without restrictions. Proceeding anyway.
+[   45.508213] systemd[1]: Configuration file /etc/systemd/system/gpu-performance.service is marked world-inaccessible. This has no effect as configuration data is accessible via APIs without restrictions. Proceeding anyway.
+[   45.943663] systemd[1]: Queued start job for default target graphical.target.
+[   45.998280] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[   46.002143] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[   46.005798] systemd[1]: Created slice system-systemd\x2dfsck.slice - Slice /system/systemd-fsck.
+[   46.009602] systemd[1]: Created slice system-xfs_scrub.slice - xfs_scrub background service slice.
+[   46.012188] systemd[1]: Created slice user.slice - User and Session Slice.
+[   46.012636] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[   46.013717] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[   46.013866] systemd[1]: Expecting device dev-disk-by\x2duuid-2a7a2c0e\x2deb22\x2d4f84\x2dab43\x2dc1bb70fec58b.device - /dev/disk/by-uuid/2a7a2c0e-eb22-4f84-ab43-c1bb70fec58b...
+[   46.013942] systemd[1]: Expecting device dev-disk-by\x2duuid-47FA\x2dE39B.device - /dev/disk/by-uuid/47FA-E39B...
+[   46.014209] systemd[1]: Reached target nss-lookup.target - Host and Network Name Lookups.
+[   46.014313] systemd[1]: Reached target nss-user-lookup.target - User and Group Name Lookups.
+[   46.014478] systemd[1]: Reached target slices.target - Slice Units.
+[   46.015199] systemd[1]: Listening on dm-event.socket - Device-mapper event daemon FIFOs.
+[   46.015911] systemd[1]: Listening on lvm2-lvmpolld.socket - LVM2 poll daemon socket.
+[   46.036983] systemd[1]: Listening on rpcbind.socket - RPCbind Server Activation Socket.
+[   46.037762] systemd[1]: Listening on syslog.socket - Syslog Socket.
+[   46.045775] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[   46.051318] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[   46.051915] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[   46.052418] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[   46.053022] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[   46.053284] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements was skipped because of an unmet condition check (ConditionSecurity=measured-uki).
+[   46.053394] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy was skipped because of an unmet condition check (ConditionSecurity=measured-uki).
+[   46.053897] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[   46.054236] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[   46.061114] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[   46.071712] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[   46.083719] systemd[1]: Mounting run-lock.mount - Legacy Locks Directory /run/lock...
+[   46.095615] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[   46.117443] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[   46.117987] systemd[1]: auth-rpcgss-module.service - Kernel Module supporting RPCSEC_GSS was skipped because of an unmet condition check (ConditionPathExists=/etc/krb5.keytab).
+[   46.155868] systemd[1]: Starting keyboard-setup.service - Set the console keyboard layout...
+[   46.175938] systemd[1]: Starting kmod-static-nodes.service - Create List of Static Device Nodes...
+[   46.190535] systemd[1]: Starting lvm2-monitor.service - Monitoring of LVM2 mirrors, snapshots etc. using dmeventd or progress polling...
+[   46.199935] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[   46.219843] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[   46.227885] systemd[1]: Starting modprobe@efi_pstore.service - Load Kernel Module efi_pstore...
+[   46.239985] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[   46.241010] systemd[1]: systemd-fsck-root.service - File System Check on Root Device was skipped because of an unmet condition check (ConditionPathExists=!/run/initramfs/fsck-root).
+[   46.241227] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info was skipped because of an unmet condition check (ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67).
+[   46.267942] systemd[1]: Starting systemd-journald.service - Journal Service...
+[   46.279931] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[   46.280048] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement was skipped because of an unmet condition check (ConditionSecurity=measured-uki).
+[   46.290574] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[   46.290869] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup was skipped because of an unmet condition check (ConditionSecurity=measured-uki).
+[   46.299889] systemd[1]: Starting systemd-udev-load-credentials.service - Load udev Rules from Credentials...
+[   46.311938] systemd[1]: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[   46.329239] systemd[1]: Mounted dev-hugepages.mount - Huge Pages File System.
+[   46.329988] systemd[1]: Mounted dev-mqueue.mount - POSIX Message Queue File System.
+[   46.330544] systemd[1]: Mounted run-lock.mount - Legacy Locks Directory /run/lock.
+[   46.331079] systemd[1]: Mounted sys-kernel-debug.mount - Kernel Debug File System.
+[   46.331745] systemd[1]: Mounted sys-kernel-tracing.mount - Kernel Trace File System.
+[   46.333164] systemd[1]: Finished kmod-static-nodes.service - Create List of Static Device Nodes.
+[   46.351393] systemd[1]: Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+[   46.358713] systemd[1]: Finished keyboard-setup.service - Set the console keyboard layout.
+[   46.517130] systemd[1]: modprobe@configfs.service: Deactivated successfully.
+[   46.518141] systemd[1]: Finished modprobe@configfs.service - Load Kernel Module configfs.
+[   46.524558] systemd[1]: Mounting sys-kernel-config.mount - Kernel Configuration File System...
+[   46.589126] systemd[1]: Mounted sys-kernel-config.mount - Kernel Configuration File System.
+[   46.636104] systemd-journald[301]: Collecting audit messages is disabled.
+[   46.644969] systemd[1]: modprobe@drm.service: Deactivated successfully.
+[   46.645933] systemd[1]: Finished modprobe@drm.service - Load Kernel Module drm.
+[   46.658454] systemd[1]: modprobe@fuse.service: Deactivated successfully.
+[   46.659549] systemd[1]: Finished modprobe@fuse.service - Load Kernel Module fuse.
+[   46.696351] systemd[1]: modprobe@efi_pstore.service: Deactivated successfully.
+[   46.697425] systemd[1]: Finished modprobe@efi_pstore.service - Load Kernel Module efi_pstore.
+[   46.704742] systemd[1]: Finished systemd-udev-load-credentials.service - Load udev Rules from Credentials.
+[   46.712320] EXT4-fs (sda3): re-mounted 1d93df94-f6f2-4289-98ee-774f2f6a4bbd r/w.
+[   46.726482] systemd[1]: Finished systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully.
+[   46.737282] systemd[1]: Finished systemd-remount-fs.service - Remount Root and Kernel File Systems.
+[   46.738953] systemd[1]: systemd-hwdb-update.service - Rebuild Hardware Database was skipped because of an unmet condition check (ConditionNeedsUpdate=/etc).
+[   46.739453] systemd[1]: systemd-pstore.service - Platform Persistent Storage Archival was skipped because of an unmet condition check (ConditionDirectoryNotEmpty=/sys/fs/pstore).
+[   46.747855] systemd[1]: Starting systemd-random-seed.service - Load/Save OS Random Seed...
+[   46.748225] systemd[1]: systemd-sysusers.service - Create System Users was skipped because no trigger condition checks were met.
+[   46.764689] systemd[1]: Starting systemd-timesyncd.service - Network Time Synchronization...
+[   46.782806] systemd[1]: Starting systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev...
+[   46.782923] systemd[1]: systemd-tpm2-setup.service - TPM SRK Setup was skipped because of an unmet condition check (ConditionSecurity=measured-uki).
+[   46.819249] lp: driver loaded but no devices found
+[   46.891287] ppdev: user-space parallel port driver
+[   47.066108] systemd[1]: Finished systemd-tmpfiles-setup-dev.service - Create Static Device Nodes in /dev.
+[   47.081146] systemd[1]: Starting systemd-udevd.service - Rule-based Manager for Device Events and Files...
+[   47.159260] random: crng init done
+[   47.188905] systemd[1]: Finished systemd-random-seed.service - Load/Save OS Random Seed.
+[   47.269176] device-mapper: uevent: version 1.0.3
+[   47.269505] device-mapper: ioctl: 4.50.0-ioctl (2025-04-28) initialised: dm-devel@lists.linux.dev
+[   47.347651] systemd[1]: Mounting sys-fs-fuse-connections.mount - FUSE Control File System...
+[   47.386838] systemd[1]: Finished lvm2-monitor.service - Monitoring of LVM2 mirrors, snapshots etc. using dmeventd or progress polling.
+[   47.387581] systemd[1]: Reached target local-fs-pre.target - Preparation for Local File Systems.
+[   47.387761] systemd[1]: var-lib-machines.mount - Virtual Machine and Container Storage (Compatibility) was skipped because of an unmet condition check (ConditionPathExists=/var/lib/machines.raw).
+[   47.387846] systemd[1]: Reached target machines.target - Containers.
+[   47.388322] systemd[1]: Listening on systemd-importd.socket - Disk Image Download Service Socket.
+[   47.413337] systemd[1]: Mounted sys-fs-fuse-connections.mount - FUSE Control File System.
+[   47.759257] Key type encrypted registered
+[   47.820177] systemd[1]: Started systemd-timesyncd.service - Network Time Synchronization.
+[   47.820604] systemd[1]: Reached target time-set.target - System Time Set.
+[   47.840345] systemd[1]: Finished systemd-modules-load.service - Load Kernel Modules.
+[   47.846018] systemd[1]: Mounting proc-fs-nfsd.mount - NFSD configuration filesystem...
+[   47.852445] systemd[1]: Starting systemd-sysctl.service - Apply Kernel Variables...
+[   48.013123] systemd[1]: Started systemd-journald.service - Journal Service.
+[   48.252471] RPC: Registered named UNIX socket transport module.
+[   48.252489] RPC: Registered udp transport module.
+[   48.252492] RPC: Registered tcp transport module.
+[   48.252495] RPC: Registered tcp-with-tls transport module.
+[   48.252498] RPC: Registered tcp NFSv4.1 backchannel transport module.
+[   48.309447] systemd-journald[301]: Received client request to flush runtime journal.
+[   49.703217] sd 0:0:0:0: Attached scsi generic sg0 type 0
+[   49.805707] io scheduler kyber registered
+[   50.279690] mousedev: PS/2 mouse device common for all mice
+[   51.942333] Adding 8593404k swap on /dev/sda2.  Priority:-2 extents:1 across:8593404k SS
+[   52.373808] acpi_cpufreq: overriding BIOS provided _PSD data
+[   52.538656] thinkpad_acpi: ThinkPad ACPI Extras v0.26
+[   52.538675] thinkpad_acpi: http://ibm-acpi.sf.net/
+[   52.538678] thinkpad_acpi: ThinkPad BIOS 8RET54WW (1.17 ), EC unknown
+[   52.538682] thinkpad_acpi: Lenovo ThinkPad X130e, model 06222DU
+[   52.603712] input: PC Speaker as /devices/platform/pcspkr/input/input16
+[   52.620192] thinkpad_acpi: radio switch found; radios are enabled
+[   52.620689] thinkpad_acpi: Tablet mode switch found (type: MHKG), currently in laptop mode
+[   52.620722] thinkpad_acpi: This ThinkPad has standard ACPI backlight brightness control, supported by the ACPI video driver
+[   52.620727] thinkpad_acpi: Disabling thinkpad-acpi brightness events by default...
+[   52.697409] cfg80211: Loading compiled-in X.509 certificates for regulatory database
+[   52.784445] Loaded X.509 cert 'sforshee: 00b28ddf47aef9cea7'
+[   52.785307] Loaded X.509 cert 'wens: 61c038651aabdcf94bd0ac7ff06c7248db18c600'
+[   52.792013] cfg80211: loaded regulatory.db is malformed or signature is missing/invalid
+[   53.466142] input: HD-Audio Generic HDMI/DP,pcm=3 as /devices/pci0000:00/0000:00:01.1/sound/card0/input17
+[   53.872730] thinkpad_acpi: rfkill switch tpacpi_bluetooth_sw: radio is unblocked
+[   54.730900] snd_hda_codec_conexant hdaudioC1D0: CX20590: BIOS auto-probing.
+[   54.732017] snd_hda_codec_conexant hdaudioC1D0: CX20590: picked fixup  for PCI SSID 17aa:0000
+[   54.732186] snd_hda_codec_conexant hdaudioC1D0: autoconfig for CX20590: line_outs=1 (0x1f/0x0/0x0/0x0/0x0) type:speaker
+[   54.732198] snd_hda_codec_conexant hdaudioC1D0:    speaker_outs=0 (0x0/0x0/0x0/0x0/0x0)
+[   54.732205] snd_hda_codec_conexant hdaudioC1D0:    hp_outs=1 (0x19/0x0/0x0/0x0/0x0)
+[   54.732212] snd_hda_codec_conexant hdaudioC1D0:    mono: mono_out=0x0
+[   54.732217] snd_hda_codec_conexant hdaudioC1D0:    inputs:
+[   54.732224] snd_hda_codec_conexant hdaudioC1D0:      Internal Mic=0x23
+[   54.732230] snd_hda_codec_conexant hdaudioC1D0:      Mic=0x1b
+[   57.640071] thinkpad_acpi: secondary fan control detected & enabled
+[   57.670423] ACPI: \_SB_.PCI0.LPC0.EC__.HKEY: BCTG evaluated but flagged as error
+[   57.670443] thinkpad_acpi: Error probing battery 2
+[   57.670451] ACPI: battery: hook failed to load: ThinkPad Battery Extension
+[   57.670474] ACPI: battery: hook unregistered: ThinkPad Battery Extension
+[   57.670712] input: ThinkPad Extra Buttons as /devices/platform/thinkpad_acpi/input/input15
+[   58.316683] input: HDA ATI SB Mic as /devices/pci0000:00/0000:00:14.2/sound/card1/input18
+[   58.316991] input: HDA ATI SB Headphone as /devices/pci0000:00/0000:00:14.2/sound/card1/input19
+[   58.726804] Bluetooth: Core ver 2.22
+[   58.726973] NET: Registered PF_BLUETOOTH protocol family
+[   58.726981] Bluetooth: HCI device and connection manager initialized
+[   58.726997] Bluetooth: HCI socket layer initialized
+[   58.727006] Bluetooth: L2CAP socket layer initialized
+[   58.727025] Bluetooth: SCO socket layer initialized
+[   58.799813] mc: Linux media interface: v0.10
+[   59.390415] zram: Added device: zram0
+[   59.412433] videodev: Linux video capture interface: v2.00
+[   59.448999] zram0: detected capacity change from 0 to 7981200
+[   59.505783] Adding 3990596k swap on /dev/zram0.  Priority:100 extents:1 across:3990596k SS
+[   59.824387] atl1c 0000:02:00.0: atl1c: enp2s0 NIC Link is Up<1000 Mbps Full Duplex>
+[   61.464314] rtl8192ce: Chip Version ID: B_CHIP_88C
+[   61.616334] usbcore: registered new interface driver btusb
+[   62.135536] rtl8192ce: Using firmware rtlwifi/rtl8192cfw.bin
+[   62.638902] uvcvideo 4-5:1.0: Found UVC 1.00 device Integrated Camera (04f2:b2b9)
+[   62.731038] ieee80211 phy0: Selected rate control algorithm 'rtl_rc'
+[   62.888739] rtlwifi: rtlwifi: wireless switch is on
+[   63.011533] usbcore: registered new interface driver uvcvideo
+[   63.105477] NFSD: Using nfsdcld client tracking operations.
+[   63.105496] NFSD: no clients to reclaim, skipping NFSv4 grace period (net effffff9)
+[   63.320633] rtl8192ce 0000:01:00.0 wlp1s0: renamed from wlan0
+[   63.752000] Bluetooth: BNEP (Ethernet Emulation) ver 1.3
+[   63.752020] Bluetooth: BNEP filters: protocol multicast
+[   63.752038] Bluetooth: BNEP socket layer initialized
+[   63.890418] Bluetooth: MGMT ver 1.23
+[   63.955488] Bluetooth: RFCOMM TTY layer initialized
+[   63.955522] Bluetooth: RFCOMM socket layer initialized
+[   63.955549] Bluetooth: RFCOMM ver 1.11
+[   68.983453] bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.
+[   69.067750] Bridge firewalling registered
+[   69.837817] Initializing XFRM netlink socket
+[   86.645369] vkcube[3645]: segfault at 1003e2bbb ip 00007f1c1cc80ece sp 00007fff1073ee38 error 4 in libvulkan_terascale.so[80ece,7f1c1cc50000+27b000] likely on CPU 0 (core 0, socket 0)
+[   86.645414] Code: 8d 65 d8 5b 41 5c 41 5d 41 5e 41 5f 5d c3 66 2e 0f 1f 84 00 00 00 00 00 0f 1f 40 00 48 89 f0 48 8b 0f 48 8b 77 28 48 8b 49 10 <48> 8b 89 b8 2b 00 00 48 8b 49 08 4c 8b 09 48 89 c7 31 d2 b9 01 00
+[  128.443375] vkcubepp[5526]: segfault at 1003e2bbb ip 00007f7622080ece sp 00007ffd250e9678 error 4 in libvulkan_terascale.so[80ece,7f7622050000+27b000] likely on CPU 0 (core 0, socket 0)
+[  128.443420] Code: 8d 65 d8 5b 41 5c 41 5d 41 5e 41 5f 5d c3 66 2e 0f 1f 84 00 00 00 00 00 0f 1f 40 00 48 89 f0 48 8b 0f 48 8b 77 28 48 8b 49 10 <48> 8b 89 b8 2b 00 00 48 8b 49 08 4c 8b 09 48 89 c7 31 d2 b9 01 00
+[ 7508.799199] vulkaninfo[362225]: segfault at 3d ip 00007fdfb0c5ec65 sp 00007fff1e1a7f80 error 4 in libvulkan_terascale.so[5ec65,7fdfb0c50000+27b000] likely on CPU 0 (core 0, socket 0)
+[ 7508.799246] Code: 48 c7 43 18 00 00 00 00 5b c3 66 2e 0f 1f 84 00 00 00 00 00 90 41 56 53 50 48 83 7f 18 00 74 24 48 8b 07 48 8b 80 b8 2b 00 00 <48> 8b 00 48 89 fb 49 89 f6 ff 50 18 48 89 df 4c 89 f6 48 c7 43 18
+[ 7518.203491] vulkaninfo[362345]: segfault at 3d ip 00007fcfb7a5ec65 sp 00007fff84a947d0 error 4 in libvulkan_terascale.so[5ec65,7fcfb7a50000+27b000] likely on CPU 1 (core 1, socket 0)
+[ 7518.203536] Code: 48 c7 43 18 00 00 00 00 5b c3 66 2e 0f 1f 84 00 00 00 00 00 90 41 56 53 50 48 83 7f 18 00 74 24 48 8b 07 48 8b 80 b8 2b 00 00 <48> 8b 00 48 89 fb 49 89 f6 ff 50 18 48 89 df 4c 89 f6 48 c7 43 18

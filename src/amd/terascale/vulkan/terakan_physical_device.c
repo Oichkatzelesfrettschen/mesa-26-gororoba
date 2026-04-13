@@ -796,6 +796,15 @@ terakan_physical_device_get_capabilities(
    /* VK_KHR_maintenance2 (#118, Vulkan 1.1). */
    extensions_out->KHR_maintenance2 = true;
 
+   /* VK_KHR_multiview (#54, Vulkan 1.1).
+    * Exposed for VK_KHR_create_renderpass2 dependency closure; feature bits
+    * remain false until multiview draw expansion is implemented. */
+   extensions_out->KHR_multiview = true;
+
+   /* VK_KHR_create_renderpass2 (#110, Vulkan 1.2).
+    * Mesa runtime handles v1/v2 render pass translation and dispatch. */
+   extensions_out->KHR_create_renderpass2 = true;
+
    /* VK_KHR_image_format_list (#148, Vulkan 1.2).
     * Metadata-only: specifies view format list at image creation.
     * Required by DXVK for swapchain/render target creation. */

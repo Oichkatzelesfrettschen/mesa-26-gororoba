@@ -1,0 +1,4 @@
+viewport_scale_nonzero: PASS (xscale=64.0 yscale=64.0)
+viewport_matches_128x128_target: PASS (w=128 h=128 xscale=64.0 yscale=64.0 xoffset=64.0 yoffset=64.0)
+window_scissor_framebuffer_bounds: PASS (tl=(0,0) br=(128,128))
+winding_cull_preserves_triangle: PASS (cull_front=0 cull_back=0 front_face_is_ccw=1 front_ptype=2 back_ptype=2 poly_mode=0 provoking_last=0)

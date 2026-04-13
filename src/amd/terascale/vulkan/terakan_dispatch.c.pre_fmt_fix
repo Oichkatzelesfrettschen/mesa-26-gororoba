@@ -1,0 +1,1378 @@
+/*
+ * Copyright © 2026 steinmarder project
+ * SPDX-License-Identifier: MIT
+ *
+ * Vulkan compute dispatch for Terakan (TeraScale-2/Evergreen).
+ *
+ * Emits the PM4 packet sequence for compute shader dispatch:
+ *   SQ_PGM_START_CS → SQ_PGM_RESOURCES_CS → SPI_COMPUTE_NUM_THREAD_X/Y/Z
+ *   → VGT_COMPUTE_THREAD_GROUP_SIZE → SQ_LDS_ALLOC → PKT3_DISPATCH_DIRECT
+ */
+
+#include "terakan_pipeline_compute.h"
+
+#include "terakan_command_buffer.h"
+#include "terakan_buffer.h"
+#include "terakan_barrier.h"
+#include "terakan_push_constants.h"
+#include "terakan_device.h"
+#include "terakan_entrypoints.h"
+#include "terakan_physical_device.h"
+#include "terakan_state.h"
+
+#include "amd/terascale/common/terascale_eg_sq.h"
+#include "amd/terascale/common/terascale_evergreend.h"
+#include "gallium/drivers/r600/r600_opcodes.h"
+
+#include <assert.h>
+#include "util/macros.h"
+
+/* Register offsets for Evergreen compute dispatch.
+ * Reference: AMD Evergreen Family ISA, Section 10 (Compute Setup). */
+#ifndef R_028D9C_SQ_PGM_START_CS
+#define R_028D9C_SQ_PGM_START_CS             0x28D9C
+#endif
+#ifndef R_028DA0_SQ_PGM_RESOURCES_CS
+#define R_028DA0_SQ_PGM_RESOURCES_CS         0x28DA0
+#endif
+#ifndef R_028DA4_SQ_PGM_RESOURCES_CS_2
+#define R_028DA4_SQ_PGM_RESOURCES_CS_2       0x28DA4
+#endif
+#ifndef R_0286EC_SPI_COMPUTE_NUM_THREAD_X
+#define R_0286EC_SPI_COMPUTE_NUM_THREAD_X    0x286EC
+#endif
+#ifndef R_0286F0_SPI_COMPUTE_NUM_THREAD_Y
+#define R_0286F0_SPI_COMPUTE_NUM_THREAD_Y    0x286F0
+#endif
+#ifndef R_0286F4_SPI_COMPUTE_NUM_THREAD_Z
+#define R_0286F4_SPI_COMPUTE_NUM_THREAD_Z    0x286F4
+#endif
+#ifndef R_0089AC_VGT_COMPUTE_THREAD_GROUP_SZ
+#define R_0089AC_VGT_COMPUTE_THREAD_GROUP_SZ 0x89AC
+#endif
+#ifndef R_008970_VGT_NUM_INDICES
+#define R_008970_VGT_NUM_INDICES             0x8970
+#endif
+#ifndef R_00899C_VGT_COMPUTE_START_X
+#define R_00899C_VGT_COMPUTE_START_X         0x899C
+#endif
+#ifndef R_0288E8_SQ_LDS_ALLOC
+#define R_0288E8_SQ_LDS_ALLOC                0x288E8
+#endif
+
+/* PM4 packet helpers (matching r600 driver conventions) */
+#ifndef PKT3
+#define PKT3(op, count, predicate) \
+   (((unsigned)(op) << 8) | (((count) - 1) << 16) | ((predicate) << 0) | (3u << 30))
+#endif
+#ifndef PKT3C
+#define PKT3C(op, count, predicate) (PKT3(op, count, predicate) | COMPUTE_MODE_BIT)
+#endif
+
+/* SET_CONTEXT_REG: for registers in the 0x28000-0x29FFF range */
+#ifndef PKT3_SET_CONTEXT_REG
+#define PKT3_SET_CONTEXT_REG 0x69
+#endif
+#define CONTEXT_REG_OFFSET(reg) (((reg) - 0x28000) >> 2)
+
+/* SET_CONFIG_REG: for registers in the 0x08000-0x0BFFF range */
+#ifndef PKT3_SET_CONFIG_REG
+#define PKT3_SET_CONFIG_REG 0x68
+#endif
+#define CONFIG_REG_OFFSET(reg) (((reg) - 0x08000) >> 2)
+
+/* DISPATCH_DIRECT */
+#ifndef PKT3_DISPATCH_DIRECT
+#define PKT3_DISPATCH_DIRECT 0x15
+#endif
+
+/* RADEON_CP_PACKET3_COMPUTE_MODE: bit 1 in PM4 header.
+ * On Evergreen, all compute context register writes MUST have this bit set
+ * or the kernel CS validator will reject them. */
+#define COMPUTE_MODE_BIT 0x00000002
+
+/* PKT3 with compute mode flag */
+#define PKT3_COMPUTE(op, count, predicate) \
+   (PKT3(op, count, predicate) | COMPUTE_MODE_BIT)
+
+/* Evergreen compute uses the Local Shader (LS) stage, not a dedicated CS.
+ * Program registers: R_0288D0_SQ_PGM_START_LS, R_0288D4_SQ_PGM_RESOURCES_LS */
+#ifndef R_0288D0_SQ_PGM_START_LS
+#define R_0288D0_SQ_PGM_START_LS        0x288D0
+#endif
+#ifndef R_0288D4_SQ_PGM_RESOURCES_LS
+#define R_0288D4_SQ_PGM_RESOURCES_LS    0x288D4
+#endif
+#ifndef R_0288D8_SQ_PGM_RESOURCES_LS_2
+#define R_0288D8_SQ_PGM_RESOURCES_LS_2  0x288D8
+#endif
+
+/* S_0288D4 field macros (from r600d_common.h) */
+#ifndef S_0288D4_NUM_GPRS
+#define S_0288D4_NUM_GPRS(x)     (((unsigned)(x) & 0xFF) << 0)
+#define S_0288D4_STACK_SIZE(x)   (((unsigned)(x) & 0xFF) << 8)
+#define S_0288D4_DX10_CLAMP(x)   (((unsigned)(x) & 0x1) << 21)
+#endif
+
+
+/* ===================================================================
+ *  CONTEXT MULTIPLEXER — Single-Ring Compute on TeraScale 1/2/3
+ * ===================================================================
+ *
+ * EVERY TeraScale generation under the Linux radeon kernel runs compute
+ * on the shared GFX ring:
+ *   TS1: R600, RV6xx, RV7xx, R700             (HD 2000–4000)
+ *   TS2: Cedar, Palm, Juniper, Cypress,       (HD 5000–6300,
+ *        Redwood, Caicos, Turks, Barts              incl. E-300 Palm)
+ *   TS3: Cayman, Northern Islands              (HD 6800–6900, aka R9xx)
+ *
+ * The Linux radeon kernel driver only creates dedicated CP1/CP2 compute
+ * rings for CHIP_TAHITI and later (SI+).  Every TeraScale family —
+ * including R9xx/Cayman which has the hardware CP1/CP2 — has its
+ * RADEON_CS_RING_COMPUTE requests silently redirected to the GFX ring by
+ * drivers/gpu/drm/radeon/radeon_cs.c (around line 216).  This means
+ * every compute dispatch lands mid-stream inside the graphics command
+ * buffer, sharing the SQ, the VLIW ALUs, the CB_COLOR surfaces, and the
+ * shader caches with in-flight draws.
+ *
+ * Without explicit boundary packets a compute dispatch will:
+ *   1. race with in-flight pixel / vertex waves (PS still running when we
+ *      touch SQ_GPR_RESOURCE_MGMT, causing an SQ config hazard),
+ *   2. read stale texture / vertex / shader caches from the previous draw,
+ *   3. commandeer CB_COLOR0 as a RAT without flushing the prior render
+ *      target write path, corrupting framebuffer contents,
+ *   4. leave SQ GPR allocation biased toward LS on the way out, starving
+ *      the next draw's VS/PS stages,
+ *   5. leave dirty TC / CB caches that the next draw reads back wrong.
+ *
+ * The Context Multiplexer injects mandatory boundary packets around each
+ * compute dispatch:
+ *
+ *   BEGIN  (terakan_compute_multiplex_begin)
+ *     • PS_PARTIAL_FLUSH        — drain all in-flight pixel/vertex waves
+ *     • SURFACE_SYNC TC+VC+SH   — invalidate shader / vertex / texture
+ *                                 caches so the compute kernel reads
+ *                                 freshly-written uniforms and UBOs
+ *     • SQ_CONFIG               — raise LS/CS priority, keep VC/EXPORT_SRC
+ *     • SQ_GPR_RESOURCE_MGMT_3  — allocate GPRs to the LS (compute) stage
+ *     • SQ_THREAD_RESOURCE_MGMT_2 — allocate thread slots to LS
+ *
+ *   DISPATCH
+ *     • (existing: DB stub, compute state, SSBO RAT, KCACHE, push const,
+ *       robustness, DISPATCH_DIRECT / DISPATCH_INDIRECT)
+ *
+ *   END    (terakan_compute_multiplex_end)
+ *     • CS_PARTIAL_FLUSH        — wait for every compute wavefront to
+ *                                 drain BEFORE the next graphics state
+ *                                 overwrites SQ_PGM_START_LS — otherwise
+ *                                 a still-executing wave would switch
+ *                                 program mid-clause and hang the SQ
+ *     • SURFACE_SYNC CB+TC+SH   — flush MEM_RAT writes out of the CB
+ *                                 write cache, invalidate the texture /
+ *                                 shader cache so the next draw re-reads
+ *                                 descriptors that now point to compute
+ *                                 output buffers
+ *     • Mark 3D state pending   — the multiplexer has stomped every SQ
+ *                                 program slot, every CB_COLOR surface,
+ *                                 DB_Z_INFO, and the resource tables for
+ *                                 FS.  Force the next draw path to fully
+ *                                 re-emit them instead of trusting its
+ *                                 cached-as-clean state.
+ *
+ * This is the ONLY correct sequence for Evergreen.  Skipping CS_PARTIAL_FLUSH
+ * causes intermittent SQ hangs.  Skipping the post-dispatch dirty marking
+ * causes the next draw to render with compute-biased GPR allocation and
+ * corrupt shader output.  Skipping PS_PARTIAL_FLUSH at the begin boundary
+ * causes a hardware hazard when SQ_GPR_RESOURCE_MGMT is written while a
+ * pixel wave is still using those GPRs — documented in the Evergreen ISA
+ * spec section 10.1 ("Switching Between Graphics and Compute Mode").
+ */
+
+/* Emit one PM4 EVENT_WRITE packet for an ME event (CS_PARTIAL_FLUSH,
+ * PS_PARTIAL_FLUSH, etc.).  EVENT_INDEX(4) is the ME (micro-engine) index
+ * which is the path the CP uses to wait for shader engine draining. */
+static inline void
+terakan_compute_multiplex_emit_event(
+   struct terakan_gfx_command_writer * const command_writer,
+   uint32_t const event_type)
+{
+   uint32_t * p = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2);
+   if (unlikely(p == NULL)) return;
+   *p++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
+   *p++ = EVENT_TYPE(event_type) | EVENT_INDEX(4);
+   terakan_gfx_command_writer_emit_done(command_writer, p);
+}
+
+/* Emit a global SURFACE_SYNC that covers the entire address space.
+ * cp_coher_cntl is an OR of S_0085F0_*_ACTION_ENA bits.  Poll interval 10
+ * matches the convention in terakan_barrier.c and terakan_queue.c. */
+static inline void
+terakan_compute_multiplex_emit_surface_sync(
+   struct terakan_gfx_command_writer * const command_writer,
+   uint32_t const cp_coher_cntl)
+{
+   uint32_t * p = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+   if (unlikely(p == NULL)) return;
+   *p++ = PKT3(PKT3_SURFACE_SYNC, 3, 0);
+   *p++ = cp_coher_cntl | TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
+   *p++ = 0xFFFFFFFF; /* size: entire address space */
+   *p++ = 0;          /* base address */
+   *p++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+   terakan_gfx_command_writer_emit_done(command_writer, p);
+}
+
+/* BEGIN boundary: prepare the shared ring for compute execution.
+ *
+ * Must be called before any compute state emission (shader, resources,
+ * RAT, KCACHE, push constants).  Emits the fence-drain + cache-invalidate
+ * + SQ-reconfig sequence that isolates the compute dispatch from any
+ * prior graphics work.
+ *
+ * Runs on EVERY TeraScale generation under the Linux radeon kernel:
+ *   - TeraScale 1 (R600/R700, HD 2000–4000)       → GFX ring forced
+ *   - TeraScale 2 (Evergreen, HD 5000–6300 incl.  → GFX ring forced
+ *                  Palm / Cedar / Juniper / etc.)
+ *   - TeraScale 3 (Northern Islands / Cayman,     → GFX ring forced
+ *                  HD 6800/6900 aka R9xx)
+ * None of these expose dedicated compute rings via the Linux radeon
+ * kernel driver — it only creates CP1/CP2 rings for CHIP_TAHITI and
+ * later (see drivers/gpu/drm/radeon/radeon_cs.c RADEON_CS_RING_COMPUTE
+ * handler, which silently redirects to GFX for family < TAHITI).  So
+ * every TeraScale chip needs the same fence-boundary treatment.
+ *
+ * Where the generations DIFFER is in how the SQ allocates registers to
+ * the LS (compute) stage:
+ *   - TS1/TS2: static allocation via SQ_GPR_RESOURCE_MGMT_3.NUM_LS_GPRS
+ *              and SQ_THREAD_RESOURCE_MGMT_2.NUM_LS_THREADS.
+ *   - TS3/R9xx: dynamic GPR mode (SQ_DYN_GPR_ENABLE=1, set once at
+ *               command-buffer init in terakan_command_buffer.c).  The
+ *               SQ allocates GPRs per wave from SQ_PGM_RESOURCES_LS.
+ *               No static allocation is possible or needed.
+ *
+ * Steps 1–3 run on ALL TS generations.
+ * Steps 4–5 run only on TS1/TS2 (gated by !is_r9xx) because R9xx uses
+ * the dynamic GPR path and would reject these register writes or
+ * interpret the bit layout differently.
+ */
+static void
+terakan_compute_multiplex_begin(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   struct terakan_device const * const device =
+      terakan_gfx_command_writer_device(command_writer);
+   struct terakan_physical_device const * const phys_dev =
+      terakan_device_physical_device(device);
+   struct terakan_physical_device_chip_info const * const chip_info =
+      &phys_dev->chip_info;
+   bool const is_r9xx = chip_info->is_r9xx;
+
+   /* (1) Drain in-flight pixel and vertex waves.  PS_PARTIAL_FLUSH also
+    * covers VS because both stages share the same fence token on all
+    * TeraScale generations.  Writing SQ_GPR_RESOURCE_MGMT or enabling
+    * a dynamic GPR allocation while a wave is still executing with the
+    * old allocation is a documented hardware hazard (Evergreen ISA spec
+    * section 10.1 "Switching Between Graphics and Compute Mode").
+    *
+    * Runs on: TS1, TS2, TS3. */
+   terakan_compute_multiplex_emit_event(
+      command_writer, EVENT_TYPE_PS_PARTIAL_FLUSH);
+
+   /* (1a) WAIT_UNTIL: block CP until the 3D pipeline fully drains.
+    *
+    * Gallium: R600_CONTEXT_WAIT_3D_IDLE → r600_flush_emit() writes
+    * SET_CONFIG_REG(R_008040_WAIT_UNTIL) with WAIT_3D_IDLE=1 (bit 15).
+    * This is a CONFIG register (global, no shadow banks) so no
+    * COMPUTE_MODE_BIT is needed.
+    *
+    * Without this, the SQ may still be retiring 3D waves when we
+    * reconfigure GPR allocation and shader stage resources below,
+    * causing an SQ deadlock and GPU hang on DISPATCH_DIRECT.
+    *
+    * Runs on: TS1, TS2, TS3. */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = CONFIG_REG_OFFSET(R_008040_WAIT_UNTIL);
+      *p++ = S_008040_WAIT_3D_IDLE(1);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (1b) EVENT_WRITE(CACHE_FLUSH_AND_INV_EVENT): flush and invalidate
+    * all hardware caches (shader, vertex, texture, CB, DB metadata).
+    *
+    * Gallium: R600_CONTEXT_FLUSH_AND_INV → r600_flush_emit() emits
+    * EVENT_WRITE with EVENT_TYPE=0x16, EVENT_INDEX=0.
+    *
+    * NOTE: EVENT_INDEX must be 0 (not 4).  EVENT_INDEX(4) is for partial
+    * flush events (PS_PARTIAL_FLUSH, CS_PARTIAL_FLUSH).  The existing
+    * emit_event helper hardcodes EVENT_INDEX(4), so we emit manually.
+    *
+    * Runs on: TS1, TS2, TS3. */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
+      *p++ = EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT) | EVENT_INDEX(0);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (2) Invalidate shader I-cache (SH), vertex cache (VC) and texture
+    * cache (TC) so the compute kernel reads fresh descriptors, UBOs, and
+    * shader bytes.  We do NOT flush CB here: graphics writes to CB are
+    * allowed to stay live — the compute kernel writes through MEM_RAT
+    * which bypasses the CB write cache for the RAT path.  We only need
+    * the READ caches to be cold.
+    *
+    * Runs on: TS1, TS2, TS3. */
+   terakan_compute_multiplex_emit_surface_sync(
+      command_writer,
+      S_0085F0_SH_ACTION_ENA(1) |
+      S_0085F0_VC_ACTION_ENA(1) |
+      S_0085F0_TC_ACTION_ENA(1));
+
+   /* (3) Re-emit SQ_CONFIG with compute-biased priorities.  The draw path
+    * may have written SQ_CONFIG with PS_PRIO > CS_PRIO; compute runs on
+    * the LS stage so we want LS_PRIO and CS_PRIO at maximum.  We keep
+    * VC_ENABLE and EXPORT_SRC_C intact because compute still uses the
+    * vertex cache for KCACHE fetches and the export path for MEM_RAT.
+    *
+    * Runs on: TS1, TS2, TS3.  The SQ_CONFIG priority field layout
+    * (LS_PRIO, CS_PRIO, etc.) is identical on Evergreen and Cayman —
+    * verified against terascale_evergreend.h definitions at lines 319–347.
+    * Our command-buffer-init code at terakan_command_buffer.c:904 skipped
+    * the priority setup on R9xx with the comment "doesn't expose the
+    * compute rings at all" — but under the Linux radeon kernel, R9xx
+    * IS forced onto the GFX ring, so it needs these priorities too. */
+   {
+      uint32_t const sq_config =
+         S_008C00_VC_ENABLE(chip_info->has_vertex_cache) |
+         S_008C00_EXPORT_SRC_C(1) |
+         S_008C00_LS_PRIO(3) | S_008C00_HS_PRIO(0) |
+         S_008C00_ES_PRIO(0) | S_008C00_GS_PRIO(0) |
+         S_008C00_VS_PRIO(0) | S_008C00_PS_PRIO(0) |
+         S_008C00_CS_PRIO(3);
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008C00_SQ_CONFIG - 0x8000) >> 2;
+      *p++ = sq_config;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (3a) Set primitive type to POINTLIST for compute.
+    *
+    * Without this, the VGT interprets compute threads using the previous
+    * draw call's primitive topology (typically TRILIST), causing wavefront
+    * scheduling deadlocks.  Gallium writes this in
+    * evergreen_init_atom_start_compute_cs() at line ~665.
+    *
+    * CONFIG register — no COMPUTE_MODE_BIT (global, not shadowed). */
+   {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = CONFIG_REG_OFFSET(R_008958_VGT_PRIMITIVE_TYPE);
+      *p++ = V_008958_DI_PT_POINTLIST;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (4) Zero ALL static GPR reservations for compute — TS1/TS2 ONLY.
+    *
+    * On R600/R700/Evergreen, the SQ partitions the 256-entry GPR file
+    * statically across stages via SQ_GPR_RESOURCE_MGMT_{1,2,3}.  For
+    * compute dispatch, ALL graphics stage reservations must be zeroed
+    * so the entire pool is available to the dynamic allocator.  The SQ
+    * then allocates per-wave based on SQ_PGM_RESOURCES_LS.NUM_GPRS.
+    *
+    * BUG FIX: Previously we only wrote MGMT_3 (LS=0x70) and left
+    * MGMT_1 and MGMT_2 at their command-buffer-init values.  Although
+    * init sets PS=VS=GS=ES=0, a static LS=112 reservation conflicts
+    * with the dynamic allocator — Gallium's evergreen_compute.c:362
+    * zeros ALL three MGMT registers and relies purely on dynamic mode.
+    * Match that proven pattern exactly.
+    *
+    * On Cayman (R9xx), GPR allocation uses the DYNAMIC GPR path and
+    * these registers have different semantics, so we skip them. */
+   if (!is_r9xx) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+      *p++ = (R_008C04_SQ_GPR_RESOURCE_MGMT_1 - 0x8000) >> 2;
+      *p++ = S_008C04_NUM_PS_GPRS(0) | S_008C04_NUM_VS_GPRS(0) |
+             S_008C04_NUM_CLAUSE_TEMP_GPRS(4);
+      *p++ = S_008C08_NUM_GS_GPRS(0) | S_008C08_NUM_ES_GPRS(0);
+      *p++ = S_008C0C_NUM_HS_GPRS(0) | S_008C0C_NUM_LS_GPRS(0);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+
+      /* Re-emit DYN_GPR_ENABLE after writing MGMT registers.
+       * Gallium does this on every compute dispatch (evergreen_compute.c:365).
+       * Even though command-buffer init already enables it, re-emitting
+       * ensures consistency if a draw path ever toggled it off. */
+      p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008D8C_SQ_DYN_GPR_CNTL_PS_FLUSH_REQ - 0x8000) >> 2;
+      *p++ = S_008D8C_DYN_GPR_ENABLE(1);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (5) Static LS thread slot allocation — TS1/TS2 ONLY.
+    *
+    * Same reasoning as step 4: TS1/TS2 partitions thread slots
+    * statically via SQ_THREAD_RESOURCE_MGMT_2, while R9xx uses dynamic
+    * per-wave allocation.  NUM_LS_THREADS=0xFF gives LS the maximum
+    * thread allocation; HS=0 (no tessellation in the compute path). */
+   if (!is_r9xx) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008C1C_SQ_THREAD_RESOURCE_MGMT_2 - 0x8000) >> 2;
+      *p++ = S_008C1C_NUM_HS_THREADS(0) | S_008C1C_NUM_LS_THREADS(0xFF);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (6) Zero out PS/VS/GS/ES thread slots — TS1/TS2 ONLY.
+    *
+    * Gallium's evergreen_init_atom_start_compute_cs() zeroes
+    * SQ_THREAD_RESOURCE_MGMT_1 to prevent PS/VS/GS/ES waves from
+    * stealing thread slots that LS needs for compute. */
+   if (!is_r9xx) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008C18_SQ_THREAD_RESOURCE_MGMT_1 - 0x8000) >> 2;
+      *p++ = 0;  /* PS=0, VS=0, GS=0, ES=0 */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (7) Zero out stack entries for graphics stages, allocate for LS.
+    * Matches Gallium: STACK_1=0, _2=0, _3=NUM_LS_STACK_ENTRIES(256). */
+   if (!is_r9xx) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+      *p++ = (R_008C20_SQ_STACK_RESOURCE_MGMT_1 - 0x8000) >> 2;
+      *p++ = 0;  /* SQ_STACK_RESOURCE_MGMT_1: PS=0, VS=0 */
+      *p++ = 0;  /* SQ_STACK_RESOURCE_MGMT_2: GS=0, ES=0 */
+      *p++ = S_008C28_NUM_HS_STACK_ENTRIES(0) |
+             S_008C28_NUM_LS_STACK_ENTRIES(0x100);  /* 256 for LS */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (8) LDS resource management — give all LDS to LS stage.
+    * Matches Gallium: NUM_PS_LDS=0, NUM_LS_LDS=8192. */
+   if (!is_r9xx) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008E2C_SQ_LDS_RESOURCE_MGMT - 0x8000) >> 2;
+      *p++ = S_008E2C_NUM_PS_LDS(0) | S_008E2C_NUM_LS_LDS(8192);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+/* (8a) SQ_DYN_GPR_RESOURCE_LIMIT_1 — pre-Cayman silicon erratum.    *    * Gallium writes this in evergreen_init_atom_start_compute_cs() via    * r600_store_context_reg(), which uses cb->pkt_flags to OR in    * RADEON_CP_PACKET3_COMPUTE_MODE.  This is a CONTEXT register    * (0x028838 >= 0x28000) so COMPUTE_MODE_BIT is REQUIRED to route    * the write to the compute shadow register bank.  Without it, the    * write lands in the 3D shadow and DISPATCH_DIRECT reads stale/zero    * GPR limits from the compute shadow — SQ deadlock, GPU hang.    *    * Each field clamped to 0x1e (30 GPRs) per stage, matching Gallium. */
+   if (!is_r9xx) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_028838_SQ_DYN_GPR_RESOURCE_LIMIT_1);
+      *p++ = S_028838_PS_GPRS(0x1e) | S_028838_VS_GPRS(0x1e) |
+             S_028838_GS_GPRS(0x1e) | S_028838_ES_GPRS(0x1e) |
+             S_028838_HS_GPRS(0x1e) | S_028838_LS_GPRS(0x1e);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (9) VGT_GS_MODE: switch to compute mode.
+    * Without COMPUTE_MODE, VGT remains in graphics mode and interferes
+    * with compute wavefront scheduling.  PARTIAL_THD_AT_EOI handles
+    * partial wavefronts at the end of a workgroup. */
+   {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_028A40_VGT_GS_MODE);
+      *p++ = S_028A40_COMPUTE_MODE(1) | S_028A40_PARTIAL_THD_AT_EOI(1);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (10) VGT_SHADER_STAGES_EN: enable compute shader stage.
+    * LS_EN=2 tells SQ to route LS-stage waves as compute.
+    * All other stages disabled. */
+   {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_028B54_VGT_SHADER_STAGES_EN);
+      *p++ = S_028B54_LS_EN(2);  /* CS_ON */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (11) Initialize LS-stage loop constant for hardware loop counters.
+    *
+    * Gallium writes SQ_LOOP_CONST at offset 160 (= LS/CS stage base)
+    * via eg_store_loop_const() in evergreen_init_atom_start_compute_cs().
+    * Value 0x01000FFF encodes: STEP=1, START=0, MAX=4095.  Without this,
+    * any shader using LOOP_START_DX10 will execute with garbage loop
+    * bounds, causing infinite ALU loops and a GPU soft-reset.
+    *
+    * PKT3_SET_LOOP_CONST offset is a dword index from the loop constant
+    * base (EVERGREEN_LOOP_CONST_OFFSET = 0x3A200).  WITH COMPUTE_MODE_BIT
+    * to route to the LS/CS stage shadow, matching eg_store_loop_const(). */
+   {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_LOOP_CONST, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = 160;  /* LS/CS stage loop const base offset */
+      *p++ = 0x01000FFF;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+}
+
+/* END boundary: restore the shared ring to a safe post-compute state.
+ *
+ * Must be called AFTER the DISPATCH_DIRECT / DISPATCH_INDIRECT packet.
+ * Drains compute waves, flushes compute outputs, and marks every 3D state
+ * index that the dispatch sequence stomped so the next draw call will
+ * re-emit its own shader programs, resources, and CB surfaces.
+ *
+ * Failure to mark state pending here is the #1 cause of post-compute draw
+ * hangs and is exactly the silent-corruption case the Context Multiplexer
+ * exists to defeat. */
+static void
+terakan_compute_multiplex_end(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   /* (1) Wait for every compute wavefront to drain.  Without this the
+    * next graphics SET_CONTEXT_REG that touches SQ_PGM_START_LS can
+    * overwrite the program pointer while a wave is mid-clause, which
+    * hangs the SQ immediately and takes the whole ring down with it. */
+   terakan_compute_multiplex_emit_event(
+      command_writer, EVENT_TYPE_CS_PARTIAL_FLUSH);
+
+   /* (2) Flush MEM_RAT writes out of the CB write cache and invalidate
+    * read caches.  Compute SSBO writes on Evergreen go CB_COLOR0 ->
+    * CB write queue -> memory; without CB_ACTION_ENA the next draw (or
+    * the CPU after a buffer->host barrier) can read stale pre-compute
+    * data.  TC_ACTION_ENA + SH_ACTION_ENA cover the case where the next
+    * draw samples from a buffer that compute just wrote. */
+   terakan_compute_multiplex_emit_surface_sync(
+      command_writer,
+      S_0085F0_CB_ACTION_ENA(1) |
+      S_0085F0_TC_ACTION_ENA(1) |
+      S_0085F0_SH_ACTION_ENA(1) |
+      S_0085F0_VC_ACTION_ENA(1));
+
+   /* (3) Mark every draw-state index the compute path stomped as pending.
+    * The next draw call will hit terakan_state_draw_apply_pending() and
+    * re-emit the real graphics versions of these registers, overwriting
+    * whatever compute left behind.
+    *
+    * This list is the INTERSECTION of:
+    *   (a) everything terakan_emit_compute_state() writes,
+    *   (b) everything terakan_emit_compute_resources() writes,
+    *   (c) everything terakan_emit_compute_kcache() writes,
+    *   (d) everything terakan_compute_multiplex_begin() writes (SQ config
+    *       + GPR / thread resource management).
+    *
+    * Rather than listing ~15 individual indices and drifting out of date
+    * every time the compute emitters change, we mark the whole SQ / CB /
+    * DB family.  The cost is a few extra register writes on the very next
+    * draw, which is dwarfed by the dispatch + flush we just did. */
+   struct terakan_state_draw * const state = &command_writer->state_draw;
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_PGM_LS_HS_ES_GS_VS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_PGM_FS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_RESOURCES_FS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_PGM_PS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_TMP_LS_HS_ES_GS_VS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_SQ_TMP_PS);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_DB_DEPTH_STENCIL_BUFFER);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_CB_COLOR_RTV);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_CB_TARGET_MASK);
+   terakan_state_draw_set_pending(state,
+      TERAKAN_STATE_DRAW_INDEX_CB_COLOR_CONTROL);
+}
+
+/* Emit bound compute resources (SSBOs/UBOs) to hardware.
+ * Compute resources are stored in hw_state_sqc.resource_descriptors.fs[]
+ * (because Evergreen compute shares the FS resource namespace).
+ * We emit PKT3_SET_RESOURCE for each bound resource. */
+
+/* Emit the RAT (CB_COLOR0) binding for compute SSBO writes.
+ *
+ * On TeraScale-2, compute SSBO writes use MEM_RAT WRITE_IND which routes
+ * through the Render Output Units (ROPs) to CB_COLOR0. This is NOT a
+ * texture resource — it's a render target in disguise.
+ *
+ * The Gallium pattern from evergreen_compute.c:
+ *   1. CB_TARGET_MASK = 0xF (enable all channels for RAT0)
+ *   2. CB_COLOR0_BASE through CB_COLOR0_CLEAR_WORD1 (13 sequential regs)
+ *   3. 4 NOP relocations for BASE, ATTRIB, CMASK, FMASK
+ *
+ * Register values derived from evergreen_init_color_surface_rat +
+ * evergreen_set_color_surface_buffer for PIPE_FORMAT_R32_UINT.
+ */
+
+
+/* Register addresses for compute KCACHE (constant buffer for LS stage) */
+#ifndef R_028FC0_ALU_CONST_BUFFER_SIZE_LS_0
+#define R_028FC0_ALU_CONST_BUFFER_SIZE_LS_0  0x28FC0
+#endif
+#ifndef R_028F40_ALU_CONST_CACHE_LS_0
+#define R_028F40_ALU_CONST_CACHE_LS_0        0x28F40
+#endif
+#define EG_FETCH_CONSTANTS_OFFSET_CS         816
+#define R600_IMAGE_REAL_RESOURCE_OFFSET      168
+
+/* Emit the KCACHE constant buffer setup for compute.
+ *
+ * The Gallium/LLVM pattern passes the SSBO base address via KC0[0].x
+ * (Constant Buffer 0, slot 0, component X). The shader reads this as
+ * LSHR_INT R6.x, KC0[0].x, 2 to get the dword offset for MEM_RAT.
+ *
+ * We set up:
+ *   1. ALU_CONST_BUFFER_SIZE_LS_0 = size in 256-byte units
+ *   2. ALU_CONST_CACHE_LS_0 = base address (va >> 8) + NOP reloc
+ *   3. SET_RESOURCE at EG_FETCH_CONSTANTS_OFFSET_CS for constant fetch
+ *
+ * The constant buffer contains a single vec4 with the SSBO's
+ * pool-relative byte offset in .x component.
+ */
+static void
+terakan_emit_compute_kcache(struct terakan_gfx_command_writer *command_writer,
+                            struct terakan_bo const *ssbo_bo)
+{
+   /* The SFN compiler generates KCACHE reads from KC0[0].x to obtain the
+    * SSBO's byte offset within the RAT buffer.  In Gallium, SSBOs live in a
+    * shared "compute_memory_pool" BO and the driver writes each SSBO's
+    * pool-relative byte offset into a constant buffer bound to KC0.  The
+    * shader does: MEM_RAT_INDEX = (KC0[0].x + tid * stride) >> 2.
+    *
+    * In Terakan/Vulkan each SSBO is its own BO, mapped 1:1 to CB_COLOR0.
+    * The byte offset is therefore 0.  We allocate a small push-buffer region
+    * and write 0 so KC0[0].x reads the correct value.
+    *
+    * BUG FIX: Previously we pointed ALU_CONST_CACHE_LS_0 at the SSBO data
+    * BO itself.  KC0[0].x then read the first dword of user data (typically
+    * 0xdeadbeef from the fill pattern), producing a wildly wrong RAT index
+    * that wrote far beyond the buffer — making the output appear untouched. */
+
+   /* Allocate a 256-byte push-buffer region for KC0 and zero it */
+   struct terakan_bo const *kc0_bo = NULL;
+   uint32_t kc0_va_lines = 0;
+   uint32_t *kc0_map = (uint32_t *)terakan_push_buffer_allocate_kcache(
+      command_writer->base.command_buffer, 256, &kc0_bo, &kc0_va_lines);
+   if (unlikely(kc0_map == NULL)) {
+      return;
+   }
+   memset(kc0_map, 0, 256);
+   /* KC0[0].x = 0 (byte offset of SSBO within its BO) */
+
+
+   /* Register the KC0 BO for relocation */
+   uint32_t bo_ref = terakan_bo_reference_writer_add_reference(
+      &command_writer->base.bo_reference_writer,
+      kc0_bo, true, false, TERAKAN_BO_PRIORITY_UNIFORM_BUFFER);
+
+   /* 1. ALU_CONST_BUFFER_SIZE_LS_0 = 1 (one 256-byte KCACHE line) */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = (R_028FC0_ALU_CONST_BUFFER_SIZE_LS_0 - 0x28000) >> 2;
+      *p++ = 1;  /* 1 × 256 bytes */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 2. ALU_CONST_CACHE_LS_0 = KC0 BO base address + NOP reloc */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = (R_028F40_ALU_CONST_CACHE_LS_0 - 0x28000) >> 2;
+      *p++ = 0;  /* Base address (relocated by kernel via NOP) */
+      *p++ = PKT3(PKT3_NOP, 0, 0);
+      *p++ = 4 * bo_ref;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 3. SET_RESOURCE for the constant fetch at KC0 slot.
+    *    The SQ fetches constants via this VTX descriptor.  Point it at
+    *    the same zero-filled push-buffer BO. */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
+      *p++ = EG_FETCH_CONSTANTS_OFFSET_CS * 8;
+      *p++ = 0;                            /* WORD0: base (relocated) */
+      *p++ = 256 - 1;                      /* WORD1: size - 1 */
+      *p++ = S_030008_STRIDE(16) |         /* WORD2: 16 bytes per vec4 */
+             S_030008_DATA_FORMAT(0x35) |  /* FMT_32_32_32_32_FLOAT */
+             S_030008_NUM_FORMAT_ALL(1);   /* NUM_FORMAT_INT */
+      *p++ = S_03000C_DST_SEL_X(V_03000C_SQ_SEL_X) |
+             S_03000C_DST_SEL_Y(V_03000C_SQ_SEL_Y) |
+             S_03000C_DST_SEL_Z(V_03000C_SQ_SEL_Z) |
+             S_03000C_DST_SEL_W(V_03000C_SQ_SEL_W);
+      *p++ = 0;                            /* WORD4 */
+      *p++ = 0;                            /* WORD5 */
+      *p++ = 0;                            /* WORD6 */
+      *p++ = S_03001C_TYPE(V_03001C_SQ_TEX_VTX_VALID_BUFFER);
+      *p++ = PKT3(PKT3_NOP, 0, 0);
+      *p++ = 4 * bo_ref;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+}
+
+/* Emit a KCACHE bank binding to LS registers for compute dispatch.
+ *
+ * The deferred hw_state KCACHE system emits to PS registers (3D shadow) and
+ * never includes COMPUTE_MODE_BIT.  Compute reads from LS registers in the
+ * compute shadow.  This function directly emits PM4 to
+ * ALU_CONST_BUFFER_SIZE_LS_<bank> and ALU_CONST_CACHE_LS_<bank> with
+ * COMPUTE_MODE_BIT, matching the proven pattern in terakan_emit_compute_kcache.
+ */
+static void
+terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command_writer,
+                                 uint32_t bank,
+                                 struct terakan_bo const *bo,
+                                 uint32_t va_kcache_lines,
+                                 uint32_t size_lines)
+{
+   if (bo == NULL || size_lines == 0)
+      return;
+
+   uint32_t bo_ref = terakan_bo_reference_writer_add_reference(
+      &command_writer->base.bo_reference_writer,
+      bo, true, false, TERAKAN_BO_PRIORITY_UNIFORM_BUFFER);
+
+   /* ALU_CONST_BUFFER_SIZE_LS_<bank> = size in 256-byte KCACHE lines */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = (R_028FC0_ALU_CONST_BUFFER_SIZE_LS_0 + bank * 4 - 0x28000) >> 2;
+      *p++ = size_lines;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* ALU_CONST_CACHE_LS_<bank> = base address (va >> 8) + NOP relocation */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = (R_028F40_ALU_CONST_CACHE_LS_0 + bank * 4 - 0x28000) >> 2;
+      *p++ = va_kcache_lines;
+      *p++ = PKT3(PKT3_NOP, 0, 0);
+      *p++ = 4 * bo_ref;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+}
+
+static void
+terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer)
+{
+   struct terakan_hw_state_sqc *state = &command_writer->hw_state_sqc;
+
+   /* Find the first bound FS resource (our SSBO) */
+   int ssbo_idx = -1;
+   for (uint32_t i = 0; i < TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE; i++) {
+      if (BITSET_TEST(state->resources_not_null.fs, i) && state->resource_bos.fs[i]) {
+         ssbo_idx = (int)i;
+         break;
+      }
+   }
+
+   if (ssbo_idx < 0) {
+      return;
+   }
+
+
+   struct terakan_bo const *bo = state->resource_bos.fs[ssbo_idx];
+   uint32_t const *desc = state->resource_descriptors.fs[ssbo_idx];
+
+   /* Register the SSBO BO for relocation */
+   uint32_t bo_ref = terakan_bo_reference_writer_add_reference(
+      &command_writer->base.bo_reference_writer,
+      bo, true, true, TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
+
+   /* Extract buffer size from the descriptor (Word 1 = size in bytes - 1) */
+   uint32_t buf_size = desc[1] + 1;
+   uint32_t width_elements = buf_size / 4; /* R32_UINT = 4 bytes per element */
+
+   /* Compute pitch: align to 64, divide by 8, minus 1 */
+   uint32_t pitch_aligned = (width_elements + 63) & ~63u;
+   uint32_t pitch_tile_max = (pitch_aligned / 8) - 1;
+
+   /* Compute dim (width for linear buffer) */
+   uint32_t dim = width_elements > 0 ? width_elements - 1 : 0;
+
+   /* CB_COLOR0_INFO for R32_UINT linear RAT buffer.
+    * Match Gallium's evergreen_set_color_surface_buffer() exactly. */
+   uint32_t cb_color_info =
+      S_028C70_FORMAT(V_028C70_COLOR_32) |
+      S_028C70_ARRAY_MODE(V_028C70_ARRAY_LINEAR_ALIGNED) |
+      S_028C70_NUMBER_TYPE(V_028C70_NUMBER_UINT) |
+      S_028C70_COMP_SWAP(0) |
+      S_028C70_BLEND_BYPASS(1) |
+      S_028C70_RAT(1);
+
+   /* 1. CB_TARGET_MASK = 0xF (enable RAT0 writes) with COMPUTE_MODE */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = (R_028238_CB_TARGET_MASK - 0x28000) >> 2;
+      *p++ = 0xF; /* Enable all 4 channels for CB0 */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 2. CB_COLOR0_BASE through CB_COLOR0_CLEAR_WORD1 (13 regs) with COMPUTE_MODE
+    *    + 4 NOP relocations for BASE, ATTRIB, CMASK, FMASK */
+   {
+      /* 13 regs = count 13 in SET_CONTEXT_REG, total = 1+1+13 = 15 header+body
+       * Plus 4 NOP relocs = 4*2 = 8 dwords. Total = 15 + 8 = 23. */
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 23);
+      if (unlikely(p == NULL)) return;
+
+      /* CB_COLOR registers ARE compute-shadowed.  Gallium's compute path
+       * writes them with radeon_compute_set_context_reg_seq (COMPUTE_MODE set).
+       * Without COMPUTE_MODE, DISPATCH_DIRECT reads stale 3D-shadow values
+       * for RAT base address → GPU hang on zero address.
+       * Kernel's evergreen_cs_check_reg handles CB_COLOR NOP relocations
+       * regardless of COMPUTE_MODE in the packet header. */
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 13, 0) | COMPUTE_MODE_BIT;
+      *p++ = (R_028C60_CB_COLOR0_BASE - 0x28000) >> 2;
+
+      *p++ = 0;                  /* CB_COLOR0_BASE (relocated by kernel) */
+      *p++ = pitch_tile_max;     /* CB_COLOR0_PITCH */
+      *p++ = 0;                  /* CB_COLOR0_SLICE */
+      *p++ = 0;                  /* CB_COLOR0_VIEW */
+      *p++ = cb_color_info;      /* CB_COLOR0_INFO */
+      *p++ = S_028C74_NON_DISP_TILING_ORDER(1); /* CB_COLOR0_ATTRIB */
+      *p++ = S_028C78_WIDTH_MAX(dim);      /* CB_COLOR0_DIM */
+      *p++ = 0;                  /* CB_COLOR0_CMASK (= BASE for no separate cmask) */
+      *p++ = 0;                  /* CB_COLOR0_CMASK_SLICE */
+      *p++ = 0;                  /* CB_COLOR0_FMASK (= BASE) */
+      *p++ = 0;                  /* CB_COLOR0_FMASK_SLICE */
+      *p++ = 0;                  /* CB_COLOR0_CLEAR_WORD0 */
+      *p++ = 0;                  /* CB_COLOR0_CLEAR_WORD1 */
+
+      /* 4 NOP relocations: BASE, ATTRIB, CMASK, FMASK
+       * The kernel patches CB_COLOR0_BASE with gpu_address >> 8 */
+      *p++ = PKT3(PKT3_NOP, 0, 0);
+      *p++ = 4 * bo_ref;  /* Reloc for CB_COLOR0_BASE */
+      *p++ = PKT3(PKT3_NOP, 0, 0);
+      *p++ = 4 * bo_ref;  /* Reloc for CB_COLOR0_ATTRIB */
+      *p++ = PKT3(PKT3_NOP, 0, 0);
+      *p++ = 4 * bo_ref;  /* Reloc for CB_COLOR0_CMASK */
+      *p++ = PKT3(PKT3_NOP, 0, 0);
+      *p++ = 4 * bo_ref;  /* Reloc for CB_COLOR0_FMASK */
+
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 3. SET_RESOURCE for the SSBO fetch path (VTX_FETCH read resource).
+    *
+    * SFN's emit_ssbo_load() emits LoadFromBuffer with resource_id =
+    * R600_IMAGE_REAL_RESOURCE_OFFSET + ssbo_index.  The SQ hardware adds the
+    * LS stage base (EG_FETCH_CONSTANTS_OFFSET_CS = 816) to get the physical
+    * resource slot.  Without this resource descriptor bound, the shader's
+    * VTX_FETCH hits an empty/garbage descriptor → GPU lockup.
+    *
+    * Descriptor format: R32_UINT buffer, stride 4, uncached, matching
+    * Gallium's evergreen_set_shader_buffers() + evergreen_emit_image_state().
+    *
+    * Gallium binds this at (EG_FETCH_CONSTANTS_OFFSET_CS +
+    *   R600_IMAGE_REAL_RESOURCE_OFFSET + offset) via compute_buffer_state. */
+   {
+      uint32_t res_slot = (EG_FETCH_CONSTANTS_OFFSET_CS +
+                           R600_IMAGE_REAL_RESOURCE_OFFSET +
+                           0);  /* Logical SSBO index 0, not HW array index */
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
+      *p++ = res_slot * 8;
+      *p++ = 0;                            /* WORD0: base address (relocated) */
+      *p++ = buf_size - 1;                 /* WORD1: size in bytes - 1 */
+      *p++ = S_030008_STRIDE(4) |          /* WORD2: 4 bytes per R32 element */
+             S_030008_DATA_FORMAT(0x0D) |  /* FMT_32 */
+             S_030008_NUM_FORMAT_ALL(1);   /* NUM_FORMAT_INT (raw bits) */
+      *p++ = S_03000C_DST_SEL_X(V_03000C_SQ_SEL_X) |
+             S_03000C_DST_SEL_Y(V_03000C_SQ_SEL_Y) |
+             S_03000C_DST_SEL_Z(V_03000C_SQ_SEL_Z) |
+             S_03000C_DST_SEL_W(V_03000C_SQ_SEL_W) |
+             S_03000C_UNCACHED(1);         /* WORD3: identity swizzle, uncached */
+      *p++ = buf_size;                     /* WORD4: num_elements (for resinfo) */
+      *p++ = 0;                            /* WORD5 */
+      *p++ = 0;                            /* WORD6 */
+      *p++ = S_03001C_TYPE(V_03001C_SQ_TEX_VTX_VALID_BUFFER); /* WORD7 */
+      /* NOP relocation for WORD0 base address */
+      *p++ = PKT3(PKT3_NOP, 0, 0);
+      *p++ = 4 * bo_ref;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+}
+
+static void
+terakan_emit_compute_state(struct terakan_gfx_command_writer *command_writer,
+                           struct terakan_pipeline_compute const *pipeline)
+{
+   /* Manual PM4 emission matching the exact Gallium evergreen_emit_cs_shader
+    * byte sequence. We bypass Terakan's emit_with_bo + add_relocation because
+    * the relocation system places the NOP at an offset the kernel CS validator
+    * cannot find after COMPUTE_MODE SET_CONTEXT_REG packets.
+    *
+    * The kernel's radeon_cs_packet_next_reloc expects the NOP IMMEDIATELY
+    * after the SET_CONTEXT_REG packet containing SQ_PGM_START_LS. */
+
+   /* Register the shader BO for the CS submission relocation table */
+   uint32_t bo_ref = terakan_bo_reference_writer_add_reference(
+      &command_writer->base.bo_reference_writer,
+      pipeline->shader.static_state.program_bo,
+      true, false, TERAKAN_BO_PRIORITY_SHADER_BINARY);
+
+   /* -1. Minimal DB state: set depth/stencil surface array mode to LINEAR_GENERAL
+    * to prevent the kernel CS validator from seeing uninitialized garbage.
+    * DB_Z_INFO = 0x28040, DB_STENCIL_INFO = 0x28044.
+    * ARRAY_MODE = 0 (LINEAR_GENERAL) satisfies the validator.
+    *
+    * COMPUTE_MODE_BIT is required: DB_Z_INFO is a CONTEXT register
+    * (0x28040 >= 0x28000) so without COMPUTE_MODE_BIT it writes to
+    * the 3D shadow, leaving the compute shadow with uninitialized DB
+    * state that can trigger kernel CS validator rejection or GPU hang. */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 4);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 2, 0) | COMPUTE_MODE_BIT;
+      *p++ = (0x28040 - 0x28000) >> 2; /* DB_Z_INFO offset */
+      *p++ = 0;  /* ARRAY_MODE = LINEAR_GENERAL */
+      *p++ = 0;  /* DB_STENCIL_INFO: ARRAY_MODE = LINEAR_GENERAL */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 0. CS_PARTIAL_FLUSH: reset the pipeline before compute dispatch.
+    * This ensures prior graphics state (stencil, depth, CB) does not
+    * contaminate the kernel CS validator surface tracking. */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
+      *p++ = EVENT_TYPE_CS_PARTIAL_FLUSH | (4 << 8);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 1. SQ_PGM_START_LS + RESOURCES_LS + RESOURCES_LS_2 + NOP reloc.
+    *
+    * CRITICAL: The SET_CONTEXT_REG and NOP reloc MUST be in the SAME
+    * emission.  The command writer may switch indirect buffers between
+    * emissions, which would separate the NOP from its SET_CONTEXT_REG.
+    * If the kernel CS validator can't find the NOP, SQ_PGM_START_LS
+    * stays at 0x0 and the SQ fetches garbage instructions → GPU hang. */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 7);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 3, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_0288D0_SQ_PGM_START_LS);
+      *p++ = pipeline->sq_pgm_start_cs;       /* SQ_PGM_START_LS (va >> 8) */
+      *p++ = pipeline->sq_pgm_resources_cs[0] |
+             S_0288D4_DX10_CLAMP(1);           /* SQ_PGM_RESOURCES_LS */
+      *p++ = 0;                                /* SQ_PGM_RESOURCES_LS_2 */
+      /* NOP relocation — same emission to guarantee contiguity */
+      *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
+      *p++ = 4 * bo_ref;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 2. SPI_COMPUTE_NUM_THREAD_X/Y/Z (COMPUTE_MODE) */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 3, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_0286EC_SPI_COMPUTE_NUM_THREAD_X);
+      *p++ = pipeline->local_size[0];
+      *p++ = pipeline->local_size[1];
+      *p++ = pipeline->local_size[2];
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 2b. SPI_COMPUTE_INPUT_CNTL: deliver thread/workgroup IDs to shader.
+    *
+    * This register tells the SPI hardware to populate the compute shader's
+    * pinned VGPRs with thread IDs (TID_IN_GROUP_ENA) and workgroup IDs
+    * (TGID_ENA).  Without it, the shader's pinned registers (sel 0 = TID,
+    * sel 1 = TGID) contain stale/garbage data, causing every thread to
+    * compute wrong global indices → MEM_RAT writes to wrong addresses
+    * → output buffer appears untouched → 0.00 GFLOPS.
+    *
+    * DISABLE_INDEX_PACK prevents SPI from compacting sparse thread IDs
+    * into a dense range, which would break gl_LocalInvocationID semantics.
+    *
+    * Gallium reference: evergreen_init_atom_start_compute_cs(), line ~720.
+    * Value = 0x7 (all three bits set). */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_0286E8_SPI_COMPUTE_INPUT_CNTL);
+      *p++ = S_0286E8_TID_IN_GROUP_ENA(1) |
+             S_0286E8_TGID_ENA(1) |
+             S_0286E8_DISABLE_INDEX_PACK(1);  /* = 0x7 */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 3. VGT_NUM_INDICES = group_size */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = CONFIG_REG_OFFSET(R_008970_VGT_NUM_INDICES);
+      *p++ = pipeline->group_size;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 4. VGT_COMPUTE_THREAD_GROUP_SIZE */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = CONFIG_REG_OFFSET(R_0089AC_VGT_COMPUTE_THREAD_GROUP_SZ);
+      *p++ = pipeline->group_size;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 5. SQ_LDS_ALLOC (COMPUTE_MODE)
+    *
+    * Gallium: num_waves = ceil(group_size / (16 * num_pipes)).
+    * Recalculate here because the pipeline was compiled without chip info. */
+   {
+      struct terakan_device const * const dev2 =
+         terakan_gfx_command_writer_device(command_writer);
+      struct terakan_physical_device const * const pd2 =
+         terakan_device_physical_device(dev2);
+      unsigned num_pipes = 1u << pd2->chip_info.max_render_backends_log2;
+      unsigned wave_div = 16 * num_pipes;
+      unsigned num_waves = (pipeline->group_size + wave_div - 1) / wave_div;
+      uint32_t lds_dwords = pipeline->sq_lds_alloc & 0x3FFF;
+      uint32_t sq_lds = lds_dwords | (num_waves << 14);
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_0288E8_SQ_LDS_ALLOC);
+      *p++ = sq_lds;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 6. VGT_COMPUTE_START_X/Y/Z = 0 */
+   {
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+      *p++ = CONFIG_REG_OFFSET(R_00899C_VGT_COMPUTE_START_X);
+      *p++ = 0;
+      *p++ = 0;
+      *p++ = 0;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+}
+
+/* ---- Vulkan dispatch entrypoints ---- */
+
+VKAPI_ATTR void VKAPI_CALL
+terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
+                    uint32_t const groupCountX,
+                    uint32_t const groupCountY,
+                    uint32_t const groupCountZ)
+{
+   if (unlikely(groupCountX == 0 || groupCountY == 0 || groupCountZ == 0)) {
+      return;
+   }
+
+   struct terakan_command_buffer *cmd =
+      terakan_command_buffer_from_handle(commandBuffer);
+   struct terakan_gfx_command_writer *command_writer = cmd->command_writer.gfx;
+
+   struct terakan_pipeline_compute const *pipeline =
+      command_writer->bound_compute_pipeline;
+   if (unlikely(pipeline == NULL)) {
+      assert(!"vkCmdDispatch called without a bound compute pipeline");
+      return;
+   }
+
+   /* ========== Context Multiplexer: BEGIN ==========
+    * Drain graphics waves, invalidate read caches, and reconfigure SQ
+    * for the LS (compute) stage.  MUST happen before any compute state
+    * emission because SQ_GPR_RESOURCE_MGMT_3 and SQ_THREAD_RESOURCE_MGMT_2
+    * affect how the subsequent SQ_PGM_RESOURCES_LS is interpreted. */
+   terakan_compute_multiplex_begin(command_writer);
+
+   /* Emit compute pipeline state if dirty (first bind or pipeline change).
+    * After the multiplexer begin boundary the SQ is ready to accept LS
+    * program writes.  We unconditionally re-emit state on the first
+    * dispatch after every bind because the multiplexer's SQ reconfig
+    * invalidates any cached "compute state is still applied" assumption. */
+   if (command_writer->compute_pipeline_dirty) {
+      terakan_emit_compute_state(command_writer, pipeline);
+      terakan_emit_compute_resources(command_writer);
+      /* Wire KCACHE (KC0) with SSBO address for compute addressing */
+      if (command_writer->hw_state_sqc.resource_bos.fs[2])
+         terakan_emit_compute_kcache(command_writer, command_writer->hw_state_sqc.resource_bos.fs[2]);
+      command_writer->compute_pipeline_dirty = false;
+   }
+
+   /* Propagate compute shader push constant usage to the command writer state
+    * so that terakan_push_constants_apply knows which driver slots and app
+    * bytes to upload. */
+   command_writer->push_constants_state.usage_compute =
+      pipeline->shader.push_constants_usage;
+
+   /* Write dispatch group counts into the driver push constant prefix.
+    * The NIR lowering pass (terakan_nir_lower_bindings_instr_load_num_workgroups)
+    * emits KCACHE reads from these offsets for gl_NumWorkGroups. */
+   command_writer->push_constants_state.driver_constants.num_workgroups[0] = groupCountX;
+   command_writer->push_constants_state.driver_constants.num_workgroups[1] = groupCountY;
+   command_writer->push_constants_state.driver_constants.num_workgroups[2] = groupCountZ;
+   command_writer->push_constants_state.driver_constants_modified |=
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_X) |
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Y) |
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Z);
+
+   /* Upload push constants (driver prefix + app constants) to KCACHE bank 15.
+    * This is the compute equivalent of the graphics path in terakan_draw.c.
+    * push_constants_apply populates the buffer but skips the deferred FS
+    * binding for compute — we emit LS KCACHE bank 15 manually below. */
+   terakan_push_constants_apply(command_writer, true);
+
+   /* Emit LS KCACHE bank 15 (push constants) with COMPUTE_MODE_BIT.
+    * Only emit if push_constants_apply() actually populated the allocation.
+    * After _reset(), all allocation fields are canonical zero (bo=NULL,
+    * va=0, size=0).  Emitting garbage here was the root cause of GPU
+    * hangs on the 3rd+ vkpeak dispatch. */
+   if (command_writer->push_constants_state.allocation.bo != NULL &&
+       command_writer->push_constants_state.allocation.size_kcache_lines != 0) {
+      terakan_emit_compute_kcache_bank(
+         command_writer,
+         TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS,
+         command_writer->push_constants_state.allocation.bo,
+         command_writer->push_constants_state.allocation.va_kcache_lines,
+         command_writer->push_constants_state.allocation.size_kcache_lines);
+   }
+
+    /* Bind robustness metadata (per-UAV byte sizes) to KCACHE bank 14 if
+    * the compute pipeline needs it for write guards.
+    * robustness_metadata_apply populates the buffer but skips the deferred
+    * FS binding for compute — we emit LS KCACHE bank 14 manually.
+    *
+    * On repeat dispatches of the same pipeline, robustness_metadata_apply
+    * returns early (bound_to_stages already set) and the LS register value
+    * from the first dispatch persists in the PM4 compute shadow. */
+   if (command_writer->bound_compute_pipeline != NULL &&
+       (command_writer->bound_compute_pipeline->shader.kcache_needed &
+        ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA))) {
+      terakan_robustness_metadata_apply(command_writer, true);
+      terakan_emit_compute_kcache_bank(
+         command_writer,
+         TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+         command_writer->robustness_metadata.bo,
+         command_writer->robustness_metadata.va_kcache_lines,
+         1);  /* 1 KCACHE line = 256 bytes */
+   }
+
+   /* Emit PKT3_DISPATCH_DIRECT with the grid dimensions */
+   uint32_t *p = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+   if (unlikely(p == NULL)) {
+      return;
+   }
+   *p++ = PKT3C(PKT3_DISPATCH_DIRECT, 3, 0);
+   *p++ = groupCountX;
+   *p++ = groupCountY;
+   *p++ = groupCountZ;
+   *p++ = 1; /* VGT_DISPATCH_INITIATOR = COMPUTE_SHADER_EN */
+   terakan_gfx_command_writer_emit_done(command_writer, p);
+
+   /* ========== Context Multiplexer: END ==========
+    * Drain compute waves, flush RAT writes, and mark 3D state pending
+    * so the next draw re-emits shader programs and CB/DB surfaces the
+    * compute dispatch stomped. */
+   terakan_compute_multiplex_end(command_writer);
+
+#if 0 /* SURFACE_SYNC removed — MEM_RAT_CACHELESS bypasses CB cache */
+   /* SURFACE_SYNC: flush CB (RAT write) caches so CPU can read the results.
+    * CB_ACTION_ENA flushes the render target (RAT) write cache.
+    * TC_ACTION_ENA flushes the texture cache (for any UAV reads).
+    * SH_ACTION_ENA flushes shader exports. */
+   {
+      uint32_t *sync = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+      if (unlikely(sync == NULL)) return;
+      *sync++ = PKT3(PKT3_SURFACE_SYNC, 3, 0);
+      *sync++ = S_0085F0_CB_ACTION_ENA(1) | S_0085F0_TC_ACTION_ENA(1) |
+                S_0085F0_SH_ACTION_ENA(1) |
+                TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
+      *sync++ = 0xFFFFFFFF; /* size = entire address space */
+      *sync++ = 0;          /* base = 0 */
+      *sync++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+      terakan_gfx_command_writer_emit_done(command_writer, sync);
+   }
+#endif
+}
+
+VKAPI_ATTR void VKAPI_CALL
+terakan_CmdDispatchBase(UNUSED VkCommandBuffer const commandBuffer,
+                        UNUSED uint32_t const baseGroupX,
+                        UNUSED uint32_t const baseGroupY,
+                        UNUSED uint32_t const baseGroupZ,
+                        UNUSED uint32_t const groupCountX,
+                        UNUSED uint32_t const groupCountY,
+                        UNUSED uint32_t const groupCountZ)
+{
+   /* TODO: Implement base group offset dispatch.
+    * TeraScale-2 supports VGT_COMPUTE_START_X/Y/Z for base offsets. */
+   assert(!"terakan_CmdDispatchBase not yet implemented");
+}
+
+VKAPI_ATTR void VKAPI_CALL
+terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
+                            VkBuffer const bufferHandle,
+                            VkDeviceSize const offset)
+{
+   struct terakan_command_buffer * const cmd =
+      terakan_command_buffer_from_handle(commandBuffer);
+   struct terakan_gfx_command_writer * const command_writer = cmd->command_writer.gfx;
+   struct terakan_buffer const * const buffer = terakan_buffer_from_handle(bufferHandle);
+
+   uint64_t const buffer_va = buffer->va + offset;
+   struct terakan_bo * const bo = (struct terakan_bo *)buffer->bo;
+
+   struct terakan_pipeline_compute const * const pipeline =
+      command_writer->bound_compute_pipeline;
+   if (unlikely(pipeline == NULL)) {
+      assert(!"vkCmdDispatchIndirect called without a bound compute pipeline");
+      return;
+   }
+
+   /* ========== Context Multiplexer: BEGIN ==========
+    * Same invariant as CmdDispatch: drain graphics waves, invalidate
+    * read caches, reconfigure SQ for LS.  This REPLACES the previous
+    * ad-hoc SURFACE_SYNC that only invalidated TC/VC/SH — the old code
+    * missed PS_PARTIAL_FLUSH and SQ reconfig, both of which are required
+    * to avoid the post-draw -> dispatch hazard. */
+   terakan_compute_multiplex_begin(command_writer);
+
+   /* Emit compute pipeline state (same as direct dispatch path).
+    * Indirect dispatches go through the same state machine — the only
+    * difference is that the CP reads the grid dimensions from a BO
+    * instead of having them inlined in the packet. */
+   if (command_writer->compute_pipeline_dirty) {
+      terakan_emit_compute_state(command_writer, pipeline);
+      terakan_emit_compute_resources(command_writer);
+      if (command_writer->hw_state_sqc.resource_bos.fs[2])
+         terakan_emit_compute_kcache(
+            command_writer, command_writer->hw_state_sqc.resource_bos.fs[2]);
+      command_writer->compute_pipeline_dirty = false;
+   }
+
+   /* Upload push constants and robustness metadata to KCACHE banks 15/14.
+    * Indirect dispatch has no CPU-visible group counts, so we cannot
+    * populate num_workgroups driver constants here — the shader must
+    * fetch them from the indirect BO if it needs gl_NumWorkGroups.
+    * push_constants_apply and robustness_metadata_apply populate their
+    * buffers but skip the deferred FS binding for compute — we emit
+    * LS KCACHE bindings manually with COMPUTE_MODE_BIT. */
+   command_writer->push_constants_state.usage_compute =
+      pipeline->shader.push_constants_usage;
+   terakan_push_constants_apply(command_writer, true);
+
+   /* Emit LS KCACHE bank 15 (push constants) with COMPUTE_MODE_BIT.
+    * Only emit if push_constants_apply() actually populated the allocation. */
+   if (command_writer->push_constants_state.allocation.bo != NULL &&
+       command_writer->push_constants_state.allocation.size_kcache_lines != 0) {
+      terakan_emit_compute_kcache_bank(
+         command_writer,
+         TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS,
+         command_writer->push_constants_state.allocation.bo,
+         command_writer->push_constants_state.allocation.va_kcache_lines,
+         command_writer->push_constants_state.allocation.size_kcache_lines);
+   }
+
+   if (command_writer->bound_compute_pipeline != NULL &&
+       (command_writer->bound_compute_pipeline->shader.kcache_needed &
+        ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA))) {
+      terakan_robustness_metadata_apply(command_writer, true);
+      terakan_emit_compute_kcache_bank(
+         command_writer,
+         TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+         command_writer->robustness_metadata.bo,
+         command_writer->robustness_metadata.va_kcache_lines,
+         1);  /* 1 KCACHE line = 256 bytes */
+   }
+
+   /* PKT3_DISPATCH_INDIRECT: CP fetches (X, Y, Z) group counts from buffer_va.
+    * The buffer must contain three uint32_t values at the given offset. */
+   uint32_t * packet = terakan_gfx_command_writer_emit_with_bo(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3, 1, 0, 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_DISPATCH_INDIRECT, 2 - 1, 0);
+   uint32_t const * const packet_addr = packet;
+   *packet++ = (uint32_t)buffer_va;
+   *packet++ = ((buffer_va >> 32) & 0xFF);
+
+   terakan_gfx_command_writer_add_relocation_for_40_bits(
+      command_writer, &packet, packet_addr, packet_addr + 1,
+      0, 0,
+      terakan_bo_reference_writer_add_reference(
+         &command_writer->base.bo_reference_writer,
+         bo, true, false, TERAKAN_BO_PRIORITY_DRAW_INDIRECT));
+
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+
+   /* ========== Context Multiplexer: END ==========
+    * Drain compute waves, flush RAT writes, mark 3D state pending. */
+   terakan_compute_multiplex_end(command_writer);
+}

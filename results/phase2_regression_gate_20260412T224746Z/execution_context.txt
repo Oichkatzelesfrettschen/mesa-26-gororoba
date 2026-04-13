@@ -1,0 +1,7 @@
+host=x130e
+user=eirikr
+pwd=/home/eirikr
+date_utc=2026-04-12T22:47:46Z
+icd=/home/eirikr/workspaces/mesa/mesa-26-debug/build-terakan-distcc/src/amd/terascale/vulkan/terascale_devenv_icd.x86_64.json
+mesa_lib=/usr/local/mesa-debug/lib/x86_64-linux-gnu
+display=:0

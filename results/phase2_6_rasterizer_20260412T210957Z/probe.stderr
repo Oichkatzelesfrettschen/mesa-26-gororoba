@@ -1,0 +1,16 @@
+terakan: info: Created an instance.
+TERAKAN ICD: vkCreateWaylandSurfaceKHR = NULL
+TERAKAN ICD: vkGetPhysicalDeviceWaylandPresentationSupportKHR = NULL
+terakan: info: Found a compatible DRM device '/dev/dri/renderD128'.
+WARNING: terakan is not a conformant Vulkan implementation, testing use only.
+Using GPU: AMD R8xx Palm (Terakan)\nterakan: pm4: SET_CONTEXT_REG PA_CL_CLIP_CNTL = 0x00010000
+terakan: pm4: SET_CONTEXT_REG PA_SU_SC_MODE_CNTL = 0x00000000
+terakan: pm4: SET_CONTEXT_REG PA_SC_MODE_CNTL_0 = 0x00000000
+terakan: pm4: SET_CONTEXT_REG PA_SC_AA_CONFIG = 0x00000000
+terakan: pm4: SET_CONTEXT_REG PA_CL_CLIP_CNTL = 0x01080000
+terakan: pm4: SET_CONTEXT_REG PA_SU_SC_MODE_CNTL = 0x00000240
+terakan: pm4: SET_CONTEXT_REG PA_SC_MODE_CNTL_0 = 0x00000002
+terakan: pm4: PKT3_DRAW_INDEX_AUTO vertex_count=3 first_vertex=0 first_instance=0
+terakan: pm4: SET_CONTEXT_REG PA_CL_CLIP_CNTL = 0x00010000
+terakan: pm4: SET_CONTEXT_REG PA_SU_SC_MODE_CNTL = 0x00000000
+terakan: pm4: SET_CONTEXT_REG PA_SC_MODE_CNTL_0 = 0x00000000

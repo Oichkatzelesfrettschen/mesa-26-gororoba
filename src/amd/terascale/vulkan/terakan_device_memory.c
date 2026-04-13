@@ -30,6 +30,7 @@
 #include "terakan_image.h"
 #include "terakan_physical_device.h"
 
+#include "util/cache_ops.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
 #include "util/u_math.h"
@@ -41,6 +42,43 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+static inline VkMemoryPropertyFlags
+terakan_device_memory_flags(struct terakan_device const * const device,
+                            struct terakan_device_memory const * const device_memory)
+{
+   return terakan_device_physical_device(device)
+      ->memory_properties.memoryTypes[device_memory->vk.memory_type_index]
+      .propertyFlags;
+}
+
+static void
+terakan_device_memory_flush_or_invalidate_mapped_range(
+   struct terakan_device const * const device,
+   struct terakan_device_memory * const device_memory, VkDeviceSize const offset,
+   VkDeviceSize const size, bool const invalidate)
+{
+   if (size == 0 || device_memory->bo->mapping == NULL || !util_has_cache_ops()) {
+      return;
+   }
+
+   /* Host-cached mappings may require explicit CPU cache maintenance before GPU-visible use. */
+   if (!(terakan_device_memory_flags(device, device_memory) &
+         VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) {
+      return;
+   }
+
+   VkDeviceSize flush_size = size;
+   if (flush_size > (VkDeviceSize)SIZE_MAX) {
+      flush_size = (VkDeviceSize)SIZE_MAX;
+   }
+   void * const start = (char *)device_memory->bo->mapping + offset;
+   if (invalidate) {
+      util_flush_inval_range(start, (size_t)flush_size);
+   } else {
+      util_flush_range(start, (size_t)flush_size);
+   }
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL
 terakan_GetMemoryFdPropertiesKHR(VkDevice const deviceHandle,
@@ -104,30 +142,61 @@ terakan_GetMemoryFdKHR(VkDevice const deviceHandle, VkMemoryGetFdInfoKHR const *
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-terakan_FlushMappedMemoryRanges(UNUSED VkDevice const device,
-                                UNUSED uint32_t const memoryRangeCount,
-                                UNUSED VkMappedMemoryRange const * const pMemoryRanges)
+terakan_FlushMappedMemoryRanges(VkDevice const deviceHandle,
+                                uint32_t const memoryRangeCount,
+                                VkMappedMemoryRange const * const pMemoryRanges)
 {
-   /* All host-visible memory types are host-coherent currently. */
+   struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
+
+   for (uint32_t range_index = 0; range_index < memoryRangeCount; ++range_index) {
+      VkMappedMemoryRange const * const range = &pMemoryRanges[range_index];
+      struct terakan_device_memory * const device_memory =
+         terakan_device_memory_from_handle(range->memory);
+      if (device_memory == NULL) {
+         continue;
+      }
+      VkDeviceSize const size =
+         range->size == VK_WHOLE_SIZE ? device_memory->vk.size - range->offset : range->size;
+      terakan_device_memory_flush_or_invalidate_mapped_range(device, device_memory,
+                                                             range->offset, size, false);
+   }
+
    return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-terakan_InvalidateMappedMemoryRanges(UNUSED VkDevice const device,
-                                     UNUSED uint32_t const memoryRangeCount,
-                                     UNUSED VkMappedMemoryRange const * const pMemoryRanges)
+terakan_InvalidateMappedMemoryRanges(VkDevice const deviceHandle,
+                                     uint32_t const memoryRangeCount,
+                                     VkMappedMemoryRange const * const pMemoryRanges)
 {
-   /* All host-visible memory types are host-coherent currently. */
+   struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
+
+   for (uint32_t range_index = 0; range_index < memoryRangeCount; ++range_index) {
+      VkMappedMemoryRange const * const range = &pMemoryRanges[range_index];
+      struct terakan_device_memory * const device_memory =
+         terakan_device_memory_from_handle(range->memory);
+      if (device_memory == NULL) {
+         continue;
+      }
+      VkDeviceSize const size =
+         range->size == VK_WHOLE_SIZE ? device_memory->vk.size - range->offset : range->size;
+      terakan_device_memory_flush_or_invalidate_mapped_range(device, device_memory,
+                                                             range->offset, size, true);
+   }
+
    return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-terakan_UnmapMemory2KHR(UNUSED VkDevice const device,
+terakan_UnmapMemory2KHR(VkDevice const deviceHandle,
                         VkMemoryUnmapInfoKHR const * const pMemoryUnmapInfo)
 {
+   struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
    struct terakan_device_memory * const device_memory =
       terakan_device_memory_from_handle(pMemoryUnmapInfo->memory);
 
+   terakan_device_memory_flush_or_invalidate_mapped_range(device, device_memory, 0,
+                                                          device_memory->vk.size, false);
    terakan_bo_unmap(device_memory->bo);
 
    return VK_SUCCESS;

@@ -1,0 +1,14 @@
+{
+  "fp32-scalar": 12.3,
+  "fp32-vec4": 22.17,
+  "shader_cache_stats": [
+    {
+      "hits": 2,
+      "misses": 0
+    },
+    {
+      "hits": 2,
+      "misses": 0
+    }
+  ]
+}

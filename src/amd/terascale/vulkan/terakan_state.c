@@ -38,6 +38,7 @@
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_endian.h"
 #include "util/u_math.h"
 
@@ -45,6 +46,7 @@
 #include <float.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -262,6 +264,7 @@ terakan_state_draw_apply_sq_resources_fs(struct terakan_gfx_command_writer * con
 {
    bool const is_r9xx =
       terakan_gfx_command_writer_physical_device(command_writer)->chip_info.is_r9xx;
+   bool const dump_vtx_resource = debug_get_bool_option("TERAKAN_DUMP_VTX_RESOURCE", false);
    uint32_t resource[8] = {
       [3] = S_03000C_DST_SEL_X(TERASCALE_SWIZZLE_X) | S_03000C_DST_SEL_Y(TERASCALE_SWIZZLE_Y) |
             S_03000C_DST_SEL_Z(TERASCALE_SWIZZLE_Z) | S_03000C_DST_SEL_W(TERASCALE_SWIZZLE_W),
@@ -279,10 +282,19 @@ terakan_state_draw_apply_sq_resources_fs(struct terakan_gfx_command_writer * con
        * To support 2048 stride, which is mandatory on Vulkan and Direct3D, the fetch shader
        * multiplies the index by 2 on R8xx, so the stride in the descriptor should be divided by 2.
        */
-      resource[2] =
-         S_030008_BASE_ADDRESS_HI(buffer->va >> 32) |
-         ((uint32_t)((buffer->stride >> (is_r9xx && buffer->stride >= 0x800 ? 1 : 0)) & 0xFFF)
-          << 8);
+      uint32_t const stride_descriptor =
+         (uint32_t)(buffer->stride >> ((!is_r9xx && buffer->stride >= 0x800) ? 1 : 0));
+      resource[2] = S_030008_BASE_ADDRESS_HI(buffer->va >> 32) |
+                    ((stride_descriptor & (is_r9xx ? 0xFFF : 0x7FF)) << 8);
+      if (unlikely(dump_vtx_resource)) {
+         uint32_t const stride_field = (resource[2] >> 8) & (is_r9xx ? 0xFFFu : 0x7FFu);
+         fprintf(stderr,
+                 "terakan: vtx_resource[%d]: va=0x%010llX size_m1=0x%08X stride_in=%u stride_desc=%u "
+                 "words={%08X,%08X,%08X,%08X,%08X,%08X,%08X,%08X}\n",
+                 buffer_index, (unsigned long long)buffer->va, buffer->size_bytes_minus_1,
+                 (uint32_t)buffer->stride, stride_field, resource[0], resource[1], resource[2],
+                 resource[3], resource[4], resource[5], resource[6], resource[7]);
+      }
       terakan_hw_state_sqc_set_resource_vi(&command_writer->hw_state_sqc, buffer_index, buffer->bo,
                                            resource);
    }
@@ -615,8 +627,10 @@ terakan_state_draw_apply_pa_cl_vte_cntl(struct terakan_gfx_command_writer * cons
 static void
 terakan_state_draw_apply_pa_sc_mode_cntl_0(struct terakan_gfx_command_writer * const command_writer)
 {
-   /* TODO(Triang3l): MSAA_ENABLE, LINE_STIPPLE_ENABLE from a variable. */
-   uint32_t const pa_sc_mode_cntl_0 = S_028A48_VPORT_SCISSOR_ENABLE(1);
+   /* TODO(Triang3l): LINE_STIPPLE_ENABLE from a variable. */
+   uint32_t const pa_sc_mode_cntl_0 =
+      S_028A48_MSAA_ENABLE(command_writer->hw_state_draw.pa_sc_aa_samples.num_samples_log2 != 0) |
+      S_028A48_VPORT_SCISSOR_ENABLE(1);
    bool const modified = command_writer->hw_state_draw.pa_sc_mode_cntl_0 != pa_sc_mode_cntl_0;
    command_writer->hw_state_draw.pa_sc_mode_cntl_0 = pa_sc_mode_cntl_0;
    terakan_hw_state_draw_written(&command_writer->hw_state_draw,

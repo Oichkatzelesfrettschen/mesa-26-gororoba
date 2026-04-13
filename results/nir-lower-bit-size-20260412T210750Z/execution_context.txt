@@ -1,0 +1,17 @@
+execution_timestamp_utc: 20260412T210750Z
+remote_host: x130e
+remote_user: eirikr
+execution_pwd: /home/eirikr/workspaces/mesa/mesa-26-debug
+mesa_repo_toplevel: /home/eirikr/workspaces/mesa/mesa-26-debug
+implementation_worktree_confirmed: /home/eirikr/workspaces/mesa/mesa-26-debug
+
+commands_used_for_this_todo:
+- ssh to x130e (remote execution)
+- rg (locate NIR pass/callback placement in terakan_shader.c)
+- git --no-pager diff (verify surgical patch)
+- ninja (build validation)
+
+toolkit_scripts_used_and_why:
+- none from r600/toolkit/* or r600/scripts/* for this implementation pass.
+  reason: task scope was a direct Mesa source edit + compile validation in remote tree.
+  probe/benchmark toolchain scripts are not required for pass-order insertion correctness.

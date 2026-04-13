@@ -79,6 +79,13 @@ terakan_robustness_metadata_apply(
       memcpy(mapping,
              command_writer->robustness_metadata.uav_byte_sizes,
              sizeof(command_writer->robustness_metadata.uav_byte_sizes));
+      fprintf(stderr, "TERAKAN_METADATA: uav_byte_sizes[0..5] = %u %u %u %u %u %u\n",
+              command_writer->robustness_metadata.uav_byte_sizes[0],
+              command_writer->robustness_metadata.uav_byte_sizes[1],
+              command_writer->robustness_metadata.uav_byte_sizes[2],
+              command_writer->robustness_metadata.uav_byte_sizes[3],
+              command_writer->robustness_metadata.uav_byte_sizes[4],
+              command_writer->robustness_metadata.uav_byte_sizes[5]);
       /* Dwords 16..27: texel buffer element counts. */
       memcpy(mapping + 16,
              command_writer->robustness_metadata.texel_buffer_element_counts,
@@ -98,25 +105,32 @@ terakan_robustness_metadata_apply(
       command_writer->robustness_metadata.bound_to_stages = 0;
    }
 
-   /* Bind KCACHE bank 14 to all needed stages. */
+   /* Bind KCACHE bank 14 to all needed stages.
+    *
+    * For compute: skip the deferred hw_state binding.  The deferred path
+    * emits to PS registers (ALU_CONST_CACHE_PS_14) but compute reads from
+    * LS registers (ALU_CONST_CACHE_LS_14).  Additionally, the deferred
+    * state is never flushed before DISPATCH_DIRECT — the compute path
+    * uses manual PM4 emission exclusively.  The caller (CmdDispatch) is
+    * responsible for emitting LS KCACHE bank 14 with COMPUTE_MODE_BIT
+    * via terakan_emit_compute_kcache_bank(). */
    VkShaderStageFlags const bind_stages =
       (is_compute ? VK_SHADER_STAGE_COMPUTE_BIT
                   : (VK_SHADER_STAGE_ALL_GRAPHICS)) &
       ~command_writer->robustness_metadata.bound_to_stages;
    if (bind_stages) {
-      unsigned remaining = (unsigned)bind_stages;
-      while (remaining) {
-         mesa_shader_stage const stage_index = vk_to_mesa_shader_stage(
-            (VkShaderStageFlagBits)((VkShaderStageFlags)1 << u_bit_scan(&remaining)));
-         /* Compute uses the FS KCACHE slot (SQC convention). */
-         mesa_shader_stage const sqc_stage =
-            (stage_index == MESA_SHADER_COMPUTE) ? MESA_SHADER_FRAGMENT : stage_index;
-         terakan_hw_state_sqc_set_kcache_for_stage[sqc_stage](
-            &command_writer->hw_state_sqc,
-            TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-            1,  /* size_lines: 1 KCACHE line (256 bytes) */
-            command_writer->robustness_metadata.bo,
-            command_writer->robustness_metadata.va_kcache_lines);
+      if (!is_compute) {
+         unsigned remaining = (unsigned)bind_stages;
+         while (remaining) {
+            mesa_shader_stage const stage_index = vk_to_mesa_shader_stage(
+               (VkShaderStageFlagBits)((VkShaderStageFlags)1 << u_bit_scan(&remaining)));
+            terakan_hw_state_sqc_set_kcache_for_stage[stage_index](
+               &command_writer->hw_state_sqc,
+               TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+               1,  /* size_lines: 1 KCACHE line (256 bytes) */
+               command_writer->robustness_metadata.bo,
+               command_writer->robustness_metadata.va_kcache_lines);
+         }
       }
       command_writer->robustness_metadata.bound_to_stages |= bind_stages;
    }

@@ -1,0 +1,3 @@
+/home/eirikr/workspaces/mesa/mesa-26-debug/results/p4_cache_verify_20260412T114153/mesa_shader_cache/mesa_shader_cache/1f/4ca4999ea9649e0e3217c9f25a50a45cb5c1c802b95ebfd361aafe4f41d09f
+/home/eirikr/workspaces/mesa/mesa-26-debug/results/p4_cache_verify_20260412T114153/mesa_shader_cache/mesa_shader_cache/1f/50b2ad7fa9062ffa7d74c41822f54441e3c0354a18c3d5231987cf1754a1e0
+/home/eirikr/workspaces/mesa/mesa-26-debug/results/p4_cache_verify_20260412T114153/mesa_shader_cache/mesa_shader_cache/index

@@ -1,0 +1,46 @@
+   120	    */
+   121	   vk_device_dispatch_table_from_entrypoints(
+   122	      &dispatch_table, &vk_cmd_enqueue_unless_primary_device_entrypoints, true);
+   123	   vk_device_dispatch_table_from_entrypoints(&dispatch_table, &terakan_device_entrypoints, false);
+   124	   vk_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_device_entrypoints, false);
+   125	
+   126	   result =
+   127	      vk_device_init(&device->vk, &physical_device->vk, &dispatch_table, create_info, allocator);
+   128	   if (result != VK_SUCCESS) {
+   129	      return result;
+   130	   }
+   131	
+   132	   /* Device-level memory cache — used as fallback when apps pass
+   133	    * VK_NULL_HANDLE for the pipeline cache.  Backed by disk_cache
+   134	    * (initialized on the physical device) for cross-run persistence. */
+   135	   {
+   136	      struct vk_pipeline_cache_create_info cache_info = { .weak_ref = true };
+   137	      device->vk.mem_cache =
+   138	         vk_pipeline_cache_create(&device->vk, &cache_info, NULL);
+   139	      if (device->vk.mem_cache == NULL) {
+   140	         vk_device_finish(&device->vk);
+   141	         return VK_ERROR_OUT_OF_HOST_MEMORY;
+   142	      }
+   143	   }
+   144	
+   145	   /* Populate the command dispatch table for secondary command buffer emulation. */
+   146	   vk_device_dispatch_table_from_entrypoints(&device->command_dispatch_table,
+   147	                                             &terakan_device_entrypoints, true);
+   148	   vk_device_dispatch_table_from_entrypoints(&device->command_dispatch_table,
+   149	                                             &vk_common_device_entrypoints, false);
+   150	   device->vk.command_dispatch_table = &device->command_dispatch_table;
+   151	
+   152	   device->vk.command_buffer_ops = &terakan_command_buffer_ops;
+   153	
+   154	
+   155	   device->winsys_fn = winsys_fn_static;
+   156	
+   157	   device->bo_reference_size = bo_reference_size;
+   158	   device->bo_reference_alignment = bo_reference_alignment;
+   159	
+   160	   device->last_bo_creation_number = 0;
+   161	
+   162	   size_t reference_placeholder_bos_created;
+   163	   for (reference_placeholder_bos_created = 0;
+   164	        reference_placeholder_bos_created < TERAKAN_QUEUE_BO_REFERENCE_PLACEHOLDER_INDEX_COUNT;
+   165	        ++reference_placeholder_bos_created) {

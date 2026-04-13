@@ -1,0 +1,212 @@
+TERAKAN ICD: vkCreateWaylandSurfaceKHR = NULL
+TERAKAN ICD: vkGetPhysicalDeviceWaylandPresentationSupportKHR = NULL
+WARNING: terakan is not a conformant Vulkan implementation, testing use only.
+=======================================================
+    vkmark 2025.01
+=======================================================
+    Vendor ID:      0x1002
+    Device ID:      0x9802
+    Device Name:    AMD R8xx Palm (Terakan)
+    Driver Version: 1
+    Device UUID:    15eda93018881365fd1c940d3e0f89ee
+=======================================================
+[vertex] duration=3:DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 0; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 1; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 2; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 3; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 4; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 5; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} pref_chan=1 occupied_mask=6 available_mask=9 allowed_mask=15 intersection_mask=9
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} pref_chan=2 occupied_mask=6 available_mask=9 allowed_mask=15 intersection_mask=9
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} pref_chan=1 occupied_mask=6 available_mask=9 allowed_mask=15 intersection_mask=9
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.x@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 0 swz 0; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.x@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 0 swz 1; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.x@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 0 swz 2; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.x@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 0 swz 3; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.x@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 0 swz 4; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.x@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 0 swz 5; reason=const readport exhausted for sel 518 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S10.x@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} pref_chan=2 occupied_mask=14 available_mask=1 allowed_mask=15 intersection_mask=1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} pref_chan=2 occupied_mask=14 available_mask=1 allowed_mask=15 intersection_mask=1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} pref_chan=2 occupied_mask=14 available_mask=1 allowed_mask=15 intersection_mask=1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} pref_chan=2 occupied_mask=14 available_mask=1 allowed_mask=15 intersection_mask=1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} pref_chan=2 occupied_mask=14 available_mask=1 allowed_mask=15 intersection_mask=1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 0; reason=const readport exhausted for sel 519 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 2
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 2
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 3; reason=const readport exhausted for sel 519 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 4; reason=const readport exhausted for sel 519 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S10.w@free{s} : KC0[6].z S2.z@fully{sb} KC0[7].z {W} at chan 3 swz 5; reason=const readport exhausted for sel 519 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.w@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 3 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.w@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 3 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.w@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 3 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.w@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 3 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.w@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 3 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.w@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 3 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.w@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 3 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.w@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 3 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.w@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 3 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.w@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 3 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.w@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 3 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.w@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 3 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.w@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 3 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.w@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 3 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.w@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 3 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.w@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 3 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 13 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.w@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 3 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.w@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 3 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.w@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 3 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} pref_chan=2 occupied_mask=4 available_mask=11 allowed_mask=15 intersection_mask=11
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 0
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} pref_chan=2 occupied_mask=4 available_mask=11 allowed_mask=15 intersection_mask=11
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} pref_chan=2 occupied_mask=4 available_mask=11 allowed_mask=15 intersection_mask=11
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 0; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 1; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 2; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 3; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 4; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 5; reason=const readport exhausted for sel 514 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} pref_chan=2 occupied_mask=4 available_mask=11 allowed_mask=15 intersection_mask=11
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.z@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 2 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.z@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 2 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 10 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.z@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 2 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 10 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.z@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 2 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.z@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 2 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.z@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 2 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.z@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 2 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.z@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 2 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 10 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.z@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 2 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 10 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.z@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 2 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.z@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 2 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.z@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 2 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.z@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 2 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.z@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 2 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 10 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.z@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 2 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 10 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.z@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 2 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.z@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 2 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.z@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 2 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.z@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 2 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.z@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 2 swz 1; reason=gpr conflict: cycle 2 chan 2 existing sel 10 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.z@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 2 swz 2; reason=gpr conflict: cycle 2 chan 2 existing sel 10 new sel 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.z@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 2 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.z@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 2 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.z@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 2 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 1; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 2; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} at chan 0 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S39.x@free{s} : KC0[2].x S1.z@fully{sb} KC0[3].x {W} pref_chan=3 occupied_mask=8 available_mask=7 allowed_mask=15 intersection_mask=7
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 1; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 2; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} at chan 0 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 0
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S40.x@free{s} : KC0[2].y S1.z@fully{sb} KC0[3].y {W} pref_chan=3 occupied_mask=8 available_mask=7 allowed_mask=15 intersection_mask=7
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 1; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 2; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} pref_chan=3 occupied_mask=8 available_mask=7 allowed_mask=15 intersection_mask=7
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 1; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 2; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} pref_chan=3 occupied_mask=8 available_mask=7 allowed_mask=15 intersection_mask=7
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 1; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 2; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} at chan 0 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S41.x@free{s} : KC0[2].z S1.z@fully{sb} KC0[3].z {W} pref_chan=3 occupied_mask=12 available_mask=3 allowed_mask=15 intersection_mask=3
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 0; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 1; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 2; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 3; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 4; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_REJECT: trans anchor ALU RECIPSQRT_IEEE S22.z@chan{s} : S21.y@chan{s} {W} blocked vec ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} at chan 0 swz 5; reason=const readport exhausted for sel 515 bank 0 chan_pair 1
+DEBUG_TOPO_REJECT: reason=repin candidate exhausted swizzles after topological pass vec=ALU MULADD_IEEE S42.x@free{s} : KC0[2].w S1.z@fully{sb} KC0[3].w {W} pref_chan=3 occupied_mask=12 available_mask=3 allowed_mask=15 intersection_mask=3
+DEBUG_REJECT_PRETRANS: no-trans-anchor blocked vec ALU MULADD_IEEE S45.w@free{s} : KC0[1].z S1.y@fully{sb} S41.x@chan{s} {W} at chan 3 swz 0; reason=gpr conflict: cycle 1 chan 1 existing sel 25 new sel 1
+DEBUG_TOPO_REJECT: reason=destination constraints collapsed allowed mask vec=ALU MULADD_IEEE S59.w@group{s} : KC0[0].w S1.x@fully{sb} S46.y@chan{s} {W} pref_chan=3 occupied_mask=10 available_mask=5 allowed_mask=0 intersection_mask=0
+DEBUG_TOPO_REJECT: reason=destination constraints collapsed allowed mask vec=ALU MULADD_IEEE S59.w@group{s} : KC0[0].w S1.x@fully{sb} S46.y@chan{s} {W} pref_chan=3 occupied_mask=10 available_mask=5 allowed_mask=0 intersection_mask=0
+ FPS: 385 FrameTime: 2.597 ms
+=======================================================
+                                   vkmark Score: 385
+=======================================================
+MESA: info: disk shader cache:  hits = 0, misses = 2

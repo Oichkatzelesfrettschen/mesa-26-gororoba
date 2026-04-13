@@ -33,6 +33,8 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 static uint32_t const terakan_meta_position_from_index_vs_r8xx[] = {
    /* 0: Export the instance ID as the first parameter. */
@@ -389,6 +391,12 @@ terakan_meta_emit_rect_3_vertices_draw(struct terakan_gfx_command_writer * const
       (uint16_t)rect->offset.x | ((uint32_t)rect->offset.y << 16),
       (uint16_t)rect->offset.x | ((uint32_t)(rect->offset.y + rect->extent.height) << 16),
       (uint16_t)(rect->offset.x + rect->extent.width) | ((uint32_t)rect->offset.y << 16)};
+
+   fprintf(stderr,
+           "terakan: meta: emit_rect_draw mode=%s rect=(%d,%d %ux%u) instances=%u\n",
+           instance_count > 1 ? "DRAW_INDEX" : "DRAW_INDEX_IMMD",
+           rect->offset.x, rect->offset.y, rect->extent.width, rect->extent.height,
+           instance_count);
 
    if (instance_count > 1) {
       /* PKT3_DRAW_INDEX_IMMD with multiple instances causes a hang in this usage scenario (tested

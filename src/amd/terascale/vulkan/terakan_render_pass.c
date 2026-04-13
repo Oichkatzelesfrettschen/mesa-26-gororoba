@@ -32,17 +32,56 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdBeginRendering(VkCommandBuffer const commandBuffer,
                           VkRenderingInfo const * const pRenderingInfo)
 {
-   struct terakan_state_draw * const state =
-      &terakan_command_buffer_from_handle(commandBuffer)->command_writer.gfx->state_draw;
+   struct terakan_gfx_command_writer * const command_writer =
+      terakan_command_buffer_from_handle(commandBuffer)->command_writer.gfx;
+   struct terakan_state_draw * const state = &command_writer->state_draw;
 
    uint32_t clear_attachment_count = 0;
    VkClearAttachment clear_attachments[TERAKAN_COLOR_HW_RTV_COUNT + 1];
+
+   uint16_t window_scissor_tl_br_xy[4];
+   terakan_state_translate_window_rect_unpacked(&pRenderingInfo->renderArea,
+                                                 window_scissor_tl_br_xy);
+   terakan_state_draw_finalize_scissor(window_scissor_tl_br_xy);
+
+   uint32_t const pa_sc_window_scissor_tl =
+      S_028204_TL_X(window_scissor_tl_br_xy[0]) |
+      S_028204_TL_Y(window_scissor_tl_br_xy[1]) | S_028204_WINDOW_OFFSET_DISABLE(1);
+   uint32_t const pa_sc_window_scissor_br =
+      S_028208_BR_X(window_scissor_tl_br_xy[2]) |
+      S_028208_BR_Y(window_scissor_tl_br_xy[3]);
+
+   uint32_t * packet = terakan_gfx_command_writer_emit(command_writer,
+                                                       TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER,
+                                                       2 + 2);
+   if (likely(packet != NULL)) {
+      *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 2, 0);
+      *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028204_PA_SC_WINDOW_SCISSOR_TL);
+      *packet++ = pa_sc_window_scissor_tl;
+      *packet++ = pa_sc_window_scissor_br;
+      terakan_gfx_command_writer_emit_done(command_writer, packet);
+   }
+
+   struct terakan_device const * const device = terakan_gfx_command_writer_device(command_writer);
+   struct terakan_instance const * const inst =
+      container_of(terakan_device_physical_device(device)->vk.base.instance,
+                   struct terakan_instance const, vk);
+   if (unlikely(inst->debug_flags & TERAKAN_DEBUG_CS_DUMP)) {
+      fprintf(stderr, "terakan: pm4: SET_CONTEXT_REG PA_SC_WINDOW_SCISSOR_TL = 0x%08X\n",
+              pa_sc_window_scissor_tl);
+      fprintf(stderr, "terakan: pm4: SET_CONTEXT_REG PA_SC_WINDOW_SCISSOR_BR = 0x%08X\n",
+              pa_sc_window_scissor_br);
+      fprintf(stderr, "terakan: state: window_scissor tl=(%u,%u) br=(%u,%u)\n",
+              window_scissor_tl_br_xy[0], window_scissor_tl_br_xy[1],
+              window_scissor_tl_br_xy[2], window_scissor_tl_br_xy[3]);
+   }
 
    terakan_state_draw_set_pending(state, TERAKAN_STATE_DRAW_INDEX_DB_DEPTH_STENCIL_BUFFER);
    state->db_depth_stencil_buffer.bo = NULL;

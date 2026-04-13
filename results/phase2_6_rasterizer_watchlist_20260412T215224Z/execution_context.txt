@@ -1,0 +1,9 @@
+timestamp_utc=2026-04-12T21:57:47Z
+host=x130e
+user=eirikr
+pwd=/home/eirikr/workspaces/mesa/mesa-26-debug
+mesa_tree=/home/eirikr/workspaces/mesa/mesa-26-debug
+git_toplevel=/home/eirikr/workspaces/mesa/mesa-26-debug
+git_branch=main
+artifact_rel=results/phase2_6_rasterizer_watchlist_20260412T215224Z
+artifact_abs=/home/eirikr/workspaces/mesa/mesa-26-debug/results/phase2_6_rasterizer_watchlist_20260412T215224Z

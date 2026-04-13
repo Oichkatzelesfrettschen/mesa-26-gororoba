@@ -1,0 +1,7 @@
+{
+  "file_format_version": "1.0.1",
+  "ICD": {
+    "api_version": "1.0.348",
+    "library_path": "/home/eirikr/workspaces/mesa/mesa-26-debug/build-terakan-vtxfetch/src/amd/terascale/vulkan/libvulkan_terascale.so"
+  }
+}

@@ -1,0 +1,5 @@
+vkEnumerateInstanceExtensionProperties failed to find the VK_KHR_display extension.
+
+Do you have a compatible Vulkan installable client driver (ICD) installed?
+Please look at the Getting Started guide for additional information.
+

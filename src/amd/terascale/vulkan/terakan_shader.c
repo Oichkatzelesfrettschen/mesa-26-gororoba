@@ -299,6 +299,26 @@ terakan_nir_should_vectorize_load_store(unsigned const align_mul, unsigned const
    return true;
 }
 
+static unsigned
+terakan_lower_bit_size_callback(const nir_instr *instr, void *UNUSED data)
+{
+   if (instr->type != nir_instr_type_alu)
+      return 0;
+
+   const nir_alu_instr *alu = nir_instr_as_alu(instr);
+
+   /* Promote ALU ops that truly operate on sub-32-bit sources.
+    * Keep 32->8/16 conversion ops out of nir_lower_bit_size so they
+    * continue through explicit backend conversion handlers. */
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+      unsigned src_bit_size = nir_src_bit_size(alu->src[i].src);
+      if (src_bit_size > 1 && src_bit_size < 32)
+         return 32;
+   }
+
+   return 0;
+}
+
 void
 terakan_shader_lower_and_optimize_post_link(
    nir_shader * const nir, struct terakan_pipeline_layout const * const pipeline_layout,
@@ -405,6 +425,7 @@ terakan_shader_lower_and_optimize_post_link(
    /* Everything lowered by nir_lower_alu is supported natively as of this writing. */
 
    NIR_PASS(_, nir, nir_lower_pack);
+   NIR_PASS(_, nir, nir_lower_bit_size, terakan_lower_bit_size_callback, NULL);
 
    nir_lower_idiv_options lower_idiv_options = {};
    NIR_PASS(_, nir, nir_lower_idiv, &lower_idiv_options);

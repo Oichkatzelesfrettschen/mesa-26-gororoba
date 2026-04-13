@@ -37,7 +37,13 @@
 void
 terakan_push_constants_state_reset(struct terakan_push_constants_state * const state)
 {
-   state->allocation.mapping_if_up_to_date = NULL;
+   /* Zero the entire allocation struct — not just mapping_if_up_to_date.
+    * The struct comment says "the rest is undefined if [mapping is NULL]",
+    * but the compute dispatch path reads bo/va/size unconditionally when
+    * emitting KCACHE bank 15.  Leaving stale heap values in those fields
+    * causes GPU hangs on the 3rd+ dispatch (when garbage happens to be
+    * non-zero).  Canonical invalidation: all fields zero. */
+   memset(&state->allocation, 0, sizeof(state->allocation));
 
    state->graphics_stages_using_push_constants = 0;
    state->usage_pre_rasterization = (struct terakan_push_constants_usage){};
@@ -127,22 +133,33 @@ terakan_push_constants_apply(struct terakan_gfx_command_writer * const command_w
       (is_compute ? VK_SHADER_STAGE_COMPUTE_BIT : state->graphics_stages_using_push_constants) &
       ~state->up_to_date_push_constants_bound_to_stages;
    if (bind_to_stages) {
-      uint32_t resource[8];
-      terakan_descriptor_create_for_uniform_buffer(
-         state->allocation.bo,
-         TERAKAN_KCACHE_HW_LINE_BYTES * (VkDeviceSize)state->allocation.va_kcache_lines,
-         TERAKAN_KCACHE_HW_LINE_BYTES * state->allocation.size_kcache_lines, resource);
-      unsigned remaining_stages = (unsigned)bind_to_stages;
-      while (remaining_stages) {
-         mesa_shader_stage const stage_index = vk_to_mesa_shader_stage(
-            (VkShaderStageFlagBits)((VkShaderStageFlags)1 << u_bit_scan(&remaining_stages)));
-         terakan_hw_state_sqc_set_kcache_for_stage[stage_index](
-            &command_writer->hw_state_sqc, TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS,
-            state->allocation.size_kcache_lines, state->allocation.bo,
-            state->allocation.va_kcache_lines);
-         terakan_hw_state_sqc_set_resource_for_stage[stage_index](
-            &command_writer->hw_state_sqc, TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS,
-            state->allocation.bo, resource);
+      /* For compute: skip the deferred hw_state KCACHE/resource binding.
+       *
+       * The deferred path indexes terakan_hw_state_sqc_set_kcache_for_stage[]
+       * with MESA_SHADER_COMPUTE (= 5), but the array is sized
+       * MESA_SHADER_FRAGMENT + 1 (= 5) — an out-of-bounds access.
+       * Even if the array were large enough, the deferred path emits to PS
+       * registers without COMPUTE_MODE_BIT.  The caller (CmdDispatch) is
+       * responsible for emitting LS KCACHE bank 15 with COMPUTE_MODE_BIT
+       * via terakan_emit_compute_kcache_bank(). */
+      if (!is_compute) {
+         uint32_t resource[8];
+         terakan_descriptor_create_for_uniform_buffer(
+            state->allocation.bo,
+            TERAKAN_KCACHE_HW_LINE_BYTES * (VkDeviceSize)state->allocation.va_kcache_lines,
+            TERAKAN_KCACHE_HW_LINE_BYTES * state->allocation.size_kcache_lines, resource);
+         unsigned remaining_stages = (unsigned)bind_to_stages;
+         while (remaining_stages) {
+            mesa_shader_stage const stage_index = vk_to_mesa_shader_stage(
+               (VkShaderStageFlagBits)((VkShaderStageFlags)1 << u_bit_scan(&remaining_stages)));
+            terakan_hw_state_sqc_set_kcache_for_stage[stage_index](
+               &command_writer->hw_state_sqc, TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS,
+               state->allocation.size_kcache_lines, state->allocation.bo,
+               state->allocation.va_kcache_lines);
+            terakan_hw_state_sqc_set_resource_for_stage[stage_index](
+               &command_writer->hw_state_sqc, TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS,
+               state->allocation.bo, resource);
+         }
       }
       state->up_to_date_push_constants_bound_to_stages |= bind_to_stages;
    }

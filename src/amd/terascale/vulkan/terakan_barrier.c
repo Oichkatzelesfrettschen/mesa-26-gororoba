@@ -26,16 +26,29 @@
 #include "terakan_cp_dma.h"
 #include "terakan_device.h"
 #include "terakan_entrypoints.h"
+#include "terakan_instance.h"
 #include "terakan_physical_device.h"
 
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600d_common.h"
+#include "util/u_debug.h"
 #include "util/macros.h"
 #include "vk_synchronization.h"
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+
+static bool
+terakan_barrier_is_cs_dump_enabled(struct terakan_gfx_command_writer const * const command_writer)
+{
+   struct terakan_device const * const device = terakan_gfx_command_writer_device(command_writer);
+   struct terakan_instance const * const inst =
+      container_of(terakan_device_physical_device(device)->vk.base.instance,
+                   struct terakan_instance const, vk);
+   return (inst->debug_flags & TERAKAN_DEBUG_CS_DUMP) != 0;
+}
 
 /* Apply aliases and filter out access not performed by the involved stages. */
 static void
@@ -230,9 +243,8 @@ terakan_barrier_get_dst_actions(struct terakan_gfx_command_writer const * const 
       bool const for_color_image =
          (image_aspects & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_PLANE_0_BIT |
                            VK_IMAGE_ASPECT_PLANE_1_BIT | VK_IMAGE_ASPECT_PLANE_2_BIT)) != 0;
-      if (for_buffer) {
-         actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
-      }
+      /* Buffer transfer destinations are produced by CP DMA / copy paths and
+       * do not require CB UAV flushes in the destination scope. */
       if (for_color_image) {
          actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_DATA |
                     TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_META;
@@ -244,15 +256,6 @@ terakan_barrier_get_dst_actions(struct terakan_gfx_command_writer const * const 
          }
       }
       /* TODO(Triang3l): Depth/stencil actions. */
-   }
-
-   if ((dst_access &
-        (VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) &&
-       (dst_stages & ((device->vk.enabled_features.fragmentStoresAndAtomics
-                          ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT
-                          : 0) |
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT))) {
-      actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
    }
 
    return actions;
@@ -270,6 +273,16 @@ terakan_barrier_emit_event_write(struct terakan_gfx_command_writer * const comma
    *packet++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
    *packet++ = event;
    terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static bool
+terakan_barrier_is_empty_src_scope(VkPipelineStageFlags2 src_stages, VkAccessFlags2 src_access)
+{
+   if (src_access != 0) {
+      return false;
+   }
+   src_stages = vk_expand_src_stage_flags2(src_stages);
+   return src_stages == VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
 }
 
 void
@@ -391,17 +404,26 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
    /* Perform implicit stage waits and cache flushes and invalidations in ME. */
 
    cp_coher_cntl |= cp_coher_cntl_cb_db_dest_base_ena;
-   if (cp_coher_cntl) {
+   if (cp_coher_cntl &&
+       !debug_get_bool_option("TERAKAN_SKIP_BARRIER_SURFACE_SYNC", false)) {
       uint32_t * surface_sync_packet = terakan_gfx_command_writer_emit(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
       if (unlikely(surface_sync_packet == NULL)) {
          return;
       }
+      uint32_t const surface_sync_cp_coher_cntl =
+         cp_coher_cntl | TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
       *surface_sync_packet++ = PKT3(PKT3_SURFACE_SYNC, 4 - 1, 0);
-      *surface_sync_packet++ = cp_coher_cntl | TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
+      *surface_sync_packet++ = surface_sync_cp_coher_cntl;
       *surface_sync_packet++ = UINT32_MAX;
       *surface_sync_packet++ = 0;
       *surface_sync_packet++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+      if (unlikely(terakan_barrier_is_cs_dump_enabled(command_writer))) {
+         fprintf(stderr,
+                 "terakan: pm4: PKT3_SURFACE_SYNC cp_coher_cntl=0x%08X coher_size=0x%08X coher_base=0x%08X poll=%u\n",
+                 surface_sync_cp_coher_cntl, UINT32_MAX, 0u,
+                 TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL);
+      }
       terakan_gfx_command_writer_emit_done(command_writer, surface_sync_packet);
    }
 
@@ -434,36 +456,59 @@ terakan_CmdPipelineBarrier2(VkCommandBuffer const commandBuffer,
    for (uint32_t barrier_index = 0; barrier_index < pDependencyInfo->memoryBarrierCount;
         ++barrier_index) {
       VkMemoryBarrier2 const * const barrier = &pDependencyInfo->pMemoryBarriers[barrier_index];
-      command_writer->pending_barrier_actions |=
+      enum terakan_barrier_action_flags src_actions =
          terakan_barrier_get_src_actions(command_writer, barrier->srcStageMask,
                                          barrier->srcAccessMask, true,
-                                         global_barrier_image_aspects) |
+                                         global_barrier_image_aspects);
+      enum terakan_barrier_action_flags dst_actions =
          terakan_barrier_get_dst_actions(command_writer, barrier->dstStageMask,
                                          barrier->dstAccessMask, true,
                                          global_barrier_image_aspects);
+      if (terakan_barrier_is_empty_src_scope(barrier->srcStageMask, barrier->srcAccessMask)) {
+         dst_actions = 0;
+      }
+      command_writer->pending_barrier_actions |= src_actions | dst_actions;
    }
 
    for (uint32_t barrier_index = 0; barrier_index < pDependencyInfo->bufferMemoryBarrierCount;
         ++barrier_index) {
       VkBufferMemoryBarrier2 const * const barrier =
          &pDependencyInfo->pBufferMemoryBarriers[barrier_index];
-      command_writer->pending_barrier_actions |=
+      enum terakan_barrier_action_flags src_actions =
          terakan_barrier_get_src_actions(command_writer, barrier->srcStageMask,
-                                         barrier->srcAccessMask, true, VK_IMAGE_ASPECT_NONE) |
+                                         barrier->srcAccessMask, true, VK_IMAGE_ASPECT_NONE);
+      enum terakan_barrier_action_flags dst_actions =
          terakan_barrier_get_dst_actions(command_writer, barrier->dstStageMask,
                                          barrier->dstAccessMask, true, VK_IMAGE_ASPECT_NONE);
+      bool const ownership_transfer =
+         barrier->srcQueueFamilyIndex != barrier->dstQueueFamilyIndex;
+      if (terakan_barrier_is_empty_src_scope(barrier->srcStageMask, barrier->srcAccessMask) &&
+          !ownership_transfer) {
+         dst_actions = 0;
+      }
+      command_writer->pending_barrier_actions |= src_actions | dst_actions;
    }
 
    for (uint32_t barrier_index = 0; barrier_index < pDependencyInfo->imageMemoryBarrierCount;
         ++barrier_index) {
       VkImageMemoryBarrier2 const * const barrier =
          &pDependencyInfo->pImageMemoryBarriers[barrier_index];
-      command_writer->pending_barrier_actions |=
+      enum terakan_barrier_action_flags src_actions =
          terakan_barrier_get_src_actions(command_writer, barrier->srcStageMask,
                                          barrier->srcAccessMask, false,
-                                         barrier->subresourceRange.aspectMask) |
+                                         barrier->subresourceRange.aspectMask);
+      enum terakan_barrier_action_flags dst_actions =
          terakan_barrier_get_dst_actions(command_writer, barrier->dstStageMask,
                                          barrier->dstAccessMask, false,
                                          barrier->subresourceRange.aspectMask);
+      bool const ownership_transfer =
+         barrier->srcQueueFamilyIndex != barrier->dstQueueFamilyIndex;
+      bool const discard_old_contents = barrier->oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ||
+                                        barrier->oldLayout == VK_IMAGE_LAYOUT_PREINITIALIZED;
+      if (terakan_barrier_is_empty_src_scope(barrier->srcStageMask, barrier->srcAccessMask) &&
+          !ownership_transfer && discard_old_contents) {
+         dst_actions = 0;
+      }
+      command_writer->pending_barrier_actions |= src_actions | dst_actions;
    }
 }

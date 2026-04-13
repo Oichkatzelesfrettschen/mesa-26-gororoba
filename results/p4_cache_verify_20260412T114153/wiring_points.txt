@@ -1,0 +1,21 @@
+# terakan_device.c cache wiring
+81:   if (device->vk.mem_cache)
+82:      vk_pipeline_cache_destroy(device->vk.mem_cache, NULL);
+136:      struct vk_pipeline_cache_create_info cache_info = { .weak_ref = true };
+137:      device->vk.mem_cache =
+138:         vk_pipeline_cache_create(&device->vk, &cache_info, NULL);
+139:      if (device->vk.mem_cache == NULL) {
+
+# vk.mem_cache references in terakan Vulkan
+/home/eirikr/workspaces/mesa/mesa-26-debug/src/amd/terascale/vulkan/terakan_device.c:81:   if (device->vk.mem_cache)
+/home/eirikr/workspaces/mesa/mesa-26-debug/src/amd/terascale/vulkan/terakan_device.c:82:      vk_pipeline_cache_destroy(device->vk.mem_cache, NULL);
+/home/eirikr/workspaces/mesa/mesa-26-debug/src/amd/terascale/vulkan/terakan_device.c:137:      device->vk.mem_cache =
+/home/eirikr/workspaces/mesa/mesa-26-debug/src/amd/terascale/vulkan/terakan_device.c:139:      if (device->vk.mem_cache == NULL) {
+/home/eirikr/workspaces/mesa/mesa-26-debug/src/amd/terascale/vulkan/terakan_pipeline_graphics.c:1627:            ? vk_pipeline_cache_from_handle(pipelineCache) : device->vk.mem_cache;
+/home/eirikr/workspaces/mesa/mesa-26-debug/src/amd/terascale/vulkan/terakan_pipeline_compute.c:286:            ? vk_pipeline_cache_from_handle(pipelineCache) : device->vk.mem_cache;
+
+# disk cache env toggles in util/disk_cache.c
+150:   if (!os_get_option("MESA_SHADER_CACHE_DIR") && !os_get_option("MESA_GLSL_CACHE_DIR"))
+155:   cache->stats.enabled = debug_get_bool_option("MESA_SHADER_CACHE_SHOW_STATS",
+233:      if (!os_get_option("MESA_SHADER_CACHE_DIR") && !os_get_option("MESA_GLSL_CACHE_DIR") &&
+328:      mesa_logi("disk shader cache:  hits = %u, misses = %u\n",

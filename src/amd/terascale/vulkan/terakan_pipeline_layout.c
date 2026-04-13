@@ -132,7 +132,10 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      desc.resource[2] = (desc.resource[2] & C_030008_BASE_ADDRESS_HI) |
                                         S_030008_BASE_ADDRESS_HI(a >> 32);
                   }
-                  setter(&command_writer->hw_state_sqc, base + di, desc.bo, desc.resource);
+                  /* SFN TEX/LOAD_BUF resource IDs are addressed after the 18 const-buffer slots. */
+                  setter(&command_writer->hw_state_sqc,
+                         base + di + TERAKAN_SAMPLER_HW_COUNT_PER_STAGE, desc.bo,
+                         desc.resource);
                }
             }
          }

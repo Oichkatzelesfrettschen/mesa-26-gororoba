@@ -1,0 +1,144 @@
+ninja: Entering directory `build-terakan-debug'
+[0/1] Regenerating build files
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/mesonbuild/mesonmain.py", line 277, in run
+    return msetup.run(['--reconfigure'] + args[2:])
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/msetup.py", line 365, in run
+    app.generate()
+    ~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/msetup.py", line 188, in generate
+    return self._generate(env, capture, vslite_ctx)
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/msetup.py", line 227, in _generate
+    intr.run()
+    ~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreter/interpreter.py", line 3069, in run
+    super().run()
+    ~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 169, in run
+    self.evaluate_codeblock(self.ast, start=1)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 194, in evaluate_codeblock
+    raise e
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 186, in evaluate_codeblock
+    self.evaluate_statement(cur)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 218, in evaluate_statement
+    return self.evaluate_if(cur)
+           ~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 308, in evaluate_if
+    self.evaluate_codeblock(i.block)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 194, in evaluate_codeblock
+    raise e
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 186, in evaluate_codeblock
+    self.evaluate_statement(cur)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 218, in evaluate_statement
+    return self.evaluate_if(cur)
+           ~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 313, in evaluate_if
+    self.evaluate_codeblock(node.elseblock.block)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 194, in evaluate_codeblock
+    raise e
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 186, in evaluate_codeblock
+    self.evaluate_statement(cur)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 240, in evaluate_statement
+    self.evaluate_foreach(cur)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 478, in evaluate_foreach
+    self.evaluate_codeblock(node.block)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 194, in evaluate_codeblock
+    raise e
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 186, in evaluate_codeblock
+    self.evaluate_statement(cur)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 204, in evaluate_statement
+    self.assignment(cur)
+    ~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 641, in assignment
+    value = self.evaluate_statement(node.value)
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 206, in evaluate_statement
+    return self.method_call(cur)
+           ~~~~~~~~~~~~~~~~^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/interpreterbase.py", line 556, in method_call
+    res = obj.method_call(method_name, args, kwargs)
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/baseobjects.py", line 81, in method_call
+    return method(args, kwargs)
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/decorators.py", line 237, in wrapper
+    return f(*nargs, **wrapped_kwargs)
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreterbase/decorators.py", line 556, in wrapper
+    return f(*wrapped_args, **wrapped_kwargs)
+  File "/usr/lib/python3/dist-packages/mesonbuild/interpreter/compiler.py", line 325, in run_method
+    result = self.compiler.run(code, self.environment, extra_args=extra_args,
+                               dependencies=deps)
+  File "/usr/lib/python3/dist-packages/mesonbuild/compilers/compilers.py", line 652, in run
+    with self._build_wrapper(code, env, extra_args, dependencies, mode=CompileCheckMode.LINK, want_output=True) as p:
+         ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/contextlib.py", line 141, in __enter__
+    return next(self.gen)
+  File "/usr/lib/python3/dist-packages/mesonbuild/compilers/compilers.py", line 1292, in _build_wrapper
+    with self.compile(code, extra_args=args, mode=mode, want_output=want_output, temp_dir=env.scratch_dir) as r:
+         ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/contextlib.py", line 141, in __enter__
+    return next(self.gen)
+  File "/usr/lib/python3/dist-packages/mesonbuild/compilers/compilers.py", line 835, in compile
+    command_list = self.get_exelist(ccache=not no_ccache) + commands.to_native()
+                                                            ~~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/compilers/mixins/clike.py", line 92, in to_native
+    default_dirs = self.compiler.get_default_include_dirs()
+  File "/usr/lib/python3/dist-packages/mesonbuild/compilers/mixins/gnu.py", line 399, in get_default_include_dirs
+    return gnulike_default_include_dirs(tuple(self.get_exelist(ccache=False)), self.language).copy()
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/compilers/mixins/gnu.py", line 324, in gnulike_default_include_dirs
+    _, stdout, _ = mesonlib.Popen_safe(cmd, stderr=subprocess.STDOUT, env=env)
+                   ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3/dist-packages/mesonbuild/utils/universal.py", line 1672, in Popen_safe
+    p = subprocess.Popen(args, universal_newlines=True, encoding=encoding, close_fds=False,
+                         stdin=stdin, stdout=stdout, stderr=stderr, **kwargs)
+  File "/usr/lib/python3.13/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/subprocess.py", line 1857, in _execute_child
+    self._posix_spawn(args, executable, env, restore_signals, close_fds,
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                      p2cread, p2cwrite,
+                      ^^^^^^^^^^^^^^^^^^
+                      c2pread, c2pwrite,
+                      ^^^^^^^^^^^^^^^^^^
+                      errread, errwrite)
+                      ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/subprocess.py", line 1801, in _posix_spawn
+    self.pid = os.posix_spawn(executable, args, env, **kwargs)
+               ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/distcc-wrap/cc'
+The Meson build system
+Version: 1.7.0
+Source dir: /home/eirikr/workspaces/mesa/mesa-26-debug
+Build dir: /home/eirikr/workspaces/mesa/mesa-26-debug/build-terakan-debug
+Build type: native build
+Project name: mesa
+Project version: 26.1.0-devel
+C compiler for the host machine: /tmp/distcc-wrap/cc (clang 19.1.7 "Debian clang version 19.1.7 (3+b1)")
+C linker for the host machine: /tmp/distcc-wrap/cc ld.bfd 2.44
+C++ compiler for the host machine: /tmp/distcc-wrap/c++ (clang 19.1.7 "Debian clang version 19.1.7 (3+b1)")
+C++ linker for the host machine: /tmp/distcc-wrap/c++ ld.bfd 2.44
+Host machine cpu family: x86_64
+Host machine cpu: x86_64
+Checking for size of "void*" : 8 (cached)
+
+ERROR: Unhandled python OSError. This is probably not a Meson bug, but an issue with your build environment.
+FAILED: build.ninja 
+/usr/bin/meson --internal regenerate /home/eirikr/workspaces/mesa/mesa-26-debug .
+ninja: error: rebuilding 'build.ninja': subcommand failed

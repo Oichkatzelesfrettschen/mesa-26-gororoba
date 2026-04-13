@@ -1,0 +1,8 @@
+TERAKAN ICD: vkCreateWaylandSurfaceKHR = NULL
+TERAKAN ICD: vkGetPhysicalDeviceWaylandPresentationSupportKHR = NULL
+WARNING: terakan is not a conformant Vulkan implementation, testing use only.
+Selected GPU 0: AMD R8xx Palm (Terakan), type: IntegratedGpu
+MESA: info: disk shader cache:  hits = 2, misses = 0
+real 4.40
+user 0.10
+sys 0.22

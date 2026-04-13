@@ -347,68 +347,100 @@ terakan_nir_lower_bindings_instr_tex(nir_builder * const b, nir_tex_instr * cons
 
    mesa_shader_stage const stage = b->shader->info.stage;
 
-   /* If nir_tex_src_texture/sampler_deref isn't present, the lowering was possibly invoked multiple
-    * times, just ignore the instruction if it has already been lowered.
+   /* Newer NIR may represent descriptor references as *_handle sources instead of *_deref.
+    * Support both forms here, and preserve already-lowered texture/sampler indices by still
+    * recording descriptor demand in resources_needed/samplers_needed.
     */
 
    struct terakan_nir_binding binding;
 
-   int const texture_deref_src_index = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
-   if (likely(texture_deref_src_index != -1)) {
-      nir_tex_src * const texture_src = &tex->src[texture_deref_src_index];
+   int texture_src_index = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
+   if (texture_src_index == -1) {
+      texture_src_index = nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+   }
+   if (likely(texture_src_index != -1)) {
+      nir_tex_src * const texture_src = &tex->src[texture_src_index];
       if (unlikely(!terakan_nir_get_binding(texture_src->src, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                                             state->layout, b->shader, &binding))) {
-         terakan_nir_lower_bindings_instr_to_null(&tex->instr);
-         return true;
-      }
-      uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
-                                          binding.set_binding->first_shader_resources[stage];
-      BITSET_SET_RANGE(state->resources_needed,
-                       resource_index_base + binding.array_index_range_first,
-                       resource_index_base + binding.array_index_range_last);
-      shader_nir_progress = true;
-      tex->texture_index = resource_index_base;
-      if (binding.array_index != NULL) {
-         if (nir_def_instr(binding.array_index)->type == nir_instr_type_load_const) {
-            tex->texture_index +=
-               nir_instr_as_load_const(nir_def_instr(binding.array_index))->value[0].u32;
-            nir_tex_instr_remove_src(tex, texture_deref_src_index);
+         if (tex->texture_index < TERAKAN_RESOURCE_HW_COUNT_FETCH) {
+            /* Keep already-lowered texture indices alive even if nir_chase_binding
+             * can't reconstruct the descriptor chain from this source form. */
+            BITSET_SET(state->resources_needed, tex->texture_index);
+            shader_nir_progress = true;
          } else {
-            texture_src->src_type = nir_tex_src_texture_offset;
-            nir_src_rewrite(&texture_src->src, binding.array_index);
+            terakan_nir_lower_bindings_instr_to_null(&tex->instr);
+            return true;
          }
       } else {
-         nir_tex_instr_remove_src(tex, texture_deref_src_index);
+         uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
+                                             binding.set_binding->first_shader_resources[stage];
+         BITSET_SET_RANGE(state->resources_needed,
+                          resource_index_base + binding.array_index_range_first,
+                          resource_index_base + binding.array_index_range_last);
+         shader_nir_progress = true;
+         tex->texture_index = resource_index_base;
+         if (binding.array_index != NULL) {
+            if (nir_def_instr(binding.array_index)->type == nir_instr_type_load_const) {
+               tex->texture_index +=
+                  nir_instr_as_load_const(nir_def_instr(binding.array_index))->value[0].u32;
+               nir_tex_instr_remove_src(tex, texture_src_index);
+            } else {
+               texture_src->src_type = nir_tex_src_texture_offset;
+               nir_src_rewrite(&texture_src->src, binding.array_index);
+            }
+         } else {
+            nir_tex_instr_remove_src(tex, texture_src_index);
+         }
       }
+   } else if (tex->texture_index < TERAKAN_RESOURCE_HW_COUNT_FETCH) {
+      BITSET_SET(state->resources_needed, tex->texture_index);
    }
 
-   int const sampler_deref_src_index = nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref);
-   if (likely(sampler_deref_src_index != -1)) {
-      nir_tex_src * const sampler_src = &tex->src[sampler_deref_src_index];
+   int sampler_src_index = nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref);
+   if (sampler_src_index == -1) {
+      sampler_src_index = nir_tex_instr_src_index(tex, nir_tex_src_sampler_handle);
+   }
+   if (likely(sampler_src_index != -1)) {
+      nir_tex_src * const sampler_src = &tex->src[sampler_src_index];
       if (unlikely(!terakan_nir_get_binding(sampler_src->src, VK_DESCRIPTOR_TYPE_SAMPLER,
                                             state->layout, b->shader, &binding))) {
-         terakan_nir_lower_bindings_instr_to_null(&tex->instr);
-         return true;
-      }
-      uint8_t const sampler_index_base = binding.set->first_shader_samplers[stage] +
-                                         binding.set_binding->first_shader_samplers[stage];
-      *state->samplers_needed |=
-         BITFIELD_RANGE(sampler_index_base + binding.array_index_range_first,
-                        binding.array_index_range_last - binding.array_index_range_first + 1);
-      shader_nir_progress = true;
-      tex->sampler_index = sampler_index_base;
-      if (binding.array_index != NULL) {
-         if (nir_def_instr(binding.array_index)->type == nir_instr_type_load_const) {
-            tex->sampler_index +=
-               nir_instr_as_load_const(nir_def_instr(binding.array_index))->value[0].u32;
-            nir_tex_instr_remove_src(tex, sampler_deref_src_index);
+         if (tex->sampler_index < TERAKAN_SAMPLER_HW_COUNT_PER_STAGE) {
+            /* Same fallback strategy as textures: preserve already-lowered indices
+             * when the binding chain isn't reconstructible from this NIR source. */
+            *state->samplers_needed |= BITFIELD_BIT(tex->sampler_index);
+            shader_nir_progress = true;
          } else {
-            sampler_src->src_type = nir_tex_src_sampler_offset;
-            nir_src_rewrite(&sampler_src->src, binding.array_index);
+            terakan_nir_lower_bindings_instr_to_null(&tex->instr);
+            return true;
          }
       } else {
-         nir_tex_instr_remove_src(tex, sampler_deref_src_index);
+         uint8_t const sampler_index_base = binding.set->first_shader_samplers[stage] +
+                                            binding.set_binding->first_shader_samplers[stage];
+         *state->samplers_needed |=
+            BITFIELD_RANGE(sampler_index_base + binding.array_index_range_first,
+                           binding.array_index_range_last - binding.array_index_range_first + 1);
+         shader_nir_progress = true;
+         tex->sampler_index = sampler_index_base;
+         if (binding.array_index != NULL) {
+            if (nir_def_instr(binding.array_index)->type == nir_instr_type_load_const) {
+               tex->sampler_index +=
+                  nir_instr_as_load_const(nir_def_instr(binding.array_index))->value[0].u32;
+               nir_tex_instr_remove_src(tex, sampler_src_index);
+            } else {
+               sampler_src->src_type = nir_tex_src_sampler_offset;
+               nir_src_rewrite(&sampler_src->src, binding.array_index);
+            }
+         } else {
+            nir_tex_instr_remove_src(tex, sampler_src_index);
+         }
       }
+   } else if ((nir_tex_instr_need_sampler(tex) ||
+               /* Evergreen TEX opcodes used for txf/txf_ms still consume
+                * sampler state even when NIR flags them as sampler-optional. */
+               tex->op == nir_texop_txf ||
+               tex->op == nir_texop_txf_ms) &&
+              tex->sampler_index < TERAKAN_SAMPLER_HW_COUNT_PER_STAGE) {
+      *state->samplers_needed |= BITFIELD_BIT(tex->sampler_index);
    }
 
    return shader_nir_progress;

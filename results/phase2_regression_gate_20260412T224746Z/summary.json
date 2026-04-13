@@ -1,0 +1,51 @@
+{
+  "vkmark": {
+    "mailbox": {
+      "scores": [
+        364.0,
+        384.0,
+        371.0,
+        387.0
+      ],
+      "mean": 376.5,
+      "stdev": 9.394147114027968,
+      "odd_mean": 367.5,
+      "even_mean": 385.5,
+      "odd_even_ratio": 0.953307392996109
+    },
+    "immediate": {
+      "scores": [
+        392.0,
+        428.0,
+        406.0,
+        417.0
+      ],
+      "mean": 410.75,
+      "stdev": 13.329947486768281,
+      "odd_mean": 399.0,
+      "even_mean": 422.5,
+      "odd_even_ratio": 0.9443786982248521
+    }
+  },
+  "vkcube": {
+    "mailbox_warm60": {
+      "fps_samples": [],
+      "fps_last": null
+    },
+    "mailbox_timed240": {
+      "fps_samples": [],
+      "fps_last": null
+    },
+    "immediate_warm60": {
+      "fps_samples": [],
+      "fps_last": null
+    },
+    "immediate_timed240": {
+      "fps_samples": [],
+      "fps_last": null
+    }
+  },
+  "vkpeak": {
+    "fp32_lines": []
+  }
+}

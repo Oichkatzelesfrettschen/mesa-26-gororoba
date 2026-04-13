@@ -1,0 +1,6 @@
+workload=vkcube --wsi xcb --c 240
+VK_ICD_FILENAMES=/home/eirikr/workspaces/mesa/mesa-26-debug/build-terakan-distcc/src/amd/terascale/vulkan/terascale_devenv_icd.x86_64.json
+MESA_SHADER_CACHE_DISABLE=false
+MESA_SHADER_CACHE_SHOW_STATS=true
+DISPLAY=:0
+XAUTHORITY=/home/eirikr/.Xauthority

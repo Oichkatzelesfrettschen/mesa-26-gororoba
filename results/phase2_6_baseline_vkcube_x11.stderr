@@ -1,0 +1,5 @@
+TERAKAN ICD: vkCreateWaylandSurfaceKHR = NULL
+TERAKAN ICD: vkGetPhysicalDeviceWaylandPresentationSupportKHR = NULL
+WARNING: terakan is not a conformant Vulkan implementation, testing use only.
+Selected GPU 0: AMD R8xx Palm (Terakan), type: IntegratedGpu
+vkcube: src/compiler/nir/nir_intrinsics_indices.h:2073: void nir_intrinsic_set_fp_math_ctrl(nir_intrinsic_instr *, unsigned int): Assertion `info->index_map[NIR_INTRINSIC_FP_MATH_CTRL] > 0' failed.

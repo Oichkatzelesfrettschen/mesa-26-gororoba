@@ -42,11 +42,13 @@
 #include "util/macros.h"
 #include "util/u_endian.h"
 #include "util/u_math.h"
+#include "util/u_debug.h"
 #include "vk_format.h"
 
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -1089,6 +1091,8 @@ terakan_vertex_input_create_fs_alu_and_fetches(
    *alu_qword_count_out = alu_dword_count / 2;
    *alu_clause_count_out = alu_clause_count;
 
+   bool const dump_vtx_fetch = debug_get_bool_option("TERAKAN_DUMP_VTX_FETCH", false);
+
    /* Emit the fetch instructions. */
    uint32_t fetch_dword_count = 0;
    for (uint32_t sorted_attribute_index = 0; sorted_attribute_index < sorted_attribute_count;
@@ -1159,6 +1163,36 @@ terakan_vertex_input_create_fs_alu_and_fetches(
                                S_SQ_VTX_WORD0_MEGA_FETCH_COUNT(mega_fetch_count - 1);
             next_fetch[2] &= C_SQ_VTX_WORD2_MEGA_FETCH;
          }
+      }
+   }
+
+   if (unlikely(dump_vtx_fetch)) {
+      uint32_t const fetch_count = *fetch_count_out;
+      for (uint32_t fetch_index = 0; fetch_index < fetch_count; ++fetch_index) {
+         uint32_t const * const fetch_words = fetch_out + 4 * fetch_index;
+         uint32_t const data_format = G_SQ_VTX_WORD1_DATA_FORMAT(fetch_words[1]);
+         uint32_t const fetch_bytes = terascale_format_bytes_per_block[data_format];
+         uint32_t const dst_sel_w = G_SQ_VTX_WORD1_DST_SEL_W(fetch_words[1]);
+         fprintf(stderr,
+                 "terakan: vtx_fetch[%u]: type=%u buffer=%u src_gpr=%u src_sel=%u dst_gpr=%u "
+                 "dst_sel={%u,%u,%u,%u} dst_sel_w_is_one=%u data_format=%u num_format=%u "
+                 "format_comp=%u offset=%u endian=%u mega=%u mega_fetch_bytes=%u natural_bytes=%u "
+                 "words={%08X,%08X,%08X,%08X}\n",
+                 fetch_index, G_SQ_VTX_WORD0_FETCH_TYPE(fetch_words[0]),
+                 G_SQ_VTX_WORD0_BUFFER_ID(fetch_words[0]), G_SQ_VTX_WORD0_SRC_GPR(fetch_words[0]),
+                 G_SQ_VTX_WORD0_SRC_SEL_X(fetch_words[0]),
+                 G_SQ_VTX_WORD1_GPR_DST_GPR(fetch_words[1]),
+                 G_SQ_VTX_WORD1_DST_SEL_X(fetch_words[1]),
+                 G_SQ_VTX_WORD1_DST_SEL_Y(fetch_words[1]),
+                 G_SQ_VTX_WORD1_DST_SEL_Z(fetch_words[1]), dst_sel_w,
+                 dst_sel_w == V_030010_SQ_SEL_1 ? 1 : 0, data_format,
+                 G_SQ_VTX_WORD1_NUM_FORMAT_ALL(fetch_words[1]),
+                 G_SQ_VTX_WORD1_FORMAT_COMP_ALL(fetch_words[1]),
+                 G_SQ_VTX_WORD2_OFFSET(fetch_words[2]),
+                 G_SQ_VTX_WORD2_ENDIAN_SWAP(fetch_words[2]),
+                 G_SQ_VTX_WORD2_MEGA_FETCH(fetch_words[2]),
+                 G_SQ_VTX_WORD0_MEGA_FETCH_COUNT(fetch_words[0]) + 1, fetch_bytes,
+                 fetch_words[0], fetch_words[1], fetch_words[2], fetch_words[3]);
       }
    }
 }

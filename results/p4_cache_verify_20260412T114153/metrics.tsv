@@ -1,0 +1,13 @@
+metric\tvalue
+cold_exit\t0
+warm_exit\t0
+cold_cache_file_count\t3
+warm_cache_file_count\t3
+cold_cache_bytes\t2097847
+warm_cache_bytes\t2097847
+cold_hits\t0
+cold_misses\t2
+warm_hits\t2
+warm_misses\t0
+cold_stats_line\tMESA: info: disk shader cache:  hits = 0, misses = 2
+warm_stats_line\tMESA: info: disk shader cache:  hits = 2, misses = 0

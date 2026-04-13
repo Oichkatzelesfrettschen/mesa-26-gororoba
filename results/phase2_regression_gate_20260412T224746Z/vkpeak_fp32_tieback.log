@@ -1,0 +1,75 @@
+== fp32-scalar ==
+WARNING: terakan is not a conformant Vulkan implementation, testing use only.
+[0 AMD R8xx Palm (Terakan)]  queueC=0[1]  queueT=0[1]
+[0 AMD R8xx Palm (Terakan)]  fp16-p/s/u/a=1/0/0/0  int8-p/s/u/a=1/0/0/0  bf16-p/s=1/0
+[0 AMD R8xx Palm (Terakan)]  subgroup=64(64~64)  ops=0/0/0/0/0/0/0/0/0/0
+[0 AMD R8xx Palm (Terakan)]  fp16-cm=0  int8-cm=0  bf16-cm=0  fp8-cm=0
+device       = AMD R8xx Palm (Terakan)
+driver       = 0.0.1
+
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: RERUN time=35.1 inv=851968 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: RERUN time=69.8 inv=1703936 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: RERUN time=139.0 inv=3407872 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: RERUN time=277.2 inv=6815744 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: RERUN time=553.6 inv=13631488 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=1106.3 dual=568.4 gflops=12.301925 dual=12.301925 inv=13631488 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=1106.2 dual=568.5 gflops=12.301597 dual=12.301597 inv=13631488 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=1106.3 dual=568.5 gflops=12.300731 dual=12.300731 inv=13631488 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=1106.2 dual=568.5 gflops=12.301275 dual=12.301275 inv=13631488 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=1106.2 dual=568.5 gflops=12.301660 dual=12.301660 inv=13631488 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=1106.2 dual=568.6 gflops=12.299151 dual=12.299151 inv=13631488 loop=16
+MESA: info: disk shader cache:  hits = 2, misses = 0
+fp32-scalar  = 12.30 GFLOPS
+== fp32-vec4 ==
+WARNING: terakan is not a conformant Vulkan implementation, testing use only.
+[0 AMD R8xx Palm (Terakan)]  queueC=0[1]  queueT=0[1]
+[0 AMD R8xx Palm (Terakan)]  fp16-p/s/u/a=1/0/0/0  int8-p/s/u/a=1/0/0/0  bf16-p/s=1/0
+[0 AMD R8xx Palm (Terakan)]  subgroup=64(64~64)  ops=0/0/0/0/0/0/0/0/0/0
+[0 AMD R8xx Palm (Terakan)]  fp16-cm=0  int8-cm=0  bf16-cm=0  fp8-cm=0
+device       = AMD R8xx Palm (Terakan)
+driver       = 0.0.1
+
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: RERUN time=57.5 inv=851968 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: RERUN time=114.6 inv=1703936 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: RERUN time=228.5 inv=3407872 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=456.5 dual=315.6 gflops=22.158411 dual=22.158411 inv=3407872 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=456.3 dual=318.3 gflops=21.966657 dual=21.966657 inv=3407872 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=457.4 dual=315.5 gflops=22.166076 dual=22.166076 inv=3407872 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=458.8 dual=317.5 gflops=22.022493 dual=22.022493 inv=3407872 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=456.2 dual=317.7 gflops=22.010342 dual=22.010342 inv=3407872 loop=16
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+TERAKAN_METADATA: uav_byte_sizes[0..5] = 54525952 0 0 0 0 0
+VKPEAK_DBG: time=456.2 dual=315.5 gflops=22.164807 dual=22.164807 inv=3407872 loop=16
+MESA: info: disk shader cache:  hits = 2, misses = 0
+fp32-vec4    = 22.17 GFLOPS

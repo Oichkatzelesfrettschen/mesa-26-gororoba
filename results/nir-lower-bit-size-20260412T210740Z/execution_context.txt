@@ -1,0 +1,8 @@
+execution_timestamp_utc: 20260412T210740Z
+remote_host: x130e
+remote_user: eirikr
+execution_pwd: /home/eirikr/workspaces/mesa/mesa-26-debug
+mesa_repo_toplevel: /home/eirikr/workspaces/mesa/mesa-26-debug
+implementation_worktree_confirmed: /home/eirikr/workspaces/mesa/mesa-26-debug
+
+commands_used_for_this_todo:

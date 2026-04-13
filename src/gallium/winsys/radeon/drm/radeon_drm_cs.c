@@ -487,6 +487,15 @@ void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
    unsigned i;
    int r;
 
+   /* Pre-submit IB dump for compute debug */
+   if (debug_get_bool_option("RADEON_DUMP_PRE_IB", false)) {
+      fprintf(stderr, "PRE_IB cdw=%u relocs=%u ring=%u\n",
+              csc->chunks[0].length_dw, csc->num_relocs, csc->flags[1]);
+      for (unsigned _j = 0; _j < csc->chunks[0].length_dw; _j++)
+         fprintf(stderr, "IB[%u] 0x%08x\n", _j, csc->buf[_j]);
+      fflush(stderr);
+   }
+
    r = drmCommandWriteRead(csc->fd, DRM_RADEON_CS,
                            &csc->cs, sizeof(struct drm_radeon_cs));
 

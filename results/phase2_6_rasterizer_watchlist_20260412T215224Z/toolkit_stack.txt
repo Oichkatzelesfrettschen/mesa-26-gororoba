@@ -1,0 +1,9 @@
+telemetry_stack=offscreen Vulkan probe + TERAKAN_DEBUG PM4/state logs
+r600_toolkit_used=none
+r600_toolkit_reason=phase2.6 proof was executed with direct custom probe binary and manual PM4 log inspection
+r600_scripts_used=r600/scripts/check_x130e_terakan_artifact_sync.sh
+r600_scripts_reason=validated x130e build/install artifact freshness to document runtime ICD mismatch risk
+pm4_capture_path=results/phase2_6_rasterizer_watchlist_20260412T215224Z/probe.stderr
+framebuffer_proof_path=results/phase2_6_rasterizer_watchlist_20260412T215224Z/probe.stdout
+watchlist_summary_path=results/phase2_6_rasterizer_watchlist_20260412T215224Z/watchlist_checks.txt
+custom_icd_path=results/phase2_6_rasterizer_watchlist_20260412T215224Z/terascale_vtxfetch.icd.x86_64.json

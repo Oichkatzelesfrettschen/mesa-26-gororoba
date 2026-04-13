@@ -668,6 +668,9 @@ RatInstr::emit_global_store(nir_intrinsic_instr *intr, Shader& shader)
                              mask,
                              0);
    shader.emit_instruction(store);
+   /* Ensure at least one ACK-tracked store in this sequence so a later
+    * WAIT_ACK can observe retirement on Evergreen compute tails. */
+   store->set_ack();
    return true;
 }
 
@@ -799,6 +802,8 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
                              1,
                              0);
    shader.emit_instruction(store);
+   /* Non-returning SSBO stores still need ACK tracking for robust tail waits. */
+   store->set_ack();
    return true;
 }
 
@@ -938,6 +943,8 @@ RatInstr::emit_ssbo_store(nir_intrinsic_instr *instr, Shader& shader)
                                 1,
                                 0);
       shader.emit_instruction(store);
+      /* Track store completion for explicit WAIT_ACK termination sequences. */
+      store->set_ack();
    }
 
    return true;

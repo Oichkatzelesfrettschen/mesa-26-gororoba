@@ -314,6 +314,42 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
       return vk_errorf(device, VK_ERROR_UNKNOWN, "Failed to lower the shader to assembly");
    }
 
+   /* Evergreen compute-tail workaround:
+    * for terminal memory CF ops (MEM_RAT / MEM_* / EXPORT-like), avoid EOP
+    * on the memory op itself and emit WAIT_ACK + NOP(EOP) terminator.
+    */
+   if (shader->shader.bc.gfx_level < CAYMAN &&
+       shader->shader.processor_type == MESA_SHADER_COMPUTE &&
+       shader->shader.bc.cf_last != nullptr) {
+      const struct cf_op_info * const last_cf = r600_isa_cf(shader->shader.bc.cf_last->op);
+      if (last_cf != nullptr && (last_cf->flags & (CF_MEM | CF_RAT | CF_EXP))) {
+         shader->shader.bc.cf_last->end_of_program = 0;
+         if (r600_bytecode_add_cfinst(&shader->shader.bc, CF_OP_WAIT_ACK) != 0) {
+            delete sfn_shader;
+            r600::release_pool();
+            r600_bytecode_clear(&shader->shader.bc);
+            if (shader->shader.arrays != nullptr) {
+               std::free(shader->shader.arrays);
+            }
+            return vk_errorf(device, VK_ERROR_UNKNOWN,
+                             "Failed to append WAIT_ACK after compute memory CF tail");
+         }
+         shader->shader.bc.cf_last->cf_addr = 0;
+         shader->shader.bc.cf_last->barrier = 1;
+         if (r600_bytecode_add_cfinst(&shader->shader.bc, CF_OP_NOP) != 0) {
+            delete sfn_shader;
+            r600::release_pool();
+            r600_bytecode_clear(&shader->shader.bc);
+            if (shader->shader.arrays != nullptr) {
+               std::free(shader->shader.arrays);
+            }
+            return vk_errorf(device, VK_ERROR_UNKNOWN,
+                             "Failed to append NOP EOP after compute memory CF tail");
+         }
+         shader->shader.bc.cf_last->end_of_program = 1;
+      }
+   }
+
    delete sfn_shader;
 
    r600::release_pool();
@@ -478,12 +514,15 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
             assert(sample_id_gpr == UINT32_MAX);
             sample_id_gpr = input.gpr;
          } else if (input.spi_sid != 0) {
+            bool const interpolator_is_linear = input.interpolate == TGSI_INTERPOLATE_LINEAR;
             interpolator_count = MAX2(input.lds_pos + 1, interpolator_count);
             shader->static_state.stage.ps.spi_ps_input_cntl[input.lds_pos] =
                S_028644_SEMANTIC(input.spi_sid) |
                S_028644_FLAT_SHADE(input.interpolate == TGSI_INTERPOLATE_CONSTANT) |
-               S_028644_PT_SPRITE_TEX(input.varying_slot == VARYING_SLOT_PNTC);
-            bool const interpolator_is_linear = input.interpolate == TGSI_INTERPOLATE_LINEAR;
+               S_028644_SEL_CENTROID(input.interpolate_location == TGSI_INTERPOLATE_LOC_CENTROID) |
+               S_028644_SEL_LINEAR(interpolator_is_linear) |
+               S_028644_PT_SPRITE_TEX(input.varying_slot == VARYING_SLOT_PNTC) |
+               S_028644_SEL_SAMPLE(input.interpolate_location == TGSI_INTERPOLATE_LOC_SAMPLE);
             if (interpolator_is_linear || input.interpolate == TGSI_INTERPOLATE_PERSPECTIVE ||
                 input.interpolate == TGSI_INTERPOLATE_COLOR) {
                switch (input.interpolate_location) {
@@ -587,7 +626,7 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
       util_memcpy_cpu_to_le32(program_bo_mapping, shader->shader.bc.bytecode, program_size_bytes);
-      terakan_bo_unmap(device->meta_shaders_bo);
+      terakan_bo_unmap(shader->static_state.program_bo);
    }
 
    /* Don't need the bytecode structure after writing the binary. */

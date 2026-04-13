@@ -284,6 +284,14 @@ static void evergreen_emit_dispatch(struct r600_context *rctx,
 
 	if (rctx->is_debug)
 		eg_trace_emit(rctx);
+
+	/* DEBUG: Dump IB before flush */
+	{
+		fprintf(stderr, "GALLIUM_FULL_IB: cdw=%u\n", cs->current.cdw);
+		for (unsigned di = 0; di < cs->current.cdw; di++)
+			fprintf(stderr, "  GIB[%3u] 0x%08x\n", di, cs->current.buf[di]);
+		fflush(stderr);
+	}
 }
 
 static void compute_emit_cs(struct r600_context *rctx,

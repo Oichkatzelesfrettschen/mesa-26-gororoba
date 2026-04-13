@@ -1,0 +1,72 @@
+ninja: Entering directory `build-terakan-plain'
+[1/88] Generating src/git_sha1.h with a custom command
+[2/88] Compiling C object src/compiler/nir/libnir.a.p/nir_opt_move_discards_to_top.c.o
+[3/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_nir_lower_64bit.cpp.o
+[4/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_nir_lower_alu.cpp.o
+[5/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_nir_lower_tex.cpp.o
+[6/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_nir.cpp.o
+[7/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_nir_lower_fs_out_to_vector.cpp.o
+[8/88] Compiling C object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_nir_vectorize_vs_inputs.c.o
+[9/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_nir_lower_tess_io.cpp.o
+[10/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_optimizer.cpp.o
+[11/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_peephole.cpp.o
+[12/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_ra.cpp.o
+[13/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_scheduler.cpp.o
+[14/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_shader.cpp.o
+[15/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_shader_cs.cpp.o
+[16/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_shader_fs.cpp.o
+[17/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_shader_gs.cpp.o
+[18/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_shader_tess.cpp.o
+[19/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_split_address_loads.cpp.o
+[20/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_shader_vs.cpp.o
+[21/88] Compiling C object src/amd/terascale/compiler/libamd_terascale_compiler_extra.a.p/meson-generated_.._terascale_sfn_nir_algebraic.c.o
+[22/88] Linking static target src/compiler/nir/libnir.a
+[23/88] Linking static target src/vulkan/runtime/libvulkan_runtime.a
+[24/88] Linking static target src/amd/terascale/compiler/libamd_terascale_compiler_extra.a
+[25/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_valuefactory.cpp.o
+[26/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meson-generated_.._terakan_entrypoints.c.o
+[27/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meta_terakan_meta.c.o
+[28/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meta_terakan_meta_2d.c.o
+[29/88] Compiling C++ object src/amd/terascale/compiler/libamd_terascale_compiler.a.p/.._.._.._gallium_drivers_r600_sfn_sfn_virtualvalues.cpp.o
+[30/88] Linking static target src/amd/terascale/compiler/libamd_terascale_compiler.a
+[31/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meta_terakan_meta_clear.c.o
+[32/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meta_terakan_meta_copy_buffer_image.c.o
+[33/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meta_terakan_meta_copy_expand_3x.c.o
+[34/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meta_terakan_meta_copy_image.c.o
+[35/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meta_terakan_meta_query_accum.c.o
+[36/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/meta_terakan_meta_query_copy.c.o
+[37/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/nir_terakan_nir_alu.c.o
+[38/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/nir_terakan_nir_buffer.c.o
+[39/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/nir_terakan_nir_compact_fragment_data_locations.c.o
+[40/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/nir_terakan_nir_apply_pipeline_layout.c.o
+[41/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/nir_terakan_nir_lower_abi.c.o
+[42/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/nir_terakan_nir_lower_bindings.c.o
+[43/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_barrier.c.o
+[44/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_bo.c.o
+[45/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_buffer.c.o
+[46/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_command_buffer.c.o
+[47/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_cp_dma.c.o
+[48/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_descriptor.c.o
+[49/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_descriptor_set.c.o
+[50/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_descriptor_set_layout.c.o
+[51/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_device.c.o
+[52/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_device_memory.c.o
+[53/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_format.c.o
+[54/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_instance.c.o
+[55/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_hw_state.c.o
+[56/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_profile.c.o
+[57/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_image.c.o
+[58/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline.c.o
+[59/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline_compute.c.o
+[60/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_physical_device.c.o
+[61/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_dispatch.c.o
+[62/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline_graphics.c.o
+FAILED: src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline_graphics.c.o 
+clang-19 -Isrc/amd/terascale/vulkan/libvulkan_terascale.so.p -Isrc/amd/terascale/vulkan -I../src/amd/terascale/vulkan -Iinclude -I../include -Isrc -I../src -Isrc/mesa -I../src/mesa -I../src/gallium/include -Isrc/gallium/auxiliary -I../src/gallium/auxiliary -Isrc/amd -I../src/amd -I../src/amd/common -I../src/amd/common/nir -Isrc/compiler -I../src/compiler -Isrc/compiler/nir -I../src/compiler/nir -Isrc/vulkan/util -I../src/vulkan/util -Isrc/vulkan/wsi -I../src/vulkan/wsi -Isrc/vulkan/runtime -I../src/vulkan/runtime -I../src/vulkan/runtime/bvh -Isrc/util -Isrc/util/format -Isrc/compiler/spirv -I/usr/include/valgrind -I/usr/include/libdrm -fvisibility=hidden -fdiagnostics-color=always -D_FILE_OFFSET_BITS=64 -Wall -Winvalid-pch -std=c11 -O2 -g -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS '-DPACKAGE_VERSION="26.1.0-devel"' '-DPACKAGE_BUGREPORT="https://gitlab.freedesktop.org/mesa/mesa/-/issues"' -DHAVE_OPENGL=1 -DHAVE_OPENGL_ES_1=1 -DHAVE_OPENGL_ES_2=1 -DHAVE_R600 -DHAVE_ZINK -DHAVE_SOFTPIPE -DHAVE_LLVMPIPE -DHAVE_SWRAST -DMESA_SYSTEM_HAS_KMS_DRM=1 -DVIDEO_CODEC_VC1DEC=1 -DVIDEO_CODEC_H264DEC=1 -DVIDEO_CODEC_H264ENC=1 -DVIDEO_CODEC_H265DEC=1 -DVIDEO_CODEC_H265ENC=1 -DVIDEO_CODEC_AV1DEC=1 -DVIDEO_CODEC_AV1ENC=1 -DVIDEO_CODEC_VP9DEC=1 -DVIDEO_CODEC_MPEG12DEC=1 -DVIDEO_CODEC_JPEGDEC=1 -DHAVE_LIBGBM -DHAVE_X11_PLATFORM -DHAVE_SURFACELESS_PLATFORM -DHAVE_DRM_PLATFORM -DHAVE_XCB_PLATFORM -DUSE_LIBGLVND=1 -DHAVE_VA_SURFACE_ATTRIB_DRM_FORMAT_MODIFIERS -DHAVE_GFX_COMPUTE -DGLX_INDIRECT_RENDERING -DGLX_DIRECT_RENDERING -DGLX_USE_DRM -DGLAPI_EXPORT_PROTO_ENTRY_POINTS=0 -DALLOW_KCMP -DMESA_DEBUG=0 -DENABLE_SHADER_CACHE -DHAVE___BUILTIN_BSWAP32 -DHAVE___BUILTIN_BSWAP64 -DHAVE___BUILTIN_CLZ -DHAVE___BUILTIN_CLZLL -DHAVE___BUILTIN_CTZ -DHAVE___BUILTIN_EXPECT -DHAVE___BUILTIN_FFS -DHAVE___BUILTIN_FFSLL -DHAVE___BUILTIN_POPCOUNT -DHAVE___BUILTIN_POPCOUNTLL -DHAVE___BUILTIN_UNREACHABLE -DHAVE___BUILTIN_TYPES_COMPATIBLE_P -DHAVE___BUILTIN_ADD_OVERFLOW -DHAVE_FUNC_ATTRIBUTE_CONST -DHAVE_FUNC_ATTRIBUTE_FLATTEN -DHAVE_FUNC_ATTRIBUTE_MALLOC -DHAVE_FUNC_ATTRIBUTE_PURE -DHAVE_FUNC_ATTRIBUTE_UNUSED -DHAVE_FUNC_ATTRIBUTE_WARN_UNUSED_RESULT -DHAVE_FUNC_ATTRIBUTE_WEAK -DHAVE_FUNC_ATTRIBUTE_FORMAT -DHAVE_FUNC_ATTRIBUTE_PACKED -DHAVE_FUNC_ATTRIBUTE_RETURNS_NONNULL -DHAVE_FUNC_ATTRIBUTE_ALIAS -DHAVE_FUNC_ATTRIBUTE_NORETURN -DHAVE_FUNC_ATTRIBUTE_COLD -DHAVE_FUNC_ATTRIBUTE_VISIBILITY -DHAVE_UINT128 -DHAVE_REALLOCARRAY -DHAVE_FMEMOPEN -D_GNU_SOURCE -DUSE_SSE41 -DHAVE___BUILTIN_IA32_CLFLUSHOPT -DUSE_GCC_ATOMIC_BUILTINS -DMAJOR_IN_SYSMACROS -DHAS_SCHED_H -DHAS_SCHED_GETAFFINITY -DHAVE_LINUX_FUTEX_H -DHAVE_ENDIAN_H -DHAVE_DLFCN_H -DHAVE_SYS_SHM_H -DHAVE_CET_H -DHAVE_POLL_H -DHAVE_SYS_INOTIFY_H -DHAVE_LINUX_UDMABUF_H -DHAVE_STRTOF -DHAVE_MKOSTEMP -DHAVE_MEMFD_CREATE -DHAVE_RANDOM_R -DHAVE_FLOCK -DHAVE_STRTOK_R -DHAVE_GETRANDOM -DHAVE_POSIX_FALLOCATE -DHAVE_SECURE_GETENV -DHAVE_SYSCONF -DHAVE_GNU_QSORT_R -DHAVE_STRUCT_TIMESPEC -DHAVE_PROGRAM_INVOCATION_NAME -DHAVE_ISSIGNALING -DHAVE_POSIX_MEMALIGN -DHAVE_DIRENT_D_TYPE -DHAVE_STRTOD_L -DHAVE_DLADDR -DHAVE_DL_ITERATE_PHDR -DHAVE_ZLIB -DHAVE_ZSTD -DHAVE_COMPRESSION -DHAVE_PTHREAD -DHAVE_PTHREAD_SETAFFINITY -DHAVE_LIBDRM '-DMESA_LLVM_VERSION_STRING="22.1.2"' -DLLVM_IS_SHARED=1 -DDRAW_LLVM_AVAILABLE=1 -DAMD_LLVM_AVAILABLE=1 -DGALLIVM_USE_ORCJIT=0 -DHAVE_SPIRV_TOOLS -DUSE_LIBELF -DHAVE_VALGRIND -DTHREAD_SANITIZER=0 -DHAVE_X11_DRM -DHAVE_DRI -DHAVE_DRI2 -DHAVE_DRI3_EXPLICIT_SYNC -DHAVE_DRISW_KMS -DHAVE_GALLIUM_EXTRA_HUD=1 -DHAVE_LIBSENSORS=1 -DHAVE_RENDERDOC_INTEGRATION=true -mtls-dialect=gnu2 -Werror=implicit-function-declaration -Werror=missing-prototypes -Werror=return-type -Werror=empty-body -Werror=incompatible-pointer-types -Werror=int-conversion -Wimplicit-fallthrough -Wmisleading-indentation -Wno-missing-field-initializers -Wno-format-truncation -fno-math-errno -fno-trapping-math -Qunused-arguments -fno-common -Wno-unknown-pragmas -Wno-microsoft-enum-value -Wno-unused-function -Werror=format -Wformat-security -Werror=thread-safety -ffunction-sections -fdata-sections -fPIC -DVK_USE_PLATFORM_XCB_KHR -DVK_USE_PLATFORM_XLIB_KHR -DVK_USE_PLATFORM_DISPLAY_KHR -DVK_USE_PLATFORM_XLIB_XRANDR_EXT -DXXH_FORCE_ALIGN_CHECK=0 -DXXH_FORCE_MEMORY_ACCESS=0 -pthread -Wno-override-init -Wno-initializer-overrides -Werror=pointer-arith -Werror=vla -Werror=gnu-empty-initializer -Wgnu-pointer-arith -MD -MQ src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline_graphics.c.o -MF src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline_graphics.c.o.d -o src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline_graphics.c.o -c ../src/amd/terascale/vulkan/terakan_pipeline_graphics.c
+../src/amd/terascale/vulkan/terakan_pipeline_graphics.c:1544:34: error: call to undeclared function 'G_0286D8_PROVIDE_Z_TO_SPI'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+ 1544 |    bool const provide_z_to_spi = G_0286D8_PROVIDE_Z_TO_SPI(fs->static_state.stage.ps.spi_input_z) != 0;
+      |                                  ^
+1 error generated.
+[63/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline_layout.c.o
+[64/88] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_pipeline_key.c.o
+ninja: build stopped: subcommand failed.

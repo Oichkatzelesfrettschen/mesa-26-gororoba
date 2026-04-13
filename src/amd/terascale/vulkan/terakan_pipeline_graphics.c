@@ -40,6 +40,7 @@
 
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600_shader_common.h"
+#include "pipe/p_shader_tokens.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
 #include "util/ralloc.h"
@@ -56,6 +57,7 @@
 #include <inttypes.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 typedef void (*terakan_pipeline_graphics_apply_state_function)(
@@ -1138,6 +1140,480 @@ terakan_pipeline_graphics_init(struct terakan_device * const device,
    return VK_SUCCESS;
 }
 
+static char const *
+terakan_pipeline_graphics_interp_mode_name(unsigned const mode)
+{
+   switch (mode) {
+   case TGSI_INTERPOLATE_CONSTANT:
+      return "flat";
+   case TGSI_INTERPOLATE_LINEAR:
+      return "noperspective";
+   case TGSI_INTERPOLATE_PERSPECTIVE:
+      return "smooth";
+   case TGSI_INTERPOLATE_COLOR:
+      return "color";
+   default:
+      return "unknown";
+   }
+}
+
+static char const *
+terakan_pipeline_graphics_interp_loc_name(unsigned const location)
+{
+   switch (location) {
+   case TGSI_INTERPOLATE_LOC_CENTER:
+      return "center";
+   case TGSI_INTERPOLATE_LOC_CENTROID:
+      return "centroid";
+   case TGSI_INTERPOLATE_LOC_SAMPLE:
+      return "sample";
+   default:
+      return "unknown";
+   }
+}
+
+static bool
+terakan_pipeline_graphics_spi_baryc_enabled(uint32_t const spi_baryc_cntl,
+                                             bool const noperspective,
+                                             unsigned const location)
+{
+   switch (location) {
+   case TGSI_INTERPOLATE_LOC_CENTER:
+      return noperspective ? G_0286E0_LINEAR_CENTER_ENA(spi_baryc_cntl) != 0
+                           : G_0286E0_PERSP_CENTER_ENA(spi_baryc_cntl) != 0;
+   case TGSI_INTERPOLATE_LOC_CENTROID:
+      return noperspective ? G_0286E0_LINEAR_CENTROID_ENA(spi_baryc_cntl) != 0
+                           : G_0286E0_PERSP_CENTROID_ENA(spi_baryc_cntl) != 0;
+   case TGSI_INTERPOLATE_LOC_SAMPLE:
+      return noperspective ? G_0286E0_LINEAR_SAMPLE_ENA(spi_baryc_cntl) != 0
+                           : G_0286E0_PERSP_SAMPLE_ENA(spi_baryc_cntl) != 0;
+   default:
+      return false;
+   }
+}
+
+static VkResult
+terakan_pipeline_graphics_validate_vs_fs_spi_routing(
+   struct terakan_device * const device,
+   struct terakan_shader_impl const * const vs,
+   struct terakan_shader_impl const * const fs)
+{
+   assert(vs != NULL);
+   assert(fs != NULL);
+
+   uint32_t const vs_export_count =
+      G_0286C4_VS_EXPORT_COUNT(vs->static_state.stage.vs.spi_vs_out_config);
+   uint32_t const vs_out_id_count = vs_export_count / 4 + 1;
+   if (unlikely(vs_out_id_count > ARRAY_SIZE(vs->static_state.stage.vs.spi_vs_out_id))) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "VS SPI export vector count out of bounds: VS_EXPORT_COUNT=%" PRIu32
+                       ", vectors=%" PRIu32 ", spi_vs_out_id_capacity=%zu",
+                       vs_export_count, vs_out_id_count,
+                       ARRAY_SIZE(vs->static_state.stage.vs.spi_vs_out_id));
+   }
+
+   if (unlikely(vs->shader.highest_export_param != vs_export_count)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "VS SPI export count mismatch: SPI_VS_OUT_CONFIG=%" PRIu32
+                       " but shader.highest_export_param=%u",
+                       vs_export_count, vs->shader.highest_export_param);
+   }
+
+   int16_t vs_param_for_sid[UINT8_MAX + 1];
+   memset(vs_param_for_sid, -1, sizeof(vs_param_for_sid));
+
+   uint8_t vs_sid_by_param[ARRAY_SIZE(vs->static_state.stage.vs.spi_vs_out_id) * 4] = {0};
+   uint32_t vs_semantic_count = 0;
+   for (uint32_t param = 0; param <= vs_export_count; ++param) {
+      uint32_t const sid =
+         (vs->static_state.stage.vs.spi_vs_out_id[param / 4] >> ((param & 3) * 8)) & 0xFFu;
+      vs_sid_by_param[param] = (uint8_t)sid;
+      if (sid != 0 && vs_param_for_sid[sid] < 0) {
+         vs_param_for_sid[sid] = (int16_t)param;
+         ++vs_semantic_count;
+      }
+   }
+
+   for (uint32_t output_index = 0; output_index < vs->shader.noutput; ++output_index) {
+      struct r600_shader_io const * const output = &vs->shader.output[output_index];
+      if (output->export_param < 0)
+         continue;
+
+      if (unlikely((uint32_t)output->export_param > vs_export_count)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "VS export index out of range: output[%" PRIu32
+                          "].export_param=%d exceeds VS_EXPORT_COUNT=%" PRIu32,
+                          output_index, output->export_param, vs_export_count);
+      }
+
+      uint32_t const sid_from_spi = vs_sid_by_param[output->export_param];
+      if (unlikely(output->spi_sid < 0 || (uint32_t)output->spi_sid != sid_from_spi)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "VS export semantic mismatch at param %d: shader spi_sid=%d"
+                          " but SPI_VS_OUT_ID sid=%" PRIu32,
+                          output->export_param, output->spi_sid, sid_from_spi);
+      }
+
+      if (sid_from_spi != 0 &&
+          unlikely(vs_param_for_sid[sid_from_spi] >= 0 &&
+                   vs_param_for_sid[sid_from_spi] != output->export_param)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "VS semantic SID=%" PRIu32
+                          " exported by multiple params (%d and %d)",
+                          sid_from_spi, vs_param_for_sid[sid_from_spi], output->export_param);
+      }
+   }
+
+   uint32_t const fs_interp_count =
+      G_0286CC_NUM_INTERP(fs->static_state.stage.ps.spi_ps_in_control[0]);
+   if (unlikely(fs_interp_count > ARRAY_SIZE(fs->static_state.stage.ps.spi_ps_input_cntl))) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "FS SPI interpolator count out of bounds: NUM_INTERP=%" PRIu32
+                       ", spi_ps_input_cntl_capacity=%zu",
+                       fs_interp_count,
+                       ARRAY_SIZE(fs->static_state.stage.ps.spi_ps_input_cntl));
+   }
+
+   uint32_t fs_expected_interp_count = 0;
+   uint32_t fs_semantic_count = 0;
+   bool fs_interp_slot_used[ARRAY_SIZE(fs->static_state.stage.ps.spi_ps_input_cntl)] = {false};
+
+   struct r600_shader_io const *position_input = NULL;
+   uint32_t face_or_sample_mask_gpr = UINT32_MAX;
+   uint32_t sample_id_gpr = UINT32_MAX;
+
+   struct terakan_instance const * const instance =
+      container_of(terakan_device_physical_device(device)->vk.base.instance,
+                   struct terakan_instance const, vk);
+   bool const debug_pipeline = (instance->debug_flags & TERAKAN_DEBUG_PIPELINE) != 0;
+
+   for (uint32_t input_index = 0; input_index < fs->shader.ninput; ++input_index) {
+      struct r600_shader_io const * const input = &fs->shader.input[input_index];
+
+      if (input->varying_slot == VARYING_SLOT_POS) {
+         if (unlikely(position_input != NULL)) {
+            return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                             "FS has multiple position inputs (indices %u and %" PRIu32 ")",
+                             (unsigned)(position_input - fs->shader.input), input_index);
+         }
+         position_input = input;
+         continue;
+      }
+
+      if (input->varying_slot == VARYING_SLOT_FACE ||
+          input->system_value == SYSTEM_VALUE_SAMPLE_MASK_IN) {
+         if (unlikely(face_or_sample_mask_gpr != UINT32_MAX && face_or_sample_mask_gpr != input->gpr)) {
+            return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                             "FS front-face/sample-mask GPR mismatch: expected %" PRIu32
+                             ", got %u at input %" PRIu32,
+                             face_or_sample_mask_gpr, input->gpr, input_index);
+         }
+         face_or_sample_mask_gpr = input->gpr;
+         continue;
+      }
+
+      if (input->system_value == SYSTEM_VALUE_SAMPLE_ID) {
+         if (unlikely(sample_id_gpr != UINT32_MAX && sample_id_gpr != input->gpr)) {
+            return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                             "FS sample-id GPR mismatch: expected %" PRIu32
+                             ", got %u at input %" PRIu32,
+                             sample_id_gpr, input->gpr, input_index);
+         }
+         sample_id_gpr = input->gpr;
+         continue;
+      }
+
+      if (input->spi_sid == 0)
+         continue;
+
+      if (unlikely(input->spi_sid < 0 || input->spi_sid > UINT8_MAX)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS input %" PRIu32 " has invalid spi_sid=%d",
+                          input_index, input->spi_sid);
+      }
+
+      if (unlikely(input->lds_pos >= ARRAY_SIZE(fs->static_state.stage.ps.spi_ps_input_cntl))) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS input %" PRIu32 " has invalid lds_pos=%u",
+                          input_index, input->lds_pos);
+      }
+
+      fs_expected_interp_count = MAX2(fs_expected_interp_count, input->lds_pos + 1);
+      if (unlikely(input->lds_pos >= fs_interp_count)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS input %" PRIu32 " requires SPI_PS_INPUT_CNTL[%u],"
+                          " but SPI_PS_IN_CONTROL.NUM_INTERP=%" PRIu32,
+                          input_index, input->lds_pos, fs_interp_count);
+      }
+
+      if (unlikely(fs_interp_slot_used[input->lds_pos])) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation slot collision: multiple inputs mapped to lds_pos=%u",
+                          input->lds_pos);
+      }
+      fs_interp_slot_used[input->lds_pos] = true;
+
+      uint32_t const spi_input_cntl = fs->static_state.stage.ps.spi_ps_input_cntl[input->lds_pos];
+      uint32_t const sid = G_028644_SEMANTIC(spi_input_cntl);
+      if (unlikely(sid != (uint32_t)input->spi_sid)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS SPI semantic mismatch at input %" PRIu32
+                          ": shader spi_sid=%d, SPI_PS_INPUT_CNTL[%u].SEMANTIC=%" PRIu32,
+                          input_index, input->spi_sid, input->lds_pos, sid);
+      }
+
+      int16_t const vs_param_index = vs_param_for_sid[sid];
+      if (unlikely(vs_param_index < 0)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS input %" PRIu32 " requests SID=%" PRIu32
+                          " but VS exports no matching semantic",
+                          input_index, sid);
+      }
+
+      bool const expected_flat = input->interpolate == TGSI_INTERPOLATE_CONSTANT;
+      bool const expected_noperspective = input->interpolate == TGSI_INTERPOLATE_LINEAR;
+      bool const expected_perspective =
+         input->interpolate == TGSI_INTERPOLATE_PERSPECTIVE ||
+         input->interpolate == TGSI_INTERPOLATE_COLOR;
+
+      bool const reg_flat = G_028644_FLAT_SHADE(spi_input_cntl) != 0;
+      bool const reg_noperspective = G_028644_SEL_LINEAR(spi_input_cntl) != 0;
+      bool const reg_centroid = G_028644_SEL_CENTROID(spi_input_cntl) != 0;
+      bool const reg_sample = G_028644_SEL_SAMPLE(spi_input_cntl) != 0;
+
+      if (unlikely(reg_centroid && reg_sample)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation ambiguity at input %" PRIu32
+                          ": SPI_PS_INPUT_CNTL[%u] has both centroid and sample selectors",
+                          input_index, input->lds_pos);
+      }
+
+      if (unlikely(reg_flat != expected_flat)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation mode mismatch at input %" PRIu32
+                          ": expected %s but SPI_PS_INPUT_CNTL[%u].FLAT_SHADE=%u",
+                          input_index,
+                          terakan_pipeline_graphics_interp_mode_name(input->interpolate),
+                          input->lds_pos, (unsigned)reg_flat);
+      }
+
+      if (unlikely(expected_flat && reg_noperspective)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation ambiguity at input %" PRIu32
+                          ": flat input has SEL_LINEAR set in SPI_PS_INPUT_CNTL[%u]",
+                          input_index, input->lds_pos);
+      }
+
+      if (unlikely(!expected_flat && expected_noperspective != reg_noperspective)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation mode mismatch at input %" PRIu32
+                          ": expected %s but SPI_PS_INPUT_CNTL[%u].SEL_LINEAR=%u",
+                          input_index,
+                          terakan_pipeline_graphics_interp_mode_name(input->interpolate),
+                          input->lds_pos, (unsigned)reg_noperspective);
+      }
+
+      bool expected_centroid;
+      bool expected_sample;
+      switch (input->interpolate_location) {
+      case TGSI_INTERPOLATE_LOC_CENTER:
+         expected_centroid = false;
+         expected_sample = false;
+         break;
+      case TGSI_INTERPOLATE_LOC_CENTROID:
+         expected_centroid = true;
+         expected_sample = false;
+         break;
+      case TGSI_INTERPOLATE_LOC_SAMPLE:
+         expected_centroid = false;
+         expected_sample = true;
+         break;
+      default:
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation location ambiguity at input %" PRIu32
+                          ": unsupported interpolate_location=%u",
+                          input_index, input->interpolate_location);
+      }
+
+      if (unlikely(reg_centroid != expected_centroid || reg_sample != expected_sample)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation location mismatch at input %" PRIu32
+                          ": expected %s but SPI_PS_INPUT_CNTL[%u] has centroid=%u sample=%u",
+                          input_index,
+                          terakan_pipeline_graphics_interp_loc_name(input->interpolate_location),
+                          input->lds_pos, (unsigned)reg_centroid, (unsigned)reg_sample);
+      }
+
+      if (unlikely(!expected_flat && !expected_noperspective && !expected_perspective)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation ambiguity at input %" PRIu32
+                          ": unsupported interpolate mode=%u",
+                          input_index, input->interpolate);
+      }
+
+      if (!expected_flat &&
+          unlikely(!terakan_pipeline_graphics_spi_baryc_enabled(
+             fs->static_state.stage.ps.spi_baryc_cntl, expected_noperspective,
+             input->interpolate_location))) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS barycentric mode mismatch at input %" PRIu32
+                          ": mode=%s location=%s not enabled in SPI_BARYC_CNTL=0x%08" PRIx32,
+                          input_index,
+                          terakan_pipeline_graphics_interp_mode_name(input->interpolate),
+                          terakan_pipeline_graphics_interp_loc_name(input->interpolate_location),
+                          fs->static_state.stage.ps.spi_baryc_cntl);
+      }
+
+      ++fs_semantic_count;
+
+      if (debug_pipeline) {
+         fprintf(stderr,
+                 "TERAKAN_SPI_ROUTE_MAP: vs_param=%d sid=%" PRIu32
+                 " fs_input=%" PRIu32 " fs_lds=%u fs_gpr=%u interp=%s loc=%s"
+                 " cntl=0x%08" PRIx32 "\n",
+                 vs_param_index, sid, input_index, input->lds_pos, input->gpr,
+                 terakan_pipeline_graphics_interp_mode_name(input->interpolate),
+                 terakan_pipeline_graphics_interp_loc_name(input->interpolate_location),
+                 spi_input_cntl);
+      }
+   }
+
+   fs_expected_interp_count = MAX2(fs_expected_interp_count, 1u);
+   if (unlikely(fs_interp_count != fs_expected_interp_count)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "SPI_PS_IN_CONTROL.NUM_INTERP mismatch: programmed=%" PRIu32
+                       " expected=%" PRIu32,
+                       fs_interp_count, fs_expected_interp_count);
+   }
+
+   for (uint32_t interp = 0; interp < fs_interp_count; ++interp) {
+      uint32_t const sid = G_028644_SEMANTIC(fs->static_state.stage.ps.spi_ps_input_cntl[interp]);
+      if (unlikely(fs_interp_slot_used[interp] && sid == 0)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation slot %" PRIu32
+                          " is used by shader input but SPI semantic is 0",
+                          interp);
+      }
+      if (unlikely(!fs_interp_slot_used[interp] && sid != 0)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS interpolation slot %" PRIu32
+                          " is programmed with SID=%" PRIu32
+                          " but no FS input maps to that lds_pos",
+                          interp, sid);
+      }
+   }
+
+   bool const position_expected = position_input != NULL;
+   bool const position_enabled =
+      G_0286CC_POSITION_ENA(fs->static_state.stage.ps.spi_ps_in_control[0]) != 0;
+   if (unlikely(position_expected != position_enabled)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "FS position mapping mismatch: expected POSITION_ENA=%u got %u",
+                       (unsigned)position_expected, (unsigned)position_enabled);
+   }
+
+   if (position_expected) {
+      uint32_t const position_addr =
+         G_0286CC_POSITION_ADDR(fs->static_state.stage.ps.spi_ps_in_control[0]);
+      if (unlikely(position_addr != position_input->gpr)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS position GPR mismatch: SPI_PS_IN_CONTROL_0.POSITION_ADDR=%" PRIu32
+                          " expected=%u",
+                          position_addr, position_input->gpr);
+      }
+
+      bool const position_centroid =
+         G_0286CC_POSITION_CENTROID(fs->static_state.stage.ps.spi_ps_in_control[0]) != 0;
+      bool const position_sample =
+         G_0286CC_POSITION_SAMPLE(fs->static_state.stage.ps.spi_ps_in_control[0]) != 0;
+      bool const expected_position_centroid =
+         position_input->interpolate_location == TGSI_INTERPOLATE_LOC_CENTROID;
+      bool const expected_position_sample =
+         position_input->interpolate_location == TGSI_INTERPOLATE_LOC_SAMPLE;
+      if (unlikely(position_centroid != expected_position_centroid ||
+                   position_sample != expected_position_sample)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS position interpolation mismatch: expected loc=%s but"
+                          " POSITION_CENTROID=%u POSITION_SAMPLE=%u",
+                          terakan_pipeline_graphics_interp_loc_name(
+                             position_input->interpolate_location),
+                          (unsigned)position_centroid, (unsigned)position_sample);
+      }
+   }
+
+   bool const provide_z_to_spi =
+      (fs->static_state.stage.ps.spi_input_z & S_0286D8_PROVIDE_Z_TO_SPI(1)) != 0;
+   if (unlikely(provide_z_to_spi != position_expected)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "SPI_INPUT_Z.PROVIDE_Z_TO_SPI mismatch: expected=%u got=%u",
+                       (unsigned)position_expected, (unsigned)provide_z_to_spi);
+   }
+
+   bool const front_face_expected = face_or_sample_mask_gpr != UINT32_MAX;
+   bool const front_face_enabled =
+      G_0286D0_FRONT_FACE_ENA(fs->static_state.stage.ps.spi_ps_in_control[1]) != 0;
+   if (unlikely(front_face_expected != front_face_enabled)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "FS front-face mapping mismatch: expected FRONT_FACE_ENA=%u got=%u",
+                       (unsigned)front_face_expected, (unsigned)front_face_enabled);
+   }
+   if (front_face_expected) {
+      uint32_t const front_face_addr =
+         G_0286D0_FRONT_FACE_ADDR(fs->static_state.stage.ps.spi_ps_in_control[1]);
+      if (unlikely(front_face_addr != face_or_sample_mask_gpr)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS front-face/sample-mask GPR mismatch: SPI_PS_IN_CONTROL_1"
+                          ".FRONT_FACE_ADDR=%" PRIu32 " expected=%" PRIu32,
+                          front_face_addr, face_or_sample_mask_gpr);
+      }
+   }
+
+   bool const sample_id_expected = sample_id_gpr != UINT32_MAX;
+   bool const sample_id_enabled =
+      G_0286D0_FIXED_PT_POSITION_ENA(fs->static_state.stage.ps.spi_ps_in_control[1]) != 0;
+   if (unlikely(sample_id_expected != sample_id_enabled)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "FS sample-id mapping mismatch: expected FIXED_PT_POSITION_ENA=%u got=%u",
+                       (unsigned)sample_id_expected, (unsigned)sample_id_enabled);
+   }
+   if (sample_id_expected) {
+      uint32_t const sample_id_addr =
+         G_0286D0_FIXED_PT_POSITION_ADDR(fs->static_state.stage.ps.spi_ps_in_control[1]);
+      if (unlikely(sample_id_addr != sample_id_gpr)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS sample-id GPR mismatch: SPI_PS_IN_CONTROL_1"
+                          ".FIXED_PT_POSITION_ADDR=%" PRIu32 " expected=%" PRIu32,
+                          sample_id_addr, sample_id_gpr);
+      }
+   }
+
+   if (debug_pipeline) {
+      int32_t const position_gpr = position_input ? (int32_t)position_input->gpr : -1;
+      int32_t const front_face_gpr =
+         face_or_sample_mask_gpr != UINT32_MAX ? (int32_t)face_or_sample_mask_gpr : -1;
+      int32_t const sample_id_gpr_log = sample_id_gpr != UINT32_MAX ? (int32_t)sample_id_gpr : -1;
+      fprintf(stderr,
+              "TERAKAN_SPI_ROUTE: vs_export_count=%" PRIu32 " vs_vectors=%" PRIu32
+              " vs_semantics=%" PRIu32 " fs_num_interp=%" PRIu32
+              " fs_semantics=%" PRIu32 "\n",
+              vs_export_count, vs_export_count + 1, vs_semantic_count,
+              fs_interp_count, fs_semantic_count);
+      fprintf(stderr,
+              "TERAKAN_SPI_GPR_MAP: position_gpr=%" PRId32
+              " front_face_gpr=%" PRId32 " sample_id_gpr=%" PRId32
+              " in_control0=0x%08" PRIx32 " in_control1=0x%08" PRIx32
+              " input_z=0x%08" PRIx32 " baryc=0x%08" PRIx32 "\n",
+              position_gpr, front_face_gpr, sample_id_gpr_log,
+              fs->static_state.stage.ps.spi_ps_in_control[0],
+              fs->static_state.stage.ps.spi_ps_in_control[1],
+              fs->static_state.stage.ps.spi_input_z,
+              fs->static_state.stage.ps.spi_baryc_cntl);
+   }
+
+   return VK_SUCCESS;
+}
+
+
 /*
  * Phase B: Per-stage SPIR-V → NIR → post-link lower → cache lookup → compile.
  *
@@ -1481,6 +1957,15 @@ terakan_pipeline_graphics_compile_shaders(
        * terakan_shader_impl_finish() on it. */
       pipeline->shaders[si] = *local;
       pipeline->shader_stages |= mesa_to_vk_shader_stage(si);
+   }
+
+   if ((pipeline->shader_stages & (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)) ==
+       (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)) {
+      result = terakan_pipeline_graphics_validate_vs_fs_spi_routing(
+         device, &pipeline->shaders[MESA_SHADER_VERTEX],
+         &pipeline->shaders[MESA_SHADER_FRAGMENT]);
+      if (result != VK_SUCCESS)
+         goto cleanup;
    }
 
    /* Merge per-stage kcache_needed masks into a single pipeline-wide mask.

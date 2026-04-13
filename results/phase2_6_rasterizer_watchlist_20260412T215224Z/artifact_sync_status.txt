@@ -1,0 +1,11 @@
+[vulkan_icd]
+  build:    2026-04-12 14:52:15.274640545 -0700 58635976 /home/eirikr/workspaces/mesa/mesa-26-debug/build-terakan-vtxfetch/src/amd/terascale/vulkan/libvulkan_terascale.so
+  install:  2026-04-11 02:18:20.247031523 -0700 58538456 /usr/local/mesa-debug/lib/x86_64-linux-gnu/libvulkan_terascale.so
+  freshness=stale-install hash=different
+
+[r600_dri]
+  build:    missing (/home/eirikr/workspaces/mesa/mesa-26-debug/build-terakan-vtxfetch/src/gallium/targets/dri/r600_dri.so)
+
+[rusticl_opencl]
+  build:    missing (/home/eirikr/workspaces/mesa/mesa-26-debug/build-terakan-vtxfetch/src/gallium/targets/rusticl/libRusticlOpenCL.so.1.0.0)
+

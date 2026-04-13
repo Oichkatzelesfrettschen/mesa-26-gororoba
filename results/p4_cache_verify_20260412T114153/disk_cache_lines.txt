@@ -1,0 +1,201 @@
+   140	      cache->compression_disabled = true;
+   141	
+   142	   if (cache_type == DISK_CACHE_SINGLE_FILE) {
+   143	      if (!disk_cache_load_cache_index_foz(local, cache))
+   144	         goto path_fail;
+   145	   } else if (cache_type == DISK_CACHE_DATABASE) {
+   146	      if (!disk_cache_db_load_cache_index(local, cache))
+   147	         goto path_fail;
+   148	   }
+   149	
+   150	   if (!os_get_option("MESA_SHADER_CACHE_DIR") && !os_get_option("MESA_GLSL_CACHE_DIR"))
+   151	      disk_cache_touch_cache_user_marker(cache->path);
+   152	
+   153	   cache->type = cache_type;
+   154	
+   155	   cache->stats.enabled = debug_get_bool_option("MESA_SHADER_CACHE_SHOW_STATS",
+   156	                                                false);
+   157	
+   158	   if (!disk_cache_mmap_cache_index(local, cache))
+   159	      goto path_fail;
+   160	
+   161	   cache->max_size = max_size;
+   162	
+   163	   if (cache->type == DISK_CACHE_DATABASE)
+   164	      mesa_cache_db_multipart_set_size_limit(&cache->cache_db, cache->max_size);
+   165	
+   166	   if (!disk_cache_init_queue(cache))
+   167	      goto fail;
+   168	
+   169	   cache->path_init_failed = false;
+   170	
+   171	 path_fail:
+   172	
+   173	   cache->driver_keys_blob_size = cv_size;
+   174	
+   175	   /* Create driver id keys */
+   176	   size_t id_size = strlen(driver_id) + 1;
+   177	   size_t gpu_name_size = strlen(gpu_name) + 1;
+   178	   cache->driver_keys_blob_size += id_size;
+   179	   cache->driver_keys_blob_size += gpu_name_size;
+   180	
+   181	   /* We sometimes store entire structs that contains a pointers in the cache,
+   182	    * use pointer size as a key to avoid hard to debug issues.
+   183	    */
+   184	   uint8_t ptr_size = sizeof(void *);
+   185	   size_t ptr_size_size = sizeof(ptr_size);
+   186	   cache->driver_keys_blob_size += ptr_size_size;
+   187	
+   188	   size_t driver_flags_size = sizeof(driver_flags);
+   189	   cache->driver_keys_blob_size += driver_flags_size;
+   190	
+   191	   cache->driver_keys_blob =
+   192	      ralloc_size(cache, cache->driver_keys_blob_size);
+   193	   if (!cache->driver_keys_blob)
+   194	      goto fail;
+   195	
+   196	   uint8_t *drv_key_blob = cache->driver_keys_blob;
+   197	   DRV_KEY_CPY(drv_key_blob, &cache_version, cv_size)
+   198	   DRV_KEY_CPY(drv_key_blob, driver_id, id_size)
+   199	   DRV_KEY_CPY(drv_key_blob, gpu_name, gpu_name_size)
+   200	   DRV_KEY_CPY(drv_key_blob, &ptr_size, ptr_size_size)
+   201	   DRV_KEY_CPY(drv_key_blob, &driver_flags, driver_flags_size)
+   202	
+   203	   /* Seed our rand function */
+   204	   s_rand_xorshift128plus(cache->seed_xorshift128plus, true);
+   205	
+   206	   ralloc_free(local);
+   207	
+   208	   return cache;
+   209	
+   210	 fail:
+   211	   ralloc_free(cache);
+   212	   ralloc_free(local);
+   213	
+   214	   return NULL;
+   215	}
+   216	
+   217	struct disk_cache *
+   218	disk_cache_create(const char *gpu_name, const char *driver_id,
+   219	                  uint64_t driver_flags)
+   220	{
+   221	   enum disk_cache_type cache_type;
+   222	   struct disk_cache *cache;
+   223	   uint64_t max_size = 0;
+   224	   const char *max_size_str;
+   225	
+   226	   if (debug_get_bool_option("MESA_DISK_CACHE_SINGLE_FILE", false)) {
+   227	      cache_type = DISK_CACHE_SINGLE_FILE;
+   228	   } else if (debug_get_bool_option("MESA_DISK_CACHE_DATABASE", false)) {
+   229	      cache_type = DISK_CACHE_DATABASE;
+   230	      /* Since switching the default cache to <mesa_shader_cache_db>, remove the
+   231	       * old cache folder if it hasn't been modified for more than 7 days.
+   232	       */
+   233	      if (!os_get_option("MESA_SHADER_CACHE_DIR") && !os_get_option("MESA_GLSL_CACHE_DIR") &&
+   234	          disk_cache_enabled())
+   235	         disk_cache_delete_old_cache();
+   236	   } else if (debug_get_bool_option("MESA_DISK_CACHE_MULTI_FILE", true)) {
+   237	      cache_type = DISK_CACHE_MULTI_FILE;
+   238	   } else {
+   239	      return NULL;
+   240	   }
+   241	
+   242	   max_size_str = os_get_option("MESA_SHADER_CACHE_MAX_SIZE");
+   243	
+   244	   if (!max_size_str) {
+   245	      max_size_str = os_get_option("MESA_GLSL_CACHE_MAX_SIZE");
+   246	      if (max_size_str)
+   247	         fprintf(stderr,
+   248	                 "*** MESA_GLSL_CACHE_MAX_SIZE is deprecated; "
+   249	                 "use MESA_SHADER_CACHE_MAX_SIZE instead ***\n");
+   250	   }
+   251	
+   252	#ifdef MESA_SHADER_CACHE_MAX_SIZE
+   253	   if (!max_size_str) {
+   254	      max_size_str = MESA_SHADER_CACHE_MAX_SIZE;
+   255	   }
+   256	#endif
+   257	
+   258	   if (max_size_str) {
+   259	      char *end;
+   260	      max_size = strtoul(max_size_str, &end, 10);
+   261	      if (end == max_size_str) {
+   262	         max_size = 0;
+   263	      } else {
+   264	         switch (*end) {
+   265	         case 'K':
+   266	         case 'k':
+   267	            max_size *= 1024;
+   268	            break;
+   269	         case 'M':
+   270	         case 'm':
+   271	            max_size *= 1024*1024;
+   272	            break;
+   273	         case '\0':
+   274	         case 'G':
+   275	         case 'g':
+   276	         default:
+   277	            max_size *= 1024*1024*1024;
+   278	            break;
+   279	         }
+   280	      }
+   281	   }
+   282	
+   283	   /* Default to 1GB for maximum cache size. */
+   284	   if (max_size == 0) {
+   285	      max_size = 1024*1024*1024;
+   286	   }
+   287	
+   288	   /* Create main writable cache. */
+   289	   cache = disk_cache_type_create(gpu_name, driver_id, NULL, driver_flags,
+   290	                                  cache_type, max_size);
+   291	   if (!cache)
+   292	      return NULL;
+   293	
+   294	   /* If MESA_DISK_CACHE_SINGLE_FILE is unset and MESA_DISK_CACHE_COMBINE_RW_WITH_RO_FOZ
+   295	    * is set, then enable additional Fossilize RO caches together with the RW
+   296	    * cache.  At first we will check cache entry presence in the RO caches and
+   297	    * if entry isn't found there, then we'll fall back to the RW cache.
+   298	    */
+   299	   if (cache_type != DISK_CACHE_SINGLE_FILE && !cache->path_init_failed &&
+   300	       debug_get_bool_option("MESA_DISK_CACHE_COMBINE_RW_WITH_RO_FOZ", false)) {
+   301	
+   302	      /* Create read-only cache used for sharing prebuilt shaders.
+   303	       * If cache entry will be found in this cache, then the main cache
+   304	       * will be bypassed.
+   305	       */
+   306	      cache->foz_ro_cache = disk_cache_type_create(gpu_name, driver_id, NULL,
+   307	                                                   driver_flags,
+   308	                                                   DISK_CACHE_SINGLE_FILE,
+   309	                                                   max_size);
+   310	   }
+   311	
+   312	   return cache;
+   313	}
+   314	
+   315	struct disk_cache *
+   316	disk_cache_create_custom(const char *gpu_name, const char *driver_id,
+   317	                         uint64_t driver_flags, const char *cache_dir_name,
+   318	                         uint32_t max_size)
+   319	{
+   320	   return disk_cache_type_create(gpu_name, driver_id, cache_dir_name, 0,
+   321	                                 DISK_CACHE_DATABASE, max_size);
+   322	}
+   323	
+   324	void
+   325	disk_cache_destroy(struct disk_cache *cache)
+   326	{
+   327	   if (unlikely(cache && cache->stats.enabled)) {
+   328	      mesa_logi("disk shader cache:  hits = %u, misses = %u\n",
+   329	                cache->stats.hits,
+   330	                cache->stats.misses);
+   331	   }
+   332	
+   333	   if (cache && util_queue_is_initialized(&cache->cache_queue)) {
+   334	      util_queue_finish(&cache->cache_queue);
+   335	      util_queue_destroy(&cache->cache_queue);
+   336	
+   337	      if (cache->foz_ro_cache)
+   338	         disk_cache_destroy(cache->foz_ro_cache);
+   339	
+   340	      if (cache->type == DISK_CACHE_SINGLE_FILE)

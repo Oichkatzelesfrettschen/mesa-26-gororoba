@@ -51,6 +51,8 @@
 
 #include <assert.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -1310,6 +1312,18 @@ terakan_image_create_resource_descriptor(
                              1);
 
       descriptor_out[6] |= S_030018_MAX_ANISO_RATIO(4);
+   }
+
+
+   if (unlikely(getenv("TERAKAN_TEX_AUDIT") != NULL)) {
+      uint64_t const texture_base_address = ((uint64_t)G_030008_BASE_ADDRESS(descriptor_out[2])) << 8;
+      uint32_t const alignment_mod_256 = (uint32_t)(texture_base_address & 0xFFu);
+      fprintf(stderr,
+              "terakan: tex_audit: image_va=0x%llX aspect_offset_shr8=0x%X texture_base_address=0x%llX alignment_mod_256=%u words=%08X,%08X,%08X,%08X,%08X,%08X,%08X,%08X\n",
+              (unsigned long long)image->va, surface_aspect->offset_in_memory_bytes_shr8,
+              (unsigned long long)texture_base_address, alignment_mod_256,
+              descriptor_out[0], descriptor_out[1], descriptor_out[2], descriptor_out[3],
+              descriptor_out[4], descriptor_out[5], descriptor_out[6], descriptor_out[7]);
    }
 
    return true;

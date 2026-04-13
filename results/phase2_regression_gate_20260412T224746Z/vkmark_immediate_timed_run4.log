@@ -1,0 +1,17 @@
+TERAKAN ICD: vkCreateWaylandSurfaceKHR = NULL
+TERAKAN ICD: vkGetPhysicalDeviceWaylandPresentationSupportKHR = NULL
+WARNING: terakan is not a conformant Vulkan implementation, testing use only.
+=======================================================
+    vkmark 2025.01
+=======================================================
+    Vendor ID:      0x1002
+    Device ID:      0x9802
+    Device Name:    AMD R8xx Palm (Terakan)
+    Driver Version: 1
+    Device UUID:    15eda93018881365fd1c940d3e0f89ee
+=======================================================
+[vertex] duration=10: FPS: 417 FrameTime: 2.398 ms
+=======================================================
+                                   vkmark Score: 417
+=======================================================
+MESA: info: disk shader cache:  hits = 2, misses = 0

@@ -580,10 +580,6 @@ terakan_CmdCopyBufferToImage2(VkCommandBuffer const commandBuffer,
       [TERAKAN_RESOURCE_BUFFER_PRIORITY_WORD] = TERAKAN_BO_PRIORITY_SHADER_READ_BUFFER,
    };
 
-   command_writer->post_color_image_copy_write_barrier_actions |=
-      TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_DATA |
-      TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CP_THROUGH_PS;
-
    terakan_meta_begin_2d_immediate_rects(command_writer, TERAKAN_META_PA_CL_VTE_CNTL_2D,
                                          TERAKAN_META_DB_RENDER_OVERRIDE_DEFAULT, true);
 
@@ -687,6 +683,13 @@ terakan_CmdCopyBufferToImage2(VkCommandBuffer const commandBuffer,
             region_bytes_per_block * (VkDeviceSize)buffer_z_pitch * color_descriptor_layer_count;
       }
    }
+
+   /* Defer setting post-copy actions until writes are emitted so pre-draw barrier drains do not
+    * consume transfer-write actions before the color exports happen.
+    */
+   command_writer->post_color_image_copy_write_barrier_actions |=
+      TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_DATA |
+      TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CP_THROUGH_PS;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -720,9 +723,6 @@ terakan_CmdCopyImageToBuffer2(VkCommandBuffer const commandBuffer,
 
    struct terakan_physical_device const * const physical_device =
       terakan_gfx_command_writer_physical_device(command_writer);
-
-   command_writer->post_color_image_copy_write_barrier_actions |=
-      TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV | TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CP_THROUGH_PS;
 
    terakan_meta_begin_2d_immediate_rects(command_writer, TERAKAN_META_PA_CL_VTE_CNTL_2D,
                                          TERAKAN_META_DB_RENDER_OVERRIDE_DEFAULT, true);
@@ -819,4 +819,10 @@ terakan_CmdCopyImageToBuffer2(VkCommandBuffer const commandBuffer,
       terakan_meta_emit_rect_3_vertices_draw(command_writer, &rect,
                                              image_descriptor_create_info.layer_count);
    }
+
+   /* Defer setting post-copy actions until writes are emitted so pre-draw barrier drains don't
+    * consume transfer-write actions before the UAV stores happen.
+    */
+   command_writer->post_buffer_copy_write_barrier_actions |=
+      TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV | TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CP_THROUGH_PS;
 }

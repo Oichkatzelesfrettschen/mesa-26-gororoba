@@ -1,0 +1,26 @@
+TERAKAN ICD: vkCreateWaylandSurfaceKHR = NULL
+TERAKAN ICD: vkGetPhysicalDeviceWaylandPresentationSupportKHR = NULL
+WARNING: terakan is not a conformant Vulkan implementation, testing use only.
+Using GPU: AMD R8xx Palm (Terakan)\nterakan: pm4: SET_CONTEXT_REG PA_SC_WINDOW_SCISSOR_TL = 0x80000000
+terakan: pm4: SET_CONTEXT_REG PA_SC_WINDOW_SCISSOR_BR = 0x00800080
+terakan: state: window_scissor tl=(0,0) br=(128,128)
+terakan: pm4: SET_CONTEXT_REG PA_CL_CLIP_CNTL = 0x00010000
+terakan: pm4: SET_CONTEXT_REG PA_SU_SC_MODE_CNTL = 0x00000000
+terakan: state: PA_SU_SC_MODE_CNTL decode cull_front=0 cull_back=0 front_face_is_ccw=1 poly_mode=0 front_ptype=0 back_ptype=0 provoking_last=0
+terakan: pm4: SET_CONTEXT_REG PA_SC_MODE_CNTL_0 = 0x00000000
+terakan: pm4: SET_CONTEXT_REG PA_SC_AA_CONFIG = 0x00000000
+terakan: pm4: SET_CONTEXT_REG SQ_PGM_START_FS = 0x00000000
+terakan: pm4: SET_CONTEXT_REG SQ_PGM_RESOURCES_FS = 0x00000000
+terakan: pm4: SET_CONTEXT_REG PA_CL_CLIP_CNTL = 0x01080000
+terakan: pm4: SET_CONTEXT_REG PA_SU_SC_MODE_CNTL = 0x00000240
+terakan: state: PA_SU_SC_MODE_CNTL decode cull_front=0 cull_back=0 front_face_is_ccw=1 poly_mode=0 front_ptype=2 back_ptype=2 provoking_last=0
+terakan: pm4: SET_CONTEXT_REG PA_SC_MODE_CNTL_0 = 0x00000002
+terakan: pm4: SET_CONTEXT_REG PA_CL_VPORT_XSCALE_0 = 0x42800000 (64.000000)
+terakan: pm4: SET_CONTEXT_REG PA_CL_VPORT_XOFFSET_0 = 0x42800000 (64.000000)
+terakan: pm4: SET_CONTEXT_REG PA_CL_VPORT_YSCALE_0 = 0x42800000 (64.000000)
+terakan: pm4: SET_CONTEXT_REG PA_CL_VPORT_YOFFSET_0 = 0x42800000 (64.000000)
+terakan: pm4: PKT3_DRAW_INDEX_AUTO vertex_count=3 first_vertex=0 first_instance=0
+terakan: pm4: SET_CONTEXT_REG PA_CL_CLIP_CNTL = 0x00010000
+terakan: pm4: SET_CONTEXT_REG PA_SU_SC_MODE_CNTL = 0x00000000
+terakan: state: PA_SU_SC_MODE_CNTL decode cull_front=0 cull_back=0 front_face_is_ccw=1 poly_mode=0 front_ptype=0 back_ptype=0 provoking_last=0
+terakan: pm4: SET_CONTEXT_REG PA_SC_MODE_CNTL_0 = 0x00000000

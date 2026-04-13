@@ -1,0 +1,3 @@
+ninja: Entering directory `build-terakan-plain'
+[1/2] Generating src/git_sha1.h with a custom command
+[2/2] Compiling C object src/amd/terascale/vulkan/libvulkan_terascale.so.p/terakan_shader.c.o
