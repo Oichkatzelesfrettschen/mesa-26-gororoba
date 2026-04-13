@@ -47,13 +47,20 @@ terakan_CmdBindPipeline(VkCommandBuffer const commandBuffer,
    struct terakan_pipeline const * const pipeline = terakan_pipeline_from_handle(pipelineHandle);
    if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
       assert(!pipeline->is_compute);
-      terakan_pipeline_graphics_bind(
-         command_writer, container_of(pipeline, struct terakan_pipeline_graphics const, base));
+      struct terakan_pipeline_graphics const * const graphics_pipeline =
+         container_of(pipeline, struct terakan_pipeline_graphics const, base);
+      if (command_writer->bound_graphics_pipeline != graphics_pipeline) {
+         terakan_pipeline_graphics_bind(command_writer, graphics_pipeline);
+         command_writer->bound_graphics_pipeline = graphics_pipeline;
+      }
    }
    if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE) {
-      command_writer->bound_compute_pipeline =
+      struct terakan_pipeline_compute const * const compute_pipeline =
          container_of(pipeline, struct terakan_pipeline_compute const, base);
-      command_writer->compute_pipeline_dirty = true;
+      if (command_writer->bound_compute_pipeline != compute_pipeline) {
+         command_writer->bound_compute_pipeline = compute_pipeline;
+         command_writer->compute_pipeline_dirty = true;
+      }
    }
 }
 
