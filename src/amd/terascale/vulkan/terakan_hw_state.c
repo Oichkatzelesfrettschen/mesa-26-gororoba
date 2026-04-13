@@ -258,9 +258,7 @@ terakan_hw_state_draw_emit_sq_rings(struct terakan_gfx_command_writer * const co
       if (command_writer->indirect_buffer->shader_rings_bo_placeholder_reference == UINT32_MAX) {
          command_writer->indirect_buffer->shader_rings_bo_placeholder_reference =
             terakan_bo_reference_writer_add_reference(
-               &command_writer->base.bo_reference_writer,
-               device->reference_placeholder_bos
-                  [TERAKAN_QUEUE_BO_REFERENCE_PLACEHOLDER_INDEX_SHADER_RINGS],
+               &command_writer->base.bo_reference_writer, device->gfx_discard_bo,
                true, true, TERAKAN_BO_PRIORITY_SHADER_RINGS);
       }
 

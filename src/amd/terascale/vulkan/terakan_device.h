@@ -66,12 +66,11 @@ struct terakan_device {
 
    uint32_t last_bo_creation_number;
 
-   /* TODO(Triang3l): Don't actually allocate BOs for placeholders. */
-   struct terakan_bo * reference_placeholder_bos[TERAKAN_QUEUE_BO_REFERENCE_PLACEHOLDER_INDEX_COUNT];
-
    /* BO for data that needs to be discarded on the graphics queue:
     * - EVENT_WRITE_EOP fence (4 bytes).
     * - CP DMA size misalignment (TERAKAN_CP_DMA_COPY_OPTIMAL_ALIGNMENT * 2).
+    * - Placeholder BO handle for deferred shader ring base relocations
+    *   (rebound to the real ring BO at queue submission time).
     */
    struct terakan_bo * gfx_discard_bo;
 
