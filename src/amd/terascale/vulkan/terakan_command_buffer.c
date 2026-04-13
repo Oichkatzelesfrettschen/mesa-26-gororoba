@@ -32,6 +32,7 @@
 #include "terakan_instance.h"
 #include "terakan_limits.h"
 #include "terakan_physical_device.h"
+#include "terakan_profile.h"
 #include "terakan_queue.h"
 #include "terakan_shader.h"
 #include "terakan_vertex_input.h"
@@ -61,6 +62,8 @@ terakan_bo_reference_writer_reset(struct terakan_bo_reference_writer * const wri
    writer->max_reference_count = max_bo_reference_count;
 
    writer->reference_count = 0;
+   writer->last_reference_bo = NULL;
+   writer->last_reference_index = TERAKAN_BO_REFERENCE_WRITER_LAST_REFERENCE_INVALID;
 
    BITSET_ZERO(writer->map_entries_used);
 }
@@ -71,6 +74,17 @@ terakan_bo_reference_writer_add_reference(struct terakan_bo_reference_writer * c
                                           bool const is_writing,
                                           enum terakan_bo_priority const priority)
 {
+   if (writer->last_reference_bo == bo &&
+       writer->last_reference_index < writer->reference_count &&
+       writer->reference_bos[writer->last_reference_index] == bo) {
+      uint32_t const reference_index = writer->last_reference_index;
+      size_t const reference_size = bo->device->bo_reference_size;
+      bo->device->winsys_fn->queue->update_bo_reference(
+         (char *)writer->references + reference_size * reference_index, bo, is_reading, is_writing,
+         priority);
+      return reference_index;
+   }
+
    /* Provide two slots per hash value for quick handling of collisions by effectively doing
     * separate chaining if there are only 2 BOs per hash in this open addressing scheme (though this
     * separate-chaining-like behavior is not guaranteed if BOs with another hash value have stomped
@@ -142,6 +156,8 @@ terakan_bo_reference_writer_add_reference(struct terakan_bo_reference_writer * c
    }
    BITSET_SET(writer->map_entries_used, (hash + collisions) & TERAKAN_BO_REFERENCE_HASH_MASK);
    writer->map[hash] = reference_index;
+   writer->last_reference_bo = bo;
+   writer->last_reference_index = reference_index;
 
    return reference_index;
 }
@@ -1058,14 +1074,63 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
    terakan_gfx_command_writer_emit_done(command_writer, packet);
 }
 
+static inline bool
+terakan_hw_state_draw_has_modified(struct terakan_hw_state_draw const * const state)
+{
+   for (unsigned word_index = 0; word_index < BITSET_WORDS(TERAKAN_HW_STATE_DRAW_INDEX_COUNT);
+        ++word_index) {
+      if (state->state_modified[word_index] != 0) {
+         return true;
+      }
+   }
+   return false;
+}
+
+static inline bool
+terakan_gfx_command_writer_can_fit_emission(
+   struct terakan_gfx_command_writer const * const command_writer,
+   struct terakan_device const * const device, uint32_t const total_packet_dwords,
+   uint32_t const bo_count, bool const relocation_array_used, uint32_t const relocation_count)
+{
+   return (command_writer->indirect_buffer_finalizer_prepend_ptr -
+           command_writer->indirect_buffer_append_ptr) >= total_packet_dwords &&
+          (device->command_buffer_submission_size_gfx.bo_references -
+           command_writer->base.bo_reference_writer.reference_count) >= bo_count &&
+          (!relocation_array_used ||
+           (device->command_buffer_submission_size_gfx.relocations -
+            command_writer->indirect_buffer->relocation_count) >= relocation_count);
+}
+
 static void
 terakan_gfx_command_writer_emit_hw_state(
    struct terakan_gfx_command_writer * const command_writer,
    enum terakan_gfx_command_writer_emit_contents const contents)
 {
-   if (contents == TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW) {
-      terakan_hw_state_draw_emit_modified(command_writer);
-      terakan_hw_state_sqc_emit_modified(command_writer);
+   if (contents != TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW) {
+      return;
+   }
+
+   if (!terakan_hw_state_draw_has_modified(&command_writer->hw_state_draw) &&
+       command_writer->hw_state_sqc.modified.indices == 0) {
+      return;
+   }
+
+   struct terakan_device * const device = terakan_gfx_command_writer_device(command_writer);
+   struct terakan_instance const * const inst =
+      container_of(terakan_device_physical_device(device)->vk.base.instance,
+                   struct terakan_instance const, vk);
+   bool const profiling = inst->debug_flags & TERAKAN_DEBUG_PROFILE;
+   uint64_t t0 = 0;
+   if (profiling) {
+      t0 = terakan_profile_now_ns();
+   }
+
+   terakan_hw_state_draw_emit_modified(command_writer);
+   terakan_hw_state_sqc_emit_modified(command_writer);
+
+   if (profiling) {
+      device->profile.state_emit_ns += terakan_profile_now_ns() - t0;
+      device->profile.state_emit_count++;
    }
 }
 
@@ -1134,6 +1199,17 @@ terakan_gfx_command_writer_emit_with_bo(struct terakan_gfx_command_writer * cons
    }
 #endif
 
+   if (command_writer->indirect_buffer != NULL &&
+       !terakan_gfx_command_writer_can_fit_emission(command_writer, device, total_packet_dwords,
+                                                    bo_count, relocation_array_used,
+                                                    relocation_count)) {
+      /* The packet itself won't fit in the current indirect buffer, avoid an unnecessary state emit
+       * into an indirect buffer that would be closed immediately afterwards.
+       */
+      terakan_gfx_command_writer_end_indirect_buffer(command_writer);
+      assert(command_writer->indirect_buffer == NULL);
+   }
+
    if (command_writer->indirect_buffer != NULL) {
       if (!is_inner) {
          /* Apply the modified tracked state in the existing indirect buffer. */
@@ -1141,13 +1217,9 @@ terakan_gfx_command_writer_emit_with_bo(struct terakan_gfx_command_writer * cons
       }
 
       if (command_writer->indirect_buffer != NULL &&
-          ((command_writer->indirect_buffer_finalizer_prepend_ptr -
-            command_writer->indirect_buffer_append_ptr) < total_packet_dwords ||
-           (device->command_buffer_submission_size_gfx.bo_references -
-            command_writer->base.bo_reference_writer.reference_count) < bo_count ||
-           (relocation_array_used &&
-            (device->command_buffer_submission_size_gfx.relocations -
-             command_writer->indirect_buffer->relocation_count) < relocation_count))) {
+          !terakan_gfx_command_writer_can_fit_emission(command_writer, device, total_packet_dwords,
+                                                       bo_count, relocation_array_used,
+                                                       relocation_count)) {
          /* Space exhausted in the current indirect buffer, either by inner emissions, or by this
           * emission.
           */
@@ -1211,13 +1283,9 @@ terakan_gfx_command_writer_emit_with_bo(struct terakan_gfx_command_writer * cons
        */
       terakan_gfx_command_writer_emit_hw_state(command_writer, contents);
 
-      if (unlikely((command_writer->indirect_buffer_finalizer_prepend_ptr -
-                    command_writer->indirect_buffer_append_ptr) < total_packet_dwords ||
-                   (device->command_buffer_submission_size_gfx.bo_references -
-                    command_writer->base.bo_reference_writer.reference_count) < bo_count ||
-                   (relocation_array_used &&
-                    (device->command_buffer_submission_size_gfx.relocations -
-                     command_writer->indirect_buffer->relocation_count) < relocation_count))) {
+      if (unlikely(!terakan_gfx_command_writer_can_fit_emission(
+             command_writer, device, total_packet_dwords, bo_count, relocation_array_used,
+             relocation_count))) {
          assert(
             !"The command emission and all the needed state setting can't fit in a single indirect "
              "buffer, this is likely a Terakan bug because an indirect buffer must be large enough "
@@ -1424,6 +1492,7 @@ terakan_BeginCommandBuffer(VkCommandBuffer const commandBuffer,
       gfx_command_writer->active_queries = NULL;
    }
    command_buffer->command_writer.gfx = gfx_command_writer;
+   command_buffer->has_compute_work = false;
 
    gfx_command_writer->base.command_buffer = command_buffer;
 
