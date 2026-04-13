@@ -22,7 +22,7 @@
  */
 
 /*
- * terakan_nir_lower_abi.c — Instruction emission (HOW)
+ * terakan_nir_lower_abi.c - Instruction emission (HOW)
  *
  * Emits hardware instructions (VFETCH, TEX, KCACHE, MEM_RAT) from
  * physical hardware indices resolved by apply_pipeline_layout.
@@ -190,13 +190,13 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
  *   Tier 1 (IF/ENDIF): caller wraps the MEM_RAT instruction in
  *     nir_push_if / nir_pop_if gated on this result.  Used for
  *     graphics UAV writes where the hardware descriptor determines the
- *     destination — we cannot redirect the address from the shader.
- *     Costs 1 CF stack entry (safe up to depth 3, ISA §3.6.5).
+ *     destination - we cannot redirect the address from the shader.
+ *     Costs 1 CF stack entry (safe up to depth 3, ISA section 3.6.5).
  *
  *   Tier 2 (math predication): caller uses nir_bcsel to select between
  *     the real address and the trash page address based on this result.
  *     Used for compute store_global where we control the destination.
- *     Costs 0 CF stack entries — pure ALU.
+ *     Costs 0 CF stack entries - pure ALU.
  *
  * INVARIANT: Tier 2 math predication MUST NOT be used for atomic operations.
  * Atomics are read-modify-write; redirecting an OOB atomic to the trash page
@@ -289,7 +289,7 @@ terakan_nir_buffer_uav_coord(nir_builder * const b, nir_def * coord,
    /* Add the UAV base granularity offset. */
 
    if (robust_access) {
-      /* SOFTWARE ALU BOUNDS CLAMP — MANDATORY on Terascale.  See function
+      /* SOFTWARE ALU BOUNDS CLAMP - MANDATORY on Terascale.  See function
        * header comment for the hardware-correctness rationale.
        *
        * If the coordinate provided by the application is already near
@@ -339,7 +339,7 @@ terakan_nir_buffer_uav_coord(nir_builder * const b, nir_def * coord,
          .base = byte_offset / 16,
          .component = (byte_offset % 16) / 4);
    } else {
-      /* Dynamic array index — fall back to VFETCH from push constant
+      /* Dynamic array index - fall back to VFETCH from push constant
        * resource descriptor. */
       BITSET_SET(state->resources_needed, TERAKAN_RESOURCE_RANGE_PUSH_CONSTANTS);
       base_granularity_offset = nir_load_buffer_resource_r600(
@@ -467,7 +467,7 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
 
    /* 3-tier UBO read routing (terakan_3tier_ubo_routing.h):
     *
-    *   Tier 1 — KCACHE direct:  0 cycles, inline ALU operand.
+    *   Tier 1 - KCACHE direct:  0 cycles, inline ALU operand.
     *            Requires: static offset, bank available, robustness OFF.
     *            KCACHE has a proven data leak within a 256-byte cache line
     *            (Phase 6 Probe 9 on AMD PALM): static OOB within the same
@@ -475,12 +475,12 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
     *            acceptable when robustness is disabled (app accepts undefined
     *            behavior) but violates robustBufferAccess which mandates zero.
     *
-    *   Tier 2 — VFETCH bounded: 20-40 cycles, hardware OOB clamping.
+    *   Tier 2 - VFETCH bounded: 20-40 cycles, hardware OOB clamping.
     *            VTX SIZE_MINUS_1 enforces descriptor-range clamping;
     *            Phase 5 Probes confirmed OOB reads return exactly zero.
     *            Used for: all robust loads, dynamic offsets, bank overflow.
     *
-    *   Tier 3 — KCACHE + MIN clamp: DEFERRED.
+    *   Tier 3 - KCACHE + MIN clamp: DEFERRED.
     *            Requires LOCK_LOOP_INDEX backend support (not available in
     *            SFN) for general dynamic offsets.  Narrow <=256B variant is
     *            a future optimization opportunity.
@@ -529,11 +529,12 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
       nir_def_rewrite_uses(&intrin->def, result);
       nir_instr_remove(&intrin->instr);
    } else {
-      /* Tier 2 — VFETCH bounded: hardware-enforced OOB clamping.
+      /* Tier 2 - VFETCH bounded: hardware-enforced OOB clamping.
        * Covers: robust_buffer_access ON (all offsets), dynamic offsets,
        * bank overflow.  VTX SIZE_MINUS_1 returns zero on OOB access. */
       uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
-                                          binding.set_binding->first_shader_resources[stage];
+                                          binding.set_binding->first_shader_resources[stage] +
+                                          TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
       BITSET_SET_RANGE(state->resources_needed,
                        resource_index_base + binding.array_index_range_first,
                        resource_index_base + binding.array_index_range_last);
@@ -611,7 +612,7 @@ terakan_nir_lower_bindings_instr_load_push_constant(
  *
  * Layout: num_workgroups[3] is at byte offset
  *   offsetof(terakan_push_constants_driver, num_workgroups) = 52
- *   → vec4_index = 3, first_component = 1 (components .yzw of vec4[3])
+ *   -> vec4_index = 3, first_component = 1 (components .yzw of vec4[3])
  */
 static void
 terakan_nir_lower_bindings_instr_load_num_workgroups(
@@ -624,7 +625,7 @@ terakan_nir_lower_bindings_instr_load_num_workgroups(
    b->cursor = nir_before_instr(&intrin->instr);
 
    /* Byte offset of num_workgroups within terakan_push_constants_driver.
-    * 12 × uint32 (UAV offsets) + 1 × uint32 (draw_id) = 52 bytes. */
+    * 12 x uint32 (UAV offsets) + 1 x uint32 (draw_id) = 52 bytes. */
    uint32_t const byte_offset =
       offsetof(struct terakan_push_constants_driver, num_workgroups);
    uint32_t const vec4_index = byte_offset / 16;
@@ -674,7 +675,7 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
       binding.array_index = nir_imm_zero(b, 1, 32);
    }
 
-   /* SSBO read robustness — Tier 1 (DWORD-granularity, zero ALU cost).
+   /* SSBO read robustness - Tier 1 (DWORD-granularity, zero ALU cost).
     *
     * VTX hardware enforces descriptor bounds via SIZE_MINUS_ONE at DWORD
     * granularity (Phase 5 Probe H1: all OOB VFETCH reads return 0).  The
@@ -688,19 +689,20 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
     * the exact Vulkan buffer view boundary are considered in-bounds by the
     * driver's advertised contract.  This is zero-cost: no ALU guards needed.
     *
-    * Tier 2 (exact-byte, sizeAlignment=1) — DEFERRED.
+    * Tier 2 (exact-byte, sizeAlignment=1) - DEFERRED.
     * If exact-byte robustness is ever required:
     *   1. Load exact_size from KCACHE bank 14 (dwords 0..11, same as write guard)
-    *   2. Gate on (exact_size & 3) != 0 — skip if buffer is already 4-aligned
+    *   2. Gate on (exact_size & 3) != 0 - skip if buffer is already 4-aligned
     *   3. At most ONE component per load can straddle the boundary
     *   4. Zero the entire straddling component (robustBufferAccess2 = hard 0)
     *   5. Cost: ~3 ALU ops per load (uadd_sat + uge + bcsel)
-    * See TERAKAN_SHADER_ABI_CONTRACT.md §11 for architecture details. */
+    * See TERAKAN_SHADER_ABI_CONTRACT.md section 11 for architecture details. */
 
    /* Vertex fetches are coherent with UAVs, do a vertex fetch unconditionally. */
    uint8_t const resource_index_base =
       binding.set->first_shader_resources[b->shader->info.stage] +
-      binding.set_binding->first_shader_resources[b->shader->info.stage];
+      binding.set_binding->first_shader_resources[b->shader->info.stage] +
+      TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
    BITSET_SET_RANGE(state->resources_needed, resource_index_base + binding.array_index_range_first,
                     resource_index_base + binding.array_index_range_last);
    nir_def_rewrite_uses(&intrin->def, terakan_nir_load_raw_resource_buffer(
@@ -765,8 +767,8 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
        *
        * MEM_RAT writes are NOT bounds-checked by hardware (Probe 7).
        * Since store_global gives us full address control, we use pure
-       * ALU math predication instead of IF/ENDIF — this costs ZERO CF
-       * stack entries (Evergreen ISA §3.6.5: CF_ALU_PUSH_BEFORE is
+       * ALU math predication instead of IF/ENDIF - this costs ZERO CF
+       * stack entries (Evergreen ISA section 3.6.5: CF_ALU_PUSH_BEFORE is
        * unsafe above stack depth 3 on 64-wide hardware).
        *
        * Pattern: compute the real address AND the trash page address,
@@ -801,7 +803,7 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
             .component = 0);
          nir_def *trash_addr = nir_ishl_imm(b, trash_addr_shr2, 2);
 
-         /* Select: in-bounds → real buffer address, OOB → trash page. */
+         /* Select: in-bounds -> real buffer address, OOB -> trash page. */
          final_addr = nir_bcsel(b, in_bounds, real_addr, trash_addr);
       } else {
          final_addr = real_addr;
@@ -993,7 +995,8 @@ terakan_nir_lower_bindings_instr_image_deref_load(
    }
 
    uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
-                                       binding.set_binding->first_shader_resources[stage];
+                                       binding.set_binding->first_shader_resources[stage] +
+                                       TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
 
    if (image_dim == GLSL_SAMPLER_DIM_BUF) {
       /* Vertex fetches are coherent with UAVs, do a vertex fetch unconditionally. */
@@ -1043,7 +1046,7 @@ terakan_nir_lower_bindings_instr_image_deref_load(
                      ? nir_channel(b, intrin->src[1].ssa, image_dim == GLSL_SAMPLER_DIM_1D ? 1 : 2)
                      : nir_imm_zero(b, 1, 32),
                   nir_imm_zero(b, 1, 32)),
-               .access = access, .id_base = resource_index_base),
+                .access = access, .id_base = resource_index_base),
             intrin->def.bit_size));
       nir_instr_remove(&intrin->instr);
       return;
@@ -1117,7 +1120,7 @@ terakan_nir_lower_bindings_instr_image_deref_store(
     *
     * The guard must use the RAW element index (intrin->src[1].x), BEFORE
     * terakan_nir_buffer_uav_coord() applies the coordinate clamp and
-    * base granularity offset — a clamped OOB write would still corrupt
+    * base granularity offset - a clamped OOB write would still corrupt
     * the last valid element rather than being dropped. */
    bool const guarded =
       state->robust_buffer_access && image_dim == GLSL_SAMPLER_DIM_BUF;
