@@ -34,6 +34,7 @@
 #include "terakan_push_constants.h"
 
 struct terakan_pipeline_compute;
+struct terakan_pipeline_graphics;
 #include "terakan_query.h"
 #include "terakan_queue.h"
 #include "terakan_shader.h"
@@ -401,6 +402,11 @@ struct terakan_gfx_command_writer {
       uint32_t va_kcache_lines;
       VkShaderStageFlags bound_to_stages;
    } robustness_metadata;
+
+   /* The currently bound graphics pipeline, or NULL if none.
+    * Used to skip redundant vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS)
+    * rebinding work when the same pipeline handle is bound consecutively. */
+   struct terakan_pipeline_graphics const *bound_graphics_pipeline;
 
    /* OR-merged kcache_needed mask from the currently bound graphics pipeline.
     * Set during terakan_pipeline_graphics_bind().  Checked at draw time to
