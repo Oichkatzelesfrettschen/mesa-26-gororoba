@@ -33,6 +33,21 @@
 
 #include "terakan_nir_lower_bindings_internal.h"
 
+static nir_def *
+terakan_nir_resize_vector(nir_builder * const b, nir_def * const src,
+                          unsigned const num_components, bool const pad_with_zero)
+{
+   if (src->num_components == num_components) {
+      return src;
+   }
+   if (src->num_components > num_components) {
+      return nir_trim_vector(b, src, num_components);
+   }
+   return pad_with_zero
+             ? nir_pad_vector_imm_int(b, src, 0, num_components)
+             : nir_pad_vector(b, src, num_components);
+}
+
 static void
 terakan_nir_build_uav_instr_r600(nir_builder * const b, nir_def * const uav_array_index,
                                  nir_def * const coord, nir_def * const value,
@@ -40,12 +55,28 @@ terakan_nir_build_uav_instr_r600(nir_builder * const b, nir_def * const uav_arra
                                  enum gl_access_qualifier const access,
                                  unsigned const id_base)
 {
+   unsigned num_components = coord->num_components;
+   if (value->num_components > num_components) {
+      num_components = value->num_components;
+   }
+   if (compare_value->num_components > num_components) {
+      num_components = compare_value->num_components;
+   }
+
+   nir_def * const coord_normalized =
+      terakan_nir_resize_vector(b, coord, num_components, true);
+   nir_def * const value_normalized =
+      terakan_nir_resize_vector(b, value, num_components, false);
+   nir_def * const compare_value_normalized =
+      terakan_nir_resize_vector(b, compare_value, num_components, false);
+
    nir_intrinsic_instr * const intrin =
       nir_intrinsic_instr_create(b->shader, nir_intrinsic_uav_instr_r600);
+   intrin->num_components = (uint8_t)num_components;
    intrin->src[0] = nir_src_for_ssa(uav_array_index);
-   intrin->src[1] = nir_src_for_ssa(coord);
-   intrin->src[2] = nir_src_for_ssa(value);
-   intrin->src[3] = nir_src_for_ssa(compare_value);
+   intrin->src[1] = nir_src_for_ssa(coord_normalized);
+   intrin->src[2] = nir_src_for_ssa(value_normalized);
+   intrin->src[3] = nir_src_for_ssa(compare_value_normalized);
    nir_intrinsic_set_uav_op_r600(intrin, uav_op);
    nir_intrinsic_set_access(intrin, access);
    nir_intrinsic_set_id_base(intrin, id_base);
