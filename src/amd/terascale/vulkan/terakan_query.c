@@ -139,6 +139,17 @@ terakan_query_pool_vk_result_size_counters(struct terakan_query_pool const * con
    }
 }
 
+static inline void
+terakan_query_sync_pending_cp_dma(struct terakan_gfx_command_writer * const command_writer)
+{
+   if (!command_writer->query_cp_dma_sync_pending) {
+      return;
+   }
+
+   terakan_cp_dma_sync_cp_me(command_writer);
+   command_writer->query_cp_dma_sync_pending = false;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdResetQueryPool(VkCommandBuffer const commandBuffer, VkQueryPool const queryPool,
                           uint32_t firstQuery, uint32_t queryCount)
@@ -151,6 +162,7 @@ terakan_CmdResetQueryPool(VkCommandBuffer const commandBuffer, VkQueryPool const
    }
    struct terakan_gfx_command_writer * const command_writer =
       terakan_command_buffer_from_handle(commandBuffer)->command_writer.gfx;
+   terakan_query_sync_pending_cp_dma(command_writer);
    /* Drain any outstanding CP DMA from a preceding vkCmdCopyQueryPoolResults
     * that may still be reading the availability bits we are about to zero. */
    terakan_cp_dma_sync_cp_me(command_writer);
@@ -159,10 +171,8 @@ terakan_CmdResetQueryPool(VkCommandBuffer const commandBuffer, VkQueryPool const
       command_writer, 0, query_pool->bo,
       query_pool->bo->va + terakan_query_pool_availability_offset_bytes(query_pool, firstQuery),
       TERAKAN_BO_PRIORITY_QUERY, (VkDeviceSize)sizeof(uint32_t) * queryCount);
-   terakan_cp_dma_sync_cp_me(command_writer);
-   /* TODO(Triang3l): Maybe sync before the next query access, not immediately here, possibly more
-    * granularly than to all CP DMA operations in general.
-    */
+   /* Defer CP/ME sync to the next query access or command buffer finalization. */
+   command_writer->query_cp_dma_sync_pending = true;
 }
 
 static void
@@ -197,6 +207,7 @@ terakan_CmdBeginQueryIndexedEXT(VkCommandBuffer const commandBuffer, VkQueryPool
 
    struct terakan_gfx_command_writer * const command_writer =
       terakan_command_buffer_from_handle(commandBuffer)->command_writer.gfx;
+   terakan_query_sync_pending_cp_dma(command_writer);
 
    /* Sample the initial value, and make sure the final value of the hardware counters for the query
     * type is sampled at the end of the indirect buffer in case this query ends up spanning multiple
@@ -356,6 +367,7 @@ terakan_CmdEndQueryIndexedEXT(VkCommandBuffer const commandBuffer, VkQueryPool c
 
    struct terakan_gfx_command_writer * const command_writer =
       terakan_command_buffer_from_handle(commandBuffer)->command_writer.gfx;
+   terakan_query_sync_pending_cp_dma(command_writer);
 
    VkDeviceSize const samples_offset_bytes =
       terakan_query_pool_samples_offset_bytes(query_pool, query);
@@ -639,6 +651,7 @@ terakan_CmdWriteTimestamp2(VkCommandBuffer const commandBuffer,
 
    struct terakan_gfx_command_writer * const command_writer =
       terakan_command_buffer_from_handle(commandBuffer)->command_writer.gfx;
+   terakan_query_sync_pending_cp_dma(command_writer);
 
    uint64_t const sample_va =
       query_pool->bo->va + terakan_query_pool_samples_offset_bytes(query_pool, query);

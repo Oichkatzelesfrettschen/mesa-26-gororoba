@@ -364,6 +364,9 @@ struct terakan_gfx_command_writer {
    enum terakan_barrier_action_flags post_buffer_copy_write_barrier_actions;
    enum terakan_barrier_action_flags post_color_image_copy_write_barrier_actions;
    enum terakan_barrier_action_flags post_depth_stencil_image_copy_write_barrier_actions;
+   /* Set when query-related CP DMA writes were emitted and the CP/ME sync is deferred
+    * until the next query access or command buffer finalization. */
+   bool query_cp_dma_sync_pending;
 
    struct terakan_query_active_table * active_queries;
    size_t active_query_counts[TERAKAN_QUERY_SAMPLE_INDEX_COUNT];
