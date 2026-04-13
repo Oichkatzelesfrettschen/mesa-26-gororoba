@@ -26,6 +26,7 @@
 #include "terakan_bo.h"
 #include "terakan_buffer.h"
 #include "terakan_command_buffer.h"
+#include "terakan_cp_dma.h"
 #include "terakan_draw.h"
 #include "terakan_entrypoints.h"
 #include "terakan_physical_device.h"
@@ -1970,6 +1971,10 @@ terakan_CmdCopyQueryPoolResults(VkCommandBuffer const commandBuffer, VkQueryPool
    struct terakan_command_buffer * const command_buffer =
       terakan_command_buffer_from_handle(commandBuffer);
    struct terakan_gfx_command_writer * const command_writer = command_buffer->command_writer.gfx;
+   if (command_writer->query_cp_dma_sync_pending) {
+      terakan_cp_dma_sync_cp_me(command_writer);
+      command_writer->query_cp_dma_sync_pending = false;
+   }
    struct terakan_physical_device const * const physical_device =
       terakan_gfx_command_writer_physical_device(command_writer);
 

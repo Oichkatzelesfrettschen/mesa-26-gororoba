@@ -1453,6 +1453,11 @@ terakan_EndCommandBuffer(VkCommandBuffer const commandBuffer)
       gfx_command_writer->post_color_image_copy_write_barrier_actions |
       gfx_command_writer->post_depth_stencil_image_copy_write_barrier_actions;
 
+   if (gfx_command_writer->query_cp_dma_sync_pending) {
+      terakan_cp_dma_sync_cp_me(gfx_command_writer);
+      gfx_command_writer->query_cp_dma_sync_pending = false;
+   }
+
    /* As barriers are deferred rather than emitted immediately in vkCmdPipelineBarrier, flush them.
     */
    terakan_barrier_emit_pending_actions(gfx_command_writer);
@@ -1522,6 +1527,7 @@ terakan_BeginCommandBuffer(VkCommandBuffer const commandBuffer,
    gfx_command_writer->post_buffer_copy_write_barrier_actions = 0;
    gfx_command_writer->post_color_image_copy_write_barrier_actions = 0;
    gfx_command_writer->post_depth_stencil_image_copy_write_barrier_actions = 0;
+   gfx_command_writer->query_cp_dma_sync_pending = false;
 
    memset(&gfx_command_writer->active_query_counts, 0,
           sizeof(gfx_command_writer->active_query_counts));
