@@ -207,6 +207,14 @@ terakan_barrier_get_dst_actions(struct terakan_gfx_command_writer const * const 
       actions |= TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
    }
 
+   if (dst_access & VK_ACCESS_2_INDEX_READ_BIT) {
+      actions |= TERAKAN_BARRIER_ACTION_INV_TC;
+      if (terakan_device_physical_device(device)->chip_info.has_vertex_cache) {
+         actions |= TERAKAN_BARRIER_ACTION_INV_VC;
+      }
+      actions |= TERAKAN_BARRIER_ACTION_INV_SH;
+   }
+
    /* Invalidate the texture cache.
     * INDIRECT_COMMAND_READ: Draw parameters and NumWorkgroups.
     * UNIFORM_READ: Texture cache for cases not supported by the ALU like dynamic data addressing.
@@ -261,6 +269,29 @@ terakan_barrier_get_dst_actions(struct terakan_gfx_command_writer const * const 
    return actions;
 }
 
+static char const *
+terakan_barrier_event_name(uint32_t const event)
+{
+   switch (event) {
+   case EVENT_TYPE(EVENT_TYPE_CS_PARTIAL_FLUSH) | EVENT_INDEX(4):
+      return "CS_PARTIAL_FLUSH";
+   case EVENT_TYPE(EVENT_TYPE_PS_PARTIAL_FLUSH) | EVENT_INDEX(4):
+      return "PS_PARTIAL_FLUSH";
+   case EVENT_TYPE(EVENT_TYPE_VS_PARTIAL_FLUSH) | EVENT_INDEX(4):
+      return "VS_PARTIAL_FLUSH";
+   case EVENT_TYPE(EVENT_TYPE_FLUSH_AND_INV_CB_PIXEL_DATA) | EVENT_INDEX(0):
+      return "FLUSH_AND_INV_CB_PIXEL_DATA";
+   case EVENT_TYPE(EVENT_TYPE_FLUSH_AND_INV_CB_META) | EVENT_INDEX(0):
+      return "FLUSH_AND_INV_CB_META";
+   case EVENT_TYPE(EVENT_TYPE_DB_CACHE_FLUSH_AND_INV) | EVENT_INDEX(0):
+      return "DB_CACHE_FLUSH_AND_INV";
+   case EVENT_TYPE(EVENT_TYPE_FLUSH_AND_INV_DB_META) | EVENT_INDEX(0):
+      return "FLUSH_AND_INV_DB_META";
+   default:
+      return "UNKNOWN";
+   }
+}
+
 static void
 terakan_barrier_emit_event_write(struct terakan_gfx_command_writer * const command_writer,
                                  uint32_t event)
@@ -272,6 +303,10 @@ terakan_barrier_emit_event_write(struct terakan_gfx_command_writer * const comma
    }
    *packet++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
    *packet++ = event;
+   if (unlikely(terakan_barrier_is_cs_dump_enabled(command_writer))) {
+      fprintf(stderr, "terakan: pm4: PKT3_EVENT_WRITE event=0x%08X name=%s\n", event,
+              terakan_barrier_event_name(event));
+   }
    terakan_gfx_command_writer_emit_done(command_writer, packet);
 }
 
@@ -439,6 +474,9 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
       }
       *pfp_sync_me_packet++ = PKT3(PKT3_PFP_SYNC_ME, 0, 0);
       *pfp_sync_me_packet++ = 0;
+      if (unlikely(terakan_barrier_is_cs_dump_enabled(command_writer))) {
+         fprintf(stderr, "terakan: pm4: PKT3_PFP_SYNC_ME\n");
+      }
       terakan_gfx_command_writer_emit_done(command_writer, pfp_sync_me_packet);
    }
 }
