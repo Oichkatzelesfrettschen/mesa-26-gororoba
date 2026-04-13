@@ -34,10 +34,12 @@
 #include "gallium/drivers/r600/r600d_common.h"
 #include "util/bitscan.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "vk_device.h"
 
 #include <assert.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -141,7 +143,6 @@ terakan_hw_state_draw_emit_vgt_index_buffer(struct terakan_gfx_command_writer * 
 
    *packet++ = PKT3(EG_PKT3_INDEX_BUFFER_SIZE, 1 - 1, 0);
    *packet++ = command_writer->hw_state_draw.vgt_index_buffer.size;
-
    terakan_gfx_command_writer_emit_done(command_writer, packet);
 }
 
@@ -1674,10 +1675,14 @@ terakan_hw_state_sqc_set_resource(struct terakan_hw_state_sqc * const state, uin
 
    BITSET_SET(modified_bitset, index);
 
-   if (BITSET_TEST(needed_bitset, index)) {
-      /* Emit before the next draw or dispatch. */
-      state->modified.indices |= BITFIELD_BIT(state_index);
-   }
+   (void)needed_bitset;
+   /* Emit before the next draw or dispatch.
+    *
+    * Keep resource updates eager even if `needed_bitset` lags the final HW
+    * resource namespace used by backend codegen. This avoids dropping valid
+    * descriptor writes when shader RID mapping differs from NIR-side bookkeeping.
+    */
+   state->modified.indices |= BITFIELD_BIT(state_index);
 }
 
 void
@@ -2084,6 +2089,7 @@ terakan_hw_state_sqc_emit_kcache_buffer(
                                                    TERAKAN_BO_PRIORITY_UNIFORM_BUFFER));
    }
 
+
    terakan_gfx_command_writer_emit_done(command_writer, packet);
 
    return true;
@@ -2156,6 +2162,15 @@ terakan_hw_state_sqc_emit_resource(struct terakan_gfx_command_writer * const com
          TERASCALE_WDDM_PATCH_IDS_SQ_VTX_CONSTANT_BASE_HI, bo_reference);
    }
 
+   if (unlikely(debug_get_bool_option("TERAKAN_TEX_BIND_AUDIT", false))) {
+      fprintf(stderr,
+              "terakan: pm4: SET_RESOURCE idx=%u type=%u bo=%p words=%08X,%08X,%08X,%08X,%08X,%08X,%08X,%08X\n",
+              global_index, G_03001C_TYPE(packet_descriptor[7]), (void const *)bo,
+              packet_descriptor[0], packet_descriptor[1], packet_descriptor[2],
+              packet_descriptor[3], packet_descriptor[4], packet_descriptor[5],
+              packet_descriptor[6], packet_descriptor[7]);
+   }
+
    terakan_gfx_command_writer_emit_done(command_writer, packet);
 
    return true;
@@ -2174,6 +2189,10 @@ terakan_hw_state_sqc_emit_sampler(struct terakan_gfx_command_writer * const comm
    *packet++ = 3 * global_index;
    memcpy(packet, sampler, sizeof(uint32_t) * 3);
    packet += 3;
+   if (unlikely(debug_get_bool_option("TERAKAN_TEX_BIND_AUDIT", false))) {
+      fprintf(stderr, "terakan: pm4: SET_SAMPLER idx=%u words=%08X,%08X,%08X\n",
+              global_index, sampler[0], sampler[1], sampler[2]);
+   }
    terakan_gfx_command_writer_emit_done(command_writer, packet);
    return true;
 }
@@ -2235,8 +2254,9 @@ terakan_hw_state_sqc_emit_resources_for_stage(
    unsigned const word_count = BITSET_WORDS(count);
 
    BITSET_DECLARE(update_bindings, TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE);
+   (void)needed_bitset;
    for (unsigned word_index = 0; word_index < word_count; ++word_index) {
-      update_bindings[word_index] = modified_bitset[word_index] & needed_bitset[word_index];
+      update_bindings[word_index] = modified_bitset[word_index];
    }
 
    unsigned binding_index;
