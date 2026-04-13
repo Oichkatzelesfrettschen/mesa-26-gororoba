@@ -99,6 +99,8 @@ extern "C" {
  */
 #define TERAKAN_BO_REFERENCE_HASH_BITS (TERAKAN_BO_REFERENCE_WRITER_REFERENCE_COUNT_LOG2 + 1)
 #define TERAKAN_BO_REFERENCE_HASH_MASK (((uint32_t)1 << TERAKAN_BO_REFERENCE_HASH_BITS) - 1)
+/* Fast path for repeated references to the same BO in consecutive packet emissions. */
+#define TERAKAN_BO_REFERENCE_WRITER_LAST_REFERENCE_INVALID UINT32_MAX
 static_assert(
    TERAKAN_BO_REFERENCE_HASH_MASK + 1 >= TERAKAN_BO_REFERENCE_WRITER_REFERENCE_COUNT,
    "There need to be enough BO reference hash map entries for each BO reference with the default "
@@ -113,6 +115,8 @@ struct terakan_bo_reference_writer {
    uint32_t reference_count;
 
    struct terakan_bo const * reference_bos[TERAKAN_BO_REFERENCE_WRITER_REFERENCE_COUNT];
+   struct terakan_bo const * last_reference_bo;
+   uint32_t last_reference_index;
 
    /* Which elements of the map are used, faster to clear than the array itself. */
    BITSET_DECLARE(map_entries_used, TERAKAN_BO_REFERENCE_HASH_MASK + 1);
@@ -199,6 +203,11 @@ struct terakan_command_buffer {
 
    /* RING_SIZE for one shader engine. */
    uint32_t shader_ring_bytes_needed_for_se_shr8[TERAKAN_SHADER_RING_INDEX_COUNT];
+
+   /* True if this command buffer records at least one compute dispatch.
+    * Used at submit time to avoid emitting CS_PARTIAL_FLUSH for submissions
+    * that contain only graphics/barrier work. */
+   bool has_compute_work;
 
    struct list_head indirect_buffers;
 
