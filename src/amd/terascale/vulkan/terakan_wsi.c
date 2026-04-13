@@ -28,7 +28,6 @@
 #include "terakan_sync_completion.h"
 
 #include "util/u_atomic.h"
-#include "util/u_debug.h"
 #include "vk_device.h"
 #include "vk_instance.h"
 #include "vk_sync.h"
@@ -216,12 +215,13 @@ terakan_wsi_init(struct terakan_physical_device * const physical_device)
    physical_device->wsi_device.sw = true;
 #endif
 
-   if (debug_get_bool_option("TERAKAN_X11_EXPERIMENTAL_HW_WAIT", false)) {
-      physical_device->wsi_device.init_image_hw_wait = terakan_wsi_init_image_hw_wait;
-      physical_device->wsi_device.destroy_image_hw_wait = terakan_wsi_destroy_image_hw_wait;
-      physical_device->wsi_device.signal_image_hw_wait = terakan_wsi_signal_image_hw_wait;
-      physical_device->wsi_device.create_image_hw_wait_sync = terakan_wsi_create_image_hw_wait_sync;
-   }
+   /* Always expose register-driven WSI image wait plumbing. Queue submit does a runtime support
+    * probe for WAIT_REG_MEM and falls back to CPU waits when unsupported.
+    */
+   physical_device->wsi_device.init_image_hw_wait = terakan_wsi_init_image_hw_wait;
+   physical_device->wsi_device.destroy_image_hw_wait = terakan_wsi_destroy_image_hw_wait;
+   physical_device->wsi_device.signal_image_hw_wait = terakan_wsi_signal_image_hw_wait;
+   physical_device->wsi_device.create_image_hw_wait_sync = terakan_wsi_create_image_hw_wait_sync;
 
    return VK_SUCCESS;
 }
