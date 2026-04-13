@@ -30,7 +30,7 @@
  *   uint8_t stage_regs[regs_size]
  */
 
-#define TERAKAN_CACHE_BLOB_VERSION 1
+#define TERAKAN_CACHE_BLOB_VERSION 2
 
 struct terakan_cached_shader_blob_header {
    uint32_t version;
@@ -39,6 +39,7 @@ struct terakan_cached_shader_blob_header {
    uint32_t sq_pgm_resources[2];
    uint32_t scratch_item_size_dwords;
    uint32_t regs_size;
+   uint32_t reflection_size;
 };
 
 /* --- vk_pipeline_cache_object ops --- */
@@ -52,18 +53,26 @@ terakan_cached_shader_serialize(struct vk_pipeline_cache_object *object,
 
    uint32_t regs_size;
    const void *regs_data;
+   uint32_t reflection_size;
+   const void *reflection_data;
    switch (cached->stage) {
    case MESA_SHADER_VERTEX:
       regs_size = sizeof(cached->regs.vs);
       regs_data = &cached->regs.vs;
+      reflection_size = sizeof(cached->reflection.vs);
+      reflection_data = &cached->reflection.vs;
       break;
    case MESA_SHADER_FRAGMENT:
       regs_size = sizeof(cached->regs.ps);
       regs_data = &cached->regs.ps;
+      reflection_size = sizeof(cached->reflection.ps);
+      reflection_data = &cached->reflection.ps;
       break;
    default:
       regs_size = 0;
       regs_data = NULL;
+      reflection_size = 0;
+      reflection_data = NULL;
       break;
    }
 
@@ -74,6 +83,7 @@ terakan_cached_shader_serialize(struct vk_pipeline_cache_object *object,
       .sq_pgm_resources = { cached->sq_pgm_resources[0], cached->sq_pgm_resources[1] },
       .scratch_item_size_dwords = cached->scratch_item_size_dwords,
       .regs_size = regs_size,
+      .reflection_size = reflection_size,
    };
 
    blob_write_bytes(blob, &hdr, sizeof(hdr));
@@ -83,6 +93,9 @@ terakan_cached_shader_serialize(struct vk_pipeline_cache_object *object,
 
    if (regs_size > 0 && regs_data != NULL)
       blob_write_bytes(blob, regs_data, regs_size);
+
+   if (reflection_size > 0 && reflection_data != NULL)
+      blob_write_bytes(blob, reflection_data, reflection_size);
 
    return !blob->out_of_memory;
 }
@@ -109,12 +122,26 @@ terakan_cached_shader_deserialize(struct vk_pipeline_cache *cache,
       return NULL;
 
    uint32_t expected_regs_size;
+   uint32_t expected_reflection_size;
    switch (hdr.stage) {
    case MESA_SHADER_VERTEX:   expected_regs_size = sizeof(((struct terakan_cached_shader *)0)->regs.vs); break;
    case MESA_SHADER_FRAGMENT: expected_regs_size = sizeof(((struct terakan_cached_shader *)0)->regs.ps); break;
    default:                   expected_regs_size = 0; break;
    }
+   switch (hdr.stage) {
+   case MESA_SHADER_VERTEX:
+      expected_reflection_size = sizeof(((struct terakan_cached_shader *)0)->reflection.vs);
+      break;
+   case MESA_SHADER_FRAGMENT:
+      expected_reflection_size = sizeof(((struct terakan_cached_shader *)0)->reflection.ps);
+      break;
+   default:
+      expected_reflection_size = 0;
+      break;
+   }
    if (hdr.regs_size != expected_regs_size)
+      return NULL;
+   if (hdr.reflection_size != expected_reflection_size)
       return NULL;
 
    struct terakan_cached_shader *cached = calloc(1, sizeof(*cached));
@@ -154,6 +181,23 @@ terakan_cached_shader_deserialize(struct vk_pipeline_cache *cache,
       }
       if (regs_dest != NULL)
          blob_copy_bytes(blob, regs_dest, hdr.regs_size);
+   }
+
+   if (hdr.reflection_size > 0) {
+      void *reflection_dest;
+      switch (hdr.stage) {
+      case MESA_SHADER_VERTEX:
+         reflection_dest = &cached->reflection.vs;
+         break;
+      case MESA_SHADER_FRAGMENT:
+         reflection_dest = &cached->reflection.ps;
+         break;
+      default:
+         reflection_dest = NULL;
+         break;
+      }
+      if (reflection_dest != NULL)
+         blob_copy_bytes(blob, reflection_dest, hdr.reflection_size);
    }
 
    if (blob->overrun) {
@@ -303,6 +347,16 @@ terakan_pipeline_cache_insert(struct vk_pipeline_cache *cache,
              sizeof(cached->regs.vs.spi_vs_out_id));
       cached->regs.vs.spi_vs_out_config = shader->static_state.stage.vs.spi_vs_out_config;
       cached->regs.vs.pa_cl_vs_out_cntl = shader->static_state.stage.vs.pa_cl_vs_out_cntl;
+
+      if (shader->shader.noutput > R600_SHADER_MAX_OUTPUTS ||
+          shader->shader.highest_export_param > UINT16_MAX)
+         goto skip_cache;
+      cached->reflection.vs.noutput = (uint16_t)shader->shader.noutput;
+      cached->reflection.vs.highest_export_param = (uint16_t)shader->shader.highest_export_param;
+      for (uint32_t i = 0; i < shader->shader.noutput; ++i) {
+         cached->reflection.vs.output[i].export_param = (int16_t)shader->shader.output[i].export_param;
+         cached->reflection.vs.output[i].spi_sid = (int16_t)shader->shader.output[i].spi_sid;
+      }
       break;
    case MESA_SHADER_FRAGMENT:
       cached->regs.ps.sq_pgm_exports_ps = shader->static_state.stage.ps.sq_pgm_exports_ps;
@@ -316,6 +370,20 @@ terakan_pipeline_cache_insert(struct vk_pipeline_cache *cache,
       cached->regs.ps.spi_baryc_cntl = shader->static_state.stage.ps.spi_baryc_cntl;
       cached->regs.ps.cb_shader_mask = shader->static_state.stage.ps.cb_shader_mask;
       cached->regs.ps.db_shader_control = shader->fs.db_shader_control;
+
+      if (shader->shader.ninput > R600_SHADER_MAX_INPUTS)
+         goto skip_cache;
+      cached->reflection.ps.ninput = (uint16_t)shader->shader.ninput;
+      for (uint32_t i = 0; i < shader->shader.ninput; ++i) {
+         struct r600_shader_io const *const input = &shader->shader.input[i];
+         cached->reflection.ps.input[i].varying_slot = (uint16_t)input->varying_slot;
+         cached->reflection.ps.input[i].system_value = (uint16_t)input->system_value;
+         cached->reflection.ps.input[i].gpr = (uint16_t)input->gpr;
+         cached->reflection.ps.input[i].spi_sid = (int16_t)input->spi_sid;
+         cached->reflection.ps.input[i].interpolate = (uint8_t)input->interpolate;
+         cached->reflection.ps.input[i].interpolate_location = (uint8_t)input->interpolate_location;
+         cached->reflection.ps.input[i].lds_pos = (uint8_t)input->lds_pos;
+      }
       break;
    default:
       break;
@@ -392,6 +460,13 @@ terakan_cached_shader_restore(struct terakan_cached_shader const *cached,
              sizeof(shader->static_state.stage.vs.spi_vs_out_id));
       shader->static_state.stage.vs.spi_vs_out_config = cached->regs.vs.spi_vs_out_config;
       shader->static_state.stage.vs.pa_cl_vs_out_cntl = cached->regs.vs.pa_cl_vs_out_cntl;
+
+      shader->shader.noutput = cached->reflection.vs.noutput;
+      shader->shader.highest_export_param = cached->reflection.vs.highest_export_param;
+      for (uint32_t i = 0; i < shader->shader.noutput; ++i) {
+         shader->shader.output[i].export_param = cached->reflection.vs.output[i].export_param;
+         shader->shader.output[i].spi_sid = cached->reflection.vs.output[i].spi_sid;
+      }
       break;
    case MESA_SHADER_FRAGMENT:
       shader->static_state.stage.ps.sq_pgm_exports_ps = cached->regs.ps.sq_pgm_exports_ps;
@@ -405,6 +480,18 @@ terakan_cached_shader_restore(struct terakan_cached_shader const *cached,
       shader->static_state.stage.ps.spi_baryc_cntl = cached->regs.ps.spi_baryc_cntl;
       shader->static_state.stage.ps.cb_shader_mask = cached->regs.ps.cb_shader_mask;
       shader->fs.db_shader_control = cached->regs.ps.db_shader_control;
+
+      shader->shader.ninput = cached->reflection.ps.ninput;
+      for (uint32_t i = 0; i < shader->shader.ninput; ++i) {
+         struct r600_shader_io *const input = &shader->shader.input[i];
+         input->varying_slot = (gl_varying_slot)cached->reflection.ps.input[i].varying_slot;
+         input->system_value = (gl_system_value)cached->reflection.ps.input[i].system_value;
+         input->gpr = cached->reflection.ps.input[i].gpr;
+         input->spi_sid = cached->reflection.ps.input[i].spi_sid;
+         input->interpolate = cached->reflection.ps.input[i].interpolate;
+         input->interpolate_location = cached->reflection.ps.input[i].interpolate_location;
+         input->lds_pos = cached->reflection.ps.input[i].lds_pos;
+      }
       break;
    default:
       break;
