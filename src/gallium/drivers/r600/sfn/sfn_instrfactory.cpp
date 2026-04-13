@@ -109,6 +109,10 @@ InstrFactory::from_nir(nir_instr *instr, Shader& shader)
       return process_jump(nir_instr_as_jump(instr), shader);
    case nir_instr_type_undef:
       return process_undef(nir_instr_as_undef(instr), shader);
+   case nir_instr_type_deref:
+      /* Deref instructions are SSA plumbing for load/store_deref intrinsics and
+       * don't translate to standalone R600 machine instructions. */
+      return true;
    default:
       fprintf(stderr, "Instruction type %d not supported\n", instr->type);
       return false;

@@ -798,13 +798,12 @@ TexInstr::Inputs::Inputs(const nir_tex_instr& instr, ValueFactory& vf):
       case nir_tex_src_offset:
          offset = &instr.src[i].src;
          break;
-         /* case nir_tex_src_sampler_deref:
-         sampler_deref = get_deref_location(instr.src[i].src);
-         break;
+      case nir_tex_src_sampler_deref:
       case nir_tex_src_texture_deref:
-         texture_deref = get_deref_location(instr.src[i].src);
+         /* NIR may keep deref srcs alongside lowered texture_index /
+          * sampler_index. SFN consumes the numeric indices, so no extra
+          * per-src handling is required here. */
          break;
-      */
       case nir_tex_src_ms_index:
          ms_index = vf.src(instr.src[i], 0);
          break;
