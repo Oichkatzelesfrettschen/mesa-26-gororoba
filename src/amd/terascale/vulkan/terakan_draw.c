@@ -26,6 +26,7 @@
 #include "terakan_instance.h"
 #include "terakan_device.h"
 
+#include "terakan_barrier.h"
 #include "terakan_buffer.h"
 #include "terakan_command_buffer.h"
 #include "terakan_entrypoints.h"
@@ -33,13 +34,66 @@
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600d_common.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_endian.h"
 #include "util/u_math.h"
 
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
+
+static inline bool
+terakan_draw_debug_cs_dump_enabled(struct terakan_gfx_command_writer * const command_writer)
+{
+   struct terakan_device const * const device = terakan_gfx_command_writer_device(command_writer);
+   struct terakan_instance const * const inst =
+      container_of(terakan_device_physical_device(device)->vk.base.instance,
+                   struct terakan_instance const, vk);
+   return (inst->debug_flags & TERAKAN_DEBUG_CS_DUMP) != 0;
+}
+
+static inline bool
+terakan_draw_pre_draw_surface_sync_enabled(void)
+{
+   return debug_get_bool_option("TERAKAN_DRAW_PRE_DRAW_SURFACE_SYNC", false);
+}
+
+static void
+terakan_draw_emit_pre_draw_surface_sync(struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t const surface_sync_cp_coher_cntl =
+      S_0085F0_TC_ACTION_ENA(1) |
+      S_0085F0_VC_ACTION_ENA(1) |
+      S_0085F0_SH_ACTION_ENA(1) |
+      S_0085F0_SMX_ACTION_ENA(1) |
+      TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
+
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 5);
+   if (unlikely(packet == NULL)) {
+      if (unlikely(terakan_draw_debug_cs_dump_enabled(command_writer))) {
+         fprintf(stderr, "terakan: pm4: PKT3_SURFACE_SYNC packet=NULL (skipped)\n");
+      }
+      return;
+   }
+
+   *packet++ = PKT3(PKT3_SURFACE_SYNC, 4 - 1, 0);
+   *packet++ = surface_sync_cp_coher_cntl;
+   *packet++ = UINT32_MAX;
+   *packet++ = 0;
+   *packet++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+
+   if (unlikely(terakan_draw_debug_cs_dump_enabled(command_writer))) {
+      fprintf(stderr,
+              "terakan: pm4: PKT3_SURFACE_SYNC cp_coher_cntl=0x%08X coher_size=0x%08X coher_base=0x%08X poll=%u\n",
+              surface_sync_cp_coher_cntl, UINT32_MAX, 0u,
+              TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL);
+   }
+
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
 
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdBindIndexBuffer(VkCommandBuffer const commandBuffer, VkBuffer const bufferHandle,
@@ -141,6 +195,9 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
    }
 
    terakan_before_hw_draw(command_writer);
+   if (unlikely(terakan_draw_pre_draw_surface_sync_enabled())) {
+      terakan_draw_emit_pre_draw_surface_sync(command_writer);
+   }
 
    if (profiling) {
       device->profile.draw_ns += terakan_profile_now_ns() - t0;
@@ -174,6 +231,11 @@ terakan_CmdDraw(VkCommandBuffer const commandBuffer, uint32_t const vertexCount,
    *packet++ = PKT3(PKT3_DRAW_INDEX_AUTO, 3 - 2, 0);
    *packet++ = vertexCount;
    *packet++ = S_0287F0_SOURCE_SELECT(V_0287F0_DI_SRC_SEL_AUTO_INDEX);
+   if (unlikely(terakan_draw_debug_cs_dump_enabled(command_writer))) {
+      fprintf(stderr,
+              "terakan: pm4: PKT3_DRAW_INDEX_AUTO vertex_count=%u first_vertex=%u first_instance=%u\n",
+              vertexCount, firstVertex, firstInstance);
+   }
    terakan_gfx_command_writer_emit_done(command_writer, packet);
 }
 
