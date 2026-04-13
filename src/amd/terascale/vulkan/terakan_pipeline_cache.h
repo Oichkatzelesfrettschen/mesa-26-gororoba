@@ -18,6 +18,7 @@
  *   - Program bytecode (raw instruction words uploaded to GPU BO)
  *   - SQ_PGM_RESOURCES register values
  *   - Stage-specific register state (SPI_VS_OUT_*, SPI_PS_INPUT_*, etc.)
+ *   - Minimal VS/FS reflection used by pipeline-time SPI route validation
  *   - scratch_item_size_dwords
  *   - db_shader_control (FS only, set by SFN compiler)
  *
@@ -27,6 +28,7 @@
  *   - fragment_data_uncompacted_locations (from post-link lowering)
  *   - vertex_attributes_needed (from NIR analysis)
  *   - uavs_for_mutable_resources_needed (from post-link lowering)
+ *   - Full r600_shader internals (bytecode/arrays/pointer-owned state)
  *
  * These fields are filled by terakan_shader_lower_and_optimize_post_link()
  * which runs BEFORE the cache lookup, so they are available on cache hit.
@@ -52,8 +54,9 @@ struct terakan_device;
 /*
  * Cached shader binary — wraps vk_pipeline_cache_object.
  *
- * Contains ONLY flat, pointer-free compilation output.
- * The r600_shader struct (which has pointers/linked lists) is NOT stored.
+ * Contains only flat, pointer-free compilation output and minimal reflection.
+ * The full r600_shader struct (which has pointers/owned allocations) is not
+ * serialized.
  */
 struct terakan_cached_shader {
    struct vk_pipeline_cache_object base;
@@ -88,6 +91,32 @@ struct terakan_cached_shader {
          uint32_t db_shader_control;
       } ps;
    } regs;
+
+   /* Minimal reflection needed by strict VS↔FS SPI validation on cache hits. */
+   union {
+      struct {
+         uint16_t noutput;
+         uint16_t highest_export_param;
+         struct {
+            int16_t export_param;
+            int16_t spi_sid;
+         } output[R600_SHADER_MAX_OUTPUTS];
+      } vs;
+
+      struct {
+         uint16_t ninput;
+         struct {
+            uint16_t varying_slot;
+            uint16_t system_value;
+            uint16_t gpr;
+            int16_t spi_sid;
+            uint8_t interpolate;
+            uint8_t interpolate_location;
+            uint8_t lds_pos;
+            uint8_t reserved;
+         } input[R600_SHADER_MAX_INPUTS];
+      } ps;
+   } reflection;
 };
 
 /* Pipeline cache object ops for serialization/deserialization */
@@ -146,7 +175,8 @@ terakan_pipeline_cache_insert(struct vk_pipeline_cache *cache,
  * Restore a terakan_shader_impl from a cached shader object.
  *
  * Allocates a new BO, copies the cached bytecode into it, and fills
- * the shader static_state and register values from the cache.
+ * the shader static_state, stage registers, and minimal SPI-validation
+ * reflection from the cache.
  *
  * Pre-compile fields (resources_needed, samplers, push_constants, etc.)
  * are NOT restored — they must already be filled by the caller via
