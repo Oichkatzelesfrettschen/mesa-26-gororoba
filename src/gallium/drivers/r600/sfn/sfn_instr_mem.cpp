@@ -764,45 +764,73 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
     */
    auto& vf = shader.value_factory();
 
-   /* Address: src[1] contains the byte address, shift right by 2 for dword offset.
-    * INDEX_GPR.x = byte_address >> 2 for MEM_RAT dword addressing. */
-   auto coord_orig = vf.src(intr->src[1], 0);
-   auto addr_base = vf.temp_register(0);
-   shader.emit_instruction(
-      new AluInstr(op2_lshr_int, addr_base, coord_orig, vf.literal(2), AluInstr::write));
+   unsigned rat_id = nir_intrinsic_id_base(intr);
+   PRegister rat_id_offset = nullptr;
+   const nir_const_value * const uav_offset_const = nir_src_as_const_value(intr->src[0]);
+   if (uav_offset_const != nullptr) {
+      rat_id += uav_offset_const->u32;
+   } else {
+      rat_id_offset = vf.src(intr->src[0], 0)->as_register();
+   }
 
-   auto addr_vec = vf.temp_vec4(pin_group, {0, 1, 2, 7});
-   shader.emit_instruction(
-      new AluInstr(op1_mov, addr_vec[0], addr_base, AluInstr::write));
+   auto coord = vf.temp_vec4(pin_chgr, {0, 1, 2, 3});
+   unsigned coord_components = MIN2(nir_src_num_components(intr->src[1]), 4u);
+   for (unsigned i = 0; i < coord_components; ++i) {
+      shader.emit_instruction(
+         new AluInstr(op1_mov, coord[i], vf.src(intr->src[1], i), AluInstr::write));
+   }
+   for (unsigned i = coord_components; i < 4; ++i) {
+      shader.emit_instruction(new AluInstr(op1_mov, coord[i], vf.zero(), AluInstr::write));
+   }
 
-   /* Value: src[2] component 0 */
-   auto value = vf.src(intr->src[2], 0);
-   PRegister v = vf.temp_register(0);
-   shader.emit_instruction(new AluInstr(op1_mov, v, value, AluInstr::write));
-   auto value_vec = RegisterVec4(v, nullptr, nullptr, nullptr, pin_chan);
+   auto data_vec4 = vf.temp_vec4(pin_chgr, {0, 1, 2, 3});
+   for (unsigned i = 0; i < 4; ++i) {
+      shader.emit_instruction(new AluInstr(op1_mov, data_vec4[i], vf.zero(), AluInstr::write));
+   }
 
-   /* RAT resource: id_base + ssbo_image_offset */
-   unsigned id_base = nir_intrinsic_id_base(intr);
-   unsigned rat_id = id_base + shader.ssbo_image_offset();
-   fprintf(stderr, "SFN: emit_uav_store id_base=%u ssbo_offset=%u rat_id=%u\n", id_base, shader.ssbo_image_offset(), rat_id);
+   unsigned const uav_op = nir_intrinsic_uav_op_r600(intr);
+   unsigned const uav_op_base = uav_op & 0x1F;
+   unsigned const value_components = MIN2(nir_src_num_components(intr->src[2]), 4u);
 
-   /* Use MEM_RAT_CACHELESS + STORE_RAW for compute SSBO writes.
-    * This bypasses the CB cache entirely (ISA opcode 0x57 vs 0x56),
-    * writing directly to VRAM through write-combining buffers.
-    * Eliminates the SURFACE_SYNC lockup that occurs with cached MEM_RAT
-    * when CB_COLOR0_BASE address is wrong or when the CB cache flush
-    * targets unmapped memory. Matches Gallium/LLVM R600 backend pattern. */
-   auto store = new RatInstr(cf_mem_rat_cacheless,
-                             RatInstr::STORE_RAW,
-                             value_vec,
-                             addr_vec,
+   if (uav_op_base == RatInstr::CMPXCHG_INT || uav_op_base == RatInstr::CMPXCHG_FLT ||
+       uav_op_base == RatInstr::CMPXCHG_FDENORM) {
+      shader.emit_instruction(
+         new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
+      shader.emit_instruction(new AluInstr(op1_mov,
+                                           data_vec4[shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3],
+                                           vf.src(intr->src[3], 0),
+                                           AluInstr::write));
+   } else if (uav_op_base == RatInstr::STORE_TYPED || uav_op_base == RatInstr::STORE_RAW) {
+      for (unsigned i = 0; i < value_components; ++i) {
+         shader.emit_instruction(
+            new AluInstr(op1_mov, data_vec4[i], vf.src(intr->src[2], i), AluInstr::write));
+      }
+   } else if (uav_op_base != RatInstr::NOP) {
+      shader.emit_instruction(
+         new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
+   }
+
+   unsigned comp_mask = 1;
+   if (uav_op_base == RatInstr::STORE_TYPED || uav_op_base == RatInstr::STORE_RAW) {
+      comp_mask = value_components ? ((1u << value_components) - 1u) : 1u;
+   }
+
+   bool const scalar_buffer_store =
+      uav_op_base == RatInstr::STORE_TYPED && coord_components == 1 && value_components == 1;
+   unsigned const rat_opcode = scalar_buffer_store ? RatInstr::STORE_RAW : uav_op;
+
+   auto store = new RatInstr((scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW)
+                                ? cf_mem_rat_cacheless
+                                : cf_mem_rat,
+                             static_cast<RatInstr::ERatOp>(rat_opcode),
+                             data_vec4,
+                             coord,
                              rat_id,
-                             nullptr,
+                             rat_id_offset,
                              1,
-                             1,
+                             CLAMP(comp_mask, 1u, 0xFu),
                              0);
    shader.emit_instruction(store);
-   /* Non-returning SSBO stores still need ACK tracking for robust tail waits. */
    store->set_ack();
    return true;
 }
