@@ -565,7 +565,8 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
        * Covers: robust_buffer_access ON (all offsets), dynamic offsets,
        * bank overflow.  VTX SIZE_MINUS_1 returns zero on OOB access. */
       uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
-                                          binding.set_binding->first_shader_resources[stage];
+                                          binding.set_binding->first_shader_resources[stage] +
+                                          TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
       BITSET_SET_RANGE(state->resources_needed,
                        resource_index_base + binding.array_index_range_first,
                        resource_index_base + binding.array_index_range_last);
@@ -732,7 +733,8 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
    /* Vertex fetches are coherent with UAVs, do a vertex fetch unconditionally. */
    uint8_t const resource_index_base =
       binding.set->first_shader_resources[b->shader->info.stage] +
-      binding.set_binding->first_shader_resources[b->shader->info.stage];
+      binding.set_binding->first_shader_resources[b->shader->info.stage] +
+      TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
    BITSET_SET_RANGE(state->resources_needed, resource_index_base + binding.array_index_range_first,
                     resource_index_base + binding.array_index_range_last);
    nir_def_rewrite_uses(&intrin->def, terakan_nir_load_raw_resource_buffer(
@@ -1025,7 +1027,8 @@ terakan_nir_lower_bindings_instr_image_deref_load(
    }
 
    uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
-                                       binding.set_binding->first_shader_resources[stage];
+                                       binding.set_binding->first_shader_resources[stage] +
+                                       TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
 
    if (image_dim == GLSL_SAMPLER_DIM_BUF) {
       /* Vertex fetches are coherent with UAVs, do a vertex fetch unconditionally. */
@@ -1075,7 +1078,7 @@ terakan_nir_lower_bindings_instr_image_deref_load(
                      ? nir_channel(b, intrin->src[1].ssa, image_dim == GLSL_SAMPLER_DIM_1D ? 1 : 2)
                      : nir_imm_zero(b, 1, 32),
                   nir_imm_zero(b, 1, 32)),
-               .access = access, .id_base = resource_index_base),
+                .access = access, .id_base = resource_index_base),
             intrin->def.bit_size));
       nir_instr_remove(&intrin->instr);
       return;

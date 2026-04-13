@@ -1065,6 +1065,7 @@ static void
 terakan_state_draw_apply_cb_color_uav(struct terakan_gfx_command_writer * const command_writer)
 {
    struct terakan_device const * const device = terakan_gfx_command_writer_device(command_writer);
+   bool const debug_uav_bind = debug_get_bool_option("TERAKAN_DEBUG_UAV_BIND", false);
 
    uint32_t uav_cb_target_mask = 0b0;
 
@@ -1110,13 +1111,33 @@ terakan_state_draw_apply_cb_color_uav(struct terakan_gfx_command_writer * const 
                                               uav_immediate_resource_index,
                                               device->uav_immediate_bo, uav_immediate_resource);
          uav_cb_target_mask |= (uint32_t)0xF << (4 * uav_color_index);
+         if (unlikely(debug_uav_bind)) {
+            fprintf(stderr,
+                    "terakan: uav-bind: mr=%u z=%u color=%u immed=%u bo=%p base=0x%08X view=0x%08X info=0x%08X\n",
+                    uav_mutable_resource_index, uav_zero_based_index, uav_color_index,
+                    uav_immediate_resource_index, (void const *)uav->bo, uav->color.base,
+                    uav->color.view, uav->color.info);
+         }
       } else {
          terakan_hw_state_draw_set_cb_color(&command_writer->hw_state_draw, uav_color_index, NULL,
                                             NULL, NULL, true);
          terakan_hw_state_sqc_set_resource_fs(&command_writer->hw_state_sqc,
                                               uav_immediate_resource_index, NULL, NULL);
+         if (unlikely(debug_uav_bind)) {
+            fprintf(stderr,
+                    "terakan: uav-bind: mr=%u z=%u color=%u immed=%u bo=NULL\n",
+                    uav_mutable_resource_index, uav_zero_based_index, uav_color_index,
+                    uav_immediate_resource_index);
+         }
       }
       ++uav_zero_based_index;
+   }
+
+   if (unlikely(debug_uav_bind)) {
+      fprintf(stderr,
+              "terakan: uav-bind: base=%u mask=0x%08X\n",
+              command_writer->state_draw.cb_color_uav.from_apply_sq_pgm_ps.fs_uav_index_base,
+              uav_cb_target_mask);
    }
 
    TERAKAN_STATE_DRAW_ASSERT_DEPENDS_ON(CB_TARGET_MASK, CB_COLOR_UAV);
@@ -1132,6 +1153,7 @@ terakan_state_draw_apply_cb_color_uav(struct terakan_gfx_command_writer * const 
 static void
 terakan_state_draw_apply_cb_target_mask(struct terakan_gfx_command_writer * const command_writer)
 {
+   bool const debug_uav_bind = debug_get_bool_option("TERAKAN_DEBUG_UAV_BIND", false);
    uint32_t cb_target_mask_rtv = 0b0;
 
    uint8_t const attachment_write_enable =
@@ -1185,6 +1207,13 @@ terakan_state_draw_apply_cb_target_mask(struct terakan_gfx_command_writer * cons
    command_writer->hw_state_draw.cb_target_mask = cb_target_mask;
    terakan_hw_state_draw_written(&command_writer->hw_state_draw,
                                  TERAKAN_HW_STATE_DRAW_INDEX_CB_TARGET_MASK, modified);
+   if (unlikely(debug_uav_bind)) {
+      fprintf(stderr,
+              "terakan: uav-bind: cb_target_mask_rtv=0x%08X cb_target_mask_uav=0x%08X cb_target_mask=0x%08X\n",
+              cb_target_mask_rtv,
+              command_writer->state_draw.cb_target_mask.from_apply_cb_color_uav.uav_cb_target_mask,
+              cb_target_mask);
+   }
 
    bool const any_rtv_or_uav_enabled = cb_target_mask != 0;
    bool const any_rtv_enabled = cb_target_mask_rtv != 0;
@@ -1205,6 +1234,7 @@ terakan_state_draw_apply_cb_target_mask(struct terakan_gfx_command_writer * cons
 static void
 terakan_state_draw_apply_cb_color_control(struct terakan_gfx_command_writer * const command_writer)
 {
+   bool const debug_uav_bind = debug_get_bool_option("TERAKAN_DEBUG_UAV_BIND", false);
    TERAKAN_STATE_DRAW_ASSERT_DEPENDS_ON(CB_COLOR_CONTROL, CB_TARGET_MASK);
    TERAKAN_STATE_DRAW_ASSERT_DEPENDS_ON(CB_COLOR_CONTROL, LOGIC_OP);
    /* Ignore the logical operation specified by the application and skip potential ROP3 state
@@ -1224,11 +1254,15 @@ terakan_state_draw_apply_cb_color_control(struct terakan_gfx_command_writer * co
    command_writer->hw_state_draw.cb_color_control = cb_color_control;
    terakan_hw_state_draw_written(&command_writer->hw_state_draw,
                                  TERAKAN_HW_STATE_DRAW_INDEX_CB_COLOR_CONTROL, modified);
+   if (unlikely(debug_uav_bind)) {
+      fprintf(stderr, "terakan: uav-bind: cb_color_control=0x%08X\n", cb_color_control);
+   }
 }
 
 static void
 terakan_state_draw_apply_db_shader_control(struct terakan_gfx_command_writer * const command_writer)
 {
+   bool const debug_uav_bind = debug_get_bool_option("TERAKAN_DEBUG_UAV_BIND", false);
    TERAKAN_STATE_DRAW_ASSERT_DEPENDS_ON(DB_SHADER_CONTROL, SQ_PGM_PS);
    uint32_t db_shader_control = command_writer->state_draw.sq_pgm_ps.fs != NULL
                                    ? command_writer->state_draw.sq_pgm_ps.fs->fs.db_shader_control
@@ -1245,6 +1279,9 @@ terakan_state_draw_apply_db_shader_control(struct terakan_gfx_command_writer * c
    command_writer->hw_state_draw.db_shader_control = db_shader_control;
    terakan_hw_state_draw_written(&command_writer->hw_state_draw,
                                  TERAKAN_HW_STATE_DRAW_INDEX_DB_SHADER_CONTROL, modified);
+   if (unlikely(debug_uav_bind)) {
+      fprintf(stderr, "terakan: uav-bind: db_shader_control=0x%08X\n", db_shader_control);
+   }
 }
 
 static terakan_state_draw_apply_function const

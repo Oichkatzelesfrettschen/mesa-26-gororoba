@@ -156,8 +156,15 @@ terakan_nir_zero_vulkan_resource_offset_impl(nir_builder * const b, nir_instr * 
 VkDescriptorType
 terakan_nir_image_descriptor_type(enum glsl_sampler_dim const dim)
 {
-   return dim == GLSL_SAMPLER_DIM_BUF ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER
-                                      : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+   switch (dim) {
+   case GLSL_SAMPLER_DIM_BUF:
+      return VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+   case GLSL_SAMPLER_DIM_SUBPASS:
+   case GLSL_SAMPLER_DIM_SUBPASS_MS:
+      return VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+   default:
+      return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+   }
 }
 
 
@@ -210,7 +217,8 @@ terakan_nir_get_binding(nir_src const src, VkDescriptorType const expected_type,
       } else if (expected_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE) {
          type_compatible =
             set_binding->descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
-            set_binding->descriptor_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+            set_binding->descriptor_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT ||
+            set_binding->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
       } else if (expected_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
          type_compatible =
             set_binding->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;

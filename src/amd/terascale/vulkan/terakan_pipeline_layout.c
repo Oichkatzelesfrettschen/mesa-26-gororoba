@@ -37,6 +37,7 @@
 #include "util/bitscan.h"
 #include "util/bitset.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -44,6 +45,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 /* Update robustness write-guard metadata for a UAV slot in KCACHE bank 14.
@@ -60,6 +62,21 @@ update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
    cw->robustness_metadata.uav_byte_sizes[uav_idx] = is_texel ? 0 : bound;
    cw->robustness_metadata.texel_buffer_element_counts[uav_idx] = is_texel ? bound : 0;
    cw->robustness_metadata.dirty = true;
+}
+
+static VkDescriptorType
+terakan_set_resource_descriptor_type(struct terakan_descriptor_set_layout const * const sl,
+                                     uint16_t const set_resource_index)
+{
+   for (uint32_t bi = 0; bi < sl->binding_count; ++bi) {
+      struct terakan_descriptor_set_layout_binding const * const b = &sl->bindings[bi];
+      if (b->descriptor_count == 0 || b->first_set_resource == UINT16_MAX)
+         continue;
+      if (set_resource_index >= b->first_set_resource &&
+          set_resource_index < b->first_set_resource + b->descriptor_count)
+         return b->descriptor_type;
+   }
+   return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -87,6 +104,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
       command_writer->state_draw.cb_color_uav.fs_uavs_not_null;
    struct terakan_state_draw_cb_color_uav * const uavs =
       command_writer->state_draw.cb_color_uav.fs_uavs;
+   bool const debug_uav_bind = debug_get_bool_option("TERAKAN_DEBUG_UAV_BIND", false);
 
    uint32_t const * set_dyn_off = pDynamicOffsets;
 
@@ -132,10 +150,17 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      desc.resource[2] = (desc.resource[2] & C_030008_BASE_ADDRESS_HI) |
                                         S_030008_BASE_ADDRESS_HI(a >> 32);
                   }
-                  /* SFN TEX/LOAD_BUF resource IDs are addressed after the 18 const-buffer slots. */
-                  setter(&command_writer->hw_state_sqc,
-                         base + di + TERAKAN_SAMPLER_HW_COUNT_PER_STAGE, desc.bo,
-                         desc.resource);
+                  uint8_t resource_index = base + di;
+                  VkDescriptorType const desc_type =
+                     terakan_set_resource_descriptor_type(sl, r->first_set_descriptor + di);
+                  (void)desc_type;
+                  /* Shader-side resource IDs consume the namespace shifted by
+                   * R600_MAX_CONST_BUFFERS. Shift all descriptor-backed
+                   * resources uniformly to keep every descriptor class in one
+                   * collision-free physical RID space.
+                   */
+                  resource_index += TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
+                  setter(&command_writer->hw_state_sqc, resource_index, desc.bo, desc.resource);
                }
             }
          }
@@ -171,6 +196,14 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   setter(&command_writer->hw_state_sqc, bank,
                          (sz + TERAKAN_KCACHE_HW_LINE_BYTES - 1) >> TERAKAN_KCACHE_HW_LINE_BYTES_LOG2,
                          br[di].bo, (uint32_t)(va >> TERAKAN_KCACHE_HW_LINE_BYTES_LOG2));
+                  if (unlikely(debug_uav_bind)) {
+                     fprintf(stderr,
+                             "terakan: ubo-bind: stage=%u binding=%u idx=%u bank=%u bo=%p va=0x%llX size=%u lines=%u\n",
+                             stage, bi, di, bank, (void const *)br[di].bo,
+                             (unsigned long long)va, sz,
+                             (sz + TERAKAN_KCACHE_HW_LINE_BYTES - 1) >>
+                                TERAKAN_KCACHE_HW_LINE_BYTES_LOG2);
+                  }
                }
             }
          }
