@@ -2133,14 +2133,30 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
   case nir_op_cube_amd:
       return emit_alu_cube(*alu, shader);
 
-   /* Sub-32-bit conversions: truncation and sign/zero-extension.
-    * nir_lower_bit_size promotes arithmetic but leaves conversion
-    * residuals; these handle u2u8/u2u16/u2u32/i2i8/i2i16/i2i32. */
+   /* Sub-32-bit unsigned truncation and zero-extension.
+    *
+    * nir_lower_bit_size widens sub-32-bit arithmetic to 32 bits and leaves
+    * nir_op_u2uN conversion residuals for the backend to handle.  Additionally,
+    * sfn_nir_lower_alu lowers nir_op_unpack_half_2x16 to a pair of nir_u2u16
+    * (to isolate each 16-bit half from the packed 32-bit word) followed by
+    * nir_f2f32 (which maps to op1_flt16_to_flt32).
+    *
+    * All cases are lowered to emit_alu_trunc_u2uN, which emits op2_and_int with
+    * a bit-width-appropriate mask.  This is the correct semantic for u2uN
+    * regardless of the consuming instruction: it ensures upper bits are zero
+    * even when the source register carries garbage in those positions.
+    *
+    * A simpler op1_mov was considered for the 32->16 case specifically (upstream
+    * Mesa commit e267a3cda22), justified by the observation that op1_flt16_to_flt32
+    * only reads the lower 16 bits of its source GPR.  That approach is rejected
+    * here for two reasons: (1) u2u16 can arrive from non-half-float paths where
+    * the AND mask is required for correctness; (2) relying on the consuming
+    * instruction to implicitly discard upper bits is a hidden invariant that
+    * would silently break if the consumer changes.
+    */
    case nir_op_u2u8:
-      fprintf(stderr, "SFN_DEBUG: hit nir_op_u2u8\n");
       return emit_alu_trunc_u2uN(*alu, 8, shader);
    case nir_op_u2u16:
-      fprintf(stderr, "SFN_DEBUG: hit nir_op_u2u16\n");
       return emit_alu_trunc_u2uN(*alu, 16, shader);
    case nir_op_u2u32: {
       unsigned src_bits = alu->src[0].src.ssa->bit_size;
