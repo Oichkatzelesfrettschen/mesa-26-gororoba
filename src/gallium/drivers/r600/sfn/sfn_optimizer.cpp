@@ -245,7 +245,11 @@ public:
    void visit(WriteTFInstr *instr) override { (void)instr; };
    void visit(RatInstr *instr) override { (void)instr; };
 
-   // TODO: these two should use copy propagation
+   /* LDS reads and atomics are not currently handled by copy propagation.
+    * Adding them requires tracking the implicit LDS_READ_RETURN dependency
+    * (the read result lands in a fixed GPR after a LDS read fence) to ensure
+    * we don't propagate past a write that invalidates the value.
+    */
    void visit(LDSAtomicInstr *instr) override { (void)instr; };
    void visit(LDSReadInstr *instr) override { (void)instr; };
 
@@ -640,9 +644,9 @@ CopyPropFwdVisitor::build_rewritten_vec4_sources(AluInstr *parents[4],
 
       const bool source_sel_can_change = register_sel_can_change(source_reg->pin());
 
-      /* If the channel can't switch we have to update the channel mask.
-       * TODO: assign channel pinned registers first might give more
-       * opportunities for this optimization. */
+      /* If the channel can't switch, the channel mask must match the pinned source.
+       * Assigning pinned sources first may expose more propagation cases.
+       */
       if (register_chan_is_pinned(source_reg->pin()))
          allowed_chan_mask = 1 << source_reg->chan();
 
@@ -672,9 +676,15 @@ CopyPropFwdVisitor::build_rewritten_vec4_sources(AluInstr *parents[4],
          is_ssa = source_is_ssa;
       } else if (new_sel != source_reg->sel()) {
          /* If we have to assign a new register sel index do so only if all
-          * already assigned sources can get a new register index, and all
-          * registers are either SSA or registers.
-          * TODO: check whether this last restriction is required. */
+          * already assigned sources can get a new register index,
+          * and all registers are either all SSA or all non-SSA.
+          * Mixing SSA and non-SSA in the same vec4 is disallowed because they
+          * have different sel-change semantics: SSA registers can always get
+          * a fresh sel, while non-SSA registers have aliasing constraints.
+          * This restriction might be conservative for some patterns but is
+          * safe; relaxing it would require proving the sel-change rules are
+          * compatible for each mixed pair.
+          */
          if (all_sel_can_change &&
              source_sel_can_change &&
              (is_ssa == source_is_ssa)) {

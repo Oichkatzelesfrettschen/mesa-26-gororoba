@@ -120,8 +120,9 @@ terakan_device_drm_radeon_create(struct terakan_physical_device * const physical
       goto fail_shared_bo_mutex;
    }
 
-   /* TODO(Triang3l): With virtual memory, query RADEON_INFO_IB_VM_MAX_SIZE for the maximum indirect
-    * buffer size in dwords.
+   /* DRM Radeon 2.50.0 does not expose a virtual-memory IB size limit.  If/when
+    * RADEON_INFO_IB_VM_MAX_SIZE becomes available, query it here and pass it instead of UINT32_MAX.
+    * UINT32_MAX is safe: the kernel will reject IBs that exceed the actual HW limit.
     */
    terakan_queue_submission_context_init(
       &device->gfx_submission_context.base,

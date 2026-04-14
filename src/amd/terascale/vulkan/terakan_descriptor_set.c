@@ -169,8 +169,10 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                dst_resource->bo = buffer_view->bo;
                memcpy(dst_resource->resource, buffer_view->resource, sizeof(uint32_t) * 8);
                if (descriptor_write->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER) {
-                  /* TODO(Triang3l): Set UNCACHED based on whether the shader will actually be
-                   * writing to this buffer.
+                  /* UNCACHED=1 is conservative (bypasses TC) but correct for writable bindings.
+                   * Read-only storage texel buffers could use UNCACHED=0 for better bandwidth;
+                   * requires pipeline-layout writability tracking -- same constraint as in
+                   * terakan_descriptor_create_for_storage_buffer.
                    */
                   dst_resource->resource[3] |= S_03000C_UNCACHED(1);
                }

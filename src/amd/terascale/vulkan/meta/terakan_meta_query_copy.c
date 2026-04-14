@@ -2190,13 +2190,11 @@ terakan_CmdCopyQueryPoolResults(VkCommandBuffer const commandBuffer, VkQueryPool
       is_64_bit ? query_pool->pipelinestat_copy_offsets_64_bit
                 : query_pool->pipelinestat_copy_offsets_32_bit;
 
-   /* TODO(Triang3l): Batch multiple queries, carefully avoiding integer overflow.
-    * Batch size limits:
-    * - Actual remaining query count (already clamped).
-    * - Source resource: 2^32 bytes (2^29 / sample counter count).
-    * - Destination UAV: 2^32 elements.
-    *   1 + (2^32 - UAV alignment offset dwords - result and availability dwords) / stride
-    *   (if stride is not 0, which, with valid usage, may be the case for 1 query).
+   /* Process queries in batches sized to avoid integer overflow in the GPU-side resource
+    * descriptors.  Limits per batch:
+    *   - src resource: 2^32 bytes (2^29 / sample counter count)
+    *   - dst UAV:      2^32 elements = 1 + (2^32 - alignment_offset - result_avail_dwords) / stride
+    * Each iteration advances src_samples_va, src_availability_va, and dst_va by the batch size.
     */
    for (uint32_t query_index = 0; query_index < queryCount;) {
       /* Limit the batch size to prevent integer overflow in sizes and addresses on the GPU. */

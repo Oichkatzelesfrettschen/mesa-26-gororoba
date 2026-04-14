@@ -117,6 +117,22 @@ enum terakan_hw_state_draw_index {
 
    TERAKAN_HW_STATE_DRAW_INDEX_CB_COLOR_CONTROL,
 
+   TERAKAN_HW_STATE_DRAW_INDEX_VGT_GS_MODE,
+   TERAKAN_HW_STATE_DRAW_INDEX_VGT_PRIMITIVEID_EN,
+   TERAKAN_HW_STATE_DRAW_INDEX_VGT_MULTI_PRIM_IB_RESET_EN,
+   TERAKAN_HW_STATE_DRAW_INDEX_VGT_REUSE_OFF,
+   TERAKAN_HW_STATE_DRAW_INDEX_VGT_VTX_CNT_EN,
+   TERAKAN_HW_STATE_DRAW_INDEX_VGT_SHADER_STAGES_EN,
+   TERAKAN_HW_STATE_DRAW_INDEX_VGT_STRMOUT_CONFIG,
+   TERAKAN_HW_STATE_DRAW_INDEX_SQ_VTX_SEMANTIC_CLEAR,
+   TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_WINDOW_SCISSOR,
+   TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_CLIPRECT_RULE,
+   TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_GENERIC_SCISSOR,
+   TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_MODE_CNTL_1,
+   TERAKAN_HW_STATE_DRAW_INDEX_DB_RENDER_CONTROL,
+   TERAKAN_HW_STATE_DRAW_INDEX_DB_RENDER_OVERRIDE2,
+   TERAKAN_HW_STATE_DRAW_INDEX_DB_ALPHA_TO_MASK,
+
    /* Special state items have their modified flags set via some method different from
     * terakan_hw_state_draw_written.
     */
@@ -253,6 +269,62 @@ struct terakan_hw_state_draw {
 
    /* TERAKAN_HW_STATE_DRAW_INDEX_CB_COLOR_CONTROL */
    uint32_t cb_color_control;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_VGT_GS_MODE */
+   uint32_t vgt_gs_mode;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_VGT_PRIMITIVEID_EN */
+   uint32_t vgt_primitiveid_en;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_VGT_MULTI_PRIM_IB_RESET_EN */
+   uint32_t vgt_multi_prim_ib_reset_en;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_VGT_REUSE_OFF */
+   uint32_t vgt_reuse_off;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_VGT_VTX_CNT_EN */
+   uint32_t vgt_vtx_cnt_en;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_VGT_SHADER_STAGES_EN */
+   uint32_t vgt_shader_stages_en;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_VGT_STRMOUT_CONFIG
+    * Covers R_028B94_VGT_STRMOUT_CONFIG and R_028B98_VGT_STRMOUT_BUFFER_CONFIG (adjacent).
+    */
+   uint32_t vgt_strmout_config;
+   uint32_t vgt_strmout_buffer_config;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_SQ_VTX_SEMANTIC_CLEAR */
+   uint32_t sq_vtx_semantic_clear;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_WINDOW_SCISSOR
+    * Covers R_028204_PA_SC_WINDOW_SCISSOR_TL and R_028208_PA_SC_WINDOW_SCISSOR_BR (adjacent).
+    */
+   uint32_t pa_sc_window_scissor_tl;
+   uint32_t pa_sc_window_scissor_br;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_CLIPRECT_RULE */
+   uint32_t pa_sc_cliprect_rule;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_GENERIC_SCISSOR
+    * Covers R_028240_PA_SC_GENERIC_SCISSOR_TL and R_028244_PA_SC_GENERIC_SCISSOR_BR (adjacent).
+    */
+   uint32_t pa_sc_generic_scissor_tl;
+   uint32_t pa_sc_generic_scissor_br;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_MODE_CNTL_1 */
+   uint32_t pa_sc_mode_cntl_1;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_DB_RENDER_CONTROL */
+   uint32_t db_render_control;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_DB_RENDER_OVERRIDE2
+    * On R9xx, DECOMPRESS_Z_ON_FLUSH must be set when 4x or more MSAA is used.
+    */
+   uint32_t db_render_override2;
+
+   /* TERAKAN_HW_STATE_DRAW_INDEX_DB_ALPHA_TO_MASK */
+   uint32_t db_alpha_to_mask;
 
    /* TERAKAN_HW_STATE_DRAW_INDEX_VGT_INDEX_BUFFER */
    struct {

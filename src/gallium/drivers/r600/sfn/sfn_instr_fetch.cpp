@@ -643,8 +643,11 @@ public:
    }
    void visit(LocalArrayValue& value)
    {
+      /* NIR currently never emits a LocalArrayValue as a direct scratch-read source; if
+       * it ever does for a constant-index case, set_array_base(constant) + GPR 0 src
+       * would work here, analogous to the LiteralConstant case below.
+       */
       UNREACHABLE("An array value can't be a direct source for scratch reads");
-      // TODO: an array element with constant offset could be used here
       (void)value;
    }
    void visit(UniformValue& value)

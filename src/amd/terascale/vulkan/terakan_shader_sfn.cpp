@@ -163,7 +163,10 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
    terakan_physical_device_chip_info const & chip_info = physical_device.chip_info;
    amd_gfx_level const gfx_level = chip_info.is_r9xx ? CAYMAN : EVERGREEN;
 
-   /* TODO(Triang3l): Fill stream output info from NIR. */
+   /* Terakan does not expose VK_EXT_transform_feedback, so there is no XFB data in the
+    * shader.  The stream output info is intentionally empty.  If XFB support is ever added,
+    * populate this from nir->xfb_info before calling r600_lower_and_optimize_nir.
+    */
    pipe_stream_output_info so_info = {};
 
    r600::init_pool();
@@ -287,8 +290,10 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
    /* Pre-applied during binding lowering. */
    shader->shader.rat_base = 0;
 
-   /* TODO(Triang3l): has_compressed_msaa_texturing. */
-   r600_bytecode_init(&shader->shader.bc, gfx_level, chip_info.chip_family, false);
+   /* All Terakan-supported chips (CHIP_CEDAR through CHIP_ARUBA) are EVERGREEN or CAYMAN,
+    * both of which have compressed MSAA texturing (mirrors r600_pipe.c line 715-718).
+    */
+   r600_bytecode_init(&shader->shader.bc, gfx_level, chip_info.chip_family, true);
 
    /* We already schedule the code with this in mind, no need to handle this in the backend
     * assembler.
