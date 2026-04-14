@@ -115,6 +115,34 @@ vk_sync_binary_wait_many(struct vk_device *device,
 }
 
 static VkResult
+vk_sync_binary_move(struct vk_device *device,
+                    struct vk_sync *dst,
+                    struct vk_sync *src)
+{
+   struct vk_sync_binary *dst_binary = to_vk_sync_binary(dst);
+   struct vk_sync_binary *src_binary = to_vk_sync_binary(src);
+   const struct vk_sync_binary_type *btype =
+      container_of(dst_binary->sync.type, struct vk_sync_binary_type, sync);
+
+   assert(btype->timeline_type->move);
+
+   VkResult result = btype->timeline_type->move(device,
+                                                &dst_binary->timeline,
+                                                &src_binary->timeline);
+   if (result != VK_SUCCESS)
+      return result;
+
+   /* dst now holds the timeline state that was pending in src.  Update the
+    * next_point reference so that waits on dst correctly target the moved
+    * timeline point, then advance src's next_point so that its reset binary
+    * state is ready for the next use. */
+   dst_binary->next_point = src_binary->next_point;
+   src_binary->next_point++;
+
+   return VK_SUCCESS;
+}
+
+static VkResult
 vk_sync_binary_import_sync_file(struct vk_device *device,
                                 struct vk_sync *sync,
                                 int fd)
@@ -157,6 +185,10 @@ vk_sync_binary_get_type(const struct vk_sync_type *timeline_type)
          .finish = vk_sync_binary_finish,
          .reset = vk_sync_binary_reset,
          .signal = vk_sync_binary_signal,
+         /* move is exposed only when the underlying timeline type supports it.
+          * vk_semaphore.c asserts sync_type->move when the device is in
+          * ASSISTED timeline mode; see vk_sync_binary_move for details. */
+         .move = timeline_type->move ? vk_sync_binary_move : NULL,
          .wait_many = vk_sync_binary_wait_many,
          .import_sync_file = vk_sync_binary_import_sync_file,
          .export_sync_file = vk_sync_binary_export_sync_file,
