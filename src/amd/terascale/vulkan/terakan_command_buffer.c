@@ -1387,6 +1387,47 @@ terakan_EndCommandBuffer(VkCommandBuffer const commandBuffer)
     */
    terakan_barrier_emit_pending_actions(gfx_command_writer);
 
+   /*
+    * End-of-CB cache flush: make all CB/DB/TC writes from this command buffer
+    * visible before the IB completes. Covers render passes that ended without
+    * a trailing application barrier (e.g., the last render pass in a frame).
+    *
+    * PS_PARTIAL_FLUSH first: ensures all pixel shader writes to CB/DB are
+    * committed to L2 before the SURFACE_SYNC ME poll begins. Without this
+    * stall the ME can poll for coherence while CB/DB writes are still in
+    * flight, which races and causes a GPU hang on TeraScale.
+    */
+   if (gfx_command_writer->indirect_buffer != NULL) {
+      struct terakan_physical_device const * const end_physical_device =
+         terakan_gfx_command_writer_physical_device(gfx_command_writer);
+      /* 2 (PS_PARTIAL_FLUSH) + 2 (CACHE_FLUSH_AND_INV_EVENT) + 5 (SURFACE_SYNC) */
+      uint32_t * flush_end = terakan_gfx_command_writer_emit(
+         gfx_command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2 + 2 + 5);
+      if (likely(flush_end != NULL)) {
+         *flush_end++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
+         *flush_end++ = EVENT_TYPE(EVENT_TYPE_PS_PARTIAL_FLUSH) | EVENT_INDEX(4);
+         *flush_end++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
+         *flush_end++ = EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT) | EVENT_INDEX(0);
+         *flush_end++ = PKT3(PKT3_SURFACE_SYNC, 4 - 1, 0);
+         *flush_end++ =
+            S_0085F0_CB0_DEST_BASE_ENA(1) | S_0085F0_CB1_DEST_BASE_ENA(1) |
+            S_0085F0_CB2_DEST_BASE_ENA(1) | S_0085F0_CB3_DEST_BASE_ENA(1) |
+            S_0085F0_CB4_DEST_BASE_ENA(1) | S_0085F0_CB5_DEST_BASE_ENA(1) |
+            S_0085F0_CB6_DEST_BASE_ENA(1) | S_0085F0_CB7_DEST_BASE_ENA(1) |
+            S_0085F0_CB8_DEST_BASE_ENA(1) | S_0085F0_CB9_DEST_BASE_ENA(1) |
+            S_0085F0_CB10_DEST_BASE_ENA(1) | S_0085F0_CB11_DEST_BASE_ENA(1) |
+            S_0085F0_DB_DEST_BASE_ENA(1) | S_0085F0_TC_ACTION_ENA(1) |
+            S_0085F0_VC_ACTION_ENA(end_physical_device->chip_info.has_vertex_cache) |
+            S_0085F0_CB_ACTION_ENA(1) | S_0085F0_DB_ACTION_ENA(1) |
+            S_0085F0_SH_ACTION_ENA(1) | S_0085F0_SMX_ACTION_ENA(1) |
+            TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
+         *flush_end++ = UINT32_MAX; /* CP_COHER_SIZE: all memory */
+         *flush_end++ = 0;          /* CP_COHER_BASE */
+         *flush_end++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+         terakan_gfx_command_writer_emit_done(gfx_command_writer, flush_end);
+      }
+   }
+
    terakan_gfx_command_writer_end_indirect_buffer(gfx_command_writer);
 
    terakan_command_buffer_release_command_writer(command_buffer);
