@@ -60,6 +60,7 @@ void
 radv_get_compute_shader_metadata(const struct radv_device *device, const struct radv_shader *cs,
                                  struct radv_compute_pipeline_metadata *metadata)
 {
+   const struct radv_userdata_locations *locs = &cs->info.user_sgprs_locs;
    uint32_t upload_sgpr = 0, inline_sgpr = 0;
 
    memset(metadata, 0, sizeof(*metadata));
@@ -74,7 +75,14 @@ radv_get_compute_shader_metadata(const struct radv_device *device, const struct 
    metadata->push_const_sgpr = upload_sgpr | (inline_sgpr << 16);
    metadata->inline_push_const_mask = cs->info.inline_push_constant_mask;
 
-   metadata->indirect_descriptors_sgpr = radv_get_user_sgpr(cs, AC_UD_INDIRECT_DESCRIPTORS);
+   if (cs->info.descriptor_heap) {
+      metadata->heap_resource_sgpr =
+         ((cs->info.user_data_0 + locs->descriptor_heaps[RADV_HEAP_RESOURCE].sgpr_idx * 4) - SI_SH_REG_OFFSET) >> 2;
+      metadata->heap_sampler_sgpr =
+         ((cs->info.user_data_0 + locs->descriptor_heaps[RADV_HEAP_SAMPLER].sgpr_idx * 4) - SI_SH_REG_OFFSET) >> 2;
+   } else {
+      metadata->indirect_descriptors_sgpr = radv_get_user_sgpr(cs, AC_UD_INDIRECT_DESCRIPTORS);
+   }
 }
 
 void
@@ -85,7 +93,8 @@ radv_compute_pipeline_init(struct radv_compute_pipeline *pipeline, const struct 
    pipeline->base.need_push_constants_upload |= radv_shader_need_push_constants_upload(shader);
 
    pipeline->base.push_constant_size = align(shader->info.push_constant_size, 4);
-   pipeline->base.dynamic_offset_count = layout->dynamic_offset_count;
+   if (layout)
+      pipeline->base.dynamic_offset_count = layout->dynamic_offset_count;
 }
 
 struct radv_shader_binary *
@@ -226,7 +235,7 @@ radv_compute_pipeline_compile(const VkComputePipelineCreateInfo *pCreateInfo, st
    if (radv_can_dump_shader_stats(device, cs_stage.nir)) {
       radv_dump_shader_stats(device, &pipeline->base, pipeline->base.shaders[MESA_SHADER_COMPUTE], stderr);
    }
-   ralloc_free(cs_stage.nir);
+   radv_pipeline_stage_finish(&cs_stage);
 
 done:
    pipeline_feedback.duration = os_time_get_nano() - pipeline_start;

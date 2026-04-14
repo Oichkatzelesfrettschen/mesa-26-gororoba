@@ -214,7 +214,7 @@ static void pvr_physical_device_get_supported_features(
    *features = (struct vk_features){
       /* Vulkan 1.0 */
       .robustBufferAccess = true,
-      .fullDrawIndexUint32 = false,
+      .fullDrawIndexUint32 = true,
       .imageCubeArray = true,
       .independentBlend = true,
       .geometryShader = false,
@@ -222,13 +222,13 @@ static void pvr_physical_device_get_supported_features(
       .sampleRateShading = true,
       .dualSrcBlend = false,
       .logicOp = true,
-      .multiDrawIndirect = false,
+      .multiDrawIndirect = true,
       .drawIndirectFirstInstance = true,
       .depthClamp = false,
-      .depthBiasClamp = false,
+      .depthBiasClamp = true,
       .fillModeNonSolid = false,
       .depthBounds = false,
-      .wideLines = false,
+      .wideLines = true,
       .largePoints = true,
       .alphaToOne = true,
       .multiViewport = false,
@@ -645,8 +645,8 @@ static bool pvr_physical_device_get_properties(
       .subTexelPrecisionBits = 8U,
       .mipmapPrecisionBits = 8U,
 
-      .maxDrawIndexedIndexValue = (1U << 24) - 1U, /* Requires fullDrawIndexUint32 */
-      .maxDrawIndirectCount = 1U, /* Requires multiDrawIndirect */
+      .maxDrawIndexedIndexValue = UINT32_MAX,
+      .maxDrawIndirectCount = 2U * 1024U * 1024U * 1024U,
       .maxSamplerLodBias = 16.0f,
       .maxSamplerAnisotropy = 16.0f, /* Requires samplerAnisotropy */
       .maxViewports = 1U, /* Requires multiViewport */
@@ -703,10 +703,9 @@ static bool pvr_physical_device_get_properties(
       .pointSizeRange[1] = PVR_POINT_SIZE_RANGE_MAX,
       .pointSizeGranularity = PVR_POINT_SIZE_GRANULARITY,
 
-      /* Requires wideLines */
-      .lineWidthRange[0] = 1.0f,
-      .lineWidthRange[1] = 1.0f,
-      .lineWidthGranularity = 0.0f,
+      .lineWidthRange[0] = PVR_LINE_WIDTH_MIN,
+      .lineWidthRange[1] = PVR_LINE_WIDTH_MAX,
+      .lineWidthGranularity = PVR_LINE_WIDTH_GRANULARITY,
 
       .strictLines = false,
       .standardSampleLocations = true,

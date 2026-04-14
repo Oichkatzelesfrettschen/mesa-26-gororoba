@@ -85,33 +85,6 @@ vk_sync_binary_signal(struct vk_device *device,
 }
 
 static VkResult
-vk_sync_binary_move(struct vk_device *device,
-                    struct vk_sync *dst_sync,
-                    struct vk_sync *src_sync)
-{
-   struct vk_sync_binary *dst = to_vk_sync_binary(dst_sync);
-   struct vk_sync_binary *src = to_vk_sync_binary(src_sync);
-   const struct vk_sync_binary_type *btype =
-      container_of(dst->sync.type, struct vk_sync_binary_type, sync);
-   VkResult result;
-
-   assert(dst_sync->type == src_sync->type);
-   if (btype->timeline_type->move == NULL)
-      return VK_ERROR_FEATURE_NOT_PRESENT;
-
-   /* Discard any existing dst payload so src can become the live binary payload. */
-   result = vk_sync_binary_reset(device, dst_sync);
-   if (unlikely(result != VK_SUCCESS))
-      return result;
-
-   uint64_t src_next_point = src->next_point;
-   src->next_point = dst->next_point;
-   dst->next_point = src_next_point;
-
-   return btype->timeline_type->move(device, &dst->timeline, &src->timeline);
-}
-
-static VkResult
 vk_sync_binary_wait_many(struct vk_device *device,
                          uint32_t wait_count,
                          const struct vk_sync_wait *waits,
@@ -146,9 +119,6 @@ vk_sync_binary_import_sync_file(struct vk_device *device,
                                 struct vk_sync *sync,
                                 int fd)
 {
-   (void)device;
-   (void)sync;
-   (void)fd;
    /* FD == -1 case handled by vk_sync_import_sync_file() */
    return VK_ERROR_INVALID_EXTERNAL_HANDLE;
 }
@@ -186,7 +156,6 @@ vk_sync_binary_get_type(const struct vk_sync_type *timeline_type)
          .init = vk_sync_binary_init,
          .finish = vk_sync_binary_finish,
          .reset = vk_sync_binary_reset,
-         .move = vk_sync_binary_move,
          .signal = vk_sync_binary_signal,
          .wait_many = vk_sync_binary_wait_many,
          .import_sync_file = vk_sync_binary_import_sync_file,

@@ -1938,6 +1938,13 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       return emit_alu_b2x(*alu, ALU_SRC_1, shader);
    case nir_op_b2i32:
       return emit_alu_b2x(*alu, ALU_SRC_1_INT, shader);
+   /* u2u16 is emitted by the unpack_half->f2f32 lowering in sfn_nir_lower_alu.cpp
+    * (nir_u2u16 truncates the packed 32-bit half to 16 bits before flt16_to_flt32).
+    * A 32->16 truncation is a no-op on r600 since all GPRs are 32-bit; mov suffices.
+    */
+   case nir_op_u2u16:
+      assert(alu->src[0].src.ssa->bit_size == 32);
+      return emit_alu_op1(*alu, op1_mov, shader);
    case nir_op_f2f32:
       assert(alu->src[0].src.ssa->bit_size == 16);
       return emit_alu_op1(*alu, op1_flt16_to_flt32, shader);

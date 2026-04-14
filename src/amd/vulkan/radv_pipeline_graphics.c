@@ -1164,82 +1164,6 @@ radv_should_export_multiview(const struct radv_shader_stage *stage, const struct
 }
 
 static void
-radv_remove_point_size(const struct radv_graphics_state_key *gfx_state, nir_shader *producer, nir_shader *consumer)
-{
-   if ((consumer->info.inputs_read & VARYING_BIT_PSIZ) || !(producer->info.outputs_written & VARYING_BIT_PSIZ))
-      return;
-
-   /* Do not remove PSIZ if the shader uses XFB because it might be stored. */
-   if (producer->xfb_info)
-      return;
-
-   /* Do not remove PSIZ if the rasterization primitive uses points. */
-   if (consumer->info.stage == MESA_SHADER_FRAGMENT &&
-       ((producer->info.stage == MESA_SHADER_TESS_EVAL && producer->info.tess.point_mode) ||
-        (producer->info.stage == MESA_SHADER_GEOMETRY && producer->info.gs.output_primitive == MESA_PRIM_POINTS) ||
-        (producer->info.stage == MESA_SHADER_MESH && producer->info.mesh.primitive_type == MESA_PRIM_POINTS)))
-      return;
-
-   nir_variable *var = nir_find_variable_with_location(producer, nir_var_shader_out, VARYING_SLOT_PSIZ);
-   assert(var);
-
-   /* Change PSIZ to a global variable which allows it to be DCE'd. */
-   var->data.location = 0;
-   var->data.mode = nir_var_shader_temp;
-
-   producer->info.outputs_written &= ~VARYING_BIT_PSIZ;
-   NIR_PASS(_, producer, nir_fixup_deref_modes);
-   NIR_PASS(_, producer, nir_remove_dead_variables, nir_var_shader_temp, NULL);
-   NIR_PASS(_, producer, nir_opt_dce);
-}
-
-static void
-radv_remove_color_exports(const struct radv_graphics_state_key *gfx_state, nir_shader *nir)
-{
-   uint8_t color_remap[MAX_RTS];
-   bool fixup_derefs = false;
-
-   /* Do not remove color exports when a PS epilog is used because the format isn't known and the color write mask can
-    * be dynamic. */
-   if (gfx_state->ps.has_epilog)
-      return;
-
-   /* Shader output locations to color attachment mappings. */
-   memset(color_remap, MESA_VK_ATTACHMENT_UNUSED, sizeof(color_remap));
-   for (uint32_t i = 0; i < MAX_RTS; i++) {
-      if (gfx_state->ps.epilog.color_map[i] != MESA_VK_ATTACHMENT_UNUSED)
-         color_remap[gfx_state->ps.epilog.color_map[i]] = i;
-   }
-
-   nir_foreach_shader_out_variable (var, nir) {
-      int idx = var->data.location;
-      idx -= FRAG_RESULT_DATA0;
-
-      if (idx < 0)
-         continue;
-
-      const uint8_t cb_idx = color_remap[idx];
-      unsigned col_format = cb_idx == MESA_VK_ATTACHMENT_UNUSED
-                               ? V_028714_SPI_SHADER_ZERO
-                               : (gfx_state->ps.epilog.spi_shader_col_format >> (4 * cb_idx)) & 0xf;
-
-      if (col_format == V_028714_SPI_SHADER_ZERO) {
-         /* Remove the color export if it's unused or in presence of holes. */
-         nir->info.outputs_written &= ~BITFIELD64_BIT(var->data.location);
-         var->data.location = 0;
-         var->data.mode = nir_var_shader_temp;
-         fixup_derefs = true;
-      }
-   }
-
-   if (fixup_derefs) {
-      NIR_PASS(_, nir, nir_fixup_deref_modes);
-      NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_shader_temp, NULL);
-      NIR_PASS(_, nir, nir_opt_dce);
-   }
-}
-
-static void
 merge_tess_info(struct shader_info *tes_info, struct shader_info *tcs_info)
 {
    /* The Vulkan 1.0.38 spec, section 21.1 Tessellator says:
@@ -1316,12 +1240,6 @@ radv_link_shaders(const struct radv_device *device, struct radv_shader_stage *pr
 
    radv_nir_lower_io_vars_to_scalar(producer, nir_var_shader_out);
    radv_nir_lower_io_vars_to_scalar(consumer, nir_var_shader_in);
-
-   /* Remove PSIZ from shaders when it's not needed.
-    * This is typically produced by translation layers like Zink or D9VK.
-    */
-   if (gfx_state->enable_remove_point_size)
-      radv_remove_point_size(gfx_state, producer, consumer);
 
    NIR_PASS(_, producer, nir_remove_dead_variables, nir_var_shader_out, NULL);
    NIR_PASS(_, consumer, nir_remove_dead_variables, nir_var_shader_in, NULL);
@@ -1466,8 +1384,6 @@ radv_link_fs(struct radv_shader_stage *fs_stage, const struct radv_graphics_stat
 
    /* Lower the view index to map on the layer. */
    NIR_PASS(_, fs_stage->nir, radv_nir_lower_view_index);
-
-   radv_remove_color_exports(gfx_state, fs_stage->nir);
 }
 
 static bool
@@ -2842,62 +2758,77 @@ radv_graphics_shaders_compile(struct radv_device *device, struct vk_pipeline_cac
    radv_foreach_stage (i, active_nir_stages) {
       int64_t stage_start = os_time_get_nano();
 
-      radv_optimize_nir(stages[i].nir, stages[i].key.optimisations_disabled);
-
       radv_nir_lower_io(device, stages[i].nir);
 
       stages[i].feedback.duration += os_time_get_nano() - stage_start;
    }
 
    if (stages[MESA_SHADER_FRAGMENT].nir) {
-      bool update_info = false;
       if (gfx_state->dynamic_line_rast_mode)
-         NIR_PASS(update_info, stages[MESA_SHADER_FRAGMENT].nir, nir_lower_poly_line_smooth,
-                  RADV_NUM_SMOOTH_AA_SAMPLES);
+         NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_lower_poly_line_smooth, RADV_NUM_SMOOTH_AA_SAMPLES);
 
       if (!gfx_state->ps.has_epilog) {
-         NIR_PASS(update_info, stages[MESA_SHADER_FRAGMENT].nir, radv_nir_remap_color_attachment, gfx_state);
+         NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, radv_nir_remap_color_attachment, gfx_state);
 
          /* Lower FS outputs to scalar to allow dce. */
          NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);
 
-         NIR_PASS(update_info, stages[MESA_SHADER_FRAGMENT].nir, radv_nir_trim_fs_color_exports, &gfx_state->ps.epilog);
+         NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, radv_nir_trim_fs_color_exports, &gfx_state->ps.epilog);
 
-         NIR_PASS(update_info, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_copy_prop);
-         NIR_PASS(update_info, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_dce);
-         NIR_PASS(update_info, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_dead_cf);
+         NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_copy_prop);
+         NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_dce);
+         NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_dead_cf);
       }
 
-      NIR_PASS(update_info, stages[MESA_SHADER_FRAGMENT].nir, radv_nir_lower_fs_input_attachment);
+      NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, radv_nir_lower_fs_input_attachment);
 
-      NIR_PASS(update_info, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_frag_coord_to_pixel_coord);
-      if (update_info)
-         nir_shader_gather_info(stages[MESA_SHADER_FRAGMENT].nir,
-                                nir_shader_get_entrypoint(stages[MESA_SHADER_FRAGMENT].nir));
+      NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_cse);
+      NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_copy_prop);
+      NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_dce);
+      NIR_PASS(_, stages[MESA_SHADER_FRAGMENT].nir, nir_opt_frag_coord_to_pixel_coord);
    }
 
-   /* Remove all varyings when the fragment shader is a noop. */
-   if (noop_fs) {
-      radv_foreach_stage (i, active_nir_stages) {
-         if (!radv_is_last_vgt_stage(&stages[i]))
-            continue;
+   radv_foreach_stage (i, active_nir_stages) {
+      if (!radv_is_last_vgt_stage(&stages[i]))
+         continue;
 
-         bool progress = false;
+      uint64_t remove_as_varying = 0;
+      uint64_t remove_as_sysval = 0;
 
-         /* Remove all output varyings. */
-         NIR_PASS(progress, stages[i].nir, nir_remove_outputs, MESA_SHADER_FRAGMENT, ~0ull, 0);
+      /* Remove all varyings when the fragment shader is a noop. */
+      if (noop_fs)
+         remove_as_varying |= ~0ull;
 
-         if (progress) {
-            /* Remove dead code resulting from removed output varyings. */
-            do {
-               progress = false;
-               NIR_PASS(progress, stages[i].nir, nir_opt_dce);
-               NIR_PASS(progress, stages[i].nir, nir_opt_dead_cf);
-            } while (progress);
-         }
-
-         break;
+      /* Remove PSIZ from shaders when it's not needed.
+       * This is typically produced by translation layers like Zink or d3d9 DXVK.
+       */
+      if (gfx_state->enable_remove_point_size && (i != MESA_SHADER_TESS_EVAL || !stages[i].nir->info.tess.point_mode) &&
+          (i != MESA_SHADER_GEOMETRY || stages[i].nir->info.gs.output_primitive != MESA_PRIM_POINTS) &&
+          (i != MESA_SHADER_MESH || stages[i].nir->info.mesh.primitive_type != MESA_PRIM_POINTS)) {
+         remove_as_varying |= VARYING_BIT_PSIZ;
+         remove_as_sysval |= VARYING_BIT_PSIZ;
       }
+
+      if (!remove_as_varying && !remove_as_sysval)
+         continue;
+
+      NIR_PASS(_, stages[i].nir, nir_remove_outputs, MESA_SHADER_FRAGMENT, remove_as_varying, remove_as_sysval);
+      break;
+   }
+
+   radv_foreach_stage (i, active_nir_stages) {
+      int64_t stage_start = os_time_get_nano();
+
+      radv_optimize_nir(stages[i].nir, stages[i].key.optimisations_disabled);
+
+      if (i == MESA_SHADER_FRAGMENT) {
+         /* Recompute FS input intrinsic bases to assign a location to each FS input.
+          * The computed base will match the index of each input in SPI_PS_INPUT_CNTL_n.
+          */
+         radv_recompute_fs_input_bases(stages[i].nir);
+      }
+
+      stages[i].feedback.duration += os_time_get_nano() - stage_start;
    }
 
    /* Optimize varyings on lowered shader I/O (more efficient than optimizing I/O derefs). */
@@ -2989,7 +2920,7 @@ radv_graphics_pipeline_state_finish(struct radv_device *device, struct radv_grap
 
    if (gfx_state->stages) {
       for (uint32_t i = 0; i < MESA_VULKAN_SHADER_STAGES; i++)
-         ralloc_free(gfx_state->stages[i].nir);
+         radv_pipeline_stage_finish(&gfx_state->stages[i]);
 
       ralloc_free(gfx_state->stages[MESA_SHADER_GEOMETRY].gs_copy_shader);
 
@@ -3052,7 +2983,7 @@ radv_generate_graphics_pipeline_state(struct radv_device *device, const VkGraphi
    if (gfx_state->compilation_required) {
       gfx_state->key = radv_generate_graphics_pipeline_key(device, pCreateInfo, &gfx_state->vk, needed_lib_flags);
 
-      gfx_state->stages = malloc(sizeof(struct radv_shader_stage) * MESA_VULKAN_SHADER_STAGES);
+      gfx_state->stages = calloc(MESA_VULKAN_SHADER_STAGES, sizeof(struct radv_shader_stage));
       if (!gfx_state->stages) {
          result = VK_ERROR_OUT_OF_HOST_MEMORY;
          goto fail;
@@ -3060,9 +2991,6 @@ radv_generate_graphics_pipeline_state(struct radv_device *device, const VkGraphi
 
       for (unsigned i = 0; i < MESA_VULKAN_SHADER_STAGES; i++) {
          gfx_state->stages[i].stage = MESA_SHADER_NONE;
-         gfx_state->stages[i].nir = NULL;
-         gfx_state->stages[i].gs_copy_shader = NULL;
-         gfx_state->stages[i].spirv.size = 0;
          gfx_state->stages[i].next_stage = MESA_SHADER_NONE;
       }
 

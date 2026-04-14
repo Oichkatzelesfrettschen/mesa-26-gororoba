@@ -21,6 +21,7 @@
 #include "radv_constants.h"
 #include "radv_shader_args.h"
 #include "radv_shader_info.h"
+#include "vk_nir_lower_descriptor_heaps.h"
 #include "vk_pipeline_cache.h"
 
 #include "aco_shader_info.h"
@@ -82,6 +83,7 @@ struct radv_shader_stage_key {
    uint8_t keep_statistic_info : 1;
    uint8_t keep_executable_info : 1;
    uint8_t view_index_from_device_index : 1;
+   uint8_t descriptor_heap : 1;
 
    /* Shader version (up to 8) to force re-compilation when RADV_BUILD_ID_OVERRIDE is enabled. */
    uint8_t version : 3;
@@ -262,6 +264,10 @@ struct radv_shader_layout {
    bool use_dynamic_descriptors;
 
    bool independent_sets;
+
+   const VkShaderDescriptorSetAndBindingMappingInfoEXT *mapping;
+
+   struct vk_sampler_state_array embedded_samplers;
 };
 
 struct radv_shader_stage {
@@ -511,7 +517,7 @@ void radv_optimize_nir_algebraic(nir_shader *shader, bool opt_offsets, bool opt_
 
 struct radv_shader_stage;
 
-nir_shader *radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_shader_stage *stage,
+nir_shader *radv_shader_spirv_to_nir(struct radv_device *device, struct radv_shader_stage *stage,
                                      const struct radv_spirv_to_nir_options *options, bool is_internal);
 
 void radv_init_shader_arenas(struct radv_device *device);

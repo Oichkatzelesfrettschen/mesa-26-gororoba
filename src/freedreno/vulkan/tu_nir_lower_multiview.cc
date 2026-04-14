@@ -9,8 +9,6 @@
 #include "tu_device.h"
 #include "tu_shader.h"
 
-#include "ir3/ir3_nir.h"
-
 /* Some a6xx variants cannot support a non-contiguous multiview mask. Instead,
  * inside the shader something like this needs to be inserted:
  *

@@ -238,9 +238,6 @@ bool amdgpu_fence_wait(struct pipe_fence_handle *fence, uint64_t timeout,
                               abs_timeout, 0, NULL))
       return false;
 
-   if (user_fence_cpu)
-      assert(*user_fence_cpu >= afence->seq_no);
-
    afence->signalled = true;
    return true;
 }
@@ -1623,17 +1620,16 @@ static int amdgpu_cs_submit_ib_userq(struct amdgpu_userq *userq,
    struct amdgpu_winsys *aws = acs->aws;
    struct amdgpu_cs_context *csc = amdgpu_csc_get_submitted(acs);
 
-   /* Syncobj dependencies. */
-   unsigned num_syncobj_dependencies = csc->syncobj_dependencies.num;
-    uint32_t *syncobj_dependencies_list =
-      (uint32_t*)alloca(num_syncobj_dependencies * sizeof(uint32_t));
-
    /* Currently only 1 vm timeline syncobj can be a dependency. */
    uint16_t num_syncobj_timeline_dependencies = 1;
    uint32_t syncobj_timeline_dependency;
    uint64_t syncobj_timeline_dependency_point;
 
+   /* Syncobj dependencies. */
+   unsigned num_syncobj_dependencies = csc->syncobj_dependencies.num;
+   uint32_t *syncobj_dependencies_list = NULL;
    if (num_syncobj_dependencies) {
+      syncobj_dependencies_list = (uint32_t*)alloca(num_syncobj_dependencies * sizeof(uint32_t));
       for (unsigned i = 0; i < num_syncobj_dependencies; i++) {
          struct amdgpu_fence *fence =
             (struct amdgpu_fence*)csc->syncobj_dependencies.list[i];
@@ -1658,22 +1654,24 @@ static int amdgpu_cs_submit_ib_userq(struct amdgpu_userq *userq,
    }
    syncobj_signal_list[num_syncobj_to_signal - 1] = ((struct amdgpu_fence*)csc->fence)->syncobj;
 
-   struct drm_amdgpu_userq_fence_info *fence_info;
+   uint16_t num_wait_fences = 256;
+   struct drm_amdgpu_userq_fence_info *fence_info = (struct drm_amdgpu_userq_fence_info*)
+      alloca(num_wait_fences * sizeof(struct drm_amdgpu_userq_fence_info));
    struct drm_amdgpu_userq_wait userq_wait_data = {
       .waitq_id = userq->userq_handle,
       .syncobj_handles = (uintptr_t)syncobj_dependencies_list,
       .syncobj_timeline_handles = (uintptr_t)&syncobj_timeline_dependency,
       .syncobj_timeline_points = (uintptr_t)&syncobj_timeline_dependency_point,
       /* Wait for previous reads/writes to complete before writing to these BOs. */
-      .bo_read_handles = (uintptr_t)shared_buf_kms_handles_write,
+      .bo_read_handles = num_shared_buf_write ? (uintptr_t)shared_buf_kms_handles_write : 0,
       /* Wait for previous writes to complete before reading from these BOs. */
-      .bo_write_handles = (uintptr_t)shared_buf_kms_handles_read,
+      .bo_write_handles = num_shared_buf_read ? (uintptr_t)shared_buf_kms_handles_read : 0,
       .num_syncobj_timeline_handles = num_syncobj_timeline_dependencies,
-      .num_fences = 0,
+      .num_fences = num_wait_fences,
       .num_syncobj_handles = num_syncobj_dependencies,
       .num_bo_read_handles = num_shared_buf_write,
       .num_bo_write_handles = num_shared_buf_read,
-      .out_fences = (uintptr_t)NULL,
+      .out_fences = (uintptr_t)fence_info,
    };
 
    /*
@@ -1683,14 +1681,6 @@ static int amdgpu_cs_submit_ib_userq(struct amdgpu_userq *userq,
     * To implement this strategy, we use amdgpu_userq_wait() before submitting
     * a job, and amdgpu_userq_signal() after to indicate completion.
     */
-   r = ac_drm_userq_wait(aws->dev, &userq_wait_data);
-   if (r)
-      mesa_loge("amdgpu: getting wait num_fences failed\n");
-
-   fence_info = (struct drm_amdgpu_userq_fence_info*)
-      alloca(userq_wait_data.num_fences * sizeof(struct drm_amdgpu_userq_fence_info));
-   userq_wait_data.out_fences = (uintptr_t)fence_info;
-
    r = ac_drm_userq_wait(aws->dev, &userq_wait_data);
    if (r)
       mesa_loge("amdgpu: getting wait fences failed\n");
