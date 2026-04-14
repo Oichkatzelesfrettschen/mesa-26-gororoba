@@ -935,9 +935,21 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
    /* TODO(Triang3l): Emit the values for graphics or compute when switching between the two. */
 
    if (!is_r9xx) {
+      /* Initialize SQ thread and stack resource management for VS+PS only
+       * (ts_enabled=0, gs_enabled=0 -> sq_thread_resource_mgmt_ts_gs_r8xx[0][0]).
+       *
+       * WHY: the VS+PS-only allocation gives both stages the maximum available
+       * thread budget (CHIP_SUMO: 96 PS + 152 VS = 248 total).  When a graphics
+       * pipeline that uses tessellation or geometry shader stages is first bound,
+       * terakan_pipeline_graphics_bind re-emits these five registers with the
+       * correct partition for the active stage set, preceded by a PS_PARTIAL_FLUSH.
+       * This avoids paying the flush cost on every bind for the common VS+PS case.
+       *
+       * state_draw.sq_tmp.sq_thread_resource_mgmt is initialized to [0][0] in
+       * terakan_state_draw_reset for the same reason, keeping the two in sync.
+       */
       unsigned const sq_vertex_stage_count =
-         terakan_shader_hw_vertex_stage_count(device->vk.enabled_features.tessellationShader,
-                                              device->vk.enabled_features.geometryShader);
+         terakan_shader_hw_vertex_stage_count(false /* ts_enabled */, false /* gs_enabled */);
 
       uint32_t const sq_stage_stack_entries =
          chip_info->sq_max_stack_entries / (sq_vertex_stage_count + 1);
@@ -954,29 +966,20 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
       }
       *packet++ = PKT3(PKT3_SET_CONFIG_REG, sq_thread_stack_register_count, 0);
       *packet++ = TERAKAN_CONFIG_REG_OFFSET(R_008C18_SQ_THREAD_RESOURCE_MGMT_1);
-      /* R_008C18_SQ_THREAD_RESOURCE_MGMT_1, R_008C1C_SQ_THREAD_RESOURCE_MGMT_2 */
-      /* TODO(Triang3l): Allocate based on the currently bound shaders, not the enabled features.
-       * Must be consistent with terakan_state_draw sq_tmp.sq_thread_resource_mgmt.
+      /* R_008C18_SQ_THREAD_RESOURCE_MGMT_1, R_008C1C_SQ_THREAD_RESOURCE_MGMT_2:
+       * VS+PS-only allocation, consistent with state_draw.sq_tmp.sq_thread_resource_mgmt.
+       * terakan_pipeline_graphics_bind updates both when a pipeline with a different
+       * stage set is bound.
        */
-      memcpy(packet,
-             chip_info->sq_thread_resource_mgmt_ts_gs_r8xx
-                [device->vk.enabled_features.tessellationShader ? 1 : 0]
-                [device->vk.enabled_features.geometryShader ? 1 : 0],
-             sizeof(uint32_t) * 2);
+      memcpy(packet, chip_info->sq_thread_resource_mgmt_ts_gs_r8xx[0][0], sizeof(uint32_t) * 2);
       packet += 2;
       /* R_008C20_SQ_STACK_RESOURCE_MGMT_1 */
       *packet++ = S_008C20_NUM_PS_STACK_ENTRIES(sq_stage_stack_entries) |
                   S_008C20_NUM_VS_STACK_ENTRIES(sq_stage_stack_entries);
-      /* R_008C24_SQ_STACK_RESOURCE_MGMT_2 */
-      *packet++ = device->vk.enabled_features.geometryShader
-                     ? S_008C24_NUM_GS_STACK_ENTRIES(sq_stage_stack_entries) |
-                          S_008C24_NUM_ES_STACK_ENTRIES(sq_stage_stack_entries)
-                     : 0;
-      /* R_008C28_SQ_STACK_RESOURCE_MGMT_3 */
-      *packet++ = device->vk.enabled_features.tessellationShader
-                     ? S_008C28_NUM_HS_STACK_ENTRIES(sq_stage_stack_entries) |
-                          S_008C28_NUM_LS_STACK_ENTRIES(sq_stage_stack_entries)
-                     : 0;
+      /* R_008C24_SQ_STACK_RESOURCE_MGMT_2: 0 -- no GS or ES in VS+PS-only init. */
+      *packet++ = 0;
+      /* R_008C28_SQ_STACK_RESOURCE_MGMT_3: 0 -- no HS or LS in VS+PS-only init. */
+      *packet++ = 0;
       *packet++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
       *packet++ = TERAKAN_CONFIG_REG_OFFSET(R_008E2C_SQ_LDS_RESOURCE_MGMT);
       *packet++ = S_008E2C_NUM_PS_LDS(TERAKAN_LIMITS_HW_LDS_SIMD_DWORD_COUNT / 2) |

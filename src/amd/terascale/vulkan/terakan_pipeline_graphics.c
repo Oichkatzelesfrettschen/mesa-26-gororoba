@@ -550,6 +550,85 @@ terakan_pipeline_graphics_bind(struct terakan_gfx_command_writer * const command
    BITSET_FOREACH_SET (state_index, pipeline->static_state, TERAKAN_PIPELINE_GRAPHICS_STATE_COUNT) {
       terakan_pipeline_graphics_apply_state_functions[state_index](command_writer, pipeline);
    }
+
+   /* Update SQ_THREAD_RESOURCE_MGMT_1/2 and SQ_STACK_RESOURCE_MGMT_1/2/3 when the pipeline's
+    * active stage set differs from the current hardware configuration.
+    *
+    * WHY: command buffer initialization sets these config registers to the VS+PS-only allocation
+    * (sq_thread_resource_mgmt_ts_gs_r8xx[0][0]).  A pipeline with tessellation or geometry shader
+    * stages needs the SQ thread budget redistributed across LS/HS/ES/GS; without this the SQ
+    * deadlocks on wave launches to slots with zero thread allocation.  Even though tessellation
+    * and geometry shaders are not yet exposed by Terakan, implementing the re-emit now keeps the
+    * invariant tight and prevents silent breakage when those features are added.
+    *
+    * HOW: compare new_thread_mgmt against state_draw.sq_tmp.sq_thread_resource_mgmt, which tracks
+    * the value currently in hardware (both are set to [0][0] at command buffer reset, both are
+    * updated together here on mismatch).  On mismatch: emit PS_PARTIAL_FLUSH followed by a single
+    * PKT3_SET_CONFIG_REG covering SQ_THREAD_RESOURCE_MGMT_1/2 and SQ_STACK_RESOURCE_MGMT_1/2/3,
+    * then sync sq_tmp.sq_thread_resource_mgmt to match hardware.
+    */
+   {
+      struct terakan_physical_device_chip_info const * const chip_info =
+         &terakan_gfx_command_writer_physical_device(command_writer)->chip_info;
+      if (!chip_info->is_r9xx) {
+         bool const ts_enabled =
+            !!(pipeline->shader_stages & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+                                          VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT));
+         bool const gs_enabled =
+            !!(pipeline->shader_stages & VK_SHADER_STAGE_GEOMETRY_BIT);
+         uint32_t const * const new_thread_mgmt =
+            chip_info->sq_thread_resource_mgmt_ts_gs_r8xx[ts_enabled ? 1 : 0][gs_enabled ? 1 : 0];
+
+         if (memcmp(command_writer->state_draw.sq_tmp.sq_thread_resource_mgmt,
+                    new_thread_mgmt, sizeof(uint32_t) * 2) != 0) {
+            unsigned const sq_vertex_stage_count =
+               terakan_shader_hw_vertex_stage_count(ts_enabled, gs_enabled);
+            uint32_t const sq_stage_stack_entries =
+               chip_info->sq_max_stack_entries / (sq_vertex_stage_count + 1);
+            /* sq_thread_stack_register_count: compile-time constant 5 covering
+             * SQ_THREAD_RESOURCE_MGMT_1, _2, SQ_STACK_RESOURCE_MGMT_1, _2, _3. */
+            uint32_t const sq_thread_stack_register_count =
+               (R_008C28_SQ_STACK_RESOURCE_MGMT_3 - R_008C18_SQ_THREAD_RESOURCE_MGMT_1) /
+                  sizeof(uint32_t) + 1;
+
+            /* Emit PS_PARTIAL_FLUSH + SET_CONFIG_REG in one reservation.
+             * Total DWORDs: 2 (EVENT_WRITE) + 2 (PKT3 header + reg offset) +
+             *               sq_thread_stack_register_count (5 data). */
+            uint32_t *p = terakan_gfx_command_writer_emit(
+               command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE,
+               2 + 2 + sq_thread_stack_register_count);
+            if (unlikely(p == NULL)) {
+               return;
+            }
+            *p++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
+            *p++ = EVENT_TYPE(EVENT_TYPE_PS_PARTIAL_FLUSH) | EVENT_INDEX(4);
+            *p++ = PKT3(PKT3_SET_CONFIG_REG, sq_thread_stack_register_count, 0);
+            *p++ = TERAKAN_CONFIG_REG_OFFSET(R_008C18_SQ_THREAD_RESOURCE_MGMT_1);
+            /* R_008C18_SQ_THREAD_RESOURCE_MGMT_1, R_008C1C_SQ_THREAD_RESOURCE_MGMT_2 */
+            memcpy(p, new_thread_mgmt, sizeof(uint32_t) * 2);
+            p += 2;
+            /* R_008C20_SQ_STACK_RESOURCE_MGMT_1 */
+            *p++ = S_008C20_NUM_PS_STACK_ENTRIES(sq_stage_stack_entries) |
+                   S_008C20_NUM_VS_STACK_ENTRIES(sq_stage_stack_entries);
+            /* R_008C24_SQ_STACK_RESOURCE_MGMT_2 */
+            *p++ = gs_enabled
+                      ? S_008C24_NUM_GS_STACK_ENTRIES(sq_stage_stack_entries) |
+                           S_008C24_NUM_ES_STACK_ENTRIES(sq_stage_stack_entries)
+                      : 0;
+            /* R_008C28_SQ_STACK_RESOURCE_MGMT_3 */
+            *p++ = ts_enabled
+                      ? S_008C28_NUM_HS_STACK_ENTRIES(sq_stage_stack_entries) |
+                           S_008C28_NUM_LS_STACK_ENTRIES(sq_stage_stack_entries)
+                      : 0;
+            terakan_gfx_command_writer_emit_done(command_writer, p);
+
+            /* Keep sq_tmp consistent with hardware.  terakan_state_draw_apply_sq_tmp reads
+             * sq_tmp.sq_thread_resource_mgmt to size the per-stage ring buffer segments. */
+            memcpy(command_writer->state_draw.sq_tmp.sq_thread_resource_mgmt,
+                   new_thread_mgmt, sizeof(uint32_t) * 2);
+         }
+      }
+   }
 }
 
 void

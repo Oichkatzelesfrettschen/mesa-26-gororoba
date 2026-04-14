@@ -1412,12 +1412,15 @@ terakan_state_draw_reset(struct terakan_state_draw * const state,
    state->sq_pgm_ps.fs = NULL;
 
    memset(&state->sq_tmp, 0, sizeof(state->sq_tmp));
+   /* Initialize sq_tmp.sq_thread_resource_mgmt to VS+PS only ([0][0]).
+    * This matches the initial SQ_THREAD_RESOURCE_MGMT_1/2 hardware values emitted
+    * during command buffer initialization in terakan_command_buffer_reset.  If a
+    * graphics pipeline that uses tessellation or geometry shader stages is bound,
+    * terakan_pipeline_graphics_bind updates this field and re-emits the hardware
+    * registers accordingly, keeping the two in sync. */
    memcpy(
       state->sq_tmp.sq_thread_resource_mgmt,
-      terakan_device_physical_device(device)
-         ->chip_info
-         .sq_thread_resource_mgmt_ts_gs_r8xx[device->vk.enabled_features.tessellationShader ? 1 : 0]
-                                            [device->vk.enabled_features.geometryShader ? 1 : 0],
+      terakan_device_physical_device(device)->chip_info.sq_thread_resource_mgmt_ts_gs_r8xx[0][0],
       sizeof(uint32_t) * 2);
 
    state->pa_cl_clip_cntl =
