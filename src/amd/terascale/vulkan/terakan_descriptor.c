@@ -193,8 +193,12 @@ terakan_descriptor_create_for_storage_buffer(
    resource_out[0] = (uint32_t)va;
    resource_out[1] = (uint32_t)(range_aligned - 1);
    resource_out[2] = S_030008_BASE_ADDRESS_HI(va >> 32) | S_030008_STRIDE(1);
-   /* TODO(Triang3l): Set UNCACHED based on whether the shader will actually be writing to this
-    * buffer.
+   /* UNCACHED=1 forces all reads through the uncached path, bypassing the TC.  For read-only
+    * storage buffers (ACCESS_NON_WRITEABLE in the shader), UNCACHED=0 would allow TC hits and
+    * improve bandwidth utilization.  However, the descriptor is created without pipeline context,
+    * so the write/read-only distinction is not available here.  To optimize this, the pipeline
+    * layout would need to encode writability per binding, either by allocating separate descriptors
+    * or by re-patching UNCACHED during pipeline creation.  Left conservative (UNCACHED=1) for now.
     */
    resource_out[3] = S_03000C_DST_SEL_X(TERASCALE_SWIZZLE_X) |
                      S_03000C_DST_SEL_Y(TERASCALE_SWIZZLE_Y) |

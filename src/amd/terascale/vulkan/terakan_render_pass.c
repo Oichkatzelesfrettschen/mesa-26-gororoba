@@ -51,6 +51,10 @@ terakan_CmdBeginRendering(VkCommandBuffer const commandBuffer,
                                                  window_scissor_tl_br_xy);
    terakan_state_draw_finalize_scissor(window_scissor_tl_br_xy);
 
+   /* Update the window scissor in hw_state_draw so it is emitted before the next draw and
+    * properly re-emitted on new indirect buffers.  The previous direct emission approach bypassed
+    * dirty tracking, causing stale values to be re-emitted on IB restart.
+    */
    uint32_t const pa_sc_window_scissor_tl =
       S_028204_TL_X(window_scissor_tl_br_xy[0]) |
       S_028204_TL_Y(window_scissor_tl_br_xy[1]) | S_028204_WINDOW_OFFSET_DISABLE(1);
@@ -58,16 +62,14 @@ terakan_CmdBeginRendering(VkCommandBuffer const commandBuffer,
       S_028208_BR_X(window_scissor_tl_br_xy[2]) |
       S_028208_BR_Y(window_scissor_tl_br_xy[3]);
 
-   uint32_t * packet = terakan_gfx_command_writer_emit(command_writer,
-                                                       TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER,
-                                                       2 + 2);
-   if (likely(packet != NULL)) {
-      *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 2, 0);
-      *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028204_PA_SC_WINDOW_SCISSOR_TL);
-      *packet++ = pa_sc_window_scissor_tl;
-      *packet++ = pa_sc_window_scissor_br;
-      terakan_gfx_command_writer_emit_done(command_writer, packet);
-   }
+   bool const scissor_modified =
+      command_writer->hw_state_draw.pa_sc_window_scissor_tl != pa_sc_window_scissor_tl ||
+      command_writer->hw_state_draw.pa_sc_window_scissor_br != pa_sc_window_scissor_br;
+   command_writer->hw_state_draw.pa_sc_window_scissor_tl = pa_sc_window_scissor_tl;
+   command_writer->hw_state_draw.pa_sc_window_scissor_br = pa_sc_window_scissor_br;
+   terakan_hw_state_draw_written(&command_writer->hw_state_draw,
+                                 TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_WINDOW_SCISSOR,
+                                 scissor_modified);
 
    struct terakan_device const * const device = terakan_gfx_command_writer_device(command_writer);
    struct terakan_instance const * const inst =

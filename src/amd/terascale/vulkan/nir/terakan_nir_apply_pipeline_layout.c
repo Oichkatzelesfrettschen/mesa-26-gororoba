@@ -309,8 +309,13 @@ terakan_nir_gather_uavs_needed_instr(nir_builder * const b, nir_instr * const in
          expected_type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
          break;
       case nir_intrinsic_image_deref_load:
-         if (nir_intrinsic_image_dim(intrin) != GLSL_SAMPLER_DIM_BUF) {
-            /* TODO(Triang3l): Detect more precisely whether the image load actually needs a UAV. */
+         if (nir_intrinsic_image_dim(intrin) != GLSL_SAMPLER_DIM_BUF &&
+             !(nir_intrinsic_access(intrin) & ACCESS_NON_WRITEABLE)) {
+            /* Non-writeable loads need no write-read coherence: the hardware TEX path enforces
+             * OOB zeroing (Phase 5 Probe 4) and this binding cannot be written in the same
+             * invocation.  Only writeable bindings (where the same invocation may write and then
+             * read) require the UAV NOP_RTN path for correct coherence.
+             */
             src = intrin->src[0];
             expected_type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
          }
@@ -389,9 +394,9 @@ terakan_nir_gather_uavs_needed(nir_shader * const shader,
       return;
    }
 
-   /* TODO(Triang3l): Research detection of which storage image bindings can skip the UAV path for
-    * reads, based on things like ACCESS_RESTRICT, ACCESS_COHERENT (or its Vulkan memory model
-    * equivalents).
+   /* ACCESS_NON_WRITEABLE loads are already excluded in terakan_nir_gather_uavs_needed_instr.
+    * Future improvement: use ACCESS_RESTRICT to further narrow same-binding write/read pairs
+    * within an invocation.
     */
 
    nir_shader_instructions_pass(shader, terakan_nir_gather_uavs_needed_instr, nir_metadata_none,

@@ -920,7 +920,13 @@ static void r600_init_color_surface(struct r600_context *rctx,
 		     ntype != V_0280A0_NUMBER_UINT &&
 		     ntype != V_0280A0_NUMBER_SINT) &&
 		    G_0280A0_BLEND_CLAMP(color_info) &&
-		    /* XXX this condition is always true since BLEND_FLOAT32 is never set (bug?). */
+		    /* CB_COLOR_INFO.BLEND_FLOAT32 (bit 7, R6xx) should be set for fp32 colour targets
+		     * to indicate the blend unit should use float32 precision.  It does not appear to
+		     * be set anywhere in this driver, making this guard always true.  On R6xx, this
+		     * could mean fp32 formats incorrectly use EXPORT_NORM if they happen to have
+		     * BLEND_CLAMP set -- unlikely in practice since those two flags are mutually
+		     * exclusive in hardware for fp32 formats.  Not applicable to Evergreen+.
+		     */
 		    !G_0280A0_BLEND_FLOAT32(color_info)) {
 			color_info |= S_0280A0_SOURCE_FORMAT(V_0280A0_EXPORT_NORM);
 			surf->export_16bpc = true;
@@ -2711,7 +2717,10 @@ void r600_update_gs_state(struct pipe_context *ctx, struct r600_pipe_shader *sha
 	r600_store_context_reg(cb, R_0288AC_SQ_GSVS_RING_ITEMSIZE,
 			       gsvs_itemsize);
 
-	/* FIXME calculate these values somehow ??? */
+	/* Conservative GS batch sizes; same rationale as in evergreen_state.c.
+	 * These values match what the Evergreen path uses and are sufficient for
+	 * all known workloads.  Optimal values would be derived from GS output size.
+	 */
 	r600_store_config_reg_seq(cb, R_0088C8_VGT_GS_PER_ES, 2);
 	r600_store_value(cb, 0x80); /* GS_PER_ES */
 	r600_store_value(cb, 0x100); /* ES_PER_GS */

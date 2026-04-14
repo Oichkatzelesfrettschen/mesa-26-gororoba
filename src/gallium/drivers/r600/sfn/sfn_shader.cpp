@@ -1652,9 +1652,11 @@ Shader::load_ubo(nir_intrinsic_instr *instr)
    auto base_id = nir_intrinsic_base(instr);
 
    if (!buf_offset) {
-      /* TODO: if bufid is constant then this can also be solved by using the
-       * CF index on the ALU block, and this would probably make sense when
-       * there are more then one loads with the same buffer ID. */
+      /* Optimization opportunity: when bufid is constant and there are multiple
+       * loads from the same buffer, the CF_INDEX on the ALU block could be used
+       * instead of GPR-indirect addressing for the buffer ID, reducing GPR pressure.
+       * Worth implementing when uniform buffer access patterns are profiled.
+       */
 
       auto addr = value_factory().src(instr->src[1], 0)->as_register();
       RegisterVec4::Swizzle dest_swz{7, 7, 7, 7};

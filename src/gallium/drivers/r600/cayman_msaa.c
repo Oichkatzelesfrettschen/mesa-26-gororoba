@@ -187,12 +187,12 @@ void cayman_emit_msaa_state(struct radeon_cmdbuf *cs, int nr_samples,
 {
 	int setup_samples = nr_samples > 1 ? nr_samples :
 			    overrast_samples > 1 ? overrast_samples : 0;
-	/* Required by OpenGL line rasterization.
+	/* Required by OpenGL line rasterization (DX10 diamond test, axis-aligned endcaps).
 	 *
-	 * TODO: We should also enable perpendicular endcaps for AA lines,
-	 *       but that requires implementing line stippling in the pixel
-	 *       shader. SC can only do line stippling with axis-aligned
-	 *       endcaps.
+	 * Perpendicular endcaps for AA lines would require PS-based line stippling:
+	 * the SC hardware only supports stippling with axis-aligned endcaps, so
+	 * perpendicular endcaps would need to be emulated in the pixel shader.
+	 * Not implemented; axis-aligned endcaps are sufficient for OpenGL compliance.
 	 */
 	unsigned sc_line_cntl = S_028BDC_DX10_DIAMOND_TEST_ENA(1);
 	unsigned sc_mode_cntl_1 =

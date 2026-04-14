@@ -104,7 +104,10 @@ static unsigned stack_entry_size(enum radeon_family chip) {
 	 * 	Columns per Row (R9xx+)                8   4   4   4 */
 
 	switch (chip) {
-	/* FIXME: are some chips missing here? */
+	/* Only chips with wavefront sizes smaller than 64 are listed explicitly.
+	 * All other chips (including all Evergreen and Cayman variants not listed below)
+	 * use wavefront size 64 and are handled by the default case.
+	 */
 	/* wavefront size 16 */
 	case CHIP_RV610:
 	case CHIP_RS780:

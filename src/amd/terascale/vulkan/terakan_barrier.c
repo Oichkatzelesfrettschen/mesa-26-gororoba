@@ -40,6 +40,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#define TERAKAN_BARRIER_CP_COHER_STATUS_REG_DW (0x0085FCu >> 2)
+
 static bool
 terakan_barrier_is_cs_dump_enabled(struct terakan_gfx_command_writer const * const command_writer)
 {
@@ -152,20 +154,35 @@ terakan_barrier_get_src_actions(struct terakan_gfx_command_writer const * const 
             actions |= command_writer->post_depth_stencil_image_copy_write_barrier_actions;
          }
       }
-      /* TODO(Triang3l): Resolve actions. */
+      if (src_stages & VK_PIPELINE_STAGE_2_RESOLVE_BIT) {
+         if (for_color_image) {
+            actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_DATA |
+                       TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_META;
+         }
+         if (for_depth_stencil_image) {
+            actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_DB_DATA |
+                       TERAKAN_BARRIER_ACTION_FLUSH_INV_DB_META;
+         }
+      }
       if (src_stages & VK_PIPELINE_STAGE_2_BLIT_BIT) {
          if (for_color_image) {
             actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_DATA |
                        TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_META;
          }
-         /* TODO(Triang3l): Depth/stencil blit actions. */
+         if (for_depth_stencil_image) {
+            actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_DB_DATA |
+                       TERAKAN_BARRIER_ACTION_FLUSH_INV_DB_META;
+         }
       }
       if (src_stages & VK_PIPELINE_STAGE_2_CLEAR_BIT) {
          if (for_color_image) {
             actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_DATA |
                        TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_RTV_META;
          }
-         /* TODO(Triang3l): Depth/stencil clear actions. */
+         if (for_depth_stencil_image) {
+            actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_DB_DATA |
+                       TERAKAN_BARRIER_ACTION_FLUSH_INV_DB_META;
+         }
       }
    }
 
@@ -263,7 +280,12 @@ terakan_barrier_get_dst_actions(struct terakan_gfx_command_writer const * const 
             actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
          }
       }
-      /* TODO(Triang3l): Depth/stencil actions. */
+      bool const for_depth_stencil_image =
+         (image_aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
+      if (for_depth_stencil_image) {
+         actions |= TERAKAN_BARRIER_ACTION_FLUSH_INV_DB_DATA |
+                    TERAKAN_BARRIER_ACTION_FLUSH_INV_DB_META;
+      }
    }
 
    return actions;
@@ -341,6 +363,13 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
 
    uint32_t cp_coher_cntl_cb_db_dest_base_ena = 0;
    uint32_t cp_coher_cntl = 0;
+   bool surface_sync_emitted = false;
+   bool const wait_reg_mem_compute_to_index =
+      debug_get_bool_option("TERAKAN_EXPERIMENTAL_BARRIER_WAIT_REG_MEM", false) &&
+      (actions & (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME |
+                  TERAKAN_BARRIER_ACTION_INV_TC)) ==
+         (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME |
+          TERAKAN_BARRIER_ACTION_INV_TC);
 
    /* Flushes are performed in bottom-to-top-of-pipe order, so preceding flushes are likely to be
     * able to make subsequent ones not have to wait.
@@ -460,6 +489,29 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
                  TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL);
       }
       terakan_gfx_command_writer_emit_done(command_writer, surface_sync_packet);
+      surface_sync_emitted = true;
+   }
+
+   if (surface_sync_emitted && wait_reg_mem_compute_to_index) {
+      uint32_t * wait_reg_mem_packet = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 7);
+      if (unlikely(wait_reg_mem_packet == NULL)) {
+         return;
+      }
+      *wait_reg_mem_packet++ = PKT3(PKT3_WAIT_REG_MEM, 5, 0);
+      *wait_reg_mem_packet++ = WAIT_REG_MEM_EQUAL | WAIT_REG_MEM_MEM_SPACE(0);
+      *wait_reg_mem_packet++ = TERAKAN_BARRIER_CP_COHER_STATUS_REG_DW;
+      *wait_reg_mem_packet++ = 0;
+      *wait_reg_mem_packet++ = 0;
+      *wait_reg_mem_packet++ = UINT32_MAX;
+      *wait_reg_mem_packet++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+      if (unlikely(terakan_barrier_is_cs_dump_enabled(command_writer))) {
+         fprintf(stderr,
+                 "terakan: pm4: PKT3_WAIT_REG_MEM mode=reg cp_coher_status_dw=0x%08X ref=0x%08X mask=0x%08X poll=%u\n",
+                 TERAKAN_BARRIER_CP_COHER_STATUS_REG_DW, 0u, UINT32_MAX,
+                 TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL);
+      }
+      terakan_gfx_command_writer_emit_done(command_writer, wait_reg_mem_packet);
    }
 
    /* Wait until all synchronization in ME is done before starting new PFP reads if PFP is in the

@@ -517,8 +517,11 @@ AluInstr::required_channels_mask() const
          return (1 << m_alu_slots) - 1;
       }
    }
-   /* TODO: handle cases where the slot pair doesn't reside in
-    * naighboring channels.
+   /* Multi-slot non-transcendental ALU instructions on Evergreen VLIW5 always occupy
+    * consecutive channels starting at dest_chan.  dest_chan=3 with m_alu_slots=2 would
+    * require channels 3+4 (w + transcendental), which cannot occur for this instruction
+    * class -- the Cayman-trans path above already handles transcendental-unit multi-slots.
+    * The assert guards against any future scheduler change that would violate this.
     */
    int mask = ((1 << m_alu_slots) - 1) << dest_chan();
    assert(mask < 0x10);
@@ -1503,8 +1506,9 @@ AluInstr::do_ready() const
        * update are scheduled, otherwise we may use the updated value when we
        * shouldn't */
       for (auto u : m_dest->uses()) {
-         /* TODO: This is working around some sloppy use updates, dead instrzuctions
-          * should remove themselves from uses. */
+         /* Dead instructions are not removed from use lists when they die; skip them
+          * here rather than requiring every dead-code pass to do full use-list cleanup.
+          */
          if (u->is_dead())
             continue;
          if (!u->is_scheduled() &&

@@ -294,11 +294,11 @@ Block::set_type(Type t, r600_chip_class chip_class)
    m_block_type = t;
    switch (t) {
    case vtx:
-      /* In theory on >= EG VTX support 16 slots, but with vertex fetch
-       * instructions the register pressure increases fast - i.e. in the worst
-       * case four register more get used, so stick to 8 slots for now.
-       * TODO: think about some trickery in the schedler to make use of up
-       * to 16 slots if the register pressure doesn't get too high.
+      /* Evergreen VTX clauses support up to 16 slots, but each vertex fetch
+       * instruction can allocate up to 4 destination GPRs, so filling all 16
+       * slots risks exhausting the register file under high-attribute workloads.
+       * Cap at 8 slots conservatively; a register-pressure-aware scheduler could
+       * raise this limit to improve throughput for low-attribute shaders.
        */
       m_remaining_slots = 8;
       m_cf_start =

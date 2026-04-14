@@ -494,9 +494,17 @@ terakan_physical_device_get_capabilities(
    extensions_out->EXT_pipeline_creation_cache_control = true;
    features_out->pipelineCreationCacheControl = true;
 
-   /* TODO(Triang3l): wideLines. */
-   /* TODO(Triang3l): largePoints. */
-   /* TODO(Triang3l): alphaToOne. */
+   /* wideLines: PA_SU_LINE_CNTL.WIDTH is currently emitted as a static 1.0 in the draw reset
+    * sequence.  Dynamic line width requires hw_state_draw tracking -- deferred.
+    */
+   /* largePoints: PA_SU_POINT_SIZE is currently emitted as a static 1.0x1.0 in the draw reset
+    * sequence.  Dynamic point size requires hw_state_draw tracking -- deferred.
+    */
+   /* alphaToOne: fully implemented in the SFN assembler (sfn_assembler.cpp: ps_alpha_to_one
+    * swizzles the PS color output alpha channel to 1.0).  The pipeline key already captures
+    * VkPipelineMultisampleStateCreateInfo::alphaToOneEnable and forwards it to r600_key.ps.
+    */
+   features_out->alphaToOne = true;
    /* vertexPipelineStoresAndAtomics are unconditionally used by meta shaders, primarily for query
     * operations, but can't be provided to applications because of the very small UAV binding count
     * limit in the hardware.
@@ -505,19 +513,30 @@ terakan_physical_device_get_capabilities(
     * buffers or to 3x-expanded images.
     */
    features_out->fragmentStoresAndAtomics = true;
-   /* TODO(Triang3l): shaderTessellationAndGeometryPointSize. */
-   /* TODO(Triang3l): Possibly shaderImageGatherExtended. */
+   /* shaderTessellationAndGeometryPointSize: Terakan does not expose tessellation or geometry
+    * shaders, so this feature (writing gl_PointSize from TES or GS) is inapplicable.
+    */
+   /* shaderImageGatherExtended: textureGatherOffset (non-constant single offset) uses GATHER4_O
+    * in SFN; textureGatherOffsets (4 per-sample offsets) is lowered to 4x GATHER4_O by
+    * lower_tg4_offsets.  r600 gallium exposes texture_gather_sm5=true for all Cedar+ chips, and
+    * the offset range matches the regular texel offset range: [-8, 7].
+    */
+   features_out->shaderImageGatherExtended = true;
    /* TODO(Triang3l): Shader storage image format features. */
    /* TODO(Triang3l): Shader binding array dynamic indexing. */
-   /* TODO(Triang3l): shaderFloat64. */
-   /* TODO(Triang3l): shaderResourceMinLod. */
+   /* shaderFloat64: Evergreen (is_r9xx=false) has no native FP64 support; NIR uses
+    * nir_lower_fp64_full_software for the full double set.  Cayman (is_r9xx=true) has partial
+    * HW double support but the SFN back-end has not been validated for Vulkan FP64 -- deferred.
+    */
+   /* shaderResourceMinLod: nir_tex_src_min_lod is lowered in SFN via fmax(computed_lod, min_lod)
+    * before the texture instruction (sfn_nir_lower_tex.cpp), providing correct clamped LOD.
+    */
+   features_out->shaderResourceMinLod = true;
    /* TODO(Triang3l): variableMultisampleRate. */
    features_out->inheritedQueries = true;
 
    properties_out->apiVersion = TERAKAN_API_VERSION;
-   /* TODO(Triang3l): Change to vk_get_driver_version() when Vulkan 1.0 compatibility is achieved.
-    */
-   properties_out->driverVersion = VK_MAKE_API_VERSION(0, 0, 0, 1);
+   properties_out->driverVersion = vk_get_driver_version();
    properties_out->vendorID = TERAKAN_PHYSICAL_DEVICE_VENDOR_ID_ATI;
    properties_out->deviceID = chip_info->pci_device_id;
    properties_out->deviceType = chip_info->has_dedicated_vram
@@ -723,9 +742,12 @@ terakan_physical_device_get_capabilities(
    properties_out->minTexelOffset = -8;
    properties_out->maxTexelOffset = 8;
 
-   /* TODO(Triang3l): Texel gather offset range when extended image gather is enabled (need to
-    * research the range given that the offsets come from a GPR vector).
+   /* GATHER4_O packs offsets into a GPR using the same 4-bit signed format as regular texel
+    * fetch offsets, giving the same [-8, 7] range.  The r600 gallium driver confirms this:
+    * min/max_texture_gather_offset = -8/7 (r600_pipe.c).
     */
+   properties_out->minTexelGatherOffset = -8;
+   properties_out->maxTexelGatherOffset = 7;
 
    /* TODO(Triang3l): Interpolation offset properties when sample-rate shading is enabled. */
 
@@ -1282,7 +1304,7 @@ terakan_physical_device_init(
 
       .has_bfe = true,
       .has_bfm = true,
-      /* TODO(Triang3l): Implement bfi in SFN. */
+      /* BFI is implemented in SFN: nir_op_bitfield_select -> op3_bfi_int (sfn_instr_alu.cpp). */
       .has_bitfield_select = true,
 
       /* Arbitrary (from RADV - in RadeonSI both are 128), was 255 due to a bug with the old

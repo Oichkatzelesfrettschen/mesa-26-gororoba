@@ -110,17 +110,6 @@ struct terakan_image_surface {
    struct terakan_image_surface_aspect aspects[TERAKAN_FORMAT_MAX_ASPECTS];
 };
 
-/* TODO(Triang3l): Replace in favor of terakan_format_aspect_index, but need to handle errors when
- * using it, and never to use it with combined depth and stencil.
- */
-static inline unsigned
-terakan_image_surface_aspect_index(VkFormat const image_format, VkImageAspectFlagBits const aspect)
-{
-   if (aspect == VK_IMAGE_ASPECT_STENCIL_BIT) {
-      return vk_format_has_depth(image_format) ? 1 : 0;
-   }
-   return 0;
-}
 
 struct terakan_image {
    struct vk_image vk;

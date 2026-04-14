@@ -243,7 +243,11 @@ public:
    void visit(WriteTFInstr *instr) override { (void)instr; };
    void visit(RatInstr *instr) override { (void)instr; };
 
-   // TODO: these two should use copy propagation
+   /* LDS reads and atomics are not currently handled by copy propagation.
+    * Adding them requires tracking the implicit LDS_READ_RETURN dependency
+    * (the read result lands in a fixed GPR after a LDS read fence) to ensure
+    * we don't propagate past a write that invalidates the value.
+    */
    void visit(LDSAtomicInstr *instr) override { (void)instr; };
    void visit(LDSReadInstr *instr) override { (void)instr; };
 
@@ -602,9 +606,15 @@ CopyPropFwdVisitor::propagate_to(RegisterVec4& value, Instr *instr)
          is_ssa = src->has_flag(Register::ssa);
       } else if (new_sel != src->sel()) {
          /* If we have to assign a new register sel index do so only
-          * if all already assigned source can get a new register index,
-          * and all registers are either SSA or registers.
-          * TODO: check whether this last restriction is required */
+          * if all already assigned sources can get a new register index,
+          * and all registers are either all SSA or all non-SSA.
+          * Mixing SSA and non-SSA in the same vec4 is disallowed because they
+          * have different sel-change semantics: SSA registers can always get
+          * a fresh sel, while non-SSA registers have aliasing constraints.
+          * This restriction might be conservative for some patterns but is
+          * safe; relaxing it would require proving the sel-change rules are
+          * compatible for each mixed pair.
+          */
          if (all_sel_can_change &&
              register_sel_can_change(src->pin()) &&
              (is_ssa == src->has_flag(Register::ssa))) {

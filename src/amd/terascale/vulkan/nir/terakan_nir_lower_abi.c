@@ -1056,9 +1056,14 @@ terakan_nir_lower_bindings_instr_image_deref_load(
    mesa_shader_stage const stage = b->shader->info.stage;
 
    enum gl_access_qualifier access = nir_intrinsic_access(intrin);
-   if (state->uavs_for_mutable_resources_needed != NULL) {
-      /* Need write-read coherence within an invocation. */
-      /* TODO(Triang3l): Detect whether write-read coherence is needed more precisely. */
+   if (state->uavs_for_mutable_resources_needed != NULL &&
+       !(access & ACCESS_NON_WRITEABLE)) {
+      /* If this shader has UAV writes AND this binding is writeable, block TEX reordering:
+       * the TEX cache is not coherent with MEM_RAT (UAV) writes, so a write-then-read
+       * sequence on the same binding could observe stale data from the TEX cache.
+       * Non-writeable bindings cannot be written in the same invocation, so they have no
+       * such coherence constraint and can safely use ACCESS_CAN_REORDER.
+       */
       access &= ~ACCESS_CAN_REORDER;
    } else {
       access |= ACCESS_CAN_REORDER;

@@ -25,6 +25,7 @@
 
 #include "terakan_command_buffer.h"
 #include "terakan_device.h"
+#include "terakan_image.h"
 #include "terakan_physical_device.h"
 #include "terakan_queue.h"
 
@@ -1302,6 +1303,231 @@ terakan_hw_state_draw_emit_cb_color(struct terakan_gfx_command_writer * const co
    }
 }
 
+static void
+terakan_hw_state_draw_emit_vgt_gs_mode(struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028A40_VGT_GS_MODE);
+   *packet++ = command_writer->hw_state_draw.vgt_gs_mode;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_vgt_primitiveid_en(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028A84_VGT_PRIMITIVEID_EN);
+   *packet++ = command_writer->hw_state_draw.vgt_primitiveid_en;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_vgt_multi_prim_ib_reset_en(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028A94_VGT_MULTI_PRIM_IB_RESET_EN);
+   *packet++ = command_writer->hw_state_draw.vgt_multi_prim_ib_reset_en;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_vgt_reuse_off(struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028AB4_VGT_REUSE_OFF);
+   *packet++ = command_writer->hw_state_draw.vgt_reuse_off;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_vgt_vtx_cnt_en(struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028AB8_VGT_VTX_CNT_EN);
+   *packet++ = command_writer->hw_state_draw.vgt_vtx_cnt_en;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_vgt_shader_stages_en(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028B54_VGT_SHADER_STAGES_EN);
+   *packet++ = command_writer->hw_state_draw.vgt_shader_stages_en;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_vgt_strmout_config(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 2);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 2, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028B94_VGT_STRMOUT_CONFIG);
+   *packet++ = command_writer->hw_state_draw.vgt_strmout_config;
+   *packet++ = command_writer->hw_state_draw.vgt_strmout_buffer_config;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_sq_vtx_semantic_clear(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_0288F0_SQ_VTX_SEMANTIC_CLEAR);
+   *packet++ = command_writer->hw_state_draw.sq_vtx_semantic_clear;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_pa_sc_window_scissor(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 2);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 2, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028204_PA_SC_WINDOW_SCISSOR_TL);
+   *packet++ = command_writer->hw_state_draw.pa_sc_window_scissor_tl;
+   *packet++ = command_writer->hw_state_draw.pa_sc_window_scissor_br;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_pa_sc_cliprect_rule(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_02820C_PA_SC_CLIPRECT_RULE);
+   *packet++ = command_writer->hw_state_draw.pa_sc_cliprect_rule;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_pa_sc_generic_scissor(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 2);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 2, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028240_PA_SC_GENERIC_SCISSOR_TL);
+   *packet++ = command_writer->hw_state_draw.pa_sc_generic_scissor_tl;
+   *packet++ = command_writer->hw_state_draw.pa_sc_generic_scissor_br;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_pa_sc_mode_cntl_1(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028A4C_PA_SC_MODE_CNTL_1);
+   *packet++ = command_writer->hw_state_draw.pa_sc_mode_cntl_1;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_db_render_control(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028000_DB_RENDER_CONTROL);
+   *packet++ = command_writer->hw_state_draw.db_render_control;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_db_render_override2(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028010_DB_RENDER_OVERRIDE2);
+   *packet++ = command_writer->hw_state_draw.db_render_override2;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
+static void
+terakan_hw_state_draw_emit_db_alpha_to_mask(
+   struct terakan_gfx_command_writer * const command_writer)
+{
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
+   *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028B70_DB_ALPHA_TO_MASK);
+   *packet++ = command_writer->hw_state_draw.db_alpha_to_mask;
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
 static terakan_hw_state_emit_function const
    terakan_hw_state_draw_emit_functions[TERAKAN_HW_STATE_DRAW_INDEX_COUNT] = {
       [TERAKAN_HW_STATE_DRAW_INDEX_PIPELINESTAT] = terakan_hw_state_draw_emit_pipelinestat,
@@ -1345,6 +1571,33 @@ static terakan_hw_state_emit_function const
       [TERAKAN_HW_STATE_DRAW_INDEX_CB_TARGET_MASK] = terakan_hw_state_draw_emit_cb_target_mask,
       [TERAKAN_HW_STATE_DRAW_INDEX_CB_BLEND_RGBA] = terakan_hw_state_draw_emit_cb_blend_rgba,
       [TERAKAN_HW_STATE_DRAW_INDEX_CB_COLOR_CONTROL] = terakan_hw_state_draw_emit_cb_color_control,
+      [TERAKAN_HW_STATE_DRAW_INDEX_VGT_GS_MODE] = terakan_hw_state_draw_emit_vgt_gs_mode,
+      [TERAKAN_HW_STATE_DRAW_INDEX_VGT_PRIMITIVEID_EN] =
+         terakan_hw_state_draw_emit_vgt_primitiveid_en,
+      [TERAKAN_HW_STATE_DRAW_INDEX_VGT_MULTI_PRIM_IB_RESET_EN] =
+         terakan_hw_state_draw_emit_vgt_multi_prim_ib_reset_en,
+      [TERAKAN_HW_STATE_DRAW_INDEX_VGT_REUSE_OFF] = terakan_hw_state_draw_emit_vgt_reuse_off,
+      [TERAKAN_HW_STATE_DRAW_INDEX_VGT_VTX_CNT_EN] = terakan_hw_state_draw_emit_vgt_vtx_cnt_en,
+      [TERAKAN_HW_STATE_DRAW_INDEX_VGT_SHADER_STAGES_EN] =
+         terakan_hw_state_draw_emit_vgt_shader_stages_en,
+      [TERAKAN_HW_STATE_DRAW_INDEX_VGT_STRMOUT_CONFIG] =
+         terakan_hw_state_draw_emit_vgt_strmout_config,
+      [TERAKAN_HW_STATE_DRAW_INDEX_SQ_VTX_SEMANTIC_CLEAR] =
+         terakan_hw_state_draw_emit_sq_vtx_semantic_clear,
+      [TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_WINDOW_SCISSOR] =
+         terakan_hw_state_draw_emit_pa_sc_window_scissor,
+      [TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_CLIPRECT_RULE] =
+         terakan_hw_state_draw_emit_pa_sc_cliprect_rule,
+      [TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_GENERIC_SCISSOR] =
+         terakan_hw_state_draw_emit_pa_sc_generic_scissor,
+      [TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_MODE_CNTL_1] =
+         terakan_hw_state_draw_emit_pa_sc_mode_cntl_1,
+      [TERAKAN_HW_STATE_DRAW_INDEX_DB_RENDER_CONTROL] =
+         terakan_hw_state_draw_emit_db_render_control,
+      [TERAKAN_HW_STATE_DRAW_INDEX_DB_RENDER_OVERRIDE2] =
+         terakan_hw_state_draw_emit_db_render_override2,
+      [TERAKAN_HW_STATE_DRAW_INDEX_DB_ALPHA_TO_MASK] =
+         terakan_hw_state_draw_emit_db_alpha_to_mask,
       [TERAKAN_HW_STATE_DRAW_INDEX_SQ_RINGS] = terakan_hw_state_draw_emit_sq_rings,
       [TERAKAN_HW_STATE_DRAW_INDEX_VIEWPORT] = terakan_hw_state_draw_emit_viewport,
       [TERAKAN_HW_STATE_DRAW_INDEX_CB_BLEND_CONTROL] = terakan_hw_state_draw_emit_cb_blend_control,
@@ -1514,6 +1767,65 @@ terakan_hw_state_draw_reset(struct terakan_hw_state_draw * const state)
    state->cb_target_mask = 0b0;
    BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_CB_TARGET_MASK);
    BITSET_SET(state->state_modified, TERAKAN_HW_STATE_DRAW_INDEX_CB_TARGET_MASK);
+
+   /* Migrated from the command buffer preamble static array. */
+   state->vgt_gs_mode = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_VGT_GS_MODE);
+
+   state->vgt_primitiveid_en = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_VGT_PRIMITIVEID_EN);
+
+   state->vgt_multi_prim_ib_reset_en = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_VGT_MULTI_PRIM_IB_RESET_EN);
+
+   state->vgt_reuse_off = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_VGT_REUSE_OFF);
+
+   state->vgt_vtx_cnt_en = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_VGT_VTX_CNT_EN);
+
+   state->vgt_shader_stages_en = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_VGT_SHADER_STAGES_EN);
+
+   state->vgt_strmout_config = 0;
+   state->vgt_strmout_buffer_config = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_VGT_STRMOUT_CONFIG);
+
+   /* R_0288F0_SQ_VTX_SEMANTIC_CLEAR: UINT32_MAX clears all semantic bindings. */
+   state->sq_vtx_semantic_clear = UINT32_MAX;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_SQ_VTX_SEMANTIC_CLEAR);
+
+   /* PA_SC_WINDOW_SCISSOR: default to full framebuffer, window offset disabled. */
+   state->pa_sc_window_scissor_tl = S_028204_WINDOW_OFFSET_DISABLE(1);
+   state->pa_sc_window_scissor_br =
+      S_028208_BR_X(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT) |
+      S_028208_BR_Y(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT);
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_WINDOW_SCISSOR);
+
+   /* PA_SC_CLIPRECT_RULE: all clip rules enabled. */
+   state->pa_sc_cliprect_rule = 0xFFFF;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_CLIPRECT_RULE);
+
+   /* PA_SC_GENERIC_SCISSOR: default to full framebuffer. */
+   state->pa_sc_generic_scissor_tl = 0;
+   state->pa_sc_generic_scissor_br =
+      S_028244_BR_X(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT) |
+      S_028244_BR_Y(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT);
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_GENERIC_SCISSOR);
+
+   /* PA_SC_MODE_CNTL_1: always enable FORCE_EOV for scan converter stability. */
+   state->pa_sc_mode_cntl_1 =
+      EG_S_028A4C_FORCE_EOV_CNTDWN_ENABLE(1) | EG_S_028A4C_FORCE_EOV_REZ_ENABLE(1);
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_PA_SC_MODE_CNTL_1);
+
+   state->db_render_control = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_DB_RENDER_CONTROL);
+
+   state->db_render_override2 = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_DB_RENDER_OVERRIDE2);
+
+   state->db_alpha_to_mask = 0;
+   BITSET_SET(state->state_ever_written, TERAKAN_HW_STATE_DRAW_INDEX_DB_ALPHA_TO_MASK);
 
    state->sq_rings.needed = 0b0;
    state->sq_rings.item_sizes_modified = 0b0;

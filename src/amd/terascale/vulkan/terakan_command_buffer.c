@@ -667,46 +667,10 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
       /* R_028A3C_VGT_GROUP_VECT_1_FMT_CNTL */
       0,
 
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028A40_VGT_GS_MODE),
-      0,
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028A84_VGT_PRIMITIVEID_EN),
-      0,
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028A94_VGT_MULTI_PRIM_IB_RESET_EN),
-      0,
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028AB4_VGT_REUSE_OFF),
-      0,
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028AB8_VGT_VTX_CNT_EN),
-      0,
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028B54_VGT_SHADER_STAGES_EN),
-      0,
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(
-         PKT3_SET_CONTEXT_REG,
-         (R_028B98_VGT_STRMOUT_BUFFER_CONFIG - R_028B94_VGT_STRMOUT_CONFIG) / sizeof(uint32_t) + 1,
-         0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028B94_VGT_STRMOUT_CONFIG),
-      /* R_028B94_VGT_STRMOUT_CONFIG */
-      0,
-      /* R_028B98_VGT_STRMOUT_BUFFER_CONFIG */
-      0,
+      /* VGT_GS_MODE, VGT_PRIMITIVEID_EN, VGT_MULTI_PRIM_IB_RESET_EN, VGT_REUSE_OFF,
+       * VGT_VTX_CNT_EN, VGT_SHADER_STAGES_EN, VGT_STRMOUT_CONFIG/BUFFER_CONFIG:
+       * now tracked and emitted via terakan_hw_state_draw.
+       */
 
       /*
        * Sequencer.
@@ -720,10 +684,7 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
       /* R_0288EC_SQ_LDS_ALLOC_PS */
       0,
 
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_0288F0_SQ_VTX_SEMANTIC_CLEAR),
-      UINT32_MAX,
+      /* SQ_VTX_SEMANTIC_CLEAR: now tracked and emitted via terakan_hw_state_draw. */
 
       /*
        * Shader export.
@@ -779,18 +740,7 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
       /* R_028034_PA_SC_SCREEN_SCISSOR_BR */
       S_028034_BR_X(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT) | S_028034_BR_Y(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT),
 
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 2, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028204_PA_SC_WINDOW_SCISSOR_TL),
-      /* R_028204_PA_SC_WINDOW_SCISSOR_TL */
-      0,
-      /* R_028208_PA_SC_WINDOW_SCISSOR_BR */
-      S_028208_BR_X(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT) | S_028208_BR_Y(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT),
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_02820C_PA_SC_CLIPRECT_RULE),
-      0xFFFF,
+      /* PA_SC_WINDOW_SCISSOR and PA_SC_CLIPRECT_RULE: now tracked and emitted via terakan_hw_state_draw. */
 
       PKT3(PKT3_SET_CONTEXT_REG,
            (R_028234_PA_SU_HARDWARE_SCREEN_OFFSET - R_028230_PA_SC_EDGERULE) / sizeof(uint32_t) + 1,
@@ -805,13 +755,7 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
       /* R_028234_PA_SU_HARDWARE_SCREEN_OFFSET */
       0,
 
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 2, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028240_PA_SC_GENERIC_SCISSOR_TL),
-      /* R_028240_PA_SC_GENERIC_SCISSOR_TL */
-      0,
-      /* R_028244_PA_SC_GENERIC_SCISSOR_BR */
-      S_028244_BR_X(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT) | S_028244_BR_Y(TERAKAN_IMAGE_MAX_WIDTH_HEIGHT),
+      /* PA_SC_GENERIC_SCISSOR: now tracked and emitted via terakan_hw_state_draw. */
 
       PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
       TERAKAN_CONTEXT_REG_OFFSET(R_028820_PA_CL_NANINF_CNTL),
@@ -825,31 +769,9 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
       /* R_028A08_PA_SU_LINE_CNTL */
       S_028A08_WIDTH((uint32_t)1 << 3),
 
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028A4C_PA_SC_MODE_CNTL_1),
-      EG_S_028A4C_FORCE_EOV_CNTDWN_ENABLE(1) | EG_S_028A4C_FORCE_EOV_REZ_ENABLE(1),
-
-      /*
-       * Depth buffer.
+      /* PA_SC_MODE_CNTL_1, DB_RENDER_CONTROL, DB_RENDER_OVERRIDE2, DB_ALPHA_TO_MASK:
+       * now tracked and emitted via terakan_hw_state_draw.
        */
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028000_DB_RENDER_CONTROL),
-      0,
-
-      /* TODO(Triang3l): Move to hw_state_draw.
-       * DECOMPRESS_Z_ON_FLUSH on R9xx must be enabled for 4x+ AA.
-       */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028010_DB_RENDER_OVERRIDE2),
-      0,
-
-      /* TODO(Triang3l): Move to hw_state_draw. */
-      PKT3(PKT3_SET_CONTEXT_REG, 1, 0),
-      TERAKAN_CONTEXT_REG_OFFSET(R_028B70_DB_ALPHA_TO_MASK),
-      0,
    };
 
    packet = terakan_gfx_command_writer_emit(command_writer,

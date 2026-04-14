@@ -344,8 +344,9 @@ terakan_AllocateMemory(VkDevice const deviceHandle,
                .attrib_stencil_tile_split =
                   vk_format_has_stencil(dedicated_image->vk.format)
                      ? dedicated_image->surface
-                          .aspects[terakan_image_surface_aspect_index(dedicated_image->vk.format,
-                                                                      VK_IMAGE_ASPECT_STENCIL_BIT)]
+                          .aspects[terakan_format_aspect_index(
+                             dedicated_image->format_info.aspect_map,
+                             VK_IMAGE_ASPECT_STENCIL_BIT, 0)]
                           .tiling.attrib_tile_split
                      : 0,
                .attrib_bank_width = dedicated_image_main_aspect->tiling.attrib_bank_width,

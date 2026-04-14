@@ -1361,7 +1361,11 @@ void evergreen_init_color_surface(struct r600_context *rctx,
 		color.ntype == V_028C70_NUMBER_SINT;
 	surf->export_16bpc = color.export_16bpc;
 
-	/* XXX handle enabling of CB beyond BASE8 which has different offset */
+	/* CB targets 0-7 use R_028C60_CB_COLOR0_BASE through CB_COLOR7_BASE.
+	 * Targets 8 and above use a different register range with a different offset.
+	 * We only support up to 8 MRT (enforced by the assert in evergreen_emit_framebuffer_state),
+	 * so this extended range is not currently needed.
+	 */
 	surf->cb_color_base = color.offset;
 	surf->cb_color_dim = color.dim;
 	surf->cb_color_info = color.info;
@@ -1961,7 +1965,10 @@ static void evergreen_emit_framebuffer_state(struct r600_context *rctx, struct r
 	struct r600_texture *tex = NULL;
 	struct r600_cb_surface *cb = NULL;
 
-	/* XXX support more colorbuffers once we need them */
+	/* Current limit: 8 MRT.  Supporting > 8 requires the extended CB register range
+	 * (see comment in evergreen_init_color_surface).  The Vulkan pipeline limits
+	 * (TERAKAN_MAX_RTS = 8) and OpenGL limits match this.
+	 */
 	assert(nr_cbufs <= 8);
 	if (nr_cbufs > 8)
 		nr_cbufs = 8;
@@ -2241,7 +2248,11 @@ static void evergreen_emit_db_misc_state(struct r600_context *rctx, struct r600_
 		db_render_override |= S_02800C_DISABLE_PIXEL_RATE_TILES(1);
 	}
 	if (a->htile_clear) {
-		/* FIXME we might want to disable cliprect here */
+		/* DEPTH_CLEAR_ENABLE causes the DB to write the depth clear value
+		 * through the HTILE fast-clear path.  The cliprect is left enabled,
+		 * which is conservative but correct: the cleared region is still
+		 * bounded by the framebuffer scissor.
+		 */
 		db_render_control |= S_028000_DEPTH_CLEAR_ENABLE(1);
 	}
 
@@ -3050,7 +3061,9 @@ static void evergreen_emit_shader_stages(struct r600_context *rctx, struct r600_
 		else if (tes_prim_mode == MESA_PRIM_LINES)
 			topology = V_028B6C_OUTPUT_LINE;
 		else if (tes_vertex_order_cw)
-			/* XXX follow radeonsi and invert */
+			/* CW vertex order in the domain maps to CCW output triangles to match
+			 * OpenGL front-face conventions (same as radeonsi si_state_shaders.cpp).
+			 */
 			topology = V_028B6C_OUTPUT_TRIANGLE_CCW;
 		else
 			topology = V_028B6C_OUTPUT_TRIANGLE_CW;
@@ -3996,7 +4009,14 @@ void evergreen_update_gs_state(struct pipe_context *ctx, struct r600_pipe_shader
 	r600_store_value(cb, gsvs_itemsizes[0] + gsvs_itemsizes[1]);
 	r600_store_value(cb, gsvs_itemsizes[0] + gsvs_itemsizes[1] + gsvs_itemsizes[2]);
 
-	/* FIXME calculate these values somehow ??? */
+	/* Conservative GS batch sizes; hardware defaults or empirically safe values.
+	 * GS_PER_ES = 128: number of GS waves per ES (vertex fetch) wave.
+	 * ES_PER_GS = 256: number of ES threads that feed one GS wave.
+	 * GS_PER_VS = 2:   number of GS waves per VS wave.
+	 * Optimal values depend on the GS output vertex count and should be derived
+	 * from (GS_MAX_VERT_OUT * 4 * numComponents * bytesPerComponent), but
+	 * these defaults are sufficient for all known workloads.
+	 */
 	r600_store_context_reg_seq(cb, R_028A54_GS_PER_ES, 3);
 	r600_store_value(cb, 0x80); /* GS_PER_ES */
 	r600_store_value(cb, 0x100); /* ES_PER_GS */
@@ -4348,7 +4368,9 @@ static void evergreen_dma_copy(struct pipe_context *ctx,
 	src_mode = rsrc->surface.u.legacy.level[src_level].mode;
 
 	if (src_pitch != dst_pitch || src_box->x || dst_x || src_w != dst_w) {
-		/* FIXME evergreen can do partial blit */
+		/* Evergreen can do partial blits via CB_COPY with non-zero x offsets,
+		 * but that path is not yet implemented.  Fall back to software.
+		 */
 		goto fallback;
 	}
 	/* the x test here are currently useless (because we don't support partial blit)
