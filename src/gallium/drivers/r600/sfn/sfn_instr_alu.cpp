@@ -36,9 +36,21 @@ nir_alu_src_fits_24bit(nir_alu_instr *alu, unsigned src_idx)
 }
 
 /* UBYTE_FLT optimization: detect byte extraction patterns feeding u2f32.
- * Returns the byte index (0-3) if the source is extracting a byte, or -1. */
+ * Returns the byte index (0-3) if the source is extracting a byte, or -1.
+ *
+ * When a pattern is matched, *underlying_src_out is populated with the NIR
+ * alu source of the pre-extraction value -- i.e. the 32-bit source from which
+ * UBYTEn_FLT must read.  Callers MUST use this source, not the u2f32's
+ * alu.src[0], because the BFE/AND/ushr intermediate only holds the extracted
+ * byte in bit positions [0..7]; UBYTEn_FLT applied to that intermediate would
+ * read byte n of a value whose bytes 1..3 are zero, producing 0.0 for every
+ * n > 0.  This was observed as the CTS host_write_uniform_buffer.* failure
+ * signature (R correct, G/B/A = 0).
+ *
+ * *underlying_src_out is left untouched when -1 is returned. */
 static int
-detect_ubyte_extraction(nir_alu_instr *u2f_alu)
+detect_ubyte_extraction(nir_alu_instr *u2f_alu,
+                        const nir_alu_src **underlying_src_out)
 {
    /* The source of u2f32 */
    nir_def *src_def = u2f_alu->src[0].src.ssa;
@@ -47,22 +59,18 @@ detect_ubyte_extraction(nir_alu_instr *u2f_alu)
 
    nir_alu_instr *src_alu = nir_def_as_alu(src_def);
 
-   /* Pattern 1: extract_u8(x, N) -> byte N */
+   /* Pattern 1: extract_u8(x, N) -> byte N of x */
    if (src_alu->op == nir_op_extract_u8) {
       nir_const_value *byte_idx = nir_src_as_const_value(src_alu->src[1].src);
-      if (byte_idx)
+      if (byte_idx) {
+         *underlying_src_out = &src_alu->src[0];
          return byte_idx->u32;
+      }
       return -1;
    }
 
-   /* Pattern 2: iand(x, 0xFF) -> byte 0 */
-   if (src_alu->op == nir_op_iand) {
-      nir_const_value *mask = nir_src_as_const_value(src_alu->src[1].src);
-      if (mask && mask->u32 == 0xFF)
-         return 0;
-   }
-
-   /* Pattern 3: iand(ushr(x, N*8), 0xFF) -> byte N */
+   /* Pattern 3 (must be checked before Pattern 2 since it is strictly more
+    * specific): iand(ushr(x, N*8), 0xFF) -> byte N of x */
    if (src_alu->op == nir_op_iand) {
       nir_const_value *mask = nir_src_as_const_value(src_alu->src[1].src);
       if (mask && mask->u32 == 0xFF) {
@@ -71,29 +79,61 @@ detect_ubyte_extraction(nir_alu_instr *u2f_alu)
             nir_alu_instr *shift_alu = nir_def_as_alu(shift_src);
             if (shift_alu->op == nir_op_ushr) {
                nir_const_value *shift_amt = nir_src_as_const_value(shift_alu->src[1].src);
-               if (shift_amt && (shift_amt->u32 % 8 == 0) && shift_amt->u32 <= 24)
+               if (shift_amt && (shift_amt->u32 % 8 == 0) && shift_amt->u32 <= 24) {
+                  *underlying_src_out = &shift_alu->src[0];
                   return shift_amt->u32 / 8;
+               }
             }
          }
       }
    }
 
-   /* Pattern 4: ushr(x, 24) -> byte 3 (top byte, mask implicit) */
+   /* Pattern 2: iand(x, 0xFF) -> byte 0 of x */
+   if (src_alu->op == nir_op_iand) {
+      nir_const_value *mask = nir_src_as_const_value(src_alu->src[1].src);
+      if (mask && mask->u32 == 0xFF) {
+         *underlying_src_out = &src_alu->src[0];
+         return 0;
+      }
+   }
+
+   /* Pattern 4: ushr(x, 24) -> byte 3 of x (top byte, mask implicit) */
    if (src_alu->op == nir_op_ushr) {
       nir_const_value *shift_amt = nir_src_as_const_value(src_alu->src[1].src);
-      if (shift_amt && shift_amt->u32 == 24)
+      if (shift_amt && shift_amt->u32 == 24) {
+         *underlying_src_out = &src_alu->src[0];
          return 3;
+      }
    }
 
    /* Pattern 5: ubfe(x, N*8, 8) or ubitfield_extract(x, N*8, 8) -> byte N */
    if (src_alu->op == nir_op_ubfe || src_alu->op == nir_op_ubitfield_extract) {
       nir_const_value *offset = nir_src_as_const_value(src_alu->src[1].src);
       nir_const_value *bits = nir_src_as_const_value(src_alu->src[2].src);
-      if (offset && bits && bits->u32 == 8 && (offset->u32 % 8 == 0) && offset->u32 <= 24)
+      if (offset && bits && bits->u32 == 8 && (offset->u32 % 8 == 0) && offset->u32 <= 24) {
+         *underlying_src_out = &src_alu->src[0];
          return offset->u32 / 8;
+      }
    }
 
    return -1;
+}
+
+/* Emit UBYTEn_FLT with an explicit underlying source, bypassing the u2f32's
+ * direct source (which would be the BFE/AND intermediate). */
+static bool
+emit_alu_ubyte_flt(const nir_alu_instr& u2f_alu,
+                   EAluOp opcode,
+                   const nir_alu_src& underlying_src,
+                   Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+   AluInstr *ir = new AluInstr(opcode,
+                               value_factory.dest(u2f_alu.def, 0, pin_free),
+                               value_factory.src(underlying_src, 0),
+                               AluInstr::write);
+   shader.emit_instruction(ir);
+   return true;
 }
 
 using std::istream;
@@ -1820,15 +1860,17 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       case nir_op_i2f32:
          return emit_alu_op1(*alu, op1_int_to_flt, shader);
       case nir_op_u2f32: {
-         
-
-/* UBYTE_FLT optimization: single-op byte-to-float conversion */
-         int byte_idx = detect_ubyte_extraction(alu);
+         /* UBYTE_FLT optimization: single-op byte-to-float conversion.  The
+          * UBYTEn_FLT source MUST be the pre-extraction value, NOT the BFE/
+          * AND intermediate -- see detect_ubyte_extraction() for why. */
+         const nir_alu_src *underlying_src = nullptr;
+         int byte_idx = detect_ubyte_extraction(alu, &underlying_src);
          if (byte_idx >= 0) {
             static const EAluOp ubyte_ops[] = {
                op1_ubyte0_flt, op1_ubyte1_flt, op1_ubyte2_flt, op1_ubyte3_flt
             };
-            return emit_alu_op1(*alu, ubyte_ops[byte_idx], shader);
+            return emit_alu_ubyte_flt(*alu, ubyte_ops[byte_idx],
+                                      *underlying_src, shader);
          }
          return emit_alu_op1(*alu, op1_uint_to_flt, shader);
       }
@@ -1908,12 +1950,16 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       case nir_op_i2f32:
          return emit_alu_trans_op1_eg(*alu, op1_int_to_flt, shader);
       case nir_op_u2f32: {
-         int byte_idx = detect_ubyte_extraction(alu);
+         /* See detect_ubyte_extraction() -- UBYTEn_FLT must read the
+          * pre-extraction 32-bit source, not the BFE/AND intermediate. */
+         const nir_alu_src *underlying_src = nullptr;
+         int byte_idx = detect_ubyte_extraction(alu, &underlying_src);
          if (byte_idx >= 0) {
             static const EAluOp ubyte_ops[] = {
                op1_ubyte0_flt, op1_ubyte1_flt, op1_ubyte2_flt, op1_ubyte3_flt
             };
-            return emit_alu_op1(*alu, ubyte_ops[byte_idx], shader);
+            return emit_alu_ubyte_flt(*alu, ubyte_ops[byte_idx],
+                                      *underlying_src, shader);
          }
          return emit_alu_trans_op1_eg(*alu, op1_uint_to_flt, shader);
       }
