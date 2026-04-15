@@ -912,9 +912,20 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     * Gallium binds this at (EG_FETCH_CONSTANTS_OFFSET_CS +
     *   R600_IMAGE_REAL_RESOURCE_OFFSET + offset) via compute_buffer_state. */
    {
-      uint32_t res_slot = (EG_FETCH_CONSTANTS_OFFSET_CS +
-                           R600_IMAGE_REAL_RESOURCE_OFFSET +
-                           0);  /* Logical SSBO index 0, not HW array index */
+      /* The shader's VFETCH BUFFER_ID equals the ssbo_idx where Terakan's NIR
+       * lowering placed this descriptor (terakan_nir_lower_bindings_instr_load_ssbo
+       * computes id_base = set->first_shader_resources +
+       * TERAKAN_SAMPLER_HW_COUNT_PER_STAGE; that same index identifies the FS-bank
+       * resource slot populated by terakan_hw_state_sqc_set_resource_fs).
+       *
+       * On compute-on-LS the HW adds EG_FETCH_CONSTANTS_OFFSET_CS (816) to the
+       * shader-emitted BUFFER_ID to form the physical SQ fetch constant slot.
+       * The SET_RESOURCE must therefore land at EG_FETCH_CONSTANTS_OFFSET_CS +
+       * ssbo_idx.  Hardcoding +R600_IMAGE_REAL_RESOURCE_OFFSET would only be
+       * correct if the SFN-native id_base (168) matched Terakan's id_base; it
+       * does not, because Terakan's first_shader_resources is determined by the
+       * descriptor set layout. */
+      uint32_t res_slot = EG_FETCH_CONSTANTS_OFFSET_CS + (uint32_t)ssbo_idx;
       uint32_t *p = terakan_gfx_command_writer_emit(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
       if (unlikely(p == NULL)) return;
