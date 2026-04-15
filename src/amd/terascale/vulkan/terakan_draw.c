@@ -30,6 +30,7 @@
 #include "terakan_buffer.h"
 #include "terakan_command_buffer.h"
 #include "terakan_entrypoints.h"
+#include "terakan_pipeline_graphics.h"
 
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600d_common.h"
@@ -203,6 +204,13 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
    bool const profiling = inst->debug_flags & TERAKAN_DEBUG_PROFILE;
    if (profiling)
       t0 = terakan_profile_now_ns();
+
+   /* If compute dispatch switched SQ into compute mode and the app issues a
+    * draw without rebinding graphics, force one graphics bind so SQ_CONFIG and
+    * SQ thread management are restored before state application. */
+   if (command_writer->sq_config_is_compute_mode && command_writer->bound_graphics_pipeline) {
+      terakan_pipeline_graphics_bind(command_writer, command_writer->bound_graphics_pipeline);
+   }
 
    terakan_state_draw_apply_pending(command_writer);
 

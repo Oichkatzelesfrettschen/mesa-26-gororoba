@@ -206,12 +206,15 @@ terakan_barrier_get_src_actions(struct terakan_gfx_command_writer const * const 
    }
 
    if (src_access & VK_ACCESS_2_HOST_WRITE_BIT) {
-      /* The CPU wrote to host-visible (GTT) memory.  The GPU texture cache
-       * (TC) and shader constant cache (SH) may contain stale lines from
-       * before the write; invalidate them so subsequent GPU reads fetch fresh
-       * data from RAM.  If the hardware has a dedicated vertex cache (VC),
-       * invalidate that too since vertex buffer reads pass through VC.
-       * No GPU pipeline flush event is needed: the GPU produced nothing. */
+      /* The CPU wrote to host-visible (GTT) memory.  Invalidate the GPU
+       * texture cache (TC) and shader constant cache (SH) so subsequent GPU
+       * reads fetch fresh data from RAM.  If the hardware has a dedicated
+       * vertex cache (VC), invalidate that too.
+       *
+       * HDP flush is NOT emitted via PKT3_WRITE_DATA here: the Radeon kernel
+       * CS validator on Evergreen rejects opcode 0x25 ("Packet3 opcode 37 not
+       * supported"), and the kernel already performs HDP coherency flush
+       * during CS submission on pre-CIK parts. */
       actions |= TERAKAN_BARRIER_ACTION_INV_TC | TERAKAN_BARRIER_ACTION_INV_SH;
       struct terakan_device const * const device =
          terakan_gfx_command_writer_device(command_writer);
@@ -324,6 +327,8 @@ terakan_barrier_event_name(uint32_t const event)
       return "DB_CACHE_FLUSH_AND_INV";
    case EVENT_TYPE(EVENT_TYPE_FLUSH_AND_INV_DB_META) | EVENT_INDEX(0):
       return "FLUSH_AND_INV_DB_META";
+   case EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT) | EVENT_INDEX(0):
+      return "CACHE_FLUSH_AND_INV_EVENT";
    default:
       return "UNKNOWN";
    }
@@ -478,6 +483,21 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
 
    if (actions & TERAKAN_BARRIER_ACTION_INV_SH) {
       cp_coher_cntl |= S_0085F0_SH_ACTION_ENA(1);
+   }
+
+   /* On Evergreen (and related TeraScale-2 parts), SURFACE_SYNC with TC/VC/SH
+    * _ACTION_ENA only invalidates the L2-side shared caches.  The per-SIMD L1
+    * texture cache and the shader instruction/constant caches require a
+    * CACHE_FLUSH_AND_INV_EVENT (0x16) to drop their lines.  Without this event,
+    * HOST_WRITE -> SHADER_READ barriers leave stale lines in L1 even after the
+    * SURFACE_SYNC completes, so the shader reads zeros from GTT WC memory.
+    * r600g's r600_memory_barrier emits this event before SURFACE_SYNC for the
+    * same reason (see R600_CONTEXT_FLUSH_AND_INV in r600_hw_context.c).
+    * Emit it whenever any read cache is being invalidated. */
+   if (actions & (TERAKAN_BARRIER_ACTION_INV_TC | TERAKAN_BARRIER_ACTION_INV_VC |
+                  TERAKAN_BARRIER_ACTION_INV_SH)) {
+      terakan_barrier_emit_event_write(
+         command_writer, EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT) | EVENT_INDEX(0));
    }
 
    /* Perform implicit stage waits and cache flushes and invalidations in ME. */

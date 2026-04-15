@@ -175,6 +175,17 @@ terakan_queue_drm_radeon_submit(
       .chunks = (__u64)(void const *)chunks,
    };
 
+   /* Drain CPU write-combining store buffers before handing the command buffer to the kernel.
+    * Terakan reports GTT_WC memory as HOST_VISIBLE | HOST_COHERENT, so the Vulkan spec places
+    * the host-to-GPU visibility guarantee on the driver at vkQueueSubmit time.  Host writes to
+    * GTT WC mappings land in per-CPU WC store buffers; the syscall/SYSCALL path is not a memory
+    * fence on x86, so WC data can still be in flight when the GPU starts executing the IB.
+    * Without this fence, dEQP-VK.memory.pipeline_barrier.host_write_{storage,uniform,vertex,
+    * uniform_texel,storage_texel}_buffer.* and host_write_transfer_src at small sizes read
+    * stale zeros: SURFACE_SYNC(TC_ACTION_ENA) correctly invalidates the GPU texture cache,
+    * but the TC then fetches 0 from RAM because the CPU writes never arrived. */
+   __atomic_thread_fence(__ATOMIC_SEQ_CST);
+
    int const cs_result = drmCommandWriteRead(device->render_node_fd, DRM_RADEON_CS, &cs_arguments,
                                              sizeof(cs_arguments));
 
