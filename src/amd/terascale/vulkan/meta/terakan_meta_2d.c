@@ -383,7 +383,7 @@ terakan_meta_emit_rect_3_vertices_draw(struct terakan_gfx_command_writer * const
 {
    terakan_hw_state_draw_set_vgt_num_instances(&command_writer->hw_state_draw, instance_count);
 
-   terakan_before_hw_draw(command_writer);
+   terakan_before_hw_draw(command_writer, true);
 
    uint32_t * packet;
 

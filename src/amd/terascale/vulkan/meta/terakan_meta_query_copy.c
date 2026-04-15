@@ -2284,7 +2284,7 @@ terakan_CmdCopyQueryPoolResults(VkCommandBuffer const commandBuffer, VkQueryPool
             constants_va_lines);
       }
 
-      terakan_before_hw_draw(command_writer);
+      terakan_before_hw_draw(command_writer, true);
 
       packet = terakan_gfx_command_writer_emit(command_writer,
                                                TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 3);
