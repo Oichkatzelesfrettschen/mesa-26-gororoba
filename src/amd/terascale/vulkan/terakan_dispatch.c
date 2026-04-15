@@ -839,7 +839,14 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       *p++ = res_slot * 8;
       *p++ = 0;                            /* WORD0: base address (relocated) */
       *p++ = buf_size - 1;                 /* WORD1: size in bytes - 1 */
-      *p++ = S_030008_STRIDE(4) |          /* WORD2: 4 bytes per R32 element */
+      /* Compute-mode VFETCH uses STRIDE=1 so the shader's byte-offset
+       * arithmetic (produced by SFN's load_ssbo lowering) indexes the buffer
+       * directly.  r600g does the same in evergreen_emit_vertex_buffers
+       * (pkt_flags == RADEON_CP_PACKET3_COMPUTE_MODE ? 1 : graphics_stride).
+       * With STRIDE=4 the hardware would multiply the byte offset by 4
+       * again, reading from i*16 instead of i*4 and returning zeros beyond
+       * the buffer bounds. */
+      *p++ = S_030008_STRIDE(1) |
              S_030008_DATA_FORMAT(0x0D) |  /* FMT_32 */
              S_030008_NUM_FORMAT_ALL(1);   /* NUM_FORMAT_INT (raw bits) */
       *p++ = S_03000C_DST_SEL_X(V_03000C_SQ_SEL_X) |
