@@ -569,6 +569,34 @@ terakan_pipeline_graphics_bind(struct terakan_gfx_command_writer * const command
       struct terakan_physical_device_chip_info const * const chip_info =
          &terakan_gfx_command_writer_physical_device(command_writer)->chip_info;
       if (!chip_info->is_r9xx) {
+         /* Compute dispatch raises LS/CS priority in R_008C00_SQ_CONFIG and zeroes
+          * graphics thread slots.  Drain shader waves before restoring graphics
+          * priorities so the next draw can launch VS/PS waves; the sq_tmp mismatch
+          * check below re-emits SQ_THREAD_RESOURCE_MGMT_1/2 for the graphics slots.
+          */
+         if (command_writer->sq_config_is_compute_mode) {
+            uint32_t const sq_config =
+               S_008C00_VC_ENABLE(chip_info->has_vertex_cache) |
+               S_008C00_EXPORT_SRC_C(1) |
+               S_008C00_LS_PRIO(3) | S_008C00_HS_PRIO(3) |
+               S_008C00_ES_PRIO(3) | S_008C00_GS_PRIO(2) |
+               S_008C00_VS_PRIO(1) | S_008C00_PS_PRIO(0) |
+               S_008C00_CS_PRIO(0);
+            /* 2 (PS_PARTIAL_FLUSH EVENT_WRITE) + 2 (SET_CONFIG_REG header) + 1 (SQ_CONFIG data) */
+            uint32_t *p = terakan_gfx_command_writer_emit(
+               command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE, 2 + 2 + 1);
+            if (unlikely(p == NULL)) {
+               return;
+            }
+            *p++ = PKT3(PKT3_EVENT_WRITE, 0, 0);
+            *p++ = EVENT_TYPE(EVENT_TYPE_PS_PARTIAL_FLUSH) | EVENT_INDEX(4);
+            *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+            *p++ = TERAKAN_CONFIG_REG_OFFSET(R_008C00_SQ_CONFIG);
+            *p++ = sq_config;
+            terakan_gfx_command_writer_emit_done(command_writer, p);
+            command_writer->sq_config_is_compute_mode = false;
+         }
+
          bool const ts_enabled =
             !!(pipeline->shader_stages & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
                                           VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT));

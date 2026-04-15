@@ -431,6 +431,13 @@ struct terakan_gfx_command_writer {
     * the SQ_PGM_START_CS / SQ_PGM_RESOURCES_CS / SPI_COMPUTE_NUM_THREAD
     * packets are emitted at dispatch time. */
    bool compute_pipeline_dirty;
+
+   /* Set after compute dispatch programs SQ_CONFIG for LS/CS priority and
+    * clears graphics thread slots.  Graphics pipeline binding drains shader
+    * waves, restores graphics SQ_CONFIG priorities, and relies on the sq_tmp
+    * mismatch path to re-emit SQ_THREAD_RESOURCE_MGMT_1/2 before the next draw.
+    */
+   bool sq_config_is_compute_mode;
 };
 
 TERAKAN_DEVICE_DEFINE_OBJECT_SHORTCUTS(gfx_command_writer,

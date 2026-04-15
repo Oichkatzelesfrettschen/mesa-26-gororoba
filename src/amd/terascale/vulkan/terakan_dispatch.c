@@ -321,6 +321,9 @@ terakan_compute_multiplex_begin(
       *p++ = (R_008C00_SQ_CONFIG - 0x8000) >> 2;
       *p++ = sq_config;
       terakan_gfx_command_writer_emit_done(command_writer, p);
+      /* Remember that SQ_CONFIG is now in compute-biased mode so
+       * terakan_pipeline_graphics_bind() can restore graphics priorities. */
+      command_writer->sq_config_is_compute_mode = true;
    }
 
    /* (4) Static LS GPR allocation - TS1/TS2 ONLY.
@@ -364,6 +367,124 @@ terakan_compute_multiplex_begin(
       *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
       *p++ = (R_008C1C_SQ_THREAD_RESOURCE_MGMT_2 - 0x8000) >> 2;
       *p++ = S_008C1C_NUM_HS_THREADS(0) | S_008C1C_NUM_LS_THREADS(0xFF);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (6) Zero out PS/VS/GS/ES thread slots - TS1/TS2 ONLY.
+    *
+    * Gallium's evergreen_init_atom_start_compute_cs() zeroes
+    * SQ_THREAD_RESOURCE_MGMT_1 to prevent PS/VS/GS/ES waves from
+    * stealing thread slots that LS needs for compute. */
+   if (!is_r9xx && !skip_begin_resource_mgmt) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008C18_SQ_THREAD_RESOURCE_MGMT_1 - 0x8000) >> 2;
+      *p++ = 0;  /* PS=0, VS=0, GS=0, ES=0 */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+
+      /* Invalidate the sq_tmp mirror so terakan_pipeline_graphics_bind()
+       * detects the mismatch and re-emits the graphics thread allocations.
+       *
+       * The mirror tracks the expected SQ_THREAD_RESOURCE_MGMT_1/2 values for
+       * graphics draws.  Writing compute values here forces the graphics bind
+       * path to re-emit VS/PS thread counts before the next draw. */
+      command_writer->state_draw.sq_tmp.sq_thread_resource_mgmt[0] = 0;
+      command_writer->state_draw.sq_tmp.sq_thread_resource_mgmt[1] =
+         S_008C1C_NUM_HS_THREADS(0) | S_008C1C_NUM_LS_THREADS(0xFF);
+   }
+
+   /* (7) Zero out stack entries for graphics stages, allocate for LS.
+    * Matches Gallium: STACK_1=0, _2=0, _3=NUM_LS_STACK_ENTRIES(256). */
+   if (!is_r9xx && !skip_begin_resource_mgmt) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+      *p++ = (R_008C20_SQ_STACK_RESOURCE_MGMT_1 - 0x8000) >> 2;
+      *p++ = 0;  /* SQ_STACK_RESOURCE_MGMT_1: PS=0, VS=0 */
+      *p++ = 0;  /* SQ_STACK_RESOURCE_MGMT_2: GS=0, ES=0 */
+      *p++ = S_008C28_NUM_HS_STACK_ENTRIES(0) |
+             S_008C28_NUM_LS_STACK_ENTRIES(0x100);  /* 256 for LS */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (8) LDS resource management - give all LDS to LS stage.
+    * Matches Gallium: NUM_PS_LDS=0, NUM_LS_LDS=8192. */
+   if (!is_r9xx && !skip_begin_resource_mgmt) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONFIG_REG, 1, 0);
+      *p++ = (R_008E2C_SQ_LDS_RESOURCE_MGMT - 0x8000) >> 2;
+      *p++ = S_008E2C_NUM_PS_LDS(0) | S_008E2C_NUM_LS_LDS(8192);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (8a) SQ_DYN_GPR_RESOURCE_LIMIT_1 - pre-Cayman compute shadow.
+    *
+    * Gallium writes this in evergreen_init_atom_start_compute_cs() via
+    * r600_store_context_reg(), which adds RADEON_CP_PACKET3_COMPUTE_MODE.
+    * This context register must use COMPUTE_MODE_BIT so DISPATCH_DIRECT
+    * reads the LS/CS GPR limits from the compute shadow register bank. */
+   if (!is_r9xx && !skip_begin_resource_mgmt) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_028838_SQ_DYN_GPR_RESOURCE_LIMIT_1);
+      *p++ = S_028838_PS_GPRS(0x1e) | S_028838_VS_GPRS(0x1e) |
+             S_028838_GS_GPRS(0x1e) | S_028838_ES_GPRS(0x1e) |
+             S_028838_HS_GPRS(0x1e) | S_028838_LS_GPRS(0x1e);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (9) VGT_GS_MODE: switch to compute mode.
+    * Without COMPUTE_MODE, VGT remains in graphics mode and interferes
+    * with compute wavefront scheduling.  PARTIAL_THD_AT_EOI handles
+    * partial wavefronts at the end of a workgroup. */
+   if (!skip_begin_stage_enable) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_028A40_VGT_GS_MODE);
+      *p++ = S_028A40_COMPUTE_MODE(1) | S_028A40_PARTIAL_THD_AT_EOI(1);
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (10) VGT_SHADER_STAGES_EN: enable compute shader stage.
+    * LS_EN=2 tells SQ to route LS-stage waves as compute.
+    * All other stages disabled. */
+   if (!skip_begin_stage_enable) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = CONTEXT_REG_OFFSET(R_028B54_VGT_SHADER_STAGES_EN);
+      *p++ = S_028B54_LS_EN(2);  /* CS_ON */
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* (11) Initialize LS-stage loop constant for hardware loop counters.
+    *
+    * Gallium writes SQ_LOOP_CONST at offset 160 (= LS/CS stage base)
+    * via eg_store_loop_const() in evergreen_init_atom_start_compute_cs().
+    * Value 0x01000FFF encodes: STEP=1, START=0, MAX=4095.  Without this,
+    * any shader using LOOP_START_DX10 will execute with garbage loop
+    * bounds, causing infinite ALU loops and a GPU soft-reset.
+    *
+    * PKT3_SET_LOOP_CONST offset is a dword index from the loop constant
+    * base (EVERGREEN_LOOP_CONST_OFFSET = 0x3A200).  WITH COMPUTE_MODE_BIT
+    * to route to the LS/CS stage shadow, matching eg_store_loop_const(). */
+   if (!skip_begin_stage_enable) {
+      uint32_t * p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_LOOP_CONST, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = 160;  /* LS/CS stage loop const base offset */
+      *p++ = 0x01000FFF;
       terakan_gfx_command_writer_emit_done(command_writer, p);
    }
 }
