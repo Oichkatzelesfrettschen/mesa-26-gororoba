@@ -783,6 +783,43 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
 
       terakan_gfx_command_writer_emit_done(command_writer, p);
    }
+   /* 3. SET_RESOURCE for the SSBO fetch path (VTX_FETCH read resource).
+    *
+    * Descriptor format: R32_UINT buffer, stride 4, uncached, matching
+    * Gallium's evergreen_set_shader_buffers() + evergreen_emit_image_state().
+    */
+   {
+      /* The shader's VFETCH BUFFER_ID equals the layout-derived ssbo_idx where
+       * Terakan NIR lowering placed this descriptor. Compute-on-LS adds
+       * EG_FETCH_CONSTANTS_OFFSET_CS to the emitted BUFFER_ID, so SET_RESOURCE
+       * must populate EG_FETCH_CONSTANTS_OFFSET_CS + ssbo_idx instead of the
+       * SFN-native R600_IMAGE_REAL_RESOURCE_OFFSET slot.
+       */
+      uint32_t res_slot = EG_FETCH_CONSTANTS_OFFSET_CS + (uint32_t)ssbo_idx;
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
+      *p++ = res_slot * 8;
+      *p++ = 0;                            /* WORD0: base address (relocated) */
+      *p++ = buf_size - 1;                 /* WORD1: size in bytes - 1 */
+      *p++ = S_030008_STRIDE(4) |          /* WORD2: 4 bytes per R32 element */
+             S_030008_DATA_FORMAT(0x0D) |  /* FMT_32 */
+             S_030008_NUM_FORMAT_ALL(1);   /* NUM_FORMAT_INT (raw bits) */
+      *p++ = S_03000C_DST_SEL_X(V_03000C_SQ_SEL_X) |
+             S_03000C_DST_SEL_Y(V_03000C_SQ_SEL_Y) |
+             S_03000C_DST_SEL_Z(V_03000C_SQ_SEL_Z) |
+             S_03000C_DST_SEL_W(V_03000C_SQ_SEL_W) |
+             S_03000C_UNCACHED(1);         /* WORD3: identity swizzle, uncached */
+      *p++ = buf_size;                     /* WORD4: num_elements (for resinfo) */
+      *p++ = 0;                            /* WORD5 */
+      *p++ = 0;                            /* WORD6 */
+      *p++ = S_03001C_TYPE(V_03001C_SQ_TEX_VTX_VALID_BUFFER); /* WORD7 */
+      /* NOP relocation for WORD0 base address */
+      *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
+      *p++ = 4 * bo_ref;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
 }
 
 static void
