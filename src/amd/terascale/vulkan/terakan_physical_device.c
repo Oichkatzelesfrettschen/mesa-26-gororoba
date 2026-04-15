@@ -834,6 +834,16 @@ terakan_physical_device_get_capabilities(
     * Mesa runtime handles v1/v2 render pass translation and dispatch. */
    extensions_out->KHR_create_renderpass2 = true;
 
+   /* VK_KHR_depth_stencil_resolve (#151, Vulkan 1.2) remains disabled.
+    * This path is only needed when the extension is advertised; keeping it
+    * explicitly off avoids accidental exposure while the resolve pipeline
+    * remains unimplemented on TeraScale-2. */
+   extensions_out->KHR_depth_stencil_resolve = false;
+   properties_out->supportedDepthResolveModes = VK_RESOLVE_MODE_NONE;
+   properties_out->supportedStencilResolveModes = VK_RESOLVE_MODE_NONE;
+   properties_out->independentResolveNone = false;
+   properties_out->independentResolve = false;
+
    /* VK_KHR_image_format_list (#148, Vulkan 1.2).
     * Metadata-only: specifies view format list at image creation.
     * Required by DXVK for swapchain/render target creation. */
