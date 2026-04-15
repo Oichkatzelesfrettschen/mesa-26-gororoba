@@ -1733,6 +1733,66 @@ terakan_pipeline_graphics_validate_vs_fs_spi_routing(
    return VK_SUCCESS;
 }
 
+static VkResult
+terakan_pipeline_graphics_validate_fs_color_export_parity(
+   struct terakan_device * const device,
+   struct terakan_shader_impl const * const fs)
+{
+   assert(fs != NULL);
+
+   uint8_t const fs_uncompacted_locations = fs->fs.fragment_data_uncompacted_locations;
+   uint32_t const expected_export_width = util_bitcount(fs_uncompacted_locations);
+   uint32_t const cb_shader_mask = fs->static_state.stage.ps.cb_shader_mask;
+
+   uint32_t exported_rtv_count = 0;
+   uint32_t exported_channel_count = 0;
+   bool seen_zero_after_exports = false;
+
+   for (uint32_t rtv = 0; rtv < TERAKAN_COLOR_HW_RTV_COUNT; ++rtv) {
+      uint32_t const nibble = (cb_shader_mask >> (rtv * 4u)) & 0xFu;
+      if (nibble == 0) {
+         if (exported_rtv_count != 0)
+            seen_zero_after_exports = true;
+         continue;
+      }
+
+      if (unlikely(seen_zero_after_exports)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS color export width mismatch: cb_shader_mask has a hole before RTV %"
+                          PRIu32 " (cb_shader_mask=0x%08" PRIx32 ")",
+                          rtv, cb_shader_mask);
+      }
+
+      ++exported_rtv_count;
+      exported_channel_count += util_bitcount(nibble);
+   }
+
+   if (unlikely(exported_rtv_count != expected_export_width)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "FS color export width mismatch: compacted exports=%" PRIu32
+                       " (cb_shader_mask=0x%08" PRIx32 ") but uncompacted locations=%"
+                       PRIu32 " (mask=0x%02x)",
+                       exported_rtv_count, cb_shader_mask, expected_export_width,
+                       fs_uncompacted_locations);
+   }
+
+   if (unlikely(expected_export_width == 0 && cb_shader_mask != 0)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "FS color export channel mismatch: no fragment outputs expected, but"
+                       " cb_shader_mask=0x%08" PRIx32,
+                       cb_shader_mask);
+   }
+
+   if (unlikely(expected_export_width != 0 && exported_channel_count == 0)) {
+      return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                       "FS color export channel mismatch: %" PRIu32
+                       " RTV exports present but cb_shader_mask has no channels",
+                       expected_export_width);
+   }
+
+   return VK_SUCCESS;
+}
+
 
 /*
  * Phase B: Per-stage SPIR-V → NIR → post-link lower → cache lookup → compile.
@@ -2084,6 +2144,13 @@ terakan_pipeline_graphics_compile_shaders(
       result = terakan_pipeline_graphics_validate_vs_fs_spi_routing(
          device, &pipeline->shaders[MESA_SHADER_VERTEX],
          &pipeline->shaders[MESA_SHADER_FRAGMENT]);
+      if (result != VK_SUCCESS)
+         goto cleanup;
+   }
+
+   if (pipeline->shader_stages & VK_SHADER_STAGE_FRAGMENT_BIT) {
+      result = terakan_pipeline_graphics_validate_fs_color_export_parity(
+         device, &pipeline->shaders[MESA_SHADER_FRAGMENT]);
       if (result != VK_SUCCESS)
          goto cleanup;
    }
