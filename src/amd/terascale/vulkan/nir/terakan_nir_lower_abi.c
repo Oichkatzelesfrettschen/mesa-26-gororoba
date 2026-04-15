@@ -824,73 +824,26 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
    /* Robustness: the effective per-stage flag is threaded via
     * state->robust_buffer_access (computed by the pipeline compiler from
     * device feature + VK_EXT_pipeline_robustness).  See the mandatory
-    * ALU-clamp rationale in terakan_nir_buffer_uav_coord(). */
-   nir_def * coord;
-   if (b->shader->info.stage == MESA_SHADER_COMPUTE) {
-      /* Compute store_ssbo via store_global + KCACHE base address.
-       *
-       * terakan_emit_compute_kcache programs KC0[0].x with the SSBO base
-       * byte address. We load it via KCACHE, add the store offset, and emit
-       * store_global. SFN lowers this to MEM_RAT_CACHELESS STORE_RAW.
-       *
-       * Robustness: math-predicated address redirect (Tier 2).
-       *
-       * MEM_RAT writes are NOT bounds-checked by hardware (Probe 7).
-       * Since store_global gives us full address control, we use pure
-       * ALU math predication instead of IF/ENDIF — this costs ZERO CF
-       * stack entries (Evergreen ISA §3.6.5: CF_ALU_PUSH_BEFORE is
-       * unsafe above stack depth 3 on 64-wide hardware).
-       *
-       * Pattern: compute the real address AND the trash page address,
-       * then bcsel based on the bounds check.  OOB writes land in the
-       * driver's 4KB trash page instead of corrupting buffer offset 0. */
-
-      bool const guarded = state->robust_buffer_access;
-
-      nir_def *ssbo_base = nir_load_kcache_r600(
-         b, 1, 32, nir_imm_zero(b, 1, 32),
-         .access = ACCESS_CAN_REORDER,
-         .id_base = 0,
-         .base = 0,
-         .component = 0);
-
-      nir_def *real_addr = nir_iadd(b, ssbo_base, intrin->src[2].ssa);
-
-      nir_def *final_addr;
-      if (guarded) {
-         nir_def *in_bounds = terakan_nir_emit_write_guard(
-            b, intrin->src[2].ssa, bytes_per_component,
-            uav_index_zero_based, uav_array_index, state);
-
-         /* Load trash page GPU VA >> 2 from KCACHE bank 14, dword 12
-          * (vec4 index 3, component 0).  Shift left by 2 to recover
-          * the byte address. */
-         nir_def *trash_addr_shr2 = nir_load_kcache_r600(
-            b, 1, 32, nir_imm_zero(b, 1, 32),
-            .access = ACCESS_CAN_REORDER,
-            .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-            .base = 3,
-            .component = 0);
-         nir_def *trash_addr = nir_ishl_imm(b, trash_addr_shr2, 2);
-
-         /* Select: in-bounds → real buffer address, OOB → trash page. */
-         final_addr = nir_bcsel(b, in_bounds, real_addr, trash_addr);
-      } else {
-         final_addr = real_addr;
-      }
-
-      nir_store_global(b, nir_channel(b, intrin->src[0].ssa, 0), final_addr,
-                       .write_mask = nir_intrinsic_write_mask(intrin),
-                       .access = nir_intrinsic_access(intrin));
-
-      nir_instr_remove(&intrin->instr);
-      return;
-   } else {
-      coord = terakan_nir_buffer_uav_coord(
-         b, intrin->src[2].ssa, uav_index_zero_based, uav_array_index,
-         state->robust_buffer_access,
-         (access & ACCESS_INCLUDE_HELPERS) != 0, state);
-   }
+    * ALU-clamp rationale in terakan_nir_buffer_uav_coord().
+    *
+    * Unified lowering for all stages including compute: emit a r600
+    * uav_instr with id_base = state->uav_base + uav_index_zero_based so
+    * SFN's emit_uav_instr (sfn_instr_mem.cpp) routes the store to a
+    * per-binding RAT slot (matching terakan_emit_compute_resources'
+    * CB_COLOR{M} emit loop, which binds CB_COLOR0 to the first bound
+    * compute SSBO in enumeration order, CB_COLOR1 to the second, etc.).
+    *
+    * The previous compute-specific path converted store_ssbo into
+    * store_global + KCACHE-loaded base, which forced SFN's
+    * RatInstr::emit_global_store to use the per-shader scalar
+    * shader.ssbo_image_offset() as the RAT id -- breaking multi-SSBO
+    * compute writes.  Keeping the nir_store_ssbo semantics through the
+    * uav_instr path preserves the Vulkan per-binding layout all the way
+    * into the PM4 stream. */
+   nir_def * coord = terakan_nir_buffer_uav_coord(
+      b, intrin->src[2].ssa, uav_index_zero_based, uav_array_index,
+      state->robust_buffer_access,
+      (access & ACCESS_INCLUDE_HELPERS) != 0, state);
    if (bytes_per_component > 1) {
       coord = nir_udiv_imm(b, coord, bytes_per_component);
    }

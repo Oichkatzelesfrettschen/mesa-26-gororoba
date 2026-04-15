@@ -792,140 +792,46 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
 {
    struct terakan_hw_state_sqc *state = &command_writer->hw_state_sqc;
 
-   /* Find the first bound FS resource (our SSBO) */
-   int ssbo_idx = -1;
+   /* Enumerate all bound compute SSBO descriptors in the FS bank. */
+   uint32_t ssbo_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
+   uint32_t ssbo_count = 0;
    for (uint32_t i = 0; i < TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE; i++) {
       if (BITSET_TEST(state->resources_not_null.fs, i) && state->resource_bos.fs[i]) {
-         ssbo_idx = (int)i;
-         break;
+         ssbo_idxs[ssbo_count++] = i;
       }
    }
-
-   if (ssbo_idx < 0) {
+   if (ssbo_count == 0) {
       return;
    }
 
-
-   struct terakan_bo const *bo = state->resource_bos.fs[ssbo_idx];
-   uint32_t const *desc = state->resource_descriptors.fs[ssbo_idx];
    if (debug_get_bool_option("TERAKAN_DEBUG_COMPUTE_DESC", false)) {
-      fprintf(stderr,
-              "terakan/compute_resources: ssbo_idx=%d desc=[0x%08x 0x%08x 0x%08x 0x%08x]\n",
-              ssbo_idx, desc[0], desc[1], desc[2], desc[3]);
+      for (uint32_t n = 0; n < ssbo_count; ++n) {
+         uint32_t const idx = ssbo_idxs[n];
+         uint32_t const *desc = state->resource_descriptors.fs[idx];
+         fprintf(stderr,
+                 "terakan/compute_resources: [%u/%u] ssbo_idx=%u desc=[0x%08x 0x%08x 0x%08x 0x%08x]\n",
+                 n, ssbo_count, idx, desc[0], desc[1], desc[2], desc[3]);
+      }
    }
 
-   /* Register the SSBO BO for relocation */
-   uint32_t bo_ref = terakan_bo_reference_writer_add_reference(
-      &command_writer->base.bo_reference_writer,
-      bo, true, true, TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
+   /* 1. SET_RESOURCE (VTX_FETCH read) for every bound SSBO at
+    *    EG_FETCH_CONSTANTS_OFFSET_CS + ssbo_idx.  The shader's VFETCH BUFFER_ID
+    *    matches ssbo_idx (terakan_nir_lower_bindings_instr_load_ssbo computes
+    *    id_base = set->first_shader_resources + TERAKAN_SAMPLER_HW_COUNT_PER_STAGE,
+    *    and that is the same index Terakan uses for resource_descriptors.fs[]).
+    *    On compute-on-LS the HW adds EG_FETCH_CONSTANTS_OFFSET_CS (816) to the
+    *    shader-emitted BUFFER_ID to form the physical SQ fetch constant slot. */
+   for (uint32_t n = 0; n < ssbo_count; ++n) {
+      uint32_t const idx = ssbo_idxs[n];
+      struct terakan_bo const * const bo = state->resource_bos.fs[idx];
+      uint32_t const * const desc = state->resource_descriptors.fs[idx];
+      uint32_t const buf_size = desc[1] + 1;
 
-   /* Extract buffer size from the descriptor (Word 1 = size in bytes - 1) */
-   uint32_t buf_size = desc[1] + 1;
-   uint32_t width_elements = buf_size / 4; /* R32_UINT = 4 bytes per element */
+      uint32_t const bo_ref = terakan_bo_reference_writer_add_reference(
+         &command_writer->base.bo_reference_writer,
+         bo, true, true, TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
 
-   /* Compute pitch: align to 64, divide by 8, minus 1 */
-   uint32_t pitch_aligned = (width_elements + 63) & ~63u;
-   uint32_t pitch_tile_max = (pitch_aligned / 8) - 1;
-
-   /* Compute dim (width for linear buffer) */
-   uint32_t dim = width_elements > 0 ? width_elements - 1 : 0;
-
-   /* CB_COLOR0_INFO for R32_UINT linear RAT buffer.
-    * Match Gallium's evergreen_set_color_surface_buffer() exactly. */
-   uint32_t cb_color_info =
-      S_028C70_FORMAT(V_028C70_COLOR_32) |
-      S_028C70_ARRAY_MODE(V_028C70_ARRAY_LINEAR_ALIGNED) |
-      S_028C70_NUMBER_TYPE(V_028C70_NUMBER_UINT) |
-      S_028C70_COMP_SWAP(0) |
-      S_028C70_BLEND_BYPASS(1) |
-      S_028C70_RESOURCE_TYPE(V_028C70_BUFFER) |
-      S_028C70_RAT(1);
-
-   /* 1. CB_TARGET_MASK = 0xF (enable RAT0 writes) with COMPUTE_MODE */
-   {
-      uint32_t *p = terakan_gfx_command_writer_emit(
-         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
-      if (unlikely(p == NULL)) return;
-      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
-      *p++ = (R_028238_CB_TARGET_MASK - 0x28000) >> 2;
-      *p++ = 0xF; /* Enable all 4 channels for CB0 */
-      terakan_gfx_command_writer_emit_done(command_writer, p);
-   }
-
-   /* 2. CB_COLOR0_BASE through CB_COLOR0_CLEAR_WORD1 (13 regs) with COMPUTE_MODE
-    *    + 4 NOP relocations for BASE, ATTRIB, CMASK, FMASK */
-   {
-      /* 13 regs = count 13 in SET_CONTEXT_REG, total = 1+1+13 = 15 header+body
-       * Plus 4 NOP relocs = 4*2 = 8 dwords. Total = 15 + 8 = 23. */
-      uint32_t *p = terakan_gfx_command_writer_emit(
-         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 23);
-      if (unlikely(p == NULL)) return;
-
-      /* CB_COLOR registers ARE compute-shadowed.  Gallium's compute path
-       * writes them with radeon_compute_set_context_reg_seq (COMPUTE_MODE set).
-       * Without COMPUTE_MODE, DISPATCH_DIRECT reads stale 3D-shadow values
-       * for RAT base address → GPU hang on zero address.
-       * Kernel's evergreen_cs_check_reg handles CB_COLOR NOP relocations
-       * regardless of COMPUTE_MODE in the packet header. */
-      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 13, 0) | COMPUTE_MODE_BIT;
-      *p++ = (R_028C60_CB_COLOR0_BASE - 0x28000) >> 2;
-
-      *p++ = 0;                  /* CB_COLOR0_BASE (relocated by kernel) */
-      *p++ = pitch_tile_max;     /* CB_COLOR0_PITCH */
-      *p++ = 0;                  /* CB_COLOR0_SLICE */
-      *p++ = 0;                  /* CB_COLOR0_VIEW */
-      *p++ = cb_color_info;      /* CB_COLOR0_INFO */
-      *p++ = S_028C74_NON_DISP_TILING_ORDER(1); /* CB_COLOR0_ATTRIB */
-      *p++ = S_028C78_WIDTH_MAX(dim);      /* CB_COLOR0_DIM */
-      *p++ = 0;                  /* CB_COLOR0_CMASK (= BASE for no separate cmask) */
-      *p++ = 0;                  /* CB_COLOR0_CMASK_SLICE */
-      *p++ = 0;                  /* CB_COLOR0_FMASK (= BASE) */
-      *p++ = 0;                  /* CB_COLOR0_FMASK_SLICE */
-      *p++ = 0;                  /* CB_COLOR0_CLEAR_WORD0 */
-      *p++ = 0;                  /* CB_COLOR0_CLEAR_WORD1 */
-
-      /* 4 NOP relocations: BASE, ATTRIB, CMASK, FMASK
-       * The kernel patches CB_COLOR0_BASE with gpu_address >> 8 */
-      *p++ = PKT3(PKT3_NOP, 0, 0);
-      *p++ = 4 * bo_ref;  /* Reloc for CB_COLOR0_BASE */
-      *p++ = PKT3(PKT3_NOP, 0, 0);
-      *p++ = 4 * bo_ref;  /* Reloc for CB_COLOR0_ATTRIB */
-      *p++ = PKT3(PKT3_NOP, 0, 0);
-      *p++ = 4 * bo_ref;  /* Reloc for CB_COLOR0_CMASK */
-      *p++ = PKT3(PKT3_NOP, 0, 0);
-      *p++ = 4 * bo_ref;  /* Reloc for CB_COLOR0_FMASK */
-
-      terakan_gfx_command_writer_emit_done(command_writer, p);
-   }
-
-   /* 3. SET_RESOURCE for the SSBO fetch path (VTX_FETCH read resource).
-    *
-    * SFN's emit_ssbo_load() emits LoadFromBuffer with resource_id =
-    * R600_IMAGE_REAL_RESOURCE_OFFSET + ssbo_index.  The SQ hardware adds the
-    * LS stage base (EG_FETCH_CONSTANTS_OFFSET_CS = 816) to get the physical
-    * resource slot.  Without this resource descriptor bound, the shader's
-    * VTX_FETCH hits an empty/garbage descriptor → GPU lockup.
-    *
-    * Descriptor format: R32_UINT buffer, stride 4, uncached, matching
-    * Gallium's evergreen_set_shader_buffers() + evergreen_emit_image_state().
-    *
-    * Gallium binds this at (EG_FETCH_CONSTANTS_OFFSET_CS +
-    *   R600_IMAGE_REAL_RESOURCE_OFFSET + offset) via compute_buffer_state. */
-   {
-      /* The shader's VFETCH BUFFER_ID equals the ssbo_idx where Terakan's NIR
-       * lowering placed this descriptor (terakan_nir_lower_bindings_instr_load_ssbo
-       * computes id_base = set->first_shader_resources +
-       * TERAKAN_SAMPLER_HW_COUNT_PER_STAGE; that same index identifies the FS-bank
-       * resource slot populated by terakan_hw_state_sqc_set_resource_fs).
-       *
-       * On compute-on-LS the HW adds EG_FETCH_CONSTANTS_OFFSET_CS (816) to the
-       * shader-emitted BUFFER_ID to form the physical SQ fetch constant slot.
-       * The SET_RESOURCE must therefore land at EG_FETCH_CONSTANTS_OFFSET_CS +
-       * ssbo_idx.  Hardcoding +R600_IMAGE_REAL_RESOURCE_OFFSET would only be
-       * correct if the SFN-native id_base (168) matched Terakan's id_base; it
-       * does not, because Terakan's first_shader_resources is determined by the
-       * descriptor set layout. */
-      uint32_t res_slot = EG_FETCH_CONSTANTS_OFFSET_CS + (uint32_t)ssbo_idx;
+      uint32_t const res_slot = EG_FETCH_CONSTANTS_OFFSET_CS + idx;
       uint32_t *p = terakan_gfx_command_writer_emit(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
       if (unlikely(p == NULL)) return;
@@ -945,9 +851,120 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       *p++ = 0;                            /* WORD5 */
       *p++ = 0;                            /* WORD6 */
       *p++ = S_03001C_TYPE(V_03001C_SQ_TEX_VTX_VALID_BUFFER); /* WORD7 */
-      /* NOP relocation for WORD0 base address */
       *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
       *p++ = 4 * bo_ref;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* 2. RAT (write) path.  TeraScale-2 hijacks the graphics color-buffer
+    *    exporter for compute writes: each RAT slot M is backed by
+    *    CB_COLOR{M}_BASE + companion registers.  Emit per-binding RAT state
+    *    so the shader can write to any bound SSBO.
+    *
+    *    CURRENT SFN LIMITATION: Terakan's NIR lowering
+    *    (terakan_nir_lower_bindings_instr_store_ssbo in
+    *    terakan_nir_lower_abi.c) converts compute store_ssbo to
+    *    store_global.  SFN's RatInstr::emit_global_store at
+    *    sfn_instr_mem.cpp:665 uses shader.ssbo_image_offset() -- a
+    *    per-shader scalar, not a per-store RAT id -- so every compute
+    *    store actually lands at the same RAT slot (typically 0 for
+    *    programs with no images).  Until SFN is taught to carry a
+    *    per-store RAT id through the store_global path (or Terakan's
+    *    lowering is switched back to nir_store_ssbo so SFN's
+    *    emit_store_ssbo picks up nir_intrinsic_id_base), only the SSBO
+    *    routed to CB_COLOR0 actually receives writes.  We still publish
+    *    CB_COLOR{M} for M = 0..N-1 so the multi-RAT configuration is
+    *    architecturally ready, CB_TARGET_MASK enables them, and the
+    *    follow-up graphics bind (terakan_before_draw re-binds the
+    *    graphics pipeline when sq_config_is_compute_mode is set) resets
+    *    the color-buffer exporter for the next render pass.
+    *
+    *    The CB_COLOR register window strides by 0x3C bytes (15 dwords)
+    *    per slot -- CB_COLOR{M}_BASE is at R_028C60_CB_COLOR0_BASE +
+    *    M * 0x3C.  Evergreen has 12 CB slots (TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT).
+    *    Cap N so we never step past that.
+    *
+    *    RAT0 is bound to the LAST enumerated SSBO.  SFN currently routes
+    *    all compute stores to RAT0, and the common GLSL convention is to
+    *    place the writable output buffer at the highest binding index, so
+    *    this heuristic lines up with the shader's intent for the single-
+    *    writable case until the SFN change lands. */
+   uint32_t rat_count = ssbo_count;
+   if (rat_count > TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
+      rat_count = TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT;
+   }
+
+   /* CB_TARGET_MASK: 4 channel-enable bits per RAT slot, one group per bound
+    * SSBO that we want to be writable.  (Graphics pipeline bind on the next
+    * draw will reset this via terakan_before_draw when
+    * sq_config_is_compute_mode is set.) */
+   {
+      uint32_t target_mask = 0;
+      for (uint32_t m = 0; m < rat_count; ++m) {
+         target_mask |= 0xFu << (4u * m);
+      }
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+      *p++ = (R_028238_CB_TARGET_MASK - 0x28000) >> 2;
+      *p++ = target_mask;
+      terakan_gfx_command_writer_emit_done(command_writer, p);
+   }
+
+   /* Per-SSBO CB_COLOR{M} state.  Bind in enumeration order so CB_COLOR{M}
+    * lines up with the M-th bound SSBO (lowest FS-bank index first).  RAT0
+    * (which SFN currently targets for every compute store because
+    * shader.ssbo_image_offset() is a per-shader scalar) thus lands on the
+    * first bound SSBO, which matches the CTS convention of placing the
+    * writable/result buffer at the lowest binding index (see
+    * vktBindingShaderAccessTests.cpp:2510 where the result STORAGE_BUFFER
+    * is added at setNdx==0 binding==0 before the test descriptors). */
+   for (uint32_t m = 0; m < rat_count; ++m) {
+      uint32_t const sidx = ssbo_idxs[m];
+      struct terakan_bo const * const bo = state->resource_bos.fs[sidx];
+      uint32_t const * const desc = state->resource_descriptors.fs[sidx];
+      uint32_t const buf_size = desc[1] + 1;
+      uint32_t const width_elements = buf_size / 4;
+      uint32_t const pitch_aligned = (width_elements + 63) & ~63u;
+      uint32_t const pitch_tile_max = (pitch_aligned / 8) - 1;
+      uint32_t const dim = width_elements > 0 ? width_elements - 1 : 0;
+      uint32_t const cb_color_info =
+         S_028C70_FORMAT(V_028C70_COLOR_32) |
+         S_028C70_ARRAY_MODE(V_028C70_ARRAY_LINEAR_ALIGNED) |
+         S_028C70_NUMBER_TYPE(V_028C70_NUMBER_UINT) |
+         S_028C70_COMP_SWAP(0) |
+         S_028C70_BLEND_BYPASS(1) |
+         S_028C70_RESOURCE_TYPE(V_028C70_BUFFER) |
+         S_028C70_RAT(1);
+
+      uint32_t const bo_ref = terakan_bo_reference_writer_add_reference(
+         &command_writer->base.bo_reference_writer,
+         bo, true, true, TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
+
+      /* CB_COLOR{M}_BASE .. CB_COLOR{M}_CLEAR_WORD1 (13 regs) + 4 NOP relocs. */
+      uint32_t *p = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 23);
+      if (unlikely(p == NULL)) return;
+      *p++ = PKT3(PKT3_SET_CONTEXT_REG, 13, 0) | COMPUTE_MODE_BIT;
+      *p++ = ((R_028C60_CB_COLOR0_BASE + m * 0x3Cu) - 0x28000u) >> 2;
+      *p++ = 0;                                 /* CB_COLOR{M}_BASE (relocated) */
+      *p++ = pitch_tile_max;                    /* CB_COLOR{M}_PITCH */
+      *p++ = 0;                                 /* CB_COLOR{M}_SLICE */
+      *p++ = 0;                                 /* CB_COLOR{M}_VIEW */
+      *p++ = cb_color_info;                     /* CB_COLOR{M}_INFO */
+      *p++ = S_028C74_NON_DISP_TILING_ORDER(1); /* CB_COLOR{M}_ATTRIB */
+      *p++ = S_028C78_WIDTH_MAX(dim);           /* CB_COLOR{M}_DIM */
+      *p++ = 0;                                 /* CB_COLOR{M}_CMASK */
+      *p++ = 0;                                 /* CB_COLOR{M}_CMASK_SLICE */
+      *p++ = 0;                                 /* CB_COLOR{M}_FMASK */
+      *p++ = 0;                                 /* CB_COLOR{M}_FMASK_SLICE */
+      *p++ = 0;                                 /* CB_COLOR{M}_CLEAR_WORD0 */
+      *p++ = 0;                                 /* CB_COLOR{M}_CLEAR_WORD1 */
+      *p++ = PKT3(PKT3_NOP, 0, 0); *p++ = 4 * bo_ref;   /* BASE */
+      *p++ = PKT3(PKT3_NOP, 0, 0); *p++ = 4 * bo_ref;   /* ATTRIB */
+      *p++ = PKT3(PKT3_NOP, 0, 0); *p++ = 4 * bo_ref;   /* CMASK */
+      *p++ = PKT3(PKT3_NOP, 0, 0); *p++ = 4 * bo_ref;   /* FMASK */
       terakan_gfx_command_writer_emit_done(command_writer, p);
    }
 }
