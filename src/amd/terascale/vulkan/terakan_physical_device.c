@@ -473,12 +473,15 @@ terakan_physical_device_get_capabilities(
    features_out->customBorderColors = true;
    features_out->customBorderColorWithoutFormat = true;
 
-   /* VK_EXT_line_rasterization (#260) — Zink base requirement.
-    * TeraScale-2 supports bresenham and smooth lines via PA_SU_LINE_CNTL. */
+   /* VK_EXT_line_rasterization (#260) -- Zink base requirement.
+    * TeraScale-2 supports bresenham and smooth lines via PA_SU_LINE_CNTL.
+    * lineSubPixelPrecisionBits: spec minimum is 4; Evergreen PA_SU_LINE_CNTL.WIDTH
+    * is a 12.4 fixed-point field, giving 4 fractional bits of subpixel precision. */
    extensions_out->EXT_line_rasterization = true;
    features_out->rectangularLines = true;
    features_out->bresenhamLines = true;
    features_out->smoothLines = true;
+   properties_out->lineSubPixelPrecisionBits = 4;
 
    /* VK_EXT_scalar_block_layout (#222, Vulkan 1.2) — Zink base requirement. */
    extensions_out->EXT_scalar_block_layout = true;
@@ -803,9 +806,13 @@ terakan_physical_device_get_capabilities(
 
    /* Vulkan 1.1 properties (VkPhysicalDeviceVulkan11Properties). */
    properties_out->pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
-   /* No multiview support on TeraScale-2. */
-   properties_out->maxMultiviewViewCount = 0;
-   properties_out->maxMultiviewInstanceIndex = 0;
+   /* KHR_multiview is exposed for VK_KHR_create_renderpass2 dependency closure.
+    * TeraScale-2 has no hardware multiview; the feature bit remains false, meaning
+    * applications cannot enable multiview rendering.  The limits must still satisfy
+    * the spec minimum (>= 6 and >= 134217727) even when the feature is off; setting
+    * them to 0 triggers CTS vulkan1p2_limits_validation.khr_multiview failures. */
+   properties_out->maxMultiviewViewCount = 6;
+   properties_out->maxMultiviewInstanceIndex = 134217727;
    properties_out->protectedNoFault = false;
    properties_out->maxPerSetDescriptors = max_per_set_descriptors;
    properties_out->maxMemoryAllocationSize = max_memory_allocation_size;
@@ -937,20 +944,10 @@ terakan_physical_device_get_capabilities(
    extensions_out->EXT_color_write_enable = true;
    features_out->colorWriteEnable = true;
 
-   /* VK_KHR_maintenance4 (#414, Vulkan 1.3).
-    * GetDeviceBufferMemoryRequirements and GetDeviceImageMemoryRequirements
-    * are already implemented in terakan_buffer.c and terakan_image.c.
-    * GetDeviceImageSparseMemoryRequirements returns 0 (no sparse support).
-    * Addresses within buffers are limited to 32 bits in several places:
-    * - Index buffer binding via INDEX_BASE.
-    * - Wraparound in copying (most importantly image copying) not handled.
-    * The DRM Radeon driver, however, limits addresses within device memory to 32 bits in various
-    * areas as of 2.50.0, so there's no sufficient justification for making workarounds to support
-    * more.
-    */
-   extensions_out->KHR_maintenance4 = true;
-   features_out->maintenance4 = true;
-   properties_out->maxBufferSize = max_memory_allocation_size;
+   /* VK_KHR_maintenance4 (#414, Vulkan 1.3) -- DEFERRED.
+    * Requires Vulkan 1.1 as the minimum advertised API version; Terakan is
+    * currently locked at Vulkan 1.0.  Advertising it at 1.0 causes CTS failure
+    * extension_core_versions.  Re-enable once VK 1.1 promotion is complete. */
 
    /* VK_EXT_non_seamless_cube_map (#423). */
    extensions_out->EXT_non_seamless_cube_map = true;
