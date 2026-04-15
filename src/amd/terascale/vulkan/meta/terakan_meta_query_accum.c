@@ -991,7 +991,7 @@ terakan_meta_query_accum(
                                         &command_writer->hw_state_draw.vgt_index_offset,
                                         dst_uav_base_granularity_offset_bytes / sizeof(uint32_t));
 
-   terakan_before_hw_draw(command_writer);
+   terakan_before_hw_draw(command_writer, true);
 
    uint32_t * packet = terakan_gfx_command_writer_emit(
       command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 3);

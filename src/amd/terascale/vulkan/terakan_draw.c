@@ -160,13 +160,36 @@ terakan_set_vertex_instance_offsets(struct terakan_gfx_command_writer * const co
 }
 
 void
-terakan_before_hw_draw(struct terakan_gfx_command_writer * const command_writer)
+terakan_before_hw_draw(struct terakan_gfx_command_writer * const command_writer,
+                       bool const is_meta_draw)
 {
    /* TODO(Triang3l): Maybe insert barriers after emitting the state changes in command emission,
     * not before, so state changes are not blocked by the barriers in the CP, and new work can begin
     * as soon as possible.
     */
-   terakan_barrier_emit_pending_actions(command_writer);
+
+   if (is_meta_draw) {
+      /* HOST_WRITE barriers accumulate INV_TC | INV_SH so the *application* draw
+       * fetches freshly-written host data from RAM instead of a stale cache line.
+       * Internal meta draws (render pass clear, blit, query) execute between the
+       * barrier record and the application draw.  If we let the meta draw consume
+       * and discard those invalidation bits, the application draw runs with no
+       * SURFACE_SYNC and still sees stale cached data.
+       *
+       * Fix: save the read-cache-invalidation bits before emitting the pending
+       * barrier for the meta draw, then restore them so they will be re-emitted
+       * before the next application draw.  Emitting an extra SURFACE_SYNC(TC|SH)
+       * before the application draw is always safe; the overhead is negligible.
+       */
+      enum terakan_barrier_action_flags const saved_inv =
+         command_writer->pending_barrier_actions &
+         (TERAKAN_BARRIER_ACTION_INV_TC | TERAKAN_BARRIER_ACTION_INV_SH |
+          TERAKAN_BARRIER_ACTION_INV_VC);
+      terakan_barrier_emit_pending_actions(command_writer);
+      command_writer->pending_barrier_actions |= saved_inv;
+   } else {
+      terakan_barrier_emit_pending_actions(command_writer);
+   }
 }
 
 static void
@@ -194,7 +217,7 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
       terakan_robustness_metadata_apply(command_writer, false);
    }
 
-   terakan_before_hw_draw(command_writer);
+   terakan_before_hw_draw(command_writer, false);
    if (unlikely(terakan_draw_pre_draw_surface_sync_enabled())) {
       terakan_draw_emit_pre_draw_surface_sync(command_writer);
    }

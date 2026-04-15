@@ -205,6 +205,21 @@ terakan_barrier_get_src_actions(struct terakan_gfx_command_writer const * const 
       }
    }
 
+   if (src_access & VK_ACCESS_2_HOST_WRITE_BIT) {
+      /* The CPU wrote to host-visible (GTT) memory.  The GPU texture cache
+       * (TC) and shader constant cache (SH) may contain stale lines from
+       * before the write; invalidate them so subsequent GPU reads fetch fresh
+       * data from RAM.  If the hardware has a dedicated vertex cache (VC),
+       * invalidate that too since vertex buffer reads pass through VC.
+       * No GPU pipeline flush event is needed: the GPU produced nothing. */
+      actions |= TERAKAN_BARRIER_ACTION_INV_TC | TERAKAN_BARRIER_ACTION_INV_SH;
+      struct terakan_device const * const device =
+         terakan_gfx_command_writer_device(command_writer);
+      if (terakan_device_physical_device(device)->chip_info.has_vertex_cache) {
+         actions |= TERAKAN_BARRIER_ACTION_INV_VC;
+      }
+   }
+
    return actions;
 }
 
