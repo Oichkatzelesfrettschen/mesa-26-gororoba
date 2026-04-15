@@ -1509,6 +1509,7 @@ terakan_BeginCommandBuffer(VkCommandBuffer const commandBuffer,
    gfx_command_writer->graphics_kcache_needed = 0;
    gfx_command_writer->bound_compute_pipeline = NULL;
    gfx_command_writer->compute_pipeline_dirty = false;
+   gfx_command_writer->sq_config_is_compute_mode = false;
 
    struct terakan_device const * const device = terakan_command_buffer_device(command_buffer);
 

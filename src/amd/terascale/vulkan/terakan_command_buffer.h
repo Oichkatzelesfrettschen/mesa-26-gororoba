@@ -431,6 +431,24 @@ struct terakan_gfx_command_writer {
     * the SQ_PGM_START_CS / SQ_PGM_RESOURCES_CS / SPI_COMPUTE_NUM_THREAD
     * packets are emitted at dispatch time. */
    bool compute_pipeline_dirty;
+
+   /* Set when a compute dispatch has left the hardware in compute-biased
+    * SQ_CONFIG state (LS_PRIO=3/CS_PRIO=3, VS_PRIO/PS_PRIO=0) and zeroed
+    * SQ_THREAD_RESOURCE_MGMT_1 (all graphics stage thread slots = 0).
+    *
+    * WHY: after compute, the SQ has no thread budget for VS/PS wavefronts.
+    * Any subsequent draw will silently deadlock waiting for wave slots that
+    * will never become available.
+    *
+    * HOW: terakan_pipeline_graphics_bind() checks this flag and, when set,
+    * emits a PS_PARTIAL_FLUSH followed by a single SET_CONFIG_REG restoring
+    * SQ_CONFIG to graphics priorities (VS_PRIO=1, PS_PRIO=0, CS_PRIO=0),
+    * then clears the flag.  The SQ_THREAD_RESOURCE_MGMT registers are
+    * restored via the existing sq_tmp mismatch path in the same function,
+    * which is triggered by the dispatch path invalidating sq_tmp whenever
+    * it writes the compute-mode values to those registers.
+    */
+   bool sq_config_is_compute_mode;
 };
 
 TERAKAN_DEVICE_DEFINE_OBJECT_SHORTCUTS(gfx_command_writer,

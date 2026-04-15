@@ -324,6 +324,9 @@ terakan_compute_multiplex_begin(
       *p++ = (R_008C00_SQ_CONFIG - 0x8000) >> 2;
       *p++ = sq_config;
       terakan_gfx_command_writer_emit_done(command_writer, p);
+      /* Remember that SQ_CONFIG is now in compute-biased mode so
+       * terakan_pipeline_graphics_bind() can restore graphics priorities. */
+      command_writer->sq_config_is_compute_mode = true;
    }
 
    /* (3a) Set primitive type to POINTLIST for compute.
@@ -419,6 +422,21 @@ terakan_compute_multiplex_begin(
       *p++ = (R_008C18_SQ_THREAD_RESOURCE_MGMT_1 - 0x8000) >> 2;
       *p++ = 0;  /* PS=0, VS=0, GS=0, ES=0 */
       terakan_gfx_command_writer_emit_done(command_writer, p);
+
+      /* Invalidate the sq_tmp mirror so terakan_pipeline_graphics_bind()
+       * detects the mismatch and re-emits the graphics thread allocations.
+       *
+       * WHY: the mirror tracks the EXPECTED hardware value for
+       * SQ_THREAD_RESOURCE_MGMT_1/2.  By writing 0 here we force the
+       * memcmp in pipeline_graphics_bind to fail, which triggers the
+       * existing PS_PARTIAL_FLUSH + SET_CONFIG_REG re-emission path that
+       * restores the correct VS/PS thread counts before the next draw.
+       * Without this, the mirror stays at the graphics value, pipeline_bind
+       * sees a false match, skips the re-emit, and VS/PS wavefronts have
+       * zero thread slots -- the SQ deadlocks at the first draw. */
+      command_writer->state_draw.sq_tmp.sq_thread_resource_mgmt[0] = 0;
+      command_writer->state_draw.sq_tmp.sq_thread_resource_mgmt[1] =
+         S_008C1C_NUM_HS_THREADS(0) | S_008C1C_NUM_LS_THREADS(128);
    }
 
    /* (7) Zero out stack entries for graphics stages, allocate for LS.
