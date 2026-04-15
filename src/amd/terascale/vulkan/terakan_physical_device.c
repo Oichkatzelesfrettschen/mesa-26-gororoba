@@ -538,6 +538,13 @@ terakan_physical_device_get_capabilities(
    /* TODO(Triang3l): variableMultisampleRate. */
    features_out->inheritedQueries = true;
 
+   /* Vulkan 1.1 variable pointers.
+    * Keep the narrower storage-buffer capability enabled while full
+    * variablePointers remains off until non-constant cross-resource pointer
+    * paths (notably UBO/SSBO mixes) are validated end-to-end. */
+   features_out->variablePointersStorageBuffer = true;
+   features_out->variablePointers = false;
+
    properties_out->apiVersion = TERAKAN_API_VERSION;
    properties_out->driverVersion = vk_get_driver_version();
    properties_out->vendorID = TERAKAN_PHYSICAL_DEVICE_VENDOR_ID_ATI;
@@ -824,6 +831,9 @@ terakan_physical_device_get_capabilities(
 
    /* VK_KHR_maintenance2 (#118, Vulkan 1.1). */
    extensions_out->KHR_maintenance2 = true;
+
+   /* VK_KHR_variable_pointers (#61, Vulkan 1.1). */
+   extensions_out->KHR_variable_pointers = true;
 
    /* VK_KHR_multiview (#54, Vulkan 1.1).
     * Exposed for VK_KHR_create_renderpass2 dependency closure; feature bits
