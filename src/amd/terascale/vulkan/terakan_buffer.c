@@ -180,6 +180,27 @@ terakan_GetDeviceBufferMemoryRequirements(VkDevice const deviceHandle,
                                           pMemoryRequirements);
 }
 
+/* VK_KHR_get_memory_requirements2 / Vulkan 1.1 entry point.
+ * Called by CTS dedicated_alloc tests (and any application using the KHR
+ * extension or VK 1.1 core) to query buffer memory requirements with an
+ * optional VkMemoryDedicatedRequirementsKHR in the pNext chain.
+ * Without this function the dispatch table has a NULL slot and the CTS
+ * crashes with SIGSEGV on the first dedicated-allocation mapping test. */
+VKAPI_ATTR void VKAPI_CALL
+terakan_GetBufferMemoryRequirements2(VkDevice const deviceHandle,
+                                     VkBufferMemoryRequirementsInfo2 const * const pInfo,
+                                     VkMemoryRequirements2 * const pMemoryRequirements)
+{
+   struct terakan_buffer const * const buffer = terakan_buffer_from_handle(pInfo->buffer);
+   /* vk_buffer.usage is VkBufferUsageFlags2KHR (64-bit, VK_KHR_maintenance5).
+    * Cast to 32-bit VkBufferUsageFlags: all alignment-relevant bits live in the
+    * lower 32 bits, which is identical to the VK 1.0 / 1.1 flag set. */
+   terakan_buffer_get_memory_requirements(terakan_device_from_handle(deviceHandle),
+                                          buffer->vk.size,
+                                          (VkBufferUsageFlags)buffer->vk.usage,
+                                          pMemoryRequirements);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 terakan_BindBufferMemory2(UNUSED VkDevice const device, uint32_t const bindInfoCount,
                           VkBindBufferMemoryInfo const * const pBindInfos)
