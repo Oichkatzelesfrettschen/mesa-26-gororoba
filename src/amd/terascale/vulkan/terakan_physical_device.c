@@ -866,7 +866,19 @@ terakan_physical_device_get_capabilities(
    extensions_out->EXT_depth_clip_enable = true;
    features_out->depthClipEnable = true;
 
-   /* VK_KHR_dedicated_allocation (#128, Vulkan 1.1). */
+   /* VK_KHR_get_memory_requirements2 (#146, Vulkan 1.1).
+    * Adds vkGetBufferMemoryRequirements2KHR, vkGetImageMemoryRequirements2KHR,
+    * and vkGetImageSparseMemoryRequirements2KHR.  The implementations exist in
+    * terakan_buffer.c and terakan_image.c.  Without this extension advertised,
+    * vkGetDeviceProcAddr returns NULL for the KHR-suffixed names even though
+    * the functions are implemented, causing SIGSEGV in CTS dedicated_alloc
+    * tests (case 229 in vk_device_entrypoint_is_enabled is gated on this).
+    * Required by VK_KHR_dedicated_allocation (#128). */
+   extensions_out->KHR_get_memory_requirements2 = true;
+
+   /* VK_KHR_dedicated_allocation (#128, Vulkan 1.1).
+    * Requires KHR_get_memory_requirements2 for VkMemoryDedicatedRequirementsKHR
+    * queries and VkMemoryDedicatedAllocateInfoKHR in vkAllocateMemory pNext. */
    extensions_out->KHR_dedicated_allocation = true;
 
    /* VK_KHR_bind_memory2 (#158, Vulkan 1.1). */

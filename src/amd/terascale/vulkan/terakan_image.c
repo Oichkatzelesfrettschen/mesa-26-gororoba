@@ -897,6 +897,20 @@ terakan_GetImageMemoryRequirements2(VkDevice const deviceHandle,
       physical_device, image->vk.external_handle_types != 0, pMemoryRequirements);
 }
 
+/* VK_KHR_get_memory_requirements2 / Vulkan 1.1 entry point.
+ * TeraScale-2 does not support sparse images -- return zero requirements.
+ * This stub is required for KHR_get_memory_requirements2 to be advertised
+ * and for CTS dedicated_alloc tests to receive a non-NULL proc addr. */
+VKAPI_ATTR void VKAPI_CALL
+terakan_GetImageSparseMemoryRequirements2(
+   UNUSED VkDevice const device,
+   UNUSED VkImageSparseMemoryRequirementsInfo2 const * const pInfo,
+   uint32_t * const pSparseMemoryRequirementCount,
+   UNUSED VkSparseImageMemoryRequirements2 * const pSparseMemoryRequirements)
+{
+   *pSparseMemoryRequirementCount = 0;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 terakan_GetImageSubresourceLayout(UNUSED VkDevice const device, VkImage const imageHandle,
                                   VkImageSubresource const * pSubresource,
