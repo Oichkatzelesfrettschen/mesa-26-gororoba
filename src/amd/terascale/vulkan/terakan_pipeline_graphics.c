@@ -1736,9 +1736,11 @@ terakan_pipeline_graphics_validate_vs_fs_spi_routing(
 static VkResult
 terakan_pipeline_graphics_validate_fs_color_export_parity(
    struct terakan_device * const device,
-   struct terakan_shader_impl const * const fs)
+   struct terakan_shader_impl const * const fs,
+   struct terakan_graphics_state_key const * const gfx_state_key)
 {
    assert(fs != NULL);
+   assert(gfx_state_key != NULL);
 
    uint8_t const fs_uncompacted_locations = fs->fs.fragment_data_uncompacted_locations;
    uint32_t const expected_export_width = util_bitcount(fs_uncompacted_locations);
@@ -1788,6 +1790,24 @@ terakan_pipeline_graphics_validate_fs_color_export_parity(
                        "FS color export channel mismatch: %" PRIu32
                        " RTV exports present but cb_shader_mask has no channels",
                        expected_export_width);
+   }
+
+   if (gfx_state_key->dual_source_blend) {
+      bool const has_rtv0 = (cb_shader_mask & 0xFu) != 0;
+      bool const has_rtv1 = (cb_shader_mask & 0xF0u) != 0;
+      bool const dual_export_possible =
+         G_02880C_DUAL_EXPORT_ENABLE(fs->fs.db_shader_control) != 0;
+      if (unlikely(!has_rtv0 || !has_rtv1 || expected_export_width < 2u ||
+                   !dual_export_possible)) {
+         return vk_errorf(device, VK_ERROR_VALIDATION_FAILED_EXT,
+                          "FS dual-source export mismatch: dual-source blending requires"
+                          " compacted RTV0+RTV1 exports and DUAL_EXPORT_ENABLE"
+                          " (cb_shader_mask=0x%08" PRIx32
+                          ", expected_exports=%" PRIu32
+                          ", db_shader_control=0x%08" PRIx32 ")",
+                          cb_shader_mask, expected_export_width,
+                          fs->fs.db_shader_control);
+      }
    }
 
    return VK_SUCCESS;
@@ -2150,7 +2170,7 @@ terakan_pipeline_graphics_compile_shaders(
 
    if (pipeline->shader_stages & VK_SHADER_STAGE_FRAGMENT_BIT) {
       result = terakan_pipeline_graphics_validate_fs_color_export_parity(
-         device, &pipeline->shaders[MESA_SHADER_FRAGMENT]);
+         device, &pipeline->shaders[MESA_SHADER_FRAGMENT], &gfx_state_key);
       if (result != VK_SUCCESS)
          goto cleanup;
    }
