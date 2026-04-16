@@ -1311,16 +1311,12 @@ terakan_image_create_resource_descriptor(
                        S_03001C_TYPE(V_03001C_SQ_TEX_VTX_VALID_TEXTURE);
 
    if (dimension == V_030000_SQ_TEX_DIM_2D_MSAA || dimension == V_030000_SQ_TEX_DIM_2D_ARRAY_MSAA) {
-      /* MIP_ADDRESS is used for the FMask address instead. */
-      /* TODO(Triang3l): FMask. */
-      descriptor_out[3] = S_03000C_MIP_ADDRESS(0);
-
-      unsigned const samples_log2 = util_logbase2((uint32_t)image->vk.samples);
-      if (physical_device->chip_info.is_r9xx) {
-         descriptor_out[4] |= S_030010_LOG2_NUM_FRAGMENTS(samples_log2);
-      }
-      /* LAST_LEVEL is used for the sample count instead. */
-      descriptor_out[5] |= S_030014_LAST_LEVEL(samples_log2);
+      /* MIP_ADDRESS carries the FMask address for MSAA SQ resources, but FMask descriptor
+       * programming is not implemented yet.
+       * Return false so image-view creation can reject sampled/input-attachment usages that require
+       * a valid SQ resource descriptor while still allowing attachment-only image views.
+       */
+      return false;
    } else {
       descriptor_out[3] = S_03000C_MIP_ADDRESS(
          image_va_shr8 +
@@ -1719,6 +1715,13 @@ terakan_CreateImageView(VkDevice const deviceHandle,
                        vk_Format_to_str(pCreateInfo->format),
                        vk_Format_to_str(image->vk.format));
    }
+   VkImageUsageFlags view_usage = image->vk.usage;
+   VkImageViewUsageCreateInfo const * const image_view_usage =
+      vk_find_struct_const(pCreateInfo->pNext, IMAGE_VIEW_USAGE_CREATE_INFO);
+   if (image_view_usage != NULL) {
+      view_usage = image_view_usage->usage;
+   }
+   bool const requires_sq_resource_descriptor = (view_usage & (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)) != 0;
 
    struct terakan_image_view * const image_view =
       vk_alloc2(&device->vk.alloc, pAllocator, sizeof(struct terakan_image_view),
@@ -1762,6 +1765,14 @@ terakan_CreateImageView(VkDevice const deviceHandle,
 
    if (!terakan_image_create_resource_descriptor(&descriptor_create_info, &pCreateInfo->components,
                                                  image_view->resource)) {
+      if (requires_sq_resource_descriptor) {
+         vk_image_view_finish(&image_view->vk);
+         vk_free2(&device->vk.alloc, pAllocator, image_view);
+         return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                          "Image view format %s (usage 0x%08X) requires an SQ resource descriptor, but this image/view combination is not yet supported (MSAA FMask-backed resources are TODO)",
+                          vk_Format_to_str(pCreateInfo->format), view_usage);
+      }
+
       memset(image_view->resource, 0, sizeof(image_view->resource));
    }
 
