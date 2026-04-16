@@ -14,7 +14,9 @@
 #include "sfn_liverangeevaluator.h"
 #include "sfn_shader.h"
 
+#include <algorithm>
 #include <cassert>
+#include <limits>
 #include <queue>
 
 namespace r600 {
@@ -99,6 +101,48 @@ Interference::initialize(ComponentInterference& comp_interference,
    }
 }
 
+static inline int
+register_bank(int color)
+{
+   return color & 1;
+}
+
+static int
+live_range_overlap_weight(const LiveRangeEntry& lhs, const LiveRangeEntry& rhs)
+{
+   int overlap_start = std::max(lhs.m_start, rhs.m_start);
+   int overlap_end = std::min(lhs.m_end, rhs.m_end);
+   int overlap = overlap_end - overlap_start;
+   return overlap > 0 ? overlap : 1;
+}
+
+static int
+read_port_conflict_penalty(const LiveRangeEntry& candidate,
+                           const LiveRangeMap::ChannelLiveRange& live_ranges,
+                           const ComponentInterference::Row& adjacency,
+                           int color)
+{
+   /* Keep low-register preference but bias harder away from same-bank pressure. */
+   int penalty = color / 16;
+
+   for (auto adj : adjacency) {
+      const auto& other = live_ranges[adj];
+      if (other.m_color == g_registers_unused)
+         continue;
+
+      int weight = live_range_overlap_weight(candidate, other);
+      if (candidate.m_alu_clause_local || other.m_alu_clause_local)
+         weight *= 2;
+
+      if (register_bank(other.m_color) == register_bank(color))
+         penalty += 4 * weight;
+      else
+         penalty += weight;
+   }
+
+   return penalty;
+}
+
 struct Group {
    int priority;
    std::array<PRegister, 4> channels;
@@ -135,75 +179,62 @@ group_allocation(LiveRangeMap& lrm,
       if (group.priority > 0)
          color = 0;
 
-      while (color < g_registers_end) {
-         /* Find the coloring for the first channel */
+      int best_color = g_registers_end;
+      int best_penalty = std::numeric_limits<int>::max();
+
+      for (int test_color = color; test_color < g_registers_end; ++test_color) {
          bool color_in_use = false;
-         int comp = start_comp;
+         int penalty = 0;
 
-         auto& adjecency = interference.row(start_comp, group.channels[comp]->index());
-         auto& regs = lrm.component(comp);
+         for (int comp = start_comp; comp < 4; ++comp) {
+            if (!group.channels[comp])
+               continue;
 
-         sfn_log << SfnLog::merge << "Try color " << color;
+            auto& component_life_ranges = lrm.component(comp);
+            const auto& candidate = component_life_ranges[group.channels[comp]->index()];
+            auto& adjecencies = interference.row(comp, group.channels[comp]->index());
 
-         for (auto adj : adjecency) {
-            if (regs[adj].m_color == color) {
-               color_in_use = true;
-               sfn_log << SfnLog::merge << " in use\n";
-               break;
-            }
-         }
-
-         if (color_in_use) {
-            ++color;
-            continue;
-         }
-
-         /* First channel color found, check whether it can be used for all
-          * channels */
-         while (comp < 4) {
-            sfn_log << SfnLog::merge << " interference: ";
-            if (group.channels[comp]) {
-               auto& component_life_ranges = lrm.component(comp);
-               auto& adjecencies = interference.row(comp, group.channels[comp]->index());
-
-               for (auto adj_index : adjecencies) {
-                  sfn_log << SfnLog::merge << *component_life_ranges[adj_index].m_register
-                          << " ";
-                  if (component_life_ranges[adj_index].m_color == color) {
-                     color_in_use = true;
-                     sfn_log << SfnLog::merge << "used";
-                     break;
-                  }
-               }
-
-               if (color_in_use)
+            for (auto adj_index : adjecencies) {
+               if (component_life_ranges[adj_index].m_color == test_color) {
+                  color_in_use = true;
                   break;
+               }
             }
-            ++comp;
+
+            if (color_in_use)
+               break;
+
+            penalty += read_port_conflict_penalty(
+               candidate, component_life_ranges, adjecencies, test_color);
          }
 
-         /* We couldn't allocate all channels with this color, so try next */
-         if (color_in_use) {
-            ++color;
-            sfn_log << SfnLog::merge << "\n";
+         if (color_in_use)
             continue;
-         }
-         sfn_log << SfnLog::merge << " success\n";
 
-         /* Coloring successful */
-         for (auto reg : group.channels) {
-            if (reg) {
-               auto& vregs = lrm.component(reg->chan());
-               auto& vreg_cmp = vregs[reg->index()];
-               assert(vreg_cmp.m_start != -1 || vreg_cmp.m_end != -1);
-               vreg_cmp.m_color = color;
-            }
+         if (penalty < best_penalty) {
+            best_penalty = penalty;
+            best_color = test_color;
+            if (best_penalty == 0)
+               break;
          }
-         break;
       }
 
-      if (color == g_registers_end)
+      if (best_color == g_registers_end)
          return false;
+
+      color = best_color;
+      sfn_log << SfnLog::merge << "Select color " << color
+              << " (read-port penalty=" << best_penalty << ")\n";
+
+      /* Coloring successful */
+      for (auto reg : group.channels) {
+         if (reg) {
+            auto& vregs = lrm.component(reg->chan());
+            auto& vreg_cmp = vregs[reg->index()];
+            assert(vreg_cmp.m_start != -1 || vreg_cmp.m_end != -1);
+            vreg_cmp.m_color = color;
+         }
+      }
    }
 
    return true;
@@ -225,9 +256,9 @@ scalar_allocation(LiveRangeMap& lrm, const Interference& interference)
 
          auto& adjecency = interference.row(comp, r.m_register->index());
 
-         int color = 0;
-
-         while (color < g_registers_end) {
+         int best_color = g_registers_end;
+         int best_penalty = std::numeric_limits<int>::max();
+         for (int color = 0; color < g_registers_end; ++color) {
             bool color_in_use = false;
             for (auto adj : adjecency) {
                if (live_ranges[adj].m_color == color) {
@@ -236,16 +267,23 @@ scalar_allocation(LiveRangeMap& lrm, const Interference& interference)
                }
             }
 
-            if (color_in_use) {
-               ++color;
+            if (color_in_use)
                continue;
-            }
 
-            r.m_color = color;
-            break;
+            int penalty = read_port_conflict_penalty(r, live_ranges, adjecency, color);
+            if (penalty < best_penalty) {
+               best_penalty = penalty;
+               best_color = color;
+               if (best_penalty == 0)
+                  break;
+            }
          }
-         if (color == g_registers_end)
+         if (best_color == g_registers_end)
             return false;
+
+         r.m_color = best_color;
+         sfn_log << SfnLog::merge << "Select color " << best_color
+                 << " (read-port penalty=" << best_penalty << ")\n";
       }
    }
    return true;
@@ -303,9 +341,9 @@ scalar_clause_local_allocation (LiveRangeMap& lrm, const Interference&  interfer
 
          auto& adjecency = interference.row(comp, r->m_register->index());
 
-         int color = g_clause_local_start;
-
-         while (color < g_clause_local_end) {
+         int best_color = g_clause_local_end;
+         int best_penalty = std::numeric_limits<int>::max();
+         for (int color = g_clause_local_start; color < g_clause_local_end; ++color) {
             bool color_in_use = false;
             for (auto adj : adjecency) {
                if (live_ranges[adj].m_color == color) {
@@ -314,16 +352,23 @@ scalar_clause_local_allocation (LiveRangeMap& lrm, const Interference&  interfer
                }
             }
 
-            if (color_in_use) {
-               ++color;
+            if (color_in_use)
                continue;
-            }
 
-            r->m_color = color;
-            break;
+            int penalty = read_port_conflict_penalty(*r, live_ranges, adjecency, color);
+            if (penalty < best_penalty) {
+               best_penalty = penalty;
+               best_color = color;
+               if (best_penalty == 0)
+                  break;
+            }
          }
-         if (color == g_clause_local_end)
+         if (best_color == g_clause_local_end)
             break;
+
+         r->m_color = best_color;
+         sfn_log << SfnLog::merge << "Select clause-local color " << best_color
+                 << " (read-port penalty=" << best_penalty << ")\n";
       }
    }
 }
