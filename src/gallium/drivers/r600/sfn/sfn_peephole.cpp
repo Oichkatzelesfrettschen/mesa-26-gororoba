@@ -290,7 +290,8 @@ void PeepholeVisitor::apply_source_mods(AluInstr *alu)
 
          bool const parent_abs = parent->has_source_mod(0, AluInstr::mod_abs);
          bool const parent_neg = parent->has_source_mod(0, AluInstr::mod_neg);
-         if (!parent_abs && !parent_neg)
+         bool const parent_has_mods = parent_abs || parent_neg;
+         if (!parent_has_mods && parent->output_modifier() != AluInstr::omod_none)
             break;
 
          PVirtualValue new_src = parent->psrc(0);
@@ -305,8 +306,14 @@ void PeepholeVisitor::apply_source_mods(AluInstr *alu)
          if (!new_src_not_pinned && !old_src_not_pinned && !sources_equal_channel)
             break;
 
-         auto [candidate_abs, candidate_neg] =
-            compose_source_mods(folded_abs, folded_neg, parent_abs, parent_neg);
+         bool candidate_abs = folded_abs;
+         bool candidate_neg = folded_neg;
+         if (parent_has_mods) {
+            auto const composed =
+               compose_source_mods(folded_abs, folded_neg, parent_abs, parent_neg);
+            candidate_abs = composed.first;
+            candidate_neg = composed.second;
+         }
 
          if (!has_abs && candidate_abs)
             break;
