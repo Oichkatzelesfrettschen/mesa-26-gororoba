@@ -227,10 +227,19 @@ terakan_CmdCopyImage2(VkCommandBuffer const commandBuffer,
    struct terakan_image const * const dst_image =
       terakan_image_from_handle(pCopyImageInfo->dstImage);
 
-   /* TODO(Triang3l): Multisampled image copying, possibly by copying fragments (directly, not via
-    * coverage samples) with sample shading, and the FMask with pixel shading - and with some path
-    * for depth/stencil.
-    */
+   if (unlikely(src_image->vk.samples != VK_SAMPLE_COUNT_1_BIT ||
+                dst_image->vk.samples != VK_SAMPLE_COUNT_1_BIT ||
+                vk_format_is_depth_or_stencil(src_image->vk.format) ||
+                vk_format_is_depth_or_stencil(dst_image->vk.format))) {
+      /* TODO(Triang3l): Implement multisampled and depth/stencil image copying by:
+       * 1) copying fragments with sample shading for color,
+       * 2) copying FMASK with pixel shading when present, and
+       * 3) adding dedicated depth/stencil transfer paths.
+       */
+      vk_command_buffer_set_error(&command_writer->base.command_buffer->vk,
+                                  VK_ERROR_VALIDATION_FAILED_EXT);
+      return;
+   }
 
    struct terakan_image_descriptor_create_info src_descriptor_create_info = {
       .image = src_image,
