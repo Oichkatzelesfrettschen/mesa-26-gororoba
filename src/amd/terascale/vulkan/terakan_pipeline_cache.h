@@ -117,6 +117,7 @@ struct terakan_cached_shader {
           * vertex buffer is never emitted (observed via host_write_vertex_
           * buffer.* CTS failures and vert_attr_read.c minimal repro). */
          BITSET_DECLARE(vertex_attributes_needed, TERAKAN_VERTEX_INPUT_MAX_ATTRIBUTES);
+         bool vs_draw_parameters_enabled;
       } vs;
 
       struct {

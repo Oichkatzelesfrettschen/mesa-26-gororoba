@@ -772,6 +772,13 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
       /* PA_SC_MODE_CNTL_1, DB_RENDER_CONTROL, DB_RENDER_OVERRIDE2, DB_ALPHA_TO_MASK:
        * now tracked and emitted via terakan_hw_state_draw.
        */
+
+      PKT3(PKT3_SET_CONTEXT_REG,
+           (R_028AA4_VGT_INSTANCE_STEP_RATE_1 - R_028AA0_VGT_INSTANCE_STEP_RATE_0) /
+              sizeof(uint32_t) + 1, 0),
+      TERAKAN_CONTEXT_REG_OFFSET(R_028AA0_VGT_INSTANCE_STEP_RATE_0),
+      /* R_028AA0_VGT_INSTANCE_STEP_RATE_0 */ 0,
+      /* R_028AA4_VGT_INSTANCE_STEP_RATE_1 */ 0,
    };
 
    packet = terakan_gfx_command_writer_emit(command_writer,

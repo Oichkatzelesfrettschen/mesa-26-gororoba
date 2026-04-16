@@ -193,6 +193,53 @@ terakan_before_hw_draw(struct terakan_gfx_command_writer * const command_writer,
    }
 }
 
+/* SFN's load_base_instance / load_base_vertex / load_draw_id read from a constant
+ * buffer at slot R600_LDS_INFO_CONST_BUFFER (= 16) via VTX_FETCH.  In r600g (Gallium)
+ * this buffer is populated per-draw by the state tracker.  Terakan must do the same.
+ *
+ * The buffer layout matches struct r600_lds_constant_buffer from r600_pipe.h.
+ * SFN reads at byte offsets 32 (vertexid_base), 36 (instance_base), 40 (vertex_base),
+ * 44 (draw_id).  We allocate the full 48-byte struct but only the draw-parameter
+ * fields at offsets 32-47 are meaningful for non-tessellation draws.
+ */
+#define TERAKAN_DRAW_PARAMS_CONST_BUFFER 16
+#define TERAKAN_DRAW_PARAMS_BUFFER_SIZE  48
+
+static void
+terakan_bind_draw_params(struct terakan_gfx_command_writer * const command_writer,
+                         uint32_t const first_vertex, uint32_t const first_instance)
+{
+   struct terakan_bo const *bo;
+   uint64_t va;
+   uint32_t * const mapping = terakan_push_buffer_allocate(
+      command_writer->base.command_buffer, TERAKAN_DRAW_PARAMS_BUFFER_SIZE,
+      sizeof(uint32_t), &bo, &va);
+   if (unlikely(mapping == NULL))
+      return;
+
+   memset(mapping, 0, TERAKAN_DRAW_PARAMS_BUFFER_SIZE);
+   mapping[8]  = 0;               /* vertexid_base (offset 32) */
+   mapping[9]  = first_instance;   /* instance_base (offset 36) */
+   mapping[10] = first_vertex;     /* vertex_base   (offset 40) */
+   mapping[11] = 0;               /* draw_id       (offset 44) */
+
+   uint32_t resource[8] = {
+      [0] = (uint32_t)va,
+      [1] = TERAKAN_DRAW_PARAMS_BUFFER_SIZE - 1,
+      [2] = S_030008_BASE_ADDRESS_HI(va >> 32) | S_030008_STRIDE(16) |
+            S_030008_DATA_FORMAT(0x23 /* FMT_32_32_32_32_FLOAT */),
+      [3] = S_03000C_DST_SEL_X(TERASCALE_SWIZZLE_X) | S_03000C_DST_SEL_Y(TERASCALE_SWIZZLE_Y) |
+            S_03000C_DST_SEL_Z(TERASCALE_SWIZZLE_Z) | S_03000C_DST_SEL_W(TERASCALE_SWIZZLE_W),
+      [7] = S_03001C_TYPE(V_03001C_SQ_TEX_VTX_VALID_BUFFER),
+   };
+
+   BITSET_SET(command_writer->hw_state_sqc.needed.resources.vs,
+              TERAKAN_DRAW_PARAMS_CONST_BUFFER);
+   terakan_hw_state_sqc_set_resource_vs(&command_writer->hw_state_sqc,
+                                        TERAKAN_DRAW_PARAMS_CONST_BUFFER,
+                                        bo, resource);
+}
+
 static void
 terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
 {
@@ -252,6 +299,12 @@ terakan_CmdDraw(VkCommandBuffer const commandBuffer, uint32_t const vertexCount,
    terakan_hw_state_draw_set_vgt_num_instances(&command_writer->hw_state_draw, instanceCount);
    terakan_set_vertex_instance_offsets(command_writer, firstVertex, firstInstance);
 
+   if (command_writer->bound_graphics_pipeline != NULL &&
+       command_writer->bound_graphics_pipeline->shaders[MESA_SHADER_VERTEX]
+          .shader.vs_draw_parameters_enabled) {
+      terakan_bind_draw_params(command_writer, firstVertex, firstInstance);
+   }
+
    terakan_before_draw(command_writer);
 
    uint32_t * packet = terakan_gfx_command_writer_emit(
@@ -285,6 +338,12 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
 
    terakan_hw_state_draw_set_vgt_num_instances(&command_writer->hw_state_draw, instanceCount);
    terakan_set_vertex_instance_offsets(command_writer, (uint32_t)vertexOffset, firstInstance);
+
+   if (command_writer->bound_graphics_pipeline != NULL &&
+       command_writer->bound_graphics_pipeline->shaders[MESA_SHADER_VERTEX]
+          .shader.vs_draw_parameters_enabled) {
+      terakan_bind_draw_params(command_writer, (uint32_t)vertexOffset, firstInstance);
+   }
 
    terakan_before_draw(command_writer);
 
