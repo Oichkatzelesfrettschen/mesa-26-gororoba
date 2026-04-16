@@ -1122,34 +1122,48 @@ terakan_queue_destroy(struct terakan_queue * const queue)
       queue->pending_completion = NULL;
    }
 
-   vk_sync_destroy(&device->vk, queue->internal_bo_timeline);
+   if (queue->internal_bo_timeline != NULL) {
+      vk_sync_destroy(&device->vk, queue->internal_bo_timeline);
+   }
 
-   mtx_lock(&device->completion_mutex);
-   queue->shutdown_competion_thread = true;
-   mtx_unlock(&device->completion_mutex);
-   cnd_broadcast(&device->completion_condition);
-   thrd_join(queue->completion_thread, NULL);
+   if (queue->completion_submissions_pending.next != NULL) {
+      mtx_lock(&device->completion_mutex);
+      queue->shutdown_competion_thread = true;
+      mtx_unlock(&device->completion_mutex);
+      cnd_broadcast(&device->completion_condition);
+      thrd_join(queue->completion_thread, NULL);
+   }
 
    struct terakan_queue_completion_submission *completion_submission, *next_submission;
    struct terakan_queue_completion_signal *completion_signal, *next_signal;
-   LIST_FOR_EACH_ENTRY_SAFE (completion_submission, next_submission,
-                             &queue->completion_submissions_pending, link) {
-      LIST_FOR_EACH_ENTRY_SAFE (completion_signal, next_signal, &completion_submission->signals,
+   if (queue->completion_submissions_pending.next != NULL) {
+      LIST_FOR_EACH_ENTRY_SAFE (completion_submission, next_submission,
+                                &queue->completion_submissions_pending, link) {
+         LIST_FOR_EACH_ENTRY_SAFE (completion_signal, next_signal, &completion_submission->signals,
+                                   link) {
+            vk_free(&device->vk.alloc, completion_signal);
+         }
+         device->winsys_fn->queue->completion_submission_finish_winsys_and_free(
+            completion_submission);
+      }
+   }
+   if (queue->completion_submissions_free.next != NULL) {
+      LIST_FOR_EACH_ENTRY_SAFE (completion_submission, next_submission,
+                                &queue->completion_submissions_free, link) {
+         device->winsys_fn->queue->completion_submission_finish_winsys_and_free(
+            completion_submission);
+      }
+   }
+   if (queue->completion_signals_free.next != NULL) {
+      LIST_FOR_EACH_ENTRY_SAFE (completion_signal, next_signal, &queue->completion_signals_free,
                                 link) {
          vk_free(&device->vk.alloc, completion_signal);
       }
-      device->winsys_fn->queue->completion_submission_finish_winsys_and_free(completion_submission);
-   }
-   LIST_FOR_EACH_ENTRY_SAFE (completion_submission, next_submission,
-                             &queue->completion_submissions_free, link) {
-      device->winsys_fn->queue->completion_submission_finish_winsys_and_free(completion_submission);
-   }
-   LIST_FOR_EACH_ENTRY_SAFE (completion_signal, next_signal, &queue->completion_signals_free,
-                             link) {
-      vk_free(&device->vk.alloc, completion_signal);
    }
 
-   device->winsys_fn->queue->release_submission_context(queue->submission_context);
+   if (queue->submission_context != NULL) {
+      device->winsys_fn->queue->release_submission_context(queue->submission_context);
+   }
 
    vk_queue_finish(&queue->vk);
 
