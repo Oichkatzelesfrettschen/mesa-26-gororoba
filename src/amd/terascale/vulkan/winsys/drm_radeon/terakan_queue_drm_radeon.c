@@ -246,9 +246,23 @@ terakan_queue_completion_submission_drm_radeon_await(
    struct drm_radeon_gem_wait_idle gem_wait_idle_arguments = {
       .handle = bo->handle,
    };
-   /* Returns -EBUSY in finite time in case of a hang (30-second timeout in DRM Radeon 2.50.0). */
-   return drmCommandWrite(device->render_node_fd, DRM_RADEON_GEM_WAIT_IDLE,
-                          &gem_wait_idle_arguments, sizeof(gem_wait_idle_arguments)) == 0;
+
+   /* DRM Radeon returns -EBUSY in finite time on timeout (~30s). Retry to reduce
+    * false DEVICE_LOST escalation if completion is delayed but still progressing.
+    */
+   for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+      int const wait_result = drmCommandWrite(device->render_node_fd, DRM_RADEON_GEM_WAIT_IDLE,
+                                              &gem_wait_idle_arguments,
+                                              sizeof(gem_wait_idle_arguments));
+      if (wait_result == 0) {
+         return true;
+      }
+      if (wait_result != -EBUSY) {
+         return false;
+      }
+   }
+
+   return false;
 }
 
 static void

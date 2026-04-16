@@ -1084,10 +1084,10 @@ terakan_gfx_command_writer_emit_with_bo(struct terakan_gfx_command_writer * cons
              "Draws and dispatches must be outer emissions, they must not be emitted by indirect "
              "buffer setup or by hardware state applying");
    } else {
-      assert((contents == TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW ||
+      assert((contents == TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_STATE ||
+              contents == TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW ||
               contents == TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER) &&
-             "hw_state emissions must be done only from within hw_state applying functions invoked "
-             "from outer emissions");
+             "outer emissions must be state/draw/other; invalid emission type");
       command_writer->is_in_outer_emit_call = true;
    }
 
