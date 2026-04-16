@@ -30,7 +30,13 @@
  *   uint8_t stage_regs[regs_size]
  */
 
-#define TERAKAN_CACHE_BLOB_VERSION 2
+/* Version history:
+ *   1: initial format
+ *   2: earlier reflection additions
+ *   3: added reflection.vs.vertex_attributes_needed (fixes host_write_vertex_
+ *      buffer.* failures where bindings_needed_by_attributes_and_provided
+ *      evaluated to 0 on cache hit, starving SET_RESOURCE emission). */
+#define TERAKAN_CACHE_BLOB_VERSION 3
 
 struct terakan_cached_shader_blob_header {
    uint32_t version;
@@ -357,6 +363,12 @@ terakan_pipeline_cache_insert(struct vk_pipeline_cache *cache,
          cached->reflection.vs.output[i].export_param = (int16_t)shader->shader.output[i].export_param;
          cached->reflection.vs.output[i].spi_sid = (int16_t)shader->shader.output[i].spi_sid;
       }
+      /* Preserve VS vertex-attribute-used bitset across cache hits.  Without this,
+       * bindings_needed_by_attributes_and_provided evaluates to 0 on cache hit
+       * and SET_RESOURCE for the vertex buffer is never emitted. */
+      memcpy(cached->reflection.vs.vertex_attributes_needed,
+             shader->vs.vertex_attributes_needed,
+             sizeof(cached->reflection.vs.vertex_attributes_needed));
       break;
    case MESA_SHADER_FRAGMENT:
       cached->regs.ps.sq_pgm_exports_ps = shader->static_state.stage.ps.sq_pgm_exports_ps;
@@ -467,6 +479,11 @@ terakan_cached_shader_restore(struct terakan_cached_shader const *cached,
          shader->shader.output[i].export_param = cached->reflection.vs.output[i].export_param;
          shader->shader.output[i].spi_sid = cached->reflection.vs.output[i].spi_sid;
       }
+      /* Restore vertex-attribute-used bitset so pipeline_graphics.c can compute
+       * bindings_needed_by_attributes_and_provided correctly on cache hit. */
+      memcpy(shader->vs.vertex_attributes_needed,
+             cached->reflection.vs.vertex_attributes_needed,
+             sizeof(shader->vs.vertex_attributes_needed));
       break;
    case MESA_SHADER_FRAGMENT:
       shader->static_state.stage.ps.sq_pgm_exports_ps = cached->regs.ps.sq_pgm_exports_ps;

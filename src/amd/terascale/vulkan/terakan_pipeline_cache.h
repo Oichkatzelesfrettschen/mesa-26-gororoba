@@ -26,12 +26,18 @@
  *   - resources_needed, samplers_needed, kcache_needed (from post-link lowering)
  *   - push_constants_usage (from post-link lowering + pipeline layout)
  *   - fragment_data_uncompacted_locations (from post-link lowering)
- *   - vertex_attributes_needed (from NIR analysis)
  *   - uavs_for_mutable_resources_needed (from post-link lowering)
  *   - Full r600_shader internals (bytecode/arrays/pointer-owned state)
  *
  * These fields are filled by terakan_shader_lower_and_optimize_post_link()
  * which runs BEFORE the cache lookup, so they are available on cache hit.
+ *
+ * vertex_attributes_needed is a special case: it is populated by SFN (see
+ * terakan_shader_sfn.cpp ~line 603, using SFN-assigned GPR indices) and
+ * therefore cannot be re-derived from NIR alone on cache hit.  It IS
+ * serialized in reflection.vs and restored on cache hit -- without this,
+ * the pipeline's bindings_needed_by_attributes_and_provided evaluates to 0
+ * and the vertex buffer's SET_RESOURCE is never emitted.
  */
 
 #ifndef TERAKAN_PIPELINE_CACHE_H
@@ -39,6 +45,7 @@
 
 #include "terakan_pipeline_key.h"
 #include "terakan_shader.h"
+#include "terakan_vertex_input.h"  /* TERAKAN_VERTEX_INPUT_MAX_ATTRIBUTES, BITSET_DECLARE */
 
 #include "util/mesa-blake3.h"
 #include "vk_pipeline_cache.h"
@@ -101,6 +108,15 @@ struct terakan_cached_shader {
             int16_t export_param;
             int16_t spi_sid;
          } output[R600_SHADER_MAX_OUTPUTS];
+         /* Vertex attributes needed by the VS, indexed by (SFN-assigned GPR - 1).
+          * This is populated by terakan_shader_impl_compile post-SFN (see
+          * terakan_shader_sfn.cpp ~line 603).  On cache hit SFN is skipped, so
+          * we MUST serialize/restore this explicitly -- otherwise
+          * pipeline_graphics.c sees a zero bitmask, bindings_needed_by_
+          * attributes_and_provided evaluates to 0, and SET_RESOURCE for the
+          * vertex buffer is never emitted (observed via host_write_vertex_
+          * buffer.* CTS failures and vert_attr_read.c minimal repro). */
+         BITSET_DECLARE(vertex_attributes_needed, TERAKAN_VERTEX_INPUT_MAX_ATTRIBUTES);
       } vs;
 
       struct {
