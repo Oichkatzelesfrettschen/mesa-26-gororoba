@@ -117,6 +117,20 @@ live_range_overlap_weight(const LiveRangeEntry& lhs, const LiveRangeEntry& rhs)
 }
 
 static int
+live_range_hotness_weight(const LiveRangeEntry& lr)
+{
+   int const span = std::max(1, lr.m_end - lr.m_start);
+   int const early_bias = std::max(1, 256 - lr.m_start);
+
+   /* Approximate block-frequency impact from linear instruction position:
+    * values that start earlier and live longer are treated as hotter. */
+   int hotness = 1 + (early_bias / 64) + (span / 64);
+   if (lr.m_alu_clause_local)
+      hotness += 1;
+   return std::min(hotness, 8);
+}
+
+static int
 read_port_conflict_penalty(const LiveRangeEntry& candidate,
                            const LiveRangeMap::ChannelLiveRange& live_ranges,
                            const ComponentInterference::Row& adjacency,
@@ -124,6 +138,8 @@ read_port_conflict_penalty(const LiveRangeEntry& candidate,
 {
    /* Keep low-register preference but bias harder away from same-bank pressure. */
    int penalty = color / 16;
+   int same_bank_pressure = 0;
+   int const candidate_hotness = live_range_hotness_weight(candidate);
 
    for (auto adj : adjacency) {
       const auto& other = live_ranges[adj];
@@ -131,14 +147,22 @@ read_port_conflict_penalty(const LiveRangeEntry& candidate,
          continue;
 
       int weight = live_range_overlap_weight(candidate, other);
+      int const overlap_pressure =
+         weight * ((candidate_hotness + live_range_hotness_weight(other)) / 2);
       if (candidate.m_alu_clause_local || other.m_alu_clause_local)
-         weight *= 2;
+         weight = (weight * 3) / 2;
 
-      if (register_bank(other.m_color) == register_bank(color))
+      if (register_bank(other.m_color) == register_bank(color)) {
          penalty += 4 * weight;
-      else
+         same_bank_pressure += overlap_pressure;
+      } else {
          penalty += weight;
+      }
    }
+
+   /* Second-order pressure term: avoid packing hot overlapping ranges into
+    * one bank even when direct interference allows it. */
+   penalty += same_bank_pressure;
 
    return penalty;
 }
