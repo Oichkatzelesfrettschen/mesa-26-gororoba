@@ -504,12 +504,14 @@ terakan_image_surface_tiling_compute(VkImageCreateInfo const * const image_creat
          }
       }
 
-      /* TODO(Triang3l): "For fmask used as texture, default ratio(1) is not enough when fmask is
-       * treated as a 8bit texture. TC seems to expect ratio to be at least 2" from the R800
-       * AddrLib.
-       */
-
       if (!used_by_db) {
+         if (samples_log2 != 0 &&
+             (image_create_info->usage &
+              (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT))) {
+            /* AddrLib notes FMASK-as-texture needs macro-tile aspect ratio >= 2. */
+            macro_tile_aspect_ratio_log2 = MAX2(macro_tile_aspect_ratio_log2, 1);
+         }
+
          /* In R800 AddrLib, one case is for `flags.texture` (conceptually likely meaning optimal
           * for random access), another is for `flags.color`, though for multisampled images, R800
           * AddrLib sets `texture` to 0 and `color` to 1 during tile split computation to "avoid
