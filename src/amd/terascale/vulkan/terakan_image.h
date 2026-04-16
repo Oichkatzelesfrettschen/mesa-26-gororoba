@@ -118,6 +118,10 @@ struct terakan_image {
    struct terakan_format_info format_info;
 
    struct terakan_image_surface surface;
+   /* Create-time requirements surface, kept stable for maintenance4-sized queries even if
+    * bound-memory metadata overrides the runtime surface in the future.
+    */
+   struct terakan_image_surface initial_surface;
 
    struct terakan_bo const * bo;
    VkDeviceSize va;

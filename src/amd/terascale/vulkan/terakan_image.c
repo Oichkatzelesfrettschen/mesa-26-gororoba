@@ -876,10 +876,7 @@ terakan_GetImageMemoryRequirements2(VkDevice const deviceHandle,
 {
    struct terakan_image const * const image = terakan_image_from_handle(pInfo->image);
 
-   /* TODO(Triang3l): For images with tiling overridden by binding a BO with metadata, provide the
-    * initial requirements rather than the one for the imported surface.
-    *
-    * Section 12.8. "Resource Memory Association" of the Vulkan 1.3.281 specification says:
+   /* Section 12.8. "Resource Memory Association" of the Vulkan 1.3.281 specification says:
     *
     *     "If the maintenance4 feature is enabled, then the alignment member is identical for all
     *     VkImage objects created with the same combination of values for the flags, imageType,
@@ -888,10 +885,14 @@ terakan_GetImageMemoryRequirements2(VkDevice const deviceHandle,
     *
     *     "The size member is identical for all VkImage objects created with the same combination of
     *     creation parameters specified in VkImageCreateInfo and its pNext chain."
+    *
+    * Keep returning create-time requirements even if runtime surface state is overridden after
+    * memory binding (for instance from imported BO metadata).
     */
-   pMemoryRequirements->memoryRequirements.size = (VkDeviceSize)image->surface.size_bytes_shr8 << 8;
+   pMemoryRequirements->memoryRequirements.size =
+      (VkDeviceSize)image->initial_surface.size_bytes_shr8 << 8;
    pMemoryRequirements->memoryRequirements.alignment =
-      (VkDeviceSize)image->surface.alignment_bytes_shr8 << 8;
+      (VkDeviceSize)image->initial_surface.alignment_bytes_shr8 << 8;
 
    struct terakan_physical_device const * const physical_device =
       terakan_device_physical_device(terakan_device_from_handle(deviceHandle));
@@ -1650,6 +1651,7 @@ terakan_CreateImage(VkDevice const deviceHandle, VkImageCreateInfo const * const
 
    terakan_image_surface_compute(pCreateInfo, &image->format_info,
                                  terakan_device_physical_device(device), &image->surface);
+   memcpy(&image->initial_surface, &image->surface, sizeof(image->initial_surface));
 
    image->bo = NULL;
    image->va = 0;
