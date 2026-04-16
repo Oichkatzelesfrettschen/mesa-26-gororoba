@@ -809,7 +809,11 @@ terakan_CmdCopyImageToBuffer2(VkCommandBuffer const commandBuffer,
       VkComponentMapping const identity_component_mapping = {};
       if (unlikely(!terakan_image_create_resource_descriptor(
              &image_descriptor_create_info, &identity_component_mapping, image_resource))) {
-         assert(!"Invalid image descriptor create info");
+         /* Fail explicitly instead of silently returning from the copy path if the image
+          * transfer descriptor cannot be encoded.
+          */
+         vk_command_buffer_set_error(&command_writer->base.command_buffer->vk,
+                                     VK_ERROR_VALIDATION_FAILED_EXT);
          return;
       }
       terakan_hw_state_sqc_set_resource_fs(&command_writer->hw_state_sqc,
