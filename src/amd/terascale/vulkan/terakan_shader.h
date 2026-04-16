@@ -110,6 +110,15 @@ extern "C" {
  * documentation), it's in dwords.
  */
 
+/* VALID_PIXEL_MODE=1 makes the hardware honor the per-pixel valid mask on this MEM_RAT
+ * export, suppressing writes from helper fragments (2x2 quad lanes that fall outside the
+ * rasterized rect) and from KILLed fragments.  Without VPM=1 the HW uses only the active
+ * mask, which is all-ones for both active and helper lanes during mid-shader execution,
+ * so helper lanes execute STORE_TYPED with their own computed addresses -- corrupting
+ * adjacent active-lane writes whenever the PS writes via a shader-computed linear
+ * address (e.g. 1-wide CopyImageToBuffer meta copies).  Per Evergreen ISA
+ * CF_ALLOC_EXPORT_WORD1_BUF: "mem-exports use the active mask only [unless VPM=1]."
+ */
 #define TERAKAN_SHADER_CF_UAV(cacheless, uav_inst, uav_id, index_gpr, data_gpr, comp_mask,         \
                               barrier)                                                             \
    (S_SQ_CF_ALLOC_EXPORT_WORD0_RAT_RAT_ID(uav_id) |                                                \
@@ -119,6 +128,7 @@ extern "C" {
     S_SQ_CF_ALLOC_EXPORT_WORD0_INDEX_GPR(index_gpr)),                                              \
       (S_SQ_CF_ALLOC_EXPORT_WORD1_BUF_COMP_MASK(comp_mask) |                                       \
        S_SQ_CF_ALLOC_EXPORT_WORD1_BARRIER(barrier) |                                               \
+       S_SQ_CF_ALLOC_EXPORT_WORD1_VALID_PIXEL_MODE(1) |                                            \
        ((cacheless) ? EG_V_SQ_CF_ALLOC_EXPORT_WORD1_SQ_CF_INST_MEM_RAT_CACHELESS                   \
                     : EG_V_SQ_CF_ALLOC_EXPORT_WORD1_SQ_CF_INST_MEM_RAT))
 
