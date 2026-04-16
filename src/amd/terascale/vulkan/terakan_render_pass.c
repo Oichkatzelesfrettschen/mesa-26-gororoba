@@ -35,6 +35,14 @@
 #include <stdio.h>
 #include <string.h>
 
+static bool
+terakan_rendering_attachment_has_resolve(VkRenderingAttachmentInfo const * const attachment)
+{
+   return attachment != NULL &&
+          (attachment->resolveMode != VK_RESOLVE_MODE_NONE ||
+           attachment->resolveImageView != VK_NULL_HANDLE);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdBeginRendering(VkCommandBuffer const commandBuffer,
                           VkRenderingInfo const * const pRenderingInfo)
@@ -45,6 +53,25 @@ terakan_CmdBeginRendering(VkCommandBuffer const commandBuffer,
 
    uint32_t clear_attachment_count = 0;
    VkClearAttachment clear_attachments[TERAKAN_COLOR_HW_RTV_COUNT + 1];
+
+   bool has_unsupported_resolve =
+      terakan_rendering_attachment_has_resolve(pRenderingInfo->pDepthAttachment) ||
+      terakan_rendering_attachment_has_resolve(pRenderingInfo->pStencilAttachment);
+   if (!has_unsupported_resolve) {
+      for (uint32_t color_attachment_index = 0;
+           color_attachment_index < pRenderingInfo->colorAttachmentCount; ++color_attachment_index) {
+         if (terakan_rendering_attachment_has_resolve(
+                &pRenderingInfo->pColorAttachments[color_attachment_index])) {
+            has_unsupported_resolve = true;
+            break;
+         }
+      }
+   }
+   if (unlikely(has_unsupported_resolve)) {
+      vk_command_buffer_set_error(&command_writer->base.command_buffer->vk,
+                                  VK_ERROR_VALIDATION_FAILED_EXT);
+      return;
+   }
 
    uint16_t window_scissor_tl_br_xy[4];
    terakan_state_translate_window_rect_unpacked(&pRenderingInfo->renderArea,
@@ -186,5 +213,7 @@ terakan_CmdBeginRendering(VkCommandBuffer const commandBuffer,
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdEndRendering(UNUSED VkCommandBuffer const commandBuffer)
 {
-   /* TODO(Triang3l): Resolve the attachments. */
+   /* Resolve attachments are currently rejected in CmdBeginRendering with
+    * VK_ERROR_VALIDATION_FAILED_EXT.
+    */
 }
