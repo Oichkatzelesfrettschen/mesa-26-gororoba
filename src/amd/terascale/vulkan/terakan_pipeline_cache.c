@@ -35,8 +35,11 @@
  *   2: earlier reflection additions
  *   3: added reflection.vs.vertex_attributes_needed (fixes host_write_vertex_
  *      buffer.* failures where bindings_needed_by_attributes_and_provided
- *      evaluated to 0 on cache hit, starving SET_RESOURCE emission). */
-#define TERAKAN_CACHE_BLOB_VERSION 3
+ *      evaluated to 0 on cache hit, starving SET_RESOURCE emission).
+ *   4: added reflection.vs.vs_draw_parameters_enabled (fixes instanced draw
+ *      failures where load_base_instance reads from R600_LDS_INFO_CONST_BUFFER
+ *      but the draw path skips binding it on cache hit). */
+#define TERAKAN_CACHE_BLOB_VERSION 4
 
 struct terakan_cached_shader_blob_header {
    uint32_t version;
@@ -369,6 +372,8 @@ terakan_pipeline_cache_insert(struct vk_pipeline_cache *cache,
       memcpy(cached->reflection.vs.vertex_attributes_needed,
              shader->vs.vertex_attributes_needed,
              sizeof(cached->reflection.vs.vertex_attributes_needed));
+      cached->reflection.vs.vs_draw_parameters_enabled =
+         shader->shader.vs_draw_parameters_enabled;
       break;
    case MESA_SHADER_FRAGMENT:
       cached->regs.ps.sq_pgm_exports_ps = shader->static_state.stage.ps.sq_pgm_exports_ps;
@@ -484,6 +489,8 @@ terakan_cached_shader_restore(struct terakan_cached_shader const *cached,
       memcpy(shader->vs.vertex_attributes_needed,
              cached->reflection.vs.vertex_attributes_needed,
              sizeof(shader->vs.vertex_attributes_needed));
+      shader->shader.vs_draw_parameters_enabled =
+         cached->reflection.vs.vs_draw_parameters_enabled;
       break;
    case MESA_SHADER_FRAGMENT:
       shader->static_state.stage.ps.sq_pgm_exports_ps = cached->regs.ps.sq_pgm_exports_ps;

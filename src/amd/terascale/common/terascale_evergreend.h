@@ -238,6 +238,9 @@
 #define   G_028B98_STREAM_3_BUFFER_EN(x)                              (((x) >> 12) & 0x0F)
 #define   C_028B98_STREAM_3_BUFFER_EN                                 0xFFFF0FFF
 
+#define R_028AA0_VGT_INSTANCE_STEP_RATE_0            0x028AA0
+#define R_028AA4_VGT_INSTANCE_STEP_RATE_1            0x028AA4
+
 #define EG_R_028A4C_PA_SC_MODE_CNTL_1                0x028A4C
 #define   EG_S_028A4C_PS_ITER_SAMPLE(x)                 (((unsigned)(x) & 0x1) << 16)
 #define   EG_S_028A4C_FORCE_EOV_CNTDWN_ENABLE(x)        (((unsigned)(x) & 0x1) << 25)
