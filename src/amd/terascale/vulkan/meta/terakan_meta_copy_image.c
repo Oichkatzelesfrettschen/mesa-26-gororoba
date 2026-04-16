@@ -369,7 +369,11 @@ terakan_CmdCopyImage2(VkCommandBuffer const commandBuffer,
          VkComponentMapping const identity_component_mapping = {};
          if (unlikely(!terakan_image_create_resource_descriptor(
                 &src_descriptor_create_info, &identity_component_mapping, src_resource))) {
-            assert(!"Invalid source image view create info");
+            /* Fail explicitly instead of silently returning from the copy path if the source
+             * transfer descriptor cannot be encoded.
+             */
+            vk_command_buffer_set_error(&command_writer->base.command_buffer->vk,
+                                        VK_ERROR_VALIDATION_FAILED_EXT);
             return;
          }
 
