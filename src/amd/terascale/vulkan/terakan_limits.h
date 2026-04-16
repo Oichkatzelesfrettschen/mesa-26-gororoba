@@ -39,7 +39,11 @@ extern "C" {
 #define TERAKAN_LIMITS_HW_LDS_SIMD_DWORD_COUNT                                                     \
    (TERAKAN_LIMITS_HW_LDS_SIMD_BANK_DWORD_COUNT * TERAKAN_LIMITS_HW_LDS_SIMD_BANK_COUNT)
 
-#define TERAKAN_LIMITS_HW_COMPUTE_GROUP_SIZE           1024
+/* Evergreen (TeraScale 2) hardware supports at most 4 wavefronts of 64 threads
+ * per workgroup = 256 threads.  Cayman (TeraScale 3) raised this to 1024.
+ * Vulkan 1.0 requires a minimum of 128, so 256 is conformant.
+ */
+#define TERAKAN_LIMITS_HW_COMPUTE_GROUP_SIZE           256
 #define TERAKAN_LIMITS_HW_COMPUTE_GROUPS_PER_DIMENSION UINT16_MAX
 
 #ifdef __cplusplus
