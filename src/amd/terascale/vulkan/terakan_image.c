@@ -121,6 +121,16 @@ terakan_image_compute_tc_non_display(struct terakan_format_info const * const fo
            (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
 }
 
+static bool
+terakan_image_aspect_map_is_multiplanar(enum terakan_format_aspect_map const aspect_map)
+{
+   assert(aspect_map < TERAKAN_FORMAT_ASPECT_MAP_COUNT);
+   return (terakan_format_aspect_map_aspect_masks[aspect_map] &
+           (VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT |
+            VK_IMAGE_ASPECT_PLANE_2_BIT)) != 0;
+}
+
+
 static unsigned
 terakan_image_macro_tile_bytes_log2(unsigned const bytes_per_block_log2,
                                     unsigned const samples_log2,
@@ -1648,6 +1658,12 @@ terakan_CreateImage(VkDevice const deviceHandle, VkImageCreateInfo const * const
                          vk_Format_to_str(pCreateInfo->format));
       goto fail_image;
    }
+   if (unlikely(terakan_image_aspect_map_is_multiplanar(image->format_info.aspect_map))) {
+      result = vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                         "Image format %s is multi-planar, but Terakan currently supports only color and depth/stencil images; per-plane surfaces/descriptors/meta are TODO",
+                         vk_Format_to_str(pCreateInfo->format));
+      goto fail_image;
+   }
 
    terakan_image_surface_compute(pCreateInfo, &image->format_info,
                                  terakan_device_physical_device(device), &image->surface);
@@ -1695,6 +1711,15 @@ terakan_CreateImageView(VkDevice const deviceHandle,
                        vk_Format_to_str(pCreateInfo->format));
    }
 
+   struct terakan_image const * const image = terakan_image_from_handle(pCreateInfo->image);
+   if (unlikely(terakan_image_aspect_map_is_multiplanar(image->format_info.aspect_map) ||
+                terakan_image_aspect_map_is_multiplanar(view_format_info.aspect_map))) {
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                       "Image view format %s or image format %s is multi-planar, but Terakan currently supports only single-plane image views",
+                       vk_Format_to_str(pCreateInfo->format),
+                       vk_Format_to_str(image->vk.format));
+   }
+
    struct terakan_image_view * const image_view =
       vk_alloc2(&device->vk.alloc, pAllocator, sizeof(struct terakan_image_view),
                 alignof(struct terakan_image_view), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -1703,8 +1728,6 @@ terakan_CreateImageView(VkDevice const deviceHandle,
    }
 
    vk_image_view_init(&device->vk, &image_view->vk, pCreateInfo);
-
-   struct terakan_image const * const image = terakan_image_from_handle(pCreateInfo->image);
 
    image_view->bo = image->bo;
 
@@ -1729,8 +1752,8 @@ terakan_CreateImageView(VkDevice const deviceHandle,
       image_format_main_aspect_index =
          terakan_format_aspect_index(image->format_info.aspect_map, VK_IMAGE_ASPECT_STENCIL_BIT, 0);
    }
-   /* TODO(Triang3l): For multi-planar images, select the correct plane for the main aspect, and
-    * also create resource descriptors for all planes if requested (the aspect mask is COLOR).
+   /* Multi-planar image formats are rejected above until per-plane image view descriptors are
+    * implemented.
     */
 
    descriptor_create_info.view_format =
