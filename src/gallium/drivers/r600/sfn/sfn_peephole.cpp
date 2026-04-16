@@ -256,66 +256,79 @@ PeepholeVisitor::visit(IfInstr *instr)
    }
 }
 
+static std::pair<bool, bool>
+compose_source_mods(bool outer_abs, bool outer_neg,
+                    bool inner_abs, bool inner_neg)
+{
+   if (outer_abs)
+      return std::make_pair(true, outer_neg);
+
+   return std::make_pair(inner_abs, inner_neg ^ outer_neg);
+}
+
 void PeepholeVisitor::apply_source_mods(AluInstr *alu)
 {
-   bool has_abs = alu->n_sources() / alu->alu_slots() < 3;
+   bool const has_abs = alu->n_sources() / alu->alu_slots() < 3;
 
    for (unsigned i = 0; i < alu->n_sources(); ++i) {
+      bool folded_abs = alu->has_source_mod(i, AluInstr::mod_abs);
+      bool folded_neg = alu->has_source_mod(i, AluInstr::mod_neg);
+      PVirtualValue folded_src = alu->psrc(i);
+      bool folded_any = false;
 
-      auto reg = alu->psrc(i)->as_register();
-      if (!reg)
-         continue;
-      if (!reg->has_flag(Register::ssa))
-         continue;
-      if (reg->parents().size() != 1)
-         continue;
+      while (true) {
+         auto reg = folded_src->as_register();
+         if (!reg || !reg->has_flag(Register::ssa) || reg->parents().size() != 1)
+            break;
 
-      auto p = (*reg->parents().begin())->as_alu();
-      if (!p)
-         continue;
+         auto parent = (*reg->parents().begin())->as_alu();
+         if (!parent || parent->opcode() != op1_mov)
+            break;
 
-      if (p->opcode() != op1_mov)
-         continue;
+         if (parent->has_alu_flag(alu_dst_clamp) || parent->has_alu_flag(alu_src0_rel))
+            break;
 
-      if (!has_abs && p->has_source_mod(0, AluInstr::mod_abs))
-         continue;
+         bool const parent_abs = parent->has_source_mod(0, AluInstr::mod_abs);
+         bool const parent_neg = parent->has_source_mod(0, AluInstr::mod_neg);
+         if (!parent_abs && !parent_neg)
+            break;
 
-      if (!p->has_source_mod(0, AluInstr::mod_abs) &&
-          !p->has_source_mod(0, AluInstr::mod_neg))
-         continue;
+         PVirtualValue new_src = parent->psrc(0);
+         bool const new_src_not_pinned = new_src->pin() == pin_free ||
+                                         new_src->pin() == pin_none;
+         bool const old_src_not_pinned = reg->pin() == pin_free ||
+                                         reg->pin() == pin_none;
+         bool const sources_equal_channel = reg->pin() == pin_chan &&
+                                            new_src->pin() == pin_chan &&
+                                            new_src->chan() == reg->chan();
 
-      if (p->has_alu_flag(alu_dst_clamp))
-         continue;
+         if (!new_src_not_pinned && !old_src_not_pinned && !sources_equal_channel)
+            break;
 
-      auto new_src = p->psrc(0);
-      bool new_src_not_pinned = new_src->pin() == pin_free ||
-                                new_src->pin() == pin_none;
+         auto [candidate_abs, candidate_neg] =
+            compose_source_mods(folded_abs, folded_neg, parent_abs, parent_neg);
 
-      bool old_src_not_pinned = reg->pin() == pin_free ||
-                                reg->pin() == pin_none;
+         if (!has_abs && candidate_abs)
+            break;
 
-      bool sources_equal_channel = reg->pin() == pin_chan &&
-                                   new_src->pin() == pin_chan &&
-                                   new_src->chan() == reg->chan();
+         folded_abs = candidate_abs;
+         folded_neg = candidate_neg;
+         folded_src = new_src;
+         folded_any = true;
+      }
 
-      if (!new_src_not_pinned &&
-          !old_src_not_pinned &&
-          !sources_equal_channel)
+      if (!folded_any)
          continue;
 
       uint32_t to_set = 0;
-      AluInstr::SourceMod to_clear = AluInstr::mod_none;
-
-      if (p->has_source_mod(0, AluInstr::mod_abs))
+      if (folded_abs)
          to_set |= AluInstr::mod_abs;
-      if (p->has_source_mod(0, AluInstr::mod_neg)) {
-         if (!alu->has_source_mod(i, AluInstr::mod_neg))
-            to_set |= AluInstr::mod_neg;
-         else
-            to_clear = AluInstr::mod_neg;
-      }
+      if (folded_neg)
+         to_set |= AluInstr::mod_neg;
 
-      progress |= alu->replace_src(i, new_src, to_set, to_clear);
+      progress |= alu->replace_src(
+         i, folded_src, to_set,
+         static_cast<AluInstr::SourceMod>(AluInstr::mod_abs | AluInstr::mod_neg));
    }
 }
 
