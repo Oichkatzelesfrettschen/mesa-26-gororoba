@@ -270,15 +270,21 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   struct terakan_state_draw_cb_color_uav * const su = &uavs[idx];
                   if (used) {
                      if (!BITSET_TEST(uavs_not_null, idx) || su->bo != uav->bo ||
-                         memcmp(&su->color, color, sizeof(*color)) != 0) {
+                         memcmp(&su->color, color, sizeof(*color)) != 0 ||
+                         memcmp(su->real_resource, uav->real_resource,
+                                sizeof(su->real_resource)) != 0) {
                         su->bo = uav->bo;
                         su->color = *color;
+                        memcpy(su->real_resource, uav->real_resource,
+                               sizeof(su->real_resource));
                         terakan_state_draw_set_pending(&command_writer->state_draw,
                                                        TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
                      }
                   } else {
                      su->bo = uav->bo;
                      su->color = *color;
+                     memcpy(su->real_resource, uav->real_resource,
+                            sizeof(su->real_resource));
                   }
                   BITSET_SET(uavs_not_null, idx);
                   /* For STORAGE_BUFFER_DYNAMIC, shrink bound by the dynamic offset. */

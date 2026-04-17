@@ -92,8 +92,17 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
                dst_uav->is_texel_buffer = 0;
                terakan_color_descriptor_image_view_to_storage_image(&dst_uav->color);
+               /* Stash the SQ_TEX_RESOURCE ("REAL") descriptor so
+                * terakan_emit_compute_resources can emit the
+                * CS+168+m SET_RESOURCE the CB exporter needs for
+                * format/tile-mode validation during MEM_RAT STORE_TYPED.
+                * See CLAIMS C-2026-04-17-08 + LATENT_INVARIANTS
+                * LI-2026-04-17-04 / LI-2026-04-17-05. */
+               memcpy(dst_uav->real_resource, image_view->resource,
+                      sizeof(dst_uav->real_resource));
             } else {
                dst_uav->bo = NULL;
+               memset(dst_uav->real_resource, 0, sizeof(dst_uav->real_resource));
             }
          }
       }

@@ -686,7 +686,18 @@ terakan_compute_multiplex_end(
 #define R_028F40_ALU_CONST_CACHE_LS_0        0x28F40
 #endif
 #define EG_FETCH_CONSTANTS_OFFSET_CS         816
+#define R600_IMAGE_IMMED_RESOURCE_OFFSET     160
 #define R600_IMAGE_REAL_RESOURCE_OFFSET      168
+#define TERAKAN_MAX_COMPUTE_STORAGE_IMAGES   8
+
+/* Invariant LI-2026-04-17-04: The IMMED and REAL resource slot windows must
+ * not overlap.  A storage image m occupies slots {IMMED+m, REAL+m}, so the
+ * separation must be at least TERAKAN_MAX_COMPUTE_STORAGE_IMAGES.  Violating
+ * this lets image m's REAL overwrite image (m - delta)'s IMMED and hang the
+ * CB exporter. */
+static_assert(R600_IMAGE_REAL_RESOURCE_OFFSET - R600_IMAGE_IMMED_RESOURCE_OFFSET >=
+                 TERAKAN_MAX_COMPUTE_STORAGE_IMAGES,
+              "IMMED/REAL compute storage image slot windows must not overlap");
 
 /* Emit the KCACHE constant buffer setup for compute.
  *
@@ -1324,7 +1335,15 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
     * Guard: if any bound UAV is not a BUFFER resource type, fail the
     * dispatch with a debug warning instead of submitting a hanging IB.
     * Override via TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH for experiments. */
-   if (!debug_get_bool_option("TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH", false)) {
+   /* LI-2026-04-17-06: when TERAKAN_EXPERIMENTAL_COMPUTE_IMAGE=1, the
+    * dispatch proceeds with the full Phase-3 image binding path (CS+160
+    * IMMED + CS+168 REAL + CB_COLOR + CB_IMMED + per-slot DEST_BASE_ENA).
+    * Without the flag the dispatch short-circuits to avoid known-hazardous
+    * ring state until the Phase-3 path has cleared CTS + CB-drain tests.
+    * TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH=1 remains as the legacy "I know
+    * this hangs, run it anyway" escape hatch. */
+   if (!debug_get_bool_option("TERAKAN_EXPERIMENTAL_COMPUTE_IMAGE", false) &&
+       !debug_get_bool_option("TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH", false)) {
       BITSET_WORD const * const cb_uavs_not_null =
          command_writer->state_draw.cb_color_uav.fs_uavs_not_null;
       struct terakan_state_draw_cb_color_uav const * const cb_uavs =
@@ -1338,8 +1357,8 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
             fprintf(stderr,
                     "terakan: compute dispatch with storage image binding not "
                     "yet implemented (task #84); skipping dispatch to prevent "
-                    "GPU hang.  Set TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH=1 to "
-                    "override (expect ring lockup).\n");
+                    "GPU hang.  Set TERAKAN_EXPERIMENTAL_COMPUTE_IMAGE=1 to "
+                    "exercise the Phase-3 path.\n");
             return;
          }
       }
