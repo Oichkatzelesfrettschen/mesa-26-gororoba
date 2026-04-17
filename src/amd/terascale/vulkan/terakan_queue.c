@@ -49,11 +49,23 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef WAIT_REG_MEM_PFP
 #define WAIT_REG_MEM_PFP (1 << 8)
 #endif
+
+
+static bool
+terakan_env_flag_enabled(char const * const name)
+{
+   char const * const value = getenv(name);
+   if (value == NULL || value[0] == '\0') {
+      return false;
+   }
+   return !(value[0] == '0' && value[1] == '\0');
+}
 
 static int
 terakan_queue_completion_thread_func(void * queue_ptr)
@@ -682,10 +694,14 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
       }
    }
 
+   bool const disable_fence_elision =
+      terakan_env_flag_enabled("TERAKAN_DISABLE_FENCE_ELISION");
+
    /* Fence elision: ensure a pending completion exists so we can reference its BO in the last
     * draw IB, avoiding a separate signal ioctl later.
     */
-   if (submit->command_buffer_count > 0 && queue->pending_completion == NULL) {
+   if (!disable_fence_elision && submit->command_buffer_count > 0 &&
+       queue->pending_completion == NULL) {
       mtx_lock(&device->completion_mutex);
       if (!list_is_empty(&queue->completion_submissions_free)) {
          queue->pending_completion = list_first_entry(
@@ -709,7 +725,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
 
    /* Find the last IB across all command buffers for fence elision merge. */
    struct terakan_command_buffer_indirect_buffer const * last_indirect_buffer = NULL;
-   if (queue->pending_completion != NULL) {
+   if (!disable_fence_elision && queue->pending_completion != NULL) {
       for (uint32_t cbi = 0; cbi < submit->command_buffer_count; ++cbi) {
          struct terakan_command_buffer const * const cb = container_of(
             submit->command_buffers[cbi], struct terakan_command_buffer const, vk);
@@ -851,7 +867,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
              * referenced in a successful draw submit. Recycle it to the free list so it doesn't
              * get used for signal elision on a stale/never-submitted BO.
              */
-            if (queue->pending_completion != NULL) {
+            if (!disable_fence_elision && queue->pending_completion != NULL) {
                mtx_lock(&device->completion_mutex);
                list_add(&queue->pending_completion->link, &queue->completion_submissions_free);
                device->completion_lost = true;
@@ -1021,7 +1037,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
     * ioctl entirely. The completion thread will await the BO becoming idle from the draw submit.
     * For empty signal submits (no command buffers), use pending_completion from a prior draw call.
     */
-   if (queue->pending_completion != NULL) {
+   if (!disable_fence_elision && queue->pending_completion != NULL) {
       /* The completion BO was proactively included in a draw IB submission. Reuse it. */
       completion_submission = queue->pending_completion;
       queue->pending_completion = NULL;
