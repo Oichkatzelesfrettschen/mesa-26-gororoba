@@ -1546,6 +1546,12 @@ terakan_BeginCommandBuffer(VkCommandBuffer const commandBuffer,
        */
       S_028354_SURFACE_SYNC_MASK(0b1000010000),
 
+      /* PS_PARTIAL_FLUSH: retire all in-flight PS wavefronts and drain
+       * CB/DB write-combine buffers before ME starts polling SURFACE_SYNC.
+       * Without this stall the ME races against CB/DB writes and wedges. */
+      PKT3(PKT3_EVENT_WRITE, 1 - 1, 0),
+      EVENT_TYPE(EVENT_TYPE_PS_PARTIAL_FLUSH) | EVENT_INDEX(4),
+
       PKT3(PKT3_EVENT_WRITE, 1 - 1, 0),
       EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT) | EVENT_INDEX(0),
 
