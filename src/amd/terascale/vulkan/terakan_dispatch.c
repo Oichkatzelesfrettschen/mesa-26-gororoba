@@ -792,25 +792,45 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
 {
    struct terakan_hw_state_sqc *state = &command_writer->hw_state_sqc;
 
-   /* Enumerate all bound compute SSBO descriptors in the FS bank. */
-   uint32_t ssbo_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
-   uint32_t ssbo_count = 0;
+   /* Enumerate bound compute resources in the FS bank.  Separate into:
+    *   res_idxs[] — all resources (for SET_RESOURCE / VFETCH reading)
+    *   uav_idxs[] — writable SSBOs only (for CB_COLOR / MEM_RAT writing)
+    * UBOs must NOT get CB_COLOR entries: with both UBO and SSBO bound,
+    * a UBO at res_idxs[0] would claim RAT0, causing the shader's MEM_RAT
+    * writes (which target RAT0) to land on the read-only UBO instead of
+    * the writable SSBO. */
+   BITSET_WORD const *uavs_not_null =
+      command_writer->state_draw.cb_color_uav.fs_uavs_not_null;
+
+   uint32_t res_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
+   uint32_t uav_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
+   uint32_t res_count = 0;
+   uint32_t uav_count = 0;
    for (uint32_t i = 0; i < TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE; i++) {
       if (BITSET_TEST(state->resources_not_null.fs, i) && state->resource_bos.fs[i]) {
-         ssbo_idxs[ssbo_count++] = i;
+         res_idxs[res_count++] = i;
+         if (i >= TERAKAN_SAMPLER_HW_COUNT_PER_STAGE + TERAKAN_RESOURCE_RANGE_MUTABLE_BASE) {
+            uint32_t uav_idx = i - TERAKAN_SAMPLER_HW_COUNT_PER_STAGE -
+                               TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
+            if (uav_idx < TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL &&
+                BITSET_TEST(uavs_not_null, uav_idx)) {
+               uav_idxs[uav_count++] = i;
+            }
+         }
       }
    }
-   if (ssbo_count == 0) {
+   if (res_count == 0) {
       return;
    }
 
    if (debug_get_bool_option("TERAKAN_DEBUG_COMPUTE_DESC", false)) {
-      for (uint32_t n = 0; n < ssbo_count; ++n) {
-         uint32_t const idx = ssbo_idxs[n];
+      for (uint32_t n = 0; n < res_count; ++n) {
+         uint32_t const idx = res_idxs[n];
          uint32_t const *desc = state->resource_descriptors.fs[idx];
+         bool const is_uav = (n < uav_count && uav_idxs[n] == idx);
          fprintf(stderr,
-                 "terakan/compute_resources: [%u/%u] ssbo_idx=%u desc=[0x%08x 0x%08x 0x%08x 0x%08x]\n",
-                 n, ssbo_count, idx, desc[0], desc[1], desc[2], desc[3]);
+                 "terakan/compute_resources: [%u/%u] res_idx=%u %s desc=[0x%08x 0x%08x 0x%08x 0x%08x]\n",
+                 n, res_count, idx, is_uav ? "UAV" : "RO", desc[0], desc[1], desc[2], desc[3]);
       }
    }
 
@@ -821,8 +841,8 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     *    and that is the same index Terakan uses for resource_descriptors.fs[]).
     *    On compute-on-LS the HW adds EG_FETCH_CONSTANTS_OFFSET_CS (816) to the
     *    shader-emitted BUFFER_ID to form the physical SQ fetch constant slot. */
-   for (uint32_t n = 0; n < ssbo_count; ++n) {
-      uint32_t const idx = ssbo_idxs[n];
+   for (uint32_t n = 0; n < res_count; ++n) {
+      uint32_t const idx = res_idxs[n];
       struct terakan_bo const * const bo = state->resource_bos.fs[idx];
       uint32_t const * const desc = state->resource_descriptors.fs[idx];
       uint32_t const buf_size = desc[1] + 1;
@@ -896,7 +916,7 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     *    place the writable output buffer at the highest binding index, so
     *    this heuristic lines up with the shader's intent for the single-
     *    writable case until the SFN change lands. */
-   uint32_t rat_count = ssbo_count;
+   uint32_t rat_count = uav_count;
    if (rat_count > TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
       rat_count = TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT;
    }
@@ -928,7 +948,7 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     * vktBindingShaderAccessTests.cpp:2510 where the result STORAGE_BUFFER
     * is added at setNdx==0 binding==0 before the test descriptors). */
    for (uint32_t m = 0; m < rat_count; ++m) {
-      uint32_t const sidx = ssbo_idxs[m];
+      uint32_t const sidx = uav_idxs[m];
       struct terakan_bo const * const bo = state->resource_bos.fs[sidx];
       uint32_t const * const desc = state->resource_descriptors.fs[sidx];
       uint32_t const buf_size = desc[1] + 1;
