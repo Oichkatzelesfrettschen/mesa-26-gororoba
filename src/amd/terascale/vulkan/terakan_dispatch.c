@@ -881,11 +881,29 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     * a UBO at res_idxs[0] would claim RAT0, causing the shader's MEM_RAT
     * writes (which target RAT0) to land on the read-only UBO instead of
     * the writable SSBO. */
+   struct terakan_device const * const device =
+      terakan_gfx_command_writer_device(command_writer);
+   struct terakan_state_draw_cb_color_uav const * const cb_uavs =
+      command_writer->state_draw.cb_color_uav.fs_uavs;
+
    BITSET_WORD const *uavs_used = pipeline->shader.uavs_for_mutable_resources_needed;
    uint32_t res_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
    uint32_t uav_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
+   /* Parallel to uav_idxs[]: for each UAV m, the index into
+    * `cb_uavs[]` (matches `uav_mutable_resource_index` used by the
+    * graphics UAV emission path).  We need this because
+    * `uav_idxs[m]` is a global resource index into
+    * `state->resource_bos.fs[]`, which does not index cb_uavs. */
+   uint32_t uav_mr_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
+   /* Parallel to uav_idxs[]: true for storage-image UAVs (non-BUFFER
+    * RESOURCE_TYPE in color.info), false for buffer UAVs
+    * (SSBO / storage-texel-buffer).  Image UAVs require the Phase-3
+    * dual SET_RESOURCE emission at CS+160+m (IMMED) and CS+168+m
+    * (REAL); see LI-2026-04-17-04. */
+   bool is_image_uav[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
    uint32_t res_count = 0;
    uint32_t uav_count = 0;
+   uint32_t image_uav_count = 0;
    for (uint32_t i = 0; i < TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE; i++) {
       if (BITSET_TEST(state->resources_not_null.fs, i) && state->resource_bos.fs[i]) {
          res_idxs[res_count++] = i;
@@ -896,10 +914,28 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
              * terakan_nir_get_binding_uav() numbering. */
             if (uav_idx < TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL &&
                 BITSET_TEST(uavs_used, uav_idx)) {
+               bool const is_image =
+                  G_028C70_RESOURCE_TYPE(cb_uavs[uav_idx].color.info) != V_028C70_BUFFER;
+               uav_mr_idxs[uav_count] = uav_idx;
+               is_image_uav[uav_count] = is_image;
+               if (is_image) {
+                  ++image_uav_count;
+               }
                uav_idxs[uav_count++] = i;
             }
          }
       }
+   }
+   if (image_uav_count > TERAKAN_MAX_COMPUTE_STORAGE_IMAGES) {
+      /* LI-2026-04-17-04 trip-wire: the IMMED/REAL slot windows only
+       * hold TERAKAN_MAX_COMPUTE_STORAGE_IMAGES images side-by-side
+       * before image m's REAL slot would alias into image (m - delta)'s
+       * IMMED slot and hang the CB exporter.  Refuse the dispatch
+       * instead of emitting a known-corrupt IB. */
+      fprintf(stderr,
+              "terakan: compute dispatch binds %u storage images, max %u; aborting.\n",
+              image_uav_count, TERAKAN_MAX_COMPUTE_STORAGE_IMAGES);
+      return;
    }
    if (res_count == 0) {
       return;
@@ -954,6 +990,23 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     *    shader-emitted BUFFER_ID to form the physical SQ fetch constant slot. */
    for (uint32_t n = 0; n < res_count; ++n) {
       uint32_t const idx = res_idxs[n];
+      /* Image UAVs do not participate in the VFETCH path; their
+       * reads go through the SQ_TEX_RESOURCE descriptor emitted at
+       * CS+168+m by the image-UAV branch below.  Skip the buffer
+       * VFETCH here to avoid publishing a stale buffer-format
+       * descriptor at CS+idx that the CB exporter could latch. */
+      {
+         bool skip_image = false;
+         for (uint32_t m = 0; m < uav_count; ++m) {
+            if (uav_idxs[m] == idx && is_image_uav[m]) {
+               skip_image = true;
+               break;
+            }
+         }
+         if (skip_image) {
+            continue;
+         }
+      }
       struct terakan_bo const * const bo = state->resource_bos.fs[idx];
       uint32_t const * const desc = state->resource_descriptors.fs[idx];
       uint32_t const buf_size = desc[1] + 1;
@@ -1058,9 +1111,123 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     * writable/result buffer at the lowest binding index (see
     * vktBindingShaderAccessTests.cpp:2510 where the result STORAGE_BUFFER
     * is added at setNdx==0 binding==0 before the test descriptors). */
+   /* Track the image-index (0..image_uav_count-1) separately from the
+    * enumeration index m.  Images share the RAT slot 0..rat_count-1
+    * space with buffer UAVs but consume distinct CS+160+image_m /
+    * CS+168+image_m slot windows per LI-2026-04-17-04. */
+   uint32_t image_m = 0;
    for (uint32_t m = 0; m < rat_count; ++m) {
       uint32_t const sidx = uav_idxs[m];
       struct terakan_bo const * const bo = state->resource_bos.fs[sidx];
+
+      if (is_image_uav[m]) {
+         /* ========== Storage-image UAV (Phase-3 path) ==========
+          * Emit in r600g's canonical order (see
+          * steinmarder/data/capture_image_ib_reference/):
+          *   (a) CB_COLOR{M}_BASE..CLEAR_WORD1 + reloc to image BO
+          *   (b) CB_IMMED{M}_BASE + reloc to uav_immediate_bo
+          *   (c) SET_RESOURCE at CS+(IMMED_OFFSET+image_m) (IMMED desc)
+          *   (d) SET_RESOURCE at CS+(REAL_OFFSET +image_m) (REAL desc)
+          * The REAL descriptor is what makes MEM_RAT STORE_TYPED
+          * format validation succeed - without it the CB exporter
+          * stalls on format lookup (CLAIMS C-2026-04-17-08). */
+         struct terakan_state_draw_cb_color_uav const * const cb_uav =
+            &cb_uavs[uav_mr_idxs[m]];
+         struct terakan_color_descriptor const * const color = &cb_uav->color;
+         unsigned const bytes_per_texel =
+            terascale_format_bytes_per_block[G_028C70_FORMAT(color->info)];
+         unsigned const bytes_per_texel_log2 = util_logbase2(bytes_per_texel);
+
+         /* (a) CB_COLOR{M}_BASE..CLEAR_WORD1 with image-native fields. */
+         uint32_t const image_bo_ref = terakan_bo_reference_writer_add_reference(
+            &command_writer->base.bo_reference_writer,
+            bo, true, true, TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
+         uint32_t *p = terakan_gfx_command_writer_emit(
+            command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 23);
+         if (unlikely(p == NULL)) return;
+         *p++ = PKT3(PKT3_SET_CONTEXT_REG, 13, 0) | COMPUTE_MODE_BIT;
+         *p++ = ((R_028C60_CB_COLOR0_BASE + m * 0x3Cu) - 0x28000u) >> 2;
+         *p++ = color->base;                      /* CB_COLOR{M}_BASE (reloc adjusts) */
+         *p++ = color->pitch;                     /* CB_COLOR{M}_PITCH */
+         *p++ = color->slice;                     /* CB_COLOR{M}_SLICE */
+         *p++ = color->view;                      /* CB_COLOR{M}_VIEW */
+         *p++ = color->info | S_028C70_RAT(1);    /* CB_COLOR{M}_INFO + RAT */
+         *p++ = color->attrib;                    /* CB_COLOR{M}_ATTRIB */
+         *p++ = color->dim;                       /* CB_COLOR{M}_DIM */
+         *p++ = 0;                                /* CB_COLOR{M}_CMASK */
+         *p++ = 0;                                /* CB_COLOR{M}_CMASK_SLICE */
+         *p++ = 0;                                /* CB_COLOR{M}_FMASK */
+         *p++ = 0;                                /* CB_COLOR{M}_FMASK_SLICE */
+         *p++ = 0;                                /* CB_COLOR{M}_CLEAR_WORD0 */
+         *p++ = 0;                                /* CB_COLOR{M}_CLEAR_WORD1 */
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT; *p++ = 4 * image_bo_ref; /* BASE */
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT; *p++ = 4 * image_bo_ref; /* ATTRIB */
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT; *p++ = 4 * image_bo_ref; /* CMASK */
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT; *p++ = 4 * image_bo_ref; /* FMASK */
+         terakan_gfx_command_writer_emit_done(command_writer, p);
+
+         /* (b) CB_IMMED{M}_BASE + reloc to uav_immediate_bo.  The
+          * register stride is 1 dword between CB_IMMED{M}_BASE
+          * (see graphics terakan_hw_state_draw_emit_cb_immed at
+          * terakan_hw_state.c:1171). */
+         uint32_t const immed_bo_ref = terakan_bo_reference_writer_add_reference(
+            &command_writer->base.bo_reference_writer,
+            device->uav_immediate_bo, true, true,
+            TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
+         p = terakan_gfx_command_writer_emit(
+            command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+         if (unlikely(p == NULL)) return;
+         *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+         *p++ = ((R_028B9C_CB_IMMED0_BASE - 0x28000u) >> 2) + m;
+         *p++ = device->uav_immediate_va_shr8[bytes_per_texel_log2];
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
+         *p++ = 4 * immed_bo_ref;
+         terakan_gfx_command_writer_emit_done(command_writer, p);
+
+         /* (c) SET_RESOURCE at CS+(IMMED_OFFSET+image_m):
+          *     buffer-format IMMED descriptor into uav_immediate_bo. */
+         uint32_t immed_resource[8];
+         terakan_color_descriptor_info_to_uav_immediate_resource(
+            device, color->info, immed_resource);
+         uint32_t const immed_slot =
+            EG_FETCH_CONSTANTS_OFFSET_CS + R600_IMAGE_IMMED_RESOURCE_OFFSET + image_m;
+         p = terakan_gfx_command_writer_emit(
+            command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
+         if (unlikely(p == NULL)) return;
+         *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
+         *p++ = immed_slot * 8;
+         for (unsigned w = 0; w < 8; ++w) {
+            *p++ = immed_resource[w];
+         }
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
+         *p++ = 4 * immed_bo_ref;
+         terakan_gfx_command_writer_emit_done(command_writer, p);
+
+         /* (d) SET_RESOURCE at CS+(REAL_OFFSET+image_m):
+          *     SQ_TEX_RESOURCE describing the image itself.  Copied
+          *     from image_view->resource[] at bind time into
+          *     cb_uav->real_resource via terakan_descriptor_set.c. */
+         uint32_t const real_slot =
+            EG_FETCH_CONSTANTS_OFFSET_CS + R600_IMAGE_REAL_RESOURCE_OFFSET + image_m;
+         p = terakan_gfx_command_writer_emit(
+            command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
+         if (unlikely(p == NULL)) return;
+         *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
+         *p++ = real_slot * 8;
+         for (unsigned w = 0; w < 8; ++w) {
+            *p++ = cb_uav->real_resource[w];
+         }
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
+         *p++ = 4 * image_bo_ref;
+         terakan_gfx_command_writer_emit_done(command_writer, p);
+
+         ++image_m;
+         continue;
+      }
+
+      /* ========== Buffer UAV (SSBO / storage-texel-buffer) ==========
+       * Unchanged path: program CB_COLOR{M} with a synthetic
+       * buffer-format descriptor covering the whole BO. */
       uint32_t const * const desc = state->resource_descriptors.fs[sidx];
       uint32_t const buf_size = desc[1] + 1;
       uint32_t const width_elements = buf_size / 4;
