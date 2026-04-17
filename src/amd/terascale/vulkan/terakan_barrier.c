@@ -215,12 +215,8 @@ terakan_barrier_get_src_actions(struct terakan_gfx_command_writer const * const 
        * CS validator on Evergreen rejects opcode 0x25 ("Packet3 opcode 37 not
        * supported"), and the kernel already performs HDP coherency flush
        * during CS submission on pre-CIK parts. */
-      actions |= TERAKAN_BARRIER_ACTION_INV_TC | TERAKAN_BARRIER_ACTION_INV_SH;
-      struct terakan_device const * const device =
-         terakan_gfx_command_writer_device(command_writer);
-      if (terakan_device_physical_device(device)->chip_info.has_vertex_cache) {
-         actions |= TERAKAN_BARRIER_ACTION_INV_VC;
-      }
+      actions |= TERAKAN_BARRIER_ACTION_INV_TC | TERAKAN_BARRIER_ACTION_INV_SH |
+                 TERAKAN_BARRIER_ACTION_INV_VC;
    }
 
    return actions;
@@ -243,11 +239,9 @@ terakan_barrier_get_dst_actions(struct terakan_gfx_command_writer const * const 
    }
 
    if (dst_access & VK_ACCESS_2_INDEX_READ_BIT) {
-      actions |= TERAKAN_BARRIER_ACTION_INV_TC;
-      if (terakan_device_physical_device(device)->chip_info.has_vertex_cache) {
-         actions |= TERAKAN_BARRIER_ACTION_INV_VC;
-      }
-      actions |= TERAKAN_BARRIER_ACTION_INV_SH;
+      actions |= TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CP_THROUGH_VS |
+                 TERAKAN_BARRIER_ACTION_INV_TC | TERAKAN_BARRIER_ACTION_INV_VC |
+                 TERAKAN_BARRIER_ACTION_INV_SH;
    }
 
    /* Invalidate the texture cache.
@@ -362,6 +356,19 @@ terakan_barrier_is_empty_src_scope(VkPipelineStageFlags2 src_stages, VkAccessFla
    return src_stages == VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
 }
 
+static bool
+terakan_barrier_is_cs_to_index_path(VkPipelineStageFlags2 src_stages, VkAccessFlags2 src_access,
+                                     VkPipelineStageFlags2 dst_stages, VkAccessFlags2 dst_access)
+{
+   src_stages = vk_expand_src_stage_flags2(src_stages);
+   dst_stages = vk_expand_dst_stage_flags2(dst_stages);
+   terakan_barrier_filter_access(&src_access, src_stages);
+   terakan_barrier_filter_access(&dst_access, dst_stages);
+   return (src_stages & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0 &&
+          (src_access & VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT) != 0 &&
+          (dst_access & VK_ACCESS_2_INDEX_READ_BIT) != 0;
+}
+
 void
 terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const command_writer)
 {
@@ -390,6 +397,9 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
                   TERAKAN_BARRIER_ACTION_INV_TC)) ==
          (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME |
           TERAKAN_BARRIER_ACTION_INV_TC);
+   bool const sync_pfp_post_surface_sync_only =
+      (actions & (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME)) ==
+         (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME);
 
    /* Flushes are performed in bottom-to-top-of-pipe order, so preceding flushes are likely to be
     * able to make subsequent ones not have to wait.
@@ -500,6 +510,24 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
          command_writer, EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT) | EVENT_INDEX(0));
    }
 
+   /* Wait until all pre-SURFACE_SYNC synchronization in ME is done before PFP starts feeding the
+    * SURFACE_SYNC + post-barrier packets.
+    */
+
+   if ((actions & TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME) && !sync_pfp_post_surface_sync_only) {
+      uint32_t * pfp_sync_me_packet = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2);
+      if (unlikely(pfp_sync_me_packet == NULL)) {
+         return;
+      }
+      *pfp_sync_me_packet++ = PKT3(PKT3_PFP_SYNC_ME, 0, 0);
+      *pfp_sync_me_packet++ = 0;
+      if (unlikely(terakan_barrier_is_cs_dump_enabled(command_writer))) {
+         fprintf(stderr, "terakan: pm4: PKT3_PFP_SYNC_ME\n");
+      }
+      terakan_gfx_command_writer_emit_done(command_writer, pfp_sync_me_packet);
+   }
+
    /* Perform implicit stage waits and cache flushes and invalidations in ME. */
 
    cp_coher_cntl |= cp_coher_cntl_cb_db_dest_base_ena;
@@ -527,6 +555,20 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
       surface_sync_emitted = true;
    }
 
+   if (surface_sync_emitted && sync_pfp_post_surface_sync_only) {
+      uint32_t * pfp_sync_me_packet = terakan_gfx_command_writer_emit(
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2);
+      if (unlikely(pfp_sync_me_packet == NULL)) {
+         return;
+      }
+      *pfp_sync_me_packet++ = PKT3(PKT3_PFP_SYNC_ME, 0, 0);
+      *pfp_sync_me_packet++ = 0;
+      if (unlikely(terakan_barrier_is_cs_dump_enabled(command_writer))) {
+         fprintf(stderr, "terakan: pm4: PKT3_PFP_SYNC_ME post_surface_sync\n");
+      }
+      terakan_gfx_command_writer_emit_done(command_writer, pfp_sync_me_packet);
+   }
+
    if (surface_sync_emitted && wait_reg_mem_compute_to_index) {
       uint32_t * wait_reg_mem_packet = terakan_gfx_command_writer_emit(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 7);
@@ -547,24 +589,6 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
                  TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL);
       }
       terakan_gfx_command_writer_emit_done(command_writer, wait_reg_mem_packet);
-   }
-
-   /* Wait until all synchronization in ME is done before starting new PFP reads if PFP is in the
-    * second synchronization scope.
-    */
-
-   if (actions & TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME) {
-      uint32_t * pfp_sync_me_packet = terakan_gfx_command_writer_emit(
-         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2);
-      if (unlikely(pfp_sync_me_packet == NULL)) {
-         return;
-      }
-      *pfp_sync_me_packet++ = PKT3(PKT3_PFP_SYNC_ME, 0, 0);
-      *pfp_sync_me_packet++ = 0;
-      if (unlikely(terakan_barrier_is_cs_dump_enabled(command_writer))) {
-         fprintf(stderr, "terakan: pm4: PKT3_PFP_SYNC_ME\n");
-      }
-      terakan_gfx_command_writer_emit_done(command_writer, pfp_sync_me_packet);
    }
 }
 
@@ -589,6 +613,11 @@ terakan_CmdPipelineBarrier2(VkCommandBuffer const commandBuffer,
          terakan_barrier_get_dst_actions(command_writer, barrier->dstStageMask,
                                          barrier->dstAccessMask, true,
                                          global_barrier_image_aspects);
+      if (terakan_barrier_is_cs_to_index_path(barrier->srcStageMask, barrier->srcAccessMask,
+                                              barrier->dstStageMask, barrier->dstAccessMask)) {
+         dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         src_actions &= ~TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
+      }
       if (terakan_barrier_is_empty_src_scope(barrier->srcStageMask, barrier->srcAccessMask)) {
          dst_actions = 0;
       }
@@ -605,6 +634,11 @@ terakan_CmdPipelineBarrier2(VkCommandBuffer const commandBuffer,
       enum terakan_barrier_action_flags dst_actions =
          terakan_barrier_get_dst_actions(command_writer, barrier->dstStageMask,
                                          barrier->dstAccessMask, true, VK_IMAGE_ASPECT_NONE);
+      if (terakan_barrier_is_cs_to_index_path(barrier->srcStageMask, barrier->srcAccessMask,
+                                              barrier->dstStageMask, barrier->dstAccessMask)) {
+         dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         src_actions &= ~TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
+      }
       bool const ownership_transfer =
          barrier->srcQueueFamilyIndex != barrier->dstQueueFamilyIndex;
       if (terakan_barrier_is_empty_src_scope(barrier->srcStageMask, barrier->srcAccessMask) &&
@@ -626,6 +660,11 @@ terakan_CmdPipelineBarrier2(VkCommandBuffer const commandBuffer,
          terakan_barrier_get_dst_actions(command_writer, barrier->dstStageMask,
                                          barrier->dstAccessMask, false,
                                          barrier->subresourceRange.aspectMask);
+      if (terakan_barrier_is_cs_to_index_path(barrier->srcStageMask, barrier->srcAccessMask,
+                                              barrier->dstStageMask, barrier->dstAccessMask)) {
+         dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         src_actions &= ~TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
+      }
       bool const ownership_transfer =
          barrier->srcQueueFamilyIndex != barrier->dstQueueFamilyIndex;
       bool const discard_old_contents = barrier->oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ||
