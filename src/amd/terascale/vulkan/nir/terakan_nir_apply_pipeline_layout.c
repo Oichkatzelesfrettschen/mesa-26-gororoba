@@ -173,9 +173,87 @@ terakan_nir_get_binding(nir_src const src, VkDescriptorType const expected_type,
                         struct terakan_pipeline_layout const * const layout,
                         nir_shader * const shader, struct terakan_nir_binding * const binding_out)
 {
-   nir_binding const binding = nir_chase_binding(src);
-   assert(binding.success);
-   if (unlikely(!binding.success)) {
+   nir_src binding_src = src;
+   nir_binding binding;
+   unsigned binding_comp = 0;
+   bool binding_comp_valid = false;
+
+   while (true) {
+      binding = nir_chase_binding(binding_src);
+      if (binding.success) {
+         break;
+      }
+
+      nir_instr * const src_instr = nir_def_instr(binding_src.ssa);
+      if (src_instr->type != nir_instr_type_alu) {
+         return false;
+      }
+      nir_alu_instr * const alu = nir_instr_as_alu(src_instr);
+
+      if (alu->op == nir_op_mov) {
+         binding_comp = alu->src[0].swizzle[0];
+         binding_comp_valid = true;
+         binding_src = alu->src[0].src;
+         continue;
+      }
+
+      if (alu->op == nir_op_bcsel) {
+         nir_src binding_true_src = alu->src[1].src;
+         nir_src binding_false_src = alu->src[2].src;
+
+         if (binding_comp_valid) {
+            nir_instr * const true_instr = nir_def_instr(binding_true_src.ssa);
+            nir_instr * const false_instr = nir_def_instr(binding_false_src.ssa);
+            if (true_instr->type == nir_instr_type_alu) {
+               nir_alu_instr * const true_alu = nir_instr_as_alu(true_instr);
+               if (nir_op_is_vec_or_mov(true_alu->op) &&
+                   binding_comp < nir_op_infos[true_alu->op].num_inputs) {
+                  binding_true_src = true_alu->src[binding_comp].src;
+               }
+            }
+            if (false_instr->type == nir_instr_type_alu) {
+               nir_alu_instr * const false_alu = nir_instr_as_alu(false_instr);
+               if (nir_op_is_vec_or_mov(false_alu->op) &&
+                   binding_comp < nir_op_infos[false_alu->op].num_inputs) {
+                  binding_false_src = false_alu->src[binding_comp].src;
+               }
+            }
+         }
+
+         nir_binding binding_true = nir_chase_binding(binding_true_src);
+         nir_binding binding_false = nir_chase_binding(binding_false_src);
+         if (!binding_true.success || !binding_false.success ||
+             binding_true.desc_set != binding_false.desc_set ||
+             binding_true.binding != binding_false.binding ||
+             binding_true.resource_type != binding_false.resource_type ||
+             binding_true.num_indices != binding_false.num_indices) {
+            return false;
+         }
+
+         bool indices_equal = true;
+         for (unsigned i = 0; i < binding_true.num_indices; ++i) {
+            nir_const_value const * const idx_true_const =
+               nir_src_as_const_value(binding_true.indices[i]);
+            nir_const_value const * const idx_false_const =
+               nir_src_as_const_value(binding_false.indices[i]);
+            if (idx_true_const != NULL && idx_false_const != NULL) {
+               if (idx_true_const->u32 != idx_false_const->u32) {
+                  indices_equal = false;
+                  break;
+               }
+            } else if (binding_true.indices[i].ssa != binding_false.indices[i].ssa) {
+               indices_equal = false;
+               break;
+            }
+         }
+         if (!indices_equal) {
+            return false;
+         }
+
+         binding = binding_true;
+         break;
+      }
+
       return false;
    }
 
