@@ -960,6 +960,10 @@ Shader::process_intrinsic(nir_intrinsic_instr *intr)
       return emit_tex_fdd(intr, TexInstr::get_gradient_v, false);
    case nir_intrinsic_ddy_fine:
       return emit_tex_fdd(intr, TexInstr::get_gradient_v, true);
+   case nir_intrinsic_load_view_index:
+      /* Multiview is not implemented on r600/TeraScale. Materialize a stable
+       * zero value rather than taking the unsupported-intrinsic crash path. */
+      return emit_simple_mov(intr->def, 0, value_factory().zero());
    case nir_intrinsic_load_reg:
       return emit_load_reg(intr);
    case nir_intrinsic_load_reg_indirect:

@@ -99,8 +99,7 @@ r600_shader_from_nir(struct r600_context *rctx,
       }
       fprintf(stderr, "--NIR --------------------------------------------------------\n");
       nir_print_shader(sh, stderr);
-      // Crash in Debug mode
-      assert(0);
+      ralloc_free(sh);
       return -2;
    }
 
@@ -114,6 +113,7 @@ r600_shader_from_nir(struct r600_context *rctx,
 
    auto scheduled_shader = r600_schedule_shader(shader);
    if (!scheduled_shader) {
+      ralloc_free(sh);
       return -1;
    }
 
@@ -142,8 +142,7 @@ r600_shader_from_nir(struct r600_context *rctx,
       R600_ERR("%s: Lowering to assembly failed\n", __func__);
 
       scheduled_shader->print(std::cerr);
-      /* For now crash if the shader could not be generated */
-      assert(0);
+      ralloc_free(sh);
       return -1;
    }
 
