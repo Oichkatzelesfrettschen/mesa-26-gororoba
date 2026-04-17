@@ -549,7 +549,30 @@ terakan_compute_multiplex_end(
    terakan_compute_multiplex_emit_event(
       command_writer, EVENT_TYPE_CS_PARTIAL_FLUSH);
 
-   /* (2) Flush MEM_RAT writes out of the CB write cache and invalidate
+   /* (2) EOP fence: force CB data/UAV write queue to drain to memory.
+    *
+    * Compute MEM_RAT writes go CB_COLOR{M} exporter -> CB write queue ->
+    * memory.  A subsequent graphics CmdBeginRenderPass that binds a
+    * different buffer to CB_COLOR0 can cause the still-pending compute
+    * writes to target the new (render pass) base, corrupting the
+    * framebuffer or losing the compute output entirely (res=0 symptom
+    * in dEQP-VK.draw.renderpass.concurrent.compute_and_triangle_list).
+    *
+    * FLUSH_AND_INV_CB_DATA_TS (event 0x38, EVENT_INDEX=5 EOP) generates
+    * an end-of-pipe timestamp that fires only after ALL CB-data writes
+    * retire to memory.  Unlike CACHE_FLUSH_AND_INV_TS_EVENT (0x14) which
+    * hangs Sumo on the GFX ring with compute in flight, the CB_DATA_TS
+    * variant is the safe CB-specific drain.  Same wrapper that
+    * terakan_barrier.c:414 uses for UAV writes.
+    *
+    * The no-TS CACHE_FLUSH_AND_INV_EVENT (0x16) would drain per-SIMD L1
+    * caches but it is NOT an EOP event — it does not guarantee CB write
+    * queue retirement.  Use 0x38 here, 0x16 only if host->shader_read
+    * coherency is also needed (it is not in the post-compute path). */
+   terakan_gfx_command_writer_emit_event_write_eop_discarding_data(
+      command_writer, EVENT_TYPE(EVENT_TYPE_FLUSH_AND_INV_CB_DATA_TS) | EVENT_INDEX(5));
+
+   /* (3) Flush MEM_RAT writes out of the CB write cache and invalidate
     * read caches.  Compute SSBO writes on Evergreen go CB_COLOR0 ->
     * CB write queue -> memory; without CB_ACTION_ENA the next draw (or
     * the CPU after a buffer->host barrier) can read stale pre-compute
