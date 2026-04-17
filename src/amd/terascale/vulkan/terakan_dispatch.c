@@ -1311,6 +1311,40 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
    bool const skip_compute_state_emit =
       debug_get_bool_option("TERAKAN_SKIP_COMPUTE_STATE_EMIT", false);
 
+   /* GPU-HANG GUARD: compute dispatches that bind a storage image as a
+    * writable UAV will wedge ring 0 on Sumo.  Root cause: compute
+    * emit_compute_resources only programs CB_COLOR{M} with the hardcoded
+    * buffer-UAV format/dimensions, so a MEM_RAT STORE_TYPED from the
+    * shader targets the CB exporter with mismatched image format and
+    * the hardware locks up.  The full fix requires emitting CB_COLOR,
+    * CB_IMMED, and uav_immediate_resource state for each storage image
+    * (analogous to terakan_state_draw_apply_cb_color_uav in the graphics
+    * path) — not yet implemented (task #84).
+    *
+    * Guard: if any bound UAV is not a BUFFER resource type, fail the
+    * dispatch with a debug warning instead of submitting a hanging IB.
+    * Override via TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH for experiments. */
+   if (!debug_get_bool_option("TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH", false)) {
+      BITSET_WORD const * const cb_uavs_not_null =
+         command_writer->state_draw.cb_color_uav.fs_uavs_not_null;
+      struct terakan_state_draw_cb_color_uav const * const cb_uavs =
+         command_writer->state_draw.cb_color_uav.fs_uavs;
+      uint32_t scan_idx;
+      BITSET_FOREACH_SET(scan_idx, cb_uavs_not_null,
+                         TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL) {
+         if (cb_uavs[scan_idx].bo != NULL &&
+             G_028C70_RESOURCE_TYPE(cb_uavs[scan_idx].color.info) !=
+                V_028C70_BUFFER) {
+            fprintf(stderr,
+                    "terakan: compute dispatch with storage image binding not "
+                    "yet implemented (task #84); skipping dispatch to prevent "
+                    "GPU hang.  Set TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH=1 to "
+                    "override (expect ring lockup).\n");
+            return;
+         }
+      }
+   }
+
    /* ========== Context Multiplexer: BEGIN ==========
     * Drain graphics waves, invalidate read caches, and reconfigure SQ
     * for the LS (compute) stage.  MUST happen before any compute state
