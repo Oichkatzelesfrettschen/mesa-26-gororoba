@@ -38,8 +38,31 @@
  *      evaluated to 0 on cache hit, starving SET_RESOURCE emission).
  *   4: added reflection.vs.vs_draw_parameters_enabled (fixes instanced draw
  *      failures where load_base_instance reads from R600_LDS_INFO_CONST_BUFFER
- *      but the draw path skips binding it on cache hit). */
-#define TERAKAN_CACHE_BLOB_VERSION 4
+ *      but the draw path skips binding it on cache hit).
+ *   5: compute UAV RAT/SRV separation (a4799de) + NIR binding chase for
+ *      MOV/BCSEL + nir_opt_intrinsics in post-link pipeline + per-pipeline
+ *      uavs_for_mutable_resources_needed filter (f0b7093).  Defensive bump:
+ *      strictly the serialized struct layout did NOT change, but the shader
+ *      binary output IS affected by the new NIR pass and binding resolution
+ *      refinements, so pre-f0b7093 cached shaders would run against post-
+ *      f0b7093 dispatch logic with mismatched RAT slot assumptions.
+ *
+ * When to bump TERAKAN_CACHE_BLOB_VERSION:
+ *   REQUIRED:
+ *     - struct terakan_cached_shader_blob_header layout changes
+ *     - cached reflection struct layout changes (reflection.vs, reflection.ps)
+ *     - NIR lowering ABI changes that affect the serialized bytecode
+ *     - new NIR optimization passes that change shader binary output
+ *     - SFN backend changes that alter the VLIW packing of cached bytecode
+ *     - changes to the resource index -> hw slot mapping convention
+ *
+ *   NOT REQUIRED (but consider documenting anyway):
+ *     - dispatch-time driver logic (register emission ordering, PM4 details)
+ *     - CB_COLOR RAT slot routing (runtime, re-derived from bound descriptors)
+ *     - cache-miss compilation path improvements (produce same bytecode)
+ *     - pure comment/refactor changes
+ */
+#define TERAKAN_CACHE_BLOB_VERSION 5
 
 struct terakan_cached_shader_blob_header {
    uint32_t version;
