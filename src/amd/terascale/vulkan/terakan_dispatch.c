@@ -788,7 +788,8 @@ terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command_writ
 }
 
 static void
-terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer)
+terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer,
+                               struct terakan_pipeline_compute const *pipeline)
 {
    struct terakan_hw_state_sqc *state = &command_writer->hw_state_sqc;
 
@@ -799,9 +800,7 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     * a UBO at res_idxs[0] would claim RAT0, causing the shader's MEM_RAT
     * writes (which target RAT0) to land on the read-only UBO instead of
     * the writable SSBO. */
-   BITSET_WORD const *uavs_not_null =
-      command_writer->state_draw.cb_color_uav.fs_uavs_not_null;
-
+   BITSET_WORD const *uavs_used = pipeline->shader.uavs_for_mutable_resources_needed;
    uint32_t res_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
    uint32_t uav_idxs[TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE];
    uint32_t res_count = 0;
@@ -812,8 +811,10 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
          if (i >= TERAKAN_SAMPLER_HW_COUNT_PER_STAGE + TERAKAN_RESOURCE_RANGE_MUTABLE_BASE) {
             uint32_t uav_idx = i - TERAKAN_SAMPLER_HW_COUNT_PER_STAGE -
                                TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
-            if (uav_idx < TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL &&
-                BITSET_TEST(uavs_not_null, uav_idx)) {
+            /* Keep the CB_COLOR RAT ordering identical to lowering-time
+             * terakan_nir_get_binding_uav() numbering. */
+            if (uav_idx < TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL &&
+                BITSET_TEST(uavs_used, uav_idx)) {
                uav_idxs[uav_count++] = i;
             }
          }
@@ -823,11 +824,40 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       return;
    }
 
+   /* Some compute paths lower SSBO stores to store_global before mutable-UAV
+    * usage tracking is populated, leaving uavs_used empty at dispatch time.
+    * SFN currently routes compute stores to RAT0, so fallback to the highest
+    * bound mutable descriptor (common CTS convention: output buffer last). */
+   if (uav_count == 0) {
+      uint32_t fallback_uav = UINT32_MAX;
+      for (uint32_t n = 0; n < res_count; ++n) {
+         uint32_t const i = res_idxs[n];
+         if (i >= TERAKAN_SAMPLER_HW_COUNT_PER_STAGE + TERAKAN_RESOURCE_RANGE_MUTABLE_BASE) {
+            uint32_t uav_idx = i - TERAKAN_SAMPLER_HW_COUNT_PER_STAGE -
+                               TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
+            if (uav_idx < TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL) {
+               fallback_uav = i;
+            }
+         }
+      }
+      if (fallback_uav != UINT32_MAX) {
+         uav_idxs[0] = fallback_uav;
+         uav_count = 1;
+      }
+   }
+
    if (debug_get_bool_option("TERAKAN_DEBUG_COMPUTE_DESC", false)) {
+      fprintf(stderr, "terakan/compute_resources: uav_count=%u\n", uav_count);
       for (uint32_t n = 0; n < res_count; ++n) {
          uint32_t const idx = res_idxs[n];
          uint32_t const *desc = state->resource_descriptors.fs[idx];
-         bool const is_uav = (n < uav_count && uav_idxs[n] == idx);
+         bool is_uav = false;
+         for (uint32_t m = 0; m < uav_count; ++m) {
+            if (uav_idxs[m] == idx) {
+               is_uav = true;
+               break;
+            }
+         }
          fprintf(stderr,
                  "terakan/compute_resources: [%u/%u] res_idx=%u %s desc=[0x%08x 0x%08x 0x%08x 0x%08x]\n",
                  n, res_count, idx, is_uav ? "UAV" : "RO", desc[0], desc[1], desc[2], desc[3]);
@@ -1246,7 +1276,7 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
          terakan_emit_compute_state(command_writer, pipeline);
       }
       if (!skip_compute_resources) {
-         terakan_emit_compute_resources(command_writer);
+         terakan_emit_compute_resources(command_writer, pipeline);
          /* Wire KCACHE (KC0) with SSBO address for compute addressing */
          if (command_writer->hw_state_sqc.resource_bos.fs[2]) {
             terakan_emit_compute_kcache(command_writer,
@@ -1409,7 +1439,7 @@ terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
     * instead of having them inlined in the packet. */
    if (command_writer->compute_pipeline_dirty) {
       terakan_emit_compute_state(command_writer, pipeline);
-      terakan_emit_compute_resources(command_writer);
+      terakan_emit_compute_resources(command_writer, pipeline);
       if (command_writer->hw_state_sqc.resource_bos.fs[2])
          terakan_emit_compute_kcache(
             command_writer, command_writer->hw_state_sqc.resource_bos.fs[2]);

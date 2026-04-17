@@ -741,23 +741,22 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
       terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
       return;
    }
-   if (binding.array_index == NULL) {
+   if (binding.array_index == NULL)
       binding.array_index = nir_imm_zero(b, 1, 32);
-   }
 
    /* SSBO read robustness — Tier 1 (DWORD-granularity, zero ALU cost).
     *
     * VTX hardware enforces descriptor bounds via SIZE_MINUS_ONE at DWORD
-    * granularity (Phase 5 Probe H1: all OOB VFETCH reads return 0).  The
+    * granularity (Phase 5 Probe H1: all OOB VFETCH reads return 0). The
     * SSBO descriptor range is rounded up to a 4-byte boundary via
     * ALIGN_POT(range, 4) in terakan_descriptor.c, so the last partial
     * DWORD is never dropped by the hardware.
     *
     * Under robustBufferAccess2 with robustStorageBufferAccessSizeAlignment=4
     * (advertised in physical_device.c), the spec permits OOB detection at
-    * 4-byte granularity.  Bytes within the rounded-up range that lie past
+    * 4-byte granularity. Bytes within the rounded-up range that lie past
     * the exact Vulkan buffer view boundary are considered in-bounds by the
-    * driver's advertised contract.  This is zero-cost: no ALU guards needed.
+    * driver's advertised contract. This is zero-cost: no ALU guards needed.
     *
     * Tier 2 (exact-byte, sizeAlignment=1) — DEFERRED.
     * If exact-byte robustness is ever required:
@@ -773,7 +772,8 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
       binding.set->first_shader_resources[b->shader->info.stage] +
       binding.set_binding->first_shader_resources[b->shader->info.stage] +
       TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
-   BITSET_SET_RANGE(state->resources_needed, resource_index_base + binding.array_index_range_first,
+   BITSET_SET_RANGE(state->resources_needed,
+                    resource_index_base + binding.array_index_range_first,
                     resource_index_base + binding.array_index_range_last);
    nir_def_rewrite_uses(&intrin->def, terakan_nir_load_raw_resource_buffer(
                                          b, intrin->num_components, intrin->def.bit_size,
