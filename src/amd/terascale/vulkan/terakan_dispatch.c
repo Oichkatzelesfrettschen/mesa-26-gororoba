@@ -287,7 +287,38 @@ terakan_compute_multiplex_begin(
     * CS_PARTIAL_FLUSH at the begin boundary.  The previous expanded
     * sequence (PS_PARTIAL_FLUSH + WAIT_UNTIL + CACHE_FLUSH_AND_INV_EVENT +
     * SURFACE_SYNC) was not part of the proven Evergreen compute preamble
-    * and can wedge this hardware path. */
+    * and can wedge this hardware path.
+    *
+    * CACHE EVENT INVARIANTS on TeraScale-2 / Sumo (learned the hard way):
+    *
+    *   - EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT (0x16, EVENT_INDEX=0):
+    *     SAFE on GFX ring.  Drains per-SIMD L1 texture / shader instruction
+    *     caches.  Used by terakan_barrier.c:497-501 for HOST_WRITE ->
+    *     SHADER_READ coherency and by r600g r600_hw_context.c:144-147.
+    *
+    *   - EVENT_TYPE_CACHE_FLUSH_AND_INV_TS_EVENT (0x14, EVENT_INDEX=5):
+    *     *** HANGS Sumo *** when emitted on the GFX ring with compute
+    *     work in flight.  Writes a timestamp at EOP, but the Sumo micro-
+    *     engine cannot reconcile this with compute queue state and wedges.
+    *     NEVER emit on GFX.  (Historically we tried this in the compute
+    *     preamble and lost a debug session to it.)
+    *
+    *   - EVENT_TYPE_FLUSH_AND_INV_CB_DATA_TS (0x38, EVENT_INDEX=5):
+    *     SAFE on GFX ring.  CB-specific EOP fence that only drains the
+    *     CB write queue; used by terakan_compute_multiplex_end to ensure
+    *     MEM_RAT writes retire before a subsequent graphics render pass
+    *     rebinds CB_COLOR0_BASE.
+    *
+    *   - EVENT_TYPE_{PS,CS,VS}_PARTIAL_FLUSH (0x0F/0x13/0x0A, EVENT_INDEX=4):
+    *     SAFE.  Drains a specific pipeline stage.  CS_PARTIAL_FLUSH is
+    *     required on the compute END boundary before touching SQ_PGM_*
+    *     (or a mid-clause wave can be stomped and hang the SQ).
+    *
+    * Host -> compute coherency is the BARRIER path's responsibility.
+    * Vulkan spec requires the application to issue a vkCmdPipelineBarrier
+    * with VK_ACCESS_HOST_WRITE_BIT -> VK_ACCESS_SHADER_READ_BIT; that
+    * barrier flows through terakan_barrier.c and emits 0x16.  The compute
+    * preamble does NOT need to redundantly invalidate TC here. */
    if (!skip_begin_sync) {
       uint32_t const begin_sync_event =
          debug_get_bool_option("TERAKAN_BEGIN_SYNC_PS_FLUSH", false)
