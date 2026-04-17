@@ -87,6 +87,17 @@ struct terakan_descriptor_set_uav {
     * (not uav_byte_sizes[]).  Used by pipeline_layout.c to separate the two
     * arrays in KCACHE bank 14 for defense-in-depth. */
    uint32_t is_texel_buffer;
+   /* SQ_TEX_RESOURCE (aka the "REAL" image resource descriptor) for
+    * STORAGE_IMAGE bindings.  r600g's compute-on-LS storage-image path
+    * emits this at slot `EG_FETCH_CONSTANTS_OFFSET_CS +
+    * R600_IMAGE_REAL_RESOURCE_OFFSET(168) + m` alongside the
+    * IMMED descriptor at 160+m.  Without it the CB exporter stalls
+    * during MEM_RAT STORE_TYPED format validation (CLAIMS
+    * C-2026-04-17-08; see findings/LATENT_INVARIANTS.md
+    * LI-2026-04-17-04).
+    * Copied from image_view->resource[8] at bind time.  Zero for
+    * non-image (buffer/texel-buffer) UAVs. */
+   uint32_t real_resource[8];
 };
 
 #define TERAKAN_DESCRIPTOR_SET_DESCRIPTOR_ALIGNMENT                                                \

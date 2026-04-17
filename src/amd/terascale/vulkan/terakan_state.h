@@ -152,6 +152,15 @@ struct terakan_state_draw_cb_color {
 struct terakan_state_draw_cb_color_uav {
    struct terakan_bo const * bo;
    struct terakan_color_descriptor color;
+   /* SQ_TEX_RESOURCE ("REAL") descriptor for storage images.  Zero
+    * for buffer-type UAVs (SSBO / storage-texel-buffer).  Emitted
+    * at compute dispatch time at slot
+    * EG_FETCH_CONSTANTS_OFFSET_CS + R600_IMAGE_REAL_RESOURCE_OFFSET + m.
+    * Required by Sumo's CB exporter during MEM_RAT STORE_TYPED
+    * format validation - without it, the ring hangs (CLAIMS
+    * C-2026-04-17-08).  Copied from image_view->resource[] via
+    * terakan_descriptor_set_uav.real_resource at CmdBindDescriptorSets. */
+   uint32_t real_resource[8];
 };
 
 /* State applied before performing application's draws, and marked for reapplication after internal
