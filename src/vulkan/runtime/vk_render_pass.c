@@ -512,6 +512,9 @@ vk_common_CreateRenderPass2(VkDevice _device,
    for (uint32_t s = 0; s < pCreateInfo->subpassCount; s++) {
       const VkSubpassDescription2 *desc = &pCreateInfo->pSubpasses[s];
       struct vk_subpass *subpass = &pass->subpasses[s];
+
+      if (desc->viewMask != 0 && !device->enabled_features.multiview)
+         return VK_ERROR_FEATURE_NOT_PRESENT;
       const VkMultisampledRenderToSingleSampledInfoEXT *mrtss =
             vk_find_struct_const(desc->pNext, MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_INFO_EXT);
       if (mrtss && !mrtss->multisampledRenderToSingleSampledEnable)

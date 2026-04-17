@@ -836,13 +836,14 @@ terakan_physical_device_get_capabilities(
    extensions_out->KHR_variable_pointers = true;
 
    /* VK_KHR_multiview (#54, Vulkan 1.1).
-    * Exposed for VK_KHR_create_renderpass2 dependency closure; feature bits
-    * remain false until multiview draw expansion is implemented. */
-   extensions_out->KHR_multiview = true;
+    * Truthful capability surfacing: disabled until multiview draw expansion
+    * and gl_ViewIndex semantics are implemented end-to-end. */
+   extensions_out->KHR_multiview = false;
 
    /* VK_KHR_create_renderpass2 (#110, Vulkan 1.2).
-    * Mesa runtime handles v1/v2 render pass translation and dispatch. */
-   extensions_out->KHR_create_renderpass2 = true;
+    * Depends on VK_KHR_multiview+VK_KHR_maintenance2; keep disabled while
+    * multiview is intentionally unimplemented. */
+   extensions_out->KHR_create_renderpass2 = false;
 
    /* VK_KHR_depth_stencil_resolve (#151, Vulkan 1.2) remains disabled.
     * This path is only needed when the extension is advertised; keeping it
