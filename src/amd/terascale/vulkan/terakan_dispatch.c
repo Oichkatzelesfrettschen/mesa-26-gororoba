@@ -604,14 +604,30 @@ terakan_compute_multiplex_end(
       command_writer, EVENT_TYPE(EVENT_TYPE_FLUSH_AND_INV_CB_DATA_TS) | EVENT_INDEX(5));
 
    /* (3) Flush MEM_RAT writes out of the CB write cache and invalidate
-    * read caches.  Compute SSBO writes on Evergreen go CB_COLOR0 ->
+    * read caches.  Compute SSBO writes on Evergreen go CB_COLOR{M} ->
     * CB write queue -> memory; without CB_ACTION_ENA the next draw (or
     * the CPU after a buffer->host barrier) can read stale pre-compute
     * data.  TC_ACTION_ENA + SH_ACTION_ENA cover the case where the next
-    * draw samples from a buffer that compute just wrote. */
+    * draw samples from a buffer that compute just wrote.
+    *
+    * LI-2026-04-17-02: CB_ACTION_ENA alone only drains the CB control
+    * cache; to also drain the per-slot CB_COLOR{M} DEST_BASE write
+    * queues we must set each CB{M}_DEST_BASE_ENA bit that the dispatch
+    * could have written to.  SFN currently routes every compute store
+    * to RAT0, but once per-store RAT ids land (or multi-image binding
+    * goes live with the Phase-3 CS+168 REAL emission) slots 1..7 come
+    * into play.  Setting all 12 bits defensively covers every RAT slot
+    * Evergreen exposes; the cost is just OR'ing a few immediate bits
+    * into the already-emitted SURFACE_SYNC, no extra packet. */
    terakan_compute_multiplex_emit_surface_sync(
       command_writer,
       S_0085F0_CB_ACTION_ENA(1) |
+      S_0085F0_CB0_DEST_BASE_ENA(1) | S_0085F0_CB1_DEST_BASE_ENA(1) |
+      S_0085F0_CB2_DEST_BASE_ENA(1) | S_0085F0_CB3_DEST_BASE_ENA(1) |
+      S_0085F0_CB4_DEST_BASE_ENA(1) | S_0085F0_CB5_DEST_BASE_ENA(1) |
+      S_0085F0_CB6_DEST_BASE_ENA(1) | S_0085F0_CB7_DEST_BASE_ENA(1) |
+      S_0085F0_CB8_DEST_BASE_ENA(1) | S_0085F0_CB9_DEST_BASE_ENA(1) |
+      S_0085F0_CB10_DEST_BASE_ENA(1) | S_0085F0_CB11_DEST_BASE_ENA(1) |
       S_0085F0_TC_ACTION_ENA(1) |
       S_0085F0_SH_ACTION_ENA(1) |
       S_0085F0_VC_ACTION_ENA(1));
