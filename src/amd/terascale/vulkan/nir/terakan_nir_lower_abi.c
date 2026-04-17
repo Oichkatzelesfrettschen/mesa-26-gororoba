@@ -868,6 +868,16 @@ terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
       nir_undef(b, 1, 32), uav_op, access,
       state->uav_base + uav_index_zero_based);
 
+   /* Enforce store->load ordering for SSBO write/read sequences in a single
+    * invocation. SFN lowers this barrier to WAIT_ACK for SSBO memory modes. */
+   if (b->shader->info.stage == MESA_SHADER_COMPUTE) {
+      nir_barrier(b,
+                  .execution_scope = SCOPE_INVOCATION,
+                  .memory_scope = SCOPE_INVOCATION,
+                  .memory_semantics = NIR_MEMORY_ACQ_REL,
+                  .memory_modes = nir_var_mem_ssbo);
+   }
+
    if (guarded) {
       nir_pop_if(b, NULL);
    }
