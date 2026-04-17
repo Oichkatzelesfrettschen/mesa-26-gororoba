@@ -671,6 +671,11 @@ terakan_compute_multiplex_end(
       TERAKAN_STATE_DRAW_INDEX_CB_TARGET_MASK);
    terakan_state_draw_set_pending(state,
       TERAKAN_STATE_DRAW_INDEX_CB_COLOR_CONTROL);
+
+   /* Same-cmdb compute->draw does not naturally cross an indirect-buffer
+    * boundary, so explicitly re-arm draw re-emission as boundary emulation.
+    * Two-cmdb submissions already get this at command-writer IB begin. */
+   terakan_hw_state_draw_indirect_buffer_begun(&command_writer->hw_state_draw);
 }
 
 /* Emit bound compute resources (SSBOs/UBOs) to hardware.
@@ -1206,17 +1211,32 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
          /* (d) SET_RESOURCE at CS+(REAL_OFFSET+image_m):
           *     SQ_TEX_RESOURCE describing the image itself.  Copied
           *     from image_view->resource[] at bind time into
-          *     cb_uav->real_resource via terakan_descriptor_set.c. */
+          *     cb_uav->real_resource via terakan_descriptor_set.c.
+          *
+          *     The kernel CS parser requires TWO NOP relocation entries
+          *     for a tex SET_RESOURCE (base VA + mip-chain VA), even
+          *     when the image has a single mip and both relocations
+          *     point at the same BO.  Emitting only one relocation
+          *     produces "bad SET_RESOURCE (tex)" / "No packet3 for
+          *     relocation" from the kernel parser and aborts submission
+          *     before the GPU is touched.  r600g reference IB at
+          *     `data/capture_image_ib_reference/ib_ref_r600g_image_store_1d_r32ui.txt`
+          *     GIB[411..424] shows the two-reloc pattern. */
          uint32_t const real_slot =
             EG_FETCH_CONSTANTS_OFFSET_CS + R600_IMAGE_REAL_RESOURCE_OFFSET + image_m;
          p = terakan_gfx_command_writer_emit(
-            command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
+            command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 14);
          if (unlikely(p == NULL)) return;
          *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
          *p++ = real_slot * 8;
          for (unsigned w = 0; w < 8; ++w) {
             *p++ = cb_uav->real_resource[w];
          }
+         /* Relocation 1: BASE VA. */
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
+         *p++ = 4 * image_bo_ref;
+         /* Relocation 2: MIP-chain VA (same BO for single-mip images;
+          * still required by the kernel validator). */
          *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
          *p++ = 4 * image_bo_ref;
          terakan_gfx_command_writer_emit_done(command_writer, p);
