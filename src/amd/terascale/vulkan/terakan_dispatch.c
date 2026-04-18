@@ -22,6 +22,7 @@
 
 #include "amd/terascale/common/terascale_eg_sq.h"
 #include "amd/terascale/common/terascale_evergreend.h"
+#include "amd/terascale/common/terascale_wddm.h"
 #include "gallium/drivers/r600/r600_opcodes.h"
 #include "gallium/drivers/r600/r600_formats.h"
 
@@ -570,24 +571,42 @@ terakan_compute_multiplex_begin(
  * hangs and is exactly the silent-corruption case the Context Multiplexer
  * exists to defeat. */
 
-/* TERAKAN_DEBUG_FLUSH_WATERMARKS helper.  Emits a PKT3_MEM_WRITE packet
- * (evergreend.h:74 PKT3_MEM_WRITE=0x3D) that stores a 32-bit `seq` value
- * into the device's scratch BO at (slot_index*8) bytes offset.  The CP
- * executes these writes in strict packet order via the ME engine, so
- * reading the four slots from the host after the dispatch completes
- * reveals which side of each flush/drain the packet observes.
+/* TERAKAN_DEBUG_FLUSH_WATERMARKS helper.  Emits a PKT3_EVENT_WRITE_EOP
+ * (evergreend.h:83 PKT3_EVENT_WRITE_EOP=0x47) that stores a 32-bit
+ * `seq` value into the device's scratch BO at (slot_index*8) bytes
+ * offset when the event fires.  Pattern mirrors terakan_query.c:669-685
+ * (timestamp emission) but with DATA_SEL=VALUE_32BIT instead of
+ * TIMESTAMP so we write our diagnostic seq rather than the GPU clock.
  *
- * Packet layout (per drivers/gpu/drm/radeon/evergreen_cs.c:2531 validator):
- *   header:   PKT3(MEM_WRITE, 3) -- count=3 -> 4 body dwords
- *   body[0]:  offset_low within BO (8-byte aligned)
- *   body[1]:  (offset_high & 0xff) | MEM_WRITE_32_BITS(1<<18)
- *   body[2]:  data value (32 bits)
- *   body[3]:  0 (unused with MEM_WRITE_32_BITS)
- *   + PKT3_NOP relocation pointing at the scratch BO.
+ * Why EVENT_WRITE_EOP and not PKT3_MEM_WRITE (0x3D):
+ *   - MEM_WRITE is validated by the radeon CS parser with strict
+ *     security constraints; early live experiment with MEM_WRITE
+ *     stalled ring 0 for 30+ seconds.
+ *   - EVENT_WRITE_EOP is the battle-tested path every Vulkan/OpenGL
+ *     queue submit uses for fence emissions.  The kernel CS parser
+ *     has an exhaustive fast-path for it (see
+ *     drivers/gpu/drm/radeon/evergreen_cs.c validator).
+ *   - Uses terakan_gfx_command_writer_add_relocation_for_40_bits
+ *     for the 40-bit address reloc, matching what the query sample
+ *     emitter already does successfully.
+ *
+ * Packet layout (5 body dwords per PKT3(count=4)):
+ *   body[0]: EVENT_TYPE(BOTTOM_OF_PIPE_TS) | EVENT_INDEX(5)
+ *   body[1]: address_lo (patched by kernel reloc)
+ *   body[2]: (address_hi & 0xff) | EOP_INT_SEL(NONE) | EOP_DATA_SEL(VALUE_32BIT)
+ *   body[3]: seq (data_lo)
+ *   body[4]: 0 (data_hi, unused for 32-bit)
  */
-#ifndef PKT3_MEM_WRITE
-#define PKT3_MEM_WRITE        0x3D
-#define MEM_WRITE_32_BITS     (1u << 18)
+
+/* EOP field encoders from r600d_common.h (not pulled into terakan
+ * headers -- defined here local to the watermark helper). */
+#ifndef EOP_INT_SEL
+#define EOP_INT_SEL(x)        ((x) << 24)
+#define EOP_INT_SEL_NONE      0
+#endif
+#ifndef EOP_DATA_SEL
+#define EOP_DATA_SEL(x)       ((x) << 29)
+#define EOP_DATA_SEL_VALUE_32BIT  1
 #endif
 
 static void
@@ -600,39 +619,48 @@ terakan_emit_flush_watermark(struct terakan_gfx_command_writer * const command_w
       return;
    }
 
-   uint32_t const bo_ref = terakan_bo_reference_writer_add_reference(
-      &command_writer->base.bo_reference_writer,
-      device->debug_watermark_bo, true, true,
-      TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
-
-   /* 1 header + 4 body + 2 reloc = 7 dwords. */
-   uint32_t *p = terakan_gfx_command_writer_emit(
-      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 7);
-   if (unlikely(p == NULL)) return;
-   *p++ = PKT3(PKT3_MEM_WRITE, 3, 0);
-   *p++ = (uint32_t)(slot_index * 8u);               /* offset_lo, 8-B aligned */
-   *p++ = MEM_WRITE_32_BITS;                         /* offset_hi=0 | 32-bit flag */
-   *p++ = seq;                                       /* data */
-   *p++ = 0;                                         /* unused */
-   *p++ = PKT3(PKT3_NOP, 0, 0);
-   *p++ = 4 * bo_ref;
-   terakan_gfx_command_writer_emit_done(command_writer, p);
+   /* emit_with_bo: 6 body dwords (1 header + 5 body), 1 BO reference,
+    * 0 standalone relocs (the 40-bit helper writes the 2 reloc NOPs
+    * through the emit cursor).  Pattern copied verbatim from
+    * terakan_query.c:664-685. */
+   uint32_t * packet = terakan_gfx_command_writer_emit_with_bo(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 6, 1, 0, 1);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   uint64_t const slot_offset = (uint64_t)(slot_index * 8u);
+   *packet++ = PKT3(PKT3_EVENT_WRITE_EOP, 5 - 1, 0);
+   *packet++ = EVENT_TYPE(EVENT_TYPE_BOTTOM_OF_PIPE_TS) | EVENT_INDEX(5);
+   uint32_t const * const packet_address = packet;
+   *packet++ = (uint32_t)slot_offset;
+   *packet++ = ((uint32_t)(slot_offset >> 32) & 0xffu) |
+               EOP_INT_SEL(EOP_INT_SEL_NONE) |
+               EOP_DATA_SEL(EOP_DATA_SEL_VALUE_32BIT);
+   *packet++ = seq;                                  /* data_lo */
+   *packet++ = 0;                                    /* data_hi (unused) */
+   terakan_gfx_command_writer_add_relocation_for_40_bits(
+      command_writer, &packet, packet_address, packet_address + 1,
+      TERASCALE_WDDM_PATCH_IDS_EVENT_WRITE_EOP_LO,
+      TERASCALE_WDDM_PATCH_IDS_EVENT_WRITE_EOP_HI,
+      terakan_bo_reference_writer_add_reference(
+         &command_writer->base.bo_reference_writer,
+         device->debug_watermark_bo, false, true, TERAKAN_BO_PRIORITY_QUERY));
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
 }
 
 static void
 terakan_compute_multiplex_end(
    struct terakan_gfx_command_writer * const command_writer)
 {
-   /* NOTE: watermark checkpoint 2 (post-dispatch, pre-EOP) is
-    * intentionally NOT emitted here yet.  Initial PKT3_MEM_WRITE
-    * experiment hung the ring (GPU reset; kernel dmesg showed
-    * "ring 0 stalled" for 30s).  Root cause pending: probably
-    * wrong packet format vs kernel validator expectations, or
-    * wrong BO-reference priority.  Infrastructure is in place in
-    * terakan_device (debug_watermark_bo + map) but the emit helper
-    * and its 4 call sites in dispatch/compute_multiplex_end are
-    * gated off until the packet format is validated against a
-    * known-working host-readable write. */
+   /* Watermark checkpoint 2: POST-dispatch, PRE-EOP.  Now via
+    * EVENT_WRITE_EOP (battle-tested CS parser path). */
+   {
+      struct terakan_device const * const dev =
+         terakan_gfx_command_writer_device(command_writer);
+      if (dev->debug_watermarks_enabled) {
+         terakan_emit_flush_watermark(command_writer, 1, 0xBBBB2222u);
+      }
+   }
 
    /* (1) Wait for every compute wavefront to drain.  Without this the
     * next graphics SET_CONTEXT_REG that touches SQ_PGM_START_LS can
@@ -664,8 +692,14 @@ terakan_compute_multiplex_end(
    terakan_gfx_command_writer_emit_event_write_eop_discarding_data(
       command_writer, EVENT_TYPE(EVENT_TYPE_FLUSH_AND_INV_CB_DATA_TS) | EVENT_INDEX(5));
 
-   /* NOTE: watermark checkpoint 3 (post-EOP, pre-SURFACE_SYNC) would
-    * go here; see the ckpt2 note above for why it's not emitted yet. */
+   /* Watermark checkpoint 3: POST-EOP, PRE-SURFACE_SYNC. */
+   {
+      struct terakan_device const * const dev =
+         terakan_gfx_command_writer_device(command_writer);
+      if (dev->debug_watermarks_enabled) {
+         terakan_emit_flush_watermark(command_writer, 2, 0xCCCC3333u);
+      }
+   }
 
    /* (3) Flush MEM_RAT writes out of the CB write cache and invalidate
     * read caches.  Compute SSBO writes on Evergreen go CB_COLOR{M} ->
@@ -712,8 +746,14 @@ terakan_compute_multiplex_end(
       S_0085F0_SH_ACTION_ENA(1) |
       S_0085F0_VC_ACTION_ENA(1));
 
-   /* NOTE: watermark checkpoint 4 (post-SURFACE_SYNC) would go here;
-    * see the ckpt2 note above. */
+   /* Watermark checkpoint 4: POST-SURFACE_SYNC. */
+   {
+      struct terakan_device const * const dev =
+         terakan_gfx_command_writer_device(command_writer);
+      if (dev->debug_watermarks_enabled) {
+         terakan_emit_flush_watermark(command_writer, 3, 0xDDDD4444u);
+      }
+   }
 
    /* (3) Mark every draw-state index the compute path stomped as pending.
     * The next draw call will hit terakan_state_draw_apply_pending() and
@@ -1730,9 +1770,14 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
    }
 
    if (!debug_get_bool_option("TERAKAN_SKIP_DISPATCH_PACKET", false)) {
-      /* NOTE: watermark checkpoint 1 (pre-dispatch) would go here;
-       * emit helper gated off until packet format is validated.
-       * See terakan_emit_flush_watermark comment above. */
+      /* Watermark checkpoint 1: PRE-dispatch baseline. */
+      {
+         struct terakan_device const * const dev =
+            terakan_gfx_command_writer_device(command_writer);
+         if (dev->debug_watermarks_enabled) {
+            terakan_emit_flush_watermark(command_writer, 0, 0xAAAA1111u);
+         }
+      }
 
       /* Emit PKT3_DISPATCH_DIRECT with the grid dimensions */
       uint32_t *p = terakan_gfx_command_writer_emit(
