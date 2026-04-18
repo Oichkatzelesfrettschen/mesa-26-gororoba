@@ -94,6 +94,22 @@ struct terakan_device {
    struct terakan_bo * uav_immediate_bo;
    uint32_t uav_immediate_va_shr8[4 + 1];
 
+   /* TERAKAN_DEBUG_FLUSH_WATERMARKS=1: host-mappable scratch BO (GTT)
+    * where the GPU writes ordered sequence numbers at four compute-
+    * dispatch checkpoints via PKT3_MEM_WRITE.  Host reads the 4
+    * dwords between dispatches to observe actual ordering of
+    * CS_PARTIAL_FLUSH / EOP(FLUSH_AND_INV_CB_DATA_TS) / SURFACE_SYNC.
+    * Slots (8-byte stride per PKT3_MEM_WRITE alignment):
+    *   0x00: pre-dispatch
+    *   0x08: post-dispatch, pre-EOP
+    *   0x10: post-EOP, pre-SURFACE_SYNC
+    *   0x18: post-SURFACE_SYNC
+    */
+   struct terakan_bo * debug_watermark_bo;
+   void * debug_watermark_map;
+   bool debug_watermarks_enabled;
+   uint32_t debug_watermark_seq;
+
    /* Buffer holding the intermediate result in accumulation of query results from multiple indirect
     * buffers.
     */
