@@ -444,7 +444,14 @@ NirLowerFSOutToVector::create_combined_vector(nir_builder *b,
       op = nir_op_vec4;
       break;
    default:
-      UNREACHABLE("combined vector must have 2 to 4 components");
+      /* Invalid component count: bail to nullptr so the caller
+       * skips this combine instead of aborting the whole process.
+       * Use fprintf to avoid pulling in the r600_pipe header chain. */
+      fprintf(stderr,
+              "R600: create_combined_vector: invalid num_comp=%d "
+              "(expected 2-4); skipping combine\n",
+              num_comp);
+      return nullptr;
    }
    nir_alu_instr *instr = nir_alu_instr_create(b->shader, op);
 
