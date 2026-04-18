@@ -333,7 +333,7 @@ fill_bytecode_tf_write(const WriteTFInstr& instr,
 
 static auto
 get_lds_opcode_properties(const AluInstr& lds)
-   -> std::tuple<unsigned int, unsigned int, bool>
+   -> std::optional<std::tuple<unsigned int, unsigned int, bool>>
 {
    unsigned int opcode = lds.lds_opcode();
    unsigned int lds_idx = 0;
@@ -372,8 +372,8 @@ get_lds_opcode_properties(const AluInstr& lds)
    case LDS_XOR:
       break;
    default:
-      std::cerr << "\n R600: error op: " << lds << "\n";
-      UNREACHABLE("Unhandled LDS op");
+      R600_ERR("sfn_fill_bytecode: unsupported LDS op %u\n", opcode);
+      return std::nullopt;
    }
 
    return std::make_tuple(opcode, lds_idx, has_lds_fetch);
@@ -517,7 +517,11 @@ emit_bytecode_lds(r600_bytecode& bc, const AluInstr& lds)
    memset(&alu, 0, sizeof(alu));
 
    alu.is_lds_idx_op = true;
-   auto [opcode, lds_idx, has_lds_fetch] = get_lds_opcode_properties(lds);
+   auto opcode_properties = get_lds_opcode_properties(lds);
+   if (!opcode_properties)
+      return false;
+
+   auto [opcode, lds_idx, has_lds_fetch] = opcode_properties.value();
    alu.op = opcode;
    alu.lds_idx = lds_idx;
 
