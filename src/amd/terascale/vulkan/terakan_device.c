@@ -75,12 +75,14 @@ terakan_device_finish(struct terakan_device * const device)
       if (device->debug_watermark_map != NULL) {
          uint32_t const * const wm = (uint32_t const *)device->debug_watermark_map;
          fprintf(stderr,
-                 "terakan/watermarks final (last dispatch):\n"
-                 "   ckpt1 pre-dispatch:         0x%08x\n"
-                 "   ckpt2 post-dispatch/preEOP: 0x%08x\n"
-                 "   ckpt3 post-EOP:             0x%08x\n"
-                 "   ckpt4 post-SURFACE_SYNC:    0x%08x\n",
-                 wm[0], wm[2], wm[4], wm[6]);
+                 "terakan/watermarks final (last dispatch + readback):\n"
+                 "   ckpt1 pre-dispatch:          0x%08x\n"
+                 "   ckpt2 post-dispatch/preEOP:  0x%08x\n"
+                 "   ckpt3 post-EOP:              0x%08x\n"
+                 "   ckpt4 post-SURFACE_SYNC:     0x%08x\n"
+                 "   ckpt5 readback-PS begin:     0x%08x\n"
+                 "   ckpt6 readback-PS end:       0x%08x\n",
+                 wm[0], wm[2], wm[4], wm[6], wm[8], wm[10]);
          terakan_bo_unmap(device->debug_watermark_bo);
       }
       terakan_bo_free(device->debug_watermark_bo, NULL);

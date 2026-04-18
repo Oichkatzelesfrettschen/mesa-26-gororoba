@@ -609,7 +609,7 @@ terakan_compute_multiplex_begin(
 #define EOP_DATA_SEL_VALUE_32BIT  1
 #endif
 
-static void
+void
 terakan_emit_flush_watermark(struct terakan_gfx_command_writer * const command_writer,
                              unsigned const slot_index, uint32_t const seq)
 {
