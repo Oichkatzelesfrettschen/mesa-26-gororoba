@@ -2069,7 +2069,13 @@ Shader::emit_load_texture_resource(nir_intrinsic_instr *instr)
    RegisterVec4 dest = vf.dest_vec4(instr->def, pin_group);
    RegisterVec4::Swizzle dest_swizzle{7, 7, 7, 7};
    unsigned first_component = nir_intrinsic_component(instr);
-   assert(first_component + instr->def.num_components <= 4);
+   if (first_component + instr->def.num_components > 4) {
+      R600_ERR("emit_load_texture_resource: first_component=%u + "
+               "num_components=%u > 4 (cross-slot texture load not "
+               "supported); bailing on shader compile\n",
+               first_component, instr->def.num_components);
+      return false;
+   }
    for (unsigned i = 0; i < instr->def.num_components; ++i) {
       dest_swizzle[i] = first_component + i;
    }
