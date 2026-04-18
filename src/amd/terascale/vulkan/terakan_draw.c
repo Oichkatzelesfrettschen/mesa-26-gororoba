@@ -170,22 +170,23 @@ terakan_before_hw_draw(struct terakan_gfx_command_writer * const command_writer,
     */
 
    if (is_meta_draw) {
-      /* HOST_WRITE barriers accumulate INV_TC | INV_SH so the *application* draw
-       * fetches freshly-written host data from RAM instead of a stale cache line.
-       * Internal meta draws (render pass clear, blit, query) execute between the
-       * barrier record and the application draw.  If we let the meta draw consume
-       * and discard those invalidation bits, the application draw runs with no
-       * SURFACE_SYNC and still sees stale cached data.
-       *
-       * Fix: save the read-cache-invalidation bits before emitting the pending
-       * barrier for the meta draw, then restore them so they will be re-emitted
-       * before the next application draw.  Emitting an extra SURFACE_SYNC(TC|SH)
-       * before the application draw is always safe; the overhead is negligible.
+      /* Preserve INV bits across a meta draw only for pure read-cache
+       * invalidation barriers. If producer-side flush actions are present
+       * (for example, COMPUTE_SHADER_WRITE -> INDEX_READ), re-emitting INV
+       * alone creates an extra same-CMDB SURFACE_SYNC(0x89800000) between
+       * the meta draw and the application draw; consume that barrier once.
        */
+      enum terakan_barrier_action_flags const meta_preserve_mask =
+         TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME | TERAKAN_BARRIER_ACTION_INV_TC |
+         TERAKAN_BARRIER_ACTION_INV_SH | TERAKAN_BARRIER_ACTION_INV_VC;
+      enum terakan_barrier_action_flags const pending_actions =
+         command_writer->pending_barrier_actions;
       enum terakan_barrier_action_flags const saved_inv =
-         command_writer->pending_barrier_actions &
-         (TERAKAN_BARRIER_ACTION_INV_TC | TERAKAN_BARRIER_ACTION_INV_SH |
-          TERAKAN_BARRIER_ACTION_INV_VC);
+         (pending_actions & ~meta_preserve_mask) == 0
+            ? (pending_actions & (TERAKAN_BARRIER_ACTION_INV_TC |
+                                  TERAKAN_BARRIER_ACTION_INV_SH |
+                                  TERAKAN_BARRIER_ACTION_INV_VC))
+            : 0;
       terakan_barrier_emit_pending_actions(command_writer);
       command_writer->pending_barrier_actions |= saved_inv;
    } else {

@@ -694,12 +694,9 @@ static void r600_clear_depth_stencil(struct pipe_context *ctx,
 static void r600_copy_buffer(struct pipe_context *ctx, struct pipe_resource *dst, unsigned dstx,
 			     struct pipe_resource *src, const struct pipe_box *src_box)
 {
-	struct r600_context *rctx = (struct r600_context*)ctx;
-
-	if (rctx->screen->b.has_cp_dma)
-		r600_cp_dma_copy_buffer(rctx, dst, dstx, src, src_box->x, src_box->width);
-	else
-		util_resource_copy_region(ctx, dst, 0, dstx, 0, 0, src, 0, src_box);
+	/* Keep buffer copies on the generic path: CP DMA intermittently triggers
+	 * kernel parser failures on this driver family under Rusticl workloads. */
+	util_resource_copy_region(ctx, dst, 0, dstx, 0, 0, src, 0, src_box);
 }
 
 /**
@@ -752,7 +749,9 @@ static void r600_copy_global_buffer(struct pipe_context *ctx,
 		}
 	}
 
-	r600_copy_buffer(ctx, dst, dstx, src, &new_src_box);
+	/* CP DMA intermittently trips kernel CS parser on compute-global paths;
+	 * use generic resource_copy_region for global pool-backed buffers. */
+	util_resource_copy_region(ctx, dst, 0, dstx, 0, 0, src, 0, &new_src_box);
 }
 
 static void bind_vs_pos_only(struct r600_context *ctx,
