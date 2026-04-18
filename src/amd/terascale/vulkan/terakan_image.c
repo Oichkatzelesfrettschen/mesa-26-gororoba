@@ -1377,10 +1377,29 @@ terakan_image_create_color_descriptor(
     * only by numbers of slices aligned to the rotation granularity on the chip revision.
     * Restrict the descriptor to the range of TERAKAN_IMAGE_MAX_TARGET_SLICES slices that includes
     * baseArrayLayer.
-    */
+    *
+    * EXCEPTION: when the VIEW is a non-array 1D/2D/CUBE view of an
+    * array image (the `single_layer` CTS variant), RESOURCE_TYPE in
+    * CB_COLOR_INFO collapses to TEXTURE1D / TEXTURE2D and the CB
+    * exporter ignores CB_COLOR_VIEW.SLICE_START.  Every MEM_RAT write
+    * then lands on slice 0 of the underlying array, which is the
+    * wrong slice whenever baseArrayLayer != 0.  Bypass the
+    * alignment mask in that single case and shift base directly to
+    * the target slice; CB_COLOR_VIEW.SLICE_START becomes 0, and
+    * writes land on the correct slice.  Safe under the same
+    * tile-rotation caveats the existing comment warns about: for
+    * LINEAR_ALIGNED images there is no rotation, for 2D_TILED the
+    * rotation is per-image-macro-tile and aligned-per-slice access
+    * matches what the CB exporter would compute anyway. */
+   bool const view_is_nonarray_2d_or_1d =
+      descriptor_create_info->view_type == VK_IMAGE_VIEW_TYPE_1D ||
+      descriptor_create_info->view_type == VK_IMAGE_VIEW_TYPE_2D ||
+      descriptor_create_info->view_type == VK_IMAGE_VIEW_TYPE_CUBE;
    uint32_t const create_info_slice_start = descriptor_create_info->base_array_layer;
    uint32_t const base_slice_start =
-      create_info_slice_start & ~(uint32_t)(TERAKAN_IMAGE_MAX_TARGET_SLICES - 1);
+      view_is_nonarray_2d_or_1d
+         ? create_info_slice_start
+         : (create_info_slice_start & ~(uint32_t)(TERAKAN_IMAGE_MAX_TARGET_SLICES - 1));
    descriptor_out->base = (uint32_t)(image->va >> 8) + surface_level->offset_in_memory_bytes_shr8 +
                           surface_level->slice_size_bytes_shr8 * base_slice_start;
 
