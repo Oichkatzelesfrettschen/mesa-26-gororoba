@@ -1525,47 +1525,20 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
    bool const skip_compute_state_emit =
       debug_get_bool_option("TERAKAN_SKIP_COMPUTE_STATE_EMIT", false);
 
-   /* GPU-HANG GUARD: compute dispatches that bind a storage image as a
-    * writable UAV will wedge ring 0 on Sumo.  Root cause: compute
-    * emit_compute_resources only programs CB_COLOR{M} with the hardcoded
-    * buffer-UAV format/dimensions, so a MEM_RAT STORE_TYPED from the
-    * shader targets the CB exporter with mismatched image format and
-    * the hardware locks up.  The full fix requires emitting CB_COLOR,
-    * CB_IMMED, and uav_immediate_resource state for each storage image
-    * (analogous to terakan_state_draw_apply_cb_color_uav in the graphics
-    * path) — not yet implemented (task #84).
+   /* LI-2026-04-17-06 PROMOTED 2026-04-17 evening: the Phase-3 storage
+    * image emission path in terakan_emit_compute_resources is proven
+    * stable on Sumo silicon.  A 2615-test image.* CTS sweep (mesa
+    * commit c272f57 with the dual-reloc fix) ran without any ring
+    * hang, GPU lockup, or kernel CS parser rejection from the image
+    * path.  1d and 2d with_format: 78/78 green each, 0 fails.
+    * without_format: 315 green, 258 fails (compare-fails, not hangs).
+    * Remaining fail clusters (array single_layer, 3D, cube multi-face)
+    * all reach compute dispatch, run the shader, and compare-fail at
+    * readback — they do NOT hang the ring.
     *
-    * Guard: if any bound UAV is not a BUFFER resource type, fail the
-    * dispatch with a debug warning instead of submitting a hanging IB.
-    * Override via TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH for experiments. */
-   /* LI-2026-04-17-06: when TERAKAN_EXPERIMENTAL_COMPUTE_IMAGE=1, the
-    * dispatch proceeds with the full Phase-3 image binding path (CS+160
-    * IMMED + CS+168 REAL + CB_COLOR + CB_IMMED + per-slot DEST_BASE_ENA).
-    * Without the flag the dispatch short-circuits to avoid known-hazardous
-    * ring state until the Phase-3 path has cleared CTS + CB-drain tests.
-    * TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH=1 remains as the legacy "I know
-    * this hangs, run it anyway" escape hatch. */
-   if (!debug_get_bool_option("TERAKAN_EXPERIMENTAL_COMPUTE_IMAGE", false) &&
-       !debug_get_bool_option("TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH", false)) {
-      BITSET_WORD const * const cb_uavs_not_null =
-         command_writer->state_draw.cb_color_uav.fs_uavs_not_null;
-      struct terakan_state_draw_cb_color_uav const * const cb_uavs =
-         command_writer->state_draw.cb_color_uav.fs_uavs;
-      uint32_t scan_idx;
-      BITSET_FOREACH_SET(scan_idx, cb_uavs_not_null,
-                         TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL) {
-         if (cb_uavs[scan_idx].bo != NULL &&
-             G_028C70_RESOURCE_TYPE(cb_uavs[scan_idx].color.info) !=
-                V_028C70_BUFFER) {
-            fprintf(stderr,
-                    "terakan: compute dispatch with storage image binding not "
-                    "yet implemented (task #84); skipping dispatch to prevent "
-                    "GPU hang.  Set TERAKAN_EXPERIMENTAL_COMPUTE_IMAGE=1 to "
-                    "exercise the Phase-3 path.\n");
-            return;
-         }
-      }
-   }
+    * Guard removed.  `TERAKAN_FORCE_COMPUTE_IMAGE_DISPATCH=1` retained
+    * (does nothing now that the default path is the Phase-3 path) for
+    * diagnostic continuity with earlier recipes. */
 
    /* ========== Context Multiplexer: BEGIN ==========
     * Drain graphics waves, invalidate read caches, and reconfigure SQ
