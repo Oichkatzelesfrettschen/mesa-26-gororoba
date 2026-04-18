@@ -92,6 +92,45 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
                dst_uav->is_texel_buffer = 0;
                terakan_color_descriptor_image_view_to_storage_image(&dst_uav->color);
+               /* When a non-array VIEW (1D/2D/CUBE) is created over a
+                * multi-layer ARRAY IMAGE, image_view->color.info is
+                * stamped with the view's type: TEXTURE1D / TEXTURE2D.
+                * The shader writes with a 2D coord, but the CB exporter
+                * for a STORAGE_IMAGE UAV on an array-backed allocation
+                * still needs TEXTURE{1,2}DARRAY addressing to compute
+                * per-slice tile offsets correctly.  Otherwise writes
+                * land at slice 0 of the physical allocation even when
+                * the view's baseArrayLayer is 0, because CB_COLOR_INFO
+                * RESOURCE_TYPE=TEXTURE2D takes a shortcut that skips
+                * the array-layer tile math -- and readback via
+                * CopyImageToBuffer (which uses the VkImage's array
+                * layout) then sees stale data.
+                *
+                * Fix: promote RESOURCE_TYPE to the array equivalent
+                * when the underlying VkImage has array_layers > 1.
+                * For truly single-layer images this is a no-op
+                * (SLICE_MAX=0 falls out naturally). */
+               if (image_view->vk.image->array_layers > 1) {
+                  uint32_t const current_type =
+                     G_028C70_RESOURCE_TYPE(dst_uav->color.info);
+                  uint32_t upgraded_type = current_type;
+                  switch (current_type) {
+                  case V_028C70_TEXTURE1D:
+                     upgraded_type = V_028C70_TEXTURE1DARRAY;
+                     break;
+                  case V_028C70_TEXTURE2D:
+                     upgraded_type = V_028C70_TEXTURE2DARRAY;
+                     break;
+                  default:
+                     /* Already array-type or 3D; leave unchanged. */
+                     break;
+                  }
+                  if (upgraded_type != current_type) {
+                     dst_uav->color.info =
+                        (dst_uav->color.info & C_028C70_RESOURCE_TYPE) |
+                        S_028C70_RESOURCE_TYPE(upgraded_type);
+                  }
+               }
                /* Stash the SQ_TEX_RESOURCE ("REAL") descriptor so
                 * terakan_emit_compute_resources can emit the
                 * CS+168+m SET_RESOURCE the CB exporter needs for
