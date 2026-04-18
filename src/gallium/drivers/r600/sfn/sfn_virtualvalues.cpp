@@ -933,7 +933,14 @@ LocalArray::element(size_t offset, PVirtualValue indirect, uint32_t chan)
          void visit(const Register& value)
          {
             if (value.has_flag(Register::ssa)) {
-               assert(value.parents().size() == 1);
+               /* Propagation is only safe when the SSA value has a
+                * unique defining instruction.  Bail out on the rare
+                * multi-parent case instead of asserting; the outer
+                * array-element lookup still succeeds, just without
+                * this optimization. */
+               if (value.parents().size() != 1) {
+                  return;
+               }
                auto p = (*value.parents().begin())->as_alu();
                if (p && p->can_propagate_src()) {
                   auto& s = p->src(0);

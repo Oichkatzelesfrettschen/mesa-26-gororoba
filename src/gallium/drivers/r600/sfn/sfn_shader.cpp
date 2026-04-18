@@ -2115,10 +2115,28 @@ Shader::emit_load_kcache(nir_intrinsic_instr *instr)
    }
 
    unsigned element_index = static_cast<unsigned>(nir_intrinsic_base(instr));
-   assert(element_index < R600_MAX_CONST_BUFFER_SIZE / (sizeof(float) * 4));
+   if (element_index >= R600_MAX_CONST_BUFFER_SIZE / (sizeof(float) * 4)) {
+      R600_ERR("emit_load_kcache: element_index %u out of range (max %zu); "
+               "bailing on shader compile\n",
+               element_index, R600_MAX_CONST_BUFFER_SIZE / (sizeof(float) * 4));
+      return false;
+   }
 
    unsigned first_component = nir_intrinsic_component(instr);
-   assert(first_component + instr->def.num_components <= 4);
+   if (first_component + instr->def.num_components > 4) {
+      /* Graceful bail: the NIR requested a KCACHE load that would span
+       * two 4-component slots, which the existing code path does not
+       * split.  Fail the shader compile so the pipeline creation
+       * returns an error rather than aborting the whole process.
+       * Promotes assert(first_component + num_components <= 4) to a
+       * runtime failure.  The correct long-term fix is to split the
+       * load into multiple slot-aligned KCACHE reads. */
+      R600_ERR("emit_load_kcache: first_component=%u + num_components=%u > 4 "
+               "(cross-slot KCACHE load not yet supported); bailing on "
+               "shader compile\n",
+               first_component, instr->def.num_components);
+      return false;
+   }
 
    AluInstr *alu = nullptr;
    for (unsigned i = 0; i < instr->def.num_components; ++i) {

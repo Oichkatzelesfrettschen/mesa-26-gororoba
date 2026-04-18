@@ -93,8 +93,16 @@ terakan_sync_completion_signal(struct vk_device * const device_base,
       container_of(sync_base, struct terakan_sync_completion, vk);
 
    mtx_lock(&device->completion_mutex);
-   assert(value < sync->pending_value);
-   assert(value > sync->current_value);
+   /* Timeline semaphores sometimes signal values that don't strictly
+    * interleave with our internal pending/current ordering (for
+    * example, an external waiter signals the same value we already
+    * expected, or a racy test signals out of order).  Graceful bail
+    * instead of asserting so the deqp-vk process keeps running and
+    * only the individual test fails. */
+   if (value >= sync->pending_value || value <= sync->current_value) {
+      mtx_unlock(&device->completion_mutex);
+      return VK_ERROR_UNKNOWN;
+   }
    p_atomic_set(&sync->pending_value, value);
    p_atomic_set(&sync->current_value, value);
    mtx_unlock(&device->completion_mutex);
