@@ -1143,6 +1143,23 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
             terascale_format_bytes_per_block[G_028C70_FORMAT(color->info)];
          unsigned const bytes_per_texel_log2 = util_logbase2(bytes_per_texel);
 
+         if (debug_get_bool_option("TERAKAN_DEBUG_COMPUTE_DESC", false)) {
+            uint32_t const slice_start = (color->view >> 0) & 0x7FF;
+            uint32_t const slice_max = (color->view >> 13) & 0x7FF;
+            fprintf(stderr,
+                    "terakan/compute_image: m=%u image_m=%u base=0x%08x pitch=0x%08x "
+                    "slice=0x%08x view=0x%08x [slice_start=%u slice_max=%u] "
+                    "info=0x%08x attrib=0x%08x dim=0x%08x "
+                    "real=[0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x]\n",
+                    m, image_m, color->base, color->pitch, color->slice, color->view,
+                    slice_start, slice_max,
+                    color->info, color->attrib, color->dim,
+                    cb_uav->real_resource[0], cb_uav->real_resource[1],
+                    cb_uav->real_resource[2], cb_uav->real_resource[3],
+                    cb_uav->real_resource[4], cb_uav->real_resource[5],
+                    cb_uav->real_resource[6], cb_uav->real_resource[7]);
+         }
+
          /* (a) CB_COLOR{M}_BASE..CLEAR_WORD1 with image-native fields. */
          uint32_t const image_bo_ref = terakan_bo_reference_writer_add_reference(
             &command_writer->base.bo_reference_writer,
