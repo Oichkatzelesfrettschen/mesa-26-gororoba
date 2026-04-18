@@ -351,7 +351,9 @@ static void compute_emit_cs(struct r600_context *rctx,
 	else
 		global_atomic_count = evergreen_emit_atomic_buffer_setup_count(rctx, current, combined_atomics, global_atomic_count);
 
-	r600_need_cs_space(rctx, 23 /* RAT CB_COLOR0 emit: 15 SET_CTX_REG + 8 NOP_reloc */, true, global_atomic_count);
+	/* Conservative headroom for manual RAT state emits, reloc NOPs,
+	 * scratch setup, and per-dispatch compute packets. */
+	r600_need_cs_space(rctx, 128, true, global_atomic_count);
 
 	if (need_buf_const) {
 		eg_setup_buffer_constants(rctx, MESA_SHADER_COMPUTE);
@@ -471,6 +473,10 @@ static void compute_emit_cs(struct r600_context *rctx,
 	/* Emit shader state */
 	r600_emit_atom(rctx, &rctx->cs_shader_state.atom);
 
+	/* Set up scratch buffers for GPR spill. */
+	if (current->scratch_space_needed)
+		evergreen_setup_scratch_buffers(rctx);
+
 	/* Emit dispatch state and dispatch packet */
 	evergreen_emit_dispatch(rctx, info, indirect_grid);
 
@@ -482,9 +488,11 @@ static void compute_emit_cs(struct r600_context *rctx,
 	r600_flush_emit(rctx);
 	rctx->b.flags = 0;
 
+	/* Flush compute — required on Evergreen and Cayman. */
+	radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+	radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_CS_PARTIAL_FLUSH) | EVENT_INDEX(4));
+
 	if (rctx->b.gfx_level >= CAYMAN) {
-		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
-		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_CS_PARTIAL_FLUSH) | EVENT_INDEX(4));
 		/* DEALLOC_STATE prevents the GPU from hanging when a
 		 * SURFACE_SYNC packet is emitted some time after a DISPATCH_DIRECT
 		 * with any of the CB*_DEST_BASE_ENA or DB_DEST_BASE_ENA bits set.

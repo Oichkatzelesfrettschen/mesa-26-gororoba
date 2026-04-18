@@ -419,20 +419,6 @@ void compute_memory_demote_item(struct compute_memory_pool *pool,
 
 		u_box_1d(item->start_in_dw * 4, item->size_in_dw * 4, &box);
 
-		{
-			struct pipe_transfer *_probe_tx = NULL;
-			char *_probe_base = (char *)pipe_buffer_map_range(pipe,
-			    (struct pipe_resource *)pool->bo, 0, pool->size_in_dw * 4,
-			    PIPE_MAP_READ, &_probe_tx);
-			if (_probe_base) {
-				uint32_t *_at = (uint32_t *)(_probe_base + item->start_in_dw * 4);
-				fprintf(stderr, "POOL_PROBE: start_dw=%ld [0..3]=0x%08x 0x%08x 0x%08x 0x%08x pool[0..3]=0x%08x 0x%08x 0x%08x 0x%08x\n",
-				    item->start_in_dw, _at[0], _at[1], _at[2], _at[3],
-				    ((uint32_t*)_probe_base)[0], ((uint32_t*)_probe_base)[1],
-				    ((uint32_t*)_probe_base)[2], ((uint32_t*)_probe_base)[3]);
-				pipe_buffer_unmap(pipe, _probe_tx);
-			}
-		}
 		rctx->b.b.resource_copy_region(pipe,
 			dst, 0, 0, 0, 0,
 			src, 0, &box);
