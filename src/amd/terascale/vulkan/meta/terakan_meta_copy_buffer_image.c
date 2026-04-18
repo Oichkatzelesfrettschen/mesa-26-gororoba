@@ -26,6 +26,7 @@
 #include "terakan_bo.h"
 #include "terakan_buffer.h"
 #include "terakan_command_buffer.h"
+#include "terakan_device.h"
 #include "terakan_entrypoints.h"
 #include "terakan_image.h"
 #include "terakan_physical_device.h"
@@ -707,6 +708,15 @@ terakan_CmdCopyImageToBuffer2(VkCommandBuffer const commandBuffer,
       return;
    }
 
+   /* Readback-path watermark slot 4 (0xEEEE5555): host-side visibility
+    * bracket.  Placed post-barrier, pre-meta-draw so the sequence versus
+    * compute checkpoints 3/4 (post-EOP/post-SURFACE_SYNC) reveals
+    * whether the pipeline-drain between the image.store dispatch and
+    * this readback is actually complete when the readback starts.
+    * Gated by TERAKAN_DEBUG_FLUSH_WATERMARKS=1; no-op otherwise.
+    */
+   terakan_emit_flush_watermark(command_writer, 4u, 0xEEEE5555u);
+
    struct terakan_image_descriptor_create_info image_descriptor_create_info = {
       .image = image,
       .view_type = terakan_meta_transfer_image_view_type(image->vk.image_type),
@@ -829,4 +839,12 @@ terakan_CmdCopyImageToBuffer2(VkCommandBuffer const commandBuffer,
     */
    command_writer->post_buffer_copy_write_barrier_actions |=
       TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV | TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CP_THROUGH_PS;
+
+   /* Readback-path watermark slot 5 (0xFFFF6666): post-PS-emission
+    * bookend.  Observed together with slot 4 this gives the meta-draw
+    * latency; together with compute checkpoints it reveals whether any
+    * of the UAV store retire deadlines overlap the readback window.
+    * Gated by TERAKAN_DEBUG_FLUSH_WATERMARKS=1; no-op otherwise.
+    */
+   terakan_emit_flush_watermark(command_writer, 5u, 0xFFFF6666u);
 }

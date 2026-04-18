@@ -95,15 +95,18 @@ struct terakan_device {
    uint32_t uav_immediate_va_shr8[4 + 1];
 
    /* TERAKAN_DEBUG_FLUSH_WATERMARKS=1: host-mappable scratch BO (GTT)
-    * where the GPU writes ordered sequence numbers at four compute-
-    * dispatch checkpoints via PKT3_MEM_WRITE.  Host reads the 4
-    * dwords between dispatches to observe actual ordering of
-    * CS_PARTIAL_FLUSH / EOP(FLUSH_AND_INV_CB_DATA_TS) / SURFACE_SYNC.
-    * Slots (8-byte stride per PKT3_MEM_WRITE alignment):
-    *   0x00: pre-dispatch
-    *   0x08: post-dispatch, pre-EOP
-    *   0x10: post-EOP, pre-SURFACE_SYNC
-    *   0x18: post-SURFACE_SYNC
+    * where the GPU writes ordered sequence numbers at six pipeline
+    * checkpoints via PKT3_EVENT_WRITE_EOP (BOTTOM_OF_PIPE_TS with
+    * DATA_SEL_VALUE_32BIT).  Host reads the dwords at queue/device
+    * teardown to observe actual ordering of CS_PARTIAL_FLUSH /
+    * EOP(FLUSH_AND_INV_CB_DATA_TS) / SURFACE_SYNC, plus the readback
+    * meta PS interleave.  Slots (8-byte EOP stride):
+    *   0x00: pre-dispatch                (compute)     0xAAAA1111
+    *   0x08: post-dispatch, pre-EOP      (compute)     0xBBBB2222
+    *   0x10: post-EOP, pre-SURFACE_SYNC  (compute)     0xCCCC3333
+    *   0x18: post-SURFACE_SYNC           (compute)     0xDDDD4444
+    *   0x20: readback PS begin           (copy-meta)   0xEEEE5555
+    *   0x28: readback PS end             (copy-meta)   0xFFFF6666
     */
    struct terakan_bo * debug_watermark_bo;
    void * debug_watermark_map;
@@ -177,6 +180,17 @@ terakan_device_log_obj(struct terakan_device const * const device)
 }
 
 void terakan_device_finish(struct terakan_device * device);
+
+/* TERAKAN_DEBUG_FLUSH_WATERMARKS instrumentation helper.  Emits one
+ * PKT3_EVENT_WRITE_EOP (BOTTOM_OF_PIPE_TS, DATA_SEL_VALUE_32BIT) that
+ * writes `seq` into device->debug_watermark_bo at offset slot_index*8.
+ * No-op when the feature is not enabled.  Safe on the gfx ring only.
+ * Defined in terakan_dispatch.c; exported for use by the readback-path
+ * meta lanes (e.g. CmdCopyImageToBuffer2) to bracket host visibility.
+ */
+struct terakan_gfx_command_writer;
+void terakan_emit_flush_watermark(struct terakan_gfx_command_writer * command_writer,
+                                  unsigned slot_index, uint32_t seq);
 
 VkResult terakan_device_init(struct terakan_device * device,
                              struct terakan_physical_device * physical_device,
