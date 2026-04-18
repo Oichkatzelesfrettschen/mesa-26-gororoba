@@ -620,7 +620,10 @@ InlineConstant::print(std::ostream& os) const
    } else if (sel() >= ALU_SRC_PARAM_BASE && sel() < ALU_SRC_PARAM_BASE + 32) {
       os << "Param" << sel() - ALU_SRC_PARAM_BASE << "." << chanchar[chan()];
    } else {
-      UNREACHABLE("Unknown inline constant");
+      /* Unknown inline constant: emit a diagnostic string instead of
+       * aborting -- this path is reached by disasm/print code where
+       * a misidentified constant shouldn't kill the process. */
+      os << "UnknownInlineConst(" << sel() << ")";
    }
 }
 
