@@ -229,7 +229,11 @@ class LowerSplit64op : public NirLowerInstruction {
                                           nir_iand(b, src, nir_imm_int(b, 0x3ff00000)));
          }
          default:
-            UNREACHABLE("trying to lower instruction that was not in filter");
+            /* Op slipped through the filter.  Return nullptr so
+             * nir_lower_instr leaves this instruction alone; a
+             * downstream pass either handles it or rejects the
+             * shader cleanly instead of aborting the process. */
+            return nullptr;
          }
       }
       case nir_instr_type_phi: {
@@ -250,7 +254,8 @@ class LowerSplit64op : public NirLowerInstruction {
          return nir_pack_64_2x32_split(b, &phi_lo->def, &phi_hi->def);
       }
       default:
-         UNREACHABLE("Trying to lower instruction that was not in filter");
+         /* Instruction type slipped through the filter.  Graceful bail. */
+         return nullptr;
       }
    }
 
@@ -374,7 +379,11 @@ LowerSplit64BitVar::split_double_store_deref(nir_intrinsic_instr *intr)
    else if (deref->deref_type == nir_deref_type_array)
       return split_store_deref_array(intr, deref);
    else {
-      UNREACHABLE("only splitting of stores to vars and arrays is supported");
+      /* Unsupported deref type for 64-bit store: return nullptr so
+       * nir_lower_instr leaves the store alone.  A downstream pass
+       * (or the final shader compile) will reject the program with
+       * a VkResult error instead of aborting deqp-vk. */
+      return nullptr;
    }
 }
 
@@ -387,9 +396,10 @@ LowerSplit64BitVar::split_double_load_deref(nir_intrinsic_instr *intr)
    else if (deref->deref_type == nir_deref_type_array)
       return split_load_deref_array(intr, deref->arr.index);
    else {
-      UNREACHABLE("only splitting of loads from vars and arrays is supported");
+      /* Unsupported deref type for 64-bit load: return nullptr
+       * (graceful bail, same pattern as split_double_store_deref). */
+      return nullptr;
    }
-   m_old_stores.push_back(&intr->instr);
 }
 
 nir_def *
