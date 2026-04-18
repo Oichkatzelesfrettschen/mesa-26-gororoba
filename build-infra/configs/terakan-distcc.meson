@@ -1,0 +1,22 @@
+# terakan-distcc: fast-rebuild variant optimised for distcc links.
+#
+# Derived from build-terakan-distcc{,-clean,-gororoba} which were all
+# near-identical (distcc-gororoba had glx=auto which we adopt as
+# canonical).  Drops zink/softpipe/llvmpipe to minimise the link
+# surface on the Bobcat host; keeps rusticl r600-only.
+# See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
+
+[project options]
+buildtype           = 'debug'
+b_ndebug            = 'false'
+
+# r600 only -- no upstream refs.  This is the daily iteration lane.
+gallium-drivers     = ['r600']
+vulkan-drivers      = ['terakan']
+
+gallium-rusticl                = true
+gallium-rusticl-enable-drivers = ['r600']
+
+amd-use-llvm        = true
+gallium-extra-hud   = true
+glx                 = 'auto'

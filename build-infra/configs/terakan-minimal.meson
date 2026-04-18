@@ -1,0 +1,15 @@
+# terakan-minimal: scratchpad config for NIR-bitsize and similar
+# compiler-pass experiments.  Derived from build-terakan-nirbit.
+# No rusticl, no HUD, no zink/softpipe/llvmpipe.  Absolute smallest
+# link to keep iteration time tight on NIR pass hacks.
+# See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
+
+[project options]
+buildtype           = 'debug'
+b_ndebug            = 'false'
+
+gallium-drivers     = ['r600']
+vulkan-drivers      = ['terakan']
+
+amd-use-llvm        = true
+glx                 = 'dri'
