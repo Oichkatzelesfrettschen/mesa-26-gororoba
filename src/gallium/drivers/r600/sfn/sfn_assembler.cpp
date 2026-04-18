@@ -223,8 +223,11 @@ AssamblerVisitor::emit_lds_op(const AluInstr& lds)
    case LDS_XOR:
       break;
    default:
-      std::cerr << "\n R600: error op: " << lds << "\n";
-      UNREACHABLE("Unhandled LDS op");
+      /* Unhandled LDS op: emit nothing and return so the whole
+       * process doesn't abort.  The generated shader is incomplete;
+       * any test consuming it will fail, but other tests continue. */
+      R600_ERR("sfn_assembler: unhandled LDS op (skipped): %u\n", alu.op);
+      return;
    }
 
    copy_src(alu.src[0], lds.src(0));
