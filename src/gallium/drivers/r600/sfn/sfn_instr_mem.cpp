@@ -519,7 +519,12 @@ get_rat_opcode(const nir_atomic_op opcode)
    case nir_atomic_op_dec_wrap:
       return RatInstr::WRAP_DEC_RTN;
    default:
-      UNREACHABLE("Unsupported atomic");
+      /* Unsupported atomic op: bail to NOP and log so the pipeline
+       * compile fails downstream with a VkResult error instead of
+       * aborting the deqp-vk process via assert(). */
+      R600_ERR("get_rat_opcode: unsupported atomic opcode %u; returning NOP\n",
+               opcode);
+      return RatInstr::NOP;
    }
 }
 
@@ -548,7 +553,10 @@ get_rat_opcode_wo(const nir_atomic_op opcode)
    case nir_atomic_op_xchg:
       return RatInstr::XCHG_RTN;
    default:
-      UNREACHABLE("Unsupported atomic");
+      /* Same graceful-bail pattern as the _rtn variant above. */
+      R600_ERR("get_rat_opcode_wo: unsupported atomic opcode %u; returning NOP\n",
+               opcode);
+      return RatInstr::NOP;
    }
 }
 
