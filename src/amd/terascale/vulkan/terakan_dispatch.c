@@ -619,6 +619,21 @@ terakan_compute_multiplex_end(
     * into play.  Setting all 12 bits defensively covers every RAT slot
     * Evergreen exposes; the cost is just OR'ing a few immediate bits
     * into the already-emitted SURFACE_SYNC, no extra packet. */
+   /* LI-2026-04-18-01 (new): SMX_ACTION_ENA pairs canonically with
+    * CB_ACTION_ENA per r600 gallium (r600_hw_context.c:173-192).
+    * SMX is the shader memory exporter's coalescing write buffer
+    * sitting ahead of the CB exporter in the write path; MEM_RAT
+    * STORE_TYPED flows shader -> SMX -> CB -> memory.  Without
+    * S_0085F0_SMX_ACTION_ENA(1) the SMX-level cache keeps tag lines
+    * live even after CB drains to memory, so a subsequent dispatch
+    * that reuses (or is near) the same BO VA can pick up stale
+    * SMX-held state and read-modify-write against ghost bytes --
+    * the observed cross-test failure pattern in
+    * dEQP-VK.image.store.*.single_layer sweeps (first of the format
+    * family passes, second -- the same-format single_layer variant
+    * -- fails).  See steinmarder findings
+    * 2026-04-17-single-layer-cross-test-leak.md + Evergreen oracle
+    * pairing. */
    terakan_compute_multiplex_emit_surface_sync(
       command_writer,
       S_0085F0_CB_ACTION_ENA(1) |
@@ -628,6 +643,7 @@ terakan_compute_multiplex_end(
       S_0085F0_CB6_DEST_BASE_ENA(1) | S_0085F0_CB7_DEST_BASE_ENA(1) |
       S_0085F0_CB8_DEST_BASE_ENA(1) | S_0085F0_CB9_DEST_BASE_ENA(1) |
       S_0085F0_CB10_DEST_BASE_ENA(1) | S_0085F0_CB11_DEST_BASE_ENA(1) |
+      S_0085F0_SMX_ACTION_ENA(1) |
       S_0085F0_TC_ACTION_ENA(1) |
       S_0085F0_SH_ACTION_ENA(1) |
       S_0085F0_VC_ACTION_ENA(1));
