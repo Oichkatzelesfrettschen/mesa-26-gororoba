@@ -176,75 +176,74 @@ public:
 
    void parseEntryPoint(const spv_parsed_instruction_t *ins)
    {
-      assert(ins->num_operands >= 3);
+      if (ins->num_operands < 3)
+         return;
 
-      const spv_parsed_operand_t *op = &ins->operands[1];
-
-      assert(op->type == SPV_OPERAND_TYPE_ID);
-
-      uint32_t funcId = ins->words[op->offset];
+      uint32_t funcId = ins->words[ins->operands[1].offset];
 
       for (auto &iter : kernels) {
          if (funcId == iter.funcId)
             return;
       }
 
-      op = &ins->operands[2];
-      assert(op->type == SPV_OPERAND_TYPE_LITERAL_STRING);
-      const char *name = reinterpret_cast<const char *>(ins->words + op->offset);
+      const char *name = reinterpret_cast<const char *>(ins->words + ins->operands[2].offset);
+      if (!name || !name[0])
+         return;
 
       kernels.push_back(SPIRVKernelInfo(funcId, name));
    }
-
    void parseFunction(const spv_parsed_instruction_t *ins)
    {
-      assert(ins->num_operands == 4);
+      if (ins->num_operands < 2)
+         return;
 
       const spv_parsed_operand_t *op = &ins->operands[1];
-
-      assert(op->type == SPV_OPERAND_TYPE_RESULT_ID);
+      if (op->type != SPV_OPERAND_TYPE_RESULT_ID && op->type != SPV_OPERAND_TYPE_ID)
+         return;
 
       uint32_t funcId = ins->words[op->offset];
 
       for (auto &kernel : kernels) {
          if (funcId == kernel.funcId && !kernel.args.size()) {
             curKernel = &kernel;
-	    return;
+            return;
          }
       }
    }
-
    void parseFunctionParam(const spv_parsed_instruction_t *ins)
    {
       const spv_parsed_operand_t *op;
       uint32_t id, typeId;
 
-      if (!curKernel)
+      if (!curKernel || ins->num_operands < 2)
          return;
 
-      assert(ins->num_operands == 2);
       op = &ins->operands[0];
-      assert(op->type == SPV_OPERAND_TYPE_TYPE_ID);
+      if (op->type != SPV_OPERAND_TYPE_TYPE_ID && op->type != SPV_OPERAND_TYPE_ID)
+         return;
       typeId = ins->words[op->offset];
       op = &ins->operands[1];
-      assert(op->type == SPV_OPERAND_TYPE_RESULT_ID);
+      if (op->type != SPV_OPERAND_TYPE_RESULT_ID && op->type != SPV_OPERAND_TYPE_ID)
+         return;
       id = ins->words[op->offset];
       curKernel->args.push_back(SPIRVKernelArg(id, typeId));
    }
-
    void parseName(const spv_parsed_instruction_t *ins)
    {
       const spv_parsed_operand_t *op;
       const char *name;
       uint32_t id;
 
-      assert(ins->num_operands == 2);
+      if (ins->num_operands < 2)
+         return;
 
       op = &ins->operands[0];
-      assert(op->type == SPV_OPERAND_TYPE_ID);
+      if (op->type != SPV_OPERAND_TYPE_ID && op->type != SPV_OPERAND_TYPE_RESULT_ID)
+         return;
       id = ins->words[op->offset];
       op = &ins->operands[1];
-      assert(op->type == SPV_OPERAND_TYPE_LITERAL_STRING);
+      if (op->type != SPV_OPERAND_TYPE_LITERAL_STRING)
+         return;
       name = reinterpret_cast<const char *>(ins->words + op->offset);
 
       for (auto &kernel : kernels) {
@@ -252,25 +251,27 @@ public:
             if (arg.id == id && arg.name.empty()) {
               arg.name = name;
               break;
-	    }
+            }
          }
       }
    }
-
    void parseTypePointer(const spv_parsed_instruction_t *ins)
    {
       enum clc_kernel_arg_address_qualifier addrQualifier;
       uint32_t typeId, storageClass;
       const spv_parsed_operand_t *op;
 
-      assert(ins->num_operands == 3);
+      if (ins->num_operands < 2)
+         return;
 
       op = &ins->operands[0];
-      assert(op->type == SPV_OPERAND_TYPE_RESULT_ID);
+      if (op->type != SPV_OPERAND_TYPE_RESULT_ID && op->type != SPV_OPERAND_TYPE_ID)
+         return;
       typeId = ins->words[op->offset];
 
       op = &ins->operands[1];
-      assert(op->type == SPV_OPERAND_TYPE_STORAGE_CLASS);
+      if (op->type != SPV_OPERAND_TYPE_STORAGE_CLASS)
+         return;
       storageClass = ins->words[op->offset];
       switch (storageClass) {
       case SpvStorageClassCrossWorkgroup:
@@ -288,7 +289,7 @@ public:
       }
 
       for (auto &kernel : kernels) {
-	 for (auto &arg : kernel.args) {
+         for (auto &arg : kernel.args) {
             if (arg.typeId == typeId) {
                arg.addrQualifier = addrQualifier;
                if (addrQualifier == CLC_KERNEL_ARG_ADDRESS_CONSTANT)
@@ -297,16 +298,17 @@ public:
          }
       }
    }
-
    void parseOpString(const spv_parsed_instruction_t *ins)
    {
       const spv_parsed_operand_t *op;
       std::string str;
 
-      assert(ins->num_operands == 2);
+      if (ins->num_operands < 2)
+         return;
 
       op = &ins->operands[1];
-      assert(op->type == SPV_OPERAND_TYPE_LITERAL_STRING);
+      if (op->type != SPV_OPERAND_TYPE_LITERAL_STRING)
+         return;
       str = reinterpret_cast<const char *>(ins->words + op->offset);
 
       size_t start = 0;
@@ -328,12 +330,12 @@ public:
       for (auto &kernel : kernels) {
          size_t pos;
 
-	 pos = str.find(kernel.name, start);
+         pos = str.find(kernel.name, start);
          if (pos == std::string::npos ||
              pos != start || str[start + kernel.name.size()] != '.')
             continue;
 
-	 pos = start + kernel.name.size();
+         pos = start + kernel.name.size();
          if (str[pos++] != '.')
             continue;
 
@@ -342,7 +344,7 @@ public:
                break;
 
             size_t entryEnd = str.find(',', pos);
-	    if (entryEnd == std::string::npos)
+            if (entryEnd == std::string::npos)
                break;
 
             std::string entryVal = str.substr(pos, entryEnd - pos);
@@ -357,7 +359,6 @@ public:
          }
       }
    }
-
    void applyDecoration(uint32_t id, const spv_parsed_instruction_t *ins)
    {
       auto iter = decorationGroups.find(id);
@@ -367,16 +368,17 @@ public:
          return;
       }
 
-      const spv_parsed_operand_t *op;
-      uint32_t decoration;
+      if (ins->num_operands < 2)
+         return;
 
-      assert(ins->num_operands >= 2);
-
-      op = &ins->operands[1];
-      assert(op->type == SPV_OPERAND_TYPE_DECORATION);
-      decoration = ins->words[op->offset];
+      const spv_parsed_operand_t *op = &ins->operands[1];
+      if (op->type != SPV_OPERAND_TYPE_DECORATION)
+         return;
+      uint32_t decoration = ins->words[op->offset];
 
       if (decoration == SpvDecorationSpecId) {
+         if (ins->num_operands < 3)
+            return;
          uint32_t spec_id = ins->words[ins->operands[2].offset];
          for (auto &c : specConstants) {
             if (c.second.id == spec_id) {
@@ -401,8 +403,11 @@ public:
                   arg.typeQualifier |= CLC_KERNEL_ARG_TYPE_RESTRICT;
                   break;
                case SpvDecorationFuncParamAttr:
+                  if (ins->num_operands < 3)
+                     break;
                   op = &ins->operands[2];
-                  assert(op->type == SPV_OPERAND_TYPE_FUNCTION_PARAMETER_ATTRIBUTE);
+                  if (op->type != SPV_OPERAND_TYPE_FUNCTION_PARAMETER_ATTRIBUTE)
+                     break;
                   switch (ins->words[op->offset]) {
                   case SpvFunctionParameterAttributeNoAlias:
                      arg.typeQualifier |= CLC_KERNEL_ARG_TYPE_RESTRICT;
@@ -418,27 +423,26 @@ public:
          }
       }
    }
-
    void parseOpDecorate(const spv_parsed_instruction_t *ins)
    {
-      const spv_parsed_operand_t *op;
-      uint32_t id;
+      if (ins->num_operands < 2)
+         return;
 
-      assert(ins->num_operands >= 2);
-
-      op = &ins->operands[0];
-      assert(op->type == SPV_OPERAND_TYPE_ID);
-      id = ins->words[op->offset];
+      const spv_parsed_operand_t *op = &ins->operands[0];
+      if (op->type != SPV_OPERAND_TYPE_ID && op->type != SPV_OPERAND_TYPE_RESULT_ID)
+         return;
+      uint32_t id = ins->words[op->offset];
 
       applyDecoration(id, ins);
    }
-
    void parseOpGroupDecorate(const spv_parsed_instruction_t *ins)
    {
-      assert(ins->num_operands >= 2);
+      if (ins->num_operands < 2)
+         return;
 
       const spv_parsed_operand_t *op = &ins->operands[0];
-      assert(op->type == SPV_OPERAND_TYPE_ID);
+      if (op->type != SPV_OPERAND_TYPE_ID && op->type != SPV_OPERAND_TYPE_RESULT_ID)
+         return;
       uint32_t groupId = ins->words[op->offset];
 
       auto lowerBound = decorationGroups.lower_bound(groupId);
@@ -452,40 +456,44 @@ public:
       vec.reserve(ins->num_operands - 1);
       for (uint32_t i = 1; i < ins->num_operands; ++i) {
          op = &ins->operands[i];
-         assert(op->type == SPV_OPERAND_TYPE_ID);
+         if (op->type != SPV_OPERAND_TYPE_ID && op->type != SPV_OPERAND_TYPE_RESULT_ID)
+            continue;
          vec.push_back(ins->words[op->offset]);
       }
    }
-
    void parseOpTypeImage(const spv_parsed_instruction_t *ins)
    {
       const spv_parsed_operand_t *op;
       uint32_t typeId;
       unsigned accessQualifier = CLC_KERNEL_ARG_ACCESS_READ;
 
+      if (ins->num_operands < 1)
+         return;
       op = &ins->operands[0];
-      assert(op->type == SPV_OPERAND_TYPE_RESULT_ID);
+      if (op->type != SPV_OPERAND_TYPE_RESULT_ID && op->type != SPV_OPERAND_TYPE_ID)
+         return;
       typeId = ins->words[op->offset];
 
       if (ins->num_operands >= 9) {
          op = &ins->operands[8];
-         assert(op->type == SPV_OPERAND_TYPE_ACCESS_QUALIFIER);
-         switch (ins->words[op->offset]) {
-         case SpvAccessQualifierReadOnly:
-            accessQualifier = CLC_KERNEL_ARG_ACCESS_READ;
-            break;
-         case SpvAccessQualifierWriteOnly:
-            accessQualifier = CLC_KERNEL_ARG_ACCESS_WRITE;
-            break;
-         case SpvAccessQualifierReadWrite:
-            accessQualifier = CLC_KERNEL_ARG_ACCESS_WRITE |
-               CLC_KERNEL_ARG_ACCESS_READ;
-            break;
+         if (op->type == SPV_OPERAND_TYPE_ACCESS_QUALIFIER) {
+            switch (ins->words[op->offset]) {
+            case SpvAccessQualifierReadOnly:
+               accessQualifier = CLC_KERNEL_ARG_ACCESS_READ;
+               break;
+            case SpvAccessQualifierWriteOnly:
+               accessQualifier = CLC_KERNEL_ARG_ACCESS_WRITE;
+               break;
+            case SpvAccessQualifierReadWrite:
+               accessQualifier = CLC_KERNEL_ARG_ACCESS_WRITE |
+                  CLC_KERNEL_ARG_ACCESS_READ;
+               break;
+            }
          }
       }
 
       for (auto &kernel : kernels) {
-	 for (auto &arg : kernel.args) {
+         for (auto &arg : kernel.args) {
             if (arg.typeId == typeId) {
                arg.accessQualifier = accessQualifier;
                arg.addrQualifier = CLC_KERNEL_ARG_ADDRESS_GLOBAL;
@@ -493,7 +501,6 @@ public:
          }
       }
    }
-
    void parseExecutionMode(const spv_parsed_instruction_t *ins)
    {
       uint32_t executionMode = ins->words[ins->operands[1].offset];
@@ -543,7 +550,8 @@ public:
             literalType = CLC_SPEC_CONSTANT_HALF;
             break;
          default:
-            UNREACHABLE("Unexpected float bit size");
+            literalTypes.erase(typeId);
+            return;
          }
          break;
       }
@@ -565,7 +573,8 @@ public:
                literalType = CLC_SPEC_CONSTANT_INT64;
                break;
             default:
-               UNREACHABLE("Unexpected int bit size");
+               literalTypes.erase(typeId);
+               return;
             }
          } else {
             switch (sizeInBits) {
@@ -582,13 +591,15 @@ public:
                literalType = CLC_SPEC_CONSTANT_UINT64;
                break;
             default:
-               UNREACHABLE("Unexpected uint bit size");
+               literalTypes.erase(typeId);
+               return;
             }
          }
          break;
       }
       default:
-         UNREACHABLE("Unexpected type opcode");
+         literalTypes.erase(typeId);
+         return;
       }
    }
 
@@ -604,7 +615,8 @@ public:
 
                // This better be an integer or float type
                auto typeIter = literalTypes.find(typeId);
-               assert(typeIter != literalTypes.end());
+               if (typeIter == literalTypes.end())
+                  continue;
 
                data.type = typeIter->second;
                break;
@@ -614,7 +626,7 @@ public:
                data.type = CLC_SPEC_CONSTANT_BOOL;
                break;
             default:
-               UNREACHABLE("Composites and Ops are not directly specializable.");
+               continue;
             }
          }
       }

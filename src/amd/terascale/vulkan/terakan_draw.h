@@ -30,11 +30,10 @@
 extern "C" {
 #endif
 
-/* When is_meta_draw is true (internal meta draws: clear, blit, query), the
- * INV_TC | INV_SH | INV_VC bits are preserved in pending_barrier_actions after
- * emission so they fire again before the next application draw.  HOST_WRITE
- * barriers target the application draw, not the meta draw that happens to run
- * between the barrier record and the application draw.
+/* When is_meta_draw is true (internal meta draws: clear, blit, query),
+ * INV_TC | INV_SH | INV_VC are preserved only for pure read-cache
+ * invalidation barriers (SYNC_PFP_TO_ME + INV_* only). Barriers that also
+ * include producer-side flush actions are consumed once.
  */
 void terakan_before_hw_draw(struct terakan_gfx_command_writer * command_writer,
                              bool is_meta_draw);

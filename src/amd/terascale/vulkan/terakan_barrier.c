@@ -400,6 +400,9 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
    bool const sync_pfp_post_surface_sync_only =
       (actions & (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME)) ==
          (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME);
+   bool const emulate_cmdb_boundary_via_ib_split =
+      (actions & (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_INV_TC)) ==
+         (TERAKAN_BARRIER_ACTION_PARTIAL_FLUSH_CS | TERAKAN_BARRIER_ACTION_INV_TC);
 
    /* Flushes are performed in bottom-to-top-of-pipe order, so preceding flushes are likely to be
     * able to make subsequent ones not have to wait.
@@ -492,7 +495,11 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
    }
 
    if (actions & TERAKAN_BARRIER_ACTION_INV_SH) {
-      cp_coher_cntl |= S_0085F0_SH_ACTION_ENA(1);
+      /* Same-CMDB compute->draw hazards on Evergreen require SMX invalidation
+       * together with SH invalidation to match the command-buffer-boundary
+       * flush behavior used by split/two-CMDB passes.
+       */
+      cp_coher_cntl |= S_0085F0_SH_ACTION_ENA(1) | S_0085F0_SMX_ACTION_ENA(1);
    }
 
    /* On Evergreen (and related TeraScale-2 parts), SURFACE_SYNC with TC/VC/SH
@@ -590,6 +597,16 @@ terakan_barrier_emit_pending_actions(struct terakan_gfx_command_writer * const c
       }
       terakan_gfx_command_writer_emit_done(command_writer, wait_reg_mem_packet);
    }
+
+   if (surface_sync_emitted && emulate_cmdb_boundary_via_ib_split) {
+      if (unlikely(terakan_barrier_is_cs_dump_enabled(command_writer))) {
+         fprintf(stderr,
+                 "terakan: pm4: EMULATE_CMDB_BOUNDARY splitting indirect buffer after barrier\n");
+      }
+      /* Force a fresh indirect buffer for subsequent draw packets so same-CMDB
+       * paths can reproduce the passing submit-boundary behavior. */
+      terakan_gfx_command_writer_end_indirect_buffer(command_writer);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -602,6 +619,8 @@ terakan_CmdPipelineBarrier2(VkCommandBuffer const commandBuffer,
    VkImageAspectFlags const global_barrier_image_aspects =
       VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT |
       VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT | VK_IMAGE_ASPECT_PLANE_2_BIT;
+   bool const keep_sync_pfp_for_wait_reg_mem =
+      debug_get_bool_option("TERAKAN_EXPERIMENTAL_BARRIER_WAIT_REG_MEM", false);
    for (uint32_t barrier_index = 0; barrier_index < pDependencyInfo->memoryBarrierCount;
         ++barrier_index) {
       VkMemoryBarrier2 const * const barrier = &pDependencyInfo->pMemoryBarriers[barrier_index];
@@ -615,7 +634,9 @@ terakan_CmdPipelineBarrier2(VkCommandBuffer const commandBuffer,
                                          global_barrier_image_aspects);
       if (terakan_barrier_is_cs_to_index_path(barrier->srcStageMask, barrier->srcAccessMask,
                                               barrier->dstStageMask, barrier->dstAccessMask)) {
-         dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         if (!keep_sync_pfp_for_wait_reg_mem) {
+            dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         }
          src_actions &= ~TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
       }
       if (terakan_barrier_is_empty_src_scope(barrier->srcStageMask, barrier->srcAccessMask)) {
@@ -636,7 +657,9 @@ terakan_CmdPipelineBarrier2(VkCommandBuffer const commandBuffer,
                                          barrier->dstAccessMask, true, VK_IMAGE_ASPECT_NONE);
       if (terakan_barrier_is_cs_to_index_path(barrier->srcStageMask, barrier->srcAccessMask,
                                               barrier->dstStageMask, barrier->dstAccessMask)) {
-         dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         if (!keep_sync_pfp_for_wait_reg_mem) {
+            dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         }
          src_actions &= ~TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
       }
       bool const ownership_transfer =
@@ -662,7 +685,9 @@ terakan_CmdPipelineBarrier2(VkCommandBuffer const commandBuffer,
                                          barrier->subresourceRange.aspectMask);
       if (terakan_barrier_is_cs_to_index_path(barrier->srcStageMask, barrier->srcAccessMask,
                                               barrier->dstStageMask, barrier->dstAccessMask)) {
-         dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         if (!keep_sync_pfp_for_wait_reg_mem) {
+            dst_actions &= ~TERAKAN_BARRIER_ACTION_SYNC_PFP_TO_ME;
+         }
          src_actions &= ~TERAKAN_BARRIER_ACTION_FLUSH_INV_CB_UAV;
       }
       bool const ownership_transfer =
