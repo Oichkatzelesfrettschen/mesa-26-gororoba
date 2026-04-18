@@ -9,7 +9,7 @@ buildtype           = 'debug'
 b_ndebug            = 'false'
 
 gallium-drivers     = ['r600']
-vulkan-drivers      = ['terakan']
+vulkan-drivers      = ['amd_terascale']
 
 amd-use-llvm        = true
 glx                 = 'dri'

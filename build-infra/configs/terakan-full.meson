@@ -13,7 +13,7 @@ b_ndebug            = 'false'
 gallium-drivers     = ['r600', 'zink', 'softpipe', 'llvmpipe']
 
 # Vulkan drivers: our terakan fork.
-vulkan-drivers      = ['terakan']
+vulkan-drivers      = ['amd_terascale']
 
 # Rusticl (OpenCL over Gallium): enabled with auto-detected driver pool.
 gallium-rusticl                = true

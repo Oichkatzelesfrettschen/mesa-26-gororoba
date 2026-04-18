@@ -12,7 +12,7 @@ b_ndebug            = 'false'
 
 # r600 only -- no upstream refs.  This is the daily iteration lane.
 gallium-drivers     = ['r600']
-vulkan-drivers      = ['terakan']
+vulkan-drivers      = ['amd_terascale']
 
 gallium-rusticl                = true
 gallium-rusticl-enable-drivers = ['r600']
