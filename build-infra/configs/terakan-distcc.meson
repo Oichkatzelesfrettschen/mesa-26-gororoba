@@ -6,6 +6,24 @@
 # surface on the Bobcat host; keeps rusticl r600-only.
 # See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
 
+[binaries]
+# Compiler chain: meson calls `ccache clang-22 ...`; on cache MISS
+# ccache prepends $CCACHE_PREFIX (= distcc) to produce
+# `distcc clang-22 ...`.  This is the canonical ccache+distcc
+# ordering per ccache.dev manual -- it is explicitly DOCUMENTED
+# AS INCORRECT to wrap as `ccache distcc clang-22` because ccache
+# hashes distcc's mtime instead of the real compiler, and fails
+# to share cache between with-distcc and without-distcc builds.
+# See docs/workspace/ccache-sccache-wiring.md (in steinmarder)
+# for the full RCA.
+c   = ['/usr/bin/ccache', '/usr/bin/clang-22']
+cpp = ['/usr/bin/ccache', '/usr/bin/clang++-22']
+
+# Rust compilation wrapped through sccache.  meson-rust invokes
+# rustc directly (bypassing cargo), so RUSTC_WRAPPER env has no
+# effect -- the wrap must happen at the compiler-binary level.
+rust = ['/usr/bin/sccache', '/usr/bin/rustc']
+
 [project options]
 buildtype           = 'debug'
 b_ndebug            = 'false'
