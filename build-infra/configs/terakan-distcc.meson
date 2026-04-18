@@ -22,7 +22,7 @@ cpp = ['/usr/bin/ccache', '/usr/bin/clang++-22']
 # Rust compilation wrapped through sccache.  meson-rust invokes
 # rustc directly (bypassing cargo), so RUSTC_WRAPPER env has no
 # effect -- the wrap must happen at the compiler-binary level.
-rust = ['/usr/bin/sccache', '/usr/bin/rustc']
+rust = ['/usr/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
 
 [project options]
 buildtype           = 'debug'
