@@ -68,6 +68,24 @@ terakan_device_finish(struct terakan_device * const device)
 
    terakan_bo_free(device->uav_immediate_bo, NULL);
 
+   /* TERAKAN_DEBUG_FLUSH_WATERMARKS scratch BO.  Print final values
+    * before freeing so the last test's checkpoint timestamps are
+    * visible. */
+   if (device->debug_watermark_bo != NULL) {
+      if (device->debug_watermark_map != NULL) {
+         uint32_t const * const wm = (uint32_t const *)device->debug_watermark_map;
+         fprintf(stderr,
+                 "terakan/watermarks final (last dispatch):\n"
+                 "   ckpt1 pre-dispatch:         0x%08x\n"
+                 "   ckpt2 post-dispatch/preEOP: 0x%08x\n"
+                 "   ckpt3 post-EOP:             0x%08x\n"
+                 "   ckpt4 post-SURFACE_SYNC:    0x%08x\n",
+                 wm[0], wm[2], wm[4], wm[6]);
+         terakan_bo_unmap(device->debug_watermark_bo);
+      }
+      terakan_bo_free(device->debug_watermark_bo, NULL);
+   }
+
    terakan_bo_free(device->robustness_trash_page_bo, NULL);
 
    terakan_bo_free(device->gfx_discard_bo, NULL);
@@ -345,6 +363,52 @@ terakan_device_init(struct terakan_device * const device,
 
    device->command_buffer_submission_size_gfx.indirect_buffer_dwords &=
       ~(uint32_t)(TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1);
+
+   /* Explicit zero-init of watermark fields: the parent vk_device
+    * zalloc covers these, but make the dependency explicit here so
+    * a future refactor that changes device-struct allocation can't
+    * accidentally leave these with garbage pointers -- which would
+    * segfault the destructor on the NULL-check path. */
+   device->debug_watermark_bo = NULL;
+   device->debug_watermark_map = NULL;
+   device->debug_watermarks_enabled = false;
+   device->debug_watermark_seq = 0;
+
+   /* TERAKAN_DEBUG_FLUSH_WATERMARKS=1 scratch BO allocation.
+    * Single page (4 KiB), GTT + HOST_VISIBLE so the CPU can read
+    * the four checkpoint sequence values between dispatches via a
+    * persistent map.  The GPU writes via PKT3_MEM_WRITE.  If
+    * allocation or mapping fails, we log but don't fail device
+    * init -- watermarks are strictly a diagnostic facility. */
+   device->debug_watermarks_enabled =
+      debug_get_bool_option("TERAKAN_DEBUG_FLUSH_WATERMARKS", false);
+   if (device->debug_watermarks_enabled) {
+      VkResult const wm_result = device->winsys_fn->bo->allocate_device_memory(
+         device, 4096u, 256u,
+         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+         0, NULL, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &device->debug_watermark_bo);
+      if (wm_result == VK_SUCCESS) {
+         device->debug_watermark_map = terakan_bo_map(device->debug_watermark_bo);
+         if (device->debug_watermark_map != NULL) {
+            memset(device->debug_watermark_map, 0, 4096);
+            fprintf(stderr,
+                    "terakan/watermarks: enabled; scratch bo va=0x%lx map=%p\n",
+                    (unsigned long)device->debug_watermark_bo->va,
+                    device->debug_watermark_map);
+         } else {
+            fprintf(stderr,
+                    "terakan/watermarks: bo_map failed; disabling\n");
+            terakan_bo_free(device->debug_watermark_bo, NULL);
+            device->debug_watermark_bo = NULL;
+            device->debug_watermarks_enabled = false;
+         }
+      } else {
+         fprintf(stderr,
+                 "terakan/watermarks: allocate_device_memory failed: 0x%x; "
+                 "disabling\n", wm_result);
+         device->debug_watermarks_enabled = false;
+      }
+   }
 
    return VK_SUCCESS;
 
