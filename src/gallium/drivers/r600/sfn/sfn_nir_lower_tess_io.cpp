@@ -141,8 +141,12 @@ load_offset_group(nir_builder *b, int ncomponents)
    case 6:
       return nir_imm_ivec2(b, 16, 20);
    default:
-      debug_printf("Got %d components\n", ncomponents);
-      UNREACHABLE("Unsupported component count");
+      /* Unsupported tess component count.  Return a zero vec to let
+       * downstream handling produce a clean compile error instead of
+       * aborting deqp-vk via UNREACHABLE. */
+      R600_ERR("lower_tess_io: unsupported component count %d; "
+               "returning zero vec\n", ncomponents);
+      return nir_imm_zero(b, ncomponents > 0 && ncomponents <= 4 ? ncomponents : 1, 32);
    }
 }
 
