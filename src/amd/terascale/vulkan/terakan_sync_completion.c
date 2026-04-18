@@ -93,17 +93,27 @@ terakan_sync_completion_signal(struct vk_device * const device_base,
       container_of(sync_base, struct terakan_sync_completion, vk);
 
    mtx_lock(&device->completion_mutex);
-   /* Timeline semaphores sometimes signal values that don't strictly
+   /* Timeline semaphores can signal values that don't strictly
     * interleave with our internal pending/current ordering (for
-    * example, an external waiter signals the same value we already
-    * expected, or a racy test signals out of order).  Graceful bail
-    * instead of asserting so the deqp-vk process keeps running and
-    * only the individual test fails. */
-   if (value >= sync->pending_value || value <= sync->current_value) {
+    * example, host-signal of a value already reached, or a racy
+    * test signaling out of order).  Treat such cases as idempotent
+    * no-ops returning VK_SUCCESS so any waiters still get a
+    * broadcast and the test continues -- previously we asserted
+    * (abort) or returned VK_ERROR_UNKNOWN (hang waiting on a
+    * signal that never completes).  Neither is correct.
+    *
+    * Two out-of-order shapes to tolerate:
+    *   value <= current_value : already signalled, waiters done.
+    *   value >= pending_value : leap-ahead, update watermarks. */
+   uint64_t const current = sync->current_value;
+   if (value <= current) {
       mtx_unlock(&device->completion_mutex);
-      return VK_ERROR_UNKNOWN;
+      cnd_broadcast(&device->completion_condition);
+      return VK_SUCCESS;
    }
-   p_atomic_set(&sync->pending_value, value);
+   if (value >= sync->pending_value) {
+      p_atomic_set(&sync->pending_value, value);
+   }
    p_atomic_set(&sync->current_value, value);
    mtx_unlock(&device->completion_mutex);
    cnd_broadcast(&device->completion_condition);
