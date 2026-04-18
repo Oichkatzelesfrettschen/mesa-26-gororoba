@@ -1,0 +1,13 @@
+# base-debug: stock Mesa reference build (NO terakan).  Kept so the
+# terakan work can be regression-compared against upstream Mesa
+# behaviour on the same hardware.  Derived from build-debug/.
+# See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
+
+[project options]
+buildtype           = 'debug'
+
+gallium-drivers     = ['r600', 'softpipe', 'llvmpipe']
+vulkan-drivers      = []
+
+amd-use-llvm        = true
+glx                 = 'dri'

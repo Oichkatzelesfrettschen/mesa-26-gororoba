@@ -1,0 +1,29 @@
+# terakan-full: canonical 'full Mesa + terakan' debug build.
+#
+# Derived from the five equivalent build dirs in the pre-synthesis
+# gororoba (build-terakan-{debug,plain,spiwatch,vtxfetch,vtxfetch-cachefix})
+# which all carried this exact option set.  See
+# ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
+
+[project options]
+buildtype           = 'debug'
+b_ndebug            = 'false'
+
+# Gallium drivers: r600 fork (the target) plus upstream refs.
+gallium-drivers     = ['r600', 'zink', 'softpipe', 'llvmpipe']
+
+# Vulkan drivers: our terakan fork.
+vulkan-drivers      = ['terakan']
+
+# Rusticl (OpenCL over Gallium): enabled with auto-detected driver pool.
+gallium-rusticl                = true
+gallium-rusticl-enable-drivers = ['auto']
+
+# AMD compiler uses LLVM, HUD available for profiling overlays, VA for
+# video accel decode tests (Evergreen UVD2).
+amd-use-llvm        = true
+gallium-extra-hud   = true
+gallium-va          = 'enabled'
+
+# GLX stack: auto-pick dri vs direct (upstream Mesa default is sane).
+glx                 = 'auto'
