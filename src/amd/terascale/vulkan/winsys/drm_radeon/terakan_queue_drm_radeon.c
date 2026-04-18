@@ -186,6 +186,31 @@ terakan_queue_drm_radeon_submit(
     * but the TC then fetches 0 from RAM because the CPU writes never arrived. */
    __atomic_thread_fence(__ATOMIC_SEQ_CST);
 
+   /* TERAKAN_DEBUG_DUMP_RELOCS=1: print the reloc list handed to
+    * DRM_RADEON_CS for every submit.  Used to identify which BO in
+    * the reloc array is responsible for kernel-visible BO-fence
+    * mismatches (e.g. the 15x GEM_WAIT_IDLE stall on single_layer
+    * image.store).  Zero GPU impact; host-side printf only. */
+   static int dump_relocs_cached = -1;
+   if (dump_relocs_cached < 0) {
+      dump_relocs_cached = debug_get_bool_option("TERAKAN_DEBUG_DUMP_RELOCS", false) ? 1 : 0;
+   }
+   if (dump_relocs_cached) {
+      struct drm_radeon_cs_reloc const * const relocs =
+         (struct drm_radeon_cs_reloc const *)bo_references;
+      fprintf(stderr,
+              "terakan/relocs: submit ib_dw=%u reloc_count=%u ring=%u\n",
+              indirect_buffer_size_dwords, bo_reference_count,
+              (unsigned)submission_context->ring);
+      for (uint32_t i = 0; i < bo_reference_count; ++i) {
+         fprintf(stderr,
+                 "terakan/relocs:   [%3u] handle=%u read_domains=0x%x "
+                 "write_domain=0x%x flags=0x%x\n",
+                 i, relocs[i].handle, relocs[i].read_domains,
+                 relocs[i].write_domain, relocs[i].flags);
+      }
+   }
+
    int const cs_result = drmCommandWriteRead(device->render_node_fd, DRM_RADEON_CS, &cs_arguments,
                                              sizeof(cs_arguments));
 
