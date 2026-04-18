@@ -4,6 +4,11 @@
 # link to keep iteration time tight on NIR pass hacks.
 # See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
 
+[binaries]
+c   = ["/usr/bin/ccache", "/usr/bin/clang-22"]
+cpp = ["/usr/bin/ccache", "/usr/bin/clang++-22"]
+rust = ["/usr/bin/sccache", "/usr/bin/rustc"]
+
 [project options]
 buildtype           = 'debug'
 b_ndebug            = 'false'
