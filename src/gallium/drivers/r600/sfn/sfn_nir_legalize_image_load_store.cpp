@@ -66,7 +66,13 @@ r600_legalize_image_load_store_impl(nir_builder *b,
          num_components = 3;
          break;
       default:
-         UNREACHABLE("Unexpected image size");
+         /* Unknown sampler dim: rather than abort the whole compile,
+          * assume 2 components and let downstream passes catch any
+          * real problem as a normal compile-error return.  Unblocks
+          * CTS sweeps that hit exotic dim values in unsupported
+          * extensions. */
+         num_components = 2;
+         break;
       }
 
       if (num_components < 3 && nir_intrinsic_image_array(ir))
