@@ -29,12 +29,14 @@
 
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_endian.h"
 #include "util/u_math.h"
 
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 unsigned
 terakan_color_descriptor_buffer_uav_base_granularity_log2(
@@ -92,6 +94,33 @@ terakan_color_descriptor_calculate_buffer_base_pitch_slice_dim_offset(
 
    assert(elements != 0);
    descriptor->dim = (uint32_t)(base_granularity_offset_bytes / bytes_per_element + elements - 1);
+
+   /* TERAKAN_DEBUG_BUFFER_UAV_LAYOUT=1: trace the inputs and outputs
+    * of buffer-UAV CB_COLOR0 layout derivation.  Used to confirm or
+    * refute CLAIMS C-2026-04-18-14 (alignment trap) by running cold
+    * and warm single_layer and diffing the log.
+    *
+    * If inputs match but outputs differ -> bug is here.
+    * If inputs differ  -> bug is in the caller's `elements` computation.
+    * If both match but IB still diverges -> observed packet comes from
+    *   a different code path (image-UAV CB binding, not this one).
+    */
+   static int trace_cached = -1;
+   if (trace_cached < 0) {
+      trace_cached = debug_get_bool_option("TERAKAN_DEBUG_BUFFER_UAV_LAYOUT", false) ? 1 : 0;
+   }
+   if (trace_cached) {
+      fprintf(stderr,
+              "terakan/uav_layout: va=0x%016llx elements=%llu bpe=%u "
+              "pipe_interleave_log2=%u base_gran_log2=%u "
+              "va_aligned=0x%016llx base=0x%08x offset_bytes=%u "
+              "pitch_reg=0x%08x slice_reg=0x%08x dim=0x%08x\n",
+              (unsigned long long)va, (unsigned long long)elements, bytes_per_element,
+              physical_device->tiling_info.pipe_interleave_bytes_log2, base_granularity_log2,
+              (unsigned long long)va_granularity_aligned, descriptor->base,
+              base_granularity_offset_bytes, descriptor->pitch, descriptor->slice,
+              descriptor->dim);
+   }
 }
 
 void
