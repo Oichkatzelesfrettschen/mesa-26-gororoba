@@ -399,6 +399,12 @@ struct terakan_gfx_command_writer {
        * for that slot instead.  Prevents misinterpretation if a driver
        * bug routes the wrong type to the wrong array. */
       uint32_t texel_buffer_element_counts[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
+      /* Per-UAV baseArrayLayer for MEM_RAT STORE_TYPED slice addressing.
+       * Non-image UAVs and descriptors that already carry a valid shader
+       * z coordinate write zero so NIR algebraic simplification removes
+       * the slice-bias add.
+       */
+      uint32_t uav_base_array_layers[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
       bool dirty;
       /* Cached allocation from the last upload — reused if not dirty. */
       struct terakan_bo const *bo;

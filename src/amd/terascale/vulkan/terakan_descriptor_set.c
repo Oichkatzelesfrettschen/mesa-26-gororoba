@@ -93,6 +93,22 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                memcpy(&dst_uav->color, &image_view->color, sizeof(struct terakan_color_descriptor));
                dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
                dst_uav->is_texel_buffer = 0;
+               /* Store the image-view base layer and whether the view hides
+                * an array-backed allocation from the shader coordinate.
+                */
+               dst_uav->base_array_layer = image_view->vk.base_array_layer;
+               {
+                  bool const is_nonarray_view =
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_1D ||
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_2D ||
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE;
+                  bool const backing_is_array =
+                     image_view->vk.image->array_layers > 1;
+                  dst_uav->view_flags = (uint8_t)((is_nonarray_view && backing_is_array)
+                     ? TERAKAN_DESCRIPTOR_SET_UAV_VIEW_FLAG_NONARRAY_VIEW_OF_ARRAY_IMAGE
+                     : 0u);
+               }
+               memset(dst_uav->_pad, 0, sizeof(dst_uav->_pad));
 
                /* TERAKAN_DEBUG_STORAGE_IMAGE_DESC=1: trace the STORAGE_IMAGE
                 * descriptor pipeline in full, at every transformation step.
@@ -264,6 +280,41 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                              current_type, upgraded_type, dst_uav->color.info,
                              image_view->vk.image->array_layers);
                   }
+                  /* Non-array views over array-backed images use a
+                   * TEXTURE2DARRAY resource. Revert the descriptor base
+                   * pre-shift when validation enables explicit slice
+                   * coordinate injection, then expose a single-layer view
+                   * window so the injected R3.z selects the physical slice.
+                   */
+                  static int slice_view_cached = -1;
+                  if (slice_view_cached < 0) {
+                     slice_view_cached = debug_get_bool_option(
+                        "TERAKAN_STORAGE_IMAGE_SLICE_VIEW", false) ? 1 : 0;
+                  }
+                  if (slice_view_cached && view_is_nonarray_2d_or_1d &&
+                      image_view->color_base_slice_shift_shr8 != 0) {
+                     uint32_t const base_layer = image_view->vk.base_array_layer;
+                     uint32_t const base_before = dst_uav->color.base;
+                     dst_uav->color.base -= image_view->color_base_slice_shift_shr8;
+                     /* TEXTURE2DARRAY writes use both CB_COLOR_VIEW.SLICE_START
+                      * and shader R3.z. Keep the view window at layer 0 so
+                      * R3.z carries the physical slice exactly once.
+                      */
+                     dst_uav->color.view =
+                        S_028C6C_SLICE_START(0) |
+                        S_028C6C_SLICE_MAX(0);
+                     if (trace_sd_cached) {
+                        fprintf(stderr,
+                                "terakan/stor_img_desc: slice-view applied "
+                                "base_layer=%u shift_shr8=0x%08x "
+                                "base_before=0x%08x reverted_base=0x%08x "
+                                "view=0x%08x (slice_start=0 refined)\n",
+                                base_layer,
+                                image_view->color_base_slice_shift_shr8,
+                                base_before, dst_uav->color.base,
+                                dst_uav->color.view);
+                     }
+                  }
                }
                /* Stash the SQ_TEX_RESOURCE ("REAL") descriptor so
                 * terakan_emit_compute_resources can emit the
@@ -334,6 +385,9 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
             } else {
                dst_uav->bo = NULL;
                memset(dst_uav->real_resource, 0, sizeof(dst_uav->real_resource));
+               dst_uav->base_array_layer = 0;
+               dst_uav->view_flags = 0;
+               memset(dst_uav->_pad, 0, sizeof(dst_uav->_pad));
             }
          }
       }
@@ -394,6 +448,9 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                dst_uav->buffer_byte_size = 0;
                dst_uav->is_texel_buffer = 1;
             }
+            dst_uav->base_array_layer = 0;
+            dst_uav->view_flags = 0;
+            memset(dst_uav->_pad, 0, sizeof(dst_uav->_pad));
          }
       }
          FALLTHROUGH;
@@ -457,6 +514,9 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
             } else {
                dst_uav->buffer_byte_size = 0;
             }
+            dst_uav->base_array_layer = 0;
+            dst_uav->view_flags = 0;
+            memset(dst_uav->_pad, 0, sizeof(dst_uav->_pad));
          }
       } break;
 

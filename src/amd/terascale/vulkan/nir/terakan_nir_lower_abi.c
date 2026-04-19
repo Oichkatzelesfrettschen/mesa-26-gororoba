@@ -33,6 +33,8 @@
 
 #include "terakan_nir_lower_bindings_internal.h"
 
+#include "util/u_debug.h"
+
 static nir_def *
 terakan_nir_resize_vector(nir_builder * const b, nir_def * const src,
                           unsigned const num_components, bool const pad_with_zero)
@@ -188,7 +190,9 @@ terakan_nir_uav_immed_index(nir_builder * const b,
 
 static nir_def *
 terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
-                            enum glsl_sampler_dim const dim, bool const is_array)
+                            enum glsl_sampler_dim const dim, bool const is_array,
+                            struct terakan_nir_lower_bindings_state * const state,
+                            unsigned const uav_index_zero_based)
 {
    /* Buffers need separate handling due to the UAV base granularity offset. */
    assert(dim != GLSL_SAMPLER_DIM_BUF);
@@ -210,6 +214,72 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
    if (dim == GLSL_SAMPLER_DIM_3D || is_array) {
       uav_coord_num_components = 3;
       uav_coord_components[2] = nir_channel(b, image_coord, dim == GLSL_SAMPLER_DIM_1D ? 1 : 2);
+   }
+
+   /* Some CTS image-store shaders pass a third coordinate component
+    * through imageStore even when the declared image type is non-array.
+    * Descriptor binding can promote the resource to TEXTURE2DARRAY, whose
+    * CB exporter reads R3.z as the physical slice index. Preserve the
+    * third coordinate component when validation explicitly enables the
+    * non-array storage-image slice path.
+   */
+   if (uav_coord_num_components < 3 && dim != GLSL_SAMPLER_DIM_1D) {
+      static int preserve_coord_z_cached = -1;
+      if (preserve_coord_z_cached < 0) {
+         preserve_coord_z_cached =
+            debug_get_bool_option("TERAKAN_STORAGE_IMAGE_PRESERVE_COORD_Z", false) ? 1 : 0;
+      }
+      if (preserve_coord_z_cached) {
+         uav_coord_num_components = 3;
+         /* Missing coordinate components lower to zero so the NIR builder
+          * does not introduce an undefined slice value.
+          */
+         if (image_coord->num_components >= 3) {
+            uav_coord_components[2] = nir_channel(b, image_coord, 2);
+         } else {
+            uav_coord_components[2] = nir_imm_zero(b, 1, 32);
+         }
+      }
+   }
+
+   /* Non-array views over array-backed storage images need the view's
+    * baseArrayLayer added to the MEM_RAT STORE_TYPED slice coordinate.
+    * The runtime metadata uploader writes zero for descriptor kinds that
+    * must not receive a slice bias.
+    */
+   if (dim != GLSL_SAMPLER_DIM_1D && dim != GLSL_SAMPLER_DIM_BUF &&
+       state != NULL && uav_index_zero_based < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
+      static int base_array_layer_cached = -1;
+      if (base_array_layer_cached < 0) {
+         base_array_layer_cached =
+            debug_get_bool_option("TERAKAN_STORAGE_IMAGE_BASE_ARRAY_LAYER", false) ? 1 : 0;
+      }
+      if (base_array_layer_cached) {
+         /* Bank 14 dword 28 starts uav_base_array_layers[]. */
+         uint32_t const layer_dword = 28u + uav_index_zero_based;
+         uint32_t const layer_vec4_index = layer_dword / 4u;
+         uint32_t const layer_component = layer_dword % 4u;
+
+         *state->kcache_needed |=
+            (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+
+         nir_def * const base_array_layer_load = nir_load_kcache_r600(
+            b, 1, 32, nir_imm_zero(b, 1, 32),
+            .access = ACCESS_CAN_REORDER,
+            .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+            .base = layer_vec4_index,
+            .component = layer_component);
+
+         if (uav_coord_num_components < 3) {
+            /* Promote to 3 components with coord_z = baseArrayLayer. */
+            uav_coord_num_components = 3;
+            uav_coord_components[2] = base_array_layer_load;
+         } else {
+            /* Zero-layer descriptors preserve the shader-provided z. */
+            uav_coord_components[2] =
+               nir_iadd(b, uav_coord_components[2], base_array_layer_load);
+         }
+      }
    }
 
    return nir_vec(b, uav_coord_components, uav_coord_num_components);
@@ -1060,7 +1130,8 @@ terakan_nir_lower_bindings_instr_image_deref_load(
          b,
          terakan_nir_build_uav_returning_instr_r600(
             b, intrin->def.num_components, 32, uav_array_index,
-            terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim, image_is_array), undef,
+            terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim, image_is_array,
+                                        state, uav_index_zero_based), undef,
             undef, immed_index, V_RAT_INST_NOP_RTN, access,
             state->uav_base + uav_index_zero_based,
             (b->shader->info.stage == MESA_SHADER_FRAGMENT
@@ -1149,7 +1220,8 @@ terakan_nir_lower_bindings_instr_image_deref_store(
                                            (access & ACCESS_INCLUDE_HELPERS) != 0, state);
    } else {
       coord = terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim,
-                                          nir_intrinsic_image_array(intrin));
+                                          nir_intrinsic_image_array(intrin),
+                                          state, uav_index_zero_based);
    }
 
    nir_def * const undef = nir_undef(b, 1, 32);
@@ -1222,7 +1294,8 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
                                            (access & ACCESS_INCLUDE_HELPERS) != 0, state);
    } else {
       coord = terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim,
-                                          nir_intrinsic_image_array(intrin));
+                                          nir_intrinsic_image_array(intrin),
+                                          state, uav_index_zero_based);
    }
 
    /* For INC/DEC, the hardware instruction accepts the maximum possible value. */

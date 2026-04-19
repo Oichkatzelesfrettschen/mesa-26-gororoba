@@ -98,7 +98,21 @@ struct terakan_descriptor_set_uav {
     * Copied from image_view->resource[8] at bind time.  Zero for
     * non-image (buffer/texel-buffer) UAVs. */
    uint32_t real_resource[8];
+   /* VkImageView baseArrayLayer for STORAGE_IMAGE bindings. Runtime
+    * robustness metadata routes this into NIR slice-coordinate lowering
+    * only for non-array views over array-backed images.
+    */
+   uint32_t base_array_layer;
+   /* Bit 0: view is non-array (1D/2D/CUBE) over a multi-layer backing
+    * image. Other bits reserved.
+    */
+   uint8_t view_flags;
+   /* Pad so sizeof % TERAKAN_DESCRIPTOR_SET_DESCRIPTOR_ALIGNMENT == 0
+    * (verified by static_assert below). */
+   uint8_t _pad[3];
 };
+
+#define TERAKAN_DESCRIPTOR_SET_UAV_VIEW_FLAG_NONARRAY_VIEW_OF_ARRAY_IMAGE 0x01u
 
 #define TERAKAN_DESCRIPTOR_SET_DESCRIPTOR_ALIGNMENT                                                \
    MAX3(alignof(struct terakan_descriptor_set_resource),                                           \
