@@ -34,11 +34,13 @@
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "util/compiler.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -91,7 +93,45 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                memcpy(&dst_uav->color, &image_view->color, sizeof(struct terakan_color_descriptor));
                dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
                dst_uav->is_texel_buffer = 0;
+
+               /* TERAKAN_DEBUG_STORAGE_IMAGE_DESC=1: trace the STORAGE_IMAGE
+                * descriptor pipeline in full, at every transformation step.
+                * This is the PRODUCER that bakes values the compute dispatch
+                * later programs into CB_COLOR{N}.  Per C-2026-04-18-15 the
+                * earlier TERAKAN_DEBUG_IMAGE_CB_LAYOUT captured only clear
+                * and meta-copy paths; this captures the actual dispatch path.
+                */
+               static int trace_sd_cached = -1;
+               if (trace_sd_cached < 0) {
+                  trace_sd_cached = debug_get_bool_option("TERAKAN_DEBUG_STORAGE_IMAGE_DESC",
+                                                          false) ? 1 : 0;
+               }
+               if (trace_sd_cached) {
+                  fprintf(stderr,
+                          "terakan/stor_img_desc: PRE-TRANSFORM image_view@%p "
+                          "bo=%p array_layers=%u "
+                          "base=0x%08x pitch=0x%08x slice=0x%08x view=0x%08x "
+                          "info=0x%08x attrib=0x%08x dim=0x%08x\n",
+                          (void *)image_view, (void *)image_view->bo,
+                          image_view->vk.image->array_layers,
+                          dst_uav->color.base, dst_uav->color.pitch,
+                          dst_uav->color.slice, dst_uav->color.view,
+                          dst_uav->color.info, dst_uav->color.attrib,
+                          dst_uav->color.dim);
+               }
+
                terakan_color_descriptor_image_view_to_storage_image(&dst_uav->color);
+
+               if (trace_sd_cached) {
+                  fprintf(stderr,
+                          "terakan/stor_img_desc: POST-XFORM   "
+                          "base=0x%08x pitch=0x%08x slice=0x%08x view=0x%08x "
+                          "info=0x%08x attrib=0x%08x dim=0x%08x\n",
+                          dst_uav->color.base, dst_uav->color.pitch,
+                          dst_uav->color.slice, dst_uav->color.view,
+                          dst_uav->color.info, dst_uav->color.attrib,
+                          dst_uav->color.dim);
+               }
                /* When a non-array VIEW (1D/2D/CUBE) is created over a
                 * multi-layer ARRAY IMAGE, image_view->color.info is
                 * stamped with the view's type: TEXTURE1D / TEXTURE2D.
@@ -129,6 +169,14 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                      dst_uav->color.info =
                         (dst_uav->color.info & C_028C70_RESOURCE_TYPE) |
                         S_028C70_RESOURCE_TYPE(upgraded_type);
+                  }
+                  if (trace_sd_cached) {
+                     fprintf(stderr,
+                             "terakan/stor_img_desc: POST-TYPE-UP "
+                             "current=%u upgraded=%u info=0x%08x "
+                             "(array_layers=%u)\n",
+                             current_type, upgraded_type, dst_uav->color.info,
+                             image_view->vk.image->array_layers);
                   }
                }
                /* Stash the SQ_TEX_RESOURCE ("REAL") descriptor so
