@@ -318,32 +318,74 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                       image_view->color_base_slice_shift_shr8 != 0) {
                      uint32_t const base_layer = image_view->vk.base_array_layer;
                      uint32_t const base_before = dst_uav->color.base;
+                     uint32_t const slice_before = dst_uav->color.slice;
                      dst_uav->color.base -= image_view->color_base_slice_shift_shr8;
-                     /* FIX-I refined (2026-04-19 session): the CB exporter
-                      * adds BOTH CB_COLOR_VIEW.SLICE_START AND shader R3.z
-                      * to the write address when RESOURCE_TYPE is
-                      * TEXTURE2DARRAY.  Earlier revisions of FIX-I wrote
-                      * SLICE_START=base_layer expecting the exporter to
-                      * use it as the write bias; combined with FIX-K
-                      * (which injects base_layer into R3.z), that caused
-                      * writes to land at slice 2*base_layer.  Leave
-                      * SLICE_START at 0 (covering VIEW layer 0..0 of the
-                      * single-layer view) and let FIX-K's R3.z injection
-                      * do the heavy lifting of targeting the physical
-                      * slice.  SLICE_MAX=0 mirrors that. */
+                     /* FIX-M (C-2026-04-19-08): CB_COLOR_SLICE.SLICE_TILE_MAX
+                      * defines the maximum tile index reachable from this
+                      * descriptor.  When the image_view was created with
+                      * layer_count=1, the tile_max is computed for a
+                      * single slice's worth of tiles.  MEM_RAT writes
+                      * targeting tile indices beyond that get clamped,
+                      * so R3.z = N > 0 (FIX-K injection) writes collapse
+                      * even after FIX-L enlarges CB_COLOR_VIEW.SLICE_MAX.
+                      *
+                      * Scale the tile max up by array_layers so the
+                      * exporter accepts tile indices across the full
+                      * physical slice range.  Guard-rail #1 still holds:
+                      * the NIR-side injection only triggers for UAVs
+                      * flagged NONARRAY_VIEW_OF_ARRAY_IMAGE, and other
+                      * UAVs keep the original clamp.  */
+                     uint32_t const orig_tile_max_plus_one =
+                        G_028C68_SLICE_TILE_MAX(dst_uav->color.slice) + 1u;
+                     uint32_t const fixm_array_layers =
+                        image_view->vk.image->array_layers;
+                     uint32_t const enlarged_tile_max =
+                        orig_tile_max_plus_one * fixm_array_layers - 1u;
+                     dst_uav->color.slice =
+                        (dst_uav->color.slice & C_028C68_SLICE_TILE_MAX) |
+                        S_028C68_SLICE_TILE_MAX(enlarged_tile_max);
+                     /* FIX-L (C-2026-04-19-07): CB_COLOR_VIEW.SLICE_MAX
+                      * acts as the hardware-side slice range gate.  For a
+                      * VK_IMAGE_VIEW_TYPE_2D view with layer_count=1 over
+                      * an array-backed image, the default view_slice_max
+                      * is 0, so MEM_RAT STORE_TYPED with shader R3.z=N>0
+                      * gets clamped/dropped even though the physical
+                      * allocation has array_layers slices.
+                      *
+                      * Fix: enlarge SLICE_MAX to array_layers-1 so any
+                      * R3.z in [0, array_layers-1] reaches the target
+                      * slice.  SLICE_START stays 0 (base already reverted
+                      * to image root).  This intentionally transfers the
+                      * out-of-bounds protection responsibility to the
+                      * shader -- the CTS / application dictates the
+                      * coord, so hardware-side view clamping on writes
+                      * is redundant and would conflict with FIX-K's
+                      * runtime R3.z injection.
+                      *
+                      * Gated alongside FIX-I; enable via
+                      * TERAKAN_FIX_I_APPLY_SLICE_VIEW=1. */
+                     uint32_t const backing_array_layers =
+                        image_view->vk.image->array_layers;
+                     uint32_t const slice_max_backing =
+                        (backing_array_layers > 0) ? (backing_array_layers - 1u) : 0u;
                      dst_uav->color.view =
                         S_028C6C_SLICE_START(0) |
-                        S_028C6C_SLICE_MAX(0);
+                        S_028C6C_SLICE_MAX(slice_max_backing);
                      if (trace_sd_cached) {
                         fprintf(stderr,
-                                "terakan/stor_img_desc: FIX-I applied "
+                                "terakan/stor_img_desc: FIX-I+L+M applied "
                                 "base_layer=%u shift_shr8=0x%08x "
                                 "base_before=0x%08x reverted_base=0x%08x "
-                                "view=0x%08x (slice_start=0 refined)\n",
+                                "view=0x%08x slice_max=%u backing=%u "
+                                "slice_before=0x%08x slice_after=0x%08x "
+                                "tile_max_before=%u tile_max_after=%u\n",
                                 base_layer,
                                 image_view->color_base_slice_shift_shr8,
                                 base_before, dst_uav->color.base,
-                                dst_uav->color.view);
+                                dst_uav->color.view, slice_max_backing,
+                                backing_array_layers,
+                                slice_before, dst_uav->color.slice,
+                                orig_tile_max_plus_one - 1u, enlarged_tile_max);
                      }
                   }
                }

@@ -1886,12 +1886,11 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
             command_writer->robustness_metadata.bo,
             command_writer->robustness_metadata.va_kcache_lines,
             1);  /* 1 KCACHE line = 256 bytes */
-         fprintf(stderr, "TERAKAN_FIX_K_LS_EMIT: bank=14 bo=%p va_lines=0x%x\n",
-                 (void const *)command_writer->robustness_metadata.bo,
-                 command_writer->robustness_metadata.va_kcache_lines);
-      } else if (command_writer->bound_compute_pipeline != NULL) {
-         fprintf(stderr, "TERAKAN_FIX_K_LS_EMIT: SKIPPED kcache_needed=0x%04x\n",
-                 command_writer->bound_compute_pipeline->shader.kcache_needed);
+         if (debug_get_bool_option("TERAKAN_DEBUG_FIX_K_LS", false)) {
+            fprintf(stderr, "TERAKAN_FIX_K_LS_EMIT: bank=14 bo=%p va_lines=0x%x\n",
+                    (void const *)command_writer->robustness_metadata.bo,
+                    command_writer->robustness_metadata.va_kcache_lines);
+         }
       }
    }
 

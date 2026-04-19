@@ -50,6 +50,8 @@
 #include "terakan_descriptor.h"
 #include "terakan_hw_state.h"
 
+#include "util/u_debug.h"
+
 #include <string.h>
 
 void
@@ -86,20 +88,22 @@ terakan_robustness_metadata_apply(
       memcpy(mapping,
              command_writer->robustness_metadata.uav_byte_sizes,
              sizeof(command_writer->robustness_metadata.uav_byte_sizes));
-      fprintf(stderr, "TERAKAN_METADATA: uav_byte_sizes[0..5] = %u %u %u %u %u %u\n",
-              command_writer->robustness_metadata.uav_byte_sizes[0],
-              command_writer->robustness_metadata.uav_byte_sizes[1],
-              command_writer->robustness_metadata.uav_byte_sizes[2],
-              command_writer->robustness_metadata.uav_byte_sizes[3],
-              command_writer->robustness_metadata.uav_byte_sizes[4],
-              command_writer->robustness_metadata.uav_byte_sizes[5]);
-      fprintf(stderr, "TERAKAN_METADATA: uav_base_array_layers[0..5] = %u %u %u %u %u %u\n",
-              command_writer->robustness_metadata.uav_base_array_layers[0],
-              command_writer->robustness_metadata.uav_base_array_layers[1],
-              command_writer->robustness_metadata.uav_base_array_layers[2],
-              command_writer->robustness_metadata.uav_base_array_layers[3],
-              command_writer->robustness_metadata.uav_base_array_layers[4],
-              command_writer->robustness_metadata.uav_base_array_layers[5]);
+      if (debug_get_bool_option("TERAKAN_DEBUG_ROBUSTNESS_METADATA", false)) {
+         fprintf(stderr, "TERAKAN_METADATA: uav_byte_sizes[0..5] = %u %u %u %u %u %u\n",
+                 command_writer->robustness_metadata.uav_byte_sizes[0],
+                 command_writer->robustness_metadata.uav_byte_sizes[1],
+                 command_writer->robustness_metadata.uav_byte_sizes[2],
+                 command_writer->robustness_metadata.uav_byte_sizes[3],
+                 command_writer->robustness_metadata.uav_byte_sizes[4],
+                 command_writer->robustness_metadata.uav_byte_sizes[5]);
+         fprintf(stderr, "TERAKAN_METADATA: uav_base_array_layers[0..5] = %u %u %u %u %u %u\n",
+                 command_writer->robustness_metadata.uav_base_array_layers[0],
+                 command_writer->robustness_metadata.uav_base_array_layers[1],
+                 command_writer->robustness_metadata.uav_base_array_layers[2],
+                 command_writer->robustness_metadata.uav_base_array_layers[3],
+                 command_writer->robustness_metadata.uav_base_array_layers[4],
+                 command_writer->robustness_metadata.uav_base_array_layers[5]);
+      }
       /* Dwords 16..27: texel buffer element counts. */
       memcpy(mapping + 16,
              command_writer->robustness_metadata.texel_buffer_element_counts,
