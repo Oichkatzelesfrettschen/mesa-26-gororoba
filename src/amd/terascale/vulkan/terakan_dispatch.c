@@ -1879,6 +1879,14 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
       if (command_writer->bound_compute_pipeline != NULL &&
           (command_writer->bound_compute_pipeline->shader.kcache_needed &
            ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA))) {
+         /* FIX-N attempt (reverted 2026-04-19): added CACHE_FLUSH_AND_
+          * INV_EVENT (0x16) here on hypothesis that Evergreen caches the
+          * KCACHE line per shader-program.  Empirically the flush did
+          * NOT resolve the 78-test sweep failure, falsifying that
+          * hypothesis.  Left as inert comment; real fix TBD after
+          * register-doc + r600g kcache management review.  Keeping
+          * TERAKAN_FIX_N_KCACHE_FLUSH env reserved for a correctly-
+          * motivated variant in a future session. */
          terakan_robustness_metadata_apply(command_writer, true);
          terakan_emit_compute_kcache_bank(
             command_writer,
