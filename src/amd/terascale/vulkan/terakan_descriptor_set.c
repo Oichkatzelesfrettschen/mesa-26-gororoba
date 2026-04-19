@@ -169,6 +169,44 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                      dst_uav->color.info =
                         (dst_uav->color.info & C_028C70_RESOURCE_TYPE) |
                         S_028C70_RESOURCE_TYPE(upgraded_type);
+
+                     /* FIX-B (C-2026-04-18-16): when we flip the
+                      * view interpretation to array semantics, the
+                      * CB exporter will now do per-slice tile math.
+                      * The base in image_view->color was pre-shifted
+                      * to the target layer under the old TEXTURE2D
+                      * "no array math" assumption.  If we leave the
+                      * shift in place, the exporter double-applies
+                      * the offset and writes land on the wrong
+                      * slice.  Revert the shift so base points at
+                      * the image root, and program CB_COLOR_VIEW so
+                      * the exporter targets baseArrayLayer by itself.
+                      *
+                      * SLICE_START and SLICE_MAX are set to the same
+                      * baseArrayLayer value because the view covers
+                      * exactly one layer (it was a non-array view).
+                      *
+                      * Gated by TERAKAN_FIX_B_SINGLE_LAYER=1 during
+                      * validation; promote to default after the
+                      * 78-test single_layer sweep goes green. */
+                     bool const fix_b_enabled =
+                        debug_get_bool_option("TERAKAN_FIX_B_SINGLE_LAYER", false);
+                     if (fix_b_enabled) {
+                        uint32_t const base_layer = image_view->vk.base_array_layer;
+                        dst_uav->color.base -= image_view->color_base_slice_shift_shr8;
+                        dst_uav->color.view =
+                           S_028C6C_SLICE_START(base_layer) |
+                           S_028C6C_SLICE_MAX(base_layer);
+                        if (trace_sd_cached) {
+                           fprintf(stderr,
+                                   "terakan/stor_img_desc: FIX-B applied "
+                                   "base_layer=%u shift_shr8=0x%08x "
+                                   "reverted_base=0x%08x view=0x%08x\n",
+                                   base_layer,
+                                   image_view->color_base_slice_shift_shr8,
+                                   dst_uav->color.base, dst_uav->color.view);
+                        }
+                     }
                   }
                   if (trace_sd_cached) {
                      fprintf(stderr,
