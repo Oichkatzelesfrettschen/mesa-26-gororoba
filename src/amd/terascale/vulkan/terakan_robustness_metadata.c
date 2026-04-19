@@ -121,6 +121,30 @@ terakan_robustness_metadata_apply(
          ((uint32_t *)mapping)[12] = device->robustness_trash_page_va_shr2;
       }
 
+      /* FIX-O (C-2026-04-19-12): flush CPU store buffers before the IB
+       * consumer submits.  Push-buffer allocations are GTT-backed and
+       * may be write-combine-mapped; CPU writes can sit in the WC
+       * buffer indefinitely, invisible to the GPU fetch.  __builtin_
+       * ia32_sfence() is an SSE-guaranteed baseline fence on x86_64
+       * (Sumo is x86_64); it orders all prior store instructions
+       * before any subsequent store, which is what the GPU-visibility
+       * guarantee requires here.
+       *
+       * Post-reloc IB capture 2026-04-19 (steinmarder
+       * findings/2026-04-19-h2-reloc-innocent.md) falsified H2
+       * (kernel reloc parser); this is H1 (WC race) under test.
+       *
+       * Gated behind TERAKAN_FIX_O_SFENCE=1 during validation.
+       * Promote to default once the 78-test single_layer sweep
+       * turns green. */
+      static int fix_o_cached = -1;
+      if (fix_o_cached < 0) {
+         fix_o_cached = debug_get_bool_option("TERAKAN_FIX_O_SFENCE", false) ? 1 : 0;
+      }
+      if (fix_o_cached) {
+         __builtin_ia32_sfence();
+      }
+
       command_writer->robustness_metadata.bo = bo;
       command_writer->robustness_metadata.va_kcache_lines = va_kcache_lines;
       command_writer->robustness_metadata.dirty = false;
