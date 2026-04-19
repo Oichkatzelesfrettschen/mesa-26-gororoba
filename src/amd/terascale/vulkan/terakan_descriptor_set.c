@@ -385,6 +385,56 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                memcpy(dst_uav->real_resource, image_view->resource,
                       sizeof(dst_uav->real_resource));
 
+               /* FIX-Q (C-2026-04-19-14): the Shader Sequencer (SQ)
+                * consults SQ_TEX_RESOURCE word 5 (BASE_ARRAY /
+                * LAST_ARRAY, bits 4-16 and 17-29) when formatting
+                * MEM_RAT STORE_TYPED writes.  For a non-array view
+                * over a multi-layer backing image the view's
+                * image_view->resource was built with
+                * BASE_ARRAY=baseArrayLayer and LAST_ARRAY=
+                * baseArrayLayer (single-slice range).  The SQ
+                * compares R3.z against this range and silently
+                * clamps out-of-bounds z to 0 BEFORE handing the
+                * payload to the CB exporter.  That is why
+                * FIX-P's hardcoded R3.z = 3 still landed on slice 0
+                * even though every byte of CB_COLOR state matched
+                * the passing full-array path.
+                *
+                * Fix: unclamp BASE_ARRAY to 0 and LAST_ARRAY to
+                * array_layers-1 for UAV bindings so R3.z (now
+                * populated by FIX-K with the absolute physical
+                * slice index) passes through the SQ unaltered.
+                * OOB protection is transferred to the shader per
+                * the FIX-K design principle; FIX-K already writes
+                * only the slice the application named. */
+               static int fix_q_cached = -1;
+               if (fix_q_cached < 0) {
+                  fix_q_cached = debug_get_bool_option(
+                     "TERAKAN_FIX_Q_UNCLAMP_ARRAY_BOUNDS", false) ? 1 : 0;
+               }
+               bool const fixq_view_nonarray =
+                  image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_1D ||
+                  image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_2D ||
+                  image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE;
+               if (fix_q_cached && fixq_view_nonarray &&
+                   image_view->vk.image->array_layers > 1) {
+                  uint32_t const backing_layers =
+                     image_view->vk.image->array_layers;
+                  uint32_t const w5_before = dst_uav->real_resource[5];
+                  dst_uav->real_resource[5] =
+                     (w5_before & C_030014_BASE_ARRAY & C_030014_LAST_ARRAY) |
+                     S_030014_BASE_ARRAY(0) |
+                     S_030014_LAST_ARRAY(backing_layers - 1u);
+                  if (trace_sd_cached) {
+                     fprintf(stderr,
+                             "terakan/stor_img_desc: FIX-Q applied "
+                             "w5_before=0x%08x w5_after=0x%08x "
+                             "BASE_ARRAY=0 LAST_ARRAY=%u\n",
+                             w5_before, dst_uav->real_resource[5],
+                             backing_layers - 1u);
+                  }
+               }
+
                /* FIX-B companion (C-2026-04-18-16 / task #140): when
                 * CB RESOURCE_TYPE was upgraded from TEXTURE2D ->
                 * TEXTURE2DARRAY (above), the SQ-side DIM must also
