@@ -1,6 +1,6 @@
 ---
 description: Mesa 26.1-devel fork with terakan Vulkan driver for Radeon HD 6310 (Evergreen/Sumo, TeraScale-2)
-last_verified: 2026-04-18
+last_verified: 2026-04-19
 ---
 
 # mesa-26-gororoba -- agent + developer reference
@@ -10,50 +10,63 @@ the terakan Vulkan driver at `src/amd/terascale/vulkan/` plus r600
 SFN improvements targeting Radeon HD 6310 (CHIP_SUMO, TeraScale-2
 VLIW5, 2-SIMD Cayman family).
 
-Target host: x130e (Bobcat + HD 6310 APU).  Primary peer repo:
+Target host: x130e (Bobcat + HD 6310 APU).  Peer repo:
 [steinmarder](https://github.com/Oichkatzelesfrettschen/steinmarder)
--- the RE-toolkit + evidence registry that drives the patches here.
+holds the RE-toolkit, evidence registry, and cross-cutting
+workspace docs referenced below.  This repo BUILDS and INSTALLS
+standalone without steinmarder cloned.
 
-## First-time host setup
+## Standalone build (this repo only)
 
-A fresh x130e-class builder needs apt packages, rustup stable +
-components, `rust-toolchain.toml` awareness, ccache/distcc/sccache,
-and distcc workers reachable by HOSTNAME (not raw IP).  Full
-reproducible recipe in
-[steinmarder/docs/workspace/host-setup.md](https://github.com/Oichkatzelesfrettschen/steinmarder/blob/main/docs/workspace/host-setup.md).
-
-Do NOT skip that doc.  Known pitfalls (`rust-toolchain.toml`
-nightly override, clang-22 TLS emutls, meson-rust ignoring
-`RUSTC_WRAPPER`) are all called out there.
-
-## Canonical build entry
-
-All builds go through `build-infra/` (replaces the 10 legacy
-`build-*/` dirs that predated 2026-04-18 synthesis).
+Minimum toolchain to build locally:
 
 ```sh
-cd build-infra
-. env/btver1.env                   # CCACHE_PREFIX=distcc, -fno-emulated-tls, etc.
-./scripts/setup-distcc.sh          # tool-health precheck
-make rebuild-terakan-distcc        # daily iteration lane
+sudo apt install meson ninja-build clang-22 pkg-config \
+    ccache distcc sccache bindgen rustup \
+    libdrm-dev libxcb-dri3-dev libxcb-present-dev libxshmfence-dev \
+    libx11-xcb-dev libxrandr-dev libxcb-randr0-dev libxcb-sync-dev \
+    libxcb-xfixes0-dev libwayland-dev wayland-protocols \
+    python3-mako python3-pip python3-ply \
+    zlib1g-dev libzstd-dev libexpat1-dev libsensors-dev \
+    llvm-22-dev libclang-22-dev libspirv-tools-dev \
+    libvulkan-dev libva-dev libegl-dev libgbm-dev glslang-tools
+rustup toolchain install stable
+rustup component add --toolchain stable rustfmt clippy rust-src \
+    rust-analyzer rust-docs llvm-tools-preview
+```
+
+Clone + build:
+
+```sh
+git clone git@github.com:Oichkatzelesfrettschen/mesa-26-gororoba.git
+cd mesa-26-gororoba/build-infra
+./scripts/setup-distcc.sh          # precheck (versions + hosts)
+. env/btver1.env                    # CCACHE_PREFIX=distcc, CFLAGS, caches
+make rebuild-terakan-distcc         # clean + configure + build
 sudo make install PROFILE=terakan-distcc
 ```
 
-Install prefix: `/usr/local/mesa-terakan-distcc/` by default.
-Isolated -- does NOT overwrite system Mesa at
-`/usr/lib/x86_64-linux-gnu/`.  Multiple profiles coexist as
-separate prefixes.
+Install prefix: `/usr/local/mesa-terakan-distcc/`.  Isolated --
+does NOT overwrite system Mesa at `/usr/lib/x86_64-linux-gnu/`.
 
-## Profiles and envs
+Load the driver:
+
+```sh
+export LD_LIBRARY_PATH=/usr/local/mesa-terakan-distcc/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+export VK_DRIVER_FILES=/usr/local/mesa-terakan-distcc/share/vulkan/icd.d/terascale_icd.x86_64.json
+vulkaninfo --summary    # should show "AMD R8xx Palm (Terakan)"
+```
+
+## Profiles + host envs
 
 Profiles live in `build-infra/configs/`:
 
-- `terakan-full.meson`    r600+zink+soft+llvm, rusticl+HUD+VA (full)
-- `terakan-distcc.meson`  r600-only, daily distcc iteration
+- `terakan-full.meson`    r600+zink+soft+llvm, rusticl+HUD+VA (full stack)
+- `terakan-distcc.meson`  r600-only, daily distcc iteration lane
 - `terakan-minimal.meson` r600-only, no HUD, NIR scratchpad
 - `base-debug.meson`      stock Mesa reference (no terakan)
 
-Each profile's `[binaries]` section pins the compiler chain:
+Each profile's `[binaries]` section pins the canonical compiler chain:
 
 ```ini
 c    = ['/usr/bin/ccache',  '/usr/bin/clang-22']
@@ -61,100 +74,104 @@ cpp  = ['/usr/bin/ccache',  '/usr/bin/clang++-22']
 rust = ['/usr/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
 ```
 
-The absolute-path stable rustc intentionally bypasses rustup's
-shim so the in-repo `rust-toolchain.toml` nightly override does
-NOT apply.  See
-[steinmarder/docs/workspace/ccache-sccache-wiring.md](https://github.com/Oichkatzelesfrettschen/steinmarder/blob/main/docs/workspace/ccache-sccache-wiring.md)
-for the full RCA of why this wiring is the canonical one.
+Absolute-path stable rustc bypasses the in-repo
+`rust-toolchain.toml` (which specifies `channel = "nightly"`)
+because `/usr/bin/rustc` is a Debian rustup shim that honors the
+in-repo file otherwise.  Confirmed stable 1.95.0 builds Mesa 26
+rusticl cleanly -- nightly is not required.
 
-Toolchain host-envs in `build-infra/env/`:
+Host-envs in `build-infra/env/` (`btver1.env`, `sapphire.env`,
+`zen4.env`) set `CCACHE_PREFIX=distcc`, host-specific CFLAGS,
+`-fno-emulated-tls` (required for clang-22 on linux x86_64 to
+avoid a link failure in libglapi), and centralised
+`CCACHE_DIR`/`SCCACHE_DIR`.
 
-- `btver1.env`  x130e Bobcat (CCACHE_PREFIX=distcc, -march=btver1,
-                `-fno-emulated-tls`, `-mtls-dialect=gnu2`,
-                CCACHE_DIR + SCCACHE_DIR)
-- `sapphire.env` Apple Silicon placeholder
-- `zen4.env`     Ryzen placeholder
+## Compiler cache status (2026-04-19 empirical)
 
-## Compiler cache verification
+### ccache -- working as intended
 
-After a full rebuild, expected healthy stats:
-
-```sh
-ccache --show-stats --verbose | head
-# Cacheable calls:  ~1400 / ~1400  (>98%)
-# Misses on first rebuild; later rebuilds should hit >90%
-
-sccache -s
-# Compile requests > 0 for the rusticl Rust TUs
+```
+Cacheable calls:   1253 / 1339 (93.58%)
+Hits on clean:       52 / 1253 ( 4.15%)    (carry-over)
+Misses on clean:   1201 / 1253 (95.85%)    (populates cache)
 ```
 
-If `Uncacheable calls` dominates, the wiring regressed to the
-deprecated `ccache distcc compiler` anti-pattern; see the RCA doc
-linked above.
+First full build populates `~/.cache/ccache`; subsequent
+rebuilds with unchanged sources should show >90% hit rate.
+Verify with: `ccache --show-stats --verbose`.
 
-## Access patterns
+### sccache -- BLOCKED BY UPSTREAM LIMITATION
 
-- SSH one-shot for quick commands:
-  `ssh x130e 'git log --oneline -5'`
-- Tmux for durable builds (survives disconnects):
-  `ssh x130e 'tmux new-session -d -s mesa-build'`
-  then `tmux send-keys` to feed commands.  Active session: `mesa-build`.
-- NFS read-only mirror on Mac:
-  `/Volumes/x130e/workspaces/mesa/mesa-26-gororoba/`.
-- Hostname-only, never raw IPs; see
-  [steinmarder/docs/workspace/hostname-policy.md](https://github.com/Oichkatzelesfrettschen/steinmarder/blob/main/docs/workspace/hostname-policy.md).
+```
+Compile requests                      N
+Compile requests executed             0
+Rust Not Supported:
+  more than one --emit              N   <-- bails here
+```
 
-## RE + evidence
+Root cause: meson-rust emits
+`--emit dep-info=... --emit link=...` (two `--emit` flags in one
+rustc invocation).  sccache 0.10.0's Rust parser only supports a
+single `--emit` per invocation and rejects the call.  **Wiring is
+correct; the limitation is in sccache itself.**  Build completes
+fine -- sccache falls through to raw rustc on reject.
 
-Every debugging session references steinmarder:
+Practical impact: Rust compilation (~3 min per clean rebuild on
+Bobcat) is not cached.  ccache covers the other ~40 min.  Track
+via `sccache -s` under `Rust Not Supported > more than one --emit`.
 
-- `src/re/r600/findings/CLAIMS.md` -- live claims tracker
-- `src/re/r600/findings/active/`   -- open RCAs
-- `src/re/r600/results/`           -- capture bundles + index.csv
-- `src/re/r600/docs/rca/`          -- cross-cutting RCAs
+### Do NOT chain wrapper-style
 
-Do not invent driver theories here without first consulting CLAIMS.
-
-## Key subsystems in this tree
-
-- `src/amd/terascale/vulkan/`      terakan Vulkan driver
-- `src/gallium/drivers/r600/`      Gallium r600 driver (SFN + VLIW5)
-- `src/gallium/frontends/rusticl/` rusticl OpenCL (Rust)
-- `build-infra/`                   canonical build entry (above)
-- `rust-toolchain.toml`            upstream Mesa file: `channel = "nightly"`.
-                                   Honored by rustup shim; our
-                                   build-infra bypasses via absolute path.
+The anti-pattern `exec ccache distcc clang "$@"` (wrapper script
+form) causes 93.5% "Multiple source files" ccache rejections --
+ccache hashes `distcc`'s mtime as the compiler.  Canonical
+answer is always: meson `[binaries]` for the wrap, env
+`CCACHE_PREFIX=distcc` for the chain.  Deep RCA in
+`steinmarder/docs/workspace/ccache-sccache-wiring.md`.
 
 ## Upstream discipline
 
 - `origin` = our fork (Oichkatzelesfrettschen/mesa-26-gororoba).
-- `upstream` = fdo mesa/mesa.  Rebase r600/terakan work against
-  upstream `main` regularly; never force-push to our `main`.
-- Fork-specific branches that may merge to our main:
-  `synthesis-*`, `x130e-wip-*` (squash-merge or ff only).
+- `upstream` = fdo mesa/mesa.  3711 commits behind upstream/main
+  as of 2026-04-18; rebase cadence + what-to-submit-upstream
+  policy in `steinmarder/docs/workspace/mesa-fork-upstream-divergence.md`.
+- Never `git push origin upstream/main:main` -- always rebase first.
 
 ## Forbidden without explicit user sign-off
 
 - `git push --force` to `main`.
-- Deleting `mesa-debug/` install prefix until a new green build
-  has been verified via `build-infra` (last-known-good binary).
 - `sudo rm -rf` on shared workspace paths.
-- Introducing `10.0.0.*` raw IPs in scripts/configs.
-- Chaining `ccache distcc compiler` (documented ccache anti-pattern).
-- Using `RUSTC_WRAPPER` env for meson-rust (it's cargo-only; noop here).
+- Introducing `10.0.0.*` raw IPs in scripts/configs (hostname
+  policy).
+- Chaining `ccache distcc compiler` in a shell wrapper (ccache
+  anti-pattern; see above).
+- Using `RUSTC_WRAPPER` env for meson-rust (cargo-only; noop
+  here -- use `[binaries]` native file).
 
-## Related docs
+## RE + evidence (cross-links to steinmarder)
 
-Canonical cross-cutting references live in steinmarder's
-`docs/workspace/`:
+All driver-RCA evidence lives in steinmarder, NOT here.  Before
+proposing a terakan fix, consult:
 
-| Link | Purpose |
-|------|---------|
-| [host-setup.md](https://github.com/Oichkatzelesfrettschen/steinmarder/blob/main/docs/workspace/host-setup.md) | First-time setup recipe (this doc) |
-| [ccache-sccache-wiring.md](https://github.com/Oichkatzelesfrettschen/steinmarder/blob/main/docs/workspace/ccache-sccache-wiring.md) | Compiler-cache RCA + canonical wiring |
-| [mesa-fork-synthesis.md](https://github.com/Oichkatzelesfrettschen/steinmarder/blob/main/docs/workspace/mesa-fork-synthesis.md) | Why 9 build variants collapsed to 4 profiles |
-| [hostname-policy.md](https://github.com/Oichkatzelesfrettschen/steinmarder/blob/main/docs/workspace/hostname-policy.md) | NFS/SSH hostname-only rule |
-| [mesa-26-debug-and-mesa-debug.md](https://github.com/Oichkatzelesfrettschen/steinmarder/blob/main/docs/workspace/mesa-26-debug-and-mesa-debug.md) | What the legacy dirs were |
+- `steinmarder/src/re/r600/findings/CLAIMS.md` -- live claims tracker
+- `steinmarder/src/re/r600/findings/active/`    -- open RCAs
+- `steinmarder/src/re/r600/results/`            -- capture bundles + index.csv
+- `steinmarder/src/re/r600/docs/rca/`           -- cross-cutting RCAs
+- `steinmarder/docs/workspace/host-setup.md`    -- extended host setup recipe
+- `steinmarder/docs/workspace/ccache-sccache-wiring.md` -- cache RCA
+- `steinmarder/docs/workspace/mesa-fork-synthesis.md`   -- 4-profile consolidation
+- `steinmarder/docs/workspace/mesa-fork-upstream-divergence.md` -- upstream rebase
+- `steinmarder/docs/workspace/hostname-policy.md`       -- raw-IP ban
+- `steinmarder/docs/workspace/mesa-26-debug-and-mesa-debug.md` -- legacy dirs
+
+## Key subsystems
+
+- `src/amd/terascale/vulkan/`      terakan Vulkan driver
+- `src/gallium/drivers/r600/`      Gallium r600 driver (SFN + VLIW5)
+- `src/gallium/frontends/rusticl/` rusticl OpenCL (Rust)
+- `build-infra/`                   canonical build entry
+- `rust-toolchain.toml`            upstream Mesa file (`channel = "nightly"`)
+                                   -- bypassed by absolute-path in configs/*.meson
 
 `CLAUDE.md` and `GEMINI.md` at this repo root are symlinks to
 THIS file -- proprietary agents see the same canonical content.
