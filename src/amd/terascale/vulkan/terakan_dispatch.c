@@ -1856,6 +1856,11 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
             command_writer->robustness_metadata.bo,
             command_writer->robustness_metadata.va_kcache_lines,
             1);  /* 1 KCACHE line = 256 bytes */
+         if (debug_get_bool_option("TERAKAN_DEBUG_COMPUTE_ROBUSTNESS_METADATA", false)) {
+            fprintf(stderr, "terakan/compute_robustness_metadata: bank=14 bo=%p va_lines=0x%x\n",
+                    (void const *)command_writer->robustness_metadata.bo,
+                    command_writer->robustness_metadata.va_kcache_lines);
+         }
       }
    }
 

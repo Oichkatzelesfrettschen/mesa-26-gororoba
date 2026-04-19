@@ -295,24 +295,44 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                       image_view->color_base_slice_shift_shr8 != 0) {
                      uint32_t const base_layer = image_view->vk.base_array_layer;
                      uint32_t const base_before = dst_uav->color.base;
+                     uint32_t const slice_before = dst_uav->color.slice;
                      dst_uav->color.base -= image_view->color_base_slice_shift_shr8;
-                     /* TEXTURE2DARRAY writes use both CB_COLOR_VIEW.SLICE_START
-                      * and shader R3.z. Keep the view window at layer 0 so
-                      * R3.z carries the physical slice exactly once.
+                     /* Expand the tile and slice limits from the single-layer
+                      * view window to the backing array. TEXTURE2DARRAY writes
+                      * use both CB_COLOR_VIEW.SLICE_START and shader R3.z, so
+                      * SLICE_START stays zero and R3.z carries the physical
+                      * slice exactly once.
                       */
+                     uint32_t const orig_tile_max_plus_one =
+                        G_028C68_SLICE_TILE_MAX(dst_uav->color.slice) + 1u;
+                     uint32_t const backing_array_layers = image_view->vk.image->array_layers;
+                     uint32_t const enlarged_tile_max =
+                        backing_array_layers > 0
+                           ? orig_tile_max_plus_one * backing_array_layers - 1u
+                           : 0u;
+                     dst_uav->color.slice =
+                        (dst_uav->color.slice & C_028C68_SLICE_TILE_MAX) |
+                        S_028C68_SLICE_TILE_MAX(enlarged_tile_max);
+                     uint32_t const slice_max_backing =
+                        (backing_array_layers > 0) ? (backing_array_layers - 1u) : 0u;
                      dst_uav->color.view =
                         S_028C6C_SLICE_START(0) |
-                        S_028C6C_SLICE_MAX(0);
+                        S_028C6C_SLICE_MAX(slice_max_backing);
                      if (trace_sd_cached) {
                         fprintf(stderr,
                                 "terakan/stor_img_desc: slice-view applied "
                                 "base_layer=%u shift_shr8=0x%08x "
                                 "base_before=0x%08x reverted_base=0x%08x "
-                                "view=0x%08x (slice_start=0 refined)\n",
+                                "view=0x%08x slice_max=%u backing=%u "
+                                "slice_before=0x%08x slice_after=0x%08x "
+                                "tile_max_before=%u tile_max_after=%u\n",
                                 base_layer,
                                 image_view->color_base_slice_shift_shr8,
                                 base_before, dst_uav->color.base,
-                                dst_uav->color.view);
+                                dst_uav->color.view, slice_max_backing,
+                                backing_array_layers,
+                                slice_before, dst_uav->color.slice,
+                                orig_tile_max_plus_one - 1u, enlarged_tile_max);
                      }
                   }
                }
