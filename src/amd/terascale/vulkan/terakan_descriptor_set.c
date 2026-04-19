@@ -320,30 +320,19 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                      uint32_t const base_before = dst_uav->color.base;
                      uint32_t const slice_before = dst_uav->color.slice;
                      dst_uav->color.base -= image_view->color_base_slice_shift_shr8;
-                     /* FIX-M (C-2026-04-19-08): CB_COLOR_SLICE.SLICE_TILE_MAX
-                      * defines the maximum tile index reachable from this
-                      * descriptor.  When the image_view was created with
-                      * layer_count=1, the tile_max is computed for a
-                      * single slice's worth of tiles.  MEM_RAT writes
-                      * targeting tile indices beyond that get clamped,
-                      * so R3.z = N > 0 (FIX-K injection) writes collapse
-                      * even after FIX-L enlarges CB_COLOR_VIEW.SLICE_MAX.
-                      *
-                      * Scale the tile max up by array_layers so the
-                      * exporter accepts tile indices across the full
-                      * physical slice range.  Guard-rail #1 still holds:
-                      * the NIR-side injection only triggers for UAVs
-                      * flagged NONARRAY_VIEW_OF_ARRAY_IMAGE, and other
-                      * UAVs keep the original clamp.  */
-                     uint32_t const orig_tile_max_plus_one =
-                        G_028C68_SLICE_TILE_MAX(dst_uav->color.slice) + 1u;
-                     uint32_t const fixm_array_layers =
-                        image_view->vk.image->array_layers;
-                     uint32_t const enlarged_tile_max =
-                        orig_tile_max_plus_one * fixm_array_layers - 1u;
-                     dst_uav->color.slice =
-                        (dst_uav->color.slice & C_028C68_SLICE_TILE_MAX) |
-                        S_028C68_SLICE_TILE_MAX(enlarged_tile_max);
+                     /* FIX-M reverted 2026-04-19 (C-2026-04-19-08):
+                      * SLICE_TILE_MAX is PER-SLICE (tiles in one slice's
+                      * 2D surface = width * height / 64).  Multiplying
+                      * by array_layers produced 0x1ff (511) vs the
+                      * correct 0x3f (63) used by the passing full-array
+                      * path.  Empirical comparison 2026-04-19 shows
+                      * FIX-M actively poisons the exporter: it tells the
+                      * hardware "this single slice contains 512 tiles",
+                      * which is impossible for 64x64 and causes MEM_RAT
+                      * writes to collapse to slice 0 regardless of R3.z.
+                      * Leaving dst_uav->color.slice unchanged; per-slice
+                      * count is already correct at image-create time. */
+                     (void)slice_before;  /* retained for trace var lifetime */
                      /* FIX-L (C-2026-04-19-07): CB_COLOR_VIEW.SLICE_MAX
                       * acts as the hardware-side slice range gate.  For a
                       * VK_IMAGE_VIEW_TYPE_2D view with layer_count=1 over
@@ -373,19 +362,17 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                         S_028C6C_SLICE_MAX(slice_max_backing);
                      if (trace_sd_cached) {
                         fprintf(stderr,
-                                "terakan/stor_img_desc: FIX-I+L+M applied "
+                                "terakan/stor_img_desc: FIX-I+L applied "
                                 "base_layer=%u shift_shr8=0x%08x "
                                 "base_before=0x%08x reverted_base=0x%08x "
                                 "view=0x%08x slice_max=%u backing=%u "
-                                "slice_before=0x%08x slice_after=0x%08x "
-                                "tile_max_before=%u tile_max_after=%u\n",
+                                "slice_kept=0x%08x (FIX-M reverted)\n",
                                 base_layer,
                                 image_view->color_base_slice_shift_shr8,
                                 base_before, dst_uav->color.base,
                                 dst_uav->color.view, slice_max_backing,
                                 backing_array_layers,
-                                slice_before, dst_uav->color.slice,
-                                orig_tile_max_plus_one - 1u, enlarged_tile_max);
+                                slice_before);
                      }
                   }
                }

@@ -284,34 +284,50 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
          fix_k_cached = debug_get_bool_option("TERAKAN_FIX_K_BASE_ARRAY_LAYER", false) ? 1 : 0;
       }
       if (fix_k_cached) {
-         /* bank 14 layout: dword 28 starts the uav_base_array_layers[12]
-          * array; each entry is one uint32_t.  vec4 index = dword/4,
-          * component = dword%4. */
-         uint32_t const layer_dword = 28u + uav_index_zero_based;
-         uint32_t const layer_vec4_index = layer_dword / 4u;
-         uint32_t const layer_component = layer_dword % 4u;
-
-         *state->kcache_needed |=
-            (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
-
-         nir_def * const base_array_layer_load = nir_load_kcache_r600(
-            b, 1, 32, nir_imm_zero(b, 1, 32),
-            .access = ACCESS_CAN_REORDER,
-            .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-            .base = layer_vec4_index,
-            .component = layer_component);
-
-         if (uav_coord_num_components < 3) {
-            /* Promote to 3 components with coord_z = baseArrayLayer. */
+         /* FIX-P (C-2026-04-19-13): H3 binary-split diagnostic.  When
+          * TERAKAN_FIX_P_FORCE_Z is set, replace the entire KCACHE-
+          * load-plus-iadd path with a literal-constant coord.z so we
+          * can observe whether the hardware honours R3.z = N for
+          * N != 0 independent of FIX-K's data-plumbing correctness.
+          * Outcome (A) slice N is written: CB exporter is innocent,
+          * FIX-K data path is broken somewhere.  Outcome (B) slice 0
+          * is written: CB exporter is clamping R3.z. */
+         int const fix_p_force_z = debug_get_num_option(
+            "TERAKAN_FIX_P_FORCE_Z", -1);
+         if (fix_p_force_z >= 0) {
             uav_coord_num_components = 3;
-            uav_coord_components[2] = base_array_layer_load;
-         } else {
-            /* Existing coord_z carries shader-provided z (e.g. imageStore
-             * on image2DArray with ivec3 coord, or the FIX-H preserved
-             * channel 2): add baseArrayLayer to it.  Zero-layer
-             * descriptors contribute zero so shader-z is preserved. */
             uav_coord_components[2] =
-               nir_iadd(b, uav_coord_components[2], base_array_layer_load);
+               nir_imm_int(b, (int32_t)fix_p_force_z);
+         } else {
+            /* bank 14 layout: dword 28 starts the uav_base_array_layers[12]
+             * array; each entry is one uint32_t.  vec4 index = dword/4,
+             * component = dword%4. */
+            uint32_t const layer_dword = 28u + uav_index_zero_based;
+            uint32_t const layer_vec4_index = layer_dword / 4u;
+            uint32_t const layer_component = layer_dword % 4u;
+
+            *state->kcache_needed |=
+               (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+
+            nir_def * const base_array_layer_load = nir_load_kcache_r600(
+               b, 1, 32, nir_imm_zero(b, 1, 32),
+               .access = ACCESS_CAN_REORDER,
+               .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+               .base = layer_vec4_index,
+               .component = layer_component);
+
+            if (uav_coord_num_components < 3) {
+               /* Promote to 3 components with coord_z = baseArrayLayer. */
+               uav_coord_num_components = 3;
+               uav_coord_components[2] = base_array_layer_load;
+            } else {
+               /* Existing coord_z carries shader-provided z (e.g. imageStore
+                * on image2DArray with ivec3 coord, or the FIX-H preserved
+                * channel 2): add baseArrayLayer to it.  Zero-layer
+                * descriptors contribute zero so shader-z is preserved. */
+               uav_coord_components[2] =
+                  nir_iadd(b, uav_coord_components[2], base_array_layer_load);
+            }
          }
       }
    }
