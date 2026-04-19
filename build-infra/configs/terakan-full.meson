@@ -8,7 +8,7 @@
 [binaries]
 c   = ["/usr/bin/ccache", "/usr/bin/clang-22"]
 cpp = ["/usr/bin/ccache", "/usr/bin/clang++-22"]
-rust = ["/usr/bin/sccache", "/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc"]
+rust = ["/home/eirikr/.local/bin/sccache", "/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc"]
 
 [project options]
 buildtype           = 'debug'
