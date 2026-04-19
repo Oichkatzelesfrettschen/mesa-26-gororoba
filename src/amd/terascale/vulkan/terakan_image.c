@@ -41,6 +41,7 @@
 #include "util/bitscan.h"
 #include "util/format/u_format.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_enum_to_str.h"
@@ -1423,6 +1424,48 @@ terakan_image_create_color_descriptor(
       MIN2(create_info_slice_max - base_slice_start, TERAKAN_IMAGE_MAX_TARGET_SLICES - 1);
    descriptor_out->view =
       S_028C6C_SLICE_START(view_slice_start) | S_028C6C_SLICE_MAX(view_slice_max);
+
+   /* TERAKAN_DEBUG_IMAGE_CB_LAYOUT=1: trace the image-CB descriptor
+    * producer.  This is the actual producer of the cold/warm
+    * single_layer divergence captured in C-2026-04-18-13 (CB_COLOR0
+    * BASE/PITCH/SLICE differ).  pitch/slice here depend on
+    * surface_level->aligned_extent_surfels populated at vkCreateImage;
+    * base depends on image->va + offset_in_memory_bytes_shr8 +
+    * slice_size_bytes_shr8 * base_slice_start.
+    * If cold vs warm differ in aligned_extent_surfels for the same
+    * test case, the bug is in the image-layout computation during
+    * CreateImage (each test allocates its own image; the discrepancy
+    * must come from image-allocation-time state).
+    * If they differ only in base, the bug is per-process VA allocation
+    * (benign unless downstream cares about absolute alignment).
+    */
+   {
+      static int trace_cached = -1;
+      if (trace_cached < 0) {
+         trace_cached = debug_get_bool_option("TERAKAN_DEBUG_IMAGE_CB_LAYOUT", false) ? 1 : 0;
+      }
+      if (trace_cached) {
+         fprintf(stderr,
+                 "terakan/image_cb_layout: view_type=%d base_array_layer=%u "
+                 "layer_count=%u base_mip_level=%u image_va=0x%016llx "
+                 "level_offset_shr8=0x%08x slice_size_shr8=0x%08x "
+                 "base_slice_start=%u ae_w=%u ae_h=%u array_mode=%u "
+                 "base=0x%08x pitch_reg=0x%08x slice_reg=0x%08x "
+                 "view_slice_start=%u view_slice_max=%u\n",
+                 (int)descriptor_create_info->view_type,
+                 descriptor_create_info->base_array_layer,
+                 descriptor_create_info->layer_count,
+                 descriptor_create_info->base_mip_level,
+                 (unsigned long long)image->va,
+                 surface_level->offset_in_memory_bytes_shr8,
+                 surface_level->slice_size_bytes_shr8, base_slice_start,
+                 surface_level->aligned_extent_surfels[0],
+                 surface_level->aligned_extent_surfels[1],
+                 (unsigned)surface_level->array_mode,
+                 descriptor_out->base, descriptor_out->pitch,
+                 descriptor_out->slice, view_slice_start, view_slice_max);
+      }
+   }
 
    bool blend_clamp = false;
    uint32_t source_format = V_028C70_EXPORT_4C_32BPC;
