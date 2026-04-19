@@ -29,6 +29,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include "util/macros.h"
+#include "util/u_atomic.h"
 #include "util/u_debug.h"
 
 /* Register offsets for Evergreen compute dispatch.
@@ -227,6 +228,63 @@ terakan_compute_multiplex_emit_surface_sync(
    terakan_gfx_command_writer_emit_done(command_writer, p);
 }
 
+static uint32_t
+terakan_w1_max_barrier_cp_coher_cntl(void)
+{
+   return S_0085F0_CB_ACTION_ENA(1) |
+          S_0085F0_CB0_DEST_BASE_ENA(1) | S_0085F0_CB1_DEST_BASE_ENA(1) |
+          S_0085F0_CB2_DEST_BASE_ENA(1) | S_0085F0_CB3_DEST_BASE_ENA(1) |
+          S_0085F0_CB4_DEST_BASE_ENA(1) | S_0085F0_CB5_DEST_BASE_ENA(1) |
+          S_0085F0_CB6_DEST_BASE_ENA(1) | S_0085F0_CB7_DEST_BASE_ENA(1) |
+          S_0085F0_CB8_DEST_BASE_ENA(1) | S_0085F0_CB9_DEST_BASE_ENA(1) |
+          S_0085F0_CB10_DEST_BASE_ENA(1) | S_0085F0_CB11_DEST_BASE_ENA(1) |
+          S_0085F0_DB_ACTION_ENA(1) | S_0085F0_DB_DEST_BASE_ENA(1) |
+          S_0085F0_SMX_ACTION_ENA(1) | S_0085F0_TC_ACTION_ENA(1) |
+          S_0085F0_SH_ACTION_ENA(1) | S_0085F0_VC_ACTION_ENA(1);
+}
+
+static uint32_t
+terakan_w6_pre_dispatch_invalidate_cp_coher_cntl(void)
+{
+   return S_0085F0_SMX_ACTION_ENA(1) |
+          S_0085F0_TC_ACTION_ENA(1) |
+          S_0085F0_SH_ACTION_ENA(1) |
+          S_0085F0_VC_ACTION_ENA(1);
+}
+
+static int32_t terakan_debug_w1_first_image_store_emitted = 0;
+static int32_t terakan_debug_w4_warmup_dispatch_emitted = 0;
+
+static void
+terakan_emit_w4_warmup_dispatch_once(struct terakan_gfx_command_writer * const command_writer)
+{
+   if (!debug_get_bool_option("TERAKAN_W4_WARMUP_DISPATCH", false)) {
+      return;
+   }
+   if (p_atomic_cmpxchg(&terakan_debug_w4_warmup_dispatch_emitted, 0, 1) != 0) {
+      return;
+   }
+
+   uint32_t * p = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+   if (unlikely(p == NULL)) {
+      return;
+   }
+   *p++ = PKT3C(PKT3_DISPATCH_DIRECT, 3, 0);
+   *p++ = 0;
+   *p++ = 0;
+   *p++ = 0;
+   *p++ = 1;
+   terakan_gfx_command_writer_emit_done(command_writer, p);
+
+   terakan_compute_multiplex_emit_event(command_writer, EVENT_TYPE_CS_PARTIAL_FLUSH);
+   uint32_t const cp_coher_cntl = terakan_w6_pre_dispatch_invalidate_cp_coher_cntl();
+   terakan_compute_multiplex_emit_surface_sync(command_writer, cp_coher_cntl);
+   fprintf(stderr,
+           "terakan/dispatch: W4 warmup dispatch emitted (0,0,0) cp_coher_cntl=0x%08x\n",
+           cp_coher_cntl);
+}
+
 /* BEGIN boundary: prepare the shared ring for compute execution.
  *
  * Must be called before any compute state emission (shader, resources,
@@ -326,6 +384,14 @@ terakan_compute_multiplex_begin(
             ? EVENT_TYPE_PS_PARTIAL_FLUSH
             : EVENT_TYPE_CS_PARTIAL_FLUSH;
       terakan_compute_multiplex_emit_event(command_writer, begin_sync_event);
+   }
+
+   if (debug_get_bool_option("TERAKAN_W6_PRE_DISPATCH_INVALIDATE", false)) {
+      uint32_t const cp_coher_cntl = terakan_w6_pre_dispatch_invalidate_cp_coher_cntl();
+      terakan_compute_multiplex_emit_surface_sync(command_writer, cp_coher_cntl);
+      fprintf(stderr,
+              "terakan/dispatch: W6 pre-dispatch invalidate cp_coher_cntl=0x%08x\n",
+              cp_coher_cntl);
    }
 
    /* (3) Re-emit SQ_CONFIG with compute-biased priorities.  The draw path
@@ -1065,6 +1131,15 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
               image_uav_count, TERAKAN_MAX_COMPUTE_STORAGE_IMAGES);
       return;
    }
+   if (image_uav_count > 0 &&
+       debug_get_bool_option("TERAKAN_W1_MAX_BARRIER_FIRST_IMAGE_STORE", false) &&
+       p_atomic_cmpxchg(&terakan_debug_w1_first_image_store_emitted, 0, 1) == 0) {
+      uint32_t const cp_coher_cntl = terakan_w1_max_barrier_cp_coher_cntl();
+      terakan_compute_multiplex_emit_surface_sync(command_writer, cp_coher_cntl);
+      fprintf(stderr,
+              "terakan/barrier: W1 first-image-store max barrier image_uav_count=%u cp_coher_cntl=0x%08x\n",
+              image_uav_count, cp_coher_cntl);
+   }
    if (res_count == 0) {
       return;
    }
@@ -1664,6 +1739,14 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
       debug_get_bool_option("TERAKAN_SKIP_COMPUTE_RESOURCES", false);
    bool const skip_compute_state_emit =
       debug_get_bool_option("TERAKAN_SKIP_COMPUTE_STATE_EMIT", false);
+   bool const skip_dispatch_packet =
+      debug_get_bool_option("TERAKAN_SKIP_DISPATCH_PACKET", false);
+   bool const force_first_submit_sync =
+      debug_get_bool_option("TERAKAN_FORCE_FIRST_SUBMIT_SYNC", false) ||
+      debug_get_bool_option("TERAKAN_DEBUG_FORCE_FIRST_SUBMIT_SYNC", false) ||
+      debug_get_bool_option("TERAKAN_FIRST_SUBMIT_SYNC", false);
+   bool const debug_first_submit_sync =
+      debug_get_bool_option("TERAKAN_DEBUG_FIRST_SUBMIT_SYNC", false);
 
    /* LI-2026-04-17-06 PROMOTED 2026-04-17 evening: the Phase-3 storage
     * image emission path in terakan_emit_compute_resources is proven
@@ -1687,6 +1770,20 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
     * affect how the subsequent SQ_PGM_RESOURCES_LS is interpreted. */
    if (!skip_compute_multiplex_begin) {
       terakan_compute_multiplex_begin(command_writer);
+
+      if (force_first_submit_sync && !cmd->has_compute_work) {
+         uint32_t const cp_coher_cntl = terakan_w6_pre_dispatch_invalidate_cp_coher_cntl();
+         terakan_compute_multiplex_emit_event(command_writer, EVENT_TYPE_CS_PARTIAL_FLUSH);
+         terakan_compute_multiplex_emit_surface_sync(command_writer, cp_coher_cntl);
+         if (debug_first_submit_sync) {
+            fprintf(stderr,
+                    "terakan/dispatch: first_submit_sync forced cp_coher_cntl=0x%08x\n",
+                    cp_coher_cntl);
+         }
+      } else if (debug_first_submit_sync && force_first_submit_sync && cmd->has_compute_work) {
+         fprintf(stderr,
+                 "terakan/dispatch: first_submit_sync skipped (non-first compute in command buffer)\n");
+      }
    }
 
    /* Emit compute pipeline state if dirty (first bind or pipeline change).
@@ -1769,7 +1866,9 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
       }
    }
 
-   if (!debug_get_bool_option("TERAKAN_SKIP_DISPATCH_PACKET", false)) {
+   if (!skip_dispatch_packet) {
+      terakan_emit_w4_warmup_dispatch_once(command_writer);
+
       /* Watermark checkpoint 1: PRE-dispatch baseline. */
       {
          struct terakan_device const * const dev =
@@ -1865,6 +1964,28 @@ terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
     * to avoid the post-draw -> dispatch hazard. */
    terakan_compute_multiplex_begin(command_writer);
 
+   {
+      bool const force_first_submit_sync =
+         debug_get_bool_option("TERAKAN_FORCE_FIRST_SUBMIT_SYNC", false) ||
+         debug_get_bool_option("TERAKAN_DEBUG_FORCE_FIRST_SUBMIT_SYNC", false) ||
+         debug_get_bool_option("TERAKAN_FIRST_SUBMIT_SYNC", false);
+      bool const debug_first_submit_sync =
+         debug_get_bool_option("TERAKAN_DEBUG_FIRST_SUBMIT_SYNC", false);
+      if (force_first_submit_sync && !cmd->has_compute_work) {
+         uint32_t const cp_coher_cntl = terakan_w6_pre_dispatch_invalidate_cp_coher_cntl();
+         terakan_compute_multiplex_emit_event(command_writer, EVENT_TYPE_CS_PARTIAL_FLUSH);
+         terakan_compute_multiplex_emit_surface_sync(command_writer, cp_coher_cntl);
+         if (debug_first_submit_sync) {
+            fprintf(stderr,
+                    "terakan/dispatch: first_submit_sync forced (indirect) cp_coher_cntl=0x%08x\n",
+                    cp_coher_cntl);
+         }
+      } else if (debug_first_submit_sync && force_first_submit_sync && cmd->has_compute_work) {
+         fprintf(stderr,
+                 "terakan/dispatch: first_submit_sync skipped (indirect non-first compute in command buffer)\n");
+      }
+   }
+
    /* Emit compute pipeline state (same as direct dispatch path).
     * Indirect dispatches go through the same state machine — the only
     * difference is that the CP reads the grid dimensions from a BO
@@ -1912,6 +2033,8 @@ terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
          command_writer->robustness_metadata.va_kcache_lines,
          1);  /* 1 KCACHE line = 256 bytes */
    }
+
+   terakan_emit_w4_warmup_dispatch_once(command_writer);
 
    /* PKT3_DISPATCH_INDIRECT: CP fetches (X, Y, Z) group counts from buffer_va.
     * The buffer must contain three uint32_t values at the given offset. */
