@@ -1879,14 +1879,6 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
       if (command_writer->bound_compute_pipeline != NULL &&
           (command_writer->bound_compute_pipeline->shader.kcache_needed &
            ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA))) {
-         /* FIX-N attempt (reverted 2026-04-19): added CACHE_FLUSH_AND_
-          * INV_EVENT (0x16) here on hypothesis that Evergreen caches the
-          * KCACHE line per shader-program.  Empirically the flush did
-          * NOT resolve the 78-test sweep failure, falsifying that
-          * hypothesis.  Left as inert comment; real fix TBD after
-          * register-doc + r600g kcache management review.  Keeping
-          * TERAKAN_FIX_N_KCACHE_FLUSH env reserved for a correctly-
-          * motivated variant in a future session. */
          terakan_robustness_metadata_apply(command_writer, true);
          terakan_emit_compute_kcache_bank(
             command_writer,
@@ -1898,6 +1890,81 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
             fprintf(stderr, "TERAKAN_FIX_K_LS_EMIT: bank=14 bo=%p va_lines=0x%x\n",
                     (void const *)command_writer->robustness_metadata.bo,
                     command_writer->robustness_metadata.va_kcache_lines);
+         }
+
+         /* FIX-N v2 (C-2026-04-19-10, citation: r600g r600_hw_context.c
+          * line 151-155): direct KCACHE reads hit the shader constant
+          * cache.  Between back-to-back compute dispatches that rebind
+          * bank 14 with a different VA, the hardware may retain a
+          * previously cached line.  CTS single_layer issues 8 dispatches
+          * without VkPipelineBarrier.
+          *
+          * Invalidation primitive per r600g: S_0085F0_SH_ACTION_ENA(1)
+          * in CP_COHER_CNTL delivered via SURFACE_SYNC; paired with a
+          * CACHE_FLUSH_AND_INV_EVENT for the per-SIMD L1 caches.
+          *
+          * STATUS (2026-04-19): FIX-N v2 emitted but the 78-test sweep
+          * still fails uniformly; isolated r32_sint_single_layer also
+          * fails with diff=63 for layer 0 and diff~14M for layers 1-7.
+          * The per-layer diff pattern shifted from canary (0x7F7F7F5F,
+          * pre-upgrade untouched) to smaller values (wrong-slice
+          * writes), confirming writes DO land but at wrong slices.
+          * The residual failure mode is NOT the shader cache.  Prime
+          * suspects for next session: (a) populate-before-upload race,
+          * (b) kernel PM4 parser re-resolving bank 14 reloc to an
+          * unexpected address, (c) descriptor set layout re-indexing
+          * between CmdBindDescriptorSets and CmdDispatch.
+          *
+          * Code left gated behind TERAKAN_FIX_N_SH_INVALIDATE=1 as
+          * inert infrastructure; safe to enable but provides no pass
+          * benefit in isolation. */
+         static int fix_n_cached = -1;
+         if (fix_n_cached < 0) {
+            fix_n_cached = debug_get_bool_option(
+               "TERAKAN_FIX_N_SH_INVALIDATE", false) ? 1 : 0;
+         }
+         if (fix_n_cached) {
+            /* L1 event flush (2 dwords) */
+            uint32_t *ev = terakan_gfx_command_writer_emit(
+               command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 2);
+            if (likely(ev != NULL)) {
+               *ev++ = PKT3(PKT3_EVENT_WRITE, 0, 0) | COMPUTE_MODE_BIT;
+               *ev++ = EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT) |
+                       EVENT_INDEX(0);
+               terakan_gfx_command_writer_emit_done(command_writer, ev);
+            }
+            /* L2 SURFACE_SYNC with SH_ACTION_ENA + FULL_CACHE_ENA (5 dwords) */
+            uint32_t *ss = terakan_gfx_command_writer_emit(
+               command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+            if (likely(ss != NULL)) {
+               /* FULL_CACHE_ENA (bit 20) is not defined in terascale
+                * headers (it is in r600d.h S_0085F0_FULL_CACHE_ENA).
+                * Inlining the bit since the constant is the same
+                * across the R600/Evergreen family. */
+               /* Peer-review fallback path: on Evergreen, constant
+                * fetches may route through the per-SIMD texture (TC)
+                * and vertex (VC) L1 caches before reaching the shared
+                * L2.  OR in TC_ACTION_ENA + VC_ACTION_ENA alongside
+                * SH_ACTION_ENA so all three invalidate in one
+                * SURFACE_SYNC.  FULL_CACHE_ENA (bit 20) is the r600g-
+                * defensive baseline; inlined because not defined in
+                * terascale headers. */
+               uint32_t const cp_coher_cntl =
+                  S_0085F0_SH_ACTION_ENA(1) |
+                  S_0085F0_TC_ACTION_ENA(1) |
+                  S_0085F0_VC_ACTION_ENA(1) |
+                  (1u << 20) |                              /* FULL_CACHE_ENA */
+                  TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
+               *ss++ = PKT3(PKT3_SURFACE_SYNC, 4 - 1, 0) | COMPUTE_MODE_BIT;
+               *ss++ = cp_coher_cntl;
+               *ss++ = UINT32_MAX;                       /* CP_COHER_SIZE */
+               *ss++ = 0;                                /* CP_COHER_BASE */
+               *ss++ = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+               terakan_gfx_command_writer_emit_done(command_writer, ss);
+            }
+            if (debug_get_bool_option("TERAKAN_DEBUG_FIX_K_LS", false)) {
+               fprintf(stderr, "TERAKAN_FIX_N_SH_INVALIDATE emitted\n");
+            }
          }
       }
    }
