@@ -225,6 +225,64 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                 * LI-2026-04-17-04 / LI-2026-04-17-05. */
                memcpy(dst_uav->real_resource, image_view->resource,
                       sizeof(dst_uav->real_resource));
+
+               /* FIX-B companion (C-2026-04-18-16 / task #140): when
+                * CB RESOURCE_TYPE was upgraded from TEXTURE2D ->
+                * TEXTURE2DARRAY (above), the SQ-side DIM must also
+                * track that upgrade so the shader-visible resource
+                * descriptor is consistent with CB exporter state.
+                *
+                * real_resource[0] word 0 bits 0-2 encode DIM:
+                *   V_030000_SQ_TEX_DIM_1D       = 0
+                *   V_030000_SQ_TEX_DIM_2D       = 1
+                *   V_030000_SQ_TEX_DIM_CUBEMAP  = 3
+                *   V_030000_SQ_TEX_DIM_1D_ARRAY = 4
+                *   V_030000_SQ_TEX_DIM_2D_ARRAY = 5
+                *
+                * Apply the same gate as the CB upgrade: only when
+                * the underlying VkImage has array_layers > 1 AND
+                * TERAKAN_FIX_B_SINGLE_LAYER=1.
+                */
+               static int fix_b_sq_cached = -1;
+               if (fix_b_sq_cached < 0) {
+                  fix_b_sq_cached = debug_get_bool_option("TERAKAN_FIX_B_SINGLE_LAYER",
+                                                         false) ? 1 : 0;
+               }
+               if (fix_b_sq_cached && image_view->vk.image->array_layers > 1) {
+                  /* 2026-04-18 diagnostic confirmed SQ DIM is already
+                   * set to V_030000_SQ_TEX_DIM_2D_ARRAY (5) by
+                   * terakan_image_create_resource_descriptor for
+                   * multi-layer backed images, regardless of view
+                   * type.  Both CB side (post-upgrade) and SQ side
+                   * are self-consistent at TEXTURE2DARRAY.
+                   * This switch below therefore never finds a 2D
+                   * to upgrade in practice; kept as defense-in-depth
+                   * for 1D (DIM=0) -> 1D_ARRAY (DIM=4) on the 1D
+                   * view path if that ever regresses. */
+                  uint32_t const sq_dim_current = dst_uav->real_resource[0] & 0x7;
+                  uint32_t sq_dim_upgraded = sq_dim_current;
+                  switch (sq_dim_current) {
+                  case 0: /* 1D */
+                     sq_dim_upgraded = 4; /* 1D_ARRAY */
+                     break;
+                  case 1: /* 2D */
+                     sq_dim_upgraded = 5; /* 2D_ARRAY */
+                     break;
+                  default:
+                     break;
+                  }
+                  if (sq_dim_upgraded != sq_dim_current) {
+                     dst_uav->real_resource[0] =
+                        (dst_uav->real_resource[0] & ~0x7u) | sq_dim_upgraded;
+                     if (trace_sd_cached) {
+                        fprintf(stderr,
+                                "terakan/stor_img_desc: FIX-B companion "
+                                "sq_dim %u -> %u real_resource[0]=0x%08x\n",
+                                sq_dim_current, sq_dim_upgraded,
+                                dst_uav->real_resource[0]);
+                     }
+                  }
+               }
             } else {
                dst_uav->bo = NULL;
                memset(dst_uav->real_resource, 0, sizeof(dst_uav->real_resource));
