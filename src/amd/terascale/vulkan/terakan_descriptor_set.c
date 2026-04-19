@@ -154,6 +154,53 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                   uint32_t const current_type =
                      G_028C70_RESOURCE_TYPE(dst_uav->color.info);
                   uint32_t upgraded_type = current_type;
+                  /* FIX-C (C-2026-04-19-01): skip the RESOURCE_TYPE
+                   * upgrade for non-array views.  The 2026-04-17
+                   * upgrade was intended to make per-slice tile math
+                   * work for multi-layer backed images, but MEM_RAT
+                   * STORE_TYPED consults R3.z (the coord's array
+                   * index) which SFN hardcodes to 0 for non-array
+                   * views.  With the upgrade in place, writes go to
+                   * image slice 0 regardless of baseArrayLayer.
+                   * Without the upgrade, RESOURCE_TYPE stays
+                   * TEXTURE{1,2}D and the CB exporter falls back to
+                   * writing at the pre-shifted base (which
+                   * terakan_image_create_color_descriptor set to the
+                   * target layer) -- the original working path.
+                   *
+                   * Trade-off: reverting the upgrade may regress the
+                   * tile-rotation case the 2026-04-17 commit
+                   * described, where TEXTURE2D + tile-rotated array
+                   * mode wrote to the wrong slice despite the
+                   * base-shift.  FIX-E (force LINEAR_ALIGNED array
+                   * mode at vkCreateImage) is the fallback for that
+                   * regression.
+                   *
+                   * Gated on TERAKAN_FIX_C_REVERT_TYPE_UPGRADE=1
+                   * during validation.  Promote to default once the
+                   * 78-test single_layer sweep goes green and the
+                   * tile-rotation case is re-verified.
+                   */
+                  static int fix_c_cached = -1;
+                  if (fix_c_cached < 0) {
+                     fix_c_cached = debug_get_bool_option(
+                        "TERAKAN_FIX_C_REVERT_TYPE_UPGRADE", false) ? 1 : 0;
+                  }
+                  bool const view_is_nonarray_2d_or_1d =
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_1D ||
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_2D ||
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE;
+                  if (fix_c_cached && view_is_nonarray_2d_or_1d) {
+                     if (trace_sd_cached) {
+                        fprintf(stderr,
+                                "terakan/stor_img_desc: FIX-C skip upgrade "
+                                "view_type=%d current_type=%u\n",
+                                (int)image_view->vk.view_type, current_type);
+                     }
+                     /* Leave upgraded_type == current_type so the
+                      * `if (upgraded_type != current_type)` below is
+                      * false and no state is modified. */
+                  } else {
                   switch (current_type) {
                   case V_028C70_TEXTURE1D:
                      upgraded_type = V_028C70_TEXTURE1DARRAY;
@@ -164,6 +211,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                   default:
                      /* Already array-type or 3D; leave unchanged. */
                      break;
+                  }
                   }
                   if (upgraded_type != current_type) {
                      dst_uav->color.info =
