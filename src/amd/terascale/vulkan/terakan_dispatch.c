@@ -1023,7 +1023,19 @@ terakan_emit_compute_kcache(struct terakan_gfx_command_writer *command_writer,
  * ALU_CONST_BUFFER_SIZE_LS_<bank> and ALU_CONST_CACHE_LS_<bank> with
  * COMPUTE_MODE_BIT, matching the proven pattern in terakan_emit_compute_kcache.
  */
-static void
+/* FIX-G (C-2026-04-19-03): exported so terakan_pipeline_layout.c can call this
+ * for compute UBO descriptor-set bindings.  Without this, application UBOs at
+ * bindings > 0 never reach the compute shader's LS-side KCACHE banks -- only
+ * PS-side (which the compute shader doesn't read).  Gated caller-side on
+ * TERAKAN_FIX_G_UBO_WIRING=1 during validation. */
+void
+terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command_writer,
+                                 uint32_t bank,
+                                 struct terakan_bo const *bo,
+                                 uint32_t va_kcache_lines,
+                                 uint32_t size_lines);
+
+void
 terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command_writer,
                                  uint32_t bank,
                                  struct terakan_bo const *bo,
@@ -1797,8 +1809,19 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
       }
       if (!skip_compute_resources) {
          terakan_emit_compute_resources(command_writer, pipeline);
-         /* Wire KCACHE (KC0) with SSBO address for compute addressing */
-         if (command_writer->hw_state_sqc.resource_bos.fs[2]) {
+         /* Wire KCACHE (KC0) with SSBO address for compute addressing.
+          *
+          * FIX-G (C-2026-04-19-03): this call stomps LS ALU_CONST_CACHE_LS_0
+          * with a zero-scratch BO (the SSBO-offset=0 convention).  When FIX-G
+          * wires real UBO descriptors through LS banks at CmdBindDescriptorSets
+          * time, bank 0 can hold a legitimate application UBO.  Skip the
+          * SSBO-offset overwrite when FIX-G is enabled; application UBOs that
+          * shader loads via KC0 reach the shader correctly. */
+         static int fix_g_cached = -1;
+         if (fix_g_cached < 0) {
+            fix_g_cached = debug_get_bool_option("TERAKAN_FIX_G_UBO_WIRING", false) ? 1 : 0;
+         }
+         if (!fix_g_cached && command_writer->hw_state_sqc.resource_bos.fs[2]) {
             terakan_emit_compute_kcache(command_writer,
                                         command_writer->hw_state_sqc.resource_bos.fs[2]);
          }

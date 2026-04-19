@@ -31,6 +31,15 @@
 #include "terakan_entrypoints.h"
 #include "terakan_hw_state.h"
 
+/* FIX-G (C-2026-04-19-03): forward declaration of the compute LS-register
+ * KCACHE bank emitter in terakan_dispatch.c.  No dedicated header for dispatch;
+ * declared here where needed. */
+void terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command_writer,
+                                      uint32_t bank,
+                                      struct terakan_bo const *bo,
+                                      uint32_t va_kcache_lines,
+                                      uint32_t size_lines);
+
 #include "amd/terascale/common/terascale_format.h"
 #include "compiler/shader_enums.h"
 #include "amd/terascale/common/terascale_evergreend.h"
@@ -193,16 +202,55 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   if (b->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC &&
                       b->first_immutable_sampler_or_dynamic_offset != UINT16_MAX)
                      va += set_dyn_off[b->first_immutable_sampler_or_dynamic_offset + di];
-                  setter(&command_writer->hw_state_sqc, bank,
-                         (sz + TERAKAN_KCACHE_HW_LINE_BYTES - 1) >> TERAKAN_KCACHE_HW_LINE_BYTES_LOG2,
-                         br[di].bo, (uint32_t)(va >> TERAKAN_KCACHE_HW_LINE_BYTES_LOG2));
+                  uint32_t const size_lines =
+                     (sz + TERAKAN_KCACHE_HW_LINE_BYTES - 1) >> TERAKAN_KCACHE_HW_LINE_BYTES_LOG2;
+                  uint32_t const va_lines =
+                     (uint32_t)(va >> TERAKAN_KCACHE_HW_LINE_BYTES_LOG2);
+                  setter(&command_writer->hw_state_sqc, bank, size_lines,
+                         br[di].bo, va_lines);
+
+                  /* FIX-G (C-2026-04-19-03): the setter above stages the
+                   * UBO into hw_state_sqc under the FS-stage bits (compute
+                   * shares the FS SQC slot).  That writes PS-side ALU_CONST_
+                   * CACHE_PS_* registers later, which the COMPUTE shader
+                   * does NOT read -- compute reads LS-side ALU_CONST_CACHE_
+                   * LS_*.  Without this additional direct emission, app
+                   * UBOs at compute bindings never reach the shader's
+                   * KCACHE, the shader's load_ubo reads whatever is at
+                   * ALU_CONST_CACHE_LS_<bank> (zero for banks > 0), and
+                   * dEQP-VK.image.store.with_format.*.*._single_layer
+                   * tests write to image slice 0 regardless of the
+                   * u_layerNdx the test provides.
+                   *
+                   * Emit LS-register KCACHE bank binding directly here for
+                   * compute.  Gated behind TERAKAN_FIX_G_UBO_WIRING=1
+                   * during validation; promote to default once the 78-test
+                   * single_layer sweep goes green.
+                   */
+                  if (is_compute) {
+                     static int fix_g_cached = -1;
+                     if (fix_g_cached < 0) {
+                        fix_g_cached = debug_get_bool_option(
+                           "TERAKAN_FIX_G_UBO_WIRING", false) ? 1 : 0;
+                     }
+                     if (fix_g_cached) {
+                        terakan_emit_compute_kcache_bank(
+                           command_writer, bank, br[di].bo, va_lines, size_lines);
+                        if (unlikely(debug_uav_bind)) {
+                           fprintf(stderr,
+                                   "terakan: FIX-G compute-ubo-bind: bank=%u "
+                                   "bo=%p va=0x%llX size=%u lines=%u (LS-direct)\n",
+                                   bank, (void const *)br[di].bo,
+                                   (unsigned long long)va, sz, size_lines);
+                        }
+                     }
+                  }
+
                   if (unlikely(debug_uav_bind)) {
                      fprintf(stderr,
                              "terakan: ubo-bind: stage=%u binding=%u idx=%u bank=%u bo=%p va=0x%llX size=%u lines=%u\n",
                              stage, bi, di, bank, (void const *)br[di].bo,
-                             (unsigned long long)va, sz,
-                             (sz + TERAKAN_KCACHE_HW_LINE_BYTES - 1) >>
-                                TERAKAN_KCACHE_HW_LINE_BYTES_LOG2);
+                             (unsigned long long)va, sz, size_lines);
                   }
                }
             }
