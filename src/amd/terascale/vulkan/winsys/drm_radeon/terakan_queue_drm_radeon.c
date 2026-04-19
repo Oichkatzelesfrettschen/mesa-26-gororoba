@@ -211,6 +211,23 @@ terakan_queue_drm_radeon_submit(
       }
    }
 
+   /* TERAKAN_DEBUG_DUMP_IB=1: dump the full IB dword-by-dword to stderr
+    * on every submit.  Framed with "=== TERAKAN_IB ring=... len=... ===" /
+    * "=== END_IB ===" so diff_ib.py can extract the right section from
+    * intermixed logs.  Host-side printf only; zero GPU impact. */
+   static int dump_ib_cached = -1;
+   if (dump_ib_cached < 0) {
+      dump_ib_cached = debug_get_bool_option("TERAKAN_DEBUG_DUMP_IB", false) ? 1 : 0;
+   }
+   if (dump_ib_cached) {
+      fprintf(stderr, "=== TERAKAN_IB ring=%u len=%u ===\n",
+              (unsigned)submission_context->ring, indirect_buffer_size_dwords);
+      for (uint32_t i = 0; i < indirect_buffer_size_dwords; ++i) {
+         fprintf(stderr, "0x%08" PRIX32 "\n", indirect_buffer[i]);
+      }
+      fprintf(stderr, "=== END_IB ===\n");
+   }
+
    int const cs_result = drmCommandWriteRead(device->render_node_fd, DRM_RADEON_CS, &cs_arguments,
                                              sizeof(cs_arguments));
 
