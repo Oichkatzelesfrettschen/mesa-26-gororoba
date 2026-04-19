@@ -198,6 +198,17 @@ struct terakan_image_view {
    struct terakan_color_descriptor color;
    struct terakan_color_meta_descriptor color_meta;
 
+   /* Amount (in units of 256 bytes, same as color.base) added to color.base
+    * by the view_is_nonarray_2d_or_1d base-shift in
+    * terakan_image_create_color_descriptor.  Zero for ordinary views.
+    * Consumers that upgrade RESOURCE_TYPE to TEXTURE*DARRAY (see
+    * terakan_descriptor_set.c STORAGE_IMAGE binding) must subtract
+    * this from color.base when flipping the view interpretation to
+    * array semantics, otherwise the CB exporter double-applies the
+    * slice offset.  See CLAIMS C-2026-04-18-16.
+    */
+   uint32_t color_base_slice_shift_shr8;
+
    struct terakan_depth_stencil_descriptor depth_stencil;
 };
 

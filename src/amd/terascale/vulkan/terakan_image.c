@@ -1841,9 +1841,30 @@ terakan_CreateImageView(VkDevice const deviceHandle,
    if (descriptor_create_info.view_format.supports_cb_color) {
       terakan_image_create_color_descriptor(&descriptor_create_info, &image_view->color,
                                             &image_view->color_meta);
+      /* Compute the shift amount that was added to color.base for the
+       * view_is_nonarray_2d_or_1d fast path (see image.c:1393-1404).
+       * Zero for all other views.  Consumers that upgrade RESOURCE_TYPE
+       * to TEXTURE*DARRAY (descriptor_set.c STORAGE_IMAGE binding)
+       * subtract this to revert back to image-root-relative base.
+       * See CLAIMS C-2026-04-18-16. */
+      bool const view_is_nonarray_2d_or_1d =
+         pCreateInfo->viewType == VK_IMAGE_VIEW_TYPE_1D ||
+         pCreateInfo->viewType == VK_IMAGE_VIEW_TYPE_2D ||
+         pCreateInfo->viewType == VK_IMAGE_VIEW_TYPE_CUBE;
+      if (view_is_nonarray_2d_or_1d && image->vk.array_layers > 1) {
+         struct terakan_image_surface_aspect const * const sa =
+            &image->surface.aspects[descriptor_create_info.image_aspect_index];
+         struct terakan_image_surface_level const * const sl =
+            &sa->levels[descriptor_create_info.base_mip_level];
+         image_view->color_base_slice_shift_shr8 =
+            sl->slice_size_bytes_shr8 * descriptor_create_info.base_array_layer;
+      } else {
+         image_view->color_base_slice_shift_shr8 = 0;
+      }
    } else {
       memset(&image_view->color, 0, sizeof(image_view->color));
       memset(&image_view->color_meta, 0, sizeof(image_view->color_meta));
+      image_view->color_base_slice_shift_shr8 = 0;
    }
 
    if (!terakan_image_create_depth_stencil_descriptor(pCreateInfo, &image_view->depth_stencil)) {
