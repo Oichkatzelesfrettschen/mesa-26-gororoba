@@ -60,16 +60,28 @@ void terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command
 /* Update robustness write-guard metadata for a UAV slot in KCACHE bank 14.
  * Routes SSBO bounds to uav_byte_sizes[] and texel buffer element counts to
  * texel_buffer_element_counts[]; zeros the complementary array for
- * defense-in-depth. Pass bound=0 for unbound UAVs. */
+ * defense-in-depth. Pass bound=0 for unbound UAVs.
+ *
+ * FIX-K (C-2026-04-19-06): base_array_layer is routed to
+ * uav_base_array_layers[] (bank 14, dwords 28..39) only when
+ * inject_base_array_layer is true (view-is-non-array-over-array-image);
+ * otherwise zero is written so the NIR-side nir_iadd folds away.  This
+ * respects guardrail #1: plain 2D images over single-layer backing must
+ * not have baseArrayLayer added, else MEM_RAT targets a slice beyond
+ * the allocation boundary and corrupts adjacent suballocations. */
 static inline void
 update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
                                uint8_t const uav_idx, bool const is_texel,
-                               uint32_t const bound)
+                               uint32_t const bound,
+                               uint32_t const base_array_layer,
+                               bool const inject_base_array_layer)
 {
    if (uav_idx >= TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT)
       return;
    cw->robustness_metadata.uav_byte_sizes[uav_idx] = is_texel ? 0 : bound;
    cw->robustness_metadata.texel_buffer_element_counts[uav_idx] = is_texel ? bound : 0;
+   cw->robustness_metadata.uav_base_array_layers[uav_idx] =
+      inject_base_array_layer ? base_array_layer : 0u;
    cw->robustness_metadata.dirty = true;
 }
 
@@ -341,13 +353,19 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      uint32_t const doff = set_dyn_off[r->first_dynamic_offset + ui];
                      bound = (doff < bound) ? (bound - doff) : 0;
                   }
-                  update_uav_robustness_metadata(command_writer, idx, uav->is_texel_buffer, bound);
+                  bool const inject_layer =
+                     (uav->view_flags &
+                      TERAKAN_DESCRIPTOR_SET_UAV_VIEW_FLAG_NONARRAY_VIEW_OF_ARRAY_IMAGE) != 0;
+                  update_uav_robustness_metadata(command_writer, idx,
+                                                 uav->is_texel_buffer, bound,
+                                                 uav->base_array_layer, inject_layer);
                } else {
                   if (used && BITSET_TEST(uavs_not_null, idx))
                      terakan_state_draw_set_pending(&command_writer->state_draw,
                                                     TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
                   BITSET_CLEAR(uavs_not_null, idx);
-                  update_uav_robustness_metadata(command_writer, idx, false, 0);
+                  update_uav_robustness_metadata(command_writer, idx, false, 0,
+                                                 0, false);
                }
             }
          }

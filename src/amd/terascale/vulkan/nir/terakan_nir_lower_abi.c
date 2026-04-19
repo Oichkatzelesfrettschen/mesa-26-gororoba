@@ -33,6 +33,8 @@
 
 #include "terakan_nir_lower_bindings_internal.h"
 
+#include "util/u_debug.h"
+
 static nir_def *
 terakan_nir_resize_vector(nir_builder * const b, nir_def * const src,
                           unsigned const num_components, bool const pad_with_zero)
@@ -188,7 +190,9 @@ terakan_nir_uav_immed_index(nir_builder * const b,
 
 static nir_def *
 terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
-                            enum glsl_sampler_dim const dim, bool const is_array)
+                            enum glsl_sampler_dim const dim, bool const is_array,
+                            struct terakan_nir_lower_bindings_state * const state,
+                            unsigned const uav_index_zero_based)
 {
    /* Buffers need separate handling due to the UAV base granularity offset. */
    assert(dim != GLSL_SAMPLER_DIM_BUF);
@@ -210,6 +214,106 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
    if (dim == GLSL_SAMPLER_DIM_3D || is_array) {
       uav_coord_num_components = 3;
       uav_coord_components[2] = nir_channel(b, image_coord, dim == GLSL_SAMPLER_DIM_1D ? 1 : 2);
+   }
+
+   /* FIX-H (C-2026-04-19-04): the CTS dEQP-VK.image.store._single_layer
+    * variants pass an ivec3 coord (gx, gy, u_layerNdx) through
+    * imageStore even when the GLSL declares the image as non-array
+    * (image2D) on a VK_IMAGE_VIEW_TYPE_2D view of a multi-layer
+    * (array_layers > 1) VkImage.  With RESOURCE_TYPE upgraded to
+    * TEXTURE2DARRAY at descriptor bind time
+    * (terakan_descriptor_set.c:113-133), the CB exporter DOES consult
+    * R3.z at dispatch time -- but this pass dropped the z coord
+    * above because dim=2D and is_array=false, so after NIR opt the
+    * shader ends up with MOV R3.z, 0 and writes land at image slice 0
+    * regardless of u_layerNdx.  Preserve the z channel when the
+    * shader's coord has it (>= 3 components) so the compute dispatch
+    * faithfully carries baseArrayLayer down to MEM_RAT STORE_TYPED.
+    *
+    * Gated via TERAKAN_FIX_H_PRESERVE_IMAGE_Z=1 during validation;
+    * promote to default once the 2d_array single_layer sweep goes
+    * from 78/78 Pass/Fail to 156/0.
+    */
+   if (uav_coord_num_components < 3 && dim != GLSL_SAMPLER_DIM_1D) {
+      static int fix_h_cached = -1;
+      if (fix_h_cached < 0) {
+         fix_h_cached = debug_get_bool_option("TERAKAN_FIX_H_PRESERVE_IMAGE_Z", false) ? 1 : 0;
+      }
+      if (fix_h_cached) {
+         uav_coord_num_components = 3;
+         /* If the shader provided fewer than 3 components (GLSL-compiler
+          * truncation when declaring imageStore on image2D with ivec3
+          * coord), nir_channel of the missing component yields undef; we
+          * explicitly take channel 2 if available, else emit zero.
+          * The SHADER's u_layerNdx read for single_layer tests lives in
+          * channel 2 of the original imageStore coord, so fetching that
+          * channel preserves the runtime KCACHE read that was being
+          * dead-code-eliminated after the z-drop. */
+         if (image_coord->num_components >= 3) {
+            uav_coord_components[2] = nir_channel(b, image_coord, 2);
+         } else {
+            uav_coord_components[2] = nir_imm_zero(b, 1, 32);
+         }
+      }
+   }
+
+   /* FIX-K (C-2026-04-19-06): runtime-add baseArrayLayer into coord.z so
+    * MEM_RAT STORE_TYPED targets the correct physical slice of a
+    * TEXTURE2DARRAY resource, compensating for Evergreen hardware that
+    * reads R3.z as the absolute slice index and ignores
+    * CB_COLOR_VIEW.SLICE_START on writes.  Runtime data source:
+    * robustness_metadata.uav_base_array_layers[uav_idx] at bank 14
+    * dword (28 + uav_idx).  The driver-side populator
+    * (terakan_pipeline_layout.c:update_uav_robustness_metadata) writes
+    * the real baseArrayLayer only when the UAV is a non-array view
+    * over a multi-layer backing (guardrail #1); all other slots get
+    * zero, so nir_iadd(coord_z, 0) collapses to coord_z (nir_opt_algebraic).
+    *
+    * Coverage: 2D / 3D / CUBE images.  GLSL_SAMPLER_DIM_1D is not
+    * covered here because the existing pass already forces the Y
+    * channel to zero for 1D (historical promotion to 2D in the DB
+    * path) -- a 1D view over a 1D_ARRAY backing would require a
+    * parallel fix; no CTS coverage today, tracked as FIX-K follow-up.
+    *
+    * Gated behind TERAKAN_FIX_K_BASE_ARRAY_LAYER=1 during validation;
+    * promote to default once single_layer sweep goes green. */
+   if (dim != GLSL_SAMPLER_DIM_1D && dim != GLSL_SAMPLER_DIM_BUF &&
+       state != NULL && uav_index_zero_based < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
+      static int fix_k_cached = -1;
+      if (fix_k_cached < 0) {
+         fix_k_cached = debug_get_bool_option("TERAKAN_FIX_K_BASE_ARRAY_LAYER", false) ? 1 : 0;
+      }
+      if (fix_k_cached) {
+         /* bank 14 layout: dword 28 starts the uav_base_array_layers[12]
+          * array; each entry is one uint32_t.  vec4 index = dword/4,
+          * component = dword%4. */
+         uint32_t const layer_dword = 28u + uav_index_zero_based;
+         uint32_t const layer_vec4_index = layer_dword / 4u;
+         uint32_t const layer_component = layer_dword % 4u;
+
+         *state->kcache_needed |=
+            (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+
+         nir_def * const base_array_layer_load = nir_load_kcache_r600(
+            b, 1, 32, nir_imm_zero(b, 1, 32),
+            .access = ACCESS_CAN_REORDER,
+            .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+            .base = layer_vec4_index,
+            .component = layer_component);
+
+         if (uav_coord_num_components < 3) {
+            /* Promote to 3 components with coord_z = baseArrayLayer. */
+            uav_coord_num_components = 3;
+            uav_coord_components[2] = base_array_layer_load;
+         } else {
+            /* Existing coord_z carries shader-provided z (e.g. imageStore
+             * on image2DArray with ivec3 coord, or the FIX-H preserved
+             * channel 2): add baseArrayLayer to it.  Zero-layer
+             * descriptors contribute zero so shader-z is preserved. */
+            uav_coord_components[2] =
+               nir_iadd(b, uav_coord_components[2], base_array_layer_load);
+         }
+      }
    }
 
    return nir_vec(b, uav_coord_components, uav_coord_num_components);
@@ -1105,7 +1209,8 @@ terakan_nir_lower_bindings_instr_image_deref_load(
          b,
          terakan_nir_build_uav_returning_instr_r600(
             b, intrin->def.num_components, 32, uav_array_index,
-            terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim, image_is_array), undef,
+            terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim, image_is_array,
+                                        state, uav_index_zero_based), undef,
             undef, immed_index, V_RAT_INST_NOP_RTN, access,
             state->uav_base + uav_index_zero_based,
             (b->shader->info.stage == MESA_SHADER_FRAGMENT
@@ -1194,7 +1299,8 @@ terakan_nir_lower_bindings_instr_image_deref_store(
                                            (access & ACCESS_INCLUDE_HELPERS) != 0, state);
    } else {
       coord = terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim,
-                                          nir_intrinsic_image_array(intrin));
+                                          nir_intrinsic_image_array(intrin),
+                                          state, uav_index_zero_based);
    }
 
    nir_def * const undef = nir_undef(b, 1, 32);
@@ -1267,7 +1373,8 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
                                            (access & ACCESS_INCLUDE_HELPERS) != 0, state);
    } else {
       coord = terakan_nir_image_uav_coord(b, intrin->src[1].ssa, image_dim,
-                                          nir_intrinsic_image_array(intrin));
+                                          nir_intrinsic_image_array(intrin),
+                                          state, uav_index_zero_based);
    }
 
    /* For INC/DEC, the hardware instruction accepts the maximum possible value. */

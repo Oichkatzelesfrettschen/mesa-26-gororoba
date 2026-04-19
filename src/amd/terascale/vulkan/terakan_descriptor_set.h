@@ -98,7 +98,27 @@ struct terakan_descriptor_set_uav {
     * Copied from image_view->resource[8] at bind time.  Zero for
     * non-image (buffer/texel-buffer) UAVs. */
    uint32_t real_resource[8];
+   /* FIX-K (C-2026-04-19-06): baseArrayLayer of the VkImageView for
+    * STORAGE_IMAGE bindings.  Routed to
+    * robustness_metadata.uav_base_array_layers[] at pipeline_layout
+    * bind time; NIR lowering adds this to coord.z so MEM_RAT
+    * STORE_TYPED targets the correct physical slice of a
+    * TEXTURE2DARRAY resource even when the view is non-array.
+    * Zero for buffer/texel-buffer UAVs, plain 2D images over single-
+    * layer backing, and array views that already carry a valid z. */
+   uint32_t base_array_layer;
+   /* Bit 0: view is non-array (1D/2D/CUBE) over a multi-layer backing
+    * image.  Only such descriptors need FIX-K injection; plain 2D
+    * images over single-layer backing (flag=0) must NOT receive
+    * baseArrayLayer addition (guardrail #1: prevents OOB writes into
+    * adjacent suballocations).  Other bits reserved. */
+   uint8_t view_flags;
+   /* Pad so sizeof % TERAKAN_DESCRIPTOR_SET_DESCRIPTOR_ALIGNMENT == 0
+    * (verified by static_assert below). */
+   uint8_t _pad_fix_k[3];
 };
+
+#define TERAKAN_DESCRIPTOR_SET_UAV_VIEW_FLAG_NONARRAY_VIEW_OF_ARRAY_IMAGE 0x01u
 
 #define TERAKAN_DESCRIPTOR_SET_DESCRIPTOR_ALIGNMENT                                                \
    MAX3(alignof(struct terakan_descriptor_set_resource),                                           \

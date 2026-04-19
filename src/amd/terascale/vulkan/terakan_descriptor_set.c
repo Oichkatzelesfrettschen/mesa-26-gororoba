@@ -93,6 +93,26 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                memcpy(&dst_uav->color, &image_view->color, sizeof(struct terakan_color_descriptor));
                dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
                dst_uav->is_texel_buffer = 0;
+               /* FIX-K (C-2026-04-19-06): stash baseArrayLayer + non-array-
+                * view-over-array-image flag so pipeline_layout.c can upload
+                * them into robustness_metadata bank 14 dwords 28..39 for
+                * NIR-side R3.z injection at MEM_RAT STORE_TYPED.  Only the
+                * non-array-view-over-array-image case gets the add applied
+                * (guardrail #1); others get zero, which nir_iadd folds
+                * away during NIR optimisation. */
+               dst_uav->base_array_layer = image_view->vk.base_array_layer;
+               {
+                  bool const is_nonarray_view =
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_1D ||
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_2D ||
+                     image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE;
+                  bool const backing_is_array =
+                     image_view->vk.image->array_layers > 1;
+                  dst_uav->view_flags = (uint8_t)((is_nonarray_view && backing_is_array)
+                     ? TERAKAN_DESCRIPTOR_SET_UAV_VIEW_FLAG_NONARRAY_VIEW_OF_ARRAY_IMAGE
+                     : 0u);
+               }
+               memset(dst_uav->_pad_fix_k, 0, sizeof(dst_uav->_pad_fix_k));
 
                /* TERAKAN_DEBUG_STORAGE_IMAGE_DESC=1: trace the STORAGE_IMAGE
                 * descriptor pipeline in full, at every transformation step.
@@ -264,6 +284,68 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                              current_type, upgraded_type, dst_uav->color.info,
                              image_view->vk.image->array_layers);
                   }
+                  /* FIX-I (C-2026-04-19-05): the original FIX-B's revert
+                   * + SLICE_START programming is dead code when the
+                   * entry-time RESOURCE_TYPE is already TEXTURE2DARRAY
+                   * (which terakan_image_create_resource_descriptor
+                   * produces for any image with array_layers>1).  In
+                   * that case `upgraded_type == current_type` and the
+                   * `if (upgraded_type != current_type)` arm above is
+                   * false, so FIX-B never runs.  The CB descriptor
+                   * ends up with RESOURCE_TYPE=2D_ARRAY, base pre-
+                   * shifted by color_base_slice_shift_shr8, and
+                   * view=0.  The exporter then adds array-tile math
+                   * on top of the already-shifted base and misses
+                   * the target slice.
+                   *
+                   * Fix (applies when view is non-array AND backing
+                   * image is multi-layer, regardless of whether an
+                   * upgrade fired): revert the base pre-shift and
+                   * let CB_COLOR_VIEW.SLICE_START/SLICE_MAX name the
+                   * target slice so the exporter handles the tile
+                   * math correctly.
+                   *
+                   * Gated behind TERAKAN_FIX_I_APPLY_SLICE_VIEW=1
+                   * during validation; promote once the single_layer
+                   * sweep goes green.
+                   */
+                  static int fix_i_cached = -1;
+                  if (fix_i_cached < 0) {
+                     fix_i_cached = debug_get_bool_option(
+                        "TERAKAN_FIX_I_APPLY_SLICE_VIEW", false) ? 1 : 0;
+                  }
+                  if (fix_i_cached && view_is_nonarray_2d_or_1d &&
+                      image_view->color_base_slice_shift_shr8 != 0) {
+                     uint32_t const base_layer = image_view->vk.base_array_layer;
+                     uint32_t const base_before = dst_uav->color.base;
+                     dst_uav->color.base -= image_view->color_base_slice_shift_shr8;
+                     /* FIX-I refined (2026-04-19 session): the CB exporter
+                      * adds BOTH CB_COLOR_VIEW.SLICE_START AND shader R3.z
+                      * to the write address when RESOURCE_TYPE is
+                      * TEXTURE2DARRAY.  Earlier revisions of FIX-I wrote
+                      * SLICE_START=base_layer expecting the exporter to
+                      * use it as the write bias; combined with FIX-K
+                      * (which injects base_layer into R3.z), that caused
+                      * writes to land at slice 2*base_layer.  Leave
+                      * SLICE_START at 0 (covering VIEW layer 0..0 of the
+                      * single-layer view) and let FIX-K's R3.z injection
+                      * do the heavy lifting of targeting the physical
+                      * slice.  SLICE_MAX=0 mirrors that. */
+                     dst_uav->color.view =
+                        S_028C6C_SLICE_START(0) |
+                        S_028C6C_SLICE_MAX(0);
+                     if (trace_sd_cached) {
+                        fprintf(stderr,
+                                "terakan/stor_img_desc: FIX-I applied "
+                                "base_layer=%u shift_shr8=0x%08x "
+                                "base_before=0x%08x reverted_base=0x%08x "
+                                "view=0x%08x (slice_start=0 refined)\n",
+                                base_layer,
+                                image_view->color_base_slice_shift_shr8,
+                                base_before, dst_uav->color.base,
+                                dst_uav->color.view);
+                     }
+                  }
                }
                /* Stash the SQ_TEX_RESOURCE ("REAL") descriptor so
                 * terakan_emit_compute_resources can emit the
@@ -334,6 +416,9 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
             } else {
                dst_uav->bo = NULL;
                memset(dst_uav->real_resource, 0, sizeof(dst_uav->real_resource));
+               dst_uav->base_array_layer = 0;
+               dst_uav->view_flags = 0;
+               memset(dst_uav->_pad_fix_k, 0, sizeof(dst_uav->_pad_fix_k));
             }
          }
       }
@@ -394,6 +479,10 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                dst_uav->buffer_byte_size = 0;
                dst_uav->is_texel_buffer = 1;
             }
+            /* FIX-K: buffer UAVs never need baseArrayLayer injection. */
+            dst_uav->base_array_layer = 0;
+            dst_uav->view_flags = 0;
+            memset(dst_uav->_pad_fix_k, 0, sizeof(dst_uav->_pad_fix_k));
          }
       }
          FALLTHROUGH;
@@ -457,6 +546,10 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
             } else {
                dst_uav->buffer_byte_size = 0;
             }
+            /* FIX-K: SSBOs never need baseArrayLayer injection. */
+            dst_uav->base_array_layer = 0;
+            dst_uav->view_flags = 0;
+            memset(dst_uav->_pad_fix_k, 0, sizeof(dst_uav->_pad_fix_k));
          }
       } break;
 

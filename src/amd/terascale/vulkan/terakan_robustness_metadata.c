@@ -36,7 +36,14 @@
  *   dword 13..15 : reserved (zero)
  *   dword 16..27 : uint32_t texel_buffer_element_counts[12]
  *                   For STORAGE_TEXEL_BUFFER: element count from VkBufferView.
- *   dword 28..63 : reserved (zero)
+ *   dword 28..39 : uint32_t uav_base_array_layers[12]
+ *                   FIX-K (C-2026-04-19-06): baseArrayLayer of each
+ *                   STORAGE_IMAGE UAV's VkImageView.  Read by NIR
+ *                   lowering to inject the slice index into MEM_RAT
+ *                   STORE_TYPED coord.z, compensating for Evergreen
+ *                   hardware treating R3.z as the absolute slice index
+ *                   and ignoring CB_COLOR_VIEW.SLICE_START on writes.
+ *   dword 40..63 : reserved (zero)
  */
 
 #include "terakan_command_buffer.h"
@@ -86,10 +93,21 @@ terakan_robustness_metadata_apply(
               command_writer->robustness_metadata.uav_byte_sizes[3],
               command_writer->robustness_metadata.uav_byte_sizes[4],
               command_writer->robustness_metadata.uav_byte_sizes[5]);
+      fprintf(stderr, "TERAKAN_METADATA: uav_base_array_layers[0..5] = %u %u %u %u %u %u\n",
+              command_writer->robustness_metadata.uav_base_array_layers[0],
+              command_writer->robustness_metadata.uav_base_array_layers[1],
+              command_writer->robustness_metadata.uav_base_array_layers[2],
+              command_writer->robustness_metadata.uav_base_array_layers[3],
+              command_writer->robustness_metadata.uav_base_array_layers[4],
+              command_writer->robustness_metadata.uav_base_array_layers[5]);
       /* Dwords 16..27: texel buffer element counts. */
       memcpy(mapping + 16,
              command_writer->robustness_metadata.texel_buffer_element_counts,
              sizeof(command_writer->robustness_metadata.texel_buffer_element_counts));
+      /* Dwords 28..39: per-UAV baseArrayLayer for FIX-K (R3.z injection). */
+      memcpy(mapping + 28,
+             command_writer->robustness_metadata.uav_base_array_layers,
+             sizeof(command_writer->robustness_metadata.uav_base_array_layers));
       /* dword 12: trash_page_addr — GPU VA >> 2 of the driver-owned trash page.
        * Used by math-predication write guards to redirect OOB writes to a safe
        * garbage sink instead of offset 0 of the target buffer. */
