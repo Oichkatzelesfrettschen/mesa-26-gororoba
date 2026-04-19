@@ -314,6 +314,14 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                      fix_i_cached = debug_get_bool_option(
                         "TERAKAN_FIX_I_APPLY_SLICE_VIEW", false) ? 1 : 0;
                   }
+                  /* FIX-T attempted (reverted 2026-04-19): remove the
+                   * shift_shr8 != 0 gate so FIX-I applies to layer 0 too.
+                   * Empirically caused LAYER 1 to regress (diff=61) while
+                   * still not fixing layer 0 (diff=7).  Mechanism unclear;
+                   * possibly a side effect of the descriptor pool update
+                   * ordering or some state propagation between sequential
+                   * descriptor updates.  Reverting to the shift!=0 gate
+                   * which gives 7/8 passing on both sint and sfloat. */
                   if (fix_i_cached && view_is_nonarray_2d_or_1d &&
                       image_view->color_base_slice_shift_shr8 != 0) {
                      uint32_t const base_layer = image_view->vk.base_array_layer;
