@@ -255,29 +255,37 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
             debug_get_bool_option("TERAKAN_STORAGE_IMAGE_BASE_ARRAY_LAYER", false) ? 1 : 0;
       }
       if (base_array_layer_cached) {
-         /* Bank 14 dword 28 starts uav_base_array_layers[]. */
-         uint32_t const layer_dword = 28u + uav_index_zero_based;
-         uint32_t const layer_vec4_index = layer_dword / 4u;
-         uint32_t const layer_component = layer_dword % 4u;
-
-         *state->kcache_needed |=
-            (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
-
-         nir_def * const base_array_layer_load = nir_load_kcache_r600(
-            b, 1, 32, nir_imm_zero(b, 1, 32),
-            .access = ACCESS_CAN_REORDER,
-            .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-            .base = layer_vec4_index,
-            .component = layer_component);
-
-         if (uav_coord_num_components < 3) {
-            /* Promote to 3 components with coord_z = baseArrayLayer. */
+         int const forced_coord_z =
+            debug_get_num_option("TERAKAN_STORAGE_IMAGE_FORCE_COORD_Z", -1);
+         if (forced_coord_z >= 0) {
             uav_coord_num_components = 3;
-            uav_coord_components[2] = base_array_layer_load;
-         } else {
-            /* Zero-layer descriptors preserve the shader-provided z. */
             uav_coord_components[2] =
-               nir_iadd(b, uav_coord_components[2], base_array_layer_load);
+               nir_imm_int(b, (int32_t)forced_coord_z);
+         } else {
+            /* Bank 14 dword 28 starts uav_base_array_layers[]. */
+            uint32_t const layer_dword = 28u + uav_index_zero_based;
+            uint32_t const layer_vec4_index = layer_dword / 4u;
+            uint32_t const layer_component = layer_dword % 4u;
+
+            *state->kcache_needed |=
+               (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+
+            nir_def * const base_array_layer_load = nir_load_kcache_r600(
+               b, 1, 32, nir_imm_zero(b, 1, 32),
+               .access = ACCESS_CAN_REORDER,
+               .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+               .base = layer_vec4_index,
+               .component = layer_component);
+
+            if (uav_coord_num_components < 3) {
+               /* Promote to 3 components with coord_z = baseArrayLayer. */
+               uav_coord_num_components = 3;
+               uav_coord_components[2] = base_array_layer_load;
+            } else {
+               /* Zero-layer descriptors preserve the shader-provided z. */
+               uav_coord_components[2] =
+                  nir_iadd(b, uav_coord_components[2], base_array_layer_load);
+            }
          }
       }
    }

@@ -297,22 +297,13 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                      uint32_t const base_before = dst_uav->color.base;
                      uint32_t const slice_before = dst_uav->color.slice;
                      dst_uav->color.base -= image_view->color_base_slice_shift_shr8;
-                     /* Expand the tile and slice limits from the single-layer
-                      * view window to the backing array. TEXTURE2DARRAY writes
-                      * use both CB_COLOR_VIEW.SLICE_START and shader R3.z, so
-                      * SLICE_START stays zero and R3.z carries the physical
-                      * slice exactly once.
+                     /* CB_COLOR_SLICE.SLICE_TILE_MAX is per-slice tile count,
+                      * so keep it unchanged. CB_COLOR_VIEW.SLICE_MAX is the
+                      * slice range gate and must cover the backing array when
+                      * shader R3.z selects the physical slice.
                       */
-                     uint32_t const orig_tile_max_plus_one =
-                        G_028C68_SLICE_TILE_MAX(dst_uav->color.slice) + 1u;
-                     uint32_t const backing_array_layers = image_view->vk.image->array_layers;
-                     uint32_t const enlarged_tile_max =
-                        backing_array_layers > 0
-                           ? orig_tile_max_plus_one * backing_array_layers - 1u
-                           : 0u;
-                     dst_uav->color.slice =
-                        (dst_uav->color.slice & C_028C68_SLICE_TILE_MAX) |
-                        S_028C68_SLICE_TILE_MAX(enlarged_tile_max);
+                     uint32_t const backing_array_layers =
+                        image_view->vk.image->array_layers;
                      uint32_t const slice_max_backing =
                         (backing_array_layers > 0) ? (backing_array_layers - 1u) : 0u;
                      dst_uav->color.view =
@@ -324,15 +315,13 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                                 "base_layer=%u shift_shr8=0x%08x "
                                 "base_before=0x%08x reverted_base=0x%08x "
                                 "view=0x%08x slice_max=%u backing=%u "
-                                "slice_before=0x%08x slice_after=0x%08x "
-                                "tile_max_before=%u tile_max_after=%u\n",
+                                "slice_kept=0x%08x\n",
                                 base_layer,
                                 image_view->color_base_slice_shift_shr8,
                                 base_before, dst_uav->color.base,
                                 dst_uav->color.view, slice_max_backing,
                                 backing_array_layers,
-                                slice_before, dst_uav->color.slice,
-                                orig_tile_max_plus_one - 1u, enlarged_tile_max);
+                                slice_before);
                      }
                   }
                }
