@@ -80,8 +80,26 @@ update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
       return;
    cw->robustness_metadata.uav_byte_sizes[uav_idx] = is_texel ? 0 : bound;
    cw->robustness_metadata.texel_buffer_element_counts[uav_idx] = is_texel ? bound : 0;
-   cw->robustness_metadata.uav_base_array_layers[uav_idx] =
-      inject_base_array_layer ? base_array_layer : 0u;
+   {
+      uint32_t bal_value =
+         inject_base_array_layer ? base_array_layer : 0u;
+      /* PROBE_BO_MARKER (Q-2026-04-19): if TERAKAN_PROBE_BO_MARKER is
+       * set, override uav_base_array_layers[uav_idx] with a distinctive
+       * 0xDEADBExx marker that varies per call.  Used to determine
+       * whether the shader's KC14 read is fetching from this BO at
+       * all.  If the shader reads back the marker, fetching IS
+       * correct (separate cache wedge issue).  If it reads 0, the
+       * shader is not reading from this BO -- bank 14 may not be
+       * bound to the right physical address at fetch time. */
+      if (debug_get_bool_option("TERAKAN_PROBE_BO_MARKER", false)) {
+         static unsigned probe_bo_call_count = 0;
+         bal_value = 0xDEADBE00u + (probe_bo_call_count++ & 0xFFu);
+         fprintf(stderr,
+            "TERAKAN_PROBE_BO_MARKER: uav_idx=%u writing 0x%08x\n",
+            uav_idx, bal_value);
+      }
+      cw->robustness_metadata.uav_base_array_layers[uav_idx] = bal_value;
+   }
    cw->robustness_metadata.dirty = true;
 }
 

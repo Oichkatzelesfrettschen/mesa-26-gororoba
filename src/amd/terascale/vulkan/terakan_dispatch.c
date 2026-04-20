@@ -1880,6 +1880,62 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
           (command_writer->bound_compute_pipeline->shader.kcache_needed &
            ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA))) {
          terakan_robustness_metadata_apply(command_writer, true);
+
+         /* FIX-R (C-2026-04-19-20, working hypothesis #1 from
+          * 2026-04-19-isa-clamp-audit-result.md addendum): the
+          * Evergreen LS KCACHE block has an internal "currently
+          * bound base" comparator that may elide the cache-line
+          * invalidation when bank 14 is rebound to a new va_lines
+          * value within the same compute multiplex.  Result: the
+          * shader reads the FIRST dispatch's KC14[7].x for every
+          * subsequent dispatch (silicon-confessed via
+          * TERAKAN_PROBE_KCACHE_VALUE=1, mesa 34f29e699).
+          *
+          * Workaround: emit a dummy ALU_CONST_CACHE_LS_14 = 0,
+          * BUFFER_SIZE_LS_14 = 0 PAIR before the real bind.  The
+          * silicon's comparator now sees base=0 -> base=0x87dN,
+          * forcing the line to be marked invalid.  No relocation
+          * is needed since base 0 doesn't reference a BO; the
+          * dummy is purely a state-machine reset.
+          *
+          * Gated behind TERAKAN_FIX_R_DUMMY_BIND=1 during
+          * validation.  Promote to default once single_layer
+          * sweep goes green. */
+         {
+            static int fix_r_cached = -1;
+            if (fix_r_cached < 0) {
+               fix_r_cached = debug_get_bool_option(
+                  "TERAKAN_FIX_R_DUMMY_BIND", false) ? 1 : 0;
+            }
+            if (fix_r_cached &&
+                command_writer->robustness_metadata.bo != NULL) {
+               /* Bind bank 14 to a DIFFERENT line within the same BO
+                * (XOR low bit of va_lines).  Same BO satisfies the
+                * kernel CS validator's reloc requirement on the
+                * BASE register; different va_lines forces the
+                * silicon's "current base" comparator to mismatch
+                * the upcoming real bind, dropping any cached line.
+                * The dummy address points to a different page within
+                * the push buffer (always allocated and mapped); no
+                * shader runs between the dummy and the real bind
+                * so the dummy data is never read. */
+               uint32_t const dummy_va_lines =
+                  command_writer->robustness_metadata.va_kcache_lines ^ 1u;
+               terakan_emit_compute_kcache_bank(
+                  command_writer,
+                  TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+                  command_writer->robustness_metadata.bo,
+                  dummy_va_lines,
+                  1);
+               if (debug_get_bool_option("TERAKAN_DEBUG_FIX_R", false)) {
+                  fprintf(stderr,
+                     "TERAKAN_FIX_R_DUMMY: bank=14 va_lines=0x%x (real=0x%x)\n",
+                     dummy_va_lines,
+                     command_writer->robustness_metadata.va_kcache_lines);
+               }
+            }
+         }
+
          terakan_emit_compute_kcache_bank(
             command_writer,
             TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
@@ -1978,6 +2034,49 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
             terakan_gfx_command_writer_device(command_writer);
          if (dev->debug_watermarks_enabled) {
             terakan_emit_flush_watermark(command_writer, 0, 0xAAAA1111u);
+         }
+      }
+
+      /* FIX-S (working hypothesis #4 from
+       * 2026-04-19-isa-clamp-audit-result.md): the compute-ring
+       * SURFACE_SYNC may post the SH/TC/VC_ACTION_ENA invalidate
+       * request without stalling the Command Processor's prefetch
+       * parser (PFP).  The PFP can race ahead and launch
+       * DISPATCH_DIRECT before the ME finishes retiring the
+       * SURFACE_SYNC's cache invalidate, so the shader's first
+       * KC14 fetch hits a still-valid stale line.
+       *
+       * Insert PKT3_PFP_SYNC_ME (op 0x42) before DISPATCH_DIRECT to
+       * force the PFP to wait for the ME to drain.  r600g's
+       * r600_state_common.c notes that on Palm (our exact silicon)
+       * a single PFP_SYNC_ME has insufficient delay -- 9 repetitions
+       * are needed for COND_WRITE-result staging.  Same chip, similar
+       * pipeline, so we expose N as TERAKAN_FIX_S_PFP_SYNC=N
+       * (default 0 = disabled; 1+ = N PFP_SYNC_ME packets). */
+      {
+         static int fix_s_count = -1;
+         if (fix_s_count < 0) {
+            fix_s_count = (int)debug_get_num_option(
+               "TERAKAN_FIX_S_PFP_SYNC", 0);
+            if (fix_s_count < 0) fix_s_count = 0;
+         }
+         if (fix_s_count > 0) {
+            uint32_t *q = terakan_gfx_command_writer_emit(
+               command_writer,
+               TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER,
+               2 * (uint32_t)fix_s_count);
+            if (likely(q != NULL)) {
+               for (int s = 0; s < fix_s_count; ++s) {
+                  *q++ = PKT3(PKT3_PFP_SYNC_ME, 0, 0) | COMPUTE_MODE_BIT;
+                  *q++ = 0;
+               }
+               terakan_gfx_command_writer_emit_done(command_writer, q);
+            }
+            if (debug_get_bool_option("TERAKAN_DEBUG_FIX_S", false)) {
+               fprintf(stderr,
+                  "TERAKAN_FIX_S_PFP_SYNC: emitted %d PFP_SYNC_ME packets\n",
+                  fix_s_count);
+            }
          }
       }
 

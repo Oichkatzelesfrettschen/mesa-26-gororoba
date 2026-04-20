@@ -84,6 +84,15 @@ terakan_robustness_metadata_apply(
       /* Zero the entire KCACHE line (256 bytes = 64 dwords).
        * Then fill the per-UAV byte sizes and texel buffer element counts. */
       memset(mapping, 0, TERAKAN_KCACHE_HW_LINE_BYTES);
+
+      /* PROBE_FILL_LINE (Q-2026-04-19): if set, overwrite the entire
+       * 256-byte KCACHE line with 0xDEADBEEF AFTER the field writes
+       * below.  If shader's KC14 read returns 0xDEADBEEF, the BO IS
+       * being fetched (residual is a slot-offset bug); if shader still
+       * returns 0, the BO is not being fetched at all. */
+      bool const probe_fill_line =
+         debug_get_bool_option("TERAKAN_PROBE_FILL_LINE", false);
+
       /* Dwords 0..11: SSBO byte sizes. */
       memcpy(mapping,
              command_writer->robustness_metadata.uav_byte_sizes,
@@ -119,6 +128,18 @@ terakan_robustness_metadata_apply(
          struct terakan_device const * const device =
             terakan_gfx_command_writer_device(command_writer);
          ((uint32_t *)mapping)[12] = device->robustness_trash_page_va_shr2;
+      }
+
+      /* Apply PROBE_FILL_LINE: blanket-fill 0xDEADBEEF across all 64
+       * dwords AFTER the field-specific writes.  Overrides everything
+       * so the shader's KC14 read should return 0xDEADBEEF if it
+       * actually fetches from this BO. */
+      if (probe_fill_line) {
+         for (uint32_t i = 0; i < TERAKAN_KCACHE_HW_LINE_BYTES / 4u; ++i) {
+            ((uint32_t *)mapping)[i] = 0xDEADBEEFu;
+         }
+         fprintf(stderr,
+            "TERAKAN_PROBE_FILL_LINE: filled 256-byte line with 0xDEADBEEF\n");
       }
 
       /* FIX-O (C-2026-04-19-12): flush CPU store buffers before the IB
