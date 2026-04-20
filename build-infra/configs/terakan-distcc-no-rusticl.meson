@@ -1,0 +1,32 @@
+# terakan-distcc-no-rusticl: same as terakan-distcc but with rusticl
+# disabled.  Use this when the rusticl rust frontend fails to
+# compile because of bindgen drift on pipe_screen / pipe_image_view
+# (see ../../../steinmarder/docs/workspace/rusticl-bindgen-drift.md).
+#
+# terakan (Vulkan) and r600 (Gallium) are pure C and build fine;
+# only the gallium-rusticl OpenCL frontend is removed from this
+# variant.  Install prefix /usr/local/mesa-terakan-distcc-no-rusticl/
+# keeps it isolated from the rusticl-enabled variant.
+
+[binaries]
+c    = ['/usr/bin/ccache', '/usr/bin/clang-22']
+cpp  = ['/usr/bin/ccache', '/usr/bin/clang++-22']
+rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
+
+[project options]
+buildtype           = 'debug'
+b_ndebug            = 'false'
+
+# r600 only -- same as terakan-distcc.
+gallium-drivers     = ['r600']
+vulkan-drivers      = ['amd_terascale']
+
+# Rusticl DISABLED because upstream rusticl/pipe_screen bindgen
+# output is opaque-stubbed on bindgen 0.71.1 + current Mesa pipe
+# struct layout; rust source expects the reified binding.
+# See rusticl-bindgen-drift.md in steinmarder docs/workspace/.
+gallium-rusticl                = false
+
+amd-use-llvm        = true
+gallium-extra-hud   = true
+glx                 = 'auto'

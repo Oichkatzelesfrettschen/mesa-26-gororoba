@@ -43,7 +43,8 @@ endif
 SETUP_ARGS := --native-file=$(CONFIG) --reconfigure
 
 .PHONY: list configure build clean distclean install test \
-        rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-minimal \
+        rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-distcc-no-rusticl \
+        rebuild-terakan-minimal \
         rebuild-base-debug rebuild-terakan-release rebuild-terakan-profile \
         help
 
@@ -104,6 +105,14 @@ rebuild-terakan-distcc:
 	$(MAKE) clean PROFILE=terakan-distcc
 	$(MAKE) configure PROFILE=terakan-distcc
 	$(MAKE) build     PROFILE=terakan-distcc
+
+# Same as terakan-distcc but with gallium-rusticl=false.  Use this
+# when the rusticl rust frontend fails to build due to bindgen drift
+# (see docs/workspace/rusticl-bindgen-drift.md in steinmarder).
+rebuild-terakan-distcc-no-rusticl:
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl
+	$(MAKE) build     PROFILE=terakan-distcc-no-rusticl
 
 rebuild-terakan-minimal:
 	$(MAKE) clean PROFILE=terakan-minimal
