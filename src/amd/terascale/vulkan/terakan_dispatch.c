@@ -953,6 +953,23 @@ terakan_emit_compute_kcache(struct terakan_gfx_command_writer *command_writer,
    memset(kc0_map, 0, 256);
    /* KC0[0].x = 0 (byte offset of SSBO within its BO) */
 
+   /* PROBE_FILL_KC0 (Q-2026-04-19 Action A): if set, fill the entire
+    * 256-byte KC0 line with 0xDEADBEEF AFTER the field writes.  Used
+    * with TERAKAN_PROBE_KCACHE_VALUE=1 + TERAKAN_PROBE_KCACHE_BANK=0
+    * to test whether the LS-bank-0 KCACHE fetch path returns content
+    * for compute shaders.  If shader's KC0[*].x returns 0xDEADBEEF
+    * (visualized as byte 0 saturated very-negative), bank 0 reads
+    * work for compute -- bank 14 has an architectural restriction.
+    * If shader still returns 0, the entire LS KCACHE fetch path is
+    * broken for compute regardless of bank. */
+   if (debug_get_bool_option("TERAKAN_PROBE_FILL_KC0", false)) {
+      for (uint32_t i = 0; i < 64u; ++i) {
+         kc0_map[i] = 0xDEADBEEFu;
+      }
+      fprintf(stderr,
+         "TERAKAN_PROBE_FILL_KC0: filled 256B KC0 line with 0xDEADBEEF\n");
+   }
+
 
    /* Register the KC0 BO for relocation */
    uint32_t bo_ref = terakan_bo_reference_writer_add_reference(

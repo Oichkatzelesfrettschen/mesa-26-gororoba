@@ -1353,21 +1353,45 @@ terakan_nir_lower_bindings_instr_image_deref_store(
             debug_get_bool_option("TERAKAN_PROBE_KCACHE_VALUE", false) ? 1 : 0;
       }
       if (probe_kcache_cached) {
-         *state->kcache_needed |=
-            (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
-         uint32_t const probe_layer_dword = 28u + uav_index_zero_based;
+         /* Action A (Q-2026-04-19 part 2): TERAKAN_PROBE_KCACHE_BANK
+          * selects which physical KC bank to fetch from.  Default 14
+          * (the original probe target); set to 0 for the bank-0
+          * sanity check (Action A in
+          * 2026-04-19-isa-clamp-audit-result.md addendum 2).
+          * For bank 0 + FIX-G ON, KC0[0].x is the application UBO's
+          * first dword = u_layerNdx (= dispatch index N per the CTS
+          * single_layer test design).  Reading back N visualizes as
+          * byte 132 (=0), byte ~136 (=1), ..., byte ~160 (=7). */
+         static int probe_bank = -1;
+         if (probe_bank < 0) {
+            probe_bank = (int)debug_get_num_option(
+               "TERAKAN_PROBE_KCACHE_BANK",
+               TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA);
+            if (probe_bank < 0 || probe_bank > 15) {
+               probe_bank = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+            }
+         }
+         *state->kcache_needed |= (uint16_t)1 << (unsigned)probe_bank;
+
+         /* For bank 14 (default), read KC14[7].x = dword 28
+          * (= uav_base_array_layers[0] FIX-K layout).
+          * For bank 0 (Action A), read KC0[0].x = dword 0
+          * (= application UBO first dword). */
+         uint32_t probe_dword;
+         if ((unsigned)probe_bank
+                 == TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA) {
+            probe_dword = 28u + uav_index_zero_based;
+         } else {
+            probe_dword = 0u;
+         }
          nir_def * const probe_kcache_load = nir_load_kcache_r600(
             b, 1, 32, nir_imm_zero(b, 1, 32),
             .access = ACCESS_CAN_REORDER,
-            .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-            .base = probe_layer_dword / 4u,
-            .component = probe_layer_dword % 4u);
-         /* Write KC14 value DIRECTLY (no magic-constant offset) so the
-          * visualization byte directly encodes the cached value:
-          *   KC14=0 -> byte 132,  KC14=7 -> byte ~160,  etc.
-          * This narrows the discriminable range to small integers
-          * matching the test's signed-int visualization scale. */
-         store_value = nir_vector_insert_imm(b, store_value_orig, probe_kcache_load, 0);
+            .id_base = (unsigned)probe_bank,
+            .base = probe_dword / 4u,
+            .component = probe_dword % 4u);
+         store_value = nir_vector_insert_imm(
+            b, store_value_orig, probe_kcache_load, 0);
       }
    }
 
