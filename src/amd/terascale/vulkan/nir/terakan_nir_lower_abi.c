@@ -255,6 +255,11 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
             debug_get_bool_option("TERAKAN_STORAGE_IMAGE_BASE_ARRAY_LAYER", false) ? 1 : 0;
       }
       if (base_array_layer_cached) {
+         static int literal_base_array_layer = INT32_MIN;
+         if (literal_base_array_layer == INT32_MIN) {
+            literal_base_array_layer = (int)debug_get_num_option(
+               "TERAKAN_STORAGE_IMAGE_LITERAL_BASE_ARRAY_LAYER", INT32_MIN);
+         }
          int const forced_coord_z =
             debug_get_num_option("TERAKAN_STORAGE_IMAGE_FORCE_COORD_Z", -1);
          static int use_workgroup_z_cached = -1;
@@ -262,10 +267,12 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
             use_workgroup_z_cached =
                debug_get_bool_option("TERAKAN_STORAGE_IMAGE_USE_WORKGROUP_Z", false) ? 1 : 0;
          }
-         if (forced_coord_z >= 0) {
+         if (literal_base_array_layer != INT32_MIN || forced_coord_z >= 0) {
+            int const layer_value =
+               literal_base_array_layer != INT32_MIN ? literal_base_array_layer : forced_coord_z;
             uav_coord_num_components = 3;
             uav_coord_components[2] =
-               nir_imm_int(b, (int32_t)forced_coord_z);
+               nir_imm_int(b, (int32_t)layer_value);
          } else {
             nir_def *base_array_layer_load;
             if (use_workgroup_z_cached) {
