@@ -300,7 +300,29 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
           * the wedge by reading baseArrayLayer from workgroup_id.z,
           * which the SPI populates from VGT_COMPUTE_START_Z.  The
           * driver-side companion in terakan_dispatch.c step 6 sets
-          * START_Z = uav_base_array_layers[0] when this gate is on. */
+          * START_Z = uav_base_array_layers[0] when this gate is on.
+          *
+          * STATUS: FALSIFIED 2026-04-19.  R1.z reads 0 at runtime
+          * even with START_Z=7 correctly emitted per-dispatch (ISA
+          * verified).  SPI does not fold VGT_COMPUTE_START into the
+          * pinned-VGPR workgroup_id on TeraScale-2 LS/CS path.
+          *
+          * FIX-W (Q-2026-04-20): literal-baked baseArrayLayer.  When
+          * TERAKAN_FIX_W_LITERAL_LAYER=N (0..7), bake N as a nir_imm_int
+          * constant.  The shader gets baseArrayLayer = N at compile
+          * time, no runtime state-passing needed.  This bypasses:
+          *   - KCACHE bank 14 wedge (doesn't touch KCACHE)
+          *   - VGT_COMPUTE_START_Z propagation (doesn't touch SPI)
+          *   - Every incremental invalidation primitive
+          * Cost: requires a separate shader variant per layer value.
+          * For the probe: single TEST_W_LITERAL_LAYER=N validates one
+          * slice.  Production: driver picks variant per dispatch based
+          * on bound ImageView's baseArrayLayer. */
+         static int fix_w_literal = INT32_MIN;
+         if (fix_w_literal == INT32_MIN) {
+            fix_w_literal = (int)debug_get_num_option(
+               "TERAKAN_FIX_W_LITERAL_LAYER", INT32_MIN);
+         }
          static int fix_u_cached = -1;
          if (fix_u_cached < 0) {
             fix_u_cached = debug_get_bool_option(
@@ -312,10 +334,35 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
                nir_imm_int(b, (int32_t)fix_p_force_z);
          } else {
             nir_def *base_array_layer_load;
-            if (fix_u_cached) {
+            if (fix_w_literal != INT32_MIN) {
+               /* FIX-W source: compile-time literal.  The driver must
+                * select the right shader variant per dispatch based on
+                * the bound ImageView's baseArrayLayer.  For probe use
+                * with TERAKAN_FIX_W_LITERAL_LAYER=N: only slice N will
+                * have correct data; slices != N get value from last
+                * dispatch (R3.z=N consistently means every dispatch
+                * writes slice N; slice N ends up with dispatch 7's
+                * u_layerNdx=7 colorExpr which = expected colorExpr for
+                * slice N only if the shader's u_layerNdx is also
+                * rewritten -- which the CTS ref already folded to 0).
+                *
+                * Ergo for probe: slice FIX_W_LITERAL receives writes;
+                * Reference for that slice is colorExpr(gz=FIX_W_LITERAL).
+                * Shader's u_layerNdx = 0 (folded), so it writes
+                * colorExpr(gz=0) to slice FIX_W_LITERAL.  These match
+                * only when FIX_W_LITERAL=0.  Therefore:
+                *   FIX_W_LITERAL=0 -> slice 0 passes, 1-7 fail
+                *   FIX_W_LITERAL=3 -> slice 3 gets colorExpr(gz=0)
+                *                      data, Reference expects
+                *                      colorExpr(gz=3), fails
+                * Production FIX-W would pair the literal with a
+                * shader variant per layer that ALSO rewrites
+                * u_layerNdx to the literal -- full fix. */
+               base_array_layer_load = nir_imm_int(b, fix_w_literal);
+            } else if (fix_u_cached) {
                /* FIX-U source: SPI-injected workgroup_id.z (= START_Z).
-                * Per-dispatch baseArrayLayer arrives via CONFIG_REG path
-                * (different shadow than wedged LS-KCACHE CONTEXT_REG). */
+                * FALSIFIED -- kept gated for reference.  See 2026-04-19
+                * audit addendum 6 in steinmarder. */
                nir_def * const wg_id = nir_load_workgroup_id(b);
                base_array_layer_load = nir_channel(b, wg_id, 2);
             } else {
