@@ -294,27 +294,51 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
           * is written: CB exporter is clamping R3.z. */
          int const fix_p_force_z = debug_get_num_option(
             "TERAKAN_FIX_P_FORCE_Z", -1);
+         /* FIX-U (Q-2026-04-19): KCACHE bank 14 is silicon-wedged on
+          * Sumo/Palm for per-dispatch base-address rebinds (proven via
+          * mesa 34f29e699 + 3b81ea00 probes; bank-independent).  Bypass
+          * the wedge by reading baseArrayLayer from workgroup_id.z,
+          * which the SPI populates from VGT_COMPUTE_START_Z.  The
+          * driver-side companion in terakan_dispatch.c step 6 sets
+          * START_Z = uav_base_array_layers[0] when this gate is on. */
+         static int fix_u_cached = -1;
+         if (fix_u_cached < 0) {
+            fix_u_cached = debug_get_bool_option(
+               "TERAKAN_FIX_U_USE_TGID_Z", false) ? 1 : 0;
+         }
          if (fix_p_force_z >= 0) {
             uav_coord_num_components = 3;
             uav_coord_components[2] =
                nir_imm_int(b, (int32_t)fix_p_force_z);
          } else {
-            /* bank 14 layout: dword 28 starts the uav_base_array_layers[12]
-             * array; each entry is one uint32_t.  vec4 index = dword/4,
-             * component = dword%4. */
-            uint32_t const layer_dword = 28u + uav_index_zero_based;
-            uint32_t const layer_vec4_index = layer_dword / 4u;
-            uint32_t const layer_component = layer_dword % 4u;
+            nir_def *base_array_layer_load;
+            if (fix_u_cached) {
+               /* FIX-U source: SPI-injected workgroup_id.z (= START_Z).
+                * Per-dispatch baseArrayLayer arrives via CONFIG_REG path
+                * (different shadow than wedged LS-KCACHE CONTEXT_REG). */
+               nir_def * const wg_id = nir_load_workgroup_id(b);
+               base_array_layer_load = nir_channel(b, wg_id, 2);
+            } else {
+               /* Original FIX-K KCACHE bank 14 path -- preserved as
+                * fallback while FIX-U is under validation.
+                *
+                * bank 14 layout: dword 28 starts the
+                * uav_base_array_layers[12] array; each entry is one
+                * uint32_t.  vec4 index = dword/4, component = dword%4. */
+               uint32_t const layer_dword = 28u + uav_index_zero_based;
+               uint32_t const layer_vec4_index = layer_dword / 4u;
+               uint32_t const layer_component = layer_dword % 4u;
 
-            *state->kcache_needed |=
-               (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+               *state->kcache_needed |=
+                  (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
 
-            nir_def * const base_array_layer_load = nir_load_kcache_r600(
-               b, 1, 32, nir_imm_zero(b, 1, 32),
-               .access = ACCESS_CAN_REORDER,
-               .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-               .base = layer_vec4_index,
-               .component = layer_component);
+               base_array_layer_load = nir_load_kcache_r600(
+                  b, 1, 32, nir_imm_zero(b, 1, 32),
+                  .access = ACCESS_CAN_REORDER,
+                  .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+                  .base = layer_vec4_index,
+                  .component = layer_component);
+            }
 
             if (uav_coord_num_components < 3) {
                /* Promote to 3 components with coord_z = baseArrayLayer. */
@@ -1413,6 +1437,29 @@ terakan_nir_lower_bindings_instr_image_deref_store(
          store_value = nir_vector_insert_imm(
             b, store_value,
             nir_imm_int(b, (int32_t)probe_hardcode_value), 0);
+      }
+   }
+
+   /* PROBE_TGID_Z (Q-2026-04-19 FIX-U validation): when set, force
+    * R-channel = workgroup_id.z directly.  Diagnostic for whether
+    * the SPI populates TGID.z from VGT_COMPUTE_START_Z per
+    * dispatch.  Used with TERAKAN_FIX_U_USE_TGID_Z=1 (driver-side
+    * START_Z population).  Visualization byte directly encodes the
+    * cached value: TGID.z=0 -> byte 132,  TGID.z=7 -> byte ~160.
+    * If shader returns 0 across all dispatches, either TGID.z isn't
+    * picking up START_Z or START_Z is itself wedged.  This probe is
+    * INDEPENDENT of FIX-K's coord.z mutation. */
+   if (image_dim != GLSL_SAMPLER_DIM_BUF &&
+       store_value->num_components >= 1) {
+      static int probe_tgid_z = -1;
+      if (probe_tgid_z < 0) {
+         probe_tgid_z = debug_get_bool_option(
+            "TERAKAN_PROBE_TGID_Z", false) ? 1 : 0;
+      }
+      if (probe_tgid_z) {
+         nir_def * const wg_id = nir_load_workgroup_id(b);
+         nir_def * const tgid_z = nir_channel(b, wg_id, 2);
+         store_value = nir_vector_insert_imm(b, store_value, tgid_z, 0);
       }
    }
 

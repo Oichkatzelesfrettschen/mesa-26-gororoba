@@ -1729,7 +1729,13 @@ terakan_emit_compute_state(struct terakan_gfx_command_writer *command_writer,
       terakan_gfx_command_writer_emit_done(command_writer, p);
    }
 
-   /* 6. VGT_COMPUTE_START_X/Y/Z = 0 */
+   /* 6. VGT_COMPUTE_START_X/Y/Z = 0/0/0 (default per-pipeline init).
+    *
+    * The per-DISPATCH FIX-U override of START_Z lives in the
+    * dispatch hot path alongside the bank 14 bind (search for
+    * TERAKAN_FIX_U_USE_TGID_Z below).  This pipeline-state emit
+    * runs once per pipeline-dirty event and only sets the
+    * baseline. */
    if (!skip_cs_state_start_xyz) {
       uint32_t *p = terakan_gfx_command_writer_emit(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
@@ -1975,6 +1981,56 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
             fprintf(stderr, "TERAKAN_FIX_K_LS_EMIT: bank=14 bo=%p va_lines=0x%x\n",
                     (void const *)command_writer->robustness_metadata.bo,
                     command_writer->robustness_metadata.va_kcache_lines);
+         }
+
+         /* FIX-U (Q-2026-04-19): per-dispatch override of
+          * VGT_COMPUTE_START_Z = uav_base_array_layers[0].  This is
+          * the KCACHE-bypass companion to FIX-K -- the SPI populates
+          * each workgroup's TGID.z (pinned VGPR 1.z) with this
+          * value, and the FIX-U-gated NIR injection in
+          * terakan_nir_lower_abi.c reads workgroup_id.z as the
+          * MEM_RAT slice index instead of doing a wedged KC14 fetch.
+          *
+          * CONFIG_REG (this register) is in a different shadow than
+          * the wedged ALU_CONST_CACHE_LS_<bank> CONTEXT_REG family
+          * and is hypothesized to honor per-dispatch updates.
+          *
+          * Caveats:
+          *  - Shifts the workgroup-ID space: TGID.z = baseArrayLayer
+          *    (not 0) for all 4096 invocations of a (64,64,1)
+          *    dispatch.  Shader code that does workgroup-id-relative
+          *    Z computation must compensate.  CTS single_layer test
+          *    does NOT use TGID.z so the shift is invisible to it.
+          *  - Coupled with the NIR-side gate.  Enable both or
+          *    neither: TERAKAN_FIX_U_USE_TGID_Z=1.
+          *
+          * Emits a 5-dword PKT3_SET_CONFIG_REG (no COMPUTE_MODE_BIT)
+          * for VGT_COMPUTE_START_X/Y/Z (X=Y=0, Z=baseArrayLayer). */
+         {
+            static int fix_u_cached = -1;
+            if (fix_u_cached < 0) {
+               fix_u_cached = debug_get_bool_option(
+                  "TERAKAN_FIX_U_USE_TGID_Z", false) ? 1 : 0;
+            }
+            if (fix_u_cached) {
+               uint32_t const start_z =
+                  command_writer->robustness_metadata.uav_base_array_layers[0];
+               uint32_t *p = terakan_gfx_command_writer_emit(
+                  command_writer,
+                  TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+               if (likely(p != NULL)) {
+                  *p++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+                  *p++ = CONFIG_REG_OFFSET(R_00899C_VGT_COMPUTE_START_X);
+                  *p++ = 0;        /* X */
+                  *p++ = 0;        /* Y */
+                  *p++ = start_z;  /* Z = baseArrayLayer */
+                  terakan_gfx_command_writer_emit_done(command_writer, p);
+               }
+               if (debug_get_bool_option("TERAKAN_DEBUG_FIX_U", false)) {
+                  fprintf(stderr,
+                     "TERAKAN_FIX_U: VGT_COMPUTE_START_Z = %u\n", start_z);
+               }
+            }
          }
 
          /* FIX-N v2 (C-2026-04-19-10, citation: r600g r600_hw_context.c
