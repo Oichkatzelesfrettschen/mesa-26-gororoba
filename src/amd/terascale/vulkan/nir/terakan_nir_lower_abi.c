@@ -1323,8 +1323,75 @@ terakan_nir_lower_bindings_instr_image_deref_store(
 
    nir_alu_type const store_type =
       nir_intrinsic_has_src_type(intrin) ? nir_intrinsic_src_type(intrin) : nir_type_uint32;
-   nir_def * const store_value =
+   nir_def * const store_value_orig =
       terakan_nir_convert_type_to_32_bits(b, intrin->src[3].ssa, store_type);
+   nir_def *store_value = store_value_orig;
+
+   /* PROBE (Q-2026-04-19): TERAKAN_PROBE_KCACHE_VALUE=1 overrides
+    * the R channel of store_value with 0xDEADBE00 + KC14_baseArrayLayer.
+    * Diagnostic for whether the LS KCACHE actually serves the per-
+    * dispatch baseArrayLayer or returns stale/zero data despite
+    * SH_ACTION_ENA being asserted.
+    *
+    *   If R = 0xDEADBE0N for dispatch N -> KCACHE works; bug is
+    *      downstream (MEM_RAT silicon dropping R3.z, not the cache).
+    *   If R = 0xDEADBE00 (constant) across all dispatches -> KCACHE
+    *      stuck; need a different invalidate primitive.
+    *
+    * Probe is independent of FIX-K's coord.z mutation so the two can
+    * be combined: PROBE+FIX-K together reads the kcache value AND
+    * uses it for slice routing.  PROBE alone (no FIX-K) reads the
+    * kcache value without changing slice routing -- all writes still
+    * land at slice 0 but with R-channel=0xDEADBE0N visible there. */
+   if (image_dim != GLSL_SAMPLER_DIM_BUF &&
+       state != NULL &&
+       uav_index_zero_based < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT &&
+       store_value_orig->num_components >= 1) {
+      static int probe_kcache_cached = -1;
+      if (probe_kcache_cached < 0) {
+         probe_kcache_cached =
+            debug_get_bool_option("TERAKAN_PROBE_KCACHE_VALUE", false) ? 1 : 0;
+      }
+      if (probe_kcache_cached) {
+         *state->kcache_needed |=
+            (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+         uint32_t const probe_layer_dword = 28u + uav_index_zero_based;
+         nir_def * const probe_kcache_load = nir_load_kcache_r600(
+            b, 1, 32, nir_imm_zero(b, 1, 32),
+            .access = ACCESS_CAN_REORDER,
+            .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+            .base = probe_layer_dword / 4u,
+            .component = probe_layer_dword % 4u);
+         /* Write KC14 value DIRECTLY (no magic-constant offset) so the
+          * visualization byte directly encodes the cached value:
+          *   KC14=0 -> byte 132,  KC14=7 -> byte ~160,  etc.
+          * This narrows the discriminable range to small integers
+          * matching the test's signed-int visualization scale. */
+         store_value = nir_vector_insert_imm(b, store_value_orig, probe_kcache_load, 0);
+      }
+   }
+
+   /* PROBE_HARDCODE: TERAKAN_PROBE_HARDCODE_VALUE=N forces R-channel
+    * of every image_store to literal N (32-bit signed).  Independent
+    * sanity check for the override mechanism: if the test's R-channel
+    * values do not change to N when this is set, the override path is
+    * being bypassed (e.g. SFN ignoring vector_insert_imm or a later
+    * pass folding it back).  Run with N=0xCAFEBABE first; expect
+    * Result PNG to show byte 0 (clamped from very-negative). */
+   if (image_dim != GLSL_SAMPLER_DIM_BUF &&
+       store_value->num_components >= 1) {
+      static int probe_hardcode_value = INT32_MIN;
+      if (probe_hardcode_value == INT32_MIN) {
+         probe_hardcode_value =
+            (int)debug_get_num_option("TERAKAN_PROBE_HARDCODE_VALUE", INT32_MIN);
+      }
+      if (probe_hardcode_value != INT32_MIN) {
+         store_value = nir_vector_insert_imm(
+            b, store_value,
+            nir_imm_int(b, (int32_t)probe_hardcode_value), 0);
+      }
+   }
+
    terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, store_value,
                                     undef, V_RAT_INST_STORE_TYPED, access,
                                     state->uav_base + uav_index_zero_based);
