@@ -257,25 +257,36 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
       if (base_array_layer_cached) {
          int const forced_coord_z =
             debug_get_num_option("TERAKAN_STORAGE_IMAGE_FORCE_COORD_Z", -1);
+         static int use_workgroup_z_cached = -1;
+         if (use_workgroup_z_cached < 0) {
+            use_workgroup_z_cached =
+               debug_get_bool_option("TERAKAN_STORAGE_IMAGE_USE_WORKGROUP_Z", false) ? 1 : 0;
+         }
          if (forced_coord_z >= 0) {
             uav_coord_num_components = 3;
             uav_coord_components[2] =
                nir_imm_int(b, (int32_t)forced_coord_z);
          } else {
-            /* Bank 14 dword 28 starts uav_base_array_layers[]. */
-            uint32_t const layer_dword = 28u + uav_index_zero_based;
-            uint32_t const layer_vec4_index = layer_dword / 4u;
-            uint32_t const layer_component = layer_dword % 4u;
+            nir_def *base_array_layer_load;
+            if (use_workgroup_z_cached) {
+               nir_def * const wg_id = nir_load_workgroup_id(b);
+               base_array_layer_load = nir_channel(b, wg_id, 2);
+            } else {
+               /* Bank 14 dword 28 starts uav_base_array_layers[]. */
+               uint32_t const layer_dword = 28u + uav_index_zero_based;
+               uint32_t const layer_vec4_index = layer_dword / 4u;
+               uint32_t const layer_component = layer_dword % 4u;
 
-            *state->kcache_needed |=
-               (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+               *state->kcache_needed |=
+                  (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
 
-            nir_def * const base_array_layer_load = nir_load_kcache_r600(
-               b, 1, 32, nir_imm_zero(b, 1, 32),
-               .access = ACCESS_CAN_REORDER,
-               .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-               .base = layer_vec4_index,
-               .component = layer_component);
+               base_array_layer_load = nir_load_kcache_r600(
+                  b, 1, 32, nir_imm_zero(b, 1, 32),
+                  .access = ACCESS_CAN_REORDER,
+                  .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+                  .base = layer_vec4_index,
+                  .component = layer_component);
+            }
 
             if (uav_coord_num_components < 3) {
                /* Promote to 3 components with coord_z = baseArrayLayer. */
@@ -1326,6 +1337,24 @@ terakan_nir_lower_bindings_instr_image_deref_store(
          store_value = nir_vector_insert_imm(
             b, store_value,
             nir_imm_int(b, (int32_t)probe_hardcode_value), 0);
+      }
+   }
+
+   /* Optional diagnostic: write workgroup_id.z into the R channel so
+    * VGT_COMPUTE_START_Z propagation can be inspected through the
+    * storage-image output value.
+    */
+   if (image_dim != GLSL_SAMPLER_DIM_BUF &&
+       store_value->num_components >= 1) {
+      static int debug_store_workgroup_z_cached = -1;
+      if (debug_store_workgroup_z_cached < 0) {
+         debug_store_workgroup_z_cached = debug_get_bool_option(
+            "TERAKAN_STORAGE_IMAGE_DEBUG_STORE_WORKGROUP_Z", false) ? 1 : 0;
+      }
+      if (debug_store_workgroup_z_cached) {
+         nir_def * const wg_id = nir_load_workgroup_id(b);
+         nir_def * const tgid_z = nir_channel(b, wg_id, 2);
+         store_value = nir_vector_insert_imm(b, store_value, tgid_z, 0);
       }
    }
 

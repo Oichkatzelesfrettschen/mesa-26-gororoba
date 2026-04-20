@@ -1699,7 +1699,9 @@ terakan_emit_compute_state(struct terakan_gfx_command_writer *command_writer,
       terakan_gfx_command_writer_emit_done(command_writer, p);
    }
 
-   /* 6. VGT_COMPUTE_START_X/Y/Z = 0 */
+   /* 6. VGT_COMPUTE_START_X/Y/Z = 0/0/0 as the per-pipeline baseline.
+    * Per-dispatch START_Z diagnostics are emitted next to the bank 14 bind.
+    */
    if (!skip_cs_state_start_xyz) {
       uint32_t *p = terakan_gfx_command_writer_emit(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
@@ -1945,6 +1947,37 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
             fprintf(stderr, "terakan/compute_robustness_metadata: bank=14 bo=%p va_lines=0x%x\n",
                     (void const *)command_writer->robustness_metadata.bo,
                     command_writer->robustness_metadata.va_kcache_lines);
+         }
+
+         /* Optional diagnostic: route uav_base_array_layers[0] through
+          * VGT_COMPUTE_START_Z so NIR can read it from workgroup_id.z.
+          */
+         {
+            static int use_workgroup_z_cached = -1;
+            if (use_workgroup_z_cached < 0) {
+               use_workgroup_z_cached = debug_get_bool_option(
+                  "TERAKAN_STORAGE_IMAGE_USE_WORKGROUP_Z", false) ? 1 : 0;
+            }
+            if (use_workgroup_z_cached) {
+               uint32_t const start_z =
+                  command_writer->robustness_metadata.uav_base_array_layers[0];
+               uint32_t *p = terakan_gfx_command_writer_emit(
+                  command_writer,
+                  TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+               if (likely(p != NULL)) {
+                  *p++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+                  *p++ = CONFIG_REG_OFFSET(R_00899C_VGT_COMPUTE_START_X);
+                  *p++ = 0;        /* X */
+                  *p++ = 0;        /* Y */
+                  *p++ = start_z;  /* Z = baseArrayLayer */
+                  terakan_gfx_command_writer_emit_done(command_writer, p);
+               }
+               if (debug_get_bool_option("TERAKAN_DEBUG_STORAGE_IMAGE_WORKGROUP_Z", false)) {
+                  fprintf(stderr,
+                     "terakan/storage_image_workgroup_z: VGT_COMPUTE_START_Z=%u\n",
+                     start_z);
+               }
+            }
          }
 
          /* FIX-N v2 (C-2026-04-19-10, citation: r600g r600_hw_context.c
