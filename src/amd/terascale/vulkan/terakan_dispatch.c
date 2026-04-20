@@ -1882,6 +1882,73 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
          BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Y) |
          BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Z);
 
+      /* FIX-V (Q-2026-04-19, VGT pipeline-latch breaker): drain prior
+       * compute dispatch via PKT3_EVENT_WRITE(CS_PARTIAL_FLUSH=0x07,
+       * EVENT_INDEX=4) BEFORE any per-dispatch state writes for the
+       * next dispatch.  Hypothesis: the LS-CS state register surface
+       * (KCACHE banks AND VGT_COMPUTE_START_Z observed wedged) is
+       * latched by the VGT/SPI block during aggressive
+       * compute-dispatch pipelining within a single command buffer.
+       * CS_PARTIAL_FLUSH retires all in-flight compute waves and
+       * drops the latch, allowing intervening CONTEXT_REG +
+       * CONFIG_REG writes to take effect on the NEXT dispatch.
+       *
+       * The existing CS_PARTIAL_FLUSH at line ~1823 only fires on
+       * the FIRST compute dispatch in a cmdbuf
+       * (force_first_submit_sync && !cmd->has_compute_work); after
+       * that, has_compute_work=true and the gate is closed.  This
+       * FIX-V emit fires on EVERY per-dispatch state setup, gated
+       * by TERAKAN_FIX_V_CS_PARTIAL_FLUSH=1.
+       *
+       * Cost: 2 dwords per dispatch + ~one-pipeline-flush latency.
+       * Much lighter than per-dispatch sub-cmdbuf (8x submit
+       * overhead) which is the only known guaranteed alternative. */
+      {
+         static int fix_v_cached = -1;
+         if (fix_v_cached < 0) {
+            fix_v_cached = debug_get_bool_option(
+               "TERAKAN_FIX_V_CS_PARTIAL_FLUSH", false) ? 1 : 0;
+         }
+         if (fix_v_cached) {
+            terakan_compute_multiplex_emit_event(
+               command_writer, EVENT_TYPE_CS_PARTIAL_FLUSH);
+            if (debug_get_bool_option("TERAKAN_DEBUG_FIX_V", false)) {
+               fprintf(stderr, "TERAKAN_FIX_V: emitted CS_PARTIAL_FLUSH\n");
+            }
+         }
+         /* FIX-V2: VGT_FLUSH (0x24) targets the VGT block specifically.
+          * If CS_PARTIAL_FLUSH isn't enough to break the VGT/SPI state
+          * latch, this is the explicit drain. */
+         static int fix_v2_cached = -1;
+         if (fix_v2_cached < 0) {
+            fix_v2_cached = debug_get_bool_option(
+               "TERAKAN_FIX_V2_VGT_FLUSH", false) ? 1 : 0;
+         }
+         if (fix_v2_cached) {
+            terakan_compute_multiplex_emit_event(
+               command_writer, EVENT_TYPE_VGT_FLUSH);
+            if (debug_get_bool_option("TERAKAN_DEBUG_FIX_V", false)) {
+               fprintf(stderr, "TERAKAN_FIX_V2: emitted VGT_FLUSH\n");
+            }
+         }
+         /* FIX-V3: CACHE_FLUSH_AND_INV_EVENT (0x16) - heaviest event-style
+          * cache invalidation in the Evergreen toolkit.  Broader than
+          * SH_ACTION_ENA: invalidates all per-SIMD L1 caches via event
+          * (vs SURFACE_SYNC's CP_COHER_CNTL bits). */
+         static int fix_v3_cached = -1;
+         if (fix_v3_cached < 0) {
+            fix_v3_cached = debug_get_bool_option(
+               "TERAKAN_FIX_V3_CACHE_FLUSH_INV", false) ? 1 : 0;
+         }
+         if (fix_v3_cached) {
+            terakan_compute_multiplex_emit_event(
+               command_writer, EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT);
+            if (debug_get_bool_option("TERAKAN_DEBUG_FIX_V", false)) {
+               fprintf(stderr, "TERAKAN_FIX_V3: emitted CACHE_FLUSH_AND_INV_EVENT\n");
+            }
+         }
+      }
+
       /* Upload push constants (driver prefix + app constants) to KCACHE bank 15.
        * This is the compute equivalent of the graphics path in terakan_draw.c.
        * push_constants_apply populates the buffer but skips the deferred FS
