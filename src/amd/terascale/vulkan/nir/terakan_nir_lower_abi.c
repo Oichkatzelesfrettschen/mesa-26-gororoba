@@ -714,6 +714,31 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
 
    b->cursor = nir_before_instr(&intrin->instr);
 
+   /* FIX-W (Q-2026-04-20) companion: TERAKAN_FIX_W_LITERAL_UBO=N
+    * replaces every load_ubo result with the literal N.  Pairs with
+    * TERAKAN_FIX_W_LITERAL_LAYER=N to enable the full single_layer
+    * fix path: coord.z = N AND u_layerNdx = N, both compile-time
+    * constants, no runtime state-passing.  CTS single_layer test
+    * has ONE UBO scalar (u_layerNdx) so blanket-replacing all
+    * load_ubo calls is safe for the probe.  Production FIX-W
+    * would be more surgical: identify which load_ubo corresponds
+    * to the dispatch-varying scalar and replace only that one. */
+   {
+      static int fix_w_ubo = INT32_MIN;
+      if (fix_w_ubo == INT32_MIN) {
+         fix_w_ubo = (int)debug_get_num_option(
+            "TERAKAN_FIX_W_LITERAL_UBO", INT32_MIN);
+      }
+      if (fix_w_ubo != INT32_MIN &&
+          intrin->def.num_components == 1 &&
+          intrin->def.bit_size == 32) {
+         nir_def *literal = nir_imm_int(b, (int32_t)fix_w_ubo);
+         nir_def_rewrite_uses(&intrin->def, literal);
+         nir_instr_remove(&intrin->instr);
+         return;
+      }
+   }
+
    struct terakan_nir_binding binding;
    if (unlikely(!terakan_nir_get_binding(intrin->src[0], VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                          state->layout, b->shader, &binding))) {
