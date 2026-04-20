@@ -954,20 +954,32 @@ terakan_emit_compute_kcache(struct terakan_gfx_command_writer *command_writer,
    /* KC0[0].x = 0 (byte offset of SSBO within its BO) */
 
    /* PROBE_FILL_KC0 (Q-2026-04-19 Action A): if set, fill the entire
-    * 256-byte KC0 line with 0xDEADBEEF AFTER the field writes.  Used
-    * with TERAKAN_PROBE_KCACHE_VALUE=1 + TERAKAN_PROBE_KCACHE_BANK=0
-    * to test whether the LS-bank-0 KCACHE fetch path returns content
-    * for compute shaders.  If shader's KC0[*].x returns 0xDEADBEEF
-    * (visualized as byte 0 saturated very-negative), bank 0 reads
-    * work for compute -- bank 14 has an architectural restriction.
-    * If shader still returns 0, the entire LS KCACHE fetch path is
-    * broken for compute regardless of bank. */
+    * 256-byte KC0 line with 0xDEADBEEF AFTER the field writes.
+    * For ABI sanity: byte 0 saturated -> KC0 reads work for compute. */
    if (debug_get_bool_option("TERAKAN_PROBE_FILL_KC0", false)) {
       for (uint32_t i = 0; i < 64u; ++i) {
          kc0_map[i] = 0xDEADBEEFu;
       }
       fprintf(stderr,
          "TERAKAN_PROBE_FILL_KC0: filled 256B KC0 line with 0xDEADBEEF\n");
+   }
+
+   /* PROBE_KC0_SAFE_MARKER (Q-2026-04-19 Action A v2): write a small
+    * dispatch-specific positive integer (10..17) to KC0[0].x.  Falls
+    * inside the dEQP signed-int normalizer's [-32, 31] range so the
+    * Result PNG byte directly encodes the value:
+    *   value 10 -> byte 172,  value 17 -> byte 201,  value 0 -> byte 132.
+    * If shader's KC0[0].x probe returns bytes in [172, 201], bank 0
+    * fetches work AND content reaches the shader unambiguously
+    * (proving wedge is bank-14-specific architectural restriction).
+    * Mode B: byte 132 -> bank 0 also wedged. */
+   if (debug_get_bool_option("TERAKAN_PROBE_KC0_SAFE_MARKER", false)) {
+      static unsigned safe_marker_counter = 0;
+      uint32_t const marker = 10u + (safe_marker_counter++ & 0x7u);
+      kc0_map[0] = marker;
+      fprintf(stderr,
+         "TERAKAN_PROBE_KC0_SAFE_MARKER: KC0[0].x=%u (dispatch %u)\n",
+         marker, safe_marker_counter - 1);
    }
 
 
