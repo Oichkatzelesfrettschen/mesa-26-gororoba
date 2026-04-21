@@ -15,6 +15,8 @@
 #include "sfn_shader.h"
 #include "sfn_virtualvalues.h"
 
+#include "util/format/u_format.h"
+
 namespace r600 {
 
 GDSInstr::GDSInstr(
@@ -1107,8 +1109,43 @@ RatInstr::emit_image_store(nir_intrinsic_instr *intrin, Shader& shader)
 
    auto op = cf_mem_rat; // nir_intrinsic_access(intrin) & ACCESS_COHERENT ?
                          // cf_mem_rat_cacheless : cf_mem_rat;
+
+   /* COMP_MASK must reflect the image format's channel count, not be
+    * hardcoded to 0xF.  Hardcoding caused MEM_RAT_STORE_TYPED on
+    * multi-channel formats (r32g32_uint, r8g8b8a8_uint, etc.) to
+    * overrun into adjacent texels because the hardware interprets
+    * "write 4 channels" against a sub-vec4 texel as "stride forward
+    * by texel-channels-bytes per channel and write all 4".  For
+    * single-channel destinations the extra channels were quietly
+    * dropped (matching descriptor DST_SEL), so r32_sint passed.
+    *
+    * Derive channel count from the format; fall back to 0xF for
+    * formats with no usable channel count (PIPE_FORMAT_NONE in
+    * older NIR pipelines that don't propagate format). */
+   pipe_format const store_format = nir_intrinsic_format(intrin);
+   unsigned comp_mask = 0xf;
+   if (store_format != PIPE_FORMAT_NONE) {
+      /* Only narrow COMP_MASK when the texel is at least one full
+       * dword per channel (32-bit formats like r32_*, r32g32_*,
+       * r32g32b32a32_*).  Sub-dword formats (r8_*, r16_*, packed
+       * RGBA8 etc.) need COMP_MASK=0xF because MEM_RAT_STORE_TYPED
+       * with a narrow mask on a sub-dword texel mis-handles the
+       * RMW the descriptor's NUM_FORMAT/COMP_SWAP performs to pack
+       * the value into the destination byte/word lanes.
+       *
+       * Empirical evidence (Wrestler HD 6310, 2026-04-20):
+       *   r32g32_uint with comp_mask=0xF -> max diff (N,N) per slice
+       *   r32g32_uint with comp_mask=0x3 -> PASS
+       *   r8_uint     with comp_mask=0xF -> PASS
+       *   r8_uint     with comp_mask=0x1 -> max diff 63 (all wrong) */
+      unsigned const channels = util_format_get_nr_components(store_format);
+      unsigned const texel_bytes = util_format_get_blocksize(store_format);
+      if (channels > 0 && channels <= 4 && texel_bytes >= 4 * channels)
+         comp_mask = (1u << channels) - 1u;
+   }
+
    auto store = new RatInstr(
-      op, RatInstr::STORE_TYPED, value, coord, imageid, image_offset, 1, 0xf, 0);
+      op, RatInstr::STORE_TYPED, value, coord, imageid, image_offset, 1, comp_mask, 0);
 
    store->set_ack();
    if (nir_intrinsic_access(intrin) & ACCESS_INCLUDE_HELPERS)
