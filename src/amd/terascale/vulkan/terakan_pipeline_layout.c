@@ -356,6 +356,21 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   update_uav_robustness_metadata(command_writer, idx,
                                                  uav->is_texel_buffer, bound,
                                                  uav->base_array_layer, inject_layer);
+
+                  /* A layer change can select a different compute shader
+                   * binary, so the compute state must be re-emitted even when
+                   * the pipeline object did not change.
+                   */
+                  if (is_compute && idx == 0) {
+                     int32_t const new_layer =
+                        inject_layer && uav->base_array_layer < 8
+                           ? (int32_t)uav->base_array_layer
+                           : INT32_MIN;
+                     if (command_writer->storage_image_variant_layer != new_layer) {
+                        command_writer->storage_image_variant_layer = new_layer;
+                        command_writer->compute_pipeline_dirty = true;
+                     }
+                  }
                } else {
                   if (used && BITSET_TEST(uavs_not_null, idx))
                      terakan_state_draw_set_pending(&command_writer->state_draw,
@@ -363,6 +378,11 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   BITSET_CLEAR(uavs_not_null, idx);
                   update_uav_robustness_metadata(command_writer, idx, false, 0,
                                                  0, false);
+                  if (is_compute && idx == 0 &&
+                      command_writer->storage_image_variant_layer != INT32_MIN) {
+                     command_writer->storage_image_variant_layer = INT32_MIN;
+                     command_writer->compute_pipeline_dirty = true;
+                  }
                }
             }
          }

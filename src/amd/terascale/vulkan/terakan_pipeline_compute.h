@@ -21,6 +21,18 @@ struct terakan_pipeline_compute {
 
    struct terakan_shader_impl shader;
 
+   /* Per-baseArrayLayer storage-image shader variants. When enabled,
+    * pipeline creation compiles one variant per layer with the storage-image
+    * slice and matching layer-index scalar baked as NIR literals.
+    *
+    * NULL slot means "variant not compiled / not needed".  Layer 0 is
+    * intentionally a separate variant (rather than reusing the base)
+    * because the base shader was compiled with the wedged kcache path,
+    * while variant[0] has coord.z = 0 baked as a literal -- they are
+    * not bytecode-identical. */
+   struct terakan_shader_impl *storage_image_layer_variants[8];
+   bool storage_image_layer_variants_enabled;
+
    /* Local workgroup size from the shader's execution mode */
    uint32_t local_size[3];
 
@@ -42,6 +54,9 @@ VkResult terakan_pipeline_compute_create(struct terakan_device *device,
 
 void terakan_pipeline_compute_destroy(struct terakan_pipeline_compute *pipeline,
                                       VkAllocationCallbacks const *allocator);
+
+void terakan_storage_image_set_compile_layer(int layer);
+void terakan_storage_image_set_compile_layer_index(int value);
 
 #ifdef __cplusplus
 }

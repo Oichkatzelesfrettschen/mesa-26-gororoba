@@ -1512,6 +1512,7 @@ terakan_BeginCommandBuffer(VkCommandBuffer const commandBuffer,
 
    memset(&gfx_command_writer->robustness_metadata, 0,
           sizeof(gfx_command_writer->robustness_metadata));
+   gfx_command_writer->storage_image_variant_layer = INT32_MIN;
    gfx_command_writer->bound_graphics_pipeline = NULL;
    gfx_command_writer->graphics_kcache_needed = 0;
    gfx_command_writer->bound_compute_pipeline = NULL;

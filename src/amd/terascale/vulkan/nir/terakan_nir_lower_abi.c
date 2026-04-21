@@ -32,6 +32,29 @@
  */
 
 #include "terakan_nir_lower_bindings_internal.h"
+#include "terakan_pipeline_compute.h"
+
+/* Storage-image variant compile state.
+ *
+ * The compute-pipeline variant loop sets these values before invoking NIR
+ * lowering so the storage-image slice coordinate and matching layer-index
+ * scalar can be baked as literals in that variant.
+ */
+__thread int g_terakan_storage_image_compile_layer = INT32_MIN;
+__thread int g_terakan_storage_image_compile_layer_index = INT32_MIN;
+
+void
+terakan_storage_image_set_compile_layer(int layer)
+{
+   g_terakan_storage_image_compile_layer = layer;
+}
+
+void
+terakan_storage_image_set_compile_layer_index(int value)
+{
+   g_terakan_storage_image_compile_layer_index = value;
+}
+
 
 #include "util/u_debug.h"
 
@@ -255,10 +278,16 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
             debug_get_bool_option("TERAKAN_STORAGE_IMAGE_BASE_ARRAY_LAYER", false) ? 1 : 0;
       }
       if (base_array_layer_cached) {
-         static int literal_base_array_layer = INT32_MIN;
+         int literal_base_array_layer = g_terakan_storage_image_compile_layer;
          if (literal_base_array_layer == INT32_MIN) {
-            literal_base_array_layer = (int)debug_get_num_option(
-               "TERAKAN_STORAGE_IMAGE_LITERAL_BASE_ARRAY_LAYER", INT32_MIN);
+            static int literal_base_array_layer_env = INT32_MIN;
+            static bool literal_base_array_layer_env_inited = false;
+            if (!literal_base_array_layer_env_inited) {
+               literal_base_array_layer_env = (int)debug_get_num_option(
+                  "TERAKAN_STORAGE_IMAGE_LITERAL_BASE_ARRAY_LAYER", INT32_MIN);
+               literal_base_array_layer_env_inited = true;
+            }
+            literal_base_array_layer = literal_base_array_layer_env;
          }
          int const forced_coord_z =
             debug_get_num_option("TERAKAN_STORAGE_IMAGE_FORCE_COORD_Z", -1);
@@ -587,25 +616,31 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
 
    b->cursor = nir_before_instr(&intrin->instr);
 
-   /* FIX-W (Q-2026-04-20) companion: TERAKAN_FIX_W_LITERAL_UBO=N
-    * replaces every load_ubo result with the literal N.  Pairs with
-    * TERAKAN_FIX_W_LITERAL_LAYER=N to enable the full single_layer
-    * fix path: coord.z = N AND u_layerNdx = N, both compile-time
-    * constants, no runtime state-passing.  CTS single_layer test
-    * has ONE UBO scalar (u_layerNdx) so blanket-replacing all
-    * load_ubo calls is safe for the probe.  Production FIX-W
-    * would be more surgical: identify which load_ubo corresponds
-    * to the dispatch-varying scalar and replace only that one. */
+   /* Storage-image layer variants bake the dispatch-varying layer index
+    * next to the storage-image slice coordinate. The diagnostic env path
+    * mirrors the compile-time variant path for single-layer probes.
+    */
    {
-      static int fix_w_ubo = INT32_MIN;
-      if (fix_w_ubo == INT32_MIN) {
-         fix_w_ubo = (int)debug_get_num_option(
-            "TERAKAN_FIX_W_LITERAL_UBO", INT32_MIN);
+      int layer_index = g_terakan_storage_image_compile_layer_index;
+      if (layer_index == INT32_MIN) {
+         static int layer_index_env = INT32_MIN;
+         static bool layer_index_env_inited = false;
+         if (!layer_index_env_inited) {
+            layer_index_env = (int)debug_get_num_option(
+               "TERAKAN_STORAGE_IMAGE_LITERAL_LAYER_INDEX", INT32_MIN);
+            layer_index_env_inited = true;
+         }
+         layer_index = layer_index_env;
       }
-      if (fix_w_ubo != INT32_MIN &&
+      if (layer_index != INT32_MIN &&
           intrin->def.num_components == 1 &&
           intrin->def.bit_size == 32) {
-         nir_def *literal = nir_imm_int(b, (int32_t)fix_w_ubo);
+         if (debug_get_bool_option("TERAKAN_DEBUG_STORAGE_IMAGE_VARIANTS", false)) {
+            fprintf(stderr,
+               "terakan/storage_image_variant: replacing load_ubo with literal %d\n",
+               layer_index);
+         }
+         nir_def *literal = nir_imm_int(b, (int32_t)layer_index);
          nir_def_rewrite_uses(&intrin->def, literal);
          nir_instr_remove(&intrin->instr);
          return;
@@ -714,6 +749,26 @@ terakan_nir_lower_bindings_instr_load_push_constant(
    assert(intrin->intrinsic == nir_intrinsic_load_push_constant);
 
    b->cursor = nir_before_instr(&intrin->instr);
+
+   /* The storage-image layer variant path can also bake a scalar that
+    * reaches the shader through push constants.
+    */
+   {
+      int layer_index = g_terakan_storage_image_compile_layer_index;
+      if (layer_index != INT32_MIN &&
+          intrin->def.num_components == 1 &&
+          intrin->def.bit_size == 32) {
+         if (debug_get_bool_option("TERAKAN_DEBUG_STORAGE_IMAGE_VARIANTS", false)) {
+            fprintf(stderr,
+               "terakan/storage_image_variant: replacing load_push_constant with literal %d\n",
+               layer_index);
+         }
+         nir_def *literal = nir_imm_int(b, (int32_t)layer_index);
+         nir_def_rewrite_uses(&intrin->def, literal);
+         nir_instr_remove(&intrin->instr);
+         return;
+      }
+   }
 
    /* Push constants don't have access robustness, simply add the base without an integer overflow
     * check.

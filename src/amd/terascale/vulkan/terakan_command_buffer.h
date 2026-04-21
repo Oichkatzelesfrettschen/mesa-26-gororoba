@@ -412,6 +412,11 @@ struct terakan_gfx_command_writer {
       VkShaderStageFlags bound_to_stages;
    } robustness_metadata;
 
+   /* baseArrayLayer for selecting a storage-image compute shader variant.
+    * Negative means the base shader remains active.
+    */
+   int32_t storage_image_variant_layer;
+
    /* The currently bound graphics pipeline, or NULL if none.
     * Used to skip redundant vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS)
     * rebinding work when the same pipeline handle is bound consecutively. */

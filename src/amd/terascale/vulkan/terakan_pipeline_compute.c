@@ -205,6 +205,93 @@ terakan_pipeline_compute_compile(
    return VK_SUCCESS;
 }
 
+static VkResult
+terakan_pipeline_compute_compile_storage_image_layer_variant(
+   struct terakan_pipeline_compute * const pipeline,
+   struct terakan_device * const device,
+   VkComputePipelineCreateInfo const * const create_info,
+   VkAllocationCallbacks const * const allocator,
+   int const layer)
+{
+   assert(layer >= 0 && layer < 8);
+
+   VkPipelineShaderStageCreateInfo const *stage_info = &create_info->stage;
+
+   size_t spirv_size = 0;
+   uint32_t const *spirv = terakan_pipeline_stage_spirv(stage_info, &spirv_size);
+
+   nir_shader *nir = terakan_shader_spirv_to_nir(
+      device, spirv_size, spirv, MESA_SHADER_COMPUTE,
+      stage_info->pName ? stage_info->pName : "main",
+      stage_info->pSpecializationInfo);
+   if (nir == NULL)
+      return VK_ERROR_UNKNOWN;
+
+   struct terakan_shader_impl *variant =
+      vk_zalloc2(&device->vk.alloc, allocator, sizeof(*variant), 8,
+                 VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (variant == NULL) {
+      ralloc_free(nir);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   struct vk_pipeline_robustness_state stage_rs;
+   vk_pipeline_robustness_state_fill(&device->vk, &stage_rs,
+                                     create_info->pNext, stage_info->pNext);
+   bool const stage_robust_buffer_access =
+      device->vk.enabled_features.robustBufferAccess ||
+      stage_rs.storage_buffers ==
+         VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT ||
+      stage_rs.storage_buffers ==
+         VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT ||
+      stage_rs.uniform_buffers ==
+         VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT ||
+      stage_rs.uniform_buffers ==
+         VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
+
+   terakan_storage_image_set_compile_layer(layer);
+   terakan_storage_image_set_compile_layer_index(layer);
+
+   terakan_shader_lower_and_optimize_post_link(
+      nir,
+      create_info->layout != VK_NULL_HANDLE
+         ? terakan_pipeline_layout_from_handle(create_info->layout)
+         : NULL,
+      variant->resources_needed,
+      &variant->samplers_needed,
+      variant->uavs_for_mutable_resources_needed,
+      &variant->push_constants_usage.driver_constants,
+      &variant->kcache_needed,
+      NULL,
+      stage_robust_buffer_access);
+
+   /* Clear the NIR-lowering literals before backend emission starts. */
+   terakan_storage_image_set_compile_layer(INT32_MIN);
+   terakan_storage_image_set_compile_layer_index(INT32_MIN);
+
+   union r600_shader_key shader_key;
+   memset(&shader_key, 0, sizeof(shader_key));
+
+   VkResult result = terakan_shader_impl_compile(
+      variant, device, &shader_key, nir, allocator);
+   ralloc_free(nir);
+   if (result != VK_SUCCESS) {
+      terakan_shader_impl_finish(variant, allocator);
+      vk_free2(&device->vk.alloc, allocator, variant);
+      return result;
+   }
+
+   pipeline->storage_image_layer_variants[layer] = variant;
+
+   if (debug_get_bool_option("TERAKAN_DEBUG_STORAGE_IMAGE_VARIANTS", false)) {
+      fprintf(stderr,
+         "terakan/storage_image_variant: compiled layer=%d program_va_shr8=0x%x\n",
+         layer, variant->static_state.program_va_shr8);
+   }
+
+   return VK_SUCCESS;
+}
+
 /*
  * Phase C: Pre-compute hardware register values from compiled shader.
  * local_size + group_size were already populated by _compile (RD-4).
@@ -247,6 +334,22 @@ terakan_pipeline_compute_create(struct terakan_device * const device,
 
    terakan_pipeline_compute_fill_hw(pipeline);
 
+   if (debug_get_bool_option("TERAKAN_STORAGE_IMAGE_LAYER_VARIANTS", false)) {
+      pipeline->storage_image_layer_variants_enabled = true;
+      for (int layer = 0; layer < 8; layer++) {
+         VkResult variant_result =
+            terakan_pipeline_compute_compile_storage_image_layer_variant(
+            pipeline, device, create_info, allocator, layer);
+         if (variant_result != VK_SUCCESS) {
+            fprintf(stderr,
+               "terakan/storage_image_variant: layer %d compile failed (rc=%d)\n",
+               layer, variant_result);
+            result = variant_result;
+            goto fail;
+         }
+      }
+   }
+
    *pipeline_out = terakan_pipeline_to_handle(&pipeline->base);
    return VK_SUCCESS;
 
@@ -261,6 +364,16 @@ terakan_pipeline_compute_destroy(struct terakan_pipeline_compute * const pipelin
 {
    struct terakan_device *device =
       container_of(pipeline->base.base.device, struct terakan_device, vk);
+
+   for (int layer = 0; layer < 8; layer++) {
+      if (pipeline->storage_image_layer_variants[layer] != NULL) {
+         terakan_shader_impl_finish(
+            pipeline->storage_image_layer_variants[layer], allocator);
+         vk_free2(&device->vk.alloc, allocator,
+                  pipeline->storage_image_layer_variants[layer]);
+         pipeline->storage_image_layer_variants[layer] = NULL;
+      }
+   }
 
    terakan_shader_impl_finish(&pipeline->shader, allocator);
    terakan_pipeline_finish(&pipeline->base);
