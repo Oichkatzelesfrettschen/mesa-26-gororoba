@@ -21,6 +21,21 @@ struct terakan_pipeline_compute {
 
    struct terakan_shader_impl shader;
 
+   /* FIX-W (Q-2026-04-20): per-baseArrayLayer compiled shader variants.
+    * When fix_w_enabled is set (gated by TERAKAN_FIX_W_PRODUCTION=1),
+    * the create path also compiles 8 variants with the FIX-K base
+    * array layer baked as a NIR literal at compile time.  At dispatch,
+    * terakan_dispatch.c selects fix_w_variants[bound_layer] instead of
+    * the base shader and emits the variant's SQ_PGM_START_CS.
+    *
+    * NULL slot means "variant not compiled / not needed".  Layer 0 is
+    * intentionally a separate variant (rather than reusing the base)
+    * because the base shader was compiled with the wedged kcache path,
+    * while variant[0] has coord.z = 0 baked as a literal -- they are
+    * not bytecode-identical. */
+   struct terakan_shader_impl *fix_w_variants[8];
+   bool fix_w_enabled;
+
    /* Local workgroup size from the shader's execution mode */
    uint32_t local_size[3];
 
@@ -42,6 +57,12 @@ VkResult terakan_pipeline_compute_create(struct terakan_device *device,
 
 void terakan_pipeline_compute_destroy(struct terakan_pipeline_compute *pipeline,
                                       VkAllocationCallbacks const *allocator);
+
+/* FIX-W (Q-2026-04-20): set the compile-time baseArrayLayer literal for
+ * the next NIR lowering pass.  Set INT32_MIN to disable.  Defined in
+ * src/amd/terascale/vulkan/nir/terakan_nir_lower_abi.c. */
+void terakan_fix_w_set_compile_layer(int layer);
+void terakan_fix_w_set_compile_ubo(int value);
 
 #ifdef __cplusplus
 }

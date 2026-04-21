@@ -32,6 +32,34 @@
  */
 
 #include "terakan_nir_lower_bindings_internal.h"
+#include "terakan_pipeline_compute.h"  /* FIX-W setter prototype */
+
+/* FIX-W production thread-local state (Q-2026-04-20).
+ *
+ * The variant-compile loop in terakan_pipeline_compute.c sets this to a
+ * specific baseArrayLayer (0..7) before invoking the post-link lowering
+ * pipeline, then resets to INT32_MIN.  The FIX-K block below reads it
+ * at NIR-lowering time and bakes a literal nir_imm_int into THIS
+ * variant's bytecode.  Each variant gets a different literal.
+ *
+ * Thread-local because Mesa's pipeline compilation is single-threaded
+ * per-pipeline but multiple pipelines may compile concurrently in
+ * different threads. */
+__thread int g_terakan_fix_w_compile_layer = INT32_MIN;
+__thread int g_terakan_fix_w_compile_ubo = INT32_MIN;
+
+void
+terakan_fix_w_set_compile_layer(int layer)
+{
+   g_terakan_fix_w_compile_layer = layer;
+}
+
+void
+terakan_fix_w_set_compile_ubo(int value)
+{
+   g_terakan_fix_w_compile_ubo = value;
+}
+
 
 #include "util/u_debug.h"
 
@@ -294,34 +322,32 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
           * is written: CB exporter is clamping R3.z. */
          int const fix_p_force_z = debug_get_num_option(
             "TERAKAN_FIX_P_FORCE_Z", -1);
-         /* FIX-U (Q-2026-04-19): KCACHE bank 14 is silicon-wedged on
-          * Sumo/Palm for per-dispatch base-address rebinds (proven via
-          * mesa 34f29e699 + 3b81ea00 probes; bank-independent).  Bypass
-          * the wedge by reading baseArrayLayer from workgroup_id.z,
-          * which the SPI populates from VGT_COMPUTE_START_Z.  The
-          * driver-side companion in terakan_dispatch.c step 6 sets
-          * START_Z = uav_base_array_layers[0] when this gate is on.
+         /* FIX-U (Q-2026-04-19): FALSIFIED.  Kept gated for reference. */
+         /* FIX-W (Q-2026-04-20): literal-baked baseArrayLayer.
           *
-          * STATUS: FALSIFIED 2026-04-19.  R1.z reads 0 at runtime
-          * even with START_Z=7 correctly emitted per-dispatch (ISA
-          * verified).  SPI does not fold VGT_COMPUTE_START into the
-          * pinned-VGPR workgroup_id on TeraScale-2 LS/CS path.
+          * Probe path: TERAKAN_FIX_W_LITERAL_LAYER=N env var (cached
+          * static, single value for the whole process).  Used to
+          * empirically validate single-slice pass.
           *
-          * FIX-W (Q-2026-04-20): literal-baked baseArrayLayer.  When
-          * TERAKAN_FIX_W_LITERAL_LAYER=N (0..7), bake N as a nir_imm_int
-          * constant.  The shader gets baseArrayLayer = N at compile
-          * time, no runtime state-passing needed.  This bypasses:
-          *   - KCACHE bank 14 wedge (doesn't touch KCACHE)
-          *   - VGT_COMPUTE_START_Z propagation (doesn't touch SPI)
-          *   - Every incremental invalidation primitive
-          * Cost: requires a separate shader variant per layer value.
-          * For the probe: single TEST_W_LITERAL_LAYER=N validates one
-          * slice.  Production: driver picks variant per dispatch based
-          * on bound ImageView's baseArrayLayer. */
-         static int fix_w_literal = INT32_MIN;
+          * Production path: g_terakan_fix_w_compile_layer thread-local.
+          * Set by terakan_pipeline_compute.c during per-variant compile
+          * to a different value per variant.  Reset to INT32_MIN
+          * between variants.  Read here at NIR-lowering time (compile
+          * time) so the NIR_imm_int gets baked into the shader
+          * bytecode of just THIS variant.  See findings doc
+          * 2026-04-20-fix-w-production-implementation.md. */
+         int fix_w_literal = g_terakan_fix_w_compile_layer;
          if (fix_w_literal == INT32_MIN) {
-            fix_w_literal = (int)debug_get_num_option(
-               "TERAKAN_FIX_W_LITERAL_LAYER", INT32_MIN);
+            /* Use two separate static vars (value + one-shot flag) to
+             * avoid the INT32_MIN-1 sentinel overflow. */
+            static int fix_w_env_cached = INT32_MIN;
+            static bool fix_w_env_inited = false;
+            if (!fix_w_env_inited) {
+               fix_w_env_cached = (int)debug_get_num_option(
+                  "TERAKAN_FIX_W_LITERAL_LAYER", INT32_MIN);
+               fix_w_env_inited = true;
+            }
+            fix_w_literal = fix_w_env_cached;
          }
          static int fix_u_cached = -1;
          if (fix_u_cached < 0) {
@@ -724,14 +750,25 @@ terakan_nir_lower_bindings_instr_load_ubo(nir_builder * const b, nir_intrinsic_i
     * would be more surgical: identify which load_ubo corresponds
     * to the dispatch-varying scalar and replace only that one. */
    {
-      static int fix_w_ubo = INT32_MIN;
+      int fix_w_ubo = g_terakan_fix_w_compile_ubo;
       if (fix_w_ubo == INT32_MIN) {
-         fix_w_ubo = (int)debug_get_num_option(
-            "TERAKAN_FIX_W_LITERAL_UBO", INT32_MIN);
+         static int fix_w_ubo_env = INT32_MIN;
+         static bool fix_w_ubo_env_inited = false;
+         if (!fix_w_ubo_env_inited) {
+            fix_w_ubo_env = (int)debug_get_num_option(
+               "TERAKAN_FIX_W_LITERAL_UBO", INT32_MIN);
+            fix_w_ubo_env_inited = true;
+         }
+         fix_w_ubo = fix_w_ubo_env;
       }
       if (fix_w_ubo != INT32_MIN &&
           intrin->def.num_components == 1 &&
           intrin->def.bit_size == 32) {
+         if (debug_get_bool_option("TERAKAN_DEBUG_FIX_W", false)) {
+            fprintf(stderr,
+               "TERAKAN_FIX_W: replacing load_ubo with literal %d\n",
+               fix_w_ubo);
+         }
          nir_def *literal = nir_imm_int(b, (int32_t)fix_w_ubo);
          nir_def_rewrite_uses(&intrin->def, literal);
          nir_instr_remove(&intrin->instr);
@@ -841,6 +878,26 @@ terakan_nir_lower_bindings_instr_load_push_constant(
    assert(intrin->intrinsic == nir_intrinsic_load_push_constant);
 
    b->cursor = nir_before_instr(&intrin->instr);
+
+   /* FIX-W (Q-2026-04-20) companion for push_constant: same logic as
+    * the load_ubo path -- bank 15 is also wedged on per-dispatch
+    * rebind, so bake the literal at variant compile time. */
+   {
+      int fix_w_pc = g_terakan_fix_w_compile_ubo;
+      if (fix_w_pc != INT32_MIN &&
+          intrin->def.num_components == 1 &&
+          intrin->def.bit_size == 32) {
+         if (debug_get_bool_option("TERAKAN_DEBUG_FIX_W", false)) {
+            fprintf(stderr,
+               "TERAKAN_FIX_W: replacing load_push_constant with literal %d\n",
+               fix_w_pc);
+         }
+         nir_def *literal = nir_imm_int(b, (int32_t)fix_w_pc);
+         nir_def_rewrite_uses(&intrin->def, literal);
+         nir_instr_remove(&intrin->instr);
+         return;
+      }
+   }
 
    /* Push constants don't have access robustness, simply add the base without an integer overflow
     * check.

@@ -420,6 +420,14 @@ struct terakan_gfx_command_writer {
       VkShaderStageFlags bound_to_stages;
    } robustness_metadata;
 
+   /* FIX-W (Q-2026-04-20): the baseArrayLayer of the currently bound
+    * non-array-view-of-array-image UAV at descriptor index 0.  Set by
+    * terakan_CmdBindDescriptorSets when such a UAV is detected for the
+    * compute bind point.  Read by terakan_dispatch.c to select the
+    * right shader variant from pipeline->fix_w_variants[].  Negative
+    * value = no FIX-W variant needed (use base shader). */
+   int32_t fix_w_current_layer;
+
    /* The currently bound graphics pipeline, or NULL if none.
     * Used to skip redundant vkCmdBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS)
     * rebinding work when the same pipeline handle is bound consecutively. */

@@ -377,6 +377,27 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   update_uav_robustness_metadata(command_writer, idx,
                                                  uav->is_texel_buffer, bound,
                                                  uav->base_array_layer, inject_layer);
+
+                  /* FIX-W (Q-2026-04-20): stash baseArrayLayer on the
+                   * command writer so CmdDispatch can select the
+                   * matching pre-compiled shader variant from
+                   * pipeline->fix_w_variants[].  Only applies to the
+                   * compute bind point AND when inject_layer would
+                   * route through the wedged FIX-K kcache read path.
+                   *
+                   * Also force compute_pipeline_dirty=true when the
+                   * layer changes: the compute-state emit path
+                   * (SQ_PGM_START_CS rebind) only fires on
+                   * pipeline-dirty, so without this, the first
+                   * dispatch's variant persists for all 8. */
+                  if (is_compute && inject_layer &&
+                      uav->base_array_layer < 8) {
+                     int32_t const new_layer = (int32_t)uav->base_array_layer;
+                     if (command_writer->fix_w_current_layer != new_layer) {
+                        command_writer->fix_w_current_layer = new_layer;
+                        command_writer->compute_pipeline_dirty = true;
+                     }
+                  }
                } else {
                   if (used && BITSET_TEST(uavs_not_null, idx))
                      terakan_state_draw_set_pending(&command_writer->state_draw,

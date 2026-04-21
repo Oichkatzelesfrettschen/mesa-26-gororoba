@@ -1562,15 +1562,39 @@ terakan_emit_compute_state(struct terakan_gfx_command_writer *command_writer,
     * The kernel's radeon_cs_packet_next_reloc expects the NOP IMMEDIATELY
     * after the SET_CONTEXT_REG packet containing SQ_PGM_START_LS. */
 
+   /* FIX-W (Q-2026-04-20): select active shader variant.  If production
+    * FIX-W is enabled on this pipeline AND the command writer has a
+    * bound baseArrayLayer in [0, 8) AND the matching variant compiled
+    * successfully, use the variant's shader BO + HW register values.
+    * Otherwise fall back to the base shader (which uses the wedged
+    * kcache path and is known to fail for this use case). */
+   struct terakan_shader_impl const *active_shader = &pipeline->shader;
+   uint32_t active_sq_pgm_start_cs = pipeline->sq_pgm_start_cs;
+   uint32_t active_sq_pgm_resources_cs_0 = pipeline->sq_pgm_resources_cs[0];
+   if (pipeline->fix_w_enabled &&
+       command_writer->fix_w_current_layer >= 0 &&
+       command_writer->fix_w_current_layer < 8 &&
+       pipeline->fix_w_variants[command_writer->fix_w_current_layer] != NULL) {
+      active_shader = pipeline->fix_w_variants[command_writer->fix_w_current_layer];
+      active_sq_pgm_start_cs = active_shader->static_state.program_va_shr8;
+      active_sq_pgm_resources_cs_0 = active_shader->static_state.sq_pgm_resources[0];
+      if (debug_get_bool_option("TERAKAN_DEBUG_FIX_W", false)) {
+         fprintf(stderr,
+            "TERAKAN_FIX_W: dispatch selects variant[layer=%d] "
+            "program_va_shr8=0x%x\n",
+            command_writer->fix_w_current_layer, active_sq_pgm_start_cs);
+      }
+   }
+
    /* Register the shader BO for the CS submission relocation table */
    uint32_t bo_ref = terakan_bo_reference_writer_add_reference(
       &command_writer->base.bo_reference_writer,
-      pipeline->shader.static_state.program_bo,
+      active_shader->static_state.program_bo,
       true, false, TERAKAN_BO_PRIORITY_SHADER_BINARY);
    if (debug_get_bool_option("TERAKAN_DEBUG_COMPUTE_DESC", false)) {
       fprintf(stderr,
               "terakan/compute_state: program_bo=%p bo_ref=%u\n",
-              (void *)pipeline->shader.static_state.program_bo, bo_ref);
+              (void *)active_shader->static_state.program_bo, bo_ref);
    }
    bool const skip_cs_state_program =
       debug_get_bool_option("TERAKAN_SKIP_CS_STATE_PROGRAM", false);
@@ -1632,8 +1656,8 @@ terakan_emit_compute_state(struct terakan_gfx_command_writer *command_writer,
       if (unlikely(p == NULL)) return;
       *p++ = PKT3(PKT3_SET_CONTEXT_REG, 3, 0) | COMPUTE_MODE_BIT;
       *p++ = CONTEXT_REG_OFFSET(R_0288D0_SQ_PGM_START_LS);
-      *p++ = pipeline->sq_pgm_start_cs;       /* SQ_PGM_START_LS (va >> 8) */
-      *p++ = pipeline->sq_pgm_resources_cs[0] |
+      *p++ = active_sq_pgm_start_cs;          /* SQ_PGM_START_LS (va >> 8) */
+      *p++ = active_sq_pgm_resources_cs_0 |
              S_0288D4_DX10_CLAMP(1);           /* SQ_PGM_RESOURCES_LS */
       *p++ = 0;                                /* SQ_PGM_RESOURCES_LS_2 */
       /* NOP relocation must be plain PKT3_NOP (no COMPUTE_MODE bit) so
