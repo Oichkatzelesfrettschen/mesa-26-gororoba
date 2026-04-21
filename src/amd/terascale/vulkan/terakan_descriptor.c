@@ -150,8 +150,24 @@ terakan_color_descriptor_info_to_uav_immediate_resource(struct terakan_device co
    resource_out[2] = S_030008_BASE_ADDRESS_HI(va_shr8 >> (32 - 8)) |
                      S_030008_STRIDE(bytes_per_texel) | S_030008_DATA_FORMAT(format) |
                      S_030008_NUM_FORMAT_ALL(terascale_format_get_sq_num_format(number_type)) |
-                     S_030008_FORMAT_COMP_ALL(number_type == TERASCALE_FORMAT_NUMBER_TYPE_SNORM ||
-                                              number_type == TERASCALE_FORMAT_NUMBER_TYPE_SINT) |
+                     /* FIX-Y (Q-2026-04-21): MEM_RAT_STORE_TYPED rescue for
+                      * dword-per-channel UINT formats.  Empirically verified
+                      * 2026-04-21 on Wrestler HD 6310: setting
+                      * FORMAT_COMP_ALL=1 for UINT rescues r32_uint,
+                      * r32g32_uint, r32g32b32a32_uint and r8g8b8a8_uint
+                      * single_layer tests in isolation (previously FAIL).
+                      * Does NOT help sub-dword-per-channel formats
+                      * (r16_uint, r16g16_uint) so applies only when every
+                      * channel occupies >= 4 bytes.  Gated on
+                      * TERAKAN_FIX_Y_FORMAT_COMP_UINT=1 during validation.
+                      * See steinmarder
+                      * findings/active/2026-04-21-single-layer-uint-primer-discovery.md
+                      * and 2026-04-21-fix-y-format-comp-uint-breakthrough.md. */
+                     S_030008_FORMAT_COMP_ALL(
+                        number_type == TERASCALE_FORMAT_NUMBER_TYPE_SNORM ||
+                        number_type == TERASCALE_FORMAT_NUMBER_TYPE_SINT ||
+                        (number_type == TERASCALE_FORMAT_NUMBER_TYPE_UINT &&
+                         debug_get_bool_option("TERAKAN_FIX_Y_FORMAT_COMP_UINT", false))) |
                      S_030008_ENDIAN_SWAP(G_028C70_ENDIAN(color_info));
    /* In Vulkan, storage descriptors can be created only for one aspect, and TeraScale's combined
     * depth / stencil SQ / CB formats correspond only to depth / stencil formats that exist in
