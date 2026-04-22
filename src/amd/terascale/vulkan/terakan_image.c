@@ -1730,6 +1730,63 @@ terakan_CreateImage(VkDevice const deviceHandle, VkImageCreateInfo const * const
    image->bo = NULL;
    image->va = 0;
 
+   /* TERAKAN_DEBUG_IMAGE_CREATE_INFO=1 (tranche-12 task #81): trace
+    * the user-supplied VkImageCreateInfo + the addrlib-chosen aspect[0]
+    * level[0] pitch and aligned extent.  Used by steinmarder probe to
+    * diff PASS sibling vs FAIL victim of identical descriptor.  Per
+    * C-2026-04-22-37: tiling is provably NOT the differential at the
+    * descriptor level; the bug must live in addrlib decisions or test
+    * framework -- this trace exposes the addrlib decision surface.
+    */
+   {
+      static int trace_ici = -1;
+      if (trace_ici < 0) {
+         trace_ici = debug_get_bool_option(
+            "TERAKAN_DEBUG_IMAGE_CREATE_INFO", false) ? 1 : 0;
+      }
+      if (trace_ici) {
+         struct terakan_image_surface_aspect const * const aspect0 =
+            &image->surface.aspects[0];
+         struct terakan_image_surface_level const * const lvl0 =
+            &aspect0->levels[0];
+         fprintf(stderr,
+                 "terakan/img_create: format=%s extent=%ux%ux%u "
+                 "mips=%u layers=%u samples=%u tiling=%s usage=0x%x flags=0x%x",
+                 vk_Format_to_str(pCreateInfo->format),
+                 pCreateInfo->extent.width, pCreateInfo->extent.height,
+                 pCreateInfo->extent.depth,
+                 pCreateInfo->mipLevels, pCreateInfo->arrayLayers,
+                 (unsigned)pCreateInfo->samples,
+                 (pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR ? "LINEAR"
+                  : pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL ? "OPTIMAL"
+                  : "?"),
+                 (unsigned)pCreateInfo->usage,
+                 (unsigned)pCreateInfo->flags);
+         fprintf(stderr,
+                 " aspect0={align_shr8=0x%x off_shr8=0x%x size_shr8=0x%x "
+                 "bpb=%u tile_split=%u bank_w=%u bank_h=%u macro_aspect=%u "
+                 "tc_non_disp=%d}",
+                 aspect0->alignment_bytes_shr8,
+                 aspect0->offset_in_memory_bytes_shr8,
+                 aspect0->size_bytes_shr8,
+                 (unsigned)aspect0->bytes_per_block,
+                 (unsigned)aspect0->tiling.attrib_tile_split,
+                 (unsigned)aspect0->tiling.attrib_bank_width,
+                 (unsigned)aspect0->tiling.attrib_bank_height,
+                 (unsigned)aspect0->tiling.attrib_macro_tile_aspect,
+                 (int)aspect0->tiling.tc_non_display);
+         fprintf(stderr,
+                 " level0={array_mode=%u off_shr8=0x%x slice_sz_shr8=0x%x "
+                 "aligned_extent=%ux%ux%u}\n",
+                 (unsigned)lvl0->array_mode,
+                 lvl0->offset_in_memory_bytes_shr8,
+                 lvl0->slice_size_bytes_shr8,
+                 (unsigned)lvl0->aligned_extent_surfels[0],
+                 (unsigned)lvl0->aligned_extent_surfels[1],
+                 (unsigned)lvl0->aligned_extent_surfels[2]);
+      }
+   }
+
    *pImage = terakan_image_to_handle(image);
    return VK_SUCCESS;
 
