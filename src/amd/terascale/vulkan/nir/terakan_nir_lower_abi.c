@@ -1608,18 +1608,34 @@ terakan_nir_lower_bindings_instr_image_deref_store(
          if (img_fmt != PIPE_FORMAT_NONE && util_format_is_pure_uint(img_fmt)) {
             const struct util_format_description * const fmtd =
                util_format_description(img_fmt);
-            unsigned bpc = 0;
+            /* FIX-Z packed-format extension (2026-04-21): per-channel-aware
+             * sign-extension shift.  Original code used a single bpc =
+             * channel[0].size which fails for packed formats with non-
+             * uniform channel widths (e.g. R10G10B10A2_UINT: 10/10/10/2 bits).
+             * The 2-bit alpha channel needs shift=30, the 10-bit RGB channels
+             * need shift=22.
+             *
+             * Pre-scan to decide whether ANY channel needs extension; if not
+             * (e.g. r32_uint with channel[0].size=32 only), short-circuit
+             * without emitting nir_channel/nir_vec at all -- mirrors the
+             * original code's no-op behavior for 32-bit-per-channel formats. */
+            bool needs_extension = false;
             for (unsigned fi = 0; fi < fmtd->nr_channels; fi++) {
-               if (fmtd->channel[fi].size > 0) { bpc = fmtd->channel[fi].size; break; }
+               unsigned const sz = fmtd->channel[fi].size;
+               if (sz > 0 && sz < 32) { needs_extension = true; break; }
             }
-            if (bpc > 0 && bpc < 32) {
-               unsigned const shift = 32u - bpc;
+            if (needs_extension) {
                nir_def *se_comps[NIR_MAX_VEC_COMPONENTS];
                unsigned const nc = store_value->num_components;
                for (unsigned ci = 0; ci < nc; ci++) {
                   nir_def *v = nir_channel(b, store_value, ci);
-                  v = nir_ishr(b, nir_ishl(b, v, nir_imm_int(b, (int)shift)),
-                               nir_imm_int(b, (int)shift));
+                  unsigned const ch_bpc =
+                     ci < fmtd->nr_channels ? fmtd->channel[ci].size : 0u;
+                  if (ch_bpc > 0 && ch_bpc < 32) {
+                     unsigned const shift = 32u - ch_bpc;
+                     v = nir_ishr(b, nir_ishl(b, v, nir_imm_int(b, (int)shift)),
+                                  nir_imm_int(b, (int)shift));
+                  }
                   se_comps[ci] = v;
                }
                store_value = nir_vec(b, se_comps, nc);
