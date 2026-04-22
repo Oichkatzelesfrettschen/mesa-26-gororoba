@@ -1248,6 +1248,31 @@ terakan_hw_state_draw_emit_cb_color(struct terakan_gfx_command_writer * const co
             packet += sizeof(*meta_descriptor) / sizeof(uint32_t);
          }
 
+         /* TERAKAN_DEBUG_CB_INFO_EMIT=1: trace each CB_COLOR_INFO write
+          * site so the steinmarder primer-diff probe can correlate which
+          * dispatches re-emit CB state.  Cross-test primer hypothesis
+          * (steinmarder findings/active/2026-04-21-tranche8-primer-is-hw-
+          * state-not-descriptor.md): if the victim's bind reuses a stale
+          * cb_color.modified=0 slot, the prior test's NUMBER_TYPE latch
+          * persists and corrupts the write.
+          */
+         {
+            static int trace_cb_emit = -1;
+            if (trace_cb_emit < 0) {
+               trace_cb_emit = debug_get_bool_option(
+                  "TERAKAN_DEBUG_CB_INFO_EMIT", false) ? 1 : 0;
+            }
+            if (trace_cb_emit) {
+               fprintf(stderr,
+                       "terakan/cb_emit: color_index=%u info=0x%08x "
+                       "base=0x%08x view=0x%08x attrib=0x%08x pitch=0x%08x slice=0x%08x\n",
+                       color_index, descriptor->info,
+                       descriptor->base, descriptor->view,
+                       descriptor->attrib, descriptor->pitch,
+                       descriptor->slice);
+            }
+         }
+
          terakan_gfx_command_writer_add_relocation(
             command_writer, &packet,
             &packet_descriptor[offsetof(struct terakan_color_descriptor, base) / sizeof(uint32_t)],
