@@ -500,6 +500,100 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                      }
                   }
                }
+               /* FIX-Z (C-2026-04-21-09): Evergreen/Bobcat MEM_RAT_STORE_TYPED
+                * silently drops writes when SQ_TEX_RESOURCE_WORD4
+                * (real_resource[4], R_030010) has NUM_FORMAT_ALL=INT (bit9:8=1)
+                * combined with FORMAT_COMP_X/Y/Z/W=UNSIGNED (bits7:0=0x00).
+                * This is the UINT integer format path; SINT uses FORMAT_COMP=
+                * SIGNED (bits7:0=0x55) and passes identically.
+                *
+                * IB evidence (2026-04-21): three-arm cold capture on x130e.
+                * sfloat (PASS): slot 0x1EC0 word4=0x0B200000 (NUM_FORMAT=NORM).
+                * sint  (PASS): slot 0x1EC0 word4=0x0B200155 (NUM_FORMAT=INT,
+                *               FORMAT_COMP=SIGNED).
+                * uint+FIX-Y (FAIL): slot 0x1EC0 word4=0x0B200100 (NUM_FORMAT=INT,
+                *               FORMAT_COMP=UNSIGNED).
+                * The IMMED buffer resource at slot 0x1980 is byte-identical for
+                * sint and uint+FIX-Y, confirming the texture resource word4
+                * FORMAT_COMP fields are the sole discriminator.
+                *
+                * Fix: for storage-image UAV descriptors only (this code path),
+                * flip FORMAT_COMP_X/Y/Z/W to SIGNED when NUM_FORMAT_ALL=INT and
+                * all FORMAT_COMP are UNSIGNED.  MEM_RAT_STORE_TYPED then accepts
+                * the write.  For 32-bit channels SIGNED vs UNSIGNED is
+                * bit-pattern-identical; for sub-32-bit UINT (R8/R16) subsequent
+                * imageLoad via the same resource sees sign-extended values, but
+                * the failing CTS image.store tests verify via CopyImageToBuffer
+                * (DMA readback), not imageLoad.
+                *
+                * FIX-Y (FORMAT_COMP_ALL in SQ_VTX_RESOURCE_WORD2 at slot 0x1980)
+                * is confirmed a no-op for this bug: it modifies the IMMED buffer
+                * resource which is identical between sint and uint.
+                *
+                * Gated on TERAKAN_FIX_Z_UINT_FORMAT_COMP=1 for validation.
+                * See steinmarder findings/active/2026-04-21-fix-z-uint-tex-resource-format-comp.md
+                * and 2026-04-21-fix-y-format-comp-uint-breakthrough.md (FIX-Y erratum). */
+               static int fix_z_cached = -1;
+               if (fix_z_cached < 0) {
+                  fix_z_cached = debug_get_bool_option(
+                     "TERAKAN_FIX_Z_UINT_FORMAT_COMP", false) ? 1 : 0;
+               }
+               if (fix_z_cached) {
+                  uint32_t const w4 = dst_uav->real_resource[4];
+                  if (G_030010_NUM_FORMAT_ALL(w4) == V_030010_SQ_NUM_FORMAT_INT &&
+                      (w4 & 0xFFu) == 0x00u) {
+                     uint32_t const w4_fixed =
+                        (w4 & ~0xFFu) |
+                        S_030010_FORMAT_COMP_X(V_030010_SQ_FORMAT_COMP_SIGNED) |
+                        S_030010_FORMAT_COMP_Y(V_030010_SQ_FORMAT_COMP_SIGNED) |
+                        S_030010_FORMAT_COMP_Z(V_030010_SQ_FORMAT_COMP_SIGNED) |
+                        S_030010_FORMAT_COMP_W(V_030010_SQ_FORMAT_COMP_SIGNED);
+                     dst_uav->real_resource[4] = w4_fixed;
+                     if (trace_sd_cached) {
+                        fprintf(stderr,
+                                "terakan/stor_img_desc: FIX-Z applied "
+                                "real_resource[4] 0x%08x -> 0x%08x\n",
+                                w4, w4_fixed);
+                     }
+                  }
+                  /* FIX-Z part 2: CB_COLOR_INFO.NUMBER_TYPE = NUMBER_UINT (4) also
+                   * causes MEM_RAT_STORE_TYPED to silently drop writes on
+                   * Evergreen/Bobcat.  NUMBER_USCALED (2) avoids both the silent-drop
+                   * (NUMBER_UINT=4) and SINT clamping (NUMBER_SINT=5 clamps >SINT_MAX).
+                   * Override UINT -> SINT in the CB descriptor.
+                   * Sub-32-bit UINT values (R8/R16) are sign-extended in the shader
+                   * (FIX-Z NIR pass) before the store so SINT clamping does not apply.
+                   *
+                   * Evidence: POST-XFORM trace shows sint info=0x1c105434 (NUMBER=5,
+                   * PASS) vs uint info=0x1c104434 (NUMBER=4, FAIL).  The difference
+                   * is exclusively bits [14:12] = NUMBER_TYPE.
+                   *
+                   * For sub-32-bit UINT (R8/R16), the CB will write values with SINT
+                   * interpretation as unsigned integer; USCALED stores the raw bit-pattern
+                   * regardless of magnitude, so R8_UINT values 128-255 are preserved.
+                   * R32_UINT also benefits since USCALED does not clamp to SINT_MAX. */
+                  if (G_028C70_NUMBER_TYPE(dst_uav->color.info) == V_028C70_NUMBER_UINT) {
+                     uint32_t const cb_info_before = dst_uav->color.info;
+                     dst_uav->color.info =
+                        (dst_uav->color.info & C_028C70_NUMBER_TYPE) |
+                        S_028C70_NUMBER_TYPE(V_028C70_NUMBER_SINT);
+                     if (trace_sd_cached) {
+                        fprintf(stderr,
+                                "terakan/stor_img_desc: FIX-Z part2 CB_NUMBER_TYPE "
+                                "UINT->SINT info 0x%08x -> 0x%08x\n",
+                                cb_info_before, dst_uav->color.info);
+                     }
+                  }
+               }
+               if (trace_sd_cached) {
+                  fprintf(stderr,
+                          "terakan/stor_img_desc: FINAL-STATE" " rr=%08x %08x %08x %08x" " %08x %08x %08x %08x" " info=%08x\n",
+                          dst_uav->real_resource[0], dst_uav->real_resource[1],
+                          dst_uav->real_resource[2], dst_uav->real_resource[3],
+                          dst_uav->real_resource[4], dst_uav->real_resource[5],
+                          dst_uav->real_resource[6], dst_uav->real_resource[7],
+                          dst_uav->color.info);
+               }
             } else {
                dst_uav->bo = NULL;
                memset(dst_uav->real_resource, 0, sizeof(dst_uav->real_resource));

@@ -62,6 +62,7 @@ terakan_fix_w_set_compile_ubo(int value)
 
 
 #include "util/u_debug.h"
+#include "util/format/u_format.h"  /* FIX-Z: util_format_is_pure_uint + util_format_description */
 
 static nir_def *
 terakan_nir_resize_vector(nir_builder * const b, nir_def * const src,
@@ -1592,6 +1593,40 @@ terakan_nir_lower_bindings_instr_image_deref_store(
       }
    }
 
+   /* FIX-Z sub-32-bit UINT sign-extension: for R8_UINT / R16_UINT formats,
+    * NUMBER_TYPE=SINT in the CB clamps values above SINT_MAX (e.g. uint8
+    * 200 -> clamped to 127).  Sign-extending each component from the
+    * format's natural bit width to 32-bit signed before the store puts
+    * the value in the SINT range (uint8 200 -> int32 -56), so the CB
+    * truncates correctly (stores 0xC8 = 200 as uint8) without clamping. */
+   {
+      static int fixz_se = -1;
+      if (fixz_se < 0)
+         fixz_se = debug_get_bool_option("TERAKAN_FIX_Z_UINT_FORMAT_COMP", false) ? 1 : 0;
+      if (fixz_se) {
+         enum pipe_format const img_fmt = (enum pipe_format)nir_intrinsic_format(intrin);
+         if (img_fmt != PIPE_FORMAT_NONE && util_format_is_pure_uint(img_fmt)) {
+            const struct util_format_description * const fmtd =
+               util_format_description(img_fmt);
+            unsigned bpc = 0;
+            for (unsigned fi = 0; fi < fmtd->nr_channels; fi++) {
+               if (fmtd->channel[fi].size > 0) { bpc = fmtd->channel[fi].size; break; }
+            }
+            if (bpc > 0 && bpc < 32) {
+               unsigned const shift = 32u - bpc;
+               nir_def *se_comps[NIR_MAX_VEC_COMPONENTS];
+               unsigned const nc = store_value->num_components;
+               for (unsigned ci = 0; ci < nc; ci++) {
+                  nir_def *v = nir_channel(b, store_value, ci);
+                  v = nir_ishr(b, nir_ishl(b, v, nir_imm_int(b, (int)shift)),
+                               nir_imm_int(b, (int)shift));
+                  se_comps[ci] = v;
+               }
+               store_value = nir_vec(b, se_comps, nc);
+            }
+         }
+      }
+   }
    terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, store_value,
                                     undef, V_RAT_INST_STORE_TYPED, access,
                                     state->uav_base + uav_index_zero_based);
