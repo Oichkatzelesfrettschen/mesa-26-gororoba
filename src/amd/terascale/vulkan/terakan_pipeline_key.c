@@ -12,6 +12,7 @@
 #include "vk_pipeline.h"
 
 #include <string.h>
+#include "util/u_debug.h"
 
 void
 terakan_shader_stage_key_fill(struct terakan_shader_stage_key *key,
@@ -39,6 +40,14 @@ terakan_shader_stage_key_fill(struct terakan_shader_stage_key *key,
 
    if (device->vk.enabled_features.robustBufferAccess)
       key->robust_buffer_access = 1;
+
+   /* Fix-stack flags that alter NIR lowering and thus the compiled binary.
+    * Cache keys must reflect these so FIX_K and FIX_Z variants do not
+    * collide with non-fix variants or each other. */
+   if (debug_get_bool_option("TERAKAN_FIX_K_BASE_ARRAY_LAYER", false))
+      key->fix_k_base_array_layer = 1;
+   if (debug_get_bool_option("TERAKAN_FIX_Z_UINT_FORMAT_COMP", true))
+      key->fix_z_uint_format_comp = 1;
 }
 
 void
