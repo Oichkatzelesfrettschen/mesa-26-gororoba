@@ -1600,9 +1600,14 @@ terakan_nir_lower_bindings_instr_image_deref_store(
     * the value in the SINT range (uint8 200 -> int32 -56), so the CB
     * truncates correctly (stores 0xC8 = 200 as uint8) without clamping. */
    {
+      /* Promoted to default 2026-04-21 (steinmarder finding
+       * 2026-04-21-tranche7-h7a-confirmed-zero-real-fails.md): tranche-7
+       * absolute-isolation matrix proved zero real isolation fails after
+       * FIX-Z (incl. per-channel packed-format handling).  Env var
+       * preserved as opt-out (TERAKAN_FIX_Z_UINT_FORMAT_COMP=0). */
       static int fixz_se = -1;
       if (fixz_se < 0)
-         fixz_se = debug_get_bool_option("TERAKAN_FIX_Z_UINT_FORMAT_COMP", false) ? 1 : 0;
+         fixz_se = debug_get_bool_option("TERAKAN_FIX_Z_UINT_FORMAT_COMP", true) ? 1 : 0;
       if (fixz_se) {
          enum pipe_format const img_fmt = (enum pipe_format)nir_intrinsic_format(intrin);
          if (img_fmt != PIPE_FORMAT_NONE && util_format_is_pure_uint(img_fmt)) {

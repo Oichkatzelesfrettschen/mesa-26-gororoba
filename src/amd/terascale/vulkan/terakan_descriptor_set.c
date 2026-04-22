@@ -530,13 +530,19 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                 * is confirmed a no-op for this bug: it modifies the IMMED buffer
                 * resource which is identical between sint and uint.
                 *
-                * Gated on TERAKAN_FIX_Z_UINT_FORMAT_COMP=1 for validation.
+                * Promoted to default (2026-04-21) per steinmarder finding
+                * 2026-04-21-tranche7-h7a-confirmed-zero-real-fails.md: the
+                * tranche-7 absolute-isolation matrix proved zero real
+                * isolation fails remain after FIX-I+K+W+Z; the residual 3
+                * sweep fails are cross-test-primer victims (independent
+                * lane).  Env var preserved as an OPT-OUT escape hatch
+                * (set TERAKAN_FIX_Z_UINT_FORMAT_COMP=0 to disable).
                 * See steinmarder findings/active/2026-04-21-fix-z-uint-tex-resource-format-comp.md
                 * and 2026-04-21-fix-y-format-comp-uint-breakthrough.md (FIX-Y erratum). */
                static int fix_z_cached = -1;
                if (fix_z_cached < 0) {
                   fix_z_cached = debug_get_bool_option(
-                     "TERAKAN_FIX_Z_UINT_FORMAT_COMP", false) ? 1 : 0;
+                     "TERAKAN_FIX_Z_UINT_FORMAT_COMP", true) ? 1 : 0;
                }
                if (fix_z_cached) {
                   uint32_t const w4 = dst_uav->real_resource[4];
