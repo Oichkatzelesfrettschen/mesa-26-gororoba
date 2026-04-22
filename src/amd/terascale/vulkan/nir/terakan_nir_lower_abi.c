@@ -1648,8 +1648,36 @@ terakan_nir_lower_bindings_instr_image_deref_store(
          }
       }
    }
+   /* FIX-AB (2026-04-22): encode the format-derived elem_size_minus_one
+    * (= dwords-per-element minus 1, encoded as {0,1,3} for {1,2,4} dwords)
+    * in uav_op high bits [6:7] so emit_uav_store_r600 can recover it.
+    * Default of ELEM_SIZE=0 caused silicon to drop the R-dword of
+    * r32g32_uint in cold-context state per steinmarder finding
+    * 2026-04-22-tranche16-silicon-drops-r-dword-cold-context.md, CLAIMS
+    * C-2026-04-22-43.  Trimming store_value at the NIR level would
+    * violate `src->num_components == intrin->num_components` validation
+    * for the uav_instr_r600 intrinsic (NIR enforces the contract); we
+    * instead carry the format channel count through the op encoding
+    * since uav_op_base only uses bits [4:0]. */
+   unsigned uav_op_with_elem_size = V_RAT_INST_STORE_TYPED;
+   {
+      enum pipe_format const trim_fmt = (enum pipe_format)nir_intrinsic_format(intrin);
+      if (trim_fmt != PIPE_FORMAT_NONE) {
+         unsigned const fmt_channels = util_format_get_nr_components(trim_fmt);
+         unsigned const tex_bytes = util_format_get_blocksize(trim_fmt);
+         if (fmt_channels > 0 && tex_bytes >= 4 * fmt_channels) {
+            unsigned esmo = 0;
+            if (fmt_channels == 2)
+               esmo = 1;
+            else if (fmt_channels == 4)
+               esmo = 3;
+            /* fmt_channels in {1, 3} keeps esmo = 0 */
+            uav_op_with_elem_size |= (esmo & 0x3u) << 5;
+         }
+      }
+   }
    terakan_nir_build_uav_instr_r600(b, uav_array_index, coord, store_value,
-                                    undef, V_RAT_INST_STORE_TYPED, access,
+                                    undef, uav_op_with_elem_size, access,
                                     state->uav_base + uav_index_zero_based);
 
    if (guarded) {

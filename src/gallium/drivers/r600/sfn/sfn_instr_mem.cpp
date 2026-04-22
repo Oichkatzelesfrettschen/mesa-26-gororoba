@@ -827,7 +827,32 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
 
    bool const scalar_buffer_store =
       uav_op_base == RatInstr::STORE_TYPED && coord_components == 1 && value_components == 1;
-   unsigned const rat_opcode = scalar_buffer_store ? RatInstr::STORE_RAW : uav_op;
+   /* Use uav_op_base (low 5 bits), not full uav_op, so my elem-size encoding
+    * in bits [6:5] doesn't leak into the RAT opcode field which would
+    * trigger the disassembler's bounds-check assertion. */
+   unsigned const rat_opcode = scalar_buffer_store ? RatInstr::STORE_RAW : uav_op_base;
+
+   /* ELEM_SIZE encodes "doublewords per array element" via bits {0,1,3}
+    * for {1,2,4} dwords (Evergreen_ISA.pdf §10.18; "3 is not supported").
+    * Hardcoded ELEM_SIZE=0 (= 1 dword) caused MEM_RAT_STORE_TYPED on
+    * multi-dword UINT formats (notably r32g32_uint) to drop the FIRST
+    * dword (R channel) in cold-context silicon state -- silicon strictly
+    * honored "1 dword" while COMP_MASK said "all N channels".  In
+    * warm-context, silicon's optional fallback cache wrote all dwords,
+    * producing the previously-mysterious non-monotonic latch behavior.
+    *
+    * The terakan NIR lowering pass encodes the format-derived
+    * elem_size_minus_one in uav_op high bits [6:5]; recover it here.
+    * value_components from the (NIR-padded) value vector is too
+    * coarse: shaders pass uvec4 to imageStore even for narrower
+    * formats, so the NIR vec component count = always 4 for terakan.
+    * The format-derived signal carried via uav_op is the only correct
+    * source.  See steinmarder finding tranche-16 + CLAIMS C-2026-04-22-43.
+    *
+    * For non-terakan (gallium r600 OpenGL/CL) callers that don't encode
+    * elem_size in uav_op, the high bits stay 0 -> elem_size_minus_one = 0
+    * (preserves prior behavior). */
+   unsigned elem_size_minus_one = (uav_op >> 5) & 0x3u;
 
    auto store = new RatInstr((scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW)
                                 ? cf_mem_rat_cacheless
@@ -839,7 +864,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
                              rat_id_offset,
                              1,
                              CLAMP(comp_mask, 1u, 0xFu),
-                             0);
+                             elem_size_minus_one);
    shader.emit_instruction(store);
    store->set_ack();
    return true;
@@ -1124,6 +1149,7 @@ RatInstr::emit_image_store(nir_intrinsic_instr *intrin, Shader& shader)
     * older NIR pipelines that don't propagate format). */
    pipe_format const store_format = nir_intrinsic_format(intrin);
    unsigned comp_mask = 0xf;
+   unsigned elem_size_minus_one = 0;
    if (store_format != PIPE_FORMAT_NONE) {
       /* Only narrow COMP_MASK when the texel is at least one full
        * dword per channel (32-bit formats like r32_*, r32g32_*,
@@ -1137,15 +1163,56 @@ RatInstr::emit_image_store(nir_intrinsic_instr *intrin, Shader& shader)
        *   r32g32_uint with comp_mask=0xF -> max diff (N,N) per slice
        *   r32g32_uint with comp_mask=0x3 -> PASS
        *   r8_uint     with comp_mask=0xF -> PASS
-       *   r8_uint     with comp_mask=0x1 -> max diff 63 (all wrong) */
+       *   r8_uint     with comp_mask=0x1 -> max diff 63 (all wrong)
+       *
+       * In the same multi-dword case we ALSO need ELEM_SIZE to encode
+       * the actual dword count (Evergreen_ISA.pdf §10.18: "Number of
+       * doublewords per array element, minus one. ... value in [1,2,4]
+       * (3 is not supported)").  Hardcoded ELEM_SIZE=0 (= 1 dword)
+       * caused MEM_RAT_STORE_TYPED on r32g32_uint to drop the FIRST
+       * dword (R channel) in cold-context silicon state -- silicon
+       * strictly honored "1 dword per element" while COMP_MASK said
+       * "all 4 channels", and only the second dword (G) landed.
+       * In warm-context, silicon's optional fallback cache wrote
+       * both dwords, producing the previously-mysterious
+       * non-monotonic latch behavior.
+       *
+       * Empirical evidence (Wrestler HD 6310, 2026-04-22):
+       *   r32g32_uint truly-solo with elem_size=0 -> R_actual = 0
+       *     universally across 4032/4096 pixels (max diff 63 in R)
+       *   PNG-decoded readback proves silicon writes only G dword
+       *
+       * 3-channel formats (r32g32b32_*) are NOT supported by the
+       * silicon's ELEM_SIZE encoding (bit pattern 0b10 has no defined
+       * value; spec says "3 is not supported").  Per terakan's format
+       * advertisement, those formats should not be reported as
+       * STORAGE_IMAGE-capable; this code conservatively leaves
+       * elem_size=0 for them.
+       *
+       * See steinmarder finding
+       * 2026-04-22-tranche16-silicon-drops-r-dword-cold-context.md
+       * and CLAIMS C-2026-04-22-43. */
       unsigned const channels = util_format_get_nr_components(store_format);
       unsigned const texel_bytes = util_format_get_blocksize(store_format);
-      if (channels > 0 && channels <= 4 && texel_bytes >= 4 * channels)
+      if (channels > 0 && channels <= 4 && texel_bytes >= 4 * channels) {
          comp_mask = (1u << channels) - 1u;
+         /* ELEM_SIZE encodes value-minus-one in {0,1,3} for {1,2,4}
+          * dwords.  Channels==3 (3-dword) has no valid encoding and
+          * is silently kept at elem_size=0 (degenerate; format should
+          * not have been advertised as storage-image-supported). */
+         if (channels == 1)
+            elem_size_minus_one = 0;
+         else if (channels == 2)
+            elem_size_minus_one = 1;
+         else if (channels == 4)
+            elem_size_minus_one = 3;
+         /* channels == 3 falls through with elem_size_minus_one = 0 */
+      }
    }
 
    auto store = new RatInstr(
-      op, RatInstr::STORE_TYPED, value, coord, imageid, image_offset, 1, comp_mask, 0);
+      op, RatInstr::STORE_TYPED, value, coord, imageid, image_offset, 1, comp_mask,
+      elem_size_minus_one);
 
    store->set_ack();
    if (nir_intrinsic_access(intrin) & ACCESS_INCLUDE_HELPERS)
