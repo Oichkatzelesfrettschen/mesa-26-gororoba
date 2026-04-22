@@ -54,7 +54,16 @@ struct terakan_shader_stage_key {
     * changes when using build-ID override.  3 bits = versions 0..7.
     */
    uint32_t version : 3;
-   uint32_t reserved : 23;
+   /*
+    * Fix stack flags that affect NIR lowering and compiled shader binary.
+    * FIX_K: KC1[7].x dynamic base_array_layer lookup vs literal 0.
+    * FIX_Z: UINT format component fix applied in NIR lowering.
+    * FIX_W and FIX_I do not need bits: FIX_W bypasses cache per pipeline,
+    * FIX_I is descriptor-level only.
+    */
+   uint32_t fix_k_base_array_layer : 1;
+   uint32_t fix_z_uint_format_comp : 1;
+   uint32_t reserved : 21;
 };
 
 static_assert(sizeof(struct terakan_shader_stage_key) == 4,

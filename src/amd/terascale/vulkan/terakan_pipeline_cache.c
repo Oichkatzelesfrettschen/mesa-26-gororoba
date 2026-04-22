@@ -371,6 +371,17 @@ terakan_pipeline_cache_insert(struct vk_pipeline_cache *cache,
    memcpy(cached->program_data, bo_mapping, program_size_bytes);
    terakan_bo_unmap(shader->static_state.program_bo);
 
+   if (getenv("TERAKAN_DEBUG_CACHE_KEY")) {
+      const uint32_t *dw3 = (const uint32_t *)cached->program_data;
+      size_t ndw3 = program_size_bytes / 4;
+      fprintf(stderr, "TCSTORE ndw=%zu bytes0=%08x %08x %08x %08x\n",
+              ndw3,
+              ndw3 > 0 ? dw3[0] : 0,
+              ndw3 > 1 ? dw3[1] : 0,
+              ndw3 > 2 ? dw3[2] : 0,
+              ndw3 > 3 ? dw3[3] : 0);
+   }
+
    /* Copy stage-specific register state */
    switch (stage) {
    case MESA_SHADER_VERTEX:
@@ -484,6 +495,17 @@ terakan_cached_shader_restore(struct terakan_cached_shader const *cached,
     */
    memcpy(bo_mapping, cached->program_data, cached->program_size_bytes);
    terakan_bo_unmap(bo);
+
+   if (getenv("TERAKAN_DEBUG_CACHE_KEY")) {
+      const uint32_t *dw = (const uint32_t *)cached->program_data;
+      size_t ndw = cached->program_size_bytes / 4;
+      fprintf(stderr, "TCRESTORE ndw=%zu bytes0=%08x %08x %08x %08x\n",
+              ndw,
+              ndw > 0 ? dw[0] : 0,
+              ndw > 1 ? dw[1] : 0,
+              ndw > 2 ? dw[2] : 0,
+              ndw > 3 ? dw[3] : 0);
+   }
 
    /* Fill the static state (program_va_shr8 = 0 for relative addressing) */
    shader->static_state.program_bo = bo;
