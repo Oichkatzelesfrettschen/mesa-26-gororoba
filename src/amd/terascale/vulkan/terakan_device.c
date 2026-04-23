@@ -334,6 +334,8 @@ terakan_device_init(struct terakan_device * const device,
    }
 
    device->completion_lost = false;
+   device->completion_broadcast_threshold = UINT64_MAX;
+   device->completion_waiter_count = 0;
 
    device->command_buffer_submission_size_gfx = terakan_command_buffer_optimal_submission_size_gfx(
       &physical_device->submission_info_gfx.base);

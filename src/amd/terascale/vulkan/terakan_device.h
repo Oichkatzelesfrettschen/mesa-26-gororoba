@@ -138,6 +138,17 @@ struct terakan_device {
     */
    bool completion_lost;
 
+   /* Minimum timeline value any wait_many thread is currently waiting for.
+    * UINT64_MAX when no thread is sleeping in wait_many.
+    * Protected by completion_mutex.
+    */
+   uint64_t completion_broadcast_threshold;
+
+   /* Count of threads currently sleeping in terakan_sync_completion_wait_many.
+    * Protected by completion_mutex.
+    */
+   uint32_t completion_waiter_count;
+
    /* Optimal command buffer submission sizes clamped to the maximum sizes for queues in their
     * families and aligned to the size alignment requirements.
     */
