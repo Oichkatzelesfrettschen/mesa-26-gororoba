@@ -25,6 +25,8 @@
 #include "terakan_profile.h"
 #define TERAKAN_DEVICE_H
 
+struct terakan_fix_ac_warmup;
+
 #include "meta/terakan_meta.h"
 #include "terakan_bo.h"
 #include "terakan_physical_device.h"
@@ -146,6 +148,11 @@ struct terakan_device {
 
    /* B0-INSTRUMENT: hot-path profiling (gated by TERAKAN_DEBUG_PROFILE) */
    struct terakan_profile_counters profile;
+
+   /* FIX-AC / PATH 3: per-submit silicon-latch CB-exporter warmup state.
+    * NULL when TERAKAN_FIX_AC_WARMUP=0 or when warmup init failed.
+    */
+   struct terakan_fix_ac_warmup *fix_ac_warmup;
 };
 
 VK_DEFINE_HANDLE_CASTS(terakan_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)

@@ -70,6 +70,8 @@ libterakan_files = files(
   'terakan_descriptor_set_layout.h',
   'terakan_device.c',
   'terakan_device.h',
+  'terakan_fix_ac_warmup.c',
+  'terakan_fix_ac_warmup.h',
   'terakan_device_memory.c',
   'terakan_device_memory.h',
   'terakan_draw.c',
