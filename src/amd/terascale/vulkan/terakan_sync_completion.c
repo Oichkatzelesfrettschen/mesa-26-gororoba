@@ -107,16 +107,20 @@ terakan_sync_completion_signal(struct vk_device * const device_base,
     *   value >= pending_value : leap-ahead, update watermarks. */
    uint64_t const current = sync->current_value;
    if (value <= current) {
+      bool const should_broadcast = (value >= device->completion_broadcast_threshold);
       mtx_unlock(&device->completion_mutex);
-      cnd_broadcast(&device->completion_condition);
+      if (should_broadcast)
+         cnd_broadcast(&device->completion_condition);
       return VK_SUCCESS;
    }
    if (value >= sync->pending_value) {
       p_atomic_set(&sync->pending_value, value);
    }
    p_atomic_set(&sync->current_value, value);
+   bool const should_broadcast = (value >= device->completion_broadcast_threshold);
    mtx_unlock(&device->completion_mutex);
-   cnd_broadcast(&device->completion_condition);
+   if (should_broadcast)
+      cnd_broadcast(&device->completion_condition);
 
    return VK_SUCCESS;
 }
@@ -162,8 +166,29 @@ terakan_sync_completion_wait_many(struct vk_device * const device_base, uint32_t
    struct terakan_device * const device = container_of(device_base, struct terakan_device, vk);
 
    mtx_lock(&device->completion_mutex);
+
+   /* Register minimum wait threshold so terakan_sync_completion_signal can skip
+    * cnd_broadcast for completions no sleeping thread needs.
+    */
+   {
+      uint64_t my_min = UINT64_MAX;
+      for (uint32_t ri = 0; ri < wait_count; ++ri) {
+         struct terakan_sync_completion const * const rs =
+            container_of(waits[ri].sync, struct terakan_sync_completion const, vk);
+         uint64_t const rv = terakan_sync_completion_get_wait_value(rs, waits[ri].wait_value);
+         if (rv < my_min)
+            my_min = rv;
+      }
+      if (my_min < device->completion_broadcast_threshold)
+         device->completion_broadcast_threshold = my_min;
+      device->completion_waiter_count++;
+   }
+
    while (true) {
       if (device->completion_lost) {
+         device->completion_waiter_count--;
+         if (device->completion_waiter_count == 0)
+            device->completion_broadcast_threshold = UINT64_MAX;
          mtx_unlock(&device->completion_mutex);
          return VK_ERROR_DEVICE_LOST;
       }
@@ -182,6 +207,9 @@ terakan_sync_completion_wait_many(struct vk_device * const device_base, uint32_t
       }
       if ((wait_index < wait_count) == wait_any) {
          /* Any awaited if wait-any, or all not timed out if wait-all. */
+         device->completion_waiter_count--;
+         if (device->completion_waiter_count == 0)
+            device->completion_broadcast_threshold = UINT64_MAX;
          mtx_unlock(&device->completion_mutex);
          return VK_SUCCESS;
       }
@@ -207,6 +235,9 @@ terakan_sync_completion_wait_many(struct vk_device * const device_base, uint32_t
                &device->vk,
                "Failed to get the current time to await the submission condition variable");
             device->completion_lost = true;
+            device->completion_waiter_count--;
+            if (device->completion_waiter_count == 0)
+               device->completion_broadcast_threshold = UINT64_MAX;
             mtx_unlock(&device->completion_mutex);
             cnd_broadcast(&device->completion_condition);
             return VK_ERROR_DEVICE_LOST;
@@ -230,11 +261,17 @@ terakan_sync_completion_wait_many(struct vk_device * const device_base, uint32_t
       if (condition_wait_result != thrd_success) {
          vk_device_set_lost(&device->vk, "Failed to await the submission condition variable");
          device->completion_lost = true;
+         device->completion_waiter_count--;
+         if (device->completion_waiter_count == 0)
+            device->completion_broadcast_threshold = UINT64_MAX;
          mtx_unlock(&device->completion_mutex);
          cnd_broadcast(&device->completion_condition);
          return VK_ERROR_DEVICE_LOST;
       }
    }
+   device->completion_waiter_count--;
+   if (device->completion_waiter_count == 0)
+      device->completion_broadcast_threshold = UINT64_MAX;
    mtx_unlock(&device->completion_mutex);
    return VK_TIMEOUT;
 }
