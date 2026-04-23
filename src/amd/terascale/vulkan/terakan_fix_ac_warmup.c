@@ -209,7 +209,7 @@ terakan_fix_ac_warmup_create(struct terakan_device *const device,
       if (mem_type_idx == UINT32_MAX) {
          /* Fallback: any compatible type (should not happen on Evergreen). */
          assert(mem_req.memoryTypeBits != 0);
-         for (uint32_t i = 0; i < 32; i++) {
+         for (uint32_t i = 0; i < mem_props->memoryTypeCount; i++) {
             if (mem_req.memoryTypeBits & (1u << i)) {
                mem_type_idx = i;
                break;
@@ -448,8 +448,12 @@ terakan_fix_ac_warmup_submit_prelude(struct terakan_device *const device,
             ib->bo_reference_count, ib->bo_references,
             ib->indirect_buffer_size_dwords, ib->indirect_buffer,
             ib->relocation_count, ib->relocations);
-         if (r != VK_SUCCESS)
+         if (r != VK_SUCCESS) {
+            fprintf(stderr,
+                    "terakan/fix-ac: warmup pass %u IB submit failed (VkResult=%d); silicon may remain in cold state\\n",
+                    warmup_pass, (int)r);
             return;
+         }
       }
    }
 }
