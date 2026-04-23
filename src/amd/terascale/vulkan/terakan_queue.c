@@ -28,6 +28,7 @@
 #include "terakan_barrier.h"
 #include "terakan_bo.h"
 #include "terakan_command_buffer.h"
+#include "terakan_fix_ac_warmup.h"
 #include "terakan_device.h"
 #include "terakan_physical_device.h"
 #include "terakan_shader.h"
@@ -36,6 +37,7 @@
 #include "c11/threads.h"
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600d_common.h"
+#include "util/u_debug.h"
 #include "util/macros.h"
 #include "c99_alloca.h"
 #include "vk_alloc.h"
@@ -735,6 +737,12 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
          }
       }
    }
+
+   /* FIX-AC: prepend silicon-latch warmup dispatch before user IBs.
+    * Skipped if warmup init failed or TERAKAN_FIX_AC_WARMUP=0.
+    */
+   if (submit->command_buffer_count > 0 && device->fix_ac_warmup != NULL)
+      terakan_fix_ac_warmup_submit_prelude(device, device->fix_ac_warmup, queue);
 
    /* Submit the command buffers. For the last IB, merge the completion BO reference and
     * conservative flush packets to enable fence elision.

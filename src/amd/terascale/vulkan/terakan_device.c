@@ -29,10 +29,12 @@
 #include "terakan_entrypoints.h"
 #include "terakan_physical_device.h"
 #include "terakan_queue.h"
+#include "terakan_fix_ac_warmup.h"
 
 #include "amd/terascale/common/terascale_eg_sq.h"
 #include "gallium/drivers/r600/r600_opcodes.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_pipeline_cache.h"
@@ -50,6 +52,9 @@
 void
 terakan_device_finish(struct terakan_device * const device)
 {
+   terakan_fix_ac_warmup_destroy(device, device->fix_ac_warmup);
+   device->fix_ac_warmup = NULL;
+
    if (device->queue_graphics != NULL) {
       terakan_queue_destroy(device->queue_graphics);
    }
@@ -329,6 +334,8 @@ terakan_device_init(struct terakan_device * const device,
    }
 
    device->completion_lost = false;
+   device->completion_broadcast_threshold = UINT64_MAX;
+   device->completion_waiter_count = 0;
 
    device->command_buffer_submission_size_gfx = terakan_command_buffer_optimal_submission_size_gfx(
       &physical_device->submission_info_gfx.base);
@@ -410,6 +417,17 @@ terakan_device_init(struct terakan_device * const device,
                  "disabling\n", wm_result);
          device->debug_watermarks_enabled = false;
       }
+   }
+
+   /* FIX-AC: per-submit warmup for silicon-latch mitigation.  Non-fatal. */
+   device->fix_ac_warmup = NULL;
+   if (debug_get_bool_option("TERAKAN_FIX_AC_WARMUP", true)) {
+      VkResult const fix_ac_res =
+         terakan_fix_ac_warmup_create(device, &device->fix_ac_warmup);
+      if (fix_ac_res != VK_SUCCESS)
+         fprintf(stderr,
+                 "terakan/fix-ac: warmup init failed 0x%x; flake mitigation disabled\n",
+                 fix_ac_res);
    }
 
    return VK_SUCCESS;
