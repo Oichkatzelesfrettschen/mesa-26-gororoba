@@ -179,6 +179,16 @@ terakan_sync_completion_wait_many(struct vk_device * const device_base, uint32_t
          if (rv < my_min)
             my_min = rv;
       }
+      /* Best-effort suppression: threshold tracks the minimum across all
+       * current waiters, but only resets when waiter_count drops to 0.  If
+       * waiter A enters at v=10 and waiter B at v=20, threshold pins at 10
+       * even after A exits.  Result: signaler may broadcast for v=10..19
+       * with no waiter actually consuming it -- those are spurious-but-safe
+       * wakeups for B that re-sleep immediately.  The optimization
+       * eliminates the no-waiter-at-all case (which was the dominant cost).
+       * A sorted multiset of waiter minima would close the residual at the
+       * cost of a per-entry allocation; deferred unless profiling justifies.
+       */
       if (my_min < device->completion_broadcast_threshold)
          device->completion_broadcast_threshold = my_min;
       device->completion_waiter_count++;
