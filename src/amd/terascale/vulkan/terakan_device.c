@@ -421,7 +421,7 @@ terakan_device_init(struct terakan_device * const device,
 
    /* FIX-AC: per-submit warmup for silicon-latch mitigation.  Non-fatal. */
    device->fix_ac_warmup = NULL;
-   if (debug_get_bool_option("TERAKAN_FIX_AC_WARMUP", true)) {
+   if (debug_get_bool_option("TERAKAN_FIX_AC_WARMUP", false)) {
       VkResult const fix_ac_res =
          terakan_fix_ac_warmup_create(device, &device->fix_ac_warmup);
       if (fix_ac_res != VK_SUCCESS)
