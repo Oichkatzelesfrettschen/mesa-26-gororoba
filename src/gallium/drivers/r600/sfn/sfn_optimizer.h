@@ -14,6 +14,8 @@ namespace r600 {
 bool
 dead_code_elimination(Shader& shader);
 bool
+dead_store_elimination(Shader& shader);
+bool
 copy_propagation_fwd(Shader& shader);
 bool
 copy_propagation_backward(Shader& shader);

@@ -18,6 +18,7 @@
 #include "sfn_valuefactory.h"
 #include "sfn_virtualvalues.h"
 
+#include <iterator>
 #include <sstream>
 
 namespace r600 {
@@ -31,6 +32,108 @@ log_shader_dump(const Shader& shader, const char *header)
       shader.print(ss);
       sfn_log << ss.str() << "\n\n";
    }
+}
+
+namespace {
+static bool alu_reads_dest(const AluInstr *src_instr, int sel, int chan)
+{
+   for (auto& s : src_instr->sources()) {
+      if (!s)
+         continue;
+      if (s->sel() == sel && s->chan() == chan)
+         return true;
+   }
+   return false;
+}
+} // namespace
+
+bool
+dead_store_elimination(Shader& shader)
+{
+   bool progress = false;
+
+   for (auto block_ptr : shader.func()) {
+      auto *block = static_cast<Block *>(block_ptr);
+      auto it = block->begin();
+      auto end = block->end();
+      for (; it != end; ++it) {
+         AluInstr *cand = (*it)->as_alu();
+         if (!cand)
+            continue;
+         if (cand->has_instr_flag(Instr::dead))
+            continue;
+         if (!cand->has_alu_flag(alu_write) || !cand->dest())
+            continue;
+         /* Don't touch ops with side effects; DCE's exclusion list also
+          * applies here. */
+         if (cand->has_alu_flag(alu_is_lds))
+            continue;
+         switch (cand->opcode()) {
+         case op2_kille:        case op2_killne:
+         case op2_kille_int:    case op2_killne_int:
+         case op2_killge:       case op2_killge_int:    case op2_killge_uint:
+         case op2_killgt:       case op2_killgt_int:    case op2_killgt_uint:
+         case op0_group_barrier:
+            continue;
+         default: break;
+         }
+
+         const int sel  = cand->dest()->sel();
+         const int chan = cand->dest_chan();
+
+         /* Walk forward in the same block looking for either a read of
+          * (sel, chan) -> bail, or a write of the same (sel, chan) ->
+          * kill cand.  Stop on any non-Alu instruction. */
+         auto fwd = std::next(it);
+         bool dominated = false;
+         bool aborted = false;
+         for (; fwd != end && !aborted && !dominated; ++fwd) {
+            AluInstr *next_alu = (*fwd)->as_alu();
+            AluGroup *next_grp = (*fwd)->as_alu_group();
+            if (next_alu) {
+               if (alu_reads_dest(next_alu, sel, chan)) {
+                  aborted = true;
+                  break;
+               }
+               if (next_alu->has_alu_flag(alu_write) && next_alu->dest() &&
+                   next_alu->dest()->sel() == sel &&
+                   next_alu->dest_chan() == chan) {
+                  dominated = true;
+                  break;
+               }
+               continue;
+            }
+            if (next_grp) {
+               for (auto *gi : *next_grp) {
+                  if (!gi)
+                     continue;
+                  if (alu_reads_dest(gi, sel, chan)) {
+                     aborted = true;
+                     break;
+                  }
+                  if (gi->has_alu_flag(alu_write) && gi->dest() &&
+                      gi->dest()->sel() == sel &&
+                      gi->dest_chan() == chan) {
+                     dominated = true;
+                     break;
+                  }
+               }
+               if (aborted || dominated)
+                  break;
+               continue;
+            }
+            /* Any other instruction class: bail conservatively. */
+            aborted = true;
+         }
+
+         if (dominated) {
+            sfn_log << SfnLog::opt << "DSE kill: " << *cand << "\n";
+            if (cand->set_dead())
+               progress = true;
+         }
+      }
+   }
+   return progress;
 }
 
 template <typename Visitor>
@@ -60,6 +163,7 @@ optimize(Shader& shader)
       progress = false;
       progress |= copy_propagation_fwd(shader);
       progress |= dead_code_elimination(shader);
+      progress |= dead_store_elimination(shader);
       progress |= copy_propagation_backward(shader);
       progress |= dead_code_elimination(shader);
       progress |= simplify_source_vectors(shader);
