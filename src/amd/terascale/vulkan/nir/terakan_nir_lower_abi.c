@@ -240,7 +240,16 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
     * swizzle, so don't initialize the array layer if it's not needed to avoid emitting an ALU
     * instruction for it.
     */
-   if (dim == GLSL_SAMPLER_DIM_3D || is_array) {
+   /* FIX-CUBE-LAYER (2026-04-25): cube images always have 6 faces, so the
+    * shader's layer coord (z) must be preserved even when is_array=false
+    * (the typical VK_IMAGE_VIEW_TYPE_CUBE case).  Without this, multi-layer
+    * cube image.store collapses all 6 faces to face 0 because uav_coord_num
+    * stays at 2 and FIX-K below replaces coord.z with only baseArrayLayer
+    * (=0 for multi-layer view).  The 3D / generic-array path already
+    * handled this correctly; cube was the gap.  See steinmarder
+    *   findings/active/2026-04-25-cube-multilayer-imagestore-rca.md
+    */
+   if (dim == GLSL_SAMPLER_DIM_3D || is_array || dim == GLSL_SAMPLER_DIM_CUBE) {
       uav_coord_num_components = 3;
       uav_coord_components[2] = nir_channel(b, image_coord, dim == GLSL_SAMPLER_DIM_1D ? 1 : 2);
    }
