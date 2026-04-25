@@ -1413,11 +1413,23 @@ terakan_image_create_color_descriptor(
                               1);
 
    uint32_t const view_slice_start = create_info_slice_start - base_slice_start;
+   /* FIX-3D-SLICE-MAX (C-2026-04-25-08): for VK_IMAGE_TYPE_3D the
+    * Vulkan view's layer_count is always 1 (per spec) when viewType
+    * is VK_IMAGE_VIEW_TYPE_3D, but the underlying 3D image has
+    * extent.depth slices.  CB_COLOR_VIEW SLICE_MAX must reflect
+    * the real slice extent, otherwise MEM_RAT STORE_TYPED writes
+    * at z>0 are clamped to slice 0 by the CB exporter.  Without
+    * this fix, all 64x64x8 3D image.store writes collapse to slice
+    * 0, producing the 4/74/78 plateau (slices 1..7 empty).  This
+    * applies whenever the underlying image is VK_IMAGE_TYPE_3D
+    * regardless of view type, since the image's depth defines the
+    * physical slice space MEM_RAT addresses through R3.z. */
    uint32_t const create_info_slice_max =
+      (image->vk.image_type == VK_IMAGE_TYPE_3D)
+         ? u_minify(image->vk.extent.depth, descriptor_create_info->base_mip_level) - 1
+         :
       (descriptor_create_info->layer_count == VK_REMAINING_ARRAY_LAYERS
-          ? (image->vk.image_type == VK_IMAGE_TYPE_3D
-                ? u_minify(image->vk.extent.depth, descriptor_create_info->base_mip_level)
-                : image->vk.array_layers)
+          ? image->vk.array_layers
           : descriptor_create_info->base_array_layer + descriptor_create_info->layer_count) -
       1;
    uint32_t const view_slice_max =
