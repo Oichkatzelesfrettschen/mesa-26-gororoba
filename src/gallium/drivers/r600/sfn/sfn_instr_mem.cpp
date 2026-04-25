@@ -854,9 +854,12 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
     * (preserves prior behavior). */
    unsigned elem_size_minus_one = (uav_op >> 5) & 0x3u;
 
+   if (scalar_buffer_store)
+      shader.start_new_block(0);
+
    auto store = new RatInstr((scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW)
-                                ? cf_mem_rat_cacheless
-                                : cf_mem_rat,
+                                 ? cf_mem_rat_cacheless
+                                 : cf_mem_rat,
                              static_cast<RatInstr::ERatOp>(rat_opcode),
                              data_vec4,
                              coord,
