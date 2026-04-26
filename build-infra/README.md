@@ -25,10 +25,13 @@ build-infra/
 |-- configs/
 |   |-- terakan-full.meson         # r600+zink+soft+llvm, rusticl+HUD+VA
 |   |-- terakan-distcc.meson       # r600 only, rusticl r600, daily lane
+|   |-- terakan-distcc-no-rusticl.meson
+|   |                                  # r600+terakan, no Rusticl
 |   |-- terakan-minimal.meson      # r600 only, no HUD, NIR scratchpad
 |   +-- base-debug.meson           # upstream Mesa reference, no terakan
 +-- env/
     |-- btver1.env                 # x130e (Bobcat) clang-22 + distcc
+    |-- btver1-ccache-no-pump.env  # x130e ccache-first distcc, no pump
     |-- sapphire.env               # Apple Silicon (placeholder)
     +-- zen4.env                   # AMD Ryzen (placeholder)
 ```
@@ -47,6 +50,20 @@ Daily terakan iteration on x130e:
 make rebuild-terakan-distcc
 sudo make install PROFILE=terakan-distcc
 ```
+
+No-Rusticl x130e clean rebuild that preserves ccache and does not use
+distcc-pump:
+```
+make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
+```
+
+This target uses `configs/terakan-distcc-no-rusticl.meson` with
+`env/btver1-ccache-no-pump.env`, removes only
+`/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump`,
+strips the pump-only `,cpp` option from `~/.distcc/hosts`, and leaves
+`~/.cache/ccache` plus `~/.cache/sccache` intact. It is separate from
+`/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl` so a
+future rebuild does not collide with that active build lane.
 
 Fresh-from-clean full build (longer; zink+llvmpipe+softpipe):
 ```
