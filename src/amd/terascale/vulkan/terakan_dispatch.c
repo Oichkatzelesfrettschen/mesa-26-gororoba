@@ -1044,6 +1044,15 @@ terakan_emit_compute_kcache(struct terakan_gfx_command_writer *command_writer,
    }
 }
 
+static bool
+terakan_compute_kcache_bank_zero_has_ubo(struct terakan_gfx_command_writer const *command_writer)
+{
+   struct terakan_hw_state_sqc_kcache_buffer const * const bank_zero =
+      &command_writer->hw_state_sqc
+          .kcache_buffers[TERAKAN_HW_STATE_SQC_NEEDED_STAGE_FS][0];
+   return bank_zero->bo != NULL && bank_zero->size_lines != 0;
+}
+
 /* Emit a KCACHE bank binding to LS registers for compute dispatch.
  *
  * The deferred hw_state KCACHE system emits to PS registers (3D shadow) and
@@ -1878,9 +1887,11 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
           * shader loads via KC0 reach the shader correctly. */
          static int fix_g_cached = -1;
          if (fix_g_cached < 0) {
-            fix_g_cached = debug_get_bool_option("TERAKAN_FIX_G_UBO_WIRING", false) ? 1 : 0;
+            fix_g_cached = debug_get_bool_option("TERAKAN_FIX_G_UBO_WIRING", true) ? 1 : 0;
          }
-         if (!fix_g_cached && command_writer->hw_state_sqc.resource_bos.fs[2]) {
+         bool const bank_zero_has_ubo =
+            fix_g_cached && terakan_compute_kcache_bank_zero_has_ubo(command_writer);
+         if (!bank_zero_has_ubo && command_writer->hw_state_sqc.resource_bos.fs[2]) {
             terakan_emit_compute_kcache(command_writer,
                                         command_writer->hw_state_sqc.resource_bos.fs[2]);
          }
@@ -2371,9 +2382,16 @@ terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
    if (command_writer->compute_pipeline_dirty) {
       terakan_emit_compute_state(command_writer, pipeline);
       terakan_emit_compute_resources(command_writer, pipeline);
-      if (command_writer->hw_state_sqc.resource_bos.fs[2])
+      static int fix_g_cached = -1;
+      if (fix_g_cached < 0) {
+         fix_g_cached = debug_get_bool_option("TERAKAN_FIX_G_UBO_WIRING", true) ? 1 : 0;
+      }
+      bool const bank_zero_has_ubo =
+         fix_g_cached && terakan_compute_kcache_bank_zero_has_ubo(command_writer);
+      if (!bank_zero_has_ubo && command_writer->hw_state_sqc.resource_bos.fs[2]) {
          terakan_emit_compute_kcache(
             command_writer, command_writer->hw_state_sqc.resource_bos.fs[2]);
+      }
       command_writer->compute_pipeline_dirty = false;
    }
 

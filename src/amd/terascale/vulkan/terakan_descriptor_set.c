@@ -305,14 +305,14 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                    * target slice so the exporter handles the tile
                    * math correctly.
                    *
-                   * Gated behind TERAKAN_FIX_I_APPLY_SLICE_VIEW=1
-                   * during validation; promote once the single_layer
-                   * sweep goes green.
+                   * Enabled by default after Task 94; set
+                   * TERAKAN_FIX_I_APPLY_SLICE_VIEW=0 only for
+                   * regression bisects.
                    */
                   static int fix_i_cached = -1;
                   if (fix_i_cached < 0) {
                      fix_i_cached = debug_get_bool_option(
-                        "TERAKAN_FIX_I_APPLY_SLICE_VIEW", false) ? 1 : 0;
+                        "TERAKAN_FIX_I_APPLY_SLICE_VIEW", true) ? 1 : 0;
                   }
                   /* FIX-T attempted (reverted 2026-04-19): remove the
                    * shift_shr8 != 0 gate so FIX-I applies to layer 0 too.
@@ -418,7 +418,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                static int fix_q_cached = -1;
                if (fix_q_cached < 0) {
                   fix_q_cached = debug_get_bool_option(
-                     "TERAKAN_FIX_Q_UNCLAMP_ARRAY_BOUNDS", false) ? 1 : 0;
+                     "TERAKAN_FIX_Q_UNCLAMP_ARRAY_BOUNDS", true) ? 1 : 0;
                }
                bool const fixq_view_nonarray =
                   image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_1D ||

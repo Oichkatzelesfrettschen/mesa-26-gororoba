@@ -253,15 +253,14 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * u_layerNdx the test provides.
                    *
                    * Emit LS-register KCACHE bank binding directly here for
-                   * compute.  Gated behind TERAKAN_FIX_G_UBO_WIRING=1
-                   * during validation; promote to default once the 78-test
-                   * single_layer sweep goes green.
+                   * compute.  Enabled by default after Task 94; set
+                   * TERAKAN_FIX_G_UBO_WIRING=0 only for regression bisects.
                    */
                   if (is_compute) {
                      static int fix_g_cached = -1;
                      if (fix_g_cached < 0) {
                         fix_g_cached = debug_get_bool_option(
-                           "TERAKAN_FIX_G_UBO_WIRING", false) ? 1 : 0;
+                           "TERAKAN_FIX_G_UBO_WIRING", true) ? 1 : 0;
                      }
                      if (fix_g_cached) {
                         terakan_emit_compute_kcache_bank(

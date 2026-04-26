@@ -307,19 +307,18 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
     * over a multi-layer backing (guardrail #1); all other slots get
     * zero, so nir_iadd(coord_z, 0) collapses to coord_z (nir_opt_algebraic).
     *
-    * Coverage: 2D / 3D / CUBE images.  GLSL_SAMPLER_DIM_1D is not
-    * covered here because the existing pass already forces the Y
-    * channel to zero for 1D (historical promotion to 2D in the DB
-    * path) -- a 1D view over a 1D_ARRAY backing would require a
-    * parallel fix; no CTS coverage today, tracked as FIX-K follow-up.
+    * Coverage: 1D / 2D / 3D / CUBE images.  For 1D non-array
+    * singleton views over 1D-array backing images, the pass keeps
+    * Y = 0 and injects the absolute layer into Z, matching the
+    * TEXTURE1DARRAY resource path.
     *
-    * Gated behind TERAKAN_FIX_K_BASE_ARRAY_LAYER=1 during validation;
-    * promote to default once single_layer sweep goes green. */
-   if (dim != GLSL_SAMPLER_DIM_1D && dim != GLSL_SAMPLER_DIM_BUF &&
+    * Enabled by default after Task 94; set
+    * TERAKAN_FIX_K_BASE_ARRAY_LAYER=0 only for regression bisects. */
+   if (dim != GLSL_SAMPLER_DIM_BUF &&
        state != NULL && uav_index_zero_based < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
       static int fix_k_cached = -1;
       if (fix_k_cached < 0) {
-         fix_k_cached = debug_get_bool_option("TERAKAN_FIX_K_BASE_ARRAY_LAYER", false) ? 1 : 0;
+         fix_k_cached = debug_get_bool_option("TERAKAN_FIX_K_BASE_ARRAY_LAYER", true) ? 1 : 0;
       }
       if (fix_k_cached) {
          /* FIX-P (C-2026-04-19-13): H3 binary-split diagnostic.  When
