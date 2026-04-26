@@ -10,6 +10,8 @@
 #   make rebuild-terakan-full                # clean + build (common loop)
 #   make clean     PROFILE=terakan-full      # drop the builddir only
 #   make distclean PROFILE=terakan-full      # drop builddir + install prefix
+#   make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
+#                                                # clean builddir only; keep ccache
 #   make install   PROFILE=terakan-full PREFIX=/usr/local/mesa-terakan
 #   make list                                # show available PROFILEs
 #
@@ -44,6 +46,7 @@ SETUP_ARGS := --native-file=$(CONFIG) --reconfigure
 
 .PHONY: list configure build clean distclean install test \
         rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-distcc-no-rusticl \
+        rebuild-terakan-distcc-no-rusticl-ccache-no-pump \
         rebuild-terakan-minimal \
         rebuild-base-debug rebuild-terakan-release rebuild-terakan-profile \
         help
@@ -59,6 +62,8 @@ help:
 	@echo "  install           sudo ninja -C \$$(BUILDDIR) install"
 	@echo "  test              ninja -C \$$(BUILDDIR) test"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
+	@echo "  rebuild-terakan-distcc-no-rusticl-ccache-no-pump"
+	@echo "                    ccache-first, non-pump no-rusticl clean rebuild"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
 	@echo "profile:   $(PROFILE)"
@@ -79,6 +84,7 @@ configure:
 
 build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
+	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	ninja -C $(BUILDDIR) -j$(JOBS)
 
 clean:
@@ -93,6 +99,7 @@ install:
 	sudo ninja -C $(BUILDDIR) install
 
 test:
+	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	ninja -C $(BUILDDIR) test
 
 # common single-command loops (clean + configure + build)
@@ -113,6 +120,15 @@ rebuild-terakan-distcc-no-rusticl:
 	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl
 	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl
 	$(MAKE) build     PROFILE=terakan-distcc-no-rusticl
+
+# Future clean-rebuild lane for x130e.  This intentionally does NOT use
+# distcc-pump, and it writes to a distinct builddir so it cannot disturb an
+# active mesa-terakan-distcc-no-rusticl build.  `clean` removes only BUILDDIR;
+# ccache and sccache live under ~/.cache via env/btver1-ccache-no-pump.env.
+rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+	$(MAKE) build PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
 
 rebuild-terakan-minimal:
 	$(MAKE) clean PROFILE=terakan-minimal
