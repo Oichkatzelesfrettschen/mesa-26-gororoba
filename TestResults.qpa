@@ -1,0 +1,159 @@
+#sessionInfo releaseName f52e89f885064b9109501bca16c813bb29389993
+#sessionInfo releaseId 0xf52e89f8
+#sessionInfo targetName "Default"
+#sessionInfo logFormatVersion "0.3.4"
+#sessionInfo vendorID 0x1002
+#sessionInfo deviceID 0x9802
+#sessionInfo deviceName AMD R8xx Palm (Terakan)
+#sessionInfo commandLineParameters "-n dEQP-VK.image.store.with_format.2d_array.r32_uint_single_layer --deqp-visibility=hidden --deqp-log-images=disable"
+
+#beginSession
+
+#beginTestCaseResult dEQP-VK.image.store.with_format.2d_array.r32_uint_single_layer
+<?xml version="1.0" encoding="UTF-8"?>
+<TestCaseResult CasePath="dEQP-VK.image.store.with_format.2d_array.r32_uint_single_layer" Version="0.3.4" CaseType="SelfValidate">
+ <Section Name="comp" Description="Program: comp">
+  <ShaderProgram LinkStatus="OK">
+   <InfoLog></InfoLog>
+   <ComputeShader CompileStatus="OK">
+    <ShaderSource>#version 440
+
+layout (local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout (binding = 0, r32ui) writeonly uniform uimage2D u_image;
+layout (binding = 1) readonly uniform Constants {
+    int u_layerNdx;
+};
+
+void main (void)
+{
+    int gx = int(gl_GlobalInvocationID.x);
+    int gy = int(gl_GlobalInvocationID.y);
+    int gz = u_layerNdx;
+    uvec4 storedColor = uvec4(gx^gy^gz, (63-gx)^gy^gz, gx^(63-gy)^gz, (63-gx)^(63-gy)^gz);
+    imageStore(u_image, ivec2(gx, gy), storedColor);
+}
+</ShaderSource>
+    <InfoLog></InfoLog>
+</ComputeShader>
+</ShaderProgram>
+  <Number Name="ComputeCompileTime" Description="Compute shader compile time" Tag="Time" Unit="ms">397.989990</Number>
+  <Number Name="LinkTime" Description="Link time" Tag="Time" Unit="ms">0.033000</Number>
+</Section>
+ <ShaderProgram LinkStatus="OK">
+  <InfoLog></InfoLog>
+  <SpirVAssemblySource>; SPIR-V
+; Version: 1.0
+; Generator: Khronos Glslang Reference Front End; 11
+; Bound: 74
+; Schema: 0
+OpCapability Shader
+%1 = OpExtInstImport &quot;GLSL.std.450&quot;
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %4 &quot;main&quot; %12
+OpExecutionMode %4 LocalSize 1 1 1
+OpDecorate %12 BuiltIn GlobalInvocationId
+OpDecorate %24 Block
+OpMemberDecorate %24 0 Offset 0
+OpDecorate %26 NonWritable
+OpDecorate %26 Binding 1
+OpDecorate %26 DescriptorSet 0
+OpDecorate %66 NonReadable
+OpDecorate %66 Binding 0
+OpDecorate %66 DescriptorSet 0
+OpDecorate %73 BuiltIn WorkgroupSize
+%2 = OpTypeVoid
+%3 = OpTypeFunction %2
+%6 = OpTypeInt 32 1
+%7 = OpTypePointer Function %6
+%9 = OpTypeInt 32 0
+%10 = OpTypeVector %9 3
+%11 = OpTypePointer Input %10
+%12 = OpVariable %11 Input
+%13 = OpConstant %9 0
+%14 = OpTypePointer Input %9
+%19 = OpConstant %9 1
+%24 = OpTypeStruct %6
+%25 = OpTypePointer Uniform %24
+%26 = OpVariable %25 Uniform
+%27 = OpConstant %6 0
+%28 = OpTypePointer Uniform %6
+%31 = OpTypeVector %9 4
+%32 = OpTypePointer Function %31
+%40 = OpConstant %6 63
+%64 = OpTypeImage %9 2D 0 0 0 2 R32ui
+%65 = OpTypePointer UniformConstant %64
+%66 = OpVariable %65 UniformConstant
+%70 = OpTypeVector %6 2
+%73 = OpConstantComposite %10 %19 %19 %19
+%4 = OpFunction %2 None %3
+%5 = OpLabel
+%8 = OpVariable %7 Function
+%18 = OpVariable %7 Function
+%23 = OpVariable %7 Function
+%33 = OpVariable %32 Function
+%15 = OpAccessChain %14 %12 %13
+%16 = OpLoad %9 %15
+%17 = OpBitcast %6 %16
+OpStore %8 %17
+%20 = OpAccessChain %14 %12 %19
+%21 = OpLoad %9 %20
+%22 = OpBitcast %6 %21
+OpStore %18 %22
+%29 = OpAccessChain %28 %26 %27
+%30 = OpLoad %6 %29
+OpStore %23 %30
+%34 = OpLoad %6 %8
+%35 = OpLoad %6 %18
+%36 = OpBitwiseXor %6 %34 %35
+%37 = OpLoad %6 %23
+%38 = OpBitwiseXor %6 %36 %37
+%39 = OpBitcast %9 %38
+%41 = OpLoad %6 %8
+%42 = OpISub %6 %40 %41
+%43 = OpLoad %6 %18
+%44 = OpBitwiseXor %6 %42 %43
+%45 = OpLoad %6 %23
+%46 = OpBitwiseXor %6 %44 %45
+%47 = OpBitcast %9 %46
+%48 = OpLoad %6 %8
+%49 = OpLoad %6 %18
+%50 = OpISub %6 %40 %49
+%51 = OpBitwiseXor %6 %48 %50
+%52 = OpLoad %6 %23
+%53 = OpBitwiseXor %6 %51 %52
+%54 = OpBitcast %9 %53
+%55 = OpLoad %6 %8
+%56 = OpISub %6 %40 %55
+%57 = OpLoad %6 %18
+%58 = OpISub %6 %40 %57
+%59 = OpBitwiseXor %6 %56 %58
+%60 = OpLoad %6 %23
+%61 = OpBitwiseXor %6 %59 %60
+%62 = OpBitcast %9 %61
+%63 = OpCompositeConstruct %31 %39 %47 %54 %62
+OpStore %33 %63
+%67 = OpLoad %64 %66
+%68 = OpLoad %6 %8
+%69 = OpLoad %6 %18
+%71 = OpCompositeConstruct %70 %68 %69
+%72 = OpLoad %31 %33
+OpImageWrite %67 %71 %72
+OpReturn
+OpFunctionEnd
+</SpirVAssemblySource>
+</ShaderProgram>
+ <Text>Result and reference images are normalized with formula p * (0.016129, 1, 1, 1) + (0, 0, 0, 0)</Text>
+ <Text>Image comparison failed: max difference = (63, 0, 0, 0), threshold = (0, 0, 0, 0)</Text>
+ <ImageSet Name="Comparison0" Description="Image Comparison, layer 0 , level 0" />
+ <ImageSet Name="Comparison1" Description="Image Comparison, layer 1 , level 0" />
+ <ImageSet Name="Comparison2" Description="Image Comparison, layer 2 , level 0" />
+ <ImageSet Name="Comparison3" Description="Image Comparison, layer 3 , level 0" />
+ <ImageSet Name="Comparison4" Description="Image Comparison, layer 4 , level 0" />
+ <ImageSet Name="Comparison5" Description="Image Comparison, layer 5 , level 0" />
+ <ImageSet Name="Comparison6" Description="Image Comparison, layer 6 , level 0" />
+ <ImageSet Name="Comparison7" Description="Image Comparison, layer 7 , level 0" />
+ <Number Name="TestDuration" Description="Test case duration in microseconds" Tag="Time" Unit="us">471188</Number>
+ <Result StatusCode="Fail">Image comparison failed</Result>
+</TestCaseResult>
+
+#endTestCaseResult
