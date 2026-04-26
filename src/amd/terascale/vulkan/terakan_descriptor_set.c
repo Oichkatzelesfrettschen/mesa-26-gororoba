@@ -282,14 +282,15 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                   }
                   /* Non-array views over array-backed images use a
                    * TEXTURE2DARRAY resource. Revert the descriptor base
-                   * pre-shift when validation enables explicit slice
-                   * coordinate injection, then expose a single-layer view
-                   * window so the injected R3.z selects the physical slice.
+                   * pre-shift and expose the backing-array slice window when
+                   * explicit slice coordinate injection is active. The CB
+                   * exporter then applies array-tile math once, while R3.z
+                   * selects the physical backing slice.
                    */
                   static int slice_view_cached = -1;
                   if (slice_view_cached < 0) {
                      slice_view_cached = debug_get_bool_option(
-                        "TERAKAN_STORAGE_IMAGE_SLICE_VIEW", false) ? 1 : 0;
+                        "TERAKAN_STORAGE_IMAGE_SLICE_VIEW", true) ? 1 : 0;
                   }
                   if (slice_view_cached && view_is_nonarray_2d_or_1d &&
                       image_view->color_base_slice_shift_shr8 != 0) {
@@ -359,7 +360,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                static int fix_q_cached = -1;
                if (fix_q_cached < 0) {
                   fix_q_cached = debug_get_bool_option(
-                     "TERAKAN_FIX_Q_UNCLAMP_ARRAY_BOUNDS", false) ? 1 : 0;
+                     "TERAKAN_FIX_Q_UNCLAMP_ARRAY_BOUNDS", true) ? 1 : 0;
                }
                bool const fixq_view_nonarray =
                   image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_1D ||

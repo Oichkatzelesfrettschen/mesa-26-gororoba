@@ -278,14 +278,16 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
    /* Non-array views over array-backed storage images need the view's
     * baseArrayLayer added to the MEM_RAT STORE_TYPED slice coordinate.
     * The runtime metadata uploader writes zero for descriptor kinds that
-    * must not receive a slice bias.
+    * must not receive a slice bias. 1D singleton views keep Y at zero
+    * and use Z for the absolute backing-array layer, matching the
+    * TEXTURE1DARRAY resource path.
     */
-   if (dim != GLSL_SAMPLER_DIM_1D && dim != GLSL_SAMPLER_DIM_BUF &&
+   if (dim != GLSL_SAMPLER_DIM_BUF &&
        state != NULL && uav_index_zero_based < TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
       static int base_array_layer_cached = -1;
       if (base_array_layer_cached < 0) {
          base_array_layer_cached =
-            debug_get_bool_option("TERAKAN_STORAGE_IMAGE_BASE_ARRAY_LAYER", false) ? 1 : 0;
+            debug_get_bool_option("TERAKAN_STORAGE_IMAGE_BASE_ARRAY_LAYER", true) ? 1 : 0;
       }
       if (base_array_layer_cached) {
          int literal_base_array_layer = g_terakan_storage_image_compile_layer;
