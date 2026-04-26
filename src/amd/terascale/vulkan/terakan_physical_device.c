@@ -539,10 +539,10 @@ terakan_physical_device_get_capabilities(
    features_out->inheritedQueries = true;
 
    /* Vulkan 1.1 variable pointers.
-    * Keep the narrower storage-buffer capability enabled while full
-    * variablePointers remains off until non-constant cross-resource pointer
-    * paths (notably UBO/SSBO mixes) are validated end-to-end. */
-   features_out->variablePointersStorageBuffer = true;
+    * Do not expose either feature on the Vulkan 1.0 path until the
+    * VK_KHR_storage_buffer_storage_class dependency and the non-constant
+    * pointer paths are validated end-to-end. */
+   features_out->variablePointersStorageBuffer = false;
    features_out->variablePointers = false;
 
    properties_out->apiVersion = TERAKAN_API_VERSION;
@@ -680,14 +680,12 @@ terakan_physical_device_get_capabilities(
    properties_out->maxVertexInputAttributes = TERAKAN_VERTEX_INPUT_MAX_ATTRIBUTES;
    properties_out->maxVertexInputBindings = TERAKAN_RESOURCE_HW_COUNT_FETCH;
    properties_out->maxVertexInputAttributeOffset = UINT16_MAX;
-   /* NON-CONFORMANT: R8xx has 11 bits for the stride in bytes, which can store values up to 2047.
-    * Vulkan requires at least 2048. R9xx has 12 bits.
-    */
-   /* TODO(Triang3l): Expose 2048 on R8xx when the fetch shader workaround is fully implemented
-    * (when vertex shaders start loading the base instance to R0.Z when it's needed).
+   /* Vulkan requires at least 2048. R8xx stores the fetch-stride field as an
+    * encoded max-minus-one value, so expose the application-facing minimum
+    * contract rather than the raw encoding limit.
     */
    properties_out->maxVertexInputBindingStride =
-      ((uint32_t)1 << (chip_info->is_r9xx ? 12 : 11)) - 1;
+      MAX2(((uint32_t)1 << (chip_info->is_r9xx ? 12 : 11)) - 1, 2048);
 
    properties_out->maxVertexOutputComponents = 4 * TERAKAN_LIMITS_HW_PARAMETER_CACHE_VECTOR_COUNT;
 
@@ -796,8 +794,14 @@ terakan_physical_device_get_capabilities(
 
    properties_out->discreteQueuePriorities = 2;
 
-   /* TODO(Triang3l): Point size when enabled. */
-   /* TODO(Triang3l): Line width when wide lines are enabled. */
+   /* Only fixed 1.0 points and lines are exposed until dynamic point size and
+    * wide line state are implemented. The fallback ranges must still be valid
+    * Vulkan contracts when largePoints and wideLines are false.
+    */
+   properties_out->pointSizeRange[0] = 1.0f;
+   properties_out->pointSizeRange[1] = 1.0f;
+   properties_out->lineWidthRange[0] = 1.0f;
+   properties_out->lineWidthRange[1] = 1.0f;
 
    /* TODO(Triang3l): Research strict lines. */
 
@@ -832,8 +836,11 @@ terakan_physical_device_get_capabilities(
    /* VK_KHR_maintenance2 (#118, Vulkan 1.1). */
    extensions_out->KHR_maintenance2 = true;
 
-   /* VK_KHR_variable_pointers (#61, Vulkan 1.1). */
-   extensions_out->KHR_variable_pointers = true;
+   /* VK_KHR_variable_pointers (#61, Vulkan 1.1).
+    * Keep hidden on the Vulkan 1.0 path until its dependency chain is exposed
+    * truthfully, either via VK_KHR_storage_buffer_storage_class or Vulkan 1.1.
+    */
+   extensions_out->KHR_variable_pointers = false;
 
    /* VK_KHR_multiview (#54, Vulkan 1.1).
     * Truthful capability surfacing: disabled until multiview draw expansion
