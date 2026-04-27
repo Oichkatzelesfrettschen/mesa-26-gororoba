@@ -19,6 +19,9 @@ namespace {
 bool
 should_trace_vec_reject(const AluInstr *instr, const std::array<AluInstr *, 5>& slots)
 {
+   if (instr->has_alu_flag(alu_is_lds))
+      return slots[4] && slots[4]->has_alu_flag(alu_is_trans);
+
    return (slots[4] && slots[4]->has_alu_flag(alu_is_trans)) ||
           instr->opcode() == op3_muladd_ieee;
 }

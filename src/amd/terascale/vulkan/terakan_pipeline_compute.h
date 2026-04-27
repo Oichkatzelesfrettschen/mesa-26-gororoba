@@ -44,6 +44,7 @@ struct terakan_pipeline_compute {
    uint32_t sq_pgm_resources_cs[2]; /* GPR count, stack size, etc. */
    uint32_t sq_lds_alloc;           /* LDS allocation (size | num_waves << 14) */
    uint32_t group_size;             /* local_size[0] * [1] * [2] */
+   uint32_t shared_size_dwords;     /* shader shared memory allocation */
 };
 
 struct terakan_device;

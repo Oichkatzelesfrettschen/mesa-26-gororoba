@@ -171,9 +171,7 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
 
    r600::init_pool();
 
-#if 0
    r600_finalize_nir_common(nir, gfx_level);
-#endif
    /* For r600_lower_and_optimize_nir, for fields like number bit sizes, and also for
     * DB_SHADER_CONTROL in fragment shaders.
     */

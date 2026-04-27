@@ -1616,7 +1616,10 @@ Shader::emit_shader_clock(nir_intrinsic_instr *instr)
 bool
 Shader::emit_group_barrier(nir_intrinsic_instr *intr)
 {
-   assert(m_control_flow_depth == 0);
+   /* Vulkan allows barriers in dynamic control flow when the executed
+    * path is uniform across the workgroup. The front-end cannot prove
+    * that for CTS branch_past_barrier, so emit the hardware group
+    * barrier and let the shader contract decide validity. */
    (void)intr;
    auto op = new AluInstr(op0_group_barrier, 0);
    emit_instruction(op);

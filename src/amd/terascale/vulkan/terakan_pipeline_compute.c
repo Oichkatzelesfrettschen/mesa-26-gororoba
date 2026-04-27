@@ -69,10 +69,10 @@ terakan_pipeline_compute_init(struct terakan_device * const device,
  * Invariant 4 (Post-link ordering barrier): Cache key construction
  * follows terakan_shader_lower_and_optimize_post_link().
  *
- * RD-4 note: Extracts local_size[3] and group_size from NIR BEFORE
- * ralloc_free because these are metadata on the NIR shader and cannot
- * be reconstructed afterward.  They are written directly into the
- * pipeline struct (not into local_shader) because they live on the
+ * RD-4 note: Extracts local_size[3], group_size, and shared_size from
+ * NIR BEFORE ralloc_free because these are metadata on the NIR shader
+ * and cannot be reconstructed afterward. They are written directly into
+ * the pipeline struct (not into local_shader) because they live on the
  * parent pipeline_compute, not on the shader_impl.
  */
 static VkResult
@@ -103,6 +103,8 @@ terakan_pipeline_compute_compile(
    pipeline->group_size = pipeline->local_size[0] *
                           pipeline->local_size[1] *
                           pipeline->local_size[2];
+   pipeline->shared_size_dwords =
+      DIV_ROUND_UP(nir->info.shared_size, sizeof(uint32_t));
 
    /* Invariant 2: compile into a stack-local; commit on success. */
    struct terakan_shader_impl local_shader;
@@ -310,7 +312,7 @@ terakan_pipeline_compute_compile_fix_w_variant(
 
 /*
  * Phase C: Pre-compute hardware register values from compiled shader.
- * local_size + group_size were already populated by _compile (RD-4).
+ * local_size, group_size, and shared_size were already populated by _compile (RD-4).
  */
 static void
 terakan_pipeline_compute_fill_hw(struct terakan_pipeline_compute * const pipeline)
@@ -322,8 +324,7 @@ terakan_pipeline_compute_fill_hw(struct terakan_pipeline_compute * const pipelin
 
    /* LDS allocation: (lds_size_dwords | num_waves << 14)
     * Conservative 1 wave for now. */
-   uint32_t lds_size_dwords = 0;
-   pipeline->sq_lds_alloc = lds_size_dwords | (1 << 14);
+   pipeline->sq_lds_alloc = pipeline->shared_size_dwords | (1 << 14);
 }
 
 /*
