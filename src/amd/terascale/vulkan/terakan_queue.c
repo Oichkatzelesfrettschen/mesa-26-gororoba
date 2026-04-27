@@ -1022,11 +1022,14 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
       return VK_SUCCESS;
    }
 
-   /* Set up the completion fence. When fence elision is active (pending_completion exists),
-    * we'll reuse it instead of allocating a new one. Only allocate for the fallback path.
+   /* Set up the completion fence. When fence elision is active, reuse
+    * pending_completion because a draw IB already references its BO. If fence
+    * elision is disabled, always allocate the fallback completion submission
+    * even when pending_completion exists, because the fallback path submits its
+    * own signal IB.
     */
    struct terakan_queue_completion_submission * completion_submission = NULL;
-   if (queue->pending_completion == NULL) {
+   if (disable_fence_elision || queue->pending_completion == NULL) {
       /* No pending completion from a draw IB — allocate for fallback signal submit. */
       mtx_lock(&device->completion_mutex);
       if (!list_is_empty(&queue->completion_submissions_free)) {
@@ -1333,6 +1336,7 @@ terakan_queue_create(struct terakan_device * const device,
    queue->internal_bo_timeline_next_value = 1;
    queue->wsi_hw_wait_probe_state = 0;
 
+   queue->pending_completion = NULL;
    queue->shader_rings_bytes_shr8 = 0;
    queue->shader_rings = NULL;
    queue->shader_rings_last_usage = 0;
