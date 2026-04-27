@@ -1065,6 +1065,48 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
 }
 
 static void
+terakan_nir_lower_bindings_instr_get_ssbo_size(
+   nir_builder * const b, nir_intrinsic_instr * const intrin,
+   struct terakan_nir_lower_bindings_state * const state)
+{
+   assert(intrin->intrinsic == nir_intrinsic_get_ssbo_size);
+
+   b->cursor = nir_before_instr(&intrin->instr);
+
+   struct terakan_nir_binding binding;
+   if (unlikely(!terakan_nir_get_binding(intrin->src[0], VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                         state->layout, b->shader, &binding))) {
+      terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+      return;
+   }
+
+   if (binding.array_index == NULL) {
+      binding.array_index = nir_imm_zero(b, 1, 32);
+   }
+
+   nir_const_value const * const array_index =
+      nir_src_as_const_value(nir_src_for_ssa(binding.array_index));
+   if (unlikely(array_index == NULL)) {
+      /* The r600 SFN backend only supports a static resource index for
+       * get_ssbo_size. Keep the failure contained in the shader result
+       * rather than leaking an unresolved descriptor intrinsic to SFN. */
+      terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+      return;
+   }
+
+   uint8_t const resource_index_base =
+      binding.set->first_shader_resources[b->shader->info.stage] +
+      binding.set_binding->first_shader_resources[b->shader->info.stage];
+   BITSET_SET_RANGE(state->resources_needed,
+                    TERAKAN_SAMPLER_HW_COUNT_PER_STAGE + resource_index_base +
+                       binding.array_index_range_first,
+                    TERAKAN_SAMPLER_HW_COUNT_PER_STAGE + resource_index_base +
+                       binding.array_index_range_last);
+   nir_src_rewrite(&intrin->src[0],
+                   nir_imm_int(b, resource_index_base + array_index->u32));
+}
+
+static void
 terakan_nir_lower_bindings_instr_store_ssbo(nir_builder * const b,
                                             nir_intrinsic_instr * const intrin,
                                             struct terakan_nir_lower_bindings_state * const state)
@@ -1865,6 +1907,9 @@ terakan_nir_lower_bindings_instr(nir_builder * const b, nir_instr * const instr,
          return true;
       case nir_intrinsic_load_ssbo:
          terakan_nir_lower_bindings_instr_load_ssbo(b, intrin, state);
+         return true;
+      case nir_intrinsic_get_ssbo_size:
+         terakan_nir_lower_bindings_instr_get_ssbo_size(b, intrin, state);
          return true;
       case nir_intrinsic_store_ssbo:
          terakan_nir_lower_bindings_instr_store_ssbo(b, intrin, state);

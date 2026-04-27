@@ -755,5 +755,8 @@ terakan_shader_impl_finish(struct terakan_shader_impl * const shader,
       free(shader->shader.arrays);
    }
 
-   terakan_bo_free(shader->static_state.program_bo, allocator);
+   if (shader->static_state.program_bo != NULL) {
+      terakan_bo_free(shader->static_state.program_bo, allocator);
+      shader->static_state.program_bo = NULL;
+   }
 }
