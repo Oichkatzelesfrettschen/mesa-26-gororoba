@@ -195,6 +195,13 @@ struct terakan_command_buffer_indirect_buffer {
 
 struct terakan_gfx_command_writer;
 
+struct terakan_command_buffer_event_update {
+   struct list_head link;
+
+   struct terakan_event * event;
+   bool signaled;
+};
+
 struct terakan_command_buffer {
    struct vk_command_buffer vk;
 
@@ -211,6 +218,7 @@ struct terakan_command_buffer {
    bool has_compute_work;
 
    struct list_head indirect_buffers;
+   struct list_head event_updates;
 
    union {
       struct terakan_gfx_command_writer * gfx;
