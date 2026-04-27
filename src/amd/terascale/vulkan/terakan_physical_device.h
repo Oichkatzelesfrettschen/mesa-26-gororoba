@@ -153,6 +153,11 @@ struct terakan_physical_device_submission_info_gfx {
 struct terakan_physical_device;
 struct terakan_device;
 
+struct terakan_event {
+   struct vk_object_base base;
+   bool signaled;
+};
+
 struct terakan_physical_device_winsys_fn {
    /* Called before vk_physical_device_init to get capabilities of additional extensions offered by
     * the winsys, as well as the device UUID. It's assumed that before the call, the fields this

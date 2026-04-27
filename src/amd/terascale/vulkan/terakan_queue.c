@@ -69,6 +69,54 @@ terakan_env_flag_enabled(char const * const name)
    return !(value[0] == '0' && value[1] == '\0');
 }
 
+static void
+terakan_queue_completion_event_updates_apply(struct list_head * const event_updates)
+{
+   struct terakan_queue_completion_event_update * event_update;
+   LIST_FOR_EACH_ENTRY (event_update, event_updates, link) {
+      event_update->event->signaled = event_update->signaled;
+   }
+}
+
+static void
+terakan_queue_completion_event_updates_free(struct terakan_device * const device,
+                                            struct list_head * const event_updates)
+{
+   list_for_each_entry_safe (struct terakan_queue_completion_event_update, event_update,
+                             event_updates, link) {
+      vk_free(&device->vk.alloc, event_update);
+   }
+   list_inithead(event_updates);
+}
+
+static VkResult
+terakan_queue_completion_event_updates_copy_from_submit(
+   struct terakan_device * const device, struct vk_queue_submit const * const submit,
+   struct list_head * const event_updates_out)
+{
+   for (uint32_t command_buffer_index = 0; command_buffer_index < submit->command_buffer_count;
+        ++command_buffer_index) {
+      struct terakan_command_buffer const * const command_buffer = container_of(
+         submit->command_buffers[command_buffer_index], struct terakan_command_buffer const, vk);
+      struct terakan_command_buffer_event_update const * command_event_update;
+      LIST_FOR_EACH_ENTRY (command_event_update, &command_buffer->event_updates, link) {
+         struct terakan_queue_completion_event_update * const event_update =
+            vk_alloc(&device->vk.alloc, sizeof(*event_update),
+                     alignof(struct terakan_queue_completion_event_update),
+                     VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+         if (event_update == NULL) {
+            terakan_queue_completion_event_updates_free(device, event_updates_out);
+            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         }
+         event_update->event = command_event_update->event;
+         event_update->signaled = command_event_update->signaled;
+         list_addtail(&event_update->link, event_updates_out);
+      }
+   }
+
+   return VK_SUCCESS;
+}
+
 static int
 terakan_queue_completion_thread_func(void * queue_ptr)
 {
@@ -119,11 +167,13 @@ terakan_queue_completion_thread_func(void * queue_ptr)
             assert(signal->value > signal->sync->current_value);
             signal->sync->current_value = signal->value;
          }
+         terakan_queue_completion_event_updates_apply(&submission->event_updates);
       }
 
       /* Recycle the submission. */
       list_splice(&submission->signals, &queue->completion_signals_free);
       list_inithead(&submission->signals);
+      terakan_queue_completion_event_updates_free(device, &submission->event_updates);
       list_add(&submission->link, &queue->completion_submissions_free);
 
       /* Notify signal waits of new semaphore values or the failure. */
@@ -721,8 +771,19 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
             /* Non-fatal: fall back to separate signal submit. */
          } else {
             queue->pending_completion->queue = queue;
+            list_inithead(&queue->pending_completion->signals);
+            list_inithead(&queue->pending_completion->event_updates);
          }
       }
+   }
+
+   struct list_head completion_event_updates;
+   list_inithead(&completion_event_updates);
+   VkResult const event_updates_copy_result =
+      terakan_queue_completion_event_updates_copy_from_submit(
+         device, submit, &completion_event_updates);
+   if (event_updates_copy_result != VK_SUCCESS) {
+      return event_updates_copy_result;
    }
 
    /* Find the last IB across all command buffers for fence elision merge. */
@@ -887,6 +948,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
                mtx_unlock(&device->completion_mutex);
             }
             cnd_broadcast(&device->completion_condition);
+            terakan_queue_completion_event_updates_free(device, &completion_event_updates);
             return VK_ERROR_DEVICE_LOST;
          }
       }
@@ -946,6 +1008,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
             device->completion_lost = true;
             mtx_unlock(&device->completion_mutex);
             cnd_broadcast(&device->completion_condition);
+            terakan_queue_completion_event_updates_free(device, &completion_event_updates);
             return VK_ERROR_DEVICE_LOST;
          }
       }
@@ -954,7 +1017,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
       completion_signal->value = submit_signal_value;
       list_add(&completion_signal->link, &completion_signals);
    }
-   if (list_is_empty(&completion_signals)) {
+   if (list_is_empty(&completion_signals) && list_is_empty(&completion_event_updates)) {
       /* Nothing to signal. */
       return VK_SUCCESS;
    }
@@ -988,11 +1051,15 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
             device->completion_lost = true;
             mtx_unlock(&device->completion_mutex);
             cnd_broadcast(&device->completion_condition);
+            terakan_queue_completion_event_updates_free(device, &completion_event_updates);
             return VK_ERROR_DEVICE_LOST;
          }
          completion_submission->queue = queue;
+         list_inithead(&completion_submission->signals);
+         list_inithead(&completion_submission->event_updates);
       }
       list_replace(&completion_signals, &completion_submission->signals);
+      list_replace(&completion_event_updates, &completion_submission->event_updates);
    }
 
    /* Section 7.4.1. "Semaphore Signaling" of the Vulkan 1.3.277 specification says:
@@ -1050,6 +1117,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
       completion_submission = queue->pending_completion;
       queue->pending_completion = NULL;
       list_replace(&completion_signals, &completion_submission->signals);
+      list_replace(&completion_event_updates, &completion_submission->event_updates);
       /* No separate GPU submission needed — the BO is already busy from the draw IB. */
    } else {
       /* No prior draw IB referenced a completion BO (e.g., first-ever signal-only submit).
@@ -1072,6 +1140,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
          mtx_lock(&device->completion_mutex);
          list_splice(&completion_signals, &queue->completion_signals_free);
          list_inithead(&completion_submission->signals);
+         terakan_queue_completion_event_updates_free(device, &completion_submission->event_updates);
          list_add(&completion_submission->link, &queue->completion_submissions_free);
          device->completion_lost = true;
          mtx_unlock(&device->completion_mutex);
@@ -1141,6 +1210,7 @@ terakan_queue_destroy(struct terakan_queue * const queue)
 
    /* Clean up pending completion submission from fence elision. */
    if (queue->pending_completion != NULL) {
+      terakan_queue_completion_event_updates_free(device, &queue->pending_completion->event_updates);
       device->winsys_fn->queue->completion_submission_finish_winsys_and_free(
          queue->pending_completion);
       queue->pending_completion = NULL;
@@ -1167,6 +1237,7 @@ terakan_queue_destroy(struct terakan_queue * const queue)
                                    link) {
             vk_free(&device->vk.alloc, completion_signal);
          }
+         terakan_queue_completion_event_updates_free(device, &completion_submission->event_updates);
          device->winsys_fn->queue->completion_submission_finish_winsys_and_free(
             completion_submission);
       }
@@ -1174,6 +1245,7 @@ terakan_queue_destroy(struct terakan_queue * const queue)
    if (queue->completion_submissions_free.next != NULL) {
       LIST_FOR_EACH_ENTRY_SAFE (completion_submission, next_submission,
                                 &queue->completion_submissions_free, link) {
+         terakan_queue_completion_event_updates_free(device, &completion_submission->event_updates);
          device->winsys_fn->queue->completion_submission_finish_winsys_and_free(
             completion_submission);
       }

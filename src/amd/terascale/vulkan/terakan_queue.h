@@ -164,6 +164,15 @@ struct terakan_queue_completion_signal {
    uint64_t value;
 };
 
+struct terakan_event;
+
+struct terakan_queue_completion_event_update {
+   struct list_head link;
+
+   struct terakan_event * event;
+   bool signaled;
+};
+
 struct terakan_queue;
 
 /* Partially implemented by the winsys. */
@@ -173,6 +182,7 @@ struct terakan_queue_completion_submission {
    struct list_head link;
 
    struct list_head signals;
+   struct list_head event_updates;
 };
 
 struct terakan_queue {

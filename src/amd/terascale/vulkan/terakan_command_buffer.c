@@ -389,6 +389,12 @@ terakan_command_buffer_release_resources(struct terakan_command_buffer * const c
       list_move_to(&indirect_buffer->link, &command_pool->indirect_buffers_free);
    }
 
+   list_for_each_entry_safe (struct terakan_command_buffer_event_update, event_update,
+                             &command_buffer->event_updates, link) {
+      vk_free(&command_pool->vk.alloc, event_update);
+   }
+   list_inithead(&command_buffer->event_updates);
+
    list_splice(&command_buffer->push_buffers, &command_pool->push_buffers_free);
    list_inithead(&command_buffer->push_buffers);
 }
@@ -448,6 +454,7 @@ terakan_command_buffer_create(struct vk_command_pool * const command_pool,
    }
 
    list_inithead(&command_buffer->indirect_buffers);
+   list_inithead(&command_buffer->event_updates);
 
    command_buffer->command_writer.gfx = NULL;
 
@@ -1704,12 +1711,36 @@ terakan_CreateCommandPool(VkDevice const deviceHandle,
  * work at barrier time.
  */
 
+static void
+terakan_command_buffer_record_event_update(VkCommandBuffer const commandBuffer,
+                                           VkEvent const event_handle, bool const signaled)
+{
+   struct terakan_command_buffer * const command_buffer =
+      terakan_command_buffer_from_handle(commandBuffer);
+   struct terakan_command_pool * const command_pool =
+      container_of(command_buffer->vk.pool, struct terakan_command_pool, vk);
+
+   struct terakan_command_buffer_event_update * const event_update =
+      vk_alloc(&command_pool->vk.alloc, sizeof(*event_update),
+               alignof(struct terakan_command_buffer_event_update),
+               VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (event_update == NULL) {
+      vk_command_buffer_set_error(&command_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
+
+   event_update->event = (struct terakan_event *)(uintptr_t)event_handle;
+   event_update->signaled = signaled;
+   list_addtail(&event_update->link, &command_buffer->event_updates);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdSetEvent2(VkCommandBuffer const commandBuffer,
                      VkEvent event,
                      const VkDependencyInfo * const pDependencyInfo)
 {
    terakan_CmdPipelineBarrier2(commandBuffer, pDependencyInfo);
+   terakan_command_buffer_record_event_update(commandBuffer, event, true);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1717,6 +1748,7 @@ terakan_CmdResetEvent2(VkCommandBuffer const commandBuffer,
                        VkEvent event,
                        VkPipelineStageFlags2 stageMask)
 {
+   terakan_command_buffer_record_event_update(commandBuffer, event, false);
 }
 
 VKAPI_ATTR void VKAPI_CALL

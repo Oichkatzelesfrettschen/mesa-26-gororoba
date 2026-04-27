@@ -1480,11 +1480,6 @@ terakan_GetDeviceImageSparseMemoryRequirements(
  * TeraScale-2 does not have GPU-side event signals, so events
  * are implemented as CPU-side flags set by CmdSetEvent/CmdResetEvent. */
 
-struct terakan_event {
-   struct vk_object_base base;
-   bool signaled;
-};
-
 VKAPI_ATTR VkResult VKAPI_CALL
 terakan_CreateEvent(VkDevice _device,
                     const VkEventCreateInfo *pCreateInfo,
