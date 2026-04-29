@@ -9,6 +9,7 @@
 #include "nir_intrinsics.h"
 #include "nir_intrinsics_indices.h"
 #include "sfn_alu_defines.h"
+#include "sfn_debug.h"
 #include "sfn_instr_alu.h"
 #include "sfn_instr_fetch.h"
 #include "sfn_instr_tex.h"
@@ -464,15 +465,78 @@ RatInstr::is_equal_to(const RatInstr& lhs) const
 bool
 RatInstr::do_ready() const
 {
+   bool required_ready = true;
+
    if (m_rat_op != STORE_TYPED) {
       for (auto i : required_instr()) {
          if (!i->is_scheduled()) {
-            return false;
+            required_ready = false;
+            break;
          }
       }
    }
 
-   return m_data.ready(block_id(), index()) && m_index.ready(block_id(), index());
+   const bool data_ready = m_data.ready(block_id(), index());
+   const bool index_ready = m_index.ready(block_id(), index());
+   const bool rat_resource_ready = resource_ready(block_id(), index());
+   const bool ready = required_ready && data_ready && index_ready;
+
+   if (!ready && sfn_log.has_debug_flag(SfnLog::schedule)) {
+      sfn_log << SfnLog::schedule
+              << "RAT readiness blocked: op=" << m_rat_op
+              << " block=" << block_id()
+              << " index=" << index()
+              << " data_gpr=" << data_gpr()
+              << " index_gpr=" << index_gpr()
+              << " need_ack=" << need_ack()
+              << " required_ready=" << required_ready
+              << " data_ready=" << data_ready
+              << " index_ready=" << index_ready
+              << " resource_ready=" << rat_resource_ready
+              << " required_count=" << required_instr().size() << "\n";
+
+      for (auto i : required_instr()) {
+         sfn_log << SfnLog::schedule
+                 << "  RAT required: block=" << i->block_id()
+                 << " index=" << i->index()
+                 << " scheduled=" << i->is_scheduled()
+                 << " dead=" << i->is_dead()
+                 << " instr=" << *i << "\n";
+      }
+
+      for (int chan = 0; chan < 4; ++chan) {
+         auto data_value = m_data[chan];
+         auto index_value = m_index[chan];
+
+         sfn_log << SfnLog::schedule
+                 << "  RAT data[" << chan << "]=" << *data_value
+                 << " ready=" << data_value->ready(block_id(), index())
+                 << " parent_count=" << data_value->parents().size() << "\n";
+         for (auto parent : data_value->parents()) {
+            sfn_log << SfnLog::schedule
+                    << "    data parent: block=" << parent->block_id()
+                    << " index=" << parent->index()
+                    << " scheduled=" << parent->is_scheduled()
+                    << " dead=" << parent->is_dead()
+                    << " instr=" << *parent << "\n";
+         }
+
+         sfn_log << SfnLog::schedule
+                 << "  RAT index[" << chan << "]=" << *index_value
+                 << " ready=" << index_value->ready(block_id(), index())
+                 << " parent_count=" << index_value->parents().size() << "\n";
+         for (auto parent : index_value->parents()) {
+            sfn_log << SfnLog::schedule
+                    << "    index parent: block=" << parent->block_id()
+                    << " index=" << parent->index()
+                    << " scheduled=" << parent->is_scheduled()
+                    << " dead=" << parent->is_dead()
+                    << " instr=" << *parent << "\n";
+         }
+      }
+   }
+
+   return ready;
 }
 
 void
