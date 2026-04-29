@@ -220,6 +220,11 @@ bool
 Register::ready(int block, int index) const
 {
    for (auto p : m_parents) {
+      /* DCE may leave dead producers in parent sets; they must not block
+       * readiness once a live replacement producer has been scheduled. */
+      if (p->is_dead())
+         continue;
+
       if (p->block_id() <= block) {
          if (p->index() < index && !p->is_scheduled()) {
             return false;
