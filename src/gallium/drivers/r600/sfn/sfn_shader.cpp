@@ -639,6 +639,9 @@ Shader::scan_instruction(nir_instr *instr)
    case nir_intrinsic_image_atomic_swap:
       m_flags.set(sh_needs_sbo_ret_address);
       FALLTHROUGH;
+   case nir_intrinsic_uav_returning_instr_r600:
+      m_flags.set(sh_needs_sbo_ret_address);
+      FALLTHROUGH;
    case nir_intrinsic_uav_instr_r600:
    case nir_intrinsic_image_store:
    case nir_intrinsic_store_ssbo:
@@ -943,6 +946,25 @@ Shader::process_intrinsic(nir_intrinsic_instr *intr)
    case nir_intrinsic_load_draw_id:
       return emit_get_lds_info_uint(intr,
                                     offsetof(struct r600_lds_constant_buffer, draw_id));
+   case nir_intrinsic_load_hw_wave_id_r600:
+      return emit_simple_mov(
+         intr->def, 0, value_factory().inline_const(ALU_SRC_HW_WAVE_ID, 0));
+   case nir_intrinsic_load_shader_engine_id_r600:
+      return emit_simple_mov(
+         intr->def, 0, value_factory().inline_const(ALU_SRC_SE_ID, 0));
+   case nir_intrinsic_mbcnt_amd: {
+      auto mask = value_factory().src(intr->src[0], 0);
+      auto previous = value_factory().src(intr->src[1], 0);
+      auto dest =
+         value_factory().dest(intr->def, 0, pin_free, BITSET_BIT(PIPE_SWIZZLE_X));
+      auto src = {mask, previous};
+      emit_instruction(new AluInstr(op1_mbcnt_32lo_accum_prev_int,
+                                    dest,
+                                    src,
+                                    AluInstr::write,
+                                    2));
+      return true;
+   }
    case nir_intrinsic_barrier:
       return emit_barrier(intr);
    case nir_intrinsic_shared_atomic:
