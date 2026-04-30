@@ -1140,7 +1140,10 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
    auto dest = vf.dest_vec4(intr->def, pin_group);
    auto wait = new ControlFlowInstr(ControlFlowInstr::cf_wait_ack);
    wait->add_required_instr(rat);
-   shader.chain_ssbo_read(wait);
+   bool const return_global_chain =
+      debug_get_bool_option("TERAKAN_EXPERIMENTAL_UAV_RETURN_GLOBAL_CHAIN", false);
+   if (!return_global_chain)
+      shader.chain_ssbo_read(wait);
    shader.emit_instruction(wait);
 
    bool const return_fetch_fmt32 =
@@ -1181,6 +1184,7 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
            << " wait_ack=1"
            << " ack=1"
            << " ack_rat_return_write=1"
+           << " global_chain=" << return_global_chain
            << " dest=" << dest << "\n";
    if (return_id_offset)
       sfn_log << SfnLog::trans
@@ -1236,8 +1240,13 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
    fetch->set_fetch_flag(FetchInstr::use_tc);
    fetch->set_fetch_flag(FetchInstr::vpm);
    fetch->add_required_instr(wait);
-   shader.emit_instruction(fetch);
-   shader.chain_ssbo_read(fetch);
+   if (return_global_chain) {
+      shader.chain_ssbo_read(fetch);
+      shader.emit_instruction(fetch);
+   } else {
+      shader.emit_instruction(fetch);
+      shader.chain_ssbo_read(fetch);
+   }
 
    return true;
 }
