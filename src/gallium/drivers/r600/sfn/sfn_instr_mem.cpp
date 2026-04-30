@@ -19,7 +19,71 @@
 #include "util/format/u_format.h"
 #include "util/u_debug.h"
 
+#include <cstring>
+
 namespace r600 {
+
+static const char *
+cmpxchg_payload_channel_name(int channel)
+{
+   switch (channel) {
+   case 0:
+      return "x";
+   case 1:
+      return "y";
+   case 2:
+      return "z";
+   case 3:
+      return "w";
+   default:
+      return "?";
+   }
+}
+
+static bool
+select_cmpxchg_payload_channels(const char *order,
+                                int default_compare_channel,
+                                int *replacement_channel,
+                                int *compare_channel)
+{
+   *replacement_channel = 0;
+   *compare_channel = default_compare_channel;
+
+   if (!order || !std::strcmp(order, "current"))
+      return true;
+
+   if (!std::strcmp(order, "swap_xw")) {
+      *replacement_channel = 3;
+      *compare_channel = 0;
+      return true;
+   }
+
+   if (!std::strcmp(order, "xy")) {
+      *replacement_channel = 0;
+      *compare_channel = 1;
+      return true;
+   }
+
+   if (!std::strcmp(order, "yx")) {
+      *replacement_channel = 1;
+      *compare_channel = 0;
+      return true;
+   }
+
+   if (!std::strcmp(order, "xz")) {
+      *replacement_channel = 0;
+      *compare_channel = 2;
+      return true;
+   }
+
+   if (!std::strcmp(order, "zx")) {
+      *replacement_channel = 2;
+      *compare_channel = 0;
+      return true;
+   }
+
+   return false;
+}
 
 GDSInstr::GDSInstr(
    ESDOp op, Register *dest, const RegisterVec4& src, int uav_base, PRegister uav_id):
@@ -915,13 +979,26 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
                            uav_op_base == RatInstr::CMPXCHG_FLT ||
                            uav_op_base == RatInstr::CMPXCHG_FDENORM;
 
+   const char *cmpxchg_payload_order =
+      cmpxchg_op ? debug_get_option("TERAKAN_EXPERIMENTAL_CMPXCHG_PAYLOAD_ORDER",
+                                    "current") : "current";
+   int cmpxchg_replacement_channel = 0;
+   int cmpxchg_compare_channel = shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3;
+   bool const cmpxchg_payload_order_valid =
+      !cmpxchg_op ||
+      select_cmpxchg_payload_channels(cmpxchg_payload_order,
+                                      shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3,
+                                      &cmpxchg_replacement_channel,
+                                      &cmpxchg_compare_channel);
+   if (cmpxchg_op && !cmpxchg_payload_order_valid)
+      cmpxchg_payload_order = "current";
+
    if (cmpxchg_op) {
       shader.emit_instruction(
-         new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
-      shader.emit_instruction(new AluInstr(op1_mov,
-                                           data_vec4[shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3],
-                                           vf.src(intr->src[3], 0),
-                                           AluInstr::write));
+         new AluInstr(op1_mov, data_vec4[cmpxchg_replacement_channel],
+                      vf.src(intr->src[2], 0), AluInstr::write));
+      shader.emit_instruction(new AluInstr(op1_mov, data_vec4[cmpxchg_compare_channel],
+                                           vf.src(intr->src[3], 0), AluInstr::write));
    } else if (uav_op_base == RatInstr::STORE_TYPED || uav_op_base == RatInstr::STORE_RAW) {
       for (unsigned i = 0; i < value_components; ++i) {
          shader.emit_instruction(
@@ -936,6 +1013,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
    if (uav_op_base == RatInstr::STORE_TYPED || uav_op_base == RatInstr::STORE_RAW) {
       comp_mask = value_components ? ((1u << value_components) - 1u) : 1u;
    }
+   unsigned burst_count = 1;
 
    bool const scalar_buffer_store =
       uav_op_base == RatInstr::STORE_TYPED && coord_components == 1 && value_components == 1;
@@ -965,6 +1043,31 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
     * elem_size in uav_op, the high bits stay 0 -> elem_size_minus_one = 0
     * (preserves prior behavior). */
    unsigned elem_size_minus_one = (uav_op >> 5) & 0x3u;
+   bool cmpxchg_comp_mask_overridden = false;
+   bool cmpxchg_burst_count_overridden = false;
+   bool cmpxchg_elem_size_overridden = false;
+   if (cmpxchg_op) {
+      int64_t const experimental_comp_mask = debug_get_num_option(
+         "TERAKAN_EXPERIMENTAL_CMPXCHG_COMP_MASK", -1);
+      if (experimental_comp_mask >= 1 && experimental_comp_mask <= 15) {
+         comp_mask = (unsigned)experimental_comp_mask;
+         cmpxchg_comp_mask_overridden = true;
+      }
+
+      int64_t const experimental_burst_count = debug_get_num_option(
+         "TERAKAN_EXPERIMENTAL_CMPXCHG_BURST_COUNT", -1);
+      if (experimental_burst_count >= 1 && experimental_burst_count <= 4) {
+         burst_count = (unsigned)experimental_burst_count;
+         cmpxchg_burst_count_overridden = true;
+      }
+
+      int64_t const experimental_elem_size = debug_get_num_option(
+         "TERAKAN_EXPERIMENTAL_CMPXCHG_ELEM_SIZE", -1);
+      if (experimental_elem_size >= 0 && experimental_elem_size <= 3) {
+         elem_size_minus_one = (unsigned)experimental_elem_size;
+         cmpxchg_elem_size_overridden = true;
+      }
+   }
 
    if (scalar_buffer_store)
       shader.start_new_block(0);
@@ -990,13 +1093,20 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
            << " coord=" << coord
            << " data=" << data_vec4
            << " comp_mask=" << CLAMP(comp_mask, 1u, 0xFu)
-           << " burst_count=1"
-           << " elem_size=" << elem_size_minus_one << "\n";
+           << " burst_count=" << burst_count
+           << " elem_size=" << elem_size_minus_one
+           << " cmpxchg_comp_mask_overridden=" << cmpxchg_comp_mask_overridden
+           << " cmpxchg_burst_count_overridden=" << cmpxchg_burst_count_overridden
+           << " cmpxchg_elem_size_overridden=" << cmpxchg_elem_size_overridden << "\n";
    if (cmpxchg_op) {
       sfn_log << SfnLog::trans
-              << "RAT_CMPXCHG_MAP path=uav_store replacement=src2.x->data.x"
+              << "RAT_CMPXCHG_MAP path=uav_store"
+              << " payload_order=" << cmpxchg_payload_order
+              << " payload_order_valid=" << cmpxchg_payload_order_valid
+              << " replacement=src2.x->data."
+              << cmpxchg_payload_channel_name(cmpxchg_replacement_channel)
               << " compare=src3.x->data."
-              << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w") << "\n";
+              << cmpxchg_payload_channel_name(cmpxchg_compare_channel) << "\n";
    }
    bool const observe_rat_atomics =
       debug_get_bool_option("TERAKAN_OBSERVE_RAT_ATOMICS", false);
@@ -1019,12 +1129,18 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
               << " rat_opcode=" << rat_opcode
               << " cf_opcode=" << rat_cf_opcode
               << " comp_mask=" << CLAMP(comp_mask, 1u, 0xFu)
-              << " burst_count=1"
+              << " burst_count=" << burst_count
               << " elem_size=" << elem_size_minus_one
               << " ack=1"
+              << " cmpxchg_comp_mask_overridden=" << cmpxchg_comp_mask_overridden
+              << " cmpxchg_burst_count_overridden=" << cmpxchg_burst_count_overridden
+              << " cmpxchg_elem_size_overridden=" << cmpxchg_elem_size_overridden
+              << " payload_order=" << cmpxchg_payload_order
+              << " payload_order_valid=" << cmpxchg_payload_order_valid
               << " compare_channel="
-              << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w")
-              << " replacement_channel=x";
+              << cmpxchg_payload_channel_name(cmpxchg_compare_channel)
+              << " replacement_channel="
+              << cmpxchg_payload_channel_name(cmpxchg_replacement_channel);
       if (rat_id_offset)
          sfn_log << " rat_id_offset=" << *rat_id_offset;
       else
@@ -1038,7 +1154,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
                              coord,
                              rat_id,
                              rat_id_offset,
-                             1,
+                             burst_count,
                              CLAMP(comp_mask, 1u, 0xFu),
                              elem_size_minus_one);
    shader.emit_instruction(store);
