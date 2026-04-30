@@ -1556,6 +1556,53 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       *p++ = PKT3(PKT3_NOP, 0, 0); *p++ = 4 * bo_ref;   /* CMASK */
       *p++ = PKT3(PKT3_NOP, 0, 0); *p++ = 4 * bo_ref;   /* FMASK */
       terakan_gfx_command_writer_emit_done(command_writer, p);
+
+      uint32_t const return_resource_index =
+         TERAKAN_RESOURCE_RANGE_UAV_IMMEDIATE_BASE_COMPUTE + m;
+      if (BITSET_TEST(pipeline->shader.resources_needed, return_resource_index)) {
+         uint32_t immed_resource[8];
+         terakan_color_descriptor_info_to_uav_immediate_resource(
+            device, cb_color_info, immed_resource);
+         uint32_t const immed_bo_ref = terakan_bo_reference_writer_add_reference(
+            &command_writer->base.bo_reference_writer,
+            device->uav_immediate_bo, true, true,
+            TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
+
+         p = terakan_gfx_command_writer_emit(
+            command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+         if (unlikely(p == NULL)) return;
+         *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
+         *p++ = ((R_028B9C_CB_IMMED0_BASE - 0x28000u) >> 2) + m;
+         *p++ = device->uav_immediate_va_shr8[2];
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
+         *p++ = 4 * immed_bo_ref;
+         terakan_gfx_command_writer_emit_done(command_writer, p);
+
+         uint32_t const return_resource_slot =
+            EG_FETCH_CONSTANTS_OFFSET_CS + return_resource_index;
+         p = terakan_gfx_command_writer_emit(
+            command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 12);
+         if (unlikely(p == NULL)) return;
+         *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
+         *p++ = return_resource_slot * 8;
+         for (unsigned w = 0; w < 8; ++w) {
+            *p++ = immed_resource[w];
+         }
+         *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
+         *p++ = 4 * immed_bo_ref;
+         terakan_gfx_command_writer_emit_done(command_writer, p);
+
+         if (debug_get_bool_option("TERAKAN_DEBUG_COMPUTE_DESC", false)) {
+            fprintf(stderr,
+                    "terakan/compute_buffer_uav_return_immed: m=%u "
+                    "return_resource=%u cb_immed_va_shr8=0x%08x "
+                    "resource=[0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x]\n",
+                    m, return_resource_index, device->uav_immediate_va_shr8[2],
+                    immed_resource[0], immed_resource[1], immed_resource[2],
+                    immed_resource[3], immed_resource[4], immed_resource[5],
+                    immed_resource[6], immed_resource[7]);
+         }
+      }
    }
 }
 
