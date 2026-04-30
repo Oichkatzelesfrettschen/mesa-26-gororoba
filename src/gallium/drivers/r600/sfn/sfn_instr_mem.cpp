@@ -865,9 +865,11 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
    unsigned const uav_op = nir_intrinsic_uav_op_r600(intr);
    unsigned const uav_op_base = uav_op & 0x1F;
    unsigned const value_components = MIN2(nir_src_num_components(intr->src[2]), 4u);
+   bool const cmpxchg_op = uav_op_base == RatInstr::CMPXCHG_INT ||
+                           uav_op_base == RatInstr::CMPXCHG_FLT ||
+                           uav_op_base == RatInstr::CMPXCHG_FDENORM;
 
-   if (uav_op_base == RatInstr::CMPXCHG_INT || uav_op_base == RatInstr::CMPXCHG_FLT ||
-       uav_op_base == RatInstr::CMPXCHG_FDENORM) {
+   if (cmpxchg_op) {
       shader.emit_instruction(
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
       shader.emit_instruction(new AluInstr(op1_mov,
@@ -921,6 +923,27 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
    if (scalar_buffer_store)
       shader.start_new_block(0);
 
+   sfn_log << SfnLog::trans
+           << "RAT_ATOMIC_EMIT path=uav_store"
+           << " intrinsic=" << nir_intrinsic_infos[intr->intrinsic].name
+           << " uav_op=" << uav_op
+           << " uav_op_base=" << uav_op_base
+           << " rat_opcode=" << rat_opcode
+           << " rat_id=" << rat_id
+           << " returning=0"
+           << " cmpxchg=" << cmpxchg_op
+           << " coord=" << coord
+           << " data=" << data_vec4
+           << " comp_mask=" << CLAMP(comp_mask, 1u, 0xFu)
+           << " burst_count=1"
+           << " elem_size=" << elem_size_minus_one << "\n";
+   if (cmpxchg_op) {
+      sfn_log << SfnLog::trans
+              << "RAT_CMPXCHG_MAP path=uav_store replacement=src2.x->data.x"
+              << " compare=src3.x->data."
+              << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w") << "\n";
+   }
+
    auto store = new RatInstr((scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW)
                                  ? cf_mem_rat_cacheless
                                  : cf_mem_rat,
@@ -972,8 +995,10 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
 
    unsigned const uav_op = nir_intrinsic_uav_op_r600(intr);
    unsigned const uav_op_base = uav_op & 0x1F;
-   if (uav_op_base == RatInstr::CMPXCHG_INT || uav_op_base == RatInstr::CMPXCHG_FLT ||
-       uav_op_base == RatInstr::CMPXCHG_FDENORM) {
+   bool const cmpxchg_op = uav_op_base == RatInstr::CMPXCHG_INT ||
+                           uav_op_base == RatInstr::CMPXCHG_FLT ||
+                           uav_op_base == RatInstr::CMPXCHG_FDENORM;
+   if (cmpxchg_op) {
       shader.emit_instruction(
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
       shader.emit_instruction(
@@ -985,6 +1010,29 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
       shader.emit_instruction(
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
       shader.emit_instruction(new AluInstr(op1_mov, data_vec4[2], vf.zero(), AluInstr::write));
+   }
+
+   sfn_log << SfnLog::trans
+           << "RAT_ATOMIC_EMIT path=uav_returning"
+           << " intrinsic=" << nir_intrinsic_infos[intr->intrinsic].name
+           << " uav_op=" << uav_op
+           << " uav_op_base=" << uav_op_base
+           << " rat_opcode=" << uav_op
+           << " rat_id=" << rat_id
+           << " return_id=" << return_id
+           << " returning=1"
+           << " cmpxchg=" << cmpxchg_op
+           << " coord=" << coord
+           << " data=" << data_vec4
+           << " comp_mask=15"
+           << " burst_count=1"
+           << " elem_size=0"
+           << " return_address=" << *shader.rat_return_address() << "\n";
+   if (cmpxchg_op) {
+      sfn_log << SfnLog::trans
+              << "RAT_CMPXCHG_MAP path=uav_returning replacement=src2.x->data.x"
+              << " compare=src3.x->data."
+              << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w") << "\n";
    }
 
    auto rat = new RatInstr(cf_mem_rat,
@@ -1021,6 +1069,23 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
    if (mega_fetch_count == 0)
       mega_fetch_count = sizeof(uint32_t) * intr->def.num_components;
    fetch->set_mfc(CLAMP(mega_fetch_count, 1u, 16u) - 1);
+   sfn_log << SfnLog::trans
+           << "RAT_RETURN_FETCH path=uav_returning"
+           << " rat_opcode=" << uav_op
+           << " rat_id=" << rat_id
+           << " return_id=" << return_id
+           << " return_address=" << *shader.rat_return_address()
+           << " fetch_resource=" << return_id
+           << " fetch_format=fmt_32_32_32_32"
+           << " fetch_mfc=" << (CLAMP(mega_fetch_count, 1u, 16u) - 1)
+           << " wait_ack=1"
+           << " ack=1"
+           << " ack_rat_return_write=1"
+           << " dest=" << dest << "\n";
+   if (return_id_offset)
+      sfn_log << SfnLog::trans
+              << "RAT_RETURN_FETCH_OFFSET path=uav_returning offset="
+              << *return_id_offset << "\n";
    fetch->set_fetch_flag(FetchInstr::use_tc);
    fetch->set_fetch_flag(FetchInstr::vpm);
    fetch->add_required_instr(wait);
@@ -1114,6 +1179,27 @@ RatInstr::emit_ssbo_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
       shader.emit_instruction(
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
    }
+   bool const cmpxchg_op = intr->intrinsic == nir_intrinsic_ssbo_atomic_swap;
+
+   sfn_log << SfnLog::trans
+           << "RAT_ATOMIC_EMIT path=ssbo_atomic"
+           << " intrinsic=" << nir_intrinsic_infos[intr->intrinsic].name
+           << " rat_opcode=" << opcode
+           << " rat_id=" << res_id
+           << " returning=" << read_result
+           << " cmpxchg=" << cmpxchg_op
+           << " coord=" << coord
+           << " data=" << data_vec4
+           << " comp_mask=15"
+           << " burst_count=1"
+           << " elem_size=0"
+           << " return_address=" << *shader.rat_return_address() << "\n";
+   if (cmpxchg_op) {
+      sfn_log << SfnLog::trans
+              << "RAT_CMPXCHG_MAP path=ssbo_atomic replacement=src3.x->data.x"
+              << " compare=src2.x->data."
+              << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w") << "\n";
+   }
 
    RegisterVec4 out_vec(coord, coord, coord, coord, pin_chgr);
 
@@ -1145,6 +1231,18 @@ RatInstr::emit_ssbo_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
       fetch->set_fetch_flag(FetchInstr::srf_mode);
       fetch->set_fetch_flag(FetchInstr::use_tc);
       fetch->set_fetch_flag(FetchInstr::vpm);
+      sfn_log << SfnLog::trans
+              << "RAT_RETURN_FETCH path=ssbo_atomic"
+              << " rat_opcode=" << opcode
+              << " rat_id=" << res_id
+              << " fetch_resource=" << (R600_IMAGE_IMMED_RESOURCE_OFFSET + res_id)
+              << " fetch_format=fmt_32"
+              << " fetch_mfc=15"
+              << " wait_ack=1"
+              << " ack=1"
+              << " ack_rat_return_write=1"
+              << " return_address=" << *shader.rat_return_address()
+              << " dest=" << dest << "\n";
       fetch->add_required_instr(wait);
       shader.chain_ssbo_read(fetch);
       shader.emit_instruction(fetch);
