@@ -1152,6 +1152,11 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
       debug_get_bool_option("TERAKAN_EXPERIMENTAL_UAV_RETURN_FETCH_MFC15", false);
    bool const return_fetch_srf =
       debug_get_bool_option("TERAKAN_EXPERIMENTAL_UAV_RETURN_FETCH_SRF", false);
+   bool const return_global_resource = debug_get_bool_option(
+      "TERAKAN_EXPERIMENTAL_UAV_RETURN_GLOBAL_RESOURCE", false);
+   unsigned const fetch_resource = return_global_resource ?
+      R600_IMAGE_IMMED_RESOURCE_OFFSET + shader.ssbo_image_offset() : return_id;
+   PRegister fetch_resource_offset = return_global_resource ? nullptr : return_id_offset;
    EVTXDataFormat const return_fetch_format =
       return_fetch_fmt32 ? fmt_32 : fmt_32_32_32_32;
 
@@ -1164,8 +1169,8 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
                                return_fetch_format,
                                vtx_nf_int,
                                vtx_es_none,
-                               return_id,
-                               return_id_offset);
+                               fetch_resource,
+                               fetch_resource_offset);
    unsigned mega_fetch_count = nir_intrinsic_mega_fetch_count_r600(intr);
    if (mega_fetch_count == 0)
       mega_fetch_count = sizeof(uint32_t) * intr->def.num_components;
@@ -1177,7 +1182,8 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
            << " rat_id=" << rat_id
            << " return_id=" << return_id
            << " return_address=" << *shader.rat_return_address()
-           << " fetch_resource=" << return_id
+           << " fetch_resource=" << fetch_resource
+           << " global_resource=" << return_global_resource
            << " fetch_format=" << (return_fetch_fmt32 ? "fmt_32" : "fmt_32_32_32_32")
            << " fetch_mfc=" << fetch_mfc
            << " fetch_srf=" << return_fetch_srf
@@ -1186,10 +1192,10 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
            << " ack_rat_return_write=1"
            << " global_chain=" << return_global_chain
            << " dest=" << dest << "\n";
-   if (return_id_offset)
+   if (fetch_resource_offset)
       sfn_log << SfnLog::trans
               << "RAT_RETURN_FETCH_OFFSET path=uav_returning offset="
-              << *return_id_offset << "\n";
+              << *fetch_resource_offset << "\n";
    bool const observe_rat_atomics =
       debug_get_bool_option("TERAKAN_OBSERVE_RAT_ATOMICS", false);
    bool const observe_rat_return =
@@ -1218,7 +1224,8 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
               << " wait_ack=1"
               << " ack_rat_return_write=1"
               << " return_address=" << *shader.rat_return_address()
-              << " fetch_resource=" << return_id
+              << " fetch_resource=" << fetch_resource
+              << " global_resource=" << return_global_resource
               << " fetch_offset=0"
               << " fetch_format="
               << (return_fetch_fmt32 ? "fmt_32" : "fmt_32_32_32_32")
