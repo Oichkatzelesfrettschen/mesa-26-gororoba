@@ -77,14 +77,15 @@ op('bfi1',  2, 'u32')
 op('bfi2',  3, 'u32')
 op('bfn',   3, 'u32', Props.CMOD, ['uint8_t ctrl'])
 op('bfrev', 1, 'u32', Props.NEGATE)
-op('cbit',  1, 'u32', Props.NEGATE | Props.CMOD)
+op('cbit',  1, 'u32')
 op('cmp',   2, 'u32', Props.NEGATE | Props.CMOD)
 
 
 # With an 8/16-bit type, `index` specifies the element index of the source
 # within the 32-bit word. For example, if src_type == U16 and index == 1, this
 # converts the upper 16-bits of the input.
-op('cvt', 1, 'u8 s8 u16 s16 u32 s32 u64 s64 f32 f64 f16 bf16', Props.NEGATE | Props.SAT, [
+op('cvt', 1, 'u8 s8 u16 s16 u32 s32 u64 s64 f32 f64 f16 bf16',
+   Props.NEGATE | Props.SAT | Props.CMOD, [
     'enum jay_type src_type',
     'enum jay_rounding_mode rounding_mode',
     'uint8_t index',
@@ -119,8 +120,10 @@ op('rndz',       1, 'f16 f32 f64', Props.NEGATE | Props.SAT)
 op('rnde',       1, 'f16 f32 f64', Props.NEGATE | Props.SAT)
 op('math', 1, 'f16 f32',     Props.NEGATE | Props.SAT, ['enum jay_math op'])
 
-for n in ['rol', 'ror', 'shl', 'shr']:
-    op(n, 2, 'u32 u64 u16 s16 s32 s64', Props.CMOD | Props.NEGATE0)
+op('rol', 2, 'u32 u64 u16 s16 s32 s64', Props.CMOD)
+op('ror', 2, 'u32 u64 u16 s16 s32 s64', Props.CMOD)
+op('shl', 2, 'u32 u64 u16 s16 s32 s64', Props.CMOD | Props.NEGATE0)
+op('shr', 2, 'u32 u64 u16 s16 s32 s64', Props.CMOD | Props.NEGATE0)
 
 op('quad_swizzle', 1, 'u1 u32', 0, ['enum jay_quad_swizzle swizzle'])
 op('sync', 0, None, Props.NO_DEST, ['enum tgl_sync_function op'])
@@ -145,7 +148,9 @@ op('send', 4, None, Props.SIDE_EFFECTS, [
 
 op('reloc',   0, 'u32 u64', 0, ['unsigned param', 'unsigned base'])
 op('preload', 0, 'u32',     0, ['unsigned reg'])
-op('deswizzle_16', 0, 'u32', Props.NO_DEST, ['unsigned dst', 'unsigned src'])
+op('deswizzle', 0, 'u32', Props.NO_DEST, ['unsigned size'])
+op('deswizzle_odd', 2, 'u32', 0, ['bool src2_hi'])
+op('deswizzle_even', 1, 'u32', 0, ['bool src_hi'])
 
 # Calculating the lane ID requires multiple power-of-two steps each involving
 # complex architectural features not modelled in the IR.

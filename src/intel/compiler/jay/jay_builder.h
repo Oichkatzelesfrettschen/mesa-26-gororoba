@@ -181,7 +181,7 @@ jay_collect(jay_builder *b,
 
    for (unsigned i = 1; i < nr; ++i) {
       if (indices[i] != (indices[0] + i)) {
-         static_assert(sizeof(uintptr_t) <= sizeof(uint64_t) &&
+         static_assert(sizeof(uintptr_t) <= sizeof(uint64_t),
                        "sorry, no Morello support");
          void *dup =
             linear_memdup(b->shader->lin_ctx, indices, sizeof(uint32_t) * nr);
@@ -527,7 +527,7 @@ _jay_SEND(jay_builder *b, const struct jayb_send_params p)
        * TODO: Come up with a better heuristic.
        */
       assert(info->type_0 == info->type_1);
-      unsigned split = !p.check_tdr ? DIV_ROUND_UP(p.nr_srcs, 2) : p.nr_srcs;
+      unsigned split = !p.check_tdr ? (p.nr_srcs / 2) : p.nr_srcs;
       I->src[2] = jay_collect_vectors(b, &p.srcs[0], split);
       I->src[3] = jay_collect_vectors(b, &p.srcs[split], p.nr_srcs - split);
    }
@@ -603,6 +603,8 @@ _jay_SEND(jay_builder *b, const struct jayb_send_params p)
 static inline void
 jay_copy_strided(jay_builder *b, jay_def dst, jay_def src, bool src_strided)
 {
+   assert(!jay_is_null(src));
+
    unsigned src_stride = src_strided ? jay_ugpr_per_grf(b->shader) : 1;
    uint32_t n = MIN2(jay_num_values(dst), jay_num_values(src) / src_stride);
 

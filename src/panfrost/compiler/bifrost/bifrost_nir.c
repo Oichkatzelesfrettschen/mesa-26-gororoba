@@ -668,6 +668,14 @@ mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
    /* No more than 16 bytes at a time. */
    bytes = MIN2(bytes, 16);
 
+   /* All loads must be aligned up to the next power of two of their byte
+    * size. If we have insufficient alignment, split into smaller loads. */
+   unsigned required_align = util_next_power_of_two(bytes);
+   if (align < required_align) {
+      bytes = align;
+      required_align = bytes;
+   }
+
    /* If the number of bytes is a multiple of 4, use 32-bit loads. Else if it's
     * a multiple of 2, use 16-bit loads. Else use 8-bit loads.
     *
@@ -701,18 +709,19 @@ mem_access_size_align_cb(nir_intrinsic_op intrin, uint8_t bytes,
       }
 
       bit_size = MAX2(bit_size, 32);
-      align = 4;
-   } else {
-      align = bit_size / 8;
+      required_align = 4;
    }
 
    return (nir_mem_access_size_align){
       .num_components = num_comps,
       .bit_size = bit_size,
-      .align = align,
+      .align = required_align,
       .shift = nir_mem_access_shift_method_scalar,
    };
 }
+
+static void bi_lower_texture_nir(nir_shader *nir, uint64_t gpu_id);
+static void bi_lower_texture_late_nir(nir_shader *nir, uint64_t gpu_id);
 
 void
 bifrost_postprocess_nir(nir_shader *nir, uint64_t gpu_id)
@@ -727,7 +736,7 @@ bifrost_postprocess_nir(nir_shader *nir, uint64_t gpu_id)
    NIR_PASS(_, nir, nir_opt_sink, move_all);
    NIR_PASS(_, nir, nir_opt_move, move_all);
 
-   bifrost_lower_texture_nir(nir, gpu_id);
+   bi_lower_texture_nir(nir, gpu_id);
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       NIR_PASS(_, nir, pan_nir_lower_noperspective_fs);
@@ -816,10 +825,12 @@ bifrost_postprocess_nir(nir_shader *nir, uint64_t gpu_id)
    NIR_PASS(_, nir, nir_lower_alu);
    NIR_PASS(_, nir, nir_lower_frag_coord_to_pixel_coord);
    NIR_PASS(_, nir, pan_nir_lower_var_special_pan);
+
+   bi_lower_texture_late_nir(nir, gpu_id);
 }
 
-void
-bifrost_lower_texture_nir(nir_shader *nir, uint64_t gpu_id)
+static void
+bi_lower_texture_nir(nir_shader *nir, uint64_t gpu_id)
 {
    NIR_PASS(_, nir, nir_lower_image_atomics_to_global, NULL, NULL);
 
@@ -964,8 +975,13 @@ pan_nir_lower_buf_image_access(nir_shader *shader, unsigned arch)
                                      nir_metadata_control_flow, &arch);
 }
 
-void
-bifrost_lower_texture_late_nir(nir_shader *nir, uint64_t gpu_id)
+/* This must be called after any lowering of resource indices
+ * (panfrost_nir_lower_res_indices / panvk_per_arch(nir_lower_descriptors))
+ * and lowering of attribute indices (pan_nir_lower_image_index /
+ * pan_nir_lower_texel_buffer_fetch_index)
+ */
+static void
+bi_lower_texture_late_nir(nir_shader *nir, uint64_t gpu_id)
 {
    NIR_PASS(_, nir, pan_nir_lower_texel_buffer_fetch, pan_arch(gpu_id));
    NIR_PASS(_, nir, pan_nir_lower_buf_image_access, pan_arch(gpu_id));

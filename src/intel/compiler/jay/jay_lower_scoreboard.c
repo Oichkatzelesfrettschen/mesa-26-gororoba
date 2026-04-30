@@ -191,7 +191,6 @@ lower_regdist_local(jay_function *func, jay_block *block, u32_per_pipe *access)
 {
    struct swsb_state state = { .access = access };
    jay_inst *last_sync = NULL;
-   bool need_deswizzle_wait = false;
 
    jay_foreach_inst_in_block_safe(block, I) {
       enum tgl_pipe exec_pipe = inst_exec_pipe(func->shader->devinfo, I);
@@ -199,18 +198,6 @@ lower_regdist_local(jay_function *func, jay_block *block, u32_per_pipe *access)
       if (I->op == JAY_OPCODE_SYNC) {
          last_sync = I;
          continue;
-      } else if (I->op == JAY_OPCODE_DESWIZZLE_16) {
-         need_deswizzle_wait = true;
-         state.ip[TGL_PIPE_INT]++;
-         continue;
-      }
-
-      /* Force a wait on the deswizzles at the start of the program. XXX: Is
-       * there a cleaner way to deal with this?
-       */
-      if (need_deswizzle_wait) {
-         dep[TGL_PIPE_INT] = state.ip[TGL_PIPE_INT];
-         need_deswizzle_wait = false;
       }
 
       /* Write-after-{write, read} */
@@ -239,7 +226,7 @@ lower_regdist_local(jay_function *func, jay_block *block, u32_per_pipe *access)
       jay_foreach_pipe(p) {
          if (dep[p]) {
             jay_foreach_pipe(q) {
-               if (dep[q] && state.finished_ip[p][q] >= dep[q]) {
+               if (p != q && dep[q] && state.finished_ip[p][q] >= dep[q]) {
                   dep[q] = 0;
                }
             }
@@ -285,11 +272,16 @@ lower_regdist_local(jay_function *func, jay_block *block, u32_per_pipe *access)
       };
 
       /* Fold the immediate preceding SYNC.nop into this instruction, allowing
-       * us to wait on both ALU and a SEND in the same annotation.
+       * us to wait on both ALU and a SEND in the same annotation. We cannot do
+       * this safely in the presence of predication or SIMD splitting that could
+       * cause any part of the instruction to get shot down, skipping the sync
+       * for future instructions (at least not without more tricky logic).
        */
       if (last_sync &&
           jay_sync_op(last_sync) == TGL_SYNC_NOP &&
           I->dep.mode == TGL_SBID_NULL &&
+          !I->predication &&
+          !jay_simd_split(func->shader, I) &&
           (I->dep.regdist == 0 ||
            inferred_sync_pipe(func->shader->devinfo, I) == I->dep.pipe)) {
 

@@ -486,7 +486,6 @@ panvk_preprocess_nir(struct vk_physical_device *vk_pdev,
     *
     * This would give us a better place to do panvk-specific lowering.
     */
-   pan_nir_lower_texture_early(nir, pdev->kmod.dev->props.gpu_id);
    NIR_PASS(_, nir, nir_lower_system_values);
 
    nir_lower_compute_system_values_options options = {
@@ -968,8 +967,6 @@ panvk_compile_nir(struct panvk_device *dev, nir_shader *nir,
    /* We're going to modify this so make our own copy to be nicer to callers */
    struct pan_compile_inputs input = *compile_input;
 
-   pan_postprocess_nir(nir, input.gpu_id);
-
    if (nir->info.stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, panvk_lower_load_vs_input,
                nir_metadata_control_flow, NULL);
@@ -981,7 +978,8 @@ panvk_compile_nir(struct panvk_device *dev, nir_shader *nir,
       NIR_PASS(_, nir, pan_nir_lower_image_index, MAX_VS_ATTRIBS);
       NIR_PASS(_, nir, pan_nir_lower_texel_buffer_fetch_index, MAX_VS_ATTRIBS);
    }
-   pan_nir_lower_texture_late(nir, input.gpu_id);
+
+   pan_postprocess_nir(nir, input.gpu_id);
 
    if (noperspective_varyings && nir->info.stage == MESA_SHADER_VERTEX) {
       NIR_PASS(_, nir, nir_inline_sysval,

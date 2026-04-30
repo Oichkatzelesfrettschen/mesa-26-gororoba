@@ -1222,6 +1222,7 @@ emit_intrinsic_copy_ubo_to_uniform(struct ir3_context *ctx,
    struct ir3_instruction *idx =
       ir3_get_src_shared(ctx, &intr->src[0], use_shared)[0];
    struct ir3_instruction *ldc = ir3_LDC_K(b, idx, 0, offset, 0);
+   ldc->cat6.dst_offset = base;
    ldc->cat6.iim_val = size;
    ldc->barrier_class = ldc->barrier_conflict = IR3_BARRIER_CONST_W;
 
@@ -1243,16 +1244,17 @@ emit_intrinsic_copy_global_to_uniform(struct ir3_context *ctx,
    unsigned size = nir_intrinsic_range(intr);
    unsigned dst = nir_intrinsic_range_base(intr);
    unsigned addr_offset = nir_intrinsic_base(intr);
-   unsigned dst_lo = dst & 0xff;
-   unsigned dst_hi = dst >> 8;
 
    struct ir3_instruction *a1 = NULL;
-   if (dst_hi)
-      a1 = ir3_create_addr1(&ctx->build, dst_hi << 8);
+   unsigned dst_imm = dst;
+   if (dst > 256) {
+      a1 = ir3_create_addr1(&ctx->build, dst);
+      dst_imm = 0;
+   }
 
    struct ir3_instruction *addr =
-      ir3_collect(b, ir3_get_src(ctx, &intr->src[0])[0]);
-   struct ir3_instruction *ldg = ir3_LDG_K(b, create_immed(b, dst_lo), 0, addr, 0, 
+      ir3_collect(b, ir3_get_src_shared(ctx, &intr->src[0], true)[0]);
+   struct ir3_instruction *ldg = ir3_LDG_K(b, create_immed(b, dst_imm), 0, addr, 0,
                                            create_immed(b, addr_offset), 0,
                                            create_immed(b, size), 0);
    ldg->barrier_class = ldg->barrier_conflict = IR3_BARRIER_CONST_W;
@@ -2383,7 +2385,7 @@ get_reduce_identity(nir_op opc, unsigned size)
    switch (opc) {
    case nir_op_iadd:
       return 0;
-   case nir_op_fadd: 
+   case nir_op_fadd:
       return size == 32 ? fui(0.0f) : _mesa_float_to_half(0.0f);
    case nir_op_imul:
       return 1;
@@ -2459,7 +2461,7 @@ emit_intrinsic_reduce(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    /* shared reg tied source */
    struct ir3_register *reduce_init = __ssa_src(scan, identity, IR3_REG_SHARED);
    ir3_reg_tie(reduce, reduce_init);
-   
+
    struct ir3_register *dst;
    switch (intr->intrinsic) {
    case nir_intrinsic_reduce: dst = reduce; break;

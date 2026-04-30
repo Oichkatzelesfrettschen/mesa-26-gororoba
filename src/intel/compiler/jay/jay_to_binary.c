@@ -246,13 +246,15 @@ emit(struct brw_codegen *p,
    unsigned exec_size = jay_simd_width_physical(f->shader, I);
    // jay_print_inst(stdout, (jay_inst *) I);
 
-   /* Fix up SWSB dependencies for SIMD split instructions. The latter
-    * instructions do not need to redundantly wait on an SBID but might
-    * replicate their regdists.
-    */
+   /* Replicate the SWSB regdist for SIMD split instructions if needed */
    struct tgl_swsb dep =
       simd_offs && !I->replicate_dep ? tgl_swsb_null() : I->dep;
-   dep.mode = simd_offs ? TGL_SBID_NULL : dep.mode;
+
+   /* We do not allow SBID dependencies on SIMD split instructions since
+    * individual groups could get shot down. This would require more tracking
+    * and is unclear whether it's beneficial.
+    */
+   assert(simd_offs == 0 || I->dep.mode == TGL_SBID_NULL);
 
    if (I->decrement_dep) {
       unsigned delta = simd_offs * jay_macro_length(I);
@@ -262,15 +264,9 @@ emit(struct brw_codegen *p,
 
    brw_set_default_exec_size(p, util_logbase2(exec_size));
    brw_set_default_mask_control(p, jay_is_no_mask(I));
+   brw_set_default_group(p, simd_offs * exec_size);
    brw_set_default_swsb(p, dep);
    brw_set_default_saturate(p, I->saturate);
-
-   /* Quad swizzle can get split down to SIMD4 even on Xe2 where we don't have
-    * NibCtrl. Fortunately, it's NoMask so it doesn't matter.
-    */
-   if (I->op != JAY_OPCODE_QUAD_SWIZZLE) {
-      brw_set_default_group(p, simd_offs * exec_size);
-   }
 
    /* Grab the hardware predicate, corresponding either to a logical predicate
     * or SEL's selector.
@@ -366,10 +362,16 @@ emit(struct brw_codegen *p,
       brw_BFN(p, dst, SRC(0), SRC(1), SRC(2), brw_imm_ud(jay_bfn_ctrl(I)));
       break;
 
-   case JAY_OPCODE_DESWIZZLE_16:
+   case JAY_OPCODE_DESWIZZLE_ODD:
+      bool hi = simd_offs ? true : jay_deswizzle_odd_src2_hi(I);
+      brw_MOV(p, dst,
+              byte_offset(to_brw_reg(f, I, simd_offs, 0, false), hi ? 64 : 0));
+      break;
+
+   case JAY_OPCODE_DESWIZZLE_EVEN:
       brw_set_default_exec_size(p, BRW_EXECUTE_16);
-      brw_MOV(p, retype(xe2_vec8_grf(jay_deswizzle_16_dst(I), 0), BRW_TYPE_UD),
-              retype(xe2_vec8_grf(jay_deswizzle_16_src(I), 0), BRW_TYPE_UD));
+      brw_MOV(p, byte_offset(dst, 64),
+              byte_offset(SRC(0), jay_deswizzle_even_src_hi(I) * 64));
       break;
 
    case JAY_OPCODE_CVT: {
@@ -417,6 +419,10 @@ emit(struct brw_codegen *p,
       break;
 
    case JAY_OPCODE_QUAD_SWIZZLE:
+      /* Quad swizzle can get split down to SIMD4 even on Xe2 where we don't
+       * have NibCtrl.  Fortunately, it's NoMask so it doesn't matter.
+       */
+      brw_set_default_group(p, 0);
       brw_MOV(p, dst, quad_swizzle(SRC(0), I));
       break;
 
@@ -498,7 +504,18 @@ emit(struct brw_codegen *p,
    }
 
    if (cmod != BRW_CONDITIONAL_NONE) {
-      brw_eu_inst_set_cond_modifier(p->devinfo, brw_eu_last_inst(p), cmod);
+      if (I->op != JAY_OPCODE_BFN) {
+         brw_eu_inst_set_cond_modifier(p->devinfo, brw_eu_last_inst(p), cmod);
+      } else {
+         unsigned cc = cmod == BRW_CONDITIONAL_L    ? 3 :
+                       cmod == BRW_CONDITIONAL_G    ? 2 :
+                       cmod == BRW_CONDITIONAL_Z    ? 1 :
+                       cmod == BRW_CONDITIONAL_NONE ? 0 :
+                                                      -1;
+         assert(cc < 4 && "invalid cmod for bfn");
+         brw_eu_inst_set_boolean_func_cond_modifier(p->devinfo,
+                                                    brw_eu_last_inst(p), cc);
+      }
    }
 
    assert(p->nr_insn == (nr_ins_before + jay_macro_length(I)) &&

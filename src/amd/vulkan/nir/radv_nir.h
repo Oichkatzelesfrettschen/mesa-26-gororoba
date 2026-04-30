@@ -57,11 +57,7 @@ bool radv_nir_lower_intrinsics_early(nir_shader *nir, bool lower_view_index_to_z
 
 bool radv_nir_lower_view_index(nir_shader *nir);
 
-bool radv_nir_lower_viewport_to_zero(nir_shader *nir);
-
 bool radv_nir_export_multiview(nir_shader *nir);
-
-void radv_nir_lower_io_vars_to_scalar(nir_shader *nir, nir_variable_mode mask);
 
 unsigned radv_map_io_driver_location(unsigned semantic);
 

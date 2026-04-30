@@ -609,8 +609,6 @@ radv_shader_spirv_to_nir(struct radv_device *device, struct radv_shader_stage *s
       NIR_PASS(_, nir, nir_split_per_member_structs);
 
       if (nir->info.stage == MESA_SHADER_FRAGMENT)
-         NIR_PASS(_, nir, nir_opt_vectorize_io_vars, nir_var_shader_out);
-      if (nir->info.stage == MESA_SHADER_FRAGMENT)
          NIR_PASS(_, nir, nir_lower_input_attachments,
                   &(nir_input_attachment_options){
                      .use_ia_coord_intrin = true,
@@ -785,6 +783,7 @@ radv_shader_spirv_to_nir(struct radv_device *device, struct radv_shader_stage *s
       radv_optimize_nir(nir, false);
 
       NIR_PASS(_, nir, nir_opt_memcpy);
+      NIR_PASS(_, nir, nir_opt_deref);
    }
 
    /* We call nir_lower_var_copies() after the first radv_optimize_nir()
@@ -800,8 +799,12 @@ radv_shader_spirv_to_nir(struct radv_device *device, struct radv_shader_stage *s
       NIR_PASS(progress, nir, nir_lower_flrp, lower_flrp, false /* always precise */);
 
    if (stage->key.descriptor_heap) {
+      const vk_nir_lower_descriptor_heaps_options heap_options = {
+         .lower_shader_record_index_to_non_uniform = true,
+      };
+
       progress = false;
-      NIR_PASS(progress, nir, vk_nir_lower_descriptor_heaps, stage->layout.mapping, &embedded_samplers);
+      NIR_PASS(progress, nir, vk_nir_lower_descriptor_heaps, stage->layout.mapping, &heap_options, &embedded_samplers);
       if (progress) {
          NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform | nir_var_image, NULL);
          NIR_PASS(_, nir, nir_opt_dce);
@@ -2962,7 +2965,8 @@ radv_parse_binary_debug_info(struct radv_device *device, const struct radv_shade
 
 VkResult
 radv_shader_create_uncached(struct radv_device *device, const struct radv_shader_binary *binary, bool replayable,
-                            struct radv_serialized_shader_arena_block *replay_block, struct radv_shader **out_shader)
+                            struct radv_serialized_shader_arena_block *replay_block, struct radv_shader_debug_info *dbg,
+                            struct radv_shader **out_shader)
 {
    VkResult result = VK_SUCCESS;
    struct radv_shader *shader = calloc(1, sizeof(struct radv_shader));
@@ -2979,6 +2983,9 @@ radv_shader_create_uncached(struct radv_device *device, const struct radv_shader
    shader->info = binary->info;
    shader->config = binary->config;
    shader->max_waves = radv_get_max_waves(device, &shader->config, &shader->info);
+
+   if (dbg)
+      shader->dbg = *dbg;
 
    if (binary->type == RADV_BINARY_TYPE_RTLD) {
 #if !defined(USE_LIBELF)
@@ -3450,7 +3457,8 @@ radv_create_trap_handler_shader(struct radv_device *device)
    info.type = RADV_SHADER_TYPE_TRAP_HANDLER;
 
    struct radv_shader_args args;
-   radv_declare_shader_args(device, NULL, &info, stage, MESA_SHADER_NONE, &args);
+   struct radv_shader_debug_info debug = {0};
+   radv_declare_shader_args(device, NULL, &info, stage, MESA_SHADER_NONE, &args, &debug);
 
 #if AMD_LLVM_AVAILABLE
    if (options.dump_shader || options.record_ir)
@@ -3470,7 +3478,7 @@ radv_create_trap_handler_shader(struct radv_device *device)
    radv_postprocess_binary_config(device, binary, &args);
 
    struct radv_shader *shader;
-   radv_shader_create_uncached(device, binary, false, NULL, &shader);
+   radv_shader_create_uncached(device, binary, false, NULL, &debug, &shader);
    radv_parse_binary_debug_info(device, binary, &shader->dbg);
 
    if (options.dump_shader) {
@@ -3509,7 +3517,8 @@ radv_aco_build_shader_part(void **bin, uint32_t num_sgprs, uint32_t num_vgprs, c
 }
 
 struct radv_shader *
-radv_compile_rt_prolog(struct radv_device *device, struct radv_shader_stage *stage)
+radv_compile_rt_prolog(struct radv_device *device, struct radv_shader_stage *stage,
+                       struct radv_shader_debug_info *debug)
 {
    const struct radv_physical_device *pdev = radv_device_physical(device);
    struct radv_instance *instance = radv_physical_device_instance(pdev);
@@ -3543,7 +3552,7 @@ radv_compile_rt_prolog(struct radv_device *device, struct radv_shader_stage *sta
    binary->info = stage->info;
 
    radv_postprocess_binary_config(device, binary, &stage->args);
-   radv_shader_create_uncached(device, binary, false, NULL, &prolog);
+   radv_shader_create_uncached(device, binary, false, NULL, debug, &prolog);
    if (!prolog || radv_parse_binary_debug_info(device, binary, &prolog->dbg) != VK_SUCCESS)
       goto done;
 
@@ -3584,7 +3593,7 @@ radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_ke
    struct radv_graphics_state_key gfx_state = {0};
 
    radv_declare_shader_args(device, &gfx_state, &info, key->next_stage,
-                            key->next_stage != MESA_SHADER_VERTEX ? MESA_SHADER_VERTEX : MESA_SHADER_NONE, &args);
+                            key->next_stage != MESA_SHADER_VERTEX ? MESA_SHADER_VERTEX : MESA_SHADER_NONE, &args, NULL);
 
    info.user_sgprs_locs = args.user_sgprs_locs;
    info.inline_push_constant_mask = args.ac.inline_push_const_mask;

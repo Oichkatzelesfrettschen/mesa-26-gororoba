@@ -21,39 +21,6 @@ type_size_vec4(const struct glsl_type *type, bool bindless)
    return glsl_count_attribute_slots(type, false);
 }
 
-void
-radv_nir_lower_io_vars_to_scalar(nir_shader *nir, nir_variable_mode mask)
-{
-   bool progress = false;
-
-   NIR_PASS(progress, nir, nir_lower_io_vars_to_scalar, mask);
-   if (progress) {
-      /* Optimize the new vector code and then remove dead vars */
-      NIR_PASS(_, nir, nir_opt_copy_prop);
-      NIR_PASS(_, nir, nir_opt_shrink_vectors, true);
-
-      if (mask & nir_var_shader_out) {
-         /* Optimize swizzled movs of load_const for nir_link_opt_varyings's constant propagation. */
-         NIR_PASS(_, nir, nir_opt_constant_folding);
-
-         /* For nir_link_opt_varyings's duplicate input opt */
-         NIR_PASS(_, nir, nir_opt_cse);
-      }
-
-      /* Run copy-propagation to help remove dead output variables (some shaders have useless copies
-       * to/from an output), so compaction later will be more effective.
-       *
-       * This will have been done earlier but it might not have worked because the outputs were
-       * vector.
-       */
-      if (nir->info.stage == MESA_SHADER_TESS_CTRL)
-         NIR_PASS(_, nir, nir_opt_copy_prop_vars);
-
-      NIR_PASS(_, nir, nir_opt_dce);
-      NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp | nir_var_shader_in | nir_var_shader_out, NULL);
-   }
-}
-
 typedef struct {
    uint64_t always_per_vertex;
    uint64_t potentially_per_primitive;
