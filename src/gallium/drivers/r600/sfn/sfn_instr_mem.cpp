@@ -882,9 +882,11 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
     */
    auto& vf = shader.value_factory();
 
-   unsigned rat_id = nir_intrinsic_id_base(intr);
+   unsigned const rat_id_base = nir_intrinsic_id_base(intr);
+   unsigned rat_id = rat_id_base;
    PRegister rat_id_offset = nullptr;
    const nir_const_value * const uav_offset_const = nir_src_as_const_value(intr->src[0]);
+   unsigned const uav_offset_value = uav_offset_const ? uav_offset_const->u32 : 0;
    if (uav_offset_const != nullptr) {
       rat_id += uav_offset_const->u32;
    } else {
@@ -996,6 +998,39 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
               << " compare=src3.x->data."
               << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w") << "\n";
    }
+   bool const observe_rat_atomics =
+      debug_get_bool_option("TERAKAN_OBSERVE_RAT_ATOMICS", false);
+   bool const observe_cmpxchg_address =
+      observe_rat_atomics ||
+      debug_get_bool_option("TERAKAN_OBSERVE_CMPXCHG_ADDRESS", false);
+   if (cmpxchg_op && observe_cmpxchg_address) {
+      sfn_log << SfnLog::trans
+              << "RAT_OBSERVE_CMPXCHG_ADDRESS"
+              << " path=uav_store"
+              << " intrinsic=" << nir_intrinsic_infos[intr->intrinsic].name
+              << " rat_id_base=" << rat_id_base
+              << " rat_id_final=" << rat_id
+              << " uav_offset_const_present=" << (uav_offset_const ? 1 : 0)
+              << " uav_offset_const_value=" << uav_offset_value
+              << " coord_components=" << coord_components
+              << " value_components=" << value_components
+              << " coord_vec=" << coord
+              << " data_vec=" << data_vec4
+              << " rat_opcode=" << rat_opcode
+              << " cf_opcode=" << rat_cf_opcode
+              << " comp_mask=" << CLAMP(comp_mask, 1u, 0xFu)
+              << " burst_count=1"
+              << " elem_size=" << elem_size_minus_one
+              << " ack=1"
+              << " compare_channel="
+              << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w")
+              << " replacement_channel=x";
+      if (rat_id_offset)
+         sfn_log << " rat_id_offset=" << *rat_id_offset;
+      else
+         sfn_log << " rat_id_offset=null";
+      sfn_log << "\n";
+   }
 
    auto store = new RatInstr(rat_cf_opcode,
                              static_cast<RatInstr::ERatOp>(rat_opcode),
@@ -1016,11 +1051,14 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
 {
    auto& vf = shader.value_factory();
 
-   unsigned rat_id = nir_intrinsic_id_base(intr);
-   unsigned return_id = nir_intrinsic_uav_return_id_base_r600(intr);
+   unsigned const rat_id_base = nir_intrinsic_id_base(intr);
+   unsigned const return_id_base = nir_intrinsic_uav_return_id_base_r600(intr);
+   unsigned rat_id = rat_id_base;
+   unsigned return_id = return_id_base;
    PRegister rat_id_offset = nullptr;
    PRegister return_id_offset = nullptr;
    const nir_const_value * const uav_offset_const = nir_src_as_const_value(intr->src[0]);
+   unsigned const uav_offset_value = uav_offset_const ? uav_offset_const->u32 : 0;
    if (uav_offset_const != nullptr) {
       rat_id += uav_offset_const->u32;
       return_id += uav_offset_const->u32;
@@ -1148,6 +1186,51 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
       sfn_log << SfnLog::trans
               << "RAT_RETURN_FETCH_OFFSET path=uav_returning offset="
               << *return_id_offset << "\n";
+   bool const observe_rat_atomics =
+      debug_get_bool_option("TERAKAN_OBSERVE_RAT_ATOMICS", false);
+   bool const observe_rat_return =
+      observe_rat_atomics ||
+      debug_get_bool_option("TERAKAN_OBSERVE_RAT_RETURN", false);
+   if (observe_rat_return) {
+      sfn_log << SfnLog::trans
+              << "RAT_OBSERVE_RETURN_BUFFER"
+              << " path=uav_returning"
+              << " intrinsic=" << nir_intrinsic_infos[intr->intrinsic].name
+              << " rat_id_base=" << rat_id_base
+              << " rat_id_final=" << rat_id
+              << " return_id_base=" << return_id_base
+              << " return_id_final=" << return_id
+              << " uav_offset_const_present=" << (uav_offset_const ? 1 : 0)
+              << " uav_offset_const_value=" << uav_offset_value
+              << " coord_components=" << coord_components
+              << " coord_vec=" << coord
+              << " data_vec=" << data_vec4
+              << " rat_opcode=" << uav_op
+              << " cf_opcode=" << cf_mem_rat
+              << " comp_mask=15"
+              << " burst_count=1"
+              << " elem_size=0"
+              << " ack=1"
+              << " wait_ack=1"
+              << " ack_rat_return_write=1"
+              << " return_address=" << *shader.rat_return_address()
+              << " fetch_resource=" << return_id
+              << " fetch_offset=0"
+              << " fetch_format="
+              << (return_fetch_fmt32 ? "fmt_32" : "fmt_32_32_32_32")
+              << " fetch_mfc=" << fetch_mfc
+              << " fetch_srf=" << return_fetch_srf
+              << " dest=" << dest;
+      if (rat_id_offset)
+         sfn_log << " rat_id_offset=" << *rat_id_offset;
+      else
+         sfn_log << " rat_id_offset=null";
+      if (return_id_offset)
+         sfn_log << " return_id_offset=" << *return_id_offset;
+      else
+         sfn_log << " return_id_offset=null";
+      sfn_log << "\n";
+   }
    if (return_fetch_srf)
       fetch->set_fetch_flag(FetchInstr::srf_mode);
    fetch->set_fetch_flag(FetchInstr::use_tc);
