@@ -17,6 +17,7 @@
 #include "sfn_virtualvalues.h"
 
 #include "util/format/u_format.h"
+#include "util/u_debug.h"
 
 namespace r600 {
 
@@ -923,15 +924,24 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
    if (scalar_buffer_store)
       shader.start_new_block(0);
 
+   bool const cmpxchg_cacheless =
+      cmpxchg_op && debug_get_bool_option("TERAKAN_EXPERIMENTAL_CMPXCHG_CACHELESS", false);
+   ECFOpCode const rat_cf_opcode =
+      (scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW || cmpxchg_cacheless)
+         ? cf_mem_rat_cacheless
+         : cf_mem_rat;
+
    sfn_log << SfnLog::trans
            << "RAT_ATOMIC_EMIT path=uav_store"
            << " intrinsic=" << nir_intrinsic_infos[intr->intrinsic].name
            << " uav_op=" << uav_op
            << " uav_op_base=" << uav_op_base
            << " rat_opcode=" << rat_opcode
+           << " cf_opcode=" << rat_cf_opcode
            << " rat_id=" << rat_id
            << " returning=0"
            << " cmpxchg=" << cmpxchg_op
+           << " cmpxchg_cacheless=" << cmpxchg_cacheless
            << " coord=" << coord
            << " data=" << data_vec4
            << " comp_mask=" << CLAMP(comp_mask, 1u, 0xFu)
@@ -944,9 +954,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
               << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w") << "\n";
    }
 
-   auto store = new RatInstr((scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW)
-                                 ? cf_mem_rat_cacheless
-                                 : cf_mem_rat,
+   auto store = new RatInstr(rat_cf_opcode,
                              static_cast<RatInstr::ERatOp>(rat_opcode),
                              data_vec4,
                              coord,
@@ -1054,13 +1062,22 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
    shader.chain_ssbo_read(wait);
    shader.emit_instruction(wait);
 
+   bool const return_fetch_fmt32 =
+      debug_get_bool_option("TERAKAN_EXPERIMENTAL_UAV_RETURN_FETCH_FMT32", false);
+   bool const return_fetch_mfc15 =
+      debug_get_bool_option("TERAKAN_EXPERIMENTAL_UAV_RETURN_FETCH_MFC15", false);
+   bool const return_fetch_srf =
+      debug_get_bool_option("TERAKAN_EXPERIMENTAL_UAV_RETURN_FETCH_SRF", false);
+   EVTXDataFormat const return_fetch_format =
+      return_fetch_fmt32 ? fmt_32 : fmt_32_32_32_32;
+
    auto fetch = new FetchInstr(vc_fetch,
                                dest,
                                {0, 1, 2, 3},
                                shader.rat_return_address(),
                                0,
                                no_index_offset,
-                               fmt_32_32_32_32,
+                               return_fetch_format,
                                vtx_nf_int,
                                vtx_es_none,
                                return_id,
@@ -1068,7 +1085,8 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
    unsigned mega_fetch_count = nir_intrinsic_mega_fetch_count_r600(intr);
    if (mega_fetch_count == 0)
       mega_fetch_count = sizeof(uint32_t) * intr->def.num_components;
-   fetch->set_mfc(CLAMP(mega_fetch_count, 1u, 16u) - 1);
+   unsigned const fetch_mfc = return_fetch_mfc15 ? 15u : CLAMP(mega_fetch_count, 1u, 16u) - 1;
+   fetch->set_mfc(fetch_mfc);
    sfn_log << SfnLog::trans
            << "RAT_RETURN_FETCH path=uav_returning"
            << " rat_opcode=" << uav_op
@@ -1076,8 +1094,9 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
            << " return_id=" << return_id
            << " return_address=" << *shader.rat_return_address()
            << " fetch_resource=" << return_id
-           << " fetch_format=fmt_32_32_32_32"
-           << " fetch_mfc=" << (CLAMP(mega_fetch_count, 1u, 16u) - 1)
+           << " fetch_format=" << (return_fetch_fmt32 ? "fmt_32" : "fmt_32_32_32_32")
+           << " fetch_mfc=" << fetch_mfc
+           << " fetch_srf=" << return_fetch_srf
            << " wait_ack=1"
            << " ack=1"
            << " ack_rat_return_write=1"
@@ -1086,6 +1105,8 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
       sfn_log << SfnLog::trans
               << "RAT_RETURN_FETCH_OFFSET path=uav_returning offset="
               << *return_id_offset << "\n";
+   if (return_fetch_srf)
+      fetch->set_fetch_flag(FetchInstr::srf_mode);
    fetch->set_fetch_flag(FetchInstr::use_tc);
    fetch->set_fetch_flag(FetchInstr::vpm);
    fetch->add_required_instr(wait);
