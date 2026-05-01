@@ -118,14 +118,15 @@ Assembler::lower(Shader *shader)
 
    ass.finalize();
 
-   /* TERAKAN_ISA_DUMP routes the post-assembly bytecode directly through
-    * r600_bytecode_disasm for Terakan compute shaders whose diagnostic
-    * path does not surface through the normal SFN log stream.
+   /* TERAKAN_ISA_DUMP_PREBUILD exposes SFN bytecode metadata before
+    * r600_bytecode_build materializes the raw dword stream.
     */
-   if (ass.m_result && getenv("TERAKAN_ISA_DUMP")) {
-      fprintf(stderr, "=== TERAKAN_ISA_ALU dump (post Assembler::lower) ===\n");
-      r600_bytecode_disasm(&m_sh->bc);
-      fprintf(stderr, "=== TERAKAN_ISA_ALU end ===\n");
+   if (ass.m_result && getenv("TERAKAN_ISA_DUMP_PREBUILD")) {
+      fprintf(stderr, "=== TERAKAN_ISA_PREBUILD dump (post Assembler::lower) ===\n");
+      fprintf(stderr, "bytecode ndw=%u ngpr=%u nstack=%u built=%u\n",
+              m_sh->bc.ndw, m_sh->bc.ngpr, m_sh->bc.nstack,
+              m_sh->bc.bytecode != nullptr);
+      fprintf(stderr, "=== TERAKAN_ISA_PREBUILD end ===\n");
       fflush(stderr);
    }
 
