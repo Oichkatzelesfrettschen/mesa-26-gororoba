@@ -371,6 +371,21 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
       const_cast<terakan_device *>(device)->profile.compile_count++;
    }
 
+   if (getenv("TERAKAN_ISA_DUMP")) {
+      fprintf(stderr, "=== TERAKAN_ISA_RAW dump (post r600_bytecode_build) ===\n");
+      fprintf(stderr, "shader_stage=%s bytecode ndw=%u ngpr=%u nstack=%u\n",
+              mesa_shader_stage_name(nir->info.stage), shader->shader.bc.ndw,
+              shader->shader.bc.ngpr, shader->shader.bc.nstack);
+      for (unsigned i = 0; i < shader->shader.bc.ndw; i += 4) {
+         fprintf(stderr, "%04u", i);
+         for (unsigned j = 0; j < 4 && i + j < shader->shader.bc.ndw; ++j)
+            fprintf(stderr, " %08x", shader->shader.bc.bytecode[i + j]);
+         fprintf(stderr, "\n");
+      }
+      fprintf(stderr, "=== TERAKAN_ISA_RAW end ===\n");
+      fflush(stderr);
+   }
+
    /* --- TERAKAN_DEBUG: ISA + VLIW analysis (linked list still valid here) --- */
    {
       struct terakan_physical_device const * const phys_dev =

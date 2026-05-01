@@ -129,10 +129,12 @@ Assembler::lower(Shader *shader)
     * bytecode unconditionally.  Kept guarded by env var so default
     * builds remain quiet.  See steinmarder findings
     * 2026-04-19-next-session-isa-clamp-audit-handoff.md for context. */
-   if (ass.m_result && getenv("TERAKAN_ISA_DUMP")) {
-      fprintf(stderr, "=== TERAKAN_ISA_ALU dump (post Assembler::lower) ===\n");
-      r600_bytecode_disasm(&m_sh->bc);
-      fprintf(stderr, "=== TERAKAN_ISA_ALU end ===\n");
+   if (ass.m_result && getenv("TERAKAN_ISA_DUMP_PREBUILD")) {
+      fprintf(stderr, "=== TERAKAN_ISA_PREBUILD dump (post Assembler::lower) ===\n");
+      fprintf(stderr, "bytecode ndw=%u ngpr=%u nstack=%u built=%u\n",
+              m_sh->bc.ndw, m_sh->bc.ngpr, m_sh->bc.nstack,
+              m_sh->bc.bytecode != nullptr);
+      fprintf(stderr, "=== TERAKAN_ISA_PREBUILD end ===\n");
       fflush(stderr);
    }
 
