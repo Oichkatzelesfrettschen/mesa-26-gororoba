@@ -34,6 +34,12 @@ printf 'rustfmt:  %s\n' "$(rustfmt --version)"
 printf 'clang-22: %s\n' "$(clang-22 --version | head -1)"
 printf '\ndistcc hosts: %s\n' "$(paste -sd ' ' ~/.distcc/hosts 2>/dev/null || echo '(~/.distcc/hosts missing)')"
 
+if [ -r "$HOME/.distcc/hosts" ] &&
+    grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$)' "$HOME/.distcc/hosts"; then
+    printf '\nraw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames such as *.local.\n' >&2
+    exit 1
+fi
+
 # Clean up the legacy wrapper dir if it exists from prior build-infra revisions.
 if [ -d /tmp/distcc-wrap ]; then
     rm -rf /tmp/distcc-wrap

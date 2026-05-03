@@ -4,16 +4,17 @@
 
 The x130e is the target machine, but it only has two local CPU cores. For
 Mesa/Terakan rebuilds, keep configuration and linking on x130e while offloading
-C and C++ compilation to the LAN distcc server DESKTOP-CKP9KB6.
+C and C++ compilation to LAN distcc servers reached by mDNS hostnames.
 
 ## What
 
 Current verified state:
 
 - Source tree: `/home/eirikr/workspaces/mesa/mesa-26-gororoba`.
-- Remote distcc server: `DESKTOP-CKP9KB6` at `10.0.0.109`.
-- distcc server port: `3632`, verified reachable from x130e.
-- distcc host spec for this lane: `DESKTOP-CKP9KB6/32,cpp,lzo`.
+- Remote distcc server: `DESKTOP-CKP9KB6.local`.
+- Optional Mac distcc server: `Eirikrs-MacBook-Air.local`.
+- distcc server port: `3632`, verified reachable from x130e before each run.
+- distcc host specs for this lane use `.local` names only.
 - Compiler: `clang-22` and `clang++-22` through ccache, with ccache misses sent through distcc.
 - Build profile: `build-infra/configs/terakan-distcc.meson`.
 - Target install prefix for the mesa-debug lane: `/usr/local/mesa-debug`.
@@ -44,7 +45,7 @@ rust = [/home/eirikr/.local/bin/sccache, /home/eirikr/.rustup/toolchains/stable-
 The critical distcc and Bobcat flags are:
 
 ```sh
-export DISTCC_HOSTS="DESKTOP-CKP9KB6/32,cpp,lzo"
+export DISTCC_HOSTS="DESKTOP-CKP9KB6.local/32,cpp,lzo Eirikrs-MacBook-Air.local/8,lzo"
 export CCACHE_PREFIX="distcc"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
@@ -78,7 +79,7 @@ export PREFIX=/usr/local/mesa-debug
 
 mkdir -p "$(dirname "$BUILDDIR")"
 
-export DISTCC_HOSTS="DESKTOP-CKP9KB6/32,cpp,lzo"
+export DISTCC_HOSTS="DESKTOP-CKP9KB6.local/32,cpp,lzo Eirikrs-MacBook-Air.local/8,lzo"
 export CCACHE_PREFIX="distcc"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
@@ -137,7 +138,7 @@ profile, so the successful installed build used:
 ```sh
 export BUILDDIR=/home/eirikr/workspaces/build/mesa-terakan-distcc-pump-no-rusticl
 export PREFIX=/usr/local/mesa-debug
-export DISTCC_HOSTS="DESKTOP-CKP9KB6/32,cpp,lzo"
+export DISTCC_HOSTS="DESKTOP-CKP9KB6.local/32,cpp,lzo Eirikrs-MacBook-Air.local/8,lzo"
 export CCACHE_PREFIX="distcc"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
@@ -198,9 +199,45 @@ deviceID   = 0x9802
 
 Notes:
 
-- `distcc-pump` used `DESKTOP-CKP9KB6`, but pump demoted to plain mode for WSI
+- `distcc-pump` used `DESKTOP-CKP9KB6.local`, but pump demoted to plain mode for WSI
   files after generated-header consistency warnings. Those files retried locally
   and the final no-rusticl build succeeded.
+
+## 2026-05-03 hostname and Mac worker audit
+
+The workspace policy is hostname-only: do not put raw DHCP IPv4 addresses in
+`/etc/hosts`, `~/.distcc/hosts`, build scripts, or prescriptive docs.
+
+On 2026-05-03, x130e had stale raw-IP `/etc/hosts` pins for both the Mac and
+desktop worker. Because `nsswitch.conf` checks `files` before mDNS, those pins
+overrode the current mDNS answers and made the Mac worker appear unreachable.
+The stale pins were removed and backed up on x130e at:
+
+```text
+/etc/hosts.codex-backup-20260503T1330Z
+```
+
+The Mac worker was then verified from x130e with:
+
+```sh
+DISTCC_HOSTS="Eirikrs-MacBook-Air.local/1,lzo" \
+  distcc /usr/bin/clang-22 -march=btver1 -mtune=btver1 \
+    -fno-emulated-tls -c /tmp/distcc_mac_probe.c \
+    -o /tmp/distcc_mac_probe.o
+file /tmp/distcc_mac_probe.o
+```
+
+The output object was an x86-64 ELF relocatable, so the Mac worker can compile
+Bobcat-targeted Terakan objects when reached through mDNS. The active no-pump
+host file was reduced to the reachable Mac worker while the desktop worker's
+distcc port timed out:
+
+```text
+Eirikrs-MacBook-Air.local/8,lzo
+```
+
+Do not re-add `DESKTOP-CKP9KB6.local` to `~/.distcc/hosts` until
+`nc -zvw4 DESKTOP-CKP9KB6.local 3632` succeeds from x130e.
 - The failed rusticl-enabled build log is
   `/home/eirikr/logs/mesa_gororoba_pump_build_20260426T003804Z.log`.
 - The successful no-rusticl build log is
