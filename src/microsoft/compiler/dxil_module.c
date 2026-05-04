@@ -1439,26 +1439,28 @@ static bool
 emit_struct_name(struct dxil_module *m, const char *name)
 {
    uint64_t temp[256];
-   assert(strlen(name) < ARRAY_SIZE(temp));
+   size_t len = strlen(name);
+   assert(len < ARRAY_SIZE(temp));
 
-   for (int i = 0; i < strlen(name); ++i)
+   for (int i = 0; i < len; ++i)
       temp[i] = name[i];
 
-   return emit_record(m, TYPE_CODE_STRUCT_NAME, temp, strlen(name));
+   return emit_record(m, TYPE_CODE_STRUCT_NAME, temp, len);
 }
 
 static bool
 emit_struct_name_char6(struct dxil_module *m, const char *name)
 {
    uint64_t temp[256];
-   assert(strlen(name) < ARRAY_SIZE(temp) - 1);
+   size_t len = strlen(name);
+   assert(len < ARRAY_SIZE(temp) - 1);
 
    temp[0] = TYPE_CODE_STRUCT_NAME;
-   for (int i = 0; i < strlen(name); ++i)
+   for (int i = 0; i < len; ++i)
       temp[i + 1] = name[i];
 
    return emit_type_table_abbrev_record(m, TYPE_TABLE_ABBREV_STRUCT_NAME,
-                                        temp, 1 + strlen(name));
+                                        temp, 1 + len);
 }
 
 static bool
@@ -2225,25 +2227,27 @@ static bool
 emit_target_triple(struct dxil_module *m, const char *triple)
 {
    uint64_t temp[256];
-   assert(strlen(triple) < ARRAY_SIZE(temp));
+   size_t len = strlen(triple);
+   assert(len < ARRAY_SIZE(temp));
 
-   for (int i = 0; i < strlen(triple); ++i)
+   for (int i = 0; i < len; ++i)
       temp[i] = triple[i];
 
-   return emit_record(m, DXIL_MODULE_CODE_TRIPLE, temp, strlen(triple));
+   return emit_record(m, DXIL_MODULE_CODE_TRIPLE, temp, len);
 }
 
 static bool
 emit_datalayout(struct dxil_module *m, const char *datalayout)
 {
    uint64_t temp[256];
-   assert(strlen(datalayout) < ARRAY_SIZE(temp));
+   size_t len = strlen(datalayout);
+   assert(len < ARRAY_SIZE(temp));
 
-   for (int i = 0; i < strlen(datalayout); ++i)
+   for (int i = 0; i < len; ++i)
       temp[i] = datalayout[i];
 
    return emit_record(m, DXIL_MODULE_CODE_DATALAYOUT,
-                      temp, strlen(datalayout));
+                      temp, len);
 }
 
 static const struct dxil_value *
@@ -2737,11 +2741,12 @@ static bool
 emit_symtab_entry(struct dxil_module *m, unsigned value, const char *name)
 {
    uint64_t temp[256];
-   assert(strlen(name) < ARRAY_SIZE(temp) - 2);
+   size_t len = strlen(name);
+   assert(len < ARRAY_SIZE(temp) - 2);
 
    temp[0] = VST_CODE_ENTRY;
    temp[1] = value;
-   for (int i = 0; i < strlen(name); ++i)
+   for (int i = 0; i < len; ++i)
       temp[i + 2] = (uint8_t)(name[i]);
 
    enum value_symtab_abbrev_id abbrev = VST_ABBREV_ENTRY_8;
@@ -2750,7 +2755,7 @@ emit_symtab_entry(struct dxil_module *m, unsigned value, const char *name)
    else if (is_char7_string(name))
       abbrev = VST_ABBREV_ENTRY_7;
 
-   return emit_value_symtab_abbrev_record(m, abbrev, temp, 2 + strlen(name));
+   return emit_value_symtab_abbrev_record(m, abbrev, temp, 2 + len);
 }
 
 static bool
@@ -3013,13 +3018,14 @@ static bool
 emit_metadata_string(struct dxil_module *m, const char *str)
 {
    uint64_t data[256];
-   assert(strlen(str) < ARRAY_SIZE(data) - 1);
+   size_t len = strlen(str);
+   assert(len < ARRAY_SIZE(data) - 1);
    data[0] = METADATA_STRING;
-   for (size_t i = 0; i < strlen(str); ++i)
+   for (size_t i = 0; i < len; ++i)
       data[i + 1] = (uint8_t)(str[i]);
 
    return emit_metadata_abbrev_record(m, METADATA_ABBREV_STRING,
-                                      data, strlen(str) + 1);
+                                      data, len + 1);
 }
 
 static bool
@@ -3067,13 +3073,14 @@ static bool
 emit_metadata_name(struct dxil_module *m, const char *name)
 {
    uint64_t data[256];
-   assert(strlen(name) < ARRAY_SIZE(data) - 1);
+   size_t len = strlen(name);
+   assert(len < ARRAY_SIZE(data) - 1);
    data[0] = METADATA_NAME;
-   for (size_t i = 0; i < strlen(name); ++i)
+   for (size_t i = 0; i < len; ++i)
       data[i + 1] = name[i];
 
    return emit_metadata_abbrev_record(m, METADATA_ABBREV_NAME,
-                                      data, strlen(name) + 1);
+                                      data, len + 1);
 }
 
 static bool
