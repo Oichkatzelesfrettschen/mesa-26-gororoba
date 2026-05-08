@@ -1869,9 +1869,9 @@ static void r600_emit_sampler_states(struct r600_context *rctx,
 
 			if (rview) {
 				/* The rv770 border color is fully compatible with
-				* evergreen. */
+				 * evergreen. */
 				evergreen_convert_border_color(&rstate->border_color,
-				                	       &border_color, &rview->base);
+							       &border_color, &rview->base);
 			} else {
 				border_color = rstate->border_color;
 			}
