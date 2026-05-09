@@ -13,6 +13,8 @@
 #include "sfn_shader.h"
 #include "sfn_virtualvalues.h"
 
+#include "util/u_debug.h"
+
 #include <algorithm>
 #include <sstream>
 
@@ -684,8 +686,15 @@ bool AluInstr::replace_src(int i, PVirtualValue new_src, uint32_t to_set,
    if (r)
       r->add_use(this);
 
-   m_source_modifiers |= to_set << (2 * i);
-   m_source_modifiers &= ~(to_clear  << (2 * i));
+   const uint32_t set_mask = to_set << (2 * i);
+   const uint32_t clear_mask = to_clear << (2 * i);
+   if (debug_get_bool_option("TERAKAN_EXPERIMENTAL_PRESERVE_REPLACED_SRC_MODS", false)) {
+      m_source_modifiers &= ~clear_mask;
+      m_source_modifiers |= set_mask;
+   } else {
+      m_source_modifiers |= set_mask;
+      m_source_modifiers &= ~clear_mask;
+   }
 
    return true;
 }
