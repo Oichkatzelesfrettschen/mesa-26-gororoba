@@ -40,6 +40,8 @@
 #include "vk_nir.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -332,6 +334,26 @@ terakan_lower_bit_size_callback(const nir_instr *instr, void *UNUSED data)
    return 0;
 }
 
+static bool
+terakan_get_experimental_wide_phi_select_limit(unsigned * const limit_out)
+{
+   char const * const limit_string =
+      getenv("TERAKAN_EXPERIMENTAL_WIDE_PHI_SELECT_LIMIT");
+   if (limit_string == NULL || limit_string[0] == '\0')
+      return false;
+
+   errno = 0;
+   char *limit_end = NULL;
+   unsigned long const parsed_limit = strtoul(limit_string, &limit_end, 0);
+   if (errno != 0 || limit_end == limit_string || limit_end[0] != '\0') {
+      *limit_out = UINT_MAX - 1;
+      return true;
+   }
+
+   *limit_out = parsed_limit >= UINT_MAX ? UINT_MAX - 1 : (unsigned)parsed_limit;
+   return true;
+}
+
 void
 terakan_shader_lower_and_optimize_post_link(
    nir_shader * const nir, struct terakan_pipeline_layout const * const pipeline_layout,
@@ -429,6 +451,34 @@ terakan_shader_lower_and_optimize_post_link(
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post terakan_nir_lower_bindings (%s) ---\n",
               mesa_shader_stage_name(nir->info.stage));
       nir_print_shader(nir, stderr);
+   }
+
+   unsigned wide_phi_select_limit = 0;
+   if (terakan_get_experimental_wide_phi_select_limit(&wide_phi_select_limit)) {
+      bool wide_phi_select_progress;
+      nir_opt_peephole_select_options wide_phi_select_options = {
+         .limit = wide_phi_select_limit,
+         .indirect_load_ok = false,
+         .expensive_alu_ok = true,
+      };
+
+      do {
+         wide_phi_select_progress = false;
+         NIR_PASS(wide_phi_select_progress, nir, nir_opt_peephole_select,
+                  &wide_phi_select_options);
+         if (wide_phi_select_progress) {
+            NIR_PASS(_, nir, nir_opt_copy_prop);
+            NIR_PASS(_, nir, nir_opt_dce);
+            NIR_PASS(_, nir, nir_opt_dead_cf);
+         }
+      } while (wide_phi_select_progress);
+
+      if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
+         fprintf(stderr,
+                 "TERAKAN_NIR_SPIRV: --- post TERAKAN_EXPERIMENTAL_WIDE_PHI_SELECT_LIMIT=%u (%s) ---\n",
+                 wide_phi_select_limit, mesa_shader_stage_name(nir->info.stage));
+         nir_print_shader(nir, stderr);
+      }
    }
 
    /* Perform lowerings on the level of basic building blocks after the interface has been set up.
