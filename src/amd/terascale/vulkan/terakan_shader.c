@@ -354,6 +354,277 @@ terakan_get_experimental_wide_phi_select_limit(unsigned * const limit_out)
    return true;
 }
 
+static bool
+terakan_get_experimental_segment_wide_phi(unsigned * const segment_size_out)
+{
+   char const * const segment_size_string =
+      getenv("TERAKAN_EXPERIMENTAL_SEGMENT_WIDE_PHI");
+   if (segment_size_string == NULL || segment_size_string[0] == '\0')
+      return false;
+
+   errno = 0;
+   char *segment_size_end = NULL;
+   unsigned long const parsed_segment_size =
+      strtoul(segment_size_string, &segment_size_end, 0);
+   if (errno != 0 || segment_size_end == segment_size_string ||
+       segment_size_end[0] != '\0' || parsed_segment_size < 2) {
+      *segment_size_out = 64;
+      return true;
+   }
+
+   *segment_size_out = parsed_segment_size >= UINT_MAX
+                          ? UINT_MAX - 1
+                          : (unsigned)parsed_segment_size;
+   return true;
+}
+
+static bool
+terakan_def_is_scalar_load_const(nir_def * const def, unsigned const bit_size,
+                                 nir_const_value * const value_out)
+{
+   if (def == NULL || def->num_components != 1 || def->bit_size != bit_size)
+      return false;
+
+   nir_instr * const instr = nir_def_instr(def);
+   if (instr->type != nir_instr_type_load_const)
+      return false;
+
+   nir_load_const_instr const * const load_const = nir_instr_as_load_const(instr);
+   if (load_const->def.num_components != 1 || load_const->def.bit_size != bit_size)
+      return false;
+
+   *value_out = load_const->value[0];
+   return true;
+}
+
+static bool
+terakan_collect_wide_phi_const_chain(nir_def *def, nir_const_value * const values,
+                                     unsigned const max_values,
+                                     unsigned * const value_count_out,
+                                     unsigned * const bit_size_out)
+{
+   unsigned value_count = 0;
+   unsigned bit_size = 0;
+
+   while (def != NULL) {
+      nir_instr * const instr = nir_def_instr(def);
+      if (instr->type != nir_instr_type_phi)
+         break;
+
+      nir_phi_instr * const phi = nir_instr_as_phi(instr);
+      if (phi->def.num_components != 1)
+         return false;
+
+      if (bit_size == 0)
+         bit_size = phi->def.bit_size;
+      else if (phi->def.bit_size != bit_size)
+         return false;
+
+      nir_phi_src *phi_sources[2] = { NULL, NULL };
+      unsigned phi_source_count = 0;
+      nir_foreach_phi_src(phi_source, phi) {
+         if (phi_source_count >= ARRAY_SIZE(phi_sources))
+            return false;
+         phi_sources[phi_source_count++] = phi_source;
+      }
+      if (phi_source_count != ARRAY_SIZE(phi_sources))
+         return false;
+
+      if (value_count >= max_values)
+         return false;
+
+      nir_const_value const_value;
+      nir_def *previous_def = NULL;
+      bool found_const = false;
+      for (unsigned phi_source_index = 0; phi_source_index < ARRAY_SIZE(phi_sources);
+           ++phi_source_index) {
+         nir_def * const source_def = phi_sources[phi_source_index]->src.ssa;
+         nir_const_value candidate_const_value;
+         if (!found_const &&
+             terakan_def_is_scalar_load_const(source_def, bit_size, &candidate_const_value)) {
+            const_value = candidate_const_value;
+            found_const = true;
+         } else if (previous_def == NULL) {
+            previous_def = source_def;
+         } else {
+            return false;
+         }
+      }
+
+      if (!found_const || previous_def == NULL)
+         return false;
+
+      values[value_count++] = const_value;
+      def = previous_def;
+   }
+
+   if (value_count < 2 || bit_size == 0)
+      return false;
+
+   for (unsigned i = 0; i < value_count / 2; ++i) {
+      nir_const_value const value_tmp = values[i];
+      values[i] = values[value_count - 1 - i];
+      values[value_count - 1 - i] = value_tmp;
+   }
+
+   *value_count_out = value_count;
+   *bit_size_out = bit_size;
+   return true;
+}
+
+static nir_def *
+terakan_find_wide_phi_selector(nir_function_impl * const impl, unsigned const case_count)
+{
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_alu)
+            continue;
+
+         nir_alu_instr * const alu = nir_instr_as_alu(instr);
+         if (alu->op != nir_op_umod || alu->def.num_components != 1 ||
+             alu->def.bit_size != 32)
+            continue;
+
+         nir_const_value const * const divisor = nir_src_as_const_value(alu->src[1].src);
+         if (divisor != NULL && divisor->u32 == case_count)
+            return &alu->def;
+      }
+   }
+
+   return NULL;
+}
+
+static nir_def *
+terakan_build_segment_local_const_select(nir_builder * const b, nir_def * const selector,
+                                         nir_const_value const * const values,
+                                         unsigned const value_count,
+                                         unsigned const segment_size,
+                                         unsigned const bit_size,
+                                         unsigned const segment_index)
+{
+   unsigned const segment_first = segment_index * segment_size;
+   unsigned const segment_last = MIN2(value_count, segment_first + segment_size);
+   nir_def *segment_result = nir_undef(b, 1, bit_size);
+
+   for (unsigned value_index = segment_first; value_index < segment_last; ++value_index) {
+      nir_def * const previous_segment_result = segment_result;
+      nir_if * const case_if = nir_push_if(b, nir_ieq_imm(b, selector, value_index));
+      nir_def * const case_value = nir_build_imm(b, 1, bit_size, &values[value_index]);
+      nir_pop_if(b, case_if);
+      segment_result = nir_if_phi(b, case_value, previous_segment_result);
+   }
+
+   return segment_result;
+}
+
+static nir_def *
+terakan_build_segment_tree_const_select(nir_builder * const b, nir_def * const selector,
+                                        nir_def * const segment_selector,
+                                        nir_const_value const * const values,
+                                        unsigned const value_count,
+                                        unsigned const segment_size,
+                                        unsigned const bit_size,
+                                        unsigned const first_segment,
+                                        unsigned const segment_count)
+{
+   if (segment_count == 1) {
+      return terakan_build_segment_local_const_select(b, selector, values, value_count,
+                                                      segment_size, bit_size,
+                                                      first_segment);
+   }
+
+   unsigned const left_count = segment_count / 2;
+   unsigned const right_count = segment_count - left_count;
+   unsigned const split_segment = first_segment + left_count;
+   nir_if * const segment_if =
+      nir_push_if(b, nir_ult_imm(b, segment_selector, split_segment));
+   nir_def * const left_result =
+      terakan_build_segment_tree_const_select(b, selector, segment_selector, values,
+                                              value_count, segment_size, bit_size,
+                                              first_segment, left_count);
+
+   nir_push_else(b, segment_if);
+   nir_def * const right_result =
+      terakan_build_segment_tree_const_select(b, selector, segment_selector, values,
+                                              value_count, segment_size, bit_size,
+                                              split_segment, right_count);
+
+   nir_pop_if(b, segment_if);
+   return nir_if_phi(b, left_result, right_result);
+}
+
+static nir_def *
+terakan_build_segmented_const_select(nir_builder * const b, nir_def * const selector,
+                                     nir_const_value const * const values,
+                                     unsigned const value_count,
+                                     unsigned const segment_size,
+                                     unsigned const bit_size)
+{
+   unsigned const segment_count = (value_count + segment_size - 1) / segment_size;
+   nir_def * const segment_selector = nir_udiv_imm(b, selector, segment_size);
+   return terakan_build_segment_tree_const_select(b, selector, segment_selector, values,
+                                                  value_count, segment_size, bit_size, 0,
+                                                  segment_count);
+}
+
+static bool
+terakan_segment_wide_phi_impl(nir_function_impl * const impl, unsigned const segment_size)
+{
+   enum { max_cases = 2048 };
+   bool progress = false;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr * const intrin = nir_instr_as_intrinsic(instr);
+         if (intrin->intrinsic != nir_intrinsic_uav_instr_r600 ||
+             intrin->num_components != 1 || intrin->src[2].ssa == NULL ||
+             intrin->src[2].ssa->num_components != 1)
+            continue;
+
+         nir_const_value values[max_cases];
+         unsigned value_count = 0;
+         unsigned bit_size = 0;
+         if (!terakan_collect_wide_phi_const_chain(intrin->src[2].ssa, values, max_cases,
+                                                   &value_count, &bit_size) ||
+             value_count <= segment_size)
+            continue;
+
+         nir_def * const selector = terakan_find_wide_phi_selector(impl, value_count);
+         if (selector == NULL)
+            continue;
+
+         nir_builder builder = nir_builder_at(nir_before_instr(&intrin->instr));
+         nir_def * const segmented_value =
+            terakan_build_segmented_const_select(&builder, selector, values, value_count,
+                                                 segment_size, bit_size);
+         if (segmented_value == NULL)
+            continue;
+
+         nir_src_rewrite(&intrin->src[2], segmented_value);
+         progress = true;
+
+         fprintf(stderr,
+                 "TERAKAN_EXPERIMENTAL_SEGMENT_WIDE_PHI: segmented %u-case uav value with segment size %u\n",
+                 value_count, segment_size);
+      }
+   }
+
+   return nir_progress(progress, impl, nir_metadata_none);
+}
+
+static bool
+terakan_segment_wide_phi(nir_shader * const nir, unsigned const segment_size)
+{
+   bool progress = false;
+   nir_foreach_function_impl(impl, nir) {
+      progress |= terakan_segment_wide_phi_impl(impl, segment_size);
+   }
+   return progress;
+}
+
 void
 terakan_shader_lower_and_optimize_post_link(
    nir_shader * const nir, struct terakan_pipeline_layout const * const pipeline_layout,
@@ -477,6 +748,26 @@ terakan_shader_lower_and_optimize_post_link(
          fprintf(stderr,
                  "TERAKAN_NIR_SPIRV: --- post TERAKAN_EXPERIMENTAL_WIDE_PHI_SELECT_LIMIT=%u (%s) ---\n",
                  wide_phi_select_limit, mesa_shader_stage_name(nir->info.stage));
+         nir_print_shader(nir, stderr);
+      }
+   }
+
+   unsigned segment_wide_phi_size = 0;
+   if (terakan_get_experimental_segment_wide_phi(&segment_wide_phi_size)) {
+      if (terakan_segment_wide_phi(nir, segment_wide_phi_size)) {
+         bool cleanup_progress;
+         do {
+            cleanup_progress = false;
+            NIR_PASS(cleanup_progress, nir, nir_opt_copy_prop);
+            NIR_PASS(cleanup_progress, nir, nir_opt_dce);
+            NIR_PASS(cleanup_progress, nir, nir_opt_dead_cf);
+         } while (cleanup_progress);
+      }
+
+      if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
+         fprintf(stderr,
+                 "TERAKAN_NIR_SPIRV: --- post TERAKAN_EXPERIMENTAL_SEGMENT_WIDE_PHI=%u (%s) ---\n",
+                 segment_wide_phi_size, mesa_shader_stage_name(nir->info.stage));
          nir_print_shader(nir, stderr);
       }
    }
