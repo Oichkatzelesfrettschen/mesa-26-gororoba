@@ -14,8 +14,11 @@
 #include "sfn_liverangeevaluator.h"
 #include "sfn_shader.h"
 
+#include "util/u_debug.h"
+
 #include <algorithm>
 #include <cassert>
+#include <iostream>
 #include <limits>
 #include <queue>
 
@@ -491,6 +494,77 @@ struct SpillCandidate {
    Register *reg;
 };
 
+struct LiveRangePressureSummary {
+   unsigned live_range_count;
+   unsigned max_component_pressure;
+   int max_component;
+};
+
+static bool
+debug_sfn_ra_spill_enabled()
+{
+   return debug_get_bool_option("TERAKAN_DEBUG_SFN_RA_SPILL", false);
+}
+
+static int
+debug_sfn_ra_spill_max_iterations(int default_max_spill_iterations)
+{
+   int64_t override = debug_get_num_option(
+      "TERAKAN_DEBUG_SFN_RA_SPILL_MAX_ITER",
+      default_max_spill_iterations);
+
+   if (override < 0)
+      return default_max_spill_iterations;
+
+   return static_cast<int>(override);
+}
+
+static LiveRangePressureSummary
+summarize_live_range_pressure(LiveRangeMap& lrm)
+{
+   LiveRangePressureSummary summary{0, 0, -1};
+
+   for (int comp = 0; comp < 4; ++comp) {
+      auto& live_ranges = lrm.component(comp);
+      for (auto& candidate : live_ranges) {
+         if (candidate.m_start == -1 && candidate.m_end == -1)
+            continue;
+
+         ++summary.live_range_count;
+
+         unsigned pressure = 0;
+         for (auto& active : live_ranges) {
+            if (active.m_start == -1 && active.m_end == -1)
+               continue;
+
+            if (active.m_start <= candidate.m_start &&
+                active.m_end > candidate.m_start) {
+               ++pressure;
+            }
+         }
+
+         if (pressure > summary.max_component_pressure) {
+            summary.max_component_pressure = pressure;
+            summary.max_component = comp;
+         }
+      }
+   }
+
+   return summary;
+}
+
+static void
+log_spill_pressure(const char *event,
+                   int iter,
+                   const LiveRangePressureSummary& summary)
+{
+   std::cerr << "TERAKAN_SFN_RA_SPILL event=" << event
+             << " iter=" << iter
+             << " live_ranges=" << summary.live_range_count
+             << " max_component_pressure=" << summary.max_component_pressure
+             << " max_component=" << summary.max_component << "\n";
+}
+
 static SpillCandidate
 select_spill_candidate(LiveRangeMap& lrm, const Interference& ifg)
 {
@@ -536,21 +610,32 @@ register_allocation_with_spill(LiveRangeMap& lrm,
                                 Shader& shader,
                                 int max_spill_iterations)
 {
+   bool const instrument_spill = debug_sfn_ra_spill_enabled();
+   int const effective_max_spill_iterations =
+      debug_sfn_ra_spill_max_iterations(max_spill_iterations);
+
    /* First try without spilling */
    if (register_allocation(lrm))
       return true;
 
    sfn_log << SfnLog::merge << "RA failed, attempting spill (up to "
-           << max_spill_iterations << " iterations)\n";
+           << effective_max_spill_iterations << " iterations)\n";
+
+   if (instrument_spill)
+      log_spill_pressure("initial_fail", -1, summarize_live_range_pressure(lrm));
 
    int scratch_slot = 0;
 
-   for (int iter = 0; iter < max_spill_iterations; ++iter) {
+   for (int iter = 0; iter < effective_max_spill_iterations; ++iter) {
       /* Re-evaluate liveness after any prior spill modifications */
       auto fresh_lrm = LiveRangeEvaluator().run(shader);
 
       /* Build interference for fresh LRM */
       Interference ifg(fresh_lrm);
+
+      auto fresh_pressure = summarize_live_range_pressure(fresh_lrm);
+      if (instrument_spill)
+         log_spill_pressure("iter_begin", iter, fresh_pressure);
 
       /* Select best spill candidate */
       auto candidate = select_spill_candidate(fresh_lrm, ifg);
@@ -565,6 +650,17 @@ register_allocation_with_spill(LiveRangeMap& lrm,
               << ", ifg=" << candidate.interference
               << ", benefit=" << candidate.benefit
               << ") to scratch slot " << scratch_slot << "\n";
+
+      if (instrument_spill) {
+         std::cerr << "TERAKAN_SFN_RA_SPILL event=candidate"
+                   << " iter=" << iter
+                   << " reg=" << *candidate.reg
+                   << " component=" << candidate.component
+                   << " range=" << candidate.range_length
+                   << " interference=" << candidate.interference
+                   << " benefit=" << candidate.benefit
+                   << " scratch_slot=" << scratch_slot << "\n";
+      }
 
       /* Insert spill store + reload into the shader IR.
        *
@@ -600,6 +696,8 @@ register_allocation_with_spill(LiveRangeMap& lrm,
 
       bool inserted_store = false;
       bool inserted_load = false;
+      int store_block_index = -1;
+      int reload_block_index = -1;
 
       if (shader.chip_class() >= ISA_CC_R700) {
          /* Evergreen+: use LoadFromScratch (VTX fetch) for reads */
@@ -610,14 +708,18 @@ register_allocation_with_spill(LiveRangeMap& lrm,
             scratch_slot + 1);
          fetch->add_required_instr(wait);
 
+         int alu_block_index = 0;
          for (auto block : shader.func()) {
             if (block->type() != Block::alu)
                continue;
+
+            int const current_block_index = alu_block_index++;
 
             if (!inserted_store) {
                block->push_back(mov_to_scratch);
                block->push_back(scratch_write);
                inserted_store = true;
+               store_block_index = current_block_index;
                continue;
             }
 
@@ -637,6 +739,7 @@ register_allocation_with_spill(LiveRangeMap& lrm,
                   }
                }
                inserted_load = true;
+               reload_block_index = current_block_index;
                break;
             }
          }
@@ -645,14 +748,18 @@ register_allocation_with_spill(LiveRangeMap& lrm,
          auto scratch_read = new ScratchIOInstr(
             reload_dest, scratch_slot, 16, 0, 0xf, true);
 
+         int alu_block_index = 0;
          for (auto block : shader.func()) {
             if (block->type() != Block::alu)
                continue;
+
+            int const current_block_index = alu_block_index++;
 
             if (!inserted_store) {
                block->push_back(mov_to_scratch);
                block->push_back(scratch_write);
                inserted_store = true;
+               store_block_index = current_block_index;
                continue;
             }
 
@@ -666,6 +773,7 @@ register_allocation_with_spill(LiveRangeMap& lrm,
                   }
                }
                inserted_load = true;
+               reload_block_index = current_block_index;
                break;
             }
          }
@@ -676,12 +784,24 @@ register_allocation_with_spill(LiveRangeMap& lrm,
          return false;
       }
 
+      if (instrument_spill) {
+         std::cerr << "TERAKAN_SFN_RA_SPILL event=inserted"
+                   << " iter=" << iter
+                   << " store_block=" << store_block_index
+                   << " reload_block=" << reload_block_index
+                   << " scratch_slot=" << scratch_slot << "\n";
+      }
+
       shader.set_flag(Shader::sh_needs_scratch_space);
       scratch_slot++;
 
       /* Retry RA with the modified shader */
       auto retry_lrm = LiveRangeEvaluator().run(shader);
+      auto retry_pressure = summarize_live_range_pressure(retry_lrm);
       if (register_allocation(retry_lrm)) {
+         if (instrument_spill)
+            log_spill_pressure("retry_success", iter, retry_pressure);
+
          sfn_log << SfnLog::merge << "Spill succeeded after "
                  << (iter + 1) << " iteration(s), "
                  << scratch_slot << " scratch slot(s)\n";
@@ -689,12 +809,15 @@ register_allocation_with_spill(LiveRangeMap& lrm,
          return true;
       }
 
+      if (instrument_spill)
+         log_spill_pressure("retry_fail", iter, retry_pressure);
+
       sfn_log << SfnLog::merge << "RA still fails after spill iter "
               << iter << ", continuing...\n";
    }
 
    R600_ERR("Register allocation failed after %d spill iterations\n",
-            max_spill_iterations);
+            effective_max_spill_iterations);
    return false;
 }
 
