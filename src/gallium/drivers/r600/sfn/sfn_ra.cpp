@@ -18,9 +18,11 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <queue>
+#include <utility>
 
 namespace r600 {
 
@@ -488,9 +490,12 @@ register_allocation(LiveRangeMap& lrm)
 struct SpillCandidate {
    int component;       /* 0-3: which channel */
    int lr_index;        /* index into LiveRangeMap::component(comp) */
+   int start;
+   int end;
    int range_length;    /* m_end - m_start */
    int interference;    /* number of interfering LRs */
    float benefit;       /* spill heuristic score */
+   bool overlaps_max_pressure_point;
    Register *reg;
 };
 
@@ -498,6 +503,8 @@ struct LiveRangePressureSummary {
    unsigned live_range_count;
    unsigned max_component_pressure;
    int max_component;
+   int max_pressure_point;
+   std::vector<int> max_pressure_live_ranges;
 };
 
 static bool
@@ -519,10 +526,44 @@ debug_sfn_ra_spill_max_iterations(int default_max_spill_iterations)
    return static_cast<int>(override);
 }
 
+static int
+debug_sfn_ra_spill_top_n()
+{
+   int64_t top_n = debug_get_num_option("TERAKAN_DEBUG_SFN_RA_SPILL_TOP_N", 8);
+
+   if (top_n < 0)
+      return 0;
+
+   if (top_n > 64)
+      return 64;
+
+   return static_cast<int>(top_n);
+}
+
+static const char *
+debug_sfn_ra_spill_heuristic()
+{
+   return debug_get_option(
+      "TERAKAN_EXPERIMENTAL_SFN_RA_SPILL_HEURISTIC", "default");
+}
+
+static bool
+debug_sfn_ra_spill_uses_hot_component()
+{
+   return strcmp(debug_sfn_ra_spill_heuristic(), "hot_component") == 0;
+}
+
+static bool
+debug_sfn_ra_spill_avoid_repeat()
+{
+   return debug_get_bool_option(
+      "TERAKAN_EXPERIMENTAL_SFN_RA_SPILL_AVOID_REPEAT", false);
+}
+
 static LiveRangePressureSummary
 summarize_live_range_pressure(LiveRangeMap& lrm)
 {
-   LiveRangePressureSummary summary{0, 0, -1};
+   LiveRangePressureSummary summary{0, 0, -1, -1, {}};
 
    for (int comp = 0; comp < 4; ++comp) {
       auto& live_ranges = lrm.component(comp);
@@ -532,20 +573,27 @@ summarize_live_range_pressure(LiveRangeMap& lrm)
 
          ++summary.live_range_count;
 
+         std::vector<int> active_indices;
+         active_indices.reserve(live_ranges.size());
+
          unsigned pressure = 0;
-         for (auto& active : live_ranges) {
+         for (size_t active_idx = 0; active_idx < live_ranges.size(); ++active_idx) {
+            auto& active = live_ranges[active_idx];
             if (active.m_start == -1 && active.m_end == -1)
                continue;
 
             if (active.m_start <= candidate.m_start &&
                 active.m_end > candidate.m_start) {
                ++pressure;
+               active_indices.push_back(static_cast<int>(active_idx));
             }
          }
 
          if (pressure > summary.max_component_pressure) {
             summary.max_component_pressure = pressure;
             summary.max_component = comp;
+            summary.max_pressure_point = candidate.m_start;
+            summary.max_pressure_live_ranges = std::move(active_indices);
          }
       }
    }
@@ -562,13 +610,27 @@ log_spill_pressure(const char *event,
              << " iter=" << iter
              << " live_ranges=" << summary.live_range_count
              << " max_component_pressure=" << summary.max_component_pressure
-             << " max_component=" << summary.max_component << "\n";
+             << " max_component=" << summary.max_component
+             << " max_pressure_point=" << summary.max_pressure_point << "\n";
 }
 
-static SpillCandidate
-select_spill_candidate(LiveRangeMap& lrm, const Interference& ifg)
+static bool
+live_range_overlaps_pressure_point(const LiveRangeEntry& lr,
+                                   int comp,
+                                   const LiveRangePressureSummary& summary)
 {
-   SpillCandidate best{-1, -1, 0, 0, -1.0f, nullptr};
+   return comp == summary.max_component &&
+          summary.max_pressure_point >= 0 &&
+          lr.m_start <= summary.max_pressure_point &&
+          lr.m_end > summary.max_pressure_point;
+}
+
+static std::vector<SpillCandidate>
+collect_spill_candidates(LiveRangeMap& lrm,
+                         const Interference& ifg,
+                         const LiveRangePressureSummary& pressure)
+{
+   std::vector<SpillCandidate> candidates;
 
    for (int comp = 0; comp < 4; ++comp) {
       auto& live_ranges = lrm.component(comp);
@@ -587,22 +649,141 @@ select_spill_candidate(LiveRangeMap& lrm, const Interference& ifg)
             continue;
 
          int range_len = lr.m_end - lr.m_start;
-         if (range_len < 4)  /* thrashing guard: don't spill tiny ranges */
+         if (range_len < 4)
             continue;
 
          int ifc = (int)ifg.row(comp, lr.m_register->index()).size();
-
-         /* Spill benefit = range * interference.
-          * Higher = better spill candidate. */
          float benefit = (float)(range_len * ifc);
 
-         if (benefit > best.benefit) {
-            best = SpillCandidate{comp, (int)i, range_len, ifc, benefit, lr.m_register};
-         }
+         candidates.push_back(SpillCandidate{comp,
+                                             (int)i,
+                                             lr.m_start,
+                                             lr.m_end,
+                                             range_len,
+                                             ifc,
+                                             benefit,
+                                             live_range_overlaps_pressure_point(
+                                                lr, comp, pressure),
+                                             lr.m_register});
       }
    }
 
-   return best;
+   std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+      if (lhs.benefit != rhs.benefit)
+         return lhs.benefit > rhs.benefit;
+      if (lhs.overlaps_max_pressure_point != rhs.overlaps_max_pressure_point)
+         return lhs.overlaps_max_pressure_point;
+      if (lhs.interference != rhs.interference)
+         return lhs.interference > rhs.interference;
+      return lhs.range_length > rhs.range_length;
+   });
+
+   return candidates;
+}
+
+static bool
+spill_candidate_already_selected(const SpillCandidate& candidate,
+                                 const std::vector<std::pair<int, int>>& selected)
+{
+   for (const auto& prior : selected) {
+      if (prior.first == candidate.component && prior.second == candidate.lr_index)
+         return true;
+   }
+
+   return false;
+}
+
+static SpillCandidate
+select_spill_candidate(const std::vector<SpillCandidate>& candidates,
+                       const std::vector<std::pair<int, int>>& selected)
+{
+   if (candidates.empty())
+      return SpillCandidate{-1, -1, -1, -1, 0, 0, -1.0f, false, nullptr};
+
+   bool const use_hot_component = debug_sfn_ra_spill_uses_hot_component();
+   bool const avoid_repeat = debug_sfn_ra_spill_avoid_repeat();
+
+   if (use_hot_component) {
+      for (const auto& candidate : candidates) {
+         if (!candidate.overlaps_max_pressure_point)
+            continue;
+         if (avoid_repeat && spill_candidate_already_selected(candidate, selected))
+            continue;
+         return candidate;
+      }
+   }
+
+   for (const auto& candidate : candidates) {
+      if (avoid_repeat && spill_candidate_already_selected(candidate, selected))
+         continue;
+      return candidate;
+   }
+
+   return SpillCandidate{-1, -1, -1, -1, 0, 0, -1.0f, false, nullptr};
+}
+
+static void
+log_spill_candidate_quality(int iter,
+                            const std::vector<SpillCandidate>& candidates,
+                            const LiveRangePressureSummary& pressure)
+{
+   int const top_n = debug_sfn_ra_spill_top_n();
+   int const limit = std::min(top_n, static_cast<int>(candidates.size()));
+
+   std::cerr << "TERAKAN_SFN_RA_SPILL event=candidate_quality_summary"
+             << " iter=" << iter
+             << " candidate_count=" << candidates.size()
+             << " emitted=" << limit
+             << " max_component=" << pressure.max_component
+             << " max_pressure_point=" << pressure.max_pressure_point
+             << " max_component_pressure=" << pressure.max_component_pressure << "\n";
+
+   for (int i = 0; i < limit; ++i) {
+      const auto& candidate = candidates[i];
+      std::cerr << "TERAKAN_SFN_RA_SPILL event=candidate_rank"
+                << " iter=" << iter
+                << " rank=" << i
+                << " reg=" << *candidate.reg
+                << " component=" << candidate.component
+                << " lr_index=" << candidate.lr_index
+                << " start=" << candidate.start
+                << " end=" << candidate.end
+                << " range=" << candidate.range_length
+                << " interference=" << candidate.interference
+                << " benefit=" << candidate.benefit
+                << " overlaps_hot_point=" << candidate.overlaps_max_pressure_point
+                << " hot_component=" << pressure.max_component
+                << " hot_point=" << pressure.max_pressure_point << "\n";
+   }
+}
+
+static void
+log_spill_hot_pressure_ranges(int iter,
+                              LiveRangeMap& lrm,
+                              const LiveRangePressureSummary& pressure)
+{
+   if (pressure.max_component < 0)
+      return;
+
+   int const top_n = debug_sfn_ra_spill_top_n();
+   int const limit = std::min(top_n,
+                              static_cast<int>(pressure.max_pressure_live_ranges.size()));
+   auto& live_ranges = lrm.component(pressure.max_component);
+
+   for (int i = 0; i < limit; ++i) {
+      int const lr_index = pressure.max_pressure_live_ranges[i];
+      auto& lr = live_ranges[lr_index];
+      std::cerr << "TERAKAN_SFN_RA_SPILL event=hot_live_range"
+                << " iter=" << iter
+                << " rank=" << i
+                << " component=" << pressure.max_component
+                << " lr_index=" << lr_index
+                << " reg=" << *lr.m_register
+                << " start=" << lr.m_start
+                << " end=" << lr.m_end
+                << " range=" << (lr.m_end - lr.m_start)
+                << " hot_point=" << pressure.max_pressure_point << "\n";
+   }
 }
 
 bool
@@ -625,6 +806,7 @@ register_allocation_with_spill(LiveRangeMap& lrm,
       log_spill_pressure("initial_fail", -1, summarize_live_range_pressure(lrm));
 
    int scratch_slot = 0;
+   std::vector<std::pair<int, int>> selected_spill_candidates;
 
    for (int iter = 0; iter < effective_max_spill_iterations; ++iter) {
       /* Re-evaluate liveness after any prior spill modifications */
@@ -638,7 +820,13 @@ register_allocation_with_spill(LiveRangeMap& lrm,
          log_spill_pressure("iter_begin", iter, fresh_pressure);
 
       /* Select best spill candidate */
-      auto candidate = select_spill_candidate(fresh_lrm, ifg);
+      auto candidates = collect_spill_candidates(fresh_lrm, ifg, fresh_pressure);
+      if (instrument_spill) {
+         log_spill_candidate_quality(iter, candidates, fresh_pressure);
+         log_spill_hot_pressure_ranges(iter, fresh_lrm, fresh_pressure);
+      }
+
+      auto candidate = select_spill_candidate(candidates, selected_spill_candidates);
       if (candidate.component < 0) {
          R600_ERR("Spill iteration %d: no viable candidate found\n", iter);
          return false;
@@ -656,9 +844,15 @@ register_allocation_with_spill(LiveRangeMap& lrm,
                    << " iter=" << iter
                    << " reg=" << *candidate.reg
                    << " component=" << candidate.component
+                   << " lr_index=" << candidate.lr_index
+                   << " start=" << candidate.start
+                   << " end=" << candidate.end
                    << " range=" << candidate.range_length
                    << " interference=" << candidate.interference
                    << " benefit=" << candidate.benefit
+                   << " overlaps_hot_point=" << candidate.overlaps_max_pressure_point
+                   << " heuristic=" << debug_sfn_ra_spill_heuristic()
+                   << " avoid_repeat=" << debug_sfn_ra_spill_avoid_repeat()
                    << " scratch_slot=" << scratch_slot << "\n";
       }
 
@@ -793,6 +987,7 @@ register_allocation_with_spill(LiveRangeMap& lrm,
       }
 
       shader.set_flag(Shader::sh_needs_scratch_space);
+      selected_spill_candidates.push_back({candidate.component, candidate.lr_index});
       scratch_slot++;
 
       /* Retry RA with the modified shader */
