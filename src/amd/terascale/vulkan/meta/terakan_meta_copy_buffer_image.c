@@ -32,9 +32,11 @@
 #include "terakan_physical_device.h"
 
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "vk_format.h"
 
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 /* Buffer to image copying by drawing to a color attachment.
@@ -500,6 +502,16 @@ struct terakan_meta_shader const terakan_meta_copy_image_to_buffer_ps = {
       },
 };
 
+static bool
+terakan_debug_image_copy_enabled(void)
+{
+   static int enabled = -1;
+   if (enabled < 0) {
+      enabled = debug_get_bool_option("TERAKAN_DEBUG_IMAGE_COPY", false) ? 1 : 0;
+   }
+   return enabled != 0;
+}
+
 static void
 terakan_meta_copy_buffer_image_pitches_and_rect(struct terakan_image const * const image,
                                                 VkBufferImageCopy2 const * const region,
@@ -657,6 +669,26 @@ terakan_CmdCopyBufferToImage2(VkCommandBuffer const commandBuffer,
          terakan_meta_set_db_shader_control_with_rtv(
             command_writer, terakan_meta_copy_buffer_to_image_ps.stage.ps.db_shader_control,
             color_descriptor.info);
+         if (unlikely(terakan_debug_image_copy_enabled())) {
+            fprintf(stderr,
+                    "TERAKAN_IMAGE_COPY dir=b2i region=%u/%u image_type=%u format=%u "
+                    "tiling=%u image_extent=%ux%ux%u image_offset=%dx%dx%d "
+                    "copy_extent=%ux%ux%u buffer_offset=%llu buffer_y_pitch=%u "
+                    "buffer_z_pitch=%u rect=%d,%d,%u,%u base_layer=%u layer_count=%u "
+                    "emitted_layers=%u bytes_per_block=%u color_view=0x%08x "
+                    "color_info=0x%08x\n",
+                    region_index + 1, pCopyBufferToImageInfo->regionCount,
+                    (unsigned)image->vk.image_type, (unsigned)image->vk.format,
+                    (unsigned)image->vk.tiling, image->vk.extent.width,
+                    image->vk.extent.height, image->vk.extent.depth, region->imageOffset.x,
+                    region->imageOffset.y, region->imageOffset.z, region->imageExtent.width,
+                    region->imageExtent.height, region->imageExtent.depth,
+                    (unsigned long long)region->bufferOffset, buffer_y_pitch, buffer_z_pitch,
+                    rect.offset.x, rect.offset.y, rect.extent.width, rect.extent.height,
+                    image_descriptor_create_info.base_array_layer,
+                    image_descriptor_create_info.layer_count, color_descriptor_layer_count,
+                    region_bytes_per_block, color_descriptor.view, color_descriptor.info);
+         }
 
          VkDeviceSize const buffer_size_elements =
             (color_descriptor_layer_count - 1) * buffer_z_pitch +
@@ -829,6 +861,28 @@ terakan_CmdCopyImageToBuffer2(VkCommandBuffer const commandBuffer,
       terakan_hw_state_sqc_set_resource_fs(&command_writer->hw_state_sqc,
                                            TERAKAN_RESOURCE_RANGE_SHADER_CONSTANT_ARRAYS_OR_META,
                                            image->bo, image_resource);
+      if (unlikely(terakan_debug_image_copy_enabled())) {
+         fprintf(stderr,
+                 "TERAKAN_IMAGE_COPY dir=i2b region=%u/%u image_type=%u format=%u "
+                 "tiling=%u image_extent=%ux%ux%u image_offset=%dx%dx%d "
+                 "copy_extent=%ux%ux%u buffer_offset=%llu buffer_y_pitch=%u "
+                 "buffer_z_pitch=%u rect=%d,%d,%u,%u base_layer=%u layer_count=%u "
+                 "bytes_per_block=%u buffer_uav_base_granularity_offset=%u "
+                 "resource_dim_word=0x%08x resource_size_word=0x%08x "
+                 "resource_array_word=0x%08x\n",
+                 region_index + 1, pCopyImageToBufferInfo->regionCount,
+                 (unsigned)image->vk.image_type, (unsigned)image->vk.format,
+                 (unsigned)image->vk.tiling, image->vk.extent.width,
+                 image->vk.extent.height, image->vk.extent.depth, region->imageOffset.x,
+                 region->imageOffset.y, region->imageOffset.z, region->imageExtent.width,
+                 region->imageExtent.height, region->imageExtent.depth,
+                 (unsigned long long)region->bufferOffset, buffer_y_pitch, buffer_z_pitch,
+                 rect.offset.x, rect.offset.y, rect.extent.width, rect.extent.height,
+                 image_descriptor_create_info.base_array_layer,
+                 image_descriptor_create_info.layer_count, region_bytes_per_block,
+                 buffer_uav_base_granularity_offset_bytes, image_resource[0],
+                 image_resource[1], image_resource[5]);
+      }
 
       terakan_meta_emit_rect_3_vertices_draw(command_writer, &rect,
                                              image_descriptor_create_info.layer_count);
