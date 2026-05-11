@@ -267,6 +267,14 @@ terakan_meta_begin_2d_immediate_rects(struct terakan_gfx_command_writer * const 
 void terakan_meta_emit_rect_3_vertices_draw(struct terakan_gfx_command_writer * command_writer,
                                             VkRect2D const * rect, uint32_t instance_count);
 
+bool terakan_debug_meta_copy_invariants_enabled(void);
+
+bool terakan_meta_copy_check_layer_progress(struct terakan_gfx_command_writer * command_writer,
+                                            char const * operation, uint32_t base_layer,
+                                            uint32_t remaining_layer_count,
+                                            uint32_t descriptor_layer_count,
+                                            uint32_t emitted_layer_count);
+
 static inline VkImageViewType
 terakan_meta_transfer_image_view_type(VkImageType const image_type)
 {

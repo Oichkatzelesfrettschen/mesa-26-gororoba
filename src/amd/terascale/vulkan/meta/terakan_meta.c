@@ -27,8 +27,48 @@
 #include "terakan_device.h"
 
 #include "util/bitscan.h"
+#include "util/u_debug.h"
 
 #include <assert.h>
+#include <stdio.h>
+
+bool
+terakan_debug_meta_copy_invariants_enabled(void)
+{
+   static int enabled = -1;
+   if (enabled < 0) {
+      enabled = debug_get_bool_option("TERAKAN_DEBUG_META_COPY_INVARIANTS", false);
+   }
+   return enabled;
+}
+
+bool
+terakan_meta_copy_check_layer_progress(struct terakan_gfx_command_writer * const command_writer,
+                                       char const * const operation,
+                                       uint32_t const base_layer,
+                                       uint32_t const remaining_layer_count,
+                                       uint32_t const descriptor_layer_count,
+                                       uint32_t const emitted_layer_count)
+{
+   if (!terakan_debug_meta_copy_invariants_enabled()) {
+      return true;
+   }
+
+   bool const valid = descriptor_layer_count > 0 && emitted_layer_count > 0 &&
+                      emitted_layer_count <= remaining_layer_count;
+   fprintf(stderr,
+           "TERAKAN_META_COPY_INVARIANT op=%s base_layer=%u remaining_layers=%u "
+           "descriptor_layers=%u emitted_layers=%u ok=%u\n",
+           operation, base_layer, remaining_layer_count, descriptor_layer_count,
+           emitted_layer_count, valid ? 1U : 0U);
+   if (!valid) {
+      vk_command_buffer_set_error(&command_writer->base.command_buffer->vk,
+                                  VK_ERROR_VALIDATION_FAILED_EXT);
+      return false;
+   }
+
+   return true;
+}
 
 static uint32_t terakan_meta_empty_opaque_ps_r8xx[] = {
    /* 0: Export the color with an alpha of 1 and end the program. */

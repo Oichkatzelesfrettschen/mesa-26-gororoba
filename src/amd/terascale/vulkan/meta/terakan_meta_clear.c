@@ -285,6 +285,19 @@ terakan_CmdClearColorImage(VkCommandBuffer const commandBuffer, VkImage const im
             struct terakan_color_meta_descriptor color_meta_descriptor;
             uint32_t const color_descriptor_layer_count = terakan_image_create_color_descriptor(
                &image_descriptor_create_info, &color_descriptor, &color_meta_descriptor);
+            uint32_t const draw_layer_count =
+               MIN2(color_descriptor_layer_count, image_descriptor_create_info.layer_count);
+            if (unlikely(draw_layer_count == 0)) {
+               vk_command_buffer_set_error(&command_writer->base.command_buffer->vk,
+                                           VK_ERROR_VALIDATION_FAILED_EXT);
+               return;
+            }
+            if (unlikely(!terakan_meta_copy_check_layer_progress(
+                   command_writer, "clear_color", image_descriptor_create_info.base_array_layer,
+                   image_descriptor_create_info.layer_count, color_descriptor_layer_count,
+                   draw_layer_count))) {
+               return;
+            }
             terakan_color_descriptor_image_view_to_color_attachment(&color_descriptor);
             terakan_hw_state_draw_set_cb_color(&command_writer->hw_state_draw, 0, image->bo,
                                                &color_descriptor, &color_meta_descriptor, false);
@@ -292,11 +305,10 @@ terakan_CmdClearColorImage(VkCommandBuffer const commandBuffer, VkImage const im
                command_writer, terakan_meta_clear_color_ps.stage.ps.db_shader_control,
                color_descriptor.info);
 
-            terakan_meta_emit_rect_3_vertices_draw(command_writer, &rect,
-                                                   color_descriptor_layer_count);
+            terakan_meta_emit_rect_3_vertices_draw(command_writer, &rect, draw_layer_count);
 
-            image_descriptor_create_info.base_array_layer += color_descriptor_layer_count;
-            image_descriptor_create_info.layer_count -= color_descriptor_layer_count;
+            image_descriptor_create_info.base_array_layer += draw_layer_count;
+            image_descriptor_create_info.layer_count -= draw_layer_count;
          }
       }
    }

@@ -670,6 +670,12 @@ terakan_CmdCopyBufferToImage2(VkCommandBuffer const commandBuffer,
                                         VK_ERROR_VALIDATION_FAILED_EXT);
             return;
          }
+         if (unlikely(!terakan_meta_copy_check_layer_progress(
+                command_writer, "b2i", image_descriptor_create_info.base_array_layer,
+                image_descriptor_create_info.layer_count, color_descriptor_layer_count,
+                draw_layer_count))) {
+            return;
+         }
          terakan_color_descriptor_image_view_to_color_attachment(&color_descriptor);
          terakan_hw_state_draw_set_cb_color(&command_writer->hw_state_draw, 0, image->bo,
                                             &color_descriptor, &color_meta_descriptor, false);
@@ -868,6 +874,12 @@ terakan_CmdCopyImageToBuffer2(VkCommandBuffer const commandBuffer,
       terakan_hw_state_sqc_set_resource_fs(&command_writer->hw_state_sqc,
                                            TERAKAN_RESOURCE_RANGE_SHADER_CONSTANT_ARRAYS_OR_META,
                                            image->bo, image_resource);
+      if (unlikely(!terakan_meta_copy_check_layer_progress(
+             command_writer, "i2b", image_descriptor_create_info.base_array_layer,
+             image_descriptor_create_info.layer_count, image_descriptor_create_info.layer_count,
+             image_descriptor_create_info.layer_count))) {
+         return;
+      }
       if (unlikely(terakan_debug_image_copy_enabled())) {
          fprintf(stderr,
                  "TERAKAN_IMAGE_COPY dir=i2b region=%u/%u image_type=%u format=%u "
