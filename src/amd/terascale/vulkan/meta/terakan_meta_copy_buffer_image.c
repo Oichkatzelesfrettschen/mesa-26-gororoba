@@ -663,6 +663,13 @@ terakan_CmdCopyBufferToImage2(VkCommandBuffer const commandBuffer,
          struct terakan_color_meta_descriptor color_meta_descriptor;
          uint32_t const color_descriptor_layer_count = terakan_image_create_color_descriptor(
             &image_descriptor_create_info, &color_descriptor, &color_meta_descriptor);
+         uint32_t const draw_layer_count =
+            MIN2(color_descriptor_layer_count, image_descriptor_create_info.layer_count);
+         if (unlikely(draw_layer_count == 0)) {
+            vk_command_buffer_set_error(&command_writer->base.command_buffer->vk,
+                                        VK_ERROR_VALIDATION_FAILED_EXT);
+            return;
+         }
          terakan_color_descriptor_image_view_to_color_attachment(&color_descriptor);
          terakan_hw_state_draw_set_cb_color(&command_writer->hw_state_draw, 0, image->bo,
                                             &color_descriptor, &color_meta_descriptor, false);
@@ -675,8 +682,8 @@ terakan_CmdCopyBufferToImage2(VkCommandBuffer const commandBuffer,
                     "tiling=%u image_extent=%ux%ux%u image_offset=%dx%dx%d "
                     "copy_extent=%ux%ux%u buffer_offset=%llu buffer_y_pitch=%u "
                     "buffer_z_pitch=%u rect=%d,%d,%u,%u base_layer=%u layer_count=%u "
-                    "emitted_layers=%u bytes_per_block=%u color_view=0x%08x "
-                    "color_info=0x%08x\n",
+                    "descriptor_layers=%u emitted_layers=%u bytes_per_block=%u "
+                    "color_view=0x%08x color_info=0x%08x\n",
                     region_index + 1, pCopyBufferToImageInfo->regionCount,
                     (unsigned)image->vk.image_type, (unsigned)image->vk.format,
                     (unsigned)image->vk.tiling, image->vk.extent.width,
@@ -687,11 +694,12 @@ terakan_CmdCopyBufferToImage2(VkCommandBuffer const commandBuffer,
                     rect.offset.x, rect.offset.y, rect.extent.width, rect.extent.height,
                     image_descriptor_create_info.base_array_layer,
                     image_descriptor_create_info.layer_count, color_descriptor_layer_count,
-                    region_bytes_per_block, color_descriptor.view, color_descriptor.info);
+                    draw_layer_count, region_bytes_per_block, color_descriptor.view,
+                    color_descriptor.info);
          }
 
          VkDeviceSize const buffer_size_elements =
-            (color_descriptor_layer_count - 1) * buffer_z_pitch +
+            (draw_layer_count - 1) * buffer_z_pitch +
             (rect.extent.height - 1) * buffer_y_pitch + rect.extent.width;
          buffer_resource[0] = (uint32_t)buffer_va;
          buffer_resource[1] = (uint32_t)(region_bytes_per_block * buffer_size_elements - 1);
@@ -707,13 +715,12 @@ terakan_CmdCopyBufferToImage2(VkCommandBuffer const commandBuffer,
                                               TERAKAN_RESOURCE_RANGE_SHADER_CONSTANT_ARRAYS_OR_META,
                                               buffer->bo, buffer_resource);
 
-         terakan_meta_emit_rect_3_vertices_draw(command_writer, &rect,
-                                                color_descriptor_layer_count);
+         terakan_meta_emit_rect_3_vertices_draw(command_writer, &rect, draw_layer_count);
 
-         image_descriptor_create_info.base_array_layer += color_descriptor_layer_count;
-         image_descriptor_create_info.layer_count -= color_descriptor_layer_count;
+         image_descriptor_create_info.base_array_layer += draw_layer_count;
+         image_descriptor_create_info.layer_count -= draw_layer_count;
          buffer_va +=
-            region_bytes_per_block * (VkDeviceSize)buffer_z_pitch * color_descriptor_layer_count;
+            region_bytes_per_block * (VkDeviceSize)buffer_z_pitch * draw_layer_count;
       }
    }
 
