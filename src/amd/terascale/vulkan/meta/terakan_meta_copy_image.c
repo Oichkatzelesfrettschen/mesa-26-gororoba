@@ -386,6 +386,19 @@ terakan_CmdCopyImage2(VkCommandBuffer const commandBuffer,
             struct terakan_color_meta_descriptor dst_color_meta;
             uint32_t const dst_color_layer_count = terakan_image_create_color_descriptor(
                &dst_descriptor_create_info, &dst_color, &dst_color_meta);
+            uint32_t const copy_layer_count =
+               MIN2(dst_color_layer_count, dst_descriptor_create_info.layer_count);
+            if (unlikely(copy_layer_count == 0)) {
+               vk_command_buffer_set_error(&command_writer->base.command_buffer->vk,
+                                           VK_ERROR_VALIDATION_FAILED_EXT);
+               return;
+            }
+            if (unlikely(!terakan_meta_copy_check_layer_progress(
+                   command_writer, "i2i", dst_descriptor_create_info.base_array_layer,
+                   dst_descriptor_create_info.layer_count, dst_color_layer_count,
+                   copy_layer_count))) {
+               return;
+            }
             terakan_color_descriptor_image_view_to_color_attachment(&dst_color);
             terakan_hw_state_draw_set_cb_color(&command_writer->hw_state_draw, 0, dst_image->bo,
                                                &dst_color, &dst_color_meta, false);
@@ -393,13 +406,13 @@ terakan_CmdCopyImage2(VkCommandBuffer const commandBuffer,
                command_writer, terakan_meta_copy_image_ps.stage.ps.db_shader_control,
                dst_color.info);
 
-            terakan_meta_emit_rect_3_vertices_draw(command_writer, &rect, dst_color_layer_count);
+            terakan_meta_emit_rect_3_vertices_draw(command_writer, &rect, copy_layer_count);
 
             src_resource[5] =
                (src_resource[5] & C_030014_BASE_ARRAY) |
-               S_030014_BASE_ARRAY(G_030014_BASE_ARRAY(src_resource[5]) + dst_color_layer_count);
-            dst_descriptor_create_info.base_array_layer += dst_color_layer_count;
-            dst_descriptor_create_info.layer_count -= dst_color_layer_count;
+               S_030014_BASE_ARRAY(G_030014_BASE_ARRAY(src_resource[5]) + copy_layer_count);
+            dst_descriptor_create_info.base_array_layer += copy_layer_count;
+            dst_descriptor_create_info.layer_count -= copy_layer_count;
          }
       }
    }
