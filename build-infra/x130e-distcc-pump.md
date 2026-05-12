@@ -11,10 +11,9 @@ C and C++ compilation to LAN distcc servers reached by mDNS hostnames.
 Current verified state:
 
 - Source tree: `/home/eirikr/workspaces/mesa/mesa-26-gororoba`.
-- Remote distcc server: `DESKTOP-CKP9KB6.local`.
-- Optional Mac distcc server: `Eirikrs-MacBook-Air.local`.
-- distcc server port: `3632`, verified reachable from x130e before each run.
-- distcc host specs for this lane use `.local` names only.
+- Active distcc SSH worker: `@x570-5600X3D.local/12,lzo`.
+- Reserved Ubuntu WSL worker: `@DESKTOP-CKP9KB6.local/48,lzo`, enabled only after SSH or distccd is reachable from x130e.
+- distcc host specs for this lane use mDNS `.local` names only; do not use raw DHCP addresses.
 - Compiler: `clang-22` and `clang++-22` through ccache, with ccache misses sent through distcc.
 - Build profile: `build-infra/configs/terakan-distcc.meson`.
 - Target install prefix for the mesa-debug lane: `/usr/local/mesa-debug`.
@@ -45,8 +44,8 @@ rust = [/home/eirikr/.local/bin/sccache, /home/eirikr/.rustup/toolchains/stable-
 The critical distcc and Bobcat flags are:
 
 ```sh
-export DISTCC_HOSTS="DESKTOP-CKP9KB6.local/32,cpp,lzo Eirikrs-MacBook-Air.local/8,lzo"
-export CCACHE_PREFIX="distcc"
+export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo"
+export CCACHE_PREFIX="/usr/bin/distcc"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
 export CFLAGS="-march=btver1 -mtune=btver1 -pipe -fno-emulated-tls"
@@ -79,8 +78,8 @@ export PREFIX=/usr/local/mesa-debug
 
 mkdir -p "$(dirname "$BUILDDIR")"
 
-export DISTCC_HOSTS="DESKTOP-CKP9KB6.local/32,cpp,lzo Eirikrs-MacBook-Air.local/8,lzo"
-export CCACHE_PREFIX="distcc"
+export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo"
+export CCACHE_PREFIX="/usr/bin/distcc"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
 export CFLAGS="-march=btver1 -mtune=btver1 -pipe -fno-emulated-tls"
@@ -92,7 +91,7 @@ meson setup \
   --prefix="$PREFIX" \
   "$BUILDDIR" "$PWD"
 
-distcc-pump ninja -C "$BUILDDIR" -j34
+ninja -C "$BUILDDIR" -j36
 ```
 
 Install with root privileges after the build succeeds:
@@ -138,8 +137,8 @@ profile, so the successful installed build used:
 ```sh
 export BUILDDIR=/home/eirikr/workspaces/build/mesa-terakan-distcc-pump-no-rusticl
 export PREFIX=/usr/local/mesa-debug
-export DISTCC_HOSTS="DESKTOP-CKP9KB6.local/32,cpp,lzo Eirikrs-MacBook-Air.local/8,lzo"
-export CCACHE_PREFIX="distcc"
+export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo"
+export CCACHE_PREFIX="/usr/bin/distcc"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
 export CFLAGS="-march=btver1 -mtune=btver1 -pipe -fno-emulated-tls"
@@ -151,7 +150,7 @@ meson setup \
   --prefix="$PREFIX" \
   "$BUILDDIR" "$PWD"
 
-distcc-pump ninja -C "$BUILDDIR" -j34
+ninja -C "$BUILDDIR" -j36
 ```
 
 Install must avoid root-side rebuilds. If `ninja install` dirties build targets
@@ -217,7 +216,7 @@ The stale pins were removed and backed up on x130e at:
 /etc/hosts.codex-backup-20260503T1330Z
 ```
 
-The Mac worker was then verified from x130e with:
+The historical Mac worker was then verified from x130e with:
 
 ```sh
 DISTCC_HOSTS="Eirikrs-MacBook-Air.local/1,lzo" \
@@ -228,16 +227,13 @@ file /tmp/distcc_mac_probe.o
 ```
 
 The output object was an x86-64 ELF relocatable, so the Mac worker can compile
-Bobcat-targeted Terakan objects when reached through mDNS. The active no-pump
-host file was reduced to the reachable Mac worker while the desktop worker's
-distcc port timed out:
+Bobcat-targeted Terakan objects when reached through mDNS. On 2026-05-12 this was superseded by SSH-mode distcc over mDNS. The active host file is now:
 
 ```text
-Eirikrs-MacBook-Air.local/8,lzo
+--randomize @x570-5600X3D.local/12,lzo
 ```
 
-Do not re-add `DESKTOP-CKP9KB6.local` to `~/.distcc/hosts` until
-`nc -zvw4 DESKTOP-CKP9KB6.local 3632` succeeds from x130e.
+Do not add `@DESKTOP-CKP9KB6.local/48,lzo` to `~/.distcc/hosts` until SSH or distccd is reachable from x130e without timeouts.
 - The failed rusticl-enabled build log is
   `/home/eirikr/logs/mesa_gororoba_pump_build_20260426T003804Z.log`.
 - The successful no-rusticl build log is
