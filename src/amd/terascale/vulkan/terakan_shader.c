@@ -494,6 +494,82 @@ terakan_find_wide_phi_selector(nir_function_impl * const impl, unsigned const ca
    return NULL;
 }
 
+static bool
+terakan_debug_wide_phi_shape_enabled(void)
+{
+   return getenv("TERAKAN_DEBUG_WIDE_PHI_SHAPE") != NULL;
+}
+
+static void
+terakan_debug_wide_phi_shape(nir_shader const * const nir,
+                             nir_function_impl * const impl,
+                             char const * const label)
+{
+   if (!terakan_debug_wide_phi_shape_enabled())
+      return;
+
+   unsigned total_phi_count = 0;
+   unsigned max_phi_source_count = 0;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_phi)
+            continue;
+
+         ++total_phi_count;
+         unsigned phi_source_count = 0;
+         nir_phi_instr * const phi = nir_instr_as_phi(instr);
+         nir_foreach_phi_src(phi_source, phi) {
+            (void)phi_source;
+            ++phi_source_count;
+         }
+         max_phi_source_count = MAX2(max_phi_source_count, phi_source_count);
+      }
+   }
+
+   enum { max_cases = 2048 };
+   unsigned uav_value_phi_chain_count = 0;
+   unsigned widest_uav_value_phi_chain = 0;
+   unsigned widest_uav_value_bit_size = 0;
+   bool widest_selector_found = false;
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr * const intrin = nir_instr_as_intrinsic(instr);
+         if (intrin->intrinsic != nir_intrinsic_uav_instr_r600 ||
+             intrin->num_components != 1 || intrin->src[2].ssa == NULL ||
+             intrin->src[2].ssa->num_components != 1)
+            continue;
+
+         nir_const_value values[max_cases];
+         unsigned value_count = 0;
+         unsigned bit_size = 0;
+         if (!terakan_collect_wide_phi_const_chain(intrin->src[2].ssa, values,
+                                                   max_cases, &value_count,
+                                                   &bit_size))
+            continue;
+
+         ++uav_value_phi_chain_count;
+         if (value_count > widest_uav_value_phi_chain) {
+            widest_uav_value_phi_chain = value_count;
+            widest_uav_value_bit_size = bit_size;
+            widest_selector_found = terakan_find_wide_phi_selector(impl, value_count) != NULL;
+         }
+      }
+   }
+
+   fprintf(stderr,
+           "TERAKAN_WIDE_PHI_SHAPE label=%s stage=%s total_phi=%u "
+           "max_phi_sources=%u uav_phi_chains=%u widest_uav_phi_chain=%u "
+           "widest_bit_size=%u selector_found=%u\n",
+           label, mesa_shader_stage_name(nir->info.stage), total_phi_count,
+           max_phi_source_count, uav_value_phi_chain_count,
+           widest_uav_value_phi_chain, widest_uav_value_bit_size,
+           widest_selector_found ? 1 : 0);
+}
+
 static nir_def *
 terakan_build_segment_local_const_select(nir_builder * const b, nir_def * const selector,
                                          nir_const_value const * const values,
@@ -724,6 +800,12 @@ terakan_shader_lower_and_optimize_post_link(
       nir_print_shader(nir, stderr);
    }
 
+   if (terakan_debug_wide_phi_shape_enabled()) {
+      nir_foreach_function_impl(impl, nir) {
+         terakan_debug_wide_phi_shape(nir, impl, "post_bindings");
+      }
+   }
+
    unsigned wide_phi_select_limit = 0;
    if (terakan_get_experimental_wide_phi_select_limit(&wide_phi_select_limit)) {
       bool wide_phi_select_progress;
@@ -772,6 +854,12 @@ terakan_shader_lower_and_optimize_post_link(
       }
    }
 
+   if (terakan_debug_wide_phi_shape_enabled()) {
+      nir_foreach_function_impl(impl, nir) {
+         terakan_debug_wide_phi_shape(nir, impl, "pre_scalar_lowering");
+      }
+   }
+
    /* Perform lowerings on the level of basic building blocks after the interface has been set up.
     */
 
@@ -781,6 +869,12 @@ terakan_shader_lower_and_optimize_post_link(
    assert(nir->options->lower_to_scalar);
    NIR_PASS(_, nir, nir_lower_alu_to_scalar, nir->options->lower_to_scalar_filter, NULL);
    NIR_PASS(_, nir, nir_lower_phis_to_scalar, NULL, NULL);
+
+   if (terakan_debug_wide_phi_shape_enabled()) {
+      nir_foreach_function_impl(impl, nir) {
+         terakan_debug_wide_phi_shape(nir, impl, "post_lower_phis_to_scalar");
+      }
+   }
 
    /* Everything lowered by nir_lower_alu is supported natively as of this writing. */
 
