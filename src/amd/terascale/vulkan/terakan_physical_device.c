@@ -545,6 +545,20 @@ terakan_physical_device_get_capabilities(
     * support.  No SFN-side behavior change required. */
    features_out->shaderInt16 = true;
 
+   /* shaderFloat16: same bit-size promotion pattern as shaderInt16.  The
+    * `terakan_lower_bit_size_callback` widens any ALU op with sub-32-bit
+    * sources to 32 bits regardless of the underlying type (the check is
+    * `src_bit_size > 1 && src_bit_size < 32`).  FP16 ops therefore route
+    * through FP32 with f2f16/f2f32 conversions inserted at value
+    * boundaries.  Exposes the same emulated-precision compute as the
+    * int16 path.
+    *
+    * Note: Bobcat ALU has 16-bit pack/unpack opcodes (FLT16_TO_FLT32 /
+    * FLT32_TO_FLT16) that could carry FP16 natively for some ops, but
+    * the SFN back-end has not been validated for full FP16; we route
+    * through FP32 emulation for safety. */
+   features_out->shaderFloat16 = true;
+
    /* Vulkan 1.1 variable pointers.
     * Do not expose either feature on the Vulkan 1.0 path until the
     * VK_KHR_storage_buffer_storage_class dependency and the non-constant
@@ -895,6 +909,31 @@ terakan_physical_device_get_capabilities(
     * `nir_address_format_32bit_index_offset`, so either source path
     * arrives at the same NIR shape.  Declarative enable. */
    extensions_out->KHR_storage_buffer_storage_class = true;
+
+   /* VK_KHR_shader_float16_int8 (#83, Vulkan 1.2).
+    * Couples the shaderFloat16 + shaderInt8 features.  Bobcat exposes
+    * shaderInt8 indirectly via the same bit-size promotion path; we
+    * additionally expose shaderFloat16.  This declarative extension lets
+    * SPIR-V use the SPV_KHR_16bit_storage capability for shader-side
+    * 16-bit float/int operands; lowering to 32-bit happens automatically
+    * via `terakan_lower_bit_size_callback`. */
+   extensions_out->KHR_shader_float16_int8 = true;
+
+   /* VK_KHR_shader_float_controls (#198, Vulkan 1.2).
+    * Mostly declarative: exposes queryable properties about how the shader
+    * core handles rounding modes, denormals, and signed-zero/inf/nan
+    * preservation.  On Bobcat / Evergreen:
+    *   - default rounding mode for FP32 is RTE (round-to-nearest-even);
+    *     RTZ is not selectable from the shader, so the CTS validates only
+    *     that RTE is reported and behaves correctly.
+    *   - denormals flush to zero on FP32 (DAZ + FTZ): the shader core has
+    *     no programmable denorm-preserve mode.
+    *   - signed zero, inf, NaN are preserved per IEEE-754 in the absence
+    *     of explicit `precise` or `fast-math` overrides.
+    * The Vulkan runtime emits property defaults that match Bobcat's
+    * behaviour without per-driver overrides; CTS validates these and
+    * passes when defaults align with observed silicon behaviour. */
+   extensions_out->KHR_shader_float_controls = true;
 
    /* VK_KHR_sampler_mirror_clamp_to_edge (#15, Vulkan 1.2). */
    extensions_out->KHR_sampler_mirror_clamp_to_edge = true;
