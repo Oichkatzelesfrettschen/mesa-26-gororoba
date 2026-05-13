@@ -1,7 +1,10 @@
-# terakan-distcc-no-rusticl: same as terakan-distcc but with rusticl
-# disabled.  Use this when the rusticl rust frontend fails to
-# compile because of bindgen drift on pipe_screen / pipe_image_view
-# (see ../../../steinmarder/docs/workspace/rusticl-bindgen-drift.md).
+# terakan-distcc-no-rusticl-pump: clean-build lane for x130e.
+#
+# This is intentionally separate from the ccache/no-pump profile.  For
+# C/C++, distcc-pump must see the original source and compiler command:
+# do not put ccache or sccache in front of this lane.  Rust remains on
+# sccache because it is a separate rustc chain and is not part of the
+# distcc include-server path.
 #
 # terakan (Vulkan) and r600 (Gallium) are pure C and build fine;
 # only the gallium-rusticl OpenCL frontend is removed from this
@@ -9,8 +12,8 @@
 # keeps it isolated from the rusticl-enabled variant.
 
 [binaries]
-c    = ['ccache', 'clang-22']
-cpp  = ['ccache', 'clang++-22']
+c    = ['distcc', 'clang-22']
+cpp  = ['distcc', 'clang++-22']
 rust = ['sccache', 'rustc']
 
 [project options]
