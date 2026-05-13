@@ -831,9 +831,22 @@ register_allocation_with_spill(LiveRangeMap& lrm,
    int const effective_max_spill_iterations =
       debug_sfn_ra_spill_max_iterations(max_spill_iterations);
 
-   /* First try without spilling */
-   if (register_allocation(lrm))
+   /* First try without spilling.  When CAPACITY_ALWAYS is set, snapshot
+    * pressure before the attempt so passing shaders are also accounted for. */
+   bool const capacity_always =
+      debug_get_bool_option("TERAKAN_DEBUG_SFN_RA_CAPACITY_ALWAYS", false);
+   if (debug_sfn_ra_capacity_enabled() && capacity_always) {
+      auto pre_pressure = summarize_live_range_pressure(lrm);
+      log_ra_capacity("pre_attempt", -1, pre_pressure);
+   }
+
+   if (register_allocation(lrm)) {
+      if (debug_sfn_ra_capacity_enabled() && capacity_always) {
+         auto success_pressure = summarize_live_range_pressure(lrm);
+         log_ra_capacity("initial_success", -1, success_pressure);
+      }
       return true;
+   }
 
    sfn_log << SfnLog::merge << "RA failed, attempting spill (up to "
            << effective_max_spill_iterations << " iterations)\n";

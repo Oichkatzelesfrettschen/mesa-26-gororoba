@@ -15,7 +15,7 @@ grep -m1 "model name" /proc/cpuinfo 2>/dev/null | sed "s/.*: //"
 nproc
 echo
 echo "=== toolchain ==="
-for c in gcc clang clang-22 clang++ clang++-22 meson ninja distcc ccache; do
+for c in gcc clang clang-21 clang++ clang++-21 meson ninja distcc ccache; do
     which "$c" >/dev/null 2>&1 && printf "%-12s %s\n" "$c" "$($c --version 2>&1 | head -1)"
 done
 echo

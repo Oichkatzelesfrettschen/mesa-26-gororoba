@@ -119,6 +119,14 @@ terakan_nir_shared_type_info(struct glsl_type const * const type, unsigned * con
    *align = comp_size * (length == 3 ? 4 : length);
 }
 
+/* Forward declaration for tranche option 2 -- the wide-phi defs rewriter is
+ * defined far below but called from terakan_shader_spirv_to_nir when the
+ * EARLIER env is set. */
+static bool
+terakan_segment_wide_phi_defs(nir_shader * nir, unsigned segment_size,
+                              unsigned min_value_count,
+                              char const *log_label);
+
 nir_shader *
 terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const spirv_size_bytes,
                             uint32_t const * const spirv, mesa_shader_stage const stage,
@@ -157,6 +165,48 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post vk_spirv_to_nir (%s) ---\n",
               mesa_shader_stage_name(nir->info.stage));
       nir_print_shader(nir, stderr);
+   }
+
+   /* Tranche option 2: env-gated EARLIER call to the wide-phi segmenter, fired
+    * immediately after vk_spirv_to_nir before any other pass observes the
+    * chain.  Separate env from the existing post-link variant so A/B testing
+    * can isolate where the rewrite needs to fire. */
+   {
+      unsigned earlier_segment_size = 0;
+      char const * const earlier_env_value =
+         getenv("TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT");
+      if (earlier_env_value != NULL && earlier_env_value[0] != '\0') {
+         char *end = NULL;
+         unsigned long parsed = strtoul(earlier_env_value, &end, 0);
+         if (end != earlier_env_value && end[0] == '\0' && parsed >= 2 &&
+             parsed < UINT_MAX) {
+            earlier_segment_size = (unsigned)parsed;
+         } else {
+            earlier_segment_size = 64;
+         }
+      }
+      if (earlier_segment_size != 0) {
+         unsigned const earlier_min_cases =
+            earlier_segment_size < UINT_MAX ? earlier_segment_size + 1 : UINT_MAX;
+         if (terakan_segment_wide_phi_defs(
+                nir, earlier_segment_size, earlier_min_cases,
+                "TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT")) {
+            bool cleanup_progress;
+            do {
+               cleanup_progress = false;
+               NIR_PASS(cleanup_progress, nir, nir_opt_copy_prop);
+               NIR_PASS(cleanup_progress, nir, nir_opt_dce);
+               NIR_PASS(cleanup_progress, nir, nir_opt_remove_phis);
+               NIR_PASS(cleanup_progress, nir, nir_opt_dead_cf);
+            } while (cleanup_progress);
+         }
+         if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
+            fprintf(stderr,
+                    "TERAKAN_NIR_SPIRV: --- post TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT=%u (%s) ---\n",
+                    earlier_segment_size, mesa_shader_stage_name(nir->info.stage));
+            nir_print_shader(nir, stderr);
+         }
+      }
    }
 
    /* SFN expects certain fragment shader system values to be accessed via load_input rather than
@@ -403,6 +453,12 @@ terakan_get_experimental_early_wide_phi_segment(unsigned * const segment_size_ou
 }
 
 static bool
+terakan_wide_phi_auto_segment_disabled(void)
+{
+   return getenv("TERAKAN_DISABLE_WIDE_PHI_AUTO_SEGMENT") != NULL;
+}
+
+static bool
 terakan_def_is_scalar_load_const(nir_def * const def, unsigned const bit_size,
                                  nir_const_value * const value_out)
 {
@@ -594,6 +650,53 @@ terakan_debug_wide_phi_shape(nir_shader const * const nir,
            widest_selector_found ? 1 : 0);
 }
 
+/* Tranche option (post-empirical): the original implementation built the
+ * inner per-segment select as a linear cascade of `if (selector == k) ...
+ * else previous_result` iterations.  That makes the `selector` SSA def live
+ * across all 64 (or segment_size) iterations within a segment -- effectively
+ * an O(segment_size)-deep nest.  This caused most of the residual pressure.
+ *
+ * Replace with a balanced binary tree over the segment's case values, mirroring
+ * the outer `terakan_build_segment_tree_const_select`.  Now every value lookup
+ * is O(log2(segment_size)) deep, and the selector's live range is bounded by
+ * the tree depth, not the segment width. */
+static nir_def *
+terakan_build_segment_local_balanced_tree(nir_builder * const b,
+                                          nir_def * const selector,
+                                          nir_const_value const * const values,
+                                          unsigned const bit_size,
+                                          unsigned const first_value,
+                                          unsigned const value_count_in_segment)
+{
+   if (value_count_in_segment == 0)
+      return nir_undef(b, 1, bit_size);
+
+   if (value_count_in_segment == 1) {
+      nir_if * const case_if =
+         nir_push_if(b, nir_ieq_imm(b, selector, first_value));
+      nir_def * const case_value =
+         nir_build_imm(b, 1, bit_size, &values[first_value]);
+      nir_pop_if(b, case_if);
+      return nir_if_phi(b, case_value, nir_undef(b, 1, bit_size));
+   }
+
+   unsigned const left_count = value_count_in_segment / 2;
+   unsigned const right_count = value_count_in_segment - left_count;
+   unsigned const split_value = first_value + left_count;
+
+   nir_if * const split_if =
+      nir_push_if(b, nir_ult_imm(b, selector, split_value));
+   nir_def * const left_result = terakan_build_segment_local_balanced_tree(
+      b, selector, values, bit_size, first_value, left_count);
+
+   nir_push_else(b, split_if);
+   nir_def * const right_result = terakan_build_segment_local_balanced_tree(
+      b, selector, values, bit_size, split_value, right_count);
+
+   nir_pop_if(b, split_if);
+   return nir_if_phi(b, left_result, right_result);
+}
+
 static nir_def *
 terakan_build_segment_local_const_select(nir_builder * const b, nir_def * const selector,
                                          nir_const_value const * const values,
@@ -604,17 +707,9 @@ terakan_build_segment_local_const_select(nir_builder * const b, nir_def * const 
 {
    unsigned const segment_first = segment_index * segment_size;
    unsigned const segment_last = MIN2(value_count, segment_first + segment_size);
-   nir_def *segment_result = nir_undef(b, 1, bit_size);
-
-   for (unsigned value_index = segment_first; value_index < segment_last; ++value_index) {
-      nir_def * const previous_segment_result = segment_result;
-      nir_if * const case_if = nir_push_if(b, nir_ieq_imm(b, selector, value_index));
-      nir_def * const case_value = nir_build_imm(b, 1, bit_size, &values[value_index]);
-      nir_pop_if(b, case_if);
-      segment_result = nir_if_phi(b, case_value, previous_segment_result);
-   }
-
-   return segment_result;
+   unsigned const segment_value_count = segment_last - segment_first;
+   return terakan_build_segment_local_balanced_tree(
+      b, selector, values, bit_size, segment_first, segment_value_count);
 }
 
 static nir_def *
@@ -661,7 +756,15 @@ terakan_build_segmented_const_select(nir_builder * const b, nir_def * const sele
                                      unsigned const bit_size)
 {
    unsigned const segment_count = (value_count + segment_size - 1) / segment_size;
-   nir_def * const segment_selector = nir_udiv_imm(b, selector, segment_size);
+   /* Tranche option 1: when segment_size is a power of 2, the segment selector
+    * is a right-shift of the case-selector instead of a udiv -- one ALU op
+    * fewer and one fewer live range to colour. */
+   nir_def *segment_selector;
+   if (util_is_power_of_two_nonzero(segment_size)) {
+      segment_selector = nir_ushr_imm(b, selector, util_logbase2(segment_size));
+   } else {
+      segment_selector = nir_udiv_imm(b, selector, segment_size);
+   }
    return terakan_build_segment_tree_const_select(b, selector, segment_selector, values,
                                                   value_count, segment_size, bit_size, 0,
                                                   segment_count);
@@ -717,66 +820,104 @@ terakan_segment_wide_phi_impl(nir_function_impl * const impl, unsigned const seg
 
 static bool
 terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
-                                   unsigned const segment_size)
+                                   unsigned const segment_size,
+                                   unsigned const min_value_count,
+                                   char const * const log_label)
 {
-   enum { max_cases = 2048 };
-   nir_phi_instr *root_phi = NULL;
+   enum { max_cases = 2048, max_chains = 16 };
    nir_const_value values[max_cases];
-   unsigned value_count = 0;
-   unsigned bit_size = 0;
+   nir_def *already_rewritten[max_chains] = { NULL };
+   unsigned already_rewritten_count = 0;
+   bool progress = false;
 
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         if (instr->type != nir_instr_type_phi)
-            continue;
+   /* Tranche option 5: process all qualifying root phis, not just the last one
+    * found.  `nir_def_rewrite_uses` only redirects consumers -- the original
+    * phi chain remains in the IR and would be detected again on a fresh sweep.
+    * Track rewritten root defs and skip them on subsequent passes. */
+   for (;;) {
+      nir_phi_instr *root_phi = NULL;
+      unsigned value_count = 0;
+      unsigned bit_size = 0;
 
-         nir_phi_instr * const phi = nir_instr_as_phi(instr);
-         unsigned candidate_value_count = 0;
-         unsigned candidate_bit_size = 0;
-         if (!terakan_collect_wide_phi_const_chain(&phi->def, values, max_cases,
-                                                   &candidate_value_count,
-                                                   &candidate_bit_size) ||
-             candidate_value_count <= segment_size)
-            continue;
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_phi)
+               continue;
 
-         if (terakan_find_wide_phi_selector(impl, candidate_value_count) == NULL)
-            continue;
+            nir_phi_instr * const phi = nir_instr_as_phi(instr);
 
-         root_phi = phi;
-         value_count = candidate_value_count;
-         bit_size = candidate_bit_size;
+            bool already_done = false;
+            for (unsigned i = 0; i < already_rewritten_count; ++i) {
+               if (already_rewritten[i] == &phi->def) {
+                  already_done = true;
+                  break;
+               }
+            }
+            if (already_done)
+               continue;
+
+            unsigned candidate_value_count = 0;
+            unsigned candidate_bit_size = 0;
+            if (!terakan_collect_wide_phi_const_chain(&phi->def, values, max_cases,
+                                                      &candidate_value_count,
+                                                      &candidate_bit_size) ||
+                candidate_value_count < min_value_count ||
+                candidate_value_count <= segment_size)
+               continue;
+
+            if (terakan_find_wide_phi_selector(impl, candidate_value_count) == NULL)
+               continue;
+
+            root_phi = phi;
+            value_count = candidate_value_count;
+            bit_size = candidate_bit_size;
+            goto found;
+         }
       }
+      break;
+
+   found:;
+      nir_def * const selector = terakan_find_wide_phi_selector(impl, value_count);
+      if (selector == NULL)
+         break;
+
+      nir_builder builder = nir_builder_at(nir_after_phis(root_phi->instr.block));
+      nir_def * const segmented_value =
+         terakan_build_segmented_const_select(&builder, selector, values, value_count,
+                                              segment_size, bit_size);
+      if (segmented_value == NULL)
+         break;
+
+      nir_def_rewrite_uses(&root_phi->def, segmented_value);
+      if (already_rewritten_count < max_chains)
+         already_rewritten[already_rewritten_count++] = &root_phi->def;
+      progress = true;
+
+      fprintf(stderr,
+              "%s: segmented %u-case phi value with segment size %u min cases %u\n",
+              log_label, value_count, segment_size, min_value_count);
+
+      /* Safety: a multi-chain shader should not exceed `max_chains` rewrites.
+       * Stop unconditionally if we hit the cap to avoid any pathological loop. */
+      if (already_rewritten_count >= max_chains)
+         break;
    }
 
-   if (root_phi == NULL)
+   if (!progress)
       return false;
-
-   nir_def * const selector = terakan_find_wide_phi_selector(impl, value_count);
-   if (selector == NULL)
-      return false;
-
-   nir_builder builder = nir_builder_at(nir_after_phis(root_phi->instr.block));
-   nir_def * const segmented_value =
-      terakan_build_segmented_const_select(&builder, selector, values, value_count,
-                                           segment_size, bit_size);
-   if (segmented_value == NULL)
-      return false;
-
-   nir_def_rewrite_uses(&root_phi->def, segmented_value);
-
-   fprintf(stderr,
-           "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT: segmented %u-case phi value with segment size %u\n",
-           value_count, segment_size);
 
    return nir_progress(true, impl, nir_metadata_none);
 }
 
 static bool
-terakan_segment_wide_phi_defs(nir_shader * const nir, unsigned const segment_size)
+terakan_segment_wide_phi_defs(nir_shader * const nir, unsigned const segment_size,
+                              unsigned const min_value_count,
+                              char const * const log_label)
 {
    bool progress = false;
    nir_foreach_function_impl(impl, nir) {
-      progress |= terakan_segment_wide_phi_defs_impl(impl, segment_size);
+      progress |= terakan_segment_wide_phi_defs_impl(impl, segment_size,
+                                                     min_value_count, log_label);
    }
    return progress;
 }
@@ -825,8 +966,27 @@ terakan_shader_lower_and_optimize_post_link(
    } while (progress);
 
    unsigned early_segment_wide_phi_size = 0;
+   unsigned early_segment_wide_phi_min_cases = 0;
+   char const *early_segment_wide_phi_label = NULL;
    if (terakan_get_experimental_early_wide_phi_segment(&early_segment_wide_phi_size)) {
-      if (terakan_segment_wide_phi_defs(nir, early_segment_wide_phi_size)) {
+      early_segment_wide_phi_min_cases =
+         early_segment_wide_phi_size < UINT_MAX ? early_segment_wide_phi_size + 1 : UINT_MAX;
+      early_segment_wide_phi_label = "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT";
+   } else if (!terakan_wide_phi_auto_segment_disabled()) {
+      /* The 512-way Vulkan 1.0 opPhi.wide shape exceeds normal and physical
+       * SFN register budgets, while the balanced early segment rewrite lowers
+       * its measured pressure from 133 to 22.  Keep the default predicate
+       * narrow: only constant selector-backed phi chains at the failing fan-in
+       * boundary are transformed. */
+      early_segment_wide_phi_size = 64;
+      early_segment_wide_phi_min_cases = 512;
+      early_segment_wide_phi_label = "TERAKAN_WIDE_PHI_AUTO_SEGMENT";
+   }
+
+   if (early_segment_wide_phi_size != 0) {
+      if (terakan_segment_wide_phi_defs(nir, early_segment_wide_phi_size,
+                                        early_segment_wide_phi_min_cases,
+                                        early_segment_wide_phi_label)) {
          bool cleanup_progress;
          do {
             cleanup_progress = false;
@@ -839,8 +999,9 @@ terakan_shader_lower_and_optimize_post_link(
 
       if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
          fprintf(stderr,
-                 "TERAKAN_NIR_SPIRV: --- post TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT=%u (%s) ---\n",
-                 early_segment_wide_phi_size, mesa_shader_stage_name(nir->info.stage));
+                 "TERAKAN_NIR_SPIRV: --- post %s=%u min_cases=%u (%s) ---\n",
+                 early_segment_wide_phi_label, early_segment_wide_phi_size,
+                 early_segment_wide_phi_min_cases, mesa_shader_stage_name(nir->info.stage));
          nir_print_shader(nir, stderr);
       }
    }

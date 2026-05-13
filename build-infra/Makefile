@@ -11,7 +11,9 @@
 #   make clean     PROFILE=terakan-full      # drop the builddir only
 #   make distclean PROFILE=terakan-full      # drop builddir + install prefix
 #   make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
-#                                                # clean builddir only; keep ccache
+#                                                # warm/incremental: ccache + distcc
+#   make rebuild-terakan-distcc-no-rusticl-pump
+#                                                # cold/clean: distcc-pump + direct clang
 #   make install   PROFILE=terakan-full PREFIX=/usr/local/mesa-terakan
 #   make list                                # show available PROFILEs
 #
@@ -44,9 +46,10 @@ endif
 # across hosts.
 SETUP_ARGS := --native-file=$(CONFIG) --reconfigure
 
-.PHONY: list configure build clean distclean install test \
+.PHONY: list configure build build-generated build-pump clean distclean install test \
         rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-distcc-no-rusticl \
         rebuild-terakan-distcc-no-rusticl-ccache-no-pump \
+        rebuild-terakan-distcc-no-rusticl-pump \
         rebuild-terakan-minimal \
         rebuild-base-debug rebuild-terakan-release rebuild-terakan-profile \
         help
@@ -63,7 +66,9 @@ help:
 	@echo "  test              ninja -C \$$(BUILDDIR) test"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
 	@echo "  rebuild-terakan-distcc-no-rusticl-ccache-no-pump"
-	@echo "                    ccache-first, non-pump no-rusticl clean rebuild"
+	@echo "                    warm/incremental no-rusticl lane: ccache -> distcc -> clang-21"
+	@echo "  rebuild-terakan-distcc-no-rusticl-pump"
+	@echo "                    cold/clean no-rusticl lane: distcc-pump -> distcc -> clang-21"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
 	@echo "profile:   $(PROFILE)"
@@ -86,6 +91,22 @@ build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	ninja -C $(BUILDDIR) -j$(JOBS)
+
+build-generated:
+	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
+	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	mapfile -t targets < <(ninja -C $(BUILDDIR) -t targets all | awk '$$2 == "CUSTOM_COMMAND" { sub(/:$$/, "", $$1); if ($$1 !~ /^meson-internal__/ && $$1 !~ /\.so$$/) print $$1 }'); \
+	if [ "$${#targets[@]}" -gt 0 ]; then \
+		echo "prebuilding $${#targets[@]} generated Meson/Ninja targets outside distcc-pump"; \
+		ninja -C $(BUILDDIR) -j$(JOBS) "$${targets[@]}"; \
+	else \
+		echo "no generated targets found"; \
+	fi
+
+build-pump:
+	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
+	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	distcc-pump ninja -C $(BUILDDIR) -j$(JOBS)
 
 clean:
 	rm -rf $(BUILDDIR)
@@ -129,6 +150,16 @@ rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
 	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
 	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
 	$(MAKE) build PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+
+# Cold clean lane for x130e.  Configure and generated Meson/Ninja outputs are
+# completed before the include server starts; the heavy C/C++ compile then runs
+# under distcc-pump with direct clang-21.  This avoids generated-header changes
+# invalidating pump's include snapshot.
+rebuild-terakan-distcc-no-rusticl-pump:
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump
+	$(MAKE) build-generated PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump
+	$(MAKE) build-pump PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump
 
 rebuild-terakan-minimal:
 	$(MAKE) clean PROFILE=terakan-minimal

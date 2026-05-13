@@ -21,14 +21,14 @@ standalone without steinmarder cloned.
 Minimum toolchain to build locally:
 
 ```sh
-sudo apt install meson ninja-build clang-22 pkg-config \
+sudo apt install meson ninja-build clang-21 pkg-config \
     ccache distcc sccache bindgen rustup \
     libdrm-dev libxcb-dri3-dev libxcb-present-dev libxshmfence-dev \
     libx11-xcb-dev libxrandr-dev libxcb-randr0-dev libxcb-sync-dev \
     libxcb-xfixes0-dev libwayland-dev wayland-protocols \
     python3-mako python3-pip python3-ply \
     zlib1g-dev libzstd-dev libexpat1-dev libsensors-dev \
-    llvm-22-dev libclang-22-dev libspirv-tools-dev \
+    llvm-21-dev libclang-21-dev libspirv-tools-dev \
     libvulkan-dev libva-dev libegl-dev libgbm-dev glslang-tools
 rustup toolchain install stable
 rustup component add --toolchain stable rustfmt clippy rust-src \
@@ -40,10 +40,11 @@ Clone + build:
 ```sh
 git clone git@github.com:Oichkatzelesfrettschen/mesa-26-gororoba.git
 cd mesa-26-gororoba/build-infra
-./scripts/setup-distcc.sh          # precheck (versions + hosts)
-. env/btver1.env                    # CCACHE_PREFIX=distcc, CFLAGS, caches
-make rebuild-terakan-distcc         # clean + configure + build
-sudo make install PROFILE=terakan-distcc
+./scripts/setup-distcc.sh          # precheck (versions + mDNS hosts)
+. env/btver1-ccache-no-pump.env     # CCACHE_PREFIX=distcc, CFLAGS, caches
+make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
+sudo make install PROFILE=terakan-distcc-no-rusticl \
+    BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
 ```
 
 Install prefix: `/usr/local/mesa-terakan-distcc/`.  Isolated --
@@ -62,16 +63,38 @@ vulkaninfo --summary    # should show "AMD R8xx Palm (Terakan)"
 Profiles live in `build-infra/configs/`:
 
 - `terakan-full.meson`    r600+zink+soft+llvm, rusticl+HUD+VA (full stack)
-- `terakan-distcc.meson`  r600-only, daily distcc iteration lane
+- `terakan-distcc.meson`  r600-only, rusticl-enabled historical lane
+- `terakan-distcc-no-rusticl.meson`  daily warm lane, no Rusticl
+- `terakan-distcc-no-rusticl-pump.meson`  cold clean pump lane, no Rusticl
 - `terakan-minimal.meson` r600-only, no HUD, NIR scratchpad
 - `base-debug.meson`      stock Mesa reference (no terakan)
 
-Each profile's `[binaries]` section pins the canonical compiler chain:
+The x130e canonical build split is:
+
+| Use case | C/C++ chain | Rust chain | Command |
+| --- | --- | --- | --- |
+| Warm incremental | `ccache -> distcc -> clang-21`, no pump | `sccache -> rustc` | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
+| Cold clean / max remote preprocessing | `distcc-pump -> distcc -> clang-21`, no ccache | `sccache -> rustc` | `make rebuild-terakan-distcc-no-rusticl-pump` |
+
+Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump
+needs distcc to see the original source and compiler command.  The Rust
+sccache lane is separate and remains valid because it wraps rustc, not
+the C/C++ include-server path.
+
+Warm/no-pump profiles pin:
 
 ```ini
-c    = ['/usr/bin/ccache',  '/usr/bin/clang-22']
-cpp  = ['/usr/bin/ccache',  '/usr/bin/clang++-22']
-rust = ['/usr/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
+c    = ['/usr/bin/ccache',  '/usr/bin/clang-21']
+cpp  = ['/usr/bin/ccache',  '/usr/bin/clang++-21']
+rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
+```
+
+Cold/pump profiles pin:
+
+```ini
+c    = ['/usr/bin/distcc',  '/usr/bin/clang-21']
+cpp  = ['/usr/bin/distcc',  '/usr/bin/clang++-21']
+rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
 ```
 
 Absolute-path stable rustc bypasses the in-repo
@@ -80,9 +103,10 @@ because `/usr/bin/rustc` is a Debian rustup shim that honors the
 in-repo file otherwise.  Confirmed stable 1.95.0 builds Mesa 26
 rusticl cleanly -- nightly is not required.
 
-Host-envs in `build-infra/env/` (`btver1.env`, `sapphire.env`,
-`zen4.env`) set `CCACHE_PREFIX=distcc`, host-specific CFLAGS,
-`-fno-emulated-tls` (required for clang-22 on linux x86_64 to
+Host-envs in `build-infra/env/` (`btver1-ccache-no-pump.env`,
+`btver1-distcc-pump.env`, `sapphire.env`, `zen4.env`) set the
+lane-specific distcc/cache policy, host-specific CFLAGS,
+`-fno-emulated-tls` (required for clang-21 on linux x86_64 to
 avoid a link failure in libglapi), and centralised
 `CCACHE_DIR`/`SCCACHE_DIR`.
 
@@ -100,25 +124,16 @@ First full build populates `~/.cache/ccache`; subsequent
 rebuilds with unchanged sources should show >90% hit rate.
 Verify with: `ccache --show-stats --verbose`.
 
-### sccache -- BLOCKED BY UPSTREAM LIMITATION
+### sccache -- patched local Rust wrapper
 
 ```
-Compile requests                      N
-Compile requests executed             0
-Rust Not Supported:
-  more than one --emit              N   <-- bails here
+~/.local/bin/sccache
 ```
 
-Root cause: meson-rust emits
-`--emit dep-info=... --emit link=...` (two `--emit` flags in one
-rustc invocation).  sccache 0.10.0's Rust parser only supports a
-single `--emit` per invocation and rejects the call.  **Wiring is
-correct; the limitation is in sccache itself.**  Build completes
-fine -- sccache falls through to raw rustc on reject.
-
-Practical impact: Rust compilation (~3 min per clean rebuild on
-Bobcat) is not cached.  ccache covers the other ~40 min.  Track
-via `sccache -s` under `Rust Not Supported > more than one --emit`.
+The workspace patched sccache for meson-rust's multi-`--emit` form.
+Use the absolute path in native files so agents do not accidentally
+pick an older `/usr/bin/sccache`.  Deep RCA and rebuild instructions
+live in `steinmarder/docs/workspace/sccache-multi-emit-patch.md`.
 
 ### Do NOT chain wrapper-style
 
