@@ -538,6 +538,13 @@ terakan_physical_device_get_capabilities(
    /* TODO(Triang3l): variableMultisampleRate. */
    features_out->inheritedQueries = true;
 
+   /* shaderInt16: sub-32-bit integer ALU is promoted to 32-bit by
+    * `terakan_lower_bit_size_callback` (terakan_shader.c).  Every int16 op
+    * arriving at NIR is widened to int32, computed, then truncated back at
+    * the value boundary -- the same emulation pattern as the existing int8
+    * support.  No SFN-side behavior change required. */
+   features_out->shaderInt16 = true;
+
    /* Vulkan 1.1 variable pointers.
     * Do not expose either feature on the Vulkan 1.0 path until the
     * VK_KHR_storage_buffer_storage_class dependency and the non-constant
