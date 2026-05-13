@@ -943,20 +943,53 @@ terakan_physical_device_get_capabilities(
    features_out->storageInputOutput16 = false;
 
    /* VK_KHR_shader_float_controls (#198, Vulkan 1.2).
-    * Mostly declarative: exposes queryable properties about how the shader
-    * core handles rounding modes, denormals, and signed-zero/inf/nan
-    * preservation.  On Bobcat / Evergreen:
+    * Exposes queryable properties about how the shader core handles
+    * rounding modes, denormals, and signed-zero/inf/nan preservation.
+    * On Bobcat / Evergreen:
     *   - default rounding mode for FP32 is RTE (round-to-nearest-even);
     *     RTZ is not selectable from the shader, so the CTS validates only
     *     that RTE is reported and behaves correctly.
     *   - denormals flush to zero on FP32 (DAZ + FTZ): the shader core has
     *     no programmable denorm-preserve mode.
-    *   - signed zero, inf, NaN are preserved per IEEE-754 in the absence
-    *     of explicit `precise` or `fast-math` overrides.
-    * The Vulkan runtime emits property defaults that match Bobcat's
-    * behaviour without per-driver overrides; CTS validates these and
-    * passes when defaults align with observed silicon behaviour. */
+    *   - signed zero, inf, NaN are preserved for FP32 comparisons and
+    *     arithmetic in the absence of explicit fast-math overrides.
+    * Report the FP32 contract explicitly here; the common Vulkan runtime
+    * only copies fields from vk_properties and otherwise leaves this
+    * structure zeroed, which makes CTS treat the float-control surface as
+    * unsupported even when the extension bit is exposed. */
    extensions_out->KHR_shader_float_controls = true;
+   /* INDEPENDENCE_32_BIT_ONLY: FP16 inherits FP32 semantics via emulation,
+    * FP64 inherits via nir_lower_fp64_full_software.  FP32 is the only
+    * width with native HW behavior, but we expose properties for all
+    * three widths consistently so CTS doesn't false-NotSupport on
+    * FP16/FP64 property queries. */
+   properties_out->denormBehaviorIndependence =
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+   properties_out->roundingModeIndependence =
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+   /* FP32 native: RTE rounding, FTZ denormals, IEEE-754 signed-zero/inf/nan
+    * preserve.  RTZ rounding and denorm-preserve are not programmable. */
+   properties_out->shaderSignedZeroInfNanPreserveFloat32 = true;
+   properties_out->shaderDenormFlushToZeroFloat32        = true;
+   properties_out->shaderDenormPreserveFloat32           = false;
+   properties_out->shaderRoundingModeRTEFloat32          = true;
+   properties_out->shaderRoundingModeRTZFloat32          = false;
+   /* FP16 inherits FP32 via FLT16_TO_FLT32 / FLT32_TO_FLT16 pack/unpack
+    * (terakan_lower_bit_size_callback widens FP16 ALU to FP32). */
+   properties_out->shaderSignedZeroInfNanPreserveFloat16 = true;
+   properties_out->shaderDenormFlushToZeroFloat16        = true;
+   properties_out->shaderDenormPreserveFloat16           = false;
+   properties_out->shaderRoundingModeRTEFloat16          = true;
+   properties_out->shaderRoundingModeRTZFloat16          = false;
+   /* FP64 inherits via nir_lower_fp64_full_software emulation.  The
+    * software path implements IEEE-754 default semantics for all three
+    * preserve modes; RTE is the only rounding emitted; FTZ is N/A
+    * because the software path uses FP32 internally. */
+   properties_out->shaderSignedZeroInfNanPreserveFloat64 = true;
+   properties_out->shaderDenormFlushToZeroFloat64        = false;
+   properties_out->shaderDenormPreserveFloat64           = false;
+   properties_out->shaderRoundingModeRTEFloat64          = true;
+   properties_out->shaderRoundingModeRTZFloat64          = false;
 
    /* VK_KHR_sampler_mirror_clamp_to_edge (#15, Vulkan 1.2). */
    extensions_out->KHR_sampler_mirror_clamp_to_edge = true;
