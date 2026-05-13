@@ -1062,9 +1062,16 @@ terakan_physical_device_get_capabilities(
    /* VK_KHR_bind_memory2 (#158, Vulkan 1.1). */
    extensions_out->KHR_bind_memory2 = true;
 
-   /* TODO(Triang3l) VK_KHR_maintenance3 (#169, Vulkan 1.1) when vkGetDescriptorSetLayoutSupport
-    * is implemented.
-    */
+   /* VK_KHR_maintenance3 (#169, Vulkan 1.1).
+    * Adds vkGetDescriptorSetLayoutSupport (implemented in
+    * terakan_descriptor_set_layout.c) plus the maxPerSetDescriptors +
+    * maxMemoryAllocationSize properties.  The descriptor query returns
+    * supported=true unless the layout's total descriptorCount exceeds
+    * 4096 (the conservative resource-table cap also enforced inside
+    * terakan_CreateDescriptorSetLayout). */
+   extensions_out->KHR_maintenance3 = true;
+   properties_out->maxPerSetDescriptors = 4096;
+   properties_out->maxMemoryAllocationSize = UINT64_C(1) << 32; /* 4 GiB cap, hardware DMA limit. */
 
    /* VK_KHR_timeline_semaphore (#208, Vulkan 1.2). */
    extensions_out->KHR_timeline_semaphore = true;
