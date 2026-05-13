@@ -29,7 +29,12 @@ SHELL := /bin/bash
 PROFILE  ?= terakan-full
 HOSTENV  ?= btver1
 BUILDDIR ?= $(abspath $(CURDIR)/../../build/mesa-$(PROFILE))
-PREFIX   ?= /usr/local/mesa-$(PROFILE)
+# Canonical single install prefix for all profiles.  Build-time variants
+# (rusticl on/off, debug/release, pump/no-pump) are selected via PROFILE
+# and live in separate BUILDDIRs, but the active installed copy lives at
+# a single canonical path.  Override with PREFIX=... on the make line for
+# parallel installs.
+PREFIX   ?= /usr/local/mesa-26-gororoba
 JOBS     ?= $(shell nproc)
 
 # --- internal paths ---------------------------------------------------------
