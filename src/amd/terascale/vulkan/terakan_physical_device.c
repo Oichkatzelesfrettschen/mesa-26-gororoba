@@ -561,6 +561,12 @@ terakan_physical_device_get_capabilities(
     * FLT16_TO_FLT32 opcodes respectively.  CTS verified end-to-end. */
    features_out->shaderFloat16 = true;
 
+   /* shaderInt8: same bit-size promotion pattern as shaderInt16.  Int8 ALU
+    * is widened to int32 by `terakan_lower_bit_size_callback`, with the
+    * boundary i2i8/i2i32 conversions handled by SFN's generic int-conversion
+    * path.  The `KHR_shader_float16_int8` extension (above) is the wrapper. */
+   features_out->shaderInt8 = true;
+
    /* Vulkan 1.1 variable pointers.
     * Do not expose either feature on the Vulkan 1.0 path until the
     * VK_KHR_storage_buffer_storage_class dependency and the non-constant
