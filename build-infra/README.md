@@ -85,11 +85,14 @@ Canonical split:
 | Use case | C/C++ chain | Rust chain | Notes |
 | --- | --- | --- | --- |
 | Warm incremental | `ccache -> distcc -> clang-21` | `sccache -> rustc` | no pump |
-| Cold clean | `distcc-pump -> distcc -> clang-21` | `sccache -> rustc` | no C/C++ ccache |
+| Cold clean | `distcc-pump -> distcc -> clang-21` | `sccache -> rustc` | default pump host is the verified x570 mDNS worker |
 
 Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump
 needs distcc to see the original source and compiler command; wrappers
 that preprocess or cache before distcc defeat the include-server path.
+The DESKTOP/WSL worker remains in the classic no-pump mesh until pump
+object parity is proven; opt in with `TERAKAN_PUMP_ALLOW_DESKTOP=1`
+only for parity probes.
 
 Fresh-from-clean full build (longer; zink+llvmpipe+softpipe):
 ```

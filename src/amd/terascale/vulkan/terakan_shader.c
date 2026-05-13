@@ -119,6 +119,12 @@ terakan_nir_shared_type_info(struct glsl_type const * const type, unsigned * con
    *align = comp_size * (length == 3 ? 4 : length);
 }
 
+/* Forward declaration for tranche option 2 -- the wide-phi defs rewriter is
+ * defined far below but called from terakan_shader_spirv_to_nir when the
+ * EARLIER env is set. */
+static bool
+terakan_segment_wide_phi_defs(nir_shader * nir, unsigned segment_size);
+
 nir_shader *
 terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const spirv_size_bytes,
                             uint32_t const * const spirv, mesa_shader_stage const stage,
@@ -157,6 +163,44 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post vk_spirv_to_nir (%s) ---\n",
               mesa_shader_stage_name(nir->info.stage));
       nir_print_shader(nir, stderr);
+   }
+
+   /* Tranche option 2: env-gated EARLIER call to the wide-phi segmenter, fired
+    * immediately after vk_spirv_to_nir before any other pass observes the
+    * chain.  Separate env from the existing post-link variant so A/B testing
+    * can isolate where the rewrite needs to fire. */
+   {
+      unsigned earlier_segment_size = 0;
+      char const * const earlier_env_value =
+         getenv("TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT");
+      if (earlier_env_value != NULL && earlier_env_value[0] != '\0') {
+         char *end = NULL;
+         unsigned long parsed = strtoul(earlier_env_value, &end, 0);
+         if (end != earlier_env_value && end[0] == '\0' && parsed >= 2 &&
+             parsed < UINT_MAX) {
+            earlier_segment_size = (unsigned)parsed;
+         } else {
+            earlier_segment_size = 64;
+         }
+      }
+      if (earlier_segment_size != 0) {
+         if (terakan_segment_wide_phi_defs(nir, earlier_segment_size)) {
+            bool cleanup_progress;
+            do {
+               cleanup_progress = false;
+               NIR_PASS(cleanup_progress, nir, nir_opt_copy_prop);
+               NIR_PASS(cleanup_progress, nir, nir_opt_dce);
+               NIR_PASS(cleanup_progress, nir, nir_opt_remove_phis);
+               NIR_PASS(cleanup_progress, nir, nir_opt_dead_cf);
+            } while (cleanup_progress);
+         }
+         if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
+            fprintf(stderr,
+                    "TERAKAN_NIR_SPIRV: --- post TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT=%u (%s) ---\n",
+                    earlier_segment_size, mesa_shader_stage_name(nir->info.stage));
+            nir_print_shader(nir, stderr);
+         }
+      }
    }
 
    /* SFN expects certain fragment shader system values to be accessed via load_input rather than

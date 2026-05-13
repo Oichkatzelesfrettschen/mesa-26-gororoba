@@ -39,8 +39,8 @@ The canonical split is:
 
 | Use case | C/C++ chain | Rust chain | Host options | Command |
 | --- | --- | --- | --- | --- |
-| Warm incremental | `ccache -> distcc -> clang-21`, no pump | `sccache -> rustc` | `lzo` | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
-| Cold clean | `distcc-pump -> distcc -> clang-21`, no ccache | `sccache -> rustc` | shell-derived `cpp,lzo` | `make rebuild-terakan-distcc-no-rusticl-pump` |
+| Warm incremental | `ccache -> distcc -> clang-21`, no pump | `sccache -> rustc` | `lzo`, includes x570 + DESKTOP + localhost + zeroconf | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
+| Cold clean | `distcc-pump -> distcc -> clang-21`, no ccache | `sccache -> rustc` | verified x570 mDNS worker with shell-derived `cpp,lzo` | `make rebuild-terakan-distcc-no-rusticl-pump` |
 
 Warm/no-pump compiler wiring:
 
@@ -81,6 +81,11 @@ Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump
 needs distcc to see the original source and compiler command.  `sccache`
 is still correct for Rust because it wraps rustc separately from the
 C/C++ include-server path.
+
+DESKTOP/WSL is intentionally excluded from the default pump lane after
+live x130e builds showed Gallivm pump discrepancies and pump demotion.
+It remains in the classic no-pump mesh.  Use
+`TERAKAN_PUMP_ALLOW_DESKTOP=1` only for explicit parity probes.
 
 ## How
 
@@ -134,6 +139,30 @@ find /usr/local/mesa-debug -maxdepth 5 -type f \
 The Makefile sources `build-infra/env/*.env` for configure/build targets.
 Use those env files as the canonical source of build lane policy rather
 than ad hoc shell exports.
+
+## 2026-05-13 canonical split check
+
+The first full pump build with DESKTOP/WSL in pump mode completed, but
+reported 15 pump demotions.  After adding the generated-output preflight,
+the warning dropped to 3 Gallivm discrepancies, all on
+`DESKTOP-CKP9KB6-2.local`.  That makes DESKTOP/WSL non-canonical for
+default pump mode.
+
+The default pump env was then tightened to the verified x570 mDNS worker:
+
+```text
+--randomize @x570-5600X3D.local/16,cpp,lzo localhost/2,lzo
+```
+
+Validation:
+
+```text
+tmux: terakan_build_pump_x570_only_check_20260513Tcanonical
+log:  /tmp/terakan_build_pump_x570_only_check_20260513Tcanonical.log
+rc:   0
+work: 100 incremental Ninja steps
+note: no distcc discrepancy or pump-demotion warning
+```
 
 ## 2026-04-26 run result
 
