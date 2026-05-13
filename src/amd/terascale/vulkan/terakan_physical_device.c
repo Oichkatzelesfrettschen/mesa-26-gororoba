@@ -545,22 +545,13 @@ terakan_physical_device_get_capabilities(
     * support.  No SFN-side behavior change required. */
    features_out->shaderInt16 = true;
 
-   /* shaderFloat16: NOT YET EXPOSED.
-    *
-    * `terakan_lower_bit_size_callback` already widens FP16 ALU sources to
-    * FP32, but `nir_lower_bit_size` then emits boundary `nir_op_f2f16`
-    * conversion ops (FP32 -> FP16) that SFN does not currently handle:
-    *   sfn_instr_alu.cpp:2227: Unknown instruction '16    %21 = f2f16 %239'
-    *   -> assertion failure during r600::AluInstr::from_nir.
-    *
-    * Adding `f2f16` to the SFN instruction selector (mapping to the Bobcat
-    * `FLT32_TO_FLT16` opcode) is the remaining work.  SFN already handles
-    * the inverse `f2f32` (FLT16_TO_FLT32) at sfn_instr_alu.cpp:1829, so
-    * the symmetric handler is the natural place.
-    *
-    * Until that work lands, leave shaderFloat16 disabled to avoid driver
-    * crashes during CTS runs of FP16 shaders. */
-   features_out->shaderFloat16 = false;
+   /* shaderFloat16: bit-size promotion in
+    * `terakan_lower_bit_size_callback` widens FP16 ALU sources to FP32;
+    * `nir_lower_bit_size` then emits boundary `nir_op_f2f16` (FP32 -> FP16)
+    * and `nir_op_f2f32` (FP16 -> FP32) conversion ops at the value
+    * boundaries.  Both are now handled in SFN via the FLT32_TO_FLT16 and
+    * FLT16_TO_FLT32 opcodes respectively.  CTS verified end-to-end. */
+   features_out->shaderFloat16 = true;
 
    /* Vulkan 1.1 variable pointers.
     * Do not expose either feature on the Vulkan 1.0 path until the
@@ -913,12 +904,11 @@ terakan_physical_device_get_capabilities(
     * arrives at the same NIR shape.  Declarative enable. */
    extensions_out->KHR_storage_buffer_storage_class = true;
 
-   /* VK_KHR_shader_float16_int8 (#83, Vulkan 1.2): NOT YET EXPOSED.
-    * Blocked behind SFN f2f16 handler (see shaderFloat16 comment above).
-    * Once SFN can emit FLT32_TO_FLT16 for nir_op_f2f16, enabling this
-    * extension lets SPIR-V use the SPV_KHR_16bit_storage capability for
-    * shader-side 16-bit float/int operands. */
-   extensions_out->KHR_shader_float16_int8 = false;
+   /* VK_KHR_shader_float16_int8 (#83, Vulkan 1.2).
+    * Couples shaderFloat16 (now enabled with the SFN f2f16/f2f32
+    * handlers) and shaderInt8.  Bobcat exposes both indirectly via the
+    * bit-size promotion path.  Declarative enable. */
+   extensions_out->KHR_shader_float16_int8 = true;
 
    /* VK_KHR_shader_float_controls (#198, Vulkan 1.2).
     * Mostly declarative: exposes queryable properties about how the shader
