@@ -873,6 +873,22 @@ terakan_physical_device_get_capabilities(
    extensions_out->KHR_shader_draw_parameters = true;
    features_out->shaderDrawParameters = true;
 
+   /* VK_KHR_shader_non_semantic_info (#293, Vulkan 1.3).
+    * Pure declarative: permits SPIR-V to embed NonSemantic.*
+    * OpExtInstImport blocks (e.g. NonSemantic.DebugPrintf,
+    * NonSemantic.Shader.DebugInfo).  vk_spirv_to_nir handles these by
+    * either inlining or skipping; no SFN/SQ work required. */
+   extensions_out->KHR_shader_non_semantic_info = true;
+
+   /* VK_KHR_storage_buffer_storage_class (#132, Vulkan 1.1).
+    * Permits SPIR-V to use the StorageBuffer storage class directly
+    * instead of the legacy BufferBlock-decorated Uniform path.  Our
+    * SSBO lowering already runs `nir_lower_explicit_io` on both
+    * `nir_var_mem_ubo` and `nir_var_mem_ssbo` with
+    * `nir_address_format_32bit_index_offset`, so either source path
+    * arrives at the same NIR shape.  Declarative enable. */
+   extensions_out->KHR_storage_buffer_storage_class = true;
+
    /* VK_KHR_sampler_mirror_clamp_to_edge (#15, Vulkan 1.2). */
    extensions_out->KHR_sampler_mirror_clamp_to_edge = true;
    features_out->samplerMirrorClampToEdge = true;
