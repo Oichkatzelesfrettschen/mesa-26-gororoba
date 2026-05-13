@@ -661,7 +661,15 @@ terakan_build_segmented_const_select(nir_builder * const b, nir_def * const sele
                                      unsigned const bit_size)
 {
    unsigned const segment_count = (value_count + segment_size - 1) / segment_size;
-   nir_def * const segment_selector = nir_udiv_imm(b, selector, segment_size);
+   /* Tranche option 1: when segment_size is a power of 2, the segment selector
+    * is a right-shift of the case-selector instead of a udiv -- one ALU op
+    * fewer and one fewer live range to colour. */
+   nir_def *segment_selector;
+   if (util_is_power_of_two_nonzero(segment_size)) {
+      segment_selector = nir_ushr_imm(b, selector, util_logbase2(segment_size));
+   } else {
+      segment_selector = nir_udiv_imm(b, selector, segment_size);
+   }
    return terakan_build_segment_tree_const_select(b, selector, segment_selector, values,
                                                   value_count, segment_size, bit_size, 0,
                                                   segment_count);
@@ -720,53 +728,65 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
                                    unsigned const segment_size)
 {
    enum { max_cases = 2048 };
-   nir_phi_instr *root_phi = NULL;
    nir_const_value values[max_cases];
-   unsigned value_count = 0;
-   unsigned bit_size = 0;
+   bool progress = false;
 
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         if (instr->type != nir_instr_type_phi)
-            continue;
+   /* Tranche option 5: process all qualifying root phis, not just the last one
+    * found.  Walk first to detect candidates without invalidating iterators,
+    * then rewrite.  After each rewrite the CFG/SSA shape changes so we restart
+    * the detection loop until no more chains remain. */
+   for (;;) {
+      nir_phi_instr *root_phi = NULL;
+      unsigned value_count = 0;
+      unsigned bit_size = 0;
 
-         nir_phi_instr * const phi = nir_instr_as_phi(instr);
-         unsigned candidate_value_count = 0;
-         unsigned candidate_bit_size = 0;
-         if (!terakan_collect_wide_phi_const_chain(&phi->def, values, max_cases,
-                                                   &candidate_value_count,
-                                                   &candidate_bit_size) ||
-             candidate_value_count <= segment_size)
-            continue;
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_phi)
+               continue;
 
-         if (terakan_find_wide_phi_selector(impl, candidate_value_count) == NULL)
-            continue;
+            nir_phi_instr * const phi = nir_instr_as_phi(instr);
+            unsigned candidate_value_count = 0;
+            unsigned candidate_bit_size = 0;
+            if (!terakan_collect_wide_phi_const_chain(&phi->def, values, max_cases,
+                                                      &candidate_value_count,
+                                                      &candidate_bit_size) ||
+                candidate_value_count <= segment_size)
+               continue;
 
-         root_phi = phi;
-         value_count = candidate_value_count;
-         bit_size = candidate_bit_size;
+            if (terakan_find_wide_phi_selector(impl, candidate_value_count) == NULL)
+               continue;
+
+            root_phi = phi;
+            value_count = candidate_value_count;
+            bit_size = candidate_bit_size;
+            goto found;
+         }
       }
+      break;
+
+   found:;
+      nir_def * const selector = terakan_find_wide_phi_selector(impl, value_count);
+      if (selector == NULL)
+         break;
+
+      nir_builder builder = nir_builder_at(nir_after_phis(root_phi->instr.block));
+      nir_def * const segmented_value =
+         terakan_build_segmented_const_select(&builder, selector, values, value_count,
+                                              segment_size, bit_size);
+      if (segmented_value == NULL)
+         break;
+
+      nir_def_rewrite_uses(&root_phi->def, segmented_value);
+      progress = true;
+
+      fprintf(stderr,
+              "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT: segmented %u-case phi value with segment size %u\n",
+              value_count, segment_size);
    }
 
-   if (root_phi == NULL)
+   if (!progress)
       return false;
-
-   nir_def * const selector = terakan_find_wide_phi_selector(impl, value_count);
-   if (selector == NULL)
-      return false;
-
-   nir_builder builder = nir_builder_at(nir_after_phis(root_phi->instr.block));
-   nir_def * const segmented_value =
-      terakan_build_segmented_const_select(&builder, selector, values, value_count,
-                                           segment_size, bit_size);
-   if (segmented_value == NULL)
-      return false;
-
-   nir_def_rewrite_uses(&root_phi->def, segmented_value);
-
-   fprintf(stderr,
-           "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT: segmented %u-case phi value with segment size %u\n",
-           value_count, segment_size);
 
    return nir_progress(true, impl, nir_metadata_none);
 }
