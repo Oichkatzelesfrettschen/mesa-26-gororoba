@@ -958,13 +958,38 @@ terakan_physical_device_get_capabilities(
     * structure zeroed, which makes CTS treat the float-control surface as
     * unsupported even when the extension bit is exposed. */
    extensions_out->KHR_shader_float_controls = true;
+   /* INDEPENDENCE_32_BIT_ONLY: FP16 inherits FP32 semantics via emulation,
+    * FP64 inherits via nir_lower_fp64_full_software.  FP32 is the only
+    * width with native HW behavior, but we expose properties for all
+    * three widths consistently so CTS doesn't false-NotSupport on
+    * FP16/FP64 property queries. */
    properties_out->denormBehaviorIndependence =
       VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
    properties_out->roundingModeIndependence =
       VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+   /* FP32 native: RTE rounding, FTZ denormals, IEEE-754 signed-zero/inf/nan
+    * preserve.  RTZ rounding and denorm-preserve are not programmable. */
    properties_out->shaderSignedZeroInfNanPreserveFloat32 = true;
-   properties_out->shaderDenormFlushToZeroFloat32 = true;
-   properties_out->shaderRoundingModeRTEFloat32 = true;
+   properties_out->shaderDenormFlushToZeroFloat32        = true;
+   properties_out->shaderDenormPreserveFloat32           = false;
+   properties_out->shaderRoundingModeRTEFloat32          = true;
+   properties_out->shaderRoundingModeRTZFloat32          = false;
+   /* FP16 inherits FP32 via FLT16_TO_FLT32 / FLT32_TO_FLT16 pack/unpack
+    * (terakan_lower_bit_size_callback widens FP16 ALU to FP32). */
+   properties_out->shaderSignedZeroInfNanPreserveFloat16 = true;
+   properties_out->shaderDenormFlushToZeroFloat16        = true;
+   properties_out->shaderDenormPreserveFloat16           = false;
+   properties_out->shaderRoundingModeRTEFloat16          = true;
+   properties_out->shaderRoundingModeRTZFloat16          = false;
+   /* FP64 inherits via nir_lower_fp64_full_software emulation.  The
+    * software path implements IEEE-754 default semantics for all three
+    * preserve modes; RTE is the only rounding emitted; FTZ is N/A
+    * because the software path uses FP32 internally. */
+   properties_out->shaderSignedZeroInfNanPreserveFloat64 = true;
+   properties_out->shaderDenormFlushToZeroFloat64        = false;
+   properties_out->shaderDenormPreserveFloat64           = false;
+   properties_out->shaderRoundingModeRTEFloat64          = true;
+   properties_out->shaderRoundingModeRTZFloat64          = false;
 
    /* VK_KHR_sampler_mirror_clamp_to_edge (#15, Vulkan 1.2). */
    extensions_out->KHR_sampler_mirror_clamp_to_edge = true;
