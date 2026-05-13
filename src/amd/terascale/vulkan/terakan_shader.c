@@ -842,6 +842,9 @@ terakan_shader_lower_and_optimize_post_link(
             cleanup_progress = false;
             NIR_PASS(cleanup_progress, nir, nir_opt_copy_prop);
             NIR_PASS(cleanup_progress, nir, nir_opt_dce);
+            NIR_PASS(cleanup_progress, nir, nir_opt_remove_phis);
+            NIR_PASS(cleanup_progress, nir, nir_opt_if,
+                     nir_opt_if_optimize_phi_true_false);
             NIR_PASS(cleanup_progress, nir, nir_opt_dead_cf);
          } while (cleanup_progress);
       }
