@@ -1833,6 +1833,57 @@ terakan_nir_lower_bindings_instr_image_deref_store(
 }
 
 static void
+terakan_nir_lower_bindings_instr_image_deref_size(
+   nir_builder * const b, nir_intrinsic_instr * const intrin,
+   struct terakan_nir_lower_bindings_state * const state)
+{
+   assert(intrin->intrinsic == nir_intrinsic_image_deref_size);
+
+   enum glsl_sampler_dim const image_dim = nir_intrinsic_image_dim(intrin);
+   bool const image_is_array = nir_intrinsic_image_array(intrin);
+
+   struct terakan_nir_binding binding;
+   if (unlikely(!terakan_nir_get_binding(intrin->src[0],
+                                         terakan_nir_image_descriptor_type(image_dim),
+                                         state->layout, b->shader, &binding))) {
+      terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+      return;
+   }
+
+   b->cursor = nir_before_instr(&intrin->instr);
+
+   mesa_shader_stage const stage = b->shader->info.stage;
+   uint8_t const resource_index_base = binding.set->first_shader_resources[stage] +
+                                       binding.set_binding->first_shader_resources[stage] +
+                                       TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
+
+   /* image_size queries via the texture cache: GET_TEXTURE_RESINFO does not
+    * write or read the image's UAV, only its texture descriptor.  Same
+    * resources-needed bookkeeping as the texture-cache load path. */
+   BITSET_SET_RANGE(state->resources_needed,
+                    resource_index_base + binding.array_index_range_first,
+                    resource_index_base + binding.array_index_range_last);
+
+   nir_def * const array_index =
+      binding.array_index != NULL ? binding.array_index : nir_imm_zero(b, 1, 32);
+
+   nir_def * const sized = nir_image_size(
+      b,
+      intrin->def.num_components,
+      32,
+      array_index,
+      nir_imm_zero(b, 1, 32),  /* LOD */
+      .image_dim = image_dim,
+      .image_array = image_is_array,
+      .format = nir_intrinsic_format(intrin),
+      .access = nir_intrinsic_access(intrin),
+      .range_base = resource_index_base);
+
+   nir_def_rewrite_uses(&intrin->def, sized);
+   nir_instr_remove(&intrin->instr);
+}
+
+static void
 terakan_nir_lower_bindings_instr_image_deref_atomic(
    nir_builder * const b, nir_intrinsic_instr * const intrin,
    struct terakan_nir_lower_bindings_state * const state)
@@ -2022,6 +2073,9 @@ terakan_nir_lower_bindings_instr(nir_builder * const b, nir_instr * const instr,
       case nir_intrinsic_image_deref_atomic:
       case nir_intrinsic_image_deref_atomic_swap:
          terakan_nir_lower_bindings_instr_image_deref_atomic(b, intrin, state);
+         return true;
+      case nir_intrinsic_image_deref_size:
+         terakan_nir_lower_bindings_instr_image_deref_size(b, intrin, state);
          return true;
       default:
          break;
