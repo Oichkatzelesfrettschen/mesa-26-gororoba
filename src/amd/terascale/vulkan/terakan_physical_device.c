@@ -527,10 +527,16 @@ terakan_physical_device_get_capabilities(
    features_out->shaderImageGatherExtended = true;
    /* TODO(Triang3l): Shader storage image format features. */
    /* TODO(Triang3l): Shader binding array dynamic indexing. */
-   /* shaderFloat64: Evergreen (is_r9xx=false) has no native FP64 support; NIR uses
-    * nir_lower_fp64_full_software for the full double set.  Cayman (is_r9xx=true) has partial
-    * HW double support but the SFN back-end has not been validated for Vulkan FP64 -- deferred.
-    */
+   /* shaderFloat64: Evergreen (is_r9xx=false) has no native FP64 support;
+    * NIR uses `nir_lower_fp64_full_software` for the full double set
+    * (configured in nir_options_non_fs below).  Cayman (is_r9xx=true)
+    * has partial HW double support but the SFN back-end has not been
+    * validated for Vulkan FP64 -- both Evergreen and Cayman go through
+    * the same software path for safety.
+    *
+    * Float controls properties (above) are populated for FP64 so CTS
+    * accepts the emulated implementation. */
+   features_out->shaderFloat64 = true;
    /* shaderResourceMinLod: nir_tex_src_min_lod is lowered in SFN via fmax(computed_lod, min_lod)
     * before the texture instruction (sfn_nir_lower_tex.cpp), providing correct clamped LOD.
     */
@@ -567,12 +573,8 @@ terakan_physical_device_get_capabilities(
     * path.  The `KHR_shader_float16_int8` extension (above) is the wrapper. */
    features_out->shaderInt8 = true;
 
-   /* Vulkan 1.1 variable pointers.
-    * Do not expose either feature on the Vulkan 1.0 path until the
-    * VK_KHR_storage_buffer_storage_class dependency and the non-constant
-    * pointer paths are validated end-to-end. */
-   features_out->variablePointersStorageBuffer = false;
-   features_out->variablePointers = false;
+   /* variablePointers / variablePointersStorageBuffer set later at the
+    * VK_KHR_variable_pointers enablement site (see below). */
 
    properties_out->apiVersion = TERAKAN_API_VERSION;
    properties_out->driverVersion = vk_get_driver_version();
@@ -866,10 +868,22 @@ terakan_physical_device_get_capabilities(
    extensions_out->KHR_maintenance2 = true;
 
    /* VK_KHR_variable_pointers (#61, Vulkan 1.1).
-    * Keep hidden on the Vulkan 1.0 path until its dependency chain is exposed
-    * truthfully, either via VK_KHR_storage_buffer_storage_class or Vulkan 1.1.
-    */
-   extensions_out->KHR_variable_pointers = false;
+    * Permits non-constant pointer indexing into SSBOs (e.g.
+    * `buffer[some_uniform_index].field`).  Depends on
+    * KHR_storage_buffer_storage_class (now enabled).
+    *
+    * Lowering chain: nir_lower_explicit_io with
+    * `nir_address_format_32bit_index_offset` handles arbitrary index
+    * + offset arithmetic on SSBO addresses.  Bobcat's UAV resource
+    * arrays carry the indices natively.
+    *
+    * Expose `variablePointersStorageBuffer` (the SSBO subset).  The
+    * broader `variablePointers` (which extends to workgroup memory)
+    * requires additional shared-memory address lowering and is
+    * deferred. */
+   extensions_out->KHR_variable_pointers = true;
+   features_out->variablePointersStorageBuffer = true;
+   features_out->variablePointers = false;
 
    /* VK_KHR_multiview (#54, Vulkan 1.1).
     * Truthful capability surfacing: disabled until multiview draw expansion
@@ -908,6 +922,15 @@ terakan_physical_device_get_capabilities(
     * NonSemantic.Shader.DebugInfo).  vk_spirv_to_nir handles these by
     * either inlining or skipping; no SFN/SQ work required. */
    extensions_out->KHR_shader_non_semantic_info = true;
+
+   /* VK_KHR_shader_relaxed_extended_instruction (#509, Vulkan 1.4).
+    * Declarative: permits SPIR-V to use the
+    * SPV_KHR_relaxed_extended_instruction capability for ExtInst
+    * (Extended-Instruction Set) calls with relaxed precision.
+    * vk_spirv_to_nir + the existing relaxed-precision lowering already
+    * handle the runtime semantics; this extension is just the gate
+    * that the SPIR-V validator checks. */
+   extensions_out->KHR_shader_relaxed_extended_instruction = true;
 
    /* VK_KHR_storage_buffer_storage_class (#132, Vulkan 1.1).
     * Permits SPIR-V to use the StorageBuffer storage class directly
