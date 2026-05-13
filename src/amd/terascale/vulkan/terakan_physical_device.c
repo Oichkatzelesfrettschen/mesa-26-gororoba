@@ -941,6 +941,15 @@ terakan_physical_device_get_capabilities(
     * arrives at the same NIR shape.  Declarative enable. */
    extensions_out->KHR_storage_buffer_storage_class = true;
 
+   /* VK_KHR_relaxed_block_layout (#145, Vulkan 1.1).
+    * Permits non-standard layout rules for std430-style UBO/SSBO blocks
+    * where vector members can straddle 16-byte alignment boundaries.
+    * Pure declarative: the layout is determined by the SPIR-V producer
+    * (glslangValidator with --enhanced-msgs), not by the driver.
+    * `nir_lower_explicit_io` already handles arbitrary offset arithmetic;
+    * no SFN-side change required. */
+   extensions_out->KHR_relaxed_block_layout = true;
+
    /* VK_KHR_shader_float16_int8 (#83, Vulkan 1.2).
     * Couples shaderFloat16 (now enabled with the SFN f2f16/f2f32
     * handlers) and shaderInt8.  Bobcat exposes both indirectly via the
