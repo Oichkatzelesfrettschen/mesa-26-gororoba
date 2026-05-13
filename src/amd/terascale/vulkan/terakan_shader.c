@@ -638,6 +638,53 @@ terakan_debug_wide_phi_shape(nir_shader const * const nir,
            widest_selector_found ? 1 : 0);
 }
 
+/* Tranche option (post-empirical): the original implementation built the
+ * inner per-segment select as a linear cascade of `if (selector == k) ...
+ * else previous_result` iterations.  That makes the `selector` SSA def live
+ * across all 64 (or segment_size) iterations within a segment -- effectively
+ * an O(segment_size)-deep nest.  This caused most of the residual pressure.
+ *
+ * Replace with a balanced binary tree over the segment's case values, mirroring
+ * the outer `terakan_build_segment_tree_const_select`.  Now every value lookup
+ * is O(log2(segment_size)) deep, and the selector's live range is bounded by
+ * the tree depth, not the segment width. */
+static nir_def *
+terakan_build_segment_local_balanced_tree(nir_builder * const b,
+                                          nir_def * const selector,
+                                          nir_const_value const * const values,
+                                          unsigned const bit_size,
+                                          unsigned const first_value,
+                                          unsigned const value_count_in_segment)
+{
+   if (value_count_in_segment == 0)
+      return nir_undef(b, 1, bit_size);
+
+   if (value_count_in_segment == 1) {
+      nir_if * const case_if =
+         nir_push_if(b, nir_ieq_imm(b, selector, first_value));
+      nir_def * const case_value =
+         nir_build_imm(b, 1, bit_size, &values[first_value]);
+      nir_pop_if(b, case_if);
+      return nir_if_phi(b, case_value, nir_undef(b, 1, bit_size));
+   }
+
+   unsigned const left_count = value_count_in_segment / 2;
+   unsigned const right_count = value_count_in_segment - left_count;
+   unsigned const split_value = first_value + left_count;
+
+   nir_if * const split_if =
+      nir_push_if(b, nir_ult_imm(b, selector, split_value));
+   nir_def * const left_result = terakan_build_segment_local_balanced_tree(
+      b, selector, values, bit_size, first_value, left_count);
+
+   nir_push_else(b, split_if);
+   nir_def * const right_result = terakan_build_segment_local_balanced_tree(
+      b, selector, values, bit_size, split_value, right_count);
+
+   nir_pop_if(b, split_if);
+   return nir_if_phi(b, left_result, right_result);
+}
+
 static nir_def *
 terakan_build_segment_local_const_select(nir_builder * const b, nir_def * const selector,
                                          nir_const_value const * const values,
@@ -648,17 +695,9 @@ terakan_build_segment_local_const_select(nir_builder * const b, nir_def * const 
 {
    unsigned const segment_first = segment_index * segment_size;
    unsigned const segment_last = MIN2(value_count, segment_first + segment_size);
-   nir_def *segment_result = nir_undef(b, 1, bit_size);
-
-   for (unsigned value_index = segment_first; value_index < segment_last; ++value_index) {
-      nir_def * const previous_segment_result = segment_result;
-      nir_if * const case_if = nir_push_if(b, nir_ieq_imm(b, selector, value_index));
-      nir_def * const case_value = nir_build_imm(b, 1, bit_size, &values[value_index]);
-      nir_pop_if(b, case_if);
-      segment_result = nir_if_phi(b, case_value, previous_segment_result);
-   }
-
-   return segment_result;
+   unsigned const segment_value_count = segment_last - segment_first;
+   return terakan_build_segment_local_balanced_tree(
+      b, selector, values, bit_size, segment_first, segment_value_count);
 }
 
 static nir_def *
