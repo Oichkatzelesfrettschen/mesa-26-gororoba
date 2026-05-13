@@ -1,0 +1,35 @@
+# terakan-distcc-no-rusticl-pump: clean-build lane for x130e.
+#
+# This is intentionally separate from the ccache/no-pump profile.  For
+# C/C++, distcc-pump must see the original source and compiler command:
+# do not put ccache or sccache in front of this lane.  Rust remains on
+# sccache because it is a separate rustc chain and is not part of the
+# distcc include-server path.
+#
+# terakan (Vulkan) and r600 (Gallium) are pure C and build fine;
+# only the gallium-rusticl OpenCL frontend is removed from this
+# variant.  Install prefix /usr/local/mesa-terakan-distcc-no-rusticl/
+# keeps it isolated from the rusticl-enabled variant.
+
+[binaries]
+c    = ['/usr/bin/distcc', '/usr/bin/clang-21']
+cpp  = ['/usr/bin/distcc', '/usr/bin/clang++-21']
+rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
+
+[project options]
+buildtype           = 'debug'
+b_ndebug            = 'false'
+
+# r600 only -- same as terakan-distcc.
+gallium-drivers     = ['r600']
+vulkan-drivers      = ['amd_terascale']
+
+# Rusticl DISABLED because upstream rusticl/pipe_screen bindgen
+# output is opaque-stubbed on bindgen 0.71.1 + current Mesa pipe
+# struct layout; rust source expects the reified binding.
+# See rusticl-bindgen-drift.md in steinmarder docs/workspace/.
+gallium-rusticl                = false
+
+amd-use-llvm        = true
+gallium-extra-hud   = true
+glx                 = 'auto'
