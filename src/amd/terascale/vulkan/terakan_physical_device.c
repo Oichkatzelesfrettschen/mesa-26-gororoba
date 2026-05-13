@@ -545,6 +545,14 @@ terakan_physical_device_get_capabilities(
     * support.  No SFN-side behavior change required. */
    features_out->shaderInt16 = true;
 
+   /* shaderInt64: NIR `nir_lower_int64` is configured to lower the full
+    * int64 op set (`lower_int64_options = ~0` in nir_options_non_fs below).
+    * Every int64 ALU op is emulated via pairs of int32 ops, then promoted
+    * to SFN by the standard ALU path.  Bobcat has no native 64-bit ALU
+    * but the software emulation runs entirely in NIR, so SFN sees only
+    * 32-bit ops by the time instruction selection runs. */
+   features_out->shaderInt64 = true;
+
    /* shaderFloat16: bit-size promotion in
     * `terakan_lower_bit_size_callback` widens FP16 ALU sources to FP32;
     * `nir_lower_bit_size` then emits boundary `nir_op_f2f16` (FP32 -> FP16)
@@ -909,6 +917,24 @@ terakan_physical_device_get_capabilities(
     * handlers) and shaderInt8.  Bobcat exposes both indirectly via the
     * bit-size promotion path.  Declarative enable. */
    extensions_out->KHR_shader_float16_int8 = true;
+
+   /* VK_KHR_16bit_storage (#84, Vulkan 1.1).
+    * Permits 16-bit values (float16, int16) to flow through SSBO/UBO/
+    * push-constant/IO storage classes.  Our existing memory-access
+    * lowering (`nir_lower_explicit_io` + the bit-size promotion in
+    * `terakan_lower_bit_size_callback`) handles the load/store side;
+    * SFN's f2f16/f2f32 handlers (sfn_instr_alu.cpp) handle the ALU
+    * boundary.  Expose only the storage-buffer + uniform-and-storage-
+    * buffer variants for now; push-constant and IO 16-bit are
+    * additional surfaces with their own boundary requirements. */
+   extensions_out->KHR_16bit_storage = true;
+   features_out->storageBuffer16BitAccess = true;
+   features_out->uniformAndStorageBuffer16BitAccess = true;
+   /* Push-constant and shader IO 16-bit access deferred -- these add
+    * more boundary handling and aren't necessary for the SPIR-V
+    * 16-bit-storage CTS shard. */
+   features_out->storagePushConstant16 = false;
+   features_out->storageInputOutput16 = false;
 
    /* VK_KHR_shader_float_controls (#198, Vulkan 1.2).
     * Mostly declarative: exposes queryable properties about how the shader
