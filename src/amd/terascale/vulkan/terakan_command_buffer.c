@@ -44,6 +44,7 @@
 #include "util/hash_table.h"
 #include "util/macros.h"
 #include "util/ralloc.h"
+#include "util/u_debug.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
 
@@ -51,6 +52,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 void
@@ -484,6 +486,66 @@ terakan_gfx_command_writer_reset_devtest_indirect_buffer_splitting(
 }
 #endif
 
+static bool
+terakan_debug_dispatch_packet_audit_enabled(void)
+{
+   static int enabled_cached = -1;
+   if (enabled_cached < 0) {
+      enabled_cached =
+         debug_get_bool_option("TERAKAN_DEBUG_DISPATCH_PACKET_AUDIT", false) ? 1 : 0;
+   }
+   return enabled_cached != 0;
+}
+
+static void
+terakan_debug_dispatch_packet_audit(
+   struct terakan_command_buffer const * const command_buffer,
+   struct terakan_command_buffer_indirect_buffer const * const indirect_buffer)
+{
+   if (!terakan_debug_dispatch_packet_audit_enabled()) {
+      return;
+   }
+
+   uint32_t const * const indirect_buffer_dwords = indirect_buffer->indirect_buffer;
+   uint32_t const indirect_buffer_size_dwords = indirect_buffer->indirect_buffer_size_dwords;
+   uint32_t packet_index = 0;
+   uint32_t packet3_count = 0;
+   uint32_t dispatch_direct_count = 0;
+   uint32_t first_dispatch_direct_dword = UINT32_MAX;
+
+   for (uint32_t dword_index = 0; dword_index < indirect_buffer_size_dwords;) {
+      uint32_t const header = indirect_buffer_dwords[dword_index];
+      uint32_t const packet_type = PKT_TYPE_G(header);
+      uint32_t packet_size_dwords = 1;
+
+      if (packet_type == 3) {
+         ++packet3_count;
+         if (PKT3_IT_OPCODE_G(header) == PKT3_DISPATCH_DIRECT) {
+            ++dispatch_direct_count;
+            if (first_dispatch_direct_dword == UINT32_MAX) {
+               first_dispatch_direct_dword = dword_index;
+            }
+         }
+         packet_size_dwords = PKT_COUNT_G(header) + 2;
+      } else if (packet_type == 0) {
+         packet_size_dwords = PKT_COUNT_G(header) + 2;
+      }
+
+      if (packet_size_dwords > indirect_buffer_size_dwords - dword_index) {
+         break;
+      }
+
+      dword_index += packet_size_dwords;
+      ++packet_index;
+   }
+
+   fprintf(stderr,
+           "terakan: dispatch_packet_audit ib_dwords=%u packets=%u pkt3=%u "
+           "dispatch_direct=%u first_dispatch_direct=%u has_compute_work=%u\n",
+           indirect_buffer_size_dwords, packet_index, packet3_count, dispatch_direct_count,
+           first_dispatch_direct_dword, command_buffer->has_compute_work ? 1 : 0);
+}
+
 void
 terakan_gfx_command_writer_end_indirect_buffer(
    struct terakan_gfx_command_writer * const command_writer)
@@ -551,6 +613,8 @@ terakan_gfx_command_writer_end_indirect_buffer(
 
    command_writer->indirect_buffer->indirect_buffer_size_dwords = indirect_buffer_size_dwords;
 
+   terakan_debug_dispatch_packet_audit(command_writer->base.command_buffer,
+                                       command_writer->indirect_buffer);
    command_writer->indirect_buffer = NULL;
 
 #ifdef TERAKAN_DEVTEST
