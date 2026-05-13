@@ -123,7 +123,9 @@ terakan_nir_shared_type_info(struct glsl_type const * const type, unsigned * con
  * defined far below but called from terakan_shader_spirv_to_nir when the
  * EARLIER env is set. */
 static bool
-terakan_segment_wide_phi_defs(nir_shader * nir, unsigned segment_size);
+terakan_segment_wide_phi_defs(nir_shader * nir, unsigned segment_size,
+                              unsigned min_value_count,
+                              char const *log_label);
 
 nir_shader *
 terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const spirv_size_bytes,
@@ -184,7 +186,11 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
          }
       }
       if (earlier_segment_size != 0) {
-         if (terakan_segment_wide_phi_defs(nir, earlier_segment_size)) {
+         unsigned const earlier_min_cases =
+            earlier_segment_size < UINT_MAX ? earlier_segment_size + 1 : UINT_MAX;
+         if (terakan_segment_wide_phi_defs(
+                nir, earlier_segment_size, earlier_min_cases,
+                "TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT")) {
             bool cleanup_progress;
             do {
                cleanup_progress = false;
@@ -444,6 +450,12 @@ terakan_get_experimental_early_wide_phi_segment(unsigned * const segment_size_ou
                           ? UINT_MAX - 1
                           : (unsigned)parsed_segment_size;
    return true;
+}
+
+static bool
+terakan_wide_phi_auto_segment_disabled(void)
+{
+   return getenv("TERAKAN_DISABLE_WIDE_PHI_AUTO_SEGMENT") != NULL;
 }
 
 static bool
@@ -808,7 +820,9 @@ terakan_segment_wide_phi_impl(nir_function_impl * const impl, unsigned const seg
 
 static bool
 terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
-                                   unsigned const segment_size)
+                                   unsigned const segment_size,
+                                   unsigned const min_value_count,
+                                   char const * const log_label)
 {
    enum { max_cases = 2048, max_chains = 16 };
    nir_const_value values[max_cases];
@@ -847,6 +861,7 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
             if (!terakan_collect_wide_phi_const_chain(&phi->def, values, max_cases,
                                                       &candidate_value_count,
                                                       &candidate_bit_size) ||
+                candidate_value_count < min_value_count ||
                 candidate_value_count <= segment_size)
                continue;
 
@@ -879,8 +894,8 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
       progress = true;
 
       fprintf(stderr,
-              "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT: segmented %u-case phi value with segment size %u\n",
-              value_count, segment_size);
+              "%s: segmented %u-case phi value with segment size %u min cases %u\n",
+              log_label, value_count, segment_size, min_value_count);
 
       /* Safety: a multi-chain shader should not exceed `max_chains` rewrites.
        * Stop unconditionally if we hit the cap to avoid any pathological loop. */
@@ -895,11 +910,14 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
 }
 
 static bool
-terakan_segment_wide_phi_defs(nir_shader * const nir, unsigned const segment_size)
+terakan_segment_wide_phi_defs(nir_shader * const nir, unsigned const segment_size,
+                              unsigned const min_value_count,
+                              char const * const log_label)
 {
    bool progress = false;
    nir_foreach_function_impl(impl, nir) {
-      progress |= terakan_segment_wide_phi_defs_impl(impl, segment_size);
+      progress |= terakan_segment_wide_phi_defs_impl(impl, segment_size,
+                                                     min_value_count, log_label);
    }
    return progress;
 }
@@ -948,8 +966,27 @@ terakan_shader_lower_and_optimize_post_link(
    } while (progress);
 
    unsigned early_segment_wide_phi_size = 0;
+   unsigned early_segment_wide_phi_min_cases = 0;
+   char const *early_segment_wide_phi_label = NULL;
    if (terakan_get_experimental_early_wide_phi_segment(&early_segment_wide_phi_size)) {
-      if (terakan_segment_wide_phi_defs(nir, early_segment_wide_phi_size)) {
+      early_segment_wide_phi_min_cases =
+         early_segment_wide_phi_size < UINT_MAX ? early_segment_wide_phi_size + 1 : UINT_MAX;
+      early_segment_wide_phi_label = "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT";
+   } else if (!terakan_wide_phi_auto_segment_disabled()) {
+      /* The 512-way Vulkan 1.0 opPhi.wide shape exceeds normal and physical
+       * SFN register budgets, while the balanced early segment rewrite lowers
+       * its measured pressure from 133 to 22.  Keep the default predicate
+       * narrow: only constant selector-backed phi chains at the failing fan-in
+       * boundary are transformed. */
+      early_segment_wide_phi_size = 64;
+      early_segment_wide_phi_min_cases = 512;
+      early_segment_wide_phi_label = "TERAKAN_WIDE_PHI_AUTO_SEGMENT";
+   }
+
+   if (early_segment_wide_phi_size != 0) {
+      if (terakan_segment_wide_phi_defs(nir, early_segment_wide_phi_size,
+                                        early_segment_wide_phi_min_cases,
+                                        early_segment_wide_phi_label)) {
          bool cleanup_progress;
          do {
             cleanup_progress = false;
@@ -962,8 +999,9 @@ terakan_shader_lower_and_optimize_post_link(
 
       if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
          fprintf(stderr,
-                 "TERAKAN_NIR_SPIRV: --- post TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT=%u (%s) ---\n",
-                 early_segment_wide_phi_size, mesa_shader_stage_name(nir->info.stage));
+                 "TERAKAN_NIR_SPIRV: --- post %s=%u min_cases=%u (%s) ---\n",
+                 early_segment_wide_phi_label, early_segment_wide_phi_size,
+                 early_segment_wide_phi_min_cases, mesa_shader_stage_name(nir->info.stage));
          nir_print_shader(nir, stderr);
       }
    }
