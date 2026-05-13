@@ -943,20 +943,28 @@ terakan_physical_device_get_capabilities(
    features_out->storageInputOutput16 = false;
 
    /* VK_KHR_shader_float_controls (#198, Vulkan 1.2).
-    * Mostly declarative: exposes queryable properties about how the shader
-    * core handles rounding modes, denormals, and signed-zero/inf/nan
-    * preservation.  On Bobcat / Evergreen:
+    * Exposes queryable properties about how the shader core handles
+    * rounding modes, denormals, and signed-zero/inf/nan preservation.
+    * On Bobcat / Evergreen:
     *   - default rounding mode for FP32 is RTE (round-to-nearest-even);
     *     RTZ is not selectable from the shader, so the CTS validates only
     *     that RTE is reported and behaves correctly.
     *   - denormals flush to zero on FP32 (DAZ + FTZ): the shader core has
     *     no programmable denorm-preserve mode.
-    *   - signed zero, inf, NaN are preserved per IEEE-754 in the absence
-    *     of explicit `precise` or `fast-math` overrides.
-    * The Vulkan runtime emits property defaults that match Bobcat's
-    * behaviour without per-driver overrides; CTS validates these and
-    * passes when defaults align with observed silicon behaviour. */
+    *   - signed zero, inf, NaN are preserved for FP32 comparisons and
+    *     arithmetic in the absence of explicit fast-math overrides.
+    * Report the FP32 contract explicitly here; the common Vulkan runtime
+    * only copies fields from vk_properties and otherwise leaves this
+    * structure zeroed, which makes CTS treat the float-control surface as
+    * unsupported even when the extension bit is exposed. */
    extensions_out->KHR_shader_float_controls = true;
+   properties_out->denormBehaviorIndependence =
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+   properties_out->roundingModeIndependence =
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+   properties_out->shaderSignedZeroInfNanPreserveFloat32 = true;
+   properties_out->shaderDenormFlushToZeroFloat32 = true;
+   properties_out->shaderRoundingModeRTEFloat32 = true;
 
    /* VK_KHR_sampler_mirror_clamp_to_edge (#15, Vulkan 1.2). */
    extensions_out->KHR_sampler_mirror_clamp_to_edge = true;
