@@ -12,9 +12,9 @@ Current verified state:
 
 - Source tree: `/home/eirikr/workspaces/mesa/mesa-26-gororoba`.
 - Active distcc SSH worker: `@x570-5600X3D.local/12,lzo`.
-- Reserved Ubuntu WSL worker: `@DESKTOP-CKP9KB6.local/48,lzo`, enabled only after SSH or distccd is reachable from x130e.
+- Active Ubuntu WSL TCP worker: `DESKTOP-CKP9KB6.local/48,lzo`.
 - distcc host specs for this lane use mDNS `.local` names only; do not use raw DHCP addresses.
-- Compiler: `clang-22` and `clang++-22` through ccache, with ccache misses sent through distcc.
+- Compiler: `clang-21` and `clang++-21` through ccache, with ccache misses sent through distcc.
 - Build profile: `build-infra/configs/terakan-distcc.meson`.
 - Target install prefix for the mesa-debug lane: `/usr/local/mesa-debug`.
 - Clean build directory: `/home/eirikr/workspaces/build/mesa-terakan-distcc-pump`.
@@ -36,16 +36,17 @@ The current canonical compiler wiring is:
 
 ```ini
 [binaries]
-c   = [/usr/bin/ccache, /usr/bin/clang-22]
-cpp = [/usr/bin/ccache, /usr/bin/clang++-22]
+c   = [/usr/bin/ccache, /usr/bin/clang-21]
+cpp = [/usr/bin/ccache, /usr/bin/clang++-21]
 rust = [/home/eirikr/.local/bin/sccache, /home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc]
 ```
 
 The critical distcc and Bobcat flags are:
 
 ```sh
-export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo"
+export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo DESKTOP-CKP9KB6.local/48,lzo"
 export CCACHE_PREFIX="/usr/bin/distcc"
+export CCACHE_PATH="/usr/bin"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
 export CFLAGS="-march=btver1 -mtune=btver1 -pipe -fno-emulated-tls"
@@ -53,7 +54,7 @@ export CXXFLAGS="$CFLAGS"
 export LDFLAGS=""
 ```
 
-`-fno-emulated-tls` is required for clang-22 on this host; without it, the Mesa
+`-fno-emulated-tls` is required for clang-21 on this host; without it, the Mesa
 link can fail when generated emulated-TLS symbols do not match the ELF-TLS
 references used by Mesa objects.
 
@@ -78,8 +79,9 @@ export PREFIX=/usr/local/mesa-debug
 
 mkdir -p "$(dirname "$BUILDDIR")"
 
-export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo"
+export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo DESKTOP-CKP9KB6.local/48,lzo"
 export CCACHE_PREFIX="/usr/bin/distcc"
+export CCACHE_PATH="/usr/bin"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
 export CFLAGS="-march=btver1 -mtune=btver1 -pipe -fno-emulated-tls"
@@ -137,8 +139,9 @@ profile, so the successful installed build used:
 ```sh
 export BUILDDIR=/home/eirikr/workspaces/build/mesa-terakan-distcc-pump-no-rusticl
 export PREFIX=/usr/local/mesa-debug
-export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo"
+export DISTCC_HOSTS="--randomize @x570-5600X3D.local/12,lzo DESKTOP-CKP9KB6.local/48,lzo"
 export CCACHE_PREFIX="/usr/bin/distcc"
+export CCACHE_PATH="/usr/bin"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
 export CFLAGS="-march=btver1 -mtune=btver1 -pipe -fno-emulated-tls"
@@ -220,7 +223,7 @@ The historical Mac worker was then verified from x130e with:
 
 ```sh
 DISTCC_HOSTS="Eirikrs-MacBook-Air.local/1,lzo" \
-  distcc /usr/bin/clang-22 -march=btver1 -mtune=btver1 \
+  distcc /usr/bin/clang-21 -march=btver1 -mtune=btver1 \
     -fno-emulated-tls -c /tmp/distcc_mac_probe.c \
     -o /tmp/distcc_mac_probe.o
 file /tmp/distcc_mac_probe.o
@@ -230,10 +233,10 @@ The output object was an x86-64 ELF relocatable, so the Mac worker can compile
 Bobcat-targeted Terakan objects when reached through mDNS. On 2026-05-12 this was superseded by SSH-mode distcc over mDNS. The active host file is now:
 
 ```text
---randomize @x570-5600X3D.local/12,lzo
+--randomize @x570-5600X3D.local/12,lzo DESKTOP-CKP9KB6.local/48,lzo
 ```
 
-Do not add `@DESKTOP-CKP9KB6.local/48,lzo` to `~/.distcc/hosts` until SSH or distccd is reachable from x130e without timeouts.
+`DESKTOP-CKP9KB6.local/48,lzo` is active only for the clang-21 lane; clang-22 requests still fail on that worker.
 - The failed rusticl-enabled build log is
   `/home/eirikr/logs/mesa_gororoba_pump_build_20260426T003804Z.log`.
 - The successful no-rusticl build log is

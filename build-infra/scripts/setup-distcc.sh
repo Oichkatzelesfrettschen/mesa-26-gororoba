@@ -13,7 +13,7 @@
 set -eu
 
 missing=0
-for tool in ccache distcc sccache rustc rustfmt clang-22 clang++-22; do
+for tool in ccache distcc sccache rustc rustfmt clang-21 clang++-21; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         printf '  MISSING  %s\n' "$tool" >&2
         missing=$((missing + 1))
@@ -31,7 +31,7 @@ printf 'distcc:   %s\n' "$(distcc --version | head -1)"
 printf 'sccache:  %s\n' "$(sccache --version)"
 printf 'rustc:    %s\n' "$(rustc --version)"
 printf 'rustfmt:  %s\n' "$(rustfmt --version)"
-printf 'clang-22: %s\n' "$(clang-22 --version | head -1)"
+printf 'clang-21: %s\n' "$(clang-21 --version | head -1)"
 printf '\ndistcc hosts: %s\n' "$(paste -sd ' ' ~/.distcc/hosts 2>/dev/null || echo '(~/.distcc/hosts missing)')"
 
 if [ -r "$HOME/.distcc/hosts" ] &&

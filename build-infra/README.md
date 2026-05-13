@@ -30,7 +30,7 @@ build-infra/
 |   |-- terakan-minimal.meson      # r600 only, no HUD, NIR scratchpad
 |   +-- base-debug.meson           # upstream Mesa reference, no terakan
 +-- env/
-    |-- btver1.env                 # x130e (Bobcat) clang-22 + distcc
+    |-- btver1.env                 # x130e (Bobcat) clang-21 + distcc
     |-- btver1-ccache-no-pump.env  # x130e ccache-first distcc, no pump
     |-- sapphire.env               # Apple Silicon (placeholder)
     +-- zen4.env                   # AMD Ryzen (placeholder)
