@@ -513,6 +513,12 @@ debug_sfn_ra_spill_enabled()
    return debug_get_bool_option("TERAKAN_DEBUG_SFN_RA_SPILL", false);
 }
 
+static bool
+debug_sfn_ra_capacity_enabled()
+{
+   return debug_get_bool_option("TERAKAN_DEBUG_SFN_RA_CAPACITY", false);
+}
+
 static int
 debug_sfn_ra_spill_max_iterations(int default_max_spill_iterations)
 {
@@ -612,6 +618,36 @@ log_spill_pressure(const char *event,
              << " max_component_pressure=" << summary.max_component_pressure
              << " max_component=" << summary.max_component
              << " max_pressure_point=" << summary.max_pressure_point << "\n";
+}
+
+static void
+log_ra_capacity(const char *event,
+                int iter,
+                const LiveRangePressureSummary& summary)
+{
+   unsigned const clause_local_count = g_clause_local_end - g_clause_local_start;
+   unsigned const physical_vec4_registers = g_clause_local_end;
+   int const over_normal =
+      (int)summary.max_component_pressure - g_registers_end;
+   int const over_physical =
+      (int)summary.max_component_pressure - (int)physical_vec4_registers;
+
+   std::cerr << "TERAKAN_SFN_RA_CAPACITY event=" << event
+             << " iter=" << iter
+             << " live_ranges=" << summary.live_range_count
+             << " max_component_pressure=" << summary.max_component_pressure
+             << " max_component=" << summary.max_component
+             << " max_pressure_point=" << summary.max_pressure_point
+             << " normal_gpr_limit=" << g_registers_end
+             << " clause_local_start=" << g_clause_local_start
+             << " clause_local_end=" << g_clause_local_end
+             << " clause_local_count=" << clause_local_count
+             << " physical_vec4_registers=" << physical_vec4_registers
+             << " pressure_over_normal="
+             << (over_normal > 0 ? over_normal : 0)
+             << " pressure_over_physical="
+             << (over_physical > 0 ? over_physical : 0)
+             << "\n";
 }
 
 static bool
@@ -802,8 +838,11 @@ register_allocation_with_spill(LiveRangeMap& lrm,
    sfn_log << SfnLog::merge << "RA failed, attempting spill (up to "
            << effective_max_spill_iterations << " iterations)\n";
 
+   auto initial_pressure = summarize_live_range_pressure(lrm);
+   if (debug_sfn_ra_capacity_enabled())
+      log_ra_capacity("initial_fail", -1, initial_pressure);
    if (instrument_spill)
-      log_spill_pressure("initial_fail", -1, summarize_live_range_pressure(lrm));
+      log_spill_pressure("initial_fail", -1, initial_pressure);
 
    int scratch_slot = 0;
    std::vector<std::pair<int, int>> selected_spill_candidates;
@@ -994,6 +1033,8 @@ register_allocation_with_spill(LiveRangeMap& lrm,
       auto retry_lrm = LiveRangeEvaluator().run(shader);
       auto retry_pressure = summarize_live_range_pressure(retry_lrm);
       if (register_allocation(retry_lrm)) {
+         if (debug_sfn_ra_capacity_enabled())
+            log_ra_capacity("retry_success", iter, retry_pressure);
          if (instrument_spill)
             log_spill_pressure("retry_success", iter, retry_pressure);
 
@@ -1004,6 +1045,8 @@ register_allocation_with_spill(LiveRangeMap& lrm,
          return true;
       }
 
+      if (debug_sfn_ra_capacity_enabled())
+         log_ra_capacity("retry_fail", iter, retry_pressure);
       if (instrument_spill)
          log_spill_pressure("retry_fail", iter, retry_pressure);
 
