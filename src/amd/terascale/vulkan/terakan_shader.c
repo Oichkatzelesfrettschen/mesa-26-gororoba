@@ -727,14 +727,16 @@ static bool
 terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
                                    unsigned const segment_size)
 {
-   enum { max_cases = 2048 };
+   enum { max_cases = 2048, max_chains = 16 };
    nir_const_value values[max_cases];
+   nir_def *already_rewritten[max_chains] = { NULL };
+   unsigned already_rewritten_count = 0;
    bool progress = false;
 
    /* Tranche option 5: process all qualifying root phis, not just the last one
-    * found.  Walk first to detect candidates without invalidating iterators,
-    * then rewrite.  After each rewrite the CFG/SSA shape changes so we restart
-    * the detection loop until no more chains remain. */
+    * found.  `nir_def_rewrite_uses` only redirects consumers -- the original
+    * phi chain remains in the IR and would be detected again on a fresh sweep.
+    * Track rewritten root defs and skip them on subsequent passes. */
    for (;;) {
       nir_phi_instr *root_phi = NULL;
       unsigned value_count = 0;
@@ -746,6 +748,17 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
                continue;
 
             nir_phi_instr * const phi = nir_instr_as_phi(instr);
+
+            bool already_done = false;
+            for (unsigned i = 0; i < already_rewritten_count; ++i) {
+               if (already_rewritten[i] == &phi->def) {
+                  already_done = true;
+                  break;
+               }
+            }
+            if (already_done)
+               continue;
+
             unsigned candidate_value_count = 0;
             unsigned candidate_bit_size = 0;
             if (!terakan_collect_wide_phi_const_chain(&phi->def, values, max_cases,
@@ -778,11 +791,18 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
          break;
 
       nir_def_rewrite_uses(&root_phi->def, segmented_value);
+      if (already_rewritten_count < max_chains)
+         already_rewritten[already_rewritten_count++] = &root_phi->def;
       progress = true;
 
       fprintf(stderr,
               "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT: segmented %u-case phi value with segment size %u\n",
               value_count, segment_size);
+
+      /* Safety: a multi-chain shader should not exceed `max_chains` rewrites.
+       * Stop unconditionally if we hit the cap to avoid any pathological loop. */
+      if (already_rewritten_count >= max_chains)
+         break;
    }
 
    if (!progress)

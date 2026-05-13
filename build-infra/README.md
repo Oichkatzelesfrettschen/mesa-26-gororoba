@@ -27,11 +27,14 @@ build-infra/
 |   |-- terakan-distcc.meson       # r600 only, rusticl r600, daily lane
 |   |-- terakan-distcc-no-rusticl.meson
 |   |                                  # r600+terakan, no Rusticl
+|   |-- terakan-distcc-no-rusticl-pump.meson
+|   |                                  # clean-build pump lane, no Rusticl
 |   |-- terakan-minimal.meson      # r600 only, no HUD, NIR scratchpad
 |   +-- base-debug.meson           # upstream Mesa reference, no terakan
 +-- env/
     |-- btver1.env                 # x130e (Bobcat) clang-21 + distcc
     |-- btver1-ccache-no-pump.env  # x130e ccache-first distcc, no pump
+    |-- btver1-distcc-pump.env     # x130e direct distcc-pump, no ccache
     |-- sapphire.env               # Apple Silicon (placeholder)
     +-- zen4.env                   # AMD Ryzen (placeholder)
 ```
@@ -51,8 +54,8 @@ make rebuild-terakan-distcc
 sudo make install PROFILE=terakan-distcc
 ```
 
-No-Rusticl x130e clean rebuild that preserves ccache and does not use
-distcc-pump:
+No-Rusticl x130e warm/incremental rebuild that preserves ccache and
+does not use distcc-pump:
 ```
 make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 ```
@@ -64,6 +67,29 @@ strips the pump-only `,cpp` option from `~/.distcc/hosts`, and leaves
 `~/.cache/ccache` plus `~/.cache/sccache` intact. It is separate from
 `/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl` so a
 future rebuild does not collide with that active build lane.
+
+No-Rusticl x130e cold clean rebuild with maximum remote preprocessing:
+```
+make rebuild-terakan-distcc-no-rusticl-pump
+```
+
+This target uses `configs/terakan-distcc-no-rusticl-pump.meson` with
+`env/btver1-distcc-pump.env` and build directory
+`/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump`.
+It configures normally, prebuilds generated Meson/Ninja targets outside
+the include-server lifetime, then runs the heavy compile under
+`distcc-pump`.
+
+Canonical split:
+
+| Use case | C/C++ chain | Rust chain | Notes |
+| --- | --- | --- | --- |
+| Warm incremental | `ccache -> distcc -> clang-21` | `sccache -> rustc` | no pump |
+| Cold clean | `distcc-pump -> distcc -> clang-21` | `sccache -> rustc` | no C/C++ ccache |
+
+Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump
+needs distcc to see the original source and compiler command; wrappers
+that preprocess or cache before distcc defeat the include-server path.
 
 Fresh-from-clean full build (longer; zink+llvmpipe+softpipe):
 ```
