@@ -1215,8 +1215,7 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
       shader.emit_instruction(
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
       shader.emit_instruction(new AluInstr(op1_mov, data_vec4[2], vf.zero(), AluInstr::write));
-   } else if (debug_get_bool_option("TERAKAN_EXPERIMENTAL_UAV_RETURN_NOP_DATA_X_ZERO",
-                                    false)) {
+   } else {
       shader.emit_instruction(
          new AluInstr(op1_mov, data_vec4[0], vf.zero(), AluInstr::write));
       shader.emit_instruction(
