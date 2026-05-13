@@ -1990,6 +1990,24 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
    case nir_op_f2f32:
       assert(alu->src[0].src.ssa->bit_size == 16);
       return emit_alu_op1(*alu, op1_flt16_to_flt32, shader);
+   case nir_op_f2f16:
+      /* FP32 -> FP16 conversion via the FLT32_TO_FLT16 opcode.
+       * Symmetric to the f2f32 / FLT16_TO_FLT32 handler above.  Required
+       * to support shaderFloat16 + VK_KHR_shader_float16_int8 -- the
+       * bit-size promotion in terakan_lower_bit_size_callback widens
+       * FP16 ALU sources to FP32, and nir_lower_bit_size emits this
+       * conversion op at the value boundary.  Without this case, the
+       * Unknown-instruction path in from_nir hits an assertion on every
+       * FP16 shader. */
+      assert(alu->src[0].src.ssa->bit_size == 32);
+      return emit_alu_op1(*alu, op1_flt32_to_flt16, shader);
+   case nir_op_f2f16_rtne:
+      /* Same as f2f16 -- FLT32_TO_FLT16 rounds to nearest even per the
+       * Bobcat ISA spec.  RTE is the only rounding mode available for
+       * this op on Evergreen, so the _rtne variant aliases to the same
+       * opcode. */
+      assert(alu->src[0].src.ssa->bit_size == 32);
+      return emit_alu_op1(*alu, op1_flt32_to_flt16, shader);
 
    case nir_op_bfm:
       return emit_alu_op2_int(*alu, op2_bfm_int, shader, op2_opt_none);
