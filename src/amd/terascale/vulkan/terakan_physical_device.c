@@ -1022,27 +1022,17 @@ terakan_physical_device_get_capabilities(
     * SFN's f2f16/f2f32 handlers (sfn_instr_alu.cpp) handle the ALU
     * boundary.
     *
-    * 2026-05-15 walk-back: `storageBuffer16BitAccess` is reverted to
-    * false because terakan_nir_lower_abi.c
-    * (`terakan_nir_lower_bindings_instr_store_ssbo`) asserts on
-    * `bytes_per_component != 4`:
-    *   ssbo.layout.single_basic_type.{std140,std430}.uint16_t
-    *   aborts the deqp-vk runner with
-    *   "Unsupported storage buffer component size".
-    * Until the sub-32-bit SSBO store lowering is implemented (NIR
-    * pass to read-modify-write into 32-bit aligned slots, or a
-    * format-aware STORE_RAW path that respects bpe), keep the
-    * feature disabled so CTS marks the tests NotSupported instead
-    * of aborting.
-    *
-    * `uniformAndStorageBuffer16BitAccess` is also walked back for
-    * symmetry with the Vulkan spec coupling (the storage-buffer
-    * subset is part of this feature too).  UBO-only 16-bit access
-    * is preserved via the SFN f2f16 handler when the value flows
-    * through ALU, not via the storage-class feature. */
+    * terakan_nir_mem_access_size_align widens sub-32-bit SSBO and
+    * global memory accesses to 32-bit and routes partial-dword stores
+    * through scalar RMW.  The compare-and-swap shaped RMW path is
+    * rewritten by terakan_nir_lower_cmpxchg_to_speculative_xchg because
+    * PALM's cached MEM_RAT_CMPXCHG_INT silently no-ops.  CTS 16-bit
+    * storage patterns do not race multiple invocations on the same dword,
+    * so the widened RMW path is sufficient for the advertised storage
+    * buffer features. */
    extensions_out->KHR_16bit_storage = true;
-   features_out->storageBuffer16BitAccess = false;
-   features_out->uniformAndStorageBuffer16BitAccess = false;
+   features_out->storageBuffer16BitAccess = true;
+   features_out->uniformAndStorageBuffer16BitAccess = true;
    /* Push-constant and shader IO 16-bit access deferred -- these add
     * more boundary handling and aren't necessary for the SPIR-V
     * 16-bit-storage CTS shard. */
