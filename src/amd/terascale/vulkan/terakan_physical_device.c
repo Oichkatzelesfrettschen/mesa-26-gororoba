@@ -1051,6 +1051,24 @@ terakan_physical_device_get_capabilities(
    /* VK_KHR_external_memory (#73, Vulkan 1.1). */
    extensions_out->KHR_external_memory = true;
 
+   /* VK_KHR_external_semaphore (#78, Vulkan 1.1).
+    * Permits exporting/importing semaphore handles across processes.  The
+    * actual export/import is implemented by the runtime against the
+    * vk_drm_syncobj sync type registered in
+    * `terakan_physical_device_drm_radeon.c`.  This driver advertises both
+    * the core extension and the OPAQUE_FD/SYNC_FD handle-type variant
+    * (KHR_external_semaphore_fd) below. */
+   extensions_out->KHR_external_semaphore = true;
+   /* VK_KHR_external_semaphore_fd (#80, Vulkan 1.1) -- OPAQUE_FD + SYNC_FD
+    * handle types.  Routed through the vk_drm_syncobj runtime helpers. */
+   extensions_out->KHR_external_semaphore_fd = true;
+
+   /* VK_KHR_external_fence (#114, Vulkan 1.1). */
+   extensions_out->KHR_external_fence = true;
+   /* VK_KHR_external_fence_fd (#116, Vulkan 1.1) -- OPAQUE_FD + SYNC_FD
+    * handle types via the same vk_drm_syncobj runtime path. */
+   extensions_out->KHR_external_fence_fd = true;
+
    /* VK_KHR_device_group (#61, Vulkan 1.1, device-side).
     * Single-GPU stub: Bobcat has exactly one logical device per physical
     * device, so subDeviceMask always == 0x1 and command-buffer device-
