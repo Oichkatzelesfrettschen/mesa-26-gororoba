@@ -1041,7 +1041,8 @@ terakan_physical_device_get_capabilities(
    extensions_out->KHR_dynamic_rendering = false; /* Tier 3: re-enable after renderpass2 + ds_resolve chain */
    features_out->dynamicRendering = false;
 
-   /* VK_KHR_external_memory_capabilities (#72, Vulkan 1.1, instance). */
+   /* VK_KHR_external_memory_capabilities (#72, Vulkan 1.1, instance) --
+    * advertised in terakan_instance.c. */
    char const driver_uuid[] = "AMD-MESA-DRV";
    static_assert(sizeof(driver_uuid) <= sizeof(properties_out->driverUUID),
                  "Driver UUID must fit into the Vulkan UUID field.");
@@ -1049,6 +1050,16 @@ terakan_physical_device_get_capabilities(
 
    /* VK_KHR_external_memory (#73, Vulkan 1.1). */
    extensions_out->KHR_external_memory = true;
+
+   /* VK_KHR_device_group (#61, Vulkan 1.1, device-side).
+    * Single-GPU stub: Bobcat has exactly one logical device per physical
+    * device, so subDeviceMask always == 0x1 and command-buffer device-
+    * group masks are trivial.  The instance-side
+    * VK_KHR_device_group_creation is advertised in terakan_instance.c;
+    * vk_common_EnumeratePhysicalDeviceGroups in the runtime returns one
+    * group per physical device by default (see
+    * src/vulkan/runtime/vk_instance.c:542) -- no driver code required. */
+   extensions_out->KHR_device_group = true;
 
    /* VK_EXT_depth_clip_enable (#103). */
    extensions_out->EXT_depth_clip_enable = true;
