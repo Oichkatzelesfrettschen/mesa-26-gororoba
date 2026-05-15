@@ -93,12 +93,12 @@ struct terakan_descriptor_set_uav {
     * R600_IMAGE_REAL_RESOURCE_OFFSET(168) + m` alongside the
     * IMMED descriptor at 160+m.  Without it the CB exporter stalls
     * during MEM_RAT STORE_TYPED format validation (CLAIMS
-    * C-2026-04-17-08; see findings/LATENT_INVARIANTS.md
-    * LI-2026-04-17-04).
+    * ; see findings/LATENT_INVARIANTS.md
+    * ).
     * Copied from image_view->resource[8] at bind time.  Zero for
     * non-image (buffer/texel-buffer) UAVs. */
    uint32_t real_resource[8];
-   /* FIX-K (C-2026-04-19-06): baseArrayLayer of the VkImageView for
+   /* baseArrayLayer of the VkImageView for
     * STORAGE_IMAGE bindings.  Routed to
     * robustness_metadata.uav_base_array_layers[] at pipeline_layout
     * bind time; NIR lowering adds this to coord.z so MEM_RAT

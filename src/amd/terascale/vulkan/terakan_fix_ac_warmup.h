@@ -38,8 +38,8 @@
  * 1 pre-recorded VkCommandBuffer.  Per-submit overhead: ~1 kernel CS ioctl.
  *
  * Controlled by TERAKAN_FIX_AC_WARMUP=1 (default true).
- * Tracked: findings/active/2026-04-22-tranche19-path3-implementation-plan.md
- * Claims: C-2026-04-22-46
+ * Tracked: findings/active/
+ * Claims:
  */
 
 #ifndef TERAKAN_FIX_AC_WARMUP_H

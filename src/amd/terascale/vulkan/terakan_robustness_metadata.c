@@ -36,7 +36,7 @@
  *   dword 16..27 : uint32_t texel_buffer_element_counts[12]
  *                   For STORAGE_TEXEL_BUFFER: element count from VkBufferView.
  *   dword 28..39 : uint32_t uav_base_array_layers[12]
- *                   FIX-K (C-2026-04-19-06): baseArrayLayer of each
+ *                   baseArrayLayer of each
  *                   STORAGE_IMAGE UAV's VkImageView.  Read by NIR
  *                   lowering to inject the slice index into MEM_RAT
  *                   STORE_TYPED coord.z, compensating for Evergreen
@@ -84,7 +84,7 @@ terakan_robustness_metadata_apply(
        * Then fill the per-UAV byte sizes and texel buffer element counts. */
       memset(mapping, 0, TERAKAN_KCACHE_HW_LINE_BYTES);
 
-      /* PROBE_FILL_LINE (Q-2026-04-19): if set, overwrite the entire
+      /* PROBE_FILL_LINE (): if set, overwrite the entire
        * 256-byte KCACHE line with 0xDEADBEEF AFTER the field writes
        * below.  If shader's KC14 read returns 0xDEADBEEF, the BO IS
        * being fetched (residual is a slot-offset bug); if shader still
@@ -141,7 +141,7 @@ terakan_robustness_metadata_apply(
             "TERAKAN_PROBE_FILL_LINE: filled 256-byte line with 0xDEADBEEF\n");
       }
 
-      /* FIX-O (C-2026-04-19-12): flush CPU store buffers before the IB
+      /* flush CPU store buffers before the IB
        * consumer submits.  Push-buffer allocations are GTT-backed and
        * may be write-combine-mapped; CPU writes can sit in the WC
        * buffer indefinitely, invisible to the GPU fetch.  __builtin_
@@ -151,7 +151,7 @@ terakan_robustness_metadata_apply(
        * guarantee requires here.
        *
        * Post-reloc IB capture 2026-04-19 (steinmarder
-       * findings/2026-04-19-h2-reloc-innocent.md) falsified H2
+       * findings/) falsified H2
        * (kernel reloc parser); this is H1 (WC race) under test.
        *
        * Gated behind TERAKAN_FIX_O_SFENCE=1 during validation.

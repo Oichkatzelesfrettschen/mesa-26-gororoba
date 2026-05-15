@@ -205,7 +205,7 @@ struct terakan_image_view {
     * terakan_descriptor_set.c STORAGE_IMAGE binding) must subtract
     * this from color.base when flipping the view interpretation to
     * array semantics, otherwise the CB exporter double-applies the
-    * slice offset.  See CLAIMS C-2026-04-18-16.
+    * slice offset.  See CLAIMS .
     */
    uint32_t color_base_slice_shift_shr8;
 

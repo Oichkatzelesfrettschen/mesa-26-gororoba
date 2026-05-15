@@ -1135,7 +1135,7 @@ terakan_physical_device_get_capabilities(
     * Permits exporting/importing semaphore handles across processes.  The
     * actual export/import is implemented by the runtime against the
     * vk_drm_syncobj sync type registered in
-    * `terakan_physical_device_drm_radeon.c`.  This driver advertises both
+    * `terakan_physical_device_drm_radeon.c`.  Terakan advertises both
     * the core extension and the OPAQUE_FD/SYNC_FD handle-type variant
     * (KHR_external_semaphore_fd) below. */
    extensions_out->KHR_external_semaphore = true;

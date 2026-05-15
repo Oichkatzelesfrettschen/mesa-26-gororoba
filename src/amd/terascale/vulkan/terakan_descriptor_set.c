@@ -94,7 +94,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                memcpy(&dst_uav->color, &image_view->color, sizeof(struct terakan_color_descriptor));
                dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
                dst_uav->is_texel_buffer = 0;
-               /* FIX-K (C-2026-04-19-06): stash baseArrayLayer + non-array-
+               /* stash baseArrayLayer + non-array-
                 * view-over-array-image flag so pipeline_layout.c can upload
                 * them into robustness_metadata bank 14 dwords 28..39 for
                 * NIR-side R3.z injection at MEM_RAT STORE_TYPED.  Only the
@@ -118,7 +118,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                /* TERAKAN_DEBUG_STORAGE_IMAGE_DESC=1: trace the STORAGE_IMAGE
                 * descriptor pipeline in full, at every transformation step.
                 * This is the PRODUCER that bakes values the compute dispatch
-                * later programs into CB_COLOR{N}.  Per C-2026-04-18-15 the
+                * later programs into CB_COLOR{N}.  Per  the
                 * earlier TERAKAN_DEBUG_IMAGE_CB_LAYOUT captured only clear
                 * and meta-copy paths; this captures the actual dispatch path.
                 */
@@ -175,7 +175,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                   uint32_t const current_type =
                      G_028C70_RESOURCE_TYPE(dst_uav->color.info);
                   uint32_t upgraded_type = current_type;
-                  /* FIX-C (C-2026-04-19-01): skip the RESOURCE_TYPE
+                  /* skip the RESOURCE_TYPE
                    * upgrade for non-array views.  The 2026-04-17
                    * upgrade was intended to make per-slice tile math
                    * work for multi-layer backed images, but MEM_RAT
@@ -239,7 +239,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                         (dst_uav->color.info & C_028C70_RESOURCE_TYPE) |
                         S_028C70_RESOURCE_TYPE(upgraded_type);
 
-                     /* FIX-B (C-2026-04-18-16): when we flip the
+                     /* when we flip the
                       * view interpretation to array semantics, the
                       * CB exporter will now do per-slice tile math.
                       * The base in image_view->color was pre-shifted
@@ -285,7 +285,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                              current_type, upgraded_type, dst_uav->color.info,
                              image_view->vk.image->array_layers);
                   }
-                  /* FIX-I (C-2026-04-19-05): the original FIX-B's revert
+                  /* the original FIX-B's revert
                    * + SLICE_START programming is dead code when the
                    * entry-time RESOURCE_TYPE is already TEXTURE2DARRAY
                    * (which terakan_image_create_resource_descriptor
@@ -329,8 +329,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                      uint32_t const base_before = dst_uav->color.base;
                      uint32_t const slice_before = dst_uav->color.slice;
                      dst_uav->color.base -= image_view->color_base_slice_shift_shr8;
-                     /* FIX-M reverted 2026-04-19 (C-2026-04-19-08):
-                      * SLICE_TILE_MAX is PER-SLICE (tiles in one slice's
+                     /* * SLICE_TILE_MAX is PER-SLICE (tiles in one slice's
                       * 2D surface = width * height / 64).  Multiplying
                       * by array_layers produced 0x1ff (511) vs the
                       * correct 0x3f (63) used by the passing full-array
@@ -342,7 +341,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                       * Leaving dst_uav->color.slice unchanged; per-slice
                       * count is already correct at image-create time. */
                      (void)slice_before;  /* retained for trace var lifetime */
-                     /* FIX-L (C-2026-04-19-07): CB_COLOR_VIEW.SLICE_MAX
+                     /* CB_COLOR_VIEW.SLICE_MAX
                       * acts as the hardware-side slice range gate.  For a
                       * VK_IMAGE_VIEW_TYPE_2D view with layer_count=1 over
                       * an array-backed image, the default view_slice_max
@@ -389,12 +388,12 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                 * terakan_emit_compute_resources can emit the
                 * CS+168+m SET_RESOURCE the CB exporter needs for
                 * format/tile-mode validation during MEM_RAT STORE_TYPED.
-                * See CLAIMS C-2026-04-17-08 + LATENT_INVARIANTS
-                * LI-2026-04-17-04 / LI-2026-04-17-05. */
+                * See CLAIMS  + LATENT_INVARIANTS
+                * / . */
                memcpy(dst_uav->real_resource, image_view->resource,
                       sizeof(dst_uav->real_resource));
 
-               /* FIX-Q (C-2026-04-19-14): the Shader Sequencer (SQ)
+               /* the Shader Sequencer (SQ)
                 * consults SQ_TEX_RESOURCE word 5 (BASE_ARRAY /
                 * LAST_ARRAY, bits 4-16 and 17-29) when formatting
                 * MEM_RAT STORE_TYPED writes.  For a non-array view
@@ -444,7 +443,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                   }
                }
 
-               /* FIX-B companion (C-2026-04-18-16 / task #140): when
+               /* when
                 * CB RESOURCE_TYPE was upgraded from TEXTURE2D ->
                 * TEXTURE2DARRAY (above), the SQ-side DIM must also
                 * track that upgrade so the shader-visible resource
@@ -501,14 +500,14 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                      }
                   }
                }
-               /* FIX-Z (C-2026-04-21-09): Evergreen/Bobcat MEM_RAT_STORE_TYPED
+               /* Evergreen/Bobcat MEM_RAT_STORE_TYPED
                 * silently drops writes when SQ_TEX_RESOURCE_WORD4
                 * (real_resource[4], R_030010) has NUM_FORMAT_ALL=INT (bit9:8=1)
                 * combined with FORMAT_COMP_X/Y/Z/W=UNSIGNED (bits7:0=0x00).
                 * This is the UINT integer format path; SINT uses FORMAT_COMP=
                 * SIGNED (bits7:0=0x55) and passes identically.
                 *
-                * IB evidence (2026-04-21): three-arm cold capture on x130e.
+                * IB evidence: three-arm cold capture on x130e.
                 * sfloat (PASS): slot 0x1EC0 word4=0x0B200000 (NUM_FORMAT=NORM).
                 * sint  (PASS): slot 0x1EC0 word4=0x0B200155 (NUM_FORMAT=INT,
                 *               FORMAT_COMP=SIGNED).
@@ -531,15 +530,15 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                 * is confirmed a no-op for this bug: it modifies the IMMED buffer
                 * resource which is identical between sint and uint.
                 *
-                * Promoted to default (2026-04-21) per steinmarder finding
-                * 2026-04-21-tranche7-h7a-confirmed-zero-real-fails.md: the
+                * Promoted to default per steinmarder finding
+                * : the
                 * tranche-7 absolute-isolation matrix proved zero real
                 * isolation fails remain after FIX-I+K+W+Z; the residual 3
                 * sweep fails are cross-test-primer victims (independent
                 * lane).  Env var preserved as an OPT-OUT escape hatch
                 * (set TERAKAN_FIX_Z_UINT_FORMAT_COMP=0 to disable).
-                * See steinmarder findings/active/2026-04-21-fix-z-uint-tex-resource-format-comp.md
-                * and 2026-04-21-fix-y-format-comp-uint-breakthrough.md (FIX-Y erratum). */
+                * See steinmarder findings/active/
+                * and  (FIX-Y erratum). */
                static int fix_z_cached = -1;
                if (fix_z_cached < 0) {
                   fix_z_cached = debug_get_bool_option(

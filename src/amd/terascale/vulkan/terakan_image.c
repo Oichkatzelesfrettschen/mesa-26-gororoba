@@ -1413,7 +1413,7 @@ terakan_image_create_color_descriptor(
                               1);
 
    uint32_t const view_slice_start = create_info_slice_start - base_slice_start;
-   /* FIX-3D-SLICE-MAX (C-2026-04-25-08): for VK_IMAGE_TYPE_3D the
+   /* FIX-3D-SLICE-MAX (): for VK_IMAGE_TYPE_3D the
     * Vulkan view's layer_count is always 1 (per spec) when viewType
     * is VK_IMAGE_VIEW_TYPE_3D, but the underlying 3D image has
     * extent.depth slices.  CB_COLOR_VIEW SLICE_MAX must reflect
@@ -1439,7 +1439,7 @@ terakan_image_create_color_descriptor(
 
    /* TERAKAN_DEBUG_IMAGE_CB_LAYOUT=1: trace the image-CB descriptor
     * producer.  This is the actual producer of the cold/warm
-    * single_layer divergence captured in C-2026-04-18-13 (CB_COLOR0
+    * single_layer divergence captured in (CB_COLOR0
     * BASE/PITCH/SLICE differ).  pitch/slice here depend on
     * surface_level->aligned_extent_surfels populated at vkCreateImage;
     * base depends on image->va + offset_in_memory_bytes_shr8 +
@@ -1746,7 +1746,7 @@ terakan_CreateImage(VkDevice const deviceHandle, VkImageCreateInfo const * const
     * the user-supplied VkImageCreateInfo + the addrlib-chosen aspect[0]
     * level[0] pitch and aligned extent.  Used by steinmarder probe to
     * diff PASS sibling vs FAIL victim of identical descriptor.  Per
-    * C-2026-04-22-37: tiling is provably NOT the differential at the
+    *: tiling is provably NOT the differential at the
     * descriptor level; the bug must live in addrlib decisions or test
     * framework -- this trace exposes the addrlib decision surface.
     */
@@ -1915,7 +1915,7 @@ terakan_CreateImageView(VkDevice const deviceHandle,
        * Zero for all other views.  Consumers that upgrade RESOURCE_TYPE
        * to TEXTURE*DARRAY (descriptor_set.c STORAGE_IMAGE binding)
        * subtract this to revert back to image-root-relative base.
-       * See CLAIMS C-2026-04-18-16. */
+       * See CLAIMS. */
       bool const view_is_nonarray_2d_or_1d =
          pCreateInfo->viewType == VK_IMAGE_VIEW_TYPE_1D ||
          pCreateInfo->viewType == VK_IMAGE_VIEW_TYPE_2D ||
