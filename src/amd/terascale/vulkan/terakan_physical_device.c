@@ -906,24 +906,19 @@ terakan_physical_device_get_capabilities(
 
    /* VK_KHR_multiview (#54, Vulkan 1.1).
     *
-    * Implemented end-to-end as Phase 4 (2026-05-15):
-    *   - 4.1 (mesa PR #22): view_index push constant slot
-    *   - 4.2 (mesa PR #24): NIR lowering for gl_ViewIndex / load_view_index
-    *   - 4.3 (mesa PR #23): record VkRenderingInfo.viewMask into state_draw
-    *   - 4.4 (mesa PR #25): CmdDraw view-loop expansion
+    * TeraScale-2 has no native multiview rendering.  The driver expands
+    * a single application draw into popcount(viewMask) draws with
+    * gl_ViewIndex set per draw via a push-constant slot, an NIR
+    * lowering of load_view_index, and recording the render-pass
+    * viewMask into the command-buffer state.  Performance is
+    * N-view-times slower than single-view but spec-correct.
     *
-    * Hardware reality on TeraScale-2: there is no native multiview
-    * rendering support; the driver expands a single application draw
-    * into popcount(viewMask) draws with gl_ViewIndex set per draw.
-    * Performance is N-view-times slower than single-view but spec-correct.
+    * The view-loop expansion currently covers direct and indexed draws;
+    * indirect variants remain a documented gap.
     *
-    * CmdDrawIndexed and CmdDrawIndirect view-loops are tracked as
-    * 4.4-extension (steinmarder task #157); the canonical multiview
-    * CTS uses direct CmdDraw and is exercised by this feature flip.
-    *
-    * Per spec limits already advertised (Vulkan 1.1 properties):
-    *   maxMultiviewViewCount      = 6   (set in this file ~line 856)
-    *   maxMultiviewInstanceIndex  = 134217727  (~line 857)
+    * Per spec limits (advertised in Vulkan 1.1 properties above):
+    *   maxMultiviewViewCount      = 6
+    *   maxMultiviewInstanceIndex  = 134217727
     */
    extensions_out->KHR_multiview = true;
    features_out->multiview = true;
@@ -938,8 +933,6 @@ terakan_physical_device_get_capabilities(
     * Mesa provides a runtime translation from vkCreateRenderPass2 to
     * vkCreateRenderPass + VkRenderingInfo so the underlying
     * dynamic-rendering-only Terakan implementation can satisfy the API.
-    *
-    * Phase 4.5 (2026-05-15): enabled alongside KHR_multiview.
     */
    extensions_out->KHR_create_renderpass2 = true;
 
@@ -1237,17 +1230,13 @@ terakan_physical_device_get_capabilities(
 
    /* VK_KHR_maintenance4 (#414, Vulkan 1.3).
     *
-    * Phase 5 trial (2026-05-15): re-enabled after Phase 5 promotion to
-    * VK 1.1 (TERAKAN_API_VERSION flipped in terakan_instance.h:40).
-    * extension_core_versions CTS now accepts the advertisement.
+    * Requires VK 1.1 advertised (TERAKAN_API_VERSION in
+    * terakan_instance.h).
     *
-    * maintenance4 adds vkGetDeviceImageMemoryRequirements and
-    * vkGetDeviceImageSparseMemoryRequirements -- info-only helpers; the
-    * existing terakan_image.c memory-requirement computation can be
-    * factored out and called by these new entry points.  For the trial,
-    * declare the extension and rely on Mesa runtime helpers (mesa-vulkan
-    * runtime provides default implementations that consult the existing
-    * vkGetImageMemoryRequirements path).
+    * Adds vkGetDeviceImageMemoryRequirements and
+    * vkGetDeviceImageSparseMemoryRequirements -- info-only helpers
+    * satisfied by Mesa-vulkan runtime defaults that consult the
+    * existing vkGetImageMemoryRequirements path.
     */
    extensions_out->KHR_maintenance4 = true;
    features_out->maintenance4 = true;
