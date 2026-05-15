@@ -579,19 +579,16 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                    * interpretation as unsigned integer; USCALED stores the raw bit-pattern
                    * regardless of magnitude, so R8_UINT values 128-255 are preserved.
                    * R32_UINT also benefits since USCALED does not clamp to SINT_MAX. */
-                  /* FIX-Z part 2 EXPERIMENT (2026-05-15): the original
-                   * UINT->SINT override was paired with the prior FIX-Z NIR
-                   * pass (sign-extending ishr).  The 2026-05-15 FIX-Z2 ushr
-                   * fix made the NIR zero-extend, so the SINT clamp now
-                   * silently demotes narrow-channel UINT values that exceed
-                   * (2^(N-1) - 1) -- e.g. 2-bit alpha 2/3 -> 1.  Test:
-                   * preserve UINT here and re-verify both buffer and image
-                   * UINT cases. */
                   if (G_028C70_NUMBER_TYPE(dst_uav->color.info) == V_028C70_NUMBER_UINT) {
+                     uint32_t const cb_info_before = dst_uav->color.info;
+                     dst_uav->color.info =
+                        (dst_uav->color.info & C_028C70_NUMBER_TYPE) |
+                        S_028C70_NUMBER_TYPE(V_028C70_NUMBER_SINT);
                      if (trace_sd_cached) {
                         fprintf(stderr,
-                                "terakan/stor_img_desc: FIX-Z part2 NO-OVERRIDE (UINT preserved) info=0x%08x\n",
-                                dst_uav->color.info);
+                                "terakan/stor_img_desc: FIX-Z part2 CB_NUMBER_TYPE "
+                                "UINT->SINT info 0x%08x -> 0x%08x\n",
+                                cb_info_before, dst_uav->color.info);
                      }
                   }
                }
