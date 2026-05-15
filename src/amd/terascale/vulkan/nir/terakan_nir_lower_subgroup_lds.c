@@ -1,5 +1,4 @@
 /*
- * Copyright (c) 2026 Eirikr Hinngart
  * SPDX-License-Identifier: MIT
  *
  * LDS-emulated cross-lane subgroup primitives for Palm / Wrestler

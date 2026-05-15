@@ -408,10 +408,18 @@ struct terakan_gfx_command_writer {
        * bug routes the wrong type to the wrong array. */
       uint32_t texel_buffer_element_counts[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
       /* Per-UAV baseArrayLayer for MEM_RAT STORE_TYPED slice addressing.
-       * Non-image UAVs and descriptors that already carry a valid shader
-       * z coordinate write zero so NIR algebraic simplification removes
-       * the slice-bias add.
-       */
+       * The TeraScale CB exporter reads
+       * R3.z as the absolute physical slice index for TEXTURE2DARRAY
+       * resources and does NOT consult CB_COLOR_VIEW.SLICE_START.  For
+       * non-array views (VK_IMAGE_VIEW_TYPE_1D/2D/CUBE) over multi-
+       * layer VkImage backings, the shader's coord-z lowers to literal
+       * 0, so writes collapse to slice 0 regardless of baseArrayLayer.
+       * Upload the per-UAV baseArrayLayer here (bank 14, dwords 28..39)
+       * so terakan_nir_image_uav_coord can emit
+       *   R3.z = nir_iadd(load_kcache(bank=14, dword=28+uav_idx),
+       *                   shader_provided_z_or_zero).
+       * Non-image UAVs (SSBO, texel buffer) and array-view images
+       * populate zero -- nir_iadd with zero is optimized out. */
       uint32_t uav_base_array_layers[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
       bool dirty;
       /* Cached allocation from the last upload — reused if not dirty. */

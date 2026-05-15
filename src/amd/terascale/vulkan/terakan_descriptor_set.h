@@ -92,16 +92,18 @@ struct terakan_descriptor_set_uav {
     * emits this at slot `EG_FETCH_CONSTANTS_OFFSET_CS +
     * R600_IMAGE_REAL_RESOURCE_OFFSET(168) + m` alongside the
     * IMMED descriptor at 160+m.  Without it the CB exporter stalls
-    * during MEM_RAT STORE_TYPED format validation (CLAIMS
-    * C-2026-04-17-08; see findings/LATENT_INVARIANTS.md
-    * LI-2026-04-17-04).
+    * during MEM_RAT STORE_TYPED format validation.
     * Copied from image_view->resource[8] at bind time.  Zero for
     * non-image (buffer/texel-buffer) UAVs. */
    uint32_t real_resource[8];
-   /* VkImageView baseArrayLayer for STORAGE_IMAGE bindings. Runtime
-    * robustness metadata routes this into NIR slice-coordinate lowering
-    * only for non-array views over array-backed images.
-    */
+   /* baseArrayLayer of the VkImageView for STORAGE_IMAGE bindings.
+    * Routed to
+    * robustness_metadata.uav_base_array_layers[] at pipeline_layout
+    * bind time; NIR lowering adds this to coord.z so MEM_RAT
+    * STORE_TYPED targets the correct physical slice of a
+    * TEXTURE2DARRAY resource even when the view is non-array.
+    * Zero for buffer/texel-buffer UAVs, plain 2D images over single-
+    * layer backing, and array views that already carry a valid z. */
    uint32_t base_array_layer;
    /* Bit 0: view is non-array (1D/2D/CUBE) over a multi-layer backing
     * image. Other bits reserved.

@@ -27,8 +27,8 @@
  * Emits hardware instructions (VFETCH, TEX, KCACHE, MEM_RAT) from
  * physical hardware indices resolved by apply_pipeline_layout.
  *
- * Phase 0 mechanical file split of the former monolith
- * terakan_nir_lower_bindings.c.  See TERAKAN_SHADER_ABI_CONTRACT.md.
+ * Mechanical file split of the former monolith
+ * terakan_nir_lower_bindings.c.
  */
 
 #include "terakan_nir_lower_bindings_internal.h"
@@ -242,14 +242,10 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
     * swizzle, so don't initialize the array layer if it's not needed to avoid emitting an ALU
     * instruction for it.
     */
-   /* FIX-CUBE-LAYER (2026-04-25): cube images always have 6 faces, so the
-    * shader's layer coord (z) must be preserved even when is_array=false
-    * (the typical VK_IMAGE_VIEW_TYPE_CUBE case).  Without this, multi-layer
-    * cube image.store collapses all 6 faces to face 0 because uav_coord_num
-    * stays at 2 and FIX-K below replaces coord.z with only baseArrayLayer
-    * (=0 for multi-layer view).  The 3D / generic-array path already
-    * handled this correctly; cube was the gap.  See steinmarder
-    *   findings/active/2026-04-25-cube-multilayer-imagestore-rca.md
+   /* Cube storage-image views always have 6 faces.  Preserve the
+    * shader's layer coordinate even when is_array is false, otherwise
+    * multi-layer cube image.store collapses every face to face 0.
+    * The 3D and generic-array paths already carry the layer coordinate.
     */
    if (dim == GLSL_SAMPLER_DIM_3D || is_array || dim == GLSL_SAMPLER_DIM_CUBE) {
       uav_coord_num_components = 3;
@@ -262,7 +258,7 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
     * CB exporter reads R3.z as the physical slice index. Preserve the
     * third coordinate component when validation explicitly enables the
     * non-array storage-image slice path.
-   */
+    */
    if (uav_coord_num_components < 3 && dim != GLSL_SAMPLER_DIM_1D) {
       static int preserve_coord_z_cached = -1;
       if (preserve_coord_z_cached < 0) {
@@ -1487,7 +1483,7 @@ terakan_nir_lower_bindings_instr_image_deref_store(
       terakan_nir_convert_type_to_32_bits(b, intrin->src[3].ssa, store_type);
    nir_def *store_value = store_value_orig;
 
-   /* PROBE (Q-2026-04-19): TERAKAN_PROBE_KCACHE_VALUE=1 overrides
+   /* TERAKAN_PROBE_KCACHE_VALUE=1 overrides
     * the R channel of store_value with 0xDEADBE00 + KC14_baseArrayLayer.
     * Diagnostic for whether the LS KCACHE actually serves the per-
     * dispatch baseArrayLayer or returns stale/zero data despite
@@ -1513,11 +1509,11 @@ terakan_nir_lower_bindings_instr_image_deref_store(
             debug_get_bool_option("TERAKAN_PROBE_KCACHE_VALUE", false) ? 1 : 0;
       }
       if (probe_kcache_cached) {
-         /* Action A (Q-2026-04-19 part 2): TERAKAN_PROBE_KCACHE_BANK
+         /* Action A (part 2): TERAKAN_PROBE_KCACHE_BANK
           * selects which physical KC bank to fetch from.  Default 14
           * (the original probe target); set to 0 for the bank-0
           * sanity check (Action A in
-          * 2026-04-19-isa-clamp-audit-result.md addendum 2).
+          *  addendum 2).
           * For bank 0 + FIX-G ON, KC0[0].x is the application UBO's
           * first dword = u_layerNdx (= dispatch index N per the CTS
           * single_layer test design).  Reading back N visualizes as
@@ -1601,11 +1597,9 @@ terakan_nir_lower_bindings_instr_image_deref_store(
     * the value in the SINT range (uint8 200 -> int32 -56), so the CB
     * truncates correctly (stores 0xC8 = 200 as uint8) without clamping. */
    {
-      /* Promoted to default 2026-04-21 (steinmarder finding
-       * 2026-04-21-tranche7-h7a-confirmed-zero-real-fails.md): tranche-7
-       * absolute-isolation matrix proved zero real isolation fails after
-       * FIX-Z (incl. per-channel packed-format handling).  Env var
-       * preserved as opt-out (TERAKAN_FIX_Z_UINT_FORMAT_COMP=0). */
+      /* Enabled by default because zero-real-resource isolation still
+       * fails after per-channel packed-format handling.  The env var
+       * remains as an opt-out (TERAKAN_FIX_Z_UINT_FORMAT_COMP=0). */
       static int fixz_se = -1;
       if (fixz_se < 0)
          fixz_se = debug_get_bool_option("TERAKAN_FIX_Z_UINT_FORMAT_COMP", true) ? 1 : 0;
@@ -1614,7 +1608,7 @@ terakan_nir_lower_bindings_instr_image_deref_store(
          if (img_fmt != PIPE_FORMAT_NONE && util_format_is_pure_uint(img_fmt)) {
             const struct util_format_description * const fmtd =
                util_format_description(img_fmt);
-            /* FIX-Z packed-format extension (2026-04-21): per-channel-aware
+            /* FIX-Z packed-format extension: per-channel-aware
              * sign-extension shift.  Original code used a single bpc =
              * channel[0].size which fails for packed formats with non-
              * uniform channel widths (e.g. R10G10B10A2_UINT: 10/10/10/2 bits).
@@ -1676,13 +1670,11 @@ terakan_nir_lower_bindings_instr_image_deref_store(
          }
       }
    }
-   /* FIX-AB (2026-04-22): encode the format-derived elem_size_minus_one
+   /* FIX-AB: encode the format-derived elem_size_minus_one
     * (= dwords-per-element minus 1, encoded as {0,1,3} for {1,2,4} dwords)
     * in uav_op high bits [6:7] so emit_uav_store_r600 can recover it.
     * Default of ELEM_SIZE=0 caused silicon to drop the R-dword of
-    * r32g32_uint in cold-context state per steinmarder finding
-    * 2026-04-22-tranche16-silicon-drops-r-dword-cold-context.md, CLAIMS
-    * C-2026-04-22-43.  Trimming store_value at the NIR level would
+    * r32g32_uint in cold-context state.  Trimming store_value at the NIR level would
     * violate `src->num_components == intrin->num_components` validation
     * for the uav_instr_r600 intrinsic (NIR enforces the contract); we
     * instead carry the format channel count through the op encoding

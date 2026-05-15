@@ -31,7 +31,7 @@
 #include "terakan_entrypoints.h"
 #include "terakan_hw_state.h"
 
-/* FIX-G (C-2026-04-19-03): forward declaration of the compute LS-register
+/* forward declaration of the compute LS-register
  * KCACHE bank emitter in terakan_dispatch.c.  No dedicated header for dispatch;
  * declared here where needed. */
 void terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command_writer,
@@ -62,10 +62,13 @@ void terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command
  * texel_buffer_element_counts[]; zeros the complementary array for
  * defense-in-depth. Pass bound=0 for unbound UAVs.
  *
- * base_array_layer is routed to uav_base_array_layers[] only when the
- * descriptor is a non-array view over an array-backed image. Other
- * descriptors store zero so the NIR-side add folds away.
- */
+ * base_array_layer is routed to
+ * uav_base_array_layers[] (bank 14, dwords 28..39) only when
+ * inject_base_array_layer is true (view-is-non-array-over-array-image);
+ * otherwise zero is written so the NIR-side nir_iadd folds away.  This
+ * respects guardrail #1: plain 2D images over single-layer backing must
+ * not have baseArrayLayer added, else MEM_RAT targets a slice beyond
+ * the allocation boundary and corrupts adjacent suballocations. */
 static inline void
 update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
                                uint8_t const uav_idx, bool const is_texel,
@@ -218,7 +221,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   setter(&command_writer->hw_state_sqc, bank, size_lines,
                          br[di].bo, va_lines);
 
-                  /* FIX-G (C-2026-04-19-03): the setter above stages the
+                  /* the setter above stages the
                    * UBO into hw_state_sqc under the FS-stage bits (compute
                    * shares the FS SQC slot).  That writes PS-side ALU_CONST_
                    * CACHE_PS_* registers later, which the COMPUTE shader

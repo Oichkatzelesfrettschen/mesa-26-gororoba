@@ -98,9 +98,9 @@ terakan_sync_completion_signal(struct vk_device * const device_base,
     * example, host-signal of a value already reached, or a racy
     * test signaling out of order).  Treat such cases as idempotent
     * no-ops returning VK_SUCCESS so any waiters still get a
-    * broadcast and the test continues -- previously we asserted
-    * (abort) or returned VK_ERROR_UNKNOWN (hang waiting on a
-    * signal that never completes).  Neither is correct.
+    * broadcast and the test continues.  Asserting (abort) or
+    * returning VK_ERROR_UNKNOWN (which hangs waiters on a signal
+    * that never completes) are both incorrect responses.
     *
     * Two out-of-order shapes to tolerate:
     *   value <= current_value : already signalled, waiters done.

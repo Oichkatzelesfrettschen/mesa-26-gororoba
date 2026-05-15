@@ -96,9 +96,8 @@ terakan_color_descriptor_calculate_buffer_base_pitch_slice_dim_offset(
    descriptor->dim = (uint32_t)(base_granularity_offset_bytes / bytes_per_element + elements - 1);
 
    /* TERAKAN_DEBUG_BUFFER_UAV_LAYOUT=1: trace the inputs and outputs
-    * of buffer-UAV CB_COLOR0 layout derivation.  Used to confirm or
-    * refute CLAIMS C-2026-04-18-14 (alignment trap) by running cold
-    * and warm single_layer and diffing the log.
+    * of buffer-UAV CB_COLOR0 layout derivation.  Compare cold and warm
+    * single-layer runs to isolate alignment-sensitive descriptor changes.
     *
     * If inputs match but outputs differ -> bug is here.
     * If inputs differ  -> bug is in the caller's `elements` computation.
