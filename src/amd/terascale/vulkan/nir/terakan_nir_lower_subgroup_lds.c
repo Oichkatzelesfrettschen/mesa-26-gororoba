@@ -1,4 +1,7 @@
 /*
+ * Copyright (c) 2026 Eirikr Hinngart
+ * SPDX-License-Identifier: MIT
+ *
  * LDS-emulated cross-lane subgroup primitives for Palm / Wrestler
  * (CHIP_PALM, Evergreen / TeraScale-2 VLIW5).
  *
@@ -53,6 +56,14 @@
 
 #include <assert.h>
 #include <stdint.h>
+
+/* Wave size on Evergreen / TeraScale-2 VLIW5 (Palm / Wrestler, CHIP_PALM)
+ * is fixed at 64 lanes per SIMD per the AMD Evergreen-Family Instruction
+ * Set Architecture.  Keep these as named constants because every lowering
+ * helper below derives slot offsets, lane masks, and per-lane bit indices
+ * from them. */
+#define TERAKAN_SUBGROUP_SIZE      64u
+#define TERAKAN_SUBGROUP_LOG2_SIZE 6u
 
 /* Per-call-site LDS allocation tracking.  Each lowered subgroup intrinsic
  * reserves its own slot at the tail of shared_size, with alignment
@@ -110,7 +121,16 @@ lower_ballot(nir_builder *b, nir_intrinsic_instr *intrin,
    if (predicate->bit_size != 1)
       predicate = nir_ine_imm(b, predicate, 0);
 
-   nir_def *lane_id = nir_load_subgroup_invocation(b);
+   /* The SFN backend has no native load_subgroup_invocation lowering
+    * (r600 historically reported subgroup_size = 1, see RCA in
+    * lower_load_subgroup_invocation below).  Inline the Wave64 lowering
+    * here so nir_shader_intrinsics_pass does not need a second walk:
+    * the walker only visits the instruction list as captured at entry,
+    * so any nir_load_subgroup_invocation emitted by THIS pass would not
+    * be revisited and would reach SFN unlowered. */
+   nir_def *lane_id =
+      nir_iand_imm(b, nir_load_local_invocation_index(b),
+                   TERAKAN_SUBGROUP_SIZE - 1u);
    nir_def *word_off = nir_imul_imm(b, nir_ushr_imm(b, lane_id, 5), 4);
    nir_def *lane_bit = nir_ishl(b, nir_imm_int(b, 1),
                                 nir_iand_imm(b, lane_id, 31));
@@ -175,7 +195,11 @@ lower_read_first_invocation(nir_builder *b, nir_intrinsic_instr *intrin,
    uint32_t const slot_off = alloc_lds_slot(alloc, slot_bytes, 4);
 
    nir_def *base = nir_imm_int(b, slot_off);
-   nir_def *lane_id = nir_load_subgroup_invocation(b);
+   /* Inline the Wave64 lane-id derivation -- see lower_ballot for why we
+    * cannot route through nir_load_subgroup_invocation. */
+   nir_def *lane_id =
+      nir_iand_imm(b, nir_load_local_invocation_index(b),
+                   TERAKAN_SUBGROUP_SIZE - 1u);
 
    /* Treat "first active invocation" as lane 0 -- a lane-0-guarded write
     * is correct when the call is uniform-control-flow (the spec's
@@ -224,9 +248,6 @@ lower_read_first_invocation(nir_builder *b, nir_intrinsic_instr *intrin,
  * load_num_subgroups when the workgroup size is fully known at compile
  * time.  Otherwise we emit the runtime arithmetic.
  */
-#define TERAKAN_SUBGROUP_SIZE      64u
-#define TERAKAN_SUBGROUP_LOG2_SIZE 6u
-
 static nir_def *
 lower_load_subgroup_invocation(nir_builder *b)
 {

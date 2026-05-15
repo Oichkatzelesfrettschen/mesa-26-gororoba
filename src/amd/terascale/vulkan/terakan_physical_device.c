@@ -893,10 +893,16 @@ terakan_physical_device_get_capabilities(
     * subgroupSupportedStages bitmask. */
    properties_out->subgroupSize = 64;
    properties_out->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+   /* Advertise BASIC only.  VOTE / BALLOT require the LDS-mediated
+    * cross-lane lowering (terakan_nir_lower_subgroup_lds.c) to be
+    * scheduler-stable; an SFN scheduler assertion
+    * (sfn_instr_alu.h:90 -- !has_alu_flag(alu_is_lds)) fires today on
+    * the simplest subgroupbarrier shader once the LDS pass is engaged.
+    * Until that SFN-side bug is resolved, advertising BASIC alone
+    * keeps CTS reporting NotSupported for the higher tiers instead of
+    * aborting. */
    properties_out->subgroupSupportedOperations =
-      VK_SUBGROUP_FEATURE_BASIC_BIT |
-      VK_SUBGROUP_FEATURE_VOTE_BIT |
-      VK_SUBGROUP_FEATURE_BALLOT_BIT;
+      VK_SUBGROUP_FEATURE_BASIC_BIT;
    properties_out->subgroupQuadOperationsInAllStages = false;
 
    /* VK_KHR_maintenance1 (#70, Vulkan 1.1).
@@ -985,14 +991,15 @@ terakan_physical_device_get_capabilities(
     * either inlining or skipping; no SFN/SQ work required. */
    extensions_out->KHR_shader_non_semantic_info = true;
 
-   /* VK_KHR_shader_relaxed_extended_instruction (#509, Vulkan 1.4).
-    * Declarative: permits SPIR-V to use the
-    * SPV_KHR_relaxed_extended_instruction capability for ExtInst
-    * (Extended-Instruction Set) calls with relaxed precision.
-    * vk_spirv_to_nir + the existing relaxed-precision lowering already
-    * handle the runtime semantics; this extension is just the gate
-    * that the SPIR-V validator checks. */
+   /* VK_KHR_shader_relaxed_extended_instruction (#559, Vulkan 1.4).
+    * Adds SPIR-V opcode 4433 OpExtInstWithForwardRefsKHR, a variant
+    * of OpExtInst whose Set ID may be a forward reference.  Purely
+    * a SPIR-V parser-layer relaxation; the silicon never sees
+    * SPIR-V.  The shared spirv_to_nir consumer
+    * (compiler/spirv/spirv_to_nir.c) already binds the opcode to
+    * vtn_handle_non_semantic_instruction. */
    extensions_out->KHR_shader_relaxed_extended_instruction = true;
+   features_out->shaderRelaxedExtendedInstruction = true;
 
    /* VK_KHR_storage_buffer_storage_class (#132, Vulkan 1.1).
     * Permits SPIR-V to use the StorageBuffer storage class directly
