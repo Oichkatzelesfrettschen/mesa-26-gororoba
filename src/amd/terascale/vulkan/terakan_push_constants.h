@@ -50,11 +50,9 @@ enum terakan_push_constants_driver_index {
    TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Y,
    TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_NUM_WORKGROUPS_Z,
 
-   /* Phase 4.1 (2026-05-15): per-draw view index for VK_KHR_multiview.
-    * Populated by terakan_CmdDraw* expansion (Phase 4.4) before each
-    * view of an N-view multiview draw.  The NIR pass (Phase 4.2,
-    * terakan_nir_lower_view_index) loads this slot via KCACHE bank 15
-    * when the shader uses gl_ViewIndex / nir_intrinsic_load_view_index. */
+   /* Per-draw view index for VK_KHR_multiview.  terakan_CmdDraw*
+    * writes this slot before each view of an N-view multiview draw;
+    * the load_view_index NIR lowering reads it via KCACHE bank 15. */
    TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_VIEW_INDEX,
 
    TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_COUNT,
@@ -79,12 +77,10 @@ struct terakan_push_constants_driver {
     * terakan_nir_lower_compute_sysvals(). */
    uint32_t num_workgroups[3];
 
-   /* Phase 4.1 (2026-05-15): per-view index for VK_KHR_multiview.
-    * Populated by terakan_CmdDraw* expansion before each view of an
-    * N-view multiview draw.  When multiview is disabled, this stays 0.
-    * The shader reads this via KCACHE bank 15 when it consumes
-    * gl_ViewIndex (lowered by Phase 4.2 terakan_nir_lower_view_index).
-    */
+   /* Per-view index for VK_KHR_multiview.  terakan_CmdDraw* writes
+    * this before each view of an N-view multiview draw; it remains 0
+    * when multiview is disabled.  The shader reads it via KCACHE bank
+    * 15 when it consumes gl_ViewIndex. */
    uint32_t view_index;
 
    /* Pad to 16 bytes so the struct lands on a vec4 boundary and the
@@ -93,8 +89,7 @@ struct terakan_push_constants_driver {
    uint32_t _pad_view[3];
 };
 
-/* Updated 2026-05-15 from 64 to 80 to accommodate view_index + alignment
- * pad.  Each KCACHE line is 16 bytes; 80 = 5 lines. */
+/* 5 x 16-byte KCACHE lines. */
 static_assert(sizeof(struct terakan_push_constants_driver) == 80,
               "driver push constants must be exactly 80 bytes (APP_BASE_BYTES; 5 KCACHE lines)");
 

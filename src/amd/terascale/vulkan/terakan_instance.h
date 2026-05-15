@@ -37,20 +37,17 @@ extern "C" {
 #define TERAKAN_USE_WSI_PLATFORM
 #endif
 
-/* Phase 5 trial (2026-05-15): promote from VK 1.0 to VK 1.1.
+/* Advertised API version.
  *
- * Prerequisites that have landed:
- *   - Phase 3.2: BASIC subgroup primitives (mesa PR #21)
- *   - Phase 4: full multiview chain (mesa PRs #22+#23+#24+#25)
- *   - Plus all Phase 2 caps + opPhi.wide + image.store etc.
+ * Implemented Vulkan 1.1 prerequisites include BASIC subgroup
+ * primitives, multiview draw expansion with gl_ViewIndex lowering,
+ * render-pass viewMask capture, and the Vulkan 1.1 capability surface
+ * reported by terakan_physical_device.c.
  *
- * Higher-tier subgroup ops (VOTE/BALLOT/ARITHMETIC, steinmarder task
- * #146) are NOT yet LDS-emulated; subgroup CTS may still NotSupport
- * those.  Multiview per-view layer (#158) is NOT yet implemented;
- * multiview image-comparison tests may still fail.
- *
- * This flip is a measurement trial -- if too many regressions, revert
- * and complete #146 + #158 first.
+ * Higher-tier subgroup ops (VOTE/BALLOT/ARITHMETIC) still require LDS
+ * emulation and may be reported unsupported.  Multiview comparison
+ * tests that require layered framebuffer writes may still expose
+ * hardware-routing gaps.
  */
 #define TERAKAN_API_VERSION VK_MAKE_API_VERSION(0, 1, 1, VK_HEADER_VERSION)
 

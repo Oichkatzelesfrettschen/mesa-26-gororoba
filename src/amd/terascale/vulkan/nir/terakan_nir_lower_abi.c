@@ -1783,33 +1783,25 @@ terakan_nir_lower_bindings_instr_image_deref_store(
                      ci < fmtd->nr_channels ? fmtd->channel[ci].size : 0u;
                   if (ch_bpc > 0 && ch_bpc < 32) {
                      unsigned const shift = 32u - ch_bpc;
-                     /* FIX-Z2 (2026-05-15): for UINT formats, use logical
-                      * right shift (ushr) to preserve the value when the
-                      * channel's MSB is set.  The arithmetic-shift pattern
-                      * (ishl;ishr) sign-extends, which is correct for SINT
-                      * but for UINT packed-formats with narrow channels
-                      * (e.g. A2 in A2B10G10R10_UINT where value=2 has its
-                      * 2-bit-MSB set), the sign-extended high bits combine
-                      * with the CB format encoding to produce off-by-N
-                      * mismatches at readback.
+                     /* Narrow-channel UINT zero-extension, dim-gated.
                       *
-                      * This block already gates on util_format_is_pure_uint
-                      * above; the channel type within a UINT format is
-                      * always UINT, so ushr is unconditionally correct
-                      * here.  SINT/SNORM/UNORM formats use separate
-                      * extension paths elsewhere.
+                      * For BUFFER images there is no CB pack truncation;
+                      * a logical right shift (ushr) zero-extends, which
+                      * is correct for UINT channels whose MSB is set
+                      * (for example, A2 in A2B10G10R10_UINT with
+                      * value=2).
                       *
-                      * FIX-Z3 (2026-05-15): the FIX-Z2 ushr regressed
-                      * non-buffer a2b10g10r10_uint_pack32 (1d/2d/3d/
-                      * cube/cube_array) -- the prior arith-shift's
-                      * sign-extended high bits actually round-tripped
-                      * correctly via the CB pack truncation, while
-                      * ushr's zero-extended high bits do NOT.
+                      * For non-buffer images the CB pack stage truncates
+                      * the high bits; arithmetic shift (ishr) leaves the
+                      * sign-extended high bits which the CB pack then
+                      * drops, producing the spec-correct result.  ushr
+                      * here regresses non-buffer a2b10g10r10_uint_pack32
+                      * because the zero-extended high bits round-trip
+                      * through the CB pack truncation incorrectly.
                       *
-                      * Gate on RESOURCE_TYPE = BUFFER (no CB pack
-                      * truncation path) for the logical shift; keep
-                      * arithmetic shift for non-buffer (with CB pack)
-                      * to preserve the previously-passing behavior. */
+                      * This block already gates on
+                      * util_format_is_pure_uint; SINT/SNORM/UNORM use
+                      * separate extension paths. */
                      enum glsl_sampler_dim const sd = nir_intrinsic_image_dim(intrin);
                      if (sd == GLSL_SAMPLER_DIM_BUF) {
                         v = nir_ushr(b,
@@ -2081,12 +2073,10 @@ terakan_nir_lower_bindings_instr(nir_builder * const b, nir_instr * const instr,
          }
          return false;
       case nir_intrinsic_load_view_index: {
-         /* Phase 4.2 (2026-05-15): lower gl_ViewIndex to a KCACHE bank-15
-          * read of the view_index push constant slot (Phase 4.1, mesa
-          * PR #22).  The dispatch code (Phase 4.4, steinmarder task #143)
-          * updates this slot before each view of a multiview draw, so
-          * the same compiled shader runs once per view with the right
-          * per-view index. */
+         /* Lower gl_ViewIndex to a KCACHE bank-15 read of the
+          * view_index push constant slot.  terakan_CmdDraw* updates
+          * the slot before each view of a multiview draw, so a single
+          * compiled shader runs once per view with the per-view index. */
          b->cursor = nir_before_instr(&intrin->instr);
 
          uint32_t const byte_offset =
