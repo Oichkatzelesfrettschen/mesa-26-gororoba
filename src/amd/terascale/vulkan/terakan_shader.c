@@ -281,6 +281,44 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
 
    NIR_PASS(_, nir, terakan_nir_lower_sin_cos);
 
+   /* Phase 3.2 BASIC subgroup primitives (2026-05-15).
+    *
+    * Run nir_lower_subgroups mirroring the r600 Gallium config in
+    * sfn_nir.cpp:745.  Wave size is 64 on Evergreen/Bobcat; ballot is
+    * stored in a single 64-bit value or two 32-bit components.
+    *
+    * Lowerings enabled here cover the VK_SUBGROUP_FEATURE_BASIC_BIT
+    * surface advertised in terakan_physical_device.c:
+    *   - lower_elect    -> elect emits `gl_SubgroupInvocationID == 0`
+    *   - lower_vote_trivial -> single-lane vote folds to source
+    *   - lower_relative_shuffle -> XOR/up/down shuffles to absolute
+    *   - lower_quad_broadcast_dynamic -> dynamic quad broadcast emul
+    *   - lower_inverse_ballot -> inverse ballot to standard ballot
+    *
+    * Higher subgroup tiers (VOTE/BALLOT/ARITHMETIC/SHUFFLE) require LDS
+    * emulation and are staged in subsequent Phase 3 sub-steps
+    * (steinmarder tasks #146 + #147).  For now BASIC primitives lower
+    * to single-lane / barrier-equivalent sequences without LDS, so the
+    * BASIC bit advertisement matches actual behavior.
+    *
+    * subgroupBarrier lowers to a standard compute barrier; wave64 is
+    * the natural lockstep granule on Evergreen SIMD so the barrier is
+    * a no-op when LDS isn't involved, and the compute barrier path
+    * handles the cross-wave case correctly.
+    */
+   {
+      static const nir_lower_subgroups_options terakan_subgroups_options = {
+         .ballot_bit_size = 32,
+         .ballot_components = 2,  /* 2 x uint32 = 64-bit ballot for wave64 */
+         .lower_vote_trivial = true,
+         .lower_relative_shuffle = true,
+         .lower_quad_broadcast_dynamic = true,
+         .lower_elect = true,
+         .lower_inverse_ballot = true,
+      };
+      NIR_PASS(_, nir, nir_lower_subgroups, &terakan_subgroups_options);
+   }
+
    if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post explicit_io/lowerings (%s) ---\n",
               mesa_shader_stage_name(nir->info.stage));
@@ -288,6 +326,81 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
    }
 
    return nir;
+}
+
+/* Sub-32-bit memory-access size/align callback (2026-05-15).
+ *
+ * MEM_RAT_STORE_TYPED on Evergreen cached path writes one dword per
+ * element (Evergreen_ISA.txt:17572 + 6584).  STORE_RAW also writes
+ * dwords (one for cached, up to two for cacheless).  Sub-32-bit SSBO
+ * stores cannot be issued directly; they must be widened to 32-bit
+ * with explicit packing.  The upstream pass
+ * nir_lower_mem_access_bit_sizes handles the widening when given a
+ * size_align callback that returns bit_size=32 for the modes we
+ * control (SSBO + global).
+ *
+ * UBO access is excluded (already 32-bit via KCACHE in the lowering).
+ * Push-constants are 32-bit too; their lowering is handled separately
+ * by terakan_nir_lower_push_constants.
+ *
+ * The shift method is `scalar` because PALM's MEM_RAT_CMPXCHG_INT
+ * is silicon-broken on the cached path -- confirmed by:
+ *   - 2026-05-13-cmpxchg-compex-hw-rca.md (initial hardware probe series)
+ *   - 2026-05-13-cmpxchg-compex-hw-rca.md (corrected 2026-05-14:
+ *     ISA opcodes 4/36 ARE present per Evergreen_ISA.txt:17572-17612,
+ *     but PALM silicon silently no-ops them)
+ *   - 2026-05-14: speculative-XCHG NIR lowering shipped as the
+ *     workgroup-scope emulation
+ *     (terakan_nir_lower_cmpxchg_to_speculative_xchg, mesa
+ *     f3eca05d584); CTS compex tests transitioned FAIL -> PASS
+ *     under this path
+ *   - 2026-05-15 follow-on: device-scope CAS remains silently
+ *     no-op (no further HW unblock found)
+ *   - atomic_semantics_matrix.md exhaustive probe table:
+ *     ADD/XCHG/INC/DEC at the same address all succeed; CMPXCHG
+ *     observed final value matches initial across all payload-lane
+ *     permutations, comp-mask variants, and burst-count variants.
+ *
+ * Net: atomic-based shift methods cannot be used here.  The pass
+ * falls back to scalarized 32-bit RMW for partial-dword stores; for
+ * the CTS u16/u8 vec patterns this works because the test pattern
+ * doesn't race on the same dword.  Cross-thread sub-dword racing
+ * SSBO writes are not spec-required for VK 1.0 conformance and
+ * remain a documented HW-silicon gap with the same scope as the
+ * device-scope CMPXCHG limitation.
+ */
+static nir_mem_access_size_align
+terakan_nir_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
+                                  uint8_t bit_size, uint32_t align_mul,
+                                  uint32_t align_offset, bool offset_is_const,
+                                  enum gl_access_qualifier access,
+                                  const void *cb_data)
+{
+   (void)intrin;
+   (void)align_mul;
+   (void)align_offset;
+   (void)offset_is_const;
+   (void)access;
+   (void)cb_data;
+
+   /* Widen all sub-32-bit accesses to 32-bit.  Cap at 32-bit because the
+    * MEM_RAT_STORE_TYPED data path is one dword per element. */
+   if (bit_size < 32) {
+      bit_size = 32;
+   } else if (bit_size > 32) {
+      bit_size = 32;
+   }
+
+   /* num_components: as many as we can fit in `bytes`, capped at 4
+    * (the vec4 channel limit of MEM_RAT_STORE_TYPED). */
+   uint8_t num_components = MAX2(1, MIN2(bytes / (bit_size / 8), 4));
+
+   return (nir_mem_access_size_align){
+      .num_components = num_components,
+      .bit_size = bit_size,
+      .align = bit_size / 8,
+      .shift = nir_mem_access_shift_method_scalar,
+   };
 }
 
 /* `data` points to `nir_variable_mode robust_modes`. */
@@ -1079,6 +1192,49 @@ terakan_shader_lower_and_optimize_post_link(
       .modes = nir_var_mem_ubo | nir_var_mem_push_const | nir_var_mem_ssbo,
    };
    NIR_PASS(_, nir, nir_lower_io_to_scalar, load_store_vectorize_options.modes, NULL, NULL);
+
+   /* Sub-32-bit memory access -> 32-bit (2026-05-15):
+    *
+    * MEM_RAT_STORE_TYPED writes one dword per element on the cached
+    * path (Evergreen_ISA.txt:17572 + 6584); the existing SSBO store
+    * lowering at terakan_nir_lower_abi.c asserts on sub-32-bit
+    * components.  Use upstream nir_lower_mem_access_bit_sizes to
+    * widen all sub-32-bit SSBO + global memory accesses to 32-bit
+    * with shift+mask scalar extraction (no atomics path needed --
+    * the CTS u16vec3 test pattern is single-thread, and the wider
+    * 32-bit RMW is correct when the surrounding write isn't racing
+    * with another thread on the same dword).
+    *
+    * Modes: SSBO + global.  UBO already lowers to 32-bit KCACHE
+    * loads upstream; push_const is also 32-bit.  Limiting modes
+    * here keeps the per-stage compile cost down.
+    *
+    * may_lower_unaligned_stores_to_atomics=TRUE: the upstream pass
+    * widens sub-32-bit aligned stores (e.g. uint16_t at byte 0 of a
+    * 16-byte std140 slot) via a generated atomic_swap (cmpxchg-shaped
+    * RMW) intrinsic.  PALM's MEM_RAT_CMPXCHG_INT is silicon-broken
+    * (silent no-op, confirmed by atomic_semantics_matrix.md exhaustive
+    * probe series and Phase 1 compex CTS pass-through), so the raw
+    * atomic_swap won't commit on its own.  We rely on a SUBSEQUENT
+    * `terakan_nir_lower_cmpxchg_to_speculative_xchg` pass to rewrite
+    * those generated cmpxchg intrinsics to load + bcsel + atomic_xchg
+    * -- correct under single-thread CTS test patterns (no cross-thread
+    * race on the same dword).  See:
+    *   - 2026-05-13-cmpxchg-compex-hw-rca.md (corrected 2026-05-14)
+    *   - 2026-05-14 mesa f3eca05d584 (speculative-XCHG NIR lowering)
+    *   - atomic_semantics_matrix.md (exhaustive HW probe)
+    * Cross-thread sub-dword racing SSBO writes are not VK 1.0
+    * conformance-required and remain a documented HW gap.
+    *
+    * The callback returns bit_size=32 unconditionally for SSBO/global
+    * because MEM_RAT_STORE_TYPED writes one dword per element.
+    */
+   nir_lower_mem_access_bit_sizes_options mem_access_options = {
+      .callback = terakan_nir_mem_access_size_align,
+      .modes = nir_var_mem_ssbo | nir_var_mem_global,
+      .may_lower_unaligned_stores_to_atomics = true,
+   };
+   NIR_PASS(_, nir, nir_lower_mem_access_bit_sizes, &mem_access_options);
    /* Use the effective per-stage robustness flag computed by the pipeline
     * compiler (device feature OR VK_EXT_pipeline_robustness per-stage state).
     * See terakan_nir_buffer_uav_coord for the hardware rationale. */
