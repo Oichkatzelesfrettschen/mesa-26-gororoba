@@ -1560,7 +1560,7 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
        * use the buffer-view path). */
       uint32_t const dim_default = width_elements > 0 ? width_elements - 1 : 0;
 
-      /* Format-aware CB_COLOR{M}_INFO selection (2026-05-15):
+      /* Format-aware CB_COLOR{M}_INFO selection.
        *
        * For storage TEXEL buffers (VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER),
        * cb_uav.color.info is populated from buffer_view->color (see
@@ -1592,7 +1592,7 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
             S_028C70_BLEND_BYPASS(1) |
             S_028C70_RESOURCE_TYPE(V_028C70_BUFFER) |
             S_028C70_RAT(1));
-      /* Format-aware PITCH+SLICE (2026-05-15 follow-up):
+      /* Format-aware PITCH+SLICE.
        *
        * The synthetic pitch_tile_max derives from width_elements=buf_size/4
        * (r32-hardcoded).  For sub-r32 formats (r8, r16) this produces a

@@ -172,6 +172,15 @@ struct terakan_state_draw {
     */
    BITSET_DECLARE(state_pending, TERAKAN_STATE_DRAW_INDEX_COUNT);
 
+   /* Multiview view mask from the active VkRenderingInfo.viewMask
+    * (dynamic-rendering path) or
+    * VkRenderPassMultiviewCreateInfo.pViewMasks[subpass] (legacy
+    * renderpass path).  Each set bit is a view to render; 0 =
+    * single-view.  terakan_CmdDraw* reads this to expand a single
+    * draw into popcount(view_mask) draws, updating the view_index
+    * push constant before each. */
+   uint32_t view_mask;
+
    /* Configuration of state setting commands themselves. */
    bool cmd_set_depth_clamp_enable_sets_depth_clip_enable;
 

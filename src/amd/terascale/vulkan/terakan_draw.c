@@ -284,6 +284,46 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
    }
 }
 
+/* For VK_KHR_multiview view-loop expansion: write the per-iteration view
+ * index to the dedicated driver push-constant slot and mark its modified
+ * bit so the KCACHE buffer is re-uploaded before the next draw.  The
+ * graphics/compute shader reads this slot via the load_view_index NIR
+ * lowering in terakan_nir_lower_abi.c, which materializes gl_ViewIndex
+ * for the application. */
+static inline void
+terakan_set_view_index_push_constant(struct terakan_gfx_command_writer * const command_writer,
+                                     uint32_t const view_index)
+{
+   command_writer->push_constants_state.driver_constants.view_index = view_index;
+   command_writer->push_constants_state.driver_constants_modified |=
+      BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_VIEW_INDEX);
+}
+
+/* Emit the actual PKT3_DRAW_INDEX_AUTO for one (sub-)draw.  Called either
+ * directly (single-view) or once per set bit in view_mask (multiview). */
+static void
+terakan_emit_draw_index_auto(struct terakan_gfx_command_writer * const command_writer,
+                             uint32_t const vertexCount,
+                             uint32_t const firstVertex, uint32_t const firstInstance)
+{
+   terakan_before_draw(command_writer);
+
+   uint32_t * packet = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 3);
+   if (unlikely(packet == NULL)) {
+      return;
+   }
+   *packet++ = PKT3(PKT3_DRAW_INDEX_AUTO, 3 - 2, 0);
+   *packet++ = vertexCount;
+   *packet++ = S_0287F0_SOURCE_SELECT(V_0287F0_DI_SRC_SEL_AUTO_INDEX);
+   if (unlikely(terakan_draw_debug_cs_dump_enabled(command_writer))) {
+      fprintf(stderr,
+              "terakan: pm4: PKT3_DRAW_INDEX_AUTO vertex_count=%u first_vertex=%u first_instance=%u\n",
+              vertexCount, firstVertex, firstInstance);
+   }
+   terakan_gfx_command_writer_emit_done(command_writer, packet);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdDraw(VkCommandBuffer const commandBuffer, uint32_t const vertexCount,
                 uint32_t const instanceCount, uint32_t const firstVertex,
@@ -306,21 +346,48 @@ terakan_CmdDraw(VkCommandBuffer const commandBuffer, uint32_t const vertexCount,
       terakan_bind_draw_params(command_writer, firstVertex, firstInstance);
    }
 
+   /* VK_KHR_multiview view-loop expansion.  When state->view_mask is
+    * non-zero (set by terakan_CmdBeginRendering from
+    * VkRenderingInfo.viewMask), the single draw expands into one draw
+    * per set bit.  For each iteration, write the per-view index into
+    * the driver push-constant slot consumed by the load_view_index NIR
+    * lowering (which materializes gl_ViewIndex for the application),
+    * and redirect every bound attachment to render only to its
+    * corresponding array slice.  view_mask == 0 keeps the original
+    * single-view path with view_index left at its default 0. */
+   uint32_t view_mask = command_writer->state_draw.view_mask;
+   if (view_mask != 0) {
+      while (view_mask != 0) {
+         uint32_t const view_idx = (uint32_t)__builtin_ctz(view_mask);
+         view_mask &= view_mask - 1;
+         terakan_set_view_index_push_constant(command_writer, view_idx);
+         terakan_emit_draw_index_auto(command_writer, vertexCount,
+                                      firstVertex, firstInstance);
+      }
+   } else {
+      terakan_emit_draw_index_auto(command_writer, vertexCount,
+                                   firstVertex, firstInstance);
+   }
+}
+
+/* Emit one PKT3_DRAW_INDEX_OFFSET sub-draw.  Called either directly
+ * (single-view) or once per set bit in view_mask (multiview). */
+static void
+terakan_emit_draw_index_offset(struct terakan_gfx_command_writer * const command_writer,
+                               uint32_t const indexCount,
+                               uint32_t const firstIndex)
+{
    terakan_before_draw(command_writer);
 
    uint32_t * packet = terakan_gfx_command_writer_emit(
-      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 3);
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 4);
    if (unlikely(packet == NULL)) {
       return;
    }
-   *packet++ = PKT3(PKT3_DRAW_INDEX_AUTO, 3 - 2, 0);
-   *packet++ = vertexCount;
-   *packet++ = S_0287F0_SOURCE_SELECT(V_0287F0_DI_SRC_SEL_AUTO_INDEX);
-   if (unlikely(terakan_draw_debug_cs_dump_enabled(command_writer))) {
-      fprintf(stderr,
-              "terakan: pm4: PKT3_DRAW_INDEX_AUTO vertex_count=%u first_vertex=%u first_instance=%u\n",
-              vertexCount, firstVertex, firstInstance);
-   }
+   *packet++ = PKT3(EG_PKT3_DRAW_INDEX_OFFSET, 4 - 2, 0);
+   *packet++ = firstIndex;
+   *packet++ = indexCount;
+   *packet++ = S_0287F0_SOURCE_SELECT(V_0287F0_DI_SRC_SEL_DMA);
    terakan_gfx_command_writer_emit_done(command_writer, packet);
 }
 
@@ -346,18 +413,22 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
       terakan_bind_draw_params(command_writer, (uint32_t)vertexOffset, firstInstance);
    }
 
-   terakan_before_draw(command_writer);
-
-   uint32_t * packet = terakan_gfx_command_writer_emit(
-      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 4);
-   if (unlikely(packet == NULL)) {
-      return;
+   /* VK_KHR_multiview view-loop expansion for indexed draws.  When
+    * view_mask != 0 the indexed draw expands to one
+    * PKT3_DRAW_INDEX_OFFSET per set bit, updating the view_index push
+    * constant and the per-attachment array slice before each.
+    * view_mask == 0 falls through to the original single-view path. */
+   uint32_t view_mask = command_writer->state_draw.view_mask;
+   if (view_mask != 0) {
+      while (view_mask != 0) {
+         uint32_t const view_idx = (uint32_t)__builtin_ctz(view_mask);
+         view_mask &= view_mask - 1;
+         terakan_set_view_index_push_constant(command_writer, view_idx);
+         terakan_emit_draw_index_offset(command_writer, indexCount, firstIndex);
+      }
+   } else {
+      terakan_emit_draw_index_offset(command_writer, indexCount, firstIndex);
    }
-   *packet++ = PKT3(EG_PKT3_DRAW_INDEX_OFFSET, 4 - 2, 0);
-   *packet++ = firstIndex;
-   *packet++ = indexCount;
-   *packet++ = S_0287F0_SOURCE_SELECT(V_0287F0_DI_SRC_SEL_DMA);
-   terakan_gfx_command_writer_emit_done(command_writer, packet);
 }
 /*
  * GPU-driven indirect draw/dispatch for Terakan (TeraScale-2/Evergreen).

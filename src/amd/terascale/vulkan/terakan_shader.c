@@ -281,30 +281,23 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
 
    NIR_PASS(_, nir, terakan_nir_lower_sin_cos);
 
-   /* Phase 3.2 BASIC subgroup primitives (2026-05-15).
+   /* BASIC subgroup primitives -- nir_lower_subgroups configured to
+    * mirror the r600 Gallium driver (sfn_nir.cpp).  Evergreen/Bobcat
+    * wave size is 64; ballot is two 32-bit components.
     *
-    * Run nir_lower_subgroups mirroring the r600 Gallium config in
-    * sfn_nir.cpp:745.  Wave size is 64 on Evergreen/Bobcat; ballot is
-    * stored in a single 64-bit value or two 32-bit components.
+    * The enabled lowerings cover VK_SUBGROUP_FEATURE_BASIC_BIT:
+    *   - lower_elect:                    elect <- (gl_SubgroupInvocationID == 0)
+    *   - lower_vote_trivial:             single-lane vote folds to source
+    *   - lower_relative_shuffle:         XOR/up/down shuffles to absolute
+    *   - lower_quad_broadcast_dynamic:   dynamic quad broadcast emulation
+    *   - lower_inverse_ballot:           inverse ballot to standard ballot
     *
-    * Lowerings enabled here cover the VK_SUBGROUP_FEATURE_BASIC_BIT
-    * surface advertised in terakan_physical_device.c:
-    *   - lower_elect    -> elect emits `gl_SubgroupInvocationID == 0`
-    *   - lower_vote_trivial -> single-lane vote folds to source
-    *   - lower_relative_shuffle -> XOR/up/down shuffles to absolute
-    *   - lower_quad_broadcast_dynamic -> dynamic quad broadcast emul
-    *   - lower_inverse_ballot -> inverse ballot to standard ballot
-    *
-    * Higher subgroup tiers (VOTE/BALLOT/ARITHMETIC/SHUFFLE) require LDS
-    * emulation and are staged in subsequent Phase 3 sub-steps
-    * (steinmarder tasks #146 + #147).  For now BASIC primitives lower
-    * to single-lane / barrier-equivalent sequences without LDS, so the
-    * BASIC bit advertisement matches actual behavior.
-    *
-    * subgroupBarrier lowers to a standard compute barrier; wave64 is
-    * the natural lockstep granule on Evergreen SIMD so the barrier is
-    * a no-op when LDS isn't involved, and the compute barrier path
-    * handles the cross-wave case correctly.
+    * BASIC primitives lower to single-lane / barrier-equivalent
+    * sequences without LDS; VOTE/BALLOT/ARITHMETIC/SHUFFLE tiers
+    * require LDS emulation and are not advertised yet.  subgroupBarrier
+    * lowers to a standard compute barrier; wave64 is the natural
+    * lockstep granule so the barrier is a no-op when LDS is not
+    * involved, and the compute barrier path covers the cross-wave case.
     */
    {
       static const nir_lower_subgroups_options terakan_subgroups_options = {
@@ -328,46 +321,32 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
    return nir;
 }
 
-/* Sub-32-bit memory-access size/align callback (2026-05-15).
+/* Memory-access size/align callback for nir_lower_mem_access_bit_sizes.
  *
- * MEM_RAT_STORE_TYPED on Evergreen cached path writes one dword per
- * element (Evergreen_ISA.txt:17572 + 6584).  STORE_RAW also writes
- * dwords (one for cached, up to two for cacheless).  Sub-32-bit SSBO
- * stores cannot be issued directly; they must be widened to 32-bit
- * with explicit packing.  The upstream pass
- * nir_lower_mem_access_bit_sizes handles the widening when given a
- * size_align callback that returns bit_size=32 for the modes we
- * control (SSBO + global).
+ * Evergreen MEM_RAT_STORE_TYPED writes one dword per element on the
+ * cached path (Evergreen ISA: "RW GPR: Four dwords of data for
+ * RAT_INST_STORE_TYPED"); STORE_RAW writes one dword for cached
+ * targets, up to two for CACHELESS.  Sub-32-bit SSBO/global stores
+ * therefore must be widened to 32-bit -- this callback returns
+ * bit_size=32 unconditionally for the modes given to the pass.
  *
- * UBO access is excluded (already 32-bit via KCACHE in the lowering).
- * Push-constants are 32-bit too; their lowering is handled separately
- * by terakan_nir_lower_push_constants.
+ * UBO/push-const are NOT in the pass's modes here: UBO goes through
+ * KCACHE (32-bit per bank line) and push-const lowering is separate.
  *
- * The shift method is `scalar` because PALM's MEM_RAT_CMPXCHG_INT
- * is silicon-broken on the cached path -- confirmed by:
- *   - 2026-05-13-cmpxchg-compex-hw-rca.md (initial hardware probe series)
- *   - 2026-05-13-cmpxchg-compex-hw-rca.md (corrected 2026-05-14:
- *     ISA opcodes 4/36 ARE present per Evergreen_ISA.txt:17572-17612,
- *     but PALM silicon silently no-ops them)
- *   - 2026-05-14: speculative-XCHG NIR lowering shipped as the
- *     workgroup-scope emulation
- *     (terakan_nir_lower_cmpxchg_to_speculative_xchg, mesa
- *     f3eca05d584); CTS compex tests transitioned FAIL -> PASS
- *     under this path
- *   - 2026-05-15 follow-on: device-scope CAS remains silently
- *     no-op (no further HW unblock found)
- *   - atomic_semantics_matrix.md exhaustive probe table:
- *     ADD/XCHG/INC/DEC at the same address all succeed; CMPXCHG
- *     observed final value matches initial across all payload-lane
- *     permutations, comp-mask variants, and burst-count variants.
+ * Shift method is `scalar` because the cached MEM_RAT_CMPXCHG_INT
+ * path silently no-ops on this silicon family (the L2 lacks the
+ * compare-and-conditional-write comparator; exhaustively probed:
+ * ADD/XCHG/INC/DEC at the same address succeed, CMPXCHG with
+ * matching compare leaves memory unchanged across all payload-lane
+ * permutations).  Atomic-based shift methods are unavailable.
  *
- * Net: atomic-based shift methods cannot be used here.  The pass
- * falls back to scalarized 32-bit RMW for partial-dword stores; for
- * the CTS u16/u8 vec patterns this works because the test pattern
- * doesn't race on the same dword.  Cross-thread sub-dword racing
- * SSBO writes are not spec-required for VK 1.0 conformance and
- * remain a documented HW-silicon gap with the same scope as the
- * device-scope CMPXCHG limitation.
+ * For dword-aligned sub-32-bit stores the upstream pass widens via
+ * a generated atomic_swap (cmpxchg-shape) RMW; the downstream
+ * terakan_nir_lower_cmpxchg_to_speculative_xchg lowering rewrites
+ * those to load+bcsel+atomic_xchg (atomic_xchg is proven working
+ * on cached MEM_RAT).  Single-thread test patterns are correct;
+ * cross-thread sub-dword racing SSBO writes are a documented
+ * silicon gap with no software workaround.
  */
 static nir_mem_access_size_align
 terakan_nir_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
@@ -450,30 +429,23 @@ terakan_nir_should_vectorize_load_store(unsigned const align_mul, unsigned const
       }
    }
 
-   /* Width-promoted alignment guard (2026-05-15):
+   /* Width-promoted alignment guard.
     *
-    * The standard NIR vectorizer can also produce a "wider type" merge,
-    * promoting e.g. two sub-32-bit element loads at byte offsets 6 and 8
-    * into a single bit_size=32 load at offset 6.  The address alignment
-    * of the original sub-32-bit elements (2-byte for u16, 1-byte for u8)
-    * is what bounds the safe VFETCH width on r600/Evergreen, not the
+    * The standard NIR vectorizer can produce a "wider type" merge,
+    * promoting e.g. two sub-32-bit element loads at byte offsets 6 and
+    * 8 into a single bit_size=32 load at offset 6.  On r600/Evergreen
+    * the address alignment of the ORIGINAL sub-32-bit elements (2-byte
+    * for u16, 1-byte for u8) bounds the safe VFETCH width, not the
     * post-merge bit_size.
     *
-    * Detect width-promotion by comparing the input intrinsic's element
-    * bit_size against the callback's proposed bit_size.  When the
-    * promotion crosses the 4-byte VFETCH-alignment boundary
-    * (combined_align < min(vector_bytes, 4)), refuse the merge so the
-    * loads stay narrow and stay aligned.
-    *
-    * For straight same-bit_size merges (e.g., two u32 -> uvec2), align_mul
-    * may legitimately be 0 ("no hint") -- the original alignment check
-    * stays gated by `bit_size < 32` so it does not refuse legitimate
-    * 32-bit merges when align hints are absent.
+    * Refuse the merge when promotion crosses the 4-byte VFETCH
+    * alignment boundary (combined_align < min(vector_bytes, 4)) so the
+    * loads stay narrow and stay aligned.  Same-bit_size merges (e.g.
+    * two u32 -> uvec2) bypass this gate because the preceding
+    * `bit_size < 32` check is what would refuse them.
     *
     * Cite: D3D 11.3 §4.4.6 Element Alignment; Barts/Cypress/Palm
-    * testing (same source as preceding gate); reproducer:
-    * dEQP-VK.ssbo.readonly.layout.basic_unsized_array.scalar.u16vec3
-    * -- "Counter value incorrect" caused by r32 fetch at byte 6.
+    * vfetch-alignment behavior (same source as the preceding gate).
     */
    {
       unsigned const low_elem_bits = low->def.bit_size;
@@ -1193,41 +1165,18 @@ terakan_shader_lower_and_optimize_post_link(
    };
    NIR_PASS(_, nir, nir_lower_io_to_scalar, load_store_vectorize_options.modes, NULL, NULL);
 
-   /* Sub-32-bit memory access -> 32-bit (2026-05-15):
+   /* Widen sub-32-bit SSBO/global accesses to 32-bit.  MEM_RAT_STORE_TYPED
+    * writes one dword per element on the cached path; sub-32-bit stores
+    * are lowered by this pass to 32-bit-aligned RMW.  UBO/push-const are
+    * not in the modes here (handled separately via KCACHE).
     *
-    * MEM_RAT_STORE_TYPED writes one dword per element on the cached
-    * path (Evergreen_ISA.txt:17572 + 6584); the existing SSBO store
-    * lowering at terakan_nir_lower_abi.c asserts on sub-32-bit
-    * components.  Use upstream nir_lower_mem_access_bit_sizes to
-    * widen all sub-32-bit SSBO + global memory accesses to 32-bit
-    * with shift+mask scalar extraction (no atomics path needed --
-    * the CTS u16vec3 test pattern is single-thread, and the wider
-    * 32-bit RMW is correct when the surrounding write isn't racing
-    * with another thread on the same dword).
-    *
-    * Modes: SSBO + global.  UBO already lowers to 32-bit KCACHE
-    * loads upstream; push_const is also 32-bit.  Limiting modes
-    * here keeps the per-stage compile cost down.
-    *
-    * may_lower_unaligned_stores_to_atomics=TRUE: the upstream pass
-    * widens sub-32-bit aligned stores (e.g. uint16_t at byte 0 of a
-    * 16-byte std140 slot) via a generated atomic_swap (cmpxchg-shaped
-    * RMW) intrinsic.  PALM's MEM_RAT_CMPXCHG_INT is silicon-broken
-    * (silent no-op, confirmed by atomic_semantics_matrix.md exhaustive
-    * probe series and Phase 1 compex CTS pass-through), so the raw
-    * atomic_swap won't commit on its own.  We rely on a SUBSEQUENT
-    * `terakan_nir_lower_cmpxchg_to_speculative_xchg` pass to rewrite
-    * those generated cmpxchg intrinsics to load + bcsel + atomic_xchg
-    * -- correct under single-thread CTS test patterns (no cross-thread
-    * race on the same dword).  See:
-    *   - 2026-05-13-cmpxchg-compex-hw-rca.md (corrected 2026-05-14)
-    *   - 2026-05-14 mesa f3eca05d584 (speculative-XCHG NIR lowering)
-    *   - atomic_semantics_matrix.md (exhaustive HW probe)
-    * Cross-thread sub-dword racing SSBO writes are not VK 1.0
-    * conformance-required and remain a documented HW gap.
-    *
-    * The callback returns bit_size=32 unconditionally for SSBO/global
-    * because MEM_RAT_STORE_TYPED writes one dword per element.
+    * may_lower_unaligned_stores_to_atomics=true: the pass generates
+    * atomic_swap (cmpxchg-shape) for partial-dword stores.  The cached
+    * MEM_RAT_CMPXCHG_INT path is silicon-broken (silent no-op) on this
+    * chip family, so the downstream cmpxchg->speculative-xchg lowering
+    * rewrites those generated cmpxchgs to load+bcsel+atomic_xchg which
+    * IS supported.  Single-thread test patterns are correct under this
+    * chain; cross-thread sub-dword racing remains a documented gap.
     */
    nir_lower_mem_access_bit_sizes_options mem_access_options = {
       .callback = terakan_nir_mem_access_size_align,

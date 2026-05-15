@@ -37,7 +37,21 @@ extern "C" {
 #define TERAKAN_USE_WSI_PLATFORM
 #endif
 
-#define TERAKAN_API_VERSION VK_MAKE_API_VERSION(0, 1, 0, VK_HEADER_VERSION)
+/* Advertised API version.
+ *
+ * VK 1.1 prerequisites that are implemented: BASIC subgroup primitives
+ * (lower_subgroups configured wave64 in terakan_shader.c), multiview
+ * via per-view draw expansion (terakan_draw.c) + view_index push
+ * constant + gl_ViewIndex NIR lowering + render-pass viewMask capture,
+ * all of the Vulkan 1.1 caps in terakan_physical_device.c.
+ *
+ * Known gaps that may surface as NotSupported / fails on the 1.1 CTS:
+ *   - higher-tier subgroup ops (VOTE/BALLOT/ARITHMETIC) need LDS
+ *     emulation, not yet wired.
+ *   - multiview per-view layer comparison tests rely on layered
+ *     framebuffer write paths not yet implemented.
+ */
+#define TERAKAN_API_VERSION VK_MAKE_API_VERSION(0, 1, 1, VK_HEADER_VERSION)
 
 /* "Debug" options are intended to be potentially useful to both driver developers and users, mainly
  * for pinpointing the causes of issues (especially those observable in real applications), as well

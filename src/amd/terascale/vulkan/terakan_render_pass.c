@@ -51,6 +51,20 @@ terakan_CmdBeginRendering(VkCommandBuffer const commandBuffer,
       terakan_command_buffer_from_handle(commandBuffer)->command_writer.gfx;
    struct terakan_state_draw * const state = &command_writer->state_draw;
 
+   /* Record the multiview view mask for the upcoming draws.
+    * pRenderingInfo->viewMask is 0 for single-view and a bitmask of
+    * view indices for multiview rendering; terakan_CmdDraw* uses this
+    * to expand a single application draw into popcount(view_mask)
+    * draws, updating the view_index push constant before each.
+    *
+    * VkRenderingInfo::viewMask is a core member since Vulkan 1.3 and
+    * comes pre-filled from VK_KHR_multiview when the renderpass-style
+    * VkRenderPassMultiviewCreateInfo path is translated to a
+    * dynamic-rendering equivalent.  For Terakan (dynamic-rendering
+    * only), this is the canonical multiview entry point.
+    */
+   state->view_mask = pRenderingInfo->viewMask;
+
    uint32_t clear_attachment_count = 0;
    VkClearAttachment clear_attachments[TERAKAN_COLOR_HW_RTV_COUNT + 1];
 
