@@ -97,7 +97,7 @@ terakan_color_descriptor_calculate_buffer_base_pitch_slice_dim_offset(
 
    /* TERAKAN_DEBUG_BUFFER_UAV_LAYOUT=1: trace the inputs and outputs
     * of buffer-UAV CB_COLOR0 layout derivation.  Used to confirm or
-    * refute CLAIMS C-2026-04-18-14 (alignment trap) by running cold
+    * refute CLAIMS (alignment trap) by running cold
     * and warm single_layer and diffing the log.
     *
     * If inputs match but outputs differ -> bug is here.

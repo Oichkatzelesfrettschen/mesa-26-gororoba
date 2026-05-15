@@ -453,12 +453,12 @@ terakan_compute_multiplex_begin(
     * so the entire pool is available to the dynamic allocator.  The SQ
     * then allocates per-wave based on SQ_PGM_RESOURCES_LS.NUM_GPRS.
     *
-    * BUG FIX: Previously we only wrote MGMT_3 (LS=0x70) and left
-    * MGMT_1 and MGMT_2 at their command-buffer-init values.  Although
-    * init sets PS=VS=GS=ES=0, a static LS=112 reservation conflicts
-    * with the dynamic allocator — Gallium's evergreen_compute.c:362
-    * zeros ALL three MGMT registers and relies purely on dynamic mode.
-    * Match that proven pattern exactly.
+    * All three MGMT registers MUST be zeroed for compute dispatch,
+    * not just MGMT_3.  A non-zero LS reservation in MGMT_3 (e.g.
+    * 0x70 = 112 GPRs) conflicts with the dynamic allocator even
+    * when PS/VS/GS/ES in MGMT_1/_2 are already 0 from command
+    * buffer init.  Gallium r600_hw_context evergreen_compute.c
+    * zeros all three and relies purely on dynamic mode.
     *
     * On Cayman (R9xx), GPR allocation uses the DYNAMIC GPR path and
     * these registers have different semantics, so we skip them. */
@@ -774,15 +774,14 @@ terakan_compute_multiplex_end(
     * data.  TC_ACTION_ENA + SH_ACTION_ENA cover the case where the next
     * draw samples from a buffer that compute just wrote.
     *
-    * LI-2026-04-17-02: CB_ACTION_ENA alone only drains the CB control
-    * cache; to also drain the per-slot CB_COLOR{M} DEST_BASE write
-    * queues we must set each CB{M}_DEST_BASE_ENA bit that the dispatch
-    * could have written to.  SFN currently routes every compute store
-    * to RAT0, but once per-store RAT ids land (or multi-image binding
-    * goes live with the Phase-3 CS+168 REAL emission) slots 1..7 come
-    * into play.  Setting all 12 bits defensively covers every RAT slot
-    * Evergreen exposes; the cost is just OR'ing a few immediate bits
-    * into the already-emitted SURFACE_SYNC, no extra packet. */
+    * CB_ACTION_ENA alone only drains the CB control cache; to also
+    * drain the per-slot CB_COLOR{M} DEST_BASE write queues we must
+    * set each CB{M}_DEST_BASE_ENA bit that the dispatch could have
+    * written to.  Setting all 12 bits defensively covers every RAT
+    * slot Evergreen exposes (per AMD 3D Engine Programming Guide
+    * for Evergreen, SURFACE_SYNC packet definition); the cost is
+    * OR'ing a few immediate bits into the already-emitted
+    * SURFACE_SYNC, no extra packet. */
    /* LI-2026-04-18-01 (new): SMX_ACTION_ENA pairs canonically with
     * CB_ACTION_ENA per r600 gallium (r600_hw_context.c:173-192).
     * SMX is the shader memory exporter's coalescing write buffer
@@ -937,10 +936,11 @@ terakan_emit_compute_kcache(struct terakan_gfx_command_writer *command_writer,
     * The byte offset is therefore 0.  We allocate a small push-buffer region
     * and write 0 so KC0[0].x reads the correct value.
     *
-    * BUG FIX: Previously we pointed ALU_CONST_CACHE_LS_0 at the SSBO data
-    * BO itself.  KC0[0].x then read the first dword of user data (typically
-    * 0xdeadbeef from the fill pattern), producing a wildly wrong RAT index
-    * that wrote far beyond the buffer — making the output appear untouched. */
+    * ALU_CONST_CACHE_LS_0 MUST point at the zero-init push-buffer
+    * region, NOT at the SSBO data BO itself.  If it points at the
+    * data BO, KC0[0].x reads the first dword of user data (often
+    * a fill-pattern value such as 0xdeadbeef), producing a wildly
+    * wrong RAT index and out-of-bounds writes. */
 
    /* Allocate a 256-byte push-buffer region for KC0 and zero it */
    struct terakan_bo const *kc0_bo = NULL;
@@ -1061,11 +1061,10 @@ terakan_compute_kcache_bank_zero_has_ubo(struct terakan_gfx_command_writer const
  * ALU_CONST_BUFFER_SIZE_LS_<bank> and ALU_CONST_CACHE_LS_<bank> with
  * COMPUTE_MODE_BIT, matching the proven pattern in terakan_emit_compute_kcache.
  */
-/* FIX-G (C-2026-04-19-03): exported so terakan_pipeline_layout.c can call this
- * for compute UBO descriptor-set bindings.  Without this, application UBOs at
- * bindings > 0 never reach the compute shader's LS-side KCACHE banks -- only
- * PS-side (which the compute shader doesn't read).  Gated caller-side on
- * TERAKAN_FIX_G_UBO_WIRING=1 during validation. */
+/* Exported for terakan_pipeline_layout.c compute UBO descriptor-set
+ * binding.  Application UBOs at bindings > 0 must reach the compute
+ * shader's LS-side KCACHE banks; the 3D-shadow path emits to PS-side
+ * KCACHE registers only, which the compute shader does not read. */
 void
 terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command_writer,
                                  uint32_t bank,
@@ -1196,8 +1195,9 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
 
    /* Some compute paths lower SSBO stores to store_global before mutable-UAV
     * usage tracking is populated, leaving uavs_used empty at dispatch time.
-    * SFN currently routes compute stores to RAT0, so fallback to the highest
-    * bound mutable descriptor (common CTS convention: output buffer last). */
+    * The r600 SFN backend emits compute stores to RAT0; when the usage list
+    * is empty, fall back to the highest bound mutable descriptor (CTS
+    * convention: output buffer last). */
    if (uav_count == 0) {
       uint32_t fallback_uav = UINT32_MAX;
       for (uint32_t n = 0; n < res_count; ++n) {
@@ -1328,11 +1328,11 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     *    M * 0x3C.  Evergreen has 12 CB slots (TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT).
     *    Cap N so we never step past that.
     *
-    *    RAT0 is bound to the LAST enumerated SSBO.  SFN currently routes
-    *    all compute stores to RAT0, and the common GLSL convention is to
-    *    place the writable output buffer at the highest binding index, so
-    *    this heuristic lines up with the shader's intent for the single-
-    *    writable case until the SFN change lands. */
+    *    RAT0 is bound to the LAST enumerated SSBO.  The r600 SFN
+    *    backend emits all compute stores to RAT0; the common GLSL
+    *    convention places the writable output buffer at the highest
+    *    binding index, so this heuristic aligns shader intent with
+    *    the bound slot for the single-writable case. */
    uint32_t rat_count = uav_count;
    if (rat_count > TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT) {
       rat_count = TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT;
@@ -1358,16 +1358,17 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
 
    /* Per-SSBO CB_COLOR{M} state.  Bind in enumeration order so CB_COLOR{M}
     * lines up with the M-th bound SSBO (lowest FS-bank index first).  RAT0
-    * (which SFN currently targets for every compute store because
+    * (the r600 SFN backend's compute-store target, since
     * shader.ssbo_image_offset() is a per-shader scalar) thus lands on the
-    * first bound SSBO, which matches the CTS convention of placing the
+    * first bound SSBO, matching the CTS convention of placing the
     * writable/result buffer at the lowest binding index (see
-    * vktBindingShaderAccessTests.cpp:2510 where the result STORAGE_BUFFER
+    * vktBindingShaderAccessTests.cpp:2510, where the result STORAGE_BUFFER
     * is added at setNdx==0 binding==0 before the test descriptors). */
    /* Track the image-index (0..image_uav_count-1) separately from the
     * enumeration index m.  Images share the RAT slot 0..rat_count-1
     * space with buffer UAVs but consume distinct CS+160+image_m /
-    * CS+168+image_m slot windows per LI-2026-04-17-04. */
+    * CS+168+image_m slot windows (per Evergreen SQ_TEX_RESOURCE
+    * indexing in CB_COLOR0_INFO + CB_COLOR0_VIEW pairs). */
    uint32_t image_m = 0;
    for (uint32_t m = 0; m < rat_count; ++m) {
       uint32_t const sidx = uav_idxs[m];
@@ -1382,8 +1383,11 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
           *   (c) SET_RESOURCE at CS+(IMMED_OFFSET+image_m) (IMMED desc)
           *   (d) SET_RESOURCE at CS+(REAL_OFFSET +image_m) (REAL desc)
           * The REAL descriptor is what makes MEM_RAT STORE_TYPED
-          * format validation succeed - without it the CB exporter
-          * stalls on format lookup (CLAIMS C-2026-04-17-08). */
+          * format validation succeed -- without it the CB exporter
+          * stalls on format lookup (Evergreen CB pipeline: format
+          * resolution flows through the SQ_TEX_RESOURCE descriptor
+          * window before the RAT slot's STORE_TYPED packet
+          * commits). */
          struct terakan_state_draw_cb_color_uav const * const cb_uav =
             &cb_uavs[uav_mr_idxs[m]];
          struct terakan_color_descriptor const * const color = &cb_uav->color;
@@ -1514,20 +1518,19 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
        * Unchanged path: program CB_COLOR{M} with a synthetic
        * buffer-format descriptor covering the whole BO. */
 
-      /* Storage-texel-buffer minalign fix (2026-05-14): mirror the
-       * graphics buffer-UAV push-constant swap from terakan_state.c
-       * here in compute.  The descriptor build in terakan_descriptor.c
-       * encodes the buffer view's base-granularity offset (in elements)
-       * in `color.view`.  The shader's terakan_nir_buffer_uav_coord
-       * lowering adds the per-UAV push constant
-       * `buffer_uav_base_granularity_offset[uav_mr_idxs[m]]` to the
-       * coord via KCACHE bank 15 load (the index is the mutable-
+      /* Storage-texel-buffer minalign: the descriptor build in
+       * terakan_descriptor.c encodes the buffer view's base-
+       * granularity offset (in elements) in `color.view`.  The
+       * shader's terakan_nir_buffer_uav_coord lowering adds the
+       * per-UAV push constant
+       * `buffer_uav_base_granularity_offset[uav_mr_idxs[m]]` to
+       * the coord via a KCACHE bank-15 load (index = the mutable-
        * resource UAV bit position, matching the shader's
-       * uav_index_zero_based numbering).  Graphics keeps this in sync
-       * at bind time; the compute path previously did not, causing the
-       * shader to add 0 and writes to land off by `offset/bpe` elements.
-       * The fix mirrors terakan_state.c:1086-1101 in the BUFFER branch.
-       * See findings/active/2026-05-14-r32-buffer-minalign-rca.md. */
+       * uav_index_zero_based numbering).  Both the graphics bind
+       * path (terakan_state.c BUFFER branch) and this compute
+       * dispatch path MUST emit the push-constant update,
+       * otherwise the shader adds 0 and writes land off by
+       * `offset/bpe` elements. */
       struct terakan_state_draw_cb_color_uav const * const cb_uav_for_offset =
          &cb_uavs[uav_mr_idxs[m]];
       if (G_028C70_RESOURCE_TYPE(cb_uav_for_offset->color.info) == V_028C70_BUFFER) {
@@ -2023,12 +2026,14 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
          terakan_emit_compute_resources(command_writer, pipeline);
          /* Wire KCACHE (KC0) with SSBO address for compute addressing.
           *
-          * FIX-G (C-2026-04-19-03): this call stomps LS ALU_CONST_CACHE_LS_0
-          * with a zero-scratch BO (the SSBO-offset=0 convention).  When FIX-G
-          * wires real UBO descriptors through LS banks at CmdBindDescriptorSets
-          * time, bank 0 can hold a legitimate application UBO.  Skip the
-          * SSBO-offset overwrite when FIX-G is enabled; application UBOs that
-          * shader loads via KC0 reach the shader correctly. */
+          * The default path stomps LS ALU_CONST_CACHE_LS_0 with a
+          * zero-scratch BO (the SSBO-offset=0 convention).  When
+          * the compute-UBO wiring path is enabled via
+          * TERAKAN_FIX_G_UBO_WIRING (terakan_emit_compute_kcache_bank
+          * binds real UBO descriptors through LS banks at
+          * CmdBindDescriptorSets time), bank 0 can hold a legitimate
+          * application UBO.  Skip the SSBO-offset overwrite in that
+          * case so application UBOs reach the shader through KC0. */
          static int fix_g_cached = -1;
          if (fix_g_cached < 0) {
             fix_g_cached = debug_get_bool_option("TERAKAN_FIX_G_UBO_WIRING", true) ? 1 : 0;
@@ -2162,15 +2167,13 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
            ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA))) {
          terakan_robustness_metadata_apply(command_writer, true);
 
-         /* FIX-R (C-2026-04-19-20, working hypothesis #1 from
-          * 2026-04-19-isa-clamp-audit-result.md addendum): the
-          * Evergreen LS KCACHE block has an internal "currently
-          * bound base" comparator that may elide the cache-line
-          * invalidation when bank 14 is rebound to a new va_lines
-          * value within the same compute multiplex.  Result: the
+         /* The Evergreen LS KCACHE block has an internal bound-base
+          * comparator that elides cache-line invalidation when bank
+          * 14 is rebound to a new va_lines value within the same
+          * compute multiplex.  Without the workaround below, the
           * shader reads the FIRST dispatch's KC14[7].x for every
-          * subsequent dispatch (silicon-confessed via
-          * TERAKAN_PROBE_KCACHE_VALUE=1, mesa 34f29e699).
+          * subsequent dispatch (empirically confirmed via
+          * TERAKAN_PROBE_KCACHE_VALUE=1).
           *
           * Workaround: emit a dummy ALU_CONST_CACHE_LS_14 = 0,
           * BUFFER_SIZE_LS_14 = 0 PAIR before the real bind.  The
@@ -2279,32 +2282,29 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
             }
          }
 
-         /* FIX-N v2 (C-2026-04-19-10, citation: r600g r600_hw_context.c
-          * line 151-155): direct KCACHE reads hit the shader constant
-          * cache.  Between back-to-back compute dispatches that rebind
-          * bank 14 with a different VA, the hardware may retain a
-          * previously cached line.  CTS single_layer issues 8 dispatches
-          * without VkPipelineBarrier.
+         /* Shader constant-cache invalidation between back-to-back
+          * compute dispatches that rebind bank 14 to a different VA.
+          * Without invalidation, the hardware retains the prior
+          * cached line and the new dispatch reads stale constants.
           *
-          * Invalidation primitive per r600g: S_0085F0_SH_ACTION_ENA(1)
-          * in CP_COHER_CNTL delivered via SURFACE_SYNC; paired with a
-          * CACHE_FLUSH_AND_INV_EVENT for the per-SIMD L1 caches.
+          * Invalidation primitive (per r600g r600_hw_context.c):
+          * S_0085F0_SH_ACTION_ENA(1) in CP_COHER_CNTL delivered via
+          * SURFACE_SYNC, paired with CACHE_FLUSH_AND_INV_EVENT for
+          * the per-SIMD L1 caches.
           *
-          * STATUS (2026-04-19): FIX-N v2 emitted but the 78-test sweep
-          * still fails uniformly; isolated r32_sint_single_layer also
-          * fails with diff=63 for layer 0 and diff~14M for layers 1-7.
-          * The per-layer diff pattern shifted from canary (0x7F7F7F5F,
-          * pre-upgrade untouched) to smaller values (wrong-slice
-          * writes), confirming writes DO land but at wrong slices.
-          * The residual failure mode is NOT the shader cache.  Prime
-          * suspects for next session: (a) populate-before-upload race,
-          * (b) kernel PM4 parser re-resolving bank 14 reloc to an
-          * unexpected address, (c) descriptor set layout re-indexing
-          * between CmdBindDescriptorSets and CmdDispatch.
+          * Empirical scope (Palm / Wrestler, CHIP_PALM, Evergreen):
+          * the invalidation primitive alone is INSUFFICIENT for the
+          * CTS image.store single_layer family.  The residual diff
+          * pattern (smaller-than-canary diffs, wrong-slice writes)
+          * indicates writes land but at incorrect slices -- not a
+          * cache-staleness failure.  Suspect non-cache surfaces:
+          * populate-before-upload race, kernel PM4 parser reloc
+          * resolution, descriptor-set re-indexing between
+          * CmdBindDescriptorSets and CmdDispatch.
           *
-          * Code left gated behind TERAKAN_FIX_N_SH_INVALIDATE=1 as
-          * inert infrastructure; safe to enable but provides no pass
-          * benefit in isolation. */
+          * Code is gated behind TERAKAN_FIX_N_SH_INVALIDATE=1 as
+          * inert infrastructure; safe to enable, no pass benefit
+          * in isolation on Palm. */
          static int fix_n_cached = -1;
          if (fix_n_cached < 0) {
             fix_n_cached = debug_get_bool_option(

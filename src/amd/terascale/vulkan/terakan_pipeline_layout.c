@@ -31,7 +31,7 @@
 #include "terakan_entrypoints.h"
 #include "terakan_hw_state.h"
 
-/* FIX-G (C-2026-04-19-03): forward declaration of the compute LS-register
+/* forward declaration of the compute LS-register
  * KCACHE bank emitter in terakan_dispatch.c.  No dedicated header for dispatch;
  * declared here where needed. */
 void terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command_writer,
@@ -62,7 +62,7 @@ void terakan_emit_compute_kcache_bank(struct terakan_gfx_command_writer *command
  * texel_buffer_element_counts[]; zeros the complementary array for
  * defense-in-depth. Pass bound=0 for unbound UAVs.
  *
- * FIX-K (C-2026-04-19-06): base_array_layer is routed to
+ * base_array_layer is routed to
  * uav_base_array_layers[] (bank 14, dwords 28..39) only when
  * inject_base_array_layer is true (view-is-non-array-over-array-image);
  * otherwise zero is written so the NIR-side nir_iadd folds away.  This
@@ -239,7 +239,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   setter(&command_writer->hw_state_sqc, bank, size_lines,
                          br[di].bo, va_lines);
 
-                  /* FIX-G (C-2026-04-19-03): the setter above stages the
+                  /* the setter above stages the
                    * UBO into hw_state_sqc under the FS-stage bits (compute
                    * shares the FS SQC slot).  That writes PS-side ALU_CONST_
                    * CACHE_PS_* registers later, which the COMPUTE shader

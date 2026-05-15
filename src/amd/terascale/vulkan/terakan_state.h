@@ -158,7 +158,7 @@ struct terakan_state_draw_cb_color_uav {
     * EG_FETCH_CONSTANTS_OFFSET_CS + R600_IMAGE_REAL_RESOURCE_OFFSET + m.
     * Required by Sumo's CB exporter during MEM_RAT STORE_TYPED
     * format validation - without it, the ring hangs (CLAIMS
-    * C-2026-04-17-08).  Copied from image_view->resource[] via
+    * ).  Copied from image_view->resource[] via
     * terakan_descriptor_set_uav.real_resource at CmdBindDescriptorSets. */
    uint32_t real_resource[8];
 };
