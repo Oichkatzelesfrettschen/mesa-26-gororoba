@@ -37,7 +37,22 @@ extern "C" {
 #define TERAKAN_USE_WSI_PLATFORM
 #endif
 
-#define TERAKAN_API_VERSION VK_MAKE_API_VERSION(0, 1, 0, VK_HEADER_VERSION)
+/* Phase 5 trial (2026-05-15): promote from VK 1.0 to VK 1.1.
+ *
+ * Prerequisites that have landed:
+ *   - Phase 3.2: BASIC subgroup primitives (mesa PR #21)
+ *   - Phase 4: full multiview chain (mesa PRs #22+#23+#24+#25)
+ *   - Plus all Phase 2 caps + opPhi.wide + image.store etc.
+ *
+ * Higher-tier subgroup ops (VOTE/BALLOT/ARITHMETIC, steinmarder task
+ * #146) are NOT yet LDS-emulated; subgroup CTS may still NotSupport
+ * those.  Multiview per-view layer (#158) is NOT yet implemented;
+ * multiview image-comparison tests may still fail.
+ *
+ * This flip is a measurement trial -- if too many regressions, revert
+ * and complete #146 + #158 first.
+ */
+#define TERAKAN_API_VERSION VK_MAKE_API_VERSION(0, 1, 1, VK_HEADER_VERSION)
 
 /* "Debug" options are intended to be potentially useful to both driver developers and users, mainly
  * for pinpointing the causes of issues (especially those observable in real applications), as well
