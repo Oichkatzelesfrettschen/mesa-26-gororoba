@@ -905,14 +905,43 @@ terakan_physical_device_get_capabilities(
    features_out->variablePointers = false;
 
    /* VK_KHR_multiview (#54, Vulkan 1.1).
-    * Truthful capability surfacing: disabled until multiview draw expansion
-    * and gl_ViewIndex semantics are implemented end-to-end. */
-   extensions_out->KHR_multiview = false;
+    *
+    * Implemented end-to-end as Phase 4 (2026-05-15):
+    *   - 4.1 (mesa PR #22): view_index push constant slot
+    *   - 4.2 (mesa PR #24): NIR lowering for gl_ViewIndex / load_view_index
+    *   - 4.3 (mesa PR #23): record VkRenderingInfo.viewMask into state_draw
+    *   - 4.4 (mesa PR #25): CmdDraw view-loop expansion
+    *
+    * Hardware reality on TeraScale-2: there is no native multiview
+    * rendering support; the driver expands a single application draw
+    * into popcount(viewMask) draws with gl_ViewIndex set per draw.
+    * Performance is N-view-times slower than single-view but spec-correct.
+    *
+    * CmdDrawIndexed and CmdDrawIndirect view-loops are tracked as
+    * 4.4-extension (steinmarder task #157); the canonical multiview
+    * CTS uses direct CmdDraw and is exercised by this feature flip.
+    *
+    * Per spec limits already advertised (Vulkan 1.1 properties):
+    *   maxMultiviewViewCount      = 6   (set in this file ~line 856)
+    *   maxMultiviewInstanceIndex  = 134217727  (~line 857)
+    */
+   extensions_out->KHR_multiview = true;
+   features_out->multiview = true;
+   /* No GS/TS multiview -- requires per-stage view duplication that's
+    * tracked separately.  CTS multiview tests do not require these. */
+   features_out->multiviewGeometryShader = false;
+   features_out->multiviewTessellationShader = false;
 
    /* VK_KHR_create_renderpass2 (#110, Vulkan 1.2).
-    * Depends on VK_KHR_multiview+VK_KHR_maintenance2; keep disabled while
-    * multiview is intentionally unimplemented. */
-   extensions_out->KHR_create_renderpass2 = false;
+    *
+    * Depends on VK_KHR_multiview + VK_KHR_maintenance2 (both now enabled).
+    * Mesa provides a runtime translation from vkCreateRenderPass2 to
+    * vkCreateRenderPass + VkRenderingInfo so the underlying
+    * dynamic-rendering-only Terakan implementation can satisfy the API.
+    *
+    * Phase 4.5 (2026-05-15): enabled alongside KHR_multiview.
+    */
+   extensions_out->KHR_create_renderpass2 = true;
 
    /* VK_KHR_depth_stencil_resolve (#151, Vulkan 1.2) remains disabled.
     * This path is only needed when the extension is advertised; keeping it
