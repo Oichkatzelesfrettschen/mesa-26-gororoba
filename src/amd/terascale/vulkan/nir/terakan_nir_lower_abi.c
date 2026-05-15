@@ -2080,6 +2080,39 @@ terakan_nir_lower_bindings_instr(nir_builder * const b, nir_instr * const instr,
             return true;
          }
          return false;
+      case nir_intrinsic_load_view_index: {
+         /* Phase 4.2 (2026-05-15): lower gl_ViewIndex to a KCACHE bank-15
+          * read of the view_index push constant slot (Phase 4.1, mesa
+          * PR #22).  The dispatch code (Phase 4.4, steinmarder task #143)
+          * updates this slot before each view of a multiview draw, so
+          * the same compiled shader runs once per view with the right
+          * per-view index. */
+         b->cursor = nir_before_instr(&intrin->instr);
+
+         uint32_t const byte_offset =
+            offsetof(struct terakan_push_constants_driver, view_index);
+         uint32_t const vec4_index = byte_offset / 16;
+         uint32_t const first_component = (byte_offset % 16) / 4;
+
+         *state->kcache_needed |= (uint16_t)1 << TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS;
+         *state->driver_push_constants_used |=
+            BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_VIEW_INDEX);
+
+         nir_def *result = nir_load_kcache_r600(
+            b, 1, 32, nir_imm_zero(b, 1, 32),
+            .access = ACCESS_CAN_REORDER,
+            .id_base = TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS,
+            .base = vec4_index,
+            .component = first_component);
+
+         if (intrin->def.bit_size != 32) {
+            result = nir_u2uN(b, result, intrin->def.bit_size);
+         }
+
+         nir_def_rewrite_uses(&intrin->def, result);
+         nir_instr_remove(&intrin->instr);
+         return true;
+      }
       case nir_intrinsic_load_ubo:
          terakan_nir_lower_bindings_instr_load_ubo(b, intrin, state);
          return true;
