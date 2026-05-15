@@ -27,6 +27,8 @@
 #include "terakan_instance.h"
 #include "terakan_sync_completion.h"
 
+#include "vk_drm_syncobj.h"
+
 #include "util/macros.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -294,6 +296,20 @@ terakan_physical_device_drm_radeon_try_create(struct vk_instance * const instanc
    device->sync_type_binary.sync.export_sync_file = NULL;
    assert(sync_type_count < ARRAY_SIZE(device->sync_types));
    device->sync_types[sync_type_count++] = &device->sync_type_binary.sync;
+
+   /* DRM syncobj-backed sync type for VK_KHR_external_semaphore_fd /
+    * VK_KHR_external_fence_fd.  The runtime auto-routes export/import
+    * entrypoints (GetSemaphoreFdKHR / ImportSemaphoreFdKHR /
+    * GetFenceFdKHR / ImportFenceFdKHR) through the syncobj type when
+    * the application requests an OPAQUE_FD or SYNC_FD handle.  The
+    * in-process terakan_sync_completion_type remains the default for
+    * intra-process sync (queue submits, command buffer fences, WSI). */
+   device->sync_type_drm_syncobj = vk_drm_syncobj_get_type(render_node_fd);
+   if (device->sync_type_drm_syncobj.features != 0) {
+      assert(sync_type_count < ARRAY_SIZE(device->sync_types));
+      device->sync_types[sync_type_count++] = &device->sync_type_drm_syncobj;
+   }
+
    assert(sync_type_count < ARRAY_SIZE(device->sync_types));
    device->sync_types[sync_type_count++] = NULL;
 

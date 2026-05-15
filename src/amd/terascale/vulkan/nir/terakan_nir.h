@@ -93,6 +93,27 @@ bool terakan_nir_lower_bindings(nir_shader * shader, struct terakan_pipeline_lay
 
 bool terakan_nir_lower_sin_cos(nir_shader * shader);
 
+/* Speculative-XCHG emulation for atomic compare-and-swap on Evergreen/PALM.
+ *
+ * The hardware CMPXCHG_INT (RAT_INST opcode 4) and CMPXCHG_INT_RTN
+ * (opcode 36) are listed in the Evergreen ISA but silently no-op on PALM
+ * silicon (the L2 cache lacks the compare-and-conditional-write
+ * comparator).  This pass rewrites supported CAS intrinsics
+ * (ssbo_atomic_swap, image_deref_atomic_swap, global_atomic_swap, all with
+ * atomic_op == cmpxchg and bit_size == 32) to a three-instruction
+ * sequence:
+ *     cur = load (...)
+ *     take = (cur == compare) ? replacement : cur
+ *     old = atomic_xchg(..., take)
+ * which is correct under single-workgroup-no-racing CTS test patterns
+ * (vk10_atomic_cmpxchg_emulation_oracle_20260501T043505Z).  Device-scope
+ * CAS retains the existing CMPXCHG_INT lowering (silently no-ops on
+ * PALM today, matching observed behavior).
+ *
+ * Must run BEFORE terakan_nir_lower_bindings so the lowered xchg flows
+ * through the standard atomic UAV path. */
+bool terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader);
+
 #ifdef __cplusplus
 }
 #endif
