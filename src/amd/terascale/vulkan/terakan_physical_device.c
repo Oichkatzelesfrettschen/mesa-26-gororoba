@@ -859,6 +859,25 @@ terakan_physical_device_get_capabilities(
    properties_out->maxPerSetDescriptors = max_per_set_descriptors;
    properties_out->maxMemoryAllocationSize = max_memory_allocation_size;
 
+   /* VkPhysicalDeviceSubgroupProperties (VK 1.1 core).
+    * Bobcat/Evergreen wave is fixed at 64 lanes.  Phase 3 step 1 of the
+    * VK 1.0 -> VK 1.1 buildout exposes the property fields so applications
+    * can query subgroupSize.  Higher-level operation support
+    * (ARITHMETIC / VOTE / BALLOT / SHUFFLE) requires LDS-emulated
+    * cross-lane communication and is staged in Phase 3 step 2+.
+    *
+    * VK_SUBGROUP_FEATURE_BASIC_BIT requires only implicit primitives:
+    *   - subgroupElect (one invocation per subgroup returns true)
+    *   - subgroupBarrier (lane-level barrier)
+    *   - subgroupMemoryBarrier*
+    * These can be lowered to standard compute barriers without any
+    * cross-lane ALU support, so the BASIC bit is safe to advertise on
+    * Bobcat from the start. */
+   properties_out->subgroupSize = 64;
+   properties_out->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
+   properties_out->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT;
+   properties_out->subgroupQuadOperationsInAllStages = false;
+
    /* VK_KHR_maintenance1 (#70, Vulkan 1.1).
     * Negative viewport height for D3D coordinate space.
     * Already functionally implemented in terakan_state_rasterization.c. */
