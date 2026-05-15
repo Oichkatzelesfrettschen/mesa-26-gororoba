@@ -1,0 +1,44 @@
+# terakan-cachyos-cross-btver1: build mesa on CachyOS znver3 host targeting
+# x130e btver1 runtime.  Mirrors terakan-distcc-no-rusticl but adapted for
+# local-build-then-rsync workflow (option C in steinmarder
+# docs/workspace/build-workflow-options.md).
+#
+# Why a separate profile:
+# - clang-22 is the local CachyOS compiler (/usr/bin/clang-22) vs
+#   x130e's clang-21 in the terakan-distcc-no-rusticl profile
+# - No distcc -- 12 znver3 cores beat a 2-core Bobcat distcc worker
+#   over LAN once roundtrip latency is accounted for
+# - Same -march=btver1 CFLAGS in env to keep the .so ISA-compatible
+#   with x130e at runtime
+#
+# Companion env file: env/cachyos-znver3-cross-btver1.env
+# Workflow: see steinmarder docs/workspace/local-build-cross-btver1.md
+# (to be added under task #151)
+
+[binaries]
+c    = ['/usr/bin/ccache', '/usr/bin/clang-22']
+cpp  = ['/usr/bin/ccache', '/usr/bin/clang++']
+rust = ['/usr/bin/rustc']
+
+[project options]
+buildtype           = 'debugoptimized'
+b_ndebug            = 'false'
+b_lto               = false
+
+# r600 + Terakan only (same as terakan-distcc-no-rusticl).
+gallium-drivers     = ['r600']
+vulkan-drivers      = ['amd_terascale']
+
+# Rusticl DISABLED -- bindgen drift, see rusticl-bindgen-drift.md.
+gallium-rusticl                = false
+
+# Match x130e config for codepath parity.
+amd-use-llvm        = true
+gallium-extra-hud   = true
+glx                 = 'auto'
+
+# CachyOS has libdisplay-info.so.3 (0.3.0); x130e has only .so.2 (0.2.0).
+# Disable libdisplay-info so the resulting .so doesn't link against the
+# CachyOS-only version at runtime.  display-info is only used by some
+# WSI/EDID code paths irrelevant to Terakan VK CTS work.
+display-info        = 'disabled'
