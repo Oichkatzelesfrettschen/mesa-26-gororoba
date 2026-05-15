@@ -1,7 +1,4 @@
 /*
- * Copyright (c) 2026 Eirikr Hinngart
- * SPDX-License-Identifier: MIT
- *
  * terakan_nir_lower_cmpxchg.c -- speculative-XCHG emulation for CMPXCHG on PALM
  *
  * RCA recap
