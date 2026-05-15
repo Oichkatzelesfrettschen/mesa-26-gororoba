@@ -180,21 +180,43 @@ proposing a terakan fix, consult:
 - `steinmarder/docs/workspace/hostname-policy.md`       -- raw-IP ban
 - `steinmarder/docs/workspace/mesa-26-debug-and-mesa-debug.md` -- legacy dirs
 
-## Source-comment durability
+## Comment + documentation hygiene policy
 
-Terakan/r600 source comments must be readable without chat, PR, task,
-or same-day context.
+The authoritative rules live at `~/AGENTS.md` "Comment + documentation
+hygiene policy".  Summary below; consult the root file for the
+complete tables and citation forms.
 
-- Do not write ambiguous referents like "this family", "this chip",
-  "this silicon", "the current GPU", or "our target" in source comments.
-- Name the exact scope: for example `PALM/SUMO Evergreen TeraScale-2`,
-  `R600/R700 TeraScale-1`, `Cayman/Northern Islands TeraScale-3`, or
-  `CHIP_CEDAR..CHIP_ARUBA` when the code really covers the full set.
-- If evidence is only from x130e, say `validated PALM/SUMO Evergreen
-  TeraScale-2 target` and explicitly state that broader r600-family
-  generalization needs chip-specific probes.
-- Keep issue numbers, PR numbers, phase labels, and dates out of source
-  comments. Put chronology in steinmarder findings/docs instead.
+**Source code comments MUST NOT contain:**
+- Task references (`steinmarder task #143`)
+- PR numbers (`mesa PR #25`)
+- Phase / step labels (`Phase 4.4`)
+- Session dates (`(2026-05-15)`)
+- Date-stamped claim/LI/Q tags (`C-2026-04-19-06`, `LI-2026-04-17-02`)
+- Deictic refs (`this chip family`, `currently`, `previously`, `our driver`)
+- Internal-repo paths in HW citations (`per Evergreen_ISA.txt:17572`)
+- Personal-name Copyright headers
+- Author tags (`@triang3l`, `(eirikr)`)
+
+**Source code comments MUST use absolute chip identity** when the
+topic is HW-specific:
+- e.g. `Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)`
+- Use public AMD doc citations: `per AMD Evergreen-Family ISA §X.Y`,
+  NOT internal `Evergreen_ISA.txt:NNN`
+
+**Markdown / finding-docs** in the sibling steinmarder repo MAY carry
+chronology but MUST triangulate PR# / task# refs with a durable
+identifier (commit SHA + file:symbol primary, PR# secondary).
+
+**Project chronology goes in commit messages and PR descriptions**,
+not source.
+
+**Linter:** lives in the sibling steinmarder repo at
+`src/re/r600/scripts/lint/comment_hygiene_lint.py`; the git hook is
+at `src/re/r600/scripts/lint/pre-commit-comment-hygiene`.  See
+`~/AGENTS.md` for installation instructions.
+
+Existing in-flight PRs MAY keep breadcrumb comments; NEW commits MUST
+follow this policy.
 
 ## Key subsystems
 
