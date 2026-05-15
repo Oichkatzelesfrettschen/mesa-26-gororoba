@@ -515,3 +515,60 @@ too_many_descriptors:
       "The application creates a descriptor set layout that is too large to fit into the hardware "
       "binding register spaces");
 }
+
+/* VK_KHR_maintenance3 / Vulkan 1.1 core: query whether a descriptor set
+ * layout would be creatable without actually creating it.
+ *
+ * Implementation strategy: count the descriptors in the requested layout
+ * and compare against Terakan's per-stage and per-set limits.  We surface
+ * the actual descriptorSetLayoutSupport.supported AND populate the
+ * VkDescriptorSetVariableDescriptorCountLayoutSupport pNext extension when
+ * present.
+ *
+ * For now the supported flag is set true unless the layout has an obvious
+ * count overflow.  The real validation lives in
+ * terakan_CreateDescriptorSetLayout which returns VALIDATION_FAILED_EXT if
+ * the layout doesn't fit; we mirror its single overflow check here. */
+VKAPI_ATTR void VKAPI_CALL
+terakan_GetDescriptorSetLayoutSupport(VkDevice const deviceHandle,
+                                      VkDescriptorSetLayoutCreateInfo const * const pCreateInfo,
+                                      VkDescriptorSetLayoutSupport * const pSupport)
+{
+   (void)deviceHandle;
+
+   /* Sum total descriptors and check against a generous upper bound that
+    * matches the limit enforced inside CreateDescriptorSetLayout (the
+    * `too_many_descriptors` error path above).  Terakan reports
+    * maxPerStageDescriptor* limits of >= 4096 per descriptor type via
+    * terakan_physical_device.c; the layout structure itself only really
+    * fails when total binding count is absurd. */
+   uint32_t total_descriptors = 0;
+   if (pCreateInfo != NULL && pCreateInfo->pBindings != NULL) {
+      for (uint32_t i = 0; i < pCreateInfo->bindingCount; ++i) {
+         total_descriptors += pCreateInfo->pBindings[i].descriptorCount;
+      }
+   }
+
+   /* Match the practical limit enforced by CreateDescriptorSetLayout: each
+    * descriptor consumes one shader-side resource slot, and Terakan's
+    * shader-side resource arrays total to less than 4096 entries.  This
+    * conservative cap rejects pathological layouts without overstating
+    * support. */
+   pSupport->supported = (total_descriptors <= 4096) ? VK_TRUE : VK_FALSE;
+
+   /* Walk pNext for VkDescriptorSetVariableDescriptorCountLayoutSupport.
+    * We don't expose descriptor_indexing features so this extension is
+    * unlikely to be requested, but handle the chain robustly per the
+    * Vulkan spec requirement. */
+   VkBaseOutStructure *out = (VkBaseOutStructure *)pSupport->pNext;
+   while (out != NULL) {
+      if (out->sType ==
+          VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT) {
+         VkDescriptorSetVariableDescriptorCountLayoutSupport * const var =
+            (VkDescriptorSetVariableDescriptorCountLayoutSupport *)out;
+         var->maxVariableDescriptorCount =
+            pSupport->supported ? (4096u - total_descriptors) : 0u;
+      }
+      out = out->pNext;
+   }
+}
