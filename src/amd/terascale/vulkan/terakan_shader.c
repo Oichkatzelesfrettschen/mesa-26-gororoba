@@ -281,6 +281,58 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
 
    NIR_PASS(_, nir, terakan_nir_lower_sin_cos);
 
+   /* Phase 3.2 BASIC subgroup primitives (2026-05-15).
+    *
+    * Run nir_lower_subgroups mirroring the r600 Gallium config in
+    * sfn_nir.cpp:745.  Wave size is 64 on Evergreen/Bobcat; ballot is
+    * stored in a single 64-bit value or two 32-bit components.
+    *
+    * Lowerings enabled here cover the VK_SUBGROUP_FEATURE_BASIC_BIT
+    * surface advertised in terakan_physical_device.c:
+    *   - lower_elect    -> elect emits `gl_SubgroupInvocationID == 0`
+    *   - lower_vote_trivial -> single-lane vote folds to source
+    *   - lower_relative_shuffle -> XOR/up/down shuffles to absolute
+    *   - lower_quad_broadcast_dynamic -> dynamic quad broadcast emul
+    *   - lower_inverse_ballot -> inverse ballot to standard ballot
+    *
+    * Higher subgroup tiers (VOTE/BALLOT/ARITHMETIC/SHUFFLE) require LDS
+    * emulation and are staged in subsequent Phase 3 sub-steps
+    * (steinmarder tasks #146 + #147).  For now BASIC primitives lower
+    * to single-lane / barrier-equivalent sequences without LDS, so the
+    * BASIC bit advertisement matches actual behavior.
+    *
+    * subgroupBarrier lowers to a standard compute barrier; wave64 is
+    * the natural lockstep granule on Evergreen SIMD so the barrier is
+    * a no-op when LDS isn't involved, and the compute barrier path
+    * handles the cross-wave case correctly.
+    */
+   {
+      static const nir_lower_subgroups_options terakan_subgroups_options = {
+         /* Phase 3.2 follow-up (2026-05-15): explicit subgroup_size lets
+          * NIR fold load_subgroup_id / load_subgroup_size /
+          * load_num_subgroups to constants for the common Bobcat case
+          * (workgroup fits in one wave).  Without this, load_subgroup_id
+          * survives through to SFN and aborts compute pipeline create
+          * with "R600: Unsupported instruction: @load_subgroup_id"
+          * (observed during the Phase 5 VK 1.1 promotion trial when
+          * dEQP-VK.subgroups.basic.compute.subgroupbarrier ran). */
+         .subgroup_size = 64,
+         .ballot_bit_size = 32,
+         .ballot_components = 2,  /* 2 x uint32 = 64-bit ballot for wave64 */
+         .lower_vote_trivial = true,
+         .lower_relative_shuffle = true,
+         .lower_quad_broadcast_dynamic = true,
+         .lower_elect = true,
+         .lower_inverse_ballot = true,
+         /* "subgroup_masks" intrinsics (load_subgroup_eq_mask, etc.)
+          * need explicit lowering when advertised; enable now so the
+          * BASIC + VOTE+BALLOT paths compile cleanly when Phase 3.3
+          * promotes the supportedOperations bitmask. */
+         .lower_subgroup_masks = true,
+      };
+      NIR_PASS(_, nir, nir_lower_subgroups, &terakan_subgroups_options);
+   }
+
    if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post explicit_io/lowerings (%s) ---\n",
               mesa_shader_stage_name(nir->info.stage));
