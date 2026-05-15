@@ -24,7 +24,7 @@ build-infra/
 |-- README.md                      # this file
 |-- configs/
 |   |-- terakan-full.meson         # r600+zink+soft+llvm, rusticl+HUD+VA
-|   |-- terakan-distcc.meson       # r600 only, rusticl r600, daily lane
+|   |-- terakan-distcc.meson       # r600 only, rusticl recovery lane
 |   |-- terakan-distcc-no-rusticl.meson
 |   |                                  # r600+terakan, no Rusticl
 |   |-- terakan-distcc-no-rusticl-pump.meson
@@ -43,16 +43,34 @@ Build outputs land OUTSIDE the source tree, at
 `../../build/mesa-<profile>/`, so `git clean -xdf` in gororoba
 does not nuke ongoing builds.
 
-Install prefixes default to `/usr/local/mesa-<profile>/` so
-multiple profiles can coexist on a test host.
+The active install prefix defaults to `/usr/local/mesa-26-gororoba`.
+Build variants live in separate build directories, but the installed ICD is a
+single canonical Terakan copy unless `PREFIX=...` is passed explicitly.
+
+Before a long build, run the host audit:
+
+```
+make audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
+```
 
 ## Common flows
 
-Daily terakan iteration on x130e:
+Daily Terakan Vulkan iteration on x130e:
+```
+make audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
+make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
+make install PROFILE=terakan-distcc-no-rusticl \
+  BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+make artifact-check
+```
+
+Rusticl-enabled recovery lane:
 ```
 make rebuild-terakan-distcc
-sudo make install PROFILE=terakan-distcc
 ```
+
+This profile is the Rusticl recovery lane and requires `bindgen`, `rustfmt`,
+and `llvm-config-21` availability on the host.
 
 No-Rusticl x130e warm/incremental rebuild that preserves ccache and
 does not use distcc-pump:
@@ -109,10 +127,33 @@ Stock Mesa reference (no terakan) for regression comparison:
 make rebuild-base-debug
 ```
 
-Full reset of a profile (nukes builddir AND install prefix):
+Full reset of a profile (removes builddir and archives install prefix aside):
 ```
 make distclean PROFILE=terakan-distcc
 ```
+
+Install the already-converged build without letting root rebuild targets:
+
+```
+make install PROFILE=terakan-distcc-no-rusticl \
+  BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+make artifact-check
+```
+
+Runtime smoke test:
+
+```
+export LD_LIBRARY_PATH=/usr/local/mesa-26-gororoba/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+export VK_DRIVER_FILES=/usr/local/mesa-26-gororoba/share/vulkan/icd.d/terascale_icd.x86_64.json
+vulkaninfo --summary
+```
+
+Delivery policy:
+
+- Current delivery is `/usr/local/mesa-26-gororoba` staging, not a PKGBUILD.
+- Rollback means moving the prefix aside with `make distclean`, not deleting it.
+- A PKGBUILD is a future packaging task once the Terakan-only install manifest
+  and stale-Rusticl cleanup contract are stable.
 
 Show available profiles + hostenvs:
 ```

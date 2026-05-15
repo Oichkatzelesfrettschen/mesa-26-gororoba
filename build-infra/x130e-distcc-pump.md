@@ -21,7 +21,9 @@ Current verified state:
 - Compiler: `clang-21` and `clang++-21`.
 - Warm profile: `build-infra/configs/terakan-distcc-no-rusticl.meson`.
 - Pump profile: `build-infra/configs/terakan-distcc-no-rusticl-pump.meson`.
-- Target install prefix for the mesa-debug lane: `/usr/local/mesa-debug`.
+- Active install prefix: `/usr/local/mesa-26-gororoba`.
+  Older `/usr/local/mesa-debug` and `/usr/local/mesa-terakan-*`
+  prefixes are historical unless a run explicitly overrides `PREFIX=...`.
 
 The no-Rusticl profile enables the daily Terakan/r600 lane:
 
@@ -131,7 +133,7 @@ sudo meson install --no-rebuild -C /home/eirikr/workspaces/mesa/build/mesa-terak
 Verify the installed artifacts:
 
 ```sh
-find /usr/local/mesa-debug -maxdepth 5 -type f \
+find /usr/local/mesa-26-gororoba -maxdepth 5 -type f \
   \( -name "libvulkan_terascale.so" -o -name "r600_dri.so" -o -name "libgallium-*.so" -o -name "terascale_icd*.json" \) \
   -printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort
 ```
@@ -164,7 +166,7 @@ work: 100 incremental Ninja steps
 note: no distcc discrepancy or pump-demotion warning
 ```
 
-## 2026-04-26 run result
+## 2026-04-26 historical run result
 
 Source revision:
 
@@ -214,6 +216,8 @@ meson install --no-rebuild -C /home/eirikr/workspaces/mesa/build/mesa-terakan-di
 ```
 
 Installed files were copied to `/usr/local/mesa-debug` at 2026-04-26T01:23:48Z.
+That prefix is historical.  The active prefix is now
+`/usr/local/mesa-26-gororoba`.
 Key artifacts:
 
 ```text
