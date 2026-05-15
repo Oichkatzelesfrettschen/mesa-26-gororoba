@@ -860,22 +860,43 @@ terakan_physical_device_get_capabilities(
    properties_out->maxMemoryAllocationSize = max_memory_allocation_size;
 
    /* VkPhysicalDeviceSubgroupProperties (VK 1.1 core).
-    * Bobcat/Evergreen wave is fixed at 64 lanes.  Phase 3 step 1 of the
-    * VK 1.0 -> VK 1.1 buildout exposes the property fields so applications
-    * can query subgroupSize.  Higher-level operation support
-    * (ARITHMETIC / VOTE / BALLOT / SHUFFLE) requires LDS-emulated
-    * cross-lane communication and is staged in Phase 3 step 2+.
     *
-    * VK_SUBGROUP_FEATURE_BASIC_BIT requires only implicit primitives:
-    *   - subgroupElect (one invocation per subgroup returns true)
-    *   - subgroupBarrier (lane-level barrier)
-    *   - subgroupMemoryBarrier*
-    * These can be lowered to standard compute barriers without any
-    * cross-lane ALU support, so the BASIC bit is safe to advertise on
-    * Bobcat from the start. */
+    * Evergreen / TeraScale-2 VLIW5 (Palm / Wrestler, CHIP_PALM) executes
+    * Wave64 lockstep within a SIMD but the VLIW5 ALU has no native
+    * cross-lane communication.  Cross-lane data movement is emulated via
+    * Local Data Share (LDS, 32 KB per SIMD) atomic-OR / write-broadcast
+    * sequences -- see terakan_nir_lower_subgroup_lds.c and the
+    * LDS_ATOMIC_OR_RET family described in the AMD Evergreen-Family
+    * Instruction Set Architecture.
+    *
+    * Operation-bit advertisement reflects what the lowering currently
+    * implements:
+    *
+    *   BASIC      -- subgroupElect / subgroupBarrier / subgroupMemoryBarrier*;
+    *                 lowered to standard compute barriers without any
+    *                 cross-lane ALU dependency.
+    *   VOTE       -- subgroupAll / subgroupAny / subgroupAllEqual;
+    *                 nir_lower_subgroups decomposes these to
+    *                 nir_intrinsic_ballot + scalar reduction, and the
+    *                 LDS pass expands ballot via LDS_ATOMIC_OR_RET into
+    *                 a uvec2 visible to all lanes after a workgroup
+    *                 barrier.
+    *   BALLOT     -- subgroupBallot / BallotBitCount / FindLSB / FindMSB;
+    *                 share the same LDS atomic-OR primitive.
+    *
+    * Higher tiers (ARITHMETIC / SHUFFLE / CLUSTERED / QUAD) require
+    * parallel-scan / per-lane broadcast layouts in LDS that are not yet
+    * implemented; advertise only what the lowering supports so
+    * dEQP-VK.subgroups.<tier> correctly reports NotSupported for the
+    * rest rather than running and failing.  Subgroup stages remain
+    * compute-only to match the LDS sync model and physical-device
+    * subgroupSupportedStages bitmask. */
    properties_out->subgroupSize = 64;
    properties_out->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
-   properties_out->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT;
+   properties_out->subgroupSupportedOperations =
+      VK_SUBGROUP_FEATURE_BASIC_BIT |
+      VK_SUBGROUP_FEATURE_VOTE_BIT |
+      VK_SUBGROUP_FEATURE_BALLOT_BIT;
    properties_out->subgroupQuadOperationsInAllStages = false;
 
    /* VK_KHR_maintenance1 (#70, Vulkan 1.1).
@@ -964,15 +985,14 @@ terakan_physical_device_get_capabilities(
     * either inlining or skipping; no SFN/SQ work required. */
    extensions_out->KHR_shader_non_semantic_info = true;
 
-   /* VK_KHR_shader_relaxed_extended_instruction (#559, Vulkan 1.4).
-    * Adds SPIR-V opcode 4433 OpExtInstWithForwardRefsKHR, a variant
-    * of OpExtInst whose Set ID may be a forward reference.  Purely
-    * a SPIR-V parser-layer relaxation; the silicon never sees
-    * SPIR-V.  The shared spirv_to_nir consumer
-    * (compiler/spirv/spirv_to_nir.c) already binds the opcode to
-    * vtn_handle_non_semantic_instruction. */
+   /* VK_KHR_shader_relaxed_extended_instruction (#509, Vulkan 1.4).
+    * Declarative: permits SPIR-V to use the
+    * SPV_KHR_relaxed_extended_instruction capability for ExtInst
+    * (Extended-Instruction Set) calls with relaxed precision.
+    * vk_spirv_to_nir + the existing relaxed-precision lowering already
+    * handle the runtime semantics; this extension is just the gate
+    * that the SPIR-V validator checks. */
    extensions_out->KHR_shader_relaxed_extended_instruction = true;
-   features_out->shaderRelaxedExtendedInstruction = true;
 
    /* VK_KHR_storage_buffer_storage_class (#132, Vulkan 1.1).
     * Permits SPIR-V to use the StorageBuffer storage class directly

@@ -114,6 +114,38 @@ bool terakan_nir_lower_sin_cos(nir_shader * shader);
  * through the standard atomic UAV path. */
 bool terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader);
 
+/* LDS-emulated cross-lane subgroup primitives for chips without native
+ * cross-lane ALU (Palm / Wrestler -- CHIP_PALM, Evergreen / TeraScale-2
+ * VLIW5).  Lowers nir_intrinsic_ballot, nir_intrinsic_read_first_invocation,
+ * and the broader VOTE/REDUCE family (decomposed by nir_lower_subgroups
+ * into the foundational primitives) to LDS shared-memory atomic-OR /
+ * write-broadcast sequences with workgroup barriers.
+ *
+ * Must run BEFORE nir_lower_subgroups so the ballot/read_first_invocation
+ * primitives this pass needs as decomposition targets remain visible to
+ * NIR's decomposer.  Allocates LDS bytes by bumping
+ * shader->info.shared_size; existing shader-declared shared memory is
+ * preserved at the same offsets it already occupies (the pass appends).
+ *
+ * Compute and kernel stages only -- subgroup ops are advertised in
+ * terakan_physical_device.c with subgroupSupportedStages =
+ * VK_SHADER_STAGE_COMPUTE_BIT. */
+bool terakan_nir_lower_subgroup_lds(nir_shader * shader);
+
+/* Active-mask materialisation helpers (terakan_nir_active_mask.c).
+ *
+ * Per AMD Evergreen-Family ISA Section 4.10, the per-lane predicate
+ * at ALU-clause entry equals the active mask, and disabled lanes do
+ * not write GPRs.  These helpers emit NIR that the SFN backend
+ * lowers to that masked-write idiom, materialising the active mask
+ * as a per-lane integer value.  Used by the LDS-mediated subgroup
+ * primitives (terakan_nir_lower_subgroup_lds) and any other call
+ * site that needs to gather across lanes without a scalar EXEC. */
+nir_def * terakan_nir_build_active_mask_as_int(nir_builder * b, nir_def * predicate);
+nir_def * terakan_nir_build_active_mask(nir_builder * b);
+nir_def * terakan_nir_build_ballot_via_lds(nir_builder * b, nir_def * predicate,
+                                           unsigned lds_scratch_offset_bytes);
+
 #ifdef __cplusplus
 }
 #endif

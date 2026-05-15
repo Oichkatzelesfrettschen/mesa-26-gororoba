@@ -1,5 +1,4 @@
 /*
- * Copyright 2025 Eirikr
  * SPDX-License-Identifier: MIT
  *
  * terakan_sched.h — Phase 0 Architecture Contract for C2-C6 Scheduler Track

@@ -1,5 +1,4 @@
 /*
- * Copyright 2025 Eirikr
  * SPDX-License-Identifier: MIT
  *
  * terakan_machine_model.h — TeraScale-2 (Evergreen) VLIW5 Machine Model
