@@ -119,6 +119,7 @@ Linux, FreeBSD, and other operating systems.
    spirv/index
    isl/index
    isaspec
+   terakan-debt-index
    rusticl
    android
    macos
