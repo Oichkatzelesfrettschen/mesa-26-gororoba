@@ -1783,7 +1783,22 @@ terakan_nir_lower_bindings_instr_image_deref_store(
                      ci < fmtd->nr_channels ? fmtd->channel[ci].size : 0u;
                   if (ch_bpc > 0 && ch_bpc < 32) {
                      unsigned const shift = 32u - ch_bpc;
-                     v = nir_ishr(b, nir_ishl(b, v, nir_imm_int(b, (int)shift)),
+                     /* FIX-Z2 (2026-05-15): for UINT formats, use logical
+                      * right shift (ushr) to preserve the value when the
+                      * channel's MSB is set.  The arithmetic-shift pattern
+                      * (ishl;ishr) sign-extends, which is correct for SINT
+                      * but for UINT packed-formats with narrow channels
+                      * (e.g. A2 in A2B10G10R10_UINT where value=2 has its
+                      * 2-bit-MSB set), the sign-extended high bits combine
+                      * with the CB format encoding to produce off-by-N
+                      * mismatches at readback.
+                      *
+                      * This block already gates on util_format_is_pure_uint
+                      * above; the channel type within a UINT format is
+                      * always UINT, so ushr is unconditionally correct
+                      * here.  SINT/SNORM/UNORM formats use separate
+                      * extension paths elsewhere. */
+                     v = nir_ushr(b, nir_ishl(b, v, nir_imm_int(b, (int)shift)),
                                   nir_imm_int(b, (int)shift));
                   }
                   se_comps[ci] = v;
