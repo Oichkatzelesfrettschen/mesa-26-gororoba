@@ -52,7 +52,14 @@ struct terakan_physical_device_drm_radeon {
    int render_node_validation_fd;
 
    struct vk_sync_binary_type sync_type_binary;
-   struct vk_sync_type const * sync_types[3];
+   /* DRM syncobj-backed sync type used for the OPAQUE_FD / SYNC_FD external
+    * sync handle paths required by VK_KHR_external_semaphore/fence_fd.
+    * Initialised from `vk_drm_syncobj_get_type(render_node_validation_fd)`
+    * during physical device creation.  Kept alongside the in-process
+    * `terakan_sync_completion_type` -- the runtime selects this type when
+    * the application asks for OPAQUE_FD export/import. */
+   struct vk_sync_type sync_type_drm_syncobj;
+   struct vk_sync_type const * sync_types[4];
 };
 
 VkResult terakan_physical_device_drm_radeon_try_create(struct vk_instance * instance,
