@@ -941,6 +941,16 @@ terakan_physical_device_get_capabilities(
     * arrives at the same NIR shape.  Declarative enable. */
    extensions_out->KHR_storage_buffer_storage_class = true;
 
+   /* VK_KHR_descriptor_update_template (#86, Vulkan 1.1).
+    * Permits batched descriptor updates via precomputed templates.
+    * Create/Destroy are dispatched to the generic vk_common_* runtime
+    * helpers; only terakan_UpdateDescriptorSetWithTemplate is driver-
+    * specific (it walks template entries, synthesizes VkWriteDescriptorSet
+    * structs pointing at offsets within the user data buffer, then
+    * delegates to terakan_UpdateDescriptorSets which already implements
+    * the per-descriptor-type write logic). */
+   extensions_out->KHR_descriptor_update_template = true;
+
    /* VK_KHR_relaxed_block_layout (#145, Vulkan 1.1).
     * Permits non-standard layout rules for std430-style UBO/SSBO blocks
     * where vector members can straddle 16-byte alignment boundaries.

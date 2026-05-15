@@ -36,6 +36,7 @@
 #include "util/macros.h"
 #include "util/u_debug.h"
 #include "vk_alloc.h"
+#include "vk_descriptor_update_template.h"
 #include "vk_log.h"
 
 #include <assert.h>
@@ -1108,4 +1109,133 @@ terakan_CreateDescriptorPool(VkDevice const deviceHandle,
 
    *pDescriptorPool = terakan_descriptor_pool_to_handle(pool);
    return VK_SUCCESS;
+}
+
+/* VK_KHR_descriptor_update_template / Vulkan 1.1 core.
+ *
+ * Implementation strategy: walk the vk_descriptor_update_template entries,
+ * synthesize a per-entry VkWriteDescriptorSet referring back into the
+ * user-supplied data buffer at each entry's offset/stride, then dispatch
+ * to terakan_UpdateDescriptorSets which already implements the full
+ * descriptor-write logic for every supported descriptor type.
+ *
+ * Create/Destroy of the template object are handled by the generic
+ * vk_common_* runtime helpers wired through the dispatch table; this
+ * driver only needs to implement the Update path.
+ */
+VKAPI_ATTR void VKAPI_CALL
+terakan_UpdateDescriptorSetWithTemplate(VkDevice const deviceHandle,
+                                        VkDescriptorSet const descriptorSetHandle,
+                                        VkDescriptorUpdateTemplate const templateHandle,
+                                        void const * const pData)
+{
+   VK_FROM_HANDLE(vk_descriptor_update_template, template, templateHandle);
+
+   /* Each template entry becomes one VkWriteDescriptorSet that points at a
+    * slice of `pData` at `entry->offset + i * entry->stride` per descriptor.
+    * Build the per-entry pointer arrays on the heap (template entry count
+    * is bounded by the layout's binding count, normally a handful). */
+   uint32_t const entry_count = template->entry_count;
+   if (entry_count == 0) {
+      return;
+   }
+
+   VkWriteDescriptorSet * const writes =
+      calloc(entry_count, sizeof(VkWriteDescriptorSet));
+   if (writes == NULL) {
+      return;
+   }
+
+   /* Worst case: every descriptor in every entry needs its own
+    * VkDescriptorImageInfo / VkDescriptorBufferInfo / VkBufferView entry.
+    * Sum the array_count fields up front and allocate one combined info
+    * buffer that holds any of the three union variants per descriptor. */
+   uint32_t total_descriptors = 0;
+   for (uint32_t i = 0; i < entry_count; ++i) {
+      total_descriptors += template->entries[i].array_count;
+   }
+
+   VkDescriptorImageInfo * const image_infos =
+      total_descriptors == 0 ? NULL : calloc(total_descriptors,
+                                             sizeof(VkDescriptorImageInfo));
+   VkDescriptorBufferInfo * const buffer_infos =
+      total_descriptors == 0 ? NULL : calloc(total_descriptors,
+                                             sizeof(VkDescriptorBufferInfo));
+   VkBufferView * const texel_views =
+      total_descriptors == 0 ? NULL : calloc(total_descriptors,
+                                             sizeof(VkBufferView));
+   if (total_descriptors != 0 &&
+       (image_infos == NULL || buffer_infos == NULL || texel_views == NULL)) {
+      free(writes);
+      free(image_infos);
+      free(buffer_infos);
+      free(texel_views);
+      return;
+   }
+
+   uint32_t next_info_slot = 0;
+   uint8_t const * const data = (uint8_t const *)pData;
+   for (uint32_t i = 0; i < entry_count; ++i) {
+      struct vk_descriptor_template_entry const * const entry =
+         &template->entries[i];
+
+      VkWriteDescriptorSet * const w = &writes[i];
+      w->sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w->pNext           = NULL;
+      w->dstSet          = descriptorSetHandle;
+      w->dstBinding      = entry->binding;
+      w->dstArrayElement = entry->array_element;
+      w->descriptorCount = entry->array_count;
+      w->descriptorType  = entry->type;
+
+      /* Populate the appropriate pImageInfo / pBufferInfo / pTexelBufferView
+       * pointer based on descriptor type.  Each per-descriptor info struct
+       * lives in the combined buffer at `next_info_slot`. */
+      uint32_t const slot_base = next_info_slot;
+      next_info_slot += entry->array_count;
+
+      switch (entry->type) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         for (uint32_t j = 0; j < entry->array_count; ++j) {
+            image_infos[slot_base + j] = *(VkDescriptorImageInfo const *)(
+               data + entry->offset + (size_t)j * entry->stride);
+         }
+         w->pImageInfo = &image_infos[slot_base];
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         for (uint32_t j = 0; j < entry->array_count; ++j) {
+            texel_views[slot_base + j] = *(VkBufferView const *)(
+               data + entry->offset + (size_t)j * entry->stride);
+         }
+         w->pTexelBufferView = &texel_views[slot_base];
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+         for (uint32_t j = 0; j < entry->array_count; ++j) {
+            buffer_infos[slot_base + j] = *(VkDescriptorBufferInfo const *)(
+               data + entry->offset + (size_t)j * entry->stride);
+         }
+         w->pBufferInfo = &buffer_infos[slot_base];
+         break;
+      default:
+         /* Unsupported descriptor type for templates -- skip the entry by
+          * leaving descriptorCount zero so UpdateDescriptorSets ignores it. */
+         w->descriptorCount = 0;
+         break;
+      }
+   }
+
+   terakan_UpdateDescriptorSets(deviceHandle, entry_count, writes, 0, NULL);
+
+   free(writes);
+   free(image_infos);
+   free(buffer_infos);
+   free(texel_views);
 }
