@@ -1797,9 +1797,29 @@ terakan_nir_lower_bindings_instr_image_deref_store(
                       * above; the channel type within a UINT format is
                       * always UINT, so ushr is unconditionally correct
                       * here.  SINT/SNORM/UNORM formats use separate
-                      * extension paths elsewhere. */
-                     v = nir_ushr(b, nir_ishl(b, v, nir_imm_int(b, (int)shift)),
-                                  nir_imm_int(b, (int)shift));
+                      * extension paths elsewhere.
+                      *
+                      * FIX-Z3 (2026-05-15): the FIX-Z2 ushr regressed
+                      * non-buffer a2b10g10r10_uint_pack32 (1d/2d/3d/
+                      * cube/cube_array) -- the prior arith-shift's
+                      * sign-extended high bits actually round-tripped
+                      * correctly via the CB pack truncation, while
+                      * ushr's zero-extended high bits do NOT.
+                      *
+                      * Gate on RESOURCE_TYPE = BUFFER (no CB pack
+                      * truncation path) for the logical shift; keep
+                      * arithmetic shift for non-buffer (with CB pack)
+                      * to preserve the previously-passing behavior. */
+                     enum glsl_sampler_dim const sd = nir_intrinsic_image_dim(intrin);
+                     if (sd == GLSL_SAMPLER_DIM_BUF) {
+                        v = nir_ushr(b,
+                                     nir_ishl(b, v, nir_imm_int(b, (int)shift)),
+                                     nir_imm_int(b, (int)shift));
+                     } else {
+                        v = nir_ishr(b,
+                                     nir_ishl(b, v, nir_imm_int(b, (int)shift)),
+                                     nir_imm_int(b, (int)shift));
+                     }
                   }
                   se_comps[ci] = v;
                }
