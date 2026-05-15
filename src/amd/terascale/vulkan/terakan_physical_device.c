@@ -1245,10 +1245,22 @@ terakan_physical_device_get_capabilities(
    extensions_out->EXT_color_write_enable = true;
    features_out->colorWriteEnable = true;
 
-   /* VK_KHR_maintenance4 (#414, Vulkan 1.3) -- DEFERRED.
-    * Requires Vulkan 1.1 as the minimum advertised API version; Terakan is
-    * currently locked at Vulkan 1.0.  Advertising it at 1.0 causes CTS failure
-    * extension_core_versions.  Re-enable once VK 1.1 promotion is complete. */
+   /* VK_KHR_maintenance4 (#414, Vulkan 1.3).
+    *
+    * Phase 5 trial (2026-05-15): re-enabled after Phase 5 promotion to
+    * VK 1.1 (TERAKAN_API_VERSION flipped in terakan_instance.h:40).
+    * extension_core_versions CTS now accepts the advertisement.
+    *
+    * maintenance4 adds vkGetDeviceImageMemoryRequirements and
+    * vkGetDeviceImageSparseMemoryRequirements -- info-only helpers; the
+    * existing terakan_image.c memory-requirement computation can be
+    * factored out and called by these new entry points.  For the trial,
+    * declare the extension and rely on Mesa runtime helpers (mesa-vulkan
+    * runtime provides default implementations that consult the existing
+    * vkGetImageMemoryRequirements path).
+    */
+   extensions_out->KHR_maintenance4 = true;
+   features_out->maintenance4 = true;
 
    /* VK_EXT_non_seamless_cube_map (#423). */
    extensions_out->EXT_non_seamless_cube_map = true;
