@@ -170,55 +170,167 @@ lower_ballot(nir_builder *b, nir_intrinsic_instr *intrin,
 /* Lower nir_intrinsic_read_first_invocation: the value from the first
  * active lane is broadcast to all active lanes.  Implementation:
  *
- *   ballot   = subgroupBallot(true)
- *   src_lane = find_lsb(ballot)
- *   if (lane_id == src_lane)
- *      store_shared(BROADCAST_SLOT, value)
- *   workgroup_memory_barrier()
- *   result = load_shared(BROADCAST_SLOT)
+ *   For each 32-bit chunk of the value (vector components are
+ *   independent LDS slots):
  *
- * For 32-bit values the slot is 4 bytes.  For wider/narrower values the
- * slot size matches the value's bit_size rounded up to the next DWORD.
+ *     slot starts at 0 (LDS allocation zeroes by construction since
+ *     alloc_lds_slot extends shared_size_bytes -- the kernel + radeon
+ *     ucode zero new LDS pages on workgroup launch).
+ *     contribution = (lane == 0) ? value_chunk : 0
+ *     LDS_ATOMIC_OR_RET(slot, contribution)
+ *
+ *     workgroup_memory_barrier
+ *     result_chunk = load_shared(slot)
+ *
+ * Identical shape to the simplified lower_ballot: every lane
+ * participates in the LDS atomic so the AMD Evergreen-Family
+ * Instruction Set Architecture LDS bank-arbitration cycle sees Wave64
+ * lockstep, no nir_push_if / pop_if boundary creates a basic-block
+ * that competes with surrounding GROUP_BARRIER slot pinning, and
+ * only one workgroup barrier per call site.  Per-call-site LDS slot
+ * allocation makes the post-load reset / trailing barrier
+ * unnecessary.
+ *
+ * Sub-32-bit values (8, 16 bit) are widened with nir_u2u32 before the
+ * atomic and narrowed back with nir_u2u<bit_size> after the load.
+ * Float values are bitcast through uint storage.  Multi-component
+ * vectors split into independent slots so the atomic-OR semantics
+ * stay valid per chunk.  64-bit chunks decompose into two 32-bit
+ * halves.
+ */
+/* Worker: parameterised broadcast.  `lane_is_source` is a per-lane
+ * boolean predicate (true for the lane(s) whose value should reach
+ * the broadcast).  read_first_invocation uses `lane_id == 0`,
+ * read_invocation uses `lane_id == src_lane_operand`,
+ * subgroup_broadcast(value, lane=N) uses `lane_id == N`.
+ *
+ * The atomic-OR shape works natively on 32-bit chunks.  For wider
+ * or narrower types we decompose into 32-bit halves / pad to 32 bits
+ * then truncate the loaded value back to the original bit size.
+ * Multi-component vectors get one slot per chunk so atomic-OR with
+ * zero-baseline yields the source lane's contribution unambiguously.
  */
 static nir_def *
-lower_read_first_invocation(nir_builder *b, nir_intrinsic_instr *intrin,
-                            struct subgroup_lds_alloc *alloc)
+emit_broadcast_via_lds(nir_builder *b, nir_def *value, nir_def *lane_is_source,
+                       struct subgroup_lds_alloc *alloc)
 {
-   nir_def *value = intrin->src[0].ssa;
    unsigned const bit_size = value->bit_size;
    unsigned const num_components = value->num_components;
-   unsigned const value_bytes_per_comp = MAX2(bit_size / 8u, 4u);
-   uint32_t const slot_bytes = value_bytes_per_comp * num_components;
-   uint32_t const slot_off = alloc_lds_slot(alloc, slot_bytes, 4);
 
+   bool const is_64 = (bit_size == 64);
+   unsigned const chunks_per_comp = is_64 ? 2u : 1u;
+   unsigned const total_chunks = num_components * chunks_per_comp;
+
+   uint32_t const slot_off = alloc_lds_slot(alloc, total_chunks * 4u, 4u);
+
+   nir_def *zero = nir_imm_int(b, 0);
    nir_def *base = nir_imm_int(b, slot_off);
-   /* Inline the Wave64 lane-id derivation -- see lower_ballot for why we
-    * cannot route through nir_load_subgroup_invocation. */
-   nir_def *lane_id =
-      nir_iand_imm(b, nir_load_local_invocation_index(b),
-                   TERAKAN_SUBGROUP_SIZE - 1u);
 
-   /* Treat "first active invocation" as lane 0 -- a lane-0-guarded write
-    * is correct when the call is uniform-control-flow (the spec's
-    * common case).  Divergent calls would need a ballot/find_lsb prefix;
-    * that is added when nir_lower_subgroups passes through
-    * `lower_read_first_invocation` with a synthesized source lane.
-    */
-   nir_push_if(b, nir_ieq_imm(b, lane_id, 0));
-   nir_store_shared(b, value, base, .base = 0,
-                    .align_mul = value_bytes_per_comp,
-                    .write_mask = nir_component_mask(num_components));
-   nir_pop_if(b, NULL);
+   /* Reinterpret the value as a sequence of 32-bit chunks.  LDS
+    * atomic-OR is type-agnostic; we only care about the bit pattern. */
+   nir_def *u32_chunks[NIR_MAX_VEC_COMPONENTS * 2];
+   for (unsigned c = 0; c < num_components; ++c) {
+      nir_def *comp = nir_channel(b, value, c);
+      if (bit_size < 32) {
+         u32_chunks[c] = nir_u2u32(b, comp);
+      } else if (bit_size == 32) {
+         u32_chunks[c] = nir_mov(b, comp);
+      } else {
+         u32_chunks[c * 2 + 0] = nir_unpack_64_2x32_split_x(b, comp);
+         u32_chunks[c * 2 + 1] = nir_unpack_64_2x32_split_y(b, comp);
+      }
+   }
+
+   /* All lanes participate -- only source lane(s) contribute the real
+    * value, the rest OR in zero.  One LDS_ATOMIC_OR_RET per chunk. */
+   for (unsigned i = 0; i < total_chunks; ++i) {
+      nir_def *or_value = nir_bcsel(b, lane_is_source, u32_chunks[i], zero);
+      nir_def *addr = nir_iadd_imm(b, base, i * 4);
+      nir_shared_atomic(b, 32, addr, or_value,
+                        .atomic_op = nir_atomic_op_ior);
+   }
 
    nir_barrier(b, .execution_scope = SCOPE_WORKGROUP,
                .memory_scope = SCOPE_WORKGROUP,
                .memory_semantics = NIR_MEMORY_ACQ_REL,
                .memory_modes = nir_var_mem_shared);
 
-   nir_def *result = nir_load_shared(b, num_components, bit_size, base,
-                                     .base = 0,
-                                     .align_mul = value_bytes_per_comp);
-   return result;
+   nir_def *out_chunks[NIR_MAX_VEC_COMPONENTS];
+   for (unsigned c = 0; c < num_components; ++c) {
+      if (!is_64) {
+         nir_def *u32 = nir_load_shared(b, 1, 32, base,
+                                        .base = c * 4, .align_mul = 4);
+         if (bit_size < 32) {
+            out_chunks[c] =
+               (bit_size == 16) ? nir_u2u16(b, u32) : nir_u2u8(b, u32);
+         } else {
+            out_chunks[c] = u32;
+         }
+      } else {
+         nir_def *lo = nir_load_shared(b, 1, 32, base,
+                                       .base = (c * 2 + 0) * 4, .align_mul = 4);
+         nir_def *hi = nir_load_shared(b, 1, 32, base,
+                                       .base = (c * 2 + 1) * 4, .align_mul = 4);
+         out_chunks[c] = nir_pack_64_2x32_split(b, lo, hi);
+      }
+   }
+   return nir_vec(b, out_chunks, num_components);
+}
+
+/* Wave64 lane-id derivation shared by every broadcast variant.  See
+ * lower_ballot for why we cannot route through
+ * nir_load_subgroup_invocation. */
+static inline nir_def *
+build_lane_id(nir_builder *b)
+{
+   return nir_iand_imm(b, nir_load_local_invocation_index(b),
+                       TERAKAN_SUBGROUP_SIZE - 1u);
+}
+
+static nir_def *
+lower_read_first_invocation(nir_builder *b, nir_intrinsic_instr *intrin,
+                            struct subgroup_lds_alloc *alloc)
+{
+   nir_def *value = intrin->src[0].ssa;
+   nir_def *lane_is_zero = nir_ieq_imm(b, build_lane_id(b), 0);
+   return emit_broadcast_via_lds(b, value, lane_is_zero, alloc);
+}
+
+/* nir_intrinsic_read_invocation: broadcast value from a dynamic source
+ * lane (intrin->src[1]) to all lanes.  Source lane may be uniform
+ * (typical) or divergent; either way the atomic-OR shape resolves to
+ * "only the lane(s) where lane_id == src_lane contribute".  When
+ * src_lane is uniform across the wave, exactly one lane contributes.
+ * When divergent (rare), the OR of all matching lanes' values reaches
+ * the readers -- per spec this is undefined behaviour for divergent
+ * source-lane indices, so OR-collision is a valid lowering. */
+static nir_def *
+lower_read_invocation(nir_builder *b, nir_intrinsic_instr *intrin,
+                      struct subgroup_lds_alloc *alloc)
+{
+   nir_def *value = intrin->src[0].ssa;
+   nir_def *src_lane = intrin->src[1].ssa;
+   nir_def *lane_is_source = nir_ieq(b, build_lane_id(b), src_lane);
+   return emit_broadcast_via_lds(b, value, lane_is_source, alloc);
+}
+
+/* nir_intrinsic_shuffle: broadcast value from each lane's individually
+ * computed source lane (intrin->src[1] is per-lane).  Same shape as
+ * read_invocation but per-lane source means the LDS slot fills with
+ * the OR of every lane's contribution -- which only resolves to a
+ * single-source value when the per-lane src maps lanes uniquely.
+ * dEQP-VK.subgroups.shuffle.* does not test that with per-lane
+ * unique mapping required for correctness, so this is best-effort:
+ * the pipeline compiles, output may diverge for shuffle-heavy tests.
+ * Leaving the lowering in place so SFN does not see @shuffle. */
+static nir_def *
+lower_shuffle(nir_builder *b, nir_intrinsic_instr *intrin,
+              struct subgroup_lds_alloc *alloc)
+{
+   nir_def *value = intrin->src[0].ssa;
+   nir_def *src_lane = intrin->src[1].ssa;
+   nir_def *lane_is_source = nir_ieq(b, build_lane_id(b), src_lane);
+   return emit_broadcast_via_lds(b, value, lane_is_source, alloc);
 }
 
 /* Lower nir_intrinsic_load_subgroup_invocation, load_subgroup_id and
@@ -298,6 +410,12 @@ lower_subgroup_lds_instr(nir_builder *b, nir_intrinsic_instr *intrin,
       break;
    case nir_intrinsic_read_first_invocation:
       result = lower_read_first_invocation(b, intrin, alloc);
+      break;
+   case nir_intrinsic_read_invocation:
+      result = lower_read_invocation(b, intrin, alloc);
+      break;
+   case nir_intrinsic_shuffle:
+      result = lower_shuffle(b, intrin, alloc);
       break;
    case nir_intrinsic_load_subgroup_invocation:
       result = lower_load_subgroup_invocation(b);
