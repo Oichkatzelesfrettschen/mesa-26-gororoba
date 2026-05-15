@@ -9,12 +9,13 @@
 #   make build     PROFILE=terakan-full      # incremental ninja
 #   make rebuild-terakan-full                # clean + build (common loop)
 #   make clean     PROFILE=terakan-full      # drop the builddir only
-#   make distclean PROFILE=terakan-full      # drop builddir + install prefix
+#   make distclean PROFILE=terakan-full      # drop builddir + archive install prefix
 #   make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 #                                                # warm/incremental: ccache + distcc
 #   make rebuild-terakan-distcc-no-rusticl-pump
 #                                                # cold/clean: distcc-pump + direct clang
-#   make install   PROFILE=terakan-full PREFIX=/usr/local/mesa-terakan
+#   make install   PROFILE=terakan-full      # meson install --no-rebuild
+#   make audit     PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
 #   make list                                # show available PROFILEs
 #
 # See also:
@@ -51,7 +52,8 @@ endif
 # across hosts.
 SETUP_ARGS := --native-file=$(CONFIG) --reconfigure
 
-.PHONY: list configure build build-generated build-pump clean distclean install test \
+.PHONY: list audit configure build build-generated build-pump clean distclean install \
+        artifact-check test \
         rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-distcc-no-rusticl \
         rebuild-terakan-distcc-no-rusticl-ccache-no-pump \
         rebuild-terakan-distcc-no-rusticl-pump \
@@ -66,8 +68,10 @@ help:
 	@echo "  configure         meson setup the builddir from configs/\$$(PROFILE).meson"
 	@echo "  build             ninja -C \$$(BUILDDIR)"
 	@echo "  clean             rm -rf \$$(BUILDDIR)"
-	@echo "  distclean         clean + rm -rf \$$(PREFIX)"
-	@echo "  install           sudo ninja -C \$$(BUILDDIR) install"
+	@echo "  distclean         clean + archive \$$(PREFIX) aside"
+	@echo "  audit             verify host tools, env policy, and profile requirements"
+	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
+	@echo "  artifact-check    list installed Terakan/r600 artifacts under \$$(PREFIX)"
 	@echo "  test              ninja -C \$$(BUILDDIR) test"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
 	@echo "  rebuild-terakan-distcc-no-rusticl-ccache-no-pump"
@@ -86,6 +90,9 @@ list:
 	for f in configs/*.meson; do echo "  $$(basename $$f .meson)"; done
 	@echo "available HOSTENVs (env/*.env):"; \
 	for f in env/*.env; do echo "  $$(basename $$f .env)"; done
+
+audit:
+	./scripts/terakan-host-audit.sh --profile $(PROFILE) --hostenv $(HOSTENV)
 
 configure:
 	@mkdir -p $(dir $(BUILDDIR))
@@ -118,11 +125,24 @@ clean:
 	@echo "cleaned: $(BUILDDIR)"
 
 distclean: clean
-	sudo rm -rf $(PREFIX) || rm -rf $(PREFIX)
-	@echo "distcleaned prefix: $(PREFIX)"
+	@if [ -e "$(PREFIX)" ]; then \
+		archive="$(PREFIX).disabled.$$(date -u +%Y%m%dT%H%M%SZ)"; \
+		sudo mv "$(PREFIX)" "$$archive"; \
+		echo "archived prefix: $(PREFIX) -> $$archive"; \
+	else \
+		echo "prefix already absent: $(PREFIX)"; \
+	fi
 
 install:
-	sudo ninja -C $(BUILDDIR) install
+	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
+	sudo meson install --no-rebuild -C $(BUILDDIR)
+
+artifact-check:
+	@test -d $(PREFIX) || { echo "prefix missing: $(PREFIX)"; exit 1; }
+	find $(PREFIX) -maxdepth 5 -type f \
+		\( -name "libvulkan_terascale.so" -o -name "r600_dri.so" -o \
+		   -name "libgallium-*.so" -o -name "terascale_icd*.json" \) \
+		-printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort
 
 test:
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \

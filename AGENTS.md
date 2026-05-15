@@ -40,21 +40,22 @@ Clone + build:
 ```sh
 git clone git@github.com:Oichkatzelesfrettschen/mesa-26-gororoba.git
 cd mesa-26-gororoba/build-infra
-./scripts/setup-distcc.sh          # precheck (versions + mDNS hosts)
+make audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
 . env/btver1-ccache-no-pump.env     # CCACHE_PREFIX=distcc, CFLAGS, caches
 make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
-sudo make install PROFILE=terakan-distcc-no-rusticl \
+make install PROFILE=terakan-distcc-no-rusticl \
     BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+make artifact-check
 ```
 
-Install prefix: `/usr/local/mesa-terakan-distcc/`.  Isolated --
+Install prefix: `/usr/local/mesa-26-gororoba/`.  Isolated --
 does NOT overwrite system Mesa at `/usr/lib/x86_64-linux-gnu/`.
 
 Load the driver:
 
 ```sh
-export LD_LIBRARY_PATH=/usr/local/mesa-terakan-distcc/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-export VK_DRIVER_FILES=/usr/local/mesa-terakan-distcc/share/vulkan/icd.d/terascale_icd.x86_64.json
+export LD_LIBRARY_PATH=/usr/local/mesa-26-gororoba/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+export VK_DRIVER_FILES=/usr/local/mesa-26-gororoba/share/vulkan/icd.d/terascale_icd.x86_64.json
 vulkaninfo --summary    # should show "AMD R8xx Palm (Terakan)"
 ```
 
