@@ -1054,6 +1054,17 @@ terakan_shader_lower_and_optimize_post_link(
    load_store_vectorize_options.cb_data = &load_store_vectorize_options.robust_modes;
    NIR_PASS(_, nir, nir_opt_load_store_vectorize, &load_store_vectorize_options);
 
+   /* Speculative-XCHG emulation for atomic compare-and-swap.
+    *
+    * Evergreen ISA exposes CMPXCHG_INT (RAT_INST=4) and CMPXCHG_INT_RTN
+    * (RAT_INST=36) on the MEM_RAT cached path, but PALM/Wrestler silicon
+    * silently no-ops them (the L2 cache lacks the compare-and-conditional-
+    * write comparator).  Rewrite supported CAS intrinsics to a load +
+    * bcsel + atomic_xchg sequence using only PALM-confirmed-working
+    * hardware.  Must run BEFORE terakan_nir_lower_bindings so the lowered
+    * xchg flows through the standard atomic UAV path. */
+   NIR_PASS(_, nir, terakan_nir_lower_cmpxchg_to_speculative_xchg);
+
    /* Lower bindings according to the pipeline layout.
     * In fragment shaders, this is done after compacting the fragment data output locations as UAVs
     * must be placed above color attachments.
