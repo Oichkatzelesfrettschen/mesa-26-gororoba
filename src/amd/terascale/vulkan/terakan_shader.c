@@ -317,6 +317,16 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
          .lower_elect = true,
          .lower_inverse_ballot = true,
          .lower_subgroup_masks = true,
+         /* Higher-tier VOTE / BALLOT / SHUFFLE / REDUCE decomposition is
+          * intentionally NOT enabled here.  The LDS-emulation pass
+          * (terakan_nir_lower_subgroup_lds.c) is in-tree as scaffolding
+          * but the r600 SFN scheduler currently asserts on the
+          * resulting nir_shared_atomic + nir_barrier pattern
+          * (sfn_instr_alu.h !has_alu_flag(alu_is_lds) inside opcode()).
+          * Until the SFN compute-LDS path handles atomic-OR + barrier
+          * sequences without that assertion, terakan advertises only
+          * VK_SUBGROUP_FEATURE_BASIC_BIT and dEQP-VK.subgroups.<tier>
+          * correctly NotSupports the higher tiers. */
       };
       NIR_PASS(_, nir, nir_lower_subgroups, &terakan_subgroups_options);
    }

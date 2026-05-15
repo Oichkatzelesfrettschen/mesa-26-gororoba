@@ -54,6 +54,7 @@ libterakan_files = files(
   'nir/terakan_nir_lower_bindings.c',
   'nir/terakan_nir_lower_bindings_internal.h',
   'nir/terakan_nir_lower_cmpxchg.c',
+  'nir/terakan_nir_lower_subgroup_lds.c',
   'terakan_barrier.c',
   'terakan_bo.c',
   'terakan_bo.h',

@@ -114,6 +114,32 @@ bool terakan_nir_lower_sin_cos(nir_shader * shader);
  * through the standard atomic UAV path. */
 bool terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader);
 
+/* LDS-emulated cross-lane subgroup primitives for chips without native
+ * cross-lane ALU (Palm / Wrestler -- CHIP_PALM, Evergreen / TeraScale-2
+ * VLIW5).  Lowers nir_intrinsic_ballot, nir_intrinsic_read_first_invocation,
+ * load_subgroup_invocation / load_subgroup_id / load_num_subgroups to
+ * LDS shared-memory atomic-OR / write-broadcast sequences plus
+ * gl_LocalInvocationIndex arithmetic.
+ *
+ * Pass ordering: must run AFTER nir_lower_subgroups, so the
+ * higher-tier vote/reduce/shuffle decomposition that
+ * nir_lower_subgroups produces (which emits fresh nir_ballot and
+ * nir_load_subgroup_invocation calls) is visible here for expansion.
+ *
+ * Compute and kernel stages only -- subgroup ops are advertised in
+ * terakan_physical_device.c with subgroupSupportedStages =
+ * VK_SHADER_STAGE_COMPUTE_BIT.
+ *
+ * Currently NOT invoked from the pipeline (terakan_shader.c).  The
+ * r600 SFN scheduler asserts !has_alu_flag(alu_is_lds) inside
+ * AluInstr::opcode() when the emitted nir_shared_atomic +
+ * nir_barrier sequence reaches scheduling.  The pass is kept in
+ * tree as scaffolding; until the SFN compute-LDS atomic-OR codepath
+ * handles the assertion, terakan advertises only
+ * VK_SUBGROUP_FEATURE_BASIC_BIT and the higher tiers are correctly
+ * reported as NotSupported by dEQP-VK.subgroups.<tier>. */
+bool terakan_nir_lower_subgroup_lds(nir_shader * shader);
+
 #ifdef __cplusplus
 }
 #endif

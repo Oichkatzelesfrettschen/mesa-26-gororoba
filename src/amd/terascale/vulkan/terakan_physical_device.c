@@ -860,19 +860,31 @@ terakan_physical_device_get_capabilities(
    properties_out->maxMemoryAllocationSize = max_memory_allocation_size;
 
    /* VkPhysicalDeviceSubgroupProperties (VK 1.1 core).
-    * Bobcat/Evergreen wave is fixed at 64 lanes.  Phase 3 step 1 of the
-    * VK 1.0 -> VK 1.1 buildout exposes the property fields so applications
-    * can query subgroupSize.  Higher-level operation support
-    * (ARITHMETIC / VOTE / BALLOT / SHUFFLE) requires LDS-emulated
-    * cross-lane communication and is staged in Phase 3 step 2+.
     *
-    * VK_SUBGROUP_FEATURE_BASIC_BIT requires only implicit primitives:
-    *   - subgroupElect (one invocation per subgroup returns true)
-    *   - subgroupBarrier (lane-level barrier)
-    *   - subgroupMemoryBarrier*
-    * These can be lowered to standard compute barriers without any
-    * cross-lane ALU support, so the BASIC bit is safe to advertise on
-    * Bobcat from the start. */
+    * Evergreen / TeraScale-2 VLIW5 (Palm / Wrestler, CHIP_PALM) executes
+    * Wave64 lockstep within a SIMD but the VLIW5 ALU has no native
+    * cross-lane communication.  Cross-lane data movement is emulated via
+    * Local Data Share (LDS, 32 KB per SIMD) atomic-OR / write-broadcast
+    * sequences -- see terakan_nir_lower_subgroup_lds.c and the
+    * LDS_ATOMIC_OR_RET family described in the AMD Evergreen-Family
+    * Instruction Set Architecture.
+    *
+    * Currently advertised tiers:
+    *
+    *   BASIC      -- subgroupElect / subgroupBarrier / subgroupMemoryBarrier*;
+    *                 lowered to standard compute barriers without any
+    *                 cross-lane ALU dependency.
+    *
+    * Higher tiers (VOTE / BALLOT / ARITHMETIC / SHUFFLE / CLUSTERED /
+    * QUAD) require LDS atomic-OR and write-broadcast sequences.  The
+    * NIR-side lowering exists in terakan_nir_lower_subgroup_lds.c but
+    * the r600 SFN scheduler currently asserts on the resulting
+    * nir_shared_atomic + nir_barrier pattern
+    * (sfn_instr_alu.h !has_alu_flag(alu_is_lds) inside opcode()).
+    * Advertise BASIC only so dEQP-VK.subgroups.<tier> correctly reports
+    * NotSupported for the higher tiers rather than crashing SFN at
+    * pipeline-create time.  Subgroup stages remain compute-only to
+    * match the LDS sync model. */
    properties_out->subgroupSize = 64;
    properties_out->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
    properties_out->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT;
