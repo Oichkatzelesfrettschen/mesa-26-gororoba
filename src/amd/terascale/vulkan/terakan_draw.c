@@ -284,11 +284,12 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
    }
 }
 
-/* Phase 4.4 (2026-05-15) helper: write the view_index push constant slot
- * + mark its modified bit so terakan_push_constants_apply re-uploads the
- * KCACHE buffer before the next draw.  Called from CmdDraw* per-view in
- * multiview expansion (Phase 4 chain: 4.1 push constant, 4.2 NIR lower,
- * 4.3 view_mask plumb, 4.4 this expansion). */
+/* For VK_KHR_multiview view-loop expansion: write the per-iteration view
+ * index to the dedicated driver push-constant slot and mark its modified
+ * bit so the KCACHE buffer is re-uploaded before the next draw.  The
+ * graphics/compute shader reads this slot via the load_view_index NIR
+ * lowering in terakan_nir_lower_abi.c, which materializes gl_ViewIndex
+ * for the application. */
 static inline void
 terakan_set_view_index_push_constant(struct terakan_gfx_command_writer * const command_writer,
                                      uint32_t const view_index)
@@ -296,6 +297,40 @@ terakan_set_view_index_push_constant(struct terakan_gfx_command_writer * const c
    command_writer->push_constants_state.driver_constants.view_index = view_index;
    command_writer->push_constants_state.driver_constants_modified |=
       BITFIELD_BIT(TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_VIEW_INDEX);
+}
+
+/* For VK_KHR_multiview view-loop expansion: redirect every bound CB_COLOR
+ * attachment and the DB depth/stencil attachment to render only to the
+ * single array slice corresponding to the current view. Per the
+ * VK_KHR_multiview specification, view N of viewMask writes to framebuffer
+ * layer baseArrayLayer + N; on Evergreen / TeraScale-2 the per-slice
+ * routing is encoded in CB_COLOR{M}_VIEW.SLICE_START (bits 0..10) and
+ * SLICE_MAX (bits 13..23), with SLICE_START == SLICE_MAX restricting the
+ * write to one layer. DB_DEPTH_VIEW uses the same SLICE_START / SLICE_MAX
+ * field layout (see AMD 3D Engine Programming Guide for AMD Evergreen,
+ * DB_DEPTH_VIEW register). Marks CB_COLOR_RTV and DB_DEPTH_STENCIL_BUFFER
+ * state pending so the apply re-emits the descriptors. */
+static void
+terakan_set_view_attachment_layer(struct terakan_gfx_command_writer * const command_writer,
+                                  uint32_t const view_index)
+{
+   struct terakan_state_draw * const state = &command_writer->state_draw;
+   uint32_t const view_field =
+      S_028C6C_SLICE_START(view_index) | S_028C6C_SLICE_MAX(view_index);
+
+   for (uint32_t i = 0; i < TERAKAN_COLOR_HW_RTV_COUNT; ++i) {
+      struct terakan_state_draw_cb_color * const cb = &state->cb_color_rtv.attachments[i];
+      if (cb->bo != NULL) {
+         cb->color.view = view_field;
+      }
+   }
+
+   if (state->db_depth_stencil_buffer.bo != NULL) {
+      state->db_depth_stencil_buffer.descriptor.view = view_field;
+      terakan_state_draw_set_pending(state, TERAKAN_STATE_DRAW_INDEX_DB_DEPTH_STENCIL_BUFFER);
+   }
+
+   terakan_state_draw_set_pending(state, TERAKAN_STATE_DRAW_INDEX_CB_COLOR_RTV);
 }
 
 /* Emit the actual PKT3_DRAW_INDEX_AUTO for one (sub-)draw.  Called either
@@ -345,31 +380,22 @@ terakan_CmdDraw(VkCommandBuffer const commandBuffer, uint32_t const vertexCount,
       terakan_bind_draw_params(command_writer, firstVertex, firstInstance);
    }
 
-   /* Phase 4.4 (2026-05-15) multiview draw expansion.
-    *
-    * If state->view_mask is non-zero, we are inside a multiview rendering
-    * scope (VkRenderingInfo.viewMask set by terakan_CmdBeginRendering --
-    * Phase 4.3, mesa PR #23).  Per VK_KHR_multiview, the driver expands
-    * the single draw into one draw per set bit in viewMask, writing the
-    * view index into gl_ViewIndex before each iteration.
-    *
-    * gl_ViewIndex is sourced from the view_index push constant (Phase 4.1,
-    * mesa PR #22) via the NIR lowering in terakan_nir_lower_abi.c
-    * (Phase 4.2, mesa PR #24).  Updating the push constant here +
-    * marking it modified is sufficient -- terakan_push_constants_apply
-    * (invoked transitively by terakan_before_draw -> hw_state apply)
-    * re-uploads the KCACHE buffer with the new view_index before each
-    * sub-draw.
-    *
-    * For view_mask == 0 (single-view, the default), we emit the original
-    * single draw with view_index = 0 (left at its default).
-    */
+   /* VK_KHR_multiview view-loop expansion.  When state->view_mask is
+    * non-zero (set by terakan_CmdBeginRendering from
+    * VkRenderingInfo.viewMask), the single draw expands into one draw
+    * per set bit.  For each iteration, write the per-view index into
+    * the driver push-constant slot consumed by the load_view_index NIR
+    * lowering (which materializes gl_ViewIndex for the application),
+    * and redirect every bound attachment to render only to its
+    * corresponding array slice.  view_mask == 0 keeps the original
+    * single-view path with view_index left at its default 0. */
    uint32_t view_mask = command_writer->state_draw.view_mask;
    if (view_mask != 0) {
       while (view_mask != 0) {
          uint32_t const view_idx = (uint32_t)__builtin_ctz(view_mask);
          view_mask &= view_mask - 1;
          terakan_set_view_index_push_constant(command_writer, view_idx);
+         terakan_set_view_attachment_layer(command_writer, view_idx);
          terakan_emit_draw_index_auto(command_writer, vertexCount,
                                       firstVertex, firstInstance);
       }
@@ -422,16 +448,18 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
       terakan_bind_draw_params(command_writer, (uint32_t)vertexOffset, firstInstance);
    }
 
-   /* Phase 4.4-ext (2026-05-15): multiview view-loop expansion for
-    * CmdDrawIndexed, mirroring CmdDraw's view-loop in mesa PR #25.
-    * Single-view path (view_mask == 0) is byte-identical to the
-    * original. */
+   /* VK_KHR_multiview view-loop expansion for indexed draws.  When
+    * view_mask != 0 the indexed draw expands to one
+    * PKT3_DRAW_INDEX_OFFSET per set bit, updating the view_index push
+    * constant and the per-attachment array slice before each.
+    * view_mask == 0 falls through to the original single-view path. */
    uint32_t view_mask = command_writer->state_draw.view_mask;
    if (view_mask != 0) {
       while (view_mask != 0) {
          uint32_t const view_idx = (uint32_t)__builtin_ctz(view_mask);
          view_mask &= view_mask - 1;
          terakan_set_view_index_push_constant(command_writer, view_idx);
+         terakan_set_view_attachment_layer(command_writer, view_idx);
          terakan_emit_draw_index_offset(command_writer, indexCount, firstIndex);
       }
    } else {
