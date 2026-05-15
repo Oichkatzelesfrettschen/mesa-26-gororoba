@@ -941,6 +941,15 @@ terakan_physical_device_get_capabilities(
     * arrives at the same NIR shape.  Declarative enable. */
    extensions_out->KHR_storage_buffer_storage_class = true;
 
+   /* VK_KHR_relaxed_block_layout (#145, Vulkan 1.1).
+    * Permits non-standard layout rules for std430-style UBO/SSBO blocks
+    * where vector members can straddle 16-byte alignment boundaries.
+    * Pure declarative: the layout is determined by the SPIR-V producer
+    * (glslangValidator with --enhanced-msgs), not by the driver.
+    * `nir_lower_explicit_io` already handles arbitrary offset arithmetic;
+    * no SFN-side change required. */
+   extensions_out->KHR_relaxed_block_layout = true;
+
    /* VK_KHR_shader_float16_int8 (#83, Vulkan 1.2).
     * Couples shaderFloat16 (now enabled with the SFN f2f16/f2f32
     * handlers) and shaderInt8.  Bobcat exposes both indirectly via the
@@ -1053,9 +1062,16 @@ terakan_physical_device_get_capabilities(
    /* VK_KHR_bind_memory2 (#158, Vulkan 1.1). */
    extensions_out->KHR_bind_memory2 = true;
 
-   /* TODO(Triang3l) VK_KHR_maintenance3 (#169, Vulkan 1.1) when vkGetDescriptorSetLayoutSupport
-    * is implemented.
-    */
+   /* VK_KHR_maintenance3 (#169, Vulkan 1.1).
+    * Adds vkGetDescriptorSetLayoutSupport (implemented in
+    * terakan_descriptor_set_layout.c) plus the maxPerSetDescriptors +
+    * maxMemoryAllocationSize properties.  The descriptor query returns
+    * supported=true unless the layout's total descriptorCount exceeds
+    * 4096 (the conservative resource-table cap also enforced inside
+    * terakan_CreateDescriptorSetLayout). */
+   extensions_out->KHR_maintenance3 = true;
+   properties_out->maxPerSetDescriptors = 4096;
+   properties_out->maxMemoryAllocationSize = UINT64_C(1) << 32; /* 4 GiB cap, hardware DMA limit. */
 
    /* VK_KHR_timeline_semaphore (#208, Vulkan 1.2). */
    extensions_out->KHR_timeline_semaphore = true;
