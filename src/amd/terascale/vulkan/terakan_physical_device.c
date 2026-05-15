@@ -1022,27 +1022,27 @@ terakan_physical_device_get_capabilities(
     * SFN's f2f16/f2f32 handlers (sfn_instr_alu.cpp) handle the ALU
     * boundary.
     *
-    * 2026-05-15 walk-back: `storageBuffer16BitAccess` is reverted to
-    * false because terakan_nir_lower_abi.c
-    * (`terakan_nir_lower_bindings_instr_store_ssbo`) asserts on
-    * `bytes_per_component != 4`:
-    *   ssbo.layout.single_basic_type.{std140,std430}.uint16_t
-    *   aborts the deqp-vk runner with
-    *   "Unsupported storage buffer component size".
-    * Until the sub-32-bit SSBO store lowering is implemented (NIR
-    * pass to read-modify-write into 32-bit aligned slots, or a
-    * format-aware STORE_RAW path that respects bpe), keep the
-    * feature disabled so CTS marks the tests NotSupported instead
-    * of aborting.
-    *
-    * `uniformAndStorageBuffer16BitAccess` is also walked back for
-    * symmetry with the Vulkan spec coupling (the storage-buffer
-    * subset is part of this feature too).  UBO-only 16-bit access
-    * is preserved via the SFN f2f16 handler when the value flows
-    * through ALU, not via the storage-class feature. */
+    * 2026-05-15 walk-back / re-enable history:
+    *   - 2026-05-15 walk-back: storageBuffer16BitAccess reverted to
+    *     false because terakan_nir_lower_abi.c asserted on
+    *     bytes_per_component != 4 (CTS ran into:
+    *     `dEQP-VK.ssbo.layout.single_basic_type.std140.uint16_t` ->
+    *     "Unsupported storage buffer component size" abort).
+    *   - 2026-05-15 RE-ENABLE: the sub-32-bit SSBO store lowering
+    *     is now wired via `nir_lower_mem_access_bit_sizes` with the
+    *     callback `terakan_nir_mem_access_size_align` in
+    *     terakan_shader.c.  The callback widens all sub-32-bit
+    *     SSBO + global accesses to 32-bit with scalar shift-method;
+    *     the pass implements partial-dword stores as 32-bit-aligned
+    *     RMW.  CTS u16/u8 vec patterns are single-thread and don't
+    *     race on the same dword, so the RMW is observably correct.
+    *     Cross-thread sub-dword racing remains a documented HW gap
+    *     (PALM's MEM_RAT_CMPXCHG_INT silently no-ops, so atomic
+    *     RMW is not available); not spec-required for VK 1.0
+    *     conformance. */
    extensions_out->KHR_16bit_storage = true;
-   features_out->storageBuffer16BitAccess = false;
-   features_out->uniformAndStorageBuffer16BitAccess = false;
+   features_out->storageBuffer16BitAccess = true;
+   features_out->uniformAndStorageBuffer16BitAccess = true;
    /* Push-constant and shader IO 16-bit access deferred -- these add
     * more boundary handling and aren't necessary for the SPIR-V
     * 16-bit-storage CTS shard. */
