@@ -183,8 +183,7 @@ proposing a terakan fix, consult:
 ## Comment + documentation hygiene policy
 
 Scope: all agents (Claude, Codex, humans).  All checked-in artifacts:
-source code AND markdown docs.  This section is the complete,
-self-contained rule set -- no external citations required.
+source code AND markdown docs.  
 
 ### Priority order
 
