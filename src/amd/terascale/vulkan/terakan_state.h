@@ -172,6 +172,19 @@ struct terakan_state_draw {
     */
    BITSET_DECLARE(state_pending, TERAKAN_STATE_DRAW_INDEX_COUNT);
 
+   /* Phase 4.3 (2026-05-15): multiview view mask from the active
+    * VkRenderingInfo.viewMask (dynamic-rendering path) or
+    * VkRenderPassMultiviewCreateInfo.pViewMasks[subpass] (legacy
+    * renderpass path).  Each set bit corresponds to one view that
+    * must be rendered.  0 = single-view (default, non-multiview).
+    *
+    * Read by terakan_CmdDraw* (Phase 4.4, steinmarder task #143) to
+    * decide whether to expand a single draw into popcount(view_mask)
+    * draws -- one per view -- with the view_index push constant
+    * (Phase 4.1, mesa PR #22) updated before each.
+    */
+   uint32_t view_mask;
+
    /* Configuration of state setting commands themselves. */
    bool cmd_set_depth_clamp_enable_sets_depth_clip_enable;
 
