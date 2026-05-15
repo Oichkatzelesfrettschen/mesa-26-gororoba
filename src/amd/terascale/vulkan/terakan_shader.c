@@ -337,6 +337,40 @@ terakan_nir_should_vectorize_load_store(unsigned const align_mul, unsigned const
       }
    }
 
+   /* Width-promoted alignment guard (2026-05-15):
+    *
+    * The standard NIR vectorizer can also produce a "wider type" merge,
+    * promoting e.g. two sub-32-bit element loads at byte offsets 6 and 8
+    * into a single bit_size=32 load at offset 6.  The address alignment
+    * of the original sub-32-bit elements (2-byte for u16, 1-byte for u8)
+    * is what bounds the safe VFETCH width on r600/Evergreen, not the
+    * post-merge bit_size.
+    *
+    * Detect width-promotion by comparing the input intrinsic's element
+    * bit_size against the callback's proposed bit_size.  When the
+    * promotion crosses the 4-byte VFETCH-alignment boundary
+    * (combined_align < min(vector_bytes, 4)), refuse the merge so the
+    * loads stay narrow and stay aligned.
+    *
+    * For straight same-bit_size merges (e.g., two u32 -> uvec2), align_mul
+    * may legitimately be 0 ("no hint") -- the original alignment check
+    * stays gated by `bit_size < 32` so it does not refuse legitimate
+    * 32-bit merges when align hints are absent.
+    *
+    * Cite: D3D 11.3 §4.4.6 Element Alignment; Barts/Cypress/Palm
+    * testing (same source as preceding gate); reproducer:
+    * dEQP-VK.ssbo.readonly.layout.basic_unsized_array.scalar.u16vec3
+    * -- "Counter value incorrect" caused by r32 fetch at byte 6.
+    */
+   {
+      unsigned const low_elem_bits = low->def.bit_size;
+      if (low_elem_bits < bit_size && low_elem_bits < 32u) {
+         if (nir_combined_align(align_mul, align_offset) < MIN2(vector_bytes, 4u)) {
+            return false;
+         }
+      }
+   }
+
    /* According to testing on Barts, for elements larger than 4 bytes, bounds checking only
     * considers the first 4 bytes, and if they are within the buffer size, the entire element is
     * fetched. This may result in data outside the memory range bound to the buffer being loaded,
