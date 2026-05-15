@@ -893,16 +893,21 @@ terakan_physical_device_get_capabilities(
     * subgroupSupportedStages bitmask. */
    properties_out->subgroupSize = 64;
    properties_out->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
-   /* Advertise BASIC only.  VOTE / BALLOT require the LDS-mediated
-    * cross-lane lowering (terakan_nir_lower_subgroup_lds.c) to be
-    * scheduler-stable; an SFN scheduler assertion
-    * (sfn_instr_alu.h:90 -- !has_alu_flag(alu_is_lds)) fires today on
-    * the simplest subgroupbarrier shader once the LDS pass is engaged.
-    * Until that SFN-side bug is resolved, advertising BASIC alone
-    * keeps CTS reporting NotSupported for the higher tiers instead of
-    * aborting. */
+   /* BASIC + VOTE + BALLOT.  VOTE and BALLOT both route through the
+    * LDS-mediated cross-lane lowering in
+    * terakan_nir_lower_subgroup_lds.c, which emits a single
+    * LDS_ATOMIC_OR_RET (per AMD Evergreen-Family Instruction Set
+    * Architecture LDS_ATOMIC family) plus exactly one workgroup
+    * barrier per ballot, replacing the earlier three-barrier shape
+    * that exhausted the SFN VLIW5 scheduler's GROUP_BARRIER slot
+    * pinning at sfn_instr_alu.h:90.  ARITHMETIC / SHUFFLE / CLUSTERED
+    * / QUAD remain unadvertised pending the matching scan / shuffle
+    * sequences; dEQP-VK.subgroups.<tier> correctly reports
+    * NotSupported for those. */
    properties_out->subgroupSupportedOperations =
-      VK_SUBGROUP_FEATURE_BASIC_BIT;
+      VK_SUBGROUP_FEATURE_BASIC_BIT |
+      VK_SUBGROUP_FEATURE_VOTE_BIT |
+      VK_SUBGROUP_FEATURE_BALLOT_BIT;
    properties_out->subgroupQuadOperationsInAllStages = false;
 
    /* VK_KHR_maintenance1 (#70, Vulkan 1.1).
