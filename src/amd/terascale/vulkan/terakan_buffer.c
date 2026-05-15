@@ -238,6 +238,14 @@ terakan_CreateBuffer(VkDevice const deviceHandle, VkBufferCreateInfo const * con
 {
    struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
 
+   /* VUID-VkBufferCreateInfo-size-00912: pCreateInfo->size must be > 0.
+    * The shared vk_buffer_init asserts this in debug builds; guard
+    * here so spec-invalid callers get an error return instead of an
+    * assertion crash. */
+   if (pCreateInfo->size == 0) {
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   }
+
    struct terakan_buffer * const buffer =
       vk_alloc2(&device->vk.alloc, pAllocator, sizeof(struct terakan_buffer),
                 alignof(struct terakan_buffer), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
