@@ -1513,20 +1513,108 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       /* ========== Buffer UAV (SSBO / storage-texel-buffer) ==========
        * Unchanged path: program CB_COLOR{M} with a synthetic
        * buffer-format descriptor covering the whole BO. */
+
+      /* Storage-texel-buffer minalign fix (2026-05-14): mirror the
+       * graphics buffer-UAV push-constant swap from terakan_state.c
+       * here in compute.  The descriptor build in terakan_descriptor.c
+       * encodes the buffer view's base-granularity offset (in elements)
+       * in `color.view`.  The shader's terakan_nir_buffer_uav_coord
+       * lowering adds the per-UAV push constant
+       * `buffer_uav_base_granularity_offset[uav_mr_idxs[m]]` to the
+       * coord via KCACHE bank 15 load (the index is the mutable-
+       * resource UAV bit position, matching the shader's
+       * uav_index_zero_based numbering).  Graphics keeps this in sync
+       * at bind time; the compute path previously did not, causing the
+       * shader to add 0 and writes to land off by `offset/bpe` elements.
+       * The fix mirrors terakan_state.c:1086-1101 in the BUFFER branch.
+       * See findings/active/2026-05-14-r32-buffer-minalign-rca.md. */
+      struct terakan_state_draw_cb_color_uav const * const cb_uav_for_offset =
+         &cb_uavs[uav_mr_idxs[m]];
+      if (G_028C70_RESOURCE_TYPE(cb_uav_for_offset->color.info) == V_028C70_BUFFER) {
+         uint32_t * const uav_base_granularity_offset_constant =
+            &command_writer->push_constants_state.driver_constants
+                .buffer_uav_base_granularity_offset[uav_mr_idxs[m]];
+         if (*uav_base_granularity_offset_constant != cb_uav_for_offset->color.view) {
+            *uav_base_granularity_offset_constant = cb_uav_for_offset->color.view;
+            command_writer->push_constants_state.driver_constants_modified |=
+               BITFIELD_BIT(
+                  TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_BUFFER_UAV_BASE_GRANULARITY_OFFSET);
+         }
+      }
+
       uint32_t const * const desc = state->resource_descriptors.fs[sidx];
       uint32_t const buf_size = desc[1] + 1;
       uint32_t const width_elements = buf_size / 4;
       uint32_t const pitch_aligned = (width_elements + 63) & ~63u;
       uint32_t const pitch_tile_max = (pitch_aligned / 8) - 1;
-      uint32_t const dim = width_elements > 0 ? width_elements - 1 : 0;
-      uint32_t const cb_color_info =
-         S_028C70_FORMAT(V_028C70_COLOR_32) |
-         S_028C70_ARRAY_MODE(V_028C70_ARRAY_LINEAR_ALIGNED) |
-         S_028C70_NUMBER_TYPE(V_028C70_NUMBER_UINT) |
-         S_028C70_COMP_SWAP(0) |
-         S_028C70_BLEND_BYPASS(1) |
-         S_028C70_RESOURCE_TYPE(V_028C70_BUFFER) |
-         S_028C70_RAT(1);
+      /* Minalign fix part 2 (2026-05-14): the shader adds
+       * buffer_uav_base_granularity_offset[m] to its coord (set up
+       * by the swap above).  For a view with a non-zero offset, the
+       * shader's final HW element index reaches up to
+       *     (elements - 1) + offset_in_elements
+       * so dim must allow that range.  cb_uav_for_offset->color.dim
+       * already has this value baked in (computed in
+       * terakan_descriptor.c:97 as offset_bytes/bpe + elements - 1).
+       * For BUFFER-resource UAVs use that; for non-BUFFER fall back
+       * to width_elements-1 (existing behavior for SSBOs that don't
+       * use the buffer-view path). */
+      uint32_t const dim_default = width_elements > 0 ? width_elements - 1 : 0;
+
+      /* Format-aware CB_COLOR{M}_INFO selection (2026-05-15):
+       *
+       * For storage TEXEL buffers (VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER),
+       * cb_uav.color.info is populated from buffer_view->color (see
+       * terakan_buffer.c CreateBufferView) with the correct FORMAT,
+       * NUMBER_TYPE, COMP_SWAP, and a valid (offset_bytes/bpe + elements - 1)
+       * dim.  The texel buffer view is what makes MEM_RAT_STORE_TYPED
+       * write the correct number of channels at the correct byte stride.
+       *
+       * For storage BUFFERs (VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, "SSBO"),
+       * the descriptor set path may leave cb_uav.color zeroed; the
+       * synthetic R32-uint descriptor covering the whole BO is the
+       * correct fallback (SSBO is word-addressed; format doesn't matter).
+       *
+       * Heuristic: use cb_uav.color when it has a valid format
+       * (FORMAT != INVALID, RAT bit set), else synthetic R32. */
+      bool const use_cb_uav_color =
+         G_028C70_RESOURCE_TYPE(cb_uav_for_offset->color.info) == V_028C70_BUFFER &&
+         G_028C70_FORMAT(cb_uav_for_offset->color.info) != TERASCALE_FORMAT_INDEX_INVALID;
+
+      uint32_t const dim = use_cb_uav_color
+         ? cb_uav_for_offset->color.dim
+         : dim_default;
+      uint32_t const cb_color_info = use_cb_uav_color
+         ? (cb_uav_for_offset->color.info | S_028C70_BLEND_BYPASS(1) | S_028C70_RAT(1))
+         : (S_028C70_FORMAT(V_028C70_COLOR_32) |
+            S_028C70_ARRAY_MODE(V_028C70_ARRAY_LINEAR_ALIGNED) |
+            S_028C70_NUMBER_TYPE(V_028C70_NUMBER_UINT) |
+            S_028C70_COMP_SWAP(0) |
+            S_028C70_BLEND_BYPASS(1) |
+            S_028C70_RESOURCE_TYPE(V_028C70_BUFFER) |
+            S_028C70_RAT(1));
+      /* Format-aware PITCH+SLICE (2026-05-15 follow-up):
+       *
+       * The synthetic pitch_tile_max derives from width_elements=buf_size/4
+       * (r32-hardcoded).  For sub-r32 formats (r8, r16) this produces a
+       * pitch *in bytes* that's smaller than the kernel-required
+       * pipe_interleave (256B on Palm) and the kernel CS validator
+       * rejects the IB with
+       *
+       *   evergreen_surface_check_linear_aligned: cb pitch 64 invalid
+       *   must be aligned with 256
+       *
+       * The buffer-view's color.pitch was computed by
+       * terakan_color_descriptor_calculate_buffer_pitch_slice with the
+       * actual bytes_per_element, so it satisfies the alignment for any
+       * supported format.  Use it when the descriptor is valid; fall
+       * back to the synthetic value for SSBO paths.
+       */
+      uint32_t const cb_color_pitch = use_cb_uav_color
+         ? cb_uav_for_offset->color.pitch
+         : pitch_tile_max;
+      uint32_t const cb_color_slice = use_cb_uav_color
+         ? cb_uav_for_offset->color.slice
+         : 0;
 
       uint32_t const bo_ref = terakan_bo_reference_writer_add_reference(
          &command_writer->base.bo_reference_writer,
@@ -1539,8 +1627,8 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       *p++ = PKT3(PKT3_SET_CONTEXT_REG, 13, 0) | COMPUTE_MODE_BIT;
       *p++ = ((R_028C60_CB_COLOR0_BASE + m * 0x3Cu) - 0x28000u) >> 2;
       *p++ = 0;                                 /* CB_COLOR{M}_BASE (relocated) */
-      *p++ = pitch_tile_max;                    /* CB_COLOR{M}_PITCH */
-      *p++ = 0;                                 /* CB_COLOR{M}_SLICE */
+      *p++ = cb_color_pitch;                    /* CB_COLOR{M}_PITCH */
+      *p++ = cb_color_slice;                    /* CB_COLOR{M}_SLICE */
       *p++ = 0;                                 /* CB_COLOR{M}_VIEW */
       *p++ = cb_color_info;                     /* CB_COLOR{M}_INFO */
       *p++ = S_028C74_NON_DISP_TILING_ORDER(1); /* CB_COLOR{M}_ATTRIB */
@@ -1568,12 +1656,21 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
             device->uav_immediate_bo, true, true,
             TERAKAN_BO_PRIORITY_SHADER_RW_BUFFER);
 
+         /* Index uav_immediate_va_shr8 by the actual bytes-per-texel log2,
+          * not the legacy hardcoded "[2]" (= bpe 4).  For multi-channel
+          * texel buffers (bpe 8, 16) the CB_IMMED slot at index 2 points
+          * to the wrong-stride immediate BO and corrupts the texel-write
+          * return path. */
+         unsigned const cb_immed_bpe_log2 = use_cb_uav_color
+            ? util_logbase2(
+                 terascale_format_bytes_per_block[G_028C70_FORMAT(cb_color_info)])
+            : 2;
          p = terakan_gfx_command_writer_emit(
             command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
          if (unlikely(p == NULL)) return;
          *p++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0) | COMPUTE_MODE_BIT;
          *p++ = ((R_028B9C_CB_IMMED0_BASE - 0x28000u) >> 2) + m;
-         *p++ = device->uav_immediate_va_shr8[2];
+         *p++ = device->uav_immediate_va_shr8[cb_immed_bpe_log2];
          *p++ = PKT3(PKT3_NOP, 0, 0) | COMPUTE_MODE_BIT;
          *p++ = 4 * immed_bo_ref;
          terakan_gfx_command_writer_emit_done(command_writer, p);
