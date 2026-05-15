@@ -341,10 +341,11 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
  * KCACHE and push-const lowering is separate.
  *
  * Shift method is `scalar` because the cached MEM_RAT_CMPXCHG_INT
- * path silently no-ops on this silicon family.  ADD/XCHG/INC/DEC at
- * the same address succeed, but CMPXCHG with a matching compare
- * leaves memory unchanged across payload-lane permutations, so
- * atomic-based shift methods are unavailable.
+ * path silently no-ops on the validated PALM/SUMO Evergreen
+ * TeraScale-2 target.  ADD/XCHG/INC/DEC at the same address succeed,
+ * but CMPXCHG with a matching compare leaves memory unchanged across
+ * payload-lane permutations.  Do not generalize that CMPXCHG failure
+ * to every r600-family GPU without chip-specific probes.
  *
  * For dword-aligned sub-32-bit stores the upstream pass widens via a
  * generated atomic_swap (cmpxchg-shape) RMW; the downstream
@@ -1184,11 +1185,12 @@ terakan_shader_lower_and_optimize_post_link(
     *
     * may_lower_unaligned_stores_to_atomics=true: the pass generates
     * atomic_swap (cmpxchg-shape) for partial-dword stores.  The cached
-    * MEM_RAT_CMPXCHG_INT path is silicon-broken on this chip family,
-    * so the downstream cmpxchg-to-speculative-xchg lowering rewrites
-    * those generated cmpxchgs to load+bcsel+atomic_xchg.  Single-thread
-    * test patterns are correct under this chain; cross-thread
-    * sub-dword racing remains a documented gap.
+    * MEM_RAT_CMPXCHG_INT path is silicon-broken on the validated
+    * PALM/SUMO Evergreen TeraScale-2 target, so the downstream
+    * cmpxchg-to-speculative-xchg lowering rewrites those generated
+    * cmpxchgs to load+bcsel+atomic_xchg.  Single-thread test patterns
+    * are correct under this chain; cross-thread sub-dword racing
+    * remains a documented gap.
     */
    nir_lower_mem_access_bit_sizes_options mem_access_options = {
       .callback = terakan_nir_mem_access_size_align,

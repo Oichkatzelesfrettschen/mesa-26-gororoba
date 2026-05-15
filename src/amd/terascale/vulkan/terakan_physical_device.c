@@ -1019,9 +1019,9 @@ terakan_physical_device_get_capabilities(
     * by `nir_lower_mem_access_bit_sizes` (callback
     * `terakan_nir_mem_access_size_align` in terakan_shader.c).  This
     * is correct for single-thread sub-dword patterns; cross-thread
-    * sub-dword racing remains a documented HW gap (MEM_RAT_CMPXCHG_INT
-    * silently no-ops on this chip family, so atomic RMW is not
-    * available). */
+    * sub-dword racing remains a documented HW gap on the validated
+    * PALM/SUMO Evergreen TeraScale-2 target (MEM_RAT_CMPXCHG_INT
+    * silently no-ops there, so atomic RMW is not available). */
    extensions_out->KHR_16bit_storage = true;
    features_out->storageBuffer16BitAccess = true;
    features_out->uniformAndStorageBuffer16BitAccess = true;

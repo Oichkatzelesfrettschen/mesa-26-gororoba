@@ -180,6 +180,22 @@ proposing a terakan fix, consult:
 - `steinmarder/docs/workspace/hostname-policy.md`       -- raw-IP ban
 - `steinmarder/docs/workspace/mesa-26-debug-and-mesa-debug.md` -- legacy dirs
 
+## Source-comment durability
+
+Terakan/r600 source comments must be readable without chat, PR, task,
+or same-day context.
+
+- Do not write ambiguous referents like "this family", "this chip",
+  "this silicon", "the current GPU", or "our target" in source comments.
+- Name the exact scope: for example `PALM/SUMO Evergreen TeraScale-2`,
+  `R600/R700 TeraScale-1`, `Cayman/Northern Islands TeraScale-3`, or
+  `CHIP_CEDAR..CHIP_ARUBA` when the code really covers the full set.
+- If evidence is only from x130e, say `validated PALM/SUMO Evergreen
+  TeraScale-2 target` and explicitly state that broader r600-family
+  generalization needs chip-specific probes.
+- Keep issue numbers, PR numbers, phase labels, and dates out of source
+  comments. Put chronology in steinmarder findings/docs instead.
+
 ## Key subsystems
 
 - `src/amd/terascale/vulkan/`      terakan Vulkan driver
