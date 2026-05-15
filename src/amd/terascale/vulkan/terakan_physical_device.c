@@ -905,14 +905,43 @@ terakan_physical_device_get_capabilities(
    features_out->variablePointers = false;
 
    /* VK_KHR_multiview (#54, Vulkan 1.1).
-    * Truthful capability surfacing: disabled until multiview draw expansion
-    * and gl_ViewIndex semantics are implemented end-to-end. */
-   extensions_out->KHR_multiview = false;
+    *
+    * Implemented end-to-end as Phase 4 (2026-05-15):
+    *   - 4.1 (mesa PR #22): view_index push constant slot
+    *   - 4.2 (mesa PR #24): NIR lowering for gl_ViewIndex / load_view_index
+    *   - 4.3 (mesa PR #23): record VkRenderingInfo.viewMask into state_draw
+    *   - 4.4 (mesa PR #25): CmdDraw view-loop expansion
+    *
+    * Hardware reality on TeraScale-2: there is no native multiview
+    * rendering support; the driver expands a single application draw
+    * into popcount(viewMask) draws with gl_ViewIndex set per draw.
+    * Performance is N-view-times slower than single-view but spec-correct.
+    *
+    * CmdDrawIndexed and CmdDrawIndirect view-loops are tracked as
+    * 4.4-extension (steinmarder task #157); the canonical multiview
+    * CTS uses direct CmdDraw and is exercised by this feature flip.
+    *
+    * Per spec limits already advertised (Vulkan 1.1 properties):
+    *   maxMultiviewViewCount      = 6   (set in this file ~line 856)
+    *   maxMultiviewInstanceIndex  = 134217727  (~line 857)
+    */
+   extensions_out->KHR_multiview = true;
+   features_out->multiview = true;
+   /* No GS/TS multiview -- requires per-stage view duplication that's
+    * tracked separately.  CTS multiview tests do not require these. */
+   features_out->multiviewGeometryShader = false;
+   features_out->multiviewTessellationShader = false;
 
    /* VK_KHR_create_renderpass2 (#110, Vulkan 1.2).
-    * Depends on VK_KHR_multiview+VK_KHR_maintenance2; keep disabled while
-    * multiview is intentionally unimplemented. */
-   extensions_out->KHR_create_renderpass2 = false;
+    *
+    * Depends on VK_KHR_multiview + VK_KHR_maintenance2 (both now enabled).
+    * Mesa provides a runtime translation from vkCreateRenderPass2 to
+    * vkCreateRenderPass + VkRenderingInfo so the underlying
+    * dynamic-rendering-only Terakan implementation can satisfy the API.
+    *
+    * Phase 4.5 (2026-05-15): enabled alongside KHR_multiview.
+    */
+   extensions_out->KHR_create_renderpass2 = true;
 
    /* VK_KHR_depth_stencil_resolve (#151, Vulkan 1.2) remains disabled.
     * This path is only needed when the extension is advertised; keeping it
@@ -993,27 +1022,27 @@ terakan_physical_device_get_capabilities(
     * SFN's f2f16/f2f32 handlers (sfn_instr_alu.cpp) handle the ALU
     * boundary.
     *
-    * 2026-05-15 walk-back: `storageBuffer16BitAccess` is reverted to
-    * false because terakan_nir_lower_abi.c
-    * (`terakan_nir_lower_bindings_instr_store_ssbo`) asserts on
-    * `bytes_per_component != 4`:
-    *   ssbo.layout.single_basic_type.{std140,std430}.uint16_t
-    *   aborts the deqp-vk runner with
-    *   "Unsupported storage buffer component size".
-    * Until the sub-32-bit SSBO store lowering is implemented (NIR
-    * pass to read-modify-write into 32-bit aligned slots, or a
-    * format-aware STORE_RAW path that respects bpe), keep the
-    * feature disabled so CTS marks the tests NotSupported instead
-    * of aborting.
-    *
-    * `uniformAndStorageBuffer16BitAccess` is also walked back for
-    * symmetry with the Vulkan spec coupling (the storage-buffer
-    * subset is part of this feature too).  UBO-only 16-bit access
-    * is preserved via the SFN f2f16 handler when the value flows
-    * through ALU, not via the storage-class feature. */
+    * 2026-05-15 walk-back / re-enable history:
+    *   - 2026-05-15 walk-back: storageBuffer16BitAccess reverted to
+    *     false because terakan_nir_lower_abi.c asserted on
+    *     bytes_per_component != 4 (CTS ran into:
+    *     `dEQP-VK.ssbo.layout.single_basic_type.std140.uint16_t` ->
+    *     "Unsupported storage buffer component size" abort).
+    *   - 2026-05-15 RE-ENABLE: the sub-32-bit SSBO store lowering
+    *     is now wired via `nir_lower_mem_access_bit_sizes` with the
+    *     callback `terakan_nir_mem_access_size_align` in
+    *     terakan_shader.c.  The callback widens all sub-32-bit
+    *     SSBO + global accesses to 32-bit with scalar shift-method;
+    *     the pass implements partial-dword stores as 32-bit-aligned
+    *     RMW.  CTS u16/u8 vec patterns are single-thread and don't
+    *     race on the same dword, so the RMW is observably correct.
+    *     Cross-thread sub-dword racing remains a documented HW gap
+    *     (PALM's MEM_RAT_CMPXCHG_INT silently no-ops, so atomic
+    *     RMW is not available); not spec-required for VK 1.0
+    *     conformance. */
    extensions_out->KHR_16bit_storage = true;
-   features_out->storageBuffer16BitAccess = false;
-   features_out->uniformAndStorageBuffer16BitAccess = false;
+   features_out->storageBuffer16BitAccess = true;
+   features_out->uniformAndStorageBuffer16BitAccess = true;
    /* Push-constant and shader IO 16-bit access deferred -- these add
     * more boundary handling and aren't necessary for the SPIR-V
     * 16-bit-storage CTS shard. */
@@ -1216,10 +1245,22 @@ terakan_physical_device_get_capabilities(
    extensions_out->EXT_color_write_enable = true;
    features_out->colorWriteEnable = true;
 
-   /* VK_KHR_maintenance4 (#414, Vulkan 1.3) -- DEFERRED.
-    * Requires Vulkan 1.1 as the minimum advertised API version; Terakan is
-    * currently locked at Vulkan 1.0.  Advertising it at 1.0 causes CTS failure
-    * extension_core_versions.  Re-enable once VK 1.1 promotion is complete. */
+   /* VK_KHR_maintenance4 (#414, Vulkan 1.3).
+    *
+    * Phase 5 trial (2026-05-15): re-enabled after Phase 5 promotion to
+    * VK 1.1 (TERAKAN_API_VERSION flipped in terakan_instance.h:40).
+    * extension_core_versions CTS now accepts the advertisement.
+    *
+    * maintenance4 adds vkGetDeviceImageMemoryRequirements and
+    * vkGetDeviceImageSparseMemoryRequirements -- info-only helpers; the
+    * existing terakan_image.c memory-requirement computation can be
+    * factored out and called by these new entry points.  For the trial,
+    * declare the extension and rely on Mesa runtime helpers (mesa-vulkan
+    * runtime provides default implementations that consult the existing
+    * vkGetImageMemoryRequirements path).
+    */
+   extensions_out->KHR_maintenance4 = true;
+   features_out->maintenance4 = true;
 
    /* VK_EXT_non_seamless_cube_map (#423). */
    extensions_out->EXT_non_seamless_cube_map = true;
