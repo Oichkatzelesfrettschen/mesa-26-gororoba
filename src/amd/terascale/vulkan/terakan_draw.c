@@ -497,7 +497,8 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
  */
 static void
 terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const command_writer,
-                                 uint64_t const buffer_va,
+                                 uint64_t const buffer_offset,
+                                 uint64_t const buffer_size,
                                  uint32_t const drawCount, uint32_t const stride,
                                  struct terakan_bo * const bo, bool const indexed)
 {
@@ -507,31 +508,59 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
       indexed ? EG_PKT3_DRAW_INDEX_INDIRECT : EG_PKT3_DRAW_INDIRECT;
    uint32_t const source_select =
       indexed ? V_0287F0_DI_SRC_SEL_DMA : V_0287F0_DI_SRC_SEL_AUTO_INDEX;
+   uint64_t const draw_struct_size = indexed ? 20u : 16u;
 
    for (uint32_t i = 0; i < drawCount; i++) {
-      uint64_t const draw_va = buffer_va + (uint64_t)i * stride;
+      uint64_t const draw_data_offset = buffer_offset + (uint64_t)i * stride;
 
-      /* Set VGT_DMA_BASE_HI + VGT_DMA_BASE (config regs at 0x287E4, 0x287E8). */
+      /* Kernel CS validator (radeon/evergreen_cs.c::evergreen_packet3_check
+       * case PACKET3_DRAW_INDIRECT) gates each draw on
+       * `data_offset + struct_size <= radeon_bo_size(reloc->robj)`.  Skip
+       * any iteration that would overflow rather than letting the
+       * kernel reject the whole submission. */
+      if (unlikely(draw_data_offset + draw_struct_size > buffer_size ||
+                   draw_data_offset > UINT32_MAX)) {
+         continue;
+      }
+
+      /* SET_BASE + DRAW_INDIRECT pair (4 + 3 = 7 IB dwords per draw).
+       *
+       * The radeon DRM CS validator requires PACKET3_SET_BASE
+       * (BASE_INDEX = 1, "DX11 Draw_Index_Indirect Patch Table Base")
+       * to register the indirect-draw buffer with its tracker before
+       * PACKET3_DRAW_INDIRECT.  SET_BASE consumes one RELOC entry and
+       * patches ADDR_LO + ADDR_HI with reloc->gpu_offset; the
+       * userspace-written ADDR fields are overwritten regardless.
+       *
+       * Counts encoded into PKT3 are (total DWs - 2):
+       *   SET_BASE        : 4 total -> count 2
+       *   DRAW_*_INDIRECT : 3 total -> count 1
+       *
+       * Writing VGT_DMA_BASE_HI/LO via SET_CONTEXT_REG is NOT a valid
+       * substitute -- the kernel rejects DRAW_INDIRECT when its
+       * indirect_draw_buffer_size tracker is unset, which is only
+       * populated by SET_BASE. */
       uint32_t * packet = terakan_gfx_command_writer_emit_with_bo(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 4 + 3, 1, 0, 1);
       if (unlikely(packet == NULL)) {
          return;
       }
 
-      *packet++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
-      *packet++ = (R_0287E4_VGT_DMA_BASE_HI - 0x8000) >> 2;
-      uint32_t const * const packet_base_hi = packet;
-      *packet++ = (uint32_t)(draw_va >> 32) & 0xFF;  /* VGT_DMA_BASE_HI */
-      uint32_t const * const packet_base_lo = packet;
-      *packet++ = (uint32_t)draw_va;                   /* VGT_DMA_BASE */
+      *packet++ = PKT3(EG_PKT3_SET_BASE, 2, 0);
+      *packet++ = 1; /* BASE_INDEX = DX11 Draw_Index_Indirect Patch Table */
+      uint32_t const * const packet_addr_lo = packet;
+      *packet++ = 0; /* ADDR_LO -- kernel patches from reloc */
+      uint32_t const * const packet_addr_hi = packet;
+      *packet++ = 0; /* ADDR_HI -- kernel patches from reloc */
 
-      *packet++ = PKT3(draw_opcode, 2, 0);
-      *packet++ = 0; /* data_offset (0 since base address is already set) */
+      *packet++ = PKT3(draw_opcode, 1, 0);
+      *packet++ = (uint32_t)draw_data_offset; /* bytes from BO base to args */
       *packet++ = S_0287F0_SOURCE_SELECT(source_select);
 
-      /* WDDM patch IDs are 0 on the DRM path. */
+      /* WDDM patch IDs are 0 on the DRM path; the helper reduces to a
+       * single 40-bit reloc that the kernel consumes at SET_BASE. */
       terakan_gfx_command_writer_add_relocation_for_40_bits(
-         command_writer, &packet, packet_base_lo, packet_base_hi,
+         command_writer, &packet, packet_addr_lo, packet_addr_hi,
          0, 0,
          terakan_bo_reference_writer_add_reference(
             &command_writer->base.bo_reference_writer,
@@ -559,7 +588,8 @@ terakan_CmdDrawIndirect(VkCommandBuffer const commandBuffer,
    struct terakan_gfx_command_writer * const command_writer = cmd->command_writer.gfx;
    struct terakan_buffer const * const buffer = terakan_buffer_from_handle(bufferHandle);
 
-   uint64_t const buffer_va = buffer->va + offset;
+   /* SET_BASE registers the BO base via reloc; the application offset
+    * + per-draw stride go into DRAW_INDIRECT's data_offset field. */
    struct terakan_bo * const bo = (struct terakan_bo *)buffer->bo;
 
    /* VK_KHR_multiview view-loop expansion for indirect draws.  When
@@ -573,11 +603,13 @@ terakan_CmdDrawIndirect(VkCommandBuffer const commandBuffer,
          view_mask &= view_mask - 1;
          terakan_set_view_index_push_constant(command_writer, view_idx);
          terakan_set_view_attachment_layer(command_writer, view_idx);
-         terakan_emit_draw_indirect_batch(command_writer, buffer_va,
+         terakan_emit_draw_indirect_batch(command_writer, offset,
+                                          buffer->vk.size,
                                           drawCount, stride, bo, false);
       }
    } else {
-      terakan_emit_draw_indirect_batch(command_writer, buffer_va,
+      terakan_emit_draw_indirect_batch(command_writer, offset,
+                                       buffer->vk.size,
                                        drawCount, stride, bo, false);
    }
 }
@@ -600,7 +632,6 @@ terakan_CmdDrawIndexedIndirect(VkCommandBuffer const commandBuffer,
    struct terakan_gfx_command_writer * const command_writer = cmd->command_writer.gfx;
    struct terakan_buffer const * const buffer = terakan_buffer_from_handle(bufferHandle);
 
-   uint64_t const buffer_va = buffer->va + offset;
    struct terakan_bo * const bo = (struct terakan_bo *)buffer->bo;
 
    /* VK_KHR_multiview view-loop expansion for indexed indirect draws.
@@ -613,11 +644,13 @@ terakan_CmdDrawIndexedIndirect(VkCommandBuffer const commandBuffer,
          view_mask &= view_mask - 1;
          terakan_set_view_index_push_constant(command_writer, view_idx);
          terakan_set_view_attachment_layer(command_writer, view_idx);
-         terakan_emit_draw_indirect_batch(command_writer, buffer_va,
+         terakan_emit_draw_indirect_batch(command_writer, offset,
+                                          buffer->vk.size,
                                           drawCount, stride, bo, true);
       }
    } else {
-      terakan_emit_draw_indirect_batch(command_writer, buffer_va,
+      terakan_emit_draw_indirect_batch(command_writer, offset,
+                                       buffer->vk.size,
                                        drawCount, stride, bo, true);
    }
 }
