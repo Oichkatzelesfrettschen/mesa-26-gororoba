@@ -388,8 +388,33 @@ AluGroup::try_readport(AluInstr *instr, AluBankSwizzle cycle)
       return true;
    }
 
+   /* AluInstr::opcode() asserts !has_alu_flag(alu_is_lds); the
+    * LDS-flagged AluInstr family occupies a disjoint opcode space
+    * (LDS_ATOMIC_OR_RET et al., per the AMD Evergreen-Family
+    * Instruction Set Architecture LDS_ATOMIC opcode group) and can
+    * never equal op3_muladd_ieee (an ALU3 opcode).  Short-circuit on
+    * the flag so the opcode() check on the right-hand side of the ||
+    * is skipped for LDS ops, and the diagnostic path below stays
+    * applicable only to ALU candidates.
+    *
+    * Affected silicon: any r600 chip where the driver lowers compute
+    * subgroup ops onto LDS atomic-OR + workgroup-barrier sequences --
+    * empirically reproduced on Palm (Wrestler GPU, CHIP_PALM,
+    * Evergreen / TeraScale-2 VLIW5), generalises across the
+    * Evergreen family (Cedar / Cypress / Hemlock / Palm / Wrestler)
+    * and Northern Islands / TeraScale-3 VLIW4 (Barts / Cayman /
+    * Aruba) which share the same SFN scheduler + LDS opcode space.
+    *
+    * Without this guard, callers that thread an LDS-flagged AluInstr
+    * into try_readport (e.g. the compute LDS atomic-OR + barrier
+    * sequences from terakan_nir_lower_subgroup_lds, scheduled via
+    * BlockScheduler::schedule_alu_to_group_vec ->
+    * try_schedule_vec_candidate -> add_vec_instructions ->
+    * try_readport) trip the assertion at AluInstr::opcode()
+    * (sfn_instr_alu.h:90). */
    if ((m_slots[4] && m_slots[4]->has_alu_flag(alu_is_trans)) ||
-       instr->opcode() == op3_muladd_ieee) {
+       (!instr->has_alu_flag(alu_is_lds) &&
+        instr->opcode() == op3_muladd_ieee)) {
       sfn_log << SfnLog::err;
       if (m_slots[4] && m_slots[4]->has_alu_flag(alu_is_trans))
          sfn_log << "DEBUG_REJECT: trans anchor " << *m_slots[4];
