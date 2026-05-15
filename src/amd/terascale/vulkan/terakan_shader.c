@@ -317,20 +317,29 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
          .lower_elect = true,
          .lower_inverse_ballot = true,
          .lower_subgroup_masks = true,
+         /* Decompose vote_any / vote_all / vote_*_eq into ballot + ALU.
+          * build_vote() in nir_lower_subgroups emits a single
+          * nir_ballot followed by integer ALU on the uvec2 result; the
+          * terakan LDS pass below expands the ballot into a single
+          * LDS_ATOMIC_OR_RET + one workgroup barrier (the
+          * single-barrier shape introduced by this commit, replacing
+          * the earlier three-barrier form that exhausted the SFN
+          * VLIW5 scheduler's GROUP_BARRIER slot pinning).  No
+          * shuffle / reduce / read_invocation lowering is enabled
+          * yet -- those expand to repeated read_invocation calls that
+          * would re-introduce the GROUP_BARRIER pressure the
+          * single-barrier ballot was designed to avoid. */
+         .lower_vote = true,
+         .lower_vote_feq = true,
+         .lower_vote_ieq = true,
+         .lower_vote_bool_eq = true,
       };
-      /* BASIC-only path.  Higher-tier vote / shuffle / reduce
-       * decomposition flags + terakan_nir_lower_subgroup_lds expansion
-       * are intentionally NOT enabled here: they trigger an SFN
-       * scheduler assertion (sfn_instr_alu.h:90 --
-       * !has_alu_flag(alu_is_lds)) on simple compute shaders such as
-       * dEQP-VK.subgroups.basic.compute.subgroupbarrier.  The
-       * subgroupSupportedOperations advertisement in
-       * terakan_physical_device.c is correspondingly walked back to
-       * BASIC only.  The LDS helpers (terakan_nir_active_mask.c +
-       * terakan_nir_lower_subgroup_lds.c) remain in tree as the
-       * documented HW-falsification witness and as the load-bearing
-       * implementation that the SFN-side fix will engage. */
       NIR_PASS(_, nir, nir_lower_subgroups, &terakan_subgroups_options);
+      /* Expand the foundational ballot + read_first_invocation
+       * primitives that nir_lower_subgroups left behind into LDS
+       * sequences (per-call-site allocation, single LDS_ATOMIC_OR_RET,
+       * single workgroup barrier).  Compute / kernel stages only. */
+      NIR_PASS(_, nir, terakan_nir_lower_subgroup_lds);
    }
    if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post explicit_io/lowerings (%s) ---\n",
