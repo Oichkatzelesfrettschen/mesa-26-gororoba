@@ -308,6 +308,15 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
     */
    {
       static const nir_lower_subgroups_options terakan_subgroups_options = {
+         /* Phase 3.2 follow-up (2026-05-15): explicit subgroup_size lets
+          * NIR fold load_subgroup_id / load_subgroup_size /
+          * load_num_subgroups to constants for the common Bobcat case
+          * (workgroup fits in one wave).  Without this, load_subgroup_id
+          * survives through to SFN and aborts compute pipeline create
+          * with "R600: Unsupported instruction: @load_subgroup_id"
+          * (observed during the Phase 5 VK 1.1 promotion trial when
+          * dEQP-VK.subgroups.basic.compute.subgroupbarrier ran). */
+         .subgroup_size = 64,
          .ballot_bit_size = 32,
          .ballot_components = 2,  /* 2 x uint32 = 64-bit ballot for wave64 */
          .lower_vote_trivial = true,
@@ -315,6 +324,11 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
          .lower_quad_broadcast_dynamic = true,
          .lower_elect = true,
          .lower_inverse_ballot = true,
+         /* "subgroup_masks" intrinsics (load_subgroup_eq_mask, etc.)
+          * need explicit lowering when advertised; enable now so the
+          * BASIC + VOTE+BALLOT paths compile cleanly when Phase 3.3
+          * promotes the supportedOperations bitmask. */
+         .lower_subgroup_masks = true,
       };
       NIR_PASS(_, nir, nir_lower_subgroups, &terakan_subgroups_options);
    }
