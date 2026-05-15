@@ -1481,14 +1481,40 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       }
 
       /* Buffer UAV: program CB_COLOR{M} with a synthetic buffer-format
-       * descriptor covering the whole BO.
-       */
+       * descriptor covering the whole BO.  For BUFFER descriptors,
+       * color.view carries the base-granularity offset that
+       * terakan_nir_buffer_uav_coord adds through the driver push-constant
+       * table.  Keep the compute path in sync with the graphics UAV bind
+       * path before emitting CB_COLOR{M}. */
+      struct terakan_state_draw_cb_color_uav const * const cb_uav_for_offset =
+         &cb_uavs[uav_mr_idxs[m]];
+      if (G_028C70_RESOURCE_TYPE(cb_uav_for_offset->color.info) == V_028C70_BUFFER) {
+         uint32_t * const uav_base_granularity_offset_constant =
+            &command_writer->push_constants_state.driver_constants
+                .buffer_uav_base_granularity_offset[uav_mr_idxs[m]];
+         if (*uav_base_granularity_offset_constant != cb_uav_for_offset->color.view) {
+            *uav_base_granularity_offset_constant = cb_uav_for_offset->color.view;
+            command_writer->push_constants_state.driver_constants_modified |=
+               BITFIELD_BIT(
+                  TERAKAN_PUSH_CONSTANTS_DRIVER_INDEX_BUFFER_UAV_BASE_GRANULARITY_OFFSET);
+         }
+      }
+
       uint32_t const * const desc = state->resource_descriptors.fs[sidx];
       uint32_t const buf_size = desc[1] + 1;
       uint32_t const width_elements = buf_size / 4;
       uint32_t const pitch_aligned = (width_elements + 63) & ~63u;
       uint32_t const pitch_tile_max = (pitch_aligned / 8) - 1;
-      uint32_t const dim = width_elements > 0 ? width_elements - 1 : 0;
+      /* BUFFER descriptors bake the view offset into color.dim as
+       * offset_elements + elements - 1.  The shader adds the same offset
+       * through buffer_uav_base_granularity_offset, so CB_COLOR_DIM must
+       * permit the final hardware element index. */
+      uint32_t const dim_default = width_elements > 0 ? width_elements - 1 : 0;
+      uint32_t const dim =
+         G_028C70_RESOURCE_TYPE(cb_uav_for_offset->color.info) == V_028C70_BUFFER &&
+               cb_uav_for_offset->color.dim != 0
+            ? cb_uav_for_offset->color.dim
+            : dim_default;
       uint32_t const cb_color_info =
          S_028C70_FORMAT(V_028C70_COLOR_32) |
          S_028C70_ARRAY_MODE(V_028C70_ARRAY_LINEAR_ALIGNED) |

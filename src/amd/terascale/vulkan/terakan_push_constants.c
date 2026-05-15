@@ -29,9 +29,11 @@
 
 #include "util/bitscan.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 void
@@ -107,6 +109,16 @@ terakan_push_constants_apply(struct terakan_gfx_command_writer * const command_w
 
       memcpy(state->allocation.mapping_if_up_to_date, &state->driver_constants,
              sizeof(state->driver_constants));
+      if (debug_get_bool_option("TERAKAN_DEBUG_BUFFER_UAV_BASE_OFFSET", false)) {
+         uint32_t const *dw = (uint32_t const *)state->allocation.mapping_if_up_to_date;
+         fprintf(stderr,
+                 "terakan/push_constants_apply: is_compute=%d bo=%p va_kcache_lines=0x%llx "
+                 "lines=%u driver_consts[0..4]={0x%08x 0x%08x 0x%08x 0x%08x 0x%08x}\n",
+                 is_compute, (void *)state->allocation.bo,
+                 (unsigned long long)state->allocation.va_kcache_lines,
+                 (unsigned)state->allocation.size_kcache_lines,
+                 dw[0], dw[1], dw[2], dw[3], dw[4]);
+      }
       state->driver_constants_modified = 0;
    }
 
