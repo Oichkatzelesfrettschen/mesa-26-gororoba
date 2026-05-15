@@ -964,14 +964,15 @@ terakan_physical_device_get_capabilities(
     * either inlining or skipping; no SFN/SQ work required. */
    extensions_out->KHR_shader_non_semantic_info = true;
 
-   /* VK_KHR_shader_relaxed_extended_instruction (#509, Vulkan 1.4).
-    * Declarative: permits SPIR-V to use the
-    * SPV_KHR_relaxed_extended_instruction capability for ExtInst
-    * (Extended-Instruction Set) calls with relaxed precision.
-    * vk_spirv_to_nir + the existing relaxed-precision lowering already
-    * handle the runtime semantics; this extension is just the gate
-    * that the SPIR-V validator checks. */
+   /* VK_KHR_shader_relaxed_extended_instruction (#559, Vulkan 1.4).
+    * Adds SPIR-V opcode 4433 OpExtInstWithForwardRefsKHR, a variant
+    * of OpExtInst whose Set ID may be a forward reference.  Purely
+    * a SPIR-V parser-layer relaxation; the silicon never sees
+    * SPIR-V.  The shared spirv_to_nir consumer
+    * (compiler/spirv/spirv_to_nir.c) already binds the opcode to
+    * vtn_handle_non_semantic_instruction. */
    extensions_out->KHR_shader_relaxed_extended_instruction = true;
+   features_out->shaderRelaxedExtendedInstruction = true;
 
    /* VK_KHR_storage_buffer_storage_class (#132, Vulkan 1.1).
     * Permits SPIR-V to use the StorageBuffer storage class directly
