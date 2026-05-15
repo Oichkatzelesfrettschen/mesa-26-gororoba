@@ -73,6 +73,9 @@ static struct vk_instance_extension_table const terakan_instance_extensions_supp
    .EXT_debug_report = true,
    .EXT_debug_utils = true,
    .KHR_external_memory_capabilities = true,
+   .KHR_external_semaphore_capabilities = true,
+   .KHR_external_fence_capabilities = true,
+   .KHR_device_group_creation = true,
    .KHR_get_physical_device_properties2 = true,
 
 #if defined(TERAKAN_USE_WSI_PLATFORM)
