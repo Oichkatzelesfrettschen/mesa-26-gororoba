@@ -317,40 +317,20 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
          .lower_elect = true,
          .lower_inverse_ballot = true,
          .lower_subgroup_masks = true,
-         /* Decompose vote_any/vote_all/vote_feq/vote_ieq into
-          * ballot + extract.  build_vote() in nir_lower_subgroups.c
-          * emits a single nir_ballot call followed by an iand-with-mask
-          * and an ieq/ine check on the result.  The terakan LDS pass
-          * (terakan_nir_lower_subgroup_lds.c) handles the ballot, and
-          * the surrounding ALU is plain integer arithmetic. */
-         .lower_vote = true,
-         .lower_vote_feq = true,
-         .lower_vote_ieq = true,
-         .lower_vote_bool_eq = true,
-         /* Decompose shuffle / reduce / scan to the LDS-implementable
-          * primitives once those are present.  Today only ballot and
-          * read_first_invocation are emulated -- enabling the lower
-          * flags below will pull in NIR's reference decomposition once
-          * the LDS pass grows scan/shuffle support. */
-         .lower_shuffle = true,
-         .lower_read_invocation_to_cond = true,
-         .lower_first_invocation_to_ballot = true,
-         .lower_reduce = true,
-         .lower_boolean_reduce = true,
-         .lower_boolean_shuffle = true,
       };
-      /* nir_lower_subgroups decomposes high-level vote / reduce / shuffle
-       * into the foundational primitives nir_ballot and
-       * nir_read_first_invocation (plus integer ALU).  The LDS-emulation
-       * pass then expands those foundational primitives into LDS
-       * shared-memory atomic-OR and write-broadcast sequences -- the
-       * only cross-lane data-movement mechanism available on Palm /
-       * Wrestler (CHIP_PALM, Evergreen / TeraScale-2 VLIW5) where the
-       * VLIW5 ALU has no native cross-lane communication.  Order:
-       * lower_subgroups first to produce ballot calls, lower_subgroup_lds
-       * second to expand them. */
+      /* BASIC-only path.  Higher-tier vote / shuffle / reduce
+       * decomposition flags + terakan_nir_lower_subgroup_lds expansion
+       * are intentionally NOT enabled here: they trigger an SFN
+       * scheduler assertion (sfn_instr_alu.h:90 --
+       * !has_alu_flag(alu_is_lds)) on simple compute shaders such as
+       * dEQP-VK.subgroups.basic.compute.subgroupbarrier.  The
+       * subgroupSupportedOperations advertisement in
+       * terakan_physical_device.c is correspondingly walked back to
+       * BASIC only.  The LDS helpers (terakan_nir_active_mask.c +
+       * terakan_nir_lower_subgroup_lds.c) remain in tree as the
+       * documented HW-falsification witness and as the load-bearing
+       * implementation that the SFN-side fix will engage. */
       NIR_PASS(_, nir, nir_lower_subgroups, &terakan_subgroups_options);
-      NIR_PASS(_, nir, terakan_nir_lower_subgroup_lds);
    }
    if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post explicit_io/lowerings (%s) ---\n",
