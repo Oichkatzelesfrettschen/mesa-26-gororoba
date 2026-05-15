@@ -115,6 +115,8 @@ static nir_def *
 lower_ballot(nir_builder *b, nir_intrinsic_instr *intrin,
              struct subgroup_lds_alloc *alloc)
 {
+   /* Per-call-site LDS slot: single-use, so no post-load reset is
+    * needed.  Eight bytes covers the wave64 uvec2 ballot result. */
    uint32_t const slot_off = alloc_lds_slot(alloc, 8, 4);
 
    nir_def *predicate = intrin->src[0].ssa;
@@ -122,27 +124,39 @@ lower_ballot(nir_builder *b, nir_intrinsic_instr *intrin,
       predicate = nir_ine_imm(b, predicate, 0);
 
    /* The SFN backend has no native load_subgroup_invocation lowering
-    * (r600 historically reported subgroup_size = 1, see RCA in
-    * lower_load_subgroup_invocation below).  Inline the Wave64 lowering
-    * here so nir_shader_intrinsics_pass does not need a second walk:
-    * the walker only visits the instruction list as captured at entry,
-    * so any nir_load_subgroup_invocation emitted by THIS pass would not
-    * be revisited and would reach SFN unlowered. */
+    * (r600 historically reported subgroup_size = 1, see
+    * lower_load_subgroup_invocation).  Inline the Wave64 lowering here
+    * because nir_shader_intrinsics_pass only walks the instruction
+    * list as captured at entry -- any nir_load_subgroup_invocation
+    * emitted from this pass would not be revisited. */
    nir_def *lane_id =
       nir_iand_imm(b, nir_load_local_invocation_index(b),
                    TERAKAN_SUBGROUP_SIZE - 1u);
    nir_def *word_off = nir_imul_imm(b, nir_ushr_imm(b, lane_id, 5), 4);
    nir_def *lane_bit = nir_ishl(b, nir_imm_int(b, 1),
                                 nir_iand_imm(b, lane_id, 31));
-   nir_def *zero = nir_imm_int(b, 0);
    nir_def *base = nir_imm_int(b, slot_off);
 
-   nir_push_if(b, predicate);
+   /* Every lane participates in the atomic-OR, contributing either
+    * its lane bit or zero.  Issuing the LDS_ATOMIC_OR_RET from every
+    * lane lockstep is what the AMD Evergreen-Family Instruction Set
+    * Architecture LDS bank-arbitration cycle expects, and it lets the
+    * SFN scheduler pack the atomic without a surrounding control-flow
+    * predicate -- the original push_if/pop_if pair created an extra
+    * basic-block boundary that compounded the GROUP_BARRIER
+    * slot-pinning rejections seen at sfn_instr_alu.h:90 in the
+    * three-barrier variant. */
    nir_def *atomic_addr = nir_iadd(b, base, word_off);
-   nir_shared_atomic(b, 32, atomic_addr, lane_bit,
+   nir_def *or_value = nir_bcsel(b, predicate, lane_bit, nir_imm_int(b, 0));
+   nir_shared_atomic(b, 32, atomic_addr, or_value,
                      .atomic_op = nir_atomic_op_ior);
-   nir_pop_if(b, NULL);
 
+   /* Single workgroup barrier ensures all lane contributions drained
+    * before the load.  The post-load reset and trailing barrier from
+    * the original three-barrier variant are dropped: each ballot uses
+    * a fresh per-call-site LDS slot allocation, so there is no
+    * subsequent ballot that could observe a non-zero residual on this
+    * slot. */
    nir_barrier(b, .execution_scope = SCOPE_WORKGROUP,
                .memory_scope = SCOPE_WORKGROUP,
                .memory_semantics = NIR_MEMORY_ACQ_REL,
@@ -150,24 +164,7 @@ lower_ballot(nir_builder *b, nir_intrinsic_instr *intrin,
 
    nir_def *lo = nir_load_shared(b, 1, 32, base, .base = 0, .align_mul = 8);
    nir_def *hi = nir_load_shared(b, 1, 32, base, .base = 4, .align_mul = 8);
-   nir_def *result = nir_vec2(b, lo, hi);
-
-   nir_barrier(b, .execution_scope = SCOPE_WORKGROUP,
-               .memory_scope = SCOPE_WORKGROUP,
-               .memory_semantics = NIR_MEMORY_ACQ_REL,
-               .memory_modes = nir_var_mem_shared);
-
-   nir_push_if(b, nir_ieq_imm(b, lane_id, 0));
-   nir_store_shared(b, zero, base, .base = 0, .align_mul = 8, .write_mask = 0x1);
-   nir_store_shared(b, zero, base, .base = 4, .align_mul = 8, .write_mask = 0x1);
-   nir_pop_if(b, NULL);
-
-   nir_barrier(b, .execution_scope = SCOPE_WORKGROUP,
-               .memory_scope = SCOPE_WORKGROUP,
-               .memory_semantics = NIR_MEMORY_ACQ_REL,
-               .memory_modes = nir_var_mem_shared);
-
-   return result;
+   return nir_vec2(b, lo, hi);
 }
 
 /* Lower nir_intrinsic_read_first_invocation: the value from the first
