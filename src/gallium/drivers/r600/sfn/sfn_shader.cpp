@@ -2154,27 +2154,42 @@ Shader::emit_load_kcache(nir_intrinsic_instr *instr)
    }
 
    unsigned first_component = nir_intrinsic_component(instr);
-   if (first_component + instr->def.num_components > 4) {
-      /* Graceful bail: the NIR requested a KCACHE load that would span
-       * two 4-component slots, which the existing code path does not
-       * split.  Fail the shader compile so the pipeline creation
-       * returns an error rather than aborting the whole process.
-       * Promotes assert(first_component + num_components <= 4) to a
-       * runtime failure.  The correct long-term fix is to split the
-       * load into multiple slot-aligned KCACHE reads. */
-      R600_ERR("emit_load_kcache: first_component=%u + num_components=%u > 4 "
-               "(cross-slot KCACHE load not yet supported); bailing on "
-               "shader compile\n",
-               first_component, instr->def.num_components);
-      return false;
+
+   /* Cross-slot KCACHE load support (2026-05-15):
+    *
+    * The NIR may request a KCACHE load that spans two 4-component slots,
+    * e.g. UBO scalar layout with bvec2 starting at component 3 (occupies
+    * slot[3] of element_index and slot[0] of element_index+1).
+    *
+    * Each KCACHE slot holds 4 components indexed 0..3.  For each output
+    * component i of the load, the source is:
+    *   slot   = element_index + (first_component + i) / 4
+    *   channel = (first_component + i) % 4
+    *
+    * Validate that the final slot is still in range before emitting.
+    */
+   {
+      unsigned const last_slot_offset =
+         (first_component + instr->def.num_components - 1) / 4;
+      unsigned const last_slot_index = element_index + last_slot_offset;
+      if (last_slot_index >= R600_MAX_CONST_BUFFER_SIZE / (sizeof(float) * 4)) {
+         R600_ERR("emit_load_kcache: cross-slot extension would reach "
+                  "element_index %u (max %zu); bailing on shader compile\n",
+                  last_slot_index,
+                  R600_MAX_CONST_BUFFER_SIZE / (sizeof(float) * 4));
+         return false;
+      }
    }
 
    AluInstr *alu = nullptr;
    for (unsigned i = 0; i < instr->def.num_components; ++i) {
+      unsigned const fc_i = first_component + i;
+      unsigned const slot_off = fc_i / 4;
+      unsigned const channel = fc_i % 4;
       alu = new AluInstr(op1_mov,
                          vf.dest(instr->def, i, pin_none),
-                         new UniformValue(512 + element_index,
-                                          first_component + i,
+                         new UniformValue(512 + element_index + slot_off,
+                                          channel,
                                           bank_offset,
                                           bank_base),
                          AluInstr::write);
