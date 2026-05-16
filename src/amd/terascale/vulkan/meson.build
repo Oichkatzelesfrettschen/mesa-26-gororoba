@@ -134,6 +134,8 @@ libterakan_files = files(
   'terakan_dmabuf_carrier.h',
   'terakan_palm_sync.c',
   'terakan_palm_sync.h',
+  'terakan_carrier_queue.c',
+  'terakan_carrier_queue.h',
   'terakan_external_sync.c',
   'terakan_external_sync.h',
   'terakan_vertex_input.c',
