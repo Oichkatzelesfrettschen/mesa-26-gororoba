@@ -153,4 +153,51 @@ terakan_carrier_support_name(enum terakan_carrier_support support);
 void
 terakan_dmabuf_carrier_log_policy(struct terakan_device *device);
 
+/*
+ * Returns true when TERAKAN_ENABLE_DMABUF_CARRIER=1 is in the
+ * environment.  Centralizes the env-gate check so every caller uses
+ * the same parsing rule (exact "1", not 1/true/yes).
+ */
+bool
+terakan_dmabuf_carrier_enabled(void);
+
+/*
+ * Caller-provided descriptor for an import attempt.
+ *
+ * The caller classifies the dma-buf into a carrier domain before
+ * import; the policy table decides whether that domain is supported.
+ */
+struct terakan_dmabuf_carrier_desc {
+   int                              dmabuf_fd;
+   enum terakan_carrier_domain      domain;
+   uint64_t                         size_bytes;
+   uint32_t                         stride;
+   uint32_t                         format;
+   uint32_t                         tiling_mode;
+   uint32_t                         usage_mask;
+};
+
+/*
+ * Import a dma-buf as a Terakan carrier, subject to the closed
+ * policy table.  On ALLOWED_PHASE0 the function imports the fd
+ * through the winsys bo->import_fd path, populates *out, and
+ * returns VK_SUCCESS.  On any other support verdict the function
+ * logs the policy reason and returns VK_ERROR_FEATURE_NOT_PRESENT.
+ * Returns other VK_ERROR_* codes for I/O failures originating in
+ * the underlying winsys import.
+ */
+VkResult
+terakan_dmabuf_carrier_import(struct terakan_device *                    device,
+                              const struct terakan_dmabuf_carrier_desc * desc,
+                              struct terakan_dmabuf_carrier **           out);
+
+/*
+ * Release any resources the carrier holds: BO unref, dmabuf fd
+ * close, sync FDs close.  Safe to call on a partially-constructed
+ * carrier (NULL-tolerant; tolerates fields left at zero/-1).
+ */
+void
+terakan_dmabuf_carrier_destroy(struct terakan_device *         device,
+                               struct terakan_dmabuf_carrier * carrier);
+
 #endif /* TERAKAN_DMABUF_CARRIER_H */

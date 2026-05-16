@@ -23,10 +23,17 @@
 
 #include "terakan_dmabuf_carrier.h"
 
+#include "terakan_bo.h"
 #include "terakan_device.h"
+
+#include "vk_alloc.h"
 
 #include "util/log.h"
 #include "util/macros.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 static const struct terakan_carrier_policy palm_carrier_policy[] = {
    [TERAKAN_CARRIER_DOMAIN_BUFFER] = {
@@ -137,4 +144,113 @@ terakan_dmabuf_carrier_log_policy(UNUSED struct terakan_device * const device)
                 terakan_carrier_support_name(p->support),
                 p->reason);
    }
+}
+
+bool
+terakan_dmabuf_carrier_enabled(void)
+{
+   /* Closed env-gate: only the exact string "1" enables the carrier
+    * path.  Avoid the 1/true/yes/on parsing variants so misspellings
+    * in shell scripts fail loud instead of silently turning the
+    * feature on. */
+   const char * const env = getenv("TERAKAN_ENABLE_DMABUF_CARRIER");
+   return env != NULL && strcmp(env, "1") == 0;
+}
+
+VkResult
+terakan_dmabuf_carrier_import(struct terakan_device * const                    device,
+                              const struct terakan_dmabuf_carrier_desc * const desc,
+                              struct terakan_dmabuf_carrier ** const            out)
+{
+   *out = NULL;
+
+   if (desc == NULL || desc->dmabuf_fd < 0)
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
+   const struct terakan_carrier_policy * const policy =
+      terakan_dmabuf_carrier_policy(desc->domain);
+   if (policy == NULL)
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+
+   if (policy->support != TERAKAN_CARRIER_ALLOWED_PHASE0) {
+      /* Closed-policy rejection.  The reason string is keyed to the
+       * carrier-path cache-domain evidence matrix; downstream tools
+       * grep these strings to map error reports back to matrix rows. */
+      mesa_loge("terakan: dmabuf carrier import rejected: "
+                "domain=%s support=%s reason=%s",
+                terakan_carrier_domain_name(policy->domain),
+                terakan_carrier_support_name(policy->support),
+                policy->reason);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
+
+   struct terakan_dmabuf_carrier * const carrier =
+      vk_zalloc(&device->vk.alloc, sizeof(*carrier), 8,
+                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (carrier == NULL)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+
+   carrier->dmabuf_fd       = -1;
+   carrier->acquire_sync_fd = -1;
+   carrier->release_sync_fd = -1;
+   carrier->domain          = policy->domain;
+   carrier->support         = policy->support;
+   carrier->size_bytes      = desc->size_bytes;
+   carrier->stride          = desc->stride;
+   carrier->format          = desc->format;
+   carrier->tiling_mode     = desc->tiling_mode;
+   carrier->usage_mask      = desc->usage_mask;
+   carrier->linear_only     =
+      (desc->domain == TERAKAN_CARRIER_DOMAIN_BUFFER);
+
+   /* Duplicate the caller-supplied fd so the carrier owns its own
+    * reference, independent of the caller's lifetime. */
+   const int dup_fd = dup(desc->dmabuf_fd);
+   if (dup_fd < 0) {
+      vk_free(&device->vk.alloc, carrier);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+   carrier->dmabuf_fd = dup_fd;
+
+   /* Use the winsys PRIME-import contract.  We do not have a
+    * carrier-level VRAM preference; default to VRAM-preferred when
+    * the BUFFER carrier is the import target (device-local makes
+    * surface-sync simpler), false otherwise. */
+   const bool prefer_vram =
+      (desc->domain == TERAKAN_CARRIER_DOMAIN_BUFFER);
+
+   const VkResult bo_result = device->winsys_fn->bo->import_fd(
+      device, carrier->dmabuf_fd, (VkDeviceSize)desc->size_bytes,
+      prefer_vram, NULL, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
+      &carrier->bo);
+   if (bo_result != VK_SUCCESS) {
+      terakan_dmabuf_carrier_destroy(device, carrier);
+      return bo_result;
+   }
+
+   carrier->gpu_va  = carrier->bo->va;
+   carrier->imported = true;
+
+   *out = carrier;
+   return VK_SUCCESS;
+}
+
+void
+terakan_dmabuf_carrier_destroy(struct terakan_device * const          device,
+                               struct terakan_dmabuf_carrier * const  carrier)
+{
+   if (carrier == NULL)
+      return;
+
+   if (carrier->bo != NULL)
+      terakan_bo_free(carrier->bo, NULL);
+
+   if (carrier->release_sync_fd >= 0)
+      close(carrier->release_sync_fd);
+   if (carrier->acquire_sync_fd >= 0)
+      close(carrier->acquire_sync_fd);
+   if (carrier->dmabuf_fd >= 0)
+      close(carrier->dmabuf_fd);
+
+   vk_free(&device->vk.alloc, carrier);
 }
