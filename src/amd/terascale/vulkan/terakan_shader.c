@@ -333,6 +333,16 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
          .lower_vote_feq = true,
          .lower_vote_ieq = true,
          .lower_vote_bool_eq = true,
+         /* Reduce / boolean_reduce decompose subgroupAdd / Min / Max /
+          * And / Or / Xor / AllEqual / etc. into nir_intrinsic_reduce
+          * with a nir_op operator argument; the LDS pass then expands
+          * each reduce into a 6-level butterfly LDS exchange (see
+          * emit_reduce_via_butterfly in terakan_nir_lower_subgroup_lds).
+          * Bounded GROUP_BARRIER cost (6 barriers per reduce
+          * regardless of input), so the SFN VLIW5 scheduler packs
+          * them without slot-pinning crisis. */
+         .lower_reduce = true,
+         .lower_boolean_reduce = true,
       };
       NIR_PASS(_, nir, nir_lower_subgroups, &terakan_subgroups_options);
       /* Expand the foundational ballot + read_first_invocation
