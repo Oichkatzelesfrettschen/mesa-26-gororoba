@@ -24,6 +24,7 @@
 #include "terakan_device_drm_radeon.h"
 
 #include "terakan_bo_drm_radeon.h"
+#include "terakan_external_sync.h"
 #include "terakan_queue_drm_radeon.h"
 
 #include "util/macros.h"
@@ -52,10 +53,22 @@ terakan_device_drm_radeon_destroy(struct terakan_device * const device_base)
    vk_free(&device->base.vk.alloc, device);
 }
 
+static VkResult
+terakan_device_drm_radeon_external_syncobj_signal_many(
+   struct terakan_device * const device_base, uint32_t const count,
+   struct terakan_external_signal const * const sigs)
+{
+   struct terakan_device_drm_radeon * const device =
+      container_of(device_base, struct terakan_device_drm_radeon, base);
+   return terakan_external_syncobj_signal_many(device->render_node_fd, count, sigs);
+}
+
 static struct terakan_device_winsys_fn const terakan_device_drm_radeon_fn = {
    .bo = &terakan_bo_drm_radeon_fn,
    .queue = &terakan_queue_drm_radeon_fn,
    .destroy = terakan_device_drm_radeon_destroy,
+   .external_syncobj_signal_many =
+      terakan_device_drm_radeon_external_syncobj_signal_many,
 };
 
 VkResult

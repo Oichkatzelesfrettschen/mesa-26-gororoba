@@ -93,6 +93,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                dst_uav->bo = image_view->bo;
                memcpy(&dst_uav->color, &image_view->color, sizeof(struct terakan_color_descriptor));
                dst_uav->buffer_byte_size = 0;  /* Image UAVs: robustness not yet supported. */
+               dst_uav->buffer_byte_offset = 0;  /* No per-element offset for images. */
                dst_uav->is_texel_buffer = 0;
                /* stash baseArrayLayer + non-array-
                 * view-over-array-image flag so pipeline_layout.c can upload
@@ -602,6 +603,7 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                }
             } else {
                dst_uav->bo = NULL;
+               dst_uav->buffer_byte_offset = 0;
                memset(dst_uav->real_resource, 0, sizeof(dst_uav->real_resource));
                dst_uav->base_array_layer = 0;
                dst_uav->view_flags = 0;
@@ -660,10 +662,12 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                 * this value.  SSBOs use bytes; the two never share a UAV
                 * slot, so the dual semantics are safe. */
                dst_uav->buffer_byte_size = (uint32_t)buffer_view->vk.elements;
+               dst_uav->buffer_byte_offset = 0;  /* Texel-buffer view bakes offset into descriptor. */
                dst_uav->is_texel_buffer = 1;
             } else {
                dst_uav->bo = NULL;
                dst_uav->buffer_byte_size = 0;
+               dst_uav->buffer_byte_offset = 0;
                dst_uav->is_texel_buffer = 1;
             }
             /* FIX-K: buffer UAVs never need baseArrayLayer injection. */
@@ -730,8 +734,17 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                   terakan_buffer_from_handle(buf_info->buffer);
                dst_uav->buffer_byte_size = (uint32_t)vk_buffer_range(
                   &buffer->vk, buf_info->offset, buf_info->range);
+               /* Capture per-element offset for shared-BO array elements.
+                * The radeon CS validator replaces SET_RESOURCE WORD0 with
+                * bo->va_low, so this offset cannot reach the shader via
+                * the descriptor; it travels via KCACHE bank 14 dwords
+                * 52..63 (robustness_metadata.view_offsets[]) and is
+                * added to byte_offset by
+                * terakan_nir_lower_bindings_instr_load_ssbo. */
+               dst_uav->buffer_byte_offset = (uint32_t)buf_info->offset;
             } else {
                dst_uav->buffer_byte_size = 0;
+               dst_uav->buffer_byte_offset = 0;
             }
             /* FIX-K: SSBOs never need baseArrayLayer injection. */
             dst_uav->base_array_layer = 0;

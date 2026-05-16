@@ -74,12 +74,20 @@ update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
                                uint8_t const uav_idx, bool const is_texel,
                                uint32_t const bound,
                                uint32_t const base_array_layer,
-                               bool const inject_base_array_layer)
+                               bool const inject_base_array_layer,
+                               uint32_t const buffer_byte_offset)
 {
    if (uav_idx >= TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT)
       return;
    cw->robustness_metadata.uav_byte_sizes[uav_idx] = is_texel ? 0 : bound;
    cw->robustness_metadata.texel_buffer_element_counts[uav_idx] = is_texel ? bound : 0;
+   /* Per-element offset for shared-BO descriptor arrays.  Consumed by
+    * terakan_nir_lower_bindings_instr_load_ssbo via KCACHE bank 14
+    * dwords 52..63 (see terakan_robustness_metadata.c).  Zero for
+    * texel buffers and images (offset is baked into the descriptor
+    * for those paths). */
+   cw->robustness_metadata.view_offsets[uav_idx] =
+      is_texel ? 0u : buffer_byte_offset;
    {
       uint32_t bal_value =
          inject_base_array_layer ? base_array_layer : 0u;
@@ -421,9 +429,19 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   bool const inject_layer =
                      (uav->view_flags &
                       TERAKAN_DESCRIPTOR_SET_UAV_VIEW_FLAG_NONARRAY_VIEW_OF_ARRAY_IMAGE) != 0;
+                  /* For STORAGE_BUFFER_DYNAMIC, also shift the per-element
+                   * offset by the dynamic offset that the descriptor binder
+                   * supplied at vkCmdBindDescriptorSets time.  This keeps
+                   * the shader's byte_offset arithmetic aligned with what
+                   * the application asked the dynamic offset to do. */
+                  uint32_t buf_offset = uav->buffer_byte_offset;
+                  if (r->first_dynamic_offset != UINT16_MAX) {
+                     buf_offset += set_dyn_off[r->first_dynamic_offset + ui];
+                  }
                   update_uav_robustness_metadata(command_writer, idx,
                                                  uav->is_texel_buffer, bound,
-                                                 uav->base_array_layer, inject_layer);
+                                                 uav->base_array_layer, inject_layer,
+                                                 buf_offset);
 
                   /* FIX-W (Q-2026-04-20): stash baseArrayLayer on the
                    * command writer so CmdDispatch can select the
@@ -451,7 +469,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                                                     TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
                   BITSET_CLEAR(uavs_not_null, idx);
                   update_uav_robustness_metadata(command_writer, idx, false, 0,
-                                                 0, false);
+                                                 0, false, 0u);
                }
             }
          }
