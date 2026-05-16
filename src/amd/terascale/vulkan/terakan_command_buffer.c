@@ -995,6 +995,22 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
       PKT3(PKT3_SET_CONFIG_REG, 1, 0),
       TERAKAN_CONFIG_REG_OFFSET(R_008A14_PA_CL_ENHANCE),
       S_008A14_CLIP_VTX_REORDER_ENA(1) | S_008A14_NUM_CLIP_SEQ(3),
+
+      /* SMX_DC_CTL0: enable FLUSH_ALL_ON_EVENT so every event-driven
+       * SMX barrier drains the full SMX write-combining cache instead
+       * of doing only a tag-flush.  Replaces the S_008020_SOFT_RESET_SMX
+       * bit which AMD provided on R600/R700 but removed in Evergreen,
+       * leaving the SMX coalescer without a hardware reset path.  Default
+       * value on Palm silicon is 0x00000009 (USE_HASH_FUNCTION=1,
+       * NUMBER_OF_SETS=4, FLUSH_ALL_ON_EVENT=0).  Setting bit 10
+       * gives 0x00000409.  Silicon-write observed in single trial
+       * 2026-05-15 on Palm/Wrestler 1002:9802 with no visible
+       * disturbance.
+       */
+      PKT3(PKT3_SET_CONFIG_REG, 1, 0),
+      TERAKAN_CONFIG_REG_OFFSET(R_00A020_SMX_DC_CTL0),
+      S_00A020_USE_HASH_FUNCTION(1) | S_00A020_NUMBER_OF_SETS(4) |
+         S_00A020_FLUSH_ALL_ON_EVENT(1),
    };
 
    packet = terakan_gfx_command_writer_emit(
