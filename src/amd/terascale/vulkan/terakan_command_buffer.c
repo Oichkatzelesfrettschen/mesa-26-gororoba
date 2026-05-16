@@ -24,6 +24,8 @@
 #include "terakan_command_buffer.h"
 
 #include "terakan_barrier.h"
+#include "terakan_carrier_queue.h"
+#include "terakan_dmabuf_carrier.h"
 #include "terakan_cp_dma.h"
 #include "terakan_descriptor.h"
 #include "terakan_device.h"
@@ -306,6 +308,12 @@ terakan_command_buffer_new_indirect_buffer(struct terakan_command_buffer * const
          return NULL;
       }
 
+      /* Initialize new per-IB fields whose lifecycle is independent
+       * of the bo_references / indirect_buffer / relocations slabs
+       * above.  Reused IBs hit the alternate branch and carry these
+       * across; fresh allocations need explicit init. */
+      indirect_buffer->carrier_lists = NULL;
+
       struct terakan_device const * const device = terakan_command_buffer_device(command_buffer);
 
       indirect_buffer->bo_references = vk_alloc(
@@ -349,6 +357,17 @@ terakan_command_buffer_new_indirect_buffer(struct terakan_command_buffer * const
    indirect_buffer->bo_reference_count = 0;
    indirect_buffer->indirect_buffer_size_dwords = 0;
    indirect_buffer->relocation_count = 0;
+
+   /* Per-IB carrier list starts empty; populated only at IB finalize
+    * when the dmabuf-carrier env-gate is on.  Both the fresh-alloc
+    * and reuse paths land here, and reused IBs may have a non-NULL
+    * pointer from a prior recording -- free + clear so each fresh
+    * recording starts from a known-NULL state. */
+   if (indirect_buffer->carrier_lists != NULL) {
+      terakan_carrier_submit_lists_destroy(indirect_buffer->carrier_lists);
+      free(indirect_buffer->carrier_lists);
+      indirect_buffer->carrier_lists = NULL;
+   }
 
    list_addtail(&indirect_buffer->link, &command_buffer->indirect_buffers);
 
@@ -569,6 +588,44 @@ terakan_gfx_command_writer_end_indirect_buffer(
       command_writer->base.bo_reference_writer.reference_count;
 
    struct terakan_device const * const device = terakan_gfx_command_writer_device(command_writer);
+
+   /* Carrier discovery at IB finalize time: when the dmabuf-carrier
+    * env-gate is on, walk the writer's reference_bos[] in lockstep
+    * with the just-built radeon CS reloc array (which is the same
+    * underlying bo_references buffer on the drm_radeon winsys),
+    * classify each carrier-published BO by read_domains /
+    * write_domain, and snapshot the acquire/release lists onto the
+    * IB so the queue-submit path can emit PFP/ME SURFACE_SYNC
+    * packets without re-walking writer state that is about to be
+    * torn down.  When the env-gate is off this entire block is
+    * skipped and the IB is byte-for-byte unchanged. */
+   if (command_writer->indirect_buffer->bo_reference_count != 0u &&
+       terakan_device_physical_device(device)->submission_info_gfx.base.relocation_type ==
+          TERAKAN_QUEUE_RELOCATION_TYPE_DRM_NOP &&
+       terakan_dmabuf_carrier_enabled()) {
+      struct terakan_carrier_submit_lists * const lists =
+         malloc(sizeof(struct terakan_carrier_submit_lists));
+      if (lists != NULL) {
+         terakan_carrier_submit_lists_init(lists);
+         (void)terakan_carrier_collect_from_radeon_relocs(
+            command_writer->base.bo_reference_writer.reference_bos,
+            command_writer->indirect_buffer->bo_reference_count,
+            command_writer->indirect_buffer->bo_references,
+            command_writer->indirect_buffer->bo_reference_count,
+            lists);
+         if (lists->acquire_count == 0u && lists->release_count == 0u) {
+            /* No carrier-published BOs in this IB; release the
+             * empty list so the submit-side fast-path sees NULL. */
+            terakan_carrier_submit_lists_destroy(lists);
+            free(lists);
+         } else {
+            command_writer->indirect_buffer->carrier_lists = lists;
+         }
+      } else {
+         mesa_logw("terakan: dmabuf-carrier list alloc failed at IB "
+                   "finalize; falling back to non-carrier submit path");
+      }
+   }
 
    /* Move finalizers to the end of the rest of the packets. */
    uint32_t const finalizer_size_dwords =
@@ -1697,6 +1754,11 @@ terakan_command_pool_trim_resources(struct terakan_command_pool * const command_
 
    list_for_each_entry_safe (struct terakan_command_buffer_indirect_buffer, indirect_buffer,
                              &command_pool->indirect_buffers_free, link) {
+      if (indirect_buffer->carrier_lists != NULL) {
+         terakan_carrier_submit_lists_destroy(indirect_buffer->carrier_lists);
+         free(indirect_buffer->carrier_lists);
+         indirect_buffer->carrier_lists = NULL;
+      }
       vk_free(&command_pool->vk.alloc, indirect_buffer->relocations);
       vk_free(&command_pool->vk.alloc, indirect_buffer->indirect_buffer);
       vk_free(&command_pool->vk.alloc, indirect_buffer->bo_references);

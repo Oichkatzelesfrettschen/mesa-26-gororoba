@@ -27,6 +27,7 @@
 
 #include "terakan_barrier.h"
 #include "terakan_bo.h"
+#include "terakan_carrier_queue.h"
 #include "terakan_command_buffer.h"
 #include "terakan_fix_ac_warmup.h"
 #include "terakan_device.h"
@@ -820,7 +821,127 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
 
          VkResult command_buffer_submit_result;
 
-         if (command_buffer_indirect_buffer == last_indirect_buffer) {
+         /* Carrier-wired path: when the IB has a non-NULL carrier
+          * list (only populated when TERAKAN_ENABLE_DMABUF_CARRIER=1
+          * at finalize time), wrap the IB body with PFP SURFACE_SYNC
+          * acquire prologue + ME SURFACE_SYNC release epilogue.  The
+          * carrier path coexists with fence-elision merge: when this
+          * IB is also the merge target, the merge happens INSIDE the
+          * carrier prologue/epilogue (carriers acquire before the
+          * IB, release after the IB body and after the merge-time
+          * flush packets).
+          *
+          * Phase 0 wiring does NOT emit an EOP fence-word write
+          * (fence_gpu_va = 0 below) because plumbing the completion
+          * BO+seq through the winsys-abstract submit interface is
+          * out of scope for queue-wiring.  The release-side ME
+          * SURFACE_SYNC drains the destination caches before the
+          * kernel observes CS retirement, and the kernel's normal
+          * retirement chain signals attached dma-buf reservations. */
+         if (unlikely(command_buffer_indirect_buffer->carrier_lists != NULL)) {
+            struct terakan_carrier_submit_lists const * const carrier_lists =
+               command_buffer_indirect_buffer->carrier_lists;
+
+            uint32_t const orig_size = command_buffer_indirect_buffer->indirect_buffer_size_dwords;
+            uint32_t const acquire_dwords_max =
+               carrier_lists->acquire_count * TERAKAN_CARRIER_DWORDS_PER_ACQUIRE;
+            uint32_t const release_dwords_max =
+               carrier_lists->release_count * TERAKAN_CARRIER_DWORDS_PER_RELEASE;
+            bool const is_merge = (command_buffer_indirect_buffer == last_indirect_buffer);
+            uint32_t const merge_flush_dwords = is_merge ? 16u : 0u;
+            uint32_t const carrier_combined_size =
+               acquire_dwords_max + orig_size + merge_flush_dwords + release_dwords_max;
+            uint32_t const carrier_aligned_size =
+               (carrier_combined_size +
+                (TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1)) &
+               ~(TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1);
+
+            uint32_t * const carrier_ib =
+               alloca(carrier_aligned_size * sizeof(uint32_t));
+            uint32_t carrier_cursor = 0u;
+
+            terakan_carrier_emit_acquires_dwords(
+               carrier_ib, carrier_aligned_size, &carrier_cursor, carrier_lists);
+
+            memcpy(&carrier_ib[carrier_cursor],
+                   command_buffer_indirect_buffer->indirect_buffer,
+                   orig_size * sizeof(uint32_t));
+            carrier_cursor += orig_size;
+
+            if (is_merge) {
+               /* Mirror the conservative-flush packets the non-carrier
+                * merge branch emits, so fence elision is preserved
+                * when this IB is the last in the submit.  See the
+                * non-carrier merge block below for packet rationale. */
+               carrier_ib[carrier_cursor++] = PKT3(PKT3_CONTEXT_CONTROL, 1, 0);
+               carrier_ib[carrier_cursor++] = (uint32_t)1 << 31;
+               carrier_ib[carrier_cursor++] = (uint32_t)1 << 31;
+               carrier_ib[carrier_cursor++] = PKT3(PKT3_EVENT_WRITE, 1 - 1, 0);
+               carrier_ib[carrier_cursor++] =
+                  EVENT_TYPE(EVENT_TYPE_CACHE_FLUSH_AND_INV_EVENT) | EVENT_INDEX(0);
+               carrier_ib[carrier_cursor++] = PKT3(PKT3_EVENT_WRITE, 1 - 1, 0);
+               carrier_ib[carrier_cursor++] =
+                  EVENT_TYPE(EVENT_TYPE_PS_PARTIAL_FLUSH) | EVENT_INDEX(4);
+               carrier_ib[carrier_cursor++] = PKT3(PKT3_EVENT_WRITE, 1 - 1, 0);
+               carrier_ib[carrier_cursor++] =
+                  EVENT_TYPE(EVENT_TYPE_VS_PARTIAL_FLUSH) | EVENT_INDEX(4);
+               carrier_ib[carrier_cursor++] = PKT3(PKT3_EVENT_WRITE, 1 - 1, 0);
+               carrier_ib[carrier_cursor++] =
+                  EVENT_TYPE(EVENT_TYPE_CS_PARTIAL_FLUSH) | EVENT_INDEX(4);
+               carrier_ib[carrier_cursor++] = PKT3(PKT3_SURFACE_SYNC, 4 - 1, 0);
+               carrier_ib[carrier_cursor++] =
+                  S_0085F0_CB_ACTION_ENA(1) | S_0085F0_DB_ACTION_ENA(1) |
+                  S_0085F0_SH_ACTION_ENA(1) |
+                  S_0085F0_CB0_DEST_BASE_ENA(1) | S_0085F0_CB1_DEST_BASE_ENA(1) |
+                  S_0085F0_CB2_DEST_BASE_ENA(1) | S_0085F0_CB3_DEST_BASE_ENA(1) |
+                  S_0085F0_CB4_DEST_BASE_ENA(1) | S_0085F0_CB5_DEST_BASE_ENA(1) |
+                  S_0085F0_CB6_DEST_BASE_ENA(1) | S_0085F0_CB7_DEST_BASE_ENA(1) |
+                  S_0085F0_CB8_DEST_BASE_ENA(1) | S_0085F0_CB9_DEST_BASE_ENA(1) |
+                  S_0085F0_CB10_DEST_BASE_ENA(1) | S_0085F0_CB11_DEST_BASE_ENA(1) |
+                  S_0085F0_DB_DEST_BASE_ENA(1) |
+                  TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME;
+               carrier_ib[carrier_cursor++] = UINT32_MAX;
+               carrier_ib[carrier_cursor++] = 0;
+               carrier_ib[carrier_cursor++] = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
+            }
+
+            terakan_carrier_emit_releases_dwords(
+               carrier_ib, carrier_aligned_size, &carrier_cursor, carrier_lists,
+               /* fence_gpu_va = */ 0u, /* fence_seq = */ 0u);
+
+            while (carrier_cursor < carrier_aligned_size) {
+               carrier_ib[carrier_cursor++] = PKT_TYPE_S(2);
+            }
+
+            uint32_t bo_count_for_carrier =
+               command_buffer_indirect_buffer->bo_reference_count;
+            void * bo_refs_for_carrier = command_buffer_indirect_buffer->bo_references;
+            if (is_merge) {
+               bo_count_for_carrier =
+                  command_buffer_indirect_buffer->bo_reference_count + 1u;
+               bo_refs_for_carrier =
+                  alloca(device->bo_reference_size * bo_count_for_carrier);
+               memcpy(bo_refs_for_carrier,
+                      command_buffer_indirect_buffer->bo_references,
+                      device->bo_reference_size *
+                         command_buffer_indirect_buffer->bo_reference_count);
+               device->winsys_fn->queue->completion_submission_create_bo_reference(
+                  queue->pending_completion,
+                  (char *)bo_refs_for_carrier +
+                     device->bo_reference_size *
+                        command_buffer_indirect_buffer->bo_reference_count);
+            }
+
+            command_buffer_submit_result = device->winsys_fn->queue->submit(
+               queue->submission_context, bo_count_for_carrier, bo_refs_for_carrier,
+               carrier_aligned_size, carrier_ib,
+               command_buffer_indirect_buffer->relocation_count,
+               command_buffer_indirect_buffer->relocations);
+            if (profiling) {
+               device->profile.submit_ib_dwords += carrier_aligned_size;
+               device->profile.submit_bo_refs += bo_count_for_carrier;
+            }
+         } else if (command_buffer_indirect_buffer == last_indirect_buffer) {
             /* Merge: append conservative flush packets and include completion BO reference.
              * This flush must be a superset of all possible signal IB flushes generated by
              * terakan_queue_get_graphics_signal_indirect_buffer() because we don't know the
