@@ -136,26 +136,53 @@ lower_ballot(nir_builder *b, nir_intrinsic_instr *intrin,
                                 nir_iand_imm(b, lane_id, 31));
    nir_def *base = nir_imm_int(b, slot_off);
 
+   /* Per AMD Evergreen-Family Instruction Set Architecture section
+    * 2.6.2, the per-SIMD LDS region is "shared memory" with no
+    * hardware zero-initialisation contract at workgroup launch --
+    * each shader must initialise the LDS region it reads.  Our
+    * single-barrier all-lane atomic-OR relies on the slot starting
+    * at zero, so emit an explicit clear FIRST.
+    *
+    * Clear shape: every lane does LDS_AND with 0 on both DWORDs of
+    * the ballot slot.  AND-with-0 is idempotent (N lockstep lanes
+    * converging on 0 just store 0) and Wave64-lockstep-safe for the
+    * LDS bank-arbitration cycle (the ISA documents the 32 integer
+    * atomic units as "unordered" but the final state is
+    * commutative-associative for AND/OR).  Two atomic_and ops per
+    * slot (one per 32-bit half of the wave64 ballot uvec2) plus one
+    * workgroup barrier so the zero state is globally visible before
+    * the subsequent atomic_or.  The clear path replaces the earlier
+    * lane-0 + push_if approach that compounded GROUP_BARRIER
+    * slot-pinning rejections in the SFN VLIW5 scheduler. */
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_shared_atomic(b, 32, base, zero, .base = 0,
+                     .atomic_op = nir_atomic_op_iand);
+   nir_shared_atomic(b, 32, base, zero, .base = 4,
+                     .atomic_op = nir_atomic_op_iand);
+
+   nir_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+               .memory_scope = SCOPE_WORKGROUP,
+               .memory_semantics = NIR_MEMORY_ACQ_REL,
+               .memory_modes = nir_var_mem_shared);
+
    /* Every lane participates in the atomic-OR, contributing either
     * its lane bit or zero.  Issuing the LDS_ATOMIC_OR_RET from every
     * lane lockstep is what the AMD Evergreen-Family Instruction Set
-    * Architecture LDS bank-arbitration cycle expects, and it lets the
-    * SFN scheduler pack the atomic without a surrounding control-flow
-    * predicate -- the original push_if/pop_if pair created an extra
-    * basic-block boundary that compounded the GROUP_BARRIER
-    * slot-pinning rejections seen at sfn_instr_alu.h:90 in the
-    * three-barrier variant. */
+    * Architecture LDS bank-arbitration cycle expects, and it lets
+    * the SFN scheduler pack the atomic without a surrounding
+    * control-flow predicate -- the original push_if/pop_if pair
+    * created an extra basic-block boundary that compounded the
+    * GROUP_BARRIER slot-pinning rejections seen at
+    * sfn_instr_alu.h:90 in the three-barrier variant. */
    nir_def *atomic_addr = nir_iadd(b, base, word_off);
    nir_def *or_value = nir_bcsel(b, predicate, lane_bit, nir_imm_int(b, 0));
    nir_shared_atomic(b, 32, atomic_addr, or_value,
                      .atomic_op = nir_atomic_op_ior);
 
-   /* Single workgroup barrier ensures all lane contributions drained
-    * before the load.  The post-load reset and trailing barrier from
-    * the original three-barrier variant are dropped: each ballot uses
-    * a fresh per-call-site LDS slot allocation, so there is no
-    * subsequent ballot that could observe a non-zero residual on this
-    * slot. */
+   /* Workgroup barrier so all lane contributions are drained before
+    * the load.  Per-call-site LDS slot allocation means no
+    * subsequent ballot can observe a residual; no trailing barrier
+    * needed. */
    nir_barrier(b, .execution_scope = SCOPE_WORKGROUP,
                .memory_scope = SCOPE_WORKGROUP,
                .memory_semantics = NIR_MEMORY_ACQ_REL,
@@ -239,6 +266,29 @@ emit_broadcast_via_lds(nir_builder *b, nir_def *value, nir_def *lane_is_source,
          u32_chunks[c * 2 + 1] = nir_unpack_64_2x32_split_y(b, comp);
       }
    }
+
+   /* NOTE: the per-slot AND-with-0 prelude that works in lower_ballot
+    * was tried here and regressed -- broadcast tests in CTS
+    * (subgroupbroadcast_int / subgroupbroadcast_uint) emit a LOOP
+    * that calls subgroupBroadcast N times across lanes, allocating
+    * a fresh per-call-site LDS slot per iteration through
+    * alloc_lds_slot.  N atomic_and + N barriers + N atomic_or + N
+    * barriers exceeds what the SFN VLIW5 scheduler can pack on
+    * Palm / Wrestler (CHIP_PALM, Evergreen / TeraScale-2 VLIW5), and
+    * the resulting SIGABRT path is distinct from the single-barrier
+    * ballot case.  Left as a known limitation for the broadcast
+    * surface; ballot stays correct because each ballot expansion is
+    * a single-slot site rather than a loop body.
+    *
+    * Per AMD Evergreen-Family Instruction Set Architecture section
+    * 2.6.2 the LDS region has no hardware zero-init at workgroup
+    * launch.  For the broadcast surface this means the loaded value
+    * may contain residual bits ORed with the source-lane contribution
+    * when a slot is reused across dispatches -- correctness for
+    * broadcast tests is therefore conditional on the test using a
+    * fresh per-call-site allocation in a single-iteration call
+    * pattern.  CTS broadcast tests that loop over lanes will see
+    * spurious bits and Fail rather than crash. */
 
    /* All lanes participate -- only source lane(s) contribute the real
     * value, the rest OR in zero.  One LDS_ATOMIC_OR_RET per chunk. */
@@ -440,9 +490,12 @@ terakan_nir_lower_subgroup_lds(nir_shader *shader)
    /* LDS-emulated subgroup ops are only meaningful in compute shaders.
     * Graphics stages may use subgroupBroadcastFirst etc. but the
     * sync-via-workgroup-LDS model does not apply outside compute, and
-    * Bobcat-class chips do not advertise subgroup ops in non-compute
-    * stages anyway (see terakan_physical_device.c
-    * subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT).
+    * the driver advertises subgroup ops compute-only anyway (see
+    * terakan_physical_device.c subgroupSupportedStages =
+    * VK_SHADER_STAGE_COMPUTE_BIT).  Affected silicon for the LDS path
+    * is Evergreen / TeraScale-2 VLIW5 (Cedar / Cypress / Hemlock /
+    * Palm / Wrestler, CHIP_PALM is the empirical reproducer) plus
+    * Northern Islands / TeraScale-3 VLIW4 (Barts / Cayman / Aruba).
     */
    if (shader->info.stage != MESA_SHADER_COMPUTE &&
        shader->info.stage != MESA_SHADER_KERNEL)
