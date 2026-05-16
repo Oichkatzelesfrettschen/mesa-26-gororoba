@@ -46,6 +46,9 @@
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
 /* Channel-target enum values stored in the packed swizzle nibble.
  * Match VK_COMPONENT_SWIZZLE_* in the AMD-side encoding so the
  * downstream comparison can use literal small ints. */
@@ -119,6 +122,20 @@ terakan_nir_lower_tg4_view_swizzle_instr(nir_builder * const b,
     */
    if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
       return false;
+   }
+
+   if (getenv("TERAKAN_TG4_VS_TRACE") != NULL) {
+      FILE *tf = fopen("/tmp/terakan_tg4_trace.log", "a");
+      if (tf) {
+         fprintf(tf,
+                 "REWRITE tg4 texture_index=%u sampler_dim=%d "
+                 "component=%u num_components=%u bit_size=%u dest_type=0x%x\n",
+                 tex->texture_index, tex->sampler_dim,
+                 tex->component, tex->def.num_components, tex->def.bit_size,
+                 tex->dest_type);
+         fflush(tf);
+         fclose(tf);
+      }
    }
 
    b->cursor = nir_before_instr(&tex->instr);

@@ -1284,6 +1284,16 @@ terakan_shader_lower_and_optimize_post_link(
          }
          if (any_tg4) break;
       }
+      if (getenv("TERAKAN_TG4_VS_TRACE") != NULL) {
+         FILE *tf = fopen("/tmp/terakan_tg4_trace.log", "a");
+         if (tf) {
+            fprintf(tf, "stage=%s any_tg4=%d\n",
+                    mesa_shader_stage_name(nir->info.stage),
+                    any_tg4 ? 1 : 0);
+            fflush(tf);
+            fclose(tf);
+         }
+      }
       if (any_tg4) {
          *kcache_needed |=
             (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
