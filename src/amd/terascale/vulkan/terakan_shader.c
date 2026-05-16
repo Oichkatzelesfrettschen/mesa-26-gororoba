@@ -333,6 +333,16 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
          .lower_vote_feq = true,
          .lower_vote_ieq = true,
          .lower_vote_bool_eq = true,
+         /* Reduce / boolean_reduce decompose subgroupAdd / Min / Max /
+          * And / Or / Xor / AllEqual / etc. into nir_intrinsic_reduce
+          * with a nir_op operator argument; the LDS pass then expands
+          * each reduce into a 6-level butterfly LDS exchange (see
+          * emit_reduce_via_butterfly in terakan_nir_lower_subgroup_lds).
+          * Bounded GROUP_BARRIER cost (6 barriers per reduce
+          * regardless of input), so the SFN VLIW5 scheduler packs
+          * them without slot-pinning crisis. */
+         .lower_reduce = true,
+         .lower_boolean_reduce = true,
       };
       NIR_PASS(_, nir, nir_lower_subgroups, &terakan_subgroups_options);
       /* Expand the foundational ballot + read_first_invocation
@@ -1250,6 +1260,36 @@ terakan_shader_lower_and_optimize_post_link(
                : 0,
             uavs_for_mutable_resources_needed, driver_push_constants_used,
             kcache_needed, robust_buffer_access);
+
+   /* Texture-gather (FETCH4 / GATHER4) per-binding VkComponentMapping
+    * rewrite.  AMD Evergreen-Family ISA Chapter 6: SQ_TEX_RESOURCE_WORD4
+    * DST_SEL permutes the four FETCH result lanes -- correct for SAMPLE
+    * but wrong for FETCH4 where the four lanes are spatial corner
+    * samples.  This pass runs after binding lowering so
+    * `tex->texture_index` is the physical resource slot (the index
+    * used for the runtime-swizzle KCACHE lookup in bank 14).  Marks
+    * KCACHE bank 14 as needed iff any tg4 was rewritten. */
+   {
+      bool any_tg4 = false;
+      nir_foreach_function_impl(impl, nir) {
+         nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+               if (instr->type == nir_instr_type_tex &&
+                   nir_instr_as_tex(instr)->op == nir_texop_tg4) {
+                  any_tg4 = true;
+                  break;
+               }
+            }
+            if (any_tg4) break;
+         }
+         if (any_tg4) break;
+      }
+      if (any_tg4) {
+         *kcache_needed |=
+            (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+         NIR_PASS(_, nir, terakan_nir_lower_tg4_view_swizzle);
+      }
+   }
 
    if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post terakan_nir_lower_bindings (%s) ---\n",

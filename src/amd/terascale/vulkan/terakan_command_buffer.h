@@ -421,6 +421,31 @@ struct terakan_gfx_command_writer {
        * Non-image UAVs (SSBO, texel buffer) and array-view images
        * populate zero -- nir_iadd with zero is optimized out. */
       uint32_t uav_base_array_layers[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
+      /* Per-sampler-binding VkComponentMapping for the
+       * `terakan_nir_lower_tg4_view_swizzle` NIR pass.  AMD Evergreen-Family
+       * ISA Chapter 6 (Texture Cache Clauses): the TEX_WORD1 DST_SEL field
+       * permutes the four result lanes of every FETCH instruction.  For
+       * FETCH4 / GATHER4 those four lanes are four spatial corner samples
+       * of one channel, not the four RGBA channels of one texel, so a
+       * non-identity DST_SEL baked into SQ_TEX_RESOURCE_WORD4 corrupts the
+       * gather result.  The runtime swizzle is loaded by the NIR pass to
+       * pre-map the gather component arg (R/G/B/A -> rewritten gather
+       * channel, ZERO/ONE -> short-circuited vec4 constant).
+       *
+       * Pack: 16 bits per sampler binding, two bindings per uint32_t.
+       *   bits [3:0]   = R-channel target (0=R, 1=G, 2=B, 3=A, 4=ZERO, 5=ONE)
+       *   bits [7:4]   = G-channel target
+       *   bits [11:8]  = B-channel target
+       *   bits [15:12] = A-channel target
+       *   bits [19:16] = R-target for second binding in this dword
+       *   ...
+       * Index by `physical_sampler_resource_slot / 2`, low/high half by
+       * `physical_sampler_resource_slot % 2`.  Slot count = 24 (12 dwords
+       * × 2 bindings) covers the typical VK 1.0 minimum + headroom.
+       * Slots >= 24 fall back to identity in the NIR pass (the SAMPLE-
+       * side bake into SQ_TEX_RESOURCE_WORD4 still handles those, only
+       * the GATHER path uses this runtime metadata). */
+      uint32_t view_swizzles[12];
       bool dirty;
       /* Cached allocation from the last upload — reused if not dirty. */
       struct terakan_bo const *bo;

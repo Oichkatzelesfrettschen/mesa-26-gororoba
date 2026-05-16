@@ -42,7 +42,19 @@
  *                   STORE_TYPED coord.z, compensating for Evergreen
  *                   hardware treating R3.z as the absolute slice index
  *                   and ignoring CB_COLOR_VIEW.SLICE_START on writes.
- *   dword 40..63 : reserved (zero)
+ *   dword 40..51 : uint32_t view_swizzles[12]  (2 bindings packed per dword)
+ *                   Per-sampler-binding VkComponentMapping for
+ *                   `terakan_nir_lower_tg4_view_swizzle`.  Each binding
+ *                   packs as 16 bits = 4 channels x 4-bit targets, with
+ *                   the channel-target encoding matching
+ *                   VK_COMPONENT_SWIZZLE_R/G/B/A/ZERO/ONE (0..5).  AMD
+ *                   Evergreen-Family ISA Chapter 6: SQ_TEX_RESOURCE_WORD4
+ *                   DST_SEL permutes the four FETCH result lanes -- for
+ *                   FETCH4 those lanes are spatial samples, so the
+ *                   descriptor-side bake is wrong; the NIR pass uses
+ *                   this metadata to pre-map the gather component
+ *                   argument before emitting the FETCH4.
+ *   dword 52..63 : reserved (zero)
  */
 
 #include "terakan_command_buffer.h"
@@ -120,6 +132,13 @@ terakan_robustness_metadata_apply(
       memcpy(mapping + 28,
              command_writer->robustness_metadata.uav_base_array_layers,
              sizeof(command_writer->robustness_metadata.uav_base_array_layers));
+      /* Dwords 40..51: per-sampler-binding VkComponentMapping pack
+       * (two bindings per dword, 16 bits each).  Consumed by
+       * terakan_nir_lower_tg4_view_swizzle to pre-map the gather
+       * component argument before FETCH4 emission. */
+      memcpy(mapping + 40,
+             command_writer->robustness_metadata.view_swizzles,
+             sizeof(command_writer->robustness_metadata.view_swizzles));
       /* dword 12: trash_page_addr — GPU VA >> 2 of the driver-owned trash page.
        * Used by math-predication write guards to redirect OOB writes to a safe
        * garbage sink instead of offset 0 of the target buffer. */

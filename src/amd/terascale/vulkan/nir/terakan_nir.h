@@ -132,6 +132,40 @@ bool terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader);
  * VK_SHADER_STAGE_COMPUTE_BIT. */
 bool terakan_nir_lower_subgroup_lds(nir_shader * shader);
 
+/* Per-binding runtime-swizzle rewrite for FETCH4 / GATHER4 on Palm /
+ * Wrestler (CHIP_PALM, Evergreen / TeraScale-2 VLIW5).  Per AMD
+ * Evergreen-Family ISA Chapter 6 (Texture Cache Clauses), the
+ * SQ_TEX_RESOURCE_WORD4 DST_SEL_X/Y/Z/W fields permute the four
+ * result lanes of a FETCH instruction.  For SAMPLE that correctly
+ * maps texel R/G/B/A through the VkComponentMapping; for GATHER4 the
+ * four "result lanes" are FOUR SPATIAL CORNER SAMPLES of one channel
+ * (per ISA §9.4 / opcode 0x15 GATHER4 description "fetches unfiltered
+ * texels from a bilinear sample and packs them into xyzw") -- the
+ * descriptor-side bake then permutes spatial samples as if they were
+ * channels.
+ *
+ * This pass detects nir_texop_tg4 instructions after binding
+ * lowering, loads the per-binding VkComponentMapping pack from KCACHE
+ * bank 14 (populated by terakan_pipeline_layout.c at descriptor-bind
+ * time), and remaps the gather component argument according to:
+ *   swizzle[comp_arg] == R/G/B/A: rewrite tex->component to that
+ *                                 real-channel index
+ *   swizzle[comp_arg] == ZERO:    replace tex result with vec4(0)
+ *   swizzle[comp_arg] == ONE:     replace tex result with vec4(1)
+ *
+ * The rewrite is dynamic (bcsel cascade between four candidate
+ * gathers plus two constant-vec4 short circuits) because the swizzle
+ * is per-VkImageView and not known at pipeline-compile time.  Cost
+ * per affected gather: 4x FETCH4 + 5x bcsel + 1x KCACHE load + a few
+ * ALU extractions.  Real shaders rarely use tg4 in hot loops; the
+ * cost is acceptable for correctness.
+ *
+ * Must run AFTER `terakan_nir_lower_bindings` so `tex->texture_index`
+ * is the physical sampler resource slot (the index used to address
+ * `view_swizzles[]` in robustness metadata KCACHE bank 14).
+ */
+bool terakan_nir_lower_tg4_view_swizzle(nir_shader * shader);
+
 /* Active-mask materialisation helpers (terakan_nir_active_mask.c).
  *
  * Per AMD Evergreen-Family ISA Section 4.10, the per-lane predicate
