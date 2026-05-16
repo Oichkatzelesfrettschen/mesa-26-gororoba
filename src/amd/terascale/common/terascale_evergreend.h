@@ -1529,6 +1529,31 @@
 
 #define R_03FF04_SQ_TEX_RESOURCE_CLEAR               0x03FF04
 
+/* SMX write-combining cache control (Evergreen 3D Registers v2 sect SMX).
+ * Documented R/W 32-bit; FLUSH_ALL_ON_EVENT=1 forces every event to drain
+ * the whole SMX cache instead of tag-flush.  Used by the W9 mitigation
+ * for the post-hang latent-degraded class on PALM (Wrestler GPU,
+ * CHIP_PALM, Evergreen / TeraScale-2 VLIW5) where the
+ * S_008020_SOFT_RESET_SMX bit AMD provided on R600/R700 was removed.
+ * Silicon default on Palm: 0x00000009. */
+#define R_00A020_SMX_DC_CTL0                         0x0000A020
+#define   S_00A020_USE_HASH_FUNCTION(x)              (((unsigned)(x) & 0x1) << 0)
+#define   G_00A020_USE_HASH_FUNCTION(x)              (((x) >> 0) & 0x1)
+#define   S_00A020_NUMBER_OF_SETS(x)                 (((unsigned)(x) & 0x1FF) << 1)
+#define   G_00A020_NUMBER_OF_SETS(x)                 (((x) >> 1) & 0x1FF)
+#define   S_00A020_FLUSH_ALL_ON_EVENT(x)             (((unsigned)(x) & 0x1) << 10)
+#define   G_00A020_FLUSH_ALL_ON_EVENT(x)             (((x) >> 10) & 0x1)
+#define   S_00A020_STALL_ON_EVENT(x)                 (((unsigned)(x) & 0x1) << 11)
+#define   G_00A020_STALL_ON_EVENT(x)                 (((x) >> 11) & 0x1)
+#define   S_00A020_DISABLE_WRITE_EVICT(x)            (((unsigned)(x) & 0x1) << 12)
+#define   G_00A020_DISABLE_WRITE_EVICT(x)            (((x) >> 12) & 0x1)
+#define   S_00A020_FORCE_FULL_STRICT_RR(x)           (((unsigned)(x) & 0x1) << 13)
+#define   G_00A020_FORCE_FULL_STRICT_RR(x)           (((x) >> 13) & 0x1)
+#define   S_00A020_NO_ATOMIC_EVICT(x)                (((unsigned)(x) & 0x1) << 14)
+#define   G_00A020_NO_ATOMIC_EVICT(x)                (((x) >> 14) & 0x1)
+
+#define R_00A02C_SMX_EVENT_CTL                       0x0000A02C
+
 #define R_00A400_TD_PS_SAMPLER0_BORDER_INDEX         0x00A400
 #define R_00A404_TD_PS_SAMPLER0_BORDER_RED           0x00A404
 #define R_00A408_TD_PS_SAMPLER0_BORDER_GREEN         0x00A408
