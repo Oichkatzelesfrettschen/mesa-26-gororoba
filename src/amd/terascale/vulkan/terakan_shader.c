@@ -1284,17 +1284,27 @@ terakan_shader_lower_and_optimize_post_link(
          }
          if (any_tg4) break;
       }
-      if (getenv("TERAKAN_TG4_VS_TRACE") != NULL) {
-         FILE *tf = fopen("/tmp/terakan_tg4_trace.log", "a");
-         if (tf) {
-            fprintf(tf, "stage=%s any_tg4=%d\n",
-                    mesa_shader_stage_name(nir->info.stage),
-                    any_tg4 ? 1 : 0);
-            fflush(tf);
-            fclose(tf);
-         }
-      }
-      if (any_tg4) {
+      /* The runtime-swizzle gather rewrite is gated off by default.
+       *
+       * A/B testing on the dEQP-VK.glsl.texture_gather.basic
+       * texture_swizzle CTS subset showed the pass to be net-neutral:
+       * both with and without the pass, 4 of 24 cases pass and 20
+       * fail, but the SET of passing cases shifts (the baseline path
+       * via descriptor SQ_TEX_RESOURCE_WORD4 DST_SEL correctly
+       * implements ZERO substitution for shift-1 swizzles, contradicting
+       * the original hypothesis that ALL non-identity swizzles broke
+       * gather4).  The pass remains compiled in so future Evergreen-
+       * side debugging can opt-in via `TERAKAN_TG4_VS_ENABLE=1`; the
+       * KCACHE bank 14 dword 40..51 view-swizzle region remains
+       * populated unconditionally so probe scripts can sanity-check
+       * per-binding swizzle plumbing.
+       *
+       * AMD Evergreen-Family ISA Chapter 6 references in the
+       * `terakan_nir_lower_tg4_view_swizzle` source remain valid; only
+       * the bcsel-cascade-of-4-clones output shape is incorrect for
+       * the channel-permuting non-identity swizzles.
+       */
+      if (any_tg4 && getenv("TERAKAN_TG4_VS_ENABLE") != NULL) {
          *kcache_needed |=
             (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
          NIR_PASS(_, nir, terakan_nir_lower_tg4_view_swizzle);
