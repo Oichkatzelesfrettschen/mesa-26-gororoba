@@ -135,6 +135,11 @@ distclean: clean
 
 install:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
+	@cur_prefix=$$(meson configure $(BUILDDIR) 2>/dev/null | awk "/^  prefix /{print \$\$2}" | head -1); \
+	if [ "$$cur_prefix" != "$(PREFIX)" ]; then \
+		echo "[install] builddir prefix $$cur_prefix != canonical $(PREFIX); reconfiguring"; \
+		meson configure --prefix=$(PREFIX) $(BUILDDIR); \
+	fi
 	sudo meson install --no-rebuild -C $(BUILDDIR)
 
 artifact-check:
