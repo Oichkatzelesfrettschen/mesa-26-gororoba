@@ -28,9 +28,22 @@
 #include <stdint.h>
 #include <vulkan/vulkan_core.h>
 
+/* C++ TUs (e.g. terakan_shader_sfn.cpp) include this header for
+ * struct terakan_bo's non-atomic fields.  Avoid pulling in C11
+ * <stdatomic.h> from C++ because libstdc++'s
+ * <bits/shared_ptr_atomic.h> redefines symbols that collide with
+ * the C11 atomic generic macros.  Atomic access to the carrier
+ * field is restricted to C TUs; in C++ the field's storage is
+ * exposed as an opaque pointer-sized slot. */
+#ifndef __cplusplus
+#include <stdatomic.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+struct terakan_dmabuf_carrier;
 
 /* Each group of two has the same priority (the maximum priority is 0xF).
  * Similar to RADEON_PRIO in the Gallium Radeon winsys.
@@ -101,6 +114,23 @@ struct terakan_bo {
    uint32_t creation_number;
 
    void * mapping;
+
+   /* Optional dma-buf carrier published on this BO.  Set via
+    * release-store by terakan_dmabuf_carrier_attach() /
+    * terakan_dmabuf_carrier_import(), cleared via release-store by
+    * terakan_dmabuf_carrier_destroy().  Read with acquire semantics
+    * from queue-submit walks.  NULL means "no carrier published";
+    * Palm carriers are an opt-in path so most BOs leave this NULL.
+    *
+    * Exposed as a C11 _Atomic pointer in C; in C++ the field is
+    * laid out as a plain pointer-sized slot (same size + alignment
+    * on supported targets) so terakan_shader_sfn.cpp can include
+    * this header without dragging C11 <stdatomic.h> into libstdc++. */
+#ifdef __cplusplus
+   struct terakan_dmabuf_carrier *carrier;
+#else
+   _Atomic(struct terakan_dmabuf_carrier *) carrier;
+#endif
 };
 
 void * terakan_bo_map(struct terakan_bo * bo);

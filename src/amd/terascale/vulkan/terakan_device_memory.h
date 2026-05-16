@@ -32,10 +32,20 @@
 extern "C" {
 #endif
 
+struct terakan_dmabuf_carrier;
+
 struct terakan_device_memory {
    struct vk_device_memory vk;
 
    struct terakan_bo * bo;
+
+   /* Optional non-owning carrier pointer.  Set when a dma-buf
+    * import path attaches a Palm external-sync carrier to this
+    * device-memory's BO via terakan_dmabuf_carrier_attach().
+    * terakan_FreeMemory() destroys the carrier (which clears the
+    * BO's atomic carrier pointer) BEFORE freeing the BO so the
+    * BO's owning struct outlives its carrier. */
+   struct terakan_dmabuf_carrier * carrier;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(terakan_device_memory, vk.base, VkDeviceMemory,

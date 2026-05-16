@@ -65,4 +65,8 @@ terakan_bo_init(struct terakan_bo * const bo, struct terakan_device * const devi
    bo->creation_number = p_atomic_inc_return(&device->last_bo_creation_number);
 
    bo->mapping = NULL;
+
+   atomic_store_explicit(&bo->carrier,
+                         (struct terakan_dmabuf_carrier *)NULL,
+                         memory_order_relaxed);
 }
