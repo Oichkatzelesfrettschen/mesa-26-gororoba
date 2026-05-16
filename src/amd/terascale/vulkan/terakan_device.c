@@ -29,6 +29,7 @@
 #include "terakan_entrypoints.h"
 #include "terakan_physical_device.h"
 #include "terakan_queue.h"
+#include "terakan_dmabuf_carrier.h"
 #include "terakan_fix_ac_warmup.h"
 
 #include "amd/terascale/common/terascale_eg_sq.h"
@@ -429,6 +430,13 @@ terakan_device_init(struct terakan_device * const device,
                  "terakan/fix-ac: warmup init failed 0x%x; flake mitigation disabled\n",
                  fix_ac_res);
    }
+
+   /* When the dma-buf carrier env-gate is on, dump the closed policy
+    * table once per device init so the carrier-path cache-domain
+    * evidence matrix is visible in logs alongside any subsequent
+    * carrier import attempts. */
+   if (terakan_dmabuf_carrier_enabled())
+      terakan_dmabuf_carrier_log_policy(device);
 
    return VK_SUCCESS;
 
