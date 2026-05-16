@@ -2,31 +2,28 @@
 /*
  * terakan_dmabuf_carrier
  *
- * Phase 0 carrier model for the Terakan PALM external-sync redesign.
- * This header introduces ONLY the policy enums, the policy table,
- * and the carrier struct.  No behavior is wired here; subsequent
- * commits introduce the PM4 packet helpers and the queue-submit
- * integration.
+ * Carrier model for the Terakan external-sync path on Palm
+ * (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5).
  *
- * Cache-domain truth boundary derives from the steinmarder
- * 2026-05-16 carrier-path cache-domain evidence matrix (filed under
- * src/re/r600/findings/active/ in the steinmarder repo).  The
- * matrix forbids global CAS, compressed depth/HTILE, tiled/modifier,
- * SX export, and cacheless RAT for Phase 0 PALM carriers; only the
- * dma-buf buffer carrier and the CB color render-target carrier are
- * empirically backed for this phase.
+ * Defines the closed policy table that gates which carrier domains
+ * are externally sync-correct on Palm, the carrier struct itself,
+ * and the import + attach + destroy entry points.
  *
- * The policy is intentionally CLOSED: every dma-buf import classifies
+ * Policy is intentionally CLOSED: every dma-buf import classifies
  * into one of the seven domains below, and every domain has an
  * explicit support verdict.  Adding a new domain or promoting a
- * pending-probe domain to allowed REQUIRES updating both the enum
- * and the policy table here, plus a finding-doc proof on the
- * steinmarder side.
+ * pending-probe domain to allowed requires updating both the enum
+ * and the policy table.  See the AMD R6xx/R7xx 3D Engine Programming
+ * Guide (SURFACE_SYNC, CB_COLOR0_INFO, CP_COHER_CNTL) and the
+ * AMD Evergreen-Family ISA reference for the underlying hardware
+ * constraints; cache-domain coverage notes live in this driver's
+ * companion docs, not in source comments.
  */
 
 #ifndef TERAKAN_DMABUF_CARRIER_H
 #define TERAKAN_DMABUF_CARRIER_H
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -38,9 +35,9 @@ struct terakan_device;
 /*
  * Carrier-domain taxonomy.
  *
- * BUFFER and CB_COLOR are the only domains Phase 0 builds emit
+ * BUFFER and CB_COLOR are the only domains the Palm build emits
  * surface-sync packets for.  The remaining five MUST hit one of the
- * REJECT paths during import.
+ * reject paths during import.
  */
 enum terakan_carrier_domain {
    TERAKAN_CARRIER_DOMAIN_BUFFER = 0,
@@ -55,22 +52,25 @@ enum terakan_carrier_domain {
 };
 
 /*
- * Support verdict per domain.  ALLOWED_PHASE0 is the only verdict
- * that produces a usable carrier; all others reject or fall back.
+ * Support verdict per domain.
  *
- * - PENDING_PROBE:        documented by AMD, not yet empirically
- *                         backed on PALM.  Future work promotes via
- *                         finding-doc + matrix update.
- * - FORBIDDEN:            explicitly disallowed; documentation
- *                         exists but the hardware/PALM combination
- *                         does not support correct external
- *                         semantics (e.g. global CAS).
- * - DECOMPRESS_REQUIRED:  the carrier path is reachable only via an
- *                         explicit decompression / uncompressed
- *                         fallback before export.
+ * INVALID is the explicit zero-initialised sentinel.  A
+ * `terakan_carrier_policy` row read from `{0}`-initialised memory
+ * MUST classify as INVALID so accidental zero-init does not silently
+ * masquerade as ALLOWED.
+ *
+ * - ALLOWED:               carrier path is empirically backed on
+ *                          Palm and produces a usable carrier.
+ * - PENDING_PROBE:         documented by AMD, not yet backed on
+ *                          Palm; reject at import.
+ * - FORBIDDEN:             explicitly disallowed (e.g. global CAS
+ *                          semantics are not linearizable on Palm).
+ * - DECOMPRESS_REQUIRED:   reachable only via an explicit
+ *                          uncompressed-fallback before export.
  */
 enum terakan_carrier_support {
-   TERAKAN_CARRIER_ALLOWED_PHASE0 = 0,
+   TERAKAN_CARRIER_SUPPORT_INVALID = 0,
+   TERAKAN_CARRIER_ALLOWED,
    TERAKAN_CARRIER_PENDING_PROBE,
    TERAKAN_CARRIER_FORBIDDEN,
    TERAKAN_CARRIER_DECOMPRESS_REQUIRED,
@@ -79,7 +79,7 @@ enum terakan_carrier_support {
 struct terakan_carrier_policy {
    enum terakan_carrier_domain  domain;
    enum terakan_carrier_support support;
-   /* Human-readable reason; emitted in debug logs and in any
+   /* Human-readable reason emitted in debug logs and any
     * VK_ERROR_FEATURE_NOT_PRESENT return path. */
    const char *                 reason;
 };
@@ -88,22 +88,26 @@ struct terakan_carrier_policy {
  * The carrier itself.
  *
  * gpu_va + size_bytes define the [va, va+size) range that
- * SURFACE_SYNC packets address via COHER_BASE / COHER_SIZE (each
- * 256-byte units in the [39:8] field per Evergreen 3D Registers
- * Reference, surface-sync section).  The carrier holds the dma-buf
- * fd kept open across the carrier lifetime to anchor the kernel
- * reservation object the external producer/consumer attaches fences
- * to.
+ * SURFACE_SYNC addresses via COHER_BASE / COHER_SIZE (each in
+ * 256-byte units in the [39:8] field per the AMD Evergreen-Family
+ * 3D Registers Reference, surface-sync section).
  *
- * acquired / gpu_dirty track the state machine documented in the
- * Carrier_Path_Rough_Draft (UNBOUND -> IMPORTED -> ACQUIRED ->
- * GPU_READING/WRITING -> GPU_DIRTY -> RELEASED).  Future commits
- * lift these into an explicit state enum.
+ * owns_bo distinguishes the two construction paths:
+ *   - terakan_dmabuf_carrier_import() allocates a fresh BO via the
+ *     winsys PRIME-import contract; owns_bo = true, destroy frees
+ *     the BO.
+ *   - terakan_dmabuf_carrier_attach() binds to an existing BO
+ *     already owned by a terakan_device_memory; owns_bo = false,
+ *     destroy MUST NOT free the BO.
+ *
+ * acquired / gpu_dirty track the (UNBOUND -> IMPORTED -> ACQUIRED
+ * -> GPU_READING/WRITING -> GPU_DIRTY -> RELEASED) state machine.
  */
 struct terakan_dmabuf_carrier {
    int                              dmabuf_fd;
 
    struct terakan_bo *              bo;
+   bool                             owns_bo;
    uint64_t                         gpu_va;
    uint64_t                         size_bytes;
 
@@ -129,9 +133,7 @@ struct terakan_dmabuf_carrier {
 
 /*
  * Policy table lookup.  Returns a pointer to the immutable
- * per-domain policy entry, or NULL if the domain is out of range
- * (defensive; the enum is closed so callers should never trigger
- * the NULL path in normal flow).
+ * per-domain policy entry, or NULL if the domain is out of range.
  */
 const struct terakan_carrier_policy *
 terakan_dmabuf_carrier_policy(enum terakan_carrier_domain domain);
@@ -162,7 +164,7 @@ bool
 terakan_dmabuf_carrier_enabled(void);
 
 /*
- * Caller-provided descriptor for an import attempt.
+ * Caller-provided descriptor for an import or attach attempt.
  *
  * The caller classifies the dma-buf into a carrier domain before
  * import; the policy table decides whether that domain is supported.
@@ -178,13 +180,37 @@ struct terakan_dmabuf_carrier_desc {
 };
 
 /*
- * Import a dma-buf as a Terakan carrier, subject to the closed
- * policy table.  On ALLOWED_PHASE0 the function imports the fd
- * through the winsys bo->import_fd path, populates *out, and
- * returns VK_SUCCESS.  On any other support verdict the function
- * logs the policy reason and returns VK_ERROR_FEATURE_NOT_PRESENT.
- * Returns other VK_ERROR_* codes for I/O failures originating in
- * the underlying winsys import.
+ * Attach a carrier to an existing BO owned by the caller (typically
+ * a terakan_device_memory's BO).  Does NOT call the winsys
+ * import_fd path and does NOT dup the caller's dma-buf fd; the
+ * caller already holds those references via its own owning struct.
+ *
+ * On ALLOWED the carrier is allocated, populated with `existing_bo`
+ * as its non-owning BO pointer (carrier->owns_bo = false), and the
+ * BO's atomic carrier pointer is published via release-store.  On
+ * any other support verdict the function returns
+ * VK_ERROR_FEATURE_NOT_PRESENT and *out remains NULL.
+ *
+ * The BO's atomic carrier field MUST be NULL at entry; attaching
+ * twice without an intervening destroy is a caller bug and asserts
+ * in debug builds.
+ */
+VkResult
+terakan_dmabuf_carrier_attach(struct terakan_device *                    device,
+                              const struct terakan_dmabuf_carrier_desc * desc,
+                              struct terakan_bo *                        existing_bo,
+                              struct terakan_dmabuf_carrier **           out);
+
+/*
+ * Import a dma-buf as a Terakan carrier without a pre-existing BO.
+ * Allocates a fresh BO via the winsys PRIME-import contract,
+ * publishes the carrier on it, and sets owns_bo = true so destroy
+ * frees the BO.
+ *
+ * Prefer terakan_dmabuf_carrier_attach() when the dma-buf is
+ * already imported into a terakan_device_memory; double-importing
+ * the same dma-buf into two distinct terakan_bo wrappers is a
+ * carrier-association soundness bug.
  */
 VkResult
 terakan_dmabuf_carrier_import(struct terakan_device *                    device,
@@ -192,9 +218,11 @@ terakan_dmabuf_carrier_import(struct terakan_device *                    device,
                               struct terakan_dmabuf_carrier **           out);
 
 /*
- * Release any resources the carrier holds: BO unref, dmabuf fd
- * close, sync FDs close.  Safe to call on a partially-constructed
- * carrier (NULL-tolerant; tolerates fields left at zero/-1).
+ * Release any resources the carrier holds: clear the BO's atomic
+ * carrier pointer (release-store of NULL), close carrier-owned sync
+ * FDs, free the BO only when owns_bo is true, then free the carrier
+ * itself.  Safe to call on a partially-constructed carrier
+ * (NULL-tolerant; tolerates fields left at zero/-1).
  */
 void
 terakan_dmabuf_carrier_destroy(struct terakan_device *         device,
