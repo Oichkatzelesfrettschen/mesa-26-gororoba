@@ -469,6 +469,68 @@ terakan_nir_binding_mutable_resource_index(
 
 
 /*
+ * terakan_nir_load_robustness_slot_u32
+ *
+ * Loads `kcache[TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA][base_slot + array_index]`
+ * as a uint32_t.  `array_index` may be a literal constant or a runtime
+ * value; for the constant case the slot index is folded statically.
+ *
+ * AMD Evergreen-Family ISA, CF Instructions chapter: the
+ * `nir_load_kcache_r600` intrinsic's src[0] is the KCACHE BANK
+ * selector for the ALU clause's CF_KCACHE0_BANK / CF_KCACHE1_BANK
+ * (4-bit field), NOT an element offset.  The robustness-metadata
+ * bank holds a contiguous packed array of per-slot uint32_t values;
+ * advancing one bank per descriptor-array element would land on the
+ * push-constants bank (bank+1) or undefined banks (bank+2 or higher).
+ * The slot offset belongs INSIDE the bank, expressed as
+ * (vec4_index, component).
+ */
+static nir_def *
+terakan_nir_load_robustness_slot_u32(nir_builder * const b,
+                                     uint32_t const base_slot,
+                                     nir_def * const array_index)
+{
+   nir_const_value const * const array_index_const =
+      nir_src_as_const_value(nir_src_for_ssa(array_index));
+   if (array_index_const != NULL) {
+      uint32_t const slot       = base_slot + array_index_const->u32;
+      uint32_t const vec4_index = slot / 4u;
+      uint32_t const component  = slot % 4u;
+      return nir_load_kcache_r600(
+         b, 1, 32, nir_imm_zero(b, 1, 32),
+         .access    = ACCESS_CAN_REORDER,
+         .id_base   = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+         .base      = vec4_index,
+         .component = component);
+   }
+
+   /* Dynamic array index.  Load the first vec4 row of the
+    * robustness-metadata bank and select the lane at runtime.  The
+    * texel-buffer and instance-array CTS surfaces all use literal
+    * array indices today; the dynamic case ships sound but
+    * intentionally simple (single-row fan-out) until a test exercises
+    * indices that cross KCACHE vec4 rows.
+    */
+   nir_def * const slot_dyn      = nir_iadd_imm(b, array_index, base_slot);
+   nir_def * const component_dyn = nir_iand_imm(b, slot_dyn, 3);
+   nir_def * const vec4_load = nir_load_kcache_r600(
+      b, 4, 32, nir_imm_zero(b, 1, 32),
+      .access    = ACCESS_CAN_REORDER,
+      .id_base   = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+      .base      = 0,
+      .component = 0);
+   nir_def * const sel0 = nir_iand_imm(b, component_dyn, 1);
+   nir_def * const sel1 = nir_iand_imm(b, nir_ushr_imm(b, component_dyn, 1), 1);
+   nir_def * const lo = nir_bcsel(b, nir_ine_imm(b, sel0, 0),
+                                  nir_channel(b, vec4_load, 1),
+                                  nir_channel(b, vec4_load, 0));
+   nir_def * const hi = nir_bcsel(b, nir_ine_imm(b, sel0, 0),
+                                  nir_channel(b, vec4_load, 3),
+                                  nir_channel(b, vec4_load, 2));
+   return nir_bcsel(b, nir_ine_imm(b, sel1, 0), hi, lo);
+}
+
+/*
  * terakan_nir_emit_write_guard
  *
  * Emits a software bounds check before a MEM_RAT write (store or atomic).
@@ -517,17 +579,13 @@ terakan_nir_emit_write_guard(nir_builder * const b,
    /* Mark KCACHE bank 14 (robustness metadata) as needed. */
    *state->kcache_needed |= (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
 
-   /* Load the exact byte size for this UAV from KCACHE bank 14.
-    * Layout: uint32_t buffer_uav_byte_size[12] starting at dword 0. */
-   uint32_t const size_vec4_index = metadata_index_zero_based / 4;
-   uint32_t const size_component = metadata_index_zero_based % 4;
-
-   nir_def *uav_byte_size = nir_load_kcache_r600(
-      b, 1, 32, uav_array_index,
-      .access = ACCESS_CAN_REORDER,
-      .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-      .base = size_vec4_index,
-      .component = size_component);
+   /* Load the exact byte size for this UAV from the robustness-metadata
+    * bank.  Layout: uint32_t buffer_uav_byte_size[N] at dword offsets
+    * [0..N-1].  Per-array-element offsets are component-strided inside
+    * one bank, not bank-strided -- see
+    * terakan_nir_load_robustness_slot_u32. */
+   nir_def * const uav_byte_size =
+      terakan_nir_load_robustness_slot_u32(b, metadata_index_zero_based, uav_array_index);
 
    /* write_end = byte_offset + write_size_bytes (saturating add to prevent
     * overflow: if byte_offset is near UINT32_MAX, the add would wrap to a
@@ -1105,21 +1163,17 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
          stage == MESA_SHADER_FRAGMENT
             ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
             : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
-      if (unlikely(mutable_resource_index_base >= mutable_resource_count)) {
+      if (unlikely(mutable_resource_index_base + binding.array_index_range_last >=
+                   mutable_resource_count)) {
          terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
          return;
       }
 
       *state->kcache_needed |=
          (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
-      uint32_t const size_vec4_index = mutable_resource_index_base / 4u;
-      uint32_t const size_component = mutable_resource_index_base % 4u;
-      nir_def * const byte_size = nir_load_kcache_r600(
-         b, 1, 32, binding.array_index,
-         .access = ACCESS_CAN_REORDER,
-         .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-         .base = size_vec4_index,
-         .component = size_component);
+      nir_def * const byte_size = terakan_nir_load_robustness_slot_u32(
+         b, mutable_resource_index_base, binding.array_index);
+
       uint32_t const read_size_bytes =
          intrin->num_components * (intrin->def.bit_size / 8u);
       nir_def * const read_end =
@@ -1592,16 +1646,13 @@ terakan_nir_lower_bindings_instr_image_deref_store(
 
       /* Texel buffer element counts are in the dedicated array at
        * KCACHE bank 14 dwords 16..27 (vec4 indices 4..6), separated
-       * from the SSBO byte sizes at dwords 0..11 for defense-in-depth. */
-      uint32_t const elem_vec4_index = 4 + uav_index_zero_based / 4;
-      uint32_t const elem_component = uav_index_zero_based % 4;
-
-      nir_def * const element_count = nir_load_kcache_r600(
-         b, 1, 32, uav_array_index,
-         .access = ACCESS_CAN_REORDER,
-         .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-         .base = elem_vec4_index,
-         .component = elem_component);
+       * from the SSBO byte sizes at dwords 0..11 for defense-in-depth.
+       * Per-array-element entries are component-strided inside this
+       * region, not bank-strided -- see
+       * terakan_nir_load_robustness_slot_u32. */
+      nir_def * const element_count =
+         terakan_nir_load_robustness_slot_u32(b, 16u + uav_index_zero_based,
+                                              uav_array_index);
 
       nir_def * const in_bounds = nir_ult(b, raw_element_index, element_count);
       nir_push_if(b, in_bounds);
@@ -2001,16 +2052,13 @@ terakan_nir_lower_bindings_instr_image_deref_atomic(
 
       /* Texel buffer element counts are in the dedicated array at
        * KCACHE bank 14 dwords 16..27 (vec4 indices 4..6), separated
-       * from the SSBO byte sizes at dwords 0..11 for defense-in-depth. */
-      uint32_t const elem_vec4_index = 4 + uav_index_zero_based / 4;
-      uint32_t const elem_component = uav_index_zero_based % 4;
-
-      nir_def * const element_count = nir_load_kcache_r600(
-         b, 1, 32, uav_array_index,
-         .access = ACCESS_CAN_REORDER,
-         .id_base = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-         .base = elem_vec4_index,
-         .component = elem_component);
+       * from the SSBO byte sizes at dwords 0..11 for defense-in-depth.
+       * Per-array-element entries are component-strided inside this
+       * region, not bank-strided -- see
+       * terakan_nir_load_robustness_slot_u32. */
+      nir_def * const element_count =
+         terakan_nir_load_robustness_slot_u32(b, 16u + uav_index_zero_based,
+                                              uav_array_index);
 
       nir_def * const in_bounds = nir_ult(b, raw_element_index, element_count);
       nir_push_if(b, in_bounds);
