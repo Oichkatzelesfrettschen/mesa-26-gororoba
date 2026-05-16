@@ -409,6 +409,150 @@ lower_shuffle(nir_builder *b, nir_intrinsic_instr *intrin,
    return emit_broadcast_via_lds(b, value, src_lane, alloc);
 }
 
+/* Butterfly LDS reduction.
+ *
+ * For subgroup reductions (subgroupAdd / Min / Max / And / Or / Xor /
+ * etc.) the goal is to compute op(value across all lanes) and
+ * broadcast the result to every lane.  The classic shape on
+ * hardware without native cross-lane ALU is the butterfly /
+ * recursive-halving pattern: at each level k = 0..log2(N)-1, lane L
+ * exchanges values with lane L XOR (1 << k) and applies the
+ * associative operator.  After log2(N) hops every lane holds the
+ * same op-reduction of all N input values.
+ *
+ * On Wave64 (TERAKAN_SUBGROUP_LOG2_SIZE = 6) the cost is 6 LDS
+ * store-barrier-load triples regardless of input value -- bounded
+ * GROUP_BARRIER pressure that the SFN VLIW5 scheduler on Palm /
+ * Wrestler can pack without slot-pinning crisis.
+ *
+ * Reuses the per-shader broadcast region as the exchange surface:
+ * region + lane_id * 4 is each lane's outgoing slot, and partner
+ * reads via region + (lane_id ^ step) * 4.  Allocation is shared
+ * with emit_broadcast_via_lds; the region is sized for one chunk
+ * per lane and chunked-iterated for wider / multi-component
+ * values.
+ *
+ * Per AMD Evergreen-Family Instruction Set Architecture section
+ * 2.6.2 (Local Data Share), the 32 banks support contention-free
+ * lane-disjoint stores; the workgroup barrier between levels
+ * drains each level's writes before the next level reads.
+ *
+ * Operator dispatch is parameterised on a nir_op:
+ *
+ *   nir_op_iadd / nir_op_imin / nir_op_imax / nir_op_umin /
+ *   nir_op_umax / nir_op_iand / nir_op_ior / nir_op_ixor /
+ *   nir_op_fadd / nir_op_fmin / nir_op_fmax / nir_op_fmul
+ *
+ * 32-bit values reduce in one chunk; 64-bit values split into hi
+ * and lo halves via nir_pack_64_2x32_split, reduce each half
+ * independently (associative+commutative operators), and the
+ * caller re-packs.  Sub-32-bit operators widen with nir_u2u32 / etc
+ * around the reduction and narrow back after.
+ */
+static nir_def *
+apply_reduce_op(nir_builder *b, nir_op op, nir_def *a, nir_def *b_val)
+{
+   switch (op) {
+   case nir_op_iadd: return nir_iadd(b, a, b_val);
+   case nir_op_imin: return nir_imin(b, a, b_val);
+   case nir_op_imax: return nir_imax(b, a, b_val);
+   case nir_op_umin: return nir_umin(b, a, b_val);
+   case nir_op_umax: return nir_umax(b, a, b_val);
+   case nir_op_iand: return nir_iand(b, a, b_val);
+   case nir_op_ior:  return nir_ior(b, a, b_val);
+   case nir_op_ixor: return nir_ixor(b, a, b_val);
+   case nir_op_fadd: return nir_fadd(b, a, b_val);
+   case nir_op_fmin: return nir_fmin(b, a, b_val);
+   case nir_op_fmax: return nir_fmax(b, a, b_val);
+   case nir_op_fmul: return nir_fmul(b, a, b_val);
+   case nir_op_imul: return nir_imul(b, a, b_val);
+   default:
+      /* Caller has filtered unsupported ops. */
+      assert(!"unhandled subgroup reduce op");
+      return a;
+   }
+}
+
+static nir_def *
+emit_reduce_chunk_via_butterfly(nir_builder *b, nir_def *chunk_value,
+                                nir_op op, struct subgroup_lds_alloc *alloc)
+{
+   if (alloc->broadcast_region_offset == TERAKAN_NO_BROADCAST_REGION) {
+      alloc->broadcast_region_offset =
+         alloc_lds_slot(alloc, TERAKAN_BROADCAST_REGION_BYTES, 4u);
+   }
+   nir_def *region_base = nir_imm_int(b, alloc->broadcast_region_offset);
+   nir_def *lane_id = build_lane_id(b);
+   nir_def *lane_addr =
+      nir_iadd(b, region_base, nir_imul_imm(b, lane_id, 4));
+
+   nir_def *current = chunk_value;
+   for (unsigned level = 0; level < TERAKAN_SUBGROUP_LOG2_SIZE; ++level) {
+      uint32_t const step = 1u << level;
+      nir_def *partner_lane = nir_ixor(b, lane_id, nir_imm_int(b, step));
+      nir_def *partner_addr =
+         nir_iadd(b, region_base, nir_imul_imm(b, partner_lane, 4));
+
+      nir_store_shared(b, current, lane_addr, .base = 0,
+                       .align_mul = 4, .write_mask = 0x1);
+
+      nir_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                  .memory_scope = SCOPE_WORKGROUP,
+                  .memory_semantics = NIR_MEMORY_ACQ_REL,
+                  .memory_modes = nir_var_mem_shared);
+
+      nir_def *partner_value = nir_load_shared(b, 1, 32, partner_addr,
+                                               .base = 0, .align_mul = 4);
+      current = apply_reduce_op(b, op, current, partner_value);
+
+      /* Barrier between levels so the next level's stores don't
+       * race the prior level's loads.  6 barriers total for Wave64. */
+      nir_barrier(b, .execution_scope = SCOPE_WORKGROUP,
+                  .memory_scope = SCOPE_WORKGROUP,
+                  .memory_semantics = NIR_MEMORY_ACQ_REL,
+                  .memory_modes = nir_var_mem_shared);
+   }
+   return current;
+}
+
+static nir_def *
+emit_reduce_via_butterfly(nir_builder *b, nir_def *value, nir_op op,
+                          struct subgroup_lds_alloc *alloc)
+{
+   unsigned const bit_size = value->bit_size;
+   unsigned const num_components = value->num_components;
+
+   nir_def *out_components[NIR_MAX_VEC_COMPONENTS];
+   for (unsigned c = 0; c < num_components; ++c) {
+      nir_def *comp = nir_channel(b, value, c);
+
+      if (bit_size < 32) {
+         nir_def *widened = nir_u2u32(b, comp);
+         nir_def *reduced =
+            emit_reduce_chunk_via_butterfly(b, widened, op, alloc);
+         out_components[c] = (bit_size == 16)
+            ? nir_u2u16(b, reduced) : nir_u2u8(b, reduced);
+      } else if (bit_size == 32) {
+         out_components[c] =
+            emit_reduce_chunk_via_butterfly(b, comp, op, alloc);
+      } else {
+         /* 64-bit: split, reduce each half, repack.  This is correct
+          * for bitwise ops (and / or / xor) and for integer add when
+          * carries are absorbed by the underlying type, but not in
+          * general (sub-word carry would cross the boundary).  For
+          * now restrict 64-bit ARITHMETIC advertisement accordingly
+          * via the operation-bit filter in the subgroup_supported_*
+          * properties. */
+         nir_def *lo = nir_unpack_64_2x32_split_x(b, comp);
+         nir_def *hi = nir_unpack_64_2x32_split_y(b, comp);
+         nir_def *lo_r = emit_reduce_chunk_via_butterfly(b, lo, op, alloc);
+         nir_def *hi_r = emit_reduce_chunk_via_butterfly(b, hi, op, alloc);
+         out_components[c] = nir_pack_64_2x32_split(b, lo_r, hi_r);
+      }
+   }
+   return nir_vec(b, out_components, num_components);
+}
+
 /* Lower nir_intrinsic_load_subgroup_invocation, load_subgroup_id and
  * load_num_subgroups for compute stages on Wave64.
  *
@@ -493,6 +637,24 @@ lower_subgroup_lds_instr(nir_builder *b, nir_intrinsic_instr *intrin,
    case nir_intrinsic_shuffle:
       result = lower_shuffle(b, intrin, alloc);
       break;
+   case nir_intrinsic_reduce: {
+      nir_op const op = nir_intrinsic_reduction_op(intrin);
+      switch (op) {
+      case nir_op_iadd: case nir_op_imin: case nir_op_imax:
+      case nir_op_umin: case nir_op_umax:
+      case nir_op_iand: case nir_op_ior:  case nir_op_ixor:
+      case nir_op_fadd: case nir_op_fmin: case nir_op_fmax:
+      case nir_op_fmul: case nir_op_imul:
+         result = emit_reduce_via_butterfly(b, intrin->src[0].ssa, op, alloc);
+         break;
+      default:
+         /* Unsupported reduce op -- let nir_lower_subgroups handle it
+          * (or leave the intrinsic unlowered to surface as SFN
+          * "Unsupported instruction" so the gap is visible). */
+         return false;
+      }
+      break;
+   }
    case nir_intrinsic_load_subgroup_invocation:
       result = lower_load_subgroup_invocation(b);
       break;

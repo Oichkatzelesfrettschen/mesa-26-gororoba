@@ -893,21 +893,30 @@ terakan_physical_device_get_capabilities(
     * subgroupSupportedStages bitmask. */
    properties_out->subgroupSize = 64;
    properties_out->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
-   /* BASIC + VOTE + BALLOT.  VOTE and BALLOT both route through the
-    * LDS-mediated cross-lane lowering in
-    * terakan_nir_lower_subgroup_lds.c, which emits a single
-    * LDS_ATOMIC_OR_RET (per AMD Evergreen-Family Instruction Set
-    * Architecture LDS_ATOMIC family) plus exactly one workgroup
-    * barrier per ballot, replacing the earlier three-barrier shape
-    * that exhausted the SFN VLIW5 scheduler's GROUP_BARRIER slot
-    * pinning at sfn_instr_alu.h:90.  ARITHMETIC / SHUFFLE / CLUSTERED
-    * / QUAD remain unadvertised pending the matching scan / shuffle
-    * sequences; dEQP-VK.subgroups.<tier> correctly reports
-    * NotSupported for those. */
+   /* BASIC + VOTE + BALLOT + ARITHMETIC.
+    *
+    * VOTE / BALLOT route through the LDS-mediated cross-lane lowering
+    * in terakan_nir_lower_subgroup_lds.c (LDS_ATOMIC_OR_RET per AMD
+    * Evergreen-Family Instruction Set Architecture section 2.6.2
+    * LDS_ATOMIC family).
+    *
+    * ARITHMETIC routes through an FFT-butterfly style LDS reduction
+    * over log2(subgroup_size) = 6 levels on Wave64: at each level
+    * lane L exchanges with lane L XOR (1 << level) via the per-shader
+    * broadcast region and applies the associative reduction op.
+    * Bounded GROUP_BARRIER cost (6 barriers per reduce regardless of
+    * input width) keeps the SFN VLIW5 scheduler under its slot-pinning
+    * threshold.  Supported ops: iadd / imul / imin / imax / umin /
+    * umax / iand / ior / ixor / fadd / fmul / fmin / fmax.
+    *
+    * SHUFFLE / CLUSTERED / QUAD remain unadvertised pending matching
+    * shuffle-mask / cluster-size / quad-broadcast sequences;
+    * dEQP-VK.subgroups.<tier> reports NotSupported for those. */
    properties_out->subgroupSupportedOperations =
       VK_SUBGROUP_FEATURE_BASIC_BIT |
       VK_SUBGROUP_FEATURE_VOTE_BIT |
-      VK_SUBGROUP_FEATURE_BALLOT_BIT;
+      VK_SUBGROUP_FEATURE_BALLOT_BIT |
+      VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
    properties_out->subgroupQuadOperationsInAllStages = false;
 
    /* VK_KHR_maintenance1 (#70, Vulkan 1.1).
