@@ -2,11 +2,11 @@
 /*
  * terakan_palm_sync
  *
- * PR B of the dmabuf-carrier Phase 0 redesign.  Introduces the PM4
- * packet helpers the carrier acquire/release paths will emit once
- * PR C wires the queue-submit integration.  No queue path calls
- * these yet; they are declared + defined and exercised only via the
- * future PR C exposure surface.
+ * PM4 packet helpers the carrier acquire/release paths emit on
+ * Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5).
+ * The queue-submit integration that invokes these helpers lives in
+ * a companion module; this header declares only the emit + mask-
+ * build entry points.
  *
  * Three packet families:
  *
@@ -50,7 +50,7 @@ struct terakan_gfx_command_writer;
  * DW2 bit 31 selects the engine that performs the sync.  PFP gates
  * front-end work (index DMA, VGT requests); ME gates middle-engine
  * (rasterization, depth, color) work.  Acquire paths use PFP so
- * index/vertex fetches do not race PALM with stale carrier data;
+ * index/vertex fetches do not race Palm with stale carrier data;
  * release paths use ME so destination color/depth writes are
  * flushed before the EOP timestamp retires.
  */
@@ -116,7 +116,7 @@ terakan_palm_emit_wait_fence_geq(
  * values.
  *
  * The build helpers are intentionally narrow: they cover ONLY the
- * Phase 0 domains (BUFFER, CB_COLOR).  Domains marked
+ * ALLOWED domains (BUFFER, CB_COLOR).  Domains marked
  * PENDING_PROBE / FORBIDDEN / DECOMPRESS_REQUIRED in the policy
  * table return 0 (no bits set); callers should never reach these
  * helpers for those domains because the import path rejects them

@@ -2,23 +2,16 @@
 /*
  * terakan_dmabuf_carrier
  *
- * Phase 0 carrier-model implementation.  Policy table + lookup
- * helpers + a debug dump.  No carrier construction is wired here;
- * import / acquire / release / destroy land in subsequent commits.
+ * Carrier-model implementation for Palm (Wrestler GPU, CHIP_PALM,
+ * Evergreen / TeraScale-2 VLIW5).  Policy table + lookup helpers +
+ * a debug dump + the import/attach/destroy entry points.
  *
- * The closed policy table below is the single authoritative
- * statement of which carrier domains PALM supports for external
- * sync.  Adding or promoting a domain requires:
- *
- *   1. updating enum terakan_carrier_domain (header), and
- *   2. updating this table, and
- *   3. landing a finding-doc on the steinmarder side under
- *      src/re/r600/findings/active/ that empirically backs the
- *      promotion via a probe in tools/workspace/x130e-kit/staged/
- *      radeon-perf-probe/.
- *
- * The reason strings are intentionally specific enough to be
- * grep-friendly in user-visible error reports.
+ * The closed policy table is the single authoritative statement of
+ * which carrier domains Palm supports for external sync.  Adding or
+ * promoting a domain requires updating both `enum
+ * terakan_carrier_domain` and this table; the reason strings are
+ * intentionally specific enough to grep in user-visible error
+ * reports.
  */
 
 #include "terakan_dmabuf_carrier.h"
@@ -31,6 +24,8 @@
 #include "util/log.h"
 #include "util/macros.h"
 
+#include <assert.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -38,14 +33,14 @@
 static const struct terakan_carrier_policy palm_carrier_policy[] = {
    [TERAKAN_CARRIER_DOMAIN_BUFFER] = {
       .domain  = TERAKAN_CARRIER_DOMAIN_BUFFER,
-      .support = TERAKAN_CARRIER_ALLOWED_PHASE0,
+      .support = TERAKAN_CARRIER_ALLOWED,
       .reason  = "buffer carrier has no image compression/modifier state; "
                  "CP_COHER_CNTL TC/VC invalidate over [va, size] is sufficient",
    },
 
    [TERAKAN_CARRIER_DOMAIN_CB_COLOR] = {
       .domain  = TERAKAN_CARRIER_DOMAIN_CB_COLOR,
-      .support = TERAKAN_CARRIER_ALLOWED_PHASE0,
+      .support = TERAKAN_CARRIER_ALLOWED,
       .reason  = "CB color path uses the documented PFP/ME SURFACE_SYNC + "
                  "WAIT_REG_MEM + EOP timestamp release proof",
    },
@@ -53,8 +48,8 @@ static const struct terakan_carrier_policy palm_carrier_policy[] = {
    [TERAKAN_CARRIER_DOMAIN_LINEAR_IMAGE] = {
       .domain  = TERAKAN_CARRIER_DOMAIN_LINEAR_IMAGE,
       .support = TERAKAN_CARRIER_PENDING_PROBE,
-      .reason  = "pending P4 linear-image carrier probe; row not yet promoted "
-                 "in the cache-domain evidence matrix",
+      .reason  = "linear-image carrier not yet empirically backed on Palm; "
+                 "refuse direct linear dma-buf imports until probe-backed",
    },
 
    [TERAKAN_CARRIER_DOMAIN_COMPRESSED_DEPTH] = {
@@ -67,7 +62,7 @@ static const struct terakan_carrier_policy palm_carrier_policy[] = {
    [TERAKAN_CARRIER_DOMAIN_TILED_IMAGE] = {
       .domain  = TERAKAN_CARRIER_DOMAIN_TILED_IMAGE,
       .support = TERAKAN_CARRIER_PENDING_PROBE,
-      .reason  = "no tiled/modifier-equivalence proof on PALM; refuse direct "
+      .reason  = "no tiled/modifier-equivalence proof on Palm; refuse direct "
                  "tiled dma-buf imports until probe-backed",
    },
 
@@ -75,23 +70,16 @@ static const struct terakan_carrier_policy palm_carrier_policy[] = {
       .domain  = TERAKAN_CARRIER_DOMAIN_SX_EXPORT,
       .support = TERAKAN_CARRIER_PENDING_PROBE,
       .reason  = "SX memory export not yet probed for external carrier "
-                 "release; SX_SURFACE_SYNC bits unverified on PALM externally",
+                 "release; SX_SURFACE_SYNC bits unverified on Palm externally",
    },
 
    [TERAKAN_CARRIER_DOMAIN_CACHELESS_RAT] = {
       .domain  = TERAKAN_CARRIER_DOMAIN_CACHELESS_RAT,
       .support = TERAKAN_CARRIER_FORBIDDEN,
       .reason  = "global compare-exchange semantics are not linearizable on "
-                 "PALM; RAT cacheless path cannot be exposed as carrier-safe",
+                 "Palm; RAT cacheless path cannot be exposed as carrier-safe",
    },
 };
-
-/* `STATIC_ASSERT` from util/macros.h is the project-canonical form;
- * it expands to a do/while wrapper compatible with file-scope use
- * when placed inside any function that the compiler will instantiate
- * with carrier-policy access.  Instead of doing that, use a one-off
- * compile-time sanity helper triggered from the log-dump function
- * below. */
 
 const struct terakan_carrier_policy *
 terakan_dmabuf_carrier_policy(enum terakan_carrier_domain const domain)
@@ -121,7 +109,8 @@ const char *
 terakan_carrier_support_name(enum terakan_carrier_support const support)
 {
    switch (support) {
-   case TERAKAN_CARRIER_ALLOWED_PHASE0:        return "allowed_phase0";
+   case TERAKAN_CARRIER_SUPPORT_INVALID:       return "invalid";
+   case TERAKAN_CARRIER_ALLOWED:               return "allowed_phase0";
    case TERAKAN_CARRIER_PENDING_PROBE:         return "pending_probe";
    case TERAKAN_CARRIER_FORBIDDEN:             return "forbidden";
    case TERAKAN_CARRIER_DECOMPRESS_REQUIRED:   return "decompress_required";
@@ -157,12 +146,22 @@ terakan_dmabuf_carrier_enabled(void)
    return env != NULL && strcmp(env, "1") == 0;
 }
 
-VkResult
-terakan_dmabuf_carrier_import(struct terakan_device * const                    device,
-                              const struct terakan_dmabuf_carrier_desc * const desc,
-                              struct terakan_dmabuf_carrier ** const            out)
+/*
+ * Shared classify-and-allocate helper for both attach and import.
+ *
+ * Returns VK_SUCCESS with *out_carrier populated (everything except
+ * the BO pointer and owns_bo) when the descriptor classifies as
+ * ALLOWED.  Returns VK_ERROR_FEATURE_NOT_PRESENT on any other
+ * verdict, after logging the policy reason.  Returns
+ * VK_ERROR_INVALID_EXTERNAL_HANDLE on a malformed descriptor and
+ * VK_ERROR_OUT_OF_HOST_MEMORY on allocation failure.
+ */
+static VkResult
+carrier_classify_and_alloc(struct terakan_device * const                    device,
+                           const struct terakan_dmabuf_carrier_desc * const desc,
+                           struct terakan_dmabuf_carrier ** const           out_carrier)
 {
-   *out = NULL;
+   *out_carrier = NULL;
 
    if (desc == NULL || desc->dmabuf_fd < 0)
       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
@@ -172,10 +171,11 @@ terakan_dmabuf_carrier_import(struct terakan_device * const                    d
    if (policy == NULL)
       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
 
-   if (policy->support != TERAKAN_CARRIER_ALLOWED_PHASE0) {
-      /* Closed-policy rejection.  The reason string is keyed to the
-       * carrier-path cache-domain evidence matrix; downstream tools
-       * grep these strings to map error reports back to matrix rows. */
+   if (policy->support != TERAKAN_CARRIER_ALLOWED) {
+      /* Closed-policy rejection.  The reason string maps the
+       * carrier domain to a documented hardware constraint;
+       * downstream tooling greps these strings to map error
+       * reports back to the policy row. */
       mesa_loge("terakan: dmabuf carrier import rejected: "
                 "domain=%s support=%s reason=%s",
                 terakan_carrier_domain_name(policy->domain),
@@ -203,19 +203,79 @@ terakan_dmabuf_carrier_import(struct terakan_device * const                    d
    carrier->linear_only     =
       (desc->domain == TERAKAN_CARRIER_DOMAIN_BUFFER);
 
+   *out_carrier = carrier;
+   return VK_SUCCESS;
+}
+
+VkResult
+terakan_dmabuf_carrier_attach(struct terakan_device * const                    device,
+                              const struct terakan_dmabuf_carrier_desc * const desc,
+                              struct terakan_bo * const                        existing_bo,
+                              struct terakan_dmabuf_carrier ** const           out)
+{
+   if (existing_bo == NULL) {
+      *out = NULL;
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+   }
+
+   struct terakan_dmabuf_carrier *carrier = NULL;
+   VkResult result = carrier_classify_and_alloc(device, desc, &carrier);
+   if (result != VK_SUCCESS) {
+      *out = NULL;
+      return result;
+   }
+
+   /* Attach path: bind to a BO whose lifetime is owned by the
+    * caller (typically a terakan_device_memory).  The carrier
+    * holds a non-owning pointer; destroy MUST NOT free this BO. */
+   carrier->bo       = existing_bo;
+   carrier->owns_bo  = false;
+   carrier->gpu_va   = existing_bo->va;
+   carrier->imported = true;
+
+   /* Defensive: the BO must not already have a carrier published.
+    * Double-attach without intervening destroy is a caller bug. */
+   struct terakan_dmabuf_carrier * const previous =
+      atomic_load_explicit(&existing_bo->carrier, memory_order_acquire);
+   assert(previous == NULL && "BO already has a published carrier");
+   if (previous != NULL) {
+      vk_free(&device->vk.alloc, carrier);
+      *out = NULL;
+      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+   }
+
+   atomic_store_explicit(&existing_bo->carrier, carrier,
+                         memory_order_release);
+
+   *out = carrier;
+   return VK_SUCCESS;
+}
+
+VkResult
+terakan_dmabuf_carrier_import(struct terakan_device * const                    device,
+                              const struct terakan_dmabuf_carrier_desc * const desc,
+                              struct terakan_dmabuf_carrier ** const           out)
+{
+   struct terakan_dmabuf_carrier *carrier = NULL;
+   VkResult result = carrier_classify_and_alloc(device, desc, &carrier);
+   if (result != VK_SUCCESS) {
+      *out = NULL;
+      return result;
+   }
+
    /* Duplicate the caller-supplied fd so the carrier owns its own
     * reference, independent of the caller's lifetime. */
    const int dup_fd = dup(desc->dmabuf_fd);
    if (dup_fd < 0) {
       vk_free(&device->vk.alloc, carrier);
+      *out = NULL;
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
    carrier->dmabuf_fd = dup_fd;
 
-   /* Use the winsys PRIME-import contract.  We do not have a
-    * carrier-level VRAM preference; default to VRAM-preferred when
-    * the BUFFER carrier is the import target (device-local makes
-    * surface-sync simpler), false otherwise. */
+   /* Use the winsys PRIME-import contract.  Default to VRAM-
+    * preferred for the BUFFER carrier (device-local makes
+    * surface-sync simpler); false otherwise. */
    const bool prefer_vram =
       (desc->domain == TERAKAN_CARRIER_DOMAIN_BUFFER);
 
@@ -224,12 +284,23 @@ terakan_dmabuf_carrier_import(struct terakan_device * const                    d
       prefer_vram, NULL, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT,
       &carrier->bo);
    if (bo_result != VK_SUCCESS) {
-      terakan_dmabuf_carrier_destroy(device, carrier);
+      /* Tear down the carrier; we own neither a BO nor a published
+       * BO->carrier pointer yet, so destroy is a pure free. */
+      if (carrier->dmabuf_fd >= 0)
+         close(carrier->dmabuf_fd);
+      vk_free(&device->vk.alloc, carrier);
+      *out = NULL;
       return bo_result;
    }
 
-   carrier->gpu_va  = carrier->bo->va;
+   carrier->owns_bo  = true;
+   carrier->gpu_va   = carrier->bo->va;
    carrier->imported = true;
+
+   /* Publish the carrier on the freshly-imported BO so future
+    * queue-submit walks find the carrier from either direction. */
+   atomic_store_explicit(&carrier->bo->carrier, carrier,
+                         memory_order_release);
 
    *out = carrier;
    return VK_SUCCESS;
@@ -242,8 +313,14 @@ terakan_dmabuf_carrier_destroy(struct terakan_device * const          device,
    if (carrier == NULL)
       return;
 
-   if (carrier->bo != NULL)
-      terakan_bo_free(carrier->bo, NULL);
+   /* Clear the BO's atomic carrier pointer first so any concurrent
+    * queue-submit walk observes "no carrier" before we tear down
+    * the carrier's fields. */
+   if (carrier->bo != NULL) {
+      atomic_store_explicit(&carrier->bo->carrier,
+                            (struct terakan_dmabuf_carrier *)NULL,
+                            memory_order_release);
+   }
 
    if (carrier->release_sync_fd >= 0)
       close(carrier->release_sync_fd);
@@ -251,6 +328,12 @@ terakan_dmabuf_carrier_destroy(struct terakan_device * const          device,
       close(carrier->acquire_sync_fd);
    if (carrier->dmabuf_fd >= 0)
       close(carrier->dmabuf_fd);
+
+   /* Only the import() path owns the BO.  The attach() path binds
+    * to a BO whose lifetime is owned by terakan_device_memory or
+    * another caller; freeing it here would double-free. */
+   if (carrier->owns_bo && carrier->bo != NULL)
+      terakan_bo_free(carrier->bo, NULL);
 
    vk_free(&device->vk.alloc, carrier);
 }

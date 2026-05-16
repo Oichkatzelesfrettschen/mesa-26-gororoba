@@ -25,6 +25,7 @@
 
 #include "terakan_descriptor.h"
 #include "terakan_device.h"
+#include "terakan_dmabuf_carrier.h"
 #include "terakan_entrypoints.h"
 #include "terakan_format.h"
 #include "terakan_image.h"
@@ -230,6 +231,15 @@ terakan_FreeMemory(VkDevice const deviceHandle, VkDeviceMemory const deviceMemor
    }
 
    struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
+
+   /* The carrier (if any) is a non-owning attachment to the BO.
+    * Destroy it BEFORE freeing the BO so the carrier's BO-pointer
+    * clear (atomic release-store of NULL into bo->carrier) sees a
+    * live BO; the BO is freed exactly once, here. */
+   if (device_memory->carrier != NULL) {
+      terakan_dmabuf_carrier_destroy(device, device_memory->carrier);
+      device_memory->carrier = NULL;
+   }
 
    terakan_bo_free(device_memory->bo, pAllocator);
 

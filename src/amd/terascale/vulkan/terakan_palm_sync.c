@@ -2,17 +2,17 @@
 /*
  * terakan_palm_sync
  *
- * PM4 packet helpers for the dmabuf-carrier acquire/release path.
- * Patterns mirror the existing terakan_compute_multiplex_emit_
- * surface_sync in terakan_dispatch.c:212 and the EOP-timestamp
- * pattern in terakan_dispatch.c:698, generalized to accept a
- * range + engine parameter.
+ * PM4 packet helpers for the dmabuf-carrier acquire/release path on
+ * Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5).
  *
- * Register/packet conventions are sourced from
- * src/amd/terascale/common/terascale_evergreend.h (PKT3 opcodes,
- * R_0085F0_CP_COHER_CNTL et al.) and src/amd/terascale/vulkan/
- * terakan_barrier.h (TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME bit
- * layout, TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL).
+ * Helpers generalize the in-driver compute-multiplex SURFACE_SYNC
+ * + EOP-timestamp patterns to accept a [gpu_va, gpu_va+size_bytes)
+ * range plus an engine selector (PFP vs ME).  PKT3 opcodes
+ * (SURFACE_SYNC = 0x43, EVENT_WRITE_EOP = 0x47, WAIT_REG_MEM = 0x3C)
+ * and the CP_COHER_CNTL bit layout (S_0085F0_*_ACTION_ENA) are
+ * defined in the AMD Evergreen-Family ISA reference and the AMD
+ * 3D Engine Programming Guide for Evergreen (CP_COHER_CNTL,
+ * SURFACE_SYNC section).
  */
 
 #include "terakan_palm_sync.h"
@@ -27,18 +27,19 @@
 
 #include <assert.h>
 
-/* PKT3 macro: same convention as terakan_dispatch.c:70 -- (header
- * type 3, opcode, count = body_dwords - 1, predicate).  Kept local
- * to this TU to avoid coupling on the dispatch-side definition. */
+/* PKT3 macro per the AMD Evergreen-Family ISA reference (PM4
+ * packet header layout): type 3, opcode, count = body_dwords - 1,
+ * predicate.  Kept local to this TU to avoid coupling on the
+ * dispatch-side definition. */
 #define TERAKAN_PALM_PKT3(op, count, predicate)                 \
    (((3u) << 30) |                                              \
     (((count) & 0x3FFFu) << 16) |                               \
     (((op)    & 0xFFu)   << 8)  |                               \
     ((predicate) & 0x1u))
 
-/* PKT3_SURFACE_SYNC = 0x43 (terascale_evergreend.h:98).
- * PKT3_EVENT_WRITE_EOP = 0x47 (Evergreen ISA, packet layout).
- * PKT3_WAIT_REG_MEM = 0x3C (terascale_evergreend.h:91). */
+/* PKT3 opcodes per the AMD Evergreen-Family ISA reference (PM4
+ * packet table): SURFACE_SYNC = 0x43, EVENT_WRITE_EOP = 0x47,
+ * WAIT_REG_MEM = 0x3C. */
 #define TERAKAN_PALM_PKT3_SURFACE_SYNC      0x43u
 #define TERAKAN_PALM_PKT3_EVENT_WRITE_EOP   0x47u
 #define TERAKAN_PALM_PKT3_WAIT_REG_MEM      0x3Cu
@@ -116,7 +117,8 @@ terakan_palm_emit_eop_release_timestamp(
     *   DW4: DATA_LO (32 bits of payload to store at ADDRESS)
     *   DW5: DATA_HI (high 32 bits when DATA_SEL == 64-bit; unused here)
     *
-    * The exact encoding mirrors terakan_dispatch.c:698. */
+    * Encoding per the AMD Evergreen-Family ISA reference,
+    * EVENT_WRITE_EOP packet definition. */
    uint32_t *p = terakan_gfx_command_writer_emit(
       cw, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 6);
    if (unlikely(p == NULL))
@@ -171,19 +173,19 @@ terakan_palm_emit_wait_fence_geq(
 uint32_t
 terakan_palm_build_acquire_coher_mask(enum terakan_carrier_domain const domain)
 {
-   /* Acquire = invalidate source-cache domains so PALM's first read
+   /* Acquire = invalidate source-cache domains so Palm's first read
     * of the carrier does not see stale TC/VC/SH state.
     *
-    * Per the R6xx/R7xx programming model and the cache-domain
-    * evidence matrix:
+    * Per the R6xx/R7xx programming model:
     *   BUFFER   -> invalidate TC + VC + SH (covers texture, vertex,
-    *               and shader-fetch paths; SH catches constant-cache
-    *               on the path described in the rough draft)
+    *               and shader-fetch paths; SH catches the constant-
+    *               cache fetch path)
     *   CB_COLOR -> CB color carriers are normally write-only on
-    *               PALM acquire; the invalidation row is empty here
-    *               and gpu_dirty bookkeeping in PR C handles the
-    *               "PALM previously wrote this BO" case via a
-    *               release-style flush before re-acquire. */
+    *               Palm acquire; the invalidation row is empty here
+    *               and the carrier's gpu_dirty bookkeeping handles
+    *               the case where Palm has written the BO since the
+    *               last release, via a release-style flush before
+    *               re-acquire. */
    switch (domain) {
    case TERAKAN_CARRIER_DOMAIN_BUFFER:
       return S_0085F0_TC_ACTION_ENA(1) |
@@ -199,8 +201,9 @@ terakan_palm_build_acquire_coher_mask(enum terakan_carrier_domain const domain)
    case TERAKAN_CARRIER_DOMAIN_SX_EXPORT:
    case TERAKAN_CARRIER_DOMAIN_CACHELESS_RAT:
    case TERAKAN_CARRIER_DOMAIN_COUNT:
-      /* Not promoted to Phase 0; PR C rejects these before any
-       * emit-helper call.  Return 0 defensively. */
+      /* Not ALLOWED in the policy table; the carrier import path
+       * rejects these before any emit-helper call.  Return 0
+       * defensively. */
       return 0u;
    }
 
@@ -211,13 +214,12 @@ uint32_t
 terakan_palm_build_release_coher_mask(enum terakan_carrier_domain const domain)
 {
    /* Release = flush destination-cache domains so external consumers
-    * see the post-PALM state.  Per the rough draft + evidence
-    * matrix:
+    * see the post-Palm state.  Per the R6xx/R7xx programming model:
     *   CB_COLOR -> CB_ACTION_ENA + all CB*_DEST_BASE_ENA bits so the
     *               kernel checks every bound CB base address; SH
     *               catches metadata writes.
     *   BUFFER   -> TC_ACTION_ENA + SH_ACTION_ENA cover write paths
-    *               that landed via the shader path; if PALM also
+    *               that landed via the shader path; if Palm also
     *               wrote via DMA the destination flush is sufficient
     *               because the dma-buf reservation will pick up the
     *               write fence. */
