@@ -33,13 +33,13 @@
  *   After a workgroup barrier, all lanes read the 8-byte slot as a uvec2
  *   and reset the slot to 0 for the next ballot.
  *
- * Broadcast layout (read_first_invocation, read_invocation):
+ * Broadcast layout (read_first_invocation, read_invocation, shuffle):
  *
- *   Reserve 1 DWORD (or one slot of the value's bit_size).  The selected
- *   source lane writes; barrier; all lanes read.  Lane selection is "the
- *   first set bit of the active execution mask" for read_first_invocation
- *   and the source-lane operand for read_invocation -- emit a per-lane
- *   "I am the source" predicate check and the write is guarded.
+ *   Reserve one Wave64 region of subgroup_size * 4 bytes per shader.
+ *   For each 32-bit value chunk, every lane writes its own chunk to
+ *   region + lane_id * 4; after a workgroup barrier, each lane reads
+ *   region + src_lane * 4.  There is no atomic operation and no
+ *   per-source-lane control-flow guard.
  *
  * The pass runs after nir_lower_explicit_io (which has already converted
  * any shader-declared shared variables to load_shared / store_shared
@@ -224,36 +224,9 @@ lower_ballot(nir_builder *b, nir_intrinsic_instr *intrin,
    return nir_vec2(b, lo, hi);
 }
 
-/* Lower nir_intrinsic_read_first_invocation: the value from the first
- * active lane is broadcast to all active lanes.  Implementation:
- *
- *   For each 32-bit chunk of the value (vector components are
- *   independent LDS slots):
- *
- *     slot starts at 0 (LDS allocation zeroes by construction since
- *     alloc_lds_slot extends shared_size_bytes -- the kernel + radeon
- *     ucode zero new LDS pages on workgroup launch).
- *     contribution = (lane == 0) ? value_chunk : 0
- *     LDS_ATOMIC_OR_RET(slot, contribution)
- *
- *     workgroup_memory_barrier
- *     result_chunk = load_shared(slot)
- *
- * Identical shape to the simplified lower_ballot: every lane
- * participates in the LDS atomic so the AMD Evergreen-Family
- * Instruction Set Architecture LDS bank-arbitration cycle sees Wave64
- * lockstep, no nir_push_if / pop_if boundary creates a basic-block
- * that competes with surrounding GROUP_BARRIER slot pinning, and
- * only one workgroup barrier per call site.  Per-call-site LDS slot
- * allocation makes the post-load reset / trailing barrier
- * unnecessary.
- *
- * Sub-32-bit values (8, 16 bit) are widened with nir_u2u32 before the
- * atomic and narrowed back with nir_u2u<bit_size> after the load.
- * Float values are bitcast through uint storage.  Multi-component
- * vectors split into independent slots so the atomic-OR semantics
- * stay valid per chunk.  64-bit chunks decompose into two 32-bit
- * halves.
+/* nir_intrinsic_read_first_invocation: read lane 0 from the
+ * lane-indexed broadcast region.  Active-mask-first selection must be
+ * resolved before this helper if a caller admits inactive leading lanes.
  */
 /* Lane-indexed broadcast.
  *
