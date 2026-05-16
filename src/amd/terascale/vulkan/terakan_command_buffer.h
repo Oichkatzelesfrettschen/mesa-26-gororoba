@@ -191,7 +191,21 @@ struct terakan_command_buffer_indirect_buffer {
     */
    struct terakan_command_buffer_indirect_buffer_query_sample
       query_begin_end_samples[TERAKAN_QUERY_SAMPLE_INDEX_COUNT][2];
+
+   /* Per-IB dmabuf-carrier acquire/release list.  Populated at IB
+    * finalize time when TERAKAN_ENABLE_DMABUF_CARRIER=1; left NULL
+    * when the env-gate is off so the rest of the IB lifecycle is
+    * byte-for-byte unchanged.  Owned by the IB; freed when the IB
+    * is freed by the command pool trim path and reset when the IB
+    * is reused for a fresh recording.
+    *
+    * When non-NULL the queue-submit path consults this list to
+    * prepend a PFP SURFACE_SYNC acquire prologue and append an ME
+    * SURFACE_SYNC release epilogue around the IB's PM4 body. */
+   struct terakan_carrier_submit_lists * carrier_lists;
 };
+
+struct terakan_carrier_submit_lists;
 
 struct terakan_gfx_command_writer;
 
