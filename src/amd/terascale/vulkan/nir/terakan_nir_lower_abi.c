@@ -1142,10 +1142,39 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
    BITSET_SET_RANGE(state->resources_needed,
                     resource_index_base + binding.array_index_range_first,
                     resource_index_base + binding.array_index_range_last);
+
+   /* Fold the per-element VkDescriptorBufferInfo::offset into the
+    * shader's byte_offset before issuing the vertex-fetch.  For
+    * shared-BO descriptor arrays (multiple array elements of one
+    * binding referencing the same VkBuffer at different offsets,
+    * e.g. dEQP-VK.ssbo.readonly.layout.single_struct.single_buffer.*_
+    * instance_array), the per-element offset cannot reach the GPU
+    * through the descriptor: the radeon kernel CS validator's
+    * SET_RESOURCE reloc replaces WORD0 with bo->va_low
+    * (drivers/gpu/drm/radeon/evergreen_cs.c reloc handler), dropping
+    * the per-element offset that userspace placed in the IB.  The
+    * offset is therefore conveyed through KCACHE bank 14 dwords
+    * 52..63 (robustness_metadata.view_offsets[]) and added to the
+    * byte_offset here at NIR-lower time.  For non-shared-BO bindings
+    * (single-element or distinct VkBuffers per slot), view_offsets[]
+    * holds 0 and the add is functionally a no-op (one ALU per SSBO
+    * load -- on Bobcat this issues alongside the VFETCH and adds no
+    * measurable cost). */
+   uint32_t const mutable_resource_index_base_off =
+      binding.set->first_shader_resources[stage] +
+      binding.set_binding->first_shader_resources[stage] -
+      TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
+   *state->kcache_needed |=
+      (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+   nir_def * const view_offset = terakan_nir_load_robustness_slot_u32(
+      b, 52u + mutable_resource_index_base_off, binding.array_index);
+   nir_def * const adjusted_byte_offset =
+      nir_iadd(b, intrin->src[1].ssa, view_offset);
+
    nir_def *result = terakan_nir_load_raw_resource_buffer(
       b, intrin->num_components, intrin->def.bit_size,
       nir_intrinsic_access(intrin), resource_index_base,
-      binding.array_index, 0, intrin->src[1].ssa);
+      binding.array_index, 0, adjusted_byte_offset);
 
    /* CTS copy_ssbo_bounds proves PALM's VFETCH descriptor clamp is not
     * sufficient for Terakan's advertised robustBufferAccess2 storage-buffer

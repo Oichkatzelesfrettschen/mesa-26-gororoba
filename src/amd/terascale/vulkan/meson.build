@@ -130,6 +130,8 @@ libterakan_files = files(
   'terakan_state_rasterization.h',
   'terakan_sync_completion.c',
   'terakan_sync_completion.h',
+  'terakan_external_sync.c',
+  'terakan_external_sync.h',
   'terakan_vertex_input.c',
   'terakan_vertex_input.h',
   'terakan_wsi.c',

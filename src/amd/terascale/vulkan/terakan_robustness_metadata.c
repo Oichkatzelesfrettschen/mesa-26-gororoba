@@ -54,7 +54,17 @@
  *                   descriptor-side bake is wrong; the NIR pass uses
  *                   this metadata to pre-map the gather component
  *                   argument before emitting the FETCH4.
- *   dword 52..63 : reserved (zero)
+ *   dword 52..63 : uint32_t view_offsets[12]
+ *                   Per-storage-buffer per-element
+ *                   VkDescriptorBufferInfo::offset.  The kernel CS
+ *                   validator REPLACES SET_RESOURCE WORD0 with
+ *                   `bo->va_low`, dropping any per-element offset that
+ *                   userspace puts in the IB.  Consumed by
+ *                   `terakan_nir_lower_bindings_instr_load_ssbo` so
+ *                   the shader adds the offset at byte_offset
+ *                   construction.  One uint32_t per mutable-resource
+ *                   slot (same index space as uav_byte_sizes /
+ *                   texel_buffer_element_counts).
  */
 
 #include "terakan_command_buffer.h"
@@ -139,6 +149,19 @@ terakan_robustness_metadata_apply(
       memcpy(mapping + 40,
              command_writer->robustness_metadata.view_swizzles,
              sizeof(command_writer->robustness_metadata.view_swizzles));
+      /* Dwords 52..63: per-storage-buffer per-element offsets.  The
+       * radeon kernel CS validator REPLACES SET_RESOURCE WORD0 with
+       * bo->va_low (drivers/gpu/drm/radeon/evergreen_cs.c reloc
+       * patching), discarding any per-element offset that userspace
+       * places in the IB.  For shared-BO descriptor arrays
+       * (VkDescriptorBufferInfo::offset != 0 across array elements
+       * referencing the same VkBuffer), the per-element offset
+       * therefore cannot be conveyed through the descriptor at all
+       * and must be folded into the shader's byte_offset at runtime.
+       * Consumed by terakan_nir_lower_bindings_instr_load_ssbo. */
+      memcpy(mapping + 52,
+             command_writer->robustness_metadata.view_offsets,
+             sizeof(command_writer->robustness_metadata.view_offsets));
       /* dword 12: trash_page_addr — GPU VA >> 2 of the driver-owned trash page.
        * Used by math-predication write guards to redirect OOB writes to a safe
        * garbage sink instead of offset 0 of the target buffer. */

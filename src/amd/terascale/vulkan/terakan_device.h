@@ -26,6 +26,7 @@
 #define TERAKAN_DEVICE_H
 
 struct terakan_fix_ac_warmup;
+struct terakan_external_signal;
 
 #include "meta/terakan_meta.h"
 #include "terakan_bo.h"
@@ -53,6 +54,14 @@ struct terakan_device_winsys_fn {
    struct terakan_queue_winsys_fn const * queue;
 
    void (*destroy)(struct terakan_device * device);
+
+   /* Optional: post-completion DRM syncobj signal hook.  NULL on
+    * winsys backends without syncobj support (e.g. WDDM).  See
+    * terakan_external_sync.h for the per-handle semantics. */
+   VkResult (*external_syncobj_signal_many)(struct terakan_device *device,
+                                            uint32_t count,
+                                            struct terakan_external_signal const *sigs);
+
 };
 
 /* Partially implemented by the winsys. */
