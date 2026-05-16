@@ -200,6 +200,54 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    */
                   resource_index += TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
                   setter(&command_writer->hw_state_sqc, resource_index, desc.bo, desc.resource);
+
+                  /* For SAMPLED_IMAGE / COMBINED_IMAGE_SAMPLER /
+                   * INPUT_ATTACHMENT descriptors, populate the per-binding
+                   * VkComponentMapping pack in robustness_metadata for the
+                   * `terakan_nir_lower_tg4_view_swizzle` NIR pass.  AMD
+                   * Evergreen-Family ISA Chapter 6: DST_SEL in WORD4 of
+                   * SQ_TEX_RESOURCE permutes FETCH result lanes, which is
+                   * correct for SAMPLE but wrong for FETCH4 / GATHER4 (the
+                   * four lanes are spatial corner samples, not RGBA
+                   * channels).  Decode the baked swizzle from
+                   * desc.resource[4] (TEX_RESOURCE_WORD4 DST_SEL_X bit [18:16],
+                   * Y [21:19], Z [24:22], W [27:25]) so the NIR pass can
+                   * remap the gather component argument before FETCH4.
+                   *
+                   * The TYPE field at G_03001C_TYPE(desc.resource[7]) ==
+                   * V_03001C_SQ_TEX_VTX_VALID_TEXTURE confirms a TEX
+                   * resource (vs BUFFER, which has different WORD4
+                   * semantics).  Non-tex resources leave the packed entry
+                   * as identity (0x3210), which the NIR pass never
+                   * dereferences for tg4 anyway.
+                   */
+                  {
+                     uint8_t const sampler_slot = base + di;
+                     bool const is_tex =
+                        G_03001C_TYPE(desc.resource[7]) ==
+                        V_03001C_SQ_TEX_VTX_VALID_TEXTURE;
+                     uint16_t pack;
+                     if (is_tex) {
+                        uint32_t const sel_x = G_030010_DST_SEL_X(desc.resource[4]);
+                        uint32_t const sel_y = G_030010_DST_SEL_Y(desc.resource[4]);
+                        uint32_t const sel_z = G_030010_DST_SEL_Z(desc.resource[4]);
+                        uint32_t const sel_w = G_030010_DST_SEL_W(desc.resource[4]);
+                        pack = (uint16_t)(((sel_x & 0xfu) << 0) |
+                                          ((sel_y & 0xfu) << 4) |
+                                          ((sel_z & 0xfu) << 8) |
+                                          ((sel_w & 0xfu) << 12));
+                     } else {
+                        pack = 0x3210u;
+                     }
+                     if (sampler_slot < 24) {
+                        uint32_t * const slot =
+                           &command_writer->robustness_metadata.view_swizzles[sampler_slot / 2u];
+                        uint32_t const shift = (sampler_slot & 1u) ? 16u : 0u;
+                        uint32_t const cleared = *slot & ~(0xffffu << shift);
+                        *slot = cleared | ((uint32_t)pack << shift);
+                        command_writer->robustness_metadata.dirty = true;
+                     }
+                  }
                }
             }
          }

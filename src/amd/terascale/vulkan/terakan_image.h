@@ -210,6 +210,26 @@ struct terakan_image_view {
    uint32_t color_base_slice_shift_shr8;
 
    struct terakan_depth_stencil_descriptor depth_stencil;
+
+   /* VkComponentMapping packed into 16 bits for the
+    * `terakan_nir_lower_tg4_view_swizzle` NIR pass.  AMD Evergreen-Family
+    * ISA Chapter 6 (Texture Cache Clauses): SQ_TEX_RESOURCE_WORD4 DST_SEL
+    * permutes the four FETCH result lanes; for FETCH4 / GATHER4 those
+    * four lanes are spatial corner samples of one channel, so the
+    * descriptor-side bake is wrong for gather.  The NIR pass loads this
+    * packed swizzle at gather-emit time to remap the gather-component
+    * argument before FETCH4.
+    *
+    * Pack layout:
+    *   bits [3:0]   = R-channel target (0..5 per VK_COMPONENT_SWIZZLE_*)
+    *   bits [7:4]   = G-channel target
+    *   bits [11:8]  = B-channel target
+    *   bits [15:12] = A-channel target
+    *
+    * Identity swizzle packs to 0x3210.  CmdBindDescriptorSets copies
+    * this into `command_writer->robustness_metadata.view_swizzles[]`
+    * at the appropriate physical slot index. */
+   uint16_t component_swizzle_packed;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(terakan_image_view, vk.base, VkImageView, VK_OBJECT_TYPE_IMAGE_VIEW)

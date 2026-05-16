@@ -1907,6 +1907,39 @@ terakan_CreateImageView(VkDevice const deviceHandle,
       memset(image_view->resource, 0, sizeof(image_view->resource));
    }
 
+   /* Pack VkComponentMapping into 16 bits for the
+    * `terakan_nir_lower_tg4_view_swizzle` NIR pass.  AMD Evergreen-Family
+    * ISA Chapter 6: SQ_TEX_RESOURCE_WORD4 DST_SEL permutes FETCH result
+    * lanes, which is correct for SAMPLE but wrong for FETCH4 / GATHER4
+    * (the four "result lanes" of GATHER4 are spatial corner samples,
+    * not RGBA channels).  The NIR pass loads this packed swizzle at
+    * runtime to remap the gather component argument before emitting
+    * FETCH4 (see terakan_nir_lower_tg4_view_swizzle.c). */
+   {
+      VkComponentSwizzle const cm[4] = {
+         pCreateInfo->components.r,
+         pCreateInfo->components.g,
+         pCreateInfo->components.b,
+         pCreateInfo->components.a,
+      };
+      uint32_t pack = 0;
+      for (unsigned ci = 0; ci < 4; ++ci) {
+         uint32_t target;
+         switch (cm[ci]) {
+         case VK_COMPONENT_SWIZZLE_IDENTITY: target = (uint32_t)ci; break;
+         case VK_COMPONENT_SWIZZLE_R:        target = 0; break;
+         case VK_COMPONENT_SWIZZLE_G:        target = 1; break;
+         case VK_COMPONENT_SWIZZLE_B:        target = 2; break;
+         case VK_COMPONENT_SWIZZLE_A:        target = 3; break;
+         case VK_COMPONENT_SWIZZLE_ZERO:     target = 4; break;
+         case VK_COMPONENT_SWIZZLE_ONE:      target = 5; break;
+         default:                            target = (uint32_t)ci; break;
+         }
+         pack |= (target & 0xfu) << (ci * 4u);
+      }
+      image_view->component_swizzle_packed = (uint16_t)pack;
+   }
+
    if (descriptor_create_info.view_format.supports_cb_color) {
       terakan_image_create_color_descriptor(&descriptor_create_info, &image_view->color,
                                             &image_view->color_meta);

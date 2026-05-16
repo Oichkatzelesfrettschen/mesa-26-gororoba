@@ -1261,6 +1261,46 @@ terakan_shader_lower_and_optimize_post_link(
             uavs_for_mutable_resources_needed, driver_push_constants_used,
             kcache_needed, robust_buffer_access);
 
+   /* Texture-gather (FETCH4 / GATHER4) per-binding VkComponentMapping
+    * rewrite.  AMD Evergreen-Family ISA Chapter 6: SQ_TEX_RESOURCE_WORD4
+    * DST_SEL permutes the four FETCH result lanes -- correct for SAMPLE
+    * but wrong for FETCH4 where the four lanes are spatial corner
+    * samples.  This pass runs after binding lowering so
+    * `tex->texture_index` is the physical resource slot (the index
+    * used for the runtime-swizzle KCACHE lookup in bank 14).  Marks
+    * KCACHE bank 14 as needed iff any tg4 was rewritten. */
+   {
+      bool any_tg4 = false;
+      nir_foreach_function_impl(impl, nir) {
+         nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+               if (instr->type == nir_instr_type_tex &&
+                   nir_instr_as_tex(instr)->op == nir_texop_tg4) {
+                  any_tg4 = true;
+                  break;
+               }
+            }
+            if (any_tg4) break;
+         }
+         if (any_tg4) break;
+      }
+      if (getenv("TERAKAN_TG4_VS_TRACE") != NULL) {
+         FILE *tf = fopen("/tmp/terakan_tg4_trace.log", "a");
+         if (tf) {
+            fprintf(tf, "stage=%s any_tg4=%d\n",
+                    mesa_shader_stage_name(nir->info.stage),
+                    any_tg4 ? 1 : 0);
+            fflush(tf);
+            fclose(tf);
+         }
+      }
+      if (any_tg4) {
+         *kcache_needed |=
+            (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+         NIR_PASS(_, nir, terakan_nir_lower_tg4_view_swizzle);
+      }
+   }
+
    if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
       fprintf(stderr, "TERAKAN_NIR_SPIRV: --- post terakan_nir_lower_bindings (%s) ---\n",
               mesa_shader_stage_name(nir->info.stage));
