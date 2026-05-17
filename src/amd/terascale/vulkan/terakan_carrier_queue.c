@@ -58,6 +58,7 @@
 
 #define TERAKAN_CARRIER_PKT3_SURFACE_SYNC      0x43u
 #define TERAKAN_CARRIER_PKT3_EVENT_WRITE_EOP   0x47u
+#define TERAKAN_CARRIER_PKT3_NOP               0x10u
 
 /* SURFACE_SYNC engine selector bit (DW1 bit 31).  Mirrors
  * TERAKAN_BARRIER_SURFACE_SYNC_ENGINE_ME in terakan_barrier.h but
@@ -101,7 +102,7 @@ terakan_carrier_submit_lists_destroy(struct terakan_carrier_submit_lists * const
    lists->release_count = 0;
 }
 
-struct terakan_dmabuf_carrier *
+struct terakan_carrier_submit_entry
 terakan_carrier_submit_lists_acquire(
    const struct terakan_carrier_submit_lists * const lists, unsigned const index)
 {
@@ -111,7 +112,7 @@ terakan_carrier_submit_lists_acquire(
    return lists->inline_acquires[index];
 }
 
-struct terakan_dmabuf_carrier *
+struct terakan_carrier_submit_entry
 terakan_carrier_submit_lists_release(
    const struct terakan_carrier_submit_lists * const lists, unsigned const index)
 {
@@ -122,24 +123,24 @@ terakan_carrier_submit_lists_release(
 }
 
 static bool
-spill_to_heap(struct terakan_dmabuf_carrier ** const                inline_storage,
-              struct terakan_dmabuf_carrier *** const               heap_storage,
+spill_to_heap(struct terakan_carrier_submit_entry * const           inline_storage,
+              struct terakan_carrier_submit_entry ** const          heap_storage,
               unsigned const                                        current_count,
               unsigned * const                                      cap_inout,
               unsigned const                                        new_cap)
 {
-   struct terakan_dmabuf_carrier ** const new_buf =
-      malloc(sizeof(struct terakan_dmabuf_carrier *) * new_cap);
+   struct terakan_carrier_submit_entry * const new_buf =
+      malloc(sizeof(struct terakan_carrier_submit_entry) * new_cap);
    if (new_buf == NULL)
       return false;
 
    if (*heap_storage != NULL) {
       memcpy(new_buf, *heap_storage,
-             sizeof(struct terakan_dmabuf_carrier *) * current_count);
+             sizeof(struct terakan_carrier_submit_entry) * current_count);
       free(*heap_storage);
    } else {
       memcpy(new_buf, inline_storage,
-             sizeof(struct terakan_dmabuf_carrier *) * current_count);
+             sizeof(struct terakan_carrier_submit_entry) * current_count);
    }
 
    *heap_storage = new_buf;
@@ -148,24 +149,26 @@ spill_to_heap(struct terakan_dmabuf_carrier ** const                inline_stora
 }
 
 static struct terakan_dmabuf_carrier *
-list_entry_at(struct terakan_dmabuf_carrier * const * const inline_storage,
-              struct terakan_dmabuf_carrier * const * const heap_storage,
-              unsigned const                                index)
+list_entry_carrier_at(struct terakan_carrier_submit_entry const * const inline_storage,
+                      struct terakan_carrier_submit_entry const * const heap_storage,
+                      unsigned const                                    index)
 {
-   return (heap_storage != NULL) ? heap_storage[index] : inline_storage[index];
+   return ((heap_storage != NULL) ? heap_storage[index] : inline_storage[index]).carrier;
 }
 
 bool
 terakan_carrier_submit_lists_append_acquire(
    struct terakan_carrier_submit_lists * const lists,
-   struct terakan_dmabuf_carrier * const       carrier)
+   struct terakan_dmabuf_carrier * const       carrier,
+   uint32_t const                              bo_reference_index,
+   uint32_t const                              bo_offset_bytes)
 {
    if (carrier == NULL)
       return true;
 
    /* Pointer-identity dedupe. */
    for (unsigned i = 0; i < lists->acquire_count; ++i) {
-      if (list_entry_at(lists->inline_acquires, lists->heap_acquires, i) == carrier)
+      if (list_entry_carrier_at(lists->inline_acquires, lists->heap_acquires, i) == carrier)
          return true;
    }
 
@@ -176,10 +179,15 @@ terakan_carrier_submit_lists_append_acquire(
          return false;
    }
 
+   struct terakan_carrier_submit_entry const entry = {
+      .carrier            = carrier,
+      .bo_reference_index = bo_reference_index,
+      .bo_offset_bytes    = bo_offset_bytes,
+   };
    if (lists->heap_acquires != NULL) {
-      lists->heap_acquires[lists->acquire_count] = carrier;
+      lists->heap_acquires[lists->acquire_count] = entry;
    } else {
-      lists->inline_acquires[lists->acquire_count] = carrier;
+      lists->inline_acquires[lists->acquire_count] = entry;
    }
    lists->acquire_count++;
    return true;
@@ -188,13 +196,15 @@ terakan_carrier_submit_lists_append_acquire(
 bool
 terakan_carrier_submit_lists_append_release(
    struct terakan_carrier_submit_lists * const lists,
-   struct terakan_dmabuf_carrier * const       carrier)
+   struct terakan_dmabuf_carrier * const       carrier,
+   uint32_t const                              bo_reference_index,
+   uint32_t const                              bo_offset_bytes)
 {
    if (carrier == NULL)
       return true;
 
    for (unsigned i = 0; i < lists->release_count; ++i) {
-      if (list_entry_at(lists->inline_releases, lists->heap_releases, i) == carrier)
+      if (list_entry_carrier_at(lists->inline_releases, lists->heap_releases, i) == carrier)
          return true;
    }
 
@@ -205,10 +215,15 @@ terakan_carrier_submit_lists_append_release(
          return false;
    }
 
+   struct terakan_carrier_submit_entry const entry = {
+      .carrier            = carrier,
+      .bo_reference_index = bo_reference_index,
+      .bo_offset_bytes    = bo_offset_bytes,
+   };
    if (lists->heap_releases != NULL) {
-      lists->heap_releases[lists->release_count] = carrier;
+      lists->heap_releases[lists->release_count] = entry;
    } else {
-      lists->inline_releases[lists->release_count] = carrier;
+      lists->inline_releases[lists->release_count] = entry;
    }
    lists->release_count++;
    return true;
@@ -251,15 +266,22 @@ terakan_carrier_collect_from_radeon_relocs(
       bool const is_reading = (relocs[i].read_domains != 0u);
       bool const is_writing = (relocs[i].write_domain != 0u);
 
+      /* Whole-BO carriers in Phase 0; the BO-relative offset is 0.
+       * Subrange carriers (future work) carry a non-zero offset. */
+      uint32_t const bo_reference_index = i;
+      uint32_t const bo_offset_bytes    = 0u;
+
       if (is_reading) {
-         if (terakan_carrier_submit_lists_append_acquire(lists, c))
+         if (terakan_carrier_submit_lists_append_acquire(
+                lists, c, bo_reference_index, bo_offset_bytes))
             ++appended;
          else
             mesa_logw("terakan: carrier acquire list spill alloc failed; "
                       "skipping carrier %p for this submit", (void *)c);
       }
       if (is_writing) {
-         if (terakan_carrier_submit_lists_append_release(lists, c))
+         if (terakan_carrier_submit_lists_append_release(
+                lists, c, bo_reference_index, bo_offset_bytes))
             ++appended;
          else
             mesa_logw("terakan: carrier release list spill alloc failed; "
@@ -311,20 +333,32 @@ emit_surface_sync_range(uint32_t * const ib,
                         uint32_t const   capacity,
                         uint32_t const   coher_cntl,
                         bool const       engine_me,
-                        uint64_t const   gpu_va,
-                        uint64_t const   size_bytes)
+                        uint64_t const   bo_offset_bytes,
+                        uint64_t const   size_bytes,
+                        uint32_t const   bo_reference_index)
 {
    /* COHER_BASE / COHER_SIZE are 256-byte units of the [39:8]
     * portion of the address per the AMD Evergreen 3D Registers
-    * Reference, surface-sync section. */
-   assert((gpu_va & 0xFFu) == 0u);
+    * Reference, surface-sync section.
+    *
+    * On the radeon DRM uAPI the address is BO-relative: COHER_BASE
+    * is the offset within the BO (in 256-byte units), and the
+    * kernel CS validator
+    * (drivers/gpu/drm/radeon/evergreen_cs.c::evergreen_cs_packet_
+    * next_reloc) rewrites the absolute GPU VA at submit time using
+    * the BO referenced by the immediately-following PKT3_NOP
+    * reloc-pairing packet.  Whole-BO carriers therefore emit
+    * COHER_BASE = 0; future subrange carriers will emit
+    * bo_offset_bytes >> 8. */
+   assert((bo_offset_bytes & 0xFFu) == 0u);
    assert(size_bytes != 0u);
-   assert(*cursor + TERAKAN_CARRIER_DWORDS_PER_ACQUIRE <= capacity);
+   assert(*cursor + TERAKAN_CARRIER_DWORDS_PER_SURFACE_SYNC +
+                       TERAKAN_CARRIER_DWORDS_PER_RELOC_NOP <= capacity);
    assert((coher_cntl & 0xE0000000u) == 0u);
 
    uint64_t const aligned_size = (size_bytes + 0xFFu) & ~(uint64_t)0xFFu;
    uint32_t const coher_size   = (uint32_t)(aligned_size >> 8);
-   uint32_t const coher_base   = (uint32_t)(gpu_va       >> 8);
+   uint32_t const coher_base   = (uint32_t)(bo_offset_bytes >> 8);
    uint32_t const engine_bit   = engine_me ? TERAKAN_CARRIER_SURFACE_SYNC_ENGINE_ME : 0u;
 
    uint32_t n = *cursor;
@@ -333,6 +367,18 @@ emit_surface_sync_range(uint32_t * const ib,
    ib[n++] = coher_size;
    ib[n++] = coher_base;
    ib[n++] = TERAKAN_CARRIER_SURFACE_SYNC_POLL_INTERVAL;
+
+   /* DRM_NOP reloc-pairing packet.  Wire form matches the in-tree
+    * pattern in terakan_queue_submit_wsi_wait_indirect_buffer
+    * (PKT3_WAIT_REG_MEM + trailing PKT3_NOP whose body dword is
+    * 4 * bo_reference_index, i.e. the dword offset within the
+    * radeon_cs reloc array of the matching drm_radeon_cs_reloc
+    * entry).  The address-bearing SURFACE_SYNC packet emits FIRST;
+    * the DRM_NOP pairing packet emits SECOND, mirroring the
+    * indirect_buffer_append_ptr convention of
+    * terakan_gfx_command_writer_add_relocation_for_40_bits. */
+   ib[n++] = TERAKAN_CARRIER_PKT3(TERAKAN_CARRIER_PKT3_NOP, 0, 0);
+   ib[n++] = 4u * bo_reference_index;
    *cursor = n;
 }
 
@@ -366,8 +412,9 @@ terakan_carrier_emit_acquires_dwords(
    const struct terakan_carrier_submit_lists * const   lists)
 {
    for (unsigned i = 0; i < lists->acquire_count; ++i) {
-      struct terakan_dmabuf_carrier * const c =
+      struct terakan_carrier_submit_entry const entry =
          terakan_carrier_submit_lists_acquire(lists, i);
+      struct terakan_dmabuf_carrier * const c = entry.carrier;
       if (c == NULL)
          continue;
 
@@ -379,7 +426,8 @@ terakan_carrier_emit_acquires_dwords(
 
       emit_surface_sync_range(ib_dwords, cursor, ib_capacity_dwords,
                               mask, /* engine_me = */ false,
-                              c->gpu_va, c->size_bytes);
+                              entry.bo_offset_bytes, c->size_bytes,
+                              entry.bo_reference_index);
    }
 }
 
@@ -393,8 +441,9 @@ terakan_carrier_emit_releases_dwords(
    uint32_t const                                      fence_seq)
 {
    for (unsigned i = 0; i < lists->release_count; ++i) {
-      struct terakan_dmabuf_carrier * const c =
+      struct terakan_carrier_submit_entry const entry =
          terakan_carrier_submit_lists_release(lists, i);
+      struct terakan_dmabuf_carrier * const c = entry.carrier;
       if (c == NULL)
          continue;
 
@@ -404,7 +453,8 @@ terakan_carrier_emit_releases_dwords(
 
       emit_surface_sync_range(ib_dwords, cursor, ib_capacity_dwords,
                               mask, /* engine_me = */ true,
-                              c->gpu_va, c->size_bytes);
+                              entry.bo_offset_bytes, c->size_bytes,
+                              entry.bo_reference_index);
    }
 
    if (lists->release_count > 0u && fence_gpu_va != 0u) {
