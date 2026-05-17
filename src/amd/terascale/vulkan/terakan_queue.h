@@ -224,6 +224,15 @@ struct terakan_queue {
    uint32_t shader_rings_bytes_shr8;
    struct terakan_bo * shader_rings;
    uint64_t shader_rings_last_usage;
+
+   /* Monotonic per-queue sequence counter for the dmabuf-carrier
+    * tail EVENT_WRITE_EOP fence-word write.  Increments once per
+    * carrier-wrapped submit that emits an EOP.  Wraparound is benign:
+    * external consumers only check value-equality with the seq the
+    * harness reads from the carrier-debug log for the same submit.
+    * Externally synchronized with the queue (terakan_queue_submit is
+    * serialized per-queue). */
+   uint32_t carrier_eop_seq_next;
 };
 
 VK_DEFINE_HANDLE_CASTS(terakan_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
@@ -289,6 +298,17 @@ struct terakan_queue_winsys_fn {
     */
    void (*completion_submission_create_bo_reference)(
       struct terakan_queue_completion_submission * submission, void * bo_reference);
+   /* Returns the BO-relative offset (zero on Palm since the completion
+    * BO is single-purpose and whole-BO-sized) and the absolute GPU VA
+    * of the completion submission's internal BO.  Used by the
+    * dmabuf-carrier path to target a tail PKT3_EVENT_WRITE_EOP at the
+    * BO whose kernel-side dma_fence the radeon CS retire path already
+    * signals.  Implementations whose completion BO does not have a
+    * stable VA (e.g. WDDM) set *gpu_va_out = 0; callers MUST suppress
+    * EOP emission when gpu_va_out is zero. */
+   void (*completion_submission_bo_gpu_va)(
+      struct terakan_queue_completion_submission * submission,
+      uint64_t * gpu_va_out);
    /* Returns whether the wait was successful. In case of a GPU hang, must return in finite time. */
    bool (*completion_submission_await)(struct terakan_queue_completion_submission * submission);
    void (*completion_submission_finish_winsys_and_free)(

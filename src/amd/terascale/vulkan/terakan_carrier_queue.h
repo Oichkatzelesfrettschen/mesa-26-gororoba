@@ -55,24 +55,41 @@ struct terakan_dmabuf_carrier;
  * references a BO via GPU virtual address to be paired with a
  * PKT3_NOP whose payload encodes the byte offset (in drm_radeon_cs_
  * reloc-sized units expressed as 4*bo_reference_index) of that BO
- * within the reloc array.  The post-release EOP fence write remains 5
- * dwords (PKT3_EVENT_WRITE_EOP) and is only emitted when fence_gpu_va
- * is non-zero; the present queue-wiring path keeps fence_gpu_va = 0,
- * so EOP_DWORDS contributes nothing to the IB capacity assertion in
- * practice.
+ * within the reloc array.
+ *
+ * The post-release EOP fence write is a full PKT3_EVENT_WRITE_EOP
+ * packet: header (1 dw) + body (5 dw: event word, address_lo,
+ * address_hi+ctl, data_lo, data_hi) = 6 dwords total.  The encoding
+ * mirrors terakan_palm_emit_eop_release_timestamp() in
+ * terakan_palm_sync.c and terakan_emit_flush_watermark() in
+ * terakan_dispatch.c byte-for-byte.  When emitted it is followed by
+ * a PKT3_NOP reloc-pairing packet (2 dwords) so the kernel CS
+ * validator can rewrite the fence GPU VA from BO-relative to
+ * absolute -- same convention as the SURFACE_SYNC pair.  The EOP is
+ * gated on (release_count > 0 AND fence_gpu_va != 0); callers that
+ * do not wire a fence target pass fence_gpu_va = 0 and the EOP is
+ * suppressed entirely.
  *
  * Callers size their combined-IB allocation by:
  *   acquire_count * TERAKAN_CARRIER_DWORDS_PER_ACQUIRE
  * + release_count * TERAKAN_CARRIER_DWORDS_PER_RELEASE
- * + TERAKAN_CARRIER_DWORDS_PER_EOP    (only when a fence target
- *                                      is wired) */
+ * + TERAKAN_CARRIER_DWORDS_PER_EOP_WITH_RELOC (always reserved; the
+ *                                              suppressed-EOP case
+ *                                              leaves trailing NOP
+ *                                              padding) */
 #define TERAKAN_CARRIER_DWORDS_PER_SURFACE_SYNC 5u
 #define TERAKAN_CARRIER_DWORDS_PER_RELOC_NOP    2u
 #define TERAKAN_CARRIER_DWORDS_PER_ACQUIRE \
    (TERAKAN_CARRIER_DWORDS_PER_SURFACE_SYNC + TERAKAN_CARRIER_DWORDS_PER_RELOC_NOP)
 #define TERAKAN_CARRIER_DWORDS_PER_RELEASE \
    (TERAKAN_CARRIER_DWORDS_PER_SURFACE_SYNC + TERAKAN_CARRIER_DWORDS_PER_RELOC_NOP)
-#define TERAKAN_CARRIER_DWORDS_PER_EOP     5u
+/* PKT3_EVENT_WRITE_EOP body is 5 dwords (event, addr_lo, addr_hi+ctl,
+ * data_lo, data_hi) -- header makes 6 total.  PKT3_NOP reloc-pair
+ * adds 2 more dwords when the kernel CS validator rewrites the fence
+ * GPU VA from a BO reference. */
+#define TERAKAN_CARRIER_DWORDS_PER_EOP     6u
+#define TERAKAN_CARRIER_DWORDS_PER_EOP_WITH_RELOC \
+   (TERAKAN_CARRIER_DWORDS_PER_EOP + TERAKAN_CARRIER_DWORDS_PER_RELOC_NOP)
 
 /* Per-entry record on the acquire / release lists.  The reloc-pairing
  * DRM_NOP packet needs the BO's index into the bo_references array
@@ -174,7 +191,13 @@ terakan_carrier_emit_acquires_dwords(
    const struct terakan_carrier_submit_lists * lists);
 
 /* Emit release epilogue + (optional) EOP fence into ib_dwords[*cursor
- * ..].  fence_gpu_va == 0 skips the EOP. */
+ * ..].  The EOP fence-word write is emitted iff:
+ *   release_count > 0 AND fence_gpu_va != 0
+ * Callers that do not wire a fence target pass fence_gpu_va = 0 and
+ * fence_bo_reference_index = 0, suppressing the EOP entirely.  When
+ * the EOP is emitted, fence_bo_reference_index names the entry in
+ * the radeon CS reloc array that the kernel CS validator will use
+ * to rewrite the fence GPU VA from BO-relative to absolute. */
 void
 terakan_carrier_emit_releases_dwords(
    uint32_t *                                  ib_dwords,
@@ -182,6 +205,7 @@ terakan_carrier_emit_releases_dwords(
    uint32_t *                                  cursor,
    const struct terakan_carrier_submit_lists * lists,
    uint64_t                                    fence_gpu_va,
-   uint32_t                                    fence_seq);
+   uint32_t                                    fence_seq,
+   uint32_t                                    fence_bo_reference_index);
 
 #endif /* TERAKAN_CARRIER_QUEUE_H */
