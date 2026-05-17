@@ -111,6 +111,20 @@ update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
    cw->robustness_metadata.dirty = true;
 }
 
+static unsigned
+terakan_uav_zero_based_index_from_mutable_resource(BITSET_WORD const * const uavs_used,
+                                                   uint8_t const mutable_resource_index)
+{
+   unsigned uav_index = 0;
+   unsigned const first_word = BITSET_BITWORD(mutable_resource_index);
+   for (unsigned word_index = 0; word_index < first_word; ++word_index) {
+      uav_index += util_bitcount(uavs_used[word_index]);
+   }
+   uav_index += util_bitcount(uavs_used[first_word] &
+                              (BITSET_BIT(mutable_resource_index) - 1));
+   return uav_index;
+}
+
 static VkDescriptorType
 terakan_set_resource_descriptor_type(struct terakan_descriptor_set_layout const * const sl,
                                      uint16_t const set_resource_index)
@@ -438,10 +452,16 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   if (r->first_dynamic_offset != UINT16_MAX) {
                      buf_offset += set_dyn_off[r->first_dynamic_offset + ui];
                   }
-                  update_uav_robustness_metadata(command_writer, idx,
-                                                 uav->is_texel_buffer, bound,
-                                                 uav->base_array_layer, inject_layer,
-                                                 buf_offset);
+                  if (used) {
+                     unsigned const uav_metadata_idx =
+                        command_writer->state_draw.cb_color_uav.from_apply_sq_pgm_ps
+                           .fs_uav_index_base +
+                        terakan_uav_zero_based_index_from_mutable_resource(uavs_used, idx);
+                     update_uav_robustness_metadata(command_writer, uav_metadata_idx,
+                                                    uav->is_texel_buffer, bound,
+                                                    uav->base_array_layer, inject_layer,
+                                                    buf_offset);
+                  }
 
                   /* FIX-W (Q-2026-04-20): stash baseArrayLayer on the
                    * command writer so CmdDispatch can select the
@@ -468,8 +488,14 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      terakan_state_draw_set_pending(&command_writer->state_draw,
                                                     TERAKAN_STATE_DRAW_INDEX_CB_COLOR_UAV);
                   BITSET_CLEAR(uavs_not_null, idx);
-                  update_uav_robustness_metadata(command_writer, idx, false, 0,
-                                                 0, false, 0u);
+                  if (used) {
+                     unsigned const uav_metadata_idx =
+                        command_writer->state_draw.cb_color_uav.from_apply_sq_pgm_ps
+                           .fs_uav_index_base +
+                        terakan_uav_zero_based_index_from_mutable_resource(uavs_used, idx);
+                     update_uav_robustness_metadata(command_writer, uav_metadata_idx, false, 0,
+                                                    0, false, 0u);
+                  }
                }
             }
          }
