@@ -938,7 +938,19 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
                   mtx_unlock(&device->completion_mutex);
                   queue->pending_completion = NULL;
                }
-               return carrier_acquire_result;
+               /* Vulkan 1.3 spec, "Lost Device": once a device is lost,
+                * every subsequent command must return VK_ERROR_DEVICE_LOST.
+                * Returning the error code alone is insufficient -- the
+                * device object itself must transition to the lost state
+                * so future submits short-circuit instead of re-entering
+                * the carrier-acquire path against the same stale fence. */
+               vk_device_set_lost(&device->vk,
+                                  "Carrier acquire fence wait failed during queue submit");
+               mtx_lock(&device->completion_mutex);
+               device->completion_lost = true;
+               mtx_unlock(&device->completion_mutex);
+               cnd_broadcast(&device->completion_condition);
+               return VK_ERROR_DEVICE_LOST;
             }
 
             memcpy(&carrier_ib[carrier_cursor],
