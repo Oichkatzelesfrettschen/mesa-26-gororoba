@@ -163,10 +163,10 @@ carrier_classify_and_alloc(struct terakan_device * const                    devi
 {
    *out_carrier = NULL;
 
-   /* Shared helper stays loose on dmabuf_fd: the attach path
-    * legitimately reaches this point with no fd (the BO is already
-    * owned by terakan_device_memory).  The import entry point below
-    * imposes the strict fd>=0 check before it tries to dup(). */
+   /* fd validity is checked by terakan_dmabuf_carrier_import() before
+    * it dup()s; the attach path legitimately has no fd at descriptor
+    * time (fd populated lazily by vkGetMemoryFdKHR on the export side
+    * OR carried by the caller's VkDeviceMemory on the import side). */
    if (desc == NULL)
       return VK_ERROR_INVALID_EXTERNAL_HANDLE;
 

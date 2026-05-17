@@ -314,6 +314,33 @@ terakan_AllocateMemory(VkDevice const deviceHandle,
             result = vk_error(device, result);
             goto fail_device_memory;
          }
+
+         /* For dma-buf imports under the carrier env-gate, attach a
+          * Palm external-sync carrier to the imported BO.  Buffer is
+          * the default Phase 0 carrier classification per the
+          * cache-domain evidence matrix; non-allowed domains return
+          * VK_ERROR_FEATURE_NOT_PRESENT from _attach() and log the
+          * policy reason, but the BO import has already succeeded so
+          * the allocation continues without a carrier. */
+         if (device_memory->vk.import_handle_type ==
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+             terakan_dmabuf_carrier_enabled()) {
+            struct terakan_dmabuf_carrier_desc const carrier_desc = {
+               .dmabuf_fd  = import_fd_info->fd,
+               .domain     = TERAKAN_CARRIER_DOMAIN_BUFFER,
+               .size_bytes = bo_size,
+            };
+            VkResult const attach_r = terakan_dmabuf_carrier_attach(
+               device, &carrier_desc, device_memory->bo,
+               &device_memory->carrier);
+            if (attach_r != VK_SUCCESS &&
+                attach_r != VK_ERROR_FEATURE_NOT_PRESENT) {
+               mesa_logw("terakan: carrier attach failed unexpectedly "
+                         "(VkResult=%d); allocation continues without "
+                         "carrier", (int)attach_r);
+               device_memory->carrier = NULL;
+            }
+         }
       } break;
 
       default:
@@ -330,6 +357,34 @@ terakan_AllocateMemory(VkDevice const deviceHandle,
       if (result != VK_SUCCESS) {
          result = vk_error(device, result);
          goto fail_device_memory;
+      }
+
+      /* For dma-buf-exportable allocations under the carrier env-gate,
+       * attach a Palm external-sync carrier to the freshly allocated
+       * BO.  This is the symmetric counterpart to the import-side
+       * attach above: a producer that allocates with
+       * VkExportMemoryAllocateInfo.handleTypes containing
+       * DMA_BUF_BIT_EXT will get a carrier on the same BO that the
+       * eventual vkGetMemoryFdKHR exports.  Buffer is the default
+       * Phase 0 classification per the cache-domain evidence matrix. */
+      if ((device_memory->vk.export_handle_types &
+              VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) != 0 &&
+          terakan_dmabuf_carrier_enabled()) {
+         struct terakan_dmabuf_carrier_desc const carrier_desc = {
+            .dmabuf_fd  = -1, /* fd is populated lazily on vkGetMemoryFdKHR */
+            .domain     = TERAKAN_CARRIER_DOMAIN_BUFFER,
+            .size_bytes = bo_size,
+         };
+         VkResult const attach_r = terakan_dmabuf_carrier_attach(
+            device, &carrier_desc, device_memory->bo,
+            &device_memory->carrier);
+         if (attach_r != VK_SUCCESS &&
+             attach_r != VK_ERROR_FEATURE_NOT_PRESENT) {
+            mesa_logw("terakan: carrier attach failed unexpectedly "
+                      "on export allocation (VkResult=%d); allocation "
+                      "continues without carrier", (int)attach_r);
+            device_memory->carrier = NULL;
+         }
       }
 
       VkMemoryDedicatedAllocateInfo const * const dedicated_info =
@@ -376,6 +431,10 @@ terakan_AllocateMemory(VkDevice const deviceHandle,
    return VK_SUCCESS;
 
 fail_bo:
+   if (device_memory->carrier != NULL) {
+      terakan_dmabuf_carrier_destroy(device, device_memory->carrier);
+      device_memory->carrier = NULL;
+   }
    terakan_bo_free(device_memory->bo, pAllocator);
 fail_device_memory:
    vk_device_memory_destroy(&device->vk, pAllocator, &device_memory->vk);
