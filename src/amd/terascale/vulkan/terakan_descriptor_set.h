@@ -82,6 +82,11 @@ struct terakan_descriptor_set_uav {
     * NOT ALIGN_POT'd — this is the raw Vulkan range / element count
     * so the write guard checks exact bounds. */
    uint32_t buffer_byte_size;
+   /* Per-element VkDescriptorBufferInfo::offset for storage-buffer
+    * descriptors.  The radeon CS validator adds the BO GPU address through
+    * relocations, so descriptor-array slots that share one BO carry their
+    * element offset through robustness_metadata.view_offsets[] instead. */
+   uint32_t buffer_byte_offset;
    /* True for STORAGE_TEXEL_BUFFER: buffer_byte_size holds element count
     * and must be routed to the texel_buffer_element_counts[] metadata array
     * (not uav_byte_sizes[]).  Used by pipeline_layout.c to separate the two

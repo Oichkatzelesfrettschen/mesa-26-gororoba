@@ -54,7 +54,9 @@
  *                   descriptor-side bake is wrong; the NIR pass uses
  *                   this metadata to pre-map the gather component
  *                   argument before emitting the FETCH4.
- *   dword 52..63 : reserved (zero)
+ *   dword 52..63 : uint32_t view_offsets[12]
+ *                   Per-storage-buffer VkDescriptorBufferInfo::offset,
+ *                   added by SSBO NIR lowering.
  */
 
 #include "terakan_command_buffer.h"
@@ -140,6 +142,10 @@ terakan_robustness_metadata_apply(
       memcpy(mapping + 40,
              command_writer->robustness_metadata.view_swizzles,
              sizeof(command_writer->robustness_metadata.view_swizzles));
+      /* Dwords 52..63: per-storage-buffer descriptor offsets. */
+      memcpy(mapping + 52,
+             command_writer->robustness_metadata.view_offsets,
+             sizeof(command_writer->robustness_metadata.view_offsets));
       /* dword 12: trash_page_addr — GPU VA >> 2 of the driver-owned trash page.
        * Used by math-predication write guards to redirect OOB writes to a safe
        * garbage sink instead of offset 0 of the target buffer. */
