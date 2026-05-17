@@ -110,6 +110,21 @@ terakan_pipeline_compute_compile(
    struct terakan_shader_impl local_shader;
    memset(&local_shader, 0, sizeof(local_shader));
 
+   /* Seed app push-constant extent from the pipeline layout so that
+    * terakan_push_constants_apply uploads the application-supplied
+    * vkCmdPushConstants payload into the compute KCACHE bank
+    * (TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS) at dispatch time.  Without
+    * this, push_constants_usage.app_extent_bytes stays at zero, the
+    * app_constants memcpy in terakan_push_constants_apply is skipped,
+    * and the shader reads zero out of the bank-15 slot.  The graphics
+    * pipeline uses the same metadata seed before shader lowering. */
+   if (create_info->layout != VK_NULL_HANDLE) {
+      struct terakan_pipeline_layout const * const compute_layout =
+         terakan_pipeline_layout_from_handle(create_info->layout);
+      local_shader.push_constants_usage.app_extent_bytes =
+         compute_layout->shader_app_push_constants_extents_bytes[MESA_SHADER_COMPUTE];
+   }
+
    /* Compute the effective robustness flag for this stage.  See the matching
     * comment in terakan_pipeline_graphics_compile_shaders. */
    struct vk_pipeline_robustness_state stage_rs;
@@ -262,6 +277,16 @@ terakan_pipeline_compute_compile_fix_w_variant(
          VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT ||
       stage_rs.uniform_buffers ==
          VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
+
+   /* Seed app push-constant extent from the pipeline layout so the
+    * FIX-W variant carries the same compute KCACHE upload metadata
+    * as the primary shader. */
+   if (create_info->layout != VK_NULL_HANDLE) {
+      struct terakan_pipeline_layout const * const variant_layout =
+         terakan_pipeline_layout_from_handle(create_info->layout);
+      variant->push_constants_usage.app_extent_bytes =
+         variant_layout->shader_app_push_constants_extents_bytes[MESA_SHADER_COMPUTE];
+   }
 
    /* Set the thread-local literal so the FIX-K block in
     * terakan_nir_lower_abi.c bakes nir_imm_int(layer) instead of
