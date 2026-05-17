@@ -1209,16 +1209,6 @@ terakan_shader_lower_and_optimize_post_link(
       nir_assign_io_var_locations(nir, nir_var_shader_out);
    }
 
-   /* Lower texture operations. */
-
-   NIR_PASS(_, nir, r600_nir_lower_cube_to_2darray);
-   /* Per AMD Evergreen-Family ISA Chapter 6: GATHER4 forces nearest filtering for integer
-    * texture formats, shifting the 4 corner positions by 0.5 texel relative to bilinear.
-    * Shift the coord forward so nearest rounding lands on the correct corners.
-    * Must follow cube_to_2darray: the pass guards on sampler_dim != CUBE; after lowering
-    * cube gather is 2D and the guard passes. */
-   NIR_PASS(_, nir, r600_nir_lower_int_tg4);
-
    /* Vectorize loads that will be lowered to typed buffer load (vertex fetch) instructions, but
     * first lower all loads to scalar to make sure hardware constraints for vectorizing are taken
     * into account. Also, lower SSBO stores to scalar because the hardware instruction stores one
