@@ -805,8 +805,28 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
    /* FIX-AC: prepend silicon-latch warmup dispatch before user IBs.
     * Skipped if warmup init failed or TERAKAN_FIX_AC_WARMUP=0.
     */
-   if (submit->command_buffer_count > 0 && device->fix_ac_warmup != NULL)
-      terakan_fix_ac_warmup_submit_prelude(device, device->fix_ac_warmup, queue);
+   if (submit->command_buffer_count > 0 && device->fix_ac_warmup != NULL) {
+      VkResult const warmup_submit_result =
+         terakan_fix_ac_warmup_submit_prelude(device, device->fix_ac_warmup, queue);
+      if (warmup_submit_result != VK_SUCCESS) {
+         vk_device_set_lost(&device->vk, "FIX-AC warmup submission failed with result %s",
+                            vk_Result_to_str(warmup_submit_result));
+         if (!disable_fence_elision && queue->pending_completion != NULL) {
+            mtx_lock(&device->completion_mutex);
+            list_add(&queue->pending_completion->link, &queue->completion_submissions_free);
+            device->completion_lost = true;
+            mtx_unlock(&device->completion_mutex);
+            queue->pending_completion = NULL;
+         } else {
+            mtx_lock(&device->completion_mutex);
+            device->completion_lost = true;
+            mtx_unlock(&device->completion_mutex);
+         }
+         cnd_broadcast(&device->completion_condition);
+         terakan_queue_completion_event_updates_free(device, &completion_event_updates);
+         return VK_ERROR_DEVICE_LOST;
+      }
+   }
 
    /* Submit the command buffers. For the last IB, merge the completion BO reference and
     * conservative flush packets to enable fence elision.
