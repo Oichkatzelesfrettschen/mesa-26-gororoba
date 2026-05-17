@@ -17,7 +17,10 @@ Current build policy:
 - Compiler: `clang-22` and `clang++-22`.
 - Warm profile: `build-infra/configs/terakan-distcc-no-rusticl.meson`.
 - Pump profile: `build-infra/configs/terakan-distcc-no-rusticl-pump.meson`.
-- Target install prefix: set `PREFIX` explicitly for the host being tested.
+- Default install prefix: `/usr/local/mesa-<profile>`.
+  Pass `PREFIX=/usr/local/mesa-26-gororoba` only when intentionally
+  installing into the shared active tree, or pass a host-specific test prefix
+  explicitly for local validation.
 
 The no-Rusticl profile enables the daily Terakan/r600 lane:
 

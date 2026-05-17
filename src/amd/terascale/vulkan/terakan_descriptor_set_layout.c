@@ -27,6 +27,7 @@
 #include "terakan_descriptor_set.h"
 #include "terakan_device.h"
 #include "terakan_entrypoints.h"
+#include "terakan_limits.h"
 #include "terakan_sampler.h"
 
 #include "util/bitscan.h"
@@ -34,6 +35,7 @@
 #include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
+#include "vk_util.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -64,6 +66,163 @@ terakan_descriptor_set_layout_compare_binding_create_infos(void const * const a,
    return 0;
 }
 
+struct terakan_descriptor_set_layout_support_info {
+   uint32_t total_descriptors;
+   uint32_t max_variable_descriptor_count;
+};
+
+static bool
+terakan_descriptor_set_layout_is_supported(
+   struct terakan_device const * const device,
+   VkDescriptorSetLayoutCreateInfo const * const create_info,
+   struct terakan_descriptor_set_layout_support_info * const support_info)
+{
+   support_info->total_descriptors = 0;
+   support_info->max_variable_descriptor_count = 0;
+
+   if (create_info == NULL ||
+       (create_info->bindingCount != 0 && create_info->pBindings == NULL)) {
+      return false;
+   }
+
+   VkDescriptorSetLayoutBindingFlagsCreateInfo const * const binding_flags_info =
+      vk_find_struct_const(create_info->pNext,
+                           DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
+
+   VkShaderStageFlags stage_mask =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+   if (device->vk.enabled_features.geometryShader) {
+      stage_mask |= VK_SHADER_STAGE_GEOMETRY_BIT;
+   }
+   if (device->vk.enabled_features.tessellationShader) {
+      stage_mask |=
+         VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+   }
+   VkShaderStageFlags uav_supported_stage_mask = VK_SHADER_STAGE_COMPUTE_BIT;
+   if (device->vk.enabled_features.fragmentStoresAndAtomics) {
+      uav_supported_stage_mask |= VK_SHADER_STAGE_FRAGMENT_BIT;
+   }
+
+   uint32_t set_resource_count = 0;
+   uint32_t set_uav_count = 0;
+   uint32_t set_sampler_count = 0;
+   uint32_t immutable_sampler_count = 0;
+   uint32_t stage_resource_count[MESA_SHADER_STAGES] = {0};
+   uint32_t stage_sampler_count[MESA_SHADER_STAGES] = {0};
+   uint32_t variable_descriptor_count = 0;
+   uint32_t variable_binding = 0;
+   bool has_variable_binding = false;
+
+   for (uint32_t binding_index = 0; binding_index < create_info->bindingCount; ++binding_index) {
+      VkDescriptorSetLayoutBinding const * const binding =
+         &create_info->pBindings[binding_index];
+      uint32_t const descriptor_count = binding->descriptorCount;
+
+      if (TERAKAN_MAX_PER_SET_DESCRIPTORS - support_info->total_descriptors <
+          descriptor_count) {
+         return false;
+      }
+      support_info->total_descriptors += descriptor_count;
+
+      if (binding_flags_info != NULL && binding_index < binding_flags_info->bindingCount &&
+          (binding_flags_info->pBindingFlags[binding_index] &
+           VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT)) {
+         if (!has_variable_binding || binding->binding >= variable_binding) {
+            has_variable_binding = true;
+            variable_binding = binding->binding;
+            variable_descriptor_count = descriptor_count;
+         }
+      }
+
+      if (descriptor_count == 0) {
+         continue;
+      }
+
+      for (uint32_t previous_index = 0; previous_index < binding_index; ++previous_index) {
+         VkDescriptorSetLayoutBinding const * const previous_binding =
+            &create_info->pBindings[previous_index];
+         if (previous_binding->descriptorCount != 0 &&
+             previous_binding->binding == binding->binding) {
+            return false;
+         }
+      }
+
+      if (descriptor_count >= MAX3(TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL,
+                                   TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL,
+                                   TERAKAN_SAMPLER_HW_COUNT_PER_STAGE)) {
+         return false;
+      }
+
+      VkDescriptorType const descriptor_type = binding->descriptorType;
+      VkShaderStageFlags const binding_stages = binding->stageFlags & stage_mask;
+
+      if (terakan_descriptor_type_has_resource(descriptor_type)) {
+         if (TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_IN_PIPELINE - set_resource_count <
+             descriptor_count) {
+            return false;
+         }
+         set_resource_count += descriptor_count;
+
+         unsigned remaining_stages = (unsigned)binding_stages;
+         while (remaining_stages) {
+            int const stage_index = u_bit_scan(&remaining_stages);
+            uint32_t const stage_resource_limit =
+               stage_index == MESA_SHADER_FRAGMENT
+                  ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
+                  : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
+            if (stage_resource_limit - stage_resource_count[stage_index] < descriptor_count) {
+               return false;
+            }
+            stage_resource_count[stage_index] += descriptor_count;
+         }
+
+         if ((binding_stages & uav_supported_stage_mask) &&
+             terakan_descriptor_type_has_uav(descriptor_type)) {
+            if (TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_IN_PIPELINE - set_uav_count <
+                descriptor_count) {
+               return false;
+            }
+            set_uav_count += descriptor_count;
+         }
+      }
+
+      if (terakan_descriptor_type_has_sampler(descriptor_type)) {
+         uint32_t const total_sampler_limit = TERAKAN_SAMPLER_HW_COUNT_PER_STAGE *
+                                             MESA_SHADER_STAGES;
+         if (binding->pImmutableSamplers != NULL) {
+            if (total_sampler_limit - immutable_sampler_count < descriptor_count) {
+               return false;
+            }
+            immutable_sampler_count += descriptor_count;
+         }
+         if (total_sampler_limit - set_sampler_count < descriptor_count) {
+            return false;
+         }
+         set_sampler_count += descriptor_count;
+
+         unsigned remaining_stages = (unsigned)binding_stages;
+         while (remaining_stages) {
+            int const stage_index = u_bit_scan(&remaining_stages);
+            if (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE - stage_sampler_count[stage_index] <
+                descriptor_count) {
+               return false;
+            }
+            stage_sampler_count[stage_index] += descriptor_count;
+         }
+      }
+   }
+
+   if (has_variable_binding) {
+      uint32_t const fixed_descriptor_count =
+         support_info->total_descriptors - variable_descriptor_count;
+      support_info->max_variable_descriptor_count =
+         MIN2(variable_descriptor_count,
+              TERAKAN_MAX_PER_SET_DESCRIPTORS - fixed_descriptor_count);
+   }
+
+   return true;
+}
+
 /* Try to combine the previous range and the new one to make binding slightly faster. */
 static bool
 terakan_descriptor_set_layout_shader_range_try_extend(
@@ -90,6 +249,14 @@ terakan_CreateDescriptorSetLayout(VkDevice const deviceHandle,
                                   VkDescriptorSetLayout * const pSetLayout)
 {
    struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
+
+   struct terakan_descriptor_set_layout_support_info support_info;
+   if (!terakan_descriptor_set_layout_is_supported(device, pCreateInfo, &support_info)) {
+      return vk_errorf(
+         device, VK_ERROR_VALIDATION_FAILED_EXT,
+         "The application creates a descriptor set layout that is too large to fit into the "
+         "hardware binding register spaces");
+   }
 
    /* Sort bindings by their numbers for pipeline layout compatibility and dynamic offset indexing
     * purposes, and also use the sorting to move empty bindings to the end.
@@ -519,56 +686,25 @@ too_many_descriptors:
 /* VK_KHR_maintenance3 / Vulkan 1.1 core: query whether a descriptor set
  * layout would be creatable without actually creating it.
  *
- * Implementation strategy: count the descriptors in the requested layout
- * and compare against Terakan's per-stage and per-set limits.  We surface
- * the actual descriptorSetLayoutSupport.supported AND populate the
- * VkDescriptorSetVariableDescriptorCountLayoutSupport pNext extension when
- * present.
- *
- * For now the supported flag is set true unless the layout has an obvious
- * count overflow.  The real validation lives in
- * terakan_CreateDescriptorSetLayout which returns VALIDATION_FAILED_EXT if
- * the layout doesn't fit; we mirror its single overflow check here. */
+ * Implementation strategy: reuse the same numeric limit checks as
+ * terakan_CreateDescriptorSetLayout so the query result matches whether the
+ * layout can be created.
+ */
 VKAPI_ATTR void VKAPI_CALL
 terakan_GetDescriptorSetLayoutSupport(VkDevice const deviceHandle,
                                       VkDescriptorSetLayoutCreateInfo const * const pCreateInfo,
                                       VkDescriptorSetLayoutSupport * const pSupport)
 {
-   (void)deviceHandle;
+   struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
 
-   /* Sum total descriptors and check against a generous upper bound that
-    * matches the limit enforced inside CreateDescriptorSetLayout (the
-    * `too_many_descriptors` error path above).  Terakan reports
-    * maxPerStageDescriptor* limits of >= 4096 per descriptor type via
-    * terakan_physical_device.c; the layout structure itself only really
-    * fails when total binding count is absurd. */
-   uint32_t total_descriptors = 0;
-   if (pCreateInfo != NULL && pCreateInfo->pBindings != NULL) {
-      for (uint32_t i = 0; i < pCreateInfo->bindingCount; ++i) {
-         total_descriptors += pCreateInfo->pBindings[i].descriptorCount;
-      }
-   }
+   struct terakan_descriptor_set_layout_support_info support_info;
+   pSupport->supported =
+      terakan_descriptor_set_layout_is_supported(device, pCreateInfo, &support_info);
 
-   /* Match the practical limit enforced by CreateDescriptorSetLayout: each
-    * descriptor consumes one shader-side resource slot, and Terakan's
-    * shader-side resource arrays total to less than 4096 entries.  This
-    * conservative cap rejects pathological layouts without overstating
-    * support. */
-   pSupport->supported = (total_descriptors <= 4096) ? VK_TRUE : VK_FALSE;
-
-   /* Walk pNext for VkDescriptorSetVariableDescriptorCountLayoutSupport.
-    * We don't expose descriptor_indexing features so this extension is
-    * unlikely to be requested, but handle the chain robustly per the
-    * Vulkan spec requirement. */
-   VkBaseOutStructure *out = (VkBaseOutStructure *)pSupport->pNext;
-   while (out != NULL) {
-      if (out->sType ==
-          VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT) {
-         VkDescriptorSetVariableDescriptorCountLayoutSupport * const var =
-            (VkDescriptorSetVariableDescriptorCountLayoutSupport *)out;
-         var->maxVariableDescriptorCount =
-            pSupport->supported ? (4096u - total_descriptors) : 0u;
-      }
-      out = out->pNext;
+   VkDescriptorSetVariableDescriptorCountLayoutSupport * const variable_count =
+      vk_find_struct(pSupport->pNext, DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT);
+   if (variable_count != NULL) {
+      variable_count->maxVariableDescriptorCount =
+         pSupport->supported ? support_info.max_variable_descriptor_count : 0;
    }
 }
