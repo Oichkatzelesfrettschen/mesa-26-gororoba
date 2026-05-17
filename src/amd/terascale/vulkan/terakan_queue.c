@@ -38,6 +38,7 @@
 #include "c11/threads.h"
 #include "amd/terascale/common/terascale_evergreend.h"
 #include "gallium/drivers/r600/r600d_common.h"
+#include "util/log.h"
 #include "util/u_debug.h"
 #include "util/macros.h"
 #include "c99_alloca.h"
@@ -841,6 +842,27 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
          if (unlikely(command_buffer_indirect_buffer->carrier_lists != NULL)) {
             struct terakan_carrier_submit_lists const * const carrier_lists =
                command_buffer_indirect_buffer->carrier_lists;
+
+            /* Env-gated debug print of the per-submit carrier counts.
+             * Independent of TERAKAN_DEBUG and TERAKAN_ENABLE_DMABUF_CARRIER
+             * so harness probes can opt into the report without bloating
+             * the normal shipping log path.  carrier_count is the sum of
+             * post-dedupe acquire + release entries (dedupe is enforced
+             * inside the append functions; equal pointer identity is
+             * silently merged). */
+            {
+               static const char * const carrier_debug_env = "TERAKAN_CARRIER_DEBUG";
+               const char * const carrier_debug_val = getenv(carrier_debug_env);
+               if (carrier_debug_val != NULL && carrier_debug_val[0] == '1') {
+                  unsigned const dbg_acquires = carrier_lists->acquire_count;
+                  unsigned const dbg_releases = carrier_lists->release_count;
+                  unsigned const dbg_carriers = dbg_acquires + dbg_releases;
+                  mesa_logi("terakan_carrier_debug: carrier_count=%u "
+                            "acquire_count=%u release_count=%u "
+                            "fence_gpu_va=0",
+                            dbg_carriers, dbg_acquires, dbg_releases);
+               }
+            }
 
             uint32_t const orig_size = command_buffer_indirect_buffer->indirect_buffer_size_dwords;
             uint32_t const acquire_dwords_max =
