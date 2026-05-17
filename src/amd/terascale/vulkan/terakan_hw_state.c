@@ -41,6 +41,7 @@
 #include <assert.h>
 #include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -2473,6 +2474,21 @@ terakan_hw_state_sqc_emit_resource(struct terakan_gfx_command_writer * const com
    memcpy(packet, descriptor, sizeof(uint32_t) * 8);
    if (!is_texture) {
       packet[TERAKAN_RESOURCE_BUFFER_PRIORITY_WORD] = 0;
+   }
+   /* TERAKAN_PROBE_WORD0_SENTINEL controls graphics buffer descriptor
+    * WORD0 before kernel relocation handling.  Texture descriptors are
+    * excluded because SQ_TEX_RESOURCE_WORD2 carries mip-chain address
+    * information that must remain paired with the normal relocation path. */
+   if (!is_texture) {
+      char const * const probe = getenv("TERAKAN_PROBE_WORD0_SENTINEL");
+      if (probe && probe[0] == '1') {
+         packet[0] = 0xCAFEBABEu;
+      } else if (probe && probe[0] == '2') {
+         packet[0] = (uint32_t)(bo->va) + 0x1000u;
+      }
+      /* else: leave the descriptor's WORD0 as written by
+       * terakan_buffer_create_storage_buffer_descriptor (bo->va + offset);
+       * kernel reloc will patch. */
    }
    packet += 8;
 
