@@ -82,18 +82,6 @@ struct terakan_descriptor_set_uav {
     * NOT ALIGN_POT'd — this is the raw Vulkan range / element count
     * so the write guard checks exact bounds. */
    uint32_t buffer_byte_size;
-   /* Per-element VkDescriptorBufferInfo::offset for shared-BO array
-    * elements (different array indices of one binding referencing the
-    * same VkBuffer at different offsets).  The radeon CS validator's
-    * SET_RESOURCE reloc replaces WORD0 with bo->va_low, dropping any
-    * per-element offset that userspace puts in the IB
-    * (drivers/gpu/drm/radeon/evergreen_cs.c reloc handler).  The
-    * shader-side byte_offset arithmetic in
-    * terakan_nir_lower_bindings_instr_load_ssbo adds this back, fed
-    * via robustness_metadata.view_offsets[] (KCACHE bank 14 dwords
-    * 52..63).  Zero for non-shared-BO descriptors and texel
-    * buffers / images. */
-   uint32_t buffer_byte_offset;
    /* True for STORAGE_TEXEL_BUFFER: buffer_byte_size holds element count
     * and must be routed to the texel_buffer_element_counts[] metadata array
     * (not uav_byte_sizes[]).  Used by pipeline_layout.c to separate the two
