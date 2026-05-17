@@ -435,6 +435,22 @@ terakan_queue_completion_submission_wddm_create_bo_reference(
                                                  true, TERAKAN_BO_PRIORITY_SYNC);
 }
 
+/* The dmabuf-carrier path is gated on terakan_dmabuf_carrier_enabled()
+ * (TERAKAN_ENABLE_DMABUF_CARRIER=1), and the gate is mutually
+ * exclusive with the WDDM winsys (the carrier import path is
+ * radeon-DRM-only).  Returning false suppresses the carrier EOP. */
+static bool
+terakan_queue_completion_submission_wddm_eop_target(
+   struct terakan_queue_completion_submission * const submission_base,
+   uint64_t * const bo_offset_out,
+   uint64_t * const gpu_va_out)
+{
+   (void)submission_base;
+   *bo_offset_out = 0u;
+   *gpu_va_out = 0u;
+   return false;
+}
+
 struct terakan_queue_winsys_fn const terakan_queue_wddm_fn = {
    .create_bo_reference = terakan_queue_wddm_create_bo_reference,
    .update_bo_reference = terakan_queue_wddm_update_bo_reference,
@@ -444,6 +460,8 @@ struct terakan_queue_winsys_fn const terakan_queue_wddm_fn = {
    .completion_submission_submit = terakan_queue_completion_submission_wddm_submit,
    .completion_submission_create_bo_reference =
       terakan_queue_completion_submission_wddm_create_bo_reference,
+   .completion_submission_eop_target =
+      terakan_queue_completion_submission_wddm_eop_target,
    .completion_submission_await = terakan_queue_completion_submission_wddm_await,
    .completion_submission_finish_winsys_and_free =
       terakan_queue_completion_submission_wddm_finish_winsys_and_free,

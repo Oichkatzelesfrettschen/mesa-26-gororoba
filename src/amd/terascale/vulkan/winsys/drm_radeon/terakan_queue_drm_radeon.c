@@ -364,6 +364,25 @@ terakan_queue_completion_submission_drm_radeon_create_bo_reference(
                                                  true, TERAKAN_BO_PRIORITY_SYNC);
 }
 
+static bool
+terakan_queue_completion_submission_drm_radeon_eop_target(
+   struct terakan_queue_completion_submission * const submission_base,
+   uint64_t * const bo_offset_out,
+   uint64_t * const gpu_va_out)
+{
+   struct terakan_queue_completion_submission_drm_radeon const * const submission = container_of(
+      submission_base, struct terakan_queue_completion_submission_drm_radeon const, base);
+   /* The completion BO is a single-byte device-local allocation; the
+    * radeon kernel attaches a dma_fence to its reservation object at
+    * CS-submit time and signals it on IB retirement.  Reusing the
+    * same BO for a host-emitted PKT3_EVENT_WRITE_EOP gives the
+    * carrier debug path a CPU-pollable seq word on the same BO whose
+    * reservation drives the carrier dma-buf signaling. */
+   *bo_offset_out = 0u;
+   *gpu_va_out = submission->bo->base.va;
+   return true;
+}
+
 struct terakan_queue_winsys_fn const terakan_queue_drm_radeon_fn = {
    .create_bo_reference = terakan_queue_drm_radeon_create_bo_reference,
    .update_bo_reference = terakan_queue_drm_radeon_update_bo_reference,
@@ -373,6 +392,8 @@ struct terakan_queue_winsys_fn const terakan_queue_drm_radeon_fn = {
    .completion_submission_submit = terakan_queue_completion_submission_drm_radeon_submit,
    .completion_submission_create_bo_reference =
       terakan_queue_completion_submission_drm_radeon_create_bo_reference,
+   .completion_submission_eop_target =
+      terakan_queue_completion_submission_drm_radeon_eop_target,
    .completion_submission_await = terakan_queue_completion_submission_drm_radeon_await,
    .completion_submission_finish_winsys_and_free =
       terakan_queue_completion_submission_drm_radeon_finish_winsys_and_free,

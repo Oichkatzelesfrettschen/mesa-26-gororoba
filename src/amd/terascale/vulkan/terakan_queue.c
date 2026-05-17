@@ -50,6 +50,7 @@
 #include "vk_synchronization.h"
 
 #include <assert.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -832,36 +833,14 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
           * IB, release after the IB body and after the merge-time
           * flush packets).
           *
-          * The initial queue wiring leaves the EOP fence-word write
-          * disabled (fence_gpu_va = 0 below) until the completion BO
-          * and sequence value are carried through the winsys-abstract
-          * submit interface.  The release-side ME SURFACE_SYNC drains
-          * destination caches before kernel CS retirement; the kernel
-          * retirement chain then signals attached dma-buf reservations. */
+          * When this IB is the merge target, the carrier release epilogue
+          * may append a tail EVENT_WRITE_EOP write to the completion BO.
+          * The release-side ME SURFACE_SYNC drains destination caches before
+          * kernel CS retirement; the kernel retirement chain then signals
+          * attached dma-buf reservations. */
          if (unlikely(command_buffer_indirect_buffer->carrier_lists != NULL)) {
             struct terakan_carrier_submit_lists const * const carrier_lists =
                command_buffer_indirect_buffer->carrier_lists;
-
-            /* Env-gated debug print of the per-submit carrier counts.
-             * Independent of TERAKAN_DEBUG and TERAKAN_ENABLE_DMABUF_CARRIER
-             * so harness probes can opt into the report without bloating
-             * the normal shipping log path.  carrier_count is the sum of
-             * post-dedupe acquire + release entries (dedupe is enforced
-             * inside the append functions; equal pointer identity is
-             * silently merged). */
-            {
-               static const char * const carrier_debug_env = "TERAKAN_CARRIER_DEBUG";
-               const char * const carrier_debug_val = getenv(carrier_debug_env);
-               if (carrier_debug_val != NULL && carrier_debug_val[0] == '1') {
-                  unsigned const dbg_acquires = carrier_lists->acquire_count;
-                  unsigned const dbg_releases = carrier_lists->release_count;
-                  unsigned const dbg_carriers = dbg_acquires + dbg_releases;
-                  mesa_logi("terakan_carrier_debug: carrier_count=%u "
-                            "acquire_count=%u release_count=%u "
-                            "fence_gpu_va=0",
-                            dbg_carriers, dbg_acquires, dbg_releases);
-               }
-            }
 
             uint32_t const orig_size = command_buffer_indirect_buffer->indirect_buffer_size_dwords;
             uint32_t const acquire_dwords_max =
@@ -870,8 +849,15 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
                carrier_lists->release_count * TERAKAN_CARRIER_DWORDS_PER_RELEASE;
             bool const is_merge = (command_buffer_indirect_buffer == last_indirect_buffer);
             uint32_t const merge_flush_dwords = is_merge ? 16u : 0u;
+            /* Reserve worst-case capacity for the tail EOP fence-word
+             * emission (PKT3_EVENT_WRITE_EOP + PKT3_NOP reloc pair).
+             * When the EOP is suppressed these
+             * dwords go unused and the trailing NOP padding loop
+             * fills them. */
+            uint32_t const eop_dwords_max = TERAKAN_CARRIER_DWORDS_PER_EOP_WITH_RELOC;
             uint32_t const carrier_combined_size =
-               acquire_dwords_max + orig_size + merge_flush_dwords + release_dwords_max;
+               acquire_dwords_max + orig_size + merge_flush_dwords +
+               release_dwords_max + eop_dwords_max;
             uint32_t const carrier_aligned_size =
                (carrier_combined_size +
                 (TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1)) &
@@ -995,9 +981,69 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
                carrier_ib[carrier_cursor++] = TERAKAN_BARRIER_SURFACE_SYNC_POLL_INTERVAL;
             }
 
+            /* Resolve the (BO, seq) pair that the tail
+             * PKT3_EVENT_WRITE_EOP targets.  The fence-word write is
+             * only safe when:
+             *   - this IB is the merge target (so the pending
+             *     completion BO is appended to the radeon CS
+             *     bo_references list below; the reloc index that
+             *     pairs the EOP packet is the appended slot,
+             *     i.e. orig bo_reference_count),
+             *   - queue->pending_completion is non-NULL (the
+             *     fence-elision path is armed for this submit),
+             *   - the winsys exposes a reloc-paired EOP target for
+             *     the completion BO,
+             *   - release_count > 0 (no carrier writes -> no
+             *     observable producer to fence-mark).
+             * carrier_emit_releases_dwords() enforces the last two
+             * conditions internally; the first two are gated here. */
+            uint64_t fence_bo_offset       = 0u;
+            uint64_t fence_debug_gpu_va    = 0u;
+            uint32_t fence_seq             = 0u;
+            uint32_t fence_bo_ref_index    = 0u;
+            bool     fence_target_valid    = false;
+            if (is_merge && queue->pending_completion != NULL &&
+                carrier_lists->release_count > 0u) {
+               if (device->winsys_fn->queue->completion_submission_eop_target(
+                      queue->pending_completion, &fence_bo_offset,
+                      &fence_debug_gpu_va)) {
+                  fence_seq          = ++queue->carrier_eop_seq_next;
+                  /* The pending completion BO is appended at index
+                   * = original bo_reference_count in the carrier
+                   * bo_refs array (see the alloca block below).
+                   * radeon CS reloc-pairing PKT3_NOP encodes
+                   * 4 * bo_reference_index. */
+                  fence_bo_ref_index  = command_buffer_indirect_buffer->bo_reference_count;
+                  fence_target_valid  = true;
+               }
+            }
+
+            /* Env-gated debug print of the per-submit carrier counts
+             * and EOP wiring.  Independent of TERAKAN_DEBUG and
+             * TERAKAN_ENABLE_DMABUF_CARRIER so debug probes can read
+             * these values back without bloating the normal shipping
+             * log path.  carrier_count is the sum of post-dedupe
+             * acquire + release entries. */
+            {
+               static const char * const carrier_debug_env = "TERAKAN_CARRIER_DEBUG";
+               const char * const carrier_debug_val = getenv(carrier_debug_env);
+               if (carrier_debug_val != NULL && carrier_debug_val[0] == '1') {
+                  unsigned const dbg_acquires = carrier_lists->acquire_count;
+                  unsigned const dbg_releases = carrier_lists->release_count;
+                  unsigned const dbg_carriers = dbg_acquires + dbg_releases;
+                  mesa_logi("terakan_carrier_debug: carrier_count=%u "
+                            "acquire_count=%u release_count=%u "
+                            "eop_emitted=%s fence_bo_offset=0x%016" PRIx64 " "
+                            "fence_gpu_va=0x%016" PRIx64 " fence_seq=%u",
+                            dbg_carriers, dbg_acquires, dbg_releases,
+                            fence_target_valid ? "yes" : "no",
+                            fence_bo_offset, fence_debug_gpu_va, fence_seq);
+               }
+            }
+
             terakan_carrier_emit_releases_dwords(
                carrier_ib, carrier_aligned_size, &carrier_cursor, carrier_lists,
-               /* fence_gpu_va = */ 0u, /* fence_seq = */ 0u);
+               fence_target_valid, fence_bo_offset, fence_seq, fence_bo_ref_index);
 
             while (carrier_cursor < carrier_aligned_size) {
                carrier_ib[carrier_cursor++] = PKT_TYPE_S(2);
@@ -1562,6 +1608,7 @@ terakan_queue_create(struct terakan_device * const device,
    queue->shader_rings_bytes_shr8 = 0;
    queue->shader_rings = NULL;
    queue->shader_rings_last_usage = 0;
+   queue->carrier_eop_seq_next = 0u;
 
    queue->vk.driver_submit = terakan_queue_submit;
 

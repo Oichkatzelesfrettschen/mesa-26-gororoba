@@ -297,8 +297,8 @@ terakan_carrier_collect_from_radeon_relocs(
 /* CPU-wait indefinitely on an imported acquire sync_fd.  Returns
  * true if the FD signals readability (producer fence has fired) or
  * the FD is invalid (no fence attached, treated as already-ordered).
- * Returns false only on a real poll() error -- the caller MUST
- * propagate the failure as a VkResult; the SURFACE_SYNC packet is
+ * Returns false only on a real poll() error; the caller propagates
+ * the failure as a VkResult. The SURFACE_SYNC packet is
  * NOT emitted on failure because the read it gates is not safe.
  * EINTR is looped silently. */
 static bool
@@ -393,22 +393,47 @@ static void
 emit_eop_release_timestamp(uint32_t * const ib,
                            uint32_t * const cursor,
                            uint32_t const   capacity,
-                           uint64_t const   fence_gpu_va,
-                           uint32_t const   seq_value)
+                           uint64_t const   fence_bo_offset,
+                           uint32_t const   seq_value,
+                           uint32_t const   bo_reference_index)
 {
-   assert((fence_gpu_va & 0x3u) == 0u);
-   assert(*cursor + TERAKAN_CARRIER_DWORDS_PER_EOP <= capacity);
+   /* PKT3_EVENT_WRITE_EOP body (5 dwords after header, count = 5 - 1):
+    *   DW1: EVENT_TYPE(20 = CACHE_FLUSH_AND_INV_TS) | EVENT_INDEX(5 = TS)
+    *   DW2: ADDRESS_LO (4-byte aligned BO-relative offset; kernel CS
+    *                    validator adds the trailing PKT3_NOP BO offset)
+    *   DW3: ADDRESS_HI bits 39:32 | DATA_SEL << 29 | INT_SEL << 24
+    *   DW4: DATA_LO (the 32-bit fence sequence written at ADDRESS)
+    *   DW5: DATA_HI (high 32 bits when DATA_SEL == 64-bit; zero for
+    *                 SEND_32BIT_LOW; the CS parser still consumes it)
+    *
+    * Layout mirrors terakan_palm_emit_eop_release_timestamp() in
+    * terakan_palm_sync.c and terakan_emit_flush_watermark() in
+    * terakan_dispatch.c byte-for-byte.  Encoding per the AMD
+    * Evergreen-Family ISA reference, EVENT_WRITE_EOP packet
+    * definition.
+    *
+    * The trailing PKT3_NOP carries the bo_reference_index that names
+    * the fence BO in the radeon CS reloc array; the kernel validator
+    * (drivers/gpu/drm/radeon/evergreen_cs.c::
+    * evergreen_cs_packet_next_reloc) consumes this pair to add the BO
+    * GPU offset to ADDRESS_LO/HI. */
+   assert((fence_bo_offset & 0x3u) == 0u);
+   assert(*cursor + TERAKAN_CARRIER_DWORDS_PER_EOP_WITH_RELOC <= capacity);
 
    uint32_t n = *cursor;
    ib[n++] = TERAKAN_CARRIER_PKT3(TERAKAN_CARRIER_PKT3_EVENT_WRITE_EOP, 5 - 1, 0);
    ib[n++] = (TERAKAN_CARRIER_EOP_EVENT_TYPE_CACHE_FLUSH_AND_INV_TS << 0) |
              (TERAKAN_CARRIER_EOP_EVENT_INDEX_TS                   << 8);
-   ib[n++] = (uint32_t)(fence_gpu_va & 0xFFFFFFFFu);
-   ib[n++] = ((uint32_t)((fence_gpu_va >> 32) & 0xFFu)) |
+   ib[n++] = (uint32_t)(fence_bo_offset & 0xFFFFFFFFu);
+   ib[n++] = ((uint32_t)((fence_bo_offset >> 32) & 0xFFu)) |
              (TERAKAN_CARRIER_EOP_DATA_SEL_SEND_32BIT_LOW << 29) |
              (TERAKAN_CARRIER_EOP_INT_SEL_NONE            << 24);
    ib[n++] = seq_value;
-   ib[n++] = 0;
+   ib[n++] = 0u;                                 /* data_hi (unused for 32-bit) */
+
+   /* DRM_NOP reloc-pairing packet for the fence BO. */
+   ib[n++] = TERAKAN_CARRIER_PKT3(TERAKAN_CARRIER_PKT3_NOP, 0, 0);
+   ib[n++] = 4u * bo_reference_index;
    *cursor = n;
 }
 
@@ -451,8 +476,10 @@ terakan_carrier_emit_releases_dwords(
    uint32_t const                                      ib_capacity_dwords,
    uint32_t * const                                    cursor,
    const struct terakan_carrier_submit_lists * const   lists,
-   uint64_t const                                      fence_gpu_va,
-   uint32_t const                                      fence_seq)
+   bool const                                          fence_bo_target_valid,
+   uint64_t const                                      fence_bo_offset,
+   uint32_t const                                      fence_seq,
+   uint32_t const                                      fence_bo_reference_index)
 {
    for (unsigned i = 0; i < lists->release_count; ++i) {
       struct terakan_carrier_submit_entry const entry =
@@ -471,8 +498,9 @@ terakan_carrier_emit_releases_dwords(
                               entry.bo_reference_index);
    }
 
-   if (lists->release_count > 0u && fence_gpu_va != 0u) {
+   if (lists->release_count > 0u && fence_bo_target_valid) {
       emit_eop_release_timestamp(ib_dwords, cursor, ib_capacity_dwords,
-                                 fence_gpu_va, fence_seq);
+                                 fence_bo_offset, fence_seq,
+                                 fence_bo_reference_index);
    }
 }

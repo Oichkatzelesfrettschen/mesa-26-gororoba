@@ -224,6 +224,14 @@ struct terakan_queue {
    uint32_t shader_rings_bytes_shr8;
    struct terakan_bo * shader_rings;
    uint64_t shader_rings_last_usage;
+
+   /* Monotonic per-queue sequence counter for the dmabuf-carrier
+    * tail EVENT_WRITE_EOP fence-word write.  Increments once per
+    * carrier-wrapped submit that emits an EOP.  Wraparound is benign:
+    * debug consumers compare against the seq printed for the same submit.
+    * Externally synchronized with the queue (terakan_queue_submit is
+    * serialized per-queue). */
+   uint32_t carrier_eop_seq_next;
 };
 
 VK_DEFINE_HANDLE_CASTS(terakan_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
@@ -289,6 +297,14 @@ struct terakan_queue_winsys_fn {
     */
    void (*completion_submission_create_bo_reference)(
       struct terakan_queue_completion_submission * submission, void * bo_reference);
+   /* Returns a reloc-paired EVENT_WRITE_EOP target for the completion
+    * submission BO.  The packet address is BO-relative; the diagnostic
+    * GPU VA is optional and may be zero even when the BO-relative target
+    * is valid.  Returning false suppresses EOP emission. */
+   bool (*completion_submission_eop_target)(
+      struct terakan_queue_completion_submission * submission,
+      uint64_t * bo_offset_out,
+      uint64_t * gpu_va_out);
    /* Returns whether the wait was successful. In case of a GPU hang, must return in finite time. */
    bool (*completion_submission_await)(struct terakan_queue_completion_submission * submission);
    void (*completion_submission_finish_winsys_and_free)(
