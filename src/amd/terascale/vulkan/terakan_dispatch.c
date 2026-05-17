@@ -1201,6 +1201,7 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
     * convention: output buffer last). */
    if (uav_count == 0) {
       uint32_t fallback_uav = UINT32_MAX;
+      uint32_t fallback_uav_mr = UINT32_MAX;
       for (uint32_t n = 0; n < res_count; ++n) {
          uint32_t const i = res_idxs[n];
          if (i >= TERAKAN_SAMPLER_HW_COUNT_PER_STAGE + TERAKAN_RESOURCE_RANGE_MUTABLE_BASE) {
@@ -1208,11 +1209,15 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
                                TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
             if (uav_idx < TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL) {
                fallback_uav = i;
+               fallback_uav_mr = uav_idx;
             }
          }
       }
       if (fallback_uav != UINT32_MAX) {
          uav_idxs[0] = fallback_uav;
+         uav_mr_idxs[0] = fallback_uav_mr;
+         is_image_uav[0] =
+            G_028C70_RESOURCE_TYPE(cb_uavs[fallback_uav_mr].color.info) != V_028C70_BUFFER;
          uav_count = 1;
       }
    }
@@ -1540,20 +1545,16 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
        * granularity offset (in elements) in `color.view`.  The
        * shader's terakan_nir_buffer_uav_coord lowering adds the
        * per-UAV push constant
-       * `buffer_uav_base_granularity_offset[uav_mr_idxs[m]]` to
-       * the coord via a KCACHE bank-15 load (index = the mutable-
-       * resource UAV bit position, matching the shader's
-       * uav_index_zero_based numbering).  Both the graphics bind
-       * path (terakan_state.c BUFFER branch) and this compute
-       * dispatch path MUST emit the push-constant update,
-       * otherwise the shader adds 0 and writes land off by
-       * `offset/bpe` elements. */
+       * buffer_uav_base_granularity_offset[m] to the coord via a
+       * KCACHE bank-15 load.  Index m is the compact UAV slot order
+       * produced by lowering, while uav_mr_idxs[m] selects the
+       * mutable-resource descriptor backing that slot. */
       struct terakan_state_draw_cb_color_uav const * const cb_uav_for_offset =
          &cb_uavs[uav_mr_idxs[m]];
       if (G_028C70_RESOURCE_TYPE(cb_uav_for_offset->color.info) == V_028C70_BUFFER) {
          uint32_t * const uav_base_granularity_offset_constant =
             &command_writer->push_constants_state.driver_constants
-                .buffer_uav_base_granularity_offset[uav_mr_idxs[m]];
+                .buffer_uav_base_granularity_offset[m];
          if (*uav_base_granularity_offset_constant != cb_uav_for_offset->color.view) {
             *uav_base_granularity_offset_constant = cb_uav_for_offset->color.view;
             command_writer->push_constants_state.driver_constants_modified |=
