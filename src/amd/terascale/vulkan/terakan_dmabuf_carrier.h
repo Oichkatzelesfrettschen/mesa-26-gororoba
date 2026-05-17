@@ -16,7 +16,7 @@
  * and the policy table.  See the AMD R6xx/R7xx 3D Engine Programming
  * Guide (SURFACE_SYNC, CB_COLOR0_INFO, CP_COHER_CNTL) and the
  * AMD Evergreen-Family ISA reference for the underlying hardware
- * constraints; cache-domain coverage notes live in this driver's
+ * constraints; cache-domain coverage notes live in Terakan's
  * companion docs, not in source comments.
  */
 
