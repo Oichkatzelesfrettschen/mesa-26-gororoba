@@ -1,5 +1,5 @@
 /*
- * Copyright © 2026 steinmarder project
+ * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
  * Vulkan compute pipeline implementation for Terakan (TeraScale-2/Evergreen).
