@@ -1060,9 +1060,7 @@ terakan_gfx_command_writer_emit_preamble_and_sq_resource_clear(
        * leaving the SMX coalescer without a hardware reset path.  Default
        * value on Palm silicon is 0x00000009 (USE_HASH_FUNCTION=1,
        * NUMBER_OF_SETS=4, FLUSH_ALL_ON_EVENT=0).  Setting bit 10
-       * gives 0x00000409.  Silicon-write observed in single trial
-       * 2026-05-15 on Palm/Wrestler 1002:9802 with no visible
-       * disturbance.
+       * gives 0x00000409.
        */
       PKT3(PKT3_SET_CONFIG_REG, 1, 0),
       TERAKAN_CONFIG_REG_OFFSET(R_00A020_SMX_DC_CTL0),

@@ -410,8 +410,7 @@ AluGroup::try_readport(AluInstr *instr, AluBankSwizzle cycle)
     * sequences from terakan_nir_lower_subgroup_lds, scheduled via
     * BlockScheduler::schedule_alu_to_group_vec ->
     * try_schedule_vec_candidate -> add_vec_instructions ->
-    * try_readport) trip the assertion at AluInstr::opcode()
-    * (sfn_instr_alu.h:90). */
+    * try_readport) trip the assertion at AluInstr::opcode(). */
    if ((m_slots[4] && m_slots[4]->has_alu_flag(alu_is_trans)) ||
        (!instr->has_alu_flag(alu_is_lds) &&
         instr->opcode() == op3_muladd_ieee)) {
