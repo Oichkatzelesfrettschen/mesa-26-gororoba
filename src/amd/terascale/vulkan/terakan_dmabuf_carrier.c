@@ -135,15 +135,60 @@ terakan_dmabuf_carrier_log_policy(UNUSED struct terakan_device * const device)
    }
 }
 
+/*
+ * Env-gate parsing.  Closed: only the exact string "1" matches.  The
+ * 1/true/yes/on parsing variants are intentionally not accepted so
+ * shell-script misspellings fail loud instead of silently flipping
+ * the gate.
+ *
+ * The IMPORT side defaults ON because foreign-producer dma-buf import
+ * is dormant on workloads that never exercise it (vkmark-class
+ * synthetic benchmarks); per-frame attach overhead is zero in that
+ * regime.  TERAKAN_DISABLE_DMABUF_CARRIER_IMPORT=1 is the emergency
+ * kill switch.
+ *
+ * The EXPORT side defaults OFF because per-frame attach overhead is
+ * non-zero on trivial-shader workloads where attach amortizes poorly
+ * (Palm vkmark clear scene measured 678 FPS gate-off vs 490 FPS with
+ * export attach forced on).  TERAKAN_ENABLE_DMABUF_CARRIER_EXPORT=1
+ * opts in for the cases where an external consumer actually imports
+ * the exported fd.
+ *
+ * TERAKAN_ENABLE_DMABUF_CARRIER=1 is the legacy master switch and
+ * forces both sides on; this preserves the existing probe/test
+ * invocation contract that gates the whole subsystem on a single
+ * variable.
+ */
+static bool
+env_eq_one(const char *name)
+{
+   const char * const env = getenv(name);
+   return env != NULL && strcmp(env, "1") == 0;
+}
+
+bool
+terakan_dmabuf_carrier_import_enabled(void)
+{
+   if (env_eq_one("TERAKAN_ENABLE_DMABUF_CARRIER"))
+      return true;
+   if (env_eq_one("TERAKAN_DISABLE_DMABUF_CARRIER_IMPORT"))
+      return false;
+   return true;
+}
+
+bool
+terakan_dmabuf_carrier_export_enabled(void)
+{
+   if (env_eq_one("TERAKAN_ENABLE_DMABUF_CARRIER"))
+      return true;
+   return env_eq_one("TERAKAN_ENABLE_DMABUF_CARRIER_EXPORT");
+}
+
 bool
 terakan_dmabuf_carrier_enabled(void)
 {
-   /* Closed env-gate: only the exact string "1" enables the carrier
-    * path.  Avoid the 1/true/yes/on parsing variants so misspellings
-    * in shell scripts fail loud instead of silently turning the
-    * feature on. */
-   const char * const env = getenv("TERAKAN_ENABLE_DMABUF_CARRIER");
-   return env != NULL && strcmp(env, "1") == 0;
+   return terakan_dmabuf_carrier_import_enabled() ||
+          terakan_dmabuf_carrier_export_enabled();
 }
 
 /*

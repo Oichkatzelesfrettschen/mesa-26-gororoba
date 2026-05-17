@@ -335,7 +335,7 @@ terakan_AllocateMemory(VkDevice const deviceHandle,
           * the allocation continues without a carrier. */
          if (device_memory->vk.import_handle_type ==
                 VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
-             terakan_dmabuf_carrier_enabled() &&
+             terakan_dmabuf_carrier_import_enabled() &&
              terakan_device_memory_can_publish_dmabuf_carrier(physical_device)) {
             struct terakan_dmabuf_carrier_desc const carrier_desc = {
                .dmabuf_fd  = import_fd_info->fd,
@@ -379,7 +379,7 @@ terakan_AllocateMemory(VkDevice const deviceHandle,
        * the eventual vkGetMemoryFdKHR exports. */
       if ((device_memory->vk.export_handle_types &
               VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) != 0 &&
-          terakan_dmabuf_carrier_enabled() &&
+          terakan_dmabuf_carrier_export_enabled() &&
           terakan_device_memory_can_publish_dmabuf_carrier(physical_device)) {
          struct terakan_dmabuf_carrier_desc const carrier_desc = {
             .dmabuf_fd  = -1, /* fd is populated lazily on vkGetMemoryFdKHR */

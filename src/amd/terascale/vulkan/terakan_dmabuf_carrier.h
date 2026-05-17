@@ -156,9 +156,42 @@ void
 terakan_dmabuf_carrier_log_policy(struct terakan_device *device);
 
 /*
- * Returns true when TERAKAN_ENABLE_DMABUF_CARRIER=1 is in the
- * environment.  Centralizes the env-gate check so every caller uses
- * the same parsing rule (exact "1", not 1/true/yes).
+ * Env-gate helpers for the dma-buf carrier subsystem.
+ *
+ * The import side (foreign-producer dma-buf brought in via
+ * VkImportMemoryFdInfoKHR with handleType DMA_BUF_BIT_EXT) defaults
+ * ON.  Empirical per-frame attach cost on the import side is zero on
+ * Palm because vkmark-class workloads never exercise it; the path
+ * stays dormant unless an actual foreign producer hands us an fd.
+ * Kill switch TERAKAN_DISABLE_DMABUF_CARRIER_IMPORT=1 is provided for
+ * emergency disablement.
+ *
+ * The export side (locally allocated VkDeviceMemory whose
+ * export_handle_types contains DMA_BUF_BIT_EXT) defaults OFF because
+ * per-frame attach cost on trivial-shader workloads is measurable
+ * (Palm vkmark clear scene: 678 FPS gate-off, 490 FPS export-attach
+ * on).  Opt in via TERAKAN_ENABLE_DMABUF_CARRIER_EXPORT=1 when an
+ * external consumer actually imports the exported fd.
+ *
+ * Backwards-compatible master switch TERAKAN_ENABLE_DMABUF_CARRIER=1
+ * forces BOTH sides on regardless of the individual gates, preserving
+ * the probe/test invocation contract that predates the split.
+ *
+ * Parsing rule: exact string "1".  Misspellings fail loud rather than
+ * silently activating or deactivating the path.
+ */
+bool
+terakan_dmabuf_carrier_import_enabled(void);
+
+bool
+terakan_dmabuf_carrier_export_enabled(void);
+
+/*
+ * Returns true when either the import or the export gate is enabled.
+ * Call sites that walk per-BO published-carrier state without knowing
+ * which side produced the carrier (queue collector, device-init log
+ * dump) gate on this aggregate so they remain active whenever any
+ * carrier can have been published on the device.
  */
 bool
 terakan_dmabuf_carrier_enabled(void);
