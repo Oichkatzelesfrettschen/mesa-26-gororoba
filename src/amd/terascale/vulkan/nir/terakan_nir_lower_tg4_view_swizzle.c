@@ -125,9 +125,9 @@ terakan_nir_lower_tg4_view_swizzle_instr(nir_builder * const b,
 
    /* Load the per-binding swizzle word from KCACHE bank 14.  The
     * region starts at dword 40 inside the bank, two bindings per
-    * dword.  Bank base 14 is the robustness metadata bank
-    * (TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA); the slot index
-    * inside the bank is `(40 + texture_index/2)`.
+    * dword.  texture_index is the base descriptor slot; a runtime
+    * nir_tex_src_texture_offset source, if present, selects the array
+    * element within that base.
     *
     * Per AMD Evergreen-Family ISA Chapter 6: the `nir_load_kcache_r600`
     * intrinsic's `id_base` is the bank selector and `base` is the
@@ -135,23 +135,34 @@ terakan_nir_lower_tg4_view_swizzle_instr(nir_builder * const b,
     * runtime bank offset (held at zero here since the bank is
     * statically known).
     */
-   unsigned const slot_dword       = 40u + (tex->texture_index >> 1u);
-   unsigned const slot_vec4_index  = slot_dword >> 2u;
-   unsigned const slot_component   = slot_dword & 3u;
-   bool     const slot_in_high_half = (tex->texture_index & 1u) != 0u;
+   nir_def * descriptor_slot = nir_imm_int(b, tex->texture_index);
+   int const texture_offset_src_index =
+      nir_tex_instr_src_index(tex, nir_tex_src_texture_offset);
+   if (texture_offset_src_index >= 0) {
+      descriptor_slot = nir_iadd(b, descriptor_slot,
+                                 tex->src[texture_offset_src_index].src.ssa);
+   }
 
-   nir_def * const swizzle_dword = nir_load_kcache_r600(
-      b, 1, 32, nir_imm_zero(b, 1, 32),
-      .access    = ACCESS_CAN_REORDER,
-      .id_base   = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
-      .base      = slot_vec4_index,
-      .component = slot_component);
+   nir_def * const slot_dword_dyn = nir_ushr_imm(b, descriptor_slot, 1u);
+   nir_def * swizzle_dword = nir_imm_int(b, 0x32103210u);
+   for (uint32_t slot_dword = 0; slot_dword < 12u; ++slot_dword) {
+      uint32_t const kcache_dword = 40u + slot_dword;
+      nir_def * const candidate = nir_load_kcache_r600(
+         b, 1, 32, nir_imm_zero(b, 1, 32),
+         .access    = ACCESS_CAN_REORDER,
+         .id_base   = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+         .base      = kcache_dword >> 2u,
+         .component = kcache_dword & 3u);
+      swizzle_dword = nir_bcsel(b, nir_ieq_imm(b, slot_dword_dyn, slot_dword),
+                                candidate, swizzle_dword);
+   }
 
    /* Extract the 16 bits for this binding from the dword (low half
-    * for even slots, high half for odd slots). */
-   nir_def * const swizzle_word = slot_in_high_half
-      ? nir_ushr_imm(b, swizzle_dword, 16u)
-      : swizzle_dword;
+    * for even slots, high half for odd slots).  Slots beyond the
+    * metadata table use identity swizzle from the default dword. */
+   nir_def * const swizzle_word = nir_bcsel(
+      b, nir_ine_imm(b, nir_iand_imm(b, descriptor_slot, 1u), 0),
+      nir_ushr_imm(b, swizzle_dword, 16u), swizzle_dword);
 
    /* Extract the 4-bit channel target for the gather's comp_arg.
     *
