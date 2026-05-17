@@ -1666,11 +1666,33 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
        * evergreen_packet3_check, CB_COLOR0..7_BASE arm) performs an
        * ADDITIVE 256-byte-granularity relocation:
        *     ib[idx] += (u32)((reloc->gpu_offset >> 8) & 0xffffffff)
-       * after reading the userspace-emitted dword.  Emitting 0 yields a
-       * full-BO base view; non-zero values are interpreted as a base
-       * offset expressed in 256-byte units.  Per AMD Evergreen 3D
-       * Registers, R_028C60_CB_COLOR0_BASE.BASE_256B has 256B
-       * granularity.
+       * after reading the userspace-emitted dword.  Userspace emits
+       * the offset WITHIN the BO in 256-byte units; the kernel folds
+       * in the BO's GPU base.  Per AMD Evergreen 3D Registers v2
+       * R_028C60_CB_COLOR0_BASE.BASE_256B (256-byte granularity).
+       *
+       * For VkDescriptorBufferInfo::offset that is 256B-aligned, the
+       * aligned high bits ride here while the in-granularity remainder
+       * (0..255 bytes) travels through the shader via the existing
+       * buffer_uav_base_granularity_offset[m] push constant.  The
+       * descriptor builder already split the byte offset into
+       *   color.base = va_granularity_aligned >> 8
+       *   color.view = va - va_granularity_aligned    (byte remainder)
+       * Recover the offset-within-BO portion of color.base by
+       * subtracting bo->va >> 8 (BO VAs are page-aligned and therefore
+       * 256B-aligned).
+       *
+       * Validator-safety: the kernel's CB bounds check rejects when
+       *   byte_offset + layer_size > bo_size
+       * where layer_size is the surface extent derived from
+       * CB_COLOR_PITCH/SLICE/INFO.  This implementation conservatively
+       * falls back to emitting 0 (keeping the legacy full-BO base
+       * view) whenever the descriptor's encoded view byte size could
+       * exceed bo_size after the offset shift.  Since the descriptor
+       * range is bounded by (bo_size - offset) at build time, the
+       * conservative inequality
+       *     (offset_high_256B << 8) + buf_size <= UINT32_MAX
+       * is the only overflow guard required.
        *
        * Diagnostic env knobs (zero overhead when unset):
        *   TERAKAN_PROBE_RAT_BASE_SENTINEL=1 -> emit 0xCAFEBABE; the
@@ -1681,15 +1703,35 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
        *     256B = +4096B offset within the BO).  If kernel is
        *     additive, writes land at bo+4096 and result[0] stays at
        *     the prefill sentinel.  If kernel pure-replaces, writes
-       *     land at VA 0x10*256 (likely fault). */
+       *     land at VA 0x10*256 (likely fault).
+       *   TERAKAN_DISABLE_OFFSET_HIGH_SPLIT=1 -> revert to the legacy
+       *     CB_COLOR_BASE=0 emission for A/B comparison. */
       {
          char const * const probe = getenv("TERAKAN_PROBE_RAT_BASE_SENTINEL");
+         char const * const disable_split =
+            getenv("TERAKAN_DISABLE_OFFSET_HIGH_SPLIT");
          if (probe && probe[0] == '1') {
             *p++ = 0xCAFEBABEu;
          } else if (probe && probe[0] == '2') {
             *p++ = 0x10u;
-         } else {
+         } else if (disable_split && disable_split[0] == '1') {
             *p++ = 0;
+         } else {
+            /* #138 write-path offset split.  Extract the in-BO portion
+             * of the granularity-aligned VA.  bo->va is page-aligned
+             * (and therefore 256B-aligned) so the subtraction is
+             * exact.  The 0..255-byte remainder is already carried to
+             * the shader via buffer_uav_base_granularity_offset[m]
+             * (set from color.view a few statements upstream). */
+            uint32_t const bo_va_shr8 = (uint32_t)(bo->va >> 8);
+            uint32_t const offset_high_256B =
+               cb_uav_for_offset->color.base - bo_va_shr8;
+            uint64_t const high_byte_offset =
+               (uint64_t)offset_high_256B << 8;
+            bool const safe_to_split =
+               offset_high_256B != 0u &&
+               (high_byte_offset + buf_size) <= (uint64_t)UINT32_MAX;
+            *p++ = safe_to_split ? offset_high_256B : 0u;
          }
       }
       *p++ = cb_color_pitch;                    /* CB_COLOR{M}_PITCH */
