@@ -1141,21 +1141,41 @@ terakan_UpdateDescriptorSetWithTemplate(VkDevice const deviceHandle,
                                         VkDescriptorUpdateTemplate const templateHandle,
                                         void const * const pData)
 {
+   VK_FROM_HANDLE(terakan_device, device, deviceHandle);
    VK_FROM_HANDLE(vk_descriptor_update_template, template, templateHandle);
 
    /* Each template entry becomes one VkWriteDescriptorSet that points at a
     * slice of `pData` at `entry->offset + i * entry->stride` per descriptor.
-    * Build the per-entry pointer arrays on the heap (template entry count
-    * is bounded by the layout's binding count, normally a handful). */
+    * Most templates are small enough to stage without heap allocation. */
    uint32_t const entry_count = template->entry_count;
    if (entry_count == 0) {
       return;
    }
 
-   VkWriteDescriptorSet * const writes =
-      calloc(entry_count, sizeof(VkWriteDescriptorSet));
-   if (writes == NULL) {
-      return;
+   enum {
+      stack_entry_count = 16,
+      stack_descriptor_count = 64,
+   };
+
+   VkWriteDescriptorSet writes_stack[stack_entry_count];
+   VkDescriptorImageInfo image_infos_stack[stack_descriptor_count];
+   VkDescriptorBufferInfo buffer_infos_stack[stack_descriptor_count];
+   VkBufferView texel_views_stack[stack_descriptor_count];
+
+   VkWriteDescriptorSet *writes = writes_stack;
+   VkDescriptorImageInfo *image_infos = NULL;
+   VkDescriptorBufferInfo *buffer_infos = NULL;
+   VkBufferView *texel_views = NULL;
+   bool writes_heap = false;
+   bool info_heap = false;
+   if (entry_count <= stack_entry_count) {
+      memset(writes_stack, 0, sizeof(writes_stack));
+   } else {
+      writes = calloc(entry_count, sizeof(*writes));
+      writes_heap = true;
+      if (writes == NULL) {
+         goto out_of_host_memory;
+      }
    }
 
    /* Worst case: every descriptor in every entry needs its own
@@ -1167,22 +1187,20 @@ terakan_UpdateDescriptorSetWithTemplate(VkDevice const deviceHandle,
       total_descriptors += template->entries[i].array_count;
    }
 
-   VkDescriptorImageInfo * const image_infos =
-      total_descriptors == 0 ? NULL : calloc(total_descriptors,
-                                             sizeof(VkDescriptorImageInfo));
-   VkDescriptorBufferInfo * const buffer_infos =
-      total_descriptors == 0 ? NULL : calloc(total_descriptors,
-                                             sizeof(VkDescriptorBufferInfo));
-   VkBufferView * const texel_views =
-      total_descriptors == 0 ? NULL : calloc(total_descriptors,
-                                             sizeof(VkBufferView));
-   if (total_descriptors != 0 &&
-       (image_infos == NULL || buffer_infos == NULL || texel_views == NULL)) {
-      free(writes);
-      free(image_infos);
-      free(buffer_infos);
-      free(texel_views);
-      return;
+   if (total_descriptors != 0) {
+      if (total_descriptors <= stack_descriptor_count) {
+         image_infos = image_infos_stack;
+         buffer_infos = buffer_infos_stack;
+         texel_views = texel_views_stack;
+      } else {
+         image_infos = calloc(total_descriptors, sizeof(*image_infos));
+         buffer_infos = calloc(total_descriptors, sizeof(*buffer_infos));
+         texel_views = calloc(total_descriptors, sizeof(*texel_views));
+         info_heap = true;
+         if (image_infos == NULL || buffer_infos == NULL || texel_views == NULL) {
+            goto out_of_host_memory;
+         }
+      }
    }
 
    uint32_t next_info_slot = 0;
@@ -1246,8 +1264,25 @@ terakan_UpdateDescriptorSetWithTemplate(VkDevice const deviceHandle,
 
    terakan_UpdateDescriptorSets(deviceHandle, entry_count, writes, 0, NULL);
 
-   free(writes);
-   free(image_infos);
-   free(buffer_infos);
-   free(texel_views);
+   if (writes_heap) {
+      free(writes);
+   }
+   if (info_heap) {
+      free(image_infos);
+      free(buffer_infos);
+      free(texel_views);
+   }
+   return;
+
+out_of_host_memory:
+   vk_loge(VK_LOG_OBJS(terakan_device_log_obj(device)),
+           "Out of host memory while staging descriptor update template");
+   if (writes_heap) {
+      free(writes);
+   }
+   if (info_heap) {
+      free(image_infos);
+      free(buffer_infos);
+      free(texel_views);
+   }
 }

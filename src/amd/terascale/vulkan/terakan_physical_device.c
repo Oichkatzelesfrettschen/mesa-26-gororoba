@@ -1102,15 +1102,10 @@ terakan_physical_device_get_capabilities(
     * register an fd-capable sync type. */
    extensions_out->KHR_external_fence = true;
 
-   /* VK_KHR_device_group (#61, Vulkan 1.1, device-side).
-    * Single-GPU stub: Bobcat has exactly one logical device per physical
-    * device, so subDeviceMask always == 0x1 and command-buffer device-
-    * group masks are trivial.  The instance-side
-    * VK_KHR_device_group_creation is advertised in terakan_instance.c;
-    * vk_common_EnumeratePhysicalDeviceGroups in the runtime returns one
-    * group per physical device by default (see
-    * src/vulkan/runtime/vk_instance.c:542) -- no driver code required. */
-   extensions_out->KHR_device_group = true;
+   /* VK_KHR_device_group (#61, Vulkan 1.1, device-side) includes
+    * vkCmdDispatchBaseKHR.  Do not advertise the extension until Terakan
+   * implements base-workgroup dispatch. */
+   extensions_out->KHR_device_group = false;
 
    /* VK_EXT_depth_clip_enable (#103). */
    extensions_out->EXT_depth_clip_enable = true;
