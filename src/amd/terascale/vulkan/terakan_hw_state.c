@@ -2475,6 +2475,20 @@ terakan_hw_state_sqc_emit_resource(struct terakan_gfx_command_writer * const com
    if (!is_texture) {
       packet[TERAKAN_RESOURCE_BUFFER_PRIORITY_WORD] = 0;
    }
+   /* TERAKAN_PROBE_138_HW_EMIT dumps graphics buffer descriptor
+    * WORD0..7 values through direct getenv handling.  This keeps the
+    * instrumentation on the descriptor emission path and avoids cached
+    * debug-option state when comparing emitted resource descriptors. */
+   if (getenv("TERAKAN_PROBE_138_HW_EMIT") != NULL && !is_texture) {
+      fprintf(stderr,
+         "TERAKAN_PROBE_138 hw_state SET_RESOURCE: idx=%u type=%u bo=%p bo->va=%llu "
+         "W0=%08X W1=%08X W2=%08X W3=%08X W4=%08X W5=%08X W6=%08X W7=%08X\n",
+         (unsigned)global_index, G_03001C_TYPE(packet_descriptor[7]),
+         (void const *)bo, (unsigned long long)bo->va,
+         packet_descriptor[0], packet_descriptor[1], packet_descriptor[2],
+         packet_descriptor[3], packet_descriptor[4], packet_descriptor[5],
+         packet_descriptor[6], packet_descriptor[7]);
+   }
    /* TERAKAN_PROBE_WORD0_SENTINEL controls graphics buffer descriptor
     * WORD0 before kernel relocation handling.  Texture descriptors are
     * excluded because SQ_TEX_RESOURCE_WORD2 carries mip-chain address
