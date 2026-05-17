@@ -1695,15 +1695,12 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
        * is the only overflow guard required.
        *
        * Diagnostic env knobs (zero overhead when unset):
-       *   TERAKAN_PROBE_RAT_BASE_SENTINEL=1 -> emit 0xCAFEBABE; the
-       *     kernel will additively add (gpu_offset >> 8) to a wildly
-       *     out-of-range value, causing the GPU to write to an
-       *     unmapped VA (expect lockup or no-op write).
+       *   TERAKAN_PROBE_RAT_BASE_SENTINEL=1 -> emit 0xCAFEBABE;
+       *     expected kernel CS validation rejection via
+       *     evergreen_cs_track_validate_cb bounds check.
        *   TERAKAN_PROBE_RAT_BASE_SENTINEL=2 -> emit 0x10 (= 16 *
-       *     256B = +4096B offset within the BO).  If kernel is
-       *     additive, writes land at bo+4096 and result[0] stays at
-       *     the prefill sentinel.  If kernel pure-replaces, writes
-       *     land at VA 0x10*256 (likely fault).
+       *     256B = +4096B offset within the BO); expected rejection
+       *     for a 4 KiB BO unless the BO/surface extent is enlarged.
        *   TERAKAN_PROBE_RAT_BASE_SENTINEL=3 -> emit 0x1 (= +256B in
        *     256B units, per AMD Evergreen 3D Registers v2
        *     R_028C60_CB_COLOR0_BASE.BASE_256B granularity).  In-bounds
