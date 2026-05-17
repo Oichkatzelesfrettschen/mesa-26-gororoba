@@ -71,8 +71,8 @@ VkResult terakan_fix_ac_warmup_create(struct terakan_device *device,
 void terakan_fix_ac_warmup_destroy(struct terakan_device *device,
                                    struct terakan_fix_ac_warmup *warmup);
 
-void terakan_fix_ac_warmup_submit_prelude(struct terakan_device *device,
-                                          struct terakan_fix_ac_warmup *warmup,
-                                          struct terakan_queue *queue);
+VkResult terakan_fix_ac_warmup_submit_prelude(struct terakan_device *device,
+                                              struct terakan_fix_ac_warmup *warmup,
+                                              struct terakan_queue *queue);
 
 #endif /* TERAKAN_FIX_AC_WARMUP_H */

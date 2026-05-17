@@ -426,13 +426,13 @@ terakan_fix_ac_warmup_destroy(struct terakan_device *const device,
    vk_free(&device->vk.alloc, warmup);
 }
 
-void
+VkResult
 terakan_fix_ac_warmup_submit_prelude(struct terakan_device *const device,
                                      struct terakan_fix_ac_warmup *const warmup,
                                      struct terakan_queue *const queue)
 {
    if (warmup->command_buffer == VK_NULL_HANDLE)
-      return;
+      return VK_SUCCESS;
 
    struct terakan_command_buffer const *const cb =
       terakan_command_buffer_from_handle(warmup->command_buffer);
@@ -452,8 +452,9 @@ terakan_fix_ac_warmup_submit_prelude(struct terakan_device *const device,
             fprintf(stderr,
                     "terakan/fix-ac: warmup pass %u IB submit failed (VkResult=%d); silicon may remain in cold state\\n",
                     warmup_pass, (int)r);
-            return;
+            return r;
          }
       }
    }
+   return VK_SUCCESS;
 }
