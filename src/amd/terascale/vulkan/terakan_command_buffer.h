@@ -460,27 +460,6 @@ struct terakan_gfx_command_writer {
        * side bake into SQ_TEX_RESOURCE_WORD4 still handles those, only
        * the GATHER path uses this runtime metadata). */
       uint32_t view_swizzles[12];
-      /* Per-storage-buffer per-element `VkDescriptorBufferInfo::offset`,
-       * uploaded to KCACHE bank 14 dwords 52..63.  Consumed by
-       * `terakan_nir_lower_bindings_instr_load_ssbo` to add to the
-       * shader's byte_offset arithmetic at SSBO load time.
-       *
-       * AMD Evergreen-Family ISA: the per-instruction PKT3_SET_RESOURCE
-       * packet's WORD0 (resource base address) is REPLACED by the radeon
-       * kernel CS validator with `bo->va_low` -- the userspace cannot
-       * convey a per-element offset through the IB.  For descriptor
-       * arrays where multiple slots reference the SAME VkBuffer at
-       * different offsets (e.g. CTS `single_buffer.*_instance_array`
-       * subset using one VkBuffer with offsets 0 / stride / 2*stride),
-       * all slots would collapse to `bo->va` without compensation.
-       *
-       * This region holds those per-slot offsets so the shader can add
-       * them at byte_offset construction time.  One uint32_t per
-       * mutable-resource slot; index by physical mutable_resource_index
-       * (the same index space used by `uav_byte_sizes[]`).
-       * `TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT = 12` entries fit in 12
-       * dwords (52..63). */
-      uint32_t view_offsets[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
       bool dirty;
       /* Cached allocation from the last upload — reused if not dirty. */
       struct terakan_bo const *bo;
