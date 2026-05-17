@@ -134,14 +134,52 @@ terakan_dmabuf_carrier_log_policy(UNUSED struct terakan_device * const device)
    }
 }
 
+/*
+ * Env-gate parsing.  Closed: only the exact string "1" matches.  The
+ * 1/true/yes/on parsing variants are intentionally not accepted so
+ * shell-script misspellings fail loud instead of silently flipping
+ * the gate.
+ *
+ * The import side defaults on because foreign-producer dma-buf import
+ * stays dormant until an application imports a fd. The export side
+ * defaults off because locally allocated exportable memory can publish
+ * carriers before an external consumer exists.
+ *
+ * TERAKAN_ENABLE_DMABUF_CARRIER=1 is the legacy master switch and
+ * forces both sides on; this preserves the existing probe/test
+ * invocation contract that gates the whole subsystem on a single
+ * variable.
+ */
+static bool
+env_eq_one(const char *name)
+{
+   const char * const env = getenv(name);
+   return env != NULL && strcmp(env, "1") == 0;
+}
+
+bool
+terakan_dmabuf_carrier_import_enabled(void)
+{
+   if (env_eq_one("TERAKAN_ENABLE_DMABUF_CARRIER"))
+      return true;
+   if (env_eq_one("TERAKAN_DISABLE_DMABUF_CARRIER_IMPORT"))
+      return false;
+   return true;
+}
+
+bool
+terakan_dmabuf_carrier_export_enabled(void)
+{
+   if (env_eq_one("TERAKAN_ENABLE_DMABUF_CARRIER"))
+      return true;
+   return env_eq_one("TERAKAN_ENABLE_DMABUF_CARRIER_EXPORT");
+}
+
 bool
 terakan_dmabuf_carrier_enabled(void)
 {
-   /* Closed env gate: only the exact string "1" enables the carrier
-    * path. Avoid parsing variants so misspellings in shell scripts
-    * fail loud instead of silently turning the feature on. */
-   const char * const env = getenv("TERAKAN_ENABLE_DMABUF_CARRIER");
-   return env != NULL && strcmp(env, "1") == 0;
+   return terakan_dmabuf_carrier_import_enabled() ||
+          terakan_dmabuf_carrier_export_enabled();
 }
 
 /*
