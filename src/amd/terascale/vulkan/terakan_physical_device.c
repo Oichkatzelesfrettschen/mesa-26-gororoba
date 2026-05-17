@@ -349,6 +349,16 @@ terakan_physical_device_chip_info_init(
       max_render_backends_per_se_log2 + (unsigned)chip_info_out->two_shader_engines_max;
 }
 
+static void
+terakan_physical_device_enable_variable_pointers(
+   struct vk_device_extension_table * const extensions_out,
+   struct vk_features * const features_out)
+{
+   extensions_out->KHR_variable_pointers = true;
+   features_out->variablePointersStorageBuffer = true;
+   features_out->variablePointers = false;
+}
+
 /* Winsys-specific extensions are not handled, they should be configured by the
  * get_winsys_extensions winsys callback.
  * deviceUUID is not set as well, expected to be configured by the winsys.
@@ -441,24 +451,24 @@ terakan_physical_device_get_capabilities(
    features_out->samplerAnisotropy = true;
    features_out->multiViewport = true;
 
-   /* VK_EXT_robustness2 (#287) — required by Zink for GL compatibility.
+   /* VK_EXT_robustness2 (#287) -- required by Zink for GL compatibility.
     * nullDescriptor allows binding VK_NULL_HANDLE in descriptor sets,
     * which Zink uses for unbound GL textures/buffers (reads return 0). */
    extensions_out->EXT_robustness2 = true;
    features_out->robustBufferAccess2 = true;
    features_out->robustImageAccess2 = false;
    features_out->nullDescriptor = true;
-   /* robustBufferAccess2 properties — Tier 1 (DWORD-granularity) baseline.
+   /* robustBufferAccess2 properties -- Tier 1 (DWORD-granularity) baseline.
     *
     * VTX hardware enforces bounds at DWORD (4-byte) granularity via the
-    * SIZE_MINUS_ONE field (Phase 5 Probe H1).  The descriptor range is
+    * SIZE_MINUS_ONE field.  The descriptor range is
     * rounded up via ALIGN_POT(range, 4) so the last partial DWORD is not
     * dropped.  The spec permits sizeAlignment = 4, meaning the driver
     * enforces OOB detection at 4-byte boundaries.
     *
     * If exact-byte robustness (sizeAlignment = 1) is ever needed, a
     * targeted tail-byte ALU mask must be emitted in lower_abi for the
-    * single straddling component per load (see §11 of the ABI contract). */
+    * single straddling component per load. */
    properties_out->robustStorageBufferAccessSizeAlignment = 4;
    /* UBO reads via KCACHE are line-locked at 256-byte granularity; via
     * VFETCH (Tier 2 robust) they share the same DWORD-clamp behavior.
@@ -467,7 +477,7 @@ terakan_physical_device_get_capabilities(
    properties_out->robustUniformBufferAccessSizeAlignment =
       TERAKAN_KCACHE_HW_LINE_BYTES;
 
-   /* VK_EXT_custom_border_color (#288) — Zink base requirement.
+   /* VK_EXT_custom_border_color (#288) -- Zink base requirement.
     * TeraScale-2 supports custom border colors via TD_PS_SAMPLER*_BORDER. */
    extensions_out->EXT_custom_border_color = true;
    features_out->customBorderColors = true;
@@ -483,24 +493,24 @@ terakan_physical_device_get_capabilities(
    features_out->smoothLines = true;
    properties_out->lineSubPixelPrecisionBits = 4;
 
-   /* VK_EXT_scalar_block_layout (#222, Vulkan 1.2) — Zink base requirement. */
+   /* VK_EXT_scalar_block_layout (#222, Vulkan 1.2) -- Zink base requirement. */
    extensions_out->EXT_scalar_block_layout = true;
    features_out->scalarBlockLayout = true;
 
-   /* VK_EXT_pipeline_creation_cache_control (#298) — enables apps to query
+   /* VK_EXT_pipeline_creation_cache_control (#298) enables apps to query
     * whether a pipeline can be satisfied from cache without compiling:
-    *   FAIL_ON_PIPELINE_COMPILE_REQUIRED → returns VK_PIPELINE_COMPILE_REQUIRED
-    *   EARLY_RETURN_ON_FAILURE → stops batch on first failure
-    *   EXTERNALLY_SYNCHRONIZED_BIT → handled by Mesa vk_pipeline_cache
+    *   FAIL_ON_PIPELINE_COMPILE_REQUIRED returns VK_PIPELINE_COMPILE_REQUIRED
+    *   EARLY_RETURN_ON_FAILURE stops batch on first failure
+    *   EXTERNALLY_SYNCHRONIZED_BIT is handled by Mesa vk_pipeline_cache
     * Combined with disk_cache, this lets apps pre-warm caches asynchronously
-    * on their own threads — critical for the dual-core E-300. */
+    * on their own threads; this matters on the dual-core Bobcat E-300. */
    extensions_out->EXT_pipeline_creation_cache_control = true;
    features_out->pipelineCreationCacheControl = true;
 
-   /* wideLines: PA_SU_LINE_CNTL.WIDTH is currently emitted as a static 1.0 in the draw reset
+   /* wideLines: PA_SU_LINE_CNTL.WIDTH is emitted as a static 1.0 in the draw reset
     * sequence.  Dynamic line width requires hw_state_draw tracking -- deferred.
     */
-   /* largePoints: PA_SU_POINT_SIZE is currently emitted as a static 1.0x1.0 in the draw reset
+   /* largePoints: PA_SU_POINT_SIZE is emitted as a static 1.0x1.0 in the draw reset
     * sequence.  Dynamic point size requires hw_state_draw tracking -- deferred.
     */
    /* alphaToOne: fully implemented in the SFN assembler (sfn_assembler.cpp: ps_alpha_to_one
@@ -527,16 +537,12 @@ terakan_physical_device_get_capabilities(
    features_out->shaderImageGatherExtended = true;
    /* TODO(Triang3l): Shader storage image format features. */
    /* TODO(Triang3l): Shader binding array dynamic indexing. */
-   /* shaderFloat64: Evergreen (is_r9xx=false) has no native FP64 support;
-    * NIR uses `nir_lower_fp64_full_software` for the full double set
-    * (configured in nir_options_non_fs below).  Cayman (is_r9xx=true)
-    * has partial HW double support but the SFN back-end has not been
-    * validated for Vulkan FP64 -- both Evergreen and Cayman go through
-    * the same software path for safety.
-    *
-    * Float controls properties (above) are populated for FP64 so CTS
-    * accepts the emulated implementation. */
-   features_out->shaderFloat64 = true;
+   /* shaderFloat64: Evergreen / TeraScale-2 VLIW5 has no native FP64
+    * support; NIR uses `nir_lower_fp64_full_software` for the full double
+    * set (configured in nir_options_non_fs below).  Cayman / TeraScale-3
+    * VLIW4 still uses a partial double-lowering mask, so keep full FP64
+    * hidden there until the compiler path is fully software-lowered too. */
+   features_out->shaderFloat64 = !chip_info->is_r9xx;
    /* shaderResourceMinLod: nir_tex_src_min_lod is lowered in SFN via fmax(computed_lod, min_lod)
     * before the texture instruction (sfn_nir_lower_tex.cpp), providing correct clamped LOD.
     */
@@ -587,7 +593,7 @@ terakan_physical_device_get_capabilities(
             "AMD R%cxx %s (Terakan)", chip_info->is_r9xx ? '9' : '8',
             terakan_physical_device_chip_family_name(chip_info->chip_family));
 
-   /* Pipeline cache UUID — hash of driver build identity + PCI device ID.
+   /* Pipeline cache UUID: hash of driver build identity + PCI device ID.
     * Used by vk_pipeline_cache and disk_cache to invalidate stale entries
     * across driver rebuilds or GPU variant changes. */
    {
@@ -724,7 +730,7 @@ terakan_physical_device_get_capabilities(
 
    /* TODO(Triang3l): Geometry shader limits. */
 
-   /* Clip and cull distance limits — PA_CL_VS_OUT_CNTL has 8 clip + 8 cull
+   /* Clip and cull distance limits: PA_CL_VS_OUT_CNTL has 8 clip + 8 cull
     * enable bits (CLIP_DIST_ENA_0..7, CULL_DIST_ENA_0..7).  The shader compiler
     * already packs both into the register (terakan_shader_sfn.cpp). */
    properties_out->maxClipDistances = 8;
@@ -906,7 +912,7 @@ terakan_physical_device_get_capabilities(
     * viewMask into the command-buffer state.  Performance is
     * N-view-times slower than single-view but spec-correct.
     *
-    * The view-loop expansion currently covers direct and indexed draws;
+    * The view-loop expansion covers direct and indexed draws;
     * indirect variants remain a documented gap.
     *
     * Per spec limits (advertised in Vulkan 1.1 properties above):
@@ -1041,13 +1047,12 @@ terakan_physical_device_get_capabilities(
     * structure zeroed, which makes CTS treat the float-control surface as
     * unsupported even when the extension bit is exposed. */
    extensions_out->KHR_shader_float_controls = true;
-   /* INDEPENDENCE_32_BIT_ONLY: FP16 inherits FP32 semantics via emulation,
-    * FP64 inherits via nir_lower_fp64_full_software.  FP32 is the only
-    * width with native HW behavior, but we expose properties for all
-    * three widths consistently so CTS doesn't false-NotSupport on
-    * FP16/FP64 property queries. */
+   /* FP16 inherits FP32 semantics via emulation.  FP64 inherits via
+    * nir_lower_fp64_full_software on Evergreen / TeraScale-2 VLIW5, so
+    * report independent denorm behavior for the explicitly different FP16
+    * and FP64 FTZ modes. */
    properties_out->denormBehaviorIndependence =
-      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
    properties_out->roundingModeIndependence =
       VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY;
    /* FP32 native: RTE rounding, FTZ denormals, IEEE-754 signed-zero/inf/nan
@@ -1066,8 +1071,9 @@ terakan_physical_device_get_capabilities(
    properties_out->shaderRoundingModeRTZFloat16          = false;
    /* FP64 inherits via nir_lower_fp64_full_software emulation.  The
     * software path implements IEEE-754 default semantics for all three
-    * preserve modes; RTE is the only rounding emitted; FTZ is N/A
-    * because the software path uses FP32 internally. */
+    * preserve modes; RTE is the only rounding emitted.  Report FTZ as
+    * disabled for Float64 even though software emulation may flush
+    * subnormal intermediates at the internal FP32 layer. */
    properties_out->shaderSignedZeroInfNanPreserveFloat64 = true;
    properties_out->shaderDenormFlushToZeroFloat64        = false;
    properties_out->shaderDenormPreserveFloat64           = false;
@@ -1132,12 +1138,11 @@ terakan_physical_device_get_capabilities(
    /* VK_KHR_maintenance3 (#169, Vulkan 1.1).
     * Adds vkGetDescriptorSetLayoutSupport (implemented in
     * terakan_descriptor_set_layout.c) plus the maxPerSetDescriptors +
-    * maxMemoryAllocationSize properties.  The descriptor query returns
-    * supported=true unless the layout's total descriptorCount exceeds
-    * 4096 (the conservative resource-table cap also enforced inside
-    * terakan_CreateDescriptorSetLayout). */
+    * maxMemoryAllocationSize properties.  maxPerSetDescriptors uses
+    * TERAKAN_MAX_PER_SET_DESCRIPTORS, the same cap enforced by descriptor
+    * layout creation and support queries. */
    extensions_out->KHR_maintenance3 = true;
-   properties_out->maxPerSetDescriptors = 4096;
+   properties_out->maxPerSetDescriptors = TERAKAN_MAX_PER_SET_DESCRIPTORS;
    properties_out->maxMemoryAllocationSize = UINT64_C(1) << 32; /* 4 GiB cap, hardware DMA limit. */
 
    /* VK_KHR_timeline_semaphore (#208, Vulkan 1.2). */
@@ -1623,6 +1628,8 @@ terakan_physical_device_init(
       min_memory_map_alignment, clock_crystal_frequency_hz, max_memory_allocation_size, &extensions,
       &features, &properties);
    device->winsys_fn->get_winsys_extensions(device, &extensions, &features, &properties);
+   assert(!features.shaderFloat64 ||
+          device->nir_options_non_fs.lower_doubles_options == nir_lower_fp64_full_software);
 
    struct vk_physical_device_dispatch_table dispatch_table;
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
@@ -1638,7 +1645,7 @@ terakan_physical_device_init(
 
    device->vk.supported_sync_types = supported_sync_types_static;
 
-   /* On-disk shader cache — Mesa's vk_pipeline_cache automatically uses
+   /* On-disk shader cache: Mesa's vk_pipeline_cache automatically uses
     * disk_cache_get()/disk_cache_put() when device->vk.disk_cache is set.
     * Cache key includes pipelineCacheUUID (driver build + PCI ID), so
     * stale entries are automatically invalidated across rebuilds. */
@@ -1697,7 +1704,7 @@ terakan_GetPhysicalDeviceSparseImageFormatProperties(
 }
 
 /* VK_KHR_maintenance4 requires vkGetDeviceImageSparseMemoryRequirements.
- * TeraScale-2 does not support sparse resources — return 0 requirements. */
+ * TeraScale-2 does not support sparse resources; return 0 requirements. */
 VKAPI_ATTR void VKAPI_CALL
 terakan_GetDeviceImageSparseMemoryRequirements(
    VkDevice device,

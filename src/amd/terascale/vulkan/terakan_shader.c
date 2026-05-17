@@ -127,6 +127,21 @@ terakan_segment_wide_phi_defs(nir_shader * nir, unsigned segment_size,
                               unsigned min_value_count,
                               char const *log_label);
 
+static void
+terakan_cleanup_after_wide_phi_defs(nir_shader * const nir, bool const opt_if_phis)
+{
+   bool cleanup_progress;
+   do {
+      cleanup_progress = false;
+      NIR_PASS(cleanup_progress, nir, nir_opt_copy_prop);
+      NIR_PASS(cleanup_progress, nir, nir_opt_dce);
+      NIR_PASS(cleanup_progress, nir, nir_opt_remove_phis);
+      if (opt_if_phis)
+         NIR_PASS(cleanup_progress, nir, nir_opt_if, nir_opt_if_optimize_phi_true_false);
+      NIR_PASS(cleanup_progress, nir, nir_opt_dead_cf);
+   } while (cleanup_progress);
+}
+
 nir_shader *
 terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const spirv_size_bytes,
                             uint32_t const * const spirv, mesa_shader_stage const stage,
@@ -167,10 +182,10 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
       nir_print_shader(nir, stderr);
    }
 
-   /* Tranche option 2: env-gated EARLIER call to the wide-phi segmenter, fired
-    * immediately after vk_spirv_to_nir before any other pass observes the
-    * chain.  Separate env from the existing post-link variant so A/B testing
-    * can isolate where the rewrite needs to fire. */
+   /* Env-gated early wide-phi segmentation runs immediately after
+    * vk_spirv_to_nir, before any other pass observes the chain.  Keep a
+    * separate env knob from the post-link variant so validation can isolate
+    * where the rewrite needs to run. */
    {
       unsigned earlier_segment_size = 0;
       char const * const earlier_env_value =
@@ -190,16 +205,8 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
             earlier_segment_size < UINT_MAX ? earlier_segment_size + 1 : UINT_MAX;
          if (terakan_segment_wide_phi_defs(
                 nir, earlier_segment_size, earlier_min_cases,
-                "TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT")) {
-            bool cleanup_progress;
-            do {
-               cleanup_progress = false;
-               NIR_PASS(cleanup_progress, nir, nir_opt_copy_prop);
-               NIR_PASS(cleanup_progress, nir, nir_opt_dce);
-               NIR_PASS(cleanup_progress, nir, nir_opt_remove_phis);
-               NIR_PASS(cleanup_progress, nir, nir_opt_dead_cf);
-            } while (cleanup_progress);
-         }
+                "TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT"))
+            terakan_cleanup_after_wide_phi_defs(nir, false);
          if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
             fprintf(stderr,
                     "TERAKAN_NIR_SPIRV: --- post TERAKAN_EXPERIMENTAL_EARLIER_WIDE_PHI_SEGMENT=%u (%s) ---\n",
@@ -425,7 +432,7 @@ terakan_nir_should_vectorize_load_store(unsigned const align_mul, unsigned const
                                         int64_t hole_size, nir_intrinsic_instr * const low,
                                         nir_intrinsic_instr * const high, void * const data)
 {
-   /* Don't vectorize kcache loads — vectorizing breaks bank locality and
+   /* Don't vectorize kcache loads; vectorizing breaks bank locality and
     * wastes ALU clause capacity.  Also reject mixed kcache + resource loads
     * (the constant address of `high` may exceed the kcache buffer window). */
    if (low->intrinsic == nir_intrinsic_load_kcache_r600 ||
@@ -613,9 +620,9 @@ terakan_get_experimental_early_wide_phi_segment(unsigned * const segment_size_ou
 }
 
 static bool
-terakan_wide_phi_auto_segment_disabled(void)
+terakan_wide_phi_auto_segment_enabled(void)
 {
-   return getenv("TERAKAN_DISABLE_WIDE_PHI_AUTO_SEGMENT") != NULL;
+   return getenv("TERAKAN_WIDE_PHI_AUTO_SEGMENT") != NULL;
 }
 
 static bool
@@ -740,6 +747,13 @@ terakan_debug_wide_phi_shape_enabled(void)
    return getenv("TERAKAN_DEBUG_WIDE_PHI_SHAPE") != NULL;
 }
 
+static bool
+terakan_debug_wide_phi_segment_enabled(void)
+{
+   return getenv("TERAKAN_DEBUG_WIDE_PHI_SEGMENT") != NULL ||
+          terakan_debug_wide_phi_shape_enabled();
+}
+
 static void
 terakan_debug_wide_phi_shape(nir_shader const * const nir,
                              nir_function_impl * const impl,
@@ -810,7 +824,7 @@ terakan_debug_wide_phi_shape(nir_shader const * const nir,
            widest_selector_found ? 1 : 0);
 }
 
-/* Tranche option (post-empirical): the original implementation built the
+/* The original implementation built the
  * inner per-segment select as a linear cascade of `if (selector == k) ...
  * else previous_result` iterations.  That makes the `selector` SSA def live
  * across all 64 (or segment_size) iterations within a segment -- effectively
@@ -916,9 +930,9 @@ terakan_build_segmented_const_select(nir_builder * const b, nir_def * const sele
                                      unsigned const bit_size)
 {
    unsigned const segment_count = (value_count + segment_size - 1) / segment_size;
-   /* Tranche option 1: when segment_size is a power of 2, the segment selector
-    * is a right-shift of the case-selector instead of a udiv -- one ALU op
-    * fewer and one fewer live range to colour. */
+   /* When segment_size is a power of two, the segment selector is a
+    * right-shift of the case-selector instead of a udiv -- one ALU op fewer
+    * and one fewer live range to color. */
    nir_def *segment_selector;
    if (util_is_power_of_two_nonzero(segment_size)) {
       segment_selector = nir_ushr_imm(b, selector, util_logbase2(segment_size));
@@ -988,11 +1002,12 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
    nir_const_value values[max_cases];
    nir_def *already_rewritten[max_chains] = { NULL };
    unsigned already_rewritten_count = 0;
+   bool max_chain_cap_hit = false;
    bool progress = false;
 
-   /* Tranche option 5: process all qualifying root phis, not just the last one
-    * found.  `nir_def_rewrite_uses` only redirects consumers -- the original
-    * phi chain remains in the IR and would be detected again on a fresh sweep.
+   /* Process all qualifying root phis, not just the last one found.
+    * `nir_def_rewrite_uses` only redirects consumers -- the original phi
+    * chain remains in the IR and would be detected again on a fresh sweep.
     * Track rewritten root defs and skip them on subsequent passes. */
    for (;;) {
       nir_phi_instr *root_phi = NULL;
@@ -1053,14 +1068,26 @@ terakan_segment_wide_phi_defs_impl(nir_function_impl * const impl,
          already_rewritten[already_rewritten_count++] = &root_phi->def;
       progress = true;
 
-      fprintf(stderr,
-              "%s: segmented %u-case phi value with segment size %u min cases %u\n",
-              log_label, value_count, segment_size, min_value_count);
+      if (terakan_debug_wide_phi_segment_enabled()) {
+         fprintf(stderr,
+                 "%s: segmented %u-case phi value with segment size %u min cases %u\n",
+                 log_label != NULL ? log_label : "TERAKAN_WIDE_PHI_SEGMENT",
+                 value_count, segment_size, min_value_count);
+      }
 
       /* Safety: a multi-chain shader should not exceed `max_chains` rewrites.
        * Stop unconditionally if we hit the cap to avoid any pathological loop. */
-      if (already_rewritten_count >= max_chains)
+      if (already_rewritten_count >= max_chains) {
+         max_chain_cap_hit = true;
          break;
+      }
+   }
+
+   if (max_chain_cap_hit && terakan_debug_wide_phi_segment_enabled()) {
+      fprintf(stderr,
+              "%s: hit max_chains=%u; additional wide phi chains may remain unsegmented\n",
+              log_label != NULL ? log_label : "TERAKAN_WIDE_PHI_SEGMENT",
+              (unsigned)max_chains);
    }
 
    if (!progress)
@@ -1132,12 +1159,12 @@ terakan_shader_lower_and_optimize_post_link(
       early_segment_wide_phi_min_cases =
          early_segment_wide_phi_size < UINT_MAX ? early_segment_wide_phi_size + 1 : UINT_MAX;
       early_segment_wide_phi_label = "TERAKAN_EXPERIMENTAL_EARLY_WIDE_PHI_SEGMENT";
-   } else if (!terakan_wide_phi_auto_segment_disabled()) {
+   } else if (terakan_wide_phi_auto_segment_enabled()) {
       /* The 512-way Vulkan 1.0 opPhi.wide shape exceeds normal and physical
        * SFN register budgets, while the balanced early segment rewrite lowers
-       * its measured pressure from 133 to 22.  Keep the default predicate
-       * narrow: only constant selector-backed phi chains at the failing fan-in
-       * boundary are transformed. */
+       * its measured pressure from 133 to 22.  The automatic predicate remains
+       * opt-in until selector provenance is tied to the phi chain being
+       * rewritten. */
       early_segment_wide_phi_size = 64;
       early_segment_wide_phi_min_cases = 512;
       early_segment_wide_phi_label = "TERAKAN_WIDE_PHI_AUTO_SEGMENT";
@@ -1146,16 +1173,8 @@ terakan_shader_lower_and_optimize_post_link(
    if (early_segment_wide_phi_size != 0) {
       if (terakan_segment_wide_phi_defs(nir, early_segment_wide_phi_size,
                                         early_segment_wide_phi_min_cases,
-                                        early_segment_wide_phi_label)) {
-         bool cleanup_progress;
-         do {
-            cleanup_progress = false;
-            NIR_PASS(cleanup_progress, nir, nir_opt_copy_prop);
-            NIR_PASS(cleanup_progress, nir, nir_opt_dce);
-            NIR_PASS(cleanup_progress, nir, nir_opt_remove_phis);
-            NIR_PASS(cleanup_progress, nir, nir_opt_dead_cf);
-         } while (cleanup_progress);
-      }
+                                        early_segment_wide_phi_label))
+         terakan_cleanup_after_wide_phi_defs(nir, false);
 
       if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
          fprintf(stderr,
@@ -1351,18 +1370,8 @@ terakan_shader_lower_and_optimize_post_link(
 
    unsigned segment_wide_phi_size = 0;
    if (terakan_get_experimental_segment_wide_phi(&segment_wide_phi_size)) {
-      if (terakan_segment_wide_phi(nir, segment_wide_phi_size)) {
-         bool cleanup_progress;
-         do {
-            cleanup_progress = false;
-            NIR_PASS(cleanup_progress, nir, nir_opt_copy_prop);
-            NIR_PASS(cleanup_progress, nir, nir_opt_dce);
-            NIR_PASS(cleanup_progress, nir, nir_opt_remove_phis);
-            NIR_PASS(cleanup_progress, nir, nir_opt_if,
-                     nir_opt_if_optimize_phi_true_false);
-            NIR_PASS(cleanup_progress, nir, nir_opt_dead_cf);
-         } while (cleanup_progress);
-      }
+      if (terakan_segment_wide_phi(nir, segment_wide_phi_size))
+         terakan_cleanup_after_wide_phi_defs(nir, true);
 
       if (getenv("TERAKAN_DEBUG_NIR_SPIRV") != NULL) {
          fprintf(stderr,
@@ -1423,8 +1432,9 @@ terakan_shader_lower_and_optimize_post_link(
     * VLIW5 constraint: no scalarization passes here (or in the post-SFN
     * loop).  TeraScale physically thrives on vec4 ops; scalarizing strips
     * the vector dependency graph that SFN's C4 Bundle Packer needs to
-    * fill X,Y,Z,W slots.  Phase 1 already ran nir_lower_alu_to_scalar
-    * with the architecture-specific filter; do not add more on top.
+    * fill X,Y,Z,W slots.  The earlier ALU lowering already ran
+    * nir_lower_alu_to_scalar with the architecture-specific filter; do not
+    * add more on top.
     * ------------------------------------------------------------------- */
    NIR_PASS(_, nir, nir_opt_copy_prop);
    NIR_PASS(_, nir, nir_opt_intrinsics);
@@ -1439,10 +1449,10 @@ terakan_shader_lower_and_optimize_post_link(
    }
 }
 /* =====================================================================
- * UINT24 peephole — convert imul → umul24 / iadd(umul24, c) → umad24.
+ * UINT24 peephole -- convert imul to umul24 and iadd(umul24, c) to umad24.
  *
- * ISA basis: Evergreen_ISA.pdf §2.5 — MUL_UINT24 performs an unsigned
- * 24×24→32 multiply using the FP24 mantissa datapath.  It is single-
+ * ISA basis: AMD Evergreen-Family ISA, section 2.5: MUL_UINT24 performs
+ * an unsigned 24x24-to-32 multiply using the FP24 mantissa datapath.  It is single-
  * cycle and executes on ANY vector ALU slot, whereas MULLO_INT is
  * multi-cycle and restricted to the trans-only slot.  MULADD_UINT24
  * fuses a 24-bit multiply with a 32-bit add in one op3 slot.
@@ -1451,7 +1461,7 @@ terakan_shader_lower_and_optimize_post_link(
  * in [0, 2^24).  The addend in umad24 has no range restriction.
  *
  * Running this at the NIR level (before SFN) enables the algebraic
- * optimizer to further combine umul24 + iadd → umad24, and lets DCE
+ * optimizer to further combine umul24 + iadd to umad24, and lets DCE
  * clean up any dead intermediate instructions.
  * =================================================================== */
 
@@ -1465,7 +1475,7 @@ terakan_nir_value_fits_24bit(nir_alu_src *alu_src)
    if (def->bit_size != 32)
       return false;
 
-   /* --- Constant --- */
+   /* Constant. */
    nir_const_value *cv = nir_src_as_const_value(alu_src->src);
    if (cv)
       return cv->u32 < (1u << 24);
@@ -1478,16 +1488,16 @@ terakan_nir_value_fits_24bit(nir_alu_src *alu_src)
    nir_alu_instr *src_alu = nir_instr_as_alu(parent);
 
    switch (src_alu->op) {
-   /* extract_u8 → [0, 255], extract_u16 → [0, 65535] */
+   /* extract_u8 -> [0, 255], extract_u16 -> [0, 65535]. */
    case nir_op_extract_u8:
    case nir_op_extract_u16:
       return true;
 
-   /* Zero-extend from ≤16-bit → always < 2^16 */
+   /* Zero-extend from <=16-bit -> always < 2^16. */
    case nir_op_u2u32:
       return src_alu->src[0].src.ssa->bit_size <= 16;
 
-   /* Bitwise AND: result ≤ mask.  If mask is constant < 2^24, the
+   /* Bitwise AND: result <= mask.  If mask is constant < 2^24, the
     * result is provably < 2^24 regardless of the other operand. */
    case nir_op_iand: {
       nir_const_value *mask0 =
@@ -1501,8 +1511,8 @@ terakan_nir_value_fits_24bit(nir_alu_src *alu_src)
       return false;
    }
 
-   /* Logical right shift by constant ≥ 8 on a 32-bit value:
-    * result < 2^(32 − shift_amt).  For shift ≥ 8, that's < 2^24. */
+   /* Logical right shift by constant >= 8 on a 32-bit value:
+    * result < 2^(32 - shift_amt).  For shift >= 8, that is < 2^24. */
    case nir_op_ushr: {
       nir_const_value *shift =
          nir_src_as_const_value(src_alu->src[1].src);
@@ -1518,7 +1528,7 @@ terakan_nir_value_fits_24bit(nir_alu_src *alu_src)
 
 /* Instruction callback for nir_shader_instructions_pass: lower a single
  * nir_op_imul to nir_op_umul24 when both sources fit in 24 bits, and
- * fuse iadd(umul24, c) → umad24 when the umul24 has a single use. */
+ * fuse iadd(umul24, c) to umad24 when the umul24 has a single use. */
 static bool
 terakan_nir_opt_uint24_instr(nir_builder *b, nir_instr *instr,
                              UNUSED void *cb_data)
@@ -1528,7 +1538,7 @@ terakan_nir_opt_uint24_instr(nir_builder *b, nir_instr *instr,
 
    nir_alu_instr *alu = nir_instr_as_alu(instr);
 
-   /* --- Phase 1: imul → umul24 when both sources fit 24 bits --- */
+   /* Lower imul to umul24 when both sources fit 24 bits. */
    if (alu->op == nir_op_imul &&
        alu->def.bit_size == 32 &&
        terakan_nir_value_fits_24bit(&alu->src[0]) &&
@@ -1537,7 +1547,7 @@ terakan_nir_opt_uint24_instr(nir_builder *b, nir_instr *instr,
       return true;
    }
 
-   /* --- Phase 2: iadd(umul24(a, b), c) → umad24(a, b, c) ---
+   /* Lower iadd(umul24(a, b), c) to umad24(a, b, c).
     * umad24 is a single op3-slot instruction that fuses multiply + add.
     * The addend c has no 24-bit range restriction.
     *
@@ -1599,19 +1609,19 @@ terakan_postprocess_nir(nir_shader *nir,
 {
    bool progress = false;
 
-   /* --- UINT24 peephole (all stages) ---
-    * Convert imul → umul24 for bounded operands, then fuse
-    * iadd(umul24, c) → umad24.  This runs for ALL shader stages
+   /* UINT24 peephole for all shader stages.
+    * Convert imul to umul24 for bounded operands, then fuse
+    * iadd(umul24, c) to umad24.  This runs for ALL shader stages
     * because integer multiplies appear everywhere (array indexing,
-    * struct offsets, loop counters × strides). */
+    * struct offsets, loop counters x strides). */
    NIR_PASS(progress, nir, terakan_nir_opt_uint24);
 
-   /* --- VS-specific varying pruning --- */
+   /* VS-specific varying pruning. */
    if (stage == MESA_SHADER_VERTEX) {
       /* Compute the set of dead VS outputs to prune. */
       uint64_t dead_varyings = 0;
 
-      /* --- Point size removal ---
+      /* Point size removal.
        * If topology is definitively not POINT_LIST AND VS is the true last
        * vertex stage, the PA ignores gl_PointSize.  Strip it to save one
        * PARAM export + the ALU that computes it.
@@ -1620,16 +1630,16 @@ terakan_postprocess_nir(nir_shader *nir,
       if (remove_point_size && (nir->info.outputs_written & VARYING_BIT_PSIZ))
          dead_varyings |= VARYING_BIT_PSIZ;
 
-      /* --- Varying pruning (FS→VS feedback) ---
-       * Only prune PARAM exports — POS/CLIP/CULL/LAYER/VIEWPORT/EDGE are
+      /* Varying pruning from FS input use back to VS output exports.
+       * Only prune PARAM exports; POS/CLIP/CULL/LAYER/VIEWPORT/EDGE are
        * consumed by the PA/clipper hardware, not routed through SPI to FS.
        * PSIZ is PA-consumed and handled separately above.
        *
        * ISA basis: SPI_VS_OUT_ID uses semantic ID matching against
        * SPI_PS_INPUT_CNTL.  Dense-packing surviving PARAM exports after
-       * pruning is safe — the SFN backend assigns consecutive export_param
+       * pruning is safe because the SFN backend assigns consecutive export_param
        * indices to surviving outputs, and SPI finds them by semantic ID
-       * regardless of physical slot.  (Evergreen_3D_Registers_v2 §SPI) */
+       * regardless of physical slot. */
       uint64_t const hw_consumed_outputs =
          VARYING_BIT_POS | VARYING_BIT_PSIZ |
          VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 |
@@ -1643,7 +1653,7 @@ terakan_postprocess_nir(nir_shader *nir,
 
       if (dead_varyings != 0) {
          /* Strip store_output intrinsics targeting dead varyings.
-          * This is the actual codegen change — SFN will not see these
+          * SFN will not see these
           * outputs and will not emit PARAM exports for them. */
          nir_function_impl *impl = nir_shader_get_entrypoint(nir);
          nir_foreach_block(block, impl) {
