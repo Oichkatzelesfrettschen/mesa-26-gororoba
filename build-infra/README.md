@@ -43,9 +43,11 @@ Build outputs land OUTSIDE the source tree, at
 `../../build/mesa-<profile>/`, so `git clean -xdf` in gororoba
 does not nuke ongoing builds.
 
-The active install prefix defaults to `/usr/local/mesa-26-gororoba`.
-Build variants live in separate build directories, but the installed ICD is a
-single canonical Terakan copy unless `PREFIX=...` is passed explicitly.
+The install prefix defaults to `/usr/local/mesa-<profile>`, derived from
+`INSTALL_NAMESPACE` and `PROFILE`.  This keeps profile-specific artifacts
+isolated because `meson install` does not remove files from an earlier
+profile.  Pass `PREFIX=...` explicitly when intentionally installing into a
+shared active tree.
 
 Before a long build, run the host audit:
 
@@ -143,14 +145,15 @@ make artifact-check
 Runtime smoke test:
 
 ```
-export LD_LIBRARY_PATH=/usr/local/mesa-26-gororoba/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-export VK_DRIVER_FILES=/usr/local/mesa-26-gororoba/share/vulkan/icd.d/terascale_icd.x86_64.json
+export PREFIX=/usr/local/mesa-terakan-distcc-no-rusticl
+export LD_LIBRARY_PATH=$PREFIX/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+export VK_DRIVER_FILES=$PREFIX/share/vulkan/icd.d/terascale_icd.x86_64.json
 vulkaninfo --summary
 ```
 
 Delivery policy:
 
-- Current delivery is `/usr/local/mesa-26-gororoba` staging, not a PKGBUILD.
+- Current delivery is `/usr/local/mesa-<profile>` staging, not a PKGBUILD.
 - Rollback means moving the prefix aside with `make distclean`, not deleting it.
 - A PKGBUILD is a future packaging task once the Terakan-only install manifest
   and stale-Rusticl cleanup contract are stable.

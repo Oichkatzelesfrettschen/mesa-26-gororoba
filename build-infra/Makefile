@@ -30,13 +30,20 @@ SHELL := /bin/bash
 PROFILE  ?= terakan-full
 HOSTENV  ?= btver1
 BUILDDIR ?= $(abspath $(CURDIR)/../../build/mesa-$(PROFILE))
-# Canonical single install prefix for all profiles.  Build-time variants
-# (rusticl on/off, debug/release, pump/no-pump) are selected via PROFILE
-# and live in separate BUILDDIRs, but the active installed copy lives at
-# a single canonical path.  Override with PREFIX=... on the make line for
-# parallel installs.
-PREFIX   ?= /usr/local/mesa-26-gororoba
+INSTALL_NAMESPACE ?= mesa
+# Keep profile lanes isolated by default because meson install does not remove
+# artifacts that are absent from the current profile.  Override PREFIX=... on
+# the make line when intentionally installing into a shared active tree.
+PREFIX   ?= /usr/local/$(INSTALL_NAMESPACE)-$(PROFILE)
+ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
+JOBS     ?= 8
+else
 JOBS     ?= $(shell nproc)
+endif
+# Generated source/header targets to prebuild outside distcc-pump.  Keep this
+# to known compiler, Vulkan, and Terascale codegen surfaces so the helper does
+# not accidentally run unrelated custom commands.
+GENERATED_TARGET_REGEX ?= ^(src/git_sha1[.]h|src/(compiler|vulkan|amd/terascale)/.*|src/util/(driconf_static[.]h|shader_stats[.]h|format_srgb[.]c|format/.*))$$
 
 # --- internal paths ---------------------------------------------------------
 TOPSRC   := $(abspath $(CURDIR)/..)
@@ -107,12 +114,12 @@ build:
 build-generated:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	mapfile -t targets < <(ninja -C $(BUILDDIR) -t targets all | awk '$$2 == "CUSTOM_COMMAND" { sub(/:$$/, "", $$1); if ($$1 !~ /^meson-internal__/ && $$1 !~ /\.so$$/) print $$1 }'); \
+	mapfile -t targets < <(ninja -C $(BUILDDIR) -t targets all | awk -v re='$(GENERATED_TARGET_REGEX)' '$$2 == "CUSTOM_COMMAND" { sub(/:$$/, "", $$1); if ($$1 ~ re) print $$1 }'); \
 	if [ "$${#targets[@]}" -gt 0 ]; then \
-		echo "prebuilding $${#targets[@]} generated Meson/Ninja targets outside distcc-pump"; \
+		echo "prebuilding $${#targets[@]} selected generated Meson/Ninja targets outside distcc-pump"; \
 		ninja -C $(BUILDDIR) -j$(JOBS) "$${targets[@]}"; \
 	else \
-		echo "no generated targets found"; \
+		echo "no selected generated targets found"; \
 	fi
 
 build-pump:
@@ -137,7 +144,7 @@ install:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@cur_prefix=$$(meson configure $(BUILDDIR) 2>/dev/null | awk "/^  prefix /{print \$\$2}" | head -1); \
 	if [ "$$cur_prefix" != "$(PREFIX)" ]; then \
-		echo "[install] builddir prefix $$cur_prefix != canonical $(PREFIX); reconfiguring"; \
+		echo "[install] builddir prefix $$cur_prefix != requested $(PREFIX); reconfiguring"; \
 		meson configure --prefix=$(PREFIX) $(BUILDDIR); \
 	fi
 	sudo meson install --no-rebuild -C $(BUILDDIR)

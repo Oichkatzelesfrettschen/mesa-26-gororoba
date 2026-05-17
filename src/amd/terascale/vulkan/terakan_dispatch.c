@@ -1704,6 +1704,17 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
        *     additive, writes land at bo+4096 and result[0] stays at
        *     the prefill sentinel.  If kernel pure-replaces, writes
        *     land at VA 0x10*256 (likely fault).
+       *   TERAKAN_PROBE_RAT_BASE_SENTINEL=3 -> emit 0x1 (= +256B in
+       *     256B units, per AMD Evergreen 3D Registers v2
+       *     R_028C60_CB_COLOR0_BASE.BASE_256B granularity).  In-bounds
+       *     for any BO whose layer extent reaches >= 512 bytes; the
+       *     additive arithmetic places the shader signature at byte
+       *     256 of the BO so the discriminator is result[64] (dword)
+       *     == signature with result[0] still PREFILL.
+       *   TERAKAN_PROBE_RAT_BASE_SENTINEL=4 -> emit 0x2 (= +512B in
+       *     256B units).  Same intent as =3 with a different offset
+       *     so the in-bounds additive arithmetic is observed twice
+       *     at distinct landing dwords (result[128]).
        *   TERAKAN_DISABLE_OFFSET_HIGH_SPLIT=1 -> revert to the legacy
        *     CB_COLOR_BASE=0 emission for A/B comparison. */
       {
@@ -1714,10 +1725,14 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
             *p++ = 0xCAFEBABEu;
          } else if (probe && probe[0] == '2') {
             *p++ = 0x10u;
+         } else if (probe && probe[0] == '3') {
+            *p++ = 0x1u;   /* +256B in 256B units -- in-bounds for >= 512B BO. */
+         } else if (probe && probe[0] == '4') {
+            *p++ = 0x2u;   /* +512B in 256B units -- in-bounds for >= 1KB BO. */
          } else if (disable_split && disable_split[0] == '1') {
-            *p++ = 0;
+            *p++ = 0u;
          } else {
-            /* #138 write-path offset split.  Extract the in-BO portion
+            /* Write-path offset split.  Extract the in-BO portion
              * of the granularity-aligned VA.  bo->va is page-aligned
              * (and therefore 256B-aligned) so the subtraction is
              * exact.  The 0..255-byte remainder is already carried to

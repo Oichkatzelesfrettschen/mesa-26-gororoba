@@ -8,8 +8,9 @@
 #
 # terakan (Vulkan) and r600 (Gallium) are pure C and build fine.
 # Only the gallium-rusticl OpenCL frontend is removed from this
-# variant.  The canonical active install prefix is selected by
-# build-infra/Makefile and defaults to /usr/local/mesa-26-gororoba.
+# variant.  build-infra/Makefile defaults this profile to its own
+# /usr/local/mesa-terakan-distcc-no-rusticl-pump prefix unless PREFIX
+# is passed explicitly.
 
 [binaries]
 c    = ['/usr/bin/distcc', '/usr/bin/clang-21']
