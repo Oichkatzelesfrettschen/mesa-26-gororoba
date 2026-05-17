@@ -1297,27 +1297,23 @@ terakan_shader_lower_and_optimize_post_link(
          }
          if (any_tg4) break;
       }
-      /* The runtime-swizzle gather rewrite is gated off by default.
+      /* Per AMD IL Spec lines 4818-4844, gather4_comp_sel accepts only
+       * IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 and SEL_1 baked into
+       * SQ_TEX_RESOURCE_WORD4 DST_SEL are HW-invalid for FETCH4 /
+       * FETCH4C / FETCH4po / FETCH4poc.  The runtime-swizzle gather
+       * rewrite plus the gather-safe descriptor plumbing
+       * (terakan_pipeline_layout.c binds the identity-DST_SEL sibling
+       * at HW slot resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET)
+       * makes this contract satisfiable: tg4 clones are retargeted to
+       * the gather-safe descriptor, the HW corner-permutation field is
+       * identity, and the application's VkComponentMapping is
+       * reconstructed (including ZERO / ONE) on the gather result via
+       * the bcsel cascade in the pass.  Enabled unconditionally now
+       * that the descriptor side is in place.
        *
-       * A/B testing on the dEQP-VK.glsl.texture_gather.basic
-       * texture_swizzle CTS subset showed the pass to be net-neutral:
-       * both with and without the pass, 4 of 24 cases pass and 20
-       * fail, but the SET of passing cases shifts (the baseline path
-       * via descriptor SQ_TEX_RESOURCE_WORD4 DST_SEL correctly
-       * implements ZERO substitution for shift-1 swizzles, contradicting
-       * the original hypothesis that ALL non-identity swizzles broke
-       * gather4).  The pass remains compiled in so future Evergreen-
-       * side debugging can opt-in via `TERAKAN_TG4_VS_ENABLE=1`; the
-       * KCACHE bank 14 dword 40..51 view-swizzle region remains
-       * populated unconditionally so probe scripts can sanity-check
-       * per-binding swizzle plumbing.
-       *
-       * AMD Evergreen-Family ISA Chapter 6 references in the
-       * `terakan_nir_lower_tg4_view_swizzle` source remain valid; only
-       * the bcsel-cascade-of-4-clones output shape is incorrect for
-       * the channel-permuting non-identity swizzles.
-       */
-      if (any_tg4 && getenv("TERAKAN_TG4_VS_ENABLE") != NULL) {
+       * Set `TERAKAN_TG4_VS_DISABLE=1` to bypass the pass for
+       * debugging the fast-path-only behaviour. */
+      if (any_tg4 && getenv("TERAKAN_TG4_VS_DISABLE") == NULL) {
          *kcache_needed |=
             (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
          NIR_PASS(_, nir, terakan_nir_lower_tg4_view_swizzle);

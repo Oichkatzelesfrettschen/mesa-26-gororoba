@@ -137,6 +137,22 @@ extern "C" {
 
 #define TERAKAN_SAMPLER_HW_COUNT_PER_STAGE 18
 
+/* Offset added to a sampled-image binding's HW resource slot to find its
+ * gather-safe sibling descriptor.  Per AMD IL Spec lines 4818-4844,
+ * gather4_comp_sel accepts only IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 /
+ * SEL_1 are HW-invalid for FETCH4 / FETCH4C / FETCH4po / FETCH4poc.  The
+ * gather-safe descriptor has identity DST_SEL in SQ_TEX_RESOURCE_WORD4 so
+ * the HW spatial-sample selection works; the application's component
+ * mapping (including literal ZERO / ONE) is reconstructed on the gather
+ * result in the `terakan_nir_lower_tg4_view_swizzle` NIR pass.
+ *
+ * 32 sample-image slots are accommodated per stage (slot range
+ * [18, 49]); gather-safe siblings occupy [50, 81].  Vulkan minimum
+ * `maxPerStageDescriptorSampledImages` is 16; 32 is comfortable
+ * headroom and total slot usage of 64 stays well below the 160-176
+ * per-stage budget. */
+#define TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET 32
+
 #define TERAKAN_SAMPLER_HW_OFFSET_PS   (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE * 0)
 #define TERAKAN_SAMPLER_HW_OFFSET_VSES (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE * 1)
 #define TERAKAN_SAMPLER_HW_OFFSET_GS   (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE * 2)

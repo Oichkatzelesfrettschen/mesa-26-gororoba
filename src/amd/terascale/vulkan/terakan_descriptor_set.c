@@ -636,6 +636,10 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                    G_03001C_TYPE(image_view->resource[7]) == V_03001C_SQ_TEX_VTX_VALID_TEXTURE) {
                   dst_resource->bo = image_view->bo;
                   memcpy(dst_resource->resource, image_view->resource, sizeof(uint32_t) * 8);
+                  /* Copy the gather-safe variant for FETCH4 / GATHER4
+                   * routing via terakan_pipeline_layout.c. */
+                  memcpy(dst_resource->resource_gather, image_view->resource_gather,
+                         sizeof(uint32_t) * 8);
                } else {
                   dst_resource->bo = NULL;
                }
