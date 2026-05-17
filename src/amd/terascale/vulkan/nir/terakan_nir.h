@@ -93,22 +93,23 @@ bool terakan_nir_lower_bindings(nir_shader * shader, struct terakan_pipeline_lay
 
 bool terakan_nir_lower_sin_cos(nir_shader * shader);
 
-/* Speculative-XCHG emulation for atomic compare-and-swap on Evergreen/PALM.
+/* Speculative-XCHG emulation for atomic compare-and-swap on Palm
+ * (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5).
  *
  * The hardware CMPXCHG_INT (RAT_INST opcode 4) and CMPXCHG_INT_RTN
- * (opcode 36) are listed in the Evergreen ISA but silently no-op on PALM
- * silicon (the L2 cache lacks the compare-and-conditional-write
- * comparator).  This pass rewrites supported CAS intrinsics
+ * (opcode 36) are listed in the AMD Evergreen-Family ISA but do not
+ * behave as a reliable compare-and-conditional-write path on Palm.  When
+ * TERAKAN_EXPERIMENTAL_SPECULATIVE_CMPXCHG is enabled, this pass rewrites
+ * supported CAS intrinsics
  * (ssbo_atomic_swap, image_deref_atomic_swap, global_atomic_swap, all with
  * atomic_op == cmpxchg and bit_size == 32) to a three-instruction
  * sequence:
  *     cur = load (...)
  *     take = (cur == compare) ? replacement : cur
  *     old = atomic_xchg(..., take)
- * which is correct under single-workgroup-no-racing CTS test patterns
- * (vk10_atomic_cmpxchg_emulation_oracle_20260501T043505Z).  Device-scope
- * CAS retains the existing CMPXCHG_INT lowering (silently no-ops on
- * PALM today, matching observed behavior).
+ * which is correct only when no other wavefront can write the same address
+ * between the load and the xchg.  Leave the environment gate disabled for
+ * normal shader compilation so device-scope CAS keeps atomic semantics.
  *
  * Must run BEFORE terakan_nir_lower_bindings so the lowered xchg flows
  * through the standard atomic UAV path. */

@@ -75,6 +75,12 @@ terakan_physical_device_drm_radeon_get_winsys_extensions(
    /* VK_KHR_external_memory_fd (#75). */
    extensions->KHR_external_memory_fd = true;
 
+   if (device->sync_type_drm_syncobj.features != 0) {
+      /* VK_KHR_external_semaphore_fd (#80) and VK_KHR_external_fence_fd (#116). */
+      extensions->KHR_external_semaphore_fd = true;
+      extensions->KHR_external_fence_fd = true;
+   }
+
    /* VK_EXT_external_memory_dma_buf (#126). */
    extensions->EXT_external_memory_dma_buf = true;
 
