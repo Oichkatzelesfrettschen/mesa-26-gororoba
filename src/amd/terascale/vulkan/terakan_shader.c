@@ -379,11 +379,10 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
  * to every r600-family GPU without chip-specific probes.
  *
  * For dword-aligned sub-32-bit stores the upstream pass widens via a
- * generated atomic_swap (cmpxchg-shape) RMW; the downstream
- * terakan_nir_lower_cmpxchg_to_speculative_xchg lowering rewrites
- * those to load+bcsel+atomic_xchg, which uses the working XCHG path.
- * Single-thread test patterns are correct; cross-thread sub-dword
- * racing SSBO writes remain a documented silicon gap.
+ * generated atomic_swap (cmpxchg-shape) RMW.  The experimental
+ * cmpxchg-to-speculative-xchg pass can rewrite that pattern for
+ * non-racing probes, but normal shader compilation keeps compare-and-swap
+ * atomic rather than replacing it with a non-atomic load-to-xchg window.
  */
 static nir_mem_access_size_align
 terakan_nir_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
@@ -1216,12 +1215,11 @@ terakan_shader_lower_and_optimize_post_link(
     *
     * may_lower_unaligned_stores_to_atomics=true: the pass generates
     * atomic_swap (cmpxchg-shape) for partial-dword stores.  The cached
-    * MEM_RAT_CMPXCHG_INT path is silicon-broken on the validated
-    * PALM/SUMO Evergreen TeraScale-2 target, so the downstream
-    * cmpxchg-to-speculative-xchg lowering rewrites those generated
-    * cmpxchgs to load+bcsel+atomic_xchg.  Single-thread test patterns
-    * are correct under this chain; cross-thread sub-dword racing
-    * remains a documented gap.
+    * MEM_RAT_CMPXCHG_INT path is not reliable on Palm (Wrestler GPU,
+    * CHIP_PALM, Evergreen / TeraScale-2 VLIW5), so the experimental
+    * cmpxchg-to-speculative-xchg pass is available for non-racing probes.
+    * Normal shader compilation keeps compare-and-swap atomic rather than
+    * replacing it with a non-atomic load-to-xchg window.
     */
    nir_lower_mem_access_bit_sizes_options mem_access_options = {
       .callback = terakan_nir_mem_access_size_align,

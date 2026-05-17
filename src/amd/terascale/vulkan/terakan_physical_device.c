@@ -861,62 +861,14 @@ terakan_physical_device_get_capabilities(
 
    /* VkPhysicalDeviceSubgroupProperties (VK 1.1 core).
     *
-    * Evergreen / TeraScale-2 VLIW5 (Palm / Wrestler, CHIP_PALM) executes
-    * Wave64 lockstep within a SIMD but the VLIW5 ALU has no native
-    * cross-lane communication.  Cross-lane data movement is emulated via
-    * Local Data Share (LDS, 32 KB per SIMD) atomic-OR / write-broadcast
-    * sequences -- see terakan_nir_lower_subgroup_lds.c and the
-    * LDS_ATOMIC_OR_RET family described in the AMD Evergreen-Family
-    * Instruction Set Architecture.
-    *
-    * Operation-bit advertisement reflects what the lowering currently
-    * implements:
-    *
-    *   BASIC      -- subgroupElect / subgroupBarrier / subgroupMemoryBarrier*;
-    *                 lowered to standard compute barriers without any
-    *                 cross-lane ALU dependency.
-    *   VOTE       -- subgroupAll / subgroupAny / subgroupAllEqual;
-    *                 nir_lower_subgroups decomposes these to
-    *                 nir_intrinsic_ballot + scalar reduction, and the
-    *                 LDS pass expands ballot via LDS_ATOMIC_OR_RET into
-    *                 a uvec2 visible to all lanes after a workgroup
-    *                 barrier.
-    *   BALLOT     -- subgroupBallot / BallotBitCount / FindLSB / FindMSB;
-    *                 share the same LDS atomic-OR primitive.
-    *
-    * Higher tiers (ARITHMETIC / SHUFFLE / CLUSTERED / QUAD) require
-    * parallel-scan / per-lane broadcast layouts in LDS that are not yet
-    * implemented; advertise only what the lowering supports so
-    * dEQP-VK.subgroups.<tier> correctly reports NotSupported for the
-    * rest rather than running and failing.  Subgroup stages remain
-    * compute-only to match the LDS sync model and physical-device
-    * subgroupSupportedStages bitmask. */
+    * Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)
+    * executes Wave64, but every advertised subgroup operation must compile
+    * through NIR and SFN before it is exposed.  Keep operation and stage
+    * support empty until all intrinsics emitted by nir_lower_subgroups have
+    * Terakan lowering coverage. */
    properties_out->subgroupSize = 64;
-   properties_out->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
-   /* BASIC + VOTE + BALLOT + ARITHMETIC.
-    *
-    * VOTE / BALLOT route through the LDS-mediated cross-lane lowering
-    * in terakan_nir_lower_subgroup_lds.c (LDS_ATOMIC_OR_RET per AMD
-    * Evergreen-Family Instruction Set Architecture section 2.6.2
-    * LDS_ATOMIC family).
-    *
-    * ARITHMETIC routes through an FFT-butterfly style LDS reduction
-    * over log2(subgroup_size) = 6 levels on Wave64: at each level
-    * lane L exchanges with lane L XOR (1 << level) via the per-shader
-    * broadcast region and applies the associative reduction op.
-    * Bounded GROUP_BARRIER cost (6 barriers per reduce regardless of
-    * input width) keeps the SFN VLIW5 scheduler under its slot-pinning
-    * threshold.  Supported ops: iadd / imul / imin / imax / umin /
-    * umax / iand / ior / ixor / fadd / fmul / fmin / fmax.
-    *
-    * SHUFFLE / CLUSTERED / QUAD remain unadvertised pending matching
-    * shuffle-mask / cluster-size / quad-broadcast sequences;
-    * dEQP-VK.subgroups.<tier> reports NotSupported for those. */
-   properties_out->subgroupSupportedOperations =
-      VK_SUBGROUP_FEATURE_BASIC_BIT |
-      VK_SUBGROUP_FEATURE_VOTE_BIT |
-      VK_SUBGROUP_FEATURE_BALLOT_BIT |
-      VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
+   properties_out->subgroupSupportedStages = 0;
+   properties_out->subgroupSupportedOperations = 0;
    properties_out->subgroupQuadOperationsInAllStages = false;
 
    /* VK_KHR_maintenance1 (#70, Vulkan 1.1).
@@ -1141,22 +1093,14 @@ terakan_physical_device_get_capabilities(
    extensions_out->KHR_external_memory = true;
 
    /* VK_KHR_external_semaphore (#78, Vulkan 1.1).
-    * Permits exporting/importing semaphore handles across processes.  The
-    * actual export/import is implemented by the runtime against the
-    * vk_drm_syncobj sync type registered in
-    * `terakan_physical_device_drm_radeon.c`.  Terakan advertises both
-    * the core extension and the OPAQUE_FD/SYNC_FD handle-type variant
-    * (KHR_external_semaphore_fd) below. */
+    * The fd handle-type variant is advertised by winsys backends that
+    * register an fd-capable sync type. */
    extensions_out->KHR_external_semaphore = true;
-   /* VK_KHR_external_semaphore_fd (#80, Vulkan 1.1) -- OPAQUE_FD + SYNC_FD
-    * handle types.  Routed through the vk_drm_syncobj runtime helpers. */
-   extensions_out->KHR_external_semaphore_fd = true;
 
-   /* VK_KHR_external_fence (#114, Vulkan 1.1). */
+   /* VK_KHR_external_fence (#114, Vulkan 1.1).
+    * The fd handle-type variant is advertised by winsys backends that
+    * register an fd-capable sync type. */
    extensions_out->KHR_external_fence = true;
-   /* VK_KHR_external_fence_fd (#116, Vulkan 1.1) -- OPAQUE_FD + SYNC_FD
-    * handle types via the same vk_drm_syncobj runtime path. */
-   extensions_out->KHR_external_fence_fd = true;
 
    /* VK_KHR_device_group (#61, Vulkan 1.1, device-side).
     * Single-GPU stub: Bobcat has exactly one logical device per physical
