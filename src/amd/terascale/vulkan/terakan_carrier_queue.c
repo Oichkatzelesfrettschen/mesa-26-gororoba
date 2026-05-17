@@ -77,11 +77,14 @@
 #define TERAKAN_CARRIER_EOP_DATA_SEL_SEND_32BIT_LOW           1u
 #define TERAKAN_CARRIER_EOP_INT_SEL_NONE                      0u
 
-/* Bounded CPU wait for an imported acquire sync_fd, in milliseconds.
- * The dma-buf reservation that produced this FD is expected to be
- * already-signaled by the time the importer reaches queue submit;
- * the poll is a defensive read-back, not a real blocking point. */
-#define TERAKAN_CARRIER_ACQUIRE_POLL_TIMEOUT_MS 250
+/* Acquire-fence wait is honor-or-fail.  An imported carrier acquire
+ * sync_fd represents external producer ordering: if the GPU starts
+ * reading the carrier BO before the FD signals, the read returns
+ * stale memory.  A bounded warn-and-continue is therefore unsafe.
+ * The wait is unbounded (poll() timeout = -1); EINTR is looped
+ * silently; any other poll failure surfaces as a submission error
+ * (VK_ERROR_DEVICE_LOST) at the vkQueueSubmit boundary.  A negative
+ * FD means no producer fence was attached, which is a valid no-op. */
 
 void
 terakan_carrier_submit_lists_init(struct terakan_carrier_submit_lists * const lists)
@@ -291,13 +294,13 @@ terakan_carrier_collect_from_radeon_relocs(
    return appended;
 }
 
-/* CPU-wait on an imported acquire sync_fd with a bounded deadline.
- * Returns true if the FD reported readability (signaled) or the FD
- * is invalid (no fence attached); returns false on poll error or
- * timeout, in which case the caller logs and continues -- the
- * SURFACE_SYNC packet is still emitted, the worst-case outcome is
- * the carrier path proceeds without external producer ordering for
- * this submit. */
+/* CPU-wait indefinitely on an imported acquire sync_fd.  Returns
+ * true if the FD signals readability (producer fence has fired) or
+ * the FD is invalid (no fence attached, treated as already-ordered).
+ * Returns false only on a real poll() error -- the caller MUST
+ * propagate the failure as a VkResult; the SURFACE_SYNC packet is
+ * NOT emitted on failure because the read it gates is not safe.
+ * EINTR is looped silently. */
 static bool
 wait_acquire_fence_cpu(int const acquire_sync_fd)
 {
@@ -311,17 +314,21 @@ wait_acquire_fence_cpu(int const acquire_sync_fd)
    };
    int rc;
    do {
-      rc = poll(&pfd, 1, TERAKAN_CARRIER_ACQUIRE_POLL_TIMEOUT_MS);
+      rc = poll(&pfd, 1, -1);
    } while (rc == -1 && errno == EINTR);
 
    if (rc < 0) {
-      mesa_logw("terakan: carrier acquire poll() errno=%d on fd=%d",
+      mesa_loge("terakan: carrier acquire poll() failed errno=%d on fd=%d",
                 errno, acquire_sync_fd);
       return false;
    }
-   if (rc == 0) {
-      mesa_logw("terakan: carrier acquire fd=%d wait timed out after %dms",
-                acquire_sync_fd, TERAKAN_CARRIER_ACQUIRE_POLL_TIMEOUT_MS);
+   /* rc > 0 from poll(-1) means at least one revents bit set.  POLLERR /
+    * POLLHUP / POLLNVAL are surfaced as a hard fail because they indicate
+    * the producer fence FD is broken rather than signaled normally. */
+   if ((pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      mesa_loge("terakan: carrier acquire fd=%d poll revents=0x%x "
+                "(POLLERR/POLLHUP/POLLNVAL)",
+                acquire_sync_fd, (unsigned)pfd.revents);
       return false;
    }
    return true;
@@ -404,7 +411,7 @@ emit_eop_release_timestamp(uint32_t * const ib,
    *cursor = n;
 }
 
-void
+VkResult
 terakan_carrier_emit_acquires_dwords(
    uint32_t * const                                    ib_dwords,
    uint32_t const                                      ib_capacity_dwords,
@@ -418,7 +425,12 @@ terakan_carrier_emit_acquires_dwords(
       if (c == NULL)
          continue;
 
-      (void)wait_acquire_fence_cpu(c->acquire_sync_fd);
+      /* Honor-or-fail: a broken or never-signaled producer fence on
+       * the import side gates a read whose result would otherwise be
+       * stale memory.  Surface the failure to the vkQueueSubmit
+       * caller instead of emitting the SURFACE_SYNC anyway. */
+      if (!wait_acquire_fence_cpu(c->acquire_sync_fd))
+         return VK_ERROR_DEVICE_LOST;
 
       uint32_t const mask = terakan_palm_build_acquire_coher_mask(c->domain);
       if (mask == 0u)
@@ -429,6 +441,7 @@ terakan_carrier_emit_acquires_dwords(
                               entry.bo_offset_bytes, c->size_bytes,
                               entry.bo_reference_index);
    }
+   return VK_SUCCESS;
 }
 
 void

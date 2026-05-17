@@ -33,6 +33,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <vulkan/vulkan_core.h>
+
 struct terakan_bo;
 struct terakan_dmabuf_carrier;
 
@@ -157,9 +159,14 @@ terakan_carrier_collect_from_radeon_relocs(
  * by the number of dwords written.  ib_capacity_dwords is the cap
  * size of the dword buffer; the helper writes at most
  * acquire_count * TERAKAN_CARRIER_DWORDS_PER_ACQUIRE dwords and
- * asserts capacity.  CPU-polls each carrier's acquire_sync_fd before
- * emitting its PFP-engine SURFACE_SYNC packet. */
-void
+ * asserts capacity.  Indefinitely CPU-polls each carrier's
+ * acquire_sync_fd before emitting its PFP-engine SURFACE_SYNC packet;
+ * an FD that fails to signal (poll returns POLLERR/POLLHUP/POLLNVAL
+ * or poll itself errors) is not safe to read past, so the helper
+ * returns VK_ERROR_DEVICE_LOST and stops emission for that submit.
+ * Returns VK_SUCCESS on normal completion or when no carriers carry
+ * an attached producer fence (FD < 0). */
+VkResult
 terakan_carrier_emit_acquires_dwords(
    uint32_t *                                  ib_dwords,
    uint32_t                                    ib_capacity_dwords,
