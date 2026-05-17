@@ -28,6 +28,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "util/macros.h"
 #include "util/u_atomic.h"
 #include "util/u_debug.h"
@@ -1274,7 +1275,23 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       if (unlikely(p == NULL)) return;
       *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
       *p++ = res_slot * 8;
-      *p++ = 0;                            /* WORD0: base address (relocated) */
+      /* TERAKAN_PROBE_WORD0_SENTINEL controls the compute buffer
+       * descriptor WORD0 value written before kernel relocation handling.
+       * Value "1" writes an invalid 32-bit address sentinel.  Value "2"
+       * writes a plausible but wrong address inside the BO.  The default
+       * leaves WORD0 at zero, matching the normal relocation-patched path.
+       * The probe is restricted to buffer descriptors because the compute
+       * path emits storage-buffer resources here. */
+      {
+         char const * const probe = getenv("TERAKAN_PROBE_WORD0_SENTINEL");
+         if (probe && probe[0] == '1') {
+            *p++ = 0xCAFEBABEu;
+         } else if (probe && probe[0] == '2') {
+            *p++ = (uint32_t)(bo->va) + 0x1000u;
+         } else {
+            *p++ = 0;                /* WORD0: base address (relocated) */
+         }
+      }
       *p++ = buf_size - 1;                 /* WORD1: size in bytes - 1 */
       /* Compute-mode VFETCH uses STRIDE=1 so the shader's byte-offset
        * arithmetic (produced by SFN's load_ssbo lowering) indexes the buffer
