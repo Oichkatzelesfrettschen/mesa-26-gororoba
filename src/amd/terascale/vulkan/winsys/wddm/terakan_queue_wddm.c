@@ -406,8 +406,9 @@ terakan_queue_completion_submission_wddm_alloc_and_init_winsys(
 
    struct terakan_bo * bo_base;
    result = device->winsys_fn->bo->allocate_device_memory(
-      device, 1, 1, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0, NULL, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE,
-      &bo_base);
+      device, sizeof(uint32_t), alignof(uint32_t),
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0, NULL,
+      VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &bo_base);
    if (result != VK_SUCCESS) {
       vk_free(&device->vk.alloc, submission);
       return result;

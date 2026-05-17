@@ -339,8 +339,9 @@ terakan_queue_completion_submission_drm_radeon_alloc_and_init_winsys(
 
    struct terakan_bo * bo_base;
    result = device->winsys_fn->bo->allocate_device_memory(
-      device, 1, 1, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, NULL, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE,
-      &bo_base);
+      device, sizeof(uint32_t), alignof(uint32_t),
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, NULL,
+      VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &bo_base);
    if (result != VK_SUCCESS) {
       vk_free(&device->vk.alloc, submission);
       return result;
@@ -371,7 +372,7 @@ terakan_queue_completion_submission_drm_radeon_bo_gpu_va(
 {
    struct terakan_queue_completion_submission_drm_radeon const * const submission = container_of(
       submission_base, struct terakan_queue_completion_submission_drm_radeon const, base);
-   /* The completion BO is a single-byte device-local allocation; the
+   /* The completion BO is a 32-bit device-local allocation; the
     * radeon kernel attaches a dma_fence to its reservation object at
     * CS-submit time and signals it on IB retirement.  Reusing the
     * same BO for a host-emitted PKT3_EVENT_WRITE_EOP gives the
