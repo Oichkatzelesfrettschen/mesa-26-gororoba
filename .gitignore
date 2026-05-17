@@ -8,3 +8,4 @@
 .venv/
 *.mda.tar
 *.ini
+build-infra/shadercache.bin
