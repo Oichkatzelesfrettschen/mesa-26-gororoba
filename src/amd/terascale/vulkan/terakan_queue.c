@@ -1045,9 +1045,12 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
                   unsigned const dbg_carriers = dbg_acquires + dbg_releases;
                   mesa_logi("terakan_carrier_debug: carrier_count=%u "
                             "acquire_count=%u release_count=%u "
+                            "is_merge=%s pending_completion=%s "
                             "eop_emitted=%s fence_bo_offset=0x%016" PRIx64 " "
                             "fence_gpu_va=0x%016" PRIx64 " fence_seq=%u",
                             dbg_carriers, dbg_acquires, dbg_releases,
+                            is_merge ? "yes" : "no",
+                            (queue->pending_completion != NULL) ? "yes" : "no",
                             fence_target_valid ? "yes" : "no",
                             fence_bo_offset, fence_debug_gpu_va, fence_seq);
                }
