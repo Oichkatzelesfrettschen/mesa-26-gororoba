@@ -110,6 +110,21 @@ terakan_pipeline_compute_compile(
    struct terakan_shader_impl local_shader;
    memset(&local_shader, 0, sizeof(local_shader));
 
+   /* Seed app push-constant extent from the pipeline layout so that
+    * terakan_push_constants_apply uploads the application-supplied
+    * vkCmdPushConstants payload into the compute KCACHE bank
+    * (TERAKAN_KCACHE_BUFFER_PUSH_CONSTANTS) at dispatch time.  Without
+    * this, push_constants_usage.app_extent_bytes stays at zero, the
+    * app_constants memcpy in terakan_push_constants_apply is skipped,
+    * and the shader reads zero out of the bank-15 slot.  The graphics
+    * pipeline uses the same metadata seed before shader lowering. */
+   if (create_info->layout != VK_NULL_HANDLE) {
+      struct terakan_pipeline_layout const * const compute_layout =
+         terakan_pipeline_layout_from_handle(create_info->layout);
+      local_shader.push_constants_usage.app_extent_bytes =
+         compute_layout->shader_app_push_constants_extents_bytes[MESA_SHADER_COMPUTE];
+   }
+
    /* Compute the effective robustness flag for this stage.  See the matching
     * comment in terakan_pipeline_graphics_compile_shaders. */
    struct vk_pipeline_robustness_state stage_rs;
@@ -251,6 +266,16 @@ terakan_pipeline_compute_compile_storage_image_layer_variant(
       stage_rs.uniform_buffers ==
          VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
 
+   /* Seed app push-constant extent from the pipeline layout so the
+    * storage-image layer variant carries the same compute KCACHE upload
+    * metadata as the primary shader. */
+   if (create_info->layout != VK_NULL_HANDLE) {
+      struct terakan_pipeline_layout const * const variant_layout =
+         terakan_pipeline_layout_from_handle(create_info->layout);
+      variant->push_constants_usage.app_extent_bytes =
+         variant_layout->shader_app_push_constants_extents_bytes[MESA_SHADER_COMPUTE];
+   }
+
    terakan_storage_image_set_compile_layer(layer);
    terakan_storage_image_set_compile_layer_index(layer);
 
@@ -295,8 +320,9 @@ terakan_pipeline_compute_compile_storage_image_layer_variant(
 }
 
 /*
- * Phase C: Pre-compute hardware register values from compiled shader.
- * local_size, group_size, and shared_size were already populated by _compile (RD-4).
+ * Precompute hardware register values from the compiled shader. Workgroup
+ * dimensions and shared memory size are captured before NIR ownership moves to
+ * the backend compiler.
  */
 static void
 terakan_pipeline_compute_fill_hw(struct terakan_pipeline_compute * const pipeline)

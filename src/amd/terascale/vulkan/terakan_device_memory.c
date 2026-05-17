@@ -43,6 +43,53 @@
 #include <stddef.h>
 #include <stdint.h>
 
+static inline VkMemoryPropertyFlags
+terakan_device_memory_flags(struct terakan_device const * const device,
+                            struct terakan_device_memory const * const device_memory)
+{
+   return terakan_device_physical_device(device)
+      ->memory_properties.memoryTypes[device_memory->vk.memory_type_index]
+      .propertyFlags;
+}
+
+static inline bool
+terakan_device_memory_can_publish_dmabuf_carrier(
+   struct terakan_physical_device const * const physical_device)
+{
+   /* Carrier submit emission uses radeon DRM_NOP reloc-pairing for
+    * every address-bearing SURFACE_SYNC packet.  Do not publish BO
+    * carriers on winsys paths that cannot validate those packets. */
+   return physical_device->submission_info_gfx.base.relocation_type ==
+          TERAKAN_QUEUE_RELOCATION_TYPE_DRM_NOP;
+}
+
+static void
+terakan_device_memory_flush_or_invalidate_mapped_range(
+   struct terakan_device const * const device,
+   struct terakan_device_memory * const device_memory, VkDeviceSize const offset,
+   VkDeviceSize const size, bool const invalidate)
+{
+   if (size == 0 || device_memory->bo->mapping == NULL || !util_has_cache_ops()) {
+      return;
+   }
+
+   /* Host-cached mappings may require explicit CPU cache maintenance before GPU-visible use. */
+   if (!(terakan_device_memory_flags(device, device_memory) &
+         VK_MEMORY_PROPERTY_HOST_CACHED_BIT)) {
+      return;
+   }
+
+   VkDeviceSize flush_size = size;
+   if (flush_size > (VkDeviceSize)SIZE_MAX) {
+      flush_size = (VkDeviceSize)SIZE_MAX;
+   }
+   void * const start = (char *)device_memory->bo->mapping + offset;
+   if (invalidate) {
+      util_flush_inval_range(start, (size_t)flush_size);
+   } else {
+      util_flush_range(start, (size_t)flush_size);
+   }
+}
 VKAPI_ATTR VkResult VKAPI_CALL
 terakan_GetMemoryFdPropertiesKHR(VkDevice const deviceHandle,
                                  VkExternalMemoryHandleTypeFlagBits const handleType, int const fd,
@@ -247,15 +294,16 @@ terakan_AllocateMemory(VkDevice const deviceHandle,
          }
 
          /* For dma-buf imports under the carrier env-gate, attach a
-          * Palm external-sync carrier to the imported BO.  Buffer is
-          * the default Phase 0 carrier classification per the
-          * cache-domain evidence matrix; non-allowed domains return
+          * Palm external-sync carrier to the imported BO only on the
+          * radeon DRM_NOP relocation path.  Buffer carriers are the
+          * default classification; non-allowed domains return
           * VK_ERROR_FEATURE_NOT_PRESENT from _attach() and log the
           * policy reason, but the BO import has already succeeded so
           * the allocation continues without a carrier. */
          if (device_memory->vk.import_handle_type ==
                 VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
-             terakan_dmabuf_carrier_enabled()) {
+             terakan_dmabuf_carrier_enabled() &&
+             terakan_device_memory_can_publish_dmabuf_carrier(physical_device)) {
             struct terakan_dmabuf_carrier_desc const carrier_desc = {
                .dmabuf_fd  = import_fd_info->fd,
                .domain     = TERAKAN_CARRIER_DOMAIN_BUFFER,
@@ -292,15 +340,14 @@ terakan_AllocateMemory(VkDevice const deviceHandle,
 
       /* For dma-buf-exportable allocations under the carrier env-gate,
        * attach a Palm external-sync carrier to the freshly allocated
-       * BO.  This is the symmetric counterpart to the import-side
-       * attach above: a producer that allocates with
-       * VkExportMemoryAllocateInfo.handleTypes containing
-       * DMA_BUF_BIT_EXT will get a carrier on the same BO that the
-       * eventual vkGetMemoryFdKHR exports.  Buffer is the default
-       * Phase 0 classification per the cache-domain evidence matrix. */
+       * BO only on the radeon DRM_NOP relocation path.  A producer
+       * that allocates with VkExportMemoryAllocateInfo.handleTypes
+       * containing DMA_BUF_BIT_EXT gets a carrier on the same BO that
+       * the eventual vkGetMemoryFdKHR exports. */
       if ((device_memory->vk.export_handle_types &
               VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) != 0 &&
-          terakan_dmabuf_carrier_enabled()) {
+          terakan_dmabuf_carrier_enabled() &&
+          terakan_device_memory_can_publish_dmabuf_carrier(physical_device)) {
          struct terakan_dmabuf_carrier_desc const carrier_desc = {
             .dmabuf_fd  = -1, /* fd is populated lazily on vkGetMemoryFdKHR */
             .domain     = TERAKAN_CARRIER_DOMAIN_BUFFER,
