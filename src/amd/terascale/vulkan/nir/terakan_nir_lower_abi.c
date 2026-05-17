@@ -411,21 +411,27 @@ terakan_nir_load_robustness_slot_u32(nir_builder * const b,
          .component = component);
    }
 
-   /* Dynamic array index.  Load the first vec4 row of the
-    * robustness-metadata bank and select the lane at runtime.  The
-    * texel-buffer and instance-array CTS surfaces all use literal
-    * array indices today; the dynamic case ships sound but
-    * intentionally simple (single-row fan-out) until a test exercises
-    * indices that cross KCACHE vec4 rows.
-    */
    nir_def * const slot_dyn      = nir_iadd_imm(b, array_index, base_slot);
    nir_def * const component_dyn = nir_iand_imm(b, slot_dyn, 3);
-   nir_def * const vec4_load = nir_load_kcache_r600(
+   nir_def * const vec4_index_dyn = nir_ushr_imm(b, slot_dyn, 2);
+
+   nir_def * vec4_load = nir_load_kcache_r600(
       b, 4, 32, nir_imm_zero(b, 1, 32),
       .access    = ACCESS_CAN_REORDER,
       .id_base   = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
       .base      = 0,
       .component = 0);
+   for (uint32_t vec4_index = 1; vec4_index < 16; ++vec4_index) {
+      nir_def * const candidate = nir_load_kcache_r600(
+         b, 4, 32, nir_imm_zero(b, 1, 32),
+         .access    = ACCESS_CAN_REORDER,
+         .id_base   = TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA,
+         .base      = vec4_index,
+         .component = 0);
+      vec4_load = nir_bcsel(b, nir_ieq_imm(b, vec4_index_dyn, vec4_index),
+                            candidate, vec4_load);
+   }
+
    nir_def * const sel0 = nir_iand_imm(b, component_dyn, 1);
    nir_def * const sel1 = nir_iand_imm(b, nir_ushr_imm(b, component_dyn, 1), 1);
    nir_def * const lo = nir_bcsel(b, nir_ine_imm(b, sel0, 0),
@@ -1012,10 +1018,33 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
    BITSET_SET_RANGE(state->resources_needed,
                     resource_index_base + binding.array_index_range_first,
                     resource_index_base + binding.array_index_range_last);
+
+   /* Fold the per-element VkDescriptorBufferInfo::offset into the
+    * shader's byte_offset before issuing the vertex fetch. The radeon
+    * kernel rewrites the resource base address during CS validation, so
+    * storage-buffer descriptor offsets are carried in the per-UAV
+    * robustness metadata and added here.
+    */
+   bool apply_uav_array_index;
+   unsigned const uav_index_zero_based = terakan_nir_get_binding_uav(
+      &binding, false, state, stage, &apply_uav_array_index);
+   nir_def * view_offset = nir_imm_zero(b, 1, 32);
+   if (likely(uav_index_zero_based != UINT_MAX)) {
+      *state->kcache_needed |=
+         (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+      nir_def * const view_offset_array_index =
+         apply_uav_array_index ? binding.array_index : nir_imm_zero(b, 1, 32);
+      view_offset = terakan_nir_load_robustness_slot_u32(
+         b, 52u + state->uav_base + uav_index_zero_based,
+         view_offset_array_index);
+   }
+   nir_def * const adjusted_byte_offset =
+      nir_iadd(b, intrin->src[1].ssa, view_offset);
+
    nir_def *result = terakan_nir_load_raw_resource_buffer(
       b, intrin->num_components, intrin->def.bit_size,
       nir_intrinsic_access(intrin), resource_index_base,
-      binding.array_index, 0, intrin->src[1].ssa);
+      binding.array_index, 0, adjusted_byte_offset);
 
    /* CTS copy_ssbo_bounds proves PALM's VFETCH descriptor clamp is not
     * sufficient for Terakan's advertised robustBufferAccess2 storage-buffer
