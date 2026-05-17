@@ -871,8 +871,15 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
                carrier_lists->release_count * TERAKAN_CARRIER_DWORDS_PER_RELEASE;
             bool const is_merge = (command_buffer_indirect_buffer == last_indirect_buffer);
             uint32_t const merge_flush_dwords = is_merge ? 16u : 0u;
+            /* Reserve worst-case capacity for the tail EOP fence-word
+             * emission (PKT3_EVENT_WRITE_EOP + PKT3_NOP reloc pair).
+             * When the EOP is suppressed (fence_gpu_va = 0) these
+             * dwords go unused and the trailing NOP padding loop
+             * fills them. */
+            uint32_t const eop_dwords_max = TERAKAN_CARRIER_DWORDS_PER_EOP_WITH_RELOC;
             uint32_t const carrier_combined_size =
-               acquire_dwords_max + orig_size + merge_flush_dwords + release_dwords_max;
+               acquire_dwords_max + orig_size + merge_flush_dwords +
+               release_dwords_max + eop_dwords_max;
             uint32_t const carrier_aligned_size =
                (carrier_combined_size +
                 (TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1)) &
@@ -998,7 +1005,8 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
 
             terakan_carrier_emit_releases_dwords(
                carrier_ib, carrier_aligned_size, &carrier_cursor, carrier_lists,
-               /* fence_gpu_va = */ 0u, /* fence_seq = */ 0u);
+               /* fence_gpu_va = */ 0u, /* fence_seq = */ 0u,
+               /* fence_bo_reference_index = */ 0u);
 
             while (carrier_cursor < carrier_aligned_size) {
                carrier_ib[carrier_cursor++] = PKT_TYPE_S(2);
