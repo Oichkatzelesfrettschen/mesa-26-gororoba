@@ -460,9 +460,6 @@ struct terakan_gfx_command_writer {
        * side bake into SQ_TEX_RESOURCE_WORD4 still handles those, only
        * the GATHER path uses this runtime metadata). */
       uint32_t view_swizzles[12];
-      /* Per-storage-buffer VkDescriptorBufferInfo::offset, uploaded to
-       * KCACHE bank 14 dwords 52..63 and added by SSBO NIR lowering. */
-      uint32_t view_offsets[TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT];
       bool dirty;
       /* Cached allocation from the last upload — reused if not dirty. */
       struct terakan_bo const *bo;

@@ -74,15 +74,12 @@ update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
                                uint8_t const uav_idx, bool const is_texel,
                                uint32_t const bound,
                                uint32_t const base_array_layer,
-                               bool const inject_base_array_layer,
-                               uint32_t const buffer_byte_offset)
+                               bool const inject_base_array_layer)
 {
    if (uav_idx >= TERAKAN_COLOR_HW_RTV_AND_UAV_COUNT)
       return;
    cw->robustness_metadata.uav_byte_sizes[uav_idx] = is_texel ? 0 : bound;
    cw->robustness_metadata.texel_buffer_element_counts[uav_idx] = is_texel ? bound : 0;
-   cw->robustness_metadata.view_offsets[uav_idx] =
-      is_texel ? 0u : buffer_byte_offset;
    {
       uint32_t bal_value =
          inject_base_array_layer ? base_array_layer : 0u;
@@ -440,23 +437,13 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   bool const inject_layer =
                      (uav->view_flags &
                       TERAKAN_DESCRIPTOR_SET_UAV_VIEW_FLAG_NONARRAY_VIEW_OF_ARRAY_IMAGE) != 0;
-                  /* For STORAGE_BUFFER_DYNAMIC, also shift the per-element
-                   * offset by the dynamic offset that the descriptor binder
-                   * supplied at vkCmdBindDescriptorSets time.  This keeps
-                   * the shader's byte_offset arithmetic aligned with what
-                   * the application asked the dynamic offset to do. */
-                  uint32_t buf_offset = uav->buffer_byte_offset;
-                  if (r->first_dynamic_offset != UINT16_MAX) {
-                     buf_offset += set_dyn_off[r->first_dynamic_offset + ui];
-                  }
                   if (used) {
                      unsigned const uav_metadata_idx =
                         terakan_uav_metadata_index_from_mutable_resource(
                            command_writer, uavs_used, idx, is_compute);
                      update_uav_robustness_metadata(command_writer, uav_metadata_idx,
                                                     uav->is_texel_buffer, bound,
-                                                    uav->base_array_layer, inject_layer,
-                                                    buf_offset);
+                                                    uav->base_array_layer, inject_layer);
                   }
 
                   /* A layer change can select a different compute shader
@@ -483,7 +470,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                         terakan_uav_metadata_index_from_mutable_resource(
                            command_writer, uavs_used, idx, is_compute);
                      update_uav_robustness_metadata(command_writer, uav_metadata_idx, false, 0,
-                                                    0, false, 0u);
+                                                    0, false);
                   }
                   if (is_compute && idx == 0 &&
                       command_writer->storage_image_variant_layer != INT32_MIN) {
