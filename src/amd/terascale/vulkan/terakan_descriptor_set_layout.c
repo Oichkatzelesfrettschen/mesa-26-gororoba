@@ -713,8 +713,27 @@ too_many_descriptors:
  * layout would be creatable without actually creating it.
  *
  * Implementation strategy: reuse the same numeric limit checks as
- * terakan_CreateDescriptorSetLayout so the query result matches whether the
- * layout can be created.
+ * terakan_CreateDescriptorSetLayout so the query result accurately
+ * predicts vkCreateDescriptorSetLayout success.  On Evergreen /
+ * TeraScale-2 VLIW5 silicon the shader resource registers are
+ * partitioned per-stage by physical hardware -- PS=176, VS/ES=160,
+ * GS=160, HS=160, LS=160, CS=176, FS=32 slots, per AMD Evergreen 3D
+ * Registers v2 section 5 "Shader Vertex Resource Constants" -- and
+ * terakan_CreateDescriptorSetLayout irreversibly assigns
+ * binding->first_shader_resources[stage_index] at set-creation time.
+ * Reporting supported=VK_TRUE for layouts that overflow those
+ * per-stage banks would then immediately fail at
+ * vkCreateDescriptorSetLayout, defeating the point of the query.
+ *
+ * The Vulkan specification permits implementations to be over-strict
+ * on platform-specific factors ("vkGetDescriptorSetLayoutSupport may
+ * take into account other factors not considered by maxPerSetDescriptors
+ * and the maxDescriptorSet* limits, including dynamic allocation and
+ * platform-specific reasons for failure" -- VK 1.4 section 14.2.3).
+ * A spec-purer Option B that defers per-stage budget enforcement to
+ * vkCreatePipelineLayout requires refactoring the per-stage slot
+ * assignment out of CreateDescriptorSetLayout; that is tracked
+ * separately and does not block this query's correctness.
  */
 VKAPI_ATTR void VKAPI_CALL
 terakan_GetDescriptorSetLayoutSupport(VkDevice const deviceHandle,
@@ -724,14 +743,9 @@ terakan_GetDescriptorSetLayoutSupport(VkDevice const deviceHandle,
    struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
 
    struct terakan_descriptor_set_layout_support_info support_info;
-   /* Per the Vulkan specification, vkGetDescriptorSetLayoutSupport ignores
-    * per-stage and per-pipeline descriptor limits.  Those are validated at
-    * pipeline-layout-creation time.  Reporting unsupported here for a layout
-    * that exceeds a per-stage limit but fits maxPerSetDescriptors would
-    * cause apps to disable valid layouts before that validation runs. */
    pSupport->supported =
       terakan_descriptor_set_layout_is_supported(device, pCreateInfo, &support_info,
-                                                 /*enforce_per_stage_and_per_pipeline_limits=*/false);
+                                                 /*enforce_per_stage_and_per_pipeline_limits=*/true);
 
    VkDescriptorSetVariableDescriptorCountLayoutSupport * const variable_count =
       vk_find_struct(pSupport->pNext, DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT);
