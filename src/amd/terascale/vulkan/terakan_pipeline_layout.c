@@ -107,10 +107,15 @@ update_uav_robustness_metadata(struct terakan_gfx_command_writer * const cw,
 }
 
 static unsigned
-terakan_uav_zero_based_index_from_mutable_resource(BITSET_WORD const * const uavs_used,
-                                                   uint8_t const mutable_resource_index)
+terakan_uav_metadata_index_from_mutable_resource(
+   struct terakan_gfx_command_writer const * const command_writer,
+   BITSET_WORD const * const uavs_used, uint8_t const mutable_resource_index,
+   bool const is_compute)
 {
-   unsigned uav_index = 0;
+   unsigned uav_index = is_compute
+      ? 0
+      : command_writer->state_draw.cb_color_uav.from_apply_sq_pgm_ps
+           .fs_uav_index_base;
    unsigned const first_word = BITSET_BITWORD(mutable_resource_index);
    for (unsigned word_index = 0; word_index < first_word; ++word_index) {
       uav_index += util_bitcount(uavs_used[word_index]);
@@ -446,9 +451,8 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   }
                   if (used) {
                      unsigned const uav_metadata_idx =
-                        command_writer->state_draw.cb_color_uav.from_apply_sq_pgm_ps
-                           .fs_uav_index_base +
-                        terakan_uav_zero_based_index_from_mutable_resource(uavs_used, idx);
+                        terakan_uav_metadata_index_from_mutable_resource(
+                           command_writer, uavs_used, idx, is_compute);
                      update_uav_robustness_metadata(command_writer, uav_metadata_idx,
                                                     uav->is_texel_buffer, bound,
                                                     uav->base_array_layer, inject_layer,
@@ -476,9 +480,8 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   BITSET_CLEAR(uavs_not_null, idx);
                   if (used) {
                      unsigned const uav_metadata_idx =
-                        command_writer->state_draw.cb_color_uav.from_apply_sq_pgm_ps
-                           .fs_uav_index_base +
-                        terakan_uav_zero_based_index_from_mutable_resource(uavs_used, idx);
+                        terakan_uav_metadata_index_from_mutable_resource(
+                           command_writer, uavs_used, idx, is_compute);
                      update_uav_robustness_metadata(command_writer, uav_metadata_idx, false, 0,
                                                     0, false, 0u);
                   }
