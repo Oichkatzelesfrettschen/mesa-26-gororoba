@@ -878,12 +878,81 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
                 (TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1)) &
                ~(TERAKAN_QUEUE_INDIRECT_BUFFER_SIZE_ALIGNMENT_DWORDS_GFX - 1);
 
-            uint32_t * const carrier_ib =
-               alloca(carrier_aligned_size * sizeof(uint32_t));
+            /* Carrier-combined-IB allocation strategy:
+             *
+             *   - Small IBs (<= TERAKAN_CARRIER_COMBINED_IB_ALLOCA_MAX dwords):
+             *     stack via alloca().  The hot path on Palm
+             *     (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)
+             *     is small carrier counts plus modest IB bodies; alloca
+             *     keeps the per-submit overhead at zero.
+             *
+             *   - Large IBs (> TERAKAN_CARRIER_COMBINED_IB_ALLOCA_MAX
+             *     dwords): heap via vk_alloc() against the device
+             *     allocator.  Threshold is 4096 dwords = 16 KB, chosen
+             *     so the alloca path stays comfortably under the Linux
+             *     default 8 MB worker-thread stack on Bobcat -- even
+             *     with several nested submit frames -- while large
+             *     workloads (many carriers, large recorded IBs) avoid
+             *     ever placing a multi-hundred-KB array on the stack.
+             *     A heap NULL is propagated as
+             *     VK_ERROR_OUT_OF_HOST_MEMORY rather than crashing.
+             *
+             * The heap pointer is owned strictly within this iteration
+             * of the per-IB loop: it is freed before continuing to the
+             * next IB on success, and before the device-lost early
+             * return on submit failure.
+             */
+            enum { TERAKAN_CARRIER_COMBINED_IB_ALLOCA_MAX = 4096u };
+            uint32_t * carrier_ib_heap = NULL;
+            uint32_t * carrier_ib;
+            if (carrier_aligned_size > TERAKAN_CARRIER_COMBINED_IB_ALLOCA_MAX) {
+               carrier_ib_heap = vk_alloc(
+                  &device->vk.alloc,
+                  (size_t)carrier_aligned_size * sizeof(uint32_t),
+                  alignof(uint32_t),
+                  VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+               if (carrier_ib_heap == NULL) {
+                  terakan_queue_completion_event_updates_free(
+                     device, &completion_event_updates);
+                  if (!disable_fence_elision && queue->pending_completion != NULL) {
+                     mtx_lock(&device->completion_mutex);
+                     list_add(&queue->pending_completion->link,
+                              &queue->completion_submissions_free);
+                     mtx_unlock(&device->completion_mutex);
+                     queue->pending_completion = NULL;
+                  }
+                  return VK_ERROR_OUT_OF_HOST_MEMORY;
+               }
+               carrier_ib = carrier_ib_heap;
+            } else {
+               carrier_ib = alloca(carrier_aligned_size * sizeof(uint32_t));
+            }
             uint32_t carrier_cursor = 0u;
 
-            terakan_carrier_emit_acquires_dwords(
-               carrier_ib, carrier_aligned_size, &carrier_cursor, carrier_lists);
+            VkResult const carrier_acquire_result =
+               terakan_carrier_emit_acquires_dwords(
+                  carrier_ib, carrier_aligned_size, &carrier_cursor, carrier_lists);
+            if (carrier_acquire_result != VK_SUCCESS) {
+               /* Imported producer fence on a carrier dma-buf did not
+                * signal cleanly.  Reading the carrier past this point
+                * would consume stale memory; refuse the submit and
+                * surface device-lost to the vkQueueSubmit caller.
+                * The heap-backed combined-IB allocation, if any, is
+                * released here on the same ownership rules as the
+                * adjacent OOM exit above. */
+               if (carrier_ib_heap != NULL)
+                  vk_free(&device->vk.alloc, carrier_ib_heap);
+               terakan_queue_completion_event_updates_free(
+                  device, &completion_event_updates);
+               if (!disable_fence_elision && queue->pending_completion != NULL) {
+                  mtx_lock(&device->completion_mutex);
+                  list_add(&queue->pending_completion->link,
+                           &queue->completion_submissions_free);
+                  mtx_unlock(&device->completion_mutex);
+                  queue->pending_completion = NULL;
+               }
+               return carrier_acquire_result;
+            }
 
             memcpy(&carrier_ib[carrier_cursor],
                    command_buffer_indirect_buffer->indirect_buffer,
@@ -962,6 +1031,17 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
             if (profiling) {
                device->profile.submit_ib_dwords += carrier_aligned_size;
                device->profile.submit_bo_refs += bo_count_for_carrier;
+            }
+            /* Free the heap-backed carrier IB on every path out of this
+             * iteration.  The winsys submit call has already copied the
+             * IB contents into the kernel CS ioctl buffer (see
+             * radeon_drm_cs.c emit), so the heap region can be released
+             * unconditionally before the shared submit-result check
+             * below decides whether to early-return on failure or
+             * continue to the next IB on success. */
+            if (carrier_ib_heap != NULL) {
+               vk_free(&device->vk.alloc, carrier_ib_heap);
+               carrier_ib_heap = NULL;
             }
          } else if (command_buffer_indirect_buffer == last_indirect_buffer) {
             /* Merge: append conservative flush packets and include completion BO reference.
