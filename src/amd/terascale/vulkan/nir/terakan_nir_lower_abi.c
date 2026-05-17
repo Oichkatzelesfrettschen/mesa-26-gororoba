@@ -1148,26 +1148,30 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
    BITSET_SET_RANGE(state->resources_needed,
                     resource_index_base + binding.array_index_range_first,
                     resource_index_base + binding.array_index_range_last);
+   uint32_t const mutable_resource_index_base =
+      binding.set->first_shader_resources[stage] +
+      binding.set_binding->first_shader_resources[stage] -
+      TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
+   unsigned const mutable_resource_count =
+      stage == MESA_SHADER_FRAGMENT
+         ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
+         : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
+   if (unlikely(mutable_resource_index_base + binding.array_index_range_last >=
+                mutable_resource_count)) {
+      terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
+      return;
+   }
 
    /* Fold the per-element VkDescriptorBufferInfo::offset into the
     * shader's byte_offset before issuing the vertex fetch. The radeon
     * kernel rewrites the resource base address during CS validation, so
-    * storage-buffer descriptor offsets are carried in the per-UAV
-    * robustness metadata and added here.
+    * storage-buffer descriptor offsets are carried in the same mutable
+    * resource metadata slot used by robustness guards.
     */
-   bool apply_uav_array_index;
-   unsigned const uav_index_zero_based = terakan_nir_get_binding_uav(
-      &binding, false, state, stage, &apply_uav_array_index);
-   nir_def * view_offset = nir_imm_zero(b, 1, 32);
-   if (likely(uav_index_zero_based != UINT_MAX)) {
-      *state->kcache_needed |=
-         (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
-      nir_def * const view_offset_array_index =
-         apply_uav_array_index ? binding.array_index : nir_imm_zero(b, 1, 32);
-      view_offset = terakan_nir_load_robustness_slot_u32(
-         b, 52u + state->uav_base + uav_index_zero_based,
-         view_offset_array_index);
-   }
+   *state->kcache_needed |=
+      (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
+   nir_def * const view_offset = terakan_nir_load_robustness_slot_u32(
+      b, 52u + mutable_resource_index_base, binding.array_index);
    nir_def * const adjusted_byte_offset =
       nir_iadd(b, intrin->src[1].ssa, view_offset);
 
@@ -1184,20 +1188,6 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
     * get_ssbo_size to zero out-of-range SSBO reads in shader ALU.
     */
    if (state->robust_buffer_access) {
-      uint32_t const mutable_resource_index_base =
-         binding.set->first_shader_resources[stage] +
-         binding.set_binding->first_shader_resources[stage] -
-         TERAKAN_RESOURCE_RANGE_MUTABLE_BASE;
-      unsigned const mutable_resource_count =
-         stage == MESA_SHADER_FRAGMENT
-            ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
-            : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
-      if (unlikely(mutable_resource_index_base + binding.array_index_range_last >=
-                   mutable_resource_count)) {
-         terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
-         return;
-      }
-
       *state->kcache_needed |=
          (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
       nir_def * const byte_size = terakan_nir_load_robustness_slot_u32(
