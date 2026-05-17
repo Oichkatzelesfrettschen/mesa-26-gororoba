@@ -1662,7 +1662,36 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       if (unlikely(p == NULL)) return;
       *p++ = PKT3(PKT3_SET_CONTEXT_REG, 13, 0) | COMPUTE_MODE_BIT;
       *p++ = ((R_028C60_CB_COLOR0_BASE + m * 0x3Cu) - 0x28000u) >> 2;
-      *p++ = 0;                                 /* CB_COLOR{M}_BASE (relocated) */
+      /* CB_COLOR{M}_BASE: kernel CS validator (radeon evergreen_cs.c
+       * evergreen_packet3_check, CB_COLOR0..7_BASE arm) performs an
+       * ADDITIVE 256-byte-granularity relocation:
+       *     ib[idx] += (u32)((reloc->gpu_offset >> 8) & 0xffffffff)
+       * after reading the userspace-emitted dword.  Emitting 0 yields a
+       * full-BO base view; non-zero values are interpreted as a base
+       * offset expressed in 256-byte units.  Per AMD Evergreen 3D
+       * Registers, R_028C60_CB_COLOR0_BASE.BASE_256B has 256B
+       * granularity.
+       *
+       * Diagnostic env knobs (zero overhead when unset):
+       *   TERAKAN_PROBE_RAT_BASE_SENTINEL=1 -> emit 0xCAFEBABE; the
+       *     kernel will additively add (gpu_offset >> 8) to a wildly
+       *     out-of-range value, causing the GPU to write to an
+       *     unmapped VA (expect lockup or no-op write).
+       *   TERAKAN_PROBE_RAT_BASE_SENTINEL=2 -> emit 0x10 (= 16 *
+       *     256B = +4096B offset within the BO).  If kernel is
+       *     additive, writes land at bo+4096 and result[0] stays at
+       *     the prefill sentinel.  If kernel pure-replaces, writes
+       *     land at VA 0x10*256 (likely fault). */
+      {
+         char const * const probe = getenv("TERAKAN_PROBE_RAT_BASE_SENTINEL");
+         if (probe && probe[0] == '1') {
+            *p++ = 0xCAFEBABEu;
+         } else if (probe && probe[0] == '2') {
+            *p++ = 0x10u;
+         } else {
+            *p++ = 0;
+         }
+      }
       *p++ = cb_color_pitch;                    /* CB_COLOR{M}_PITCH */
       *p++ = cb_color_slice;                    /* CB_COLOR{M}_SLICE */
       *p++ = 0;                                 /* CB_COLOR{M}_VIEW */
