@@ -1279,21 +1279,28 @@ terakan_emit_compute_resources(struct terakan_gfx_command_writer *command_writer
       if (unlikely(p == NULL)) return;
       *p++ = PKT3(PKT3_SET_RESOURCE, 8, 0) | COMPUTE_MODE_BIT;
       *p++ = res_slot * 8;
-      /* TERAKAN_PROBE_WORD0_SENTINEL controls the compute buffer
-       * descriptor WORD0 value written before kernel relocation handling.
-       * Value "1" writes an invalid 32-bit address sentinel.  Value "2"
-       * writes a plausible but wrong address inside the BO.  The default
-       * leaves WORD0 at zero, matching the normal relocation-patched path.
-       * The probe is restricted to buffer descriptors because the compute
-       * path emits storage-buffer resources here. */
+      /* WORD0 carries the per-BO byte offset. The radeon kernel CS
+       * validator reads ib[WORD0] as a byte offset and writes
+       * ib[WORD0] = reloc->gpu_offset + offset for
+       * SQ_TEX_VTX_VALID_BUFFER resources. desc[0] is
+       * (uint32_t)(buffer->va + VkDescriptorBufferInfo::offset), so
+       * subtracting bo->va recovers the descriptor's byte offset.
+       *
+       * Diagnostic env knobs:
+       *   TERAKAN_PROBE_WORD0_SENTINEL=1 -> 0xCAFEBABE
+       *   TERAKAN_PROBE_WORD0_SENTINEL=2 -> bo->va + 0x1000 sentinel
+       *   TERAKAN_VFETCH_FORCE_WORD0_ZERO=1 -> legacy WORD0 = 0. */
       {
          char const * const probe = getenv("TERAKAN_PROBE_WORD0_SENTINEL");
+         char const * const legacy = getenv("TERAKAN_VFETCH_FORCE_WORD0_ZERO");
          if (probe && probe[0] == '1') {
             *p++ = 0xCAFEBABEu;
          } else if (probe && probe[0] == '2') {
             *p++ = (uint32_t)(bo->va) + 0x1000u;
+         } else if (legacy && legacy[0] == '1') {
+            *p++ = 0;
          } else {
-            *p++ = 0;                /* WORD0: base address (relocated) */
+            *p++ = (uint32_t)(desc[0] - (uint32_t)bo->va);
          }
       }
       *p++ = buf_size - 1;                 /* WORD1: size in bytes - 1 */

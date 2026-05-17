@@ -999,33 +999,19 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
    BITSET_SET_RANGE(state->resources_needed,
                     resource_index_base + binding.array_index_range_first,
                     resource_index_base + binding.array_index_range_last);
-   /* Fold the per-element VkDescriptorBufferInfo::offset into the
-    * shader's byte_offset before issuing the vertex fetch. The radeon
-    * kernel rewrites the resource base address during CS validation, so
-    * storage-buffer descriptor offsets are carried in the same compact
-    * hardware UAV metadata slot used by robustness guards.
+   /* The per-element VkDescriptorBufferInfo::offset reaches the GPU
+    * through the SET_RESOURCE WORD0 emission in
+    * terakan_emit_compute_resources (terakan_dispatch.c).  The radeon
+    * kernel CS validator reads that WORD0 as a byte offset within the
+    * BO and writes ib[WORD0] = reloc->gpu_offset + offset, so the
+    * resource descriptor already addresses the correct per-element
+    * base. The shader's byte_offset stays block-relative, so no
+    * adjustment needed here.
     */
-   bool apply_uav_array_index;
-   unsigned const uav_index_zero_based = terakan_nir_get_binding_uav(
-      &binding, false, state, stage, &apply_uav_array_index);
-   nir_def * const uav_array_index =
-      apply_uav_array_index ? binding.array_index : nir_imm_zero(b, 1, 32);
-   uint32_t robustness_metadata_index = 0;
-   nir_def * view_offset = nir_imm_zero(b, 1, 32);
-   if (likely(uav_index_zero_based != UINT_MAX)) {
-      robustness_metadata_index = state->uav_base + uav_index_zero_based;
-      *state->kcache_needed |=
-         (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
-      view_offset = terakan_nir_load_robustness_slot_u32(
-         b, 52u + robustness_metadata_index, uav_array_index);
-   }
-   nir_def * const adjusted_byte_offset =
-      nir_iadd(b, intrin->src[1].ssa, view_offset);
-
    nir_def *result = terakan_nir_load_raw_resource_buffer(
       b, intrin->num_components, intrin->def.bit_size,
       nir_intrinsic_access(intrin), resource_index_base,
-      binding.array_index, 0, adjusted_byte_offset);
+      binding.array_index, 0, intrin->src[1].ssa);
 
    /* CTS copy_ssbo_bounds proves PALM's VFETCH descriptor clamp is not
     * sufficient for Terakan's advertised robustBufferAccess2 storage-buffer
@@ -1035,14 +1021,19 @@ terakan_nir_lower_bindings_instr_load_ssbo(nir_builder * const b,
     * get_ssbo_size to zero out-of-range SSBO reads in shader ALU.
     */
    if (state->robust_buffer_access) {
+      bool apply_uav_array_index;
+      unsigned const uav_index_zero_based = terakan_nir_get_binding_uav(
+         &binding, false, state, stage, &apply_uav_array_index);
       if (unlikely(uav_index_zero_based == UINT_MAX)) {
          terakan_nir_lower_bindings_instr_to_null(&intrin->instr);
          return;
       }
+      nir_def * const uav_array_index =
+         apply_uav_array_index ? binding.array_index : nir_imm_zero(b, 1, 32);
       *state->kcache_needed |=
          (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
       nir_def * const byte_size = terakan_nir_load_robustness_slot_u32(
-         b, robustness_metadata_index, uav_array_index);
+         b, state->uav_base + uav_index_zero_based, uav_array_index);
 
       uint32_t const read_size_bytes =
          intrin->num_components * (intrin->def.bit_size / 8u);
