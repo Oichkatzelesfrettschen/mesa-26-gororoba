@@ -46,6 +46,15 @@
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
+/* HW descriptor slot offset from the sample descriptor to the gather-safe
+ * sibling.  See terakan_descriptor.h:TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET
+ * for the rationale.  Per AMD IL Spec lines 4818-4844, FETCH4 / FETCH4C /
+ * FETCH4po / FETCH4poc accept gather4_comp_sel only in
+ * {IL_COMPSEL_X_R, Y_G, Z_B, W_A}; SEL_0 and SEL_1 are HW-invalid.  The
+ * gather-safe descriptor has identity DST_SEL; this pass reconstructs
+ * the application's ZERO / ONE on the result via ALU. */
+#define TERAKAN_TG4_GATHER_SLOT_OFFSET (TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET)
+
 /* Channel-target enum values stored in the packed swizzle nibble.
  * Match VK_COMPONENT_SWIZZLE_* in the AMD-side encoding so the
  * downstream comparison can use literal small ints. */
@@ -63,7 +72,17 @@
 /* Clone `tex` with `op == nir_texop_tg4` rewritten to gather channel
  * `new_component` instead of `tex->component`.  Returns the new tex
  * instr's def.  Uses `nir_instr_clone` so source rewrites and SSA
- * book-keeping happen via the canonical NIR clone path. */
+ * book-keeping happen via the canonical NIR clone path.
+ *
+ * The clone's `texture_index` is shifted by
+ * TERAKAN_TG4_GATHER_SLOT_OFFSET to route the FETCH4 through the
+ * gather-safe descriptor (identity DST_SEL) bound at the parallel
+ * HW slot by `terakan_pipeline_layout.c`.  This is what makes the
+ * AMD IL `gather4_comp_sel` HW contract satisfiable: the gather-safe
+ * descriptor never carries SEL_0 / SEL_1 in DST_SEL, so the HW lane
+ * permutation produces the spatial corner samples cleanly, and the
+ * application's VkComponentMapping (including ZERO / ONE) is
+ * reconstructed via the bcsel cascade below. */
 static nir_def *
 clone_tg4_with_component(nir_builder * const b, nir_tex_instr * const tex,
                          unsigned const new_component)
@@ -71,6 +90,11 @@ clone_tg4_with_component(nir_builder * const b, nir_tex_instr * const tex,
    nir_instr * const cloned_instr = nir_instr_clone(b->shader, &tex->instr);
    nir_tex_instr * const clone = nir_instr_as_tex(cloned_instr);
    clone->component = new_component;
+   /* Shift only texture_index, not sampler_index: the gather-safe
+    * sibling is a parallel SQ_TEX_RESOURCE descriptor (different
+    * RESOURCE_ID).  The sampler is unchanged -- it carries no
+    * gather-specific state and the same SAMPLER_ID is reused. */
+   clone->texture_index += TERAKAN_TG4_GATHER_SLOT_OFFSET;
    nir_builder_instr_insert(b, &clone->instr);
    return &clone->def;
 }

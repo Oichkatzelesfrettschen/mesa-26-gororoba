@@ -45,6 +45,17 @@ extern "C" {
 struct terakan_descriptor_set_resource {
    struct terakan_bo const * bo;
    uint32_t resource[8];
+   /* Gather-safe SQ_TEX_RESOURCE companion descriptor.  Copied from
+    * image_view->resource_gather at descriptor-update time.  Bound at
+    * HW slot (sample_slot + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET) by
+    * terakan_pipeline_layout.c so the `terakan_nir_lower_tg4_view_swizzle`
+    * NIR pass can route nir_texop_tg4 to a descriptor with identity
+    * DST_SEL.  See AMD IL Spec lines 4818-4844 (gather4_comp_sel) and
+    * 2026-05-17-139a-sel1-amd-il-spec-citation.md.  For non-image
+    * (buffer / texel-buffer) descriptors this field is unused; for
+    * sampled-image descriptors that don't carry a gather-safe variant
+    * (e.g. buffer views) it equals `resource`. */
+   uint32_t resource_gather[8];
 };
 
 struct terakan_descriptor_set_sampler {
