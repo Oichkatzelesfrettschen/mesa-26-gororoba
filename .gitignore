@@ -5,6 +5,9 @@
 *.pyo
 *.out
 /build
+/build-debug/
+/build-terakan-*/
+/build-terakan-plain/
 .venv/
 *.mda.tar
 *.ini
