@@ -239,12 +239,14 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * The runtime assert protects against future
                    * regressions if the constants drift apart. */
                   if (binding_is_image_class) {
-                     /* For image-class bindings only -- this avoids the
-                      * sparse-mixed-resource-layout sentinel where writing
-                      * to a buffer descriptor's "gather slot" could
-                      * overwrite a different image binding's regular slot.
-                      * The sentinel is tracked as a separate follow-up
-                      * (see findings/active/2026-05-17-139a-sparse-mixed-resource-sentinel.md). */
+                     /* Image-class bindings only.  Writing the gather
+                      * slot for a buffer / texel-buffer binding would
+                      * land at `resource_index + 24` in the same SQC
+                      * bank that a different image-class binding may
+                      * use for its REGULAR descriptor; the parallel
+                      * write would clobber it.  Image-class writes are
+                      * safe because the regular and gather slots both
+                      * belong to the same logical sampled image. */
                      uint32_t const gather_slot =
                         (uint32_t)resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
                      uint32_t const stage_resource_count =
