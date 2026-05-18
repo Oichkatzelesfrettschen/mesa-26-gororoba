@@ -117,6 +117,14 @@ terakan_set_resource_descriptor_type(struct terakan_descriptor_set_layout const 
    return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 }
 
+static bool
+terakan_descriptor_type_is_gather_resource(VkDescriptorType const descriptor_type)
+{
+   return descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+          descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+          descriptor_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                               VkPipelineBindPoint const pipelineBindPoint,
@@ -197,9 +205,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * exactly these TYPEs, not for buffer / texel-buffer
                    * descriptors which never reach FETCH4. */
                   bool const binding_is_image_class =
-                     desc_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-                     desc_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
-                     desc_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+                     terakan_descriptor_type_is_gather_resource(desc_type);
                   /* Shader-side resource IDs consume the namespace shifted by
                    * R600_MAX_CONST_BUFFERS. Shift all descriptor-backed
                    * resources uniformly to keep every descriptor class in one
@@ -213,15 +219,14 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * gather-safe descriptor at the parallel slot offset so
                    * the `terakan_nir_lower_tg4_view_swizzle` NIR pass can
                    * route nir_texop_tg4 to a FETCH4-compatible DST_SEL.
-                   * Per AMD IL Spec lines 4818-4844, gather4_comp_sel
-                   * accepts only IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0
-                   * and SEL_1 baked in the regular descriptor's
-                   * SQ_TEX_RESOURCE_WORD4 DST_SEL are HW-invalid for
-                   * FETCH4-family ops.  The gather-safe sibling has
-                   * identity DST_SEL; NIR ALU reconstructs the
-                   * application's VkComponentMapping (ZERO/ONE included)
-                   * on the gather result.  See
-                   * 2026-05-17-139a-sel1-amd-il-spec-citation.md.
+                   * Per the AMD IL Spec gather4_comp_sel definition,
+                   * gather4_comp_sel accepts only
+                   * IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 and SEL_1
+                   * baked in the regular descriptor's SQ_TEX_RESOURCE_WORD4
+                   * DST_SEL are HW-invalid for FETCH4-family ops.  The
+                   * gather-safe sibling has identity DST_SEL; NIR ALU
+                   * reconstructs the application's VkComponentMapping
+                   * (ZERO/ONE included) on the gather result.
                    *
                    * Bounds check: the gather slot
                    * `resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET`
@@ -239,14 +244,6 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * The runtime assert protects against future
                    * regressions if the constants drift apart. */
                   if (binding_is_image_class) {
-                     /* Image-class bindings only.  Writing the gather
-                      * slot for a buffer / texel-buffer binding would
-                      * land at `resource_index + 24` in the same SQC
-                      * bank that a different image-class binding may
-                      * use for its REGULAR descriptor; the parallel
-                      * write would clobber it.  Image-class writes are
-                      * safe because the regular and gather slots both
-                      * belong to the same logical sampled image. */
                      uint32_t const gather_slot =
                         (uint32_t)resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
                      uint32_t const stage_resource_count =
@@ -531,6 +528,77 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
    }
 }
 
+static VkResult
+terakan_pipeline_layout_validate_gather_resource_slots(
+   struct terakan_device * const device, struct terakan_pipeline_layout const * const layout,
+   VkShaderStageFlags const stage_mask, uint8_t const * const final_resource_counts)
+{
+   for (uint32_t set_index = 0; set_index < layout->vk.set_count; ++set_index) {
+      struct vk_descriptor_set_layout const * const vk_set_layout =
+         layout->vk.set_layouts[set_index];
+      if (vk_set_layout == NULL)
+         continue;
+
+      struct terakan_descriptor_set_layout const * const set_layout =
+         container_of(vk_set_layout, struct terakan_descriptor_set_layout const, vk);
+
+      unsigned remaining_stages = (unsigned)stage_mask;
+      while (remaining_stages) {
+         unsigned const stage = u_bit_scan(&remaining_stages);
+         struct terakan_descriptor_set_layout_shader const * const shader_layout =
+            &set_layout->shaders[stage];
+         struct terakan_descriptor_set_layout_shader_range const * const ranges =
+            set_layout->shader_ranges + shader_layout->first_resource_range;
+
+         uint32_t const regular_resource_end =
+            TERAKAN_RESOURCE_RANGE_MUTABLE_BASE + final_resource_counts[stage];
+         uint32_t const stage_resource_limit =
+            TERAKAN_RESOURCE_RANGE_MUTABLE_BASE +
+            (((VkShaderStageFlags)1 << stage == VK_SHADER_STAGE_FRAGMENT_BIT)
+                ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
+                : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL);
+
+         for (uint8_t range_index = 0; range_index < shader_layout->resource_range_count;
+              ++range_index) {
+            struct terakan_descriptor_set_layout_shader_range const * const range =
+               &ranges[range_index];
+            for (uint8_t descriptor_index = 0; descriptor_index < range->descriptor_count;
+                 ++descriptor_index) {
+               VkDescriptorType const descriptor_type =
+                  terakan_set_resource_descriptor_type(
+                     set_layout, range->first_set_descriptor + descriptor_index);
+               if (!terakan_descriptor_type_is_gather_resource(descriptor_type))
+                  continue;
+
+               uint32_t const resource_index =
+                  layout->sets[set_index].first_shader_resources[stage] +
+                  range->first_shader_descriptor + descriptor_index;
+               uint32_t const gather_index =
+                  resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
+
+               if (gather_index >= stage_resource_limit) {
+                  return vk_errorf(
+                     device, VK_ERROR_VALIDATION_FAILED_EXT,
+                     "The application creates a pipeline layout whose sampled-image gather "
+                     "descriptor slot %u exceeds the stage %u SQC resource range",
+                     gather_index, stage);
+               }
+
+               if (gather_index < regular_resource_end) {
+                  return vk_errorf(
+                     device, VK_ERROR_VALIDATION_FAILED_EXT,
+                     "The application creates a pipeline layout whose sampled-image gather "
+                     "descriptor slot %u overlaps regular descriptor slots below %u in stage %u",
+                     gather_index, regular_resource_end, stage);
+               }
+            }
+         }
+      }
+   }
+
+   return VK_SUCCESS;
+}
+
 VkResult
 terakan_pipeline_layout_create(struct terakan_device * const device,
                                VkPipelineLayoutCreateInfo const * const create_info,
@@ -587,6 +655,13 @@ terakan_pipeline_layout_create(struct terakan_device * const device,
             sls->immutable_samplers_unnormalized_coordinates << next_samp[st];
          next_samp[st] += sls->sampler_count;
       }
+   }
+
+   VkResult result =
+      terakan_pipeline_layout_validate_gather_resource_slots(device, layout, stage_mask, next_res);
+   if (result != VK_SUCCESS) {
+      vk_pipeline_layout_unref(&device->vk, &layout->vk);
+      return result;
    }
 
    for (uint32_t pi = 0; pi < create_info->pushConstantRangeCount; ++pi) {
