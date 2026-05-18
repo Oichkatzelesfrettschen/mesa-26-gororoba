@@ -201,6 +201,27 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   setter(&command_writer->hw_state_sqc, resource_index, desc.bo, desc.resource);
 
                   /* For SAMPLED_IMAGE / COMBINED_IMAGE_SAMPLER /
+                   * INPUT_ATTACHMENT (TEX-type resources), also bind the
+                   * gather-safe descriptor at the parallel slot offset so
+                   * the `terakan_nir_lower_tg4_view_swizzle` NIR pass can
+                   * route nir_texop_tg4 to a FETCH4-compatible DST_SEL.
+                   * Per AMD IL Spec lines 4818-4844, gather4_comp_sel
+                   * accepts only IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0
+                   * and SEL_1 baked in the regular descriptor's
+                   * SQ_TEX_RESOURCE_WORD4 DST_SEL are HW-invalid for
+                   * FETCH4-family ops.  The gather-safe sibling has
+                   * identity DST_SEL; NIR ALU reconstructs the
+                   * application's VkComponentMapping (ZERO/ONE included)
+                   * on the gather result.  See
+                   * 2026-05-17-139a-sel1-amd-il-spec-citation.md. */
+                  if (G_03001C_TYPE(desc.resource[7]) ==
+                      V_03001C_SQ_TEX_VTX_VALID_TEXTURE) {
+                     setter(&command_writer->hw_state_sqc,
+                            resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET,
+                            desc.bo, desc.resource_gather);
+                  }
+
+                  /* For SAMPLED_IMAGE / COMBINED_IMAGE_SAMPLER /
                    * INPUT_ATTACHMENT descriptors, populate the per-binding
                    * VkComponentMapping pack in robustness_metadata for the
                    * `terakan_nir_lower_tg4_view_swizzle` NIR pass.  AMD
