@@ -165,7 +165,13 @@ bool terakan_nir_lower_subgroup_lds(nir_shader * shader);
  * is the physical sampler resource slot (the index used to address
  * `view_swizzles[]` in robustness metadata KCACHE bank 14).
  */
-bool terakan_nir_lower_tg4_view_swizzle(nir_shader * shader);
+/* When `resources_needed` is non-NULL, the pass marks the gather-safe
+ * HW slot (`tex->texture_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET`)
+ * for each rewritten tg4 so the SQC state tracker keeps that slot
+ * live across binds.  Pass NULL only if the caller has already marked
+ * the relevant gather slots through some other path. */
+bool terakan_nir_lower_tg4_view_swizzle(nir_shader * shader,
+                                        BITSET_WORD * resources_needed);
 
 /* Active-mask materialisation helpers (terakan_nir_active_mask.c).
  *
