@@ -238,6 +238,22 @@ terakan_instance_init(struct terakan_instance * instance,
            TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL - TERAKAN_COLOR_UAV_COUNT_PIXEL -
               instance->max_per_stage_uniform_buffers - instance->max_per_stage_input_attachments);
 
+   /* Cap to the dual-descriptor gather-safe slot budget.  Per AMD IL Spec
+    * lines 4818-4844, gather4_comp_sel accepts only IL_COMPSEL_{X_R, Y_G,
+    * Z_B, W_A}; SEL_0 / SEL_1 baked into SQ_TEX_RESOURCE_WORD4 DST_SEL
+    * are HW-invalid for FETCH4-family ops.  Terakan routes
+    * nir_texop_tg4 through a parallel gather-safe descriptor with
+    * identity DST_SEL.  The KCACHE bank 14 view_swizzles[] storage
+    * caps the per-stage sampled-image count that can carry this routing
+    * at TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES.  Clamping
+    * maxPerStageDescriptorSampledImages here ensures Vulkan validation
+    * rejects pipeline layouts that would exceed the budget before they
+    * reach the runtime, eliminating the latent slot-collision and
+    * resources_needed-coverage hazards. */
+   instance->max_per_stage_sampled_images =
+      MIN2(instance->max_per_stage_sampled_images,
+           TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES);
+
    return VK_SUCCESS;
 }
 
