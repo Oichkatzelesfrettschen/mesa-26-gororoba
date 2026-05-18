@@ -1464,6 +1464,54 @@ RatInstr::emit_ssbo_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
    }
    bool const cmpxchg_op = intr->intrinsic == nir_intrinsic_ssbo_atomic_swap;
+   bool const ssbo_cmpxchg_comp_mask_1 =
+      cmpxchg_op && debug_get_bool_option(
+         "TERAKAN_EXPERIMENTAL_SSBO_CMPXCHG_COMP_MASK_1", false);
+   bool const ssbo_cmpxchg_cacheless =
+      cmpxchg_op && debug_get_bool_option(
+         "TERAKAN_EXPERIMENTAL_SSBO_CMPXCHG_CACHELESS", false);
+   unsigned ssbo_atomic_comp_mask = ssbo_cmpxchg_comp_mask_1 ? 1u : 0xfu;
+   ECFOpCode ssbo_atomic_cf =
+      ssbo_cmpxchg_cacheless ? cf_mem_rat_cacheless : cf_mem_rat;
+   int ssbo_atomic_burst_count = 1;
+   int ssbo_atomic_elem_size = 0;
+
+   /* Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)
+    * silently drops the conditional write on the cached MEM_RAT CMPXCHG
+    * path.  The shader already carries ordinary SSBO atomics through
+    * this function, so the field fuzzer stays behind cmpxchg_op: every
+    * non-CMPXCHG atomic in the same shader remains a control sample.
+    *
+    * TERAKAN_FUZZ_FIELD chooses one MEM_RAT_ATOMIC packet field:
+    *   comp_mask:   RatInstr component mask, 0..15
+    *   elem_size:   RatInstr element size encoding, 0..3
+    *   burst_count: RatInstr burst count, 1..15
+    *   cf_op:       0 = cached MEM_RAT, 1 = cacheless MEM_RAT
+    * TERAKAN_FUZZ_VALUE supplies the numeric value.  Invalid values
+    * leave the packet at the baseline selected by the SSBO CMPXCHG
+    * env knobs. */
+   char const *fuzz_field = nullptr;
+   int64_t fuzz_value = 0;
+   if (cmpxchg_op) {
+      char const *raw = debug_get_option("TERAKAN_FUZZ_FIELD", nullptr);
+      if (raw && raw[0]) {
+         fuzz_field = raw;
+         fuzz_value = debug_get_num_option("TERAKAN_FUZZ_VALUE", 0);
+         if (!strcmp(fuzz_field, "comp_mask") &&
+             fuzz_value >= 0 && fuzz_value <= 15) {
+            ssbo_atomic_comp_mask = (unsigned)fuzz_value;
+         } else if (!strcmp(fuzz_field, "elem_size") &&
+                    fuzz_value >= 0 && fuzz_value <= 3) {
+            ssbo_atomic_elem_size = (int)fuzz_value;
+         } else if (!strcmp(fuzz_field, "burst_count") &&
+                    fuzz_value >= 1 && fuzz_value <= 15) {
+            ssbo_atomic_burst_count = (int)fuzz_value;
+         } else if (!strcmp(fuzz_field, "cf_op") &&
+                    fuzz_value >= 0 && fuzz_value <= 1) {
+            ssbo_atomic_cf = fuzz_value ? cf_mem_rat_cacheless : cf_mem_rat;
+         }
+      }
+   }
 
    sfn_log << SfnLog::trans
            << "RAT_ATOMIC_EMIT path=ssbo_atomic"
@@ -1474,21 +1522,30 @@ RatInstr::emit_ssbo_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
            << " cmpxchg=" << cmpxchg_op
            << " coord=" << coord
            << " data=" << data_vec4
-           << " comp_mask=15"
-           << " burst_count=1"
-           << " elem_size=0"
+           << " comp_mask=" << ssbo_atomic_comp_mask
+           << " burst_count=" << ssbo_atomic_burst_count
+           << " elem_size=" << ssbo_atomic_elem_size
+           << " cf_op=" << (ssbo_atomic_cf == cf_mem_rat_cacheless
+                              ? "cf_mem_rat_cacheless" : "cf_mem_rat")
            << " return_address=" << *shader.rat_return_address() << "\n";
    if (cmpxchg_op) {
       sfn_log << SfnLog::trans
               << "RAT_CMPXCHG_MAP path=ssbo_atomic replacement=src3.x->data.x"
               << " compare=src2.x->data."
-              << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w") << "\n";
+              << cmpxchg_payload_channel_name(TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL)
+              << " comp_mask_override=" << ssbo_cmpxchg_comp_mask_1
+              << " cacheless_override=" << ssbo_cmpxchg_cacheless
+              << " fuzz_field=" << (fuzz_field ? fuzz_field : "none")
+              << " fuzz_value=" << fuzz_value
+              << "\n";
    }
 
    RegisterVec4 out_vec(coord, coord, coord, coord, pin_chgr);
 
    auto atomic =
-      new RatInstr(cf_mem_rat, opcode, data_vec4, out_vec, res_id, image_offset, 1, 0xf, 0);
+      new RatInstr(ssbo_atomic_cf, opcode, data_vec4, out_vec, res_id,
+                   image_offset, ssbo_atomic_burst_count,
+                   ssbo_atomic_comp_mask, ssbo_atomic_elem_size);
    shader.emit_instruction(atomic);
 
    atomic->set_ack();
@@ -1623,8 +1680,7 @@ RatInstr::emit_image_store(nir_intrinsic_instr *intrin, Shader& shader)
        * strictly honored "1 dword per element" while COMP_MASK said
        * "all 4 channels", and only the second dword (G) landed.
        * In warm-context, silicon's optional fallback cache wrote
-       * both dwords, producing the previously-mysterious
-       * non-monotonic latch behavior.
+    * both dwords, producing the non-monotonic latch behavior.
        *
        * Empirical evidence (Wrestler HD 6310, 2026-04-22):
        *   r32g32_uint truly-solo with elem_size=0 -> R_actual = 0
