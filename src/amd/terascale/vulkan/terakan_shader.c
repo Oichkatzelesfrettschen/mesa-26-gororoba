@@ -1127,7 +1127,8 @@ terakan_shader_lower_and_optimize_post_link(
    uint32_t * const driver_push_constants_used,
    uint16_t * const kcache_needed,
    uint8_t * const fragment_data_uncompacted_locations_out,
-   bool const robust_buffer_access)
+   bool const robust_buffer_access,
+   enum radeon_family const chip_family)
 {
    bool progress;
 
@@ -1260,7 +1261,7 @@ terakan_shader_lower_and_optimize_post_link(
     * bcsel + atomic_xchg sequence using only PALM-confirmed-working
     * hardware.  Must run BEFORE terakan_nir_lower_bindings so the lowered
     * xchg flows through the standard atomic UAV path. */
-   NIR_PASS(_, nir, terakan_nir_lower_cmpxchg_to_speculative_xchg);
+   NIR_PASS(_, nir, terakan_nir_lower_cmpxchg_to_speculative_xchg, chip_family);
 
    /* Lower bindings according to the pipeline layout.
     * In fragment shaders, this is done after compacting the fragment data output locations as UAVs
