@@ -18,7 +18,7 @@ plus forward-looking `release`/`profile` variants.  See
 
 ## Layout
 
-```
+```text
 build-infra/
 |-- Makefile                       # entry point
 |-- README.md                      # this file
@@ -43,6 +43,16 @@ Build outputs land OUTSIDE the source tree, at
 `../../build/mesa-<profile>/`, so `git clean -xdf` in gororoba
 does not nuke ongoing builds.
 
+Legacy in-tree `build-terakan-*` directories are not build infrastructure.
+They are superseded by this Makefile and ignored at the source root.  Terakan
+evidence bundles belong in steinmarder under `src/re/r600/results/`, not in
+Mesa build directories.
+
+Rulkan is the RS480/R300 Vulkan research lane in steinmarder
+`src/re/r300/`.  Until a Mesa-side R300 Vulkan ICD exists, Rulkan probes and
+evidence stay in steinmarder; this repository remains the Terakan code and
+Mesa build-infra checkout.
+
 The install prefix defaults to `/usr/local/mesa-<profile>`, derived from
 `INSTALL_NAMESPACE` and `PROFILE`.  This keeps profile-specific artifacts
 isolated because `meson install` does not remove files from an earlier
@@ -51,14 +61,14 @@ shared active tree.
 
 Before a long build, run the host audit:
 
-```
+```bash
 make audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
 ```
 
 ## Common flows
 
 Daily Terakan Vulkan iteration on x130e:
-```
+```bash
 make audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
 make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 make install PROFILE=terakan-distcc-no-rusticl \
@@ -67,7 +77,7 @@ make artifact-check
 ```
 
 Rusticl-enabled recovery lane:
-```
+```bash
 make rebuild-terakan-distcc
 ```
 
@@ -76,7 +86,7 @@ and `llvm-config-21` availability on the host.
 
 No-Rusticl x130e warm/incremental rebuild that preserves ccache and
 does not use distcc-pump:
-```
+```bash
 make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 ```
 
@@ -89,7 +99,7 @@ strips the pump-only `,cpp` option from `~/.distcc/hosts`, and leaves
 future rebuild does not collide with that active build lane.
 
 No-Rusticl x130e cold clean rebuild with maximum remote preprocessing:
-```
+```bash
 make rebuild-terakan-distcc-no-rusticl-pump
 ```
 
@@ -115,28 +125,28 @@ object parity is proven; opt in with `TERAKAN_PUMP_ALLOW_DESKTOP=1`
 only for parity probes.
 
 Fresh-from-clean full build (longer; zink+llvmpipe+softpipe):
-```
+```bash
 make rebuild-terakan-full
 ```
 
 NIR pass experiment:
-```
+```bash
 make rebuild-terakan-minimal
 ```
 
 Stock Mesa reference (no terakan) for regression comparison:
-```
+```bash
 make rebuild-base-debug
 ```
 
 Full reset of a profile (removes builddir and archives install prefix aside):
-```
+```bash
 make distclean PROFILE=terakan-distcc
 ```
 
 Install the already-converged build without letting root rebuild targets:
 
-```
+```bash
 make install PROFILE=terakan-distcc-no-rusticl \
   BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
 make artifact-check
@@ -144,7 +154,7 @@ make artifact-check
 
 Runtime smoke test:
 
-```
+```bash
 export PREFIX=/usr/local/mesa-terakan-distcc-no-rusticl
 export LD_LIBRARY_PATH=$PREFIX/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 export VK_DRIVER_FILES=$PREFIX/share/vulkan/icd.d/terascale_icd.x86_64.json
@@ -159,7 +169,7 @@ Delivery policy:
   and stale-Rusticl cleanup contract are stable.
 
 Show available profiles + hostenvs:
-```
+```bash
 make list
 ```
 
