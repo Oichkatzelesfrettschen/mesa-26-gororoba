@@ -125,7 +125,8 @@ terakan_descriptor_set_layout_is_supported(
    uint32_t set_uav_count = 0;
    uint32_t set_sampler_count = 0;
    uint32_t immutable_sampler_count = 0;
-   uint32_t stage_resource_count[MESA_SHADER_STAGES] = {0};
+   uint32_t stage_sampled_image_count[MESA_SHADER_STAGES] = {0};
+   uint32_t stage_other_resource_count[MESA_SHADER_STAGES] = {0};
    uint32_t stage_sampler_count[MESA_SHADER_STAGES] = {0};
    uint32_t variable_descriptor_count = 0;
    uint32_t variable_binding = 0;
@@ -191,10 +192,27 @@ terakan_descriptor_set_layout_is_supported(
                   stage_index == MESA_SHADER_FRAGMENT
                      ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
                      : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL;
-               if (stage_resource_limit - stage_resource_count[stage_index] < descriptor_count) {
+
+               if (terakan_descriptor_type_has_gather_resource(descriptor_type)) {
+                  if (TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES -
+                         stage_sampled_image_count[stage_index] <
+                      descriptor_count) {
+                     return false;
+                  }
+                  stage_sampled_image_count[stage_index] += descriptor_count;
+               } else {
+                  stage_other_resource_count[stage_index] += descriptor_count;
+               }
+
+               uint32_t const stage_resource_count =
+                  stage_sampled_image_count[stage_index] != 0
+                     ? TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET +
+                          stage_sampled_image_count[stage_index] +
+                          stage_other_resource_count[stage_index]
+                     : stage_other_resource_count[stage_index];
+               if (stage_resource_count > stage_resource_limit) {
                   return false;
                }
-               stage_resource_count[stage_index] += descriptor_count;
             }
          }
 
@@ -525,53 +543,81 @@ terakan_CreateDescriptorSetLayout(VkDevice const deviceHandle,
 
       uint8_t stage_resource_count = 0;
       uint8_t stage_uniform_buffer_count = 0;
+      uint8_t stage_sampled_image_count = 0;
 
       uint8_t const stage_flag = (uint8_t)1 << stage_index;
 
-      for (uint32_t create_info_binding_index = 0;
-           create_info_binding_index < non_empty_create_info_binding_count;
-           ++create_info_binding_index) {
-         struct terakan_descriptor_set_layout_binding * const binding =
-            &layout->bindings[sorted_create_info_bindings[create_info_binding_index].binding];
+      /* Sampled images need a parallel gather-safe descriptor at
+       * texture_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET.  Assign
+       * sampled images first, reserve their sibling range, then place every
+       * other resource descriptor after that range so sparse mixed-resource
+       * layouts cannot alias a gather sibling with a regular descriptor. */
+      for (uint32_t resource_pass = 0; resource_pass < 2; ++resource_pass) {
+         bool const sampled_image_pass = resource_pass == 0;
 
-         if (!(binding->stage_flags & stage_flag) ||
-             !terakan_descriptor_type_has_resource(binding->descriptor_type)) {
-            continue;
+         if (!sampled_image_pass && stage_sampled_image_count != 0) {
+            stage_resource_count =
+               TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET + stage_sampled_image_count;
          }
 
-         if ((stage_flag == VK_SHADER_STAGE_FRAGMENT_BIT
-                 ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
-                 : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL) -
-                stage_resource_count <
-             binding->descriptor_count) {
-            goto too_many_descriptors_destroy;
-         }
+         for (uint32_t create_info_binding_index = 0;
+              create_info_binding_index < non_empty_create_info_binding_count;
+              ++create_info_binding_index) {
+            struct terakan_descriptor_set_layout_binding * const binding =
+               &layout->bindings[sorted_create_info_bindings[create_info_binding_index].binding];
 
-         binding->first_shader_resources[stage_index] = stage_resource_count;
+            if (!(binding->stage_flags & stage_flag) ||
+                !terakan_descriptor_type_has_resource(binding->descriptor_type)) {
+               continue;
+            }
 
-         assert(next_shader_range_index < shader_range_count);
-         struct terakan_descriptor_set_layout_shader_range * const shader_range =
-            &layout->shader_ranges[next_shader_range_index];
-         shader_range->first_set_descriptor = binding->first_set_resource;
-         shader_range->first_dynamic_offset =
-            binding->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
-                  binding->descriptor_type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
-               ? binding->first_immutable_sampler_or_dynamic_offset
-               : UINT16_MAX;
-         shader_range->first_shader_descriptor = stage_resource_count;
-         shader_range->descriptor_count = binding->descriptor_count;
-         if (next_shader_range_index == layout_shader->first_resource_range ||
-             !terakan_descriptor_set_layout_shader_range_try_extend(
-                &layout->shader_ranges[next_shader_range_index - 1], shader_range)) {
-            ++next_shader_range_index;
-         }
+            if (terakan_descriptor_type_has_gather_resource(binding->descriptor_type) !=
+                sampled_image_pass) {
+               continue;
+            }
 
-         stage_resource_count += binding->descriptor_count;
+            if (sampled_image_pass &&
+                TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES - stage_sampled_image_count <
+                   binding->descriptor_count) {
+               goto too_many_descriptors_destroy;
+            }
 
-         if (binding->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
-             binding->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
-            binding->first_shader_uniform_buffers[stage_index] = stage_uniform_buffer_count;
-            stage_uniform_buffer_count += binding->descriptor_count;
+            if ((stage_flag == VK_SHADER_STAGE_FRAGMENT_BIT
+                    ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
+                    : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL) -
+                   stage_resource_count <
+                binding->descriptor_count) {
+               goto too_many_descriptors_destroy;
+            }
+
+            binding->first_shader_resources[stage_index] = stage_resource_count;
+
+            assert(next_shader_range_index < shader_range_count);
+            struct terakan_descriptor_set_layout_shader_range * const shader_range =
+               &layout->shader_ranges[next_shader_range_index];
+            shader_range->first_set_descriptor = binding->first_set_resource;
+            shader_range->first_dynamic_offset =
+               binding->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+                     binding->descriptor_type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC
+                  ? binding->first_immutable_sampler_or_dynamic_offset
+                  : UINT16_MAX;
+            shader_range->first_shader_descriptor = stage_resource_count;
+            shader_range->descriptor_count = binding->descriptor_count;
+            if (next_shader_range_index == layout_shader->first_resource_range ||
+                !terakan_descriptor_set_layout_shader_range_try_extend(
+                   &layout->shader_ranges[next_shader_range_index - 1], shader_range)) {
+               ++next_shader_range_index;
+            }
+
+            stage_resource_count += binding->descriptor_count;
+
+            if (sampled_image_pass) {
+               stage_sampled_image_count += binding->descriptor_count;
+            } else if (binding->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                       binding->descriptor_type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
+               binding->first_shader_uniform_buffers[stage_index] = stage_uniform_buffer_count;
+               stage_uniform_buffer_count += binding->descriptor_count;
+            }
          }
       }
 
