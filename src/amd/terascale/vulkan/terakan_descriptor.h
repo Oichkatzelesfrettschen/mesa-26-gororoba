@@ -161,11 +161,11 @@ extern "C" {
 #define TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES 24u
 
 /* Offset added to a sampled-image binding's HW resource slot to find its
- * gather-safe sibling.  Pipeline-layout creation verifies that no regular
- * resource descriptor occupies the sibling range for any sampled image.
- * Sampled-image descriptors therefore remain addressable as
- * texture_index + OFFSET in NIR without aliasing SSBO, UBO, storage-image,
- * or texel-buffer descriptors in the same SQC bank. */
+ * gather-safe sibling.  Descriptor-set-layout creation assigns sampled
+ * images densely at the start of each set/stage resource slice, reserves the
+ * sibling range at +OFFSET, then places all non-sampled-image resources after
+ * that range.  The NIR tg4 rewrite can therefore use texture_index + OFFSET
+ * without aliasing SSBO, UBO, storage-image, or texel-buffer descriptors. */
 #define TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES
 
 #define TERAKAN_SAMPLER_HW_OFFSET_PS   (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE * 0)
@@ -372,6 +372,13 @@ static inline bool
 terakan_descriptor_type_has_resource(VkDescriptorType const descriptor_type)
 {
    return descriptor_type != VK_DESCRIPTOR_TYPE_SAMPLER;
+}
+
+static inline bool
+terakan_descriptor_type_has_gather_resource(VkDescriptorType const descriptor_type)
+{
+   return descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+          descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 }
 
 static inline bool

@@ -117,14 +117,6 @@ terakan_set_resource_descriptor_type(struct terakan_descriptor_set_layout const 
    return VK_DESCRIPTOR_TYPE_MAX_ENUM;
 }
 
-static bool
-terakan_descriptor_type_is_gather_resource(VkDescriptorType const descriptor_type)
-{
-   return descriptor_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
-          descriptor_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
-          descriptor_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
-}
-
 VKAPI_ATTR void VKAPI_CALL
 terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                               VkPipelineBindPoint const pipelineBindPoint,
@@ -199,13 +191,12 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   uint8_t resource_index = base + di;
                   VkDescriptorType const desc_type =
                      terakan_set_resource_descriptor_type(sl, r->first_set_descriptor + di);
-                  /* Image-class binding TYPEs are the only ones that can
-                   * legally back a `nir_texop_tg4` instruction.  The
-                   * gather-safe sibling slot is bound (or cleared) for
-                   * exactly these TYPEs, not for buffer / texel-buffer
-                   * descriptors which never reach FETCH4. */
-                  bool const binding_is_image_class =
-                     terakan_descriptor_type_is_gather_resource(desc_type);
+                  /* Sampled-image binding TYPEs are the only ones that can
+                   * legally back a nir_texop_tg4 instruction.  The
+                   * gather-safe sibling slot is bound or cleared for those
+                   * TYPEs only. */
+                  bool const binding_is_sampled_image =
+                     terakan_descriptor_type_has_gather_resource(desc_type);
                   /* Shader-side resource IDs consume the namespace shifted by
                    * R600_MAX_CONST_BUFFERS. Shift all descriptor-backed
                    * resources uniformly to keep every descriptor class in one
@@ -214,11 +205,11 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                   resource_index += TERAKAN_SAMPLER_HW_COUNT_PER_STAGE;
                   setter(&command_writer->hw_state_sqc, resource_index, desc.bo, desc.resource);
 
-                  /* For SAMPLED_IMAGE / COMBINED_IMAGE_SAMPLER /
-                   * INPUT_ATTACHMENT (TEX-type resources), also bind the
-                   * gather-safe descriptor at the parallel slot offset so
-                   * the `terakan_nir_lower_tg4_view_swizzle` NIR pass can
-                   * route nir_texop_tg4 to a FETCH4-compatible DST_SEL.
+                  /* For SAMPLED_IMAGE / COMBINED_IMAGE_SAMPLER descriptors,
+                   * also bind the gather-safe descriptor at the parallel slot
+                   * offset so the `terakan_nir_lower_tg4_view_swizzle` NIR
+                   * pass can route nir_texop_tg4 to a FETCH4-compatible
+                   * DST_SEL.
                    * Per the AMD IL Spec gather4_comp_sel definition,
                    * gather4_comp_sel accepts only
                    * IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 and SEL_1
@@ -228,22 +219,11 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * reconstructs the application's VkComponentMapping
                    * (ZERO/ONE included) on the gather result.
                    *
-                   * Bounds check: the gather slot
-                   * `resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET`
-                   * must stay within the per-stage SQC resource bank.
-                   * Pixel/Compute stages have 176 slots
-                   * (TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE); vertex
-                   * stages have 160 (TERAKAN_RESOURCE_HW_COUNT_VERTEX).
-                   * `resource_index` here is the HW slot (already
-                   * shifted by TERAKAN_SAMPLER_HW_COUNT_PER_STAGE = 18).
-                   * For the smallest range (vertex, 160 slots): with
-                   * `maxPerStageDescriptorSampledImages` clamped to
-                   * TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES (= 24) and
-                   * GATHER_DESCRIPTOR_SLOT_OFFSET (= 24), the highest
-                   * gather slot is 18 + 23 + 24 = 65, well below 160.
-                   * The runtime assert protects against future
-                   * regressions if the constants drift apart. */
-                  if (binding_is_image_class) {
+                   * Descriptor-set layout creation reserves the sibling
+                   * range before non-sampled-image resources.  The runtime
+                   * assert protects against future drift in those layout
+                   * invariants. */
+                  if (binding_is_sampled_image) {
                      uint32_t const gather_slot =
                         (uint32_t)resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
                      uint32_t const stage_resource_count =
@@ -255,7 +235,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                             "TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES or "
                             "GATHER_DESCRIPTOR_SLOT_OFFSET must be reduced");
                      if (gather_slot < stage_resource_count) {
-                        /* Always write the gather slot for image-class
+                        /* Always write the gather slot for sampled-image
                          * bindings, even when the current descriptor is
                          * NULL.  For a NULL binding `desc.resource_gather`
                          * is zeroed by `vkUpdateDescriptorSets`; writing
@@ -269,9 +249,9 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      }
                   }
 
-                  /* For SAMPLED_IMAGE / COMBINED_IMAGE_SAMPLER /
-                   * INPUT_ATTACHMENT descriptors, populate the per-binding
-                   * VkComponentMapping pack in robustness_metadata for the
+                  /* For TEX descriptors in the low sampled-image range,
+                   * populate the per-binding VkComponentMapping pack in
+                   * robustness_metadata for the
                    * `terakan_nir_lower_tg4_view_swizzle` NIR pass.  AMD
                    * Evergreen-Family ISA Chapter 6: DST_SEL in WORD4 of
                    * SQ_TEX_RESOURCE permutes FETCH result lanes, which is
@@ -307,7 +287,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                      } else {
                         pack = 0x3210u;
                      }
-                     if (sampler_slot < 24) {
+                     if (sampler_slot < TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES) {
                         uint32_t * const slot =
                            &command_writer->robustness_metadata.view_swizzles[sampler_slot / 2u];
                         uint32_t const shift = (sampler_slot & 1u) ? 16u : 0u;
@@ -528,77 +508,6 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
    }
 }
 
-static VkResult
-terakan_pipeline_layout_validate_gather_resource_slots(
-   struct terakan_device * const device, struct terakan_pipeline_layout const * const layout,
-   VkShaderStageFlags const stage_mask, uint8_t const * const final_resource_counts)
-{
-   for (uint32_t set_index = 0; set_index < layout->vk.set_count; ++set_index) {
-      struct vk_descriptor_set_layout const * const vk_set_layout =
-         layout->vk.set_layouts[set_index];
-      if (vk_set_layout == NULL)
-         continue;
-
-      struct terakan_descriptor_set_layout const * const set_layout =
-         container_of(vk_set_layout, struct terakan_descriptor_set_layout const, vk);
-
-      unsigned remaining_stages = (unsigned)stage_mask;
-      while (remaining_stages) {
-         unsigned const stage = u_bit_scan(&remaining_stages);
-         struct terakan_descriptor_set_layout_shader const * const shader_layout =
-            &set_layout->shaders[stage];
-         struct terakan_descriptor_set_layout_shader_range const * const ranges =
-            set_layout->shader_ranges + shader_layout->first_resource_range;
-
-         uint32_t const regular_resource_end =
-            TERAKAN_RESOURCE_RANGE_MUTABLE_BASE + final_resource_counts[stage];
-         uint32_t const stage_resource_limit =
-            TERAKAN_RESOURCE_RANGE_MUTABLE_BASE +
-            (((VkShaderStageFlags)1 << stage == VK_SHADER_STAGE_FRAGMENT_BIT)
-                ? TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL
-                : TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL);
-
-         for (uint8_t range_index = 0; range_index < shader_layout->resource_range_count;
-              ++range_index) {
-            struct terakan_descriptor_set_layout_shader_range const * const range =
-               &ranges[range_index];
-            for (uint8_t descriptor_index = 0; descriptor_index < range->descriptor_count;
-                 ++descriptor_index) {
-               VkDescriptorType const descriptor_type =
-                  terakan_set_resource_descriptor_type(
-                     set_layout, range->first_set_descriptor + descriptor_index);
-               if (!terakan_descriptor_type_is_gather_resource(descriptor_type))
-                  continue;
-
-               uint32_t const resource_index =
-                  layout->sets[set_index].first_shader_resources[stage] +
-                  range->first_shader_descriptor + descriptor_index;
-               uint32_t const gather_index =
-                  resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
-
-               if (gather_index >= stage_resource_limit) {
-                  return vk_errorf(
-                     device, VK_ERROR_VALIDATION_FAILED_EXT,
-                     "The application creates a pipeline layout whose sampled-image gather "
-                     "descriptor slot %u exceeds the stage %u SQC resource range",
-                     gather_index, stage);
-               }
-
-               if (gather_index < regular_resource_end) {
-                  return vk_errorf(
-                     device, VK_ERROR_VALIDATION_FAILED_EXT,
-                     "The application creates a pipeline layout whose sampled-image gather "
-                     "descriptor slot %u overlaps regular descriptor slots below %u in stage %u",
-                     gather_index, regular_resource_end, stage);
-               }
-            }
-         }
-      }
-   }
-
-   return VK_SUCCESS;
-}
-
 VkResult
 terakan_pipeline_layout_create(struct terakan_device * const device,
                                VkPipelineLayoutCreateInfo const * const create_info,
@@ -655,13 +564,6 @@ terakan_pipeline_layout_create(struct terakan_device * const device,
             sls->immutable_samplers_unnormalized_coordinates << next_samp[st];
          next_samp[st] += sls->sampler_count;
       }
-   }
-
-   VkResult result =
-      terakan_pipeline_layout_validate_gather_resource_slots(device, layout, stage_mask, next_res);
-   if (result != VK_SUCCESS) {
-      vk_pipeline_layout_unref(&device->vk, &layout->vk);
-      return result;
    }
 
    for (uint32_t pi = 0; pi < create_info->pushConstantRangeCount; ++pi) {
