@@ -259,10 +259,12 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * regressions if the constants drift apart. */
                   if (binding_is_image_class) {
                      /* Buffer-class descriptors do not feed FETCH4.  Writing
-                      * a parallel gather slot for them can alias a different
-                      * image binding's regular resource slot in sparse mixed
-                      * layouts, so only image-class bindings update this
-                      * sibling slot. */
+                      * their gather slot at `resource_index +
+                      * TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET` can alias a
+                      * different image binding's regular resource slot in the
+                      * same SQC bank.  Image-class writes are safe because the
+                      * regular and gather slots belong to the same logical
+                      * sampled image. */
                      uint32_t const gather_slot =
                         (uint32_t)resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
                      uint32_t const stage_resource_count =
