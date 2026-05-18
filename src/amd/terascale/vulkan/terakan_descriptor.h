@@ -233,6 +233,26 @@ static_assert(
    (TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL * 5 +                                       \
     TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL)
 
+/* Storage-type safety guards for the descriptor-set-layout helpers.
+ *
+ * Per-stage and per-pipeline hardware-bank limits are the concern of
+ * vkCreatePipelineLayout, not vkCreateDescriptorSetLayout (see Vulkan
+ * 1.4 specification section 14.2.3 -- vkGetDescriptorSetLayoutSupport
+ * is permitted to take platform-specific factors into account but is
+ * not required to).  The descriptor-set-layout helpers therefore only
+ * need to protect the uint8_t per-stage offset fields and the uint16_t
+ * per-set accumulators against silent integer overflow.
+ *
+ * These guards reflect the maximum value the corresponding storage
+ * field can encode, not the hardware bank size.  Pipeline-layout
+ * creation still enforces the actual per-stage hardware caps
+ * (TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL /
+ *  TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL /
+ *  TERAKAN_SAMPLER_HW_COUNT_PER_STAGE).
+ */
+#define TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX UINT8_MAX
+#define TERAKAN_DESCRIPTOR_SET_PER_SET_STORAGE_MAX UINT16_MAX
+
 /* SQ_VTX_CONSTANT doesn't have words 5 and 6, so using word 5 for the BO priority. */
 #define TERAKAN_RESOURCE_BUFFER_PRIORITY_WORD 5
 

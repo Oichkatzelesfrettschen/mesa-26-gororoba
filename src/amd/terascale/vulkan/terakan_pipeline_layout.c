@@ -508,6 +508,31 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
    }
 }
 
+/* terakan_pipeline_layout_create is the authoritative enforcement
+ * point for per-stage hardware-bank caps (Option B contract).
+ *
+ * terakan_descriptor_set_layout.c assigns binding->first_shader_-
+ * resources[stage] and binding->first_shader_samplers[stage] as
+ * per-set-relative offsets bounded only by uint8_t storage.  This
+ * function walks all bound VkDescriptorSetLayout objects in stage_mask
+ * order and computes the absolute per-stage offsets, rejecting layouts
+ * that overflow:
+ *
+ *   - TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL (PS, 176 slots)
+ *   - TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL (VS/ES/GS/HS/
+ *     LS/CS, 160 or 176 slots)
+ *   - TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS per stage
+ *   - TERAKAN_SAMPLER_HW_COUNT_PER_STAGE per stage (16 slots)
+ *
+ * AMD Evergreen 3D Registers v2 section 5 "Shader Vertex Resource
+ * Constants" partitions the hardware constant banks per-stage with
+ * those counts.
+ *
+ * Failures here surface to the caller as VK_ERROR_OUT_OF_DEVICE_MEMORY
+ * via the too_many_descriptors label.  See the leading comment on
+ * terakan_descriptor_set_layout_is_supported for the matching
+ * descriptor-set-layout side of this contract.
+ */
 VkResult
 terakan_pipeline_layout_create(struct terakan_device * const device,
                                VkPipelineLayoutCreateInfo const * const create_info,
