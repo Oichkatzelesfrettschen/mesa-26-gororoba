@@ -20,9 +20,10 @@
  * producing a result that no atomic CMPXCHG instruction would ever
  * produce.  The rewrite is therefore valid only for shaders that DO NOT
  * race on the slot under compare-and-swap.  Vulkan CTS opatomic.compex
- * shaders, dEQP single-invocation atomic probes, and many SPIR-V
- * compute kernels with workgroup-local CMPXCHG meet that constraint.
- * General Device-scope CMPXCHG does NOT.
+ * shaders and dEQP single-invocation atomic probes meet that
+ * constraint, but the NIR intrinsics reaching this pass do not yet
+ * encode enough dispatch-shape proof to identify them.  General
+ * Device-scope CMPXCHG does NOT meet the constraint.
  *
  * Policy surface
  *
@@ -44,12 +45,11 @@
  *     reporting outside this NIR pass.
  *
  *   cts_speculative
- *     Enable the speculative-XCHG rewrite, but only for compare-and-
- *     swap intrinsics whose memory scope cannot race on Palm (workgroup
- *     / subgroup / invocation, image accesses that the shader proves
- *     non-aliasing with other dispatches).  This is the CTS frontier
- *     mode: it lets opatomic.compex tests pass without claiming
- *     Vulkan-Device-scope CMPXCHG conformance.
+ *     Enable the speculative-XCHG rewrite only for compare-and-swap
+ *     intrinsics whose non-racing shape is visible to this pass.  The
+ *     SSBO / image / global atomics handled here do not carry that proof, so
+ *     this policy keeps them native.  This is the CTS frontier mode,
+ *     not a claim of Vulkan Device-scope CMPXCHG conformance.
  *
  *   force_dpm_high
  *     Selects the same NIR rewrite as cts_speculative.  A dispatch-time
@@ -83,6 +83,7 @@
 #include "util/u_debug.h"
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 enum terakan_palm_cmpxchg_policy {
@@ -130,8 +131,13 @@ get_palm_cmpxchg_policy(enum radeon_family const chip_family)
       if (!strcmp(policy_str, "native_noop_legacy")) {
          return TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
       }
-      /* Unknown policy string: fall through to the legacy boolean,
-       * never silently downgrade to permissive. */
+      fprintf(stderr,
+              "terakan: unknown TERAKAN_PALM_CMPXCHG_POLICY='%s'; "
+              "accepted values are strict_reject, cts_speculative, "
+              "force_dpm_high, unsafe_speculative, native_noop_legacy. "
+              "Using native_noop_legacy.\n",
+              policy_str);
+      return TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
    }
 
    /* Legacy boolean keeps older harness scripts and existing CI working.
@@ -151,23 +157,21 @@ get_palm_cmpxchg_policy(enum radeon_family const chip_family)
 static bool
 is_non_racing_cmpxchg(nir_intrinsic_instr const *intr)
 {
-   /* Single-invocation dispatches are non-racing by construction;
-    * the harness probes that drive this lane use a 1x1x1 dispatch
-    * with local_size 1x1x1.  Detecting that at the NIR pass level
-    * would require shader-wide analysis; for now, the cts_speculative
-    * policy trusts the developer's intent.  unsafe_speculative skips
-    * this check entirely. */
+   /* SSBO, image, and global atomic-swap intrinsics in this Mesa branch
+    * carry access flags and the atomic opcode, but not a memory scope or
+    * dispatch-shape proof.  Treat them as Device-scope until an earlier
+    * pass attaches a proof this function can read. */
    (void)intr;
-   return true;
+   return false;
 }
 
 struct lower_cmpxchg_state {
-   enum radeon_family chip_family;
+   enum terakan_palm_cmpxchg_policy policy;
 };
 
 static bool
 should_emulate(nir_intrinsic_instr const * intr,
-               enum radeon_family const chip_family)
+               enum terakan_palm_cmpxchg_policy const policy)
 {
    if (intr->intrinsic != nir_intrinsic_ssbo_atomic_swap &&
        intr->intrinsic != nir_intrinsic_image_deref_atomic_swap &&
@@ -183,7 +187,7 @@ should_emulate(nir_intrinsic_instr const * intr,
       return false;
    }
 
-   switch (get_palm_cmpxchg_policy(chip_family)) {
+   switch (policy) {
    case TERAKAN_PALM_CMPXCHG_POLICY_STRICT_REJECT:
    case TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY:
       return false;
@@ -284,7 +288,7 @@ lower_cmpxchg_instr(nir_builder * b, nir_intrinsic_instr * intr,
                     void * state)
 {
    struct lower_cmpxchg_state const * const pass_state = state;
-   if (!should_emulate(intr, pass_state->chip_family)) {
+   if (!should_emulate(intr, pass_state->policy)) {
       return false;
    }
 
@@ -315,7 +319,7 @@ terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader,
                                               enum radeon_family chip_family)
 {
    struct lower_cmpxchg_state state = {
-      .chip_family = chip_family,
+      .policy = get_palm_cmpxchg_policy(chip_family),
    };
    return nir_shader_intrinsics_pass(shader, lower_cmpxchg_instr,
                                      nir_metadata_block_index |
