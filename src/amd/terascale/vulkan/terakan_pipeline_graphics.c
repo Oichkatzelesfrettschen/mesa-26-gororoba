@@ -1978,7 +1978,8 @@ terakan_pipeline_graphics_compile_shaders(
          &fs_local->push_constants_usage.driver_constants,
          &fs_local->kcache_needed,
          &fs_local->fs.fragment_data_uncompacted_locations,
-         stages[MESA_SHADER_FRAGMENT].robust_buffer_access);
+         stages[MESA_SHADER_FRAGMENT].robust_buffer_access,
+         terakan_device_physical_device(device)->chip_info.chip_family);
 
       fs_inputs_read = fs_nir->info.inputs_read;
    }
@@ -2020,7 +2021,8 @@ terakan_pipeline_graphics_compile_shaders(
             &local->push_constants_usage.driver_constants,
             &local->kcache_needed,
             NULL, /* Not FS: no fragment data locations */
-            stages[si].robust_buffer_access);
+            stages[si].robust_buffer_access,
+            terakan_device_physical_device(device)->chip_info.chip_family);
 
          /* Cross-stage post-process: varying pruning + point size removal.
           *
