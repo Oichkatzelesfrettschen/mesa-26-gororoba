@@ -1552,7 +1552,7 @@ RatInstr::emit_ssbo_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
       sfn_log << SfnLog::trans
               << "RAT_CMPXCHG_MAP path=ssbo_atomic replacement=src3.x->data.x"
               << " compare=src2.x->data."
-              << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w")
+              << cmpxchg_payload_channel_name(TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL)
               << " comp_mask_override=" << ssbo_cmpxchg_comp_mask_1
               << " cacheless_override=" << ssbo_cmpxchg_cacheless
               << " fuzz_field=" << (fuzz_field ? fuzz_field : "none")
