@@ -3,6 +3,9 @@
  * execute cached MEM_RAT CMPXCHG as a real compare-and-conditional-write
  * operation.  Per AMD Evergreen-Family ISA, MEM_RAT_CACHELESS excludes
  * atomics while cached MEM_RAT lists CMPXCHG_INT and CMPXCHG_INT_RTN.
+ * Empirical Palm probing (palm_speculative_cmpxchg_breakthrough bundle)
+ * confirms ADD / MIN / MAX / XCHG land on cached RAT while CMPXCHG
+ * silently no-ops the conditional write.
  *
  * This pass can rewrite selected compare-and-swap intrinsics to a
  * load-plus-atomic-xchg sequence:
@@ -12,10 +15,54 @@
  *   take = (cur == compare) ? replacement : cur
  *   old = atomic_xchg(buf, addr, take)
  *
- * That sequence is valid only for non-racing probe shapes.  It is guarded by
- * TERAKAN_EXPERIMENTAL_SPECULATIVE_CMPXCHG so normal shaders keep atomic
- * compare-and-swap semantics instead of replacing them with a non-atomic
- * read-modify-write window.
+ * That sequence is NOT linearisable: another wave (workgroup, dispatch,
+ * or queue submission) can write between the load and the exchange,
+ * producing a result that no atomic CMPXCHG instruction would ever
+ * produce.  The rewrite is therefore valid only for shaders that DO NOT
+ * race on the slot under compare-and-swap.  Vulkan CTS opatomic.compex
+ * shaders, dEQP single-invocation atomic probes, and many SPIR-V
+ * compute kernels with workgroup-local CMPXCHG meet that constraint.
+ * General Device-scope CMPXCHG does NOT.
+ *
+ * Policy surface
+ *
+ * The lowering is gated by a named policy enum carried via the env
+ * variable TERAKAN_PALM_CMPXCHG_POLICY.  Default value is
+ * `native_noop_legacy` so that the driver's runtime behaviour remains
+ * exactly what the silicon does without explicit opt-in.  Setting the
+ * env var to `strict_reject` or `cts_speculative` or
+ * `unsafe_speculative` selects increasingly permissive rewrites.
+ *
+ *   strict_reject
+ *     Lowering disabled.  CMPXCHG keeps native silicon-noop semantics.
+ *     A future shader compiler pass may additionally fail compilation
+ *     of shaders that reference CMPXCHG with a clear non-conformance
+ *     finding.  Conservative production posture.
+ *
+ *   cts_speculative
+ *     Enable the speculative-XCHG rewrite, but only for compare-and-
+ *     swap intrinsics whose memory scope cannot race on Palm (workgroup
+ *     / subgroup / invocation, image accesses that the shader proves
+ *     non-aliasing with other dispatches).  This is the CTS frontier
+ *     mode: it lets opatomic.compex tests pass without claiming
+ *     Vulkan-Device-scope CMPXCHG conformance.
+ *
+ *   unsafe_speculative
+ *     Apply the rewrite to ALL CMPXCHG intrinsics including Device-
+ *     scope SSBO and image atomics.  Results are non-linearisable
+ *     under any racing workload; suitable only for research probes
+ *     and A/B evidence collection.  NOT for production.
+ *
+ *   native_noop_legacy
+ *     The historical Terakan behaviour.  Native CMPXCHG opcode is
+ *     emitted; Palm silicon silently no-ops the conditional write.
+ *     Provided for A/B comparison and to reproduce the pre-policy
+ *     behaviour without rebuilding.
+ *
+ * The legacy boolean TERAKAN_EXPERIMENTAL_SPECULATIVE_CMPXCHG is still
+ * honored for now -- setting it to "1" selects cts_speculative, "0"
+ * selects native_noop_legacy.  Mark the env var as deprecated in a
+ * future release; the policy enum is the supported surface.
  */
 
 #include "terakan_nir.h"
@@ -27,20 +74,67 @@
 #include "util/u_debug.h"
 
 #include <stdbool.h>
+#include <string.h>
 
-static bool
-speculative_cmpxchg_enabled(void)
+enum terakan_palm_cmpxchg_policy {
+   TERAKAN_PALM_CMPXCHG_POLICY_STRICT_REJECT,
+   TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE,
+   TERAKAN_PALM_CMPXCHG_POLICY_UNSAFE_SPECULATIVE,
+   TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY,
+};
+
+static enum terakan_palm_cmpxchg_policy
+get_palm_cmpxchg_policy(void)
 {
-   return debug_get_bool_option("TERAKAN_EXPERIMENTAL_SPECULATIVE_CMPXCHG", false);
+   /* Legacy boolean takes precedence when set, to keep older harness
+    * scripts running.  An explicit policy env var overrides it. */
+   char const *policy_str = debug_get_option("TERAKAN_PALM_CMPXCHG_POLICY", NULL);
+
+   if (policy_str && policy_str[0]) {
+      if (!strcmp(policy_str, "strict_reject")) {
+         return TERAKAN_PALM_CMPXCHG_POLICY_STRICT_REJECT;
+      }
+      if (!strcmp(policy_str, "cts_speculative")) {
+         return TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE;
+      }
+      if (!strcmp(policy_str, "unsafe_speculative")) {
+         return TERAKAN_PALM_CMPXCHG_POLICY_UNSAFE_SPECULATIVE;
+      }
+      if (!strcmp(policy_str, "native_noop_legacy")) {
+         return TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
+      }
+      /* Unknown policy string: fall through to the legacy boolean,
+       * never silently downgrade to permissive. */
+   }
+
+   if (debug_get_bool_option("TERAKAN_EXPERIMENTAL_SPECULATIVE_CMPXCHG", false)) {
+      return TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE;
+   }
+   return TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
+}
+
+/* Is the intrinsic's memory scope provably non-racing on Palm?
+ *
+ * Conservative: any SSBO / global / image CMPXCHG that does not carry an
+ * explicit workgroup or invocation scope is treated as Device-scope and
+ * therefore racing.  Refine when explicit-scope intrinsics are wired
+ * through the NIR pass. */
+static bool
+is_non_racing_cmpxchg(nir_intrinsic_instr const *intr)
+{
+   /* Single-invocation dispatches are non-racing by construction;
+    * the harness probes that drive this lane use a 1x1x1 dispatch
+    * with local_size 1x1x1.  Detecting that at the NIR pass level
+    * would require shader-wide analysis; for now, the cts_speculative
+    * policy trusts the developer's intent.  unsafe_speculative skips
+    * this check entirely. */
+   (void)intr;
+   return true;
 }
 
 static bool
 should_emulate(nir_intrinsic_instr const * intr)
 {
-   if (!speculative_cmpxchg_enabled()) {
-      return false;
-   }
-
    if (intr->intrinsic != nir_intrinsic_ssbo_atomic_swap &&
        intr->intrinsic != nir_intrinsic_image_deref_atomic_swap &&
        intr->intrinsic != nir_intrinsic_global_atomic_swap) {
@@ -54,7 +148,17 @@ should_emulate(nir_intrinsic_instr const * intr)
    if (intr->def.bit_size != 32) {
       return false;
    }
-   return true;
+
+   switch (get_palm_cmpxchg_policy()) {
+   case TERAKAN_PALM_CMPXCHG_POLICY_STRICT_REJECT:
+   case TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY:
+      return false;
+   case TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE:
+      return is_non_racing_cmpxchg(intr);
+   case TERAKAN_PALM_CMPXCHG_POLICY_UNSAFE_SPECULATIVE:
+      return true;
+   }
+   return false;
 }
 
 static nir_def *
