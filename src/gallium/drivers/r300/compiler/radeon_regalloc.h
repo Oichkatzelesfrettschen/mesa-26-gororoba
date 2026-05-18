@@ -78,7 +78,7 @@ struct regalloc_state {
 };
 
 struct rc_class {
-   enum rc_reg_class ID;
+   unsigned int ID;
 
    unsigned int WritemaskCount;
 
