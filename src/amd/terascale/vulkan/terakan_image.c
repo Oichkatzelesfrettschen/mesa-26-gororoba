@@ -1894,8 +1894,12 @@ terakan_CreateImageView(VkDevice const deviceHandle,
       view_format_info.aspect_formats[view_format_main_aspect_index];
    descriptor_create_info.image_aspect_index = image_format_main_aspect_index;
 
-   if (!terakan_image_create_resource_descriptor(&descriptor_create_info, &pCreateInfo->components,
-                                                 image_view->resource)) {
+   bool const resource_descriptor_built =
+      terakan_image_create_resource_descriptor(&descriptor_create_info,
+                                               &pCreateInfo->components,
+                                               image_view->resource);
+
+   if (!resource_descriptor_built) {
       if (requires_sq_resource_descriptor) {
          vk_image_view_finish(&image_view->vk);
          vk_free2(&device->vk.alloc, pAllocator, image_view);
@@ -1905,32 +1909,38 @@ terakan_CreateImageView(VkDevice const deviceHandle,
       }
 
       memset(image_view->resource, 0, sizeof(image_view->resource));
+      memset(image_view->resource_gather, 0, sizeof(image_view->resource_gather));
+   } else {
+      /* Build the gather-safe variant by copying `resource` and forcing the
+       * SQ_TEX_RESOURCE_WORD4 DST_SEL_X/Y/Z/W fields to identity
+       * (X/Y/Z/W = 0/1/2/3).  Per AMD IL Spec lines 4818-4844,
+       * gather4_comp_sel for FETCH4 / FETCH4C / FETCH4po / FETCH4poc only
+       * accepts the four real channels; SEL_0 and SEL_1 produce undefined
+       * HW behaviour on Evergreen and later.  The application-requested
+       * VkComponentMapping (which may include ZERO / ONE literals) is
+       * preserved separately in `component_swizzle_packed` for the
+       * `terakan_nir_lower_tg4_view_swizzle` NIR pass to reconstruct on
+       * the gather result via ALU.
+       *
+       * Sample / load paths continue to use `resource` with the
+       * application's mapping baked into DST_SEL for the fast HW
+       * swizzle path.  Only the gather path binds `resource_gather`.
+       *
+       * Building this only on the success branch (with an explicit
+       * zero on the failure-and-not-required branch above) keeps the
+       * two descriptors in sync: an unbuildable view has both
+       * descriptors zeroed; a buildable view has the sample-baked
+       * `resource` plus the identity-DST_SEL `resource_gather`. */
+      memcpy(image_view->resource_gather, image_view->resource,
+             sizeof(image_view->resource_gather));
+      image_view->resource_gather[4] =
+         (image_view->resource_gather[4] &
+          C_030010_DST_SEL_X & C_030010_DST_SEL_Y & C_030010_DST_SEL_Z & C_030010_DST_SEL_W) |
+         S_030010_DST_SEL_X(V_030010_SQ_SEL_X) |
+         S_030010_DST_SEL_Y(V_030010_SQ_SEL_Y) |
+         S_030010_DST_SEL_Z(V_030010_SQ_SEL_Z) |
+         S_030010_DST_SEL_W(V_030010_SQ_SEL_W);
    }
-
-   /* Build the gather-safe variant by copying `resource` and forcing the
-    * SQ_TEX_RESOURCE_WORD4 DST_SEL_X/Y/Z/W fields to identity
-    * (X/Y/Z/W = 0/1/2/3).  Per AMD IL Spec lines 4818-4844, gather4_comp_sel
-    * for FETCH4 / FETCH4C / FETCH4po / FETCH4poc only accepts the four real
-    * channels; SEL_0 and SEL_1 produce undefined HW behaviour on
-    * Evergreen and later.  The application-requested VkComponentMapping
-    * (which may include ZERO/ONE literals) is preserved separately in
-    * `component_swizzle_packed` for the
-    * `terakan_nir_lower_tg4_view_swizzle` NIR pass to reconstruct on the
-    * gather result via ALU.
-    *
-    * Sample / load paths continue to use `resource` with the
-    * application's mapping baked into DST_SEL for the fast HW swizzle
-    * path.  Only the gather path (PR A2 dual-descriptor plumbing)
-    * binds `resource_gather`. */
-   memcpy(image_view->resource_gather, image_view->resource,
-          sizeof(image_view->resource_gather));
-   image_view->resource_gather[4] =
-      (image_view->resource_gather[4] &
-       C_030010_DST_SEL_X & C_030010_DST_SEL_Y & C_030010_DST_SEL_Z & C_030010_DST_SEL_W) |
-      S_030010_DST_SEL_X(V_030010_SQ_SEL_X) |
-      S_030010_DST_SEL_Y(V_030010_SQ_SEL_Y) |
-      S_030010_DST_SEL_Z(V_030010_SQ_SEL_Z) |
-      S_030010_DST_SEL_W(V_030010_SQ_SEL_W);
 
    /* Pack VkComponentMapping into 16 bits for the
     * `terakan_nir_lower_tg4_view_swizzle` NIR pass.  AMD Evergreen-Family

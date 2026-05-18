@@ -195,22 +195,23 @@ struct terakan_image_view {
 
    uint32_t resource[8];
 
-   /* Gather-safe SQ_TEX_RESOURCE descriptor.  Identical to `resource` except
-    * SQ_TEX_RESOURCE_WORD4 DST_SEL_X/Y/Z/W are forced to the identity
-    * channel-only set (X/Y/Z/W = 0/1/2/3) -- never SEL_0 (= 4) or SEL_1
-    * (= 5).  Per AMD IL Spec lines 4818-4844, gather4_comp_sel for
-    * FETCH4 / FETCH4C / FETCH4po / FETCH4poc only accepts the four real
-    * channels; literal-zero and literal-one are HW-invalid and produce
-    * undefined results.  The `terakan_nir_lower_tg4_view_swizzle` NIR pass
-    * reconstructs the application's VkComponentMapping (including ZERO/ONE
-    * literals) on the gather result via ALU using KCACHE bank 14
+   /* Gather-safe SQ_TEX_RESOURCE descriptor.  Identical to `resource`
+    * except SQ_TEX_RESOURCE_WORD4 DST_SEL_X/Y/Z/W are forced to the
+    * identity channel-only set (X/Y/Z/W = 0/1/2/3) -- never SEL_0
+    * (= 4) or SEL_1 (= 5).  Per AMD IL Spec lines 4818-4844,
+    * gather4_comp_sel for FETCH4 / FETCH4C / FETCH4po / FETCH4poc only
+    * accepts the four real channels; literal-zero and literal-one are
+    * HW-invalid and produce undefined results.  The
+    * `terakan_nir_lower_tg4_view_swizzle` NIR pass reconstructs the
+    * application's VkComponentMapping (including ZERO / ONE literals)
+    * on the gather result via ALU using KCACHE bank 14
     * `view_swizzles[]` metadata.
     *
-    * Sample / load paths keep using `resource` (which has the application's
-    * VkComponentMapping baked into DST_SEL) for the fast HW swizzle path.
-    * GATHER4 paths bind `resource_gather` to a separate slot via the
-    * pipeline-layout dual-descriptor plumbing (PR A2; this field is
-    * populated by PR A1 but not yet consumed). */
+    * Sample / load paths keep using `resource` (with the application's
+    * VkComponentMapping baked into DST_SEL) for the fast HW swizzle
+    * path.  GATHER4 paths bind `resource_gather` at the parallel HW
+    * slot `resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET` set
+    * up by `terakan_pipeline_layout.c`. */
    uint32_t resource_gather[8];
 
    struct terakan_color_descriptor color;
