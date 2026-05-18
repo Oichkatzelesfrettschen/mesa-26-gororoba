@@ -1899,7 +1899,10 @@ delete_buffers(struct gl_context *ctx, GLsizei n, const GLuint *ids)
          /* The GLuint ID holds one reference and the context that created
           * the buffer holds the other one.
           */
-         assert(p_atomic_read(&bufObj->RefCount) >= (bufObj->Ctx ? 2 : 1));
+#ifndef NDEBUG
+         int ref_count = p_atomic_read(&bufObj->RefCount);
+         assert(ref_count >= (bufObj->Ctx ? 2 : 1));
+#endif
 
          if (bufObj->Ctx == ctx) {
             detach_ctx_from_buffer(ctx, bufObj);

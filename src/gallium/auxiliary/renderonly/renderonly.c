@@ -43,7 +43,10 @@ renderonly_scanout_destroy(struct renderonly_scanout *scanout,
 {
    struct drm_mode_destroy_dumb destroy_dumb = {0};
 
-   assert(p_atomic_read(&scanout->refcnt) > 0);
+#ifndef NDEBUG
+   int refcnt = p_atomic_read(&scanout->refcnt);
+   assert(refcnt > 0);
+#endif
    if (p_atomic_dec_return(&scanout->refcnt))
       return;
 
@@ -94,7 +97,10 @@ renderonly_create_kms_dumb_buffer_for_resource(struct pipe_resource *rsc,
    scanout->handle = create_dumb.handle;
    scanout->stride = create_dumb.pitch;
 
-   assert(p_atomic_read(&scanout->refcnt) == 0);
+#ifndef NDEBUG
+   int refcnt = p_atomic_read(&scanout->refcnt);
+   assert(refcnt == 0);
+#endif
    p_atomic_set(&scanout->refcnt, 1);
 
    if (!out_handle)
@@ -169,4 +175,3 @@ err_unlock:
 
    return scanout;
 }
-
