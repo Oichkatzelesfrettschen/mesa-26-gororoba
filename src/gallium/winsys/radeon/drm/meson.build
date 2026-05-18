@@ -11,9 +11,7 @@ if with_gallium_radeonsi
   amd_common_libs += [libamd_common]
 endif
 
-libradeonwinsys = static_library(
-  'radeonwinsys',
-  files('radeon_drm_bo.c',
+libradeonwinsys_files = files('radeon_drm_bo.c',
         'radeon_drm_bo.h',
         'radeon_drm_cs.c',
         'radeon_drm_cs.h',
@@ -21,7 +19,11 @@ libradeonwinsys = static_library(
         'radeon_drm_winsys.c',
         'radeon_drm_winsys.h',
         'radeon_surface.c',
-        'radeon_surface.h'),
+        'radeon_surface.h')
+
+libradeonwinsys = static_library(
+  'radeonwinsys',
+  [libradeonwinsys_files, sha1_h],
   include_directories : [inc_src, inc_include, inc_gallium, inc_gallium_aux],
   gnu_symbol_visibility : 'hidden',
   link_with : amd_common_libs,

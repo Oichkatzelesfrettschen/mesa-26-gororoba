@@ -35,21 +35,608 @@
 
 #include "radeon_drm_cs.h"
 
+#include "git_sha1.h"
+#include "util/os_file.h"
+#include "util/u_atomic.h"
+#include "util/u_debug.h"
 #include "util/u_memory.h"
 #include "util/os_time.h"
 
+#include <errno.h>
+#include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
+#include <sys/utsname.h>
+#include <time.h>
+#include <unistd.h>
 #include <xf86drm.h>
 
 
 #define RELOC_DWORDS (sizeof(struct drm_radeon_cs_reloc) / sizeof(uint32_t))
+#define R300_REKIT_TRACE_SCHEMA_VERSION 1
+#define R300_REKIT_ENDIAN_MARKER 0x01020304u
+#define R300_REKIT_SHA256_HEX_LEN 64
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+struct r300_rekit_ib_header {
+   char magic[8];
+   uint32_t schema_version;
+   uint32_t header_size;
+   uint32_t endian_marker;
+   uint32_t dword_count;
+   uint32_t pci_id;
+   uint32_t family;
+   uint32_t drm_major;
+   uint32_t drm_minor;
+   uint32_t drm_patchlevel;
+   char mesa_commit[64];
+   char kernel_release[64];
+   char run_id[64];
+   uint32_t reserved[16];
+};
+
+struct r300_rekit_trace {
+   bool enabled;
+   char run_id[64];
+   char dir[PATH_MAX];
+   char kernel_release[64];
+};
+
+static int r300_rekit_trace_counter;
+
+struct r300_rekit_sha256 {
+   uint32_t h[8];
+   uint64_t bit_count;
+   uint8_t block[64];
+   size_t block_len;
+};
+
+static FILE *
+r300_rekit_fopen(const struct r300_rekit_trace *trace, const char *name,
+                 const char *mode);
 
 static struct pipe_fence_handle *radeon_cs_create_fence(struct radeon_cmdbuf *rcs);
 static void radeon_fence_reference(struct radeon_winsys *ws,
                                    struct pipe_fence_handle **dst,
                                    struct pipe_fence_handle *src);
+
+static bool
+r300_rekit_trace_mask_has(const char *name)
+{
+   const char *mask = debug_get_option("R300_REKIT_TRACE_MASK", NULL);
+
+   return !mask || !mask[0] || strstr(mask, "all") || strstr(mask, name);
+}
+
+static void
+r300_rekit_json_string(FILE *file, const char *value)
+{
+   fputc('"', file);
+   for (const unsigned char *p = (const unsigned char *)value; p && *p; ++p) {
+      switch (*p) {
+      case '"':
+         fputs("\\\"", file);
+         break;
+      case '\\':
+         fputs("\\\\", file);
+         break;
+      case '\b':
+         fputs("\\b", file);
+         break;
+      case '\f':
+         fputs("\\f", file);
+         break;
+      case '\n':
+         fputs("\\n", file);
+         break;
+      case '\r':
+         fputs("\\r", file);
+         break;
+      case '\t':
+         fputs("\\t", file);
+         break;
+      default:
+         if (*p < 0x20)
+            fprintf(file, "\\u%04x", *p);
+         else
+            fputc(*p, file);
+         break;
+      }
+   }
+   fputc('"', file);
+}
+
+static uint32_t
+r300_rekit_rotr32(uint32_t value, unsigned bits)
+{
+   return (value >> bits) | (value << (32 - bits));
+}
+
+static void
+r300_rekit_sha256_transform(struct r300_rekit_sha256 *ctx,
+                            const uint8_t block[64])
+{
+   static const uint32_t k[64] = {
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+      0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+      0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+      0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+      0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+      0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+      0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+      0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+      0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+   };
+   uint32_t w[64];
+   uint32_t a, b, c, d, e, f, g, h;
+
+   for (unsigned i = 0; i < 16; ++i) {
+      w[i] = ((uint32_t)block[i * 4] << 24) |
+             ((uint32_t)block[i * 4 + 1] << 16) |
+             ((uint32_t)block[i * 4 + 2] << 8) |
+             block[i * 4 + 3];
+   }
+
+   for (unsigned i = 16; i < 64; ++i) {
+      uint32_t s0 = r300_rekit_rotr32(w[i - 15], 7) ^
+                    r300_rekit_rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+      uint32_t s1 = r300_rekit_rotr32(w[i - 2], 17) ^
+                    r300_rekit_rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+      w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+   }
+
+   a = ctx->h[0];
+   b = ctx->h[1];
+   c = ctx->h[2];
+   d = ctx->h[3];
+   e = ctx->h[4];
+   f = ctx->h[5];
+   g = ctx->h[6];
+   h = ctx->h[7];
+
+   for (unsigned i = 0; i < 64; ++i) {
+      uint32_t s1 = r300_rekit_rotr32(e, 6) ^ r300_rekit_rotr32(e, 11) ^
+                    r300_rekit_rotr32(e, 25);
+      uint32_t ch = (e & f) ^ (~e & g);
+      uint32_t temp1 = h + s1 + ch + k[i] + w[i];
+      uint32_t s0 = r300_rekit_rotr32(a, 2) ^ r300_rekit_rotr32(a, 13) ^
+                    r300_rekit_rotr32(a, 22);
+      uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+      uint32_t temp2 = s0 + maj;
+
+      h = g;
+      g = f;
+      f = e;
+      e = d + temp1;
+      d = c;
+      c = b;
+      b = a;
+      a = temp1 + temp2;
+   }
+
+   ctx->h[0] += a;
+   ctx->h[1] += b;
+   ctx->h[2] += c;
+   ctx->h[3] += d;
+   ctx->h[4] += e;
+   ctx->h[5] += f;
+   ctx->h[6] += g;
+   ctx->h[7] += h;
+}
+
+static void
+r300_rekit_sha256_init(struct r300_rekit_sha256 *ctx)
+{
+   static const uint32_t initial[8] = {
+      0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+   };
+
+   memcpy(ctx->h, initial, sizeof(ctx->h));
+   ctx->bit_count = 0;
+   ctx->block_len = 0;
+}
+
+static void
+r300_rekit_sha256_update(struct r300_rekit_sha256 *ctx, const void *data,
+                         size_t size)
+{
+   const uint8_t *bytes = data;
+
+   ctx->bit_count += (uint64_t)size * 8;
+
+   while (size) {
+      size_t copy = MIN2(size, sizeof(ctx->block) - ctx->block_len);
+      memcpy(ctx->block + ctx->block_len, bytes, copy);
+      ctx->block_len += copy;
+      bytes += copy;
+      size -= copy;
+
+      if (ctx->block_len == sizeof(ctx->block)) {
+         r300_rekit_sha256_transform(ctx, ctx->block);
+         ctx->block_len = 0;
+      }
+   }
+}
+
+static void
+r300_rekit_sha256_final(struct r300_rekit_sha256 *ctx,
+                        uint8_t digest[32])
+{
+   uint64_t bit_count = ctx->bit_count;
+
+   ctx->block[ctx->block_len++] = 0x80;
+   if (ctx->block_len > 56) {
+      memset(ctx->block + ctx->block_len, 0, sizeof(ctx->block) - ctx->block_len);
+      r300_rekit_sha256_transform(ctx, ctx->block);
+      ctx->block_len = 0;
+   }
+
+   memset(ctx->block + ctx->block_len, 0, 56 - ctx->block_len);
+   for (unsigned i = 0; i < 8; ++i)
+      ctx->block[56 + i] = (uint8_t)(bit_count >> (56 - i * 8));
+   r300_rekit_sha256_transform(ctx, ctx->block);
+
+   for (unsigned i = 0; i < 8; ++i) {
+      digest[i * 4] = (uint8_t)(ctx->h[i] >> 24);
+      digest[i * 4 + 1] = (uint8_t)(ctx->h[i] >> 16);
+      digest[i * 4 + 2] = (uint8_t)(ctx->h[i] >> 8);
+      digest[i * 4 + 3] = (uint8_t)ctx->h[i];
+   }
+}
+
+static bool
+r300_rekit_sha256_file(const struct r300_rekit_trace *trace, const char *name,
+                       char hex[R300_REKIT_SHA256_HEX_LEN + 1])
+{
+   struct r300_rekit_sha256 ctx;
+   uint8_t digest[32];
+   uint8_t buf[4096];
+   FILE *file = r300_rekit_fopen(trace, name, "rb");
+   static const char hexdigits[] = "0123456789abcdef";
+
+   if (!file)
+      return false;
+
+   r300_rekit_sha256_init(&ctx);
+   for (;;) {
+      size_t read_size = fread(buf, 1, sizeof(buf), file);
+      if (read_size)
+         r300_rekit_sha256_update(&ctx, buf, read_size);
+      if (read_size != sizeof(buf))
+         break;
+   }
+
+   if (ferror(file)) {
+      fclose(file);
+      return false;
+   }
+
+   fclose(file);
+   r300_rekit_sha256_final(&ctx, digest);
+
+   for (unsigned i = 0; i < sizeof(digest); ++i) {
+      hex[i * 2] = hexdigits[digest[i] >> 4];
+      hex[i * 2 + 1] = hexdigits[digest[i] & 0xf];
+   }
+   hex[R300_REKIT_SHA256_HEX_LEN] = 0;
+   return true;
+}
+
+static bool
+r300_rekit_join_path(char *out, size_t out_size, const char *dir,
+                     const char *name)
+{
+   int written = snprintf(out, out_size, "%s/%s", dir, name);
+   return written > 0 && (size_t)written < out_size;
+}
+
+static FILE *
+r300_rekit_fopen(const struct r300_rekit_trace *trace, const char *name,
+                 const char *mode)
+{
+   char path[PATH_MAX];
+
+   if (!r300_rekit_join_path(path, sizeof(path), trace->dir, name))
+      return NULL;
+
+   return fopen(path, mode);
+}
+
+static void
+r300_rekit_fill_ib_header(struct radeon_drm_cs *cs,
+                          const struct radeon_cs_context *csc,
+                          const struct r300_rekit_trace *trace,
+                          struct r300_rekit_ib_header *header)
+{
+   memset(header, 0, sizeof(*header));
+   memcpy(header->magic, "R3RKIB1", 7);
+   header->schema_version = R300_REKIT_TRACE_SCHEMA_VERSION;
+   header->header_size = sizeof(*header);
+   header->endian_marker = R300_REKIT_ENDIAN_MARKER;
+   header->dword_count = csc->chunks[0].length_dw;
+   header->pci_id = cs->ws->info.pci_id;
+   header->family = cs->ws->info.family;
+   header->drm_major = cs->ws->info.drm_major;
+   header->drm_minor = cs->ws->info.drm_minor;
+   header->drm_patchlevel = cs->ws->info.drm_patchlevel;
+   snprintf(header->mesa_commit, sizeof(header->mesa_commit), "%s%s",
+            PACKAGE_VERSION, MESA_GIT_SHA1);
+   snprintf(header->kernel_release, sizeof(header->kernel_release), "%s",
+            trace->kernel_release);
+   snprintf(header->run_id, sizeof(header->run_id), "%s", trace->run_id);
+}
+
+static void
+r300_rekit_write_ib(struct radeon_drm_cs *cs,
+                    const struct radeon_cs_context *csc,
+                    const struct r300_rekit_trace *trace,
+                    const char *name)
+{
+   struct r300_rekit_ib_header header;
+   FILE *file = r300_rekit_fopen(trace, name, "wb");
+
+   if (!file)
+      return;
+
+   r300_rekit_fill_ib_header(cs, csc, trace, &header);
+   fwrite(&header, sizeof(header), 1, file);
+   fwrite(csc->buf, sizeof(uint32_t), csc->chunks[0].length_dw, file);
+   fclose(file);
+}
+
+static void
+r300_rekit_write_bo_table(const struct radeon_cs_context *csc,
+                          const struct r300_rekit_trace *trace)
+{
+   FILE *file = r300_rekit_fopen(trace, "bo_table.json", "w");
+
+   if (!file)
+      return;
+
+   fputs("[\n", file);
+   for (unsigned i = 0; i < csc->num_relocs; ++i) {
+      const struct radeon_bo *bo = csc->relocs_bo[i].bo;
+      fprintf(file,
+              "%s{\"reloc_index\":%u,\"handle\":%u,\"size\":%" PRIu64
+              ",\"va\":%" PRIu64 ",\"priority_usage\":%u,"
+              "\"initial_domain\":%u}",
+              i ? ",\n" : "", i, bo ? bo->handle : 0,
+              bo ? (uint64_t)bo->base.size : 0,
+              bo ? bo->va : 0,
+              csc->relocs_bo[i].u.real.priority_usage,
+              bo ? bo->initial_domain : 0);
+   }
+   fputs("\n]\n", file);
+   fclose(file);
+}
+
+static void
+r300_rekit_write_relocs(const struct radeon_cs_context *csc,
+                        const struct r300_rekit_trace *trace)
+{
+   FILE *file = r300_rekit_fopen(trace, "relocs.json", "w");
+
+   if (!file)
+      return;
+
+   fputs("[\n", file);
+   for (unsigned i = 0; i < csc->num_relocs; ++i) {
+      const struct drm_radeon_cs_reloc *reloc = &csc->relocs[i];
+      fprintf(file,
+              "%s{\"reloc_index\":%u,\"handle\":%u,"
+              "\"read_domains\":%u,\"write_domain\":%u,\"flags\":%u}",
+              i ? ",\n" : "", i, reloc->handle, reloc->read_domains,
+              reloc->write_domain, reloc->flags);
+   }
+   fputs("\n]\n", file);
+   fclose(file);
+}
+
+static void
+r300_rekit_write_submit(struct radeon_drm_cs *cs,
+                        const struct radeon_cs_context *csc,
+                        const struct r300_rekit_trace *trace,
+                        int ioctl_result)
+{
+   FILE *file = r300_rekit_fopen(trace, "submit.json", "w");
+
+   if (!file)
+      return;
+
+   fputs("{\n", file);
+   fputs("  \"run_id\":", file);
+   r300_rekit_json_string(file, trace->run_id);
+   fprintf(file,
+           ",\n  \"schema_version\":%u,\n  \"ip_type\":%u,\n"
+           "  \"ring\":%u,\n  \"flags0\":%u,\n  \"flags1\":%u,\n"
+           "  \"num_chunks\":%u,\n  \"ib_dwords\":%u,\n"
+           "  \"num_relocs\":%u,\n  \"ioctl_result\":%d\n}\n",
+           R300_REKIT_TRACE_SCHEMA_VERSION, cs->ip_type, csc->flags[1],
+           csc->flags[0], csc->flags[1], csc->cs.num_chunks,
+           csc->chunks[0].length_dw, csc->num_relocs, ioctl_result);
+   fclose(file);
+}
+
+static void
+r300_rekit_write_manifest(struct radeon_drm_cs *cs,
+                          const struct radeon_cs_context *csc,
+                          const struct r300_rekit_trace *trace,
+                          bool ioctl_result_valid,
+                          int ioctl_result,
+                          bool patched_ib_available)
+{
+   FILE *file = r300_rekit_fopen(trace, "manifest.json", "w");
+   const char *mask = debug_get_option("R300_REKIT_TRACE_MASK", "all");
+   char pre_hash[R300_REKIT_SHA256_HEX_LEN + 1] = {0};
+   char patched_hash[R300_REKIT_SHA256_HEX_LEN + 1] = {0};
+   bool pre_hash_valid = r300_rekit_sha256_file(trace, "pre_ib.bin", pre_hash);
+   bool patched_hash_valid =
+      patched_ib_available &&
+      r300_rekit_sha256_file(trace, "patched_ib.bin", patched_hash);
+
+   if (!file)
+      return;
+
+   fputs("{\n", file);
+   fputs("  \"run_id\":", file);
+   r300_rekit_json_string(file, trace->run_id);
+   fputs(",\n  \"mesa\":", file);
+   r300_rekit_json_string(file, PACKAGE_VERSION MESA_GIT_SHA1);
+   fputs(",\n  \"kernel_release\":", file);
+   r300_rekit_json_string(file, trace->kernel_release);
+   fputs(",\n  \"trace_mask\":", file);
+   r300_rekit_json_string(file, mask ? mask : "all");
+   fprintf(file,
+           ",\n  \"schema_version\":%u,\n  \"pci_id\":\"0x%04x\",\n"
+           "  \"family\":%u,\n  \"drm_version\":\"%u.%u.%u\",\n"
+           "  \"ib_dwords\":%u,\n  \"num_relocs\":%u,\n"
+           "  \"ioctl_result_valid\":%s,\n"
+           "  \"ioctl_result\":%d,\n"
+           "  \"patched_ib_available\":%s,\n",
+           R300_REKIT_TRACE_SCHEMA_VERSION, cs->ws->info.pci_id,
+           cs->ws->info.family, cs->ws->info.drm_major,
+           cs->ws->info.drm_minor, cs->ws->info.drm_patchlevel,
+           csc->chunks[0].length_dw, csc->num_relocs,
+           ioctl_result_valid ? "true" : "false",
+           ioctl_result_valid ? ioctl_result : 0,
+           patched_ib_available ? "true" : "false");
+   fputs("  \"artifact_sha256\":{\n", file);
+   fprintf(file, "    \"pre_ib.bin\":%s", pre_hash_valid ? "\"" : "null");
+   if (pre_hash_valid) {
+      fputs(pre_hash, file);
+      fputc('"', file);
+   }
+   fputs(",\n", file);
+   fprintf(file, "    \"patched_ib.bin\":%s", patched_hash_valid ? "\"" : "null");
+   if (patched_hash_valid) {
+      fputs(patched_hash, file);
+      fputc('"', file);
+   }
+   fputs("\n  },\n", file);
+   fputs("  \"artifacts\":[\"pre_ib.bin\",", file);
+   if (patched_ib_available)
+      fputs("\"patched_ib.bin\",", file);
+   fputs("\"relocs.json\",\"bo_table.json\",\"submit.json\","
+         "\"stderr.txt\"]\n}\n", file);
+   fclose(file);
+}
+
+static void
+r300_rekit_write_stderr_note(const struct r300_rekit_trace *trace)
+{
+   FILE *file = r300_rekit_fopen(trace, "stderr.txt", "w");
+
+   if (!file)
+      return;
+
+   fprintf(file, "r300-rekit trace run %s\n", trace->run_id);
+   fputs("Process stderr is captured by the outer runner.\n", file);
+   fclose(file);
+}
+
+static bool
+r300_rekit_begin_trace(struct radeon_drm_cs *cs,
+                       const struct radeon_cs_context *csc,
+                       struct r300_rekit_trace *trace)
+{
+   static bool warned_missing_dir;
+   const char *root;
+   struct utsname uts;
+   int counter;
+   int written;
+
+   memset(trace, 0, sizeof(*trace));
+
+   if (cs->ws->gen != DRV_R300 ||
+       !debug_get_bool_option("R300_REKIT_TRACE", false))
+      return false;
+
+   root = debug_get_option("R300_REKIT_TRACE_DIR", NULL);
+   if (!root || !root[0]) {
+      if (!warned_missing_dir) {
+         fprintf(stderr,
+                 "r300-rekit: R300_REKIT_TRACE_DIR is required; tracing disabled\n");
+         warned_missing_dir = true;
+      }
+      return false;
+   }
+
+   if (os_mkdir(root, 0775) && errno != EEXIST) {
+      fprintf(stderr, "r300-rekit: cannot create trace dir %s: %s\n",
+              root, strerror(errno));
+      return false;
+   }
+
+   if (uname(&uts) == 0)
+      snprintf(trace->kernel_release, sizeof(trace->kernel_release), "%s",
+               uts.release);
+   else
+      snprintf(trace->kernel_release, sizeof(trace->kernel_release), "unknown");
+
+   counter = p_atomic_inc_return(&r300_rekit_trace_counter);
+   snprintf(trace->run_id, sizeof(trace->run_id), "%lld-%ld-%d",
+            (long long)time(NULL), (long)getpid(), counter);
+
+   written = snprintf(trace->dir, sizeof(trace->dir), "%s/%s", root,
+                      trace->run_id);
+   if (written <= 0 || (size_t)written >= sizeof(trace->dir)) {
+      fprintf(stderr, "r300-rekit: trace path too long\n");
+      return false;
+   }
+
+   if (os_mkdir(trace->dir, 0775) && errno != EEXIST) {
+      fprintf(stderr, "r300-rekit: cannot create trace run dir %s: %s\n",
+              trace->dir, strerror(errno));
+      return false;
+   }
+
+   trace->enabled = true;
+
+   if (r300_rekit_trace_mask_has("cs"))
+      r300_rekit_write_ib(cs, csc, trace, "pre_ib.bin");
+   if (r300_rekit_trace_mask_has("bo"))
+      r300_rekit_write_bo_table(csc, trace);
+   if (r300_rekit_trace_mask_has("reloc"))
+      r300_rekit_write_relocs(csc, trace);
+   if (r300_rekit_trace_mask_has("submit"))
+      r300_rekit_write_manifest(cs, csc, trace, false, 0, false);
+   r300_rekit_write_stderr_note(trace);
+
+   return true;
+}
+
+static void
+r300_rekit_finish_trace(struct radeon_drm_cs *cs,
+                        const struct radeon_cs_context *csc,
+                        const struct r300_rekit_trace *trace,
+                        int ioctl_result)
+{
+   if (!trace->enabled)
+      return;
+
+   if (!ioctl_result && r300_rekit_trace_mask_has("cs"))
+      r300_rekit_write_ib(cs, csc, trace, "patched_ib.bin");
+   if (r300_rekit_trace_mask_has("submit"))
+      r300_rekit_write_submit(cs, csc, trace, ioctl_result);
+   if (r300_rekit_trace_mask_has("submit"))
+      r300_rekit_write_manifest(cs, csc, trace, true, ioctl_result,
+                                ioctl_result == 0 &&
+                                r300_rekit_trace_mask_has("cs"));
+}
 
 static struct radeon_winsys_ctx *radeon_drm_ctx_create(struct radeon_winsys *ws,
                                                        unsigned flags)
@@ -484,6 +1071,7 @@ void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
 {
    struct radeon_drm_cs *cs = (struct radeon_drm_cs*)job;
    struct radeon_cs_context *csc = cs->cst;
+   struct r300_rekit_trace trace;
    unsigned i;
    int r;
 
@@ -496,8 +1084,12 @@ void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
       fflush(stderr);
    }
 
+   r300_rekit_begin_trace(cs, csc, &trace);
+
    r = drmCommandWriteRead(csc->fd, DRM_RADEON_CS,
                            &csc->cs, sizeof(struct drm_radeon_cs));
+
+   r300_rekit_finish_trace(cs, csc, &trace, r);
 
    /* Post-reloc IB dump: after the kernel patches relocations,
     * csc->buf contains the actual GPU-visible register values.
