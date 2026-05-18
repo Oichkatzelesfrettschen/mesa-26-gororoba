@@ -642,6 +642,14 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                          sizeof(uint32_t) * 8);
                } else {
                   dst_resource->bo = NULL;
+                  /* Clear the gather-safe sibling too so a rebind from a
+                   * previously-valid imageView to NULL doesn't leave the
+                   * gather slot pointing at the old TEX descriptor.  With
+                   * `nullDescriptor` advertised, the regular slot's null
+                   * binding is HW-visible at line 201; the gather sibling
+                   * at line ~245 must mirror it. */
+                  memset(dst_resource->resource_gather, 0,
+                         sizeof(dst_resource->resource_gather));
                }
             }
          }
