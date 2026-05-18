@@ -37,7 +37,7 @@ def c_string(raw):
 
 def parse_header(blob):
     if len(blob) < HEADER_STRUCT.size:
-        raise ValueError("file is smaller than the r300-rekit IB header")
+        raise ValueError("file is smaller than the r300 trace IB header")
     unpacked = HEADER_STRUCT.unpack_from(blob)
     magic = unpacked[0]
     if magic != MAGIC:
@@ -199,7 +199,7 @@ def find_mesa_root(script_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Decode r300-rekit IB dumps")
+    parser = argparse.ArgumentParser(description="Decode r300 trace IB dumps")
     parser.add_argument("ib", type=Path, help="pre_ib.bin or patched_ib.bin")
     parser.add_argument("--jsonl", action="store_true", help="emit one JSON object per packet")
     parser.add_argument("--mesa-root", type=Path, default=None)
