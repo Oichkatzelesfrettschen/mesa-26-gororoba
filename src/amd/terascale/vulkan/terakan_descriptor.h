@@ -137,21 +137,36 @@ extern "C" {
 
 #define TERAKAN_SAMPLER_HW_COUNT_PER_STAGE 18
 
-/* Offset added to a sampled-image binding's HW resource slot to find its
- * gather-safe sibling descriptor.  Per AMD IL Spec lines 4818-4844,
- * gather4_comp_sel accepts only IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 /
- * SEL_1 are HW-invalid for FETCH4 / FETCH4C / FETCH4po / FETCH4poc.  The
- * gather-safe descriptor has identity DST_SEL in SQ_TEX_RESOURCE_WORD4 so
- * the HW spatial-sample selection works; the application's component
- * mapping (including literal ZERO / ONE) is reconstructed on the gather
- * result in the `terakan_nir_lower_tg4_view_swizzle` NIR pass.
+/* Maximum sampled-image bindings per stage that can be safely routed
+ * through the dual-descriptor (sample + gather-safe) scheme.
  *
- * 32 sample-image slots are accommodated per stage (slot range
- * [18, 49]); gather-safe siblings occupy [50, 81].  Vulkan minimum
- * `maxPerStageDescriptorSampledImages` is 16; 32 is comfortable
- * headroom and total slot usage of 64 stays well below the 160-176
- * per-stage budget. */
-#define TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET 32
+ * Per AMD IL Spec lines 4818-4844, gather4_comp_sel accepts only
+ * IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 / SEL_1 are HW-invalid for
+ * FETCH4 / FETCH4C / FETCH4po / FETCH4poc.  The gather-safe descriptor
+ * has identity DST_SEL in SQ_TEX_RESOURCE_WORD4; the application's
+ * component mapping (including literal ZERO / ONE) is reconstructed on
+ * the gather result in the `terakan_nir_lower_tg4_view_swizzle` NIR
+ * pass.
+ *
+ * The cap (24) is tied to the KCACHE bank 14 `view_swizzles[12]` region
+ * (12 dwords * 2 bindings per dword = 24 slots).  Vulkan minimum
+ * `maxPerStageDescriptorSampledImages` is 16; 24 is comfortable
+ * headroom.  Raising this requires extending `view_swizzles[]` storage
+ * AND the matching TERAKAN_TG4_VIEW_SWIZZLE_SLOT_LIMIT in the NIR pass.
+ *
+ * `maxPerStageDescriptorSampledImages` is clamped to this value in
+ * terakan_instance.c so Vulkan validation rejects pipeline layouts that
+ * would exceed the gather-safe budget before they reach the runtime. */
+#define TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES 24u
+
+/* Offset added to a sampled-image binding's HW resource slot to find its
+ * gather-safe sibling.  Tied to TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES so
+ * sample slots [base, base + MAX-1] and gather slots [base + OFFSET, base +
+ * OFFSET + MAX-1] are guaranteed non-overlapping.  Sample range starts at
+ * HW slot 18 (after the per-stage sampler region) and gather range starts
+ * at 18 + OFFSET = 42, ending at 65.  Total usage 48 of 176 (PS/CS) or
+ * 160 (VS/GS/HS/LS) HW slots per stage. */
+#define TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES
 
 #define TERAKAN_SAMPLER_HW_OFFSET_PS   (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE * 0)
 #define TERAKAN_SAMPLER_HW_OFFSET_VSES (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE * 1)

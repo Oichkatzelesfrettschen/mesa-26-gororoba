@@ -1316,7 +1316,12 @@ terakan_shader_lower_and_optimize_post_link(
       if (any_tg4 && getenv("TERAKAN_TG4_VS_DISABLE") == NULL) {
          *kcache_needed |=
             (uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA;
-         NIR_PASS(_, nir, terakan_nir_lower_tg4_view_swizzle);
+         /* Pass resources_needed so the pass marks the gather-safe HW slot
+          * (texture_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET) for each
+          * rewritten tg4.  Without this the SQC state tracker may evict
+          * the gather descriptor between draws and the cloned FETCH4 reads
+          * stale data. */
+         NIR_PASS(_, nir, terakan_nir_lower_tg4_view_swizzle, resources_needed);
       }
    }
 

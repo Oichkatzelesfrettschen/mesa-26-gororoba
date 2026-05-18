@@ -213,12 +213,39 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * identity DST_SEL; NIR ALU reconstructs the
                    * application's VkComponentMapping (ZERO/ONE included)
                    * on the gather result.  See
-                   * 2026-05-17-139a-sel1-amd-il-spec-citation.md. */
+                   * 2026-05-17-139a-sel1-amd-il-spec-citation.md.
+                   *
+                   * Bounds check: the gather slot
+                   * `resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET`
+                   * must stay within the per-stage SQC resource bank.
+                   * Pixel/Compute stages have 176 slots
+                   * (TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE); vertex
+                   * stages have 160 (TERAKAN_RESOURCE_HW_COUNT_VERTEX).
+                   * `resource_index` here is the HW slot (already
+                   * shifted by TERAKAN_SAMPLER_HW_COUNT_PER_STAGE = 18).
+                   * For the smallest range (vertex, 160 slots): with
+                   * `maxPerStageDescriptorSampledImages` clamped to
+                   * TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES (= 24) and
+                   * GATHER_DESCRIPTOR_SLOT_OFFSET (= 24), the highest
+                   * gather slot is 18 + 23 + 24 = 65, well below 160.
+                   * The runtime assert protects against future
+                   * regressions if the constants drift apart. */
                   if (G_03001C_TYPE(desc.resource[7]) ==
                       V_03001C_SQ_TEX_VTX_VALID_TEXTURE) {
-                     setter(&command_writer->hw_state_sqc,
-                            resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET,
-                            desc.bo, desc.resource_gather);
+                     uint32_t const gather_slot =
+                        (uint32_t)resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
+                     uint32_t const stage_resource_count =
+                        (sqc == MESA_SHADER_FRAGMENT)
+                           ? TERAKAN_RESOURCE_HW_COUNT_PIXEL_COMPUTE
+                           : TERAKAN_RESOURCE_HW_COUNT_VERTEX;
+                     assert(gather_slot < stage_resource_count &&
+                            "tg4 gather-safe slot overflows per-stage SQC bank; "
+                            "TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES or "
+                            "GATHER_DESCRIPTOR_SLOT_OFFSET must be reduced");
+                     if (gather_slot < stage_resource_count) {
+                        setter(&command_writer->hw_state_sqc, gather_slot,
+                               desc.bo, desc.resource_gather);
+                     }
                   }
 
                   /* For SAMPLED_IMAGE / COMBINED_IMAGE_SAMPLER /
