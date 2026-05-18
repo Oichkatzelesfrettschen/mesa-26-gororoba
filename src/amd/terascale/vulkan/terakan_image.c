@@ -1909,10 +1909,10 @@ terakan_CreateImageView(VkDevice const deviceHandle,
        * application's mapping baked into DST_SEL for the fast HW
        * swizzle path.  Only the gather path binds `resource_gather`.
        *
-       * Building this only on the success branch (with an explicit
-       * zero on the failure-and-not-required branch above) keeps the
-       * two descriptors in sync: an unbuildable view has both
-       * descriptors zeroed; a buildable view has the sample-baked
+       * Build this only when resource creation succeeds.  If resource
+       * creation is optional and fails, both descriptors are zeroed.  The
+       * two descriptors therefore stay in sync: an unbuildable view has no
+       * resource state, while a buildable view has the sample-baked
        * `resource` plus the identity-DST_SEL `resource_gather`. */
       memcpy(image_view->resource_gather, image_view->resource,
              sizeof(image_view->resource_gather));
