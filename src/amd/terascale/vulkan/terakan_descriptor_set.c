@@ -584,6 +584,12 @@ terakan_UpdateDescriptorSets(UNUSED VkDevice const device, uint32_t const descri
                          sizeof(uint32_t) * 8);
                } else {
                   dst_resource->bo = NULL;
+                  /* A null image view must clear the gather-safe sibling too.
+                   * Otherwise a later FETCH4 path can observe the old TEX
+                   * descriptor through the parallel gather slot even though
+                   * the regular resource slot is null. */
+                  memset(dst_resource->resource_gather, 0,
+                         sizeof(dst_resource->resource_gather));
                }
             }
          }

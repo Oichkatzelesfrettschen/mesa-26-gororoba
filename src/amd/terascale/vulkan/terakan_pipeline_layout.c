@@ -209,6 +209,17 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                                         S_030008_BASE_ADDRESS_HI(a >> 32);
                   }
                   uint8_t resource_index = base + di;
+                  VkDescriptorType const desc_type =
+                     terakan_set_resource_descriptor_type(sl, r->first_set_descriptor + di);
+                  /* Image-class binding TYPEs are the only ones that can
+                   * legally back a `nir_texop_tg4` instruction.  The
+                   * gather-safe sibling slot is bound (or cleared) for
+                   * exactly these TYPEs, not for buffer / texel-buffer
+                   * descriptors which never reach FETCH4. */
+                  bool const binding_is_image_class =
+                     desc_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                     desc_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+                     desc_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
                   /* Shader-side resource IDs consume the namespace shifted by
                    * R600_MAX_CONST_BUFFERS. Shift all descriptor-backed
                    * resources uniformly to keep every descriptor class in one
@@ -222,15 +233,14 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * gather-safe descriptor at the parallel slot offset so
                    * the `terakan_nir_lower_tg4_view_swizzle` NIR pass can
                    * route nir_texop_tg4 to a FETCH4-compatible DST_SEL.
-                   * Per AMD IL Spec lines 4818-4844, gather4_comp_sel
-                   * accepts only IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0
-                   * and SEL_1 baked in the regular descriptor's
+                   * The AMD IL gather4_comp_sel rule accepts only
+                   * IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 and SEL_1
+                   * baked in the regular descriptor's
                    * SQ_TEX_RESOURCE_WORD4 DST_SEL are HW-invalid for
                    * FETCH4-family ops.  The gather-safe sibling has
                    * identity DST_SEL; NIR ALU reconstructs the
                    * application's VkComponentMapping (ZERO/ONE included)
-                   * on the gather result.  See
-                   * 2026-05-17-139a-sel1-amd-il-spec-citation.md.
+                   * on the gather result.
                    *
                    * Bounds check: the gather slot
                    * `resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET`
@@ -247,8 +257,12 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                    * gather slot is 18 + 23 + 24 = 65, well below 160.
                    * The runtime assert protects against future
                    * regressions if the constants drift apart. */
-                  if (G_03001C_TYPE(desc.resource[7]) ==
-                      V_03001C_SQ_TEX_VTX_VALID_TEXTURE) {
+                  if (binding_is_image_class) {
+                     /* Buffer-class descriptors do not feed FETCH4.  Writing
+                      * a parallel gather slot for them can alias a different
+                      * image binding's regular resource slot in sparse mixed
+                      * layouts, so only image-class bindings update this
+                      * sibling slot. */
                      uint32_t const gather_slot =
                         (uint32_t)resource_index + TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET;
                      uint32_t const stage_resource_count =
@@ -260,6 +274,15 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
                             "TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES or "
                             "GATHER_DESCRIPTOR_SLOT_OFFSET must be reduced");
                      if (gather_slot < stage_resource_count) {
+                        /* Always write the gather slot for image-class
+                         * bindings, even when the current descriptor is
+                         * NULL.  For a NULL binding `desc.resource_gather`
+                         * is zeroed by `vkUpdateDescriptorSets`; writing
+                         * those zeros clears any stale gather descriptor
+                         * left over from a prior `vkCmdBindDescriptorSets`
+                         * with a valid imageView.  For a valid TEX
+                         * binding the field carries the identity-DST_SEL
+                         * variant built by `terakan_image_create_image_view`. */
                         setter(&command_writer->hw_state_sqc, gather_slot,
                                desc.bo, desc.resource_gather);
                      }
