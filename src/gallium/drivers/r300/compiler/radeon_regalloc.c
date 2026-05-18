@@ -6,6 +6,7 @@
 
 #include "radeon_regalloc.h"
 #include "radeon_list.h"
+#include "util/macros.h"
 
 #define VERBOSE 0
 
@@ -14,6 +15,8 @@
       if (VERBOSE)                     \
          fprintf(stderr, __VA_ARGS__); \
    } while (0)
+
+STATIC_ASSERT(RC_REG_CLASS_VP_COUNT <= RC_REG_CLASS_FP_COUNT);
 
 const struct rc_class rc_class_list_vp[] = {
    {
@@ -456,6 +459,7 @@ rc_init_regalloc_state(struct rc_regalloc_state *s, enum rc_program_type prog)
    /* Create the register classes */
    for (i = 0; i < class_count; i++) {
       const struct rc_class *class = &s->class_list[i];
+      assert(class->ID < RC_REG_CLASS_FP_COUNT);
       s->classes[class->ID] = ra_alloc_reg_class(s->regs);
 
       /* Assign registers to the classes */

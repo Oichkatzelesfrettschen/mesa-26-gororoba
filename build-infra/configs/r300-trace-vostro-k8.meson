@@ -1,15 +1,15 @@
-# r300-rekit-vostro-k8: narrow GLX build for RS480 / R300 oracle runs.
+# r300-trace-vostro-k8: narrow GLX build for RS480 / R300 oracle runs.
 #
 # The Vostro 1000 target is an AMD Turion 64 X2 TL-66 system.  Clang
 # identifies it as k8-sse3; keep that in the sourced environment so
 # remote distcc compilers never emit newer host instructions.
 
 [binaries]
-c   = ['/usr/bin/ccache', 'clang-21']
-cpp = ['/usr/bin/ccache', 'clang++-21']
-ar = 'llvm-ar-21'
-nm = 'llvm-nm-21'
-strip = 'llvm-strip-21'
+c   = ['/usr/bin/ccache', '/usr/bin/clang-21']
+cpp = ['/usr/bin/ccache', '/usr/bin/clang++-21']
+ar = '/usr/bin/llvm-ar-21'
+nm = '/usr/bin/llvm-nm-21'
+strip = '/usr/bin/llvm-strip-21'
 
 [project options]
 buildtype = 'debugoptimized'

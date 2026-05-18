@@ -26,6 +26,7 @@
 
 #include "terakan_pipeline_layout.h"
 
+#include "amd_family.h"
 #include "util/bitset.h"
 #include "nir.h"
 #include "nir_builder.h"
@@ -98,22 +99,28 @@ bool terakan_nir_lower_sin_cos(nir_shader * shader);
  *
  * The hardware CMPXCHG_INT (RAT_INST opcode 4) and CMPXCHG_INT_RTN
  * (opcode 36) are listed in the AMD Evergreen-Family ISA but do not
- * behave as a reliable compare-and-conditional-write path on Palm.  When
- * TERAKAN_EXPERIMENTAL_SPECULATIVE_CMPXCHG is enabled, this pass rewrites
- * supported CAS intrinsics
- * (ssbo_atomic_swap, image_deref_atomic_swap, global_atomic_swap, all with
+ * behave as a reliable compare-and-conditional-write path on Palm.
+ * The pass rewrites supported CAS intrinsics (ssbo_atomic_swap,
+ * image_deref_atomic_swap, global_atomic_swap, all with
  * atomic_op == cmpxchg and bit_size == 32) to a three-instruction
  * sequence:
  *     cur = load (...)
  *     take = (cur == compare) ? replacement : cur
  *     old = atomic_xchg(..., take)
- * which is correct only when no other wavefront can write the same address
- * between the load and the xchg.  Leave the environment gate disabled for
- * normal shader compilation so device-scope CAS keeps atomic semantics.
+ * which is correct only when no other wavefront can write the same
+ * address between the load and the xchg.
+ *
+ * Gating is policy-driven via TERAKAN_PALM_CMPXCHG_POLICY; the
+ * chip_family argument selects the default when no env var is set --
+ * CHIP_PALM defaults to cts_speculative, every other supported
+ * Terakan chip family defaults to native_noop_legacy.  See the
+ * comment block at the top of terakan_nir_lower_cmpxchg.c for the
+ * full policy surface.
  *
  * Must run BEFORE terakan_nir_lower_bindings so the lowered xchg flows
  * through the standard atomic UAV path. */
-bool terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader);
+bool terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader,
+                                                   enum radeon_family chip_family);
 
 /* LDS-emulated cross-lane subgroup primitives for chips without native
  * cross-lane ALU (Palm / Wrestler -- CHIP_PALM, Evergreen / TeraScale-2

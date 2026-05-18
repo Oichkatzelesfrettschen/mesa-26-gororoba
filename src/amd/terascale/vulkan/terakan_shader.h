@@ -30,6 +30,7 @@
 #include "terakan_push_constants.h"
 #include "terakan_vertex_input.h"
 
+#include "amd_family.h"
 #include "amd/terascale/common/terascale_eg_sq.h"
 #include "gallium/drivers/r600/r600_opcodes.h"
 #include "gallium/drivers/r600/r600_shader_common.h"
@@ -351,7 +352,8 @@ void terakan_shader_lower_and_optimize_post_link(
    BITSET_WORD * uavs_for_mutable_resources_needed, uint32_t * driver_push_constants_used,
    uint16_t * kcache_needed,
    uint8_t * fragment_data_uncompacted_locations_out,
-   bool robust_buffer_access);
+   bool robust_buffer_access,
+   enum radeon_family chip_family);
 
 /*
  * Cross-stage NIR post-processing: Multi-Pass Post-Link Barrier.
