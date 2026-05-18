@@ -78,6 +78,8 @@ struct regalloc_state {
 };
 
 struct rc_class {
+   /* FP and VP register-class enums both start at zero.  ID indexes
+    * rc_regalloc_state::classes, whose size follows the larger FP domain. */
    unsigned int ID;
 
    unsigned int WritemaskCount;

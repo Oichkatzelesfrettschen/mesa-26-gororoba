@@ -153,7 +153,8 @@ terakan_pipeline_compute_compile(
       &local_shader.push_constants_usage.driver_constants,
       &local_shader.kcache_needed,
       NULL,
-      stage_robust_buffer_access);
+      stage_robust_buffer_access,
+      terakan_device_physical_device(device)->chip_info.chip_family);
 
    /* Build cache key (Invariant 4: only after post-link lowering). */
    VkPipelineCreateFlags2KHR const pipeline_flags =
@@ -290,7 +291,8 @@ terakan_pipeline_compute_compile_storage_image_layer_variant(
       &variant->push_constants_usage.driver_constants,
       &variant->kcache_needed,
       NULL,
-      stage_robust_buffer_access);
+      stage_robust_buffer_access,
+      terakan_device_physical_device(device)->chip_info.chip_family);
 
    /* Clear the NIR-lowering literals before backend emission starts. */
    terakan_storage_image_set_compile_layer(INT32_MIN);
