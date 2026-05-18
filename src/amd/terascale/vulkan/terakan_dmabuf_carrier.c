@@ -80,6 +80,7 @@ static const struct terakan_carrier_policy palm_carrier_policy[] = {
                  "conditional write at the L2 cache (silicon power-area "
                  "cut on the Wrestler die); AMD Evergreen-Family ISA "
                  "MEM_RAT_CACHELESS forbids atomics; speculative-XCHG "
+<<<<<<< HEAD
                  "rewrite is the only working compare-and-swap surface "
                  "on CHIP_PALM and is gated by "
                  "TERAKAN_PALM_CMPXCHG_POLICY -- the env-unset default "
@@ -88,6 +89,21 @@ static const struct terakan_carrier_policy palm_carrier_policy[] = {
                  "family (CHIP_CYPRESS, CHIP_JUNIPER, CHIP_REDWOOD, "
                  "CHIP_CEDAR, CHIP_SUMO, CHIP_SUMO2, CHIP_CAYMAN, "
                  "CHIP_ARUBA) whose comparators are wired up correctly",
+||||||| 5c70965766d
+                 "rewrite is valid only for non-racing shapes and is "
+                 "gated by TERAKAN_PALM_CMPXCHG_POLICY (cts_speculative "
+                 "for CTS / probe workloads; default native_noop_legacy "
+                 "preserves silicon-noop behavior)",
+=======
+                 "rewrite is the only working compare-and-swap surface "
+                 "on CHIP_PALM and is gated by "
+                 "TERAKAN_PALM_CMPXCHG_POLICY -- env-unset default is "
+                 "cts_speculative on CHIP_PALM (deployed) and "
+                 "native_noop_legacy on every other Terakan chip "
+                 "family (CHIP_CYPRESS, CHIP_JUNIPER, CHIP_REDWOOD, "
+                 "CHIP_CEDAR, CHIP_SUMO, CHIP_SUMO2, CHIP_CAYMAN, "
+                 "CHIP_ARUBA) whose comparators are wired up correctly",
+>>>>>>> terakan/palm_default_cts_speculative_for_chip_palm
    },
 };
 
