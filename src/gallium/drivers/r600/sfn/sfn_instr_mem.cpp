@@ -23,6 +23,30 @@
 
 namespace r600 {
 
+/* AMD Evergreen-Family ISA section 9 "Export To UAV", MEM_RAT
+ * instruction:
+ *
+ *   RW GPR: X = data, Y = returnAddr, Z = CmpData for other
+ *   RAT_INSTs.
+ *
+ * AMD HD6900 Series (Northern Islands / Cayman) ISA chapter 8
+ * documents the same data payload layout for CF_INST_MEM_RAT
+ * (verbatim "Z = CmpData for other RAT_INSTs" entry at the
+ * "Export To UAV" instruction reference).
+ *
+ * Both chip classes therefore put the compare value in channel Z
+ * (RW_GPR.z, == data_vec4[2]).  The historical conditional
+ * `chip_class == ISA_CC_CAYMAN ? 2 : 3` placed it in W (channel
+ * 3) on Evergreen, contradicting the Evergreen ISA quoted above
+ * and causing CMPXCHG_INT / CMPXCHG_INT_RTN to compare against
+ * uninitialised channel content, with the conditional write
+ * dropping on success (steinmarder PR #185 SSBO atomicCompSwap
+ * success-write drop signature, reproduced at single-invocation
+ * granularity in steinmarder bundle palm_mem_rat_atomic_-
+ * completion_semantics_20260518T184200Z).
+ */
+#define TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL 2
+
 static const char *
 cmpxchg_payload_channel_name(int channel)
 {
@@ -881,7 +905,7 @@ RatInstr::emit_global_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
       shader.emit_instruction(
          new AluInstr(op1_mov,
-                      data_vec4[shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3],
+                      data_vec4[TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL],
                       vf.src(intr->src[1], 0),
                       AluInstr::write));
    } else {
@@ -983,11 +1007,11 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
       cmpxchg_op ? debug_get_option("TERAKAN_EXPERIMENTAL_CMPXCHG_PAYLOAD_ORDER",
                                     "current") : "current";
    int cmpxchg_replacement_channel = 0;
-   int cmpxchg_compare_channel = shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3;
+   int cmpxchg_compare_channel = TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL;
    bool const cmpxchg_payload_order_valid =
       !cmpxchg_op ||
       select_cmpxchg_payload_channels(cmpxchg_payload_order,
-                                      shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3,
+                                      TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL,
                                       &cmpxchg_replacement_channel,
                                       &cmpxchg_compare_channel);
    if (cmpxchg_op && !cmpxchg_payload_order_valid)
@@ -1208,7 +1232,7 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[2], 0), AluInstr::write));
       shader.emit_instruction(
          new AluInstr(op1_mov,
-                      data_vec4[shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3],
+                      data_vec4[TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL],
                       vf.src(intr->src[3], 0),
                       AluInstr::write));
    } else if (uav_op_base != RatInstr::NOP) {
@@ -1456,7 +1480,7 @@ RatInstr::emit_ssbo_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
          new AluInstr(op1_mov, data_vec4[0], vf.src(intr->src[3], 0), AluInstr::write));
       shader.emit_instruction(
          new AluInstr(op1_mov,
-                      data_vec4[shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3],
+                      data_vec4[TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL],
                       vf.src(intr->src[2], 0),
                       AluInstr::write));
    } else {
@@ -1765,7 +1789,7 @@ RatInstr::emit_image_load_or_atomic(nir_intrinsic_instr *intrin, Shader& shader)
          new AluInstr(op1_mov, data_vec4[0], vf.src(intrin->src[4], 0), AluInstr::write));
       shader.emit_instruction(
          new AluInstr(op1_mov,
-                      data_vec4[shader.chip_class() == ISA_CC_CAYMAN ? 2 : 3],
+                      data_vec4[TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL],
                       vf.src(intrin->src[3], 0),
                       AluInstr::write));
    } else {
