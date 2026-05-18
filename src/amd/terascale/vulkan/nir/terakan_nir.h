@@ -113,9 +113,10 @@ bool terakan_nir_lower_sin_cos(nir_shader * shader);
  * Gating is policy-driven via TERAKAN_PALM_CMPXCHG_POLICY; the
  * chip_family argument selects the default when no env var is set --
  * CHIP_PALM defaults to cts_speculative, every other supported
- * Terakan chip family defaults to native_noop_legacy.  See the
- * comment block at the top of terakan_nir_lower_cmpxchg.c for the
- * full policy surface.
+ * Terakan chip family defaults to native_noop_legacy.  The
+ * cts_speculative policy still leaves unproven Device-scope atomics
+ * native.  See the comment block at the top of
+ * terakan_nir_lower_cmpxchg.c for the full policy surface.
  *
  * Must run BEFORE terakan_nir_lower_bindings so the lowered xchg flows
  * through the standard atomic UAV path. */
