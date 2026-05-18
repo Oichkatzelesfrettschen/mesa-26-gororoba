@@ -1729,6 +1729,16 @@ RatInstr::emit_image_load_or_atomic(nir_intrinsic_instr *intrin, Shader& shader)
       auto dest = vf.dest_vec4(intrin->def, pin_group);
 
       auto wait = new ControlFlowInstr(ControlFlowInstr::cf_wait_ack);
+      /* The cf_wait_ack must depend on the atomic itself, otherwise
+       * the SFN scheduler can place the wait in a CF clause that
+       * fires before the atomic retires, the subsequent vc_fetch
+       * reads rat_return_address before the atomic has written it,
+       * and the returned-prior value is observed as zero (the
+       * cleared initial state of the return slot) while the
+       * atomic's memory write still lands correctly.  The global,
+       * SSBO, and explicit UAV-returning atomic emit paths all add
+       * this dependency edge. */
+      wait->add_required_instr(atomic);
 
       shader.chain_ssbo_read(wait);
       shader.emit_instruction(wait);
