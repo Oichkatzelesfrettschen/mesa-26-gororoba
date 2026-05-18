@@ -140,10 +140,11 @@ extern "C" {
 /* Maximum sampled-image bindings per stage that can be safely routed
  * through the dual-descriptor (sample + gather-safe) scheme.
  *
- * Per AMD IL Spec lines 4818-4844, gather4_comp_sel accepts only
- * IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 / SEL_1 are HW-invalid for
- * FETCH4 / FETCH4C / FETCH4po / FETCH4poc.  The gather-safe descriptor
- * has identity DST_SEL in SQ_TEX_RESOURCE_WORD4; the application's
+ * Per the AMD IL Spec gather4_comp_sel definition, gather4_comp_sel
+ * accepts only IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 / SEL_1 are
+ * HW-invalid for FETCH4 / FETCH4C / FETCH4po / FETCH4poc.  The
+ * gather-safe descriptor has identity DST_SEL in SQ_TEX_RESOURCE_WORD4;
+ * the application's
  * component mapping (including literal ZERO / ONE) is reconstructed on
  * the gather result in the `terakan_nir_lower_tg4_view_swizzle` NIR
  * pass.
@@ -160,12 +161,11 @@ extern "C" {
 #define TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES 24u
 
 /* Offset added to a sampled-image binding's HW resource slot to find its
- * gather-safe sibling.  Tied to TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES so
- * sample slots [base, base + MAX-1] and gather slots [base + OFFSET, base +
- * OFFSET + MAX-1] are guaranteed non-overlapping.  Sample range starts at
- * HW slot 18 (after the per-stage sampler region) and gather range starts
- * at 18 + OFFSET = 42, ending at 65.  Total usage 48 of 176 (PS/CS) or
- * 160 (VS/GS/HS/LS) HW slots per stage. */
+ * gather-safe sibling.  Pipeline-layout creation verifies that no regular
+ * resource descriptor occupies the sibling range for any sampled image.
+ * Sampled-image descriptors therefore remain addressable as
+ * texture_index + OFFSET in NIR without aliasing SSBO, UBO, storage-image,
+ * or texel-buffer descriptors in the same SQC bank. */
 #define TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES
 
 #define TERAKAN_SAMPLER_HW_OFFSET_PS   (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE * 0)

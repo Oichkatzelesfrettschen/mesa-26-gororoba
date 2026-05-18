@@ -1297,9 +1297,9 @@ terakan_shader_lower_and_optimize_post_link(
          }
          if (any_tg4) break;
       }
-      /* Per AMD IL Spec lines 4818-4844, gather4_comp_sel accepts only
-       * IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 and SEL_1 baked into
-       * SQ_TEX_RESOURCE_WORD4 DST_SEL are HW-invalid for FETCH4 /
+      /* Per the AMD IL Spec gather4_comp_sel definition, gather4_comp_sel
+       * accepts only IL_COMPSEL_{X_R, Y_G, Z_B, W_A}; SEL_0 and SEL_1
+       * baked into SQ_TEX_RESOURCE_WORD4 DST_SEL are HW-invalid for FETCH4 /
        * FETCH4C / FETCH4po / FETCH4poc.  The runtime-swizzle gather
        * rewrite plus the gather-safe descriptor plumbing
        * (terakan_pipeline_layout.c binds the identity-DST_SEL sibling
