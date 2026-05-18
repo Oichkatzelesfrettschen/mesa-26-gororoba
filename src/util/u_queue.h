@@ -80,7 +80,10 @@ util_queue_fence_init(struct util_queue_fence *fence)
 static inline void
 util_queue_fence_destroy(struct util_queue_fence *fence)
 {
-   assert(p_atomic_read_relaxed(&fence->val) == 0);
+#ifndef NDEBUG
+   uint32_t val = p_atomic_read_relaxed(&fence->val);
+   assert(val == 0);
+#endif
    /* no-op */
 }
 

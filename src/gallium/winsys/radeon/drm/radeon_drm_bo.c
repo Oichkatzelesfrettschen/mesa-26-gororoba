@@ -1187,7 +1187,10 @@ static struct pb_buffer_lean *radeon_winsys_bo_from_handle(struct radeon_winsys 
       /* Increase the refcount. */
       if (unlikely(p_atomic_inc_return(&bo->base.reference.count) == 1)) {
          p_atomic_dec(&bo->base.reference.count);
-         assert(p_atomic_read(&bo->base.reference.count) == 0);
+#ifndef NDEBUG
+         int ref_count = p_atomic_read(&bo->base.reference.count);
+         assert(ref_count == 0);
+#endif
       } else {
          goto done;
       }

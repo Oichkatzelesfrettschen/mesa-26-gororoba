@@ -778,7 +778,10 @@ _mesa_glthread_wait_for_call(struct gl_context *ctx,
    int batch = p_atomic_read(last_batch_index_where_called);
    if (batch != -1) {
       util_queue_fence_wait(&ctx->GLThread.batches[batch].fence);
-      assert(p_atomic_read(last_batch_index_where_called) == -1);
+#ifndef NDEBUG
+      int current_batch = p_atomic_read(last_batch_index_where_called);
+      assert(current_batch == -1);
+#endif
    }
 }
 

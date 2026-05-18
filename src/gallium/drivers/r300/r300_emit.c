@@ -675,7 +675,7 @@ void r300_emit_query_start(struct r300_context *r300, unsigned size, void*state)
         (struct pipe_framebuffer_state *)r300->fb_state.state;
     struct r300_surface *surf = NULL;
     bool use_dummy_z = false;
-    unsigned dwords = 4;
+    UNUSED unsigned dwords = 4;
     CS_LOCALS(r300);
 
     if (!query)
