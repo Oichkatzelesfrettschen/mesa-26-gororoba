@@ -76,8 +76,14 @@ static const struct terakan_carrier_policy palm_carrier_policy[] = {
    [TERAKAN_CARRIER_DOMAIN_CACHELESS_RAT] = {
       .domain  = TERAKAN_CARRIER_DOMAIN_CACHELESS_RAT,
       .support = TERAKAN_CARRIER_FORBIDDEN,
-      .reason  = "global compare-exchange semantics are not linearizable on "
-                 "Palm; RAT cacheless path cannot be exposed as carrier-safe",
+      .reason  = "Palm native global CMPXCHG silently no-ops the "
+                 "conditional write at the L2 cache (silicon power-area "
+                 "cut on the Wrestler die); AMD Evergreen-Family ISA "
+                 "MEM_RAT_CACHELESS forbids atomics; speculative-XCHG "
+                 "rewrite is valid only for non-racing shapes and is "
+                 "gated by TERAKAN_PALM_CMPXCHG_POLICY (cts_speculative "
+                 "for CTS / probe workloads; default native_noop_legacy "
+                 "preserves silicon-noop behavior)",
    },
 };
 
