@@ -71,33 +71,50 @@ struct terakan_descriptor_set_layout_support_info {
    uint32_t max_variable_descriptor_count;
 };
 
-/* The `enforce_per_stage_and_per_pipeline_limits` flag controls which
- * storage-type-safety guards the helper applies.
+/* Under Option B, per-stage and per-pipeline hardware-bank limits are
+ * the concern of vkCreatePipelineLayout, not vkCreateDescriptorSet-
+ * Layout.  See Vulkan 1.4 specification section 14.2.3:
+ * vkGetDescriptorSetLayoutSupport may report platform-specific reasons
+ * for failure but is not required to, and per-stage / per-pipeline
+ * limits are reported separately via maxPerStageDescriptor* and
+ * maxDescriptorSet*.
  *
- * Under Option B (the current model), per-stage and per-pipeline
- * hardware-bank limits are the concern of vkCreatePipelineLayout, not
- * vkCreateDescriptorSetLayout.  See Vulkan 1.4 specification section
- * 14.2.3: vkGetDescriptorSetLayoutSupport may report platform-specific
- * reasons for failure but is not required to, and per-stage / per-
- * pipeline limits are reported separately via maxPerStageDescriptor*
- * and maxDescriptorSet*.  Both call sites of this helper -- the support
- * query and CreateDescriptorSetLayout -- therefore enforce storage-
- * type safety only: the uint8_t per-stage offset fields, the uint16_t
- * per-set accumulators, and the gather-safety constraint
- * (TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES) which is a single-set
- * single-stage invariant the pipeline-layout cannot see.
+ * Both call sites of this helper -- the support query and Create-
+ * DescriptorSetLayout -- run identical semantics: storage-type safety
+ * only.  The helper protects:
  *
- * The per-stage hardware-bank caps (TERAKAN_RESOURCE_RANGE_MUTABLE_-
- * MAX_COUNT_PIXEL / _NON_PIXEL and TERAKAN_SAMPLER_HW_COUNT_PER_STAGE)
- * are enforced at terakan_pipeline_layout_create time.  See the
- * companion comment there.
+ *   - the uint8_t per-stage offset fields on each layout binding
+ *     (cap TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX);
+ *   - the uint16_t per-set accumulators
+ *     (cap TERAKAN_DESCRIPTOR_SET_PER_SET_STORAGE_MAX);
+ *   - the uint32_t per-stage sampler-occupancy bitfields
+ *     (cap TERAKAN_DESCRIPTOR_SET_PER_STAGE_SAMPLER_MASK_BITS = 32);
+ *   - the gather-safety constraint
+ *     (TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES), a single-set single-
+ *     stage invariant the pipeline-layout cannot see.
+ *
+ * Consequences worth naming explicitly:
+ *
+ *   - Returning supported = VK_FALSE is still possible at the support
+ *     query: any layout that exceeds the storage-type caps above is
+ *     rejected here.  These are not maxPerSet* / maxPerStageDescriptor*
+ *     reports; they are driver-internal representational limits that
+ *     are wider than the HW caps but still finite.
+ *   - The per-stage hardware-bank caps
+ *     (TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL,
+ *      TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL,
+ *      TERAKAN_SAMPLER_HW_COUNT_PER_STAGE) are NOT enforced here.
+ *     They are enforced at terakan_pipeline_layout_create time.
+ *   - The uniform-buffer cap (TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS) is
+ *     enforced ONLY at pipeline-layout time; there is no descriptor-
+ *     set-layout counterpart -- the set-layout never tracks uniform-
+ *     buffer counts for cap purposes, only for offset assignment.
  */
 static bool
 terakan_descriptor_set_layout_is_supported(
    struct terakan_device const * const device,
    VkDescriptorSetLayoutCreateInfo const * const create_info,
-   struct terakan_descriptor_set_layout_support_info * const support_info,
-   bool enforce_per_stage_and_per_pipeline_limits)
+   struct terakan_descriptor_set_layout_support_info * const support_info)
 {
    support_info->total_descriptors = 0;
    support_info->max_variable_descriptor_count = 0;
@@ -170,8 +187,7 @@ terakan_descriptor_set_layout_is_supported(
          }
       }
 
-      if (enforce_per_stage_and_per_pipeline_limits &&
-          descriptor_count > TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX) {
+      if (descriptor_count > TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX) {
          return false;
       }
 
@@ -179,14 +195,13 @@ terakan_descriptor_set_layout_is_supported(
       VkShaderStageFlags const binding_stages = binding->stageFlags & stage_mask;
 
       if (terakan_descriptor_type_has_resource(descriptor_type)) {
-         if (enforce_per_stage_and_per_pipeline_limits &&
-             TERAKAN_DESCRIPTOR_SET_PER_SET_STORAGE_MAX - set_resource_count <
+         if (TERAKAN_DESCRIPTOR_SET_PER_SET_STORAGE_MAX - set_resource_count <
              descriptor_count) {
             return false;
          }
          set_resource_count += descriptor_count;
 
-         if (enforce_per_stage_and_per_pipeline_limits) {
+         {
             unsigned remaining_stages = (unsigned)binding_stages;
             while (remaining_stages) {
                int const stage_index = u_bit_scan(&remaining_stages);
@@ -216,8 +231,7 @@ terakan_descriptor_set_layout_is_supported(
 
          if ((binding_stages & uav_supported_stage_mask) &&
              terakan_descriptor_type_has_uav(descriptor_type)) {
-            if (enforce_per_stage_and_per_pipeline_limits &&
-                TERAKAN_DESCRIPTOR_SET_PER_SET_STORAGE_MAX - set_uav_count <
+            if (TERAKAN_DESCRIPTOR_SET_PER_SET_STORAGE_MAX - set_uav_count <
                 descriptor_count) {
                return false;
             }
@@ -226,31 +240,35 @@ terakan_descriptor_set_layout_is_supported(
       }
 
       if (terakan_descriptor_type_has_sampler(descriptor_type)) {
-         if (enforce_per_stage_and_per_pipeline_limits) {
-            if (binding->pImmutableSamplers != NULL) {
-               if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX -
-                      immutable_sampler_count <
-                   descriptor_count) {
-                  return false;
-               }
-               immutable_sampler_count += descriptor_count;
-            }
-            if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX - set_sampler_count <
+         /* Sampler occupancy is encoded in 32-bit bitfields on the
+          * per-stage layout-shader.  A single sampler binding therefore
+          * cannot exceed the mask-bit width (32). */
+         if (descriptor_count > TERAKAN_DESCRIPTOR_SET_PER_STAGE_SAMPLER_MASK_BITS) {
+            return false;
+         }
+         if (binding->pImmutableSamplers != NULL) {
+            if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX -
+                   immutable_sampler_count <
                 descriptor_count) {
                return false;
             }
-            set_sampler_count += descriptor_count;
+            immutable_sampler_count += descriptor_count;
+         }
+         if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX - set_sampler_count <
+             descriptor_count) {
+            return false;
+         }
+         set_sampler_count += descriptor_count;
 
-            unsigned remaining_stages = (unsigned)binding_stages;
-            while (remaining_stages) {
-               int const stage_index = u_bit_scan(&remaining_stages);
-               if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX -
-                      stage_sampler_count[stage_index] <
-                   descriptor_count) {
-                  return false;
-               }
-               stage_sampler_count[stage_index] += descriptor_count;
+         unsigned remaining_stages = (unsigned)binding_stages;
+         while (remaining_stages) {
+            int const stage_index = u_bit_scan(&remaining_stages);
+            if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_SAMPLER_MASK_BITS -
+                   stage_sampler_count[stage_index] <
+                descriptor_count) {
+               return false;
             }
+            stage_sampler_count[stage_index] += descriptor_count;
          }
       }
    }
@@ -294,12 +312,12 @@ terakan_CreateDescriptorSetLayout(VkDevice const deviceHandle,
    struct terakan_device * const device = terakan_device_from_handle(deviceHandle);
 
    struct terakan_descriptor_set_layout_support_info support_info;
-   if (!terakan_descriptor_set_layout_is_supported(device, pCreateInfo, &support_info,
-                                                   /*enforce_per_stage_and_per_pipeline_limits=*/true)) {
+   if (!terakan_descriptor_set_layout_is_supported(device, pCreateInfo, &support_info)) {
       return vk_errorf(
          device, VK_ERROR_VALIDATION_FAILED_EXT,
-         "The application creates a descriptor set layout that is too large to fit into the "
-         "hardware binding register spaces");
+         "The application creates a descriptor set layout that exceeds Terakan's "
+         "internal storage representation; the hardware binding register caps are "
+         "enforced separately at vkCreatePipelineLayout time");
    }
 
    /* Sort bindings by their numbers for pipeline layout compatibility and dynamic offset indexing
@@ -387,6 +405,12 @@ terakan_CreateDescriptorSetLayout(VkDevice const deviceHandle,
          }
       }
       if (terakan_descriptor_type_has_sampler(binding_type)) {
+         /* A single sampler binding cannot exceed the 32-bit sampler-
+          * mask width on the per-stage layout-shader; tighter than the
+          * uint8_t storage MAX. */
+         if (binding->descriptorCount > TERAKAN_DESCRIPTOR_SET_PER_STAGE_SAMPLER_MASK_BITS) {
+            goto too_many_descriptors;
+         }
          if (binding->pImmutableSamplers != NULL) {
             if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX -
                    immutable_sampler_count <
@@ -658,9 +682,14 @@ terakan_CreateDescriptorSetLayout(VkDevice const deviceHandle,
          }
 
          /* Per-stage hardware sampler cap (SAMPLER_HW_COUNT_PER_STAGE)
-          * is enforced at terakan_pipeline_layout_create.  The set-
-          * layout guards uint8_t storage of first_shader_samplers[]. */
-         if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX - stage_sampler_count <
+          * is enforced at terakan_pipeline_layout_create.  Here the
+          * tighter cap is the 32-bit width of the per-stage sampler-
+          * occupancy bitfields (non_immutable_samplers /
+          * immutable_samplers_unnormalized_coordinates).  The OR-into-
+          * shifted-mask immediately below would invoke shift UB if
+          * stage_sampler_count + binding->descriptor_count exceeded the
+          * mask width. */
+         if (TERAKAN_DESCRIPTOR_SET_PER_STAGE_SAMPLER_MASK_BITS - stage_sampler_count <
              binding->descriptor_count) {
             goto too_many_descriptors_destroy;
          }
@@ -788,8 +817,7 @@ terakan_GetDescriptorSetLayoutSupport(VkDevice const deviceHandle,
 
    struct terakan_descriptor_set_layout_support_info support_info;
    pSupport->supported =
-      terakan_descriptor_set_layout_is_supported(device, pCreateInfo, &support_info,
-                                                 /*enforce_per_stage_and_per_pipeline_limits=*/true);
+      terakan_descriptor_set_layout_is_supported(device, pCreateInfo, &support_info);
 
    VkDescriptorSetVariableDescriptorCountLayoutSupport * const variable_count =
       vk_find_struct(pSupport->pNext, DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_LAYOUT_SUPPORT);

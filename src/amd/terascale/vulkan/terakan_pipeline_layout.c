@@ -511,18 +511,30 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
 /* terakan_pipeline_layout_create is the authoritative enforcement
  * point for per-stage hardware-bank caps (Option B contract).
  *
- * terakan_descriptor_set_layout.c assigns binding->first_shader_-
- * resources[stage] and binding->first_shader_samplers[stage] as
- * per-set-relative offsets bounded only by uint8_t storage.  This
- * function walks all bound VkDescriptorSetLayout objects in stage_mask
- * order and computes the absolute per-stage offsets, rejecting layouts
- * that overflow:
+ * terakan_descriptor_set_layout.c assigns the per-binding
+ * `first_shader_resources[stage]` and `first_shader_samplers[stage]`
+ * fields as per-set-relative offsets bounded by uint8_t storage and,
+ * for samplers, by the 32-bit per-stage occupancy-mask width.  This
+ * function walks all bound VkDescriptorSetLayout objects in
+ * stage_mask order and computes the absolute per-stage offsets,
+ * rejecting layouts that overflow any of:
  *
- *   - TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL (PS, 176 slots)
- *   - TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL (VS/ES/GS/HS/
- *     LS/CS, 160 or 176 slots)
- *   - TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS per stage
- *   - TERAKAN_SAMPLER_HW_COUNT_PER_STAGE per stage (16 slots)
+ *   resource caps -- the matching descriptor-set-layout helper
+ *     tracks set-relative per-stage resource counts; the cap
+ *     enforced here is the absolute per-stage hardware bank:
+ *       TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL     PS 176
+ *       TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL VS/ES/GS/
+ *                                                         HS/LS/CS
+ *                                                         160 or 176
+ *   sampler cap -- the per-stage hardware sampler bank:
+ *       TERAKAN_SAMPLER_HW_COUNT_PER_STAGE 16
+ *     (the matching descriptor-set-layout helper additionally caps
+ *      per-stage sampler count at the 32-bit mask width).
+ *   uniform-buffer cap -- enforced ONLY at pipeline-layout time;
+ *     the set-layout side does not track uniform-buffer counts for
+ *     cap purposes, only for offset assignment, so there is no
+ *     descriptor-set-layout counterpart for:
+ *       TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS
  *
  * AMD Evergreen 3D Registers v2 section 5 "Shader Vertex Resource
  * Constants" partitions the hardware constant banks per-stage with
