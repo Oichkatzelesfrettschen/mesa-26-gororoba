@@ -16,7 +16,7 @@
          fprintf(stderr, __VA_ARGS__); \
    } while (0)
 
-static_assert(RC_REG_CLASS_VP_COUNT <= RC_REG_CLASS_FP_COUNT,
+static_assert((unsigned)RC_REG_CLASS_VP_COUNT <= (unsigned)RC_REG_CLASS_FP_COUNT,
               "vertex register classes must fit in fragment storage");
 
 const struct rc_class rc_class_list_vp[] = {
