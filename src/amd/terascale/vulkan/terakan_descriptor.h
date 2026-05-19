@@ -233,6 +233,47 @@ static_assert(
    (TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL * 5 +                                       \
     TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL)
 
+/* Storage-type safety guards for the descriptor-set-layout helpers.
+ *
+ * Per-stage and per-pipeline hardware-bank limits are the concern of
+ * vkCreatePipelineLayout, not vkCreateDescriptorSetLayout (see Vulkan
+ * 1.4 specification section 14.2.3 -- vkGetDescriptorSetLayoutSupport
+ * is permitted to take platform-specific factors into account but is
+ * not required to).  The descriptor-set-layout helpers therefore only
+ * need to protect the uint8_t per-stage offset fields and the uint16_t
+ * per-set accumulators against silent integer overflow.
+ *
+ * These guards reflect the maximum value the corresponding storage
+ * field can encode, not the hardware bank size.  Pipeline-layout
+ * creation still enforces the actual per-stage hardware caps
+ * (TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_PIXEL /
+ *  TERAKAN_RESOURCE_RANGE_MUTABLE_MAX_COUNT_NON_PIXEL /
+ *  TERAKAN_SAMPLER_HW_COUNT_PER_STAGE).
+ */
+#define TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX UINT8_MAX
+#define TERAKAN_DESCRIPTOR_SET_PER_SET_STORAGE_MAX UINT16_MAX
+
+/* Per-stage sampler occupancy is encoded in two uint32_t bitfields on
+ * terakan_descriptor_set_layout_shader (non_immutable_samplers and
+ * immutable_samplers_unnormalized_coordinates).  Bit i represents
+ * sampler slot i within the stage's set-relative sampler space.
+ *
+ * Construction of those bitfields uses shifts of the form
+ *   (uint32_t)1 << binding_descriptor_count
+ *   bitfield << stage_sampler_count
+ * and the result is OR'd into the layout-shader field.  Both
+ * operations are undefined behaviour in C if the shift amount equals
+ * or exceeds 32 (the type width).  The descriptor-set-layout helpers
+ * therefore cap per-stage sampler count at this representation
+ * width -- a tighter constraint than the per-stage uint8_t storage
+ * MAX above, and tighter than what the HW per-stage sampler bank
+ * could accept (16, enforced at pipeline-layout time).
+ *
+ * Pipeline-layout creation enforces the actual HW cap
+ * (TERAKAN_SAMPLER_HW_COUNT_PER_STAGE = 16) on top of this.
+ */
+#define TERAKAN_DESCRIPTOR_SET_PER_STAGE_SAMPLER_MASK_BITS 32u
+
 /* SQ_VTX_CONSTANT doesn't have words 5 and 6, so using word 5 for the BO priority. */
 #define TERAKAN_RESOURCE_BUFFER_PRIORITY_WORD 5
 
