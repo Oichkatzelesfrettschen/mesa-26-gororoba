@@ -5,9 +5,9 @@
 # See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
 
 [binaries]
-c   = ["/usr/bin/ccache", "/usr/bin/clang-21"]
-cpp = ["/usr/bin/ccache", "/usr/bin/clang++-21"]
-rust = ["/home/eirikr/.local/bin/sccache", "/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc"]
+c   = ['/usr/bin/ccache', '/usr/bin/clang-21']
+cpp = ['/usr/bin/ccache', '/usr/bin/clang++-21']
+rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
 
 [project options]
 buildtype           = 'debug'
