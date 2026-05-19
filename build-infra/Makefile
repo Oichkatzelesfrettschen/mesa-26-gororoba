@@ -177,7 +177,10 @@ audit:
 	need_file "$(CONFIG)"; need_file "$(ENVFILE)"; \
 	if grep -Eq 'gallium-rusticl[[:space:]]*=[[:space:]]*true' "$(CONFIG)"; then rusticl_enabled=1; else rusticl_enabled=0; fi; \
 	if grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)"; then needs_llvm_config=0; else needs_llvm_config=1; fi; \
-	if grep -Eq "platforms[[:space:]]*=[^#]*'wayland'" "$(CONFIG)"; then wayland_platform=1; else wayland_platform=0; fi; \
+	if ! grep -Eq "^[[:space:]]*platforms[[:space:]]*=" "$(CONFIG)"; then wayland_platform=1; \
+	elif grep -Eq "^[[:space:]]*platforms[[:space:]]*=[^#]*'wayland'" "$(CONFIG)"; then wayland_platform=1; \
+	elif grep -Eq "^[[:space:]]*platforms[[:space:]]*=[^#]*'auto'" "$(CONFIG)"; then wayland_platform=1; \
+	else wayland_platform=0; fi; \
 	for tool in meson ninja pkg-config python3; do need_command "$$tool"; done; \
 	case "$(COMPILER_CHAIN)" in \
 		ccache) need_command ccache; \

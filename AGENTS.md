@@ -7,8 +7,8 @@ last_verified: 2026-04-19
 
 Fork of Mesa 26.1-devel tracking upstream `main` closely.  Carries
 the terakan Vulkan driver at `src/amd/terascale/vulkan/` plus r600
-SFN improvements targeting Radeon HD 6310 (CHIP_SUMO, TeraScale-2
-VLIW5, 2-SIMD Cayman family).
+SFN improvements targeting Radeon HD 6310 (Palm / Wrestler,
+CHIP_PALM, Evergreen / TeraScale-2 VLIW5).
 
 Target host: x130e (Bobcat + HD 6310 APU).  Peer repo:
 [steinmarder](https://github.com/Oichkatzelesfrettschen/steinmarder)
@@ -95,6 +95,22 @@ surface.  Meson owns configuration and Ninja generation.  Make owns host
 selection, audit checks, generated native overlays, clean/build/install
 targets, and distcc-pump sequencing.  Do not add standalone build helper
 scripts for compiler selection, audit policy, or clean/build orchestration.
+
+Build audits MUST model Meson's defaults, not only explicit profile text.
+If an option is omitted or set to `auto`, audit the dependencies Meson will
+enable on the target host.  Do not pass audit by assuming an absent option is
+disabled.
+
+Raw submit probes MUST require exact opt-in values for hazard gates.  A
+variable being present is not consent.  Use checks such as
+`R300_TRACE_HAZARD_ACCEPTED=1` and reject unset, empty, or zero-valued gates.
+
+| WHAT TO DO | WHAT NOT TO DO |
+|---|---|
+| Audit Meson defaults such as omitted or `auto` platforms. | Do not treat an absent Meson option as disabled. |
+| Keep compiler, audit, clean, build, and install orchestration in Make. | Do not add standalone build helper scripts for policy decisions. |
+| Require exact raw-submit gate values such as `=1`. | Do not use `getenv()` presence as hazardous-path consent. |
+| Use PATH-resolved tool names in generated native files. | Do not hard-code user-specific compiler or Rust toolchain paths. |
 
 The x130e canonical build split is:
 
