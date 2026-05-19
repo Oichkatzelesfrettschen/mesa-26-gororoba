@@ -37,6 +37,8 @@ INSTALL_NAMESPACE ?= mesa
 PREFIX   ?= /usr/local/$(INSTALL_NAMESPACE)-$(PROFILE)
 ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
 JOBS     ?= 8
+else ifneq (,$(filter $(HOSTENV),vostro1000-k8-ccache-no-pump))
+JOBS     ?= 16
 else
 JOBS     ?= $(shell nproc)
 endif
@@ -168,6 +170,7 @@ audit:
 	need_file "$(CONFIG)"; need_file "$(ENVFILE)"; \
 	if grep -Eq 'gallium-rusticl[[:space:]]*=[[:space:]]*true' "$(CONFIG)"; then rusticl_enabled=1; else rusticl_enabled=0; fi; \
 	if grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)"; then needs_llvm_config=0; else needs_llvm_config=1; fi; \
+	if grep -Eq "platforms[[:space:]]*=[^#]*'wayland'" "$(CONFIG)"; then wayland_platform=1; else wayland_platform=0; fi; \
 	for tool in meson ninja pkg-config python3; do need_command "$$tool"; done; \
 	case "$(COMPILER_CHAIN)" in \
 		ccache) need_command ccache; if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then need_command distcc; fi ;; \
@@ -183,7 +186,10 @@ audit:
 	fi; \
 	if python3 -c 'import mako, ply' >/dev/null 2>&1; then ok "python modules mako ply"; else fail "missing Python module mako or ply"; fi; \
 	if python3 -c 'import sys; sys.version_info < (3, 12) or __import__("packaging")' >/dev/null 2>&1; then ok "python packaging requirement"; else fail "Python 3.12+ needs module packaging"; fi; \
-	for pc in libdrm xcb-dri3 xcb-present xshmfence x11-xcb xrandr xcb-randr xcb-sync xcb-xfixes wayland-client wayland-server wayland-protocols vulkan; do need_pkg_config "$$pc"; done; \
+	for pc in libdrm xcb-dri3 xcb-present xshmfence x11-xcb xrandr xcb-randr xcb-sync xcb-xfixes vulkan; do need_pkg_config "$$pc"; done; \
+	if [ "$$wayland_platform" -eq 1 ]; then \
+		for pc in wayland-client wayland-server wayland-protocols; do need_pkg_config "$$pc"; done; \
+	else ok "profile does not request Wayland platform"; fi; \
 	if command -v glslangValidator >/dev/null 2>&1; then ok "command glslangValidator"; else fail "missing command glslangValidator"; fi; \
 	if [ -r "$$HOME/.distcc/hosts" ]; then \
 		if grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$$)' "$$HOME/.distcc/hosts"; then fail "raw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames"; \
