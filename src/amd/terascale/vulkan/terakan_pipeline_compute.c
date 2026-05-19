@@ -16,6 +16,7 @@
 #include "terakan_entrypoints.h"
 #include "terakan_pipeline.h"
 #include "terakan_shader.h"
+#include "nir/terakan_nir.h"
 
 #include "terakan_pipeline_cache.h"
 #include "terakan_pipeline_key.h"
@@ -155,6 +156,17 @@ terakan_pipeline_compute_compile(
       NULL,
       stage_robust_buffer_access,
       terakan_device_physical_device(device)->chip_info.chip_family);
+
+   /* strict_reject: pipeline creation fails when any CMPXCHG intrinsic
+    * survives post-link lowering.  The NIR pass leaves them native under
+    * strict_reject; detecting them here and surfacing VK_ERROR_FEATURE_NOT_PRESENT
+    * is the "failure reporting outside the NIR pass" the policy comment
+    * describes. */
+   if (terakan_nir_cmpxchg_strict_reject_check(
+          nir, terakan_device_physical_device(device)->chip_info.chip_family)) {
+      ralloc_free(nir);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
 
    /* Build cache key (Invariant 4: only after post-link lowering). */
    VkPipelineCreateFlags2KHR const pipeline_flags =
@@ -308,6 +320,17 @@ terakan_pipeline_compute_compile_fix_w_variant(
       NULL,
       stage_robust_buffer_access,
       terakan_device_physical_device(device)->chip_info.chip_family);
+
+   /* strict_reject check mirrors the primary compile path. */
+   if (terakan_nir_cmpxchg_strict_reject_check(
+          nir, terakan_device_physical_device(device)->chip_info.chip_family)) {
+      terakan_fix_w_set_compile_layer(INT32_MIN);
+      terakan_fix_w_set_compile_ubo(INT32_MIN);
+      ralloc_free(nir);
+      terakan_shader_impl_finish(variant, allocator);
+      vk_free2(&device->vk.alloc, allocator, variant);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
 
    /* Reset BEFORE compile so any mid-compile NIR emission inside SFN
     * doesn't accidentally inherit the literal. */
