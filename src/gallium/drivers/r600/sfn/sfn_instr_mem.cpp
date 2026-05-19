@@ -1135,6 +1135,8 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
          : (scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW || cmpxchg_cacheless)
               ? cf_mem_rat_cacheless
               : cf_mem_rat;
+   unsigned const rat_comp_mask =
+      cmpxchg_comp_mask_overridden ? comp_mask : CLAMP(comp_mask, 1u, 0xFu);
 
    sfn_log << SfnLog::trans
            << "RAT_ATOMIC_EMIT path=uav_store"
@@ -1149,7 +1151,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
            << " cmpxchg_cacheless=" << cmpxchg_cacheless
            << " coord=" << coord
            << " data=" << data_vec4
-           << " comp_mask=" << CLAMP(comp_mask, 1u, 0xFu)
+           << " comp_mask=" << rat_comp_mask
            << " burst_count=" << burst_count
            << " elem_size=" << elem_size_minus_one
            << " cmpxchg_comp_mask_overridden=" << cmpxchg_comp_mask_overridden
@@ -1187,7 +1189,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
               << " data_vec=" << data_vec4
               << " rat_opcode=" << rat_opcode
               << " cf_opcode=" << rat_cf_opcode
-              << " comp_mask=" << CLAMP(comp_mask, 1u, 0xFu)
+              << " comp_mask=" << rat_comp_mask
               << " burst_count=" << burst_count
               << " elem_size=" << elem_size_minus_one
               << " ack=1"
@@ -1214,7 +1216,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
                              rat_id,
                              rat_id_offset,
                              burst_count,
-                             CLAMP(comp_mask, 1u, 0xFu),
+                             rat_comp_mask,
                              elem_size_minus_one);
    shader.emit_instruction(store);
    store->set_ack();
