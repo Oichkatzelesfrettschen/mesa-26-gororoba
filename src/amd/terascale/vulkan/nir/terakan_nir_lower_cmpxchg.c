@@ -157,10 +157,11 @@ get_palm_cmpxchg_policy(enum radeon_family const chip_family)
 static bool
 is_non_racing_cmpxchg(nir_intrinsic_instr const *intr)
 {
-   /* SSBO, image, and global atomic-swap intrinsics in this Mesa branch
-    * carry access flags and the atomic opcode, but not a memory scope or
-    * dispatch-shape proof.  Treat them as Device-scope until an earlier
-    * pass attaches a proof this function can read. */
+   /* SSBO and image atomic-swap intrinsics carry access flags and the
+    * atomic opcode.  Global atomic-swap carries the opcode only.  None
+    * carries a memory scope or dispatch-shape proof here, so treat the
+    * operation as Device-scope until an earlier pass attaches a proof
+    * this function can read. */
    (void)intr;
    return false;
 }
