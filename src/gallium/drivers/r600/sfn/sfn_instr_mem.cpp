@@ -1826,22 +1826,51 @@ RatInstr::emit_image_load_or_atomic(nir_intrinsic_instr *intrin, Shader& shader)
       unsigned endian = 0;
       r600_vertex_data_type(format, &fmt, &num_format, &format_comp, &endian);
 
+      /* Image-return-fetch encoding experiments.
+       *
+       * The SSBO / global / explicit-UAV-returning return-fetch
+       * encoding differs from the image-side default on three axes:
+       *
+       *   fetch_mfc:    SSBO/global 15, image 3
+       *   srf_mode:     SSBO/global set,  image not set
+       *   fetch_format: SSBO/global hardcoded fmt_32,
+       *                 image computes via r600_vertex_data_type
+       *
+       * These knobs let probe harnesses toggle each axis individually
+       * (or combined) without rebuilding mesa.  Default behavior is
+       * unchanged from the historical image-return-fetch encoding. */
+      bool const image_return_match_ssbo_mfc =
+         debug_get_bool_option("TERAKAN_EXPERIMENTAL_IMAGE_RETURN_MFC15", false);
+      bool const image_return_match_ssbo_srf =
+         debug_get_bool_option("TERAKAN_EXPERIMENTAL_IMAGE_RETURN_SRF", false);
+      bool const image_return_match_ssbo_fmt32 =
+         debug_get_bool_option("TERAKAN_EXPERIMENTAL_IMAGE_RETURN_FMT32", false);
+      EVTXDataFormat const fetch_data_format =
+         image_return_match_ssbo_fmt32 ? fmt_32 : (EVTXDataFormat)fmt;
+      EVFetchNumFormat const fetch_num_format =
+         image_return_match_ssbo_fmt32 ? vtx_nf_int : (EVFetchNumFormat)num_format;
+      EVFetchEndianSwap const fetch_endian =
+         image_return_match_ssbo_fmt32 ? vtx_es_none : (EVFetchEndianSwap)endian;
+      unsigned const fetch_mfc = image_return_match_ssbo_mfc ? 15u : 3u;
+
       auto fetch = new FetchInstr(vc_fetch,
                                   dest,
                                   {0, 1, 2, 3},
                                   shader.rat_return_address(),
                                   0,
                                   no_index_offset,
-                                  (EVTXDataFormat)fmt,
-                                  (EVFetchNumFormat)num_format,
-                                  (EVFetchEndianSwap)endian,
+                                  fetch_data_format,
+                                  fetch_num_format,
+                                  fetch_endian,
                                   R600_IMAGE_IMMED_RESOURCE_OFFSET + imageid,
                                   image_offset);
-      fetch->set_mfc(3);
+      fetch->set_mfc(fetch_mfc);
       fetch->set_fetch_flag(FetchInstr::use_tc);
       fetch->set_fetch_flag(FetchInstr::vpm);
+      if (image_return_match_ssbo_srf)
+         fetch->set_fetch_flag(FetchInstr::srf_mode);
       fetch->add_required_instr(wait);
-      if (format_comp)
+      if (!image_return_match_ssbo_fmt32 && format_comp)
          fetch->set_fetch_flag(FetchInstr::format_comp_signed);
 
       shader.emit_instruction(fetch);
