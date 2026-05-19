@@ -10,15 +10,16 @@ C and C++ compilation to LAN distcc servers reached by mDNS hostnames.
 
 Current verified state:
 
-- Source tree: `/home/eirikr/workspaces/mesa/mesa-26-gororoba`.
+- Source tree: `~/workspaces/mesa/mesa-26-gororoba`.
 - Warm build tree:
-  `/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump`.
+  `~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump`.
 - Pump build tree:
-  `/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump`.
+  `~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump`.
 - Active distcc SSH worker: `@x570-5600X3D.local/16,lzo`.
 - Active Ubuntu WSL TCP worker: `DESKTOP-CKP9KB6-2.local/32,lzo`.
 - distcc host specs for this lane use mDNS `.local` names only; do not use raw DHCP addresses.
-- Compiler: `clang-21` and `clang++-21`.
+- Compiler: a coherent installed `clang` / `clang++` / `llvm-config`
+  family selected by the Makefile-generated Meson native overlay.
 - Warm profile: `build-infra/configs/terakan-distcc-no-rusticl.meson`.
 - Pump profile: `build-infra/configs/terakan-distcc-no-rusticl-pump.meson`.
 - Default install prefix: `/usr/local/mesa-<profile>`.
@@ -41,33 +42,34 @@ The canonical split is:
 
 | Use case | C/C++ chain | Rust chain | Host options | Command |
 | --- | --- | --- | --- | --- |
-| Warm incremental | `ccache -> distcc -> clang-21`, no pump | `sccache -> rustc` | `lzo`, includes x570 + DESKTOP + localhost + zeroconf | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
-| Cold clean | `distcc-pump -> distcc -> clang-21`, no ccache | `sccache -> rustc` | verified x570 mDNS worker with shell-derived `cpp,lzo` | `make rebuild-terakan-distcc-no-rusticl-pump` |
+| Warm incremental | `ccache -> distcc -> clang`, no pump | `sccache -> rustc` | `lzo`, includes x570 + DESKTOP + localhost + zeroconf | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
+| Cold clean | `distcc-pump -> distcc -> clang`, no ccache | `sccache -> rustc` | verified x570 mDNS worker with shell-derived `cpp,lzo` | `make rebuild-terakan-distcc-no-rusticl-pump` |
 
-Warm/no-pump compiler wiring:
+Warm/no-pump compiler wiring is generated at configure time:
 
 ```ini
 [binaries]
-c   = [/usr/bin/ccache, /usr/bin/clang-21]
-cpp = [/usr/bin/ccache, /usr/bin/clang++-21]
-rust = [/home/eirikr/.local/bin/sccache, /home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc]
+c = ['ccache', '<selected-clang>']
+cpp = ['ccache', '<selected-clang++>']
+rust = ['sccache', 'rustc']
+llvm-config = '<selected-llvm-config>'
 ```
 
-Cold/pump compiler wiring:
+Cold/pump compiler wiring is generated at configure time:
 
 ```ini
 [binaries]
-c   = [/usr/bin/distcc, /usr/bin/clang-21]
-cpp = [/usr/bin/distcc, /usr/bin/clang++-21]
-rust = [/home/eirikr/.local/bin/sccache, /home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc]
+c   = ['distcc', '<selected-clang>']
+cpp = ['distcc', '<selected-clang++>']
+rust = ['sccache', 'rustc']
+llvm-config = '<selected-llvm-config>'
 ```
 
 The critical distcc and Bobcat flags are:
 
 ```sh
 export DISTCC_HOSTS="--randomize @x570-5600X3D.local/16,lzo DESKTOP-CKP9KB6-2.local/32,lzo localhost/2,lzo +zeroconf"
-export CCACHE_PREFIX="/usr/bin/distcc"
-export CCACHE_PATH="/usr/bin"
+export CCACHE_PREFIX="${CCACHE_PREFIX:-distcc}"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
 export CFLAGS="-march=btver1 -mtune=btver1 -pipe -fno-emulated-tls"
@@ -75,8 +77,8 @@ export CXXFLAGS="$CFLAGS"
 export LDFLAGS=""
 ```
 
-`-fno-emulated-tls` is required for clang-21 on this host; without it, the Mesa
-link can fail when generated emulated-TLS symbols do not match the ELF-TLS
+`-fno-emulated-tls` is required for the validated clang lane on this host;
+without it, the Mesa link can fail when generated emulated-TLS symbols do not match the ELF-TLS
 references used by Mesa objects.
 
 Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump
@@ -94,7 +96,7 @@ It remains in the classic no-pump mesh.  Use
 Sync the repo first:
 
 ```sh
-cd /home/eirikr/workspaces/mesa/mesa-26-gororoba
+cd ~/workspaces/mesa/mesa-26-gororoba
 git fetch --all --prune
 git pull --ff-only origin main
 ```
@@ -102,7 +104,7 @@ git pull --ff-only origin main
 Use the warm lane for normal edit/build/probe loops:
 
 ```sh
-cd /home/eirikr/workspaces/mesa/mesa-26-gororoba/build-infra
+cd ~/workspaces/mesa/mesa-26-gororoba/build-infra
 make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 ```
 
@@ -110,7 +112,7 @@ Use the pump lane for cold clean builds where remote preprocessing is
 worth more than cache hits:
 
 ```sh
-cd /home/eirikr/workspaces/mesa/mesa-26-gororoba/build-infra
+cd ~/workspaces/mesa/mesa-26-gororoba/build-infra
 make rebuild-terakan-distcc-no-rusticl-pump
 ```
 
@@ -127,7 +129,7 @@ Install with root privileges only after the user-owned build converges.
 Do not commit or build the repo as root:
 
 ```sh
-sudo meson install --no-rebuild -C /home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+sudo meson install --no-rebuild -C ~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
 ```
 
 Verify the installed artifacts:
@@ -188,11 +190,10 @@ That is the exact failure mode described by the `terakan-distcc-no-rusticl`
 profile, so the successful installed build used:
 
 ```sh
-export BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-pump-no-rusticl
+export BUILDDIR=~/workspaces/mesa/build/mesa-terakan-distcc-pump-no-rusticl
 export PREFIX=/usr/local/mesa-debug
 export DISTCC_HOSTS="--randomize @x570-5600X3D.local/16,lzo DESKTOP-CKP9KB6-2.local/32,lzo localhost/2,lzo +zeroconf"
-export CCACHE_PREFIX="/usr/bin/distcc"
-export CCACHE_PATH="/usr/bin"
+export CCACHE_PREFIX="${CCACHE_PREFIX:-distcc}"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
 export CFLAGS="-march=btver1 -mtune=btver1 -pipe -fno-emulated-tls"
@@ -212,7 +213,7 @@ Install must avoid root-side rebuilds. If `ninja install` dirties build targets
 same distcc environment, then install as root with:
 
 ```sh
-meson install --no-rebuild -C /home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-pump-no-rusticl
+meson install --no-rebuild -C ~/workspaces/mesa/build/mesa-terakan-distcc-pump-no-rusticl
 ```
 
 Installed files were copied to `/usr/local/mesa-debug` at 2026-04-26T01:23:48Z.
@@ -276,7 +277,7 @@ The historical Mac worker was then verified from x130e with:
 
 ```sh
 DISTCC_HOSTS="Eirikrs-MacBook-Air.local/1,lzo" \
-  distcc /usr/bin/clang-21 -march=btver1 -mtune=btver1 \
+  distcc clang -march=btver1 -mtune=btver1 \
     -fno-emulated-tls -c /tmp/distcc_mac_probe.c \
     -o /tmp/distcc_mac_probe.o
 file /tmp/distcc_mac_probe.o
@@ -290,10 +291,10 @@ was superseded by SSH-mode distcc over mDNS. The active host file is now:
 --randomize @x570-5600X3D.local/16,lzo DESKTOP-CKP9KB6-2.local/32,lzo localhost/2,lzo +zeroconf
 ```
 
-`DESKTOP-CKP9KB6-2.local/32,lzo` is active only for the clang-21 lane.
+`DESKTOP-CKP9KB6-2.local/32,lzo` is active only for the no-pump clang lane.
 - The failed rusticl-enabled build log is
-  `/home/eirikr/logs/mesa_gororoba_pump_build_20260426T003804Z.log`.
+  `~/logs/mesa_gororoba_pump_build_20260426T003804Z.log`.
 - The successful no-rusticl build log is
-  `/home/eirikr/logs/mesa_gororoba_no_rusticl_build_20260426T010131Z.log`.
+  `~/logs/mesa_gororoba_no_rusticl_build_20260426T010131Z.log`.
 - The successful install log is
-  `/home/eirikr/logs/mesa_gororoba_no_rusticl_install_norebuild_20260426T012346Z.log`.
+  `~/logs/mesa_gororoba_no_rusticl_install_norebuild_20260426T012346Z.log`.

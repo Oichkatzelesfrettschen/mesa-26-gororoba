@@ -36,17 +36,19 @@ crosses the boundary.
 
 ## Standalone build (this repo only)
 
-Minimum toolchain to build locally:
+Minimum toolchain to build locally.  LLVM package suffixes vary by
+host; install one coherent clang/clang++/llvm-config family and let
+`build-infra/Makefile` generate the Meson native-file overlay for it.
 
 ```sh
-sudo apt install meson ninja-build clang-21 pkg-config \
+sudo apt install meson ninja-build clang pkg-config \
     ccache distcc sccache bindgen rustup \
     libdrm-dev libxcb-dri3-dev libxcb-present-dev libxshmfence-dev \
     libx11-xcb-dev libxrandr-dev libxcb-randr0-dev libxcb-sync-dev \
     libxcb-xfixes0-dev libwayland-dev wayland-protocols \
     python3-mako python3-pip python3-ply \
     zlib1g-dev libzstd-dev libexpat1-dev libsensors-dev \
-    llvm-21-dev libclang-21-dev libspirv-tools-dev \
+    llvm-dev libclang-dev libspirv-tools-dev \
     libvulkan-dev libva-dev libegl-dev libgbm-dev glslang-tools
 rustup toolchain install stable
 rustup component add --toolchain stable rustfmt clippy rust-src \
@@ -88,34 +90,42 @@ Profiles live in `build-infra/configs/`:
 - `terakan-minimal.meson` r600-only, no HUD, NIR scratchpad
 - `base-debug.meson`      stock Mesa reference (no terakan)
 
+Build-system changes MUST keep Meson plus Make as the only orchestration
+surface.  Meson owns configuration and Ninja generation.  Make owns host
+selection, audit checks, generated native overlays, clean/build/install
+targets, and distcc-pump sequencing.  Do not add standalone build helper
+scripts for compiler selection, audit policy, or clean/build orchestration.
+
 The x130e canonical build split is:
 
 | Use case | C/C++ chain | Rust chain | Command |
 | --- | --- | --- | --- |
-| Warm incremental | `ccache -> distcc -> clang-21`, no pump | `sccache -> rustc` | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
-| Cold clean / max remote preprocessing | `distcc-pump -> distcc -> clang-21`, no ccache | `sccache -> rustc` | `make rebuild-terakan-distcc-no-rusticl-pump` |
+| Warm incremental | `ccache -> distcc -> clang`, no pump | `sccache -> rustc` | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
+| Cold clean / max remote preprocessing | `distcc-pump -> distcc -> clang`, no ccache | `sccache -> rustc` | `make rebuild-terakan-distcc-no-rusticl-pump` |
 
 Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump
 needs distcc to see the original source and compiler command.  The Rust
 sccache lane is separate and remains valid because it wraps rustc, not
 the C/C++ include-server path.
 
-Warm/no-pump profiles pin:
+Warm/no-pump configure writes:
 
 ```ini
-c    = ['ccache', 'clang-21']
-cpp  = ['ccache', 'clang++-21']
+[binaries]
+c    = ['ccache', '<selected-clang>']
+cpp  = ['ccache', '<selected-clang++>']
 rust = ['sccache', 'rustc']
-llvm-config = 'llvm-config-21'
+llvm-config = '<selected-llvm-config>'
 ```
 
-Cold/pump profiles pin:
+Cold/pump configure writes:
 
 ```ini
-c    = ['distcc', 'clang-21']
-cpp  = ['distcc', 'clang++-21']
+[binaries]
+c    = ['distcc', '<selected-clang>']
+cpp  = ['distcc', '<selected-clang++>']
 rust = ['sccache', 'rustc']
-llvm-config = 'llvm-config-21'
+llvm-config = '<selected-llvm-config>'
 ```
 
 Native files MUST use PATH-resolved compiler names, not user-specific
@@ -124,14 +134,17 @@ policy for the checkout; `sccache` is the optional cache wrapper in
 front of it.  If a host needs a specific Rust channel, set that through
 the repo toolchain file or the host env, not by hard-coding a
 `~/.rustup/toolchains/.../bin/rustc` path in a Meson native file.
-Version-coupled tools such as `llvm-config-21` stay versioned but
-PATH-resolved so the compiler and LLVM dependency agree without
-encoding a local filesystem path.
+Version-coupled LLVM helper tools are written into
+`$BUILDDIR/gororoba-toolchain.meson` by Make before `meson setup`.
+The generator prefers the canonical x130e major when present, honors
+`MESA_LLVM_VERSION` or `GOROROBA_LLVM_VERSION` when set, and otherwise
+chooses an installed clang/clang++/llvm-config major that is coherent
+on the host.
 
 Host-envs in `build-infra/env/` (`btver1-ccache-no-pump.env`,
 `btver1-distcc-pump.env`, `sapphire.env`, `zen4.env`) set the
 lane-specific distcc/cache policy, host-specific CFLAGS,
-`-fno-emulated-tls` (required for clang-21 on linux x86_64 to
+`-fno-emulated-tls` (required for the validated clang lane on linux x86_64 to
 avoid a link failure in libglapi), and centralised
 `CCACHE_DIR`/`SCCACHE_DIR`.
 
@@ -291,10 +304,10 @@ Canonical Palm comment: `Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 
 
 | WRONG (internal) | RIGHT (public) |
 |---|---|
-| `per Evergreen_ISA.txt:17572` | `per AMD Evergreen-Family ISA, §10.x.x (MEM_RD_SCATTER)` |
-| `see phase5_isa_pdf_audit_20260418T182628Z/...` | `per AMD Radeon HD 6000-Series ISA (Cayman), §X.Y` |
-| -- | `per AMD 3D Engine Programming Guide for Evergreen, §M (CB_COLOR0_VIEW)` |
-| -- | `per Direct3D 11.3 Functional Specification, §4.4.6 Element Alignment` |
+| `per Evergreen_ISA.txt:17572` | `per AMD Evergreen-Family ISA, section 10.x.x (MEM_RD_SCATTER)` |
+| `see phase5_isa_pdf_audit_20260418T182628Z/...` | `per AMD Radeon HD 6000-Series ISA (Cayman), section X.Y` |
+| -- | `per AMD 3D Engine Programming Guide for Evergreen, section M (CB_COLOR0_VIEW)` |
+| -- | `per Direct3D 11.3 Functional Specification, section 4.4.6 Element Alignment` |
 
 - Bit-field encodings (`SLICE_START bits 0-10 of CB_COLOR_VIEW`).
 - Empirical silicon behavior (`Palm silently no-ops MEM_RAT_CMPXCHG_INT on the cached path`).
@@ -341,7 +354,7 @@ files use SPDX-only with no Copyright line, which is also fine):
 - MUST NOT add `(LLM-assisted)`, `Generated by Claude`, or any AI tag
   to the file header.  Mesa's disclosure mechanism is the commit-
   trailer system; file headers stay clean and license-focused.
-- MUST NOT use `Copyright © YYYY steinmarder project` (legacy
+- MUST NOT use `Copyright (c) YYYY steinmarder project` (legacy
   invented-collective form from earlier work).  Use `Terascale
   Functionalists` instead.
 
@@ -479,7 +492,7 @@ grounded, time-invariant.
 
 ### LLM-readable markdown style (for memory/finding-docs/AGENTS.md)
 
-- MUST use heading depth ≤ 3 levels.
+- MUST use heading depth <= 3 levels.
 - MUST use exactly one H1 per file (the document title).
 - MUST include frontmatter on programmatically-loaded files.
 - MUST use language tags on code fences (` ```bash`, ` ```c`).
