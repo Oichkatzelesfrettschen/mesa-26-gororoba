@@ -58,6 +58,7 @@ endif
 # source ENVFILE so CC, CXX, PKG_CONFIG_PATH, CFLAGS etc. are consistent
 # across hosts.
 SETUP_ARGS := --native-file=$(CONFIG) --reconfigure
+MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
 
 .PHONY: list audit configure build build-generated build-pump clean distclean install \
         artifact-check test \
@@ -104,6 +105,7 @@ audit:
 configure:
 	@mkdir -p $(dir $(BUILDDIR))
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC)
 
 build:
@@ -184,19 +186,19 @@ rebuild-terakan-distcc-no-rusticl:
 # active mesa-terakan-distcc-no-rusticl build.  `clean` removes only BUILDDIR;
 # ccache and sccache live under ~/.cache via env/btver1-ccache-no-pump.env.
 rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
-	$(MAKE) build PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
+	$(MAKE) build PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
 
 # Cold clean lane for x130e.  Configure and generated Meson/Ninja outputs are
 # completed before the include server starts; the heavy C/C++ compile then runs
 # under distcc-pump with direct clang-21.  This avoids generated-header changes
 # invalidating pump's include snapshot.
 rebuild-terakan-distcc-no-rusticl-pump:
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump
-	$(MAKE) build-generated PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump
-	$(MAKE) build-pump PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) build-generated PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) build-pump PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
 
 rebuild-terakan-minimal:
 	$(MAKE) clean PROFILE=terakan-minimal

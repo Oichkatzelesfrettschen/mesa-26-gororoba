@@ -18,12 +18,12 @@ standalone without steinmarder cloned.
 
 ## Canonical Mesa Workspace Boundary
 
-Under `/home/eirikr/workspaces/mesa`, only two source roots are durable:
+Under `~/workspaces/mesa`, only two source roots are durable:
 
-| Directory | Owner |
+| Directory | Purpose |
 |---|---|
-| `/home/eirikr/workspaces/mesa/mesa-26-gororoba` | Mesa driver code, Terakan, r300g, Mesa build/install infrastructure |
-| `/home/eirikr/workspaces/mesa/steinmarder` | RE runners, evidence bundles, manifests, findings, host kits, and policy docs |
+| `~/workspaces/mesa/mesa-26-gororoba` | Mesa driver code, Terakan, r300g, Mesa build/install infrastructure |
+| `~/workspaces/mesa/steinmarder` | RE runners, evidence bundles, manifests, findings, host kits, and policy docs |
 
 Other `mesa-26-gororoba-*` entries under that workspace are temporary Git
 worktrees of this repo.  They are not new projects.  Work from them MUST land
@@ -62,7 +62,7 @@ make audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
 . env/btver1-ccache-no-pump.env     # CCACHE_PREFIX=distcc, CFLAGS, caches
 make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 make install PROFILE=terakan-distcc-no-rusticl \
-    BUILDDIR=/home/eirikr/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+    BUILDDIR="$HOME/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump"
 make artifact-check
 ```
 
@@ -103,24 +103,30 @@ the C/C++ include-server path.
 Warm/no-pump profiles pin:
 
 ```ini
-c    = ['/usr/bin/ccache',  '/usr/bin/clang-21']
-cpp  = ['/usr/bin/ccache',  '/usr/bin/clang++-21']
-rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
+c    = ['ccache', 'clang-21']
+cpp  = ['ccache', 'clang++-21']
+rust = ['sccache', 'rustc']
+llvm-config = 'llvm-config-21'
 ```
 
 Cold/pump profiles pin:
 
 ```ini
-c    = ['/usr/bin/distcc',  '/usr/bin/clang-21']
-cpp  = ['/usr/bin/distcc',  '/usr/bin/clang++-21']
-rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
+c    = ['distcc', 'clang-21']
+cpp  = ['distcc', 'clang++-21']
+rust = ['sccache', 'rustc']
+llvm-config = 'llvm-config-21'
 ```
 
-Absolute-path stable rustc bypasses the in-repo
-`rust-toolchain.toml` (which specifies `channel = "nightly"`)
-because `/usr/bin/rustc` is a Debian rustup shim that honors the
-in-repo file otherwise.  Confirmed stable 1.95.0 builds Mesa 26
-rusticl cleanly -- nightly is not required.
+Native files MUST use PATH-resolved compiler names, not user-specific
+toolchain paths.  `rustc` is selected by the active rustup/toolchain
+policy for the checkout; `sccache` is the optional cache wrapper in
+front of it.  If a host needs a specific Rust channel, set that through
+the repo toolchain file or the host env, not by hard-coding a
+`~/.rustup/toolchains/.../bin/rustc` path in a Meson native file.
+Version-coupled tools such as `llvm-config-21` stay versioned but
+PATH-resolved so the compiler and LLVM dependency agree without
+encoding a local filesystem path.
 
 Host-envs in `build-infra/env/` (`btver1-ccache-no-pump.env`,
 `btver1-distcc-pump.env`, `sapphire.env`, `zen4.env`) set the
@@ -146,13 +152,14 @@ Verify with: `ccache --show-stats --verbose`.
 ### sccache -- patched local Rust wrapper
 
 ```
-~/.local/bin/sccache
+sccache
 ```
 
 The workspace patched sccache for meson-rust's multi-`--emit` form.
-Use the absolute path in native files so agents do not accidentally
-pick an older `/usr/bin/sccache`.  Deep RCA and rebuild instructions
-live in `steinmarder/docs/workspace/sccache-multi-emit-patch.md`.
+Use PATH order or the host env to select a patched cache binary; do
+not bake a per-user path into native files.  Deep RCA and rebuild
+instructions live in
+`steinmarder/docs/workspace/sccache-multi-emit-patch.md`.
 
 ### Do NOT chain wrapper-style
 

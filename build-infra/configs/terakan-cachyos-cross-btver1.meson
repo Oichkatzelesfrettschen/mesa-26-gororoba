@@ -4,7 +4,7 @@
 # docs/workspace/build-workflow-options.md).
 #
 # Why a separate profile:
-# - clang-22 is the local CachyOS compiler (/usr/bin/clang-22) vs
+# - clang-22 is the local CachyOS compiler vs
 #   x130e's clang-21 in the terakan-distcc-no-rusticl profile
 # - No distcc -- 12 znver3 cores beat a 2-core Bobcat distcc worker
 #   over LAN once roundtrip latency is accounted for
@@ -13,12 +13,12 @@
 #
 # Companion env file: env/cachyos-znver3-cross-btver1.env
 # Workflow: see steinmarder docs/workspace/local-build-cross-btver1.md
-# (to be added under task #151)
 
 [binaries]
-c    = ['/usr/bin/ccache', '/usr/bin/clang-22']
-cpp  = ['/usr/bin/ccache', '/usr/bin/clang++']
-rust = ['/usr/bin/rustc']
+c    = ['ccache', 'clang-22']
+cpp  = ['ccache', 'clang++']
+rust = ['rustc']
+llvm-config = 'llvm-config-22'
 
 [project options]
 buildtype           = 'debugoptimized'
