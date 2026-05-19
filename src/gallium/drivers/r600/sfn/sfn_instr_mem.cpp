@@ -1091,7 +1091,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
 
    /* TERAKAN_FUZZ_FIELD / TERAKAN_FUZZ_VALUE unified axis fuzzer.
     * Selects one MEM_RAT packet field and overrides it for every emit:
-    *   comp_mask:   RatInstr component mask, 0..15
+    *   comp_mask:   RatInstr component mask, 1..15 (0 is rejected: malformed MEM_RAT CF)
     *   elem_size:   element size encoding, 0..3
     *   burst_count: burst count, 1..15
     *   cf_op:       0 = cached MEM_RAT, 1 = cacheless MEM_RAT
@@ -1104,8 +1104,22 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
       uav_store_fuzz_value = debug_get_num_option("TERAKAN_FUZZ_VALUE", 0);
       if (!strcmp(uav_store_fuzz_field, "comp_mask") &&
           uav_store_fuzz_value >= 0 && uav_store_fuzz_value <= 15) {
-         comp_mask = (unsigned)uav_store_fuzz_value;
-         cmpxchg_comp_mask_overridden = true;
+         if (uav_store_fuzz_value == 0) {
+            /* comp_mask=0 encodes a degenerate MEM_RAT CF instruction that
+             * writes no components; the non-fuzzer path clamps to 1 for this
+             * reason (see rat_comp_mask below).  The fuzzer bypasses that
+             * clamp via cmpxchg_comp_mask_overridden, so value=0 WOULD reach
+             * the hardware, but the packet is malformed.  Reject it so the
+             * caller gets a clear error instead of a silent no-op dispatch. */
+            fprintf(stderr,
+                    "TERAKAN_FUZZ_FIELD=comp_mask TERAKAN_FUZZ_VALUE=0 "
+                    "ignored in emit_uav_store_r600: comp_mask=0 produces a "
+                    "malformed MEM_RAT CF with no components written; use "
+                    "a value in [1,15]\n");
+         } else {
+            comp_mask = (unsigned)uav_store_fuzz_value;
+            cmpxchg_comp_mask_overridden = true;
+         }
       } else if (!strcmp(uav_store_fuzz_field, "elem_size") &&
                  uav_store_fuzz_value >= 0 && uav_store_fuzz_value <= 3) {
          elem_size_minus_one = (unsigned)uav_store_fuzz_value;
@@ -1135,6 +1149,13 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
          : (scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW || cmpxchg_cacheless)
               ? cf_mem_rat_cacheless
               : cf_mem_rat;
+   /* Non-fuzz path: comp_mask=0 would produce a MEM_RAT CF with no components
+    * written -- a degenerate packet the Evergreen ISA does not define.  Clamp
+    * to 1 so callers that compute a zero mask (e.g. zero-component intrinsics)
+    * emit the least-destructive valid packet rather than a silent no-op.
+    * The fuzzer path (cmpxchg_comp_mask_overridden) bypasses this clamp so
+    * deliberate out-of-spec values can reach the hardware; the env-var parser
+    * above already rejects value=0 on the comp_mask axis to guard that path. */
    unsigned const rat_comp_mask =
       cmpxchg_comp_mask_overridden ? comp_mask : CLAMP(comp_mask, 1u, 0xFu);
 
@@ -1296,7 +1317,18 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
       uav_returning_fuzz_value = debug_get_num_option("TERAKAN_FUZZ_VALUE", 0);
       if (!strcmp(uav_returning_fuzz_field, "comp_mask") &&
           uav_returning_fuzz_value >= 0 && uav_returning_fuzz_value <= 15) {
-         uav_returning_comp_mask = (unsigned)uav_returning_fuzz_value;
+         if (uav_returning_fuzz_value == 0) {
+            /* comp_mask=0 produces a degenerate MEM_RAT CF with no components
+             * written; reject it so the caller gets a clear error instead of
+             * a silent no-op dispatch (no clamp exists on this path). */
+            fprintf(stderr,
+                    "TERAKAN_FUZZ_FIELD=comp_mask TERAKAN_FUZZ_VALUE=0 "
+                    "ignored in emit_uav_returning_instr_r600: comp_mask=0 "
+                    "produces a malformed MEM_RAT CF with no components "
+                    "written; use a value in [1,15]\n");
+         } else {
+            uav_returning_comp_mask = (unsigned)uav_returning_fuzz_value;
+         }
       } else if (!strcmp(uav_returning_fuzz_field, "elem_size") &&
                  uav_returning_fuzz_value >= 0 && uav_returning_fuzz_value <= 3) {
          uav_returning_elem_size = (unsigned)uav_returning_fuzz_value;
@@ -1596,7 +1628,19 @@ RatInstr::emit_ssbo_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
          fuzz_value = debug_get_num_option("TERAKAN_FUZZ_VALUE", 0);
          if (!strcmp(fuzz_field, "comp_mask") &&
              fuzz_value >= 0 && fuzz_value <= 15) {
-            ssbo_atomic_comp_mask = (unsigned)fuzz_value;
+            if (fuzz_value == 0) {
+               /* comp_mask=0 produces a degenerate MEM_RAT CF with no
+                * components written; reject it so the caller gets a clear
+                * error instead of a silent no-op dispatch (no clamp exists
+                * on this path). */
+               fprintf(stderr,
+                       "TERAKAN_FUZZ_FIELD=comp_mask TERAKAN_FUZZ_VALUE=0 "
+                       "ignored in emit_ssbo_atomic_op: comp_mask=0 produces "
+                       "a malformed MEM_RAT CF with no components written; "
+                       "use a value in [1,15]\n");
+            } else {
+               ssbo_atomic_comp_mask = (unsigned)fuzz_value;
+            }
          } else if (!strcmp(fuzz_field, "elem_size") &&
                     fuzz_value >= 0 && fuzz_value <= 3) {
             ssbo_atomic_elem_size = (int)fuzz_value;

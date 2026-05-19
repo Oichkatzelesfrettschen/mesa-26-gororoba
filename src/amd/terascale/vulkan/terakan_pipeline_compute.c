@@ -143,8 +143,11 @@ terakan_pipeline_compute_compile(
 
    /* Post-link lowering — populates pre-compile metadata (Invariant 3).
     * strict_reject_fired is set inside the function before lower_bindings
-    * removes the ssbo_atomic_swap intrinsics. */
+    * removes the ssbo_atomic_swap intrinsics.
+    * image_atomic_reject is set for any image atomic intrinsic on CHIP_PALM;
+    * those wedge the CP ring and are rejected at pipeline-creation time. */
    bool cmpxchg_strict_reject = false;
+   bool image_atomic_reject = false;
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -158,9 +161,10 @@ terakan_pipeline_compute_compile(
       NULL,
       stage_robust_buffer_access,
       terakan_device_physical_device(device)->chip_info.chip_family,
-      &cmpxchg_strict_reject);
+      &cmpxchg_strict_reject,
+      &image_atomic_reject);
 
-   if (cmpxchg_strict_reject) {
+   if (cmpxchg_strict_reject || image_atomic_reject) {
       ralloc_free(nir);
       return VK_ERROR_FEATURE_NOT_PRESENT;
    }
@@ -305,6 +309,7 @@ terakan_pipeline_compute_compile_fix_w_variant(
    terakan_fix_w_set_compile_ubo(layer);
 
    bool cmpxchg_strict_reject_fix_w = false;
+   bool image_atomic_reject_fix_w = false;
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -318,9 +323,10 @@ terakan_pipeline_compute_compile_fix_w_variant(
       NULL,
       stage_robust_buffer_access,
       terakan_device_physical_device(device)->chip_info.chip_family,
-      &cmpxchg_strict_reject_fix_w);
+      &cmpxchg_strict_reject_fix_w,
+      &image_atomic_reject_fix_w);
 
-   if (cmpxchg_strict_reject_fix_w) {
+   if (cmpxchg_strict_reject_fix_w || image_atomic_reject_fix_w) {
       terakan_fix_w_set_compile_layer(INT32_MIN);
       terakan_fix_w_set_compile_ubo(INT32_MIN);
       ralloc_free(nir);

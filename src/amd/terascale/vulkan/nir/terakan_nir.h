@@ -189,6 +189,20 @@ bool terakan_nir_lower_subgroup_lds(nir_shader * shader);
 bool terakan_nir_lower_tg4_view_swizzle(nir_shader * shader,
                                         BITSET_WORD * resources_needed);
 
+/* Pipeline-time image atomic reject check for Palm / Wrestler
+ * (CHIP_PALM, Evergreen / TeraScale-2 VLIW5).
+ *
+ * Palm image atomic RAT ops never signal the returning-atomic completion
+ * handshake; the CP ring stalls until kernel soft-reset (W8 recovery,
+ * 10 s lockup_timeout).  This check scans the NIR for any image atomic
+ * intrinsic and returns true when chip_family is CHIP_PALM.  The pipeline
+ * creation path must return VK_ERROR_FEATURE_NOT_PRESENT when true.
+ *
+ * Must run BEFORE terakan_nir_lower_bindings, which replaces these
+ * intrinsics with R600 UAV intrinsics and removes the originals. */
+bool terakan_nir_palm_image_atomic_reject_check(nir_shader const * nir,
+                                                enum radeon_family chip_family);
+
 /* Active-mask materialisation helpers (terakan_nir_active_mask.c).
  *
  * Per AMD Evergreen-Family ISA Section 4.10, the per-lane predicate
