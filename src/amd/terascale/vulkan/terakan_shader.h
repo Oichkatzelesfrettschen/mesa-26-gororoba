@@ -366,7 +366,7 @@ nir_shader * terakan_shader_spirv_to_nir(struct terakan_device * device, size_t 
  *   indefinitely waiting for a done signal that never arrives.  Pipeline-level
  *   reject prevents apps that ignore the format-feature mask from wedging the
  *   GPU.  The matching format-feature guard lives in terakan_format.c
- *   (VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT gated on !CHIP_PALM); these
+ *   (VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT gated on !CHIP_PALM); these
  *   two layers together enforce the Palm atomic exclusion at both the
  *   capability-query and the pipeline-creation boundaries. */
 void terakan_shader_lower_and_optimize_post_link(
