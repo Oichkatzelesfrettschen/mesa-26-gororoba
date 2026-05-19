@@ -62,6 +62,14 @@
 #define R300_US_ALU_ALPHA_INST_0 0x49c0
 #define R300_US_ALU_ALPHA_ADDR_0 0x47c0
 #define R300_US_W_FMT 0x46b4
+#define R300_PFS_PARAM_0_X 0x4c00
+
+#define R300_ALU_SRC0C_CONST (1u << 5)
+#define R300_ALU_SRC1C_CONST (1u << 11)
+#define R300_ALU_SRC2C_CONST (1u << 17)
+#define R300_ALU_SRC0A_CONST (1u << 5)
+#define R300_ALU_SRC1A_CONST (1u << 11)
+#define R300_ALU_SRC2A_CONST (1u << 17)
 
 struct r300_trace_ib_header {
    char magic[8];
@@ -107,6 +115,7 @@ struct r300_raw_options {
 struct r300_raw_ib {
    uint32_t dw[256];
    unsigned count;
+   bool overflow;
 };
 
 static const struct r300_raw_program_info programs[] = {
@@ -252,119 +261,148 @@ packet3(uint32_t op, uint32_t count)
    return RADEON_CP_PACKET3 | op | (count << 16);
 }
 
-static void
+static bool
 emit(struct r300_raw_ib *ib, uint32_t value)
 {
-   if (ib->count < ARRAY_SIZE(ib->dw))
-      ib->dw[ib->count++] = value;
+   if (ib->count >= ARRAY_SIZE(ib->dw)) {
+      ib->overflow = true;
+      return false;
+   }
+
+   ib->dw[ib->count++] = value;
+   return true;
 }
 
-static void
+static bool
 emit_reg(struct r300_raw_ib *ib, uint32_t reg, uint32_t value)
 {
-   emit(ib, packet0(reg, 1));
-   emit(ib, value);
+   return emit(ib, packet0(reg, 1)) &&
+          emit(ib, value);
 }
 
-static void
+static bool
 emit_reg_seq4(struct r300_raw_ib *ib, uint32_t reg, uint32_t a,
               uint32_t b, uint32_t c, uint32_t d)
 {
-   emit(ib, packet0(reg, 4));
-   emit(ib, a);
-   emit(ib, b);
-   emit(ib, c);
-   emit(ib, d);
+   return emit(ib, packet0(reg, 4)) &&
+          emit(ib, a) &&
+          emit(ib, b) &&
+          emit(ib, c) &&
+          emit(ib, d);
 }
 
-static void
+static bool
 emit_common_render_state(struct r300_raw_ib *ib)
 {
-   emit_reg(ib, R300_RB3D_DSTCACHE_CTLSTAT, 0x0000000a);
-   emit_reg(ib, R300_ZB_ZCACHE_CTLSTAT, 0x00000003);
-   emit_reg(ib, RADEON_WAIT_UNTIL, 0x00020000);
-   emit_reg(ib, R300_GB_AA_CONFIG, 0x00000000);
-   emit_reg(ib, R300_RB3D_CCTL, 0x00000000);
-   emit_reg(ib, R300_RB3D_COLOROFFSET0, 0x00000000);
-   emit_reg(ib, R300_RB3D_COLORPITCH0, 0x00c10040);
-   emit_reg(ib, R300_ZB_CNTL, 0x00000000);
-   emit_reg(ib, R300_RB3D_ROPCNTL, 0x00000000);
-   emit_reg(ib, R300_RB3D_CBLEND, 0x00000000);
-   emit_reg(ib, R300_RB3D_ABLEND, 0x00000000);
-   emit_reg(ib, R300_RB3D_COLOR_CHANNEL_MASK, 0x0000000f);
-   emit_reg(ib, R300_RB3D_DITHER_CTL, 0x00000000);
-   emit_reg(ib, R300_VAP_OUTPUT_VTX_FMT_0, 0x00000001);
-   emit_reg(ib, R300_VAP_OUTPUT_VTX_FMT_1, 0x00000004);
+   return emit_reg(ib, R300_RB3D_DSTCACHE_CTLSTAT, 0x0000000a) &&
+          emit_reg(ib, R300_ZB_ZCACHE_CTLSTAT, 0x00000003) &&
+          emit_reg(ib, RADEON_WAIT_UNTIL, 0x00020000) &&
+          emit_reg(ib, R300_GB_AA_CONFIG, 0x00000000) &&
+          emit_reg(ib, R300_RB3D_CCTL, 0x00000000) &&
+          emit_reg(ib, R300_RB3D_COLOROFFSET0, 0x00000000) &&
+          emit_reg(ib, R300_RB3D_COLORPITCH0, 0x00c10040) &&
+          emit_reg(ib, R300_ZB_CNTL, 0x00000000) &&
+          emit_reg(ib, R300_RB3D_ROPCNTL, 0x00000000) &&
+          emit_reg(ib, R300_RB3D_CBLEND, 0x00000000) &&
+          emit_reg(ib, R300_RB3D_ABLEND, 0x00000000) &&
+          emit_reg(ib, R300_RB3D_COLOR_CHANNEL_MASK, 0x0000000f) &&
+          emit_reg(ib, R300_RB3D_DITHER_CTL, 0x00000000) &&
+          emit_reg(ib, R300_VAP_OUTPUT_VTX_FMT_0, 0x00000001) &&
+          emit_reg(ib, R300_VAP_OUTPUT_VTX_FMT_1, 0x00000004);
 }
 
-static void
+static bool
+emit_uniform_seed_state(struct r300_raw_ib *ib)
+{
+   return emit_reg_seq4(ib, R300_PFS_PARAM_0_X,
+                        0x40c00000, 0x41100000, 0x41300000, 0x3f800000);
+}
+
+static bool
 emit_texture_seed_state(struct r300_raw_ib *ib)
 {
-   emit_reg(ib, R300_TX_INVALTAGS, 0x00000000);
-   emit_reg(ib, R300_TX_ENABLE, 0x00000001);
-   emit_reg(ib, R300_TX_FILTER0_0, 0x00002a00);
-   emit_reg(ib, R300_TX_FILTER1_0, 0x00000000);
-   emit_reg(ib, R300_TX_FORMAT0_0, 0x00000000);
-   emit_reg(ib, R300_TX_FORMAT1_0, 0x00000000);
-   emit_reg(ib, R300_TX_FORMAT2_0, 0x00000000);
-   emit_reg(ib, R300_TX_OFFSET_0, 0x00000000);
+   return emit_reg(ib, R300_TX_INVALTAGS, 0x00000000) &&
+          emit_reg(ib, R300_TX_ENABLE, 0x00000001) &&
+          emit_reg(ib, R300_TX_FILTER0_0, 0x00002a00) &&
+          emit_reg(ib, R300_TX_FILTER1_0, 0x00000000) &&
+          emit_reg(ib, R300_TX_FORMAT0_0, 0x00000000) &&
+          emit_reg(ib, R300_TX_FORMAT1_0, 0x00000000) &&
+          emit_reg(ib, R300_TX_FORMAT2_0, 0x00000000) &&
+          emit_reg(ib, R300_TX_OFFSET_0, 0x00000000);
 }
 
-static void
+static bool
 emit_us_program(struct r300_raw_ib *ib,
                 const struct r300_raw_program_info *program)
 {
-   emit_reg(ib, R300_US_OUT_FMT_0, 0x00001b00);
-   emit_reg(ib, R300_US_CONFIG, 0x00000000);
-   emit_reg(ib, R300_US_PIXSIZE, 0x00000000);
-   emit_reg(ib, R300_US_CODE_OFFSET, 0x00000000);
-   emit_reg_seq4(ib, R300_US_CODE_ADDR_0,
-                 0x00000000, 0x00000000, 0x00000000, 0x00400000);
+   if (!emit_reg(ib, R300_US_OUT_FMT_0, 0x00001b00) ||
+       !emit_reg(ib, R300_US_CONFIG, 0x00000000) ||
+       !emit_reg(ib, R300_US_PIXSIZE, 0x00000000) ||
+       !emit_reg(ib, R300_US_CODE_OFFSET, 0x00000000) ||
+       !emit_reg_seq4(ib, R300_US_CODE_ADDR_0,
+                      0x00000000, 0x00000000, 0x00000000, 0x00400000))
+      return false;
 
    if (program->program == R300_RAW_PROGRAM_SOLID_TRIANGLE) {
-      emit_reg(ib, R300_US_ALU_RGB_INST_0, 0x02804000);
-      emit_reg(ib, R300_US_ALU_RGB_ADDR_0, 0x1c000020);
-      emit_reg(ib, R300_US_ALU_ALPHA_INST_0, 0x01800489);
-      emit_reg(ib, R300_US_ALU_ALPHA_ADDR_0, 0x01000020);
+      if (!emit_reg(ib, R300_US_ALU_RGB_INST_0, 0x02804000) ||
+          !emit_reg(ib, R300_US_ALU_RGB_ADDR_0, 0x1c000020) ||
+          !emit_reg(ib, R300_US_ALU_ALPHA_INST_0, 0x01800489) ||
+          !emit_reg(ib, R300_US_ALU_ALPHA_ADDR_0, 0x01000020))
+         return false;
+   } else if (program->uses_uniform_seed) {
+      if (!emit_reg(ib, R300_US_ALU_RGB_INST_0, 0x02804000) ||
+          !emit_reg(ib, R300_US_ALU_RGB_ADDR_0,
+                    0x1c000000 | R300_ALU_SRC0C_CONST |
+                    R300_ALU_SRC1C_CONST | R300_ALU_SRC2C_CONST) ||
+          !emit_reg(ib, R300_US_ALU_ALPHA_INST_0, 0x01800891) ||
+          !emit_reg(ib, R300_US_ALU_ALPHA_ADDR_0,
+                    0x01000000 | R300_ALU_SRC0A_CONST |
+                    R300_ALU_SRC1A_CONST | R300_ALU_SRC2A_CONST))
+         return false;
    } else {
-      emit_reg(ib, R300_US_ALU_RGB_INST_0, 0x02804000);
-      emit_reg(ib, R300_US_ALU_RGB_ADDR_0, 0x1c000000);
-      emit_reg(ib, R300_US_ALU_ALPHA_INST_0, 0x01800891);
-      emit_reg(ib, R300_US_ALU_ALPHA_ADDR_0, 0x01000000);
+      if (!emit_reg(ib, R300_US_ALU_RGB_INST_0, 0x02804000) ||
+          !emit_reg(ib, R300_US_ALU_RGB_ADDR_0, 0x1c000000) ||
+          !emit_reg(ib, R300_US_ALU_ALPHA_INST_0, 0x01800891) ||
+          !emit_reg(ib, R300_US_ALU_ALPHA_ADDR_0, 0x01000000))
+         return false;
    }
 
-   emit_reg(ib, R300_US_W_FMT, 0x00000000);
+   return emit_reg(ib, R300_US_W_FMT, 0x00000000);
 }
 
-static void
+static bool
 emit_draw(struct r300_raw_ib *ib, bool uses_varying_seed)
 {
-   emit(ib, packet3(R300_PACKET3_3D_LOAD_VBPNTR, 3));
-   emit(ib, 0x00000021);
-   emit(ib, uses_varying_seed ? 0x00000808 : 0x00000008);
-   emit(ib, 0x00000000);
-   emit(ib, 0x00000000);
-   emit_reg(ib, R300_GA_COLOR_CONTROL,
-            uses_varying_seed ? 0x0003aaaa : 0x00035555);
-   emit_reg(ib, R300_VAP_VF_MAX_VTX_INDX, 0x00000002);
-   emit(ib, packet3(R300_PACKET3_3D_DRAW_VBUF_2, 0));
-   emit(ib, 0x00030024);
-   emit(ib, R300_PACKET2_NOP);
-   emit(ib, R300_PACKET2_NOP);
+   return emit(ib, packet3(R300_PACKET3_3D_LOAD_VBPNTR, 3)) &&
+          emit(ib, 0x00000021) &&
+          emit(ib, uses_varying_seed ? 0x00000808 : 0x00000008) &&
+          emit(ib, 0x00000000) &&
+          emit(ib, 0x00000000) &&
+          emit_reg(ib, R300_GA_COLOR_CONTROL,
+                   uses_varying_seed ? 0x0003aaaa : 0x00035555) &&
+          emit_reg(ib, R300_VAP_VF_MAX_VTX_INDX, 0x00000002) &&
+          emit(ib, packet3(R300_PACKET3_3D_DRAW_VBUF_2, 0)) &&
+          emit(ib, 0x00030024) &&
+          emit(ib, R300_PACKET2_NOP) &&
+          emit(ib, R300_PACKET2_NOP);
 }
 
-static struct r300_raw_ib
-build_ib(const struct r300_raw_program_info *program)
+static bool
+build_ib(const struct r300_raw_program_info *program, struct r300_raw_ib *ib)
 {
-   struct r300_raw_ib ib = {0};
+   *ib = (struct r300_raw_ib) {0};
 
-   emit_common_render_state(&ib);
-   if (program->uses_texture_seed)
-      emit_texture_seed_state(&ib);
-   emit_us_program(&ib, program);
-   emit_draw(&ib, program->uses_varying_seed);
-
-   return ib;
+   if (!emit_common_render_state(ib))
+      return false;
+   if (program->uses_uniform_seed && !emit_uniform_seed_state(ib))
+      return false;
+   if (program->uses_texture_seed && !emit_texture_seed_state(ib))
+      return false;
+   if (!emit_us_program(ib, program))
+      return false;
+   if (!emit_draw(ib, program->uses_varying_seed))
+      return false;
+   return !ib->overflow;
 }
 
 static bool
@@ -498,7 +536,13 @@ main(int argc, char **argv)
       return 1;
    }
 
-   struct r300_raw_ib ib = build_ib(opts.program);
+   struct r300_raw_ib ib;
+   if (!build_ib(opts.program, &ib)) {
+      fprintf(stderr,
+              "r300_raw_shader_triangle: IB exceeds %u dwords for %s\n",
+              (unsigned)ARRAY_SIZE(ib.dw), opts.program->name);
+      return 1;
+   }
    char ib_path[PATH_MAX];
    char program_path[PATH_MAX];
    char submit_path[PATH_MAX];

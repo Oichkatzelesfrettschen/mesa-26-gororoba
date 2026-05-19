@@ -1,6 +1,6 @@
 # R300 Raw Tools
 
-These tools are Mesa-side bring-up aids for the RS482/RS485 Rulkan
+These tools are Mesa-side bring-up aids for the RS482/RS485 Vulkan
 lane.  They must not call GLX, OpenGL, or the Gallium state tracker.
 
 ## `r300_raw_nop`
