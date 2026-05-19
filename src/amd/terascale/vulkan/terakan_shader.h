@@ -346,6 +346,12 @@ nir_shader * terakan_shader_spirv_to_nir(struct terakan_device * device, size_t 
  * skipped in the name of silicon trust.  See terakan_nir_buffer_uav_coord
  * for the clamp implementation and the rationale comment.
  */
+/* cmpxchg_strict_reject_out is set to true when strict_reject policy is active
+ * and at least one 32-bit SSBO / image / global CMPXCHG intrinsic survived the
+ * speculative-XCHG pass.  The caller MUST check this flag after return and
+ * propagate VK_ERROR_FEATURE_NOT_PRESENT; the check runs before lower_bindings
+ * consumes and removes the surviving intrinsics.  Pass NULL when CMPXCHG cannot
+ * appear in the shader stage (vertex-only geometry stages, for instance). */
 void terakan_shader_lower_and_optimize_post_link(
    nir_shader * nir, struct terakan_pipeline_layout const * pipeline_layout,
    BITSET_WORD * resources_needed, uint32_t * samplers_needed,
@@ -353,7 +359,8 @@ void terakan_shader_lower_and_optimize_post_link(
    uint16_t * kcache_needed,
    uint8_t * fragment_data_uncompacted_locations_out,
    bool robust_buffer_access,
-   enum radeon_family chip_family);
+   enum radeon_family chip_family,
+   bool * cmpxchg_strict_reject_out);
 
 /*
  * Cross-stage NIR post-processing: Multi-Pass Post-Link Barrier.

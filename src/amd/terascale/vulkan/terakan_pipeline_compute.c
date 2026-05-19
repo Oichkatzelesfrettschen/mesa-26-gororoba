@@ -16,7 +16,6 @@
 #include "terakan_entrypoints.h"
 #include "terakan_pipeline.h"
 #include "terakan_shader.h"
-#include "nir/terakan_nir.h"
 
 #include "terakan_pipeline_cache.h"
 #include "terakan_pipeline_key.h"
@@ -142,7 +141,10 @@ terakan_pipeline_compute_compile(
       stage_rs.uniform_buffers ==
          VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
 
-   /* Post-link lowering — populates pre-compile metadata (Invariant 3). */
+   /* Post-link lowering — populates pre-compile metadata (Invariant 3).
+    * strict_reject_fired is set inside the function before lower_bindings
+    * removes the ssbo_atomic_swap intrinsics. */
+   bool cmpxchg_strict_reject = false;
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -155,15 +157,10 @@ terakan_pipeline_compute_compile(
       &local_shader.kcache_needed,
       NULL,
       stage_robust_buffer_access,
-      terakan_device_physical_device(device)->chip_info.chip_family);
+      terakan_device_physical_device(device)->chip_info.chip_family,
+      &cmpxchg_strict_reject);
 
-   /* strict_reject: pipeline creation fails when any CMPXCHG intrinsic
-    * survives post-link lowering.  The NIR pass leaves them native under
-    * strict_reject; detecting them here and surfacing VK_ERROR_FEATURE_NOT_PRESENT
-    * is the "failure reporting outside the NIR pass" the policy comment
-    * describes. */
-   if (terakan_nir_cmpxchg_strict_reject_check(
-          nir, terakan_device_physical_device(device)->chip_info.chip_family)) {
+   if (cmpxchg_strict_reject) {
       ralloc_free(nir);
       return VK_ERROR_FEATURE_NOT_PRESENT;
    }
@@ -307,6 +304,7 @@ terakan_pipeline_compute_compile_fix_w_variant(
    terakan_fix_w_set_compile_layer(layer);
    terakan_fix_w_set_compile_ubo(layer);
 
+   bool cmpxchg_strict_reject_fix_w = false;
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -319,11 +317,10 @@ terakan_pipeline_compute_compile_fix_w_variant(
       &variant->kcache_needed,
       NULL,
       stage_robust_buffer_access,
-      terakan_device_physical_device(device)->chip_info.chip_family);
+      terakan_device_physical_device(device)->chip_info.chip_family,
+      &cmpxchg_strict_reject_fix_w);
 
-   /* strict_reject check mirrors the primary compile path. */
-   if (terakan_nir_cmpxchg_strict_reject_check(
-          nir, terakan_device_physical_device(device)->chip_info.chip_family)) {
+   if (cmpxchg_strict_reject_fix_w) {
       terakan_fix_w_set_compile_layer(INT32_MIN);
       terakan_fix_w_set_compile_ubo(INT32_MIN);
       ralloc_free(nir);
