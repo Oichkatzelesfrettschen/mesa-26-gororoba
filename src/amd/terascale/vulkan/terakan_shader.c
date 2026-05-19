@@ -1127,10 +1127,13 @@ terakan_shader_lower_and_optimize_post_link(
    uint8_t * const fragment_data_uncompacted_locations_out,
    bool const robust_buffer_access,
    enum radeon_family const chip_family,
-   bool * const cmpxchg_strict_reject_out)
+   bool * const cmpxchg_strict_reject_out,
+   bool * const image_atomic_reject_out)
 {
    if (cmpxchg_strict_reject_out)
       *cmpxchg_strict_reject_out = false;
+   if (image_atomic_reject_out)
+      *image_atomic_reject_out = false;
    bool progress;
 
    /* Finally eliminate all dead code that may have effect on lowerings below and on analysis within
@@ -1268,6 +1271,15 @@ terakan_shader_lower_and_optimize_post_link(
     * ssbo_atomic_swap with R600 UAV intrinsics and removes the original. */
    if (cmpxchg_strict_reject_out)
       *cmpxchg_strict_reject_out = terakan_nir_cmpxchg_strict_reject_check(nir, chip_family);
+
+   /* Palm image atomic reject: scan for image atomic intrinsics BEFORE
+    * lower_bindings replaces them.  Palm (Wrestler GPU, CHIP_PALM,
+    * Evergreen / TeraScale-2 VLIW5) image atomic RAT ops do not complete the
+    * returning-atomic handshake. Must run before lower_bindings consumes the
+    * image_deref_atomic and related intrinsics. */
+   if (image_atomic_reject_out)
+      *image_atomic_reject_out =
+         terakan_nir_palm_image_atomic_reject_check(nir, chip_family);
 
    /* Lower bindings according to the pipeline layout.
     * In fragment shaders, this is done after compacting the fragment data output locations as UAVs

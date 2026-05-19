@@ -142,9 +142,10 @@ terakan_pipeline_compute_compile(
          VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
 
    /* Post-link lowering populates pre-compile metadata (Invariant 3).
-    * The CMPXCHG strict-reject flag is sampled before binding lowering
-    * consumes the original atomic intrinsics. */
+    * The reject flags are sampled before binding lowering consumes the
+    * original CMPXCHG and image atomic intrinsics. */
    bool cmpxchg_strict_reject = false;
+   bool image_atomic_reject = false;
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -158,9 +159,10 @@ terakan_pipeline_compute_compile(
       NULL,
       stage_robust_buffer_access,
       terakan_device_physical_device(device)->chip_info.chip_family,
-      &cmpxchg_strict_reject);
+      &cmpxchg_strict_reject,
+      &image_atomic_reject);
 
-   if (cmpxchg_strict_reject) {
+   if (cmpxchg_strict_reject || image_atomic_reject) {
       ralloc_free(nir);
       return VK_ERROR_FEATURE_NOT_PRESENT;
    }
@@ -290,6 +292,7 @@ terakan_pipeline_compute_compile_storage_image_layer_variant(
    terakan_storage_image_set_compile_layer_index(layer);
 
    bool cmpxchg_strict_reject_variant = false;
+   bool image_atomic_reject_variant = false;
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -303,9 +306,10 @@ terakan_pipeline_compute_compile_storage_image_layer_variant(
       NULL,
       stage_robust_buffer_access,
       terakan_device_physical_device(device)->chip_info.chip_family,
-      &cmpxchg_strict_reject_variant);
+      &cmpxchg_strict_reject_variant,
+      &image_atomic_reject_variant);
 
-   if (cmpxchg_strict_reject_variant) {
+   if (cmpxchg_strict_reject_variant || image_atomic_reject_variant) {
       terakan_storage_image_set_compile_layer(INT32_MIN);
       terakan_storage_image_set_compile_layer_index(INT32_MIN);
       ralloc_free(nir);

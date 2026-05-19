@@ -360,7 +360,8 @@ void terakan_shader_lower_and_optimize_post_link(
    uint8_t * fragment_data_uncompacted_locations_out,
    bool robust_buffer_access,
    enum radeon_family chip_family,
-   bool * cmpxchg_strict_reject_out);
+   bool * cmpxchg_strict_reject_out,
+   bool * image_atomic_reject_out);
 
 /*
  * Cross-stage NIR post-processing: Multi-Pass Post-Link Barrier.
