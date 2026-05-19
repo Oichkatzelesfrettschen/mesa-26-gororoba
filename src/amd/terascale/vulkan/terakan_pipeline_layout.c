@@ -530,7 +530,7 @@ terakan_CmdBindDescriptorSets(VkCommandBuffer const commandBuffer,
  *       TERAKAN_SAMPLER_HW_COUNT_PER_STAGE 16
  *     (the matching descriptor-set-layout helper additionally caps
  *      per-stage sampler count at the 32-bit mask width).
- *   uniform-buffer cap -- enforced ONLY at pipeline-layout time;
+ *   uniform-buffer cap -- enforced only at pipeline-layout time;
  *     the set-layout side does not track uniform-buffer counts for
  *     cap purposes, only for offset assignment, so there is no
  *     descriptor-set-layout counterpart for:

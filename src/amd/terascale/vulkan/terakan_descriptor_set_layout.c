@@ -72,16 +72,17 @@ struct terakan_descriptor_set_layout_support_info {
 };
 
 /* Under Option B, per-stage and per-pipeline hardware-bank limits are
- * the concern of vkCreatePipelineLayout, not vkCreateDescriptorSet-
- * Layout.  See Vulkan 1.4 specification section 14.2.3:
+ * the concern of vkCreatePipelineLayout, not
+ * vkCreateDescriptorSetLayout.  See Vulkan 1.4 specification section
+ * 14.2.3:
  * vkGetDescriptorSetLayoutSupport may report platform-specific reasons
  * for failure but is not required to, and per-stage / per-pipeline
  * limits are reported separately via maxPerStageDescriptor* and
  * maxDescriptorSet*.
  *
- * Both call sites of this helper -- the support query and Create-
- * DescriptorSetLayout -- run identical semantics: storage-type safety
- * only.  The helper protects:
+ * Both call sites of this helper -- the support query and
+ * CreateDescriptorSetLayout -- run identical semantics:
+ * storage-type safety only.  The helper protects:
  *
  *   - the uint8_t per-stage offset fields on each layout binding
  *     (cap TERAKAN_DESCRIPTOR_SET_PER_STAGE_STORAGE_MAX);
@@ -90,8 +91,8 @@ struct terakan_descriptor_set_layout_support_info {
  *   - the uint32_t per-stage sampler-occupancy bitfields
  *     (cap TERAKAN_DESCRIPTOR_SET_PER_STAGE_SAMPLER_MASK_BITS = 32);
  *   - the gather-safety constraint
- *     (TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES), a single-set single-
- *     stage invariant the pipeline-layout cannot see.
+ *     (TERAKAN_MAX_GATHER_SAFE_SAMPLED_IMAGES), a single-set
+ *     single-stage invariant the pipeline-layout cannot see.
  *
  * Consequences worth naming explicitly:
  *
@@ -106,9 +107,10 @@ struct terakan_descriptor_set_layout_support_info {
  *      TERAKAN_SAMPLER_HW_COUNT_PER_STAGE) are NOT enforced here.
  *     They are enforced at terakan_pipeline_layout_create time.
  *   - The uniform-buffer cap (TERAKAN_KCACHE_MAX_UNIFORM_BUFFERS) is
- *     enforced ONLY at pipeline-layout time; there is no descriptor-
- *     set-layout counterpart -- the set-layout never tracks uniform-
- *     buffer counts for cap purposes, only for offset assignment.
+ *     enforced only at pipeline-layout time; there is no
+ *     descriptor-set-layout counterpart.  The set-layout never tracks
+ *     uniform-buffer counts for cap purposes, only for offset
+ *     assignment.
  */
 static bool
 terakan_descriptor_set_layout_is_supported(
@@ -796,16 +798,16 @@ too_many_descriptors:
 /* VK_KHR_maintenance3 / Vulkan 1.1 core: query whether a descriptor set
  * layout would be creatable without actually creating it.
  *
- * Implementation strategy: the support query and CreateDescriptor-
- * SetLayout call the same helper with identical semantics (storage-
- * type safety only).  Per-stage hardware bank caps (PS=176, VS/ES=160,
- * GS=160, HS=160, LS=160, CS=176, FS=32 slots, per AMD Evergreen 3D
- * Registers v2 section 5 "Shader Vertex Resource Constants") are
- * enforced at terakan_pipeline_layout_create, where the full set of
- * bound VkDescriptorSetLayout objects and the target stage mask are
- * known.  This is the spec-conformant Option B model -- a layout that
- * fits maxPerSetDescriptors but overflows a per-stage bank now
- * succeeds at vkCreateDescriptorSetLayout and is rejected at the
+ * Implementation strategy: the support query and
+ * CreateDescriptorSetLayout call the same helper with identical
+ * semantics (storage-type safety only).  Per-stage hardware bank caps
+ * (PS=176, VS/ES=160, GS=160, HS=160, LS=160, CS=176, FS=32 slots, per
+ * AMD Evergreen 3D Registers v2 section 5 "Shader Vertex Resource
+ * Constants") are enforced at terakan_pipeline_layout_create, where
+ * the full set of bound VkDescriptorSetLayout objects and the target
+ * stage mask are known.  This is the spec-conformant Option B model:
+ * a layout that fits maxPerSetDescriptors but overflows a per-stage
+ * bank succeeds at vkCreateDescriptorSetLayout and is rejected at the
  * pipeline-layout that would actually bind it to those banks.
  */
 VKAPI_ATTR void VKAPI_CALL
