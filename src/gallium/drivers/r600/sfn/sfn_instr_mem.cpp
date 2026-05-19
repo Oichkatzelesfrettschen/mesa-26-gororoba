@@ -35,15 +35,11 @@ namespace r600 {
  * "Export To UAV" instruction reference).
  *
  * Both chip classes therefore put the compare value in channel Z
- * (RW_GPR.z, == data_vec4[2]).  The historical conditional
- * `chip_class == ISA_CC_CAYMAN ? 2 : 3` placed it in W (channel
- * 3) on Evergreen, contradicting the Evergreen ISA quoted above
- * and causing CMPXCHG_INT / CMPXCHG_INT_RTN to compare against
- * uninitialised channel content, with the conditional write
- * dropping on success (steinmarder PR #185 SSBO atomicCompSwap
- * success-write drop signature, reproduced at single-invocation
- * granularity in steinmarder bundle palm_mem_rat_atomic_-
- * completion_semantics_20260518T184200Z).
+ * (RW_GPR.z, == data_vec4[2]).  Putting it in W (channel 3) on
+ * Evergreen makes CMPXCHG_INT / CMPXCHG_INT_RTN compare against
+ * uninitialised channel content, so the conditional write drops on
+ * the success path while the returned-prior value can still look
+ * correct.
  */
 #define TERAKAN_RAT_CMPXCHG_COMPARE_CHANNEL 2
 
