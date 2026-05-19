@@ -1,5 +1,5 @@
 ---
-description: Mesa 26.1-devel fork with terakan Vulkan driver for Radeon HD 6310 (Evergreen/Sumo, TeraScale-2)
+description: Mesa 26.1-devel fork with terakan Vulkan driver for Radeon HD 6310 (Palm / Wrestler, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)
 last_verified: 2026-04-19
 ---
 
