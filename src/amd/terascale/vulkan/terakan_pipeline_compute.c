@@ -5,8 +5,8 @@
  * Vulkan compute pipeline implementation for Terakan (TeraScale-2/Evergreen).
  *
  * This provides the native vk_shader abstraction for compute shaders,
- * enabling GPU-driven rendering via vkCmdDispatch → indirect draw buffer
- * population. The pipeline compiles SPIR-V → NIR → r600 bytecode and
+ * enabling GPU-driven rendering via vkCmdDispatch to indirect draw buffer
+ * population. The pipeline compiles SPIR-V to NIR to r600 bytecode and
  * pre-computes all HW register values for dispatch emission.
  */
 
@@ -16,6 +16,7 @@
 #include "terakan_entrypoints.h"
 #include "terakan_pipeline.h"
 #include "terakan_shader.h"
+#include "nir/terakan_nir.h"
 
 #include "terakan_pipeline_cache.h"
 #include "terakan_pipeline_key.h"
@@ -32,14 +33,14 @@
 
 
 /*
- * Phase A: Allocate and initialize base compute pipeline.
+ * Allocate and initialize the base compute pipeline.
  */
 static VkResult
 terakan_pipeline_compute_init(struct terakan_device * const device,
                               VkAllocationCallbacks const * const allocator,
                               struct terakan_pipeline_compute ** const pipeline_out)
 {
-   /* vk_zalloc2 atomically allocates and zero-initialises the whole pipeline
+   /* vk_zalloc2 atomically allocates and zero-initializes the whole pipeline
     * struct.  See the matching comment in terakan_pipeline_graphics_init(). */
    struct terakan_pipeline_compute *pipeline =
       vk_zalloc2(&device->vk.alloc, allocator, sizeof(*pipeline), 8,
@@ -54,7 +55,7 @@ terakan_pipeline_compute_init(struct terakan_device * const device,
 }
 
 /*
- * Phase B: Compile compute shader with cache integration.
+ * Compile the compute shader with cache integration.
  *
  * Invariants (mirrors terakan_pipeline_graphics_compile_shaders):
  *
@@ -141,7 +142,7 @@ terakan_pipeline_compute_compile(
       stage_rs.uniform_buffers ==
          VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
 
-   /* Post-link lowering — populates pre-compile metadata (Invariant 3). */
+   /* Post-link lowering populates pre-compile metadata (Invariant 3). */
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -155,6 +156,14 @@ terakan_pipeline_compute_compile(
       NULL,
       stage_robust_buffer_access,
       terakan_device_physical_device(device)->chip_info.chip_family);
+
+   /* Pipeline creation fails when strict mode leaves any CMPXCHG intrinsic
+    * native after post-link lowering. */
+   if (terakan_nir_cmpxchg_strict_reject_check(
+          nir, terakan_device_physical_device(device)->chip_info.chip_family)) {
+      ralloc_free(nir);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
 
    /* Build cache key (Invariant 4: only after post-link lowering). */
    VkPipelineCreateFlags2KHR const pipeline_flags =
@@ -177,7 +186,7 @@ terakan_pipeline_compute_compile(
                                       &shader_key, spirv_hash,
                                       NULL, 0);
 
-   /* Cache lookup — skip compilation on hit (Invariant 3). */
+   /* Cache lookup skips compilation on hit (Invariant 3). */
    struct terakan_cached_shader *cached =
       terakan_pipeline_cache_lookup(cache, cache_key);
    VkResult result;
@@ -191,7 +200,7 @@ terakan_pipeline_compute_compile(
          return result;
       }
    } else {
-      /* Cache miss — compilation required.  If the app set
+      /* Cache miss requires compilation.  If the app set
        * FAIL_ON_PIPELINE_COMPILE_REQUIRED, bail out immediately.
        * VK_PIPELINE_COMPILE_REQUIRED is a non-error success code (>0)
        * but counts as non-VK_SUCCESS for EARLY_RETURN_ON_FAILURE. */
@@ -294,6 +303,17 @@ terakan_pipeline_compute_compile_storage_image_layer_variant(
       stage_robust_buffer_access,
       terakan_device_physical_device(device)->chip_info.chip_family);
 
+   /* Match the primary compile path: strict mode rejects surviving CMPXCHG. */
+   if (terakan_nir_cmpxchg_strict_reject_check(
+          nir, terakan_device_physical_device(device)->chip_info.chip_family)) {
+      terakan_storage_image_set_compile_layer(INT32_MIN);
+      terakan_storage_image_set_compile_layer_index(INT32_MIN);
+      ralloc_free(nir);
+      terakan_shader_impl_finish(variant, allocator);
+      vk_free2(&device->vk.alloc, allocator, variant);
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   }
+
    /* Clear the NIR-lowering literals before backend emission starts. */
    terakan_storage_image_set_compile_layer(INT32_MIN);
    terakan_storage_image_set_compile_layer_index(INT32_MIN);
@@ -340,7 +360,7 @@ terakan_pipeline_compute_fill_hw(struct terakan_pipeline_compute * const pipelin
 }
 
 /*
- * Orchestrator — thin caller with single destroy error path (Invariant 2).
+ * Thin caller with a single destroy error path (Invariant 2).
  */
 VkResult
 terakan_pipeline_compute_create(struct terakan_device * const device,

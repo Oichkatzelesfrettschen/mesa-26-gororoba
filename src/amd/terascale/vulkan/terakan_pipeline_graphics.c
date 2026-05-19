@@ -34,6 +34,7 @@
 #include "terakan_state_color.h"
 #include "terakan_state_input_assembly.h"
 #include "terakan_state_rasterization.h"
+#include "nir/terakan_nir.h"
 
 #include "terakan_pipeline_cache.h"
 #include "terakan_pipeline_key.h"
@@ -1222,19 +1223,20 @@ terakan_pipeline_graphics_fragment_output_init(struct terakan_pipeline_graphics 
 
 
 /*
- * Phase A: Allocate and initialize base pipeline object.
- * Only allocation and base-object init — no compilation, no state parsing.
+ * Allocate and initialize the base graphics pipeline object.
+ * Only allocation and base-object init runs here; compilation and state
+ * parsing run after the object exists.
  */
 static VkResult
 terakan_pipeline_graphics_init(struct terakan_device * const device,
                                VkAllocationCallbacks const * const allocator,
                                struct terakan_pipeline_graphics ** const pipeline_out)
 {
-   /* vk_zalloc2 atomically allocates and zero-initialises the whole pipeline
+   /* vk_zalloc2 atomically allocates and zero-initializes the whole pipeline
     * struct.  Zeroing is an intrinsic guarantee of object creation, not a
-    * bandage applied by the caller — the teardown path relies on all pointer
+    * bandage applied by the caller; the teardown path relies on all pointer
     * fields being NULL and all stage bitmasks being 0 until explicitly set
-    * by the compilation phase.  Do NOT replace with vk_alloc2 + memset. */
+    * by shader compilation.  Do NOT replace with vk_alloc2 + memset. */
    struct terakan_pipeline_graphics * const pipeline =
       vk_zalloc2(&device->vk.alloc, allocator, sizeof(struct terakan_pipeline_graphics),
                  alignof(struct terakan_pipeline_graphics), VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -1802,7 +1804,8 @@ terakan_pipeline_graphics_validate_fs_color_export_parity(
 
 
 /*
- * Phase B: Per-stage SPIR-V → NIR → post-link lower → cache lookup → compile.
+ * Compile graphics shader stages through SPIR-V, NIR, post-link lowering,
+ * cache lookup, backend compile, and pipeline commit.
  *
  * Invariant 1 (Dual stage mask): declared_stages is precomputed from
  * create_info and is loop-invariant.  pipeline->shader_stages accumulates
@@ -1839,7 +1842,7 @@ terakan_pipeline_graphics_validate_fs_color_export_parity(
  * VS cache keys (because vs_as_es flips, which is a legitimate
  * recompilation trigger).  This preserves per-stage caching while
  * honouring cross-stage linkage requirements.  Do NOT hash gfx_state_key
- * directly into the cache key — doing so would destroy per-stage
+ * directly into the cache key; doing so would destroy per-stage
  * hit rates across pipelines that reuse stages.
  */
 static VkResult
@@ -1871,13 +1874,13 @@ terakan_pipeline_graphics_compile_shaders(
     * Unlike the original single-loop design, the barrier requires that
     * FS is lowered first (to extract inputs_read), then VS is lowered
     * with FS feedback (to prune dead outputs).  The application's
-    * pStages array order is irrelevant — the driver controls the
+    * pStages array order is irrelevant; the driver controls the
     * compilation sequence.
     *
-    * Pass 1 (Discovery):  SPIR-V → NIR for all stages.  No compilation.
+    * Pass 1 (Discovery):  SPIR-V to NIR for all stages.  No compilation.
     * Pass 2 (Fragment):   Post-link lower FS, extract inputs_read.
     * Pass 3 (Vertex+):    Post-link lower VS (with FS feedback) + others.
-    * Pass 4 (Compile):    Cache key → lookup → compile → commit.
+    * Pass 4 (Compile):    Cache key, lookup, compile, commit.
     */
    struct {
       bool present;
@@ -1889,7 +1892,7 @@ terakan_pipeline_graphics_compile_shaders(
    memset(stages, 0, sizeof(stages));
 
    /* =================================================================
-    * PASS 1 — Discovery: Convert all SPIR-V to NIR.  Determine per-stage
+    * PASS 1: Discovery.  Convert all SPIR-V to NIR.  Determine per-stage
     * robustness.  Do NOT compile or lower.
     * ================================================================= */
    for (uint32_t i = 0; i < create_info->stageCount; ++i) {
@@ -1941,7 +1944,7 @@ terakan_pipeline_graphics_compile_shaders(
    }
 
    /* =================================================================
-    * PASS 2 — Fragment Pass: Post-link lower the FS, run DCE, extract
+    * PASS 2: Fragment pass.  Post-link lower the FS, run DCE, extract
     * inputs_read for cross-stage feedback to the VS.
     *
     * This is the foundation of the Multi-Pass Post-Link Barrier.
@@ -1968,10 +1971,18 @@ terakan_pipeline_graphics_compile_shaders(
          stages[MESA_SHADER_FRAGMENT].robust_buffer_access,
          terakan_device_physical_device(device)->chip_info.chip_family);
 
+      /* Strict mode rejects shaders with CMPXCHG after post-link lowering. */
+      if (terakan_nir_cmpxchg_strict_reject_check(
+             fs_nir,
+             terakan_device_physical_device(device)->chip_info.chip_family)) {
+         result = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto cleanup;
+      }
+
       fs_inputs_read = fs_nir->info.inputs_read;
    }
 
-   /* Compute the graphics state key ONCE — used by both Pass 3 (postprocess
+   /* Compute the graphics state key ONCE; used by both Pass 3 (postprocess
     * decisions) and Pass 4 (cache key projection).  All inputs are from
     * immutable create_info or from FS post-link results (ps_nr_cbufs).
     * Computing once guarantees byte-identical keys across passes. */
@@ -1987,7 +1998,7 @@ terakan_pipeline_graphics_compile_shaders(
                                    declared_stages, ps_nr_cbufs);
 
    /* =================================================================
-    * PASS 3 — Vertex + Others: Post-link lower all non-FS stages.
+    * PASS 3: Vertex and other stages.  Post-link lower all non-FS stages.
     * For VS: apply terakan_postprocess_nir with FS feedback (varying
     * pruning, point size removal).  This is the core cross-stage
     * optimization enabled by the Multi-Pass Barrier.
@@ -2010,6 +2021,14 @@ terakan_pipeline_graphics_compile_shaders(
             NULL, /* Not FS: no fragment data locations */
             stages[si].robust_buffer_access,
             terakan_device_physical_device(device)->chip_info.chip_family);
+
+         /* Strict mode rejects shaders with CMPXCHG after post-link lowering. */
+         if (terakan_nir_cmpxchg_strict_reject_check(
+                nir,
+                terakan_device_physical_device(device)->chip_info.chip_family)) {
+            result = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto cleanup;
+         }
 
          /* Cross-stage post-process: varying pruning + point size removal.
           *
@@ -2036,7 +2055,7 @@ terakan_pipeline_graphics_compile_shaders(
    }
 
    /* =================================================================
-    * PASS 4 — Compilation: Build cache keys, lookup or compile, commit.
+    * PASS 4: Compilation.  Build cache keys, lookup or compile, commit.
     *
     * For VS, the cache key includes cross-stage postprocess context
     * (fs_inputs_read + remove_point_size) to prevent aliasing between
@@ -2104,7 +2123,7 @@ terakan_pipeline_graphics_compile_shaders(
                                          postprocess_ctx,
                                          postprocess_ctx_size);
 
-      /* Cache lookup — skip compilation on hit (Invariant 3). */
+      /* Cache lookup skips compilation on hit (Invariant 3). */
       struct terakan_cached_shader *cached =
          terakan_pipeline_cache_lookup(cache, cache_key);
       if (cached != NULL) {
@@ -2116,7 +2135,7 @@ terakan_pipeline_graphics_compile_shaders(
          if (result != VK_SUCCESS)
             goto cleanup;
       } else {
-         /* Cache miss — compilation required.  If the app set
+         /* Cache miss requires compilation.  If the app set
           * FAIL_ON_PIPELINE_COMPILE_REQUIRED, bail out immediately so the
           * app can schedule its own background compile and retry later.
           * VK_PIPELINE_COMPILE_REQUIRED is a non-error success code (>0)
@@ -2209,9 +2228,9 @@ cleanup:
 }
 
 /*
- * Phase C: Parse VkGraphicsPipelineCreateInfo into hardware state registers.
+ * Parse VkGraphicsPipelineCreateInfo into hardware state registers.
  *
- * Invariant 5: Runs AFTER compile_shaders — depends on compiled VS data
+ * Invariant 5: Runs AFTER compile_shaders; depends on compiled VS data
  * (vertex_attributes_needed) and FS data (fragment_data_locations).
  * BITSET_ZERO is inside this function for self-containment (RD-5).
  */
@@ -2251,7 +2270,7 @@ terakan_pipeline_graphics_fill_state(
 }
 
 /*
- * Orchestrator — thin caller with single destroy error path (Invariant 2).
+ * Thin caller with a single destroy error path (Invariant 2).
  * All sub-functions are static (Invariant 6).
  */
 static VkResult
