@@ -34,7 +34,6 @@
 #include "terakan_state_color.h"
 #include "terakan_state_input_assembly.h"
 #include "terakan_state_rasterization.h"
-#include "nir/terakan_nir.h"
 
 #include "terakan_pipeline_cache.h"
 #include "terakan_pipeline_key.h"
@@ -1960,7 +1959,10 @@ terakan_pipeline_graphics_compile_shaders(
       nir_shader *fs_nir = stages[MESA_SHADER_FRAGMENT].nir;
 
       /* Post-link lowering populates pre-compile metadata (Invariant 3).
-       * This runs BEFORE cache key construction (Invariant 4). */
+       * This runs BEFORE cache key construction (Invariant 4).
+       * The CMPXCHG strict-reject flag is sampled before binding lowering
+       * consumes the original atomic intrinsics. */
+      bool cmpxchg_strict_reject_fs = false;
       terakan_shader_lower_and_optimize_post_link(
          fs_nir, pipeline_layout, fs_local->resources_needed,
          &fs_local->samplers_needed,
@@ -1969,12 +1971,10 @@ terakan_pipeline_graphics_compile_shaders(
          &fs_local->kcache_needed,
          &fs_local->fs.fragment_data_uncompacted_locations,
          stages[MESA_SHADER_FRAGMENT].robust_buffer_access,
-         terakan_device_physical_device(device)->chip_info.chip_family);
+         terakan_device_physical_device(device)->chip_info.chip_family,
+         &cmpxchg_strict_reject_fs);
 
-      /* Strict mode rejects shaders with CMPXCHG after post-link lowering. */
-      if (terakan_nir_cmpxchg_strict_reject_check(
-             fs_nir,
-             terakan_device_physical_device(device)->chip_info.chip_family)) {
+      if (cmpxchg_strict_reject_fs) {
          result = VK_ERROR_FEATURE_NOT_PRESENT;
          goto cleanup;
       }
@@ -2012,6 +2012,7 @@ terakan_pipeline_graphics_compile_shaders(
          nir_shader *nir = stages[si].nir;
 
          /* Post-link lowering populates pre-compile metadata (Invariant 3). */
+         bool cmpxchg_strict_reject_stage = false;
          terakan_shader_lower_and_optimize_post_link(
             nir, pipeline_layout, local->resources_needed,
             &local->samplers_needed,
@@ -2020,12 +2021,10 @@ terakan_pipeline_graphics_compile_shaders(
             &local->kcache_needed,
             NULL, /* Not FS: no fragment data locations */
             stages[si].robust_buffer_access,
-            terakan_device_physical_device(device)->chip_info.chip_family);
+            terakan_device_physical_device(device)->chip_info.chip_family,
+            &cmpxchg_strict_reject_stage);
 
-         /* Strict mode rejects shaders with CMPXCHG after post-link lowering. */
-         if (terakan_nir_cmpxchg_strict_reject_check(
-                nir,
-                terakan_device_physical_device(device)->chip_info.chip_family)) {
+         if (cmpxchg_strict_reject_stage) {
             result = VK_ERROR_FEATURE_NOT_PRESENT;
             goto cleanup;
          }

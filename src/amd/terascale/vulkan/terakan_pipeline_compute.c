@@ -16,7 +16,6 @@
 #include "terakan_entrypoints.h"
 #include "terakan_pipeline.h"
 #include "terakan_shader.h"
-#include "nir/terakan_nir.h"
 
 #include "terakan_pipeline_cache.h"
 #include "terakan_pipeline_key.h"
@@ -142,7 +141,10 @@ terakan_pipeline_compute_compile(
       stage_rs.uniform_buffers ==
          VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
 
-   /* Post-link lowering populates pre-compile metadata (Invariant 3). */
+   /* Post-link lowering populates pre-compile metadata (Invariant 3).
+    * The CMPXCHG strict-reject flag is sampled before binding lowering
+    * consumes the original atomic intrinsics. */
+   bool cmpxchg_strict_reject = false;
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -155,12 +157,10 @@ terakan_pipeline_compute_compile(
       &local_shader.kcache_needed,
       NULL,
       stage_robust_buffer_access,
-      terakan_device_physical_device(device)->chip_info.chip_family);
+      terakan_device_physical_device(device)->chip_info.chip_family,
+      &cmpxchg_strict_reject);
 
-   /* Pipeline creation fails when strict mode leaves any CMPXCHG intrinsic
-    * native after post-link lowering. */
-   if (terakan_nir_cmpxchg_strict_reject_check(
-          nir, terakan_device_physical_device(device)->chip_info.chip_family)) {
+   if (cmpxchg_strict_reject) {
       ralloc_free(nir);
       return VK_ERROR_FEATURE_NOT_PRESENT;
    }
@@ -289,6 +289,7 @@ terakan_pipeline_compute_compile_storage_image_layer_variant(
    terakan_storage_image_set_compile_layer(layer);
    terakan_storage_image_set_compile_layer_index(layer);
 
+   bool cmpxchg_strict_reject_variant = false;
    terakan_shader_lower_and_optimize_post_link(
       nir,
       create_info->layout != VK_NULL_HANDLE
@@ -301,11 +302,10 @@ terakan_pipeline_compute_compile_storage_image_layer_variant(
       &variant->kcache_needed,
       NULL,
       stage_robust_buffer_access,
-      terakan_device_physical_device(device)->chip_info.chip_family);
+      terakan_device_physical_device(device)->chip_info.chip_family,
+      &cmpxchg_strict_reject_variant);
 
-   /* Match the primary compile path: strict mode rejects surviving CMPXCHG. */
-   if (terakan_nir_cmpxchg_strict_reject_check(
-          nir, terakan_device_physical_device(device)->chip_info.chip_family)) {
+   if (cmpxchg_strict_reject_variant) {
       terakan_storage_image_set_compile_layer(INT32_MIN);
       terakan_storage_image_set_compile_layer_index(INT32_MIN);
       ralloc_free(nir);

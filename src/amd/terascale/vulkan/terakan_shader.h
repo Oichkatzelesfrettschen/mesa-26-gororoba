@@ -340,12 +340,18 @@ nir_shader * terakan_shader_spirv_to_nir(struct terakan_device * device, size_t 
  * per-pipeline or per-stage VK_EXT_pipeline_robustness state that requires
  * software bounds checking.  The NIR lowering uses it to inject ALU
  * bounds clamps (nir_umin_imm) on storage-buffer and texel-buffer
- * coordinates.  This is a mandatory software fallback — the Terascale
+ * coordinates.  This is a mandatory software fallback; the Terascale
  * hardware does NOT provide reliable native OOB handling for UAV writes
  * or byte-granular descriptor clamping, so ALU clamping must never be
  * skipped in the name of silicon trust.  See terakan_nir_buffer_uav_coord
  * for the clamp implementation and the rationale comment.
  */
+/* cmpxchg_strict_reject_out is set to true when strict mode is active
+ * and at least one 32-bit SSBO / image / global CMPXCHG intrinsic survived the
+ * speculative-XCHG pass.  The caller MUST check this flag after return and
+ * propagate VK_ERROR_FEATURE_NOT_PRESENT; the check runs before lower_bindings
+ * consumes and removes the surviving intrinsics.  Pass NULL when CMPXCHG cannot
+ * appear in the shader stage (vertex-only geometry stages, for instance). */
 void terakan_shader_lower_and_optimize_post_link(
    nir_shader * nir, struct terakan_pipeline_layout const * pipeline_layout,
    BITSET_WORD * resources_needed, uint32_t * samplers_needed,
@@ -353,7 +359,8 @@ void terakan_shader_lower_and_optimize_post_link(
    uint16_t * kcache_needed,
    uint8_t * fragment_data_uncompacted_locations_out,
    bool robust_buffer_access,
-   enum radeon_family chip_family);
+   enum radeon_family chip_family,
+   bool * cmpxchg_strict_reject_out);
 
 /*
  * Cross-stage NIR post-processing: Multi-Pass Post-Link Barrier.
@@ -367,12 +374,12 @@ void terakan_shader_lower_and_optimize_post_link(
  *   PARAM export slot + PA_CL_VS_OUT_CNTL.USE_VTX_POINT_SIZE).
  * - Varying pruning: strip VS outputs not consumed by the FS after DCE.
  *   Uses FS inputs_read extracted by the Fragment Pass of the Multi-Pass
- *   Barrier.  Only prunes PARAM exports — POS/CLIP/CULL/LAYER/VIEWPORT
+ *   Barrier.  Only prunes PARAM exports; POS/CLIP/CULL/LAYER/VIEWPORT
  *   are PA-consumed and never pruned.
  *
- * ISA basis: SPI routing uses semantic ID matching (SPI_VS_OUT_ID ↔
+ * ISA basis: SPI routing uses semantic ID matching (SPI_VS_OUT_ID to
  * SPI_PS_INPUT_CNTL), so dense-packing surviving PARAM exports after
- * pruning is safe — the SFN backend naturally assigns consecutive
+ * pruning is safe; the SFN backend naturally assigns consecutive
  * export_param indices to surviving outputs.
  *
  * fs_inputs_read: bitmask of VARYING_SLOT_* bits actually read by the FS
