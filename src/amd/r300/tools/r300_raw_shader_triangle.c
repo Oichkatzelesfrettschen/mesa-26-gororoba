@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -291,6 +292,32 @@ emit_reg_seq4(struct r300_raw_ib *ib, uint32_t reg, uint32_t a,
           emit(ib, d);
 }
 
+static uint32_t
+pack_r300_float24(float value)
+{
+   union {
+      float f;
+      uint32_t u;
+   } u = { .f = value };
+   int exponent = 0;
+   float mantissa;
+   uint32_t packed = 0;
+
+   if (value == 0.0f)
+      return 0;
+
+   mantissa = frexpf(value, &exponent);
+   if (mantissa < 0.0f) {
+      packed |= 1u << 23;
+      mantissa *= -1.0f;
+   }
+
+   exponent += 62;
+   packed |= (uint32_t)exponent << 16;
+   packed |= (u.u & 0x7fffffu) >> 7;
+   return packed;
+}
+
 static bool
 emit_common_render_state(struct r300_raw_ib *ib)
 {
@@ -315,7 +342,10 @@ static bool
 emit_uniform_seed_state(struct r300_raw_ib *ib)
 {
    return emit_reg_seq4(ib, R300_PFS_PARAM_0_X,
-                        0x40c00000, 0x41100000, 0x41300000, 0x3f800000);
+                        pack_r300_float24(6.0f),
+                        pack_r300_float24(9.0f),
+                        pack_r300_float24(11.0f),
+                        pack_r300_float24(1.0f));
 }
 
 static bool
