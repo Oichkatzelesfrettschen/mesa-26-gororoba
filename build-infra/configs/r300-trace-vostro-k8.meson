@@ -4,14 +4,6 @@
 # identifies it as k8-sse3; keep that in the sourced environment so
 # remote distcc compilers never emit newer host instructions.
 
-[binaries]
-c   = ['ccache', 'clang-22']
-cpp = ['ccache', 'clang++-22']
-ar = 'llvm-ar'
-nm = 'llvm-nm'
-strip = 'llvm-strip'
-llvm-config = 'llvm-config'
-
 [project options]
 buildtype = 'debugoptimized'
 

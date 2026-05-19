@@ -1,29 +1,10 @@
-# terakan-distcc: fast-rebuild variant optimised for distcc links.
+# terakan-distcc: fast-rebuild variant optimized for distcc links.
 #
 # Derived from build-terakan-distcc{,-clean,-gororoba} which were all
 # near-identical (distcc-gororoba had glx=auto which we adopt as
 # canonical).  Drops zink/softpipe/llvmpipe to minimise the link
 # surface on the Bobcat host; keeps rusticl r600-only.
 # See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
-
-[binaries]
-# Compiler chain: meson calls `ccache clang-22 ...`; on cache MISS
-# ccache prepends $CCACHE_PREFIX (= distcc) to produce
-# `distcc clang-22 ...`.  This is the canonical ccache+distcc
-# ordering per ccache.dev manual -- it is explicitly DOCUMENTED
-# AS INCORRECT to wrap as `ccache distcc clang-22` because ccache
-# hashes distcc's mtime instead of the real compiler, and fails
-# to share cache between with-distcc and without-distcc builds.
-# See docs/workspace/ccache-sccache-wiring.md (in steinmarder)
-# for the full RCA.
-c   = ['ccache', 'clang-22']
-cpp = ['ccache', 'clang++-22']
-
-# Rust compilation wrapped through sccache.  meson-rust invokes
-# rustc directly (bypassing cargo), so RUSTC_WRAPPER env has no
-# effect -- the wrap must happen at the compiler-binary level.
-rust = ['sccache', 'rustc']
-llvm-config = 'llvm-config'
 
 [project options]
 buildtype           = 'debug'

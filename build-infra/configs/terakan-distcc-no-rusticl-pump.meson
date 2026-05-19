@@ -12,12 +12,6 @@
 # /usr/local/mesa-terakan-distcc-no-rusticl-pump prefix unless PREFIX
 # is passed explicitly.
 
-[binaries]
-c    = ['distcc', 'clang-22']
-cpp  = ['distcc', 'clang++-22']
-rust = ['sccache', 'rustc']
-llvm-config = 'llvm-config'
-
 [project options]
 buildtype           = 'debug'
 b_ndebug            = 'false'

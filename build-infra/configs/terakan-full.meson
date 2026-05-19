@@ -5,12 +5,6 @@
 # which all carried this exact option set.  See
 # ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
 
-[binaries]
-c   = ['ccache', 'clang-22']
-cpp = ['ccache', 'clang++-22']
-rust = ['sccache', 'rustc']
-llvm-config = 'llvm-config'
-
 [project options]
 buildtype           = 'debug'
 b_ndebug            = 'false'

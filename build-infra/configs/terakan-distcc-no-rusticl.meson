@@ -9,12 +9,6 @@
 # /usr/local/mesa-terakan-distcc-no-rusticl prefix unless PREFIX is
 # passed explicitly.
 
-[binaries]
-c    = ['ccache', 'clang-22']
-cpp  = ['ccache', 'clang++-22']
-rust = ['sccache', 'rustc']
-llvm-config = 'llvm-config'
-
 [project options]
 buildtype           = 'debug'
 b_ndebug            = 'false'

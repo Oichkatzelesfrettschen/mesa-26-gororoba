@@ -32,7 +32,7 @@ build-infra/
 |   |-- terakan-minimal.meson      # r600 only, no HUD, NIR scratchpad
 |   +-- base-debug.meson           # upstream Mesa reference, no terakan
 +-- env/
-    |-- btver1.env                 # x130e (Bobcat) clang-22 + distcc
+    |-- btver1.env                 # x130e (Bobcat) LLVM-family + distcc
     |-- btver1-ccache-no-pump.env  # x130e ccache-first distcc, no pump
     |-- btver1-distcc-pump.env     # x130e direct distcc-pump, no ccache
     |-- sapphire.env               # Apple Silicon (placeholder)
@@ -67,12 +67,22 @@ make audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
 
 ## Common flows
 
+Build-system policy:
+
+- Meson native files carry Mesa options.
+- Make is the only build orchestration layer above Meson.
+- Host-specific LLVM command names are generated into
+  `$BUILDDIR/gororoba-toolchain.meson` during `make configure`.
+- New build-system behavior belongs in `build-infra/Makefile` or Meson
+  files.  Do not add standalone helper scripts for compiler selection,
+  audit policy, or clean/build orchestration.
+
 Daily Terakan Vulkan iteration on x130e:
 ```bash
 make audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
 make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 make install PROFILE=terakan-distcc-no-rusticl \
-  BUILDDIR=../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+  BUILDDIR=~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
 make artifact-check
 ```
 
@@ -82,7 +92,10 @@ make rebuild-terakan-distcc
 ```
 
 This profile is the Rusticl recovery lane and requires `bindgen`, `rustfmt`,
-and a host LLVM configuration tool that matches the configured compiler lane.
+and a coherent clang/clang++/llvm-config major on the host.  The Makefile
+writes `$BUILDDIR/gororoba-toolchain.meson` before `meson setup`, so the
+committed Meson profiles describe Mesa options while the generated overlay
+captures the host's installed LLVM naming scheme.
 
 No-Rusticl x130e warm/incremental rebuild that preserves ccache and
 does not use distcc-pump:
@@ -92,10 +105,10 @@ make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 
 This target uses `configs/terakan-distcc-no-rusticl.meson` with
 `env/btver1-ccache-no-pump.env`, removes only
-`../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump`,
+`~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump`,
 strips the pump-only `,cpp` option from `~/.distcc/hosts`, and leaves
 `~/.cache/ccache` plus `~/.cache/sccache` intact. It is separate from
-`../../build/mesa-terakan-distcc-no-rusticl` so a
+`~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl` so a
 future rebuild does not collide with that active build lane.
 
 No-Rusticl x130e cold clean rebuild with maximum remote preprocessing:
@@ -105,7 +118,7 @@ make rebuild-terakan-distcc-no-rusticl-pump
 
 This target uses `configs/terakan-distcc-no-rusticl-pump.meson` with
 `env/btver1-distcc-pump.env` and build directory
-`../../build/mesa-terakan-distcc-no-rusticl-pump`.
+`~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump`.
 It configures normally, prebuilds generated Meson/Ninja targets outside
 the include-server lifetime, then runs the heavy compile under
 `distcc-pump`.
@@ -114,14 +127,18 @@ Canonical split:
 
 | Use case | C/C++ chain | Rust chain | Notes |
 | --- | --- | --- | --- |
-| Warm incremental | `ccache -> distcc -> clang-22` | `sccache -> rustc` | no pump |
-| Cold clean | `distcc-pump -> distcc -> clang-22` | `sccache -> rustc` | configured mDNS pump host list |
+| Warm incremental | `ccache -> distcc -> clang` | `sccache -> rustc` | no pump |
+| Cold clean | `distcc-pump -> distcc -> clang` | `sccache -> rustc` | default pump host is the verified x570 mDNS worker |
 
 Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump
 needs distcc to see the original source and compiler command; wrappers
 that preprocess or cache before distcc defeat the include-server path.
-Workers that demote pump mode remain in the classic no-pump mesh until
-object parity is proven; opt in only for parity probes.
+Meson setup remains local: configure-time compiler probes and generated
+target discovery run without distcc or pump variables, then Ninja performs
+the distributed compile phase.
+The DESKTOP/WSL worker remains in the classic no-pump mesh until pump
+object parity is proven; opt in with `TERAKAN_PUMP_ALLOW_DESKTOP=1`
+only for parity probes.
 
 Fresh-from-clean full build (longer; zink+llvmpipe+softpipe):
 ```bash
@@ -147,7 +164,7 @@ Install the already-converged build without letting root rebuild targets:
 
 ```bash
 make install PROFILE=terakan-distcc-no-rusticl \
-  BUILDDIR=../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+  BUILDDIR=~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
 make artifact-check
 ```
 

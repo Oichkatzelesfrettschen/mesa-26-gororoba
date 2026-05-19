@@ -3,12 +3,6 @@
 # behavior on the same hardware.  Derived from build-debug/.
 # See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
 
-[binaries]
-c   = ['ccache', 'clang-22']
-cpp = ['ccache', 'clang++-22']
-rust = ['sccache', 'rustc']
-llvm-config = 'llvm-config'
-
 [project options]
 buildtype           = 'debug'
 
