@@ -1913,12 +1913,20 @@ RatInstr::emit_image_load_or_atomic(nir_intrinsic_instr *intrin, Shader& shader)
        *
        * These knobs let probe harnesses toggle each axis individually
        * (or combined) without rebuilding mesa.  Default behavior is
-       * unchanged from the historical image-return-fetch encoding. */
+       * unchanged from the historical image-return-fetch encoding.
+       *
+       * Apply them only to returning image atomics.  imageLoad uses this
+       * helper too, but formatted image loads must keep the format-derived
+       * fetch fields from r600_vertex_data_type. */
+      bool const image_atomic_return = !image_load;
       bool const image_return_match_ssbo_mfc =
+         image_atomic_return &&
          debug_get_bool_option("TERAKAN_EXPERIMENTAL_IMAGE_RETURN_MFC15", false);
       bool const image_return_match_ssbo_srf =
+         image_atomic_return &&
          debug_get_bool_option("TERAKAN_EXPERIMENTAL_IMAGE_RETURN_SRF", false);
       bool const image_return_match_ssbo_fmt32 =
+         image_atomic_return &&
          debug_get_bool_option("TERAKAN_EXPERIMENTAL_IMAGE_RETURN_FMT32", false);
       EVTXDataFormat const fetch_data_format =
          image_return_match_ssbo_fmt32 ? fmt_32 : (EVTXDataFormat)fmt;
