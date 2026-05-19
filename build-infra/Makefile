@@ -60,6 +60,7 @@ endif
 # source ENVFILE so CC, CXX, PKG_CONFIG_PATH, CFLAGS etc. are consistent
 # across hosts.
 SETUP_ARGS := --native-file=$(CONFIG) --reconfigure
+MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
 
 .PHONY: list audit configure build build-generated build-pump clean distclean install \
         artifact-check test \
@@ -106,6 +107,7 @@ audit:
 configure:
 	@mkdir -p $(dir $(BUILDDIR))
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC)
 
 build:

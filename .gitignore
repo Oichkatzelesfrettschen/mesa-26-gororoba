@@ -12,3 +12,10 @@
 *.mda.tar
 *.ini
 build-infra/shadercache.bin
+
+# macOS Finder/AppleDouble metadata from NFS, SMB, and removable-media copies.
+.DS_Store
+._*
+**/._*
+.AppleDouble
+**/.AppleDouble

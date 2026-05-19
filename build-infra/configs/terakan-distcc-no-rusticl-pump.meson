@@ -16,6 +16,7 @@
 c    = ['distcc', 'clang-22']
 cpp  = ['distcc', 'clang++-22']
 rust = ['sccache', 'rustc']
+llvm-config = 'llvm-config'
 
 [project options]
 buildtype           = 'debug'

@@ -23,6 +23,7 @@ cpp = ['ccache', 'clang++-22']
 # rustc directly (bypassing cargo), so RUSTC_WRAPPER env has no
 # effect -- the wrap must happen at the compiler-binary level.
 rust = ['sccache', 'rustc']
+llvm-config = 'llvm-config'
 
 [project options]
 buildtype           = 'debug'

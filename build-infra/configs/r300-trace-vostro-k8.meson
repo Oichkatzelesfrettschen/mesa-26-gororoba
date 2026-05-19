@@ -5,11 +5,12 @@
 # remote distcc compilers never emit newer host instructions.
 
 [binaries]
-c   = ['/usr/bin/ccache', '/usr/bin/clang-21']
-cpp = ['/usr/bin/ccache', '/usr/bin/clang++-21']
-ar = '/usr/bin/llvm-ar-21'
-nm = '/usr/bin/llvm-nm-21'
-strip = '/usr/bin/llvm-strip-21'
+c   = ['ccache', 'clang-22']
+cpp = ['ccache', 'clang++-22']
+ar = 'llvm-ar'
+nm = 'llvm-nm'
+strip = 'llvm-strip'
+llvm-config = 'llvm-config'
 
 [project options]
 buildtype = 'debugoptimized'
