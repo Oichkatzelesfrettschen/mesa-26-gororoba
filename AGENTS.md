@@ -16,6 +16,24 @@ holds the RE-toolkit, evidence registry, and cross-cutting
 workspace docs referenced below.  This repo BUILDS and INSTALLS
 standalone without steinmarder cloned.
 
+## Canonical Mesa Workspace Boundary
+
+Under `/home/eirikr/workspaces/mesa`, only two source roots are durable:
+
+| Directory | Owner |
+|---|---|
+| `/home/eirikr/workspaces/mesa/mesa-26-gororoba` | Mesa driver code, Terakan, r300g, Mesa build/install infrastructure |
+| `/home/eirikr/workspaces/mesa/steinmarder` | RE runners, evidence bundles, manifests, findings, host kits, and policy docs |
+
+Other `mesa-26-gororoba-*` entries under that workspace are temporary Git
+worktrees of this repo.  They are not new projects.  Work from them MUST land
+through a branch, PR, and merge to `main`; after the work is merged or
+explicitly superseded, the temporary worktree should be removed.
+
+Do not put Steinmarder evidence bundles or findings in Mesa.  Do not put Mesa
+driver changes in Steinmarder.  Use the sibling repo and a PR when a task
+crosses the boundary.
+
 ## Standalone build (this repo only)
 
 Minimum toolchain to build locally:
