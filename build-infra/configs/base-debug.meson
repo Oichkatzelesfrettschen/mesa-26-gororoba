@@ -1,12 +1,12 @@
 # base-debug: stock Mesa reference build (NO terakan).  Kept so the
 # terakan work can be regression-compared against upstream Mesa
-# behaviour on the same hardware.  Derived from build-debug/.
+# behavior on the same hardware.  Derived from build-debug/.
 # See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
 
 [binaries]
-c   = ["ccache", "clang-22"]
-cpp = ["ccache", "clang++-22"]
-rust = ["sccache", "rustc"]
+c   = ['ccache', 'clang-22']
+cpp = ['ccache', 'clang++-22']
+rust = ['sccache', 'rustc']
 
 [project options]
 buildtype           = 'debug'
