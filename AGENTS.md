@@ -191,6 +191,31 @@ source code AND markdown docs.
 2. MARKDOWN finding-doc bodies (SECONDARY).
 3. FILE-HEADER license blocks (THIRD).
 
+### Durable mechanism names, not phase labels
+
+Branch names, bundle directory names, finding-doc filenames, PR
+titles, commit subject lines, and source comments MUST use durable
+mechanism names that describe the engineering work itself, NOT phase
+or chronology labels.
+
+| Surface | WRONG | RIGHT |
+|---|---|---|
+| Branch | `terakan/phase1e-atomic-fix` | `terakan/palm_mem_rat_atomic_completion_semantics` |
+| Finding filename | `2026-05-18-phase1e-atomic.md` | `2026-05-18-palm-mem-rat-atomic-completion-semantics.md` |
+| PR title | `Phase 1E-atomic discriminator` | `palm_mem_rat_atomic_completion_semantics discriminator` |
+| Commit subject | `terakan: Phase 1E follow-ups` | `terakan: palm_mem_rat_atomic_completion_semantics follow-ups` |
+| Source comment | `Phase 1E-atomic case` | `palm_mem_rat_atomic_completion_semantics case` |
+
+Why: phase labels make sense in the moment and rot fast.  A reviewer
+reading the durable mechanism name knows what it is; a reviewer
+reading `Phase 1E-atomic` has to dig.  The durable name survives
+`git log`, branch listings, finding-doc directory walks, and
+follow-up work years later.
+
+Phase labels MAY appear ONLY as secondary registry metadata, e.g. a
+YAML frontmatter `phase: 1E-atomic` field on a finding-doc for
+project-management chronology.  They are never load-bearing.
+
 ### Source code MUST NOT contain
 
 | Banned pattern | Example | Move to |
