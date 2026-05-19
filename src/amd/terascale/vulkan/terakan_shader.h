@@ -346,12 +346,29 @@ nir_shader * terakan_shader_spirv_to_nir(struct terakan_device * device, size_t 
  * skipped in the name of silicon trust.  See terakan_nir_buffer_uav_coord
  * for the clamp implementation and the rationale comment.
  */
-/* cmpxchg_strict_reject_out is set to true when strict_reject policy is active
- * and at least one 32-bit SSBO / image / global CMPXCHG intrinsic survived the
- * speculative-XCHG pass.  The caller MUST check this flag after return and
- * propagate VK_ERROR_FEATURE_NOT_PRESENT; the check runs before lower_bindings
- * consumes and removes the surviving intrinsics.  Pass NULL when CMPXCHG cannot
- * appear in the shader stage (vertex-only geometry stages, for instance). */
+/*
+ * cmpxchg_strict_reject_out: written to true when strict_reject policy is
+ *   active and at least one 32-bit SSBO / image / global CMPXCHG intrinsic
+ *   survived the speculative-XCHG pass.  Callers MUST propagate
+ *   VK_ERROR_FEATURE_NOT_PRESENT from pipeline creation when this is set;
+ *   the check runs before lower_bindings consumes and removes the surviving
+ *   intrinsics.  Pass NULL when CMPXCHG cannot appear in the shader stage
+ *   (vertex-only geometry stages, for instance).
+ *
+ * image_atomic_reject_out: written to true when the shader contains an image
+ *   atomic intrinsic (image_deref_atomic, image_deref_atomic_swap,
+ *   image_atomic, image_atomic_swap, bindless variants, image_heap variants)
+ *   AND chip_family == CHIP_PALM (Wrestler GPU, Evergreen / TeraScale-2 VLIW5).
+ *   Callers MUST propagate VK_ERROR_FEATURE_NOT_PRESENT from pipeline creation
+ *   when this is set.  Palm silently wedges ring 0 on returning-atomic
+ *   completion -- the hardware completion handshake for MEM_RAT returning
+ *   atomics was cut at the Palm power-area trim, so the CP stalls
+ *   indefinitely waiting for a done signal that never arrives.  Pipeline-level
+ *   reject prevents apps that ignore the format-feature mask from wedging the
+ *   GPU.  The matching format-feature guard lives in terakan_format.c
+ *   (VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT gated on !CHIP_PALM); these
+ *   two layers together enforce the Palm atomic exclusion at both the
+ *   capability-query and the pipeline-creation boundaries. */
 void terakan_shader_lower_and_optimize_post_link(
    nir_shader * nir, struct terakan_pipeline_layout const * pipeline_layout,
    BITSET_WORD * resources_needed, uint32_t * samplers_needed,

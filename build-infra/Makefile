@@ -147,7 +147,14 @@ audit:
 		requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; selected=""; \
 		if [ -n "$$requested" ]; then \
 			if llvm_has_core "$$requested" "$$need_config"; then selected="$$requested"; \
-			else fail "requested LLVM major $$requested lacks required clang/clang++/llvm-config tools on PATH"; return; fi; \
+			else \
+				if [ "$$need_config" = "1" ]; then \
+					fail "requested LLVM major $$requested lacks required clang/clang++/llvm-config tools on PATH"; \
+				else \
+					fail "requested LLVM major $$requested lacks required clang/clang++ tools on PATH"; \
+				fi; \
+				return; \
+			fi; \
 		else \
 			for version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
 				if llvm_has_core "$$version" "$$need_config"; then selected="$$version"; break; fi; \
@@ -173,10 +180,13 @@ audit:
 	if grep -Eq "platforms[[:space:]]*=[^#]*'wayland'" "$(CONFIG)"; then wayland_platform=1; else wayland_platform=0; fi; \
 	for tool in meson ninja pkg-config python3; do need_command "$$tool"; done; \
 	case "$(COMPILER_CHAIN)" in \
-		ccache) need_command ccache; if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then need_command distcc; fi ;; \
-		distcc) need_command distcc ;; \
-		direct) ;; \
-		*) fail "unknown COMPILER_CHAIN=$(COMPILER_CHAIN)" ;; \
+		ccache) need_command ccache; \
+		        if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then \
+		            need_command distcc; distcc_active=1; \
+		        else distcc_active=0; fi ;; \
+		distcc) need_command distcc; distcc_active=1 ;; \
+		direct) distcc_active=0 ;; \
+		*) fail "unknown COMPILER_CHAIN=$(COMPILER_CHAIN)"; distcc_active=0 ;; \
 	esac; \
 	need_llvm_family "$$needs_llvm_config"; \
 	if [ "$$rusticl_enabled" -eq 1 ]; then need_command sccache; need_command rustc; \
@@ -191,10 +201,12 @@ audit:
 		for pc in wayland-client wayland-server wayland-protocols; do need_pkg_config "$$pc"; done; \
 	else ok "profile does not request Wayland platform"; fi; \
 	if command -v glslangValidator >/dev/null 2>&1; then ok "command glslangValidator"; else fail "missing command glslangValidator"; fi; \
-	if [ -r "$$HOME/.distcc/hosts" ]; then \
-		if grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$$)' "$$HOME/.distcc/hosts"; then fail "raw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames"; \
-		else ok "distcc hosts use hostname policy"; fi; \
-	else warn "~/.distcc/hosts is missing; distcc builds may run locally only"; fi; \
+	if [ "$$distcc_active" = "1" ]; then \
+		if [ -r "$$HOME/.distcc/hosts" ]; then \
+			if grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$$)' "$$HOME/.distcc/hosts"; then fail "raw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames"; \
+			else ok "distcc hosts use hostname policy"; fi; \
+		else warn "~/.distcc/hosts is missing; distcc builds may run locally only"; fi; \
+	else ok "distcc not in active compiler chain; skipping host policy check"; fi; \
 	if [ "$(HOSTENV)" = "btver1-ccache-no-pump" ]; then \
 		if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then ok "warm lane defaults CCACHE_PREFIX to distcc"; else fail "warm lane must default CCACHE_PREFIX to distcc"; fi; \
 		if grep -q 'unset DISTCC_PUMP' "$(ENVFILE)"; then ok "warm lane clears distcc-pump state"; else fail "warm lane must clear distcc-pump state"; fi; \
@@ -250,7 +262,14 @@ configure:
 	requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; \
 	llvm_version=""; \
 	if [ -n "$$requested" ]; then \
-		has_core "$$requested" "$$needs_llvm_config" || { echo "requested LLVM major $$requested lacks required clang/clang++/llvm-config tools" >&2; exit 1; }; \
+		if ! has_core "$$requested" "$$needs_llvm_config"; then \
+			if [ "$$needs_llvm_config" -eq 1 ]; then \
+				echo "requested LLVM major $$requested lacks required clang/clang++/llvm-config tools" >&2; \
+			else \
+				echo "requested LLVM major $$requested lacks required clang/clang++ tools" >&2; \
+			fi; \
+			exit 1; \
+		fi; \
 		llvm_version="$$requested"; \
 	else \
 		for candidate_version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
