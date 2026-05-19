@@ -4,8 +4,8 @@
 # docs/workspace/build-workflow-options.md).
 #
 # Why a separate profile:
-# - clang-22 is the local CachyOS compiler vs
-#   x130e's clang-21 in the terakan-distcc-no-rusticl profile
+# - The local LLVM package suffix may differ from x130e; the generated
+#   Meson toolchain overlay selects a coherent installed LLVM family.
 # - No distcc -- 12 znver3 cores beat a 2-core Bobcat distcc worker
 #   over LAN once roundtrip latency is accounted for
 # - Same -march=btver1 CFLAGS in env to keep the .so ISA-compatible
@@ -13,12 +13,6 @@
 #
 # Companion env file: env/cachyos-znver3-cross-btver1.env
 # Workflow: see steinmarder docs/workspace/local-build-cross-btver1.md
-
-[binaries]
-c    = ['ccache', 'clang-22']
-cpp  = ['ccache', 'clang++']
-rust = ['rustc']
-llvm-config = 'llvm-config-22'
 
 [project options]
 buildtype           = 'debugoptimized'

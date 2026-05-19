@@ -49,15 +49,21 @@ GENERATED_TARGET_REGEX ?= ^(src/git_sha1[.]h|src/(compiler|vulkan|amd/terascale)
 TOPSRC   := $(abspath $(CURDIR)/..)
 CONFIG   := $(CURDIR)/configs/$(PROFILE).meson
 ENVFILE  := $(CURDIR)/env/$(HOSTENV).env
+TOOLCHAIN_NATIVE := $(BUILDDIR)/gororoba-toolchain.meson
+ifeq ($(PROFILE),terakan-distcc-no-rusticl-pump)
+COMPILER_CHAIN ?= distcc
+else
+COMPILER_CHAIN ?= ccache
+endif
 
 ifeq (,$(wildcard $(CONFIG)))
 $(error unknown PROFILE='$(PROFILE)'; see `make list`)
 endif
 
-# `meson setup --native-file` loads option defaults from CONFIG.  We also
-# source ENVFILE so CC, CXX, PKG_CONFIG_PATH, CFLAGS etc. are consistent
-# across hosts.
-SETUP_ARGS := --native-file=$(CONFIG) --reconfigure
+# `meson setup --native-file` loads option defaults from CONFIG.  The
+# generated toolchain overlay keeps compiler package suffixes host-local
+# instead of committing one LLVM major into every native file.
+SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure
 MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
 
 .PHONY: list audit configure build build-generated build-pump clean distclean install \
@@ -83,15 +89,16 @@ help:
 	@echo "  test              ninja -C \$$(BUILDDIR) test"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
 	@echo "  rebuild-terakan-distcc-no-rusticl-ccache-no-pump"
-	@echo "                    warm/incremental no-rusticl lane: ccache -> distcc -> clang-21"
+	@echo "                    warm/incremental no-rusticl lane: ccache -> distcc -> clang"
 	@echo "  rebuild-terakan-distcc-no-rusticl-pump"
-	@echo "                    cold/clean no-rusticl lane: distcc-pump -> distcc -> clang-21"
+	@echo "                    cold/clean no-rusticl lane: distcc-pump -> distcc -> clang"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
 	@echo "profile:   $(PROFILE)"
 	@echo "hostenv:   $(HOSTENV)"
 	@echo "builddir:  $(BUILDDIR)"
 	@echo "prefix:    $(PREFIX)"
+	@echo "compiler chain: $(COMPILER_CHAIN)"
 
 list:
 	@echo "available PROFILEs (configs/*.meson):"; \
@@ -100,10 +107,182 @@ list:
 	for f in env/*.env; do echo "  $$(basename $$f .env)"; done
 
 audit:
-	./scripts/terakan-host-audit.sh --profile $(PROFILE) --hostenv $(HOSTENV)
+	@failures=0; warnings=0; \
+	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
+	warn() { echo "WARN  $$*" >&2; warnings=$$((warnings + 1)); }; \
+	ok() { echo "OK    $$*"; }; \
+	need_command() { if command -v "$$1" >/dev/null 2>&1; then ok "command $$1"; else fail "missing command $$1"; fi; }; \
+	need_file() { if [ -e "$$1" ]; then ok "path $$1"; else fail "missing path $$1"; fi; }; \
+	llvm_version_major() { \
+		case "$$1" in \
+			clang|clang++) "$$1" --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p;q' ;; \
+			llvm-config) "$$1" --version 2>/dev/null | sed 's/[.].*//;q' ;; \
+			*) "$$1" --version 2>/dev/null | sed -n 's/.*LLVM version \([0-9][0-9]*\).*/\1/p' | sed -n '1p' ;; \
+		esac; \
+	}; \
+	find_llvm_tool() { \
+		tool="$$1"; version="$$2"; \
+		for candidate in "$$tool-$$version" "$$tool$$version" "$$tool"; do \
+			if command -v "$$candidate" >/dev/null 2>&1; then \
+				if [ "$$candidate" = "$$tool" ]; then \
+					detected="$$(llvm_version_major "$$candidate" || true)"; \
+					[ "$$detected" = "$$version" ] || continue; \
+				fi; \
+				printf '%s\n' "$$candidate"; return 0; \
+			fi; \
+		done; \
+		return 1; \
+	}; \
+	llvm_has_core() { \
+		version="$$1"; \
+		find_llvm_tool clang "$$version" >/dev/null 2>&1 && \
+		find_llvm_tool clang++ "$$version" >/dev/null 2>&1 && \
+		find_llvm_tool llvm-config "$$version" >/dev/null 2>&1; \
+	}; \
+	need_llvm_family() { \
+		requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; selected=""; \
+		if [ -n "$$requested" ]; then \
+			if llvm_has_core "$$requested"; then selected="$$requested"; \
+			else fail "requested LLVM major $$requested lacks clang, clang++, or llvm-config on PATH"; return; fi; \
+		else \
+			for version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
+				if llvm_has_core "$$version"; then selected="$$version"; break; fi; \
+			done; \
+			version=30; \
+			while [ -z "$$selected" ] && [ "$$version" -ge 10 ]; do \
+				if llvm_has_core "$$version"; then selected="$$version"; break; fi; \
+				version=$$((version - 1)); \
+			done; \
+		fi; \
+		if [ -n "$$selected" ]; then ok "LLVM family $$selected with clang/clang++/llvm-config"; \
+		else fail "missing coherent clang/clang++/llvm-config LLVM family"; fi; \
+	}; \
+	need_pkg_config() { if pkg-config --exists "$$1" 2>/dev/null; then ok "pkg-config $$1"; else fail "missing pkg-config dependency $$1"; fi; }; \
+	echo "Terakan host audit"; \
+	echo "profile: $(PROFILE)"; \
+	echo "hostenv: $(HOSTENV)"; \
+	echo "topsrc:  $(TOPSRC)"; echo; \
+	need_file "$(CONFIG)"; need_file "$(ENVFILE)"; \
+	if grep -Eq 'gallium-rusticl[[:space:]]*=[[:space:]]*true' "$(CONFIG)"; then rusticl_enabled=1; else rusticl_enabled=0; fi; \
+	for tool in meson ninja pkg-config python3 ccache distcc; do need_command "$$tool"; done; \
+	need_llvm_family; \
+	if [ "$$rusticl_enabled" -eq 1 ]; then need_command sccache; need_command rustc; \
+	else \
+		if command -v sccache >/dev/null 2>&1; then ok "optional command sccache"; else warn "optional sccache missing; required only for Rusticl recovery profiles"; fi; \
+		if command -v rustc >/dev/null 2>&1; then ok "optional command rustc"; else warn "optional rustc missing; required only for Rusticl recovery profiles"; fi; \
+	fi; \
+	if python3 -c 'import mako, ply' >/dev/null 2>&1; then ok "python modules mako ply"; else fail "missing Python module mako or ply"; fi; \
+	if python3 -c 'import sys; sys.version_info < (3, 12) or __import__("packaging")' >/dev/null 2>&1; then ok "python packaging requirement"; else fail "Python 3.12+ needs module packaging"; fi; \
+	for pc in libdrm xcb-dri3 xcb-present xshmfence x11-xcb xrandr xcb-randr xcb-sync xcb-xfixes wayland-client wayland-server wayland-protocols vulkan; do need_pkg_config "$$pc"; done; \
+	if command -v glslangValidator >/dev/null 2>&1; then ok "command glslangValidator"; else fail "missing command glslangValidator"; fi; \
+	if [ -r "$$HOME/.distcc/hosts" ]; then \
+		if grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$$)' "$$HOME/.distcc/hosts"; then fail "raw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames"; \
+		else ok "distcc hosts use hostname policy"; fi; \
+	else warn "~/.distcc/hosts is missing; distcc builds may run locally only"; fi; \
+	if [ "$(HOSTENV)" = "btver1-ccache-no-pump" ]; then \
+		if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then ok "warm lane defaults CCACHE_PREFIX to distcc"; else fail "warm lane must default CCACHE_PREFIX to distcc"; fi; \
+		if grep -q 'unset DISTCC_PUMP' "$(ENVFILE)"; then ok "warm lane clears distcc-pump state"; else fail "warm lane must clear distcc-pump state"; fi; \
+	fi; \
+	if [ "$(HOSTENV)" = "btver1-distcc-pump" ]; then \
+		if grep -q 'unset CCACHE_PREFIX' "$(ENVFILE)"; then ok "pump lane removes ccache prefix"; else fail "pump lane must unset CCACHE_PREFIX"; fi; \
+		if grep -q ',cpp' "$(ENVFILE)"; then ok "pump lane derives cpp host options"; else fail "pump lane must derive ,cpp host options"; fi; \
+	fi; \
+	if [ "$$rusticl_enabled" -eq 1 ]; then \
+		echo; echo "Rusticl recovery lane checks"; need_command bindgen; need_command rustfmt; \
+	else ok "profile disables Rusticl for Terakan daily lane"; fi; \
+	echo; echo "Debian package hints for missing daily-lane tools:"; \
+	echo "  meson ninja-build clang pkg-config ccache distcc sccache"; \
+	echo "  libdrm-dev libxcb-dri3-dev libxcb-present-dev libxshmfence-dev"; \
+	echo "  libx11-xcb-dev libxrandr-dev libxcb-randr0-dev libxcb-sync-dev"; \
+	echo "  libxcb-xfixes0-dev libwayland-dev wayland-protocols python3-mako"; \
+	echo "  python3-ply python3-packaging libvulkan-dev glslang-tools"; \
+	if [ "$$rusticl_enabled" -eq 1 ]; then echo "  rust-bindgen llvm-dev libclang-dev"; fi; \
+	if [ "$$failures" -gt 0 ]; then echo; echo "Terakan host audit failed: $$failures failure(s), $$warnings warning(s)." >&2; exit 1; fi; \
+	echo; echo "Terakan host audit passed with $$warnings warning(s)."
 
 configure:
 	@mkdir -p $(dir $(BUILDDIR))
+	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	version_major() { \
+		case "$$1" in \
+			clang|clang++) "$$1" --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p;q' ;; \
+			llvm-config) "$$1" --version 2>/dev/null | sed 's/[.].*//;q' ;; \
+			*) "$$1" --version 2>/dev/null | sed -n 's/.*LLVM version \([0-9][0-9]*\).*/\1/p' | sed -n '1p' ;; \
+		esac; \
+	}; \
+	find_tool() { \
+		tool="$$1"; version="$$2"; \
+		for candidate in "$$tool-$$version" "$$tool$$version" "$$tool"; do \
+			if command -v "$$candidate" >/dev/null 2>&1; then \
+				if [ "$$candidate" = "$$tool" ]; then \
+					detected="$$(version_major "$$candidate" || true)"; \
+					[ "$$detected" = "$$version" ] || continue; \
+				fi; \
+				printf '%s\n' "$$candidate"; return 0; \
+			fi; \
+		done; \
+		return 1; \
+	}; \
+	has_core() { \
+		version="$$1"; \
+		find_tool clang "$$version" >/dev/null 2>&1 && \
+		find_tool clang++ "$$version" >/dev/null 2>&1 && \
+		find_tool llvm-config "$$version" >/dev/null 2>&1; \
+	}; \
+	requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; \
+	llvm_version=""; \
+	if [ -n "$$requested" ]; then \
+		has_core "$$requested" || { echo "requested LLVM major $$requested lacks clang, clang++, or llvm-config" >&2; exit 1; }; \
+		llvm_version="$$requested"; \
+	else \
+		for candidate_version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
+			if has_core "$$candidate_version"; then llvm_version="$$candidate_version"; break; fi; \
+		done; \
+		if [ -z "$$llvm_version" ]; then \
+			candidate_version=30; \
+			while [ "$$candidate_version" -ge 10 ]; do \
+				if has_core "$$candidate_version"; then llvm_version="$$candidate_version"; break; fi; \
+				candidate_version=$$((candidate_version - 1)); \
+			done; \
+		fi; \
+	fi; \
+	[ -n "$$llvm_version" ] || { echo "no matching clang/clang++/llvm-config major found on PATH" >&2; exit 1; }; \
+	clang_cmd="$$(find_tool clang "$$llvm_version")"; \
+	clangxx_cmd="$$(find_tool clang++ "$$llvm_version")"; \
+	llvm_config_cmd="$$(find_tool llvm-config "$$llvm_version")"; \
+	llvm_ar_cmd="$$(find_tool llvm-ar "$$llvm_version" || true)"; \
+	llvm_nm_cmd="$$(find_tool llvm-nm "$$llvm_version" || true)"; \
+	llvm_strip_cmd="$$(find_tool llvm-strip "$$llvm_version" || true)"; \
+	llvm_objcopy_cmd="$$(find_tool llvm-objcopy "$$llvm_version" || true)"; \
+	mkdir -p "$$(dirname "$(TOOLCHAIN_NATIVE)")"; \
+	{ \
+		echo "# Generated by build-infra/Makefile."; \
+		echo "# Do not edit; rerun make configure."; \
+		echo; \
+		echo "[binaries]"; \
+		case "$(COMPILER_CHAIN)" in \
+			ccache) \
+				printf "c = ['ccache', '%s']\n" "$$clang_cmd"; \
+				printf "cpp = ['ccache', '%s']\n" "$$clangxx_cmd"; \
+				;; \
+			distcc) \
+				printf "c = ['distcc', '%s']\n" "$$clang_cmd"; \
+				printf "cpp = ['distcc', '%s']\n" "$$clangxx_cmd"; \
+				;; \
+			direct) \
+				printf "c = '%s'\n" "$$clang_cmd"; \
+				printf "cpp = '%s'\n" "$$clangxx_cmd"; \
+				;; \
+			*) echo "unknown COMPILER_CHAIN=$(COMPILER_CHAIN)" >&2; exit 2 ;; \
+		esac; \
+		echo "rust = ['sccache', 'rustc']"; \
+		printf "llvm-config = '%s'\n" "$$llvm_config_cmd"; \
+		[ -z "$$llvm_ar_cmd" ] || printf "ar = '%s'\n" "$$llvm_ar_cmd"; \
+		[ -z "$$llvm_nm_cmd" ] || printf "nm = '%s'\n" "$$llvm_nm_cmd"; \
+		[ -z "$$llvm_strip_cmd" ] || printf "strip = '%s'\n" "$$llvm_strip_cmd"; \
+		[ -z "$$llvm_objcopy_cmd" ] || printf "objcopy = '%s'\n" "$$llvm_objcopy_cmd"; \
+	} > "$(TOOLCHAIN_NATIVE)"; \
+	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) (LLVM $$llvm_version, $(COMPILER_CHAIN))"
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC)
@@ -192,7 +371,7 @@ rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
 
 # Cold clean lane for x130e.  Configure and generated Meson/Ninja outputs are
 # completed before the include server starts; the heavy C/C++ compile then runs
-# under distcc-pump with direct clang-21.  This avoids generated-header changes
+# under distcc-pump with direct clang.  This avoids generated-header changes
 # invalidating pump's include snapshot.
 rebuild-terakan-distcc-no-rusticl-pump:
 	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
