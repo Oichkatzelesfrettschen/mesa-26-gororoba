@@ -1128,8 +1128,11 @@ terakan_shader_lower_and_optimize_post_link(
    uint16_t * const kcache_needed,
    uint8_t * const fragment_data_uncompacted_locations_out,
    bool const robust_buffer_access,
-   enum radeon_family const chip_family)
+   enum radeon_family const chip_family,
+   bool * const cmpxchg_strict_reject_out)
 {
+   if (cmpxchg_strict_reject_out)
+      *cmpxchg_strict_reject_out = false;
    bool progress;
 
    /* Finally eliminate all dead code that may have effect on lowerings below and on analysis within
@@ -1262,6 +1265,12 @@ terakan_shader_lower_and_optimize_post_link(
     * hardware.  Must run BEFORE terakan_nir_lower_bindings so the lowered
     * xchg flows through the standard atomic UAV path. */
    NIR_PASS(_, nir, terakan_nir_lower_cmpxchg_to_speculative_xchg, chip_family);
+
+   /* strict_reject: check for surviving CMPXCHG intrinsics BEFORE lower_bindings
+    * removes them.  lower_bindings replaces ssbo_atomic_swap with R600 UAV
+    * intrinsics and removes the original; any scan run after that finds nothing. */
+   if (cmpxchg_strict_reject_out)
+      *cmpxchg_strict_reject_out = terakan_nir_cmpxchg_strict_reject_check(nir, chip_family);
 
    /* Lower bindings according to the pipeline layout.
     * In fragment shaders, this is done after compacting the fragment data output locations as UAVs
