@@ -1149,18 +1149,16 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
          : (scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW || cmpxchg_cacheless)
               ? cf_mem_rat_cacheless
               : cf_mem_rat;
-   /* Non-fuzz path: comp_mask=0 would produce a MEM_RAT CF with no components
-    * written -- a degenerate packet the AMD Evergreen-Family ISA does not define.
-    * Clamp to 1 so callers that compute a zero mask (e.g. zero-component
-    * intrinsics) emit the least-destructive valid packet rather than a silent
-    * no-op.
-    * When cmpxchg_comp_mask_overridden is set (via the TERAKAN_FUZZ_FIELD
-    * env knob, range-checked to 1..15 by the parser above), the comp_mask
-    * value is forwarded to the packet without clamping.  This preserves the
-    * caller's intent (e.g. comp_mask=2 to drop dword 0, comp_mask=7 to
-    * fetch lower 3 dwords).  Without an override, comp_mask is clamped to
-    * at least 1 because a zero-component MEM_RAT CF packet is undefined
-    * per the AMD Evergreen-Family ISA. */
+   /* comp_mask=0 would produce a MEM_RAT CF with no components written --
+    * a degenerate packet the AMD Evergreen-Family ISA does not define.  Clamp
+    * to 1 so callers that compute a zero mask (e.g. zero-component intrinsics)
+    * emit the least-destructive valid packet rather than a silent no-op.
+    * cmpxchg_comp_mask_overridden is set by two mechanisms: the
+    * TERAKAN_EXPERIMENTAL_CMPXCHG_COMP_MASK env knob (direct override,
+    * range-checked to 1..15 above) and TERAKAN_FUZZ_FIELD=comp_mask
+    * (unified fuzzer axis, range-checked to 1..15 above).  Either mechanism
+    * forwards comp_mask without clamping to let deliberate out-of-spec values
+    * reach the hardware for isolation testing. */
    unsigned const rat_comp_mask =
       cmpxchg_comp_mask_overridden ? comp_mask : CLAMP(comp_mask, 1u, 0xFu);
 
