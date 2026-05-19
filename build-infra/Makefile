@@ -135,27 +135,30 @@ audit:
 	}; \
 	llvm_has_core() { \
 		version="$$1"; \
+		need_config="$${2:-1}"; \
 		find_llvm_tool clang "$$version" >/dev/null 2>&1 && \
 		find_llvm_tool clang++ "$$version" >/dev/null 2>&1 && \
-		find_llvm_tool llvm-config "$$version" >/dev/null 2>&1; \
+		{ [ "$$need_config" -eq 0 ] || find_llvm_tool llvm-config "$$version" >/dev/null 2>&1; }; \
 	}; \
 	need_llvm_family() { \
+		need_config="$${1:-1}"; \
 		requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; selected=""; \
 		if [ -n "$$requested" ]; then \
-			if llvm_has_core "$$requested"; then selected="$$requested"; \
-			else fail "requested LLVM major $$requested lacks clang, clang++, or llvm-config on PATH"; return; fi; \
+			if llvm_has_core "$$requested" "$$need_config"; then selected="$$requested"; \
+			else fail "requested LLVM major $$requested lacks required clang/clang++/llvm-config tools on PATH"; return; fi; \
 		else \
 			for version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
-				if llvm_has_core "$$version"; then selected="$$version"; break; fi; \
+				if llvm_has_core "$$version" "$$need_config"; then selected="$$version"; break; fi; \
 			done; \
 			version=30; \
 			while [ -z "$$selected" ] && [ "$$version" -ge 10 ]; do \
-				if llvm_has_core "$$version"; then selected="$$version"; break; fi; \
+				if llvm_has_core "$$version" "$$need_config"; then selected="$$version"; break; fi; \
 				version=$$((version - 1)); \
 			done; \
 		fi; \
-		if [ -n "$$selected" ]; then ok "LLVM family $$selected with clang/clang++/llvm-config"; \
-		else fail "missing coherent clang/clang++/llvm-config LLVM family"; fi; \
+		if [ -n "$$selected" ]; then \
+			if [ "$$need_config" -eq 1 ]; then ok "LLVM family $$selected with clang/clang++/llvm-config"; else ok "LLVM compiler family $$selected"; fi; \
+		else fail "missing coherent LLVM compiler family"; fi; \
 	}; \
 	need_pkg_config() { if pkg-config --exists "$$1" 2>/dev/null; then ok "pkg-config $$1"; else fail "missing pkg-config dependency $$1"; fi; }; \
 	echo "Terakan host audit"; \
@@ -164,8 +167,15 @@ audit:
 	echo "topsrc:  $(TOPSRC)"; echo; \
 	need_file "$(CONFIG)"; need_file "$(ENVFILE)"; \
 	if grep -Eq 'gallium-rusticl[[:space:]]*=[[:space:]]*true' "$(CONFIG)"; then rusticl_enabled=1; else rusticl_enabled=0; fi; \
-	for tool in meson ninja pkg-config python3 ccache distcc; do need_command "$$tool"; done; \
-	need_llvm_family; \
+	if grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)"; then needs_llvm_config=0; else needs_llvm_config=1; fi; \
+	for tool in meson ninja pkg-config python3; do need_command "$$tool"; done; \
+	case "$(COMPILER_CHAIN)" in \
+		ccache) need_command ccache; if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then need_command distcc; fi ;; \
+		distcc) need_command distcc ;; \
+		direct) ;; \
+		*) fail "unknown COMPILER_CHAIN=$(COMPILER_CHAIN)" ;; \
+	esac; \
+	need_llvm_family "$$needs_llvm_config"; \
 	if [ "$$rusticl_enabled" -eq 1 ]; then need_command sccache; need_command rustc; \
 	else \
 		if command -v sccache >/dev/null 2>&1; then ok "optional command sccache"; else warn "optional sccache missing; required only for Rusticl recovery profiles"; fi; \
@@ -225,31 +235,34 @@ configure:
 	}; \
 	has_core() { \
 		version="$$1"; \
+		need_config="$${2:-1}"; \
 		find_tool clang "$$version" >/dev/null 2>&1 && \
 		find_tool clang++ "$$version" >/dev/null 2>&1 && \
-		find_tool llvm-config "$$version" >/dev/null 2>&1; \
+		{ [ "$$need_config" -eq 0 ] || find_tool llvm-config "$$version" >/dev/null 2>&1; }; \
 	}; \
+	if grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)"; then needs_llvm_config=0; else needs_llvm_config=1; fi; \
 	requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; \
 	llvm_version=""; \
 	if [ -n "$$requested" ]; then \
-		has_core "$$requested" || { echo "requested LLVM major $$requested lacks clang, clang++, or llvm-config" >&2; exit 1; }; \
+		has_core "$$requested" "$$needs_llvm_config" || { echo "requested LLVM major $$requested lacks required clang/clang++/llvm-config tools" >&2; exit 1; }; \
 		llvm_version="$$requested"; \
 	else \
 		for candidate_version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
-			if has_core "$$candidate_version"; then llvm_version="$$candidate_version"; break; fi; \
+			if has_core "$$candidate_version" "$$needs_llvm_config"; then llvm_version="$$candidate_version"; break; fi; \
 		done; \
 		if [ -z "$$llvm_version" ]; then \
 			candidate_version=30; \
 			while [ "$$candidate_version" -ge 10 ]; do \
-				if has_core "$$candidate_version"; then llvm_version="$$candidate_version"; break; fi; \
+				if has_core "$$candidate_version" "$$needs_llvm_config"; then llvm_version="$$candidate_version"; break; fi; \
 				candidate_version=$$((candidate_version - 1)); \
 			done; \
 		fi; \
 	fi; \
-	[ -n "$$llvm_version" ] || { echo "no matching clang/clang++/llvm-config major found on PATH" >&2; exit 1; }; \
+	[ -n "$$llvm_version" ] || { echo "no matching LLVM compiler family found on PATH" >&2; exit 1; }; \
 	clang_cmd="$$(find_tool clang "$$llvm_version")"; \
 	clangxx_cmd="$$(find_tool clang++ "$$llvm_version")"; \
-	llvm_config_cmd="$$(find_tool llvm-config "$$llvm_version")"; \
+	llvm_config_cmd=""; \
+	if [ "$$needs_llvm_config" -eq 1 ]; then llvm_config_cmd="$$(find_tool llvm-config "$$llvm_version")"; fi; \
 	llvm_ar_cmd="$$(find_tool llvm-ar "$$llvm_version" || true)"; \
 	llvm_nm_cmd="$$(find_tool llvm-nm "$$llvm_version" || true)"; \
 	llvm_strip_cmd="$$(find_tool llvm-strip "$$llvm_version" || true)"; \
@@ -276,7 +289,7 @@ configure:
 			*) echo "unknown COMPILER_CHAIN=$(COMPILER_CHAIN)" >&2; exit 2 ;; \
 		esac; \
 		echo "rust = ['sccache', 'rustc']"; \
-		printf "llvm-config = '%s'\n" "$$llvm_config_cmd"; \
+		[ -z "$$llvm_config_cmd" ] || printf "llvm-config = '%s'\n" "$$llvm_config_cmd"; \
 		[ -z "$$llvm_ar_cmd" ] || printf "ar = '%s'\n" "$$llvm_ar_cmd"; \
 		[ -z "$$llvm_nm_cmd" ] || printf "nm = '%s'\n" "$$llvm_nm_cmd"; \
 		[ -z "$$llvm_strip_cmd" ] || printf "strip = '%s'\n" "$$llvm_strip_cmd"; \
