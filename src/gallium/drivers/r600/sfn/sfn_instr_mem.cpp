@@ -1089,15 +1089,52 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
       }
    }
 
+   /* TERAKAN_FUZZ_FIELD / TERAKAN_FUZZ_VALUE unified axis fuzzer.
+    * Selects one MEM_RAT packet field and overrides it for every emit:
+    *   comp_mask:   RatInstr component mask, 0..15
+    *   elem_size:   element size encoding, 0..3
+    *   burst_count: burst count, 1..15
+    *   cf_op:       0 = cached MEM_RAT, 1 = cacheless MEM_RAT
+    * Valid only when TERAKAN_FUZZ_VALUE is in-range; out-of-range values
+    * leave the packet at the baseline the EXPERIMENTAL knobs set. */
+   char const *uav_store_fuzz_field = debug_get_option("TERAKAN_FUZZ_FIELD", nullptr);
+   int64_t uav_store_fuzz_value = 0;
+   bool uav_store_fuzz_cf_cacheless = false;
+   if (uav_store_fuzz_field && uav_store_fuzz_field[0]) {
+      uav_store_fuzz_value = debug_get_num_option("TERAKAN_FUZZ_VALUE", 0);
+      if (!strcmp(uav_store_fuzz_field, "comp_mask") &&
+          uav_store_fuzz_value >= 0 && uav_store_fuzz_value <= 15) {
+         comp_mask = (unsigned)uav_store_fuzz_value;
+         cmpxchg_comp_mask_overridden = true;
+      } else if (!strcmp(uav_store_fuzz_field, "elem_size") &&
+                 uav_store_fuzz_value >= 0 && uav_store_fuzz_value <= 3) {
+         elem_size_minus_one = (unsigned)uav_store_fuzz_value;
+         cmpxchg_elem_size_overridden = true;
+      } else if (!strcmp(uav_store_fuzz_field, "burst_count") &&
+                 uav_store_fuzz_value >= 1 && uav_store_fuzz_value <= 15) {
+         burst_count = (unsigned)uav_store_fuzz_value;
+         cmpxchg_burst_count_overridden = true;
+      } else if (!strcmp(uav_store_fuzz_field, "cf_op") &&
+                 uav_store_fuzz_value >= 0 && uav_store_fuzz_value <= 1) {
+         uav_store_fuzz_cf_cacheless = (uav_store_fuzz_value == 1);
+      }
+   }
+
    if (scalar_buffer_store)
       shader.start_new_block(0);
 
    bool const cmpxchg_cacheless =
       cmpxchg_op && debug_get_bool_option("TERAKAN_EXPERIMENTAL_CMPXCHG_CACHELESS", false);
+   /* TERAKAN_FUZZ_FIELD=cf_op overrides cacheless selection for all UAV ops. */
+   bool const fuzz_cf_active = uav_store_fuzz_field && uav_store_fuzz_field[0] &&
+                               !strcmp(uav_store_fuzz_field, "cf_op") &&
+                               uav_store_fuzz_value >= 0 && uav_store_fuzz_value <= 1;
    ECFOpCode const rat_cf_opcode =
-      (scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW || cmpxchg_cacheless)
-         ? cf_mem_rat_cacheless
-         : cf_mem_rat;
+      fuzz_cf_active
+         ? (uav_store_fuzz_cf_cacheless ? cf_mem_rat_cacheless : cf_mem_rat)
+         : (scalar_buffer_store || uav_op_base == RatInstr::STORE_RAW || cmpxchg_cacheless)
+              ? cf_mem_rat_cacheless
+              : cf_mem_rat;
 
    sfn_log << SfnLog::trans
            << "RAT_ATOMIC_EMIT path=uav_store"
@@ -1117,7 +1154,9 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
            << " elem_size=" << elem_size_minus_one
            << " cmpxchg_comp_mask_overridden=" << cmpxchg_comp_mask_overridden
            << " cmpxchg_burst_count_overridden=" << cmpxchg_burst_count_overridden
-           << " cmpxchg_elem_size_overridden=" << cmpxchg_elem_size_overridden << "\n";
+           << " cmpxchg_elem_size_overridden=" << cmpxchg_elem_size_overridden
+           << " fuzz_field=" << (uav_store_fuzz_field ? uav_store_fuzz_field : "none")
+           << " fuzz_value=" << uav_store_fuzz_value << "\n";
    if (cmpxchg_op) {
       sfn_log << SfnLog::trans
               << "RAT_CMPXCHG_MAP path=uav_store"
@@ -1242,6 +1281,32 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
          new AluInstr(op1_mov, data_vec4[2], vf.zero(), AluInstr::write));
    }
 
+   /* TERAKAN_FUZZ_FIELD / TERAKAN_FUZZ_VALUE unified axis fuzzer.
+    * Same four axes as emit_uav_store_r600; see that function for axis docs.
+    * Defaults: comp_mask=15, burst_count=1, elem_size=0, cf_op=cf_mem_rat. */
+   unsigned uav_returning_comp_mask = 0xfu;
+   unsigned uav_returning_burst_count = 1u;
+   unsigned uav_returning_elem_size = 0u;
+   ECFOpCode uav_returning_cf_opcode = cf_mem_rat;
+   char const *uav_returning_fuzz_field = debug_get_option("TERAKAN_FUZZ_FIELD", nullptr);
+   int64_t uav_returning_fuzz_value = 0;
+   if (uav_returning_fuzz_field && uav_returning_fuzz_field[0]) {
+      uav_returning_fuzz_value = debug_get_num_option("TERAKAN_FUZZ_VALUE", 0);
+      if (!strcmp(uav_returning_fuzz_field, "comp_mask") &&
+          uav_returning_fuzz_value >= 0 && uav_returning_fuzz_value <= 15) {
+         uav_returning_comp_mask = (unsigned)uav_returning_fuzz_value;
+      } else if (!strcmp(uav_returning_fuzz_field, "elem_size") &&
+                 uav_returning_fuzz_value >= 0 && uav_returning_fuzz_value <= 3) {
+         uav_returning_elem_size = (unsigned)uav_returning_fuzz_value;
+      } else if (!strcmp(uav_returning_fuzz_field, "burst_count") &&
+                 uav_returning_fuzz_value >= 1 && uav_returning_fuzz_value <= 15) {
+         uav_returning_burst_count = (unsigned)uav_returning_fuzz_value;
+      } else if (!strcmp(uav_returning_fuzz_field, "cf_op") &&
+                 uav_returning_fuzz_value >= 0 && uav_returning_fuzz_value <= 1) {
+         uav_returning_cf_opcode = uav_returning_fuzz_value ? cf_mem_rat_cacheless : cf_mem_rat;
+      }
+   }
+
    sfn_log << SfnLog::trans
            << "RAT_ATOMIC_EMIT path=uav_returning"
            << " intrinsic=" << nir_intrinsic_infos[intr->intrinsic].name
@@ -1254,9 +1319,12 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
            << " cmpxchg=" << cmpxchg_op
            << " coord=" << coord
            << " data=" << data_vec4
-           << " comp_mask=15"
-           << " burst_count=1"
-           << " elem_size=0"
+           << " comp_mask=" << uav_returning_comp_mask
+           << " burst_count=" << uav_returning_burst_count
+           << " elem_size=" << uav_returning_elem_size
+           << " cf_opcode=" << uav_returning_cf_opcode
+           << " fuzz_field=" << (uav_returning_fuzz_field ? uav_returning_fuzz_field : "none")
+           << " fuzz_value=" << uav_returning_fuzz_value
            << " return_address=" << *shader.rat_return_address() << "\n";
    if (cmpxchg_op) {
       sfn_log << SfnLog::trans
@@ -1265,15 +1333,15 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
               << (shader.chip_class() == ISA_CC_CAYMAN ? "z" : "w") << "\n";
    }
 
-   auto rat = new RatInstr(cf_mem_rat,
+   auto rat = new RatInstr(uav_returning_cf_opcode,
                            static_cast<RatInstr::ERatOp>(uav_op),
                            data_vec4,
                            coord,
                            rat_id,
                            rat_id_offset,
-                           1,
-                           0xf,
-                           0);
+                           uav_returning_burst_count,
+                           uav_returning_comp_mask,
+                           uav_returning_elem_size);
    shader.emit_instruction(rat);
    rat->set_ack();
    rat->set_instr_flag(ack_rat_return_write);
@@ -1357,10 +1425,12 @@ RatInstr::emit_uav_returning_instr_r600(nir_intrinsic_instr *intr, Shader& shade
               << " coord_vec=" << coord
               << " data_vec=" << data_vec4
               << " rat_opcode=" << uav_op
-              << " cf_opcode=" << cf_mem_rat
-              << " comp_mask=15"
-              << " burst_count=1"
-              << " elem_size=0"
+              << " cf_opcode=" << uav_returning_cf_opcode
+              << " comp_mask=" << uav_returning_comp_mask
+              << " burst_count=" << uav_returning_burst_count
+              << " elem_size=" << uav_returning_elem_size
+              << " fuzz_field=" << (uav_returning_fuzz_field ? uav_returning_fuzz_field : "none")
+              << " fuzz_value=" << uav_returning_fuzz_value
               << " ack=1"
               << " wait_ack=1"
               << " ack_rat_return_write=1"
@@ -1502,14 +1572,19 @@ RatInstr::emit_ssbo_atomic_op(nir_intrinsic_instr *intr, Shader& shader)
     * this function, so the field fuzzer stays behind cmpxchg_op: every
     * non-CMPXCHG atomic in the same shader remains a control sample.
     *
-    * TERAKAN_FUZZ_FIELD chooses one MEM_RAT_ATOMIC packet field:
-    *   comp_mask:   RatInstr component mask, 0..15
-    *   elem_size:   RatInstr element size encoding, 0..3
-    *   burst_count: RatInstr burst count, 1..15
-    *   cf_op:       0 = cached MEM_RAT, 1 = cacheless MEM_RAT
-    * TERAKAN_FUZZ_VALUE supplies the numeric value.  Invalid values
-    * leave the packet at the baseline selected by the SSBO CMPXCHG
-    * env knobs. */
+    * NOTE: This function handles nir_intrinsic_ssbo_atomic and
+    * nir_intrinsic_ssbo_atomic_swap -- the r600g Gallium path (OpenGL/CL).
+    * Terakan-Vulkan SSBO atomics lower through nir_intrinsic_uav_instr_r600
+    * and nir_intrinsic_uav_returning_instr_r600, reaching emit_uav_store_r600
+    * and emit_uav_returning_instr_r600 respectively.  TERAKAN_FUZZ_FIELD and
+    * TERAKAN_FUZZ_VALUE fire in BOTH of those live paths; setting them here
+    * exercises the Gallium path only and will NOT affect Terakan-Vulkan. */
+   if (debug_get_option("TERAKAN_FUZZ_FIELD", nullptr)) {
+      fprintf(stderr,
+              "r600/sfn: TERAKAN_FUZZ_FIELD active in emit_ssbo_atomic_op "
+              "(r600g Gallium path).  Terakan-Vulkan atomics reach "
+              "emit_uav_store_r600 / emit_uav_returning_instr_r600 instead.\n");
+   }
    char const *fuzz_field = nullptr;
    int64_t fuzz_value = 0;
    if (cmpxchg_op) {
