@@ -34,6 +34,7 @@
 #include "terakan_state_color.h"
 #include "terakan_state_input_assembly.h"
 #include "terakan_state_rasterization.h"
+#include "nir/terakan_nir.h"
 
 #include "terakan_pipeline_cache.h"
 #include "terakan_pipeline_key.h"
@@ -1981,6 +1982,14 @@ terakan_pipeline_graphics_compile_shaders(
          stages[MESA_SHADER_FRAGMENT].robust_buffer_access,
          terakan_device_physical_device(device)->chip_info.chip_family);
 
+      /* strict_reject: fail pipeline creation when any CMPXCHG survives. */
+      if (terakan_nir_cmpxchg_strict_reject_check(
+             fs_nir,
+             terakan_device_physical_device(device)->chip_info.chip_family)) {
+         result = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto cleanup;
+      }
+
       fs_inputs_read = fs_nir->info.inputs_read;
    }
 
@@ -2023,6 +2032,14 @@ terakan_pipeline_graphics_compile_shaders(
             NULL, /* Not FS: no fragment data locations */
             stages[si].robust_buffer_access,
             terakan_device_physical_device(device)->chip_info.chip_family);
+
+         /* strict_reject check mirrors FS pass and compute pipeline. */
+         if (terakan_nir_cmpxchg_strict_reject_check(
+                nir,
+                terakan_device_physical_device(device)->chip_info.chip_family)) {
+            result = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto cleanup;
+         }
 
          /* Cross-stage post-process: varying pruning + point size removal.
           *

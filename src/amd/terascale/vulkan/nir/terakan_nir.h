@@ -123,6 +123,14 @@ bool terakan_nir_lower_sin_cos(nir_shader * shader);
 bool terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader,
                                                    enum radeon_family chip_family);
 
+/* Returns true when TERAKAN_PALM_CMPXCHG_POLICY=strict_reject is active and
+ * at least one 32-bit SSBO / image / global CMPXCHG intrinsic remains in the
+ * shader after the lowering pass.  The pipeline-compilation path MUST call
+ * this after terakan_nir_lower_cmpxchg_to_speculative_xchg and return
+ * VK_ERROR_FEATURE_NOT_PRESENT when it returns true. */
+bool terakan_nir_cmpxchg_strict_reject_check(nir_shader const * shader,
+                                             enum radeon_family chip_family);
+
 /* LDS-emulated cross-lane subgroup primitives for chips without native
  * cross-lane ALU (Palm / Wrestler -- CHIP_PALM, Evergreen / TeraScale-2
  * VLIW5).  Lowers nir_intrinsic_ballot, nir_intrinsic_read_first_invocation,

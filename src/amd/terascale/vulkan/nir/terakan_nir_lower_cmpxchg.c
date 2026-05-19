@@ -3,9 +3,8 @@
  * execute cached MEM_RAT CMPXCHG as a real compare-and-conditional-write
  * operation.  Per AMD Evergreen-Family ISA, MEM_RAT_CACHELESS excludes
  * atomics while cached MEM_RAT lists CMPXCHG_INT and CMPXCHG_INT_RTN.
- * Empirical Palm probing (palm_speculative_cmpxchg_breakthrough bundle)
- * confirms ADD / MIN / MAX / XCHG land on cached RAT while CMPXCHG
- * silently no-ops the conditional write.
+ * Empirical Palm probing confirms ADD / MIN / MAX / XCHG land on cached
+ * RAT while CMPXCHG silently no-ops the conditional write.
  *
  * This pass can rewrite selected compare-and-swap intrinsics to a
  * load-plus-atomic-xchg sequence:
@@ -81,6 +80,7 @@
 
 #include "amd_family.h"
 #include "util/u_debug.h"
+#include "util/log.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -108,6 +108,19 @@ default_policy_for_chip(enum radeon_family const chip_family)
    return TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
 }
 
+static char const *
+policy_name(enum terakan_palm_cmpxchg_policy const policy)
+{
+   switch (policy) {
+   case TERAKAN_PALM_CMPXCHG_POLICY_STRICT_REJECT:     return "strict_reject";
+   case TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE:   return "cts_speculative";
+   case TERAKAN_PALM_CMPXCHG_POLICY_FORCE_DPM_HIGH:    return "force_dpm_high";
+   case TERAKAN_PALM_CMPXCHG_POLICY_UNSAFE_SPECULATIVE: return "unsafe_speculative";
+   case TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY: return "native_noop_legacy";
+   }
+   return "unknown";
+}
+
 static enum terakan_palm_cmpxchg_policy
 get_palm_cmpxchg_policy(enum radeon_family const chip_family)
 {
@@ -115,37 +128,49 @@ get_palm_cmpxchg_policy(enum radeon_family const chip_family)
     * the harness and CTS-bringup runs use to pin a specific mode. */
    char const *policy_str = debug_get_option("TERAKAN_PALM_CMPXCHG_POLICY", NULL);
 
+   enum terakan_palm_cmpxchg_policy policy;
+
    if (policy_str && policy_str[0]) {
       if (!strcmp(policy_str, "strict_reject")) {
-         return TERAKAN_PALM_CMPXCHG_POLICY_STRICT_REJECT;
+         policy = TERAKAN_PALM_CMPXCHG_POLICY_STRICT_REJECT;
+      } else if (!strcmp(policy_str, "cts_speculative")) {
+         policy = TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE;
+      } else if (!strcmp(policy_str, "force_dpm_high")) {
+         policy = TERAKAN_PALM_CMPXCHG_POLICY_FORCE_DPM_HIGH;
+      } else if (!strcmp(policy_str, "unsafe_speculative")) {
+         policy = TERAKAN_PALM_CMPXCHG_POLICY_UNSAFE_SPECULATIVE;
+      } else if (!strcmp(policy_str, "native_noop_legacy")) {
+         policy = TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
+      } else {
+         fprintf(stderr,
+                 "terakan: unknown TERAKAN_PALM_CMPXCHG_POLICY='%s'; "
+                 "accepted values are strict_reject, cts_speculative, "
+                 "force_dpm_high, unsafe_speculative, native_noop_legacy. "
+                 "Using native_noop_legacy.\n",
+                 policy_str);
+         policy = TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
       }
-      if (!strcmp(policy_str, "cts_speculative")) {
-         return TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE;
-      }
-      if (!strcmp(policy_str, "force_dpm_high")) {
-         return TERAKAN_PALM_CMPXCHG_POLICY_FORCE_DPM_HIGH;
-      }
-      if (!strcmp(policy_str, "unsafe_speculative")) {
-         return TERAKAN_PALM_CMPXCHG_POLICY_UNSAFE_SPECULATIVE;
-      }
-      if (!strcmp(policy_str, "native_noop_legacy")) {
-         return TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
-      }
-      fprintf(stderr,
-              "terakan: unknown TERAKAN_PALM_CMPXCHG_POLICY='%s'; "
-              "accepted values are strict_reject, cts_speculative, "
-              "force_dpm_high, unsafe_speculative, native_noop_legacy. "
-              "Using native_noop_legacy.\n",
-              policy_str);
-      return TERAKAN_PALM_CMPXCHG_POLICY_NATIVE_NOOP_LEGACY;
+   } else if (debug_get_bool_option("TERAKAN_EXPERIMENTAL_SPECULATIVE_CMPXCHG", false)) {
+      /* Legacy boolean keeps older harness scripts and existing CI working.
+       * Treats "1" as cts_speculative, "0" / unset as the chip default. */
+      policy = TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE;
+   } else {
+      policy = default_policy_for_chip(chip_family);
    }
 
-   /* Legacy boolean keeps older harness scripts and existing CI working.
-    * Treats "1" as cts_speculative, "0" / unset as the chip default. */
-   if (debug_get_bool_option("TERAKAN_EXPERIMENTAL_SPECULATIVE_CMPXCHG", false)) {
-      return TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE;
-   }
-   return default_policy_for_chip(chip_family);
+   /* One-shot per-process diagnostic.  The selected policy must be
+    * visible at runtime because the same binary can run strict rejection,
+    * CTS-scoped speculation, or native Palm silicon-noop behavior. */
+   mesa_logi_once("terakan: CMPXCHG policy: chip=%d env=%s selected=%s speculative_xchg=%s",
+                  (int)chip_family,
+                  policy_str ? policy_str : "(unset)",
+                  policy_name(policy),
+                  (policy == TERAKAN_PALM_CMPXCHG_POLICY_CTS_SPECULATIVE ||
+                   policy == TERAKAN_PALM_CMPXCHG_POLICY_FORCE_DPM_HIGH ||
+                   policy == TERAKAN_PALM_CMPXCHG_POLICY_UNSAFE_SPECULATIVE)
+                     ? "enabled" : "disabled");
+
+   return policy;
 }
 
 /* Is the intrinsic's memory scope provably non-racing on Palm?
@@ -326,4 +351,44 @@ terakan_nir_lower_cmpxchg_to_speculative_xchg(nir_shader * shader,
                                      nir_metadata_block_index |
                                         nir_metadata_dominance,
                                      &state);
+}
+
+/* Scan shader for CMPXCHG intrinsics that were left native because
+ * strict_reject is active.  The lowering pass returns false (no transform)
+ * for strict_reject; it is the caller's responsibility to check this
+ * function and propagate VK_ERROR_FEATURE_NOT_PRESENT to the pipeline-
+ * creation path.
+ *
+ * Returns true when strict_reject is active AND at least one 32-bit SSBO /
+ * image / global CMPXCHG intrinsic remains in the shader.  Returns false for
+ * every other policy (native_noop_legacy is silent by design; speculative
+ * policies handle or skip every eligible intrinsic). */
+bool
+terakan_nir_cmpxchg_strict_reject_check(nir_shader const * const shader,
+                                        enum radeon_family const chip_family)
+{
+   if (get_palm_cmpxchg_policy(chip_family) != TERAKAN_PALM_CMPXCHG_POLICY_STRICT_REJECT)
+      return false;
+
+   nir_foreach_function_impl(impl, shader) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr const * const intr =
+               nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_ssbo_atomic_swap &&
+                intr->intrinsic != nir_intrinsic_image_deref_atomic_swap &&
+                intr->intrinsic != nir_intrinsic_global_atomic_swap)
+               continue;
+            if (nir_intrinsic_atomic_op(intr) != nir_atomic_op_cmpxchg)
+               continue;
+            if (intr->def.bit_size != 32)
+               continue;
+            /* At least one CMPXCHG survives under strict_reject. */
+            return true;
+         }
+      }
+   }
+   return false;
 }
