@@ -10,6 +10,7 @@ buildtype = 'debugoptimized'
 platforms = ['x11']
 gallium-drivers = ['r300']
 vulkan-drivers = []
+tools = ['r300']
 
 gallium-rusticl = false
 llvm = 'disabled'

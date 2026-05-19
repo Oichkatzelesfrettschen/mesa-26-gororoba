@@ -129,6 +129,7 @@ if with_tools.contains('all')
     'nir',
     'nouveau',
     'panfrost',
+    'r300',
     'zink',
   ]
 endif

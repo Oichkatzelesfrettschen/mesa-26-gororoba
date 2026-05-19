@@ -40,3 +40,7 @@ endif
 if with_amd_terascale_vk
   subdir('terascale/vulkan')
 endif
+
+if with_tools.contains('r300')
+  subdir('r300/tools')
+endif
