@@ -109,10 +109,23 @@ terakan_format_info_get(VkFormat const format, struct terakan_format_info * cons
 }
 
 VKAPI_ATTR void VKAPI_CALL
-terakan_GetPhysicalDeviceFormatProperties2(UNUSED VkPhysicalDevice const physicalDevice,
+terakan_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice const physicalDevice,
                                            VkFormat const format,
                                            VkFormatProperties2 * const pFormatProperties)
 {
+   /* Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5) image
+    * atomic RAT ops wedge ring 0: the returning-atomic completion handshake
+    * never signals, requiring a kernel soft-reset via W8.a/b/c.  Per
+    * Vulkan spec section 3.10 "Format Properties", clearing
+    * VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT and
+    * VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_ATOMIC_BIT prevents
+    * conformant applications from using image atomics on this silicon.
+    * VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT is preserved: imageStore
+    * confirmed working on Palm (Wave 5A v3, cell 1). */
+   struct terakan_physical_device const * const physical_device =
+      terakan_physical_device_from_handle(physicalDevice);
+   bool const chip_palm =
+      physical_device->chip_info.chip_family == CHIP_PALM;
    VkFormatFeatureFlags2 image_linear_tiling_features = 0;
    VkFormatFeatureFlags2 image_optimal_tiling_features = 0;
    VkFormatFeatureFlags2 buffer_features = 0;
@@ -220,7 +233,7 @@ terakan_GetPhysicalDeviceFormatProperties2(UNUSED VkPhysicalDevice const physica
             image_tiled_only_features |= VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT |
                                          VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT |
                                          VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
-            if (image_cb_color_atomic) {
+            if (image_cb_color_atomic && !chip_palm) {
                image_tiled_only_features |= VK_FORMAT_FEATURE_2_STORAGE_IMAGE_ATOMIC_BIT;
             }
          }
@@ -276,7 +289,8 @@ terakan_GetPhysicalDeviceFormatProperties2(UNUSED VkPhysicalDevice const physica
                buffer_features |= VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT |
                                   VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT |
                                   VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
-               if (terascale_format_supports_uav_atomic_int(&buffer_format_info)) {
+               if (terascale_format_supports_uav_atomic_int(&buffer_format_info) &&
+                   !chip_palm) {
                   buffer_features |= VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
                }
             }

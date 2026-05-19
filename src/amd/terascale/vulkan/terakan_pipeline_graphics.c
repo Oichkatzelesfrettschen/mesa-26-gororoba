@@ -1972,8 +1972,11 @@ terakan_pipeline_graphics_compile_shaders(
       /* Post-link lowering populates pre-compile metadata (Invariant 3).
        * This runs BEFORE cache key construction (Invariant 4).
        * strict_reject_fs is set inside before lower_bindings removes the
-       * ssbo_atomic_swap intrinsics. */
+       * ssbo_atomic_swap intrinsics.
+       * image_atomic_reject_fs is set for any image atomic on CHIP_PALM;
+       * those wedge the CP ring and are rejected at pipeline-creation time. */
       bool strict_reject_fs = false;
+      bool image_atomic_reject_fs = false;
       terakan_shader_lower_and_optimize_post_link(
          fs_nir, pipeline_layout, fs_local->resources_needed,
          &fs_local->samplers_needed,
@@ -1983,9 +1986,10 @@ terakan_pipeline_graphics_compile_shaders(
          &fs_local->fs.fragment_data_uncompacted_locations,
          stages[MESA_SHADER_FRAGMENT].robust_buffer_access,
          terakan_device_physical_device(device)->chip_info.chip_family,
-         &strict_reject_fs);
+         &strict_reject_fs,
+         &image_atomic_reject_fs);
 
-      if (strict_reject_fs) {
+      if (strict_reject_fs || image_atomic_reject_fs) {
          result = VK_ERROR_FEATURE_NOT_PRESENT;
          goto cleanup;
       }
@@ -2024,6 +2028,7 @@ terakan_pipeline_graphics_compile_shaders(
 
          /* Post-link lowering populates pre-compile metadata (Invariant 3). */
          bool strict_reject_stage = false;
+         bool image_atomic_reject_stage = false;
          terakan_shader_lower_and_optimize_post_link(
             nir, pipeline_layout, local->resources_needed,
             &local->samplers_needed,
@@ -2033,9 +2038,10 @@ terakan_pipeline_graphics_compile_shaders(
             NULL, /* Not FS: no fragment data locations */
             stages[si].robust_buffer_access,
             terakan_device_physical_device(device)->chip_info.chip_family,
-            &strict_reject_stage);
+            &strict_reject_stage,
+            &image_atomic_reject_stage);
 
-         if (strict_reject_stage) {
+         if (strict_reject_stage || image_atomic_reject_stage) {
             result = VK_ERROR_FEATURE_NOT_PRESENT;
             goto cleanup;
          }
