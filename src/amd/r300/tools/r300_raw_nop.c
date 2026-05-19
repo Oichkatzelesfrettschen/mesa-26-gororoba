@@ -173,7 +173,8 @@ static int
 submit_nop(const struct r300_raw_options *opts, const uint32_t *ib,
            unsigned ib_dwords)
 {
-   if (!getenv("R300_TRACE_HAZARD_ACCEPTED")) {
+   const char *hazard_accepted = getenv("R300_TRACE_HAZARD_ACCEPTED");
+   if (!hazard_accepted || strcmp(hazard_accepted, "1") != 0) {
       fprintf(stderr, "r300_raw_nop: --submit requires R300_TRACE_HAZARD_ACCEPTED=1\n");
       return -EPERM;
    }
