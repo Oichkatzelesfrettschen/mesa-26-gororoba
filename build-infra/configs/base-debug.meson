@@ -4,9 +4,10 @@
 # See ../../../steinmarder/docs/workspace/mesa-fork-synthesis.md.
 
 [binaries]
-c   = ['/usr/bin/ccache', '/usr/bin/clang-21']
-cpp = ['/usr/bin/ccache', '/usr/bin/clang++-21']
-rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
+c   = ['ccache', 'clang-21']
+cpp = ['ccache', 'clang++-21']
+rust = ['sccache', 'rustc']
+llvm-config = 'llvm-config-21'
 
 [project options]
 buildtype           = 'debug'

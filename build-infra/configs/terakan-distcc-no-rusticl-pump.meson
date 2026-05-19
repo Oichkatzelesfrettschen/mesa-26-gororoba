@@ -13,9 +13,10 @@
 # is passed explicitly.
 
 [binaries]
-c    = ['/usr/bin/distcc', '/usr/bin/clang-21']
-cpp  = ['/usr/bin/distcc', '/usr/bin/clang++-21']
-rust = ['/home/eirikr/.local/bin/sccache', '/home/eirikr/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc']
+c    = ['distcc', 'clang-21']
+cpp  = ['distcc', 'clang++-21']
+rust = ['sccache', 'rustc']
+llvm-config = 'llvm-config-21'
 
 [project options]
 buildtype           = 'debug'
