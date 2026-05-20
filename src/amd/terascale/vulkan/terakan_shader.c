@@ -1157,8 +1157,24 @@ terakan_lower_cube_gather_coord_to_normalized(nir_shader *shader)
             int coord_index = nir_tex_instr_src_index(tex, nir_tex_src_coord);
             if (coord_index < 0)
                continue;
-            nir_builder b = nir_builder_at(nir_before_instr(instr));
             nir_def *orig = tex->src[coord_index].src.ssa;
+            /* Cube-lowered coords are vec3 (S, T, face_id) per
+             * r600_nir_lower_cube_to_2darray.  If a future NIR layout
+             * change reduces arity (e.g. uses vec2 + a separate
+             * sampler-shape src), skip this experimental
+             * normalisation rather than read past-the-end channels.
+             * Release builds rely on this runtime check; the
+             * trailing assert() guards debug builds but compiles out
+             * in release. */
+            if (orig->num_components < 3)
+               continue;
+            assert(orig->num_components >= 3);
+            nir_builder b = nir_builder_at(nir_before_instr(instr));
+            /* Preserve only channel 2 (face_id) regardless of total
+             * arity.  If a future layout puts a W component at
+             * channel 3 (e.g. for shadow-cube gather), we drop it
+             * here deliberately -- the cube_to_2darray lowering does
+             * not use W. */
             nir_def *normalized = nir_vec3(&b,
                nir_fadd_imm(&b, nir_channel(&b, orig, 0), -1.0f),
                nir_fadd_imm(&b, nir_channel(&b, orig, 1), -1.0f),
