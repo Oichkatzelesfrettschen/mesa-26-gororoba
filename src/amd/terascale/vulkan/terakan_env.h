@@ -19,15 +19,16 @@
  *
  * Acceptance matrix (the test under
  * src/amd/terascale/vulkan/tests/run_terakan_env_gate_unit.sh):
- *   unset     -> false
- *   VAR=      -> false
- *   VAR=0     -> false
- *   VAR=true  -> false
- *   VAR=yes   -> false
- *   VAR=01    -> false
- *   VAR=1\n   -> false  (trailing whitespace rejected)
- *   VAR= 1    -> false  (leading whitespace rejected)
- *   VAR=1     -> true
+ *   unset       -> false
+ *   VAR=        -> false  (empty)
+ *   VAR=0       -> false
+ *   VAR=true    -> false
+ *   VAR=yes     -> false
+ *   VAR=01      -> false
+ *   VAR="1 "    -> false  (trailing space rejected)
+ *   VAR=" 1"    -> false  (leading space rejected)
+ *   VAR="1\n"   -> false  (trailing newline rejected)
+ *   VAR=1       -> true   (exact two-byte string '1' + NUL)
  */
 static inline bool
 terakan_env_gate_enabled(const char *name)
