@@ -24,6 +24,7 @@
 #include "terakan_shader.h"
 
 #include "nir/terakan_nir.h"
+#include "terakan_env.h"
 #include "terakan_bo.h"
 #include "terakan_command_buffer.h"
 #include "terakan_descriptor.h"
@@ -1139,7 +1140,7 @@ terakan_segment_wide_phi(nir_shader * const nir, unsigned const segment_size)
 static bool
 terakan_lower_cube_gather_coord_to_normalized(nir_shader *shader)
 {
-   if (getenv("TERAKAN_EXPERIMENTAL_CUBE_GATHER_COORD_NORMALIZE") == NULL)
+   if (!terakan_env_gate_enabled("TERAKAN_EXPERIMENTAL_CUBE_GATHER_COORD_NORMALIZE"))
       return false;
    bool progress = false;
    nir_foreach_function_impl(impl, shader) {
