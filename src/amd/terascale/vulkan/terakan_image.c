@@ -1942,15 +1942,15 @@ terakan_CreateImageView(VkDevice const deviceHandle,
          S_030010_DST_SEL_Z(V_030010_SQ_SEL_Z) |
          S_030010_DST_SEL_W(V_030010_SQ_SEL_W);
 
-      /* DIM-patch hypothesis (CUBEMAP -> 2D_ARRAY for integer cube gather
-       * descriptors) was empirically falsified on Palm/Wrestler: with the
-       * patch enabled the rgba8i / rgba8ui 50-case sweep still reports
-       * 0/50 pass, identical to the baseline.  Switching DIM to 2D_ARRAY
-       * breaks cube-seamless filter semantics that the CTS verifies
-       * against.  See findings/active/2026-05-20-139c-byte-identical-isa-
-       * falsified-tier-s-evidence.md for the full Tier-S evidence chain.
-       * Resolution path tracked under H6 (piglit r600g cross-check) and
-       * H9 (cube-seamless wrap-mode emulation in NIR).
+      /* Integer cube GATHER4 on AMD Evergreen-family hardware was
+       * suspected of needing the gather descriptor's DIM rewritten from
+       * SQ_TEX_DIM_CUBEMAP to SQ_TEX_DIM_2D_ARRAY to bypass a NEAREST
+       * footprint quirk.  Direct test showed the rewrite has no effect
+       * on the rgba8i / rgba8ui cube gather result and breaks the
+       * cube-seamless face-boundary filter that samplerCube semantics
+       * rely on; the user-supplied addressMode then leaks onto face
+       * edges instead of being ignored.  Do not re-introduce the DIM
+       * rewrite here without first solving the seamless-filter loss.
        */
 
    }

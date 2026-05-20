@@ -1298,8 +1298,8 @@ terakan_shader_lower_and_optimize_post_link(
             kcache_needed, robust_buffer_access);
 
    /* Lower cube sampler_dim to 2D_ARRAY before the view-swizzle clone pass.
-    * Idempotent; the call inside SFN's r600_lower_and_optimize_nir becomes
-    * a no-op since sampler_dim is no longer CUBE. */
+    * Idempotent: the equivalent NIR_PASS in r600_finalize_nir_common
+    * (sfn_nir.cpp) becomes a no-op once sampler_dim is no longer CUBE. */
    NIR_PASS(_, nir, r600_nir_lower_cube_to_2darray);
 
    /* Apply the integer GATHER4 NEAREST-footprint coordinate correction
