@@ -21,9 +21,11 @@ lower_coord_shift_normalized(nir_builder *b, nir_tex_instr *tex)
    int coord_index = nir_tex_instr_src_index(tex, nir_tex_src_coord);
    nir_def *corr = nullptr;
    if (unlikely(tex->array_is_lowered_cube)) {
+      /* TXS on sampler_dim=2D is_array=true returns vec3 (W,H,layers);
+       * trim the scale product to vec2 before adding to the 2-component coord. */
       auto corr2 = nir_fadd(b,
                             nir_trim_vector(b, tex->src[coord_index].src.ssa, 2),
-                            nir_fmul_imm(b, scale, -0.5f));
+                            nir_trim_vector(b, nir_fmul_imm(b, scale, -0.5f), 2));
       corr = nir_vec3(b,
                       nir_channel(b, corr2, 0),
                       nir_channel(b, corr2, 1),
@@ -111,6 +113,32 @@ r600_nir_lower_int_tg4(nir_shader *shader)
             need_lowering = true;
          }
       }
+   }
+
+   /* Fallback: after Vulkan binding lowering removes typed sampler uniforms,
+    * nir_foreach_uniform_variable finds nothing.  Detect integer tg4 directly
+    * from the instruction dest_type -- r600_nir_lower_int_tg4_impl already
+    * gates on dest_type internally, so enabling lowering here is idempotent. */
+   if (!need_lowering) {
+      nir_foreach_function_impl(impl, shader)
+      {
+         nir_foreach_block(block, impl)
+         {
+            nir_foreach_instr(instr, block)
+            {
+               if (instr->type == nir_instr_type_tex) {
+                  nir_tex_instr *tex = nir_instr_as_tex(instr);
+                  if (tex->op == nir_texop_tg4 &&
+                      tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE &&
+                      nir_alu_type_get_base_type(tex->dest_type) != nir_type_float) {
+                     need_lowering = true;
+                     goto done_scan;
+                  }
+               }
+            }
+         }
+      }
+      done_scan:;
    }
 
    if (need_lowering) {

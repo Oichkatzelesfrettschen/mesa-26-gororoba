@@ -140,21 +140,6 @@ terakan_nir_lower_tg4_view_swizzle_instr(nir_builder * const b,
       return false;
    }
 
-   /* Iteration-1 scope: cube samplers regress under the 4-way clone
-    * fan-out (SFN's cube-coord prepare path appears to interact with
-    * multi-clone tg4 in a way that the 2d_array path does not).  Skip
-    * cube for now -- the cube swizzle CTS cases will continue to use
-    * the descriptor-side DST_SEL bake (still wrong for gather, but
-    * not worse than upstream r600 gallium per r600-turks-fails.txt).
-    * Cube fix deferred to a follow-up; the architecture stays the
-    * same (KCACHE-loaded swizzle + bcsel cascade), only the
-    * coord-prepare interaction needs additional surgery on the SFN
-    * side.
-    */
-   if (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
-      return false;
-   }
-
    b->cursor = nir_before_instr(&tex->instr);
 
    /* Load the per-binding swizzle word from KCACHE bank 14.  The

@@ -786,7 +786,8 @@ void
 r600_lower_and_optimize_nir(nir_shader *sh,
                             const union r600_shader_key *key,
                             enum amd_gfx_level gfx_level,
-                            struct pipe_stream_output_info *so_info)
+                            struct pipe_stream_output_info *so_info,
+                            bool int_tg4_pre_lowered)
 {
 
    r600::sort_uniforms(sh);
@@ -875,7 +876,10 @@ r600_lower_and_optimize_nir(nir_shader *sh,
    NIR_PASS(_, sh, nir_lower_alu_to_scalar, r600_lower_to_scalar_instr_filter, NULL);
    NIR_PASS(_, sh, nir_lower_phis_to_scalar, NULL, NULL);
    NIR_PASS(_, sh, nir_lower_alu_to_scalar, r600_lower_to_scalar_instr_filter, NULL);
-   NIR_PASS(_, sh, r600_nir_lower_int_tg4);
+   /* Vulkan (Terakan) applies this before view-swizzle cloning to avoid
+    * TXS on gather-safe descriptor slots with shifted texture_index. */
+   if (!int_tg4_pre_lowered)
+      NIR_PASS(_, sh, r600_nir_lower_int_tg4);
    NIR_PASS(_, sh, nir_lower_bit_size, r600_lower_bit_size_callback, NULL);
    NIR_PASS(_, sh, r600::r600_nir_lower_tex_to_backend, gfx_level);
 
