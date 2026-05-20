@@ -176,7 +176,7 @@ terakan_shader_impl_compile(terakan_shader_impl * const shader, terakan_device *
     * DB_SHADER_CONTROL in fragment shaders.
     */
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
-   r600_lower_and_optimize_nir(nir, key, gfx_level, &so_info);
+   r600_lower_and_optimize_nir(nir, key, gfx_level, &so_info, true);
 
    /* -------------------------------------------------------------------
     * Post-SFN iterative convergence loop.

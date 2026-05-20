@@ -111,7 +111,8 @@ void
 r600_lower_and_optimize_nir(nir_shader *sh,
                             const union r600_shader_key *key,
                             enum amd_gfx_level gfx_level,
-                            struct pipe_stream_output_info *so_info);
+                            struct pipe_stream_output_info *so_info,
+                            bool int_tg4_pre_lowered);
 
 void
 r600_finalize_nir_common(nir_shader *nir, enum amd_gfx_level gfx_level);
