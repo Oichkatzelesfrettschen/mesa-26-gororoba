@@ -32,6 +32,7 @@
 #include "terakan_image.h"
 
 #include "terakan_device.h"
+#include "terakan_env.h"
 #include "terakan_device_memory.h"
 #include "terakan_entrypoints.h"
 #include "terakan_format.h"
@@ -1967,7 +1968,7 @@ terakan_CreateImageView(VkDevice const deviceHandle,
       if (G_030000_DIM(image_view->resource[0]) == V_030000_SQ_TEX_DIM_CUBEMAP &&
           (descriptor_create_info.view_format.number_type == TERASCALE_FORMAT_NUMBER_TYPE_UINT ||
            descriptor_create_info.view_format.number_type == TERASCALE_FORMAT_NUMBER_TYPE_SINT) &&
-          getenv("TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY") != NULL) {
+          terakan_env_gate_enabled("TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY")) {
          image_view->resource_gather[0] =
             (image_view->resource_gather[0] & C_030000_DIM) |
             S_030000_DIM(V_030000_SQ_TEX_DIM_2D_ARRAY);
