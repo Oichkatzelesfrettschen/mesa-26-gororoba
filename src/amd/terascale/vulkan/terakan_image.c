@@ -1942,15 +1942,21 @@ terakan_CreateImageView(VkDevice const deviceHandle,
          S_030010_DST_SEL_Z(V_030010_SQ_SEL_Z) |
          S_030010_DST_SEL_W(V_030010_SQ_SEL_W);
 
-      /* Integer cube GATHER4 on AMD Evergreen-family hardware was
-       * suspected of needing the gather descriptor's DIM rewritten from
+      /* Integer cube GATHER4 on Palm/Wrestler (CHIP_PALM, the only
+       * Evergreen-family target validated for this lane) was suspected
+       * of needing the gather descriptor's DIM rewritten from
        * SQ_TEX_DIM_CUBEMAP to SQ_TEX_DIM_2D_ARRAY to bypass a NEAREST
-       * footprint quirk.  Direct test showed the rewrite has no effect
-       * on the rgba8i / rgba8ui cube gather result and breaks the
-       * cube-seamless face-boundary filter that samplerCube semantics
-       * rely on; the user-supplied addressMode then leaks onto face
-       * edges instead of being ignored.  Do not re-introduce the DIM
-       * rewrite here without first solving the seamless-filter loss.
+       * footprint quirk.  Direct test on Palm showed the rewrite has
+       * no effect on the rgba8i / rgba8ui cube gather result and
+       * breaks the cube-seamless face-boundary filter that samplerCube
+       * semantics rely on; the user-supplied addressMode then leaks
+       * onto face edges instead of being ignored.  Do not re-introduce
+       * the DIM rewrite as default behaviour on Palm without first
+       * solving the seamless-filter loss.  Other Evergreen-family
+       * chips (Cypress / Juniper / Redwood / Cedar / Cayman) have NOT
+       * been validated against this finding and may behave
+       * differently; treat the conclusion as Palm-scoped until
+       * cross-chip evidence exists.
        *
        * `TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY=1` reactivates
        * the rewrite for future hypothesis testing (e.g. paired with
