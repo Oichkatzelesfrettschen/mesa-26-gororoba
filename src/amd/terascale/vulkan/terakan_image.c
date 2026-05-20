@@ -1941,6 +1941,18 @@ terakan_CreateImageView(VkDevice const deviceHandle,
          S_030010_DST_SEL_Y(V_030010_SQ_SEL_Y) |
          S_030010_DST_SEL_Z(V_030010_SQ_SEL_Z) |
          S_030010_DST_SEL_W(V_030010_SQ_SEL_W);
+
+      /* DIM-patch hypothesis (CUBEMAP -> 2D_ARRAY for integer cube gather
+       * descriptors) was empirically falsified on Palm/Wrestler: with the
+       * patch enabled the rgba8i / rgba8ui 50-case sweep still reports
+       * 0/50 pass, identical to the baseline.  Switching DIM to 2D_ARRAY
+       * breaks cube-seamless filter semantics that the CTS verifies
+       * against.  See findings/active/2026-05-20-139c-byte-identical-isa-
+       * falsified-tier-s-evidence.md for the full Tier-S evidence chain.
+       * Resolution path tracked under H6 (piglit r600g cross-check) and
+       * H9 (cube-seamless wrap-mode emulation in NIR).
+       */
+
    }
 
    /* Pack VkComponentMapping into 16 bits for the
