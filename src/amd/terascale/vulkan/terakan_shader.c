@@ -1119,6 +1119,59 @@ terakan_segment_wide_phi(nir_shader * const nir, unsigned const segment_size)
    return progress;
 }
 
+/* Experimental: normalise the cube-lowered face UV from the
+ * [1.0, 2.0] biased range that r600_nir_lower_cube_to_2darray emits
+ * down to [0.0, 1.0] using the formula `u - 1.0`.  Active only when
+ * TERAKAN_EXPERIMENTAL_CUBE_GATHER_COORD_NORMALIZE=1 is set in the
+ * environment AND the tg4 instruction has integer dest_type AND
+ * array_is_lowered_cube is true.  Used to test whether normalised
+ * gather coordinates change the rgba8i / rgba8ui cube gather verdict
+ * on Palm when paired with TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY.
+ * Default off; never fires unless explicitly opted-in.
+ *
+ * Math: r600_nir_lower_cube_to_2darray emits xy = (S, T) / (2|MA|) + 1.5
+ * where S/|MA|, T/|MA| in [-1, 1], so S/(2|MA|), T/(2|MA|) in [-0.5, 0.5]
+ * and the biased xy lies in [1.0, 2.0].  Map u_in -> u_in - 1.0 to
+ * land in [0.0, 1.0].  Earlier (now reverted) experiments tried
+ * (u_in - 0.5) * 0.5 which yields [0.25, 0.75] -- arithmetically wrong
+ * for [1, 2] input; that path has been removed and the corrected
+ * formula lives only here.  z (face_id) is preserved unchanged. */
+static bool
+terakan_lower_cube_gather_coord_to_normalized(nir_shader *shader)
+{
+   if (getenv("TERAKAN_EXPERIMENTAL_CUBE_GATHER_COORD_NORMALIZE") == NULL)
+      return false;
+   bool progress = false;
+   nir_foreach_function_impl(impl, shader) {
+      bool impl_progress = false;
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+               continue;
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            if (tex->op != nir_texop_tg4 || !tex->array_is_lowered_cube)
+               continue;
+            if (nir_alu_type_get_base_type(tex->dest_type) == nir_type_float)
+               continue;
+            int coord_index = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+            if (coord_index < 0)
+               continue;
+            nir_builder b = nir_builder_at(nir_before_instr(instr));
+            nir_def *orig = tex->src[coord_index].src.ssa;
+            nir_def *normalized = nir_vec3(&b,
+               nir_fadd_imm(&b, nir_channel(&b, orig, 0), -1.0f),
+               nir_fadd_imm(&b, nir_channel(&b, orig, 1), -1.0f),
+               nir_channel(&b, orig, 2));
+            nir_src_rewrite(&tex->src[coord_index].src, normalized);
+            impl_progress = true;
+         }
+      }
+      progress |= nir_progress(impl_progress, impl,
+                                nir_metadata_block_index | nir_metadata_dominance);
+   }
+   return progress;
+}
+
 void
 terakan_shader_lower_and_optimize_post_link(
    nir_shader * const nir, struct terakan_pipeline_layout const * const pipeline_layout,
@@ -1301,6 +1354,11 @@ terakan_shader_lower_and_optimize_post_link(
     * Idempotent: the equivalent NIR_PASS in r600_finalize_nir_common
     * (sfn_nir.cpp) becomes a no-op once sampler_dim is no longer CUBE. */
    NIR_PASS(_, nir, r600_nir_lower_cube_to_2darray);
+
+   /* Experimental cube-coord normalisation.  Default OFF; gated by
+    * TERAKAN_EXPERIMENTAL_CUBE_GATHER_COORD_NORMALIZE=1.  See the
+    * static-function comment for the math and when to enable.  */
+   NIR_PASS(_, nir, terakan_lower_cube_gather_coord_to_normalized);
 
    /* Apply the integer GATHER4 NEAREST-footprint coordinate correction
     * BEFORE the view-swizzle clone pass.  The view-swizzle pass shifts
