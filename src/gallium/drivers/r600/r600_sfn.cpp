@@ -55,7 +55,7 @@ r600_shader_from_nir(struct r600_context *rctx,
 
    auto sh = nir_shader_clone(sel->nir, sel->nir);
 
-   r600_lower_and_optimize_nir(sh, key, rctx->b.gfx_level, &sel->so);
+   r600_lower_and_optimize_nir(sh, key, rctx->b.gfx_level, &sel->so, false);
 
    if (rctx->screen->b.debug_flags & DBG_ALL_SHADERS) {
       fprintf(stderr,

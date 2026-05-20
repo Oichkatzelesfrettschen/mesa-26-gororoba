@@ -1297,6 +1297,20 @@ terakan_shader_lower_and_optimize_post_link(
             uavs_for_mutable_resources_needed, driver_push_constants_used,
             kcache_needed, robust_buffer_access);
 
+   /* Lower cube sampler_dim to 2D_ARRAY before the view-swizzle clone pass.
+    * Idempotent; the call inside SFN's r600_lower_and_optimize_nir becomes
+    * a no-op since sampler_dim is no longer CUBE. */
+   NIR_PASS(_, nir, r600_nir_lower_cube_to_2darray);
+
+   /* Apply the integer GATHER4 NEAREST-footprint coordinate correction
+    * BEFORE the view-swizzle clone pass.  The view-swizzle pass shifts
+    * clone texture_index by TERAKAN_GATHER_DESCRIPTOR_SLOT_OFFSET; TXS on
+    * those slots returns wrong sizes and corrupts the -0.5/N shift if the
+    * correction runs on the clones instead of the original descriptor.
+    * SFN's r600_lower_and_optimize_nir skips this pass when called with
+    * int_tg4_pre_lowered=true (see terakan_shader_sfn.cpp). */
+   NIR_PASS(_, nir, r600_nir_lower_int_tg4);
+
    /* Texture-gather (FETCH4 / GATHER4) per-binding VkComponentMapping
     * rewrite.  AMD Evergreen-Family ISA Chapter 6: SQ_TEX_RESOURCE_WORD4
     * DST_SEL permutes the four FETCH result lanes -- correct for SAMPLE
