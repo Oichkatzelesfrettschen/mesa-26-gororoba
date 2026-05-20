@@ -1951,7 +1951,21 @@ terakan_CreateImageView(VkDevice const deviceHandle,
        * rely on; the user-supplied addressMode then leaks onto face
        * edges instead of being ignored.  Do not re-introduce the DIM
        * rewrite here without first solving the seamless-filter loss.
+       *
+       * `TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY=1` reactivates
+       * the rewrite for future hypothesis testing (e.g. paired with
+       * cube-seamless emulation in the sampler clone or a NIR pass).
+       * Default off.  Integer cube views only (UINT / SINT formats);
+       * float cube views and non-cube views are unaffected.
        */
+      if (G_030000_DIM(image_view->resource[0]) == V_030000_SQ_TEX_DIM_CUBEMAP &&
+          (descriptor_create_info.view_format.number_type == TERASCALE_FORMAT_NUMBER_TYPE_UINT ||
+           descriptor_create_info.view_format.number_type == TERASCALE_FORMAT_NUMBER_TYPE_SINT) &&
+          getenv("TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY") != NULL) {
+         image_view->resource_gather[0] =
+            (image_view->resource_gather[0] & C_030000_DIM) |
+            S_030000_DIM(V_030000_SQ_TEX_DIM_2D_ARRAY);
+      }
 
    }
 
