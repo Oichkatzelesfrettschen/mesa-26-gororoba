@@ -859,20 +859,13 @@ BlockScheduler::can_reserve_kcache_for_ar_uses(const AluInstr& addr_load) const
 
    auto next_addr_load = find_next_addr_load(addr_load, *addr);
    auto ar_uses = collect_ar_uses(addr_load, *addr, next_addr_load);
-   unsigned const remaining_ar_uses = ar_uses.size();
 
-   unsigned checked = 0;
    for (auto use : ar_uses) {
-      if (checked == remaining_ar_uses)
-         break;
-
       if (!m_current_block->can_reserve_kcache(*use, kcache))
          return false;
-
-      ++checked;
    }
 
-   return checked == remaining_ar_uses;
+   return true;
 }
 
 bool
@@ -984,12 +977,17 @@ BlockScheduler::handle_alu_group_fill_failure(Shader::ShaderBlocks& out_blocks,
                                               const AluScheduleContext& alu_ctx)
 {
    if (alu_ctx.had_kcache_failure_in_fill) {
+      const char *failure = m_current_block->kcache_preflight_failed()
+                               ? "KCACHE preflight failed"
+                               : "KCACHE reservation failed";
+
       /* LDS read groups should not lead to impossible kcache constellations. */
       assert(!m_current_block->lds_group_active());
 
       if (alu_ctx.expected_ar_uses > 0) {
          sfn_log << SfnLog::schedule
-                 << "KCACHE reservation failed with "
+                 << failure
+                 << " with "
                  << alu_ctx.expected_ar_uses
                  << " pending AR uses; cannot break ALU clause\n";
          return AluGroupFillResult::failed;
