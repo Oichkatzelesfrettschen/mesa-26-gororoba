@@ -9,6 +9,11 @@ scope: Claude Code entrypoint for mesa-26-gororoba; imports canonical AGENTS.md
 
 This file intentionally imports `AGENTS.md` rather than duplicating it or symlinking it.
 
+Extended doctrine, including the LLM interaction guide, reasoning depth,
+source-comment style, tool discipline, synthesis rule, and regression-on-fix
+discipline, lives in `AGENTS.md`.  Do not duplicate those sections here; update
+the canonical file and keep this wrapper as the Claude-specific loader.
+
 Claude-specific rules:
 
 - Use `/memory` to verify that this file and `AGENTS.md` are loaded.

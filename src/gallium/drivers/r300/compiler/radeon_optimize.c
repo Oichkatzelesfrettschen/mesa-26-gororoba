@@ -167,11 +167,13 @@ copy_propagate(struct radeon_compiler *c, struct rc_instruction *inst_mov)
    rc_remove_instruction(inst_mov);
 }
 
-/* Returns 1 and sets *pswz / *pnegate when every channel selected by
+/* Returns nonzero and sets *pswz / *pnegate when every channel selected by
  * active_mask carries the same special-constant swizzle (ONE, ZERO,
  * HALF -- any swz >= 4).  Works for any register file: the
  * per-channel swz < 4 check already rejects sources that read an
- * actual register component.  Returns 0 otherwise. */
+ * actual register component.  Returns 0 (have_used == 0) when all
+ * active channels are UNUSED or when any active channel reads a real
+ * component. */
 static int
 is_src_uniform_constant(struct rc_src_register src, unsigned int active_mask, rc_swizzle *pswz,
                         unsigned int *pnegate)

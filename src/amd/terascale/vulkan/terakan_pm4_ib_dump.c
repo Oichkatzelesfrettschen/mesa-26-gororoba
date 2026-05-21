@@ -86,6 +86,7 @@ static uintptr_t
 pm4_ib_dump_pthread_key(pthread_t thread)
 {
    unsigned char bytes[sizeof(thread)];
+   /* FNV-1a 64-bit offset basis (FNV reference: http://www.isthe.com/chongo/tech/comp/fnv/) */
    uint64_t key = 14695981039346656037ull;
 
    memcpy(bytes, &thread, sizeof(bytes));
@@ -99,7 +100,7 @@ pm4_ib_dump_pthread_key(pthread_t thread)
 
    return folded ? folded : 1;
 }
-#endif
+#endif /* !DETECT_OS_WINDOWS */
 
 /* Per-thread identifier for the JSONL "tid" field.  The chosen
  * value differs across platforms (kernel TID on Linux/Android,

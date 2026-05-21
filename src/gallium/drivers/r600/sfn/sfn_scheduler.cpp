@@ -1262,7 +1262,7 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup *group,
       return false;
    }
 
-   auto kc_save = m_current_block->kcache_snapshot();
+   auto kcache_before = m_current_block->kcache_snapshot();
    if (!m_current_block->try_reserve_kcache(**it)) {
       sfn_log << SfnLog::schedule << " failed (kcache)\n";
       ++it;
@@ -1270,7 +1270,9 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup *group,
    }
 
    if (!group->add_vec_instructions(*it)) {
-      m_current_block->kcache_rollback(kc_save);
+      /* KCACHE was committed by try_reserve_kcache; roll it back since the
+       * instruction was not accepted into the group. */
+      m_current_block->kcache_rollback(kcache_before);
       sfn_log << SfnLog::schedule << " failed\n";
       ++it;
       return false;
