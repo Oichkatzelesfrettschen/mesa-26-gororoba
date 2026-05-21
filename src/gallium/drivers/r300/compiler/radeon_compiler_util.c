@@ -310,6 +310,18 @@ reset_srcreg(struct rc_src_register *reg)
    reg->Swizzle = RC_SWIZZLE_XYZW;
 }
 
+bool
+rc_src_register_equal(const struct rc_src_register *a,
+                      const struct rc_src_register *b)
+{
+   return a->File == b->File &&
+          a->Index == b->Index &&
+          a->RelAddr == b->RelAddr &&
+          a->Swizzle == b->Swizzle &&
+          a->Abs == b->Abs &&
+          a->Negate == b->Negate;
+}
+
 unsigned int
 rc_src_reads_dst_mask(rc_register_file src_file, unsigned int src_idx, unsigned int src_swz,
                       rc_register_file dst_file, unsigned int dst_idx, unsigned int dst_mask)
@@ -415,23 +427,13 @@ is_same_presub(const struct rc_presub_instruction *existing,
       return false;
 
    num_srcs = rc_presubtract_src_reg_count(op);
-   if (existing->SrcReg[0].File != src0->File ||
-       existing->SrcReg[0].Index != src0->Index ||
-       existing->SrcReg[0].RelAddr != src0->RelAddr ||
-       existing->SrcReg[0].Swizzle != src0->Swizzle ||
-       existing->SrcReg[0].Abs != src0->Abs ||
-       existing->SrcReg[0].Negate != src0->Negate)
+   if (!rc_src_register_equal(&existing->SrcReg[0], src0))
       return false;
 
    if (num_srcs > 1) {
       if (!src1)
          return false;
-      if (existing->SrcReg[1].File != src1->File ||
-          existing->SrcReg[1].Index != src1->Index ||
-          existing->SrcReg[1].RelAddr != src1->RelAddr ||
-          existing->SrcReg[1].Swizzle != src1->Swizzle ||
-          existing->SrcReg[1].Abs != src1->Abs ||
-          existing->SrcReg[1].Negate != src1->Negate)
+      if (!rc_src_register_equal(&existing->SrcReg[1], src1))
          return false;
    }
 
