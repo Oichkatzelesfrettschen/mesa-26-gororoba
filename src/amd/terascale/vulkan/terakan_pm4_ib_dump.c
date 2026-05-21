@@ -4,9 +4,13 @@
  */
 
 /*
- * Env-gated PM4 IB JSONL dump.  The disabled path is one cached
- * boolean read and one branch; file I/O starts only after
- * TERAKAN_DEBUG_DUMP_IB=1 is accepted by util/u_debug.h.
+ * Env-gated PM4 IB JSONL dump.  The disabled path costs one
+ * call_once + one atomic-relaxed load of the cached
+ * pm4_ib_dump_enabled flag + one branch on the false return;
+ * file I/O starts only after TERAKAN_DEBUG_DUMP_IB=1 is
+ * accepted by util/u_debug.h.  After the first call the
+ * call_once is a no-op on the C11 once-flag (per c11/threads.h
+ * contract).
  */
 
 #include "terakan_pm4_ib_dump.h"
@@ -26,7 +30,8 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
-#if DETECT_OS_LINUX || DETECT_OS_FREEBSD
+#include <pthread.h>
+#if DETECT_OS_LINUX
 #include <sys/syscall.h>
 #endif
 #include <unistd.h>
@@ -72,6 +77,14 @@ pm4_ib_dump_getpid(void)
 #endif
 }
 
+/* Per-thread identifier for the JSONL "tid" field.  The chosen
+ * value differs across platforms (kernel TID on Linux/Android,
+ * GetCurrentThreadId on Windows, pthread_getthreadid_np on FreeBSD,
+ * pthread_self cast on other POSIX); within a process the value is
+ * unique per thread, which is the property the byte-path decoder
+ * relies on for per-thread correlation.  The fallback never returns
+ * 0; threads can be told apart on every supported platform.
+ */
 static uintptr_t
 pm4_ib_dump_gettid(void)
 {
@@ -80,14 +93,15 @@ pm4_ib_dump_gettid(void)
 #elif DETECT_OS_ANDROID
    return (uintptr_t)gettid();
 #elif DETECT_OS_FREEBSD
-   long tid = 0;
-   if (syscall(SYS_thr_self, &tid) == 0)
-      return (uintptr_t)tid;
-   return 0;
+   return (uintptr_t)pthread_getthreadid_np();
 #elif DETECT_OS_LINUX
    return (uintptr_t)syscall(SYS_gettid);
 #else
-   return 0;
+   /* Generic POSIX fallback: pthread_self is unique per thread
+    * within a process; the cast to uintptr_t is well-defined on
+    * every platform we ship to that lacks a native gettid.
+    */
+   return (uintptr_t)pthread_self();
 #endif
 }
 

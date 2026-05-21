@@ -558,28 +558,37 @@ merge_presub_sources(struct rc_pair_instruction *dst_full, struct rc_pair_sub_in
       /* Shuffle the sources, so we can put the
        * presubtract source in the correct place. */
       for (arg = 0; arg < info->NumSrcRegs; arg++) {
-         /* If the arg does read both from rgb and alpha, then we need to rewrite
-          * both sources and the code currently doesn't handle this.
-          * FIXME: This is definitely solvable, however shader-db shows it is
-          * not worth the effort.
-          */
-         if (rc_source_type_swz(dst_full->RGB.Arg[arg].Swizzle) & RC_SOURCE_ALPHA &&
-             rc_source_type_swz(dst_full->RGB.Arg[arg].Swizzle) & RC_SOURCE_RGB)
-            return 0;
+         unsigned int arg_type = rc_source_type_swz(dst_full->RGB.Arg[arg].Swizzle);
 
-         /*If this arg does not read from an rgb source,
-          * do nothing. */
-         if (!(rc_source_type_swz(dst_full->RGB.Arg[arg].Swizzle) & type)) {
+         /* Skip args that don't read from the source type being shuffled. */
+         if (!(arg_type & type))
             continue;
-         }
 
          if (dst_full->RGB.Arg[arg].Source == srcp_src)
             dst_full->RGB.Arg[arg].Source = free_source;
-         /* We need to do this just in case register
-          * is one of the sources already, but in the
-          * wrong spot. */
-         else if (dst_full->RGB.Arg[arg].Source == free_source && !one_way) {
+         else if (dst_full->RGB.Arg[arg].Source == free_source && !one_way)
             dst_full->RGB.Arg[arg].Source = srcp_src;
+         else
+            continue;
+
+         /* A mixed-swizzle arg reads xyz from RGB.Src[source] and w from
+          * Alpha.Src[source].  After the primary source array is shuffled,
+          * mirror the moved entry into the secondary array so both channel
+          * planes resolve the same register.  Fall back to failure when the
+          * secondary slot already holds a conflicting register. */
+         if (arg_type & RC_SOURCE_ALPHA && arg_type & RC_SOURCE_RGB) {
+            unsigned int new_src = dst_full->RGB.Arg[arg].Source;
+            struct rc_pair_sub_instruction *sec =
+               (type == RC_SOURCE_RGB) ? &dst_full->Alpha : &dst_full->RGB;
+            struct rc_pair_instruction_source pri_src =
+               (type == RC_SOURCE_RGB) ? dst_full->RGB.Src[new_src]
+                                       : dst_full->Alpha.Src[new_src];
+            if (!sec->Src[new_src].Used) {
+               sec->Src[new_src] = pri_src;
+            } else if (sec->Src[new_src].File != pri_src.File ||
+                       sec->Src[new_src].Index != pri_src.Index) {
+               return 0;
+            }
          }
       }
    }

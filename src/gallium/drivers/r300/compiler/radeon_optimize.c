@@ -167,19 +167,14 @@ copy_propagate(struct radeon_compiler *c, struct rc_instruction *inst_mov)
    rc_remove_instruction(inst_mov);
 }
 
-/**
- * Check if a source register is actually always the same
- * swizzle constant.
- */
+/* Returns 1 and sets *pswz / *pnegate when every active channel of src carries
+ * the same special-constant swizzle (ONE, ZERO, HALF -- any swz >= 4).  Works
+ * for any register file: the per-channel swz < 4 check already rejects
+ * sources that read an actual register component.  Returns 0 otherwise. */
 static int
 is_src_uniform_constant(struct rc_src_register src, rc_swizzle *pswz, unsigned int *pnegate)
 {
    int have_used = 0;
-
-   if (src.File != RC_FILE_NONE) {
-      *pswz = 0;
-      return 0;
-   }
 
    for (unsigned int chan = 0; chan < 4; ++chan) {
       unsigned int swz = GET_SWZ(src.Swizzle, chan);
@@ -523,20 +518,15 @@ presub_replace_bias(struct rc_instruction *inst_mad, struct rc_instruction *inst
 static int
 peephole_add_presub_inv(struct radeon_compiler *c, struct rc_instruction *inst_add)
 {
-   unsigned int i, swz;
-
    if (!is_presub_candidate(c, inst_add))
       return 0;
 
-   /* Check if src0 is 1. */
-   /* XXX It would be nice to use is_src_uniform_constant here, but that
-    * function only works if the register's file is RC_FILE_NONE */
-   for (i = 0; i < 4; i++) {
-      if (!(inst_add->U.I.DstReg.WriteMask & (1 << i)))
-         continue;
-
-      swz = GET_SWZ(inst_add->U.I.SrcReg[0].Swizzle, i);
-      if (swz != RC_SWIZZLE_ONE || inst_add->U.I.SrcReg[0].Negate & (1 << i))
+   /* Check if src0 is 1 on every active channel. */
+   {
+      rc_swizzle src0_swz = RC_SWIZZLE_UNUSED;
+      unsigned int src0_neg = 0;
+      if (!is_src_uniform_constant(inst_add->U.I.SrcReg[0], &src0_swz, &src0_neg) ||
+          src0_swz != RC_SWIZZLE_ONE || src0_neg)
          return 0;
    }
 
