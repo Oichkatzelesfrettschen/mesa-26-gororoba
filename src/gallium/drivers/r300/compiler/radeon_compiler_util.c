@@ -364,7 +364,7 @@ struct src_select {
 };
 
 struct can_use_presub_data {
-   struct src_select Selects[5];
+   struct src_select Selects[8];
    unsigned int SelectCount;
    const struct rc_src_register *ReplaceReg;
    unsigned int ReplaceRemoved;
@@ -401,6 +401,41 @@ can_use_presub_read_cb(void *userdata, struct rc_instruction *inst, struct rc_sr
       return;
 
    can_use_presub_data_add_select(d, src->File, src->Index, src->Swizzle);
+}
+
+static bool
+is_same_presub(const struct rc_presub_instruction *existing,
+               rc_presubtract_op op,
+               const struct rc_src_register *src0,
+               const struct rc_src_register *src1)
+{
+   unsigned int num_srcs;
+
+   if (existing->Opcode != op)
+      return false;
+
+   num_srcs = rc_presubtract_src_reg_count(op);
+   if (existing->SrcReg[0].File != src0->File ||
+       existing->SrcReg[0].Index != src0->Index ||
+       existing->SrcReg[0].RelAddr != src0->RelAddr ||
+       existing->SrcReg[0].Swizzle != src0->Swizzle ||
+       existing->SrcReg[0].Abs != src0->Abs ||
+       existing->SrcReg[0].Negate != src0->Negate)
+      return false;
+
+   if (num_srcs > 1) {
+      if (!src1)
+         return false;
+      if (existing->SrcReg[1].File != src1->File ||
+          existing->SrcReg[1].Index != src1->Index ||
+          existing->SrcReg[1].RelAddr != src1->RelAddr ||
+          existing->SrcReg[1].Swizzle != src1->Swizzle ||
+          existing->SrcReg[1].Abs != src1->Abs ||
+          existing->SrcReg[1].Negate != src1->Negate)
+         return false;
+   }
+
+   return true;
 }
 
 unsigned int
@@ -441,13 +476,13 @@ rc_inst_can_use_presub(struct radeon_compiler *c, struct rc_instruction *inst,
       }
    }
 
-   /* We can't use more than one presubtract value in an
-    * instruction, unless the two prsubtract operations
-    * are the same and read from the same registers.
-    * XXX For now we will limit instructions to only one presubtract
-    * value.*/
+   /* An instruction uses at most one presubtract operation.  A second
+    * source in the same instruction may reference the same presub result
+    * when the operation and source registers are identical -- the hardware
+    * presub slot is already allocated and produces the same value. */
    if (inst->U.I.PreSub.Opcode != RC_PRESUB_NONE) {
-      return 0;
+      if (!is_same_presub(&inst->U.I.PreSub, presub_op, presub_src0, presub_src1))
+         return 0;
    }
 
    memset(&d, 0, sizeof(d));
