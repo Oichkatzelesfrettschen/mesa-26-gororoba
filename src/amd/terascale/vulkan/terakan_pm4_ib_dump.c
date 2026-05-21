@@ -4,155 +4,222 @@
  */
 
 /*
- * terakan_pm4_ib_dump.c -- env-gated final PM4 IB capture.
- *
- * Companion to terakan_descriptor_dump.c (descriptor-object capture).  Same
- * lazy-open + per-pid file + flockfile concurrency model; different
- * gate (reuses the existing TERAKAN_DEBUG_DUMP_IB env var so the
- * stderr-side and JSONL-file outputs activate together by default).
+ * Env-gated PM4 IB JSONL dump.  The disabled path is one cached
+ * boolean read and one branch; file I/O starts only after
+ * TERAKAN_DEBUG_DUMP_IB=1 is accepted by util/u_debug.h.
  */
 
 #include "terakan_pm4_ib_dump.h"
 
-#include "terakan_env.h"
-
+#include "c11/threads.h"
+#include "util/detect_os.h"
+#include "util/os_misc.h"
+#include "util/os_time.h"
+#include "util/simple_mtx.h"
 #include "util/u_debug.h"
 
-#include <inttypes.h>
-#include <pthread.h>
-#include <stdio.h>
+#if DETECT_OS_WINDOWS
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <sys/stat.h>
+#include <windows.h>
+#else
+#include <fcntl.h>
+#if DETECT_OS_LINUX || DETECT_OS_FREEBSD
 #include <sys/syscall.h>
-#include <time.h>
+#endif
 #include <unistd.h>
+#endif
 
-static pthread_once_t   a1_init_once    = PTHREAD_ONCE_INIT;
-static bool             a1_enabled      = false;
-static FILE            *a1_stream       = NULL;
-static pthread_mutex_t  a1_open_lock    = PTHREAD_MUTEX_INITIALIZER;
+#include <inttypes.h>
+#include <stdio.h>
+
+#include "terakan_env.h"
+
+static once_flag pm4_ib_dump_init_once = ONCE_FLAG_INIT;
+static bool pm4_ib_dump_enabled = false;
+static FILE *pm4_ib_dump_stream = NULL;
+static simple_mtx_t pm4_ib_dump_open_lock = SIMPLE_MTX_INITIALIZER;
+static simple_mtx_t pm4_ib_dump_write_lock = SIMPLE_MTX_INITIALIZER;
 
 static void
-a1_init_cb(void)
+pm4_ib_dump_init_cb(void)
 {
-   /* Active iff TERAKAN_DEBUG_DUMP_IB is truthy AND the explicit
-    * file-output disable knob is NOT set to "1".  The disable knob
-    * exists for operators who want stderr text only (e.g. /tmp
-    * is on a read-only filesystem).  Default behaviour: when
-    * TERAKAN_DEBUG_DUMP_IB activates the stderr-side dump, the
-    * JSONL file output activates as well. */
    if (!debug_get_bool_option("TERAKAN_DEBUG_DUMP_IB", false)) {
-      a1_enabled = false;
+      pm4_ib_dump_enabled = false;
       return;
    }
-   if (terakan_env_gate_enabled("TERAKAN_DEBUG_DUMP_IB_JSONL_DISABLE")) {
-      a1_enabled = false;
-      return;
-   }
-   a1_enabled = true;
+
+   pm4_ib_dump_enabled =
+      !terakan_env_gate_enabled("TERAKAN_DEBUG_DUMP_IB_JSONL_DISABLE");
 }
 
 bool
 terakan_pm4_ib_dump_active(void)
 {
-   pthread_once(&a1_init_once, a1_init_cb);
-   return a1_enabled;
+   call_once(&pm4_ib_dump_init_once, pm4_ib_dump_init_cb);
+   return pm4_ib_dump_enabled;
+}
+
+static int
+pm4_ib_dump_getpid(void)
+{
+#if DETECT_OS_WINDOWS
+   return _getpid();
+#else
+   return (int)getpid();
+#endif
+}
+
+static uintptr_t
+pm4_ib_dump_gettid(void)
+{
+#if DETECT_OS_WINDOWS
+   return (uintptr_t)GetCurrentThreadId();
+#elif DETECT_OS_ANDROID
+   return (uintptr_t)gettid();
+#elif DETECT_OS_FREEBSD
+   return (uintptr_t)syscall(SYS_thr_self);
+#elif DETECT_OS_LINUX
+   return (uintptr_t)syscall(SYS_gettid);
+#else
+   return 0;
+#endif
+}
+
+static const char *
+pm4_ib_dump_tmp_dir(void)
+{
+#if DETECT_OS_WINDOWS
+   const char *tmp_dir = os_get_option("TEMP");
+   if (!tmp_dir || !tmp_dir[0])
+      tmp_dir = os_get_option("TMP");
+   return tmp_dir && tmp_dir[0] ? tmp_dir : ".";
+#else
+   const char *tmp_dir = os_get_option("TMPDIR");
+   return tmp_dir && tmp_dir[0] ? tmp_dir : "/tmp";
+#endif
 }
 
 static FILE *
-a1_stream_or_open(void)
+pm4_ib_dump_fopen_append_cloexec(const char *path)
 {
-   FILE *s;
-   char  path[64];
+#if DETECT_OS_WINDOWS
+   int fd = _open(path, _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY | _O_NOINHERIT,
+                  _S_IREAD | _S_IWRITE);
+   if (fd < 0)
+      return NULL;
 
-   s = __atomic_load_n(&a1_stream, __ATOMIC_ACQUIRE);
-   if (s)
-      return s;
+   FILE *stream = _fdopen(fd, "a");
+   if (!stream)
+      _close(fd);
+   return stream;
+#else
+   int flags = O_WRONLY | O_CREAT | O_APPEND
+#ifdef O_CLOEXEC
+               | O_CLOEXEC
+#endif
+               ;
+   int fd = open(path, flags, 0600);
+   if (fd < 0)
+      return NULL;
 
-   pthread_mutex_lock(&a1_open_lock);
-   s = a1_stream;
-   if (!s) {
-      snprintf(path, sizeof(path), "/tmp/terakan_pm4_ib_%d.jsonl",
-               (int)getpid());
-      s = fopen(path, "ae");
-      if (s)
-         setvbuf(s, NULL, _IOLBF, 0);
-      __atomic_store_n(&a1_stream, s, __ATOMIC_RELEASE);
+#ifndef O_CLOEXEC
+   if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+      close(fd);
+      return NULL;
    }
-   pthread_mutex_unlock(&a1_open_lock);
-   return s;
+#endif
+
+   FILE *stream = fdopen(fd, "a");
+   if (!stream)
+      close(fd);
+   return stream;
+#endif
+}
+
+static FILE *
+pm4_ib_dump_stream_or_open(void)
+{
+   FILE *stream;
+   char path[512];
+
+   stream = __atomic_load_n(&pm4_ib_dump_stream, __ATOMIC_ACQUIRE);
+   if (stream)
+      return stream;
+
+   simple_mtx_lock(&pm4_ib_dump_open_lock);
+   stream = __atomic_load_n(&pm4_ib_dump_stream, __ATOMIC_RELAXED);
+   if (!stream) {
+      snprintf(path, sizeof(path), "%s/terakan_pm4_ib_%d.jsonl",
+               pm4_ib_dump_tmp_dir(), pm4_ib_dump_getpid());
+      stream = pm4_ib_dump_fopen_append_cloexec(path);
+      if (stream)
+         setvbuf(stream, NULL, _IOLBF, 0);
+      __atomic_store_n(&pm4_ib_dump_stream, stream, __ATOMIC_RELEASE);
+   }
+   simple_mtx_unlock(&pm4_ib_dump_open_lock);
+   return stream;
 }
 
 static uint64_t
-a1_ts_nsec(void)
+pm4_ib_dump_ts_nsec(void)
 {
-   struct timespec ts;
-   clock_gettime(CLOCK_MONOTONIC, &ts);
-   return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+   return (uint64_t)os_time_get_nano();
 }
 
-static pid_t
-a1_gettid(void)
-{
-   return (pid_t)syscall(SYS_gettid);
-}
-
-/* Trivial CRC32 (poly 0xEDB88320, little-endian).  Matches the
- * Linux kernel's crc32_le() output byte-for-byte so the steinmarder
- * Y.3 decoder can compare A1's CRC against the Y.2 observer's
- * ib_post_validate.ib_crc32_le directly.  Cheap: 8 ops/byte
- * via per-byte table-free implementation.  Could be sped up with
- * a table but the IB lengths here are small (~kilobytes per
- * submission). */
+/* CRC32 with the little-endian Ethernet polynomial.  The kernel-side
+ * observer uses the same polynomial, so diagnostic tooling can compare
+ * submitted PM4 IB bytes against post-validator captures without
+ * retaining every dword in memory.
+ */
 static uint32_t
-a1_crc32_le(uint32_t crc, uint8_t const *p, size_t n)
+pm4_ib_dump_crc32_le(uint32_t crc, const uint8_t *bytes, size_t size)
 {
-   for (size_t i = 0; i < n; i++) {
-      crc ^= p[i];
-      for (int k = 0; k < 8; k++)
+   for (size_t i = 0; i < size; i++) {
+      crc ^= bytes[i];
+      for (int bit = 0; bit < 8; bit++)
          crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
    }
    return crc;
 }
 
 void
-terakan_pm4_ib_dump_cs_submission(unsigned ring,
-                              uint32_t const *ib_dwords,
-                              uint32_t ib_length_dwords)
+terakan_pm4_ib_dump_cs_submission(unsigned ring, const uint32_t *ib_dwords,
+                                  uint32_t ib_length_dwords)
 {
-   FILE *s;
-   uint32_t crc;
-   uint32_t i;
+   FILE *stream;
 
    if (!terakan_pm4_ib_dump_active() || !ib_dwords || ib_length_dwords == 0)
       return;
-   s = a1_stream_or_open();
-   if (!s)
+
+   stream = pm4_ib_dump_stream_or_open();
+   if (!stream)
       return;
 
-   crc = a1_crc32_le(0, (uint8_t const *)ib_dwords,
-                    (size_t)ib_length_dwords * sizeof(uint32_t));
+   uint32_t crc = pm4_ib_dump_crc32_le(
+      0, (const uint8_t *)ib_dwords,
+      (size_t)ib_length_dwords * sizeof(uint32_t));
 
-   flockfile(s);
-   fprintf(s,
+   simple_mtx_lock(&pm4_ib_dump_write_lock);
+   fprintf(stream,
            "{\"event\":\"pm4_ib_cs_submission\","
            "\"ts_nsec\":%" PRIu64 ","
            "\"pid\":%d,"
-           "\"tid\":%d,"
+           "\"tid\":%" PRIuPTR ","
            "\"ring\":%u,"
            "\"ib_length_dw\":%u,"
            "\"ib_crc32\":\"0x%08" PRIx32 "\","
            "\"ib_dwords\":[",
-           a1_ts_nsec(),
-           (int)getpid(),
-           (int)a1_gettid(),
-           ring,
-           ib_length_dwords,
-           crc);
-   for (i = 0; i < ib_length_dwords; i++)
-      fprintf(s,
+           pm4_ib_dump_ts_nsec(), pm4_ib_dump_getpid(), pm4_ib_dump_gettid(),
+           ring, ib_length_dwords, crc);
+   for (uint32_t i = 0; i < ib_length_dwords; i++)
+      fprintf(stream,
               i + 1 < ib_length_dwords
-                ? "\"0x%08" PRIx32 "\","
-                : "\"0x%08" PRIx32 "\"",
+                 ? "\"0x%08" PRIx32 "\","
+                 : "\"0x%08" PRIx32 "\"",
               ib_dwords[i]);
-   fputs("]}\n", s);
-   funlockfile(s);
+   fputs("]}\n", stream);
+   simple_mtx_unlock(&pm4_ib_dump_write_lock);
 }
