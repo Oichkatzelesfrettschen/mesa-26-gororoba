@@ -231,7 +231,7 @@ rc_vert_fc(struct radeon_compiler *c, void *user)
          break;
 
       case RC_OPCODE_ENDIF:
-         /* Optimization opportunity (not yet implemented): when LoopDepth == 1,
+         /* FIXME: Optimization not yet implemented -- when LoopDepth == 1,
           * BranchDepth == 1, there is exactly one break in the loop, and BRK is
           * the only instruction in the IF block (ENDIF immediately follows BRK),
           * the three-instruction sequence PRED_SNEQ_PUSH + RCP(0) + PRED_SET_POP
