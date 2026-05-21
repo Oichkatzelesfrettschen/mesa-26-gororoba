@@ -19,3 +19,13 @@ build-infra/shadercache.bin
 **/._*
 .AppleDouble
 **/.AppleDouble
+
+# GNU global / clangd index files (generated locally for
+# RE / RCA / audit tier-S tooling; per-developer artifacts).
+GTAGS
+GPATH
+GRTAGS
+*.tag
+*.taghl
+tags
+TAGS
