@@ -23,6 +23,8 @@
 
 #include "terakan_sampler.h"
 
+#include "terakan_a0_dump.h"
+
 #include "terakan_device.h"
 #include "terakan_entrypoints.h"
 #include "terakan_physical_device.h"
@@ -97,5 +99,13 @@ terakan_CreateSampler(VkDevice const deviceHandle, VkSamplerCreateInfo const * c
    sampler->unnormalized_coordinates = pCreateInfo->unnormalizedCoordinates;
 
    *pSampler = terakan_sampler_to_handle(sampler);
+
+   /* Y.3a A0 capture: emit the 3-dword sampler descriptor on the
+    * env-gated `TERAKAN_DEBUG_DUMP_DESCRIPTOR=1` strict path.  No-op
+    * when the gate is off (one cached boolean read).  Bytes captured
+    * here are the A0 input to the master-plan A0/A1/B/C byte-path
+    * comparison in src/amd/terascale/vulkan/terakan_a0_dump.h.
+    */
+   terakan_a0_dump_sampler(*pSampler, sampler);
    return VK_SUCCESS;
 }

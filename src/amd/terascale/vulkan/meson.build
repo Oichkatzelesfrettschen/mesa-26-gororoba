@@ -87,6 +87,8 @@ libterakan_files = files(
   'terakan_hw_state.h',
   'terakan_image.c',
   'terakan_image.h',
+  'terakan_a0_dump.c',
+  'terakan_a0_dump.h',
   'terakan_instance.c',
   'terakan_instance.h',
   'terakan_limits.h',
