@@ -438,6 +438,16 @@ project-management chronology.  They are never load-bearing.
 | Internal-repo paths | `per Evergreen_ISA.txt:17572` | rewrite with public AMD title |
 | Personal-name copyright | `Copyright (c) YYYY Eirikr Hinngart` | delete; SPDX-only or no header |
 
+### FIXME and TODO retention
+
+FIXME, TODO, and regression-notice markers document gaps whose resolution is incomplete or unverified.
+
+- MUST NOT remove a FIXME, TODO, or regression-notice comment unless the underlying issue is BOTH fully implemented AND empirically verified in that same commit.
+- MUST retain the marker when rewriting surrounding code unless the rewrite itself closes the underlying issue.
+- MUST add a new TODO when a fix is implemented but empirical hardware verification remains outstanding.
+- MUST NOT drop regression-notice comments during refactoring, structural analysis rewrites, or style cleanup.
+- When a FIXME is resolved: if any aspect remains unconfirmed (e.g., hardware test not run, interaction with another subsystem not checked), replace it with a TODO naming the specific open item.
+
 ### Source code MUST contain (when HW-specific)
 
 - Absolute chip identity combining angles so the comment is findable
