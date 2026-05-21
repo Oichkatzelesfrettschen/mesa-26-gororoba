@@ -366,6 +366,7 @@ private:
    bool try_reserve_vec_kcache_for_group(const AluInstr& instr,
                                          AluScheduleContext& alu_ctx,
                                          std::array<KCacheLine, 4>& kcache);
+   bool can_reserve_kcache_for_ar_uses(const AluInstr& addr_load) const;
    void update_idx_load_state(const AluInstr& instr);
 
    bool schedule_exports(Shader::ShaderBlocks& out_blocks,
@@ -789,6 +790,88 @@ BlockScheduler::report_pv_chain_stats()
            << pv_ratio << "%), "
            << m_pv_total_substitutions << " substitutions, "
            << "max chain=" << m_pv_max_chain << "\n";
+}
+
+static bool
+instr_precedes(const Instr *lhs, const Instr *rhs)
+{
+   if (lhs->block_id() != rhs->block_id())
+      return lhs->block_id() < rhs->block_id();
+
+   return lhs->index() < rhs->index();
+}
+
+static Instr *
+find_next_addr_load(const AluInstr& addr_load, const Register& addr)
+{
+   Instr *next_addr_load = nullptr;
+   for (auto parent : addr->parents()) {
+      if (parent == &addr_load || parent->is_dead())
+         continue;
+      if (instr_precedes(&addr_load, parent) &&
+          (!next_addr_load || instr_precedes(parent, next_addr_load)))
+         next_addr_load = parent;
+   }
+
+   return next_addr_load;
+}
+
+static std::list<AluInstr *>
+collect_ar_uses(const AluInstr& addr_load, const Register& addr, const Instr *next_addr_load)
+{
+   std::list<AluInstr *> ar_uses;
+   for (auto use : addr->uses()) {
+      if (use->is_dead() || use->is_scheduled())
+         continue;
+
+      auto alu = use->as_alu();
+      if (!alu)
+         continue;
+
+      if (!instr_precedes(&addr_load, alu))
+         continue;
+      if (next_addr_load && !instr_precedes(alu, next_addr_load))
+         continue;
+
+      ar_uses.push_back(alu);
+   }
+
+   ar_uses.sort([](const AluInstr *lhs, const AluInstr *rhs) {
+      return instr_precedes(lhs, rhs);
+   });
+
+   return ar_uses;
+}
+
+bool
+BlockScheduler::can_reserve_kcache_for_ar_uses(const AluInstr& addr_load) const
+{
+   if (!addr_load.num_ar_uses())
+      return true;
+
+   auto addr = addr_load.dest();
+   if (!addr || !addr->has_flag(Register::addr_or_idx))
+      return true;
+
+   auto kcache = m_current_block->kcache_snapshot();
+   if (!m_current_block->can_reserve_kcache(addr_load, kcache))
+      return false;
+
+   auto next_addr_load = find_next_addr_load(addr_load, *addr);
+   auto ar_uses = collect_ar_uses(addr_load, *addr, next_addr_load);
+
+   unsigned checked = 0;
+   for (auto use : ar_uses) {
+      if (checked == addr_load.num_ar_uses())
+         break;
+
+      if (!m_current_block->can_reserve_kcache(*use, kcache))
+         return false;
+
+      ++checked;
+   }
+
+   return checked == addr_load.num_ar_uses();
 }
 
 bool
@@ -1329,6 +1412,14 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup& group,
                                             group_has_update_pred,
                                             is_kill,
                                             does_update_pred)) {
+      ++it;
+      return false;
+   }
+
+   if (!can_reserve_kcache_for_ar_uses(**it)) {
+      m_current_block->mark_kcache_reservation_failed();
+      alu_ctx.had_kcache_failure_in_fill = true;
+      sfn_log << SfnLog::schedule << " failed (AR kcache)\n";
       ++it;
       return false;
    }

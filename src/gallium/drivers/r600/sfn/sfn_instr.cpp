@@ -366,7 +366,7 @@ Block::insert(const iterator pos, Instr *instr)
 
 auto
 Block::try_reserve_kcache(const AluGroup& group) const
-   -> std::pair<std::array<KCacheLine, 4>, bool>
+   -> std::pair<Block::KCacheState, bool>
 {
    auto kcache = m_kcache;
 
@@ -408,19 +408,27 @@ Block::kcache_needs_extended() const
 
 auto
 Block::try_reserve_kcache(const AluInstr& instr) const
-   -> std::pair<std::array<KCacheLine, 4>, bool>
+   -> std::pair<Block::KCacheState, bool>
 {
    auto kcache = m_kcache;
 
+   if (!can_reserve_kcache(instr, kcache))
+      return {kcache, false};
+
+   return {kcache, true};
+}
+
+bool
+Block::can_reserve_kcache(const AluInstr& instr, KCacheState& kcache) const
+{
    for (auto& src : instr.sources()) {
       auto u = src->as_uniform();
       if (u) {
-         if (!try_reserve_kcache(*u, kcache)) {
-            return {kcache, false};
-         }
+         if (!try_reserve_kcache(*u, kcache))
+            return false;
       }
    }
-   return {kcache, true};
+   return true;
 }
 
 bool
@@ -436,7 +444,7 @@ Block::update_kcache_reservation(const AluInstr& instr)
 }
 
 void
-Block::commit_kcache_reservation(const std::array<KCacheLine, 4>& kcache)
+Block::commit_kcache_reservation(const KCacheState& kcache)
 {
    m_kcache = kcache;
 }

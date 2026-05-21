@@ -202,11 +202,14 @@ public:
    void set_type(Type t, r600_chip_class chip_class);
    int32_t remaining_slots() const { return m_remaining_slots;}
 
+   using KCacheState = std::array<KCacheLine, 4>;
+
    auto try_reserve_kcache(const AluGroup& instr) const
-      -> std::pair<std::array<KCacheLine, 4>, bool>;
+      -> std::pair<KCacheState, bool>;
    auto try_reserve_kcache(const AluInstr& group) const
-      -> std::pair<std::array<KCacheLine, 4>, bool>;
-   void commit_kcache_reservation(const std::array<KCacheLine, 4>& kcache);
+      -> std::pair<KCacheState, bool>;
+   bool can_reserve_kcache(const AluInstr& instr, KCacheState& kcache) const;
+   void commit_kcache_reservation(const KCacheState& kcache);
    bool update_kcache_reservation(const AluGroup& instr);
    bool update_kcache_reservation(const AluInstr& instr);
 
@@ -220,8 +223,8 @@ public:
    size_t size() const { return m_instructions.size(); }
 
    bool kcache_reservation_failed() const { return m_kcache_alloc_failed; }
+   void mark_kcache_reservation_failed() { m_kcache_alloc_failed = true; }
 
-   using KCacheState = std::array<KCacheLine, 4>;
    KCacheState kcache_snapshot() const { return m_kcache; }
    void kcache_rollback(const KCacheState& s) { m_kcache = s; m_kcache_alloc_failed = false; }
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
@@ -252,6 +255,7 @@ private:
    uint32_t m_remaining_slots{0xffff};
 
    std::array<KCacheLine, 4> m_kcache;
+   bool m_kcache_alloc_failed{false};
 
    Instr *m_last_lds_instr{nullptr};
 
