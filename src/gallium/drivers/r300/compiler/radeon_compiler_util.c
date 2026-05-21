@@ -388,6 +388,7 @@ can_use_presub_data_add_select(struct can_use_presub_data *data, rc_register_fil
 {
    struct src_select *select;
 
+   assert(data->SelectCount < ARRAY_SIZE(data->Selects));
    select = &data->Selects[data->SelectCount++];
    select->File = file;
    select->Index = index;
