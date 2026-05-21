@@ -806,6 +806,27 @@ ntr_emit_scalar(struct ntr_compile *c, unsigned tgsi_op, struct ureg_dst dst, st
    }
 }
 
+/* Attempt to fold a source modifier directly into the SSA temp map, avoiding
+ * a MOV instruction when the source comes from an inline-able file.  Returns
+ * true and updates c->ssa_temp on success; the caller emits a MOV on false.
+ * src must already carry the modifier (e.g. ureg_abs, ureg_negate). */
+static bool
+ntr_try_fold_srcmod_to_ssa(struct ntr_compile *c, nir_def *def, struct ureg_src src)
+{
+   if (src.Indirect || src.DimIndirect)
+      return false;
+   switch (src.File) {
+   case TGSI_FILE_IMMEDIATE:
+   case TGSI_FILE_INPUT:
+   case TGSI_FILE_CONSTANT:
+   case TGSI_FILE_SYSTEM_VALUE:
+      c->ssa_temp[def->index] = src;
+      return true;
+   default:
+      return false;
+   }
+}
+
 static void
 ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
 {
@@ -859,10 +880,6 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
    } else {
       /* Special cases for NIR to TGSI ALU op translation. */
 
-      /* TODO: Use something like the ntr_store() path for the MOV calls so we
-       * don't emit extra MOVs for swizzles/srcmods of inputs/const/imm.
-       */
-
       switch (instr->op) {
       case nir_op_fabs:
          /* Try to eliminate */
@@ -871,7 +888,7 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
 
          if (c->lower_fabs)
             ntr_MAX(c, dst, src[0], ureg_negate(src[0]));
-         else
+         else if (!ntr_try_fold_srcmod_to_ssa(c, &instr->def, ureg_abs(src[0])))
             ntr_MOV(c, dst, ureg_abs(src[0]));
          break;
 
@@ -884,7 +901,8 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
          if (nir_legacy_float_mod_folds(instr))
             break;
 
-         ntr_MOV(c, dst, ureg_negate(src[0]));
+         if (!ntr_try_fold_srcmod_to_ssa(c, &instr->def, ureg_negate(src[0])))
+            ntr_MOV(c, dst, ureg_negate(src[0]));
          break;
 
          /* NOTE: TGSI 32-bit math ops have the old "one source channel
