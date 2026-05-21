@@ -31,6 +31,9 @@
 #else
 #include <fcntl.h>
 #include <pthread.h>
+#if DETECT_OS_FREEBSD && defined(HAVE_PTHREAD_NP_H)
+#include <pthread_np.h>
+#endif
 #if DETECT_OS_LINUX
 #include <sys/syscall.h>
 #endif
@@ -39,6 +42,7 @@
 
 #include <inttypes.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "terakan_env.h"
 
@@ -77,13 +81,28 @@ pm4_ib_dump_getpid(void)
 #endif
 }
 
+static uintptr_t
+pm4_ib_dump_pthread_key(pthread_t thread)
+{
+   unsigned char bytes[sizeof(thread)];
+   uintptr_t key = (uintptr_t)1469598103934665603ull;
+
+   memcpy(bytes, &thread, sizeof(bytes));
+
+   for (size_t i = 0; i < sizeof(thread); i++) {
+      key ^= bytes[i];
+      key *= (uintptr_t)1099511628211ull;
+   }
+
+   return key ? key : 1;
+}
+
 /* Per-thread identifier for the JSONL "tid" field.  The chosen
  * value differs across platforms (kernel TID on Linux/Android,
  * GetCurrentThreadId on Windows, pthread_getthreadid_np on FreeBSD,
- * pthread_self cast on other POSIX); within a process the value is
- * unique per thread, which is the property the byte-path decoder
- * relies on for per-thread correlation.  The fallback never returns
- * 0; threads can be told apart on every supported platform.
+ * pthread_t-derived key on other POSIX); within a process the value
+ * is stable per thread, which is the property the byte-path decoder
+ * relies on for per-thread correlation.  The fallback never returns 0.
  */
 static uintptr_t
 pm4_ib_dump_gettid(void)
@@ -93,15 +112,15 @@ pm4_ib_dump_gettid(void)
 #elif DETECT_OS_ANDROID
    return (uintptr_t)gettid();
 #elif DETECT_OS_FREEBSD
+#ifdef HAVE_PTHREAD_NP_H
    return (uintptr_t)pthread_getthreadid_np();
+#else
+   return pm4_ib_dump_pthread_key(pthread_self());
+#endif
 #elif DETECT_OS_LINUX
    return (uintptr_t)syscall(SYS_gettid);
 #else
-   /* Generic POSIX fallback: pthread_self is unique per thread
-    * within a process; the cast to uintptr_t is well-defined on
-    * every platform we ship to that lacks a native gettid.
-    */
-   return (uintptr_t)pthread_self();
+   return pm4_ib_dump_pthread_key(pthread_self());
 #endif
 }
 
