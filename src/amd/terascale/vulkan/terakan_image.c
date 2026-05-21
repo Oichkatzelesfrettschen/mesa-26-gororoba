@@ -31,6 +31,7 @@
 
 #include "terakan_image.h"
 
+#include "terakan_descriptor_dump.h"
 #include "terakan_device.h"
 #include "terakan_env.h"
 #include "terakan_device_memory.h"
@@ -2043,5 +2044,18 @@ terakan_CreateImageView(VkDevice const deviceHandle,
    }
 
    *pView = terakan_image_view_to_handle(image_view);
+
+   /* Descriptor-object byte capture for the byte-path comparison:
+    * emit the 8-dword SQ_TEX_RESOURCE descriptor + its gather-safe
+    * variant under the env-gated `TERAKAN_DEBUG_DUMP_DESCRIPTOR=1`
+    * strict path.  Disabled-path cost is one cached boolean read.
+    * Emitting both arrays exposes the channel-mapping difference
+    * between the gather-emit path and the sample/load path, which
+    * isolates whether wrong-result gather submissions on Palm are
+    * a descriptor-construction defect or a downstream packet
+    * emission / kernel validator / silicon-execute issue.  See
+    * src/amd/terascale/vulkan/terakan_descriptor_dump.h for the JSONL
+    * schema and gate semantics. */
+   terakan_descriptor_dump_image_view(*pView, image_view, pCreateInfo);
    return VK_SUCCESS;
 }
