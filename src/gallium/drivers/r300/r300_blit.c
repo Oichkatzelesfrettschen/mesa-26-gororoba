@@ -157,7 +157,8 @@ static bool r300_fast_zclear_allowed(struct r300_context *r300,
      * GB pipe, so zmask_dwords is bounded to at most 0x1400 by the allocation
      * eligibility check in r300_setup_hyperz_properties().  R300/R350 (PIPE_ZMASK_SIZE
      * = 4096 dwords, single pipe) and RV350/RV370/RV380 (5120 dwords, single
-     * pipe) are similarly bounded below 0x1400. */
+     * pipe) are similarly bounded below 0x1400.
+     * TODO: Confirm this static bound with a fast-clear test on RS480/RC410 hardware. */
     if (r300->screen->caps.is_r500 && zmask_dwords > 0x1400)
         return false;
 
