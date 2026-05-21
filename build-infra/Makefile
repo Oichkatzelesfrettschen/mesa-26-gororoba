@@ -410,6 +410,30 @@ rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
 	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
 	$(MAKE) build PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
 
+# Pair target: build BOTH the release-default canonical AND the
+# debug variant in the same invocation.  Release goes to
+# /usr/local/mesa-26-gororoba/ (timing-sensitive probe target),
+# debug goes to /usr/local/mesa-26-gororoba-debug/ (interactive
+# bringup target).  Both builds use the same ccache + distcc
+# fabric so ccache hits across them give near-incremental
+# wall-clock on the second pass.
+rebuild-terakan-distcc-no-rusticl-ccache-no-pump-pair:
+	$(MAKE) rebuild-terakan-distcc-no-rusticl-ccache-no-pump
+	$(MAKE) install PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump \
+	    BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
+	    PREFIX=/usr/local/mesa-26-gororoba INSTALL_NAMESPACE=mesa-26-gororoba
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
+	$(MAKE) build PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
+	$(MAKE) install PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump \
+	    BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
+	    PREFIX=/usr/local/mesa-26-gororoba-debug INSTALL_NAMESPACE=mesa-26-gororoba-debug
+
+rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump:
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
+	$(MAKE) build PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
+
 # Cold clean lane for x130e.  Configure and generated Meson/Ninja outputs are
 # completed before the include server starts; the heavy C/C++ compile then runs
 # under distcc-pump with direct clang.  This avoids generated-header changes
