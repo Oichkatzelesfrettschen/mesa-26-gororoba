@@ -24,6 +24,7 @@
 #include "compiler/radeon_compiler.h"
 #include "compiler/nir_to_rc.h"
 #include "nir.h"
+#include "r300_nir_to_rc_direct.h"
 
 /* Convert info about FS input semantics to r300_shader_semantics. */
 void r300_shader_read_fs_inputs(struct tgsi_shader_info* info,
@@ -409,11 +410,16 @@ static void r300_translate_fragment_shader(
     unsigned i;
 
     if (state.type == PIPE_SHADER_IR_NIR) {
-        nir_shader *clone = nir_shader_clone(NULL, state.ir.nir);
-        state.tokens = nir_to_rc(clone, (struct pipe_screen *)r300->screen, shader->compare_state);
+        /* Direct NIR->RC path: fill shader->info from NIR variable metadata,
+         * bypassing the nir_to_rc()/tgsi_scan_shader() round-trip.
+         * Only the fields consumed by r300_shader_read_fs_inputs() and
+         * find_output_registers() are populated.
+         * TODO: verify output on RS482/RS485 (1002:5974) before removing
+         * the nir_to_rc/tgsi_scan_shader fallback path. */
+        r300_nir_fill_shader_info(state.ir.nir, &shader->info);
+    } else {
+        tgsi_scan_shader(state.tokens, &shader->info);
     }
-
-    tgsi_scan_shader(state.tokens, &shader->info);
     r300_shader_read_fs_inputs(&shader->info, &shader->inputs);
 
     wpos = shader->inputs.wpos;
@@ -451,23 +457,31 @@ static void r300_translate_fragment_shader(
 
     if (compiler.Base.Debug & RC_DBG_LOG) {
         DBG(r300, DBG_FP, "r300: Initial fragment program\n");
-        tgsi_dump(state.tokens, 0);
+        if (state.type != PIPE_SHADER_IR_NIR)
+            tgsi_dump(state.tokens, 0);
     }
-
-    /* Translate TGSI to our internal representation */
-    ttr.compiler = &compiler.Base;
-    ttr.info = &shader->info;
-
-    r300_tgsi_to_rc(&ttr, state.tokens);
 
     if (state.type == PIPE_SHADER_IR_NIR) {
-        FREE((void*)state.tokens);
-    }
-
-    if (ttr.error) {
-        shader->error = strdup("Cannot translate a shader from TGSI.");
-        r300_dummy_fragment_shader(r300, shader);
-        return;
+        /* Direct NIR->RC path: walk lowered NIR and emit RC instructions
+         * without an intermediate TGSI token array. */
+        r300_nir_to_rc_direct(&compiler.Base, state.ir.nir,
+                              (struct pipe_screen *)r300->screen,
+                              shader->compare_state);
+        if (compiler.Base.Error) {
+            shader->error = strdup(compiler.Base.ErrorMsg);
+            r300_dummy_fragment_shader(r300, shader);
+            return;
+        }
+    } else {
+        /* TGSI path */
+        ttr.compiler = &compiler.Base;
+        ttr.info = &shader->info;
+        r300_tgsi_to_rc(&ttr, state.tokens);
+        if (ttr.error) {
+            shader->error = strdup("Cannot translate a shader from TGSI.");
+            r300_dummy_fragment_shader(r300, shader);
+            return;
+        }
     }
 
     if (!r300->screen->caps.is_r500 ||
