@@ -25,6 +25,8 @@
 #include "terakan_device_drm_radeon.h"
 #include "terakan_queue.h"
 
+#include "terakan_pm4_ib_dump.h"
+
 #include "util/macros.h"
 #include "util/u_debug.h"
 #include "c99_alloca.h"
