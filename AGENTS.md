@@ -35,6 +35,100 @@ Do not put steinmarder evidence bundles or findings in Mesa.  Do not put Mesa dr
 
 Conformance first, standards second, stability third, performance fourth, safety throughout.  A fast-but-non-conforming patch must be labelled as such.  Never hide the conformance cost of a workaround.
 
+## LLM interaction guide
+
+This section is for language model agents working in Mesa code.  Read it before
+editing Terakan, r300, r600, NIR, Meson, tests, or comments.  The sibling
+steinmarder repo carries broader evidence and runner doctrine, but this file
+must stand alone for Mesa build, install, and review flows.
+
+### Discipline, rigor, and depth
+
+Work inside the real system.  Read code, docs, logs, tests, histories, and
+prior evidence before forming a conclusion.  Build a precise model of the
+interacting systems, name unknowns explicitly, and turn every implementation
+claim into something checkable.
+
+Use an ordered task tree.  Research before editing; model before designing;
+verify before claiming completion.  Each tool invocation must answer a concrete
+question or move implementation forward.
+
+Research from primary sources where possible: Mesa source, Linux kernel source,
+Khronos/Vulkan/OpenGL specs, AMD ISA/register manuals, CTS/Piglit/deqp tests,
+and retained steinmarder evidence when available.  Treat memory and generated
+summaries as leads, not authority.
+
+Implement complete, robust solutions.  No stubs, placeholders, dead code, or
+"TODO later" prose without explicit tracked rationale.  When blocked, trace the
+root cause through all interacting layers instead of choosing a shortcut.
+
+### Reasoning depth
+
+Mesa/Terakan bugs frequently span specification, lowering, command emission,
+kernel validation, cache/coherency behavior, and exact PALM/Wrestler silicon.
+Do not jump from a single code observation to a silicon conclusion.
+
+| Level | Axis added | Example |
+|---:|---|---|
+| 0 | direct observation | A lowering pass emits a specific intrinsic. |
+| 1 | spec intent | The Vulkan or GLSL rule requires a result class. |
+| 2 | driver/kernel mechanism | The descriptor, packet, or CS validator path carries the state. |
+| 3 | silicon evidence | PALM/Wrestler probes or CTS show the hardware behavior. |
+| 4 | systemic cost | Upstreamability, maintainability, performance, and waiver impact. |
+
+Level-3 conclusions require claim, evidence chain, and falsification criterion.
+Level-4 analysis is secondary until levels 0-3 are locked.  Read hardware and
+spec constraints before judging code shape; code that looks odd may be
+satisfying a silicon or kernel constraint.
+
+### Evidence and falsification
+
+Before editing code for a hardware RCA, state:
+
+- direct observation,
+- source/spec constraint,
+- implementation hypothesis,
+- falsification criterion,
+- validation command or bundle path.
+
+Do not claim a CTS issue is fixed from a build-only result.  Build success,
+runtime success, CTS success, and silicon evidence are different evidence
+classes.  Unexpected CTS or tool output is the finding; do not silently rerun
+until it fits the prediction.
+
+### Tool discipline for RCA and audit work
+
+Use the strongest tool that matches the claim.
+
+Tier S, not optional when available and relevant:
+
+- `clangd` or LSP for definitions, references, call hierarchy, and symbol
+  reachability.
+- GNU Global, `cscope`, or equivalent indexes for large C trees.
+- `ast-grep` or Semgrep for structural patterns and class-of-bug audits.
+- `rg`, `git grep`, and `fd` for text, comments, strings, generated path
+  discovery, and fallback search.
+- `git log -S`, `git log -G`, and `git blame` for evolution.
+
+Tier A, flow-sensitive:
+
+- Compiler diagnostics, warnings-as-errors, and static analysis where viable.
+- Coccinelle for cross-file consistency checks.
+- Mesa, kernel, and CTS/Piglit/deqp runner logs.
+- Shader disassembly, packet decode, and NIR dumps.
+
+Tier C, empirical:
+
+- CTS/Piglit/deqp, dmesg, hardware counters, retained bundles, and minimal
+  reproducers when hardware policy permits.
+
+When an audit reports a code claim, cite how the symbol/path was found, not
+only file:line.  For example: `(clangd: references on FUNC)`, `(global -r
+SYMBOL)`, or `(rg --fixed-strings SYMBOL src/)`.
+
+Every new probe, lint, or verdict-producing script must be calibrated against
+known-good and known-bad inputs before its verdict is trusted.
+
 ## Naming discipline
 
 Use durable mechanism names, not waves, phases, agents, worktrees, or chronology labels.
@@ -55,7 +149,7 @@ Do not:
 
 - force-push `main`.
 - run destructive commands on shared workspace paths.
-- introduce raw IPv4 addresses in scripts/configs.
+- introduce raw IPv4 or IPv6 literals in scripts/configs; use hostnames.
 - encode local absolute paths or private host FQNs.
 - symlink instruction files.
 - chain `ccache distcc compiler` through a shell wrapper.
@@ -127,11 +221,21 @@ All driver RCA evidence lives in steinmarder, not here.  Before proposing a Tera
 - `steinmarder/AGENTS_README.md`
 - `steinmarder/AGENT_RULES.md`
 
-Mesa code changes must cite public specs, kernel/Mesa source paths, and exact evidence names in comments when those comments are needed.  Do not cite private PR chronology or wave labels in code.
+Mesa code changes must cite public specs, kernel/Mesa source paths, freedesktop.org issue numbers, and exact evidence names in comments when those comments are needed.  Freedesktop.org bug and issue references (e.g. `https://gitlab.freedesktop.org/...` URLs and GitLab issue numbers on freedesktop.org) are required and allowed.  Do not cite internal GitHub/GitLab issue numbers from this fork or from steinmarder.  Do not cite private PR chronology or wave labels in code.
 
 ## Source comment voice
 
 Comments should be short, active, sequenced, and primary-source-grounded.  Explain why the code is shaped that way, not what the next line already says.
+
+Mesa-like comments are not necessarily one-liners.  Use short labels for
+obvious local sections, and compact multi-sentence blocks when the code depends
+on hardware behavior, API rules, kernel validation, empirical evidence, or
+non-local invariants.  The common rule is mechanism over decoration.
+
+Do not frame source comments with decorative delimiter lines, banner boxes,
+ASCII art, or long punctuation runs.  Start with the first useful sentence and
+end after the last useful sentence; do not wrap it in `/* ----- */`,
+`// =====`, `/* --- label --- */`, or similar borders.
 
 Good:
 
@@ -147,19 +251,15 @@ Bad:
 Wave 8A workaround for atomics.
 ```
 
+Also bad:
+
+```text
+/* ---------------------------------------------------------------------------
+ * Single-slot ramp texture cache for R300-class gradient draws.
+ * -------------------------------------------------------------------------- */
+```
+
 When extending Triang3l-authored Terakan files, match the file's cadence: shorter line lengths, fewer subclauses, and comments only where they carry silicon/spec/test information.
-
-## Evidence and falsification
-
-Before editing code for a hardware RCA, state:
-
-- direct observation,
-- source/spec constraint,
-- implementation hypothesis,
-- falsification criterion,
-- validation command or bundle path.
-
-Do not claim a CTS issue is fixed from a build-only result.  Build success, runtime success, CTS success, and silicon evidence are different evidence classes.
 
 ## Security stop-line
 
@@ -193,9 +293,22 @@ Always record what was run.  If hardware is unavailable or safety policy blocks 
 
 ## Synthesis rule
 
-When merging changes from parallel branches or review findings, preserve all non-refuted content.  Do not use wave/phase chronology to decide which branch wins.  Mechanism and evidence decide.
+When merging changes from parallel branches or review findings, preserve all
+non-refuted content.  Do not use wave/phase chronology to decide which branch
+wins.  Mechanism and evidence decide.
 
-Default additive merge policy: union, then harmonize terminology.
+Default additive merge policy: union, then harmonize terminology, then infuse.
+Infuse means distill both sources into a stronger, navigable rule or change that
+carries the evidence, examples, and enforcement hooks forward.
+
+| Verb | Required action |
+|---|---|
+| Analyze | Identify what each side contributes before editing. |
+| Reconcile | Preserve all non-refuted content; selection needs proof. |
+| Resolve | Finish the merge; leave no half-merged state or hidden follow-up. |
+| Expand | Surface links between findings, code paths, and tests. |
+| Harmonize | Use one durable mechanism name for the same thing. |
+| Infuse | Add the check, citation, or rule that prevents the same failure class. |
 
 Before merge commit:
 
@@ -204,6 +317,34 @@ git diff --staged
 ```
 
 Ask what content this resolution dropped from each source branch that was not empirically refuted.  Restore, refute, or explicitly track anything missing.
+
+Forbidden shortcuts for additive content:
+
+```bash
+git merge -X theirs branch
+git checkout --theirs file
+sed -i '/^<<</d; /^===/d; /^>>>/d' file
+```
+
+Those commands select; they do not synthesize.  Use `git cherry-pick
+--no-commit`, manual conflict editing, and adversarial diff review instead.
+
+## Regression-on-fix discipline
+
+A targeted fix for issue A must not regress unrelated behavior B.  After any
+change to a script, runner, build file, lowering pass, or descriptor path:
+
+- re-read `git diff --staged` with adversarial intent;
+- verify every removed line was intentional, duplicated elsewhere, or refuted;
+- compare test labels with the commands they run;
+- verify every symbol named in comments/docs against source;
+- enumerate every override mechanism before documenting one;
+- check optional tool availability before configuring for it;
+- calibrate every new verdict-producing probe, lint, or runner on known-good
+  and known-bad inputs.
+
+If a reviewer finds a defect, fix the class, not just the instance.  Add the
+rule, lint, test, or documented check that would have caught it.
 
 ## Multi-CLI wrappers
 
