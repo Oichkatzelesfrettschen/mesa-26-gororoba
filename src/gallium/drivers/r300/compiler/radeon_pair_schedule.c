@@ -1171,8 +1171,9 @@ scan_read(void *data, struct rc_instruction *inst, rc_register_file file, unsign
       (*v)->Readers = reader;
       /* If the previous block ended with unresolved TEX instructions, check
        * whether any of them wrote this register.  Registering via
-       * add_tex_reader limits SemWait to instructions that actually consume
-       * the TEX result -- not every instruction in the block. */
+       * add_tex_reader limits SemWait to instructions that consume the TEX
+       * result.  The pair scheduler only tracks TEMP values in reg_value,
+       * so pending TEX dependencies are TEMP-only here. */
       if (s->PrevBlockHasTex) {
          struct rc_list *pend_ptr;
          for (pend_ptr = s->PendingTEX; pend_ptr; pend_ptr = pend_ptr->Next) {

@@ -80,7 +80,10 @@ pm4_ib_dump_gettid(void)
 #elif DETECT_OS_ANDROID
    return (uintptr_t)gettid();
 #elif DETECT_OS_FREEBSD
-   return (uintptr_t)syscall(SYS_thr_self);
+   long tid = 0;
+   if (syscall(SYS_thr_self, &tid) == 0)
+      return (uintptr_t)tid;
+   return 0;
 #elif DETECT_OS_LINUX
    return (uintptr_t)syscall(SYS_gettid);
 #else
@@ -111,7 +114,7 @@ pm4_ib_dump_fopen_append_cloexec(const char *path)
    if (fd < 0)
       return NULL;
 
-   FILE *stream = _fdopen(fd, "a");
+   FILE *stream = _fdopen(fd, "ab");
    if (!stream)
       _close(fd);
    return stream;
