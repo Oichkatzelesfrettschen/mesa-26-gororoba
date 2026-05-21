@@ -20,7 +20,7 @@ The following rules are enforceable. Later sections may explain mechanism or rat
 
 - MUST keep Mesa normal flows independent of `steinmarder`: build, install, test, source-comment, upstream-sync, and submission. `steinmarder` may supply evidence only; its bundles and findings stay out of Mesa, and Mesa driver changes stay out of `steinmarder`.
 - MUST use repository-relative paths, generated native files, PATH-resolved tools, or explicit user roots. Discover the repository root with `repo_root=$(git rev-parse --show-toplevel)`.
-- MUST NOT put local absolute paths, private host FQDNs, per-user toolchains, raw IP literals, or worktree names in checked-in files.
+- MUST NOT put local absolute paths, private host FQDNs, per-user toolchains, raw IPv4 literals, or worktree names in checked-in files.
 - MUST keep instruction files as real tracked files: no symlinks, copied bodies, or divergent loader instructions.
 
 ### Root cause, evidence, and conformance

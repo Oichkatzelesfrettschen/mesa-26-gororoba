@@ -805,7 +805,7 @@ static Instr *
 find_next_addr_load(const AluInstr& addr_load, const Register& addr)
 {
    Instr *next_addr_load = nullptr;
-   for (auto parent : addr->parents()) {
+   for (auto parent : addr.parents()) {
       if (parent == &addr_load || parent->is_dead())
          continue;
       if (instr_precedes(&addr_load, parent) &&
@@ -820,7 +820,7 @@ static std::list<AluInstr *>
 collect_ar_uses(const AluInstr& addr_load, const Register& addr, const Instr *next_addr_load)
 {
    std::list<AluInstr *> ar_uses;
-   for (auto use : addr->uses()) {
+   for (auto use : addr.uses()) {
       if (use->is_dead() || use->is_scheduled())
          continue;
 
@@ -859,10 +859,11 @@ BlockScheduler::can_reserve_kcache_for_ar_uses(const AluInstr& addr_load) const
 
    auto next_addr_load = find_next_addr_load(addr_load, *addr);
    auto ar_uses = collect_ar_uses(addr_load, *addr, next_addr_load);
+   unsigned const remaining_ar_uses = ar_uses.size();
 
    unsigned checked = 0;
    for (auto use : ar_uses) {
-      if (checked == addr_load.num_ar_uses())
+      if (checked == remaining_ar_uses)
          break;
 
       if (!m_current_block->can_reserve_kcache(*use, kcache))
@@ -871,7 +872,7 @@ BlockScheduler::can_reserve_kcache_for_ar_uses(const AluInstr& addr_load) const
       ++checked;
    }
 
-   return checked == addr_load.num_ar_uses();
+   return checked == remaining_ar_uses;
 }
 
 bool
@@ -1123,10 +1124,10 @@ BlockScheduler::finalize_schedule_alu_group(Shader::ShaderBlocks& out_blocks,
 
    /* Record this group's destination slots so the next ready-vector pass can
     * prioritize instructions that can use PV or PS forwarding. */
-   for (int s = 0; s < 5; ++s)
+   for (int s = 0; s < AluGroup::max_slots(); ++s)
       m_prev_group_dest[s] = -1;
 
-   int const group_slot_count = AluGroup::has_t() ? 5 : 4;
+   int const group_slot_count = AluGroup::max_slots();
    for (int s = 0; s < group_slot_count; ++s) {
       auto slot_instr = group[s];
       if (slot_instr && slot_instr->has_alu_flag(alu_write)) {
@@ -1219,7 +1220,7 @@ void
 BlockScheduler::start_new_block(Shader::ShaderBlocks& out_blocks, Block::Type type)
 {
    /* PV/PS forwarding cannot cross CF block boundaries */
-   for (int s = 0; s < 5; ++s)
+   for (int s = 0; s < AluGroup::max_slots(); ++s)
       m_prev_group_dest[s] = -1;
 
    if (!m_current_block->empty()) {
@@ -1417,7 +1418,7 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup& group,
    }
 
    if (!can_reserve_kcache_for_ar_uses(**it)) {
-      m_current_block->mark_kcache_reservation_failed();
+      m_current_block->mark_kcache_preflight_failed();
       alu_ctx.had_kcache_failure_in_fill = true;
       sfn_log << SfnLog::schedule << " failed (AR kcache)\n";
       ++it;
@@ -1478,7 +1479,7 @@ BlockScheduler::schedule_alu_to_group_vec(AluGroup& group, AluScheduleContext& a
             if (!src || !src->as_register())
                continue;
             int src_key = src->sel() * 4 + src->chan();
-            for (int slot = 0; slot < 5; ++slot) {
+            for (int slot = 0; slot < AluGroup::max_slots(); ++slot) {
                if (m_prev_group_dest[slot] == src_key) {
                   is_pv_ps_consumer = true;
                   static const char *slot_names[] = {"PV.x", "PV.y", "PV.z", "PV.w", "PS"};
@@ -1717,7 +1718,7 @@ BlockScheduler::schedule_alu_to_group_trans(AluGroup& group,
             if (!src || !src->as_register())
                continue;
             int src_key = src->sel() * 4 + src->chan();
-            for (int slot = 0; slot < 5; ++slot) {
+            for (int slot = 0; slot < AluGroup::max_slots(); ++slot) {
                if (m_prev_group_dest[slot] == src_key) {
                   is_pv_ps_consumer = true;
                   static const char *slot_names[] = {"PV.x", "PV.y", "PV.z", "PV.w", "PS"};

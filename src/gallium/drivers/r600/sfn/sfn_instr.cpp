@@ -447,6 +447,8 @@ void
 Block::commit_kcache_reservation(const KCacheState& kcache)
 {
    m_kcache = kcache;
+   m_kcache_alloc_failed = false;
+   m_kcache_preflight_failed = false;
 }
 
 void

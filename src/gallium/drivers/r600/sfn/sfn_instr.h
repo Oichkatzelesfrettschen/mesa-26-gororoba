@@ -224,9 +224,16 @@ public:
 
    bool kcache_reservation_failed() const { return m_kcache_alloc_failed; }
    void mark_kcache_reservation_failed() { m_kcache_alloc_failed = true; }
+   bool kcache_preflight_failed() const { return m_kcache_preflight_failed; }
+   void mark_kcache_preflight_failed() { m_kcache_preflight_failed = true; }
 
    KCacheState kcache_snapshot() const { return m_kcache; }
-   void kcache_rollback(const KCacheState& s) { m_kcache = s; m_kcache_alloc_failed = false; }
+   void kcache_rollback(const KCacheState& s) {
+      m_kcache = s;
+      m_kcache_alloc_failed = false;
+      m_kcache_preflight_failed = false;
+   }
+
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
 
    void set_expected_ar_uses(uint32_t n) {m_expected_ar_uses = n;}
@@ -256,6 +263,7 @@ private:
 
    std::array<KCacheLine, 4> m_kcache;
    bool m_kcache_alloc_failed{false};
+   bool m_kcache_preflight_failed{false};
 
    Instr *m_last_lds_instr{nullptr};
 

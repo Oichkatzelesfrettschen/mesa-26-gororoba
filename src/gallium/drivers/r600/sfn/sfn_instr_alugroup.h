@@ -85,6 +85,7 @@ public:
    void update_readport_reserver();
 
    static bool has_t() { return s_max_slots == 5; }
+   static int max_slots() { return s_max_slots; }
 
    bool addr_for_src() const { return m_addr_for_src; }
    bool has_kill_op() const { return m_has_kill_op; }
