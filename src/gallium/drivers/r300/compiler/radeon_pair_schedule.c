@@ -1169,6 +1169,24 @@ scan_read(void *data, struct rc_instruction *inst, rc_register_file file, unsign
       *v = memory_pool_malloc(&s->C->Pool, sizeof(struct reg_value));
       memset(*v, 0, sizeof(struct reg_value));
       (*v)->Readers = reader;
+      /* If the previous block ended with unresolved TEX instructions, check
+       * whether any of them wrote this register.  Registering via
+       * add_tex_reader limits SemWait to instructions that actually consume
+       * the TEX result -- not every instruction in the block. */
+      if (s->PrevBlockHasTex) {
+         struct rc_list *pend_ptr;
+         for (pend_ptr = s->PendingTEX; pend_ptr; pend_ptr = pend_ptr->Next) {
+            struct schedule_instruction *tex_sinst = pend_ptr->Item;
+            struct rc_instruction *tex_inst = tex_sinst->Instruction;
+            if (tex_inst->Type == RC_INSTRUCTION_NORMAL &&
+                tex_inst->U.I.DstReg.File == RC_FILE_TEMPORARY &&
+                tex_inst->U.I.DstReg.Index == index &&
+                ((tex_inst->U.I.DstReg.WriteMask >> chan) & 1)) {
+               add_tex_reader(s, tex_sinst, s->Current);
+               break;
+            }
+         }
+      }
    } else {
       reader->Next = (*v)->Readers;
       (*v)->Readers = reader;
@@ -1247,13 +1265,6 @@ schedule_block(struct schedule_state *s, struct rc_instruction *begin, struct rc
          if (info->HasTexture) {
             s->TEXCount++;
          }
-      }
-
-      /* XXX: This causes SemWait to be set for all instructions in
-       * a block if the previous block contained a TEX instruction.
-       * We can do better here, but it will take a lot of work. */
-      if (s->PrevBlockHasTex) {
-         s->Current->TexReadCount = 1;
       }
 
       s->Current->Instruction = inst;
