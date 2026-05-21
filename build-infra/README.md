@@ -48,9 +48,9 @@ They are superseded by this Makefile and ignored at the source root.  Terakan
 evidence bundles belong in steinmarder under `src/re/r600/results/`, not in
 Mesa build directories.
 
-r300vk is the RS480/R300 Vulkan research lane in steinmarder
-`src/re/r300/`.  Until a Mesa-side R300 Vulkan ICD exists, r300vk probes and
-evidence stay in steinmarder; this repository remains the Terakan code and
+`r300vk` is the RS480/R300 Vulkan research lane in steinmarder
+`src/re/r300/`.  Until a Mesa-side R300 Vulkan ICD exists, `r300vk` probes and
+evidence stays in steinmarder; this repository remains the Terakan code and
 Mesa build-infra checkout.
 
 The install prefix defaults to `/usr/local/mesa-<profile>`, derived from

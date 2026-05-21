@@ -1964,53 +1964,43 @@ ntr_fixup_varying_slots(nir_shader *s, nir_variable_mode mode)
 }
 
 /**
- * Translates the NIR shader to TGSI.
+ * Runs all NIR lowering passes required before RC instruction emission.
  *
- * This requires some lowering of the NIR shader to prepare it for translation.
- * We take ownership of the NIR shader passed, returning a reference to the new
- * TGSI tokens instead.  If you need to keep the NIR, then pass us a clone.
+ * Call this before r300_nir_to_rc_direct().  nir_to_rc() calls it
+ * internally before TGSI emission, so it must not be called twice on the
+ * same shader.
  */
-const void *
-nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
-          struct r300_fragment_program_external_state state)
+void
+r300_nir_lower_for_rc(struct nir_shader *s, struct pipe_screen *screen,
+                      struct r300_fragment_program_external_state state)
 {
-   struct ntr_compile *c;
-   const void *tgsi_tokens;
    bool is_r500 = r300_screen(screen)->caps.is_r500;
-   c = rzalloc(NULL, struct ntr_compile);
-   c->screen = screen;
-   c->lower_fabs = !is_r500 && s->info.stage == MESA_SHADER_VERTEX;
+   bool lower_fabs = !is_r500 && s->info.stage == MESA_SHADER_VERTEX;
 
-   ntr_fixup_varying_slots(s, s->info.stage == MESA_SHADER_FRAGMENT ? nir_var_shader_in : nir_var_shader_out);
+   ntr_fixup_varying_slots(s, s->info.stage == MESA_SHADER_FRAGMENT
+                              ? nir_var_shader_in : nir_var_shader_out);
 
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
-      if (is_r500) {
+      if (is_r500)
          NIR_PASS(_, s, r300_transform_fs_trig_input);
-      }
    } else if (r300_screen(screen)->caps.has_tcl) {
       if (is_r500) {
          /* Only nine should set both NTT shader name and
           * use_legacy_math_rules and D3D9 already mandates
           * the proper range for the trigonometric inputs.
           */
-         if (!s->info.use_legacy_math_rules || !(s->info.name && !strcmp("TTN", s->info.name))) {
+         if (!s->info.use_legacy_math_rules ||
+             !(s->info.name && !strcmp("TTN", s->info.name)))
             NIR_PASS(_, s, r300_transform_vs_trig_input);
-         }
       } else {
-         if (r300_screen(screen)->caps.is_r400) {
+         if (r300_screen(screen)->caps.is_r400)
             NIR_PASS(_, s, r300_transform_vs_trig_input);
-         }
       }
    }
 
    /* Lower array indexing on FS inputs.  Since we don't set
     * ureg->supports_any_inout_decl_range, the TGSI input decls will be split to
     * elements by ureg, and so dynamically indexing them would be invalid.
-    * Ideally we would set that ureg flag based on
-    * pipe_shader_caps.tgsi_any_inout_decl_range, but can't due to mesa/st
-    * splitting NIR VS outputs to elements even if the FS doesn't get the
-    * corresponding splitting, and virgl depends on TGSI across link boundaries
-    * having matching declarations.
     */
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
       NIR_PASS(_, s, nir_lower_indirect_derefs_to_if_else_trees,
@@ -2022,12 +2012,10 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
             nir_lower_io_use_interpolated_input_intrinsics);
 
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
-      /* Shadow lowering. */
       int num_texture_states = state.sampler_state_count;
       if (num_texture_states > 0) {
          nir_lower_tex_shadow_swizzle tex_swizzle[PIPE_MAX_SHADER_SAMPLER_VIEWS];
          enum compare_func tex_compare_func[PIPE_MAX_SHADER_SAMPLER_VIEWS];
-
          for (unsigned i = 0; i < num_texture_states; i++) {
             tex_compare_func[i] = state.unit[i].texture_compare_func;
             tex_swizzle[i].swizzle_r = GET_SWZ(state.unit[i].texture_swizzle, 0);
@@ -2038,7 +2026,6 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
          NIR_PASS(_, s, nir_lower_tex_shadow, num_texture_states, tex_compare_func,
                   tex_swizzle, true);
       }
-
       nir_to_rc_lower_txp(s);
       NIR_PASS(_, s, nir_to_rc_lower_tex);
    }
@@ -2060,9 +2047,8 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
       }
    } while (progress);
 
-   if (s->info.stage == MESA_SHADER_FRAGMENT) {
+   if (s->info.stage == MESA_SHADER_FRAGMENT)
       NIR_PASS(_, s, r300_nir_prepare_presubtract);
-   }
 
    NIR_PASS(_, s, nir_lower_int_to_float);
    NIR_PASS(_, s, nir_opt_copy_prop);
@@ -2073,10 +2059,8 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
    NIR_PASS(_, s, nir_opt_copy_prop);
    /* CSE cleanup after late ftrunc lowering. */
    NIR_PASS(_, s, nir_opt_cse);
-   /* At this point we need to clean;
-    *  a) fcsel_gt that come from the ftrunc lowering on R300,
-    *  b) all flavours of fcsels that read three different temp sources on R500.
-    */
+   /* Clean fcsel_gt from ftrunc lowering on R300 and all fcsel flavors that
+    * read three different temp sources on R500. */
    if (s->info.stage == MESA_SHADER_VERTEX) {
       if (is_r500)
          NIR_PASS(_, s, r300_nir_lower_fcsel_r500);
@@ -2091,27 +2075,45 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
    NIR_PASS(_, s, nir_opt_shrink_vectors, false);
    NIR_PASS(_, s, nir_opt_dce);
 
-   nir_move_options move_all = nir_move_const_undef | nir_move_load_ubo | nir_move_load_input | nir_move_load_frag_coord |
-                               nir_move_comparisons | nir_move_copies | nir_move_load_ssbo;
-
+   nir_move_options move_all = nir_move_const_undef | nir_move_load_ubo |
+                               nir_move_load_input | nir_move_load_frag_coord |
+                               nir_move_comparisons | nir_move_copies |
+                               nir_move_load_ssbo;
    NIR_PASS(_, s, nir_opt_move, move_all);
    NIR_PASS(_, s, nir_move_vec_src_uses_to_dest, true);
-   /* Late vectorizing after nir_move_vec_src_uses_to_dest helps instructions but
-    * increases register usage. Testing shows this is beneficial only in VS.
-    */
+   /* Late vectorizing after nir_move_vec_src_uses_to_dest helps instructions
+    * but increases register usage.  Beneficial only in VS. */
    if (s->info.stage == MESA_SHADER_VERTEX)
       NIR_PASS(_, s, nir_opt_vectorize, ntr_should_vectorize_instr, NULL);
 
    NIR_PASS(_, s, nir_convert_from_ssa, true, false);
    NIR_PASS(_, s, nir_lower_vec_to_regs, NULL, NULL);
-
-   /* locals_to_reg_intrinsics will leave dead derefs that are good to clean up.
-    */
+   /* locals_to_reg_intrinsics leaves dead derefs; clean up. */
    NIR_PASS(_, s, nir_lower_locals_to_regs, 32);
    NIR_PASS(_, s, nir_opt_dce);
-
    /* See comment in ntr_get_alu_src for supported modifiers */
-   NIR_PASS(_, s, nir_legacy_trivialize, !c->lower_fabs);
+   NIR_PASS(_, s, nir_legacy_trivialize, !lower_fabs);
+}
+
+/**
+ * Translates the NIR shader to TGSI.
+ *
+ * This requires some lowering of the NIR shader to prepare it for translation.
+ * We take ownership of the NIR shader passed, returning a reference to the new
+ * TGSI tokens instead.  If you need to keep the NIR, then pass us a clone.
+ */
+const void *
+nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
+          struct r300_fragment_program_external_state state)
+{
+   struct ntr_compile *c;
+   const void *tgsi_tokens;
+   bool is_r500 = r300_screen(screen)->caps.is_r500;
+   c = rzalloc(NULL, struct ntr_compile);
+   c->screen = screen;
+   c->lower_fabs = !is_r500 && s->info.stage == MESA_SHADER_VERTEX;
+
+   r300_nir_lower_for_rc(s, screen, state);
 
    if (NIR_DEBUG(TGSI)) {
       fprintf(stderr, "NIR before translation to TGSI:\n");

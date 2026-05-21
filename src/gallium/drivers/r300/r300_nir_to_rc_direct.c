@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: MIT
  *
  * Direct NIR->RC translation for r300, bypassing the ureg/TGSI serialization
- * round-trip.  The NIR lowering passes from nir_to_rc() must run before this
- * function is called; this file handles only the final RC instruction emission.
+ * round-trip.  r300_nir_lower_for_rc() must run on the NIR shader before
+ * calling this function; it handles only the final RC instruction emission.
  *
  * The two-pass TGSI route was:
  *   nir_to_rc() -> ureg_get_tokens() -> malloc'd token array
@@ -20,6 +20,9 @@
  */
 
 #include "r300_nir_to_rc_direct.h"
+
+#include <assert.h>
+#include <stdio.h>
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_legacy.h"
@@ -108,6 +111,19 @@ nrc_scalar_swizzle(uint8_t chan)
 {
    rc_swizzle c = nrc_swizzle_chan(chan);
    return RC_MAKE_SWIZZLE(c, c, c, c);
+}
+
+/* Return the RC input slot index (== driver_location) for the given varying
+ * slot, or -1 if not found.  Variables remain in the shader after nir_lower_io
+ * runs, so this is safe to call from the emission phase. */
+static int
+nrc_find_input_slot(const nir_shader *s, gl_varying_slot slot)
+{
+   nir_foreach_shader_in_variable(var, s) {
+      if ((gl_varying_slot)var->data.location == slot)
+         return (int)var->data.driver_location;
+   }
+   return -1;
 }
 
 /* -------------------------------------------------------------------------
@@ -245,20 +261,24 @@ nrc_dst_for_def(struct nrc_compile *c, nir_def *def)
 static void
 nrc_emit_scalar(struct nrc_compile *c, enum rc_opcode opcode,
                 struct rc_dst_register dst, struct rc_src_register src0,
-                struct rc_src_register src1)
+                struct rc_src_register src1, bool saturate)
 {
-   /* Emit once per destination channel with the src replicated from channel 0
-    * of src0.  The RC compiler accepts a per-channel scalar in this form. */
+   /* One RC instruction per destination channel.  For each channel i, extract
+    * the source channel that feeds it from src0.Swizzle and replicate to all
+    * four positions, satisfying the scalar-read rule.  Saturation is applied
+    * per-instruction to match the original NIR ALU destination. */
    for (int i = 0; i < 4; i++) {
       if (!(dst.WriteMask & (1u << i)))
          continue;
+      rc_swizzle src_chan = (rc_swizzle)((src0.Swizzle >> (i * 3)) & 0x7u);
+      struct rc_src_register scalar_src = src0;
+      scalar_src.Swizzle = RC_MAKE_SWIZZLE(src_chan, src_chan, src_chan, src_chan);
       struct rc_instruction *inst = nrc_emit(c, opcode);
-      inst->U.I.DstReg         = dst;
+      inst->U.I.DstReg           = dst;
       inst->U.I.DstReg.WriteMask = 1u << i;
-      inst->U.I.SrcReg[0]      = src0;
-      /* Replicate the .x component to satisfy the scalar replication rule */
-      inst->U.I.SrcReg[0].Swizzle = nrc_scalar_swizzle(0);
-      inst->U.I.SrcReg[1]      = src1;
+      inst->U.I.SrcReg[0]        = scalar_src;
+      inst->U.I.SrcReg[1]        = src1;
+      inst->U.I.SaturateMode     = saturate ? RC_SATURATE_ZERO_ONE : RC_SATURATE_NONE;
    }
 }
 
@@ -361,31 +381,31 @@ nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
    }
 
    case nir_op_frcp:
-      nrc_emit_scalar(c, RC_OPCODE_RCP, dst, src[0], (struct rc_src_register){0});
+      nrc_emit_scalar(c, RC_OPCODE_RCP, dst, src[0], (struct rc_src_register){0}, saturate);
       break;
 
    case nir_op_frsq:
-      nrc_emit_scalar(c, RC_OPCODE_RSQ, dst, src[0], (struct rc_src_register){0});
+      nrc_emit_scalar(c, RC_OPCODE_RSQ, dst, src[0], (struct rc_src_register){0}, saturate);
       break;
 
    case nir_op_fexp2:
-      nrc_emit_scalar(c, RC_OPCODE_EX2, dst, src[0], (struct rc_src_register){0});
+      nrc_emit_scalar(c, RC_OPCODE_EX2, dst, src[0], (struct rc_src_register){0}, saturate);
       break;
 
    case nir_op_flog2:
-      nrc_emit_scalar(c, RC_OPCODE_LG2, dst, src[0], (struct rc_src_register){0});
+      nrc_emit_scalar(c, RC_OPCODE_LG2, dst, src[0], (struct rc_src_register){0}, saturate);
       break;
 
    case nir_op_fsin:
-      nrc_emit_scalar(c, RC_OPCODE_SIN, dst, src[0], (struct rc_src_register){0});
+      nrc_emit_scalar(c, RC_OPCODE_SIN, dst, src[0], (struct rc_src_register){0}, saturate);
       break;
 
    case nir_op_fcos:
-      nrc_emit_scalar(c, RC_OPCODE_COS, dst, src[0], (struct rc_src_register){0});
+      nrc_emit_scalar(c, RC_OPCODE_COS, dst, src[0], (struct rc_src_register){0}, saturate);
       break;
 
    case nir_op_fpow:
-      nrc_emit_scalar(c, RC_OPCODE_POW, dst, src[0], src[1]);
+      nrc_emit_scalar(c, RC_OPCODE_POW, dst, src[0], src[1], saturate);
       break;
 
    case nir_op_flrp: {
@@ -394,8 +414,7 @@ nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
        * Expand to MAD: a*(1-c) + b*c = MAD(a, (1-c), b*c) is complex;
        * simpler: use the CMP/MAD form:  lerp = src2*src1 + src0*(1-src2).
        * For now, fail gracefully and fall back to TGSI path on error. */
-      fprintf(stderr, "r300_nir_to_rc_direct: flrp not yet lowered; "
-              "use r300_nir_lower_flrp first\n");
+      rc_error(c->compiler, "r300_nir_to_rc_direct: flrp not lowered; run r300_nir_lower_flrp first\n");
       c->error = true;
       break;
    }
@@ -443,8 +462,8 @@ nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
       UNREACHABLE("vec ops should be lowered by nir_lower_vec_to_regs");
 
    default:
-      fprintf(stderr, "r300_nir_to_rc_direct: unknown NIR opcode %s\n",
-              nir_op_infos[instr->op].name);
+      rc_error(c->compiler, "r300_nir_to_rc_direct: unknown NIR opcode %s\n",
+               nir_op_infos[instr->op].name);
       c->error = true;
       break;
    }
@@ -501,7 +520,7 @@ nrc_emit_texture(struct nrc_compile *c, nir_tex_instr *instr)
    case nir_texop_texture_samples:
    case nir_texop_tg4:
       /* These must be lowered by nir_to_rc_lower_tex before reaching here. */
-      fprintf(stderr, "r300_nir_to_rc_direct: texop %d not lowered\n", instr->op);
+      rc_error(c->compiler, "r300_nir_to_rc_direct: texop %d not lowered\n", instr->op);
       c->error = true;
       return;
    default:
@@ -583,6 +602,19 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
       unsigned frac = nir_intrinsic_component(instr);
       struct rc_src_register value = nrc_src(c, instr->src[0]);
 
+      /* RC executes channel i of dst from channel i of src.  When frac > 0,
+       * the source's channel 0 should land at output channel frac, so shift
+       * the source swizzle up by frac positions to match the shifted WriteMask. */
+      if (frac) {
+         uint32_t orig = value.Swizzle;
+         uint32_t new_swiz = orig;
+         for (int i = frac; i < 4; i++) {
+            rc_swizzle sc = (rc_swizzle)((orig >> ((i - (int)frac) * 3)) & 0x7u);
+            new_swiz = (new_swiz & ~(0x7u << (i * 3))) | ((uint32_t)sc << (i * 3));
+         }
+         value.Swizzle = new_swiz;
+      }
+
       inst = nrc_emit(c, RC_OPCODE_MOV);
       inst->U.I.DstReg.File      = RC_FILE_OUTPUT;
       inst->U.I.DstReg.Index     = base;
@@ -594,33 +626,41 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_output:
    case nir_intrinsic_load_per_vertex_output: {
       int base = nir_intrinsic_base(instr);
+      unsigned frac = nir_intrinsic_component(instr);
       struct rc_dst_register dst = nrc_dst_for_def(c, &instr->def);
       inst = nrc_emit(c, RC_OPCODE_MOV);
-      inst->U.I.DstReg         = dst;
-      inst->U.I.SrcReg[0].File  = RC_FILE_OUTPUT;
-      inst->U.I.SrcReg[0].Index = base;
+      inst->U.I.DstReg            = dst;
+      inst->U.I.SrcReg[0].File    = RC_FILE_OUTPUT;
+      inst->U.I.SrcReg[0].Index   = base;
       inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
+      if (frac) {
+         inst->U.I.SrcReg[0].Swizzle =
+            RC_MAKE_SWIZZLE(nrc_swizzle_chan(frac + 0),
+                            nrc_swizzle_chan(MIN2(frac + 1, 3)),
+                            nrc_swizzle_chan(MIN2(frac + 2, 3)),
+                            nrc_swizzle_chan(MIN2(frac + 3, 3)));
+      }
       break;
    }
 
    case nir_intrinsic_load_ubo:
    case nir_intrinsic_load_ubo_vec4: {
-      /* UBO load: constant file, dimension = UBO binding, index = vec4 offset */
+      /* UBO loads must be constant-indexed on r300; indirect access is unsupported. */
+      if (!nir_src_is_const(instr->src[0]) || !nir_src_is_const(instr->src[1])) {
+         rc_error(c->compiler, "r300_nir_to_rc_direct: indirect UBO access not supported\n");
+         c->error = true;
+         return;
+      }
       struct rc_dst_register dst = nrc_dst_for_def(c, &instr->def);
-      unsigned ubo_binding = nir_src_as_uint(instr->src[0]);
       unsigned vec4_offset = nir_src_as_uint(instr->src[1]) / 16;
+      /* nir_intrinsic_base gives the starting constant slot for this UBO binding
+       * in the flat RC constant table, matching RC_CONSTANT_EXTERNAL allocation. */
+      int slot = nir_intrinsic_base(instr) + (int)vec4_offset;
 
       inst = nrc_emit(c, RC_OPCODE_MOV);
       inst->U.I.DstReg = dst;
-      inst->U.I.SrcReg[0].File  = RC_FILE_CONSTANT;
-      /* Constant slots are laid out as [ubo_binding * MAX_CONSTS + offset];
-       * the RC compiler receives the pre-allocated constant table from
-       * r300_tgsi_to_rc.c's RC_CONSTANT_EXTERNAL entries.  For now, use the
-       * first slot and rely on the existing constant table populated by
-       * r300_translate_fragment_shader for the TGSI path.
-       * TODO: implement proper UBO constant slot mapping matching the
-       * RC_CONSTANT_EXTERNAL allocation in r300_tgsi_to_rc.c. */
-      inst->U.I.SrcReg[0].Index   = (int)vec4_offset;
+      inst->U.I.SrcReg[0].File    = RC_FILE_CONSTANT;
+      inst->U.I.SrcReg[0].Index   = slot;
       inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
 
       unsigned frac = nir_intrinsic_component(instr);
@@ -635,37 +675,55 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
    }
 
    case nir_intrinsic_load_frag_coord: {
+      /* WPOS input slot assigned by nir_lower_io from the VARYING_SLOT_POS
+       * input variable; rc_transform_fragment_wpos() transforms it later. */
+      int idx = nrc_find_input_slot(c->s, VARYING_SLOT_POS);
+      if (idx < 0) {
+         rc_error(c->compiler, "r300_nir_to_rc_direct: no VARYING_SLOT_POS input for frag_coord\n");
+         c->error = true;
+         return;
+      }
       struct rc_dst_register dst = nrc_dst_for_def(c, &instr->def);
       inst = nrc_emit(c, RC_OPCODE_MOV);
-      inst->U.I.DstReg         = dst;
-      inst->U.I.SrcReg[0].File  = RC_FILE_INPUT;
-      /* WPOS is declared by the compiler at a specific slot via
-       * rc_transform_fragment_wpos(); use the WPOS input slot. */
-      inst->U.I.SrcReg[0].Index   = 0;  /* TODO: derive WPOS slot */
+      inst->U.I.DstReg            = dst;
+      inst->U.I.SrcReg[0].File    = RC_FILE_INPUT;
+      inst->U.I.SrcReg[0].Index   = idx;
       inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
       break;
    }
 
    case nir_intrinsic_load_front_face: {
-      /* After nir_lower_bool_to_float, front face is a float in RC_FILE_INPUT.
-       * The driver assigns it via rc_transform_fragment_face(); we emit a MOV
-       * from the FACE input slot with saturation (matching ntr_setup_inputs). */
+      /* FACE input slot assigned by nir_lower_io from VARYING_SLOT_FACE;
+       * rc_transform_fragment_face() transforms it after compilation. */
+      int idx = nrc_find_input_slot(c->s, VARYING_SLOT_FACE);
+      if (idx < 0) {
+         rc_error(c->compiler, "r300_nir_to_rc_direct: no VARYING_SLOT_FACE input for front_face\n");
+         c->error = true;
+         return;
+      }
       struct rc_dst_register dst = nrc_dst_for_def(c, &instr->def);
       inst = nrc_emit(c, RC_OPCODE_MOV);
-      inst->U.I.DstReg           = dst;
-      inst->U.I.SaturateMode     = RC_SATURATE_ZERO_ONE;
-      inst->U.I.SrcReg[0].File   = RC_FILE_INPUT;
-      inst->U.I.SrcReg[0].Index  = 0;  /* TODO: derive FACE input slot */
+      inst->U.I.DstReg            = dst;
+      inst->U.I.SaturateMode      = RC_SATURATE_ZERO_ONE;
+      inst->U.I.SrcReg[0].File    = RC_FILE_INPUT;
+      inst->U.I.SrcReg[0].Index   = idx;
       inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
       break;
    }
 
    case nir_intrinsic_load_point_coord: {
+      /* PNTC input slot assigned by nir_lower_io from VARYING_SLOT_PNTC. */
+      int idx = nrc_find_input_slot(c->s, VARYING_SLOT_PNTC);
+      if (idx < 0) {
+         rc_error(c->compiler, "r300_nir_to_rc_direct: no VARYING_SLOT_PNTC input for point_coord\n");
+         c->error = true;
+         return;
+      }
       struct rc_dst_register dst = nrc_dst_for_def(c, &instr->def);
       inst = nrc_emit(c, RC_OPCODE_MOV);
-      inst->U.I.DstReg           = dst;
-      inst->U.I.SrcReg[0].File   = RC_FILE_INPUT;
-      inst->U.I.SrcReg[0].Index  = 0;  /* TODO: derive PNTC input slot */
+      inst->U.I.DstReg            = dst;
+      inst->U.I.SrcReg[0].File    = RC_FILE_INPUT;
+      inst->U.I.SrcReg[0].Index   = idx;
       inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
       break;
    }
@@ -731,7 +789,7 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
 
    case nir_intrinsic_load_reg_indirect:
    case nir_intrinsic_store_reg_indirect:
-      fprintf(stderr, "r300_nir_to_rc_direct: indirect reg not supported\n");
+      rc_error(c->compiler, "r300_nir_to_rc_direct: indirect register access not supported\n");
       c->error = true;
       break;
 
@@ -761,8 +819,8 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
       break;
 
    default:
-      fprintf(stderr, "r300_nir_to_rc_direct: unhandled intrinsic %s\n",
-              nir_intrinsic_infos[instr->intrinsic].name);
+      rc_error(c->compiler, "r300_nir_to_rc_direct: unhandled intrinsic %s\n",
+               nir_intrinsic_infos[instr->intrinsic].name);
       c->error = true;
       break;
    }
@@ -780,7 +838,7 @@ nrc_emit_if(struct nrc_compile *c, nir_if *nif)
 {
    /* R3xx/R4xx do not support branching; the RC compiler emits an error. */
    if (!c->is_r500) {
-      fprintf(stderr, "r300_nir_to_rc_direct: branches not supported on R3xx/R4xx\n");
+      rc_error(c->compiler, "r300_nir_to_rc_direct: branches not supported on R3xx/R4xx\n");
       c->error = true;
       return;
    }
@@ -803,7 +861,7 @@ static void
 nrc_emit_loop(struct nrc_compile *c, nir_loop *loop)
 {
    if (!c->is_r500) {
-      fprintf(stderr, "r300_nir_to_rc_direct: loops not supported on R3xx/R4xx\n");
+      rc_error(c->compiler, "r300_nir_to_rc_direct: loops not supported on R3xx/R4xx\n");
       c->error = true;
       return;
    }
@@ -852,8 +910,8 @@ nrc_emit_block(struct nrc_compile *c, nir_block *block)
          /* Undefined defs don't generate code. */
          break;
       default:
-         fprintf(stderr, "r300_nir_to_rc_direct: unhandled instr type %d\n",
-                 instr->type);
+         rc_error(c->compiler, "r300_nir_to_rc_direct: unhandled instr type %d\n",
+                  instr->type);
          c->error = true;
          break;
       }
@@ -900,7 +958,12 @@ r300_nir_fill_shader_info(const struct nir_shader *s, struct tgsi_shader_info *i
    int ni = 0;
    nir_foreach_shader_in_variable (var, s) {
       unsigned sem_name, sem_index;
-      tgsi_get_gl_varying_semantic(var->data.location, true, &sem_name, &sem_index);
+      /* Apply the same TEX0-7 -> VAR0+ fixup that ntr_fixup_varying_slots does
+       * in the TGSI path, so the semantic names match tgsi_scan_shader output. */
+      int loc = var->data.location;
+      if (loc >= VARYING_SLOT_TEX0 && loc <= VARYING_SLOT_TEX7)
+         loc = VARYING_SLOT_VAR0 + (loc - VARYING_SLOT_TEX0);
+      tgsi_get_gl_varying_semantic(loc, true, &sem_name, &sem_index);
       info->input_semantic_name[ni]  = sem_name;
       info->input_semantic_index[ni] = sem_index;
       ni++;
@@ -980,11 +1043,11 @@ r300_nir_to_rc_direct(struct radeon_compiler *compiler,
    /* Walk and emit */
    nrc_emit_cf_list(&c, &impl->body);
 
-   rc_calculate_inputs_outputs(compiler);
+   /* rc_calculate_inputs_outputs reads the instruction stream; skip on error
+    * to avoid operating on a partial or inconsistent program. */
+   if (!c.error)
+      rc_calculate_inputs_outputs(compiler);
 
    FREE(c.ssa_temp);
    FREE(c.reg_temp);
-
-   if (c.error)
-      compiler->Error = 1;
 }

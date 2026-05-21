@@ -1135,14 +1135,10 @@ add_tex_reader(struct schedule_state *s, struct schedule_instruction *writer,
 }
 
 static unsigned
-add_pending_tex_readers(struct schedule_state *s, rc_register_file file, unsigned int index,
-                        unsigned int chan)
+add_pending_tex_readers(struct schedule_state *s, unsigned int index, unsigned int chan)
 {
    struct rc_list *pend_ptr;
    unsigned matches = 0;
-
-   if (file != RC_FILE_TEMPORARY)
-      return 0;
 
    for (pend_ptr = s->PendingTEX; pend_ptr; pend_ptr = pend_ptr->Next) {
       struct schedule_instruction *tex_sinst = pend_ptr->Item;
@@ -1209,7 +1205,7 @@ scan_read(void *data, struct rc_instruction *inst, rc_register_file file, unsign
        * result.  The pair scheduler only tracks TEMP values in reg_value,
        * so pending TEX dependencies are TEMP-only here. */
       if (s->PrevBlockHasTex && file == RC_FILE_TEMPORARY &&
-          !add_pending_tex_readers(s, file, index, chan))
+          !add_pending_tex_readers(s, index, chan))
          DBG("%i: no pending TEX writer for %i[%i].%u\n",
              s->Current->Instruction->IP, file, index, chan);
    } else {
@@ -1226,7 +1222,7 @@ scan_read(void *data, struct rc_instruction *inst, rc_register_file file, unsign
           * first read.  Register this reader too so the scheduler cannot
           * emit it before the SemWait instruction that protects all
           * consumers of this TEX result. */
-         if (!add_pending_tex_readers(s, file, index, chan))
+         if (!add_pending_tex_readers(s, index, chan))
             DBG("%i: no pending TEX writer for %i[%i].%u\n",
                 s->Current->Instruction->IP, file, index, chan);
       }

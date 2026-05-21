@@ -81,11 +81,13 @@ pm4_ib_dump_getpid(void)
 #endif
 }
 
+#if !DETECT_OS_WINDOWS
 static uintptr_t
 pm4_ib_dump_pthread_key(pthread_t thread)
 {
    unsigned char bytes[sizeof(thread)];
-   uintptr_t key = (uintptr_t)1469598103934665603ull;
+   /* FNV-1a 64-bit offset basis (FNV reference: http://www.isthe.com/chongo/tech/comp/fnv/) */
+   uintptr_t key = (uintptr_t)14695981039346656037ull;
 
    memcpy(bytes, &thread, sizeof(bytes));
 
@@ -96,6 +98,7 @@ pm4_ib_dump_pthread_key(pthread_t thread)
 
    return key ? key : 1;
 }
+#endif /* !DETECT_OS_WINDOWS */
 
 /* Per-thread identifier for the JSONL "tid" field.  The chosen
  * value differs across platforms (kernel TID on Linux/Android,

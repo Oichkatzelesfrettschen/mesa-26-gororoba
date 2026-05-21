@@ -462,13 +462,16 @@ static void r300_translate_fragment_shader(
     }
 
     if (state.type == PIPE_SHADER_IR_NIR) {
-        /* Direct NIR->RC path: walk lowered NIR and emit RC instructions
-         * without an intermediate TGSI token array. */
+        /* Direct NIR->RC path: lower the NIR shader for RC, then walk it and
+         * emit RC instructions without an intermediate TGSI token array. */
+        r300_nir_lower_for_rc(state.ir.nir,
+                              (struct pipe_screen *)r300->screen,
+                              shader->compare_state);
         r300_nir_to_rc_direct(&compiler.Base, state.ir.nir,
                               (struct pipe_screen *)r300->screen,
                               shader->compare_state);
         if (compiler.Base.Error) {
-            shader->error = strdup(compiler.Base.ErrorMsg);
+            shader->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg : "");
             r300_dummy_fragment_shader(r300, shader);
             return;
         }
@@ -509,7 +512,7 @@ static void r300_translate_fragment_shader(
     r3xx_compile_fragment_program(&compiler);
 
     if (compiler.Base.Error) {
-        shader->error = strdup(compiler.Base.ErrorMsg);
+        shader->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg : "");
 
         if (shader->dummy) {
             fprintf(stderr, "r300 FP: Cannot compile the dummy shader! "
