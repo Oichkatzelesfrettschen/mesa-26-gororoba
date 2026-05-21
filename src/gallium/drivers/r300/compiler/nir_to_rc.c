@@ -874,6 +874,27 @@ ntr_emit_scalar(struct ntr_compile *c, rc_opcode op, struct ntr_alu_dst dst,
    }
 }
 
+/* Attempt to fold a source modifier directly into the SSA temp map, avoiding
+ * a MOV instruction when the source comes from an inline-able file.  Returns
+ * true and updates c->ssa_temp on success; the caller emits a MOV on false.
+ * src must already carry the modifier (for example, ntr_abs or ntr_negate). */
+static bool
+ntr_try_fold_srcmod_to_ssa(struct ntr_compile *c, nir_def *def,
+                           struct rc_src_register src)
+{
+   if (src.RelAddr)
+      return false;
+
+   switch (src.File) {
+   case RC_FILE_INPUT:
+   case RC_FILE_CONSTANT:
+      c->ssa_temp[def->index] = src;
+      return true;
+   default:
+      return false;
+   }
+}
+
 static void
 ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
 {
@@ -924,10 +945,6 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
    } else {
       /* Special cases for NIR to TGSI ALU op translation. */
 
-      /* TODO: Use something like the ntr_store() path for the MOV calls so we
-       * don't emit extra MOVs for swizzles/srcmods of inputs/const/imm.
-       */
-
       switch (instr->op) {
       case nir_op_fabs:
          /* Try to eliminate */
@@ -936,7 +953,7 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
 
          if (c->lower_fabs)
             ntr_emit_alu_op2(c, RC_OPCODE_MAX, dst, src[0], ntr_negate(src[0]));
-         else
+         else if (!ntr_try_fold_srcmod_to_ssa(c, &instr->def, ntr_abs(src[0])))
             ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_abs(src[0]));
          break;
 
@@ -949,7 +966,8 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
          if (nir_legacy_float_mod_folds(instr))
             break;
 
-         ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_negate(src[0]));
+         if (!ntr_try_fold_srcmod_to_ssa(c, &instr->def, ntr_negate(src[0])))
+            ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_negate(src[0]));
          break;
 
          /* NOTE: TGSI 32-bit math ops have the old "one source channel
