@@ -49,9 +49,16 @@ ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
 JOBS     ?= 8
 else ifneq (,$(filter $(HOSTENV),vostro1000-k8-ccache-no-pump))
 JOBS     ?= 16
+else ifneq (,$(filter $(HOSTENV),vostro1000-k8-distcc))
+JOBS     ?= 24
 else
 JOBS     ?= $(shell nproc)
 endif
+# Build serialization lock: held during ninja and meson install to prevent
+# concurrent builds from different agents stomping each other.  Any process
+# that respects this lock will serialize automatically.
+BUILD_LOCK ?= /var/lock/mesa-26-gororoba-build.lock
+
 # Generated source/header targets to prebuild outside distcc-pump.  Keep this
 # to known compiler, Vulkan, and Terascale codegen surfaces so the helper does
 # not accidentally run unrelated custom commands.
@@ -87,6 +94,8 @@ MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER
         rebuild-terakan-distcc-no-rusticl-pump \
         rebuild-terakan-minimal \
         rebuild-base-debug rebuild-terakan-release rebuild-terakan-profile \
+        rebuild-r300-vostro-k8-release rebuild-r300-vostro-k8-debug \
+        install-r300-vostro-k8-release install-r300-vostro-k8-debug \
         help
 
 help:
@@ -343,7 +352,7 @@ configure:
 build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	ninja -C $(BUILDDIR) -j$(JOBS)
+	flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS)
 
 build-generated:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
@@ -381,7 +390,7 @@ install:
 		echo "[install] builddir prefix $$cur_prefix != requested $(PREFIX); reconfiguring"; \
 		meson configure --prefix=$(PREFIX) $(BUILDDIR); \
 	fi
-	sudo meson install --no-rebuild -C $(BUILDDIR)
+	flock -x -w 7200 $(BUILD_LOCK) sudo meson install --no-rebuild -C $(BUILDDIR)
 
 artifact-check:
 	@test -d $(PREFIX) || { echo "prefix missing: $(PREFIX)"; exit 1; }
@@ -479,3 +488,33 @@ rebuild-terakan-profile:
 	$(MAKE) clean PROFILE=terakan-profile
 	$(MAKE) configure PROFILE=terakan-profile
 	$(MAKE) build     PROFILE=terakan-profile
+
+# Canonical Vostro r300 release build: prefix /usr/local/mesa-26-gororoba
+rebuild-r300-vostro-k8-release:
+	$(MAKE) clean configure build \
+		PROFILE=r300-vostro-k8-release \
+		HOSTENV=vostro1000-k8-distcc \
+		COMPILER_CHAIN=distcc \
+		PREFIX=/usr/local/mesa-26-gororoba
+
+install-r300-vostro-k8-release:
+	$(MAKE) install \
+		PROFILE=r300-vostro-k8-release \
+		HOSTENV=vostro1000-k8-distcc \
+		COMPILER_CHAIN=distcc \
+		PREFIX=/usr/local/mesa-26-gororoba
+
+# Canonical Vostro r300 debug build: prefix /usr/local/mesa-26-gororoba-DEBUG
+rebuild-r300-vostro-k8-debug:
+	$(MAKE) clean configure build \
+		PROFILE=r300-vostro-k8-debug \
+		HOSTENV=vostro1000-k8-distcc \
+		COMPILER_CHAIN=distcc \
+		PREFIX=/usr/local/mesa-26-gororoba-DEBUG
+
+install-r300-vostro-k8-debug:
+	$(MAKE) install \
+		PROFILE=r300-vostro-k8-debug \
+		HOSTENV=vostro1000-k8-distcc \
+		COMPILER_CHAIN=distcc \
+		PREFIX=/usr/local/mesa-26-gororoba-DEBUG
