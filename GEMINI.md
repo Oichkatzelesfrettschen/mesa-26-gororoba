@@ -11,7 +11,7 @@ This file intentionally imports `AGENTS.md` rather than duplicating it or symlin
 
 Extended doctrine, including the LLM interaction guide, reasoning depth,
 source-comment style, tool discipline, synthesis rule, and regression-on-fix
-discipline, lives in `AGENTS.md`.  Do not duplicate those sections here; update
+discipline lives in `AGENTS.md`.  Do not duplicate those sections here; update
 the canonical file and keep this wrapper as the Gemini-specific loader.
 
 Gemini-specific rules:
