@@ -10,8 +10,8 @@
 # passed explicitly.
 
 [project options]
-buildtype           = 'debug'
-b_ndebug            = 'false'
+buildtype           = 'release'
+b_ndebug            = 'true'
 werror              = true
 
 # r600 only -- same as terakan-distcc.
