@@ -381,6 +381,7 @@ Block::try_reserve_kcache(const AluGroup& group)
 
    m_kcache = kcache;
    m_kcache_alloc_failed = false;
+   m_kcache_preflight_failed = false;
    return true;
 }
 
@@ -408,6 +409,7 @@ Block::try_reserve_kcache(const AluInstr& instr)
 
    m_kcache = kcache;
    m_kcache_alloc_failed = false;
+   m_kcache_preflight_failed = false;
    return true;
 }
 
