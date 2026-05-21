@@ -228,6 +228,21 @@ terakan_queue_drm_radeon_submit(
       fprintf(stderr, "=== END_IB ===\n");
    }
 
+   /* Final-IB byte capture for the byte-path comparison: parallel
+    * machine-parseable JSONL dump to /tmp/terakan_a1_<pid>.jsonl,
+    * gated by the same TERAKAN_DEBUG_DUMP_IB env var (with
+    * explicit TERAKAN_DEBUG_DUMP_IB_JSONL_DISABLE=1 opt-out).
+    * Carries a crc32_le that lines up with the radeon-palm-gate
+    * DKMS CS observer's `ib_post_validate.ib_crc32_le` (see
+    * tools/workspace/mesa-rekit/staged/radeon-palm-gate-dkms/
+    * usr/src/radeon-palm-gate-1.0/w11-sources/radeon_palm_cs_observer.c
+    * in the steinmarder tree) for direct final-IB-vs-
+    * post-validator-IB equality testing.  No-op when the gate is
+    * off. */
+   terakan_pm4_ib_dump_cs_submission((unsigned)submission_context->ring,
+                                 indirect_buffer,
+                                 indirect_buffer_size_dwords);
+
    int const cs_result = drmCommandWriteRead(device->render_node_fd, DRM_RADEON_CS, &cs_arguments,
                                              sizeof(cs_arguments));
 

@@ -23,7 +23,7 @@
 
 #include "terakan_sampler.h"
 
-#include "terakan_a0_dump.h"
+#include "terakan_descriptor_dump.h"
 
 #include "terakan_device.h"
 #include "terakan_entrypoints.h"
@@ -100,12 +100,12 @@ terakan_CreateSampler(VkDevice const deviceHandle, VkSamplerCreateInfo const * c
 
    *pSampler = terakan_sampler_to_handle(sampler);
 
-   /* Y.3a A0 capture: emit the 3-dword sampler descriptor on the
-    * env-gated `TERAKAN_DEBUG_DUMP_DESCRIPTOR=1` strict path.  No-op
-    * when the gate is off (one cached boolean read).  Bytes captured
-    * here are the A0 input to the master-plan A0/A1/B/C byte-path
-    * comparison in src/amd/terascale/vulkan/terakan_a0_dump.h.
-    */
-   terakan_a0_dump_sampler(*pSampler, sampler);
+   /* Descriptor-object byte capture for the byte-path comparison:
+    * emit the 3-dword SQ_TEX_SAMPLER descriptor under the env-gated
+    * `TERAKAN_DEBUG_DUMP_DESCRIPTOR=1` strict path.  Disabled-path
+    * cost is one cached boolean read.  See
+    * src/amd/terascale/vulkan/terakan_descriptor_dump.h for the JSONL
+    * schema and gate semantics. */
+   terakan_descriptor_dump_sampler(*pSampler, sampler);
    return VK_SUCCESS;
 }

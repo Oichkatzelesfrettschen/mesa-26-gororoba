@@ -4,9 +4,9 @@
  */
 
 /*
- * terakan_a0_dump.c -- env-gated descriptor-object capture (Y.3a).
+ * terakan_descriptor_dump.c -- env-gated descriptor-object capture (Y.3a).
  *
- * See terakan_a0_dump.h for the schema + safety contract.  All file
+ * See terakan_descriptor_dump.h for the schema + safety contract.  All file
  * I/O is gated by TERAKAN_DEBUG_DUMP_DESCRIPTOR=1 (strict env gate
  * helper from terakan_env.h).  Disabled-path overhead = one cached
  * boolean read + a branch.
@@ -20,7 +20,7 @@
  * stdio's normal teardown.
  */
 
-#include "terakan_a0_dump.h"
+#include "terakan_descriptor_dump.h"
 
 #include <inttypes.h>
 #include <pthread.h>
@@ -45,7 +45,7 @@ a0_init_cb(void)
 }
 
 bool
-terakan_a0_dump_active(void)
+terakan_descriptor_dump_active(void)
 {
    pthread_once(&a0_init_once, a0_init_cb);
    return a0_enabled;
@@ -67,7 +67,7 @@ a0_stream_or_open(void)
    pthread_mutex_lock(&a0_open_lock);
    s = a0_stream;
    if (!s) {
-      snprintf(path, sizeof(path), "/tmp/terakan_a0_%d.jsonl",
+      snprintf(path, sizeof(path), "/tmp/terakan_descriptor_%d.jsonl",
                (int)getpid());
       s = fopen(path, "ae"); /* O_APPEND + FD_CLOEXEC */
       if (s)
@@ -101,13 +101,13 @@ a0_print_dword_array(FILE *s, const uint32_t *dw, unsigned n)
 }
 
 void
-terakan_a0_dump_image_view(VkImageView view_handle,
+terakan_descriptor_dump_image_view(VkImageView view_handle,
                            struct terakan_image_view const *view,
                            VkImageViewCreateInfo const *create_info)
 {
    FILE *s;
 
-   if (!terakan_a0_dump_active() || !view || !create_info)
+   if (!terakan_descriptor_dump_active() || !view || !create_info)
       return;
    s = a0_stream_or_open();
    if (!s)
@@ -115,7 +115,7 @@ terakan_a0_dump_image_view(VkImageView view_handle,
 
    flockfile(s);
    fprintf(s,
-           "{\"event\":\"a0_image_view\","
+           "{\"event\":\"descriptor_image_view\","
            "\"ts_nsec\":%" PRIu64 ","
            "\"pid\":%d,"
            "\"tid\":%d,"
@@ -139,12 +139,12 @@ terakan_a0_dump_image_view(VkImageView view_handle,
 }
 
 void
-terakan_a0_dump_sampler(VkSampler sampler_handle,
+terakan_descriptor_dump_sampler(VkSampler sampler_handle,
                         struct terakan_sampler const *sampler)
 {
    FILE *s;
 
-   if (!terakan_a0_dump_active() || !sampler)
+   if (!terakan_descriptor_dump_active() || !sampler)
       return;
    s = a0_stream_or_open();
    if (!s)
@@ -152,7 +152,7 @@ terakan_a0_dump_sampler(VkSampler sampler_handle,
 
    flockfile(s);
    fprintf(s,
-           "{\"event\":\"a0_sampler\","
+           "{\"event\":\"descriptor_sampler\","
            "\"ts_nsec\":%" PRIu64 ","
            "\"pid\":%d,"
            "\"tid\":%d,"
