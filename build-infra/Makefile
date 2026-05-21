@@ -491,30 +491,18 @@ rebuild-terakan-profile:
 
 # Canonical Vostro r300 release build: prefix /usr/local/mesa-26-gororoba
 rebuild-r300-vostro-k8-release:
-	$(MAKE) clean configure build \
-		PROFILE=r300-vostro-k8-release \
-		HOSTENV=vostro1000-k8-distcc \
-		COMPILER_CHAIN=distcc \
-		PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) -j1 clean PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
 
 install-r300-vostro-k8-release:
-	$(MAKE) install \
-		PROFILE=r300-vostro-k8-release \
-		HOSTENV=vostro1000-k8-distcc \
-		COMPILER_CHAIN=distcc \
-		PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) install PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
 
 # Canonical Vostro r300 debug build: prefix /usr/local/mesa-26-gororoba-DEBUG
 rebuild-r300-vostro-k8-debug:
-	$(MAKE) clean configure build \
-		PROFILE=r300-vostro-k8-debug \
-		HOSTENV=vostro1000-k8-distcc \
-		COMPILER_CHAIN=distcc \
-		PREFIX=/usr/local/mesa-26-gororoba-DEBUG
+	$(MAKE) -j1 clean PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-DEBUG
+	$(MAKE) -j1 configure PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-DEBUG
+	$(MAKE) build PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-DEBUG
 
 install-r300-vostro-k8-debug:
-	$(MAKE) install \
-		PROFILE=r300-vostro-k8-debug \
-		HOSTENV=vostro1000-k8-distcc \
-		COMPILER_CHAIN=distcc \
-		PREFIX=/usr/local/mesa-26-gororoba-DEBUG
+	$(MAKE) install PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-DEBUG
