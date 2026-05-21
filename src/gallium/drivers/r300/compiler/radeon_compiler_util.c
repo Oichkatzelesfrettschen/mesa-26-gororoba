@@ -380,6 +380,7 @@ struct can_use_presub_data {
    unsigned int SelectCount;
    const struct rc_src_register *ReplaceReg;
    unsigned int ReplaceRemoved;
+   unsigned int Overflow;
 };
 
 static void
@@ -388,7 +389,11 @@ can_use_presub_data_add_select(struct can_use_presub_data *data, rc_register_fil
 {
    struct src_select *select;
 
-   assert(data->SelectCount < ARRAY_SIZE(data->Selects));
+   if (data->SelectCount >= ARRAY_SIZE(data->Selects)) {
+      data->Overflow = 1;
+      return;
+   }
+
    select = &data->Selects[data->SelectCount++];
    select->File = file;
    select->Index = index;
@@ -515,6 +520,10 @@ rc_inst_can_use_presub(struct radeon_compiler *c, struct rc_instruction *inst,
             alpha_count++;
          }
       }
+   }
+
+   if (d.Overflow) {
+      return 0;
    }
 
    /* Count the number of source selects for Alpha and RGB.  If we

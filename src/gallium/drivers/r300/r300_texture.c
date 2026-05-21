@@ -31,16 +31,11 @@
 enum pipe_format r300_unbyteswap_array_format(enum pipe_format format)
 {
     /* Only BGRA 8888 array formats are supported for simplicity of
-     * the implementation. On little-endian hosts these formats need
-     * R300_SURF_DWORD_SWAP in the render backend, which the CRTC display
-     * controller does not apply.  r300_is_format_supported() therefore
-     * excludes them from PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET so
-     * that only render-target use is enabled.  (The original regression in
-     * freedesktop.org bug #98869 was caused by advertising these formats for
-     * scanout without that exclusion.)
-     * TODO: Verify A8R8G8B8/X8R8G8B8 render-target output on LE hardware;
-     * the fix rests on static analysis of bug #98869 and has not been
-     * confirmed by GL draw calls on actual little-endian silicon. */
+     * the implementation.  These formats render through
+     * R300_SURF_DWORD_SWAP, which the CRTC display controller does not
+     * apply during scanout.  r300_is_format_supported() therefore excludes
+     * them from PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET so that only
+     * render-target use is enabled. */
     switch (format) {
     case PIPE_FORMAT_A8R8G8B8_UNORM:
         return PIPE_FORMAT_B8G8R8A8_UNORM;
