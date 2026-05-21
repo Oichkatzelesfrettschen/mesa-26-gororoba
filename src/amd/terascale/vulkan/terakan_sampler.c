@@ -100,12 +100,8 @@ terakan_CreateSampler(VkDevice const deviceHandle, VkSamplerCreateInfo const * c
 
    *pSampler = terakan_sampler_to_handle(sampler);
 
-   /* Descriptor-object byte capture for the byte-path comparison:
-    * emit the 3-dword SQ_TEX_SAMPLER descriptor under the env-gated
-    * `TERAKAN_DEBUG_DUMP_DESCRIPTOR=1` strict path.  Disabled-path
-    * cost is one cached boolean read.  See
-    * src/amd/terascale/vulkan/terakan_descriptor_dump.h for the JSONL
-    * schema and gate semantics. */
+   /* Env-gated descriptor dump for comparing sampler construction with
+    * command-stream packet captures. */
    terakan_descriptor_dump_sampler(*pSampler, sampler);
    return VK_SUCCESS;
 }
