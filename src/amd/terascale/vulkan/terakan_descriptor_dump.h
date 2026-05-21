@@ -4,22 +4,22 @@
  */
 
 /*
- * terakan_a0_dump.h -- env-gated descriptor-object capture (Y.3a).
+ * terakan_descriptor_dump.h -- env-gated descriptor-object capture.
  *
  * Emits the SQ_TEX_RESOURCE / SQ_TEX_RESOURCE_GATHER / sampler dword
  * arrays that Terakan computes at VkImageView / VkSampler creation
- * time as JSON Lines to /tmp/terakan_a0_<pid>.jsonl.  This is the A0
- * (descriptor object) side of the master-plan A0/A1/B/C byte-path
- * comparison; A1 (final PM4 IB) is Y.3b, B (libdrm uprobe envelope)
- * is the existing Phase W.1 bundle, C (post-validator IB) is the
- * Y.2 radeon-palm-gate DKMS observer.
+ * time as JSON Lines to /tmp/terakan_descriptor_<pid>.jsonl.  These are the
+ * descriptor-object (A0) bytes in the descriptor-object/final-IB/
+ * libdrm-envelope/post-validator-IB byte-path ontology used to
+ * localise wrong-result-vs-byte-preserved verdicts in
+ * dEQP-VK.glsl.texture_gather cube int gather cases on Palm.
  *
  * Gate: env TERAKAN_DEBUG_DUMP_DESCRIPTOR with value "1" via the
  * strict gate helper terakan_env_gate_enabled().  Default off.
  *
  * Output schema (one JSON object per line per descriptor):
  *   {
- *     "event":          "a0_image_view" | "a0_sampler",
+ *     "event":          "descriptor_image_view" | "descriptor_sampler",
  *     "ts_nsec":        <CLOCK_MONOTONIC>,
  *     "pid":            <getpid>,
  *     "tid":            <gettid>,
@@ -35,8 +35,8 @@
  * production-path side effects.
  */
 
-#ifndef TERAKAN_A0_DUMP_H
-#define TERAKAN_A0_DUMP_H
+#ifndef TERAKAN_DESCRIPTOR_DUMP_H
+#define TERAKAN_DESCRIPTOR_DUMP_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -48,19 +48,19 @@ struct terakan_sampler;
 /* Cheap enable check.  Inlines to one getenv() on first call and a
  * cached static on subsequent calls so the disabled-path overhead is
  * essentially zero. */
-bool terakan_a0_dump_active(void);
+bool terakan_descriptor_dump_active(void);
 
 /* Emit one a0_image_view JSONL row.  Caller already constructed
  * view->resource[] and view->resource_gather[]; this function just
  * formats + writes.  Safe to call unconditionally (re-checks
  * a0_dump_active() internally). */
-void terakan_a0_dump_image_view(VkImageView view_handle,
+void terakan_descriptor_dump_image_view(VkImageView view_handle,
                                 struct terakan_image_view const *view,
                                 VkImageViewCreateInfo const *create_info);
 
 /* Emit one a0_sampler JSONL row.  Caller already constructed
  * sampler->descriptor (3 dwords per Evergreen ISA Ch.7). */
-void terakan_a0_dump_sampler(VkSampler sampler_handle,
+void terakan_descriptor_dump_sampler(VkSampler sampler_handle,
                              struct terakan_sampler const *sampler);
 
-#endif /* TERAKAN_A0_DUMP_H */
+#endif /* TERAKAN_DESCRIPTOR_DUMP_H */
