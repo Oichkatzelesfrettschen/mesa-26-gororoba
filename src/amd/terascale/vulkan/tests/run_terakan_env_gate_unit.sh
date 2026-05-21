@@ -27,11 +27,15 @@ set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 HDR="${SELF_DIR}/../terakan_env.h"
 
-# Portable mktemp templates: trailing 'X' fields are filled with random
-# characters by both GNU and BSD coreutils.  No --suffix flag is used.
-TMP_DRV="$(mktemp -t terakan_env_gate_drv.XXXXXX.c)"
-TMP_BIN="$(mktemp -t terakan_env_gate_bin.XXXXXX)"
-trap 'rm -f "${TMP_BIN}" "${TMP_DRV}"' EXIT
+# Portable mktemp: BSD mktemp (macOS/OpenBSD/FreeBSD) requires the
+# 'X' field to be at the END of the template; GNU mktemp accepts X
+# anywhere.  The previous "terakan_env_gate_drv.XXXXXX.c" pattern
+# breaks on BSD because Xs are not trailing.  Use a private temp
+# directory + fixed filenames inside it for cross-platform safety.
+TMP_DIR="$(mktemp -d -t terakan_env_gate.XXXXXX)"
+TMP_DRV="${TMP_DIR}/drv.c"
+TMP_BIN="${TMP_DIR}/drv.bin"
+trap 'rm -rf "${TMP_DIR}"' EXIT
 
 cat > "${TMP_DRV}" <<EOF
 #include <stdio.h>
@@ -45,7 +49,14 @@ EOF
 
 # -std=c11 to guarantee stdbool.h + static-inline semantics across
 # toolchains; -Werror to fail closed on any unexpected diagnostic.
-"${CC:-cc}" -std=c11 -O0 -Wall -Wextra -Werror "${TMP_DRV}" -o "${TMP_BIN}" || {
+#
+# CC is intentionally LEFT UNQUOTED so values like 'ccache clang' or
+# 'clang -target x86_64-linux-gnu' are word-split into argv as the
+# user intends.  ${CC:-cc} provides the default.  shellcheck disable
+# applies because the unquoting is deliberate per common Makefile /
+# autotools convention.
+# shellcheck disable=SC2086
+${CC:-cc} -std=c11 -O0 -Wall -Wextra -Werror "${TMP_DRV}" -o "${TMP_BIN}" || {
     echo "build failed" >&2
     exit 2
 }
