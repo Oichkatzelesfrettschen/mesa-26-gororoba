@@ -764,19 +764,12 @@ BlockScheduler::can_reserve_kcache_for_ar_uses(const AluInstr& addr_load) const
       return instr_precedes(lhs, rhs);
    });
 
-   unsigned checked = 0;
-   const unsigned remaining_ar_uses = ar_uses.size();
    for (auto use : ar_uses) {
-      if (checked == remaining_ar_uses)
-         break;
-
       if (!m_current_block->can_reserve_kcache(*use, kcache))
          return false;
-
-      ++checked;
    }
 
-   return checked == remaining_ar_uses;
+   return true;
 }
 
 bool
@@ -899,23 +892,26 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
          break;
       } else if (m_current_block->kcache_reservation_failed() ||
                  m_current_block->kcache_preflight_failed()) {
-         // LDS read groups should not lead to impossible
-         // kcache constellations
+         const bool preflight_failed = m_current_block->kcache_preflight_failed();
+         const char *failure =
+            preflight_failed ? "KCACHE preflight failed" : "KCACHE reservation failed";
+
+         /* LDS read groups should not lead to impossible
+          * kcache constellations. */
          assert(!m_current_block->lds_group_active());
 
-         // AR is loaded but not all uses are done — cannot start a
-         // new CF here because the address register value would be
-         // lost across clause boundaries.  This is a genuine
-         // scheduler limitation: bail out so the shader fails
-         // compilation rather than silently miscompiling.
+         /* AR is loaded but not all uses are done, so starting a new
+          * CF here would lose the address register value across clause
+          * boundaries.  Bail out so the shader fails compilation
+          * rather than silently miscompiling. */
          if (expected_ar_uses > 0) {
-            fprintf(stderr, "r600/sfn: KCACHE reservation failed while AR in use "
-                            "(%d pending uses) -- cannot break clause\n",
-                            m_current_block->expected_ar_uses());
+            fprintf(stderr, "r600/sfn: %s while AR in use "
+                            "(%d pending uses); cannot break clause\n",
+                            failure, m_current_block->expected_ar_uses());
             return false;
          }
 
-         // kcache reservation failed, so we have to start a new CF
+         /* kcache reservation or preflight failed, so start a new CF. */
          start_new_block(out_blocks, Block::alu);
       } else {
          // Ready is not empty, but we didn't schedule anything, this
