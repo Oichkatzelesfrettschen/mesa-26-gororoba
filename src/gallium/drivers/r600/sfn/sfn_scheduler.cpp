@@ -765,8 +765,9 @@ BlockScheduler::can_reserve_kcache_for_ar_uses(const AluInstr& addr_load) const
    });
 
    unsigned checked = 0;
+   const unsigned remaining_ar_uses = ar_uses.size();
    for (auto use : ar_uses) {
-      if (checked == addr_load.num_ar_uses())
+      if (checked == remaining_ar_uses)
          break;
 
       if (!m_current_block->can_reserve_kcache(*use, kcache))
@@ -775,7 +776,7 @@ BlockScheduler::can_reserve_kcache_for_ar_uses(const AluInstr& addr_load) const
       ++checked;
    }
 
-   return checked == addr_load.num_ar_uses();
+   return checked == remaining_ar_uses;
 }
 
 bool
@@ -896,7 +897,8 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
       if (success) {
          ++m_alu_groups_scheduled;
          break;
-      } else if (m_current_block->kcache_reservation_failed()) {
+      } else if (m_current_block->kcache_reservation_failed() ||
+                 m_current_block->kcache_preflight_failed()) {
          // LDS read groups should not lead to impossible
          // kcache constellations
          assert(!m_current_block->lds_group_active());
@@ -956,7 +958,7 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
    /* Law 1: Record this group's vec-slot destinations so the next
     * collect_ready_alu_vec() round can boost instructions that would
     * benefit from PV (Previous Vector) forwarding. */
-   for (int s = 0; s < (AluGroup::has_t() ? 5 : 4); ++s) {
+   for (int s = 0; s < AluGroup::max_slots(); ++s) {
       m_prev_group_dest[s] = -1;
       auto slot_instr = (*group)[s];
       if (slot_instr && slot_instr->has_alu_flag(alu_write)) {
@@ -1254,7 +1256,7 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup *group,
    }
 
    if (!can_reserve_kcache_for_ar_uses(**it)) {
-      m_current_block->mark_kcache_reservation_failed();
+      m_current_block->mark_kcache_preflight_failed();
       sfn_log << SfnLog::schedule << " failed (AR kcache)\n";
       ++it;
       return false;
@@ -1351,7 +1353,7 @@ BlockScheduler::schedule_alu_to_group_vec(AluGroup *group)
                if (!src || !src->as_register())
                   continue;
                int src_key = src->sel() * 4 + src->chan();
-               for (int slot = 0; slot < 5; ++slot) {
+               for (int slot = 0; slot < AluGroup::max_slots(); ++slot) {
                   if (m_prev_group_dest[slot] == src_key) {
                      is_pv_ps_consumer = true;
                      static const char *slot_names[] = {"PV.x", "PV.y", "PV.z", "PV.w", "PS"};
@@ -1469,6 +1471,7 @@ BlockScheduler::schedule_alu_multislot_to_group_vec(AluGroup *group)
          continue;
       }
 
+      auto kc_save = m_current_block->kcache_snapshot();
       if (!m_current_block->try_reserve_kcache(**i)) {
          sfn_log << SfnLog::schedule << " failed (kcache)\n";
          ++i;
@@ -1486,6 +1489,7 @@ BlockScheduler::schedule_alu_multislot_to_group_vec(AluGroup *group)
 
          alu_multi_slot_ready.erase(old_i);
       } else {
+         m_current_block->kcache_rollback(kc_save);
          if ((group->free_slot_mask() & 0xf) == 0xf) {
             std::cerr << **i << "\n";
             UNREACHABLE("Splitting into an empty slot must not fail");
@@ -1508,7 +1512,7 @@ BlockScheduler::schedule_alu_to_group_trans(AluGroup *group,
    bool group_has_update_pred = group->has_update_exec();
 
    /* Active PV/PS Seeker for trans slot: try instructions that read from
-    * the previous group's destinations first (all 5 slots — trans can
+    * the previous group's destinations first (all slots; trans can
     * read PV.xyzw as well as PS). */
    {
       auto it = readylist.begin();
@@ -1520,7 +1524,7 @@ BlockScheduler::schedule_alu_to_group_trans(AluGroup *group,
             if (!src || !src->as_register())
                continue;
             int src_key = src->sel() * 4 + src->chan();
-            for (int slot = 0; slot < 5; ++slot) {
+            for (int slot = 0; slot < AluGroup::max_slots(); ++slot) {
                if (m_prev_group_dest[slot] == src_key) {
                   is_pv_ps_consumer = true;
                   static const char *slot_names[] = {"PV.x", "PV.y", "PV.z", "PV.w", "PS"};
@@ -1593,6 +1597,7 @@ BlockScheduler::schedule_alu_to_group_trans(AluGroup *group,
       }
 
       sfn_log << SfnLog::schedule << "Try schedule to trans " << **i;
+      auto kc_save = m_current_block->kcache_snapshot();
       if (!m_current_block->try_reserve_kcache(**i)) {
          sfn_log << SfnLog::schedule << " failed (kcache)\n";
          ++i;
@@ -1601,6 +1606,7 @@ BlockScheduler::schedule_alu_to_group_trans(AluGroup *group,
 
       if ((group_has_kill && (*i)->has_alu_flag(alu_update_exec)) ||
           (group_has_update_pred && (*i)->is_kill())) {
+         m_current_block->kcache_rollback(kc_save);
          ++i;
          continue;
       }
@@ -1618,6 +1624,7 @@ BlockScheduler::schedule_alu_to_group_trans(AluGroup *group,
          sfn_log << SfnLog::schedule << " success\n";
          break;
       } else {
+         m_current_block->kcache_rollback(kc_save);
          ++i;
          sfn_log << SfnLog::schedule << " failed\n";
       }

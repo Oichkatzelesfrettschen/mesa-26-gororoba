@@ -87,16 +87,18 @@ pm4_ib_dump_pthread_key(pthread_t thread)
 {
    unsigned char bytes[sizeof(thread)];
    /* FNV-1a 64-bit offset basis (FNV reference: http://www.isthe.com/chongo/tech/comp/fnv/) */
-   uintptr_t key = (uintptr_t)14695981039346656037ull;
+   uint64_t key = 14695981039346656037ull;
 
    memcpy(bytes, &thread, sizeof(bytes));
 
    for (size_t i = 0; i < sizeof(thread); i++) {
       key ^= bytes[i];
-      key *= (uintptr_t)1099511628211ull;
+      key *= 1099511628211ull;
    }
 
-   return key ? key : 1;
+   uintptr_t folded = (uintptr_t)(key ^ (key >> 32));
+
+   return folded ? folded : 1;
 }
 #endif /* !DETECT_OS_WINDOWS */
 

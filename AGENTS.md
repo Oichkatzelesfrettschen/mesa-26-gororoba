@@ -168,7 +168,7 @@ Canonical shape:
 meson setup builddir \
   --prefix="$PWD/install" \
   -Dbuildtype=debugoptimized \
-  -Dgallium-drivers=r300,r600,llvmpipe \
+  -Dgallium-drivers=r300,r600,softpipe \
   -Dvulkan-drivers=amd_terascale \
   -Dllvm=enabled
 ninja -C builddir
