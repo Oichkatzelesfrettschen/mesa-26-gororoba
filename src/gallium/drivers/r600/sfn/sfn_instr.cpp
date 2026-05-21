@@ -401,17 +401,26 @@ Block::try_reserve_kcache(const AluInstr& instr)
 {
    auto kcache = m_kcache;
 
+   if (!can_reserve_kcache(instr, kcache)) {
+      m_kcache_alloc_failed = true;
+      return false;
+   }
+
+   m_kcache = kcache;
+   m_kcache_alloc_failed = false;
+   return true;
+}
+
+bool
+Block::can_reserve_kcache(const AluInstr& instr, KCacheState& kcache) const
+{
    for (auto& src : instr.sources()) {
       auto u = src->as_uniform();
       if (u) {
-         if (!try_reserve_kcache(*u, kcache)) {
-            m_kcache_alloc_failed = true;
+         if (!try_reserve_kcache(*u, kcache))
             return false;
-         }
       }
    }
-   m_kcache = kcache;
-   m_kcache_alloc_failed = false;
    return true;
 }
 

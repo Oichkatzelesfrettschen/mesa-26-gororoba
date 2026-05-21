@@ -202,8 +202,11 @@ public:
    void set_type(Type t, r600_chip_class chip_class);
    int32_t remaining_slots() const { return m_remaining_slots;}
 
+   using KCacheState = std::array<KCacheLine, 4>;
+
    bool try_reserve_kcache(const AluGroup& instr);
    bool try_reserve_kcache(const AluInstr& group);
+   bool can_reserve_kcache(const AluInstr& instr, KCacheState& kcache) const;
 
    auto last_lds_instr() { return m_last_lds_instr; }
    void set_last_lds_instr(Instr *instr) { m_last_lds_instr = instr; }
@@ -215,8 +218,8 @@ public:
    size_t size() const { return m_instructions.size(); }
 
    bool kcache_reservation_failed() const { return m_kcache_alloc_failed; }
+   void mark_kcache_reservation_failed() { m_kcache_alloc_failed = true; }
 
-   using KCacheState = std::array<KCacheLine, 4>;
    KCacheState kcache_snapshot() const { return m_kcache; }
    void kcache_rollback(const KCacheState& s) { m_kcache = s; m_kcache_alloc_failed = false; }
 
