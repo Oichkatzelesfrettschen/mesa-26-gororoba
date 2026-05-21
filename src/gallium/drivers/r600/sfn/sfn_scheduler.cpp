@@ -1040,8 +1040,11 @@ BlockScheduler::finalize_schedule_alu_group(Shader::ShaderBlocks& out_blocks,
 
    /* Record this group's destination slots so the next ready-vector pass can
     * prioritize instructions that can use PV or PS forwarding. */
-   for (int s = 0; s < 5; ++s) {
+   for (int s = 0; s < 5; ++s)
       m_prev_group_dest[s] = -1;
+
+   int const group_slot_count = AluGroup::has_t() ? 5 : 4;
+   for (int s = 0; s < group_slot_count; ++s) {
       auto slot_instr = group[s];
       if (slot_instr && slot_instr->has_alu_flag(alu_write)) {
          auto d = slot_instr->dest();
