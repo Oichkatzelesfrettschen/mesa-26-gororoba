@@ -462,14 +462,20 @@ static void r300_translate_fragment_shader(
     }
 
     if (state.type == PIPE_SHADER_IR_NIR) {
-        /* Direct NIR->RC path: lower the NIR shader for RC, then walk it and
-         * emit RC instructions without an intermediate TGSI token array. */
-        r300_nir_lower_for_rc(state.ir.nir,
+        /* Clone before lowering: r300_nir_lower_for_rc() mutates the NIR
+         * shader in place (varying-slot remapping, trig lowering, shadow
+         * lowering keyed on compare_state).  r300_pick_fragment_shader()
+         * reuses the same state.ir.nir across compile_state variants, so
+         * running the lowering sequence twice on the same object corrupts
+         * shadow-compare and varying-slot state for subsequent variants. */
+        nir_shader *const nir = nir_shader_clone(NULL, state.ir.nir);
+        r300_nir_lower_for_rc(nir,
                               (struct pipe_screen *)r300->screen,
                               shader->compare_state);
-        r300_nir_to_rc_direct(&compiler.Base, state.ir.nir,
+        r300_nir_to_rc_direct(&compiler.Base, nir,
                               (struct pipe_screen *)r300->screen,
                               shader->compare_state);
+        ralloc_free(nir);
         if (compiler.Base.Error) {
             shader->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg : "");
             r300_dummy_fragment_shader(r300, shader);

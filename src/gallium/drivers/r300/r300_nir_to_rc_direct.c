@@ -652,9 +652,13 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
          return;
       }
       struct rc_dst_register dst = nrc_dst_for_def(c, &instr->def);
-      unsigned vec4_offset = nir_src_as_uint(instr->src[1]) / 16;
-      /* nir_intrinsic_base gives the starting constant slot for this UBO binding
-       * in the flat RC constant table, matching RC_CONSTANT_EXTERNAL allocation. */
+      /* src[1] is a vec4 index at this stage: the Gallium/Mesa UBO lowering
+       * pipeline converts byte offsets to vec4 units before the shader
+       * reaches emission.  The TGSI path (ntr_emit_load_ubo, nir_to_rc.c)
+       * adds src[1] directly without dividing by 16; align with that. */
+      unsigned vec4_offset = nir_src_as_uint(instr->src[1]);
+      /* nir_intrinsic_base gives the starting constant slot for this UBO
+       * binding in the flat RC constant table (RC_CONSTANT_EXTERNAL). */
       int slot = nir_intrinsic_base(instr) + (int)vec4_offset;
 
       inst = nrc_emit(c, RC_OPCODE_MOV);
@@ -712,10 +716,13 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
    }
 
    case nir_intrinsic_load_point_coord: {
-      /* PNTC input slot assigned by nir_lower_io from VARYING_SLOT_PNTC. */
-      int idx = nrc_find_input_slot(c->s, VARYING_SLOT_PNTC);
+      /* r300_nir_lower_for_rc() runs ntr_fixup_varying_slots() before
+       * emission.  That pass remaps VARYING_SLOT_PNTC -> VARYING_SLOT_VAR8
+       * (nir_to_rc.c:ntr_fixup_varying_slots).  Searching for PNTC after
+       * the remap always returns -1 even when point coord is present. */
+      int idx = nrc_find_input_slot(c->s, VARYING_SLOT_VAR8);
       if (idx < 0) {
-         rc_error(c->compiler, "r300_nir_to_rc_direct: no VARYING_SLOT_PNTC input for point_coord\n");
+         rc_error(c->compiler, "r300_nir_to_rc_direct: no VARYING_SLOT_VAR8 input for point_coord\n");
          c->error = true;
          return;
       }
