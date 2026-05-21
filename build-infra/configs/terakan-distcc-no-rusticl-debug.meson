@@ -5,9 +5,6 @@
 # variant installs to /usr/local/mesa-26-gororoba/; this variant
 # installs to /usr/local/mesa-26-gororoba-debug/.  Both prefixes
 # coexist; operators select via VK_ICD_FILENAMES.
-#
-# See ../../../steinmarder/docs/workspace/release-vs-debug-build-split.md
-# for the RCA that motivated the split.
 
 [project options]
 buildtype           = 'debug'

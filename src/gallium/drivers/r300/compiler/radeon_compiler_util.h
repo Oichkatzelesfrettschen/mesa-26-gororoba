@@ -46,6 +46,9 @@ struct rc_src_register lmul_swizzle(unsigned int swizzle, struct rc_src_register
 
 void reset_srcreg(struct rc_src_register *reg);
 
+bool rc_src_register_equal(const struct rc_src_register *a,
+                           const struct rc_src_register *b);
+
 unsigned int rc_src_reads_dst_mask(rc_register_file src_file, unsigned int src_idx,
                                    unsigned int src_swz, rc_register_file dst_file,
                                    unsigned int dst_idx, unsigned int dst_mask);

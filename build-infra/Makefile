@@ -35,6 +35,16 @@ INSTALL_NAMESPACE ?= mesa
 # artifacts that are absent from the current profile.  Override PREFIX=... on
 # the make line when intentionally installing into a shared active tree.
 PREFIX   ?= /usr/local/$(INSTALL_NAMESPACE)-$(PROFILE)
+TERAKAN_RELEASE_PROFILE := terakan-distcc-no-rusticl
+TERAKAN_RELEASE_HOSTENV := btver1-ccache-no-pump
+TERAKAN_RELEASE_BUILDDIR := $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
+TERAKAN_RELEASE_PREFIX := /usr/local/mesa-26-gororoba
+TERAKAN_RELEASE_NAMESPACE := mesa-26-gororoba
+TERAKAN_DEBUG_PROFILE := terakan-distcc-no-rusticl-debug
+TERAKAN_DEBUG_HOSTENV := btver1-ccache-no-pump
+TERAKAN_DEBUG_BUILDDIR := $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
+TERAKAN_DEBUG_PREFIX := /usr/local/mesa-26-gororoba-debug
+TERAKAN_DEBUG_NAMESPACE := mesa-26-gororoba-debug
 ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
 JOBS     ?= 8
 else ifneq (,$(filter $(HOSTENV),vostro1000-k8-ccache-no-pump))
@@ -72,6 +82,8 @@ MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER
         artifact-check test \
         rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-distcc-no-rusticl \
         rebuild-terakan-distcc-no-rusticl-ccache-no-pump \
+        rebuild-terakan-distcc-no-rusticl-ccache-no-pump-pair \
+        rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump \
         rebuild-terakan-distcc-no-rusticl-pump \
         rebuild-terakan-minimal \
         rebuild-base-debug rebuild-terakan-release rebuild-terakan-profile \
@@ -382,6 +394,17 @@ test:
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	ninja -C $(BUILDDIR) test
 
+define CLEAN_CONFIGURE_BUILD_PROFILE
+	$(MAKE) clean PROFILE=$(1) HOSTENV=$(2) BUILDDIR=$(3)
+	$(MAKE) configure PROFILE=$(1) HOSTENV=$(2) BUILDDIR=$(3)
+	$(MAKE) build PROFILE=$(1) HOSTENV=$(2) BUILDDIR=$(3)
+endef
+
+define INSTALL_PROFILE
+	$(MAKE) install PROFILE=$(1) HOSTENV=$(2) BUILDDIR=$(3) \
+	    PREFIX=$(4) INSTALL_NAMESPACE=$(5)
+endef
+
 # common single-command loops (clean + configure + build)
 rebuild-terakan-full:
 	$(MAKE) clean PROFILE=terakan-full
@@ -406,9 +429,7 @@ rebuild-terakan-distcc-no-rusticl:
 # active mesa-terakan-distcc-no-rusticl build.  `clean` removes only BUILDDIR;
 # ccache and sccache live under ~/.cache via env/btver1-ccache-no-pump.env.
 rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
-	$(MAKE) build PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
+	$(call CLEAN_CONFIGURE_BUILD_PROFILE,$(TERAKAN_RELEASE_PROFILE),$(TERAKAN_RELEASE_HOSTENV),$(TERAKAN_RELEASE_BUILDDIR))
 
 # Pair target: build BOTH the release-default canonical AND the
 # debug variant in the same invocation.  Release goes to
@@ -416,23 +437,17 @@ rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
 # debug goes to /usr/local/mesa-26-gororoba-debug/ (interactive
 # bringup target).  Both builds use the same ccache + distcc
 # fabric so ccache hits across them give near-incremental
-# wall-clock on the second pass.
+# wall-clock on the second pass.  Installs run only after both build
+# trees succeed so the active release/debug pair does not get half
+# updated by a late debug failure.
 rebuild-terakan-distcc-no-rusticl-ccache-no-pump-pair:
 	$(MAKE) rebuild-terakan-distcc-no-rusticl-ccache-no-pump
-	$(MAKE) install PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump \
-	    BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
-	    PREFIX=/usr/local/mesa-26-gororoba INSTALL_NAMESPACE=mesa-26-gororoba
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
-	$(MAKE) build PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
-	$(MAKE) install PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump \
-	    BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
-	    PREFIX=/usr/local/mesa-26-gororoba-debug INSTALL_NAMESPACE=mesa-26-gororoba-debug
+	$(MAKE) rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump
+	$(call INSTALL_PROFILE,$(TERAKAN_RELEASE_PROFILE),$(TERAKAN_RELEASE_HOSTENV),$(TERAKAN_RELEASE_BUILDDIR),$(TERAKAN_RELEASE_PREFIX),$(TERAKAN_RELEASE_NAMESPACE))
+	$(call INSTALL_PROFILE,$(TERAKAN_DEBUG_PROFILE),$(TERAKAN_DEBUG_HOSTENV),$(TERAKAN_DEBUG_BUILDDIR),$(TERAKAN_DEBUG_PREFIX),$(TERAKAN_DEBUG_NAMESPACE))
 
 rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump:
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
-	$(MAKE) build PROFILE=terakan-distcc-no-rusticl-debug HOSTENV=btver1-ccache-no-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
+	$(call CLEAN_CONFIGURE_BUILD_PROFILE,$(TERAKAN_DEBUG_PROFILE),$(TERAKAN_DEBUG_HOSTENV),$(TERAKAN_DEBUG_BUILDDIR))
 
 # Cold clean lane for x130e.  Configure and generated Meson/Ninja outputs are
 # completed before the include server starts; the heavy C/C++ compile then runs
