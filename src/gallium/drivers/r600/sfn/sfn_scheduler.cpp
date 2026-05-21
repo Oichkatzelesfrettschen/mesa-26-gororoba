@@ -888,7 +888,7 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
    /* Law 1: Record this group's vec-slot destinations so the next
     * collect_ready_alu_vec() round can boost instructions that would
     * benefit from PV (Previous Vector) forwarding. */
-   for (int s = 0; s < 5; ++s) {
+   for (int s = 0; s < (AluGroup::has_t() ? 5 : 4); ++s) {
       m_prev_group_dest[s] = -1;
       auto slot_instr = (*group)[s];
       if (slot_instr && slot_instr->has_alu_flag(alu_write)) {
