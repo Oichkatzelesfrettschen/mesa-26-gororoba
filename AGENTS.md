@@ -150,7 +150,7 @@ Do not:
 - force-push `main`.
 - run destructive commands on shared workspace paths.
 - introduce raw IPv4 or IPv6 literals in scripts/configs; use hostnames.
-- encode local absolute paths or private host FQNs.
+- encode local absolute paths or private host FQDNs.
 - symlink instruction files.
 - chain `ccache distcc compiler` through a shell wrapper.
 - use `RUSTC_WRAPPER` for Meson Rust and assume it affects Meson; use Meson `[binaries]` native files.
@@ -297,9 +297,9 @@ When merging changes from parallel branches or review findings, preserve all
 non-refuted content.  Do not use wave/phase chronology to decide which branch
 wins.  Mechanism and evidence decide.
 
-Default additive merge policy: union, then harmonize terminology, then infuse.
-Infuse means distill both sources into a stronger, navigable rule or change that
-carries the evidence, examples, and enforcement hooks forward.
+Default additive merge policy: union, then harmonize terminology, then preserve
+the strongest resulting rule or change.  The result must carry the evidence,
+examples, and enforcement hooks forward in repo-native language.
 
 | Verb | Required action |
 |---|---|
