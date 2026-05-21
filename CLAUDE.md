@@ -1,10 +1,10 @@
-@AGENTS.md
+@agents.md
 
 # Claude Code Loader for mesa-26-gororoba
 
 ## Loading rule
 
-`@AGENTS.md` contains the Mesa rules. This file exists only to load `@AGENTS.md` and add Claude Code operating notes.
+`AGENTS.md` contains the Mesa rules. This file exists only to load `AGENTS.md` and add Claude Code operating notes.
 
 Do not copy the `AGENTS.md` body here. Do not add Mesa policy that applies to every agent here. Shared rules belong in `AGENTS.md`.
 
