@@ -148,11 +148,16 @@ static bool r300_fast_zclear_allowed(struct r300_context *r300,
     if (!zmask_dwords)
         return false;
 
-    /* On tested RV530, 3D_CLEAR_ZMASK does not work above 0x1400. Avoid fast Z
-     * clear in that range and fall back to normal depth clear.
+    /* Empirically, RV530 (R5xx, tested with 1P/2Z config) fails 3D_CLEAR_ZMASK
+     * when the ZMASK buffer exceeds 0x1400 dwords.  The is_r500 guard limits
+     * fast-clear to that threshold.
      *
-     * FIXME: Validate whether pre-R5xx families need a similar guard and/or
-     * a different threshold. */
+     * Pre-R5xx chips are safe without a separate guard: RS480/RC410 carry
+     * zmask_ram = RV3xx_ZMASK_SIZE = 5120 (= 0x1400) dwords and use a single
+     * GB pipe, so zmask_dwords is bounded to at most 0x1400 by the allocation
+     * eligibility check in r300_setup_hyperz_properties().  R300/R350 (PIPE_ZMASK_SIZE
+     * = 4096 dwords, single pipe) and RV350/RV370/RV380 (5120 dwords, single
+     * pipe) are similarly bounded below 0x1400. */
     if (r300->screen->caps.is_r500 && zmask_dwords > 0x1400)
         return false;
 
