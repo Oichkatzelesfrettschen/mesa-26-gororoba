@@ -344,11 +344,20 @@ static bool r300_is_format_supported(struct pipe_screen* screen,
         /* 2101010 cannot be rendered to on non-r5xx. */
         (!is_color2101010 || is_r500) &&
         r300_is_colorbuffer_format_supported(format)) {
-        retval |= usage &
-            (PIPE_BIND_RENDER_TARGET |
-             PIPE_BIND_DISPLAY_TARGET |
-             PIPE_BIND_SCANOUT |
-             PIPE_BIND_SHARED);
+        /* Formats that require DWORD_SWAP in the render backend
+         * (A8R8G8B8, X8R8G8B8 on little-endian) cannot be used for scanout:
+         * the CRTC display controller reads framebuffer memory without the
+         * GPU render engine's endian-swap setting, producing wrong pixel byte
+         * order on screen.  Allow only RENDER_TARGET and SHARED. */
+        bool needs_dword_swap =
+            r300_unbyteswap_array_format(format) != format;
+        unsigned scanout_mask = needs_dword_swap
+            ? (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SHARED)
+            : (PIPE_BIND_RENDER_TARGET |
+               PIPE_BIND_DISPLAY_TARGET |
+               PIPE_BIND_SCANOUT |
+               PIPE_BIND_SHARED);
+        retval |= usage & scanout_mask;
 
         if (r300_is_blending_supported(r300_screen(screen), format)) {
             retval |= usage & PIPE_BIND_BLENDABLE;
