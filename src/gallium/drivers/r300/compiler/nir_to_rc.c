@@ -888,7 +888,7 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
 
          if (c->lower_fabs)
             ntr_MAX(c, dst, src[0], ureg_negate(src[0]));
-         else if (!ntr_try_fold_srcmod_to_ssa(c, &instr->def, ureg_abs(src[0])))
+         else if (dst.Saturate || !ntr_try_fold_srcmod_to_ssa(c, &instr->def, ureg_abs(src[0])))
             ntr_MOV(c, dst, ureg_abs(src[0]));
          break;
 
@@ -901,7 +901,7 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
          if (nir_legacy_float_mod_folds(instr))
             break;
 
-         if (!ntr_try_fold_srcmod_to_ssa(c, &instr->def, ureg_negate(src[0])))
+         if (dst.Saturate || !ntr_try_fold_srcmod_to_ssa(c, &instr->def, ureg_negate(src[0])))
             ntr_MOV(c, dst, ureg_negate(src[0]));
          break;
 
