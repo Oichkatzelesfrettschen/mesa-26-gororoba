@@ -55,7 +55,7 @@ Do not:
 
 - force-push `main`.
 - run destructive commands on shared workspace paths.
-- introduce raw `10.0.0.*` IPs in scripts/configs.
+- introduce raw IPv4 addresses in scripts/configs.
 - encode local absolute paths or private host FQNs.
 - symlink instruction files.
 - chain `ccache distcc compiler` through a shell wrapper.
@@ -74,8 +74,8 @@ Canonical shape:
 meson setup builddir \
   --prefix="$PWD/install" \
   -Dbuildtype=debugoptimized \
-  -Dgallium-drivers=r300,r600,swrast \
-  -Dvulkan-drivers=terakan \
+  -Dgallium-drivers=r300,r600,softpipe \
+  -Dvulkan-drivers=amd_terascale \
   -Dllvm=enabled
 ninja -C builddir
 ninja -C builddir install
