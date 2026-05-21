@@ -12,6 +12,7 @@
 [project options]
 buildtype           = 'debug'
 b_ndebug            = 'false'
+werror              = true
 
 # r600 only -- same as terakan-distcc.
 gallium-drivers     = ['r600']
