@@ -953,7 +953,8 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
 
          if (c->lower_fabs)
             ntr_emit_alu_op2(c, RC_OPCODE_MAX, dst, src[0], ntr_negate(src[0]));
-         else if (!ntr_try_fold_srcmod_to_ssa(c, &instr->def, ntr_abs(src[0])))
+         else if (dst.saturate != RC_SATURATE_NONE ||
+                  !ntr_try_fold_srcmod_to_ssa(c, &instr->def, ntr_abs(src[0])))
             ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_abs(src[0]));
          break;
 
@@ -966,7 +967,8 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
          if (nir_legacy_float_mod_folds(instr))
             break;
 
-         if (!ntr_try_fold_srcmod_to_ssa(c, &instr->def, ntr_negate(src[0])))
+         if (dst.saturate != RC_SATURATE_NONE ||
+             !ntr_try_fold_srcmod_to_ssa(c, &instr->def, ntr_negate(src[0])))
             ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_negate(src[0]));
          break;
 

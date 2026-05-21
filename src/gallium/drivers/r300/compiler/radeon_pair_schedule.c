@@ -1205,6 +1205,24 @@ scan_read(void *data, struct rc_instruction *inst, rc_register_file file, unsign
       if ((*v)->Writer) {
          add_tex_reader(s, (*v)->Writer, s->Current);
          s->Current->NumDependencies++;
+      } else if (s->PrevBlockHasTex) {
+         /* The reg was written by a PendingTEX from the previous block
+          * and another instruction in this block already registered the
+          * first read.  Register this reader too so the scheduler cannot
+          * emit it before the SemWait instruction that protects all
+          * consumers of this TEX result. */
+         struct rc_list *pend_ptr;
+         for (pend_ptr = s->PendingTEX; pend_ptr; pend_ptr = pend_ptr->Next) {
+            struct schedule_instruction *tex_sinst = pend_ptr->Item;
+            struct rc_instruction *tex_inst = tex_sinst->Instruction;
+            if (tex_inst->Type == RC_INSTRUCTION_NORMAL &&
+                tex_inst->U.I.DstReg.File == RC_FILE_TEMPORARY &&
+                tex_inst->U.I.DstReg.Index == index &&
+                ((tex_inst->U.I.DstReg.WriteMask >> chan) & 1)) {
+               add_tex_reader(s, tex_sinst, s->Current);
+               break;
+            }
+         }
       }
    }
    (*v)->NumReaders++;
