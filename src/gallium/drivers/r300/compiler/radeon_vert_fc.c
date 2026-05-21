@@ -231,10 +231,27 @@ rc_vert_fc(struct radeon_compiler *c, void *user)
          break;
 
       case RC_OPCODE_ENDIF:
-         /* TODO: If LoopDepth == 1 and there is only a single break
-          * we can optimize out the endif just after the break. However
-          * previous attempts were buggy, so keep it simple for now.
-          */
+         /* Optimization opportunity (not yet implemented): when LoopDepth == 1,
+          * BranchDepth == 1, there is exactly one break in the loop, and BRK is
+          * the only instruction in the IF block (ENDIF immediately follows BRK),
+          * the three-instruction sequence PRED_SNEQ_PUSH + RCP(0) + PRED_SET_POP
+          * can be collapsed to a single ME_PRED_SEQ(cond_src).
+          *
+          * ME_PRED_SEQ sets pred = (src == 0), which equals NOT cond.  That
+          * correctly gives pred=1 when the break is not taken (loop continues)
+          * and pred=0 when it is taken (subsequent iterations become no-ops
+          * because lower_endloop is skipped for LoopDepth==1 and nothing
+          * resets pred between hardware iterations).
+          *
+          * Simply removing PRED_SET_POP alone is wrong: PRED_SNEQ_PUSH already
+          * sets pred=0 on the no-break path (cond==false), so without the POP
+          * that path also exits with pred=0 and all subsequent iterations
+          * become no-ops regardless of the break condition.
+          *
+          * Implementation requires: a break counter in vert_fc_state, a saved
+          * pointer to the BRK instruction and its source register, detection at
+          * ENDIF time that the IF block contained only that BRK, and replacement
+          * of the three instructions in-place. */
          inst->U.I.Opcode = RC_ME_PRED_SET_POP;
          build_pred_dst(&inst->U.I.DstReg, &fc_state);
          build_pred_src(&inst->U.I.SrcReg[0], &fc_state);
