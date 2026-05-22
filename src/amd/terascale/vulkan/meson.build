@@ -58,6 +58,7 @@ libterakan_files = files(
   'nir/terakan_nir_lower_cmpxchg.c',
   'nir/terakan_nir_lower_subgroup_lds.c',
   'nir/terakan_nir_lower_tg4_view_swizzle.c',
+  'nir/terakan_nir_lower_24bit_mul_hint.c',
   'terakan_barrier.c',
   'terakan_bo.c',
   'terakan_bo.h',
