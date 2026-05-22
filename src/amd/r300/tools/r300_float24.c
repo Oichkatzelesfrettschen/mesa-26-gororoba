@@ -114,13 +114,19 @@ struct known_value {
 };
 
 static const struct known_value known_values[] = {
-   { 0.0f,   0x000000u, "0.0"  },
-   { 1.0f,   0x3F0000u, "1.0"  },
-   {-1.0f,   0xBF0000u, "-1.0" },
-   { 2.0f,   0x400000u, "2.0"  },
-   { 0.5f,   0x3E0000u, "0.5"  },
-   { 0.25f,  0x3D0000u, "0.25" },
-   { 1.5f,   0x3F8000u, "1.5"  },
+   { 0.0f,        0x000000u, "0.0"    },
+   { 1.0f,        0x3F0000u, "1.0"    },
+   {-1.0f,        0xBF0000u, "-1.0"   },
+   { 2.0f,        0x400000u, "2.0"    },
+   { 0.5f,        0x3E0000u, "0.5"    },
+   { 0.25f,       0x3D0000u, "0.25"   },
+   { 1.5f,        0x3F8000u, "1.5"    },
+   /* Exponent boundary: frexpf_exp = -61 gives stored_exp = 1 (min non-degenerate). */
+   { 0x1p-62f,    0x010000u, "2^-62"  },
+   {-0x1p-62f,    0x810000u, "-2^-62" },
+   /* Exponent boundary: frexpf_exp = 65 gives stored_exp = 127 (max). */
+   { 0x1p64f,     0x7F0000u, "2^64"   },
+   {-0x1p64f,     0xFF0000u, "-2^64"  },
 };
 
 static int
@@ -155,6 +161,8 @@ run_roundtrip_tests(void)
 {
    static const float inputs[] = {
       1.0f, -1.0f, 2.0f, 0.5f, 0.25f, 1.5f, 3.14159f, -0.333f, 1024.0f, 0.001f,
+      /* Exponent boundary values. */
+      0x1p-62f, -0x1p-62f, 0x1p64f, -0x1p64f,
    };
    int fail = 0;
 
