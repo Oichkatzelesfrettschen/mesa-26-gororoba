@@ -16,17 +16,18 @@
  *   ./builddir/src/amd/r300/tools/r300_float24 1.0 -1.0 3.14159
  */
 
-/* Exponent bias added to the frexpf exponent before storing in bits 22:16.
- * The 7-bit stored exponent field holds values in [0, R300_FLOAT24_EXP_MAX_STORED].
- * Change both constants together if the encoding ever needs adjustment. */
-#define R300_FLOAT24_EXP_BIAS       62u
-#define R300_FLOAT24_EXP_MAX_STORED 127u
-
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* R300_FLOAT24_EXP_BIAS is added to the frexpf exponent before storing in bits 22:16.
+ * Changing it shifts the range of IEEE exponents the format can encode.
+ * R300_FLOAT24_EXP_MAX_STORED is determined by the 7-bit field width (2^7 - 1 = 127).
+ * Adjusting the bias does not change EXP_MAX_STORED; only a field-width change does. */
+#define R300_FLOAT24_EXP_BIAS       62u
+#define R300_FLOAT24_EXP_MAX_STORED 127u
 
 /* Convert an IEEE 754 single-precision float to the R300 fragment shader
  * 24-bit float format.  Mirrors r300_emit.c:pack_float24 exactly.
@@ -93,7 +94,7 @@ r300_unpack_float24(uint32_t f24)
       return 0.0f;
 
    sign = (f24 >> 23) & 1u;
-   stored_exp = (f24 >> 16) & 0x7Fu;
+   stored_exp = (f24 >> 16) & R300_FLOAT24_EXP_MAX_STORED;
    mantissa_bits = f24 & 0xFFFFu;
 
    /* frexpf exponent = stored_exp - R300_FLOAT24_EXP_BIAS.  IEEE stored
