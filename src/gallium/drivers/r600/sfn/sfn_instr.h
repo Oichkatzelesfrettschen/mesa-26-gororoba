@@ -222,11 +222,28 @@ public:
    bool kcache_preflight_failed() const { return m_kcache_preflight_failed; }
    void mark_kcache_preflight_failed() { m_kcache_preflight_failed = true; }
 
+   /* When AluGroup::add_vec_instructions rejects a candidate after
+    * a successful KCACHE reservation, the rejection reason is a
+    * local-to-group constraint -- most often Evergreen KCACHE
+    * readport exhaustion (ISA Section 4.7.8: per-bank chan_pair
+    * readport contention) or a slot-type / co-issue conflict.  For
+    * all such reasons the correct recovery is the same as for a
+    * KCACHE preflight failure: start a new ALU clause so the
+    * constraint accounting resets at the CF_ALU boundary.  Without
+    * this flag, BlockScheduler::schedule_alu falls into the
+    * indirect-array NOP workaround branch and the malformed bundle
+    * reaches the kernel CS validator, which rejects with -EINVAL
+    * and triggers a controlled GPU reset surfaced as
+    * VK_ERROR_DEVICE_LOST. */
+   bool readport_exhaustion_failed() const { return m_readport_exhaustion_failed; }
+   void mark_readport_exhaustion_failed() { m_readport_exhaustion_failed = true; }
+
    KCacheState kcache_snapshot() const { return m_kcache; }
    void kcache_rollback(const KCacheState& s) {
       m_kcache = s;
       m_kcache_alloc_failed = false;
       m_kcache_preflight_failed = false;
+      m_readport_exhaustion_failed = false;
    }
 
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
@@ -259,6 +276,7 @@ private:
    std::array<KCacheLine, 4> m_kcache;
    bool m_kcache_alloc_failed{false};
    bool m_kcache_preflight_failed{false};
+   bool m_readport_exhaustion_failed{false};
 
    Instr *m_last_lds_instr{nullptr};
 
