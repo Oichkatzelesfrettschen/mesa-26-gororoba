@@ -263,13 +263,27 @@ When extending Triang3l-authored Terakan files, match the file's cadence: shorte
 
 ### TODO bodies stay mechanism-only
 
-Legitimate TODO/FIXME/XXX/HACK/PLACEHOLDER tags must name the missing work, the reason for deferral, and a tracking artifact in mechanism terms: a function, register, ISA section, kernel symbol, freedesktop.org issue URL, spec chapter, or silicon-constraint name.  They must not embed reviewer breadcrumbs, PR thread references, internal phase or wave labels, or AGENTS.md rule-number citations.  The chronology rule above binds TODO bodies as strictly as ordinary comments.
+Legitimate TODO/FIXME/XXX/HACK/PLACEHOLDER tags must name three things in mechanism terms:
+
+- the missing work, in terms of the function, register, ISA section, kernel symbol, or spec chapter that needs the change;
+- the reason for deferral, in terms of the silicon, ABI, or evidence constraint that blocks completing it now;
+- the tracking artifact, in terms of a durable name (function, register, freedesktop.org issue URL, spec chapter, silicon-constraint name).
+
+The same comment must not embed any of the following:
+
+- reviewer breadcrumbs (`reviewer P1 badge`, `Sourcery flagged`),
+- PR-thread references (`PR thread that introduced this`, `the install-prefix work that surfaced this`),
+- internal phase, wave, or mission labels (`Wave 5C`, `Phase 1E-atomic`, `mission-r300-breakthrough`),
+- AGENTS.md rule-number citations (`Per AGENTS.md rule 9a, ...`).
+
+The chronology + deictic prohibitions stated earlier in this section bind TODO bodies as strictly as ordinary comments.  Reviewer feedback, PR chronology, and phase labels belong in the commit message and the PR description; the source comment carries mechanism only.
 
 Wrong shape (project chronology smuggled into the source):
 
 ```text
-/* TODO: ... Reason for deferral: outside this PR's scope.
- *       Tracking: reviewer P1 badge on the consolidated style PR. */
+/* TODO: ...  Reason for deferral: outside this PR's scope.
+ *       Tracking: reviewer P1 badge on the consolidated style PR.
+ */
 ```
 
 Right shape (mechanism only):
@@ -277,10 +291,21 @@ Right shape (mechanism only):
 ```text
 /* TODO: PALM does not honour ALU_PUSH_BEFORE when stack depth is a
  *       multiple of 4.  Emit an explicit PUSH CF before the ALU
- *       clause and re-test the stack-tracker tier-2 selector. */
+ *       clause and re-test the stack-tracker tier-2 selector.
+ */
 ```
 
-Reviewer feedback, PR chronology, and phase labels belong in the commit message and the PR description.  The source comment carries mechanism only.
+A complex case still stays mechanism-only:
+
+```text
+/* TODO: r600_nir_lower_int_tg4 must run before
+ *       r600_nir_lower_cube_to_2darray for integer GATHER4 on cube
+ *       textures.  Inserting the pass earlier currently regresses
+ *       textureGather(int_2d_array), so the swap is gated on
+ *       fixing the 2d_array residual under TERAKAN_EXPERIMENTAL_
+ *       CUBE_GATHER_DIM_2D_ARRAY=1.
+ */
+```
 
 ## Security stop-line
 
