@@ -16,6 +16,7 @@
  *   ./builddir/src/amd/r300/tools/r300_float24 1.0 -1.0 3.14159
  */
 
+#include <assert.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,9 +38,11 @@
  *   bits 22:16 frexpf exponent + 62 (7 bits; bias 63 relative to frexpf)
  *   bits 15:0  top 16 bits of IEEE 754 mantissa (bits 22:7)
  *
- * Valid for normal IEEE floats within the 7-bit exponent range.  Does not
- * handle inf, NaN, or subnormals -- the hardware does not need them for
- * PFS_PARAM constant loads.
+ * Valid for normal IEEE floats whose frexpf exponent is in [-61, 65]
+ * (stored_exp 1..127).  stored_exp=0 with zero mantissa bits collides with
+ * the zero encoding (frexpf_exp=-62 pure powers of two pack to 0x000000),
+ * so frexpf_exp=-62 is excluded from the valid range.  Inf, NaN, subnormals,
+ * and out-of-range exponents are not handled.
  */
 static uint32_t
 r300_pack_float24(float f)
@@ -48,7 +51,6 @@ r300_pack_float24(float f)
       float fl;
       uint32_t u;
    } u;
-   float mantissa;
    int exponent;
    uint32_t float24 = 0;
 
@@ -58,15 +60,13 @@ r300_pack_float24(float f)
       return 0;
 
    u.fl = f;
-   mantissa = frexpf(f, &exponent);
 
-   if (mantissa < 0) {
+   if (signbit(f))
       float24 |= (1u << 23);
-      mantissa = -mantissa;
-   }
 
-   (void)mantissa; /* used only for sign; mantissa bits come from u.u */
+   frexpf(f, &exponent);
    exponent += (int)R300_FLOAT24_EXP_BIAS;
+   assert(exponent >= 1 && exponent <= (int)R300_FLOAT24_EXP_MAX_STORED);
    float24 |= (uint32_t)((unsigned)exponent << 16);
    float24 |= (u.u & 0x7FFFFFu) >> 7;
 
@@ -121,7 +121,10 @@ static const struct known_value known_values[] = {
    { 0.5f,        0x3E0000u, "0.5"    },
    { 0.25f,       0x3D0000u, "0.25"   },
    { 1.5f,        0x3F8000u, "1.5"    },
-   /* Exponent boundary: frexpf_exp = -61 gives stored_exp = 1 (min non-degenerate). */
+   /* Minimum valid input: frexpf_exp = -61 gives stored_exp = 1.
+    * frexpf_exp = -62 (stored_exp = 0) is excluded: a pure power-of-two at
+    * that exponent has zero mantissa bits in [22:7], so it packs to 0x000000
+    * and collides with the zero encoding. */
    { 0x1p-62f,    0x010000u, "2^-62"  },
    {-0x1p-62f,    0x810000u, "-2^-62" },
    /* Exponent boundary: frexpf_exp = 65 gives stored_exp = 127 (max). */
@@ -231,10 +234,13 @@ main(int argc, char **argv)
       if (f != 0.0f) {
          int exp;
          frexpf(f, &exp);
-         /* stored_exp = exp + R300_FLOAT24_EXP_BIAS must fit in 7 bits. */
+         /* stored_exp = exp + R300_FLOAT24_EXP_BIAS must be in [1, 127].
+          * stored_exp=0 is excluded: a pure power-of-two at frexpf_exp=-62
+          * has zero mantissa bits in [22:7] and packs to 0x000000, colliding
+          * with the zero encoding. */
          int stored = exp + (int)R300_FLOAT24_EXP_BIAS;
-         if (stored < 0 || stored > (int)R300_FLOAT24_EXP_MAX_STORED) {
-            fprintf(stderr, "error: '%s' exponent %d is outside the R300 float24 7-bit range\n", argv[i], exp);
+         if (stored < 1 || stored > (int)R300_FLOAT24_EXP_MAX_STORED) {
+            fprintf(stderr, "error: '%s' exponent %d is outside the R300 float24 valid range\n", argv[i], exp);
             return 1;
          }
       }

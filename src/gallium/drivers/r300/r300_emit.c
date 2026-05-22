@@ -186,7 +186,9 @@ static void get_rc_constant_state(
  * bits 15:0 = top 16 bits of the IEEE 754 mantissa.  frexpf normalizes to
  * [0.5, 1.0), so the effective bias against the [1, 2.0) IEEE convention is 63.
  *
- * Valid for normal IEEE floats whose frexpf exponent is in [-62, 65].
+ * Valid for normal IEEE floats whose frexpf exponent is in [-61, 65]
+ * (stored_exp 1..127).  stored_exp=0 with zero mantissa bits collides with
+ * the zero encoding, so frexpf_exp=-62 is excluded from the valid range.
  * Inf, NaN, subnormals, and out-of-range exponents are not handled.
  */
 uint32_t pack_float24(float f)
@@ -195,7 +197,6 @@ uint32_t pack_float24(float f)
         float fl;
         uint32_t u;
     } u;
-    float mantissa;
     int exponent;
     uint32_t float24 = 0;
 
@@ -204,14 +205,12 @@ uint32_t pack_float24(float f)
 
     u.fl = f;
 
-    mantissa = frexpf(f, &exponent);
-
-    if (mantissa < 0)
+    if (signbit(f))
         float24 |= (1u << 23);
 
-    (void)mantissa; /* used only for sign; mantissa bits come from u.u */
-
+    frexpf(f, &exponent);
     exponent += 62;
+    assert(exponent >= 1 && exponent <= 127);
     float24 |= (uint32_t)((unsigned)exponent << 16);
     float24 |= (u.u & 0x7FFFFFu) >> 7;
 
