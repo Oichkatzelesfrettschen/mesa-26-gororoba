@@ -635,7 +635,7 @@ Multi-paragraph comment blocks are reserved for genuine silicon-quirk reasoning.
 
 ### TODO comments
 
-Rule files are not TODO trackers. Deferred work belongs in the source file at the affected mechanism, using `TODO:`, `FIXME:`, `XXX:`, `HACK:`, or `PLACEHOLDER:` at the start of the comment. Do not add real future-work TODOs to rule files. Examples in this section describe comment shape only.
+Rule files are not TODO trackers. Deferred work belongs in the source file at the affected mechanism, using `TODO:`, `FIXME:`, `XXX:`, `HACK:`, or `PLACEHOLDER:` at the start of the comment. Do not add real future-work TODOs to rule files. Examples in this section describe comment shape only. Placeholders are deliberately generic so readers do not mistake examples for real action items.
 
 A TODO-family comment MUST name three mechanism elements:
 
@@ -664,23 +664,6 @@ Right shape (all three mechanism elements named):
  *       tracking-artifact --
  *           <durable function, register, gitlab.freedesktop.org issue
  *           URL, spec chapter, or silicon-constraint name>.
- */
-```
-
-A complex deferral still stays mechanism-only:
-
-```text
-/* TODO: missing work --
- *           r600_nir_lower_int_tg4 must run before
- *           r600_nir_lower_cube_to_2darray for integer GATHER4 on
- *           cube textures.
- *       reason --
- *           inserting the pass earlier regresses textureGather on
- *           int_2d_array, so the pass order remains gated on fixing
- *           the 2d_array residual.
- *       tracking-artifact --
- *           sfn_nir.cpp pass-order block and the
- *           dEQP-VK.glsl.texture_gather.basic_cube.int.* test family.
  */
 ```
 
