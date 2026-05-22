@@ -149,6 +149,16 @@ bool terakan_nir_cmpxchg_strict_reject_check(nir_shader const * shader,
  * VK_SHADER_STAGE_COMPUTE_BIT. */
 bool terakan_nir_lower_subgroup_lds(nir_shader * shader);
 
+/* Detect 32-bit integer multiplications whose operands provably fit
+ * unsigned 24 bits and rewrite them to nir_op_umul24.  SFN emits
+ * umul24 as MUL_UINT24 (Evergreen ISA section 9-154, opcode 181 /
+ * 0xB5; vec-slot, single cycle) instead of MULLO_INT (t-slot, multi-
+ * cycle).  Connects to the int24 / uint24 wavefront-width
+ * investigation; mathematical correctness rests on identical low-32
+ * bits between imul and umul24 when both operands are within
+ * unsigned [0, 2^24).  See terakan_nir_lower_24bit_mul_hint.c. */
+bool terakan_nir_lower_24bit_mul_hint(nir_shader * shader);
+
 /* Per-binding runtime-swizzle rewrite for FETCH4 / GATHER4 on Palm /
  * Wrestler (CHIP_PALM, Evergreen / TeraScale-2 VLIW5).  Per AMD
  * Evergreen-Family ISA Chapter 6 (Texture Cache Clauses), the
