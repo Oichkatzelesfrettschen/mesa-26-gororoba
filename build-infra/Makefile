@@ -35,16 +35,30 @@ INSTALL_NAMESPACE ?= mesa
 # artifacts that are absent from the current profile.  Override PREFIX=... on
 # the make line when intentionally installing into a shared active tree.
 PREFIX   ?= /usr/local/$(INSTALL_NAMESPACE)-$(PROFILE)
-TERAKAN_RELEASE_PROFILE := terakan-distcc-no-rusticl
-TERAKAN_RELEASE_HOSTENV := btver1-ccache-no-pump
-TERAKAN_RELEASE_BUILDDIR := $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump)
-TERAKAN_RELEASE_PREFIX := /usr/local/mesa-26-gororoba
-TERAKAN_RELEASE_NAMESPACE := mesa-26-gororoba
-TERAKAN_DEBUG_PROFILE := terakan-distcc-no-rusticl-debug
-TERAKAN_DEBUG_HOSTENV := btver1-ccache-no-pump
-TERAKAN_DEBUG_BUILDDIR := $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump)
-TERAKAN_DEBUG_PREFIX := /usr/local/mesa-26-gororoba-debug
-TERAKAN_DEBUG_NAMESPACE := mesa-26-gororoba-debug
+# Pair-member descriptor: one space-separated row per build variant.
+# Field order: profile hostenv builddir prefix namespace.  Accessors:
+# $(call PAIR_PROFILE,LIST), $(call PAIR_HOSTENV,LIST), etc.  Adding a
+# new variant means defining one new PAIR_<NAME> list, not five
+# parallel _PROFILE/_HOSTENV/_BUILDDIR/_PREFIX/_NAMESPACE variables.
+PAIR_PROFILE   = $(word 1,$1)
+PAIR_HOSTENV   = $(word 2,$1)
+PAIR_BUILDDIR  = $(word 3,$1)
+PAIR_PREFIX    = $(word 4,$1)
+PAIR_NAMESPACE = $(word 5,$1)
+
+TERAKAN_PAIR_RELEASE := \
+    terakan-distcc-no-rusticl \
+    btver1-ccache-no-pump \
+    $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
+    /usr/local/mesa-26-gororoba \
+    mesa-26-gororoba
+
+TERAKAN_PAIR_DEBUG := \
+    terakan-distcc-no-rusticl-debug \
+    btver1-ccache-no-pump \
+    $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
+    /usr/local/mesa-26-gororoba-debug \
+    mesa-26-gororoba-debug
 ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
 JOBS     ?= 8
 else ifneq (,$(filter $(HOSTENV),vostro1000-k8-ccache-no-pump))
@@ -385,10 +399,12 @@ distclean: clean
 
 install:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
-	@cur_prefix=$$(meson configure $(BUILDDIR) 2>/dev/null | awk "/^  prefix /{print \$\$2}" | head -1); \
+	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	cur_prefix=$$(python3 -c "import json,sys; d=json.load(open('$(BUILDDIR)/meson-info/intro-buildoptions.json')); print(next(o['value'] for o in d if o['name']=='prefix'))" 2>/dev/null); \
 	if [ "$$cur_prefix" != "$(PREFIX)" ]; then \
-		echo "[install] builddir prefix $$cur_prefix != requested $(PREFIX); reconfiguring"; \
-		meson configure --prefix=$(PREFIX) $(BUILDDIR); \
+		echo "[install] builddir prefix '$$cur_prefix' != requested '$(PREFIX)'; running meson setup --reconfigure to regenerate install.dat"; \
+		for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
+		meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
 	fi
 	flock -x -w 7200 $(BUILD_LOCK) sudo meson install --no-rebuild -C $(BUILDDIR)
 
@@ -403,15 +419,43 @@ test:
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	ninja -C $(BUILDDIR) test
 
-define CLEAN_CONFIGURE_BUILD_PROFILE
-	$(MAKE) clean PROFILE=$(1) HOSTENV=$(2) BUILDDIR=$(3)
-	$(MAKE) configure PROFILE=$(1) HOSTENV=$(2) BUILDDIR=$(3)
-	$(MAKE) build PROFILE=$(1) HOSTENV=$(2) BUILDDIR=$(3)
+# Pair-member loops.  Each takes one PAIR_<NAME> list and threads
+# PROFILE + HOSTENV + BUILDDIR + PREFIX + INSTALL_NAMESPACE through
+# to the sub-make.  Threading PREFIX through configure (not just
+# install) ensures meson-private/install.dat is generated at the
+# correct prefix on the first configure, removing the prior
+# "configure to default prefix, then retarget at install" hazard
+# where install.dat retained the configure-time prefix and the
+# binaries landed under /usr/local/<NAMESPACE>-<PROFILE>/ instead
+# of the requested PREFIX.
+define CLEAN_CONFIGURE_BUILD_PAIR
+	$(MAKE) clean \
+	    PROFILE=$(call PAIR_PROFILE,$1) \
+	    HOSTENV=$(call PAIR_HOSTENV,$1) \
+	    BUILDDIR=$(call PAIR_BUILDDIR,$1) \
+	    PREFIX=$(call PAIR_PREFIX,$1) \
+	    INSTALL_NAMESPACE=$(call PAIR_NAMESPACE,$1)
+	$(MAKE) configure \
+	    PROFILE=$(call PAIR_PROFILE,$1) \
+	    HOSTENV=$(call PAIR_HOSTENV,$1) \
+	    BUILDDIR=$(call PAIR_BUILDDIR,$1) \
+	    PREFIX=$(call PAIR_PREFIX,$1) \
+	    INSTALL_NAMESPACE=$(call PAIR_NAMESPACE,$1)
+	$(MAKE) build \
+	    PROFILE=$(call PAIR_PROFILE,$1) \
+	    HOSTENV=$(call PAIR_HOSTENV,$1) \
+	    BUILDDIR=$(call PAIR_BUILDDIR,$1) \
+	    PREFIX=$(call PAIR_PREFIX,$1) \
+	    INSTALL_NAMESPACE=$(call PAIR_NAMESPACE,$1)
 endef
 
-define INSTALL_PROFILE
-	$(MAKE) install PROFILE=$(1) HOSTENV=$(2) BUILDDIR=$(3) \
-	    PREFIX=$(4) INSTALL_NAMESPACE=$(5)
+define INSTALL_PAIR
+	$(MAKE) install \
+	    PROFILE=$(call PAIR_PROFILE,$1) \
+	    HOSTENV=$(call PAIR_HOSTENV,$1) \
+	    BUILDDIR=$(call PAIR_BUILDDIR,$1) \
+	    PREFIX=$(call PAIR_PREFIX,$1) \
+	    INSTALL_NAMESPACE=$(call PAIR_NAMESPACE,$1)
 endef
 
 # common single-command loops (clean + configure + build)
@@ -438,7 +482,7 @@ rebuild-terakan-distcc-no-rusticl:
 # active mesa-terakan-distcc-no-rusticl build.  `clean` removes only BUILDDIR;
 # ccache and sccache live under ~/.cache via env/btver1-ccache-no-pump.env.
 rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
-	$(call CLEAN_CONFIGURE_BUILD_PROFILE,$(TERAKAN_RELEASE_PROFILE),$(TERAKAN_RELEASE_HOSTENV),$(TERAKAN_RELEASE_BUILDDIR))
+	$(call CLEAN_CONFIGURE_BUILD_PAIR,$(TERAKAN_PAIR_RELEASE))
 
 # Pair target: build BOTH the release-default canonical AND the
 # debug variant in the same invocation.  Release goes to
@@ -452,11 +496,18 @@ rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
 rebuild-terakan-distcc-no-rusticl-ccache-no-pump-pair:
 	$(MAKE) rebuild-terakan-distcc-no-rusticl-ccache-no-pump
 	$(MAKE) rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump
-	$(call INSTALL_PROFILE,$(TERAKAN_RELEASE_PROFILE),$(TERAKAN_RELEASE_HOSTENV),$(TERAKAN_RELEASE_BUILDDIR),$(TERAKAN_RELEASE_PREFIX),$(TERAKAN_RELEASE_NAMESPACE))
-	$(call INSTALL_PROFILE,$(TERAKAN_DEBUG_PROFILE),$(TERAKAN_DEBUG_HOSTENV),$(TERAKAN_DEBUG_BUILDDIR),$(TERAKAN_DEBUG_PREFIX),$(TERAKAN_DEBUG_NAMESPACE))
+	$(call INSTALL_PAIR,$(TERAKAN_PAIR_RELEASE))
+	$(call INSTALL_PAIR,$(TERAKAN_PAIR_DEBUG))
 
 rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump:
-	$(call CLEAN_CONFIGURE_BUILD_PROFILE,$(TERAKAN_DEBUG_PROFILE),$(TERAKAN_DEBUG_HOSTENV),$(TERAKAN_DEBUG_BUILDDIR))
+	$(call CLEAN_CONFIGURE_BUILD_PAIR,$(TERAKAN_PAIR_DEBUG))
+
+# Install-only convenience targets.  Use these after the pair build
+# trees are already populated (e.g., when fixing the install routing
+# without redoing the 60-minute compile pass).
+install-terakan-distcc-no-rusticl-ccache-no-pump-pair:
+	$(call INSTALL_PAIR,$(TERAKAN_PAIR_RELEASE))
+	$(call INSTALL_PAIR,$(TERAKAN_PAIR_DEBUG))
 
 # Cold clean lane for x130e.  Configure and generated Meson/Ninja outputs are
 # completed before the include server starts; the heavy C/C++ compile then runs
