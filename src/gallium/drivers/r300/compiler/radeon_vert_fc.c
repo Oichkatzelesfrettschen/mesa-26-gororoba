@@ -17,6 +17,13 @@ struct vert_fc_state {
    unsigned LoopsReserved;
    int PredStack[R500_PVS_MAX_LOOP_DEPTH];
    int PredicateReg;
+   /* Single-BRK ENDIF optimization state (LoopDepth == 1 only).
+    * Tracks the outermost IF and its sole BRK so the three-instruction
+    * VE_PRED_SNEQ_PUSH + RCP(0) + ME_PRED_SET_POP sequence can be
+    * collapsed to a single ME_PRED_SEQ(cond_src) at ENDIF time. */
+   unsigned BreakCount;
+   struct rc_instruction *IfInst;
+   struct rc_instruction *BrkInst;
 };
 
 static void
@@ -205,10 +212,19 @@ rc_vert_fc(struct radeon_compiler *c, void *user)
       case RC_OPCODE_BGNLOOP:
          lower_bgnloop(inst, &fc_state);
          fc_state.LoopDepth++;
+         if (fc_state.LoopDepth == 1) {
+            fc_state.BreakCount = 0;
+            fc_state.IfInst = NULL;
+            fc_state.BrkInst = NULL;
+         }
          break;
 
       case RC_OPCODE_BRK:
          lower_brk(inst, &fc_state);
+         if (fc_state.LoopDepth == 1) {
+            fc_state.BreakCount++;
+            fc_state.BrkInst = inst;
+         }
          break;
 
       case RC_OPCODE_ENDLOOP:
@@ -220,6 +236,10 @@ rc_vert_fc(struct radeon_compiler *c, void *user)
          fc_state.LoopDepth--;
          break;
       case RC_OPCODE_IF:
+         /* Save the outermost IF inside a LoopDepth==1 loop for the
+          * single-BRK ENDIF optimization check. */
+         if (fc_state.LoopDepth == 1 && fc_state.BranchDepth == 0)
+            fc_state.IfInst = inst;
          lower_if(inst, &fc_state);
          fc_state.BranchDepth++;
          break;
@@ -231,30 +251,29 @@ rc_vert_fc(struct radeon_compiler *c, void *user)
          break;
 
       case RC_OPCODE_ENDIF:
-         /* FIXME: Optimization not yet implemented -- when LoopDepth == 1,
-          * BranchDepth == 1, there is exactly one break in the loop, and BRK is
-          * the only instruction in the IF block (ENDIF immediately follows BRK),
-          * the three-instruction sequence PRED_SNEQ_PUSH + RCP(0) + PRED_SET_POP
-          * can be collapsed to a single ME_PRED_SEQ(cond_src).
-          *
-          * ME_PRED_SEQ sets pred = (src == 0), which equals NOT cond.  That
-          * correctly gives pred=1 when the break is not taken (loop continues)
-          * and pred=0 when it is taken (subsequent iterations become no-ops
-          * because lower_endloop is skipped for LoopDepth==1 and nothing
-          * resets pred between hardware iterations).
-          *
-          * Simply removing PRED_SET_POP alone is wrong: PRED_SNEQ_PUSH already
-          * sets pred=0 on the no-break path (cond==false), so without the POP
-          * that path also exits with pred=0 and all subsequent iterations
-          * become no-ops regardless of the break condition.
-          *
-          * Implementation requires: a break counter in vert_fc_state, a saved
-          * pointer to the BRK instruction and its source register, detection at
-          * ENDIF time that the IF block contained only that BRK, and replacement
-          * of the three instructions in-place. */
-         inst->U.I.Opcode = RC_ME_PRED_SET_POP;
-         build_pred_dst(&inst->U.I.DstReg, &fc_state);
-         build_pred_src(&inst->U.I.SrcReg[0], &fc_state);
+         if (fc_state.LoopDepth == 1 && fc_state.BranchDepth == 1 &&
+             fc_state.BreakCount == 1 &&
+             fc_state.BrkInst != NULL && fc_state.IfInst != NULL &&
+             fc_state.BrkInst->Prev == fc_state.IfInst &&
+             fc_state.BrkInst->Next == inst) {
+            /* ME_PRED_SEQ(cond) sets pred = (cond.w == 0) = NOT cond.
+             * lower_endloop is suppressed for LoopDepth==1, so pred=0
+             * persists across hardware iterations, making them no-ops.
+             * Replaces VE_PRED_SNEQ_PUSH + RCP(0) + ME_PRED_SET_POP when
+             * the IF block holds exactly one BRK. */
+            fc_state.IfInst->U.I.Opcode = RC_ME_PRED_SEQ;
+            fc_state.IfInst->U.I.SrcReg[0] = fc_state.IfInst->U.I.SrcReg[1];
+            memset(&fc_state.IfInst->U.I.SrcReg[1], 0,
+                   sizeof(fc_state.IfInst->U.I.SrcReg[1]));
+            rc_remove_instruction(fc_state.BrkInst);
+            struct rc_instruction *prev = inst->Prev;
+            rc_remove_instruction(inst);
+            inst = prev;
+         } else {
+            inst->U.I.Opcode = RC_ME_PRED_SET_POP;
+            build_pred_dst(&inst->U.I.DstReg, &fc_state);
+            build_pred_src(&inst->U.I.SrcReg[0], &fc_state);
+         }
          fc_state.BranchDepth--;
          break;
 
