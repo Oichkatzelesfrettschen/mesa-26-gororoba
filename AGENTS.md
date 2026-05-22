@@ -227,9 +227,9 @@ Mesa code changes must cite public specs, kernel/Mesa source paths, freedesktop.
 
 Use American English spelling in new or modified source comments, commit messages, and documentation authored by this project's contributors (e.g., "honor" not "honour", "behavior" not "behaviour", "initialize" not "initialise").  This rule scopes to NEW or MODIFIED text only.
 
-The tree carries many upstream Mesa files whose comments were authored by upstream contributors in British or other English variants (for example `src/egl/main/eglcontext.c` uses "honour").  Do NOT edit upstream comments solely to change spelling -- churn-only spelling edits across upstream code are explicitly discouraged because they create needless merge conflict surface against the upstream synchronisation lane.  Quoted spec text, kernel symbol names, and diagnostics that mirror hardware identifiers stay verbatim regardless of spelling.
+The tree carries many upstream Mesa files whose comments were authored by upstream contributors in British or other English variants (for example `src/egl/main/eglcontext.c` uses "honour").  Do NOT edit upstream comments solely to change spelling -- churn-only spelling edits across upstream code are explicitly discouraged because they create needless merge conflict surface against the upstream synchronization lane.  Quoted spec text, kernel symbol names, and diagnostics that mirror hardware identifiers stay verbatim regardless of spelling.
 
-When a contributor is making a substantive edit to upstream code anyway (changing behaviour or extending a function), they MAY align the touched comment lines to American English in the same commit.  When the substantive edit is unrelated to comment text, leave the existing spelling alone.
+When a contributor is making a substantive edit to upstream code anyway (changing behavior or extending a function), they MAY align the touched comment lines to American English in the same commit.  When the substantive edit is unrelated to comment text, leave the existing spelling alone.
 
 Comments should be short, active, sequenced, and primary-source-grounded.  Explain why the code is shaped that way, not what the next line already says.
 
