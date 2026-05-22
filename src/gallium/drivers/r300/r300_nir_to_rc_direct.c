@@ -131,7 +131,7 @@ nrc_find_input_slot(const nir_shader *s, gl_varying_slot slot)
  * ------------------------------------------------------------------------- */
 
 static struct rc_instruction *
-nrc_emit(struct nrc_compile *c, enum rc_opcode opcode)
+nrc_emit(struct nrc_compile *c, rc_opcode opcode)
 {
    struct rc_instruction *inst =
       rc_insert_new_instruction(c->compiler,
@@ -259,7 +259,7 @@ nrc_dst_for_def(struct nrc_compile *c, nir_def *def)
  * -------------------------------------------------------------------------*/
 
 static void
-nrc_emit_scalar(struct nrc_compile *c, enum rc_opcode opcode,
+nrc_emit_scalar(struct nrc_compile *c, rc_opcode opcode,
                 struct rc_dst_register dst, struct rc_src_register src0,
                 struct rc_src_register src1, bool saturate)
 {
@@ -299,7 +299,7 @@ nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
       src[i] = nrc_alu_src(c, instr, i);
 
    /* Primary opcode table (direct one-to-one mappings). */
-   static const enum rc_opcode op_map[] = {
+   static const rc_opcode op_map[] = {
       [nir_op_mov]             = RC_OPCODE_MOV,
       [nir_op_fadd]            = RC_OPCODE_ADD,
       [nir_op_fmul]            = RC_OPCODE_MUL,
@@ -500,7 +500,7 @@ nrc_emit_texture(struct nrc_compile *c, nir_tex_instr *instr)
    int ddx_idx  = nir_tex_instr_src_index(instr, nir_tex_src_ddx);
    int ddy_idx  = nir_tex_instr_src_index(instr, nir_tex_src_ddy);
 
-   enum rc_opcode opcode;
+   rc_opcode opcode;
    switch (instr->op) {
    case nir_texop_tex:
       opcode = RC_OPCODE_TEX;
