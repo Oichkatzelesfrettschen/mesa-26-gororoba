@@ -261,6 +261,27 @@ Also bad:
 
 When extending Triang3l-authored Terakan files, match the file's cadence: shorter line lengths, fewer subclauses, and comments only where they carry silicon/spec/test information.
 
+### TODO bodies stay mechanism-only
+
+Legitimate TODO/FIXME/XXX/HACK/PLACEHOLDER tags must name the missing work, the reason for deferral, and a tracking artifact in mechanism terms: a function, register, ISA section, kernel symbol, freedesktop.org issue URL, spec chapter, or silicon-constraint name.  They must not embed reviewer breadcrumbs, PR thread references, internal phase or wave labels, or AGENTS.md rule-number citations.  The chronology rule above binds TODO bodies as strictly as ordinary comments.
+
+Wrong shape (project chronology smuggled into the source):
+
+```text
+/* TODO: ... Reason for deferral: outside this PR's scope.
+ *       Tracking: reviewer P1 badge on the consolidated style PR. */
+```
+
+Right shape (mechanism only):
+
+```text
+/* TODO: PALM does not honour ALU_PUSH_BEFORE when stack depth is a
+ *       multiple of 4.  Emit an explicit PUSH CF before the ALU
+ *       clause and re-test the stack-tracker tier-2 selector. */
+```
+
+Reviewer feedback, PR chronology, and phase labels belong in the commit message and the PR description.  The source comment carries mechanism only.
+
 ## Security stop-line
 
 Critical vulnerabilities interrupt normal work:
