@@ -976,10 +976,15 @@ BlockScheduler::handle_alu_group_fill_failure(Shader::ShaderBlocks& out_blocks,
                                               AluGroup& group,
                                               const AluScheduleContext& alu_ctx)
 {
-   if (alu_ctx.had_kcache_failure_in_fill) {
-      const char *failure = m_current_block->kcache_preflight_failed()
-                               ? "KCACHE preflight failed"
-                               : "KCACHE reservation failed";
+   if (alu_ctx.had_kcache_failure_in_fill ||
+       m_current_block->readport_exhaustion_failed()) {
+      const bool readport_failed = m_current_block->readport_exhaustion_failed();
+      const bool preflight_failed = m_current_block->kcache_preflight_failed();
+      const char *failure = readport_failed
+                               ? "readport exhaustion"
+                               : preflight_failed
+                                  ? "KCACHE preflight failed"
+                                  : "KCACHE reservation failed";
 
       /* LDS read groups should not lead to impossible kcache constellations. */
       assert(!m_current_block->lds_group_active());
@@ -993,7 +998,7 @@ BlockScheduler::handle_alu_group_fill_failure(Shader::ShaderBlocks& out_blocks,
          return AluGroupFillResult::failed;
       }
 
-      /* No AR value is live, so a new ALU clause can retry the kcache layout. */
+      /* No AR value is live, so a new ALU clause can retry the group layout. */
       start_new_block(out_blocks, Block::alu);
       return AluGroupFillResult::retry;
    }
@@ -1431,7 +1436,13 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup& group,
    }
 
    if (!group.add_vec_instructions(*it)) {
-      sfn_log << SfnLog::schedule << " failed\n";
+      /* AluGroup rejects local constraints that additional candidates in the
+       * same clause cannot satisfy, most often Evergreen KCACHE readport
+       * exhaustion or a slot-type / co-issue conflict.  The KCACHE state is
+       * still dry-run-only here; mark the failure so the outer fill handler
+       * starts a new ALU clause instead of using the indirect-array NOP path. */
+      m_current_block->mark_readport_exhaustion_failed();
+      sfn_log << SfnLog::schedule << " failed (readport or local)\n";
       ++it;
       return false;
    }
@@ -1644,13 +1655,13 @@ BlockScheduler::schedule_alu_multislot_to_group_vec(AluGroup& group, AluSchedule
          allowed_dest_chan_mask &= ~BITFIELD_BIT((*i)->dest_chan());
          int new_chan = u_bit_scan(&allowed_dest_chan_mask);
 
-         if (!dest->can_switch_to_chan(new_chan))
-            break;
-
-         if (dest)
+         if (dest) {
+            if (!dest->can_switch_to_chan(new_chan))
+               break;
             dest->set_chan(new_chan);
-         else
+         } else {
             (*i)->set_allowed_dest_chan_mask(BITSET_BIT(new_chan));
+         }
       }
 
       if (!can_merge) {
