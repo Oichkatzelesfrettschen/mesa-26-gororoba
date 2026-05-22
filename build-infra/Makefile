@@ -104,6 +104,7 @@ MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER
         rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-distcc-no-rusticl \
         rebuild-terakan-distcc-no-rusticl-ccache-no-pump \
         rebuild-terakan-distcc-no-rusticl-ccache-no-pump-pair \
+        install-terakan-distcc-no-rusticl-ccache-no-pump-pair \
         rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump \
         rebuild-terakan-distcc-no-rusticl-pump \
         rebuild-terakan-minimal \
@@ -400,13 +401,19 @@ distclean: clean
 install:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	cur_prefix=$$(python3 -c "import json,sys; d=json.load(open('$(BUILDDIR)/meson-info/intro-buildoptions.json')); print(next(o['value'] for o in d if o['name']=='prefix'))" 2>/dev/null); \
-	if [ "$$cur_prefix" != "$(PREFIX)" ]; then \
-		echo "[install] builddir prefix '$$cur_prefix' != requested '$(PREFIX)'; running meson setup --reconfigure to regenerate install.dat"; \
-		for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-		meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
-	fi
-	flock -x -w 7200 $(BUILD_LOCK) sudo meson install --no-rebuild -C $(BUILDDIR)
+	flock -x -w 7200 $(BUILD_LOCK) bash -c '\
+	    dat_prefix=$$(python3 -c "import pickle; print(getattr(pickle.load(open(\"$(BUILDDIR)/meson-private/install.dat\",\"rb\")), \"prefix\", \"\"))" 2>/dev/null); \
+	    if [ "$$dat_prefix" != "$(PREFIX)" ]; then \
+	        echo "[install] install.dat prefix \"$$dat_prefix\" != requested \"$(PREFIX)\"; running meson setup --reconfigure to regenerate install.dat"; \
+	        for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
+	        meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
+	        new_dat_prefix=$$(python3 -c "import pickle; print(getattr(pickle.load(open(\"$(BUILDDIR)/meson-private/install.dat\",\"rb\")), \"prefix\", \"\"))" 2>/dev/null); \
+	        if [ "$$new_dat_prefix" != "$(PREFIX)" ]; then \
+	            echo "[install] FAIL: install.dat prefix still \"$$new_dat_prefix\" after reconfigure; refusing to install to wrong prefix" >&2; \
+	            exit 1; \
+	        fi; \
+	    fi; \
+	    sudo meson install --no-rebuild -C $(BUILDDIR)'
 
 artifact-check:
 	@test -d $(PREFIX) || { echo "prefix missing: $(PREFIX)"; exit 1; }
