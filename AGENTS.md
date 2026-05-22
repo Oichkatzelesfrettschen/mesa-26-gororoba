@@ -267,16 +267,17 @@ Legitimate TODO/FIXME/XXX/HACK/PLACEHOLDER tags must name three things in mechan
 
 - the missing work, in terms of the function, register, ISA section, kernel symbol, or spec chapter that needs the change;
 - the reason for deferral, in terms of the silicon, ABI, or evidence constraint that blocks completing it now;
-- the tracking artifact, in terms of a durable name (function, register, freedesktop.org issue URL, spec chapter, silicon-constraint name).
+- the tracking artifact, in terms of a durable name (function, register, `gitlab.freedesktop.org` issue URL, spec chapter, silicon-constraint name).
 
 The same comment must not embed any of the following:
 
 - reviewer breadcrumbs (`reviewer P1 badge`, `Sourcery flagged`),
 - PR-thread references (`PR thread that introduced this`, `the install-prefix work that surfaced this`),
 - internal phase, wave, or mission labels (`Wave 5C`, `Phase 1E-atomic`, `mission-r300-breakthrough`),
-- AGENTS.md rule-number citations (`Per AGENTS.md rule 9a, ...`).
+- AGENTS.md rule-number citations (`Per AGENTS.md rule 9a, ...`),
+- time-relative or deictic references (`currently`, `previously`, `this driver`, `our GPU`), per the `## Source comment voice` rule already established in this file.
 
-The chronology + deictic prohibitions stated earlier in this section bind TODO bodies as strictly as ordinary comments.  Reviewer feedback, PR chronology, and phase labels belong in the commit message and the PR description; the source comment carries mechanism only.
+The chronology prohibition above and the deictic prohibition just listed bind TODO bodies as strictly as ordinary comments.  Reviewer feedback, PR chronology, and phase labels belong in the commit message and the PR description; the source comment carries mechanism only.
 
 Wrong shape (project chronology smuggled into the source):
 
@@ -286,24 +287,38 @@ Wrong shape (project chronology smuggled into the source):
  */
 ```
 
-Right shape (mechanism only):
+Right shape (all three mechanism elements named: missing work, reason, tracking artifact):
 
 ```text
-/* TODO: PALM does not honour ALU_PUSH_BEFORE when stack depth is a
- *       multiple of 4.  Emit an explicit PUSH CF before the ALU
- *       clause and re-test the stack-tracker tier-2 selector.
+/* TODO: missing work --
+ *           PALM does not honour ALU_PUSH_BEFORE when stack depth
+ *           is a non-zero multiple of 4; SFN must emit an explicit
+ *           PUSH CF before the ALU clause in that case.
+ *       reason --
+ *           the explicit PUSH consumes 1 subentry, which forces
+ *           STACK_SIZE in SQ_PGM_RESOURCES[15:8] to grow, so the
+ *           emission cannot land until terakan_cf_stack_tracker
+ *           accounts the extra subentry on the mod-4 boundary.
+ *       tracking --
+ *           Evergreen ISA section 4 "Control Flow / ALU-PUSH hazard"
+ *           and r600_nir_lower_cube_to_2darray.
  */
 ```
 
 A complex case still stays mechanism-only:
 
 ```text
-/* TODO: r600_nir_lower_int_tg4 must run before
- *       r600_nir_lower_cube_to_2darray for integer GATHER4 on cube
- *       textures.  Inserting the pass earlier currently regresses
- *       textureGather(int_2d_array), so the swap is gated on
- *       fixing the 2d_array residual under TERAKAN_EXPERIMENTAL_
- *       CUBE_GATHER_DIM_2D_ARRAY=1.
+/* TODO: missing work --
+ *           r600_nir_lower_int_tg4 must run before
+ *           r600_nir_lower_cube_to_2darray for integer GATHER4 on
+ *           cube textures.
+ *       reason --
+ *           inserting the pass earlier regresses textureGather on
+ *           int_2d_array; the swap is gated on first fixing the
+ *           2d_array residual under TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY=1.
+ *       tracking --
+ *           sfn_nir.cpp pass-order block in terakan_shader.c and the
+ *           dEQP-VK.glsl.texture_gather.basic_cube.int.* test family.
  */
 ```
 
