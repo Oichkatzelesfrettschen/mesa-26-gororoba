@@ -205,7 +205,7 @@ uint32_t pack_float24(float f)
 
     u.fl = f;
 
-    if (signbit(f))
+    if (u.u >> 31)
         float24 |= (1u << 23);
 
     frexpf(f, &exponent);
