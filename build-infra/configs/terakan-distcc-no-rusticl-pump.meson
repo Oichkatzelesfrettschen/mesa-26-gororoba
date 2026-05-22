@@ -36,5 +36,13 @@ amd-use-llvm        = true
 # and is irrelevant to r600+terakan; amd-use-llvm above remains true
 # so the AMD compiler backend stays available.
 draw-use-llvm       = false
+# Wayland disabled: Mesa's src/egl/drivers/dri2/platform_wayland.c
+# references `wl_fixes_interface` (wayland staging/fixes protocol),
+# but Debian's wayland-protocols 1.44 package does NOT ship the
+# staging/fixes/fixes.xml XML, so the generated symbol is undefined
+# at link time.  terakan (Vulkan) does not need EGL or Wayland; r600
+# Gallium uses X11/DRM platforms.  X11 platform stays enabled via
+# `platforms` default-minus-wayland.
+platforms           = ['x11']
 gallium-extra-hud   = true
 glx                 = 'auto'
