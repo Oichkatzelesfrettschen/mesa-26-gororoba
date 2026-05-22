@@ -15,13 +15,11 @@
  * 24 bits but no hint reaches the backend; the multiply lands on
  * MULLO_INT and the vec slots sit idle.
  *
- * Hardware references:
- *   src/re/r600/Evergreen_ISA.txt section 9-154 (MUL_UINT24 opcode
- *     181 / 0xB5) and section 9-165 (MULHI_UINT24 178 / 0xB2)
- *   src/re/r600/terakan_machine_model.h:220
- *     (TERAKAN_OP2_MUL_UINT24 = 181, slot_mask = TERAKAN_SLOT_MASK_VEC)
- *   src/re/r600/findings/TERASCALE_OPENCL_PROBE_ANALYSIS.md:17
- *     (int24 single-cycle on Wrestler)
+ * Hardware reference: AMD Evergreen-Family Instruction Set
+ * Architecture, Section "ALU Instructions", opcodes MUL_UINT24
+ * (0xB5) and MULHI_UINT24 (0xB2).  The 24-bit multiplier sits on
+ * each of the four vec (xyzw) ALU slots; the full-width 32-bit
+ * MULLO_INT runs only on the t-slot and consumes multiple cycles.
  *
  * Mathematical correctness: nir_op_imul returns the low 32 bits of
  * a 32x32 -> 32 multiply.  nir_op_umul24 returns the low 32 bits of
@@ -30,17 +28,10 @@
  * bits, regardless of signed-vs-unsigned interpretation, because
  * neither expression has carry-out beyond bit 47.
  *
- * Approach modeled on nir_opt_uub.c (Igalia 2025): for each
- * nir_op_imul instruction, walk both component-0 scalar inputs via
+ * Approach modeled on nir_opt_uub.c: for each nir_op_imul
+ * instruction, walk both component-0 scalar inputs via
  * nir_scalar_chase_alu_src, compute nir_unsigned_upper_bound on
  * each, and rewrite to nir_op_umul24 when both bounds <= 2^24 - 1.
- *
- * Connects to the int24 / uint24 wavefront-width investigation at
- *   ../../../../../steinmarder/src/re/r600/findings/active/
- *     2026-05-22-palm-int24-wavefront-width-research-quality-
- *     investigation-design.md
- * which measures the dispatch-shape impact of moving onto the
- * 24-bit multiplier path.
  */
 
 #include "terakan_nir.h"

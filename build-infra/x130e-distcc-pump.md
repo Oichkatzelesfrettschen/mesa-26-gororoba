@@ -86,10 +86,19 @@ needs distcc to see the original source and compiler command.  `sccache`
 is still correct for Rust because it wraps rustc separately from the
 C/C++ include-server path.
 
-DESKTOP/WSL is intentionally excluded from the default pump lane after
-live x130e builds showed Gallivm pump discrepancies and pump demotion.
-It remains in the classic no-pump mesh.  Use
-`TERAKAN_PUMP_ALLOW_DESKTOP=1` only for explicit parity probes.
+DESKTOP/WSL participates in the pump lane by default.  Operators
+opt out per-build by exporting `TERAKAN_PUMP_ALLOW_DESKTOP=0` before
+sourcing the env; absent or `=1` keeps DESKTOP/WSL in the pump lane.
+distcc-pump's three-step include-fingerprint safety ladder handles
+the residual class of translation units whose preprocessed hash is
+not stable across the LAN crossing:
+
+  1. pump preprocess on the client + remote compile
+  2. classic distcc preprocess on the client + remote compile
+  3. fully local compile on the client
+
+Step 3 is the safety net.  Translation units that fall back to step 3
+build locally without breaking the rest of the build.
 
 ## How
 
