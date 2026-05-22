@@ -891,9 +891,12 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
          ++m_alu_groups_scheduled;
          break;
       } else if (m_current_block->kcache_reservation_failed() ||
-                 m_current_block->kcache_preflight_failed()) {
+                 m_current_block->kcache_preflight_failed() ||
+                 m_current_block->readport_exhaustion_failed()) {
          const bool preflight_failed = m_current_block->kcache_preflight_failed();
+         const bool readport_failed = m_current_block->readport_exhaustion_failed();
          const char *failure =
+            readport_failed ? "readport exhaustion" :
             preflight_failed ? "KCACHE preflight failed" : "KCACHE reservation failed";
 
          /* LDS read groups should not lead to impossible
@@ -1269,7 +1272,17 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup *group,
       /* KCACHE was committed by try_reserve_kcache; roll it back since the
        * instruction was not accepted into the group. */
       m_current_block->kcache_rollback(kcache_before);
-      sfn_log << SfnLog::schedule << " failed\n";
+      /* AluGroup::add_vec_instructions rejects for local-to-group
+       * constraints that the outer scheduler cannot satisfy by trying
+       * additional candidates within the same clause -- most commonly
+       * Evergreen KCACHE readport exhaustion (ISA Section 4.7.8) but
+       * also slot-type / co-issue conflicts.  For all such reasons the
+       * correct recovery is the same as for a KCACHE preflight failure:
+       * start a new ALU clause so the constraint accounting resets at
+       * the CF_ALU boundary.  Mark the flag AFTER kcache_rollback so
+       * the rollback's flag-clear does not erase our signal. */
+      m_current_block->mark_readport_exhaustion_failed();
+      sfn_log << SfnLog::schedule << " failed (readport or local)\n";
       ++it;
       return false;
    }
