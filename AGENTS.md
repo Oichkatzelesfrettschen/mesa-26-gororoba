@@ -653,7 +653,7 @@ Wrong shape:
  */
 ```
 
-Right shape:
+Right shape (all three mechanism elements named):
 
 ```text
 /* TODO: missing work --
@@ -670,11 +670,17 @@ Right shape:
 A complex deferral still stays mechanism-only:
 
 ```text
-/* TODO: r600_nir_lower_int_tg4 must run before
- *       r600_nir_lower_cube_to_2darray for integer GATHER4 on cube
- *       textures. Inserting the pass earlier regresses
- *       textureGather(int_2d_array), so the pass order remains gated
- *       on fixing the 2d_array residual.
+/* TODO: missing work --
+ *           r600_nir_lower_int_tg4 must run before
+ *           r600_nir_lower_cube_to_2darray for integer GATHER4 on
+ *           cube textures.
+ *       reason --
+ *           inserting the pass earlier regresses textureGather on
+ *           int_2d_array, so the pass order remains gated on fixing
+ *           the 2d_array residual.
+ *       tracking-artifact --
+ *           sfn_nir.cpp pass-order block and the
+ *           dEQP-VK.glsl.texture_gather.basic_cube.int.* test family.
  */
 ```
 
