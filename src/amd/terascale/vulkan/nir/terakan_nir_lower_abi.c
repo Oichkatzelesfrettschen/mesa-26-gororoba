@@ -331,7 +331,7 @@ terakan_nir_image_uav_coord(nir_builder * const b, nir_def * const image_coord,
          /* H3 binary-split diagnostic.  When
           * TERAKAN_FIX_P_FORCE_Z is set, replace the entire KCACHE-
           * load-plus-iadd path with a literal-constant coord.z so we
-          * can observe whether the hardware honours R3.z = N for
+          * can observe whether the hardware honors R3.z = N for
           * N != 0 independent of FIX-K's data-plumbing correctness.
           * Outcome (A) slice N is written: CB exporter is innocent,
           * FIX-K data path is broken somewhere.  Outcome (B) slice 0

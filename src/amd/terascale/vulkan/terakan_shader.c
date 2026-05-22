@@ -1359,7 +1359,7 @@ terakan_shader_lower_and_optimize_post_link(
     * In fragment shaders, this is done after compacting the fragment data output locations as UAVs
     * must be placed above color attachments.
     * robust_buffer_access is threaded here so that the UAV coord clamp in
-    * terakan_nir_buffer_uav_coord honours per-pipeline robustness state. */
+    * terakan_nir_buffer_uav_coord honors per-pipeline robustness state. */
    NIR_PASS(_, nir, terakan_nir_lower_bindings, pipeline_layout, resources_needed, samplers_needed,
             nir->info.stage == MESA_SHADER_FRAGMENT
                ? util_bitcount(fragment_data_uncompacted_locations)

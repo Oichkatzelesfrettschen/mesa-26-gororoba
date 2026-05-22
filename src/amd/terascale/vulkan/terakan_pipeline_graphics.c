@@ -1851,7 +1851,7 @@ terakan_pipeline_graphics_validate_fs_color_export_parity(
  * same VS cache key; two pipelines where one adds a GS produce different
  * VS cache keys (because vs_as_es flips, which is a legitimate
  * recompilation trigger).  This preserves per-stage caching while
- * honouring cross-stage linkage requirements.  Do NOT hash gfx_state_key
+ * honoring cross-stage linkage requirements.  Do NOT hash gfx_state_key
  * directly into the cache key — doing so would destroy per-stage
  * hit rates across pipelines that reuse stages.
  */
