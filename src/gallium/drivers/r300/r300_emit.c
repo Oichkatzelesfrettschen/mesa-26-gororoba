@@ -179,8 +179,15 @@ static void get_rc_constant_state(
     }
 }
 
-/* Convert a normal single-precision float into the 7.16 format
- * used by the R300 fragment shader.
+/* Pack an IEEE 754 single-precision float into the 24-bit float format used
+ * by the R300 fragment shader for PFS_PARAM_0..31 constant loads.
+ *
+ * Format: bit 23 = sign, bits 22:16 = frexpf_exponent + 62 (7-bit field),
+ * bits 15:0 = top 16 bits of the IEEE 754 mantissa.  frexpf normalizes to
+ * [0.5, 1.0), so the effective bias against the [1, 2.0) IEEE convention is 63.
+ *
+ * Valid for normal IEEE floats whose frexpf exponent is in [-62, 65].
+ * Inf, NaN, subnormals, and out-of-range exponents are not handled.
  */
 uint32_t pack_float24(float f)
 {
@@ -192,23 +199,21 @@ uint32_t pack_float24(float f)
     int exponent;
     uint32_t float24 = 0;
 
-    if (f == 0.0)
+    if (f == 0.0f)
         return 0;
 
     u.fl = f;
 
     mantissa = frexpf(f, &exponent);
 
-    /* Handle -ve */
-    if (mantissa < 0) {
-        float24 |= (1 << 23);
-        mantissa = mantissa * -1.0;
-    }
-    /* Handle exponent, bias of 63 */
+    if (mantissa < 0)
+        float24 |= (1u << 23);
+
+    (void)mantissa; /* used only for sign; mantissa bits come from u.u */
+
     exponent += 62;
-    float24 |= (exponent << 16);
-    /* Kill 7 LSB of mantissa */
-    float24 |= (u.u & 0x7FFFFF) >> 7;
+    float24 |= (uint32_t)((unsigned)exponent << 16);
+    float24 |= (u.u & 0x7FFFFFu) >> 7;
 
     return float24;
 }
