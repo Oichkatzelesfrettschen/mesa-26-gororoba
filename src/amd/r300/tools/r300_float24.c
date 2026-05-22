@@ -16,6 +16,12 @@
  *   ./builddir/src/amd/r300/tools/r300_float24 1.0 -1.0 3.14159
  */
 
+/* Exponent bias added to the frexpf exponent before storing in bits 22:16.
+ * The 7-bit stored exponent field holds values in [0, R300_FLOAT24_EXP_MAX_STORED].
+ * Change both constants together if the encoding ever needs adjustment. */
+#define R300_FLOAT24_EXP_BIAS       62u
+#define R300_FLOAT24_EXP_MAX_STORED 127u
+
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -59,7 +65,7 @@ r300_pack_float24(float f)
    }
 
    (void)mantissa; /* used only for sign; mantissa bits come from u.u */
-   exponent += 62;
+   exponent += (int)R300_FLOAT24_EXP_BIAS;
    float24 |= (uint32_t)((unsigned)exponent << 16);
    float24 |= (u.u & 0x7FFFFFu) >> 7;
 
@@ -90,11 +96,12 @@ r300_unpack_float24(uint32_t f24)
    stored_exp = (f24 >> 16) & 0x7Fu;
    mantissa_bits = f24 & 0xFFFFu;
 
-   /* frexpf exponent = stored_exp - 62.  IEEE stored exponent bias is 127;
-    * frexpf normalizes to [0.5, 1.0) so IEEE_stored = frexpf_exp - 1 + 127
-    * = (stored_exp - 62) + 126 = stored_exp + 64.
+   /* frexpf exponent = stored_exp - R300_FLOAT24_EXP_BIAS.  IEEE stored
+    * exponent bias is 127; frexpf normalizes to [0.5, 1.0) so
+    * IEEE_stored = (stored_exp - R300_FLOAT24_EXP_BIAS) + 126
+    *            = stored_exp + (126 - R300_FLOAT24_EXP_BIAS).
     */
-   u.u = (sign << 31) | ((stored_exp + 64u) << 23) | (mantissa_bits << 7);
+   u.u = (sign << 31) | ((stored_exp + (126u - R300_FLOAT24_EXP_BIAS)) << 23) | (mantissa_bits << 7);
    return u.fl;
 }
 
@@ -177,8 +184,8 @@ print_usage(const char *argv0)
       "  float ...  pack each float and print the R300 float24 hex\n"
       "\n"
       "R300 float24 (PFS_PARAM): bit 23 = sign, bits 22:16 = exponent\n"
-      "(bias 63, frexpf_exp + 62), bits 15:0 = top 16 IEEE mantissa bits.\n",
-      argv0);
+      "(bias %u, frexpf_exp + %u), bits 15:0 = top 16 IEEE mantissa bits.\n",
+      argv0, R300_FLOAT24_EXP_BIAS + 1u, R300_FLOAT24_EXP_BIAS);
 }
 
 int
@@ -215,8 +222,9 @@ main(int argc, char **argv)
       if (f != 0.0f) {
          int exp;
          frexpf(f, &exp);
-         /* stored_exp = exp + 62 must fit in 7 bits [0,127]. */
-         if (exp + 62 < 0 || exp + 62 > 127) {
+         /* stored_exp = exp + R300_FLOAT24_EXP_BIAS must fit in 7 bits. */
+         int stored = exp + (int)R300_FLOAT24_EXP_BIAS;
+         if (stored < 0 || stored > (int)R300_FLOAT24_EXP_MAX_STORED) {
             fprintf(stderr, "error: '%s' exponent %d is outside the R300 float24 7-bit range\n", argv[i], exp);
             return 1;
          }

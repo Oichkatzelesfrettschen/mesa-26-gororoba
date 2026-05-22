@@ -37,7 +37,7 @@ health evidence.  `--submit` must keep failing until those pieces exist.
 
 `r300_float24` packs IEEE 754 single-precision floats into the R300 PFS_PARAM
 24-bit format used for fragment shader constant loads (PFS_PARAM_0..31).  It
-mirrors `r300_emit.c:pack_float24` exactly and requires only libc.
+mirrors `r300_emit.c:pack_float24` exactly and requires standard C and libm.
 
 The format is: bit 23 = sign, bits 22:16 = frexpf exponent + 62 (7-bit field),
 bits 15:0 = top 16 bits of the IEEE 754 mantissa.
