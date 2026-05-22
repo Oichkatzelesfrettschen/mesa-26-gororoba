@@ -18,6 +18,7 @@
 
 #include <assert.h>
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,14 @@
  * Adjusting the bias does not change EXP_MAX_STORED; only a field-width change does. */
 #define R300_FLOAT24_EXP_BIAS       62u
 #define R300_FLOAT24_EXP_MAX_STORED 127u
+
+/* IEEE 754 bit 31 is the sign bit.  Using a helper makes the intent explicit
+ * and keeps the bit-31 extraction in one place for both pack and unpack paths. */
+static inline bool
+r300_ieee_float_is_negative(uint32_t bits)
+{
+   return (bits & 0x80000000u) != 0;
+}
 
 /* Convert an IEEE 754 single-precision float to the R300 fragment shader
  * 24-bit float format.  Mirrors r300_emit.c:pack_float24 exactly.
@@ -61,7 +70,7 @@ r300_pack_float24(float f)
 
    u.fl = f;
 
-   if (u.u >> 31)
+   if (r300_ieee_float_is_negative(u.u))
       float24 |= (1u << 23);
 
    frexpf(f, &exponent);
