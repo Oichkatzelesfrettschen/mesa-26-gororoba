@@ -15,3 +15,11 @@ r300_raw_shader_triangle = executable(
   dependencies : [dep_m],
   install : false,
 )
+
+r300_float24 = executable(
+  'r300_float24',
+  ['r300_float24.c'],
+  dependencies : [dep_m],
+  override_options : ['optimization=3'],
+  install : false,
+)
