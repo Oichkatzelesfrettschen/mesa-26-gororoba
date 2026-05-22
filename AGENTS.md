@@ -263,6 +263,8 @@ When extending Triang3l-authored Terakan files, match the file's cadence: shorte
 
 ### TODO bodies stay mechanism-only
 
+AGENTS.md is the style guide for source comments; it is not a TODO tracker.  Deferred engineering work goes in the source file at the line that names the affected mechanism, with the literal `TODO:` / `FIXME:` / `XXX:` / `HACK:` / `PLACEHOLDER:` tag at the start of the comment.  Adding "TODO: do X eventually" to AGENTS.md, even as commentary, is forbidden -- the rule the tag tracks lives in the source, not in the style guide.  Examples in this section name the comment SHAPE, not real action items.
+
 Legitimate TODO/FIXME/XXX/HACK/PLACEHOLDER tags must name three things in mechanism terms:
 
 - the missing work, in terms of the function, register, ISA section, kernel symbol, or spec chapter that needs the change;
@@ -279,6 +281,8 @@ The same comment must not embed any of the following:
 
 The chronology prohibition above and the deictic prohibition just listed bind TODO bodies as strictly as ordinary comments.  Reviewer feedback, PR chronology, and phase labels belong in the commit message and the PR description; the source comment carries mechanism only.
 
+The example blocks below are illustrative skeletons of comment shape, not tracked engineering TODOs.  AGENTS.md is the style guide; it MUST NOT be used as a TODO tracker.  A real deferred TODO lives in the source file at the line whose mechanism it describes, never in this style guide.  The placeholders `<missing-work>`, `<reason>`, and `<tracking-artifact>` are deliberately generic so a reader does not mistake the example for a real action item.
+
 Wrong shape (project chronology smuggled into the source):
 
 ```text
@@ -287,38 +291,19 @@ Wrong shape (project chronology smuggled into the source):
  */
 ```
 
-Right shape (all three mechanism elements named: missing work, reason, tracking artifact):
+Right shape (all three mechanism elements named):
 
 ```text
 /* TODO: missing work --
- *           PALM does not honour ALU_PUSH_BEFORE when stack depth
- *           is a non-zero multiple of 4; SFN must emit an explicit
- *           PUSH CF before the ALU clause in that case.
+ *           <one or two lines naming the function, register, ISA
+ *           section, kernel symbol, or spec chapter that needs the
+ *           change>.
  *       reason --
- *           the explicit PUSH consumes 1 subentry, which forces
- *           STACK_SIZE in SQ_PGM_RESOURCES[15:8] to grow, so the
- *           emission cannot land until terakan_cf_stack_tracker
- *           accounts the extra subentry on the mod-4 boundary.
+ *           <one or two lines naming the silicon, ABI, or evidence
+ *           constraint that blocks completing the change now>.
  *       tracking --
- *           Evergreen ISA section 4 "Control Flow / ALU-PUSH hazard"
- *           and r600_nir_lower_cube_to_2darray.
- */
-```
-
-A complex case still stays mechanism-only:
-
-```text
-/* TODO: missing work --
- *           r600_nir_lower_int_tg4 must run before
- *           r600_nir_lower_cube_to_2darray for integer GATHER4 on
- *           cube textures.
- *       reason --
- *           inserting the pass earlier regresses textureGather on
- *           int_2d_array; the swap is gated on first fixing the
- *           2d_array residual under TERAKAN_EXPERIMENTAL_CUBE_GATHER_DIM_2D_ARRAY=1.
- *       tracking --
- *           sfn_nir.cpp pass-order block in terakan_shader.c and the
- *           dEQP-VK.glsl.texture_gather.basic_cube.int.* test family.
+ *           <a durable name: function, register, gitlab.freedesktop.org
+ *           issue URL, spec chapter, or silicon-constraint name>.
  */
 ```
 
