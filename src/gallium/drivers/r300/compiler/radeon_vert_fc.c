@@ -234,6 +234,11 @@ rc_vert_fc(struct radeon_compiler *c, void *user)
             inst = inst->Next;
          }
          fc_state.LoopDepth--;
+         if (fc_state.LoopDepth == 0) {
+            fc_state.BreakCount = 0;
+            fc_state.IfInst = NULL;
+            fc_state.BrkInst = NULL;
+         }
          break;
       case RC_OPCODE_IF:
          /* Save the outermost IF inside a LoopDepth==1 loop for the
@@ -257,14 +262,17 @@ rc_vert_fc(struct radeon_compiler *c, void *user)
              fc_state.BrkInst->Prev == fc_state.IfInst &&
              fc_state.BrkInst->Next == inst) {
             /* ME_PRED_SEQ(cond) sets pred = (cond.w == 0) = NOT cond.
+             * RC_PRED_SET predicates the write so the instruction is a
+             * no-op in iterations where pred is already 0 (after a break),
+             * preventing a later cond==0 from reasserting pred=1.
              * lower_endloop is suppressed for LoopDepth==1, so pred=0
              * persists across hardware iterations, making them no-ops.
              * Replaces VE_PRED_SNEQ_PUSH + RCP(0) + ME_PRED_SET_POP when
              * the IF block holds exactly one BRK. */
             fc_state.IfInst->U.I.Opcode = RC_ME_PRED_SEQ;
+            fc_state.IfInst->U.I.DstReg.Pred = RC_PRED_SET;
             fc_state.IfInst->U.I.SrcReg[0] = fc_state.IfInst->U.I.SrcReg[1];
-            memset(&fc_state.IfInst->U.I.SrcReg[1], 0,
-                   sizeof(fc_state.IfInst->U.I.SrcReg[1]));
+            fc_state.IfInst->U.I.SrcReg[1] = (struct rc_src_register){0};
             rc_remove_instruction(fc_state.BrkInst);
             struct rc_instruction *prev = inst->Prev;
             rc_remove_instruction(inst);
