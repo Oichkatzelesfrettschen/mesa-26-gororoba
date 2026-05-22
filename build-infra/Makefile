@@ -401,19 +401,13 @@ distclean: clean
 install:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	flock -x -w 7200 $(BUILD_LOCK) bash -c '\
-	    dat_prefix=$$(python3 -c "import pickle; print(getattr(pickle.load(open(\"$(BUILDDIR)/meson-private/install.dat\",\"rb\")), \"prefix\", \"\"))" 2>/dev/null); \
-	    if [ "$$dat_prefix" != "$(PREFIX)" ]; then \
-	        echo "[install] install.dat prefix \"$$dat_prefix\" != requested \"$(PREFIX)\"; running meson setup --reconfigure to regenerate install.dat"; \
-	        for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
-	        meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
-	        new_dat_prefix=$$(python3 -c "import pickle; print(getattr(pickle.load(open(\"$(BUILDDIR)/meson-private/install.dat\",\"rb\")), \"prefix\", \"\"))" 2>/dev/null); \
-	        if [ "$$new_dat_prefix" != "$(PREFIX)" ]; then \
-	            echo "[install] FAIL: install.dat prefix still \"$$new_dat_prefix\" after reconfigure; refusing to install to wrong prefix" >&2; \
-	            exit 1; \
-	        fi; \
-	    fi; \
-	    sudo meson install --no-rebuild -C $(BUILDDIR)'
+	flock -x -w 7200 $(BUILD_LOCK) bash -c 'set -euo pipefail; \
+	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
+	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
+	    meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
+	    echo "[install] running meson install --no-rebuild -C $(BUILDDIR)"; \
+	    sudo meson install --no-rebuild -C $(BUILDDIR); \
+	    echo "[install] complete; releasing flock"'
 
 artifact-check:
 	@test -d $(PREFIX) || { echo "prefix missing: $(PREFIX)"; exit 1; }
