@@ -27,5 +27,14 @@ vulkan-drivers      = ['amd_terascale']
 gallium-rusticl                = false
 
 amd-use-llvm        = true
+# draw-use-llvm dropped: triggers Mesa's gallivm/lp_bld_misc.cpp which
+# requires llvm::SectionMemoryManager from LLVM ExecutionEngine.
+# Debian's libLLVM-21.so does NOT export the SectionMemoryManager
+# constructor symbol (linker reports `undefined reference to
+# llvm::SectionMemoryManager::SectionMemoryManager(MemoryMapper*, bool)`).
+# The Gallium draw module's LLVM JIT path is only required by llvmpipe
+# and is irrelevant to r600+terakan; amd-use-llvm above remains true
+# so the AMD compiler backend stays available.
+draw-use-llvm       = false
 gallium-extra-hud   = true
 glx                 = 'auto'
