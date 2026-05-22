@@ -1,0 +1,51 @@
+# terakan-cachyos-cross-rusticl-musl-x86-64-baseline:
+# build mesa on the CachyOS znver3 host with rusticl enabled, targeting
+# x130e (Bobcat) runtime via an x86-64 generic baseline and a musl rust
+# target so the rust-built rusticl runtime is glibc-independent and
+# microarch-portable.  Mirrors terakan-cachyos-cross-btver1.meson for
+# the local-build-then-rsync workflow but flips three knobs:
+#
+# 1. gallium-rusticl = true (re-enabled; precondition: the bindgen
+#    drift fix from docs/workspace/rusticl-bindgen-drift.md has
+#    landed, otherwise the rust frontend compile still fails at
+#    rusticl_mesa_bindings.rs).
+# 2. CFLAGS / CXXFLAGS in the companion env file drop -march=btver1
+#    in favor of -march=x86-64 -mtune=generic so the C/C++ output is
+#    portable across every x86_64 microarch and the resulting .so
+#    runs on x130e Bobcat AND on any cachyos znver3 / mesh node.
+# 3. RUSTFLAGS in the companion env file pin
+#    --target=x86_64-unknown-linux-musl so the rust frontend
+#    statically links against musl libc instead of inheriting the
+#    build host's glibc.  This eliminates the GLIBC_2.* version
+#    skew between CachyOS (newer glibc) and x130e Linux Mint
+#    xanmod (older glibc) for the rust crates.
+#
+# Companion env file: env/cachyos-cross-rusticl-musl-x86-64-baseline.env
+# Bindgen-drift precondition: docs/workspace/rusticl-bindgen-drift.md
+
+[project options]
+buildtype           = 'debugoptimized'
+b_ndebug            = 'false'
+b_lto               = false
+
+# r600 + Terakan + rusticl(r600).
+gallium-drivers     = ['r600']
+vulkan-drivers      = ['amd_terascale']
+
+# Rusticl ENABLED.  Precondition: the bindgen-drift fix landed.
+# Without that fix the rust frontend compile fails at
+# rusticl_mesa_bindings.rs with E0609 / E0560 / E0422 against
+# pipe_screen and pipe_image_view.
+gallium-rusticl                = true
+gallium-rusticl-enable-drivers = ['r600']
+
+# Match the cross-btver1 profile's amd / hud / glx surface for
+# codepath parity.
+amd-use-llvm        = true
+gallium-extra-hud   = true
+glx                 = 'auto'
+
+# CachyOS has libdisplay-info.so.3 (0.3.0); x130e has only .so.2
+# (0.2.0).  Disable libdisplay-info so the rsynced .so does not
+# link against a CachyOS-only soname at runtime.
+display-info        = 'disabled'
