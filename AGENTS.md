@@ -667,6 +667,17 @@ Right shape:
  */
 ```
 
+A complex deferral still stays mechanism-only:
+
+```text
+/* TODO: r600_nir_lower_int_tg4 must run before
+ *       r600_nir_lower_cube_to_2darray for integer GATHER4 on cube
+ *       textures. Inserting the pass earlier regresses
+ *       textureGather(int_2d_array), so the pass order remains gated
+ *       on fixing the 2d_array residual.
+ */
+```
+
 Reviewer feedback, PR chronology, and phase labels belong in the commit message or PR description. Source comments carry mechanism only.
 
 ### Finding documents and agent-loaded Markdown
