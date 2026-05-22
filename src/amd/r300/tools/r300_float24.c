@@ -45,6 +45,8 @@ r300_pack_float24(float f)
    int exponent;
    uint32_t float24 = 0;
 
+   /* -0.0f == 0.0f in C, so signed zero also maps to 0.  PFS_PARAM constants
+    * do not require signed zero; the hardware does not need the distinction. */
    if (f == 0.0f)
       return 0;
 
@@ -205,6 +207,19 @@ main(int argc, char **argv)
       if (*end != '\0') {
          fprintf(stderr, "error: not a float: %s\n", argv[i]);
          return 1;
+      }
+      if (!isfinite(f)) {
+         fprintf(stderr, "error: '%s' is not finite; R300 float24 does not encode inf or nan\n", argv[i]);
+         return 1;
+      }
+      if (f != 0.0f) {
+         int exp;
+         frexpf(f, &exp);
+         /* stored_exp = exp + 62 must fit in 7 bits [0,127]. */
+         if (exp + 62 < 0 || exp + 62 > 127) {
+            fprintf(stderr, "error: '%s' exponent %d is outside the R300 float24 7-bit range\n", argv[i], exp);
+            return 1;
+         }
       }
       printf("r300_pack_float24(%g) = 0x%06X\n", (double)f, r300_pack_float24(f));
    }
