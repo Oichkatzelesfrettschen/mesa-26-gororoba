@@ -25,7 +25,10 @@
 #
 # Companion env file: env/cachyos-cross-rusticl-x86-64-host-glibc-baseline.env
 # Bindgen-drift status + musl-everywhere RCA:
-#   ../steinmarder/docs/workspace/rusticl-bindgen-drift.md
+#   ../../../steinmarder/docs/workspace/rusticl-bindgen-drift.md
+# (relative to this configs/ directory; matches the convention used
+# by build-infra/configs/base-debug.meson and other configs that
+# point at the sibling steinmarder repo.)
 
 [project options]
 buildtype           = 'debugoptimized'
