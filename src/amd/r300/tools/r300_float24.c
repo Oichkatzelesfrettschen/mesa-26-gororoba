@@ -31,8 +31,9 @@
 #define R300_FLOAT24_EXP_BIAS       62u
 #define R300_FLOAT24_EXP_MAX_STORED 127u
 
-/* IEEE 754 bit 31 is the sign bit.  Using a helper makes the intent explicit
- * and keeps the bit-31 extraction in one place for both pack and unpack paths. */
+/* IEEE 754 bit 31 is the sign bit.  The pack path uses this helper to make the
+ * sign extraction explicit; the unpack path reconstructs sign from the float24
+ * stored_exp field and does not need the IEEE bit-31 position directly. */
 static inline bool
 r300_ieee_float_is_negative(uint32_t bits)
 {
