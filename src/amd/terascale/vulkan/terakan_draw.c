@@ -553,18 +553,20 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
       uint32_t const * const packet_addr_hi = packet;
       *packet++ = 0; /* ADDR_HI -- kernel patches from reloc */
 
-      *packet++ = PKT3(draw_opcode, 1, 0);
-      *packet++ = (uint32_t)draw_data_offset; /* bytes from BO base to args */
-      *packet++ = S_0287F0_SOURCE_SELECT(source_select);
-
-      /* WDDM patch IDs are 0 on the DRM path; the helper reduces to a
-       * single 40-bit reloc that the kernel consumes at SET_BASE. */
+      /* The DRM CS validator (evergreen_cs.c PACKET3_SET_BASE handler)
+       * calls radeon_cs_packet_next_reloc() after advancing p->idx past
+       * SET_BASE, expecting PKT3_NOP at that position before any DRAW
+       * packet.  Emit the reloc NOP here, between SET_BASE and DRAW. */
       terakan_gfx_command_writer_add_relocation_for_40_bits(
          command_writer, &packet, packet_addr_lo, packet_addr_hi,
          0, 0,
          terakan_bo_reference_writer_add_reference(
             &command_writer->base.bo_reference_writer,
             bo, true, false, TERAKAN_BO_PRIORITY_DRAW_INDIRECT));
+
+      *packet++ = PKT3(draw_opcode, 1, 0);
+      *packet++ = (uint32_t)draw_data_offset; /* bytes from BO base to args */
+      *packet++ = S_0287F0_SOURCE_SELECT(source_select);
 
       terakan_gfx_command_writer_emit_done(command_writer, packet);
    }
