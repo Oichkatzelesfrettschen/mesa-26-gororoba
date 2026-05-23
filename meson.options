@@ -879,3 +879,10 @@ option(
   value : false,
   description : 'use experimental virtio backend for intel driver',
 )
+
+option(
+  'r300vk-gallium-backend',
+  type : 'boolean',
+  value : false,
+  description : 'Enable Gallium-backed r300g device/submit path in r300vk (adds DRM CS submit; requires hardware gate R300VK_GALLIUM_SUBMIT_ACCEPTED=1 before Vostro runs).',
+)

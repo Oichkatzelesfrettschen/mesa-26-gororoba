@@ -29,15 +29,49 @@ libr300vk_deps = [
   idep_vulkan_util,
 ]
 
+libr300vk_inc = [
+  inc_include,
+  inc_src,
+]
+
+libr300vk_link_with = []
+
+# Gallium-backed device and submit path.  Gated behind r300vk-gallium-backend
+# so the loader-only R0 build (no Gallium dependency) continues to work.
+# with_gallium_r300 is set by the parent meson.build when gallium-drivers
+# includes r300; guard both options so the build fails clearly if only one
+# is set.
+# Processed from src/meson.build AFTER subdir('gallium') so that driver_r300
+# and libgallium are in scope.
+if get_option('r300vk-gallium-backend') and with_gallium_r300
+  libr300vk_files += files(
+    'r300vk_device.c',
+    'r300vk_queue.c',
+  )
+  libr300vk_deps += [
+    idep_nir,
+    idep_vulkan_wsi,
+    driver_r300,
+  ]
+  libr300vk_inc += [
+    inc_gallium,
+    inc_gallium_aux,
+    include_directories('../../../../gallium/drivers'),
+  ]
+  # libgallium provides Gallium auxiliary symbols (u_upload_alloc_ref,
+  # u_default_texture_subdata, etc.) that libr300.a references but does
+  # not define.  Must be in link_with (not dependencies) because meson
+  # tracks it as a static_library object, not a declare_dependency.
+  libr300vk_link_with += [libgallium]
+endif
+
 libvulkan_r300 = shared_library(
   'vulkan_r300',
   [libr300vk_files, r300vk_entrypoints],
   vs_module_defs : vulkan_api_def,
-  include_directories : [
-    inc_include,
-    inc_src,
-  ],
+  include_directories : libr300vk_inc,
   dependencies : libr300vk_deps,
+  link_with : libr300vk_link_with,
   c_args : [no_override_init_args],
   link_args : [
     ld_args_build_id,
