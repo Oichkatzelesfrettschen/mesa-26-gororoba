@@ -356,6 +356,8 @@ r300vk_physical_device_destroy(struct vk_physical_device *const device_base)
    vk_free(&device->vk.instance->alloc, device);
 }
 
+/* CCN reflects the multi-step DRM device probing sequence: filter by node
+ * type, PCI vendor/device IDs, and capability query, each with an exit path. */
 VkResult
 r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
                                           struct _drmDevice *const drm_device,
