@@ -76,6 +76,18 @@ r300vk_MapMemory(VkDevice _device,
                        "or BindImageMemory2 (resource-backed memory model "
                        "requires a prior bind)");
 
+   if (mem->resource->target != PIPE_BUFFER)
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r300vk: image-backed device memory is not host-mappable");
+
+   /* Unmap any stale mapping from a previous vkMapMemory call.  Vulkan
+    * spec forbids double-mapping without an intervening vkUnmapMemory,
+    * but guard here to avoid leaking the old pipe_transfer. */
+   if (mem->transfer) {
+      device->pipe->buffer_unmap(device->pipe, mem->transfer);
+      mem->transfer = NULL;
+   }
+
    struct pipe_box box;
    u_box_1d((unsigned)offset,
             size == VK_WHOLE_SIZE ? mem->resource->width0 - (unsigned)offset
@@ -137,7 +149,12 @@ r300vk_BindBufferMemory2(VkDevice _device,
                           uint32_t bindInfoCount,
                           const VkBindBufferMemoryInfo *pBindInfos)
 {
+   VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
+      if (pBindInfos[i].memoryOffset != 0)
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r300vk: non-zero memoryOffset is unsupported "
+                          "in the resource-backed memory model");
       VK_FROM_HANDLE(r300vk_buffer, buf, pBindInfos[i].buffer);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
       pipe_resource_reference(&mem->resource, buf->resource);
@@ -150,7 +167,12 @@ r300vk_BindImageMemory2(VkDevice _device,
                          uint32_t bindInfoCount,
                          const VkBindImageMemoryInfo *pBindInfos)
 {
+   VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
+      if (pBindInfos[i].memoryOffset != 0)
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r300vk: non-zero memoryOffset is unsupported "
+                          "in the resource-backed memory model");
       VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
       pipe_resource_reference(&mem->resource, img->resource);
