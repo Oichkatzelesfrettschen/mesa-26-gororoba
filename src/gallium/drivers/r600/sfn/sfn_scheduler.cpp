@@ -1000,6 +1000,24 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
       start_new_block(out_blocks, Block::unknown);
    }
    group->update_readport_reserver();
+
+   /* Partial-group fill: a T-slot instruction succeeded (success=true) but a
+    * vec candidate failed readport exhaustion in the same schedule_alu
+    * invocation.  The while loop exited via the success branch before the
+    * readport_exhaustion_failed predicate (lines 901-903) was evaluated, so
+    * the clause-split was skipped.  The committed group belongs to the old
+    * block above; start_new_block here opens a fresh clause so the next
+    * schedule_alu invocation begins with clean per-clause readport accounting
+    * and the rejected vec candidate can join the new group.
+    * Guards mirror try_schedule_vec_candidate: no clause break while an LDS
+    * group is active or an AR use is still pending. */
+   if (success &&
+       m_current_block->readport_exhaustion_failed() &&
+       !m_current_block->lds_group_active() &&
+       m_current_block->expected_ar_uses() == 0) {
+      start_new_block(out_blocks, Block::alu);
+   }
+
    return success;
 }
 
