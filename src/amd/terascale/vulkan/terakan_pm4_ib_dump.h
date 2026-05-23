@@ -61,4 +61,16 @@ void terakan_pm4_ib_dump_cs_submission(unsigned ring,
                                    uint32_t const *ib_dwords,
                                    uint32_t ib_length_dwords);
 
+/* Record-end capture gate (TERAKAN_DEBUG_DUMP_IB_RECORD_END),
+ * independent of the submit-time gate.  Lets vkEndCommandBuffer dump
+ * a finalized IB without a submit, so a wedge-class IB can be
+ * decomposed offline without dispatching it. */
+bool terakan_pm4_ib_dump_record_end_active(void);
+
+/* Emit one pm4_ib_record_end JSONL row (same schema as
+ * pm4_ib_cs_submission).  No-op when the record-end gate is off. */
+void terakan_pm4_ib_dump_record_end(unsigned ring,
+                                uint32_t const *ib_dwords,
+                                uint32_t ib_length_dwords);
+
 #endif /* TERAKAN_PM4_IB_DUMP_H */

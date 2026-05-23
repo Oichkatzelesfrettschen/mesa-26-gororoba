@@ -33,6 +33,7 @@
 #include "terakan_image.h"
 #include "terakan_instance.h"
 #include "terakan_limits.h"
+#include "terakan_pm4_ib_dump.h"
 #include "terakan_physical_device.h"
 #include "terakan_profile.h"
 #include "terakan_queue.h"
@@ -1578,6 +1579,24 @@ terakan_EndCommandBuffer(VkCommandBuffer const commandBuffer)
    }
 
    terakan_gfx_command_writer_end_indirect_buffer(gfx_command_writer);
+
+   /* TERAKAN_DEBUG_DUMP_IB_RECORD_END=1: dump each finalized IB now,
+    * at record-end, WITHOUT a submit.  This is the wedge-free capture
+    * path -- a command buffer that would hang the GPU on submit can be
+    * recorded with --mode no-submit and its PM4 still captured here for
+    * offline decomposition (steinmarder pm4_decode).  The submit-time
+    * TERAKAN_DEBUG_DUMP_IB hook is unaffected; both can run together,
+    * distinguished by the JSONL "event" field.  The internal gate
+    * check makes this a single cached-bool load + branch when off.
+    * Ring is reported as 0 (gfx) because the ring binding happens at
+    * submit, which has not occurred at record-end. */
+   if (terakan_pm4_ib_dump_record_end_active()) {
+      list_for_each_entry (struct terakan_command_buffer_indirect_buffer,
+                           record_end_ib, &command_buffer->indirect_buffers, link) {
+         terakan_pm4_ib_dump_record_end(0, record_end_ib->indirect_buffer,
+                                        record_end_ib->indirect_buffer_size_dwords);
+      }
+   }
 
    terakan_command_buffer_release_command_writer(command_buffer);
 
