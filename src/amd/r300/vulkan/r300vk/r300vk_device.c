@@ -4,6 +4,7 @@
  */
 
 #include "r300vk_device.h"
+#include "r300vk_cmd_buffer.h"
 
 #include "r300vk_entrypoints.h"
 #include "r300vk_physical_device.h"
@@ -67,9 +68,7 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    vk_device_dispatch_table_from_entrypoints(&device->command_dispatch_table,
                                              &vk_common_device_entrypoints, false);
    device->vk.command_dispatch_table = &device->command_dispatch_table;
-   /* command_buffer_ops wired in PR 4 when r300vk_cmd_buffer.c is added;
-    * vkAllocateCommandBuffers is not supported until then. */
-   device->vk.command_buffer_ops = NULL;
+   device->vk.command_buffer_ops = &r300vk_cmd_buffer_ops;
 
    /* Initialize the Gallium-mediated r300g backend.
     * radeon_drm_winsys_create() opens a new fd reference to the render node
