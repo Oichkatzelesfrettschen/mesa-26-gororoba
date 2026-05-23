@@ -34,8 +34,8 @@ r300vk_CreateFramebuffer(VkDevice _device,
    if (pCreateInfo->attachmentCount > PIPE_MAX_COLOR_BUFS + 1) {
       vk_object_base_finish(&fb->base);
       vk_free2(&device->vk.alloc, pAllocator, fb);
-      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                       "r300vk: framebuffer attachmentCount %u exceeds fixed storage %u",
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: framebuffer attachmentCount %u exceeds r300 fixed storage %u",
                        pCreateInfo->attachmentCount, PIPE_MAX_COLOR_BUFS + 1);
    }
 

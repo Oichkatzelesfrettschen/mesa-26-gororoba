@@ -51,6 +51,15 @@ r300vk_replay_gpu(struct r300vk_device *device,
 {
    struct pipe_context *pipe = device->pipe;
 
+   /* VB cache: defers set_vertex_buffers to DRAW time so that it always
+    * follows bind_vertex_elements_state (Gallium p_context.h line 417).
+    * Accumulating here also preserves lower binding slots when firstBinding > 0
+    * without clobbering slots outside the current CmdBindVertexBuffers range. */
+   struct pipe_vertex_buffer vb_cache[R300VK_MAX_VERTEX_BINDINGS];
+   uint32_t vb_max_used = 0;
+   bool vb_dirty = false;
+   memset(vb_cache, 0, sizeof(vb_cache));
+
    for (uint32_t i = 0; i < cmd->entry_count; i++) {
       const struct r300vk_cmd_entry *e = &cmd->entries[i];
 
@@ -100,8 +109,12 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
       case R300VK_CMD_SET_SCISSOR: {
          struct pipe_scissor_state sc;
-         sc.minx = (unsigned)e->set_sc.scissor.offset.x;
-         sc.miny = (unsigned)e->set_sc.scissor.offset.y;
+         /* VkRect2D offset is signed; clamp to zero before converting to
+          * unsigned Gallium coordinates so negative origins do not wrap. */
+         int32_t ox = e->set_sc.scissor.offset.x;
+         int32_t oy = e->set_sc.scissor.offset.y;
+         sc.minx = (unsigned)(ox > 0 ? ox : 0);
+         sc.miny = (unsigned)(oy > 0 ? oy : 0);
          sc.maxx = sc.minx + e->set_sc.scissor.extent.width;
          sc.maxy = sc.miny + e->set_sc.scissor.extent.height;
          pipe->set_scissor_states(pipe, 0, 1, &sc);
@@ -109,19 +122,33 @@ r300vk_replay_gpu(struct r300vk_device *device,
       }
 
       case R300VK_CMD_BIND_VERTEX_BUFFERS: {
+         /* Accumulate into the VB cache rather than calling set_vertex_buffers
+          * immediately.  set_vertex_buffers must follow bind_vertex_elements_state
+          * per p_context.h; deferring to DRAW guarantees the Gallium ordering
+          * contract regardless of the order CmdBindPipeline and
+          * CmdBindVertexBuffers appear in the Vulkan recording. */
          uint32_t first = e->bind_vbufs.first_binding;
          uint32_t count = e->bind_vbufs.binding_count;
-         struct pipe_vertex_buffer vb[R300VK_MAX_VERTEX_BINDINGS] = {0};
          for (uint32_t b = 0; b < count; b++) {
-            vb[first + b].is_user_buffer  = false;
-            vb[first + b].buffer_offset   = (unsigned)e->bind_vbufs.offsets[b];
-            vb[first + b].buffer.resource = e->bind_vbufs.buffers[b]->resource;
+            vb_cache[first + b].is_user_buffer  = false;
+            vb_cache[first + b].buffer_offset   = (unsigned)e->bind_vbufs.offsets[b];
+            vb_cache[first + b].buffer.resource = e->bind_vbufs.buffers[b]->resource;
+            if (first + b + 1 > vb_max_used)
+               vb_max_used = first + b + 1;
          }
-         pipe->set_vertex_buffers(pipe, first + count, vb);
+         vb_dirty = true;
          break;
       }
 
       case R300VK_CMD_DRAW: {
+         /* Flush the VB cache after bind_vertex_elements_state (set by
+          * BIND_PIPELINE above in the stream) so the Gallium ordering holds.
+          * vb_max_used tracks the highest slot index written so only the live
+          * range is submitted, and lower slots from earlier binds are preserved. */
+         if (vb_dirty) {
+            pipe->set_vertex_buffers(pipe, vb_max_used, vb_cache);
+            vb_dirty = false;
+         }
          struct pipe_draw_info info;
          memset(&info, 0, sizeof(info));
          /* Topology was snapshotted at record time so the correct primitive

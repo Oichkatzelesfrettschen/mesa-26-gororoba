@@ -100,7 +100,7 @@ r300vk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    cmd->bound_pipeline      = NULL;
    cmd->current_color_image = NULL;
    vk_command_buffer_begin(&cmd->base, pBeginInfo);
-   return VK_SUCCESS;
+   return vk_command_buffer_get_record_result(&cmd->base);
 }
 
 VkResult
