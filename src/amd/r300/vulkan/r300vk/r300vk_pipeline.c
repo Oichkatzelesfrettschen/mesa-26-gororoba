@@ -14,6 +14,7 @@
 #include "vk_object.h"
 #include "vk_util.h"
 
+#include "compiler/nir/nir.h"
 #include "compiler/spirv/nir_spirv.h"
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
@@ -60,6 +61,22 @@ r300vk_compile_shader(struct r300vk_device *device,
                        "r300vk: vk_spirv_to_nir failed for %s shader",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
+
+   /* vk_spirv_to_nir sets data.location for VS inputs (VERT_ATTRIB_GENERIC0+n)
+    * but leaves data.driver_location at zero for all variables.  nir_lower_io
+    * (called inside r300g's nir_to_rc via r300_nir_lower_for_rc) uses
+    * driver_location as the TGSI IN[]/OUT[] base, so all inputs would collapse
+    * to IN[0] without this assignment.  Terakan applies the same pattern in
+    * terakan_shader.c before handing NIR to r600g. */
+   if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
+      nir_foreach_shader_in_variable(var, nir) {
+         assert(var->data.location >= VERT_ATTRIB_GENERIC0);
+         var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
+      }
+      nir_assign_io_var_locations(nir, nir_var_shader_out);
+   } else {
+      nir_assign_io_var_locations(nir, nir_var_shader_in);
+   }
 
    struct pipe_shader_state ss = {
       .type   = PIPE_SHADER_IR_NIR,
