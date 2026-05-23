@@ -965,10 +965,16 @@ r300_nir_fill_shader_info(const struct nir_shader *s, struct tgsi_shader_info *i
    int ni = 0;
    nir_foreach_shader_in_variable (var, s) {
       unsigned sem_name, sem_index;
-      /* Apply the same TEX0-7 -> VAR0+ fixup that ntr_fixup_varying_slots does
-       * in the TGSI path, so the semantic names match tgsi_scan_shader output. */
+      /* Apply the full ntr_fixup_varying_slots() remapping so semantic names
+       * match what tgsi_scan_shader() produces after the TGSI round-trip.
+       * ntr_fixup_varying_slots() runs on the lowered clone before RC emission;
+       * this pre-lowering NIR must produce the same semantic names/indices. */
       int loc = var->data.location;
-      if (loc >= VARYING_SLOT_TEX0 && loc <= VARYING_SLOT_TEX7)
+      if (loc >= VARYING_SLOT_VAR0 && loc < VARYING_SLOT_PATCH0)
+         loc += 9;
+      else if (loc == VARYING_SLOT_PNTC)
+         loc = VARYING_SLOT_VAR8;
+      else if (loc >= VARYING_SLOT_TEX0 && loc <= VARYING_SLOT_TEX7)
          loc = VARYING_SLOT_VAR0 + (loc - VARYING_SLOT_TEX0);
       tgsi_get_gl_varying_semantic(loc, true, &sem_name, &sem_index);
       info->input_semantic_name[ni]  = sem_name;
