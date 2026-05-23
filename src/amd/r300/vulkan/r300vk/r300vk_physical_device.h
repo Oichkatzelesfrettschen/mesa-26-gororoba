@@ -7,6 +7,7 @@
 #define R300VK_PHYSICAL_DEVICE_H
 
 #include "vk_physical_device.h"
+#include "vk_sync.h"
 
 #include <stdint.h>
 
@@ -28,6 +29,11 @@ struct r300vk_physical_device {
    /* Render-node fd kept open to validate the DRM device.  Released
     * when the physical device is destroyed. */
    int render_node_fd;
+
+   /* NULL-terminated sync type table assigned to vk.supported_sync_types.
+    * r300vk uses a CPU-side binary sync; the radeon DRM driver does not
+    * support DRM_CAP_SYNCOBJ (confirmed on kernel 6.18 radeon driver). */
+   const struct vk_sync_type *sync_types[2];
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_physical_device, vk.base, VkPhysicalDevice,

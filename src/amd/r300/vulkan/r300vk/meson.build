@@ -20,6 +20,7 @@ r300vk_entrypoints = custom_target(
 libr300vk_files = files(
   'r300vk_instance.c',
   'r300vk_physical_device.c',
+  'r300vk_cpu_sync.c',
 )
 
 libr300vk_deps = [
@@ -43,6 +44,10 @@ libr300vk_link_with = []
 # is set.
 # Processed from src/meson.build AFTER subdir('gallium') so that driver_r300
 # and libgallium are in scope.
+if get_option('r300vk-gallium-backend') and not with_gallium_r300
+  error('r300vk-gallium-backend requires gallium-drivers to include r300; ' +
+        'add r300 to -Dgallium-drivers or disable -Dr300vk-gallium-backend')
+endif
 if get_option('r300vk-gallium-backend') and with_gallium_r300
   libr300vk_files += files(
     'r300vk_device.c',

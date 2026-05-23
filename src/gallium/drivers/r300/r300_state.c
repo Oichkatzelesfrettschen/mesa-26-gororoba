@@ -2180,8 +2180,16 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
             }
         }
 
-       struct r300_fragment_program_external_state state = {};
-       vs->state.tokens = nir_to_rc(shader->ir.nir, pipe->screen, state);
+       if (r300->screen->caps.has_tcl) {
+          /* TCL path: keep NIR for direct RC emission in
+           * r300_translate_vertex_shader, bypassing the TGSI round-trip.
+           * vs->state.ir.nir is already set from the vs->state = *shader copy.
+           * vs->state.tokens stays NULL to signal the direct path. */
+       } else {
+          /* SWTCL path: r300_draw_init_vertex_shader needs TGSI tokens. */
+          struct r300_fragment_program_external_state ext_state = {};
+          vs->state.tokens = nir_to_rc(shader->ir.nir, pipe->screen, ext_state);
+       }
     } else {
        assert(vs->state.type == PIPE_SHADER_IR_TGSI);
        /* we need to keep a local copy of the tokens */
@@ -2277,6 +2285,11 @@ static void r300_delete_vs_state(struct pipe_context* pipe, void* shader)
                 (struct draw_vertex_shader*)vs->draw_vs);
     }
 
+    /* On the TCL direct path (has_tcl=true, NIR input), tokens is NULL and
+     * nir_to_rc() was never called, so NIR ownership stays with vs.
+     * On the SWTCL path nir_to_rc() took NIR ownership and freed it. */
+    if (vs->state.type == PIPE_SHADER_IR_NIR && !vs->state.tokens)
+        ralloc_free(vs->state.ir.nir);
     FREE((void*)vs->state.tokens);
     FREE(shader);
 }

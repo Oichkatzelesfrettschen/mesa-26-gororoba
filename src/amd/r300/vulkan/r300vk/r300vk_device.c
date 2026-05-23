@@ -98,6 +98,11 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    /* One graphics-plus-transfer queue.  RS482/RS485 has no hardware vertex
     * processor; the vertex stage runs through Gallium Draw software TCL.
     * No compute queue is exposed. */
+   if (pCreateInfo->queueCreateInfoCount == 0) {
+      result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                         "r300vk: queueCreateInfoCount must be at least 1");
+      goto fail_pipe;
+   }
    result = vk_queue_init(&device->queue.vk, &device->vk,
                            &pCreateInfo->pQueueCreateInfos[0], 0);
    if (result != VK_SUCCESS)

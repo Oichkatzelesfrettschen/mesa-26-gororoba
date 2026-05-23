@@ -7,13 +7,14 @@
 #include "r300_vs.h"
 
 #include "r300_context.h"
+#include "r300_nir_to_rc_direct.h"
 #include "r300_screen.h"
 #include "r300_tgsi_to_rc.h"
 #include "r300_reg.h"
 
-#include "tgsi/tgsi_dump.h"
-
+#include "compiler/nir_to_rc.h"
 #include "compiler/radeon_compiler.h"
+#include "tgsi/tgsi_dump.h"
 
 /* Convert info about VS output semantics into r300_shader_semantics. */
 static void r300_shader_read_vs_outputs(
@@ -155,7 +156,14 @@ static void set_vertex_inputs_outputs(struct r300_vertex_program_compiler * c)
 void r300_init_vs_outputs(struct r300_context *r300,
                           struct r300_vertex_shader *vs)
 {
-    tgsi_scan_shader(vs->state.tokens, &vs->shader->info);
+    /* When tokens is NULL the NIR direct path is in use: fill info from NIR
+     * variable metadata rather than running tgsi_scan_shader.
+     * r300_nir_fill_shader_info applies the same ntr_fixup_varying_slots
+     * remapping that tgsi_scan_shader sees after the TGSI round-trip. */
+    if (vs->state.tokens)
+        tgsi_scan_shader(vs->state.tokens, &vs->shader->info);
+    else
+        r300_nir_fill_shader_info(vs->state.ir.nir, &vs->shader->info);
     r300_shader_read_vs_outputs(r300, &vs->shader->info, &vs->shader->outputs);
 }
 
@@ -199,21 +207,40 @@ void r300_translate_vertex_shader(struct r300_context *r300,
     compiler.Base.max_constants = 256;
     compiler.Base.max_alu_insts = r300->screen->caps.is_r500 ? 1024 : 256;
 
-    if (compiler.Base.Debug & RC_DBG_LOG) {
-        DBG(r300, DBG_VP, "r300: Initial vertex program\n");
-        tgsi_dump(shader->state.tokens, 0);
-    }
+    if (shader->state.tokens) {
+        /* TGSI path: used for SWTCL (TCL-less) chips and TGSI input shaders. */
+        if (compiler.Base.Debug & RC_DBG_LOG) {
+            DBG(r300, DBG_VP, "r300: Initial vertex program\n");
+            tgsi_dump(shader->state.tokens, 0);
+        }
 
-    /* Translate TGSI to our internal representation */
-    ttr.compiler = &compiler.Base;
-    ttr.info = &vs->info;
+        ttr.compiler = &compiler.Base;
+        ttr.info = &vs->info;
 
-    r300_tgsi_to_rc(&ttr, shader->state.tokens);
+        r300_tgsi_to_rc(&ttr, shader->state.tokens);
 
-    if (ttr.error) {
-        vs->error = strdup("Cannot translate shader from TGSI");
-        vs->dummy = true;
-        return;
+        if (ttr.error) {
+            vs->error = strdup("Cannot translate shader from TGSI");
+            vs->dummy = true;
+            return;
+        }
+    } else {
+        /* NIR direct path: r300_nir_lower_for_rc reduces the NIR to the
+         * subset r300_nir_to_rc_direct handles, then the RC program is
+         * filled without a TGSI serialization round-trip.
+         * r300_create_vs_state leaves tokens NULL on TCL-capable chips. */
+        struct r300_fragment_program_external_state ext_state = {};
+        r300_nir_lower_for_rc(shader->state.ir.nir, r300->context.screen,
+                              ext_state);
+        r300_nir_to_rc_direct(&compiler.Base, shader->state.ir.nir,
+                              r300->context.screen, ext_state);
+
+        if (compiler.Base.Error) {
+            vs->error = strdup(compiler.Base.ErrorMsg);
+            rc_destroy(&compiler.Base);
+            vs->dummy = true;
+            return;
+        }
     }
 
     if (compiler.Base.Program.Constants.Count > 200) {

@@ -50,7 +50,10 @@ r300vk_FreeMemory(VkDevice _device,
       return;
 
    if (mem->transfer) {
-      device->pipe->buffer_unmap(device->pipe, mem->transfer);
+      if (mem->resource && mem->resource->target == PIPE_BUFFER)
+         device->pipe->buffer_unmap(device->pipe, mem->transfer);
+      else
+         device->pipe->texture_unmap(device->pipe, mem->transfer);
       mem->transfer = NULL;
    }
    pipe_resource_reference(&mem->resource, NULL);
@@ -76,27 +79,45 @@ r300vk_MapMemory(VkDevice _device,
                        "or BindImageMemory2 (resource-backed memory model "
                        "requires a prior bind)");
 
-   if (mem->resource->target != PIPE_BUFFER)
-      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                       "r300vk: image-backed device memory is not host-mappable");
-
    /* Unmap any stale mapping from a previous vkMapMemory call.  Vulkan
     * spec forbids double-mapping without an intervening vkUnmapMemory,
     * but guard here to avoid leaking the old pipe_transfer. */
    if (mem->transfer) {
-      device->pipe->buffer_unmap(device->pipe, mem->transfer);
+      if (mem->resource->target == PIPE_BUFFER)
+         device->pipe->buffer_unmap(device->pipe, mem->transfer);
+      else
+         device->pipe->texture_unmap(device->pipe, mem->transfer);
       mem->transfer = NULL;
    }
 
    struct pipe_box box;
-   u_box_1d((unsigned)offset,
-            size == VK_WHOLE_SIZE ? mem->resource->width0 - (unsigned)offset
-                                  : (unsigned)size,
-            &box);
+   void *ptr;
 
-   void *ptr = device->pipe->buffer_map(device->pipe, mem->resource, 0,
-                                         PIPE_MAP_READ_WRITE, &box,
-                                         &mem->transfer);
+   if (mem->resource->target == PIPE_BUFFER) {
+      /* resource_offset: byte offset into the pipe_resource.  MapMemory's
+       * offset is relative to the VkDeviceMemory object; memory_offset is
+       * where the buffer starts within that object.  For the resource-backed
+       * model both are expected to be zero, but compute correctly. */
+      unsigned resource_offset = (unsigned)(offset >= mem->memory_offset
+                                            ? offset - mem->memory_offset : 0);
+      unsigned map_size = size == VK_WHOLE_SIZE
+                          ? mem->resource->width0 - resource_offset
+                          : (unsigned)size;
+      u_box_1d(resource_offset, map_size, &box);
+      ptr = device->pipe->buffer_map(device->pipe, mem->resource, 0,
+                                      PIPE_MAP_READ_WRITE, &box,
+                                      &mem->transfer);
+   } else {
+      /* Texture resource: map mip level 0, full surface.  The offset
+       * parameter is not meaningful for driver-tiled textures; callers
+       * that need linear-addressable access should bind to a PIPE_BUFFER
+       * readback resource instead. */
+      u_box_origin_2d(mem->resource->width0, mem->resource->height0, &box);
+      ptr = device->pipe->texture_map(device->pipe, mem->resource, 0,
+                                       PIPE_MAP_READ_WRITE, &box,
+                                       &mem->transfer);
+   }
+
    if (!ptr)
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 
@@ -115,7 +136,10 @@ r300vk_UnmapMemory(VkDevice _device,
    if (!mem->transfer)
       return;
 
-   device->pipe->buffer_unmap(device->pipe, mem->transfer);
+   if (mem->resource && mem->resource->target == PIPE_BUFFER)
+      device->pipe->buffer_unmap(device->pipe, mem->transfer);
+   else
+      device->pipe->texture_unmap(device->pipe, mem->transfer);
    mem->transfer = NULL;
    mem->map_ptr = NULL;
 }
@@ -149,14 +173,11 @@ r300vk_BindBufferMemory2(VkDevice _device,
                           uint32_t bindInfoCount,
                           const VkBindBufferMemoryInfo *pBindInfos)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   (void)_device;
    for (uint32_t i = 0; i < bindInfoCount; i++) {
-      if (pBindInfos[i].memoryOffset != 0)
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "r300vk: non-zero memoryOffset is unsupported "
-                          "in the resource-backed memory model");
       VK_FROM_HANDLE(r300vk_buffer, buf, pBindInfos[i].buffer);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
+      mem->memory_offset = pBindInfos[i].memoryOffset;
       pipe_resource_reference(&mem->resource, buf->resource);
    }
    return VK_SUCCESS;
@@ -167,14 +188,11 @@ r300vk_BindImageMemory2(VkDevice _device,
                          uint32_t bindInfoCount,
                          const VkBindImageMemoryInfo *pBindInfos)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
+   (void)_device;
    for (uint32_t i = 0; i < bindInfoCount; i++) {
-      if (pBindInfos[i].memoryOffset != 0)
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "r300vk: non-zero memoryOffset is unsupported "
-                          "in the resource-backed memory model");
       VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
+      mem->memory_offset = pBindInfos[i].memoryOffset;
       pipe_resource_reference(&mem->resource, img->resource);
    }
    return VK_SUCCESS;

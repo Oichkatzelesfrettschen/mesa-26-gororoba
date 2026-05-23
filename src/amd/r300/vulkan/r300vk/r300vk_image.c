@@ -33,6 +33,33 @@ r300vk_CreateImage(VkDevice _device,
 
    vk_image_init(&device->vk, &img->vk, pCreateInfo);
 
+   /* R300-class hardware only supports flat 2D images: one layer, one mip
+    * level, and no MSAA.  Reject any other configuration so callers see a
+    * clear error rather than silently incorrect behavior.  Vulkan requires
+    * these conditions to be advertised via GetPhysicalDeviceImageFormatProperties;
+    * an app that ignores those limits invokes undefined behavior per spec. */
+   if (pCreateInfo->arrayLayers > 1) {
+      vk_image_finish(&img->vk);
+      vk_free2(&device->vk.alloc, pAllocator, img);
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: arrayLayers %u > 1 unsupported",
+                       pCreateInfo->arrayLayers);
+   }
+   if (pCreateInfo->mipLevels > 1) {
+      vk_image_finish(&img->vk);
+      vk_free2(&device->vk.alloc, pAllocator, img);
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: mipLevels %u > 1 unsupported",
+                       pCreateInfo->mipLevels);
+   }
+   if (pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT) {
+      vk_image_finish(&img->vk);
+      vk_free2(&device->vk.alloc, pAllocator, img);
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: samples 0x%x != VK_SAMPLE_COUNT_1_BIT unsupported",
+                       pCreateInfo->samples);
+   }
+
    enum pipe_format pipe_fmt = vk_format_to_pipe_format(pCreateInfo->format);
    if (pipe_fmt == PIPE_FORMAT_NONE) {
       vk_image_finish(&img->vk);
