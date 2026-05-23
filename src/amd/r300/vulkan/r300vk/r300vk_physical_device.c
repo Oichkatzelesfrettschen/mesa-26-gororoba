@@ -151,7 +151,7 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
    props->maxFragmentDualSrcAttachments = 0;
    props->maxFragmentCombinedOutputResources = 4;
 
-   /* No documented or Vostro-proven native compute dispatch surface
+   /* No documented or silicon-proven native compute dispatch surface
     * exists for this RS482/RS485 R300VK target.  See
     * R300VK_CONFORMANCE_STATUS in r300vk_private.h for the
     * non-conformance contract. */
