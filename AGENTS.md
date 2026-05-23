@@ -49,7 +49,15 @@ distillation and must never contradict them.
 - MUST verify module reachability (`/proc/PID/maps` or `gdb info sharedlibrary`)
   before symbolizing a crash address.
 - MUST treat warnings and unexpected tool/CTS output as defects to investigate,
-  and report unexpected results immediately.
+  and report unexpected results immediately; build touched code clean under the
+  project's configured warning flags and add no new warning.
+- MUST keep each translation unit in its existing language and standard: C
+  translation units (gallium, drivers) are C11; C++ backends (SFN, NIR helpers)
+  are C++11 as the floor and otherwise match the TU's configured standard; never
+  change a TU's language or mix C and C++ in one TU.
+- MUST write Python tooling to run under CPython 3.12 through 3.14+ (nothing
+  removed before 3.12, nothing that breaks on 3.14), and shell scripts as POSIX
+  `sh` unless a script explicitly requires and declares `bash`.
 - MUST use durable mechanism names in branches, commit subjects, PR titles,
   comments, finding filenames, and bundle directories; set branch, first commit
   subject, and PR title canonically before first push.
@@ -1181,6 +1189,35 @@ to a script, runner, build file, lowering pass, or descriptor path:
 
 If a reviewer finds a defect, fix the class, not just the instance.  Add the rule,
 lint, test, or documented check that would have caught it.
+
+## Workspace cleanup and deletion-readiness (strict clean)
+
+A repository is deletion-ready only when every applicable condition holds.  Do
+not delete or treat a repo as disposable until they do.
+
+1. The working tree has no tracked modifications and no untracked, unignored
+   files.
+2. The checked-out branch is the canonical primary branch (normally `main` or
+   `master`) unless the repo documents a different primary.
+3. The primary branch is synced with its configured remote primary: no commits
+   ahead, none behind.
+4. Local non-primary branches have been reviewed, reconciled, PR'd or merged
+   where appropriate, and deleted only after their content is represented on the
+   primary branch or explicitly deemed discardable.
+5. Remote non-upstream branches the user owns have been reviewed, PR'd or merged
+   where appropriate, and deleted only after their content is represented on the
+   primary or explicitly deemed discardable.
+6. Open PRs the user owns have been reviewed, comments addressed, and merged or
+   explicitly closed as obsolete.
+7. Linked worktrees, hidden worktrees, nested `.git` directories, and `.git`
+   file worktrees have been inventoried; any unique work in them is reconciled
+   before deletion.
+8. Build or validation gates meaningful for the repo have passed, with warnings
+   treated as errors where the project supports that discipline.
+9. For a repo without a meaningful build gate, the absence of a gate is recorded,
+   never silently treated as success.
+10. The repo is removed only by reversible trash movement unless permanent
+    deletion is explicitly requested.
 
 ## Multi-CLI wrappers
 
