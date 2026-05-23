@@ -20,6 +20,7 @@ r300vk_entrypoints = custom_target(
 libr300vk_files = files(
   'r300vk_instance.c',
   'r300vk_physical_device.c',
+  'r300vk_cpu_sync.c',
 )
 
 libr300vk_deps = [
