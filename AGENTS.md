@@ -598,6 +598,37 @@ Raw-submit or hazardous probes require exact opt-in values such as
 `R300_TRACE_HAZARD_ACCEPTED=1`; variable presence is not consent.  Reject unset,
 empty, or zero-valued gates.
 
+### Release vs debug builds, and the measurement-contamination guard
+
+Keep the release and debug Mesa builds in separate build directories and
+separate install prefixes.  They must not share object files, build
+directories, or install paths; run `meson setup`, `ninja`, and `install` fully
+for one before starting the other.
+
+- Silicon-evidence and conformance work uses a `buildtype=release` build.
+  `debugoptimized` and `debug` emit instrumentation that changes timing,
+  allocator behavior, and GL error paths, which contaminates measurements --
+  never collect silicon evidence against a debug build.
+- Driver RCA and shader disassembly use a separate `buildtype=debug` build at
+  its own prefix.
+
+Run a probe against a specific build without altering the system default by
+pointing the loader explicitly at that build's prefix:
+
+```bash
+LIBGL_DRIVERS_PATH=<prefix>/lib/dri \
+LD_LIBRARY_PATH=<prefix>/lib \
+  ./probe_binary
+```
+
+Cross-contamination guard: do NOT let `LIBGL_DRIVERS_PATH` or `LD_LIBRARY_PATH`
+inherit values from the shell environment in a release probe run -- unset them
+or set them explicitly.  A debug DRI driver silently loaded into a release probe
+run changes measured behavior; that is the contamination class that invalidates
+silicon evidence.  The same discipline applies to a Vulkan ICD run via
+`VK_ICD_FILENAMES`: point it at the exact prefix's ICD JSON, never inherit a
+stale value.
+
 ### Build profiles and host envs
 
 Profiles live in `build-infra/configs/`:
