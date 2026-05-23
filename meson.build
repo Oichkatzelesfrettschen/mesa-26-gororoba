@@ -289,7 +289,7 @@ if _vulkan_drivers.contains('auto')
   endif
 elif _vulkan_drivers.contains('all')
    # Build every vulkan driver regardless of architecture.
-   _vulkan_drivers = ['amd', 'amd_terascale', 'intel', 'intel_hasvk', 'swrast',
+   _vulkan_drivers = ['amd', 'amd_r300', 'amd_terascale', 'intel', 'intel_hasvk', 'swrast',
                       'freedreno', 'panfrost', 'virtio', 'broadcom',
                       'imagination', 'microsoft-experimental',
                       'nouveau', 'asahi', 'gfxstream', 'kosmickrisp']
@@ -298,6 +298,7 @@ endif
 with_intel_vk = _vulkan_drivers.contains('intel')
 with_intel_hasvk = _vulkan_drivers.contains('intel_hasvk')
 with_amd_vk = _vulkan_drivers.contains('amd')
+with_amd_r300_vk = _vulkan_drivers.contains('amd_r300')
 with_amd_terascale_vk = _vulkan_drivers.contains('amd_terascale')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_panfrost_vk = _vulkan_drivers.contains('panfrost')

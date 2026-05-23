@@ -207,8 +207,8 @@ option(
   'vulkan-drivers',
   type : 'array',
   value : ['auto'],
-  choices : ['auto', 'amd', 'amd_terascale', 'broadcom', 'freedreno', 'intel', 'intel_hasvk',
-             'panfrost', 'swrast', 'virtio', 'imagination',
+  choices : ['auto', 'amd', 'amd_r300', 'amd_terascale', 'broadcom', 'freedreno', 'intel',
+             'intel_hasvk', 'panfrost', 'swrast', 'virtio', 'imagination',
              'microsoft-experimental', 'nouveau', 'asahi', 'gfxstream',
              'kosmickrisp', 'all'],
   description : 'List of vulkan drivers to build. If this is set to auto ' +
