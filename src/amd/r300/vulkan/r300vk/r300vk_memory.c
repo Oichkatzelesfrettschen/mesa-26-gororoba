@@ -152,7 +152,7 @@ r300vk_BindBufferMemory2(VkDevice _device,
    VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       if (pBindInfos[i].memoryOffset != 0)
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+         return vk_errorf(device, VK_ERROR_UNKNOWN,
                           "r300vk: non-zero memoryOffset is unsupported "
                           "in the resource-backed memory model");
       VK_FROM_HANDLE(r300vk_buffer, buf, pBindInfos[i].buffer);
@@ -170,7 +170,7 @@ r300vk_BindImageMemory2(VkDevice _device,
    VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       if (pBindInfos[i].memoryOffset != 0)
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+         return vk_errorf(device, VK_ERROR_UNKNOWN,
                           "r300vk: non-zero memoryOffset is unsupported "
                           "in the resource-backed memory model");
       VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
