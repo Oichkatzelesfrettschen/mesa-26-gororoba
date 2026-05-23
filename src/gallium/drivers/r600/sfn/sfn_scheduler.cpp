@@ -779,6 +779,14 @@ BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
    AluGroup *group = nullptr;
    int expected_ar_uses = m_current_block->expected_ar_uses();
 
+   /* Scope the readport-exhaustion flag to this single schedule_alu
+    * invocation.  Any stale signal from a prior group-fill attempt
+    * (e.g. a successful group filled after one rejection set the
+    * flag) must not bleed into a future attempt where no rejection
+    * has yet occurred -- otherwise the outer loop would clause-
+    * split spuriously. */
+   m_current_block->clear_readport_exhaustion_failed();
+
    sfn_log << SfnLog::schedule << "Schedule alu with " <<
               m_current_block->expected_ar_uses()
            << " pending AR loads\n";
@@ -1273,16 +1281,33 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup *group,
        * instruction was not accepted into the group. */
       m_current_block->kcache_rollback(kcache_before);
       /* AluGroup::add_vec_instructions rejects for local-to-group
-       * constraints that the outer scheduler cannot satisfy by trying
-       * additional candidates within the same clause -- most commonly
-       * Evergreen KCACHE readport exhaustion (ISA Section 4.7.8) but
-       * also slot-type / co-issue conflicts.  For all such reasons the
-       * correct recovery is the same as for a KCACHE preflight failure:
-       * start a new ALU clause so the constraint accounting resets at
-       * the CF_ALU boundary.  Mark the flag AFTER kcache_rollback so
-       * the rollback's flag-clear does not erase our signal. */
-      m_current_block->mark_readport_exhaustion_failed();
-      sfn_log << SfnLog::schedule << " failed (readport or local)\n";
+       * constraints -- most importantly Evergreen KCACHE readport
+       * exhaustion (ISA Section 4.7.8: per-bank chan_pair contention),
+       * but also slot-type / co-issue conflicts.  Recovery for
+       * readport exhaustion is the same as for a KCACHE preflight
+       * failure: start a new ALU clause so the constraint accounting
+       * resets at the CF_ALU boundary.
+       *
+       * Only request the clause-split when both:
+       *   (a) no LDS group is active -- the clause-split branch in
+       *       schedule_alu asserts !lds_group_active(), so signalling
+       *       a split during an LDS group would crash the scheduler;
+       *   (b) no AR (address register) is loaded -- the clause-split
+       *       branch fails compilation when expected_ar_uses > 0
+       *       (cannot break a clause while AR is live across the
+       *       boundary).
+       * In those guarded-out cases, falling through to the existing
+       * indirect-array NOP workaround is the safest behavior.
+       *
+       * The flag is set AFTER kcache_rollback because we just cleared
+       * the KCACHE-side flags; the readport flag survives subsequent
+       * speculative-caller rollbacks (PV/PS seeker etc.) because
+       * Block::kcache_rollback no longer clears it. */
+      if (!m_current_block->lds_group_active() &&
+          m_current_block->expected_ar_uses() == 0) {
+         m_current_block->mark_readport_exhaustion_failed();
+      }
+      sfn_log << SfnLog::schedule << " failed (local group constraint)\n";
       ++it;
       return false;
    }

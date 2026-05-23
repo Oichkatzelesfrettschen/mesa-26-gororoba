@@ -222,28 +222,39 @@ public:
    bool kcache_preflight_failed() const { return m_kcache_preflight_failed; }
    void mark_kcache_preflight_failed() { m_kcache_preflight_failed = true; }
 
-   /* When AluGroup::add_vec_instructions rejects a candidate after
-    * a successful KCACHE reservation, the rejection reason is a
-    * local-to-group constraint -- most often Evergreen KCACHE
-    * readport exhaustion (ISA Section 4.7.8: per-bank chan_pair
-    * readport contention) or a slot-type / co-issue conflict.  For
-    * all such reasons the correct recovery is the same as for a
-    * KCACHE preflight failure: start a new ALU clause so the
-    * constraint accounting resets at the CF_ALU boundary.  Without
-    * this flag, BlockScheduler::schedule_alu falls into the
-    * indirect-array NOP workaround branch and the malformed bundle
-    * reaches the kernel CS validator, which rejects with -EINVAL
-    * and triggers a controlled GPU reset surfaced as
-    * VK_ERROR_DEVICE_LOST. */
+   /* Set when AluGroup::add_vec_instructions rejects a candidate
+    * for Evergreen KCACHE readport exhaustion (ISA Section 4.7.8:
+    * per-bank chan_pair readport contention) after a successful
+    * KCACHE reservation.  Recovery for readport exhaustion is the
+    * same as for a KCACHE preflight failure: start a new ALU
+    * clause so the constraint accounting resets at the CF_ALU
+    * boundary.  Without this flag, BlockScheduler::schedule_alu
+    * falls into the indirect-array NOP workaround branch and the
+    * malformed bundle reaches the kernel CS validator, which
+    * rejects with -EINVAL and triggers a controlled GPU reset
+    * surfaced as VK_ERROR_DEVICE_LOST.
+    *
+    * The flag deliberately survives kcache_rollback so it persists
+    * past speculative-candidate retries (e.g. the PV/PS seeker
+    * path in schedule_alu_to_group_vec calls kcache_rollback on
+    * its own failure path without intending to clear the readport
+    * signal).  BlockScheduler::schedule_alu calls
+    * clear_readport_exhaustion_failed() at the top of its outer
+    * loop to scope the flag to a single group-fill attempt. */
    bool readport_exhaustion_failed() const { return m_readport_exhaustion_failed; }
    void mark_readport_exhaustion_failed() { m_readport_exhaustion_failed = true; }
+   void clear_readport_exhaustion_failed() { m_readport_exhaustion_failed = false; }
 
    KCacheState kcache_snapshot() const { return m_kcache; }
    void kcache_rollback(const KCacheState& s) {
       m_kcache = s;
       m_kcache_alloc_failed = false;
       m_kcache_preflight_failed = false;
-      m_readport_exhaustion_failed = false;
+      /* m_readport_exhaustion_failed deliberately NOT cleared here:
+       * speculative callers wrap try_schedule_vec_candidate in their
+       * own kcache_rollback on failure (PV/PS seeker, etc.).  The
+       * mark from try_schedule_vec_candidate must survive that outer
+       * rollback so schedule_alu's outer loop can clause-split. */
    }
 
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
