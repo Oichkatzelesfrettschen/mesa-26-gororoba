@@ -23,12 +23,19 @@ extern "C" {
  * until BindBufferMemory2 or BindImageMemory2.  MapMemory requires a
  * prior bind; without a resource it returns VK_ERROR_MEMORY_MAP_FAILED.
  * FlushMappedMemoryRanges and InvalidateMappedMemoryRanges are no-ops
- * because there is no CPU-GPU cache separation on this target. */
+ * because there is no CPU-GPU cache separation on this target.
+ *
+ * memory_offset records the VkBindBufferMemoryInfo/VkBindImageMemoryInfo
+ * memoryOffset.  For the resource-backed model the pipe_resource IS the
+ * allocation, so memoryOffset is always expected to be zero; it is stored
+ * here so MapMemory can compute the correct byte offset into the resource
+ * for PIPE_BUFFER objects (resource_offset = MapMemory.offset - memory_offset). */
 struct r300vk_device_memory {
    struct vk_object_base  base;
    VkDeviceSize           size;
+   VkDeviceSize           memory_offset;  /* from BindBufferMemory2/BindImageMemory2 */
    struct pipe_resource  *resource;  /* NULL until BindBufferMemory2/BindImageMemory2 */
-   struct pipe_transfer  *transfer;  /* non-NULL while mapped via transfer_map */
+   struct pipe_transfer  *transfer;  /* non-NULL while mapped */
    void                  *map_ptr;
 };
 
