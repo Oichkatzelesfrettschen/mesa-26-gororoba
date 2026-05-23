@@ -45,6 +45,16 @@ extern "C" {
  * device. */
 #define R300VK_CONFORMANCE_STATUS "experimental_nonconformant_graphics_without_compute"
 
+/* Backend identity labels for the Gallium-mediated submit path.
+ * RS482/RS485 has no hardware vertex processor (num_vert_fpus == 0 for
+ * the RS480 family per r300_parse_chipset()); Gallium Draw handles TCL in
+ * software.  The fragment stage runs through the Radeon Compiler RC path
+ * via r300_nir_to_rc_direct inside r300g. */
+#define R300VK_BACKEND_LABEL       "r300g_gallium_mediated"
+#define R300VK_VERTEX_EXEC_LOCUS   "gallium_draw_sw_tcl"
+#define R300VK_FRAGMENT_EXEC_LOCUS "r300_rc_hardware_program"
+#define R300VK_MEMORY_MODEL_LABEL  "experimental_resource_backed"
+
 static inline bool
 r300vk_pci_device_id_is_supported(uint32_t pci_device_id)
 {
