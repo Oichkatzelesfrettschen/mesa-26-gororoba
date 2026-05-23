@@ -59,15 +59,18 @@ struct r300vk_cmd_set_scissor {
 #define R300VK_MAX_VERTEX_BINDINGS 16
 
 struct r300vk_cmd_bind_vertex_buffers {
+   uint32_t              first_binding;
    uint32_t              binding_count;
    struct r300vk_buffer *buffers[R300VK_MAX_VERTEX_BINDINGS];
    VkDeviceSize          offsets[R300VK_MAX_VERTEX_BINDINGS];
 };
 
 struct r300vk_cmd_draw {
-   uint32_t count;
-   uint32_t first;
-   uint32_t instances;
+   uint32_t            count;
+   uint32_t            first;
+   uint32_t            instances;
+   uint32_t            first_instance;
+   VkPrimitiveTopology topology; /* snapshotted from bound pipeline at record time */
 };
 
 struct r300vk_cmd_copy_image_to_buf {

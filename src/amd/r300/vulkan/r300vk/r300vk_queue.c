@@ -55,17 +55,20 @@ r300vk_replay_gpu(struct r300vk_device *device,
       case R300VK_CMD_BEGIN_RENDER_PASS: {
          struct pipe_framebuffer_state fb;
          memset(&fb, 0, sizeof(fb));
-         fb.width    = e->begin_rp.width;
-         fb.height   = e->begin_rp.height;
-         fb.nr_cbufs = 1;
-         fb.cbufs[0].texture     = e->begin_rp.color_image->resource;
-         fb.cbufs[0].format      = e->begin_rp.color_format;
-         fb.cbufs[0].level       = 0;
-         fb.cbufs[0].first_layer = 0;
-         fb.cbufs[0].last_layer  = 0;
+         fb.width  = e->begin_rp.width;
+         fb.height = e->begin_rp.height;
+         if (e->begin_rp.color_image) {
+            fb.nr_cbufs = 1;
+            fb.cbufs[0].texture     = e->begin_rp.color_image->resource;
+            fb.cbufs[0].format      = e->begin_rp.color_format;
+            fb.cbufs[0].level       = 0;
+            fb.cbufs[0].first_layer = 0;
+            fb.cbufs[0].last_layer  = 0;
+         }
          pipe->set_framebuffer_state(pipe, &fb);
 
-         if (e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+         if (e->begin_rp.color_image &&
+             e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
             union pipe_color_union cv;
             memcpy(cv.f, e->begin_rp.clear_color.float32, sizeof(cv.f));
             pipe->clear(pipe, PIPE_CLEAR_COLOR0, 0xF, 0, NULL, &cv, 0.0, 0);
@@ -102,25 +105,27 @@ r300vk_replay_gpu(struct r300vk_device *device,
       }
 
       case R300VK_CMD_BIND_VERTEX_BUFFERS: {
-         struct pipe_vertex_buffer vb[R300VK_MAX_VERTEX_BINDINGS];
+         uint32_t first = e->bind_vbufs.first_binding;
          uint32_t count = e->bind_vbufs.binding_count;
+         struct pipe_vertex_buffer vb[R300VK_MAX_VERTEX_BINDINGS] = {0};
          for (uint32_t b = 0; b < count; b++) {
-            vb[b].is_user_buffer  = false;
-            vb[b].buffer_offset   = (unsigned)e->bind_vbufs.offsets[b];
-            vb[b].buffer.resource = e->bind_vbufs.buffers[b]->resource;
+            vb[first + b].is_user_buffer  = false;
+            vb[first + b].buffer_offset   = (unsigned)e->bind_vbufs.offsets[b];
+            vb[first + b].buffer.resource = e->bind_vbufs.buffers[b]->resource;
          }
-         pipe->set_vertex_buffers(pipe, count, vb);
+         pipe->set_vertex_buffers(pipe, first + count, vb);
          break;
       }
 
       case R300VK_CMD_DRAW: {
          struct pipe_draw_info info;
          memset(&info, 0, sizeof(info));
-         /* bound_pipeline is non-NULL here; its topology was recorded at
-          * pipeline creation from VkPipelineInputAssemblyStateCreateInfo. */
-         info.mode           = vk_topology_to_mesa(cmd->bound_pipeline->topology);
+         /* Topology was snapshotted at record time so the correct primitive
+          * mode is used even if a different pipeline is bound before submit. */
+         info.mode           = vk_topology_to_mesa(e->draw.topology);
          info.index_size     = 0;
          info.instance_count = e->draw.instances;
+         info.start_instance = e->draw.first_instance;
          struct pipe_draw_start_count_bias draw = {
             .start      = e->draw.first,
             .count      = e->draw.count,
@@ -175,9 +180,15 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
       if (!src_map)
          continue;
 
+      /* Row pitch drives both the mapping size and the destination stride.
+       * When bufferRowLength > imageExtent.width, dst_size must cover the
+       * full row_pitch * height range, not the tighter width * height * 4. */
+      unsigned row_pitch = region->bufferRowLength
+                           ? region->bufferRowLength * 4
+                           : region->imageExtent.width * 4;
+      unsigned dst_size  = row_pitch * region->imageExtent.height;
+
       struct pipe_transfer *dst_xfer = NULL;
-      unsigned dst_size = region->imageExtent.width *
-                          region->imageExtent.height * 4;
       uint8_t *dst_map = pipe_buffer_map_range(pipe, dst,
                                                (unsigned)region->bufferOffset,
                                                dst_size,
@@ -188,9 +199,6 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
          continue;
       }
 
-      unsigned row_pitch = region->bufferRowLength
-                           ? region->bufferRowLength * 4
-                           : region->imageExtent.width * 4;
       for (unsigned row = 0; row < region->imageExtent.height; row++) {
          memcpy(dst_map + row * row_pitch,
                 src_map + row * src_xfer->stride,

@@ -122,14 +122,26 @@ r300vk_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
                   pRenderPassBegin->framebuffer);
 
    /* Resolve the first color attachment to the underlying pipe_resource
-    * and its pipe_format for framebuffer setup at replay time. */
+    * and its pipe_format for framebuffer setup at replay time.  Skip the
+    * slot if the subpass uses VK_ATTACHMENT_UNUSED. */
    struct r300vk_image *color_image = NULL;
    enum pipe_format color_format = PIPE_FORMAT_NONE;
+   VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+   VkClearColorValue clear_color = {0};
+
    if (rp->color_attachment_count > 0) {
       uint32_t att_idx = rp->color_attachment_refs[0];
-      VK_FROM_HANDLE(r300vk_image_view, iv, fb->attachments[att_idx]);
-      color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
-      color_format = vk_format_to_pipe_format(rp->attachments[att_idx].format);
+      if (att_idx != VK_ATTACHMENT_UNUSED &&
+          att_idx < fb->attachment_count &&
+          att_idx < rp->attachment_count) {
+         VK_FROM_HANDLE(r300vk_image_view, iv, fb->attachments[att_idx]);
+         color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
+         color_format = vk_format_to_pipe_format(rp->attachments[att_idx].format);
+         load_op      = rp->attachments[att_idx].load_op;
+         if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+             pRenderPassBegin->clearValueCount > att_idx)
+            clear_color = pRenderPassBegin->pClearValues[att_idx].color;
+      }
    }
 
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
@@ -140,14 +152,8 @@ r300vk_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    e->begin_rp.color_format = color_format;
    e->begin_rp.width        = fb->width;
    e->begin_rp.height       = fb->height;
-
-   if (rp->attachment_count > 0)
-      e->begin_rp.load_op = rp->attachments[0].load_op;
-   else
-      e->begin_rp.load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-
-   if (pRenderPassBegin->clearValueCount > 0)
-      e->begin_rp.clear_color = pRenderPassBegin->pClearValues[0].color;
+   e->begin_rp.load_op      = load_op;
+   e->begin_rp.clear_color  = clear_color;
 
    cmd->current_color_image = color_image;
 }
@@ -221,10 +227,13 @@ r300vk_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
 
-   uint32_t count = bindingCount < R300VK_MAX_VERTEX_BINDINGS
-                    ? bindingCount : R300VK_MAX_VERTEX_BINDINGS;
-   e->type                     = R300VK_CMD_BIND_VERTEX_BUFFERS;
-   e->bind_vbufs.binding_count = count;
+   uint32_t first = firstBinding < R300VK_MAX_VERTEX_BINDINGS
+                    ? firstBinding : R300VK_MAX_VERTEX_BINDINGS;
+   uint32_t avail = R300VK_MAX_VERTEX_BINDINGS - first;
+   uint32_t count = bindingCount < avail ? bindingCount : avail;
+   e->type                      = R300VK_CMD_BIND_VERTEX_BUFFERS;
+   e->bind_vbufs.first_binding  = first;
+   e->bind_vbufs.binding_count  = count;
    for (uint32_t i = 0; i < count; i++) {
       VK_FROM_HANDLE(r300vk_buffer, buf, pBuffers[i]);
       e->bind_vbufs.buffers[i] = buf;
@@ -242,10 +251,16 @@ r300vk_CmdDraw(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
-   e->type           = R300VK_CMD_DRAW;
-   e->draw.count     = vertexCount;
-   e->draw.first     = firstVertex;
-   e->draw.instances = instanceCount;
+   e->type                = R300VK_CMD_DRAW;
+   e->draw.count          = vertexCount;
+   e->draw.first          = firstVertex;
+   e->draw.instances      = instanceCount;
+   e->draw.first_instance = firstInstance;
+   /* Snapshot topology so replay is correct even if a different pipeline
+    * is bound before this draw is executed. */
+   e->draw.topology = cmd->bound_pipeline
+                      ? cmd->bound_pipeline->topology
+                      : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
 void
