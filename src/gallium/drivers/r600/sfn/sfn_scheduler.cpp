@@ -1164,6 +1164,18 @@ BlockScheduler::finalize_schedule_alu_group(Shader::ShaderBlocks& out_blocks,
       start_new_block(out_blocks, Block::unknown);
    }
    group.update_readport_reserver();
+
+   /* A partial group can schedule one slot, then reject a later vector
+    * candidate for a local group constraint.  The fill loop returns the
+    * scheduled group before handle_alu_group_fill_failure can split the
+    * clause, so split here after committing the group to the old block and
+    * recording its readport reservation.  The next schedule_alu attempt then
+    * starts with fresh per-clause readport accounting. */
+   if (m_current_block->readport_exhaustion_failed() &&
+       !m_current_block->lds_group_active() &&
+       expected_ar_uses == 0) {
+      start_new_block(out_blocks, Block::alu);
+   }
 }
 
 bool

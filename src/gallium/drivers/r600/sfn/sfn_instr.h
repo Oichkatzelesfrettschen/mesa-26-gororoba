@@ -228,9 +228,10 @@ public:
    void mark_kcache_preflight_failed() { m_kcache_preflight_failed = true; }
 
    /* Set when AluGroup::add_vec_instructions rejects a candidate for a local
-    * group constraint that must be retried at a CF_ALU boundary, especially
-    * Evergreen KCACHE readport exhaustion (ISA Section 4.7.8: per-bank
-    * chan_pair readport contention). Without this signal,
+    * group constraint that must be retried at a CF_ALU boundary. The
+    * dominant case is Evergreen KCACHE readport exhaustion (ISA Section 4.7.8:
+    * per-bank chan_pair readport contention), but the same path also covers
+    * slot-type and co-issue conflicts. Without this signal,
     * BlockScheduler::handle_alu_group_fill_failure treats the unscheduled
     * candidate as the indirect-array NOP workaround case, so the malformed
     * group can be emitted instead of splitting at the clause boundary.
