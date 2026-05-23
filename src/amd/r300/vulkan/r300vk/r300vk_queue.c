@@ -59,7 +59,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
          fb.height   = e->begin_rp.height;
          fb.nr_cbufs = 1;
          fb.cbufs[0].texture     = e->begin_rp.color_image->resource;
-         fb.cbufs[0].format      = PIPE_FORMAT_R8G8B8A8_UNORM;
+         fb.cbufs[0].format      = e->begin_rp.color_format;
          fb.cbufs[0].level       = 0;
          fb.cbufs[0].first_layer = 0;
          fb.cbufs[0].last_layer  = 0;

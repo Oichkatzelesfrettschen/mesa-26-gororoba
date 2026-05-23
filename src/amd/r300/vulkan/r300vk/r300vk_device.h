@@ -54,9 +54,9 @@ VkResult r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
 void r300vk_DestroyDevice(VkDevice device,
                            const VkAllocationCallbacks *pAllocator);
 
-/* Queue submit callback wired into vk_queue.driver_submit.  Extended when
- * command buffer recording is added to replay r300vk_cmd_entry arrays
- * against the pipe_context and fence-wait for GPU completion. */
+/* Queue submit callback wired into vk_queue.driver_submit.  Replays
+ * r300vk_cmd_entry arrays against the pipe_context, flushes, fence-waits,
+ * then executes CPU-side readback copies (COPY_IMAGE_TO_BUFFER). */
 VkResult r300vk_queue_driver_submit(struct vk_queue *queue,
                                     struct vk_queue_submit *submit);
 

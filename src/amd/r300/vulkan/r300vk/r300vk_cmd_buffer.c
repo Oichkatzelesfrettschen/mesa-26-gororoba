@@ -15,6 +15,7 @@
 #include "vk_alloc.h"
 #include "vk_command_buffer.h"
 #include "vk_command_pool.h"
+#include "vk_format.h"
 #include "vk_log.h"
 #include "vk_object.h"
 
@@ -120,21 +121,25 @@ r300vk_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(r300vk_framebuffer, fb,
                   pRenderPassBegin->framebuffer);
 
-   /* Resolve the first color attachment to the underlying pipe_resource. */
+   /* Resolve the first color attachment to the underlying pipe_resource
+    * and its pipe_format for framebuffer setup at replay time. */
    struct r300vk_image *color_image = NULL;
+   enum pipe_format color_format = PIPE_FORMAT_NONE;
    if (rp->color_attachment_count > 0) {
       uint32_t att_idx = rp->color_attachment_refs[0];
       VK_FROM_HANDLE(r300vk_image_view, iv, fb->attachments[att_idx]);
-      color_image = container_of(iv->vk.image, struct r300vk_image, vk);
+      color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
+      color_format = vk_format_to_pipe_format(rp->attachments[att_idx].format);
    }
 
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
 
    e->type = R300VK_CMD_BEGIN_RENDER_PASS;
-   e->begin_rp.color_image = color_image;
-   e->begin_rp.width       = fb->width;
-   e->begin_rp.height      = fb->height;
+   e->begin_rp.color_image  = color_image;
+   e->begin_rp.color_format = color_format;
+   e->begin_rp.width        = fb->width;
+   e->begin_rp.height       = fb->height;
 
    if (rp->attachment_count > 0)
       e->begin_rp.load_op = rp->attachments[0].load_op;
@@ -179,6 +184,9 @@ r300vk_CmdSetViewport(VkCommandBuffer commandBuffer,
                        uint32_t viewportCount,
                        const VkViewport *pViewports)
 {
+   /* RS482/RS485 has a single viewport slot; only viewport 0 is meaningful. */
+   if (firstViewport > 0 || viewportCount == 0)
+      return;
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
@@ -192,10 +200,13 @@ r300vk_CmdSetScissor(VkCommandBuffer commandBuffer,
                       uint32_t scissorCount,
                       const VkRect2D *pScissors)
 {
+   /* RS482/RS485 has a single scissor slot; only scissor 0 is meaningful. */
+   if (firstScissor > 0 || scissorCount == 0)
+      return;
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
-   e->type         = R300VK_CMD_SET_SCISSOR;
+   e->type           = R300VK_CMD_SET_SCISSOR;
    e->set_sc.scissor = pScissors[0];
 }
 

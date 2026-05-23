@@ -13,6 +13,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 
 VkResult
@@ -81,7 +82,8 @@ r300vk_GetImageMemoryRequirements2(VkDevice _device,
 
    /* 4096-byte alignment satisfies r300g tiling requirements. */
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
-      .size           = (VkDeviceSize)ext->width * ext->height * 4,
+      .size           = (VkDeviceSize)ext->width * ext->height *
+                        util_format_get_blocksize(vk_format_to_pipe_format(img->vk.format)),
       .alignment      = 4096,
       .memoryTypeBits = 1,  /* GTT heap index 0 */
    };

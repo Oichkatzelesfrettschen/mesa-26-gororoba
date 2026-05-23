@@ -10,6 +10,8 @@
 
 #include "vk_command_buffer.h"
 
+#include "pipe/p_state.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -39,6 +41,7 @@ struct r300vk_cmd_begin_render_pass {
    VkClearColorValue     clear_color;
    uint32_t              width;
    uint32_t              height;
+   enum pipe_format      color_format;
 };
 
 struct r300vk_cmd_bind_pipeline {

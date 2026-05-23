@@ -60,12 +60,16 @@ r300vk_compile_shader(struct r300vk_device *device,
 
    if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
       pl->vs_cso = device->pipe->create_vs_state(device->pipe, &ss);
-      if (!pl->vs_cso)
+      if (!pl->vs_cso) {
+         ralloc_free(nir);
          return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      }
    } else {
       pl->fs_cso = device->pipe->create_fs_state(device->pipe, &ss);
-      if (!pl->fs_cso)
+      if (!pl->fs_cso) {
+         ralloc_free(nir);
          return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      }
    }
    return VK_SUCCESS;
 }
@@ -157,8 +161,9 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
          device->pipe->create_vertex_elements_state(device->pipe, n, ve);
    }
 
-   if (info->pInputAssemblyState)
-      pl->topology = info->pInputAssemblyState->topology;
+   pl->topology = info->pInputAssemblyState
+                  ? info->pInputAssemblyState->topology
+                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
    *pPipeline = r300vk_pipeline_to_handle(pl);
    return VK_SUCCESS;
