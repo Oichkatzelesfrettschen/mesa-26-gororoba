@@ -4,6 +4,7 @@
  */
 
 #include "r300vk_physical_device.h"
+#include "r300vk_cpu_sync.h"
 
 #include "r300vk_entrypoints.h"
 #include "r300vk_instance.h"
@@ -405,6 +406,9 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    device->pci_device_id = drm_device->deviceinfo.pci->device_id;
    device->render_node_fd = render_node_fd;
 
+   device->sync_types[0] = &r300vk_cpu_sync_type;
+   device->sync_types[1] = NULL;
+
    struct vk_features features;
    r300vk_physical_device_init_features(&features);
 
@@ -436,6 +440,8 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
       vk_free(&instance->vk.alloc, device);
       return result;
    }
+
+   device->vk.supported_sync_types = device->sync_types;
 
    if (instance->debug_flags & R300VK_DEBUG_STARTUP) {
       fprintf(stderr,

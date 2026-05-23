@@ -10,6 +10,7 @@
 #include "r300vk_buffer.h"
 
 #include "vk_queue.h"
+#include "vk_sync.h"
 
 #include "compiler/shader_enums.h"
 #include "pipe/p_context.h"
@@ -246,5 +247,12 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
       r300vk_replay_cpu_readback(device, cmd);
    }
 
-   return VK_SUCCESS;
+   /* In IMMEDIATE submit mode (VK_DEVICE_TIMELINE_MODE_NONE), the vk_queue
+    * runtime calls vk_sync_signal_unwrap before driver_submit, which strips
+    * timeline wrappers but does NOT call .signal on binary syncs.  After
+    * driver_submit returns, only timeline signal_points are processed by the
+    * runtime.  Binary syncs in submit->signals are the driver's
+    * responsibility.  Signal them here so vkWaitForFences unblocks. */
+   return vk_sync_signal_many(&device->vk, submit->signal_count,
+                              submit->signals);
 }
