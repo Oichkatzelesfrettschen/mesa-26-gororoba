@@ -53,12 +53,19 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
 {
    /* Texture and image dimensions.  R3xx FORMAT2_HEIGHT and
     * FORMAT2_WIDTH fields in R300_TX_FORMAT2_n cap each axis at 2048
-    * (R3xx-RRG ch. "Texture Engine", TX_FORMAT2 register). */
+    * (R3xx-RRG ch. "Texture Engine", TX_FORMAT2 register).
+    *
+    * maxImageArrayLayers must report at least 256 to satisfy Vulkan
+    * 1.4 ch. 49.1 "Limit Requirements".  R3xx hardware does not
+    * accelerate array textures natively, but the driver can fall back
+    * to per-layer 2D images at pipeline-lowering time.  Reporting the
+    * spec minimum keeps validation green while the lowering path is
+    * still future work. */
    props->maxImageDimension1D = 2048;
    props->maxImageDimension2D = 2048;
    props->maxImageDimension3D = 256;
    props->maxImageDimensionCube = 2048;
-   props->maxImageArrayLayers = 1;
+   props->maxImageArrayLayers = 256;
 
    /* Texel buffer size: R3xx has no native texel buffer object.  The
     * Vulkan 1.4 minimum is 65536. */
@@ -130,17 +137,24 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
    props->maxGeometryOutputVertices = 0;
    props->maxGeometryTotalOutputComponents = 0;
 
-   /* Fragment shader: R300 has 32 fragment ALU slots (R300_PFS_INSTR_*)
-    * and the PS reads up to 8 generic varyings; combined output
-    * resources cover the four CB_COLOR0..3 attachments.  R3xx supports
-    * 4 MRTs through R300_RB3D_CCTL_NUM_MULTIWRITES. */
+   /* Fragment shader budget for the RS482/RS485 R300VK target.
+    * R300-class RS482 fragment programs are constrained by the
+    * current Mesa r300 operational budget of 64 ALU instructions
+    * (R300_PFS_INSTR_*), 32 TEX instructions, and 32 vec4 PFS_PARAM
+    * constants (R300_PFS_PARAM_0..31).  Vulkan has no direct
+    * fragment-ALU limit field; the limit is enforced later at
+    * pipeline/shader-lowering time.  Combined output resources
+    * cover the four CB_COLOR0..3 attachments through
+    * R300_RB3D_CCTL_NUM_MULTIWRITES. */
    props->maxFragmentInputComponents = 64;
    props->maxFragmentOutputAttachments = 4;
    props->maxFragmentDualSrcAttachments = 0;
    props->maxFragmentCombinedOutputResources = 4;
 
-   /* No native compute dispatch.  See R300VK_CONFORMANCE_STATUS in
-    * r300vk_private.h for the non-conformance contract. */
+   /* No documented or Vostro-proven native compute dispatch surface
+    * exists for this RS482/RS485 R300VK target.  See
+    * R300VK_CONFORMANCE_STATUS in r300vk_private.h for the
+    * non-conformance contract. */
    props->maxComputeSharedMemorySize = 0;
    props->maxComputeWorkGroupCount[0] = 0;
    props->maxComputeWorkGroupCount[1] = 0;
