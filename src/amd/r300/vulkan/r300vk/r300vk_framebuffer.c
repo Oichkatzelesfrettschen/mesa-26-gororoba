@@ -10,6 +10,8 @@
 #include "vk_log.h"
 #include "vk_object.h"
 
+#include "pipe/p_state.h"
+
 #include <string.h>
 
 VkResult
@@ -28,6 +30,15 @@ r300vk_CreateFramebuffer(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &fb->base, VK_OBJECT_TYPE_FRAMEBUFFER);
+
+   if (pCreateInfo->attachmentCount > PIPE_MAX_COLOR_BUFS + 1) {
+      vk_object_base_finish(&fb->base);
+      vk_free2(&device->vk.alloc, pAllocator, fb);
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r300vk: framebuffer attachmentCount %u exceeds fixed storage %u",
+                       pCreateInfo->attachmentCount, PIPE_MAX_COLOR_BUFS + 1);
+   }
+
    fb->width            = pCreateInfo->width;
    fb->height           = pCreateInfo->height;
    fb->attachment_count = pCreateInfo->attachmentCount;

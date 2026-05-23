@@ -27,6 +27,14 @@ r300vk_CreateRenderPass(VkDevice _device,
 
    vk_object_base_init(&device->vk, &rp->base, VK_OBJECT_TYPE_RENDER_PASS);
 
+   if (pCreateInfo->attachmentCount > PIPE_MAX_COLOR_BUFS + 1) {
+      vk_object_base_finish(&rp->base);
+      vk_free2(&device->vk.alloc, pAllocator, rp);
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r300vk: attachmentCount %u exceeds fixed storage %u",
+                       pCreateInfo->attachmentCount, PIPE_MAX_COLOR_BUFS + 1);
+   }
+
    rp->attachment_count = pCreateInfo->attachmentCount;
    for (uint32_t i = 0; i < pCreateInfo->attachmentCount; i++) {
       rp->attachments[i].format       = pCreateInfo->pAttachments[i].format;
@@ -38,6 +46,13 @@ r300vk_CreateRenderPass(VkDevice _device,
    /* Parse subpass 0 color attachment references. */
    if (pCreateInfo->subpassCount > 0) {
       const VkSubpassDescription *sp = &pCreateInfo->pSubpasses[0];
+      if (sp->colorAttachmentCount > PIPE_MAX_COLOR_BUFS) {
+         vk_object_base_finish(&rp->base);
+         vk_free2(&device->vk.alloc, pAllocator, rp);
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r300vk: subpass colorAttachmentCount %u exceeds fixed storage %u",
+                          sp->colorAttachmentCount, PIPE_MAX_COLOR_BUFS);
+      }
       rp->color_attachment_count = sp->colorAttachmentCount;
       for (uint32_t i = 0; i < sp->colorAttachmentCount; i++)
          rp->color_attachment_refs[i] = sp->pColorAttachments[i].attachment;
