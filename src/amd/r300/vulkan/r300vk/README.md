@@ -37,7 +37,7 @@ classification reported to external tooling is therefore
 | Renderer string | `ATI RS480` | Mesa r300g, `r300_get_renderer()` |
 
 Both PCI IDs are tagged with the `RS482_` prefix in Mesa's canonical
-PCI table even though `0x5975` markets as RS485 (Radeon Xpress
+PCI table even though `0x5975` is marketed as RS485 (Radeon Xpress
 1100/1150 mobile).  The row name reflects the closer codename, not the
 product marketing name; cite the source path, not the marketing label.
 
@@ -69,7 +69,7 @@ chip) and uses the Mesa Vulkan runtime base structures
 
 ## Conformance contract
 
-No documented or Vostro-proven native compute dispatch surface exists
+No documented or silicon-proven native compute dispatch surface exists
 for this RS482/RS485 R300VK target.  The r300vk skeleton MUST NOT be
 advertised as conformant Vulkan for any version.  The contract is
 enforced by:

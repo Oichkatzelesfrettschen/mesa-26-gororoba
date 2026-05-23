@@ -30,7 +30,7 @@ extern "C" {
 
 /* Conformance classification reported to probes and external tooling.
  *
- * No documented or Vostro-proven native compute dispatch surface
+ * No documented or silicon-proven native compute dispatch surface
  * exists for this RS482/RS485 R300VK target: no COMPUTE queue, no
  * workgroup shared memory, no shader atomics, no SPIR-V compute
  * capabilities, no SSBO storage semantics in the current Mesa r300
