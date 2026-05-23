@@ -872,21 +872,20 @@ bool
 BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
 {
    bool scheduled = false;
+   m_current_block->clear_readport_exhaustion_failed();
    auto alu_ctx = prepare_schedule_alu(out_blocks);
-
    AluGroup *group = schedule_prebuilt_alu_group_first(out_blocks, scheduled, alu_ctx);
 
    if (!group) {
       if (alu_ctx.has_alu_ready) {
          group = new AluGroup();
          sfn_log << SfnLog::schedule << "START new ALU group\n";
-         
       } else {
          return false;
       }
-   } 
+   }
 
-  assert(group);
+   assert(group);
 
    auto fill_result = fill_alu_group(out_blocks, *group, alu_ctx);
    if (fill_result == AluGroupFillResult::failed && !scheduled)
@@ -1438,11 +1437,16 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup& group,
    if (!group.add_vec_instructions(*it)) {
       /* AluGroup rejects local constraints that additional candidates in the
        * same clause cannot satisfy, most often Evergreen KCACHE readport
-       * exhaustion or a slot-type / co-issue conflict.  The KCACHE state is
-       * still dry-run-only here; mark the failure so the outer fill handler
-       * starts a new ALU clause instead of using the indirect-array NOP path. */
-      m_current_block->mark_readport_exhaustion_failed();
-      sfn_log << SfnLog::schedule << " failed (readport or local)\n";
+       * exhaustion or a slot-type / co-issue conflict. The KCACHE state is
+       * still dry-run-only here. Only request a clause split when no LDS
+       * group is active and no address-register value is live across the
+       * boundary; otherwise the existing indirect-array NOP path handles the
+       * local group rejection. */
+      if (!m_current_block->lds_group_active() &&
+          m_current_block->expected_ar_uses() == 0) {
+         m_current_block->mark_readport_exhaustion_failed();
+      }
+      sfn_log << SfnLog::schedule << " failed (local group constraint)\n";
       ++it;
       return false;
    }

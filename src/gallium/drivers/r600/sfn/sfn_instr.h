@@ -227,27 +227,31 @@ public:
    bool kcache_preflight_failed() const { return m_kcache_preflight_failed; }
    void mark_kcache_preflight_failed() { m_kcache_preflight_failed = true; }
 
-   /* When AluGroup::add_vec_instructions rejects a candidate after
-    * a successful KCACHE reservation, the rejection reason is a
-    * local-to-group constraint -- most often Evergreen KCACHE
-    * readport exhaustion (ISA Section 4.7.8: per-bank chan_pair
-    * readport contention) or a slot-type / co-issue conflict.  For
-    * all such reasons the correct recovery is the same as for a
-    * KCACHE preflight failure: start a new ALU clause so the
-    * constraint accounting resets at the CF_ALU boundary.  Without
-    * this signal, BlockScheduler::handle_alu_group_fill_failure treats
-    * the unscheduled candidate as the indirect-array NOP workaround
-    * case, so the malformed group can be emitted instead of splitting
-    * at the clause boundary. */
+   /* Set when AluGroup::add_vec_instructions rejects a candidate for a local
+    * group constraint that must be retried at a CF_ALU boundary, especially
+    * Evergreen KCACHE readport exhaustion (ISA Section 4.7.8: per-bank
+    * chan_pair readport contention). Without this signal,
+    * BlockScheduler::handle_alu_group_fill_failure treats the unscheduled
+    * candidate as the indirect-array NOP workaround case, so the malformed
+    * group can be emitted instead of splitting at the clause boundary.
+    *
+    * The signal deliberately survives kcache_rollback because speculative
+    * callers roll back dry-run KCACHE state after try_schedule_vec_candidate
+    * rejects a candidate. BlockScheduler::schedule_alu clears the signal at
+    * the top of each scheduling attempt, so it cannot leak into a later ALU
+    * group fill. */
    bool readport_exhaustion_failed() const { return m_readport_exhaustion_failed; }
    void mark_readport_exhaustion_failed() { m_readport_exhaustion_failed = true; }
+   void clear_readport_exhaustion_failed() { m_readport_exhaustion_failed = false; }
 
    KCacheState kcache_snapshot() const { return m_kcache; }
    void kcache_rollback(const KCacheState& s) {
       m_kcache = s;
       m_kcache_alloc_failed = false;
       m_kcache_preflight_failed = false;
-      m_readport_exhaustion_failed = false;
+      /* m_readport_exhaustion_failed is scoped by schedule_alu, not by KCACHE
+       * rollback, so speculative caller rollbacks cannot erase the signal
+       * before the group-fill failure handler can split the clause. */
    }
 
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
