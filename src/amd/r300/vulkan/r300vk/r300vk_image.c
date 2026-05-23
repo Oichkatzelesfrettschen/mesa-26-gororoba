@@ -33,9 +33,17 @@ r300vk_CreateImage(VkDevice _device,
 
    vk_image_init(&device->vk, &img->vk, pCreateInfo);
 
+   enum pipe_format pipe_fmt = vk_format_to_pipe_format(pCreateInfo->format);
+   if (pipe_fmt == PIPE_FORMAT_NONE) {
+      vk_image_finish(&img->vk);
+      vk_free2(&device->vk.alloc, pAllocator, img);
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                       "r300vk: unsupported image format %d", pCreateInfo->format);
+   }
+
    struct pipe_resource tmpl = {
       .target     = PIPE_TEXTURE_2D,
-      .format     = vk_format_to_pipe_format(pCreateInfo->format),
+      .format     = pipe_fmt,
       .bind       = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
       .usage      = PIPE_USAGE_DEFAULT,
       .width0     = pCreateInfo->extent.width,

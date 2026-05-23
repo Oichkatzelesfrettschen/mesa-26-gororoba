@@ -136,12 +136,15 @@ r300vk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       device->screen->fence_reference(device->screen, &fence, NULL);
    }
 
+   /* Queue teardown before context teardown: vk_queue_finish must complete
+    * before the pipe_context it could reference is destroyed. */
+   vk_queue_finish(&device->queue.vk);
+
    /* Destroy in ownership order: context -> screen (which also destroys
     * the radeon_winsys backing store and closes the internal DRM fd). */
    device->pipe->destroy(device->pipe);
    device->screen->destroy(device->screen);
 
-   vk_queue_finish(&device->queue.vk);
    vk_device_finish(&device->vk);
    vk_free2(&device->vk.alloc, pAllocator, device);
 }
