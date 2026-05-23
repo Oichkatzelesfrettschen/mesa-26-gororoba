@@ -223,21 +223,26 @@ public:
    void mark_kcache_preflight_failed() { m_kcache_preflight_failed = true; }
 
    /* Set when AluGroup::add_vec_instructions rejects a candidate
-    * for Evergreen KCACHE readport exhaustion (ISA Section 4.7.8:
-    * per-bank chan_pair readport contention) after a successful
-    * KCACHE reservation.  Recovery for readport exhaustion is the
-    * same as for a KCACHE preflight failure: start a new ALU
-    * clause so the constraint accounting resets at the CF_ALU
-    * boundary.  Without this flag, BlockScheduler::schedule_alu
-    * falls into the indirect-array NOP workaround branch and the
-    * malformed bundle reaches the kernel CS validator, which
-    * rejects with -EINVAL and triggers a controlled GPU reset
-    * surfaced as VK_ERROR_DEVICE_LOST.
+    * for a local-to-group constraint after a successful KCACHE
+    * reservation.  The dominant cause -- and the original motivation
+    * for the flag's name -- is Evergreen KCACHE readport exhaustion
+    * (ISA Section 4.7.8: per-bank chan_pair readport contention).
+    * The same code path also reaches this branch on slot-type and
+    * co-issue conflicts (PARAM source restrictions, LDS-op mixing,
+    * topological channel constraints), because recovery for every
+    * one of those classes is identical: start a new ALU clause so
+    * the constraint accounting resets at the CF_ALU boundary.
+    *
+    * Without this flag, BlockScheduler::schedule_alu falls into the
+    * indirect-array NOP workaround branch and the malformed bundle
+    * reaches the kernel CS validator, which rejects with -EINVAL
+    * and triggers a controlled GPU reset surfaced as
+    * VK_ERROR_DEVICE_LOST.
     *
     * The flag deliberately survives kcache_rollback so it persists
     * past speculative-candidate retries (e.g. the PV/PS seeker
     * path in schedule_alu_to_group_vec calls kcache_rollback on
-    * its own failure path without intending to clear the readport
+    * its own failure path without intending to clear the rejection
     * signal).  BlockScheduler::schedule_alu calls
     * clear_readport_exhaustion_failed() at the top of its outer
     * loop to scope the flag to a single group-fill attempt. */
