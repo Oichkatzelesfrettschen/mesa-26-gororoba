@@ -42,8 +42,9 @@ r300vk_CreateFramebuffer(VkDevice _device,
    fb->width            = pCreateInfo->width;
    fb->height           = pCreateInfo->height;
    fb->attachment_count = pCreateInfo->attachmentCount;
-   memcpy(fb->attachments, pCreateInfo->pAttachments,
-          pCreateInfo->attachmentCount * sizeof(VkImageView));
+   if (pCreateInfo->attachmentCount > 0)
+      memcpy(fb->attachments, pCreateInfo->pAttachments,
+             pCreateInfo->attachmentCount * sizeof(VkImageView));
 
    *pFramebuffer = r300vk_framebuffer_to_handle(fb);
    return VK_SUCCESS;

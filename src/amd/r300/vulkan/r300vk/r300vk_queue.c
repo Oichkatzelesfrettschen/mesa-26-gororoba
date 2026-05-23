@@ -17,6 +17,7 @@
 #include "pipe/p_defines.h"
 #include "util/u_inlines.h"
 #include "util/box.h"
+#include "util/format/u_format.h"
 
 #include "vulkan/util/vk_util.h"
 
@@ -181,11 +182,13 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
          continue;
 
       /* Row pitch drives both the mapping size and the destination stride.
-       * When bufferRowLength > imageExtent.width, dst_size must cover the
-       * full row_pitch * height range, not the tighter width * height * 4. */
-      unsigned row_pitch = region->bufferRowLength
-                           ? region->bufferRowLength * 4
-                           : region->imageExtent.width * 4;
+       * Use the actual format block size rather than assuming 4 bpp so that
+       * non-RGBA8 formats (R8, RG16, RGBA16F) map and copy correctly.
+       * bufferRowLength == 0 means tightly packed per the Vulkan spec. */
+      unsigned bpp = util_format_get_blocksize(src->format);
+      unsigned row_pitch = (region->bufferRowLength
+                            ? region->bufferRowLength
+                            : region->imageExtent.width) * bpp;
       unsigned dst_size  = row_pitch * region->imageExtent.height;
 
       struct pipe_transfer *dst_xfer = NULL;
@@ -202,7 +205,7 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
       for (unsigned row = 0; row < region->imageExtent.height; row++) {
          memcpy(dst_map + row * row_pitch,
                 src_map + row * src_xfer->stride,
-                region->imageExtent.width * 4);
+                region->imageExtent.width * bpp);
       }
 
       pipe->buffer_unmap(pipe, dst_xfer);

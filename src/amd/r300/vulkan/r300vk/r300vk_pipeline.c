@@ -35,6 +35,14 @@ r300vk_compile_shader(struct r300vk_device *device,
                        struct r300vk_pipeline *pl,
                        VkResult *out_result)
 {
+   /* r300g exposes VS and FS only; geometry, tessellation, and compute are
+    * unsupported on R300-class hardware. */
+   if (stage_info->stage != VK_SHADER_STAGE_VERTEX_BIT &&
+       stage_info->stage != VK_SHADER_STAGE_FRAGMENT_BIT)
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: unsupported shader stage 0x%x",
+                       stage_info->stage);
+
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    mesa_shader_stage stage = vk_to_mesa_shader_stage(stage_info->stage);
 
@@ -112,6 +120,11 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
       bs.rt[0].alpha_dst_factor = PIPE_BLENDFACTOR_ZERO;
       bs.rt[0].colormask       = PIPE_MASK_RGBA;
       pl->blend_cso = device->pipe->create_blend_state(device->pipe, &bs);
+      if (!pl->blend_cso) {
+         r300vk_DestroyPipeline(r300vk_device_to_handle(device),
+                                r300vk_pipeline_to_handle(pl), pAllocator);
+         return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      }
    }
 
    /* Rasterizer CSO: fill, cull none. */
@@ -124,12 +137,22 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
       rs.depth_clip_near = true;
       rs.depth_clip_far  = true;
       pl->rasterizer_cso = device->pipe->create_rasterizer_state(device->pipe, &rs);
+      if (!pl->rasterizer_cso) {
+         r300vk_DestroyPipeline(r300vk_device_to_handle(device),
+                                r300vk_pipeline_to_handle(pl), pAllocator);
+         return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      }
    }
 
    /* Depth-stencil-alpha CSO: depth test disabled. */
    {
       struct pipe_depth_stencil_alpha_state dsa = {0};
       pl->dsa_cso = device->pipe->create_depth_stencil_alpha_state(device->pipe, &dsa);
+      if (!pl->dsa_cso) {
+         r300vk_DestroyPipeline(r300vk_device_to_handle(device),
+                                r300vk_pipeline_to_handle(pl), pAllocator);
+         return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      }
    }
 
    /* Vertex elements CSO from VkVertexInputAttributeDescriptions. */
@@ -144,9 +167,17 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
       for (uint32_t i = 0; i < n; i++) {
          const VkVertexInputAttributeDescription *attr =
             &vi->pVertexAttributeDescriptions[i];
+         enum pipe_format elem_fmt = vk_format_to_pipe_format(attr->format);
+         if (elem_fmt == PIPE_FORMAT_NONE) {
+            r300vk_DestroyPipeline(r300vk_device_to_handle(device),
+                                   r300vk_pipeline_to_handle(pl), pAllocator);
+            return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                             "r300vk: unsupported vertex attribute format %d "
+                             "at location %u", attr->format, attr->location);
+         }
          ve[i].src_offset          = (uint16_t)attr->offset;
          ve[i].vertex_buffer_index = (uint8_t)attr->binding;
-         ve[i].src_format          = (uint8_t)vk_format_to_pipe_format(attr->format);
+         ve[i].src_format          = (uint8_t)elem_fmt;
          /* Locate the stride for this binding. */
          for (uint32_t b = 0; b < vi->vertexBindingDescriptionCount; b++) {
             if (vi->pVertexBindingDescriptions[b].binding == attr->binding) {
@@ -159,6 +190,11 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
       }
       pl->velems_cso =
          device->pipe->create_vertex_elements_state(device->pipe, n, ve);
+      if (!pl->velems_cso) {
+         r300vk_DestroyPipeline(r300vk_device_to_handle(device),
+                                r300vk_pipeline_to_handle(pl), pAllocator);
+         return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      }
    }
 
    pl->topology = info->pInputAssemblyState
@@ -185,7 +221,8 @@ r300vk_CreateGraphicsPipelines(VkDevice _device,
                                                pAllocator, &pPipelines[i]);
       if (r != VK_SUCCESS) {
          pPipelines[i] = VK_NULL_HANDLE;
-         result = r;
+         if (result == VK_SUCCESS)
+            result = r;
       }
    }
    return result;
