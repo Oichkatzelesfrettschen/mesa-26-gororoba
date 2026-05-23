@@ -226,16 +226,18 @@ pm4_ib_dump_crc32_le(uint32_t crc, const uint8_t *bytes, size_t size)
    return crc;
 }
 
-void
-terakan_pm4_ib_dump_cs_submission(unsigned ring, const uint32_t *ib_dwords,
-                                  uint32_t ib_length_dwords)
+/* Shared JSONL row writer.  The `event` string distinguishes a
+ * submit-time capture ("pm4_ib_cs_submission", written just before
+ * the DRM_RADEON_CS ioctl) from a record-end capture
+ * ("pm4_ib_record_end", written at vkEndCommandBuffer with no submit).
+ * Both rows carry identical ib_dwords + ib_crc32 fields, so the
+ * steinmarder pm4_decode --format jsonl reader consumes either
+ * interchangeably. */
+static void
+pm4_ib_dump_write_row(const char *event, unsigned ring,
+                      const uint32_t *ib_dwords, uint32_t ib_length_dwords)
 {
-   FILE *stream;
-
-   if (!terakan_pm4_ib_dump_active() || !ib_dwords || ib_length_dwords == 0)
-      return;
-
-   stream = pm4_ib_dump_stream_or_open();
+   FILE *stream = pm4_ib_dump_stream_or_open();
    if (!stream)
       return;
 
@@ -245,7 +247,7 @@ terakan_pm4_ib_dump_cs_submission(unsigned ring, const uint32_t *ib_dwords,
 
    simple_mtx_lock(&pm4_ib_dump_write_lock);
    fprintf(stream,
-           "{\"event\":\"pm4_ib_cs_submission\","
+           "{\"event\":\"%s\","
            "\"ts_nsec\":%" PRIu64 ","
            "\"pid\":%d,"
            "\"tid\":%" PRIuPTR ","
@@ -253,8 +255,8 @@ terakan_pm4_ib_dump_cs_submission(unsigned ring, const uint32_t *ib_dwords,
            "\"ib_length_dw\":%u,"
            "\"ib_crc32\":\"0x%08" PRIx32 "\","
            "\"ib_dwords\":[",
-           pm4_ib_dump_ts_nsec(), pm4_ib_dump_getpid(), pm4_ib_dump_gettid(),
-           ring, ib_length_dwords, crc);
+           event, pm4_ib_dump_ts_nsec(), pm4_ib_dump_getpid(),
+           pm4_ib_dump_gettid(), ring, ib_length_dwords, crc);
    for (uint32_t i = 0; i < ib_length_dwords; i++)
       fprintf(stream,
               i + 1 < ib_length_dwords
@@ -263,4 +265,50 @@ terakan_pm4_ib_dump_cs_submission(unsigned ring, const uint32_t *ib_dwords,
               ib_dwords[i]);
    fputs("]}\n", stream);
    simple_mtx_unlock(&pm4_ib_dump_write_lock);
+}
+
+void
+terakan_pm4_ib_dump_cs_submission(unsigned ring, const uint32_t *ib_dwords,
+                                  uint32_t ib_length_dwords)
+{
+   if (!terakan_pm4_ib_dump_active() || !ib_dwords || ib_length_dwords == 0)
+      return;
+   pm4_ib_dump_write_row("pm4_ib_cs_submission", ring, ib_dwords, ib_length_dwords);
+}
+
+/* Record-end gate, independent of the submit-time gate.  When
+ * TERAKAN_DEBUG_DUMP_IB_RECORD_END=1, vkEndCommandBuffer dumps each
+ * finalized IB without requiring a submit -- so a wedge-class IB can
+ * be captured and decomposed offline (via pm4_decode) WITHOUT
+ * dispatching it to silicon.  Pair with the probes' --mode no-submit.
+ */
+static once_flag pm4_ib_dump_record_end_init_once = ONCE_FLAG_INIT;
+static bool pm4_ib_dump_record_end_enabled = false;
+
+static void
+pm4_ib_dump_record_end_init_cb(void)
+{
+   if (!debug_get_bool_option("TERAKAN_DEBUG_DUMP_IB_RECORD_END", false)) {
+      pm4_ib_dump_record_end_enabled = false;
+      return;
+   }
+   pm4_ib_dump_record_end_enabled =
+      !terakan_env_gate_enabled("TERAKAN_DEBUG_DUMP_IB_JSONL_DISABLE");
+}
+
+bool
+terakan_pm4_ib_dump_record_end_active(void)
+{
+   call_once(&pm4_ib_dump_record_end_init_once, pm4_ib_dump_record_end_init_cb);
+   return pm4_ib_dump_record_end_enabled;
+}
+
+void
+terakan_pm4_ib_dump_record_end(unsigned ring, const uint32_t *ib_dwords,
+                               uint32_t ib_length_dwords)
+{
+   if (!terakan_pm4_ib_dump_record_end_active() || !ib_dwords ||
+       ib_length_dwords == 0)
+      return;
+   pm4_ib_dump_write_row("pm4_ib_record_end", ring, ib_dwords, ib_length_dwords);
 }
