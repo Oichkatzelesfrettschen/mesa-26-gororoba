@@ -42,6 +42,8 @@ viewport_vk_to_gallium(const VkViewport *vp, struct pipe_viewport_state *pv)
    pv->swizzle_w    = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 }
 
+/* CCN is proportional to the number of command types dispatched; one case
+ * per r300vk_cmd_type is the minimum correct structure. */
 static void
 r300vk_replay_gpu(struct r300vk_device *device,
                   const struct r300vk_cmd_buffer *cmd)
