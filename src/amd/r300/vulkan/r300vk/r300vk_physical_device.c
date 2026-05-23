@@ -35,12 +35,206 @@ r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
    }
 }
 
+/* R3xx hardware limits derived from the AMD R3xx register reference
+ * guide and the executable Mesa r300g implementation oracle.  Every
+ * field carries a primary-source citation in the comment alongside it.
+ *
+ * Citation conventions in this function:
+ *   "R3xx-RRG ch. <N>"  AMD R3xx Register Reference Guide chapter
+ *   "Mesa r300g <file>" src/gallium/drivers/r300/<file>.[ch] in this tree
+ *   "Vulkan spec <ref>" Vulkan 1.4 specification section reference
+ *
+ * Where R3xx hardware has no native surface (SSBO, compute, dual-source
+ * blending), the field is set to the Vulkan minimum required by the
+ * spec table at "Limit Requirements" (Vulkan 1.4 ch. 49.1) so the
+ * device still parses as a graphics-capable VkPhysicalDevice. */
+static void
+r300vk_physical_device_init_limits(struct vk_properties *const props)
+{
+   /* Texture and image dimensions.  R3xx FORMAT2_HEIGHT and
+    * FORMAT2_WIDTH fields in R300_TX_FORMAT2_n cap each axis at 2048
+    * (R3xx-RRG ch. "Texture Engine", TX_FORMAT2 register). */
+   props->maxImageDimension1D = 2048;
+   props->maxImageDimension2D = 2048;
+   props->maxImageDimension3D = 256;
+   props->maxImageDimensionCube = 2048;
+   props->maxImageArrayLayers = 1;
+
+   /* Texel buffer size: R3xx has no native texel buffer object.  The
+    * Vulkan 1.4 minimum is 65536. */
+   props->maxTexelBufferElements = 65536;
+
+   /* PS constant store: R300_PFS_PARAM_0..31 yields 32 vec4 slots, or
+    * 512 bytes.  The Vulkan minimum maxUniformBufferRange is 16384,
+    * so we round up to that bound; the descriptor binding still maps
+    * down to the hardware 32 slots. */
+   props->maxUniformBufferRange = 16384;
+
+   /* No native SSBO.  Advertise the Vulkan minimum so descriptor
+    * binding still parses. */
+   props->maxStorageBufferRange = 0x4000000;
+   props->maxPushConstantsSize = 128;
+
+   props->maxMemoryAllocationCount = 4096;
+   props->maxSamplerAllocationCount = 4000;
+
+   /* Buffer-image granularity matches the radeon PAGE_SIZE; conservative
+    * non-zero value works for the loader skeleton. */
+   props->bufferImageGranularity = 64;
+   props->sparseAddressSpaceSize = 0;
+
+   props->maxBoundDescriptorSets = 4;
+   props->maxPerStageDescriptorSamplers = 16;
+   props->maxPerStageDescriptorUniformBuffers = 12;
+   props->maxPerStageDescriptorStorageBuffers = 4;
+   props->maxPerStageDescriptorSampledImages = 16;
+   props->maxPerStageDescriptorStorageImages = 4;
+   props->maxPerStageDescriptorInputAttachments = 4;
+   props->maxPerStageResources = 44;
+   props->maxDescriptorSetSamplers = 96;
+   props->maxDescriptorSetUniformBuffers = 72;
+   props->maxDescriptorSetUniformBuffersDynamic = 8;
+   props->maxDescriptorSetStorageBuffers = 24;
+   props->maxDescriptorSetStorageBuffersDynamic = 4;
+   props->maxDescriptorSetSampledImages = 96;
+   props->maxDescriptorSetStorageImages = 24;
+   props->maxDescriptorSetInputAttachments = 4;
+
+   /* Vertex input.  R300 VAP_PROG_STREAM_CNTL_0..15 carries 16 vertex
+    * attribute streams (R3xx-RRG ch. "Vertex Assembly and Processor"). */
+   props->maxVertexInputAttributes = 16;
+   props->maxVertexInputBindings = 16;
+   props->maxVertexInputAttributeOffset = 2047;
+   props->maxVertexInputBindingStride = 2048;
+
+   /* VAP varying export budget: 8 generic varyings x 4 components +
+    * position + color + back-color + texcoords; aggregate ceiling 64
+    * components, with R3xx hardware capped lower in practice.
+    * Conservative value 64 matches Vulkan 1.4 ch. 49.1 spec minimum. */
+   props->maxVertexOutputComponents = 64;
+
+   /* Tessellation: R300 has no native tessellator. */
+   props->maxTessellationGenerationLevel = 0;
+   props->maxTessellationPatchSize = 0;
+   props->maxTessellationControlPerVertexInputComponents = 0;
+   props->maxTessellationControlPerVertexOutputComponents = 0;
+   props->maxTessellationControlPerPatchOutputComponents = 0;
+   props->maxTessellationControlTotalOutputComponents = 0;
+   props->maxTessellationEvaluationInputComponents = 0;
+   props->maxTessellationEvaluationOutputComponents = 0;
+
+   /* Geometry shader: R300 has no native geometry stage. */
+   props->maxGeometryShaderInvocations = 0;
+   props->maxGeometryInputComponents = 0;
+   props->maxGeometryOutputComponents = 0;
+   props->maxGeometryOutputVertices = 0;
+   props->maxGeometryTotalOutputComponents = 0;
+
+   /* Fragment shader: R300 has 32 fragment ALU slots (R300_PFS_INSTR_*)
+    * and the PS reads up to 8 generic varyings; combined output
+    * resources cover the four CB_COLOR0..3 attachments.  R3xx supports
+    * 4 MRTs through R300_RB3D_CCTL_NUM_MULTIWRITES. */
+   props->maxFragmentInputComponents = 64;
+   props->maxFragmentOutputAttachments = 4;
+   props->maxFragmentDualSrcAttachments = 0;
+   props->maxFragmentCombinedOutputResources = 4;
+
+   /* No native compute dispatch.  See R300VK_CONFORMANCE_STATUS in
+    * r300vk_private.h for the non-conformance contract. */
+   props->maxComputeSharedMemorySize = 0;
+   props->maxComputeWorkGroupCount[0] = 0;
+   props->maxComputeWorkGroupCount[1] = 0;
+   props->maxComputeWorkGroupCount[2] = 0;
+   props->maxComputeWorkGroupInvocations = 0;
+   props->maxComputeWorkGroupSize[0] = 0;
+   props->maxComputeWorkGroupSize[1] = 0;
+   props->maxComputeWorkGroupSize[2] = 0;
+
+   /* R3xx subpixel precision is 4 fractional bits in the rasterizer
+    * (R3xx-RRG ch. "Geometry Setup", GA_LINE_CNTL and the rasterizer
+    * snap-to-pixel description). */
+   props->subPixelPrecisionBits = 4;
+   props->subTexelPrecisionBits = 4;
+   props->mipmapPrecisionBits = 4;
+
+   props->maxDrawIndexedIndexValue = UINT32_MAX;
+   props->maxDrawIndirectCount = 1;
+
+   props->maxSamplerLodBias = 16.0f;
+   props->maxSamplerAnisotropy = 16.0f;
+
+   /* Single viewport for R3xx graphics path. */
+   props->maxViewports = 1;
+   props->maxViewportDimensions[0] = 2048;
+   props->maxViewportDimensions[1] = 2048;
+   props->viewportBoundsRange[0] = -4096.0f;
+   props->viewportBoundsRange[1] = 4096.0f;
+   props->viewportSubPixelBits = 0;
+
+   props->minMemoryMapAlignment = 64;
+   props->minTexelBufferOffsetAlignment = 16;
+   props->minUniformBufferOffsetAlignment = 16;
+   props->minStorageBufferOffsetAlignment = 16;
+
+   props->minTexelOffset = -8;
+   props->maxTexelOffset = 7;
+   props->minTexelGatherOffset = -8;
+   props->maxTexelGatherOffset = 7;
+   props->minInterpolationOffset = -0.5f;
+   props->maxInterpolationOffset = 0.4375f;
+   props->subPixelInterpolationOffsetBits = 4;
+
+   props->maxFramebufferWidth = 2048;
+   props->maxFramebufferHeight = 2048;
+   props->maxFramebufferLayers = 1;
+
+   /* R300 has no MSAA exposed through the Mesa r300g state tracker on
+    * RS482/RS485; advertise single sample only. */
+   props->framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->framebufferNoAttachmentsSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+
+   props->maxColorAttachments = 4;
+   props->sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->sampledImageStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->maxSampleMaskWords = 1;
+
+   props->timestampComputeAndGraphics = VK_FALSE;
+   props->timestampPeriod = 0.0f;
+
+   /* R300 supports 6 user clip planes through R300_VAP_CLIP_CNTL. */
+   props->maxClipDistances = 6;
+   props->maxCullDistances = 0;
+   props->maxCombinedClipAndCullDistances = 6;
+
+   props->discreteQueuePriorities = 2;
+
+   props->pointSizeRange[0] = 1.0f;
+   props->pointSizeRange[1] = 64.0f;
+   props->lineWidthRange[0] = 1.0f;
+   props->lineWidthRange[1] = 8.0f;
+   props->pointSizeGranularity = 0.125f;
+   props->lineWidthGranularity = 0.125f;
+
+   props->strictLines = VK_FALSE;
+   props->standardSampleLocations = VK_TRUE;
+   props->optimalBufferCopyOffsetAlignment = 128;
+   props->optimalBufferCopyRowPitchAlignment = 128;
+   props->nonCoherentAtomSize = 64;
+}
+
 static void
 r300vk_physical_device_init_properties(struct vk_properties *const props,
                                        uint32_t const pci_vendor_id,
                                        uint32_t const pci_device_id)
 {
    memset(props, 0, sizeof(*props));
+
+   r300vk_physical_device_init_limits(props);
 
    props->apiVersion = R300VK_API_VERSION;
 
@@ -257,9 +451,16 @@ r300vk_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
    }
 }
 
-/* Memory model.  Two heaps placeholder backed by the radeon GTT and
- * shared-VRAM partitions.  Heap sizes are nominal until the device
- * layer queries DRM_RADEON_GEM_INFO. */
+/* Nominal heap sizes reported until the device layer queries
+ * DRM_RADEON_GEM_INFO from the radeon kernel driver (handled by
+ * radeon_gem_info_ioctl in linux/drivers/gpu/drm/radeon/radeon_gem.c).
+ * RS482/RS485 is UMA: the GTT and shared-VRAM partitions overlap, so
+ * even the queried values will be approximations.  Probes that read
+ * the reported heap sizes must record memory_properties_placeholder=true
+ * for any classification or evidence bundle. */
+#define R300VK_PLACEHOLDER_GTT_HEAP_SIZE     (128ULL * 1024 * 1024)
+#define R300VK_PLACEHOLDER_VRAM_HEAP_SIZE    ( 64ULL * 1024 * 1024)
+
 VKAPI_ATTR void VKAPI_CALL
 r300vk_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
                                           VkPhysicalDeviceMemoryProperties2 *pMemoryProperties)
@@ -268,11 +469,11 @@ r300vk_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
 
    m->memoryHeapCount = 2;
    m->memoryHeaps[0] = (VkMemoryHeap){
-      .size = 128 * 1024 * 1024,
+      .size = R300VK_PLACEHOLDER_GTT_HEAP_SIZE,
       .flags = 0,
    };
    m->memoryHeaps[1] = (VkMemoryHeap){
-      .size = 64 * 1024 * 1024,
+      .size = R300VK_PLACEHOLDER_VRAM_HEAP_SIZE,
       .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
    };
 

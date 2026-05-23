@@ -22,13 +22,26 @@ static const struct debug_control r300vk_debug_options[] = {
    {NULL, 0},
 };
 
-/* The two KHR entries below are promoted to core in Vulkan 1.1 but must
- * still be reported because R300VK_API_VERSION advertises Vulkan 1.0.
- * WSI, debug-utils, and external-handle capability extensions are not
- * yet wired and are intentionally omitted. */
+/* KHR_get_physical_device_properties2 is honoured by the Mesa Vulkan
+ * runtime through vk_common_GetPhysicalDeviceProperties2 (generated
+ * from vk_physical_device_properties_gen.py).  No driver-side hook is
+ * required for the instance-level alias vkGetPhysicalDeviceProperties2KHR
+ * because the entrypoints generator (vk_entrypoints_gen.py) emits the
+ * alias automatically and the runtime fills it from
+ * pdev->properties.
+ *
+ * KHR_device_group_creation, debug-utils, external-memory-capabilities,
+ * and the WSI surface family are not advertised because the
+ * corresponding vkEnumeratePhysicalDeviceGroupsKHR /
+ * vkCreateDebugUtilsMessengerEXT /
+ * vkGetPhysicalDeviceExternalBufferPropertiesKHR /
+ * vkCreate*SurfaceKHR entrypoints are not implemented.  Promising an
+ * extension without its entrypoints violates Vulkan 1.4 spec ch. 36
+ * "Extensions" and produces VK_ERROR_FEATURE_NOT_PRESENT crashes in
+ * application code paths that take the advertised feature flag as a
+ * green light. */
 static const struct vk_instance_extension_table r300vk_instance_extensions_supported = {
    .KHR_get_physical_device_properties2 = true,
-   .KHR_device_group_creation = true,
 };
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -43,15 +56,19 @@ r300vk_EnumerateInstanceExtensionProperties(const char *pLayerName,
                                                      pPropertyCount, pProperties);
 }
 
+/* The driver exposes no instance layers.  The Vulkan 1.4 spec
+ * (ch. 36 "Layers", vkEnumerateInstanceLayerProperties) requires
+ * returning VK_SUCCESS with *pPropertyCount=0 whether or not the
+ * caller passed a pProperties array; VK_ERROR_LAYER_NOT_PRESENT is
+ * reserved for vkCreateInstance receiving a ppEnabledLayerNames entry
+ * the implementation cannot satisfy. */
 VKAPI_ATTR VkResult VKAPI_CALL
 r300vk_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount,
                                         VkLayerProperties *pProperties)
 {
-   if (pProperties == NULL) {
-      *pPropertyCount = 0;
-      return VK_SUCCESS;
-   }
-   return vk_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
+   (void)pProperties;
+   *pPropertyCount = 0;
+   return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
