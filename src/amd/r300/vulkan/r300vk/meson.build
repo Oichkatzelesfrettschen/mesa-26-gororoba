@@ -47,6 +47,9 @@ if get_option('r300vk-gallium-backend') and with_gallium_r300
   libr300vk_files += files(
     'r300vk_device.c',
     'r300vk_queue.c',
+    'r300vk_memory.c',
+    'r300vk_buffer.c',
+    'r300vk_image.c',
   )
   libr300vk_deps += [
     idep_nir,
