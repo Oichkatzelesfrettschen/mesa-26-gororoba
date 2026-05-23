@@ -50,6 +50,9 @@ if get_option('r300vk-gallium-backend') and with_gallium_r300
     'r300vk_memory.c',
     'r300vk_buffer.c',
     'r300vk_image.c',
+    'r300vk_shader_module.c',
+    'r300vk_render_pass.c',
+    'r300vk_framebuffer.c',
   )
   libr300vk_deps += [
     idep_nir,
