@@ -27,18 +27,26 @@ classification reported to external tooling is therefore
 | Field | Value | Primary source |
 |---|---|---|
 | Vendor | ATI / AMD | PCI vendor ID `0x1002` (PCI-SIG) |
-| RS482 device | `0x5974` | Mesa `r300_chipset.c`, `RS482_5974` row |
-| RS485 device | `0x5975` | Mesa `r300_chipset.c`, `RS482_5975` row |
+| RS482 device | `0x5974` | `include/pci_ids/r300_pci_ids.h`, `CHIPSET(0x5974, RS482_5974, RS480)` |
+| RS485 device | `0x5975` | `include/pci_ids/r300_pci_ids.h`, `CHIPSET(0x5975, RS482_5975, RS480)` |
 | Family | RS480 | Mesa `r300_chipset.c`, `r300_parse_chipset()` |
 | Generation | R3xx | AMD R3xx Register Reference Guide (RRG) |
-| Vertex FPUs | 0 | `r300_parse_chipset()` `num_vert_fpus` |
-| Compute queue | absent | R3xx ISA -- no compute dispatch packets |
+| Vertex FPUs (Mesa-classified) | 0 | `r300_parse_chipset()` `num_vert_fpus` |
+| Compute queue | not surfaced | R3xx-RRG -- no documented compute dispatch packet |
 | Kernel driver | `radeon` | `drivers/gpu/drm/radeon/radeon_drv.c` |
 | Renderer string | `ATI RS480` | Mesa r300g, `r300_get_renderer()` |
 
-Vertex stage execution routes through Gallium Draw SW TCL because
-`num_vert_fpus == 0` -- the hardware exposes no vertex shader unit.
-The R300 RS/TX/US/CB/ZB blocks remain hardware-backed.
+Both PCI IDs are tagged with the `RS482_` prefix in Mesa's canonical
+PCI table even though `0x5975` markets as RS485 (Radeon Xpress
+1100/1150 mobile).  The row name reflects the closer codename, not the
+product marketing name; cite the source path, not the marketing label.
+
+Current Mesa r300g routes RS482/RS485 vertex-stage execution through
+Gallium Draw SW TCL because the RS480 family is classified with
+`num_vert_fpus == 0`.  This is a source-supported driver-path fact,
+not a final silicon impossibility claim.  Hardware PVS execution on
+this exact target remains `silicon_unproven_not_disproven`.  The R300
+RS/TX/US/CB/ZB blocks remain hardware-backed.
 
 ## Repository layout
 
@@ -61,8 +69,10 @@ chip) and uses the Mesa Vulkan runtime base structures
 
 ## Conformance contract
 
-The r300vk skeleton MUST NOT be advertised as conformant Vulkan for
-any version.  The contract is enforced by:
+No documented or Vostro-proven native compute dispatch surface exists
+for this RS482/RS485 R300VK target.  The r300vk skeleton MUST NOT be
+advertised as conformant Vulkan for any version.  The contract is
+enforced by:
 
 1. The `R300VK_CONFORMANCE_STATUS` macro in `r300vk_private.h`.
 2. The empty `vk_features` table in `r300vk_physical_device_init_features`.

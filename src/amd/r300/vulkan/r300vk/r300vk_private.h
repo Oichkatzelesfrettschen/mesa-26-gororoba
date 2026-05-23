@@ -30,9 +30,11 @@ extern "C" {
 
 /* Conformance classification reported to probes and external tooling.
  *
- * The R3xx generation has no native compute dispatch surface: no
- * COMPUTE queue, no workgroup shared memory, no shader atomics, no
- * SPIR-V compute capabilities, no SSBO storage semantics.  The
+ * No documented or Vostro-proven native compute dispatch surface
+ * exists for this RS482/RS485 R300VK target: no COMPUTE queue, no
+ * workgroup shared memory, no shader atomics, no SPIR-V compute
+ * capabilities, no SSBO storage semantics in the current Mesa r300
+ * implementation oracle or the AMD R3xx-RRG documentation.  The
  * VkQueueFlagBits reference (Vulkan spec ch. 5 "Devices and Queues",
  * VkQueueFamilyProperties::queueFlags) requires that a conformant
  * implementation report VK_QUEUE_COMPUTE_BIT for any queue family that
