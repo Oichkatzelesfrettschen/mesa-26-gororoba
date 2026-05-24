@@ -264,6 +264,52 @@ r300vk_CmdDraw(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
+                   uint32_t groupCountX,
+                   uint32_t groupCountY,
+                   uint32_t groupCountZ)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)groupCountX;
+   (void)groupCountY;
+   (void)groupCountZ;
+
+   vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+void
+r300vk_CmdDispatchBase(VkCommandBuffer commandBuffer,
+                       uint32_t baseGroupX,
+                       uint32_t baseGroupY,
+                       uint32_t baseGroupZ,
+                       uint32_t groupCountX,
+                       uint32_t groupCountY,
+                       uint32_t groupCountZ)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)baseGroupX;
+   (void)baseGroupY;
+   (void)baseGroupZ;
+   (void)groupCountX;
+   (void)groupCountY;
+   (void)groupCountZ;
+
+   vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+void
+r300vk_CmdDispatchIndirect(VkCommandBuffer commandBuffer,
+                           VkBuffer buffer,
+                           VkDeviceSize offset)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)buffer;
+   (void)offset;
+
+   vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+void
 r300vk_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
                               const VkCopyImageToBufferInfo2 *pCopyImageToBufferInfo)
 {

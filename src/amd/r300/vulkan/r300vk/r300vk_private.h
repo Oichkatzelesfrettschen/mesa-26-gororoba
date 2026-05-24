@@ -28,6 +28,9 @@ extern "C" {
 
 #define R300VK_API_VERSION VK_MAKE_API_VERSION(0, 1, 0, VK_HEADER_VERSION)
 
+#define R300VK_HYBRID_COMPUTE_ENV "R300VK_HYBRID_COMPUTE_EXPERIMENTAL"
+#define R300VK_HYBRID_COMPUTE_ENV_VALUE "1"
+
 /* Conformance classification reported to probes and external tooling.
  *
  * No documented or silicon-proven native compute dispatch surface
@@ -44,6 +47,7 @@ extern "C" {
  * this classification before treating the implementation as a graphics
  * device. */
 #define R300VK_CONFORMANCE_STATUS "experimental_nonconformant_graphics_without_compute"
+#define R300VK_HYBRID_COMPUTE_STATUS "experimental_nonconformant_hybrid_compute_queue"
 
 /* Backend identity labels for the Gallium-mediated submit path.
  * RS482/RS485 has no hardware vertex processor (num_vert_fpus == 0 for

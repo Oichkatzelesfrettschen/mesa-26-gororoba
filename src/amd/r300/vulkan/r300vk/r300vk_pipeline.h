@@ -60,6 +60,13 @@ VkResult r300vk_CreateGraphicsPipelines(VkDevice device,
                                          const VkAllocationCallbacks *pAllocator,
                                          VkPipeline *pPipelines);
 
+VkResult r300vk_CreateComputePipelines(VkDevice device,
+                                        VkPipelineCache pipelineCache,
+                                        uint32_t createInfoCount,
+                                        const VkComputePipelineCreateInfo *pCreateInfos,
+                                        const VkAllocationCallbacks *pAllocator,
+                                        VkPipeline *pPipelines);
+
 void r300vk_DestroyPipeline(VkDevice device,
                              VkPipeline pipeline,
                              const VkAllocationCallbacks *pAllocator);

@@ -244,6 +244,26 @@ r300vk_CreateGraphicsPipelines(VkDevice _device,
    return result;
 }
 
+VkResult
+r300vk_CreateComputePipelines(VkDevice _device,
+                              VkPipelineCache pipelineCache,
+                              uint32_t createInfoCount,
+                              const VkComputePipelineCreateInfo *pCreateInfos,
+                              const VkAllocationCallbacks *pAllocator,
+                              VkPipeline *pPipelines)
+{
+   VK_FROM_HANDLE(r300vk_device, device, _device);
+   (void)pipelineCache;
+   (void)pCreateInfos;
+   (void)pAllocator;
+
+   for (uint32_t i = 0; i < createInfoCount; i++)
+      pPipelines[i] = VK_NULL_HANDLE;
+
+   return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                    "r300vk: hybrid compute pipeline execution is not implemented");
+}
+
 void
 r300vk_DestroyPipeline(VkDevice _device,
                         VkPipeline _pipeline,
