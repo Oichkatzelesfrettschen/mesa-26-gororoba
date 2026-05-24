@@ -1,12 +1,12 @@
-# r300-vostro-k8-debug: narrow GLX debug build for RS480/R300 compiler log capture.
-# Canonical install prefix: /usr/local/mesa-26-gororoba-DEBUG
+# r300-vostro-k8-debug: narrow GLX debugoptimized build for RS480/R300 compiler log capture.
+# Canonical install prefix: /usr/local/mesa-26-gororoba-debug
 #
-# Enables assertions, R300_DEBUG output, and debug symbols.
+# Enables assertions, R300_DEBUG output, debug symbols, and optimization.
 # Required for observed_alu_count / observed_tex_count evidence bundles.
 # LLVM disabled -- r300 Gallium needs no LLVM backend.
 
 [project options]
-buildtype = 'debug'
+buildtype = 'debugoptimized'
 b_ndebug = 'false'
 
 platforms = ['x11']
