@@ -631,7 +631,7 @@ Canonical standalone shape:
 
 ```bash
 meson setup builddir \
-  --prefix="$PWD/install" \
+  --prefix="/opt/local/mesa-26-gororoba-debug" \
   -Dbuildtype=debugoptimized \
   -Dgallium-drivers=r300,r600,softpipe \
   -Dvulkan-drivers=amd_terascale \
@@ -706,22 +706,21 @@ centralised `CCACHE_DIR`/`SCCACHE_DIR`.
 ### Canonical build directories and install prefixes
 
 Each build directory maps to exactly one install prefix.  Never share object
-files or install paths between directories.  `MESA_ROOT` is the repository root
-(`$(git rev-parse --show-toplevel)`).
+files or install paths between directories.
 
 | Directory | Purpose | Install prefix | Key options |
 |---|---|---|---|
-| `builddir` | Full-stack debug daily driver | `$MESA_ROOT/install` | `-Dbuildtype=debugoptimized -Dgallium-drivers=r300,r600,softpipe -Dvulkan-drivers=amd_terascale -Dllvm=enabled` |
-| `builddir-release` | Silicon evidence and conformance | `/usr/local/mesa-26-gororoba` | `-Dbuildtype=release` + same driver set |
-| `builddir-r300vk-gallium` | r300vk Gallium-backed ICD (vostro / dev) | `$MESA_ROOT/install` | `-Dbuildtype=debugoptimized -Dr300vk-gallium-backend=true -Dgallium-drivers=r300 -Dvulkan-drivers=amd_r300 -Dllvm=enabled` |
-| `builddir-r300tools` | r300 analysis, clangd index, no Vulkan | `$MESA_ROOT/install` | `-Dbuildtype=debugoptimized -Dgallium-drivers=r300 -Dllvm=enabled` |
+| `builddir` | Full-stack debug daily driver | `/opt/local/mesa-26-gororoba-debug` | `-Dbuildtype=debugoptimized -Dgallium-drivers=r300,r600,softpipe -Dvulkan-drivers=amd_terascale -Dllvm=enabled` |
+| `builddir-release` | Silicon evidence and conformance | `/opt/local/mesa-26-gororoba` | `-Dbuildtype=release` + same driver set |
+| `builddir-r300vk-gallium` | r300vk Gallium-backed ICD (vostro / dev) | `/opt/local/mesa-26-gororoba-debug` | `-Dbuildtype=debugoptimized -Dr300vk-gallium-backend=true -Dgallium-drivers=r300 -Dvulkan-drivers=amd_r300 -Dllvm=enabled` |
+| `builddir-r300tools` | r300 analysis, clangd index, no Vulkan | `/opt/local/mesa-26-gororoba-debug` | `-Dbuildtype=debugoptimized -Dgallium-drivers=r300 -Dllvm=enabled` |
 
-The `install/` subdirectory inside the repo is the single canonical prefix for
-all debug-class directories.  Do NOT use suffixed variants such as
-`install-gallium` or `install-r300vk-gallium`; they fragment the driver search
-path and require separate `LIBGL_DRIVERS_PATH` / `VK_ICD_FILENAMES` overrides.
-Release builds always go to `/usr/local/mesa-26-gororoba` (isolated from system
-Mesa at `/usr/lib/`).
+Debug-class directories install to `/opt/local/mesa-26-gororoba-debug`.
+Release builds install to `/opt/local/mesa-26-gororoba`.  Neither path is inside
+the repository tree.  Do NOT use in-repo `install/` subdirectories or suffixed
+variants such as `install-gallium`; they pollute the working tree and require
+separate `LIBGL_DRIVERS_PATH` / `VK_ICD_FILENAMES` overrides.  System Mesa at
+`/usr/lib/` must not be disturbed by project builds.
 
 #### Clean and reconfigure
 
