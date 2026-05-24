@@ -1108,9 +1108,9 @@ terakan_physical_device_get_capabilities(
     * register an fd-capable sync type. */
    extensions_out->KHR_external_fence = true;
 
-   /* VK_KHR_device_group (#61, Vulkan 1.1, device-side) includes
-    * vkCmdDispatchBaseKHR.  Do not advertise the extension until Terakan
-   * implements base-workgroup dispatch. */
+   /* Keep VK_KHR_device_group disabled until the full device-group state and
+    * command surface is implemented.  Vulkan 1.1 still exposes the core
+    * vkCmdDispatchBase entrypoint. */
    extensions_out->KHR_device_group = false;
 
    /* VK_EXT_depth_clip_enable (#103). */
