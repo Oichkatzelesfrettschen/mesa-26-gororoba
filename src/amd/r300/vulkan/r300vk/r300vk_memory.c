@@ -114,11 +114,19 @@ r300vk_MapMemory(VkDevice _device,
        * and sub-range sizes are not meaningful for driver-tiled textures;
        * callers that need linear-addressable sub-range access should bind to
        * a PIPE_BUFFER readback resource instead.
-       * Validate size in bytes against mem->size (the VkDeviceMemory byte
-       * allocation size from AllocateMemory), not width0 which is in texels. */
+       * Reject a non-zero sub-offset (the map returns the whole surface) and
+       * any explicit size that exceeds the allocation bytes remaining from
+       * the map offset.  The bound is mem->size - offset, not mem->size: an
+       * image bound at a non-zero memoryOffset has a shorter valid tail, so
+       * bounding by the full allocation size would accept ranges whose
+       * offset + size runs past the VkDeviceMemory end.  Compare bytes, not
+       * width0 which counts texels.  The right clause is evaluated only when
+       * effective_offset == 0 (offset == memory_offset <= mem->size), so the
+       * subtraction cannot underflow. */
       VkDeviceSize effective_offset = (offset >= mem->memory_offset)
                                       ? offset - mem->memory_offset : 1;
-      if (effective_offset != 0 || (size != VK_WHOLE_SIZE && size > mem->size))
+      if (effective_offset != 0 ||
+          (size != VK_WHOLE_SIZE && size > mem->size - offset))
          return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
       u_box_origin_2d(mem->resource->width0, mem->resource->height0, &box);
       ptr = device->pipe->texture_map(device->pipe, mem->resource, 0,
