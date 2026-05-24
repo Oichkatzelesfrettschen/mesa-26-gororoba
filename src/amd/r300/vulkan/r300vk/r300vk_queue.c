@@ -303,15 +303,10 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
        * oracle to check it against (the curated safe-register set carries no
        * 3D-engine config registers).  Honor the flag by reporting the gap
        * once, then run the pipe_context replay path. */
-      if (device->use_cs_backend) {
-         static bool cs_backend_gap_reported = false;
-         if (!cs_backend_gap_reported) {
-            mesa_logw("r300vk: cs-direct-emit backend requested via "
-                      "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
-                      "implemented; using pipe_context replay backend");
-            cs_backend_gap_reported = true;
-         }
-      }
+      if (device->use_cs_backend)
+         mesa_logw_once("r300vk: cs-direct-emit backend requested via "
+                        "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
+                        "implemented; using pipe_context replay backend");
       r300vk_replay_gpu(device, cmd);
    }
 
