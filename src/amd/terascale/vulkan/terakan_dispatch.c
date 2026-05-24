@@ -2745,21 +2745,22 @@ terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
       return;
    }
 
-   /* PKT3_DISPATCH_INDIRECT: CP fetches (X, Y, Z) group counts from buffer_va.
-    * The buffer must contain three uint32_t values at the given offset. */
+   /* The radeon CS parser relocates DISPATCH_INDIRECT DATA_OFFSET only.
+    * The following dword is VGT_DISPATCH_INITIATOR, so emit the compute
+    * initiator payload rather than an address high dword.
+    */
    uint32_t * packet = terakan_gfx_command_writer_emit_with_bo(
-      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3, 1, 0, 1);
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 3, 1, 1, 0);
    if (unlikely(packet == NULL)) {
       return;
    }
-   *packet++ = PKT3(PKT3_DISPATCH_INDIRECT, 2 - 1, 0);
+   *packet++ = PKT3C(PKT3_DISPATCH_INDIRECT, 1, 0);
    uint32_t const * const packet_addr = packet;
    *packet++ = (uint32_t)buffer_va;
-   *packet++ = ((buffer_va >> 32) & 0xFF);
+   *packet++ = 1; /* VGT_DISPATCH_INITIATOR = COMPUTE_SHADER_EN */
 
-   terakan_gfx_command_writer_add_relocation_for_40_bits(
-      command_writer, &packet, packet_addr, packet_addr + 1,
-      0, 0,
+   terakan_gfx_command_writer_add_relocation(
+      command_writer, &packet, packet_addr, *packet_addr, 0,
       terakan_bo_reference_writer_add_reference(
          &command_writer->base.bo_reference_writer,
          bo, true, false, TERAKAN_BO_PRIORITY_DRAW_INDIRECT));
