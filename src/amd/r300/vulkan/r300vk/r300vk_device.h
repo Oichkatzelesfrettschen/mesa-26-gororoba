@@ -46,7 +46,12 @@ VK_DEFINE_HANDLE_CASTS(r300vk_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
  * registers, so a standalone emitter is neither low-coupling nor separately
  * validatable.  The submit path honors the flag by reporting the gap once
  * and running the pipe_context replay.  The env var must compare equal to
- * the literal string "1"; unset, empty, or other values leave it false. */
+ * the literal string "1"; unset, empty, or other values leave it false.
+ *
+ * hybrid_compute_enabled: exact opt-in for exposing the scalar hybrid
+ * compute experiment.  The queue is still non-conformant until compute
+ * pipeline, descriptor, dispatch, and memory semantics are implemented and
+ * validated against CTS plus retained dmesg evidence. */
 struct r300vk_device {
    struct vk_device vk; /* must be first */
    struct vk_device_dispatch_table command_dispatch_table;
@@ -55,6 +60,7 @@ struct r300vk_device {
    struct pipe_context   *pipe;
    struct r300vk_queue    queue;
    bool                   use_cs_backend;
+   bool                   hybrid_compute_enabled;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)

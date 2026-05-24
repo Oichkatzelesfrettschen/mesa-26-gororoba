@@ -28,9 +28,17 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <xf86drm.h>
+
+static bool
+r300vk_hybrid_compute_enabled(void)
+{
+   const char *gate = getenv(R300VK_HYBRID_COMPUTE_ENV);
+   return gate && strcmp(gate, R300VK_HYBRID_COMPUTE_ENV_VALUE) == 0;
+}
 
 static const char *
 r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
@@ -61,6 +69,8 @@ r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
 static void
 r300vk_physical_device_init_limits(struct vk_properties *const props)
 {
+   const bool hybrid_compute = r300vk_hybrid_compute_enabled();
+
    /* Texture and image dimensions.  R3xx FORMAT2_HEIGHT and
     * FORMAT2_WIDTH fields in R300_TX_FORMAT2_n cap each axis at 2048
     * (R3xx-RRG ch. "Texture Engine", TX_FORMAT2 register).
@@ -161,18 +171,33 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
    props->maxFragmentDualSrcAttachments = 0;
    props->maxFragmentCombinedOutputResources = 4;
 
-   /* No documented or silicon-proven native compute dispatch surface
-    * exists for this RS482/RS485 R300VK target.  See
-    * R300VK_CONFORMANCE_STATUS in r300vk_private.h for the
-    * non-conformance contract. */
-   props->maxComputeSharedMemorySize = 0;
-   props->maxComputeWorkGroupCount[0] = 0;
-   props->maxComputeWorkGroupCount[1] = 0;
-   props->maxComputeWorkGroupCount[2] = 0;
-   props->maxComputeWorkGroupInvocations = 0;
-   props->maxComputeWorkGroupSize[0] = 0;
-   props->maxComputeWorkGroupSize[1] = 0;
-   props->maxComputeWorkGroupSize[2] = 0;
+   if (hybrid_compute) {
+      /* The hybrid compute experiment advertises a bounded software/graphics
+       * execution target only under exact operator opt-in.  R3xx still has no
+       * native compute dispatch packet or workgroup shared memory, so shared
+       * memory stays zero and the workgroup is deliberately scalar. */
+      props->maxComputeSharedMemorySize = 0;
+      props->maxComputeWorkGroupCount[0] = 65535;
+      props->maxComputeWorkGroupCount[1] = 65535;
+      props->maxComputeWorkGroupCount[2] = 65535;
+      props->maxComputeWorkGroupInvocations = 1;
+      props->maxComputeWorkGroupSize[0] = 1;
+      props->maxComputeWorkGroupSize[1] = 1;
+      props->maxComputeWorkGroupSize[2] = 1;
+   } else {
+      /* No documented or silicon-proven native compute dispatch surface
+       * exists for this RS482/RS485 R300VK target.  See
+       * R300VK_CONFORMANCE_STATUS in r300vk_private.h for the
+       * non-conformance contract. */
+      props->maxComputeSharedMemorySize = 0;
+      props->maxComputeWorkGroupCount[0] = 0;
+      props->maxComputeWorkGroupCount[1] = 0;
+      props->maxComputeWorkGroupCount[2] = 0;
+      props->maxComputeWorkGroupInvocations = 0;
+      props->maxComputeWorkGroupSize[0] = 0;
+      props->maxComputeWorkGroupSize[1] = 0;
+      props->maxComputeWorkGroupSize[2] = 0;
+   }
 
    /* R3xx subpixel precision is 4 fractional bits in the rasterizer
     * (R3xx-RRG ch. "Geometry Setup", GA_LINE_CNTL and the rasterizer
@@ -489,17 +514,22 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
 
 /* Queue family enumeration.  Advertises one graphics+transfer queue
  * family with one queue.  RS482/RS485 has no native compute dispatch
- * surface, so VK_QUEUE_COMPUTE_BIT is intentionally absent. */
+ * surface, so VK_QUEUE_COMPUTE_BIT is absent unless the hybrid compute
+ * experiment is explicitly enabled for CTS/RCA work. */
 VKAPI_ATTR void VKAPI_CALL
 r300vk_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
                                                uint32_t *pCount,
                                                VkQueueFamilyProperties2 *pProperties)
 {
    VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pProperties, pCount);
+   VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
+
+   if (r300vk_hybrid_compute_enabled())
+      queue_flags |= VK_QUEUE_COMPUTE_BIT;
 
    vk_outarray_append_typed(VkQueueFamilyProperties2, &out, p) {
       p->queueFamilyProperties = (VkQueueFamilyProperties){
-         .queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT,
+         .queueFlags = queue_flags,
          .queueCount = 1,
          .timestampValidBits = 0,
          .minImageTransferGranularity = {1, 1, 1},
