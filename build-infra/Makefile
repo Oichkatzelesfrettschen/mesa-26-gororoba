@@ -111,6 +111,8 @@ MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER
         rebuild-base-debug rebuild-terakan-release rebuild-terakan-profile \
         rebuild-r300-vostro-k8-release rebuild-r300-vostro-k8-debug \
         install-r300-vostro-k8-release install-r300-vostro-k8-debug \
+        rebuild-r300vk-vostro-k8-release rebuild-r300vk-vostro-k8-debug \
+        install-r300vk-vostro-k8-release install-r300vk-vostro-k8-debug \
         help
 
 help:
@@ -560,3 +562,21 @@ rebuild-r300-vostro-k8-debug:
 
 install-r300-vostro-k8-debug:
 	$(MAKE) install PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
+
+# Canonical Vostro r300vk release build: prefix /usr/local/mesa-26-gororoba
+rebuild-r300vk-vostro-k8-release:
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+
+install-r300vk-vostro-k8-release:
+	$(MAKE) install PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+
+# Canonical Vostro r300vk debugoptimized build: prefix /usr/local/mesa-26-gororoba-debug
+rebuild-r300vk-vostro-k8-debug:
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+
+install-r300vk-vostro-k8-debug:
+	$(MAKE) install PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
