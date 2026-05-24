@@ -178,9 +178,37 @@ r300vk_replay_gpu(struct r300vk_device *device,
       }
 
       case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
-      case R300VK_CMD_PIPELINE_BARRIER:
          /* Handled in the CPU readback pass after flush+fence. */
          break;
+
+      case R300VK_CMD_PIPELINE_BARRIER: {
+         /* RS482/RS485 is UMA with no auxiliary compression surfaces
+          * (no CMASK, no HTILE, no DCC -- R3xx predates those features).
+          * A layout transition here has no aux decompression step; the
+          * only hardware action is a CS flush to create a submit boundary.
+          *
+          * Flush analysis: pipe->flush() submits the current CS and resets
+          * r300g's dirty_state bitmask.  r300_emit_dirty_state() re-emits
+          * all dirty atoms (framebuffer, blend, rasterizer, DSA, vertex
+          * elements) before the next draw_vbo call, so state remains
+          * coherent across the flush boundary.  vb_dirty is local
+          * replay-loop state tracking whether the VB cache needs pushing
+          * before the next draw; it is not reset by the flush and continues
+          * to work correctly.
+          *
+          * The submit-time flush in r300vk_queue_driver_submit already
+          * provides the ordering guarantee for the render->readback path,
+          * but an explicit flush here satisfies the Vulkan memory-ordering
+          * contract at barrier granularity for future multi-submit cases. */
+         pipe->flush(pipe, NULL, 0);
+
+         /* Update the resource-state ledger so commands after this barrier
+          * observe the new layout.  On RS482/RS485 there is no aux surface
+          * state to transition; this is a pure bookkeeping update. */
+         if (e->barrier.image)
+            e->barrier.image->resource_state.layout = e->barrier.new_layout;
+         break;
+      }
       }
    }
 }

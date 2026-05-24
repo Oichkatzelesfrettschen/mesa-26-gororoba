@@ -7,6 +7,7 @@
 #define R300VK_IMAGE_H
 
 #include "r300vk_private.h"
+#include "r300vk_resource_state.h"
 
 #include "vk_image.h"
 
@@ -22,8 +23,9 @@ extern "C" {
  * so r300g routes it to VRAM.  PIPE_USAGE_STAGING is reserved for
  * the separate readback buffer in the triangle probe path. */
 struct r300vk_image {
-   struct vk_image        vk;  /* must be first; contains vk_object_base */
-   struct pipe_resource  *resource;
+   struct vk_image               vk;  /* must be first; contains vk_object_base */
+   struct pipe_resource         *resource;
+   struct r300vk_resource_state  resource_state;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_image, vk.base, VkImage,

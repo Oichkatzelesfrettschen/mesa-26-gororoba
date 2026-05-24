@@ -286,8 +286,19 @@ r300vk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
                             const VkDependencyInfo *pDependencyInfo)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
-   /* Replay issues a flush at submit boundary; no per-barrier action needed. */
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
-   e->type = R300VK_CMD_PIPELINE_BARRIER;
+   e->type              = R300VK_CMD_PIPELINE_BARRIER;
+   e->barrier.image     = NULL;
+   e->barrier.new_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+   /* Capture the first image memory barrier for resource-state tracking.
+    * Single-image command streams only need the first entry; multi-image
+    * tracking can extend this when a falsifiable test case requires it. */
+   if (pDependencyInfo && pDependencyInfo->imageMemoryBarrierCount > 0) {
+      const VkImageMemoryBarrier2 *ib = &pDependencyInfo->pImageMemoryBarriers[0];
+      VK_FROM_HANDLE(r300vk_image, img, ib->image);
+      e->barrier.image      = img;
+      e->barrier.new_layout = ib->newLayout;
+   }
 }
