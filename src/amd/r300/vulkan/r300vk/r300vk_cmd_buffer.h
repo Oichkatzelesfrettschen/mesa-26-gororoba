@@ -79,10 +79,11 @@ struct r300vk_cmd_copy_image_to_buf {
    VkBufferImageCopy2    region;
 };
 
-/* Captures the first image memory barrier from a vkCmdPipelineBarrier2 call
- * so the resource-state ledger can be updated at replay time.  Only the first
- * image barrier is stored; this is sufficient for single-image command streams.
- * image is NULL when the barrier carries no VkImageMemoryBarrier2 entries. */
+/* One image layout transition from a vkCmdPipelineBarrier2 call, so the
+ * resource-state ledger can be updated at replay time.  vkCmdPipelineBarrier2
+ * records one entry per VkImageMemoryBarrier2 in the dependency, so every
+ * image's layout reaches the ledger; image is NULL for a barrier with no
+ * image memory barriers (the entry then only marks a replay flush boundary). */
 struct r300vk_cmd_pipeline_barrier {
    struct r300vk_image *image;
    VkImageLayout        new_layout;
