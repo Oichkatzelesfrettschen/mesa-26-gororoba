@@ -2025,13 +2025,11 @@ terakan_emit_compute_state(struct terakan_gfx_command_writer *command_writer,
       terakan_gfx_command_writer_emit_done(command_writer, p);
    }
 
-   /* 6. VGT_COMPUTE_START_X/Y/Z = 0/0/0 (default per-pipeline init).
+   /* 6. VGT_COMPUTE_START_X/Y/Z baseline.
     *
-    * The per-DISPATCH FIX-U override of START_Z lives in the
-    * dispatch hot path alongside the bank 14 bind (search for
-    * TERAKAN_FIX_U_USE_TGID_Z below).  This pipeline-state emit
-    * runs once per pipeline-dirty event and only sets the
-    * baseline. */
+    * Dispatch entrypoints re-emit the final start registers for every
+    * direct, base, and indirect launch.  The pipeline-dirty state only
+    * establishes a safe zero baseline. */
    if (!skip_cs_state_start_xyz) {
       uint32_t *p = terakan_gfx_command_writer_emit(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
@@ -2045,13 +2043,38 @@ terakan_emit_compute_state(struct terakan_gfx_command_writer *command_writer,
    }
 }
 
+static bool
+terakan_emit_compute_start(
+   struct terakan_gfx_command_writer * const command_writer,
+   uint32_t const base_group_x,
+   uint32_t const base_group_y,
+   uint32_t const base_group_z)
+{
+   uint32_t * p = terakan_gfx_command_writer_emit(
+      command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
+   if (unlikely(p == NULL)) {
+      return false;
+   }
+
+   *p++ = PKT3(PKT3_SET_CONFIG_REG, 3, 0);
+   *p++ = CONFIG_REG_OFFSET(R_00899C_VGT_COMPUTE_START_X);
+   *p++ = base_group_x;
+   *p++ = base_group_y;
+   *p++ = base_group_z;
+   terakan_gfx_command_writer_emit_done(command_writer, p);
+   return true;
+}
+
 /* ---- Vulkan dispatch entrypoints ---- */
 
-VKAPI_ATTR void VKAPI_CALL
-terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
-                    uint32_t const groupCountX,
-                    uint32_t const groupCountY,
-                    uint32_t const groupCountZ)
+static void
+terakan_cmd_dispatch_base(VkCommandBuffer const commandBuffer,
+                          uint32_t const baseGroupX,
+                          uint32_t const baseGroupY,
+                          uint32_t const baseGroupZ,
+                          uint32_t const groupCountX,
+                          uint32_t const groupCountY,
+                          uint32_t const groupCountZ)
 {
    if (unlikely(groupCountX == 0 || groupCountY == 0 || groupCountZ == 0)) {
       return;
@@ -2527,7 +2550,21 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
          }
       }
 
-      /* Emit PKT3_DISPATCH_DIRECT with the grid dimensions */
+      /* The TGID.z diagnostic mode deliberately owns START_Z.  It changes
+       * the workgroup-id space and remains an explicit opt-in. */
+      bool const fix_u_overrides_compute_start =
+         debug_get_bool_option("TERAKAN_FIX_U_USE_TGID_Z", false) &&
+         command_writer->bound_compute_pipeline != NULL &&
+         (command_writer->bound_compute_pipeline->shader.kcache_needed &
+          ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA));
+
+      /* Program the workgroup-id base before the grid dimensions. */
+      if (!fix_u_overrides_compute_start &&
+          !terakan_emit_compute_start(command_writer,
+                                      baseGroupX, baseGroupY, baseGroupZ)) {
+         return;
+      }
+
       uint32_t *p = terakan_gfx_command_writer_emit(
          command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_OTHER, 5);
       if (unlikely(p == NULL)) {
@@ -2572,17 +2609,27 @@ terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-terakan_CmdDispatchBase(UNUSED VkCommandBuffer const commandBuffer,
-                        UNUSED uint32_t const baseGroupX,
-                        UNUSED uint32_t const baseGroupY,
-                        UNUSED uint32_t const baseGroupZ,
-                        UNUSED uint32_t const groupCountX,
-                        UNUSED uint32_t const groupCountY,
-                        UNUSED uint32_t const groupCountZ)
+terakan_CmdDispatch(VkCommandBuffer const commandBuffer,
+                    uint32_t const groupCountX,
+                    uint32_t const groupCountY,
+                    uint32_t const groupCountZ)
 {
-   /* TODO: Implement base group offset dispatch.
-    * TeraScale-2 supports VGT_COMPUTE_START_X/Y/Z for base offsets. */
-   assert(!"terakan_CmdDispatchBase not yet implemented");
+   terakan_cmd_dispatch_base(commandBuffer, 0, 0, 0,
+                             groupCountX, groupCountY, groupCountZ);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+terakan_CmdDispatchBase(VkCommandBuffer const commandBuffer,
+                        uint32_t const baseGroupX,
+                        uint32_t const baseGroupY,
+                        uint32_t const baseGroupZ,
+                        uint32_t const groupCountX,
+                        uint32_t const groupCountY,
+                        uint32_t const groupCountZ)
+{
+   terakan_cmd_dispatch_base(commandBuffer,
+                             baseGroupX, baseGroupY, baseGroupZ,
+                             groupCountX, groupCountY, groupCountZ);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -2691,6 +2738,12 @@ terakan_CmdDispatchIndirect(VkCommandBuffer const commandBuffer,
    }
 
    terakan_emit_w4_warmup_dispatch_once(command_writer);
+
+   /* Indirect dispatch has no base parameters.  Reset the workgroup-id base
+    * so a preceding vkCmdDispatchBase cannot leak into the indirect grid. */
+   if (!terakan_emit_compute_start(command_writer, 0, 0, 0)) {
+      return;
+   }
 
    /* PKT3_DISPATCH_INDIRECT: CP fetches (X, Y, Z) group counts from buffer_va.
     * The buffer must contain three uint32_t values at the given offset. */
