@@ -12,8 +12,16 @@
 
 #include "util/macros.h"
 #include "vk_alloc.h"
+#include "vk_format.h"
 #include "vk_log.h"
 #include "vk_util.h"
+
+#ifdef R300VK_GALLIUM_BACKEND
+#include "pipe/p_defines.h"
+#include "pipe/p_screen.h"
+#include "r300/r300_public.h"
+#include "winsys/radeon_winsys.h"
+#endif
 
 #include <fcntl.h>
 #include <stdbool.h>
@@ -350,6 +358,11 @@ r300vk_physical_device_destroy(struct vk_physical_device *const device_base)
    struct r300vk_physical_device *const device =
       container_of(device_base, struct r300vk_physical_device, vk);
 
+#ifdef R300VK_GALLIUM_BACKEND
+   if (device->screen)
+      device->screen->destroy(device->screen);
+#endif
+
    if (device->render_node_fd >= 0)
       close(device->render_node_fd);
 
@@ -406,6 +419,22 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    device->pci_device_id = drm_device->deviceinfo.pci->device_id;
    device->render_node_fd = render_node_fd;
 
+#ifdef R300VK_GALLIUM_BACKEND
+   struct pipe_screen_config screen_config = {0};
+   device->rws = radeon_drm_winsys_create(render_node_fd, &screen_config,
+                                          r300_screen_create);
+   if (!device->rws || !device->rws->screen) {
+      if (device->rws && device->rws->screen)
+         device->rws->screen->destroy(device->rws->screen);
+      close(render_node_fd);
+      vk_free(&instance->vk.alloc, device);
+      return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                       "r300vk: failed to create r300g pipe_screen for '%s'",
+                       render_node_path);
+   }
+   device->screen = device->rws->screen;
+#endif
+
    device->sync_types[0] = &r300vk_cpu_sync_type;
    device->sync_types[1] = NULL;
 
@@ -436,6 +465,10 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
       /* terakan_physical_device_init does not call vk_physical_device_finish
        * on init failure (terakan_physical_device.c fail_isa label); the
        * runtime helper only requires finish after a successful init. */
+#ifdef R300VK_GALLIUM_BACKEND
+      if (device->screen)
+         device->screen->destroy(device->screen);
+#endif
       close(render_node_fd);
       vk_free(&instance->vk.alloc, device);
       return result;
@@ -471,6 +504,244 @@ r300vk_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
          .minImageTransferGranularity = {1, 1, 1},
       };
    }
+}
+
+static bool
+r300vk_screen_supports_format(const struct r300vk_physical_device *const device,
+                              enum pipe_format format,
+                              enum pipe_texture_target target,
+                              unsigned bindings)
+{
+#ifdef R300VK_GALLIUM_BACKEND
+   return device->screen &&
+          device->screen->is_format_supported(device->screen, format, target,
+                                              0, 0, bindings);
+#else
+   return false;
+#endif
+}
+
+static void
+r300vk_get_format_properties(const struct r300vk_physical_device *const device,
+                             VkFormat vk_format,
+                             VkFormatProperties3 *const properties)
+{
+   memset(properties, 0, sizeof(*properties));
+   properties->sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+
+   const enum pipe_format pipe_format = vk_format_to_pipe_format(vk_format);
+   if (pipe_format == PIPE_FORMAT_NONE)
+      return;
+
+   VkFormatFeatureFlags2 image_features = 0;
+   VkFormatFeatureFlags2 buffer_features = 0;
+
+   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                     PIPE_BIND_DEPTH_STENCIL)) {
+      image_features |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT |
+                        VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
+                        VK_FORMAT_FEATURE_2_BLIT_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+   }
+
+   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                     PIPE_BIND_SAMPLER_VIEW)) {
+      image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
+                        VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
+
+      if (!util_format_is_pure_integer(pipe_format))
+         image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+   }
+
+   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                     PIPE_BIND_RENDER_TARGET)) {
+      image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
+                        VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+
+      if (!util_format_is_pure_integer(pipe_format))
+         image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
+   }
+
+   if (!util_format_is_srgb(pipe_format) &&
+       r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
+                                     PIPE_BIND_VERTEX_BUFFER)) {
+      buffer_features |= VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
+   }
+
+   if (r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
+                                     PIPE_BIND_CONSTANT_BUFFER)) {
+      buffer_features |= VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
+   }
+
+   properties->linearTilingFeatures = image_features;
+   properties->optimalTilingFeatures = image_features;
+   properties->bufferFeatures = buffer_features;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
+                                          VkFormat format,
+                                          VkFormatProperties2 *pFormatProperties)
+{
+   VK_FROM_HANDLE(r300vk_physical_device, device, physicalDevice);
+
+   VkFormatProperties3 properties3;
+   r300vk_get_format_properties(device, format, &properties3);
+
+   pFormatProperties->formatProperties = (VkFormatProperties){
+      .linearTilingFeatures =
+         vk_format_features2_to_features(properties3.linearTilingFeatures),
+      .optimalTilingFeatures =
+         vk_format_features2_to_features(properties3.optimalTilingFeatures),
+      .bufferFeatures =
+         vk_format_features2_to_features(properties3.bufferFeatures),
+   };
+
+   VkFormatProperties3 *const out_properties3 =
+      vk_find_struct(pFormatProperties->pNext, FORMAT_PROPERTIES_3);
+   if (out_properties3) {
+      out_properties3->linearTilingFeatures = properties3.linearTilingFeatures;
+      out_properties3->optimalTilingFeatures = properties3.optimalTilingFeatures;
+      out_properties3->bufferFeatures = properties3.bufferFeatures;
+   }
+}
+
+static VkResult
+r300vk_get_image_format_properties(
+   const struct r300vk_physical_device *const device,
+   const VkPhysicalDeviceImageFormatInfo2 *const info,
+   VkImageFormatProperties *const image_properties)
+{
+   VkFormatProperties3 format_properties;
+   r300vk_get_format_properties(device, info->format, &format_properties);
+
+   VkFormatFeatureFlags2 image_features = 0;
+   switch (info->tiling) {
+   case VK_IMAGE_TILING_LINEAR:
+      image_features = format_properties.linearTilingFeatures;
+      break;
+   case VK_IMAGE_TILING_OPTIMAL:
+      image_features = format_properties.optimalTilingFeatures;
+      break;
+   default:
+      goto unsupported;
+   }
+
+   if (image_features == 0)
+      goto unsupported;
+
+   if ((info->usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
+      goto unsupported;
+
+   VkExtent3D max_extent;
+   uint32_t max_mip_levels;
+   uint32_t max_array_layers;
+
+   switch (info->type) {
+   case VK_IMAGE_TYPE_1D:
+      max_extent = (VkExtent3D){
+         device->vk.properties.maxImageDimension1D, 1, 1,
+      };
+      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension1D) + 1;
+      max_array_layers = device->vk.properties.maxImageArrayLayers;
+      break;
+   case VK_IMAGE_TYPE_2D:
+      max_extent = (VkExtent3D){
+         device->vk.properties.maxImageDimension2D,
+         device->vk.properties.maxImageDimension2D,
+         1,
+      };
+      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension2D) + 1;
+      max_array_layers = device->vk.properties.maxImageArrayLayers;
+      break;
+   case VK_IMAGE_TYPE_3D:
+      max_extent = (VkExtent3D){
+         device->vk.properties.maxImageDimension3D,
+         device->vk.properties.maxImageDimension3D,
+         device->vk.properties.maxImageDimension3D,
+      };
+      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension3D) + 1;
+      max_array_layers = 1;
+      break;
+   default:
+      goto unsupported;
+   }
+
+   *image_properties = (VkImageFormatProperties){
+      .maxExtent = max_extent,
+      .maxMipLevels = max_mip_levels,
+      .maxArrayLayers = max_array_layers,
+      .sampleCounts = VK_SAMPLE_COUNT_1_BIT,
+      .maxResourceSize = UINT32_MAX,
+   };
+   return VK_SUCCESS;
+
+unsupported:
+   *image_properties = (VkImageFormatProperties){0};
+   return VK_ERROR_FORMAT_NOT_SUPPORTED;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+r300vk_GetPhysicalDeviceImageFormatProperties2(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceImageFormatInfo2 *pImageFormatInfo,
+   VkImageFormatProperties2 *pImageFormatProperties)
+{
+   VK_FROM_HANDLE(r300vk_physical_device, device, physicalDevice);
+
+   const VkPhysicalDeviceExternalImageFormatInfo *external_info =
+      vk_find_struct_const(pImageFormatInfo->pNext,
+                           PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+   if (external_info && external_info->handleType != 0)
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+   VkResult result =
+      r300vk_get_image_format_properties(device, pImageFormatInfo,
+                                         &pImageFormatProperties->imageFormatProperties);
+   if (result != VK_SUCCESS)
+      return result;
+
+   VkExternalImageFormatProperties *const external_properties =
+      vk_find_struct(pImageFormatProperties->pNext,
+                     EXTERNAL_IMAGE_FORMAT_PROPERTIES);
+   if (external_properties) {
+      external_properties->externalMemoryProperties =
+         (VkExternalMemoryProperties){0};
+   }
+
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetPhysicalDeviceSparseImageFormatProperties2(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceSparseImageFormatInfo2 *pFormatInfo,
+   uint32_t *pPropertyCount,
+   VkSparseImageFormatProperties2 *pProperties)
+{
+   *pPropertyCount = 0;
 }
 
 /* Nominal heap sizes reported until the device layer queries
