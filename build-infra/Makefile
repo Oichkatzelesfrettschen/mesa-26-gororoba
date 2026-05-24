@@ -550,11 +550,11 @@ rebuild-r300-vostro-k8-release:
 install-r300-vostro-k8-release:
 	$(MAKE) install PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
 
-# Canonical Vostro r300 debug build: prefix /usr/local/mesa-26-gororoba-DEBUG
+# Canonical Vostro r300 debugoptimized build: prefix /usr/local/mesa-26-gororoba-debug
 rebuild-r300-vostro-k8-debug:
-	$(MAKE) -j1 clean PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-DEBUG
-	$(MAKE) -j1 configure PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-DEBUG
-	$(MAKE) build PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-DEBUG
+	$(MAKE) -j1 clean PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
 
 install-r300-vostro-k8-debug:
-	$(MAKE) install PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-DEBUG
+	$(MAKE) install PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
