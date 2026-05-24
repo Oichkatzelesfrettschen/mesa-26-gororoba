@@ -288,6 +288,16 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
       struct r300vk_cmd_buffer *cmd =
          container_of(submit->command_buffers[ci],
                       struct r300vk_cmd_buffer, base);
+
+      /* Backend dispatch: use_cs_backend routes to r300vk_replay_backend_b()
+       * (cs-direct-emit via radeon_winsys) when the hazard gate is accepted.
+       * Backend B is not yet implemented (blocked on r300g shader-code
+       * extraction API and IR completeness for full pipeline state atoms);
+       * fall through to Backend A so the gate flag can be tested end-to-end
+       * before the implementation lands.
+       * TODO: replace with r300vk_replay_backend_b(device, cmd) when
+       * r300_vs_get_hw_code() extraction API and baked-PM4 IR extension
+       * are in place (r300vk/cs-direct-emit-backend). */
       r300vk_replay_gpu(device, cmd);
    }
 
