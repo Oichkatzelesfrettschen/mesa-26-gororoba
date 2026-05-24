@@ -34,7 +34,16 @@ VK_DEFINE_HANDLE_CASTS(r300vk_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
  * radeon_drm_winsys_create() initializes rws and sets rws->screen to the
  * r300 pipe_screen.  pipe is the per-device pipe_context; r300g routes
  * NIR shaders through r300_nir_to_rc_direct internally -- the ICD never
- * calls nir_to_tgsi. */
+ * calls nir_to_tgsi.
+ *
+ * use_cs_backend: true when R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1 is
+ * set in the environment at CreateDevice time.  When true, the submit path
+ * is expected to dispatch through r300vk_replay_backend_b() (cs-direct-emit)
+ * rather than the pipe_context-mediated r300vk_replay_gpu() path.  Backend B
+ * is not yet implemented (blocked on r300g shader-code extraction API and IR
+ * completeness); the flag controls the dispatch hook for PR 3 to fill in.
+ * The env var must compare equal to the literal string "1"; unset, empty,
+ * or other values leave use_cs_backend false. */
 struct r300vk_device {
    struct vk_device vk; /* must be first */
    struct vk_device_dispatch_table command_dispatch_table;
@@ -42,6 +51,7 @@ struct r300vk_device {
    struct pipe_screen    *screen;
    struct pipe_context   *pipe;
    struct r300vk_queue    queue;
+   bool                   use_cs_backend;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
