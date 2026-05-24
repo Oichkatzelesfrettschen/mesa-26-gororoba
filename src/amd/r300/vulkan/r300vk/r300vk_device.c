@@ -19,6 +19,9 @@
 
 #include "util/os_time.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "winsys/radeon_winsys.h"
@@ -109,6 +112,14 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
       goto fail_pipe;
 
    device->queue.vk.driver_submit = r300vk_queue_driver_submit;
+
+   /* Backend dispatch: check for explicit cs-direct-emit opt-in.
+    * The env var must be exactly "1"; unset, empty, or any other value
+    * leaves the default pipe_context-mediated Backend A path active.
+    * Checked once at device creation and stored as a device flag so the
+    * submit hot path avoids repeated getenv() calls. */
+   const char *cs_gate = getenv("R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED");
+   device->use_cs_backend = cs_gate && strcmp(cs_gate, "1") == 0;
 
    *pDevice = r300vk_device_to_handle(device);
    return VK_SUCCESS;
