@@ -97,6 +97,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
          pipe->bind_vs_state(pipe, pl->vs_cso);
          pipe->bind_fs_state(pipe, pl->fs_cso);
          pipe->bind_vertex_elements_state(pipe, pl->velems_cso);
+         /* Changing vertex elements requires a subsequent set_vertex_buffers
+          * before the next draw per p_context.h.  Vulkan allows CmdBindPipeline
+          * without a follow-up CmdBindVertexBuffers, so force a VB flush. */
+         vb_dirty = true;
          break;
       }
 

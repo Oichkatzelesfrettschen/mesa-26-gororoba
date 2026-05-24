@@ -96,22 +96,28 @@ r300vk_MapMemory(VkDevice _device,
    if (mem->resource->target == PIPE_BUFFER) {
       /* resource_offset: byte offset into the pipe_resource.  MapMemory's
        * offset is relative to the VkDeviceMemory object; memory_offset is
-       * where the buffer starts within that object.  For the resource-backed
-       * model both are expected to be zero, but compute correctly. */
-      unsigned resource_offset = (unsigned)(offset >= mem->memory_offset
-                                            ? offset - mem->memory_offset : 0);
+       * where the buffer starts within that object. */
+      if (offset < mem->memory_offset)
+         return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+      unsigned resource_offset = (unsigned)(offset - mem->memory_offset);
       unsigned map_size = size == VK_WHOLE_SIZE
                           ? mem->resource->width0 - resource_offset
                           : (unsigned)size;
+      if (resource_offset + map_size > mem->resource->width0)
+         return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
       u_box_1d(resource_offset, map_size, &box);
       ptr = device->pipe->buffer_map(device->pipe, mem->resource, 0,
                                       PIPE_MAP_READ_WRITE, &box,
                                       &mem->transfer);
    } else {
-      /* Texture resource: map mip level 0, full surface.  The offset
-       * parameter is not meaningful for driver-tiled textures; callers
-       * that need linear-addressable access should bind to a PIPE_BUFFER
-       * readback resource instead. */
+      /* Texture resource: map mip level 0, full surface.  Non-zero offsets
+       * and sub-range sizes are not meaningful for driver-tiled textures;
+       * callers that need linear-addressable sub-range access should bind to
+       * a PIPE_BUFFER readback resource instead. */
+      VkDeviceSize effective_offset = (offset >= mem->memory_offset)
+                                      ? offset - mem->memory_offset : 1;
+      if (effective_offset != 0 || (size != VK_WHOLE_SIZE && size != mem->resource->width0))
+         return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
       u_box_origin_2d(mem->resource->width0, mem->resource->height0, &box);
       ptr = device->pipe->texture_map(device->pipe, mem->resource, 0,
                                        PIPE_MAP_READ_WRITE, &box,
