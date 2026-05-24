@@ -16,7 +16,9 @@ extern "C" {
 #endif
 
 struct _drmDevice;
+struct pipe_screen;
 struct r300vk_instance;
+struct radeon_winsys;
 
 struct r300vk_physical_device {
    struct vk_physical_device vk;
@@ -29,6 +31,14 @@ struct r300vk_physical_device {
    /* Render-node fd kept open to validate the DRM device.  Released
     * when the physical device is destroyed. */
    int render_node_fd;
+
+#ifdef R300VK_GALLIUM_BACKEND
+   /* Gallium r300g oracle used for physical-device format queries.
+    * The screen owns its radeon_winsys reference and is destroyed before
+    * the render-node fd is closed. */
+   struct radeon_winsys *rws;
+   struct pipe_screen *screen;
+#endif
 
    /* NULL-terminated sync type table assigned to vk.supported_sync_types.
     * r300vk uses a CPU-side binary sync; the radeon DRM driver does not
