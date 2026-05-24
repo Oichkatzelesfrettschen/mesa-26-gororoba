@@ -245,9 +245,11 @@ if with_platform_windows
   icd_file_name = 'vulkan_terascale.dll'
 endif
 
+terakan_icd_api_version = '1.1'
+
 icd_command = [
   prog_python, '@INPUT0@',
-  '--api-version', '1.0',
+  '--api-version', terakan_icd_api_version,
   '--xml', '@INPUT1@',
     '--icd-lib-path', icd_lib_path,
     '--icd-filename', icd_file_name,
@@ -274,7 +276,7 @@ _dev_icd = custom_target(
   output : _dev_icdname,
   command : [
     prog_python, '@INPUT0@',
-    '--api-version', '1.0',
+    '--api-version', terakan_icd_api_version,
     '--xml', '@INPUT1@',
     '--icd-lib-path', meson.current_build_dir(),
     '--icd-filename', icd_file_name,
