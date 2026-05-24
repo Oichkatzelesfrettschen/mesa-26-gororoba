@@ -432,6 +432,18 @@ only as secondary registry metadata, e.g. a YAML frontmatter `phase: 1E-atomic`
 field on a finding-doc.  They are never load-bearing and never appear in source
 comments or primary artifact names.
 
+A name describes WHAT IS INSIDE -- the content, target, or mechanism -- not the
+ACT of aggregating it.  This rule decides the generic container words.
+`tranche` is opaque aggregation jargon (a finance term repurposed as a session
+batch) and names content in no form, so it is forbidden outright in branches,
+filenames, identifiers, and comments.  `set`, `batch`, and `group` are plain
+words forbidden ONLY in their ordinal-container form (`set5`, `batch_2`,
+`group3` -- "the Nth thing"), because an ordinal names a position in a sequence,
+not content; a descriptive compound that names what is inside (`group_map`,
+`subgroup`, `workgroup`, `batch_size`, a Vulkan descriptor `set`) is correct and
+preserved.  Rename a container identifier to the content it holds, not to
+another container word.
+
 ## Hard prohibitions
 
 Do not:
