@@ -71,7 +71,7 @@ endif
 # Build serialization lock: held during ninja and meson install to prevent
 # concurrent builds from different agents stomping each other.  Any process
 # that respects this lock will serialize automatically.
-BUILD_LOCK ?= /var/lock/mesa-26-gororoba-build.lock
+BUILD_LOCK ?= $(HOME)/.cache/mesa-26-gororoba/mesa-build.lock
 
 # Generated source/header targets to prebuild outside distcc-pump.  Keep this
 # to known compiler, Vulkan, and Terascale codegen surfaces so the helper does
@@ -367,6 +367,7 @@ configure:
 build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS)
 
 build-generated:
@@ -401,6 +402,7 @@ distclean: clean
 install:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	flock -x -w 7200 $(BUILD_LOCK) bash -c 'set -euo pipefail; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
