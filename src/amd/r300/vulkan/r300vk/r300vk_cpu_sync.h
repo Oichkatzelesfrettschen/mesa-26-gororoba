@@ -8,6 +8,7 @@
 
 #include "vk_sync.h"
 #include "c11/threads.h"
+#include "util/cnd_monotonic.h"
 #include <stdbool.h>
 
 #ifdef __cplusplus
@@ -21,10 +22,10 @@ extern "C" {
  * any caller that inspects the signaled state before submit completes will
  * block rather than observe stale data. */
 struct r300vk_cpu_sync {
-   struct vk_sync vk;
-   mtx_t          lock;
-   cnd_t          changed;
-   bool           signaled;
+   struct vk_sync          vk;
+   mtx_t                   lock;
+   struct u_cnd_monotonic  changed;
+   bool                    signaled;
 };
 
 static inline struct r300vk_cpu_sync *

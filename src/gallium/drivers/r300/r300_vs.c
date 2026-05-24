@@ -12,6 +12,7 @@
 #include "r300_tgsi_to_rc.h"
 #include "r300_reg.h"
 
+#include "nir.h"
 #include "compiler/nir_to_rc.h"
 #include "compiler/radeon_compiler.h"
 #include "tgsi/tgsi_dump.h"
@@ -228,12 +229,17 @@ void r300_translate_vertex_shader(struct r300_context *r300,
         /* NIR direct path: r300_nir_lower_for_rc reduces the NIR to the
          * subset r300_nir_to_rc_direct handles, then the RC program is
          * filled without a TGSI serialization round-trip.
-         * r300_create_vs_state leaves tokens NULL on TCL-capable chips. */
+         * r300_create_vs_state leaves tokens NULL on TCL-capable chips.
+         * Clone before lowering: r300_nir_lower_for_rc() mutates varying
+         * slots in place; r300_pick_vertex_shader() reuses state.ir.nir
+         * across wpos variants, so lowering the same object twice corrupts
+         * driver_location assignments for subsequent compiles. */
         struct r300_fragment_program_external_state ext_state = {};
-        r300_nir_lower_for_rc(shader->state.ir.nir, r300->context.screen,
-                              ext_state);
-        r300_nir_to_rc_direct(&compiler.Base, shader->state.ir.nir,
+        nir_shader *nir = nir_shader_clone(NULL, shader->state.ir.nir);
+        r300_nir_lower_for_rc(nir, r300->context.screen, ext_state);
+        r300_nir_to_rc_direct(&compiler.Base, nir,
                               r300->context.screen, ext_state);
+        ralloc_free(nir);
 
         if (compiler.Base.Error) {
             vs->error = strdup(compiler.Base.ErrorMsg);

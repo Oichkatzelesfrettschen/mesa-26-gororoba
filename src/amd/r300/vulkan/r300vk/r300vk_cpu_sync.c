@@ -20,7 +20,7 @@ r300vk_cpu_sync_init(UNUSED struct vk_device *device,
    if (mtx_init(&sync->lock, mtx_plain) != thrd_success)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-   if (cnd_init(&sync->changed) != thrd_success) {
+   if (u_cnd_monotonic_init(&sync->changed) != thrd_success) {
       mtx_destroy(&sync->lock);
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    }
@@ -35,7 +35,7 @@ r300vk_cpu_sync_finish(UNUSED struct vk_device *device,
 {
    struct r300vk_cpu_sync *sync = r300vk_cpu_sync_from_vk(vk_sync);
 
-   cnd_destroy(&sync->changed);
+   u_cnd_monotonic_destroy(&sync->changed);
    mtx_destroy(&sync->lock);
 }
 
@@ -48,7 +48,7 @@ r300vk_cpu_sync_signal(UNUSED struct vk_device *device,
 
    mtx_lock(&sync->lock);
    sync->signaled = true;
-   cnd_broadcast(&sync->changed);
+   u_cnd_monotonic_broadcast(&sync->changed);
    mtx_unlock(&sync->lock);
 
    return VK_SUCCESS;
@@ -62,7 +62,7 @@ r300vk_cpu_sync_reset(UNUSED struct vk_device *device,
 
    mtx_lock(&sync->lock);
    sync->signaled = false;
-   cnd_broadcast(&sync->changed);
+   u_cnd_monotonic_broadcast(&sync->changed);
    mtx_unlock(&sync->lock);
 
    return VK_SUCCESS;
@@ -93,19 +93,21 @@ r300vk_cpu_sync_wait(struct vk_device *device,
       }
 
       if (abs_timeout_ns >= (uint64_t)INT64_MAX) {
-         cnd_wait(&sync->changed, &sync->lock);
+         u_cnd_monotonic_wait(&sync->changed, &sync->lock);
       } else {
-         uint64_t rel_ns = abs_timeout_ns - now_ns;
-         struct timespec now_ts, abs_ts;
-         timespec_get(&now_ts, TIME_UTC);
-         abs_ts.tv_sec  = now_ts.tv_sec  + (time_t)(rel_ns / 1000000000ULL);
-         abs_ts.tv_nsec = now_ts.tv_nsec + (long)(rel_ns % 1000000000ULL);
-         if (abs_ts.tv_nsec >= 1000000000L) {
-            abs_ts.tv_sec++;
-            abs_ts.tv_nsec -= 1000000000L;
+         /* Convert the Vulkan monotonic absolute timeout to a timespec for
+          * u_cnd_monotonic_timedwait, which uses CLOCK_MONOTONIC internally
+          * to match os_time_get_nano(). */
+         struct timespec abs_ts = {
+            .tv_sec  = (time_t)(abs_timeout_ns / 1000000000ULL),
+            .tv_nsec = (long)(abs_timeout_ns % 1000000000ULL),
+         };
+         int rc = u_cnd_monotonic_timedwait(&sync->changed, &sync->lock,
+                                            &abs_ts);
+         if (rc == thrd_timedout) {
+            mtx_unlock(&sync->lock);
+            return VK_TIMEOUT;
          }
-         int rc = cnd_timedwait(&sync->changed, &sync->lock, &abs_ts);
-         (void)rc;
       }
 
       now_ns = os_time_get_nano();
