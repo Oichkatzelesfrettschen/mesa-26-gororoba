@@ -89,12 +89,14 @@ r300vk_compile_shader(struct r300vk_device *device,
          ralloc_free(nir);
          return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
       }
+      pl->vs_hw_valid = r300_vs_get_hw_code(pl->vs_cso, &pl->vs_hw);
    } else {
       pl->fs_cso = device->pipe->create_fs_state(device->pipe, &ss);
       if (!pl->fs_cso) {
          ralloc_free(nir);
          return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
       }
+      pl->fs_hw_valid = r300_fs_get_hw_code(pl->fs_cso, &pl->fs_hw);
    }
    return VK_SUCCESS;
 }
