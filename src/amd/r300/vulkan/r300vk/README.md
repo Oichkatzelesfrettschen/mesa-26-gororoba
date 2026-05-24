@@ -57,6 +57,19 @@ src/amd/r300/vulkan/r300vk/
   r300vk_instance.c           vkCreateInstance / vk_icdGetInstanceProcAddr
   r300vk_physical_device.h    struct r300vk_physical_device
   r300vk_physical_device.c    DRM probe + properties + queues + memory
+  r300vk_device.h             struct r300vk_device / r300vk_queue
+  r300vk_device.c             CreateDevice / DestroyDevice / gate check
+  r300vk_queue.c              submit replay -- Backend A (pipe_context)
+  r300vk_memory.h/.c          VkDeviceMemory resource-backed model
+  r300vk_buffer.h/.c          VkBuffer backed by PIPE_BUFFER pipe_resource
+  r300vk_image.h/.c           VkImage backed by PIPE_TEXTURE_2D pipe_resource
+  r300vk_resource_state.h     per-image layout-tracking struct
+  r300vk_cmd_buffer.h/.c      command recording into r300vk_cmd_entry stream
+  r300vk_pipeline.h/.c        CreateGraphicsPipelines -- SPIR-V -> NIR -> r300g CSOs
+  r300vk_render_pass.h/.c     VkRenderPass local object
+  r300vk_framebuffer.h/.c     VkFramebuffer local object
+  r300vk_shader_module.h/.c   VkShaderModule SPIR-V storage
+  r300vk_cpu_sync.h/.c        vkCreateFence / vkWaitForFences (CPU timeline)
   meson.build                 libvulkan_r300 + ICD JSON
   README.md                   this file
 ```
@@ -66,6 +79,65 @@ production sibling Vulkan driver for the Evergreen / VLIW5 PALM
 chip) and uses the Mesa Vulkan runtime base structures
 (`vk_instance`, `vk_physical_device`) directly through
 `src/vulkan/runtime/`.
+
+## Submit architecture: semantic IR and backend dispatch
+
+The Vulkan command stream is lowered to a device-independent
+`r300vk_cmd_entry` array (see `r300vk_cmd_buffer.h`) at record time.
+At submit time, `r300vk_queue_driver_submit` replays this array through
+a backend selected at `CreateDevice` time.
+
+```
+vkCmd* recording
+  -> r300vk_cmd_entry stream  (semantic IR, device-independent)
+     -> Backend A (default): r300vk_replay_gpu()
+        -> Gallium pipe_context calls
+        -> r300g atom-dirty machinery
+        -> radeon_winsys DRM_RADEON_CS submit
+     -> Backend B (planned): r300vk_replay_backend_b()
+        -> radeon_winsys cs_emit directly
+        -> bypasses Gallium pipe_context
+        -> NOT YET IMPLEMENTED (see below)
+```
+
+**Backend A** (current, working): `r300vk_replay_gpu()` in `r300vk_queue.c`
+lowers the cmd_entry stream through Gallium's `pipe_context` call layer.
+Gallium's atom-dirty machinery emits all required register state
+(viewport, blend, DSA, rasterizer, vertex elements, PVS flush, guardband,
+VAP invariant state) automatically before each draw.  Pipeline barriers
+issue a `pipe->flush()` mid-stream; r300g re-emits all dirty atoms before
+the next `draw_vbo`, so state remains coherent across the flush boundary.
+
+**Backend B** (planned, not implemented): direct `radeon_winsys cs_emit`
+bypassing `pipe_context`.  Two prerequisites must be resolved first:
+
+1. **Shader code access (FATAL)**: `vs_cso` and `fs_cso` in
+   `r300vk_pipeline` are `void *` (opaque Gallium CSO handles).  Backend B
+   cannot cast them to `r300_vertex_shader` / `r300_fragment_shader`
+   without a dedicated extraction API (e.g. `r300_vs_get_hw_code()`).
+   That function does not yet exist in r300g's public headers.
+
+2. **IR completeness (SERIOUS)**: the `r300vk_cmd_entry` stream carries
+   Vulkan-semantic operations (bind pipeline as CSO handle, set viewport
+   as `VkViewport`).  It does not carry the 15+ r300g register atoms
+   (guardband, VAP invariant state, blend equation bytes, DSA bits, etc.)
+   that Gallium's atom-dirty mechanism provides implicitly.  Backend B
+   needs either baked-PM4 extensions to the IR or a parallel r300g-state-
+   to-PM4 translation path.
+
+The `use_cs_backend` device flag (set by
+`R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1` at `CreateDevice` time) is
+the dispatch gate.  The dispatch hook in `r300vk_queue_driver_submit` is
+in place; the Backend B function body is the PR 3 deliverable.
+
+## Resource-state ledger
+
+`r300vk_resource_state` (in `r300vk_resource_state.h`) tracks the current
+`VkImageLayout` per image.  On RS482/RS485 (UMA, no aux compression
+surfaces) layout transitions have no aux decompression step; they reduce
+to a `pipe->flush()` at the barrier boundary plus a bookkeeping update to
+`image->resource_state.layout`.  The field is updated at replay time in
+the `R300VK_CMD_PIPELINE_BARRIER` case of `r300vk_replay_gpu()`.
 
 ## Conformance contract
 
