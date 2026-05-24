@@ -12,6 +12,7 @@
 
 #include "util/macros.h"
 #include "vk_alloc.h"
+#include "vk_enum_defines.h"
 #include "vk_format.h"
 #include "vk_log.h"
 #include "vk_util.h"
