@@ -444,6 +444,18 @@ not content; a descriptive compound that names what is inside (`group_map`,
 preserved.  Rename a container identifier to the content it holds, not to
 another container word.
 
+***Derive every durable name from what the artifact does or what is inside it,
+never from the label it currently carries.*** Read the artifact (the function
+body, the file it points at, the data it holds), state in one line what it does
+or what is inside, decompose that to its load-bearing mechanism and object, and
+derive the name from those.  One-line description -> derived name: "builds the
+imageStore reference IB" -> `capture_reference_ib`; "byte capture via a single
+uprobe on libdrm `drmIoctl`" -> `DRMIOCTL_UPROBE_SCRIPT`; "the next-15 blocker
+frontier manifest" -> `BLOCKER_FRONTIER_MANIFEST`.  A name that is a container
+word bolted to an ordinal or to jargon (`VARIANT_2C`, `phase2_kamikaze`) encodes
+the act or the chronology, not the content; read the artifact and decompose
+again.
+
 ## Hard prohibitions
 
 Do not:
