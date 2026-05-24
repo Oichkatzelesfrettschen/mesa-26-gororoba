@@ -126,8 +126,10 @@ vlVaQueryVideoProcPipelineCaps(VADriverContextP ctx, VAContextID context,
                                                         PIPE_VIDEO_CAP_VPP_BLEND_MODES);
 
    pipeline_cap->blend_flags = 0;
-   if (pipe_blend_modes & PIPE_VIDEO_VPP_BLEND_MODE_GLOBAL_ALPHA)
+   if (!media_only || pipe_blend_modes & PIPE_VIDEO_VPP_BLEND_MODE_GLOBAL_ALPHA)
       pipeline_cap->blend_flags |= VA_BLEND_GLOBAL_ALPHA;
+   if (!media_only || pipe_blend_modes & PIPE_VIDEO_VPP_BLEND_MODE_PREMULTIPLIED_ALPHA)
+      pipeline_cap->blend_flags |= VA_BLEND_PREMULTIPLIED_ALPHA;
 
    vlVaDriver *drv = VL_VA_DRIVER(ctx);
 
@@ -165,7 +167,7 @@ VAStatus
 vlVaQueryVideoProcFilters(VADriverContextP ctx, VAContextID context_id,
                           VAProcFilterType *filters, unsigned int *num_filters)
 {
-   vlVaDriver *drv = VL_VA_DRIVER(ctx);
+   vlVaDriver *drv;
    vlVaContext *context;
    unsigned int num = 0;
 
@@ -174,6 +176,8 @@ vlVaQueryVideoProcFilters(VADriverContextP ctx, VAContextID context_id,
 
    if (!num_filters || !filters)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+   drv = VL_VA_DRIVER(ctx);
 
    mtx_lock(&drv->mutex);
    context = handle_table_get(drv->htab, context_id);
@@ -198,7 +202,7 @@ vlVaQueryVideoProcFilterCaps(VADriverContextP ctx, VAContextID context_id,
                              VAProcFilterType type, void *filter_caps,
                              unsigned int *num_filter_caps)
 {
-   vlVaDriver *drv = VL_VA_DRIVER(ctx);
+   vlVaDriver *drv;
    vlVaContext *context;
    unsigned int i;
    bool supports_filters;
@@ -208,6 +212,8 @@ vlVaQueryVideoProcFilterCaps(VADriverContextP ctx, VAContextID context_id,
 
    if (!filter_caps || !num_filter_caps)
       return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+   drv = VL_VA_DRIVER(ctx);
 
    mtx_lock(&drv->mutex);
    context = handle_table_get(drv->htab, context_id);
@@ -375,8 +381,13 @@ vlVaPostProcCompositor(vlVaDriver *drv,
       mirror = VL_COMPOSITOR_MIRROR_NONE;
 
    vl_compositor_clear_layers(&drv->cstate);
+
    vl_compositor_set_layer_rotation(&drv->cstate, 0, rotation);
    vl_compositor_set_layer_mirror(&drv->cstate, 0, mirror);
+
+   drv->cstate.layers[0].blend_enabled = param->blend.enabled;
+   drv->cstate.layers[0].blend_mode = param->blend.mode;
+   drv->cstate.layers[0].blend_alpha = param->blend.global_alpha;
 
    if (dst_yuv) {
       if (src_yuv) {
@@ -643,10 +654,12 @@ vlVaHandleVAProcPipelineParameterBufferType(vlVaDriver *drv, vlVaContext *contex
    }
 
    if (param->blend_state) {
-      if (param->blend_state->flags & VA_BLEND_GLOBAL_ALPHA) {
-         vpp.blend.mode = PIPE_VIDEO_VPP_BLEND_MODE_GLOBAL_ALPHA;
-         vpp.blend.global_alpha = param->blend_state->global_alpha;
-      }
+      vpp.blend.enabled = true;
+      vpp.blend.global_alpha = param->blend_state->global_alpha;
+      if (param->blend_state->flags & VA_BLEND_GLOBAL_ALPHA)
+         vpp.blend.mode |= PIPE_VIDEO_VPP_BLEND_MODE_GLOBAL_ALPHA;
+      if (param->blend_state->flags & VA_BLEND_PREMULTIPLIED_ALPHA)
+         vpp.blend.mode |= PIPE_VIDEO_VPP_BLEND_MODE_PREMULTIPLIED_ALPHA;
    }
 
    /* Output background color */

@@ -32,7 +32,7 @@ get_surface_count(const struct anv_device *device,
 {
 #if GFX_VERx10 >= 125
    if (shader->vk.stage == MESA_SHADER_COMPUTE &&
-       !device->physical->instance->force_compute_surface_prefetch)
+       !device->physical->instance->drirc.perf.cs_surface_prefetch)
       return 0;
 #endif
    return shader->bind_map.surface_count;
@@ -51,7 +51,7 @@ get_sampler_count(const struct anv_device *device,
     */
    return 0;
 #else
-   if (!device->physical->instance->force_sampler_prefetch)
+   if (!device->physical->instance->drirc.perf.sampler_prefetch)
       return 0;
 
    return DIV_ROUND_UP(
@@ -533,7 +533,7 @@ emit_vs_shader(struct anv_batch *batch,
    }
 #endif
 
-   if (device->physical->instance->vf_component_packing) {
+   if (device->physical->instance->drirc.perf.vf_comp_packing) {
       anv_shader_emit(batch, shader, vs.vf_component_packing,
                       GENX(3DSTATE_VF_COMPONENT_PACKING), vfc) {
          vfc.VertexElementEnablesDW[0] = vs_prog_data->vf_component_packing[0];
@@ -914,12 +914,7 @@ emit_task_shader(struct anv_batch *batch,
                                                       task_dispatch.group_size,
                                                       task_dispatch.simd_size);
 
-      /*
-       * 3DSTATE_TASK_SHADER_DATA.InlineData[0:1] will be used for an address
-       * of a buffer with push constants and descriptor set table and
-       * InlineData[2:7] will be used for first few push constants.
-       */
-      task.EmitInlineParameter = true;
+      task.EmitInlineParameter = shader->bind_map.inline_dwords_count > 0;
       task.IndirectDataLength = align(shader->bind_map.push_ranges[0].length * 32, 64);
 
       task.XP0Required = task_prog_data->uses_drawid;
@@ -1018,12 +1013,7 @@ emit_mesh_shader(struct anv_batch *batch,
                                                       mesh_dispatch.group_size,
                                                       mesh_dispatch.simd_size);
 
-      /*
-       * 3DSTATE_MESH_SHADER_DATA.InlineData[0:1] will be used for an address
-       * of a buffer with push constants and descriptor set table and
-       * InlineData[2:7] will be used for first few push constants.
-       */
-      mesh.EmitInlineParameter = true;
+      mesh.EmitInlineParameter = shader->bind_map.inline_dwords_count > 0;
       mesh.IndirectDataLength = align(shader->bind_map.push_ranges[0].length * 32, 64);
 
       mesh.XP0Required = mesh_prog_data->uses_drawid;
@@ -1209,7 +1199,7 @@ emit_cs_shader(struct anv_batch *batch,
          .RegistersPerThread                = ptl_register_blocks(cs_prog_data->base.grf_used),
 #endif
       },
-      .EmitInlineParameter            = cs_prog_data->uses_inline_push_addr,
+      .EmitInlineParameter            = shader->bind_map.inline_dwords_count > 0,
    };
 
    assert(ARRAY_SIZE(shader->cs.gfx125.compute_walker_body) >=
@@ -1279,6 +1269,75 @@ emit_cs_shader(struct anv_batch *batch,
    GENX(INTERFACE_DESCRIPTOR_DATA_pack)(batch,
                                         shader->cs.gfx9.idd,
                                         &desc);
+#endif
+}
+
+void
+genX(write_cs_descriptor)(struct anv_dgc_cs_descriptor *desc,
+                          struct anv_device *device,
+                          struct anv_shader *shader)
+{
+   const struct anv_pipeline_bind_map *bind_map = &shader->bind_map;
+   const struct anv_push_range *push_range = &bind_map->push_ranges[0];
+
+   *desc = (struct anv_dgc_cs_descriptor) {
+      .push_data_offset = 32 * (push_range->set == ANV_DESCRIPTOR_SET_PUSH_CONSTANTS ?
+                                push_range->start : 0),
+   };
+
+   const struct brw_cs_prog_data *prog_data =
+      brw_cs_prog_data_const(shader->prog_data);
+   const struct intel_cs_dispatch_info dispatch =
+      brw_cs_get_dispatch_info(device->info, prog_data, NULL);
+
+   desc->right_mask = dispatch.right_mask;
+   desc->threads = dispatch.threads;
+   desc->simd_size = dispatch.simd_size;
+
+#if GFX_VERx10 >= 125
+   GENX(COMPUTE_WALKER_pack)(NULL, desc->gfx125.compute_walker,
+                             &(struct GENX(COMPUTE_WALKER)) {
+                                GENX(COMPUTE_WALKER_header),
+                                .body = {
+                                   .PostSync.MOCS = anv_mocs(device, NULL, 0),
+                                },
+                             });
+
+   assert(sizeof(desc->gfx125.compute_walker) >
+          sizeof(shader->cs.gfx125.compute_walker_body));
+   for (uint32_t i = 0; i < ARRAY_SIZE(shader->cs.gfx125.compute_walker_body); i++)
+      desc->gfx125.compute_walker[1 + i] |= shader->cs.gfx125.compute_walker_body[i];
+   desc->gfx125.inline_dwords_count = bind_map->inline_dwords_count;
+   assert(sizeof(desc->gfx125.inline_dwords) ==
+          sizeof(bind_map->inline_dwords));
+   memcpy(desc->gfx125.inline_dwords,
+          bind_map->inline_dwords,
+          sizeof(bind_map->inline_dwords));
+
+#else
+   assert(sizeof(desc->gfx9.media_vfe_state) ==
+          shader->cs.gfx9.vfe.len * 4);
+   assert(sizeof(desc->gfx9.interface_descriptor_data) ==
+          sizeof(shader->cs.gfx9.idd));
+
+   memcpy(desc->gfx9.media_vfe_state,
+          &shader->cmd_data[shader->cs.gfx9.vfe.offset],
+          shader->cs.gfx9.vfe.len * 4);
+   memcpy(desc->gfx9.interface_descriptor_data,
+          shader->cs.gfx9.idd,
+          sizeof(desc->gfx9.interface_descriptor_data));
+
+   desc->gfx9.n_threads = dispatch.threads;
+   desc->gfx9.cross_thread_push_size = prog_data->push.cross_thread.size;
+   desc->gfx9.per_thread_push_size = prog_data->push.per_thread.size;
+   desc->gfx9.subgroup_id_offset =
+      offsetof(struct anv_push_constants, cs.subgroup_id) -
+      (32 * push_range->start + prog_data->push.cross_thread.size);
+
+   GENX(GPGPU_WALKER_pack)(NULL, desc->gfx9.gpgpu_walker,
+                           &(struct GENX(GPGPU_WALKER)) {
+                                GENX(GPGPU_WALKER_header),
+                           });
 #endif
 }
 

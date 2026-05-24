@@ -8,8 +8,10 @@
 #define AC_GPU_INFO_H
 
 #include <stdbool.h>
-#include "util/macros.h"
+#include <stdint.h>
+#include <stdio.h>
 #include "amd_family.h"
+#include "ac_video.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -115,6 +117,8 @@ struct ac_compiler_info {
    uint32_t max_vgpr_alloc;
    uint32_t wave64_vgpr_alloc_granularity;
 
+   uint32_t lds_size_per_workgroup;
+
    uint32_t hs_offchip_workgroup_dw_size;
 
    /* Flags */
@@ -171,7 +175,6 @@ struct ac_compiler_info {
    uint32_t conformant_trunc_coord : 1;
 
    uint32_t has_attr_ring : 1;
-   uint32_t mesh_fast_launch_2 : 1;
 
    /* GFX6-7: limit TCS workgroup to 16 patches for better performance. */
    uint32_t smaller_tcs_workgroups : 1;
@@ -196,8 +199,12 @@ struct ac_compiler_info {
    uint32_t has_attr_ring_wait_bug : 1;
    /* GFX6: limit TCS workgroup to one patch if primitive ID is used. */
    uint32_t has_primid_instancing_bug : 1;
+   /* GFX6 and certain GFX7 chips: bug with compute workgroups larger 256 invocations. */
+   uint32_t has_cs_regalloc_hang_bug : 1;
+   /* GFX6-GFX12, except GFX9: SMEM loads on NULL PRT page don't work. */
+   uint32_t has_smem_with_null_prt_bug : 1;
 
-   uint32_t reserved : 5;
+   uint32_t reserved : 3;
 };
 
 struct radeon_info {
@@ -267,7 +274,6 @@ struct radeon_info {
    bool has_two_planes_iterate256_bug;
    bool has_vgt_flush_ngg_legacy_bug;
    bool has_prim_restart_sync_bug;
-   bool has_cs_regalloc_hang_bug;
    bool has_async_compute_threadgroup_bug;
    bool has_async_compute_align32_bug;
    bool has_32bit_predication;
@@ -293,9 +299,6 @@ struct radeon_info {
                              * the LLVM version doesn't work with multiparts shaders.
                              */
 
-   /* Support GS_FAST_LAUNCH(2) for mesh shaders. */
-   bool mesh_fast_launch_2;
-
    /* Display features. */
    /* There are 2 display DCC codepaths, because display expects unaligned DCC. */
    /* Disable RB and pipe alignment to skip the retile blit. (1 RB chips only) */
@@ -317,7 +320,10 @@ struct radeon_info {
    uint32_t address32_hi;
    bool has_dedicated_vram;
    bool all_vram_visible;
+   uint64_t high_va_offset;
+   uint64_t high_va_max;
    uint64_t virtual_address_max;
+   uint64_t virtual_address_alignment;
    bool has_l2_uncached;
    bool r600_has_virtual_memory;
    uint32_t max_tcc_blocks;
@@ -326,7 +332,6 @@ struct radeon_info {
    bool cp_sdma_ge_use_system_memory_scope;
    bool cp_dma_use_L2;
    unsigned pc_lines;
-   uint32_t lds_size_per_workgroup;
 
    /* CP info. */
    bool gfx_ib_pad_with_type2;
@@ -347,16 +352,7 @@ struct radeon_info {
    uint32_t vcn_enc_major_version;
    uint32_t vcn_enc_minor_version;
    uint32_t vcn_fw_revision;
-   struct video_caps_info {
-      struct video_codec_cap {
-         uint32_t valid;
-         uint32_t max_width;
-         uint32_t max_height;
-         uint32_t max_pixels_per_frame;
-         uint32_t max_level;
-         uint32_t pad;
-      } codec_info[8]; /* the number of available codecs */
-   } dec_caps, enc_caps;
+   struct ac_video_caps video_caps;
 
    enum vcn_version vcn_ip_version;
    enum sdma_version sdma_ip_version;
@@ -392,6 +388,7 @@ struct radeon_info {
    bool has_trap_handler_support;
    bool kernel_has_modifiers;
    uint32_t userq_ip_mask; /* AMD_IP_* bits */
+   uint8_t address_prt_wa_control_bit;
 
    /* If the kernel driver uses CU reservation for high priority compute on gfx10+, it programs
     * a global CU mask in the hw that is AND'ed with CU_EN register fields set by userspace.
@@ -485,9 +482,18 @@ enum ac_query_gpu_info_result {
    AC_QUERY_GPU_INFO_UNIMPLEMENTED_HW,
 };
 
+/* If compiler_compat_mode is true, then ac_compiler_info must be identical between:
+ * - CHIP_VANGOGH and CHIP_REMBRANDT
+ * - CHIP_NAVI33, CHIP_PHOENIX and CHIP_PHOENIX2
+ * This is done by disabling features and enabling workarounds.
+ *
+ * conformant_trunc_coord is an exception, and might differ.
+ */
 enum ac_query_gpu_info_result ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
-                                                bool require_pci_bus_info);
-void ac_fill_compiler_info(struct radeon_info *info, const struct drm_amdgpu_info_device *device_info);
+                                                bool require_pci_bus_info,
+                                                bool compiler_compat_mode);
+void ac_fill_compiler_info(struct radeon_info *info,
+                           const struct drm_amdgpu_info_device *device_info, bool compat_mode);
 void ac_fill_tiling_info(struct radeon_info *info, const struct amdgpu_gpu_info *amdinfo);
 void ac_fill_memory_info(struct radeon_info *info, const struct drm_amdgpu_info_device *device_info,
                          const struct drm_amdgpu_memory_info *meminfo);

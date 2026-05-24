@@ -175,8 +175,8 @@ llvmpipe_init_compute_caps(struct pipe_screen *screen)
 
    caps->max_local_size = 32768;
    caps->grid_dimension = 3;
-   caps->max_global_size = 1 << 31;
-   caps->max_mem_alloc_size = 1 << 31;
+   caps->max_global_size = 1ull << 31;
+   caps->max_mem_alloc_size = 1ull << 31;
    caps->subgroup_sizes = lp_native_vector_width / 32;
    caps->max_subgroups = 1024 / (lp_native_vector_width / 32);
    caps->max_compute_units = 8;
@@ -293,7 +293,6 @@ llvmpipe_init_screen_caps(struct pipe_screen *screen)
    caps->max_texture_gather_components = 4;
    caps->vs_window_space_position = true;
    caps->fs_fine_derivative = true;
-   caps->tgsi_tex_txf_lz = true;
    caps->sampler_view_target = true;
    caps->fake_sw_msaa = false;
    caps->texture_query_lod = true;
@@ -489,9 +488,9 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_bitfield_extract16 = true,
    .lower_bitfield_extract = true,
    .lower_fdph = true,
-   .lower_ffma16 = true,
-   .lower_ffma32 = true,
-   .lower_ffma64 = true,
+   .float_mul_add16 = nir_float_muladd_support_keep_weak_ffma,
+   .float_mul_add32 = nir_float_muladd_support_keep_weak_ffma,
+   .float_mul_add64 = nir_float_muladd_support_keep_weak_ffma,
    .lower_flrp16 = true,
    .lower_fmod = true,
    .lower_hadd = true,

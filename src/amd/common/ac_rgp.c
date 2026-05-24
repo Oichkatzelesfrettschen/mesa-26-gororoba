@@ -271,6 +271,7 @@ enum sqtt_gfxip_level
    SQTT_GFXIP_LEVEL_GFXIP_11_0 = 0xc,
    SQTT_GFXIP_LEVEL_GFXIP_11_5 = 0xd,
    SQTT_GFXIP_LEVEL_GFXIP_12 = 0x10,
+   SQTT_GFXIP_LEVEL_GFXIP_11_7 = 0x11,
 };
 
 enum sqtt_memory_type
@@ -364,6 +365,8 @@ static enum sqtt_gfxip_level ac_gfx_level_to_sqtt_gfxip_level(enum amd_gfx_level
       return SQTT_GFXIP_LEVEL_GFXIP_11_0;
    case GFX11_5:
       return SQTT_GFXIP_LEVEL_GFXIP_11_5;
+   case GFX11_7:
+      return SQTT_GFXIP_LEVEL_GFXIP_11_7;
    case GFX12:
       return SQTT_GFXIP_LEVEL_GFXIP_12;
    default:
@@ -469,7 +472,7 @@ static void ac_sqtt_fill_asic_info(const struct radeon_info *rad_info,
    chunk->vram_size = (uint64_t)rad_info->vram_size_kb * 1024;
    chunk->l2_cache_size = rad_info->l2_cache_size;
    chunk->l1_cache_size = rad_info->tcp_cache_size;
-   chunk->lds_size = rad_info->lds_size_per_workgroup;
+   chunk->lds_size = rad_info->compiler_info.lds_size_per_workgroup;
 
    strncpy(chunk->gpu_name, ac_get_family_name(rad_info->family), SQTT_GPU_NAME_MAX_SIZE - 1);
 
@@ -713,6 +716,7 @@ static enum sqtt_version ac_gfx_level_to_sqtt_version(enum amd_gfx_level gfx_lev
       return SQTT_VERSION_2_4;
    case GFX11:
    case GFX11_5:
+   case GFX11_7:
       return SQTT_VERSION_3_2;
    case GFX12:
       return SQTT_VERSION_3_3;
@@ -860,6 +864,7 @@ enum elf_gfxip_level
    EF_AMDGPU_MACH_AMDGCN_GFX1030 = 0x036,
    EF_AMDGPU_MACH_AMDGCN_GFX1100 = 0x041,
    EF_AMDGPU_MACH_AMDGCN_GFX1150 = 0x043,
+   EF_AMDGPU_MACH_AMDGCN_GFX1170 = 0x05d,
    EF_AMDGPU_MACH_AMDGCN_GFX1200 = 0x04e,
 };
 
@@ -878,6 +883,8 @@ static enum elf_gfxip_level ac_gfx_level_to_elf_gfxip_level(enum amd_gfx_level g
       return EF_AMDGPU_MACH_AMDGCN_GFX1100;
    case GFX11_5:
       return EF_AMDGPU_MACH_AMDGCN_GFX1150;
+   case GFX11_7:
+      return EF_AMDGPU_MACH_AMDGCN_GFX1170;
    case GFX12:
       return EF_AMDGPU_MACH_AMDGCN_GFX1200;
    default:

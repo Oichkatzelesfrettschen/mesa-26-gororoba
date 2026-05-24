@@ -1234,7 +1234,16 @@ anv_state_reserved_array_pool_free(struct anv_state_reserved_array_pool *pool,
    simple_mtx_lock(&pool->mutex);
    BITSET_SET(pool->states, idx);
    simple_mtx_unlock(&pool->mutex);
- }
+}
+
+void
+anv_state_reserved_array_pool_index_free(struct anv_state_reserved_array_pool *pool,
+                                         uint32_t index)
+{
+   simple_mtx_lock(&pool->mutex);
+   BITSET_SET(pool->states, index);
+   simple_mtx_unlock(&pool->mutex);
+}
 
 void
 anv_bo_pool_init(struct anv_bo_pool *pool, struct anv_device *device,
@@ -1687,16 +1696,18 @@ anv_device_alloc_bo(struct anv_device *device,
     * MTL(Xe KMD only)/LNL platforms, which incur largest perf penalty from
     * page misses.
     */
-   if (align64(size, 2 * 1024 * 1024) <= (size * 4 / 3) &&
-       anv_device_has_perf_improvement_with_2mb_pages_oversubscription(device))
-      size = align64(size, 2 * 1024 * 1024);
-   /* bos larger than 1MB can't be allocated with slab but to reduce pages we
-    * could align size to 64k pages to gain performance with minimum memory
-    * waste.
-    */
-   else if ((size > (1 * 1024 * 1024)) &&
-            anv_device_has_perf_improvement_with_64k_pages(device))
-      size = align64(size, 64 * 1024);
+   if (!ANV_DEBUG(NO_ALLOC_OVER_SUBSCRIPTION)) {
+      if (align64(size, 2 * 1024 * 1024) <= (size * 4 / 3) &&
+          anv_device_has_perf_improvement_with_2mb_pages_oversubscription(device))
+         size = align64(size, 2 * 1024 * 1024);
+      /* bos larger than 1MB can't be allocated with slab but to reduce pages we
+       * could align size to 64k pages to gain performance with minimum memory
+       * waste.
+       */
+      else if ((size > (1 * 1024 * 1024)) &&
+               anv_device_has_perf_improvement_with_64k_pages(device))
+         size = align64(size, 64 * 1024);
+   }
 
    const struct intel_memory_class_instance *regions[2];
    uint32_t nregions = 0;

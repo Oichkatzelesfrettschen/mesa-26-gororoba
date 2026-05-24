@@ -95,17 +95,6 @@ blorp_surface_reloc(struct blorp_batch *batch, uint32_t ss_offset,
       anv_batch_set_error(&cmd_buffer->batch, result);
 }
 
-static uint64_t
-blorp_get_surface_address(struct blorp_batch *blorp_batch,
-                          struct blorp_address address)
-{
-   struct anv_address anv_addr = {
-      .bo = address.buffer,
-      .offset = address.offset,
-   };
-   return anv_address_physical(anv_addr);
-}
-
 #if GFX_VER == 9
 static struct blorp_address
 blorp_get_surface_base_address(struct blorp_batch *batch)
@@ -442,6 +431,9 @@ blorp_exec_on_render(struct blorp_batch *batch,
       BITSET_SET(hw_state->emit_dirty, ANV_GFX_STATE_CC_STATE);
       BITSET_SET(hw_state->emit_dirty, ANV_GFX_STATE_PS_BLEND);
    }
+
+   /* Add the flagged instructions as emitted */
+   BITSET_OR(hw_state->emitted, hw_state->emitted, hw_state->emit_dirty);
 
    anv_cmd_dirty_mask_t dirty = ~(ANV_CMD_DIRTY_INDEX_BUFFER |
                                   ANV_CMD_DIRTY_XFB_ENABLE |

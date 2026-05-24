@@ -29,10 +29,15 @@ dEQP-GLES2.functional.shaders.loops.for_constant_iterations.101_iterations_fragm
 dEQP-GLES2.functional.shaders.loops.for_constant_iterations.mixed_break_continue_fragment,Fail
 
 dEQP-GLES2.functional.shaders.random.all_features.fragment.5,Fail
+dEQP-GLES2.functional.shaders.random.all_features.fragment.22,Fail
+dEQP-GLES2.functional.shaders.random.all_features.fragment.32,Fail
+dEQP-GLES2.functional.shaders.random.all_features.fragment.79,Fail
 dEQP-GLES2.functional.shaders.random.all_features.fragment.93,Fail
 dEQP-GLES2.functional.shaders.random.all_features.fragment.97,Fail
 dEQP-GLES2.functional.shaders.random.trigonometric.fragment.15,Fail
+dEQP-GLES2.functional.shaders.random.trigonometric.fragment.26,Fail
 dEQP-GLES2.functional.shaders.random.trigonometric.fragment.45,Fail
+dEQP-GLES2.functional.shaders.random.trigonometric.fragment.81,Fail
 
 # Need to port the DP3 trick for all_equal from st_glsl_to_tgsi.
 dEQP-GLES2.functional.shaders.struct.uniform.equal_fragment,Fail
@@ -964,6 +969,9 @@ spec@glsl-1.20@execution@fs-vec4-const-array-indirect-access-032-elements,Fail
 spec@glsl-1.20@execution@fs-vec4-const-array-indirect-access-048-elements,Fail
 spec@glsl-1.20@execution@fs-vec4-const-array-indirect-access-128-elements,Fail
 spec@glsl-1.20@execution@fs-vec4-const-array-indirect-access-256-elements,Fail
+
+# Loop unrolling regression
+spec@glsl-1.20@execution@fs-function-inout-array-of-structs,Fail
 
 # https://gitlab.freedesktop.org/mesa/mesa/-/issues/4980
 spec@glsl-1.20@execution@glsl-fs-frontfacing,Fail

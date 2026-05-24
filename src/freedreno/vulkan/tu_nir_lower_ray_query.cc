@@ -262,8 +262,8 @@ load_tlas(nir_builder *b, nir_def *tlas,
    } else {
       return nir_load_global_ir3(b, components, 32,
                                  nir_pack_64_2x32(b, tlas),
-                                 nir_iadd_imm(b, nir_imul_imm(b, index, AS_RECORD_SIZE / 4),
-                                              offset / 4),
+                                 nir_iadd_imm(b, nir_imul_imm(b, index, AS_RECORD_SIZE),
+                                              offset),
                                  /* The required alignment of the
                                   * user-specified base from the Vulkan spec.
                                   */
@@ -522,7 +522,7 @@ lower_rq_load(nir_builder *b, struct hash_table *ht, nir_intrinsic_instr *intr)
  */
 #define TU_BVH_NO_INSTANCE_ROOT 0xfffffffeu
 
-nir_def *
+static nir_def *
 nir_build_vec3_mat_mult(nir_builder *b, nir_def *vec, nir_def *matrix[], bool translation)
 {
    nir_def *result_components[3] = {

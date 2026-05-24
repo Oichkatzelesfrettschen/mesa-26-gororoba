@@ -57,7 +57,6 @@ struct brw_shader_params
    const nir_shader *nir;
    const brw_base_prog_key *key;
    brw_stage_prog_data *prog_data;
-
    unsigned dispatch_width;
 
    /* Fragment shader. */
@@ -86,7 +85,6 @@ public:
 
    void vfail(const char *msg, va_list args);
    void fail(const char *msg, ...);
-   void limit_dispatch_width(unsigned n, const char *msg);
 
    void emit_gs_control_data_bits(const brw_reg &vertex_count);
    brw_reg gs_urb_channel_mask(const brw_reg &dword_index);
@@ -126,7 +124,6 @@ public:
    const brw_base_prog_key *const key;
 
    struct brw_stage_prog_data *prog_data;
-
    brw_analysis<brw_live_variables, brw_shader> live_analysis;
    brw_analysis<brw_register_pressure, brw_shader> regpressure_analysis;
    brw_analysis<brw_performance, brw_shader> performance_analysis;
@@ -213,7 +210,6 @@ public:
 
    const unsigned dispatch_width; /**< 8, 16 or 32 */
    const unsigned max_polygons;
-   unsigned max_dispatch_width;
 
    /* The API selected subgroup size */
    unsigned api_subgroup_size; /**< 0, 8, 16, 32 */

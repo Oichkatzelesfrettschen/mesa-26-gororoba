@@ -2466,7 +2466,7 @@ VkResult pvr_arch_cmd_buffer_end_sub_cmd(struct pvr_cmd_buffer *cmd_buffer)
       if (result != VK_SUCCESS)
          return pvr_cmd_buffer_set_error_unwarned(cmd_buffer, result);
 
-      if (gfx_sub_cmd->multiview_enabled) {
+      if (gfx_sub_cmd->view_index_wanted) {
          result = pvr_csb_gfx_build_view_index_ctrl_stream(
             device,
             pvr_csb_get_start_address(&gfx_sub_cmd->control_stream),
@@ -2737,6 +2737,7 @@ VkResult pvr_arch_cmd_buffer_start_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
                ? state->render_pass_info.pass->multiview_enabled
                : false;
       }
+      sub_cmd->gfx.view_index_wanted = sub_cmd->gfx.multiview_enabled;
 
       if (state->vis_test_enabled)
          sub_cmd->gfx.query_pool = state->query_pool;
@@ -3056,16 +3057,18 @@ void PVR_PER_ARCH(CmdBindVertexBuffers2)(VkCommandBuffer commandBuffer,
    cmd_buffer->state.dirty.vertex_bindings = true;
 }
 
-void PVR_PER_ARCH(CmdBindIndexBuffer)(VkCommandBuffer commandBuffer,
-                                      VkBuffer buffer,
-                                      VkDeviceSize offset,
-                                      VkIndexType indexType)
+void PVR_PER_ARCH(CmdBindIndexBuffer2)(VkCommandBuffer commandBuffer,
+                                       VkBuffer buffer,
+                                       VkDeviceSize offset,
+                                       ASSERTED VkDeviceSize size,
+                                       VkIndexType indexType)
 {
    VK_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(pvr_buffer, index_buffer, buffer);
    struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
 
    assert(offset < index_buffer->vk.size);
+   assert(size == VK_WHOLE_SIZE || offset + size <= index_buffer->vk.size);
    assert(indexType == VK_INDEX_TYPE_UINT32 ||
           indexType == VK_INDEX_TYPE_UINT16 ||
           indexType == VK_INDEX_TYPE_UINT8_KHR);
@@ -5490,6 +5493,9 @@ static VkResult pvr_setup_descriptor_mappings(
    uint32_t *const descriptor_data_offset_out)
 {
    const struct pvr_pds_info *const pds_info = &descriptor_state->pds_info;
+   const struct pvr_device *device = cmd_buffer->device;
+   const struct pvr_physical_device *pdevice = device->pdevice;
+   const struct pvr_device_info *dev_info = &pdevice->dev_info;
    const struct pvr_descriptor_state *desc_state;
    const pco_data *data;
    struct pvr_suballoc_bo *pvr_bo;
@@ -5503,7 +5509,7 @@ static VkResult pvr_setup_descriptor_mappings(
 
    result = pvr_arch_cmd_buffer_alloc_mem(
       cmd_buffer,
-      cmd_buffer->device->heaps.pds_heap,
+      device->heaps.pds_heap,
       PVR_DW_TO_BYTES(pds_info->data_size_in_dwords),
       &pvr_bo);
    if (result != VK_SUCCESS)
@@ -5796,7 +5802,7 @@ static VkResult pvr_setup_descriptor_mappings(
 
          case PVR_BUFFER_TYPE_TILE_BUFFERS: {
             const struct pvr_device_tile_buffer_state *tile_buffer_state =
-               &cmd_buffer->device->tile_buffer_state;
+               &device->tile_buffer_state;
             const struct pvr_graphics_pipeline *const gfx_pipeline =
                cmd_buffer->state.gfx_pipeline;
             const pco_data *const fs_data = &gfx_pipeline->fs_data;
@@ -5839,8 +5845,7 @@ static VkResult pvr_setup_descriptor_mappings(
                                                 : sizeof(uint32_t);
 
             size_t total_spill_mem_size =
-               spill_block_size * rogue_get_total_instance_count(
-                                     &cmd_buffer->device->pdevice->dev_info);
+               spill_block_size * rogue_get_total_instance_count(dev_info);
             struct pvr_suballoc_bo *spill_buffer_bo;
             result = pvr_arch_cmd_buffer_upload_general(cmd_buffer,
                                                         NULL,
@@ -5877,8 +5882,7 @@ static VkResult pvr_setup_descriptor_mappings(
             unsigned scratch_block_size = data->common.scratch;
 
             size_t total_scratch_mem_size =
-               scratch_block_size * rogue_get_total_instance_count(
-                                       &cmd_buffer->device->pdevice->dev_info);
+               scratch_block_size * rogue_get_total_instance_count(dev_info);
             struct pvr_suballoc_bo *scratch_buffer_bo;
             result = pvr_arch_cmd_buffer_upload_general(cmd_buffer,
                                                         NULL,
@@ -5936,6 +5940,66 @@ static VkResult pvr_setup_descriptor_mappings(
             break;
          }
 
+         case PVR_BUFFER_TYPE_GLOBAL_SHMEM: {
+            assert(stage == PVR_STAGE_ALLOCATION_COMPUTE);
+            assert(data->cs.global_shmem);
+
+            unsigned usc_slots = PVR_GET_FEATURE_VALUE(dev_info, usc_slots, 0U);
+            assert(usc_slots);
+
+            unsigned num_clusters =
+               PVR_GET_FEATURE_VALUE(dev_info, num_clusters, 0U);
+            assert(num_clusters);
+
+            /* If each workgroup doesn't fit in a slot, then we run one wg per
+             * cluster, so allocate memory for each cluster.
+             */
+            unsigned global_shmem_size = data->cs.shmem.count * num_clusters;
+
+            /* If each workgroup _does_ fit in a slot, then we can run one wg
+             * per slot, so ensure the buffer has enough space for each slot
+             * running simultaneously.
+             */
+            unsigned local_size = data->cs.workgroup_size[0] *
+                                  data->cs.workgroup_size[1] *
+                                  data->cs.workgroup_size[2];
+
+            if (local_size <= ROGUE_MAX_INSTANCES_PER_TASK)
+               global_shmem_size *= usc_slots;
+
+            /* Allocate the shmem buffer. */
+            struct pvr_suballoc_bo *global_shmem_bo;
+            result = pvr_arch_cmd_buffer_upload_general(cmd_buffer,
+                                                        NULL,
+                                                        global_shmem_size,
+                                                        &global_shmem_bo);
+
+            if (result != VK_SUCCESS)
+               return result;
+
+            if (data->cs.zero_shmem) {
+               void *shmem_buf = pvr_bo_suballoc_get_map_addr(global_shmem_bo);
+               memset(shmem_buf, 0u, global_shmem_size);
+            }
+
+            /* Allocate a buffer to store the address of the shmem buffer. */
+            struct pvr_suballoc_bo *global_shmem_addr_bo;
+            result = pvr_arch_cmd_buffer_upload_general(
+               cmd_buffer,
+               &global_shmem_bo->dev_addr.addr,
+               sizeof(global_shmem_bo->dev_addr.addr),
+               &global_shmem_addr_bo);
+
+            if (result != VK_SUCCESS)
+               return result;
+
+            PVR_WRITE(qword_buffer,
+                      global_shmem_addr_bo->dev_addr.addr,
+                      special_buff_entry->const_offset,
+                      pds_info->data_size_in_dwords);
+            break;
+         }
+
          default:
             UNREACHABLE("Unsupported special buffer type.");
          }
@@ -5951,7 +6015,7 @@ static VkResult pvr_setup_descriptor_mappings(
 
    *descriptor_data_offset_out =
       pvr_bo->dev_addr.addr -
-      cmd_buffer->device->heaps.pds_heap->base_addr.addr;
+      device->heaps.pds_heap->base_addr.addr;
 
    return VK_SUCCESS;
 }
@@ -6179,6 +6243,8 @@ static void pvr_compute_update_kernel(
 {
    const struct pvr_physical_device *pdevice = cmd_buffer->device->pdevice;
    struct pvr_cmd_buffer_state *state = &cmd_buffer->state;
+   const struct pvr_device_runtime_info *dev_runtime_info =
+      &pdevice->dev_runtime_info;
    struct pvr_csb *csb = &sub_cmd->control_stream;
    const struct pvr_compute_pipeline *pipeline = state->compute_pipeline;
    const pco_data *const cs_data = &pipeline->cs_data;
@@ -6188,6 +6254,7 @@ static void pvr_compute_update_kernel(
    bool base_group_set = !!global_base_group[0] || !!global_base_group[1] ||
                          !!global_base_group[2];
    uint32_t pds_data_offset = pipeline->pds_cs_program.data_offset;
+   const unsigned max_coeffs = dev_runtime_info->cdm_max_local_mem_size_regs;
 
    /* Does the PDS data segment need patching, or can the default be used? */
    if ((uses_wg_id && base_group_set) || uses_num_wgs) {
@@ -6264,6 +6331,11 @@ static void pvr_compute_update_kernel(
                         cs_data->cs.workgroup_size[1] *
                         cs_data->cs.workgroup_size[2];
    uint32_t coeff_regs = cs_data->common.coeffs + cs_data->common.shareds;
+   assert(coeff_regs <= max_coeffs);
+
+   /* Allocation starvation - force one workgroup per cluster. */
+   if (cs_data->cs.global_shmem && work_size > ROGUE_MAX_INSTANCES_PER_TASK)
+      coeff_regs = MAX2(coeff_regs, max_coeffs);
 
    info.usc_common_size =
       DIV_ROUND_UP(PVR_DW_TO_BYTES(coeff_regs),
@@ -6283,7 +6355,10 @@ static void pvr_compute_update_kernel(
    info.local_size[2] = 1U;
 
    info.max_instances =
-      pvr_compute_flat_slot_size(pdevice, coeff_regs, false, work_size);
+      pvr_compute_flat_slot_size(pdevice,
+                                 coeff_regs,
+                                 cs_data->common.uses.barriers,
+                                 work_size);
 
    pvr_compute_generate_control_stream(csb, sub_cmd, &info);
 }
@@ -6611,11 +6686,19 @@ pvr_setup_isp_faces_and_control(struct pvr_cmd_buffer *const cmd_buffer,
    const enum ROGUE_TA_OBJTYPE obj_type =
       pvr_ta_objtype(dynamic_state->ia.primitive_topology);
 
-   const VkImageAspectFlags ds_aspects =
+   VkImageAspectFlags ds_aspects =
       (!rasterizer_discard && attachment)
          ? vk_format_aspects(attachment->vk_format) &
               (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
          : VK_IMAGE_ASPECT_NONE;
+
+   /* Dynamic rendering attachments could be bound with a D+S format but only
+    * D or S active.
+    */
+   if (!pass_info->pass && attachment && !attachment->is_depth)
+      ds_aspects &= ~VK_IMAGE_ASPECT_DEPTH_BIT;
+   if (!pass_info->pass && attachment && !attachment->is_stencil)
+      ds_aspects &= ~VK_IMAGE_ASPECT_STENCIL_BIT;
 
    /* This is deliberately a full copy rather than a pointer because
     * vk_optimize_depth_stencil_state() can only be run once against any given
@@ -8140,6 +8223,7 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
    struct vk_dynamic_graphics_state *const dynamic_state =
       &cmd_buffer->vk.dynamic_graphics_state;
    const struct pvr_graphics_pipeline *const gfx_pipeline = state->gfx_pipeline;
+   const pco_data *const vs_data = &gfx_pipeline->vs_data;
    const pco_data *const fs_data = &gfx_pipeline->fs_data;
    struct pvr_sub_cmd_gfx *sub_cmd;
    bool fstencil_writemask_zero;
@@ -8185,6 +8269,9 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
    sub_cmd->frag_has_side_effects |= fs_data->common.uses.side_effects;
    sub_cmd->frag_uses_texture_rw |= false;
    sub_cmd->vertex_uses_texture_rw |= false;
+
+   sub_cmd->view_index_wanted |= vs_data->common.multiview;
+   sub_cmd->view_index_wanted |= fs_data->common.multiview;
 
    sub_cmd->job.get_vis_results = state->vis_test_enabled;
 
@@ -8950,6 +9037,9 @@ static VkResult pvr_execute_sub_cmd(struct pvr_cmd_buffer *cmd_buffer,
 
    primary_sub_cmd->type = sec_sub_cmd->type;
    primary_sub_cmd->owned = false;
+   primary_sub_cmd->is_dynamic_render = sec_sub_cmd->is_dynamic_render;
+   primary_sub_cmd->is_suspend = sec_sub_cmd->is_suspend;
+   primary_sub_cmd->is_resume = sec_sub_cmd->is_resume;
 
    list_addtail(&primary_sub_cmd->link, &cmd_buffer->sub_cmds);
 
@@ -9083,6 +9173,8 @@ pvr_execute_graphics_cmd_buffer(struct pvr_cmd_buffer *cmd_buffer,
 
       primary_sub_cmd->gfx.job.get_vis_results |=
          sec_sub_cmd->gfx.job.get_vis_results;
+      primary_sub_cmd->gfx.view_index_wanted |=
+         sec_sub_cmd->gfx.view_index_wanted;
 
       primary_sub_cmd->gfx.max_tiles_in_flight =
          MIN2(primary_sub_cmd->gfx.max_tiles_in_flight,
@@ -9836,4 +9928,13 @@ VkResult PVR_PER_ARCH(EndCommandBuffer)(VkCommandBuffer commandBuffer)
    util_dynarray_fini(&state->query_indices);
 
    return vk_command_buffer_end(&cmd_buffer->vk);
+}
+
+void PVR_PER_ARCH(GetRenderingAreaGranularity)(
+   VkDevice _device,
+   const VkRenderingAreaInfoKHR *pRenderingAreaInfo,
+   VkExtent2D *pGranularity)
+{
+   VK_FROM_HANDLE(pvr_device, device, _device);
+   pvr_get_render_area_granularity(device->pdevice, pGranularity);
 }

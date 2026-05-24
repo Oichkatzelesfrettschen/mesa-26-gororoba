@@ -43,7 +43,10 @@ tu_cmd_buffer_setup_status_tracking(struct tu_device *device)
       device, NULL, &status_bo, sizeof(enum tu_cmd_buffer_status), 0,
       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+         (device->physical_device->preferred_uncached_as_cached_index >= 0 ?
+          VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0)
+         ,
       TU_BO_ALLOC_INTERNAL_RESOURCE, NULL, "cmd_buffer_status");
    if (result != VK_SUCCESS)
       return NULL;
@@ -96,6 +99,27 @@ tu_cmd_buffer_status_gpu_write(struct tu_cmd_buffer *cmd_buffer,
 }
 
 static void
+tu_wait_for_rb_done(struct tu_cs *cs, uint32_t onchip_addr, uint32_t seqno)
+{
+   tu_cs_emit_pkt7(cs, CP_EVENT_WRITE7, 4);
+   tu_cs_emit(cs, CP_EVENT_WRITE7_0(
+      .event = RB_DONE_TS,
+      .write_src = EV_WRITE_USER_32B,
+      .write_dst = EV_DST_ONCHIP,
+      .write_enabled = true).value);
+   tu_cs_emit_qw(cs, onchip_addr);
+   tu_cs_emit(cs, seqno);
+
+   tu_cs_emit_pkt7(cs, CP_WAIT_REG_MEM, 6);
+   tu_cs_emit(cs, CP_WAIT_REG_MEM_0_FUNCTION(WRITE_EQ) | CP_WAIT_REG_MEM_0_POLL(POLL_ON_CHIP));
+   tu_cs_emit_qw(cs, onchip_addr);
+   tu_cs_emit(cs, CP_WAIT_REG_MEM_3_REF(seqno));
+   tu_cs_emit(cs, CP_WAIT_REG_MEM_4_MASK(~0u));
+   tu_cs_emit(cs, CP_WAIT_REG_MEM_5_DELAY_LOOP_CYCLES(2));
+}
+
+template <chip CHIP>
+static void
 tu_clone_trace_range(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
                      struct u_trace *dst,
                      struct u_trace_iterator begin, struct u_trace_iterator end)
@@ -103,17 +127,37 @@ tu_clone_trace_range(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
    if (u_trace_iterator_equal(begin, end))
       return;
 
+   /* The only way to wait for tracepoint's RB_DONE_TS completion on A7XX+ is to wait
+    * on a value it written, however neither we know the value tracepoint writes,
+    * nor we can rely on previous value being zero. So we have to issue our own
+    * RB_DONE_TS with known value and wait for it.
+    */
+    /* TODO: Maybe we can do this only when we copy from memory written by RB_DONE_TS? */
+    if constexpr (CHIP >= A7XX) {
+      static uint32_t seqno = 0;
+      uint32_t value = p_atomic_add_return(&seqno, 1);
+
+      /* BV can race BR so we cannot wait on the same addr in both since it can be overwritten. */
+      tu_cond_exec_start(cs, CP_COND_REG_EXEC_0_MODE(THREAD_MODE) | CP_COND_REG_EXEC_0_BR);
+      tu_wait_for_rb_done(cs, TU_ONCHIP_BR_U_TRACE_BARRIER, value);
+      tu_cond_exec_end(cs);
+
+      tu_cond_exec_start(cs, CP_COND_REG_EXEC_0_MODE(THREAD_MODE) | CP_COND_REG_EXEC_0_BV);
+      tu_wait_for_rb_done(cs, TU_ONCHIP_BV_U_TRACE_BARRIER, value);
+      tu_cond_exec_end(cs);
+   }
+
    tu_cs_emit_wfi(cs);
    tu_cs_emit_pkt7(cs, CP_WAIT_FOR_ME, 0);
-   u_trace_clone_append(begin, end, &cmd->trace, cs, tu_copy_buffer);
+   u_trace_clone_append(begin, end, dst, cs, tu_copy_buffer);
 }
 
+template <chip CHIP>
 static void
 tu_clone_trace(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
                struct u_trace *dst, struct u_trace *src)
 {
-   tu_clone_trace_range(cmd, cs, dst, u_trace_begin_iterator(src),
-         u_trace_end_iterator(src));
+   tu_clone_trace_range<CHIP>(cmd, cs, dst, u_trace_begin_iterator(src), u_trace_end_iterator(src));
 }
 
 template <chip CHIP>
@@ -216,6 +260,7 @@ tu6_lazy_init_vsc(struct tu_cmd_buffer *cmd)
    cmd->vsc_draw_strm_offset = prim_strm_size;
    cmd->vsc_draw_strm_size_offset = cmd->vsc_draw_strm_offset + draw_strm_size;
    cmd->vsc_state_offset = cmd->vsc_draw_strm_size_offset + draw_strm_size_size;
+   cmd->vsc_initialized = true;
 }
 
 static void
@@ -253,8 +298,6 @@ tu_emit_vsc(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
       tu_cs_emit(cs, A6XX_CP_SET_PSEUDO_REG__0_PSEUDO_REG(VSC_PIPE_DATA_PRIM_BASE));
       tu_emit_vis_stream_patchpoint(cmd, cs, cmd->vsc_prim_strm_offset);
    }
-
-   cmd->vsc_initialized = true;
 }
 
 struct tu_set_render_mode {
@@ -429,6 +472,25 @@ tu7_set_thread_br_patchpoint(struct tu_cmd_buffer *cmd,
                      CP_THREAD_CONTROL_0_CONCURRENT_BIN_DISABLE);
 }
 
+void
+tu7_set_thread_both_patchpoint(struct tu_cmd_buffer *cmd,
+                               struct tu_cs *cs)
+{
+   tu_cs_emit_pkt7(cs, CP_THREAD_CONTROL, 1);
+
+   struct tu_cb_control_point info = {
+      .type = TU_CB_CONTROL_TYPE_PATCHPOINT,
+      .patchpoint = cs->cur,
+      .patch_value = CP_THREAD_CONTROL_0_THREAD(CP_SET_THREAD_BOTH),
+      .original_value = CP_THREAD_CONTROL_0_THREAD(CP_SET_THREAD_BR) |
+                        CP_THREAD_CONTROL_0_CONCURRENT_BIN_DISABLE,
+   };
+   util_dynarray_append(&cmd->cb_control_points, info);
+
+   tu_cs_emit(cs, CP_THREAD_CONTROL_0_THREAD(CP_SET_THREAD_BR) |
+                     CP_THREAD_CONTROL_0_CONCURRENT_BIN_DISABLE);
+}
+
 /* "Normal" cache flushes outside the renderpass, that don't require any special handling */
 template <chip CHIP>
 void
@@ -442,7 +504,7 @@ tu_emit_cache_flush(struct tu_cmd_buffer *cmd_buffer)
 
    if ((flushes & TU_CMD_FLAG_WAIT_FOR_BR) && CHIP >= A7XX &&
        !(cmd_buffer->state.pass && cmd_buffer->state.renderpass_cb_disabled) &&
-       !TU_DEBUG(NO_CONCURRENT_BINNING)) {
+       cmd_buffer->device->instance->allow_concurrent_binning) {
       trace_start_concurrent_binning_barrier(&cmd_buffer->trace, cs, cmd_buffer);
 
       /* Wait-for-BR when repeated a lot of times per frame can add up
@@ -2112,6 +2174,7 @@ tu6_init_static_regs(struct tu_device *dev, struct tu_cs *cs)
                     (phys_dev->info->props.enable_tp_ubwc_flag_hint
                         ? A6XX_TPL1_DBG_ECO_CNTL1_TP_UBWC_FLAG_HINT
                         : 0);
+            break;
          case REG_A6XX_SP_CHICKEN_BITS:
             value = (value & ~A6XX_SP_CHICKEN_BITS_EOLM_ENABLE) |
                     (phys_dev->info->props.has_eolm_eogm
@@ -2204,8 +2267,8 @@ tu6_init_static_regs(struct tu_device *dev, struct tu_cs *cs)
    if (CHIP >= A8XX)
       tu_cs_emit_regs(cs, SP_ALPHA_TEST_CNTL(CHIP));
 
-   tu_cs_emit_regs(cs, A6XX_TPL1_GFX_BORDER_COLOR_BASE(.qword = dev->global_bo->iova + gb_offset(bcolor)));
-   tu_cs_emit_regs(cs, A6XX_TPL1_CS_BORDER_COLOR_BASE(.qword = dev->global_bo->iova + gb_offset(bcolor)));
+   tu_cs_emit_regs(cs, A6XX_TPL1_GFX_BORDER_COLOR_BASE(.qword = dev->global_bo->iova + gb_offset(bcolor_builtin)));
+   tu_cs_emit_regs(cs, A6XX_TPL1_CS_BORDER_COLOR_BASE(.qword = dev->global_bo->iova + gb_offset(bcolor_builtin)));
 
    /* BR-only registers */
    /* non-ctx regs programmed by KMD (and blocked from UMD) on gen8+ */
@@ -2678,13 +2741,12 @@ tu6_emit_binning_pass(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
    /* emit IB to binning drawcmds: */
    tu_cs_emit_call(cs, &cmd->draw_cs);
 
+   tu_clone_trace_range<CHIP>(cmd, cs, &cmd->trace, cmd->trace_renderpass_start, u_trace_end_iterator(&cmd->rp_trace));
+
    if (use_cb)
       trace_end_concurrent_binning_ib(&cmd->trace, cs);
    else
       trace_end_binning_ib(&cmd->trace, cs);
-
-   tu_clone_trace_range(cmd, cs, &cmd->trace, cmd->trace_renderpass_start,
-                        u_trace_end_iterator(&cmd->rp_trace));
 
    /* switching from binning pass to GMEM pass will cause a switch from
     * PROGRAM_BINNING to PROGRAM, which invalidates const state (XS_CONST states)
@@ -3005,6 +3067,10 @@ tu_trace_end_render_pass(struct tu_cmd_buffer *cmd, bool gmem)
 static void
 tu_renderpass_begin(struct tu_cmd_buffer *cmd)
 {
+   if (cmd->state.pass->warn_fdm_force_disabled) {
+      trace_warning_fdm_force_disabled(&cmd->trace, &cmd->cs, cmd);
+   }
+
    /* We need to re-emit any draw states that are patched in order for them to
     * be correctly added to the per-renderpass patchpoint list, even if they
     * are the same as before.
@@ -3059,8 +3125,8 @@ tu7_emit_concurrent_binning_start(struct tu_cmd_buffer *cmd,
        tu7_cb_disable_reason(
           (!cmd->state.lrz.fast_clear && cmd->state.lrz.image_view), cmd,
           "LRZ fast clear disabled") ||
-       tu7_cb_disable_reason(TU_DEBUG(NO_CONCURRENT_BINNING), cmd,
-                             "TU_DEBUG(NO_CONCURRENT_BINNING)")) {
+       tu7_cb_disable_reason(!cmd->device->instance->allow_concurrent_binning, cmd,
+                             "globally disabled")) {
      tu_cs_emit_pkt7(cs, CP_THREAD_CONTROL, 1);
      tu_cs_emit(cs, CP_THREAD_CONTROL_0_THREAD(CP_SET_THREAD_BR) |
                     CP_THREAD_CONTROL_0_CONCURRENT_BIN_DISABLE);
@@ -3466,11 +3532,11 @@ tu6_tile_render_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
       tu_cs_emit_regs(cs, RB_BIN_FOVEAT(CHIP));
    }
 
-   if (use_binning) {
-      if (!cmd->vsc_initialized) {
-         tu6_lazy_init_vsc(cmd);
-      }
+   if (!cmd->vsc_initialized) {
+      tu6_lazy_init_vsc(cmd);
+   }
 
+   if (use_binning) {
       /* We always emit VSC before each renderpass, because due to
        * skipsaverestore the underlying VSC registers may have become
        * invalid. Normally we'd need to WFI before setting these non-context
@@ -3531,13 +3597,6 @@ tu6_tile_render_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
    }
 
    if (vsc->binning_possible) {
-      /* On a7xx we always need VSC allocated because the VSC state has to go
-       * together with other stream data. We could allocate just the VSC state
-       * if binning is disabled but it doesn't seem worth it.
-       */
-      if (CHIP >= A7XX && !cmd->vsc_initialized)
-         tu6_lazy_init_vsc(cmd);
-
       /* Upload state regs to memory to be restored on skipsaverestore
        * preemption. On a7xx this is considered part of the vis stream that
        * requires a patchpoint.
@@ -3671,8 +3730,7 @@ tu6_render_tile(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
 
    tu_cs_emit_call(cs, &cmd->tile_store_cs);
 
-   tu_clone_trace_range(cmd, cs, &cmd->trace, cmd->trace_renderpass_start,
-                        u_trace_end_iterator(&cmd->rp_trace));
+   tu_clone_trace_range<CHIP>(cmd, cs, &cmd->trace, cmd->trace_renderpass_start, u_trace_end_iterator(&cmd->rp_trace));
    tu_cs_emit_wfi(cs);
 
    tu_set_render_mode<CHIP>(cs, {RM6_BIN_RENDER_END});
@@ -3975,9 +4033,8 @@ tu_cmd_render_sysmem(struct tu_cmd_buffer *cmd,
    /* Outside of renderpasses we assume all draw states are disabled. */
    tu_disable_draw_states(cmd, &cmd->cs);
 
-   tu_clone_trace_range(cmd, &cmd->cs, &cmd->trace,
-                        cmd->trace_renderpass_start,
-                        u_trace_end_iterator(&cmd->rp_trace));
+   tu_clone_trace_range<CHIP>(cmd, &cmd->cs, &cmd->trace, cmd->trace_renderpass_start,
+                              u_trace_end_iterator(&cmd->rp_trace));
 
    tu_trace_end_render_pass<CHIP>(cmd, false);
 }
@@ -4061,6 +4118,7 @@ tu_create_cmd_buffer(struct vk_command_pool *pool,
 
    u_trace_init(&cmd_buffer->trace, &device->trace_context);
    u_trace_init(&cmd_buffer->rp_trace, &device->trace_context);
+   u_trace_init(&cmd_buffer->pre_chain.rp_trace, &device->trace_context);
    cmd_buffer->trace_renderpass_start =
       u_trace_begin_iterator(&cmd_buffer->rp_trace);
    new (&cmd_buffer->autotune_ctx) tu_autotune::cmd_buf_ctx(*device->autotune);
@@ -4111,6 +4169,7 @@ tu_cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
 
    u_trace_fini(&cmd_buffer->trace);
    u_trace_fini(&cmd_buffer->rp_trace);
+   u_trace_fini(&cmd_buffer->pre_chain.rp_trace);
 
    cmd_buffer->autotune_ctx.~cmd_buf_ctx();
 
@@ -4219,6 +4278,9 @@ tu_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer,
    u_trace_init(&cmd_buffer->trace, &cmd_buffer->device->trace_context);
    u_trace_fini(&cmd_buffer->rp_trace);
    u_trace_init(&cmd_buffer->rp_trace, &cmd_buffer->device->trace_context);
+   u_trace_fini(&cmd_buffer->pre_chain.rp_trace);
+   u_trace_init(&cmd_buffer->pre_chain.rp_trace,
+                &cmd_buffer->device->trace_context);
    cmd_buffer->trace_renderpass_start =
       u_trace_begin_iterator(&cmd_buffer->rp_trace);
 
@@ -5285,7 +5347,10 @@ TU_GENX(tu_EndCommandBuffer);
 static void
 tu_bind_vs(struct tu_cmd_buffer *cmd, struct tu_shader *vs)
 {
-   cmd->state.shaders[MESA_SHADER_VERTEX] = vs;
+   if (cmd->state.shaders[MESA_SHADER_VERTEX] != vs) {
+      cmd->state.shaders[MESA_SHADER_VERTEX] = vs;
+      cmd->state.dirty |= TU_CMD_DIRTY_VS;
+   }
 }
 
 static void
@@ -6017,7 +6082,7 @@ vk2tu_src_stage(struct tu_device *dev,
    return stage;
 }
 
-static enum tu_stage
+enum tu_stage
 vk2tu_dst_stage(struct tu_device *dev,
                 VkPipelineStageFlags2 vk_stages)
 {
@@ -6078,7 +6143,6 @@ tu_render_pass_state_merge(struct tu_render_pass_state *dst,
    dst->draw_cs_writes_to_cond_pred |= src->draw_cs_writes_to_cond_pred;
    dst->shared_viewport |= src->shared_viewport;
 
-   dst->drawcall_count += src->drawcall_count;
    dst->drawcall_bandwidth_per_sample_sum +=
       src->drawcall_bandwidth_per_sample_sum;
    if (!dst->lrz_disable_reason && src->lrz_disable_reason) {
@@ -6095,6 +6159,8 @@ tu_render_pass_state_merge(struct tu_render_pass_state *dst,
    if (!dst->gmem_disable_reason && src->gmem_disable_reason) {
       dst->gmem_disable_reason = src->gmem_disable_reason;
    }
+
+   dst->drawcall_count += src->drawcall_count;
 }
 
 void
@@ -6131,8 +6197,7 @@ tu_append_pre_chain(struct tu_cmd_buffer *cmd,
 
    tu_render_pass_state_merge(&cmd->state.rp,
                               &secondary->pre_chain.state);
-   tu_clone_trace(cmd, &cmd->draw_cs,
-                  &cmd->rp_trace, &secondary->pre_chain.rp_trace);
+   TU_CALLX(cmd->device, tu_clone_trace)(cmd, &cmd->draw_cs, &cmd->rp_trace, &secondary->pre_chain.rp_trace);
    util_dynarray_append_dynarray(&cmd->fdm_bin_patchpoints,
                                  &secondary->pre_chain.fdm_bin_patchpoints);
 
@@ -6153,7 +6218,7 @@ tu_append_post_chain(struct tu_cmd_buffer *cmd,
    tu_cs_add_entries(&cmd->draw_cs, &secondary->draw_cs);
    tu_cs_add_entries(&cmd->draw_epilogue_cs, &secondary->draw_epilogue_cs);
 
-   tu_clone_trace(cmd, &cmd->draw_cs, &cmd->rp_trace, &secondary->rp_trace);
+   TU_CALLX(cmd->device, tu_clone_trace)(cmd, &cmd->draw_cs, &cmd->rp_trace, &secondary->rp_trace);
    cmd->state.rp = secondary->state.rp;
    util_dynarray_append_dynarray(&cmd->fdm_bin_patchpoints,
                                  &secondary->fdm_bin_patchpoints);
@@ -6172,7 +6237,7 @@ tu_append_pre_post_chain(struct tu_cmd_buffer *cmd,
    tu_cs_add_entries(&cmd->draw_cs, &secondary->draw_cs);
    tu_cs_add_entries(&cmd->draw_epilogue_cs, &secondary->draw_epilogue_cs);
 
-   tu_clone_trace(cmd, &cmd->draw_cs, &cmd->rp_trace, &secondary->rp_trace);
+   TU_CALLX(cmd->device, tu_clone_trace)(cmd, &cmd->draw_cs, &cmd->rp_trace, &secondary->rp_trace);
    tu_render_pass_state_merge(&cmd->state.rp,
                               &secondary->state.rp);
    util_dynarray_append_dynarray(&cmd->fdm_bin_patchpoints,
@@ -6254,7 +6319,7 @@ tu_CmdExecuteCommands(VkCommandBuffer commandBuffer,
          cmd->state.lrz.color_written_with_z_test |=
             secondary->state.lrz.color_written_with_z_test;
 
-         tu_clone_trace(cmd, &cmd->draw_cs, &cmd->rp_trace, &secondary->rp_trace);
+         TU_CALLX(cmd->device, tu_clone_trace)(cmd, &cmd->draw_cs, &cmd->rp_trace, &secondary->rp_trace);
          tu_render_pass_state_merge(&cmd->state.rp, &secondary->state.rp);
          util_dynarray_append_dynarray(&cmd->fdm_bin_patchpoints,
                                        &secondary->fdm_bin_patchpoints);
@@ -6319,7 +6384,7 @@ tu_CmdExecuteCommands(VkCommandBuffer commandBuffer,
             assert(tu_cs_is_empty(&secondary->draw_cs));
             assert(tu_cs_is_empty(&secondary->draw_epilogue_cs));
             tu_cs_add_entries(&cmd->cs, &secondary->cs);
-            tu_clone_trace(cmd, &cmd->cs, &cmd->trace, &secondary->trace);
+            TU_CALLX(cmd->device, tu_clone_trace)(cmd, &cmd->cs, &cmd->trace, &secondary->trace);
             break;
 
          case SR_IN_PRE_CHAIN:
@@ -9627,7 +9692,8 @@ tu_CmdEndRendering2EXT(VkCommandBuffer commandBuffer,
 void
 tu_barrier(struct tu_cmd_buffer *cmd,
            uint32_t dep_count,
-           const VkDependencyInfo *dep_infos)
+           const VkDependencyInfo *dep_infos,
+           bool no_sync)
 {
    VkPipelineStageFlags2 srcStage = 0;
    VkPipelineStageFlags2 dstStage = 0;
@@ -9813,9 +9879,11 @@ tu_barrier(struct tu_cmd_buffer *cmd,
 
    tu_flush_for_access(cache, src_flags, dst_flags);
 
-   enum tu_stage src_stage = vk2tu_src_stage(cmd->device, srcStage);
-   enum tu_stage dst_stage = vk2tu_dst_stage(cmd->device, dstStage);
-   TU_CALLX(cmd->device, tu_flush_for_stage)(cache, src_stage, dst_stage);
+   if (!no_sync) {
+      enum tu_stage src_stage = vk2tu_src_stage(cmd->device, srcStage);
+      enum tu_stage dst_stage = vk2tu_dst_stage(cmd->device, dstStage);
+      TU_CALLX(cmd->device, tu_flush_for_stage)(cache, src_stage, dst_stage);
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -9824,7 +9892,7 @@ tu_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(tu_cmd_buffer, cmd_buffer, commandBuffer);
 
-   tu_barrier(cmd_buffer, 1, pDependencyInfo);
+   tu_barrier(cmd_buffer, 1, pDependencyInfo, false);
 }
 
 template <chip CHIP>

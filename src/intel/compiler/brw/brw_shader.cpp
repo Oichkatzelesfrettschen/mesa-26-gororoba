@@ -166,8 +166,6 @@ brw_shader::brw_shader(const brw_shader_params *params)
          api_subgroup_size == 16 ||
          api_subgroup_size == 32);
 
-   this->max_dispatch_width = 32;
-
    this->failed = false;
    this->fail_msg = NULL;
 
@@ -254,30 +252,6 @@ brw_shader::fail(const char *format, ...)
    va_end(va);
 }
 
-/**
- * Mark this program as impossible to compile with dispatch width greater
- * than n.
- *
- * During the SIMD8 compile (which happens first), we can detect and flag
- * things that are unsupported in SIMD16+ mode, so the compiler can skip the
- * SIMD16+ compile altogether.
- *
- * During a compile of dispatch width greater than n (if one happens anyway),
- * this just calls fail().
- */
-void
-brw_shader::limit_dispatch_width(unsigned n, const char *msg)
-{
-   if (dispatch_width > n) {
-      fail("%s", msg);
-   } else {
-      max_dispatch_width = MIN2(max_dispatch_width, n);
-      brw_shader_perf_log(compiler, log_data,
-                          "Shader dispatch width limited to SIMD%d: %s\n",
-                          n, msg);
-   }
-}
-
 enum intel_barycentric_mode
 brw_barycentric_mode(const struct brw_fs_prog_key *key,
                      nir_intrinsic_instr *intr)
@@ -353,8 +327,9 @@ brw_shader::assign_curb_setup()
             continue;
 
          struct brw_reg brw_reg;
-         if (inst->src[i].nr == BRW_INLINE_PARAM_REG) {
+         if (inst->src[i].nr >= BRW_INLINE_PARAM_REG) {
             brw_reg = cs_payload().inline_parameter;
+            brw_reg.nr += inst->src[i].nr - BRW_INLINE_PARAM_REG;
          } else {
             assert(inst->src[i].nr < 64);
             used |= BITFIELD64_BIT(inst->src[i].nr);
@@ -1073,4 +1048,57 @@ brw_reg
 brw_allocate_vgrf_units(brw_shader &s, unsigned units_of_REGSIZE)
 {
    return brw_vgrf(brw_allocate_vgrf_number(s, units_of_REGSIZE), BRW_TYPE_UD);
+}
+
+const unsigned *
+brw_compile(const struct brw_compiler *compiler,
+            struct brw_compile_params *params)
+{
+   assert(params);
+   assert(params->nir);
+   assert(params->key);
+   assert(params->prog_data);
+
+   switch (params->nir->info.stage) {
+   case MESA_SHADER_VERTEX:
+      return brw_compile_vs(compiler, (struct brw_compile_vs_params *)params);
+   case MESA_SHADER_TESS_CTRL:
+      return brw_compile_tcs(compiler, (struct brw_compile_tcs_params *)params);
+   case MESA_SHADER_TESS_EVAL:
+      return brw_compile_tes(compiler, (struct brw_compile_tes_params *)params);
+   case MESA_SHADER_GEOMETRY:
+      return brw_compile_gs(compiler, (struct brw_compile_gs_params *)params);
+   case MESA_SHADER_TASK:
+      return brw_compile_task(compiler, (struct brw_compile_task_params *)params);
+   case MESA_SHADER_MESH:
+      return brw_compile_mesh(compiler, (struct brw_compile_mesh_params *)params);
+   case MESA_SHADER_FRAGMENT:
+      return brw_compile_fs(compiler, (struct brw_compile_fs_params *)params);
+   case MESA_SHADER_COMPUTE:
+   case MESA_SHADER_KERNEL:
+      return brw_compile_cs(compiler, (struct brw_compile_cs_params *)params);
+   case MESA_SHADER_RAYGEN:
+   case MESA_SHADER_ANY_HIT:
+   case MESA_SHADER_CLOSEST_HIT:
+   case MESA_SHADER_MISS:
+   case MESA_SHADER_INTERSECTION:
+   case MESA_SHADER_CALLABLE:
+      return brw_compile_bs(compiler, (struct brw_compile_bs_params *)params);
+   default:
+      UNREACHABLE("Unsupported shader stage");
+      return NULL;
+   }
+}
+
+void brw_prog_data_init(struct brw_stage_prog_data *prog_data,
+                        const struct brw_compile_params *params)
+{
+   /* Do not memset the structure to 0, the driver might have put some bits of
+    * information in there.
+    */
+   prog_data->ray_queries = params->nir->info.ray_queries;
+   prog_data->stage = params->nir->info.stage;
+   prog_data->source_hash = params->source_hash;
+   prog_data->total_scratch = 0;
+   prog_data->total_shared = params->nir->info.shared_size;
 }

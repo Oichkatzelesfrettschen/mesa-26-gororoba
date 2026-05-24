@@ -5,12 +5,14 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "gfx/si_gfx.h"
 #include "si_build_pm4.h"
 #include "si_pipe.h"
 #include "sid.h"
 #include "util/os_time.h"
 #include "util/u_log.h"
 #include "util/u_upload_mgr.h"
+#include "ac_cmdbuf_cp.h"
 #include "ac_debug.h"
 #include "si_utrace.h"
 
@@ -112,7 +114,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
    /* Drop this flush if it's a no-op. */
    if (!radeon_emitted(cs, ctx->initial_gfx_cs_size) &&
        (!wait_flags || !ctx->gfx_last_ib_is_busy) &&
-       !(flags & RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION)) {
+       !(flags & (RADEON_FLUSH_TOGGLE_SECURE_SUBMISSION | RADEON_FLUSH_FORCE))) {
       tc_driver_internal_flush_notify(ctx->tc);
       return;
    }
@@ -158,7 +160,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
    /* If we use s_sendmsg to set tess factors to all 0 or all 1 instead of writing to the tess
     * factor buffer, we need this at the end of command buffers:
     */
-   if ((ctx->gfx_level == GFX11 || ctx->gfx_level == GFX11_5) && ctx->has_tessellation) {
+   if ((ctx->gfx_level >= GFX11 && ctx->gfx_level < GFX12) && ctx->has_tessellation) {
       radeon_begin(cs);
       radeon_event_write(V_028A90_SQ_NON_EVENT);
       radeon_end();

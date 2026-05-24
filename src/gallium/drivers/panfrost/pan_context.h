@@ -346,6 +346,13 @@ struct panfrost_fs_key {
    uint8_t clip_plane_enable;
 
    bool line_smooth;
+
+   /* The VS varying layout determines how the FS is compiled (LD_VAR vs
+    * LD_VAR_BUF and byte offsets). Include the full layout in the key so
+    * the disk cache and in-memory variant cache correctly distinguish FS
+    * binaries compiled against different VS layouts.
+    */
+   struct pan_varying_layout vs_varying_layout;
 };
 
 struct panfrost_vs_key {
@@ -403,6 +410,9 @@ struct panfrost_uncompiled_shader {
    /* Stream output information */
    struct pipe_stream_output_info stream_output;
 
+   /* Varying layout (if known) */
+   struct pan_varying_layout vs_varying_layout;
+
    /** Lock for the variants array */
    simple_mtx_t lock;
 
@@ -454,8 +464,7 @@ bool panfrost_nir_remove_fragcolor_stores(nir_shader *s, unsigned nr_cbufs);
 bool panfrost_nir_lower_sysvals(nir_shader *s, unsigned arch,
                                 struct panfrost_sysvals *sysvals);
 
-bool panfrost_nir_lower_res_indices(nir_shader *shader,
-                                    struct pan_compile_inputs *inputs);
+bool panfrost_nir_lower_res_indices(nir_shader *shader, uint64_t gpu_id);
 
 bool panfrost_nir_lower_pls(nir_shader *shader,
                             struct panfrost_screen *screen);

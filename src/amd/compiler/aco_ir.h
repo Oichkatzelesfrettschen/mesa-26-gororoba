@@ -1042,13 +1042,7 @@ private:
 struct RegisterDemand {
    constexpr RegisterDemand() = default;
    constexpr RegisterDemand(const int16_t v, const int16_t s) noexcept : vgpr{v}, sgpr{s} {}
-   constexpr RegisterDemand(Temp t) noexcept
-   {
-      if (t.regClass().type() == RegType::sgpr)
-         sgpr = t.size();
-      else
-         vgpr = t.size();
-   }
+   constexpr RegisterDemand(Temp t) noexcept { (*this)[t.type()] = t.size(); }
    int16_t vgpr = 0;
    int16_t sgpr = 0;
 
@@ -1065,6 +1059,18 @@ struct RegisterDemand {
    constexpr bool exceeds(const RegisterDemand other) const noexcept
    {
       return vgpr > other.vgpr || sgpr > other.sgpr;
+   }
+
+   constexpr bool empty() const noexcept { return !exceeds(RegisterDemand()); }
+
+   constexpr const int16_t& operator[](RegType type) const noexcept
+   {
+      return type == RegType::vgpr ? vgpr : sgpr;
+   }
+
+   constexpr int16_t& operator[](RegType type) noexcept
+   {
+      return type == RegType::vgpr ? vgpr : sgpr;
    }
 
    constexpr RegisterDemand operator+(const Temp t) const noexcept
@@ -1101,19 +1107,13 @@ struct RegisterDemand {
 
    constexpr RegisterDemand& operator+=(const Temp t) noexcept
    {
-      if (t.type() == RegType::sgpr)
-         sgpr += t.size();
-      else
-         vgpr += t.size();
+      (*this)[t.type()] += t.size();
       return *this;
    }
 
    constexpr RegisterDemand& operator-=(const Temp t) noexcept
    {
-      if (t.type() == RegType::sgpr)
-         sgpr -= t.size();
-      else
-         vgpr -= t.size();
+      (*this)[t.type()] -= t.size();
       return *this;
    }
 
@@ -2052,7 +2052,19 @@ bool can_use_input_modifiers(amd_gfx_level gfx_level, aco_opcode op, int idx);
 bool can_use_opsel(amd_gfx_level gfx_level, aco_opcode op, int idx);
 bool instr_is_16bit(amd_gfx_level gfx_level, aco_opcode op);
 uint8_t get_gfx11_true16_mask(aco_opcode op);
+bool can_use_SDWA(amd_gfx_level gfx_level, const Instruction* instr, bool pre_ra);
 bool can_use_SDWA(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool pre_ra);
+
+struct SubdwordCaps {
+   unsigned placement_stride;
+   unsigned overwrite_bytes;
+};
+
+unsigned get_subdword_operand_stride(Program* program, const Instruction* instr, unsigned idx,
+                                     RegClass rc);
+SubdwordCaps get_subdword_definition_caps(Program* program, const Instruction* instr, unsigned idx,
+                                          RegClass rc);
+
 bool opcode_supports_dpp(amd_gfx_level gfx_level, aco_opcode opcode, bool vop3p);
 bool can_use_DPP(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool dpp8);
 bool can_write_m0(const aco_ptr<Instruction>& instr);
@@ -2627,6 +2639,7 @@ typedef struct {
    const int16_t opcode_gfx9[static_cast<int>(aco_opcode::num_opcodes)];
    const int16_t opcode_gfx10[static_cast<int>(aco_opcode::num_opcodes)];
    const int16_t opcode_gfx11[static_cast<int>(aco_opcode::num_opcodes)];
+   const int16_t opcode_gfx11_7[static_cast<int>(aco_opcode::num_opcodes)];
    const int16_t opcode_gfx12[static_cast<int>(aco_opcode::num_opcodes)];
    const std::bitset<static_cast<int>(aco_opcode::num_opcodes)> is_atomic;
    const char* name[static_cast<int>(aco_opcode::num_opcodes)];

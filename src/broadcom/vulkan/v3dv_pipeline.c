@@ -192,9 +192,6 @@ v3dv_pipeline_get_nir_options(const struct v3d_device_info *devinfo)
       .lower_mul_2x32_64 = true,
       .lower_fdiv = true,
       .lower_find_lsb = true,
-      .lower_ffma16 = true,
-      .lower_ffma32 = true,
-      .lower_ffma64 = true,
       .lower_flrp32 = true,
       .lower_fpow = true,
       .lower_fsqrt = true,
@@ -224,6 +221,11 @@ v3dv_pipeline_get_nir_options(const struct v3d_device_info *devinfo)
 
    if (!initialized) {
       options.lower_fsat = devinfo->ver < 71;
+      if (devinfo->ver >= 71) {
+         options.has_udot_4x8 = true;
+         options.has_sdot_4x8 = true;
+         options.has_sudot_4x8 = true;
+      }
       initialized = true;
     }
 
@@ -2465,7 +2467,7 @@ pipeline_compile_graphics(struct v3dv_pipeline *pipeline,
             vk_find_struct_const(sinfo->pNext, SHADER_MODULE_CREATE_INFO);
       }
 
-      vk_pipeline_robustness_state_fill(&device->vk, &p_stage->robustness,
+      vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &p_stage->robustness,
                                         pCreateInfo->pNext, sinfo->pNext);
 
       vk_pipeline_hash_shader_stage(pipeline->flags,
@@ -2516,7 +2518,7 @@ pipeline_compile_graphics(struct v3dv_pipeline *pipeline,
       p_stage->module = NULL;
       p_stage->module_info = NULL;
       p_stage->nir = b.shader;
-      vk_pipeline_robustness_state_fill(&device->vk, &p_stage->robustness,
+      vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &p_stage->robustness,
                                         NULL, NULL);
       pipeline_compute_blake3_from_nir(p_stage);
       p_stage->program_id =
@@ -3138,6 +3140,26 @@ lower_compute(struct nir_shader *nir)
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_shared, nir_address_format_32bit_offset);
 
+   /* V3D can't execute workgroups with more than 256 invocations
+    * (maxComputeWorkGroupInvocations). If the shader requested a
+    * larger workgroup, serialize it into a 256-invocation one.
+    */
+   const uint32_t wg_size = nir->info.workgroup_size[0] *
+                            nir->info.workgroup_size[1] *
+                            nir->info.workgroup_size[2];
+   if (wg_size > V3D_MAX_CSD_WG_SIZE) {
+      perf_debug("Compute shader requested workgroup size %u (>256); "
+                 "lowering to a 256-invocation workgroup wrapping an "
+                 "outer loop (workgroup_size=(%u,%u,%u)).\n",
+                 wg_size,
+                 nir->info.workgroup_size[0],
+                 nir->info.workgroup_size[1],
+                 nir->info.workgroup_size[2]);
+      NIR_PASS(_, nir, nir_lower_workgroup_size, V3D_MAX_CSD_WG_SIZE);
+      v3d_optimize_nir(NULL, nir);
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   }
+
    struct nir_lower_compute_system_values_options sysval_options = {
       .has_base_workgroup_id = true,
    };
@@ -3179,7 +3201,7 @@ pipeline_compile_compute(struct v3dv_pipeline *pipeline,
          vk_find_struct_const(sinfo->pNext, SHADER_MODULE_CREATE_INFO);
    }
 
-   vk_pipeline_robustness_state_fill(&device->vk, &p_stage->robustness,
+   vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &p_stage->robustness,
                                      info->pNext, sinfo->pNext);
 
    vk_pipeline_hash_shader_stage(pipeline->flags,

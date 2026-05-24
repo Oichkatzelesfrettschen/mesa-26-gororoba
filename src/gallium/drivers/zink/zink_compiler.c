@@ -246,8 +246,8 @@ lower_gl_point_gs_instr(nir_builder *b, nir_instr *instr, void *data)
 
    for (size_t i = 0; i < 4; i++) {
       pos = nir_vec4(b,
-                     nir_ffma(b, half_w_delta, point_dir[i][0], point_pos_x),
-                     nir_ffma(b, half_h_delta, point_dir[i][1], point_pos_y),
+                     nir_ffma_weak(b, half_w_delta, point_dir[i][0], point_pos_x),
+                     nir_ffma_weak(b, half_h_delta, point_dir[i][1], point_pos_y),
                      nir_channel(b, point_pos, 2),
                      nir_channel(b, point_pos, 3));
 
@@ -1266,9 +1266,6 @@ zink_screen_init_compiler(struct zink_screen *screen)
    static const struct nir_shader_compiler_options
    default_options = {
       .io_options = nir_io_has_intrinsics | nir_io_mediump_is_32bit,
-      .lower_ffma16 = true,
-      .lower_ffma32 = true,
-      .lower_ffma64 = true,
       .lower_scmp = true,
       .lower_fdph = true,
       .lower_flrp32 = true,
@@ -1307,6 +1304,7 @@ zink_screen_init_compiler(struct zink_screen *screen)
       .lower_mul_2x32_64 = true,
       .support_16bit_alu = true, /* not quite what it sounds like */
       .max_unroll_iterations = 0,
+      .float_mul_add32 = nir_float_muladd_support_keep_weak_ffma,
    };
 
    screen->nir_options = default_options;
@@ -1317,12 +1315,17 @@ zink_screen_init_compiler(struct zink_screen *screen)
    if (!screen->info.feats.features.shaderFloat64) {
       screen->nir_options.lower_doubles_options = ~0;
       screen->nir_options.lower_flrp64 = true;
-      screen->nir_options.lower_ffma64 = true;
       /* soft fp64 function inlining will blow up loop bodies and effectively
        * stop Vulkan drivers from unrolling the loops.
        */
       screen->nir_options.max_unroll_iterations_fp64 = 32;
+   } else {
+      screen->nir_options.float_mul_add64 |= nir_float_muladd_support_keep_weak_ffma;
    }
+
+   if (screen->info.feats12.shaderFloat16 ||
+       (screen->info.have_KHR_shader_float16_int8 && screen->info.shader_float16_int8_feats.shaderFloat16))
+      screen->nir_options.float_mul_add16 |= nir_float_muladd_support_keep_weak_ffma;
 
    /* XXX: do any drivers need different estimates? */
    screen->nir_options.varying_expression_max_cost = amd_varying_expression_max_cost;
@@ -1387,6 +1390,15 @@ zink_screen_init_compiler(struct zink_screen *screen)
    }
    screen->ntv_info.have_float_controls2 = screen->info.have_KHR_shader_float_controls2;
    screen->ntv_info.bindless_set_idx = screen->desc_set_id[ZINK_DESCRIPTOR_BINDLESS];
+
+   if (screen->info.have_KHR_shader_fma) {
+      if (screen->info.fma_feats.shaderFmaFloat16)
+         screen->nir_options.float_mul_add16 |= nir_float_muladd_support_has_ffma;
+      if (screen->info.fma_feats.shaderFmaFloat32)
+         screen->nir_options.float_mul_add32 |= nir_float_muladd_support_has_ffma;
+      if (screen->info.fma_feats.shaderFmaFloat64)
+         screen->nir_options.float_mul_add64 |= nir_float_muladd_support_has_ffma;
+   }
 }
 
 struct nir_shader *
@@ -3029,7 +3041,7 @@ zink_compiler_assign_io(struct zink_screen *screen, nir_shader *producer, nir_sh
       bool can_remove = false;
       if (!nir_find_variable_with_location(consumer, nir_var_shader_in, VARYING_SLOT_PSIZ)) {
          /* maintenance5 guarantees "A default size of 1.0 is used if PointSize is not written" */
-         if (screen->info.have_KHR_maintenance5 && !var->data.explicit_xfb_buffer && delete_psiz_store(producer, true))
+         if (!var->data.explicit_xfb_buffer && delete_psiz_store(producer, true))
             can_remove = !(producer->info.outputs_written & VARYING_BIT_PSIZ);
          else if (consumer->info.stage != MESA_SHADER_FRAGMENT)
             can_remove = !var->data.explicit_location;
@@ -3522,8 +3534,7 @@ zink_shader_spirv_compile(struct zink_screen *screen, struct zink_shader *zs, st
          .push_const_addr_format = nir_address_format_logical,
          .shared_addr_format = nir_address_format_32bit_offset,
       };
-      uint32_t num_spec_entries = 0;
-      struct nir_spirv_specialization *spec_entries = NULL;
+      struct nir_spirv_specialization *spec = NULL;
       VkSpecializationInfo sinfo = {0};
       VkSpecializationMapEntry me[3];
       uint32_t size[3] = {1,1,1};
@@ -3538,14 +3549,14 @@ zink_shader_spirv_compile(struct zink_screen *screen, struct zink_shader *zs, st
             me[i].constantID = ids[i];
             me[i].offset = i * sizeof(uint32_t);
          }
-         spec_entries = vk_spec_info_to_nir_spirv(&sinfo, &num_spec_entries);
+         spec = vk_spec_info_to_nir_spirv(&sinfo);
       }
       nir_shader *nir = spirv_to_nir(spirv->words, spirv->num_words,
-                         spec_entries, num_spec_entries,
-                         clamp_stage(&zs->info), "main", &spirv_options, &screen->nir_options);
+                         spec, clamp_stage(&zs->info), "main", &spirv_options,
+                         &screen->nir_options);
       assert(nir);
       ralloc_free(nir);
-      free(spec_entries);
+      vtn_free_specialization(spec);
    }
 #endif
 

@@ -1056,12 +1056,22 @@ nvk_image_init(struct nvk_device *dev,
       }
    }
 
-   /* Disable zcull save/restore regions until
-    * https://gitlab.freedesktop.org/mesa/mesa/-/work_items/15221
-    * is fixed.
+   const VkImageUsageFlagBits READ_ONLY_IMAGE_USAGE =
+      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+      VK_IMAGE_USAGE_SAMPLED_BIT |
+      VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+
+   /*
+    * We don't know how to update the zcull data if the image is written
+    * as anything other than a depth attachment
     */
-   if (false &&
-       (image->vk.aspects & VK_IMAGE_ASPECT_DEPTH_BIT) &&
+   const VkImageUsageFlagBits ZCULL_COMPATIBLE_IMAGE_USAGE =
+      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | READ_ONLY_IMAGE_USAGE;
+
+   if ((image->vk.aspects & VK_IMAGE_ASPECT_DEPTH_BIT) &&
+       (image->vk.usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
+       !(image->vk.usage & ~ZCULL_COMPATIBLE_IMAGE_USAGE) &&
+       !(image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) &&
        image->vk.image_type != VK_IMAGE_TYPE_3D &&
        image->vk.tiling == VK_IMAGE_TILING_OPTIMAL &&
        pdev->info.has_zcull_info) {
@@ -1681,20 +1691,6 @@ nvk_bind_image_memory(struct nvk_device *dev,
 
    if (image->zcull.nil.size_B > 0) {
       result = nvk_image_zcull_bind(&image->zcull, mem, offset_B);
-      if (result != VK_SUCCESS)
-         return result;
-
-      /*
-       * zcull hardware kills the context if we try to LOAD_ZCULL on garbage
-       * data. Work around this by always initializing the zcull data to zero.
-       */
-      result = nvk_upload_queue_fill(dev, &dev->upload,
-                                     image->zcull.addr,
-                                     0, image->zcull.nil.size_B);
-      if (result != VK_SUCCESS)
-         return result;
-
-      result = nvk_upload_queue_sync(dev, &dev->upload);
       if (result != VK_SUCCESS)
          return result;
    }

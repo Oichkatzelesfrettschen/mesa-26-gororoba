@@ -960,7 +960,6 @@ struct pipe_caps {
    bool fp16;
    bool doubles;
    bool int64;
-   bool tgsi_tex_txf_lz;
    bool shader_clock;
    bool shader_realtime_clock;
    bool polygon_mode_fill_rectangle;
@@ -1063,6 +1062,7 @@ struct pipe_caps {
    bool representative_fragment_test;
    bool prefer_persp;
    bool blit_3d;
+   bool glsl_bindless_handles_are_32bit;
 
    int accelerated;
    int min_texel_offset;

@@ -24,6 +24,7 @@ struct nir_to_msl_ctx {
    nir_shader *shader;
    struct _mesa_string_buffer *text;
    uint64_t disabled_workarounds;
+   bool uses_per_draw_data;
    unsigned short indentlevel;
    struct io_slot_info inputs_info[NUM_TOTAL_VARYING_SLOTS];
    struct io_slot_info outputs_info[NUM_TOTAL_VARYING_SLOTS];
@@ -85,5 +86,3 @@ bool msl_def_is_sampler(struct nir_to_msl_ctx *ctx, nir_def *def);
 void msl_nir_lower_subgroups(nir_shader *nir);
 
 bool msl_nir_lower_algebraic_late(nir_shader *shader);
-
-bool msl_nir_lower_clip_distance(nir_shader *nir);

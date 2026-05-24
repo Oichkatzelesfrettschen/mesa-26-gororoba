@@ -293,7 +293,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000004],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x10000000],
@@ -332,7 +331,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0x00000880],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00000430],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000004],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0x00080000],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -366,7 +364,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00000400],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x01000000],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000004],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0x02000000],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -437,7 +434,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0x00000880],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001430],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000004],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0x00080000],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x10000001],
@@ -473,7 +469,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00000420],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000004],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0x02000000],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -509,7 +504,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001430],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000004],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0x02000000],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -545,7 +539,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001400],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x01000000],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000004],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0x02000000],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -586,7 +579,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001400],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x00000006],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000084],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0x02000000],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -621,7 +613,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001400],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x01000000],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000084],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0x02000000],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -656,7 +647,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001400],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x6],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000084],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0x02000000],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 1],
@@ -693,7 +683,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001400],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0x1200000],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000084],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0x2000400],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -704,6 +693,7 @@ add_gpus([
         GPUId(702), # KGSL
         GPUId(chip_id=0x00b207002000, name="FD702"), # QRB2210 RB1
         GPUId(chip_id=0xffff07002000, name="FD702"), # Default no-speedbin fallback
+        GPUId(chip_id=0xffff07000400, name="Adreno (TM) 704"),
     ], A6xxGPUInfo(
         CHIP.A6XX, # NOT a mistake!
         [a6xx_base, a6xx_gen1_low, GPUProps(
@@ -743,7 +733,6 @@ add_gpus([
             [A6XXRegs.REG_A6XX_GRAS_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_SP_CHICKEN_BITS, 0x00001400],
             [A6XXRegs.REG_A6XX_SP_DBG_ECO_CNTL, 0],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF, 0x00000084],
             [A6XXRegs.REG_A6XX_HLSQ_DBG_ECO_CNTL, 0x02000000],
             [A6XXRegs.REG_A6XX_VPC_DBG_ECO_CNTL, 0],
             [A6XXRegs.REG_A6XX_UCHE_UNKNOWN_0E12, 0x1],
@@ -880,7 +869,6 @@ a730_raw_magic_regs = [
         [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_1, 0x00402400],
         [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_2, 0x00000000],
         [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_3, 0x00000000],
-        [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF,    0x00000084],
         [A6XXRegs.REG_A7XX_UCHE_UNKNOWN_0E10, 0x00000000],
         [A6XXRegs.REG_A7XX_UCHE_UNKNOWN_0E11, 0x00000040],
         [A6XXRegs.REG_A7XX_SP_HLSQ_DBG_ECO_CNTL, 0x00008000],
@@ -930,7 +918,6 @@ a740_raw_magic_regs = [
         [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_1, 0x00400400],
         [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_2, 0x00430800],
         [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_3, 0x00000000],
-        [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF,    0x00000084],
         [A6XXRegs.REG_A7XX_UCHE_UNKNOWN_0E10, 0x00000000],
         [A6XXRegs.REG_A7XX_UCHE_UNKNOWN_0E11, 0x00000000],
         [A6XXRegs.REG_A7XX_SP_HLSQ_DBG_ECO_CNTL, 0x00000000],
@@ -1037,7 +1024,6 @@ add_gpus([
             [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_1, 0x00400400],
             [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_2, 0x00430800],
             [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_3, 0x00000000],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF,    0x00000084],
             [A6XXRegs.REG_A7XX_UCHE_UNKNOWN_0E10, 0x00000000],
             [A6XXRegs.REG_A7XX_UCHE_UNKNOWN_0E11, 0x00000000],
             [A6XXRegs.REG_A7XX_SP_HLSQ_DBG_ECO_CNTL, 0x00000000],
@@ -1121,7 +1107,6 @@ add_gpus([
             [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_1, 0x00400400],
             [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_2, 0x00430820],
             [A6XXRegs.REG_A7XX_SP_CHICKEN_BITS_3, 0x00000000],
-            [A6XXRegs.REG_A6XX_UCHE_CLIENT_PF,    0x00000084],
             [A6XXRegs.REG_A7XX_UCHE_UNKNOWN_0E10, 0x00000000],
             [A6XXRegs.REG_A7XX_UCHE_UNKNOWN_0E11, 0x00000080],
             [A6XXRegs.REG_A7XX_SP_HLSQ_DBG_ECO_CNTL, 0x00000000],
@@ -1420,7 +1405,26 @@ add_gpus([
     ))
 
 add_gpus([
-        GPUId(chip_id=0xffff44070041, name="Adreno (TM) X2-85"),
+        GPUId(chip_id=0xffff44070031, name="Adreno (TM) X2-85"),
+    ], A6xxGPUInfo(
+        CHIP.A8XX,
+        [a7xx_base, a7xx_gen3, a8xx_base, a8xx_gen2],
+        num_ccu = 6,
+        num_slices = 3,
+        tile_align_w = 96,
+        tile_align_h = 32,
+        tile_max_w = 16416,
+        tile_max_h = 16384,
+        num_vsc_pipes = 32,
+        cs_shared_mem_size = 32 * 1024,
+        wave_granularity = 2,
+        fibers_per_sp = 128 * 2 * 16,
+        magic_regs = dict(),
+        raw_magic_regs = a8xx_base_raw_magic_regs,
+    ))
+
+add_gpus([
+        GPUId(chip_id=0xffff44070041, name="Adreno (TM) X2-90"),
     ], A6xxGPUInfo(
         CHIP.A8XX,
         [a7xx_base, a7xx_gen3, a8xx_base, a8xx_gen2],

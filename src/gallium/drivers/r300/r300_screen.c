@@ -105,8 +105,9 @@ static struct disk_cache* r300_get_disk_shader_cache(struct pipe_screen* pscreen
 
 #define COMMON_NIR_OPTIONS                    \
    .fdot_replicates = true,                   \
-   .fuse_ffma32 = true,                       \
-   .fuse_ffma64 = true,                       \
+   .float_mul_add32 =                         \
+      nir_float_muladd_support_has_fmad |     \
+      nir_float_muladd_support_fuse,          \
    .lower_bitops = true,                      \
    .lower_extract_byte = true,                \
    .lower_extract_word = true,                \
@@ -668,8 +669,8 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
      * When config->options is NULL the CALLOC'd r300screen->options fields are
      * already false, matching every OPT_BOOL default in r300_debug_options.h. */
     if (config && config->options) {
-        driParseConfigFiles(config->options, config->options_info, 0, "r300", NULL,
-                            NULL, NULL, 0, NULL, 0);
+        driParseConfigFiles(config->options, config->options_info,
+                            &(driConfigFileParseParams) { .driverName = "r300" });
 
 #define OPT_BOOL(name, dflt, description)                                                          \
         r300screen->options.name = driQueryOptionb(config->options, "r300_" #name);

@@ -12,8 +12,6 @@
 
 #include "ac_gpu_info.h"
 #include "nir.h"
-#include <array>
-#include <iostream>
 #include <vector>
 
 using namespace aco;
@@ -388,6 +386,7 @@ aco_is_gpu_supported(const struct radeon_info* info)
    case GFX10_3:
    case GFX11:
    case GFX11_5:
+   case GFX11_7:
    case GFX12:
       return true;
    default:

@@ -66,15 +66,21 @@ jay_compute_liveness(jay_function *f)
 
    ralloc_free(f->dead_defs);
    f->dead_defs = BITSET_RZALLOC(f, f->ssa_alloc);
+   BITSET_WORD *uniform = BITSET_CALLOC(f->ssa_alloc);
 
    jay_foreach_block(f, block) {
-      u_sparse_bitset_free(&block->live_in);
       u_sparse_bitset_free(&block->live_out);
-
-      u_sparse_bitset_init(&block->live_in, f->ssa_alloc, block);
       u_sparse_bitset_init(&block->live_out, f->ssa_alloc, block);
 
       jay_worklist_push_head(&worklist, block);
+   }
+
+   jay_foreach_inst_in_func(f, _, I) {
+      jay_foreach_dst_index(I, dst, index) {
+         if (jay_is_uniform(dst)) {
+            BITSET_SET(uniform, index);
+         }
+      }
    }
 
    while (!u_worklist_is_empty(&worklist)) {
@@ -85,6 +91,7 @@ jay_compute_liveness(jay_function *f)
        * 1. Assume everything liveout from this block was live_in
        * 2. Clear live_in for anything defined in this block
        */
+      u_sparse_bitset_free(&block->live_in);
       u_sparse_bitset_dup(&block->live_in, &block->live_out);
 
       jay_foreach_inst_in_block_rev(block, inst) {
@@ -93,9 +100,26 @@ jay_compute_liveness(jay_function *f)
 
       /* Propagate block->live_in[] to the live_out[] of predecessors. Since
        * phis are split, they are handled naturally without special cases.
+       *
+       * The physical control flow graph is a subset of the logical control flow
+       * graph. So, edges that are in both can use the fast merge, and other
+       * edges are physical-only and need to merge only UGPRs.
        */
-      jay_foreach_predecessor(block, p) {
-         if (u_sparse_bitset_merge(&(*p)->live_out, &block->live_in)) {
+      jay_foreach_predecessor(block, p, UGPR) {
+         bool progress = false;
+
+         if (jay_cfg_has_edge(*p, block, GPR)) {
+            progress = u_sparse_bitset_merge(&(*p)->live_out, &block->live_in);
+         } else {
+            U_SPARSE_BITSET_FOREACH_SET(&block->live_in, i) {
+               if (BITSET_TEST(uniform, i)) {
+                  progress |= !u_sparse_bitset_test(&(*p)->live_out, i);
+                  u_sparse_bitset_set(&(*p)->live_out, i);
+               }
+            }
+         }
+
+         if (progress) {
             jay_worklist_push_tail(&worklist, *p);
          }
       }
@@ -110,6 +134,7 @@ jay_compute_liveness(jay_function *f)
 #endif
 
    u_worklist_fini(&worklist);
+   free(uniform);
 }
 
 /*
@@ -120,7 +145,6 @@ void
 jay_calculate_register_demands(jay_function *func)
 {
    enum jay_file *files = calloc(func->ssa_alloc, sizeof(enum jay_file));
-   BITSET_WORD *killed = BITSET_CALLOC(func->ssa_alloc);
    unsigned *max_demand = func->demand;
    memset(max_demand, 0, sizeof(func->demand));
 
@@ -149,11 +173,6 @@ jay_calculate_register_demands(jay_function *func)
             max_demand[I->dst.file] = MAX2(max_demand[I->dst.file], max);
          }
 
-         /* Collect source values to kill */
-         jay_foreach_killed(I, s, c) {
-            BITSET_SET(killed, jay_channel(I->src[s], c));
-         }
-
          /* Make destinations live */
          jay_foreach_dst(I, d) {
             demands[d.file] += util_next_power_of_two(jay_num_values(d));
@@ -179,16 +198,12 @@ jay_calculate_register_demands(jay_function *func)
             demands[d.file] -= util_next_power_of_two(n) - n;
          }
 
-         /* Late-kill sources */
+         /* Late-kill sources. Duplicated sources are only marked killed once,
+          * so we do not need to filter out duplicates.
+          */
          jay_foreach_killed(I, s, c) {
-            uint32_t index = jay_channel(I->src[s], c);
-
-            if (BITSET_TEST(killed, index)) {
-               BITSET_CLEAR(killed, index);
-
-               assert(demands[I->src[s].file] > 0);
-               --demands[I->src[s].file];
-            }
+            assert(demands[I->src[s].file] > 0);
+            --demands[I->src[s].file];
          }
 
          if (jay_debug & JAY_DBG_PRINTDEMAND) {
@@ -196,8 +211,12 @@ jay_calculate_register_demands(jay_function *func)
             jay_print_inst(stdout, I);
          }
       }
+
+      jay_foreach_ssa_file(f) {
+         block->demand_max[f] = max_demand[f];
+         block->demand_out[f] = demands[f];
+      }
    }
 
    free(files);
-   free(killed);
 }

@@ -663,14 +663,12 @@ iris_rewrite_compute_walker_pc(struct iris_batch *batch,
    for (uint32_t i = 0; i < GENX(COMPUTE_WALKER_length); i++)
       walker[i] |= dwords[i];
 
-   /*
-    * TDOD: Add INTEL_NEEDS_WA_14025112257 check once HSD is propogated for all
-    * other impacted platforms.
-    */
-   if (screen->devinfo->ver >= 20 && batch->name == IRIS_BATCH_COMPUTE) {
+#if INTEL_NEEDS_WA_14025112257
+   if (batch->name == IRIS_BATCH_COMPUTE) {
       iris_emit_pipe_control_flush(batch, "WA_14025112257",
                                    PIPE_CONTROL_STATE_CACHE_INVALIDATE);
    }
+#endif
 #else
    UNREACHABLE("Unsupported");
 #endif
@@ -1117,10 +1115,11 @@ iris_alloc_push_constants(struct iris_batch *batch)
 
    /* Divide as equally as possible with any remainder given to FRAGMENT. */
    const unsigned push_constant_kb = devinfo->max_constant_urb_size_kb;
-   const unsigned stage_size = push_constant_kb / 5;
+   const unsigned n_stages = GFX_VERx10 >= 125 ? 4 : 5;
+   const unsigned stage_size = push_constant_kb / n_stages;
    const unsigned frag_size = push_constant_kb - 4 * stage_size;
 
-   for (int i = 0; i <= MESA_SHADER_FRAGMENT; i++) {
+   for (int i = 0; i <= (GFX_VERx10 >= 125 ? MESA_SHADER_GEOMETRY : MESA_SHADER_FRAGMENT); i++) {
       iris_emit_cmd(batch, GENX(3DSTATE_PUSH_CONSTANT_ALLOC_VS), alloc) {
          alloc._3DCommandSubOpcode = 18 + i;
          alloc.ConstantBufferOffset = stage_size * i;
@@ -8835,9 +8834,9 @@ iris_upload_indirect_render_state(struct iris_context *ice,
       if (indirect->buffer) {
          struct iris_bo *bo = iris_resource_bo(indirect->buffer);
          ind.ArgumentBufferStartAddress = ro_bo(bo, indirect->offset);
-         ind.MOCS = iris_mocs(bo, &screen->isl_dev, 0);
+         ind.MOCSIndex = MOCS_GET_INDEX(iris_mocs(bo, &screen->isl_dev, 0));
          } else {
-         ind.MOCS = iris_mocs(NULL, &screen->isl_dev, 0);
+         ind.MOCSIndex = MOCS_GET_INDEX(iris_mocs(NULL, &screen->isl_dev, 0));
       }
 
       if (indirect->indirect_draw_count) {
@@ -9208,8 +9207,8 @@ struct GENX(COMPUTE_WALKER_BODY) body = {
          ind.MaxCount                   = 1;
          ind.body                       = body;
          ind.ArgumentBufferStartAddress = indirect_bo;
-         ind.MOCS                       =
-            iris_mocs(indirect_bo.bo, &screen->isl_dev, 0);
+         ind.MOCSIndex                  =
+            MOCS_GET_INDEX(iris_mocs(indirect_bo.bo, &screen->isl_dev, 0));
       }
    } else {
       if (grid->indirect)
@@ -9226,14 +9225,12 @@ struct GENX(COMPUTE_WALKER_BODY) body = {
       }
    }
 
-   /*
-    * TDOD: Add INTEL_NEEDS_WA_14025112257 check once HSD is propogated for all
-    * other impacted platforms.
-    */
-   if (screen->devinfo->ver >= 20 && batch->name == IRIS_BATCH_COMPUTE) {
+#if INTEL_NEEDS_WA_14025112257
+   if (batch->name == IRIS_BATCH_COMPUTE) {
       iris_emit_pipe_control_flush(batch, "WA_14025112257",
                                    PIPE_CONTROL_STATE_CACHE_INVALIDATE);
    }
+#endif
 
    trace_intel_end_compute(&batch->trace, grid->grid[0], grid->grid[1], grid->grid[2], 0);
 }

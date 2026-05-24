@@ -175,7 +175,7 @@ infer_nir_alu_type_from_uses_ssa(nir_def *ssa);
 static nir_alu_type
 infer_nir_alu_type_from_use(nir_src *src)
 {
-   nir_instr *instr = nir_src_parent_instr(src);
+   nir_instr *instr = nir_src_use_instr(src);
    nir_alu_type atype = nir_type_invalid;
    switch (instr->type) {
    case nir_instr_type_alu: {
@@ -2287,6 +2287,21 @@ emit_alu(struct ntv_context *ctx, nir_alu_instr *alu)
          }
          result = spirv_builder_emit_composite_construct(&ctx->builder, dest_type, components, num_components);
       }
+      break;
+   }
+
+   case nir_op_ffma_weak: {
+      assert(nir_op_infos[alu->op].num_inputs == 3);
+      result = emit_builtin_triop(ctx, GLSLstd450Fma, dest_type,
+                                  src[0], src[1], src[2]);
+      break;
+   }
+
+   case nir_op_ffma: {
+      assert(nir_op_infos[alu->op].num_inputs == 3);
+      spirv_builder_emit_cap(&ctx->builder, SpvCapabilityFMAKHR);
+      spirv_builder_emit_extension(&ctx->builder, "SPV_KHR_fma");
+      result = emit_triop(ctx, SpvOpFmaKHR, dest_type, src[0], src[1], src[2]);
       break;
    }
 
@@ -5626,7 +5641,7 @@ static void
 fixup_deref_components(nir_deref_instr *deref)
 {
    nir_foreach_use(src, &deref->def) {
-      nir_instr *user_instr = nir_src_parent_instr(src);
+      nir_instr *user_instr = nir_src_use_instr(src);
       if (user_instr->type != nir_instr_type_deref)
          continue;
       nir_deref_instr *user_deref = nir_instr_as_deref(user_instr);

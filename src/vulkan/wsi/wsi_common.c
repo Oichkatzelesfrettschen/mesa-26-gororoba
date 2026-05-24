@@ -756,6 +756,15 @@ wsi_configure_image(const struct wsi_swapchain *chain,
       __vk_append_struct(&info->create, &info->ext_mem);
    }
 
+   const VkImageCompressionControlEXT *sc_compr_ctrl =
+      vk_find_struct_const(pCreateInfo->pNext,
+                           IMAGE_COMPRESSION_CONTROL_EXT);
+   if (sc_compr_ctrl != NULL) {
+      info->img_compr_ctrl = *sc_compr_ctrl;
+      info->img_compr_ctrl.pNext = NULL;
+      __vk_append_struct(&info->create, &info->img_compr_ctrl);
+   }
+
    info->wsi = (struct wsi_image_create_info) {
       .sType = VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA,
    };
@@ -1667,7 +1676,7 @@ wsi_GetPastPresentationTimingEXT(
       vk_outarray_append_typed(VkPastPresentationTimingEXT, &timings, timing) {
          timing->targetTime = swapchain->present_timing.timings[i].target_time;
          timing->presentId = in_timing->present_id;
-         timing->timeDomain = swapchain->present_timing.time_domain;
+         timing->timeDomain = VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT;
          timing->timeDomainId = 0;
          timing->reportComplete = in_timing->complete;
 
@@ -2743,7 +2752,7 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
 
    VkMemoryRequirements reqs;
    wsi->GetBufferMemoryRequirements(chain->device, image->blit.buffer, &reqs);
-   assert(reqs.size <= info->linear_size);
+   assert(reqs.size >= info->linear_size);
 
    struct wsi_memory_allocate_info memory_wsi_info = {
       .sType = VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA,

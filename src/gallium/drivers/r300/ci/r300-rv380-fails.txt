@@ -23,6 +23,7 @@ dEQP-GLES2.functional.shaders.loops.for_constant_iterations.mixed_break_continue
 dEQP-GLES2.functional.shaders.loops.for_constant_iterations.mixed_break_continue_vertex,Fail
 dEQP-GLES2.functional.shaders.random.all_features.fragment.6,Fail
 dEQP-GLES2.functional.shaders.random.all_features.fragment.93,Fail
+dEQP-GLES2.functional.shaders.random.all_features.fragment.97,Fail
 dEQP-GLES2.functional.shaders.random.trigonometric.fragment.45,Fail
 dEQP-GLES2.functional.texture.filtering.cube.linear_linear_clamp_l8_npot,Fail
 dEQP-GLES2.functional.texture.filtering.cube.linear_linear_clamp_rgb888_npot,Fail
@@ -930,12 +931,10 @@ spec@glsl-1.10@execution@glsl-vs-vectorize-between-basic-blocks-loop,Fail
 spec@glsl-1.10@execution@loops@glsl-fs-loop-vec4-counter,Fail
 spec@glsl-1.10@execution@loops@glsl-vs-loop-break,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-dst-in-nested-loop-combined,Fail
-spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-loop,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-combined,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-inner,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-fs-vec4-indexing-temp-src-in-nested-loop-outer,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-dst-in-nested-loop-combined,Fail
-spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-src-in-loop,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-src-in-nested-loop-combined,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-src-in-nested-loop-inner,Fail
 spec@glsl-1.10@execution@temp-array-indexing@glsl-vs-vec4-indexing-temp-src-in-nested-loop-outer,Fail
@@ -1131,6 +1130,9 @@ spec@glsl-1.20@execution@clipping@vs-clip-vertex-primitives,Fail
 
 # Writes -NaN to the output and does not match the expected zero result.
 spec@glsl-1.20@execution@const-builtin@glsl-const-builtin-normalize,Fail
+
+# Loop unrolling regression
+spec@glsl-1.20@execution@fs-function-inout-array-of-structs,Fail
 
 # See issue:
 # https://gitlab.freedesktop.org/mesa/mesa/-/issues/8618

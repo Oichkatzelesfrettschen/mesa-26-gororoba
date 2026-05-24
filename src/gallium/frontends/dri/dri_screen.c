@@ -42,7 +42,6 @@
 #include "util/u_debug.h"
 #include "util/u_driconf.h"
 #include "util/format/u_format_s3tc.h"
-#include "util/log.h"
 
 #include "state_tracker/st_context.h"
 #include "driver_trace/tr_screen.h"
@@ -608,22 +607,6 @@ dri_destroy_screen(struct dri_screen *screen)
 }
 
 static void
-dri_postprocessing_init(struct dri_screen *screen)
-{
-   unsigned i;
-
-   for (i = 0; i < PP_FILTERS; i++) {
-      screen->pp_enabled[i] = driQueryOptioni(&screen->dev->option_cache,
-                                              pp_filters[i].name);
-      static bool warned = false;
-      if (screen->pp_enabled[i] && !warned) {
-         mesa_logw("The postprocessing infrastructure is deprecated");
-         warned = true;
-      }
-   }
-}
-
-static void
 dri_set_background_context(struct st_context *st,
                            struct util_queue_monitoring *queue_info)
 {
@@ -650,7 +633,6 @@ dri_init_screen(struct dri_screen *screen,
       screen->target = PIPE_TEXTURE_RECT;
 
    dri_init_options(screen);
-   dri_postprocessing_init(screen);
 
    st_api_query_versions(&screen->base,
                          &screen->options,

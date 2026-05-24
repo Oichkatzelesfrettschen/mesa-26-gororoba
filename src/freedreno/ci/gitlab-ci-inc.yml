@@ -12,6 +12,7 @@
         - src/freedreno/ci/$GPU_VERSION-skips.txt
         - src/freedreno/ci/$GPU_VERSION-slow-skips.txt
         - src/freedreno/ci/$PIGLIT_TRACES_FILE
+        - src/freedreno/ci/$REPLAY_CONFIG
         - src/freedreno/ci/$GPU_VERSION-vkd3d-fails.txt
         - src/freedreno/ci/$GPU_VERSION-vkd3d-flakes.txt
         - src/freedreno/ci/$GPU_VERSION-vkd3d-skips.txt
@@ -88,6 +89,13 @@
     - !reference [.collabora-farm-rules, rules]
     - !reference [.turnip-rules, rules]
 
+.collabora-turnip-restricted-rules:
+  stage: freedreno
+  rules:
+    - !reference [.test, rules]
+    - !reference [.restricted-rules, rules]
+    - !reference [.collabora-turnip-rules, rules]
+
 .collabora-turnip-manual-rules:
   stage: freedreno-nightly
   extends: .no-auto-retry
@@ -126,6 +134,13 @@
     - !reference [.test, rules]
     - !reference [.valve-farm-rules, rules]
     - !reference [.turnip-rules, rules]
+
+.valve-turnip-restricted-rules:
+  stage: freedreno
+  rules:
+    - !reference [.test, rules]
+    - !reference [.restricted-rules, rules]
+    - !reference [.valve-turnip-rules, rules]
 
 .valve-turnip-manual-rules:
   stage: freedreno-nightly

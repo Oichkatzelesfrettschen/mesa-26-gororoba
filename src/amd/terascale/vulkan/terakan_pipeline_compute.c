@@ -128,7 +128,7 @@ terakan_pipeline_compute_compile(
    /* Compute the effective robustness flag for this stage.  See the matching
     * comment in terakan_pipeline_graphics_compile_shaders. */
    struct vk_pipeline_robustness_state stage_rs;
-   vk_pipeline_robustness_state_fill(&device->vk, &stage_rs,
+   vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &stage_rs,
                                      create_info->pNext, stage_info->pNext);
    bool const stage_robust_buffer_access =
       device->vk.enabled_features.robustBufferAccess ||
@@ -181,7 +181,7 @@ terakan_pipeline_compute_compile(
 
    blake3_hash spirv_hash;
    struct vk_pipeline_robustness_state rs;
-   vk_pipeline_robustness_state_fill(&device->vk, &rs,
+   vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &rs,
                                      create_info->pNext, stage_info->pNext);
    vk_pipeline_hash_shader_stage(pipeline_flags, stage_info, &rs, spirv_hash);
 
@@ -279,7 +279,7 @@ terakan_pipeline_compute_compile_fix_w_variant(
    }
 
    struct vk_pipeline_robustness_state stage_rs;
-   vk_pipeline_robustness_state_fill(&device->vk, &stage_rs,
+   vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &stage_rs,
                                      create_info->pNext, stage_info->pNext);
    bool const stage_robust_buffer_access =
       device->vk.enabled_features.robustBufferAccess ||

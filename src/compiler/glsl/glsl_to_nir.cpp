@@ -790,6 +790,7 @@ void
 nir_visitor::visit(ir_loop *ir)
 {
    nir_loop *loop = nir_push_loop(&b);
+   loop->do_while = ir->do_while;
    nir_loop_add_continue_construct(loop);
    visit_exec_list(&ir->body_instructions, this);
    nir_push_continue(&b, loop);
@@ -2358,6 +2359,12 @@ nir_visitor::visit(ir_expression *ir)
       return;
    }
 
+   case ir_unop_asin:
+      result = nir_asin(&b, srcs[0]);
+      break;
+   case ir_unop_acos:
+      result = nir_acos(&b, srcs[0]);
+      break;
    case ir_unop_atan:
       result = nir_atan(&b, srcs[0]);
       break;
@@ -2562,7 +2569,7 @@ nir_visitor::visit(ir_expression *ir)
 
    case ir_binop_ldexp: result = nir_ldexp(&b, srcs[0], srcs[1]); break;
    case ir_triop_fma:
-      result = nir_ffma(&b, srcs[0], srcs[1], srcs[2]);
+      result = nir_ffma_weak(&b, srcs[0], srcs[1], srcs[2]);
       break;
    case ir_triop_lrp:
       result = nir_flrp(&b, srcs[0], srcs[1], srcs[2]);

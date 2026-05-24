@@ -29,6 +29,23 @@ radv_entrypoints = custom_target(
   depend_files : vk_entrypoints_gen_depend_files,
 )
 
+radv_drirc = custom_target(
+  'radv_drirc',
+  input  : files('radv_drirc_gen.py'),
+  output : ['radv_drirc.c', 'radv_drirc.h'],
+  command : [
+    prog_python, '@INPUT@',
+    '--import-path', join_paths(dir_source_root, 'src/util'),
+    '--drirc-src', '@OUTPUT0@',
+    '--drirc-hdr', '@OUTPUT1@',
+    '--validate', join_paths(dir_source_root, 'src/util/00-radv-defaults.conf'),
+  ],
+  depend_files : files(
+    join_paths(dir_source_root, 'src/util/drirc_gen.py'),
+    join_paths(dir_source_root, 'src/util/00-radv-defaults.conf'),
+  ),
+)
+
 libradv_files = files(
   'bvh/bvh.h',
   'layers/radv_app_workarounds.c',
@@ -235,7 +252,7 @@ endif
 
 libvulkan_radeon = shared_library(
   'vulkan_radeon',
-  [libradv_files, radv_entrypoints, sha1_h, radix_sort_spv, bvh_spv, radv_annotate_layer],
+  [libradv_files, radv_entrypoints, radv_drirc, sha1_h, radix_sort_spv, bvh_spv, radv_annotate_layer],
   vs_module_defs : vulkan_api_def,
   include_directories : [
     inc_include, inc_src, inc_amd, inc_amd_common, inc_amd_common_llvm,
@@ -342,7 +359,7 @@ if with_radv_tests
         inc_util,
         include_directories('.'),
       ],
-      link_with  : [ libvulkan_radeon ],
+      link_with  : [ libamd_common, libvulkan_radeon, libamdgpu_noop_drm_shim ],
       dependencies : [dep_llvm, dep_thread, idep_gtest, idep_nir, idep_mesautil, idep_vulkan_util_headers],
     ),
     suite : ['compiler', 'nir'],

@@ -221,10 +221,13 @@ kk_CreateDevice(VkPhysicalDevice physicalDevice,
    if (dev->residency_set.handle == NULL)
       goto fail_init;
 
-   result =
-      kk_queue_init(dev, &dev->queue, &pCreateInfo->pQueueCreateInfos[0], 0);
-   if (result != VK_SUCCESS)
-      goto fail_vab_memory;
+   if (pCreateInfo->queueCreateInfoCount > 0) {
+      result =
+         kk_queue_init(dev, &dev->queue, &pCreateInfo->pQueueCreateInfos[0], 0);
+      if (result != VK_SUCCESS)
+         goto fail_vab_memory;
+      dev->has_queue = true;
+   }
 
    result = kk_device_init_meta(dev);
    if (result != VK_SUCCESS)
@@ -256,7 +259,10 @@ fail_query_table:
 fail_meta:
    kk_device_finish_meta(dev);
 fail_mem_cache:
-   kk_queue_finish(dev, &dev->queue);
+   if (dev->has_queue) {
+      kk_queue_finish(dev, &dev->queue);
+      dev->has_queue = false;
+   }
 fail_vab_memory:
    mtl_release(dev->residency_set.handle);
    simple_mtx_destroy(&dev->residency_set.mutex);
@@ -287,11 +293,19 @@ kk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    kk_query_table_finish(dev, &dev->occlusion_queries);
    kk_destroy_sampler_heap(dev, &dev->samplers);
 
+   /* Geometry heap */
+   if (dev->heap)
+      kk_destroy_bo(dev, dev->heap);
+
    /* Release the residency set last once all BOs are released. */
    mtl_release(dev->residency_set.handle);
    simple_mtx_destroy(&dev->residency_set.mutex);
 
-   kk_queue_finish(dev, &dev->queue);
+   if (dev->has_queue) {
+      kk_queue_finish(dev, &dev->queue);
+      dev->has_queue = false;
+   }
+
    vk_device_finish(&dev->vk);
 
    vk_free(&dev->vk.alloc, dev);

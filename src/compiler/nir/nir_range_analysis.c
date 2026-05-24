@@ -829,6 +829,7 @@ process_fp_query(struct analysis_state *state, struct analysis_query *aq, uint32
       case nir_op_fmax:
       case nir_op_fmin:
       case nir_op_fmul:
+      case nir_op_fmul_rtz:
       case nir_op_fmulz:
       case nir_op_fpow:
       case nir_op_vec2:
@@ -836,7 +837,10 @@ process_fp_query(struct analysis_state *state, struct analysis_query *aq, uint32
          push_fp_query(state, alu->src[1].src.ssa);
          return;
       case nir_op_ffma:
+      case nir_op_ffma_weak:
       case nir_op_ffmaz:
+      case nir_op_fmad:
+      case nir_op_fmadz:
       case nir_op_flrp:
          push_fp_query(state, alu->src[0].src.ssa);
          push_fp_query(state, alu->src[1].src.ssa);
@@ -1030,6 +1034,7 @@ process_fp_query(struct analysis_state *state, struct analysis_query *aq, uint32
       break;
 
    case nir_op_fmul:
+   case nir_op_fmul_rtz:
    case nir_op_fmulz: {
       bool mulz = alu->op == nir_op_fmulz;
       bool src_eq = nir_alu_srcs_equal(alu, alu, 0, 1);
@@ -1318,9 +1323,11 @@ process_fp_query(struct analysis_state *state, struct analysis_query *aq, uint32
       break;
    }
 
+   case nir_op_fmad:
+   case nir_op_fmadz:
    case nir_op_ffma:
    case nir_op_ffmaz: {
-      bool mulz = alu->op == nir_op_ffmaz;
+      bool mulz = nir_alu_instr_is_mul_add_z(alu);
       bool src_eq = nir_alu_srcs_equal(alu, alu, 0, 1);
       bool src_neg_eq = !nir_src_is_const(alu->src[0].src) && nir_alu_srcs_negative_equal(alu, alu, 0, 1);
       fp_class_mask r_mul = fmul_fp_class(src_res[0], src_res[1], mulz, src_eq, src_neg_eq);
@@ -1815,6 +1822,7 @@ get_alu_uub(struct analysis_state *state, struct scalar_query q, uint32_t *resul
       break;
    case nir_op_fsat:
    case nir_op_fmul:
+   case nir_op_fmul_rtz:
    case nir_op_fmulz:
    case nir_op_f2u32:
    case nir_op_f2i32:
@@ -2019,6 +2027,7 @@ get_alu_uub(struct analysis_state *state, struct scalar_query q, uint32_t *resul
       }
       break;
    case nir_op_fmul:
+   case nir_op_fmul_rtz:
    case nir_op_fmulz:
       /* infinity/NaN starts at 0x7f800000u, negative numbers at 0x80000000 */
       if (src[0] < 0x7f800000u && src[1] < 0x7f800000u) {
@@ -2183,9 +2192,9 @@ ssa_def_bits_used(const nir_def *def, int recur)
       return all_bits;
 
    nir_foreach_use(src, def) {
-      switch (nir_src_parent_instr(src)->type) {
+      switch (nir_src_use_instr(src)->type) {
       case nir_instr_type_alu: {
-         nir_alu_instr *use_alu = nir_instr_as_alu(nir_src_parent_instr(src));
+         nir_alu_instr *use_alu = nir_instr_as_alu(nir_src_use_instr(src));
          unsigned src_idx = container_of(src, nir_alu_src, src) - use_alu->src;
 
          /* If a user of the value produces a vector result, return the
@@ -2353,7 +2362,7 @@ ssa_def_bits_used(const nir_def *def, int recur)
 
       case nir_instr_type_intrinsic: {
          nir_intrinsic_instr *use_intrin =
-            nir_instr_as_intrinsic(nir_src_parent_instr(src));
+            nir_instr_as_intrinsic(nir_src_use_instr(src));
          unsigned src_idx = src - use_intrin->src;
 
          switch (use_intrin->intrinsic) {
@@ -2414,7 +2423,7 @@ ssa_def_bits_used(const nir_def *def, int recur)
       }
 
       case nir_instr_type_phi: {
-         nir_phi_instr *use_phi = nir_instr_as_phi(nir_src_parent_instr(src));
+         nir_phi_instr *use_phi = nir_instr_as_phi(nir_src_use_instr(src));
          bits_used |= ssa_def_bits_used(&use_phi->def, recur);
          break;
       }

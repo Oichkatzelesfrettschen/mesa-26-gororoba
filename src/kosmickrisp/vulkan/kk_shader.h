@@ -21,6 +21,7 @@ struct kk_cmd_buffer;
 
 struct kk_shader_info {
    mesa_shader_stage stage;
+   bool uses_per_draw_data;
    union {
       /* Vertex shader is the pipeline, store all relevant data here. */
       struct {
@@ -31,6 +32,9 @@ struct kk_shader_info {
          /* Data needed to start render pass and bind pipeline. */
          uint32_t attribs_read;
          uint32_t sample_count;
+
+         /* Required for fragment shader cull distance discards. */
+         uint8_t num_cull_distances;
 
          /* Data needed for serialization. */
          enum mtl_primitive_topology_class topology;
@@ -91,10 +95,10 @@ static inline nir_address_format
 kk_buffer_addr_format(VkPipelineRobustnessBufferBehaviorEXT robustness)
 {
    switch (robustness) {
-   case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT:
+   case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED:
       return nir_address_format_64bit_global_32bit_offset;
-   case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT:
-   case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT:
+   case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS:
+   case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2:
       return nir_address_format_64bit_bounded_global;
    default:
       UNREACHABLE("Invalid robust buffer access behavior");
@@ -106,6 +110,8 @@ kk_nir_lower_descriptors(nir_shader *nir,
                          const struct vk_pipeline_robustness_state *rs,
                          uint32_t set_layout_count,
                          struct vk_descriptor_set_layout *const *set_layouts);
+
+bool kk_nir_lower_null_images(nir_shader *nir);
 
 bool kk_nir_lower_textures(nir_shader *nir);
 

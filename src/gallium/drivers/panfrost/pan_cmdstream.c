@@ -49,7 +49,7 @@
  * functions. */
 #if PAN_ARCH <= 9
 #define JOBX(__suffix) GENX(jm_##__suffix)
-#elif PAN_ARCH <= 13
+#elif PAN_ARCH <= 14
 #define JOBX(__suffix) GENX(csf_##__suffix)
 #else
 #error "Unsupported arch"
@@ -146,13 +146,14 @@ panfrost_sampler_compare_func(const struct pipe_sampler_state *cso)
 }
 
 static enum mali_mipmap_mode
-pan_pipe_to_mipmode(enum pipe_tex_mipfilter f)
+pan_pipe_to_mipmode(enum pipe_tex_mipfilter f, bool use_perf_trilinear)
 {
    switch (f) {
    case PIPE_TEX_MIPFILTER_NEAREST:
       return MALI_MIPMAP_MODE_NEAREST;
    case PIPE_TEX_MIPFILTER_LINEAR:
-      return MALI_MIPMAP_MODE_TRILINEAR;
+      return use_perf_trilinear ? MALI_MIPMAP_MODE_PERFORMANCE_TRILINEAR :
+                                  MALI_MIPMAP_MODE_TRILINEAR;
 #if PAN_ARCH >= 6
    case PIPE_TEX_MIPFILTER_NONE:
       return MALI_MIPMAP_MODE_NONE;
@@ -220,7 +221,9 @@ panfrost_create_sampler_state(struct pipe_context *pctx,
       cfg.wrap_mode_t = translate_tex_wrap(cso->wrap_t, using_nearest);
       cfg.wrap_mode_r = translate_tex_wrap(cso->wrap_r, using_nearest);
 
-      cfg.mipmap_mode = pan_pipe_to_mipmode(cso->min_mip_filter);
+      cfg.mipmap_mode = pan_pipe_to_mipmode(cso->min_mip_filter,
+                                            cso->max_anisotropy > 1);
+
       cfg.compare_function = panfrost_sampler_compare_func(cso);
       cfg.seamless_cube_map = cso->seamless_cube_map;
 
@@ -2409,7 +2412,7 @@ panfrost_emit_vertex_data(struct panfrost_batch *batch, uint64_t *buffers)
             cfg.pointer = addr;
             cfg.stride = stride;
             cfg.size = size;
-            cfg.divisor_r = __builtin_ctz(hw_divisor);
+            cfg.divisor_r = hw_divisor ? __builtin_ctz(hw_divisor) : 0;
          }
 
       } else {
@@ -3443,7 +3446,7 @@ panfrost_single_draw_direct(struct panfrost_batch *batch,
    struct panfrost_compiled_shader *vs = ctx->prog[MESA_SHADER_VERTEX];
    bool idvs = vs->info.vs.idvs;
 
-   UNUSED unsigned vertex_count =
+   unsigned vertex_count =
       panfrost_draw_get_vertex_count(batch, info, draw, idvs);
 
    panfrost_statistics_record(ctx, info, draw);
@@ -3473,7 +3476,8 @@ panfrost_single_draw_direct(struct panfrost_batch *batch,
                                     info->mode == MESA_PRIM_POINTS);
 #endif
 
-   JOBX(launch_draw)(batch, info, drawid_offset, draw, vertex_count);
+   if (vertex_count > 0)
+      JOBX(launch_draw)(batch, info, drawid_offset, draw, vertex_count);
    batch->draw_count++;
 }
 

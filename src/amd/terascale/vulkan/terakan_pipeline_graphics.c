@@ -1933,7 +1933,7 @@ terakan_pipeline_graphics_compile_shaders(
        * VK_EXT_pipeline_robustness per-pipeline and per-stage overrides;
        * otherwise fall back to device-level robustBufferAccess. */
       struct vk_pipeline_robustness_state stage_rs;
-      vk_pipeline_robustness_state_fill(&device->vk, &stage_rs,
+      vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &stage_rs,
                                         create_info->pNext, stage_info->pNext);
       stages[si].robust_buffer_access =
          device->vk.enabled_features.robustBufferAccess ||
@@ -2104,7 +2104,7 @@ terakan_pipeline_graphics_compile_shaders(
 
       blake3_hash spirv_hash;
       struct vk_pipeline_robustness_state rs;
-      vk_pipeline_robustness_state_fill(&device->vk, &rs,
+      vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &rs,
                                         create_info->pNext,
                                         stages[si].stage_info->pNext);
       vk_pipeline_hash_shader_stage(pipeline_flags,

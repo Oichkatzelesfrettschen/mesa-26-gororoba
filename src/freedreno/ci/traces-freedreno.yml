@@ -167,7 +167,7 @@ traces:
       checksum: d25edb433abfcde517b626b3071906ff
     zink-a618:
       label: [no-perf]
-      checksum: d25edb433abfcde517b626b3071906ff
+      checksum: a8a714fd7017fb07be6c3e904595eb0f
 
   glxgears/glxgears-2-v2.trace:
     freedreno-a306:
@@ -520,16 +520,6 @@ traces:
       label: [crash]
     zink-a618:
       label: [crash]
-
-  thedarkmod/thedarkmod.trace:
-    freedreno-a306:
-      label: [unsupported]
-    freedreno-a530:
-      label: [unsupported]
-    freedreno-a618:
-      label: [skip, broken, slow]
-    zink-a618:
-      label: [skip]
 
   jvgs/jvgs-d27fb67-v2.trace:
     freedreno-a306:

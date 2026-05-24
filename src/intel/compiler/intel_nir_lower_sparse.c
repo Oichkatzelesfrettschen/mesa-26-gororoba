@@ -136,13 +136,15 @@ split_tex_residency(nir_builder *b, nir_tex_instr *tex, bool jay)
    /* Clone the original instruction */
    nir_tex_instr *sparse_tex =
       nir_instr_as_tex(nir_instr_clone(b->shader, &tex->instr));
-   nir_def_init(&sparse_tex->instr, &sparse_tex->def, 2, tex->def.bit_size);
+   nir_def_init(&sparse_tex->instr, &sparse_tex->def,
+                tex->def.num_components, tex->def.bit_size);
    nir_builder_instr_insert(b, &sparse_tex->instr);
 
    if (jay) {
       sparse_tex->op = tex->op == nir_texop_txf ?
                        nir_texop_sparse_residency_txf_intel :
                        nir_texop_sparse_residency_intel;
+      sparse_tex->def.num_components = 2;
    }
 
    /* txl/txb/tex and tg4 both access the same pixels for residency checking
@@ -150,13 +152,14 @@ split_tex_residency(nir_builder *b, nir_tex_instr *tex, bool jay)
     * out unwanted color components, using fewer registers.
     */
    if (tex->op == nir_texop_tg4) {
-      if (!sparse_tex->is_gather_implicit_lod) {
+      if (sparse_tex->is_gather_implicit_lod) {
+         assert(nir_tex_instr_src_index(sparse_tex, nir_tex_src_lod) == -1);
+      } else if (nir_tex_instr_src_index(sparse_tex, nir_tex_src_lod) == -1 &&
+                 nir_tex_instr_src_index(sparse_tex, nir_tex_src_bias) == -1) {
          /* Add explicit LOD 0 */
          nir_builder bb = nir_builder_at(nir_after_instr(&tex->instr));
          nir_tex_instr_add_src(sparse_tex, nir_tex_src_lod,
-                               nir_imm_int(&bb, 0));
-      } else {
-         assert(nir_tex_instr_src_index(sparse_tex, nir_tex_src_lod) == -1);
+                            nir_imm_int(&bb, 0));
       }
 
       if (jay)

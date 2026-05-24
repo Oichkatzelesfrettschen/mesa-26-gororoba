@@ -14,6 +14,8 @@
 void ac_nir_set_options(const struct ac_compiler_info *info, bool use_llvm,
                         nir_shader_compiler_options *options)
 {
+   memset(options, 0, sizeof(*options));
+
    /*        |---------------------------------- Performance & Availability --------------------------------|
     *        |MAD/MAC/MADAK/MADMK|MAD_LEGACY|MAC_LEGACY|    FMA     |FMAC/FMAAK/FMAMK|FMA_LEGACY|PK_FMA_F16,|Best choice
     * Arch   |    F32,F16,F64    | F32,F16  | F32,F16  |F32,F16,F64 |    F32,F16     |   F32    |PK_FMAC_F16|F16,F32,F64
@@ -34,7 +36,17 @@ void ac_nir_set_options(const struct ac_compiler_info *info, bool use_llvm,
     * gfx10 and older prefer MAD for F32 because of the legacy instruction.
     */
 
-   memset(options, 0, sizeof(*options));
+   options->float_mul_add32 = nir_float_muladd_support_has_ffma;
+   if (info->has_mad32)
+      options->float_mul_add32 |= nir_float_muladd_support_prefers_split;
+
+   if (info->gfx_level >= GFX8) {
+      options->float_mul_add16 = nir_float_muladd_support_has_ffma;
+      if (info->gfx_level == GFX8)
+         options->float_mul_add16 |= nir_float_muladd_support_prefers_split;
+   }
+
+   options->float_mul_add64 = nir_float_muladd_support_has_ffma;
    options->vertex_id_zero_based = true;
    options->lower_scmp = true;
    options->lower_flrp16 = true;
@@ -90,7 +102,7 @@ void ac_nir_set_options(const struct ac_compiler_info *info, bool use_llvm,
    options->has_msad = true;
    options->has_shfr32 = true;
    options->has_mul24_relaxed = true;
-   options->has_f2e4m3fn_satfn = !use_llvm && info->gfx_level >= GFX12;
+   options->has_f2e4m3fn_satfn = !use_llvm && info->gfx_level >= GFX11_7;
    options->has_atomic_isub = true;
    options->has_atomic_load_store = true;
    options->lower_int64_options = nir_lower_imul64 | nir_lower_imul_high64 | nir_lower_imul_2x32_64 | nir_lower_divmod64 |
@@ -218,6 +230,39 @@ ac_nir_unpack_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct a
    return ac_nir_unpack_value(b, value, rshift, bitwidth);
 }
 
+/* This lowers small indirect array derefs to if-else trees. We might want to do this before
+ * ac_nir_lower_indirect_derefs() to lower small array derefs to if-else trees earlier than
+ * lowering large array derefs to scratch. This is because we want to do the scratch lowering
+ * as late as possible (because scratch access isn't very optimizable), but the if-else tree
+ * lowering can be optimized. For example, an indirect access where we can know that all
+ * elements that might be accessed are equal could be replaced with a use of that element, or
+ * nir_opt_peephole_select() can flatten some of the if-else tree. */
+bool
+ac_nir_lower_indirect_derefs_early(nir_shader *shader)
+{
+   struct set vars;
+   _mesa_pointer_set_init(&vars, NULL);
+   nir_foreach_function_impl(impl, shader) {
+      nir_foreach_function_temp_variable(var, impl) {
+         unsigned var_size, var_align;
+         glsl_get_natural_size_align_bytes(var->type, &var_size, &var_align);
+         if (var_size < 256)
+            _mesa_set_add(&vars, var);
+      }
+   }
+
+   bool progress = false;
+   if (vars.entries)
+      NIR_PASS(progress, shader, nir_lower_indirect_var_derefs_to_if_else_trees, &vars);
+
+   _mesa_set_fini(&vars, NULL);
+
+   return progress;
+}
+
+/* This lowers all indirect array derefs to either scratch adccess or if-else trees, ensuring
+ * that none remains.
+ */
 bool
 ac_nir_lower_indirect_derefs(nir_shader *shader)
 {

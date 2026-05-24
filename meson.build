@@ -115,6 +115,7 @@ with_vulkan_anti_lag_layer = get_option('vulkan-layers').contains('anti-lag')
 with_tools = get_option('tools')
 if with_tools.contains('all')
   with_tools = [
+    'amd',
     'asahi',
     'dlclose-skip',
     'drm-shim',
@@ -357,7 +358,7 @@ with_vdrm = [
 ].contains(true)
 
 with_dri = false
-if with_gallium and (system_has_kms_drm or (freedreno_kmds.contains('kgsl') and with_gallium_zink))
+if with_gallium and (system_has_kms_drm or (with_gallium_zink and (freedreno_kmds.contains('kgsl') or host_machine.system() == 'darwin')))
   _glx = get_option('glx')
   _egl = get_option('egl')
   if _glx == 'dri' or _egl.enabled() or (_glx == 'disabled' and _egl.allowed())
@@ -446,6 +447,15 @@ if _codecs.contains('all')
 elif _codecs.contains('all_free')
   _codecs += free_codecs
 endif
+
+with_video_encode = false
+foreach c : _codecs
+  if c.contains('enc')
+    with_video_encode = true
+    break
+  endif
+endforeach
+
 foreach c : all_codecs
    pre_args += '-DVIDEO_CODEC_@0@=@1@'.format(c.to_upper(), _codecs.contains(c).to_int())
 endforeach
@@ -740,7 +750,6 @@ _va_drivers = [
 ]
 
 allow_fallback_for_libva = get_option('allow-fallback-for').contains('libva')
-fallback_libva_options = []
 _va = get_option('gallium-va') \
   .require(_va_drivers.contains(true),
            error_message : 'VA state tracker requires at least one of the following gallium drivers: r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video), virgl.')
@@ -748,8 +757,8 @@ _dep_va_name = host_machine.system() == 'windows' ? 'libva-win32' : 'libva'
 dep_va = dependency(
   _dep_va_name, version : '>= 1.8.0',
   required : _va,
-  allow_fallback: allow_fallback_for_libva,
-  default_options: fallback_libva_options
+  allow_fallback : allow_fallback_for_libva,
+  default_options : [ 'c_std=none' ]
 )
 if dep_va.found()
   dep_va_headers = dep_va.partial_dependency(compile_args : true, includes : true)
@@ -941,6 +950,7 @@ with_llvm = with_llvm \
 
 with_poly = [
   with_gallium_asahi, with_asahi_vk, with_tools.contains('asahi'),
+  with_kosmickrisp_vk,
 ].contains(true)
 
 dep_clc = null_dep
@@ -1240,6 +1250,8 @@ endif
 c_msvc_compat_args = []
 no_override_init_args = []
 cpp_msvc_compat_args = []
+soong_compat_c_args = []
+soong_compat_cpp_args = []
 ld_args_gc_sections = []
 if cc.get_argument_syntax() == 'msvc'
   _trial = [
@@ -1359,6 +1371,40 @@ else
   ]
   c_msvc_compat_args += cc.get_supported_arguments(_trial_msvc)
   cpp_msvc_compat_args += cpp.get_supported_arguments(_trial_msvc)
+
+  # Check for C and C++ arguments for Soong compatibility.
+  _trial_soong_c = [
+    '-Werror=date-time',
+    '-Werror=gnu-alignof-expression',
+    '-Werror=ignored-qualifiers',
+    '-Werror=implicit-fallthrough',
+    '-Werror=int-conversion',
+    '-Werror=missing-prototypes',
+    '-Werror=pragma-pack',
+    '-Werror=pragma-pack-suspicious-include',
+    '-Werror=sizeof-array-div',
+    '-Werror=string-plus-int',
+    '-Werror=unreachable-code-loop-increment',
+  ]
+  _trial_soong_cpp = [
+    '-D_LIBCPP_ENABLE_THREAD_SAFETY_ANNOTATIONS',
+    '-Werror=date-time',
+    '-Werror=gnu-alignof-expression',
+    '-Werror=ignored-qualifiers',
+    '-Werror=implicit-fallthrough',
+    '-Werror=pragma-pack',
+    '-Werror=pragma-pack-suspicious-include',
+    '-Werror=sizeof-array-div',
+    '-Werror=string-plus-int',
+    '-Werror=unreachable-code-loop-increment',
+  ]
+  if cpp.get_id() == 'gcc'
+    _trial_soong_cpp += '-Werror=missing-declarations'
+  else
+    _trial_soong_cpp += '-Werror=missing-prototypes'
+  endif
+  soong_compat_c_args += cc.get_supported_arguments(_trial_soong_c)
+  soong_compat_cpp_args += cpp.get_supported_arguments(_trial_soong_cpp)
 endif
 
 # set linker arguments
@@ -1799,7 +1845,7 @@ endif
 dep_libdrm_amdgpu = null_dep
 dep_libdrm_intel = null_dep
 
-_drm_amdgpu_ver = '2.4.121'
+_drm_amdgpu_ver = '2.4.133'
 _drm_intel_ver = '2.4.75'
 _drm_ver = '2.4.109'
 
@@ -2321,7 +2367,7 @@ renderdoc_integration_supported = [
   'linux',
   'android',
 ].contains(host_machine.system())
-pre_args += '-DHAVE_RENDERDOC_INTEGRATION=@0@'.format(renderdoc_integration_supported)
+pre_args += '-DHAVE_RENDERDOC_INTEGRATION=@0@'.format(renderdoc_integration_supported.to_int())
 
 with_teflon = get_option('teflon')
 if with_teflon and with_tests
@@ -2531,6 +2577,7 @@ if with_any_vk
   video_apis += 'vulkan'
 endif
 video_summary += {'APIs': video_apis.length() != 0 ? video_apis : false}
+video_summary += {'Encoding': with_video_encode}
 summary(video_summary, section: 'Video', bool_yn: true, list_sep: ' ')
 
 llvm_summary = {'Required': with_llvm}

@@ -207,13 +207,13 @@ v3d_init_compute_caps(struct v3d_screen *screen)
         /* GL_MAX_COMPUTE_WORK_GROUP_SIZE */
         caps->max_block_size[0] =
         caps->max_block_size[1] =
-        caps->max_block_size[2] = 256;
+        caps->max_block_size[2] = V3D_MAX_CSD_WG_SIZE;
 
         /* GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS: This is
          * limited by WG_SIZE in the CSD.
          */
         caps->max_threads_per_block =
-        caps->max_variable_threads_per_block = 256;
+        caps->max_variable_threads_per_block = V3D_MAX_CSD_WG_SIZE;
 
         /* GL_MAX_COMPUTE_SHARED_MEMORY_SIZE */
         caps->max_local_size = 32768;
@@ -582,9 +582,6 @@ v3d_screen_get_compiler_options(struct pipe_screen *pscreen,
                 .lower_unpack_32_2x16_split = true,
                 .lower_fdiv = true,
                 .lower_find_lsb = true,
-                .lower_ffma16 = true,
-                .lower_ffma32 = true,
-                .lower_ffma64 = true,
                 .lower_flrp32 = true,
                 .lower_fpow = true,
                 .lower_fsqrt = true,
@@ -806,8 +803,8 @@ v3d_screen_create(int fd, const struct pipe_screen_config *config,
         if (!screen->perfcnt)
                 goto fail;
 
-        driParseConfigFiles(config->options, config->options_info, 0, "v3d",
-                            NULL, NULL, NULL, 0, NULL, 0);
+        driParseConfigFiles(config->options, config->options_info,
+                            &(driConfigFileParseParams) { .driverName = "v3d" });
 
         /* We have to driCheckOption for the simulator mode to not assertion
          * fail on not having our XML config.

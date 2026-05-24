@@ -145,7 +145,7 @@ tag_src(nir_src *src, validate_state *state)
    }
 }
 
-/* Due to tagging, it's not safe to use nir_src_parent_instr during the main
+/* Due to tagging, it's not safe to use nir_src_use_instr during the main
  * validate loop. This is a tagging-aware version.
  */
 static nir_instr *
@@ -176,7 +176,7 @@ static void
 validate_if_src(nir_src *src, validate_state *state)
 {
    validate_src_tag(src, state);
-   validate_assert(state, nir_src_parent_if(src) == state->if_stmt);
+   validate_assert(state, nir_src_use_if(src) == state->if_stmt);
    validate_assert(state, src->ssa != NULL);
    validate_assert(state, src->ssa->num_components == 1);
 }
@@ -184,11 +184,11 @@ validate_if_src(nir_src *src, validate_state *state)
 static void
 validate_src(nir_src *src, validate_state *state)
 {
-   /* Validate the tag first, so that nir_src_parent_instr is valid */
+   /* Validate the tag first, so that nir_src_use_instr is valid */
    validate_src_tag(src, state);
 
    /* Source assumed to be instruction, use validate_if_src for if */
-   validate_assert(state, nir_src_parent_instr(src) == state->instr);
+   validate_assert(state, nir_src_use_instr(src) == state->instr);
 
    validate_assert(state, src->ssa != NULL);
 }
@@ -761,9 +761,11 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
    case nir_intrinsic_vild_nv: {
       int base = nir_intrinsic_base(instr);
       nir_src src = *nir_get_io_offset_src(instr);
+      nir_src *uniform_src = nir_get_io_uniform_offset_src(instr);
       unsigned const_bits = nir_get_io_base_size_nv(instr);
 
-      if (nir_src_is_const(src) && nir_src_as_int(src) == 0) {
+      if (nir_src_is_const(src) && nir_src_as_int(src) == 0 &&
+          (!uniform_src || (nir_src_is_const(*uniform_src) && nir_src_as_int(*uniform_src) == 0))) {
          validate_assert(state, base >= 0 && base < BITFIELD_MASK(const_bits));
       } else {
          int32_t max = BITFIELD_MASK(const_bits - 1);
@@ -771,8 +773,11 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
          validate_assert(state, base >= min && base < max);
       }
 
+      if (uniform_src)
+         validate_assert(state, uniform_src->ssa->bit_size >= src.ssa->bit_size);
+
       if (instr->intrinsic == nir_intrinsic_load_global_nv) {
-         validate_assert(state, instr->src[1].ssa->bit_size == 1);
+         validate_assert(state, instr->src[2].ssa->bit_size == 1);
       }
 
       break;
@@ -1030,7 +1035,8 @@ validate_tex_instr(nir_tex_instr *instr, validate_state *state)
       case nir_tex_src_bias:
          validate_assert(state, instr->op == nir_texop_txb ||
                                    instr->op == nir_texop_tg4 ||
-                                   instr->op == nir_texop_lod);
+                                   instr->op == nir_texop_lod ||
+                                   instr->op == nir_texop_sparse_residency_intel);
          break;
 
       case nir_tex_src_lod:
@@ -1795,13 +1801,13 @@ validate_src_dominance(nir_src *src, void *_state)
 {
    validate_state *state = _state;
 
-   if (nir_def_block(src->ssa) == nir_src_parent_instr(src)->block) {
+   if (nir_def_block(src->ssa) == nir_src_use_instr(src)->block) {
       validate_assert(state, src->ssa->index < state->impl->ssa_alloc);
       validate_assert(state, BITSET_TEST(state->ssa_defs_found,
                                          src->ssa->index));
    } else {
       validate_assert(state, nir_block_dominates(nir_def_block(src->ssa),
-                                                 nir_src_parent_instr(src)->block));
+                                                 nir_src_use_instr(src)->block));
    }
    return true;
 }
@@ -2299,6 +2305,29 @@ validate_function(nir_function *func, validate_state *state)
 }
 
 static void
+validate_float_mul_add(nir_float_muladd_support muladd_support, validate_state *state)
+{
+   if (muladd_support & nir_float_muladd_support_fuse) {
+      validate_assert(state, muladd_support &
+         (nir_float_muladd_support_has_ffma | nir_float_muladd_support_has_fmad));
+   }
+
+   if (muladd_support & nir_float_muladd_support_prefers_split)
+      validate_assert(state, muladd_support & nir_float_muladd_support_has_ffma);
+}
+
+static void
+validate_options(const nir_shader_compiler_options *options, validate_state *state)
+{
+   if (!options)
+      return;
+
+   validate_float_mul_add(options->float_mul_add16, state);
+   validate_float_mul_add(options->float_mul_add32, state);
+   validate_float_mul_add(options->float_mul_add64, state);
+}
+
+static void
 init_validate_state(validate_state *state)
 {
    state->mem_ctx = ralloc_context(NULL);
@@ -2401,6 +2430,8 @@ nir_validate_shader(nir_shader *shader, const char *when)
    if (shader->info.stage == MESA_SHADER_COMPUTE)
       valid_modes |= nir_var_mem_node_payload |
                      nir_var_mem_node_payload_in;
+
+   validate_options(shader->options, &state);
 
    exec_list_validate(&shader->variables);
    nir_foreach_variable_in_shader(var, shader)

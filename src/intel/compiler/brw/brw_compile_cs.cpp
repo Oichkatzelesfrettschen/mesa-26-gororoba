@@ -122,8 +122,10 @@ brw_compile_cs(const struct brw_compiler *compiler,
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
    struct nir_shader *nir = params->base.nir;
-   const struct brw_cs_prog_key *key = params->key;
-   struct brw_cs_prog_data *prog_data = params->prog_data;
+   const struct brw_cs_prog_key *key =
+      (const struct brw_cs_prog_key *)params->base.key;
+   struct brw_cs_prog_data *prog_data =
+      (struct brw_cs_prog_data *)params->base.prog_data;
 
    const bool debug_enabled =
       brw_should_print_shader(nir, params->base.debug_flag ?
@@ -131,9 +133,6 @@ brw_compile_cs(const struct brw_compiler *compiler,
                                    params->base.source_hash);
 
    brw_prog_data_init(&prog_data->base, &params->base);
-   prog_data->uses_inline_data = brw_nir_uses_inline_data(nir) ||
-                                 key->base.uses_inline_push_addr;
-   assert(compiler->devinfo->verx10 >= 125 || !prog_data->uses_inline_data);
 
    if (!nir->info.workgroup_size_variable) {
       prog_data->local_size[0] = nir->info.workgroup_size[0];

@@ -85,6 +85,10 @@ get_src_words(struct validate_state *validate, jay_inst *I, unsigned s)
       return 4;
    }
 
+   if (I->op == JAY_OPCODE_GPR_FROM_UGPRS) {
+      return jay_ugpr_per_grf(validate->func->shader);
+   }
+
    bool vectorized = I->dst.file == UGPR &&
                      jay_num_values(I->dst) > jay_type_vector_length(I->type) &&
                      I->op != JAY_OPCODE_SEND &&
@@ -201,7 +205,7 @@ validate_inst(struct validate_state *validate, jay_inst *I)
    CHECK(!I->broadcast_flag ||
          (!jay_is_null(I->cond_flag) &&
           jay_is_null(I->dst) &&
-          I->cond_flag.file == FLAG &&
+          I->cond_flag.file == UFLAG &&
           (I->op == JAY_OPCODE_CMP || I->op == JAY_OPCODE_MOV)));
 
    /* Standard modifiers only allowed on some instructions */
@@ -214,7 +218,8 @@ validate_inst(struct validate_state *validate, jay_inst *I)
       CHECK(num_srcs >= I->predication);
 
       if (jay_inst_has_default(I)) {
-         CHECK(jay_inst_get_default(I)->file == I->dst.file);
+         jay_def dst = jay_is_null(I->dst) ? I->cond_flag : I->dst;
+         CHECK(jay_inst_get_default(I)->file == dst.file);
       }
 
       CHECK(jay_is_flag(*jay_inst_get_predicate(I)));
@@ -247,15 +252,18 @@ validate_inst(struct validate_state *validate, jay_inst *I)
       CHECK(!I->src[s].negate || jay_has_src_mods(I, s));
    }
 
-   switch (I->op) {
-   case JAY_OPCODE_SEL:
+   if (I->op == JAY_OPCODE_SEL) {
       CHECK(jay_is_flag(I->src[2]) && "SEL src[2] (selector) must be a flag");
-      break;
-   case JAY_OPCODE_SWAP:
-      CHECK(I->src[0].file == I->src[1].file && "SWAP files must match");
-      break;
-   default:
-      break;
+   } else if (I->op == JAY_OPCODE_SYNC) {
+      CHECK(validate->post_ra && "SYNC does not exist while scheduling");
+   } else if (I->op == JAY_OPCODE_GPR_FROM_UGPRS) {
+      enum jay_type src_type = jay_gpr_from_ugprs_src_type(I);
+      CHECK(I->dst.file == GPR);
+      CHECK(I->src[0].file == UGPR);
+      CHECK(jay_num_values(I->src[0]) == 16);
+      CHECK(src_type == JAY_TYPE_U8 || src_type == JAY_TYPE_U16);
+      CHECK(jay_gpr_from_ugprs_stride(I) <= 16 / jay_type_size_bits(src_type));
+      CHECK(jay_gpr_from_ugprs_index(I) < 16 / jay_type_size_bits(src_type));
    }
 }
 
@@ -270,21 +278,30 @@ jay_validate_function(struct validate_state *validate)
       validate->block = block;
       validate->I = NULL;
 
-      CHECK(block->successors[0] || !block->successors[1]);
+      CHECK(block->logical_succs[0] || !block->logical_succs[1]);
 
       /* Post-RA we can remove physical jumps though they exist logically */
-      if (block->successors[1] && !validate->post_ra) {
+      if (block->logical_succs[1] && !validate->post_ra) {
          CHECK(jay_block_ending_jump(block) != NULL);
+      }
+
+      bool uniform_phi = false;
+      jay_foreach_phi_src_in_block(block, phi) {
+         uniform_phi |= jay_is_uniform(phi->src[0]);
       }
 
       /* If a block has multiple successors, and one of them has multiple
        * predecessors, then we've detected a critical edge.
        */
-      if (jay_num_successors(block) > 1 && !validate->post_ra) {
-         jay_foreach_successor(block, succ) {
-            if (jay_num_predecessors(succ) > 1) {
-               chirp(validate, "Critical edge (B%u -> B%u) is not allowed",
-                     block->index, succ->index);
+      for (enum jay_file file = GPR; file <= (uniform_phi ? UGPR : GPR);
+           ++file) {
+         if (jay_num_successors(block, file) > 1 && !validate->post_ra) {
+            jay_foreach_successor(block, succ, file) {
+               if (jay_num_predecessors(succ, file) > 1) {
+                  chirp(validate, "%s critical edge (B%u -> B%u)",
+                        file == GPR ? "Logical" : "Physical", block->index,
+                        succ->index);
+               }
             }
          }
       }

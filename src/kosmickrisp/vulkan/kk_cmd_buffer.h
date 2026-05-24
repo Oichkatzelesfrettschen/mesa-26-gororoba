@@ -37,6 +37,7 @@ struct kk_root_descriptor_table {
          uint64_t attrib_base[KK_MAX_ATTRIBS];
          uint32_t attrib_clamps[KK_MAX_ATTRIBS];
          float blend_constant[4];
+         float clip_z_coeff;
          uint32_t draw_id;
       } draw;
       struct {
@@ -68,7 +69,15 @@ struct kk_descriptor_state {
    struct kk_push_descriptor_set *push[KK_MAX_SETS];
 };
 
+struct kk_per_draw_data {
+   /* Mask of stages that need per-draw data uploaded */
+   uint32_t upload_mask;
+
+   uint32_t draw_id;
+};
+
 struct kk_attachment {
+   VkRenderingAttachmentFlagsKHR flags;
    VkFormat vk_format;
    struct kk_image_view *iview;
 
@@ -111,10 +120,11 @@ struct kk_graphics_state {
    mtl_render_pass_descriptor *render_pass_descriptor;
    bool is_depth_stencil_dynamic;
    bool is_cull_front_and_back;
+   bool is_ms_bresenham_lines;
    bool need_to_start_render_pass;
 
    enum kk_dirty dirty;
-   uint32_t sample_count;
+   uint32_t pipeline_sample_count;
 
    struct {
       enum mtl_visibility_result_mode mode;
@@ -128,7 +138,8 @@ struct kk_graphics_state {
    /* Index buffer */
    struct {
       mtl_buffer *handle;
-      uint32_t size;
+      uint64_t buffer_size;
+      uint32_t range;
       uint32_t offset;
       uint32_t restart;
       uint8_t bytes_per_index;
@@ -138,9 +149,6 @@ struct kk_graphics_state {
    struct {
       struct kk_addr_range addr_range[KK_MAX_VBUFS];
       mtl_buffer *handles[KK_MAX_VBUFS];
-      /* Required to understand maximum size of index buffer if primitive is
-       * triangle fans */
-      uint32_t max_vertices;
    } vb;
 
    /* Needed by vk_command_buffer::dynamic_graphics_state */
@@ -170,6 +178,9 @@ struct kk_cmd_buffer {
 
    /* Owned large BOs */
    struct util_dynarray large_bos;
+
+   /* Does the command buffer use the geometry heap? */
+   bool uses_heap;
 };
 
 VK_DEFINE_HANDLE_CASTS(kk_cmd_buffer, vk.base, VkCommandBuffer,
@@ -213,6 +224,11 @@ kk_cmd_buffer_dirty_all_gfx(struct kk_cmd_buffer *cmd)
    cmd->state.dirty_shaders = ~0u;
    cmd->state.gfx.dirty = ~0u;
    cmd->state.gfx.descriptors.root_dirty = true;
+
+   /* We just flushed out the heap use. If we want to use it again, we'll need
+    * to queue a free for it again.
+    */
+   cmd->uses_heap = false;
 }
 
 void kk_cmd_release_dynamic_ds_state(struct kk_cmd_buffer *cmd);

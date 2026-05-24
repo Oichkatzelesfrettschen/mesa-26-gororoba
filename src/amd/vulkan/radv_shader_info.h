@@ -14,7 +14,6 @@
 #include <inttypes.h>
 #include <stdbool.h>
 
-#include "util/set.h"
 #include "ac_nir.h"
 #include "radv_constants.h"
 #include "radv_shader_args.h"
@@ -124,7 +123,6 @@ struct radv_shader_info {
       uint64_t tcs_inputs_via_lds;
       uint32_t vb_desc_usage_mask;
       uint32_t input_slot_usage_mask;
-      uint32_t num_outputs; /* For NGG streamout only */
       uint8_t num_linked_outputs;
       uint8_t num_attributes;
       bool needs_draw_id : 1;
@@ -151,7 +149,6 @@ struct radv_shader_info {
    } gs;
    struct {
       uint32_t tcs_vertices_out;
-      uint32_t num_outputs;            /* For NGG streamout only */
       uint8_t num_linked_inputs;       /* Number of reserved per-vertex input slots in VRAM. */
       uint8_t num_linked_patch_inputs; /* Number of reserved per-patch input slots in VRAM. */
       uint8_t num_linked_outputs;
@@ -329,7 +326,7 @@ struct radv_shader_regs {
 
 void radv_nir_shader_info_init(mesa_shader_stage stage, mesa_shader_stage next_stage, struct radv_shader_info *info);
 
-void radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *nir,
+void radv_nir_shader_info_pass(const struct radv_compiler_info *compiler_info, const struct nir_shader *nir,
                                const struct radv_shader_layout *layout, const struct radv_shader_stage_key *stage_key,
                                const struct radv_graphics_state_key *gfx_state,
                                const enum radv_pipeline_type pipeline_type, bool consider_force_vrs,
@@ -337,16 +334,17 @@ void radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shad
 
 void radv_get_esgs_gsvs_ring_size(const struct radv_device *device, struct radv_shader_regs *regs,
                                   const struct radv_shader_info *es_info, const struct radv_shader_info *gs_info);
-void radv_get_legacy_gs_info(const struct radv_device *device, struct radv_shader_info *es_info, struct radv_shader_info *gs_info);
+void radv_get_legacy_gs_info(const struct radv_compiler_info *compiler_info, struct radv_shader_info *es_info,
+                             struct radv_shader_info *gs_info);
 
-void gfx10_get_ngg_info(const struct radv_device *device, struct radv_shader_info *es_info,
+void gfx10_get_ngg_info(const struct radv_compiler_info *compiler_info, struct radv_shader_info *es_info,
                         struct radv_shader_info *gs_info, struct gfx10_ngg_info *out);
 
 void gfx10_ngg_set_esgs_ring_itemsize(struct radv_shader_info *es_info, struct radv_shader_info *gs_info,
                                       struct gfx10_ngg_info *out);
 
-void radv_nir_shader_info_link(struct radv_device *device, const struct radv_graphics_state_key *gfx_state,
-                               struct radv_shader_stage *stages);
+void radv_nir_shader_info_link(const struct radv_compiler_info *compiler_info,
+                               const struct radv_graphics_state_key *gfx_state, struct radv_shader_stage *stages);
 
 enum ac_hw_stage radv_select_hw_stage(const struct radv_shader_info *const info, const enum amd_gfx_level gfx_level);
 

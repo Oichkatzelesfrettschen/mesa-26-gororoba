@@ -328,79 +328,34 @@ vk_pipeline_hash_shader_stage(VkPipelineCreateFlags2KHR pipeline_flags,
    _mesa_blake3_compute(blake_hash, sizeof(blake_hash), stage_blake3);
 }
 
-static VkPipelineRobustnessBufferBehaviorEXT
-vk_device_default_robust_buffer_behavior(const struct vk_device *device)
-{
-   if (device->enabled_features.robustBufferAccess2) {
-      return VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT;
-   } else if (device->enabled_features.robustBufferAccess) {
-      return VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT;
-   } else {
-      return VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT;
-   }
-}
-
-static VkPipelineRobustnessImageBehaviorEXT
-vk_device_default_robust_image_behavior(const struct vk_device *device)
-{
-   if (device->enabled_features.robustImageAccess2) {
-      return VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_2_EXT;
-   } else if (device->enabled_features.robustImageAccess) {
-      return VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_EXT;
-   } else {
-      return VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED_EXT;
-   }
-}
-
 void
-vk_pipeline_robustness_state_fill(const struct vk_device *device,
+vk_pipeline_robustness_state_fill(const struct vk_pipeline_robustness_state *device_robustness_state,
                                   struct vk_pipeline_robustness_state *rs,
                                   const void *pipeline_pNext,
                                   const void *shader_stage_pNext)
 {
-   *rs = (struct vk_pipeline_robustness_state) {
-      .uniform_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT,
-      .storage_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT,
-      .vertex_inputs = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT,
-      .images = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT_EXT,
-      .null_uniform_buffer_descriptor = device->enabled_features.nullDescriptor,
-      .null_storage_buffer_descriptor = device->enabled_features.nullDescriptor,
-   };
+   /* Use the device robustness state by default. */
+   *rs = *device_robustness_state;
 
    const VkPipelineRobustnessCreateInfoEXT *shader_info =
       vk_find_struct_const(shader_stage_pNext,
                            PIPELINE_ROBUSTNESS_CREATE_INFO_EXT);
-   if (shader_info) {
-      rs->storage_buffers = shader_info->storageBuffers;
-      rs->uniform_buffers = shader_info->uniformBuffers;
-      rs->vertex_inputs = shader_info->vertexInputs;
-      rs->images = shader_info->images;
-   } else {
-      const VkPipelineRobustnessCreateInfoEXT *pipeline_info =
-         vk_find_struct_const(pipeline_pNext,
-                              PIPELINE_ROBUSTNESS_CREATE_INFO_EXT);
-      if (pipeline_info) {
-         rs->storage_buffers = pipeline_info->storageBuffers;
-         rs->uniform_buffers = pipeline_info->uniformBuffers;
-         rs->vertex_inputs = pipeline_info->vertexInputs;
-         rs->images = pipeline_info->images;
-      }
+   const VkPipelineRobustnessCreateInfoEXT *pipeline_info =
+      vk_find_struct_const(pipeline_pNext,
+                           PIPELINE_ROBUSTNESS_CREATE_INFO_EXT);
+
+   const VkPipelineRobustnessCreateInfoEXT *robustness_info =
+      shader_info ? shader_info : pipeline_info;
+   if (robustness_info) {
+      if (robustness_info->storageBuffers != VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT)
+         rs->storage_buffers = robustness_info->storageBuffers;
+      if (robustness_info->uniformBuffers != VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT)
+         rs->uniform_buffers = robustness_info->uniformBuffers;
+      if (robustness_info->vertexInputs != VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT)
+         rs->vertex_inputs = robustness_info->vertexInputs;
+      if (robustness_info->images != VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT_EXT)
+         rs->images = robustness_info->images;
    }
-
-   if (rs->storage_buffers ==
-       VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT)
-      rs->storage_buffers = vk_device_default_robust_buffer_behavior(device);
-
-   if (rs->uniform_buffers ==
-       VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT)
-      rs->uniform_buffers = vk_device_default_robust_buffer_behavior(device);
-
-   if (rs->vertex_inputs ==
-       VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT)
-      rs->vertex_inputs = vk_device_default_robust_buffer_behavior(device);
-
-   if (rs->images == VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT_EXT)
-      rs->images = vk_device_default_robust_image_behavior(device);
 }
 
 static void
@@ -949,8 +904,8 @@ vk_pipeline_hash_precomp_shader_stage(struct vk_device *device,
                                       struct vk_pipeline_stage *stage)
 {
    struct vk_pipeline_robustness_state rs;
-   vk_pipeline_robustness_state_fill(device, &rs, pipeline_info_pNext,
-                                     info->pNext);
+   vk_pipeline_robustness_state_fill(&device->robustness_state, &rs,
+                                     pipeline_info_pNext, info->pNext);
 
    vk_pipeline_hash_shader_stage_blake3(pipeline_flags, info,
                                         &rs, stage->precomp_key);
@@ -985,9 +940,8 @@ vk_pipeline_precompile_shader(struct vk_device *device,
       return VK_PIPELINE_COMPILE_REQUIRED;
 
    struct vk_pipeline_robustness_state rs;
-   vk_pipeline_robustness_state_fill(device, &rs,
-                                     pipeline_info_pNext,
-                                     info->pNext);
+   vk_pipeline_robustness_state_fill(&device->robustness_state, &rs,
+                                     pipeline_info_pNext, info->pNext);
 
    const struct nir_shader_compiler_options *nir_options =
       ops->get_nir_options(device->physical, stage->stage, &rs);
@@ -1317,7 +1271,7 @@ vk_pipeline_to_shader_flags(VkPipelineCreateFlags2KHR pipeline_flags,
        pipeline_layout != NULL &&
        (pipeline_layout->create_flags &
         VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT))
-      shader_flags |= VK_SHADER_CREATE_INDEPENDENT_SETS_BIT_MESA;
+      shader_flags |= VK_SHADER_CREATE_INDEPENDENT_SETS_BIT_KHR;
 
    return shader_flags;
 }
@@ -2771,6 +2725,20 @@ struct vk_rt_pipeline {
 
    uint8_t dynamic_descriptor_offsets[MESA_VK_MAX_DESCRIPTOR_SETS];
 };
+
+uint32_t
+vk_pipeline_get_rt_scratch_size(struct vk_pipeline *pipeline)
+{
+   assert(pipeline->bind_point == VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
+   return container_of(pipeline, struct vk_rt_pipeline, base)->scratch_size;
+}
+
+uint32_t
+vk_pipeline_get_rt_ray_queries(struct vk_pipeline *pipeline)
+{
+   assert(pipeline->bind_point == VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR);
+   return container_of(pipeline, struct vk_rt_pipeline, base)->ray_queries;
+}
 
 static struct vk_rt_stage
 vk_rt_stage_ref(struct vk_rt_stage *stage)

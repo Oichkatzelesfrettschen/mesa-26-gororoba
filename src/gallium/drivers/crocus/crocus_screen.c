@@ -272,7 +272,6 @@ crocus_init_screen_caps(struct crocus_screen *screen)
    caps->texture_float_linear = true;
    caps->texture_half_float_linear = true;
    caps->polygon_offset_clamp = true;
-   caps->tgsi_tex_txf_lz = true;
    caps->multisample_z_resolve = true;
    caps->shader_group_vote = true;
    caps->vs_window_space_position = true;
@@ -573,8 +572,8 @@ crocus_screen_create(int fd, const struct pipe_screen_config *config)
    screen->aperture_bytes = get_aperture_size(fd);
    screen->aperture_threshold = screen->aperture_bytes * 3 / 4;
 
-   driParseConfigFiles(config->options, config->options_info, 0, "crocus",
-                       NULL, NULL, NULL, 0, NULL, 0);
+   driParseConfigFiles(config->options, config->options_info,
+                       &(driConfigFileParseParams) { .driverName = "crocus" });
 
    bool bo_reuse = false;
    int bo_reuse_mode = driQueryOptioni(config->options, "bo_reuse");

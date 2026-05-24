@@ -107,7 +107,7 @@ lower_urb_read_logical_send_xe2(const brw_builder &bld, brw_urb_inst *urb)
                              LSC_CACHE(devinfo, LOAD, L1UC_L3UC));
 
 
-   send->mlen = lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, send->exec_size);
+   send->mlen = brw_lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, send->exec_size);
    send->ex_mlen = 0;
    send->header_size = 0;
    send->has_side_effects = true;
@@ -238,7 +238,7 @@ lower_urb_write_logical_send_xe2(const brw_builder &bld, brw_urb_inst *urb)
 
    setup_lsc_surface_descriptors(bld, send, send->desc, brw_reg(), offset);
 
-   send->mlen = lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, send->exec_size);
+   send->mlen = brw_lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, send->exec_size);
    send->ex_mlen = ex_mlen;
    send->header_size = 0;
    send->has_side_effects = true;
@@ -777,7 +777,7 @@ lower_sampler_logical_send(const brw_builder &bld, brw_tex_inst *tex)
       sampler_bindless || is_high_sampler(devinfo, sampler) ||
       tex->residency;
 
-   unsigned header_size = needs_header ? reg_unit(devinfo) : 0, length = 0;
+   unsigned header_size = 0, length = 0;
    brw_reg sources[1 + MAX_SAMPLER_MESSAGE_SIZE];
 
    for (unsigned i = 0; i < ARRAY_SIZE(sources); i++)
@@ -1192,6 +1192,7 @@ lower_lsc_memory_logical_send(const brw_builder &bld, brw_mem_inst *mem)
    const bool coherent_access = mem->flags & MEMORY_FLAG_COHERENT_ACCESS;
    const bool has_side_effects = mem->has_side_effects();
    const bool fused_eu_disable = mem->flags & MEMORY_FLAG_FUSED_EU_DISABLE;
+   const bool can_reorder = mem->flags & MEMORY_FLAG_CAN_REORDER;
 
    const uint32_t data_size_B = lsc_data_size_bytes(data_size);
    const enum brw_reg_type data_type =
@@ -1339,12 +1340,12 @@ lower_lsc_memory_logical_send(const brw_builder &bld, brw_mem_inst *mem)
    setup_lsc_surface_descriptors(bld, send, send->desc, binding, base_offset);
 
 
-   send->mlen = lsc_msg_addr_len(devinfo, addr_size,
+   send->mlen = brw_lsc_msg_addr_len(devinfo, addr_size,
                                  send->exec_size * coord_components);
    send->ex_mlen = ex_mlen;
    send->header_size = 0;
    send->has_side_effects = has_side_effects;
-   send->is_volatile = !has_side_effects || volatile_access;
+   send->is_volatile = (!has_side_effects && !can_reorder) || volatile_access;
    send->fused_eu_disable = fused_eu_disable;
 
    /* Finally, the payload */
@@ -1405,6 +1406,7 @@ lower_hdc_memory_logical_send(const brw_builder &bld, brw_mem_inst *mem)
    const bool volatile_access = mem->flags & MEMORY_FLAG_VOLATILE_ACCESS;
    const bool fused_eu_disable = mem->flags & MEMORY_FLAG_FUSED_EU_DISABLE;
    const bool has_side_effects = mem->has_side_effects();
+   const bool can_reorder = mem->flags & MEMORY_FLAG_CAN_REORDER;
    const bool has_dest = mem->dst.file != BAD_FILE && !mem->dst.is_null();
    assert(mem->address_offset == 0);
 
@@ -1537,7 +1539,7 @@ lower_hdc_memory_logical_send(const brw_builder &bld, brw_mem_inst *mem)
 
       if (lsc_opcode_is_atomic(op)) {
          desc = brw_dp_typed_atomic_desc(devinfo, mem->exec_size, mem->group,
-                                         lsc_op_to_legacy_atomic(op),
+                                         brw_lsc_op_to_legacy_atomic(op),
                                          has_dest);
       } else {
          desc = brw_dp_typed_surface_rw_desc(devinfo, mem->exec_size,
@@ -1554,7 +1556,7 @@ lower_hdc_memory_logical_send(const brw_builder &bld, brw_mem_inst *mem)
       sfid = BRW_SFID_HDC1;
 
       if (lsc_opcode_is_atomic(op)) {
-         unsigned aop = lsc_op_to_legacy_atomic(op);
+         unsigned aop = brw_lsc_op_to_legacy_atomic(op);
          if (lsc_opcode_is_atomic_float(op)) {
             desc = brw_dp_a64_untyped_atomic_float_desc(devinfo, mem->exec_size,
                                                         data_bit_size, aop,
@@ -1580,7 +1582,7 @@ lower_hdc_memory_logical_send(const brw_builder &bld, brw_mem_inst *mem)
       sfid = surface_access ? BRW_SFID_HDC1 : BRW_SFID_HDC0;
 
       if (lsc_opcode_is_atomic(op)) {
-         unsigned aop = lsc_op_to_legacy_atomic(op);
+         unsigned aop = brw_lsc_op_to_legacy_atomic(op);
          if (lsc_opcode_is_atomic_float(op)) {
             desc = brw_dp_untyped_atomic_float_desc(devinfo, mem->exec_size,
                                                     aop, has_dest);
@@ -1610,7 +1612,7 @@ lower_hdc_memory_logical_send(const brw_builder &bld, brw_mem_inst *mem)
    send->ex_mlen = ex_mlen;
    send->header_size = header.file != BAD_FILE ? 1 : 0;
    send->has_side_effects = has_side_effects;
-   send->is_volatile = !has_side_effects || volatile_access;
+   send->is_volatile = (!has_side_effects && !can_reorder) || volatile_access;
    send->fused_eu_disable = fused_eu_disable;
 
    if (block) {
@@ -1702,7 +1704,7 @@ lower_lsc_varying_pull_constant_logical_send(const brw_builder &bld,
                    alignment >= 4 ? 4 : 1 /* num_channels */,
                    false /* transpose */,
                    LSC_CACHE(devinfo, LOAD, L1STATE_L3MOCS));
-   send->mlen = lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, send->exec_size);
+   send->mlen = brw_lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, send->exec_size);
 
    setup_lsc_surface_descriptors(bld, send, send->desc, binding, 0);
 
@@ -2415,8 +2417,7 @@ brw_lower_uniform_pull_constant_loads(brw_shader &s)
                                    send->size_written / 4,
                                    true /* transpose */,
                                    LSC_CACHE(devinfo, LOAD, L1STATE_L3MOCS));
-
-         send->mlen = lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, 1);
+         send->mlen = brw_lsc_msg_addr_len(devinfo, LSC_ADDR_SIZE_A32, 1);
          send->ex_mlen = 0;
          send->header_size = 0;
          send->has_side_effects = false;

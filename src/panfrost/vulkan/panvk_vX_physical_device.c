@@ -139,6 +139,7 @@ panvk_per_arch(get_physical_device_extensions)(
          device->kmod.dev->props.gpu_can_query_timestamp,
       .EXT_conditional_rendering = PAN_ARCH >= 10,
       .EXT_color_write_enable = true,
+      .EXT_conservative_rasterization = PAN_ARCH >= 11,
       .EXT_custom_border_color = true,
       .EXT_depth_bias_control = true,
       .EXT_depth_clamp_control = true,
@@ -150,8 +151,10 @@ panvk_per_arch(get_physical_device_extensions)(
       .EXT_display_control = true,
 #endif
       .EXT_descriptor_indexing = PAN_ARCH >= 9,
+      .EXT_dynamic_rendering_unused_attachments = true,
       .EXT_extended_dynamic_state = true,
       .EXT_extended_dynamic_state2 = true,
+      .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_acquire_unmodified = true,
       .EXT_external_memory_dma_buf = true,
       .EXT_global_priority = true,
@@ -199,6 +202,7 @@ panvk_per_arch(get_physical_device_extensions)(
       .EXT_shader_stencil_export = true,
       .EXT_shader_subgroup_ballot = true,
       .EXT_shader_subgroup_vote = true,
+      .EXT_shader_uniform_buffer_unsized_array = true,
       .EXT_subgroup_size_control = has_vk1_1,
 #ifdef PANVK_USE_WSI_PLATFORM
       .EXT_swapchain_maintenance1 = true,
@@ -484,6 +488,9 @@ panvk_per_arch(get_physical_device_features)(
       /* VK_EXT_depth_clip_enable */
       .depthClipEnable = true,
 
+      /* VK_EXT_dynamic_rendering_unused_attachments */
+      .dynamicRenderingUnusedAttachments = true,
+
       /* VK_EXT_extended_dynamic_state */
       .extendedDynamicState = true,
 
@@ -491,6 +498,39 @@ panvk_per_arch(get_physical_device_features)(
       .extendedDynamicState2 = true,
       .extendedDynamicState2LogicOp = true,
       .extendedDynamicState2PatchControlPoints = false,
+
+      /* VK_EXT_extended_dynamic_state3 */
+      .extendedDynamicState3TessellationDomainOrigin = false,
+      .extendedDynamicState3DepthClampEnable = true,
+      .extendedDynamicState3PolygonMode = false,
+      .extendedDynamicState3RasterizationSamples = true,
+      .extendedDynamicState3SampleMask = true,
+      .extendedDynamicState3AlphaToCoverageEnable = true,
+      .extendedDynamicState3AlphaToOneEnable = false,
+      .extendedDynamicState3LogicOpEnable = true,
+      .extendedDynamicState3ColorBlendEnable = true,
+      .extendedDynamicState3ColorBlendEquation = true,
+      .extendedDynamicState3ColorWriteMask = true,
+      .extendedDynamicState3RasterizationStream = false,
+      .extendedDynamicState3ConservativeRasterizationMode = PAN_ARCH >= 11,
+      .extendedDynamicState3ExtraPrimitiveOverestimationSize = false,
+      .extendedDynamicState3DepthClipEnable = true,
+      .extendedDynamicState3SampleLocationsEnable = false,
+      .extendedDynamicState3ColorBlendAdvanced = false,
+      .extendedDynamicState3ProvokingVertexMode = false,
+      .extendedDynamicState3LineRasterizationMode = true,
+      .extendedDynamicState3LineStippleEnable = false,
+      .extendedDynamicState3DepthClipNegativeOneToOne = false,
+      .extendedDynamicState3ViewportWScalingEnable = false,
+      .extendedDynamicState3ViewportSwizzle = false,
+      .extendedDynamicState3CoverageToColorEnable = false,
+      .extendedDynamicState3CoverageToColorLocation = false,
+      .extendedDynamicState3CoverageModulationMode = false,
+      .extendedDynamicState3CoverageModulationTableEnable = false,
+      .extendedDynamicState3CoverageModulationTable = false,
+      .extendedDynamicState3CoverageReductionMode = false,
+      .extendedDynamicState3RepresentativeFragmentTestEnable = false,
+      .extendedDynamicState3ShadingRateImageEnable = false,
 
       /* VK_EXT_attachment_feedback_loop_dynamic_state */
       .attachmentFeedbackLoopDynamicState = true,
@@ -573,6 +613,9 @@ panvk_per_arch(get_physical_device_features)(
 
       /* VK_EXT_shader_replicated_composites */
       .shaderReplicatedComposites = true,
+
+      /* VK_EXT_shader_uniform_buffer_unsized_array */
+      .shaderUniformBufferUnsizedArray = true,
 
       /* VK_EXT_shader_atomic_float */
       .shaderBufferFloat32Atomics = true,
@@ -731,24 +774,13 @@ panvk_per_arch(get_physical_device_properties)(
       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
 
       /* Vulkan 1.0 limits */
-      /* Maximum texture dimension is 2^16, but we're limited by the
-       * size/surface-stride fields. The size/surface_stride field is 32-bit
-       * on v10-, so let's take that as a reference for now.
-       * The following limits are chosen so we don't overflow these
-       * size/surface_stride fields. We choose them so they are a power-of-two,
-       * except for 2D/Cube dimensions where taking a power-of-two would be
-       * too limiting, so we pick power-of-two-minus-one, which makes things
-       * fit exactly in our 32-bit budget.
-       */
+      /* Maximum texture dimension is 2^16. */
       .maxImageDimension1D = (1 << 16),
-      .maxImageDimension2D = PAN_ARCH <= 10 ? (1 << 14) - 1 : (1 << 16),
-      .maxImageDimension3D = PAN_ARCH <= 10 ? (1 << 9) : (1 << 14),
-      .maxImageDimensionCube = PAN_ARCH <= 10 ? (1 << 14) - 1 : (1 << 16),
+      .maxImageDimension2D = (1 << 16),
+      .maxImageDimension3D = (1 << 16),
+      .maxImageDimensionCube = (1 << 16),
       .maxImageArrayLayers = (1 << 16),
-      /* Pre-v11 is limited to 2^27 elements of 16 byte formats due to
-         size fields of 32 bits. */
-      .maxTexelBufferElements =
-         PAN_ARCH >= 11 ? PANVK_MAX_BUFFER_SIZE : (1 << 27),
+      .maxTexelBufferElements = UINT64_C(1) << (util_logbase2(panvk_get_max_buffer_size(device) / 16)),
       /* Each uniform entry is 16-byte and the number of entries is encoded in a
        * 12-bit field, with the minus(1) modifier, which gives 2^20.
        */
@@ -886,7 +918,7 @@ panvk_per_arch(get_physical_device_properties)(
       .subPixelInterpolationOffsetBits = 8,
       .maxFramebufferWidth = (1 << 14),
       .maxFramebufferHeight = (1 << 14),
-      .maxFramebufferLayers = 256,
+      .maxFramebufferLayers = MAX_FRAMEBUFFER_LAYERS,
       .framebufferColorSampleCounts = sample_counts,
       .framebufferDepthSampleCounts = sample_counts,
       .framebufferStencilSampleCounts = sample_counts,
@@ -1090,7 +1122,7 @@ panvk_per_arch(get_physical_device_properties)(
       .storageTexelBufferOffsetSingleTexelAlignment = true,
       .uniformTexelBufferOffsetAlignmentBytes = 4,
       .uniformTexelBufferOffsetSingleTexelAlignment = true,
-      .maxBufferSize = PANVK_MAX_BUFFER_SIZE,
+      .maxBufferSize = panvk_get_max_buffer_size(device),
 
       /* Vulkan 1.4 properties */
       .lineSubPixelPrecisionBits = 8,
@@ -1155,6 +1187,17 @@ panvk_per_arch(get_physical_device_properties)(
       /* Sparse binding not supported yet. */
       .image2DViewOf3DSparse = false,
       .defaultVertexAttributeValue = VK_DEFAULT_VERTEX_ATTRIBUTE_VALUE_ZERO_ZERO_ZERO_ZERO_KHR,
+
+      /* VK_EXT_conservative_rasterization */
+      .primitiveOverestimationSize = 1.0f / 512.0f,
+      .maxExtraPrimitiveOverestimationSize = 0.0f,
+      .extraPrimitiveOverestimationSizeGranularity = 0.0f,
+      .primitiveUnderestimation = false,
+      .conservativePointAndLineRasterization = false,
+      .degenerateTrianglesRasterized = PAN_ARCH >= 14,
+      .degenerateLinesRasterized = false,
+      .fullyCoveredFragmentShaderInputVariable = false,
+      .conservativeRasterizationPostDepthCoverage = false,
 
       /* VK_EXT_custom_border_color */
       .maxCustomBorderColorSamplers = 32768,

@@ -87,21 +87,21 @@ to_brw_reg(jay_function *f,
       if (jay_type_size_bits(type) == 64) {
          type = jay_type_resize(type, 32);
       } else if (I->op == JAY_OPCODE_BFN) {
-         assert(jay_as_uint(d) < UINT16_MAX);
+         assert(jay_as_uint(d) <= UINT16_MAX);
          type = JAY_TYPE_U16;
       }
 
       R = brw_imm_ud(jay_as_uint(d));
    } else if (jay_is_null(d)) {
       R = brw_null_reg();
-   } else if (d.file == UGPR) {
-      unsigned grf = (reg >> 1) / 8;
+   } else if (d.file == UGPR || d.file == UACCUM) {
+      unsigned phys_reg = (reg >> 1) / 8;
       offset_B = ((reg >> 1) % 8) * 4;
 
       if (d.file == UGPR) {
-         R = brw_ud1_grf(grf, 0);
+         R = brw_ud1_grf(phys_reg, 0);
       } else {
-         R = brw_ud1_reg(ARF, BRW_ARF_ACCUMULATOR + (grf * 2), 0);
+         R = brw_ud1_reg(ARF, BRW_ARF_ACCUMULATOR + (phys_reg * 2), 0);
       }
 
       /* Handle 3-src restrictions and vectorized uniform code. */
@@ -133,26 +133,32 @@ to_brw_reg(jay_function *f,
             R = stride(R, 4, 2, 2);
          }
       }
-   } else if (d.file == GPR) {
-      enum jay_stride def_stride = jay_def_stride(f->shader, d);
+   } else if (d.file == GPR || d.file == ACCUM) {
+      enum jay_stride def_stride =
+         d.file == GPR ? jay_def_stride(f->shader, d) : JAY_STRIDE_4;
       uint32_t type_bits = jay_type_size_bits(type);
       unsigned stride_bits = jay_stride_to_bits(def_stride);
       unsigned simd_width = jay_simd_width_physical(f->shader, I);
 
-      unsigned grf;
+      unsigned phys_reg;
       if (def_stride == JAY_STRIDE_2) {
          /* Bit 0 selects between lo/hi halves of the GPR */
-         grf = (reg / 2) * jay_grf_per_gpr(f->shader);
+         phys_reg = (reg / 2) * jay_grf_per_gpr(f->shader);
          offset_B = (reg & 1) * 2 * f->shader->dispatch_width;
       } else {
          /* Low bits are an offset in 2-byte words into the GRF */
          unsigned mask = BITFIELD_MASK(stride_bits / 32);
-         grf = ((reg & ~mask) / 2) * jay_grf_per_gpr(f->shader);
+         phys_reg = ((reg & ~mask) / 2) * jay_grf_per_gpr(f->shader);
          offset_B = (reg & mask) * 2;
       }
 
-      R = byte_offset(xe2_vec8_grf(grf, 0),
-                      simd_offs * simd_width * stride_bits / 8);
+      if (d.file == GPR) {
+         R = xe2_vec8_grf(phys_reg, 0);
+      } else {
+         R = brw_vecn_reg(8, ARF, BRW_ARF_ACCUMULATOR + (phys_reg * 2), 0);
+      }
+
+      R = byte_offset(R, simd_offs * simd_width * stride_bits / 8);
 
       if (stride_bits == (type_bits * 4)) {
          R = stride(R, 8, 2, 4);
@@ -319,6 +325,7 @@ emit(struct brw_codegen *p,
       OP1(FBH, FBH)
       OP1(LZD, LZD)
       OP2(ROL, ROL)
+      OP2(ROR, ROR)
       OP2(AVG, AVG)
       OP2(ADD, ADD)
       OP2(MUL, MUL)
@@ -334,6 +341,7 @@ emit(struct brw_codegen *p,
       OP2(SHR, SHR)
       OP2(SHL, SHL)
       OP2(BFI1, BFI1)
+      OP2(MAC, MAC)
       OP3(BFI2, BFI2)
       OP3(ADD3, ADD3)
       OP3(CSEL, CSEL)
@@ -362,11 +370,13 @@ emit(struct brw_codegen *p,
       brw_BFN(p, dst, SRC(0), SRC(1), SRC(2), brw_imm_ud(jay_bfn_ctrl(I)));
       break;
 
-   case JAY_OPCODE_DESWIZZLE_ODD:
-      bool hi = simd_offs ? true : jay_deswizzle_odd_src2_hi(I);
+   case JAY_OPCODE_DESWIZZLE_ODD: {
+      bool hi = simd_offs == 0 ? true : jay_deswizzle_odd_src2_hi(I);
+      brw_set_default_group(p, 0);
       brw_MOV(p, dst,
               byte_offset(to_brw_reg(f, I, simd_offs, 0, false), hi ? 64 : 0));
       break;
+   }
 
    case JAY_OPCODE_DESWIZZLE_EVEN:
       brw_set_default_exec_size(p, BRW_EXECUTE_16);
@@ -403,6 +413,10 @@ emit(struct brw_codegen *p,
 
    case JAY_OPCODE_SYNC:
       brw_SYNC(p, jay_sync_op(I));
+
+      if (!jay_is_null(I->src[0])) {
+         brw_set_src0(p, brw_eu_last_inst(p), stride(SRC(0), 0, 1, 0));
+      }
       break;
 
    case JAY_OPCODE_CMP:
@@ -470,8 +484,24 @@ emit(struct brw_codegen *p,
               brw_imm_uw(jay_lane_id_expand_width(I)));
       break;
 
+   case JAY_OPCODE_GPR_FROM_UGPRS:
+      brw_MOV(p, dst,
+              byte_offset(stride(SRC(0), jay_gpr_from_ugprs_stride(I), 1, 0),
+                          jay_gpr_from_ugprs_index(I)));
+      break;
+
    case JAY_OPCODE_EXTRACT_BYTE_PER_8LANES:
       brw_MOV(p, dst, stride(retype(SRC(simd_offs), BRW_TYPE_UB), 1, 8, 0));
+      break;
+
+   case JAY_OPCODE_BYTE_PACK:
+      brw_MOV(p, stride(retype(dst, BRW_TYPE_UB), 1, 1, 0),
+              stride(retype(SRC(0), BRW_TYPE_UB), 4, 1, 0));
+      break;
+
+   case JAY_OPCODE_WORD_PACK:
+      brw_set_default_exec_size(p, util_logbase2(2 * exec_size));
+      brw_MOV(p, retype(dst, BRW_TYPE_UW), subscript(SRC(0), BRW_TYPE_UW, 0));
       break;
 
    case JAY_OPCODE_SHR_ODD_SUBSPANS_BY_4:
@@ -523,7 +553,10 @@ emit(struct brw_codegen *p,
 }
 
 struct jay_shader_bin *
-jay_to_binary(jay_shader *s, void *const_data, size_t const_data_size)
+jay_to_binary(jay_shader *s,
+              void *const_data,
+              size_t const_data_size,
+              bool debug)
 {
    struct jay_shader_bin *bin = rzalloc(s, struct jay_shader_bin);
 
@@ -568,7 +601,7 @@ jay_to_binary(jay_shader *s, void *const_data, size_t const_data_size)
 
    brw_compact_instructions(&p, start_offset, disasm);
 
-   if (INTEL_DEBUG(intel_debug_flag_for_shader_stage(s->stage)) || !valid) {
+   if (debug || !valid) {
       dump_assembly(p.store, 0, p.next_insn_offset, disasm, NULL, stdout);
    }
 

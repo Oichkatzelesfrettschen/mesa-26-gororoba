@@ -277,8 +277,10 @@ brw_compile_task(const struct brw_compiler *compiler,
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
    struct nir_shader *nir = params->base.nir;
-   const struct brw_task_prog_key *key = params->key;
-   struct brw_task_prog_data *prog_data = params->prog_data;
+   const struct brw_task_prog_key *key =
+      (const struct brw_task_prog_key *)params->base.key;
+   struct brw_task_prog_data *prog_data =
+      (struct brw_task_prog_data *)params->base.prog_data;
    const bool debug_enabled = brw_should_print_shader(nir, DEBUG_TASK, params->base.source_hash);
 
    brw_pass_tracker pt_ = {
@@ -318,9 +320,6 @@ brw_compile_task(const struct brw_compiler *compiler,
 
    prog_data->uses_drawid =
       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID);
-
-   prog_data->base.uses_inline_data = brw_nir_uses_inline_data(nir) ||
-                                      key->base.uses_inline_push_addr;
 
    brw_postprocess_nir_opts(pt);
 
@@ -966,8 +965,10 @@ brw_compile_mesh(const struct brw_compiler *compiler,
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
    struct nir_shader *nir = params->base.nir;
-   const struct brw_mesh_prog_key *key = params->key;
-   struct brw_mesh_prog_data *prog_data = params->prog_data;
+   const struct brw_mesh_prog_key *key =
+      (const struct brw_mesh_prog_key *)params->base.key;
+   struct brw_mesh_prog_data *prog_data =
+      (struct brw_mesh_prog_data *)params->base.prog_data;
    const bool debug_enabled = brw_should_print_shader(nir, DEBUG_MESH, params->base.source_hash);
 
    brw_pass_tracker pt_ = {
@@ -1035,9 +1036,6 @@ brw_compile_mesh(const struct brw_compiler *compiler,
             NULL);
 
    prog_data->autostrip_enable = brw_mesh_autostrip_enable(compiler, nir, &prog_data->map);
-
-   prog_data->base.uses_inline_data = brw_nir_uses_inline_data(nir) ||
-                                      key->base.uses_inline_push_addr;
 
    brw_postprocess_nir_opts(pt);
 
@@ -1164,14 +1162,15 @@ brw_compile_mesh(const struct brw_compiler *compiler,
          if (wa_18019110168_mapping[i] != -1)
             remap_table[i] = prog_data->map.vue_map.varying_to_slot[wa_18019110168_mapping[i]];
       }
+      uint32_t constant_data_aligned_size = align(nir->constant_data_size, 32);
       uint8_t *const_data =
          (uint8_t *) rzalloc_size(params->base.mem_ctx,
-                                  nir->constant_data_size + sizeof(remap_table));
+                                  constant_data_aligned_size + sizeof(remap_table));
       memcpy(const_data, nir->constant_data, nir->constant_data_size);
-      memcpy(const_data + nir->constant_data_size, remap_table, sizeof(remap_table));
-      g.add_const_data(const_data, nir->constant_data_size + sizeof(remap_table));
+      memcpy(const_data + constant_data_aligned_size, remap_table, sizeof(remap_table));
+      g.add_const_data(const_data, constant_data_aligned_size + sizeof(remap_table));
       prog_data->wa_18019110168_mapping_offset =
-         prog_data->base.base.const_data_offset + nir->constant_data_size;
+         prog_data->base.base.const_data_offset + constant_data_aligned_size;
    } else {
       g.add_const_data(nir->constant_data, nir->constant_data_size);
    }

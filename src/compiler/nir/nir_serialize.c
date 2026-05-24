@@ -1539,7 +1539,7 @@ read_phi(read_ctx *ctx, nir_block *blk, union packed_instr header)
        * we have to set the parent_instr manually.  It doesn't really matter
        * when we do it, so we might as well do it here.
        */
-      nir_src_set_parent_instr(&src->src, &phi->instr);
+      nir_src_set_use_instr(&src->src, &phi->instr);
 
       /* Stash it in the list of phi sources.  We'll walk this list and fix up
        * sources at the very end of read_function_impl.
@@ -1889,6 +1889,7 @@ write_loop(write_ctx *ctx, nir_loop *loop)
    blob_write_uint8(ctx->blob, loop->control);
    bool has_continue_construct = nir_loop_has_continue_construct(loop);
    blob_write_uint8(ctx->blob, has_continue_construct);
+   blob_write_uint8(ctx->blob, loop->do_while);
 
    write_cf_list(ctx, &loop->body);
    if (has_continue_construct) {
@@ -1905,6 +1906,7 @@ read_loop(read_ctx *ctx, struct exec_list *cf_list)
 
    loop->control = blob_read_uint8(ctx->blob);
    bool has_continue_construct = blob_read_uint8(ctx->blob);
+   loop->do_while = blob_read_uint8(ctx->blob);
 
    read_cf_list(ctx, &loop->body);
    if (has_continue_construct) {

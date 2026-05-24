@@ -182,7 +182,7 @@ resolve_vis_stream_patchpoints(struct tu_queue *queue,
     * streams and therefore should be avoided.
     */
    uint32_t min_vis_stream_count =
-      (TU_DEBUG(NO_CONCURRENT_BINNING) || dev->physical_device->info->chip < 7) ?
+      (!dev->instance->allow_concurrent_binning || dev->physical_device->info->chip < 7) ?
       1 : MIN2(MAX2(rp_count, 1), TU_MAX_VIS_STREAMS);
    uint32_t vis_stream_count;
 
@@ -548,7 +548,7 @@ queue_submit(struct vk_queue *_queue, struct vk_queue_submit *vk_submit)
 #ifdef HAVE_PERFETTO
    if (u_trace_should_process(&device->trace_context)) {
       for (int i = 0; i < vk_submit->command_buffer_count; i++)
-         tu_perfetto_refresh_debug_utils_object_name(
+         tu_perfetto_refresh_debug_utils_object_name(device,
             &vk_submit->command_buffers[i]->base);
    }
 #endif
