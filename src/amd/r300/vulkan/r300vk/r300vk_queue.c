@@ -54,16 +54,23 @@ viewport_vk_to_gallium(const VkViewport *vp,
  * so the buffer must be indexable through base + count rather than only count
  * elements.  The owner reference is held in transient_vbs until the submit fence
  * completes; set_vertex_buffers takes its own references. */
-static void
+static bool
 r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
                                    struct pipe_context *pipe,
                                    struct pipe_vertex_buffer *vb_cache,
                                    uint8_t binding, uint32_t base, uint32_t count,
                                    struct util_dynarray *transient_vbs)
 {
-   if (count == 0 || binding >= R300VK_MAX_VERTEX_BINDINGS ||
-       count > UINT32_MAX - base)
-      return;
+   if (count == 0)
+      return true;
+
+   if (binding >= R300VK_MAX_VERTEX_BINDINGS)
+      return false;
+
+   if (count > UINT32_MAX - base) {
+      memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
+      return false;
+   }
 
    const uint32_t total_count = base + count;
    struct pipe_resource tmpl = {
@@ -79,7 +86,7 @@ r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
    struct pipe_resource *res =
       device->screen->resource_create(device->screen, &tmpl);
    if (!res)
-      return;
+      return false;
 
    struct pipe_transfer *xfer = NULL;
    int32_t *map = pipe_buffer_map(pipe, res,
@@ -87,7 +94,7 @@ r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
                                   &xfer);
    if (!map) {
       pipe_resource_reference(&res, NULL);
-      return;
+      return false;
    }
 
    for (uint32_t i = 0; i < total_count; i++)
@@ -98,6 +105,7 @@ r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
    vb_cache[binding].buffer_offset   = 0;
    vb_cache[binding].buffer.resource = res;
    util_dynarray_append(transient_vbs, res);
+   return true;
 }
 
 static uint32_t
@@ -200,7 +208,7 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
 
       const uint32_t stride = pl->vertex_stride[b];
       const uint32_t extent = pl->vertex_binding_extent[b];
-      if (stride == 0 || extent == 0 || !vb_cache[b].buffer.resource)
+      if (extent == 0 || !vb_cache[b].buffer.resource)
          return 0;
 
       const VkDeviceSize offset = vb_cache[b].buffer_offset;
@@ -208,6 +216,9 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
       const VkDeviceSize bytes = size > offset ? size - offset : 0;
       if (bytes < extent)
          return 0;
+
+      if (stride == 0)
+         continue;
 
       const VkDeviceSize vertices = 1 + (bytes - extent) / stride;
       if (first_vertex >= vertices)
@@ -364,27 +375,34 @@ r300vk_replay_gpu(struct r300vk_device *device,
          if (skip_render_pass)
             break;
 
+         bool synthetic_streams_ready = true;
+
          /* Supply the synthetic VS-system-value stream(s) for this draw: the
           * vertex-id stream steps per vertex (firstVertex + i), the instance-id
           * stream per instance (firstInstance + i).  The velems CSO already
           * carries the matching element + instance_divisor. */
          if (bound_pipeline && bound_pipeline->needs_vertex_id_stream) {
-            r300vk_bind_synthetic_index_stream(device, pipe, vb_cache,
-                                               bound_pipeline->vertex_id_vb_binding,
-                                               e->draw.first, e->draw.count,
-                                               transient_vbs);
-            if (bound_pipeline->vertex_id_vb_binding + 1u > vb_max_used)
-               vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
-            vb_dirty = true;
+            synthetic_streams_ready =
+               r300vk_bind_synthetic_index_stream(
+                  device, pipe, vb_cache, bound_pipeline->vertex_id_vb_binding,
+                  e->draw.first, e->draw.count, transient_vbs);
+            if (synthetic_streams_ready) {
+               if (bound_pipeline->vertex_id_vb_binding + 1u > vb_max_used)
+                  vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
+               vb_dirty = true;
+            }
          }
-         if (bound_pipeline && bound_pipeline->needs_instance_id_stream) {
-            r300vk_bind_synthetic_index_stream(device, pipe, vb_cache,
-                                               bound_pipeline->instance_id_vb_binding,
-                                               e->draw.first_instance,
-                                               e->draw.instances, transient_vbs);
-            if (bound_pipeline->instance_id_vb_binding + 1u > vb_max_used)
-               vb_max_used = bound_pipeline->instance_id_vb_binding + 1u;
-            vb_dirty = true;
+         if (synthetic_streams_ready && bound_pipeline &&
+             bound_pipeline->needs_instance_id_stream) {
+            synthetic_streams_ready =
+               r300vk_bind_synthetic_index_stream(
+                  device, pipe, vb_cache, bound_pipeline->instance_id_vb_binding,
+                  e->draw.first_instance, e->draw.instances, transient_vbs);
+            if (synthetic_streams_ready) {
+               if (bound_pipeline->instance_id_vb_binding + 1u > vb_max_used)
+                  vb_max_used = bound_pipeline->instance_id_vb_binding + 1u;
+               vb_dirty = true;
+            }
          }
          /* Flush the VB cache after bind_vertex_elements_state (set by
           * BIND_PIPELINE above in the stream) so the Gallium ordering holds.
@@ -404,10 +422,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
          info.start_instance = e->draw.first_instance;
          struct pipe_draw_start_count_bias draw = {
             .start      = e->draw.first,
-            .count      =
+            .count      = synthetic_streams_ready ?
                r300vk_robust_vertex_count(bound_pipeline, vb_cache,
                                            vb_sizes, e->draw.first,
-                                           e->draw.count),
+                                           e->draw.count) : 0,
             .index_bias = 0,
          };
          if (draw.count > 0)

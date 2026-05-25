@@ -41,14 +41,14 @@
 
 static unsigned g_failures;
 
-#define CHECK(cond, name)                                                      \
-   do {                                                                        \
-      if (cond) {                                                              \
-         printf("  ok   - %s\n", (name));                                      \
-      } else {                                                                 \
-         printf("  FAIL - %s\n", (name));                                      \
-         g_failures++;                                                         \
-      }                                                                        \
+#define CHECK(cond, name)                 \
+   do {                                   \
+      if (cond) {                         \
+         printf("  ok   - %s\n", (name)); \
+      } else {                            \
+         printf("  FAIL - %s\n", (name)); \
+         g_failures++;                    \
+      }                                   \
    } while (0)
 
 /* A stack screen whose caps the lowering reads.  has_tcl = true selects the
@@ -155,9 +155,9 @@ static unsigned
 count_system_value_derefs(nir_shader *s)
 {
    unsigned count = 0;
-   nir_foreach_function_impl(impl, s) {
-      nir_foreach_block(block, impl) {
-         nir_foreach_instr(instr, block) {
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
             if (instr->type != nir_instr_type_intrinsic)
                continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
