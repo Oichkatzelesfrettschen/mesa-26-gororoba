@@ -800,21 +800,23 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
       c->error = true;
       break;
 
-   /* VS system values */
+   /* VS system values never reach the RC emitter on r300.  The GL state
+    * tracker cannot produce them: r300_screen.c advertises GLSL 1.20
+    * (glsl_feature_level = 120) with no_integers = true and exposes no
+    * PIPE_CAP_VERTEX_ID or draw-parameters cap, so gl_VertexID / gl_InstanceID
+    * / gl_DrawID never lower into a VS, and load_invocation_id has no GS/CS
+    * stage to originate from.  The NIR-direct path is reached only when
+    * has_tcl is true (r300_create_vs_state in r300_state.c); SW-TCL chips
+    * route the VS to the draw module instead.  No RC input slot exists for a
+    * system value either -- r300_tgsi_to_rc.c has no TGSI_FILE_SYSTEM_VALUE
+    * case and nrc_find_input_slot returns -1 -- so a hardcoded index would
+    * alias input 0.  Abort loudly if a caps bump or a HW-TCL Vulkan path ever
+    * makes these reachable, so the missing slot mechanism is built then. */
    case nir_intrinsic_load_vertex_id:
    case nir_intrinsic_load_instance_id:
    case nir_intrinsic_load_draw_id:
-   case nir_intrinsic_load_invocation_id: {
-      /* VS system values come from dedicated RC input slots; index assignment
-       * matches the TGSI SYSTEM_VALUE slot set up by the VS input lowering. */
-      struct rc_dst_register dst = nrc_dst_for_def(c, &instr->def);
-      inst = nrc_emit(c, RC_OPCODE_MOV);
-      inst->U.I.DstReg = dst;
-      inst->U.I.SrcReg[0].File   = RC_FILE_INPUT;
-      inst->U.I.SrcReg[0].Index  = 0;  /* TODO: derive correct system-value slot */
-      inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
-      break;
-   }
+   case nir_intrinsic_load_invocation_id:
+      UNREACHABLE("VS system-value intrinsics are not produced for r300");
 
    /* Barycentric load_barycentric_* are only sources for interpolated_input;
     * they carry no RC instruction and are handled by the caller. */
