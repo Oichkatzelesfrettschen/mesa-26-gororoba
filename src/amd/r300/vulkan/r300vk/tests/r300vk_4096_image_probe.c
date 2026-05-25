@@ -273,7 +273,7 @@ verify_readback(struct probe_context *ctx,
    if (result != VK_SUCCESS)
       return probe_fail("map_readback_buffer", result);
 
-   const uint8_t expected[4] = { 191, 128, 64, 255 };
+   const uint8_t expected[4] = { 255, 0, 255, 255 };
    const uint8_t *bytes = mapped;
    bool ok = true;
    VkDeviceSize first_mismatch = 0;
@@ -444,7 +444,7 @@ run_4096_clear_copy_probe(struct probe_context *ctx)
       goto out_fail_begin_command_buffer;
 
    const VkClearValue clear_value = {
-      .color = { .float32 = { 0.25f, 0.50f, 0.75f, 1.0f } },
+      .color = { .float32 = { 1.0f, 0.0f, 1.0f, 1.0f } },
    };
    const VkRenderPassBeginInfo render_begin = {
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
