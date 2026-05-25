@@ -800,8 +800,8 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
       c->error = true;
       break;
 
-   /* VS system values never reach the RC emitter on r300.  The GL state
-    * tracker cannot produce them: r300_screen.c advertises GLSL 1.20
+   /* VS system values never reach the RC emitter on the GL/r300g path.  The
+    * GL state tracker cannot produce them: r300_screen.c advertises GLSL 1.20
     * (glsl_feature_level = 120) with no_integers = true and exposes no
     * PIPE_CAP_VERTEX_ID or draw-parameters cap, so gl_VertexID / gl_InstanceID
     * / gl_DrawID never lower into a VS, and load_invocation_id has no GS/CS
@@ -810,13 +810,21 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
     * route the VS to the draw module instead.  No RC input slot exists for a
     * system value either -- r300_tgsi_to_rc.c has no TGSI_FILE_SYSTEM_VALUE
     * case and nrc_find_input_slot returns -1 -- so a hardcoded index would
-    * alias input 0.  Abort loudly if a caps bump or a HW-TCL Vulkan path ever
-    * makes these reachable, so the missing slot mechanism is built then. */
+    * alias input 0.  R300VK, however, ingests arbitrary user SPIR-V that can
+    * carry VertexIndex / InstanceIndex, so an unsupported system value must
+    * fail compilation deterministically (the caller propagates compiler->Error
+    * to pipeline creation) rather than aborting the client process.
+    * Supporting these needs a synthetic-input lowering on the SW-TCL path, not
+    * a hardcoded RC slot. */
    case nir_intrinsic_load_vertex_id:
    case nir_intrinsic_load_instance_id:
    case nir_intrinsic_load_draw_id:
    case nir_intrinsic_load_invocation_id:
-      UNREACHABLE("VS system-value intrinsics are not produced for r300");
+      rc_error(c->compiler,
+               "r300_nir_to_rc_direct: unsupported VS system-value intrinsic %s\n",
+               nir_intrinsic_infos[instr->intrinsic].name);
+      c->error = true;
+      break;
 
    /* Barycentric load_barycentric_* are only sources for interpolated_input;
     * they carry no RC instruction and are handled by the caller. */
