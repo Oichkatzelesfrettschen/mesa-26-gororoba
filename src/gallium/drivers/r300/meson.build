@@ -128,3 +128,24 @@ driver_r300 = declare_dependency(
   compile_args : '-DGALLIUM_R300',
   link_with : [libr300, libradeonwinsys],
 )
+
+if with_tests
+  # Hand-built rc_program correctness corpus.  It links libr300 directly (the
+  # static archive resolves the hidden-visibility RC symbols at link time) and
+  # needs no winsys, so it stays a pure compiler-pass unit test.
+  test(
+    'r300-compiler-corpus',
+    executable(
+      'r300_compiler_corpus_test',
+      files('compiler/tests/rc_compiler_corpus_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+endif
