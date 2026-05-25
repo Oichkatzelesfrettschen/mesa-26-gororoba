@@ -193,10 +193,9 @@ nir_remove_single_src_phis_block(nir_block *block)
    bool progress = false;
    nir_foreach_phi_safe(phi, block) {
       nir_def *def = NULL;
-      nir_foreach_phi_src(src, phi) {
+      nir_phi_src *src = exec_node_data_head(nir_phi_src, &phi->srcs, node);
+      if (src)
          def = src->src.ssa;
-         break;
-      }
 
       if (!def) {
          nir_builder b = nir_builder_create(nir_cf_node_get_function(&block->cf_node));
