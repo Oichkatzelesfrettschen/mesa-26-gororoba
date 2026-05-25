@@ -136,9 +136,9 @@ that preprocess or cache before distcc defeat the include-server path.
 Meson setup remains local: configure-time compiler probes and generated
 target discovery run without distcc or pump variables, then Ninja performs
 the distributed compile phase.
-The DESKTOP/WSL worker participates in the pump lane by default.
-Operators opt out per-build by exporting `TERAKAN_PUMP_ALLOW_DESKTOP=0`
-before sourcing the env; absent or `=1` keeps DESKTOP/WSL in the pump
+The Ubuntu WSL worker participates in the pump lane by default.
+Operators opt out per-build by exporting `TERAKAN_PUMP_ALLOW_WSL=0`
+before sourcing the env; absent or `=1` keeps the WSL worker in the pump
 lane.  distcc-pump's three-step safety ladder (pump preprocess ->
 classic distcc -> fully local) handles the residual class of
 translation units whose preprocessed include-fingerprint is not

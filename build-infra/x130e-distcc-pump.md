@@ -16,7 +16,7 @@ Current verified state:
 - Pump build tree:
   `~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump`.
 - Active distcc SSH worker: `@x570-5600X3D.local/16,lzo`.
-- Active Ubuntu WSL TCP worker: `DESKTOP-CKP9KB6.local/32,lzo`.
+- Active Ubuntu WSL TCP worker: `ALIENWARE.local/32,lzo`.
 - distcc host specs for this lane use mDNS `.local` names only; do not use raw DHCP addresses.
 - Compiler: a coherent installed `clang` / `clang++` / `llvm-config`
   family selected by the Makefile-generated Meson native overlay.
@@ -42,7 +42,7 @@ The canonical split is:
 
 | Use case | C/C++ chain | Rust chain | Host options | Command |
 | --- | --- | --- | --- | --- |
-| Warm incremental | `ccache -> distcc -> clang`, no pump | `sccache -> rustc` | `lzo`, includes x570 + DESKTOP + localhost + zeroconf | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
+| Warm incremental | `ccache -> distcc -> clang`, no pump | `sccache -> rustc` | `lzo`, includes x570 + WSL + localhost + zeroconf | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
 | Cold clean | `distcc-pump -> distcc -> clang`, no ccache | `sccache -> rustc` | verified x570 mDNS worker with shell-derived `cpp,lzo` | `make rebuild-terakan-distcc-no-rusticl-pump` |
 
 Warm/no-pump compiler wiring is generated at configure time:
@@ -68,7 +68,7 @@ llvm-config = '<selected-llvm-config>'
 The critical distcc and Bobcat flags are:
 
 ```sh
-export DISTCC_HOSTS="--randomize @x570-5600X3D.local/16,lzo DESKTOP-CKP9KB6.local/32,lzo localhost/2,lzo +zeroconf"
+export DISTCC_HOSTS="--randomize @x570-5600X3D.local/16,lzo ALIENWARE.local/32,lzo localhost/2,lzo +zeroconf"
 export CCACHE_PREFIX="${CCACHE_PREFIX:-distcc}"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
@@ -86,9 +86,9 @@ needs distcc to see the original source and compiler command.  `sccache`
 is still correct for Rust because it wraps rustc separately from the
 C/C++ include-server path.
 
-DESKTOP/WSL participates in the pump lane by default.  Operators
-opt out per-build by exporting `TERAKAN_PUMP_ALLOW_DESKTOP=0` before
-sourcing the env; absent or `=1` keeps DESKTOP/WSL in the pump lane.
+The Ubuntu WSL worker participates in the pump lane by default.  Operators
+opt out per-build by exporting `TERAKAN_PUMP_ALLOW_WSL=0` before
+sourcing the env; absent or `=1` keeps the WSL worker in the pump lane.
 distcc-pump's three-step include-fingerprint safety ladder handles
 the residual class of translation units whose preprocessed hash is
 not stable across the LAN crossing:
@@ -155,10 +155,10 @@ than ad hoc shell exports.
 
 ## 2026-05-13 canonical split check
 
-The first full pump build with DESKTOP/WSL in pump mode completed, but
+The first full pump build with the Ubuntu WSL worker in pump mode completed, but
 reported 15 pump demotions.  After adding the generated-output preflight,
 the warning dropped to 3 Gallivm discrepancies, all on
-`DESKTOP-CKP9KB6.local`.  That makes DESKTOP/WSL non-canonical for
+`ALIENWARE.local`.  That makes the WSL worker non-canonical for
 default pump mode.
 
 The default pump env was then tightened to the verified x570 mDNS worker:
@@ -201,7 +201,7 @@ profile, so the successful installed build used:
 ```sh
 export BUILDDIR=~/workspaces/mesa/build/mesa-terakan-distcc-pump-no-rusticl
 export PREFIX=/usr/local/mesa-debug
-export DISTCC_HOSTS="--randomize @x570-5600X3D.local/16,lzo DESKTOP-CKP9KB6.local/32,lzo localhost/2,lzo +zeroconf"
+export DISTCC_HOSTS="--randomize @x570-5600X3D.local/16,lzo ALIENWARE.local/32,lzo localhost/2,lzo +zeroconf"
 export CCACHE_PREFIX="${CCACHE_PREFIX:-distcc}"
 export CCACHE_DIR="$HOME/.cache/ccache"
 export SCCACHE_DIR="$HOME/.cache/sccache"
@@ -297,10 +297,10 @@ Bobcat-targeted Terakan objects when reached through mDNS. On 2026-05-12 this
 was superseded by SSH-mode distcc over mDNS. The active host file is now:
 
 ```text
---randomize @x570-5600X3D.local/16,lzo DESKTOP-CKP9KB6.local/32,lzo localhost/2,lzo +zeroconf
+--randomize @x570-5600X3D.local/16,lzo ALIENWARE.local/32,lzo localhost/2,lzo +zeroconf
 ```
 
-`DESKTOP-CKP9KB6.local/32,lzo` is active only for the no-pump clang lane.
+`ALIENWARE.local/32,lzo` is active only for the no-pump clang lane.
 - The failed rusticl-enabled build log is
   `~/logs/mesa_gororoba_pump_build_20260426T003804Z.log`.
 - The successful no-rusticl build log is
