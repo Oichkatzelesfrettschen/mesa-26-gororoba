@@ -35,7 +35,8 @@ hardening.  `env/vostro1000-x86-64-v1-clang22-ccache-distcc.env` pins LLVM 22,
 sets `CCACHE_PREFIX=distcc`, probes TCP distccd volunteers, and uses plain
 distcc hosts without `,cpp` because `,cpp` belongs to pump mode.  The Makefile
 sets `JOBS=36` for this host environment so Ninja has enough work to keep the
-reachable distcc volunteers busy.
+reachable distcc volunteers busy.  The environment owns `DISTCC_HOSTS` at source
+time so login-shell defaults cannot silently route this lane to stale workers.
 
 Validated live volunteers on 2026-05-25:
 
