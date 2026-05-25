@@ -31,6 +31,7 @@
 
 #include "nir_to_rc.h"
 #include "r300_fs.h"
+#include "r300_nir.h"
 #include "r300_nir_to_rc_direct.h"
 #include "r300_screen.h"
 #include "radeon_compiler.h"
@@ -209,6 +210,34 @@ case_system_value_rejected(enum vs_sysval sysval, const char *label,
    teardown_vs(&c, &rs);
 }
 
+/* When the driver reserves a synthetic-attribute slot,
+ * r300_nir_lower_vs_system_values_to_inputs rewrites the system value to a read
+ * of that input before r300_nir_to_rc_direct runs, so it compiles cleanly
+ * (instead of the deterministic rejection) and reads the reserved RC slot. */
+static void
+case_system_value_lowered_to_input(void)
+{
+   struct r300_vertex_program_compiler c;
+   struct rc_regalloc_state rs;
+   nir_shader *nir = build_vs(VS_SYSVAL_VERTEX_ID);
+
+   bool changed = r300_nir_lower_vs_system_values_to_inputs(nir, 2, -1);
+   run_vs(&c, &rs, nir);
+
+   CHECK(changed, "the lowering pass rewrote load_vertex_id");
+   CHECK(!c.Base.Error,
+         "a system value with a reserved slot compiles without error");
+
+   unsigned seen[8];
+   unsigned n = distinct_input_slots(&c.Base, seen, 8);
+   bool has_slot2 = false;
+   for (unsigned k = 0; k < n; k++)
+      has_slot2 |= seen[k] == 2;
+   CHECK(has_slot2, "the lowered system value reads the reserved RC input slot");
+
+   teardown_vs(&c, &rs);
+}
+
 int
 main(void)
 {
@@ -217,6 +246,7 @@ main(void)
    case_system_value_rejected(VS_SYSVAL_VERTEX_ID, "load_vertex_id", "vertex_id");
    case_system_value_rejected(VS_SYSVAL_INSTANCE_ID, "load_instance_id",
                               "instance_id");
+   case_system_value_lowered_to_input();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
