@@ -302,21 +302,18 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
 
    /* VK_KHR_driver_properties identity.
     *
-    * FIXME: missing work --
-    *           populate driverID with a Khronos-registered VkDriverId for
-    *           r300vk so VkPhysicalDeviceDriverProperties (Vulkan
-    *           1.2 ch. 4.1.3) carries an accurate driver fingerprint.
-    *       reason --
-    *           Khronos has not allocated a VkDriverId for this driver;
-    *           reusing VK_DRIVER_ID_MESA_RADV would misattribute every
-    *           conformance result.  Reporting (VkDriverId)0 keeps the
-    *           driverName/driverInfo strings as the load-bearing
-    *           attribution surface until a real ID lands.
-    *       tracking-artifact --
-    *           VkDriverId registry at
-    *           https://gitlab.khronos.org/vulkan/vulkan/-/issues and the
-    *           VkPhysicalDeviceDriverProperties chapter of the Vulkan
-    *           specification (Vulkan 1.2, 4.1.3).
+    * driverID is deliberately (VkDriverId)0.  The VkDriverId enum
+    * (VkPhysicalDeviceDriverProperties, Vulkan 1.2 ch. 4.1.3) is a
+    * Khronos-allocated registry; every value names a specific shipping
+    * driver and the enum has no value 0.  r300vk is a downstream
+    * driver that is not submitted upstream, so no VkDriverId will be
+    * allocated for it.  Reusing an existing ID such as
+    * VK_DRIVER_ID_MESA_RADV is rejected: an application keying off
+    * driverID would apply RADV-specific workarounds to r300vk and
+    * misbehave.  0 (out-of-enum) is the least-harmful honest value;
+    * driverName ("r300vk") and driverInfo carry the real attribution.
+    * dEQP-VK.api.driver_properties may flag a 0 driverID, which is
+    * accepted: this driver is not run for conformance submission.
     */
    props->driverID = (VkDriverId)0;
    snprintf(props->driverName, sizeof(props->driverName), "%s", "r300vk");
