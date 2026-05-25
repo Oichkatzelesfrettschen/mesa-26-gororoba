@@ -1181,6 +1181,25 @@ ntr_emit_store_output(struct ntr_compile *c, nir_intrinsic_instr *instr)
    ntr_MOV(c, out, src);
 }
 
+static bool
+ntr_is_vs_system_value_intrinsic(nir_intrinsic_op intrinsic)
+{
+   switch (intrinsic) {
+   case nir_intrinsic_load_vertex_id:
+   case nir_intrinsic_load_vertex_id_zero_base:
+   case nir_intrinsic_load_first_vertex:
+   case nir_intrinsic_load_is_indexed_draw:
+   case nir_intrinsic_load_base_vertex:
+   case nir_intrinsic_load_instance_id:
+   case nir_intrinsic_load_base_instance:
+   case nir_intrinsic_load_draw_id:
+   case nir_intrinsic_load_invocation_id:
+      return true;
+   default:
+      return false;
+   }
+}
+
 static void
 ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
 {
@@ -1242,6 +1261,12 @@ ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
       break;
 
    default:
+      if (ntr_is_vs_system_value_intrinsic(instr->intrinsic)) {
+         /* r300 exposes neither vertex-id nor draw-parameter system values to
+          * the VS frontend, and the RC VS input map has no system-value slot.
+          * A hardcoded RC_FILE_INPUT index would alias user attribute 0. */
+         UNREACHABLE("r300 VS system-value intrinsics need explicit RC input slots");
+      }
       fprintf(stderr, "Unknown intrinsic: ");
       nir_print_instr(&instr->instr, stderr);
       fprintf(stderr, "\n");
