@@ -4,6 +4,7 @@
  */
 
 #include "r300vk_pipeline.h"
+#include "r300vk_cmd_buffer.h"
 #include "r300vk_device.h"
 #include "r300vk_shader_module.h"
 
@@ -28,6 +29,9 @@
 extern bool r300_nir_lower_vs_system_values_to_inputs(nir_shader *s,
                                                       int vertex_id_slot,
                                                       int instance_id_slot);
+extern void r300_nir_vs_reads_system_values(nir_shader *s,
+                                            bool *reads_vertex_id,
+                                            bool *reads_instance_id);
 
 static const struct spirv_to_nir_options r300vk_spirv_opts = {
    .environment            = NIR_SPIRV_VULKAN,
@@ -82,14 +86,14 @@ r300vk_compile_shader(struct r300vk_device *device,
        * attributes and lower the intrinsic to a read of it; the draw path fills
        * that slot per draw (firstVertex + i / firstInstance + i). */
       uint32_t n_app = vi ? vi->vertexAttributeDescriptionCount : 0;
-      bool needs_vid =
-         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID);
-      bool needs_iid =
-         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID);
+      /* vk_spirv_to_nir leaves gl_VertexIndex / gl_InstanceIndex as a load_deref
+       * of a nir_var_system_value variable and never gathers system_values_read,
+       * so nir->info cannot be trusted to flag the read here.  Scan the NIR for
+       * both the deref and the lowered-intrinsic form instead. */
+      bool needs_vid = false, needs_iid = false;
+      r300_nir_vs_reads_system_values(nir, &needs_vid, &needs_iid);
       if (needs_vid || needs_iid) {
-         int vid_slot = needs_vid ? (int)n_app : -1;
-         int iid_slot = needs_iid ? (int)(n_app + (needs_vid ? 1 : 0)) : -1;
-         r300_nir_lower_vs_system_values_to_inputs(nir, vid_slot, iid_slot);
+         unsigned synth = (needs_vid ? 1u : 0u) + (needs_iid ? 1u : 0u);
 
          /* Reserve a vertex-buffer binding past the application's bindings. */
          uint8_t binding = 0;
@@ -100,6 +104,21 @@ r300vk_compile_shader(struct r300vk_device *device,
                   binding = app_b + 1;
             }
          }
+
+         /* Hard-fail rather than silently skip when the synthetic slot or
+          * binding would overflow the velem array or the vertex-buffer cache. */
+         if (n_app + synth > PIPE_MAX_ATTRIBS ||
+             (unsigned)binding + synth > R300VK_MAX_VERTEX_BINDINGS) {
+            ralloc_free(nir);
+            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                             "r300vk: no vertex input slot/binding available for "
+                             "the synthetic VS system-value stream");
+         }
+
+         int vid_slot = needs_vid ? (int)n_app : -1;
+         int iid_slot = needs_iid ? (int)(n_app + (needs_vid ? 1 : 0)) : -1;
+         r300_nir_lower_vs_system_values_to_inputs(nir, vid_slot, iid_slot);
+
          pl->needs_vertex_id_stream   = needs_vid;
          pl->needs_instance_id_stream = needs_iid;
          pl->vertex_id_slot         = (uint8_t)n_app;
@@ -148,7 +167,9 @@ r300vk_build_velems_cso(struct r300vk_device *device,
                          const VkPipelineVertexInputStateCreateInfo *vi)
 {
    struct pipe_vertex_element ve[PIPE_MAX_ATTRIBS];
-   uint32_t n = vi->vertexAttributeDescriptionCount;
+   /* vi may be NULL for a VertexIndex-only shader with no application vertex
+    * inputs; the synthetic system-value element is still appended below. */
+   uint32_t n = vi ? vi->vertexAttributeDescriptionCount : 0;
    if (n > PIPE_MAX_ATTRIBS)
       n = PIPE_MAX_ATTRIBS;
 
@@ -267,7 +288,10 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
          FAIL_PIPELINE(vk_error(device, VK_ERROR_INITIALIZATION_FAILED));
    }
 
-   if (info->pVertexInputState) {
+   /* Build the velems CSO when there is application vertex input OR a synthetic
+    * system-value stream to append (a VertexIndex-only VS has no app input). */
+   if (info->pVertexInputState || pl->needs_vertex_id_stream ||
+       pl->needs_instance_id_stream) {
       VkResult r = r300vk_build_velems_cso(device, pl, info->pVertexInputState);
       if (r != VK_SUCCESS)
          FAIL_PIPELINE(r);
