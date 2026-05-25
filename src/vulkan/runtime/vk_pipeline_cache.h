@@ -132,13 +132,20 @@ vk_pipeline_cache_object_init(struct vk_device *device,
 static inline void
 vk_pipeline_cache_object_finish(struct vk_pipeline_cache_object *object)
 {
-   assert(p_atomic_read(&object->ref_cnt) <= 1);
+#ifndef NDEBUG
+   uint32_t ref_cnt = p_atomic_read(&object->ref_cnt);
+   assert(ref_cnt <= 1);
+#endif
 }
 
 static inline struct vk_pipeline_cache_object *
 vk_pipeline_cache_object_ref(struct vk_pipeline_cache_object *object)
 {
-   assert(object && p_atomic_read(&object->ref_cnt) >= 1);
+   assert(object);
+#ifndef NDEBUG
+   uint32_t ref_cnt = p_atomic_read(&object->ref_cnt);
+   assert(ref_cnt >= 1);
+#endif
    p_atomic_inc(&object->ref_cnt);
    return object;
 }

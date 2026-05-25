@@ -287,7 +287,10 @@ vk_sync_timeline_unref_point_locked(struct vk_device *device,
    /* The caller needs to have its own reference to the state, not just the
     * one implicit in point, because it's also holding the lock.
     */
-   assert(p_atomic_read(&state->refcount) > 1);
+#ifndef NDEBUG
+   uint32_t refcount = p_atomic_read(&state->refcount);
+   assert(refcount > 1);
+#endif
 
    if (vk_sync_timeline_unref_point_no_unref_state_locked(point))
       vk_sync_timeline_state_unref(device, state);

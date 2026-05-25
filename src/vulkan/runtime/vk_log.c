@@ -190,7 +190,10 @@ __vk_log_impl(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
          switch (base->type) {
          case VK_OBJECT_TYPE_COMMAND_BUFFER: {
             /* We allow at most one command buffer to be submitted at a time */
-            assert(++cmdbuf_n <= 1);
+#ifndef NDEBUG
+            cmdbuf_n++;
+            assert(cmdbuf_n <= 1);
+#endif
             struct vk_command_buffer *cmd_buffer =
                (struct vk_command_buffer *)base;
             if (cmd_buffer->labels.size > 0) {
@@ -203,7 +206,10 @@ __vk_log_impl(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 
          case VK_OBJECT_TYPE_QUEUE: {
             /* We allow at most one queue to be submitted at a time */
-            assert(++queue_n <= 1);
+#ifndef NDEBUG
+            queue_n++;
+            assert(queue_n <= 1);
+#endif
             struct vk_queue *queue = (struct vk_queue *)base;
             if (queue->labels.size > 0) {
                cb_data.queueLabelCount =

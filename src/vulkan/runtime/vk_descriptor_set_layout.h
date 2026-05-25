@@ -84,7 +84,11 @@ void vk_descriptor_set_layout_destroy(struct vk_device *device,
 static inline struct vk_descriptor_set_layout *
 vk_descriptor_set_layout_ref(struct vk_descriptor_set_layout *layout)
 {
-   assert(layout && p_atomic_read(&layout->ref_cnt) >= 1);
+   assert(layout);
+#ifndef NDEBUG
+   uint32_t ref_cnt = p_atomic_read(&layout->ref_cnt);
+   assert(ref_cnt >= 1);
+#endif
    p_atomic_inc(&layout->ref_cnt);
    return layout;
 }
@@ -93,7 +97,11 @@ static inline void
 vk_descriptor_set_layout_unref(struct vk_device *device,
                                struct vk_descriptor_set_layout *layout)
 {
-   assert(layout && p_atomic_read(&layout->ref_cnt) >= 1);
+   assert(layout);
+#ifndef NDEBUG
+   uint32_t ref_cnt = p_atomic_read(&layout->ref_cnt);
+   assert(ref_cnt >= 1);
+#endif
    if (p_atomic_dec_zero(&layout->ref_cnt))
       layout->destroy(device, layout);
 }
@@ -103,4 +111,3 @@ vk_descriptor_set_layout_unref(struct vk_device *device,
 #endif
 
 #endif /* VK_DESCRIPTOR_SET_LAYOUT_H */
-

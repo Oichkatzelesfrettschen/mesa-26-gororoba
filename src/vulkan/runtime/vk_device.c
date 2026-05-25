@@ -406,7 +406,10 @@ timeline_mode_str(struct vk_device *device)
 void
 _vk_device_report_lost(struct vk_device *device)
 {
-   assert(p_atomic_read(&device->_lost.lost) > 0);
+#ifndef NDEBUG
+   int lost = p_atomic_read(&device->_lost.lost);
+   assert(lost > 0);
+#endif
 
    device->_lost.reported = true;
 
