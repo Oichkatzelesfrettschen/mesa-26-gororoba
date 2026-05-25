@@ -41,6 +41,20 @@ The generated Meson toolchain overlay records absolute compiler paths so
 `ccache` and `distcc` see the same C and C++ compiler binaries during the build
 that Meson found during configuration.
 
+Mode matrix:
+
+- Default incremental lane: Meson uses `['ccache', clang]` and
+  `CCACHE_PREFIX=distcc`.  ccache hashes on the Vostro client; cache misses go
+  to the live `DISTCC_HOSTS` mesh.
+- Direct distcc fallback: Meson uses `['distcc', clang]` with `CCACHE_PREFIX`
+  unset.  This is for clean builds where cache hashing is not the limiting
+  cost.
+- Local tertiary fallback: each Vostro env appends `localhost/2,lzo`; if every
+  volunteer is unreachable, the env emits only `localhost/2,lzo`.
+- Pump lane: pump mode is a no-cache lane.  Use the pump-specific envs that
+  unset `CCACHE_PREFIX` and invoke `distcc-pump`; do not combine pump with
+  ccache.
+
 Validated live volunteers on 2026-05-25:
 
 - `ALIENWARE.local/32,lzo`: `/usr/bin/clang` is clang 21.1.8, but
