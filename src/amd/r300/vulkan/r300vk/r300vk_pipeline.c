@@ -22,6 +22,13 @@
 
 #include <string.h>
 
+/* Defined in the r300 driver (compiler/r300_nir_lower_vs_system_values.c).
+ * Declared locally because its header r300_nir.h includes r300_screen.h, which
+ * is not on the r300vk include path. */
+extern bool r300_nir_lower_vs_system_values_to_inputs(nir_shader *s,
+                                                      int vertex_id_slot,
+                                                      int instance_id_slot);
+
 static const struct spirv_to_nir_options r300vk_spirv_opts = {
    .environment            = NIR_SPIRV_VULKAN,
    .ubo_addr_format        = nir_address_format_32bit_index_offset,
@@ -34,7 +41,7 @@ static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
                        struct r300vk_pipeline *pl,
-                       VkResult *out_result)
+                       const VkPipelineVertexInputStateCreateInfo *vi)
 {
    /* r300g exposes VS and FS only; geometry, tessellation, and compute are
     * unsupported on R300-class hardware. */
@@ -69,6 +76,38 @@ r300vk_compile_shader(struct r300vk_device *device,
     * to IN[0] without this assignment.  Terakan applies the same pattern in
     * terakan_shader.c before handing NIR to r600g. */
    if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
+      /* RS480-family has no PVS, so gl_VertexIndex / gl_InstanceIndex cannot run
+       * on hardware T&L and r300_nir_to_rc_direct would reject them.  When the
+       * VS reads them, reserve a vertex-input slot past the application's
+       * attributes and lower the intrinsic to a read of it; the draw path fills
+       * that slot per draw (firstVertex + i / firstInstance + i). */
+      uint32_t n_app = vi ? vi->vertexAttributeDescriptionCount : 0;
+      bool needs_vid =
+         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID);
+      bool needs_iid =
+         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID);
+      if (needs_vid || needs_iid) {
+         int vid_slot = needs_vid ? (int)n_app : -1;
+         int iid_slot = needs_iid ? (int)(n_app + (needs_vid ? 1 : 0)) : -1;
+         r300_nir_lower_vs_system_values_to_inputs(nir, vid_slot, iid_slot);
+
+         /* Reserve a vertex-buffer binding past the application's bindings. */
+         uint8_t binding = 0;
+         if (vi) {
+            for (uint32_t b = 0; b < vi->vertexBindingDescriptionCount; b++) {
+               uint8_t app_b = (uint8_t)vi->pVertexBindingDescriptions[b].binding;
+               if (app_b + 1 > binding)
+                  binding = app_b + 1;
+            }
+         }
+         pl->needs_vertex_id_stream   = needs_vid;
+         pl->needs_instance_id_stream = needs_iid;
+         pl->vertex_id_slot         = (uint8_t)n_app;
+         pl->instance_id_slot       = (uint8_t)(n_app + (needs_vid ? 1 : 0));
+         pl->vertex_id_vb_binding   = binding;
+         pl->instance_id_vb_binding = binding + (needs_vid ? 1 : 0);
+      }
+
       nir_foreach_shader_in_variable(var, nir) {
          assert(var->data.location >= VERT_ATTRIB_GENERIC0);
          var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
@@ -135,8 +174,30 @@ r300vk_build_velems_cso(struct r300vk_device *device,
       }
    }
 
+   /* Append synthetic VS-system-value elements (R32_SINT, one int per element)
+    * the VS reads via the lowering in r300vk_compile_shader.  instance_divisor
+    * 0 steps the vertex-id element per vertex; 1 steps the instance-id element
+    * per instance. */
+   uint32_t velem_count = n;
+   if (pl->needs_vertex_id_stream && velem_count < PIPE_MAX_ATTRIBS) {
+      ve[velem_count].src_offset          = 0;
+      ve[velem_count].vertex_buffer_index = pl->vertex_id_vb_binding;
+      ve[velem_count].src_format          = (uint8_t)PIPE_FORMAT_R32_SINT;
+      ve[velem_count].src_stride          = sizeof(int32_t);
+      ve[velem_count].instance_divisor    = 0;
+      velem_count++;
+   }
+   if (pl->needs_instance_id_stream && velem_count < PIPE_MAX_ATTRIBS) {
+      ve[velem_count].src_offset          = 0;
+      ve[velem_count].vertex_buffer_index = pl->instance_id_vb_binding;
+      ve[velem_count].src_format          = (uint8_t)PIPE_FORMAT_R32_SINT;
+      ve[velem_count].src_stride          = sizeof(int32_t);
+      ve[velem_count].instance_divisor    = 1;
+      velem_count++;
+   }
+
    pl->velems_cso =
-      device->pipe->create_vertex_elements_state(device->pipe, n, ve);
+      device->pipe->create_vertex_elements_state(device->pipe, velem_count, ve);
    if (!pl->velems_cso)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
    return VK_SUCCESS;
@@ -166,7 +227,8 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
    } while (0)
 
    for (uint32_t i = 0; i < info->stageCount; i++) {
-      VkResult r = r300vk_compile_shader(device, &info->pStages[i], pl, NULL);
+      VkResult r = r300vk_compile_shader(device, &info->pStages[i], pl,
+                                         info->pVertexInputState);
       if (r != VK_SUCCESS)
          FAIL_PIPELINE(r);
    }

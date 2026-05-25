@@ -48,6 +48,18 @@ struct r300vk_pipeline {
    void                   *velems_cso;
    VkPrimitiveTopology     topology;
    uint32_t                vertex_stride[16];
+
+   /* Synthetic VS-system-value stream.  RS480-family parts have no PVS, so a VS
+    * that reads gl_VertexIndex / gl_InstanceIndex has the value supplied as a
+    * driver-generated vertex attribute (filled per draw with firstVertex + i /
+    * firstInstance + i) at a reserved driver_location / vertex-buffer binding;
+    * r300_nir_lower_vs_system_values_to_inputs rewrote the intrinsic to read it. */
+   bool                    needs_vertex_id_stream;
+   bool                    needs_instance_id_stream;
+   uint8_t                 vertex_id_slot;          /* velem index == driver_location */
+   uint8_t                 instance_id_slot;
+   uint8_t                 vertex_id_vb_binding;    /* synthetic vertex_buffer_index */
+   uint8_t                 instance_id_vb_binding;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_pipeline, base, VkPipeline,
