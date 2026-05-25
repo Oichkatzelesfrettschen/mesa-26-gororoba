@@ -1,16 +1,14 @@
 /*
- * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
- * NIR-input admission harness for r300_nir_to_rc_direct.
+ * NIR-input admission harness for nir_to_rc.
  *
  * The rc_program corpus harness tests RC passes; it cannot reach
- * r300_nir_to_rc_direct, which consumes a nir_shader.  This harness builds a
- * tiny vertex shader with nir_builder, runs the production lowering
- * (r300_nir_lower_for_rc), and calls r300_nir_to_rc_direct, then asserts on the
- * emitted rc_program and the compiler error state.  It needs no pipe_screen
- * beyond a stack struct r300_screen whose caps the lowering reads (is_r500,
- * has_tcl, is_r400); r300_nir_to_rc_direct ignores its screen argument.
+ * nir_to_rc, which consumes a nir_shader.  This harness builds a tiny vertex
+ * shader with nir_builder, runs the production NIR-to-RC translation, and
+ * asserts on the emitted rc_program and compiler error state.  It needs no
+ * pipe_screen beyond a stack struct r300_screen whose caps the lowering reads
+ * (is_r500, has_tcl, is_r400).
  *
  * Two boundaries are pinned.  First, two vertex inputs at distinct
  * driver_locations must map to distinct RC input slots: a regression here is
@@ -31,7 +29,7 @@
 
 #include "nir_to_rc.h"
 #include "r300_fs.h"
-#include "r300_nir_to_rc_direct.h"
+#include "r300_nir.h"
 #include "r300_screen.h"
 #include "radeon_compiler.h"
 #include "radeon_program.h"
@@ -51,8 +49,8 @@ static unsigned g_failures;
    } while (0)
 
 /* A stack screen whose caps the lowering reads.  has_tcl = true selects the
- * HW-TCL route that actually reaches r300_nir_to_rc_direct; is_r500/is_r400
- * false makes it an R300-class part. */
+ * HW-TCL route that reaches nir_to_rc; is_r500/is_r400 false makes it an
+ * R300-class part. */
 static struct pipe_screen *
 fake_r300_screen(struct r300_screen *s)
 {
@@ -111,7 +109,7 @@ build_vs(enum vs_sysval sysval)
    return b.shader;
 }
 
-/* Run the production lowering + the direct emitter on a built shader. */
+/* Run the production NIR-to-RC lowering and emitter on a built shader. */
 static void
 run_vs(struct r300_vertex_program_compiler *c, struct rc_regalloc_state *rs,
        nir_shader *nir)
@@ -119,6 +117,10 @@ run_vs(struct r300_vertex_program_compiler *c, struct rc_regalloc_state *rs,
    struct r300_screen screen;
    struct pipe_screen *ps = fake_r300_screen(&screen);
    const struct r300_fragment_program_external_state ext = {0};
+   struct r300_vertex_shader_code vs_code = {0};
+   union r300_shader_code code = {
+      .v = &vs_code,
+   };
 
    rc_init_regalloc_state(rs, RC_VERTEX_PROGRAM);
    memset(c, 0, sizeof(*c));
@@ -133,8 +135,7 @@ run_vs(struct r300_vertex_program_compiler *c, struct rc_regalloc_state *rs,
    c->Base.max_constants = 256;
    c->Base.max_alu_insts = 256;
 
-   r300_nir_lower_for_rc(nir, ps, ext);
-   r300_nir_to_rc_direct(&c->Base, nir, ps, ext);
+   nir_to_rc(nir, ps, ext, code, &c->Base);
 }
 
 static void
@@ -209,6 +210,34 @@ case_system_value_rejected(enum vs_sysval sysval, const char *label,
    teardown_vs(&c, &rs);
 }
 
+/* When the driver reserves a synthetic-attribute slot,
+ * r300_nir_lower_vs_system_values_to_inputs rewrites the system value to a read
+ * of that input before nir_to_rc runs, so it compiles cleanly instead of
+ * taking the deterministic rejection path, and reads the reserved RC slot. */
+static void
+case_system_value_lowered_to_input(void)
+{
+   struct r300_vertex_program_compiler c;
+   struct rc_regalloc_state rs;
+   nir_shader *nir = build_vs(VS_SYSVAL_VERTEX_ID);
+
+   bool changed = r300_nir_lower_vs_system_values_to_inputs(nir, 2, -1);
+   run_vs(&c, &rs, nir);
+
+   CHECK(changed, "the lowering pass rewrote load_vertex_id");
+   CHECK(!c.Base.Error,
+         "a system value with a reserved slot compiles without error");
+
+   unsigned seen[8];
+   unsigned n = distinct_input_slots(&c.Base, seen, 8);
+   bool has_slot2 = false;
+   for (unsigned k = 0; k < n; k++)
+      has_slot2 |= seen[k] == 2;
+   CHECK(has_slot2, "the lowered system value reads the reserved RC input slot");
+
+   teardown_vs(&c, &rs);
+}
+
 int
 main(void)
 {
@@ -217,6 +246,7 @@ main(void)
    case_system_value_rejected(VS_SYSVAL_VERTEX_ID, "load_vertex_id", "vertex_id");
    case_system_value_rejected(VS_SYSVAL_INSTANCE_ID, "load_instance_id",
                               "instance_id");
+   case_system_value_lowered_to_input();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

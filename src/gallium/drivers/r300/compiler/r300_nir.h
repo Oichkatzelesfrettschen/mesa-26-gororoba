@@ -163,4 +163,12 @@ extern bool r300_nir_lower_comparison_fs(nir_shader *shader);
 
 extern bool r300_nir_add_wpos(nir_shader *shader, nir_variable **wpos_var_out);
 
+/* Rewrite VS load_vertex_id/load_instance_id to reads from synthetic vertex
+ * inputs that the driver reserves and supplies as ordinary attributes.  A
+ * negative slot leaves the corresponding intrinsic untouched so nir_to_rc can
+ * reject unsupported system values deterministically. */
+extern bool r300_nir_lower_vs_system_values_to_inputs(nir_shader *s,
+                                                      int vertex_id_slot,
+                                                      int instance_id_slot);
+
 #endif /* R300_NIR_H */

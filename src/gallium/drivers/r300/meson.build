@@ -59,6 +59,7 @@ files_r300 = files(
   'compiler/r500_fragprog.h',
   'compiler/r300_nir.c',
   'compiler/r300_nir.h',
+  'compiler/r300_nir_lower_vs_system_values.c',
   'compiler/r500_nir_lower_fcsel.c',
   'compiler/radeon_code.c',
   'compiler/radeon_code.h',
@@ -145,9 +146,9 @@ if with_tests
     suite : ['r300'],
   )
 
-  # NIR-input admission harness for r300_nir_to_rc_direct: proves distinct
-  # vertex attributes do not alias and that an unsupported VS system value
-  # fails compilation deterministically instead of aborting.
+  # NIR-input admission harness for nir_to_rc: proves distinct vertex
+  # attributes do not alias and that an unsupported VS system value fails
+  # compilation deterministically instead of aborting.
   test(
     'r300-nir-vs-harness',
     executable(
@@ -157,8 +158,8 @@ if with_tests
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
       ],
-      # libgallium supplies the ureg_*/tgsi_* symbols nir_to_rc.c references
-      # (r300_nir_lower_for_rc shares that translation unit).
+      # libgallium supplies the ureg_*/tgsi_* symbols referenced from the
+      # production NIR-to-RC translation unit.
       link_with : [libr300, libgallium],
       dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
       gnu_symbol_visibility : 'hidden',
