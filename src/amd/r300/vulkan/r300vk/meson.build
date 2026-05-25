@@ -36,6 +36,7 @@ libr300vk_inc = [
 ]
 
 libr300vk_link_with = []
+libr300vk_c_args = [no_override_init_args]
 
 # Gallium-backed device and submit path.  Gated behind r300vk-gallium-backend
 # so the loader-only R0 build (no Gallium dependency) continues to work.
@@ -76,6 +77,7 @@ if get_option('r300vk-gallium-backend') and with_gallium_r300
   # not define.  Must be in link_with (not dependencies) because meson
   # tracks it as a static_library object, not a declare_dependency.
   libr300vk_link_with += [libgallium]
+  libr300vk_c_args += ['-DR300VK_GALLIUM_BACKEND']
 endif
 
 libvulkan_r300 = shared_library(
@@ -85,7 +87,7 @@ libvulkan_r300 = shared_library(
   include_directories : libr300vk_inc,
   dependencies : libr300vk_deps,
   link_with : libr300vk_link_with,
-  c_args : [no_override_init_args],
+  c_args : libr300vk_c_args,
   link_args : [
     ld_args_build_id,
     ld_args_bsymbolic,

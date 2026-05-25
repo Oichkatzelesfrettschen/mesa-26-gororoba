@@ -264,6 +264,52 @@ r300vk_CmdDraw(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
+                   uint32_t groupCountX,
+                   uint32_t groupCountY,
+                   uint32_t groupCountZ)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)groupCountX;
+   (void)groupCountY;
+   (void)groupCountZ;
+
+   vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+void
+r300vk_CmdDispatchBase(VkCommandBuffer commandBuffer,
+                       uint32_t baseGroupX,
+                       uint32_t baseGroupY,
+                       uint32_t baseGroupZ,
+                       uint32_t groupCountX,
+                       uint32_t groupCountY,
+                       uint32_t groupCountZ)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)baseGroupX;
+   (void)baseGroupY;
+   (void)baseGroupZ;
+   (void)groupCountX;
+   (void)groupCountY;
+   (void)groupCountZ;
+
+   vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+void
+r300vk_CmdDispatchIndirect(VkCommandBuffer commandBuffer,
+                           VkBuffer buffer,
+                           VkDeviceSize offset)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)buffer;
+   (void)offset;
+
+   vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+void
 r300vk_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
                               const VkCopyImageToBufferInfo2 *pCopyImageToBufferInfo)
 {
@@ -286,18 +332,32 @@ r300vk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
                             const VkDependencyInfo *pDependencyInfo)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
-   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
-   if (!e) return;
-   e->type              = R300VK_CMD_PIPELINE_BARRIER;
-   e->barrier.image     = NULL;
-   e->barrier.new_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-   /* Capture the first image memory barrier for resource-state tracking.
-    * Single-image command streams only need the first entry; multi-image
-    * tracking can extend this when a falsifiable test case requires it. */
-   if (pDependencyInfo && pDependencyInfo->imageMemoryBarrierCount > 0) {
-      const VkImageMemoryBarrier2 *ib = &pDependencyInfo->pImageMemoryBarriers[0];
+   uint32_t image_count = pDependencyInfo ?
+      pDependencyInfo->imageMemoryBarrierCount : 0;
+
+   /* No image barrier: still record one entry so the replay flush creates the
+    * submit boundary the execution/memory barrier requires. */
+   if (image_count == 0) {
+      struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+      if (!e) return;
+      e->type               = R300VK_CMD_PIPELINE_BARRIER;
+      e->barrier.image      = NULL;
+      e->barrier.new_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+      return;
+   }
+
+   /* One ledger update per image barrier.  Every image in the dependency must
+    * reach the resource-state ledger at replay, not only the first; recording
+    * a single entry left the other images with stale layouts.  Each entry
+    * also acts as an independent flush boundary, which is conservative but
+    * correct for the RS482/RS485 UMA no-aux-surface model. */
+   for (uint32_t i = 0; i < image_count; i++) {
+      const VkImageMemoryBarrier2 *ib = &pDependencyInfo->pImageMemoryBarriers[i];
+      struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+      if (!e) return;
       VK_FROM_HANDLE(r300vk_image, img, ib->image);
+      e->type               = R300VK_CMD_PIPELINE_BARRIER;
       e->barrier.image      = img;
       e->barrier.new_layout = ib->newLayout;
    }

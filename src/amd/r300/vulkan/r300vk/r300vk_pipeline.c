@@ -89,12 +89,14 @@ r300vk_compile_shader(struct r300vk_device *device,
          ralloc_free(nir);
          return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
       }
+      pl->vs_hw_valid = r300_vs_get_hw_code(pl->vs_cso, &pl->vs_hw);
    } else {
       pl->fs_cso = device->pipe->create_fs_state(device->pipe, &ss);
       if (!pl->fs_cso) {
          ralloc_free(nir);
          return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
       }
+      pl->fs_hw_valid = r300_fs_get_hw_code(pl->fs_cso, &pl->fs_hw);
    }
    return VK_SUCCESS;
 }
@@ -240,6 +242,26 @@ r300vk_CreateGraphicsPipelines(VkDevice _device,
       }
    }
    return result;
+}
+
+VkResult
+r300vk_CreateComputePipelines(VkDevice _device,
+                              VkPipelineCache pipelineCache,
+                              uint32_t createInfoCount,
+                              const VkComputePipelineCreateInfo *pCreateInfos,
+                              const VkAllocationCallbacks *pAllocator,
+                              VkPipeline *pPipelines)
+{
+   VK_FROM_HANDLE(r300vk_device, device, _device);
+   (void)pipelineCache;
+   (void)pCreateInfos;
+   (void)pAllocator;
+
+   for (uint32_t i = 0; i < createInfoCount; i++)
+      pPipelines[i] = VK_NULL_HANDLE;
+
+   return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                    "r300vk: hybrid compute pipeline execution is not implemented");
 }
 
 void

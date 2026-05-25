@@ -10,18 +10,37 @@
 #include "r300vk_instance.h"
 #include "r300vk_private.h"
 
+#include "util/disk_cache.h"
 #include "util/macros.h"
+#include "util/mesa-blake3.h"
 #include "vk_alloc.h"
+#include "vk_enum_defines.h"
+#include "vk_format.h"
 #include "vk_log.h"
 #include "vk_util.h"
+
+#ifdef R300VK_GALLIUM_BACKEND
+#include "pipe/p_defines.h"
+#include "pipe/p_screen.h"
+#include "r300/r300_public.h"
+#include "winsys/radeon_winsys.h"
+#endif
 
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <xf86drm.h>
+
+static bool
+r300vk_hybrid_compute_enabled(void)
+{
+   const char *gate = getenv(R300VK_HYBRID_COMPUTE_ENV);
+   return gate && strcmp(gate, R300VK_HYBRID_COMPUTE_ENV_VALUE) == 0;
+}
 
 static const char *
 r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
@@ -52,6 +71,8 @@ r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
 static void
 r300vk_physical_device_init_limits(struct vk_properties *const props)
 {
+   const bool hybrid_compute = r300vk_hybrid_compute_enabled();
+
    /* Texture and image dimensions.  R3xx FORMAT2_HEIGHT and
     * FORMAT2_WIDTH fields in R300_TX_FORMAT2_n cap each axis at 2048
     * (R3xx-RRG ch. "Texture Engine", TX_FORMAT2 register).
@@ -152,18 +173,33 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
    props->maxFragmentDualSrcAttachments = 0;
    props->maxFragmentCombinedOutputResources = 4;
 
-   /* No documented or silicon-proven native compute dispatch surface
-    * exists for this RS482/RS485 R300VK target.  See
-    * R300VK_CONFORMANCE_STATUS in r300vk_private.h for the
-    * non-conformance contract. */
-   props->maxComputeSharedMemorySize = 0;
-   props->maxComputeWorkGroupCount[0] = 0;
-   props->maxComputeWorkGroupCount[1] = 0;
-   props->maxComputeWorkGroupCount[2] = 0;
-   props->maxComputeWorkGroupInvocations = 0;
-   props->maxComputeWorkGroupSize[0] = 0;
-   props->maxComputeWorkGroupSize[1] = 0;
-   props->maxComputeWorkGroupSize[2] = 0;
+   if (hybrid_compute) {
+      /* The hybrid compute experiment advertises a bounded software/graphics
+       * execution target only under exact operator opt-in.  R3xx still has no
+       * native compute dispatch packet or workgroup shared memory, so shared
+       * memory stays zero and the workgroup is deliberately scalar. */
+      props->maxComputeSharedMemorySize = 0;
+      props->maxComputeWorkGroupCount[0] = 65535;
+      props->maxComputeWorkGroupCount[1] = 65535;
+      props->maxComputeWorkGroupCount[2] = 65535;
+      props->maxComputeWorkGroupInvocations = 1;
+      props->maxComputeWorkGroupSize[0] = 1;
+      props->maxComputeWorkGroupSize[1] = 1;
+      props->maxComputeWorkGroupSize[2] = 1;
+   } else {
+      /* No documented or silicon-proven native compute dispatch surface
+       * exists for this RS482/RS485 R300VK target.  See
+       * R300VK_CONFORMANCE_STATUS in r300vk_private.h for the
+       * non-conformance contract. */
+      props->maxComputeSharedMemorySize = 0;
+      props->maxComputeWorkGroupCount[0] = 0;
+      props->maxComputeWorkGroupCount[1] = 0;
+      props->maxComputeWorkGroupCount[2] = 0;
+      props->maxComputeWorkGroupInvocations = 0;
+      props->maxComputeWorkGroupSize[0] = 0;
+      props->maxComputeWorkGroupSize[1] = 0;
+      props->maxComputeWorkGroupSize[2] = 0;
+   }
 
    /* R3xx subpixel precision is 4 fractional bits in the rasterizer
     * (R3xx-RRG ch. "Geometry Setup", GA_LINE_CNTL and the rasterizer
@@ -270,39 +306,24 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
    const char *const chip_name = r300vk_chip_name_from_pci_device_id(pci_device_id);
    snprintf(props->deviceName, sizeof(props->deviceName), "%s", chip_name);
 
-   /* Pipeline-cache UUID seeds the disk_cache key.  Fold the API version
-    * and PCI ID into the bytes so a header version bump or chip switch
-    * invalidates stale entries.
-    *
-    * FIXME: missing work --
-    *           replace the hand-rolled byte layout with a BLAKE3 hash that
-    *           ingests disk_cache_get_function_identifier() and
-    *           MESA_GIT_SHA1 from src/util/disk_cache.h, matching the
-    *           construction in terakan_physical_device.c's pipelineCacheUUID
-    *           block.
-    *       reason --
-    *           BLAKE3 hashing requires the shader cache to be wired and the
-    *           sha1_h custom_target from src/meson.build to be plumbed into
-    *           the r300vk shared library; neither lands until the device
-    *           layer brings in the disk_cache dependency.
-    *       tracking-artifact --
-    *           disk_cache_get_function_identifier (src/util/disk_cache.h)
-    *           and the equivalent block in terakan_physical_device.c near
-    *           line 600 of terakan_physical_device_get_capabilities.
-    */
-   memset(props->pipelineCacheUUID, 0, sizeof(props->pipelineCacheUUID));
-   props->pipelineCacheUUID[0] = 'r';
-   props->pipelineCacheUUID[1] = '3';
-   props->pipelineCacheUUID[2] = '0';
-   props->pipelineCacheUUID[3] = '0';
-   props->pipelineCacheUUID[4] = 'v';
-   props->pipelineCacheUUID[5] = 'k';
-   props->pipelineCacheUUID[6] = (uint8_t)(pci_device_id >> 8);
-   props->pipelineCacheUUID[7] = (uint8_t)(pci_device_id & 0xff);
-   props->pipelineCacheUUID[8] = (uint8_t)(props->apiVersion >> 24);
-   props->pipelineCacheUUID[9] = (uint8_t)(props->apiVersion >> 16);
-   props->pipelineCacheUUID[10] = (uint8_t)(props->apiVersion >> 8);
-   props->pipelineCacheUUID[11] = (uint8_t)(props->apiVersion & 0xff);
+   /* Pipeline-cache UUID: BLAKE3 of the driver build identity plus the PCI
+    * device ID, so a driver rebuild or a chip switch invalidates stale
+    * disk_cache and vk_pipeline_cache entries.  disk_cache_get_function_identifier
+    * derives the build id from this driver's .so via dladdr.  Mirrors the
+    * construction in terakan_physical_device.c. */
+   {
+      struct mesa_blake3 uuid_ctx;
+      _mesa_blake3_init(&uuid_ctx);
+      disk_cache_get_function_identifier(r300vk_physical_device_init_properties,
+                                         &uuid_ctx);
+      _mesa_blake3_update(&uuid_ctx, &pci_device_id, sizeof(pci_device_id));
+      uint8_t uuid_hash[BLAKE3_OUT_LEN];
+      _mesa_blake3_final(&uuid_ctx, uuid_hash);
+      static_assert(sizeof(props->pipelineCacheUUID) <= BLAKE3_OUT_LEN,
+                    "pipelineCacheUUID must fit in BLAKE3 output");
+      memcpy(props->pipelineCacheUUID, uuid_hash,
+             sizeof(props->pipelineCacheUUID));
+   }
 
    /* VK_KHR_driver_properties identity.
     *
@@ -349,6 +370,11 @@ r300vk_physical_device_destroy(struct vk_physical_device *const device_base)
 {
    struct r300vk_physical_device *const device =
       container_of(device_base, struct r300vk_physical_device, vk);
+
+#ifdef R300VK_GALLIUM_BACKEND
+   if (device->screen)
+      device->screen->destroy(device->screen);
+#endif
 
    if (device->render_node_fd >= 0)
       close(device->render_node_fd);
@@ -406,6 +432,22 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    device->pci_device_id = drm_device->deviceinfo.pci->device_id;
    device->render_node_fd = render_node_fd;
 
+#ifdef R300VK_GALLIUM_BACKEND
+   struct pipe_screen_config screen_config = {0};
+   device->rws = radeon_drm_winsys_create(render_node_fd, &screen_config,
+                                          r300_screen_create);
+   if (!device->rws || !device->rws->screen) {
+      if (device->rws && device->rws->screen)
+         device->rws->screen->destroy(device->rws->screen);
+      close(render_node_fd);
+      vk_free(&instance->vk.alloc, device);
+      return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+                       "r300vk: failed to create r300g pipe_screen for '%s'",
+                       render_node_path);
+   }
+   device->screen = device->rws->screen;
+#endif
+
    device->sync_types[0] = &r300vk_cpu_sync_type;
    device->sync_types[1] = NULL;
 
@@ -436,6 +478,10 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
       /* terakan_physical_device_init does not call vk_physical_device_finish
        * on init failure (terakan_physical_device.c fail_isa label); the
        * runtime helper only requires finish after a successful init. */
+#ifdef R300VK_GALLIUM_BACKEND
+      if (device->screen)
+         device->screen->destroy(device->screen);
+#endif
       close(render_node_fd);
       vk_free(&instance->vk.alloc, device);
       return result;
@@ -455,17 +501,22 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
 
 /* Queue family enumeration.  Advertises one graphics+transfer queue
  * family with one queue.  RS482/RS485 has no native compute dispatch
- * surface, so VK_QUEUE_COMPUTE_BIT is intentionally absent. */
+ * surface, so VK_QUEUE_COMPUTE_BIT is absent unless the hybrid compute
+ * experiment is explicitly enabled for CTS/RCA work. */
 VKAPI_ATTR void VKAPI_CALL
 r300vk_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
                                                uint32_t *pCount,
                                                VkQueueFamilyProperties2 *pProperties)
 {
    VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pProperties, pCount);
+   VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
+
+   if (r300vk_hybrid_compute_enabled())
+      queue_flags |= VK_QUEUE_COMPUTE_BIT;
 
    vk_outarray_append_typed(VkQueueFamilyProperties2, &out, p) {
       p->queueFamilyProperties = (VkQueueFamilyProperties){
-         .queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT,
+         .queueFlags = queue_flags,
          .queueCount = 1,
          .timestampValidBits = 0,
          .minImageTransferGranularity = {1, 1, 1},
@@ -473,13 +524,252 @@ r300vk_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
    }
 }
 
-/* Nominal heap sizes reported until the device layer queries
- * DRM_RADEON_GEM_INFO from the radeon kernel driver (handled by
- * radeon_gem_info_ioctl in linux/drivers/gpu/drm/radeon/radeon_gem.c).
- * RS482/RS485 is UMA: the GTT and shared-VRAM partitions overlap, so
- * even the queried values will be approximations.  Probes that read
- * the reported heap sizes must record memory_properties_placeholder=true
- * for any classification or evidence bundle. */
+static bool
+r300vk_screen_supports_format(const struct r300vk_physical_device *const device,
+                              enum pipe_format format,
+                              enum pipe_texture_target target,
+                              unsigned bindings)
+{
+#ifdef R300VK_GALLIUM_BACKEND
+   return device->screen &&
+          device->screen->is_format_supported(device->screen, format, target,
+                                              0, 0, bindings);
+#else
+   return false;
+#endif
+}
+
+static void
+r300vk_get_format_properties(const struct r300vk_physical_device *const device,
+                             VkFormat vk_format,
+                             VkFormatProperties3 *const properties)
+{
+   memset(properties, 0, sizeof(*properties));
+   properties->sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
+
+   const enum pipe_format pipe_format = vk_format_to_pipe_format(vk_format);
+   if (pipe_format == PIPE_FORMAT_NONE)
+      return;
+
+   VkFormatFeatureFlags2 image_features = 0;
+   VkFormatFeatureFlags2 buffer_features = 0;
+
+   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                     PIPE_BIND_DEPTH_STENCIL)) {
+      image_features |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT |
+                        VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
+                        VK_FORMAT_FEATURE_2_BLIT_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+   }
+
+   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                     PIPE_BIND_SAMPLER_VIEW)) {
+      image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
+                        VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
+
+      if (!util_format_is_pure_integer(pipe_format))
+         image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+   }
+
+   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                     PIPE_BIND_RENDER_TARGET)) {
+      image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
+                        VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+
+      if (!util_format_is_pure_integer(pipe_format))
+         image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
+   }
+
+   if (!util_format_is_srgb(pipe_format) &&
+       r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
+                                     PIPE_BIND_VERTEX_BUFFER)) {
+      buffer_features |= VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
+   }
+
+   if (r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
+                                     PIPE_BIND_CONSTANT_BUFFER)) {
+      buffer_features |= VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
+   }
+
+   properties->linearTilingFeatures = image_features;
+   properties->optimalTilingFeatures = image_features;
+   properties->bufferFeatures = buffer_features;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
+                                          VkFormat format,
+                                          VkFormatProperties2 *pFormatProperties)
+{
+   VK_FROM_HANDLE(r300vk_physical_device, device, physicalDevice);
+
+   VkFormatProperties3 properties3;
+   r300vk_get_format_properties(device, format, &properties3);
+
+   pFormatProperties->formatProperties = (VkFormatProperties){
+      .linearTilingFeatures =
+         vk_format_features2_to_features(properties3.linearTilingFeatures),
+      .optimalTilingFeatures =
+         vk_format_features2_to_features(properties3.optimalTilingFeatures),
+      .bufferFeatures =
+         vk_format_features2_to_features(properties3.bufferFeatures),
+   };
+
+   VkFormatProperties3 *const out_properties3 =
+      vk_find_struct(pFormatProperties->pNext, FORMAT_PROPERTIES_3);
+   if (out_properties3) {
+      out_properties3->linearTilingFeatures = properties3.linearTilingFeatures;
+      out_properties3->optimalTilingFeatures = properties3.optimalTilingFeatures;
+      out_properties3->bufferFeatures = properties3.bufferFeatures;
+   }
+}
+
+static VkResult
+r300vk_get_image_format_properties(
+   const struct r300vk_physical_device *const device,
+   const VkPhysicalDeviceImageFormatInfo2 *const info,
+   VkImageFormatProperties *const image_properties)
+{
+   VkFormatProperties3 format_properties;
+   r300vk_get_format_properties(device, info->format, &format_properties);
+
+   VkFormatFeatureFlags2 image_features = 0;
+   switch (info->tiling) {
+   case VK_IMAGE_TILING_LINEAR:
+      image_features = format_properties.linearTilingFeatures;
+      break;
+   case VK_IMAGE_TILING_OPTIMAL:
+      image_features = format_properties.optimalTilingFeatures;
+      break;
+   default:
+      goto unsupported;
+   }
+
+   if (image_features == 0)
+      goto unsupported;
+
+   if ((info->usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT))
+      goto unsupported;
+   if ((info->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
+       !(image_features & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
+      goto unsupported;
+
+   VkExtent3D max_extent;
+   uint32_t max_mip_levels;
+   uint32_t max_array_layers;
+
+   switch (info->type) {
+   case VK_IMAGE_TYPE_1D:
+      max_extent = (VkExtent3D){
+         device->vk.properties.maxImageDimension1D, 1, 1,
+      };
+      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension1D) + 1;
+      max_array_layers = device->vk.properties.maxImageArrayLayers;
+      break;
+   case VK_IMAGE_TYPE_2D:
+      max_extent = (VkExtent3D){
+         device->vk.properties.maxImageDimension2D,
+         device->vk.properties.maxImageDimension2D,
+         1,
+      };
+      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension2D) + 1;
+      max_array_layers = device->vk.properties.maxImageArrayLayers;
+      break;
+   case VK_IMAGE_TYPE_3D:
+      max_extent = (VkExtent3D){
+         device->vk.properties.maxImageDimension3D,
+         device->vk.properties.maxImageDimension3D,
+         device->vk.properties.maxImageDimension3D,
+      };
+      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension3D) + 1;
+      max_array_layers = 1;
+      break;
+   default:
+      goto unsupported;
+   }
+
+   *image_properties = (VkImageFormatProperties){
+      .maxExtent = max_extent,
+      .maxMipLevels = max_mip_levels,
+      .maxArrayLayers = max_array_layers,
+      .sampleCounts = VK_SAMPLE_COUNT_1_BIT,
+      .maxResourceSize = UINT32_MAX,
+   };
+   return VK_SUCCESS;
+
+unsupported:
+   *image_properties = (VkImageFormatProperties){0};
+   return VK_ERROR_FORMAT_NOT_SUPPORTED;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+r300vk_GetPhysicalDeviceImageFormatProperties2(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceImageFormatInfo2 *pImageFormatInfo,
+   VkImageFormatProperties2 *pImageFormatProperties)
+{
+   VK_FROM_HANDLE(r300vk_physical_device, device, physicalDevice);
+
+   const VkPhysicalDeviceExternalImageFormatInfo *external_info =
+      vk_find_struct_const(pImageFormatInfo->pNext,
+                           PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
+   if (external_info && external_info->handleType != 0)
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+
+   VkResult result =
+      r300vk_get_image_format_properties(device, pImageFormatInfo,
+                                         &pImageFormatProperties->imageFormatProperties);
+   if (result != VK_SUCCESS)
+      return result;
+
+   VkExternalImageFormatProperties *const external_properties =
+      vk_find_struct(pImageFormatProperties->pNext,
+                     EXTERNAL_IMAGE_FORMAT_PROPERTIES);
+   if (external_properties) {
+      external_properties->externalMemoryProperties =
+         (VkExternalMemoryProperties){0};
+   }
+
+   return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetPhysicalDeviceSparseImageFormatProperties2(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceSparseImageFormatInfo2 *pFormatInfo,
+   uint32_t *pPropertyCount,
+   VkSparseImageFormatProperties2 *pProperties)
+{
+   *pPropertyCount = 0;
+}
+
+/* Fallback heap sizes for the loader-only build (no Gallium oracle) or when the
+ * winsys query reports zero.  The Gallium-backed build reports the real sizes
+ * from the radeon winsys instead (see r300vk_GetPhysicalDeviceMemoryProperties2),
+ * which the winsys read via DRM_RADEON_GEM_INFO at creation -- radeon_drm_winsys.c
+ * populates info.gart_size_kb / vram_size_kb.  RS482/RS485 is UMA: the GART
+ * aperture and the BIOS-carved shared-VRAM partition overlap in physical memory,
+ * so a probe needing the exact physical split must treat the two heaps as one
+ * shared pool. */
 #define R300VK_PLACEHOLDER_GTT_HEAP_SIZE     (128ULL * 1024 * 1024)
 #define R300VK_PLACEHOLDER_VRAM_HEAP_SIZE    ( 64ULL * 1024 * 1024)
 
@@ -489,13 +779,31 @@ r300vk_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
 {
    VkPhysicalDeviceMemoryProperties *const m = &pMemoryProperties->memoryProperties;
 
+   /* Report the real GART and shared-VRAM sizes when a Gallium r300g oracle is
+    * attached.  query_info hands back the radeon_info the winsys cached from
+    * DRM_RADEON_GEM_INFO at creation; gart_size_kb / vram_size_kb are the total
+    * aperture sizes.  The loader-only build (no rws) keeps the nominal fallbacks. */
+   uint64_t gtt_bytes  = R300VK_PLACEHOLDER_GTT_HEAP_SIZE;
+   uint64_t vram_bytes = R300VK_PLACEHOLDER_VRAM_HEAP_SIZE;
+#ifdef R300VK_GALLIUM_BACKEND
+   VK_FROM_HANDLE(r300vk_physical_device, pdev, physicalDevice);
+   if (pdev->rws && pdev->rws->query_info) {
+      struct radeon_info rinfo;
+      pdev->rws->query_info(pdev->rws, &rinfo);
+      if (rinfo.gart_size_kb)
+         gtt_bytes = (uint64_t)rinfo.gart_size_kb * 1024;
+      if (rinfo.vram_size_kb)
+         vram_bytes = (uint64_t)rinfo.vram_size_kb * 1024;
+   }
+#endif
+
    m->memoryHeapCount = 2;
    m->memoryHeaps[0] = (VkMemoryHeap){
-      .size = R300VK_PLACEHOLDER_GTT_HEAP_SIZE,
+      .size = gtt_bytes,
       .flags = 0,
    };
    m->memoryHeaps[1] = (VkMemoryHeap){
-      .size = R300VK_PLACEHOLDER_VRAM_HEAP_SIZE,
+      .size = vram_bytes,
       .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
    };
 

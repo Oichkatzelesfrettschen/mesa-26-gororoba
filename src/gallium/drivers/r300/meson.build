@@ -18,6 +18,7 @@ files_r300 = files(
   'r300_fs.h',
   'r300_hyperz.c',
   'r300_public.h',
+  'r300_icd.c',
   'r300_query.c',
   'r300_reg.h',
   'r300_render.c',

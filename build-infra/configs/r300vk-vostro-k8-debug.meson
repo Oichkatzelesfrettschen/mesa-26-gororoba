@@ -1,0 +1,31 @@
+# r300vk-vostro-k8-debug: Gallium-backed r300vk ICD for RS482/RS485 validation.
+# Canonical validation host: Vostro 1000, RS482/RS485 device 1002:5974.
+#
+# The profile keeps LLVM disabled because r300g does not need it, enables the
+# Gallium-backed r300vk path, and builds debugoptimized so CTS failures retain
+# useful symbols without throwing away optimizer-sensitive code shape.
+
+[project options]
+buildtype = 'debugoptimized'
+b_ndebug = 'false'
+
+platforms = ['x11']
+gallium-drivers = ['r300']
+vulkan-drivers = ['amd_r300']
+r300vk-gallium-backend = true
+tools = ['r300']
+
+gallium-rusticl = false
+llvm = 'disabled'
+draw-use-llvm = false
+
+opengl = false
+glx = 'disabled'
+egl = 'disabled'
+gbm = 'disabled'
+gles1 = 'disabled'
+gles2 = 'disabled'
+glvnd = 'disabled'
+valgrind = 'disabled'
+libunwind = 'disabled'
+perfetto = false

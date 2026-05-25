@@ -19,6 +19,7 @@
 #include "util/u_inlines.h"
 #include "util/box.h"
 #include "util/format/u_format.h"
+#include "util/log.h"
 
 #include "vulkan/util/vk_util.h"
 
@@ -187,10 +188,13 @@ r300vk_replay_gpu(struct r300vk_device *device,
           * A layout transition here has no aux decompression step; the
           * only hardware action is a CS flush to create a submit boundary.
           *
-          * Flush analysis: pipe->flush() submits the current CS and resets
-          * r300g's dirty_state bitmask.  r300_emit_dirty_state() re-emits
-          * all dirty atoms (framebuffer, blend, rasterizer, DSA, vertex
-          * elements) before the next draw_vbo call, so state remains
+          * Flush analysis: pipe->flush() submits the current CS, then
+          * r300_flush_and_cleanup() re-marks every state atom dirty through
+          * r300_mark_atom_dirty() -- r300g has no single dirty bitmask; each
+          * atom carries its own dirty flag walked by foreach_atom.
+          * r300_emit_dirty_state() then re-emits all dirty atoms (framebuffer,
+          * blend, rasterizer, DSA, vertex elements) before the next draw_vbo
+          * call, so state remains
           * coherent across the flush boundary.  vb_dirty is local
           * replay-loop state tracking whether the VB cache needs pushing
           * before the next draw; it is not reset by the flush and continues
@@ -289,15 +293,20 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
          container_of(submit->command_buffers[ci],
                       struct r300vk_cmd_buffer, base);
 
-      /* Backend dispatch: use_cs_backend routes to r300vk_replay_backend_b()
-       * (cs-direct-emit via radeon_winsys) when the hazard gate is accepted.
-       * Backend B is not yet implemented (blocked on r300g shader-code
-       * extraction API and IR completeness for full pipeline state atoms);
-       * fall through to Backend A so the gate flag can be tested end-to-end
-       * before the implementation lands.
-       * TODO: replace with r300vk_replay_backend_b(device, cmd) when
-       * r300_vs_get_hw_code() extraction API and baked-PM4 IR extension
-       * are in place (r300vk/cs-direct-emit-backend). */
+      /* Submit backend selection.  device->use_cs_backend selects the cs-direct
+       * path (native PM4 via radeon_winsys) when the hazard gate is accepted.
+       * That path is not implemented and is not separately validatable on
+       * RS482/RS485: r300g's emit functions are coupled to the private
+       * struct r300_context and its populated dirty-atom state machine, so a
+       * standalone PM4 emitter would either duplicate the pipe_context replay
+       * with worse coupling or re-derive r300_emit.c with no register-level
+       * oracle to check it against (the curated safe-register set carries no
+       * 3D-engine config registers).  Honor the flag by reporting the gap
+       * once, then run the pipe_context replay path. */
+      if (device->use_cs_backend)
+         mesa_logw_once("r300vk: cs-direct-emit backend requested via "
+                        "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
+                        "implemented; using pipe_context replay backend");
       r300vk_replay_gpu(device, cmd);
    }
 

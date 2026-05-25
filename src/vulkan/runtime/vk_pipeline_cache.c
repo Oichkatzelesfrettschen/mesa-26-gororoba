@@ -187,7 +187,11 @@ vk_pipeline_cache_object_weak_ref(struct vk_pipeline_cache *cache,
 void
 vk_pipeline_cache_object_unref(struct vk_device *device, struct vk_pipeline_cache_object *object)
 {
-   assert(object && p_atomic_read(&object->ref_cnt) >= 1);
+   assert(object);
+#ifndef NDEBUG
+   uint32_t ref_cnt = p_atomic_read(&object->ref_cnt);
+   assert(ref_cnt >= 1);
+#endif
 
    struct vk_pipeline_cache *weak_owner = p_atomic_read(&object->weak_owner);
    if (!weak_owner) {

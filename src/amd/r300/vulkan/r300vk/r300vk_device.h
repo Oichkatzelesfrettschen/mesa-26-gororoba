@@ -38,12 +38,20 @@ VK_DEFINE_HANDLE_CASTS(r300vk_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
  *
  * use_cs_backend: true when R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1 is
  * set in the environment at CreateDevice time.  When true, the submit path
- * is expected to dispatch through r300vk_replay_backend_b() (cs-direct-emit)
- * rather than the pipe_context-mediated r300vk_replay_gpu() path.  Backend B
- * is not yet implemented (blocked on r300g shader-code extraction API and IR
- * completeness); the flag controls the dispatch hook for PR 3 to fill in.
- * The env var must compare equal to the literal string "1"; unset, empty,
- * or other values leave use_cs_backend false. */
+ * would dispatch a cs-direct emitter (native PM4 via radeon_winsys)
+ * rather than the pipe_context-mediated r300vk_replay_gpu() path.  That
+ * backend is not implemented: r300g's emit functions are coupled to the
+ * private struct r300_context and its dirty-atom state machine, and the
+ * curated RS482/RS485 safe-register set exposes no 3D-engine config
+ * registers, so a standalone emitter is neither low-coupling nor separately
+ * validatable.  The submit path honors the flag by reporting the gap once
+ * and running the pipe_context replay.  The env var must compare equal to
+ * the literal string "1"; unset, empty, or other values leave it false.
+ *
+ * hybrid_compute_enabled: exact opt-in for exposing the scalar hybrid
+ * compute experiment.  The queue is still non-conformant until compute
+ * pipeline, descriptor, dispatch, and memory semantics are implemented and
+ * validated against CTS plus retained dmesg evidence. */
 struct r300vk_device {
    struct vk_device vk; /* must be first */
    struct vk_device_dispatch_table command_dispatch_table;
@@ -52,6 +60,7 @@ struct r300vk_device {
    struct pipe_context   *pipe;
    struct r300vk_queue    queue;
    bool                   use_cs_backend;
+   bool                   hybrid_compute_enabled;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)
