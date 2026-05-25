@@ -6,45 +6,10 @@
 [built-in options]
 buildtype = 'debugoptimized'
 b_ndebug = 'false'
-c_args = [
-  '-march=x86-64',
-  '-mtune=generic',
-  '-Os',
-  '-pipe',
-  '-fno-plt',
-  '-fexceptions',
-  '-ffunction-sections',
-  '-fdata-sections',
-]
-cpp_args = [
-  '-march=x86-64',
-  '-mtune=generic',
-  '-Os',
-  '-pipe',
-  '-fno-plt',
-  '-fexceptions',
-  '-ffunction-sections',
-  '-fdata-sections',
-  '-Wp,-D_GLIBCXX_ASSERTIONS',
-]
-c_link_args = [
-  '-fuse-ld=lld',
-  '-Wl,-O1',
-  '-Wl,--sort-common',
-  '-Wl,--as-needed',
-  '-Wl,-z,relro',
-  '-Wl,-z,now',
-  '-Wl,--gc-sections',
-]
-cpp_link_args = [
-  '-fuse-ld=lld',
-  '-Wl,-O1',
-  '-Wl,--sort-common',
-  '-Wl,--as-needed',
-  '-Wl,-z,relro',
-  '-Wl,-z,now',
-  '-Wl,--gc-sections',
-]
+c_args = ['-march=x86-64', '-mtune=generic', '-Os', '-pipe', '-fno-plt', '-fexceptions', '-ffunction-sections', '-fdata-sections']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-Os', '-pipe', '-fno-plt', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
+cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
 
 [project options]
 platforms = ['x11']
