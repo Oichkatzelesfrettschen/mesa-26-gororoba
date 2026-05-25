@@ -20,7 +20,7 @@ extern "C" {
 #endif
 
 /* r300vk_pipeline stores Gallium CSO handles compiled from SPIR-V through
- * vk_spirv_to_nir() -> r300g's internal r300_nir_to_rc_direct path.
+ * vk_spirv_to_nir() -> r300g's internal nir_to_rc path.
  * The ICD does NOT call nir_to_tgsi; r300g handles the NIR lowering
  * internally when create_vs_state / create_fs_state receive
  * PIPE_SHADER_IR_NIR shader state.
@@ -50,6 +50,17 @@ struct r300vk_pipeline {
    uint32_t                vertex_stride[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_extent[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_mask;
+
+   /* Synthetic VS-system-value stream.  The RC vertex path has no
+    * system-value input slot, so R300VK supplies VertexIndex / InstanceIndex
+    * as driver-generated vertex attributes at reserved driver_location and
+    * vertex-buffer binding pairs. */
+   bool                    needs_vertex_id_stream;
+   bool                    needs_instance_id_stream;
+   uint8_t                 vertex_id_slot;
+   uint8_t                 instance_id_slot;
+   uint8_t                 vertex_id_vb_binding;
+   uint8_t                 instance_id_vb_binding;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_pipeline, base, VkPipeline,

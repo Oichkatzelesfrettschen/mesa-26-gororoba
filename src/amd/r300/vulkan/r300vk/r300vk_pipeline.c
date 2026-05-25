@@ -24,6 +24,13 @@
 
 #include <string.h>
 
+/* Defined in the r300 driver (compiler/r300_nir_lower_vs_system_values.c).
+ * Declared locally because its header r300_nir.h includes r300_screen.h, which
+ * is not on the r300vk include path. */
+extern bool r300_nir_lower_vs_system_values_to_inputs(nir_shader *s,
+                                                      int vertex_id_slot,
+                                                      int instance_id_slot);
+
 static const struct spirv_to_nir_options r300vk_spirv_opts = {
    .environment            = NIR_SPIRV_VULKAN,
    .ubo_addr_format        = nir_address_format_32bit_index_offset,
@@ -36,7 +43,7 @@ static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
                        struct r300vk_pipeline *pl,
-                       VkResult *out_result)
+                       const VkPipelineVertexInputStateCreateInfo *vi)
 {
    /* r300g exposes VS and FS only; geometry, tessellation, and compute are
     * unsupported on R300-class hardware. */
@@ -66,11 +73,75 @@ r300vk_compile_shader(struct r300vk_device *device,
 
    /* vk_spirv_to_nir sets data.location for VS inputs (VERT_ATTRIB_GENERIC0+n)
     * but leaves data.driver_location at zero for all variables.  nir_lower_io
-    * (called inside r300g's nir_to_rc via r300_nir_lower_for_rc) uses
-    * driver_location as the TGSI IN[]/OUT[] base, so all inputs would collapse
-    * to IN[0] without this assignment.  Terakan applies the same pattern in
-    * terakan_shader.c before handing NIR to r600g. */
+    * inside r300g's nir_to_rc uses driver_location as the RC input base, so
+    * all inputs would collapse to IN[0] without this assignment. */
    if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
+      bool needs_vid =
+         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_VERTEX_ID);
+      bool needs_iid =
+         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID);
+      if (needs_vid || needs_iid) {
+         uint32_t next_input_slot = 0;
+         uint32_t next_vb_binding = 0;
+         if (vi) {
+            for (uint32_t a = 0; a < vi->vertexAttributeDescriptionCount; a++) {
+               const VkVertexInputAttributeDescription *attr =
+                  &vi->pVertexAttributeDescriptions[a];
+               if (attr->location >= R300VK_MAX_VERTEX_BINDINGS) {
+                  ralloc_free(nir);
+                  return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                                   "r300vk: vertex attribute location %u "
+                                   "exceeds %u", attr->location,
+                                   R300VK_MAX_VERTEX_BINDINGS - 1);
+               }
+               next_input_slot = MAX2(next_input_slot, attr->location + 1);
+            }
+            for (uint32_t b = 0; b < vi->vertexBindingDescriptionCount; b++) {
+               uint32_t app_b = vi->pVertexBindingDescriptions[b].binding;
+               if (app_b >= R300VK_MAX_VERTEX_BINDINGS) {
+                  ralloc_free(nir);
+                  return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                                   "r300vk: vertex binding %u exceeds %u",
+                                   app_b, R300VK_MAX_VERTEX_BINDINGS - 1);
+               }
+               next_vb_binding = MAX2(next_vb_binding, app_b + 1);
+            }
+         }
+
+         const uint32_t sysval_count = (needs_vid ? 1u : 0u) +
+                                       (needs_iid ? 1u : 0u);
+         if (next_input_slot + sysval_count > R300VK_MAX_VERTEX_BINDINGS) {
+            ralloc_free(nir);
+            return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                             "r300vk: no vertex attribute slot available for "
+                             "VS system-value stream");
+         }
+         if (next_vb_binding + sysval_count > R300VK_MAX_VERTEX_BINDINGS) {
+            ralloc_free(nir);
+            return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                             "r300vk: no vertex binding available for VS "
+                             "system-value stream");
+         }
+
+         int vid_slot = needs_vid ? (int)next_input_slot : -1;
+         int iid_slot = needs_iid ? (int)(next_input_slot +
+                                          (needs_vid ? 1u : 0u)) : -1;
+         r300_nir_lower_vs_system_values_to_inputs(nir, vid_slot, iid_slot);
+
+         pl->needs_vertex_id_stream   = needs_vid;
+         pl->needs_instance_id_stream = needs_iid;
+         pl->vertex_id_slot =
+            (uint8_t)(needs_vid ? next_input_slot : 0);
+         pl->instance_id_slot =
+            (uint8_t)(needs_iid ? next_input_slot +
+                       (needs_vid ? 1u : 0u) : 0);
+         pl->vertex_id_vb_binding =
+            (uint8_t)(needs_vid ? next_vb_binding : 0);
+         pl->instance_id_vb_binding =
+            (uint8_t)(needs_iid ? next_vb_binding +
+                       (needs_vid ? 1u : 0u) : 0);
+      }
+
       nir_foreach_shader_in_variable(var, nir) {
          assert(var->data.location >= VERT_ATTRIB_GENERIC0);
          var->data.driver_location = var->data.location - VERT_ATTRIB_GENERIC0;
@@ -106,17 +177,51 @@ r300vk_compile_shader(struct r300vk_device *device,
 /* Build and create the vertex elements CSO.  Extracted to keep
  * r300vk_create_one_pipeline within the CCN budget. */
 static VkResult
+r300vk_vertex_element_count(struct r300vk_device *device,
+                            const VkPipelineVertexInputStateCreateInfo *vi,
+                            uint32_t *element_count_out)
+{
+   uint32_t element_count = 0;
+   uint32_t location_mask = 0;
+
+   for (uint32_t i = 0; i < vi->vertexAttributeDescriptionCount; i++) {
+      const VkVertexInputAttributeDescription *attr =
+         &vi->pVertexAttributeDescriptions[i];
+      if (attr->location >= R300VK_MAX_VERTEX_BINDINGS)
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r300vk: vertex attribute location %u exceeds %u",
+                          attr->location, R300VK_MAX_VERTEX_BINDINGS - 1);
+      if (location_mask & BITFIELD_BIT(attr->location))
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r300vk: duplicate vertex attribute location %u",
+                          attr->location);
+
+      location_mask |= BITFIELD_BIT(attr->location);
+      element_count = MAX2(element_count, attr->location + 1);
+   }
+
+   if (element_count > 0 && location_mask != BITFIELD_MASK(element_count))
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r300vk: sparse vertex attribute locations are not "
+                       "representable by r300g vertex elements");
+
+   *element_count_out = element_count;
+   return VK_SUCCESS;
+}
+
+static VkResult
 r300vk_build_velems_cso(struct r300vk_device *device,
                          struct r300vk_pipeline *pl,
                          const VkPipelineVertexInputStateCreateInfo *vi)
 {
    struct pipe_vertex_element ve[PIPE_MAX_ATTRIBS];
-   uint32_t n = vi->vertexAttributeDescriptionCount;
-   if (n > PIPE_MAX_ATTRIBS)
-      n = PIPE_MAX_ATTRIBS;
+   uint32_t n;
+   VkResult result = r300vk_vertex_element_count(device, vi, &n);
+   if (result != VK_SUCCESS)
+      return result;
 
    memset(ve, 0, sizeof(ve));
-   for (uint32_t i = 0; i < n; i++) {
+   for (uint32_t i = 0; i < vi->vertexAttributeDescriptionCount; i++) {
       const VkVertexInputAttributeDescription *attr =
          &vi->pVertexAttributeDescriptions[i];
       if (attr->binding >= R300VK_MAX_VERTEX_BINDINGS)
@@ -135,12 +240,13 @@ r300vk_build_velems_cso(struct r300vk_device *device,
                           "r300vk: vertex attribute offset %u exceeds "
                           "representable binding extent", attr->offset);
 
-      ve[i].src_offset          = (uint16_t)attr->offset;
-      ve[i].vertex_buffer_index = (uint8_t)attr->binding;
-      ve[i].src_format          = (uint8_t)elem_fmt;
+      struct pipe_vertex_element *elem = &ve[attr->location];
+      elem->src_offset          = (uint16_t)attr->offset;
+      elem->vertex_buffer_index = (uint8_t)attr->binding;
+      elem->src_format          = (uint8_t)elem_fmt;
       for (uint32_t b = 0; b < vi->vertexBindingDescriptionCount; b++) {
          if (vi->pVertexBindingDescriptions[b].binding == attr->binding) {
-            ve[i].src_stride = vi->pVertexBindingDescriptions[b].stride;
+            elem->src_stride = vi->pVertexBindingDescriptions[b].stride;
             pl->vertex_stride[attr->binding] =
                vi->pVertexBindingDescriptions[b].stride;
             pl->vertex_binding_extent[attr->binding] =
@@ -152,8 +258,30 @@ r300vk_build_velems_cso(struct r300vk_device *device,
       }
    }
 
+   /* Append synthetic VS-system-value elements (R32_SINT, one int per element)
+    * the VS reads via the lowering in r300vk_compile_shader.  instance_divisor
+    * 0 steps the vertex-id element per vertex; 1 steps the instance-id element
+    * per instance. */
+   uint32_t velem_count = n;
+   if (pl->needs_vertex_id_stream && velem_count < PIPE_MAX_ATTRIBS) {
+      ve[velem_count].src_offset          = 0;
+      ve[velem_count].vertex_buffer_index = pl->vertex_id_vb_binding;
+      ve[velem_count].src_format          = (uint8_t)PIPE_FORMAT_R32_SINT;
+      ve[velem_count].src_stride          = sizeof(int32_t);
+      ve[velem_count].instance_divisor    = 0;
+      velem_count++;
+   }
+   if (pl->needs_instance_id_stream && velem_count < PIPE_MAX_ATTRIBS) {
+      ve[velem_count].src_offset          = 0;
+      ve[velem_count].vertex_buffer_index = pl->instance_id_vb_binding;
+      ve[velem_count].src_format          = (uint8_t)PIPE_FORMAT_R32_SINT;
+      ve[velem_count].src_stride          = sizeof(int32_t);
+      ve[velem_count].instance_divisor    = 1;
+      velem_count++;
+   }
+
    pl->velems_cso =
-      device->pipe->create_vertex_elements_state(device->pipe, n, ve);
+      device->pipe->create_vertex_elements_state(device->pipe, velem_count, ve);
    if (!pl->velems_cso)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
    return VK_SUCCESS;
@@ -183,7 +311,8 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
    } while (0)
 
    for (uint32_t i = 0; i < info->stageCount; i++) {
-      VkResult r = r300vk_compile_shader(device, &info->pStages[i], pl, NULL);
+      VkResult r = r300vk_compile_shader(device, &info->pStages[i], pl,
+                                         info->pVertexInputState);
       if (r != VK_SUCCESS)
          FAIL_PIPELINE(r);
    }
