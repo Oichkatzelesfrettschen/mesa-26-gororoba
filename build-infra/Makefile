@@ -65,6 +65,8 @@ else ifneq (,$(filter $(HOSTENV),vostro1000-k8-ccache-no-pump))
 JOBS     ?= 16
 else ifneq (,$(filter $(HOSTENV),vostro1000-k8-distcc))
 JOBS     ?= 24
+else ifneq (,$(filter $(HOSTENV),vostro1000-x86-64-v1-clang22-ccache-distcc))
+JOBS     ?= 36
 else
 JOBS     ?= $(shell nproc)
 endif
