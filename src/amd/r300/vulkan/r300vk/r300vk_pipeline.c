@@ -52,6 +52,17 @@ r300vk_find_vertex_binding_desc(const VkPipelineVertexInputStateCreateInfo *vi,
    return NULL;
 }
 
+static uint32_t
+r300vk_vertex_fetch_size(enum pipe_format format)
+{
+   /* r300_create_vertex_elements_state stores r300_vertex_element_state
+    * format_size as a dword-aligned byte count, and r300_emit_vertex_arrays
+    * emits it through R300_VBPNTR_SIZE*.  Clamp robust vertex counts against
+    * that same fetch span so tightly packed 8/16/24-bit attributes cannot
+    * expose a final vertex whose r300 hardware fetch crosses the binding end. */
+   return align(util_format_get_blocksize(format), 4);
+}
+
 static VkResult
 r300vk_reserve_vs_system_value_streams(
    struct r300vk_device *device,
@@ -300,7 +311,7 @@ r300vk_build_velems_cso(struct r300vk_device *device,
          return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                           "r300vk: unsupported vertex attribute format %d "
                           "at location %u", attr->format, attr->location);
-      const uint32_t attr_size = util_format_get_blocksize(elem_fmt);
+      const uint32_t attr_size = r300vk_vertex_fetch_size(elem_fmt);
       if (attr->offset > UINT32_MAX - attr_size)
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: vertex attribute offset %u exceeds "
