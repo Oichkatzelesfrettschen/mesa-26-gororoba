@@ -161,6 +161,15 @@ extern bool r300_nir_lower_flrp(nir_shader *shader);
 
 extern bool r300_nir_lower_comparison_fs(nir_shader *shader);
 
+/* Report whether a VS reads gl_VertexIndex / gl_InstanceIndex, tolerant of both
+ * representations: the pre-lowered load_deref of a nir_var_system_value variable
+ * that spirv_to_nir emits, and the post-nir_lower_system_values intrinsic form.
+ * vk_spirv_to_nir leaves the deref form and never gathers system_values_read, so
+ * a caller cannot rely on nir->info to detect the read. */
+extern void r300_nir_vs_reads_system_values(nir_shader *s,
+                                            bool *reads_vertex_id,
+                                            bool *reads_instance_id);
+
 /* Rewrite VS gl_VertexIndex / gl_InstanceIndex to reads of a synthetic vertex
  * input the driver supplies at the given driver_location (slot < 0 disables a
  * given system value).  For the SW-TCL route on parts with no hardware vertex

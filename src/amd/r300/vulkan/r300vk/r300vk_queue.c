@@ -17,6 +17,7 @@
 #include "pipe/p_state.h"
 #include "pipe/p_defines.h"
 #include "util/u_inlines.h"
+#include "util/u_dynarray.h"
 #include "util/box.h"
 #include "util/format/u_format.h"
 #include "util/log.h"
@@ -46,6 +47,65 @@ viewport_vk_to_gallium(const VkViewport *vp,
    pv->swizzle_y    = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
    pv->swizzle_z    = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
    pv->swizzle_w    = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
+}
+
+/* Allocate a transient vertex buffer for a synthetic VS-system-value stream.
+ * Gallium applies draw.start and start_instance while fetching vertex elements,
+ * so the buffer must be indexable through base + count rather than only count
+ * elements.  The owner reference is held in transient_vbs until the submit fence
+ * completes; set_vertex_buffers takes its own references. */
+static bool
+r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
+                                   struct pipe_context *pipe,
+                                   struct pipe_vertex_buffer *vb_cache,
+                                   uint8_t binding, uint32_t base, uint32_t count,
+                                   struct util_dynarray *transient_vbs)
+{
+   if (count == 0)
+      return true;
+
+   if (binding >= R300VK_MAX_VERTEX_BINDINGS)
+      return false;
+
+   if (count > UINT32_MAX - base) {
+      memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
+      return false;
+   }
+
+   const uint32_t total_count = base + count;
+   struct pipe_resource tmpl = {
+      .target     = PIPE_BUFFER,
+      .format     = PIPE_FORMAT_R8_UNORM,
+      .bind       = PIPE_BIND_VERTEX_BUFFER,
+      .usage      = PIPE_USAGE_STREAM,
+      .width0     = (uint64_t)total_count * sizeof(int32_t),
+      .height0    = 1,
+      .depth0     = 1,
+      .array_size = 1,
+   };
+   struct pipe_resource *res =
+      device->screen->resource_create(device->screen, &tmpl);
+   if (!res)
+      return false;
+
+   struct pipe_transfer *xfer = NULL;
+   int32_t *map = pipe_buffer_map(pipe, res,
+                                  PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                  &xfer);
+   if (!map) {
+      pipe_resource_reference(&res, NULL);
+      return false;
+   }
+
+   for (uint32_t i = 0; i < total_count; i++)
+      map[i] = (int32_t)i;
+   pipe_buffer_unmap(pipe, xfer);
+
+   vb_cache[binding].is_user_buffer  = false;
+   vb_cache[binding].buffer_offset   = 0;
+   vb_cache[binding].buffer.resource = res;
+   util_dynarray_append(transient_vbs, res);
+   return true;
 }
 
 static uint32_t
@@ -147,17 +207,24 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
          continue;
 
       const uint32_t stride = pl->vertex_stride[b];
-      if (stride == 0 || !vb_cache[b].buffer.resource)
+      const uint32_t extent = pl->vertex_binding_extent[b];
+      if (extent == 0 || !vb_cache[b].buffer.resource)
          return 0;
 
       const VkDeviceSize offset = vb_cache[b].buffer_offset;
       const VkDeviceSize size = vb_sizes[b];
       const VkDeviceSize bytes = size > offset ? size - offset : 0;
-      const uint32_t vertices = bytes / stride;
+      if (bytes < extent)
+         return 0;
+
+      if (stride == 0)
+         continue;
+
+      const VkDeviceSize vertices = 1 + (bytes - extent) / stride;
       if (first_vertex >= vertices)
          return 0;
 
-      max_count = MIN2(max_count, vertices - first_vertex);
+      max_count = MIN2(max_count, (uint32_t)(vertices - first_vertex));
    }
 
    return max_count;
@@ -167,7 +234,8 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
  * per r300vk_cmd_type is the minimum correct structure. */
 static void
 r300vk_replay_gpu(struct r300vk_device *device,
-                  const struct r300vk_cmd_buffer *cmd)
+                  const struct r300vk_cmd_buffer *cmd,
+                  struct util_dynarray *transient_vbs)
 {
    struct pipe_context *pipe = device->pipe;
    const uint32_t tile_pass_count = r300vk_cmd_tile_pass_count(cmd);
@@ -306,6 +374,36 @@ r300vk_replay_gpu(struct r300vk_device *device,
       case R300VK_CMD_DRAW: {
          if (skip_render_pass)
             break;
+
+         bool synthetic_streams_ready = true;
+
+         /* Supply the synthetic VS-system-value stream(s) for this draw: the
+          * vertex-id stream steps per vertex (firstVertex + i), the instance-id
+          * stream per instance (firstInstance + i).  The velems CSO already
+          * carries the matching element + instance_divisor. */
+         if (bound_pipeline && bound_pipeline->needs_vertex_id_stream) {
+            synthetic_streams_ready =
+               r300vk_bind_synthetic_index_stream(
+                  device, pipe, vb_cache, bound_pipeline->vertex_id_vb_binding,
+                  e->draw.first, e->draw.count, transient_vbs);
+            if (synthetic_streams_ready) {
+               if (bound_pipeline->vertex_id_vb_binding + 1u > vb_max_used)
+                  vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
+               vb_dirty = true;
+            }
+         }
+         if (synthetic_streams_ready && bound_pipeline &&
+             bound_pipeline->needs_instance_id_stream) {
+            synthetic_streams_ready =
+               r300vk_bind_synthetic_index_stream(
+                  device, pipe, vb_cache, bound_pipeline->instance_id_vb_binding,
+                  e->draw.first_instance, e->draw.instances, transient_vbs);
+            if (synthetic_streams_ready) {
+               if (bound_pipeline->instance_id_vb_binding + 1u > vb_max_used)
+                  vb_max_used = bound_pipeline->instance_id_vb_binding + 1u;
+               vb_dirty = true;
+            }
+         }
          /* Flush the VB cache after bind_vertex_elements_state (set by
           * BIND_PIPELINE above in the stream) so the Gallium ordering holds.
           * vb_max_used tracks the highest slot index written so only the live
@@ -324,10 +422,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
          info.start_instance = e->draw.first_instance;
          struct pipe_draw_start_count_bias draw = {
             .start      = e->draw.first,
-            .count      =
+            .count      = synthetic_streams_ready ?
                r300vk_robust_vertex_count(bound_pipeline, vb_cache,
                                            vb_sizes, e->draw.first,
-                                           e->draw.count),
+                                           e->draw.count) : 0,
             .index_bias = 0,
          };
          if (draw.count > 0)
@@ -511,6 +609,11 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
                                                struct r300vk_device, vk);
    struct pipe_context  *pipe   = device->pipe;
 
+   /* Synthetic VS-system-value vertex buffers allocated during replay; held
+    * until after the submit fence, then released. */
+   struct util_dynarray transient_vbs;
+   util_dynarray_init(&transient_vbs, NULL);
+
    for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
       struct r300vk_cmd_buffer *cmd =
          container_of(submit->command_buffers[ci],
@@ -530,7 +633,7 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
          mesa_logw_once("r300vk: cs-direct-emit backend requested via "
                         "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
                         "implemented; using pipe_context replay backend");
-      r300vk_replay_gpu(device, cmd);
+      r300vk_replay_gpu(device, cmd, &transient_vbs);
    }
 
    struct pipe_fence_handle *fence = NULL;
@@ -540,6 +643,11 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
                                    OS_TIMEOUT_INFINITE);
       device->screen->fence_reference(device->screen, &fence, NULL);
    }
+
+   /* GPU is done with the draws; release the synthetic VS-system-value streams. */
+   util_dynarray_foreach(&transient_vbs, struct pipe_resource *, pres)
+      pipe_resource_reference(pres, NULL);
+   util_dynarray_fini(&transient_vbs);
 
    for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
       struct r300vk_cmd_buffer *cmd =

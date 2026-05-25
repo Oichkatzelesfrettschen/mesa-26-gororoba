@@ -65,6 +65,8 @@ else ifneq (,$(filter $(HOSTENV),vostro1000-k8-ccache-no-pump))
 JOBS     ?= 16
 else ifneq (,$(filter $(HOSTENV),vostro1000-k8-distcc))
 JOBS     ?= 24
+else ifneq (,$(filter $(HOSTENV),vostro1000-x86-64-v1-clang22-ccache-distcc))
+JOBS     ?= 36
 else
 JOBS     ?= $(shell nproc)
 endif
@@ -98,6 +100,17 @@ endif
 # instead of committing one LLVM major into every native file.
 SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure
 MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
+LOCKED_TOOL_ENV := \
+    PATH="$$PATH" \
+    CCACHE_BASEDIR="$${CCACHE_BASEDIR:-}" \
+    CCACHE_COMPILERCHECK="$${CCACHE_COMPILERCHECK:-}" \
+    CCACHE_DEPEND="$${CCACHE_DEPEND:-}" \
+    CCACHE_DIR="$${CCACHE_DIR:-}" \
+    CCACHE_MAXSIZE="$${CCACHE_MAXSIZE:-}" \
+    CCACHE_PATH="$${CCACHE_PATH:-}" \
+    CCACHE_PREFIX="$${CCACHE_PREFIX:-}" \
+    DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
+    SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
 .PHONY: list audit configure build build-generated build-pump clean distclean install \
         artifact-check test \
@@ -113,6 +126,10 @@ MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER
         install-r300-vostro-k8-release install-r300-vostro-k8-debug \
         rebuild-r300vk-vostro-k8-release rebuild-r300vk-vostro-k8-debug \
         install-r300vk-vostro-k8-release install-r300vk-vostro-k8-debug \
+        rebuild-r300vk-vostro-x86-64-v1-clang22-release \
+        install-r300vk-vostro-x86-64-v1-clang22-release \
+        rebuild-r300vk-vostro-x86-64-v1-clang22-debug \
+        install-r300vk-vostro-x86-64-v1-clang22-debug \
         help
 
 help:
@@ -194,7 +211,7 @@ audit:
 				return; \
 			fi; \
 		else \
-			for version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
+			for version in 22 21 20 19 18 17 16 15 14 13 12 11 10; do \
 				if llvm_has_core "$$version" "$$need_config"; then selected="$$version"; break; fi; \
 			done; \
 			version=30; \
@@ -313,7 +330,7 @@ configure:
 		fi; \
 		llvm_version="$$requested"; \
 	else \
-		for candidate_version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
+		for candidate_version in 22 21 20 19 18 17 16 15 14 13 12 11 10; do \
 			if has_core "$$candidate_version" "$$needs_llvm_config"; then llvm_version="$$candidate_version"; break; fi; \
 		done; \
 		if [ -z "$$llvm_version" ]; then \
@@ -370,15 +387,18 @@ build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
-	flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS)
+	env $(LOCKED_TOOL_ENV) \
+	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS)
 
 build-generated:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	mapfile -t targets < <(ninja -C $(BUILDDIR) -t targets all | awk -v re='$(GENERATED_TARGET_REGEX)' '$$2 == "CUSTOM_COMMAND" { sub(/:$$/, "", $$1); if ($$1 ~ re) print $$1 }'); \
 	if [ "$${#targets[@]}" -gt 0 ]; then \
 		echo "prebuilding $${#targets[@]} selected generated Meson/Ninja targets outside distcc-pump"; \
-		ninja -C $(BUILDDIR) -j$(JOBS) "$${targets[@]}"; \
+		env $(LOCKED_TOOL_ENV) \
+		    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS) "$${targets[@]}"; \
 	else \
 		echo "no selected generated targets found"; \
 	fi
@@ -386,7 +406,9 @@ build-generated:
 build-pump:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	distcc-pump ninja -C $(BUILDDIR) -j$(JOBS)
+	mkdir -p "$(dir $(BUILD_LOCK))"; \
+	env $(LOCKED_TOOL_ENV) \
+	    flock -x -w 7200 $(BUILD_LOCK) distcc-pump ninja -C $(BUILDDIR) -j$(JOBS)
 
 clean:
 	rm -rf $(BUILDDIR)
@@ -405,7 +427,8 @@ install:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
-	flock -x -w 7200 $(BUILD_LOCK) bash -c 'set -euo pipefail; \
+	env $(LOCKED_TOOL_ENV) \
+	    flock -x -w 7200 $(BUILD_LOCK) bash -c 'set -euo pipefail; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	    meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
@@ -416,13 +439,17 @@ install:
 artifact-check:
 	@test -d $(PREFIX) || { echo "prefix missing: $(PREFIX)"; exit 1; }
 	find $(PREFIX) -maxdepth 5 -type f \
-		\( -name "libvulkan_terascale.so" -o -name "r600_dri.so" -o \
-		   -name "libgallium-*.so" -o -name "terascale_icd*.json" \) \
+		\( -name "libvulkan_terascale.so" -o -name "libvulkan_r300.so" -o \
+		   -name "r600_dri.so" -o -name "r300_dri.so" -o \
+		   -name "libdril_dri.so" -o -name "libgallium-*.so" -o \
+		   -name "terascale_icd*.json" -o -name "r300_icd*.json" \) \
 		-printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort
 
 test:
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	ninja -C $(BUILDDIR) test
+	mkdir -p "$(dir $(BUILD_LOCK))"; \
+	env $(LOCKED_TOOL_ENV) \
+	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) test
 
 # Pair-member loops.  Each takes one PAIR_<NAME> list and threads
 # PROFILE + HOSTENV + BUILDDIR + PREFIX + INSTALL_NAMESPACE through
@@ -580,3 +607,21 @@ rebuild-r300vk-vostro-k8-debug:
 
 install-r300vk-vostro-k8-debug:
 	$(MAKE) install PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+
+# Canonical Vostro r300vk x86-64-v1 clang 22 release build.
+rebuild-r300vk-vostro-x86-64-v1-clang22-release:
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+
+install-r300vk-vostro-x86-64-v1-clang22-release:
+	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+
+# Canonical Vostro r300vk x86-64-v1 clang 22 debugoptimized build.
+rebuild-r300vk-vostro-x86-64-v1-clang22-debug:
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+
+install-r300vk-vostro-x86-64-v1-clang22-debug:
+	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug

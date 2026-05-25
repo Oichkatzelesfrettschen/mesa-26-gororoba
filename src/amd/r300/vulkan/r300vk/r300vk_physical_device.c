@@ -10,7 +10,9 @@
 #include "r300vk_instance.h"
 #include "r300vk_private.h"
 
+#include "pipe/p_defines.h"
 #include "util/disk_cache.h"
+#include "util/format/u_format.h"
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
 #include "vk_alloc.h"
@@ -20,7 +22,6 @@
 #include "vk_util.h"
 
 #ifdef R300VK_GALLIUM_BACKEND
-#include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "r300/r300_public.h"
 #include "winsys/radeon_winsys.h"
@@ -65,10 +66,10 @@ r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
  *   "Mesa r300g <file>" src/gallium/drivers/r300/<file>.[ch] in this tree
  *   "Vulkan spec <ref>" Vulkan 1.4 specification section reference
  *
-    * Where the RS482 path has no single native 4096-wide render surface,
-    * r300vk presents the Vulkan floor through a 2560 hardware-backed span plus
-    * a residual span.  Native r300g resources remain the fast path for images
-    * that fit in one span. */
+ * Where the RS482 path has no single native 4096-wide render surface, r300vk
+ * presents the Vulkan floor through a 2560 hardware-backed span plus a residual
+ * span.  Native r300g resources remain the fast path for images that fit in
+ * one span. */
 static void
 r300vk_physical_device_init_limits(struct vk_properties *const props)
 {
