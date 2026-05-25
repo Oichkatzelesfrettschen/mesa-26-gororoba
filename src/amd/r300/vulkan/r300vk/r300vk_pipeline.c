@@ -19,6 +19,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
+#include "util/macros.h"
 
 #include <string.h>
 
@@ -130,6 +131,7 @@ r300vk_build_velems_cso(struct r300vk_device *device,
             ve[i].src_stride = vi->pVertexBindingDescriptions[b].stride;
             pl->vertex_stride[attr->binding] =
                vi->pVertexBindingDescriptions[b].stride;
+            pl->vertex_binding_mask |= BITFIELD_BIT(attr->binding);
             break;
          }
       }

@@ -25,6 +25,11 @@ extern "C" {
 struct r300vk_image {
    struct vk_image               vk;  /* must be first; contains vk_object_base */
    struct pipe_resource         *resource;
+   struct pipe_resource         *tiles[4];
+   uint32_t                      tile_cols;
+   uint32_t                      tile_rows;
+   uint32_t                      tile_width[2];
+   uint32_t                      tile_height[2];
    struct r300vk_resource_state  resource_state;
 };
 

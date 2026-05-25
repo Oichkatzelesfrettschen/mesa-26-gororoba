@@ -48,6 +48,7 @@ struct r300vk_pipeline {
    void                   *velems_cso;
    VkPrimitiveTopology     topology;
    uint32_t                vertex_stride[16];
+   uint32_t                vertex_binding_mask;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_pipeline, base, VkPipeline,
