@@ -28,6 +28,7 @@
  * corpus exercises that encoding under the RS482-relevant r300 swizzle caps.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 
 #include "r300_fragprog_swizzle.h"
@@ -238,6 +239,139 @@ case_non_constant_source_untouched(void)
    corpus_fs_destroy(&cc);
 }
 
+static unsigned
+corpus_count_instructions(struct radeon_compiler *c)
+{
+   unsigned count = 0;
+   for (struct rc_instruction *inst = c->Program.Instructions.Next;
+        inst != &c->Program.Instructions; inst = inst->Next)
+      count++;
+   return count;
+}
+
+static void
+corpus_set_src(struct rc_instruction *inst, unsigned idx, unsigned file, unsigned index)
+{
+   inst->U.I.SrcReg[idx].File = file;
+   inst->U.I.SrcReg[idx].Index = index;
+   inst->U.I.SrcReg[idx].Swizzle = RC_SWIZZLE_XYZW;
+}
+
+/* True if any instruction still reads the constant file.  rc_optimize may
+ * rewrite an ADD into a presubtract form, so scanning the program is safer
+ * than holding a pointer to the original instruction across the pass. */
+static bool
+corpus_reads_constant_file(struct radeon_compiler *c)
+{
+   for (struct rc_instruction *inst = c->Program.Instructions.Next;
+        inst != &c->Program.Instructions; inst = inst->Next) {
+      const struct rc_opcode_info *info = rc_get_opcode_info(inst->U.I.Opcode);
+      for (unsigned s = 0; s < info->NumSrcRegs; s++)
+         if (inst->U.I.SrcReg[s].File == RC_FILE_CONSTANT)
+            return true;
+   }
+   return false;
+}
+
+/* rc_optimize copy-propagates a MOV whose destination is a temporary into its
+ * readers and then removes the MOV (radeon_optimize.c copy_propagate). */
+static void
+case_optimize_copy_propagates_mov(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   struct rc_instruction *mov = corpus_append_alu(&cc.base, RC_OPCODE_MOV);
+   mov->U.I.DstReg.Index = 1;
+   corpus_set_src(mov, 0, RC_FILE_INPUT, 0);
+
+   struct rc_instruction *add = corpus_append_alu(&cc.base, RC_OPCODE_ADD);
+   add->U.I.DstReg.Index = 2;
+   corpus_set_src(add, 0, RC_FILE_TEMPORARY, 1);   /* reads the MOV destination */
+   corpus_set_src(add, 1, RC_FILE_INPUT, 1);
+
+   unsigned before = corpus_count_instructions(&cc.base);
+   rc_optimize(&cc.base, NULL);
+   unsigned after = corpus_count_instructions(&cc.base);
+
+   CHECK(!cc.base.Error, "copy-propagate: no compiler error");
+   CHECK(after == before - 1, "the redundant temporary MOV is copy-propagated away");
+   struct rc_instruction *only = cc.base.Program.Instructions.Next;
+   CHECK(only->U.I.Opcode == RC_OPCODE_ADD &&
+         only->U.I.SrcReg[0].File == RC_FILE_INPUT &&
+         only->U.I.SrcReg[0].Index == 0,
+         "the reader's source is chained to the MOV's input");
+
+   corpus_fs_destroy(&cc);
+}
+
+/* copy_propagate returns early unless the MOV destination is a temporary
+ * (radeon_optimize.c:129), so an output MOV must survive. */
+static void
+case_optimize_keeps_output_mov(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   struct rc_instruction *mov = corpus_append_alu(&cc.base, RC_OPCODE_MOV);
+   mov->U.I.DstReg.File = RC_FILE_OUTPUT;
+   mov->U.I.DstReg.Index = 0;
+   corpus_set_src(mov, 0, RC_FILE_TEMPORARY, 0);
+
+   unsigned before = corpus_count_instructions(&cc.base);
+   rc_optimize(&cc.base, NULL);
+   unsigned after = corpus_count_instructions(&cc.base);
+
+   CHECK(after == before,
+         "an output MOV is not removed (copy_propagate requires a temporary dst)");
+   CHECK(cc.base.Program.Instructions.Next->U.I.DstReg.File == RC_FILE_OUTPUT,
+         "the surviving instruction still writes the output");
+
+   corpus_fs_destroy(&cc);
+}
+
+/* constant_folding replaces an all-ones immediate with the ONE swizzle and
+ * drops it out of the constant file (radeon_optimize.c:214). */
+static void
+case_optimize_folds_one_constant_to_none(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   unsigned idx = corpus_add_uniform_immediate(&cc.base, 1.0f);
+   struct rc_instruction *add = corpus_append_alu(&cc.base, RC_OPCODE_ADD);
+   corpus_set_constant_src0(add, idx);
+   corpus_set_src(add, 1, RC_FILE_TEMPORARY, 0);
+
+   rc_optimize(&cc.base, NULL);
+
+   CHECK(!corpus_reads_constant_file(&cc.base),
+         "an all-ones immediate is folded out of the constant file");
+
+   corpus_fs_destroy(&cc);
+}
+
+/* A non-special immediate (2.0) has no constant swizzle, so constant_folding
+ * leaves it in the constant file. */
+static void
+case_optimize_keeps_nonspecial_constant(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   unsigned idx = corpus_add_uniform_immediate(&cc.base, 2.0f);
+   struct rc_instruction *add = corpus_append_alu(&cc.base, RC_OPCODE_ADD);
+   corpus_set_constant_src0(add, idx);
+   corpus_set_src(add, 1, RC_FILE_TEMPORARY, 0);
+
+   rc_optimize(&cc.base, NULL);
+
+   CHECK(corpus_reads_constant_file(&cc.base),
+         "a non-special (2.0) immediate stays in the constant file");
+
+   corpus_fs_destroy(&cc);
+}
+
 int
 main(void)
 {
@@ -249,6 +383,12 @@ main(void)
    case_low_mantissa_bits_stay_constant();
    case_inconsistent_channels_stay_constant();
    case_non_constant_source_untouched();
+
+   printf("r300 compiler correctness corpus: rc_optimize\n");
+   case_optimize_copy_propagates_mov();
+   case_optimize_keeps_output_mov();
+   case_optimize_folds_one_constant_to_none();
+   case_optimize_keeps_nonspecial_constant();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
