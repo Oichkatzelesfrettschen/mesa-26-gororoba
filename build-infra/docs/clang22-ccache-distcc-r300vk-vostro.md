@@ -37,6 +37,9 @@ distcc hosts without `,cpp` because `,cpp` belongs to pump mode.  The Makefile
 sets `JOBS=36` for this host environment so Ninja has enough work to keep the
 reachable distcc volunteers busy.  The environment owns `DISTCC_HOSTS` at source
 time so login-shell defaults cannot silently route this lane to stale workers.
+The generated Meson toolchain overlay records absolute compiler paths so
+`ccache` and `distcc` see the same C and C++ compiler binaries during the build
+that Meson found during configuration.
 
 Validated live volunteers on 2026-05-25:
 
