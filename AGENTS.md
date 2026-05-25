@@ -337,8 +337,8 @@ Implementation discipline:
 
 Communication:
 
-13. SHOULD chain each WHY forward to what the next step needs.  "X.  Then Y needs
-    X.  Then Z needs Y."  One sentence per step.
+13. SHOULD chain each reason forward to what the next step needs.  "X.  Then Y
+    needs X.  Then Z needs Y."  One sentence per step.
 14. SHOULD prefer one-sentence conclusions when the sentence is sufficient.
 15. MUST NOT pad responses with narration of internal deliberation.  Report
     results and decisions.
@@ -402,6 +402,59 @@ mechanism.  If prose becomes terse but opaque, add the missing invariant.  If a
 source comment names a phase, session, PR, reviewer, agent, local path, or
 private artifact as authority, move that history to a commit message or finding.
 If a claim cannot be falsified, mark it as conjecture or remove it.
+
+### Modern driver code voice and elegance
+
+Modern driver code is imaginative, but its imagination is disciplined into local
+invariants.  The best Mesa-shaped code does not perform cleverness for the
+reader.  It makes the domain visible: API object, chip generation, register
+field, command packet, memory lifetime, synchronization edge, format table,
+error path.  Names, structs, tables, asserts, and cleanup labels carry most of
+the thought.  Comments are reserved for the constraint that would otherwise be
+lost.
+
+Write with that voice.  Be direct, formal, and concrete.  Public entry points
+carry the subsystem prefix.  Local helpers use mechanism verbs: emit, lower,
+fill, find, validate, lock, unlock, init, finish, destroy.  Constants,
+registers, packet fields, and enum translations keep their domain names instead
+of becoming prose.  State objects, key structs, and descriptor words are not
+loose parameter clouds; they are the local algebra of the driver.
+
+Use the shape the mechanism demands.  Prefer a small helper when the operation
+has a name, and a table when the operation is a finite map.  Do not split a
+hardware/API matrix merely to reduce line count if the split hides the
+invariant.  A long function is acceptable only when it stays locally auditable:
+feature bits, packet words, ioctl validation, resource lifetime, ordered
+emission, or unwind edges are visible in one place and every exit path can be
+checked.
+
+Treat error paths as ownership topology.  Labels such as `fail`, `unsupported`,
+`err_*`, `out`, `put`, `free`, and retry labels are not decoration; they show
+which object is live, which invariant failed, and which cleanup edge runs next.
+The error idiom follows the subsystem ABI: `VkResult` and `vk_error` in Vulkan
+paths, negative errno and WARN/assert fences in kernel-shaped paths.  Assertions
+guard impossible internal states; external input is validated and rejected.
+
+Treat tables as compressed proofs.  Formats, register fields, enum
+translations, chip gates, descriptor words, packet layouts, and workaround
+selectors belong in data when the cases form a finite map.  Keep the exact
+distinctions when cases differ materially.  Abstraction is good only while it
+preserves the chip, ABI, spec, and evidence boundary that made the case exist.
+
+Comment in the same register.  A comment earns its place when it names the
+spec, silicon behavior, kernel validator, ABI rule, synchronization pair,
+measured quirk, or consequence a future maintainer must know.  It may say
+uncertainty, but only by tying the uncertainty to a mechanism and a disabled,
+guarded, or falsifiable path.  It must never depend on review chronology,
+private context, or the mood of the session.
+
+Elegance here means proof density.  The elegant patch is the smallest mechanism
+that preserves exact domains, visible state transitions, reviewable cleanup,
+and a falsifiable consequence.  Commit messages and PR text should follow the
+same discipline: component prefix, mechanism first, rationale in terms of the
+invariant, evidence named by command or bundle, and tests stated plainly.  If
+prose becomes ceremonial, delete it.  If code becomes terse but hides the
+invariant, name the invariant.
 
 
 ## Naming discipline
@@ -840,8 +893,9 @@ patches should not mix behavior with formatting churn, should affect one
 component when possible, must not introduce build breaks, should remain
 bisectable, must be tested prudently, and should use clean history without fixup
 commits when presented for review.  Commit subjects use a component prefix and a
-concise mechanism.  Bodies explain why, what changed, evidence, tests, and
-trailers.
+concise mechanism.  Bodies make the mechanism reviewable: name the invariant or
+bug, describe the change at the level a maintainer needs, cite the evidence, and
+state the tests without turning the message into a template.
 
 Use `Closes:` for GitLab issue URLs and `Fixes:` only for an earlier commit that
 introduced the defect.  Use `Backport-to:` or the supported Mesa stable mechanism
@@ -990,11 +1044,12 @@ line lengths, fewer subclauses, and comments only where they carry silicon/spec/
 test information.
 
 Commit messages and PR titles MUST be mechanism-named and component-prefixed when
-the project style expects it.  Keep the subject concise; put rationale, evidence,
-tests, `Fixes:`, backport notes, AI-assistance disclosure, and review trailers in
-the body where they belong.  Do not mix formatting churn with logic changes.
-Every commit should be buildable, reviewable, and bisectable unless a stated
-migration plan says otherwise.
+the project style expects it.  Keep the subject concise.  Use the body to make a
+maintainer understand the invariant, the change, the evidence, and the tests as
+one reviewable story; `Fixes:`, backport notes, AI-assistance disclosure, and
+review trailers stay in the body where Mesa expects them.  Do not mix formatting
+churn with logic changes.  Every commit should be buildable, reviewable, and
+bisectable unless a stated migration plan says otherwise.
 
 Markdown loaded by agents MUST have exactly one H1, heading depth at most three,
 language tags on code fences, specific cross-references, and rule text in MUST /
@@ -1036,7 +1091,7 @@ Structural distillate:
 - Anchor citations by name (AMD Evergreen-Family ISA section,
   `SQ_TEX_RESOURCE_WORD4.DST_SEL_X`, Vulkan spec section) rather than by line
   number or repo-internal path.
-- Multi-paragraph blocks reserved for genuine silicon-quirk WHYs.
+- Multi-paragraph blocks reserved for genuine silicon-quirk reasoning.
 
 Prose-level distillate (the part that makes a comment feel like everything just
 makes sense):
@@ -1046,9 +1101,9 @@ makes sense):
   The hardware does things; say so.
 - Let sequence be the explanation.  "X.  Then Y.  Then Z." -- one sentence per
   step, each doing one thing -- beats one sentence with three clauses.
-- Chain each WHY by what the next step needs ("...so the descriptor write can
+- Chain each reason by what the next step needs ("...so the descriptor write can
   resolve the relocation"), so the comment moves forward instead of cataloguing
-  in parallel.
+  facts in parallel.
 
 Example shape:
 
