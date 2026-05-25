@@ -1,0 +1,45 @@
+# r300-canonical-vostro-k8: the canonical Mesa build for the CachyOS Vostro 1000
+# (AMD Turion 64 X2 TL-66, RS482/RS485 radeon).  One profile that carries
+# everything this machine's r300 work needs and nothing it does not:
+#
+#   * gallium r300            -- the GL driver (RS480/RS482 hardware path)
+#   * vulkan amd_r300         -- the r300vk Vulkan ICD
+#   * egl + gbm               -- the headless render path that reaches r300
+#                                silicon over /dev/dri/renderD128 (the DRI2-only
+#                                RADEON DDX makes GLX fall back to llvmpipe, so
+#                                EGL/GBM is the working hardware path here)
+#   * R300_TRACE (implicit)   -- lives in the radeon winsys, present with any
+#                                gallium-drivers=r300 build
+#
+# Deliberately EXCLUDED:
+#   * swrast / llvmpipe       -- llvm='disabled' + draw-use-llvm=false: there is
+#                                NO software rasterizer, so a probe gets hardware
+#                                r300 or fails loudly (no silent llvmpipe trace)
+#   * r600 / terakan          -- not in gallium-drivers/vulkan-drivers; this is
+#                                the r300 lane, not TeraScale
+#   * rusticl, perfetto, video codecs -- not needed for r300 RE
+#
+# k8 target: the Vostro is a Turion 64 X2 (clang identifies k8-sse3); pair with
+# a vostro1000-k8 HOSTENV so remote distcc never emits newer host instructions.
+
+[project options]
+buildtype = 'debugoptimized'
+
+platforms = ['x11']
+gallium-drivers = ['r300']
+vulkan-drivers = ['amd_r300']
+tools = ['r300']
+
+gallium-rusticl = false
+llvm = 'disabled'
+draw-use-llvm = false
+
+glx = 'dri'
+egl = 'enabled'
+gbm = 'enabled'
+gles1 = 'disabled'
+gles2 = 'enabled'
+glvnd = 'disabled'
+valgrind = 'disabled'
+libunwind = 'disabled'
+perfetto = false
