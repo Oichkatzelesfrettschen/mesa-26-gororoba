@@ -293,7 +293,7 @@ configure:
 					detected="$$(version_major "$$candidate" || true)"; \
 					[ "$$detected" = "$$version" ] || continue; \
 				fi; \
-				command -v "$$candidate"; return 0; \
+				printf '%s\n' "$$candidate"; return 0; \
 			fi; \
 		done; \
 		return 1; \
