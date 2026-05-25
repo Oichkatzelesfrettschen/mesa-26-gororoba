@@ -1290,6 +1290,14 @@ else
     '-Wimplicit-fallthrough',
     '-Wmisleading-indentation',
     '-Wno-error=maybe-uninitialized',
+    # gcc-16 surfaces these in upstream base-tree code (r300_cb.h assert() of a
+    # register expression containing a multiply -> int-in-bool-context;
+    # draw_decompose_tmp.h's flags set-but-unused in some template instantiations).
+    # They are benign and clang (the primary toolchain) does not raise them;
+    # demote to warnings so a tree-wide -Dwerror=true does not block on upstream
+    # source.  get_supported_arguments drops either flag on compilers that lack it.
+    '-Wno-error=int-in-bool-context',
+    '-Wno-error=unused-but-set-variable',
     '-Wno-missing-field-initializers',
     '-Wno-format-truncation',
     '-Wno-nonnull-compare',
