@@ -1262,10 +1262,14 @@ ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
 
    default:
       if (ntr_is_vs_system_value_intrinsic(instr->intrinsic)) {
-         /* r300 exposes neither vertex-id nor draw-parameter system values to
-          * the VS frontend, and the RC VS input map has no system-value slot.
-          * A hardcoded RC_FILE_INPUT index would alias user attribute 0. */
-         UNREACHABLE("r300 VS system-value intrinsics need explicit RC input slots");
+         /* GL/r300g does not expose these VS system values.  r300vk can ingest
+          * SPIR-V that carries VertexIndex or InstanceIndex, but the RC VS input
+          * map has no system-value slot.  A hardcoded RC_FILE_INPUT index would
+          * alias user attribute 0. */
+         rc_error(c->compiler,
+                  "r300: unsupported VS system-value intrinsic %s\n",
+                  nir_intrinsic_infos[instr->intrinsic].name);
+         break;
       }
       fprintf(stderr, "Unknown intrinsic: ");
       nir_print_instr(&instr->instr, stderr);
