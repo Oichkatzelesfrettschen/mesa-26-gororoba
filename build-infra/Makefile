@@ -113,6 +113,10 @@ MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER
         install-r300-vostro-k8-release install-r300-vostro-k8-debug \
         rebuild-r300vk-vostro-k8-release rebuild-r300vk-vostro-k8-debug \
         install-r300vk-vostro-k8-release install-r300vk-vostro-k8-debug \
+        rebuild-r300vk-vostro-x86-64-v1-clang22-release \
+        install-r300vk-vostro-x86-64-v1-clang22-release \
+        rebuild-r300vk-vostro-x86-64-v1-clang22-debug \
+        install-r300vk-vostro-x86-64-v1-clang22-debug \
         help
 
 help:
@@ -194,7 +198,7 @@ audit:
 				return; \
 			fi; \
 		else \
-			for version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
+			for version in 22 21 20 19 18 17 16 15 14 13 12 11 10; do \
 				if llvm_has_core "$$version" "$$need_config"; then selected="$$version"; break; fi; \
 			done; \
 			version=30; \
@@ -313,7 +317,7 @@ configure:
 		fi; \
 		llvm_version="$$requested"; \
 	else \
-		for candidate_version in 21 22 20 19 18 17 16 15 14 13 12 11 10; do \
+		for candidate_version in 22 21 20 19 18 17 16 15 14 13 12 11 10; do \
 			if has_core "$$candidate_version" "$$needs_llvm_config"; then llvm_version="$$candidate_version"; break; fi; \
 		done; \
 		if [ -z "$$llvm_version" ]; then \
@@ -580,3 +584,21 @@ rebuild-r300vk-vostro-k8-debug:
 
 install-r300vk-vostro-k8-debug:
 	$(MAKE) install PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+
+# Canonical Vostro r300vk x86-64-v1 clang 22 release build.
+rebuild-r300vk-vostro-x86-64-v1-clang22-release:
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+
+install-r300vk-vostro-x86-64-v1-clang22-release:
+	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+
+# Canonical Vostro r300vk x86-64-v1 clang 22 debugoptimized build.
+rebuild-r300vk-vostro-x86-64-v1-clang22-debug:
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+
+install-r300vk-vostro-x86-64-v1-clang22-debug:
+	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
