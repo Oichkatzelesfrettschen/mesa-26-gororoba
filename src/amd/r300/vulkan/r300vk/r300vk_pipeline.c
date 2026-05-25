@@ -72,7 +72,7 @@ r300vk_reserve_vs_system_value_streams(
       (needs_vertex_id ? 1u : 0u) + (needs_instance_id ? 1u : 0u);
    uint32_t next_input_slot = 0;
    uint32_t location_mask = 0;
-   uint32_t next_binding = 0;
+   uint32_t used_binding_mask = 0;
 
    if (vi) {
       if (vi->vertexAttributeDescriptionCount > PIPE_MAX_ATTRIBS)
@@ -88,7 +88,6 @@ r300vk_reserve_vs_system_value_streams(
             return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                              "r300vk: vertex binding %u exceeds %u",
                              desc->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
-         next_binding = MAX2(next_binding, desc->binding + 1);
       }
 
       for (uint32_t i = 0; i < vi->vertexAttributeDescriptionCount; i++) {
@@ -113,6 +112,7 @@ r300vk_reserve_vs_system_value_streams(
 
          location_mask |= BITFIELD_BIT(attr->location);
          next_input_slot = MAX2(next_input_slot, attr->location + 1);
+         used_binding_mask |= BITFIELD_BIT(attr->binding);
       }
    }
 
@@ -122,10 +122,24 @@ r300vk_reserve_vs_system_value_streams(
                        "representable by r300g vertex elements");
 
    if (next_input_slot > PIPE_MAX_ATTRIBS - synth_count ||
-       next_input_slot > R300VK_MAX_VERTEX_BINDINGS - synth_count ||
-       next_binding > R300VK_MAX_VERTEX_BINDINGS - synth_count)
+       next_input_slot > R300VK_MAX_VERTEX_BINDINGS - synth_count)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: no vertex input slot/binding available for "
+                       "r300vk: no vertex input slot available for "
+                       "the synthetic VS system-value stream");
+
+   uint8_t synth_bindings[2];
+   uint32_t reserved_count = 0;
+   for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
+      if (used_binding_mask & BITFIELD_BIT(b))
+         continue;
+      synth_bindings[reserved_count++] = (uint8_t)b;
+      if (reserved_count == synth_count)
+         break;
+   }
+
+   if (reserved_count < synth_count)
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: no vertex buffer binding available for "
                        "the synthetic VS system-value stream");
 
    *vertex_id_slot = needs_vertex_id ? (int)next_input_slot : -1;
@@ -136,9 +150,11 @@ r300vk_reserve_vs_system_value_streams(
    pl->needs_instance_id_stream = needs_instance_id;
    pl->vertex_id_slot = (uint8_t)next_input_slot;
    pl->instance_id_slot = (uint8_t)(next_input_slot + (needs_vertex_id ? 1 : 0));
-   pl->vertex_id_vb_binding = (uint8_t)next_binding;
-   pl->instance_id_vb_binding = (uint8_t)(next_binding +
-                                          (needs_vertex_id ? 1 : 0));
+   uint32_t synth_index = 0;
+   pl->vertex_id_vb_binding =
+      needs_vertex_id ? synth_bindings[synth_index++] : 0;
+   pl->instance_id_vb_binding =
+      needs_instance_id ? synth_bindings[synth_index++] : 0;
 
    return VK_SUCCESS;
 }
@@ -330,7 +346,7 @@ r300vk_build_velems_cso(struct r300vk_device *device,
          return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                           "r300vk: unsupported vertex attribute format %d "
                           "at location %u", attr->format, attr->location);
-      const uint32_t attr_size = align(util_format_get_blocksize(elem_fmt), 4);
+      const uint32_t attr_size = util_format_get_blocksize(elem_fmt);
       if (attr->offset > UINT32_MAX - attr_size)
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: vertex attribute offset %u exceeds "

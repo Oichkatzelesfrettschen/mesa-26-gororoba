@@ -37,7 +37,7 @@ extern "C" {
 #define R300VK_R3XX_MAX_ARRAY_LAYERS 1u
 #define R300VK_R3XX_MAX_MIP_LEVELS 1u
 #define R300VK_R3XX_SUPPORTED_SAMPLE_COUNTS VK_SAMPLE_COUNT_1_BIT
-#define R300VK_MAX_VERTEX_BINDINGS 16
+#define R300VK_MAX_VERTEX_BINDINGS 16u
 
 #define R300VK_VK10_MIN_IMAGE_DIMENSION_1D 4096u
 #define R300VK_VK10_MIN_IMAGE_DIMENSION_2D 4096u
@@ -75,7 +75,7 @@ extern "C" {
  * RS482/RS485 has no hardware vertex processor (num_vert_fpus == 0 for
  * the RS480 family per r300_parse_chipset()); Gallium Draw handles TCL in
  * software.  The fragment stage runs through the Radeon Compiler RC path
- * via r300_nir_to_rc_direct inside r300g. */
+ * via nir_to_rc inside r300g. */
 #define R300VK_BACKEND_LABEL       "r300g_gallium_mediated"
 #define R300VK_VERTEX_EXEC_LOCUS   "gallium_draw_sw_tcl"
 #define R300VK_FRAGMENT_EXEC_LOCUS "r300_rc_hardware_program"
