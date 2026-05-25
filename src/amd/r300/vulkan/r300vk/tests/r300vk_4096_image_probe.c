@@ -276,20 +276,29 @@ verify_readback(struct probe_context *ctx,
    const uint8_t expected[4] = { 191, 128, 64, 255 };
    const uint8_t *bytes = mapped;
    bool ok = true;
+   VkDeviceSize first_mismatch = 0;
    for (VkDeviceSize i = 0; i + 3 < buffer_size; i += 4) {
       if (memcmp(bytes + i, expected, sizeof(expected)) != 0) {
          ok = false;
+         first_mismatch = i;
          break;
       }
    }
 
-   vkUnmapMemory(ctx->device, buffer_memory);
    if (!ok) {
-      probe_result("verify_tile_readback", "fail",
-                   "readback bytes differ from clear color");
+      char detail[192];
+      snprintf(detail, sizeof(detail),
+               "offset=%" PRIu64 " actual=%u,%u,%u,%u expected=%u,%u,%u,%u",
+               (uint64_t)first_mismatch,
+               bytes[first_mismatch + 0], bytes[first_mismatch + 1],
+               bytes[first_mismatch + 2], bytes[first_mismatch + 3],
+               expected[0], expected[1], expected[2], expected[3]);
+      vkUnmapMemory(ctx->device, buffer_memory);
+      probe_result("verify_tile_readback", "fail", detail);
       return 1;
    }
 
+   vkUnmapMemory(ctx->device, buffer_memory);
    probe_result("verify_tile_readback", "pass",
                 "tile-boundary readback matches clear color");
    return 0;

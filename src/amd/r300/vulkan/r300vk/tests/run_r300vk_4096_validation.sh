@@ -53,8 +53,9 @@ summary=$out_dir/summary.txt
    $("${pkg_config}" --cflags --libs vulkan) \
    -o "$probe_bin" >"$compile_log" 2>&1
 
+probe_status=0
 R300VK_HYBRID_COMPUTE_EXPERIMENTAL=${R300VK_HYBRID_COMPUTE_EXPERIMENTAL:-1} \
-   "$probe_bin" >"$run_log" 2>&1
+   "$probe_bin" >"$run_log" 2>&1 || probe_status=$?
 
 if command -v "$sudo_bin" >/dev/null 2>&1; then
    "$sudo_bin" -n dmesg 2>/dev/null |
@@ -69,7 +70,7 @@ fi
    echo "icd=$VK_ICD_FILENAMES"
    echo "run_log=$run_log"
    echo "dmesg_filtered_lines=$(wc -l < "$dmesg_log")"
-   if grep -q '"status":"fail"' "$run_log"; then
+   if [ "$probe_status" -ne 0 ] || grep -q '"status":"fail"' "$run_log"; then
       echo "status=fail"
    else
       echo "status=pass"
@@ -77,4 +78,4 @@ fi
 } >"$summary"
 
 cat "$summary"
-! grep -q '"status":"fail"' "$run_log"
+[ "$probe_status" -eq 0 ] && ! grep -q '"status":"fail"' "$run_log"
