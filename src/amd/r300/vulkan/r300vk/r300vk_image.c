@@ -120,7 +120,14 @@ r300vk_GetImageMemoryRequirements2(VkDevice _device,
       .size           = (VkDeviceSize)ext->width * ext->height *
                         util_format_get_blocksize(vk_format_to_pipe_format(img->vk.format)),
       .alignment      = 4096,
-      .memoryTypeBits = 1,  /* GTT heap index 0 */
+      /* r300g places a single-sample render-target texture in
+       * RADEON_DOMAIN_VRAM | RADEON_DOMAIN_GTT (r300_texture.c domain
+       * selection), so both advertised memory types back it validly: type 0
+       * (host-visible GTT) and type 1 (device-local).  The bound BO domain is
+       * fixed by the pipe_resource template, not by the type the app picks, so
+       * a device-local color target binds correctly.  Reporting only type 0
+       * rejected a conformant device-local color-image allocation. */
+      .memoryTypeBits = 0x3,
    };
 }
 
