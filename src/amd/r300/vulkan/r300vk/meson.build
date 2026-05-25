@@ -33,6 +33,7 @@ libr300vk_deps = [
 libr300vk_inc = [
   inc_include,
   inc_src,
+  inc_gallium,
 ]
 
 libr300vk_link_with = []
