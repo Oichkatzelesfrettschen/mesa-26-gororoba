@@ -10,7 +10,9 @@
 #include "r300vk_instance.h"
 #include "r300vk_private.h"
 
+#include "util/disk_cache.h"
 #include "util/macros.h"
+#include "util/mesa-blake3.h"
 #include "vk_alloc.h"
 #include "vk_enum_defines.h"
 #include "vk_format.h"
@@ -304,39 +306,24 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
    const char *const chip_name = r300vk_chip_name_from_pci_device_id(pci_device_id);
    snprintf(props->deviceName, sizeof(props->deviceName), "%s", chip_name);
 
-   /* Pipeline-cache UUID seeds the disk_cache key.  Fold the API version
-    * and PCI ID into the bytes so a header version bump or chip switch
-    * invalidates stale entries.
-    *
-    * FIXME: missing work --
-    *           replace the hand-rolled byte layout with a BLAKE3 hash that
-    *           ingests disk_cache_get_function_identifier() and
-    *           MESA_GIT_SHA1 from src/util/disk_cache.h, matching the
-    *           construction in terakan_physical_device.c's pipelineCacheUUID
-    *           block.
-    *       reason --
-    *           BLAKE3 hashing requires the shader cache to be wired and the
-    *           sha1_h custom_target from src/meson.build to be plumbed into
-    *           the r300vk shared library; neither lands until the device
-    *           layer brings in the disk_cache dependency.
-    *       tracking-artifact --
-    *           disk_cache_get_function_identifier (src/util/disk_cache.h)
-    *           and the equivalent block in terakan_physical_device.c near
-    *           line 600 of terakan_physical_device_get_capabilities.
-    */
-   memset(props->pipelineCacheUUID, 0, sizeof(props->pipelineCacheUUID));
-   props->pipelineCacheUUID[0] = 'r';
-   props->pipelineCacheUUID[1] = '3';
-   props->pipelineCacheUUID[2] = '0';
-   props->pipelineCacheUUID[3] = '0';
-   props->pipelineCacheUUID[4] = 'v';
-   props->pipelineCacheUUID[5] = 'k';
-   props->pipelineCacheUUID[6] = (uint8_t)(pci_device_id >> 8);
-   props->pipelineCacheUUID[7] = (uint8_t)(pci_device_id & 0xff);
-   props->pipelineCacheUUID[8] = (uint8_t)(props->apiVersion >> 24);
-   props->pipelineCacheUUID[9] = (uint8_t)(props->apiVersion >> 16);
-   props->pipelineCacheUUID[10] = (uint8_t)(props->apiVersion >> 8);
-   props->pipelineCacheUUID[11] = (uint8_t)(props->apiVersion & 0xff);
+   /* Pipeline-cache UUID: BLAKE3 of the driver build identity plus the PCI
+    * device ID, so a driver rebuild or a chip switch invalidates stale
+    * disk_cache and vk_pipeline_cache entries.  disk_cache_get_function_identifier
+    * derives the build id from this driver's .so via dladdr.  Mirrors the
+    * construction in terakan_physical_device.c. */
+   {
+      struct mesa_blake3 uuid_ctx;
+      _mesa_blake3_init(&uuid_ctx);
+      disk_cache_get_function_identifier(r300vk_physical_device_init_properties,
+                                         &uuid_ctx);
+      _mesa_blake3_update(&uuid_ctx, &pci_device_id, sizeof(pci_device_id));
+      uint8_t uuid_hash[BLAKE3_OUT_LEN];
+      _mesa_blake3_final(&uuid_ctx, uuid_hash);
+      static_assert(sizeof(props->pipelineCacheUUID) <= BLAKE3_OUT_LEN,
+                    "pipelineCacheUUID must fit in BLAKE3 output");
+      memcpy(props->pipelineCacheUUID, uuid_hash,
+             sizeof(props->pipelineCacheUUID));
+   }
 
    /* VK_KHR_driver_properties identity.
     *
@@ -775,13 +762,14 @@ r300vk_GetPhysicalDeviceSparseImageFormatProperties2(
    *pPropertyCount = 0;
 }
 
-/* Nominal heap sizes reported until the device layer queries
- * DRM_RADEON_GEM_INFO from the radeon kernel driver (handled by
- * radeon_gem_info_ioctl in linux/drivers/gpu/drm/radeon/radeon_gem.c).
- * RS482/RS485 is UMA: the GTT and shared-VRAM partitions overlap, so
- * even the queried values will be approximations.  Probes that read
- * the reported heap sizes must record memory_properties_placeholder=true
- * for any classification or evidence bundle. */
+/* Fallback heap sizes for the loader-only build (no Gallium oracle) or when the
+ * winsys query reports zero.  The Gallium-backed build reports the real sizes
+ * from the radeon winsys instead (see r300vk_GetPhysicalDeviceMemoryProperties2),
+ * which the winsys read via DRM_RADEON_GEM_INFO at creation -- radeon_drm_winsys.c
+ * populates info.gart_size_kb / vram_size_kb.  RS482/RS485 is UMA: the GART
+ * aperture and the BIOS-carved shared-VRAM partition overlap in physical memory,
+ * so a probe needing the exact physical split must treat the two heaps as one
+ * shared pool. */
 #define R300VK_PLACEHOLDER_GTT_HEAP_SIZE     (128ULL * 1024 * 1024)
 #define R300VK_PLACEHOLDER_VRAM_HEAP_SIZE    ( 64ULL * 1024 * 1024)
 
@@ -791,13 +779,31 @@ r300vk_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
 {
    VkPhysicalDeviceMemoryProperties *const m = &pMemoryProperties->memoryProperties;
 
+   /* Report the real GART and shared-VRAM sizes when a Gallium r300g oracle is
+    * attached.  query_info hands back the radeon_info the winsys cached from
+    * DRM_RADEON_GEM_INFO at creation; gart_size_kb / vram_size_kb are the total
+    * aperture sizes.  The loader-only build (no rws) keeps the nominal fallbacks. */
+   uint64_t gtt_bytes  = R300VK_PLACEHOLDER_GTT_HEAP_SIZE;
+   uint64_t vram_bytes = R300VK_PLACEHOLDER_VRAM_HEAP_SIZE;
+#ifdef R300VK_GALLIUM_BACKEND
+   VK_FROM_HANDLE(r300vk_physical_device, pdev, physicalDevice);
+   if (pdev->rws && pdev->rws->query_info) {
+      struct radeon_info rinfo;
+      pdev->rws->query_info(pdev->rws, &rinfo);
+      if (rinfo.gart_size_kb)
+         gtt_bytes = (uint64_t)rinfo.gart_size_kb * 1024;
+      if (rinfo.vram_size_kb)
+         vram_bytes = (uint64_t)rinfo.vram_size_kb * 1024;
+   }
+#endif
+
    m->memoryHeapCount = 2;
    m->memoryHeaps[0] = (VkMemoryHeap){
-      .size = R300VK_PLACEHOLDER_GTT_HEAP_SIZE,
+      .size = gtt_bytes,
       .flags = 0,
    };
    m->memoryHeaps[1] = (VkMemoryHeap){
-      .size = R300VK_PLACEHOLDER_VRAM_HEAP_SIZE,
+      .size = vram_bytes,
       .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
    };
 
