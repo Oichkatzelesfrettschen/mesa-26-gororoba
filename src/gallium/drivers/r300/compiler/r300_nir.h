@@ -163,6 +163,12 @@ extern bool r300_nir_lower_comparison_fs(nir_shader *shader);
 
 extern bool r300_nir_add_wpos(nir_shader *shader, nir_variable **wpos_var_out);
 
+/* Report VS load_vertex_id/load_instance_id reads across the deref and
+ * intrinsic forms that can reach the r300 NIR-to-RC path. */
+extern void r300_nir_vs_reads_system_values(nir_shader *s,
+                                            bool *reads_vertex_id,
+                                            bool *reads_instance_id);
+
 /* Rewrite VS load_vertex_id/load_instance_id to reads from synthetic vertex
  * inputs that the driver reserves and supplies as ordinary attributes.  A
  * negative slot leaves the corresponding intrinsic untouched so nir_to_rc can
