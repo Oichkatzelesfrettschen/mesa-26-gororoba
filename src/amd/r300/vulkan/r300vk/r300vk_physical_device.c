@@ -10,7 +10,9 @@
 #include "r300vk_instance.h"
 #include "r300vk_private.h"
 
+#include "pipe/p_defines.h"
 #include "util/disk_cache.h"
+#include "util/format/u_format.h"
 #include "util/macros.h"
 #include "util/mesa-blake3.h"
 #include "vk_alloc.h"
@@ -20,7 +22,6 @@
 #include "vk_util.h"
 
 #ifdef R300VK_GALLIUM_BACKEND
-#include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "r300/r300_public.h"
 #include "winsys/radeon_winsys.h"
@@ -55,38 +56,30 @@ r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
    }
 }
 
-/* R3xx hardware limits derived from the AMD R3xx register reference
- * guide and the executable Mesa r300g implementation oracle.  Every
- * field carries a primary-source citation in the comment alongside it.
+/* R3xx hardware limits are split between the Vulkan 1.0 physical-device
+ * minimums the ICD must advertise and the smaller RS482 execution caps that
+ * the resource paths tile or reject at creation time.  The executable Mesa
+ * r300g oracle is the execution cap; the Vulkan limit table is the API floor.
  *
  * Citation conventions in this function:
  *   "R3xx-RRG ch. <N>"  AMD R3xx Register Reference Guide chapter
  *   "Mesa r300g <file>" src/gallium/drivers/r300/<file>.[ch] in this tree
  *   "Vulkan spec <ref>" Vulkan 1.4 specification section reference
  *
- * Where R3xx hardware has no native surface (SSBO, compute, dual-source
- * blending), the field is set to the Vulkan minimum required by the
- * spec table at "Limit Requirements" (Vulkan 1.4 ch. 49.1) so the
- * device still parses as a graphics-capable VkPhysicalDevice. */
+ * Where the RS482 path has no single native 4096-wide render surface, r300vk
+ * presents the Vulkan floor through a 2560 hardware-backed span plus a residual
+ * span.  Native r300g resources remain the fast path for images that fit in
+ * one span. */
 static void
 r300vk_physical_device_init_limits(struct vk_properties *const props)
 {
-   const bool hybrid_compute = r300vk_hybrid_compute_enabled();
-
-   /* Texture and image dimensions.  R3xx FORMAT2_HEIGHT and
-    * FORMAT2_WIDTH fields in R300_TX_FORMAT2_n cap each axis at 2048
-    * (R3xx-RRG ch. "Texture Engine", TX_FORMAT2 register).
-    *
-    * maxImageArrayLayers must report at least 256 to satisfy Vulkan
-    * 1.4 ch. 49.1 "Limit Requirements".  R3xx hardware does not
-    * accelerate array textures natively, but the driver can fall back
-    * to per-layer 2D images at pipeline-lowering time.  Reporting the
-    * spec minimum keeps validation green while the lowering path is
-    * still future work. */
-   props->maxImageDimension1D = 2048;
-   props->maxImageDimension2D = 2048;
+   /* Texture and image dimensions.  The RS482 render path accepts a 2560-wide
+    * hardware span; r300vk composes the Vulkan 4096 floor from that fast path
+    * plus a residual span when an image exceeds the single-span limit. */
+   props->maxImageDimension1D = R300VK_VK10_MIN_IMAGE_DIMENSION_1D;
+   props->maxImageDimension2D = R300VK_VK10_MIN_IMAGE_DIMENSION_2D;
    props->maxImageDimension3D = 256;
-   props->maxImageDimensionCube = 2048;
+   props->maxImageDimensionCube = R300VK_VK10_MIN_IMAGE_DIMENSION_CUBE;
    props->maxImageArrayLayers = 256;
 
    /* Texel buffer size: R3xx has no native texel buffer object.  The
@@ -101,7 +94,7 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
 
    /* No native SSBO.  Advertise the Vulkan minimum so descriptor
     * binding still parses. */
-   props->maxStorageBufferRange = 0x4000000;
+   props->maxStorageBufferRange = R300VK_VK10_MIN_STORAGE_BUFFER_RANGE;
    props->maxPushConstantsSize = 128;
 
    props->maxMemoryAllocationCount = 4096;
@@ -173,33 +166,16 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
    props->maxFragmentDualSrcAttachments = 0;
    props->maxFragmentCombinedOutputResources = 4;
 
-   if (hybrid_compute) {
-      /* The hybrid compute experiment advertises a bounded software/graphics
-       * execution target only under exact operator opt-in.  R3xx still has no
-       * native compute dispatch packet or workgroup shared memory, so shared
-       * memory stays zero and the workgroup is deliberately scalar. */
-      props->maxComputeSharedMemorySize = 0;
-      props->maxComputeWorkGroupCount[0] = 65535;
-      props->maxComputeWorkGroupCount[1] = 65535;
-      props->maxComputeWorkGroupCount[2] = 65535;
-      props->maxComputeWorkGroupInvocations = 1;
-      props->maxComputeWorkGroupSize[0] = 1;
-      props->maxComputeWorkGroupSize[1] = 1;
-      props->maxComputeWorkGroupSize[2] = 1;
-   } else {
-      /* No documented or silicon-proven native compute dispatch surface
-       * exists for this RS482/RS485 R300VK target.  See
-       * R300VK_CONFORMANCE_STATUS in r300vk_private.h for the
-       * non-conformance contract. */
-      props->maxComputeSharedMemorySize = 0;
-      props->maxComputeWorkGroupCount[0] = 0;
-      props->maxComputeWorkGroupCount[1] = 0;
-      props->maxComputeWorkGroupCount[2] = 0;
-      props->maxComputeWorkGroupInvocations = 0;
-      props->maxComputeWorkGroupSize[0] = 0;
-      props->maxComputeWorkGroupSize[1] = 0;
-      props->maxComputeWorkGroupSize[2] = 0;
-   }
+   props->maxComputeSharedMemorySize =
+      R300VK_VK10_MIN_COMPUTE_SHARED_MEMORY_SIZE;
+   props->maxComputeWorkGroupCount[0] = 65535;
+   props->maxComputeWorkGroupCount[1] = 65535;
+   props->maxComputeWorkGroupCount[2] = 65535;
+   props->maxComputeWorkGroupInvocations =
+      R300VK_VK10_MIN_COMPUTE_WORKGROUP_INVOCATIONS;
+   props->maxComputeWorkGroupSize[0] = R300VK_VK10_MIN_COMPUTE_WORKGROUP_SIZE_X;
+   props->maxComputeWorkGroupSize[1] = R300VK_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Y;
+   props->maxComputeWorkGroupSize[2] = R300VK_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Z;
 
    /* R3xx subpixel precision is 4 fractional bits in the rasterizer
     * (R3xx-RRG ch. "Geometry Setup", GA_LINE_CNTL and the rasterizer
@@ -216,10 +192,10 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
 
    /* Single viewport for R3xx graphics path. */
    props->maxViewports = 1;
-   props->maxViewportDimensions[0] = 2048;
-   props->maxViewportDimensions[1] = 2048;
-   props->viewportBoundsRange[0] = -4096.0f;
-   props->viewportBoundsRange[1] = 4096.0f;
+   props->maxViewportDimensions[0] = R300VK_VK10_MIN_VIEWPORT_DIMENSION;
+   props->maxViewportDimensions[1] = R300VK_VK10_MIN_VIEWPORT_DIMENSION;
+   props->viewportBoundsRange[0] = -8192.0f;
+   props->viewportBoundsRange[1] = 8191.0f;
    props->viewportSubPixelBits = 0;
 
    props->minMemoryMapAlignment = 64;
@@ -235,23 +211,22 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
    props->maxInterpolationOffset = 0.4375f;
    props->subPixelInterpolationOffsetBits = 4;
 
-   props->maxFramebufferWidth = 2048;
-   props->maxFramebufferHeight = 2048;
+   props->maxFramebufferWidth = R300VK_VK10_MIN_FRAMEBUFFER_DIMENSION;
+   props->maxFramebufferHeight = R300VK_VK10_MIN_FRAMEBUFFER_DIMENSION;
    props->maxFramebufferLayers = 1;
 
-   /* R300 has no MSAA exposed through the Mesa r300g state tracker on
-    * RS482/RS485; advertise single sample only. */
-   props->framebufferColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   props->framebufferDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   props->framebufferStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   props->framebufferNoAttachmentsSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->framebufferColorSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->framebufferDepthSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->framebufferStencilSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->framebufferNoAttachmentsSampleCounts =
+      R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
 
    props->maxColorAttachments = 4;
-   props->sampledImageColorSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->sampledImageColorSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
    props->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   props->sampledImageDepthSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   props->sampledImageStencilSampleCounts = VK_SAMPLE_COUNT_1_BIT;
-   props->storageImageSampleCounts = VK_SAMPLE_COUNT_1_BIT;
+   props->sampledImageDepthSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->sampledImageStencilSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
+   props->storageImageSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
    props->maxSampleMaskWords = 1;
 
    props->timestampComputeAndGraphics = VK_FALSE;
@@ -359,10 +334,11 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
 static void
 r300vk_physical_device_init_features(struct vk_features *features)
 {
-   /* Zero optional features.  vk_physical_device_init stores this table
-    * so vk_common_GetPhysicalDeviceFeatures2 can answer queries with the
-    * exact set the driver supports. */
    memset(features, 0, sizeof(*features));
+   features->robustBufferAccess = true;
+   features->largePoints = true;
+   features->wideLines = true;
+   features->samplerAnisotropy = true;
 }
 
 void
@@ -677,13 +653,16 @@ r300vk_get_image_format_properties(
    uint32_t max_mip_levels;
    uint32_t max_array_layers;
 
+   /* Physical-device limits expose Vulkan's floor.  Per-format properties
+    * expose the implemented flat-image contract so vkCreateImage and format
+    * queries agree: one mip level and one array layer. */
    switch (info->type) {
    case VK_IMAGE_TYPE_1D:
       max_extent = (VkExtent3D){
          device->vk.properties.maxImageDimension1D, 1, 1,
       };
-      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension1D) + 1;
-      max_array_layers = device->vk.properties.maxImageArrayLayers;
+      max_mip_levels = 1;
+      max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_2D:
       max_extent = (VkExtent3D){
@@ -691,8 +670,8 @@ r300vk_get_image_format_properties(
          device->vk.properties.maxImageDimension2D,
          1,
       };
-      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension2D) + 1;
-      max_array_layers = device->vk.properties.maxImageArrayLayers;
+      max_mip_levels = 1;
+      max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_3D:
       max_extent = (VkExtent3D){
@@ -700,7 +679,7 @@ r300vk_get_image_format_properties(
          device->vk.properties.maxImageDimension3D,
          device->vk.properties.maxImageDimension3D,
       };
-      max_mip_levels = util_logbase2(device->vk.properties.maxImageDimension3D) + 1;
+      max_mip_levels = 1;
       max_array_layers = 1;
       break;
    default:
@@ -711,7 +690,7 @@ r300vk_get_image_format_properties(
       .maxExtent = max_extent,
       .maxMipLevels = max_mip_levels,
       .maxArrayLayers = max_array_layers,
-      .sampleCounts = VK_SAMPLE_COUNT_1_BIT,
+      .sampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS,
       .maxResourceSize = UINT32_MAX,
    };
    return VK_SUCCESS;

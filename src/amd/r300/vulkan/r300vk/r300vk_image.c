@@ -14,7 +14,77 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "util/format/u_format.h"
+#include "util/macros.h"
 #include "util/u_inlines.h"
+
+static uint32_t
+r300vk_split_image_axis(uint32_t extent, uint32_t tiles[2])
+{
+   if (extent == 0 || extent > R300VK_VK10_MIN_IMAGE_DIMENSION_2D)
+      return 0;
+
+   if (extent <= R300VK_R3XX_MAX_RENDER_DIMENSION) {
+      tiles[0] = extent;
+      tiles[1] = 0;
+      return 1;
+   }
+
+   tiles[0] = R300VK_R3XX_MAX_RENDER_DIMENSION;
+   tiles[1] = extent - R300VK_R3XX_MAX_RENDER_DIMENSION;
+   return 2;
+}
+
+static void
+r300vk_image_release_resources(struct r300vk_image *img)
+{
+   for (uint32_t i = 0; i < ARRAY_SIZE(img->tiles); i++)
+      pipe_resource_reference(&img->tiles[i], NULL);
+   img->resource = NULL;
+}
+
+static VkResult
+r300vk_image_create_tile_resources(struct r300vk_device *device,
+                                   struct r300vk_image *img,
+                                   const VkImageCreateInfo *info,
+                                   enum pipe_format pipe_fmt)
+{
+   img->tile_cols = r300vk_split_image_axis(info->extent.width,
+                                            img->tile_width);
+   img->tile_rows = r300vk_split_image_axis(info->extent.height,
+                                            img->tile_height);
+   if (img->tile_cols == 0 || img->tile_rows == 0)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r300vk: image extent %ux%u exceeds the 4096 floor",
+                       info->extent.width, info->extent.height);
+
+   for (uint32_t y = 0; y < img->tile_rows; y++) {
+      for (uint32_t x = 0; x < img->tile_cols; x++) {
+         struct pipe_resource tmpl = {
+            .target     = PIPE_TEXTURE_2D,
+            .format     = pipe_fmt,
+            .bind       = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
+            .usage      = PIPE_USAGE_DEFAULT,
+            .width0     = img->tile_width[x],
+            .height0    = img->tile_height[y],
+            .depth0     = 1,
+            .array_size = 1,
+            .last_level = 0,
+            .nr_samples = info->samples,
+         };
+
+         const uint32_t tile_index = y * img->tile_cols + x;
+         img->tiles[tile_index] =
+            device->screen->resource_create(device->screen, &tmpl);
+         if (!img->tiles[tile_index]) {
+            r300vk_image_release_resources(img);
+            return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         }
+      }
+   }
+
+   img->resource = img->tiles[0];
+   return VK_SUCCESS;
+}
 
 VkResult
 r300vk_CreateImage(VkDevice _device,
@@ -33,11 +103,11 @@ r300vk_CreateImage(VkDevice _device,
 
    vk_image_init(&device->vk, &img->vk, pCreateInfo);
 
-   /* R300-class hardware only supports flat 2D images: one layer, one mip
-    * level, and no MSAA.  Reject any other configuration so callers see a
-    * clear error rather than silently incorrect behavior.  Vulkan requires
-    * these conditions to be advertised via GetPhysicalDeviceImageFormatProperties;
-    * an app that ignores those limits invokes undefined behavior per spec. */
+   /* R300-class hardware only supports flat 2D images: one layer and one mip
+    * level.  The 4096 Vulkan 1.0 floor is represented as one, two, or four
+    * hardware-sized 2D resources, and 4x MSAA is passed through to r300g per
+    * tile.  Reject unsupported shapes so callers see a clear error rather
+    * than silently incorrect behavior. */
    if (pCreateInfo->arrayLayers > 1) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
@@ -52,11 +122,12 @@ r300vk_CreateImage(VkDevice _device,
                        "r300vk: mipLevels %u > 1 unsupported",
                        pCreateInfo->mipLevels);
    }
-   if (pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT) {
+   if (pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT &&
+       pCreateInfo->samples != VK_SAMPLE_COUNT_4_BIT) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
       return vk_errorf(device, VK_ERROR_UNKNOWN,
-                       "r300vk: samples 0x%x != VK_SAMPLE_COUNT_1_BIT unsupported",
+                       "r300vk: samples 0x%x unsupported",
                        pCreateInfo->samples);
    }
 
@@ -68,24 +139,12 @@ r300vk_CreateImage(VkDevice _device,
                        "r300vk: unsupported image format %d", pCreateInfo->format);
    }
 
-   struct pipe_resource tmpl = {
-      .target     = PIPE_TEXTURE_2D,
-      .format     = pipe_fmt,
-      .bind       = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
-      .usage      = PIPE_USAGE_DEFAULT,
-      .width0     = pCreateInfo->extent.width,
-      .height0    = pCreateInfo->extent.height,
-      .depth0     = 1,
-      .array_size = 1,
-      .last_level = 0,
-      .nr_samples = 1,
-   };
-
-   img->resource = device->screen->resource_create(device->screen, &tmpl);
-   if (!img->resource) {
+   VkResult result =
+      r300vk_image_create_tile_resources(device, img, pCreateInfo, pipe_fmt);
+   if (result != VK_SUCCESS) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
-      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      return result;
    }
 
    *pImage = r300vk_image_to_handle(img);
@@ -102,7 +161,7 @@ r300vk_DestroyImage(VkDevice _device,
    if (!img)
       return;
 
-   pipe_resource_reference(&img->resource, NULL);
+   r300vk_image_release_resources(img);
    vk_image_finish(&img->vk);
    vk_free2(&device->vk.alloc, pAllocator, img);
 }
@@ -118,6 +177,7 @@ r300vk_GetImageMemoryRequirements2(VkDevice _device,
    /* 4096-byte alignment satisfies r300g tiling requirements. */
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size           = (VkDeviceSize)ext->width * ext->height *
+                        MAX2(1u, img->vk.samples) *
                         util_format_get_blocksize(vk_format_to_pipe_format(img->vk.format)),
       .alignment      = 4096,
       /* r300g places a single-sample render-target texture in

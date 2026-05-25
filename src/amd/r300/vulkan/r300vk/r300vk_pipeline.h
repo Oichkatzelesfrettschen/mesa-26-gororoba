@@ -48,6 +48,7 @@ struct r300vk_pipeline {
    void                   *velems_cso;
    VkPrimitiveTopology     topology;
    uint32_t                vertex_stride[16];
+   uint32_t                vertex_binding_mask;
 
    /* Synthetic VS-system-value stream.  RS480-family parts have no PVS, so a VS
     * that reads gl_VertexIndex / gl_InstanceIndex has the value supplied as a
