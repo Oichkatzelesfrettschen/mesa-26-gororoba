@@ -46,9 +46,10 @@ Validated live volunteers on 2026-05-25:
 - `ALIENWARE.local/32,lzo`: `/usr/bin/clang` is clang 21.1.8, but
   `/usr/bin/clang-22` and `/usr/bin/clang++-22` are clang 22.1.6; distccd is
   listening on TCP 3632.
-- `x570-5600X3D.local/16,lzo`: `/usr/bin/clang` and `/usr/bin/clang-22` are
-  clang 22.1.5; ccache and distccd are installed; included only when TCP 3632
-  is reachable from the Vostro.
+- `x570-5600X3D/16,lzo`: `/usr/bin/clang` and `/usr/bin/clang-22` are clang
+  22.1.5; ccache and distccd are installed.  The env probes
+  `x570-5600X3D` before `x570-5600X3D.local` because the bare CachyOS hostname
+  is the stable TCP form from the Vostro on this LAN.
 
 The profile name uses `x86-64-v1` for the psABI baseline.  Clang spells that
 baseline as `-march=x86-64`, so the native files use `-march=x86-64` and
