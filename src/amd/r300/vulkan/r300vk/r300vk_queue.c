@@ -85,14 +85,17 @@ r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
    };
    struct pipe_resource *res =
       device->screen->resource_create(device->screen, &tmpl);
-   if (!res)
+   if (!res) {
+      memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
       return false;
+   }
 
    struct pipe_transfer *xfer = NULL;
    int32_t *map = pipe_buffer_map(pipe, res,
                                   PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                   &xfer);
    if (!map) {
+      memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
       pipe_resource_reference(&res, NULL);
       return false;
    }
@@ -224,7 +227,9 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
       if (first_vertex >= vertices)
          return 0;
 
-      max_count = MIN2(max_count, (uint32_t)(vertices - first_vertex));
+      const VkDeviceSize available_vertices = vertices - first_vertex;
+      if (available_vertices < max_count)
+         max_count = (uint32_t)available_vertices;
    }
 
    return max_count;
@@ -375,6 +380,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
          if (skip_render_pass)
             break;
 
+         struct pipe_vertex_buffer draw_vb_cache[R300VK_MAX_VERTEX_BINDINGS];
+         memcpy(draw_vb_cache, vb_cache, sizeof(draw_vb_cache));
+         uint32_t draw_vb_max_used = vb_max_used;
+         bool draw_vb_dirty = vb_dirty;
          bool synthetic_streams_ready = true;
 
          /* Supply the synthetic VS-system-value stream(s) for this draw: the
@@ -384,33 +393,42 @@ r300vk_replay_gpu(struct r300vk_device *device,
          if (bound_pipeline && bound_pipeline->needs_vertex_id_stream) {
             synthetic_streams_ready =
                r300vk_bind_synthetic_index_stream(
-                  device, pipe, vb_cache, bound_pipeline->vertex_id_vb_binding,
-                  e->draw.first, e->draw.count, transient_vbs);
+                  device, pipe, draw_vb_cache,
+                  bound_pipeline->vertex_id_vb_binding, e->draw.first,
+                  e->draw.count, transient_vbs);
             if (synthetic_streams_ready) {
-               if (bound_pipeline->vertex_id_vb_binding + 1u > vb_max_used)
-                  vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
-               vb_dirty = true;
+               if (bound_pipeline->vertex_id_vb_binding + 1u > draw_vb_max_used)
+                  draw_vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
+               draw_vb_dirty = true;
             }
          }
          if (synthetic_streams_ready && bound_pipeline &&
              bound_pipeline->needs_instance_id_stream) {
             synthetic_streams_ready =
                r300vk_bind_synthetic_index_stream(
-                  device, pipe, vb_cache, bound_pipeline->instance_id_vb_binding,
+                  device, pipe, draw_vb_cache,
+                  bound_pipeline->instance_id_vb_binding,
                   e->draw.first_instance, e->draw.instances, transient_vbs);
             if (synthetic_streams_ready) {
-               if (bound_pipeline->instance_id_vb_binding + 1u > vb_max_used)
-                  vb_max_used = bound_pipeline->instance_id_vb_binding + 1u;
-               vb_dirty = true;
+               if (bound_pipeline->instance_id_vb_binding + 1u >
+                   draw_vb_max_used)
+                  draw_vb_max_used =
+                     bound_pipeline->instance_id_vb_binding + 1u;
+               draw_vb_dirty = true;
             }
          }
-         /* Flush the VB cache after bind_vertex_elements_state (set by
+         /* Flush the draw VB state after bind_vertex_elements_state (set by
           * BIND_PIPELINE above in the stream) so the Gallium ordering holds.
-          * vb_max_used tracks the highest slot index written so only the live
-          * range is submitted, and lower slots from earlier binds are preserved. */
-         if (vb_dirty) {
-            pipe->set_vertex_buffers(pipe, vb_max_used, vb_cache);
-            vb_dirty = false;
+          * draw_vb_max_used tracks the highest slot index written so only the
+          * live range is submitted.  Synthetic streams are draw-local overlays;
+          * vb_dirty restores the application VB cache before a later draw that
+          * does not use the same overlay. */
+         if (draw_vb_dirty) {
+            pipe->set_vertex_buffers(pipe, draw_vb_max_used, draw_vb_cache);
+            vb_dirty = synthetic_streams_ready &&
+                       (bound_pipeline &&
+                        (bound_pipeline->needs_vertex_id_stream ||
+                         bound_pipeline->needs_instance_id_stream));
          }
          struct pipe_draw_info info;
          memset(&info, 0, sizeof(info));
