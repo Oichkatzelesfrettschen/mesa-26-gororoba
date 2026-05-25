@@ -1,0 +1,34 @@
+# r300vk-vostro-x86-64-v1-clang22-debug: debugoptimized RS482/r300vk ICD.
+#
+# Same x86-64-v1 clang 22 lane as the release profile, with asserts and debug
+# info preserved for CTS/dmesg RCA.
+
+[built-in options]
+buildtype = 'debugoptimized'
+b_ndebug = 'false'
+c_args = ['-march=x86-64', '-mtune=generic', '-Os', '-pipe', '-fno-plt', '-fexceptions', '-ffunction-sections', '-fdata-sections']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-Os', '-pipe', '-fno-plt', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
+cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
+
+[project options]
+platforms = ['x11']
+gallium-drivers = ['r300']
+vulkan-drivers = ['amd_r300']
+r300vk-gallium-backend = true
+tools = ['r300']
+
+gallium-rusticl = false
+llvm = 'disabled'
+draw-use-llvm = false
+
+opengl = false
+glx = 'disabled'
+egl = 'disabled'
+gbm = 'disabled'
+gles1 = 'disabled'
+gles2 = 'disabled'
+glvnd = 'disabled'
+valgrind = 'disabled'
+libunwind = 'disabled'
+perfetto = false

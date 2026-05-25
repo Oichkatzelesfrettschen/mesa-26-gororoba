@@ -47,7 +47,8 @@ struct r300vk_pipeline {
    void                   *dsa_cso;
    void                   *velems_cso;
    VkPrimitiveTopology     topology;
-   uint32_t                vertex_stride[16];
+   uint32_t                vertex_stride[R300VK_MAX_VERTEX_BINDINGS];
+   uint32_t                vertex_binding_extent[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_mask;
 };
 
