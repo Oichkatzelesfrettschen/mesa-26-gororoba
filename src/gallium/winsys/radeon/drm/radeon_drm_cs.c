@@ -1453,6 +1453,21 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
          radeon_drm_cs_emit_ioctl_oneshot(cs, NULL, 0);
       }
    } else {
+      /* No-submit path: RADEON_NOOP or RADEON_FLUSH_NOOP built the command
+       * stream fully but it never reaches DRM_RADEON_CS.  r300_trace_begin_trace
+       * normally runs inside radeon_drm_cs_emit_ioctl_oneshot, which this branch
+       * skips, so capture the pre-ioctl IB here too: R300_TRACE can then decode
+       * the stream with no GPU submit (a decoder-shape preflight).  Set
+       * chunks[0].length_dw -- the submit path sets it before emit, this path
+       * does not -- so r300_trace_write_ib copies the right dword count.  There
+       * is no patched IB and no submit result; begin_trace's manifest already
+       * records submitted=false.  begin_trace self-gates on DRV_R300 + R300_TRACE,
+       * so this is a no-op for every other winsys and when tracing is off. */
+      if (rcs->current.cdw) {
+         struct r300_trace trace;
+         cs->cst->chunks[0].length_dw = rcs->current.cdw;
+         r300_trace_begin_trace(cs, cs->cst, &trace);
+      }
       radeon_cs_context_cleanup(&cs->ws->base, cs->cst);
    }
 
