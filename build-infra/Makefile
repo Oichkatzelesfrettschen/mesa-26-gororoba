@@ -100,6 +100,17 @@ endif
 # instead of committing one LLVM major into every native file.
 SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure
 MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
+LOCKED_TOOL_ENV := \
+    PATH="$$PATH" \
+    CCACHE_BASEDIR="$${CCACHE_BASEDIR:-}" \
+    CCACHE_COMPILERCHECK="$${CCACHE_COMPILERCHECK:-}" \
+    CCACHE_DEPEND="$${CCACHE_DEPEND:-}" \
+    CCACHE_DIR="$${CCACHE_DIR:-}" \
+    CCACHE_MAXSIZE="$${CCACHE_MAXSIZE:-}" \
+    CCACHE_PATH="$${CCACHE_PATH:-}" \
+    CCACHE_PREFIX="$${CCACHE_PREFIX:-}" \
+    DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
+    SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
 .PHONY: list audit configure build build-generated build-pump clean distclean install \
         artifact-check test \
@@ -376,15 +387,18 @@ build:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
-	flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS)
+	env $(LOCKED_TOOL_ENV) \
+	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS)
 
 build-generated:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
+	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	mapfile -t targets < <(ninja -C $(BUILDDIR) -t targets all | awk -v re='$(GENERATED_TARGET_REGEX)' '$$2 == "CUSTOM_COMMAND" { sub(/:$$/, "", $$1); if ($$1 ~ re) print $$1 }'); \
 	if [ "$${#targets[@]}" -gt 0 ]; then \
 		echo "prebuilding $${#targets[@]} selected generated Meson/Ninja targets outside distcc-pump"; \
-		ninja -C $(BUILDDIR) -j$(JOBS) "$${targets[@]}"; \
+		env $(LOCKED_TOOL_ENV) \
+		    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS) "$${targets[@]}"; \
 	else \
 		echo "no selected generated targets found"; \
 	fi
@@ -392,7 +406,9 @@ build-generated:
 build-pump:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	distcc-pump ninja -C $(BUILDDIR) -j$(JOBS)
+	mkdir -p "$(dir $(BUILD_LOCK))"; \
+	env $(LOCKED_TOOL_ENV) \
+	    flock -x -w 7200 $(BUILD_LOCK) distcc-pump ninja -C $(BUILDDIR) -j$(JOBS)
 
 clean:
 	rm -rf $(BUILDDIR)
@@ -411,7 +427,8 @@ install:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
-	flock -x -w 7200 $(BUILD_LOCK) bash -c 'set -euo pipefail; \
+	env $(LOCKED_TOOL_ENV) \
+	    flock -x -w 7200 $(BUILD_LOCK) bash -c 'set -euo pipefail; \
 	    echo "[install] flock acquired; reconfiguring $(BUILDDIR) with --prefix=$(PREFIX)"; \
 	    for var in $(MESON_SETUP_LOCAL_UNSET); do unset "$$var"; done; \
 	    meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
@@ -428,7 +445,9 @@ artifact-check:
 
 test:
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	ninja -C $(BUILDDIR) test
+	mkdir -p "$(dir $(BUILD_LOCK))"; \
+	env $(LOCKED_TOOL_ENV) \
+	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) test
 
 # Pair-member loops.  Each takes one PAIR_<NAME> list and threads
 # PROFILE + HOSTENV + BUILDDIR + PREFIX + INSTALL_NAMESPACE through

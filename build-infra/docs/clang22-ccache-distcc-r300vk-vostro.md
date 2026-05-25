@@ -37,12 +37,18 @@ distcc hosts without `,cpp` because `,cpp` belongs to pump mode.  The Makefile
 sets `JOBS=36` for this host environment so Ninja has enough work to keep the
 reachable distcc volunteers busy.  The environment owns `DISTCC_HOSTS` at source
 time so login-shell defaults cannot silently route this lane to stale workers.
-The environment prepends `/usr/local/bin:/usr/bin` to `PATH` and sets
-`CCACHE_PATH=/usr/local/bin:/usr/bin` so ccache can find the Vostro C++ compiler
-while the generated Meson toolchain overlay keeps the compiler names as
-`clang-22` and `clang++-22`.  Bare compiler names are intentional: distcc sends
-that command name to volunteers, and ALIENWARE/X570 provide clang 22 in a
-different directory than the Vostro.
+The environment prepends `/usr/bin:/usr/local/bin` to `PATH` and sets
+`CCACHE_PATH=/usr/bin:/usr/local/bin` so ccache resolves the same Clang 22
+compiler path that the distcc volunteers provide.  The Vostro keeps a
+`/usr/bin/clang++-22` entry so ccache sends `/usr/bin/clang++-22` to distcc
+instead of the Vostro-only `/usr/local/bin/clang++-22` wrapper.  The generated
+Meson toolchain overlay keeps the compiler names as
+`clang-22` and `clang++-22`.  Bare compiler names are intentional in direct
+distcc mode: distcc sends that command name to volunteers, and ALIENWARE/X570
+provide clang 22 in a matching command namespace.  The Makefile passes the
+sourced cache/distcc environment explicitly through `flock` to compiler-bearing
+Ninja recipes so the compiler search path used by ccache matches the configured
+lane.
 
 Mode matrix:
 
