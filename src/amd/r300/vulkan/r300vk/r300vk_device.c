@@ -91,7 +91,9 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    }
    device->screen = device->rws->screen;
 
-   device->pipe = device->screen->context_create(device->screen, NULL, 0);
+   device->pipe =
+      device->screen->context_create(device->screen, NULL,
+                                     PIPE_CONTEXT_ROBUST_BUFFER_ACCESS);
    if (!device->pipe) {
       result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                          "r300vk: pipe_screen->context_create failed");
