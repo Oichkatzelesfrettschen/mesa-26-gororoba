@@ -161,4 +161,12 @@ extern bool r300_nir_lower_flrp(nir_shader *shader);
 
 extern bool r300_nir_lower_comparison_fs(nir_shader *shader);
 
+/* Rewrite VS gl_VertexIndex / gl_InstanceIndex to reads of a synthetic vertex
+ * input the driver supplies at the given driver_location (slot < 0 disables a
+ * given system value).  For the SW-TCL route on parts with no hardware vertex
+ * shader. */
+extern bool r300_nir_lower_vs_system_values_to_inputs(nir_shader *s,
+                                                      int vertex_id_slot,
+                                                      int instance_id_slot);
+
 #endif /* R300_NIR_H */
