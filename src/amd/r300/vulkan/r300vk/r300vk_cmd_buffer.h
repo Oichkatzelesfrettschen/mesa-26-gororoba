@@ -56,8 +56,6 @@ struct r300vk_cmd_set_scissor {
    VkRect2D scissor;
 };
 
-#define R300VK_MAX_VERTEX_BINDINGS 16
-
 struct r300vk_cmd_bind_vertex_buffers {
    uint32_t              first_binding;
    uint32_t              binding_count;

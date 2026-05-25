@@ -147,17 +147,21 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
          continue;
 
       const uint32_t stride = pl->vertex_stride[b];
-      if (stride == 0 || !vb_cache[b].buffer.resource)
+      const uint32_t extent = pl->vertex_binding_extent[b];
+      if (stride == 0 || extent == 0 || !vb_cache[b].buffer.resource)
          return 0;
 
       const VkDeviceSize offset = vb_cache[b].buffer_offset;
       const VkDeviceSize size = vb_sizes[b];
       const VkDeviceSize bytes = size > offset ? size - offset : 0;
-      const uint32_t vertices = bytes / stride;
+      if (bytes < extent)
+         return 0;
+
+      const VkDeviceSize vertices = 1 + (bytes - extent) / stride;
       if (first_vertex >= vertices)
          return 0;
 
-      max_count = MIN2(max_count, vertices - first_vertex);
+      max_count = MIN2(max_count, (uint32_t)(vertices - first_vertex));
    }
 
    return max_count;

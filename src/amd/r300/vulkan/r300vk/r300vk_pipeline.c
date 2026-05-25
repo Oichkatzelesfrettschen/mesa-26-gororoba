@@ -19,6 +19,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
+#include "util/format/u_format.h"
 #include "util/macros.h"
 
 #include <string.h>
@@ -118,11 +119,22 @@ r300vk_build_velems_cso(struct r300vk_device *device,
    for (uint32_t i = 0; i < n; i++) {
       const VkVertexInputAttributeDescription *attr =
          &vi->pVertexAttributeDescriptions[i];
+      if (attr->binding >= R300VK_MAX_VERTEX_BINDINGS)
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r300vk: vertex attribute binding %u exceeds %u",
+                          attr->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
+
       enum pipe_format elem_fmt = vk_format_to_pipe_format(attr->format);
       if (elem_fmt == PIPE_FORMAT_NONE)
          return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                           "r300vk: unsupported vertex attribute format %d "
                           "at location %u", attr->format, attr->location);
+      const uint32_t attr_size = align(util_format_get_blocksize(elem_fmt), 4);
+      if (attr->offset > UINT32_MAX - attr_size)
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r300vk: vertex attribute offset %u exceeds "
+                          "representable binding extent", attr->offset);
+
       ve[i].src_offset          = (uint16_t)attr->offset;
       ve[i].vertex_buffer_index = (uint8_t)attr->binding;
       ve[i].src_format          = (uint8_t)elem_fmt;
@@ -131,6 +143,9 @@ r300vk_build_velems_cso(struct r300vk_device *device,
             ve[i].src_stride = vi->pVertexBindingDescriptions[b].stride;
             pl->vertex_stride[attr->binding] =
                vi->pVertexBindingDescriptions[b].stride;
+            pl->vertex_binding_extent[attr->binding] =
+               MAX2(pl->vertex_binding_extent[attr->binding],
+                    attr->offset + attr_size);
             pl->vertex_binding_mask |= BITFIELD_BIT(attr->binding);
             break;
          }
