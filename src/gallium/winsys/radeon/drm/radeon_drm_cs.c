@@ -642,7 +642,7 @@ r300_trace_write_manifest(struct radeon_drm_cs *cs,
       r300_trace_manifest_artifact(file, "relocs.json", &first_artifact);
    if (r300_trace_mask_has("bo"))
       r300_trace_manifest_artifact(file, "bo_table.json", &first_artifact);
-   if (r300_trace_mask_has("submit"))
+   if (ioctl_result_valid && r300_trace_mask_has("submit"))
       r300_trace_manifest_artifact(file, "submit.json", &first_artifact);
    r300_trace_manifest_artifact(file, "stderr.txt", &first_artifact);
    fputs("]\n}\n", file);
@@ -1453,17 +1453,17 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
          radeon_drm_cs_emit_ioctl_oneshot(cs, NULL, 0);
       }
    } else {
-      /* No-submit path: RADEON_NOOP or RADEON_FLUSH_NOOP built the command
-       * stream fully but it never reaches DRM_RADEON_CS.  r300_trace_begin_trace
-       * normally runs inside radeon_drm_cs_emit_ioctl_oneshot, which this branch
-       * skips, so capture the pre-ioctl IB here too: R300_TRACE can then decode
-       * the stream with no GPU submit (a decoder-shape preflight).  Set
-       * chunks[0].length_dw -- the submit path sets it before emit, this path
-       * does not -- so r300_trace_write_ib copies the right dword count.  There
-       * is no patched IB and no submit result; begin_trace's manifest already
-       * records submitted=false.  begin_trace self-gates on DRV_R300 + R300_TRACE,
-       * so this is a no-op for every other winsys and when tracing is off. */
-      if (rcs->current.cdw) {
+      /* A valid RADEON_NOOP or RADEON_FLUSH_NOOP stream never reaches
+       * DRM_RADEON_CS, so capture its pre-ioctl IB here for decoder-shape
+       * preflight.  The submit path sets chunks[0].length_dw before emit; this
+       * path must do the same before r300_trace_write_ib copies the buffer.
+       * Overflowed command streams are excluded by the submit-path bounds check
+       * so trace capture never reads past the IB buffer.  Without a real ioctl,
+       * the manifest keeps ioctl_result_valid=false and
+       * patched_ib_available=false, and omits submit.json.  begin_trace
+       * self-gates on DRV_R300 + R300_TRACE, so this is a no-op for every other
+       * winsys and when tracing is off. */
+      if (rcs->current.cdw && rcs->current.cdw <= rcs->current.max_dw) {
          struct r300_trace trace;
          cs->cst->chunks[0].length_dw = rcs->current.cdw;
          r300_trace_begin_trace(cs, cs->cst, &trace);
