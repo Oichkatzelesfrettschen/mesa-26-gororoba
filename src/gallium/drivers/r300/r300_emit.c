@@ -210,7 +210,19 @@ uint32_t pack_float24(float f)
 
     frexpf(f, &exponent);
     exponent += 62;
-    assert(exponent >= 1 && exponent <= 127);
+
+    /* The r300 float24 exponent is a 7-bit biased field with a stored range
+     * of [1,127] (bias 62), so the representable magnitude is about 2^-61 to
+     * 2^65.  A non-zero constant outside that range -- e.g. a tiny polynomial
+     * coefficient from atan/asin lowering -- must not pack a wrapped exponent.
+     * Flush an underflowing magnitude to zero (the hardware has no float24
+     * denormals) and saturate an overflowing one to the largest representable
+     * float24, preserving sign. */
+    if (exponent < 1)
+        return 0;
+    if (exponent > 127)
+        return float24 | (127u << 16) | 0xFFFFu;
+
     float24 |= (uint32_t)((unsigned)exponent << 16);
     float24 |= (u.u & 0x7FFFFFu) >> 7;
 
