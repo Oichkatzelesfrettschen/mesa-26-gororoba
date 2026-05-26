@@ -483,6 +483,11 @@ r300vk_CreateComputePipelines(VkDevice _device,
    (void)pCreateInfos;
    (void)pAllocator;
 
+   /* createInfoCount == 0 is a no-op that succeeds: there is no pPipelines
+    * entry to write and nothing to reject, matching vk_common_CreateComputePipelines. */
+   if (createInfoCount == 0)
+      return VK_SUCCESS;
+
    for (uint32_t i = 0; i < createInfoCount; i++)
       pPipelines[i] = VK_NULL_HANDLE;
 

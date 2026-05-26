@@ -123,10 +123,11 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    const char *cs_gate = getenv("R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED");
    device->use_cs_backend = cs_gate && strcmp(cs_gate, "1") == 0;
 
-   const char *hybrid_compute_gate = getenv(R300VK_HYBRID_COMPUTE_ENV);
-   device->hybrid_compute_enabled =
-      hybrid_compute_gate &&
-      strcmp(hybrid_compute_gate, R300VK_HYBRID_COMPUTE_ENV_VALUE) == 0;
+   /* Inherit the hybrid-compute gate the physical device cached at creation
+    * rather than re-reading the environment, so the device's runtime behavior
+    * cannot diverge from the advertised queue flags if the environment changes
+    * mid-process.  The physical-device value is the single source of truth. */
+   device->hybrid_compute_enabled = pdevice->hybrid_compute_enabled;
 
    *pDevice = r300vk_device_to_handle(device);
    return VK_SUCCESS;
