@@ -33,8 +33,7 @@ VK_DEFINE_HANDLE_CASTS(r300vk_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 /* r300vk_device wraps vk_device plus the Gallium-mediated backend state.
  * radeon_drm_winsys_create() initializes rws and sets rws->screen to the
  * r300 pipe_screen.  pipe is the per-device pipe_context; r300g routes
- * NIR shaders through r300_nir_to_rc_direct internally -- the ICD never
- * calls nir_to_tgsi.
+ * NIR shaders through nir_to_rc internally -- the ICD never calls nir_to_tgsi.
  *
  * use_cs_backend: true when R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED=1 is
  * set in the environment at CreateDevice time.  When true, the submit path

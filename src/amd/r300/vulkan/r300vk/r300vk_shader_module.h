@@ -20,7 +20,7 @@ extern "C" {
 /* r300vk_shader_module stores the raw SPIR-V words verbatim.
  * CreateGraphicsPipelines reads code + code_size to drive
  * vk_spirv_to_nir(), which produces the NIR shader that r300g
- * then lowers through r300_nir_to_rc_direct internally. */
+ * then lowers through nir_to_rc internally. */
 struct r300vk_shader_module {
    struct vk_object_base  base;
    size_t                 code_size;

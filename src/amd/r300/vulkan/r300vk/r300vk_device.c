@@ -77,8 +77,8 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
     * radeon_drm_winsys_create() opens a new fd reference to the render node
     * and populates rws->screen with the r300 pipe_screen.  The ICD owns
     * both from this point; screen->destroy() releases both when called from
-    * DestroyDevice.  r300g routes NIR shader states through
-    * r300_nir_to_rc_direct internally; the ICD never calls nir_to_tgsi. */
+    * DestroyDevice.  r300g routes NIR shader states through nir_to_rc
+    * internally; the ICD never calls nir_to_tgsi. */
    struct pipe_screen_config screen_config = {0};
    device->rws = radeon_drm_winsys_create(pdevice->render_node_fd,
                                            &screen_config,
