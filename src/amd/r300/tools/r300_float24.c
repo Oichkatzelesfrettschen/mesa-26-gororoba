@@ -16,7 +16,6 @@
  *   ./builddir/src/amd/r300/tools/r300_float24 1.0 -1.0 3.14159
  */
 
-#include <assert.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -48,11 +47,12 @@ r300_ieee_float_is_negative(uint32_t bits)
  *   bits 22:16 frexpf exponent + 62 (7 bits; bias 63 relative to frexpf)
  *   bits 15:0  top 16 bits of IEEE 754 mantissa (bits 22:7)
  *
- * Valid for normal IEEE floats whose frexpf exponent is in [-61, 65]
- * (stored_exp 1..127).  stored_exp=0 with zero mantissa bits collides with
- * the zero encoding (frexpf_exp=-62 pure powers of two pack to 0x000000),
- * so frexpf_exp=-62 is excluded from the valid range.  Inf, NaN, subnormals,
- * and out-of-range exponents are not handled.
+ * Normal finite IEEE inputs whose frexpf exponent is in [-61, 65]
+ * (stored_exp 1..127) are encoded directly.  stored_exp=0 with zero mantissa
+ * bits collides with the zero encoding, so underflowing finite inputs,
+ * including IEEE subnormals, are flushed to zero.  Overflowing finite inputs
+ * are saturated to the largest representable float24.  Inf and NaN are not
+ * handled.
  */
 static uint32_t
 r300_pack_float24(float f)
@@ -76,7 +76,11 @@ r300_pack_float24(float f)
 
    frexpf(f, &exponent);
    exponent += (int)R300_FLOAT24_EXP_BIAS;
-   assert(exponent >= 1 && exponent <= (int)R300_FLOAT24_EXP_MAX_STORED);
+   if (exponent < 1)
+      return 0;
+   if (exponent > (int)R300_FLOAT24_EXP_MAX_STORED)
+      return float24 | (R300_FLOAT24_EXP_MAX_STORED << 16) | 0xFFFFu;
+
    float24 |= (uint32_t)((unsigned)exponent << 16);
    float24 |= (u.u & 0x7FFFFFu) >> 7;
 
@@ -125,6 +129,7 @@ struct known_value {
 
 static const struct known_value known_values[] = {
    { 0.0f,        0x000000u, "0.0"    },
+   {-0.0f,        0x000000u, "-0.0"   },
    { 1.0f,        0x3F0000u, "1.0"    },
    {-1.0f,        0xBF0000u, "-1.0"   },
    { 2.0f,        0x400000u, "2.0"    },
@@ -137,9 +142,17 @@ static const struct known_value known_values[] = {
     * and collides with the zero encoding. */
    { 0x1p-62f,    0x010000u, "2^-62"  },
    {-0x1p-62f,    0x810000u, "-2^-62" },
+   /* Finite underflow flushes to zero; the hardware has no float24 denormals. */
+   { 0x1p-63f,    0x000000u, "2^-63"  },
+   {-0x1p-63f,    0x000000u, "-2^-63" },
+   { 0x1p-149f,   0x000000u, "2^-149" },
+   {-0x1p-149f,   0x000000u, "-2^-149"},
    /* Exponent boundary: frexpf_exp = 65 gives stored_exp = 127 (max). */
    { 0x1p64f,     0x7F0000u, "2^64"   },
    {-0x1p64f,     0xFF0000u, "-2^64"  },
+   /* Finite overflow saturates to the largest representable float24. */
+   { 0x1p65f,     0x7FFFFFu, "2^65"   },
+   {-0x1p65f,     0xFFFFFFu, "-2^65"  },
 };
 
 static int
@@ -240,19 +253,6 @@ main(int argc, char **argv)
       if (!isfinite(f)) {
          fprintf(stderr, "error: '%s' is not finite; R300 float24 does not encode inf or nan\n", argv[i]);
          return 1;
-      }
-      if (f != 0.0f) {
-         int exp;
-         frexpf(f, &exp);
-         /* stored_exp = exp + R300_FLOAT24_EXP_BIAS must be in [1, 127].
-          * stored_exp=0 is excluded: a pure power-of-two at frexpf_exp=-62
-          * has zero mantissa bits in [22:7] and packs to 0x000000, colliding
-          * with the zero encoding. */
-         int stored = exp + (int)R300_FLOAT24_EXP_BIAS;
-         if (stored < 1 || stored > (int)R300_FLOAT24_EXP_MAX_STORED) {
-            fprintf(stderr, "error: '%s' exponent %d is outside the R300 float24 valid range\n", argv[i], exp);
-            return 1;
-         }
       }
       printf("r300_pack_float24(%g) = 0x%06X\n", (double)f, r300_pack_float24(f));
    }
