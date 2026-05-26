@@ -534,12 +534,11 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
 
    if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
                                      PIPE_BIND_DEPTH_STENCIL)) {
-      image_features |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT |
-                        VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
-                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
-                        VK_FORMAT_FEATURE_2_BLIT_SRC_BIT |
-                        VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+      /* PIPE_BIND_DEPTH_STENCIL guarantees only depth/stencil attachment use.
+       * Sampled, transfer, and blit capability is advertised by the
+       * PIPE_BIND_SAMPLER_VIEW and PIPE_BIND_RENDER_TARGET blocks below when
+       * the format actually supports those binds, so do not imply them here. */
+      image_features |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT;
    }
 
    if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
@@ -570,12 +569,22 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
       buffer_features |= VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
    }
 
+   /* A Vulkan uniform texel buffer is a typed buffer fetched through a
+    * sampler-view-class binding, not an untyped Gallium constant buffer.  Gate
+    * UNIFORM_TEXEL_BUFFER on PIPE_BIND_SAMPLER_VIEW for PIPE_BUFFER so the
+    * advertised set matches the formats r300g can actually fetch as texel data
+    * rather than every format a constant buffer would nominally accept. */
    if (r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
-                                     PIPE_BIND_CONSTANT_BUFFER)) {
+                                     PIPE_BIND_SAMPLER_VIEW)) {
       buffer_features |= VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
    }
 
-   properties->linearTilingFeatures = image_features;
+   /* r300vk creates r300g-tiled textures regardless of VkImageTiling
+    * (r300vk_image.c has no linear-layout path), so advertising linear-tiling
+    * image features would promise a row-major layout the driver never
+    * produces.  Report linear-tiling images as unsupported; only optimal
+    * tiling carries the image feature set. */
+   properties->linearTilingFeatures = 0;
    properties->optimalTilingFeatures = image_features;
    properties->bufferFeatures = buffer_features;
 }
