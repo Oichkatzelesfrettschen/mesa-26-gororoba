@@ -538,6 +538,7 @@ static void
 r300_trace_write_submit(struct radeon_drm_cs *cs,
                         const struct radeon_cs_context *csc,
                         const struct r300_trace *trace,
+                        bool ioctl_result_valid,
                         int ioctl_result)
 {
    FILE *file = r300_trace_fopen(trace, "submit.json", "w");
@@ -552,10 +553,13 @@ r300_trace_write_submit(struct radeon_drm_cs *cs,
            ",\n  \"schema_version\":%u,\n  \"ip_type\":%u,\n"
            "  \"flags0\":%u,\n  \"flags1\":%u,\n"
            "  \"num_chunks\":%u,\n  \"ib_dwords\":%u,\n"
-           "  \"num_relocs\":%u,\n  \"ioctl_result\":%d\n}\n",
+           "  \"num_relocs\":%u,\n  \"ioctl_result_valid\":%s,\n"
+           "  \"ioctl_result\":%d\n}\n",
            R300_TRACE_SCHEMA_VERSION, cs->ip_type, csc->flags[0],
            csc->flags[1], csc->cs.num_chunks,
-           csc->chunks[0].length_dw, csc->num_relocs, ioctl_result);
+           csc->chunks[0].length_dw, csc->num_relocs,
+           ioctl_result_valid ? "true" : "false",
+           ioctl_result_valid ? ioctl_result : 0);
    fclose(file);
 }
 
@@ -739,11 +743,25 @@ r300_trace_finish_trace(struct radeon_drm_cs *cs,
    if (!ioctl_result && r300_trace_mask_has("cs"))
       r300_trace_write_ib(cs, csc, trace, "patched_ib.bin");
    if (r300_trace_mask_has("submit"))
-      r300_trace_write_submit(cs, csc, trace, ioctl_result);
+      r300_trace_write_submit(cs, csc, trace, true, ioctl_result);
    if (r300_trace_mask_has("submit"))
       r300_trace_write_manifest(cs, csc, trace, true, ioctl_result,
                                 ioctl_result == 0 &&
                                 r300_trace_mask_has("cs"));
+}
+
+static void
+r300_trace_finish_no_submit_trace(struct radeon_drm_cs *cs,
+                                  const struct radeon_cs_context *csc,
+                                  const struct r300_trace *trace)
+{
+   if (!trace->enabled)
+      return;
+
+   if (r300_trace_mask_has("submit"))
+      r300_trace_write_submit(cs, csc, trace, false, 0);
+   if (r300_trace_mask_has("submit"))
+      r300_trace_write_manifest(cs, csc, trace, false, 0, false);
 }
 
 static struct radeon_winsys_ctx *radeon_drm_ctx_create(struct radeon_winsys *ws,
@@ -1453,20 +1471,25 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
          radeon_drm_cs_emit_ioctl_oneshot(cs, NULL, 0);
       }
    } else {
-      /* No-submit path: RADEON_NOOP or RADEON_FLUSH_NOOP built the command
-       * stream fully but it never reaches DRM_RADEON_CS.  r300_trace_begin_trace
-       * normally runs inside radeon_drm_cs_emit_ioctl_oneshot, which this branch
-       * skips, so capture the pre-ioctl IB here too: R300_TRACE can then decode
-       * the stream with no GPU submit (a decoder-shape preflight).  Set
-       * chunks[0].length_dw -- the submit path sets it before emit, this path
-       * does not -- so r300_trace_write_ib copies the right dword count.  There
-       * is no patched IB and no submit result; begin_trace's manifest already
-       * records submitted=false.  begin_trace self-gates on DRV_R300 + R300_TRACE,
-       * so this is a no-op for every other winsys and when tracing is off. */
-      if (rcs->current.cdw) {
+      /* No-submit path: an empty, overflowed, RADEON_NOOP, or
+       * RADEON_FLUSH_NOOP command stream never reaches DRM_RADEON_CS.
+       * r300_trace_begin_trace normally runs inside
+       * radeon_drm_cs_emit_ioctl_oneshot, which this branch skips, so capture a
+       * bounded non-empty IB here too.  The same cdw <= max_dw guard as the
+       * submit path is required before setting chunks[0].length_dw; otherwise
+       * r300_trace_write_ib would copy past the command buffer after overflow.
+       * There is no patched IB and no ioctl result, so finish the trace with a
+       * final manifest that records ioctl_result_valid=false and
+       * patched_ib_available=false.  Clear the DRM submit fields first so
+       * submit.json cannot inherit stale ring flags from a recycled context. */
+      if (rcs->current.cdw && rcs->current.cdw <= rcs->current.max_dw) {
          struct r300_trace trace;
+         cs->cst->flags[0] = 0;
+         cs->cst->flags[1] = 0;
+         cs->cst->cs.num_chunks = 0;
          cs->cst->chunks[0].length_dw = rcs->current.cdw;
-         r300_trace_begin_trace(cs, cs->cst, &trace);
+         if (r300_trace_begin_trace(cs, cs->cst, &trace))
+            r300_trace_finish_no_submit_trace(cs, cs->cst, &trace);
       }
       radeon_cs_context_cleanup(&cs->ws->base, cs->cst);
    }
