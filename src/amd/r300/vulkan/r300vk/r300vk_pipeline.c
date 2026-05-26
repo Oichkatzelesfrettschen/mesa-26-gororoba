@@ -4,7 +4,6 @@
  */
 
 #include "r300vk_pipeline.h"
-#include "r300vk_cmd_buffer.h"
 #include "r300vk_device.h"
 #include "r300vk_shader_module.h"
 
