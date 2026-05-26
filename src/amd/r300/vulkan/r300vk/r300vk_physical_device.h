@@ -32,6 +32,12 @@ struct r300vk_physical_device {
     * when the physical device is destroyed. */
    int render_node_fd;
 
+   /* Experimental hybrid-compute queue gate, read once from the environment
+    * at physical-device creation.  Caching it keeps the advertised queue
+    * flags consistent across queries even if the environment changes
+    * mid-process. */
+   bool hybrid_compute_enabled;
+
 #ifdef R300VK_GALLIUM_BACKEND
    /* Gallium r300g oracle used for physical-device format queries.
     * The screen owns its radeon_winsys reference and is destroyed before

@@ -464,6 +464,7 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    }
 
    device->vk.supported_sync_types = device->sync_types;
+   device->hybrid_compute_enabled = r300vk_hybrid_compute_enabled();
 
    if (instance->debug_flags & R300VK_DEBUG_STARTUP) {
       fprintf(stderr,
@@ -484,10 +485,11 @@ r300vk_GetPhysicalDeviceQueueFamilyProperties2(VkPhysicalDevice physicalDevice,
                                                uint32_t *pCount,
                                                VkQueueFamilyProperties2 *pProperties)
 {
+   VK_FROM_HANDLE(r300vk_physical_device, pdev, physicalDevice);
    VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties2, out, pProperties, pCount);
    VkQueueFlags queue_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_TRANSFER_BIT;
 
-   if (r300vk_hybrid_compute_enabled())
+   if (pdev->hybrid_compute_enabled)
       queue_flags |= VK_QUEUE_COMPUTE_BIT;
 
    vk_outarray_append_typed(VkQueueFamilyProperties2, &out, p) {
