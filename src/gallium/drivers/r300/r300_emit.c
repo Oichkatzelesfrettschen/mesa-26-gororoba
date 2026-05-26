@@ -186,10 +186,12 @@ static void get_rc_constant_state(
  * bits 15:0 = top 16 bits of the IEEE 754 mantissa.  frexpf normalizes to
  * [0.5, 1.0), so the effective bias against the [1, 2.0) IEEE convention is 63.
  *
- * Valid for normal IEEE floats whose frexpf exponent is in [-61, 65]
- * (stored_exp 1..127).  stored_exp=0 with zero mantissa bits collides with
- * the zero encoding, so frexpf_exp=-62 is excluded from the valid range.
- * Inf, NaN, subnormals, and out-of-range exponents are not handled.
+ * Normal finite IEEE inputs whose frexpf exponent is in [-61, 65]
+ * (stored_exp 1..127) are encoded directly.  stored_exp=0 with zero mantissa
+ * bits collides with the zero encoding, so underflowing finite inputs,
+ * including IEEE subnormals, are flushed to zero.  Overflowing finite inputs
+ * are saturated to the largest representable float24.  Inf and NaN are not
+ * handled.
  */
 uint32_t pack_float24(float f)
 {
