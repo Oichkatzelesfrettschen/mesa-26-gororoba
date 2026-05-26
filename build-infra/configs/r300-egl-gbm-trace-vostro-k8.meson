@@ -2,8 +2,10 @@
 # for RS480/RS482 oracle PM4 capture.  Derived from r300-trace-vostro-k8 by
 # enabling egl + gbm so a GBM-device EGL context reaches the r300 gallium
 # driver over /dev/dri/renderD128, bypassing the DRI2-only GLX path that
-# Mesa's DRIL client cannot drive on this host.  llvm stays disabled so there
-# is NO llvmpipe fallback: the probe gets hardware r300 or it fails loudly.
+# Mesa's DRIL client cannot drive on this host.  EGL_DEFAULT_DISPLAY uses the
+# DRM native platform so simple EGL probes do not accidentally require X11.
+# llvm stays disabled so there is NO llvmpipe fallback: the probe gets hardware
+# r300 or it fails loudly.
 # R300_TRACE lives in the radeon winsys (radeon_drm_cs.c), present with any
 # gallium-drivers=r300 build.
 
@@ -21,6 +23,7 @@ draw-use-llvm = false
 
 glx = 'dri'
 egl = 'enabled'
+egl-native-platform = 'drm'
 gbm = 'enabled'
 gles1 = 'disabled'
 gles2 = 'enabled'

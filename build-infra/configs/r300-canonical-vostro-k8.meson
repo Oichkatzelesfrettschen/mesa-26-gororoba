@@ -7,7 +7,8 @@
 #   * egl + gbm               -- the headless render path that reaches r300
 #                                silicon over /dev/dri/renderD128 (the DRI2-only
 #                                RADEON DDX makes GLX fall back to llvmpipe, so
-#                                EGL/GBM is the working hardware path here)
+#                                EGL_DEFAULT_DISPLAY uses the DRM native
+#                                platform here)
 #   * R300_TRACE (implicit)   -- lives in the radeon winsys, present with any
 #                                gallium-drivers=r300 build
 #
@@ -28,6 +29,7 @@ buildtype = 'debugoptimized'
 platforms = ['x11']
 gallium-drivers = ['r300']
 vulkan-drivers = ['amd_r300']
+r300vk-gallium-backend = true
 tools = ['r300']
 
 gallium-rusticl = false
@@ -36,6 +38,7 @@ draw-use-llvm = false
 
 glx = 'dri'
 egl = 'enabled'
+egl-native-platform = 'drm'
 gbm = 'enabled'
 gles1 = 'disabled'
 gles2 = 'enabled'
