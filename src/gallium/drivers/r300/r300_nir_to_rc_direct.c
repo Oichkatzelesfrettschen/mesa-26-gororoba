@@ -304,6 +304,9 @@ nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
       [nir_op_fadd]            = RC_OPCODE_ADD,
       [nir_op_fmul]            = RC_OPCODE_MUL,
       [nir_op_ffma]            = RC_OPCODE_MAD,
+      /* The r300 fragment MAD is not IEEE single-rounding, so the unfused
+       * multiply-add lowers to the same instruction as the fused one. */
+      [nir_op_fmad]            = RC_OPCODE_MAD,
       [nir_op_fmin]            = RC_OPCODE_MIN,
       [nir_op_fmax]            = RC_OPCODE_MAX,
       [nir_op_fdot2_replicated] = RC_OPCODE_DP2,
