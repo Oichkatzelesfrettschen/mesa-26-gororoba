@@ -9,7 +9,7 @@
 # terakan (Vulkan) and r600 (Gallium) are pure C and build fine.
 # Only the gallium-rusticl OpenCL frontend is removed from this
 # variant.  build-infra/Makefile defaults this profile to its own
-# /usr/local/mesa-terakan-distcc-no-rusticl-pump prefix unless PREFIX
+# /opt/local/mesa-terakan-distcc-no-rusticl-pump prefix unless PREFIX
 # is passed explicitly.
 
 [project options]

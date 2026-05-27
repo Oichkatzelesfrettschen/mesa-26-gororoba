@@ -2,7 +2,7 @@
 # Canonical validation host: Vostro 1000, RS482/RS485 device 1002:5974.
 #
 # This production lane installs beside the r300 Gallium oracle under
-# /usr/local/mesa-26-gororoba.  LLVM stays disabled because r300g does not need
+# /opt/local/mesa-26-gororoba.  LLVM stays disabled because r300g does not need
 # it, while r300vk-gallium-backend keeps physical-device and submit queries
 # wired through the r300g screen and pipe_context surfaces.
 
