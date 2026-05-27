@@ -86,7 +86,7 @@ build_fs(enum fs_mad_form form)
     * as fmad and exercises op_map[nir_op_fmad].  lower_flrp32 makes the generic
     * flrp lowering rewrite flrp into a fmad chain (which the has_fmad support
     * then preserves).  A zero-init options block omits both and the test
-    * silently degrades to MUL + ADD, never touching the path #249 fixed. */
+    * silently degrades to MUL + ADD, never touching the fmad emission path. */
    static const nir_shader_compiler_options options = {
       .float_mul_add32 =
          nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
