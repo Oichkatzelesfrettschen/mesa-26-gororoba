@@ -528,37 +528,48 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
 
    VkFormatFeatureFlags2 image_features = 0;
    VkFormatFeatureFlags2 buffer_features = 0;
+   const bool supports_depth_stencil =
+      r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                    PIPE_BIND_DEPTH_STENCIL);
+   const bool supports_sampler_view =
+      r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                    PIPE_BIND_SAMPLER_VIEW);
+   const bool supports_render_target =
+      r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
+                                    PIPE_BIND_RENDER_TARGET);
 
-   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
-                                     PIPE_BIND_DEPTH_STENCIL)) {
+   if (supports_depth_stencil) {
       /* PIPE_BIND_DEPTH_STENCIL guarantees only depth/stencil attachment use.
-       * Sampled, transfer, and blit capability is advertised by the
-       * PIPE_BIND_SAMPLER_VIEW and PIPE_BIND_RENDER_TARGET blocks below when
-       * the format actually supports those binds, so do not imply them here. */
+       * PIPE_BIND_SAMPLER_VIEW is the separate authority for sampled-image
+       * capability. */
       image_features |= VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT;
    }
 
-   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
-                                     PIPE_BIND_SAMPLER_VIEW)) {
-      image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
-                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
-                        VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
+   if (supports_sampler_view) {
+      image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT;
 
       if (!util_format_is_pure_integer(pipe_format))
          image_features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
    }
 
-   if (r300vk_screen_supports_format(device, pipe_format, PIPE_TEXTURE_2D,
-                                     PIPE_BIND_RENDER_TARGET)) {
-      image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT |
-                        VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
-                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
-                        VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+   if (supports_render_target) {
+      image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT;
 
       if (!util_format_is_pure_integer(pipe_format))
          image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
    }
+
+   /* r300vk implements one Vulkan image transfer operation:
+    * CmdCopyImageToBuffer2.  Submit first flushes and waits for the GPU, then
+    * the readback pass maps each r300g tile with pipe->texture_map.  Therefore
+    * every image format that can be allocated for r300vk's attachment or
+    * sampled-image paths is a transfer source, including depth/stencil formats
+    * that only advertise PIPE_BIND_DEPTH_STENCIL.  r300vk has no command replay
+    * path for transfer destinations, image-to-image copies, resolves, or blits,
+    * so do not infer TRANSFER_DST or BLIT bits from Gallium render or sampler
+    * support. */
+   if (supports_depth_stencil || supports_sampler_view || supports_render_target)
+      image_features |= VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
 
    if (!util_format_is_srgb(pipe_format) &&
        r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
