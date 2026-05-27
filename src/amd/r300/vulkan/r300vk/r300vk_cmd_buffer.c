@@ -41,6 +41,15 @@ r300vk_cmd_append(struct r300vk_cmd_buffer *cmd)
    return &cmd->entries[cmd->entry_count++];
 }
 
+static void
+r300vk_cmd_buffer_reset_recording_state(struct r300vk_cmd_buffer *cmd)
+{
+   cmd->entry_count             = 0;
+   cmd->bound_pipeline          = NULL;
+   cmd->bound_compute_pipeline  = NULL;
+   cmd->current_color_image     = NULL;
+}
+
 static VkResult
 r300vk_cmd_buffer_create(struct vk_command_pool *pool,
                           VkCommandBufferLevel level,
@@ -69,9 +78,7 @@ r300vk_cmd_buffer_reset(struct vk_command_buffer *base,
 {
    struct r300vk_cmd_buffer *cmd =
       container_of(base, struct r300vk_cmd_buffer, base);
-   cmd->entry_count        = 0;
-   cmd->bound_pipeline     = NULL;
-   cmd->current_color_image = NULL;
+   r300vk_cmd_buffer_reset_recording_state(cmd);
    vk_command_buffer_reset(base);
 }
 
@@ -96,9 +103,7 @@ r300vk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
                            const VkCommandBufferBeginInfo *pBeginInfo)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
-   cmd->entry_count         = 0;
-   cmd->bound_pipeline      = NULL;
-   cmd->current_color_image = NULL;
+   r300vk_cmd_buffer_reset_recording_state(cmd);
    vk_command_buffer_begin(&cmd->base, pBeginInfo);
    return vk_command_buffer_get_record_result(&cmd->base);
 }
