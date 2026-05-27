@@ -170,4 +170,24 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  # Fragment-stage admission harness for r300_nir_to_rc_direct: proves the
+  # multiply-add family compiles.  nir_op_fmad must emit RC_OPCODE_MAD, and
+  # nir_op_flrp (fog / mix) must lower to a fmad chain before the emitter
+  # rather than tripping its defensive raw-flrp guard.
+  test(
+    'r300-nir-fs-harness',
+    executable(
+      'r300_nir_fs_harness_test',
+      files('compiler/tests/r300_nir_fs_harness_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
 endif

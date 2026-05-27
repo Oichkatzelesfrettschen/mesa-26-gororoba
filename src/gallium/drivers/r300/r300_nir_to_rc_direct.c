@@ -412,11 +412,14 @@ nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
       break;
 
    case nir_op_flrp: {
-      /* TODO: r300_nir_lower_flrp should have eliminated this for VS; for FS
-       * the RC compiler has LRP in its internal opcode set via the CMP path.
-       * Expand to MAD: a*(1-c) + b*c = MAD(a, (1-c), b*c) is complex;
-       * simpler: use the CMP/MAD form:  lerp = src2*src1 + src0*(1-src2).
-       * For now, fail gracefully and fall back to TGSI path on error. */
+      /* flrp is lowered to a nested fmad chain before this emitter.
+       * r300_optimize_nir runs r300_nir_lower_flrp for every stage at
+       * shader-state creation, and the generic nir_lower_flrp fires from the
+       * lower_flrp32 screen option; both rewrite flrp(a,b,c) into
+       * fmad(b, c, fmad(-a, c, a)), which emits as RC_OPCODE_MAD.  Reaching
+       * this case means neither lowering ran, so the program cannot be
+       * emitted: rc_error makes r300_fs.c / r300_vs.c install a dummy shader
+       * instead of emitting a wrong one. */
       rc_error(c->compiler, "r300_nir_to_rc_direct: flrp not lowered; run r300_nir_lower_flrp first\n");
       c->error = true;
       break;
