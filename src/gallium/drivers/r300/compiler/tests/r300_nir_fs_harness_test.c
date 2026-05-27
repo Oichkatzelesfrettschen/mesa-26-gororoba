@@ -121,17 +121,23 @@ build_fs(enum fs_mad_form form)
    return b.shader;
 }
 
-/* Build a fragment shader that mirrors st_nir_lower_fog's blend exactly:
+/* Build a fragment shader that reproduces st_nir_lower_fog's output blend:
  *
  *   f   = fsat(ffma_weak(fogc, params.x, params.y))          (FOG_LINEAR)
  *   fog = ffma_weak(color, f, fog_color * (1 - f))           (vec4)
  *   out = vector_insert(fog, color.w, 3)                     (alpha passthrough)
  *
  * The vector_insert that re-packs the original alpha is the "output packing"
- * the fog SSA-temp-mistranslation finding fingers.  All operands are varyings
- * so nothing constant-folds and the full packing reaches the emitter, matching
- * the fog program whose RS482 RC dump read never-written temporaries and wrote
- * the RC sentinel temp[RC_REGISTER_MAX_INDEX - 1]. */
+ * the fog SSA-temp-mistranslation finding fingers; that packing, not the input
+ * provenance, is what this test pins.  Production reads the fog coordinate from
+ * VARYING_SLOT_FOGC and params/fog_color from state uniforms; the harness
+ * instead feeds them from generic varyings (so nothing constant-folds and the
+ * full packing reaches the emitter).  The substitution is faithful because
+ * ntr_fixup_varying_slots remaps only the VAR/PNTC/TEX slots, not FOGC, and the
+ * r300 vec_to_regs + fsat lowering the bug lives in is downstream of and
+ * independent of which input slot the values arrive on.  This reproduces the
+ * fog program whose RS482 RC dump read never-written temporaries and wrote the
+ * RC sentinel temp[RC_REGISTER_MAX_INDEX - 1]. */
 static nir_shader *
 build_fs_fog(void)
 {
@@ -269,7 +275,10 @@ count_sentinel_temp_refs(struct radeon_compiler *c)
  * wrote.  Read-before-write of a temp is the other symptom of the fog
  * mistranslation (the RC dump reads never-written temp[6]/temp[8]/temp[9]).
  * Index granularity, not per-channel: a write to any channel of temp[i] marks
- * temp[i] as defined, so this under-reports rather than false-positives. */
+ * temp[i] as defined, so this under-reports rather than false-positives.  The
+ * `Index < RC_REGISTER_MAX_INDEX` guards below bound the written[] access; the
+ * RC Index bitfield is RC_REGISTER_INDEX_BITS wide so they hold by construction
+ * today, but they keep the array access correct if that width ever grows. */
 static unsigned
 count_temp_read_before_write(struct radeon_compiler *c)
 {
