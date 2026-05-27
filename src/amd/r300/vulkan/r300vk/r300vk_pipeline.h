@@ -40,6 +40,11 @@ struct r300vk_pipeline {
    bool                    vs_hw_valid;
    bool                    fs_hw_valid;
 
+   /* A compute pipeline created under the experimental hybrid-compute gate.
+    * The no-op kernel carries no graphics CSOs; lowering the kernel onto the
+    * compute-as-raster substrate is a later stage. */
+   bool                    is_compute;
+
    void                   *vs_cso;
    void                   *fs_cso;
    void                   *blend_cso;

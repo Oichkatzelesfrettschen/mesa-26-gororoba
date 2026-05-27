@@ -33,6 +33,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_PIPELINE_BARRIER,
+   R300VK_CMD_DISPATCH,
 };
 
 struct r300vk_cmd_begin_render_pass {
@@ -87,6 +88,15 @@ struct r300vk_cmd_pipeline_barrier {
    VkImageLayout        new_layout;
 };
 
+/* One vkCmdDispatch.  The group counts are recorded for a future executor that
+ * lowers an admitted kernel onto the compute-as-raster substrate; the no-op
+ * kernel emits no GPU work, so replay only marks a submit boundary. */
+struct r300vk_cmd_dispatch {
+   uint32_t group_count_x;
+   uint32_t group_count_y;
+   uint32_t group_count_z;
+};
+
 struct r300vk_cmd_entry {
    enum r300vk_cmd_type type;
    union {
@@ -98,6 +108,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_draw                draw;
       struct r300vk_cmd_copy_image_to_buf   copy_img_buf;
       struct r300vk_cmd_pipeline_barrier    barrier;
+      struct r300vk_cmd_dispatch            dispatch;
    };
 };
 
@@ -107,6 +118,7 @@ struct r300vk_cmd_buffer {
    uint32_t                  entry_count;
    uint32_t                  entry_cap;
    struct r300vk_pipeline   *bound_pipeline;
+   struct r300vk_pipeline   *bound_compute_pipeline;
    struct r300vk_image      *current_color_image;
 };
 
