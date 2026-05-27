@@ -289,11 +289,11 @@ nrc_emit_scalar(struct nrc_compile *c, rc_opcode opcode,
 static void
 nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
 {
-   /* A folded fsat is realized by saturating its producer: nrc_alu_dst chases
-    * the fold and sets SaturateMode on the producing instruction.  The fsat
-    * node's own source is then no longer valid, so emitting a MOV_SAT for it
-    * reads an unwritten temp (the lowered-fog factor clamp was one such read).
-    * Skip it, matching the TGSI path (nir_to_rc.c). */
+   /* A folded fsat is realized by saturating its producer: nrc_alu_dst returns
+    * the fold via *saturate_out and each emit case applies RC_SATURATE_ZERO_ONE
+    * to the producing RC instruction.  The fsat node's own source is then no
+    * longer a materialized temp, so emitting a MOV_SAT for it would read an
+    * unwritten temp.  Skip it, matching the TGSI path (nir_to_rc.c). */
    if (instr->op == nir_op_fsat && nir_legacy_fsat_folds(instr))
       return;
 
@@ -792,25 +792,37 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
        * nrc_alu_dst and nrc_src_from_legacy) folds load_reg/store_reg into the
        * producing/consuming instruction and resolves the access to
        * reg_temp[handle->index] + base_offset, so the load_reg/store_reg cases
-       * below emit nothing.  decl_reg precedes every use, so allocating here is
-       * what those resolutions read. */
+       * below emit nothing.  nir_trivialize_registers runs
+       * move_reg_decls(nir_start_block(impl)) before this walk, so every
+       * decl_reg precedes any use of its register and the temp is allocated
+       * before those resolutions read it. */
       c->reg_temp[instr->def.index] = nrc_alloc_temp(c);
       break;
 
    case nir_intrinsic_load_reg:
    case nir_intrinsic_store_reg:
       /* Fully consumed by nir_legacy_chase: the producer writes the register
-       * temp directly and the consumer reads it.  Emitting an explicit MOV
-       * here double-handles the register and moves an SSA temp the producer
-       * never wrote -- the lowered-fog vec/insert packing folded its fmad
-       * straight into the register, so the redundant store read an unwritten
-       * temp and the load read the RC sentinel temp. */
+       * temp directly and the consumer reads it.  Emitting an explicit MOV here
+       * would double-handle the register and move an SSA temp the producer never
+       * wrote; an unresolved reg_temp entry is UINT32_MAX, which truncates to
+       * RC_REGISTER_MAX_INDEX - 1 in the 11-bit Index field (the RC sentinel
+       * temp).  Matches the TGSI path (nir_to_rc.c). */
       break;
 
    case nir_intrinsic_load_reg_indirect:
    case nir_intrinsic_store_reg_indirect:
-      /* nir_legacy does not fold relative-addressed registers; the direct path
-       * has no relative-addressing emission, so reject rather than miscompile. */
+      /* nrc_src_from_legacy and nrc_alu_dst resolve a register to
+       * reg_temp[handle->index] + a constant base_offset only; neither emits a
+       * relative-address source, so an indirect register access cannot be
+       * lowered correctly here and is rejected rather than miscompiled.
+       *
+       * TODO: nir_lower_locals_to_regs can turn an indirectly-indexed local
+       *       array in a fragment shader into load_reg_indirect /
+       *       store_reg_indirect, which the TGSI path (nir_to_rc.c) emits via
+       *       ureg relative addressing but this path rejects.  Add RC
+       *       relative-address emission (rc_src_register RelAddr) so those
+       *       shaders compile through the direct path instead of falling back
+       *       to a dummy shader. */
       rc_error(c->compiler, "r300_nir_to_rc_direct: indirect register access not supported\n");
       c->error = true;
       break;
