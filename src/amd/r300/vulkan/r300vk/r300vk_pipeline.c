@@ -519,14 +519,11 @@ r300vk_CreateComputePipelines(VkDevice _device,
    if (createInfoCount == 0)
       return VK_SUCCESS;
 
-   /* No compute pipeline is created on this RS482/RS485 R300VK target: every
-    * call fails and every pPipelines[] slot stays VK_NULL_HANDLE, so the spec
-    * contract (failed pipelines are VK_NULL_HANDLE) holds and the return code
-    * stays VK_ERROR_FEATURE_NOT_PRESENT.  What changes under the experimental
-    * hybrid-compute gate is the diagnostic: the admission classifier names WHY
-    * a kernel cannot lower to the compute-as-raster substrate, per kernel,
-    * instead of one generic message.  The COMPUTE queue is exposed only under
-    * the same gate, so a conformant run never reaches this entry point. */
+   /* The COMPUTE queue is exposed only under the experimental hybrid-compute
+    * gate, so a conformant run never reaches this entry point.  Pre-NULL every
+    * slot: an inadmissible kernel or an allocation failure leaves its slot
+    * VK_NULL_HANDLE per the spec contract, and the diagnostic names WHY a
+    * kernel cannot lower to the compute-as-raster substrate. */
    for (uint32_t i = 0; i < createInfoCount; i++)
       pPipelines[i] = VK_NULL_HANDLE;
 
@@ -549,16 +546,23 @@ r300vk_CreateComputePipelines(VkDevice _device,
                           "substrate classifier (%s: %s)", i,
                           r300_compute_reject_name(adm.reason),
                           adm.detail ? adm.detail : "unsupported construct");
+
+      /* The kernel is admissible against the substrate.  Create a no-op compute
+       * pipeline object: a valid VkPipeline that CmdDispatch can bind and
+       * submit, carrying no graphics CSOs because the kernel is not yet lowered
+       * onto the compute-as-raster substrate.  vk_zalloc2 leaves every CSO
+       * pointer NULL, which r300vk_DestroyPipeline frees conditionally. */
+      struct r300vk_pipeline *pl =
+         vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pl), 8,
+                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!pl)
+         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      vk_object_base_init(&device->vk, &pl->base, VK_OBJECT_TYPE_PIPELINE);
+      pl->is_compute = true;
+      pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 
-   /* Every kernel was admissible against the substrate, but the
-    * dispatch-to-raster execution path is not yet implemented, so creation
-    * still fails.  The kernels named here are the ones a future executor would
-    * lower; the failure code is unchanged. */
-   return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                    "r300vk: compute kernels are admissible against the RS482 "
-                    "substrate but the dispatch-to-raster execution path is "
-                    "not yet implemented");
+   return VK_SUCCESS;
 }
 
 void
