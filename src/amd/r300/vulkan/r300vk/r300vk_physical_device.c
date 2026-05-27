@@ -668,6 +668,10 @@ r300vk_get_image_format_properties(
        !(image_features & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
       goto unsupported;
 
+   if (info->usage & (VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+                      VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))
+      goto unsupported;
+
    VkExtent3D max_extent;
    uint32_t max_mip_levels;
    uint32_t max_array_layers;
