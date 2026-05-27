@@ -419,7 +419,14 @@ nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
        * fmad(b, c, fmad(-a, c, a)), which emits as RC_OPCODE_MAD.  Reaching
        * this case means neither lowering ran, so the program cannot be
        * emitted: rc_error makes r300_fs.c / r300_vs.c install a dummy shader
-       * instead of emitting a wrong one. */
+       * instead of emitting a wrong one.
+       *
+       * TODO: the flrp-to-fmad-to-MAD chain is proven only by the host
+       *       r300_nir_fs_harness_test; no RS482 render rung exercises a GLSL
+       *       mix()/flrp fragment.  Add a mix() rung to
+       *       run_r300_egl_gbm_fragment_ladder.sh and confirm the rendered
+       *       center pixel before treating this guard as unreachable on
+       *       hardware. */
       rc_error(c->compiler, "r300_nir_to_rc_direct: flrp not lowered; run r300_nir_lower_flrp first\n");
       c->error = true;
       break;
