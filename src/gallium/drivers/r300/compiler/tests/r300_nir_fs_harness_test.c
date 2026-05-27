@@ -121,6 +121,72 @@ build_fs(enum fs_mad_form form)
    return b.shader;
 }
 
+/* Build a fragment shader that mirrors st_nir_lower_fog's blend exactly:
+ *
+ *   f   = fsat(ffma_weak(fogc, params.x, params.y))          (FOG_LINEAR)
+ *   fog = ffma_weak(color, f, fog_color * (1 - f))           (vec4)
+ *   out = vector_insert(fog, color.w, 3)                     (alpha passthrough)
+ *
+ * The vector_insert that re-packs the original alpha is the "output packing"
+ * the fog SSA-temp-mistranslation finding fingers.  All operands are varyings
+ * so nothing constant-folds and the full packing reaches the emitter, matching
+ * the fog program whose RS482 RC dump read never-written temporaries and wrote
+ * the RC sentinel temp[RC_REGISTER_MAX_INDEX - 1]. */
+static nir_shader *
+build_fs_fog(void)
+{
+   static const nir_shader_compiler_options options = {
+      .float_mul_add32 =
+         nir_float_muladd_support_has_fmad | nir_float_muladd_support_fuse,
+      .lower_flrp32 = true,
+   };
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
+                                                  "r300_nir_fs_harness_fog");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+
+   nir_variable *color_in =
+      nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_color");
+   color_in->data.location = VARYING_SLOT_VAR0;
+   color_in->data.driver_location = 0;
+   color_in->data.interpolation = INTERP_MODE_SMOOTH;
+
+   nir_variable *fog_in =
+      nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_fog");
+   fog_in->data.location = VARYING_SLOT_VAR1;
+   fog_in->data.driver_location = 1;
+   fog_in->data.interpolation = INTERP_MODE_SMOOTH;
+
+   nir_variable *out =
+      nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *color = nir_load_var(&b, color_in);
+   nir_def *fog_vars = nir_load_var(&b, fog_in);
+   /* in_fog packs the scalar fog coord (.x), the two FOG_LINEAR params (.y,.z),
+    * and a fog_color seed (.w broadcast) into one varying so the harness needs
+    * no state-uniform plumbing. */
+   nir_def *fogc = nir_channel(&b, fog_vars, 0);
+   nir_def *param0 = nir_channel(&b, fog_vars, 1);
+   nir_def *param1 = nir_channel(&b, fog_vars, 2);
+   nir_def *fog_color = nir_vec4(&b, nir_channel(&b, fog_vars, 3),
+                                 nir_channel(&b, fog_vars, 3),
+                                 nir_channel(&b, fog_vars, 3),
+                                 nir_channel(&b, fog_vars, 3));
+
+   nir_def *f = nir_fsat(&b, nir_ffma_weak(&b, fogc, param0, param1));
+   nir_def *one_minus_f = nir_fsub_imm(&b, 1.0, f);
+   nir_def *fog = nir_ffma_weak(&b, color, nir_vec4(&b, f, f, f, f),
+                                nir_fmul(&b, fog_color, nir_vec4(&b, one_minus_f,
+                                                                 one_minus_f,
+                                                                 one_minus_f,
+                                                                 one_minus_f)));
+   nir_def *value = nir_vector_insert_imm(&b, fog, nir_channel(&b, color, 3), 3);
+
+   nir_store_var(&b, out, value, 0xf);
+   return b.shader;
+}
+
 /* Run the production NIR pipeline + the direct emitter as a fragment program.
  *
  * Production lowers NIR in two stages: r300_optimize_nir() at shader-state
@@ -177,6 +243,85 @@ count_opcode(struct radeon_compiler *c, rc_opcode op)
    return count;
 }
 
+/* Count destination or source register references to the RC sentinel temp
+ * (index RC_REGISTER_MAX_INDEX - 1).  A correct program never names it; the fog
+ * SSA-temp mistranslation routed the colour result through it. */
+static unsigned
+count_sentinel_temp_refs(struct radeon_compiler *c)
+{
+   const unsigned sentinel = RC_REGISTER_MAX_INDEX - 1;
+   unsigned count = 0;
+   for (struct rc_instruction *inst = c->Program.Instructions.Next;
+        inst != &c->Program.Instructions; inst = inst->Next) {
+      const struct rc_opcode_info *info = rc_get_opcode_info(inst->U.I.Opcode);
+      if (info->HasDstReg && inst->U.I.DstReg.File == RC_FILE_TEMPORARY &&
+          inst->U.I.DstReg.Index == sentinel)
+         count++;
+      for (unsigned s = 0; s < info->NumSrcRegs; s++)
+         if (inst->U.I.SrcReg[s].File == RC_FILE_TEMPORARY &&
+             inst->U.I.SrcReg[s].Index == sentinel)
+            count++;
+   }
+   return count;
+}
+
+/* Count source reads of a temporary register index that no prior instruction
+ * wrote.  Read-before-write of a temp is the other symptom of the fog
+ * mistranslation (the RC dump reads never-written temp[6]/temp[8]/temp[9]).
+ * Index granularity, not per-channel: a write to any channel of temp[i] marks
+ * temp[i] as defined, so this under-reports rather than false-positives. */
+static unsigned
+count_temp_read_before_write(struct radeon_compiler *c)
+{
+   bool written[RC_REGISTER_MAX_INDEX] = {false};
+   unsigned count = 0;
+   for (struct rc_instruction *inst = c->Program.Instructions.Next;
+        inst != &c->Program.Instructions; inst = inst->Next) {
+      const struct rc_opcode_info *info = rc_get_opcode_info(inst->U.I.Opcode);
+      for (unsigned s = 0; s < info->NumSrcRegs; s++)
+         if (inst->U.I.SrcReg[s].File == RC_FILE_TEMPORARY &&
+             inst->U.I.SrcReg[s].Index < RC_REGISTER_MAX_INDEX &&
+             !written[inst->U.I.SrcReg[s].Index])
+            count++;
+      if (info->HasDstReg && inst->U.I.DstReg.File == RC_FILE_TEMPORARY &&
+          inst->U.I.DstReg.Index < RC_REGISTER_MAX_INDEX)
+         written[inst->U.I.DstReg.Index] = true;
+   }
+   return count;
+}
+
+/* Count instructions that saturate their result.  The fog factor is
+ * f = fsat(ffma_weak(...)); the fsat folds into the MAD, which must then carry
+ * RC_SATURATE_ZERO_ONE.  Zero saturating ops means the fold dropped the clamp
+ * (f would be unbounded on hardware -- a defect that compiles clean). */
+static unsigned
+count_saturating_ops(struct radeon_compiler *c)
+{
+   unsigned count = 0;
+   for (struct rc_instruction *inst = c->Program.Instructions.Next;
+        inst != &c->Program.Instructions; inst = inst->Next)
+      if (inst->U.I.SaturateMode != RC_SATURATE_NONE)
+         count++;
+   return count;
+}
+
+static void
+dump_program(struct radeon_compiler *c, const char *label)
+{
+   printf("    -- %s --\n", label);
+   unsigned line = 0;
+   for (struct rc_instruction *inst = c->Program.Instructions.Next;
+        inst != &c->Program.Instructions; inst = inst->Next, line++) {
+      const struct rc_opcode_info *info = rc_get_opcode_info(inst->U.I.Opcode);
+      printf("    %2u: %-10s dst t%u.%x", line, info->Name,
+             inst->U.I.DstReg.Index, inst->U.I.DstReg.WriteMask);
+      for (unsigned s = 0; s < info->NumSrcRegs; s++)
+         printf("  src%u=f%u:%u", s, inst->U.I.SrcReg[s].File,
+                inst->U.I.SrcReg[s].Index);
+      printf("\n");
+   }
+}
+
 /* A varying-fed fmad must compile cleanly and emit at least one RC_OPCODE_MAD;
  * a regression that drops op_map[nir_op_fmad] re-raises the unknown-opcode
  * error here. */
@@ -212,12 +357,37 @@ case_flrp_lowers_to_mad(void)
    teardown_fs(&c, &rs);
 }
 
+/* The fog blend (st_nir_lower_fog shape) must compile into a well-formed RC
+ * program: no read of an unwritten temporary and no reference to the RC
+ * sentinel temp.  Both symptoms appear in the RS482 fog RC dump where the
+ * lowered-flrp / ffma_weak output packing dropped the colour term. */
+static void
+case_fog_packing_well_formed(void)
+{
+   struct r300_fragment_program_compiler c;
+   struct rc_regalloc_state rs;
+   run_fs(&c, &rs, build_fs_fog());
+
+   CHECK(!c.Base.Error, "fog-shaped fragment compiles without error");
+   if (getenv("R300_FS_HARNESS_DUMP"))
+      dump_program(&c.Base, "fog");
+   CHECK(count_sentinel_temp_refs(&c.Base) == 0,
+         "fog program names no RC sentinel temp[RC_REGISTER_MAX_INDEX-1]");
+   CHECK(count_temp_read_before_write(&c.Base) == 0,
+         "fog program reads no never-written temporary");
+   CHECK(count_saturating_ops(&c.Base) >= 1,
+         "fog factor clamp survives as a saturating instruction");
+
+   teardown_fs(&c, &rs);
+}
+
 int
 main(void)
 {
    printf("r300 fragment NIR-to-RC admission harness\n");
    case_fmad_emits_mad();
    case_flrp_lowers_to_mad();
+   case_fog_packing_well_formed();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
