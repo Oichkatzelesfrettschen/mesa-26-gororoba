@@ -53,7 +53,7 @@ Mesa build directories.
 evidence stay in steinmarder; this repository remains the Terakan code and
 Mesa build-infra checkout.
 
-The install prefix defaults to `/usr/local/mesa-<profile>`, derived from
+The install prefix defaults to `/opt/local/mesa-<profile>`, derived from
 `INSTALL_NAMESPACE` and `PROFILE`.  This keeps profile-specific artifacts
 isolated because `meson install` does not remove files from an earlier
 profile.  Pass `PREFIX=...` explicitly when intentionally installing into a
@@ -175,7 +175,7 @@ make artifact-check
 Runtime smoke test:
 
 ```bash
-export PREFIX=/usr/local/mesa-terakan-distcc-no-rusticl
+export PREFIX=/opt/local/mesa-terakan-distcc-no-rusticl
 export LD_LIBRARY_PATH=$PREFIX/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 export VK_DRIVER_FILES=$PREFIX/share/vulkan/icd.d/terascale_icd.x86_64.json
 vulkaninfo --summary
@@ -183,7 +183,7 @@ vulkaninfo --summary
 
 Delivery policy:
 
-- Current delivery is `/usr/local/mesa-<profile>` staging, not a PKGBUILD.
+- Current delivery is `/opt/local/mesa-<profile>` staging, not a PKGBUILD.
 - Rollback means moving the prefix aside with `make distclean`, not deleting it.
 - A PKGBUILD is a future packaging task once the Terakan-only install manifest
   and stale-Rusticl cleanup contract are stable.
