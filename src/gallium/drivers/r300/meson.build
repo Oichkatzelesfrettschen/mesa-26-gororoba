@@ -38,6 +38,7 @@ files_r300 = files(
   'r300_texture_desc.h',
   'r300_texture.h',
   'r300_nir_to_rc_direct.c',
+  'r300_compute_admission.c',
   'r300_nir_to_rc_direct.h',
   'r300_tgsi_to_rc.c',
   'r300_tgsi_to_rc.h',
@@ -180,6 +181,25 @@ if with_tests
     executable(
       'r300_nir_fs_harness_test',
       files('compiler/tests/r300_nir_fs_harness_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
+  # Classify-only compute-admission harness: a compute kernel that only loads,
+  # does FP24-range arithmetic, and writes its buffer output is admissible;
+  # shared memory, a barrier, a general atomic, a scatter, or FP64 reject.
+  test(
+    'r300-nir-compute-admission',
+    executable(
+      'r300_nir_compute_admission_test',
+      files('compiler/tests/r300_nir_compute_admission_test.c'),
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
         include_directories('compiler'),
