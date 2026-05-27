@@ -38,3 +38,11 @@ Claude-specific rules:
   here.  Verify or falsify each finding against the actual code before acting.
   A gathered finding can mis-state the mechanism, and acting on a wrong one is
   its own regression.
+- Background and fan-out subagents (`Agent`/`Task` tool, including the `Explore`
+  read-only searcher) default to Sonnet: pass `model: sonnet`.  This is Claude,
+  and a search-and-summarize fan-out does not need Opus.  Escalate a subagent to
+  Opus only when the task genuinely justifies it -- deep synthesis, a hazardous
+  or hard-to-reverse decision, cross-file reasoning -- and say why in the
+  dispatch.  Keep the synthesis step (interpreting what the subagents returned)
+  on the parent model.  This concretizes the tool-agnostic "Subagent model
+  economy" rule in `AGENTS.md`.

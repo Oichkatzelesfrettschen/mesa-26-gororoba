@@ -1252,6 +1252,14 @@ code needs the mechanism to be intelligible.
 
 Use the strongest tool that matches the claim.
 
+Subagent model economy: dispatch background and fan-out subagents (read-only
+search, file location, summarize-and-cite) on the smallest capable model, not
+the largest.  Escalate to a larger model only for a task that genuinely needs it
+-- deep synthesis, a hazardous or hard-to-reverse decision, cross-file reasoning
+-- and record the reason for the escalation.  A search-and-summarize fan-out on a
+large model is a cost defect, not rigor; the parent does the synthesis.  For
+Claude Code specifically the concrete default is in `CLAUDE.md`.
+
 Tier S, required when available and relevant:
 
 - `clangd` or LSP for definitions, references, call hierarchy, and symbol
