@@ -503,6 +503,21 @@ r300vk_replay_gpu(struct r300vk_device *device,
             e->barrier.image->resource_state.layout = e->barrier.new_layout;
          break;
       }
+
+      case R300VK_CMD_DISPATCH:
+         if (skip_render_pass)
+            break;
+         /* The no-op compute kernel emits no GPU work, so this proves the
+          * Vulkan compute object lifecycle (pipeline create, bind, dispatch
+          * record, submit, fence), not GPU activation.  A dispatch is still an
+          * execution boundary: the flush submits any preceding work in a mixed
+          * graphics+compute command buffer, and is a harmless no-op on the
+          * empty compute-only CS.  The submit-time flush in
+          * r300vk_queue_driver_submit signals the fence either way; lowering
+          * the kernel onto the compute-as-raster substrate (the draw that
+          * produces the kernel's output) is the next stage. */
+         pipe->flush(pipe, NULL, 0);
+         break;
       }
       }
    }

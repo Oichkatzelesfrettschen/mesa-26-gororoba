@@ -173,10 +173,21 @@ r300vk_CmdBindPipeline(VkCommandBuffer commandBuffer,
                         VkPipelineBindPoint pipelineBindPoint,
                         VkPipeline pipeline)
 {
-   if (pipelineBindPoint != VK_PIPELINE_BIND_POINT_GRAPHICS)
-      return;
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(r300vk_pipeline, pl, pipeline);
+
+   /* GRAPHICS and COMPUTE are independent bind points, so a compute bind must
+    * not clobber graphics state.  The graphics bind records an entry because
+    * replay binds the pipeline's CSOs; a compute pipeline carries no CSOs (its
+    * no-op kernel emits no GPU work), so its bind only tracks the pipeline that
+    * the next CmdDispatch validates against. */
+   if (pipelineBindPoint == VK_PIPELINE_BIND_POINT_COMPUTE) {
+      cmd->bound_compute_pipeline = pl;
+      return;
+   }
+   if (pipelineBindPoint != VK_PIPELINE_BIND_POINT_GRAPHICS)
+      return;
+
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
    e->type              = R300VK_CMD_BIND_PIPELINE;
@@ -270,11 +281,22 @@ r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
                    uint32_t groupCountZ)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
-   (void)groupCountX;
-   (void)groupCountY;
-   (void)groupCountZ;
 
-   vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+   /* Dispatch without a bound compute pipeline is undefined; a compute pipeline
+    * is created only under the experimental hybrid-compute gate, so a NULL here
+    * also covers the ungated case where compute is not exposed.  Surface it as a
+    * command-buffer error rather than recording a dispatch with no kernel. */
+   if (!cmd->bound_compute_pipeline) {
+      vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+      return;
+   }
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type                  = R300VK_CMD_DISPATCH;
+   e->dispatch.group_count_x = groupCountX;
+   e->dispatch.group_count_y = groupCountY;
+   e->dispatch.group_count_z = groupCountZ;
 }
 
 void
