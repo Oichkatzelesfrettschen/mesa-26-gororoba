@@ -42,11 +42,75 @@ r300vk_image_release_resources(struct r300vk_image *img)
    img->resource = NULL;
 }
 
+static bool
+r300vk_screen_supports_format(struct r300vk_device *device,
+                              enum pipe_format format,
+                              unsigned bindings)
+{
+   return device->screen &&
+          device->screen->is_format_supported(device->screen, format,
+                                              PIPE_TEXTURE_2D, 0, 0,
+                                              bindings);
+}
+
+static VkImageUsageFlags
+r300vk_supported_image_usage(struct r300vk_device *device,
+                             enum pipe_format pipe_fmt)
+{
+   VkImageUsageFlags usage = 0;
+
+   if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_SAMPLER_VIEW))
+      usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+   if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_RENDER_TARGET))
+      usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+   if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_DEPTH_STENCIL))
+      usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+   if (usage)
+      usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+   return usage;
+}
+
+static unsigned
+r300vk_image_pipe_bind(struct r300vk_device *device,
+                       enum pipe_format pipe_fmt,
+                       VkImageUsageFlags usage)
+{
+   unsigned bind = 0;
+
+   if (usage & VK_IMAGE_USAGE_SAMPLED_BIT)
+      bind |= PIPE_BIND_SAMPLER_VIEW;
+   if (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+      bind |= PIPE_BIND_RENDER_TARGET;
+   if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
+      bind |= PIPE_BIND_DEPTH_STENCIL;
+
+   /* CmdCopyImageToBuffer2 only needs a mappable image resource, but r300g's
+    * texture constructor still wants the resource classified by a real
+    * hardware use.  A transfer-source-only image uses the strongest supported
+    * bind class in the same order as r300vk_supported_image_usage:
+    * depth/stencil, render-target, sampler-view. */
+   if (bind == 0 && (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+      if (r300vk_screen_supports_format(device, pipe_fmt,
+                                        PIPE_BIND_DEPTH_STENCIL))
+         bind = PIPE_BIND_DEPTH_STENCIL;
+      else if (r300vk_screen_supports_format(device, pipe_fmt,
+                                             PIPE_BIND_RENDER_TARGET))
+         bind = PIPE_BIND_RENDER_TARGET;
+      else
+         bind = PIPE_BIND_SAMPLER_VIEW;
+   }
+
+   return bind;
+}
+
 static VkResult
 r300vk_image_create_tile_resources(struct r300vk_device *device,
                                    struct r300vk_image *img,
                                    const VkImageCreateInfo *info,
-                                   enum pipe_format pipe_fmt)
+                                   enum pipe_format pipe_fmt,
+                                   unsigned pipe_bind)
 {
    img->tile_cols = r300vk_split_image_axis(info->extent.width,
                                             img->tile_width);
@@ -62,7 +126,7 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
          struct pipe_resource tmpl = {
             .target     = PIPE_TEXTURE_2D,
             .format     = pipe_fmt,
-            .bind       = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
+            .bind       = pipe_bind,
             .usage      = PIPE_USAGE_DEFAULT,
             .width0     = img->tile_width[x],
             .height0    = img->tile_height[y],
@@ -94,6 +158,11 @@ r300vk_CreateImage(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
    struct r300vk_image *img;
+
+   if (pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL)
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                       "r300vk: image tiling %d unsupported",
+                       pCreateInfo->tiling);
 
    img = vk_zalloc2(&device->vk.alloc, pAllocator,
                     sizeof(*img), 8,
@@ -139,8 +208,21 @@ r300vk_CreateImage(VkDevice _device,
                        "r300vk: unsupported image format %d", pCreateInfo->format);
    }
 
+   const VkImageUsageFlags supported_usage =
+      r300vk_supported_image_usage(device, pipe_fmt);
+   if ((pCreateInfo->usage & ~supported_usage) != 0) {
+      vk_image_finish(&img->vk);
+      vk_free2(&device->vk.alloc, pAllocator, img);
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                       "r300vk: unsupported image usage 0x%x for format %d",
+                       pCreateInfo->usage & ~supported_usage,
+                       pCreateInfo->format);
+   }
+
    VkResult result =
-      r300vk_image_create_tile_resources(device, img, pCreateInfo, pipe_fmt);
+      r300vk_image_create_tile_resources(
+         device, img, pCreateInfo, pipe_fmt,
+         r300vk_image_pipe_bind(device, pipe_fmt, pCreateInfo->usage));
    if (result != VK_SUCCESS) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);

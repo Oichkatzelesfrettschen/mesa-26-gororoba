@@ -35,6 +35,13 @@ probe_fail(const char *case_name, VkResult result)
    return 1;
 }
 
+static int
+probe_unexpected_success(const char *case_name)
+{
+   probe_result(case_name, "fail", "unexpected VK_SUCCESS");
+   return 1;
+}
+
 static uint32_t
 find_memory_type(VkPhysicalDevice physical_device,
                  uint32_t type_bits,
@@ -168,6 +175,44 @@ finish_probe_context(struct probe_context *ctx)
 static int
 check_format_contract(struct probe_context *ctx)
 {
+   VkFormatProperties format_props;
+   vkGetPhysicalDeviceFormatProperties(ctx->physical_device,
+                                       VK_FORMAT_B8G8R8A8_UNORM,
+                                       &format_props);
+   if (format_props.linearTilingFeatures != 0) {
+      char detail[128];
+      snprintf(detail, sizeof(detail), "linearTilingFeatures=0x%x",
+               format_props.linearTilingFeatures);
+      probe_result("linear_format_features_zero", "fail", detail);
+      return 1;
+   }
+   probe_result("linear_format_features_zero", "pass",
+                "linear tiling reports no image features");
+
+   const VkFormatFeatureFlags required_optimal =
+      VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+      VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+   if ((format_props.optimalTilingFeatures & required_optimal) !=
+       required_optimal) {
+      char detail[160];
+      snprintf(detail, sizeof(detail), "optimalTilingFeatures=0x%x",
+               format_props.optimalTilingFeatures);
+      probe_result("optimal_transfer_src_features", "fail", detail);
+      return 1;
+   }
+   if (format_props.optimalTilingFeatures &
+       (VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+        VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+        VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+      char detail[160];
+      snprintf(detail, sizeof(detail), "optimalTilingFeatures=0x%x",
+               format_props.optimalTilingFeatures);
+      probe_result("unsupported_transfer_features_absent", "fail", detail);
+      return 1;
+   }
+   probe_result("unsupported_transfer_features_absent", "pass",
+                "transfer-dst and blit format bits are absent");
+
    VkImageFormatProperties props;
    VkResult result =
       vkGetPhysicalDeviceImageFormatProperties(ctx->physical_device,
@@ -194,6 +239,71 @@ check_format_contract(struct probe_context *ctx)
 
    probe_result("format_4096_contract", "pass",
                 "4096 extent, one mip, one layer, 1x sample supported");
+
+   result = vkGetPhysicalDeviceImageFormatProperties(
+      ctx->physical_device, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TYPE_2D,
+      VK_IMAGE_TILING_LINEAR,
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+      0, &props);
+   if (result == VK_SUCCESS)
+      return probe_unexpected_success("linear_image_format_unsupported");
+   if (result != VK_ERROR_FORMAT_NOT_SUPPORTED)
+      return probe_fail("linear_image_format_unsupported", result);
+   probe_result("linear_image_format_unsupported", "pass",
+                "linear tiling rejected by image-format query");
+
+   result = vkGetPhysicalDeviceImageFormatProperties(
+      ctx->physical_device, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TYPE_2D,
+      VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0, &props);
+   if (result == VK_SUCCESS)
+      return probe_unexpected_success("transfer_dst_format_unsupported");
+   if (result != VK_ERROR_FORMAT_NOT_SUPPORTED)
+      return probe_fail("transfer_dst_format_unsupported", result);
+   probe_result("transfer_dst_format_unsupported", "pass",
+                "transfer-dst usage rejected by image-format query");
+   return 0;
+}
+
+static int
+check_create_reject_contract(struct probe_context *ctx)
+{
+   VkImage image = VK_NULL_HANDLE;
+   VkImageCreateInfo image_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_B8G8R8A8_UNORM,
+      .extent = { 64, 64, 1 },
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_LINEAR,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+   };
+   VkResult result = vkCreateImage(ctx->device, &image_info, NULL, &image);
+   if (result == VK_SUCCESS) {
+      vkDestroyImage(ctx->device, image, NULL);
+      return probe_unexpected_success("linear_create_unsupported");
+   }
+   if (result != VK_ERROR_FORMAT_NOT_SUPPORTED)
+      return probe_fail("linear_create_unsupported", result);
+   probe_result("linear_create_unsupported", "pass",
+                "linear tiling rejected by vkCreateImage");
+
+   image = VK_NULL_HANDLE;
+   image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+   image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   result = vkCreateImage(ctx->device, &image_info, NULL, &image);
+   if (result == VK_SUCCESS) {
+      vkDestroyImage(ctx->device, image, NULL);
+      return probe_unexpected_success("transfer_dst_create_unsupported");
+   }
+   if (result != VK_ERROR_FORMAT_NOT_SUPPORTED)
+      return probe_fail("transfer_dst_create_unsupported", result);
+   probe_result("transfer_dst_create_unsupported", "pass",
+                "transfer-dst-only image rejected by vkCreateImage");
    return 0;
 }
 
@@ -621,6 +731,8 @@ main(void)
    int status = init_probe_context(&ctx);
    if (!status)
       status |= check_format_contract(&ctx);
+   if (!status)
+      status |= check_create_reject_contract(&ctx);
    if (!status)
       status |= run_4096_clear_copy_probe(&ctx);
 
