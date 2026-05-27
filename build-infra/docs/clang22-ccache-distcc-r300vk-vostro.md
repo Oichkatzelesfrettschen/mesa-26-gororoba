@@ -14,17 +14,17 @@ incremental lane with distcc-pump.
 The canonical incremental release and debug paths are:
 
 ```sh
-make -C build-infra -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
-make -C build-infra build PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
-make -C build-infra install PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+make -C build-infra -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra build PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra install PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
-make -C build-infra -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
-make -C build-infra build PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
-make -C build-infra install PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+make -C build-infra -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra build PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra install PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
 ```
 
-The release prefix is `/usr/local/mesa-26-gororoba`.  The debug prefix is
-`/usr/local/mesa-26-gororoba-debug`.  The `rebuild-*` convenience targets first
+The release prefix is `/opt/local/mesa-26-gororoba`.  The debug prefix is
+`/opt/local/mesa-26-gororoba-debug`.  The `rebuild-*` convenience targets first
 run `clean`; use them only when the builddir itself needs regeneration.
 
 ## How

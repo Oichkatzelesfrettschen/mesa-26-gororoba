@@ -85,9 +85,9 @@ P0 - Baseline and Authority
 P1 - Build and Delivery
    Keep ``terakan-distcc-no-rusticl`` as the daily lane, keep Rusticl as a
    recovery lane, install with ``meson install --no-rebuild``, and validate
-   the active prefix ``/usr/local/mesa-26-gororoba``.
+   the active prefix ``/opt/local/mesa-26-gororoba``.
 
-   Current delivery decision: use the ``/usr/local/mesa-26-gororoba`` staging
+   Current delivery decision: use the ``/opt/local/mesa-26-gororoba`` staging
    prefix for Terakan-only installs.  Rollback archives that prefix aside; it
    does not delete it.  A PKGBUILD remains a future task after the install
    manifest and stale-Rusticl cleanup contract are stable.
