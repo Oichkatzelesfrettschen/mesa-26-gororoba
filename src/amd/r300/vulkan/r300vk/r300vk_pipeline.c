@@ -16,6 +16,7 @@
 
 #include "compiler/nir/nir.h"
 #include "compiler/spirv/nir_spirv.h"
+#include "r300/r300_compute_admission.h"
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
@@ -469,6 +470,38 @@ r300vk_CreateGraphicsPipelines(VkDevice _device,
    return result;
 }
 
+/* Classify one compute kernel against the RS482 compute-as-raster substrate
+ * without lowering or executing it.  r300g sets nir_options for VERTEX and
+ * FRAGMENT only, so there is no compute entry to translate with; the kernel is
+ * translated with the fragment-stage options purely to obtain a well-formed
+ * nir_shader to walk.  That is sound for classification because the substrate
+ * verbs (FP24 ALU compute, texture-load, RB3D export, blend/stencil/ZPASS
+ * reductions) are the fragment pipeline's, and the kernel is never handed to
+ * the RC backend.  r300_nir_classify_compute reads the shader and mutates
+ * nothing.  Returns false only when SPIR-V translation itself failed. */
+static bool
+r300vk_classify_compute_kernel(struct r300vk_device *device,
+                               const VkPipelineShaderStageCreateInfo *stage_info,
+                               struct r300_compute_admission *adm)
+{
+   VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
+   if (!mod)
+      return false;
+
+   nir_shader *nir = vk_spirv_to_nir(&device->vk, mod->code, mod->code_size,
+                                     MESA_SHADER_COMPUTE, stage_info->pName,
+                                     stage_info->pSpecializationInfo,
+                                     &r300vk_spirv_opts,
+                                     device->screen->nir_options[MESA_SHADER_FRAGMENT],
+                                     false, NULL);
+   if (!nir)
+      return false;
+
+   r300_nir_classify_compute(nir, adm);
+   ralloc_free(nir);
+   return true;
+}
+
 VkResult
 r300vk_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
@@ -479,7 +512,6 @@ r300vk_CreateComputePipelines(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
    (void)pipelineCache;
-   (void)pCreateInfos;
    (void)pAllocator;
 
    /* createInfoCount == 0 is a no-op that succeeds: there is no pPipelines
@@ -487,11 +519,46 @@ r300vk_CreateComputePipelines(VkDevice _device,
    if (createInfoCount == 0)
       return VK_SUCCESS;
 
+   /* No compute pipeline is created on this RS482/RS485 R300VK target: every
+    * call fails and every pPipelines[] slot stays VK_NULL_HANDLE, so the spec
+    * contract (failed pipelines are VK_NULL_HANDLE) holds and the return code
+    * stays VK_ERROR_FEATURE_NOT_PRESENT.  What changes under the experimental
+    * hybrid-compute gate is the diagnostic: the admission classifier names WHY
+    * a kernel cannot lower to the compute-as-raster substrate, per kernel,
+    * instead of one generic message.  The COMPUTE queue is exposed only under
+    * the same gate, so a conformant run never reaches this entry point. */
    for (uint32_t i = 0; i < createInfoCount; i++)
       pPipelines[i] = VK_NULL_HANDLE;
 
+   if (!device->hybrid_compute_enabled)
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: compute is not exposed (set "
+                       R300VK_HYBRID_COMPUTE_ENV "=1 for the experimental "
+                       "hybrid-compute path)");
+
+   for (uint32_t i = 0; i < createInfoCount; i++) {
+      struct r300_compute_admission adm;
+      if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage, &adm))
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "r300vk: SPIR-V to NIR failed for compute kernel %u",
+                          i);
+
+      if (!adm.admissible)
+         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                          "r300vk: compute kernel %u rejected by the RS482 "
+                          "substrate classifier (%s: %s)", i,
+                          r300_compute_reject_name(adm.reason),
+                          adm.detail ? adm.detail : "unsupported construct");
+   }
+
+   /* Every kernel was admissible against the substrate, but the
+    * dispatch-to-raster execution path is not yet implemented, so creation
+    * still fails.  The kernels named here are the ones a future executor would
+    * lower; the failure code is unchanged. */
    return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                    "r300vk: hybrid compute pipeline execution is not implemented");
+                    "r300vk: compute kernels are admissible against the RS482 "
+                    "substrate but the dispatch-to-raster execution path is "
+                    "not yet implemented");
 }
 
 void
