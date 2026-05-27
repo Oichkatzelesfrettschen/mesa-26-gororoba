@@ -44,12 +44,19 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!device)
       return vk_error(pdevice, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   /* Three-table dispatch: secondary command buffer support is implemented
-    * by recording into r300vk_cmd_buffer (vk_cmd_enqueue path), then
-    * replaying recorded entries against the pipe_context at submit time.
-    * The wsi_device_entrypoints table is last so the WSI common
-    * implementation fills any present-related entrypoint the driver does
-    * not override. */
+   /* Four-table dispatch, highest precedence first.  Secondary command buffer
+    * support is implemented by recording into r300vk_cmd_buffer (vk_cmd_enqueue
+    * path), then replaying recorded entries against the pipe_context at submit
+    * time.  r300vk_device_entrypoints carries the driver's own implementations;
+    * wsi fills present-related entrypoints; vk_common_device_entrypoints is last
+    * so the runtime's generic state-tracking implementations fill every device
+    * entrypoint the driver does not override -- including the descriptor-set and
+    * pipeline-layout machinery (CreateDescriptorSetLayout, CreatePipelineLayout,
+    * CreateDescriptorPool, AllocateDescriptorSets, UpdateDescriptorSets).
+    * Without this table those entrypoints are NULL and any descriptor-using
+    * path (every compute pipeline, and any graphics shader with bound
+    * resources) calls through a NULL dispatch pointer.  The command dispatch
+    * table below already layers vk_common; the main table must too. */
    struct vk_device_dispatch_table dispatch_table;
    vk_device_dispatch_table_from_entrypoints(
       &dispatch_table, &vk_cmd_enqueue_unless_primary_device_entrypoints, true);
@@ -57,6 +64,8 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
       &dispatch_table, &r300vk_device_entrypoints, false);
    vk_device_dispatch_table_from_entrypoints(
       &dispatch_table, &wsi_device_entrypoints, false);
+   vk_device_dispatch_table_from_entrypoints(
+      &dispatch_table, &vk_common_device_entrypoints, false);
 
    result = vk_device_init(&device->vk, &pdevice->vk, &dispatch_table,
                             pCreateInfo, pAllocator);
