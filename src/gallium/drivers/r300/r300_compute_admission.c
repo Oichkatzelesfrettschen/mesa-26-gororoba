@@ -43,6 +43,7 @@ is_rw_storage_store(nir_intrinsic_op op)
 {
    switch (op) {
    case nir_intrinsic_store_global:
+   case nir_intrinsic_store_global_2x32:
    case nir_intrinsic_image_store:
    case nir_intrinsic_image_deref_store:
    case nir_intrinsic_bindless_image_store:
@@ -92,6 +93,17 @@ r300_nir_classify_compute(const nir_shader *s,
                   reject(out, R300_COMPUTE_REJECT_GENERAL_ATOMIC, name);
                   return;
                }
+               if (strstr(name, "shared") != NULL) {
+                  reject(out, R300_COMPUTE_REJECT_SHARED_MEMORY, name);
+                  return;
+               }
+               if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+                  if (!nir_src_is_const(intr->src[1]) || nir_src_as_uint(intr->src[1]) != 0 ||
+                      !nir_src_is_const(intr->src[2]) || nir_src_as_uint(intr->src[2]) != 0) {
+                     reject(out, R300_COMPUTE_REJECT_RW_STORAGE, "non-canonical store_ssbo");
+                     return;
+                  }
+               }
                if (is_rw_storage_store(intr->intrinsic)) {
                   reject(out, R300_COMPUTE_REJECT_RW_STORAGE, name);
                   return;
@@ -109,10 +121,23 @@ r300_nir_classify_compute(const nir_shader *s,
                }
             } else if (instr->type == nir_instr_type_alu) {
                nir_alu_instr *alu = nir_instr_as_alu(instr);
-               /* FP24 ALU: a 64-bit float result is beyond the envelope. */
+               /* FP24 ALU: a 64-bit float result or source is beyond the envelope. */
+               bool uses_fp64 = false;
                if (alu->def.bit_size == 64 &&
                    nir_alu_type_get_base_type(
                       nir_op_infos[alu->op].output_type) == nir_type_float) {
+                  uses_fp64 = true;
+               } else {
+                  for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+                     if (alu->src[i].src.ssa->bit_size == 64 &&
+                         nir_alu_type_get_base_type(
+                            nir_op_infos[alu->op].input_types[i]) == nir_type_float) {
+                        uses_fp64 = true;
+                        break;
+                     }
+                  }
+               }
+               if (uses_fp64) {
                   reject(out, R300_COMPUTE_REJECT_FP64,
                          nir_op_infos[alu->op].name);
                   return;
