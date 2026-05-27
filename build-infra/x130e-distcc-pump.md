@@ -23,7 +23,7 @@ Current verified state:
 - Warm profile: `build-infra/configs/terakan-distcc-no-rusticl.meson`.
 - Pump profile: `build-infra/configs/terakan-distcc-no-rusticl-pump.meson`.
 - Default install prefix: `/usr/local/mesa-<profile>`.
-  Pass `PREFIX=/usr/local/mesa-26-gororoba` only when intentionally
+  Pass `PREFIX=/opt/local/mesa-26-gororoba` only when intentionally
   installing into the shared active tree.
 
 The no-Rusticl profile enables the daily Terakan/r600 lane:

@@ -34,7 +34,7 @@ INSTALL_NAMESPACE ?= mesa
 # Keep profile lanes isolated by default because meson install does not remove
 # artifacts that are absent from the current profile.  Override PREFIX=... on
 # the make line when intentionally installing into a shared active tree.
-PREFIX   ?= /usr/local/$(INSTALL_NAMESPACE)-$(PROFILE)
+PREFIX   ?= /opt/local/$(INSTALL_NAMESPACE)-$(PROFILE)
 # Pair-member descriptor: one space-separated row per build variant.
 # Field order: profile hostenv builddir prefix namespace.  Accessors:
 # $(call PAIR_PROFILE,LIST), $(call PAIR_HOSTENV,LIST), etc.  Adding a
@@ -50,14 +50,14 @@ TERAKAN_PAIR_RELEASE := \
     terakan-distcc-no-rusticl \
     btver1-ccache-no-pump \
     $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
-    /usr/local/mesa-26-gororoba \
+    /opt/local/mesa-26-gororoba \
     mesa-26-gororoba
 
 TERAKAN_PAIR_DEBUG := \
     terakan-distcc-no-rusticl-debug \
     btver1-ccache-no-pump \
     $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
-    /usr/local/mesa-26-gororoba-debug \
+    /opt/local/mesa-26-gororoba-debug \
     mesa-26-gororoba-debug
 ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
 JOBS     ?= 8
@@ -458,7 +458,7 @@ test:
 # correct prefix on the first configure, removing the prior
 # "configure to default prefix, then retarget at install" hazard
 # where install.dat retained the configure-time prefix and the
-# binaries landed under /usr/local/<NAMESPACE>-<PROFILE>/ instead
+# binaries landed under /opt/local/<NAMESPACE>-<PROFILE>/ instead
 # of the requested PREFIX.
 define CLEAN_CONFIGURE_BUILD_PAIR
 	$(MAKE) clean \
@@ -518,8 +518,8 @@ rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
 
 # Pair target: build BOTH the release-default canonical AND the
 # debug variant in the same invocation.  Release goes to
-# /usr/local/mesa-26-gororoba/ (timing-sensitive probe target),
-# debug goes to /usr/local/mesa-26-gororoba-debug/ (interactive
+# /opt/local/mesa-26-gororoba/ (timing-sensitive probe target),
+# debug goes to /opt/local/mesa-26-gororoba-debug/ (interactive
 # bringup target).  Both builds use the same ccache + distcc
 # fabric so ccache hits across them give near-incremental
 # wall-clock on the second pass.  Installs run only after both build
@@ -572,56 +572,56 @@ rebuild-terakan-profile:
 	$(MAKE) configure PROFILE=terakan-profile
 	$(MAKE) build     PROFILE=terakan-profile
 
-# Canonical Vostro r300 release build: prefix /usr/local/mesa-26-gororoba
+# Canonical Vostro r300 release build: prefix /opt/local/mesa-26-gororoba
 rebuild-r300-vostro-k8-release:
-	$(MAKE) -j1 clean PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
-	$(MAKE) -j1 configure PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
-	$(MAKE) build PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) -j1 clean PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/opt/local/mesa-26-gororoba
 
 install-r300-vostro-k8-release:
-	$(MAKE) install PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) install PROFILE=r300-vostro-k8-release HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/opt/local/mesa-26-gororoba
 
-# Canonical Vostro r300 debugoptimized build: prefix /usr/local/mesa-26-gororoba-debug
+# Canonical Vostro r300 debugoptimized build: prefix /opt/local/mesa-26-gororoba-debug
 rebuild-r300-vostro-k8-debug:
-	$(MAKE) -j1 clean PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
-	$(MAKE) -j1 configure PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
-	$(MAKE) build PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 clean PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/opt/local/mesa-26-gororoba-debug
 
 install-r300-vostro-k8-debug:
-	$(MAKE) install PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) install PROFILE=r300-vostro-k8-debug HOSTENV=vostro1000-k8-distcc COMPILER_CHAIN=distcc PREFIX=/opt/local/mesa-26-gororoba-debug
 
-# Canonical Vostro r300vk release build: prefix /usr/local/mesa-26-gororoba
+# Canonical Vostro r300vk release build: prefix /opt/local/mesa-26-gororoba
 rebuild-r300vk-vostro-k8-release:
-	$(MAKE) -j1 clean PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
-	$(MAKE) -j1 configure PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
-	$(MAKE) build PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
 install-r300vk-vostro-k8-release:
-	$(MAKE) install PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) install PROFILE=r300vk-vostro-k8-release HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
-# Canonical Vostro r300vk debugoptimized build: prefix /usr/local/mesa-26-gororoba-debug
+# Canonical Vostro r300vk debugoptimized build: prefix /opt/local/mesa-26-gororoba-debug
 rebuild-r300vk-vostro-k8-debug:
-	$(MAKE) -j1 clean PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
-	$(MAKE) -j1 configure PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
-	$(MAKE) build PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
 
 install-r300vk-vostro-k8-debug:
-	$(MAKE) install PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) install PROFILE=r300vk-vostro-k8-debug HOSTENV=vostro1000-k8-ccache-no-pump COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
 
 # Canonical Vostro r300vk x86-64-v1 clang 22 release build.
 rebuild-r300vk-vostro-x86-64-v1-clang22-release:
-	$(MAKE) -j1 clean PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
-	$(MAKE) -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
-	$(MAKE) build PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
 install-r300vk-vostro-x86-64-v1-clang22-release:
-	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba
+	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
 # Canonical Vostro r300vk x86-64-v1 clang 22 debugoptimized build.
 rebuild-r300vk-vostro-x86-64-v1-clang22-debug:
-	$(MAKE) -j1 clean PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
-	$(MAKE) -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
-	$(MAKE) build PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 clean PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
 
 install-r300vk-vostro-x86-64-v1-clang22-debug:
-	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/usr/local/mesa-26-gororoba-debug
+	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug

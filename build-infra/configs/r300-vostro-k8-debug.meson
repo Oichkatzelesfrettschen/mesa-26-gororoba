@@ -1,5 +1,5 @@
 # r300-vostro-k8-debug: narrow GLX debugoptimized build for RS480/R300 compiler log capture.
-# Canonical install prefix: /usr/local/mesa-26-gororoba-debug
+# Canonical install prefix: /opt/local/mesa-26-gororoba-debug
 #
 # Enables assertions, R300_DEBUG output, debug symbols, and optimization.
 # Required for observed_alu_count / observed_tex_count evidence bundles.

@@ -19,7 +19,7 @@ will later cover in broader shards.
 Run it through the POSIX wrapper:
 
 ```sh
-VK_ICD_FILENAMES=/usr/local/mesa-26-gororoba/share/vulkan/icd.d/r300_icd.x86_64.json \
+VK_ICD_FILENAMES=/opt/local/mesa-26-gororoba/share/vulkan/icd.d/r300_icd.x86_64.json \
   src/amd/r300/vulkan/r300vk/tests/run_r300vk_4096_validation.sh \
   /tmp/r300vk-4096-validation
 ```
