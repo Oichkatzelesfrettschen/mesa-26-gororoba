@@ -289,6 +289,14 @@ nrc_emit_scalar(struct nrc_compile *c, rc_opcode opcode,
 static void
 nrc_emit_alu(struct nrc_compile *c, nir_alu_instr *instr)
 {
+   /* A folded fsat is realized by saturating its producer: nrc_alu_dst chases
+    * the fold and sets SaturateMode on the producing instruction.  The fsat
+    * node's own source is then no longer valid, so emitting a MOV_SAT for it
+    * reads an unwritten temp (the lowered-fog factor clamp was one such read).
+    * Skip it, matching the TGSI path (nir_to_rc.c). */
+   if (instr->op == nir_op_fsat && nir_legacy_fsat_folds(instr))
+      return;
+
    bool saturate = false;
    struct rc_dst_register dst = nrc_alu_dst(c, instr, &saturate);
    struct rc_src_register src[3] = {{0}, {0}, {0}};
@@ -779,36 +787,30 @@ nrc_emit_intrinsic(struct nrc_compile *c, nir_intrinsic_instr *instr)
       break;
    }
 
-   case nir_intrinsic_decl_reg: {
-      unsigned idx = instr->def.index;
-      c->reg_temp[idx] = nrc_alloc_temp(c);
+   case nir_intrinsic_decl_reg:
+      /* Allocate the RC temp backing this register.  nir_legacy_chase (used by
+       * nrc_alu_dst and nrc_src_from_legacy) folds load_reg/store_reg into the
+       * producing/consuming instruction and resolves the access to
+       * reg_temp[handle->index] + base_offset, so the load_reg/store_reg cases
+       * below emit nothing.  decl_reg precedes every use, so allocating here is
+       * what those resolutions read. */
+      c->reg_temp[instr->def.index] = nrc_alloc_temp(c);
       break;
-   }
 
-   case nir_intrinsic_load_reg: {
-      struct rc_dst_register dst = nrc_dst_for_def(c, &instr->def);
-      unsigned ridx = nir_intrinsic_base(instr);
-      inst = nrc_emit(c, RC_OPCODE_MOV);
-      inst->U.I.DstReg            = dst;
-      inst->U.I.SrcReg[0].File    = RC_FILE_TEMPORARY;
-      inst->U.I.SrcReg[0].Index   = c->reg_temp[ridx];
-      inst->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XYZW;
+   case nir_intrinsic_load_reg:
+   case nir_intrinsic_store_reg:
+      /* Fully consumed by nir_legacy_chase: the producer writes the register
+       * temp directly and the consumer reads it.  Emitting an explicit MOV
+       * here double-handles the register and moves an SSA temp the producer
+       * never wrote -- the lowered-fog vec/insert packing folded its fmad
+       * straight into the register, so the redundant store read an unwritten
+       * temp and the load read the RC sentinel temp. */
       break;
-   }
-
-   case nir_intrinsic_store_reg: {
-      unsigned ridx   = nir_intrinsic_base(instr);
-      unsigned wmask  = nir_intrinsic_write_mask(instr);
-      inst = nrc_emit(c, RC_OPCODE_MOV);
-      inst->U.I.DstReg.File      = RC_FILE_TEMPORARY;
-      inst->U.I.DstReg.Index     = c->reg_temp[ridx];
-      inst->U.I.DstReg.WriteMask = wmask;
-      inst->U.I.SrcReg[0]        = nrc_src(c, instr->src[0]);
-      break;
-   }
 
    case nir_intrinsic_load_reg_indirect:
    case nir_intrinsic_store_reg_indirect:
+      /* nir_legacy does not fold relative-addressed registers; the direct path
+       * has no relative-addressing emission, so reject rather than miscompile. */
       rc_error(c->compiler, "r300_nir_to_rc_direct: indirect register access not supported\n");
       c->error = true;
       break;
