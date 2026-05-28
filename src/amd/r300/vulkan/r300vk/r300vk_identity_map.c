@@ -21,6 +21,34 @@
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Diagnostic logging gate.  Active when the R300VK_DEBUG env variable
+ * contains the substring "identity_map" (matches the existing
+ * debug-options convention parsed in r300vk_instance.c).  Cached in a
+ * file-scope static so the per-dispatch hot path does only one getenv on
+ * the first call -- subsequent calls hit the cached integer.  The probe
+ * runner already captures gate_on_stderr.txt, so any IDM_LOG line lands
+ * in the bundle without runner changes. */
+static bool
+identity_map_debug_enabled(void)
+{
+   static int cached = -1;
+   if (cached < 0) {
+      const char *flags = getenv("R300VK_DEBUG");
+      cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
+   }
+   return cached != 0;
+}
+
+#define IDM_LOG(fmt, ...) \
+   do { \
+      if (identity_map_debug_enabled()) \
+         fprintf(stderr, "ident_map: " fmt "\n", ##__VA_ARGS__); \
+   } while (0)
+
 struct pipe_sampler_view *
 r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
                                                struct pipe_resource *src_buf,
@@ -139,32 +167,66 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
-   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+   IDM_LOG("entry pl=%p is_identity_map=%d set_count=%u gx=%u gy=%u gz=%u",
+           (const void *)pl,
+           pl ? (int)pl->identity_map.is_identity_map : -1,
+           binds ? binds->set_count : 0,
+           dispatch ? dispatch->group_count_x : 0,
+           dispatch ? dispatch->group_count_y : 0,
+           dispatch ? dispatch->group_count_z : 0);
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0) {
+      IDM_LOG("early-return null-or-empty-binds");
       return false;
-   if (!pl->vs_cso || !pl->fs_cso)
+   }
+   if (!pl->vs_cso || !pl->fs_cso) {
+      IDM_LOG("early-return no-vs-or-fs-cso");
       return false;
+   }
 
    /* Walk the bound set to resolve the input + output ssbo bindings to
     * VkBuffer.resource pointers.  The first descriptor set holds them
     * (r300_nir_detect_identity_map records the bindings without recording
     * which set; identity-map kernels use a single set in practice). */
    const struct r300vk_descriptor_set *set = binds->sets[0];
-   if (!set || !set->layout)
+   IDM_LOG("set=%p layout=%p in_binding=%u out_binding=%u",
+           (const void *)set,
+           set ? (const void *)set->layout : NULL,
+           pl->identity_map.input_ssbo_binding,
+           pl->identity_map.output_ssbo_binding);
+   if (!set || !set->layout) {
+      IDM_LOG("early-return no-set-or-layout");
       return false;
+   }
 
    const struct r300vk_descriptor *in_desc =
       find_descriptor_by_binding(set, pl->identity_map.input_ssbo_binding);
    const struct r300vk_descriptor *out_desc =
       find_descriptor_by_binding(set, pl->identity_map.output_ssbo_binding);
-   if (!in_desc || !out_desc)
+   IDM_LOG("descriptor walk in_desc=%p out_desc=%p",
+           (const void *)in_desc, (const void *)out_desc);
+   if (!in_desc || !out_desc) {
+      IDM_LOG("early-return descriptor-walk-miss");
       return false;
-   if (!in_desc->buf.buffer || !out_desc->buf.buffer)
+   }
+   IDM_LOG("in_desc->buf.buffer=%p out_desc->buf.buffer=%p",
+           (const void *)(uintptr_t)in_desc->buf.buffer,
+           (const void *)(uintptr_t)out_desc->buf.buffer);
+   if (!in_desc->buf.buffer || !out_desc->buf.buffer) {
+      IDM_LOG("early-return null-vkbuffer-handle");
       return false;
+   }
 
    VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
    VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
-   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource)
+   IDM_LOG("in_buf=%p resource=%p out_buf=%p resource=%p",
+           (const void *)in_buf,
+           in_buf ? (const void *)in_buf->resource : NULL,
+           (const void *)out_buf,
+           out_buf ? (const void *)out_buf->resource : NULL);
+   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource) {
+      IDM_LOG("early-return null-pipe-resource");
       return false;
+   }
 
    /* The total work-item count is the grid-size product.  The kernel's
     * local_size is folded into the per-invocation index space already
@@ -181,8 +243,12 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
 
    unsigned width = 0, height = 0;
    derive_raster_extent(total_invocations, &width, &height);
-   if (width > 2048 || height > 2048)
+   IDM_LOG("raster extent total=%u width=%u height=%u",
+           total_invocations, width, height);
+   if (width > 2048 || height > 2048) {
+      IDM_LOG("early-return extent-exceeds-2048-cap");
       return false;
+   }
 
    /* RGBA8 UNORM: 4 bytes per texel, bit-exact UNORM8 round-trip on FP24
     * per the M-E exactness theorem.  A future expansion lets the kernel's
@@ -196,8 +262,11 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *in_sv =
       r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
                                                      width, height, fmt);
-   if (!in_sv)
+   IDM_LOG("wrap in_sv=%p", (const void *)in_sv);
+   if (!in_sv) {
+      IDM_LOG("early-return wrap-input-failed");
       return false;
+   }
 
    /* Allocate the output render target (linear-tiled 2D texture). */
    struct pipe_resource rt_templ;
@@ -213,7 +282,9 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    rt_templ.usage      = PIPE_USAGE_DEFAULT;
    rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
    struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   IDM_LOG("rt=%p", (const void *)rt);
    if (!rt) {
+      IDM_LOG("early-return rt-create-failed");
       pipe_sampler_view_reference(&in_sv, NULL);
       return false;
    }
@@ -335,12 +406,14 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    memset(&draw, 0, sizeof(draw));
    draw.start = 0;
    draw.count = 4;
+   IDM_LOG("draw_vbo mode=triangle_strip count=4");
    pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
 
    /* Flush so the RT contents reach memory before the texture->buffer
     * copy.  pipe->flush submits the CS; r300g re-marks all atoms dirty so
     * a subsequent submit re-emits state cleanly. */
    pipe->flush(pipe, NULL, 0);
+   IDM_LOG("post-flush, beginning rt->buffer copy");
 
    /* Copy the RT back to the output ssbo.  Same util_resource_copy_region
     * fallback path as the input wrap, but in the texture->buffer
@@ -358,6 +431,9 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
                               0, 0, 0 /* dst x,y,z bytes */,
                               rt, 0 /* src_level */,
                               &copy_box);
+   IDM_LOG("rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+           (const void *)out_buf->resource, (const void *)rt,
+           copy_box.width, copy_box.height);
 
    /* Tear down transient state.  Unbind sampler views and vertex buffers
     * first so the pipe_context releases its internal references before we
@@ -373,5 +449,6 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    pipe_sampler_view_reference(&in_sv, NULL);
    pipe_resource_reference(&vb, NULL);
    pipe_resource_reference(&rt, NULL);
+   IDM_LOG("orchestrator done OK");
    return true;
 }
