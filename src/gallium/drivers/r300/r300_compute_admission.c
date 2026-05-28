@@ -155,9 +155,29 @@ r300_nir_classify_compute(const nir_shader *s,
                   return;
                }
                if (intr->intrinsic == nir_intrinsic_store_ssbo) {
-                  if (!nir_src_is_const(intr->src[1]) || nir_src_as_uint(intr->src[1]) != 0 ||
-                      !nir_src_is_const(intr->src[2]) || nir_src_as_uint(intr->src[2]) != 0) {
-                     reject(out, R300_COMPUTE_REJECT_RW_STORAGE, "non-canonical store_ssbo");
+                  /* Two admissible shapes: the canonical (binding=0,
+                   * offset=0) single-element write that the M-D no-op
+                   * lifecycle established, and the identity-map shape
+                   * where the stored value is itself a load_ssbo result
+                   * -- a coordinate-indexed gather-then-store the
+                   * fullscreen-quad dispatch lowering carries to RB3D
+                   * export. Anything else is arbitrary scatter. */
+                  const bool canonical =
+                     nir_src_is_const(intr->src[1]) &&
+                     nir_src_as_uint(intr->src[1]) == 0 &&
+                     nir_src_is_const(intr->src[2]) &&
+                     nir_src_as_uint(intr->src[2]) == 0;
+                  bool identity_load_then_store = false;
+                  if (!canonical && intr->src[0].ssa) {
+                     const nir_intrinsic_instr *src_intr =
+                        nir_def_as_intrinsic(intr->src[0].ssa);
+                     if (src_intr &&
+                         src_intr->intrinsic == nir_intrinsic_load_ssbo)
+                        identity_load_then_store = true;
+                  }
+                  if (!canonical && !identity_load_then_store) {
+                     reject(out, R300_COMPUTE_REJECT_RW_STORAGE,
+                            "non-canonical store_ssbo");
                      return;
                   }
                }
