@@ -212,6 +212,41 @@ struct r300_compute_multipass_scan_pattern {
 void r300_nir_detect_multipass_scan_pattern(const struct nir_shader *s,
                                             struct r300_compute_multipass_scan_pattern *out);
 
+/* Predicated masked-store pattern recognized at compute-pipeline-create time.
+ * The shape is the per-element conditional store
+ *
+ *     if (in_pred[gid] != 0u) out_data[gid] = in_val[gid];
+ *
+ * glslang emits this as a real control-flow branch (OpBranchConditional ->
+ * nir_if) with the single store_ssbo INSIDE the conditional and two load_ssbo
+ * (the predicate and the value); out_data is never loaded.  A side-effecting
+ * store cannot be speculatively if-converted to a bcsel (that would need an
+ * unsafe load of out_data), so the conditional store survives to the detector.
+ * On RS482 this lowers to a per-pixel predicate discard: the orchestrator seeds
+ * a render target from out_data's pre-existing contents, draws a fullscreen
+ * quad whose fragment program KILL_IFs the masked fragments and writes the
+ * sampled value for the covered ones, then copies the RT back to out_data --
+ * killed fragments perform no ROP write, so the masked cells keep the seeded
+ * baseline.  The per-pixel-predicate verb is the M-H realization (stream-
+ * compaction precursor).
+ *
+ * Discriminator from every prior admitted shape: a store that is CONDITIONAL
+ * (inside a nir_if) with load_count == 2.  Identity-map needs load_count == 1;
+ * binary-map needs the store value to be a binary ALU op (this store value is a
+ * plain load_ssbo def); blend-acc and ZPASS need an atomic; multipass needs a
+ * loop.  Bindings stay 0 when the post-explicit_io binding sources are not
+ * constants (the orchestrator's positional fallback: binding 0 = predicate,
+ * 1 = value, 2 = output). */
+struct r300_compute_predicated_store_pattern {
+   bool       is_predicated_store;
+   uint32_t   pred_ssbo_binding;      /* binding feeding the nir_if condition */
+   uint32_t   value_ssbo_binding;     /* binding of the stored value load */
+   uint32_t   output_ssbo_binding;    /* binding of the conditional store dest */
+};
+
+void r300_nir_detect_predicated_store_pattern(const struct nir_shader *s,
+                                              struct r300_compute_predicated_store_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

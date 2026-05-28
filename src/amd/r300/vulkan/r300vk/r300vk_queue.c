@@ -559,6 +559,13 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                                   e->dispatch.pipeline,
                                                   &e->dispatch,
                                                   last_bind_dsets);
+         } else if (e->dispatch.pipeline &&
+                    e->dispatch.pipeline->predicated_store.is_predicated_store &&
+                    last_bind_dsets) {
+            r300vk_predicated_store_dispatch_replay(device,
+                                                    e->dispatch.pipeline,
+                                                    &e->dispatch,
+                                                    last_bind_dsets);
          }
          /* The no-op compute kernel emits no GPU work, so this proves the
           * Vulkan compute object lifecycle (pipeline create, bind, dispatch

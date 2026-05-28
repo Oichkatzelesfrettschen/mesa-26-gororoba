@@ -97,6 +97,19 @@ struct r300vk_pipeline {
     * in the admitted NIR shader. */
    struct r300_compute_multipass_scan_pattern multipass_scan;
 
+   /* M-H per-pixel predicate + masked store detected at pipeline-create time.
+    * Recognized shape:
+    *   if (in_pred[gid] != 0u) out_data[gid] = in_val[gid];
+    * a conditional store_ssbo inside a nir_if with two load_ssbo (predicate +
+    * value) and no atomic / no loop.  Lowers to a per-pixel KILL_IF discard:
+    * the orchestrator seeds the render target from out_data, draws a fullscreen
+    * quad whose FS discards the masked fragments and writes the sampled value
+    * for the covered ones, and copies the RT back -- killed fragments keep the
+    * seeded baseline.  Discriminated from identity-map (load_count == 1),
+    * binary-map (store value is a binary ALU op), blend-acc / ZPASS (atomic),
+    * and multipass (loop) by the conditional store with two loads. */
+   struct r300_compute_predicated_store_pattern predicated_store;
+
    void                   *vs_cso;
    void                   *fs_cso;
    void                   *blend_cso;

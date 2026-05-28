@@ -492,7 +492,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_binary_map_pattern *binmap,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
                                struct r300_compute_zpass_reduction_pattern *zpass,
-                               struct r300_compute_multipass_scan_pattern *multiscan)
+                               struct r300_compute_multipass_scan_pattern *multiscan,
+                               struct r300_compute_predicated_store_pattern *predstore)
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    if (!mod)
@@ -1106,6 +1107,93 @@ r300vk_multipass_scan_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
+/* Synthesise the predicated masked-store fragment program.  Two samplers:
+ * sampler 0 is the predicate texture, sampler 1 is the value texture; both
+ * carry the per-element SSBO contents wrapped as PIPE_TEXTURE_2D (NEAREST).
+ * The FS samples the predicate, discards the fragment when the predicate is
+ * false, samples the value, and writes it.  A discarded fragment performs no
+ * ROP write, so the render target keeps whatever the orchestrator seeded into
+ * it from out_data -- that is how a masked cell stays at its baseline.
+ *
+ * The predicate arrives as a UNORM8 texel, so a true predicate (kernel encodes
+ * any non-zero low byte) samples to >= 1/255, and a false one to 0.  TGSI
+ * KILL_IF discards when ANY of src.x/y/z/w is negative, so the threshold is
+ * pred_x - 1/512: 0 -> -1/512 < 0 -> discard (masked); 1/255 -> positive ->
+ * pass.  1/512 sits below the smallest non-zero UNORM8 step (1/255), so any
+ * non-zero predicate byte passes -- matching the kernel's `!= 0u`.  The
+ * predicate is broadcast to all four channels before the subtract (the
+ * unwritten y/z/w of a GENERIC varying default to (0,0,1), which would make a
+ * naive per-vector subtract discard every fragment).
+ *
+ * Cost: 2 TEX + 1 ADD + 1 KILL_IF + 1 MOV. */
+static void *
+r300vk_synthesize_predicated_store_fs(struct pipe_context *pipe)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp_pred = ureg_DECL_sampler(ureg, 0);
+   struct ureg_src samp_val  = ureg_DECL_sampler(ureg, 1);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+
+   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                            TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out      = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst tmp_pred = ureg_DECL_temporary(ureg);
+   struct ureg_dst tmp_val  = ureg_DECL_temporary(ureg);
+   struct ureg_dst kill     = ureg_DECL_temporary(ureg);
+
+   ureg_TEX(ureg, ureg_writemask(tmp_pred, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp_pred);
+   struct ureg_src thresh = ureg_imm1f(ureg, 1.0f / 512.0f);
+   struct ureg_src pred_xxxx =
+      ureg_scalar(ureg_src(tmp_pred), TGSI_SWIZZLE_X);
+   ureg_ADD(ureg, kill, pred_xxxx, ureg_negate(thresh));
+   ureg_KILL_IF(ureg, ureg_src(kill));
+
+   ureg_TEX(ureg, ureg_writemask(tmp_val, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp_val);
+   ureg_MOV(ureg, out, ureg_src(tmp_val));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* Synthesise the predicated masked-store VS + FS pair.  Same fullscreen-quad
+ * vertex passthrough and device-cached state CSOs as the identity / binary
+ * lowerings; only the KILL_IF FS differs. */
+static bool
+r300vk_predicated_store_synthesize_shaders(struct r300vk_device *device,
+                                           struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
+                                                      TGSI_SEMANTIC_GENERIC };
+   const unsigned          vs_semantic_indices[] = { 0, 0 };
+   pl->vs_cso = util_make_vertex_passthrough_shader(
+                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_predicated_store_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
 VkResult
 r300vk_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
@@ -1144,9 +1232,10 @@ r300vk_CreateComputePipelines(VkDevice _device,
       struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
       struct r300_compute_zpass_reduction_pattern zpass = {0};
       struct r300_compute_multipass_scan_pattern multiscan = {0};
+      struct r300_compute_predicated_store_pattern predstore = {0};
       if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage,
                                           &adm, &ident, &binmap, &blendacc, &zpass,
-                                          &multiscan))
+                                          &multiscan, &predstore))
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: SPIR-V to NIR failed for compute kernel %u",
                           i);
@@ -1178,6 +1267,7 @@ r300vk_CreateComputePipelines(VkDevice _device,
       pl->blend_acc_reduction = blendacc;
       pl->zpass_reduction = zpass;
       pl->multipass_scan = multiscan;
+      pl->predicated_store = predstore;
       /* When the kernel matches the identity-map pattern, synthesize the
        * fullscreen-quad VS + texture-sampling FS pair the dispatch replay
        * will bind.  A synthesis failure demotes the pipeline back to a no-op
@@ -1211,6 +1301,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
       else if (pl->multipass_scan.is_multipass_scan &&
                !r300vk_multipass_scan_synthesize_shaders(device, pl))
          pl->multipass_scan.is_multipass_scan = false;
+      else if (pl->predicated_store.is_predicated_store &&
+               !r300vk_predicated_store_synthesize_shaders(device, pl))
+         pl->predicated_store.is_predicated_store = false;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 
