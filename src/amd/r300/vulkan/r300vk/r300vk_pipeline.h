@@ -57,47 +57,44 @@ struct r300vk_pipeline {
 
    /* Texture-pair binary-map kernel detected at pipeline-create time.  Same
     * orchestrator skeleton as identity_map but with two sampler stages (in_a
-    * + in_b) and a synthesised FS containing two TEX + one ALU + one MOV
-    * out per the M-F derivation in
-    * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md. */
+    * + in_b) and a synthesized FS containing two TEX + one ALU + one MOV
+    * out per element. */
    struct r300_compute_binary_map_pattern binary_map;
 
-   /* Blend-add reduction kernel detected at pipeline-create time (M-G Entry 4
-    * of the compute-realization roadmap).  Recognised shape:
+   /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
+    * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])
     * lowers to a draw of N point fragments at position (bin, 0), with the FS
     * sampling in_data via a 1D texture coordinate and writing the value to
     * COLOR.  The blend equation `RB3D_CBLEND.COMB_FCN_ADD` with
     * blend_func = (ONE, ONE) accumulates the per-fragment value into the bin
-    * cell of the 1xM output RT; the substrate verb is hardware-confirmed by
-    * bundle blendacc_20260527T045725Z (substrate finding
-    * 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md).  The
-    * orchestrator parallels the identity-map orchestrator at one level of
-    * indirection -- different RT extent, different VBO, blend state enabled. */
+    * cell of the 1xM output RT.  The orchestrator parallels the identity-map
+    * orchestrator at one level of indirection -- different RT extent,
+    * different VBO, blend state enabled. */
    struct r300_compute_blend_acc_reduction_pattern blend_acc_reduction;
 
-   /* ZPASS coverage-count reduction kernel detected at pipeline-create time
-    * (M-G Entry 5).  Recognised shape:
+   /* ZPASS coverage-count reduction kernel detected at pipeline-create time.
+    * Recognized shape:
     *   if (in_data[gid] >= THRESHOLD) atomicAdd(count_out, 1u);
     * Orchestrator lowers to N point-primitive draws into a 1xN RT with the
     * per-vertex-baked predicate gating fragment KILL; the ZB ZPASS counter
-    * (ZB_ZPASS_DATA / ZB_ZPASS_ADDR per umr-gororoba's rs482_gfx_3_0_0.reg
-    * decode at DWORD 0x13d6 / 0x13d7) accumulates the per-pipe surviving-
-    * fragment count, exposed through pipe_query (PIPE_QUERY_OCCLUSION_COUNTER)
-    * via r300_query.c. */
+    * (ZB_ZPASS_DATA / ZB_ZPASS_ADDR) accumulates
+    * the per-pipe surviving-fragment count, exposed through pipe_query
+    * (PIPE_QUERY_OCCLUSION_COUNTER) via r300_query.c. */
    struct r300_compute_zpass_reduction_pattern zpass_reduction;
 
-   /* Multipass FBO ping-pong scan kernel detected at pipeline-create time
-    * (M-G Entry 6).  Recognised shape:
+   /* Multipass FBO ping-pong scan kernel detected at pipeline-create time.
+    * Recognized shape:
     *   uint x = in_data[gid];
     *   for (uint k = 0; k < pass_count; k++) x = x * 2u;
     *   out_data[gid] = x;
     * with pass_count a runtime params-buffer load.  Lowers to the
-    * substrate's multipass FBO ping-pong verb (frontier ping_pong_fbo_iter4
-    * per 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md):
-    * the orchestrator runs pass_count dependent fragment passes binding the
-    * prior pass's RT as the next pass's sampler.  The unique discriminator
-    * from M-E/M-F/M-G.4/M-G.5 is the kernel's nir_loop. */
+    * compute-as-raster multipass FBO ping-pong substrate verb: the
+    * orchestrator runs pass_count dependent fragment passes binding the prior
+    * pass's RT as the next pass's sampler.  The unique discriminator from
+    * the single-pass kernel classes (identity-map, binary-map,
+    * blend-acc-reduction, ZPASS-reduction) is the presence of a nir_loop
+    * in the admitted NIR shader. */
    struct r300_compute_multipass_scan_pattern multipass_scan;
 
    void                   *vs_cso;

@@ -196,10 +196,9 @@ nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
 
 /* Map the kernel's total invocation count onto a 2D raster grid: a single
  * row up to the texture-axis cap (R300 = 2048), then add rows as needed.
- * The bit-exact identity-map theorem in
- * src/re/r300/docs/rs482-r300vk-compute-identity-map-derivation.md bounds
- * this at 2048 x 2048 per dispatch; larger grids tile and dispatch
- * multiple times (M-J generalization). */
+ * The bit-exact identity-map lowering bounds this at 2048 x 2048 per dispatch
+ * (the R300 maximum 2D texture extent on each axis); larger grids would tile
+ * and dispatch multiple times. */
 static void
 derive_raster_extent(uint32_t total_invocations,
                      unsigned *out_width, unsigned *out_height)
@@ -243,11 +242,11 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * (r300_nir_detect_identity_map records the bindings without recording
     * which set; identity-map kernels use a single set in practice). */
    /* Only kernels binding their ssbos at Vulkan set slot 0 are supported by
-    * the M-E lowering today; binds->first_set is the slot the recorded
-    * sets[] array starts at, so a non-zero first_set means binds->sets[0]
-    * is for slot first_set, not slot 0, and the orchestrator would resolve
-    * the wrong set if it indexed [0] blindly.  Multi-set support is M-J
-    * generalization. */
+    * the compute-as-raster lowering today; binds->first_set is the slot the
+    * recorded sets[] array starts at, so a non-zero first_set means
+    * binds->sets[0] is for slot first_set, not slot 0, and the orchestrator
+    * would resolve the wrong set if it indexed [0] blindly.  Multi-set support
+    * is a later generalization. */
    if (binds->first_set != 0) {
       IDM_LOG("early-return first_set=%u (only slot 0 supported)",
               binds->first_set);
@@ -270,9 +269,9 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * nir_lower_explicit_io with nir_address_format_32bit_index_offset (the
     * binding is a load_vulkan_descriptor handle).  Fall back to the
     * descriptor-set layout: input = first STORAGE_BUFFER, output = second.
-    * This is the contract the identity-map kernel class follows
-    * (matches steinmarder's compute_exhaustive_kernels/06_admissible_
-    * identity_map.comp). */
+    * This is the contract the identity-map kernel class follows: a single
+    * input storage buffer and a single output storage buffer, declared in
+    * that order. */
    uint32_t in_binding = pl->identity_map.input_ssbo_binding;
    uint32_t out_binding = pl->identity_map.output_ssbo_binding;
    if (in_binding == out_binding) {
@@ -317,12 +316,10 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    }
 
    /* The total work-item count is the grid-size product.  The kernel's
-    * local_size is folded into the per-invocation index space already
-    * (the ComputeGrid->RasterGrid functor in the M-E derivation takes the
-    * full group count); for local_size > 1, the M-E.4 oracle controls the
-    * shader and so picks local_size = 1 to keep the first end-to-end test
-    * simple.  M-J generalizes to local_size > 1 by widening the index
-    * domain. */
+    * local_size is folded into the per-invocation index space already (the
+    * compute-grid-to-raster-grid mapping takes the full group count).  The
+    * first cut fixes local_size = 1 to keep the readback oracle simple; a
+    * later generalization widens the index domain to local_size > 1. */
    /* 64-bit product so 2^32-wrapping group counts cannot smuggle a
     * small non-zero total past the zero-check.  The 2048*2048 axis cap
     * is enforced after derive_raster_extent below; here we only need to
@@ -349,7 +346,8 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    }
 
    /* RGBA8 UNORM: 4 bytes per texel, bit-exact UNORM8 round-trip on FP24
-    * per the M-E exactness theorem.  A future expansion lets the kernel's
+    * (NEAREST sampling returns the stored texel unmodified, so the UNORM8
+    * value survives the FP24 ALU).  A future expansion lets the kernel's
     * element type pick FP16 or R8_UNORM; the bit-exactness bound applies
     * to all three. */
    const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
@@ -584,14 +582,13 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    return true;
 }
 
-/* M-F binary-map orchestrator: same shape as
- * r300vk_identity_map_dispatch_replay above but with two input ssbos
- * wrapped as separate sampler views and bound at fragment-stage stages
- * 0 + 1.  The synthesised FS (r300vk_synthesize_binary_map_fs in
- * r300vk_pipeline.c) reads both samplers, applies the detected ALU op,
- * and writes via RB3D color export -- the rest of the pipeline state
- * (blend / raster / dsa / sampler / VBO / framebuffer / viewport /
- * scissor) is identical to the identity-map path. */
+/* Binary-map orchestrator: same shape as r300vk_identity_map_dispatch_replay
+ * above but with two input ssbos wrapped as separate sampler views and bound
+ * at fragment-stage sampler stages 0 + 1.  The synthesised FS
+ * (r300vk_synthesize_binary_map_fs in r300vk_pipeline.c) reads both samplers,
+ * applies the detected ALU op, and writes via RB3D color export -- the rest of
+ * the pipeline state (blend / raster / dsa / sampler / VBO / framebuffer /
+ * viewport / scissor) is identical to the identity-map path. */
 bool
 r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
                                   const struct r300vk_pipeline *pl,
@@ -629,25 +626,21 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Binding-index resolution.  Two sources, in priority order:
-    *  (1) The M-F.1 detector reads the constant binding sources from
-    *      the kernel's load_ssbo / store_ssbo intrinsics (see
-    *      r300_compute_admission.c r300_nir_detect_binary_map: it
-    *      sets binmap->{input_a,input_b,output}_ssbo_binding when
-    *      nir_src_is_const returns true for each binding source).
-    *      When the kernel's NIR retains constant binding sources --
-    *      the common case for a GLSL kernel with explicit
-    *      layout(binding=N) qualifiers -- the captured indices are
-    *      authoritative and the orchestrator MUST use them so a
-    *      non-commutative ALU op (SUB, DIV, MOD, SHL, SHR) gets its
-    *      operand order right for any binding declaration order.
-    *  (2) When all three captured indices are zero (Vulkan forbids
-    *      duplicate bindings within a set, so all-zero means the
-    *      detector saw opaque post-explicit_io handles instead of
-    *      constants), fall back to positional layout iteration:
-    *      input_a = 1st STORAGE_BUFFER, input_b = 2nd, output = 3rd.
-    *      This preserves the compute_exhaustive_kernels/
-    *      07_admissible_binary_map_*.comp probe's pre-explicit_io
-    *      path. */
+    *  (1) The binary-map detector reads the constant binding sources from
+    *      the kernel's load_ssbo / store_ssbo intrinsics
+    *      (r300_nir_detect_binary_map sets
+    *      binmap->{input_a,input_b,output}_ssbo_binding when nir_src_is_const
+    *      returns true for each binding source).  When the kernel's NIR
+    *      retains constant binding sources -- the common case for a GLSL
+    *      kernel with explicit layout(binding=N) qualifiers -- the captured
+    *      indices are authoritative and the orchestrator uses them so a
+    *      non-commutative ALU op (isub / fsub) gets its operand order right
+    *      for any binding declaration order.
+    *  (2) When all three captured indices are zero (Vulkan forbids duplicate
+    *      bindings within a set, so all-zero means the detector saw opaque
+    *      post-explicit_io handles instead of constants), fall back to
+    *      positional layout iteration: input_a = 1st STORAGE_BUFFER,
+    *      input_b = 2nd, output = 3rd. */
    uint32_t in_a_binding = pl->binary_map.input_a_ssbo_binding;
    uint32_t in_b_binding = pl->binary_map.input_b_ssbo_binding;
    uint32_t out_binding  = pl->binary_map.output_ssbo_binding;
@@ -808,7 +801,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    sc.maxx = width; sc.maxy = height;
    pipe->set_scissor_states(pipe, 0, 1, &sc);
 
-   /* Bind state + two sampler stages -- this is the M-F-specific change. */
+   /* Bind state + two sampler stages -- this is the binary-map-specific change. */
    pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
    pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
    pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
@@ -890,9 +883,9 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    return true;
 }
 
-/* M-G blend-acc-reduction orchestrator.  Decomposes
- * `atomicAdd(out[gid & MASK], in[gid])` into N point fragments accumulating
- * the per-gid value into M bins through RB3D `COMB_FCN_ADD` blending.
+/* Blend-acc-reduction orchestrator.  Decomposes
+ * atomicAdd(out[gid & MASK], in[gid]) into N point fragments accumulating
+ * the per-gid value into M bins through RB3D COMB_FCN_ADD blending.
  *
  * Shape differs from binary_map_dispatch_replay in three load-bearing
  * places (named at each site below):
@@ -946,7 +939,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Detector binding-index priority + positional fallback (same policy
-    * as M-F.3 binary_map_dispatch_replay, mesa #295). */
+    * as r300vk_binary_map_dispatch_replay). */
    uint32_t in_binding  = pl->blend_acc_reduction.value_ssbo_binding;
    uint32_t out_binding = pl->blend_acc_reduction.output_ssbo_binding;
    const bool detector_captured = (in_binding != 0 || out_binding != 0);
@@ -989,8 +982,8 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("blend_acc early-return M-out-of-range=%u", M);
       return false;
    }
-   /* Total invocations from the dispatch grid (M-E numeric envelope:
-    * 64-bit product guard + 2048 x 2048 axis cap). */
+   /* Total invocations from the dispatch grid (64-bit product guard +
+    * 2048 x 2048 axis cap). */
    const uint64_t total_invocations =
       (uint64_t)dispatch->group_count_x *
       (uint64_t)dispatch->group_count_y *
@@ -1141,18 +1134,17 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
 
    /* Clear the 1xM RT to 0 before the blend-add draw.  resource_create
     * leaves the texture contents implementation-defined; for blend ADD
-    * (dest + src) to produce the correct per-bin sum, dest MUST start at
-    * 0.  Without this clear, an initial M-G.5 bundle (20260528T162452Z)
-    * read every cell at exactly 3x the expected value (got=0x30303030
-    * for expected=0x10101010), consistent with garbage dest contributing
-    * an extra 2x the per-fragment value through the accumulation.  An
-    * explicit pipe->clear with the COLOR0 mask zeroes the RT through the
-    * RB3D fast-clear path before the per-point fragments accumulate. */
+    * (dest + src) to produce the correct per-bin sum, dest MUST start at 0.
+    * Without this clear an uninitialized dest adds its garbage contents into
+    * every bin's accumulation (observed empirically as inflated readback
+    * values).  An explicit pipe->clear with the COLOR0 mask zeroes the RT
+    * through the RB3D fast-clear path before the per-point fragments
+    * accumulate. */
    {
       union pipe_color_union zero;
       memset(&zero, 0, sizeof(zero));
-      /* pipe->clear signature (p_context.h:723): buffers + color_clear_mask
-       * + stencil_clear_mask + scissor_state + color + depth + stencil. */
+      /* pipe_context::clear args: buffers + color_clear_mask +
+       * stencil_clear_mask + scissor_state + color + depth + stencil. */
       pipe->clear(pipe, PIPE_CLEAR_COLOR0, ~0u, 0, NULL, &zero, 0.0, 0);
    }
 
@@ -1226,14 +1218,12 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    return true;
 }
 
-/* M-G Entry 5 ZPASS coverage-count reduction orchestrator.  Decomposes
+/* ZPASS coverage-count reduction orchestrator.  Decomposes
  * `if (in_data[gid] != 0u) atomicAdd(count_out, 1u)` into N point fragments
  * whose KILL_IF gates discard the false-predicate fragments; the depth/
- * stencil unit's ZPASS counter (mmR300_ZB_ZPASS_DATA = DWORD 0x13d6 /
- * byte 0x4f58, mmR300_ZB_ZPASS_ADDR = DWORD 0x13d7 / byte 0x4f5c per
- * umr-gororoba/database/ip/rs482_gfx_3_0_0.reg) counts surviving
- * fragments, exposed to userspace as PIPE_QUERY_OCCLUSION_COUNTER through
- * r300_query.c.
+ * stencil unit's ZPASS counter (ZB_ZPASS_DATA / ZB_ZPASS_ADDR) counts
+ * surviving fragments, exposed to userspace as PIPE_QUERY_OCCLUSION_COUNTER
+ * through r300_query.c.
  *
  * Shape differs from blend_acc_reduction_dispatch_replay in three load-
  * bearing places:
@@ -1581,22 +1571,21 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    return true;
 }
 
-/* M-G Entry 6 multipass FBO ping-pong scan orchestrator.  Realizes the
- * per-element self-iterated kernel `x = in[gid]; for (k < pass_count) x =
- * x * 2u; out[gid] = x` as pass_count dependent fragment passes: two RGBA8
- * textures alternate as sampler source and render target, each pass
- * doubling the texel the synthesised FS samples from the prior pass's
- * output.  The substrate verb is multipass FBO ping-pong (frontier
- * ping_pong_fbo_iter4, bundle glamor_compute_surface_20260522T023537Z).
+/* Multipass FBO ping-pong scan orchestrator.  Realizes the per-element
+ * self-iterated kernel `x = in[gid]; for (k < pass_count) x = x * 2u;
+ * out[gid] = x` as pass_count dependent fragment passes: two RGBA8 textures
+ * alternate as sampler source and render target, each pass doubling the texel
+ * the synthesised FS samples from the prior pass's output.  The substrate verb
+ * is multipass FBO ping-pong.
  *
  * Differs from the single-pass identity-map orchestrator in two places:
  *
  *   1. pass_count is read from a third storage buffer (binding 2) at
  *      replay time -- the runtime value the kernel's loop bound carries,
- *      which is also what the M-G.6 detector keyed on.  No push-constant
- *      plumbing exists (r300vk advertises maxPushConstantsSize but has no
- *      R300VK_CMD_PUSH_CONSTANTS recording path), so the count rides the
- *      existing descriptor machinery.
+ *      which is also what the multipass-scan detector keyed on.  No
+ *      push-constant plumbing exists (r300vk advertises maxPushConstantsSize
+ *      but has no R300VK_CMD_PUSH_CONSTANTS recording path), so the count
+ *      rides the existing descriptor machinery.
  *   2. Two textures alternate src/dst across pass_count draws; the prior
  *      pass's RT becomes the next pass's sampler input.
  *
@@ -1604,8 +1593,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
  * input straight through (zero doublings).  Above 16 the per-byte UNORM8
  * doubling would saturate for any non-zero input, so the orchestrator
  * rejects rather than silently clamp (the read-back oracle would otherwise
- * see saturated bytes).  Design + admit-path linchpin in
- * 2026-05-28-rs482-multipass-pingpong-scan-design.md. */
+ * see saturated bytes). */
 bool
 r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
                                       const struct r300vk_pipeline *pl,
@@ -1641,9 +1629,9 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Positional binding resolution (binding 0 = input data, 1 = output,
-    * 2 = params holding pass_count) -- same convention as the M-F.3 /
-    * M-G.3 layout fallback; the detector's binding fields stay 0 post-
-    * explicit_io. */
+    * 2 = params holding pass_count) -- same convention as the binary-map and
+    * blend-acc layout fallback; the detector's binding fields stay 0
+    * post-explicit_io. */
    uint32_t in_binding = 0, out_binding = 0, params_binding = 0;
    if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
        !nth_storage_buffer_binding(set, 1, &out_binding) ||

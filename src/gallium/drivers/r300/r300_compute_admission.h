@@ -16,12 +16,11 @@ extern "C" {
 struct nir_shader;
 
 /* Why a compute kernel cannot lower to the RS482 compute-as-raster substrate.
- * Each reason names a hardware constraint from the substrate finding
- * (2026-05-27-rs482-compute-substrate-expanded-and-numeric-envelope): the
- * substrate has texture-LD load, FP24 ALU compute, RB3D export store, the
- * blend ADD/MIN/MAX/SUB + stencil + ZPASS reduction forms, ROP bitwise, and
- * per-pixel predicates -- but no LDS, no workgroup barrier, no general atomic
- * on an arbitrary address, no arbitrary read-write storage, and no FP64. */
+ * Each reason names a hardware constraint: the substrate has texture-LD load,
+ * FP24 ALU compute, RB3D export store, the blend ADD/MIN/MAX/SUB + stencil +
+ * ZPASS reduction forms, ROP bitwise, and per-pixel predicates -- but no LDS,
+ * no workgroup barrier, no general atomic on an arbitrary address, no
+ * arbitrary read-write storage, and no FP64. */
 enum r300_compute_reject {
    R300_COMPUTE_ADMIT = 0,
    R300_COMPUTE_REJECT_SHARED_MEMORY,  /* no LDS on R3xx */
@@ -79,10 +78,9 @@ void r300_nir_detect_identity_map(const struct nir_shader *s,
 /* Texture-pair binary-map pattern: exactly one store_ssbo whose value is the
  * result of a single ALU op whose two sources are exactly the SSA defs of
  * two distinct load_ssbo intrinsics.  The recognized ALU op set is bounded
- * by the FP24-budget table in
- * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md
- * (iadd / isub / imul / imin / imax / umin / umax / fadd / fsub / fmul /
- * fmin / fmax for the first cut; richer arithmetic is M-G territory).
+ * by what the FP24 fragment ALU reproduces exactly: iadd / isub / imul /
+ * imin / imax / umin / umax / fadd / fsub / fmul / fmin / fmax for the first
+ * cut; richer arithmetic is a later extension.
  *
  * alu_op carries the NIR opcode value so the orchestrator's FS synthesis
  * picks the right PFS instruction; the bindings are 0 when the post-
@@ -99,29 +97,28 @@ struct r300_compute_binary_map_pattern {
 void r300_nir_detect_binary_map(const struct nir_shader *s,
                                 struct r300_compute_binary_map_pattern *out);
 
-/* M-G blend-add-reduction kernel pattern (Conjecture M-G Entry 4): a kernel
- * whose store value is an atomicAdd of a load_ssbo result, where the atomic's
- * target buffer is a small output histogram and the atomic's offset folds the
- * dispatch grid into a smaller bin range -- the canonical shape:
+/* Blend-add-reduction kernel pattern: a kernel whose store value is an
+ * atomicAdd of a load_ssbo result, where the atomic's target buffer is a
+ * small output histogram and the atomic's offset folds the dispatch grid into
+ * a smaller bin range -- the canonical shape:
  *
  *     uint gid = gl_GlobalInvocationID.x;
  *     uint bin = gid & BIN_MASK;
  *     atomicAdd(out_data[bin], in_data[gid]);
  *
  * On RS482 this lowers to a blend-add accumulation: the output buffer binds
- * as a 1xM RT, the blend equation is `RB3D_CBLEND.COMB_FCN_ADD` with
- * `blend_func = (ONE, ONE)`, the orchestrator draws one fragment per gid at
+ * as a 1xM RT, the blend equation is RB3D_CBLEND.COMB_FCN_ADD with
+ * blend_func = (ONE, ONE), the orchestrator draws one fragment per gid at
  * position (bin, 0), and the RB3D blend hardware accumulates the per-gid
  * value into the bin cell.  The mechanism is hardware-confirmed at the
- * substrate verb level (bundle blendacc_20260527T045725Z); M-G.1 lifts the
- * pattern from kernel NIR to driver detection.
+ * substrate verb level.
  *
  * value_ssbo_binding is the binding of the load_ssbo feeding the atomic
  * value; output_ssbo_binding is the binding of the atomic's target buffer
  * (the histogram).  When the post-explicit_io binding sources are not
  * constants, both stay 0 and the orchestrator's descriptor-set layout
- * fallback recovers them (same policy as binary-map M-F.3).  alu_op holds
- * nir_op_iadd for the first cut; fadd will land alongside in a future
+ * fallback recovers them (same policy as the binary-map detector).  alu_op
+ * holds nir_op_iadd for the first cut; fadd will land alongside in a future
  * extension when the FP24 envelope analysis confirms the per-bin sum stays
  * exact. */
 struct r300_compute_blend_acc_reduction_pattern {
@@ -134,31 +131,25 @@ struct r300_compute_blend_acc_reduction_pattern {
 void r300_nir_detect_blend_acc_reduction(const struct nir_shader *s,
                                          struct r300_compute_blend_acc_reduction_pattern *out);
 
-/* M-G Entry 5 ZPASS coverage-count reduction kernel pattern.  Recognises
- * the predicate-gated counter shape:
+/* ZPASS coverage-count reduction kernel pattern.  Recognises the
+ * predicate-gated counter shape:
  *
  *     uint gid = gl_GlobalInvocationID.x;
  *     if (in_data[gid] >= THRESHOLD)
  *         atomicAdd(count_out, 1u);
  *
- * On RS482 this lowers to the substrate's ZPASS coverage-count verb:
+ * On RS482 this lowers to the depth/stencil unit's ZPASS coverage-count verb:
  * the orchestrator binds a 1xN RT, draws N point primitives at
  * (gid_norm_x, 0), each fragment KILL-discards when the per-vertex-baked
- * predicate is false; the depth/stencil unit's `ZB_ZPASS_DATA` /
- * `ZB_ZPASS_ADDR` counter pair (per umr-gororoba RS482 register decode
- * mmR300_ZB_ZPASS_DATA = DWORD 0x13d6 / byte 0x4f58 and
- * mmR300_ZB_ZPASS_ADDR = DWORD 0x13d7 / byte 0x4f5c) accumulates the
- * per-pipe surviving-fragment count.  Mesa's existing
- * src/gallium/drivers/r300/r300_query.c r300_create_query +
- * begin_query + end_query + get_query_result chain (lines 15-188)
- * wraps this register pair as PIPE_QUERY_OCCLUSION_COUNTER returning
- * a u64 fragment sum; the orchestrator writes that sum to count_out[0].
+ * predicate is false; the ZB_ZPASS_DATA / ZB_ZPASS_ADDR counter pair
+ * accumulates the per-pipe surviving-fragment count.  Mesa's existing
+ * r300_query.c chain (r300_create_query + begin_query + end_query +
+ * get_query_result) wraps this register pair as PIPE_QUERY_OCCLUSION_COUNTER
+ * returning a u64 fragment sum; the orchestrator writes that sum to
+ * count_out[0].  The mechanism is hardware-confirmed at the substrate verb
+ * level (surviving-fragment count read back through the occlusion query).
  *
- * The mechanism is hardware-confirmed at the substrate verb level by
- * bundle stencil_zpass_20260527T052208Z (zpass_samples=1682, per
- * 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md).
- *
- * Discriminator from M-G Entry 4 (blend-acc reduction):
+ * Discriminator from the blend-acc reduction:
  *
  *   blend-acc: 1 ssbo_atomic-iadd + 1 load_ssbo, the atomic's value
  *              source SSA == load's def (load's RESULT is the
@@ -170,7 +161,7 @@ void r300_nir_detect_blend_acc_reduction(const struct nir_shader *s,
  * value_ssbo_binding is the binding of the predicate load_ssbo;
  * output_ssbo_binding is the binding of the single-element counter
  * buffer.  Bindings stay 0 when the post-explicit_io binding sources
- * are not constants (same convention as M-F.3 / M-G.3 fallback). */
+ * are not constants (the orchestrator's positional fallback recovers them). */
 struct r300_compute_zpass_reduction_pattern {
    bool       is_zpass_reduction;
    uint32_t   value_ssbo_binding;     /* binding of the predicate-source load_ssbo */
@@ -181,40 +172,36 @@ struct r300_compute_zpass_reduction_pattern {
 void r300_nir_detect_zpass_reduction(const struct nir_shader *s,
                                      struct r300_compute_zpass_reduction_pattern *out);
 
-/* M-G Entry 6 multipass FBO ping-pong scan kernel pattern.  Recognises the
- * per-element self-iterated shape:
+/* Multipass FBO ping-pong scan kernel pattern.  Recognises the per-element
+ * self-iterated shape:
  *
  *     uint x = in_data[gid];
  *     for (uint k = 0u; k < pass_count; k++) x = x * 2u;
  *     out_data[gid] = x;
  *
  * where pass_count is a runtime value loaded from a params storage buffer
- * (binding 2) so the loop does NOT constant-fold.  On RS482 this lowers to
- * the substrate's multipass FBO ping-pong verb (substrate finding
- * 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md, frontier
- * ping_pong_fbo_iter4): the orchestrator runs pass_count dependent fragment
+ * (binding 2) so the loop does NOT constant-fold.  On RS482 this lowers to a
+ * multipass FBO ping-pong: the orchestrator runs pass_count dependent fragment
  * passes binding the prior pass's render target as the next pass's sampler,
- * each pass applying the per-iteration step (the doubling) to the texel.
- * The mechanism is hardware-confirmed at the EGL/GBM render-ladder level by
- * bundle glamor_compute_surface_20260522T023537Z.
+ * each pass applying the per-iteration step (the doubling) to the texel.  The
+ * mechanism is hardware-confirmed at the EGL/GBM render-ladder level.
  *
- * Design + admit-path linchpin in
- * src/re/r300/findings/active/2026-05-28-rs482-multipass-pingpong-scan-design.md:
- * the kernel NIR is classified-then-discarded (ralloc_free in
+ * The kernel NIR is classified-then-discarded (ralloc_free in
  * r300vk_classify_compute_kernel), never compiled to the R300 fragment
- * program, so the runtime loop is a detection-time signal only -- which is
- * what keeps Entry 6 independent of the M-K dispatch-barrier contract.
+ * program, so the runtime loop is a detection-time signal only -- the
+ * recognised shape is realized entirely by the orchestrator's pass ladder,
+ * not by executing the kernel's own loop.
  *
- * Discriminator from every prior entry: the presence of a nir_loop.  M-E
- * identity-map, M-F binary-map, M-G.4 blend-acc, and M-G.5 ZPASS are all
- * loop-free; M-G.6 is the only shape carrying a loop whose body is a
- * self-only arithmetic step (the loop-carried value is not a cross-element
- * gather, which would need a workgroup barrier the substrate lacks).
+ * Discriminator from every other admitted shape: the presence of a nir_loop.
+ * Identity-map, binary-map, blend-acc, and ZPASS are all loop-free; this is
+ * the only shape carrying a loop whose body is a self-only arithmetic step
+ * (the loop-carried value is not a cross-element gather, which would need a
+ * workgroup barrier the substrate lacks).
  *
- * step_op holds the per-iteration nir_op (nir_op_imul for the doubling
- * first cut).  Bindings stay 0 when the post-explicit_io binding sources
- * are not constants (same positional-fallback convention as M-F.3 / M-G.3:
- * binding 0 = input, 1 = output, 2 = params). */
+ * step_op holds the per-iteration nir_op (nir_op_imul for the doubling first
+ * cut).  Bindings stay 0 when the post-explicit_io binding sources are not
+ * constants (the orchestrator's positional fallback: binding 0 = input,
+ * 1 = output, 2 = params). */
 struct r300_compute_multipass_scan_pattern {
    bool       is_multipass_scan;
    uint32_t   input_ssbo_binding;     /* binding of the per-element data load */

@@ -523,7 +523,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
           * lower onto the same skeleton with two sampler stages via the
           * binary-map orchestrator; any other admitted kernel falls
           * through to the no-op compute lifecycle (the same empty-CS
-          * submit boundary M-D established). */
+          * submit boundary the no-op compute lifecycle established). */
          if (e->dispatch.pipeline &&
              e->dispatch.pipeline->identity_map.is_identity_map &&
              last_bind_dsets) {

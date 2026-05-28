@@ -94,14 +94,11 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
     * down to the hardware 32 slots. */
    props->maxUniformBufferRange = 16384;
 
-   /* SSBO size advertise.  R3xx has no native SSBO; the M-E /
-    * M-F compute-as-raster substrate maps stores to RB3D color export
-    * which the radeon GART backs.  The empirical 1 GB GART on
-    * cachyos-vostro1000 (radeon-unified-dkms with gartsize=1024 +
-    * zz-radeon-forensic.conf, live GTT 0xC0000000-0xFFFFFFFF) lets a
-    * Vulkan caller allocate inside the extra space; elevate the
-    * advertise so vkGetPhysicalDeviceProperties returns a limit the
-    * substrate can actually back.  Mirrors r300_screen.c's caps->
+   /* SSBO size advertise.  R3xx has no native SSBO; the compute-as-raster
+    * substrate maps stores to RB3D color export backed by the radeon GART.
+    * Cap the advertised maxStorageBufferRange to 512 MB only when the
+    * kernel-reported GART (info.gart_size_kb) is >= 1 GB; otherwise
+    * advertise the Vulkan minimum.  Mirrors r300_screen.c's
     * max_shader_buffer_size gate. */
    if (gart_size_kb >= 1024u * 1024u)
       props->maxStorageBufferRange = 512u * 1024u * 1024u; /* 512 MB */
@@ -312,7 +309,7 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
    /* Pipeline-cache UUID: BLAKE3 of the driver build identity plus the PCI
     * device ID, so a driver rebuild or a chip switch invalidates stale
     * disk_cache and vk_pipeline_cache entries.  disk_cache_get_function_identifier
-    * derives the build id from this driver's .so via dladdr.  Mirrors the
+    * derives the build id from the r300vk .so via dladdr.  Mirrors the
     * construction in terakan_physical_device.c. */
    {
       struct mesa_blake3 uuid_ctx;
@@ -341,7 +338,7 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
     * misbehave.  0 (out-of-enum) is the least-harmful honest value;
     * driverName ("r300vk") and driverInfo carry the real attribution.
     * dEQP-VK.api.driver_properties may flag a 0 driverID, which is
-    * accepted: this driver is not run for conformance submission.
+    * accepted: r300vk is not run for conformance submission.
     */
    props->driverID = (VkDriverId)0;
    snprintf(props->driverName, sizeof(props->driverName), "%s", "r300vk");
