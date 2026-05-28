@@ -111,28 +111,29 @@ r300_nir_detect_identity_map(const nir_shader *s,
    /* store_ssbo src layout: [0]=value, [1]=binding, [2]=offset.
     * load_ssbo  src layout: [0]=binding, [1]=offset.
     *
-    * NOTE on the offset comparison.  An earlier M-E.6 adversarial-review fix
-    * added `offset_eq = (store->src[2].ssa == load->src[1].ssa)` to defend
-    * against a scatter shape `out[g(i)] = in[i]` where the M-E lowering would
-    * silently compute `out[i] = in[i]` (the orchestrator's fullscreen-FS pass
-    * does not honour g).  Empirically that gate fails for the legitimate
-    * identity-map kernel too, because nir_lower_explicit_io with
-    * nir_address_format_32bit_index_offset emits independent address-computation
-    * chains for each load_ssbo and each store_ssbo intrinsic.  Even after
-    * nir_opt_dce + nir_opt_cse in r300vk_pipeline.c the load offset SSA and the
-    * store offset SSA stay distinct (Vostro bundles 20260528T143353Z and
-    * 20260528T143953Z both show value_eq_load=1 + offset_eq=0 for the
-    * `out[gid] = in[gid]` kernel, with CSE confirmed present via libvulkan_r300
-    * .so sha256 change between runs).  Reading both Vostro PASS bundles
-    * 20260528T024858Z and 20260528T042102Z timestamps shows they predate the
-    * offset_eq fix landing at mesa #290 (24892578dc4, 2026-05-27 22:51 PST):
-    * M-E never passed _with_ this gate active.  Accept the bounded scatter
-    * miscompute risk -- a scatter kernel would compute out[i]=in[i] in the
-    * orchestrator's fullscreen-FS lowering, which is a silent value
-    * miscompute but NOT a memory hazard (the framebuffer extent matches the
-    * buffer extent so no out-of-bounds write occurs).  TODO: rewrite
-    * offset_eq to walk both SSA defs to their root global-invocation-id
-    * extract for semantic equivalence rather than SSA-def identity. */
+    * offset_eq below compares the store offset def with the load offset def,
+    * but the detector does NOT gate on it.  nir_lower_explicit_io with
+    * nir_address_format_32bit_index_offset emits an independent address-
+    * computation chain for each load_ssbo and each store_ssbo intrinsic, so
+    * the load offset def and the store offset def stay distinct even for
+    * out[gid] = in[gid] -- and stay distinct through nir_opt_dce + nir_opt_cse
+    * (both offsets derive from the same gl_GlobalInvocationID, but CSE does
+    * not fold the separately lowered chains).  Gating on offset_eq therefore
+    * rejects the legitimate identity-map kernel.
+    *
+    * Cost of not gating: a scatter kernel out[g(i)] = in[i] is admitted and
+    * the fullscreen-FS lowering computes out[i] = in[i] (the pass cannot honor
+    * a scatter index g).  That is a bounded value miscompute, not a memory
+    * hazard -- the fullscreen draw's framebuffer extent equals the output
+    * buffer extent, so no out-of-bounds write occurs.
+    *
+    * TODO: gate the identity shape on semantic offset equivalence by walking
+    *       the store and load offset defs to their root gl_GlobalInvocationID
+    *       extract and comparing those, replacing the SSA-def-identity
+    *       offset_eq.  Reason: SSA-def identity under-approximates
+    *       post-explicit_io offset equality, so a genuine scatter cannot
+    *       currently be distinguished from a gather.  Tracking:
+    *       r300_nir_detect_identity_map offset gate. */
    const bool offset_eq = (store->src[2].ssa == load->src[1].ssa);
    {
       const char *dbg = getenv("R300VK_DEBUG");
@@ -162,14 +163,13 @@ r300_nir_detect_identity_map(const nir_shader *s,
    out->is_identity_map = true;
 }
 
-/* M-F texture-pair binary-map detector.  Mirrors the identity-map pattern at
- * one level of indirection: store_ssbo's value is the def of a single ALU
- * op whose two sources are the defs of two distinct load_ssbo intrinsics.
+/* Texture-pair binary-map detector.  Mirrors the identity-map pattern at one
+ * level of indirection: store_ssbo's value is the def of a single ALU op whose
+ * two sources are the defs of two distinct load_ssbo intrinsics.
  *
- * Pure read-only NIR walk.  The recognized ALU op set is bounded by the
- * FP24-budget per-operator table in
- * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md;
- * an op outside the set leaves is_binary_map false so the orchestrator
+ * Pure read-only NIR walk.  The recognized ALU op set is bounded by what the
+ * compute-as-raster fragment lowering can reproduce within the R300 FP24 ALU
+ * budget; an op outside the set leaves is_binary_map false so the orchestrator
  * dispatches the no-op compute lifecycle. */
 static bool
 binary_map_op_admitted(uint16_t op)
@@ -228,7 +228,7 @@ r300_nir_detect_binary_map(const nir_shader *s,
       return;
 
    /* Store value must come from an ALU op (not directly from a load_ssbo
-    * -- that's the identity-map case the M-E detector already handles). */
+    * -- that's the identity-map case r300_nir_detect_identity_map handles). */
    const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
    if (!alu)
       return;
@@ -247,22 +247,23 @@ r300_nir_detect_binary_map(const nir_shader *s,
    const bool ba = (s0 == &load_b->def && s1 == &load_a->def);
    if (!ab && !ba)
       return;
-   /* The matching offset-equality gate the identity-map detector carries is
-    * also non-empirical here: nir_lower_explicit_io with
-    * nir_address_format_32bit_index_offset emits independent address-
-    * computation chains per intrinsic, so the load_a, load_b, and store
-    * offset SSA defs all stay distinct even when the source GLSL uses the
-    * same gl_GlobalInvocationID.x in all three.  Empirical Vostro M-F.5
-    * bundles confirmed the gate breaks the legitimate binary-map shape
-    * (same kernel, same dispatch) despite a nir_opt_dce + nir_opt_cse pass
-    * between explicit_io and the detector.  Mirror the identity-map
-    * detector's policy: accept the bounded scatter miscompute (the
-    * orchestrator's fullscreen-FS lowering computes out[i] = f(a[i], b[i])
-    * regardless of g, which is a value miscompute but not a memory hazard
-    * because the framebuffer extent matches the buffer extent).  TODO:
-    * promote to semantic offset equivalence via SSA-tree walk to the root
-    * global-invocation-id extract once the M-G compute-realization roadmap
-    * provides a probe that exercises a genuine scatter. */
+   /* Like the identity-map detector, this detector does NOT gate on offset
+    * equality.  nir_lower_explicit_io with nir_address_format_32bit_index_offset
+    * emits independent address-computation chains per intrinsic, so the load_a,
+    * load_b, and store offset defs all stay distinct even when the source GLSL
+    * uses the same gl_GlobalInvocationID.x in all three, and nir_opt_dce +
+    * nir_opt_cse before the detector does not fold them.  Accept the same
+    * bounded scatter miscompute as the identity path: the fullscreen-FS
+    * lowering computes out[i] = f(a[i], b[i]) regardless of any scatter index
+    * g, a value miscompute bounded by the framebuffer extent (which equals the
+    * buffer extent), not a memory hazard.
+    *
+    * TODO: gate on semantic offset equivalence by walking the store and load
+    *       offset defs to their root gl_GlobalInvocationID extract, replacing
+    *       SSA-def identity.  Reason: SSA-def identity under-approximates
+    *       post-explicit_io offset equality, so a genuine scatter is currently
+    *       indistinguishable from a gather.  Tracking:
+    *       r300_nir_detect_binary_map offset gate. */
 
    out->is_binary_map = true;
    out->alu_op = (uint16_t)alu->op;
@@ -277,43 +278,40 @@ r300_nir_detect_binary_map(const nir_shader *s,
       out->output_ssbo_binding  = nir_src_as_uint(store->src[1]);
 }
 
-/* M-G Entry 4 blend-add reduction detector.  Recognises the histogram /
- * accumulator shape that lowers to RB3D `COMB_FCN_ADD` blend accumulation:
+/* Blend-add reduction detector.  Recognises the histogram / accumulator shape
+ * that lowers to RB3D COMB_FCN_ADD blend accumulation:
  *
  *     uint gid = gl_GlobalInvocationID.x;
  *     uint bin = gid & MASK;
  *     atomicAdd(out_data[bin], in_data[gid]);
  *
- * Detection invariants (mirror the M-F.1 binary-map shape, one level of
- * indirection lower because the store side is the atomic itself instead
- * of a separate store_ssbo):
+ * Detection invariants (the binary-map shape one level of indirection lower,
+ * because the store side is the atomic itself instead of a separate
+ * store_ssbo):
  *
  *   1. Exactly 1 ssbo_atomic intrinsic + exactly 1 load_ssbo intrinsic +
  *      exactly 0 store_ssbo intrinsics (the atomic IS the store).
  *   2. The atomic's ATOMIC_OP index is nir_atomic_op_iadd (integer add).
- *      M-G future extensions for fadd, imin, imax, etc. plug into the
- *      same shape; landing iadd first because every per-bin sum is
- *      integer-exact within the FP24 envelope when bin_count is small
- *      and per-bin sum < 2^17 (M-E numeric envelope, finding
- *      2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md).
+ *      fadd, imin, imax, etc. plug into the same shape; iadd lands first
+ *      because every per-bin sum is integer-exact in the R300 FP24 ALU when
+ *      bin_count is small and per-bin sum < 2^17.
  *   3. The atomic's value-source SSA def equals the load_ssbo's def --
  *      identifies that the input is FED INTO the atomic rather than
  *      consumed elsewhere.
- *   4. The atomic's binding != the load's binding -- output histogram
+ *   4. The atomic's binding != the load's binding -- the output histogram
  *      cannot also be the input source (Vulkan forbids it by descriptor
  *      contract, but spell it out for the detector's predicate-completeness).
  *
- * The bin-mask analysis (walking the atomic's offset SSA back to find the
- * `gid & const_mask` shape) is NOT performed here: the orchestrator will
- * size the output RT from the descriptor's buffer size (M-bin output = M
- * uint32 cells in the descriptor), and the mask is implicit in the buffer
- * size.  Treat the mask analysis as an M-G.2 / M-G.3 extension if a
- * non-power-of-2-minus-1 mask probe shape needs it.
+ * The bin-mask analysis (walking the atomic's offset def back to find the
+ * `gid & const_mask` shape) is NOT performed here: the orchestrator sizes the
+ * output RT from the descriptor's buffer size (M-bin output = M uint32 cells),
+ * and the mask is implicit in that size.  A non-(2^k - 1) mask shape would
+ * need the explicit mask walk.
  *
- * The same "binding sources may be opaque post-explicit_io" caveat from
- * M-F.1 applies: when nir_src_is_const returns false, the field stays
- * 0 and the orchestrator's positional fallback recovers from the
- * descriptor set layout. */
+ * The same "binding sources may be opaque post-explicit_io" caveat from the
+ * binary-map detector applies: when nir_src_is_const returns false the field
+ * stays 0 and the orchestrator's positional descriptor-set-layout fallback
+ * recovers the binding. */
 void
 r300_nir_detect_blend_acc_reduction(const nir_shader *s,
                                     struct r300_compute_blend_acc_reduction_pattern *out)
@@ -407,15 +405,15 @@ def_derives_from(const nir_def *def, const nir_def *root, unsigned depth)
    return false;
 }
 
-/* M-G Entry 5 ZPASS coverage-count detector.  Recognises the shape:
+/* ZPASS coverage-count detector.  Recognises the shape:
  *
  *     uint gid = gl_GlobalInvocationID.x;
  *     if (in_data[gid] >= THRESHOLD)
  *         atomicAdd(count_out, 1u);
  *
- * which lowers to the substrate's ZPASS occlusion-counter verb (bundle
- * stencil_zpass_20260527T052208Z; substrate finding 2026-05-26-rs482-
- * compute-as-raster-functional-unit-substrate.md).  Detection invariants:
+ * which lowers to the depth/stencil unit's ZPASS occlusion-counter verb
+ * (ZB_ZPASS_DATA / ZB_ZPASS_ADDR), counting surviving fragments.  Detection
+ * invariants:
  *
  *   1. Exactly 1 ssbo_atomic + 1 load_ssbo + 0 store_ssbo.
  *   2. The atomic's ATOMIC_OP is nir_atomic_op_iadd.
@@ -540,18 +538,17 @@ multipass_step_is_doubling(const nir_alu_instr *alu)
    }
 }
 
-/* M-G Entry 6 multipass ping-pong scan detector.  Recognises the
- * per-element self-iterated shape `x = in[gid]; for (k < pass_count) x =
- * 2*x; out[gid] = x`, where pass_count is a runtime params-buffer load so
- * the loop survives constant folding, feeding a single store_ssbo.  The
- * discriminator from every prior M-series entry is the presence of a
- * nir_loop: M-E identity-map, M-F binary-map, M-G.4 blend-acc, and M-G.5
- * ZPASS are all loop-free.  A genuine cross-element scan would need a
- * workgroup barrier (absent on RS482), so this admits only the self-only
- * iterated step; the orchestrator runs it as pass_count dependent FBO
- * ping-pong passes.  Detection invariants:
+/* Multipass ping-pong scan detector.  Recognises the per-element self-iterated
+ * shape `x = in[gid]; for (k < pass_count) x = 2*x; out[gid] = x`, where
+ * pass_count is a runtime params-buffer load so the loop survives constant
+ * folding, feeding a single store_ssbo.  The discriminator from every other
+ * admitted shape is the presence of a nir_loop: identity-map, binary-map,
+ * blend-acc reduction, and ZPASS reduction are all loop-free.  A genuine
+ * cross-element scan would need a workgroup barrier (absent on RS482), so this
+ * admits only the self-only iterated step; the orchestrator runs it as
+ * pass_count dependent FBO ping-pong passes.  Detection invariants:
  *
- *   1. Exactly 1 store_ssbo, 0 ssbo_atomic (rules out M-G.4 / M-G.5).
+ *   1. Exactly 1 store_ssbo, 0 ssbo_atomic (rules out the reduction shapes).
  *   2. At least 2 load_ssbo: the per-element data plus the runtime
  *      pass_count from the params buffer.
  *   3. A nir_loop is present (the unique discriminator).
@@ -560,13 +557,11 @@ multipass_step_is_doubling(const nir_alu_instr *alu)
  *      a loop carrying any other arithmetic is not the realizable
  *      iterated-scale shape and is rejected, not silently mis-scaled.
  *
- * step_op carries the per-iteration nir_op for diagnostics; the
- * orchestrator hard-codes the doubling, which is sound precisely because
- * every admitted step is a doubling.  Bindings stay 0 when the
- * post-explicit_io binding sources are not constants; the orchestrator's
- * positional fallback recovers them (binding 0 = input, 1 = output, 2 =
- * params).  See the design finding
- * 2026-05-28-rs482-multipass-pingpong-scan-design.md. */
+ * step_op carries the per-iteration nir_op for diagnostics; the orchestrator
+ * hard-codes the doubling, which is sound precisely because every admitted
+ * step is a doubling.  Bindings stay 0 when the post-explicit_io binding
+ * sources are not constants; the orchestrator's positional fallback recovers
+ * them (binding 0 = input, 1 = output, 2 = params). */
 void
 r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
                                        struct r300_compute_multipass_scan_pattern *out)
@@ -639,24 +634,22 @@ r300_nir_classify_compute(const nir_shader *s,
 {
    admit(out);
 
-   /* M-G Entry 4 (blend-add reduction) admit-precheck.  An ssbo_atomic with
-    * ATOMIC_OP=iadd looks like a "general atomic" to the loop below, but
-    * the blend-acc detector lifts it to the RB3D `COMB_FCN_ADD` accumulation
-    * shape -- one of the eight hardware-confirmed substrate verbs (substrate
-    * finding 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md,
-    * bundle blendacc_20260527T045725Z).  Run the detector here and set a
-    * local flag so the loop's general-atomic reject case knows to admit
-    * THIS specific atomic.  Other atomic shapes still reject. */
+   /* Blend-add reduction admit-precheck.  An ssbo_atomic with ATOMIC_OP=iadd
+    * looks like a "general atomic" to the loop below, but the blend-acc
+    * detector lifts it to the RB3D COMB_FCN_ADD accumulation shape -- one of
+    * the hardware-confirmed compute-as-raster substrate verbs.  Run the
+    * detector here and set a local flag so the loop's general-atomic reject
+    * case knows to admit THIS specific atomic.  Other atomic shapes still
+    * reject. */
    struct r300_compute_blend_acc_reduction_pattern blend_acc = {0};
    r300_nir_detect_blend_acc_reduction(s, &blend_acc);
    const bool admit_ssbo_atomic_blend_acc = blend_acc.is_blend_acc_reduction;
 
-   /* M-G Entry 5 ZPASS coverage-count admit-precheck.  Same admit-on-shape
-    * pattern as blend-acc but the structural test is conditional-gating
-    * an atomicAdd-of-1.  Detector + classifier admit-flag are mutually
-    * exclusive against blend-acc (the atomic's value source is const 1
-    * for ZPASS, vs a load_ssbo def for blend-acc) so admitting one
-    * cannot admit the other. */
+   /* ZPASS coverage-count admit-precheck.  Same admit-on-shape pattern as
+    * blend-acc but the structural test is a conditional-gated atomicAdd-of-1.
+    * Detector + classifier admit-flag are mutually exclusive against blend-acc
+    * (the atomic's value source is const 1 for ZPASS, vs a load_ssbo def for
+    * blend-acc) so admitting one cannot admit the other. */
    struct r300_compute_zpass_reduction_pattern zpass = {0};
    r300_nir_detect_zpass_reduction(s, &zpass);
    const bool admit_ssbo_atomic_zpass = zpass.is_zpass_reduction;
@@ -690,8 +683,8 @@ r300_nir_classify_compute(const nir_shader *s,
                /* Every atomic intrinsic carries "atomic" in its name; the
                 * substrate has only the blend-add/min/max/sub, stencil, and
                 * ZPASS reduction forms, none of which are an arbitrary-address
-                * NIR atomic.  The blend-acc-reduction shape (M-G Entry 4) IS
-                * a substrate-compatible atomic-add, so when the kernel-level
+                * NIR atomic.  The blend-acc-reduction shape IS a
+                * substrate-compatible atomic-add, so when the kernel-level
                 * detector confirmed the SHAPE upstream, admit the specific
                 * ssbo_atomic the detector recognised. */
                if (strstr(name, "atomic") != NULL) {

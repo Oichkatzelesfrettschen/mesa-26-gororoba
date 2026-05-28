@@ -512,31 +512,28 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
     * ssbo_addr_format set as the LOWERING TARGET for a later
     * nir_lower_explicit_io pass.  The classifier and the identity-map
     * detector both pattern-match on load_ssbo / store_ssbo intrinsics, so
-    * the lowering must run before they walk the NIR -- otherwise the
-    * detector misses the identity shape and r300vk_identity_map_dispatch_replay
-    * never runs (an empirical bundle 20260528T034632Z showed 256/256
-    * readback mismatches with the dispatch lifecycle otherwise clean). */
+    * the lowering must run before they walk the NIR -- otherwise the detector
+    * misses the identity shape and r300vk_identity_map_dispatch_replay never
+    * runs (the dispatch lifecycle stays clean but every readback mismatches).
+    * UBO derefs are lowered in the same pass; only the SSBO intrinsics feed
+    * the detectors. */
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_ubo | nir_var_mem_ssbo,
             nir_address_format_32bit_index_offset);
 
-   /* CSE + DCE between explicit_io and the detectors.  nir_lower_explicit_io
-    * emits independent address computations for each load_ssbo / store_ssbo
-    * intrinsic even when the source GLSL uses the same index for both --
-    * `out[gid] = in[gid]` produces two separate SSA defs for the gid*stride
-    * offset, one feeding the load and one feeding the store.  The M-E.6
-    * adversarial-review fix added the `store->src[2].ssa == load->src[1].ssa`
-    * gate to reject scatter shapes `out[g(i)] = in[i]`, but absent CSE the
-    * gate also rejects the legitimate identity-map shape on Vostro RS482
-    * (empirical bundle 20260528T143353Z showed both M-E and M-F cases
-    * regressed with sentinel_survivors=256/256 because is_identity_map=0
-    * and is_binary_map=0 fell through to the M-D no-op path).
-    * nir_opt_cse folds the duplicate offset computations to a single SSA
-    * def shared between the load and the store, restoring the offset_eq
-    * gate to TRUE on the identity-map and binary-map shapes.  The loop is
-    * standard mesa pattern (progressing while either DCE or CSE finds
-    * work) -- bounded by the NIR size, terminates in O(1) for the small
-    * single-statement kernels the detectors actually pattern-match. */
+   /* CSE + DCE between explicit_io and the detectors canonicalize the NIR so
+    * the detectors' intrinsic counting and value-def matching are reliable.
+    * nir_lower_explicit_io emits an independent address computation for each
+    * load_ssbo / store_ssbo, and a kernel can carry duplicate loads; CSE
+    * merges the duplicates so the single-store / single-load counts the
+    * detectors require are exact, and DCE drops dead access.  This does NOT
+    * make the per-intrinsic offset chains identical -- the load offset def and
+    * the store offset def stay distinct even for out[gid] = in[gid], which is
+    * why r300_nir_detect_identity_map matches on value-def identity (store
+    * value == load def) and deliberately does not gate on offset equality.
+    * The loop runs to fixpoint (it stops when neither pass reports progress);
+    * it is bounded by the NIR size, which is small for the single-statement
+    * kernels the detectors pattern-match. */
    bool progress;
    do {
       progress = false;
@@ -557,9 +554,9 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
 
-   /* R300VK_DEBUG=identity_map -- log what the classifier + detector
-    * decided, so the M-E.4.4 triage can pin whether identity_map was
-    * recognised at all and which bindings it captured. */
+   /* R300VK_DEBUG=identity_map -- log what the classifier + detector decided,
+    * so triage can pin whether identity_map was recognised at all and which
+    * bindings it captured. */
    {
       const char *flags = getenv("R300VK_DEBUG");
       if (flags && strstr(flags, "identity_map")) {
@@ -605,8 +602,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
  * blend = passthrough (write color unmodified, all four channels), rasterizer
  * = no cull / fill solid / no scissor / depth clip both planes, dsa = depth
  * test off + stencil off + alpha test off, sampler = NEAREST + CLAMP_TO_EDGE
- * (per the M-E exactness theorem: only NEAREST returns the stored texel
- * unmodified, the M-E.identity-map readback requires bit-exactness).
+ * (only NEAREST returns the stored texel unmodified, which the identity-map
+ * bit-exact readback requires).
  *
  * Idempotent: subsequent identity-map pipelines find the CSOs populated and
  * skip recreation.  The matching delete_*_state runs in r300vk_DestroyDevice
@@ -679,9 +676,8 @@ r300vk_device_init_identity_map_state(struct r300vk_device *device)
  * binary_map_op_admitted().  TGSI ADD / SUB / MUL / MIN / MAX are float;
  * integer NIR opcodes fold into the same float ALU because the texture
  * sampling normalises UNORM8 bytes to [0,1] floats anyway -- the byte
- * round-trip stays bit-exact when the operator obeys the FP24-budget
- * envelope (per
- * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md). */
+ * round-trip stays bit-exact when the operator obeys the FP24 integer-exact
+ * envelope. */
 static bool
 emit_binary_op(struct ureg_program *ureg, uint16_t nir_op,
                struct ureg_dst dst,
@@ -705,7 +701,7 @@ emit_binary_op(struct ureg_program *ureg, uint16_t nir_op,
    }
 }
 
-/* Synthesise the 2-sampler fragment program for the M-F binary-map lowering:
+/* Synthesise the 2-sampler fragment program for the binary-map lowering:
  *   TEX  tmp0, IN[0], SAMP[0]   (sample in_a)
  *   TEX  tmp1, IN[0], SAMP[1]   (sample in_b)
  *   <op> tmp0, tmp0, tmp1       (the binary ALU op)
@@ -756,10 +752,10 @@ r300vk_synthesize_binary_map_fs(struct pipe_context *pipe, uint16_t alu_op)
    return ureg_create_shader_and_destroy(ureg, pipe);
 }
 
-/* Synthesise the M-F (binary-map) VS + FS pair on the pipeline.  Reuses the
+/* Synthesise the binary-map VS + FS pair on the pipeline.  Reuses the
  * device-cached state CSOs (blend / raster / dsa / sampler) the identity-map
- * synthesis populates -- M-F and M-E share every per-draw state object;
- * only the FS differs. */
+ * synthesis populates -- the binary-map and identity-map paths share every
+ * per-draw state object; only the FS differs. */
 static bool
 r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
                                      struct r300vk_pipeline *pl)
@@ -840,13 +836,12 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* Synthesise the VS + FS pair for the M-G blend-add reduction lowering
- * (Conjecture M-G Entry 4).  The shaders are structurally identical to
- * r300vk_identity_map_synthesize_shaders -- a vertex_passthrough VS feeding
- * a single-sampler FS that samples the bound 2D texture and writes the
- * texel to OUT[0] COLOR.  The semantic difference between identity-map
- * and blend-acc reduction lives ENTIRELY in the orchestrator at dispatch
- * time:
+/* Synthesise the VS + FS pair for the blend-add reduction lowering.  The
+ * shaders are structurally identical to r300vk_identity_map_synthesize_shaders
+ * -- a vertex_passthrough VS feeding a single-sampler FS that samples the
+ * bound 2D texture and writes the texel to OUT[0] COLOR.  The semantic
+ * difference between identity-map and blend-acc reduction lives ENTIRELY in
+ * the orchestrator at dispatch time:
  *
  *   - identity-map orchestrator binds the output buffer as a W x H RT
  *     matching the input texture extent and draws a fullscreen quad with
@@ -855,24 +850,21 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
  *   - blend-acc orchestrator binds the output buffer as a 1 x M RT (M =
  *     histogram bin count, derived from the output buffer's element count
  *     at orchestrator time) and draws N point primitives at positions
- *     (gid & MASK, 0) with blending ENABLED in `COMB_FCN_ADD` /
+ *     (gid & MASK, 0) with blending ENABLED in COMB_FCN_ADD /
  *     blend_func = (ONE, ONE).  The blend hardware accumulates N writes
  *     into M bins.
  *
- * Sharing the synthesis lets the M-G.3 orchestrator reuse the device-cached
- * sampler / raster CSOs the M-E lowering already populates and adds only
- * the blend-state difference.  This is the same reuse pattern M-F.2 uses
- * for its own state CSOs (binary-map synthesis comment, r300vk_pipeline.c
- * ~line 755). */
+ * Sharing the synthesis lets the blend-acc orchestrator reuse the
+ * device-cached sampler / raster CSOs the identity-map lowering already
+ * populates and adds only the blend-state difference, the same reuse pattern
+ * the binary-map synthesis uses for its own state CSOs. */
 /* Initialise the device-cached blend-acc-reduction blend state CSO on
  * demand (the only state difference from the identity-map CSO set).
- * Configures the RB3D blend hardware path that the substrate finding
- * (2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md) and
- * the substrate bundle blendacc_20260527T045725Z empirically confirmed:
- * `COMB_FCN_ADD` with blend_func = (ONE, ONE) accumulates dest+src into
- * the RT cell.  The other CSOs (rasterizer / dsa / sampler) come from
- * r300vk_device_init_identity_map_state -- the M-G orchestrator binds
- * those unchanged from the M-E set. */
+ * Configures the RB3D blend hardware path the compute-as-raster substrate
+ * confirmed: COMB_FCN_ADD with blend_func = (ONE, ONE) accumulates dest+src
+ * into the RT cell.  The other CSOs (rasterizer / dsa / sampler) come from
+ * r300vk_device_init_identity_map_state -- the blend-acc orchestrator binds
+ * those unchanged from the identity-map set. */
 bool
 r300vk_device_init_blend_acc_reduction_state(struct r300vk_device *device);
 
@@ -901,13 +893,13 @@ r300vk_device_init_blend_acc_reduction_state(struct r300vk_device *device)
    return device->blend_acc_reduction_blend_cso != NULL;
 }
 
-/* Synthesise the M-G blend-acc-reduction fragment program: a single-MOV
+/* Synthesise the blend-acc-reduction fragment program: a single-MOV
  * passthrough from the GENERIC varying (carrying the per-fragment value
  * the orchestrator baked into the per-point VBO entry) to OUT[0] COLOR.
  * The RB3D blend hardware sums the per-fragment color into the bin cell
  * of the 1xM output RT.  Cost: 1 MOV ALU / 64-slot R300 PFS budget.
  *
- * This is structurally distinct from the M-E identity-map FS, which does
+ * This is structurally distinct from the identity-map FS, which does
  * TEX + MOV (samples the input texture); the blend-acc FS doesn't sample
  * because the value rides on the per-vertex attribute through the
  * rasterizer interpolator. */
@@ -938,10 +930,11 @@ r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_blend_acc_reduction_state(device))
       return false;
 
-   /* The VS is the same vertex-passthrough shape as M-E/M-F: 2 attributes
-    * (POSITION + GENERIC) feed the rasterizer.  The GENERIC attribute
-    * carries the per-vertex color the orchestrator stages into the VBO
-    * (a packed RGBA8 of the kernel's per-gid input value). */
+   /* The VS is the same vertex-passthrough shape as the identity-map and
+    * binary-map paths: 2 attributes (POSITION + GENERIC) feed the
+    * rasterizer.  The GENERIC attribute carries the per-vertex color the
+    * orchestrator stages into the VBO (a packed RGBA8 of the kernel's per-gid
+    * input value). */
    const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
                                                       TGSI_SEMANTIC_GENERIC };
    const unsigned          vs_semantic_indices[] = { 0, 0 };
@@ -959,7 +952,7 @@ r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* Synthesise the M-G ZPASS-reduction fragment program: one MOV from the
+/* Synthesise the ZPASS-reduction fragment program: one MOV from the
  * GENERIC predicate varying (carrying a per-vertex predicate value the
  * orchestrator baked into the VBO: 1.0 = survive, 0.0 = discard) to a
  * temp, then KILL_IF on (predicate <= 0).  Surviving fragments write a
@@ -993,11 +986,11 @@ r300vk_synthesize_zpass_reduction_fs(struct pipe_context *pipe)
     * the y/z/w channels follow the GL/D3D convention (0, 0, 1) for an
     * unwritten varying.  A naive `tmp = in_pred - 0.5; KILL_IF tmp`
     * would compute tmp.y = -0.5 and kill EVERY fragment regardless of
-    * predicate, returning ZPASS counter = 0 (bundle 20260528T190615Z).
-    * Broadcasting the predicate to all four channels before the
-    * subtract gives KILL_IF (predicate-0.5, predicate-0.5,
-    * predicate-0.5, predicate-0.5): discard when predicate < 0.5
-    * (the 0.0-baked discard case), pass when predicate >= 0.5. */
+    * predicate, returning ZPASS counter = 0.  Broadcasting the predicate
+    * to all four channels before the subtract gives KILL_IF
+    * (predicate-0.5, predicate-0.5, predicate-0.5, predicate-0.5):
+    * discard when predicate < 0.5 (the 0.0-baked discard case), pass when
+    * predicate >= 0.5. */
    struct ureg_src half = ureg_imm1f(ureg, 0.5f);
    struct ureg_src pred_xxxx =
       ureg_scalar(in_pred, TGSI_SWIZZLE_X);
@@ -1022,8 +1015,8 @@ r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   /* Same vertex-passthrough as M-E/M-F/M-G.3: 2 attributes (POSITION +
-    * GENERIC predicate-value). */
+   /* Same vertex-passthrough as the other compute-as-raster lowerings:
+    * 2 attributes (POSITION + GENERIC predicate-value). */
    const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
                                                       TGSI_SEMANTIC_GENERIC };
    const unsigned          vs_semantic_indices[] = { 0, 0 };
@@ -1041,21 +1034,17 @@ r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* Synthesise the M-G Entry 6 multipass ping-pong scan fragment program: one
- * per-pass FS the orchestrator binds for every dependent FBO pass.  Each
- * pass samples the prior pass's render target (NEAREST) at the fragment's
- * GENERIC texcoord and writes the texel doubled -- the 1-TEX + 1-MUL shape
- * the ping_pong_fbo_iter4 frontier confirmed (RS482_RS485_COMPUTE_PROBE_
- * DESIGN_SPECS.md).  The orchestrator runs this FS pass_count times,
- * swapping the sampler/target RT pair each pass, so the texel doubles once
- * per pass and lands at in * 2^pass_count.
+/* Synthesise the multipass ping-pong scan fragment program: one per-pass FS
+ * the orchestrator binds for every dependent FBO pass.  Each pass samples the
+ * prior pass's render target (NEAREST) at the fragment's GENERIC texcoord and
+ * writes the texel doubled -- a 1-TEX + 1-MUL shape.  The orchestrator runs
+ * this FS pass_count times, swapping the sampler/target RT pair each pass, so
+ * the texel doubles once per pass and lands at in * 2^pass_count.
  *
- * First-cut limitation (documented in the design finding
- * 2026-05-28-rs482-multipass-pingpong-scan-design.md): the FS hard-codes
- * the doubling step, matching the probe kernel `x = x * 2u`.  The detector
- * records step_op so a future cut can generalise to other per-iteration
- * scales; the doubling-only synthesis is the analogue of the deferred-fadd
- * scoping in M-G Entry 4. */
+ * First-cut limitation: the FS hard-codes the doubling step, matching the
+ * probe kernel `x = x * 2u`.  The detector records step_op so a future cut can
+ * generalise to other per-iteration scales; the doubling-only synthesis
+ * mirrors the iadd-first scoping of the blend-acc reduction. */
 static void *
 r300vk_synthesize_multipass_scan_fs(struct pipe_context *pipe)
 {
@@ -1086,9 +1075,10 @@ r300vk_synthesize_multipass_scan_fs(struct pipe_context *pipe)
    return ureg_create_shader_and_destroy(ureg, pipe);
 }
 
-/* Synthesise the M-G Entry 6 VS + per-pass FS.  Same vertex-passthrough as
- * M-E/M-F (POSITION + GENERIC texcoord); the FS is the doubling sampler
- * program the orchestrator rebinds for each ping-pong pass. */
+/* Synthesise the multipass-scan VS + per-pass FS.  Same vertex-passthrough as
+ * the other compute-as-raster lowerings (POSITION + GENERIC texcoord); the FS
+ * is the doubling sampler program the orchestrator rebinds for each ping-pong
+ * pass. */
 static bool
 r300vk_multipass_scan_synthesize_shaders(struct r300vk_device *device,
                                          struct r300vk_pipeline *pl)
@@ -1193,7 +1183,7 @@ r300vk_CreateComputePipelines(VkDevice _device,
        * will bind.  A synthesis failure demotes the pipeline back to a no-op
        * compute object: vkCreateComputePipelines still succeeds (the kernel
        * is admitted; the lowering is the optimization) and the dispatch path
-       * falls back to the M-D no-op semantics.  Detector mutual-exclusivity
+       * falls back to the no-op compute semantics.  Detector mutual-exclusivity
        * matters here -- at most one of identity_map / binary_map /
        * blend_acc_reduction can fire for a given kernel because their match
        * conditions are structurally disjoint (identity-map: store value is

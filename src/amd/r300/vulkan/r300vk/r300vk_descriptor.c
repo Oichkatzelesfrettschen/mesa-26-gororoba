@@ -312,8 +312,8 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
           * backing binding (the kind of read-modify-write hazard Vulkan
           * spec 14.2.3 "Descriptor Set Updates" requires to be atomic from
           * the consumer's perspective).  Stamping after validation gives
-          * the all-or-nothing visibility the M-E/M-F dispatch-replay walker
-          * relies on. */
+          * the all-or-nothing visibility the compute-as-raster dispatch-replay
+          * walker relies on. */
          switch (write->descriptorType) {
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -325,14 +325,12 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
              * application that binds offset+range > buffer-size --
              * legal Vulkan API call from the client's perspective but
              * a runtime mistake -- gets a slot that points past
-             * the buffer's allocated pages; the M-E/M-F orchestrator's
-             * wrap helper would then read garbage at the upper GART
-             * range.  This defense replaces the falsified GART-3
-             * NIR-clamp (see steinmarder
-             * src/re/r300/findings/active/2026-05-28-r300-pfs-no-flat-
-             * 32bit-shader-address-falsified.md) -- R300 PFS has no
-             * shader-emitted flat address, so the defense surface
-             * lives at descriptor binding, not in NIR.
+             * the buffer's allocated pages; the compute-as-raster
+             * orchestrator's wrap helper would then read garbage at the
+             * upper GART range.  R300 PFS has no shader-emitted flat
+             * address, so an out-of-bounds descriptor offset cannot be
+             * clamped in NIR; the defense surface lives at descriptor
+             * binding, not in NIR.
              *
              * VK_WHOLE_SIZE (~0ull) means "from offset to end of
              * buffer", which is by construction in-bounds; the Mesa

@@ -12,10 +12,12 @@
  * pipe_context primitives so the gallium-mediated submit path replays the
  * kernel as a graphics draw.
  *
- * Three helpers; each is its own subtask in the M-E build-out:
- *   M-E.3.1  r300vk_identity_map_wrap_input_as_sampler_view   <-- this file
- *   M-E.3.2  r300vk_identity_map_dispatch_replay              <-- follow-on
- *   M-E.4    bit-exact readback oracle for the dispatched draw
+ * Three helpers:
+ *   r300vk_identity_map_wrap_input_as_sampler_view   wraps a pipe_resource
+ *       buffer as a PIPE_TEXTURE_2D sampler view for fragment-draw input.
+ *   r300vk_identity_map_dispatch_replay              lowers the admitted
+ *       kernel onto the compute-as-raster substrate as a fullscreen-quad draw.
+ *   bit-exact readback oracle validates the dispatched draw result.
  */
 
 #ifndef R300VK_IDENTITY_MAP_H
@@ -77,7 +79,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
                                     const struct r300vk_cmd_dispatch *dispatch,
                                     const struct r300vk_cmd_bind_descriptor_sets *binds);
 
-/* M-F binary-map dispatch replay: lowers an admitted compute kernel of the
+/* Binary-map dispatch replay: lowers an admitted compute kernel of the
  * shape out[i] = f(a[i], b[i]) onto a fullscreen-quad fragment draw that
  * samples in_a (sampler 0) + in_b (sampler 1), applies the synthesised
  * per-op ALU in the PFS, and writes to the RT.  Same orchestrator skeleton
@@ -94,7 +96,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
                                   const struct r300vk_cmd_dispatch *dispatch,
                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
 
-/* M-G blend-acc-reduction orchestrator entry: descriptor walk to resolve
+/* Blend-acc-reduction orchestrator entry: descriptor walk to resolve
  * the (value-input, histogram-output) buffer pair, stage a per-point VBO
  * carrying (pos, packed-RGBA8-value) per gid, bind the blend-enabled
  * `COMB_FCN_ADD` / blend_func (ONE, ONE) state CSO, draw N point primitives
@@ -113,36 +115,34 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
                                            const struct r300vk_cmd_dispatch *dispatch,
                                            const struct r300vk_cmd_bind_descriptor_sets *binds);
 
-/* M-G Entry 5 ZPASS coverage-count reduction orchestrator entry: resolves
- * the (predicate-source, single-element counter) buffer pair, stages a
+/* ZPASS coverage-count reduction orchestrator entry: resolves the
+ * (predicate-source, single-element counter) buffer pair, stages a
  * per-point VBO carrying (pos, predicate-float) per gid, draws N point
  * primitives into a 1xN RT with PIPE_QUERY_OCCLUSION_COUNTER bracketed
  * around the draw.  The fragment program KILL_IF discards every fragment
  * whose baked predicate is 0; surviving fragments increment the depth/
- * stencil unit's ZPASS counter pair (`mmR300_ZB_ZPASS_DATA` =
- * DWORD 0x13d6 / byte 0x4f58 and `mmR300_ZB_ZPASS_ADDR` = DWORD 0x13d7 /
- * byte 0x4f5c per the umr-gororoba RS482 register decode at
- * `umr-gororoba/database/ip/rs482_gfx_3_0_0.reg`); pipe_query exposes the
- * sum as a uint64 that the orchestrator truncates to uint32 and writes
- * to count_out[0].  The kernel-shape pattern is `if (in_data[gid] != 0u)
- * atomicAdd(count_out, 1u)` (the orchestrator and probe share a
- * compare-to-zero predicate contract; the detector recognises the SHAPE
- * but does not extract the comparison RHS, so the contract is the
- * orchestrator side of the discipline).  Returns false on resource
- * creation failure, descriptor walk miss, or query-result wait failure;
- * the queue's caller then falls through to the no-op compute lifecycle
- * and the dispatch still signals the fence so the object lifecycle
+ * stencil unit's ZPASS counter pair (ZB_ZPASS_DATA / ZB_ZPASS_ADDR);
+ * pipe_query exposes the sum as a uint64 that the orchestrator truncates to
+ * uint32 and writes to count_out[0].  The
+ * kernel-shape pattern is `if (in_data[gid] != 0u) atomicAdd(count_out, 1u)`
+ * (the orchestrator and probe share a compare-to-zero predicate contract;
+ * the detector recognizes the shape but does not extract the comparison RHS,
+ * so the contract is enforced on the orchestrator side).  Returns false on
+ * resource creation failure, descriptor walk miss, or query-result wait
+ * failure; the queue's caller then falls through to the no-op compute
+ * lifecycle and the dispatch still signals the fence so the object lifecycle
  * completes. */
-/* M-G Entry 6 multipass FBO ping-pong scan orchestrator: resolves the
- * (input, output, params) buffer triple, reads pass_count from the params
- * buffer, seeds a 1xN RGBA8 texture from the input, runs pass_count
- * dependent fragment passes alternating two textures as sampler source /
- * render target (each pass doubling the texel via the synthesised FS), and
- * copies the final texture to the output buffer.  Realizes the substrate's
- * multipass FBO ping-pong verb (frontier ping_pong_fbo_iter4).  Returns
- * false on resource creation failure, descriptor walk miss, or a pass_count
- * above the per-byte UNORM8 envelope; the queue's caller then falls through
- * to the no-op compute lifecycle. */
+/* Multipass FBO ping-pong scan orchestrator: resolves the (input, output,
+ * params) buffer triple, reads pass_count from the params buffer, seeds a
+ * 1xN RGBA8 texture from the input, runs pass_count dependent fragment
+ * passes alternating two textures as sampler source / render target (each
+ * pass doubling the texel via the synthesized FS), and copies the final
+ * texture to the output buffer.  The unique discriminator from the
+ * single-pass identity-map, binary-map, blend-acc-reduction, and
+ * ZPASS-reduction kernels is the presence of a nir_loop in the admitted
+ * NIR shader.  Returns false on resource creation failure, descriptor walk
+ * miss, or a pass_count above the per-byte UNORM8 envelope; the queue's
+ * caller then falls through to the no-op compute lifecycle. */
 bool
 r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
                                       const struct r300vk_pipeline *pl,
