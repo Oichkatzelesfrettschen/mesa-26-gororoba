@@ -517,6 +517,30 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
             nir_var_mem_ubo | nir_var_mem_ssbo,
             nir_address_format_32bit_index_offset);
 
+   /* CSE + DCE between explicit_io and the detectors.  nir_lower_explicit_io
+    * emits independent address computations for each load_ssbo / store_ssbo
+    * intrinsic even when the source GLSL uses the same index for both --
+    * `out[gid] = in[gid]` produces two separate SSA defs for the gid*stride
+    * offset, one feeding the load and one feeding the store.  The M-E.6
+    * adversarial-review fix added the `store->src[2].ssa == load->src[1].ssa`
+    * gate to reject scatter shapes `out[g(i)] = in[i]`, but absent CSE the
+    * gate also rejects the legitimate identity-map shape on Vostro RS482
+    * (empirical bundle 20260528T143353Z showed both M-E and M-F cases
+    * regressed with sentinel_survivors=256/256 because is_identity_map=0
+    * and is_binary_map=0 fell through to the M-D no-op path).
+    * nir_opt_cse folds the duplicate offset computations to a single SSA
+    * def shared between the load and the store, restoring the offset_eq
+    * gate to TRUE on the identity-map and binary-map shapes.  The loop is
+    * standard mesa pattern (progressing while either DCE or CSE finds
+    * work) -- bounded by the NIR size, terminates in O(1) for the small
+    * single-statement kernels the detectors actually pattern-match. */
+   bool progress;
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_dce);
+      NIR_PASS(progress, nir, nir_opt_cse);
+   } while (progress);
+
    r300_nir_classify_compute(nir, adm);
    /* Identity-map + binary-map detection are independent of admission so
     * the orchestrator can use them to select the appropriate compute-as-
