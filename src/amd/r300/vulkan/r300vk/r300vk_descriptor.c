@@ -16,6 +16,7 @@
  */
 
 #include "r300vk_descriptor.h"
+#include "r300vk_buffer.h"
 #include "r300vk_device.h"
 #include "r300vk_entrypoints.h"
 
@@ -311,6 +312,37 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC: {
             const VkDescriptorBufferInfo *bi = &write->pBufferInfo[d];
+            /* Bound-check (offset, range) against the buffer's actual
+             * size before stamping the slot.  Without this, a Vulkan
+             * application that binds offset+range > buffer-size --
+             * legal Vulkan API call from the client's perspective but
+             * a runtime mistake -- gets a slot that points past
+             * the buffer's allocated pages; the M-E/M-F orchestrator's
+             * wrap helper would then read garbage at the upper GART
+             * range.  This defense replaces the falsified GART-3
+             * NIR-clamp (see steinmarder
+             * src/re/r300/findings/active/2026-05-28-r300-pfs-no-flat-
+             * 32bit-shader-address-falsified.md) -- R300 PFS has no
+             * shader-emitted flat address, so the defense surface
+             * lives at descriptor binding, not in NIR.
+             *
+             * VK_WHOLE_SIZE (~0ull) means "from offset to end of
+             * buffer", which is by construction in-bounds; the Mesa
+             * runtime does not resolve it earlier than this site, so
+             * accept it.  An out-of-bounds binding is silently
+             * skipped (the previous slot's value, NULL after
+             * AllocateDescriptorSets's zalloc, persists). */
+            VK_FROM_HANDLE(r300vk_buffer, buf, bi->buffer);
+            bool in_bounds = (buf == NULL); /* NULL-buffer = unbind, fine */
+            if (buf) {
+               in_bounds = (bi->offset <= buf->size) &&
+                           (bi->range == VK_WHOLE_SIZE ||
+                            (bi->range <= buf->size - bi->offset));
+            }
+            if (!in_bounds) {
+               slot->type = 0;
+               break;
+            }
             slot->buf.buffer = bi->buffer;
             slot->buf.offset = bi->offset;
             slot->buf.range  = bi->range;
