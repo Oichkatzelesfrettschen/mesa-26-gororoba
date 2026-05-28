@@ -2,16 +2,17 @@
  * Copyright (c) 2026 Terascale Functionalists
  * SPDX-License-Identifier: MIT
  *
- * r300vk descriptor-set machinery -- the M-E prerequisite the exhaustive
- * compute probe identified.  vk_common provides CreatePipelineLayout but not
- * the descriptor-set entrypoints (a descriptor set maps to driver-specific
- * resource state, so each Mesa driver implements its own).
+ * r300vk descriptor-set machinery -- object lifecycle for VkDescriptorSetLayout,
+ * VkDescriptorPool, VkDescriptorSet.  vk_common provides CreatePipelineLayout
+ * but not the descriptor-set entrypoints (a descriptor set maps to
+ * driver-specific resource state, so each Mesa driver implements its own).
  *
- * Object lifecycle only: the layout records bindings, the pool lends sets, a
- * set records bound buffer / image handles per binding.  The gallium-mediated
- * consumption (the bound set -> r300g sampler_views / shader_buffers at
- * draw_vbo / dispatch replay time) is a later stage (M-E); a no-op kernel
- * (M-D) does not read the descriptors so the unwritten slots are not read.
+ * Scope: object lifecycle only.  The layout records bindings; the pool is a
+ * bump-allocator of max_sets slots; a set records bound buffer / image handles
+ * per binding.  The gallium-binding stage (the bound set translates into r300g
+ * pipe_context sampler_views / shader_buffers / shader_images / constant_buffers
+ * at draw_vbo / dispatch replay time) is a separate stage; a no-op dispatch
+ * kernel does not read the descriptors so the unwritten slots are not read.
  */
 
 #include "r300vk_descriptor.h"
@@ -32,6 +33,13 @@ static int compare_binding_index(const void *a, const void *b)
    return (ba < bb) ? -1 : (ba > bb) ? 1 : 0;
 }
 
+static bool
+descriptor_type_is_dynamic(VkDescriptorType t)
+{
+   return t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+          t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+}
+
 VkResult
 r300vk_CreateDescriptorSetLayout(VkDevice _device,
                                  const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
@@ -49,6 +57,7 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    layout->binding_count = n;
+   uint32_t dynamic_count = 0;
    for (uint32_t i = 0; i < n; i++) {
       const VkDescriptorSetLayoutBinding *src = &pCreateInfo->pBindings[i];
       layout->bindings[i] = (struct r300vk_dsl_binding){
@@ -57,10 +66,12 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
          .count        = src->descriptorCount,
          .stage_flags  = src->stageFlags,
       };
+      if (descriptor_type_is_dynamic(src->descriptorType))
+         dynamic_count += src->descriptorCount;
    }
    /* Sort by binding index so AllocateDescriptorSets can compute the linear
-    * slot offset by a single in-order pass, and so UpdateDescriptorSets can
-    * binary-search the dst binding. */
+    * slot offset by a single in-order pass, and so find_binding can scan in
+    * order. */
    qsort(layout->bindings, n, sizeof(layout->bindings[0]), compare_binding_index);
    uint32_t off = 0;
    for (uint32_t i = 0; i < n; i++) {
@@ -68,6 +79,14 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
       off += layout->bindings[i].count;
    }
    layout->total_descriptors = off;
+
+   /* vk_common_CreatePipelineLayout reads dynamic_descriptor_count off the
+    * runtime base to compute per-set dynamic_descriptor_offset[s], the index
+    * each set's dynamic offsets start at in the bind-time pDynamicOffsets
+    * array.  Without this count, any pipeline-layout that contains a dynamic
+    * descriptor binding computes offset 0 for every set and binds the wrong
+    * data. */
+   layout->base.dynamic_descriptor_count = dynamic_count;
 
    *pSetLayout = r300vk_descriptor_set_layout_to_handle(layout);
    return VK_SUCCESS;
@@ -102,6 +121,25 @@ r300vk_CreateDescriptorPool(VkDevice _device,
    return VK_SUCCESS;
 }
 
+/* Tear down one allocated slot and clear its bookkeeping.  Used by the
+ * AllocateDescriptorSets failure rollback, FreeDescriptorSets, and
+ * ResetDescriptorPool.  set->descriptors was allocated with the device alloc
+ * (no pAllocator), so the free call matches that side; any caller-supplied
+ * pAllocator only owns the pool struct itself. */
+static void
+release_set_slot(struct r300vk_device *device, struct r300vk_descriptor_set *set)
+{
+   if (!set->allocated)
+      return;
+   if (set->descriptors) {
+      vk_free(&device->vk.alloc, set->descriptors);
+      set->descriptors = NULL;
+   }
+   vk_object_base_finish(&set->base);
+   set->allocated = false;
+   set->layout = NULL;
+}
+
 void
 r300vk_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
                              const VkAllocationCallbacks *pAllocator)
@@ -110,12 +148,8 @@ r300vk_DestroyDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
    VK_FROM_HANDLE(r300vk_descriptor_pool, pool, _pool);
    if (!pool)
       return;
-   for (uint32_t i = 0; i < pool->max_sets; i++) {
-      if (pool->sets[i].descriptors)
-         vk_free2(&device->vk.alloc, pAllocator, pool->sets[i].descriptors);
-      if (pool->sets[i].allocated)
-         vk_object_base_finish(&pool->sets[i].base);
-   }
+   for (uint32_t i = 0; i < pool->max_sets; i++)
+      release_set_slot(device, &pool->sets[i]);
    vk_free2(&device->vk.alloc, pAllocator, pool->sets);
    vk_object_base_finish(&pool->base);
    vk_free2(&device->vk.alloc, pAllocator, pool);
@@ -128,14 +162,8 @@ r300vk_ResetDescriptorPool(VkDevice _device, VkDescriptorPool _pool,
    VK_FROM_HANDLE(r300vk_device, device, _device);
    VK_FROM_HANDLE(r300vk_descriptor_pool, pool, _pool);
    (void)flags;
-   for (uint32_t i = 0; i < pool->max_sets; i++) {
-      if (pool->sets[i].allocated) {
-         vk_free(&device->vk.alloc, pool->sets[i].descriptors);
-         pool->sets[i].descriptors = NULL;
-         vk_object_base_finish(&pool->sets[i].base);
-         pool->sets[i].allocated = false;
-      }
-   }
+   for (uint32_t i = 0; i < pool->max_sets; i++)
+      release_set_slot(device, &pool->sets[i]);
    pool->allocated_sets = 0;
    return VK_SUCCESS;
 }
@@ -147,8 +175,9 @@ r300vk_AllocateDescriptorSets(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
    VK_FROM_HANDLE(r300vk_descriptor_pool, pool, pAllocateInfo->descriptorPool);
+   const uint32_t n = pAllocateInfo->descriptorSetCount;
 
-   for (uint32_t i = 0; i < pAllocateInfo->descriptorSetCount; i++) {
+   for (uint32_t i = 0; i < n; i++) {
       VK_FROM_HANDLE(r300vk_descriptor_set_layout, layout,
                      pAllocateInfo->pSetLayouts[i]);
 
@@ -161,27 +190,47 @@ r300vk_AllocateDescriptorSets(VkDevice _device,
             break;
          }
       }
+      VkResult fail_result = VK_SUCCESS;
       if (!set) {
-         /* Roll back the sets allocated in this call so the caller sees a
-          * consistent state. */
-         for (uint32_t j = 0; j < i; j++)
-            pDescriptorSets[j] = VK_NULL_HANDLE;
-         return vk_error(device, VK_ERROR_OUT_OF_POOL_MEMORY);
-      }
-
-      vk_object_base_init(&device->vk, &set->base, VK_OBJECT_TYPE_DESCRIPTOR_SET);
-      set->layout    = layout;
-      set->allocated = true;
-      if (layout->total_descriptors > 0) {
-         set->descriptors = vk_zalloc(&device->vk.alloc,
-                                       layout->total_descriptors *
-                                          sizeof(set->descriptors[0]),
-                                       8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-         if (!set->descriptors) {
-            vk_object_base_finish(&set->base);
-            set->allocated = false;
-            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         fail_result = VK_ERROR_OUT_OF_POOL_MEMORY;
+      } else {
+         vk_object_base_init(&device->vk, &set->base,
+                             VK_OBJECT_TYPE_DESCRIPTOR_SET);
+         set->layout    = layout;
+         set->allocated = true;
+         if (layout->total_descriptors > 0) {
+            set->descriptors =
+               vk_zalloc(&device->vk.alloc,
+                         layout->total_descriptors * sizeof(set->descriptors[0]),
+                         8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+            if (!set->descriptors) {
+               /* Roll back this half-initialized slot before falling into the
+                * shared failure path. */
+               vk_object_base_finish(&set->base);
+               set->allocated = false;
+               set->layout = NULL;
+               fail_result = VK_ERROR_OUT_OF_HOST_MEMORY;
+            }
          }
+      }
+      if (fail_result != VK_SUCCESS) {
+         /* VUID-vkAllocateDescriptorSets-pDescriptorSets-00756: every
+          * pDescriptorSets[k] for k in [0,n) MUST be VK_NULL_HANDLE on
+          * failure.  Also release the slots committed by earlier iterations
+          * so the pool's allocated_sets and per-slot state stay consistent;
+          * a subsequent allocate before a reset must see the real free
+          * count. */
+         for (uint32_t j = 0; j < i; j++) {
+            VK_FROM_HANDLE(r300vk_descriptor_set, prev, pDescriptorSets[j]);
+            if (prev) {
+               release_set_slot(device, prev);
+               if (pool->allocated_sets > 0)
+                  pool->allocated_sets--;
+            }
+         }
+         for (uint32_t j = 0; j < n; j++)
+            pDescriptorSets[j] = VK_NULL_HANDLE;
+         return vk_error(device, fail_result);
       }
       pool->allocated_sets++;
       pDescriptorSets[i] = r300vk_descriptor_set_to_handle(set);
@@ -200,10 +249,7 @@ r300vk_FreeDescriptorSets(VkDevice _device, VkDescriptorPool _pool,
       VK_FROM_HANDLE(r300vk_descriptor_set, set, pDescriptorSets[i]);
       if (!set || !set->allocated)
          continue;
-      vk_free(&device->vk.alloc, set->descriptors);
-      set->descriptors = NULL;
-      vk_object_base_finish(&set->base);
-      set->allocated = false;
+      release_set_slot(device, set);
       if (pool->allocated_sets > 0)
          pool->allocated_sets--;
    }
@@ -239,12 +285,24 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
                                                         write->dstBinding);
       if (!b)
          continue;
-      /* Walk dstArrayElement..dstArrayElement+descriptorCount-1, possibly
-       * spilling into successive bindings if the layout chain consents (the
-       * spec allows the write to cross into adjacent bindings of identical
-       * type; the simple impl here stays within the named binding). */
+      /* Walk dstArrayElement..dstArrayElement+descriptorCount-1.  The Vulkan
+       * spec allows the write to spill into adjacent bindings of identical
+       * type (VUID-VkWriteDescriptorSet-dstArrayElement-00321); this impl
+       * spans the linear set->descriptors[] array without checking adjacent
+       * binding-type identity, which is correct for r300vk's compute kernels
+       * (single binding per set) and over-permissive for multi-binding layouts
+       * that mix descriptor types -- the slot->type field still records the
+       * actual type written, so the consumer can detect a mismatch at replay
+       * time.  Cap the write to the set's total_descriptors to keep the index
+       * inside the allocated array. */
       uint32_t base = b->offset + write->dstArrayElement;
-      for (uint32_t d = 0; d < write->descriptorCount; d++) {
+      uint32_t total = set->layout->total_descriptors;
+      uint32_t span = write->descriptorCount;
+      if (base >= total)
+         continue;
+      if (base + span > total)
+         span = total - base;
+      for (uint32_t d = 0; d < span; d++) {
          struct r300vk_descriptor *slot = &set->descriptors[base + d];
          slot->type = write->descriptorType;
          switch (write->descriptorType) {
@@ -275,9 +333,9 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
          }
          default:
             /* Texel buffers and inline-uniform-block are not yet wired into
-             * the gallium binding; record the type so a future stage can
-             * detect and reject early.  Not a stub: the slot's type field
-             * makes the unsupported case visible to the dispatch replay. */
+             * the gallium-binding stage; the slot's recorded type makes the
+             * unsupported case visible to the dispatch replay so it can
+             * reject early rather than dispatch with stale data. */
             break;
          }
       }
@@ -287,12 +345,27 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
       const VkCopyDescriptorSet *cp = &pDescriptorCopies[c];
       VK_FROM_HANDLE(r300vk_descriptor_set, src_set, cp->srcSet);
       VK_FROM_HANDLE(r300vk_descriptor_set, dst_set, cp->dstSet);
-      const struct r300vk_dsl_binding *src_b = find_binding(src_set->layout, cp->srcBinding);
-      const struct r300vk_dsl_binding *dst_b = find_binding(dst_set->layout, cp->dstBinding);
+      const struct r300vk_dsl_binding *src_b =
+         find_binding(src_set->layout, cp->srcBinding);
+      const struct r300vk_dsl_binding *dst_b =
+         find_binding(dst_set->layout, cp->dstBinding);
       if (!src_b || !dst_b)
          continue;
-      memcpy(&dst_set->descriptors[dst_b->offset + cp->dstArrayElement],
-             &src_set->descriptors[src_b->offset + cp->srcArrayElement],
-             cp->descriptorCount * sizeof(struct r300vk_descriptor));
+      /* The spec permits a copy to span adjacent bindings of identical type;
+       * cap descriptorCount to whichever side has fewer remaining slots in
+       * the linear array so a malformed call cannot memcpy past the
+       * descriptors allocation. */
+      uint32_t src_total = src_set->layout->total_descriptors;
+      uint32_t dst_total = dst_set->layout->total_descriptors;
+      uint32_t src_base = src_b->offset + cp->srcArrayElement;
+      uint32_t dst_base = dst_b->offset + cp->dstArrayElement;
+      if (src_base >= src_total || dst_base >= dst_total)
+         continue;
+      uint32_t span = cp->descriptorCount;
+      if (src_base + span > src_total) span = src_total - src_base;
+      if (dst_base + span > dst_total) span = dst_total - dst_base;
+      memcpy(&dst_set->descriptors[dst_base],
+             &src_set->descriptors[src_base],
+             span * sizeof(struct r300vk_descriptor));
    }
 }

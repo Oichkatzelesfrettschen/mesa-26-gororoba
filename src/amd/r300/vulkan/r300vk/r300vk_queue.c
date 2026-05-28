@@ -504,6 +504,15 @@ r300vk_replay_gpu(struct r300vk_device *device,
          break;
       }
 
+      case R300VK_CMD_BIND_DESCRIPTOR_SETS:
+         /* Record-only at this stage: the bound layout, set handles, and
+          * dynamic offsets are already on the entry.  Translation into the
+          * gallium binding (sampler_views / shader_buffers / shader_images /
+          * constant_buffers via pipe_context) is the consumer's job at the
+          * next CmdDispatch / CmdDraw; a no-op kernel does not read the
+          * descriptors so replay is a no-op here. */
+         break;
+
       case R300VK_CMD_DISPATCH:
          if (skip_render_pass)
             break;
