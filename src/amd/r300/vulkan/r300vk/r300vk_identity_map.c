@@ -20,6 +20,7 @@
 #include "pipe/p_screen.h"
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
+#include "util/u_surface.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -84,10 +85,18 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
       return NULL;
 
    /* Copy the buffer contents into the texture.  r300g's
-    * r300_resource_copy_region falls back to util_resource_copy_region for
-    * the buffer-to-texture target combination (r300_blit.c:593), which
-    * handles the row-pitch / format-layout details by mapping both sides
-    * and memcpy-ing. */
+    * r300_resource_copy_region does NOT fall back to
+    * util_resource_copy_region for PIPE_BUFFER -> PIPE_TEXTURE_2D when
+    * the dst format is blit-supported (r300_blit.c:593-596 -- the
+    * fallback fires only when both sides are PIPE_BUFFER OR the format
+    * is unsupported).  The non-fallback path emits a TXF instruction in
+    * the synthesized blit shader; R300 hardware has no texelFetch (TXF
+    * asserts in r300_tgsi_to_rc.c:169 "Unknown TGSI/RC opcode: TXF").
+    * Call util_resource_copy_region directly to force the CPU map +
+    * memcpy path, which handles arbitrary target combinations including
+    * buffer -> texture by walking rows through transfer_map.  Box
+    * semantics: bytes for the buffer side, texels for the texture side
+    * -- the helper handles the conversion. */
    const unsigned bytes = width * height * util_format_get_blocksize(format);
    struct pipe_box src_box;
    memset(&src_box, 0, sizeof(src_box));
@@ -95,11 +104,11 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
    src_box.height = 1;
    src_box.depth  = 1;
 
-   pipe->resource_copy_region(pipe,
-                              tex,    /* dst */ 0 /* dst_level */,
-                              0, 0, 0 /* dst x,y,z */,
-                              src_buf, 0 /* src_level */,
-                              &src_box);
+   util_resource_copy_region(pipe,
+                             tex,    /* dst */ 0 /* dst_level */,
+                             0, 0, 0 /* dst x,y,z */,
+                             src_buf, 0 /* src_level */,
+                             &src_box);
 
    /* Create the sampler view.  The view holds an internal reference to the
     * texture; drop our local reference so the texture lifetime tracks the
@@ -473,11 +482,15 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    copy_box.width  = width;
    copy_box.height = height;
    copy_box.depth  = 1;
-   pipe->resource_copy_region(pipe,
-                              out_buf->resource, 0 /* dst_level */,
-                              0, 0, 0 /* dst x,y,z bytes */,
-                              rt, 0 /* src_level */,
-                              &copy_box);
+   /* Same TXF-avoidance reason as the input wrap: r300g's resource_copy_region
+    * for PIPE_TEXTURE_2D -> PIPE_BUFFER also takes the blitter path with
+    * blit-supported formats and hits the TXF assertion.  util_resource_copy_region
+    * forces the CPU map + memcpy. */
+   util_resource_copy_region(pipe,
+                             out_buf->resource, 0 /* dst_level */,
+                             0, 0, 0 /* dst x,y,z bytes */,
+                             rt, 0 /* src_level */,
+                             &copy_box);
    IDM_LOG("rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
            (const void *)out_buf->resource, (const void *)rt,
            copy_box.width, copy_box.height);
