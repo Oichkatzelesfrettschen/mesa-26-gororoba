@@ -277,11 +277,128 @@ r300_nir_detect_binary_map(const nir_shader *s,
       out->output_ssbo_binding  = nir_src_as_uint(store->src[1]);
 }
 
+/* M-G Entry 4 blend-add reduction detector.  Recognises the histogram /
+ * accumulator shape that lowers to RB3D `COMB_FCN_ADD` blend accumulation:
+ *
+ *     uint gid = gl_GlobalInvocationID.x;
+ *     uint bin = gid & MASK;
+ *     atomicAdd(out_data[bin], in_data[gid]);
+ *
+ * Detection invariants (mirror the M-F.1 binary-map shape, one level of
+ * indirection lower because the store side is the atomic itself instead
+ * of a separate store_ssbo):
+ *
+ *   1. Exactly 1 ssbo_atomic intrinsic + exactly 1 load_ssbo intrinsic +
+ *      exactly 0 store_ssbo intrinsics (the atomic IS the store).
+ *   2. The atomic's ATOMIC_OP index is nir_atomic_op_iadd (integer add).
+ *      M-G future extensions for fadd, imin, imax, etc. plug into the
+ *      same shape; landing iadd first because every per-bin sum is
+ *      integer-exact within the FP24 envelope when bin_count is small
+ *      and per-bin sum < 2^17 (M-E numeric envelope, finding
+ *      2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md).
+ *   3. The atomic's value-source SSA def equals the load_ssbo's def --
+ *      identifies that the input is FED INTO the atomic rather than
+ *      consumed elsewhere.
+ *   4. The atomic's binding != the load's binding -- output histogram
+ *      cannot also be the input source (Vulkan forbids it by descriptor
+ *      contract, but spell it out for the detector's predicate-completeness).
+ *
+ * The bin-mask analysis (walking the atomic's offset SSA back to find the
+ * `gid & const_mask` shape) is NOT performed here: the orchestrator will
+ * size the output RT from the descriptor's buffer size (M-bin output = M
+ * uint32 cells in the descriptor), and the mask is implicit in the buffer
+ * size.  Treat the mask analysis as an M-G.2 / M-G.3 extension if a
+ * non-power-of-2-minus-1 mask probe shape needs it.
+ *
+ * The same "binding sources may be opaque post-explicit_io" caveat from
+ * M-F.1 applies: when nir_src_is_const returns false, the field stays
+ * 0 and the orchestrator's positional fallback recovers from the
+ * descriptor set layout. */
+void
+r300_nir_detect_blend_acc_reduction(const nir_shader *s,
+                                    struct r300_compute_blend_acc_reduction_pattern *out)
+{
+   out->is_blend_acc_reduction = false;
+   out->value_ssbo_binding     = 0;
+   out->output_ssbo_binding    = 0;
+   out->alu_op                 = 0;
+
+   const nir_intrinsic_instr *atomic = NULL;
+   const nir_intrinsic_instr *load   = NULL;
+   unsigned atomic_count = 0;
+   unsigned load_count   = 0;
+   unsigned store_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+               atomic = intr;
+               atomic_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               load = intr;
+               load_count++;
+            } else if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store_count++;
+            }
+         }
+      }
+   }
+
+   if (atomic_count != 1 || load_count != 1 || store_count != 0)
+      return;
+
+   /* nir_intrinsic_atomic_op index carries the per-atomic operation
+    * selector; nir_atomic_op_iadd is integer add. */
+   if (nir_intrinsic_atomic_op(atomic) != nir_atomic_op_iadd)
+      return;
+
+   /* ssbo_atomic src layout per nir_intrinsics.py:960:
+    *   intrinsic("ssbo_atomic", src_comp=[-1, 1, 1], ...)
+    *   src[0] = binding (variable size), src[1] = offset, src[2] = value.
+    * The value source MUST equal the load_ssbo's def -- this is the
+    * "load X, atomic-add X into bin" structural invariant.
+    * load_ssbo src layout (also from nir_intrinsics.py):
+    *   src[0] = binding, src[1] = offset. */
+   if (atomic->src[2].ssa != &load->def)
+      return;
+
+   /* The atomic's binding and the load's binding must be distinct;
+    * Vulkan's descriptor contract forbids aliasing a writable target
+    * back to an input source within one descriptor write, but spell
+    * it out so the detector handles malformed input gracefully. */
+   if (nir_src_is_const(atomic->src[0]) && nir_src_is_const(load->src[0]) &&
+       nir_src_as_uint(atomic->src[0]) == nir_src_as_uint(load->src[0]))
+      return;
+
+   out->is_blend_acc_reduction = true;
+   out->alu_op = (uint16_t)nir_op_iadd;
+   if (nir_src_is_const(load->src[0]))
+      out->value_ssbo_binding  = nir_src_as_uint(load->src[0]);
+   if (nir_src_is_const(atomic->src[0]))
+      out->output_ssbo_binding = nir_src_as_uint(atomic->src[0]);
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
 {
    admit(out);
+
+   /* M-G Entry 4 (blend-add reduction) admit-precheck.  An ssbo_atomic with
+    * ATOMIC_OP=iadd looks like a "general atomic" to the loop below, but
+    * the blend-acc detector lifts it to the RB3D `COMB_FCN_ADD` accumulation
+    * shape -- one of the eight hardware-confirmed substrate verbs (substrate
+    * finding 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md,
+    * bundle blendacc_20260527T045725Z).  Run the detector here and set a
+    * local flag so the loop's general-atomic reject case knows to admit
+    * THIS specific atomic.  Other atomic shapes still reject. */
+   struct r300_compute_blend_acc_reduction_pattern blend_acc = {0};
+   r300_nir_detect_blend_acc_reduction(s, &blend_acc);
+   const bool admit_ssbo_atomic_blend_acc = blend_acc.is_blend_acc_reduction;
 
    /* Workgroup shared memory: no LDS on R3xx. */
    if (s->info.shared_size > 0) {
@@ -312,8 +429,15 @@ r300_nir_classify_compute(const nir_shader *s,
                /* Every atomic intrinsic carries "atomic" in its name; the
                 * substrate has only the blend-add/min/max/sub, stencil, and
                 * ZPASS reduction forms, none of which are an arbitrary-address
-                * NIR atomic. */
+                * NIR atomic.  The blend-acc-reduction shape (M-G Entry 4) IS
+                * a substrate-compatible atomic-add, so when the kernel-level
+                * detector confirmed the SHAPE upstream, admit the specific
+                * ssbo_atomic the detector recognised. */
                if (strstr(name, "atomic") != NULL) {
+                  if (admit_ssbo_atomic_blend_acc &&
+                      intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+                     continue;  /* blend-acc-reduction lowering will handle it */
+                  }
                   reject(out, R300_COMPUTE_REJECT_GENERAL_ATOMIC, name);
                   return;
                }

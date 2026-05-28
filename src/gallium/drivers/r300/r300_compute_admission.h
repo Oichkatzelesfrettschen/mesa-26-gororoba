@@ -99,6 +99,41 @@ struct r300_compute_binary_map_pattern {
 void r300_nir_detect_binary_map(const struct nir_shader *s,
                                 struct r300_compute_binary_map_pattern *out);
 
+/* M-G blend-add-reduction kernel pattern (Conjecture M-G Entry 4): a kernel
+ * whose store value is an atomicAdd of a load_ssbo result, where the atomic's
+ * target buffer is a small output histogram and the atomic's offset folds the
+ * dispatch grid into a smaller bin range -- the canonical shape:
+ *
+ *     uint gid = gl_GlobalInvocationID.x;
+ *     uint bin = gid & BIN_MASK;
+ *     atomicAdd(out_data[bin], in_data[gid]);
+ *
+ * On RS482 this lowers to a blend-add accumulation: the output buffer binds
+ * as a 1xM RT, the blend equation is `RB3D_CBLEND.COMB_FCN_ADD` with
+ * `blend_func = (ONE, ONE)`, the orchestrator draws one fragment per gid at
+ * position (bin, 0), and the RB3D blend hardware accumulates the per-gid
+ * value into the bin cell.  The mechanism is hardware-confirmed at the
+ * substrate verb level (bundle blendacc_20260527T045725Z); M-G.1 lifts the
+ * pattern from kernel NIR to driver detection.
+ *
+ * value_ssbo_binding is the binding of the load_ssbo feeding the atomic
+ * value; output_ssbo_binding is the binding of the atomic's target buffer
+ * (the histogram).  When the post-explicit_io binding sources are not
+ * constants, both stay 0 and the orchestrator's descriptor-set layout
+ * fallback recovers them (same policy as binary-map M-F.3).  alu_op holds
+ * nir_op_iadd for the first cut; fadd will land alongside in a future
+ * extension when the FP24 envelope analysis confirms the per-bin sum stays
+ * exact. */
+struct r300_compute_blend_acc_reduction_pattern {
+   bool       is_blend_acc_reduction;
+   uint32_t   value_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+   uint16_t   alu_op;     /* nir_op enum value, only valid if true */
+};
+
+void r300_nir_detect_blend_acc_reduction(const struct nir_shader *s,
+                                         struct r300_compute_blend_acc_reduction_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif
