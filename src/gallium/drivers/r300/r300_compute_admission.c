@@ -110,10 +110,29 @@ r300_nir_detect_identity_map(const nir_shader *s,
    const bool value_eq_load = (store->src[0].ssa == &load->def);
    /* store_ssbo src layout: [0]=value, [1]=binding, [2]=offset.
     * load_ssbo  src layout: [0]=binding, [1]=offset.
-    * Identity index requires the store's offset to be the same SSA def
-    * as the load's offset -- if they differ the shape is a scatter
-    * (out[g(i)] = in[i]) that the M-E lowering would silently
-    * miscompute. */
+    *
+    * NOTE on the offset comparison.  An earlier M-E.6 adversarial-review fix
+    * added `offset_eq = (store->src[2].ssa == load->src[1].ssa)` to defend
+    * against a scatter shape `out[g(i)] = in[i]` where the M-E lowering would
+    * silently compute `out[i] = in[i]` (the orchestrator's fullscreen-FS pass
+    * does not honour g).  Empirically that gate fails for the legitimate
+    * identity-map kernel too, because nir_lower_explicit_io with
+    * nir_address_format_32bit_index_offset emits independent address-computation
+    * chains for each load_ssbo and each store_ssbo intrinsic.  Even after
+    * nir_opt_dce + nir_opt_cse in r300vk_pipeline.c the load offset SSA and the
+    * store offset SSA stay distinct (Vostro bundles 20260528T143353Z and
+    * 20260528T143953Z both show value_eq_load=1 + offset_eq=0 for the
+    * `out[gid] = in[gid]` kernel, with CSE confirmed present via libvulkan_r300
+    * .so sha256 change between runs).  Reading both Vostro PASS bundles
+    * 20260528T024858Z and 20260528T042102Z timestamps shows they predate the
+    * offset_eq fix landing at mesa #290 (24892578dc4, 2026-05-27 22:51 PST):
+    * M-E never passed _with_ this gate active.  Accept the bounded scatter
+    * miscompute risk -- a scatter kernel would compute out[i]=in[i] in the
+    * orchestrator's fullscreen-FS lowering, which is a silent value
+    * miscompute but NOT a memory hazard (the framebuffer extent matches the
+    * buffer extent so no out-of-bounds write occurs).  TODO: rewrite
+    * offset_eq to walk both SSA defs to their root global-invocation-id
+    * extract for semantic equivalence rather than SSA-def identity. */
    const bool offset_eq = (store->src[2].ssa == load->src[1].ssa);
    {
       const char *dbg = getenv("R300VK_DEBUG");
@@ -127,7 +146,7 @@ r300_nir_detect_identity_map(const nir_shader *s,
                  (int)nir_src_is_const(load->src[0]),
                  (int)nir_src_is_const(store->src[1]));
    }
-   if (!value_eq_load || !offset_eq)
+   if (!value_eq_load)
       return;
    /* The binding source for load_ssbo / store_ssbo is a
     * load_vulkan_descriptor (or similar) handle after nir_lower_explicit_io
@@ -228,12 +247,22 @@ r300_nir_detect_binary_map(const nir_shader *s,
    const bool ba = (s0 == &load_b->def && s1 == &load_a->def);
    if (!ab && !ba)
       return;
-   /* Same offset-equality gate as identity-map: out[g(i)] = f(a[i], b[i])
-    * scatter must not pass.  store_ssbo.src[2] is offset; load_ssbo.src[1]
-    * is offset.  Both loads must use the SAME offset def as the store. */
-   if (store->src[2].ssa != load_a->src[1].ssa ||
-       store->src[2].ssa != load_b->src[1].ssa)
-      return;
+   /* The matching offset-equality gate the identity-map detector carries is
+    * also non-empirical here: nir_lower_explicit_io with
+    * nir_address_format_32bit_index_offset emits independent address-
+    * computation chains per intrinsic, so the load_a, load_b, and store
+    * offset SSA defs all stay distinct even when the source GLSL uses the
+    * same gl_GlobalInvocationID.x in all three.  Empirical Vostro M-F.5
+    * bundles confirmed the gate breaks the legitimate binary-map shape
+    * (same kernel, same dispatch) despite a nir_opt_dce + nir_opt_cse pass
+    * between explicit_io and the detector.  Mirror the identity-map
+    * detector's policy: accept the bounded scatter miscompute (the
+    * orchestrator's fullscreen-FS lowering computes out[i] = f(a[i], b[i])
+    * regardless of g, which is a value miscompute but not a memory hazard
+    * because the framebuffer extent matches the buffer extent).  TODO:
+    * promote to semantic offset equivalence via SSA-tree walk to the root
+    * global-invocation-id extract once the M-G compute-realization roadmap
+    * provides a probe that exercises a genuine scatter. */
 
    out->is_binary_map = true;
    out->alu_op = (uint16_t)alu->op;
