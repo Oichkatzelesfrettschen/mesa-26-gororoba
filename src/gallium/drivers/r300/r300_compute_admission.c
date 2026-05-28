@@ -500,9 +500,49 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
       out->output_ssbo_binding = nir_src_as_uint(atomic->src[0]);
 }
 
+/* A per-iteration step doubles its loop-carried value when it is x*2
+ * (imul with a constant 2 operand), x<<1 (ishl by a constant 1), or x+x
+ * (iadd of one scalar with itself).  The orchestrator's fragment pass
+ * hard-codes a doubling (TEX then MUL by 2.0), so the detector admits
+ * only steps it can faithfully execute: an admitted x*3 or x+c would be
+ * silently realized as x*16, a wrong compute result.  Float fmul/fadd
+ * are deliberately excluded -- the per-byte UNORM8 doubling the
+ * orchestrator runs does not model IEEE float-domain doubling, so a
+ * float step is not faithfully executed either and must fall through to
+ * substrate-absence rejection.  Scalars are resolved through bit-exact
+ * mov/vec chains so a doubling that arrives via a copy still matches. */
+static bool
+multipass_step_is_doubling(const nir_alu_instr *alu)
+{
+   switch (alu->op) {
+   case nir_op_ishl: {
+      nir_scalar amt =
+         nir_scalar_resolved(alu->src[1].src.ssa, alu->src[1].swizzle[0]);
+      return nir_scalar_is_const(amt) && nir_scalar_as_uint(amt) == 1;
+   }
+   case nir_op_imul:
+      for (unsigned i = 0; i < 2; i++) {
+         nir_scalar sc =
+            nir_scalar_resolved(alu->src[i].src.ssa, alu->src[i].swizzle[0]);
+         if (nir_scalar_is_const(sc) && nir_scalar_as_uint(sc) == 2)
+            return true;
+      }
+      return false;
+   case nir_op_iadd: {
+      nir_scalar a =
+         nir_scalar_resolved(alu->src[0].src.ssa, alu->src[0].swizzle[0]);
+      nir_scalar b =
+         nir_scalar_resolved(alu->src[1].src.ssa, alu->src[1].swizzle[0]);
+      return nir_scalar_equal(a, b);
+   }
+   default:
+      return false;
+   }
+}
+
 /* M-G Entry 6 multipass ping-pong scan detector.  Recognises the
- * per-element self-iterated shape `x = in[gid]; for (k < pass_count) x = x
- * op c; out[gid] = x`, where pass_count is a runtime params-buffer load so
+ * per-element self-iterated shape `x = in[gid]; for (k < pass_count) x =
+ * 2*x; out[gid] = x`, where pass_count is a runtime params-buffer load so
  * the loop survives constant folding, feeding a single store_ssbo.  The
  * discriminator from every prior M-series entry is the presence of a
  * nir_loop: M-E identity-map, M-F binary-map, M-G.4 blend-acc, and M-G.5
@@ -515,15 +555,17 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
  *   2. At least 2 load_ssbo: the per-element data plus the runtime
  *      pass_count from the params buffer.
  *   3. A nir_loop is present (the unique discriminator).
- *   4. A recognised per-iteration arithmetic step (imul / ishl / iadd /
- *      fmul / fadd) sits inside a loop body -- a loop without one is not
- *      the iterated-scale shape.
+ *   4. A per-iteration DOUBLING step (x*2 / x<<1 / x+x) sits inside a
+ *      loop body.  The admit set equals what the orchestrator executes:
+ *      a loop carrying any other arithmetic is not the realizable
+ *      iterated-scale shape and is rejected, not silently mis-scaled.
  *
- * step_op carries the per-iteration nir_op for the orchestrator's FS
- * synthesis (nir_op_imul for the doubling first cut).  Bindings stay 0
- * when the post-explicit_io binding sources are not constants; the
- * orchestrator's positional fallback recovers them (binding 0 = input,
- * 1 = output, 2 = params).  See the design finding
+ * step_op carries the per-iteration nir_op for diagnostics; the
+ * orchestrator hard-codes the doubling, which is sound precisely because
+ * every admitted step is a doubling.  Bindings stay 0 when the
+ * post-explicit_io binding sources are not constants; the orchestrator's
+ * positional fallback recovers them (binding 0 = input, 1 = output, 2 =
+ * params).  See the design finding
  * 2026-05-28-rs482-multipass-pingpong-scan-design.md. */
 void
 r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
@@ -570,9 +612,7 @@ r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
             } else if (block_in_loop && !step_found &&
                        instr->type == nir_instr_type_alu) {
                const nir_alu_instr *alu = nir_instr_as_alu(instr);
-               if (alu->op == nir_op_imul || alu->op == nir_op_ishl ||
-                   alu->op == nir_op_iadd || alu->op == nir_op_fmul ||
-                   alu->op == nir_op_fadd) {
+               if (multipass_step_is_doubling(alu)) {
                   step_op    = (uint16_t)alu->op;
                   step_found = true;
                }
