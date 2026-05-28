@@ -107,6 +107,21 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
       props->maxStorageBufferRange = 512u * 1024u * 1024u; /* 512 MB */
    else
       props->maxStorageBufferRange = R300VK_VK10_MIN_STORAGE_BUFFER_RANGE;
+   /* TODO: elevate VkPhysicalDeviceVulkan13Properties.maxBufferSize and
+    *       VkPhysicalDeviceMaintenance4Properties.maxBufferSize in
+    *       lock-step with maxStorageBufferRange.  Vulkan spec 47.78
+    *       requires maxBufferSize >= maxStorageBufferRange whenever the
+    *       Vulkan 1.3 properties chain or VK_KHR_maintenance4 is
+    *       advertised.
+    *       reason -- r300vk currently advertises API version 1.0
+    *       (R300VK_API_VERSION = VK_MAKE_API_VERSION(0, 1, 0, ...) in
+    *       r300vk_private.h) and does not yet expose maintenance4; the
+    *       maxBufferSize field lives in a properties chain the loader
+    *       does not query at the 1.0 advertise level, so populating it
+    *       would write a value the application cannot reach.
+    *       tracking -- VkPhysicalDeviceMaintenance4Properties .maxBufferSize
+    *       (header vulkan_core.h field, lock-step elevation lands with the
+    *       r300vk maintenance4 advertise). */
    props->maxPushConstantsSize = 128;
 
    props->maxMemoryAllocationCount = 4096;
