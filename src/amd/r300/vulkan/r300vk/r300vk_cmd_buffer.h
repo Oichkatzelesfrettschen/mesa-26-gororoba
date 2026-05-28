@@ -23,6 +23,7 @@ struct r300vk_pipeline;
 struct r300vk_image;
 struct r300vk_buffer;
 struct r300vk_descriptor_set;
+struct r300vk_cmd_bind_descriptor_sets;
 
 #define R300VK_MAX_BOUND_DESCRIPTOR_SETS  8u
 #define R300VK_MAX_DYNAMIC_OFFSETS        16u
@@ -93,13 +94,17 @@ struct r300vk_cmd_pipeline_barrier {
    VkImageLayout        new_layout;
 };
 
-/* One vkCmdDispatch.  The group counts are recorded for a future executor that
- * lowers an admitted kernel onto the compute-as-raster substrate; the no-op
- * kernel emits no GPU work, so replay only marks a submit boundary. */
+/* One vkCmdDispatch.  The group counts are recorded for the executor that
+ * lowers an admitted kernel onto the compute-as-raster substrate.  The
+ * pipeline snapshot is taken at record time (cmd->bound_compute_pipeline)
+ * so the replay can decide whether to drive the identity-map orchestrator
+ * (and reach the kernel's vs_cso / fs_cso / identity_map slots) or fall
+ * through to the no-op compute-lifecycle path. */
 struct r300vk_cmd_dispatch {
-   uint32_t group_count_x;
-   uint32_t group_count_y;
-   uint32_t group_count_z;
+   uint32_t                       group_count_x;
+   uint32_t                       group_count_y;
+   uint32_t                       group_count_z;
+   const struct r300vk_pipeline  *pipeline;
 };
 
 /* One vkCmdBindDescriptorSets2KHR.  The runtime's legacy vk_common shim

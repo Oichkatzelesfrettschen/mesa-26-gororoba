@@ -303,6 +303,10 @@ r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
    e->dispatch.group_count_x = groupCountX;
    e->dispatch.group_count_y = groupCountY;
    e->dispatch.group_count_z = groupCountZ;
+   /* Snapshot the compute pipeline so the queue replay can branch on
+    * identity_map.is_identity_map without re-walking the cmd-buffer for
+    * the most recent CmdBindPipeline. */
+   e->dispatch.pipeline = cmd->bound_compute_pipeline;
 }
 
 void
