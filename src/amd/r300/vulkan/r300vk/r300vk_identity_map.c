@@ -1139,6 +1139,21 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    sc.maxx = M; sc.maxy = 1;
    pipe->set_scissor_states(pipe, 0, 1, &sc);
 
+   /* Clear the 1xM RT to 0 before the blend-add draw.  resource_create
+    * leaves the texture contents implementation-defined; for blend ADD
+    * (dest + src) to produce the correct per-bin sum, dest MUST start at
+    * 0.  Without this clear, an initial M-G.5 bundle (20260528T162452Z)
+    * read every cell at exactly 3x the expected value (got=0x30303030
+    * for expected=0x10101010), consistent with garbage dest contributing
+    * an extra 2x the per-fragment value through the accumulation.  An
+    * explicit pipe->clear with the COLOR0 mask zeroes the RT through the
+    * RB3D fast-clear path before the per-point fragments accumulate. */
+   {
+      union pipe_color_union zero;
+      memset(&zero, 0, sizeof(zero));
+      pipe->clear(pipe, PIPE_CLEAR_COLOR0, NULL, &zero, 0.0f, 0);
+   }
+
    /* Difference 3: blend state = ADD/(ONE,ONE) instead of disabled. */
    if (!device->blend_acc_reduction_blend_cso) {
       IDM_LOG("blend_acc early-return no-cached-blend-cso");
