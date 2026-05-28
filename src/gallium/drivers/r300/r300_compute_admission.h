@@ -7,6 +7,7 @@
 #define R300_COMPUTE_ADMISSION_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,6 +49,32 @@ void r300_nir_classify_compute(const struct nir_shader *s,
 
 /* Human-readable name of a rejection reason (static string). */
 const char *r300_compute_reject_name(enum r300_compute_reject reason);
+
+/* Identity-map pattern recognized at compute-pipeline-create time so the
+ * dispatch-replay can lower the kernel to a fullscreen-quad fragment draw that
+ * samples in_tex (NEAREST) and writes the RB3D color export.  The pattern is
+ * `out_buffer[gid] = in_buffer[gid]`: one store_ssbo of a value loaded by one
+ * load_ssbo, with the two ssbo bindings recorded so the dispatch can resolve
+ * them through the bound descriptor sets to a pipe_sampler_view (input) and a
+ * pipe_surface (output).
+ *
+ * The index-equivalence between load and store is not asserted by the
+ * detection (a deep ssa-chain trace would prove it); a non-identity index
+ * relationship is caught empirically by the read-back oracle. */
+struct r300_compute_identity_pattern {
+   bool       is_identity_map;
+   uint32_t   input_ssbo_binding;   /* binding index of the load_ssbo source */
+   uint32_t   output_ssbo_binding;  /* binding index of the store_ssbo dest */
+};
+
+/* Detect the identity-map pattern in a classify-admitted kernel.  Pure
+ * read-only analysis.  Sets out->is_identity_map = true when exactly one
+ * store_ssbo's value is the result of exactly one load_ssbo; the bindings are
+ * the canonical (binding=0) form r300_nir_classify_compute already enforces
+ * for store_ssbo, but load_ssbo's binding is read off the load's src[0]
+ * descriptor. */
+void r300_nir_detect_identity_map(const struct nir_shader *s,
+                                  struct r300_compute_identity_pattern *out);
 
 #ifdef __cplusplus
 }

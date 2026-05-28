@@ -11,6 +11,7 @@
 #include "vk_object.h"
 
 #include "r300/r300_public.h"
+#include "r300/r300_compute_admission.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -44,6 +45,15 @@ struct r300vk_pipeline {
     * The no-op kernel carries no graphics CSOs; lowering the kernel onto the
     * compute-as-raster substrate is a later stage. */
    bool                    is_compute;
+
+   /* Identity-map kernel detected at pipeline-create time.  When set, the
+    * dispatch replay lowers the kernel onto the compute-as-raster substrate as
+    * a fullscreen-quad fragment draw that samples in_tex (NEAREST) and writes
+    * via RB3D color export, then copies the RT to the output ssbo via the
+    * existing R300VK_CMD_COPY_IMAGE_TO_BUFFER path.  The bindings are the ssbo
+    * indices the kernel reads/writes; the dispatch resolves them through the
+    * bound descriptor sets. */
+   struct r300_compute_identity_pattern identity_map;
 
    void                   *vs_cso;
    void                   *fs_cso;
