@@ -860,13 +860,99 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
  * the blend-state difference.  This is the same reuse pattern M-F.2 uses
  * for its own state CSOs (binary-map synthesis comment, r300vk_pipeline.c
  * ~line 755). */
+/* Initialise the device-cached blend-acc-reduction blend state CSO on
+ * demand (the only state difference from the identity-map CSO set).
+ * Configures the RB3D blend hardware path that the substrate finding
+ * (2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md) and
+ * the substrate bundle blendacc_20260527T045725Z empirically confirmed:
+ * `COMB_FCN_ADD` with blend_func = (ONE, ONE) accumulates dest+src into
+ * the RT cell.  The other CSOs (rasterizer / dsa / sampler) come from
+ * r300vk_device_init_identity_map_state -- the M-G orchestrator binds
+ * those unchanged from the M-E set. */
+bool
+r300vk_device_init_blend_acc_reduction_state(struct r300vk_device *device);
+
+bool
+r300vk_device_init_blend_acc_reduction_state(struct r300vk_device *device)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+   if (device->blend_acc_reduction_blend_cso)
+      return true;
+
+   struct pipe_blend_state blend = {0};
+   blend.rt[0].blend_enable     = 1;
+   blend.rt[0].rgb_func         = PIPE_BLEND_ADD;
+   blend.rt[0].alpha_func       = PIPE_BLEND_ADD;
+   blend.rt[0].rgb_src_factor   = PIPE_BLENDFACTOR_ONE;
+   blend.rt[0].rgb_dst_factor   = PIPE_BLENDFACTOR_ONE;
+   blend.rt[0].alpha_src_factor = PIPE_BLENDFACTOR_ONE;
+   blend.rt[0].alpha_dst_factor = PIPE_BLENDFACTOR_ONE;
+   blend.rt[0].colormask        = PIPE_MASK_RGBA;
+   device->blend_acc_reduction_blend_cso =
+      pipe->create_blend_state(pipe, &blend);
+   return device->blend_acc_reduction_blend_cso != NULL;
+}
+
+/* Synthesise the M-G blend-acc-reduction fragment program: a single-MOV
+ * passthrough from the GENERIC varying (carrying the per-fragment value
+ * the orchestrator baked into the per-point VBO entry) to OUT[0] COLOR.
+ * The RB3D blend hardware sums the per-fragment color into the bin cell
+ * of the 1xM output RT.  Cost: 1 MOV ALU / 64-slot R300 PFS budget.
+ *
+ * This is structurally distinct from the M-E identity-map FS, which does
+ * TEX + MOV (samples the input texture); the blend-acc FS doesn't sample
+ * because the value rides on the per-vertex attribute through the
+ * rasterizer interpolator. */
+static void *
+r300vk_synthesize_blend_acc_reduction_fs(struct pipe_context *pipe)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+   struct ureg_src in_color = ureg_DECL_fs_input(
+      ureg, TGSI_SEMANTIC_GENERIC, 0, TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out_color = ureg_DECL_output(
+      ureg, TGSI_SEMANTIC_COLOR, 0);
+   ureg_MOV(ureg, out_color, in_color);
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
 static bool
 r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
                                               struct r300vk_pipeline *pl)
 {
-   /* Defer to the identity-map synthesis: structurally identical shader
-    * pair; only the orchestrator-time blend state and RT extent differ. */
-   return r300vk_identity_map_synthesize_shaders(device, pl);
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+   if (!r300vk_device_init_blend_acc_reduction_state(device))
+      return false;
+
+   /* The VS is the same vertex-passthrough shape as M-E/M-F: 2 attributes
+    * (POSITION + GENERIC) feed the rasterizer.  The GENERIC attribute
+    * carries the per-vertex color the orchestrator stages into the VBO
+    * (a packed RGBA8 of the kernel's per-gid input value). */
+   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
+                                                      TGSI_SEMANTIC_GENERIC };
+   const unsigned          vs_semantic_indices[] = { 0, 0 };
+   pl->vs_cso = util_make_vertex_passthrough_shader(
+                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_blend_acc_reduction_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
 }
 
 VkResult
