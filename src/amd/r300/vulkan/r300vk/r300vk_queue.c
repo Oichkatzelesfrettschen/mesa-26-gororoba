@@ -519,9 +519,11 @@ r300vk_replay_gpu(struct r300vk_device *device,
          if (skip_render_pass)
             break;
          /* Identity-map kernels lower onto the fullscreen-quad fragment
-          * draw via the orchestrator; admitted-but-not-identity-map
-          * kernels fall through to the no-op compute lifecycle (the same
-          * empty-CS submit boundary M-D established). */
+          * draw via the identity-map orchestrator; binary-map kernels
+          * lower onto the same skeleton with two sampler stages via the
+          * binary-map orchestrator; any other admitted kernel falls
+          * through to the no-op compute lifecycle (the same empty-CS
+          * submit boundary M-D established). */
          if (e->dispatch.pipeline &&
              e->dispatch.pipeline->identity_map.is_identity_map &&
              last_bind_dsets) {
@@ -529,6 +531,13 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                                 e->dispatch.pipeline,
                                                 &e->dispatch,
                                                 last_bind_dsets);
+         } else if (e->dispatch.pipeline &&
+                    e->dispatch.pipeline->binary_map.is_binary_map &&
+                    last_bind_dsets) {
+            r300vk_binary_map_dispatch_replay(device,
+                                              e->dispatch.pipeline,
+                                              &e->dispatch,
+                                              last_bind_dsets);
          }
          /* The no-op compute kernel emits no GPU work, so this proves the
           * Vulkan compute object lifecycle (pipeline create, bind, dispatch

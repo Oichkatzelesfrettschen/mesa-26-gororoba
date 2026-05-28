@@ -77,6 +77,23 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
                                     const struct r300vk_cmd_dispatch *dispatch,
                                     const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* M-F binary-map dispatch replay: lowers an admitted compute kernel of the
+ * shape out[i] = f(a[i], b[i]) onto a fullscreen-quad fragment draw that
+ * samples in_a (sampler 0) + in_b (sampler 1), applies the synthesised
+ * per-op ALU in the PFS, and writes to the RT.  Same orchestrator skeleton
+ * as identity-map, the only structural changes are: 3-binding layout
+ * (input_a / input_b / output), two input wraps, two sampler views bound.
+ *
+ * Returns false on resource_create failure, descriptor walk miss, or any
+ * post-explicit_io binding inconsistency; the queue's caller then falls
+ * through to the no-op compute lifecycle and the dispatch still signals
+ * the fence so the object lifecycle completes. */
+bool
+r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
+                                  const struct r300vk_pipeline *pl,
+                                  const struct r300vk_cmd_dispatch *dispatch,
+                                  const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #ifdef __cplusplus
 }
 #endif
