@@ -242,6 +242,17 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * VkBuffer.resource pointers.  The first descriptor set holds them
     * (r300_nir_detect_identity_map records the bindings without recording
     * which set; identity-map kernels use a single set in practice). */
+   /* Only kernels binding their ssbos at Vulkan set slot 0 are supported by
+    * the M-E lowering today; binds->first_set is the slot the recorded
+    * sets[] array starts at, so a non-zero first_set means binds->sets[0]
+    * is for slot first_set, not slot 0, and the orchestrator would resolve
+    * the wrong set if it indexed [0] blindly.  Multi-set support is M-J
+    * generalization. */
+   if (binds->first_set != 0) {
+      IDM_LOG("early-return first_set=%u (only slot 0 supported)",
+              binds->first_set);
+      return false;
+   }
    const struct r300vk_descriptor_set *set = binds->sets[0];
    IDM_LOG("set=%p layout=%p in_binding=%u out_binding=%u",
            (const void *)set,
@@ -312,16 +323,26 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * shader and so picks local_size = 1 to keep the first end-to-end test
     * simple.  M-J generalizes to local_size > 1 by widening the index
     * domain. */
-   const uint32_t total_invocations = dispatch->group_count_x *
-                                      dispatch->group_count_y *
-                                      dispatch->group_count_z;
-   if (total_invocations == 0)
+   /* 64-bit product so 2^32-wrapping group counts cannot smuggle a
+    * small non-zero total past the zero-check.  The 2048*2048 axis cap
+    * is enforced after derive_raster_extent below; here we only need to
+    * keep the multiplication exact. */
+   const uint64_t total_invocations =
+      (uint64_t)dispatch->group_count_x *
+      (uint64_t)dispatch->group_count_y *
+      (uint64_t)dispatch->group_count_z;
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
       return false;
+   }
 
    unsigned width = 0, height = 0;
-   derive_raster_extent(total_invocations, &width, &height);
-   IDM_LOG("raster extent total=%u width=%u height=%u",
-           total_invocations, width, height);
+   /* total_invocations was 64-bit for overflow safety; the 2048*2048 ceiling
+    * check above guarantees it fits in 32 bits at this point. */
+   derive_raster_extent((uint32_t)total_invocations, &width, &height);
+   IDM_LOG("raster extent total=%llu width=%u height=%u",
+           (unsigned long long)total_invocations, width, height);
    if (width > 2048 || height > 2048) {
       IDM_LOG("early-return extent-exceeds-2048-cap");
       return false;
@@ -393,7 +414,12 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    vb_templ.height0    = 1;
    vb_templ.depth0     = 1;
    vb_templ.array_size = 1;
-   vb_templ.usage      = PIPE_USAGE_IMMUTABLE;
+   /* PIPE_USAGE_STREAM: written once by buffer_subdata right after create,
+    * read by the GPU on the draw, then released.  IMMUTABLE would be a
+    * semantic lie -- the buffer IS written after create -- and only worked
+    * accidentally because r300_buffer_create lands every vertex buffer in
+    * GTT regardless of usage. */
+   vb_templ.usage      = PIPE_USAGE_STREAM;
    vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
    struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
    if (!vb) {
