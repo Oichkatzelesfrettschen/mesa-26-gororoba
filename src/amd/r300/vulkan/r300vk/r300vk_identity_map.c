@@ -84,31 +84,52 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
    if (!tex)
       return NULL;
 
-   /* Copy the buffer contents into the texture.  r300g's
-    * r300_resource_copy_region does NOT fall back to
-    * util_resource_copy_region for PIPE_BUFFER -> PIPE_TEXTURE_2D when
-    * the dst format is blit-supported (r300_blit.c:593-596 -- the
-    * fallback fires only when both sides are PIPE_BUFFER OR the format
-    * is unsupported).  The non-fallback path emits a TXF instruction in
-    * the synthesized blit shader; R300 hardware has no texelFetch (TXF
-    * asserts in r300_tgsi_to_rc.c:169 "Unknown TGSI/RC opcode: TXF").
-    * Call util_resource_copy_region directly to force the CPU map +
-    * memcpy path, which handles arbitrary target combinations including
-    * buffer -> texture by walking rows through transfer_map.  Box
-    * semantics: bytes for the buffer side, texels for the texture side
-    * -- the helper handles the conversion. */
-   const unsigned bytes = width * height * util_format_get_blocksize(format);
+   /* Copy the buffer bytes into the 2D texture.  Neither
+    * pipe->resource_copy_region (r300g blitter -> TXF -> R300 has no
+    * texelFetch -> assertion) NOR util_resource_copy_region (asserts
+    * src->target == dst->target at u_surface.c:225) handles the
+    * PIPE_BUFFER -> PIPE_TEXTURE_2D direction directly.  Do the map
+    * + memcpy ourselves: read the buffer as a flat byte stream, write
+    * each texel-row of the texture from the matching byte range.
+    * Linear-tiled texture so the dst pitch is W * blocksize plus any
+    * driver-imposed alignment, captured by the transfer's stride. */
+   const unsigned bpp = util_format_get_blocksize(format);
+   struct pipe_transfer *src_xfer = NULL;
    struct pipe_box src_box;
    memset(&src_box, 0, sizeof(src_box));
-   src_box.width  = bytes;
+   src_box.width  = width * height * bpp;
    src_box.height = 1;
    src_box.depth  = 1;
+   const void *src_map = pipe->buffer_map(pipe, src_buf, 0, PIPE_MAP_READ,
+                                          &src_box, &src_xfer);
+   if (!src_map) {
+      pipe_resource_reference(&tex, NULL);
+      return NULL;
+   }
 
-   util_resource_copy_region(pipe,
-                             tex,    /* dst */ 0 /* dst_level */,
-                             0, 0, 0 /* dst x,y,z */,
-                             src_buf, 0 /* src_level */,
-                             &src_box);
+   struct pipe_transfer *dst_xfer = NULL;
+   struct pipe_box dst_box;
+   memset(&dst_box, 0, sizeof(dst_box));
+   dst_box.width  = width;
+   dst_box.height = height;
+   dst_box.depth  = 1;
+   void *dst_map = pipe->texture_map(pipe, tex, 0,
+                                     PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                     &dst_box, &dst_xfer);
+   if (!dst_map) {
+      pipe->buffer_unmap(pipe, src_xfer);
+      pipe_resource_reference(&tex, NULL);
+      return NULL;
+   }
+   const uint8_t *src_bytes = (const uint8_t *)src_map;
+   uint8_t       *dst_bytes = (uint8_t *)dst_map;
+   const unsigned row_bytes = width * bpp;
+   for (unsigned r = 0; r < height; r++)
+      memcpy(dst_bytes + r * dst_xfer->stride,
+             src_bytes + r * row_bytes,
+             row_bytes);
+   pipe->texture_unmap(pipe, dst_xfer);
+   pipe->buffer_unmap(pipe, src_xfer);
 
    /* Create the sampler view.  The view holds an internal reference to the
     * texture; drop our local reference so the texture lifetime tracks the
@@ -482,15 +503,39 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    copy_box.width  = width;
    copy_box.height = height;
    copy_box.depth  = 1;
-   /* Same TXF-avoidance reason as the input wrap: r300g's resource_copy_region
-    * for PIPE_TEXTURE_2D -> PIPE_BUFFER also takes the blitter path with
-    * blit-supported formats and hits the TXF assertion.  util_resource_copy_region
-    * forces the CPU map + memcpy. */
-   util_resource_copy_region(pipe,
-                             out_buf->resource, 0 /* dst_level */,
-                             0, 0, 0 /* dst x,y,z bytes */,
-                             rt, 0 /* src_level */,
-                             &copy_box);
+   /* Same TXF-avoidance + cross-target-assertion reasons as the input
+    * wrap: pipe->resource_copy_region's blitter emits TXF on the
+    * texture-to-buffer direction too, and util_resource_copy_region
+    * asserts on cross-target.  Map + memcpy ourselves. */
+   {
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.width  = width * height * util_format_get_blocksize(fmt);
+         out_box.height = 1;
+         out_box.depth  = 1;
+         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                            PIPE_MAP_WRITE |
+                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                            &out_box, &out_xfer);
+         if (out_bytes) {
+            const uint8_t *src_rows = (const uint8_t *)rt_map;
+            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
+            const unsigned bpp = util_format_get_blocksize(fmt);
+            const unsigned row_bytes = width * bpp;
+            for (unsigned r = 0; r < height; r++)
+               memcpy(dst_bytes + r * row_bytes,
+                      src_rows + r * rt_xfer->stride,
+                      row_bytes);
+            pipe->buffer_unmap(pipe, out_xfer);
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
    IDM_LOG("rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
            (const void *)out_buf->resource, (const void *)rt,
            copy_box.width, copy_box.height);
