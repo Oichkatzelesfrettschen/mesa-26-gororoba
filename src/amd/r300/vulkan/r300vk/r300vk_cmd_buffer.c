@@ -4,6 +4,7 @@
  */
 
 #include "r300vk_cmd_buffer.h"
+#include "r300vk_descriptor.h"
 #include "r300vk_device.h"
 #include "r300vk_entrypoints.h"
 #include "r300vk_framebuffer.h"
@@ -302,6 +303,46 @@ r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
    e->dispatch.group_count_x = groupCountX;
    e->dispatch.group_count_y = groupCountY;
    e->dispatch.group_count_z = groupCountZ;
+}
+
+void
+r300vk_CmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer,
+                                  const VkBindDescriptorSetsInfoKHR *info)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   if (!info || info->descriptorSetCount == 0)
+      return;
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+
+   /* Derive the bind point from stageFlags.  vk_common's legacy shim sets
+    * stageFlags from a single VkPipelineBindPoint via
+    * vk_shader_stages_from_bind_point, so a single bit set is the common case;
+    * choose compute when only compute stages are present, graphics otherwise. */
+   VkPipelineBindPoint bp = VK_PIPELINE_BIND_POINT_GRAPHICS;
+   if ((info->stageFlags & ~(VkShaderStageFlags)VK_SHADER_STAGE_COMPUTE_BIT) == 0 &&
+       (info->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT) != 0)
+      bp = VK_PIPELINE_BIND_POINT_COMPUTE;
+
+   uint32_t sets_n = info->descriptorSetCount;
+   if (sets_n > R300VK_MAX_BOUND_DESCRIPTOR_SETS)
+      sets_n = R300VK_MAX_BOUND_DESCRIPTOR_SETS;
+   uint32_t doff_n = info->dynamicOffsetCount;
+   if (doff_n > R300VK_MAX_DYNAMIC_OFFSETS)
+      doff_n = R300VK_MAX_DYNAMIC_OFFSETS;
+
+   e->type                          = R300VK_CMD_BIND_DESCRIPTOR_SETS;
+   e->bind_dsets.bind_point         = bp;
+   e->bind_dsets.pipeline_layout    = info->layout;
+   e->bind_dsets.first_set          = info->firstSet;
+   e->bind_dsets.set_count          = sets_n;
+   e->bind_dsets.dynamic_offset_count = doff_n;
+   for (uint32_t i = 0; i < sets_n; i++) {
+      VK_FROM_HANDLE(r300vk_descriptor_set, dset, info->pDescriptorSets[i]);
+      e->bind_dsets.sets[i] = dset;
+   }
+   for (uint32_t i = 0; i < doff_n; i++)
+      e->bind_dsets.dynamic_offsets[i] = info->pDynamicOffsets[i];
 }
 
 void

@@ -22,6 +22,10 @@ extern "C" {
 struct r300vk_pipeline;
 struct r300vk_image;
 struct r300vk_buffer;
+struct r300vk_descriptor_set;
+
+#define R300VK_MAX_BOUND_DESCRIPTOR_SETS  8u
+#define R300VK_MAX_DYNAMIC_OFFSETS        16u
 
 enum r300vk_cmd_type {
    R300VK_CMD_BEGIN_RENDER_PASS,
@@ -34,6 +38,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_PIPELINE_BARRIER,
    R300VK_CMD_DISPATCH,
+   R300VK_CMD_BIND_DESCRIPTOR_SETS,
 };
 
 struct r300vk_cmd_begin_render_pass {
@@ -97,18 +102,37 @@ struct r300vk_cmd_dispatch {
    uint32_t group_count_z;
 };
 
+/* One vkCmdBindDescriptorSets2KHR.  The runtime's legacy vk_common shim
+ * (vk_command_buffer.c) forwards both the 1.0/1.1 entrypoint and the
+ * VkBindDescriptorSetsInfoKHR form through CmdBindDescriptorSets2KHR on the
+ * device dispatch table, so r300vk only implements the 2KHR variant.  The
+ * set handles stay valid for the cmd-buffer's lifetime of use (spec rule);
+ * dynamic offsets are caller-owned for the call so the values are copied
+ * inline.  The replay stage maps the bound sets to pipe_context
+ * sampler_views / shader_buffers / shader_images / constant_buffers. */
+struct r300vk_cmd_bind_descriptor_sets {
+   VkPipelineBindPoint           bind_point;
+   VkPipelineLayout              pipeline_layout;
+   uint32_t                      first_set;
+   uint32_t                      set_count;
+   struct r300vk_descriptor_set *sets[R300VK_MAX_BOUND_DESCRIPTOR_SETS];
+   uint32_t                      dynamic_offset_count;
+   uint32_t                      dynamic_offsets[R300VK_MAX_DYNAMIC_OFFSETS];
+};
+
 struct r300vk_cmd_entry {
    enum r300vk_cmd_type type;
    union {
-      struct r300vk_cmd_begin_render_pass   begin_rp;
-      struct r300vk_cmd_bind_pipeline       bind_pipeline;
-      struct r300vk_cmd_set_viewport        set_vp;
-      struct r300vk_cmd_set_scissor         set_sc;
-      struct r300vk_cmd_bind_vertex_buffers bind_vbufs;
-      struct r300vk_cmd_draw                draw;
-      struct r300vk_cmd_copy_image_to_buf   copy_img_buf;
-      struct r300vk_cmd_pipeline_barrier    barrier;
-      struct r300vk_cmd_dispatch            dispatch;
+      struct r300vk_cmd_begin_render_pass    begin_rp;
+      struct r300vk_cmd_bind_pipeline        bind_pipeline;
+      struct r300vk_cmd_set_viewport         set_vp;
+      struct r300vk_cmd_set_scissor          set_sc;
+      struct r300vk_cmd_bind_vertex_buffers  bind_vbufs;
+      struct r300vk_cmd_draw                 draw;
+      struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
+      struct r300vk_cmd_pipeline_barrier     barrier;
+      struct r300vk_cmd_dispatch             dispatch;
+      struct r300vk_cmd_bind_descriptor_sets bind_dsets;
    };
 };
 
