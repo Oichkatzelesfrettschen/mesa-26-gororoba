@@ -1991,21 +1991,22 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       assert(alu->src[0].src.ssa->bit_size == 16);
       return emit_alu_op1(*alu, op1_flt16_to_flt32, shader);
    case nir_op_f2f16:
-      /* FP32 -> FP16 conversion via the FLT32_TO_FLT16 opcode.
-       * Symmetric to the f2f32 / FLT16_TO_FLT32 handler above.  Required
-       * to support shaderFloat16 + VK_KHR_shader_float16_int8 -- the
-       * bit-size promotion in terakan_lower_bit_size_callback widens
-       * FP16 ALU sources to FP32, and nir_lower_bit_size emits this
-       * conversion op at the value boundary.  Without this case, the
-       * Unknown-instruction path in from_nir hits an assertion on every
-       * FP16 shader. */
-      assert(alu->src[0].src.ssa->bit_size == 32);
-      return emit_alu_op1(*alu, op1_flt32_to_flt16, shader);
    case nir_op_f2f16_rtne:
-      /* Same as f2f16 -- FLT32_TO_FLT16 rounds to nearest even per the
-       * Bobcat ISA spec.  RTE is the only rounding mode available for
-       * this op on Evergreen, so the _rtne variant aliases to the same
-       * opcode. */
+      /* FP32 -> FP16 via the FLT32_TO_FLT16 opcode.  Symmetric to the
+       * f2f32 / FLT16_TO_FLT32 handler above.  Required to support
+       * shaderFloat16 + VK_KHR_shader_float16_int8: the bit-size promotion
+       * in terakan_lower_bit_size_callback widens FP16 ALU sources to FP32,
+       * and nir_lower_bit_size emits this conversion op at the value
+       * boundary.  Without it the Unknown-instruction path in from_nir
+       * asserts on every FP16 shader.
+       *
+       * f2f16 and f2f16_rtne share this body because FLT32_TO_FLT16 rounds
+       * to nearest even, the only rounding mode Evergreen offers for the op.
+       * f2f16_rtz is intentionally not handled: Terakan advertises
+       * shaderRoundingModeRTZFloat16 = false (terakan_physical_device.c), so
+       * the NIR pipeline never requests round-toward-zero FP16 conversion.
+       * If it ever appeared it would hit the Unknown-instruction path rather
+       * than silently rounding to nearest even. */
       assert(alu->src[0].src.ssa->bit_size == 32);
       return emit_alu_op1(*alu, op1_flt32_to_flt16, shader);
 
