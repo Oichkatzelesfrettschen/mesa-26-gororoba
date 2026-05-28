@@ -62,6 +62,20 @@ struct r300vk_pipeline {
     * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md. */
    struct r300_compute_binary_map_pattern binary_map;
 
+   /* Blend-add reduction kernel detected at pipeline-create time (M-G Entry 4
+    * of the compute-realization roadmap).  Recognised shape:
+    *   atomicAdd(out_data[gid & MASK], in_data[gid])
+    * lowers to a draw of N point fragments at position (bin, 0), with the FS
+    * sampling in_data via a 1D texture coordinate and writing the value to
+    * COLOR.  The blend equation `RB3D_CBLEND.COMB_FCN_ADD` with
+    * blend_func = (ONE, ONE) accumulates the per-fragment value into the bin
+    * cell of the 1xM output RT; the substrate verb is hardware-confirmed by
+    * bundle blendacc_20260527T045725Z (substrate finding
+    * 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md).  The
+    * orchestrator parallels the identity-map orchestrator at one level of
+    * indirection -- different RT extent, different VBO, blend state enabled. */
+   struct r300_compute_blend_acc_reduction_pattern blend_acc_reduction;
+
    void                   *vs_cso;
    void                   *fs_cso;
    void                   *blend_cso;
