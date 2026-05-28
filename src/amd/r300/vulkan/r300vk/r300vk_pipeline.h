@@ -55,6 +55,13 @@ struct r300vk_pipeline {
     * bound descriptor sets. */
    struct r300_compute_identity_pattern identity_map;
 
+   /* Texture-pair binary-map kernel detected at pipeline-create time.  Same
+    * orchestrator skeleton as identity_map but with two sampler stages (in_a
+    * + in_b) and a synthesised FS containing two TEX + one ALU + one MOV
+    * out per the M-F derivation in
+    * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md. */
+   struct r300_compute_binary_map_pattern binary_map;
+
    void                   *vs_cso;
    void                   *fs_cso;
    void                   *blend_cso;

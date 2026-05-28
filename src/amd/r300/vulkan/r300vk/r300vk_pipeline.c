@@ -486,7 +486,8 @@ static bool
 r300vk_classify_compute_kernel(struct r300vk_device *device,
                                const VkPipelineShaderStageCreateInfo *stage_info,
                                struct r300_compute_admission *adm,
-                               struct r300_compute_identity_pattern *ident)
+                               struct r300_compute_identity_pattern *ident,
+                               struct r300_compute_binary_map_pattern *binmap)
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    if (!mod)
@@ -515,11 +516,14 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
             nir_address_format_32bit_index_offset);
 
    r300_nir_classify_compute(nir, adm);
-   /* Identity-map detection is independent of admission so a later expansion
-    * can use it for diagnostic logging on a rejected kernel that still has
-    * the identity-map shape; the dispatch lowering only takes the path when
-    * both admit and is_identity_map are set. */
+   /* Identity-map + binary-map detection are independent of admission so
+    * the orchestrator can use them to select the appropriate compute-as-
+    * raster lowering shape for an admitted kernel.  The two detectors are
+    * mutually exclusive in their match conditions (identity-map requires
+    * the store value to be a load_ssbo def; binary-map requires the store
+    * value to be a binary ALU op def) so at most one fires. */
    r300_nir_detect_identity_map(nir, ident);
+   r300_nir_detect_binary_map(nir, binmap);
 
    /* R300VK_DEBUG=identity_map -- log what the classifier + detector
     * decided, so the M-E.4.4 triage can pin whether identity_map was
@@ -548,10 +552,15 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
          fprintf(stderr,
                  "ident_map: classify admit=%d reason=%d detect "
                  "is_identity_map=%d in_binding=%u out_binding=%u "
+                 "is_binary_map=%d binmap_in_a=%u binmap_in_b=%u "
+                 "binmap_out=%u binmap_op=%u "
                  "(ssbo_loads=%u ssbo_stores=%u image_stores=%u)\n",
                  (int)adm->admissible, (int)adm->reason,
                  (int)ident->is_identity_map,
                  ident->input_ssbo_binding, ident->output_ssbo_binding,
+                 (int)binmap->is_binary_map,
+                 binmap->input_a_ssbo_binding, binmap->input_b_ssbo_binding,
+                 binmap->output_ssbo_binding, (unsigned)binmap->alu_op,
                  ssbo_loads, ssbo_stores, image_stores);
       }
    }
@@ -718,8 +727,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
    for (uint32_t i = 0; i < createInfoCount; i++) {
       struct r300_compute_admission adm;
       struct r300_compute_identity_pattern ident = {0};
+      struct r300_compute_binary_map_pattern binmap = {0};
       if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage,
-                                          &adm, &ident))
+                                          &adm, &ident, &binmap))
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: SPIR-V to NIR failed for compute kernel %u",
                           i);
@@ -747,12 +757,15 @@ r300vk_CreateComputePipelines(VkDevice _device,
       vk_object_base_init(&device->vk, &pl->base, VK_OBJECT_TYPE_PIPELINE);
       pl->is_compute = true;
       pl->identity_map = ident;
+      pl->binary_map = binmap;
       /* When the kernel matches the identity-map pattern, synthesize the
        * fullscreen-quad VS + texture-sampling FS pair the dispatch replay
        * will bind.  A synthesis failure demotes the pipeline back to a no-op
        * compute object: vkCreateComputePipelines still succeeds (the kernel
        * is admitted; the lowering is the optimization) and the dispatch path
-       * falls back to the M-D no-op semantics. */
+       * falls back to the M-D no-op semantics.  M-F binary-map synthesis
+       * lands in M-F.2; for now an admitted binary-map kernel uses the M-D
+       * no-op dispatch path until M-F.2's two-sampler FS lands. */
       if (pl->identity_map.is_identity_map &&
           !r300vk_identity_map_synthesize_shaders(device, pl))
          pl->identity_map.is_identity_map = false;

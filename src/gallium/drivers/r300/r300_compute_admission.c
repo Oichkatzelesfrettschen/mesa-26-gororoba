@@ -131,6 +131,105 @@ r300_nir_detect_identity_map(const nir_shader *s,
    out->is_identity_map = true;
 }
 
+/* M-F texture-pair binary-map detector.  Mirrors the identity-map pattern at
+ * one level of indirection: store_ssbo's value is the def of a single ALU
+ * op whose two sources are the defs of two distinct load_ssbo intrinsics.
+ *
+ * Pure read-only NIR walk.  The recognized ALU op set is bounded by the
+ * FP24-budget per-operator table in
+ * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md;
+ * an op outside the set leaves is_binary_map false so the orchestrator
+ * dispatches the no-op compute lifecycle. */
+static bool
+binary_map_op_admitted(uint16_t op)
+{
+   switch (op) {
+   case nir_op_iadd: case nir_op_isub: case nir_op_imul:
+   case nir_op_imin: case nir_op_imax:
+   case nir_op_umin: case nir_op_umax:
+   case nir_op_fadd: case nir_op_fsub: case nir_op_fmul:
+   case nir_op_fmin: case nir_op_fmax:
+      return true;
+   default:
+      return false;
+   }
+}
+
+void
+r300_nir_detect_binary_map(const nir_shader *s,
+                           struct r300_compute_binary_map_pattern *out)
+{
+   out->is_binary_map         = false;
+   out->input_a_ssbo_binding  = 0;
+   out->input_b_ssbo_binding  = 0;
+   out->output_ssbo_binding   = 0;
+   out->alu_op                = 0;
+
+   const nir_intrinsic_instr *store = NULL;
+   const nir_intrinsic_instr *load_a = NULL;
+   const nir_intrinsic_instr *load_b = NULL;
+   unsigned store_count = 0;
+   unsigned load_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (load_count == 0)
+                  load_a = intr;
+               else if (load_count == 1)
+                  load_b = intr;
+               load_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 2)
+      return;
+   if (!store->src[0].ssa)
+      return;
+
+   /* Store value must come from an ALU op (not directly from a load_ssbo
+    * -- that's the identity-map case the M-E detector already handles). */
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!alu)
+      return;
+   if (!binary_map_op_admitted(alu->op))
+      return;
+
+   /* The op must have exactly 2 inputs and each input's SSA def must be the
+    * def of one of the two collected load_ssbos.  The matching is order-
+    * independent: (alu.src[0], alu.src[1]) can land on (load_a, load_b) or
+    * (load_b, load_a) -- both shapes are admissible. */
+   if (nir_op_infos[alu->op].num_inputs != 2)
+      return;
+   const nir_def *s0 = alu->src[0].src.ssa;
+   const nir_def *s1 = alu->src[1].src.ssa;
+   const bool ab = (s0 == &load_a->def && s1 == &load_b->def);
+   const bool ba = (s0 == &load_b->def && s1 == &load_a->def);
+   if (!ab && !ba)
+      return;
+
+   out->is_binary_map = true;
+   out->alu_op = (uint16_t)alu->op;
+   /* Capture constant binding indices when present; the orchestrator's
+    * descriptor-set layout fallback picks the first-three STORAGE_BUFFER
+    * bindings when these stay at the defaults. */
+   if (nir_src_is_const(load_a->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load_a->src[0]);
+   if (nir_src_is_const(load_b->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load_b->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding  = nir_src_as_uint(store->src[1]);
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
