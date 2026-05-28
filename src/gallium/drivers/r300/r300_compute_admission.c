@@ -686,18 +686,29 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
       }
    }
 
-   if (store_count != 1 || atomic_count != 0 || load_count != 2 ||
-       has_loop || !store_in_if || !store->src[0].ssa)
-      return;
-
    /* The stored value must come directly from a load_ssbo (the value load).
     * A binary-map kernel's store value is an ALU op, not a load -- this gate
     * keeps the two shapes disjoint.  nir_def_as_intrinsic_or_null returns NULL
     * when the value def is not produced by an intrinsic (the same idiom
     * binary-map uses with nir_def_as_alu_or_null). */
    const nir_intrinsic_instr *val_load =
-      nir_def_as_intrinsic_or_null(store->src[0].ssa);
-   if (!val_load || val_load->intrinsic != nir_intrinsic_load_ssbo)
+      (store && store->src[0].ssa)
+         ? nir_def_as_intrinsic_or_null(store->src[0].ssa) : NULL;
+   const bool val_is_load =
+      val_load && val_load->intrinsic == nir_intrinsic_load_ssbo;
+
+   {
+      const char *dbg = getenv("R300VK_DEBUG");
+      if (dbg && strstr(dbg, "identity_map"))
+         fprintf(stderr,
+                 "ident_map: predstore-detect store=%u load=%u atomic=%u "
+                 "has_loop=%d store_in_if=%d val_is_load=%d\n",
+                 store_count, load_count, atomic_count, (int)has_loop,
+                 (int)store_in_if, (int)val_is_load);
+   }
+
+   if (store_count != 1 || atomic_count != 0 || load_count != 2 ||
+       has_loop || !store_in_if || !val_is_load)
       return;
 
    /* The other load feeds the nir_if condition (the predicate). */
