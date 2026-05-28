@@ -489,7 +489,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                const VkPipelineShaderStageCreateInfo *stage_info,
                                struct r300_compute_admission *adm,
                                struct r300_compute_identity_pattern *ident,
-                               struct r300_compute_binary_map_pattern *binmap)
+                               struct r300_compute_binary_map_pattern *binmap,
+                               struct r300_compute_blend_acc_reduction_pattern *blendacc)
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    if (!mod)
@@ -550,6 +551,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
     * value to be a binary ALU op def) so at most one fires. */
    r300_nir_detect_identity_map(nir, ident);
    r300_nir_detect_binary_map(nir, binmap);
+   r300_nir_detect_blend_acc_reduction(nir, blendacc);
 
    /* R300VK_DEBUG=identity_map -- log what the classifier + detector
     * decided, so the M-E.4.4 triage can pin whether identity_map was
@@ -834,6 +836,39 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
+/* Synthesise the VS + FS pair for the M-G blend-add reduction lowering
+ * (Conjecture M-G Entry 4).  The shaders are structurally identical to
+ * r300vk_identity_map_synthesize_shaders -- a vertex_passthrough VS feeding
+ * a single-sampler FS that samples the bound 2D texture and writes the
+ * texel to OUT[0] COLOR.  The semantic difference between identity-map
+ * and blend-acc reduction lives ENTIRELY in the orchestrator at dispatch
+ * time:
+ *
+ *   - identity-map orchestrator binds the output buffer as a W x H RT
+ *     matching the input texture extent and draws a fullscreen quad with
+ *     blending DISABLED.  Each fragment writes one texel exactly.
+ *
+ *   - blend-acc orchestrator binds the output buffer as a 1 x M RT (M =
+ *     histogram bin count, derived from the output buffer's element count
+ *     at orchestrator time) and draws N point primitives at positions
+ *     (gid & MASK, 0) with blending ENABLED in `COMB_FCN_ADD` /
+ *     blend_func = (ONE, ONE).  The blend hardware accumulates N writes
+ *     into M bins.
+ *
+ * Sharing the synthesis lets the M-G.3 orchestrator reuse the device-cached
+ * sampler / raster CSOs the M-E lowering already populates and adds only
+ * the blend-state difference.  This is the same reuse pattern M-F.2 uses
+ * for its own state CSOs (binary-map synthesis comment, r300vk_pipeline.c
+ * ~line 755). */
+static bool
+r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
+                                              struct r300vk_pipeline *pl)
+{
+   /* Defer to the identity-map synthesis: structurally identical shader
+    * pair; only the orchestrator-time blend state and RT extent differ. */
+   return r300vk_identity_map_synthesize_shaders(device, pl);
+}
+
 VkResult
 r300vk_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
@@ -869,8 +904,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
       struct r300_compute_admission adm;
       struct r300_compute_identity_pattern ident = {0};
       struct r300_compute_binary_map_pattern binmap = {0};
+      struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
       if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage,
-                                          &adm, &ident, &binmap))
+                                          &adm, &ident, &binmap, &blendacc))
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: SPIR-V to NIR failed for compute kernel %u",
                           i);
@@ -899,20 +935,29 @@ r300vk_CreateComputePipelines(VkDevice _device,
       pl->is_compute = true;
       pl->identity_map = ident;
       pl->binary_map = binmap;
+      pl->blend_acc_reduction = blendacc;
       /* When the kernel matches the identity-map pattern, synthesize the
        * fullscreen-quad VS + texture-sampling FS pair the dispatch replay
        * will bind.  A synthesis failure demotes the pipeline back to a no-op
        * compute object: vkCreateComputePipelines still succeeds (the kernel
        * is admitted; the lowering is the optimization) and the dispatch path
-       * falls back to the M-D no-op semantics.  M-F binary-map synthesis
-       * lands in M-F.2; for now an admitted binary-map kernel uses the M-D
-       * no-op dispatch path until M-F.2's two-sampler FS lands. */
+       * falls back to the M-D no-op semantics.  Detector mutual-exclusivity
+       * matters here -- at most one of identity_map / binary_map /
+       * blend_acc_reduction can fire for a given kernel because their match
+       * conditions are structurally disjoint (identity-map: store value is
+       * a load_ssbo def; binary-map: store value is a binary ALU op def;
+       * blend-acc: kernel carries 1 ssbo_atomic-iadd, 0 store_ssbo).  The
+       * else-if chain protects against the impossible "two detectors fired"
+       * case by giving identity-map priority. */
       if (pl->identity_map.is_identity_map &&
           !r300vk_identity_map_synthesize_shaders(device, pl))
          pl->identity_map.is_identity_map = false;
       else if (pl->binary_map.is_binary_map &&
                !r300vk_binary_map_synthesize_shaders(device, pl))
          pl->binary_map.is_binary_map = false;
+      else if (pl->blend_acc_reduction.is_blend_acc_reduction &&
+               !r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
+         pl->blend_acc_reduction.is_blend_acc_reduction = false;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 
