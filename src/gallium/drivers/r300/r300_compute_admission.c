@@ -103,7 +103,6 @@ r300_nir_detect_identity_map(const nir_shader *s,
       return;
    }
    const bool value_eq_load = (store->src[0].ssa == &load->def);
-   const bool load_binding_const = nir_src_is_const(load->src[0]);
    {
       const char *dbg = getenv("R300VK_DEBUG");
       if (dbg && strstr(dbg, "identity_map"))
@@ -112,18 +111,23 @@ r300_nir_detect_identity_map(const nir_shader *s,
                  "value_eq_load=%d load_binding_const=%d "
                  "store_binding_const=%d\n",
                  (void *)store->src[0].ssa, (void *)&load->def,
-                 (int)value_eq_load, (int)load_binding_const,
+                 (int)value_eq_load,
+                 (int)nir_src_is_const(load->src[0]),
                  (int)nir_src_is_const(store->src[1]));
    }
    if (!value_eq_load)
       return;
-   /* The store binding is constant 0 (classify-time invariant).  The load's
-    * binding is the descriptor index the lowering needs. */
-   if (!load_binding_const)
-      return;
-   out->input_ssbo_binding  = nir_src_as_uint(load->src[0]);
-   out->output_ssbo_binding = nir_src_is_const(store->src[1]) ?
-                              nir_src_as_uint(store->src[1]) : 0;
+   /* The binding source for load_ssbo / store_ssbo is a
+    * load_vulkan_descriptor (or similar) handle after nir_lower_explicit_io
+    * with nir_address_format_32bit_index_offset, NOT a constant -- the
+    * earlier const-binding check rejected every real identity-map kernel.
+    * Capture what's a constant when it IS one (for diagnostic), but the
+    * orchestrator resolves the actual VkBuffer bindings from the bound
+    * descriptor set's layout at dispatch time, not from the NIR. */
+   if (nir_src_is_const(load->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
    out->is_identity_map = true;
 }
 
