@@ -382,6 +382,124 @@ r300_nir_detect_blend_acc_reduction(const nir_shader *s,
       out->output_ssbo_binding = nir_src_as_uint(atomic->src[0]);
 }
 
+/* Recursive transitive dependency: does `def` derive from `root` through any
+ * chain of ALU / mov / extract instructions?  Bounded depth keeps the walk
+ * total for the small kernels the detector pattern-matches. */
+static bool
+def_derives_from(const nir_def *def, const nir_def *root, unsigned depth)
+{
+   if (!def || depth >= 8)
+      return false;
+   if (def == root)
+      return true;
+   /* Canonical r300 NIR pattern (per r300_nir_detect_binary_map at line 232
+    * of this file): nir_def_as_alu_or_null casts back through the def's
+    * embedded location to recover the producing nir_alu_instr, returning
+    * NULL when the def is not from an ALU. */
+   const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)def);
+   if (!alu)
+      return false;
+   const unsigned num_srcs = nir_op_infos[alu->op].num_inputs;
+   for (unsigned i = 0; i < num_srcs; i++) {
+      if (def_derives_from(alu->src[i].src.ssa, root, depth + 1))
+         return true;
+   }
+   return false;
+}
+
+/* M-G Entry 5 ZPASS coverage-count detector.  Recognises the shape:
+ *
+ *     uint gid = gl_GlobalInvocationID.x;
+ *     if (in_data[gid] >= THRESHOLD)
+ *         atomicAdd(count_out, 1u);
+ *
+ * which lowers to the substrate's ZPASS occlusion-counter verb (bundle
+ * stencil_zpass_20260527T052208Z; substrate finding 2026-05-26-rs482-
+ * compute-as-raster-functional-unit-substrate.md).  Detection invariants:
+ *
+ *   1. Exactly 1 ssbo_atomic + 1 load_ssbo + 0 store_ssbo.
+ *   2. The atomic's ATOMIC_OP is nir_atomic_op_iadd.
+ *   3. The atomic's value-source (src[2]) is a NIR-constant equal to 1.
+ *      This is the discriminator from blend-acc: blend-acc's value source
+ *      is a load_ssbo def, ZPASS's is a literal 1.
+ *   4. The atomic is contained in a block whose parent cf_node is a
+ *      nir_if (the if-then branch with the atomic; nested if's not
+ *      supported in the first cut).
+ *   5. The nir_if's condition SSA def transitively derives from the
+ *      load_ssbo's def via ALU operations (the predicate is computed
+ *      from the load result).
+ *
+ * Bin-mask analysis is NOT performed: the output buffer is single-element
+ * (1 uint32 cell) and the orchestrator binds it directly without
+ * histogram indexing. */
+void
+r300_nir_detect_zpass_reduction(const nir_shader *s,
+                                struct r300_compute_zpass_reduction_pattern *out)
+{
+   out->is_zpass_reduction  = false;
+   out->value_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+   out->alu_op              = 0;
+
+   const nir_intrinsic_instr *atomic = NULL;
+   const nir_intrinsic_instr *load   = NULL;
+   const nir_block           *atomic_block = NULL;
+   unsigned atomic_count = 0;
+   unsigned load_count   = 0;
+   unsigned store_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+               atomic = intr;
+               atomic_block = block;
+               atomic_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               load = intr;
+               load_count++;
+            } else if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store_count++;
+            }
+         }
+      }
+   }
+
+   if (atomic_count != 1 || load_count != 1 || store_count != 0)
+      return;
+   if (nir_intrinsic_atomic_op(atomic) != nir_atomic_op_iadd)
+      return;
+
+   /* Value source must be a NIR constant equal to 1.  This is the
+    * load-bearing discriminator from blend-acc-reduction. */
+   if (!nir_src_is_const(atomic->src[2]) ||
+       nir_src_as_uint(atomic->src[2]) != 1)
+      return;
+
+   /* The atomic must be inside an if-then (or if-else) branch, not at
+    * the function impl's top level. */
+   const nir_cf_node *parent_cf = atomic_block->cf_node.parent;
+   if (!parent_cf || parent_cf->type != nir_cf_node_if)
+      return;
+   const nir_if *if_node = nir_cf_node_as_if(parent_cf);
+
+   /* The if condition must transitively derive from the load_ssbo's def.
+    * This rules out kernels where the predicate is computed from some
+    * other source (a uniform, gl_GlobalInvocationID directly, etc.). */
+   if (!def_derives_from(if_node->condition.ssa, &load->def, 0))
+      return;
+
+   out->is_zpass_reduction = true;
+   out->alu_op = (uint16_t)nir_op_iadd;
+   if (nir_src_is_const(load->src[0]))
+      out->value_ssbo_binding  = nir_src_as_uint(load->src[0]);
+   if (nir_src_is_const(atomic->src[0]))
+      out->output_ssbo_binding = nir_src_as_uint(atomic->src[0]);
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
@@ -399,6 +517,16 @@ r300_nir_classify_compute(const nir_shader *s,
    struct r300_compute_blend_acc_reduction_pattern blend_acc = {0};
    r300_nir_detect_blend_acc_reduction(s, &blend_acc);
    const bool admit_ssbo_atomic_blend_acc = blend_acc.is_blend_acc_reduction;
+
+   /* M-G Entry 5 ZPASS coverage-count admit-precheck.  Same admit-on-shape
+    * pattern as blend-acc but the structural test is conditional-gating
+    * an atomicAdd-of-1.  Detector + classifier admit-flag are mutually
+    * exclusive against blend-acc (the atomic's value source is const 1
+    * for ZPASS, vs a load_ssbo def for blend-acc) so admitting one
+    * cannot admit the other. */
+   struct r300_compute_zpass_reduction_pattern zpass = {0};
+   r300_nir_detect_zpass_reduction(s, &zpass);
+   const bool admit_ssbo_atomic_zpass = zpass.is_zpass_reduction;
 
    /* Workgroup shared memory: no LDS on R3xx. */
    if (s->info.shared_size > 0) {
@@ -434,9 +562,10 @@ r300_nir_classify_compute(const nir_shader *s,
                 * detector confirmed the SHAPE upstream, admit the specific
                 * ssbo_atomic the detector recognised. */
                if (strstr(name, "atomic") != NULL) {
-                  if (admit_ssbo_atomic_blend_acc &&
+                  if ((admit_ssbo_atomic_blend_acc ||
+                       admit_ssbo_atomic_zpass) &&
                       intr->intrinsic == nir_intrinsic_ssbo_atomic) {
-                     continue;  /* blend-acc-reduction lowering will handle it */
+                     continue;  /* blend-acc OR ZPASS lowering will handle it */
                   }
                   reject(out, R300_COMPUTE_REJECT_GENERAL_ATOMIC, name);
                   return;
