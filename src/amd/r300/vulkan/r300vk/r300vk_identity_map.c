@@ -1225,3 +1225,358 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    IDM_LOG("blend_acc orchestrator done OK");
    return true;
 }
+
+/* M-G Entry 5 ZPASS coverage-count reduction orchestrator.  Decomposes
+ * `if (in_data[gid] != 0u) atomicAdd(count_out, 1u)` into N point fragments
+ * whose KILL_IF gates discard the false-predicate fragments; the depth/
+ * stencil unit's ZPASS counter (mmR300_ZB_ZPASS_DATA = DWORD 0x13d6 /
+ * byte 0x4f58, mmR300_ZB_ZPASS_ADDR = DWORD 0x13d7 / byte 0x4f5c per
+ * umr-gororoba/database/ip/rs482_gfx_3_0_0.reg) counts surviving
+ * fragments, exposed to userspace as PIPE_QUERY_OCCLUSION_COUNTER through
+ * r300_query.c.
+ *
+ * Shape differs from blend_acc_reduction_dispatch_replay in three load-
+ * bearing places:
+ *
+ *   1. The output buffer is a single uint32 counter, not a 1xM histogram
+ *      RT row.  The RT itself is still 1xN (one pixel per point fragment)
+ *      because each draw point needs a distinct rasterization slot to
+ *      avoid Z-test deduplication; the RT contents are discarded, only
+ *      the ZPASS query result matters.
+ *   2. The VBO entries carry (vec2 pos, float predicate) instead of
+ *      (vec2 pos, packed-RGBA8 value).  The CPU stage reads in_data[gid]
+ *      and bakes 1.0f if (in_data[gid] != 0u) else 0.0f.
+ *   3. A pipe_query (PIPE_QUERY_OCCLUSION_COUNTER) brackets the draw;
+ *      get_query_result(wait=true) returns the u64 sum of surviving
+ *      fragments, truncated to u32 and written to count_out[0].
+ *
+ * No blend (only the ZPASS path matters); RT clear unnecessary (RT
+ * contents never read).  Other surfaces reuse the identity-map
+ * orchestrator's shape verbatim. */
+bool
+r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
+                                       const struct r300vk_pipeline *pl,
+                                       const struct r300vk_cmd_dispatch *dispatch,
+                                       const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   IDM_LOG("zpass entry pl=%p is_zpass=%d set_count=%u gx=%u gy=%u gz=%u",
+           (const void *)pl,
+           pl ? (int)pl->zpass_reduction.is_zpass_reduction : -1,
+           binds ? binds->set_count : 0,
+           dispatch ? dispatch->group_count_x : 0,
+           dispatch ? dispatch->group_count_y : 0,
+           dispatch ? dispatch->group_count_z : 0);
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0) {
+      IDM_LOG("zpass early-return null-or-empty-binds");
+      return false;
+   }
+   if (!pipe->create_query || !pipe->begin_query || !pipe->end_query ||
+       !pipe->get_query_result || !pipe->destroy_query) {
+      IDM_LOG("zpass early-return pipe-query-vtable-missing");
+      return false;
+   }
+   if (!pl->vs_cso || !pl->fs_cso) {
+      IDM_LOG("zpass early-return no-vs-or-fs-cso");
+      return false;
+   }
+   if (binds->first_set != 0) {
+      IDM_LOG("zpass early-return first_set=%u (only slot 0 supported)",
+              binds->first_set);
+      return false;
+   }
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout) {
+      IDM_LOG("zpass early-return no-set-or-layout");
+      return false;
+   }
+
+   uint32_t in_binding  = pl->zpass_reduction.value_ssbo_binding;
+   uint32_t out_binding = pl->zpass_reduction.output_ssbo_binding;
+   const bool detector_captured = (in_binding != 0 || out_binding != 0);
+   if (!detector_captured) {
+      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
+          !nth_storage_buffer_binding(set, 1, &out_binding)) {
+         IDM_LOG("zpass early-return layout-has-fewer-than-two-storage-buffers");
+         return false;
+      }
+   }
+   IDM_LOG("zpass bindings: in=%u out=%u source=%s",
+           in_binding, out_binding,
+           detector_captured ? "detector" : "positional");
+
+   const struct r300vk_descriptor *in_desc =
+      find_descriptor_by_binding(set, in_binding);
+   const struct r300vk_descriptor *out_desc =
+      find_descriptor_by_binding(set, out_binding);
+   if (!in_desc || !out_desc || !in_desc->buf.buffer || !out_desc->buf.buffer) {
+      IDM_LOG("zpass early-return descriptor-walk-miss");
+      return false;
+   }
+   VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
+   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource) {
+      IDM_LOG("zpass early-return null-pipe-resource");
+      return false;
+   }
+
+   /* Output buffer must hold at least one uint32.  Excess capacity is
+    * fine -- the orchestrator only writes the first 4 bytes (the
+    * surviving-fragment count). */
+   const uint64_t out_byte_size = out_buf->size;
+   if (out_byte_size < sizeof(uint32_t)) {
+      IDM_LOG("zpass early-return output-too-small=%llu",
+              (unsigned long long)out_byte_size);
+      return false;
+   }
+
+   const uint64_t total_invocations =
+      (uint64_t)dispatch->group_count_x *
+      (uint64_t)dispatch->group_count_y *
+      (uint64_t)dispatch->group_count_z;
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("zpass early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
+      return false;
+   }
+   const uint32_t N = (uint32_t)total_invocations;
+   IDM_LOG("zpass N=%u", N);
+
+   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+
+   /* 1 x N RT: one rasterization slot per gid so distinct (x, 0) point
+    * fragments do not collapse under per-pixel deduplication.  RT
+    * contents are unused; only the ZPASS counter matters. */
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = fmt;
+   rt_templ.width0     = N;
+   rt_templ.height0    = 1;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      IDM_LOG("zpass early-return rt-create-failed");
+      return false;
+   }
+
+   /* VBO entries: vec2 pos (8 bytes) + float predicate (4 bytes) = 12B
+    * per gid.  CPU-stage from in_buf: predicate = (in_data[gid] != 0)
+    * baked as 1.0f or 0.0f.  The FS reads the predicate as GENERIC 0 and
+    * KILL_IFs when predicate < 0.5 (i.e. when baked 0.0). */
+   const uint32_t vbo_stride = 12u;
+   const uint64_t vbo_bytes  = (uint64_t)N * vbo_stride;
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = (unsigned)vbo_bytes;
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb) {
+      pipe_resource_reference(&rt, NULL);
+      IDM_LOG("zpass early-return vbo-create-failed");
+      return false;
+   }
+
+   {
+      struct pipe_transfer *in_xfer = NULL;
+      struct pipe_box in_box;
+      memset(&in_box, 0, sizeof(in_box));
+      in_box.width  = (unsigned)(N * sizeof(uint32_t));
+      in_box.height = 1; in_box.depth = 1;
+      const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
+                                            PIPE_MAP_READ, &in_box, &in_xfer);
+      if (!in_map) {
+         pipe_resource_reference(&vb, NULL);
+         pipe_resource_reference(&rt, NULL);
+         IDM_LOG("zpass early-return in-map-failed");
+         return false;
+      }
+      struct pipe_transfer *vb_xfer = NULL;
+      struct pipe_box vb_box;
+      memset(&vb_box, 0, sizeof(vb_box));
+      vb_box.width  = (unsigned)vbo_bytes;
+      vb_box.height = 1; vb_box.depth = 1;
+      void *vb_map = pipe->buffer_map(pipe, vb, 0,
+                                      PIPE_MAP_WRITE |
+                                      PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                      &vb_box, &vb_xfer);
+      if (!vb_map) {
+         pipe->buffer_unmap(pipe, in_xfer);
+         pipe_resource_reference(&vb, NULL);
+         pipe_resource_reference(&rt, NULL);
+         IDM_LOG("zpass early-return vbo-map-failed");
+         return false;
+      }
+      const uint32_t *in_words = (const uint32_t *)in_map;
+      uint8_t        *vb_bytes = (uint8_t *)vb_map;
+      const float inv_N = 2.0f / (float)N;  /* NDC step per gid */
+      for (uint32_t gid = 0; gid < N; gid++) {
+         /* Pixel-center NDC X for gid: -1 + (gid + 0.5) * (2/N). */
+         const float pos_x = -1.0f + ((float)gid + 0.5f) * inv_N;
+         const float pos_y = 0.0f;
+         const float pred  = (in_words[gid] != 0u) ? 1.0f : 0.0f;
+         uint8_t *e = vb_bytes + (size_t)gid * vbo_stride;
+         memcpy(e + 0, &pos_x, 4);
+         memcpy(e + 4, &pos_y, 4);
+         memcpy(e + 8, &pred,  4);
+      }
+      pipe->buffer_unmap(pipe, vb_xfer);
+      pipe->buffer_unmap(pipe, in_xfer);
+   }
+   IDM_LOG("zpass VBO staged N=%u entries (%llu bytes)",
+           N, (unsigned long long)vbo_bytes);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = vbo_stride;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;  /* position xy */
+   velems[1].src_offset = 8; velems[1].src_stride = vbo_stride;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R32_FLOAT;     /* predicate */
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      IDM_LOG("zpass early-return velems-create-failed");
+      return false;
+   }
+
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = fmt;
+   surf_templ.texture = rt;
+
+   struct pipe_framebuffer_state fb;
+   memset(&fb, 0, sizeof(fb));
+   fb.width = N;  fb.height = 1;
+   fb.nr_cbufs = 1; fb.cbufs[0] = surf_templ;
+   pipe->set_framebuffer_state(pipe, &fb);
+
+   struct pipe_viewport_state vp;
+   memset(&vp, 0, sizeof(vp));
+   vp.scale[0] = (float)N * 0.5f; vp.scale[1] = 0.5f;
+   vp.scale[2] = 0.5f;
+   vp.translate[0] = (float)N * 0.5f; vp.translate[1] = 0.5f;
+   vp.translate[2] = 0.5f;
+   pipe->set_viewport_states(pipe, 0, 1, &vp);
+
+   struct pipe_scissor_state sc = {0};
+   sc.maxx = N; sc.maxy = 1;
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+
+   /* No blend (identity_map_blend_cso, ADD disabled); no depth buffer
+    * attached; rasterizer + DSA reuse the identity-map shape so depth
+    * test passes trivially -- ZPASS counts every non-KILLed fragment. */
+   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_vs_state(pipe, pl->vs_cso);
+   pipe->bind_fs_state(pipe, pl->fs_cso);
+   pipe->bind_vertex_elements_state(pipe, velems_cso);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   /* Bracket the draw with PIPE_QUERY_OCCLUSION_COUNTER.  r300_query.c
+    * wraps the ZB ZPASS register pair behind this query type and returns
+    * a uint64 fragment sum via get_query_result. */
+   struct pipe_query *q = pipe->create_query(
+      pipe, PIPE_QUERY_OCCLUSION_COUNTER, 0);
+   if (!q) {
+      pipe->set_vertex_buffers(pipe, 0, NULL);
+      struct pipe_framebuffer_state empty_fb;
+      memset(&empty_fb, 0, sizeof(empty_fb));
+      pipe->set_framebuffer_state(pipe, &empty_fb);
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      IDM_LOG("zpass early-return create_query-failed");
+      return false;
+   }
+   if (!pipe->begin_query(pipe, q)) {
+      pipe->destroy_query(pipe, q);
+      pipe->set_vertex_buffers(pipe, 0, NULL);
+      struct pipe_framebuffer_state empty_fb;
+      memset(&empty_fb, 0, sizeof(empty_fb));
+      pipe->set_framebuffer_state(pipe, &empty_fb);
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      IDM_LOG("zpass early-return begin_query-failed");
+      return false;
+   }
+
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_POINTS;
+   info.instance_count = 1;
+   info.max_index      = N - 1;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = N };
+   IDM_LOG("zpass draw_vbo mode=points count=%u", N);
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->end_query(pipe, q);
+   pipe->flush(pipe, NULL, 0);
+
+   union pipe_query_result qr;
+   memset(&qr, 0, sizeof(qr));
+   const bool query_ok = pipe->get_query_result(pipe, q, true /* wait */, &qr);
+   pipe->destroy_query(pipe, q);
+   if (!query_ok) {
+      pipe->set_vertex_buffers(pipe, 0, NULL);
+      struct pipe_framebuffer_state empty_fb;
+      memset(&empty_fb, 0, sizeof(empty_fb));
+      pipe->set_framebuffer_state(pipe, &empty_fb);
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      IDM_LOG("zpass early-return get_query_result-failed");
+      return false;
+   }
+   /* Saturate u64->u32: the ZPASS counter on RS482 is a per-pipe u32
+    * accumulator that the kernel sums across pipes into a u64; for the
+    * first-cut probe N is bounded at 2048*2048, well under UINT32_MAX. */
+   const uint64_t raw_sum = qr.u64;
+   const uint32_t saturated = (raw_sum > UINT32_MAX)
+      ? UINT32_MAX : (uint32_t)raw_sum;
+   IDM_LOG("zpass query u64=%llu saturated_u32=%u",
+           (unsigned long long)raw_sum, saturated);
+
+   {
+      struct pipe_box out_box;
+      memset(&out_box, 0, sizeof(out_box));
+      out_box.width  = (unsigned)sizeof(uint32_t);
+      out_box.height = 1; out_box.depth = 1;
+      struct pipe_transfer *out_xfer = NULL;
+      void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                         PIPE_MAP_WRITE |
+                                         PIPE_MAP_DISCARD_RANGE,
+                                         &out_box, &out_xfer);
+      if (out_bytes) {
+         memcpy(out_bytes, &saturated, sizeof(uint32_t));
+         pipe->buffer_unmap(pipe, out_xfer);
+      }
+   }
+
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&rt, NULL);
+   IDM_LOG("zpass orchestrator done OK");
+   return true;
+}

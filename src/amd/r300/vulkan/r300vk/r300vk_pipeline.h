@@ -76,6 +76,17 @@ struct r300vk_pipeline {
     * indirection -- different RT extent, different VBO, blend state enabled. */
    struct r300_compute_blend_acc_reduction_pattern blend_acc_reduction;
 
+   /* ZPASS coverage-count reduction kernel detected at pipeline-create time
+    * (M-G Entry 5).  Recognised shape:
+    *   if (in_data[gid] >= THRESHOLD) atomicAdd(count_out, 1u);
+    * Orchestrator lowers to N point-primitive draws into a 1xN RT with the
+    * per-vertex-baked predicate gating fragment KILL; the ZB ZPASS counter
+    * (ZB_ZPASS_DATA / ZB_ZPASS_ADDR per umr-gororoba's rs482_gfx_3_0_0.reg
+    * decode at DWORD 0x13d6 / 0x13d7) accumulates the per-pipe surviving-
+    * fragment count, exposed through pipe_query (PIPE_QUERY_OCCLUSION_COUNTER)
+    * via r300_query.c. */
+   struct r300_compute_zpass_reduction_pattern zpass_reduction;
+
    void                   *vs_cso;
    void                   *fs_cso;
    void                   *blend_cso;

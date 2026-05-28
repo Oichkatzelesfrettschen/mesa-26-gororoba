@@ -545,6 +545,13 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                                        e->dispatch.pipeline,
                                                        &e->dispatch,
                                                        last_bind_dsets);
+         } else if (e->dispatch.pipeline &&
+                    e->dispatch.pipeline->zpass_reduction.is_zpass_reduction &&
+                    last_bind_dsets) {
+            r300vk_zpass_reduction_dispatch_replay(device,
+                                                   e->dispatch.pipeline,
+                                                   &e->dispatch,
+                                                   last_bind_dsets);
          }
          /* The no-op compute kernel emits no GPU work, so this proves the
           * Vulkan compute object lifecycle (pipeline create, bind, dispatch
