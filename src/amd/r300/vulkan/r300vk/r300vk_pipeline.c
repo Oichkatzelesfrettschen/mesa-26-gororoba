@@ -4,6 +4,9 @@
  */
 
 #include "r300vk_pipeline.h"
+#include "util/u_simple_shaders.h"
+#include "pipe/p_shader_tokens.h"
+#include "tgsi/tgsi_from_mesa.h"
 #include "r300vk_device.h"
 #include "r300vk_shader_module.h"
 
@@ -508,6 +511,52 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    return true;
 }
 
+/* Synthesize the fullscreen-quad VS + texture-sampling FS pair that lowers an
+ * identity-map compute kernel onto the compute-as-raster substrate.  The VS
+ * passes through a POSITION attribute and one GENERIC varying (texture
+ * coordinates); the FS samples PIPE_TEXTURE_2D (NEAREST configured at the
+ * sampler-state binding point at dispatch replay time) and writes the texel
+ * to the bound color RT.  Both CSOs are cached on the pipeline; the existing
+ * destroy path frees vs_cso / fs_cso conditionally.
+ *
+ * util_make_vertex_passthrough_shader and util_make_fragment_tex_shader are
+ * the Mesa-canonical helpers in src/gallium/auxiliary/util/u_simple_shaders.c
+ * (TGSI-based; r300g's create_vs_state / create_fs_state accept TGSI directly
+ * via PIPE_SHADER_IR_TGSI -- the same path other r300/r600 driver-internal
+ * shader synthesis uses, e.g. r600_blit.c).  Returning false signals a
+ * synthesis failure that demotes the pipeline back to a no-op compute object
+ * so vkCreateComputePipelines still succeeds with the kernel admitted, just
+ * without the identity-map lowering. */
+static bool
+r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
+                                       struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+
+   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
+                                                      TGSI_SEMANTIC_GENERIC };
+   const unsigned          vs_semantic_indices[] = { 0, 0 };
+
+   pl->vs_cso = util_make_vertex_passthrough_shader(
+                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = util_make_fragment_tex_shader(
+                   pipe, TGSI_TEXTURE_2D,
+                   TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                   false /* use_txf: NEAREST sample, not integer fetch */,
+                   true  /* use_persp: perspective-correct interpolation */);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
 VkResult
 r300vk_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
@@ -571,6 +620,15 @@ r300vk_CreateComputePipelines(VkDevice _device,
       vk_object_base_init(&device->vk, &pl->base, VK_OBJECT_TYPE_PIPELINE);
       pl->is_compute = true;
       pl->identity_map = ident;
+      /* When the kernel matches the identity-map pattern, synthesize the
+       * fullscreen-quad VS + texture-sampling FS pair the dispatch replay
+       * will bind.  A synthesis failure demotes the pipeline back to a no-op
+       * compute object: vkCreateComputePipelines still succeeds (the kernel
+       * is admitted; the lowering is the optimization) and the dispatch path
+       * falls back to the M-D no-op semantics. */
+      if (pl->identity_map.is_identity_map &&
+          !r300vk_identity_map_synthesize_shaders(device, pl))
+         pl->identity_map.is_identity_map = false;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 
