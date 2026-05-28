@@ -628,18 +628,42 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   /* Layout-fallback: input_a = 1st STORAGE_BUFFER, input_b = 2nd, output
-    * = 3rd.  Matches the kernel-class contract that the M-F probe enforces
-    * (compute_exhaustive_kernels/07_admissible_binary_map_*.comp). */
-   uint32_t in_a_binding = 0, in_b_binding = 0, out_binding = 0;
-   if (!nth_storage_buffer_binding(set, 0, &in_a_binding) ||
-       !nth_storage_buffer_binding(set, 1, &in_b_binding) ||
-       !nth_storage_buffer_binding(set, 2, &out_binding)) {
-      IDM_LOG("bin_map early-return layout-has-fewer-than-three-storage-buffers");
-      return false;
+   /* Binding-index resolution.  Two sources, in priority order:
+    *  (1) The M-F.1 detector reads the constant binding sources from
+    *      the kernel's load_ssbo / store_ssbo intrinsics (see
+    *      r300_compute_admission.c r300_nir_detect_binary_map: it
+    *      sets binmap->{input_a,input_b,output}_ssbo_binding when
+    *      nir_src_is_const returns true for each binding source).
+    *      When the kernel's NIR retains constant binding sources --
+    *      the common case for a GLSL kernel with explicit
+    *      layout(binding=N) qualifiers -- the captured indices are
+    *      authoritative and the orchestrator MUST use them so a
+    *      non-commutative ALU op (SUB, DIV, MOD, SHL, SHR) gets its
+    *      operand order right for any binding declaration order.
+    *  (2) When all three captured indices are zero (Vulkan forbids
+    *      duplicate bindings within a set, so all-zero means the
+    *      detector saw opaque post-explicit_io handles instead of
+    *      constants), fall back to positional layout iteration:
+    *      input_a = 1st STORAGE_BUFFER, input_b = 2nd, output = 3rd.
+    *      This preserves the compute_exhaustive_kernels/
+    *      07_admissible_binary_map_*.comp probe's pre-explicit_io
+    *      path. */
+   uint32_t in_a_binding = pl->binary_map.input_a_ssbo_binding;
+   uint32_t in_b_binding = pl->binary_map.input_b_ssbo_binding;
+   uint32_t out_binding  = pl->binary_map.output_ssbo_binding;
+   const bool detector_captured = (in_a_binding != 0 || in_b_binding != 0 ||
+                                   out_binding  != 0);
+   if (!detector_captured) {
+      if (!nth_storage_buffer_binding(set, 0, &in_a_binding) ||
+          !nth_storage_buffer_binding(set, 1, &in_b_binding) ||
+          !nth_storage_buffer_binding(set, 2, &out_binding)) {
+         IDM_LOG("bin_map early-return layout-has-fewer-than-three-storage-buffers");
+         return false;
+      }
    }
-   IDM_LOG("bin_map bindings: in_a=%u in_b=%u out=%u",
-           in_a_binding, in_b_binding, out_binding);
+   IDM_LOG("bin_map bindings: in_a=%u in_b=%u out=%u source=%s",
+           in_a_binding, in_b_binding, out_binding,
+           detector_captured ? "detector" : "positional");
 
    const struct r300vk_descriptor *desc_in_a =
       find_descriptor_by_binding(set, in_a_binding);
