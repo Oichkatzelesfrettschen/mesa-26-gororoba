@@ -61,6 +61,17 @@ struct r300vk_device {
    struct r300vk_queue    queue;
    bool                   use_cs_backend;
    bool                   hybrid_compute_enabled;
+
+   /* Cached gallium state CSOs every identity-map compute dispatch reuses
+    * (blend = passthrough, rasterizer = no-cull / fill-solid, dsa = depth+
+    * stencil off, sampler = NEAREST + CLAMP_TO_EDGE).  Lazily created on the
+    * first identity-map pipeline-create, freed in r300vk_DestroyDevice.  NULL
+    * means uninitialized; r300vk_device_init_identity_map_state populates
+    * them on demand. */
+   void                  *identity_map_blend_cso;
+   void                  *identity_map_rasterizer_cso;
+   void                  *identity_map_dsa_cso;
+   void                  *identity_map_sampler_cso;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)

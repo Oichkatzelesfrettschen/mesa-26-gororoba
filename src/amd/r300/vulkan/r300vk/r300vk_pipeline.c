@@ -511,6 +511,78 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    return true;
 }
 
+/* Lazily create the gallium state CSOs every identity-map dispatch reuses:
+ * blend = passthrough (write color unmodified, all four channels), rasterizer
+ * = no cull / fill solid / no scissor / depth clip both planes, dsa = depth
+ * test off + stencil off + alpha test off, sampler = NEAREST + CLAMP_TO_EDGE
+ * (per the M-E exactness theorem: only NEAREST returns the stored texel
+ * unmodified, the M-E.identity-map readback requires bit-exactness).
+ *
+ * Idempotent: subsequent identity-map pipelines find the CSOs populated and
+ * skip recreation.  The matching delete_*_state runs in r300vk_DestroyDevice
+ * before the pipe_context itself is destroyed. */
+static bool
+r300vk_device_init_identity_map_state(struct r300vk_device *device)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+
+   if (!device->identity_map_blend_cso) {
+      struct pipe_blend_state blend = {0};
+      blend.rt[0].colormask = PIPE_MASK_RGBA;
+      device->identity_map_blend_cso =
+         pipe->create_blend_state(pipe, &blend);
+      if (!device->identity_map_blend_cso)
+         return false;
+   }
+
+   if (!device->identity_map_rasterizer_cso) {
+      struct pipe_rasterizer_state raster = {0};
+      raster.cull_face       = PIPE_FACE_NONE;
+      raster.fill_front      = PIPE_POLYGON_MODE_FILL;
+      raster.fill_back       = PIPE_POLYGON_MODE_FILL;
+      raster.point_size      = 1.0f;
+      raster.line_width      = 1.0f;
+      raster.depth_clip_near = 1;
+      raster.depth_clip_far  = 1;
+      raster.half_pixel_center = 1;
+      raster.bottom_edge_rule  = 1;
+      device->identity_map_rasterizer_cso =
+         pipe->create_rasterizer_state(pipe, &raster);
+      if (!device->identity_map_rasterizer_cso)
+         return false;
+   }
+
+   if (!device->identity_map_dsa_cso) {
+      struct pipe_depth_stencil_alpha_state dsa = {0};
+      /* All zero: depth test off, stencil off, alpha test off. */
+      device->identity_map_dsa_cso =
+         pipe->create_depth_stencil_alpha_state(pipe, &dsa);
+      if (!device->identity_map_dsa_cso)
+         return false;
+   }
+
+   if (!device->identity_map_sampler_cso) {
+      struct pipe_sampler_state samp = {0};
+      samp.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+      samp.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+      samp.wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+      samp.min_img_filter = PIPE_TEX_FILTER_NEAREST;
+      samp.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
+      samp.min_mip_filter = PIPE_TEX_MIPFILTER_NONE;
+      samp.max_lod  = 0.0f;
+      /* unnormalized_coords stays 0 (default = normalized [0,1] coords);
+       * the fullscreen-quad texcoords land in that range exactly. */
+      device->identity_map_sampler_cso =
+         pipe->create_sampler_state(pipe, &samp);
+      if (!device->identity_map_sampler_cso)
+         return false;
+   }
+
+   return true;
+}
+
 /* Synthesize the fullscreen-quad VS + texture-sampling FS pair that lowers an
  * identity-map compute kernel onto the compute-as-raster substrate.  The VS
  * passes through a POSITION attribute and one GENERIC varying (texture
@@ -538,6 +610,12 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
    const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
                                                       TGSI_SEMANTIC_GENERIC };
    const unsigned          vs_semantic_indices[] = { 0, 0 };
+
+   /* Cached gallium state CSOs live on the device so every identity-map
+    * pipeline reuses them.  Initialize on demand from the first identity-map
+    * synthesis; subsequent calls find them populated. */
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
 
    pl->vs_cso = util_make_vertex_passthrough_shader(
                    pipe, 2, vs_semantic_names, vs_semantic_indices, false);
