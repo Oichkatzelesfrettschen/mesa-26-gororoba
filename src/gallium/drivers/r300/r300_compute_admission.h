@@ -181,6 +181,50 @@ struct r300_compute_zpass_reduction_pattern {
 void r300_nir_detect_zpass_reduction(const struct nir_shader *s,
                                      struct r300_compute_zpass_reduction_pattern *out);
 
+/* M-G Entry 6 multipass FBO ping-pong scan kernel pattern.  Recognises the
+ * per-element self-iterated shape:
+ *
+ *     uint x = in_data[gid];
+ *     for (uint k = 0u; k < pass_count; k++) x = x * 2u;
+ *     out_data[gid] = x;
+ *
+ * where pass_count is a runtime value loaded from a params storage buffer
+ * (binding 2) so the loop does NOT constant-fold.  On RS482 this lowers to
+ * the substrate's multipass FBO ping-pong verb (substrate finding
+ * 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md, frontier
+ * ping_pong_fbo_iter4): the orchestrator runs pass_count dependent fragment
+ * passes binding the prior pass's render target as the next pass's sampler,
+ * each pass applying the per-iteration step (the doubling) to the texel.
+ * The mechanism is hardware-confirmed at the EGL/GBM render-ladder level by
+ * bundle glamor_compute_surface_20260522T023537Z.
+ *
+ * Design + admit-path linchpin in
+ * src/re/r300/findings/active/2026-05-28-rs482-multipass-pingpong-scan-design.md:
+ * the kernel NIR is classified-then-discarded (ralloc_free in
+ * r300vk_classify_compute_kernel), never compiled to the R300 fragment
+ * program, so the runtime loop is a detection-time signal only -- which is
+ * what keeps Entry 6 independent of the M-K dispatch-barrier contract.
+ *
+ * Discriminator from every prior entry: the presence of a nir_loop.  M-E
+ * identity-map, M-F binary-map, M-G.4 blend-acc, and M-G.5 ZPASS are all
+ * loop-free; M-G.6 is the only shape carrying a loop whose body is a
+ * self-only arithmetic step (the loop-carried value is not a cross-element
+ * gather, which would need a workgroup barrier the substrate lacks).
+ *
+ * step_op holds the per-iteration nir_op (nir_op_imul for the doubling
+ * first cut).  Bindings stay 0 when the post-explicit_io binding sources
+ * are not constants (same positional-fallback convention as M-F.3 / M-G.3:
+ * binding 0 = input, 1 = output, 2 = params). */
+struct r300_compute_multipass_scan_pattern {
+   bool       is_multipass_scan;
+   uint32_t   input_ssbo_binding;     /* binding of the per-element data load */
+   uint32_t   output_ssbo_binding;    /* binding of the store dest */
+   uint16_t   step_op;                /* per-iteration nir_op (imul for doubling) */
+};
+
+void r300_nir_detect_multipass_scan_pattern(const struct nir_shader *s,
+                                            struct r300_compute_multipass_scan_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

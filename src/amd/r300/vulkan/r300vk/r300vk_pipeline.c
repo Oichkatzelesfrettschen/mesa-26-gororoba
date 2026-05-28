@@ -491,7 +491,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_identity_pattern *ident,
                                struct r300_compute_binary_map_pattern *binmap,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
-                               struct r300_compute_zpass_reduction_pattern *zpass)
+                               struct r300_compute_zpass_reduction_pattern *zpass,
+                               struct r300_compute_multipass_scan_pattern *multiscan)
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    if (!mod)
@@ -554,6 +555,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_binary_map(nir, binmap);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
    r300_nir_detect_zpass_reduction(nir, zpass);
+   r300_nir_detect_multipass_scan_pattern(nir, multiscan);
 
    /* R300VK_DEBUG=identity_map -- log what the classifier + detector
     * decided, so the M-E.4.4 triage can pin whether identity_map was
@@ -1039,6 +1041,81 @@ r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
+/* Synthesise the M-G Entry 6 multipass ping-pong scan fragment program: one
+ * per-pass FS the orchestrator binds for every dependent FBO pass.  Each
+ * pass samples the prior pass's render target (NEAREST) at the fragment's
+ * GENERIC texcoord and writes the texel doubled -- the 1-TEX + 1-MUL shape
+ * the ping_pong_fbo_iter4 frontier confirmed (RS482_RS485_COMPUTE_PROBE_
+ * DESIGN_SPECS.md).  The orchestrator runs this FS pass_count times,
+ * swapping the sampler/target RT pair each pass, so the texel doubles once
+ * per pass and lands at in * 2^pass_count.
+ *
+ * First-cut limitation (documented in the design finding
+ * 2026-05-28-rs482-multipass-pingpong-scan-design.md): the FS hard-codes
+ * the doubling step, matching the probe kernel `x = x * 2u`.  The detector
+ * records step_op so a future cut can generalise to other per-iteration
+ * scales; the doubling-only synthesis is the analogue of the deferred-fadd
+ * scoping in M-G Entry 4. */
+static void *
+r300vk_synthesize_multipass_scan_fs(struct pipe_context *pipe)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+
+   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                            TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst tmp = ureg_DECL_temporary(ureg);
+
+   /* Sample the prior pass's RT, then double every channel.  The per-byte
+    * UNORM8 doubling matches the kernel's uint *2 only while each byte stays
+    * below 256 / 2^pass_count (the probe seeds inputs within that bound); a
+    * channel that would exceed 1.0 clamps, which the readback oracle catches
+    * as a mismatch rather than silently passing. */
+   ureg_TEX(ureg, ureg_writemask(tmp, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp);
+   struct ureg_src two = ureg_imm4f(ureg, 2.0f, 2.0f, 2.0f, 2.0f);
+   ureg_MUL(ureg, out, ureg_src(tmp), two);
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* Synthesise the M-G Entry 6 VS + per-pass FS.  Same vertex-passthrough as
+ * M-E/M-F (POSITION + GENERIC texcoord); the FS is the doubling sampler
+ * program the orchestrator rebinds for each ping-pong pass. */
+static bool
+r300vk_multipass_scan_synthesize_shaders(struct r300vk_device *device,
+                                         struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
+                                                      TGSI_SEMANTIC_GENERIC };
+   const unsigned          vs_semantic_indices[] = { 0, 0 };
+   pl->vs_cso = util_make_vertex_passthrough_shader(
+                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_multipass_scan_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
 VkResult
 r300vk_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
@@ -1076,8 +1153,10 @@ r300vk_CreateComputePipelines(VkDevice _device,
       struct r300_compute_binary_map_pattern binmap = {0};
       struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
       struct r300_compute_zpass_reduction_pattern zpass = {0};
+      struct r300_compute_multipass_scan_pattern multiscan = {0};
       if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage,
-                                          &adm, &ident, &binmap, &blendacc, &zpass))
+                                          &adm, &ident, &binmap, &blendacc, &zpass,
+                                          &multiscan))
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: SPIR-V to NIR failed for compute kernel %u",
                           i);
@@ -1108,6 +1187,7 @@ r300vk_CreateComputePipelines(VkDevice _device,
       pl->binary_map = binmap;
       pl->blend_acc_reduction = blendacc;
       pl->zpass_reduction = zpass;
+      pl->multipass_scan = multiscan;
       /* When the kernel matches the identity-map pattern, synthesize the
        * fullscreen-quad VS + texture-sampling FS pair the dispatch replay
        * will bind.  A synthesis failure demotes the pipeline back to a no-op
@@ -1123,7 +1203,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
        * case by giving identity-map priority.  Zpass discriminates from
        * blend-acc by NOT consuming the load_ssbo def as the atomic value
        * (it consumes a constant 1 gated by an nir_if from the load), so the
-       * two reductions stay structurally disjoint. */
+       * two reductions stay structurally disjoint.  Multipass-scan
+       * discriminates from all four by carrying a nir_loop (they are all
+       * loop-free), so its detector cannot collide with theirs. */
       if (pl->identity_map.is_identity_map &&
           !r300vk_identity_map_synthesize_shaders(device, pl))
          pl->identity_map.is_identity_map = false;
@@ -1136,6 +1218,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
       else if (pl->zpass_reduction.is_zpass_reduction &&
                !r300vk_zpass_reduction_synthesize_shaders(device, pl))
          pl->zpass_reduction.is_zpass_reduction = false;
+      else if (pl->multipass_scan.is_multipass_scan &&
+               !r300vk_multipass_scan_synthesize_shaders(device, pl))
+         pl->multipass_scan.is_multipass_scan = false;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 

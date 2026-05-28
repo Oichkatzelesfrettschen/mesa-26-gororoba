@@ -87,6 +87,19 @@ struct r300vk_pipeline {
     * via r300_query.c. */
    struct r300_compute_zpass_reduction_pattern zpass_reduction;
 
+   /* Multipass FBO ping-pong scan kernel detected at pipeline-create time
+    * (M-G Entry 6).  Recognised shape:
+    *   uint x = in_data[gid];
+    *   for (uint k = 0; k < pass_count; k++) x = x * 2u;
+    *   out_data[gid] = x;
+    * with pass_count a runtime params-buffer load.  Lowers to the
+    * substrate's multipass FBO ping-pong verb (frontier ping_pong_fbo_iter4
+    * per 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md):
+    * the orchestrator runs pass_count dependent fragment passes binding the
+    * prior pass's RT as the next pass's sampler.  The unique discriminator
+    * from M-E/M-F/M-G.4/M-G.5 is the kernel's nir_loop. */
+   struct r300_compute_multipass_scan_pattern multipass_scan;
+
    void                   *vs_cso;
    void                   *fs_cso;
    void                   *blend_cso;
