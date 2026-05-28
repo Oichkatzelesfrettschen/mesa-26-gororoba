@@ -554,6 +554,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
+   r300_nir_detect_predicated_store_pattern(nir, predstore);
 
    /* R300VK_DEBUG=identity_map -- log what the classifier + detector decided,
     * so triage can pin whether identity_map was recognised at all and which
