@@ -24,6 +24,7 @@
 #ifdef R300VK_GALLIUM_BACKEND
 #include "pipe/p_screen.h"
 #include "r300/r300_public.h"
+#include "r300/r300_screen.h"
 #include "winsys/radeon_winsys.h"
 #endif
 
@@ -71,7 +72,8 @@ r300vk_chip_name_from_pci_device_id(uint32_t pci_device_id)
  * span.  Native r300g resources remain the fast path for images that fit in
  * one span. */
 static void
-r300vk_physical_device_init_limits(struct vk_properties *const props)
+r300vk_physical_device_init_limits(struct vk_properties *const props,
+                                   uint64_t const gart_size_kb)
 {
    /* Texture and image dimensions.  The RS482 render path accepts a 2560-wide
     * hardware span; r300vk composes the Vulkan 4096 floor from that fast path
@@ -92,9 +94,19 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
     * down to the hardware 32 slots. */
    props->maxUniformBufferRange = 16384;
 
-   /* No native SSBO.  Advertise the Vulkan minimum so descriptor
-    * binding still parses. */
-   props->maxStorageBufferRange = R300VK_VK10_MIN_STORAGE_BUFFER_RANGE;
+   /* SSBO size advertise.  R3xx has no native SSBO; the M-E /
+    * M-F compute-as-raster substrate maps stores to RB3D color export
+    * which the radeon GART backs.  The empirical 1 GB GART on
+    * cachyos-vostro1000 (radeon-unified-dkms with gartsize=1024 +
+    * zz-radeon-forensic.conf, live GTT 0xC0000000-0xFFFFFFFF) lets a
+    * Vulkan caller allocate inside the extra space; elevate the
+    * advertise so vkGetPhysicalDeviceProperties returns a limit the
+    * substrate can actually back.  Mirrors r300_screen.c's caps->
+    * max_shader_buffer_size gate. */
+   if (gart_size_kb >= 1024u * 1024u)
+      props->maxStorageBufferRange = 512u * 1024u * 1024u; /* 512 MB */
+   else
+      props->maxStorageBufferRange = R300VK_VK10_MIN_STORAGE_BUFFER_RANGE;
    props->maxPushConstantsSize = 128;
 
    props->maxMemoryAllocationCount = 4096;
@@ -256,11 +268,12 @@ r300vk_physical_device_init_limits(struct vk_properties *const props)
 static void
 r300vk_physical_device_init_properties(struct vk_properties *const props,
                                        uint32_t const pci_vendor_id,
-                                       uint32_t const pci_device_id)
+                                       uint32_t const pci_device_id,
+                                       uint64_t const gart_size_kb)
 {
    memset(props, 0, sizeof(*props));
 
-   r300vk_physical_device_init_limits(props);
+   r300vk_physical_device_init_limits(props, gart_size_kb);
 
    props->apiVersion = R300VK_API_VERSION;
 
@@ -433,9 +446,20 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
     * used by terakan_physical_device_init at
     * src/amd/terascale/vulkan/terakan_physical_device.c around line 1640.
     */
+   /* Source gart_size_kb from the r300 screen's radeon_info so the
+    * advertised SSBO ceiling tracks the kernel's actual GART provisioning.
+    * Without the gallium backend (loader-only R0 build) the screen is
+    * absent; pass 0 so init_limits falls back to the default 128 MB
+    * advertise. */
+   uint64_t gart_size_kb = 0;
+#ifdef R300VK_GALLIUM_BACKEND
+   if (device->screen)
+      gart_size_kb = r300_screen(device->screen)->info.gart_size_kb;
+#endif
    struct vk_properties properties;
    r300vk_physical_device_init_properties(&properties, device->pci_vendor_id,
-                                          device->pci_device_id);
+                                          device->pci_device_id,
+                                          gart_size_kb);
 
    /* Driver entrypoints only; vk_physical_device_init merges
     * vk_common_physical_device_entrypoints itself at
