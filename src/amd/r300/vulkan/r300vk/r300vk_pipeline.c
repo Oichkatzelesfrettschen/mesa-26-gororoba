@@ -7,6 +7,8 @@
 #include "util/u_simple_shaders.h"
 #include "pipe/p_shader_tokens.h"
 #include "tgsi/tgsi_from_mesa.h"
+#include "tgsi/tgsi_ureg.h"
+#include "compiler/nir/nir_opcodes.h"
 #include "r300vk_device.h"
 #include "r300vk_shader_module.h"
 
@@ -641,6 +643,121 @@ r300vk_device_init_identity_map_state(struct r300vk_device *device)
    return true;
 }
 
+/* Emit the binary ALU op into a ureg fragment program.  Maps the detected
+ * NIR opcode to its TGSI counterpart via the tgsi_ureg helpers.  The
+ * admitted op set mirrors r300_compute_admission.c
+ * binary_map_op_admitted().  TGSI ADD / SUB / MUL / MIN / MAX are float;
+ * integer NIR opcodes fold into the same float ALU because the texture
+ * sampling normalises UNORM8 bytes to [0,1] floats anyway -- the byte
+ * round-trip stays bit-exact when the operator obeys the FP24-budget
+ * envelope (per
+ * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md). */
+static bool
+emit_binary_op(struct ureg_program *ureg, uint16_t nir_op,
+               struct ureg_dst dst,
+               struct ureg_src a, struct ureg_src b)
+{
+   switch (nir_op) {
+   case nir_op_fadd: case nir_op_iadd:
+      ureg_ADD(ureg, dst, a, b); return true;
+   case nir_op_fsub: case nir_op_isub:
+      /* TGSI has no SUB opcode; ureg_ADD with the second operand negated
+       * is the canonical lowering (and what gallium drivers expect). */
+      ureg_ADD(ureg, dst, a, ureg_negate(b)); return true;
+   case nir_op_fmul: case nir_op_imul:
+      ureg_MUL(ureg, dst, a, b); return true;
+   case nir_op_fmin: case nir_op_imin: case nir_op_umin:
+      ureg_MIN(ureg, dst, a, b); return true;
+   case nir_op_fmax: case nir_op_imax: case nir_op_umax:
+      ureg_MAX(ureg, dst, a, b); return true;
+   default:
+      return false;
+   }
+}
+
+/* Synthesise the 2-sampler fragment program for the M-F binary-map lowering:
+ *   TEX  tmp0, IN[0], SAMP[0]   (sample in_a)
+ *   TEX  tmp1, IN[0], SAMP[1]   (sample in_b)
+ *   <op> tmp0, tmp0, tmp1       (the binary ALU op)
+ *   MOV  OUT[0], tmp0
+ *   END
+ *
+ * Costs: 2 TEX + 2 ALU = 4/96 of the R300 PFS budget
+ * (R300_PFS_MAX_ALU_INST=64 / R300_PFS_MAX_TEX_INST=32). */
+static void *
+r300vk_synthesize_binary_map_fs(struct pipe_context *pipe, uint16_t alu_op)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp_a = ureg_DECL_sampler(ureg, 0);
+   struct ureg_src samp_b = ureg_DECL_sampler(ureg, 1);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+
+   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                            TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst tmp_a = ureg_DECL_temporary(ureg);
+   struct ureg_dst tmp_b = ureg_DECL_temporary(ureg);
+
+   /* ureg_load_tex (u_simple_shaders.c) is file-static and not exported;
+    * call ureg_TEX directly with TGSI_TEXTURE_2D + the (coord, sampler)
+    * pair, which is the same opcode the helper emits for use_txf=false. */
+   ureg_TEX(ureg, ureg_writemask(tmp_a, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp_a);
+   ureg_TEX(ureg, ureg_writemask(tmp_b, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp_b);
+
+   if (!emit_binary_op(ureg, alu_op,
+                       ureg_writemask(tmp_a, TGSI_WRITEMASK_XYZW),
+                       ureg_src(tmp_a), ureg_src(tmp_b))) {
+      ureg_destroy(ureg);
+      return NULL;
+   }
+
+   ureg_MOV(ureg, out, ureg_src(tmp_a));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* Synthesise the M-F (binary-map) VS + FS pair on the pipeline.  Reuses the
+ * device-cached state CSOs (blend / raster / dsa / sampler) the identity-map
+ * synthesis populates -- M-F and M-E share every per-draw state object;
+ * only the FS differs. */
+static bool
+r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
+                                     struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
+                                                      TGSI_SEMANTIC_GENERIC };
+   const unsigned          vs_semantic_indices[] = { 0, 0 };
+
+   pl->vs_cso = util_make_vertex_passthrough_shader(
+                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_binary_map_fs(pipe, pl->binary_map.alu_op);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
 /* Synthesize the fullscreen-quad VS + texture-sampling FS pair that lowers an
  * identity-map compute kernel onto the compute-as-raster substrate.  The VS
  * passes through a POSITION attribute and one GENERIC varying (texture
@@ -769,6 +886,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
       if (pl->identity_map.is_identity_map &&
           !r300vk_identity_map_synthesize_shaders(device, pl))
          pl->identity_map.is_identity_map = false;
+      else if (pl->binary_map.is_binary_map &&
+               !r300vk_binary_map_synthesize_shaders(device, pl))
+         pl->binary_map.is_binary_map = false;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 

@@ -94,7 +94,12 @@ r300_nir_detect_identity_map(const nir_shader *s,
    }
 
    /* Identity-map shape: one source ssbo load, one dest ssbo store, the
-    * store's stored value is the load's SSA def. */
+    * store's stored value is the load's SSA def, AND the store's offset
+    * source is the load's offset source.  The offset-equality gate rules
+    * out scatter kernels of the shape out[hash(i)] = in[i] -- value
+    * equality alone admitted those, and the synthesized fullscreen FS
+    * (which samples in[fragment_coord] and writes to out[fragment_coord])
+    * would silently miscompute hash(i) as i. */
    if (store_count != 1 || load_count != 1) {
       const char *dbg = getenv("R300VK_DEBUG");
       if (dbg && strstr(dbg, "identity_map"))
@@ -103,19 +108,26 @@ r300_nir_detect_identity_map(const nir_shader *s,
       return;
    }
    const bool value_eq_load = (store->src[0].ssa == &load->def);
+   /* store_ssbo src layout: [0]=value, [1]=binding, [2]=offset.
+    * load_ssbo  src layout: [0]=binding, [1]=offset.
+    * Identity index requires the store's offset to be the same SSA def
+    * as the load's offset -- if they differ the shape is a scatter
+    * (out[g(i)] = in[i]) that the M-E lowering would silently
+    * miscompute. */
+   const bool offset_eq = (store->src[2].ssa == load->src[1].ssa);
    {
       const char *dbg = getenv("R300VK_DEBUG");
       if (dbg && strstr(dbg, "identity_map"))
          fprintf(stderr,
                  "ident_map: detect inner store_val_ssa=%p load_def=%p "
-                 "value_eq_load=%d load_binding_const=%d "
-                 "store_binding_const=%d\n",
+                 "value_eq_load=%d offset_eq=%d "
+                 "load_binding_const=%d store_binding_const=%d\n",
                  (void *)store->src[0].ssa, (void *)&load->def,
-                 (int)value_eq_load,
+                 (int)value_eq_load, (int)offset_eq,
                  (int)nir_src_is_const(load->src[0]),
                  (int)nir_src_is_const(store->src[1]));
    }
-   if (!value_eq_load)
+   if (!value_eq_load || !offset_eq)
       return;
    /* The binding source for load_ssbo / store_ssbo is a
     * load_vulkan_descriptor (or similar) handle after nir_lower_explicit_io
@@ -215,6 +227,12 @@ r300_nir_detect_binary_map(const nir_shader *s,
    const bool ab = (s0 == &load_a->def && s1 == &load_b->def);
    const bool ba = (s0 == &load_b->def && s1 == &load_a->def);
    if (!ab && !ba)
+      return;
+   /* Same offset-equality gate as identity-map: out[g(i)] = f(a[i], b[i])
+    * scatter must not pass.  store_ssbo.src[2] is offset; load_ssbo.src[1]
+    * is offset.  Both loads must use the SAME offset def as the store. */
+   if (store->src[2].ssa != load_a->src[1].ssa ||
+       store->src[2].ssa != load_b->src[1].ssa)
       return;
 
    out->is_binary_map = true;
