@@ -76,6 +76,29 @@ struct r300_compute_identity_pattern {
 void r300_nir_detect_identity_map(const struct nir_shader *s,
                                   struct r300_compute_identity_pattern *out);
 
+/* Texture-pair binary-map pattern: exactly one store_ssbo whose value is the
+ * result of a single ALU op whose two sources are exactly the SSA defs of
+ * two distinct load_ssbo intrinsics.  The recognized ALU op set is bounded
+ * by the FP24-budget table in
+ * src/re/r300/docs/rs482-r300vk-compute-texture-pair-binary-map-derivation.md
+ * (iadd / isub / imul / imin / imax / umin / umax / fadd / fsub / fmul /
+ * fmin / fmax for the first cut; richer arithmetic is M-G territory).
+ *
+ * alu_op carries the NIR opcode value so the orchestrator's FS synthesis
+ * picks the right PFS instruction; the bindings are 0 when the post-
+ * explicit_io load_ssbo / store_ssbo binding sources are not constants
+ * (the orchestrator's descriptor-set layout fallback recovers them then). */
+struct r300_compute_binary_map_pattern {
+   bool       is_binary_map;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+   uint16_t   alu_op;     /* nir_op enum value, only valid if is_binary_map */
+};
+
+void r300_nir_detect_binary_map(const struct nir_shader *s,
+                                struct r300_compute_binary_map_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif
