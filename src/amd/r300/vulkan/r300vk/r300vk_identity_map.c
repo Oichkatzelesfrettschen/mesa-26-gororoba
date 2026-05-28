@@ -139,6 +139,31 @@ find_descriptor_by_binding(const struct r300vk_descriptor_set *set,
    return NULL;
 }
 
+/* Walk the descriptor-set layout and pick the Nth STORAGE_BUFFER binding's
+ * binding index.  Used to resolve the identity-map kernel's input + output
+ * ssbo bindings when the NIR detector cannot recover them as constants
+ * (the post-explicit_io binding source is a Vulkan descriptor handle, not
+ * a nir_load_const).  The bindings array is sorted by binding index per
+ * r300vk_CreateDescriptorSetLayout, so the Nth STORAGE_BUFFER seen during
+ * a forward walk is the Nth declared in the layout. */
+static bool
+nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
+                           unsigned which,
+                           uint32_t *out_binding)
+{
+   unsigned seen = 0;
+   for (uint32_t i = 0; i < set->layout->binding_count; i++) {
+      if (set->layout->bindings[i].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+         if (seen == which) {
+            *out_binding = set->layout->bindings[i].binding;
+            return true;
+         }
+         seen++;
+      }
+   }
+   return false;
+}
+
 /* Map the kernel's total invocation count onto a 2D raster grid: a single
  * row up to the texture-axis cap (R300 = 2048), then add rows as needed.
  * The bit-exact identity-map theorem in
@@ -198,11 +223,33 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
+   /* The detector's pl->identity_map.{input,output}_ssbo_binding only
+    * carry the Vulkan binding indices when the NIR load_ssbo / store_ssbo
+    * sources were constants -- which they are NOT after
+    * nir_lower_explicit_io with nir_address_format_32bit_index_offset (the
+    * binding is a load_vulkan_descriptor handle).  Fall back to the
+    * descriptor-set layout: input = first STORAGE_BUFFER, output = second.
+    * This is the contract the identity-map kernel class follows
+    * (matches steinmarder's compute_exhaustive_kernels/06_admissible_
+    * identity_map.comp). */
+   uint32_t in_binding = pl->identity_map.input_ssbo_binding;
+   uint32_t out_binding = pl->identity_map.output_ssbo_binding;
+   if (in_binding == out_binding) {
+      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
+          !nth_storage_buffer_binding(set, 1, &out_binding)) {
+         IDM_LOG("early-return layout-has-fewer-than-two-storage-buffers");
+         return false;
+      }
+      IDM_LOG("recovered bindings from layout: in=%u out=%u",
+              in_binding, out_binding);
+   }
+
    const struct r300vk_descriptor *in_desc =
-      find_descriptor_by_binding(set, pl->identity_map.input_ssbo_binding);
+      find_descriptor_by_binding(set, in_binding);
    const struct r300vk_descriptor *out_desc =
-      find_descriptor_by_binding(set, pl->identity_map.output_ssbo_binding);
-   IDM_LOG("descriptor walk in_desc=%p out_desc=%p",
+      find_descriptor_by_binding(set, out_binding);
+   IDM_LOG("descriptor walk in_binding=%u out_binding=%u in_desc=%p out_desc=%p",
+           in_binding, out_binding,
            (const void *)in_desc, (const void *)out_desc);
    if (!in_desc || !out_desc) {
       IDM_LOG("early-return descriptor-walk-miss");
