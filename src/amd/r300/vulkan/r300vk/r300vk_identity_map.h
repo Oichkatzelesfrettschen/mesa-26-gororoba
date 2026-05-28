@@ -133,6 +133,22 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
  * the queue's caller then falls through to the no-op compute lifecycle
  * and the dispatch still signals the fence so the object lifecycle
  * completes. */
+/* M-G Entry 6 multipass FBO ping-pong scan orchestrator: resolves the
+ * (input, output, params) buffer triple, reads pass_count from the params
+ * buffer, seeds a 1xN RGBA8 texture from the input, runs pass_count
+ * dependent fragment passes alternating two textures as sampler source /
+ * render target (each pass doubling the texel via the synthesised FS), and
+ * copies the final texture to the output buffer.  Realizes the substrate's
+ * multipass FBO ping-pong verb (frontier ping_pong_fbo_iter4).  Returns
+ * false on resource creation failure, descriptor walk miss, or a pass_count
+ * above the per-byte UNORM8 envelope; the queue's caller then falls through
+ * to the no-op compute lifecycle. */
+bool
+r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
+                                      const struct r300vk_pipeline *pl,
+                                      const struct r300vk_cmd_dispatch *dispatch,
+                                      const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 bool
 r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
                                        const struct r300vk_pipeline *pl,

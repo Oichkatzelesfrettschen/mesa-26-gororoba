@@ -1580,3 +1580,371 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    IDM_LOG("zpass orchestrator done OK");
    return true;
 }
+
+/* M-G Entry 6 multipass FBO ping-pong scan orchestrator.  Realizes the
+ * per-element self-iterated kernel `x = in[gid]; for (k < pass_count) x =
+ * x * 2u; out[gid] = x` as pass_count dependent fragment passes: two RGBA8
+ * textures alternate as sampler source and render target, each pass
+ * doubling the texel the synthesised FS samples from the prior pass's
+ * output.  The substrate verb is multipass FBO ping-pong (frontier
+ * ping_pong_fbo_iter4, bundle glamor_compute_surface_20260522T023537Z).
+ *
+ * Differs from the single-pass identity-map orchestrator in two places:
+ *
+ *   1. pass_count is read from a third storage buffer (binding 2) at
+ *      replay time -- the runtime value the kernel's loop bound carries,
+ *      which is also what the M-G.6 detector keyed on.  No push-constant
+ *      plumbing exists (r300vk advertises maxPushConstantsSize but has no
+ *      R300VK_CMD_PUSH_CONSTANTS recording path), so the count rides the
+ *      existing descriptor machinery.
+ *   2. Two textures alternate src/dst across pass_count draws; the prior
+ *      pass's RT becomes the next pass's sampler input.
+ *
+ * Bounds: pass_count is clamped to [0, 16].  pass_count == 0 copies the
+ * input straight through (zero doublings).  Above 16 the per-byte UNORM8
+ * doubling would saturate for any non-zero input, so the orchestrator
+ * rejects rather than silently clamp (the read-back oracle would otherwise
+ * see saturated bytes).  Design + admit-path linchpin in
+ * 2026-05-28-rs482-multipass-pingpong-scan-design.md. */
+bool
+r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
+                                      const struct r300vk_pipeline *pl,
+                                      const struct r300vk_cmd_dispatch *dispatch,
+                                      const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   IDM_LOG("multipass entry pl=%p is_multipass=%d set_count=%u gx=%u gy=%u gz=%u",
+           (const void *)pl,
+           pl ? (int)pl->multipass_scan.is_multipass_scan : -1,
+           binds ? binds->set_count : 0,
+           dispatch ? dispatch->group_count_x : 0,
+           dispatch ? dispatch->group_count_y : 0,
+           dispatch ? dispatch->group_count_z : 0);
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0) {
+      IDM_LOG("multipass early-return null-or-empty-binds");
+      return false;
+   }
+   if (!pl->vs_cso || !pl->fs_cso) {
+      IDM_LOG("multipass early-return no-vs-or-fs-cso");
+      return false;
+   }
+   if (binds->first_set != 0) {
+      IDM_LOG("multipass early-return first_set=%u (only slot 0 supported)",
+              binds->first_set);
+      return false;
+   }
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout) {
+      IDM_LOG("multipass early-return no-set-or-layout");
+      return false;
+   }
+
+   /* Positional binding resolution (binding 0 = input data, 1 = output,
+    * 2 = params holding pass_count) -- same convention as the M-F.3 /
+    * M-G.3 layout fallback; the detector's binding fields stay 0 post-
+    * explicit_io. */
+   uint32_t in_binding = 0, out_binding = 0, params_binding = 0;
+   if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
+       !nth_storage_buffer_binding(set, 1, &out_binding) ||
+       !nth_storage_buffer_binding(set, 2, &params_binding)) {
+      IDM_LOG("multipass early-return layout-has-fewer-than-three-storage-buffers");
+      return false;
+   }
+   const struct r300vk_descriptor *in_desc =
+      find_descriptor_by_binding(set, in_binding);
+   const struct r300vk_descriptor *out_desc =
+      find_descriptor_by_binding(set, out_binding);
+   const struct r300vk_descriptor *params_desc =
+      find_descriptor_by_binding(set, params_binding);
+   if (!in_desc || !out_desc || !params_desc ||
+       !in_desc->buf.buffer || !out_desc->buf.buffer ||
+       !params_desc->buf.buffer) {
+      IDM_LOG("multipass early-return descriptor-walk-miss");
+      return false;
+   }
+   VK_FROM_HANDLE(r300vk_buffer, in_buf,     in_desc->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, out_buf,    out_desc->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, params_buf, params_desc->buf.buffer);
+   if (!in_buf || !out_buf || !params_buf ||
+       !in_buf->resource || !out_buf->resource || !params_buf->resource) {
+      IDM_LOG("multipass early-return null-pipe-resource");
+      return false;
+   }
+
+   /* Read pass_count (first uint32 of the params buffer). */
+   uint32_t pass_count = 0;
+   {
+      struct pipe_transfer *p_xfer = NULL;
+      struct pipe_box p_box;
+      memset(&p_box, 0, sizeof(p_box));
+      p_box.width = (unsigned)sizeof(uint32_t);
+      p_box.height = 1; p_box.depth = 1;
+      const void *p_map = pipe->buffer_map(pipe, params_buf->resource, 0,
+                                           PIPE_MAP_READ, &p_box, &p_xfer);
+      if (!p_map) {
+         IDM_LOG("multipass early-return params-map-failed");
+         return false;
+      }
+      memcpy(&pass_count, p_map, sizeof(uint32_t));
+      pipe->buffer_unmap(pipe, p_xfer);
+   }
+   if (pass_count > 16) {
+      IDM_LOG("multipass early-return pass_count=%u exceeds-unorm8-envelope", pass_count);
+      return false;
+   }
+   IDM_LOG("multipass pass_count=%u", pass_count);
+
+   const uint64_t total_invocations =
+      (uint64_t)dispatch->group_count_x *
+      (uint64_t)dispatch->group_count_y *
+      (uint64_t)dispatch->group_count_z;
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("multipass early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
+      return false;
+   }
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total_invocations, &width, &height);
+   if (width > 2048 || height > 2048) {
+      IDM_LOG("multipass early-return extent-exceeds-2048-cap");
+      return false;
+   }
+
+   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+   const unsigned bpp = util_format_get_blocksize(fmt);
+
+   /* Two textures alternating as sampler source / render target.  Each is
+    * both RENDER_TARGET (as the pass's dst) and SAMPLER_VIEW (as the next
+    * pass's src). */
+   struct pipe_resource tex_templ;
+   memset(&tex_templ, 0, sizeof(tex_templ));
+   tex_templ.target     = PIPE_TEXTURE_2D;
+   tex_templ.format     = fmt;
+   tex_templ.width0     = width;
+   tex_templ.height0    = height;
+   tex_templ.depth0     = 1;
+   tex_templ.array_size = 1;
+   tex_templ.usage      = PIPE_USAGE_DEFAULT;
+   tex_templ.bind       = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+   struct pipe_resource *tex[2] = {
+      screen->resource_create(screen, &tex_templ),
+      screen->resource_create(screen, &tex_templ),
+   };
+   if (!tex[0] || !tex[1]) {
+      pipe_resource_reference(&tex[0], NULL);
+      pipe_resource_reference(&tex[1], NULL);
+      IDM_LOG("multipass early-return tex-create-failed");
+      return false;
+   }
+
+   /* Seed tex[0] with the input buffer bytes (map + per-row memcpy, the
+    * same PIPE_BUFFER->PIPE_TEXTURE_2D path the identity-map input wrap
+    * uses; resource_copy_region cannot do the buffer->texture direction on
+    * r300g). */
+   {
+      struct pipe_transfer *in_xfer = NULL;
+      struct pipe_box in_box;
+      memset(&in_box, 0, sizeof(in_box));
+      in_box.width  = width * height * bpp;
+      in_box.height = 1; in_box.depth = 1;
+      const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
+                                            PIPE_MAP_READ, &in_box, &in_xfer);
+      if (!in_map) {
+         pipe_resource_reference(&tex[0], NULL);
+         pipe_resource_reference(&tex[1], NULL);
+         IDM_LOG("multipass early-return in-map-failed");
+         return false;
+      }
+      struct pipe_transfer *t_xfer = NULL;
+      struct pipe_box t_box;
+      memset(&t_box, 0, sizeof(t_box));
+      t_box.width = width; t_box.height = height; t_box.depth = 1;
+      void *t_map = pipe->texture_map(pipe, tex[0], 0,
+                                      PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                      &t_box, &t_xfer);
+      if (!t_map) {
+         pipe->buffer_unmap(pipe, in_xfer);
+         pipe_resource_reference(&tex[0], NULL);
+         pipe_resource_reference(&tex[1], NULL);
+         IDM_LOG("multipass early-return seed-tex-map-failed");
+         return false;
+      }
+      const uint8_t *src_bytes = (const uint8_t *)in_map;
+      uint8_t       *dst_bytes = (uint8_t *)t_map;
+      const unsigned row_bytes = width * bpp;
+      for (unsigned r = 0; r < height; r++)
+         memcpy(dst_bytes + r * t_xfer->stride, src_bytes + r * row_bytes,
+                row_bytes);
+      pipe->texture_unmap(pipe, t_xfer);
+      pipe->buffer_unmap(pipe, in_xfer);
+   }
+
+   /* Fullscreen-quad VBO (pos.xy, texcoord.xy), identical to the
+    * identity-map orchestrator's quad. */
+   const float verts[16] = {
+      -1.0f, -1.0f, 0.0f, 0.0f,
+       1.0f, -1.0f, 1.0f, 0.0f,
+      -1.0f,  1.0f, 0.0f, 1.0f,
+       1.0f,  1.0f, 1.0f, 1.0f,
+   };
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = sizeof(verts);
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb) {
+      pipe_resource_reference(&tex[0], NULL);
+      pipe_resource_reference(&tex[1], NULL);
+      IDM_LOG("multipass early-return vbo-create-failed");
+      return false;
+   }
+   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = 16;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   velems[1].src_offset = 8; velems[1].src_stride = 16;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&tex[0], NULL);
+      pipe_resource_reference(&tex[1], NULL);
+      return false;
+   }
+
+   /* State that is constant across all passes: blend off, no cull, depth
+    * off, NEAREST sampler, the doubling FS + passthrough VS, the velems,
+    * the fullscreen VB, viewport, scissor. */
+   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_vs_state(pipe, pl->vs_cso);
+   pipe->bind_fs_state(pipe, pl->fs_cso);
+   pipe->bind_vertex_elements_state(pipe, velems_cso);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
+                             &device->identity_map_sampler_cso);
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   struct pipe_viewport_state vp;
+   memset(&vp, 0, sizeof(vp));
+   vp.scale[0] = (float)width * 0.5f; vp.scale[1] = (float)height * 0.5f;
+   vp.scale[2] = 0.5f;
+   vp.translate[0] = (float)width * 0.5f; vp.translate[1] = (float)height * 0.5f;
+   vp.translate[2] = 0.5f;
+   pipe->set_viewport_states(pipe, 0, 1, &vp);
+   struct pipe_scissor_state sc = {0};
+   sc.maxx = width; sc.maxy = height;
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+
+   /* The ping-pong loop.  tex[src_idx] holds the current value; each pass
+    * samples it, doubles, and writes tex[src_idx ^ 1], which becomes the
+    * next pass's source.  After pass_count passes the result is in
+    * tex[pass_count & 1]; pass_count == 0 leaves it in tex[0] (= input). */
+   unsigned src_idx = 0;
+   for (uint32_t k = 0; k < pass_count; k++) {
+      const unsigned dst_idx = src_idx ^ 1u;
+
+      struct pipe_sampler_view sv_templ;
+      memset(&sv_templ, 0, sizeof(sv_templ));
+      sv_templ.format            = fmt;
+      sv_templ.target            = PIPE_TEXTURE_2D;
+      sv_templ.u.tex.first_layer = 0;
+      sv_templ.u.tex.last_layer  = 0;
+      sv_templ.u.tex.first_level = 0;
+      sv_templ.u.tex.last_level  = 0;
+      sv_templ.swizzle_r = PIPE_SWIZZLE_X;
+      sv_templ.swizzle_g = PIPE_SWIZZLE_Y;
+      sv_templ.swizzle_b = PIPE_SWIZZLE_Z;
+      sv_templ.swizzle_a = PIPE_SWIZZLE_W;
+      struct pipe_sampler_view *sv =
+         pipe->create_sampler_view(pipe, tex[src_idx], &sv_templ);
+      if (!sv) {
+         IDM_LOG("multipass pass=%u early-return sampler-view-failed", k);
+         break;
+      }
+
+      struct pipe_surface surf_templ;
+      memset(&surf_templ, 0, sizeof(surf_templ));
+      surf_templ.format  = fmt;
+      surf_templ.texture = tex[dst_idx];
+      struct pipe_framebuffer_state fb;
+      memset(&fb, 0, sizeof(fb));
+      fb.width = width; fb.height = height;
+      fb.nr_cbufs = 1; fb.cbufs[0] = surf_templ;
+      pipe->set_framebuffer_state(pipe, &fb);
+
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &sv);
+
+      struct pipe_draw_info info;
+      memset(&info, 0, sizeof(info));
+      info.mode = MESA_PRIM_TRIANGLE_STRIP;
+      info.instance_count = 1;
+      info.max_index = 3;
+      struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+      pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      pipe->flush(pipe, NULL, 0);
+
+      struct pipe_sampler_view *no_view = NULL;
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, &no_view);
+      pipe_sampler_view_reference(&sv, NULL);
+      IDM_LOG("multipass pass=%u src=%u dst=%u done", k, src_idx, dst_idx);
+      src_idx = dst_idx;
+   }
+
+   /* Copy the final texture (tex[src_idx]) back to the output buffer. */
+   {
+      struct pipe_box copy_box;
+      memset(&copy_box, 0, sizeof(copy_box));
+      copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, tex[src_idx], 0,
+                                             PIPE_MAP_READ, &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.width  = width * height * bpp;
+         out_box.height = 1; out_box.depth = 1;
+         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                            PIPE_MAP_WRITE |
+                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                            &out_box, &out_xfer);
+         if (out_bytes) {
+            const uint8_t *src_rows = (const uint8_t *)rt_map;
+            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
+            const unsigned row_bytes = width * bpp;
+            for (unsigned r = 0; r < height; r++)
+               memcpy(dst_bytes + r * row_bytes,
+                      src_rows + r * rt_xfer->stride, row_bytes);
+            pipe->buffer_unmap(pipe, out_xfer);
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+   IDM_LOG("multipass copy issued final_tex=%u", src_idx);
+
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&tex[0], NULL);
+   pipe_resource_reference(&tex[1], NULL);
+   IDM_LOG("multipass orchestrator done OK");
+   return true;
+}
