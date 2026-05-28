@@ -986,16 +986,26 @@ r300vk_synthesize_zpass_reduction_fs(struct pipe_context *pipe)
    struct ureg_dst tmp = ureg_DECL_temporary(ureg);
    struct ureg_dst out_color = ureg_DECL_output(
       ureg, TGSI_SEMANTIC_COLOR, 0);
-   /* tmp.x = predicate - 0.5; KILL_IF tmp.x discards when tmp.x < 0
-    * i.e. when predicate < 0.5 (the 0.0-baked discard case). */
+   /* TGSI KILL_IF discards when ANY of src.x/y/z/w is negative.  The
+    * baked predicate only lives in the GENERIC varying's x channel;
+    * the y/z/w channels follow the GL/D3D convention (0, 0, 1) for an
+    * unwritten varying.  A naive `tmp = in_pred - 0.5; KILL_IF tmp`
+    * would compute tmp.y = -0.5 and kill EVERY fragment regardless of
+    * predicate, returning ZPASS counter = 0 (bundle 20260528T190615Z).
+    * Broadcasting the predicate to all four channels before the
+    * subtract gives KILL_IF (predicate-0.5, predicate-0.5,
+    * predicate-0.5, predicate-0.5): discard when predicate < 0.5
+    * (the 0.0-baked discard case), pass when predicate >= 0.5. */
    struct ureg_src half = ureg_imm1f(ureg, 0.5f);
-   ureg_ADD(ureg, tmp, in_pred, ureg_negate(half));
+   struct ureg_src pred_xxxx =
+      ureg_scalar(in_pred, TGSI_SWIZZLE_X);
+   ureg_ADD(ureg, tmp, pred_xxxx, ureg_negate(half));
    ureg_KILL_IF(ureg, ureg_src(tmp));
    /* Surviving fragments write white -- color content doesn't matter for
     * the ZPASS count, just that A fragment lands and the depth/stencil
     * unit increments the counter.  Reusing the predicate varying (which
     * is 1.0 for survivors anyway) keeps the program minimal. */
-   ureg_MOV(ureg, out_color, in_pred);
+   ureg_MOV(ureg, out_color, pred_xxxx);
    ureg_END(ureg);
    return ureg_create_shader_and_destroy(ureg, pipe);
 }
