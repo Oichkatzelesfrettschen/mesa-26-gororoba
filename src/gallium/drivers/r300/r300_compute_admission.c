@@ -154,39 +154,15 @@ r300_nir_classify_compute(const nir_shader *s,
                   reject(out, R300_COMPUTE_REJECT_SHARED_MEMORY, name);
                   return;
                }
-               if (intr->intrinsic == nir_intrinsic_store_ssbo) {
-                  /* Two admissible shapes: the canonical (binding=0,
-                   * offset=0) single-element write that the M-D no-op
-                   * lifecycle established, and the identity-map shape
-                   * where the stored value is itself a load_ssbo result
-                   * -- a coordinate-indexed gather-then-store the
-                   * fullscreen-quad dispatch lowering carries to RB3D
-                   * export. Anything else is arbitrary scatter. */
-                  const bool canonical =
-                     nir_src_is_const(intr->src[1]) &&
-                     nir_src_as_uint(intr->src[1]) == 0 &&
-                     nir_src_is_const(intr->src[2]) &&
-                     nir_src_as_uint(intr->src[2]) == 0;
-                  bool identity_load_then_store = false;
-                  if (!canonical && intr->src[0].ssa) {
-                     /* _or_null is the safe variant: nir_def_as_intrinsic
-                      * asserts when the producing instruction is not an
-                      * intrinsic (ALU result, load_const, phi, etc.); a
-                      * store_ssbo whose value comes from an ALU op is the
-                      * common-case non-identity shape and must classify
-                      * cleanly, not abort the process. */
-                     const nir_intrinsic_instr *src_intr =
-                        nir_def_as_intrinsic_or_null(intr->src[0].ssa);
-                     if (src_intr &&
-                         src_intr->intrinsic == nir_intrinsic_load_ssbo)
-                        identity_load_then_store = true;
-                  }
-                  if (!canonical && !identity_load_then_store) {
-                     reject(out, R300_COMPUTE_REJECT_RW_STORAGE,
-                            "non-canonical store_ssbo");
-                     return;
-                  }
-               }
+               /* store_ssbo is the coordinate-indexed RB3D export the
+                * ComputeGrid->RasterGrid functor maps onto.  Every
+                * store_ssbo admits at the classifier level; the
+                * orchestrator at dispatch time decides whether the
+                * specific shape (identity-map, in-place ALU, future
+                * texture-pair binary-map) lowers to a real draw or falls
+                * through to the no-op compute lifecycle.  Arbitrary
+                * SCATTER -- a store_global / image_store / store_deref to
+                * mem_global -- still rejects below. */
                if (is_rw_storage_store(intr->intrinsic)) {
                   reject(out, R300_COMPUTE_REJECT_RW_STORAGE, name);
                   return;
