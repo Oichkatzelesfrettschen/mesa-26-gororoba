@@ -72,6 +72,13 @@ struct r300vk_device {
    void                  *identity_map_rasterizer_cso;
    void                  *identity_map_dsa_cso;
    void                  *identity_map_sampler_cso;
+
+   /* M-G blend-acc-reduction blend state CSO -- the one CSO that differs
+    * from the identity-map state set: blend enabled, ADD function,
+    * blend_func (ONE, ONE) accumulates per-fragment value into bin cells.
+    * Created on demand at the first blend-acc-reduction pipeline-create,
+    * freed in r300vk_DestroyDevice alongside the identity-map CSOs. */
+   void                  *blend_acc_reduction_blend_cso;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)

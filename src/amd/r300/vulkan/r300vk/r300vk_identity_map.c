@@ -889,3 +889,322 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    IDM_LOG("bin_map orchestrator done OK");
    return true;
 }
+
+/* M-G blend-acc-reduction orchestrator.  Decomposes
+ * `atomicAdd(out[gid & MASK], in[gid])` into N point fragments accumulating
+ * the per-gid value into M bins through RB3D `COMB_FCN_ADD` blending.
+ *
+ * Shape differs from binary_map_dispatch_replay in three load-bearing
+ * places (named at each site below):
+ *
+ *   1. Output RT extent is 1 x M (M = out_buf->size / 4 = histogram bin
+ *      count), not the W x H matching the input texture.
+ *   2. VBO carries N entries each (vec2 pos_ndc, uint32_t value_rgba8),
+ *      with the input buffer's per-gid uint32 value PRE-STAGED at
+ *      orchestrator time via pipe->buffer_map.  The draw is N point
+ *      primitives (MESA_PRIM_POINTS) instead of a 4-vertex
+ *      TRIANGLE_STRIP.
+ *   3. Blend state is the device-cached
+ *      blend_acc_reduction_blend_cso (ADD / ONE / ONE) instead of the
+ *      blend-disabled identity_map_blend_cso.
+ *
+ * Other surfaces (rasterizer / dsa / sampler CSOs, framebuffer + viewport
+ * + scissor setup, copy-back path) reuse the identity-map orchestrator's
+ * shape verbatim. */
+bool
+r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
+                                           const struct r300vk_pipeline *pl,
+                                           const struct r300vk_cmd_dispatch *dispatch,
+                                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   IDM_LOG("blend_acc entry pl=%p is_blend_acc=%d set_count=%u gx=%u gy=%u gz=%u",
+           (const void *)pl,
+           pl ? (int)pl->blend_acc_reduction.is_blend_acc_reduction : -1,
+           binds ? binds->set_count : 0,
+           dispatch ? dispatch->group_count_x : 0,
+           dispatch ? dispatch->group_count_y : 0,
+           dispatch ? dispatch->group_count_z : 0);
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0) {
+      IDM_LOG("blend_acc early-return null-or-empty-binds");
+      return false;
+   }
+   if (!pl->vs_cso || !pl->fs_cso) {
+      IDM_LOG("blend_acc early-return no-vs-or-fs-cso");
+      return false;
+   }
+   if (binds->first_set != 0) {
+      IDM_LOG("blend_acc early-return first_set=%u (only slot 0 supported)",
+              binds->first_set);
+      return false;
+   }
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout) {
+      IDM_LOG("blend_acc early-return no-set-or-layout");
+      return false;
+   }
+
+   /* Detector binding-index priority + positional fallback (same policy
+    * as M-F.3 binary_map_dispatch_replay, mesa #295). */
+   uint32_t in_binding  = pl->blend_acc_reduction.value_ssbo_binding;
+   uint32_t out_binding = pl->blend_acc_reduction.output_ssbo_binding;
+   const bool detector_captured = (in_binding != 0 || out_binding != 0);
+   if (!detector_captured) {
+      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
+          !nth_storage_buffer_binding(set, 1, &out_binding)) {
+         IDM_LOG("blend_acc early-return layout-has-fewer-than-two-storage-buffers");
+         return false;
+      }
+   }
+   IDM_LOG("blend_acc bindings: in=%u out=%u source=%s",
+           in_binding, out_binding,
+           detector_captured ? "detector" : "positional");
+
+   const struct r300vk_descriptor *in_desc =
+      find_descriptor_by_binding(set, in_binding);
+   const struct r300vk_descriptor *out_desc =
+      find_descriptor_by_binding(set, out_binding);
+   if (!in_desc || !out_desc || !in_desc->buf.buffer || !out_desc->buf.buffer) {
+      IDM_LOG("blend_acc early-return descriptor-walk-miss");
+      return false;
+   }
+   VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
+   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource) {
+      IDM_LOG("blend_acc early-return null-pipe-resource");
+      return false;
+   }
+
+   /* Difference 1: output RT extent is 1 x M.  M = histogram bin count,
+    * derived from the output buffer size (each bin holds one uint32). */
+   const uint64_t out_byte_size = out_buf->size;
+   if (out_byte_size == 0 || (out_byte_size % sizeof(uint32_t)) != 0) {
+      IDM_LOG("blend_acc early-return malformed-output-size=%llu",
+              (unsigned long long)out_byte_size);
+      return false;
+   }
+   const uint32_t M = (uint32_t)(out_byte_size / sizeof(uint32_t));
+   if (M == 0 || M > 2048) {
+      IDM_LOG("blend_acc early-return M-out-of-range=%u", M);
+      return false;
+   }
+   /* Total invocations from the dispatch grid (M-E numeric envelope:
+    * 64-bit product guard + 2048 x 2048 axis cap). */
+   const uint64_t total_invocations =
+      (uint64_t)dispatch->group_count_x *
+      (uint64_t)dispatch->group_count_y *
+      (uint64_t)dispatch->group_count_z;
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("blend_acc early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
+      return false;
+   }
+   const uint32_t N = (uint32_t)total_invocations;
+   IDM_LOG("blend_acc M=%u N=%u", M, N);
+
+   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+
+   /* Difference 1 (cont): 1 x M RT instead of W x H. */
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = fmt;
+   rt_templ.width0     = M;
+   rt_templ.height0    = 1;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      IDM_LOG("blend_acc early-return rt-create-failed");
+      return false;
+   }
+
+   /* Difference 2: VBO carries N entries (vec2 pos_ndc, uint32 rgba8 value).
+    * Per-entry stride = 12 bytes.  Stage the per-gid input value from
+    * in_buf->resource at orchestrator time so the FS receives the value
+    * via the rasterizer interpolator without needing a TEX op. */
+   const uint32_t vbo_stride = 12u;
+   const uint64_t vbo_bytes  = (uint64_t)N * vbo_stride;
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = (unsigned)vbo_bytes;
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb) {
+      pipe_resource_reference(&rt, NULL);
+      IDM_LOG("blend_acc early-return vbo-create-failed");
+      return false;
+   }
+
+   /* CPU-stage the VBO from the input buffer.  Each gid contributes one
+    * point primitive at NDC position (bin_to_ndc(gid & (M-1)), 0) with the
+    * input value packed as RGBA8.  The bin mask is derived from M-1 (only
+    * power-of-2 M is supported in this first cut; non-power-of-2 M falls
+    * through with the current bin = gid % M scalar arithmetic). */
+   const uint32_t bin_mask = (M > 0 && (M & (M - 1)) == 0) ? (M - 1) : 0;
+   const bool power_of_two_M = (bin_mask != 0);
+   {
+      struct pipe_transfer *in_xfer = NULL;
+      struct pipe_box in_box;
+      memset(&in_box, 0, sizeof(in_box));
+      in_box.width  = (unsigned)(N * sizeof(uint32_t));
+      in_box.height = 1; in_box.depth = 1;
+      const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
+                                            PIPE_MAP_READ, &in_box, &in_xfer);
+      if (!in_map) {
+         pipe_resource_reference(&vb, NULL);
+         pipe_resource_reference(&rt, NULL);
+         IDM_LOG("blend_acc early-return in-map-failed");
+         return false;
+      }
+      struct pipe_transfer *vb_xfer = NULL;
+      struct pipe_box vb_box;
+      memset(&vb_box, 0, sizeof(vb_box));
+      vb_box.width  = (unsigned)vbo_bytes;
+      vb_box.height = 1; vb_box.depth = 1;
+      void *vb_map = pipe->buffer_map(pipe, vb, 0,
+                                      PIPE_MAP_WRITE |
+                                      PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                      &vb_box, &vb_xfer);
+      if (!vb_map) {
+         pipe->buffer_unmap(pipe, in_xfer);
+         pipe_resource_reference(&vb, NULL);
+         pipe_resource_reference(&rt, NULL);
+         IDM_LOG("blend_acc early-return vbo-map-failed");
+         return false;
+      }
+      const uint32_t *in_words = (const uint32_t *)in_map;
+      uint8_t        *vb_bytes = (uint8_t *)vb_map;
+      const float inv_M = 2.0f / (float)M;  /* NDC step per bin */
+      for (uint32_t gid = 0; gid < N; gid++) {
+         const uint32_t bin = power_of_two_M ? (gid & bin_mask) : (gid % M);
+         /* Bin center in NDC X: -1 + (bin + 0.5) * (2/M). */
+         const float pos_x = -1.0f + ((float)bin + 0.5f) * inv_M;
+         const float pos_y = 0.0f;
+         uint8_t *e = vb_bytes + (size_t)gid * vbo_stride;
+         memcpy(e + 0, &pos_x, 4);
+         memcpy(e + 4, &pos_y, 4);
+         memcpy(e + 8, &in_words[gid], 4);  /* packed RGBA8 value */
+      }
+      pipe->buffer_unmap(pipe, vb_xfer);
+      pipe->buffer_unmap(pipe, in_xfer);
+   }
+   IDM_LOG("blend_acc VBO staged N=%u entries (%llu bytes)",
+           N, (unsigned long long)vbo_bytes);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = vbo_stride;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;     /* position xy */
+   velems[1].src_offset = 8; velems[1].src_stride = vbo_stride;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R8G8B8A8_UNORM;   /* color (UNORM8) */
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      return false;
+   }
+
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = fmt;
+   surf_templ.texture = rt;
+
+   struct pipe_framebuffer_state fb;
+   memset(&fb, 0, sizeof(fb));
+   fb.width = M;  fb.height = 1;
+   fb.nr_cbufs = 1; fb.cbufs[0] = surf_templ;
+   pipe->set_framebuffer_state(pipe, &fb);
+
+   struct pipe_viewport_state vp;
+   memset(&vp, 0, sizeof(vp));
+   vp.scale[0] = (float)M * 0.5f; vp.scale[1] = 0.5f;
+   vp.scale[2] = 0.5f;
+   vp.translate[0] = (float)M * 0.5f; vp.translate[1] = 0.5f;
+   vp.translate[2] = 0.5f;
+   pipe->set_viewport_states(pipe, 0, 1, &vp);
+
+   struct pipe_scissor_state sc = {0};
+   sc.maxx = M; sc.maxy = 1;
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+
+   /* Difference 3: blend state = ADD/(ONE,ONE) instead of disabled. */
+   if (!device->blend_acc_reduction_blend_cso) {
+      IDM_LOG("blend_acc early-return no-cached-blend-cso");
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      return false;
+   }
+   pipe->bind_blend_state(pipe, device->blend_acc_reduction_blend_cso);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_vs_state(pipe, pl->vs_cso);
+   pipe->bind_fs_state(pipe, pl->fs_cso);
+   pipe->bind_vertex_elements_state(pipe, velems_cso);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_POINTS;
+   info.instance_count = 1;
+   info.max_index      = N - 1;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = N };
+   IDM_LOG("blend_acc draw_vbo mode=points count=%u", N);
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+
+   /* Copy the 1 x M RT back to the output buffer.  out_byte_size already
+    * equals M * sizeof(uint32_t), so the row spans the whole output. */
+   {
+      struct pipe_box copy_box;
+      memset(&copy_box, 0, sizeof(copy_box));
+      copy_box.width = M; copy_box.height = 1; copy_box.depth = 1;
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.width  = (unsigned)out_byte_size;
+         out_box.height = 1; out_box.depth = 1;
+         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                            PIPE_MAP_WRITE |
+                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                            &out_box, &out_xfer);
+         if (out_bytes) {
+            memcpy(out_bytes, rt_map, (size_t)out_byte_size);
+            pipe->buffer_unmap(pipe, out_xfer);
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+   IDM_LOG("blend_acc rt->buffer copy issued (out=%p, src=%p, M=%u)",
+           (const void *)out_buf->resource, (const void *)rt, M);
+
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&rt, NULL);
+   IDM_LOG("blend_acc orchestrator done OK");
+   return true;
+}
