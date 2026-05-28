@@ -94,6 +94,25 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
                                   const struct r300vk_cmd_dispatch *dispatch,
                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* M-G blend-acc-reduction orchestrator entry: descriptor walk to resolve
+ * the (value-input, histogram-output) buffer pair, stage a per-point VBO
+ * carrying (pos, packed-RGBA8-value) per gid, bind the blend-enabled
+ * `COMB_FCN_ADD` / blend_func (ONE, ONE) state CSO, draw N point primitives
+ * into a 1xM RT, copy the accumulated bin cells back to the output buffer.
+ * The kernel-shape pattern recognised by r300_nir_detect_blend_acc_reduction
+ * is `atomicAdd(out_data[gid & MASK], in_data[gid])` (the histogram /
+ * accumulator shape).
+ *
+ * Returns false on resource_create failure, descriptor walk miss, or any
+ * post-explicit_io binding inconsistency; the queue's caller then falls
+ * through to the no-op compute lifecycle and the dispatch still signals
+ * the fence so the object lifecycle completes. */
+bool
+r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
+                                           const struct r300vk_pipeline *pl,
+                                           const struct r300vk_cmd_dispatch *dispatch,
+                                           const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #ifdef __cplusplus
 }
 #endif
