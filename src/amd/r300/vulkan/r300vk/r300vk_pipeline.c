@@ -501,6 +501,19 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    if (!nir)
       return false;
 
+   /* vk_spirv_to_nir emits storage-buffer access in deref form
+    * (store_deref / load_deref through nir_var_mem_ssbo), with
+    * ssbo_addr_format set as the LOWERING TARGET for a later
+    * nir_lower_explicit_io pass.  The classifier and the identity-map
+    * detector both pattern-match on load_ssbo / store_ssbo intrinsics, so
+    * the lowering must run before they walk the NIR -- otherwise the
+    * detector misses the identity shape and r300vk_identity_map_dispatch_replay
+    * never runs (an empirical bundle 20260528T034632Z showed 256/256
+    * readback mismatches with the dispatch lifecycle otherwise clean). */
+   NIR_PASS(_, nir, nir_lower_explicit_io,
+            nir_var_mem_ubo | nir_var_mem_ssbo,
+            nir_address_format_32bit_index_offset);
+
    r300_nir_classify_compute(nir, adm);
    /* Identity-map detection is independent of admission so a later expansion
     * can use it for diagnostic logging on a rejected kernel that still has
