@@ -95,14 +95,31 @@ r300_nir_detect_identity_map(const nir_shader *s,
 
    /* Identity-map shape: one source ssbo load, one dest ssbo store, the
     * store's stored value is the load's SSA def. */
-   if (store_count != 1 || load_count != 1)
+   if (store_count != 1 || load_count != 1) {
+      const char *dbg = getenv("R300VK_DEBUG");
+      if (dbg && strstr(dbg, "identity_map"))
+         fprintf(stderr, "ident_map: detect-skip count store=%u load=%u\n",
+                 store_count, load_count);
       return;
-   if (store->src[0].ssa != &load->def)
+   }
+   const bool value_eq_load = (store->src[0].ssa == &load->def);
+   const bool load_binding_const = nir_src_is_const(load->src[0]);
+   {
+      const char *dbg = getenv("R300VK_DEBUG");
+      if (dbg && strstr(dbg, "identity_map"))
+         fprintf(stderr,
+                 "ident_map: detect inner store_val_ssa=%p load_def=%p "
+                 "value_eq_load=%d load_binding_const=%d "
+                 "store_binding_const=%d\n",
+                 (void *)store->src[0].ssa, (void *)&load->def,
+                 (int)value_eq_load, (int)load_binding_const,
+                 (int)nir_src_is_const(store->src[1]));
+   }
+   if (!value_eq_load)
       return;
-
    /* The store binding is constant 0 (classify-time invariant).  The load's
     * binding is the descriptor index the lowering needs. */
-   if (!nir_src_is_const(load->src[0]))
+   if (!load_binding_const)
       return;
    out->input_ssbo_binding  = nir_src_as_uint(load->src[0]);
    out->output_ssbo_binding = nir_src_is_const(store->src[1]) ?
