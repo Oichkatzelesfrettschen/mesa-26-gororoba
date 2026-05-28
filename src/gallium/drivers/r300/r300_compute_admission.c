@@ -53,6 +53,63 @@ is_rw_storage_store(nir_intrinsic_op op)
    }
 }
 
+/* Walk the kernel and detect the identity-map structural pattern:
+ * exactly one store_ssbo whose value source is the SSA def of exactly one
+ * load_ssbo.  The store's binding is the canonical 0 the classifier already
+ * enforces; the load's binding is read off its first source so the dispatch
+ * lowering knows which descriptor maps to the input sampler view.
+ *
+ * The index-equivalence between the load and the store (both indexed by
+ * gl_GlobalInvocationID.xy) is not asserted here; the readback oracle catches
+ * a non-identity index relationship.  Detection only gates the LOWERING
+ * branch -- a mis-detected kernel falls back to the no-op pipeline path. */
+void
+r300_nir_detect_identity_map(const nir_shader *s,
+                             struct r300_compute_identity_pattern *out)
+{
+   out->is_identity_map     = false;
+   out->input_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *store = NULL;
+   const nir_intrinsic_instr *load  = NULL;
+   unsigned store_count = 0;
+   unsigned load_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               load = intr;
+               load_count++;
+            }
+         }
+      }
+   }
+
+   /* Identity-map shape: one source ssbo load, one dest ssbo store, the
+    * store's stored value is the load's SSA def. */
+   if (store_count != 1 || load_count != 1)
+      return;
+   if (store->src[0].ssa != &load->def)
+      return;
+
+   /* The store binding is constant 0 (classify-time invariant).  The load's
+    * binding is the descriptor index the lowering needs. */
+   if (!nir_src_is_const(load->src[0]))
+      return;
+   out->input_ssbo_binding  = nir_src_as_uint(load->src[0]);
+   out->output_ssbo_binding = nir_src_is_const(store->src[1]) ?
+                              nir_src_as_uint(store->src[1]) : 0;
+   out->is_identity_map = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)

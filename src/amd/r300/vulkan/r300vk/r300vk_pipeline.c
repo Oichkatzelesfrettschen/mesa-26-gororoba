@@ -482,7 +482,8 @@ r300vk_CreateGraphicsPipelines(VkDevice _device,
 static bool
 r300vk_classify_compute_kernel(struct r300vk_device *device,
                                const VkPipelineShaderStageCreateInfo *stage_info,
-                               struct r300_compute_admission *adm)
+                               struct r300_compute_admission *adm,
+                               struct r300_compute_identity_pattern *ident)
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    if (!mod)
@@ -498,6 +499,11 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
       return false;
 
    r300_nir_classify_compute(nir, adm);
+   /* Identity-map detection is independent of admission so a later expansion
+    * can use it for diagnostic logging on a rejected kernel that still has
+    * the identity-map shape; the dispatch lowering only takes the path when
+    * both admit and is_identity_map are set. */
+   r300_nir_detect_identity_map(nir, ident);
    ralloc_free(nir);
    return true;
 }
@@ -535,7 +541,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
       struct r300_compute_admission adm;
-      if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage, &adm))
+      struct r300_compute_identity_pattern ident = {0};
+      if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage,
+                                          &adm, &ident))
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: SPIR-V to NIR failed for compute kernel %u",
                           i);
@@ -547,11 +555,14 @@ r300vk_CreateComputePipelines(VkDevice _device,
                           r300_compute_reject_name(adm.reason),
                           adm.detail ? adm.detail : "unsupported construct");
 
-      /* The kernel is admissible against the substrate.  Create a no-op compute
+      /* The kernel is admissible against the substrate.  Create a compute
        * pipeline object: a valid VkPipeline that CmdDispatch can bind and
-       * submit, carrying no graphics CSOs because the kernel is not yet lowered
-       * onto the compute-as-raster substrate.  vk_zalloc2 leaves every CSO
-       * pointer NULL, which r300vk_DestroyPipeline frees conditionally. */
+       * submit.  When the kernel matches the identity-map pattern, the
+       * dispatch replay lowers it onto the compute-as-raster substrate as a
+       * fullscreen-quad fragment draw (VS+FS synthesis lands in the next
+       * stage); otherwise the dispatch remains the no-op object lifecycle.
+       * vk_zalloc2 leaves every CSO pointer NULL, which r300vk_DestroyPipeline
+       * frees conditionally. */
       struct r300vk_pipeline *pl =
          vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pl), 8,
                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -559,6 +570,7 @@ r300vk_CreateComputePipelines(VkDevice _device,
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       vk_object_base_init(&device->vk, &pl->base, VK_OBJECT_TYPE_PIPELINE);
       pl->is_compute = true;
+      pl->identity_map = ident;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 
