@@ -155,6 +155,21 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
                                        const struct r300vk_cmd_dispatch *dispatch,
                                        const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* M-H predicated masked-store orchestrator: resolves the (predicate, value,
+ * output) buffer triple, seeds a render target from the output buffer's
+ * pre-existing contents, draws a fullscreen quad whose fragment program
+ * KILL_IFs the masked (predicate-false) fragments and writes the sampled value
+ * for the covered ones, then copies the RT back to the output buffer.  Killed
+ * fragments perform no ROP write, so masked cells keep the seeded baseline --
+ * the masked-store semantics.  Returns false on resource creation failure,
+ * descriptor walk miss, or a seed/copy map failure; the queue's caller then
+ * falls through to the no-op compute lifecycle. */
+bool
+r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
+                                        const struct r300vk_pipeline *pl,
+                                        const struct r300vk_cmd_dispatch *dispatch,
+                                        const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #ifdef __cplusplus
 }
 #endif

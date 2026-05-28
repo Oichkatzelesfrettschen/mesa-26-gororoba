@@ -628,6 +628,91 @@ r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
 }
 
+/* M-H predicated masked-store detector.  Recognises
+ * `if (in_pred[gid] != 0u) out_data[gid] = in_val[gid]`: a single store_ssbo
+ * sitting inside a nir_if, two load_ssbo (predicate + value), no atomic, no
+ * loop, with the stored value coming directly from a load_ssbo.  The
+ * conditional store is the discriminator from identity-map (load_count == 1)
+ * and binary-map (store value is a binary ALU op, not a load); the absent
+ * atomic separates it from blend-acc / ZPASS, and the absent loop from
+ * multipass.  The orchestrator lowers it to a per-pixel KILL_IF discard over an
+ * RT seeded from out_data, so masked cells keep their pre-existing baseline. */
+void
+r300_nir_detect_predicated_store_pattern(const nir_shader *s,
+                                         struct r300_compute_predicated_store_pattern *out)
+{
+   out->is_predicated_store = false;
+   out->pred_ssbo_binding   = 0;
+   out->value_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *store       = NULL;
+   const nir_intrinsic_instr *first_load  = NULL;
+   const nir_intrinsic_instr *second_load = NULL;
+   unsigned atomic_count = 0, load_count = 0, store_count = 0;
+   bool has_loop    = false;
+   bool store_in_if = false;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         /* A block is inside a conditional when any cf-node ancestor is a
+          * nir_cf_node_if, and inside a loop when any ancestor is a
+          * nir_cf_node_loop.  One pass over the ancestor chain sets both. */
+         bool block_in_if = false;
+         for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
+            if (p->type == nir_cf_node_loop)
+               has_loop = true;
+            else if (p->type == nir_cf_node_if)
+               block_in_if = true;
+         }
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+               atomic_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (!first_load)
+                  first_load = intr;
+               else if (!second_load)
+                  second_load = intr;
+               load_count++;
+            } else if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+               store_in_if = block_in_if;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || atomic_count != 0 || load_count != 2 ||
+       has_loop || !store_in_if || !store->src[0].ssa)
+      return;
+
+   /* The stored value must come directly from a load_ssbo (the value load).
+    * A binary-map kernel's store value is an ALU op, not a load -- this gate
+    * keeps the two shapes disjoint.  nir_def_as_intrinsic_or_null returns NULL
+    * when the value def is not produced by an intrinsic (the same idiom
+    * binary-map uses with nir_def_as_alu_or_null). */
+   const nir_intrinsic_instr *val_load =
+      nir_def_as_intrinsic_or_null(store->src[0].ssa);
+   if (!val_load || val_load->intrinsic != nir_intrinsic_load_ssbo)
+      return;
+
+   /* The other load feeds the nir_if condition (the predicate). */
+   const nir_intrinsic_instr *pred_load =
+      (val_load == first_load) ? second_load : first_load;
+
+   out->is_predicated_store = true;
+   if (pred_load && nir_src_is_const(pred_load->src[0]))
+      out->pred_ssbo_binding = nir_src_as_uint(pred_load->src[0]);
+   if (nir_src_is_const(val_load->src[0]))
+      out->value_ssbo_binding = nir_src_as_uint(val_load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)

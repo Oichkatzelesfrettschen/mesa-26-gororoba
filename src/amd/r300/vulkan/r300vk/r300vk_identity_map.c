@@ -887,6 +887,320 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    return copy_ok;
 }
 
+bool
+r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
+                                        const struct r300vk_pipeline *pl,
+                                        const struct r300vk_cmd_dispatch *dispatch,
+                                        const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   IDM_LOG("predstore entry pl=%p is_predicated_store=%d set_count=%u "
+           "gx=%u gy=%u gz=%u",
+           (const void *)pl,
+           pl ? (int)pl->predicated_store.is_predicated_store : -1,
+           binds ? binds->set_count : 0,
+           dispatch ? dispatch->group_count_x : 0,
+           dispatch ? dispatch->group_count_y : 0,
+           dispatch ? dispatch->group_count_z : 0);
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0) {
+      IDM_LOG("predstore early-return null-or-empty-binds");
+      return false;
+   }
+   if (!pl->vs_cso || !pl->fs_cso) {
+      IDM_LOG("predstore early-return no-vs-or-fs-cso");
+      return false;
+   }
+   if (binds->first_set != 0) {
+      IDM_LOG("predstore early-return first_set=%u (only slot 0)",
+              binds->first_set);
+      return false;
+   }
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout) {
+      IDM_LOG("predstore early-return no-set-or-layout");
+      return false;
+   }
+
+   /* Positional binding resolution (binding 0 = predicate, 1 = value,
+    * 2 = output) -- the same convention as M-F.3 / M-G.3 / Entry 6; the
+    * detector's binding fields stay 0 post-explicit_io. */
+   uint32_t pred_binding = 0, val_binding = 0, out_binding = 0;
+   if (!nth_storage_buffer_binding(set, 0, &pred_binding) ||
+       !nth_storage_buffer_binding(set, 1, &val_binding) ||
+       !nth_storage_buffer_binding(set, 2, &out_binding)) {
+      IDM_LOG("predstore early-return layout-has-fewer-than-three-storage-buffers");
+      return false;
+   }
+   IDM_LOG("predstore bindings: pred=%u val=%u out=%u",
+           pred_binding, val_binding, out_binding);
+   const struct r300vk_descriptor *pred_desc =
+      find_descriptor_by_binding(set, pred_binding);
+   const struct r300vk_descriptor *val_desc =
+      find_descriptor_by_binding(set, val_binding);
+   const struct r300vk_descriptor *out_desc =
+      find_descriptor_by_binding(set, out_binding);
+   if (!pred_desc || !val_desc || !out_desc ||
+       !pred_desc->buf.buffer || !val_desc->buf.buffer ||
+       !out_desc->buf.buffer) {
+      IDM_LOG("predstore early-return descriptor-walk-miss");
+      return false;
+   }
+   VK_FROM_HANDLE(r300vk_buffer, pred_buf, pred_desc->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, val_buf,  val_desc->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, out_buf,  out_desc->buf.buffer);
+   if (!pred_buf || !val_buf || !out_buf ||
+       !pred_buf->resource || !val_buf->resource || !out_buf->resource) {
+      IDM_LOG("predstore early-return null-pipe-resource");
+      return false;
+   }
+
+   const uint64_t total_invocations =
+      (uint64_t)dispatch->group_count_x *
+      (uint64_t)dispatch->group_count_y *
+      (uint64_t)dispatch->group_count_z;
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("predstore early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
+      return false;
+   }
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total_invocations, &width, &height);
+   if (width > 2048 || height > 2048) {
+      IDM_LOG("predstore early-return extent-exceeds-2048-cap");
+      return false;
+   }
+
+   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+   const unsigned bpp = util_format_get_blocksize(fmt);
+
+   /* Wrap the predicate (sampler 0) and value (sampler 1) buffers as
+    * PIPE_TEXTURE_2D + NEAREST sampler views, the same input wrap M-E / M-F
+    * use. */
+   struct pipe_sampler_view *sv_pred =
+      r300vk_identity_map_wrap_input_as_sampler_view(device, pred_buf->resource,
+                                                     width, height, fmt);
+   if (!sv_pred) {
+      IDM_LOG("predstore early-return pred-wrap-failed");
+      return false;
+   }
+   struct pipe_sampler_view *sv_val =
+      r300vk_identity_map_wrap_input_as_sampler_view(device, val_buf->resource,
+                                                     width, height, fmt);
+   if (!sv_val) {
+      pipe_sampler_view_reference(&sv_pred, NULL);
+      IDM_LOG("predstore early-return val-wrap-failed");
+      return false;
+   }
+
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = fmt;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      pipe_sampler_view_reference(&sv_val, NULL);
+      pipe_sampler_view_reference(&sv_pred, NULL);
+      IDM_LOG("predstore early-return rt-create-failed");
+      return false;
+   }
+
+   /* Seed the render target from out_data's pre-existing contents.  A masked
+    * fragment (predicate false) is KILL_IF-discarded and performs no ROP
+    * write, so its RT texel keeps this seed -- that is how a masked cell stays
+    * untouched.  No pipe->clear is issued: clearing would erase the baseline.
+    * Map and per-row memcpy out -> RT honoring the texture transfer stride
+    * (the buffer-to-texture direction r300g cannot do via resource_copy_region;
+    * the same path the multipass seed uses). */
+   {
+      struct pipe_transfer *out_xfer = NULL;
+      struct pipe_box out_box;
+      memset(&out_box, 0, sizeof(out_box));
+      out_box.width  = width * height * bpp;
+      out_box.height = 1; out_box.depth = 1;
+      const void *out_map = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                             PIPE_MAP_READ, &out_box, &out_xfer);
+      if (!out_map) {
+         pipe_resource_reference(&rt, NULL);
+         pipe_sampler_view_reference(&sv_val, NULL);
+         pipe_sampler_view_reference(&sv_pred, NULL);
+         IDM_LOG("predstore early-return out-seed-map-failed");
+         return false;
+      }
+      struct pipe_transfer *rt_xfer = NULL;
+      struct pipe_box rt_box;
+      memset(&rt_box, 0, sizeof(rt_box));
+      rt_box.width = width; rt_box.height = height; rt_box.depth = 1;
+      void *rt_seed = pipe->texture_map(pipe, rt, 0,
+                                        PIPE_MAP_WRITE |
+                                        PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                        &rt_box, &rt_xfer);
+      if (!rt_seed) {
+         pipe->buffer_unmap(pipe, out_xfer);
+         pipe_resource_reference(&rt, NULL);
+         pipe_sampler_view_reference(&sv_val, NULL);
+         pipe_sampler_view_reference(&sv_pred, NULL);
+         IDM_LOG("predstore early-return rt-seed-map-failed");
+         return false;
+      }
+      const uint8_t *src_bytes = (const uint8_t *)out_map;
+      uint8_t       *dst_bytes = (uint8_t *)rt_seed;
+      const unsigned row_bytes = width * bpp;
+      for (unsigned r = 0; r < height; r++)
+         memcpy(dst_bytes + r * rt_xfer->stride, src_bytes + r * row_bytes,
+                row_bytes);
+      pipe->texture_unmap(pipe, rt_xfer);
+      pipe->buffer_unmap(pipe, out_xfer);
+   }
+   IDM_LOG("predstore seeded RT from out");
+
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = fmt;
+   surf_templ.texture = rt;
+
+   const float verts[16] = {
+      -1.0f, -1.0f, 0.0f, 0.0f,
+       1.0f, -1.0f, 1.0f, 0.0f,
+      -1.0f,  1.0f, 0.0f, 1.0f,
+       1.0f,  1.0f, 1.0f, 1.0f,
+   };
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = sizeof(verts);
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb) {
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&sv_val, NULL);
+      pipe_sampler_view_reference(&sv_pred, NULL);
+      IDM_LOG("predstore early-return vbo-create-failed");
+      return false;
+   }
+   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = 16;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   velems[1].src_offset = 8; velems[1].src_stride = 16;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&sv_val, NULL);
+      pipe_sampler_view_reference(&sv_pred, NULL);
+      return false;
+   }
+
+   struct pipe_framebuffer_state fb;
+   memset(&fb, 0, sizeof(fb));
+   fb.width = width;  fb.height = height;
+   fb.nr_cbufs = 1;   fb.cbufs[0] = surf_templ;
+   pipe->set_framebuffer_state(pipe, &fb);
+
+   struct pipe_viewport_state vp;
+   memset(&vp, 0, sizeof(vp));
+   vp.scale[0] = (float)width  * 0.5f; vp.scale[1] = (float)height * 0.5f;
+   vp.scale[2] = 0.5f;
+   vp.translate[0] = (float)width * 0.5f; vp.translate[1] = (float)height * 0.5f;
+   vp.translate[2] = 0.5f;
+   pipe->set_viewport_states(pipe, 0, 1, &vp);
+
+   struct pipe_scissor_state sc = {0};
+   sc.maxx = width; sc.maxy = height;
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+
+   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_vs_state(pipe, pl->vs_cso);
+   pipe->bind_fs_state(pipe, pl->fs_cso);
+   pipe->bind_vertex_elements_state(pipe, velems_cso);
+   void *samplers[2] = { device->identity_map_sampler_cso,
+                         device->identity_map_sampler_cso };
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
+   struct pipe_sampler_view *views[2] = { sv_pred, sv_val };
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 2, 0, views);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.instance_count = 1;
+   info.max_index      = 3;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+   IDM_LOG("predstore draw_vbo mode=triangle_strip count=4");
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+   IDM_LOG("predstore post-flush, beginning rt->buffer copy");
+
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   {
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.width  = width * height * bpp;
+         out_box.height = 1; out_box.depth = 1;
+         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                            PIPE_MAP_WRITE |
+                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                            &out_box, &out_xfer);
+         if (out_bytes) {
+            const uint8_t *src_rows = (const uint8_t *)rt_map;
+            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
+            const unsigned row_bytes = width * bpp;
+            for (unsigned r = 0; r < height; r++)
+               memcpy(dst_bytes + r * row_bytes,
+                      src_rows + r * rt_xfer->stride, row_bytes);
+            pipe->buffer_unmap(pipe, out_xfer);
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+   IDM_LOG("predstore copy issued");
+
+   struct pipe_sampler_view *no_views[2] = { NULL, NULL };
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 2, no_views);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&sv_val, NULL);
+   pipe_sampler_view_reference(&sv_pred, NULL);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&rt, NULL);
+   IDM_LOG("predstore orchestrator done OK");
+   return true;
+}
+
 /* Blend-acc-reduction orchestrator.  Decomposes
  * atomicAdd(out[gid & MASK], in[gid]) into N point fragments accumulating
  * the per-gid value into M bins through RB3D COMB_FCN_ADD blending.
