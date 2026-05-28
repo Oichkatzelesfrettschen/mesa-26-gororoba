@@ -16,6 +16,44 @@ name.  Option diffing collapsed them to four canonical sets
 plus forward-looking `release`/`profile` variants.  See
 `../../steinmarder/docs/workspace/mesa-fork-synthesis.md`.
 
+## Unified generic lane (recommended)
+
+One portable, `-Os` lane replaces the per-host `-march` matrix
+(`btver1`/`k8`/`znver3`/`x86-64-v1`).  `configs/gororoba-terakan.meson`
++ `env/generic-x86-64-os.env` build a `-march=x86-64 -mtune=generic`
+driver that runs on every machine in the fabric (x130e Bobcat, x570
+Zen, Vostro k8, DESKTOP), so the binary is shareable and the ccache is
+not fragmented by target.
+
+Toolchain: clang (auto-detected, prefers 22), ccache+distcc in the
+canonical ccache-first ordering (`CCACHE_PREFIX=distcc`, no pump --
+pump is removed upstream and incompatible with ccache), and the
+fastest available linker (mold, else lld, else default).  `-Os` plus
+orthogonal performance flags (`-fno-semantic-interposition`,
+`-fomit-frame-pointer`, `-pipe`) and the required `-fno-emulated-tls`.
+
+One config file, three modes via Make targets -- builddir lifecycle is
+the only difference between clean and rebuild:
+
+```bash
+P="PROFILE=gororoba-terakan HOSTENV=generic-x86-64-os"
+
+# clean build (wipe builddir, configure, build, incremental install):
+make clean configure build install $P
+
+# rebuild (incremental ninja against the existing builddir, then install):
+make build install $P
+
+# stable release (layers -Doptimization=2 + thin-LTO over the -Os base,
+# no separate config file):
+make clean configure build install $P MODE=stable
+```
+
+`install` is incremental (`meson install --no-rebuild --only-changed`).
+Verify the optimization level actually resolved with
+`meson configure <builddir> | grep optimization` (expect `s`, or `2`
+for `MODE=stable`).
+
 ## Layout
 
 ```text
