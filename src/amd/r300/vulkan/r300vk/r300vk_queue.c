@@ -498,6 +498,18 @@ r300vk_replay_gpu(struct r300vk_device *device,
           * contract at barrier granularity for future multi-submit cases. */
          pipe->flush(pipe, NULL, 0);
 
+         /* Make the barrier resolution observable: a producer-barrier-consumer
+          * dispatch pair (the M-K visibility contract) needs the flush to be
+          * confirmed, not assumed.  Gated by the same R300VK_DEBUG token the
+          * compute-as-raster orchestrators use. */
+         {
+            const char *dbg = getenv("R300VK_DEBUG");
+            if (dbg && strstr(dbg, "identity_map"))
+               fprintf(stderr,
+                       "ident_map: pipeline_barrier flush honored "
+                       "(dispatch-barrier-dispatch visibility)\n");
+         }
+
          /* Update the resource-state ledger so commands after this barrier
           * observe the new layout.  On RS482/RS485 there is no aux surface
           * state to transition; this is a pure bookkeeping update. */
