@@ -134,6 +134,53 @@ struct r300_compute_blend_acc_reduction_pattern {
 void r300_nir_detect_blend_acc_reduction(const struct nir_shader *s,
                                          struct r300_compute_blend_acc_reduction_pattern *out);
 
+/* M-G Entry 5 ZPASS coverage-count reduction kernel pattern.  Recognises
+ * the predicate-gated counter shape:
+ *
+ *     uint gid = gl_GlobalInvocationID.x;
+ *     if (in_data[gid] >= THRESHOLD)
+ *         atomicAdd(count_out, 1u);
+ *
+ * On RS482 this lowers to the substrate's ZPASS coverage-count verb:
+ * the orchestrator binds a 1xN RT, draws N point primitives at
+ * (gid_norm_x, 0), each fragment KILL-discards when the per-vertex-baked
+ * predicate is false; the depth/stencil unit's `ZB_ZPASS_DATA` /
+ * `ZB_ZPASS_ADDR` counter pair (per umr-gororoba RS482 register decode
+ * mmR300_ZB_ZPASS_DATA = DWORD 0x13d6 / byte 0x4f58 and
+ * mmR300_ZB_ZPASS_ADDR = DWORD 0x13d7 / byte 0x4f5c) accumulates the
+ * per-pipe surviving-fragment count.  Mesa's existing
+ * src/gallium/drivers/r300/r300_query.c r300_create_query +
+ * begin_query + end_query + get_query_result chain (lines 15-188)
+ * wraps this register pair as PIPE_QUERY_OCCLUSION_COUNTER returning
+ * a u64 fragment sum; the orchestrator writes that sum to count_out[0].
+ *
+ * The mechanism is hardware-confirmed at the substrate verb level by
+ * bundle stencil_zpass_20260527T052208Z (zpass_samples=1682, per
+ * 2026-05-26-rs482-compute-as-raster-functional-unit-substrate.md).
+ *
+ * Discriminator from M-G Entry 4 (blend-acc reduction):
+ *
+ *   blend-acc: 1 ssbo_atomic-iadd + 1 load_ssbo, the atomic's value
+ *              source SSA == load's def (load's RESULT is the
+ *              accumulated value).
+ *   zpass:     1 ssbo_atomic-iadd + 1 load_ssbo, the atomic's value
+ *              source is the CONSTANT 1 (NOT the load's def); the load
+ *              feeds an nir_if condition that GATES the atomic.
+ *
+ * value_ssbo_binding is the binding of the predicate load_ssbo;
+ * output_ssbo_binding is the binding of the single-element counter
+ * buffer.  Bindings stay 0 when the post-explicit_io binding sources
+ * are not constants (same convention as M-F.3 / M-G.3 fallback). */
+struct r300_compute_zpass_reduction_pattern {
+   bool       is_zpass_reduction;
+   uint32_t   value_ssbo_binding;     /* binding of the predicate-source load_ssbo */
+   uint32_t   output_ssbo_binding;    /* binding of the single-element counter */
+   uint16_t   alu_op;                 /* nir_op_iadd for the first cut */
+};
+
+void r300_nir_detect_zpass_reduction(const struct nir_shader *s,
+                                     struct r300_compute_zpass_reduction_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

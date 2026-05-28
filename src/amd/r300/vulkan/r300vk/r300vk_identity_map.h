@@ -113,6 +113,32 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
                                            const struct r300vk_cmd_dispatch *dispatch,
                                            const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* M-G Entry 5 ZPASS coverage-count reduction orchestrator entry: resolves
+ * the (predicate-source, single-element counter) buffer pair, stages a
+ * per-point VBO carrying (pos, predicate-float) per gid, draws N point
+ * primitives into a 1xN RT with PIPE_QUERY_OCCLUSION_COUNTER bracketed
+ * around the draw.  The fragment program KILL_IF discards every fragment
+ * whose baked predicate is 0; surviving fragments increment the depth/
+ * stencil unit's ZPASS counter pair (`mmR300_ZB_ZPASS_DATA` =
+ * DWORD 0x13d6 / byte 0x4f58 and `mmR300_ZB_ZPASS_ADDR` = DWORD 0x13d7 /
+ * byte 0x4f5c per the umr-gororoba RS482 register decode at
+ * `umr-gororoba/database/ip/rs482_gfx_3_0_0.reg`); pipe_query exposes the
+ * sum as a uint64 that the orchestrator truncates to uint32 and writes
+ * to count_out[0].  The kernel-shape pattern is `if (in_data[gid] != 0u)
+ * atomicAdd(count_out, 1u)` (the orchestrator and probe share a
+ * compare-to-zero predicate contract; the detector recognises the SHAPE
+ * but does not extract the comparison RHS, so the contract is the
+ * orchestrator side of the discipline).  Returns false on resource
+ * creation failure, descriptor walk miss, or query-result wait failure;
+ * the queue's caller then falls through to the no-op compute lifecycle
+ * and the dispatch still signals the fence so the object lifecycle
+ * completes. */
+bool
+r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
+                                       const struct r300vk_pipeline *pl,
+                                       const struct r300vk_cmd_dispatch *dispatch,
+                                       const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #ifdef __cplusplus
 }
 #endif

@@ -490,7 +490,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_admission *adm,
                                struct r300_compute_identity_pattern *ident,
                                struct r300_compute_binary_map_pattern *binmap,
-                               struct r300_compute_blend_acc_reduction_pattern *blendacc)
+                               struct r300_compute_blend_acc_reduction_pattern *blendacc,
+                               struct r300_compute_zpass_reduction_pattern *zpass)
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    if (!mod)
@@ -552,6 +553,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_identity_map(nir, ident);
    r300_nir_detect_binary_map(nir, binmap);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
+   r300_nir_detect_zpass_reduction(nir, zpass);
 
    /* R300VK_DEBUG=identity_map -- log what the classifier + detector
     * decided, so the M-E.4.4 triage can pin whether identity_map was
@@ -955,6 +957,88 @@ r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
+/* Synthesise the M-G ZPASS-reduction fragment program: one MOV from the
+ * GENERIC predicate varying (carrying a per-vertex predicate value the
+ * orchestrator baked into the VBO: 1.0 = survive, 0.0 = discard) to a
+ * temp, then KILL_IF on (predicate <= 0).  Surviving fragments write a
+ * constant white color to OUT[0] (the color is irrelevant -- only the
+ * ZPASS counter matters).  Cost: 1 MOV + 1 KILL_IF + 1 MOV out = 3
+ * ALU / 64-slot R300 PFS budget.
+ *
+ * Mesa's tgsi_ureg has no ureg_KILL_IF helper, so we emit through the
+ * TGSI macro path: ureg_insn with TGSI_OPCODE_KILL_IF takes one source
+ * and discards the fragment when src.x < 0.  We negate the predicate
+ * before emitting so KILL_IF(-predicate) discards when predicate < 0 --
+ * we want discard when predicate == 0, but the canonical r300 predicate
+ * convention here is "1.0 = pass, 0.0 = kill"; KILL_IF(-1.0) does NOT
+ * trigger discard (negative-of-positive is negative, KILL_IF discards
+ * on negative, so KILL_IF(-1.0) discards), so KILL_IF(predicate-0.5)
+ * gives the right shape: discard when predicate < 0.5 (i.e. 0.0 baked
+ * value), pass when predicate >= 0.5 (i.e. 1.0). */
+static void *
+r300vk_synthesize_zpass_reduction_fs(struct pipe_context *pipe)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+   struct ureg_src in_pred = ureg_DECL_fs_input(
+      ureg, TGSI_SEMANTIC_GENERIC, 0, TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst tmp = ureg_DECL_temporary(ureg);
+   struct ureg_dst out_color = ureg_DECL_output(
+      ureg, TGSI_SEMANTIC_COLOR, 0);
+   /* TGSI KILL_IF discards when ANY of src.x/y/z/w is negative.  The
+    * baked predicate only lives in the GENERIC varying's x channel;
+    * the y/z/w channels follow the GL/D3D convention (0, 0, 1) for an
+    * unwritten varying.  A naive `tmp = in_pred - 0.5; KILL_IF tmp`
+    * would compute tmp.y = -0.5 and kill EVERY fragment regardless of
+    * predicate, returning ZPASS counter = 0 (bundle 20260528T190615Z).
+    * Broadcasting the predicate to all four channels before the
+    * subtract gives KILL_IF (predicate-0.5, predicate-0.5,
+    * predicate-0.5, predicate-0.5): discard when predicate < 0.5
+    * (the 0.0-baked discard case), pass when predicate >= 0.5. */
+   struct ureg_src half = ureg_imm1f(ureg, 0.5f);
+   struct ureg_src pred_xxxx =
+      ureg_scalar(in_pred, TGSI_SWIZZLE_X);
+   ureg_ADD(ureg, tmp, pred_xxxx, ureg_negate(half));
+   ureg_KILL_IF(ureg, ureg_src(tmp));
+   /* Surviving fragments write white -- color content doesn't matter for
+    * the ZPASS count, just that A fragment lands and the depth/stencil
+    * unit increments the counter.  Reusing the predicate varying (which
+    * is 1.0 for survivors anyway) keeps the program minimal. */
+   ureg_MOV(ureg, out_color, pred_xxxx);
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+static bool
+r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
+                                          struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   /* Same vertex-passthrough as M-E/M-F/M-G.3: 2 attributes (POSITION +
+    * GENERIC predicate-value). */
+   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
+                                                      TGSI_SEMANTIC_GENERIC };
+   const unsigned          vs_semantic_indices[] = { 0, 0 };
+   pl->vs_cso = util_make_vertex_passthrough_shader(
+                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_zpass_reduction_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
 VkResult
 r300vk_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
@@ -991,8 +1075,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
       struct r300_compute_identity_pattern ident = {0};
       struct r300_compute_binary_map_pattern binmap = {0};
       struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
+      struct r300_compute_zpass_reduction_pattern zpass = {0};
       if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage,
-                                          &adm, &ident, &binmap, &blendacc))
+                                          &adm, &ident, &binmap, &blendacc, &zpass))
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: SPIR-V to NIR failed for compute kernel %u",
                           i);
@@ -1022,6 +1107,7 @@ r300vk_CreateComputePipelines(VkDevice _device,
       pl->identity_map = ident;
       pl->binary_map = binmap;
       pl->blend_acc_reduction = blendacc;
+      pl->zpass_reduction = zpass;
       /* When the kernel matches the identity-map pattern, synthesize the
        * fullscreen-quad VS + texture-sampling FS pair the dispatch replay
        * will bind.  A synthesis failure demotes the pipeline back to a no-op
@@ -1034,7 +1120,10 @@ r300vk_CreateComputePipelines(VkDevice _device,
        * a load_ssbo def; binary-map: store value is a binary ALU op def;
        * blend-acc: kernel carries 1 ssbo_atomic-iadd, 0 store_ssbo).  The
        * else-if chain protects against the impossible "two detectors fired"
-       * case by giving identity-map priority. */
+       * case by giving identity-map priority.  Zpass discriminates from
+       * blend-acc by NOT consuming the load_ssbo def as the atomic value
+       * (it consumes a constant 1 gated by an nir_if from the load), so the
+       * two reductions stay structurally disjoint. */
       if (pl->identity_map.is_identity_map &&
           !r300vk_identity_map_synthesize_shaders(device, pl))
          pl->identity_map.is_identity_map = false;
@@ -1044,6 +1133,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
       else if (pl->blend_acc_reduction.is_blend_acc_reduction &&
                !r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
+      else if (pl->zpass_reduction.is_zpass_reduction &&
+               !r300vk_zpass_reduction_synthesize_shaders(device, pl))
+         pl->zpass_reduction.is_zpass_reduction = false;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 
