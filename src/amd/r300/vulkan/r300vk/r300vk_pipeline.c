@@ -520,6 +520,42 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
     * the identity-map shape; the dispatch lowering only takes the path when
     * both admit and is_identity_map are set. */
    r300_nir_detect_identity_map(nir, ident);
+
+   /* R300VK_DEBUG=identity_map -- log what the classifier + detector
+    * decided, so the M-E.4.4 triage can pin whether identity_map was
+    * recognised at all and which bindings it captured. */
+   {
+      const char *flags = getenv("R300VK_DEBUG");
+      if (flags && strstr(flags, "identity_map")) {
+         unsigned ssbo_loads = 0, ssbo_stores = 0, image_stores = 0;
+         nir_foreach_function_impl (impl, nir) {
+            nir_foreach_block (block, impl) {
+               nir_foreach_instr (instr, block) {
+                  if (instr->type != nir_instr_type_intrinsic)
+                     continue;
+                  const nir_intrinsic_instr *in =
+                     nir_instr_as_intrinsic(instr);
+                  if (in->intrinsic == nir_intrinsic_load_ssbo)
+                     ssbo_loads++;
+                  else if (in->intrinsic == nir_intrinsic_store_ssbo)
+                     ssbo_stores++;
+                  else if (in->intrinsic == nir_intrinsic_image_deref_store ||
+                           in->intrinsic == nir_intrinsic_image_store)
+                     image_stores++;
+               }
+            }
+         }
+         fprintf(stderr,
+                 "ident_map: classify admit=%d reason=%d detect "
+                 "is_identity_map=%d in_binding=%u out_binding=%u "
+                 "(ssbo_loads=%u ssbo_stores=%u image_stores=%u)\n",
+                 (int)adm->admissible, (int)adm->reason,
+                 (int)ident->is_identity_map,
+                 ident->input_ssbo_binding, ident->output_ssbo_binding,
+                 ssbo_loads, ssbo_stores, image_stores);
+      }
+   }
+
    ralloc_free(nir);
    return true;
 }
