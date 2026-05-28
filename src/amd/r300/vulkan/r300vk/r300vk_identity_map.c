@@ -531,6 +531,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * wrap: pipe->resource_copy_region's blitter emits TXF on the
     * texture-to-buffer direction too, and util_resource_copy_region
     * asserts on cross-target.  Map + memcpy ourselves. */
+   bool copy_ok = false;
    {
       struct pipe_transfer *rt_xfer = NULL;
       const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
@@ -556,6 +557,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
                       src_rows + r * rt_xfer->stride,
                       row_bytes);
             pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -578,8 +580,8 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    pipe_sampler_view_reference(&in_sv, NULL);
    pipe_resource_reference(&vb, NULL);
    pipe_resource_reference(&rt, NULL);
-   IDM_LOG("orchestrator done OK");
-   return true;
+   IDM_LOG("orchestrator done copy_ok=%d", (int)copy_ok);
+   return copy_ok;
 }
 
 /* Binary-map orchestrator: same shape as r300vk_identity_map_dispatch_replay
@@ -833,6 +835,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    struct pipe_box copy_box;
    memset(&copy_box, 0, sizeof(copy_box));
    copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   bool copy_ok = false;
    {
       struct pipe_transfer *rt_xfer = NULL;
       const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
@@ -858,6 +861,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
                       src_rows + r * rt_xfer->stride,
                       row_bytes);
             pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -879,8 +883,8 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    pipe_sampler_view_reference(&sv_a, NULL);
    pipe_resource_reference(&vb, NULL);
    pipe_resource_reference(&rt, NULL);
-   IDM_LOG("bin_map orchestrator done OK");
-   return true;
+   IDM_LOG("bin_map orchestrator done copy_ok=%d", (int)copy_ok);
+   return copy_ok;
 }
 
 /* Blend-acc-reduction orchestrator.  Decomposes
@@ -1180,6 +1184,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
 
    /* Copy the 1 x M RT back to the output buffer.  out_byte_size already
     * equals M * sizeof(uint32_t), so the row spans the whole output. */
+   bool copy_ok = false;
    {
       struct pipe_box copy_box;
       memset(&copy_box, 0, sizeof(copy_box));
@@ -1200,6 +1205,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
          if (out_bytes) {
             memcpy(out_bytes, rt_map, (size_t)out_byte_size);
             pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -1214,8 +1220,8 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    pipe->delete_vertex_elements_state(pipe, velems_cso);
    pipe_resource_reference(&vb, NULL);
    pipe_resource_reference(&rt, NULL);
-   IDM_LOG("blend_acc orchestrator done OK");
-   return true;
+   IDM_LOG("blend_acc orchestrator done copy_ok=%d", (int)copy_ok);
+   return copy_ok;
 }
 
 /* ZPASS coverage-count reduction orchestrator.  Decomposes
@@ -1544,6 +1550,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    IDM_LOG("zpass query u64=%llu saturated_u32=%u",
            (unsigned long long)raw_sum, saturated);
 
+   bool copy_ok = false;
    {
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
@@ -1557,6 +1564,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
       if (out_bytes) {
          memcpy(out_bytes, &saturated, sizeof(uint32_t));
          pipe->buffer_unmap(pipe, out_xfer);
+         copy_ok = true;
       }
    }
 
@@ -1567,8 +1575,8 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    pipe->delete_vertex_elements_state(pipe, velems_cso);
    pipe_resource_reference(&vb, NULL);
    pipe_resource_reference(&rt, NULL);
-   IDM_LOG("zpass orchestrator done OK");
-   return true;
+   IDM_LOG("zpass orchestrator done copy_ok=%d", (int)copy_ok);
+   return copy_ok;
 }
 
 /* Multipass FBO ping-pong scan orchestrator.  Realizes the per-element
@@ -1843,6 +1851,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
     * next pass's source.  After pass_count passes the result is in
     * tex[pass_count & 1]; pass_count == 0 leaves it in tex[0] (= input). */
    unsigned src_idx = 0;
+   bool passes_ok = true;
    for (uint32_t k = 0; k < pass_count; k++) {
       const unsigned dst_idx = src_idx ^ 1u;
 
@@ -1861,7 +1870,8 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
       struct pipe_sampler_view *sv =
          pipe->create_sampler_view(pipe, tex[src_idx], &sv_templ);
       if (!sv) {
-         IDM_LOG("multipass pass=%u early-return sampler-view-failed", k);
+         IDM_LOG("multipass pass=%u sampler-view-failed (fail closed)", k);
+         passes_ok = false;
          break;
       }
 
@@ -1894,6 +1904,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Copy the final texture (tex[src_idx]) back to the output buffer. */
+   bool copy_ok = false;
    {
       struct pipe_box copy_box;
       memset(&copy_box, 0, sizeof(copy_box));
@@ -1919,6 +1930,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
                memcpy(dst_bytes + r * row_bytes,
                       src_rows + r * rt_xfer->stride, row_bytes);
             pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -1933,6 +1945,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    pipe_resource_reference(&vb, NULL);
    pipe_resource_reference(&tex[0], NULL);
    pipe_resource_reference(&tex[1], NULL);
-   IDM_LOG("multipass orchestrator done OK");
-   return true;
+   IDM_LOG("multipass orchestrator done passes_ok=%d copy_ok=%d",
+           (int)passes_ok, (int)copy_ok);
+   return passes_ok && copy_ok;
 }
