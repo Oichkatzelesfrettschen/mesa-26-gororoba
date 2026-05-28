@@ -9,10 +9,17 @@
 
 #include "r300vk_identity_map.h"
 #include "r300vk_device.h"
+#include "r300vk_pipeline.h"
+#include "r300vk_descriptor.h"
+#include "r300vk_buffer.h"
+#include "r300vk_cmd_buffer.h"
 
+#include "compiler/shader_enums.h"
 #include "pipe/p_context.h"
+#include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
 #include "util/format/u_format.h"
+#include "util/u_inlines.h"
 
 struct pipe_sampler_view *
 r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
@@ -86,4 +93,285 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
       pipe->create_sampler_view(pipe, tex, &sv_templ);
    pipe_resource_reference(&tex, NULL);
    return sv;
+}
+
+/* Locate the descriptor in a set's flat descriptors[] array that matches a
+ * given Vulkan binding index.  Returns NULL on miss (the layout never
+ * declared that binding) or zero count (the binding was declared with
+ * descriptorCount = 0). */
+static const struct r300vk_descriptor *
+find_descriptor_by_binding(const struct r300vk_descriptor_set *set,
+                           uint32_t binding_index)
+{
+   for (uint32_t i = 0; i < set->layout->binding_count; i++) {
+      if (set->layout->bindings[i].binding == binding_index &&
+          set->layout->bindings[i].count > 0)
+         return &set->descriptors[set->layout->bindings[i].offset];
+   }
+   return NULL;
+}
+
+/* Map the kernel's total invocation count onto a 2D raster grid: a single
+ * row up to the texture-axis cap (R300 = 2048), then add rows as needed.
+ * The bit-exact identity-map theorem in
+ * src/re/r300/docs/rs482-r300vk-compute-identity-map-derivation.md bounds
+ * this at 2048 x 2048 per dispatch; larger grids tile and dispatch
+ * multiple times (M-J generalization). */
+static void
+derive_raster_extent(uint32_t total_invocations,
+                     unsigned *out_width, unsigned *out_height)
+{
+   const unsigned axis_cap = 2048;
+   if (total_invocations <= axis_cap) {
+      *out_width  = total_invocations ? total_invocations : 1;
+      *out_height = 1;
+      return;
+   }
+   *out_width  = axis_cap;
+   *out_height = (total_invocations + axis_cap - 1) / axis_cap;
+}
+
+bool
+r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
+                                    const struct r300vk_pipeline *pl,
+                                    const struct r300vk_cmd_dispatch *dispatch,
+                                    const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso)
+      return false;
+
+   /* Walk the bound set to resolve the input + output ssbo bindings to
+    * VkBuffer.resource pointers.  The first descriptor set holds them
+    * (r300_nir_detect_identity_map records the bindings without recording
+    * which set; identity-map kernels use a single set in practice). */
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   const struct r300vk_descriptor *in_desc =
+      find_descriptor_by_binding(set, pl->identity_map.input_ssbo_binding);
+   const struct r300vk_descriptor *out_desc =
+      find_descriptor_by_binding(set, pl->identity_map.output_ssbo_binding);
+   if (!in_desc || !out_desc)
+      return false;
+   if (!in_desc->buf.buffer || !out_desc->buf.buffer)
+      return false;
+
+   VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
+   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource)
+      return false;
+
+   /* The total work-item count is the grid-size product.  The kernel's
+    * local_size is folded into the per-invocation index space already
+    * (the ComputeGrid->RasterGrid functor in the M-E derivation takes the
+    * full group count); for local_size > 1, the M-E.4 oracle controls the
+    * shader and so picks local_size = 1 to keep the first end-to-end test
+    * simple.  M-J generalizes to local_size > 1 by widening the index
+    * domain. */
+   const uint32_t total_invocations = dispatch->group_count_x *
+                                      dispatch->group_count_y *
+                                      dispatch->group_count_z;
+   if (total_invocations == 0)
+      return false;
+
+   unsigned width = 0, height = 0;
+   derive_raster_extent(total_invocations, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   /* RGBA8 UNORM: 4 bytes per texel, bit-exact UNORM8 round-trip on FP24
+    * per the M-E exactness theorem.  A future expansion lets the kernel's
+    * element type pick FP16 or R8_UNORM; the bit-exactness bound applies
+    * to all three. */
+   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+
+   /* Wrap the input buffer as a 2D sampler view.  The view holds the
+    * texture's only strong reference; drop the view at the end and the
+    * texture is freed. */
+   struct pipe_sampler_view *in_sv =
+      r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
+                                                     width, height, fmt);
+   if (!in_sv)
+      return false;
+
+   /* Allocate the output render target (linear-tiled 2D texture). */
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = fmt;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.last_level = 0;
+   rt_templ.nr_samples = 0;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      pipe_sampler_view_reference(&in_sv, NULL);
+      return false;
+   }
+
+   /* Wrap the RT as a pipe_surface for the framebuffer cbufs[0] slot. */
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format            = fmt;
+   surf_templ.first_layer       = 0;
+   surf_templ.last_layer        = 0;
+   surf_templ.level             = 0;
+   surf_templ.texture           = rt;
+
+   /* Allocate the fullscreen-quad VBO with 4 vertices (TRIANGLE_STRIP):
+    * each vertex = (pos.xy, texcoord.xy), 16 bytes, 64 bytes total.
+    * Clip-space corners (-1, -1)..(1, 1) with texcoords (0, 0)..(1, 1) so
+    * the FS samples the input texture across its full extent. */
+   const float verts[16] = {
+      -1.0f, -1.0f, 0.0f, 0.0f,
+       1.0f, -1.0f, 1.0f, 0.0f,
+      -1.0f,  1.0f, 0.0f, 1.0f,
+       1.0f,  1.0f, 1.0f, 1.0f,
+   };
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = sizeof(verts);
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_IMMUTABLE;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb) {
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&in_sv, NULL);
+      return false;
+   }
+   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
+
+   /* Vertex element layout: position at offset 0, texcoord at offset 8.
+    * R32G32_FLOAT per attribute; src_stride 16. */
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset          = 0;
+   velems[0].src_stride          = 16;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format          = PIPE_FORMAT_R32G32_FLOAT;
+   velems[0].instance_divisor    = 0;
+   velems[1].src_offset          = 8;
+   velems[1].src_stride          = 16;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format          = PIPE_FORMAT_R32G32_FLOAT;
+   velems[1].instance_divisor    = 0;
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&in_sv, NULL);
+      return false;
+   }
+
+   /* Bind the framebuffer.  set_framebuffer_state copies surf_templ into
+    * the framebuffer state structure; the surface lifetime is tied to the
+    * texture, which the local pipe_resource_reference keeps alive until
+    * after the draw. */
+   struct pipe_framebuffer_state fb;
+   memset(&fb, 0, sizeof(fb));
+   fb.width            = width;
+   fb.height           = height;
+   fb.nr_cbufs         = 1;
+   fb.cbufs[0]         = surf_templ;
+   pipe->set_framebuffer_state(pipe, &fb);
+
+   /* Viewport: identity NDC -> pixel mapping over (0, 0)..(width, height). */
+   struct pipe_viewport_state vp;
+   memset(&vp, 0, sizeof(vp));
+   vp.scale[0]     = (float)width  * 0.5f;
+   vp.scale[1]     = (float)height * 0.5f;
+   vp.scale[2]     = 0.5f;
+   vp.translate[0] = (float)width  * 0.5f;
+   vp.translate[1] = (float)height * 0.5f;
+   vp.translate[2] = 0.5f;
+   pipe->set_viewport_states(pipe, 0, 1, &vp);
+
+   struct pipe_scissor_state sc = {0};
+   sc.minx = 0; sc.miny = 0;
+   sc.maxx = width;
+   sc.maxy = height;
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+
+   /* Bind the cached state CSOs and the per-pipeline VS / FS. */
+   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_vs_state(pipe, pl->vs_cso);
+   pipe->bind_fs_state(pipe, pl->fs_cso);
+   pipe->bind_vertex_elements_state(pipe, velems_cso);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
+                             &device->identity_map_sampler_cso);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &in_sv);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer_offset      = 0;
+   vb_state.buffer.resource    = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   /* Draw: 4-vertex triangle-strip covers the entire RT. */
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode             = MESA_PRIM_TRIANGLE_STRIP;
+   info.index_size       = 0;
+   info.instance_count   = 1;
+   info.min_index        = 0;
+   info.max_index        = 3;
+   struct pipe_draw_start_count_bias draw;
+   memset(&draw, 0, sizeof(draw));
+   draw.start = 0;
+   draw.count = 4;
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+
+   /* Flush so the RT contents reach memory before the texture->buffer
+    * copy.  pipe->flush submits the CS; r300g re-marks all atoms dirty so
+    * a subsequent submit re-emits state cleanly. */
+   pipe->flush(pipe, NULL, 0);
+
+   /* Copy the RT back to the output ssbo.  Same util_resource_copy_region
+    * fallback path as the input wrap, but in the texture->buffer
+    * direction. */
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.x      = 0;
+   copy_box.y      = 0;
+   copy_box.z      = 0;
+   copy_box.width  = width;
+   copy_box.height = height;
+   copy_box.depth  = 1;
+   pipe->resource_copy_region(pipe,
+                              out_buf->resource, 0 /* dst_level */,
+                              0, 0, 0 /* dst x,y,z bytes */,
+                              rt, 0 /* src_level */,
+                              &copy_box);
+
+   /* Tear down transient state.  Unbind sampler views and vertex buffers
+    * first so the pipe_context releases its internal references before we
+    * drop ours, then delete the velems CSO, then drop the local refs. */
+   struct pipe_sampler_view *no_view = NULL;
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, &no_view);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&in_sv, NULL);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&rt, NULL);
+   return true;
 }

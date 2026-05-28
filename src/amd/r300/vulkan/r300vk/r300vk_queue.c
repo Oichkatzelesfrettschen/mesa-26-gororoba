@@ -8,6 +8,7 @@
 #include "r300vk_pipeline.h"
 #include "r300vk_image.h"
 #include "r300vk_buffer.h"
+#include "r300vk_identity_map.h"
 
 #include "vk_queue.h"
 #include "vk_sync.h"
@@ -261,6 +262,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
       uint32_t vb_max_used = 0;
       bool vb_dirty = false;
       const struct r300vk_pipeline *bound_pipeline = NULL;
+      const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets = NULL;
       memset(vb_cache, 0, sizeof(vb_cache));
       memset(vb_sizes, 0, sizeof(vb_sizes));
 
@@ -505,17 +507,29 @@ r300vk_replay_gpu(struct r300vk_device *device,
       }
 
       case R300VK_CMD_BIND_DESCRIPTOR_SETS:
-         /* Record-only at this stage: the bound layout, set handles, and
-          * dynamic offsets are already on the entry.  Translation into the
-          * gallium binding (sampler_views / shader_buffers / shader_images /
-          * constant_buffers via pipe_context) is the consumer's job at the
-          * next CmdDispatch / CmdDraw; a no-op kernel does not read the
-          * descriptors so replay is a no-op here. */
+         /* Track the most recent bind for the dispatch lowering to consume:
+          * the identity-map orchestrator walks this entry's set handles +
+          * dynamic offsets to resolve the kernel's input + output ssbo
+          * bindings to pipe_resource pointers.  A no-op kernel reads no
+          * descriptors so the tracking is harmless there. */
+         last_bind_dsets = &e->bind_dsets;
          break;
 
       case R300VK_CMD_DISPATCH:
          if (skip_render_pass)
             break;
+         /* Identity-map kernels lower onto the fullscreen-quad fragment
+          * draw via the orchestrator; admitted-but-not-identity-map
+          * kernels fall through to the no-op compute lifecycle (the same
+          * empty-CS submit boundary M-D established). */
+         if (e->dispatch.pipeline &&
+             e->dispatch.pipeline->identity_map.is_identity_map &&
+             last_bind_dsets) {
+            r300vk_identity_map_dispatch_replay(device,
+                                                e->dispatch.pipeline,
+                                                &e->dispatch,
+                                                last_bind_dsets);
+         }
          /* The no-op compute kernel emits no GPU work, so this proves the
           * Vulkan compute object lifecycle (pipeline create, bind, dispatch
           * record, submit, fence), not GPU activation.  A dispatch is still an

@@ -31,6 +31,9 @@ extern "C" {
 #endif
 
 struct r300vk_device;
+struct r300vk_pipeline;
+struct r300vk_cmd_dispatch;
+struct r300vk_cmd_bind_descriptor_sets;
 
 /* Wrap the contents of a PIPE_BUFFER pipe_resource as a transient
  * PIPE_TEXTURE_2D + a pipe_sampler_view configured for NEAREST sampling.
@@ -53,6 +56,26 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
                                                unsigned width,
                                                unsigned height,
                                                enum pipe_format format);
+
+/* The dispatch-replay orchestrator: lowers one R300VK_CMD_DISPATCH of an
+ * identity-map kernel into the equivalent fullscreen-quad draw.  Walks the
+ * bound descriptor set to resolve the input + output ssbo bindings to the
+ * underlying pipe_resource handles, wraps the input via the helper above,
+ * allocates a transient output RT, sets up the framebuffer + viewport +
+ * scissor, lazily creates the fullscreen VBO + vertex elements, binds the
+ * device-cached state CSOs + the pipeline's vs_cso / fs_cso, issues the
+ * draw, flushes, and copies the RT contents back to the output buffer.
+ *
+ * Returns false on any unrecoverable failure (resource_create, descriptor
+ * walk miss, dimensions exceeding the 2048-per-axis texture cap).  A
+ * failed replay leaves the pipe_context in an indeterminate state; the
+ * caller's submit-time flush + fence still signals the Vulkan fence so the
+ * dispatch object lifecycle still completes. */
+bool
+r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
+                                    const struct r300vk_pipeline *pl,
+                                    const struct r300vk_cmd_dispatch *dispatch,
+                                    const struct r300vk_cmd_bind_descriptor_sets *binds);
 
 #ifdef __cplusplus
 }
