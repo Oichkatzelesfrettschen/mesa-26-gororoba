@@ -1,0 +1,29 @@
+# gororoba-terakan: unified terakan/r600 build config.
+#
+# One portable lane shared by every machine; pair it with the
+# generic-x86-64-os.env hostenv (which supplies -march=x86-64 -mtune=generic
+# -Os and the ccache+distcc, no-pump toolchain ordering).
+#
+# Optimization is set with the optimization/debug options rather than buildtype:
+# meson couples buildtype to optimization/debug, so a buildtype='release' here
+# would silently override the -Os intent.  optimization='s' resolves to -Os and
+# leaves buildtype as 'custom'.  The MODE=stable build path overrides
+# -Doptimization=2 -Db_lto=true on the meson command line for a thin-LTO release
+# without editing this file.
+
+[project options]
+optimization        = 's'
+debug               = false
+b_ndebug            = 'true'
+werror              = true
+
+# r600 Gallium + the amd_terascale Vulkan driver (terakan).  Rusticl stays off:
+# its rust frontend breaks on bindgen drift against the current pipe struct
+# layout (see ../../../steinmarder/docs/workspace/rusticl-bindgen-drift.md).
+gallium-drivers     = ['r600']
+vulkan-drivers      = ['amd_terascale']
+gallium-rusticl     = false
+
+amd-use-llvm        = true
+gallium-extra-hud   = true
+glx                 = 'auto'
