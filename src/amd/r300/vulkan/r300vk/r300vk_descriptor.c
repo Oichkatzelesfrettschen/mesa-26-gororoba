@@ -305,7 +305,15 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
          span = total - base;
       for (uint32_t d = 0; d < span; d++) {
          struct r300vk_descriptor *slot = &set->descriptors[base + d];
-         slot->type = write->descriptorType;
+         /* Defer the slot->type stamp until the per-type case body has
+          * accepted the write.  Earlier shape wrote slot->type at the top of
+          * the loop and rolled it back to 0 on the out-of-bounds path; that
+          * exposed a momentary window where slot->type was live without any
+          * backing binding (the kind of read-modify-write hazard Vulkan
+          * spec 14.2.3 "Descriptor Set Updates" requires to be atomic from
+          * the consumer's perspective).  Stamping after validation gives
+          * the all-or-nothing visibility the M-E/M-F dispatch-replay walker
+          * relies on. */
          switch (write->descriptorType) {
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
@@ -340,12 +348,16 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
                             (bi->range <= buf->size - bi->offset));
             }
             if (!in_bounds) {
-               slot->type = 0;
+               /* Leave slot->type = 0 (the AllocateDescriptorSets zalloc
+                * value, or the previous accepted write's type if the slot
+                * was reused); the dispatch-replay walker reads
+                * slot->type == 0 as "no descriptor here" and skips. */
                break;
             }
             slot->buf.buffer = bi->buffer;
             slot->buf.offset = bi->offset;
             slot->buf.range  = bi->range;
+            slot->type = write->descriptorType;
             break;
          }
          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
@@ -356,11 +368,13 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
             slot->img.image_view = ii->imageView;
             slot->img.layout     = ii->imageLayout;
             slot->img.sampler    = ii->sampler;
+            slot->type = write->descriptorType;
             break;
          }
          case VK_DESCRIPTOR_TYPE_SAMPLER: {
             const VkDescriptorImageInfo *ii = &write->pImageInfo[d];
             slot->img.sampler = ii->sampler;
+            slot->type = write->descriptorType;
             break;
          }
          default:
@@ -368,6 +382,7 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
              * the gallium-binding stage; the slot's recorded type makes the
              * unsupported case visible to the dispatch replay so it can
              * reject early rather than dispatch with stale data. */
+            slot->type = write->descriptorType;
             break;
          }
       }
