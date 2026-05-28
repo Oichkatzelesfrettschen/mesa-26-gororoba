@@ -112,7 +112,7 @@ LOCKED_TOOL_ENV := \
     DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
     SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
-.PHONY: list audit configure build build-generated build-pump clean distclean install \
+.PHONY: list vostro-prefix-check audit configure build build-generated build-pump clean distclean install \
         artifact-check test \
         rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-distcc-no-rusticl \
         rebuild-terakan-distcc-no-rusticl-ccache-no-pump \
@@ -163,7 +163,14 @@ list:
 	@echo "available HOSTENVs (env/*.env):"; \
 	for f in env/*.env; do echo "  $$(basename $$f .env)"; done
 
-audit:
+vostro-prefix-check:
+	@case "$(PROFILE):$(PREFIX)" in \
+		r300*-vostro-*:/usr/local/mesa-26-gororoba*) \
+			echo "Vostro r300/r300vk profiles install under /opt/local/mesa-26-gororoba*; refusing PREFIX=$(PREFIX)" >&2; \
+			exit 2 ;; \
+	esac
+
+audit: vostro-prefix-check
 	@failures=0; warnings=0; \
 	fail() { echo "FAIL  $$*" >&2; failures=$$((failures + 1)); }; \
 	warn() { echo "WARN  $$*" >&2; warnings=$$((warnings + 1)); }; \
@@ -286,7 +293,7 @@ audit:
 	if [ "$$failures" -gt 0 ]; then echo; echo "Terakan host audit failed: $$failures failure(s), $$warnings warning(s)." >&2; exit 1; fi; \
 	echo; echo "Terakan host audit passed with $$warnings warning(s)."
 
-configure:
+configure: vostro-prefix-check
 	@mkdir -p $(dir $(BUILDDIR))
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	version_major() { \
@@ -423,7 +430,7 @@ distclean: clean
 		echo "prefix already absent: $(PREFIX)"; \
 	fi
 
-install:
+install: vostro-prefix-check
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
@@ -436,7 +443,7 @@ install:
 	    sudo meson install --no-rebuild -C $(BUILDDIR); \
 	    echo "[install] complete; releasing flock"'
 
-artifact-check:
+artifact-check: vostro-prefix-check
 	@test -d $(PREFIX) || { echo "prefix missing: $(PREFIX)"; exit 1; }
 	find $(PREFIX) -maxdepth 5 -type f \
 		\( -name "libvulkan_terascale.so" -o -name "libvulkan_r300.so" -o \
