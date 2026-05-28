@@ -1151,7 +1151,9 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    {
       union pipe_color_union zero;
       memset(&zero, 0, sizeof(zero));
-      pipe->clear(pipe, PIPE_CLEAR_COLOR0, NULL, &zero, 0.0f, 0);
+      /* pipe->clear signature (p_context.h:723): buffers + color_clear_mask
+       * + stencil_clear_mask + scissor_state + color + depth + stencil. */
+      pipe->clear(pipe, PIPE_CLEAR_COLOR0, ~0u, 0, NULL, &zero, 0.0, 0);
    }
 
    /* Difference 3: blend state = ADD/(ONE,ONE) instead of disabled. */
