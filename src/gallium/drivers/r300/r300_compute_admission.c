@@ -169,8 +169,14 @@ r300_nir_classify_compute(const nir_shader *s,
                      nir_src_as_uint(intr->src[2]) == 0;
                   bool identity_load_then_store = false;
                   if (!canonical && intr->src[0].ssa) {
+                     /* _or_null is the safe variant: nir_def_as_intrinsic
+                      * asserts when the producing instruction is not an
+                      * intrinsic (ALU result, load_const, phi, etc.); a
+                      * store_ssbo whose value comes from an ALU op is the
+                      * common-case non-identity shape and must classify
+                      * cleanly, not abort the process. */
                      const nir_intrinsic_instr *src_intr =
-                        nir_def_as_intrinsic(intr->src[0].ssa);
+                        nir_def_as_intrinsic_or_null(intr->src[0].ssa);
                      if (src_intr &&
                          src_intr->intrinsic == nir_intrinsic_load_ssbo)
                         identity_load_then_store = true;
