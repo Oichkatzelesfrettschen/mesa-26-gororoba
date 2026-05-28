@@ -560,6 +560,21 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                                   &e->dispatch,
                                                   last_bind_dsets);
          }
+         /* The *_dispatch_replay calls above return false when the
+          * compute-as-raster lowering fails to produce the kernel's output
+          * (resource create/map failure, or a partial ping-pong pass); the
+          * orchestrator logs the failure.  The fence still signals below, so
+          * a failed lowering currently surfaces to the application as a
+          * completed dispatch with unwritten output.
+          *
+          * TODO: escalate a false *_dispatch_replay return to a submit-level
+          *       VkResult through r300vk_queue_driver_submit so the
+          *       application learns the dispatch did not write its output.
+          *       reason -- the correct VkResult and the submit error path
+          *       need on-hardware verification before changing submit
+          *       semantics on the RS482 target.
+          *       tracking -- r300vk_queue_driver_submit and the
+          *       r300vk_*_dispatch_replay bool contract. */
          /* The no-op compute kernel emits no GPU work, so this proves the
           * Vulkan compute object lifecycle (pipeline create, bind, dispatch
           * record, submit, fence), not GPU activation.  A dispatch is still an
