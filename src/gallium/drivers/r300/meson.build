@@ -20,6 +20,8 @@ files_r300 = files(
   'r300_public.h',
   'r300_icd.c',
   'r300_query.c',
+  'r300_r2vb.c',
+  'r300_r2vb.h',
   'r300_reg.h',
   'r300_render.c',
   'r300_render_stencilref.c',
