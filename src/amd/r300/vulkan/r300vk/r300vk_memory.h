@@ -16,27 +16,46 @@
 extern "C" {
 #endif
 
-/* r300vk_device_memory: resource-backed model.
+/* r300vk_device_memory: resource-backed model with lazy map-before-bind storage.
  *
  * RS482/RS485 is UMA; VRAM and GTT share the same physical memory.
- * AllocateMemory allocates the object but defers pipe_resource creation
- * until BindBufferMemory2 or BindImageMemory2.  MapMemory requires a
- * prior bind; without a resource it returns VK_ERROR_MEMORY_MAP_FAILED.
- * FlushMappedMemoryRanges and InvalidateMappedMemoryRanges are no-ops
- * because there is no CPU-GPU cache separation on this target.
+ * AllocateMemory allocates the object and defers pipe_resource creation.  The
+ * resource is filled lazily by whichever path needs it first:
+ *   - MapMemory, when the memory is mapped before any bind, creates the
+ *     memory's own HOST_VISIBLE pipe_buffer and sets owns_buffer.  Vulkan
+ *     permits mapping VkDeviceMemory before (or without) binding a resource.
+ *   - BindBufferMemory2, when owns_buffer is set, copies the buffer's slice of
+ *     the mapped allocation (at memoryOffset) into the VkBuffer's own
+ *     create-time resource, so every consumer reads buf->resource offset-free
+ *     and no draw/descriptor/compute path needs the bind offset; otherwise the
+ *     memory borrows the buffer's create-time resource (the prior model).
+ *   - BindImageMemory2 installs the image's tiled resource.
+ * FlushMappedMemoryRanges and InvalidateMappedMemoryRanges are no-ops because
+ * there is no CPU-GPU cache separation on this target.
  *
  * memory_offset records the VkBindBufferMemoryInfo/VkBindImageMemoryInfo
- * memoryOffset.  For the resource-backed model the pipe_resource IS the
- * allocation, so memoryOffset is always expected to be zero; it is stored
- * here so MapMemory can compute the correct byte offset into the resource
- * for PIPE_BUFFER objects (resource_offset = MapMemory.offset - memory_offset). */
+ * memoryOffset.  For a borrowed bound resource (owns_buffer == false) the
+ * pipe_resource starts at the buffer, so MapMemory uses
+ * resource_offset = MapMemory.offset - memory_offset.  For an owns_buffer
+ * allocation the resource IS the whole VkDeviceMemory and memory_offset stays
+ * the bind offset for record; the buffer's bytes were already copied out at
+ * bind, so the draw reads buf->resource directly.  A subsequent map sees the
+ * whole allocation (resource_offset = offset, memory_offset 0 before any bind).
+ *
+ * Coherency caveat: the bind-time copy is one-way (map -> buffer).  A map that
+ * REWRITES the bytes after BindBufferMemory2 will not propagate to the buffer;
+ * the deqp allocate->map->write->bind pattern does not do this. */
 struct r300vk_device_memory {
    struct vk_object_base  base;
    VkDeviceSize           size;
    VkDeviceSize           memory_offset;  /* from BindBufferMemory2/BindImageMemory2 */
-   struct pipe_resource  *resource;  /* NULL until BindBufferMemory2/BindImageMemory2 */
+   struct pipe_resource  *resource;  /* NULL until first map or BindBufferMemory2/BindImageMemory2 */
    struct pipe_transfer  *transfer;  /* non-NULL while mapped */
    void                  *map_ptr;
+   bool                   owns_buffer;  /* true when MapMemory lazily created the
+                                         * memory's own host pipe_buffer for the
+                                         * map-before-bind case (vs borrowing a
+                                         * bound buffer/image resource) */
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_device_memory, base,
