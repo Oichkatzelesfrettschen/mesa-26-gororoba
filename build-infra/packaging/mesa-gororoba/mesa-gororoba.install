@@ -1,0 +1,28 @@
+# mesa-gororoba install scriptlet: surface the non-obvious consequences of
+# replacing system mesa with a scope-limited fork build.
+
+_notes() {
+  cat <<'EOF'
+mesa-gororoba replaces stock `mesa` with an RS482-scoped fork build:
+  * GL: r300 hardware + llvmpipe software fallback (egl/glx/gles/gbm/glvnd).
+  * Vulkan: amd_r300 (r300vk) ICD at /usr/share/vulkan/icd.d/r300_icd.x86_64.json.
+Consequences to know:
+  * llvm coupling: llvmpipe links libLLVM.so of the build host's llvm major.
+    If the installed llvm-libs major differs, llvmpipe paths fail to dlopen --
+    rebuild mesa-gororoba against the current llvm.
+  * libva-driver is provided as a no-backend virtual (RS482 has no VA-API state
+    tracker); VA-API consumers install but get no hardware video decode.
+  * `pacman -Syu` will conflict whenever stock mesa bumps.  Add to
+    /etc/pacman.conf:  IgnorePkg = mesa-gororoba
+    (or keep a local repo and rebuild on upstream bumps).
+  * Rollback: pacman -U /var/cache/pacman/pkg/mesa-2:*-x86_64.pkg.tar.zst
+EOF
+}
+
+post_install() {
+  _notes
+}
+
+post_upgrade() {
+  _notes
+}
