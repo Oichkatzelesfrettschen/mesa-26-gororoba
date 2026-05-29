@@ -38,17 +38,16 @@ conditional: `meson setup --reconfigure` + ninja's dependency graph handle it;
 - `env/btver1.env` (fragile `paste` DISTCC_HOSTS; superseded), `env/btver1-ccache-no-pump.env`, `env/btver1-distcc-ccache-warm.env` (its `CCACHE_COMPILERCHECK`/`CCACHE_DEPEND` are now merged into `generic-x86-64-os.env`).
 - `env/btver1-distcc-pump.env` and `configs/terakan-distcc-no-rusticl-pump.meson` (distcc-pump is dead: removed upstream, incompatible with ccache).
 - `env/cachyos-znver3-cross-btver1.env` and `configs/terakan-cachyos-cross-btver1.meson` (the `-march=btver1` differentiator is dropped; generic x86-64 runs on Bobcat).
-- r300 redundant configs subsumed by `r300-canonical-vostro-k8.meson` / the `r300vk-vostro-x86-64-v1-clang22-*` pair: `r300-egl-gbm-trace-vostro-k8`, `r300-trace-vostro-k8`, `r300-vostro-k8-debug`, `r300vk-vostro-k8-release`, `r300vk-vostro-k8-debug`.
+- r300 lane consolidated to the two `[12]_r300_full_*_x86_64v1-clang22-distcc-cache` profiles (maximal r300 GL/GLES + amd_r300 ICD).  All prior r300/vostro configs are removed: `r300-canonical-vostro-k8`, `r300-egl-gbm-trace-vostro-k8`, `r300-trace-vostro-k8`, `r300-vostro-k8-{debug,release}`, `r300vk-vostro-k8-{debug,release}`, `r300vk-vostro-x86-64-v1-clang22-{debug,release}`, and the orphaned `vostro1000-k8-*` envs.
 
 ## Keep (distinct purpose)
 
 `terakan-distcc-no-rusticl-debug` (debug artifact), `terakan-distcc` + the
 Rusticl cross-build lane (Rusticl recovery), `terakan-full` (reference stack),
 `terakan-minimal` (NIR scratchpad), `base-debug` (upstream regression),
-`r300-canonical-vostro-k8` + `r300vk-vostro-x86-64-v1-clang22-*` (r300 canonical,
-different target/CPU), the Vostro k8 + x86-64-v1 envs (k8-sse3 CPU, LLVM-22 pin),
-`zen4`/`sapphire` placeholders.  `r300-vostro-k8-release` is an operator decision
-(keep only if silicon-evidence work needs a strict-release Gallium-only artifact).
+the two `[12]_r300_full_*` r300 profiles (canonical r300; see
+`docs/r300-full-profile-options.md`), the `vostro1000-x86-64-v1-clang22-ccache-distcc`
+env (LLVM-22 pin), and the `zen4`/`sapphire` placeholders.
 
 ## Makefile follow-ups
 

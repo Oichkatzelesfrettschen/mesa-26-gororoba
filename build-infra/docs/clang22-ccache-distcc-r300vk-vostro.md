@@ -1,8 +1,9 @@
-# clang 22 ccache + distcc r300vk Vostro lane
+# clang 22 ccache + distcc r300 Vostro lane
 
 ## Why
 
-r300vk validation on the Vostro needs a repeatable fast lane that uses clang 22,
+r300 validation on the Vostro (full GL/GLES plus the amd_r300 ICD) needs a
+repeatable fast lane that uses clang 22,
 keeps ccache warm on the slow RS482 host, and sends cache misses to LAN distcc
 volunteers.  The ccache and distcc manuals agree on the safe shape:
 `ccache clang-22` in Meson, with `CCACHE_PREFIX=distcc` in the environment.
@@ -14,13 +15,13 @@ incremental lane with distcc-pump.
 The canonical incremental release and debug paths are:
 
 ```sh
-make -C build-infra -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-make -C build-infra build PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-make -C build-infra install PROFILE=r300vk-vostro-x86-64-v1-clang22-release HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra -j1 configure PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra build PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra install PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
-make -C build-infra -j1 configure PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
-make -C build-infra build PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
-make -C build-infra install PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra -j1 configure PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra build PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra install PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
 ```
 
 The release prefix is `/opt/local/mesa-26-gororoba`.  The debug prefix is
@@ -29,9 +30,10 @@ run `clean`; use them only when the builddir itself needs regeneration.
 
 ## How
 
-`configs/r300vk-vostro-x86-64-v1-clang22-*.meson` pins the component set,
-x86-64-v1 code generation, `-Os`, section splitting, lld, and relro/now link
-hardening.  `env/vostro1000-x86-64-v1-clang22-ccache-distcc.env` pins LLVM 22,
+`configs/1_r300_full_release_x86_64v1-clang22-distcc-cache.meson` and its `2_`
+debug sibling pin the maximal r300 component set, x86-64-v1 code generation,
+`-Os` (release only), `-fno-emulated-tls` for the libglapi clang link, section
+splitting, lld, and relro/now link hardening.  `env/vostro1000-x86-64-v1-clang22-ccache-distcc.env` pins LLVM 22,
 sets `CCACHE_PREFIX=distcc`, probes TCP distccd volunteers, and uses plain
 distcc hosts without `,cpp` because `,cpp` belongs to pump mode.  The Makefile
 sets `JOBS=36` for this host environment so Ninja has enough work to keep the
