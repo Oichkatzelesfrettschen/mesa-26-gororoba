@@ -24,32 +24,38 @@ extern "C" {
  *   - MapMemory, when the memory is mapped before any bind, creates the
  *     memory's own HOST_VISIBLE pipe_buffer and sets owns_buffer.  Vulkan
  *     permits mapping VkDeviceMemory before (or without) binding a resource.
- *   - BindBufferMemory2, when owns_buffer is set, copies the buffer's slice of
- *     the mapped allocation (at memoryOffset) into the VkBuffer's own
- *     create-time resource, so every consumer reads buf->resource offset-free
- *     and no draw/descriptor/compute path needs the bind offset; otherwise the
+ *   - BindBufferMemory2, when owns_buffer is set, records the bound VkBuffer's
+ *     create-time resource in bound_resource and seeds it with whatever the map
+ *     already holds.  The host map stays live across the bind, and consumers
+ *     read buf->resource offset-free (the slice copy carries memoryOffset), so
+ *     no draw/descriptor/compute path needs the bind offset; otherwise the
  *     memory borrows the buffer's create-time resource (the prior model).
  *   - BindImageMemory2 installs the image's tiled resource.
- * FlushMappedMemoryRanges and InvalidateMappedMemoryRanges are no-ops because
- * there is no CPU-GPU cache separation on this target.
+ *
+ * Map persistence and coherency: Vulkan keeps a map valid across bind, and the
+ * standard deqp pattern is map -> bind -> WRITE-via-host-ptr -> flush (and
+ * render -> invalidate -> READ-via-host-ptr).  The host map lives on the lazy
+ * pipe_buffer (mem->resource); the bound VkBuffer has its own GPU-side resource
+ * (bound_resource).  They are kept in sync only at the explicit barriers:
+ * FlushMappedMemoryRanges copies the live map (host) -> bound_resource (so a
+ * post-bind host write reaches the GPU buffer), and InvalidateMappedMemoryRanges
+ * copies bound_resource (GPU) -> the live map (so a copyImageToBuffer result
+ * reaches the host read).  The lazy buffer is host-only -- the GPU never touches
+ * it -- so the map needs no PIPE_MAP_PERSISTENT/COHERENT.
  *
  * memory_offset records the VkBindBufferMemoryInfo/VkBindImageMemoryInfo
  * memoryOffset.  For a borrowed bound resource (owns_buffer == false) the
  * pipe_resource starts at the buffer, so MapMemory uses
  * resource_offset = MapMemory.offset - memory_offset.  For an owns_buffer
- * allocation the resource IS the whole VkDeviceMemory and memory_offset stays
- * the bind offset for record; the buffer's bytes were already copied out at
- * bind, so the draw reads buf->resource directly.  A subsequent map sees the
- * whole allocation (resource_offset = offset, memory_offset 0 before any bind).
- *
- * Coherency caveat: the bind-time copy is one-way (map -> buffer).  A map that
- * REWRITES the bytes after BindBufferMemory2 will not propagate to the buffer;
- * the deqp allocate->map->write->bind pattern does not do this. */
+ * allocation the resource IS the whole VkDeviceMemory; the sync copies the
+ * buffer's slice at memory_offset, so consumers read bound_resource from byte 0. */
 struct r300vk_device_memory {
    struct vk_object_base  base;
    VkDeviceSize           size;
    VkDeviceSize           memory_offset;  /* from BindBufferMemory2/BindImageMemory2 */
    struct pipe_resource  *resource;  /* NULL until first map or BindBufferMemory2/BindImageMemory2 */
+   struct pipe_resource  *bound_resource;  /* owns_buffer: the bound VkBuffer's resource, synced
+                                            * with the host map at Flush/Invalidate */
    struct pipe_transfer  *transfer;  /* non-NULL while mapped */
    void                  *map_ptr;
    bool                   owns_buffer;  /* true when MapMemory lazily created the
