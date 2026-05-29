@@ -63,6 +63,7 @@ r300vk_FreeMemory(VkDevice _device,
       mem->transfer = NULL;
    }
    pipe_resource_reference(&mem->resource, NULL);
+   pipe_resource_reference(&mem->bound_resource, NULL);
 
    vk_object_base_finish(&mem->base);
    vk_free2(&device->vk.alloc, pAllocator, mem);
@@ -195,15 +196,57 @@ r300vk_UnmapMemory(VkDevice _device,
    mem->map_ptr = NULL;
 }
 
+/* Sync the live host map and the bound VkBuffer's GPU resource for an
+ * owns_buffer (map-before-bind) allocation.  host_to_buffer copies the map's
+ * slice at memory_offset into bound_resource (Flush and the bind-time seed);
+ * !host_to_buffer copies bound_resource back into the map (Invalidate).  The
+ * copy reads/writes the live map_ptr directly, so the map and its transfer stay
+ * valid -- the lazy buffer is host-only, so there is no second transfer on it
+ * and no concurrent GPU access. */
+static void
+r300vk_sync_owned_buffer(struct r300vk_device *device,
+                         struct r300vk_device_memory *mem,
+                         bool host_to_buffer)
+{
+   if (!mem->owns_buffer || !mem->bound_resource || !mem->map_ptr)
+      return;
+
+   unsigned avail = (mem->memory_offset < mem->size)
+                    ? (unsigned)(mem->size - mem->memory_offset) : 0;
+   unsigned bytes = (unsigned)mem->bound_resource->width0;
+   if (bytes > avail)
+      bytes = avail;
+   if (!bytes)
+      return;
+
+   struct pipe_box box;
+   u_box_1d(0, bytes, &box);
+   struct pipe_transfer *bt = NULL;
+   void *bp = device->pipe->buffer_map(device->pipe, mem->bound_resource, 0,
+                                       host_to_buffer ? PIPE_MAP_WRITE : PIPE_MAP_READ,
+                                       &box, &bt);
+   if (!bp)
+      return;
+   char *hp = (char *)mem->map_ptr + mem->memory_offset;
+   if (host_to_buffer)
+      memcpy(bp, hp, bytes);
+   else
+      memcpy(hp, bp, bytes);
+   device->pipe->buffer_unmap(device->pipe, bt);
+}
+
 VkResult
 r300vk_FlushMappedMemoryRanges(VkDevice _device,
                                 uint32_t memoryRangeCount,
                                 const VkMappedMemoryRange *pMemoryRanges)
 {
-   /* RS482/RS485 is UMA; no CPU-GPU cache separation on this target. */
-   (void)_device;
-   (void)memoryRangeCount;
-   (void)pMemoryRanges;
+   VK_FROM_HANDLE(r300vk_device, device, _device);
+   /* Push post-bind host writes (e.g. the deqp vertex memcpy) across to the
+    * bound VkBuffer's GPU resource. */
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
+      r300vk_sync_owned_buffer(device, mem, true /* host -> buffer */);
+   }
    return VK_SUCCESS;
 }
 
@@ -212,10 +255,13 @@ r300vk_InvalidateMappedMemoryRanges(VkDevice _device,
                                      uint32_t memoryRangeCount,
                                      const VkMappedMemoryRange *pMemoryRanges)
 {
-   /* RS482/RS485 is UMA; no CPU-GPU cache separation on this target. */
-   (void)_device;
-   (void)memoryRangeCount;
-   (void)pMemoryRanges;
+   VK_FROM_HANDLE(r300vk_device, device, _device);
+   /* Pull GPU writes (e.g. copyImageToBuffer into a readback buffer) back into
+    * the live host map before the app reads through the host ptr. */
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
+      r300vk_sync_owned_buffer(device, mem, false /* buffer -> host */);
+   }
    return VK_SUCCESS;
 }
 
@@ -230,43 +276,20 @@ r300vk_BindBufferMemory2(VkDevice _device,
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
 
       if (mem->owns_buffer) {
-         /* Map-before-bind created the memory's own host buffer and the app wrote
-          * the buffer's data through the map.  CreateBuffer already gave the
-          * VkBuffer its own resource starting at byte 0, and every consumer
-          * (vertex bind, descriptors, the identity-map compute replay) reads
-          * buf->resource from byte 0 -- so copy the buffer's slice of the mapped
-          * allocation (at memoryOffset) into buf->resource.  Every consumer stays
-          * offset-free: no draw/descriptor/compute path changes, so the shipping
-          * dispatch path is byte-for-byte untouched.  The cost is CPU-write
-          * coherency for the unusual map-AFTER-bind rewrite, which deqp's
-          * allocate->map->write->bind allocator (and the sub-allocating default
-          * allocator that binds at a non-zero offset) does not use. */
-         if (mem->transfer) {
-            /* Commit any live mapping so the copy sees the written bytes. */
-            device->pipe->buffer_unmap(device->pipe, mem->transfer);
-            mem->transfer = NULL;
-            mem->map_ptr = NULL;
-         }
-         VkDeviceSize avail = mem->size - pBindInfos[i].memoryOffset;
-         unsigned copy_bytes = (unsigned)(buf->size < avail ? buf->size : avail);
-         struct pipe_box src_box;
-         struct pipe_transfer *st = NULL, *dt = NULL;
-         u_box_1d((unsigned)pBindInfos[i].memoryOffset, copy_bytes, &src_box);
-         const void *src = device->pipe->buffer_map(device->pipe, mem->resource, 0,
-                                                    PIPE_MAP_READ, &src_box, &st);
-         struct pipe_box dst_box;
-         u_box_1d(0, copy_bytes, &dst_box);
-         void *dst = device->pipe->buffer_map(device->pipe, buf->resource, 0,
-                                              PIPE_MAP_WRITE, &dst_box, &dt);
-         if (src && dst)
-            memcpy(dst, src, copy_bytes);
-         if (dt)
-            device->pipe->buffer_unmap(device->pipe, dt);
-         if (st)
-            device->pipe->buffer_unmap(device->pipe, st);
-         if (!src || !dst)
-            return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         /* Map-before-bind: the memory has its own host pipe_buffer
+          * (mem->resource) and a live map.  Vulkan keeps that map valid across
+          * this bind, and the deqp pattern writes the buffer's bytes through the
+          * host ptr AFTER the bind, then flushes.  So keep the map live, record
+          * the VkBuffer's create-time resource as bound_resource, and seed it
+          * with whatever the map already holds (covers a write-BEFORE-bind app);
+          * post-bind host writes and the GPU readback are carried both ways by
+          * Flush/InvalidateMappedMemoryRanges.  The slice copy at memory_offset
+          * keeps every consumer reading buf->resource from byte 0, so no
+          * draw/descriptor/compute path needs the bind offset and the shipping
+          * dispatch path is untouched. */
          mem->memory_offset = pBindInfos[i].memoryOffset;
+         pipe_resource_reference(&mem->bound_resource, buf->resource);
+         r300vk_sync_owned_buffer(device, mem, true /* host -> buffer (seed) */);
       } else {
          /* No prior owned map: the memory borrows the buffer's create-time
           * resource.  Byte-for-byte the path the shipping compute/dispatch
