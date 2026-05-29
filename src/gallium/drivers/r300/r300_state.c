@@ -1219,25 +1219,31 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
     /* Copy state directly into shader. */
     fs->state = *shader;
 
-    if (fs->state.type == PIPE_SHADER_IR_NIR) {
-        r300_optimize_nir(shader->ir.nir, r300->screen);
-
-        /* R300/R400 can not do any kind of control flow, so abort early here. */
-        if (!r300->screen->caps.is_r500) {
-            char *msg = r300_check_control_flow(shader->ir.nir);
-            if (msg && shader->report_compile_error) {
-                fprintf(stderr, "r300 FP: Compiler error: %s\n", msg);
-                ((struct pipe_shader_state *)shader)->error_message = strdup(msg);
-                ralloc_free(shader->ir.nir);
-                FREE(fs);
-                return NULL;
-	    }
-        }
-    } else {
-       assert(fs->state.type == PIPE_SHADER_IR_TGSI);
-       /* Convert to NIR. */
+    /* Always convert TGSI input to NIR up front, the same as
+     * r300_create_vs_state.  Driver-synthesized TGSI fragment programs
+     * (u_blitter, the compute-as-raster KILL_IF shaders) must then run the same
+     * r300_optimize_nir as GLSL/SPIR-V NIR input -- in particular
+     * nir_lower_alu_to_scalar, which r300_alu_to_scalar_filter_cb selects for
+     * the bany/ball vector-comparison reductions a vec4 KILL_IF lowers to.
+     * Without it those reductions reach nir_to_rc's nir_lower_bool_to_float
+     * un-lowered and trip its "vector comparisons should be lowered" assert. */
+    if (fs->state.type == PIPE_SHADER_IR_TGSI) {
        fs->state.ir.nir = tgsi_to_nir(fs->state.tokens, pipe->screen, false);
        fs->state.type = PIPE_SHADER_IR_NIR;
+    }
+
+    r300_optimize_nir(fs->state.ir.nir, r300->screen);
+
+    /* R300/R400 can not do any kind of control flow, so abort early here. */
+    if (!r300->screen->caps.is_r500) {
+        char *msg = r300_check_control_flow(fs->state.ir.nir);
+        if (msg && shader->report_compile_error) {
+            fprintf(stderr, "r300 FP: Compiler error: %s\n", msg);
+            ((struct pipe_shader_state *)shader)->error_message = strdup(msg);
+            ralloc_free(fs->state.ir.nir);
+            FREE(fs);
+            return NULL;
+        }
     }
 
     /* Precompile the fragment shader at creation time to avoid jank at runtime.
