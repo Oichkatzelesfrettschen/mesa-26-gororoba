@@ -839,9 +839,22 @@ r300vk_synthesize_binary_map_fs(struct pipe_context *pipe, uint16_t alu_op)
  * device-cached state CSOs (blend / raster / dsa / sampler) the identity-map
  * synthesis populates -- the binary-map and identity-map paths share every
  * per-draw state object; only the FS differs. */
+/* Fullscreen-quad vertex shader synthesis: 2 attributes (POSITION + GENERIC).
+ * Identity-map coordinate interpolation and per-vertex reduction values use
+ * this passthrough shape.  Cached on the pipeline object; the existing
+ * destroy path frees it. */
+static void *
+r300vk_synthesize_passthrough_vs(struct pipe_context *pipe)
+{
+   const enum tgsi_semantic names[]   = { TGSI_SEMANTIC_POSITION,
+                                          TGSI_SEMANTIC_GENERIC };
+   const unsigned          indices[] = { 0, 0 };
+   return util_make_vertex_passthrough_shader(pipe, 2, names, indices, false);
+}
+
 static bool
 r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
-                                     struct r300vk_pipeline *pl)
+                                      struct r300vk_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
@@ -849,12 +862,7 @@ r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
@@ -875,25 +883,18 @@ r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
  * to the bound color RT.  Both CSOs are cached on the pipeline; the existing
  * destroy path frees vs_cso / fs_cso conditionally.
  *
- * util_make_vertex_passthrough_shader and util_make_fragment_tex_shader are
- * the Mesa-canonical helpers in src/gallium/auxiliary/util/u_simple_shaders.c
- * (TGSI-based; r300g's create_vs_state / create_fs_state accept TGSI directly
- * via PIPE_SHADER_IR_TGSI -- the same path other r300/r600 driver-internal
- * shader synthesis uses, e.g. r600_blit.c).  Returning false signals a
- * synthesis failure that demotes the pipeline back to a no-op compute object
- * so vkCreateComputePipelines still succeeds with the kernel admitted, just
- * without the identity-map lowering. */
+ * util_make_fragment_tex_shader is the Mesa-canonical helper in
+ * src/gallium/auxiliary/util/u_simple_shaders.c (TGSI-based).  Returning false
+ * signals a synthesis failure that demotes the pipeline back to a no-op
+ * compute object so vkCreateComputePipelines still succeeds with the kernel
+ * admitted, just without the identity-map lowering. */
 static bool
 r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
-                                       struct r300vk_pipeline *pl)
+                                        struct r300vk_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
 
    /* Cached gallium state CSOs live on the device so every identity-map
     * pipeline reuses them.  Initialize on demand from the first identity-map
@@ -901,16 +902,15 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
    pl->fs_cso = util_make_fragment_tex_shader(
-                   pipe, TGSI_TEXTURE_2D,
-                   TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                   false /* use_txf: NEAREST sample, not integer fetch */,
-                   true  /* use_persp: perspective-correct interpolation */);
+                    pipe, TGSI_TEXTURE_2D,
+                    TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                    false /* use_txf: NEAREST sample, not integer fetch */,
+                    true  /* use_persp: perspective-correct interpolation */);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -1018,15 +1018,11 @@ r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
     * rasterizer.  The GENERIC attribute carries the per-vertex color the
     * orchestrator stages into the VBO (a packed RGBA8 of the kernel's per-gid
     * input value). */
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
-   if (!pl->vs_cso)
+    pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_blend_acc_reduction_fs(pipe);
+    pl->fs_cso = r300vk_synthesize_blend_acc_reduction_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -1100,11 +1096,7 @@ r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
 
    /* Same vertex-passthrough as the other compute-as-raster lowerings:
     * 2 attributes (POSITION + GENERIC predicate-value). */
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
@@ -1172,11 +1164,7 @@ r300vk_multipass_scan_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
@@ -1259,11 +1247,7 @@ r300vk_predicated_store_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
@@ -1365,11 +1349,7 @@ r300vk_multitap_gather_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
