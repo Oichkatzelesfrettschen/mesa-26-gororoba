@@ -382,6 +382,30 @@ r300vk_replay_gpu(struct r300vk_device *device,
          if (skip_render_pass)
             break;
 
+         /* Resolve pipeline-static viewport/scissor before the draw.  A static
+          * state is not supplied by any CmdSetViewport/CmdSetScissor, so the
+          * SET_VIEWPORT/SET_SCISSOR replay never set it and the pipe viewport
+          * is still zero (scale 0 collapses the primitive to a point).  Apply
+          * it here with the live tile origin -- the same per-tile transform the
+          * dynamic path uses -- so a static pipeline rasterizes.  A dynamic
+          * state leaves has_static_* false and keeps the replay-supplied value;
+          * a pipeline that mixes one static and one dynamic state updates only
+          * the static one here. */
+         if (bound_pipeline && bound_pipeline->has_static_viewport) {
+            struct pipe_viewport_state pv;
+            viewport_vk_to_gallium(&bound_pipeline->static_viewport,
+                                   (float)tile_origin_x, (float)tile_origin_y,
+                                   &pv);
+            pipe->set_viewport_states(pipe, 0, 1, &pv);
+         }
+         if (bound_pipeline && bound_pipeline->has_static_scissor) {
+            struct pipe_scissor_state sc;
+            r300vk_scissor_vk_to_tile(&bound_pipeline->static_scissor,
+                                      tile_origin_x, tile_origin_y,
+                                      tile_width, tile_height, &sc);
+            pipe->set_scissor_states(pipe, 0, 1, &sc);
+         }
+
          struct pipe_vertex_buffer draw_vb_cache[R300VK_MAX_VERTEX_BINDINGS];
          memcpy(draw_vb_cache, vb_cache, sizeof(draw_vb_cache));
          uint32_t draw_vb_max_used = vb_max_used;
