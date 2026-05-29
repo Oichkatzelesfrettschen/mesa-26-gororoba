@@ -164,6 +164,16 @@ if cpp.has_type('std::pmr::monotonic_buffer_resource',
    r600_cpp_args += '-DHAVE_MEMORY_RESOURCE'
 endif
 
+# clang's -Wc99-designator fires on the generated nir_builder index-struct
+# initializers used throughout the sfn backend.  nir_load_ubo expands to
+# _nir_load_ubo_indices{0, __VA_ARGS__}, so a designated call site
+# (.range_base = N, .range = M in sfn_shader_tess.cpp) becomes a list that
+# mixes the macro's positional default with designated fields.  That macro
+# shape is upstream NIR codegen, GCC does not warn on it, and freedreno
+# silences the same warning the same way; keep it off so the clang werror
+# build links.
+r600_cpp_args += cpp.get_supported_arguments(['-Wno-c99-designator'])
+
 libr600 = static_library(
   'r600',
   [files_r600, egd_tables_h, sfn_nir_algebraic_c, sha1_h],

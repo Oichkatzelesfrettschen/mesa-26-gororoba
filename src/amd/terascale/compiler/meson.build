@@ -101,6 +101,12 @@ if cpp.has_type('std::pmr::monotonic_buffer_resource', prefix : '#include <memor
   amd_terascale_compiler_cpp_args += '-DHAVE_MEMORY_RESOURCE'
 endif
 
+# This library compiles the shared r600 sfn sources, so it hits the same
+# generated nir_builder -Wc99-designator warning libr600 suppresses (clang flags
+# nir_load_ubo's {0, .range_base = ...} mixed initializer; GCC and freedreno do
+# not).  Match libr600 so the clang werror build links.
+amd_terascale_compiler_cpp_args += cpp.get_supported_arguments(['-Wno-c99-designator'])
+
 amd_terascale_compiler_includes = [
   inc_amd_common,
   inc_compiler,
