@@ -55,6 +55,43 @@ static void allocate_hardware_inputs(
     }
 }
 
+/* Translate a PIPE_TEX_WRAP value to the rc_wrap_mode the compiler needs.
+ * Only the modes the r300 hardware cannot perform natively are non-NONE;
+ * clamp variants are handled by the sampler HW and need no shader math. */
+static rc_wrap_mode
+r300_pipe_wrap_to_rc(unsigned pipe_wrap)
+{
+    switch (pipe_wrap) {
+    case PIPE_TEX_WRAP_REPEAT:
+        return RC_WRAP_REPEAT;
+    case PIPE_TEX_WRAP_MIRROR_REPEAT:
+        return RC_WRAP_MIRRORED_REPEAT;
+    case PIPE_TEX_WRAP_MIRROR_CLAMP:
+    case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE:
+    case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_BORDER:
+        return RC_WRAP_MIRRORED_CLAMP;
+    default:
+        return RC_WRAP_NONE;
+    }
+}
+
+/* Pick the wrap mode that is most important to emulate correctly when two
+ * axes disagree.  Missing REPEAT on a repeating NPOT texture is the most
+ * visible failure; MIRRORED_REPEAT second; MIRRORED_CLAMP third.
+ * The compiler applies one mode uniformly to all coordinate channels, so
+ * this is a best-effort choice for the mixed-axis case. */
+static rc_wrap_mode
+r300_npot_wrap_max(rc_wrap_mode a, rc_wrap_mode b)
+{
+    if (a == RC_WRAP_REPEAT || b == RC_WRAP_REPEAT)
+        return RC_WRAP_REPEAT;
+    if (a == RC_WRAP_MIRRORED_REPEAT || b == RC_WRAP_MIRRORED_REPEAT)
+        return RC_WRAP_MIRRORED_REPEAT;
+    if (a == RC_WRAP_MIRRORED_CLAMP || b == RC_WRAP_MIRRORED_CLAMP)
+        return RC_WRAP_MIRRORED_CLAMP;
+    return RC_WRAP_NONE;
+}
+
 void r300_fragment_program_get_external_state(
     struct r300_context* r300,
     struct r300_fragment_program_external_state* state)
@@ -90,26 +127,34 @@ void r300_fragment_program_get_external_state(
                                 v->swizzle[2], v->swizzle[3]);
         }
 
-        /* XXX this should probably take into account STR, not just S. */
         if (t->tex.is_npot) {
-            switch (s->state.wrap_s) {
-            case PIPE_TEX_WRAP_REPEAT:
-                state->unit[i].wrap_mode = RC_WRAP_REPEAT;
-                break;
+            /* Start with S, which applies to every texture target. */
+            rc_wrap_mode mode = r300_pipe_wrap_to_rc(s->state.wrap_s);
 
-            case PIPE_TEX_WRAP_MIRROR_REPEAT:
-                state->unit[i].wrap_mode = RC_WRAP_MIRRORED_REPEAT;
+            /* Include T for 2-D and 3-D spatial coordinates; include R for
+             * volume and cube targets.  For 1D_ARRAY the T coord is an array
+             * layer index, not a spatial axis, so skip it there.  Same for
+             * wrap_r on 2D_ARRAY.  The compiler emits one wrap mode for all
+             * channels, so r300_npot_wrap_max picks the most critical one
+             * when the axes disagree. */
+            switch (t->b.target) {
+            case PIPE_TEXTURE_3D:
+            case PIPE_TEXTURE_CUBE:
+            case PIPE_TEXTURE_CUBE_ARRAY:
+                mode = r300_npot_wrap_max(mode,
+                           r300_pipe_wrap_to_rc(s->state.wrap_r));
+                FALLTHROUGH;
+            case PIPE_TEXTURE_2D:
+            case PIPE_TEXTURE_RECT:
+            case PIPE_TEXTURE_2D_ARRAY:
+                mode = r300_npot_wrap_max(mode,
+                           r300_pipe_wrap_to_rc(s->state.wrap_t));
                 break;
-
-            case PIPE_TEX_WRAP_MIRROR_CLAMP:
-            case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE:
-            case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_BORDER:
-                state->unit[i].wrap_mode = RC_WRAP_MIRRORED_CLAMP;
-                break;
-
             default:
-                state->unit[i].wrap_mode = RC_WRAP_NONE;
+                break;
             }
+
+            state->unit[i].wrap_mode = mode;
 
             if (t->b.target == PIPE_TEXTURE_3D)
                 state->unit[i].clamp_and_scale_before_fetch = true;
