@@ -1,0 +1,128 @@
+# Maintainer: Terascale Functionalists
+#
+# mesa-gororoba: a drop-in replacement for the stock `mesa` package built from
+# the mesa-26-gororoba fork.  It ships the r300 Gallium GL driver, the llvmpipe
+# software fallback, and the amd_r300 (r300vk) Vulkan ICD, installed into /usr
+# the same way stock mesa is, so the loader/glvnd pick them up natively without
+# the /etc/environment + /etc/profile.d driver-path overrides.
+#
+# Scope is deliberately RS482-focused: r300 hardware GL + llvmpipe fallback +
+# the r300vk Vulkan ICD.  radv (vulkan-radeon) is inert on pre-GCN RS482 and
+# stays a separate stock package; OpenCL (rusticl) is not built.  Build for the
+# x86-64 psABI baseline so the artifact runs on the K8 Turion 64 X2 in the
+# Vostro (no SSE4.2/AVX).  llvm major MUST match the target host's llvm-libs
+# (built and run against llvm 22): a major mismatch makes every llvmpipe path
+# fail to dlopen libLLVM.so.<major>.  The .install scriptlet warns on mismatch.
+#
+# Two lanes, do not confuse them:
+#   * DEV / rapid iteration: build the devenv tree (ninja -C <builddir>) and run
+#     via VK_DRIVER_FILES (Vulkan) or LIBGL_DRIVERS_PATH+LD_LIBRARY_PATH (GL).
+#     Incremental, seconds per file.  This package is NOT for per-file iteration.
+#   * RELEASE / proper install: this PKGBUILD -> /usr.  Full build (~4 min on a
+#     fast x86-64 host).  Promote here once a change is stable.
+#
+# Install / reinstall:
+#   sudo pacman -U mesa-gororoba-*.pkg.tar.zst        # answer "y" to remove mesa
+#   sudo pacman -U --overwrite '*' mesa-gororoba-*.pkg.tar.zst   # if a file
+#                                                     # conflict with another
+#                                                     # package needs forcing
+# Replacing system mesa means every `pacman -Syu` that bumps stock mesa
+# conflicts; add `IgnorePkg = mesa-gororoba` to /etc/pacman.conf (or maintain a
+# local repo with repo-add and rebuild on upstream bumps).  Rollback: stock is
+# cached in /var/cache/pacman/pkg (pacman -U .../mesa-2:26.1.1-1-*.pkg.tar.zst).
+
+pkgname=mesa-gororoba
+pkgver=26.2.0
+pkgrel=1
+epoch=2
+# Pinned to the merged-main tip carrying the r300vk static viewport/scissor fix.
+# Update per build; the source is the public fork, not a local path.  For rapid
+# iteration override with #branch=main and rebuild.
+_commit=c4de681fa86fb204876f573ae2aba029177bbf5f
+pkgdesc='Mesa (mesa-26-gororoba fork): r300 GL + llvmpipe + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
+arch=('x86_64')
+url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
+license=('MIT')
+
+depends=(
+  expat glibc libdrm libelf libgcc libglvnd libstdc++ libx11 libxcb libxext
+  libxdamage libxshmfence libxxf86vm llvm-libs lm_sensors spirv-tools wayland
+  zlib zstd vulkan-icd-loader
+)
+makedepends=(
+  clang llvm meson ninja glslang spirv-tools python-mako python-ply
+  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
+  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
+)
+# Drop-in for the stock GL package.  radv/opencl/lib32 stay their own stock
+# packages; their dependents read `mesa`/`opengl-driver`/`libva-driver`, which
+# we provide.  libva-driver is satisfied as a virtual so VA-API consumers (mpv,
+# firefox, vlc) stay installable; RS482 has no VA-API state tracker, so it is a
+# no-backend stub (honest: install-time satisfied, runtime VA-API unavailable).
+provides=("mesa=${epoch}:${pkgver}-${pkgrel}"
+          "libva-mesa-driver=${epoch}:${pkgver}-${pkgrel}"
+          'mesa-libgl' 'opengl-driver' 'libva-driver' 'vulkan-driver')
+conflicts=('mesa' 'libva-mesa-driver')
+replaces=('mesa' 'libva-mesa-driver')
+options=('!lto' '!debug' 'strip')
+install="${pkgname}.install"
+source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}")
+sha256sums=('SKIP')
+
+build() {
+  # clang + lld toolchain.
+  export CC=clang
+  export CXX=clang++
+  export CC_LD=lld
+  export CXX_LD=lld
+
+  # x86-64 psABI baseline so the artifact runs on the K8 Turion (no SSE4.2/AVX).
+  # Exported here so they override any host-native -march the build host's
+  # makepkg.conf injects; meson folds CFLAGS/CXXFLAGS/LDFLAGS into its arg base.
+  # -g1 keeps minimal frame info for crash triage; target-cpu=x86-64 guards any
+  # Rust translation unit from emitting K8-incompatible code.
+  export CFLAGS='-march=x86-64 -mtune=generic -O2 -pipe -fno-plt -fexceptions -ffunction-sections -fdata-sections -g1'
+  export CXXFLAGS="${CFLAGS} -Wp,-D_GLIBCXX_ASSERTIONS"
+  export LDFLAGS='-fuse-ld=lld -Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro -Wl,-z,now -Wl,--gc-sections'
+  export RUSTFLAGS='-C target-cpu=x86-64'
+
+  meson setup "${pkgname}" build \
+    --prefix=/usr \
+    --sysconfdir=/etc \
+    --buildtype=release \
+    --wrap-mode=nofallback \
+    -D b_ndebug=true \
+    -D b_lto=false \
+    -D platforms=x11,wayland \
+    -D gallium-drivers=r300,llvmpipe \
+    -D vulkan-drivers=amd_r300 \
+    -D r300vk-gallium-backend=true \
+    -D gallium-rusticl=false \
+    -D llvm=enabled \
+    -D draw-use-llvm=true \
+    -D egl=enabled \
+    -D gbm=enabled \
+    -D glx=dri \
+    -D gles1=enabled \
+    -D gles2=enabled \
+    -D opengl=true \
+    -D glvnd=enabled \
+    -D video-codecs= \
+    -D valgrind=disabled \
+    -D libunwind=disabled
+
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "${pkgdir}"
+
+  # Mesa ships its license summary as docs/license.rst (Arch/CachyOS practice).
+  # A missing license is a packaging defect, not something to swallow silently.
+  if [ -f "${pkgname}/docs/license.rst" ]; then
+    install -Dm644 "${pkgname}/docs/license.rst" \
+      "${pkgdir}/usr/share/licenses/${pkgname}/license.rst"
+  else
+    echo "WARNING: ${pkgname}/docs/license.rst not found; license not installed"
+  fi
+}
