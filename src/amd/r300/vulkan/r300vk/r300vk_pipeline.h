@@ -139,6 +139,18 @@ struct r300vk_pipeline {
    uint32_t                vertex_binding_extent[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_mask;
 
+   /* Pipeline-static viewport/scissor, captured at create time when the
+    * matching VK_DYNAMIC_STATE_VIEWPORT/SCISSOR is not enabled.  Static
+    * viewport state lives in VkPipelineViewportStateCreateInfo, so no
+    * CmdSetViewport/CmdSetScissor command records a replay entry.  Draw replay
+    * applies the captured state with the live tile origin before
+    * rasterization; has_static_* false means replay-supplied dynamic state
+    * remains active. */
+   VkViewport              static_viewport;
+   VkRect2D                static_scissor;
+   bool                    has_static_viewport;
+   bool                    has_static_scissor;
+
    /* Synthetic VS-system-value stream.  The RC vertex path has no
     * system-value input slot, so R300VK supplies VertexIndex / InstanceIndex
     * as driver-generated vertex attributes at reserved driver_location and
