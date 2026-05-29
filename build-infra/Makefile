@@ -394,7 +394,7 @@ build:
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	env $(LOCKED_TOOL_ENV) \
-	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS)
+	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)}
 
 build-generated:
 	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
@@ -404,7 +404,7 @@ build-generated:
 	if [ "$${#targets[@]}" -gt 0 ]; then \
 		echo "prebuilding $${#targets[@]} selected generated Meson/Ninja targets outside distcc-pump"; \
 		env $(LOCKED_TOOL_ENV) \
-		    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$(JOBS) "$${targets[@]}"; \
+		    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)} "$${targets[@]}"; \
 	else \
 		echo "no selected generated targets found"; \
 	fi
@@ -414,7 +414,7 @@ build-pump:
 	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	env $(LOCKED_TOOL_ENV) \
-	    flock -x -w 7200 $(BUILD_LOCK) distcc-pump ninja -C $(BUILDDIR) -j$(JOBS)
+	    flock -x -w 7200 $(BUILD_LOCK) distcc-pump ninja -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)}
 
 clean:
 	rm -rf $(BUILDDIR)
