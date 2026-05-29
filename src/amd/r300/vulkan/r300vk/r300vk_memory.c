@@ -17,6 +17,8 @@
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
 
+#include <string.h>
+
 VkResult
 r300vk_AllocateMemory(VkDevice _device,
                       const VkMemoryAllocateInfo *pAllocateInfo,
@@ -215,23 +217,43 @@ r300vk_BindBufferMemory2(VkDevice _device,
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
 
       if (mem->owns_buffer) {
-         /* Map-before-bind already created the memory's own host pipe_buffer and
-          * the application may have written through the map.  Point the VkBuffer
-          * at that same resource so the written bytes ARE the buffer's storage --
-          * one shared allocation, no copy.  buf's create-time resource is
-          * released by the reference assignment.
-          *
-          * The memory's buffer spans the whole VkDeviceMemory from byte 0, while
-          * a draw reads buf->resource from byte 0, so a non-zero memoryOffset
-          * would silently alias the wrong bytes.  Reject it loudly rather than
-          * miscompute, until the draw path threads the bind offset through. */
-         if (pBindInfos[i].memoryOffset != 0)
-            return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
-                             "r300vk: non-zero memoryOffset with map-before-bind "
-                             "is unsupported (buffer would alias the wrong bytes "
-                             "of the host-mapped allocation)");
-         mem->memory_offset = 0;
-         pipe_resource_reference(&buf->resource, mem->resource);
+         /* Map-before-bind created the memory's own host buffer and the app wrote
+          * the buffer's data through the map.  CreateBuffer already gave the
+          * VkBuffer its own resource starting at byte 0, and every consumer
+          * (vertex bind, descriptors, the identity-map compute replay) reads
+          * buf->resource from byte 0 -- so copy the buffer's slice of the mapped
+          * allocation (at memoryOffset) into buf->resource.  Every consumer stays
+          * offset-free: no draw/descriptor/compute path changes, so the shipping
+          * dispatch path is byte-for-byte untouched.  The cost is CPU-write
+          * coherency for the unusual map-AFTER-bind rewrite, which deqp's
+          * allocate->map->write->bind allocator (and the sub-allocating default
+          * allocator that binds at a non-zero offset) does not use. */
+         if (mem->transfer) {
+            /* Commit any live mapping so the copy sees the written bytes. */
+            device->pipe->buffer_unmap(device->pipe, mem->transfer);
+            mem->transfer = NULL;
+            mem->map_ptr = NULL;
+         }
+         VkDeviceSize avail = mem->size - pBindInfos[i].memoryOffset;
+         unsigned copy_bytes = (unsigned)(buf->size < avail ? buf->size : avail);
+         struct pipe_box src_box;
+         struct pipe_transfer *st = NULL, *dt = NULL;
+         u_box_1d((unsigned)pBindInfos[i].memoryOffset, copy_bytes, &src_box);
+         const void *src = device->pipe->buffer_map(device->pipe, mem->resource, 0,
+                                                    PIPE_MAP_READ, &src_box, &st);
+         struct pipe_box dst_box;
+         u_box_1d(0, copy_bytes, &dst_box);
+         void *dst = device->pipe->buffer_map(device->pipe, buf->resource, 0,
+                                              PIPE_MAP_WRITE, &dst_box, &dt);
+         if (src && dst)
+            memcpy(dst, src, copy_bytes);
+         if (dt)
+            device->pipe->buffer_unmap(device->pipe, dt);
+         if (st)
+            device->pipe->buffer_unmap(device->pipe, st);
+         if (!src || !dst)
+            return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         mem->memory_offset = pBindInfos[i].memoryOffset;
       } else {
          /* No prior map: keep the resource-backed model unchanged -- the memory
           * borrows the buffer's create-time resource.  Byte-for-byte the path
