@@ -62,6 +62,7 @@ r300vk_FreeMemory(VkDevice _device,
          device->pipe->texture_unmap(device->pipe, mem->transfer);
       mem->transfer = NULL;
    }
+   pipe_resource_reference(&mem->mapped_resource, NULL);
    pipe_resource_reference(&mem->resource, NULL);
    pipe_resource_reference(&mem->bound_resource, NULL);
 
@@ -166,6 +167,10 @@ r300vk_MapMemory(VkDevice _device,
    if (!ptr)
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 
+   /* Acquire a reference to the resource actually mapped by the transfer,
+    * so it stays alive even if mem->resource is rebound. */
+   pipe_resource_reference(&mem->mapped_resource, mem->transfer->resource);
+
    mem->map_ptr = ptr;
    *ppData = ptr;
    return VK_SUCCESS;
@@ -194,6 +199,7 @@ r300vk_UnmapMemory(VkDevice _device,
       device->pipe->texture_unmap(device->pipe, mem->transfer);
    mem->transfer = NULL;
    mem->map_ptr = NULL;
+   pipe_resource_reference(&mem->mapped_resource, NULL);
 }
 
 /* Sync the live host map and the bound VkBuffer's GPU resource for an
@@ -293,19 +299,11 @@ r300vk_BindBufferMemory2(VkDevice _device,
       } else {
          /* No prior owned map: the memory borrows the buffer's create-time
           * resource.  Byte-for-byte the path the shipping compute/dispatch
-          * (identity-map replay) relies on -- the guard below is a no-op there
-          * because mem->transfer is NULL.  It only fires when this allocation
-          * was mapped and is now aliased onto a second buffer: the rebind frees
-          * the prior mem->resource, so the live transfer must be committed and
-          * dropped first (same use-after-free class as BindImageMemory2). */
-         if (mem->transfer) {
-            if (mem->transfer->resource->target == PIPE_BUFFER)
-               device->pipe->buffer_unmap(device->pipe, mem->transfer);
-            else
-               device->pipe->texture_unmap(device->pipe, mem->transfer);
-            mem->transfer = NULL;
-            mem->map_ptr = NULL;
-         }
+          * (identity-map replay) relies on.  If the memory was mapped and is
+          * now aliased onto a second buffer, the live transfer stays valid;
+          * mapped_resource holds a reference on the old resource until
+          * UnmapMemory (preventing use-after-free when mem->resource is
+          * overwritten below). */
          mem->memory_offset = pBindInfos[i].memoryOffset;
          pipe_resource_reference(&mem->resource, buf->resource);
       }
@@ -318,30 +316,16 @@ r300vk_BindImageMemory2(VkDevice _device,
                          uint32_t bindInfoCount,
                          const VkBindImageMemoryInfo *pBindInfos)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
 
       /* If the memory was mapped before bind, vkMapMemory created its own lazy
-       * HOST_VISIBLE pipe_buffer and a transfer that borrows it (Gallium
-       * transfers do not hold a reference on their resource).  The
-       * pipe_resource_reference below drops that lazy buffer's last reference
-       * and frees it; the still-live transfer would then dangle and fault at
-       * unmap, where r300_texture_transfer_unmap reads a freed-and-reused
-       * r300_transfer (observed linear_texture = 0x271) and copies from a
-       * garbage source in r300_resource_copy_region.  Commit and drop the
-       * mapping first, while mem->resource is still the lazy buffer.  This
-       * mirrors the live-transfer handling in r300vk_BindBufferMemory2. */
-      if (mem->transfer) {
-         if (mem->transfer->resource->target == PIPE_BUFFER)
-            device->pipe->buffer_unmap(device->pipe, mem->transfer);
-         else
-            device->pipe->texture_unmap(device->pipe, mem->transfer);
-         mem->transfer = NULL;
-         mem->map_ptr = NULL;
-      }
-
+       * HOST_VISIBLE pipe_buffer and a transfer that borrows it.  Vulkan
+       * permits keeping that map alive across this bind; mapped_resource
+       * holds a reference on the lazy buffer so the still-live transfer stays
+       * valid even after mem->resource is replaced by the image's tiled
+       * texture below. */
       mem->memory_offset = pBindInfos[i].memoryOffset;
       pipe_resource_reference(&mem->resource, img->resource);
    }
