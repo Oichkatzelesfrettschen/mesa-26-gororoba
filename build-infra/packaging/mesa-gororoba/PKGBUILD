@@ -33,7 +33,7 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=1
+pkgrel=2
 epoch=2
 # Pinned to the merged-main tip carrying the r300vk static viewport/scissor fix.
 # Update per build; the source is the public fork, not a local path.  For rapid
