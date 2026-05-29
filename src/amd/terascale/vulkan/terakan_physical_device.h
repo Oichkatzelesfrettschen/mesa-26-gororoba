@@ -28,6 +28,8 @@
 #include "terakan_queue.h"
 #include "wsi_common.h"
 
+#include "util/simple_mtx.h"
+
 #include "gallium/drivers/r600/r600_isa.h"
 #include "amd_family.h"
 #include "nir.h"
@@ -196,6 +198,14 @@ struct terakan_physical_device {
    nir_shader_compiler_options nir_options_fs;
    struct r600_isa * isa;
 
+   /* Lazily-built bit-exact soft-float64 NIR library for nir_lower_doubles --
+    * Evergreen/PALM has no native FP64, so shaderFloat64 is delivered by
+    * lowering each fp64 op to integer soft-float.  Built once from float64.glsl
+    * (see terakan_softfp64.c), shared read-only across logical devices and
+    * guarded by softfp64_mutex. */
+   struct nir_shader * softfp64;
+   simple_mtx_t softfp64_mutex;
+
    VkPhysicalDeviceMemoryProperties memory_properties;
 
    struct wsi_device wsi_device;
@@ -208,6 +218,15 @@ VkExternalMemoryHandleTypeFlags terakan_physical_device_supported_external_memor
    struct terakan_physical_device const * device);
 
 void terakan_physical_device_finish(struct terakan_physical_device * device);
+
+/* Lazily build (first call) and return the soft-float64 NIR library, or NULL if
+ * the SPIR-V import fails; see terakan_softfp64.c.  The device is const because
+ * the build is logically-const memoization (the same library is returned every
+ * call); the cache write happens under softfp64_mutex inside. */
+struct nir_shader *
+terakan_physical_device_get_softfp64(struct terakan_physical_device const * device);
+
+void terakan_physical_device_destroy_softfp64(struct terakan_physical_device * device);
 
 void terakan_physical_device_destroy(struct vk_physical_device * device);
 
