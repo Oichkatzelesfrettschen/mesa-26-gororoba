@@ -1,7 +1,11 @@
 # 2_r300_full_debug_x86_64v1-clang22-distcc-cache: the maximal-feature r300
 # DEBUG sibling of 1_r300_full_release_x86_64v1-clang22-distcc-cache.  Same r300
-# API/loader surface and same x86-64-v1/clang22/distcc-cache lane; the only
-# differences are buildtype, assertions, and the absence of the release-only -Os.
+# API/loader surface and same x86-64-v1/clang22/distcc-cache lane.  Beyond the
+# release profile it carries debug-only instrumentation surfaces: debugoptimized
+# buildtype with live assertions, frame pointers and the release-only -Os
+# dropped, the llvmpipe LLVM reference driver, valgrind + libunwind annotations,
+# the perfetto track-event timeline, the XA gallium frontend, and the full
+# platform set.  Conformance and silicon evidence use the release profile.
 #
 # Why a separate debug profile: driver RCA and shader disassembly need assertions
 # live (b_ndebug='false') and a debugoptimized build (-O2 -g, real frame
@@ -31,8 +35,11 @@ c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed'
 cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
 
 [project options]
-platforms = ['x11', 'wayland']
-gallium-drivers = ['r300']
+platforms = ['x11', 'wayland', 'surfaceless', 'drm', 'xcb']
+# llvmpipe rides alongside r300 as the LLVM-backed software reference: a debug
+# RCA can diff RS482 hardware output against a known-correct rasterizer in the
+# same process without a second install.
+gallium-drivers = ['r300', 'llvmpipe']
 vulkan-drivers = ['amd_r300']
 r300vk-gallium-backend = true
 tools = ['r300']
@@ -54,10 +61,19 @@ shader-cache = 'enabled'
 gallium-extra-hud = true
 lmsensors = 'enabled'
 
-# No software rasterizer: hardware r300 or a loud failure.
-llvm = 'disabled'
+# LLVM required for the debug profile: it builds the llvmpipe reference driver
+# (gallium-drivers above) so an RCA can compare RS482 output against a software
+# rasterizer in-process.  draw-use-llvm stays false so r300's own SW-TCL keeps
+# the C draw path -- the path under instrumentation -- rather than an LLVM-JIT'd
+# one; llvmpipe carries its own JIT regardless.
+llvm = 'enabled'
 draw-use-llvm = false
 gallium-rusticl = false
+
+# XA gallium frontend: r300 historically drove X acceleration through XA, and
+# its surface/blit/copy paths are a primary-source reference for the CB->GART
+# and render-target handoff archaeology behind the R2VB streamout investigation.
+gallium-xa = 'enabled'
 
 # Maximal debug instrumentation (debug profile only; 1_ release stays lean).
 # valgrind builds the VALGRIND_* client-request annotations so memcheck can see
@@ -66,10 +82,10 @@ gallium-rusticl = false
 valgrind = 'enabled'
 libunwind = 'enabled'
 
-# Excluded surfaces (kept out to bound the artifact and the lane).  perfetto is
-# excluded deliberately: enabling it clones the large perfetto proto subproject,
-# which overruns the space-constrained Vostro tmpfs, and r300 carries almost no
-# perfetto track-event instrumentation, so the disk cost buys little on this chip.
-perfetto = false
+# Perfetto enabled for the debug profile: the track-event timeline correlates
+# r300 CS submits, blitter passes, and the r300vk queue against ftrace/GPU
+# events during an RCA.  It clones the large perfetto proto subproject, so build
+# this profile off the larger /home prefix, never the space-constrained tmpfs.
+perfetto = true
 video-codecs = []
 vulkan-layers = []
