@@ -31,17 +31,17 @@ ISA/linker policy without release-only `-Os` in the native-file arguments.
 platform, the renderD128 headless path the Piglit/deqp lane runs on; X11 and
 Wayland callers select their platform explicitly.
 
-## Relationship to the other r300 clang22 profiles
+## The two profiles are the whole r300 lane
 
-`1_`/`2_` are the canonical maximal-feature r300 build: one artifact carries the
-full GL/GLES surface and the amd_r300 ICD.  Profile `1_` therefore subsumes the
-GL-only `r300-canonical-vostro-x86-64-v1-clang22-release`, which is removed.
-
-The lighter `r300vk-vostro-x86-64-v1-clang22-{release,debug}` pair stays: it is
-the Vulkan-ICD-only fast-iteration lane (`opengl=false`, no GL/GLES/EGL/GBM), so
-an r300vk driver edit rebuilds the ICD without paying for the full GL stack.
-Use that pair for r300vk RCA loops; use `1_`/`2_` for conformance, desktop, and
-the full-surface artifact.
+`1_`/`2_` are the only r300 build profiles.  Every prior r300/vostro variant is
+removed and subsumed: the GL-only `r300-canonical-vostro-*`, the Vulkan-ICD-only
+`r300vk-vostro-*` (`opengl=false`), the `*-vostro-k8-*` Turion-native pair, and
+the `r300-{trace,egl-gbm-trace}-vostro-k8` capture variants.  One artifact now
+carries the full GL/GLES surface and the amd_r300 ICD, so r300 conformance,
+desktop, r300vk RCA, and silicon evidence all build from the same standardized
+pair: release `1_`, assertions-live debug `2_`.  The x86-64-v1 psABI baseline is
+a safe subset of the Turion 64 X2, so the removed k8-native lane added no reach
+the generic baseline lacks on this hardware.
 
 ## Build placement and artifact hygiene
 

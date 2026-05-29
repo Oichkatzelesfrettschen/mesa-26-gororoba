@@ -19,8 +19,13 @@
 [built-in options]
 buildtype = 'debugoptimized'
 b_ndebug = 'false'
-c_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fexceptions', '-ffunction-sections', '-fdata-sections']
-cpp_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
+# -fno-emulated-tls matches profile 1_ (the GL stack's libglapi needs native
+# TLS under clang).  Unlike 1_, the debug profile omits -fno-semantic-
+# interposition and never adds -fomit-frame-pointer: RCA gdb backtraces want
+# frame pointers and minimal cross-object inlining so a fault lands on its true
+# frame.
+c_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fexceptions', '-ffunction-sections', '-fdata-sections']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
 c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
 cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
 
