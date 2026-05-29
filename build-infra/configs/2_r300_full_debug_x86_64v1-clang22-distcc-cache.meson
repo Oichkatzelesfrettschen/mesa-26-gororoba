@@ -1,0 +1,66 @@
+# 2_r300_full_debug_x86_64v1-clang22-distcc-cache: the maximal-feature r300
+# DEBUG sibling of 1_r300_full_release_x86_64v1-clang22-distcc-cache.  Same r300
+# API/loader surface and same x86-64-v1/clang22/distcc-cache lane; the only
+# differences are buildtype, assertions, and the absence of the release-only -Os.
+#
+# Why a separate debug profile: driver RCA and shader disassembly need assertions
+# live (b_ndebug='false') and a debugoptimized build (-O2 -g, real frame
+# pointers, intact error paths) so a gdb backtrace through r300_emit, the blitter,
+# and the r300vk queue lands on the true fault site instead of an optimizer-folded
+# address.  Conformance and silicon evidence use the release profile instead, so
+# the assertion instrumentation never contaminates a pass/fail baseline.
+#
+# Install this to the -debug prefix (/opt/local/mesa-26-gororoba-debug) so the
+# release and debug artifacts never share object files or install paths.
+#
+# Feature set, exclusions, and HOSTENV pairing are identical to profile 1_; see
+# that file's header for the full rationale.
+
+[built-in options]
+buildtype = 'debugoptimized'
+b_ndebug = 'false'
+# -fno-emulated-tls matches profile 1_ (the GL stack's libglapi needs native
+# TLS under clang).  Unlike 1_, the debug profile omits -fno-semantic-
+# interposition and never adds -fomit-frame-pointer: RCA gdb backtraces want
+# frame pointers and minimal cross-object inlining so a fault lands on its true
+# frame.
+c_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fexceptions', '-ffunction-sections', '-fdata-sections']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
+cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
+
+[project options]
+platforms = ['x11', 'wayland']
+gallium-drivers = ['r300']
+vulkan-drivers = ['amd_r300']
+r300vk-gallium-backend = true
+tools = ['r300']
+
+# Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
+opengl = true
+gles1 = 'enabled'
+gles2 = 'enabled'
+
+# Loader and window-system surfaces (GLVND, GLX-DRI, EGL, GBM).
+glvnd = 'enabled'
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'drm'
+gbm = 'enabled'
+
+# r300 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
+shader-cache = 'enabled'
+gallium-extra-hud = true
+lmsensors = 'enabled'
+
+# No software rasterizer: hardware r300 or a loud failure.
+llvm = 'disabled'
+draw-use-llvm = false
+gallium-rusticl = false
+
+# Excluded surfaces (kept out to bound the artifact and the lane).
+video-codecs = []
+vulkan-layers = []
+perfetto = false
+valgrind = 'disabled'
+libunwind = 'disabled'
