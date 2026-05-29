@@ -1077,13 +1077,26 @@ static void r300_render_draw_arrays(struct vbuf_render* render,
     struct r300_context* r300 = r300render->r300;
     uint8_t* ptr;
     unsigned i;
-    unsigned dwords = 6;
+    /* VAP_VF_CNTL packs the vertex count in a 16-bit field; only r5xx widens it
+     * via R500_VAP_ALT_NUM_VERTICES.  The HWTCL emitter (r300_emit_draw_arrays)
+     * already takes the alt path for count > 65535; mirror it so the SWTCL
+     * backend is not the asymmetric one that silently emits a truncated count.
+     * r3xx/r4xx is bounded to <= 65535 per batch by max_vertex_buffer_bytes. */
+    bool alt_num_verts = r300->screen->caps.is_r500 && count > 65535;
+    unsigned dwords = 6 + (alt_num_verts ? 2 : 0);
 
     CS_LOCALS(r300);
     (void) i; (void) ptr;
 
     assert(start == 0);
-    assert(count < (1 << 16));
+    /* A 65536-vertex draw with no alt support shifts to 0 in the count field
+     * and underflows the kernel CS validator; refuse it rather than emit a
+     * malformed IB that corrupts driver state. */
+    if (!alt_num_verts && count > 65535) {
+        fprintf(stderr, "r300: SWTCL draw of %u vertices exceeds the 16-bit "
+                "VAP count limit on a non-r5xx part; skipping.\n", count);
+        return;
+    }
 
     DBG(r300, DBG_DRAW, "r300: render_draw_arrays (count: %d)\n", count);
 
@@ -1096,10 +1109,14 @@ static void r300_render_draw_arrays(struct vbuf_render* render,
     BEGIN_CS(dwords);
     OUT_CS_REG(R300_GA_COLOR_CONTROL,
             r300_provoking_vertex_fixes(r300, r300render->prim));
+    if (alt_num_verts) {
+        OUT_CS_REG(R500_VAP_ALT_NUM_VERTICES, count);
+    }
     OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, count - 1);
     OUT_CS_PKT3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
     OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST | (count << 16) |
-           r300render->hwprim);
+           r300render->hwprim |
+           (alt_num_verts ? R500_VAP_VF_CNTL__USE_ALT_NUM_VERTS : 0));
     END_CS;
 }
 
@@ -1161,7 +1178,17 @@ static struct vbuf_render* r300_render_create(struct r300_context* r300)
 
     r300render->r300 = r300;
 
-    r300render->base.max_vertex_buffer_bytes = R300_MAX_DRAW_VBO_SIZE;
+    /* The draw module derives the per-batch vertex count from this byte budget
+     * (max_vertex_buffer_bytes / vertex_size).  The smallest SWTCL vertex is the
+     * mandatory 4-float clip position (16 bytes), so a 1 MiB budget yields up to
+     * 65536 vertices -- one past the 16-bit VAP_VF_CNTL count field.  r5xx widens
+     * that field with R500_VAP_ALT_NUM_VERTICES (handled in
+     * r300_render_draw_arrays); r3xx/r4xx cannot, so a 65536-vertex batch would
+     * shift to 0 in the field and make the kernel CS validator's (nverts-1) size
+     * check underflow.  Cap the r3xx/r4xx budget so the worst-case 16-byte vertex
+     * stays at or below 65535 per batch. */
+    r300render->base.max_vertex_buffer_bytes =
+        r300->screen->caps.is_r500 ? R300_MAX_DRAW_VBO_SIZE : 65535 * 16;
     r300render->base.max_indices = 16 * 1024;
 
     r300render->base.get_vertex_info = r300_render_get_vertex_info;
