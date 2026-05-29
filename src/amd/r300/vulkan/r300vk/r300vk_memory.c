@@ -53,7 +53,10 @@ r300vk_FreeMemory(VkDevice _device,
       return;
 
    if (mem->transfer) {
-      if (mem->resource && mem->resource->target == PIPE_BUFFER)
+      /* Free a still-mapped allocation: unmap against the transfer's own
+       * resource, not mem->resource (see r300vk_UnmapMemory) -- a rebind can
+       * leave mem->resource a texture while the live transfer is a buffer. */
+      if (mem->transfer->resource->target == PIPE_BUFFER)
          device->pipe->buffer_unmap(device->pipe, mem->transfer);
       else
          device->pipe->texture_unmap(device->pipe, mem->transfer);
@@ -105,7 +108,10 @@ r300vk_MapMemory(VkDevice _device,
     * spec forbids double-mapping without an intervening vkUnmapMemory,
     * but guard here to avoid leaking the old pipe_transfer. */
    if (mem->transfer) {
-      if (mem->resource->target == PIPE_BUFFER)
+      /* Match the resource the prior transfer was created from, like
+       * r300vk_UnmapMemory: keying on mem->resource can mis-route a buffer
+       * transfer into texture_unmap after a rebind changed mem->resource. */
+      if (mem->transfer->resource->target == PIPE_BUFFER)
          device->pipe->buffer_unmap(device->pipe, mem->transfer);
       else
          device->pipe->texture_unmap(device->pipe, mem->transfer);
@@ -174,7 +180,14 @@ r300vk_UnmapMemory(VkDevice _device,
    if (!mem->transfer)
       return;
 
-   if (mem->resource && mem->resource->target == PIPE_BUFFER)
+   /* Unmap against the resource the transfer was created from, not mem->resource.
+    * A map-before-bind map lazily creates a PIPE_BUFFER and a buffer transfer; a
+    * later BindImageMemory2 replaces mem->resource with the image's tiled
+    * texture.  Keying on mem->resource then routes that buffer transfer into
+    * texture_unmap, whose r300_transfer cast reads a garbage linear_texture and
+    * faults in r300_resource_copy_region.  pipe_transfer->resource is fixed at
+    * map time, so it is the correct buffer-vs-texture discriminator. */
+   if (mem->transfer->resource->target == PIPE_BUFFER)
       device->pipe->buffer_unmap(device->pipe, mem->transfer);
    else
       device->pipe->texture_unmap(device->pipe, mem->transfer);
