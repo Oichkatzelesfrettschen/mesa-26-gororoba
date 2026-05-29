@@ -55,8 +55,8 @@ gallium-extra-hud = true
 lmsensors = 'enabled'
 
 # No software rasterizer: hardware r300 or a loud failure.
-llvm = 'disabled'
-draw-use-llvm = false
+llvm = 'enabled'
+draw-use-llvm = true
 gallium-rusticl = false
 
 # Maximal debug instrumentation (debug profile only; 1_ release stays lean).
