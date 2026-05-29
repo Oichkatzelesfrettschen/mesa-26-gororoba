@@ -11,11 +11,13 @@
 # -Doptimization=2 -Db_lto=true on the meson command line for a thin-LTO release
 # without editing this file.
 
-[project options]
+[built-in options]
 optimization        = 's'
 debug               = false
 b_ndebug            = 'true'
 werror              = true
+
+[project options]
 
 # r600 Gallium + the amd_terascale Vulkan driver (terakan).  Rusticl stays off:
 # its rust frontend breaks on bindgen drift against the current pipe struct
@@ -25,5 +27,7 @@ vulkan-drivers      = ['amd_terascale']
 gallium-rusticl     = false
 
 amd-use-llvm        = true
+draw-use-llvm       = true
 gallium-extra-hud   = true
 glx                 = 'auto'
+platforms           = ['x11']
