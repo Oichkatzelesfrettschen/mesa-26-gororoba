@@ -15,7 +15,7 @@
 # 2. CFLAGS / CXXFLAGS in the companion env file drop -march=btver1
 #    in favor of -march=x86-64 -mtune=generic so the produced .so is
 #    microarch-portable across every x86_64 microarch and runs on
-#    x130e Bobcat AND on any cachyos znver3 / x570 / DESKTOP host.
+#    x130e Bobcat AND on any cachyos znver3 / x570 / ALIENWARE host.
 #
 # werror = true keeps the operator-validation pass clean.  Combined
 # with `ninja -k 0` this catches every warning across the tree

@@ -22,7 +22,7 @@ One portable, `-Os` lane replaces the per-host `-march` matrix
 (`btver1`/`k8`/`znver3`/`x86-64-v1`).  `configs/gororoba-terakan.meson`
 + `env/generic-x86-64-os.env` build a `-march=x86-64 -mtune=generic`
 driver that runs on every machine in the fabric (x130e Bobcat, x570
-Zen, Vostro k8, DESKTOP), so the binary is shareable and the ccache is
+Zen, Vostro k8, ALIENWARE), so the binary is shareable and the ccache is
 not fragmented by target.
 
 Toolchain: clang (auto-detected, prefers 22), ccache+distcc in the
