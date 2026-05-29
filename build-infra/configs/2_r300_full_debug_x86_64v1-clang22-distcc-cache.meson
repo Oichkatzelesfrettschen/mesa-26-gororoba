@@ -3,9 +3,10 @@
 # API/loader surface and same x86-64-v1/clang22/distcc-cache lane.  Beyond the
 # release profile it carries debug-only instrumentation surfaces: debugoptimized
 # buildtype with live assertions, frame pointers and the release-only -Os
-# dropped, the llvmpipe LLVM reference driver, valgrind + libunwind annotations,
-# the perfetto track-event timeline, the XA gallium frontend, and the full
-# platform set.  Conformance and silicon evidence use the release profile.
+# dropped, valgrind + libunwind annotations, the perfetto track-event timeline,
+# and the full platform set.  It deliberately keeps r300's SW-TCL on the C draw
+# interpreter (no llvmpipe, draw-use-llvm=false) so the vertex path stays
+# instrumentable.  Conformance and silicon evidence use the release profile.
 #
 # Why a separate debug profile: driver RCA and shader disassembly need assertions
 # live (b_ndebug='false') and a debugoptimized build (-O2 -g, real frame
@@ -36,10 +37,10 @@ cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-neede
 
 [project options]
 platforms = ['x11', 'wayland']
-# llvmpipe rides alongside r300 as the LLVM-backed software reference: a debug
-# RCA can diff RS482 hardware output against a known-correct rasterizer in the
-# same process without a second install.
-gallium-drivers = ['r300', 'llvmpipe']
+# r300 only: no llvmpipe.  Building llvmpipe forces draw-use-llvm=true, which
+# routes r300's SW-TCL through the gallivm JIT instead of the C draw interpreter
+# -- the exact path this debug profile exists to instrument and extend.
+gallium-drivers = ['r300']
 vulkan-drivers = ['amd_r300']
 r300vk-gallium-backend = true
 tools = ['r300']
@@ -61,19 +62,15 @@ shader-cache = 'enabled'
 gallium-extra-hud = true
 lmsensors = 'enabled'
 
-# LLVM required for the debug profile: it builds the llvmpipe reference driver
-# (gallium-drivers above) so an RCA can compare RS482 output against a software
-# rasterizer in-process.  draw-use-llvm must be true here -- meson rejects
-# llvmpipe with draw-use-llvm=false ("Lavapipe and llvmpipe require LLVM draw
-# support"), so r300's SW-TCL is LLVM-JIT'd as a side effect; valgrind and the
-# perfetto track-events still instrument it.
-llvm = 'enabled'
-draw-use-llvm = true
+# RS482 has caps.has_tcl=false, so r300 routes all vertex work through the
+# Gallium draw module (SW-TCL) -- r300_context.c draw_create().  Keep
+# draw-use-llvm=false so that path stays the C interpreter (draw_context.c
+# DRAW_USE_LLVM selects the gallivm JIT only when true): gdb/valgrind
+# step-through and the surface to build/measure a custom hybrid TCL on.  With no
+# llvmpipe, llvm is otherwise unused here, so leave it disabled to stay lean.
+llvm = 'disabled'
+draw-use-llvm = false
 gallium-rusticl = false
-
-# XA gallium frontend: r300 historically drove X acceleration through XA, and
-# its surface/blit/copy paths are a primary-source reference for the CB->GART
-# and render-target handoff archaeology behind the R2VB streamout investigation.
 
 # Maximal debug instrumentation (debug profile only; 1_ release stays lean).
 # valgrind builds the VALGRIND_* client-request annotations so memcheck can see
