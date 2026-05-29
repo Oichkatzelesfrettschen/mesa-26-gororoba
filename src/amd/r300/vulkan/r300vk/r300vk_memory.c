@@ -53,7 +53,10 @@ r300vk_FreeMemory(VkDevice _device,
       return;
 
    if (mem->transfer) {
-      if (mem->resource && mem->resource->target == PIPE_BUFFER)
+      /* Free a still-mapped allocation: unmap against the transfer's own
+       * resource, not mem->resource (see r300vk_UnmapMemory) -- a rebind can
+       * leave mem->resource a texture while the live transfer is a buffer. */
+      if (mem->transfer->resource->target == PIPE_BUFFER)
          device->pipe->buffer_unmap(device->pipe, mem->transfer);
       else
          device->pipe->texture_unmap(device->pipe, mem->transfer);
@@ -105,7 +108,10 @@ r300vk_MapMemory(VkDevice _device,
     * spec forbids double-mapping without an intervening vkUnmapMemory,
     * but guard here to avoid leaking the old pipe_transfer. */
    if (mem->transfer) {
-      if (mem->resource->target == PIPE_BUFFER)
+      /* Match the resource the prior transfer was created from, like
+       * r300vk_UnmapMemory: keying on mem->resource can mis-route a buffer
+       * transfer into texture_unmap after a rebind changed mem->resource. */
+      if (mem->transfer->resource->target == PIPE_BUFFER)
          device->pipe->buffer_unmap(device->pipe, mem->transfer);
       else
          device->pipe->texture_unmap(device->pipe, mem->transfer);
@@ -174,7 +180,14 @@ r300vk_UnmapMemory(VkDevice _device,
    if (!mem->transfer)
       return;
 
-   if (mem->resource && mem->resource->target == PIPE_BUFFER)
+   /* Unmap against the resource the transfer was created from, not mem->resource.
+    * A map-before-bind map lazily creates a PIPE_BUFFER and a buffer transfer; a
+    * later BindImageMemory2 replaces mem->resource with the image's tiled
+    * texture.  Keying on mem->resource then routes that buffer transfer into
+    * texture_unmap, whose r300_transfer cast reads a garbage linear_texture and
+    * faults in r300_resource_copy_region.  pipe_transfer->resource is fixed at
+    * map time, so it is the correct buffer-vs-texture discriminator. */
+   if (mem->transfer->resource->target == PIPE_BUFFER)
       device->pipe->buffer_unmap(device->pipe, mem->transfer);
    else
       device->pipe->texture_unmap(device->pipe, mem->transfer);
@@ -255,9 +268,21 @@ r300vk_BindBufferMemory2(VkDevice _device,
             return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          mem->memory_offset = pBindInfos[i].memoryOffset;
       } else {
-         /* No prior map: keep the resource-backed model unchanged -- the memory
-          * borrows the buffer's create-time resource.  Byte-for-byte the path
-          * the shipping compute/dispatch (identity-map replay) relies on. */
+         /* No prior owned map: the memory borrows the buffer's create-time
+          * resource.  Byte-for-byte the path the shipping compute/dispatch
+          * (identity-map replay) relies on -- the guard below is a no-op there
+          * because mem->transfer is NULL.  It only fires when this allocation
+          * was mapped and is now aliased onto a second buffer: the rebind frees
+          * the prior mem->resource, so the live transfer must be committed and
+          * dropped first (same use-after-free class as BindImageMemory2). */
+         if (mem->transfer) {
+            if (mem->transfer->resource->target == PIPE_BUFFER)
+               device->pipe->buffer_unmap(device->pipe, mem->transfer);
+            else
+               device->pipe->texture_unmap(device->pipe, mem->transfer);
+            mem->transfer = NULL;
+            mem->map_ptr = NULL;
+         }
          mem->memory_offset = pBindInfos[i].memoryOffset;
          pipe_resource_reference(&mem->resource, buf->resource);
       }
@@ -270,10 +295,30 @@ r300vk_BindImageMemory2(VkDevice _device,
                          uint32_t bindInfoCount,
                          const VkBindImageMemoryInfo *pBindInfos)
 {
-   (void)_device;
+   VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
+
+      /* If the memory was mapped before bind, vkMapMemory created its own lazy
+       * HOST_VISIBLE pipe_buffer and a transfer that borrows it (Gallium
+       * transfers do not hold a reference on their resource).  The
+       * pipe_resource_reference below drops that lazy buffer's last reference
+       * and frees it; the still-live transfer would then dangle and fault at
+       * unmap, where r300_texture_transfer_unmap reads a freed-and-reused
+       * r300_transfer (observed linear_texture = 0x271) and copies from a
+       * garbage source in r300_resource_copy_region.  Commit and drop the
+       * mapping first, while mem->resource is still the lazy buffer.  This
+       * mirrors the live-transfer handling in r300vk_BindBufferMemory2. */
+      if (mem->transfer) {
+         if (mem->transfer->resource->target == PIPE_BUFFER)
+            device->pipe->buffer_unmap(device->pipe, mem->transfer);
+         else
+            device->pipe->texture_unmap(device->pipe, mem->transfer);
+         mem->transfer = NULL;
+         mem->map_ptr = NULL;
+      }
+
       mem->memory_offset = pBindInfos[i].memoryOffset;
       pipe_resource_reference(&mem->resource, img->resource);
    }
