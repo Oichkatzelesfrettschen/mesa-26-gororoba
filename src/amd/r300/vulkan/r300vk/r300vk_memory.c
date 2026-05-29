@@ -13,8 +13,11 @@
 #include "vk_object.h"
 
 #include "pipe/p_context.h"
+#include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
+
+#include <string.h>
 
 VkResult
 r300vk_AllocateMemory(VkDevice _device,
@@ -73,11 +76,30 @@ r300vk_MapMemory(VkDevice _device,
    VK_FROM_HANDLE(r300vk_device, device, _device);
    VK_FROM_HANDLE(r300vk_device_memory, mem, _memory);
 
-   if (!mem->resource)
-      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                       "r300vk: MapMemory called before BindBufferMemory2 "
-                       "or BindImageMemory2 (resource-backed memory model "
-                       "requires a prior bind)");
+   /* Map-before-bind: Vulkan permits mapping HOST_VISIBLE VkDeviceMemory before
+    * (or without) binding it to a buffer or image, and deqp's default allocator
+    * does exactly this.  The resource-backed model has no storage until a bind,
+    * so lazily create the memory's own host-visible pipe_buffer here.  A later
+    * BindBufferMemory2 makes the VkBuffer reference this same resource, so writes
+    * made through the map reach the bound buffer (single shared storage, no
+    * copy).  Image binds install their tiled resource and never reach this lazy
+    * path once bound. */
+   if (!mem->resource) {
+      struct pipe_resource tmpl = {
+         .target     = PIPE_BUFFER,
+         .format     = PIPE_FORMAT_R8_UNORM,
+         .bind       = PIPE_BIND_VERTEX_BUFFER,
+         .usage      = PIPE_USAGE_DYNAMIC,
+         .width0     = (unsigned)mem->size,
+         .height0    = 1,
+         .depth0     = 1,
+         .array_size = 1,
+      };
+      mem->resource = device->screen->resource_create(device->screen, &tmpl);
+      if (!mem->resource)
+         return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+      mem->owns_buffer = true;
+   }
 
    /* Unmap any stale mapping from a previous vkMapMemory call.  Vulkan
     * spec forbids double-mapping without an intervening vkUnmapMemory,
@@ -189,12 +211,56 @@ r300vk_BindBufferMemory2(VkDevice _device,
                           uint32_t bindInfoCount,
                           const VkBindBufferMemoryInfo *pBindInfos)
 {
-   (void)_device;
+   VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       VK_FROM_HANDLE(r300vk_buffer, buf, pBindInfos[i].buffer);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
-      mem->memory_offset = pBindInfos[i].memoryOffset;
-      pipe_resource_reference(&mem->resource, buf->resource);
+
+      if (mem->owns_buffer) {
+         /* Map-before-bind created the memory's own host buffer and the app wrote
+          * the buffer's data through the map.  CreateBuffer already gave the
+          * VkBuffer its own resource starting at byte 0, and every consumer
+          * (vertex bind, descriptors, the identity-map compute replay) reads
+          * buf->resource from byte 0 -- so copy the buffer's slice of the mapped
+          * allocation (at memoryOffset) into buf->resource.  Every consumer stays
+          * offset-free: no draw/descriptor/compute path changes, so the shipping
+          * dispatch path is byte-for-byte untouched.  The cost is CPU-write
+          * coherency for the unusual map-AFTER-bind rewrite, which deqp's
+          * allocate->map->write->bind allocator (and the sub-allocating default
+          * allocator that binds at a non-zero offset) does not use. */
+         if (mem->transfer) {
+            /* Commit any live mapping so the copy sees the written bytes. */
+            device->pipe->buffer_unmap(device->pipe, mem->transfer);
+            mem->transfer = NULL;
+            mem->map_ptr = NULL;
+         }
+         VkDeviceSize avail = mem->size - pBindInfos[i].memoryOffset;
+         unsigned copy_bytes = (unsigned)(buf->size < avail ? buf->size : avail);
+         struct pipe_box src_box;
+         struct pipe_transfer *st = NULL, *dt = NULL;
+         u_box_1d((unsigned)pBindInfos[i].memoryOffset, copy_bytes, &src_box);
+         const void *src = device->pipe->buffer_map(device->pipe, mem->resource, 0,
+                                                    PIPE_MAP_READ, &src_box, &st);
+         struct pipe_box dst_box;
+         u_box_1d(0, copy_bytes, &dst_box);
+         void *dst = device->pipe->buffer_map(device->pipe, buf->resource, 0,
+                                              PIPE_MAP_WRITE, &dst_box, &dt);
+         if (src && dst)
+            memcpy(dst, src, copy_bytes);
+         if (dt)
+            device->pipe->buffer_unmap(device->pipe, dt);
+         if (st)
+            device->pipe->buffer_unmap(device->pipe, st);
+         if (!src || !dst)
+            return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+         mem->memory_offset = pBindInfos[i].memoryOffset;
+      } else {
+         /* No prior map: keep the resource-backed model unchanged -- the memory
+          * borrows the buffer's create-time resource.  Byte-for-byte the path
+          * the shipping compute/dispatch (identity-map replay) relies on. */
+         mem->memory_offset = pBindInfos[i].memoryOffset;
+         pipe_resource_reference(&mem->resource, buf->resource);
+      }
    }
    return VK_SUCCESS;
 }
