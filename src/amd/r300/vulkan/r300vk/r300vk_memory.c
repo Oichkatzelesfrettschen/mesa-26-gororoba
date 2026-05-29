@@ -268,9 +268,21 @@ r300vk_BindBufferMemory2(VkDevice _device,
             return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
          mem->memory_offset = pBindInfos[i].memoryOffset;
       } else {
-         /* No prior map: keep the resource-backed model unchanged -- the memory
-          * borrows the buffer's create-time resource.  Byte-for-byte the path
-          * the shipping compute/dispatch (identity-map replay) relies on. */
+         /* No prior owned map: the memory borrows the buffer's create-time
+          * resource.  Byte-for-byte the path the shipping compute/dispatch
+          * (identity-map replay) relies on -- the guard below is a no-op there
+          * because mem->transfer is NULL.  It only fires when this allocation
+          * was mapped and is now aliased onto a second buffer: the rebind frees
+          * the prior mem->resource, so the live transfer must be committed and
+          * dropped first (same use-after-free class as BindImageMemory2). */
+         if (mem->transfer) {
+            if (mem->transfer->resource->target == PIPE_BUFFER)
+               device->pipe->buffer_unmap(device->pipe, mem->transfer);
+            else
+               device->pipe->texture_unmap(device->pipe, mem->transfer);
+            mem->transfer = NULL;
+            mem->map_ptr = NULL;
+         }
          mem->memory_offset = pBindInfos[i].memoryOffset;
          pipe_resource_reference(&mem->resource, buf->resource);
       }
