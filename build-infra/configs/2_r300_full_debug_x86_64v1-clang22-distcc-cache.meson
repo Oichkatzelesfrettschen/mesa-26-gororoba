@@ -35,7 +35,7 @@ c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed'
 cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
 
 [project options]
-platforms = ['x11', 'wayland', 'surfaceless', 'drm', 'xcb']
+platforms = ['x11', 'wayland']
 # llvmpipe rides alongside r300 as the LLVM-backed software reference: a debug
 # RCA can diff RS482 hardware output against a known-correct rasterizer in the
 # same process without a second install.
@@ -63,17 +63,17 @@ lmsensors = 'enabled'
 
 # LLVM required for the debug profile: it builds the llvmpipe reference driver
 # (gallium-drivers above) so an RCA can compare RS482 output against a software
-# rasterizer in-process.  draw-use-llvm stays false so r300's own SW-TCL keeps
-# the C draw path -- the path under instrumentation -- rather than an LLVM-JIT'd
-# one; llvmpipe carries its own JIT regardless.
+# rasterizer in-process.  draw-use-llvm must be true here -- meson rejects
+# llvmpipe with draw-use-llvm=false ("Lavapipe and llvmpipe require LLVM draw
+# support"), so r300's SW-TCL is LLVM-JIT'd as a side effect; valgrind and the
+# perfetto track-events still instrument it.
 llvm = 'enabled'
-draw-use-llvm = false
+draw-use-llvm = true
 gallium-rusticl = false
 
 # XA gallium frontend: r300 historically drove X acceleration through XA, and
 # its surface/blit/copy paths are a primary-source reference for the CB->GART
 # and render-target handoff archaeology behind the R2VB streamout investigation.
-gallium-xa = 'enabled'
 
 # Maximal debug instrumentation (debug profile only; 1_ release stays lean).
 # valgrind builds the VALGRIND_* client-request annotations so memcheck can see
