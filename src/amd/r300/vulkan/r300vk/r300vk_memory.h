@@ -16,20 +16,27 @@
 extern "C" {
 #endif
 
-/* r300vk_device_memory: resource-backed model.
+/* r300vk_device_memory: resource-backed model with lazy map-before-bind storage.
  *
  * RS482/RS485 is UMA; VRAM and GTT share the same physical memory.
- * AllocateMemory allocates the object but defers pipe_resource creation
- * until BindBufferMemory2 or BindImageMemory2.  MapMemory requires a
- * prior bind; without a resource it returns VK_ERROR_MEMORY_MAP_FAILED.
- * FlushMappedMemoryRanges and InvalidateMappedMemoryRanges are no-ops
- * because there is no CPU-GPU cache separation on this target.
+ * AllocateMemory allocates the object and defers pipe_resource creation.  The
+ * resource is filled lazily by whichever path needs it first:
+ *   - MapMemory, when the memory is mapped before any bind, creates the
+ *     memory's own HOST_VISIBLE pipe_buffer and sets owns_buffer.  Vulkan
+ *     permits mapping VkDeviceMemory before (or without) binding a resource.
+ *   - BindBufferMemory2, when owns_buffer is set, points the VkBuffer at that
+ *     same buffer so map writes and the bound buffer share one allocation;
+ *     otherwise the memory borrows the buffer's create-time resource.
+ *   - BindImageMemory2 installs the image's tiled resource.
+ * FlushMappedMemoryRanges and InvalidateMappedMemoryRanges are no-ops because
+ * there is no CPU-GPU cache separation on this target.
  *
  * memory_offset records the VkBindBufferMemoryInfo/VkBindImageMemoryInfo
- * memoryOffset.  For the resource-backed model the pipe_resource IS the
- * allocation, so memoryOffset is always expected to be zero; it is stored
- * here so MapMemory can compute the correct byte offset into the resource
- * for PIPE_BUFFER objects (resource_offset = MapMemory.offset - memory_offset). */
+ * memoryOffset.  For a borrowed bound resource (owns_buffer == false) the
+ * pipe_resource starts at the buffer, so MapMemory uses
+ * resource_offset = MapMemory.offset - memory_offset.  An owns_buffer
+ * allocation's resource IS the whole VkDeviceMemory, so memoryOffset must be
+ * zero (BindBufferMemory2 rejects non-zero) and offset - 0 reduces correctly. */
 struct r300vk_device_memory {
    struct vk_object_base  base;
    VkDeviceSize           size;
