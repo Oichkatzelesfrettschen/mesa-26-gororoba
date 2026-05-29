@@ -448,6 +448,39 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
                   ? info->pInputAssemblyState->topology
                   : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
+   /* Capture pipeline-static viewport/scissor so the draw replay can apply it.
+    * A state is dynamic only if listed in pDynamicState; otherwise its value
+    * lives in pViewportState and no CmdSetViewport/CmdSetScissor is issued.
+    * pViewportState is itself absent when rasterizerDiscardEnable is set, in
+    * which case nothing rasterizes and the captured viewport is unused. */
+   bool dynamic_viewport = false;
+   bool dynamic_scissor = false;
+   if (info->pDynamicState) {
+      for (uint32_t d = 0; d < info->pDynamicState->dynamicStateCount; d++) {
+         switch (info->pDynamicState->pDynamicStates[d]) {
+         case VK_DYNAMIC_STATE_VIEWPORT:
+            dynamic_viewport = true;
+            break;
+         case VK_DYNAMIC_STATE_SCISSOR:
+            dynamic_scissor = true;
+            break;
+         default:
+            break;
+         }
+      }
+   }
+   const VkPipelineViewportStateCreateInfo *vp_state = info->pViewportState;
+   if (vp_state && !dynamic_viewport &&
+       vp_state->pViewports && vp_state->viewportCount > 0) {
+      pl->static_viewport = vp_state->pViewports[0];
+      pl->has_static_viewport = true;
+   }
+   if (vp_state && !dynamic_scissor &&
+       vp_state->pScissors && vp_state->scissorCount > 0) {
+      pl->static_scissor = vp_state->pScissors[0];
+      pl->has_static_scissor = true;
+   }
+
    *pPipeline = r300vk_pipeline_to_handle(pl);
    return VK_SUCCESS;
 }

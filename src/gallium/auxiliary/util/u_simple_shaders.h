@@ -34,6 +34,7 @@
 #include "pipe/p_shader_tokens.h"
 
 
+enum pipe_format;
 struct pipe_context;
 struct pipe_shader_state;
 struct pipe_stream_output_info;

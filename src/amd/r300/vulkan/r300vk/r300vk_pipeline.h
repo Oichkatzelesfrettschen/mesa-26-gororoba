@@ -140,6 +140,20 @@ struct r300vk_pipeline {
    uint32_t                vertex_binding_extent[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_mask;
 
+   /* Pipeline-static viewport/scissor, captured at create time when the
+    * matching VK_DYNAMIC_STATE_VIEWPORT/SCISSOR is not enabled.  When a state
+    * is static, Vulkan takes it from VkPipelineViewportStateCreateInfo and the
+    * application issues no CmdSetViewport/CmdSetScissor, so the record/replay
+    * SET_VIEWPORT/SET_SCISSOR path never fires.  r300vk has no other apply
+    * point, so the draw replays against the zero-initialized pipe viewport
+    * (scale 0 collapses every vertex onto translate -- a zero-area primitive
+    * that rasterizes nothing).  has_static_* false means the state is dynamic
+    * and the SET_VIEWPORT/SET_SCISSOR replay supplies it instead. */
+   VkViewport              static_viewport;
+   VkRect2D                static_scissor;
+   bool                    has_static_viewport;
+   bool                    has_static_scissor;
+
    /* Synthetic VS-system-value stream.  RS480-family parts have no PVS, so a VS
     * that reads gl_VertexIndex / gl_InstanceIndex has the value supplied as a
     * driver-generated vertex attribute (filled per draw with firstVertex + i /
