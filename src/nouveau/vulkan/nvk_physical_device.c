@@ -184,6 +184,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
       .KHR_shader_float_controls = true,
       .KHR_shader_float_controls2 = true,
       .KHR_shader_float16_int8 = true,
+      .KHR_shader_fma = true,
       .KHR_shader_integer_dot_product = true,
       .KHR_shader_maximal_reconvergence = true,
       .KHR_shader_non_semantic_info = true,
@@ -278,6 +279,7 @@ nvk_get_device_extensions(const struct nvk_instance *instance,
       .EXT_sampler_filter_minmax = info->cls_eng3d >= MAXWELL_B,
       .EXT_scalar_block_layout = true,
       .EXT_separate_stencil_usage = true,
+      .EXT_shader_atomic_float = true,
       .EXT_shader_image_atomic_int64 = info->cls_eng3d >= KEPLER_B,
       .EXT_shader_demote_to_helper_invocation = true,
       .EXT_shader_module_identifier = true,
@@ -719,6 +721,20 @@ nvk_get_device_features(const struct nv_device_info *info,
       .robustImageAccess2 = true,
       .nullDescriptor = true,
 
+      /* VK_EXT_shader_atomic_float */
+      .shaderBufferFloat32Atomics = true,
+      .shaderBufferFloat32AtomicAdd = true,
+      .shaderBufferFloat64Atomics = true,
+      .shaderBufferFloat64AtomicAdd = true,
+      .shaderSharedFloat32Atomics = true,
+      .shaderSharedFloat32AtomicAdd = true,
+      .shaderSharedFloat64Atomics = true,
+      .shaderSharedFloat64AtomicAdd = true,
+      .shaderImageFloat32Atomics = true,
+      .shaderImageFloat32AtomicAdd = true,
+      .sparseImageFloat32Atomics = true,
+      .sparseImageFloat32AtomicAdd = true,
+
       /* VK_EXT_shader_image_atomic_int64 */
       .shaderImageInt64Atomics = info->cls_eng3d >= KEPLER_B,
       .sparseImageInt64Atomics = info->cls_eng3d >= MAXWELL_A,
@@ -772,6 +788,11 @@ nvk_get_device_features(const struct nv_device_info *info,
       .presentAtRelativeTime = true,
       .presentAtAbsoluteTime = true,
 #endif
+
+      /* VK_KHR_shader_fma */
+      .shaderFmaFloat16 = info->sm >= 70,
+      .shaderFmaFloat32 = true,
+      .shaderFmaFloat64 = true,
    };
 }
 
@@ -1776,6 +1797,13 @@ nvk_GetPhysicalDeviceQueueFamilyProperties2(
                p->priorities[0] = VK_QUEUE_GLOBAL_PRIORITY_MEDIUM;
                break;
             }
+
+            case VK_STRUCTURE_TYPE_QUEUE_FAMILY_QUERY_RESULT_STATUS_PROPERTIES_KHR: {
+                VkQueueFamilyQueryResultStatusPropertiesKHR *p = (void *)ext;
+                p->queryResultStatusSupport = VK_FALSE;
+                break;
+            }
+
             case VK_STRUCTURE_TYPE_QUEUE_FAMILY_OWNERSHIP_TRANSFER_PROPERTIES_KHR: {
                VkQueueFamilyOwnershipTransferPropertiesKHR *p = (void *)ext;
                p->optimalImageTransferToQueueFamilies = ~0;

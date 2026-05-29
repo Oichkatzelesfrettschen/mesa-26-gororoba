@@ -213,9 +213,33 @@ endif
 
 files_drirc = files('00-mesa-defaults.conf')
 
-if with_amd_vk
-  files_drirc += files('00-radv-defaults.conf')
-endif
+foreach i : [
+  [with_amd_vk, '../amd/vulkan/00-radv-defaults.conf'],
+  [with_intel_vk, '../intel/vulkan/00-anv-defaults.conf'],
+  [with_intel_hasvk, '../intel/vulkan_hasvk/00-hasvk-defaults.conf'],
+  [with_nouveau_vk, '../nouveau/vulkan/00-nvk-defaults.conf'],
+  [with_microsoft_vk, '../microsoft/vulkan/00-dzn-defaults.conf'],
+  [with_freedreno_vk, '../freedreno/vulkan/00-turnip-defaults.conf'],
+  [with_gallium_r300, '../gallium/drivers/r300/00-r300-defaults.conf'],
+  [with_gallium_iris, '../gallium/drivers/iris/00-iris-defaults.conf'],
+  [with_gallium_crocus, '../gallium/drivers/crocus/00-crocus-defaults.conf'],
+  [with_gallium_asahi, '../gallium/drivers/asahi/00-asahi-defaults.conf'],
+  [with_gallium_v3d, '../gallium/drivers/v3d/00-v3d-defaults.conf'],
+  [with_asahi_vk, '../asahi/vulkan/00-hk-defaults.conf'],
+  [with_panfrost_vk, '../panfrost/vulkan/00-panvk-defaults.conf'],
+  [with_gallium_virgl, '../gallium/drivers/virgl/00-virtio_gpu-defaults.conf'],
+  [with_gallium_panfrost, '../gallium/drivers/panfrost/00-panfrost-defaults.conf'],
+  [with_gallium_radeonsi, '../gallium/drivers/radeonsi/00-radeonsi-defaults.conf'],
+  [with_gallium_zink, '../gallium/drivers/zink/00-zink-defaults.conf'],
+  [with_gallium_r600, '../gallium/drivers/r600/00-r600-defaults.conf'],
+  [with_gallium_freedreno, '../gallium/drivers/freedreno/00-msm-defaults.conf'],
+  [with_gallium_d3d12, '../gallium/drivers/d3d12/00-d3d12-defaults.conf'],
+  [with_gallium_svga, '../gallium/drivers/svga/00-vmwgfx-defaults.conf'],
+]
+  if i[0]
+    files_drirc += files(i[1])
+  endif
+endforeach
 
 drirc_gen = files('drirc_gen.py')
 
@@ -225,7 +249,7 @@ if with_tests
     test(
       'drirc xml validation',
       prog_xmllint,
-      args : ['--noout', '--valid', files_drirc],
+      args : ['--noout', '--dtdvalid', files('driconf.dtd'), files_drirc],
       suite : ['util'],
     )
   endif

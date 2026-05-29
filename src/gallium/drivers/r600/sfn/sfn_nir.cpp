@@ -22,6 +22,7 @@
 #include "sfn_nir_lower_tex.h"
 #include "sfn_optimizer.h"
 #include "sfn_ra.h"
+#include "sfn_shader_tess.h"
 #include "sfn_scheduler.h"
 #include "sfn_shader.h"
 #include "sfn_split_address_loads.h"
@@ -720,6 +721,8 @@ r600_finalize_nir_common(nir_shader *nir, enum amd_gfx_level gfx_level)
 
    NIR_PASS(_, nir, nir_lower_flrp, nir_lower_flrp_mask, false);
 
+   NIR_PASS(_, nir, nir_opt_idiv_const, 64);
+   NIR_PASS(_, nir, nir_opt_idiv_const, 32);
    nir_lower_idiv_options idiv_options = {0};
    NIR_PASS(_, nir, nir_lower_idiv, &idiv_options);
 
@@ -741,6 +744,7 @@ r600_finalize_nir_common(nir_shader *nir, enum amd_gfx_level gfx_level)
 
    NIR_PASS(_, nir, r600_lower_shared_io);
    NIR_PASS(_, nir, r600_nir_lower_atomics);
+
 
    static const nir_lower_subgroups_options r600_nir_subgroups_options = {
       .ballot_bit_size = 32,
@@ -910,8 +914,11 @@ r600_lower_and_optimize_nir(nir_shader *sh,
       NIR_PASS(_, sh, r600_lower_tess_io, static_cast<mesa_prim>(prim_type));
    }
 
-   if (sh->info.stage == MESA_SHADER_TESS_CTRL)
+   if (sh->info.stage == MESA_SHADER_TESS_CTRL) {
+      NIR_PASS(_, sh, nir_lower_system_values);
+      NIR_PASS(_, sh, r600_lower_tess_level_default_to_ubo);
       NIR_PASS(_, sh, r600_append_tcs_TF_emission, (mesa_prim)key->tcs.prim_mode);
+   }
 
    if (sh->info.stage == MESA_SHADER_TESS_EVAL) {
       NIR_PASS(_,

@@ -125,6 +125,8 @@ struct v3dv_physical_device {
       bool multisync;
       bool perfmon;
    } caps;
+
+   bool is_shim;
 };
 
 static inline struct v3dv_bo *
@@ -290,6 +292,13 @@ struct v3dv_device {
          VkPipelineLayout p_layout;
          struct hash_table *cache[3]; /* v3dv_meta_texel_buffer_copy_pipeline for 1d, 2d, 3d */
       } texel_buffer_copy;
+      /* Device-wide staging BO pre-filled with zeros, used by TFU stride-0
+       * fill (vkCmdFillBuffer) when data == 0. Lazily allocated under
+       * meta.mtx; freed in destroy_device_meta.
+       */
+      struct {
+         struct v3dv_bo *src_bo;
+      } tfu_fill_zero;
    } meta;
 
    struct v3dv_bo_cache {

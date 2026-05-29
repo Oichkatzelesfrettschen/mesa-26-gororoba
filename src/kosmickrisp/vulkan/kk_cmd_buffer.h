@@ -28,7 +28,7 @@
 struct kk_query_pool;
 
 struct kk_root_descriptor_table {
-   struct kk_bo *root_buffer;
+   struct kk_ptr root_buffer;
 
    union {
       struct {
@@ -38,7 +38,6 @@ struct kk_root_descriptor_table {
          uint32_t attrib_clamps[KK_MAX_ATTRIBS];
          float blend_constant[4];
          float clip_z_coeff;
-         uint32_t draw_id;
       } draw;
       struct {
          uint32_t base_group[3];
@@ -139,8 +138,8 @@ struct kk_graphics_state {
    struct {
       mtl_buffer *handle;
       uint64_t buffer_size;
-      uint32_t range;
-      uint32_t offset;
+      uint64_t range;
+      uint64_t offset;
       uint32_t restart;
       uint8_t bytes_per_index;
    } index;
@@ -160,7 +159,22 @@ struct kk_compute_state {
    struct kk_descriptor_state descriptors;
 };
 
+struct kk_conditional_rendering_state {
+   uint64_t address;
+   bool inverted;
+   bool enabled;
+};
+
 struct kk_encoder;
+
+struct kk_uploader {
+   /** List of kk_cmd_bo */
+   struct list_head bos;
+
+   /* Current addresses */
+   struct kk_bo *bo;
+   uint32_t offset;
+};
 
 struct kk_cmd_buffer {
    struct vk_command_buffer vk;
@@ -171,10 +185,13 @@ struct kk_cmd_buffer {
    struct {
       struct kk_graphics_state gfx;
       struct kk_compute_state cs;
+      struct kk_conditional_rendering_state cond_render;
       struct kk_shader *shaders[MESA_SHADER_STAGES];
       /* Only tracks graphics shaders since compute is always bound for now. */
       uint32_t dirty_shaders;
    } state;
+
+   struct kk_uploader uploader;
 
    /* Owned large BOs */
    struct util_dynarray large_bos;
@@ -245,18 +262,11 @@ void kk_cmd_buffer_write_descriptor_buffer(struct kk_cmd_buffer *cmd,
                                            struct kk_descriptor_state *desc,
                                            size_t size, size_t offset);
 
-/* Allocates temporary buffer that will be released once the command buffer has
- * completed */
-struct kk_bo *kk_cmd_allocate_buffer(struct kk_cmd_buffer *cmd, size_t size_B,
-                                     size_t alignment_B);
+struct kk_ptr kk_pool_alloc(struct kk_cmd_buffer *cmd, uint32_t size,
+                            uint32_t alignment);
 
-struct kk_pool {
-   mtl_buffer *handle;
-   uint64_t gpu;
-   void *cpu;
-};
-struct kk_pool kk_pool_upload(struct kk_cmd_buffer *cmd, void *data,
-                              size_t size_B, size_t alignment_B);
+struct kk_ptr kk_pool_upload(struct kk_cmd_buffer *cmd, const void *data,
+                             uint32_t size, uint32_t alignment);
 
 uint64_t kk_upload_descriptor_root(struct kk_cmd_buffer *cmd,
                                    VkPipelineBindPoint bind_point);
@@ -264,7 +274,53 @@ uint64_t kk_upload_descriptor_root(struct kk_cmd_buffer *cmd,
 void kk_cmd_buffer_flush_push_descriptors(struct kk_cmd_buffer *cmd,
                                           struct kk_descriptor_state *desc);
 
-void kk_dispatch_precomp(struct kk_cmd_buffer *cmd, struct mtl_size grid,
+enum kk_grid_mode {
+   KK_GRID_DIRECT = 0u,
+   KK_GRID_INDIRECT,
+};
+struct kk_grid {
+   enum kk_grid_mode mode;
+   union {
+      struct {
+         uint32_t offset;
+         mtl_buffer *indirect;
+      };
+      struct mtl_size size;
+   };
+};
+
+static struct kk_grid
+kk_grid_3d(uint32_t x, uint32_t y, uint32_t z)
+{
+   return (struct kk_grid){
+      .mode = KK_GRID_DIRECT,
+      .size = {x, y, z},
+   };
+}
+
+static struct kk_grid
+kk_grid_2d(uint32_t x, uint32_t y)
+{
+   return kk_grid_3d(x, y, 1u);
+}
+
+static struct kk_grid
+kk_grid_1d(uint32_t x)
+{
+   return kk_grid_3d(x, 1u, 1u);
+}
+
+static struct kk_grid
+kk_grid_indirect(mtl_buffer *indirect, uint32_t offset)
+{
+   return (struct kk_grid){
+      .mode = KK_GRID_INDIRECT,
+      .indirect = indirect,
+      .offset = offset,
+   };
+}
+
+void kk_dispatch_precomp(struct kk_cmd_buffer *cmd, struct kk_grid grid,
                          bool pre_gfx, enum libkk_program idx, void *data,
                          size_t data_size);
 

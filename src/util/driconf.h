@@ -148,10 +148,6 @@
  */
 #define DRI_CONF_SECTION_DEBUG DRI_CONF_SECTION("Debugging")
 
-#define DRI_CONF_ALWAYS_FLUSH_BATCH(def) \
-   DRI_CONF_OPT_B(always_flush_batch, def,                              \
-                  "Enable flushing batchbuffer after each draw call")
-
 #define DRI_CONF_ALWAYS_FLUSH_CACHE(def) \
    DRI_CONF_OPT_B(always_flush_cache, def, \
                   "Enable flushing GPU caches with each draw call")
@@ -330,10 +326,6 @@
    DRI_CONF_OPT_B(ignore_map_unsynchronized, def, \
                   "Ignore GL_MAP_UNSYNCHRONIZED_BIT, workaround for games that use it incorrectly")
 
-#define DRI_CONF_VK_DONT_CARE_AS_LOAD(def) \
-   DRI_CONF_OPT_B(vk_dont_care_as_load, def, \
-                  "Treat VK_ATTACHMENT_LOAD_OP_DONT_CARE as LOAD_OP_LOAD, workaround on tiler GPUs for games that confuse these two load ops")
-
 #define DRI_CONF_VK_LOWER_TERMINATE_TO_DISCARD(def) \
    DRI_CONF_OPT_B(vk_lower_terminate_to_discard, def, \
                   "Lower terminate to discard (which is implicitly demote)")
@@ -388,10 +380,6 @@
 #define DRI_CONF_INTEL_DISABLE_THREADED_CONTEXT(def) \
    DRI_CONF_OPT_B(intel_disable_threaded_context, def, "Disable threaded context")
 
-#define DRI_CONF_VK_REQUIRE_ETC2(def) \
-  DRI_CONF_OPT_B(vk_require_etc2, def, \
-                 "Implement emulated ETC2 on HW that does not support it")
-
 #define DRI_CONF_VK_REQUIRE_ASTC(def) \
    DRI_CONF_OPT_B(vk_require_astc, def, \
                   "Implement emulated ASTC on HW that does not support it")
@@ -400,10 +388,6 @@
  * \brief Image quality-related options
  */
 #define DRI_CONF_SECTION_QUALITY DRI_CONF_SECTION("Image Quality")
-
-#define DRI_CONF_PRECISE_TRIG(def) \
-   DRI_CONF_OPT_B(precise_trig, def, \
-                  "Prefer accuracy over performance in trig functions")
 
 #define DRI_CONF_PP_LOWER_DEPTH_RANGE_RATE() \
    DRI_CONF_OPT_F(lower_depth_range_rate, 1.0, 0.0, 1.0, \
@@ -506,10 +490,6 @@
    DRI_CONF_OPT_B(allow_rgb16_configs, def, \
                   "Allow exposure of visuals and fbconfigs with rgb16 and rgba16 formats")
 
-#define DRI_CONF_ALLOW_RGB565_CONFIGS(def) \
-   DRI_CONF_OPT_B(allow_rgb565_configs, def, \
-                  "Allow exposure of visuals and fbconfigs with rgb565 formats")
-
 #define DRI_CONF_FORCE_INTEGER_TEX_NEAREST(def) \
    DRI_CONF_OPT_B(force_integer_tex_nearest, def, \
                   "Force integer textures to use nearest filtering")
@@ -524,10 +504,6 @@
 #define DRI_CONF_VERTEX_PROGRAM_DEFAULT_OUT(def) \
    DRI_CONF_OPT_B(vertex_program_default_out, def, \
                   "Initialize outputs of vertex program to a default value vec4(0, 0, 0, 1)")
-
-#define DRI_CONF_NO_FP16(def) \
-   DRI_CONF_OPT_B(no_fp16, def, \
-                  "Disable 16-bit float support")
 
 #define DRI_CONF_VK_ZERO_VRAM(def) \
    DRI_CONF_OPT_B(vk_zero_vram, def, \
@@ -668,6 +644,14 @@
    DRI_CONF_OPT_B(tu_allow_concurrent_binning, def, \
                   "Allow concurrent binning on A7XX+, the CB is disabled by default because it regresses performance on desktop games")
 
+#define DRI_CONF_TU_RESTRICT_SUBGROUP_SIZE_64(def) \
+   DRI_CONF_OPT_B(tu_restrict_subgroup_size_64, def, \
+                  "Restrict subgroup size to 64 (instead of a max of 128) to work around games assuming desktop GPU 32/64 sizes")
+
+#define DRI_CONF_TU_DONT_CARE_AS_LOAD(def) \
+   DRI_CONF_OPT_B(tu_dont_care_as_load, def, \
+                  "Treat VK_ATTACHMENT_LOAD_OP_DONT_CARE as LOAD_OP_LOAD, workaround on tiler GPUs for games that confuse these two load ops")
+
 /**
  * \brief Honeykrisp specific configuration options
  */
@@ -733,5 +717,12 @@
  */
 
  #define DRI_CONF_NVK_APP_LAYER() DRI_CONF_OPT_S_NODEF(nvk_app_layer, "Select an application layer.")
+
+/**
+ * \brief Asahi specific configuration options
+ */
+#define DRI_CONF_ASAHI_NO_FP16(def) \
+   DRI_CONF_OPT_B(asahi_no_fp16, def, \
+                  "Disable 16-bit float support")
 
 #endif

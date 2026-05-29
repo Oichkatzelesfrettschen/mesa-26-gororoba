@@ -1155,6 +1155,10 @@ system_value("blend_const_color_aaaa8888_unorm", 1)
 # System value for internal compute shaders in radeonsi.
 system_value("user_data_amd", 8)
 
+# Whether to use load_frag_coord_x() or load_pixel_coord() based on dynamic states.
+intrinsic("load_use_float_frag_coord_xy_amd", dest_comp=1, bit_sizes=[1],
+          flags=[CAN_ELIMINATE, CAN_REORDER])
+
 # Loads for gl_Color, for radeonsi which interpolates these in the shader
 # prolog to handle flatshading and front/back color selection without
 # recompiles and therefore doesn't handle them like normal varyings.
@@ -1421,6 +1425,12 @@ system_value("printf_buffer_size", 1, bit_sizes=[32])
 # printf. After lowering, the intrinsic will set an aborted? bit in the printf
 # buffer. This avoids a separate abort buffer.
 intrinsic("printf_abort")
+
+# SPV_KHR_abort
+# The source is a deref to the message type.
+intrinsic("abort", src_comp=[1])
+system_value("abort_buffer_address", 1, bit_sizes=[32,64])
+system_value("abort_buffer_size", 1, bit_sizes=[32])
 
 # Mesh shading MultiView intrinsics
 system_value("mesh_view_count", 1)
@@ -2325,7 +2335,22 @@ intrinsic("strict_wqm_coord_amd", src_comp=[0], dest_comp=0, bit_sizes=[32], ind
           flags=[CAN_ELIMINATE])
 
 intrinsic("cmat_muladd_amd", src_comp=[-1, -1, 0], dest_comp=0, bit_sizes=src2,
-          indices=[SATURATE, NEG_LO_AMD, NEG_HI_AMD, SRC_BASE_TYPE, SRC_BASE_TYPE2], flags=[CAN_ELIMINATE])
+          indices=[SATURATE, NEG_LO_AMD, NEG_HI_AMD, SRC_BASE_TYPE, SRC_BASE_TYPE2], flags=SUBGROUP_FLAGS)
+
+# Global cooperative matrix load with combined cooperative matrix transpose.
+# This corresponds to RDNA4's global_load_tr_b{64,128}. Like typical cooperative matrix operations,
+# this has to be in subgroup uniform control flow with all invocations active.
+# The definition's component size may be 8-bit or 16-bit and matches the type of matrix to load.
+# The result has 8 components (wave32) or 4 components (wave64). The address is ignored for lanes
+# 32-63, and the actual address that's loaded from is probably offset from the values in lanes 0-31.
+# src[] = { address }.
+intrinsic("load_deref_transpose_amd", bit_sizes=[8, 16], dest_comp=0, src_comp=[1],
+          indices=[ACCESS], flags=SUBGROUP_FLAGS)
+intrinsic("load_global_transpose_amd", bit_sizes=[8, 16], dest_comp=0, src_comp=[1],
+          indices=[ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=SUBGROUP_FLAGS)
+# src[] = { address, unsigned 32-bit offset }.
+intrinsic("load_global_tr_amd", bit_sizes=[8, 16], dest_comp=0, src_comp=[1, 1],
+          indices=[BASE, ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=SUBGROUP_FLAGS)
 
 # Get the debug log buffer descriptor.
 intrinsic("load_debug_log_desc_amd", bit_sizes=[32], dest_comp=4, flags=[CAN_ELIMINATE, CAN_REORDER])

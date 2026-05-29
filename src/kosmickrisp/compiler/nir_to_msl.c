@@ -760,11 +760,12 @@ src_to_packed_store(struct nir_to_msl_ctx *ctx, nir_src *src,
                     uint32_t num_components)
 {
    if (num_components == 1) {
-      P_IND(ctx, "*(%s %s*)", addressing, type);
+      P_IND(ctx, "(*(%s %s*)", addressing, type);
    } else {
-      P_IND(ctx, "*(%s packed_%s*)", addressing, type);
+      P_IND(ctx, "(*(%s packed_%s*)", addressing, type);
    }
    src_to_msl(ctx, src);
+   P(ctx, ")");
 }
 
 static const char *
@@ -1234,6 +1235,8 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
          P(ctx, " = ")
          src_to_packed(ctx, &instr->src[0], type,
                        instr->src[0].ssa->num_components);
+         writemask_to_msl(ctx, nir_intrinsic_write_mask(instr),
+                          instr->num_components);
          P(ctx, ";\n");
       }
       break;
@@ -1494,7 +1497,7 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       src_to_msl(ctx, &instr->src[0]);
       P(ctx, ", ");
       src_to_msl(ctx, &instr->src[1]);
-      P(ctx, ");");
+      P(ctx, ");\n");
       break;
    case nir_intrinsic_rotate:
       P(ctx, "simd_shuffle_rotate_down(");
@@ -1614,6 +1617,10 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       P_IND(ctx, "out.gl_ClipDistance[%d] = ", nir_intrinsic_base(instr));
       src_to_msl(ctx, &instr->src[0]);
       P(ctx, ";\n");
+      break;
+   case nir_intrinsic_load_ro_sink_address_poly:
+      /* Point to NULL, not really used currently */
+      P(ctx, "0x0;\n");
       break;
    default:
       P_IND(ctx, "Unknown intrinsic %s\n", info->name);
@@ -2031,6 +2038,7 @@ msl_preprocess_nir(struct nir_shader *nir)
    NIR_PASS(_, nir, nir_opt_combine_barriers, NULL, NULL);
    NIR_PASS(_, nir, nir_lower_var_copies);
    NIR_PASS(_, nir, nir_split_var_copies);
+   NIR_PASS(_, nir, nir_lower_memcpy);
 
    NIR_PASS(_, nir, nir_split_array_vars,
             nir_var_function_temp | nir_var_shader_in | nir_var_shader_out);

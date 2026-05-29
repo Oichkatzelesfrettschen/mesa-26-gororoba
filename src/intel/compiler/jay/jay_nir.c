@@ -261,17 +261,6 @@ jay_process_nir(const struct intel_device_info *devinfo,
    /* TODO: Real heuristic */
    bool do_simd32 = INTEL_SIMD(FS, 32);
    do_simd32 &= stage == MESA_SHADER_COMPUTE || stage == MESA_SHADER_FRAGMENT;
-
-   /* TODO: The SIMD32 fragment payload is even more fragmented than RA
-    * currently models when sample position is read. RA needs a rework to handle
-    * the real partitions in a proper way (this is planned soon).
-    *
-    * Hot fix for
-    * dEQP-GLES31.functional.shaders.sample_variables.sample_pos.correctness.multisample_texture_4
-    */
-   do_simd32 &=
-      !BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS);
-
    unsigned simd_width = do_simd32 ? (nir->info.api_subgroup_size ?: 32) : 16;
 
    if (stage == MESA_SHADER_VERTEX) {
@@ -349,6 +338,12 @@ jay_process_nir(const struct intel_device_info *devinfo,
          NIR_PASS(_, nir, nir_opt_constant_folding);
          NIR_PASS(_, nir, brw_nir_lower_alpha_to_coverage);
       }
+
+      /* We want to run the standard opt loop after lowering but before
+       * gathering prog data, so we have accurate information about which system
+       * values are actually used (vs DCE'd away).
+       */
+      brw_nir_optimize(pt);
 
       // TODO
       // NIR_PASS(_, nir, brw_nir_move_interpolation_to_top);

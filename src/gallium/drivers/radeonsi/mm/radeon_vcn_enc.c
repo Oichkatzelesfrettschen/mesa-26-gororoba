@@ -444,12 +444,18 @@ static void radeon_vcn_enc_h264_get_slice_ctrl_param(struct radeon_encoder *enc,
                                                 enc->enc_pic.quality_modes.pre_encode_mode) &&
        pic->num_slice_descriptors <= RENCODE_MAX_NUM_SLICES)
    {
-      enc->enc_pic.slice_ctrl.slice_control_mode = RENCODE_H264_SLICE_CONTROL_MODE_VARIABLE_MBS;
+      uint32_t cumulative_mbs = 0;
       enc->enc_pic.h264_slice_info_var.num_slices = pic->num_slice_descriptors;
       for (unsigned i = 0; i < pic->num_slice_descriptors; i++) {
          enc->enc_pic.h264_slice_info_var.slice_info[i].num_mbs_per_slice =
             pic->slices_descriptors[i].num_macroblocks;
+         cumulative_mbs += pic->slices_descriptors[i].num_macroblocks;
       }
+
+      /* If the app input does not fill the frame, override it by not using
+       * variable slice mode. */
+      if (cumulative_mbs == num_mbs_total)
+         enc->enc_pic.slice_ctrl.slice_control_mode = RENCODE_H264_SLICE_CONTROL_MODE_VARIABLE_MBS;
    }
 }
 
@@ -549,6 +555,21 @@ static void radeon_vcn_enc_h264_get_param(struct radeon_encoder *enc,
          pic->dpb[ref_l0].is_ltr;
    } else {
       enc->enc_pic.enc_params.reference_picture_index = 0xffffffff;
+   }
+
+   if (pic->ref_list1[0] == PIPE_H2645_LIST_REF_INVALID_ENTRY &&
+       pic->ref_list0[1] != PIPE_H2645_LIST_REF_INVALID_ENTRY) {
+      uint8_t ref_l0_1 = pic->ref_list0[1];
+
+      enc->enc_pic.h264_enc_params.l0_reference_picture1_index = ref_l0_1;
+      enc->enc_pic.h264_enc_params.picture_info_l0_reference_picture1.pic_type =
+         radeon_enc_h2645_picture_type(pic->dpb[ref_l0_1].picture_type);
+      enc->enc_pic.h264_enc_params.picture_info_l0_reference_picture1.pic_order_cnt =
+         pic->dpb[ref_l0_1].pic_order_cnt;
+      enc->enc_pic.h264_enc_params.picture_info_l0_reference_picture1.is_long_term =
+         pic->dpb[ref_l0_1].is_ltr;
+   } else {
+      enc->enc_pic.h264_enc_params.l0_reference_picture1_index = 0xffffffff;
    }
 
    if (pic->ref_list1[0] != PIPE_H2645_LIST_REF_INVALID_ENTRY) {
@@ -813,13 +834,19 @@ static void radeon_vcn_enc_hevc_get_slice_ctrl_param(struct radeon_encoder *enc,
                                                 enc->enc_pic.quality_modes.pre_encode_mode) &&
        pic->num_slice_descriptors <= RENCODE_MAX_NUM_SLICES)
    {
-      enc->enc_pic.hevc_slice_ctrl.slice_control_mode = RENCODE_HEVC_SLICE_CONTROL_MODE_VARIABLE_CTBS;
+      uint32_t cumulative_ctbs = 0;
       enc->enc_pic.hevc_slice_info_var.num_slice_segments = pic->num_slice_descriptors;
       for (unsigned i = 0; i < pic->num_slice_descriptors; i++) {
          enc->enc_pic.hevc_slice_info_var.slice_segment_info[i].num_ctbs_per_segment =
             pic->slices_descriptors[i].num_ctu_in_slice;
          enc->enc_pic.hevc_slice_info_var.slice_segment_info[i].is_independent = 1;
+         cumulative_ctbs += pic->slices_descriptors[i].num_ctu_in_slice;
       }
+
+      /* If the app input does not fill the frame, override it by not using
+       * variable slice mode. */
+      if (cumulative_ctbs == num_ctbs_total)
+         enc->enc_pic.slice_ctrl.slice_control_mode = RENCODE_HEVC_SLICE_CONTROL_MODE_VARIABLE_CTBS;
    }
 }
 

@@ -51,12 +51,28 @@ jay_lower_spill(jay_function *func)
 {
    jay_builder b = jay_init_builder(func, jay_before_function(func));
 
-   /* We reserve the top UGPRs for spilling by ABI */
-   unsigned ugpr_reservation = func->shader->num_regs[UGPR];
-   assert(util_is_aligned(ugpr_reservation + 1, func->shader->dispatch_width));
+   /* We reserved a block of UGPRs for our use */
+   signed ugpr_reservation = -1, gpr2 = -1;
+   for (unsigned i = 0; i < func->shader->partition.nr_blocks[GPR]; ++i) {
+      struct jay_register_block B = func->shader->partition.blocks[GPR][i];
 
-   jay_def surf = jay_bare_reg(UGPR, ugpr_reservation);
-   jay_def sp = jay_bare_reg(UGPR, ugpr_reservation + 1);
+      if (B.stride == JAY_STRIDE_2) {
+         gpr2 = B.start_gpr;
+      }
+   }
+
+   for (unsigned i = 0; i < func->shader->partition.nr_blocks[UGPR]; ++i) {
+      struct jay_register_block B = func->shader->partition.blocks[UGPR][i];
+
+      if (B.type == JAY_BLOCK_SPILL) {
+         ugpr_reservation = B.start_gpr;
+      }
+   }
+
+   assert(ugpr_reservation >= 0 && "must have reserved something");
+   assert(gpr2 >= 0 && "must have a stride-2 gpr");
+
+   jay_def sp = jay_bare_reg(UGPR, ugpr_reservation);
    sp.num_values_m1 = func->shader->dispatch_width - 1;
 
    /* Calculate how much stack space we need */
@@ -76,11 +92,12 @@ jay_lower_spill(jay_function *func)
     * TODO: Need ABI for multi-function.
     */
    assert(func->is_entrypoint);
-   jay_AND(&b, JAY_TYPE_U32, surf, jay_bare_reg(UGPR, 5), ~BITFIELD_MASK(10));
-   jay_SHR(&b, JAY_TYPE_U32, ADDRESS_REG, surf, 4);
+   jay_def tmpu = jay_bare_reg(UGPR, ugpr_reservation);
+   jay_AND(&b, JAY_TYPE_U32, tmpu, jay_bare_reg(UGPR, 5), ~BITFIELD_MASK(10));
+   jay_SHR(&b, JAY_TYPE_U32, ADDRESS_REG, tmpu, 4);
 
    /* We use a 32-bit strided stack: SP = scratch + (lane ID * 4) */
-   jay_def tmp2 = jay_bare_reg(GPR, func->shader->partition.base2);
+   jay_def tmp2 = jay_bare_reg(GPR, gpr2);
    jay_LANE_ID_8(&b, tmp2);
    for (unsigned i = 8; i < b.shader->dispatch_width; i *= 2) {
       jay_LANE_ID_EXPAND(&b, tmp2, tmp2, i);
@@ -104,7 +121,8 @@ jay_lower_spill(jay_function *func)
 
          if (I->op == JAY_OPCODE_MOV && jay_is_send_like(I)) {
             if (!address_valid) {
-               jay_SHR(&b, JAY_TYPE_U32, ADDRESS_REG, surf, 4);
+               jay_MOV(&b, ADDRESS_REG, tmpu);
+               jay_MOV(&b, tmpu, b.shader->scratch_size);
                address_valid = true;
             }
 
@@ -118,9 +136,8 @@ jay_lower_spill(jay_function *func)
 
             jay_remove_instruction(I);
          } else if (I->op == JAY_OPCODE_SHUFFLE) {
-            /* Shuffles implicitly clobber the address register so we'll need to
-             * rematerialize the surface state (but be lazy).
-             */
+            /* Shuffles implicitly clobber the address register. Spill it. */
+            jay_MOV(&b, tmpu, ADDRESS_REG);
             address_valid = false;
          }
       }
@@ -128,7 +145,8 @@ jay_lower_spill(jay_function *func)
       /* Canonicalize our internal registers at block boundaries */
       if (jay_num_successors(block, GPR) > 0) {
          if (!address_valid) {
-            jay_SHR(&b, JAY_TYPE_U32, ADDRESS_REG, surf, 4);
+            jay_MOV(&b, ADDRESS_REG, tmpu);
+            jay_MOV(&b, tmpu, b.shader->scratch_size);
          }
 
          if (sp_delta_B > 0) {

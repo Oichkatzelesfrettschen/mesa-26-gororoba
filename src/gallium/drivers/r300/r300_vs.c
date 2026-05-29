@@ -7,15 +7,14 @@
 #include "r300_vs.h"
 
 #include "r300_context.h"
-#include "r300_nir_to_rc_direct.h"
 #include "r300_screen.h"
-#include "r300_tgsi_to_rc.h"
 #include "r300_reg.h"
 
-#include "nir.h"
+#include "tgsi/tgsi_dump.h"
+
 #include "compiler/nir_to_rc.h"
 #include "compiler/radeon_compiler.h"
-#include "tgsi/tgsi_dump.h"
+#include "nir/nir.h"
 
 /* Convert info about VS output semantics into r300_shader_semantics. */
 static void r300_shader_read_vs_outputs(
@@ -90,13 +89,12 @@ static void set_vertex_inputs_outputs(struct r300_vertex_program_compiler * c)
 {
     struct r300_vertex_shader_code * vs = c->UserData;
     struct r300_shader_semantics* outputs = &vs->outputs;
-    struct tgsi_shader_info* info = &vs->info;
     int i, reg = 0;
     bool any_bcolor_used = outputs->bcolor[0] != ATTR_UNUSED ||
                            outputs->bcolor[1] != ATTR_UNUSED;
 
     /* Fill in the input mapping */
-    for (i = 0; i < info->num_inputs; i++)
+    for (i = 0; i < vs->num_inputs; i++)
         c->code->inputs[i] = i;
 
     /* Position. */
@@ -157,103 +155,77 @@ static void set_vertex_inputs_outputs(struct r300_vertex_program_compiler * c)
 void r300_init_vs_outputs(struct r300_context *r300,
                           struct r300_vertex_shader *vs)
 {
-    /* When tokens is NULL the NIR direct path is in use: fill info from NIR
-     * variable metadata rather than running tgsi_scan_shader.
-     * r300_nir_fill_shader_info applies the same ntr_fixup_varying_slots
-     * remapping that tgsi_scan_shader sees after the TGSI round-trip. */
-    if (vs->state.tokens)
-        tgsi_scan_shader(vs->state.tokens, &vs->shader->info);
-    else
-        r300_nir_fill_shader_info(vs->state.ir.nir, &vs->shader->info);
+    tgsi_scan_shader(vs->state.tokens, &vs->shader->info);
     r300_shader_read_vs_outputs(r300, &vs->shader->info, &vs->shader->outputs);
+}
+
+static void r300_setup_vs_compiler(struct r300_context *r300,
+                            struct r300_vertex_program_compiler *compiler,
+                            struct r300_vertex_shader_code *vs)
+{
+    /* Setup the compiler */
+    memset(compiler, 0, sizeof(*compiler));
+    rc_init(&compiler->Base, &r300->vs_regalloc_state);
+
+    DBG_ON(r300, DBG_VP) ? compiler->Base.Debug |= RC_DBG_LOG : 0;
+    compiler->code = &vs->code;
+    compiler->UserData = vs;
+    compiler->Base.debug = &r300->context.debug;
+    compiler->Base.is_r400 = r300->screen->caps.is_r400;
+    compiler->Base.is_r500 = r300->screen->caps.is_r500;
+    compiler->Base.disable_optimizations = DBG_ON(r300, DBG_NO_OPT);
+    /* Only R500 has few IEEE math opcodes. */
+    if (r300->screen->options.ieeemath && r300->screen->caps.is_r500) {
+        compiler->Base.math_rules = RC_MATH_IEEE;
+    } else if (r300->screen->options.ffmath) {
+        compiler->Base.math_rules = RC_MATH_FF;
+    }
+    compiler->Base.has_half_swizzles = false;
+    compiler->Base.has_presub = false;
+    compiler->Base.has_omod = false;
+    compiler->Base.max_temp_regs = 32;
+    compiler->Base.max_constants = 256;
+    compiler->Base.max_alu_insts = r300->screen->caps.is_r500 ? 1024 : 256;
 }
 
 void r300_translate_vertex_shader(struct r300_context *r300,
                                   struct r300_vertex_shader *shader)
 {
     struct r300_vertex_program_compiler compiler;
-    struct tgsi_to_rc ttr;
     unsigned i;
-    struct r300_vertex_shader_code *vs = shader->shader;
 
-    r300_init_vs_outputs(r300, shader);
+    struct r300_vertex_shader_code *vs = shader->shader;
+    r300_shader_semantics_reset(&vs->outputs);
+
+    union r300_shader_code code;
+    code.v = vs;
+
+    r300_setup_vs_compiler(r300, &compiler, vs);
+
+    nir_shader *clone = nir_shader_clone(NULL, shader->state.ir.nir);
+    struct r300_fragment_program_external_state external_state = {};
+    nir_to_rc(clone, (struct pipe_screen *)r300->screen,
+              external_state, code, &compiler.Base);
+    vs->outputs.wpos = vs->outputs.num_total;
 
     /* Nothing to do if the shader does not write gl_Position. */
     if (vs->outputs.pos == ATTR_UNUSED) {
         vs->dummy = true;
-        return;
+        goto cleanup;
     }
 
-    /* Setup the compiler */
-    memset(&compiler, 0, sizeof(compiler));
-    rc_init(&compiler.Base, &r300->vs_regalloc_state);
-
-    DBG_ON(r300, DBG_VP) ? compiler.Base.Debug |= RC_DBG_LOG : 0;
-    compiler.code = &vs->code;
-    compiler.UserData = vs;
-    compiler.Base.debug = &r300->context.debug;
-    compiler.Base.is_r400 = r300->screen->caps.is_r400;
-    compiler.Base.is_r500 = r300->screen->caps.is_r500;
-    compiler.Base.disable_optimizations = DBG_ON(r300, DBG_NO_OPT);
-    /* Only R500 has few IEEE math opcodes. */
-    if (r300->screen->options.ieeemath && r300->screen->caps.is_r500) {
-        compiler.Base.math_rules = RC_MATH_IEEE;
-    } else if (r300->screen->options.ffmath) {
-        compiler.Base.math_rules = RC_MATH_FF;
-    }
-    compiler.Base.has_half_swizzles = false;
-    compiler.Base.has_presub = false;
-    compiler.Base.has_omod = false;
-    compiler.Base.max_temp_regs = 32;
-    compiler.Base.max_constants = 256;
-    compiler.Base.max_alu_insts = r300->screen->caps.is_r500 ? 1024 : 256;
-
-    if (shader->state.tokens) {
-        /* TGSI path: used for SWTCL (TCL-less) chips and TGSI input shaders. */
-        if (compiler.Base.Debug & RC_DBG_LOG) {
-            DBG(r300, DBG_VP, "r300: Initial vertex program\n");
-            tgsi_dump(shader->state.tokens, 0);
-        }
-
-        ttr.compiler = &compiler.Base;
-        ttr.info = &vs->info;
-
-        r300_tgsi_to_rc(&ttr, shader->state.tokens);
-
-        if (ttr.error) {
-            vs->error = strdup("Cannot translate shader from TGSI");
-            vs->dummy = true;
-            return;
-        }
-    } else {
-        /* NIR direct path: r300_nir_lower_for_rc reduces the NIR to the
-         * subset r300_nir_to_rc_direct handles, then the RC program is
-         * filled without a TGSI serialization round-trip.
-         * r300_create_vs_state leaves tokens NULL on TCL-capable chips.
-         * Clone before lowering: r300_nir_lower_for_rc() mutates varying
-         * slots in place; r300_pick_vertex_shader() reuses state.ir.nir
-         * across wpos variants, so lowering the same object twice corrupts
-         * driver_location assignments for subsequent compiles. */
-        struct r300_fragment_program_external_state ext_state = {};
-        nir_shader *nir = nir_shader_clone(NULL, shader->state.ir.nir);
-        r300_nir_lower_for_rc(nir, r300->context.screen, ext_state);
-        r300_nir_to_rc_direct(&compiler.Base, nir,
-                              r300->context.screen, ext_state);
-        ralloc_free(nir);
-
-        if (compiler.Base.Error) {
-            vs->error = strdup(compiler.Base.ErrorMsg);
-            rc_destroy(&compiler.Base);
-            vs->dummy = true;
-            return;
-        }
+    if (compiler.Base.Error) {
+        vs->error = strdup(compiler.Base.ErrorMsg ? compiler.Base.ErrorMsg
+                                                  : "Cannot translate shader from NIR");
+        vs->dummy = true;
+        goto cleanup;
     }
 
     if (compiler.Base.Program.Constants.Count > 200) {
         compiler.Base.remove_unused_constants = true;
     }
 
-    compiler.RequiredOutputs = ~(~0U << (vs->info.num_outputs + (vs->wpos ? 1 : 0)));
+    compiler.RequiredOutputs = ~(~0U << (vs->outputs.num_total + (vs->wpos ? 1 : 0)));
     compiler.SetHwInputOutput = &set_vertex_inputs_outputs;
 
     /* Insert the WPOS output. */
@@ -264,9 +236,8 @@ void r300_translate_vertex_shader(struct r300_context *r300,
     r3xx_compile_vertex_program(&compiler);
     if (compiler.Base.Error) {
         vs->error = strdup(compiler.Base.ErrorMsg);
-        rc_destroy(&compiler.Base);
         vs->dummy = true;
-        return;
+        goto cleanup;
     }
 
     /* Initialize numbers of constants for each type. */
@@ -282,5 +253,6 @@ void r300_translate_vertex_shader(struct r300_context *r300,
     vs->immediates_count = vs->code.constants.Count - vs->externals_count;
 
     /* And, finally... */
+cleanup:
     rc_destroy(&compiler.Base);
 }
