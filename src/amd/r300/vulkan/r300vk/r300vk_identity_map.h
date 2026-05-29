@@ -170,6 +170,23 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
                                         const struct r300vk_cmd_dispatch *dispatch,
                                         const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* Multi-tap gather (box-3 convolution) orchestrator: resolves the (input,
+ * output) buffer pair, wraps the input as a single PIPE_TEXTURE_2D sampler
+ * view (like identity-map), uploads the neighbor texel displacement
+ * CONST[0] = (1/width, 0, 0, 0) as a fragment constant, draws a fullscreen
+ * quad whose synthesized FS samples the input at three neighborhood offsets
+ * (gid-1, gid, gid+1) and sums them in the FP24 ALU, then copies the RT back
+ * to the output buffer.  The displacement is dispatch-time (width = the grid
+ * size), so the orchestrator computes and uploads it here rather than baking
+ * it into the FS at pipeline-create.  Returns false on resource creation
+ * failure, descriptor walk miss, or a copy-back map failure; the queue's
+ * caller then falls through to the no-op compute lifecycle. */
+bool
+r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
+                                       const struct r300vk_pipeline *pl,
+                                       const struct r300vk_cmd_dispatch *dispatch,
+                                       const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #ifdef __cplusplus
 }
 #endif

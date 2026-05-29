@@ -887,6 +887,279 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    return copy_ok;
 }
 
+/* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
+ * view, two storage buffers) plus a per-dispatch fragment constant carrying
+ * the neighbor texel displacement.  The synthesized FS
+ * (r300vk_synthesize_multitap_gather_fs) samples the input at three
+ * neighborhood offsets and sums them; everything else (RT, VBO, framebuffer,
+ * viewport, scissor, draw, copy-back) is the identity-map path. */
+bool
+r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
+                                       const struct r300vk_pipeline *pl,
+                                       const struct r300vk_cmd_dispatch *dispatch,
+                                       const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   IDM_LOG("gather entry pl=%p is_multitap_gather=%d tap_count=%u "
+           "set_count=%u gx=%u gy=%u gz=%u",
+           (const void *)pl,
+           pl ? (int)pl->multitap_gather.is_multitap_gather : -1,
+           pl ? (unsigned)pl->multitap_gather.tap_count : 0,
+           binds ? binds->set_count : 0,
+           dispatch ? dispatch->group_count_x : 0,
+           dispatch ? dispatch->group_count_y : 0,
+           dispatch ? dispatch->group_count_z : 0);
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0) {
+      IDM_LOG("gather early-return null-or-empty-binds");
+      return false;
+   }
+   if (!pl->vs_cso || !pl->fs_cso) {
+      IDM_LOG("gather early-return no-vs-or-fs-cso");
+      return false;
+   }
+   if (binds->first_set != 0) {
+      IDM_LOG("gather early-return first_set=%u (only slot 0)",
+              binds->first_set);
+      return false;
+   }
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout) {
+      IDM_LOG("gather early-return no-set-or-layout");
+      return false;
+   }
+
+   /* Two storage buffers: input (binding 0) and output (binding 1).  The
+    * detector's captured bindings stay 0 post-explicit_io (the binding source
+    * becomes a load_vulkan_descriptor handle, not a constant), so resolve
+    * positionally like the identity-map path when both indices are 0. */
+   uint32_t in_binding  = pl->multitap_gather.input_ssbo_binding;
+   uint32_t out_binding = pl->multitap_gather.output_ssbo_binding;
+   if (in_binding == out_binding) {
+      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
+          !nth_storage_buffer_binding(set, 1, &out_binding)) {
+         IDM_LOG("gather early-return layout-has-fewer-than-two-storage-buffers");
+         return false;
+      }
+   }
+   IDM_LOG("gather bindings: in=%u out=%u", in_binding, out_binding);
+
+   const struct r300vk_descriptor *in_desc =
+      find_descriptor_by_binding(set, in_binding);
+   const struct r300vk_descriptor *out_desc =
+      find_descriptor_by_binding(set, out_binding);
+   if (!in_desc || !out_desc || !in_desc->buf.buffer || !out_desc->buf.buffer) {
+      IDM_LOG("gather early-return descriptor-walk-miss");
+      return false;
+   }
+   VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
+   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource) {
+      IDM_LOG("gather early-return null-pipe-resource");
+      return false;
+   }
+
+   const uint64_t total_invocations =
+      (uint64_t)dispatch->group_count_x *
+      (uint64_t)dispatch->group_count_y *
+      (uint64_t)dispatch->group_count_z;
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("gather early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
+      return false;
+   }
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total_invocations, &width, &height);
+   if (width > 2048 || height > 2048) {
+      IDM_LOG("gather early-return extent-exceeds-2048-cap");
+      return false;
+   }
+
+   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+   struct pipe_sampler_view *in_sv =
+      r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
+                                                     width, height, fmt);
+   if (!in_sv) {
+      IDM_LOG("gather early-return wrap-input-failed");
+      return false;
+   }
+
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = fmt;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      IDM_LOG("gather early-return rt-create-failed");
+      pipe_sampler_view_reference(&in_sv, NULL);
+      return false;
+   }
+
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = fmt;
+   surf_templ.texture = rt;
+
+   const float verts[16] = {
+      -1.0f, -1.0f, 0.0f, 0.0f,
+       1.0f, -1.0f, 1.0f, 0.0f,
+      -1.0f,  1.0f, 0.0f, 1.0f,
+       1.0f,  1.0f, 1.0f, 1.0f,
+   };
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = sizeof(verts);
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb) {
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&in_sv, NULL);
+      return false;
+   }
+   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = 16;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   velems[1].src_offset = 8; velems[1].src_stride = 16;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&in_sv, NULL);
+      return false;
+   }
+
+   struct pipe_framebuffer_state fb;
+   memset(&fb, 0, sizeof(fb));
+   fb.width = width;  fb.height = height;
+   fb.nr_cbufs = 1;   fb.cbufs[0] = surf_templ;
+   pipe->set_framebuffer_state(pipe, &fb);
+
+   struct pipe_viewport_state vp;
+   memset(&vp, 0, sizeof(vp));
+   vp.scale[0] = (float)width  * 0.5f; vp.scale[1] = (float)height * 0.5f;
+   vp.scale[2] = 0.5f;
+   vp.translate[0] = (float)width * 0.5f; vp.translate[1] = (float)height * 0.5f;
+   vp.translate[2] = 0.5f;
+   pipe->set_viewport_states(pipe, 0, 1, &vp);
+
+   struct pipe_scissor_state sc = {0};
+   sc.maxx = width; sc.maxy = height;
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+
+   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_vs_state(pipe, pl->vs_cso);
+   pipe->bind_fs_state(pipe, pl->fs_cso);
+   pipe->bind_vertex_elements_state(pipe, velems_cso);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
+                             &device->identity_map_sampler_cso);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &in_sv);
+
+   /* The neighbor texel displacement is 1/width in normalized texcoord X.
+    * height == 1 for <= 2048 elements (derive_raster_extent), so the row
+    * spans the full [0,1] in X and 1/width lands exactly one texel over;
+    * the .y/.z/.w stay 0 so the offset taps remain in row 0.  The FS reads
+    * this as CONST[0].  user_buffer feeds r300_set_constant_buffer directly
+    * (it maps cb->user_buffer with no GPU upload), so the float4 is consumed
+    * before this stack frame unwinds at the draw below. */
+   const float texel_delta[4] = { 1.0f / (float)width, 0.0f, 0.0f, 0.0f };
+   struct pipe_constant_buffer cb;
+   memset(&cb, 0, sizeof(cb));
+   cb.user_buffer = texel_delta;
+   cb.buffer_size = sizeof(texel_delta);
+   pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
+   IDM_LOG("gather const upload texel_delta.x=1/%u", width);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.instance_count = 1;
+   info.max_index      = 3;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+   IDM_LOG("gather draw_vbo mode=triangle_strip count=4");
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+   IDM_LOG("gather post-flush, beginning rt->buffer copy");
+
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   bool copy_ok = false;
+   {
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.width  = width * height * util_format_get_blocksize(fmt);
+         out_box.height = 1;
+         out_box.depth  = 1;
+         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                            PIPE_MAP_WRITE |
+                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                            &out_box, &out_xfer);
+         if (out_bytes) {
+            const uint8_t *src_rows = (const uint8_t *)rt_map;
+            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
+            const unsigned bpp = util_format_get_blocksize(fmt);
+            const unsigned row_bytes = width * bpp;
+            for (unsigned r = 0; r < height; r++)
+               memcpy(dst_bytes + r * row_bytes,
+                      src_rows + r * rt_xfer->stride,
+                      row_bytes);
+            pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+   IDM_LOG("gather rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+           (const void *)out_buf->resource, (const void *)rt,
+           copy_box.width, copy_box.height);
+
+   /* Tear down the sampler view, the fragment constant, and the rest. */
+   struct pipe_sampler_view *no_view = NULL;
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, &no_view);
+   pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, NULL);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&in_sv, NULL);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&rt, NULL);
+   IDM_LOG("gather orchestrator done copy_ok=%d", (int)copy_ok);
+   return copy_ok;
+}
+
 bool
 r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
                                         const struct r300vk_pipeline *pl,
