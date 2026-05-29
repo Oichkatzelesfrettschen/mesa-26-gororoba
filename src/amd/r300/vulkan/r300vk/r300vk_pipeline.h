@@ -110,6 +110,25 @@ struct r300vk_pipeline {
     * and multipass (loop) by the conditional store with two loads. */
    struct r300_compute_predicated_store_pattern predicated_store;
 
+   /* Multi-tap gather (N-tap neighborhood convolution) detected at
+    * pipeline-create time.  Recognized shape:
+    *   out_data[gid] = in_data[gid+o0] + in_data[gid+o1] + ... (N >= 3 taps)
+    * an unconditional store of an iadd-reduction over N >= 3 load_ssbo leaves
+    * from one input buffer, no atomic / no loop.  Lowers to a single
+    * fullscreen-quad draw that samples the input (wrapped PIPE_TEXTURE_2D,
+    * NEAREST) at N neighborhood taps and sums them in the FP24 ALU.  The
+    * detector recognizes the shape but does not extract per-tap offsets; the
+    * orchestrator applies a fixed canonical box-3 kernel (taps at gid-1, gid,
+    * gid+1) and the probe kernel matches it -- the shared canonical-kernel
+    * contract.  The neighbor texel displacement (1/width in normalized
+    * texcoord X, the single texture row derive_raster_extent produces for
+    * <= 2048 elements) is a dispatch-time quantity the orchestrator uploads as
+    * a fragment constant; the FS adds it to the interpolated texcoord.
+    * Discriminated from binary-map (load_count == 2; gather has >= 3) and from
+    * every loop/atomic/conditional class by the unconditional iadd-tree
+    * store. */
+   struct r300_compute_multitap_gather_pattern multitap_gather;
+
    void                   *vs_cso;
    void                   *fs_cso;
    void                   *blend_cso;
