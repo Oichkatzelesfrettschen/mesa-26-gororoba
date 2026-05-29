@@ -285,6 +285,26 @@ terakan_shader_spirv_to_nir(struct terakan_device * const device, size_t const s
       nir_var_mem_push_const | (nir->info.stage == MESA_SHADER_COMPUTE ? nir_var_mem_shared : 0),
       nir_address_format_32bit_offset);
 
+   /* Evergreen/PALM has no native FP64.  Lower fp64 ops to the soft-float
+    * library here, in the Terakan pipeline, before the shared SFN backend: the
+    * lowering emits 64-bit integer arithmetic, which the SFN lower_64bit path's
+    * nir_lower_int64 then decomposes to 32-bit.  Run it before the 24-bit-mul
+    * hint so any 24-bit-fittable multiplies it produces are caught too.
+    *
+    * Gate only on lower_doubles_options, not on info.bit_sizes_float: that
+    * field is set by nir_shader_gather_info, which vk_spirv_to_nir does not run,
+    * so reading it here could be stale/zero and silently skip the lowering on a
+    * genuine fp64 shader (invoke-but-gate-dead).  nir_lower_doubles already
+    * no-ops on a shader with no fp64 ops, so an unconditional call is correct;
+    * the only cost is building softfp64 once on a device that never uses fp64.
+    * A NULL library (import failed) leaves fp64 reaching SFN unlowered, the
+    * prior behaviour, rather than failing compilation. */
+   if (nir->options->lower_doubles_options) {
+      struct nir_shader * const softfp64 = terakan_physical_device_get_softfp64(physical_device);
+      if (softfp64 != NULL)
+         NIR_PASS(_, nir, nir_lower_doubles, softfp64, nir->options->lower_doubles_options);
+   }
+
    /* Lower 32-bit integer multiplies whose operands provably fit
     * unsigned 24 bits to nir_op_umul24 so SFN emits MUL_UINT24 on
     * the vec slot (single cycle) instead of MULLO_INT on the t-slot
