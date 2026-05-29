@@ -137,6 +137,10 @@ LOCKED_TOOL_ENV := \
         install-r300vk-vostro-x86-64-v1-clang22-release \
         rebuild-r300vk-vostro-x86-64-v1-clang22-debug \
         install-r300vk-vostro-x86-64-v1-clang22-debug \
+        rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache \
+        install-1_r300_full_release_x86_64v1-clang22-distcc-cache \
+        rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache \
+        install-2_r300_full_debug_x86_64v1-clang22-distcc-cache \
         help
 
 help:
@@ -639,3 +643,23 @@ rebuild-r300vk-vostro-x86-64-v1-clang22-debug:
 
 install-r300vk-vostro-x86-64-v1-clang22-debug:
 	$(MAKE) install PROFILE=r300vk-vostro-x86-64-v1-clang22-debug HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+
+# Canonical full-feature r300 RELEASE build: maximal GL/GLES surface plus the
+# amd_r300 ICD in one artifact (profile 1_).  Installs to the release prefix.
+rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache:
+	$(MAKE) -j1 clean PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+
+install-1_r300_full_release_x86_64v1-clang22-distcc-cache:
+	$(MAKE) install PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+
+# Canonical full-feature r300 DEBUG build: same surface, assertions live (-O2 -g),
+# installs to the -debug prefix (profile 2_).
+rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
+	$(MAKE) -j1 clean PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+
+install-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
+	$(MAKE) install PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug

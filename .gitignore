@@ -13,6 +13,15 @@
 *.ini
 build-infra/shadercache.bin
 
+# In-tree Meson build directories.  The build-infra Makefile builds out-of-tree
+# under ../../build/mesa-<profile>/ (outside the repo), but a hand-run
+# `meson setup builddir` (the canonical shape in AGENTS.md) lands in-tree, so
+# guard the documented builddir names against accidental commits.
+/builddir
+/builddir-*/
+# clangd / tooling compilation database, regenerated from any build directory.
+compile_commands.json
+
 # macOS Finder/AppleDouble metadata from NFS, SMB, and removable-media copies.
 .DS_Store
 ._*
