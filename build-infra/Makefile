@@ -2,7 +2,7 @@
 #
 # Consolidates the 9 legacy build-*/ dirs into a single infra that
 # selects a PROFILE -> meson config file -> builddir under
-# ../../build/mesa-<profile>/.
+# ../build/mesa-<profile>/.
 #
 # Usage:
 #   make configure PROFILE=terakan-full      # first time, or after config edits
@@ -29,7 +29,7 @@ SHELL := /bin/bash
 # --- configurable parameters -------------------------------------------------
 PROFILE  ?= terakan-full
 HOSTENV  ?= btver1
-BUILDDIR ?= $(abspath $(CURDIR)/../../build/mesa-$(PROFILE))
+BUILDDIR ?= $(abspath $(CURDIR)/../build/mesa-$(PROFILE))
 INSTALL_NAMESPACE ?= mesa
 # Keep profile lanes isolated by default because meson install does not remove
 # artifacts that are absent from the current profile.  Override PREFIX=... on
@@ -49,14 +49,14 @@ PAIR_NAMESPACE = $(word 5,$1)
 TERAKAN_PAIR_RELEASE := \
     terakan-distcc-no-rusticl \
     btver1-ccache-no-pump \
-    $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
+    $(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
     /opt/local/mesa-26-gororoba \
     mesa-26-gororoba
 
 TERAKAN_PAIR_DEBUG := \
     terakan-distcc-no-rusticl-debug \
     btver1-ccache-no-pump \
-    $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
+    $(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
     /opt/local/mesa-26-gororoba-debug \
     mesa-26-gororoba-debug
 ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
@@ -553,10 +553,10 @@ install-terakan-distcc-no-rusticl-ccache-no-pump-pair:
 # under distcc-pump with direct clang.  This avoids generated-header changes
 # invalidating pump's include snapshot.
 rebuild-terakan-distcc-no-rusticl-pump:
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) build-generated PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) build-pump PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) build-generated PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) build-pump PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
 
 rebuild-terakan-minimal:
 	$(MAKE) clean PROFILE=terakan-minimal
@@ -608,8 +608,8 @@ install-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
 # Override the pinned source commit with GOROROBA_COMMIT=<sha>.  Artifacts live
 # under ../../build/ (the sanctioned build area), not as workspace siblings.
 GOROROBA_PKG_SRC   ?= $(CURDIR)/packaging/mesa-gororoba
-GOROROBA_PKG_DIR   ?= $(abspath $(CURDIR)/../../build/mesa-gororoba-pkg)
-GOROROBA_REPO_DIR  ?= $(abspath $(CURDIR)/../../build/mesa-gororoba-repo)
+GOROROBA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-gororoba-pkg)
+GOROROBA_REPO_DIR  ?= $(abspath $(CURDIR)/../build/mesa-gororoba-repo)
 GOROROBA_REPO_NAME ?= gororoba
 TARGET_HOST        ?= cachyos-vostro1000
 

@@ -26,4 +26,15 @@ gallium-extra-hud   = true
 gallium-va          = 'enabled'
 
 # GLX stack: auto-pick dri vs direct (upstream Mesa default is sane).
-glx                 = 'auto'
+glx                 = 'dri'
+
+# Maximal GL/EGL/GBM/GLES/glvnd surface for r600/x130e testing parity with the
+# r300 canonical 1_/2_ profiles.
+opengl              = true
+gles1               = 'enabled'
+gles2               = 'enabled'
+egl                 = 'enabled'
+gbm                 = 'enabled'
+glvnd               = 'enabled'
+platforms           = ['x11', 'wayland']
+shader-cache        = 'enabled'
