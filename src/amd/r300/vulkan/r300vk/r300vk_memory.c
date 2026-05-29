@@ -13,6 +13,7 @@
 #include "vk_object.h"
 
 #include "pipe/p_context.h"
+#include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
 
@@ -73,11 +74,30 @@ r300vk_MapMemory(VkDevice _device,
    VK_FROM_HANDLE(r300vk_device, device, _device);
    VK_FROM_HANDLE(r300vk_device_memory, mem, _memory);
 
-   if (!mem->resource)
-      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
-                       "r300vk: MapMemory called before BindBufferMemory2 "
-                       "or BindImageMemory2 (resource-backed memory model "
-                       "requires a prior bind)");
+   /* Map-before-bind: Vulkan permits mapping HOST_VISIBLE VkDeviceMemory before
+    * (or without) binding it to a buffer or image, and deqp's default allocator
+    * does exactly this.  The resource-backed model has no storage until a bind,
+    * so lazily create the memory's own host-visible pipe_buffer here.  A later
+    * BindBufferMemory2 makes the VkBuffer reference this same resource, so writes
+    * made through the map reach the bound buffer (single shared storage, no
+    * copy).  Image binds install their tiled resource and never reach this lazy
+    * path once bound. */
+   if (!mem->resource) {
+      struct pipe_resource tmpl = {
+         .target     = PIPE_BUFFER,
+         .format     = PIPE_FORMAT_R8_UNORM,
+         .bind       = PIPE_BIND_VERTEX_BUFFER,
+         .usage      = PIPE_USAGE_DYNAMIC,
+         .width0     = (unsigned)mem->size,
+         .height0    = 1,
+         .depth0     = 1,
+         .array_size = 1,
+      };
+      mem->resource = device->screen->resource_create(device->screen, &tmpl);
+      if (!mem->resource)
+         return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+      mem->owns_buffer = true;
+   }
 
    /* Unmap any stale mapping from a previous vkMapMemory call.  Vulkan
     * spec forbids double-mapping without an intervening vkUnmapMemory,
@@ -189,12 +209,36 @@ r300vk_BindBufferMemory2(VkDevice _device,
                           uint32_t bindInfoCount,
                           const VkBindBufferMemoryInfo *pBindInfos)
 {
-   (void)_device;
+   VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       VK_FROM_HANDLE(r300vk_buffer, buf, pBindInfos[i].buffer);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
-      mem->memory_offset = pBindInfos[i].memoryOffset;
-      pipe_resource_reference(&mem->resource, buf->resource);
+
+      if (mem->owns_buffer) {
+         /* Map-before-bind already created the memory's own host pipe_buffer and
+          * the application may have written through the map.  Point the VkBuffer
+          * at that same resource so the written bytes ARE the buffer's storage --
+          * one shared allocation, no copy.  buf's create-time resource is
+          * released by the reference assignment.
+          *
+          * The memory's buffer spans the whole VkDeviceMemory from byte 0, while
+          * a draw reads buf->resource from byte 0, so a non-zero memoryOffset
+          * would silently alias the wrong bytes.  Reject it loudly rather than
+          * miscompute, until the draw path threads the bind offset through. */
+         if (pBindInfos[i].memoryOffset != 0)
+            return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                             "r300vk: non-zero memoryOffset with map-before-bind "
+                             "is unsupported (buffer would alias the wrong bytes "
+                             "of the host-mapped allocation)");
+         mem->memory_offset = 0;
+         pipe_resource_reference(&buf->resource, mem->resource);
+      } else {
+         /* No prior map: keep the resource-backed model unchanged -- the memory
+          * borrows the buffer's create-time resource.  Byte-for-byte the path
+          * the shipping compute/dispatch (identity-map replay) relies on. */
+         mem->memory_offset = pBindInfos[i].memoryOffset;
+         pipe_resource_reference(&mem->resource, buf->resource);
+      }
    }
    return VK_SUCCESS;
 }

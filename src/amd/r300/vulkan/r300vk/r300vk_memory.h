@@ -34,9 +34,13 @@ struct r300vk_device_memory {
    struct vk_object_base  base;
    VkDeviceSize           size;
    VkDeviceSize           memory_offset;  /* from BindBufferMemory2/BindImageMemory2 */
-   struct pipe_resource  *resource;  /* NULL until BindBufferMemory2/BindImageMemory2 */
+   struct pipe_resource  *resource;  /* NULL until first map or BindBufferMemory2/BindImageMemory2 */
    struct pipe_transfer  *transfer;  /* non-NULL while mapped */
    void                  *map_ptr;
+   bool                   owns_buffer;  /* true when MapMemory lazily created the
+                                         * memory's own host pipe_buffer for the
+                                         * map-before-bind case (vs borrowing a
+                                         * bound buffer/image resource) */
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_device_memory, base,
