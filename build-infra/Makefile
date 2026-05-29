@@ -2,7 +2,7 @@
 #
 # Consolidates the 9 legacy build-*/ dirs into a single infra that
 # selects a PROFILE -> meson config file -> builddir under
-# ../../build/mesa-<profile>/.
+# ../build/mesa-<profile>/.
 #
 # Usage:
 #   make configure PROFILE=terakan-full      # first time, or after config edits
@@ -29,7 +29,7 @@ SHELL := /bin/bash
 # --- configurable parameters -------------------------------------------------
 PROFILE  ?= terakan-full
 HOSTENV  ?= btver1
-BUILDDIR ?= $(abspath $(CURDIR)/../../build/mesa-$(PROFILE))
+BUILDDIR ?= $(abspath $(CURDIR)/../build/mesa-$(PROFILE))
 INSTALL_NAMESPACE ?= mesa
 # Keep profile lanes isolated by default because meson install does not remove
 # artifacts that are absent from the current profile.  Override PREFIX=... on
@@ -49,14 +49,14 @@ PAIR_NAMESPACE = $(word 5,$1)
 TERAKAN_PAIR_RELEASE := \
     terakan-distcc-no-rusticl \
     btver1-ccache-no-pump \
-    $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
+    $(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
     /opt/local/mesa-26-gororoba \
     mesa-26-gororoba
 
 TERAKAN_PAIR_DEBUG := \
     terakan-distcc-no-rusticl-debug \
     btver1-ccache-no-pump \
-    $(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
+    $(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
     /opt/local/mesa-26-gororoba-debug \
     mesa-26-gororoba-debug
 ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
@@ -129,6 +129,7 @@ LOCKED_TOOL_ENV := \
         install-1_r300_full_release_x86_64v1-clang22-distcc-cache \
         rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache \
         install-2_r300_full_debug_x86_64v1-clang22-distcc-cache \
+        pkg-mesa-gororoba deploy-mesa-gororoba \
         help
 
 help:
@@ -552,10 +553,10 @@ install-terakan-distcc-no-rusticl-ccache-no-pump-pair:
 # under distcc-pump with direct clang.  This avoids generated-header changes
 # invalidating pump's include snapshot.
 rebuild-terakan-distcc-no-rusticl-pump:
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) build-generated PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) build-pump PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) build-generated PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
+	$(MAKE) build-pump PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
 
 rebuild-terakan-minimal:
 	$(MAKE) clean PROFILE=terakan-minimal
@@ -597,3 +598,33 @@ rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
 
 install-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
 	$(MAKE) install PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+
+# mesa-gororoba CachyOS-style /usr drop-in package (r300 GL + llvmpipe +
+# amd_r300/r300vk Vulkan ICD), built -march=x86-64 so it runs on the K8 Vostro.
+# pkg-mesa-gororoba runs makepkg and repo-adds the artifact to a local
+# [gororoba] repo; deploy-mesa-gororoba ships it to TARGET_HOST and installs it
+# (atomic swap over stock mesa; --overwrite forces any file collision).  Build
+# on a fast x86-64 host whose llvm major matches the target's llvm-libs.
+# Override the pinned source commit with GOROROBA_COMMIT=<sha>.  Artifacts live
+# under ../../build/ (the sanctioned build area), not as workspace siblings.
+GOROROBA_PKG_SRC   ?= $(CURDIR)/packaging/mesa-gororoba
+GOROROBA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-gororoba-pkg)
+GOROROBA_REPO_DIR  ?= $(abspath $(CURDIR)/../build/mesa-gororoba-repo)
+GOROROBA_REPO_NAME ?= gororoba
+TARGET_HOST        ?= cachyos-vostro1000
+
+pkg-mesa-gororoba:
+	mkdir -p "$(GOROROBA_PKG_DIR)/tmp" "$(GOROROBA_REPO_DIR)"
+	cp "$(GOROROBA_PKG_SRC)/PKGBUILD" "$(GOROROBA_PKG_SRC)/mesa-gororoba.install" "$(GOROROBA_PKG_DIR)/"
+	[ -z "$(GOROROBA_COMMIT)" ] || sed -i 's/^_commit=.*/_commit=$(GOROROBA_COMMIT)/' "$(GOROROBA_PKG_DIR)/PKGBUILD"
+	cd "$(GOROROBA_PKG_DIR)" && TMPDIR="$(GOROROBA_PKG_DIR)/tmp" SRCDEST="$(GOROROBA_PKG_DIR)" BUILDDIR="$(GOROROBA_PKG_DIR)" makepkg -f --noconfirm --skipinteg
+	cp "$(GOROROBA_PKG_DIR)"/mesa-gororoba-*.pkg.tar.zst "$(GOROROBA_REPO_DIR)/"
+	repo-add "$(GOROROBA_REPO_DIR)/$(GOROROBA_REPO_NAME).db.tar.zst" "$(GOROROBA_REPO_DIR)"/mesa-gororoba-*.pkg.tar.zst
+	@echo "packaged + repo-added under $(GOROROBA_REPO_DIR); deploy: make deploy-mesa-gororoba TARGET_HOST=<host>"
+
+deploy-mesa-gororoba:
+	@pkg=$$(ls -t "$(GOROROBA_PKG_DIR)"/mesa-gororoba-*.pkg.tar.zst 2>/dev/null | head -1); \
+	test -n "$$pkg" || { echo "no package; run 'make pkg-mesa-gororoba' first"; exit 1; }; \
+	echo "deploy $$pkg -> $(TARGET_HOST)"; \
+	scp "$$pkg" "$(TARGET_HOST):/tmp/" && \
+	ssh "$(TARGET_HOST)" "yes | sudo -n pacman -U --overwrite '*' /tmp/$$(basename $$pkg)"
