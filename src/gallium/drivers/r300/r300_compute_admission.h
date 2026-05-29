@@ -247,6 +247,46 @@ struct r300_compute_predicated_store_pattern {
 void r300_nir_detect_predicated_store_pattern(const struct nir_shader *s,
                                               struct r300_compute_predicated_store_pattern *out);
 
+/* Multi-tap neighborhood gather (convolution) pattern.  Recognises the
+ * unweighted N-tap shape
+ *
+ *     out_data[gid] = in_data[gid+o0] + in_data[gid+o1] + ... ;   // N >= 3
+ *
+ * one store_ssbo whose value is an integer add-reduction tree (nested
+ * nir_op_iadd) whose every leaf is a load_ssbo def, with at least three taps,
+ * no atomic, and no loop.  On RS482 this lowers to a multi-TEX fragment draw:
+ * the input SSBO binds as a PIPE_TEXTURE_2D (the identity-map substrate), the
+ * synthesized fragment program samples it at N neighbourhood taps in one
+ * texture clause, sums them in the FP24 ALU, and writes the RB3D color export
+ * -- the texture-pair binary-map generalised to N taps of one sampler plus a
+ * sum.
+ *
+ * Discriminator from every prior admitted shape: an add-reduction of >= 3
+ * load_ssbo leaves.  identity-map needs load_count == 1; binary-map needs the
+ * store value to be an ALU op with EXACTLY two inputs, both load_ssbo defs (an
+ * N>=3 nested iadd has an iadd, not a load, as its first input, so the
+ * binary-map two-input test rejects it); blend-acc and ZPASS need an atomic;
+ * multipass needs a loop.
+ *
+ * The detector recognises the SHAPE, not per-tap offsets or weights: the
+ * orchestrator applies a canonical box kernel and the probe uses the same
+ * kernel (the shared probe/orchestrator contract, as for the ZPASS KILL_IF
+ * threshold).  Per-byte exactness holds while the unweighted tap sum stays
+ * <= 255 (no UNORM8 clamp, no inter-byte carry, no division): a box-3 on input
+ * bytes <= 85 sums to <= 255.  Bindings stay 0 when the post-explicit_io
+ * binding sources are not constants; the orchestrator's positional fallback
+ * recovers them (binding 0 = input, 1 = output).  tap_count carries the leaf
+ * count for diagnostics. */
+struct r300_compute_multitap_gather_pattern {
+   bool       is_multitap_gather;
+   uint32_t   input_ssbo_binding;     /* binding of the gathered input */
+   uint32_t   output_ssbo_binding;    /* binding of the store dest */
+   uint16_t   tap_count;              /* load_ssbo leaves in the add-reduction (>= 3) */
+};
+
+void r300_nir_detect_multitap_gather_pattern(const struct nir_shader *s,
+                                             struct r300_compute_multitap_gather_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif
