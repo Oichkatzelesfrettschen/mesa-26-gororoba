@@ -21,11 +21,12 @@ buildtype = 'debugoptimized'
 b_ndebug = 'false'
 # -fno-emulated-tls matches profile 1_ (the GL stack's libglapi needs native
 # TLS under clang).  Unlike 1_, the debug profile omits -fno-semantic-
-# interposition and never adds -fomit-frame-pointer: RCA gdb backtraces want
-# frame pointers and minimal cross-object inlining so a fault lands on its true
-# frame.
-c_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fexceptions', '-ffunction-sections', '-fdata-sections']
-cpp_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
+# interposition and forces -fno-omit-frame-pointer: clang at -O2 (debugoptimized)
+# drops the frame pointer by default, which breaks gdb/libunwind RCA backtraces,
+# so pin it on and keep cross-object inlining minimal so a fault lands on its
+# true frame.
+c_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-ffunction-sections', '-fdata-sections']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
 c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
 cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
 
@@ -58,9 +59,17 @@ llvm = 'disabled'
 draw-use-llvm = false
 gallium-rusticl = false
 
-# Excluded surfaces (kept out to bound the artifact and the lane).
+# Maximal debug instrumentation (debug profile only; 1_ release stays lean).
+# valgrind builds the VALGRIND_* client-request annotations so memcheck can see
+# BO/transfer lifetimes; libunwind gives reliable symbolized stack traces for
+# u_debug_stack and gdb.  Both deps are present on the Vostro.
+valgrind = 'enabled'
+libunwind = 'enabled'
+
+# Excluded surfaces (kept out to bound the artifact and the lane).  perfetto is
+# excluded deliberately: enabling it clones the large perfetto proto subproject,
+# which overruns the space-constrained Vostro tmpfs, and r300 carries almost no
+# perfetto track-event instrumentation, so the disk cost buys little on this chip.
+perfetto = false
 video-codecs = []
 vulkan-layers = []
-perfetto = false
-valgrind = 'disabled'
-libunwind = 'disabled'
