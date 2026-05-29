@@ -45,7 +45,7 @@ cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-neede
 
 [project options]
 platforms = ['x11', 'wayland']
-gallium-drivers = ['r300', 'llvmpipe']
+gallium-drivers = ['r300']
 vulkan-drivers = ['amd_r300']
 r300vk-gallium-backend = true
 tools = ['r300']
@@ -73,8 +73,8 @@ gallium-extra-hud = true
 lmsensors = 'enabled'
 
 # No software rasterizer: hardware r300 or a loud failure.
-llvm = 'enabled'
-draw-use-llvm = true
+llvm = 'disabled'
+draw-use-llvm = false
 gallium-rusticl = false
 
 # Excluded surfaces (kept out to bound the artifact and the lane).
