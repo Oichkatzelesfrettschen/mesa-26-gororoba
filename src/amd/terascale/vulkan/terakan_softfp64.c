@@ -1,0 +1,89 @@
+/*
+ * Copyright (c) 2026 Terascale Functionalists
+ * SPDX-License-Identifier: MIT
+ */
+
+/* Evergreen / PALM (TeraScale-2 VLIW5) has no native FP64.  The driver
+ * advertises shaderFloat64 and configures nir_lower_fp64_full_software in
+ * nir_options_non_fs, but the pass that consumes those options
+ * (nir_lower_doubles) needs a soft-float64 NIR library to clone helper bodies
+ * from.  This builds that library once, lazily, from the shared float64.glsl
+ * compiled to SPIR-V at build time (terakan_float64_spv.h), via spirv_to_nir --
+ * the gl_context-free path a Vulkan driver uses; anv does the same in
+ * anv_util.c.  nir_lower_doubles reads the library read-only, so a single
+ * cached copy is shared across every logical device of this physical device.
+ */
+
+#include "terakan_float64_spv.h"
+#include "terakan_physical_device.h"
+
+#include "compiler/nir/nir.h"
+#include "compiler/spirv/nir_spirv.h"
+#include "util/ralloc.h"
+#include "util/simple_mtx.h"
+
+struct nir_shader *
+terakan_physical_device_get_softfp64(struct terakan_physical_device const * const device_const)
+{
+   /* Logically-const memoization: the same library is returned every call, but
+    * the first call writes the cache under the mutex.  Cast away const here,
+    * the one place that mutation lives. */
+   struct terakan_physical_device * const device = (struct terakan_physical_device *)device_const;
+
+   simple_mtx_lock(&device->softfp64_mutex);
+
+   if (device->softfp64 == NULL) {
+      nir_shader_compiler_options const * const nir_options = &device->nir_options_non_fs;
+
+      /* float64.glsl uses uint64 bitcasts and 64-bit integer arithmetic; the
+       * SPIR-V module declares Float64 / Int64 plus the sub-word integer and
+       * address capabilities glsl2spirv emits.  create_library keeps every
+       * helper as a callable function for nir_lower_doubles to clone. */
+      const struct spirv_capabilities spirv_caps = {
+         .Addresses = true,
+         .Float64 = true,
+         .Int8 = true,
+         .Int16 = true,
+         .Int64 = true,
+         .Shader = true,
+      };
+      const struct spirv_to_nir_options spirv_options = {
+         .capabilities = &spirv_caps,
+         .environment = NIR_SPIRV_VULKAN,
+         .create_library = true,
+      };
+
+      nir_shader * const nir = spirv_to_nir(
+         terakan_float64_spv_source, sizeof(terakan_float64_spv_source) / sizeof(uint32_t), NULL,
+         MESA_SHADER_VERTEX, "main", &spirv_options, nir_options);
+
+      if (nir != NULL) {
+         nir_validate_shader(nir, "terakan softfp64 after spirv_to_nir");
+
+         /* Inline every helper so nir_lower_doubles can clone individual
+          * function bodies into the consumer shader (mirrors anv_util.c). */
+         NIR_PASS(_, nir, nir_lower_variable_initializers, nir_var_function_temp);
+         NIR_PASS(_, nir, nir_lower_returns);
+         NIR_PASS(_, nir, nir_inline_functions);
+         nir_sweep(nir);
+
+         device->softfp64 = nir;
+      }
+
+      /* On spirv_to_nir failure softfp64 stays NULL and terakan_shader.c skips
+       * the fp64 lowering, leaving the pre-wiring behaviour unchanged rather
+       * than failing device creation. */
+   }
+
+   simple_mtx_unlock(&device->softfp64_mutex);
+   return device->softfp64;
+}
+
+void
+terakan_physical_device_destroy_softfp64(struct terakan_physical_device * const device)
+{
+   if (device->softfp64 != NULL) {
+      ralloc_free(device->softfp64);
+      device->softfp64 = NULL;
+   }
+}

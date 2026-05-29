@@ -96,6 +96,7 @@ libterakan_files = files(
   'terakan_instance.h',
   'terakan_limits.h',
   'terakan_physical_device.c',
+  'terakan_softfp64.c',
   'terakan_profile.c',
   'terakan_physical_device.h',
   'terakan_pipeline.c',
@@ -199,11 +200,30 @@ elif system_has_kms_drm
   libterakan_deps += dep_libdrm
 endif
 
+# Evergreen/PALM has no native FP64; the shared soft-float64 GLSL library is
+# compiled to a SPIR-V header at build time and imported via spirv_to_nir at
+# device init (terakan_softfp64.c), mirroring src/intel/shaders/meson.build.
+terakan_float64_spv_h = custom_target(
+  'terakan_float64_spv.h',
+  input : [glsl2spirv, float64_glsl_file],
+  output : 'terakan_float64_spv.h',
+  command : [
+    prog_python, '@INPUT@', '@OUTPUT@',
+    prog_glslang,
+    '--vn', 'terakan_float64_spv_source',
+    '--glsl-version', '450',
+    '-Olib',
+    glslang_depfile,
+  ],
+  depfile : 'terakan_float64_spv.h.d',
+)
+
 libvulkan_terascale = shared_library(
   'vulkan_terascale',
   [
     libterakan_files,
     terakan_entrypoints,
+    terakan_float64_spv_h,
     sha1_h,
   ],
   vs_module_defs : vulkan_api_def,
