@@ -10,6 +10,19 @@
 #include "r300vk_buffer.h"
 #include "r300vk_identity_map.h"
 
+#include <stdlib.h>
+
+static bool
+identity_map_debug_enabled(void)
+{
+   static int cached = -1;
+   if (cached < 0) {
+      const char *flags = getenv("R300VK_DEBUG");
+      cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
+   }
+   return cached != 0;
+}
+
 #include "vk_queue.h"
 #include "vk_sync.h"
 
@@ -526,12 +539,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
           * dispatch pair (the M-K visibility contract) needs the flush to be
           * confirmed, not assumed.  Gated by the same R300VK_DEBUG token the
           * compute-as-raster orchestrators use. */
-         {
-            const char *dbg = getenv("R300VK_DEBUG");
-            if (dbg && strstr(dbg, "identity_map"))
-               fprintf(stderr,
-                       "ident_map: pipeline_barrier flush honored "
-                       "(dispatch-barrier-dispatch visibility)\n");
+         if (identity_map_debug_enabled()) {
+            fprintf(stderr,
+                    "ident_map: pipeline_barrier flush honored "
+                    "(dispatch-barrier-dispatch visibility)\n");
          }
 
          /* Update the resource-state ledger so commands after this barrier

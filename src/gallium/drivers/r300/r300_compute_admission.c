@@ -16,6 +16,17 @@
 
 #include "compiler/nir/nir.h"
 
+static bool
+identity_map_debug_enabled(void)
+{
+   static int cached = -1;
+   if (cached < 0) {
+      const char *flags = getenv("R300VK_DEBUG");
+      cached = (flags && strstr(flags, "identity_map")) ? 1 : 0;
+   }
+   return cached != 0;
+}
+
 static void
 admit(struct r300_compute_admission *out)
 {
@@ -101,8 +112,7 @@ r300_nir_detect_identity_map(const nir_shader *s,
     * (which samples in[fragment_coord] and writes to out[fragment_coord])
     * would silently miscompute hash(i) as i. */
    if (store_count != 1 || load_count != 1) {
-      const char *dbg = getenv("R300VK_DEBUG");
-      if (dbg && strstr(dbg, "identity_map"))
+      if (identity_map_debug_enabled())
          fprintf(stderr, "ident_map: detect-skip count store=%u load=%u\n",
                  store_count, load_count);
       return;
@@ -135,18 +145,15 @@ r300_nir_detect_identity_map(const nir_shader *s,
     *       currently be distinguished from a gather.  Tracking:
     *       r300_nir_detect_identity_map offset gate. */
    const bool offset_eq = (store->src[2].ssa == load->src[1].ssa);
-   {
-      const char *dbg = getenv("R300VK_DEBUG");
-      if (dbg && strstr(dbg, "identity_map"))
-         fprintf(stderr,
-                 "ident_map: detect inner store_val_ssa=%p load_def=%p "
-                 "value_eq_load=%d offset_eq=%d "
-                 "load_binding_const=%d store_binding_const=%d\n",
-                 (void *)store->src[0].ssa, (void *)&load->def,
-                 (int)value_eq_load, (int)offset_eq,
-                 (int)nir_src_is_const(load->src[0]),
-                 (int)nir_src_is_const(store->src[1]));
-   }
+   if (identity_map_debug_enabled())
+      fprintf(stderr,
+              "ident_map: detect inner store_val_ssa=%p load_def=%p "
+              "value_eq_load=%d offset_eq=%d "
+              "load_binding_const=%d store_binding_const=%d\n",
+              (void *)store->src[0].ssa, (void *)&load->def,
+              (int)value_eq_load, (int)offset_eq,
+              (int)nir_src_is_const(load->src[0]),
+              (int)nir_src_is_const(store->src[1]));
    if (!value_eq_load)
       return;
    /* The binding source for load_ssbo / store_ssbo is a
@@ -649,21 +656,22 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
    const nir_intrinsic_instr *store       = NULL;
    const nir_intrinsic_instr *first_load  = NULL;
    const nir_intrinsic_instr *second_load = NULL;
+   const nir_if              *store_if    = NULL;
    unsigned atomic_count = 0, load_count = 0, store_count = 0;
    bool has_loop    = false;
-   bool store_in_if = false;
 
    nir_foreach_function_impl (impl, s) {
       nir_foreach_block (block, impl) {
          /* A block is inside a conditional when any cf-node ancestor is a
           * nir_cf_node_if, and inside a loop when any ancestor is a
-          * nir_cf_node_loop.  One pass over the ancestor chain sets both. */
-         bool block_in_if = false;
+          * nir_cf_node_loop.  We track the direct nir_if parent of the store
+          * block for condition validation. */
+         const nir_if *block_if = NULL;
          for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
             if (p->type == nir_cf_node_loop)
                has_loop = true;
-            else if (p->type == nir_cf_node_if)
-               block_in_if = true;
+            else if (p->type == nir_cf_node_if && !block_if)
+               block_if = nir_cf_node_as_if(p);
          }
          nir_foreach_instr (instr, block) {
             if (instr->type != nir_instr_type_intrinsic)
@@ -680,7 +688,7 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
             } else if (intr->intrinsic == nir_intrinsic_store_ssbo) {
                store = intr;
                store_count++;
-               store_in_if = block_in_if;
+               store_if = block_if;
             }
          }
       }
@@ -697,23 +705,24 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
    const bool val_is_load =
       val_load && val_load->intrinsic == nir_intrinsic_load_ssbo;
 
-   {
-      const char *dbg = getenv("R300VK_DEBUG");
-      if (dbg && strstr(dbg, "identity_map"))
-         fprintf(stderr,
-                 "ident_map: predstore-detect store=%u load=%u atomic=%u "
-                 "has_loop=%d store_in_if=%d val_is_load=%d\n",
-                 store_count, load_count, atomic_count, (int)has_loop,
-                 (int)store_in_if, (int)val_is_load);
-   }
+   if (identity_map_debug_enabled())
+      fprintf(stderr,
+              "ident_map: predstore-detect store=%u load=%u atomic=%u "
+              "has_loop=%d store_if=%p val_is_load=%d\n",
+              store_count, load_count, atomic_count, (int)has_loop,
+              (const void *)store_if, (int)val_is_load);
 
    if (store_count != 1 || atomic_count != 0 || load_count != 2 ||
-       has_loop || !store_in_if || !val_is_load)
+       has_loop || !store_if || !val_is_load)
       return;
 
    /* The other load feeds the nir_if condition (the predicate). */
    const nir_intrinsic_instr *pred_load =
       (val_load == first_load) ? second_load : first_load;
+
+   /* Verify that pred_load feeds the if condition. */
+   if (!pred_load || !def_derives_from(store_if->condition.ssa, &pred_load->def, 0))
+       return;
 
    out->is_predicated_store = true;
    if (pred_load && nir_src_is_const(pred_load->src[0]))
@@ -728,23 +737,34 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
  * node recurses into both inputs; a load_ssbo def is a tap leaf worth 1; any
  * other def (a non-load, non-iadd) makes the tree impure and returns -1.
  * Depth-bounded like def_derives_from for the small kernels the detector
- * pattern-matches. */
+ * pattern-matches.  Verifies that all load_ssbo leaves pull from the same
+ * binding (captured in *binding). */
 static int
-multitap_add_tree_taps(const nir_def *def, unsigned depth)
+multitap_add_tree_taps(const nir_def *def, uint32_t *binding, unsigned depth)
 {
    if (!def || depth >= 8)
       return -1;
    const nir_intrinsic_instr *intr =
       nir_def_as_intrinsic_or_null((nir_def *)def);
-   if (intr)
-      return intr->intrinsic == nir_intrinsic_load_ssbo ? 1 : -1;
+   if (intr) {
+      if (intr->intrinsic != nir_intrinsic_load_ssbo)
+         return -1;
+      if (!nir_src_is_const(intr->src[0]))
+         return -1;
+      uint32_t b = nir_src_as_uint(intr->src[0]);
+      if (*binding == 0xffffffff)
+         *binding = b;
+      else if (*binding != b)
+         return -1;
+      return 1;
+   }
    const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)def);
    if (!alu || alu->op != nir_op_iadd)
       return -1;
-   const int l = multitap_add_tree_taps(alu->src[0].src.ssa, depth + 1);
+   const int l = multitap_add_tree_taps(alu->src[0].src.ssa, binding, depth + 1);
    if (l < 0)
       return -1;
-   const int r = multitap_add_tree_taps(alu->src[1].src.ssa, depth + 1);
+   const int r = multitap_add_tree_taps(alu->src[1].src.ssa, binding, depth + 1);
    if (r < 0)
       return -1;
    return l + r;
@@ -760,6 +780,43 @@ multitap_add_tree_taps(const nir_def *def, unsigned depth)
  * fragment draw applying a canonical box kernel over the input bound as a 2D
  * texture; fadd is excluded from the first cut because the per-byte UNORM8
  * integer-sum envelope is the exact-realizable form. */
+/* Verify that the add-reduction tree's load_ssbo leaves use exactly the
+ * box-3 offsets {base-4, base, base+4} relative to the store's offset def.
+ * Returns a bitmask of found offsets (bit 0 for base-4, bit 1 for base, bit 2
+ * for base+4). */
+static int
+multitap_verify_box3_offsets(const nir_def *def, const nir_def *base, unsigned depth)
+{
+   if (!def || depth >= 8)
+      return 0;
+   const nir_intrinsic_instr *intr =
+      nir_def_as_intrinsic_or_null((nir_def *)def);
+   if (intr) {
+      if (intr->intrinsic != nir_intrinsic_load_ssbo)
+         return 0;
+      const nir_def *offset = intr->src[1].ssa;
+      if (offset == base)
+         return (1 << 1); /* base (offset 0) */
+      /* Check for base +/- 4 via ALU iadd. */
+      const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)offset);
+      if (alu && alu->op == nir_op_iadd) {
+         for (int i = 0; i < 2; i++) {
+            if (alu->src[i].src.ssa == base && nir_src_is_const(alu->src[1-i].src)) {
+               int32_t val = (int32_t)nir_src_as_int(alu->src[1-i].src);
+               if (val == -4) return (1 << 0);
+               if (val == 4)  return (1 << 2);
+            }
+         }
+      }
+      return 0;
+   }
+   const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)def);
+   if (!alu || alu->op != nir_op_iadd)
+      return 0;
+   return multitap_verify_box3_offsets(alu->src[0].src.ssa, base, depth + 1) |
+          multitap_verify_box3_offsets(alu->src[1].src.ssa, base, depth + 1);
+}
+
 void
 r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
                                         struct r300_compute_multitap_gather_pattern *out)
@@ -770,7 +827,6 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
    out->tap_count           = 0;
 
    const nir_intrinsic_instr *store      = NULL;
-   const nir_intrinsic_instr *first_load = NULL;
    unsigned atomic_count = 0, load_count = 0, store_count = 0;
    bool has_loop = false;
 
@@ -790,8 +846,6 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
                store = intr;
                store_count++;
             } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
-               if (!first_load)
-                  first_load = intr;
                load_count++;
             } else if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
                atomic_count++;
@@ -802,22 +856,25 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
 
    if (store_count != 1 || atomic_count != 0 || has_loop || load_count < 3)
       return;
-   if (!store->src[0].ssa)
+   if (!store->src[0].ssa || !store->src[2].ssa)
       return;
 
    /* Store value must be an integer add-reduction whose every leaf is a
-    * load_ssbo def, with at least three taps. */
-   const nir_alu_instr *root = nir_def_as_alu_or_null(store->src[0].ssa);
-   if (!root || root->op != nir_op_iadd)
+    * load_ssbo def, with at least three taps.  All taps must pull from the
+    * same SSBO binding. */
+   uint32_t binding = 0xffffffff;
+   const int taps = multitap_add_tree_taps(store->src[0].ssa, &binding, 0);
+   if (taps != 3 || binding == 0xffffffff)
       return;
-   const int taps = multitap_add_tree_taps(store->src[0].ssa, 0);
-   if (taps < 3)
+
+   /* Kernel must be exactly the 3-tap box filter {-1, 0, 1} relative to the
+    * store index. */
+   if (multitap_verify_box3_offsets(store->src[0].ssa, store->src[2].ssa, 0) != 0x7)
       return;
 
    out->is_multitap_gather = true;
    out->tap_count = (uint16_t)taps;
-   if (first_load && nir_src_is_const(first_load->src[0]))
-      out->input_ssbo_binding = nir_src_as_uint(first_load->src[0]);
+   out->input_ssbo_binding = binding;
    if (nir_src_is_const(store->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
 }
