@@ -330,8 +330,18 @@ static bool r300_is_format_supported(struct pipe_screen* screen,
 	 * fallbacks for ATI1N only, so if we enable ATI2N, we will crash for ATI1N.
 	 * Therefore disable both on r400 for now. Additionally, some online source
 	 * claim r300 can also do ATI2N.
+	 *
+	 * The R300_EXPERIMENTAL_ATI2N opt-in advertises ATI2N (RGTC2) sampler
+	 * support on R300-class parts so the silicon claim above can be tested:
+	 * r300_translate_texformat already emits R400_TX_FORMAT_ATI2N
+	 * unconditionally, so only this gate stands between an RGTC2 texture and
+	 * the R300-class TMU. ATI1N stays r5xx-only to avoid the ATI1N-fallback
+	 * crash the comment describes. Unset (the default) keeps R300-class ATI2N
+	 * disabled, so default behavior is unchanged.
 	 */
-        (is_r500 || !is_ati2n) &&
+        (is_r500 ||
+         (is_ati2n && getenv("R300_EXPERIMENTAL_ATI2N")) ||
+         !is_ati2n) &&
         r300_is_sampler_format_supported(format)) {
         retval |= PIPE_BIND_SAMPLER_VIEW;
     }
