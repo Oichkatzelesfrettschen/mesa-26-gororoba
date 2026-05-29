@@ -283,10 +283,30 @@ r300vk_BindImageMemory2(VkDevice _device,
                          uint32_t bindInfoCount,
                          const VkBindImageMemoryInfo *pBindInfos)
 {
-   (void)_device;
+   VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
+
+      /* If the memory was mapped before bind, vkMapMemory created its own lazy
+       * HOST_VISIBLE pipe_buffer and a transfer that borrows it (Gallium
+       * transfers do not hold a reference on their resource).  The
+       * pipe_resource_reference below drops that lazy buffer's last reference
+       * and frees it; the still-live transfer would then dangle and fault at
+       * unmap, where r300_texture_transfer_unmap reads a freed-and-reused
+       * r300_transfer (observed linear_texture = 0x271) and copies from a
+       * garbage source in r300_resource_copy_region.  Commit and drop the
+       * mapping first, while mem->resource is still the lazy buffer.  This
+       * mirrors the live-transfer handling in r300vk_BindBufferMemory2. */
+      if (mem->transfer) {
+         if (mem->transfer->resource->target == PIPE_BUFFER)
+            device->pipe->buffer_unmap(device->pipe, mem->transfer);
+         else
+            device->pipe->texture_unmap(device->pipe, mem->transfer);
+         mem->transfer = NULL;
+         mem->map_ptr = NULL;
+      }
+
       mem->memory_offset = pBindInfos[i].memoryOffset;
       pipe_resource_reference(&mem->resource, img->resource);
    }
