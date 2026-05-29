@@ -724,6 +724,104 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
 }
 
+/* Count the load_ssbo leaves of a pure integer add-reduction tree.  An iadd
+ * node recurses into both inputs; a load_ssbo def is a tap leaf worth 1; any
+ * other def (a non-load, non-iadd) makes the tree impure and returns -1.
+ * Depth-bounded like def_derives_from for the small kernels the detector
+ * pattern-matches. */
+static int
+multitap_add_tree_taps(const nir_def *def, unsigned depth)
+{
+   if (!def || depth >= 8)
+      return -1;
+   const nir_intrinsic_instr *intr =
+      nir_def_as_intrinsic_or_null((nir_def *)def);
+   if (intr)
+      return intr->intrinsic == nir_intrinsic_load_ssbo ? 1 : -1;
+   const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)def);
+   if (!alu || alu->op != nir_op_iadd)
+      return -1;
+   const int l = multitap_add_tree_taps(alu->src[0].src.ssa, depth + 1);
+   if (l < 0)
+      return -1;
+   const int r = multitap_add_tree_taps(alu->src[1].src.ssa, depth + 1);
+   if (r < 0)
+      return -1;
+   return l + r;
+}
+
+/* M-I multi-tap gather detector.  Recognises an unweighted N-tap neighbourhood
+ * convolution `out[gid] = in[gid+o0] + ... + in[gid+o_{N-1}]` (N >= 3): one
+ * store_ssbo whose value is an integer add-reduction tree of >= 3 load_ssbo
+ * leaves, no atomic, no loop.  The >= 3 add-leaf count is the discriminator
+ * from binary-map (exactly two load inputs to a single ALU op) and identity-map
+ * (one load); the absent atomic separates it from blend-acc and ZPASS, the
+ * absent loop from multipass.  The orchestrator lowers it to a multi-TEX
+ * fragment draw applying a canonical box kernel over the input bound as a 2D
+ * texture; fadd is excluded from the first cut because the per-byte UNORM8
+ * integer-sum envelope is the exact-realizable form. */
+void
+r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
+                                        struct r300_compute_multitap_gather_pattern *out)
+{
+   out->is_multitap_gather  = false;
+   out->input_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+   out->tap_count           = 0;
+
+   const nir_intrinsic_instr *store      = NULL;
+   const nir_intrinsic_instr *first_load = NULL;
+   unsigned atomic_count = 0, load_count = 0, store_count = 0;
+   bool has_loop = false;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
+            if (p->type == nir_cf_node_loop) {
+               has_loop = true;
+               break;
+            }
+         }
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (!first_load)
+                  first_load = intr;
+               load_count++;
+            } else if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+               atomic_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || atomic_count != 0 || has_loop || load_count < 3)
+      return;
+   if (!store->src[0].ssa)
+      return;
+
+   /* Store value must be an integer add-reduction whose every leaf is a
+    * load_ssbo def, with at least three taps. */
+   const nir_alu_instr *root = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!root || root->op != nir_op_iadd)
+      return;
+   const int taps = multitap_add_tree_taps(store->src[0].ssa, 0);
+   if (taps < 3)
+      return;
+
+   out->is_multitap_gather = true;
+   out->tap_count = (uint16_t)taps;
+   if (first_load && nir_src_is_const(first_load->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(first_load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
