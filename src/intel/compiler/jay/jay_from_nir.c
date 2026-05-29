@@ -14,7 +14,6 @@
 #include "intel/dev/intel_debug.h"
 #include "util/bitpack_helpers.h"
 #include "util/bitscan.h"
-#include "util/bitset.h"
 #include "util/lut.h"
 #include "util/macros.h"
 #include "util/u_math.h"
@@ -42,6 +41,7 @@ static const struct debug_named_value jay_debug_options[] = {
    { "sync",        JAY_DBG_SYNC,        "Sync after every instruction"          },
    { "noacc",       JAY_DBG_NOACC,       "Disable accumulator substitution"      },
    { "nosched",     JAY_DBG_NOSCHED,     "Disable scheduling"                    },
+   { "strict",      JAY_DBG_STRICT,      "Strictly conform to bspec/fulsim"      },
    DEBUG_NAMED_VALUE_END
 };
 
@@ -850,11 +850,6 @@ jay_emit_fb_write(jay_builder *b, nir_intrinsic_instr *intr)
          srcs[i] = jay_UNDEF_u32(b);
    }
 
-   /* Our current send splitting heuristic is bad, override it. */
-   if (split == -1) {
-      split = len;
-   }
-
    jay_inst *send =
       jay_SEND(b, .sfid = BRW_SFID_RENDER_CACHE, .check_tdr = true,
                .msg_desc = desc | (ex_desc << 32), .srcs = srcs, .nr_srcs = len,
@@ -910,7 +905,9 @@ jay_src_as_strided(jay_builder *b,
                    unsigned element_sz,
                    enum jay_file dst_file)
 {
-   if (dst_file == UGPR) {
+   if (jay_is_null(x)) {
+      return x;
+   } else if (dst_file == UGPR) {
       assert(jay_is_uniform(x) && "Uniform dests require uniform sources");
 
       if (x.file != UGPR) {
@@ -1037,21 +1034,19 @@ jay_emit_mem_access(struct nir_to_jay_state *nj, nir_intrinsic_instr *intr)
    if (!has_dest) {
       uniform &= jay_is_null(data) || data.file == UGPR;
       uniform &= jay_is_null(offset) || offset.file == UGPR;
-      uniform &= !(cmask || urb);
+      uniform &= !urb;
    }
 
    /* Per bspec 57330, 8-bit/16-bit are not supported for transpose */
    bool transpose = uniform && !cmask && ndata->bit_size >= 32;
-   bool scalar_uniform = uniform && !cmask && ndata->bit_size < 32;
 
    if (!uniform) {
       offset = jay_as_gpr(b, offset);
+      data = jay_as_gpr(b, data);
    } else if (!transpose) {
       offset = jay_src_as_strided(b, offset, a64 ? 2 : 1, UGPR);
+      data = jay_src_as_strided(b, data, 1, UGPR);
    }
-
-   if (!jay_is_null(data) && !transpose && !scalar_uniform)
-      data = jay_as_gpr(b, data);
 
    unsigned access =
       nir_intrinsic_has_access(intr) ? nir_intrinsic_access(intr) : 0;
@@ -2124,11 +2119,9 @@ jay_emit_texture(struct nir_to_jay_state *nj, nir_tex_instr *tex)
       desc_src = jay_AND_u32(b, desc_src, 0xfff);
    }
 
-   if (n_sources > 2 || !jay_is_null(header)) {
-      for (unsigned i = 0; i < n_sources; ++i) {
-         payload[i] =
-            jay_src_as_strided(b, payload[i], 1, payload_uniform ? UGPR : GPR);
-      }
+   for (unsigned i = 0; i < n_sources; ++i) {
+      payload[i] =
+         jay_src_as_strided(b, payload[i], 1, payload_uniform ? UGPR : GPR);
    }
 
    enum jay_type src_type = jay_type(JAY_TYPE_U, payload_type_bit_size);
@@ -2525,11 +2518,6 @@ setup_vertex_payload(struct nir_to_jay_state *nj, struct payload_builder *p)
 {
    nj->payload.urb_handle = read_payload(p, GPR);
 
-   /* XXX: This is a hack to line up with the partition chosen in RA. This whole
-    * thing needs an overhaul. Need to think harder about partitioning.
-    */
-   p->offsets[GPR] += 7;
-
    setup_payload_dispatch_start(nj, p);
    setup_payload_push(nj, p);
 
@@ -2608,20 +2596,50 @@ setup_fragment_payload(struct nir_to_jay_state *nj, struct payload_builder *p)
       fs->bary[i] = read_vector_payload(p, GPR, 2);
    }
 
-   if (nj->s->prog_data->fs.uses_src_depth) {
-      fs->coord.z = read_payload(p, GPR);
+   struct {
+      bool cond;
+      jay_def *def;
+   } split_gprs[] = {
+      { nj->s->prog_data->fs.uses_src_depth,   &fs->coord.z       },
+      { nj->s->prog_data->fs.uses_src_w,       &fs->coord.w       },
+      { nj->s->prog_data->fs.uses_sample_mask, &fs->coverage_mask },
+   };
+
+   unsigned extra_gpr =
+      split_gprs[0].cond + split_gprs[1].cond + split_gprs[2].cond;
+   bool odd = extra_gpr & 1;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(split_gprs); ++i) {
+      if (split_gprs[i].cond) {
+         extra_gpr -= 1;
+
+         /* Pad out to GPR alignment by reading the last split GPR as two UGPR
+          * halves and zipping them together below. This lets us construct a
+          * valid partition with minimal copying.
+          */
+         if (extra_gpr == 0 && jay_grf_per_gpr(nj->s) == 2 && odd) {
+            *split_gprs[i].def =
+               read_vector_payload(p, UGPR, jay_ugpr_per_grf(nj->s));
+         } else {
+            *split_gprs[i].def = read_payload(p, GPR);
+         }
+      }
    }
 
-   if (nj->s->prog_data->fs.uses_src_w) {
-      fs->coord.w = read_payload(p, GPR);
-   }
-
-   if (nj->s->prog_data->fs.uses_sample_mask) {
-      fs->coverage_mask = read_payload(p, GPR);
-   }
+   assert(extra_gpr == 0);
 
    if (nj->s->prog_data->fs.uses_pos_offset) {
       fs->sample_pos = read_vector_payload(p, UGPR, jay_ugpr_per_grf(nj->s));
+   }
+
+   nj->s->payload_ugprs = p->offsets[UGPR];
+
+   jay_def split[3] = { jay_null() };
+   for (unsigned i = 0; i < ARRAY_SIZE(split_gprs); ++i) {
+      if (!jay_is_null(*split_gprs[i].def) &&
+          (*split_gprs[i].def).file == UGPR) {
+         split[i] = read_vector_payload(p, UGPR, jay_ugpr_per_grf(nj->s));
+      }
    }
 
    setup_payload_dispatch_start(nj, p);
@@ -2642,7 +2660,14 @@ setup_fragment_payload(struct nir_to_jay_state *nj, struct payload_builder *p)
       }
    }
 
-   if (BITSET_TEST(nj->nir->info.system_values_read, SYSTEM_VALUE_FRAG_COORD)) {
+   for (unsigned i = 0; i < ARRAY_SIZE(split_gprs); ++i) {
+      if (!jay_is_null(split[i]) && split_gprs[i].def->file == UGPR) {
+         *(split_gprs[i].def) =
+            jay_ZIP_UGPR16_u32(&nj->bld, *split_gprs[i].def, split[i]);
+      }
+   }
+
+   if (nj->s->prog_data->fs.uses_src_xy) {
       jay_def t = jay_alloc_def(&nj->bld, GPR, 1);
       jay_def lo = jay_extract_range(nj->payload.u0, 10, 4);
       jay_EXPAND_QUAD(&nj->bld, t, lo, payload_u1(nj, 10, 4));
@@ -2678,7 +2703,6 @@ jay_insert_payload_swizzle(jay_shader *s)
    jay_builder b = jay_init_builder(func, jay_before_function(func));
 
    unsigned size = s->payload_gprs;
-   assert(s->partition.blocks[GPR][0].start == 1);
 
    /* Odd: copy both halves to contiguous pair after payload */
    for (unsigned i = 0; i < (size / 2); ++i) {
@@ -2939,6 +2963,8 @@ jay_compile(const struct intel_device_info *devinfo,
    if (debug) {
       fprintf(stdout, "Jay shader (post-RA):\n\n");
       jay_print(stdout, s);
+
+      jay_print_partition(&s->partition);
    }
 
    struct jay_shader_bin *bin =

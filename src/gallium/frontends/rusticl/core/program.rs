@@ -137,14 +137,24 @@ impl ProgramBuild {
                     continue;
                 }
 
-                let build_result =
-                    convert_spirv_to_nir(build, kernel_name, &args, &mut self.spec_constants, dev);
+                let Some(build_result) =
+                    convert_spirv_to_nir(build, kernel_name, &args, &mut self.spec_constants, dev)
+                else {
+                    build.status = CL_BUILD_ERROR;
+                    build.log = "Internal compilation error".to_owned();
+                    return;
+                };
                 kernel_info_set.insert(build_result.kernel_info);
 
                 self.builds_by_device.get_mut(dev).unwrap().kernels.insert(
                     kernel_name.clone(),
                     Arc::new(build_result.nir_kernel_builds),
                 );
+            }
+
+            // If all devices failed to rebuilt their kernels we simply return here.
+            if kernel_info_set.is_empty() {
+                return;
             }
 
             // we want the same (internal) args for every compiled kernel, for now
@@ -223,7 +233,7 @@ impl DeviceProgramBuild {
         kernel: &str,
         device: &Device,
         spec_constants: &mut HashMap<u32, Vec<u8>>,
-    ) -> NirShader {
+    ) -> Option<NirShader> {
         assert_eq!(self.status, CL_BUILD_SUCCESS as cl_build_status);
 
         let mut spec_constants: Vec<_> = spec_constants
@@ -247,10 +257,9 @@ impl DeviceProgramBuild {
             device
                 .screen
                 .nir_shader_compiler_options(mesa_shader_stage::MESA_SHADER_COMPUTE),
-            &device.spirv_caps,
+            device.spirv_to_nir_opts(),
             &device.lib_clc,
             &mut spec_constants,
-            device.address_bits(),
             log.as_mut(),
         );
 
@@ -260,7 +269,7 @@ impl DeviceProgramBuild {
             }
         };
 
-        nir.unwrap()
+        nir
     }
 
     fn is_success(&self) -> bool {
@@ -315,6 +324,8 @@ fn prepare_options(options: &str, dev: &Device) -> Vec<CString> {
             "-cl-denorms-are-zero" => Some("-fdenormal-fp-math=positive-zero"),
             // We can ignore it as long as we don't support ifp
             "-cl-no-subgroup-ifp" => None,
+            // This indicates how many registers per thread should be used, we just ignore it.
+            "-cl-intel-256-GRF-per-thread" => None,
             // Some applications use this argument when they detect Intel hardware.
             "-cl-intel-greater-than-4GB-buffer-required" => None,
             // Some applications use this when they detect QC hardware

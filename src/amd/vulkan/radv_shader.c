@@ -579,7 +579,7 @@ radv_shader_spirv_to_nir(const struct radv_compiler_info *compiler_info, struct 
          NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp | nir_var_shader_temp, NULL);
       }
 
-      NIR_PASS(progress, nir, radv_nir_lower_cooperative_matrix, compiler_info->ac->gfx_level,
+      NIR_PASS(progress, nir, radv_nir_lower_cooperative_matrix, compiler_info->ac->gfx_level, stage,
                nir->info.max_subgroup_size);
       if (progress) {
          NIR_PASS(_, nir, nir_opt_dce);
@@ -3770,8 +3770,8 @@ radv_compute_spi_ps_input(enum amd_gfx_level gfx_level, const struct radv_graphi
                   S_0286CC_FRONT_FACE_ENA(info->ps.reads_front_face) |
                   S_0286CC_POS_FIXED_PT_ENA(info->ps.reads_pixel_coord);
 
-   if (info->ps.reads_frag_coord_mask || info->ps.reads_sample_pos_mask) {
-      uint8_t mask = info->ps.reads_frag_coord_mask | info->ps.reads_sample_pos_mask;
+   if (info->ps.reads_frag_coord_mask) {
+      uint8_t mask = info->ps.reads_frag_coord_mask;
 
       for (unsigned i = 0; i < 4; i++) {
          if (mask & (1 << i))

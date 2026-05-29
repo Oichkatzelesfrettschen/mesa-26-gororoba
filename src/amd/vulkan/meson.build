@@ -38,11 +38,11 @@ radv_drirc = custom_target(
     '--import-path', join_paths(dir_source_root, 'src/util'),
     '--drirc-src', '@OUTPUT0@',
     '--drirc-hdr', '@OUTPUT1@',
-    '--validate', join_paths(dir_source_root, 'src/util/00-radv-defaults.conf'),
+    '--validate', join_paths(dir_source_root, 'src/amd/vulkan/00-radv-defaults.conf'),
   ],
   depend_files : files(
     join_paths(dir_source_root, 'src/util/drirc_gen.py'),
-    join_paths(dir_source_root, 'src/util/00-radv-defaults.conf'),
+    '00-radv-defaults.conf',
   ),
 )
 
@@ -89,6 +89,7 @@ libradv_files = files(
   'nir/radv_nir_lower_immediate_samplers.c',
   'nir/radv_nir_lower_intrinsics_early.c',
   'nir/radv_nir_lower_io.c',
+  'nir/radv_nir_lower_opt_fs_frag_pos.c',
   'nir/radv_nir_lower_primitive_shading_rate.c',
   'nir/radv_nir_lower_printf.c',
   'nir/radv_nir_lower_ray_queries.c',

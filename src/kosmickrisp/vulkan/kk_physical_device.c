@@ -146,6 +146,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .KHR_shader_maximal_reconvergence = true,
       .KHR_shader_relaxed_extended_instruction = true,
       .KHR_shader_subgroup_uniform_control_flow = true,
+      .KHR_shader_untyped_pointers = true,
 #ifdef KK_USE_WSI_PLATFORM
       .KHR_swapchain = true,
       .KHR_swapchain_mutable_format = true,
@@ -156,6 +157,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .EXT_attachment_feedback_loop_layout = true,
       .EXT_attachment_feedback_loop_dynamic_state = true,
       .EXT_calibrated_timestamps = true,
+      .EXT_conditional_rendering = true,
       .EXT_depth_clip_control = true,
       .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_metal = true,
@@ -164,6 +166,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .EXT_memory_budget = true,
       .EXT_multi_draw = true,
       .EXT_mutable_descriptor_type = true,
+      .EXT_nested_command_buffer = true,
       .EXT_post_depth_coverage = true,
       .EXT_robustness2 = true,
       .EXT_shader_atomic_float = true,
@@ -352,6 +355,9 @@ kk_get_device_features(
       /* VK_KHR_shader_relaxed_extended_instruction */
       .shaderRelaxedExtendedInstruction = true,
 
+      /* VK_KHR_shader_untyped_pointers */
+      .shaderUntypedPointers = true,
+
       /* VK_KHR_unified_image_layouts */
       .unifiedImageLayouts = true,
       .unifiedImageLayoutsVideo = false,
@@ -372,6 +378,10 @@ kk_get_device_features(
       /* VK_EXT_attachment_feedback_loop_dynamic_state */
       .attachmentFeedbackLoopDynamicState = true,
 
+      /* VK_EXT_conditional_rendering */
+      .conditionalRendering = true,
+      .inheritedConditionalRendering = true,
+
       /* VK_EXT_depth_clip_control */
       .depthClipControl = true,
 
@@ -386,6 +396,11 @@ kk_get_device_features(
 
       /* VK_EXT_multi_draw */
       .multiDraw = true,
+
+      /* VK_EXT_nested_command_buffer */
+      .nestedCommandBuffer = true,
+      .nestedCommandBufferRendering = true,
+      .nestedCommandBufferSimultaneousUse = true,
 
       /* VK_EXT_shader_replicated_composites */
       .shaderReplicatedComposites = true,
@@ -410,9 +425,8 @@ kk_get_device_properties(const struct kk_physical_device *pdev,
 {
    VkSampleCountFlagBits sample_counts = VK_SAMPLE_COUNT_1_BIT;
    for (uint32_t sample_count = VK_SAMPLE_COUNT_2_BIT;
-      sample_count <= VK_SAMPLE_COUNT_8_BIT; sample_count <<= 1) {
-      if (mtl_device_supports_sample_count(pdev->mtl_dev_handle,
-                                           sample_count))
+        sample_count <= VK_SAMPLE_COUNT_8_BIT; sample_count <<= 1) {
+      if (mtl_device_supports_sample_count(pdev->mtl_dev_handle, sample_count))
          sample_counts |= sample_count;
    }
 
@@ -909,8 +923,8 @@ kk_get_sysmem_heap_budget(struct kk_physical_device *pdev)
    uint64_t sysmem_used_B = sysmem_size_B - sysmem_available_B;
    uint64_t sysmem_budget_B =
       mtl_device_recommended_max_working_set_size(pdev->mtl_dev_handle);
-   uint64_t remaining_budget_B = sysmem_budget_B > sysmem_used_B ?
-                                 sysmem_budget_B - sysmem_used_B : 0u;
+   uint64_t remaining_budget_B =
+      sysmem_budget_B > sysmem_used_B ? sysmem_budget_B - sysmem_used_B : 0u;
    return remaining_budget_B +
           mtl_device_current_allocated_size(pdev->mtl_dev_handle);
 }
@@ -1169,8 +1183,7 @@ kk_GetPhysicalDeviceQueueFamilyProperties2(
          p->queueFamilyProperties.minImageTransferGranularity =
             (VkExtent3D){1, 1, 1};
 
-         vk_foreach_struct(ext, p->pNext)
-         {
+         vk_foreach_struct(ext, p->pNext) {
             switch (ext->sType) {
             case VK_STRUCTURE_TYPE_QUEUE_FAMILY_GLOBAL_PRIORITY_PROPERTIES: {
                VkQueueFamilyGlobalPriorityProperties *pSub = (void *)ext;

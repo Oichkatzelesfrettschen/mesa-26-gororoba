@@ -1027,8 +1027,10 @@ get_device_properties(const struct v3dv_physical_device *device,
                                                   MAX_STORAGE_IMAGES,
 
       /* Compute limits */
-      .maxComputeSharedMemorySize               = 32u * 1024u,
-      .maxComputeWorkGroupCount                 = { 65535, 65535, 65535 },
+      .maxComputeSharedMemorySize               = V3D_MAX_COMPUTE_SHARED_MEMORY_SIZE,
+      .maxComputeWorkGroupCount                 = { V3D_MAX_CSD_WG_COUNT,
+                                                    V3D_MAX_CSD_WG_COUNT,
+                                                    V3D_MAX_CSD_WG_COUNT },
       .maxComputeWorkGroupInvocations           = V3D_MAX_CSD_WG_SIZE,
       .maxComputeWorkGroupSize                  = { V3D_MAX_CSD_WG_SIZE,
                                                     V3D_MAX_CSD_WG_SIZE,
@@ -1357,10 +1359,10 @@ create_physical_device(struct v3dv_instance *instance,
    if (fstat(primary_fd, &primary_stat) != 0) {
       result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
                          "failed to stat DRM primary node");
-      goto fail;
+   } else {
+      device->has_primary = true;
+      device->primary_devid = primary_stat.st_rdev;
    }
-   device->has_primary = true;
-   device->primary_devid = primary_stat.st_rdev;
 
    if (fstat(render_fd, &render_stat) != 0) {
       result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
@@ -1378,6 +1380,12 @@ create_physical_device(struct v3dv_instance *instance,
    device->primary_fd = primary_fd;
    device->render_fd = render_fd;
    device->display_fd = display_fd;
+
+   drmVersionPtr version = drmGetVersion(render_fd);
+   if (version) {
+      device->is_shim = version->desc && strcmp(version->desc, "shim") == 0;
+      drmFreeVersion(version);
+   }
 
    if (!v3d_get_device_info(device->render_fd, &device->devinfo, &v3d_ioctl)) {
       result = vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
@@ -1662,7 +1670,7 @@ enumerate_devices(struct vk_instance *vk_instance)
          break;
    }
 
-   if (render_fd < 0 || primary_fd < 0)
+   if (render_fd < 0)
       result = VK_ERROR_INCOMPATIBLE_DRIVER;
    else
       result = create_physical_device(instance, primary_fd, render_fd, display_fd);
@@ -1829,9 +1837,14 @@ queue_init(struct v3dv_device *device, struct v3dv_queue *queue,
    if (result != VK_SUCCESS)
       return result;
 
-   result = vk_queue_enable_submit_thread(&queue->vk);
-   if (result != VK_SUCCESS)
-      goto fail_submit_thread;
+   /* Threaded submit requires an implementation of syncobj which is not
+    * available on the shim driver.
+    */
+   if (!device->pdevice->is_shim) {
+      result = vk_queue_enable_submit_thread(&queue->vk);
+      if (result != VK_SUCCESS)
+         goto fail_submit_thread;
+   }
 
    queue->device = device;
    queue->vk.driver_submit = v3dv_queue_driver_submit;
@@ -1897,6 +1910,10 @@ init_device_meta(struct v3dv_device *device)
 static void
 destroy_device_meta(struct v3dv_device *device)
 {
+   if (device->meta.tfu_fill_zero.src_bo) {
+      v3dv_bo_free(device, device->meta.tfu_fill_zero.src_bo);
+      device->meta.tfu_fill_zero.src_bo = NULL;
+   }
    mtx_destroy(&device->meta.mtx);
    v3dv_meta_clear_finish(device);
    v3dv_meta_blit_finish(device);
@@ -1956,7 +1973,12 @@ v3dv_CreateDevice(VkPhysicalDevice physicalDevice,
    device->vk.copy_sync_payloads = vk_drm_syncobj_copy_payloads;
 
    vk_device_set_drm_fd(&device->vk, physical_device->render_fd);
-   vk_device_enable_threaded_submit(&device->vk);
+
+   /* Threaded submit requires an implementation of syncobj which is not
+    * available on the shim driver.
+    */
+   if (!physical_device->is_shim)
+      vk_device_enable_threaded_submit(&device->vk);
 
    device->queues = vk_zalloc2(&device->vk.alloc, pAllocator,
                                sizeof(*device->queues) * total_queues, 8,
