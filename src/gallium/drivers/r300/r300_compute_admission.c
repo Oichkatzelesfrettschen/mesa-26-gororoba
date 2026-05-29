@@ -828,14 +828,16 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
 
    const nir_intrinsic_instr *store      = NULL;
    unsigned atomic_count = 0, load_count = 0, store_count = 0;
-   bool has_loop = false;
+   bool has_loop = false, in_if = false;
 
    nir_foreach_function_impl (impl, s) {
       nir_foreach_block (block, impl) {
          for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
             if (p->type == nir_cf_node_loop) {
                has_loop = true;
-               break;
+            }
+            if (p->type == nir_cf_node_if) {
+               in_if = true;
             }
          }
          nir_foreach_instr (instr, block) {
@@ -854,7 +856,7 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
       }
    }
 
-   if (store_count != 1 || atomic_count != 0 || has_loop || load_count < 3)
+   if (store_count != 1 || atomic_count != 0 || has_loop || in_if || load_count < 3)
       return;
    if (!store->src[0].ssa || !store->src[2].ssa)
       return;

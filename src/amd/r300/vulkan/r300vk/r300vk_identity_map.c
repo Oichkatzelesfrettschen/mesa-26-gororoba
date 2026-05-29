@@ -53,6 +53,7 @@ identity_map_debug_enabled(void)
 struct pipe_sampler_view *
 r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
                                                struct pipe_resource *src_buf,
+                                               unsigned byte_offset,
                                                unsigned width,
                                                unsigned height,
                                                enum pipe_format format)
@@ -96,10 +97,7 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
    const unsigned bpp = util_format_get_blocksize(format);
    struct pipe_transfer *src_xfer = NULL;
    struct pipe_box src_box;
-   memset(&src_box, 0, sizeof(src_box));
-   src_box.width  = width * height * bpp;
-   src_box.height = 1;
-   src_box.depth  = 1;
+   u_box_1d(byte_offset, width * height * bpp, &src_box);
    const void *src_map = pipe->buffer_map(pipe, src_buf, 0, PIPE_MAP_READ,
                                           &src_box, &src_xfer);
    if (!src_map) {
@@ -274,7 +272,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * that order. */
    uint32_t in_binding = pl->identity_map.input_ssbo_binding;
    uint32_t out_binding = pl->identity_map.output_ssbo_binding;
-   if (in_binding == out_binding) {
+   if (in_binding == out_binding && in_binding == 0) {
       if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
           !nth_storage_buffer_binding(set, 1, &out_binding)) {
          IDM_LOG("early-return layout-has-fewer-than-two-storage-buffers");
@@ -357,6 +355,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * texture is freed. */
    struct pipe_sampler_view *in_sv =
       r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
+                                                     (unsigned)in_desc->buf.offset,
                                                      width, height, fmt);
    IDM_LOG("wrap in_sv=%p", (const void *)in_sv);
    if (!in_sv) {
@@ -540,6 +539,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (unsigned)out_desc->buf.offset;
          out_box.width  = width * height * util_format_get_blocksize(fmt);
          out_box.height = 1;
          out_box.depth  = 1;
@@ -703,6 +703,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
    struct pipe_sampler_view *sv_a =
       r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
+                                                     (unsigned)desc_in_a->buf.offset,
                                                      width, height, fmt);
    if (!sv_a) {
       IDM_LOG("bin_map early-return wrap-input-a-failed");
@@ -710,6 +711,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    }
    struct pipe_sampler_view *sv_b =
       r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_b->resource,
+                                                     (unsigned)desc_in_b->buf.offset,
                                                      width, height, fmt);
    if (!sv_b) {
       pipe_sampler_view_reference(&sv_a, NULL);
@@ -844,6 +846,7 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (unsigned)desc_out->buf.offset;
          out_box.width  = width * height * util_format_get_blocksize(fmt);
          out_box.height = 1;
          out_box.depth  = 1;
@@ -935,7 +938,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
     * positionally like the identity-map path when both indices are 0. */
    uint32_t in_binding  = pl->multitap_gather.input_ssbo_binding;
    uint32_t out_binding = pl->multitap_gather.output_ssbo_binding;
-   if (in_binding == out_binding) {
+   if (in_binding == out_binding && in_binding == 0) {
       if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
           !nth_storage_buffer_binding(set, 1, &out_binding)) {
          IDM_LOG("gather early-return layout-has-fewer-than-two-storage-buffers");
@@ -963,8 +966,8 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
       (uint64_t)dispatch->group_count_x *
       (uint64_t)dispatch->group_count_y *
       (uint64_t)dispatch->group_count_z;
-   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
-      IDM_LOG("gather early-return total_invocations=%llu out-of-bounds",
+   if (total_invocations == 0 || total_invocations > 2048u) {
+      IDM_LOG("gather early-return total_invocations=%llu out-of-bounds (1D box-3 limit)",
               (unsigned long long)total_invocations);
       return false;
    }
@@ -978,6 +981,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
    const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
    struct pipe_sampler_view *in_sv =
       r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
+                                                     (unsigned)in_desc->buf.offset,
                                                      width, height, fmt);
    if (!in_sv) {
       IDM_LOG("gather early-return wrap-input-failed");
@@ -1117,6 +1121,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (unsigned)out_desc->buf.offset;
          out_box.width  = width * height * util_format_get_blocksize(fmt);
          out_box.height = 1;
          out_box.depth  = 1;
@@ -1252,6 +1257,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
     * use. */
    struct pipe_sampler_view *sv_pred =
       r300vk_identity_map_wrap_input_as_sampler_view(device, pred_buf->resource,
+                                                     (unsigned)pred_desc->buf.offset,
                                                      width, height, fmt);
    if (!sv_pred) {
       IDM_LOG("predstore early-return pred-wrap-failed");
@@ -1259,6 +1265,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    }
    struct pipe_sampler_view *sv_val =
       r300vk_identity_map_wrap_input_as_sampler_view(device, val_buf->resource,
+                                                     (unsigned)val_desc->buf.offset,
                                                      width, height, fmt);
    if (!sv_val) {
       pipe_sampler_view_reference(&sv_pred, NULL);
@@ -1438,6 +1445,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (unsigned)out_desc->buf.offset;
          out_box.width  = width * height * bpp;
          out_box.height = 1; out_box.depth = 1;
          void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
@@ -1640,6 +1648,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
       struct pipe_transfer *in_xfer = NULL;
       struct pipe_box in_box;
       memset(&in_box, 0, sizeof(in_box));
+      in_box.x      = (unsigned)in_desc->buf.offset;
       in_box.width  = (unsigned)(N * sizeof(uint32_t));
       in_box.height = 1; in_box.depth = 1;
       const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
@@ -1783,6 +1792,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (unsigned)out_desc->buf.offset;
          out_box.width  = (unsigned)out_byte_size;
          out_box.height = 1; out_box.depth = 1;
          void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
@@ -1974,6 +1984,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
       struct pipe_transfer *in_xfer = NULL;
       struct pipe_box in_box;
       memset(&in_box, 0, sizeof(in_box));
+      in_box.x      = (unsigned)in_desc->buf.offset;
       in_box.width  = (unsigned)(N * sizeof(uint32_t));
       in_box.height = 1; in_box.depth = 1;
       const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
@@ -2141,6 +2152,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    {
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
+      out_box.x      = (unsigned)out_desc->buf.offset;
       out_box.width  = (unsigned)sizeof(uint32_t);
       out_box.height = 1; out_box.depth = 1;
       struct pipe_transfer *out_xfer = NULL;
@@ -2261,6 +2273,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
       struct pipe_transfer *p_xfer = NULL;
       struct pipe_box p_box;
       memset(&p_box, 0, sizeof(p_box));
+      p_box.x      = (unsigned)params_desc->buf.offset;
       p_box.width = (unsigned)sizeof(uint32_t);
       p_box.height = 1; p_box.depth = 1;
       const void *p_map = pipe->buffer_map(pipe, params_buf->resource, 0,
@@ -2329,6 +2342,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
       struct pipe_transfer *in_xfer = NULL;
       struct pipe_box in_box;
       memset(&in_box, 0, sizeof(in_box));
+      in_box.x      = (unsigned)in_desc->buf.offset;
       in_box.width  = width * height * bpp;
       in_box.height = 1; in_box.depth = 1;
       const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
@@ -2503,6 +2517,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (unsigned)out_desc->buf.offset;
          out_box.width  = width * height * bpp;
          out_box.height = 1; out_box.depth = 1;
          void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
