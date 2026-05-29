@@ -493,7 +493,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
                                struct r300_compute_zpass_reduction_pattern *zpass,
                                struct r300_compute_multipass_scan_pattern *multiscan,
-                               struct r300_compute_predicated_store_pattern *predstore)
+                               struct r300_compute_predicated_store_pattern *predstore,
+                               struct r300_compute_multitap_gather_pattern *gather)
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    if (!mod)
@@ -555,6 +556,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
    r300_nir_detect_predicated_store_pattern(nir, predstore);
+   r300_nir_detect_multitap_gather_pattern(nir, gather);
 
    /* R300VK_DEBUG=identity_map -- log what the classifier + detector decided,
     * so triage can pin whether identity_map was recognised at all and which
@@ -1195,6 +1197,112 @@ r300vk_predicated_store_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
+/* Synthesise the box-3 multi-tap gather fragment program:
+ *   ADD  coord_l, IN[0], -CONST[0]   (texcoord one texel left)
+ *   ADD  coord_r, IN[0],  CONST[0]   (texcoord one texel right)
+ *   TEX  t_c, IN[0],     SAMP[0]     (center tap, in[gid])
+ *   TEX  t_l, coord_l,   SAMP[0]     (left   tap, in[gid-1])
+ *   TEX  t_r, coord_r,   SAMP[0]     (right  tap, in[gid+1])
+ *   ADD  acc, t_c, t_l
+ *   ADD  OUT[0], acc, t_r
+ *   END
+ *
+ * One sampler sampled at three neighborhood offsets, summed in the FP24 ALU.
+ * CONST[0] carries the neighbor texel displacement (1/width, 0, 0, 0): the
+ * element count <= 2048 lays out as a single texture row (height == 1, per
+ * derive_raster_extent in r300vk_identity_map.c), so the displacement is
+ * purely in normalized texcoord X and CONST[0].y stays 0 to keep the offset
+ * taps in row 0.  width is a dispatch-time quantity (the grid size arrives at
+ * CmdDispatch, not pipeline-create), so the orchestrator uploads CONST[0] per
+ * dispatch via set_constant_buffer; the FS adds it to the interpolated
+ * texcoord.  CLAMP_TO_EDGE on the device sampler defines the boundary taps:
+ * gid 0's left tap and gid (N-1)'s right tap clamp to the edge texel, matching
+ * a 1D edge-clamped analytic convolution.
+ *
+ * The FS emits a FIXED box-3 regardless of the detected tap_count -- the
+ * canonical-kernel contract (the detector recognizes the N-tap shape; the
+ * orchestrator and the probe agree on box-3).  The three TEX read distinct
+ * offset coordinates, so CSE does not collapse them to one fetch.
+ *
+ * Bit-exactness rests on M-F: the two-byte FP24-accumulate-then-UNORM8-store
+ * ADD is hardware-verified bit-exact on RS482.  Box-3 is the same mechanism
+ * with one more term; three input bytes each <= 85 sum to <= 255, so the
+ * accumulate neither clamps nor carries, and the readback oracle confirms the
+ * three-term round-trip.
+ *
+ * Cost: 3 TEX + 4 ALU = 7/96 of the R300 PFS budget
+ * (R300_PFS_MAX_ALU_INST=64 / R300_PFS_MAX_TEX_INST=32). */
+static void *
+r300vk_synthesize_multitap_gather_fs(struct pipe_context *pipe)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+
+   struct ureg_src delta = ureg_DECL_constant(ureg, 0);
+   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                            TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out     = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst coord_l = ureg_DECL_temporary(ureg);
+   struct ureg_dst coord_r = ureg_DECL_temporary(ureg);
+   struct ureg_dst t_c     = ureg_DECL_temporary(ureg);
+   struct ureg_dst t_l     = ureg_DECL_temporary(ureg);
+   struct ureg_dst t_r     = ureg_DECL_temporary(ureg);
+
+   ureg_ADD(ureg, coord_l, tex, ureg_negate(delta));
+   ureg_ADD(ureg, coord_r, tex, delta);
+
+   ureg_TEX(ureg, ureg_writemask(t_c, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp);
+   ureg_TEX(ureg, ureg_writemask(t_l, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, ureg_src(coord_l), samp);
+   ureg_TEX(ureg, ureg_writemask(t_r, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, ureg_src(coord_r), samp);
+
+   ureg_ADD(ureg, ureg_writemask(t_c, TGSI_WRITEMASK_XYZW),
+            ureg_src(t_c), ureg_src(t_l));
+   ureg_ADD(ureg, out, ureg_src(t_c), ureg_src(t_r));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* Synthesise the multi-tap gather VS + FS pair.  Same fullscreen-quad vertex
+ * passthrough (POSITION + one GENERIC texcoord) and device-cached state CSOs
+ * as the identity / binary lowerings; only the box-3 FS differs.  The FS reads
+ * CONST[0] (the neighbor texel delta) which the orchestrator uploads per
+ * dispatch. */
+static bool
+r300vk_multitap_gather_synthesize_shaders(struct r300vk_device *device,
+                                          struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
+                                                      TGSI_SEMANTIC_GENERIC };
+   const unsigned          vs_semantic_indices[] = { 0, 0 };
+   pl->vs_cso = util_make_vertex_passthrough_shader(
+                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_multitap_gather_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
 VkResult
 r300vk_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
@@ -1234,9 +1342,10 @@ r300vk_CreateComputePipelines(VkDevice _device,
       struct r300_compute_zpass_reduction_pattern zpass = {0};
       struct r300_compute_multipass_scan_pattern multiscan = {0};
       struct r300_compute_predicated_store_pattern predstore = {0};
+      struct r300_compute_multitap_gather_pattern gather = {0};
       if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage,
                                           &adm, &ident, &binmap, &blendacc, &zpass,
-                                          &multiscan, &predstore))
+                                          &multiscan, &predstore, &gather))
          return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "r300vk: SPIR-V to NIR failed for compute kernel %u",
                           i);
@@ -1269,6 +1378,7 @@ r300vk_CreateComputePipelines(VkDevice _device,
       pl->zpass_reduction = zpass;
       pl->multipass_scan = multiscan;
       pl->predicated_store = predstore;
+      pl->multitap_gather = gather;
       /* When the kernel matches the identity-map pattern, synthesize the
        * fullscreen-quad VS + texture-sampling FS pair the dispatch replay
        * will bind.  A synthesis failure demotes the pipeline back to a no-op
@@ -1286,7 +1396,11 @@ r300vk_CreateComputePipelines(VkDevice _device,
        * (it consumes a constant 1 gated by an nir_if from the load), so the
        * two reductions stay structurally disjoint.  Multipass-scan
        * discriminates from all four by carrying a nir_loop (they are all
-       * loop-free), so its detector cannot collide with theirs. */
+       * loop-free), so its detector cannot collide with theirs.
+       * Multitap-gather carries >= 3 load_ssbo and an iadd-tree store value,
+       * disjoint from binary-map (exactly 2 loads), identity-map (1 load), the
+       * atomic reductions, predicated-store (conditional), and multipass
+       * (loop). */
       if (pl->identity_map.is_identity_map &&
           !r300vk_identity_map_synthesize_shaders(device, pl))
          pl->identity_map.is_identity_map = false;
@@ -1305,6 +1419,9 @@ r300vk_CreateComputePipelines(VkDevice _device,
       else if (pl->predicated_store.is_predicated_store &&
                !r300vk_predicated_store_synthesize_shaders(device, pl))
          pl->predicated_store.is_predicated_store = false;
+      else if (pl->multitap_gather.is_multitap_gather &&
+               !r300vk_multitap_gather_synthesize_shaders(device, pl))
+         pl->multitap_gather.is_multitap_gather = false;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 
