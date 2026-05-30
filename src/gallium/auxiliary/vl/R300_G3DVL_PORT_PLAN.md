@@ -71,6 +71,42 @@ Remaining drift building `libgalliumvl.a` (~86 errors, 2 files truncated at
 Only after milestone 1 builds clean does this branch become a merge candidate; the
 backend (milestone 2) makes va advertise a profile, and milestone 3 is "it plays."
 
+## Remaining-class API contracts (mesa 26, verified against source)
+
+Done so far on this branch: superseded `vl_decoder.c` deleted; `p_compiler.h` ->
+`util/compiler.h`; `PIPE_SHADER_{VERTEX,FRAGMENT}` -> `MESA_SHADER_*`, `PIPE_PRIM_*`
+-> `MESA_PRIM_*`.  Drift 86 -> 56.  Remaining classes, with the exact mesa-26 idiom:
+
+- `pipe_surface` was rebuilt as a lightweight VALUE (p_state.h:411): fields are
+  `format:16`, `nr_samples:16`, `first_layer:16`, `last_layer:16`, `level`,
+  `texture` -- no `width`, `height`, or `.u` union.  Framebuffer state now embeds
+  `struct pipe_surface cbufs[]` BY VALUE, not by pointer.
+  * `surf->width` / `surf->height` -> `pipe_surface_size(surf, &w, &h)`
+    (`util/u_inlines.h:403`; signature `(const struct pipe_surface *, unsigned *w,
+    unsigned *h)`), or `u_minify(surf->texture->width0/height0, surf->level)`.
+  * `surf->u.tex.level/first_layer/last_layer` -> `surf->level/first_layer/
+    last_layer` (union flattened).  MUST be edited per site, NOT sed'd: a blind
+    `.u.tex.` rewrite would corrupt `pipe_sampler_view`, which KEEPS its `.u.tex`.
+  * `pipe_context.create_surface` is gone (the "no member create_surface" +
+    "assigning to pipe_surface from pipe_surface*; dereference with *" errors): the
+    kernels' render-target setup must move to the value-embedded framebuffer model
+    that `vl_compositor_gfx.c` uses (build `pipe_surface` inline, assign into
+    `fb_state.cbufs[i]` by value).  Deepest sub-fix; do per kernel.
+- `pipe_sampler_state.normalized_coords` -> `unnormalized_coords` (p_state.h:468,
+  INVERTED sense): `normalized_coords = 1` -> drop (default 0); `= 0` ->
+  `unnormalized_coords = 1`.  Check each site's sense.
+- `pipe_screen.get_param`/`get_shader_param` -> the `pipe_caps`/`shader_caps`
+  structs (~mesa 23): `screen->get_param(s, PIPE_CAP_MAX_RENDER_TARGETS)` ->
+  `screen->caps.max_render_targets` (p_defines.h:1075); `PIPE_SHADER_CAP_MAX_
+  INSTRUCTIONS` -> `screen->shader_caps[MESA_SHADER_*].max_instructions`;
+  `PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL` was REMOVED -- FS position is always a
+  sysval now, so take that branch unconditionally and delete the query.
+- Arity class (DANGEROUS -- compiles wrong, runtime-only check, hazard-gated on
+  vostro): `pipe_context` hooks `set_sampler_views`, `set_constant_buffer`,
+  `draw_vbo` changed shape.  Match each to a LIVE caller (`vl_compositor_gfx.c`,
+  radeonsi `si_*`), not by counting args.  Do LAST, one site at a time, each
+  against its reference caller.
+
 ## Build / iterate / verify order
 
 1. Wire meson; build vl/ kernels (video enabled) under the canonical clang-22
