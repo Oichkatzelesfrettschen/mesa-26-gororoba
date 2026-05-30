@@ -269,8 +269,24 @@ callbacks as `vl_mc_ycbcr_vert_shader`/`vl_mc_ycbcr_frag_shader` typedefs whose
 signature is `(..., struct ureg_program *shader, ...)`.  So the conversion is one
 coordinated change, in this order:
 
-1. `vl_mc.h` -- change the two callback typedefs from `struct ureg_program *` to
-   `nir_builder *` (and pass the source as `nir_def *` instead of `ureg_dst`).
+1. `vl_mc.h` -- change the two callback typedefs (verified at vl_mc.h:68-76).
+   From:
+   ```c
+   typedef void (*vl_mc_ycbcr_vert_shader)(void *priv, struct vl_mc *mc,
+       struct ureg_program *shader, unsigned first_output, struct ureg_dst tex);
+   typedef void (*vl_mc_ycbcr_frag_shader)(void *priv, struct vl_mc *mc,
+       struct ureg_program *shader, unsigned first_input, struct ureg_dst dst);
+   ```
+   To (the frag callback RETURNS the textured value rather than writing a passed
+   dst, since NIR is SSA; the vert callback gets the nir_builder + the position):
+   ```c
+   typedef void (*vl_mc_ycbcr_vert_shader)(void *priv, struct vl_mc *mc,
+       nir_builder *b, unsigned first_output, nir_def *tex);
+   typedef nir_def *(*vl_mc_ycbcr_frag_shader)(void *priv, struct vl_mc *mc,
+       nir_builder *b, unsigned first_input, nir_def *dst_in);
+   ```
+   `vl_mc.h` then includes `compiler/nir/nir_builder.h` (or fwd-declares the nir
+   types) instead of `tgsi/tgsi_ureg.h`.
 2. `vl_mpeg12_decoder.c` -- rewrite `mc_vert_shader_callback` (emit the GENERIC
    texcoord output via nir; it also chains `vl_idct_stage2_vert_shader`) and
    `mc_frag_shader_callback` (the source `nir_tex`).  11 ureg ops here.
