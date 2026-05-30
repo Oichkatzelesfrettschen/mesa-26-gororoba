@@ -70,6 +70,11 @@ r300vk_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
 }
 
 
+/* Defined later in this file; resolve_buffers calls it before that point. */
+static const struct r300vk_descriptor *
+find_descriptor_by_binding(const struct r300vk_descriptor_set *set,
+                           uint32_t binding_index);
+
 static bool
 r300vk_idm_resolve_buffers(const struct r300vk_descriptor_set *set,
                            uint32_t count,
@@ -335,29 +340,6 @@ r300vk_idm_create_fullscreen_vbo(struct pipe_context *pipe,
    }
    *out_vb = vb;
    *out_velems_cso = velems_cso;
-   return true;
-}
-
-static bool
-r300vk_idm_resolve_buffers(const struct r300vk_descriptor_set *set,
-                           uint32_t count,
-                           const uint32_t *bindings,
-                           const struct r300vk_descriptor **descs,
-                           struct r300vk_buffer **bufs)
-{
-   for (uint32_t i = 0; i < count; i++) {
-      descs[i] = find_descriptor_by_binding(set, bindings[i]);
-      if (!descs[i] || !descs[i]->buf.buffer) {
-         IDM_LOG("early-return descriptor-walk-miss (binding=%u)", bindings[i]);
-         return false;
-      }
-      VK_FROM_HANDLE(r300vk_buffer, buf, descs[i]->buf.buffer);
-      if (!buf || !buf->resource) {
-         IDM_LOG("early-return null-pipe-resource (binding=%u)", bindings[i]);
-         return false;
-      }
-      bufs[i] = buf;
-   }
    return true;
 }
 
@@ -873,7 +855,8 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    /* Allocate the fullscreen-quad VBO with 4 vertices (TRIANGLE_STRIP):
     * each vertex = (pos.xy, texcoord.xy), 16 bytes, 64 bytes total.
     * Clip-space corners (-1, -1)..(1, 1) with texcoords (0, 0)..(1, 1) so
-    * the FS samples the input texture across its full extent. */   struct pipe_resource *vb = NULL;
+    * the FS samples the input texture across its full extent. */
+   struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
@@ -1143,7 +1126,8 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    surf_templ.format  = fmt;
    surf_templ.texture = rt;
 
-   /* Fullscreen quad VBO + velems: identical to identity-map. */   struct pipe_resource *vb = NULL;
+   /* Fullscreen quad VBO + velems: identical to identity-map. */
+   struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
@@ -1274,7 +1258,8 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
    if (!set || !set->layout) {
       IDM_LOG("gather early-return no-set-or-layout");
       return false;
-   }   uint32_t bindings[2] = { pl->multitap_gather.input_ssbo_binding, pl->multitap_gather.output_ssbo_binding };
+   }
+   uint32_t bindings[2] = { pl->multitap_gather.input_ssbo_binding, pl->multitap_gather.output_ssbo_binding };
    const struct r300vk_descriptor *descs[2] = {0};
    struct r300vk_buffer *bufs[2] = {0};
    if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
@@ -1283,23 +1268,6 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
    const struct r300vk_descriptor *out_desc = descs[1];
    struct r300vk_buffer *in_buf = bufs[0];
    struct r300vk_buffer *out_buf = bufs[1];
-   }
-   IDM_LOG("gather bindings: in=%u out=%u", in_binding, out_binding);
-
-   const struct r300vk_descriptor *in_desc =
-      find_descriptor_by_binding(set, in_binding);
-   const struct r300vk_descriptor *out_desc =
-      find_descriptor_by_binding(set, out_binding);
-   if (!in_desc || !out_desc || !in_desc->buf.buffer || !out_desc->buf.buffer) {
-      IDM_LOG("gather early-return descriptor-walk-miss");
-      return false;
-   }
-   VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
-   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource) {
-      IDM_LOG("gather early-return null-pipe-resource");
-      return false;
-   }
 
    const uint64_t total_invocations =
       (uint64_t)dispatch->group_count_x *
@@ -1835,7 +1803,8 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Detector binding-index priority + positional fallback (same policy
-    * as r300vk_binary_map_dispatch_replay). */   uint32_t bindings[2] = { pl->blend_acc_reduction.value_ssbo_binding, pl->blend_acc_reduction.output_ssbo_binding };
+    * as r300vk_binary_map_dispatch_replay). */
+   uint32_t bindings[2] = { pl->blend_acc_reduction.value_ssbo_binding, pl->blend_acc_reduction.output_ssbo_binding };
    const struct r300vk_descriptor *descs[2] = {0};
    struct r300vk_buffer *bufs[2] = {0};
    if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
@@ -1889,7 +1858,8 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    if (!rt) {
       IDM_LOG("blend_acc early-return rt-create-failed");
       return false;
-   }   struct pipe_resource *vb = NULL;
+   }
+   struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_blend_acc_vbo(pipe, in_buf->resource, (unsigned)in_desc->buf.offset, N, M, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
@@ -2037,7 +2007,8 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    if (!set || !set->layout) {
       IDM_LOG("zpass early-return no-set-or-layout");
       return false;
-   }   uint32_t bindings[2] = { pl->zpass_reduction.value_ssbo_binding, pl->zpass_reduction.output_ssbo_binding };
+   }
+   uint32_t bindings[2] = { pl->zpass_reduction.value_ssbo_binding, pl->zpass_reduction.output_ssbo_binding };
    const struct r300vk_descriptor *descs[2] = {0};
    struct r300vk_buffer *bufs[2] = {0};
    if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
@@ -2055,7 +2026,8 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("zpass early-return output-too-small=%llu",
               (unsigned long long)out_byte_size);
       return false;
-   }   uint64_t total_invocations = 0;
+   }
+   uint64_t total_invocations = 0;
    unsigned width = 0, height = 0;
    if (!r300vk_idm_compute_raster_grid(dispatch, &total_invocations, &width, &height))
       return false;
@@ -2081,7 +2053,8 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    if (!rt) {
       IDM_LOG("zpass early-return rt-create-failed");
       return false;
-   }   struct pipe_resource *vb = NULL;
+   }
+   struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_zpass_vbo(pipe, in_buf->resource, (unsigned)in_desc->buf.offset, N, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
@@ -2397,7 +2370,8 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Fullscreen-quad VBO (pos.xy, texcoord.xy), identical to the
-    * identity-map orchestrator's quad. */   struct pipe_resource *vb = NULL;
+    * identity-map orchestrator's quad. */
+   struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_resource_reference(&tex[0], NULL);
@@ -2490,7 +2464,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Copy the final texture (tex[src_idx]) back to the output buffer. */
-   bool copy_ok = r300vk_identity_map_readback_rt(pipe, rt, out_buf->resource,
+   bool copy_ok = r300vk_identity_map_readback_rt(pipe, tex[src_idx], out_buf->resource,
                                                   (unsigned)out_desc->buf.offset,
                                                   width, height, fmt,
                                                   width * util_format_get_blocksize(fmt));
