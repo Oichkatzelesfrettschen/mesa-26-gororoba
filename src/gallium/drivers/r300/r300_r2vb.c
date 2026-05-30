@@ -28,7 +28,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "util/os_time.h"
 #include "util/u_inlines.h"
 
 #include "r300_context.h"
@@ -193,17 +192,24 @@ void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300)
     if (do_submit) {
         struct pipe_fence_handle *fence = NULL;
         struct timespec t0, t1;
+        bool signalled = false;
+        int flush_rc;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        r300->rws->cs_flush(&r300->cs, 0, &fence);
+        flush_rc = r300->rws->cs_flush(&r300->cs, 0, &fence);
         if (fence) {
-            r300->rws->fence_wait(r300->rws, fence, OS_TIMEOUT_INFINITE);
+            /* Bounded wait, never OS_TIMEOUT_INFINITE: a wedged GPU must not hang
+             * the process.  fence_wait returns false on timeout, so signalled=0
+             * marks a likely hang for the caller's evidence capture. */
+            signalled = r300->rws->fence_wait(r300->rws, fence,
+                                              (uint64_t)5 * 1000 * 1000 * 1000);
             r300->rws->fence_reference(r300->rws, &fence, NULL);
         }
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +
                     (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
-        fprintf(stderr, "r2vb_direct_vap_timing nverts=%u submit_ms=%.4f\n",
-                num_vertices, ms);
+        fprintf(stderr, "r2vb_direct_vap_timing nverts=%u submit_ms=%.4f "
+                "flush_rc=%d fence=%d signalled=%d\n",
+                num_vertices, ms, flush_rc, fence != NULL, signalled);
     } else {
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
         fprintf(stderr, "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP)\n",
