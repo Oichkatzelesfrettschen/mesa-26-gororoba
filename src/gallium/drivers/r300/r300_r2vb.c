@@ -38,7 +38,10 @@
 void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        struct r300_resource *output_gart_bo,
                                        uint32_t output_gart_bo_offset,
-                                       uint32_t num_vertices)
+                                       uint32_t num_vertices,
+                                       struct r300_resource *stage3_color_bo,
+                                       uint32_t stage3_width,
+                                       uint32_t stage3_height)
 {
     CS_LOCALS(r300);
 
@@ -51,10 +54,23 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                              RADEON_PRIO_COLOR_BUFFER,
                              RADEON_DOMAIN_GTT);
 
-    /* 36 dwords: stage 1 = 15, stage 2 = 6, stage 3 = 15.  OUT_CS_REG and
-     * OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N) emits one header
-     * plus its N values; the LOAD_VBPNTR body is seven dwords. */
-    BEGIN_CS(36);
+    /* Stage-3 observation target (optional).  When present, the stage-3 draw
+     * renders into this separate 2D BO instead of overwriting the stage-1 vertex
+     * data in output_gart_bo, so a CPU readback of stage3_color_bo shows where
+     * the re-ingested vertices rasterized -- evidence of the VAP fetch (stage 3),
+     * not just the stage-1 render.  NULL keeps the legacy single-BO loop. */
+    if (stage3_color_bo)
+        r300->rws->cs_add_buffer(&r300->cs, stage3_color_bo->buf,
+                                 RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
+                                 RADEON_PRIO_COLOR_BUFFER,
+                                 RADEON_DOMAIN_GTT);
+
+    /* 36 dwords for the single-BO loop: stage 1 = 15, stage 2 = 6, stage 3 = 15.
+     * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
+     * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords.
+     * The stage-3 color-target switch adds nine dwords (COLOROFFSET0 + reloc +
+     * COLORPITCH0 + the SC_SCISSORS pair). */
+    BEGIN_CS(stage3_color_bo ? 45 : 36);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -115,6 +131,23 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
                R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
     OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+
+    /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
+     * target and scissor to its extent so the re-ingested draw rasterizes there,
+     * leaving output_gart_bo's stage-1 vertex data intact for comparison.  The
+     * scissor follows stage3_height so the CS validator's pitch * cpp * maxy
+     * color-size bound fits stage3_color_bo (same SC_SCISSORS_BR encoding as
+     * stage 1, here for the full 2D extent rather than one row). */
+    if (stage3_color_bo) {
+        OUT_CS_REG(R300_RB3D_COLOROFFSET0, 0);
+        OUT_CS_RELOC(stage3_color_bo);
+        OUT_CS_REG(R300_RB3D_COLORPITCH0,
+                   stage3_width | R300_COLOR_FORMAT_ARGB32323232);
+        OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
+        OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
+        OUT_CS(((stage3_width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
+               ((stage3_height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+    }
 
     /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.
      *
@@ -216,10 +249,55 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
     if (!res)
         return false;
 
+    /* Optional stage-3 observation target: a separate square GART BO the
+     * re-ingested draw renders into, so a readback evidences the VAP fetch
+     * (stage 3) and not just the stage-1 render.  s3dim defaults to 64 texels
+     * per side, FP32x4; R300_R2VB_STAGE3_DIM overrides within the 64 KiB pitch
+     * the loop's COLORPITCH0 can encode. */
+    struct pipe_resource *stage3 = NULL;
+    uint32_t s3dim = 64;
+    const char *obs = getenv("R300_R2VB_STAGE3_OBSERVE");
+    bool observe = obs && strcmp(obs, "1") == 0;
+    if (observe) {
+        const char *sd = getenv("R300_R2VB_STAGE3_DIM");
+        if (sd) {
+            long d = strtol(sd, NULL, 0);
+            if (d > 0 && d <= 2048)
+                s3dim = (uint32_t)d;
+        }
+        struct pipe_resource s3t = {0};
+        s3t.target = PIPE_BUFFER;
+        s3t.format = PIPE_FORMAT_R8_UNORM;
+        s3t.width0 = s3dim * s3dim * 16;  /* FP32x4 2D, pitch = s3dim texels */
+        s3t.height0 = 1;
+        s3t.depth0 = 1;
+        s3t.array_size = 1;
+        s3t.bind = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_CUSTOM;
+        s3t.usage = PIPE_USAGE_DEFAULT;
+        stage3 = pscreen->resource_create(pscreen, &s3t);
+        if (!stage3) {
+            pipe_resource_reference(&res, NULL);
+            return false;
+        }
+        /* Sentinel-fill so a post-submit readback distinguishes rasterized
+         * texels (overwritten by stage 3) from untouched ones. */
+        struct pipe_transfer *fill_xfer = NULL;
+        struct pipe_box box = {.x = 0, .y = 0, .z = 0,
+                               .width = s3dim * s3dim * 16, .height = 1, .depth = 1};
+        void *fill = r300->context.buffer_map(&r300->context, stage3, 0,
+                                              PIPE_MAP_WRITE, &box, &fill_xfer);
+        if (fill) {
+            memset(fill, 0xff, s3dim * s3dim * 16);  /* -NaN sentinel per float */
+            r300->context.buffer_unmap(&r300->context, fill_xfer);
+        }
+    }
+
     /* Burn the one-shot only once the GTT BO exists and the loop runs, so a
      * missing env gate or a failed allocation can still fire on a later flush. */
     fired = true;
-    r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, num_vertices);
+    r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, num_vertices,
+                                      stage3 ? r300_resource(stage3) : NULL,
+                                      s3dim, s3dim);
 
     if (do_submit) {
         struct pipe_fence_handle *fence = NULL;
@@ -247,6 +325,39 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
         fprintf(stderr, "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP)\n",
                 num_vertices);
     }
+
+    /* Read back the stage-3 target.  The fence wait above (submit mode) makes the
+     * GPU writes coherent; in capture mode nothing was submitted, so the buffer
+     * stays at the sentinel and the written count is zero -- a negative control
+     * that the readback path itself is sound.  Count texels whose first float was
+     * overwritten (no longer the 0xffffffff sentinel) and report the first one,
+     * which is where the re-ingested geometry first rasterized. */
+    if (stage3) {
+        struct pipe_transfer *rd_xfer = NULL;
+        struct pipe_box box = {.x = 0, .y = 0, .z = 0,
+                               .width = s3dim * s3dim * 16, .height = 1, .depth = 1};
+        const uint32_t *texels = r300->context.buffer_map(&r300->context, stage3, 0,
+                                                          PIPE_MAP_READ, &box, &rd_xfer);
+        if (texels) {
+            uint32_t written = 0, first_slot = 0;
+            float first_r = 0.0f;
+            for (uint32_t i = 0; i < s3dim * s3dim; i++) {
+                if (texels[i * 4] != 0xffffffffu) {
+                    if (!written) {
+                        first_slot = i;
+                        memcpy(&first_r, &texels[i * 4], sizeof(first_r));
+                    }
+                    written++;
+                }
+            }
+            fprintf(stderr, "r2vb_stage3_readback dim=%ux%u written_texels=%u "
+                    "first_slot=%u first_r=%.6f\n",
+                    s3dim, s3dim, written, first_slot, first_r);
+            r300->context.buffer_unmap(&r300->context, rd_xfer);
+        }
+    }
+
+    pipe_resource_reference(&stage3, NULL);
     pipe_resource_reference(&res, NULL);
     return true;
 }
