@@ -34,12 +34,13 @@
 #include "util/u_sampler.h"
 #include "util/u_memory.h"
 
-#include "tgsi/tgsi_ureg.h"
+#include "compiler/nir/nir_builder.h"
 
 #include "vl_defines.h"
 #include "vl_types.h"
 #include "vl_vertex_buffers.h"
 #include "vl_idct.h"
+#include "vl_nir.h"
 
 enum VS_OUTPUT
 {
@@ -68,395 +69,403 @@ static const uint32_t const_matrix[8][8] = {
    { 0x3dc7c5c4, 0xbe8e39dd, 0x3ed4db32, 0xbefb14c0, 0x3efb14be, 0xbed4db31, 0x3e8e39ce, 0xbdc7c596 },
 };
 
+/* The IDCT runs as two separable matrix-vector passes over 8x8 blocks packed
+ * four coefficients per texel (VL_BLOCK_WIDTH/4 == 2 texels wide).  These
+ * helpers build the sample addresses and the per-row dot products the passes
+ * share.  The arithmetic is the proven shader IDCT, transliterated lane for
+ * lane from TGSI writemasks to NIR component builds. */
+
+/* Even/odd address pair for one column.  Each address is a vec2: one lane
+ * carries the row "start" coordinate, the other the column "tc".  right_side
+ * and transposed pick which lane is which, since the second pass samples the
+ * matrix transposed.  addr[1] is addr[0] nudged one texel (1/size) along the
+ * start lane so fetch_four reads the coefficient pair in one TEX each. */
 static void
-calc_addr(struct ureg_program *shader, struct ureg_dst addr[2],
-          struct ureg_src tc, struct ureg_src start, bool right_side,
-          bool transposed, float size)
+calc_addr(nir_builder *b, nir_def *addr[2], nir_def *tc, nir_def *start,
+          bool right_side, bool transposed, float size)
 {
-   unsigned wm_start = (right_side == transposed) ? TGSI_WRITEMASK_X : TGSI_WRITEMASK_Y;
-   unsigned sw_start = right_side ? TGSI_SWIZZLE_Y : TGSI_SWIZZLE_X;
+   bool start_in_x = (right_side == transposed);
+   unsigned sw_start = right_side ? 1 : 0;
+   unsigned sw_tc = right_side ? 0 : 1;
 
-   unsigned wm_tc = (right_side == transposed) ? TGSI_WRITEMASK_Y : TGSI_WRITEMASK_X;
-   unsigned sw_tc = right_side ? TGSI_SWIZZLE_X : TGSI_SWIZZLE_Y;
+   nir_def *s0 = nir_channel(b, start, sw_start);
+   nir_def *t0 = nir_channel(b, tc, sw_tc);
+   nir_def *s1 = nir_fadd(b, s0, nir_imm_float(b, 1.0f / size));
 
-   /*
-    * addr[0..1].(start) = right_side ? start.x : tc.x
-    * addr[0..1].(tc) = right_side ? tc.y : start.y
-    * addr[0..1].z = tc.z
-    * addr[1].(start) += 1.0f / scale
-    */
-   ureg_MOV(shader, ureg_writemask(addr[0], wm_start), ureg_scalar(start, sw_start));
-   ureg_MOV(shader, ureg_writemask(addr[0], wm_tc), ureg_scalar(tc, sw_tc));
-
-   ureg_ADD(shader, ureg_writemask(addr[1], wm_start), ureg_scalar(start, sw_start), ureg_imm1f(shader, 1.0f / size));
-   ureg_MOV(shader, ureg_writemask(addr[1], wm_tc), ureg_scalar(tc, sw_tc));
+   addr[0] = start_in_x ? nir_vec2(b, s0, t0) : nir_vec2(b, t0, s0);
+   addr[1] = start_in_x ? nir_vec2(b, s1, t0) : nir_vec2(b, t0, s1);
 }
 
+/* Step both addresses by pos texels along the tc lane, walking the eight matrix
+ * rows (mismatch) or the +-2 coefficient neighbourhood (stage 1).  pos is
+ * signed; the start lane is copied through unchanged. */
 static void
-increment_addr(struct ureg_program *shader, struct ureg_dst daddr[2],
-               struct ureg_src saddr[2], bool right_side, bool transposed,
-               int pos, float size)
+increment_addr(nir_builder *b, nir_def *daddr[2], nir_def *saddr[2],
+               bool right_side, bool transposed, int pos, float size)
 {
-   unsigned wm_start = (right_side == transposed) ? TGSI_WRITEMASK_X : TGSI_WRITEMASK_Y;
-   unsigned wm_tc = (right_side == transposed) ? TGSI_WRITEMASK_Y : TGSI_WRITEMASK_X;
+   unsigned tc_lane = (right_side == transposed) ? 1 : 0;
+   nir_def *delta = nir_imm_float(b, pos / size);
 
-   /*
-    * daddr[0..1].(start) = saddr[0..1].(start)
-    * daddr[0..1].(tc) = saddr[0..1].(tc)
-    */
-
-   ureg_MOV(shader, ureg_writemask(daddr[0], wm_start), saddr[0]);
-   ureg_ADD(shader, ureg_writemask(daddr[0], wm_tc), saddr[0], ureg_imm1f(shader, pos / size));
-   ureg_MOV(shader, ureg_writemask(daddr[1], wm_start), saddr[1]);
-   ureg_ADD(shader, ureg_writemask(daddr[1], wm_tc), saddr[1], ureg_imm1f(shader, pos / size));
+   for (unsigned k = 0; k < 2; ++k) {
+      nir_def *x = nir_channel(b, saddr[k], 0);
+      nir_def *y = nir_channel(b, saddr[k], 1);
+      if (tc_lane == 0)
+         x = nir_fadd(b, x, delta);
+      else
+         y = nir_fadd(b, y, delta);
+      daddr[k] = nir_vec2(b, x, y);
+   }
 }
 
+/* Sample the even/odd texel pair.  The caller sizes the coordinate to the
+ * sampler: vec2 for the 2D source/matrix planes, vec3 for the 3D intermediate
+ * the second pass reads. */
 static void
-fetch_four(struct ureg_program *shader, struct ureg_dst m[2], struct ureg_src addr[2],
-           struct ureg_src sampler, bool resource3d)
+fetch_four(nir_builder *b, nir_def *m[2], nir_def *addr[2],
+           nir_deref_instr *sampler)
 {
-   ureg_TEX(shader, m[0], resource3d ? TGSI_TEXTURE_3D : TGSI_TEXTURE_2D, addr[0], sampler);
-   ureg_TEX(shader, m[1], resource3d ? TGSI_TEXTURE_3D : TGSI_TEXTURE_2D, addr[1], sampler);
+   m[0] = nir_tex(b, addr[0], .texture_deref = sampler, .sampler_deref = sampler);
+   m[1] = nir_tex(b, addr[1], .texture_deref = sampler, .sampler_deref = sampler);
 }
 
-static void
-matrix_mul(struct ureg_program *shader, struct ureg_dst dst, struct ureg_dst l[2], struct ureg_dst r[2])
+/* One output coefficient: dot4 of the matrix row with the even coefficients
+ * plus dot4 with the odd coefficients -- the separable DCT-III row sum. */
+static nir_def *
+matrix_mul(nir_builder *b, nir_def *l[2], nir_def *r[2])
 {
-   struct ureg_dst tmp;
+   return nir_fadd(b, nir_fdot4(b, l[0], r[0]), nir_fdot4(b, l[1], r[1]));
+}
 
-   tmp = ureg_DECL_temporary(shader);
+/* Widen a vec2/vec3 address to the vec4 a generic varying carries, zero-filling
+ * the unused lanes (the TGSI form wrote only the live lanes; zero is inert). */
+static nir_def *
+idct_pad4(nir_builder *b, nir_def *v)
+{
+   nir_def *zero = nir_imm_float(b, 0.0f);
+   unsigned n = v->num_components;
+   return nir_vec4(b, nir_channel(b, v, 0),
+                   n > 1 ? nir_channel(b, v, 1) : zero,
+                   n > 2 ? nir_channel(b, v, 2) : zero, zero);
+}
 
-   /*
-    * tmp.xy = dot4(m[0][0..1], m[1][0..1])
-    * dst = tmp.x + tmp.y
-    */
-   ureg_DP4(shader, ureg_writemask(tmp, TGSI_WRITEMASK_X), ureg_src(l[0]), ureg_src(r[0]));
-   ureg_DP4(shader, ureg_writemask(tmp, TGSI_WRITEMASK_Y), ureg_src(l[1]), ureg_src(r[1]));
-   ureg_ADD(shader, dst,
-      ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_X),
-      ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_Y));
+/* Finalize a hand-built IDCT fragment shader.  The stage-1 pass writes several
+ * render targets, so the single-output vl_nir_fs_finish does not fit; the
+ * driver finalizes (nir_to_rc) on create_fs_state. */
+static void *
+idct_create_fs(struct vl_idct *idct, nir_builder *b)
+{
+   idct->pipe->screen->finalize_nir(idct->pipe->screen, b->shader, true);
 
-   ureg_release_temporary(shader, tmp);
+   struct pipe_shader_state state = {0};
+   state.type = PIPE_SHADER_IR_NIR;
+   state.ir.nir = b->shader;
+   return idct->pipe->create_fs_state(idct->pipe, &state);
 }
 
 static void *
 create_mismatch_vert_shader(struct vl_idct *idct)
 {
-   struct ureg_program *shader;
-   struct ureg_src vpos;
-   struct ureg_src scale;
-   struct ureg_dst t_tex;
-   struct ureg_dst o_vpos, o_addr[2];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
+      idct->pipe->screen->nir_options[MESA_SHADER_VERTEX],
+      "vl:idct_mismatch_vs");
 
-   shader = ureg_create(MESA_SHADER_VERTEX);
-   if (!shader)
-      return NULL;
+   nir_variable *iv_pos = nir_variable_create(b.shader, nir_var_shader_in,
+                                              glsl_vec4_type(), "vpos");
+   iv_pos->data.location = VERT_ATTRIB_GENERIC0 + VS_I_VPOS;
+   nir_def *vpos = nir_trim_vector(&b, nir_load_var(&b, iv_pos), 2);
 
-   vpos = ureg_DECL_vs_input(shader, VS_I_VPOS);
-
-   t_tex = ureg_DECL_temporary(shader);
-
-   o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
-
-   o_addr[0] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_L_ADDR0);
-   o_addr[1] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_L_ADDR1);
-
-   /*
-    * scale = (VL_BLOCK_WIDTH, VL_BLOCK_HEIGHT) / (dst.width, dst.height)
-    *
-    * t_vpos = vpos + 7 / VL_BLOCK_WIDTH
-    * o_vpos.xy = t_vpos * scale
-    *
-    * o_addr = calc_addr(...)
-    *
-    */
-
-   scale = ureg_imm2f(shader,
+   nir_def *scale = nir_imm_vec2(&b,
       (float)VL_BLOCK_WIDTH / idct->buffer_width,
       (float)VL_BLOCK_HEIGHT / idct->buffer_height);
 
-   ureg_MAD(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_XY), vpos, scale, scale);
-   ureg_MOV(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_ZW), ureg_imm1f(shader, 1.0f));
+   /* o_vpos.xy = vpos*scale + scale (the +7/VL_BLOCK_WIDTH half-block centring
+    * folded into the MAD); o_vpos.zw = 1. */
+   nir_def *pos_xy = nir_ffma(&b, vpos, scale, scale);
+   nir_variable *ov_pos = nir_variable_create(b.shader, nir_var_shader_out,
+                                              glsl_vec4_type(), "pos_out");
+   ov_pos->data.location = VARYING_SLOT_POS;
+   nir_store_var(&b, ov_pos,
+      nir_vec4(&b, nir_channel(&b, pos_xy, 0), nir_channel(&b, pos_xy, 1),
+               nir_imm_float(&b, 1.0f), nir_imm_float(&b, 1.0f)), 0xf);
 
-   ureg_MUL(shader, ureg_writemask(t_tex, TGSI_WRITEMASK_XY), vpos, scale);
-   calc_addr(shader, o_addr, ureg_src(t_tex), ureg_src(t_tex), false, false, idct->buffer_width / 4);
+   /* o_l_addr = calc_addr(t_tex, t_tex), t_tex = vpos*scale */
+   nir_def *t_tex = nir_fmul(&b, vpos, scale);
+   nir_def *addr[2];
+   calc_addr(&b, addr, t_tex, t_tex, false, false, idct->buffer_width / 4);
 
-   ureg_release_temporary(shader, t_tex);
+   for (unsigned k = 0; k < 2; ++k) {
+      nir_variable *ov = nir_variable_create(b.shader, nir_var_shader_out,
+                                             glsl_vec4_type(), "l_addr_out");
+      ov->data.location = VARYING_SLOT_VAR0 + VS_O_L_ADDR0 + k;
+      nir_store_var(&b, ov, idct_pad4(&b, addr[k]), 0xf);
+   }
 
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, idct->pipe);
+   return vl_nir_vs_finish(&b, idct->pipe);
 }
 
 static void *
 create_mismatch_frag_shader(struct vl_idct *idct)
 {
-   struct ureg_program *shader;
+   const float K14 = (float)(1 << 14);
 
-   struct ureg_src addr[2];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+      idct->pipe->screen->nir_options[MESA_SHADER_FRAGMENT],
+      "vl:idct_mismatch_fs");
 
-   struct ureg_dst m[8][2];
-   struct ureg_dst fragment;
-
-   unsigned i;
-
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
-
-   addr[0] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_L_ADDR0, TGSI_INTERPOLATE_LINEAR);
-   addr[1] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_L_ADDR1, TGSI_INTERPOLATE_LINEAR);
-
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   for (i = 0; i < 8; ++i) {
-      m[i][0] = ureg_DECL_temporary(shader);
-      m[i][1] = ureg_DECL_temporary(shader);
+   nir_def *addr[2];
+   for (unsigned k = 0; k < 2; ++k) {
+      nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "l_addr");
+      in->data.location = VARYING_SLOT_VAR0 + VS_O_L_ADDR0 + k;
+      addr[k] = nir_trim_vector(&b, nir_load_var(&b, in), 2);
    }
 
-   for (i = 0; i < 8; ++i) {
-      increment_addr(shader, m[i], addr, false, false, i, idct->buffer_height);
+   const struct glsl_type *st =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sv = nir_variable_create(b.shader, nir_var_uniform, st, "src");
+   sv->data.binding = 0;
+   nir_deref_instr *samp = nir_build_deref_var(&b, sv);
+
+   /* Fetch all eight matrix rows (even/odd texel each, 64 coefficients). */
+   nir_def *m[8][2];
+   for (unsigned i = 0; i < 8; ++i) {
+      nir_def *a[2];
+      increment_addr(&b, a, addr, false, false, i, idct->buffer_height);
+      fetch_four(&b, m[i], a, samp);
    }
 
-   for (i = 0; i < 8; ++i) {
-      struct ureg_src s_addr[2];
-      s_addr[0] = ureg_src(m[i][0]);
-      s_addr[1] = ureg_src(m[i][1]);
-      fetch_four(shader, m[i], s_addr, ureg_DECL_sampler(shader, 0), false);
+   /* Accumulate the even and odd texels, then fold to one vec4 of partial sums. */
+   nir_def *sum0 = m[0][0], *sum1 = m[0][1];
+   for (unsigned i = 1; i < 8; ++i) {
+      sum0 = nir_fadd(&b, sum0, m[i][0]);
+      sum1 = nir_fadd(&b, sum1, m[i][1]);
    }
+   nir_def *sum = nir_fadd(&b, sum0, sum1);
 
-   for (i = 1; i < 8; ++i) {
-      ureg_ADD(shader, m[0][0], ureg_src(m[0][0]), ureg_src(m[i][0]));
-      ureg_ADD(shader, m[0][1], ureg_src(m[0][1]), ureg_src(m[i][1]));
-   }
+   /* IEEE-1180 mismatch control on coefficient 63 (the .w of the last texel).
+    * total parity = frac(sum(|partial sums|) * 16384) < 0.5; coeff-63 parity is
+    * the same test on |coeff63| * 16384; nudge coeff63 by +-1/32768 only when
+    * both are odd. */
+   nir_def *sum_acc = nir_fdot4(&b, nir_fabs(&b, sum),
+                                nir_imm_vec4(&b, K14, K14, K14, K14));
+   nir_def *c63 = nir_channel(&b, m[7][1], 3);
+   nir_def *c63_acc = nir_fmul(&b, nir_fabs(&b, c63), nir_imm_float(&b, K14));
 
-   ureg_ADD(shader, m[0][0], ureg_src(m[0][0]), ureg_src(m[0][1]));
-   ureg_DP4(shader, m[0][0], ureg_abs(ureg_src(m[0][0])), ureg_imm1f(shader, 1 << 14));
+   nir_def *sum_odd = nir_flt(&b, nir_fabs(&b, nir_ffract(&b, sum_acc)),
+                              nir_imm_float(&b, 0.5f));
+   nir_def *c63_odd = nir_flt(&b, nir_fabs(&b, nir_ffract(&b, c63_acc)),
+                              nir_imm_float(&b, 0.5f));
 
-   ureg_MUL(shader, ureg_writemask(m[0][0], TGSI_WRITEMASK_W), ureg_abs(ureg_src(m[7][1])), ureg_imm1f(shader, 1 << 14));
-   ureg_FRC(shader, m[0][0], ureg_src(m[0][0]));
-   ureg_SGT(shader, m[0][0], ureg_imm1f(shader, 0.5f), ureg_abs(ureg_src(m[0][0])));
+   nir_def *corr = nir_bcsel(&b, c63_odd,
+                             nir_imm_float(&b, 1.0f / (1 << 15)),
+                             nir_imm_float(&b, -1.0f / (1 << 15)));
+   corr = nir_fmul(&b, corr, nir_b2f32(&b, sum_odd));
 
-   ureg_CMP(shader, ureg_writemask(m[0][0], TGSI_WRITEMASK_W), ureg_negate(ureg_src(m[0][0])),
-            ureg_imm1f(shader, 1.0f / (1 << 15)), ureg_imm1f(shader, -1.0f / (1 << 15)));
-   ureg_MUL(shader, ureg_writemask(m[0][0], TGSI_WRITEMASK_W), ureg_src(m[0][0]),
-            ureg_scalar(ureg_src(m[0][0]), TGSI_SWIZZLE_X));
+   nir_def *color = nir_vec4(&b,
+      nir_channel(&b, m[7][1], 0), nir_channel(&b, m[7][1], 1),
+      nir_channel(&b, m[7][1], 2), nir_fadd(&b, corr, c63));
 
-   ureg_MOV(shader, ureg_writemask(fragment, TGSI_WRITEMASK_XYZ), ureg_src(m[7][1]));
-   ureg_ADD(shader, ureg_writemask(fragment, TGSI_WRITEMASK_W), ureg_src(m[0][0]), ureg_src(m[7][1]));
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, color, 0xf);
 
-   for (i = 0; i < 8; ++i) {
-      ureg_release_temporary(shader, m[i][0]);
-      ureg_release_temporary(shader, m[i][1]);
-   }
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, idct->pipe);
+   return idct_create_fs(idct, &b);
 }
 
 static void *
 create_stage1_vert_shader(struct vl_idct *idct)
 {
-   struct ureg_program *shader;
-   struct ureg_src vrect, vpos;
-   struct ureg_src scale;
-   struct ureg_dst t_tex, t_start;
-   struct ureg_dst o_vpos, o_l_addr[2], o_r_addr[2];
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
+      idct->pipe->screen->nir_options[MESA_SHADER_VERTEX],
+      "vl:idct_stage1_vs");
 
-   shader = ureg_create(MESA_SHADER_VERTEX);
-   if (!shader)
-      return NULL;
+   nir_variable *iv_rect = nir_variable_create(b.shader, nir_var_shader_in,
+                                               glsl_vec4_type(), "vrect");
+   iv_rect->data.location = VERT_ATTRIB_GENERIC0 + VS_I_RECT;
+   nir_variable *iv_pos = nir_variable_create(b.shader, nir_var_shader_in,
+                                              glsl_vec4_type(), "vpos");
+   iv_pos->data.location = VERT_ATTRIB_GENERIC0 + VS_I_VPOS;
+   nir_def *vrect = nir_trim_vector(&b, nir_load_var(&b, iv_rect), 2);
+   nir_def *vpos = nir_trim_vector(&b, nir_load_var(&b, iv_pos), 2);
 
-   vrect = ureg_DECL_vs_input(shader, VS_I_RECT);
-   vpos = ureg_DECL_vs_input(shader, VS_I_VPOS);
-
-   t_tex = ureg_DECL_temporary(shader);
-   t_start = ureg_DECL_temporary(shader);
-
-   o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
-
-   o_l_addr[0] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_L_ADDR0);
-   o_l_addr[1] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_L_ADDR1);
-
-   o_r_addr[0] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_R_ADDR0);
-   o_r_addr[1] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_R_ADDR1);
-
-   /*
-    * scale = (VL_BLOCK_WIDTH, VL_BLOCK_HEIGHT) / (dst.width, dst.height)
-    *
-    * t_vpos = vpos + vrect
-    * o_vpos.xy = t_vpos * scale
-    * o_vpos.zw = vpos
-    *
-    * o_l_addr = calc_addr(...)
-    * o_r_addr = calc_addr(...)
-    *
-    */
-
-   scale = ureg_imm2f(shader,
+   nir_def *scale = nir_imm_vec2(&b,
       (float)VL_BLOCK_WIDTH / idct->buffer_width,
       (float)VL_BLOCK_HEIGHT / idct->buffer_height);
 
-   ureg_ADD(shader, ureg_writemask(t_tex, TGSI_WRITEMASK_XY), vpos, vrect);
-   ureg_MUL(shader, ureg_writemask(t_tex, TGSI_WRITEMASK_XY), ureg_src(t_tex), scale);
+   /* o_vpos.xy = (vpos + vrect) * scale; zw = 1. */
+   nir_def *t_tex = nir_fmul(&b, nir_fadd(&b, vpos, vrect), scale);
+   nir_variable *ov_pos = nir_variable_create(b.shader, nir_var_shader_out,
+                                              glsl_vec4_type(), "pos_out");
+   ov_pos->data.location = VARYING_SLOT_POS;
+   nir_store_var(&b, ov_pos,
+      nir_vec4(&b, nir_channel(&b, t_tex, 0), nir_channel(&b, t_tex, 1),
+               nir_imm_float(&b, 1.0f), nir_imm_float(&b, 1.0f)), 0xf);
 
-   ureg_MOV(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_XY), ureg_src(t_tex));
-   ureg_MOV(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_ZW), ureg_imm1f(shader, 1.0f));
+   nir_def *t_start = nir_fmul(&b, vpos, scale);
 
-   ureg_MUL(shader, ureg_writemask(t_start, TGSI_WRITEMASK_XY), vpos, scale);
+   /* Left = the source coefficients walked by the matrix rows; right = the DCT
+    * matrix sampled transposed (the 0.0 start lane is the matrix origin). */
+   nir_def *l_addr[2], *r_addr[2];
+   calc_addr(&b, l_addr, t_tex, t_start, false, false, idct->buffer_width / 4);
+   calc_addr(&b, r_addr, vrect, nir_imm_vec2(&b, 0.0f, 0.0f), true, true,
+             VL_BLOCK_WIDTH / 4);
 
-   calc_addr(shader, o_l_addr, ureg_src(t_tex), ureg_src(t_start), false, false, idct->buffer_width / 4);
-   calc_addr(shader, o_r_addr, vrect, ureg_imm1f(shader, 0.0f), true, true, VL_BLOCK_WIDTH / 4);
+   nir_def *addrs[4] = { l_addr[0], l_addr[1], r_addr[0], r_addr[1] };
+   for (unsigned k = 0; k < 4; ++k) {
+      nir_variable *ov = nir_variable_create(b.shader, nir_var_shader_out,
+                                             glsl_vec4_type(), "addr_out");
+      ov->data.location = VARYING_SLOT_VAR0 + VS_O_L_ADDR0 + k;
+      nir_store_var(&b, ov, idct_pad4(&b, addrs[k]), 0xf);
+   }
 
-   ureg_release_temporary(shader, t_tex);
-   ureg_release_temporary(shader, t_start);
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, idct->pipe);
+   return vl_nir_vs_finish(&b, idct->pipe);
 }
 
 static void *
 create_stage1_frag_shader(struct vl_idct *idct)
 {
-   struct ureg_program *shader;
-   struct ureg_src l_addr[2], r_addr[2];
-   struct ureg_dst l[4][2], r[2];
-   struct ureg_dst *fragment;
-   unsigned i;
-   int j;
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+      idct->pipe->screen->nir_options[MESA_SHADER_FRAGMENT],
+      "vl:idct_stage1_fs");
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
-
-   fragment = MALLOC(idct->nr_of_render_targets * sizeof(struct ureg_dst));
-
-   l_addr[0] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_L_ADDR0, TGSI_INTERPOLATE_LINEAR);
-   l_addr[1] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_L_ADDR1, TGSI_INTERPOLATE_LINEAR);
-
-   r_addr[0] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_R_ADDR0, TGSI_INTERPOLATE_LINEAR);
-   r_addr[1] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_R_ADDR1, TGSI_INTERPOLATE_LINEAR);
-
-   for (i = 0; i < idct->nr_of_render_targets; ++i)
-       fragment[i] = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, i);
-
-   for (i = 0; i < 4; ++i) {
-      l[i][0] = ureg_DECL_temporary(shader);
-      l[i][1] = ureg_DECL_temporary(shader);
+   nir_def *l_addr[2], *r_addr[2];
+   for (unsigned k = 0; k < 2; ++k) {
+      nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "l_addr");
+      in->data.location = VARYING_SLOT_VAR0 + VS_O_L_ADDR0 + k;
+      l_addr[k] = nir_trim_vector(&b, nir_load_var(&b, in), 2);
+   }
+   for (unsigned k = 0; k < 2; ++k) {
+      nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "r_addr");
+      in->data.location = VARYING_SLOT_VAR0 + VS_O_R_ADDR0 + k;
+      r_addr[k] = nir_trim_vector(&b, nir_load_var(&b, in), 2);
    }
 
-   r[0] = ureg_DECL_temporary(shader);
-   r[1] = ureg_DECL_temporary(shader);
+   const struct glsl_type *st =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sv_src = nir_variable_create(b.shader, nir_var_uniform, st, "src");
+   sv_src->data.binding = 0;
+   nir_deref_instr *samp_src = nir_build_deref_var(&b, sv_src);
+   nir_variable *sv_mat = nir_variable_create(b.shader, nir_var_uniform, st, "matrix");
+   sv_mat->data.binding = 1;
+   nir_deref_instr *samp_mat = nir_build_deref_var(&b, sv_mat);
 
-   for (i = 0; i < 4; ++i) {
-      increment_addr(shader, l[i], l_addr, false, false, i - 2, idct->buffer_height);
+   /* Four source rows around the output row (offsets -2..+1). */
+   nir_def *l[4][2];
+   for (unsigned i = 0; i < 4; ++i) {
+      nir_def *a[2];
+      increment_addr(&b, a, l_addr, false, false, (int)i - 2, idct->buffer_height);
+      fetch_four(&b, l[i], a, samp_src);
    }
 
-   for (i = 0; i < 4; ++i) {
-      struct ureg_src s_addr[2];
-      s_addr[0] = ureg_src(l[i][0]);
-      s_addr[1] = ureg_src(l[i][1]);
-      fetch_four(shader, l[i], s_addr, ureg_DECL_sampler(shader, 0), false);
+   /* One render target per output column: the matrix column dotted with each of
+    * the four source rows fills the four channels of that target. */
+   for (unsigned i = 0; i < idct->nr_of_render_targets; ++i) {
+      nir_def *r[2], *a[2];
+      increment_addr(&b, a, r_addr, true, true,
+                     (int)i - (int)idct->nr_of_render_targets / 2, VL_BLOCK_HEIGHT);
+      fetch_four(&b, r, a, samp_mat);
+
+      nir_def *chan[4];
+      for (unsigned j = 0; j < 4; ++j)
+         chan[j] = matrix_mul(&b, l[j], r);
+
+      nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                              glsl_vec4_type(), "frag");
+      out->data.location = FRAG_RESULT_DATA0 + i;
+      nir_store_var(&b, out,
+                    nir_vec4(&b, chan[0], chan[1], chan[2], chan[3]), 0xf);
    }
 
-   for (i = 0; i < idct->nr_of_render_targets; ++i) {
-      struct ureg_src s_addr[2];
-
-      increment_addr(shader, r, r_addr, true, true, i - (signed)idct->nr_of_render_targets / 2, VL_BLOCK_HEIGHT);
-
-      s_addr[0] = ureg_src(r[0]);
-      s_addr[1] = ureg_src(r[1]);
-      fetch_four(shader, r, s_addr, ureg_DECL_sampler(shader, 1), false);
-
-      for (j = 0; j < 4; ++j) {
-         matrix_mul(shader, ureg_writemask(fragment[i], TGSI_WRITEMASK_X << j), l[j], r);
-      }
-   }
-
-   for (i = 0; i < 4; ++i) {
-      ureg_release_temporary(shader, l[i][0]);
-      ureg_release_temporary(shader, l[i][1]);
-   }
-   ureg_release_temporary(shader, r[0]);
-   ureg_release_temporary(shader, r[1]);
-
-   ureg_END(shader);
-
-   FREE(fragment);
-
-   return ureg_create_shader_and_destroy(shader, idct->pipe);
+   return idct_create_fs(idct, &b);
 }
 
 void
-vl_idct_stage2_vert_shader(struct vl_idct *idct, struct ureg_program *shader,
-                           unsigned first_output, struct ureg_dst tex)
+vl_idct_stage2_vert_shader(struct vl_idct *idct, nir_builder *b,
+                           unsigned first_output, nir_def *tex)
 {
-   struct ureg_src vrect, vpos;
-   struct ureg_src scale;
-   struct ureg_dst t_start;
-   struct ureg_dst o_l_addr[2], o_r_addr[2];
+   /* This runs inside the motion-comp ycbcr vertex shader and shares its
+    * vrect/vpos inputs; fetch the existing variables rather than redeclaring at
+    * the same attribute location. */
+   nir_variable *iv_rect = nir_get_variable_with_location(b->shader,
+      nir_var_shader_in, VERT_ATTRIB_GENERIC0 + VS_I_RECT, glsl_vec4_type());
+   nir_variable *iv_pos = nir_get_variable_with_location(b->shader,
+      nir_var_shader_in, VERT_ATTRIB_GENERIC0 + VS_I_VPOS, glsl_vec4_type());
+   nir_def *vrect = nir_trim_vector(b, nir_load_var(b, iv_rect), 2);
+   nir_def *vpos = nir_trim_vector(b, nir_load_var(b, iv_pos), 2);
 
-   vrect = ureg_DECL_vs_input(shader, VS_I_RECT);
-   vpos = ureg_DECL_vs_input(shader, VS_I_VPOS);
-
-   t_start = ureg_DECL_temporary(shader);
-
-   --first_output;
-
-   o_l_addr[0] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, first_output + VS_O_L_ADDR0);
-   o_l_addr[1] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, first_output + VS_O_L_ADDR1);
-
-   o_r_addr[0] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, first_output + VS_O_R_ADDR0);
-   o_r_addr[1] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, first_output + VS_O_R_ADDR1);
-
-   scale = ureg_imm2f(shader,
+   nir_def *scale = nir_imm_vec2(b,
       (float)VL_BLOCK_WIDTH / idct->buffer_width,
       (float)VL_BLOCK_HEIGHT / idct->buffer_height);
 
-   ureg_MUL(shader, ureg_writemask(tex, TGSI_WRITEMASK_Z),
-      ureg_scalar(vrect, TGSI_SWIZZLE_X),
-      ureg_imm1f(shader, VL_BLOCK_WIDTH / idct->nr_of_render_targets));
-   ureg_MUL(shader, ureg_writemask(t_start, TGSI_WRITEMASK_XY), vpos, scale);
+   /* tex.z selects the intermediate depth slice this render target reads
+    * (integer block-width / render-target division, as in the original). */
+   nir_def *tex_z = nir_fmul(b, nir_channel(b, vrect, 0),
+      nir_imm_float(b, (float)(VL_BLOCK_WIDTH / idct->nr_of_render_targets)));
+   nir_def *t_start = nir_fmul(b, vpos, scale);
 
-   calc_addr(shader, o_l_addr, vrect, ureg_imm1f(shader, 0.0f), false, false, VL_BLOCK_WIDTH / 4);
-   calc_addr(shader, o_r_addr, ureg_src(tex), ureg_src(t_start), true, false, idct->buffer_height / 4);
+   /* Left = transpose matrix from the origin; right = the intermediate sampled
+    * at the macroblock position, carrying the depth slice in z. */
+   nir_def *l_addr[2], *r_addr[2];
+   calc_addr(b, l_addr, vrect, nir_imm_vec2(b, 0.0f, 0.0f), false, false,
+             VL_BLOCK_WIDTH / 4);
+   calc_addr(b, r_addr, nir_trim_vector(b, tex, 2), t_start, true, false,
+             idct->buffer_height / 4);
 
-   ureg_MOV(shader, ureg_writemask(o_r_addr[0], TGSI_WRITEMASK_Z), ureg_src(tex));
-   ureg_MOV(shader, ureg_writemask(o_r_addr[1], TGSI_WRITEMASK_Z), ureg_src(tex));
+   nir_def *outs[4] = {
+      l_addr[0], l_addr[1],
+      nir_vec3(b, nir_channel(b, r_addr[0], 0), nir_channel(b, r_addr[0], 1), tex_z),
+      nir_vec3(b, nir_channel(b, r_addr[1], 0), nir_channel(b, r_addr[1], 1), tex_z),
+   };
+   for (unsigned k = 0; k < 4; ++k) {
+      nir_variable *ov = nir_variable_create(b->shader, nir_var_shader_out,
+                                             glsl_vec4_type(), "idct_addr_out");
+      ov->data.location = VARYING_SLOT_VAR0 + first_output + k;
+      nir_store_var(b, ov, idct_pad4(b, outs[k]), 0xf);
+   }
 }
 
-void
-vl_idct_stage2_frag_shader(struct vl_idct *idct, struct ureg_program *shader,
-                           unsigned first_input, struct ureg_dst fragment)
+nir_def *
+vl_idct_stage2_frag_shader(struct vl_idct *idct, nir_builder *b,
+                           unsigned first_input)
 {
-   struct ureg_src l_addr[2], r_addr[2];
+   nir_def *l_addr[2], *r_addr[2];
+   for (unsigned k = 0; k < 2; ++k) {
+      nir_variable *in = nir_variable_create(b->shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "idct_l_addr");
+      in->data.location = VARYING_SLOT_VAR0 + first_input + k;
+      l_addr[k] = nir_trim_vector(b, nir_load_var(b, in), 2);
+   }
+   for (unsigned k = 0; k < 2; ++k) {
+      nir_variable *in = nir_variable_create(b->shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "idct_r_addr");
+      in->data.location = VARYING_SLOT_VAR0 + first_input + 2 + k;
+      r_addr[k] = nir_trim_vector(b, nir_load_var(b, in), 3);
+   }
 
-   struct ureg_dst l[2], r[2];
+   /* sampler 0 = the first-pass intermediate (3D, sliced by the address z),
+    * sampler 1 = the transpose DCT matrix (2D). */
+   const struct glsl_type *st3 =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_3D, false, false, GLSL_TYPE_FLOAT);
+   const struct glsl_type *st2 =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sv0 = nir_variable_create(b->shader, nir_var_uniform, st3,
+                                           "intermediate");
+   sv0->data.binding = 0;
+   nir_variable *sv1 = nir_variable_create(b->shader, nir_var_uniform, st2,
+                                           "transpose");
+   sv1->data.binding = 1;
+   nir_deref_instr *samp0 = nir_build_deref_var(b, sv0);
+   nir_deref_instr *samp1 = nir_build_deref_var(b, sv1);
 
-   --first_input;
+   nir_def *l[2], *r[2];
+   fetch_four(b, l, l_addr, samp1);   /* 2D transpose */
+   fetch_four(b, r, r_addr, samp0);   /* 3D intermediate */
 
-   l_addr[0] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, first_input + VS_O_L_ADDR0, TGSI_INTERPOLATE_LINEAR);
-   l_addr[1] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, first_input + VS_O_L_ADDR1, TGSI_INTERPOLATE_LINEAR);
-
-   r_addr[0] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, first_input + VS_O_R_ADDR0, TGSI_INTERPOLATE_LINEAR);
-   r_addr[1] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, first_input + VS_O_R_ADDR1, TGSI_INTERPOLATE_LINEAR);
-
-   l[0] = ureg_DECL_temporary(shader);
-   l[1] = ureg_DECL_temporary(shader);
-   r[0] = ureg_DECL_temporary(shader);
-   r[1] = ureg_DECL_temporary(shader);
-
-   fetch_four(shader, l, l_addr, ureg_DECL_sampler(shader, 1), false);
-   fetch_four(shader, r, r_addr, ureg_DECL_sampler(shader, 0), true);
-
-   matrix_mul(shader, fragment, l, r);
-
-   ureg_release_temporary(shader, l[0]);
-   ureg_release_temporary(shader, l[1]);
-   ureg_release_temporary(shader, r[0]);
-   ureg_release_temporary(shader, r[1]);
+   /* The reconstructed residual, broadcast like the original full-vec4 write. */
+   return nir_replicate(b, matrix_mul(b, l, r), 4);
 }
 
 static bool
@@ -552,7 +561,8 @@ init_state(struct vl_idct *idct)
       sampler.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
       sampler.compare_mode = PIPE_TEX_COMPARE_NONE;
       sampler.compare_func = PIPE_FUNC_ALWAYS;
-      sampler.normalized_coords = 1;
+      /* mesa-26 inverted the sense to unnormalized_coords; the memset leaves it
+       * 0, i.e. normalized coordinates, as this path requires. */
       idct->samplers[i] = idct->pipe->create_sampler_state(idct->pipe, &sampler);
       if (!idct->samplers[i])
          goto error_samplers;
@@ -590,7 +600,6 @@ static bool
 init_source(struct vl_idct *idct, struct vl_idct_buffer *buffer)
 {
    struct pipe_resource *tex;
-   struct pipe_surface surf_templ;
 
    assert(idct && buffer);
 
@@ -600,11 +609,9 @@ init_source(struct vl_idct *idct, struct vl_idct_buffer *buffer)
    buffer->fb_state_mismatch.height = tex->height0;
    buffer->fb_state_mismatch.nr_cbufs = 1;
 
-   memset(&surf_templ, 0, sizeof(surf_templ));
-   surf_templ.format = tex->format;
-   surf_templ.u.tex.first_layer = 0;
-   surf_templ.u.tex.last_layer = 0;
-   buffer->fb_state_mismatch.cbufs[0] = idct->pipe->create_surface(idct->pipe, tex, &surf_templ);
+   /* mesa-26 framebuffer state embeds pipe_surface by value; build the single
+    * mismatch-pass target in place (level 0, layer 0). */
+   pipe_surface_init(idct->pipe, &buffer->fb_state_mismatch.cbufs[0], tex, 0, 0);
 
    buffer->viewport_mismatch.scale[0] = tex->width0;
    buffer->viewport_mismatch.scale[1] = tex->height0;
@@ -622,7 +629,7 @@ cleanup_source(struct vl_idct_buffer *buffer)
 {
    assert(buffer);
 
-   pipe_surface_reference(&buffer->fb_state_mismatch.cbufs[0], NULL);
+   pipe_resource_reference(&buffer->fb_state_mismatch.cbufs[0].texture, NULL);
 
    pipe_sampler_view_reference(&buffer->sampler_views.individual.source, NULL);
 }
@@ -631,7 +638,6 @@ static bool
 init_intermediate(struct vl_idct *idct, struct vl_idct_buffer *buffer)
 {
    struct pipe_resource *tex;
-   struct pipe_surface surf_templ;
    unsigned i;
 
    assert(idct && buffer);
@@ -641,17 +647,10 @@ init_intermediate(struct vl_idct *idct, struct vl_idct_buffer *buffer)
    buffer->fb_state.width = tex->width0;
    buffer->fb_state.height = tex->height0;
    buffer->fb_state.nr_cbufs = idct->nr_of_render_targets;
-   for(i = 0; i < idct->nr_of_render_targets; ++i) {
-      memset(&surf_templ, 0, sizeof(surf_templ));
-      surf_templ.format = tex->format;
-      surf_templ.u.tex.first_layer = i;
-      surf_templ.u.tex.last_layer = i;
-      buffer->fb_state.cbufs[i] = idct->pipe->create_surface(
-         idct->pipe, tex, &surf_templ);
-
-      if (!buffer->fb_state.cbufs[i])
-         goto error_surfaces;
-   }
+   /* One value-embedded surface per render target, each a single layer of the
+    * intermediate (the first IDCT pass scatters the columns across layers). */
+   for(i = 0; i < idct->nr_of_render_targets; ++i)
+      pipe_surface_init(idct->pipe, &buffer->fb_state.cbufs[i], tex, 0, i);
 
    buffer->viewport.scale[0] = tex->width0;
    buffer->viewport.scale[1] = tex->height0;
@@ -662,12 +661,6 @@ init_intermediate(struct vl_idct *idct, struct vl_idct_buffer *buffer)
    buffer->viewport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
    return true;
-
-error_surfaces:
-   for(i = 0; i < idct->nr_of_render_targets; ++i)
-      pipe_surface_reference(&buffer->fb_state.cbufs[i], NULL);
-
-   return false;
 }
 
 static void
@@ -678,7 +671,7 @@ cleanup_intermediate(struct vl_idct_buffer *buffer)
    assert(buffer);
 
    for(i = 0; i < PIPE_MAX_COLOR_BUFS; ++i)
-      pipe_surface_reference(&buffer->fb_state.cbufs[i], NULL);
+      pipe_resource_reference(&buffer->fb_state.cbufs[i].texture, NULL);
 
    pipe_sampler_view_reference(&buffer->sampler_views.individual.intermediate, NULL);
 }
@@ -836,7 +829,7 @@ vl_idct_flush(struct vl_idct *idct, struct vl_idct_buffer *buffer, unsigned num_
                                    0, 2, idct->samplers);
 
    idct->pipe->set_sampler_views(idct->pipe, MESA_SHADER_FRAGMENT, 0, 2, 0,
-                                 false, buffer->sampler_views.stage[0]);
+                                 buffer->sampler_views.stage[0]);
 
    /* mismatch control */
    idct->pipe->set_framebuffer_state(idct->pipe, &buffer->fb_state_mismatch);
@@ -863,6 +856,6 @@ vl_idct_prepare_stage2(struct vl_idct *idct, struct vl_idct_buffer *buffer)
    idct->pipe->bind_sampler_states(idct->pipe, MESA_SHADER_FRAGMENT,
                                    0, 2, idct->samplers);
    idct->pipe->set_sampler_views(idct->pipe, MESA_SHADER_FRAGMENT,
-                                 0, 2, 0, false, buffer->sampler_views.stage[1]);
+                                 0, 2, 0, buffer->sampler_views.stage[1]);
 }
 

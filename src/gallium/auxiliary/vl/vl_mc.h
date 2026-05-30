@@ -31,7 +31,7 @@
 #include "pipe/p_state.h"
 #include "pipe/p_video_state.h"
 
-#include "tgsi/tgsi_ureg.h"
+#include "compiler/nir/nir_builder.h"
 
 #include "vl_defines.h"
 #include "vl_types.h"
@@ -65,15 +65,22 @@ struct vl_mc_buffer
    struct pipe_framebuffer_state fb_state;
 };
 
+/* The ycbcr vertex callback emits its texcoord-address outputs into the shared
+ * builder, starting at generic varying slot first_output, from the
+ * macroblock-relative position tex.  The fragment callback returns the sampled
+ * (or IDCT-reconstructed) source value as an SSA def -- in NIR the destination
+ * is the returned value, not a written register, so no out-parameter is passed.
+ * The decoder supplies one pair: a plain source-texture fetch for the
+ * motion-compensation-only entrypoint, or the IDCT second pass when the
+ * decoder reconstructs residuals in-shader. */
 typedef void (*vl_mc_ycbcr_vert_shader)(void *priv, struct vl_mc *mc,
-                                        struct ureg_program *shader,
+                                        nir_builder *b,
                                         unsigned first_output,
-                                        struct ureg_dst tex);
+                                        nir_def *tex);
 
-typedef void (*vl_mc_ycbcr_frag_shader)(void *priv, struct vl_mc *mc,
-                                        struct ureg_program *shader,
-                                        unsigned first_input,
-                                        struct ureg_dst dst);
+typedef nir_def *(*vl_mc_ycbcr_frag_shader)(void *priv, struct vl_mc *mc,
+                                            nir_builder *b,
+                                            unsigned first_input);
 
 bool vl_mc_init(struct vl_mc *renderer, struct pipe_context *pipe,
                 unsigned picture_width, unsigned picture_height,
