@@ -258,6 +258,36 @@ PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL branch); `create_ref_*` (half-pel bilinear
 TX = L3, residual ADD + `nir_fsat` = MOV_SAT); `create_ycbcr_*` (the per-plane
 fetch + combine).
 
+### Coupling finding (cflow): mc + idct + mpeg12_decoder convert TOGETHER
+
+DONE pure-NIR (compiles clean, committed): `vl_matrix_filter`, `vl_zscan`.  Those
+were independent.  The remaining three are NOT independent -- `cflow` on
+`vl_mpeg12_decoder.c` shows `mc_vert_shader_callback` (mpeg12_decoder.c:1066)
+calls `vl_idct_stage2_vert_shader()`, and `mc_frag_shader_callback` (:1088) emits
+the source TEX into mc's ycbcr fragment shader.  mc's ycbcr builders take these
+callbacks as `vl_mc_ycbcr_vert_shader`/`vl_mc_ycbcr_frag_shader` typedefs whose
+signature is `(..., struct ureg_program *shader, ...)`.  So the conversion is one
+coordinated change, in this order:
+
+1. `vl_mc.h` -- change the two callback typedefs from `struct ureg_program *` to
+   `nir_builder *` (and pass the source as `nir_def *` instead of `ureg_dst`).
+2. `vl_mpeg12_decoder.c` -- rewrite `mc_vert_shader_callback` (emit the GENERIC
+   texcoord output via nir; it also chains `vl_idct_stage2_vert_shader`) and
+   `mc_frag_shader_callback` (the source `nir_tex`).  11 ureg ops here.
+3. `vl_idct.c` -- `vl_idct_stage2_vert_shader`/`_frag_shader` first (the callback
+   targets), then `create_stage1_*`, `create_mismatch_*`, and `matrix_mul`
+   (the separable DCT-III matrix-MAC over the 3D matrix texture).
+4. `vl_mc.c` -- `calc_position`/`calc_line` (NIR helpers; calc_line uses
+   `nir_load_frag_coord`), `create_ref_vert/frag` (the IF/ENDIF y-adjust becomes
+   `nir_bcsel`; CMP becomes `nir_bcsel`), `create_ycbcr_vert/frag` (IF/ELSE/KILL
+   become `nir_push_if`/`nir_discard`; the callbacks fill the body).
+
+cloc: the cluster is 1966 LOC.  lizard CCN hotspots: `vl_mpeg12_end_frame` 24,
+`vl_create_mpeg12_decoder` 16, `vl_mpeg12_decode_macroblock` 15 (state plumbing,
+IR-agnostic -- those do NOT change), `create_stage1_frag_shader` 9,
+`create_ycbcr_vert_shader` (control flow).  Gate when done: `semgrep`/`grep`
+for residual `ureg_`/`tgsi_` across the five kernels must be 0.
+
 `vl_idct` (6 shaders) -- the heaviest; `matrix_mul` is the separable DCT-III
 matrix-MAC (Theorem S4) reading a 3D matrix texture; stage1 transposes into the
 intermediate surface, stage2 completes the second 1-D pass; `mismatch` applies
