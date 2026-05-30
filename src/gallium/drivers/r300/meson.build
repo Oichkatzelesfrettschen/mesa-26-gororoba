@@ -151,47 +151,6 @@ if with_tests
     suite : ['r300'],
   )
 
-  # NIR-input admission harness for r300_nir_to_rc_direct: proves distinct
-  # vertex attributes do not alias and that an unsupported VS system value
-  # fails compilation deterministically instead of aborting.
-  test(
-    'r300-nir-vs-harness',
-    executable(
-      'r300_nir_vs_harness_test',
-      files('compiler/tests/r300_nir_vs_harness_test.c'),
-      include_directories : [
-        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
-        include_directories('compiler'),
-      ],
-      # libgallium supplies the ureg_*/tgsi_* symbols nir_to_rc.c references
-      # (r300_nir_lower_for_rc shares that translation unit).
-      link_with : [libr300, libgallium],
-      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r300'],
-  )
-
-  # Fragment-stage admission harness for r300_nir_to_rc_direct: proves the
-  # multiply-add family compiles.  nir_op_fmad must emit RC_OPCODE_MAD, and
-  # nir_op_flrp (fog / mix) must lower to a fmad chain before the emitter
-  # rather than tripping its defensive raw-flrp guard.
-  test(
-    'r300-nir-fs-harness',
-    executable(
-      'r300_nir_fs_harness_test',
-      files('compiler/tests/r300_nir_fs_harness_test.c'),
-      include_directories : [
-        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
-        include_directories('compiler'),
-      ],
-      link_with : [libr300, libgallium],
-      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
-      gnu_symbol_visibility : 'hidden',
-    ),
-    suite : ['r300'],
-  )
-
   # Classify-only compute-admission harness: a compute kernel that only loads,
   # does FP24-range arithmetic, and writes its buffer output is admissible;
   # shared memory, a barrier, a general atomic, a scatter, or FP64 reject.

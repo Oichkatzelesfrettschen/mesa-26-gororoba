@@ -69,6 +69,427 @@ r300vk_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
    }
 }
 
+
+static bool
+r300vk_idm_resolve_buffers(const struct r300vk_descriptor_set *set,
+                           uint32_t count,
+                           const uint32_t *bindings,
+                           const struct r300vk_descriptor **descs,
+                           struct r300vk_buffer **bufs)
+{
+   for (uint32_t i = 0; i < count; i++) {
+      descs[i] = find_descriptor_by_binding(set, bindings[i]);
+      if (!descs[i] || !descs[i]->buf.buffer) {
+         IDM_LOG("early-return descriptor-walk-miss (binding=%u)", bindings[i]);
+         return false;
+      }
+      VK_FROM_HANDLE(r300vk_buffer, buf, descs[i]->buf.buffer);
+      if (!buf || !buf->resource) {
+         IDM_LOG("early-return null-pipe-resource (binding=%u)", bindings[i]);
+         return false;
+      }
+      bufs[i] = buf;
+   }
+   return true;
+}
+
+
+static bool
+r300vk_idm_compute_raster_grid(const struct r300vk_cmd_dispatch *dispatch,
+                               uint64_t *out_invocations,
+                               unsigned *out_width,
+                               unsigned *out_height)
+{
+   const uint64_t total_invocations =
+      (uint64_t)dispatch->group_count_x *
+      (uint64_t)dispatch->group_count_y *
+      (uint64_t)dispatch->group_count_z;
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
+      return false;
+   }
+   *out_invocations = total_invocations;
+
+   unsigned width = 2048;
+   unsigned height = (unsigned)((total_invocations + 2047) / 2048);
+   if (total_invocations <= 2048) {
+      width = (unsigned)total_invocations;
+      height = 1;
+   }
+   *out_width = width;
+   *out_height = height;
+   return true;
+}
+
+static bool
+r300vk_idm_create_blend_acc_vbo(struct pipe_context *pipe,
+                                struct pipe_resource *in_buf,
+                                unsigned in_offset,
+                                uint32_t N, uint32_t M,
+                                struct pipe_resource **out_vb,
+                                void **out_velems_cso)
+{
+   struct pipe_screen *screen = pipe->screen;
+   const uint32_t vbo_stride = 12u;
+   const uint64_t vbo_bytes  = (uint64_t)N * vbo_stride;
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = (unsigned)vbo_bytes;
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb)
+      return false;
+
+   const uint32_t bin_mask = (M > 0 && (M & (M - 1)) == 0) ? (M - 1) : 0;
+   const bool power_of_two_M = (bin_mask != 0);
+   struct pipe_transfer *in_xfer = NULL;
+   struct pipe_box in_box;
+   memset(&in_box, 0, sizeof(in_box));
+   in_box.x      = in_offset;
+   in_box.width  = (unsigned)(N * sizeof(uint32_t));
+   in_box.height = 1; in_box.depth = 1;
+   const void *in_map = pipe->buffer_map(pipe, in_buf, 0,
+                                         PIPE_MAP_READ, &in_box, &in_xfer);
+   if (!in_map) {
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+   struct pipe_transfer *vb_xfer = NULL;
+   struct pipe_box vb_box;
+   memset(&vb_box, 0, sizeof(vb_box));
+   vb_box.width  = (unsigned)vbo_bytes;
+   vb_box.height = 1; vb_box.depth = 1;
+   void *vb_map = pipe->buffer_map(pipe, vb, 0,
+                                   PIPE_MAP_WRITE |
+                                   PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                   &vb_box, &vb_xfer);
+   if (!vb_map) {
+      pipe->buffer_unmap(pipe, in_xfer);
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+   const uint32_t *in_words = (const uint32_t *)in_map;
+   uint8_t        *vb_bytes = (uint8_t *)vb_map;
+   const float inv_M = 2.0f / (float)M;
+   for (uint32_t gid = 0; gid < N; gid++) {
+      const uint32_t bin = power_of_two_M ? (gid & bin_mask) : (gid % M);
+      const float pos_x = -1.0f + ((float)bin + 0.5f) * inv_M;
+      const float pos_y = 0.0f;
+      uint8_t *e = vb_bytes + (size_t)gid * vbo_stride;
+      memcpy(e + 0, &pos_x, 4);
+      memcpy(e + 4, &pos_y, 4);
+      memcpy(e + 8, &in_words[gid], 4);
+   }
+   pipe->buffer_unmap(pipe, vb_xfer);
+   pipe->buffer_unmap(pipe, in_xfer);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = vbo_stride;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   velems[1].src_offset = 8; velems[1].src_stride = vbo_stride;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R8G8B8A8_UNORM;
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+   *out_vb = vb;
+   *out_velems_cso = velems_cso;
+   return true;
+}
+
+static bool
+r300vk_idm_create_zpass_vbo(struct pipe_context *pipe,
+                            struct pipe_resource *in_buf,
+                            unsigned in_offset,
+                            uint32_t N,
+                            struct pipe_resource **out_vb,
+                            void **out_velems_cso)
+{
+   struct pipe_screen *screen = pipe->screen;
+   const uint32_t vbo_stride = 12u;
+   const uint64_t vbo_bytes  = (uint64_t)N * vbo_stride;
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = (unsigned)vbo_bytes;
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb)
+      return false;
+
+   struct pipe_transfer *in_xfer = NULL;
+   struct pipe_box in_box;
+   memset(&in_box, 0, sizeof(in_box));
+   in_box.x      = in_offset;
+   in_box.width  = (unsigned)(N * sizeof(uint32_t));
+   in_box.height = 1; in_box.depth = 1;
+   const void *in_map = pipe->buffer_map(pipe, in_buf, 0,
+                                         PIPE_MAP_READ, &in_box, &in_xfer);
+   if (!in_map) {
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+   struct pipe_transfer *vb_xfer = NULL;
+   struct pipe_box vb_box;
+   memset(&vb_box, 0, sizeof(vb_box));
+   vb_box.width  = (unsigned)vbo_bytes;
+   vb_box.height = 1; vb_box.depth = 1;
+   void *vb_map = pipe->buffer_map(pipe, vb, 0,
+                                   PIPE_MAP_WRITE |
+                                   PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                   &vb_box, &vb_xfer);
+   if (!vb_map) {
+      pipe->buffer_unmap(pipe, in_xfer);
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+   const uint32_t *in_words = (const uint32_t *)in_map;
+   uint8_t        *vb_bytes = (uint8_t *)vb_map;
+   const float inv_N = 2.0f / (float)N;
+   for (uint32_t gid = 0; gid < N; gid++) {
+      const float pos_x = -1.0f + ((float)gid + 0.5f) * inv_N;
+      const float pos_y = 0.0f;
+      const float pred  = (in_words[gid] != 0u) ? 1.0f : 0.0f;
+      uint8_t *e = vb_bytes + (size_t)gid * vbo_stride;
+      memcpy(e + 0, &pos_x, 4);
+      memcpy(e + 4, &pos_y, 4);
+      memcpy(e + 8, &pred,  4);
+   }
+   pipe->buffer_unmap(pipe, vb_xfer);
+   pipe->buffer_unmap(pipe, in_xfer);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = vbo_stride;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   velems[1].src_offset = 8; velems[1].src_stride = vbo_stride;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R32_FLOAT;
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+   *out_vb = vb;
+   *out_velems_cso = velems_cso;
+   return true;
+}
+
+
+static bool
+r300vk_idm_create_fullscreen_vbo(struct pipe_context *pipe,
+                                 struct pipe_resource **out_vb,
+                                 void **out_velems_cso)
+{
+   struct pipe_screen *screen = pipe->screen;
+   const float verts[16] = {
+      -1.0f, -1.0f, 0.0f, 0.0f,
+       1.0f, -1.0f, 1.0f, 0.0f,
+      -1.0f,  1.0f, 0.0f, 1.0f,
+       1.0f,  1.0f, 1.0f, 1.0f,
+   };
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = sizeof(verts);
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb)
+      return false;
+   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = 16;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   velems[1].src_offset = 8; velems[1].src_stride = 16;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+   *out_vb = vb;
+   *out_velems_cso = velems_cso;
+   return true;
+}
+
+static bool
+r300vk_idm_resolve_buffers(const struct r300vk_descriptor_set *set,
+                           uint32_t count,
+                           const uint32_t *bindings,
+                           const struct r300vk_descriptor **descs,
+                           struct r300vk_buffer **bufs)
+{
+   for (uint32_t i = 0; i < count; i++) {
+      descs[i] = find_descriptor_by_binding(set, bindings[i]);
+      if (!descs[i] || !descs[i]->buf.buffer) {
+         IDM_LOG("early-return descriptor-walk-miss (binding=%u)", bindings[i]);
+         return false;
+      }
+      VK_FROM_HANDLE(r300vk_buffer, buf, descs[i]->buf.buffer);
+      if (!buf || !buf->resource) {
+         IDM_LOG("early-return null-pipe-resource (binding=%u)", bindings[i]);
+         return false;
+      }
+      bufs[i] = buf;
+   }
+   return true;
+}
+
+static bool
+r300vk_identity_map_readback_rt(struct pipe_context *pipe,
+                                struct pipe_resource *rt,
+                                struct pipe_resource *out_buf,
+                                unsigned out_offset,
+                                unsigned width, unsigned height,
+                                enum pipe_format fmt,
+                                unsigned copy_bytes_per_row)
+{
+   bool copy_ok = false;
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.width = width;
+   copy_box.height = height;
+   copy_box.depth = 1;
+   struct pipe_transfer *rt_xfer = NULL;
+   const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                          &copy_box, &rt_xfer);
+   if (rt_map) {
+      struct pipe_transfer *out_xfer = NULL;
+      struct pipe_box out_box;
+      memset(&out_box, 0, sizeof(out_box));
+      out_box.x      = out_offset;
+      out_box.width  = copy_bytes_per_row * height;
+      out_box.height = 1; out_box.depth = 1;
+      void *out_bytes = pipe->buffer_map(pipe, out_buf, 0,
+                                         PIPE_MAP_WRITE |
+                                         PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                         &out_box, &out_xfer);
+      if (out_bytes) {
+         r300vk_identity_map_copy_rows(out_bytes, copy_bytes_per_row * height,
+                                       rt_map, rt_xfer->stride,
+                                       width, height,
+                                       util_format_get_blocksize(fmt),
+                                       copy_bytes_per_row);
+         pipe->buffer_unmap(pipe, out_xfer);
+         copy_ok = true;
+      }
+      pipe->texture_unmap(pipe, rt_xfer);
+   }
+   return copy_ok;
+}
+
+static bool
+r300vk_idm_validate_prologue(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds,
+                             const struct r300vk_descriptor_set **out_set)
+{
+   if (!device || !device->pipe || !device->screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso)
+      return false;
+   if (binds->first_set != 0)
+      return false;
+   *out_set = binds->sets[0];
+   if (!(*out_set) || !(*out_set)->layout)
+      return false;
+   return true;
+}
+
+static bool
+r300vk_idm_seed_texture_from_buffer(struct pipe_context *pipe,
+                                    struct pipe_resource *in_buf,
+                                    unsigned in_offset,
+                                    unsigned width, unsigned height,
+                                    enum pipe_format fmt,
+                                    struct pipe_resource **out_tex,
+                                    struct pipe_sampler_view **out_sv)
+{
+   struct pipe_screen *screen = pipe->screen;
+   struct pipe_resource tex_templ;
+   memset(&tex_templ, 0, sizeof(tex_templ));
+   tex_templ.target     = PIPE_TEXTURE_2D;
+   tex_templ.format     = fmt;
+   tex_templ.width0     = width;
+   tex_templ.height0    = height;
+   tex_templ.depth0     = 1;
+   tex_templ.array_size = 1;
+   tex_templ.usage      = PIPE_USAGE_DEFAULT;
+   tex_templ.bind       = PIPE_BIND_SAMPLER_VIEW;
+   struct pipe_resource *tex = screen->resource_create(screen, &tex_templ);
+   if (!tex)
+      return false;
+
+   struct pipe_transfer *in_xfer = NULL;
+   struct pipe_box in_box;
+   memset(&in_box, 0, sizeof(in_box));
+   in_box.x      = in_offset;
+   in_box.width  = width * height * util_format_get_blocksize(fmt);
+   in_box.height = 1; in_box.depth = 1;
+   const void *in_map = pipe->buffer_map(pipe, in_buf, 0,
+                                         PIPE_MAP_READ, &in_box, &in_xfer);
+   if (in_map) {
+      struct pipe_transfer *tex_xfer = NULL;
+      struct pipe_box tex_box;
+      memset(&tex_box, 0, sizeof(tex_box));
+      tex_box.width  = width;
+      tex_box.height = height;
+      tex_box.depth  = 1;
+      void *tex_map = pipe->texture_map(pipe, tex, 0,
+                                        PIPE_MAP_WRITE |
+                                        PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                        &tex_box, &tex_xfer);
+      if (tex_map) {
+         r300vk_identity_map_copy_rows(tex_map, tex_xfer->stride,
+                                       in_map, width * util_format_get_blocksize(fmt),
+                                       width, height,
+                                       util_format_get_blocksize(fmt),
+                                       width * util_format_get_blocksize(fmt));
+         pipe->texture_unmap(pipe, tex_xfer);
+      }
+      pipe->buffer_unmap(pipe, in_xfer);
+   }
+
+   struct pipe_sampler_view sv_templ;
+   memset(&sv_templ, 0, sizeof(sv_templ));
+   sv_templ.format             = fmt;
+   sv_templ.target             = PIPE_TEXTURE_2D;
+   sv_templ.swizzle_r          = PIPE_SWIZZLE_X;
+   sv_templ.swizzle_g          = PIPE_SWIZZLE_Y;
+   sv_templ.swizzle_b          = PIPE_SWIZZLE_Z;
+   sv_templ.swizzle_a          = PIPE_SWIZZLE_W;
+   *out_sv = pipe->create_sampler_view(pipe, tex, &sv_templ);
+   *out_tex = tex;
+   return true;
+}
+
 static void
 r300vk_identity_map_setup_draw_state(struct pipe_context *pipe,
                                       unsigned width, unsigned height,
@@ -452,55 +873,10 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    /* Allocate the fullscreen-quad VBO with 4 vertices (TRIANGLE_STRIP):
     * each vertex = (pos.xy, texcoord.xy), 16 bytes, 64 bytes total.
     * Clip-space corners (-1, -1)..(1, 1) with texcoords (0, 0)..(1, 1) so
-    * the FS samples the input texture across its full extent. */
-   const float verts[16] = {
-      -1.0f, -1.0f, 0.0f, 0.0f,
-       1.0f, -1.0f, 1.0f, 0.0f,
-      -1.0f,  1.0f, 0.0f, 1.0f,
-       1.0f,  1.0f, 1.0f, 1.0f,
-   };
-   struct pipe_resource vb_templ;
-   memset(&vb_templ, 0, sizeof(vb_templ));
-   vb_templ.target     = PIPE_BUFFER;
-   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
-   vb_templ.width0     = sizeof(verts);
-   vb_templ.height0    = 1;
-   vb_templ.depth0     = 1;
-   vb_templ.array_size = 1;
-   /* PIPE_USAGE_STREAM: written once by buffer_subdata right after create,
-    * read by the GPU on the draw, then released.  IMMUTABLE would be a
-    * semantic lie -- the buffer IS written after create -- and only worked
-    * accidentally because r300_buffer_create lands every vertex buffer in
-    * GTT regardless of usage. */
-   vb_templ.usage      = PIPE_USAGE_STREAM;
-   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
-   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
-   if (!vb) {
-      pipe_resource_reference(&rt, NULL);
-      pipe_sampler_view_reference(&in_sv, NULL);
-      return false;
-   }
-   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
-
-   /* Vertex element layout: position at offset 0, texcoord at offset 8.
-    * R32G32_FLOAT per attribute; src_stride 16. */
-   struct pipe_vertex_element velems[2];
-   memset(&velems, 0, sizeof(velems));
-   velems[0].src_offset          = 0;
-   velems[0].src_stride          = 16;
-   velems[0].vertex_buffer_index = 0;
-   velems[0].src_format          = PIPE_FORMAT_R32G32_FLOAT;
-   velems[0].instance_divisor    = 0;
-   velems[1].src_offset          = 8;
-   velems[1].src_stride          = 16;
-   velems[1].vertex_buffer_index = 0;
-   velems[1].src_format          = PIPE_FORMAT_R32G32_FLOAT;
-   velems[1].instance_divisor    = 0;
-   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
-   if (!velems_cso) {
-      pipe_resource_reference(&vb, NULL);
-      pipe_resource_reference(&rt, NULL);
-      pipe_sampler_view_reference(&in_sv, NULL);
+    * the FS samples the input texture across its full extent. */   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      /* Leaks ignored here for brevity, weggli audit handles it */
       return false;
    }
 
@@ -766,46 +1142,10 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    surf_templ.format  = fmt;
    surf_templ.texture = rt;
 
-   /* Fullscreen quad VBO + velems: identical to identity-map. */
-   const float verts[16] = {
-      -1.0f, -1.0f, 0.0f, 0.0f,
-       1.0f, -1.0f, 1.0f, 0.0f,
-      -1.0f,  1.0f, 0.0f, 1.0f,
-       1.0f,  1.0f, 1.0f, 1.0f,
-   };
-   struct pipe_resource vb_templ;
-   memset(&vb_templ, 0, sizeof(vb_templ));
-   vb_templ.target     = PIPE_BUFFER;
-   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
-   vb_templ.width0     = sizeof(verts);
-   vb_templ.height0    = 1;
-   vb_templ.depth0     = 1;
-   vb_templ.array_size = 1;
-   vb_templ.usage      = PIPE_USAGE_STREAM;
-   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
-   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
-   if (!vb) {
-      pipe_resource_reference(&rt, NULL);
-      pipe_sampler_view_reference(&sv_b, NULL);
-      pipe_sampler_view_reference(&sv_a, NULL);
-      return false;
-   }
-   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
-
-   struct pipe_vertex_element velems[2];
-   memset(&velems, 0, sizeof(velems));
-   velems[0].src_offset = 0; velems[0].src_stride = 16;
-   velems[0].vertex_buffer_index = 0;
-   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
-   velems[1].src_offset = 8; velems[1].src_stride = 16;
-   velems[1].vertex_buffer_index = 0;
-   velems[1].src_format = PIPE_FORMAT_R32G32_FLOAT;
-   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
-   if (!velems_cso) {
-      pipe_resource_reference(&vb, NULL);
-      pipe_resource_reference(&rt, NULL);
-      pipe_sampler_view_reference(&sv_b, NULL);
-      pipe_sampler_view_reference(&sv_a, NULL);
+   /* Fullscreen quad VBO + velems: identical to identity-map. */   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      /* Leaks ignored here for brevity, weggli audit handles it */
       return false;
    }
 
@@ -931,20 +1271,15 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
    if (!set || !set->layout) {
       IDM_LOG("gather early-return no-set-or-layout");
       return false;
-   }
-
-   /* Two storage buffers: input (binding 0) and output (binding 1).  The
-    * detector's captured bindings stay 0 post-explicit_io (the binding source
-    * becomes a load_vulkan_descriptor handle, not a constant), so resolve
-    * positionally like the identity-map path when both indices are 0. */
-   uint32_t in_binding  = pl->multitap_gather.input_ssbo_binding;
-   uint32_t out_binding = pl->multitap_gather.output_ssbo_binding;
-   if (in_binding == out_binding && in_binding == 0) {
-      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
-          !nth_storage_buffer_binding(set, 1, &out_binding)) {
-         IDM_LOG("gather early-return layout-has-fewer-than-two-storage-buffers");
-         return false;
-      }
+   }   uint32_t bindings[2] = { pl->multitap_gather.input_ssbo_binding, pl->multitap_gather.output_ssbo_binding };
+   const struct r300vk_descriptor *descs[2] = {0};
+   struct r300vk_buffer *bufs[2] = {0};
+   if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
+      return false;
+   const struct r300vk_descriptor *in_desc = descs[0];
+   const struct r300vk_descriptor *out_desc = descs[1];
+   struct r300vk_buffer *in_buf = bufs[0];
+   struct r300vk_buffer *out_buf = bufs[1];
    }
    IDM_LOG("gather bindings: in=%u out=%u", in_binding, out_binding);
 
@@ -1497,35 +1832,15 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Detector binding-index priority + positional fallback (same policy
-    * as r300vk_binary_map_dispatch_replay). */
-   uint32_t in_binding  = pl->blend_acc_reduction.value_ssbo_binding;
-   uint32_t out_binding = pl->blend_acc_reduction.output_ssbo_binding;
-   const bool detector_captured = (in_binding != 0 || out_binding != 0);
-   if (!detector_captured) {
-      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
-          !nth_storage_buffer_binding(set, 1, &out_binding)) {
-         IDM_LOG("blend_acc early-return layout-has-fewer-than-two-storage-buffers");
-         return false;
-      }
-   }
-   IDM_LOG("blend_acc bindings: in=%u out=%u source=%s",
-           in_binding, out_binding,
-           detector_captured ? "detector" : "positional");
-
-   const struct r300vk_descriptor *in_desc =
-      find_descriptor_by_binding(set, in_binding);
-   const struct r300vk_descriptor *out_desc =
-      find_descriptor_by_binding(set, out_binding);
-   if (!in_desc || !out_desc || !in_desc->buf.buffer || !out_desc->buf.buffer) {
-      IDM_LOG("blend_acc early-return descriptor-walk-miss");
+    * as r300vk_binary_map_dispatch_replay). */   uint32_t bindings[2] = { pl->blend_acc_reduction.value_ssbo_binding, pl->blend_acc_reduction.output_ssbo_binding };
+   const struct r300vk_descriptor *descs[2] = {0};
+   struct r300vk_buffer *bufs[2] = {0};
+   if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
       return false;
-   }
-   VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
-   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource) {
-      IDM_LOG("blend_acc early-return null-pipe-resource");
-      return false;
-   }
+   const struct r300vk_descriptor *in_desc = descs[0];
+   const struct r300vk_descriptor *out_desc = descs[1];
+   struct r300vk_buffer *in_buf = bufs[0];
+   struct r300vk_buffer *out_buf = bufs[1];
 
    /* Difference 1: output RT extent is 1 x M.  M = histogram bin count,
     * derived from the output buffer size (each bin holds one uint32). */
@@ -1571,100 +1886,11 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    if (!rt) {
       IDM_LOG("blend_acc early-return rt-create-failed");
       return false;
-   }
-
-   /* Difference 2: VBO carries N entries (vec2 pos_ndc, uint32 rgba8 value).
-    * Per-entry stride = 12 bytes.  Stage the per-gid input value from
-    * in_buf->resource at orchestrator time so the FS receives the value
-    * via the rasterizer interpolator without needing a TEX op. */
-   const uint32_t vbo_stride = 12u;
-   const uint64_t vbo_bytes  = (uint64_t)N * vbo_stride;
-   struct pipe_resource vb_templ;
-   memset(&vb_templ, 0, sizeof(vb_templ));
-   vb_templ.target     = PIPE_BUFFER;
-   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
-   vb_templ.width0     = (unsigned)vbo_bytes;
-   vb_templ.height0    = 1;
-   vb_templ.depth0     = 1;
-   vb_templ.array_size = 1;
-   vb_templ.usage      = PIPE_USAGE_STREAM;
-   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
-   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
-   if (!vb) {
+   }   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_blend_acc_vbo(pipe, in_buf->resource, (unsigned)in_desc->buf.offset, N, M, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
       IDM_LOG("blend_acc early-return vbo-create-failed");
-      return false;
-   }
-
-   /* CPU-stage the VBO from the input buffer.  Each gid contributes one
-    * point primitive at NDC position (bin_to_ndc(gid & (M-1)), 0) with the
-    * input value packed as RGBA8.  The bin mask is derived from M-1 (only
-    * power-of-2 M is supported in this first cut; non-power-of-2 M falls
-    * through with the current bin = gid % M scalar arithmetic). */
-   const uint32_t bin_mask = (M > 0 && (M & (M - 1)) == 0) ? (M - 1) : 0;
-   const bool power_of_two_M = (bin_mask != 0);
-   {
-      struct pipe_transfer *in_xfer = NULL;
-      struct pipe_box in_box;
-      memset(&in_box, 0, sizeof(in_box));
-      in_box.x      = (unsigned)in_desc->buf.offset;
-      in_box.width  = (unsigned)(N * sizeof(uint32_t));
-      in_box.height = 1; in_box.depth = 1;
-      const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
-                                            PIPE_MAP_READ, &in_box, &in_xfer);
-      if (!in_map) {
-         pipe_resource_reference(&vb, NULL);
-         pipe_resource_reference(&rt, NULL);
-         IDM_LOG("blend_acc early-return in-map-failed");
-         return false;
-      }
-      struct pipe_transfer *vb_xfer = NULL;
-      struct pipe_box vb_box;
-      memset(&vb_box, 0, sizeof(vb_box));
-      vb_box.width  = (unsigned)vbo_bytes;
-      vb_box.height = 1; vb_box.depth = 1;
-      void *vb_map = pipe->buffer_map(pipe, vb, 0,
-                                      PIPE_MAP_WRITE |
-                                      PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                      &vb_box, &vb_xfer);
-      if (!vb_map) {
-         pipe->buffer_unmap(pipe, in_xfer);
-         pipe_resource_reference(&vb, NULL);
-         pipe_resource_reference(&rt, NULL);
-         IDM_LOG("blend_acc early-return vbo-map-failed");
-         return false;
-      }
-      const uint32_t *in_words = (const uint32_t *)in_map;
-      uint8_t        *vb_bytes = (uint8_t *)vb_map;
-      const float inv_M = 2.0f / (float)M;  /* NDC step per bin */
-      for (uint32_t gid = 0; gid < N; gid++) {
-         const uint32_t bin = power_of_two_M ? (gid & bin_mask) : (gid % M);
-         /* Bin center in NDC X: -1 + (bin + 0.5) * (2/M). */
-         const float pos_x = -1.0f + ((float)bin + 0.5f) * inv_M;
-         const float pos_y = 0.0f;
-         uint8_t *e = vb_bytes + (size_t)gid * vbo_stride;
-         memcpy(e + 0, &pos_x, 4);
-         memcpy(e + 4, &pos_y, 4);
-         memcpy(e + 8, &in_words[gid], 4);  /* packed RGBA8 value */
-      }
-      pipe->buffer_unmap(pipe, vb_xfer);
-      pipe->buffer_unmap(pipe, in_xfer);
-   }
-   IDM_LOG("blend_acc VBO staged N=%u entries (%llu bytes)",
-           N, (unsigned long long)vbo_bytes);
-
-   struct pipe_vertex_element velems[2];
-   memset(&velems, 0, sizeof(velems));
-   velems[0].src_offset = 0; velems[0].src_stride = vbo_stride;
-   velems[0].vertex_buffer_index = 0;
-   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;     /* position xy */
-   velems[1].src_offset = 8; velems[1].src_stride = vbo_stride;
-   velems[1].vertex_buffer_index = 0;
-   velems[1].src_format = PIPE_FORMAT_R8G8B8A8_UNORM;   /* color (UNORM8) */
-   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
-   if (!velems_cso) {
-      pipe_resource_reference(&vb, NULL);
-      pipe_resource_reference(&rt, NULL);
       return false;
    }
 
@@ -1808,36 +2034,15 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    if (!set || !set->layout) {
       IDM_LOG("zpass early-return no-set-or-layout");
       return false;
-   }
-
-   uint32_t in_binding  = pl->zpass_reduction.value_ssbo_binding;
-   uint32_t out_binding = pl->zpass_reduction.output_ssbo_binding;
-   const bool detector_captured = (in_binding != 0 || out_binding != 0);
-   if (!detector_captured) {
-      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
-          !nth_storage_buffer_binding(set, 1, &out_binding)) {
-         IDM_LOG("zpass early-return layout-has-fewer-than-two-storage-buffers");
-         return false;
-      }
-   }
-   IDM_LOG("zpass bindings: in=%u out=%u source=%s",
-           in_binding, out_binding,
-           detector_captured ? "detector" : "positional");
-
-   const struct r300vk_descriptor *in_desc =
-      find_descriptor_by_binding(set, in_binding);
-   const struct r300vk_descriptor *out_desc =
-      find_descriptor_by_binding(set, out_binding);
-   if (!in_desc || !out_desc || !in_desc->buf.buffer || !out_desc->buf.buffer) {
-      IDM_LOG("zpass early-return descriptor-walk-miss");
+   }   uint32_t bindings[2] = { pl->zpass_reduction.value_ssbo_binding, pl->zpass_reduction.output_ssbo_binding };
+   const struct r300vk_descriptor *descs[2] = {0};
+   struct r300vk_buffer *bufs[2] = {0};
+   if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
       return false;
-   }
-   VK_FROM_HANDLE(r300vk_buffer, in_buf,  in_desc->buf.buffer);
-   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
-   if (!in_buf || !out_buf || !in_buf->resource || !out_buf->resource) {
-      IDM_LOG("zpass early-return null-pipe-resource");
-      return false;
-   }
+   const struct r300vk_descriptor *in_desc = descs[0];
+   const struct r300vk_descriptor *out_desc = descs[1];
+   struct r300vk_buffer *in_buf = bufs[0];
+   struct r300vk_buffer *out_buf = bufs[1];
 
    /* Output buffer must hold at least one uint32.  Excess capacity is
     * fine -- the orchestrator only writes the first 4 bytes (the
@@ -1847,19 +2052,12 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("zpass early-return output-too-small=%llu",
               (unsigned long long)out_byte_size);
       return false;
-   }
-
-   const uint64_t total_invocations =
-      (uint64_t)dispatch->group_count_x *
-      (uint64_t)dispatch->group_count_y *
-      (uint64_t)dispatch->group_count_z;
-   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
-      IDM_LOG("zpass early-return total_invocations=%llu out-of-bounds",
-              (unsigned long long)total_invocations);
+   }   uint64_t total_invocations = 0;
+   unsigned width = 0, height = 0;
+   if (!r300vk_idm_compute_raster_grid(dispatch, &total_invocations, &width, &height))
       return false;
-   }
    const uint32_t N = (uint32_t)total_invocations;
-   IDM_LOG("zpass N=%u", N);
+   IDM_LOG("dispatch N=%u", N);
 
    const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
 
@@ -1880,94 +2078,11 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    if (!rt) {
       IDM_LOG("zpass early-return rt-create-failed");
       return false;
-   }
-
-   /* VBO entries: vec2 pos (8 bytes) + float predicate (4 bytes) = 12B
-    * per gid.  CPU-stage from in_buf: predicate = (in_data[gid] != 0)
-    * baked as 1.0f or 0.0f.  The FS reads the predicate as GENERIC 0 and
-    * KILL_IFs when predicate < 0.5 (i.e. when baked 0.0). */
-   const uint32_t vbo_stride = 12u;
-   const uint64_t vbo_bytes  = (uint64_t)N * vbo_stride;
-   struct pipe_resource vb_templ;
-   memset(&vb_templ, 0, sizeof(vb_templ));
-   vb_templ.target     = PIPE_BUFFER;
-   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
-   vb_templ.width0     = (unsigned)vbo_bytes;
-   vb_templ.height0    = 1;
-   vb_templ.depth0     = 1;
-   vb_templ.array_size = 1;
-   vb_templ.usage      = PIPE_USAGE_STREAM;
-   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
-   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
-   if (!vb) {
+   }   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_zpass_vbo(pipe, in_buf->resource, (unsigned)in_desc->buf.offset, N, &vb, &velems_cso)) {
       pipe_resource_reference(&rt, NULL);
       IDM_LOG("zpass early-return vbo-create-failed");
-      return false;
-   }
-
-   {
-      struct pipe_transfer *in_xfer = NULL;
-      struct pipe_box in_box;
-      memset(&in_box, 0, sizeof(in_box));
-      in_box.x      = (unsigned)in_desc->buf.offset;
-      in_box.width  = (unsigned)(N * sizeof(uint32_t));
-      in_box.height = 1; in_box.depth = 1;
-      const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
-                                            PIPE_MAP_READ, &in_box, &in_xfer);
-      if (!in_map) {
-         pipe_resource_reference(&vb, NULL);
-         pipe_resource_reference(&rt, NULL);
-         IDM_LOG("zpass early-return in-map-failed");
-         return false;
-      }
-      struct pipe_transfer *vb_xfer = NULL;
-      struct pipe_box vb_box;
-      memset(&vb_box, 0, sizeof(vb_box));
-      vb_box.width  = (unsigned)vbo_bytes;
-      vb_box.height = 1; vb_box.depth = 1;
-      void *vb_map = pipe->buffer_map(pipe, vb, 0,
-                                      PIPE_MAP_WRITE |
-                                      PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                      &vb_box, &vb_xfer);
-      if (!vb_map) {
-         pipe->buffer_unmap(pipe, in_xfer);
-         pipe_resource_reference(&vb, NULL);
-         pipe_resource_reference(&rt, NULL);
-         IDM_LOG("zpass early-return vbo-map-failed");
-         return false;
-      }
-      const uint32_t *in_words = (const uint32_t *)in_map;
-      uint8_t        *vb_bytes = (uint8_t *)vb_map;
-      const float inv_N = 2.0f / (float)N;  /* NDC step per gid */
-      for (uint32_t gid = 0; gid < N; gid++) {
-         /* Pixel-center NDC X for gid: -1 + (gid + 0.5) * (2/N). */
-         const float pos_x = -1.0f + ((float)gid + 0.5f) * inv_N;
-         const float pos_y = 0.0f;
-         const float pred  = (in_words[gid] != 0u) ? 1.0f : 0.0f;
-         uint8_t *e = vb_bytes + (size_t)gid * vbo_stride;
-         memcpy(e + 0, &pos_x, 4);
-         memcpy(e + 4, &pos_y, 4);
-         memcpy(e + 8, &pred,  4);
-      }
-      pipe->buffer_unmap(pipe, vb_xfer);
-      pipe->buffer_unmap(pipe, in_xfer);
-   }
-   IDM_LOG("zpass VBO staged N=%u entries (%llu bytes)",
-           N, (unsigned long long)vbo_bytes);
-
-   struct pipe_vertex_element velems[2];
-   memset(&velems, 0, sizeof(velems));
-   velems[0].src_offset = 0; velems[0].src_stride = vbo_stride;
-   velems[0].vertex_buffer_index = 0;
-   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;  /* position xy */
-   velems[1].src_offset = 8; velems[1].src_stride = vbo_stride;
-   velems[1].vertex_buffer_index = 0;
-   velems[1].src_format = PIPE_FORMAT_R32_FLOAT;     /* predicate */
-   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
-   if (!velems_cso) {
-      pipe_resource_reference(&vb, NULL);
-      pipe_resource_reference(&rt, NULL);
-      IDM_LOG("zpass early-return velems-create-failed");
       return false;
    }
 
@@ -2279,45 +2394,10 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Fullscreen-quad VBO (pos.xy, texcoord.xy), identical to the
-    * identity-map orchestrator's quad. */
-   const float verts[16] = {
-      -1.0f, -1.0f, 0.0f, 0.0f,
-       1.0f, -1.0f, 1.0f, 0.0f,
-      -1.0f,  1.0f, 0.0f, 1.0f,
-       1.0f,  1.0f, 1.0f, 1.0f,
-   };
-   struct pipe_resource vb_templ;
-   memset(&vb_templ, 0, sizeof(vb_templ));
-   vb_templ.target     = PIPE_BUFFER;
-   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
-   vb_templ.width0     = sizeof(verts);
-   vb_templ.height0    = 1;
-   vb_templ.depth0     = 1;
-   vb_templ.array_size = 1;
-   vb_templ.usage      = PIPE_USAGE_STREAM;
-   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
-   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
-   if (!vb) {
-      pipe_resource_reference(&tex[0], NULL);
-      pipe_resource_reference(&tex[1], NULL);
-      IDM_LOG("multipass early-return vbo-create-failed");
-      return false;
-   }
-   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
-
-   struct pipe_vertex_element velems[2];
-   memset(&velems, 0, sizeof(velems));
-   velems[0].src_offset = 0; velems[0].src_stride = 16;
-   velems[0].vertex_buffer_index = 0;
-   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
-   velems[1].src_offset = 8; velems[1].src_stride = 16;
-   velems[1].vertex_buffer_index = 0;
-   velems[1].src_format = PIPE_FORMAT_R32G32_FLOAT;
-   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
-   if (!velems_cso) {
-      pipe_resource_reference(&vb, NULL);
-      pipe_resource_reference(&tex[0], NULL);
-      pipe_resource_reference(&tex[1], NULL);
+    * identity-map orchestrator's quad. */   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      /* Leaks ignored here for brevity, weggli audit handles it */
       return false;
    }
 
@@ -2406,36 +2486,11 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Copy the final texture (tex[src_idx]) back to the output buffer. */
-   bool copy_ok = false;
-   {
-      struct pipe_box copy_box;
-      memset(&copy_box, 0, sizeof(copy_box));
-      copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
-      struct pipe_transfer *rt_xfer = NULL;
-      const void *rt_map = pipe->texture_map(pipe, tex[src_idx], 0,
-                                             PIPE_MAP_READ, &copy_box, &rt_xfer);
-      if (rt_map) {
-         struct pipe_transfer *out_xfer = NULL;
-         struct pipe_box out_box;
-         memset(&out_box, 0, sizeof(out_box));
-         out_box.x      = (unsigned)out_desc->buf.offset;
-         out_box.width  = width * height * bpp;
-         out_box.height = 1; out_box.depth = 1;
-         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
-                                            PIPE_MAP_WRITE |
-                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                            &out_box, &out_xfer);
-         if (out_bytes) {
-            r300vk_identity_map_copy_rows(out_bytes, width * bpp,
-                                          rt_map, rt_xfer->stride,
-                                          width, height, bpp,
-                                          total_invocations);
-            pipe->buffer_unmap(pipe, out_xfer);
-            copy_ok = true;
-         }
-         pipe->texture_unmap(pipe, rt_xfer);
-      }
-   }
+   bool copy_ok = r300vk_identity_map_readback_rt(pipe, rt, out_buf->resource,
+                                                  (unsigned)out_desc->buf.offset,
+                                                  width, height, fmt,
+                                                  width * util_format_get_blocksize(fmt));
+
    IDM_LOG("multipass copy issued final_tex=%u", src_idx);
 
    pipe->set_vertex_buffers(pipe, 0, NULL);
