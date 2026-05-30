@@ -510,7 +510,8 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    if (instance->debug_flags & R300VK_DEBUG_STARTUP) {
       fprintf(stderr,
               "r300vk: info: Found compatible DRM device '%s' (%04x:%04x).\n",
-              render_node_path, device->pci_vendor_id, device->pci_device_id);
+              drm_device->nodes[DRM_NODE_RENDER], device->pci_vendor_id,
+              device->pci_device_id);
    }
 
    *device_out = &device->vk;
