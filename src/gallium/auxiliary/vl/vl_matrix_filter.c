@@ -32,6 +32,7 @@
 #include "tgsi/tgsi_ureg.h"
 
 #include "util/u_draw.h"
+#include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
 
@@ -180,7 +181,8 @@ vl_matrix_filter_init(struct vl_matrix_filter *filter, struct pipe_context *pipe
    sampler.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
    sampler.compare_mode = PIPE_TEX_COMPARE_NONE;
    sampler.compare_func = PIPE_FUNC_ALWAYS;
-   sampler.normalized_coords = 1;
+   /* mesa-26 pipe_sampler_state uses unnormalized_coords (inverted); the
+    * memset leaves it 0, i.e. normalized coordinates. */
    filter->sampler = pipe->create_sampler_state(pipe, &sampler);
    if (!filter->sampler)
       goto error_sampler;
@@ -272,12 +274,15 @@ vl_matrix_filter_render(struct vl_matrix_filter *filter,
 {
    struct pipe_viewport_state viewport;
    struct pipe_framebuffer_state fb_state;
+   unsigned dst_width, dst_height;
 
    assert(filter && src && dst);
 
+   pipe_surface_size(dst, &dst_width, &dst_height);
+
    memset(&viewport, 0, sizeof(viewport));
-   viewport.scale[0] = dst->width;
-   viewport.scale[1] = dst->height;
+   viewport.scale[0] = dst_width;
+   viewport.scale[1] = dst_height;
    viewport.scale[2] = 1;
    viewport.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
    viewport.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
@@ -285,22 +290,22 @@ vl_matrix_filter_render(struct vl_matrix_filter *filter,
    viewport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
    memset(&fb_state, 0, sizeof(fb_state));
-   fb_state.width = dst->width;
-   fb_state.height = dst->height;
+   fb_state.width = dst_width;
+   fb_state.height = dst_height;
    fb_state.nr_cbufs = 1;
-   fb_state.cbufs[0] = dst;
+   fb_state.cbufs[0] = *dst;
 
    filter->pipe->bind_rasterizer_state(filter->pipe, filter->rs_state);
    filter->pipe->bind_blend_state(filter->pipe, filter->blend);
    filter->pipe->bind_sampler_states(filter->pipe, MESA_SHADER_FRAGMENT,
                                      0, 1, &filter->sampler);
    filter->pipe->set_sampler_views(filter->pipe, MESA_SHADER_FRAGMENT,
-                                   0, 1, 0, false, &src);
+                                   0, 1, 0, &src);
    filter->pipe->bind_vs_state(filter->pipe, filter->vs);
    filter->pipe->bind_fs_state(filter->pipe, filter->fs);
    filter->pipe->set_framebuffer_state(filter->pipe, &fb_state);
    filter->pipe->set_viewport_states(filter->pipe, 0, 1, &viewport);
-   filter->pipe->set_vertex_buffers(filter->pipe, 0, 1, 0, false, &filter->quad);
+   filter->pipe->set_vertex_buffers(filter->pipe, 1, &filter->quad);
    filter->pipe->bind_vertex_elements_state(filter->pipe, filter->ves);
 
    util_draw_arrays(filter->pipe, MESA_PRIM_QUADS, 0, 4);
