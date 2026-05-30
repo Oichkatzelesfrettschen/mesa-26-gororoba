@@ -616,7 +616,15 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
    if (supports_depth_stencil || supports_sampler_view || supports_render_target)
       image_features |= VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
 
-   if (!util_format_is_srgb(pipe_format) &&
+   /* Depth/stencil formats carry no buffer features: a VkBuffer cannot hold a
+    * depth/stencil format and the spec requires bufferFeatures == 0 for them
+    * (dEQP-VK.api.buffer.invalid_buffer_features asserts exactly this).  r300's
+    * is_format_supported can accept a depth format's underlying bits as a
+    * vertex/texel fetch (e.g. Z16_UNORM read as a 16-bit unorm), so gate the
+    * buffer bits on the format not being depth/stencil. */
+   const bool is_depth_or_stencil = util_format_is_depth_or_stencil(pipe_format);
+
+   if (!is_depth_or_stencil && !util_format_is_srgb(pipe_format) &&
        r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
                                      PIPE_BIND_VERTEX_BUFFER)) {
       buffer_features |= VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
@@ -627,7 +635,8 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * UNIFORM_TEXEL_BUFFER on PIPE_BIND_SAMPLER_VIEW for PIPE_BUFFER so the
     * advertised set matches the formats r300g can actually fetch as texel data
     * rather than every format a constant buffer would nominally accept. */
-   if (r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
+   if (!is_depth_or_stencil &&
+       r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
                                      PIPE_BIND_SAMPLER_VIEW)) {
       buffer_features |= VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
    }
