@@ -333,7 +333,7 @@ init_state(struct vl_zscan *zscan)
       sampler.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
       sampler.compare_mode = PIPE_TEX_COMPARE_NONE;
       sampler.compare_func = PIPE_FUNC_ALWAYS;
-      sampler.normalized_coords = 1;
+      /* mesa-26: unnormalized_coords (inverted); memset leaves it 0 = normalized. */
       zscan->samplers[i] = zscan->pipe->create_sampler_state(zscan->pipe, &sampler);
       if (!zscan->samplers[i])
          goto error_samplers;
@@ -487,6 +487,7 @@ vl_zscan_init_buffer(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer,
 {
    struct pipe_resource res_tmpl, *res;
    struct pipe_sampler_view sv_tmpl;
+   unsigned dst_width, dst_height;
 
    assert(zscan && buffer);
 
@@ -494,8 +495,10 @@ vl_zscan_init_buffer(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer,
 
    pipe_sampler_view_reference(&buffer->src, src);
 
-   buffer->viewport.scale[0] = dst->width;
-   buffer->viewport.scale[1] = dst->height;
+   pipe_surface_size(dst, &dst_width, &dst_height);
+
+   buffer->viewport.scale[0] = dst_width;
+   buffer->viewport.scale[1] = dst_height;
    buffer->viewport.scale[2] = 1;
    buffer->viewport.translate[0] = 0;
    buffer->viewport.translate[1] = 0;
@@ -505,10 +508,14 @@ vl_zscan_init_buffer(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer,
    buffer->viewport.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
    buffer->viewport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
-   buffer->fb_state.width = dst->width;
-   buffer->fb_state.height = dst->height;
+   buffer->fb_state.width = dst_width;
+   buffer->fb_state.height = dst_height;
    buffer->fb_state.nr_cbufs = 1;
-   pipe_surface_reference(&buffer->fb_state.cbufs[0], dst);
+   /* mesa-26 framebuffer cbufs are surface values; copy the render target and
+    * take a ref on its resource so the stored fb outlives the caller's dst. */
+   buffer->fb_state.cbufs[0] = *dst;
+   buffer->fb_state.cbufs[0].texture = NULL;
+   pipe_resource_reference(&buffer->fb_state.cbufs[0].texture, dst->texture);
 
    memset(&res_tmpl, 0, sizeof(res_tmpl));
    res_tmpl.target = PIPE_TEXTURE_3D;
@@ -543,7 +550,7 @@ vl_zscan_cleanup_buffer(struct vl_zscan_buffer *buffer)
    pipe_sampler_view_reference(&buffer->src, NULL);
    pipe_sampler_view_reference(&buffer->layout, NULL);
    pipe_sampler_view_reference(&buffer->quant, NULL);
-   pipe_surface_reference(&buffer->fb_state.cbufs[0], NULL);
+   pipe_resource_reference(&buffer->fb_state.cbufs[0].texture, NULL);
 }
 
 void
@@ -608,7 +615,7 @@ vl_zscan_render(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer, unsigned
    zscan->pipe->set_framebuffer_state(zscan->pipe, &buffer->fb_state);
    zscan->pipe->set_viewport_states(zscan->pipe, 0, 1, &buffer->viewport);
    zscan->pipe->set_sampler_views(zscan->pipe, MESA_SHADER_FRAGMENT,
-                                  0, 3, 0, false, &buffer->src);
+                                  0, 3, 0, &buffer->src);
    zscan->pipe->bind_vs_state(zscan->pipe, zscan->vs);
    zscan->pipe->bind_fs_state(zscan->pipe, zscan->fs);
    util_draw_arrays_instanced(zscan->pipe, MESA_PRIM_QUADS, 0, 4, 0, num_instances);
