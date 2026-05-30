@@ -289,12 +289,15 @@ vl_zscan_layout(struct pipe_context *pipe, const int layout[64], unsigned blocks
    unsigned x, y, i, pitch;
    float *f;
 
+   /* pipe_box is laid out {x, width, y, height, z, depth}; a positional
+    * initializer would drop VL_BLOCK_HEIGHT into z and upload to an
+    * out-of-bounds layer.  Name the fields. */
    struct pipe_box rect =
    {
-      0, 0, 0,
-      VL_BLOCK_WIDTH * blocks_per_line,
-      VL_BLOCK_HEIGHT,
-      1
+      .x = 0, .y = 0, .z = 0,
+      .width = VL_BLOCK_WIDTH * blocks_per_line,
+      .height = VL_BLOCK_HEIGHT,
+      .depth = 1,
    };
 
    assert(pipe && layout && blocks_per_line);
@@ -478,12 +481,14 @@ vl_zscan_upload_quant(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer,
    unsigned x, y, i, pitch;
    uint8_t *data;
 
+   /* pipe_box is laid out {x, width, y, height, z, depth}; name the fields so
+    * the intra/non-intra depth slice lands in z, not the block height. */
    struct pipe_box rect =
    {
-      0, 0, intra ? 1 : 0,
-      VL_BLOCK_WIDTH,
-      VL_BLOCK_HEIGHT,
-      1
+      .x = 0, .y = 0, .z = intra ? 1 : 0,
+      .width = VL_BLOCK_WIDTH,
+      .height = VL_BLOCK_HEIGHT,
+      .depth = 1,
    };
 
    assert(buffer);

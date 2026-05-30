@@ -686,12 +686,14 @@ vl_idct_upload_matrix(struct pipe_context *pipe, float scale)
    unsigned i, j, pitch;
    float *f;
 
+   /* pipe_box is laid out {x, width, y, height, z, depth}; name the fields so
+    * VL_BLOCK_HEIGHT does not land in z and force an out-of-bounds layer. */
    struct pipe_box rect =
    {
-      0, 0, 0,
-      VL_BLOCK_WIDTH / 4,
-      VL_BLOCK_HEIGHT,
-      1
+      .x = 0, .y = 0, .z = 0,
+      .width = VL_BLOCK_WIDTH / 4,
+      .height = VL_BLOCK_HEIGHT,
+      .depth = 1,
    };
 
    assert(pipe);

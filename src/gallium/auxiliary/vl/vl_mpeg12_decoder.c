@@ -594,7 +594,9 @@ vl_mpeg12_begin_frame(struct pipe_video_codec *decoder,
    struct vl_mpeg12_buffer *buf;
 
    struct pipe_resource *tex;
-   struct pipe_box rect = { 0, 0, 0, 1, 1, 1 };
+   /* pipe_box is laid out {x, width, y, height, z, depth}; name the fields so
+    * the upload stays on layer z=0 (width/height are set below from the texture). */
+   struct pipe_box rect = { .x = 0, .y = 0, .z = 0, .width = 1, .height = 1, .depth = 1 };
 
    uint8_t intra_matrix[64];
    uint8_t non_intra_matrix[64];
