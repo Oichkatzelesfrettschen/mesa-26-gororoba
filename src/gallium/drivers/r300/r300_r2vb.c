@@ -65,30 +65,32 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                  RADEON_PRIO_COLOR_BUFFER,
                                  RADEON_DOMAIN_GTT);
 
-    /* 36 dwords for the single-BO loop: stage 1 = 15, stage 2 = 6, stage 3 = 15.
+    /* 56 dwords for the single-BO loop: stage 1 = 35, stage 2 = 6, stage 3 = 15.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
-     * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords.
-     * The stage-3 color-target switch adds nine dwords (COLOROFFSET0 + reloc +
-     * COLORPITCH0 + the SC_SCISSORS pair). */
-    BEGIN_CS(stage3_color_bo ? 45 : 36);
+     * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
+     * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
+     * vertices (twelve dwords).  The stage-3 color-target switch adds nine dwords
+     * (COLOROFFSET0 + reloc + COLORPITCH0 + the SC_SCISSORS pair). */
+    BEGIN_CS(stage3_color_bo ? 65 : 56);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
      * Point the color buffer at the GTT output BO with an FP32x4 color format so
-     * each "pixel" the fragment program writes is one vec4 vertex, then draw.
-     * VAP_VF_MAX_VTX_INDX is an inclusive maximum, so it is count-1, and the draw
-     * packet must carry the vertex count in VAP_VF_CNTL NUM_VERTICES like every
-     * other r300 vertex-list emitter -- without it the draw requests zero
-     * vertices and produces no fragments.
+     * each "pixel" the bound fragment program writes is one vec4 vertex, then
+     * rasterize the whole num_vertices x 1 target with a self-supplied covering
+     * triangle (below).  Stage 1 owns its geometry: an inherited DRAW_VBUF_2
+     * against the caller's vertex array produced zero fragments after the
+     * caller's flush, leaving the BO unwritten, so the loop no longer depends on
+     * the caller's post-flush vertex-array state.
      *
-     * Contract (the build-out boundary, not a stub): the caller binds the
-     * "vertex compute" fragment program, the GTT framebuffer, and the pass-1
-     * geometry through the normal r300 pipe state path before calling this, so
-     * r300_emit_dirty_state has already emitted the US instruction state, the RS
-     * interpolator state, and the GA/SU setup into this same IB.  The US
-     * microcode lives in the US instruction registers (r300_emit_fs in
-     * r300_emit.c), never as a relocatable BO; this function deliberately does
-     * not hand-roll the compiler's fragment-shader emit. */
+     * Contract (the build-out boundary, not a stub): the caller still binds the
+     * "vertex compute" fragment program through the normal r300 pipe state path,
+     * so r300_emit_dirty_state has emitted the US instruction state, the RS
+     * interpolator state, and the GA/SU setup into this same IB.  The US microcode
+     * lives in the US instruction registers (r300_emit_fs in r300_emit.c), never
+     * as a relocatable BO; this function deliberately does not hand-roll the
+     * compiler's fragment-shader emit, and the covering triangle's vertex values
+     * are ignored by a wpos-only program that writes from gl_FragCoord. */
     /* Disable depth: this color-only vertex render needs no Z test, and the
      * radeon CS validator (r300_cs_track_check) defaults z_enabled true with a
      * NULL z buffer, so a draw with ZB_CNTL R300_Z_ENABLE still set but no depth
@@ -112,11 +114,40 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     OUT_CS_RELOC(output_gart_bo);
     OUT_CS_REG(R300_RB3D_COLORPITCH0,
                num_vertices | R300_COLOR_FORMAT_ARGB32323232);
-    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
-    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
-    OUT_CS((num_vertices << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) |
-           R300_VAP_VF_CNTL__PRIM_TRIANGLES |
-           R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
+    /* Self-supplied covering geometry.  Declare one FP32x4 position stream with
+     * pre-divided window coordinates (VTX_XY_FMT), then emit a single covering
+     * triangle (0,0),(2*num_vertices,0),(0,2) in-IB via 3D_DRAW_IMMD.  At the
+     * num_vertices x 1 scissor that triangle rasterizes every slot exactly, so
+     * the bound wpos fragment program writes its synthesized vertex into each
+     * BO slot from gl_FragCoord regardless of what the caller last drew.  The
+     * embedded vertices need no relocation -- they travel in the command stream
+     * -- so this draw is independent of any vertex-array BO. */
+    OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+    OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
+    OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_0, 1);
+    OUT_CS(R300_DATA_TYPE_FLOAT_4 | R300_LAST_VEC);
+    OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_EXT_0, 1);
+    OUT_CS((R300_SWIZZLE_SELECT_X << R300_SWIZZLE_SELECT_X_SHIFT) |
+           (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
+           (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
+           (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) |
+           (0xf << R300_WRITE_ENA_SHIFT));
+    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, 2);
+    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, 3 * 4);
+    OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (3 << 16) |
+           R300_VAP_VF_CNTL__PRIM_TRIANGLES);
+    OUT_CS_32F(0.0f);
+    OUT_CS_32F(0.0f);
+    OUT_CS_32F(0.0f);
+    OUT_CS_32F(1.0f);
+    OUT_CS_32F((float)(2 * num_vertices));
+    OUT_CS_32F(0.0f);
+    OUT_CS_32F(0.0f);
+    OUT_CS_32F(1.0f);
+    OUT_CS_32F(0.0f);
+    OUT_CS_32F(2.0f);
+    OUT_CS_32F(0.0f);
+    OUT_CS_32F(1.0f);
 
     /* Stage 2 -- the full cb_flush_clean barrier (r300_context.c / r300_emit_
      * gpu_flush).  Flush+free the ZB zcache and the RB3D dstcache tags, then halt
