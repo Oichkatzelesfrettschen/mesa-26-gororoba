@@ -398,6 +398,10 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
     r300->context.priv = priv;
     r300->context.set_debug_callback = u_default_set_debug_callback;
     r300->context.create_video_codec = r300_create_video_codec;
+    /* The va frontend calls create_video_buffer unconditionally on surface
+     * allocation; the generic vl helper backs the decode planes (a NULL hook
+     * here would crash vaCreateSurfaces). */
+    r300->context.create_video_buffer = vl_video_buffer_create;
 
     r300->context.destroy = r300_destroy_context;
 
