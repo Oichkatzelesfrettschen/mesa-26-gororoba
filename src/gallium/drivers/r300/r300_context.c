@@ -18,6 +18,7 @@
 #include "r300_screen.h"
 #include "r300_screen_buffer.h"
 #include "r300_texture.h"
+#include "r300_video.h"
 #include "compiler/radeon_regalloc.h"
 
 #include <inttypes.h>
@@ -396,6 +397,7 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
     r300->context.screen = screen;
     r300->context.priv = priv;
     r300->context.set_debug_callback = u_default_set_debug_callback;
+    r300->context.create_video_codec = r300_create_video_codec;
 
     r300->context.destroy = r300_destroy_context;
 

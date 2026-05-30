@@ -1,0 +1,61 @@
+/*
+ * Copyright (c) 2026 Terascale Functionalists
+ * SPDX-License-Identifier: MIT
+ */
+
+/* RS482/R300-class hardware has no UVD/VCE video block, so the only
+ * hardware-accelerated decode path is the g3dvl shader decoder: MPEG-1/MPEG-2
+ * macroblocks reconstructed by fragment shaders (IDCT, motion compensation,
+ * inverse zigzag scan) on the 3D pipe.  This backend advertises that one codec
+ * and routes codec creation to vl_create_mpeg12_decoder; everything else --
+ * H.264, HEVC, encode -- is unsupported and reported as such. */
+
+#include "pipe/p_screen.h"
+#include "pipe/p_video_codec.h"
+
+#include "util/u_video.h"
+
+#include "vl/vl_mpeg12_decoder.h"
+
+#include "r300_video.h"
+
+int
+r300_get_video_param(struct pipe_screen *screen,
+                     enum pipe_video_profile profile,
+                     enum pipe_video_entrypoint entrypoint,
+                     enum pipe_video_cap param)
+{
+   /* Only MPEG-1/MPEG-2 decode exists on this hardware. */
+   if (u_reduce_video_profile(profile) != PIPE_VIDEO_FORMAT_MPEG12)
+      return 0;
+
+   switch (param) {
+   case PIPE_VIDEO_CAP_SUPPORTED:
+      /* The shader decoder accepts the full-bitstream, IDCT and
+       * motion-compensation entrypoints, but never encode. */
+      return entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM ||
+             entrypoint == PIPE_VIDEO_ENTRYPOINT_IDCT ||
+             entrypoint == PIPE_VIDEO_ENTRYPOINT_MC;
+   case PIPE_VIDEO_CAP_MAX_WIDTH:
+   case PIPE_VIDEO_CAP_MAX_HEIGHT:
+      /* Bounded by the maximum 2D texture the decode surfaces are sampled as. */
+      return 2048;
+   case PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE:
+      return 1;
+   default:
+      return 0;
+   }
+}
+
+struct pipe_video_codec *
+r300_create_video_codec(struct pipe_context *context,
+                        const struct pipe_video_codec *templat)
+{
+   if (templat->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE)
+      return NULL;
+
+   if (u_reduce_video_profile(templat->profile) == PIPE_VIDEO_FORMAT_MPEG12)
+      return vl_create_mpeg12_decoder(context, templat);
+
+   return NULL;
+}
