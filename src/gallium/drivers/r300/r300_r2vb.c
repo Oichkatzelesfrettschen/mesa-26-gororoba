@@ -339,20 +339,34 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
         const uint32_t *texels = r300->context.buffer_map(&r300->context, stage3, 0,
                                                           PIPE_MAP_READ, &box, &rd_xfer);
         if (texels) {
-            uint32_t written = 0, first_slot = 0;
-            float first_r = 0.0f;
+            /* A texel is "written" when stage 3 overwrote its sentinel.  Track
+             * the count and the bounding box / centroid in texel coordinates
+             * (x = i % dim, y = i / dim) so the caller can compare the observed
+             * coverage against the region its known stage-1 vertices predict --
+             * the evidence that stage 3 (the re-ingest) rasterized them. */
+            uint32_t written = 0;
+            uint32_t min_x = s3dim, min_y = s3dim, max_x = 0, max_y = 0;
+            uint64_t sum_x = 0, sum_y = 0;
             for (uint32_t i = 0; i < s3dim * s3dim; i++) {
                 if (texels[i * 4] != 0xffffffffu) {
-                    if (!written) {
-                        first_slot = i;
-                        memcpy(&first_r, &texels[i * 4], sizeof(first_r));
-                    }
+                    uint32_t x = i % s3dim, y = i / s3dim;
+                    if (x < min_x) min_x = x;
+                    if (y < min_y) min_y = y;
+                    if (x > max_x) max_x = x;
+                    if (y > max_y) max_y = y;
+                    sum_x += x;
+                    sum_y += y;
                     written++;
                 }
             }
-            fprintf(stderr, "r2vb_stage3_readback dim=%ux%u written_texels=%u "
-                    "first_slot=%u first_r=%.6f\n",
-                    s3dim, s3dim, written, first_slot, first_r);
+            if (written)
+                fprintf(stderr, "r2vb_stage3_readback dim=%ux%u written_texels=%u "
+                        "bbox=%u,%u,%u,%u centroid=%.1f,%.1f\n",
+                        s3dim, s3dim, written, min_x, min_y, max_x, max_y,
+                        (double)sum_x / written, (double)sum_y / written);
+            else
+                fprintf(stderr, "r2vb_stage3_readback dim=%ux%u written_texels=0 "
+                        "bbox=none centroid=none\n", s3dim, s3dim);
             r300->context.buffer_unmap(&r300->context, rd_xfer);
         }
     }
