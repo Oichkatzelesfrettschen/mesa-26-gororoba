@@ -742,6 +742,7 @@ if prog_glslang.found()
 endif
 
 _va_drivers = [
+  with_gallium_r300,
   with_gallium_d3d12_video,
   with_gallium_nouveau,
   with_gallium_r600,

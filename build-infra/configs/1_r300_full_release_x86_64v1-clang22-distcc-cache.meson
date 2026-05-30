@@ -77,8 +77,10 @@ llvm = 'disabled'
 draw-use-llvm = false
 gallium-rusticl = false
 
-# Excluded surfaces (kept out to bound the artifact and the lane).
-video-codecs = []
+# r300 gallium-va video decode (MPEG-2 / mpeg12dec) enabled by default; the
+# decode backend (g3dvl shader kernels) lands separately on the port branch.
+video-codecs = ['mpeg12dec']
+gallium-va = 'enabled'
 vulkan-layers = []
 perfetto = false
 valgrind = 'disabled'
