@@ -389,8 +389,6 @@ files_libgalliumvl = files(
   'vl/vl_deint_filter.h',
   'vl/vl_deint_filter_cs.c',
   'vl/vl_deint_filter_cs.h',
-  'vl/vl_decoder.c',
-  'vl/vl_decoder.h',
   'vl/vl_idct.c',
   'vl/vl_idct.h',
   'vl/vl_matrix_filter.c',

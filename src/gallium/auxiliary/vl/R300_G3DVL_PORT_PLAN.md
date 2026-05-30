@@ -1,10 +1,13 @@
 # Port plan: restore the g3dvl shader video decoder for r300 gallium-va (mesa 26)
 
-The shader-based g3dvl decode kernels were removed from mesa 26 (only
-`vl_mpeg12_bitstream` and `vl_vertex_buffers` remain).  RS482/R300-class has no
-UVD/VCE, so shader decode is the only HW-accelerated video path; this branch
-restores the removed kernels and re-wires r300's gallium-va backend.  It is a kept
-PORT BRANCH and is NOT merged to main until it builds and passes the kernel
+mesa 26 removed only the shader-based g3dvl DECODE kernels (`vl_idct`, `vl_mc`,
+`vl_zscan`, `vl_matrix_filter`, `vl_mpeg12_decoder`, `vl_decoder`).  The
+PRESENTATION half survives: `vl_compositor{,_cs,_gfx}.c` (gfx and compute paths),
+`vl_csc.c`, `vl_deint_filter{,_cs}.c`, `vl_codec.c` (a new support-dispatch),
+`vl_video_buffer.c`, `vl_mpeg12_bitstream.c`, `vl_vertex_buffers.c`.  RS482/R300
+has no UVD/VCE, so shader decode is the only HW-accelerated video path; this
+branch restores the removed decode kernels and re-wires r300's gallium-va backend.
+It is a kept PORT BRANCH, NOT merged to main until it builds and passes the kernel
 compile-verify.  Decomposition and admissibility proofs:
 `docs/.../rs482-mpeg2-decode-verb-decomposition.md`,
 `rs482-h264-mpeg4-decode-verb-factoring.md`, the formal monograph.
@@ -12,8 +15,15 @@ compile-verify.  Decomposition and admissibility proofs:
 ## Mined kernels (restored into src/gallium/auxiliary/vl/)
 
 `vl_idct.{c,h}` (868L), `vl_mc.{c,h}` (658L), `vl_zscan.{c,h}` (615L),
-`vl_matrix_filter.{c,h}` (307L), `vl_mpeg12_decoder.{c,h}` (1239L),
-`vl_decoder.{c,h}` (94L) -- from mesa-21.3.3 (the last pre-removal tag).
+`vl_matrix_filter.{c,h}` (307L), `vl_mpeg12_decoder.{c,h}` (1239L) -- from
+mesa-21.3.3 (the last pre-removal tag).
+
+`vl_decoder.{c,h}` was also restored but then DELETED: its `vl_create_decoder`
+dispatch + `vl_profile_supported`/`vl_level_supported` are superseded by mesa-26's
+`vl_codec.c` (`vl_codec_supported`, gated on the `VIDEO_CODEC_*` build defines) and
+by the driver instantiating the codec directly through its `create_video_codec`
+vtable hook + `vl_create_mpeg12_decoder()`.  `vl_create_decoder` has zero callers
+in mesa 26.
 
 ## Drift assessment (tractable)
 
@@ -21,24 +31,45 @@ Present in mesa 26 (no port needed): `tgsi_ureg.h` (the shader-gen API the kerne
 use), `pipe/p_video_codec.h`, `pipe/p_video_enums.h`, and the shared vl headers
 `vl_defines.h`, `vl_types.h`, `vl_video_buffer.h`.
 
-Known drift to fix:
-1. meson wiring -- re-add the decode sources to `src/gallium/auxiliary/meson.build`
-   under the video-frontend conditional (in 21.3.3 they sat with vl_decoder.c at
-   the lines that also list vl_idct/vl_mc/vl_zscan/vl_matrix_filter/
-   vl_mpeg12_decoder).
-2. `vl_mc.c:89` uses `screen->get_param(screen, PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL)`
-   -- that PIPE_CAP was removed in mesa 26 (FS position is sysval via NIR now).
-   Fix: drop the conditional and take the sysval path unconditionally (or the
-   mesa-26 caps equivalent), since modern r300 NIR emits position as a sysval.
-3. `screen->get_param`/`get_video_param` signatures: mesa migrated PIPE_CAP to the
-   `pipe_caps` struct (~mesa 23).  The kernels query few caps; update those call
-   sites to the caps-struct accessors the build flags.
-4. r300 backend -- re-add to `src/gallium/drivers/r300/r300_screen.c` (from 21.3.3
-   r300_screen.c:437 r300_get_video_param + :732 `screen.get_video_param =
-   r300_get_video_param` + :734 `screen.is_video_format_supported =
-   vl_video_buffer_is_format_supported`), updated to the mesa 26 screen vtable.
-5. enable `gallium-va` (and/or `vdpau`) + `video-codecs=mpeg2` in the build
-   profile; the va target needs libva headers.
+## Empirical drift inventory (clang-22 against mesa 26, build oracle)
+
+Wiring done: meson lists the 5 decode kernels in `files_libgalliumvl` (an
+unconditional `files()` list -- compiled whenever libgalliumvl builds, i.e. when a
+video frontend is enabled); `_va_drivers` includes `with_gallium_r300`; the build
+profiles default `video-codecs = ['mpeg12dec']` + `gallium-va = 'enabled'`.  libva
+1.23.0 is found.  The removed `pipe/p_compiler.h` include in `vl_zscan.h` is
+replaced by `util/compiler.h`.
+
+Remaining drift building `libgalliumvl.a` (~86 errors, 2 files truncated at
+`-ferror-limit`, so the true count is higher).  Classes, fix in this order:
+
+1. Mechanical enum renames (safe, high volume): `PIPE_SHADER_{VERTEX,FRAGMENT}` ->
+   `MESA_SHADER_*`; `PIPE_PRIM_*` -> `MESA_PRIM_*`; plus a few fully-removed
+   identifiers with no compiler suggestion (TGSI/PIPE_CAP leftovers).
+2. Struct-field refactors: `pipe_surface` lost `width`/`height` (derive via
+   `u_minify(tex->width0/height0, level)` or the new accessor); `pipe_surface` is
+   now passed by pointer at several call sites (the "dereference with *" errors);
+   `pipe_sampler_state.normalized_coords` removed (mesa-26 sampler-state shape).
+3. Vtable arity changes (DANGEROUS -- a clean compile here can be wrong at
+   runtime): `set_sampler_views`, `set_constant_buffer`, `draw_vbo`, and similar
+   `pipe_context` hooks changed argument counts/shapes.  MUST be matched to the new
+   API contract by reading a live caller (`vl_compositor_gfx.c`, radeonsi) -- NOT
+   by adding arguments to silence clang.  The only runtime check is hazard-gated on
+   vostro, so a wrong arity sits undetected.
+
+## Milestones (a clean libgalliumvl.a is milestone 1 of 3)
+
+1. Decode kernels compile: `libgalliumvl.a` builds clean (the drift above).
+2. r300 backend wiring: add `r300_get_video_param` + `screen.get_video_param` +
+   `screen.is_video_format_supported = vl_video_buffer_is_format_supported` +
+   `context.create_video_codec` (-> `vl_create_mpeg12_decoder`) to the mesa-26
+   r300 screen/context vtables (21.3.3 `r300_screen.c:437/732/734` as reference,
+   updated to the new vtable shapes).
+3. Hazard-gated runtime: `vainfo` shows the MPEG-2 profile, then end-to-end decode
+   of a clip on vostro (tasks 14/28), NIR->RC budget compile-verify (task 27).
+
+Only after milestone 1 builds clean does this branch become a merge candidate; the
+backend (milestone 2) makes va advertise a profile, and milestone 3 is "it plays."
 
 ## Build / iterate / verify order
 
