@@ -24,6 +24,13 @@
  * r300_context.c; no speculative fallback defines.
  */
 
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include "util/os_time.h"
+#include "util/u_inlines.h"
+
 #include "r300_context.h"
 #include "r300_cs.h"
 #include "r300_reg.h"
@@ -123,4 +130,84 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
            R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
 
     END_CS;
+}
+
+/* Gated Phase-4 self-test for the R2VB direct-VAP path.  R300_R2VB_TIMING picks
+ * the mode:
+ *   capture -- emit the loop into a fresh GTT buffer and flush with
+ *              RADEON_FLUSH_NOOP, so the IB is captured by R300_TRACE and never
+ *              reaches DRM_RADEON_CS.  The packets can be decoded and verified
+ *              with zero hardware risk.  This is the structural preflight.
+ *   submit  -- a real flush with a fence wait, timed; additionally requires
+ *              R300_RAW_SUBMIT_ACCEPTED=1.  This is the hazard-gated measurement
+ *              that decides whether R2VB beats the gallivm CPU baseline; a draw
+ *              that the CS validator passes can still hang reset-less silicon, so
+ *              the caller must have bound the vertex-compute fragment program and
+ *              GTT framebuffer first (the loop's contract).
+ * R300_R2VB_NVERTS sets the count, clamped below 2^16 (the SWTCL VAP
+ * NUM_VERTICES field width). */
+void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300)
+{
+    const char *mode = getenv("R300_R2VB_TIMING");
+    if (!mode)
+        return;
+    bool do_submit = strcmp(mode, "submit") == 0;
+    if (do_submit) {
+        const char *gate = getenv("R300_RAW_SUBMIT_ACCEPTED");
+        if (!gate || strcmp(gate, "1") != 0) {
+            fprintf(stderr,
+                    "r2vb selftest: submit mode needs R300_RAW_SUBMIT_ACCEPTED=1\n");
+            return;
+        }
+    }
+
+    uint32_t num_vertices = 64;
+    const char *nv = getenv("R300_R2VB_NVERTS");
+    if (nv) {
+        long v = strtol(nv, NULL, 0);
+        if (v > 0 && v < 65536)
+            num_vertices = (uint32_t)v;
+    }
+
+    struct pipe_screen *pscreen = r300->context.screen;
+    struct pipe_resource templ = {0};
+    templ.target = PIPE_BUFFER;
+    templ.format = PIPE_FORMAT_R8_UNORM;
+    templ.width0 = num_vertices * 16;  /* one FP32x4 clip-space vertex per slot */
+    templ.height0 = 1;
+    templ.depth0 = 1;
+    templ.array_size = 1;
+    /* PIPE_BIND_CUSTOM is load-bearing: r300_buffer_create puts a plain vertex
+     * buffer in RAM (rbuf->buf == NULL) on a no-TCL part like RS482, since SWTCL
+     * vertices are CPU-side.  The R2VB path needs a real GART BO the GPU renders
+     * to and fetches from, and PIPE_BIND_CUSTOM is the flag r300 uses to force
+     * the winsys allocation instead of the RAM path. */
+    templ.bind = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_CUSTOM;
+    templ.usage = PIPE_USAGE_DEFAULT;
+    struct pipe_resource *res = pscreen->resource_create(pscreen, &templ);
+    if (!res)
+        return;
+
+    r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, num_vertices);
+
+    if (do_submit) {
+        struct pipe_fence_handle *fence = NULL;
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        r300->rws->cs_flush(&r300->cs, 0, &fence);
+        if (fence) {
+            r300->rws->fence_wait(r300->rws, fence, OS_TIMEOUT_INFINITE);
+            r300->rws->fence_reference(r300->rws, &fence, NULL);
+        }
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +
+                    (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+        fprintf(stderr, "r2vb_direct_vap_timing nverts=%u submit_ms=%.4f\n",
+                num_vertices, ms);
+    } else {
+        r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
+        fprintf(stderr, "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP)\n",
+                num_vertices);
+    }
+    pipe_resource_reference(&res, NULL);
 }
