@@ -17,6 +17,7 @@
 #include "r300_emit.h"
 #include "r300_screen.h"
 #include "r300_screen_buffer.h"
+#include "r300_r2vb.h"
 #include "r300_texture.h"
 #include "compiler/radeon_regalloc.h"
 
@@ -545,6 +546,10 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
                 r300->screen->caps.zmask_ram ? "YES" : "NO",
                 r300->screen->caps.hiz_ram ? "YES" : "NO");
     }
+
+    /* Gated RS482 R2VB direct-VAP self-test; no-op unless R300_R2VB_TIMING is
+     * set.  See r300_r2vb.c for the capture/submit contract. */
+    r300_emit_rs482_r2vb_capture_selftest(r300);
 
     return &r300->context;
 
