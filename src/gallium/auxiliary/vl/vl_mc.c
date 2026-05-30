@@ -32,12 +32,13 @@
 #include "util/u_sampler.h"
 #include "util/u_draw.h"
 
-#include "tgsi/tgsi_ureg.h"
+#include "compiler/nir/nir_builder.h"
 
 #include "vl_defines.h"
 #include "vl_vertex_buffers.h"
 #include "vl_mc.h"
 #include "vl_idct.h"
+#include "vl_nir.h"
 
 enum VS_OUTPUT
 {
@@ -49,111 +50,99 @@ enum VS_OUTPUT
    VS_O_VTEX = VS_O_VBOTTOM
 };
 
-static struct ureg_dst
-calc_position(struct vl_mc *r, struct ureg_program *shader, struct ureg_src block_scale)
+/* The motion-comp vertex shaders share this: build the macroblock-relative
+ * clip position and emit it, returning the xy for the texcoord math.  block_scale
+ * maps the macroblock grid to destination texels. */
+static nir_def *
+calc_position(struct vl_mc *r, nir_builder *b, nir_def *block_scale)
 {
-   struct ureg_src vrect, vpos;
-   struct ureg_dst t_vpos;
-   struct ureg_dst o_vpos;
+   nir_variable *iv_rect = nir_get_variable_with_location(b->shader,
+      nir_var_shader_in, VERT_ATTRIB_GENERIC0 + VS_I_RECT, glsl_vec4_type());
+   nir_variable *iv_pos = nir_get_variable_with_location(b->shader,
+      nir_var_shader_in, VERT_ATTRIB_GENERIC0 + VS_I_VPOS, glsl_vec4_type());
+   nir_def *vrect = nir_trim_vector(b, nir_load_var(b, iv_rect), 2);
+   nir_def *vpos = nir_trim_vector(b, nir_load_var(b, iv_pos), 2);
 
-   vrect = ureg_DECL_vs_input(shader, VS_I_RECT);
-   vpos = ureg_DECL_vs_input(shader, VS_I_VPOS);
+   /* t_vpos = (vpos + vrect) * block_scale; o_vpos.xy = t_vpos, zw = 1. */
+   nir_def *t_vpos = nir_fmul(b, nir_fadd(b, vpos, vrect), block_scale);
 
-   t_vpos = ureg_DECL_temporary(shader);
-
-   o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
-
-   /*
-    * block_scale = (VL_MACROBLOCK_WIDTH, VL_MACROBLOCK_HEIGHT) / (dst.width, dst.height)
-    *
-    * t_vpos = (vpos + vrect) * block_scale
-    * o_vpos.xy = t_vpos
-    * o_vpos.zw = vpos
-    */
-   ureg_ADD(shader, ureg_writemask(t_vpos, TGSI_WRITEMASK_XY), vpos, vrect);
-   ureg_MUL(shader, ureg_writemask(t_vpos, TGSI_WRITEMASK_XY), ureg_src(t_vpos), block_scale);
-   ureg_MOV(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_XY), ureg_src(t_vpos));
-   ureg_MOV(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_ZW), ureg_imm1f(shader, 1.0f));
+   nir_variable *o_vpos = nir_get_variable_with_location(b->shader,
+      nir_var_shader_out, VARYING_SLOT_POS, glsl_vec4_type());
+   nir_store_var(b, o_vpos,
+      nir_vec4(b, nir_channel(b, t_vpos, 0), nir_channel(b, t_vpos, 1),
+               nir_imm_float(b, 1.0f), nir_imm_float(b, 1.0f)), 0xf);
 
    return t_vpos;
 }
 
-static struct ureg_dst
-calc_line(struct pipe_screen *screen, struct ureg_program *shader)
+/* Field-parity selector for the interlaced reference fetch: in mesa-26 the
+ * fragment position is always a sysval, so this is the unconditional branch the
+ * removed fragment-position-is-sysval capability query used to guard.  Returns the
+ * scalar frac(pos.y / 2) >= 0.5 ? 1.0 : 0.0. */
+static nir_def *
+calc_line(nir_builder *b)
 {
-   struct ureg_dst tmp;
-   struct ureg_src pos;
+   nir_def *pos = nir_load_frag_coord(b);
+   nir_def *frac = nir_ffract(b, nir_fmul(b, nir_channel(b, pos, 1),
+                                          nir_imm_float(b, 0.5f)));
+   return nir_b2f32(b, nir_fge(b, frac, nir_imm_float(b, 0.5f)));
+}
 
-   tmp = ureg_DECL_temporary(shader);
+/* Finalize a hand-built motion-comp fragment shader and hand it to the driver
+ * (nir_to_rc runs on create_fs_state). */
+static void *
+mc_create_fs(struct vl_mc *r, nir_builder *b)
+{
+   r->pipe->screen->finalize_nir(r->pipe->screen, b->shader, true);
 
-   if (screen->get_param(screen, PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL))
-      pos = ureg_DECL_system_value(shader, TGSI_SEMANTIC_POSITION, 0);
-   else
-      pos = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS,
-                               TGSI_INTERPOLATE_LINEAR);
-
-   /*
-    * tmp.y = fraction(pos.y / 2) >= 0.5 ? 1 : 0
-    */
-   ureg_MUL(shader, ureg_writemask(tmp, TGSI_WRITEMASK_Y), pos, ureg_imm1f(shader, 0.5f));
-   ureg_FRC(shader, ureg_writemask(tmp, TGSI_WRITEMASK_Y), ureg_src(tmp));
-   ureg_SGE(shader, ureg_writemask(tmp, TGSI_WRITEMASK_Y), ureg_src(tmp), ureg_imm1f(shader, 0.5f));
-
-   return tmp;
+   struct pipe_shader_state state = {0};
+   state.type = PIPE_SHADER_IR_NIR;
+   state.ir.nir = b->shader;
+   return r->pipe->create_fs_state(r->pipe, &state);
 }
 
 static void *
 create_ref_vert_shader(struct vl_mc *r)
 {
-   struct ureg_program *shader;
-   struct ureg_src mv_scale;
-   struct ureg_src vmv[2];
-   struct ureg_dst t_vpos;
-   struct ureg_dst o_vmv[2];
-   unsigned i;
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
+      r->pipe->screen->nir_options[MESA_SHADER_VERTEX], "vl:mc_ref_vs");
 
-   shader = ureg_create(MESA_SHADER_VERTEX);
-   if (!shader)
-      return NULL;
+   nir_variable *iv_mv0 = nir_variable_create(b.shader, nir_var_shader_in,
+                                              glsl_vec4_type(), "mv_top");
+   iv_mv0->data.location = VERT_ATTRIB_GENERIC0 + VS_I_MV_TOP;
+   nir_variable *iv_mv1 = nir_variable_create(b.shader, nir_var_shader_in,
+                                              glsl_vec4_type(), "mv_bottom");
+   iv_mv1->data.location = VERT_ATTRIB_GENERIC0 + VS_I_MV_BOTTOM;
+   nir_def *vmv[2] = { nir_load_var(&b, iv_mv0), nir_load_var(&b, iv_mv1) };
 
-   vmv[0] = ureg_DECL_vs_input(shader, VS_I_MV_TOP);
-   vmv[1] = ureg_DECL_vs_input(shader, VS_I_MV_BOTTOM);
-
-   t_vpos = calc_position(r, shader, ureg_imm2f(shader,
+   nir_def *block_scale = nir_imm_vec2(&b,
       (float)VL_MACROBLOCK_WIDTH / r->buffer_width,
-      (float)VL_MACROBLOCK_HEIGHT / r->buffer_height)
-   );
+      (float)VL_MACROBLOCK_HEIGHT / r->buffer_height);
+   nir_def *t_vpos = calc_position(r, &b, block_scale);
 
-   o_vmv[0] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTOP);
-   o_vmv[1] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VBOTTOM);
+   /* mv_scale.xy = 0.5 / dst; z = 1/4 (quarter-pel); w = 1/MV_WEIGHT_MAX.
+    * o_vmv[i].xy = mv*mv_scale + t_vpos; zw = mv*mv_scale. */
+   nir_def *mv_scale = nir_imm_vec4(&b,
+      0.5f / r->buffer_width, 0.5f / r->buffer_height,
+      1.0f / 4.0f, 1.0f / PIPE_VIDEO_MV_WEIGHT_MAX);
 
-   /*
-    * mv_scale.xy = 0.5 / (dst.width, dst.height);
-    * mv_scale.z = 1.0f / 4.0f
-    * mv_scale.w = 1.0f / 255.0f
-    *
-    * // Apply motion vectors
-    * o_vmv[0..1].xy = vmv[0..1] * mv_scale + t_vpos
-    * o_vmv[0..1].zw = vmv[0..1] * mv_scale
-    *
-    */
+   for (unsigned i = 0; i < 2; ++i) {
+      nir_def *mv = vmv[i];
+      nir_def *o = nir_vec4(&b,
+         nir_ffma(&b, nir_channel(&b, mv_scale, 0), nir_channel(&b, mv, 0),
+                  nir_channel(&b, t_vpos, 0)),
+         nir_ffma(&b, nir_channel(&b, mv_scale, 1), nir_channel(&b, mv, 1),
+                  nir_channel(&b, t_vpos, 1)),
+         nir_fmul(&b, nir_channel(&b, mv_scale, 2), nir_channel(&b, mv, 2)),
+         nir_fmul(&b, nir_channel(&b, mv_scale, 3), nir_channel(&b, mv, 3)));
 
-   mv_scale = ureg_imm4f(shader,
-      0.5f / r->buffer_width,
-      0.5f / r->buffer_height,
-      1.0f / 4.0f,
-      1.0f / PIPE_VIDEO_MV_WEIGHT_MAX);
-
-   for (i = 0; i < 2; ++i) {
-      ureg_MAD(shader, ureg_writemask(o_vmv[i], TGSI_WRITEMASK_XY), mv_scale, vmv[i], ureg_src(t_vpos));
-      ureg_MUL(shader, ureg_writemask(o_vmv[i], TGSI_WRITEMASK_ZW), mv_scale, vmv[i]);
+      nir_variable *ov = nir_variable_create(b.shader, nir_var_shader_out,
+                                             glsl_vec4_type(), "vmv_out");
+      ov->data.location = VARYING_SLOT_VAR0 + VS_O_VTOP + i;
+      nir_store_var(&b, ov, o, 0xf);
    }
 
-   ureg_release_temporary(shader, t_vpos);
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, r->pipe);
+   return vl_nir_vs_finish(&b, r->pipe);
 }
 
 static void *
@@ -163,213 +152,165 @@ create_ref_frag_shader(struct vl_mc *r)
       r->buffer_height / 2 *
       r->macroblock_size / VL_MACROBLOCK_HEIGHT;
 
-   struct ureg_program *shader;
-   struct ureg_src tc[2], sampler;
-   struct ureg_dst ref, field;
-   struct ureg_dst fragment;
-   unsigned label;
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+      r->pipe->screen->nir_options[MESA_SHADER_FRAGMENT], "vl:mc_ref_fs");
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
+   nir_def *tc[2];
+   for (unsigned k = 0; k < 2; ++k) {
+      nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+      in->data.location = VARYING_SLOT_VAR0 + VS_O_VTOP + k;
+      tc[k] = nir_load_var(&b, in);
+   }
 
-   tc[0] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTOP, TGSI_INTERPOLATE_LINEAR);
-   tc[1] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VBOTTOM, TGSI_INTERPOLATE_LINEAR);
+   const struct glsl_type *st =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sv = nir_variable_create(b.shader, nir_var_uniform, st, "ref");
+   sv->data.binding = 0;
+   nir_deref_instr *samp = nir_build_deref_var(&b, sv);
 
-   sampler = ureg_DECL_sampler(shader, 0);
-   ref = ureg_DECL_temporary(shader);
+   /* ref = (field set) ? bottom-field tc : top-field tc.  fragment.w follows the
+    * same selection. */
+   nir_def *field = calc_line(&b);
+   nir_def *sel = nir_fge(&b, field, nir_imm_float(&b, 0.5f));
+   nir_def *ref = nir_bcsel(&b, sel, nir_trim_vector(&b, tc[1], 3),
+                            nir_trim_vector(&b, tc[0], 3));
+   nir_def *frag_w = nir_bcsel(&b, sel, nir_channel(&b, tc[1], 3),
+                               nir_channel(&b, tc[0], 3));
 
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
+   nir_def *ref_x = nir_channel(&b, ref, 0);
+   nir_def *ref_y = nir_channel(&b, ref, 1);
+   nir_def *ref_z = nir_channel(&b, ref, 2);
 
-   field = calc_line(r->pipe->screen, shader);
+   /* When ref.z (the field offset) is nonzero, snap ref.y onto the field grid:
+    * ref.y = (floor(ref.y * y_scale) + ref.z) / y_scale.  ref.z == 0 leaves it
+    * untouched -- the bcsel false arm, equivalent to the TGSI IF guard. */
+   nir_def *adj = nir_fmul(&b,
+      nir_fadd(&b, nir_ffloor(&b, nir_fmul(&b, ref_y, nir_imm_float(&b, y_scale))),
+               ref_z),
+      nir_imm_float(&b, 1.0f / y_scale));
+   ref_y = nir_bcsel(&b, nir_fneu(&b, ref_z, nir_imm_float(&b, 0.0f)), adj, ref_y);
 
-   /*
-    * ref = field.z ? tc[1] : tc[0]
-    *
-    * // Adjust tc acording to top/bottom field selection
-    * if (|ref.z|) {
-    *    ref.y *= y_scale
-    *    ref.y = floor(ref.y)
-    *    ref.y += ref.z
-    *    ref.y /= y_scale
-    * }
-    * fragment.xyz = tex(ref, sampler[0])
-    */
-   ureg_CMP(shader, ureg_writemask(ref, TGSI_WRITEMASK_XYZ),
-            ureg_negate(ureg_scalar(ureg_src(field), TGSI_SWIZZLE_Y)),
-            tc[1], tc[0]);
-   ureg_CMP(shader, ureg_writemask(fragment, TGSI_WRITEMASK_W),
-            ureg_negate(ureg_scalar(ureg_src(field), TGSI_SWIZZLE_Y)),
-            tc[1], tc[0]);
+   nir_def *texel = nir_tex(&b, nir_vec2(&b, ref_x, ref_y),
+                            .texture_deref = samp, .sampler_deref = samp);
 
-   ureg_IF(shader, ureg_scalar(ureg_src(ref), TGSI_SWIZZLE_Z), &label);
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out,
+      nir_vec4(&b, nir_channel(&b, texel, 0), nir_channel(&b, texel, 1),
+               nir_channel(&b, texel, 2), frag_w), 0xf);
 
-      ureg_MUL(shader, ureg_writemask(ref, TGSI_WRITEMASK_Y),
-               ureg_src(ref), ureg_imm1f(shader, y_scale));
-      ureg_FLR(shader, ureg_writemask(ref, TGSI_WRITEMASK_Y), ureg_src(ref));
-      ureg_ADD(shader, ureg_writemask(ref, TGSI_WRITEMASK_Y),
-               ureg_src(ref), ureg_scalar(ureg_src(ref), TGSI_SWIZZLE_Z));
-      ureg_MUL(shader, ureg_writemask(ref, TGSI_WRITEMASK_Y),
-               ureg_src(ref), ureg_imm1f(shader, 1.0f / y_scale));
-
-   ureg_fixup_label(shader, label, ureg_get_instruction_number(shader));
-   ureg_ENDIF(shader);
-
-   ureg_TEX(shader, ureg_writemask(fragment, TGSI_WRITEMASK_XYZ), TGSI_TEXTURE_2D, ureg_src(ref), sampler);
-
-   ureg_release_temporary(shader, ref);
-
-   ureg_release_temporary(shader, field);
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, r->pipe);
+   return mc_create_fs(r, &b);
 }
 
 static void *
 create_ycbcr_vert_shader(struct vl_mc *r, vl_mc_ycbcr_vert_shader vs_callback, void *callback_priv)
 {
-   struct ureg_program *shader;
-
-   struct ureg_src vrect, vpos;
-   struct ureg_dst t_vpos, t_vtex;
-   struct ureg_dst o_vpos, o_flags;
-
    struct vertex2f scale = {
       (float)VL_BLOCK_WIDTH / r->buffer_width * VL_MACROBLOCK_WIDTH / r->macroblock_size,
       (float)VL_BLOCK_HEIGHT / r->buffer_height * VL_MACROBLOCK_HEIGHT / r->macroblock_size
    };
 
-   unsigned label;
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
+      r->pipe->screen->nir_options[MESA_SHADER_VERTEX], "vl:mc_ycbcr_vs");
 
-   shader = ureg_create(MESA_SHADER_VERTEX);
-   if (!shader)
-      return NULL;
+   nir_def *block_scale = nir_imm_vec2(&b, scale.x, scale.y);
+   nir_def *t_vpos = calc_position(r, &b, block_scale);
 
-   vrect = ureg_DECL_vs_input(shader, VS_I_RECT);
-   vpos = ureg_DECL_vs_input(shader, VS_I_VPOS);
+   nir_variable *iv_rect = nir_get_variable_with_location(b.shader,
+      nir_var_shader_in, VERT_ATTRIB_GENERIC0 + VS_I_RECT, glsl_vec4_type());
+   nir_variable *iv_pos = nir_get_variable_with_location(b.shader,
+      nir_var_shader_in, VERT_ATTRIB_GENERIC0 + VS_I_VPOS, glsl_vec4_type());
+   nir_def *vrect = nir_load_var(&b, iv_rect);
+   nir_def *vpos = nir_load_var(&b, iv_pos);
 
-   t_vpos = calc_position(r, shader, ureg_imm2f(shader, scale.x, scale.y));
-   t_vtex = ureg_DECL_temporary(shader);
+   /* The decoder fills the source texcoord (or the IDCT addresses) at VS_O_VTEX. */
+   vs_callback(callback_priv, r, &b, VS_O_VTEX, t_vpos);
 
-   o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
-   o_flags = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_FLAGS);
+   /* o_flags.z = intra * 0.5; o_flags.w defaults to -1 (no field split). */
+   nir_def *o_flags_z = nir_fmul(&b, nir_channel(&b, vpos, 2), nir_imm_float(&b, 0.5f));
+   nir_def *o_flags_w = nir_imm_float(&b, -1.0f);
+   nir_def *o_vpos_y = nir_channel(&b, t_vpos, 1);
 
-   /*
-    * o_vtex.xy = t_vpos
-    * o_flags.z = intra * 0.5
-    *
-    * if(interlaced) {
-    *    t_vtex.xy = vrect.y ? { 0, scale.y } : { -scale.y : 0 }
-    *    t_vtex.z = vpos.y % 2
-    *    t_vtex.y = t_vtex.z ? t_vtex.x : t_vtex.y
-    *    o_vpos.y = t_vtex.y + t_vpos.y
-    *
-    *    o_flags.w = t_vtex.z ? 0 : 1
-    * }
-    *
-    */
+   if (r->macroblock_size == VL_MACROBLOCK_HEIGHT) {
+      /* Interlaced macroblock: vpos.w selects whether this row takes the field
+       * offset.  Every branch is a pure value select -- the TGSI IF only guarded
+       * the same arithmetic. */
+      nir_def *zero = nir_imm_float(&b, 0.0f);
+      nir_def *do_split = nir_fneu(&b, nir_channel(&b, vpos, 3), zero);
 
-   vs_callback(callback_priv, r, shader, VS_O_VTEX, t_vpos);
+      /* t_vtex.xy = (vrect.y > 0) ? (0, scale.y) : (-scale.y, 0) */
+      nir_def *vry = nir_flt(&b, zero, nir_channel(&b, vrect, 1));
+      nir_def *tvtex_x = nir_bcsel(&b, vry, zero, nir_imm_float(&b, -scale.y));
+      nir_def *tvtex_y0 = nir_bcsel(&b, vry, nir_imm_float(&b, scale.y), zero);
 
-   ureg_MUL(shader, ureg_writemask(o_flags, TGSI_WRITEMASK_Z),
-            ureg_scalar(vpos, TGSI_SWIZZLE_Z), ureg_imm1f(shader, 0.5f));
-   ureg_MOV(shader, ureg_writemask(o_flags, TGSI_WRITEMASK_W), ureg_imm1f(shader, -1.0f));
+      /* t_vtex.z = frac(vpos.y * 0.5) (the row parity); t_vtex.y picks x when set. */
+      nir_def *tvtex_z = nir_ffract(&b,
+         nir_fmul(&b, nir_channel(&b, vpos, 1), nir_imm_float(&b, 0.5f)));
+      nir_def *tz = nir_flt(&b, zero, tvtex_z);
+      nir_def *tvtex_y = nir_bcsel(&b, tz, tvtex_x, tvtex_y0);
 
-   if (r->macroblock_size == VL_MACROBLOCK_HEIGHT) { //TODO
-      ureg_IF(shader, ureg_scalar(vpos, TGSI_SWIZZLE_W), &label);
-
-         ureg_CMP(shader, ureg_writemask(t_vtex, TGSI_WRITEMASK_XY),
-                  ureg_negate(ureg_scalar(vrect, TGSI_SWIZZLE_Y)),
-                  ureg_imm2f(shader, 0.0f, scale.y),
-                  ureg_imm2f(shader, -scale.y, 0.0f));
-         ureg_MUL(shader, ureg_writemask(t_vtex, TGSI_WRITEMASK_Z),
-                  ureg_scalar(vpos, TGSI_SWIZZLE_Y), ureg_imm1f(shader, 0.5f));
-
-         ureg_FRC(shader, ureg_writemask(t_vtex, TGSI_WRITEMASK_Z), ureg_src(t_vtex));
-
-         ureg_CMP(shader, ureg_writemask(t_vtex, TGSI_WRITEMASK_Y),
-                  ureg_negate(ureg_scalar(ureg_src(t_vtex), TGSI_SWIZZLE_Z)),
-                  ureg_scalar(ureg_src(t_vtex), TGSI_SWIZZLE_X),
-                  ureg_scalar(ureg_src(t_vtex), TGSI_SWIZZLE_Y));
-         ureg_ADD(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_Y),
-                  ureg_src(t_vpos), ureg_src(t_vtex));
-
-         ureg_CMP(shader, ureg_writemask(o_flags, TGSI_WRITEMASK_W),
-                  ureg_negate(ureg_scalar(ureg_src(t_vtex), TGSI_SWIZZLE_Z)),
-                  ureg_imm1f(shader, 0.0f), ureg_imm1f(shader, 1.0f));
-
-      ureg_fixup_label(shader, label, ureg_get_instruction_number(shader));
-      ureg_ENDIF(shader);
+      /* o_vpos.y += t_vtex.y; o_flags.w = (parity) ? 0 : 1 -- only when split. */
+      nir_def *new_vpos_y = nir_fadd(&b, nir_channel(&b, t_vpos, 1), tvtex_y);
+      o_vpos_y = nir_bcsel(&b, do_split, new_vpos_y, o_vpos_y);
+      nir_def *new_flags_w = nir_bcsel(&b, tz, zero, nir_imm_float(&b, 1.0f));
+      o_flags_w = nir_bcsel(&b, do_split, new_flags_w, o_flags_w);
    }
 
-   ureg_release_temporary(shader, t_vtex);
-   ureg_release_temporary(shader, t_vpos);
+   /* Override o_vpos.y (calc_position stored the unadjusted value). */
+   nir_variable *o_vpos = nir_get_variable_with_location(b.shader,
+      nir_var_shader_out, VARYING_SLOT_POS, glsl_vec4_type());
+   nir_store_var(&b, o_vpos, o_vpos_y, 0x2);
 
-   ureg_END(shader);
+   nir_variable *o_flags = nir_variable_create(b.shader, nir_var_shader_out,
+      glsl_vec4_type(), "flags_out");
+   o_flags->data.location = VARYING_SLOT_VAR0 + VS_O_FLAGS;
+   nir_store_var(&b, o_flags,
+      nir_vec4(&b, nir_imm_float(&b, 0.0f), nir_imm_float(&b, 0.0f),
+               o_flags_z, o_flags_w), 0xf);
 
-   return ureg_create_shader_and_destroy(shader, r->pipe);
+   return vl_nir_vs_finish(&b, r->pipe);
 }
 
 static void *
 create_ycbcr_frag_shader(struct vl_mc *r, float scale, bool invert,
                          vl_mc_ycbcr_frag_shader fs_callback, void *callback_priv)
 {
-   struct ureg_program *shader;
-   struct ureg_src flags;
-   struct ureg_dst tmp;
-   struct ureg_dst fragment;
-   unsigned label;
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+      r->pipe->screen->nir_options[MESA_SHADER_FRAGMENT], "vl:mc_ycbcr_fs");
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
+   nir_variable *iv_flags = nir_variable_create(b.shader, nir_var_shader_in,
+                                                glsl_vec4_type(), "flags");
+   iv_flags->data.location = VARYING_SLOT_VAR0 + VS_O_FLAGS;
+   nir_def *flags = nir_load_var(&b, iv_flags);
+   nir_def *flags_z = nir_channel(&b, flags, 2);
+   nir_def *flags_w = nir_channel(&b, flags, 3);
 
-   flags = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_FLAGS, TGSI_INTERPOLATE_LINEAR);
+   /* Kill the fragment whose field flag matches the line parity (it belongs to
+    * the other field). */
+   nir_def *field = calc_line(&b);
+   nir_discard_if(&b, nir_feq(&b, flags_w, field));
 
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
+   /* Surviving fragments: the decoder supplies the source value (a plain
+    * reference fetch, or the IDCT-reconstructed residual), scaled and biased by
+    * the intra weight, negated for the reverse-subtract blender pass. */
+   nir_def *src = nir_trim_vector(&b, fs_callback(callback_priv, r, &b, VS_O_VTEX), 3);
+   nir_def *fz3 = nir_replicate(&b, flags_z, 3);
+   nir_def *scaled = (scale != 1.0f)
+      ? nir_ffma(&b, src, nir_replicate(&b, nir_imm_float(&b, scale), 3), fz3)
+      : nir_fadd(&b, src, fz3);
+   nir_def *rgb = nir_fmul(&b, scaled,
+      nir_replicate(&b, nir_imm_float(&b, invert ? -1.0f : 1.0f), 3));
 
-   tmp = calc_line(r->pipe->screen, shader);
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out,
+      nir_vec4(&b, nir_channel(&b, rgb, 0), nir_channel(&b, rgb, 1),
+               nir_channel(&b, rgb, 2), nir_imm_float(&b, 1.0f)), 0xf);
 
-   /*
-    * if (field == tc.w)
-    *    kill();
-    * else {
-    *    fragment.xyz  = tex(tc, sampler) * scale + tc.z
-    *    fragment.w = 1.0f
-    * }
-    */
-
-   ureg_SEQ(shader, ureg_writemask(tmp, TGSI_WRITEMASK_Y),
-            ureg_scalar(flags, TGSI_SWIZZLE_W), ureg_src(tmp));
-
-   ureg_IF(shader, ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_Y), &label);
-
-      ureg_KILL(shader);
-
-   ureg_fixup_label(shader, label, ureg_get_instruction_number(shader));
-   ureg_ELSE(shader, &label);
-
-      fs_callback(callback_priv, r, shader, VS_O_VTEX, tmp);
-
-      if (scale != 1.0f)
-         ureg_MAD(shader, ureg_writemask(tmp, TGSI_WRITEMASK_XYZ),
-                  ureg_src(tmp), ureg_imm1f(shader, scale),
-                  ureg_scalar(flags, TGSI_SWIZZLE_Z));
-      else
-         ureg_ADD(shader, ureg_writemask(tmp, TGSI_WRITEMASK_XYZ),
-                  ureg_src(tmp), ureg_scalar(flags, TGSI_SWIZZLE_Z));
-                  
-      ureg_MUL(shader, ureg_writemask(fragment, TGSI_WRITEMASK_XYZ), ureg_src(tmp), ureg_imm1f(shader, invert ? -1.0f : 1.0f));
-      ureg_MOV(shader, ureg_writemask(fragment, TGSI_WRITEMASK_W), ureg_imm1f(shader, 1.0f));
-
-   ureg_fixup_label(shader, label, ureg_get_instruction_number(shader));
-   ureg_ENDIF(shader);
-
-   ureg_release_temporary(shader, tmp);
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, r->pipe);
+   return mc_create_fs(r, &b);
 }
 
 static bool
@@ -391,7 +332,8 @@ init_pipe_state(struct vl_mc *r)
    sampler.mag_img_filter = PIPE_TEX_FILTER_LINEAR;
    sampler.compare_mode = PIPE_TEX_COMPARE_NONE;
    sampler.compare_func = PIPE_FUNC_ALWAYS;
-   sampler.normalized_coords = 1;
+   /* mesa-26 inverted the sense to unnormalized_coords; the memset default 0
+    * keeps normalized coordinates, as the reference fetch requires. */
    r->sampler_ref = r->pipe->create_sampler_state(r->pipe, &sampler);
    if (!r->sampler_ref)
       goto error_sampler_ref;
@@ -569,7 +511,9 @@ vl_mc_init_buffer(struct vl_mc *renderer, struct vl_mc_buffer *buffer)
    buffer->viewport.swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 
    buffer->fb_state.nr_cbufs = 1;
-   buffer->fb_state.zsbuf = NULL;
+   /* mesa-26 embeds the zsbuf by value; a zeroed surface (no texture) means
+    * none. */
+   memset(&buffer->fb_state.zsbuf, 0, sizeof(buffer->fb_state.zsbuf));
 
    return true;
 }
@@ -585,14 +529,19 @@ vl_mc_set_surface(struct vl_mc_buffer *buffer, struct pipe_surface *surface)
 {
    assert(buffer && surface);
 
+   unsigned width, height;
+
    buffer->surface_cleared = false;
 
-   buffer->viewport.scale[0] = surface->width;
-   buffer->viewport.scale[1] = surface->height;
+   /* mesa-26 pipe_surface has no width/height; derive from the texture level,
+    * and the framebuffer embeds the surface by value. */
+   pipe_surface_size(surface, &width, &height);
+   buffer->viewport.scale[0] = width;
+   buffer->viewport.scale[1] = height;
 
-   buffer->fb_state.width = surface->width;
-   buffer->fb_state.height = surface->height;
-   buffer->fb_state.cbufs[0] = surface;
+   buffer->fb_state.width = width;
+   buffer->fb_state.height = height;
+   buffer->fb_state.cbufs[0] = *surface;
 }
 
 static void
@@ -622,7 +571,7 @@ vl_mc_render_ref(struct vl_mc *renderer, struct vl_mc_buffer *buffer, struct pip
    renderer->pipe->bind_fs_state(renderer->pipe, renderer->fs_ref);
 
    renderer->pipe->set_sampler_views(renderer->pipe, MESA_SHADER_FRAGMENT,
-                                     0, 1, 0, false, &ref);
+                                     0, 1, 0, &ref);
    renderer->pipe->bind_sampler_states(renderer->pipe, MESA_SHADER_FRAGMENT,
                                        0, 1, &renderer->sampler_ref);
 
