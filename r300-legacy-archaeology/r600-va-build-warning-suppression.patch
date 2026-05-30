@@ -1,0 +1,21 @@
+--- src/gallium/drivers/r600/r600_buffer_common.c
++++ src/gallium/drivers/r600/r600_buffer_common.c
+@@ -83,6 +83,9 @@
+         return ctx->ws->buffer_map(ctx->ws, resource->buf, NULL, usage);
+ }
+ 
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Warray-bounds"
++
+ void r600_init_resource_fields(struct r600_common_screen *rscreen,
+                                struct r600_resource *res,
+                                uint64_t size, unsigned alignment)
+@@ -141,6 +144,8 @@
+         }
+ }
+ 
++#pragma GCC diagnostic pop
++
+ bool r600_alloc_resource(struct r600_common_screen *rscreen,
+                          struct r600_resource *res)
+ {
