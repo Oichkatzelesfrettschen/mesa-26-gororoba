@@ -332,7 +332,7 @@ r300vk_BindImageMemory2(VkDevice _device,
       VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
 
-      if (pBindInfos[i].memoryOffset + img->size > mem->size)
+      if (pBindInfos[i].memoryOffset + r300vk_image_memory_size(img) > mem->size)
          return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
       /* If the memory was mapped before bind, vkMapMemory created its own lazy

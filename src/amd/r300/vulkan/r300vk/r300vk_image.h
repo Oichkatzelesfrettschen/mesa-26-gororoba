@@ -52,6 +52,10 @@ void r300vk_DestroyImage(VkDevice device,
                           VkImage image,
                           const VkAllocationCallbacks *pAllocator);
 
+/* Byte size r300vk advertises for an image in GetImageMemoryRequirements2;
+ * BindImageMemory2 bounds-checks against the same value. */
+VkDeviceSize r300vk_image_memory_size(const struct r300vk_image *img);
+
 void r300vk_GetImageMemoryRequirements2(VkDevice device,
                                          const VkImageMemoryRequirementsInfo2 *pInfo,
                                          VkMemoryRequirements2 *pMemoryRequirements);
