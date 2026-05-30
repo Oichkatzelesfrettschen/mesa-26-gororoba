@@ -449,7 +449,7 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
       vk_free(&instance->vk.alloc, device);
       return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
                        "r300vk: failed to create r300g pipe_screen for '%s'",
-                       render_node_path);
+                       drm_device->nodes[DRM_NODE_RENDER]);
    }
    device->screen = device->rws->screen;
 #endif
