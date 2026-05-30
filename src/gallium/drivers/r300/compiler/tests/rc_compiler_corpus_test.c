@@ -5,7 +5,7 @@
  * Compile-only correctness corpus for r300 radeon-compiler (RC) passes.
  *
  * Each case hand-builds a small rc_program, runs one pass in isolation, and
- * asserts on the resulting instruction list.  The first rows pin down
+ * asserts on the resulting instruction list or stats result.  The first rows pin down
  * rc_inline_literals (compiler/radeon_inline_literals.c).  An R300 inline
  * constant is a 7-bit float: 3 mantissa bits and a 4-bit exponent biased by
  * 7, so ieee_754_to_r300_float only accepts an IEEE-754 value whose unbiased
@@ -26,6 +26,13 @@
  * is_r500 && opt), so an r300-class part such as RS482 never runs it; the
  * 7-bit encoding it implements is nonetheless radeon-compiler-wide, and the
  * corpus exercises that encoding under the RS482-relevant r300 swizzle caps.
+ *
+ * The later rows pin down rc_get_stats (compiler/radeon_compiler.c), because
+ * RS482-facing notes and admissions use its cycle model as the software-side
+ * timing proxy.  The model counts one cycle per non-BEGIN_TEX instruction, then
+ * layers the BEGIN_TEX penalty and the extra MAD cycle on top.  The corpus
+ * keeps those rows on the r300-class path with is_r500 = 0, so the tests do
+ * not accidentally depend on the r500-only SemWait credit.
  */
 
 #include <stdbool.h>
@@ -96,6 +103,24 @@ corpus_append_alu(struct radeon_compiler *c, rc_opcode opcode)
    inst->U.I.DstReg.File = RC_FILE_TEMPORARY;
    inst->U.I.DstReg.Index = 0;
    inst->U.I.DstReg.WriteMask = RC_MASK_XYZW;
+   return inst;
+}
+
+static void
+corpus_init_pair_instruction(struct rc_instruction *inst)
+{
+   inst->Type = RC_INSTRUCTION_PAIR;
+   memset(&inst->U.P, 0, sizeof(inst->U.P));
+   inst->U.P.RGB.Opcode = RC_OPCODE_NOP;
+   inst->U.P.Alpha.Opcode = RC_OPCODE_NOP;
+}
+
+static struct rc_instruction *
+corpus_append_pair(struct radeon_compiler *c)
+{
+   struct rc_instruction *inst =
+      rc_insert_new_instruction(c, c->Program.Instructions.Prev);
+   corpus_init_pair_instruction(inst);
    return inst;
 }
 
@@ -273,6 +298,14 @@ corpus_reads_constant_file(struct radeon_compiler *c)
    return false;
 }
 
+static struct rc_program_stats
+corpus_get_stats(struct radeon_compiler *c)
+{
+   struct rc_program_stats stats = {0};
+   rc_get_stats(c, &stats);
+   return stats;
+}
+
 /* rc_optimize copy-propagates a MOV whose destination is a temporary into its
  * readers and then removes the MOV (radeon_optimize.c copy_propagate). */
 static void
@@ -372,6 +405,84 @@ case_optimize_keeps_nonspecial_constant(void)
    corpus_fs_destroy(&cc);
 }
 
+static void
+case_stats_begin_tex_adds_penalty_for_texture_block(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   corpus_append_alu(&cc.base, RC_OPCODE_BEGIN_TEX);
+   corpus_append_alu(&cc.base, RC_OPCODE_TEX);
+   struct rc_program_stats stats = corpus_get_stats(&cc.base);
+
+   CHECK(stats.type == RC_FRAGMENT_PROGRAM,
+         "stats inherit the fragment-program type");
+   CHECK(stats.num_tex_insts == 1,
+         "BEGIN_TEX + TEX counts one texture instruction");
+   CHECK(stats.num_cycles == 31,
+         "BEGIN_TEX before a real texture block adds the 30-cycle penalty plus TEX");
+
+   corpus_fs_destroy(&cc);
+}
+
+static void
+case_stats_kil_only_texblock_skips_penalty(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   corpus_append_alu(&cc.base, RC_OPCODE_BEGIN_TEX);
+   corpus_append_alu(&cc.base, RC_OPCODE_KIL);
+   corpus_append_alu(&cc.base, RC_OPCODE_NOP);
+   struct rc_program_stats stats = corpus_get_stats(&cc.base);
+
+   CHECK(stats.num_tex_insts == 0,
+         "BEGIN_TEX + KIL + NOP keeps the tex count at zero");
+   CHECK(stats.num_cycles == 2,
+         "BEGIN_TEX before a kill-only block skips the penalty but still counts KIL and NOP");
+
+   corpus_fs_destroy(&cc);
+}
+
+static void
+case_stats_mad_three_temp_sources_adds_cycle(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   struct rc_instruction *mad = corpus_append_alu(&cc.base, RC_OPCODE_MAD);
+   corpus_set_src(mad, 0, RC_FILE_TEMPORARY, 0);
+   corpus_set_src(mad, 1, RC_FILE_TEMPORARY, 1);
+   corpus_set_src(mad, 2, RC_FILE_TEMPORARY, 2);
+
+   struct rc_program_stats stats = corpus_get_stats(&cc.base);
+
+   CHECK(stats.num_cycles == 2,
+         "MAD with three different temporaries pays the extra cycle on top of the base instruction");
+
+   corpus_fs_destroy(&cc);
+}
+
+static void
+case_stats_r300_semwait_credit_stays_disabled(void)
+{
+   struct corpus_compiler cc;
+   corpus_fs_init(&cc);
+
+   corpus_append_alu(&cc.base, RC_OPCODE_BEGIN_TEX);
+   corpus_append_alu(&cc.base, RC_OPCODE_TEX);
+   struct rc_instruction *pair = corpus_append_pair(&cc.base);
+   pair->U.P.SemWait = 1;
+
+   struct rc_program_stats stats = corpus_get_stats(&cc.base);
+
+   CHECK(!cc.base.is_r500, "corpus stats run on the r300-class path");
+   CHECK(stats.num_cycles == 32,
+         "SemWait does not credit cycles back on r300-class hardware");
+
+   corpus_fs_destroy(&cc);
+}
+
 int
 main(void)
 {
@@ -389,6 +500,12 @@ main(void)
    case_optimize_keeps_output_mov();
    case_optimize_folds_one_constant_to_none();
    case_optimize_keeps_nonspecial_constant();
+
+   printf("r300 compiler correctness corpus: rc_get_stats\n");
+   case_stats_begin_tex_adds_penalty_for_texture_block();
+   case_stats_kil_only_texblock_skips_penalty();
+   case_stats_mad_three_temp_sources_adds_cycle();
+   case_stats_r300_semwait_credit_stays_disabled();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

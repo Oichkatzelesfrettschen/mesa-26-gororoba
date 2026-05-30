@@ -884,23 +884,9 @@ ntr_emit_scalar(struct ntr_compile *c, rc_opcode op, struct ntr_alu_dst dst,
 }
 
 static void
-ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
+ntr_emit_alu_direct(struct ntr_compile *c, nir_alu_instr *instr, struct ntr_alu_dst dst,
+                    const struct rc_src_register src[static 4])
 {
-   struct rc_src_register src[4];
-   struct ntr_alu_dst dst;
-   unsigned i;
-   int num_srcs = nir_op_infos[instr->op].num_inputs;
-
-   /* Don't try to translate folded fsat since their source won't be valid */
-   if (instr->op == nir_op_fsat && nir_legacy_fsat_folds(instr))
-      return;
-
-   assert(num_srcs <= ARRAY_SIZE(src));
-   for (i = 0; i < num_srcs; i++)
-      src[i] = ntr_get_alu_src(c, instr, i);
-
-   dst = ntr_get_alu_dest(c, &instr->def);
-
    static const rc_opcode op_map[] = {
       [nir_op_mov] = RC_OPCODE_MOV,
 
@@ -923,102 +909,157 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
       [nir_op_fmad] = RC_OPCODE_MAD,
    };
 
-   if (instr->op < ARRAY_SIZE(op_map) && op_map[instr->op] > 0) {
-      /* The normal path for NIR to TGSI ALU op translation */
-      const struct rc_opcode_info *opcode_info = rc_get_opcode_info(op_map[instr->op]);
-      ntr_emit_alu_op(c, op_map[instr->op], dst,
-                      opcode_info->NumSrcRegs > 0 ? &src[0] : NULL,
-                      opcode_info->NumSrcRegs > 1 ? &src[1] : NULL,
-                      opcode_info->NumSrcRegs > 2 ? &src[2] : NULL);
-   } else {
-      /* Special cases for NIR to TGSI ALU op translation. */
+   if (instr->op >= ARRAY_SIZE(op_map) || op_map[instr->op] == 0)
+      return;
 
-      /* TODO: Use something like the ntr_store() path for the MOV calls so we
-       * don't emit extra MOVs for swizzles/srcmods of inputs/const/imm.
-       */
+   const struct rc_opcode_info *opcode_info = rc_get_opcode_info(op_map[instr->op]);
+   ntr_emit_alu_op(c, op_map[instr->op], dst,
+                   opcode_info->NumSrcRegs > 0 ? &src[0] : NULL,
+                   opcode_info->NumSrcRegs > 1 ? &src[1] : NULL,
+                   opcode_info->NumSrcRegs > 2 ? &src[2] : NULL);
+}
 
-      switch (instr->op) {
-      case nir_op_fabs:
-         /* Try to eliminate */
-         if (!c->lower_fabs && nir_legacy_float_mod_folds(instr))
-            break;
+static bool
+ntr_alu_op_is_direct(nir_op op)
+{
+   switch (op) {
+   case nir_op_mov:
+   case nir_op_fdot2_replicated:
+   case nir_op_fdot3_replicated:
+   case nir_op_fdot4_replicated:
+   case nir_op_ffract:
+   case nir_op_fround_even:
+   case nir_op_slt:
+   case nir_op_sge:
+   case nir_op_seq:
+   case nir_op_sne:
+   case nir_op_fadd:
+   case nir_op_fmul:
+   case nir_op_fmin:
+   case nir_op_fmax:
+   case nir_op_fmad:
+      return true;
 
-         if (c->lower_fabs)
-            ntr_emit_alu_op2(c, RC_OPCODE_MAX, dst, src[0], ntr_negate(src[0]));
-         else
-            ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_abs(src[0]));
-         break;
-
-      case nir_op_fsat:
-         ntr_emit_alu_op1(c, RC_OPCODE_MOV, ntr_alu_dst_saturate(dst), src[0]);
-         break;
-
-      case nir_op_fneg:
-         /* Try to eliminate */
-         if (nir_legacy_float_mod_folds(instr))
-            break;
-
-         ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_negate(src[0]));
-         break;
-
-         /* NOTE: TGSI 32-bit math ops have the old "one source channel
-          * replicated to all dst channels" behavior, while 64 is normal mapping
-          * of src channels to dst.
-          */
-      case nir_op_frcp:
-         ntr_emit_scalar(c, RC_OPCODE_RCP, dst, src[0], NULL);
-         break;
-
-      case nir_op_frsq:
-         ntr_emit_scalar(c, RC_OPCODE_RSQ, dst, src[0], NULL);
-         break;
-
-      case nir_op_fexp2:
-         ntr_emit_scalar(c, RC_OPCODE_EX2, dst, src[0], NULL);
-         break;
-
-      case nir_op_flog2:
-         ntr_emit_scalar(c, RC_OPCODE_LG2, dst, src[0], NULL);
-         break;
-
-      case nir_op_fsin:
-         ntr_emit_scalar(c, RC_OPCODE_SIN, dst, src[0], NULL);
-         break;
-
-      case nir_op_fcos:
-         ntr_emit_scalar(c, RC_OPCODE_COS, dst, src[0], NULL);
-         break;
-
-      case nir_op_fsub:
-         ntr_emit_alu_op2(c, RC_OPCODE_ADD, dst, src[0], ntr_negate(src[1]));
-         break;
-
-      case nir_op_fpow:
-         ntr_emit_scalar(c, RC_OPCODE_POW, dst, src[0], &src[1]);
-         break;
-
-      case nir_op_fcsel:
-         /* Implement this as CMP(-abs(src0), src1, src2). */
-         ntr_emit_alu_op3(c, RC_OPCODE_CMP, dst,
-                          ntr_negate(ntr_abs(src[0])), src[1], src[2]);
-         break;
-
-      case nir_op_fcsel_gt:
-         ntr_emit_alu_op3(c, RC_OPCODE_CMP, dst,
-                          ntr_negate(src[0]), src[1], src[2]);
-         break;
-
-      case nir_op_fcsel_ge:
-         /* Implement this as if !(src0 < 0.0) was identical to src0 >= 0.0. */
-         ntr_emit_alu_op3(c, RC_OPCODE_CMP, dst, src[0], src[2], src[1]);
-         break;
-
-      default:
-         ntr_fail_unsupported_op(c, "NIR ALU opcode",
-                                 nir_op_infos[instr->op].name);
-         return;
-      }
+   default:
+      return false;
    }
+}
+
+static void
+ntr_emit_alu_special(struct ntr_compile *c, nir_alu_instr *instr, struct ntr_alu_dst dst,
+                     const struct rc_src_register src[static 4])
+{
+   /* Special cases for NIR to TGSI ALU op translation. */
+
+   /* TODO: Use something like the ntr_store() path for the MOV calls so we
+    * don't emit extra MOVs for swizzles/srcmods of inputs/const/imm.
+    */
+   switch (instr->op) {
+   case nir_op_fabs:
+      /* Try to eliminate */
+      if (!c->lower_fabs && nir_legacy_float_mod_folds(instr))
+         break;
+
+      if (c->lower_fabs)
+         ntr_emit_alu_op2(c, RC_OPCODE_MAX, dst, src[0], ntr_negate(src[0]));
+      else
+         ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_abs(src[0]));
+      break;
+
+   case nir_op_fsat:
+      ntr_emit_alu_op1(c, RC_OPCODE_MOV, ntr_alu_dst_saturate(dst), src[0]);
+      break;
+
+   case nir_op_fneg:
+      /* Try to eliminate */
+      if (nir_legacy_float_mod_folds(instr))
+         break;
+
+      ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_negate(src[0]));
+      break;
+
+      /* NOTE: TGSI 32-bit math ops have the old "one source channel
+       * replicated to all dst channels" behavior, while 64 is normal mapping
+       * of src channels to dst.
+       */
+   case nir_op_frcp:
+      ntr_emit_scalar(c, RC_OPCODE_RCP, dst, src[0], NULL);
+      break;
+
+   case nir_op_frsq:
+      ntr_emit_scalar(c, RC_OPCODE_RSQ, dst, src[0], NULL);
+      break;
+
+   case nir_op_fexp2:
+      ntr_emit_scalar(c, RC_OPCODE_EX2, dst, src[0], NULL);
+      break;
+
+   case nir_op_flog2:
+      ntr_emit_scalar(c, RC_OPCODE_LG2, dst, src[0], NULL);
+      break;
+
+   case nir_op_fsin:
+      ntr_emit_scalar(c, RC_OPCODE_SIN, dst, src[0], NULL);
+      break;
+
+   case nir_op_fcos:
+      ntr_emit_scalar(c, RC_OPCODE_COS, dst, src[0], NULL);
+      break;
+
+   case nir_op_fsub:
+      ntr_emit_alu_op2(c, RC_OPCODE_ADD, dst, src[0], ntr_negate(src[1]));
+      break;
+
+   case nir_op_fpow:
+      ntr_emit_scalar(c, RC_OPCODE_POW, dst, src[0], &src[1]);
+      break;
+
+   case nir_op_fcsel:
+      /* Implement this as CMP(-abs(src0), src1, src2). */
+      ntr_emit_alu_op3(c, RC_OPCODE_CMP, dst,
+                       ntr_negate(ntr_abs(src[0])), src[1], src[2]);
+      break;
+
+   case nir_op_fcsel_gt:
+      ntr_emit_alu_op3(c, RC_OPCODE_CMP, dst,
+                       ntr_negate(src[0]), src[1], src[2]);
+      break;
+
+   case nir_op_fcsel_ge:
+      /* Implement this as if !(src0 < 0.0) was identical to src0 >= 0.0. */
+      ntr_emit_alu_op3(c, RC_OPCODE_CMP, dst, src[0], src[2], src[1]);
+      break;
+
+   default:
+      ntr_fail_unsupported_op(c, "NIR ALU opcode",
+                              nir_op_infos[instr->op].name);
+      return;
+   }
+}
+
+static void
+ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
+{
+   struct rc_src_register src[4];
+   struct ntr_alu_dst dst;
+   unsigned i;
+   int num_srcs = nir_op_infos[instr->op].num_inputs;
+
+   /* Don't try to translate folded fsat since their source won't be valid */
+   if (instr->op == nir_op_fsat && nir_legacy_fsat_folds(instr))
+      return;
+
+   assert(num_srcs <= ARRAY_SIZE(src));
+   for (i = 0; i < num_srcs; i++)
+      src[i] = ntr_get_alu_src(c, instr, i);
+
+   dst = ntr_get_alu_dest(c, &instr->def);
+
+   ntr_emit_alu_direct(c, instr, dst, src);
+   if (c->compiler->Error || ntr_alu_op_is_direct(instr->op))
+      return;
+
+   ntr_emit_alu_special(c, instr, dst, src);
 }
 
 static struct rc_src_register
@@ -1173,6 +1214,71 @@ ntr_emit_store_output(struct ntr_compile *c, nir_intrinsic_instr *instr)
 }
 
 static void
+ntr_emit_intrinsic_system_value(struct ntr_compile *c, nir_intrinsic_instr *instr)
+{
+   rc_error(c->compiler,
+            "r300: system value should have been lowered before nir_to_rc: %s\n",
+            nir_intrinsic_infos[instr->intrinsic].name);
+}
+
+static bool
+ntr_emit_intrinsic_kill(struct ntr_compile *c, nir_intrinsic_instr *instr)
+{
+   switch (instr->intrinsic) {
+   case nir_intrinsic_terminate:
+      ntr_KILL(c);
+      return true;
+
+   case nir_intrinsic_terminate_if: {
+      struct rc_src_register cond = ntr_scalar(ntr_get_src(c, instr->src[0]), 0);
+      /* For !native_integers, the bool got lowered to 1.0 or 0.0. */
+      ntr_KILL_IF(c, ntr_negate(cond));
+      return true;
+   }
+
+   default:
+      return false;
+   }
+}
+
+static bool
+ntr_emit_intrinsic_derivative(struct ntr_compile *c, nir_intrinsic_instr *instr)
+{
+   switch (instr->intrinsic) {
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_coarse:
+      ntr_DDX(c, ntr_get_dest(c, &instr->def), ntr_get_src(c, instr->src[0]));
+      return true;
+
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_coarse:
+      ntr_DDY(c, ntr_get_dest(c, &instr->def), ntr_get_src(c, instr->src[0]));
+      return true;
+
+   default:
+      return false;
+   }
+}
+
+static bool
+ntr_intrinsic_is_consumed(nir_intrinsic_op intrinsic)
+{
+   switch (intrinsic) {
+   case nir_intrinsic_load_barycentric_pixel:
+   case nir_intrinsic_load_barycentric_centroid:
+   case nir_intrinsic_decl_reg:
+   case nir_intrinsic_load_reg:
+   case nir_intrinsic_load_reg_indirect:
+   case nir_intrinsic_store_reg:
+   case nir_intrinsic_store_reg_indirect:
+      return true;
+
+   default:
+      return false;
+   }
+}
+
+static void
 ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
 {
    switch (instr->intrinsic) {
@@ -1184,9 +1290,7 @@ ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_frag_coord:
    case nir_intrinsic_load_point_coord:
    case nir_intrinsic_load_front_face:
-      rc_error(c->compiler,
-               "r300: system value should have been lowered before nir_to_rc: %s\n",
-               nir_intrinsic_infos[instr->intrinsic].name);
+      ntr_emit_intrinsic_system_value(c, instr);
       return;
 
    case nir_intrinsic_load_input:
@@ -1196,45 +1300,23 @@ ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
 
    case nir_intrinsic_store_output:
       ntr_emit_store_output(c, instr);
-      break;
+      return;
 
-   case nir_intrinsic_terminate:
-      ntr_KILL(c);
-      break;
+   default:
+      if (ntr_emit_intrinsic_kill(c, instr))
+         return;
 
-   case nir_intrinsic_terminate_if: {
-      struct rc_src_register cond = ntr_scalar(ntr_get_src(c, instr->src[0]), 0);
-      /* For !native_integers, the bool got lowered to 1.0 or 0.0. */
-      ntr_KILL_IF(c, ntr_negate(cond));
-      break;
-   }
       /* In TGSI we don't actually generate the barycentric coords, and
        * emit the corresponding INTERP_CENTROID instruction in
        * ntr_emit_load_input. The barycentric loads themselves are
        * therefore consumed there.
        */
-   case nir_intrinsic_load_barycentric_pixel:
-   case nir_intrinsic_load_barycentric_centroid:
-      break;
+      if (ntr_intrinsic_is_consumed(instr->intrinsic))
+         return;
 
-   case nir_intrinsic_ddx:
-   case nir_intrinsic_ddx_coarse:
-      ntr_DDX(c, ntr_get_dest(c, &instr->def), ntr_get_src(c, instr->src[0]));
-      return;
-   case nir_intrinsic_ddy:
-   case nir_intrinsic_ddy_coarse:
-      ntr_DDY(c, ntr_get_dest(c, &instr->def), ntr_get_src(c, instr->src[0]));
-      return;
+      if (ntr_emit_intrinsic_derivative(c, instr))
+         return;
 
-   case nir_intrinsic_decl_reg:
-   case nir_intrinsic_load_reg:
-   case nir_intrinsic_load_reg_indirect:
-   case nir_intrinsic_store_reg:
-   case nir_intrinsic_store_reg_indirect:
-      /* fully consumed */
-      break;
-
-   default:
       ntr_fail_unsupported_op(c, "NIR intrinsic",
                               nir_intrinsic_infos[instr->intrinsic].name);
       return;

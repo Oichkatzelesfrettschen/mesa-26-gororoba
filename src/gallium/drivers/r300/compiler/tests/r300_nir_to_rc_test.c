@@ -5,12 +5,14 @@
  * Direct NIR-to-RC regression harness for r300 vertex shaders.
  *
  * The translator is shared by direct-NIR g3dvl shaders and the classic state
- * tracker path.  These cases pin down two robustness edges:
+ * tracker path.  These cases pin down three seams:
  *
  * 1. Unsupported intrinsics must fail deterministically through Base.Error
  *    instead of printing and continuing with an uninitialized SSA temp.
  * 2. NIR loop continue constructs must be lowered before nir_to_rc emission,
  *    because the RC emitter walks only the loop body list.
+ * 3. The special ALU lowering paths must keep emitting the RC opcode/srcmod
+ *    patterns that the r300 RC backend expects.
  */
 
 #include <stdbool.h>
@@ -96,6 +98,49 @@ vs_position_output(nir_builder *b)
 }
 
 static nir_shader *
+build_vs_with_fsub(void)
+{
+   nir_builder b = vs_builder("vs_fsub");
+   nir_variable *in =
+      nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(), "in0");
+   nir_variable *pos = vs_position_output(&b);
+   in->data.location = VERT_ATTRIB_GENERIC0;
+
+   nir_def *loaded = nir_load_var(&b, in);
+   nir_def *x = nir_channel(&b, loaded, 0);
+   nir_def *y = nir_channel(&b, loaded, 1);
+   nir_def *diff = nir_fsub(&b, x, y);
+   nir_store_var(&b, pos,
+                 nir_vec4(&b, diff, nir_imm_float(&b, 0.0f),
+                          nir_imm_float(&b, 0.0f), nir_imm_float(&b, 1.0f)),
+                 0xf);
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   return b.shader;
+}
+
+static nir_shader *
+build_vs_with_fcsel_gt(void)
+{
+   nir_builder b = vs_builder("vs_fcsel_gt");
+   nir_variable *in =
+      nir_variable_create(b.shader, nir_var_shader_in, glsl_vec4_type(), "in0");
+   nir_variable *pos = vs_position_output(&b);
+   in->data.location = VERT_ATTRIB_GENERIC0;
+
+   nir_def *loaded = nir_load_var(&b, in);
+   nir_def *x = nir_channel(&b, loaded, 0);
+   nir_def *y = nir_channel(&b, loaded, 1);
+   nir_def *z = nir_channel(&b, loaded, 2);
+   nir_def *selected = nir_build_alu3(&b, nir_op_fcsel_gt, x, y, z);
+   nir_store_var(&b, pos,
+                 nir_vec4(&b, selected, nir_imm_float(&b, 0.0f),
+                          nir_imm_float(&b, 0.0f), nir_imm_float(&b, 1.0f)),
+                 0xf);
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   return b.shader;
+}
+
+static nir_shader *
 build_vs_with_unsupported_intrinsic(void)
 {
    nir_builder b = vs_builder("vs_load_vertex_id");
@@ -131,6 +176,28 @@ build_vs_with_continue_construct(void)
 }
 
 static void
+check_scalar_swizzle(struct rc_src_register src, unsigned chan, const char *name)
+{
+   CHECK(GET_SWZ(src.Swizzle, 0) == chan &&
+            GET_SWZ(src.Swizzle, 1) == chan &&
+            GET_SWZ(src.Swizzle, 2) == chan &&
+            GET_SWZ(src.Swizzle, 3) == chan,
+         name);
+}
+
+static struct rc_instruction *
+find_first_opcode(struct radeon_compiler *compiler, rc_opcode opcode)
+{
+   for (struct rc_instruction *inst = compiler->Program.Instructions.Next;
+        inst != &compiler->Program.Instructions; inst = inst->Next) {
+      if (inst->Type == RC_INSTRUCTION_NORMAL && inst->U.I.Opcode == opcode)
+         return inst;
+   }
+
+   return NULL;
+}
+
+static void
 case_unsupported_intrinsic_sets_error(void)
 {
    struct nir_to_rc_vs_test_compiler tc;
@@ -146,6 +213,69 @@ case_unsupported_intrinsic_sets_error(void)
    CHECK(tc.compiler.Base.ErrorMsg &&
             strstr(tc.compiler.Base.ErrorMsg, "unsupported NIR intrinsic") != NULL,
          "unsupported VS intrinsic records the translator error message");
+
+   nir_to_rc_vs_test_destroy(&tc);
+}
+
+static void
+case_fsub_emits_add_with_negated_rhs(void)
+{
+   struct nir_to_rc_vs_test_compiler tc;
+   nir_to_rc_vs_test_init(&tc);
+   union r300_shader_code rc = {.v = &tc.code};
+
+   nir_to_rc(build_vs_with_fsub(), &tc.screen.screen,
+             (struct r300_fragment_program_external_state){0}, rc,
+             &tc.compiler.Base);
+
+   struct rc_instruction *add = find_first_opcode(&tc.compiler.Base, RC_OPCODE_ADD);
+
+   CHECK(!tc.compiler.Base.Error, "fsub lowers without a compiler error");
+   CHECK(add != NULL, "fsub emits an ADD in RC");
+   if (add != NULL) {
+      CHECK(add->U.I.SrcReg[0].File == RC_FILE_INPUT &&
+               add->U.I.SrcReg[1].File == RC_FILE_INPUT,
+            "fsub ADD reads the vertex input file");
+      check_scalar_swizzle(add->U.I.SrcReg[0], RC_SWIZZLE_X,
+                           "fsub ADD keeps src0 on the X channel");
+      check_scalar_swizzle(add->U.I.SrcReg[1], RC_SWIZZLE_Y,
+                           "fsub ADD reads src1 from the Y channel");
+      CHECK(add->U.I.SrcReg[1].Negate == RC_MASK_XYZW,
+            "fsub ADD negates the right-hand source");
+   }
+
+   nir_to_rc_vs_test_destroy(&tc);
+}
+
+static void
+case_fcsel_gt_emits_cmp_with_negated_condition(void)
+{
+   struct nir_to_rc_vs_test_compiler tc;
+   nir_to_rc_vs_test_init(&tc);
+   union r300_shader_code rc = {.v = &tc.code};
+
+   nir_to_rc(build_vs_with_fcsel_gt(), &tc.screen.screen,
+             (struct r300_fragment_program_external_state){0}, rc,
+             &tc.compiler.Base);
+
+   struct rc_instruction *cmp = find_first_opcode(&tc.compiler.Base, RC_OPCODE_CMP);
+
+   CHECK(!tc.compiler.Base.Error, "fcsel_gt lowers without a compiler error");
+   CHECK(cmp != NULL, "fcsel_gt emits a CMP in RC");
+   if (cmp != NULL) {
+      CHECK(cmp->U.I.SrcReg[0].File == RC_FILE_INPUT &&
+               cmp->U.I.SrcReg[1].File == RC_FILE_INPUT &&
+               cmp->U.I.SrcReg[2].File == RC_FILE_INPUT,
+            "fcsel_gt CMP reads all operands from the vertex input file");
+      check_scalar_swizzle(cmp->U.I.SrcReg[0], RC_SWIZZLE_X,
+                           "fcsel_gt CMP keeps the condition on X");
+      check_scalar_swizzle(cmp->U.I.SrcReg[1], RC_SWIZZLE_Y,
+                           "fcsel_gt CMP keeps the true value on Y");
+      check_scalar_swizzle(cmp->U.I.SrcReg[2], RC_SWIZZLE_Z,
+                           "fcsel_gt CMP keeps the false value on Z");
+      CHECK(cmp->U.I.SrcReg[0].Negate == RC_MASK_XYZW,
+            "fcsel_gt CMP negates the condition source");
+   }
 
    nir_to_rc_vs_test_destroy(&tc);
 }
@@ -172,6 +302,8 @@ main(void)
 {
    printf("r300 nir_to_rc regression harness\n");
    case_unsupported_intrinsic_sets_error();
+    case_fsub_emits_add_with_negated_rhs();
+    case_fcsel_gt_emits_cmp_with_negated_condition();
    case_continue_construct_is_lowered_before_emit();
 
    if (g_failures) {
