@@ -227,6 +227,44 @@ ninja -C build-port src/gallium/auxiliary/libgalliumvl.a   # NIR->RC compile-ver
 # decode a known clip, diff frames vs a reference decoder (the only correctness oracle)
 ```
 
+### Status + remaining-kernel conversion specifics
+
+DONE (compiles clean on 1_r300, committed): `vl_nir.{c,h}` scaffolding;
+`vl_matrix_filter` fully pure-NIR (validated template).
+
+The scaffolding currently assumes a passthrough VS and 2D float samplers.  The
+remaining three kernels break those assumptions, so extend `vl_nir` first:
+
+- Configurable sampler dim: replace the fixed-2D loop in `vl_nir_fs_begin` with a
+  per-sampler `enum glsl_sampler_dim` (zscan quant and idct matrix are 3D /
+  `GLSL_SAMPLER_DIM_3D`); give `vl_nir_tex` a dim/coord-size argument.
+- Custom VS: zscan's VS is not a passthrough; add a builder that exposes
+  `vl_nir` I/O setup but lets the kernel emit the position/texcoord math.
+- Per-channel pack: the TGSI `WRITEMASK_X << i` idiom that fills channel i of a
+  vec4 becomes building a `nir_vec`/`nir_vec4` from `num_channels` scalar defs.
+
+`vl_zscan` (2 shaders) -- `create_vert_shader` (CCN 46): `o_vpos.xy=(vpos+vrect)
+*scale`, `zw=1`; per-channel texcoord from `block_num` via `nir_ffract`/
+`nir_ffloor` + the `1/(blocks_per_line*BLOCK_WIDTH)*(i - num_channels/2)` offset,
+packed as a `nir_vec4{x=MAD(vrect,1/bpl,tmp), y=vrect, z=vpos, w=MUL(tmp,bpl/
+total)}`.  `create_frag_shader` (CCN 39): samp0=src(2D), samp1=scan(2D),
+samp2=quant(3D); per channel `t = tex(tex(vtex,scan).x-coord, src)`,
+`q = tex(vtex,quant)*16`, pack channels, `frag = t * q` (inverse scan + inverse
+quant, monograph S-stage).
+
+`vl_mc` (4 shaders) -- `calc_position`/`calc_line` (interlace select
+`frac(frag_coord.y/2) >= 0.5` via `nir_load_frag_coord`, replacing the removed
+PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL branch); `create_ref_*` (half-pel bilinear
+TX = L3, residual ADD + `nir_fsat` = MOV_SAT); `create_ycbcr_*` (the per-plane
+fetch + combine).
+
+`vl_idct` (6 shaders) -- the heaviest; `matrix_mul` is the separable DCT-III
+matrix-MAC (Theorem S4) reading a 3D matrix texture; stage1 transposes into the
+intermediate surface, stage2 completes the second 1-D pass; `mismatch` applies
+the IEEE-1180 oddification.  NIR->RC 64-ALU/32-TEX budget check (task 27) matters
+most here.  `calc_addr`/`increment_addr`/`fetch_four` are gather-address helpers
+-> `nir` integer/float address math feeding `nir_tex` coords.
+
 ## Build / iterate / verify order
 
 1. Wire meson; build vl/ kernels (video enabled) under the canonical clang-22
