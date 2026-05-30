@@ -56,6 +56,8 @@ struct r300vk_device_memory {
    struct pipe_resource  *resource;  /* NULL until first map or BindBufferMemory2/BindImageMemory2 */
    struct pipe_resource  *bound_resource;  /* owns_buffer: the bound VkBuffer's resource, synced
                                             * with the host map at Flush/Invalidate */
+   struct pipe_resource  *mapped_resource; /* holds a ref on the resource currently mapped,
+                                            * keeping it alive if mem->resource is rebound */
    struct pipe_transfer  *transfer;  /* non-NULL while mapped */
    void                  *map_ptr;
    bool                   owns_buffer;  /* true when MapMemory lazily created the

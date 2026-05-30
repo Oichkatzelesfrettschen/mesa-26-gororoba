@@ -55,6 +55,7 @@ struct r300vk_cmd_bind_descriptor_sets;
 struct pipe_sampler_view *
 r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
                                                struct pipe_resource *src_buf,
+                                               unsigned byte_offset,
                                                unsigned width,
                                                unsigned height,
                                                enum pipe_format format);

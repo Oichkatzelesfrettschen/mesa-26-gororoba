@@ -1433,6 +1433,9 @@ terakan_physical_device_finish(struct terakan_physical_device * const device)
 {
    terakan_wsi_finish(device);
 
+   terakan_physical_device_destroy_softfp64(device);
+   simple_mtx_destroy(&device->softfp64_mutex);
+
    disk_cache_destroy(device->vk.disk_cache);
    device->vk.disk_cache = NULL;
 
@@ -1610,6 +1613,11 @@ terakan_physical_device_init(
    };
 
    device->nir_options_fs = device->nir_options_non_fs;
+
+   /* The soft-float64 library is built lazily on the first fp64 shader, not
+    * here, so it costs nothing on devices that never compile fp64. */
+   device->softfp64 = NULL;
+   simple_mtx_init(&device->softfp64_mutex, mtx_plain);
 
    /* Must be allocated using calloc because r600_isa_destroy frees it, and r600_isa_destroy also
     * must be called even if r600_isa_init fails.

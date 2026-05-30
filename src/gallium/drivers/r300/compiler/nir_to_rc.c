@@ -446,7 +446,8 @@ ntr_output_decl(struct ntr_compile *c, nir_intrinsic_instr *instr, uint32_t *fra
                              ntr_fs_output_index(c, semantics.location,
                                                  semantics.dual_source_blend_index));
    } else {
-      ntr_read_input_output(c, semantics.location, base);
+      for (unsigned i = 0; i < semantics.num_slots; i++)
+         ntr_read_input_output(c, semantics.location + i, base + i);
 
       out = ntr_dst_register(c, RC_FILE_OUTPUT, base);
       c->num_outputs = MAX2(c->num_outputs, base + semantics.num_slots);
@@ -1081,7 +1082,8 @@ ntr_emit_load_input(struct ntr_compile *c, nir_intrinsic_instr *instr)
    nir_io_semantics semantics = nir_intrinsic_io_semantics(instr);
 
    if (c->s->info.stage == MESA_SHADER_FRAGMENT)
-      ntr_read_input_output(c, semantics.location, base);
+      for (unsigned i = 0; i < semantics.num_slots; i++)
+         ntr_read_input_output(c, semantics.location + i, base + i);
 
    if (c->s->info.stage == MESA_SHADER_VERTEX) {
       input = ntr_src_register(c, RC_FILE_INPUT, base);

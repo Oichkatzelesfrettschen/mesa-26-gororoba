@@ -793,9 +793,22 @@ r300vk_synthesize_binary_map_fs(struct pipe_context *pipe, uint16_t alu_op)
  * device-cached state CSOs (blend / raster / dsa / sampler) the identity-map
  * synthesis populates -- the binary-map and identity-map paths share every
  * per-draw state object; only the FS differs. */
+/* Fullscreen-quad vertex shader synthesis: 2 attributes (POSITION + GENERIC).
+ * Identity-map coordinate interpolation and per-vertex reduction values use
+ * this passthrough shape.  Cached on the pipeline object; the existing
+ * destroy path frees it. */
+static void *
+r300vk_synthesize_passthrough_vs(struct pipe_context *pipe)
+{
+   const enum tgsi_semantic names[]   = { TGSI_SEMANTIC_POSITION,
+                                          TGSI_SEMANTIC_GENERIC };
+   const unsigned          indices[] = { 0, 0 };
+   return util_make_vertex_passthrough_shader(pipe, 2, names, indices, false);
+}
+
 static bool
 r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
-                                     struct r300vk_pipeline *pl)
+                                      struct r300vk_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
@@ -803,12 +816,7 @@ r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
@@ -829,25 +837,18 @@ r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
  * to the bound color RT.  Both CSOs are cached on the pipeline; the existing
  * destroy path frees vs_cso / fs_cso conditionally.
  *
- * util_make_vertex_passthrough_shader and util_make_fragment_tex_shader are
- * the Mesa-canonical helpers in src/gallium/auxiliary/util/u_simple_shaders.c
- * (TGSI-based; r300g's create_vs_state / create_fs_state accept TGSI directly
- * via PIPE_SHADER_IR_TGSI -- the same path other r300/r600 driver-internal
- * shader synthesis uses, e.g. r600_blit.c).  Returning false signals a
- * synthesis failure that demotes the pipeline back to a no-op compute object
- * so vkCreateComputePipelines still succeeds with the kernel admitted, just
- * without the identity-map lowering. */
+ * util_make_fragment_tex_shader is the Mesa-canonical helper in
+ * src/gallium/auxiliary/util/u_simple_shaders.c (TGSI-based).  Returning false
+ * signals a synthesis failure that demotes the pipeline back to a no-op
+ * compute object so vkCreateComputePipelines still succeeds with the kernel
+ * admitted, just without the identity-map lowering. */
 static bool
 r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
-                                       struct r300vk_pipeline *pl)
+                                        struct r300vk_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
       return false;
-
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
 
    /* Cached gallium state CSOs live on the device so every identity-map
     * pipeline reuses them.  Initialize on demand from the first identity-map
@@ -855,16 +856,15 @@ r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
    pl->fs_cso = util_make_fragment_tex_shader(
-                   pipe, TGSI_TEXTURE_2D,
-                   TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                   false /* use_txf: NEAREST sample, not integer fetch */,
-                   true  /* use_persp: perspective-correct interpolation */);
+                    pipe, TGSI_TEXTURE_2D,
+                    TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                    false /* use_txf: NEAREST sample, not integer fetch */,
+                    true  /* use_persp: perspective-correct interpolation */);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -972,15 +972,11 @@ r300vk_blend_acc_reduction_synthesize_shaders(struct r300vk_device *device,
     * rasterizer.  The GENERIC attribute carries the per-vertex color the
     * orchestrator stages into the VBO (a packed RGBA8 of the kernel's per-gid
     * input value). */
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
-   if (!pl->vs_cso)
+    pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_blend_acc_reduction_fs(pipe);
+    pl->fs_cso = r300vk_synthesize_blend_acc_reduction_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -1054,11 +1050,7 @@ r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
 
    /* Same vertex-passthrough as the other compute-as-raster lowerings:
     * 2 attributes (POSITION + GENERIC predicate-value). */
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
@@ -1126,11 +1118,7 @@ r300vk_multipass_scan_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
@@ -1213,11 +1201,7 @@ r300vk_predicated_store_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
@@ -1257,14 +1241,13 @@ r300vk_predicated_store_synthesize_shaders(struct r300vk_device *device,
  * orchestrator and the probe agree on box-3).  The three TEX read distinct
  * offset coordinates, so CSE does not collapse them to one fetch.
  *
- * Bit-exactness rests on M-F: the two-byte FP24-accumulate-then-UNORM8-store
- * ADD is hardware-verified bit-exact on RS482.  Box-3 is the same mechanism
- * with one more term; three input bytes each <= 85 sum to <= 255, so the
- * accumulate neither clamps nor carries, and the readback oracle confirms the
- * three-term round-trip.
+ * Bit-exactness: explicitly performs the 32-bit integer addition carry chain
+ * in FP24.  The 0.0-1.0 UNORM8 input samples are scaled to 0-255, summed
+ * per-channel with carry extraction via TRUNC and remainders via FRC, then
+ * output as exact UNORM8 values.  FP24 mantissa (16-bit) exactly represents
+ * the 0..767 intermediate channel sums.
  *
- * Cost: 3 TEX + 4 ALU = 7/96 of the R300 PFS budget
- * (R300_PFS_MAX_ALU_INST=64 / R300_PFS_MAX_TEX_INST=32). */
+ * Cost: 3 TEX + ~26 ALU = ~30/96 of the R300 PFS budget. */
 static void *
 r300vk_synthesize_multitap_gather_fs(struct pipe_context *pipe)
 {
@@ -1286,6 +1269,10 @@ r300vk_synthesize_multitap_gather_fs(struct pipe_context *pipe)
    struct ureg_dst t_c     = ureg_DECL_temporary(ureg);
    struct ureg_dst t_l     = ureg_DECL_temporary(ureg);
    struct ureg_dst t_r     = ureg_DECL_temporary(ureg);
+   struct ureg_dst s0      = ureg_DECL_temporary(ureg);
+   struct ureg_dst s1      = ureg_DECL_temporary(ureg);
+   struct ureg_dst s2      = ureg_DECL_temporary(ureg);
+   struct ureg_dst carry   = ureg_DECL_temporary(ureg);
 
    ureg_ADD(ureg, coord_l, tex, ureg_negate(delta));
    ureg_ADD(ureg, coord_r, tex, delta);
@@ -1297,9 +1284,56 @@ r300vk_synthesize_multitap_gather_fs(struct pipe_context *pipe)
    ureg_TEX(ureg, ureg_writemask(t_r, TGSI_WRITEMASK_XYZW),
             TGSI_TEXTURE_2D, ureg_src(coord_r), samp);
 
-   ureg_ADD(ureg, ureg_writemask(t_c, TGSI_WRITEMASK_XYZW),
-            ureg_src(t_c), ureg_src(t_l));
-   ureg_ADD(ureg, out, ureg_src(t_c), ureg_src(t_r));
+   /* Scale 0.0-1.0 UNORM8 to 0-255. */
+   struct ureg_src scale255 = ureg_imm1f(ureg, 255.0f);
+   ureg_MUL(ureg, t_c, ureg_src(t_c), scale255);
+   ureg_MUL(ureg, t_l, ureg_src(t_l), scale255);
+   ureg_MUL(ureg, t_r, ureg_src(t_r), scale255);
+
+   /* s0 = t_c + t_l + t_r */
+   ureg_ADD(ureg, s0, ureg_src(t_c), ureg_src(t_l));
+   ureg_ADD(ureg, s0, ureg_src(s0), ureg_src(t_r));
+
+   struct ureg_src inv256 = ureg_imm1f(ureg, 1.0f / 256.0f);
+   struct ureg_src scale_out = ureg_imm1f(ureg, 256.0f / 255.0f);
+
+   /* Carry chain: X -> Y -> Z -> W. */
+   /* X channel: remainder s0.x % 256, carry s0.x / 256. */
+   ureg_MUL(ureg, ureg_writemask(s1, TGSI_WRITEMASK_X),
+            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_X), inv256);
+   ureg_TRUNC(ureg, ureg_writemask(carry, TGSI_WRITEMASK_X), ureg_src(s1));
+   ureg_FRC(ureg, ureg_writemask(s2, TGSI_WRITEMASK_X), ureg_src(s1));
+   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_X), ureg_src(s2), scale_out);
+
+   /* Y channel: s0.y + carry.x */
+   ureg_ADD(ureg, ureg_writemask(s0, TGSI_WRITEMASK_Y),
+            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_Y),
+            ureg_scalar(ureg_src(carry), TGSI_SWIZZLE_X));
+   ureg_MUL(ureg, ureg_writemask(s1, TGSI_WRITEMASK_Y),
+            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_Y), inv256);
+   ureg_TRUNC(ureg, ureg_writemask(carry, TGSI_WRITEMASK_Y), ureg_src(s1));
+   ureg_FRC(ureg, ureg_writemask(s2, TGSI_WRITEMASK_Y), ureg_src(s1));
+   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_Y), ureg_src(s2), scale_out);
+
+   /* Z channel: s0.z + carry.y */
+   ureg_ADD(ureg, ureg_writemask(s0, TGSI_WRITEMASK_Z),
+            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_Z),
+            ureg_scalar(ureg_src(carry), TGSI_SWIZZLE_Y));
+   ureg_MUL(ureg, ureg_writemask(s1, TGSI_WRITEMASK_Z),
+            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_Z), inv256);
+   ureg_TRUNC(ureg, ureg_writemask(carry, TGSI_WRITEMASK_Z), ureg_src(s1));
+   ureg_FRC(ureg, ureg_writemask(s2, TGSI_WRITEMASK_Z), ureg_src(s1));
+   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_Z), ureg_src(s2), scale_out);
+
+   /* W channel: s0.w + carry.z (no carry-out needed). */
+   ureg_ADD(ureg, ureg_writemask(s0, TGSI_WRITEMASK_W),
+            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_W),
+            ureg_scalar(ureg_src(carry), TGSI_SWIZZLE_Z));
+   ureg_MUL(ureg, ureg_writemask(s1, TGSI_WRITEMASK_W),
+            ureg_scalar(ureg_src(s0), TGSI_SWIZZLE_W), inv256);
+   ureg_FRC(ureg, ureg_writemask(s2, TGSI_WRITEMASK_W), ureg_src(s1));
+   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_W), ureg_src(s2), scale_out);
+
    ureg_END(ureg);
    return ureg_create_shader_and_destroy(ureg, pipe);
 }
@@ -1319,11 +1353,7 @@ r300vk_multitap_gather_synthesize_shaders(struct r300vk_device *device,
    if (!r300vk_device_init_identity_map_state(device))
       return false;
 
-   const enum tgsi_semantic vs_semantic_names[]   = { TGSI_SEMANTIC_POSITION,
-                                                      TGSI_SEMANTIC_GENERIC };
-   const unsigned          vs_semantic_indices[] = { 0, 0 };
-   pl->vs_cso = util_make_vertex_passthrough_shader(
-                   pipe, 2, vs_semantic_names, vs_semantic_indices, false);
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
    if (!pl->vs_cso)
       return false;
 
