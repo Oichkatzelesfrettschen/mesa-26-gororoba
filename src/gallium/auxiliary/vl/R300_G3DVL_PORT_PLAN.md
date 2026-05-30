@@ -356,3 +356,88 @@ MPEG-2 main first (I-frame-only is the minimal viable path, then P/B); then
 MPEG-4 ASP (reuses the kernels + quarter-pel); H.264 needs the additional 6-tap
 luma + integer transform + intra-wavefront work (separate, larger). "Even
 minimal, it plays."
+
+## Authoritative target and execution boundary
+
+- Canonical file to maintain in this lane:
+  `src/gallium/auxiliary/vl/R300_G3DVL_PORT_PLAN.md` in `mesa-26-gororoba`.
+- Execution workspace for active changes: isolated Git worktree under `/tmp`
+  with one mechanism-named branch per lane.
+- Keep Mesa build/install/test standalone.  Steinmarder is evidence and RCA
+  support; do not make Mesa build steps depend on steinmarder paths.
+
+## Coupled surface map (Mesa + steinmarder)
+
+| Surface | File(s) | Why coupled |
+|---|---|---|
+| NIR helper substrate | `vl_nir.{c,h}` | Shared builder path used by decode kernels. |
+| Decode kernel core | `vl_matrix_filter.c`, `vl_zscan.c`, `vl_mc.c`, `vl_idct.c`, `vl_mpeg12_decoder.c` | Shader decode execution graph; callback and resource contracts cross files. |
+| Decode integration | `r300_video.{c,h}`, `r300_context.c`, `r300_screen.c` | Gallium video capability advertisement and codec constructor wiring. |
+| Build wiring | `src/gallium/auxiliary/meson.build` | Ensures kernels are in `files_libgalliumvl` when video frontend is enabled. |
+| Formal derivation anchor | `steinmarder/src/re/r300/docs/rs482-fragment-simt-mac-formal-monograph.md` | First-principles bounds and admissibility constraints for shader math. |
+| Lane policy/ledger | `steinmarder/src/re/r300/docs/RS482_RS485_NEXT_WORK_ROADMAP.md` | Evidence gates and ordering discipline for RS482/RS485 work. |
+
+## Recursive execution graph (mechanism-ordered)
+
+1. **r300_g3dvl_surface_inventory**
+   - Freeze the coupled file set and function map.
+   - Output: per-file owner and contract table.
+2. **r300_g3dvl_shader_graph_lock**
+   - Confirm shader-call graph edges and callback signatures across
+     `vl_mc`/`vl_idct`/`vl_mpeg12_decoder`.
+   - Falsifier: any remaining TGSI-shaped callback signature.
+3. **r300_g3dvl_nir_contract_close**
+   - Complete any missing `vl_nir` helper capabilities (sampler dims,
+     non-passthrough VS helper, channel pack helpers) required by remaining
+     decode shaders.
+   - Falsifier: kernel-local duplicated helper logic that should be shared.
+4. **r300_g3dvl_decode_kernel_close**
+   - Finish decode-kernel NIR conversion and remove residual TGSI decode-path
+     constructs.
+   - Falsifier: `ureg_`/`tgsi_` hits in decode kernels.
+5. **r300_g3dvl_backend_contract_close**
+   - Keep `r300_video` capability wiring and `create_video_codec` contract
+     synchronized with mesa-26 pipe API and video-frontend expectations.
+   - Falsifier: `vainfo` path misses MPEG-2 capability after build/install.
+6. **r300_g3dvl_budget_and_init_gate**
+   - Validate decoder-init shader creation/lowering path and RC budget behavior.
+   - Falsifier: init-time compile/lower errors or RC budget overflow.
+7. **r300_g3dvl_runtime_oracle**
+   - Run hazard-gated runtime decode oracle and compare decoded output against a
+     reference decoder.
+   - Falsifier: frame mismatch or runtime instability.
+8. **r300_g3dvl_submission_batch**
+   - Commit mechanism-bounded batches, open PR, and merge only after gates hold.
+
+## Falsification and gate matrix
+
+| Claim class | Expected evidence | Falsifier | Gate command or artifact |
+|---|---|---|---|
+| Decode kernels are pure-NIR | No decode-path TGSI/ureg residue | Any decode-file `ureg_` or `tgsi_` symbol | `rg '\\bureg_|tgsi_ureg' src/gallium/auxiliary/vl/*.{c,h}` |
+| API drift is fully closed | Build clean with current pipe API signatures | Arity or struct-shape compile error in decode path | `ninja -C <builddir> src/gallium/auxiliary/libgalliumvl.a` |
+| r300 wiring is complete | Video caps and codec constructor exposed | Missing MPEG-2 profile/entrypoint in frontend probe | `vainfo` on target runtime lane |
+| NIR lowers correctly at init | Decoder-init reaches finalized NIR and RC lowering | Init-time lower/validate failure | debug build init trace and compiler output |
+| Runtime path is correct | Known clip decodes with expected frames | Corrupt output, mismatch, or instability | retained hazard-gated runtime bundle |
+
+## Code-review and commit batching protocol
+
+1. One mechanism per commit subject (`r300:` / `vl:` prefix and stable mechanism
+   name).
+2. No formatting-only churn mixed with behavior changes.
+3. Every batch states what is proven: build-only, init-lowering, or runtime.
+4. Every unresolved risk remains explicit in this plan until closed by evidence.
+5. PR merge bar: never merge decode-kernel expansions that have not crossed at
+   least the build and decoder-init gates.
+
+## Repo-wide Git LFS normalization lane
+
+Repo-wide LFS pointer audit result (this iteration):
+
+- `mesa-26-gororoba`: no Git LFS pointer files found.
+- `steinmarder`: no Git LFS pointer files found.
+
+Normalization policy for future sweeps:
+
+1. Detect pointer files by exact LFS header signature.
+2. Convert only when real content is available and attributable.
+3. Preserve provenance and hashes in the commit narrative for converted files.
