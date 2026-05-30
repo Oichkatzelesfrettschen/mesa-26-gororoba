@@ -106,7 +106,7 @@ create_vert_shader(struct vl_zscan *zscan)
          * ((signed)i - (signed)zscan->num_channels / 2);
       nir_def *tx = nir_fadd(&b, frac_bn, nir_imm_float(&b, chan_off));
 
-      nir_def *ox = nir_ffma(&b, nir_channel(&b, vrect, 0),
+      nir_def *ox = nir_fmad(&b, nir_channel(&b, vrect, 0),
          nir_imm_float(&b, 1.0f / zscan->blocks_per_line), tx);
       nir_def *oy = nir_channel(&b, vrect, 1);
       nir_def *oz = nir_channel(&b, vpos, 2);
