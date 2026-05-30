@@ -77,8 +77,12 @@ llvm = 'disabled'
 draw-use-llvm = false
 gallium-rusticl = false
 
-# r300 gallium-va video decode (MPEG-2 / mpeg12dec) enabled by default; the
-# decode backend (g3dvl shader kernels) lands separately on the port branch.
+# r300 gallium-va video decode (MPEG-1/MPEG-2 / mpeg12dec): the restored pure-NIR
+# g3dvl shader decode kernels (vl_idct/vl_mc/vl_zscan/vl_matrix_filter/
+# vl_mpeg12_decoder) and the r300 video backend (r300_video.c get_video_param +
+# create_video_codec) are wired, so this build exposes the MPEG-2 decode profile
+# through the va frontend on RS482 (no UVD; the 3D pipe is the decoder).  H.264/
+# MPEG-4 (the h264_legacy compute-as-raster path) lands as a later codec addition.
 video-codecs = ['mpeg12dec']
 gallium-va = 'enabled'
 vulkan-layers = []
