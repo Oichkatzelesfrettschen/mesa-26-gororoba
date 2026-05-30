@@ -54,8 +54,13 @@ r300_create_video_codec(struct pipe_context *context,
    if (templat->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE)
       return NULL;
 
+   /* vl_create_mpeg12_decoder lives in libgalliumvl and has no stub; reference
+    * it only when the MPEG-1/2 codec is built in, so a video-disabled r300 build
+    * (which links the vl stub) does not pull an undefined symbol. */
+#if VIDEO_CODEC_MPEG12DEC
    if (u_reduce_video_profile(templat->profile) == PIPE_VIDEO_FORMAT_MPEG12)
       return vl_create_mpeg12_decoder(context, templat);
+#endif
 
    return NULL;
 }
