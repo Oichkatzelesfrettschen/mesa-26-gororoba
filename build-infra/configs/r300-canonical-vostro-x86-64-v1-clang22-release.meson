@@ -1,0 +1,59 @@
+# r300-canonical-vostro-x86-64-v1-clang22-release: the release conformance build
+# for the CachyOS Vostro 1000 (AMD Turion 64 X2 TL-66, RS482/RS485 radeon).  It
+# is the release sibling of r300-canonical-vostro-k8 and carries the same r300
+# feature set; the only difference is buildtype.
+#
+# Why a separate release profile: GL/GLES conformance and silicon evidence must
+# run against buildtype='release'.  A debugoptimized build keeps assertions live
+# and takes -O0-shaped error paths, so a driver assert can abort a CTS/Piglit
+# case that release would pass (or fail differently), which contaminates the
+# pass/fail baseline.  r300-canonical-vostro-k8 is debugoptimized for driver RCA;
+# this profile exists so conformance does not borrow that build.
+#
+# Feature set (identical to the canonical profile):
+#   * gallium r300            -- the GL driver (RS480/RS482 hardware path)
+#   * vulkan amd_r300         -- the r300vk Vulkan ICD
+#   * egl + gbm               -- the headless render path that reaches r300
+#                                silicon over /dev/dri/renderD128 (the DRI2-only
+#                                RADEON DDX makes GLX fall back to llvmpipe, so
+#                                EGL_DEFAULT_DISPLAY uses the DRM native platform
+#                                here).  Piglit/deqp run on this surfaceless path.
+#   * gles2                   -- RS480 exposes desktop GL 2.1 and GLES 2.0; the
+#                                GLES conformance lane needs a GLES context.
+#
+# Deliberately EXCLUDED (same as the canonical profile):
+#   * swrast / llvmpipe       -- llvm='disabled' + draw-use-llvm=false: no
+#                                software rasterizer, so a probe gets hardware
+#                                r300 or fails loudly (no silent llvmpipe trace
+#                                masquerading as a conformance pass)
+#   * r600 / terakan          -- this is the r300 lane, not TeraScale
+#   * rusticl, perfetto, video codecs -- not needed for r300 conformance
+#
+# Pair with the vostro1000-x86-64-v1-clang22-ccache-distcc HOSTENV: clang 22 over
+# ccache-first distcc, x86-64-v1 baseline ISA.  x86-64-v1 is a safe subset of the
+# Turion 64 X2, so remote distcc volunteers never emit instructions the Vostro
+# cannot run.
+
+[project options]
+buildtype = 'release'
+
+platforms = ['x11']
+gallium-drivers = ['r300']
+vulkan-drivers = ['amd_r300']
+r300vk-gallium-backend = true
+tools = ['r300']
+
+gallium-rusticl = false
+llvm = 'disabled'
+draw-use-llvm = false
+
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'drm'
+gbm = 'enabled'
+gles1 = 'disabled'
+gles2 = 'enabled'
+glvnd = 'disabled'
+valgrind = 'disabled'
+libunwind = 'disabled'
+perfetto = false
