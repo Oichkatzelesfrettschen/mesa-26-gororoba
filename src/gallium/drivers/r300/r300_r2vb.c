@@ -131,32 +131,42 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     END_CS;
 }
 
-/* Gated Phase-4 self-test for the R2VB direct-VAP path.  R300_R2VB_TIMING picks
- * the mode:
- *   capture -- emit the loop into a fresh GTT buffer and flush with
- *              RADEON_FLUSH_NOOP, so the IB is captured by R300_TRACE and never
- *              reaches DRM_RADEON_CS.  The packets can be decoded and verified
- *              with zero hardware risk.  This is the structural preflight.
- *   submit  -- a real flush with a fence wait, timed; additionally requires
- *              R300_RAW_SUBMIT_ACCEPTED=1.  This is the hazard-gated measurement
- *              that decides whether R2VB beats the gallivm CPU baseline; a draw
- *              that the CS validator passes can still hang reset-less silicon, so
- *              the caller must have bound the vertex-compute fragment program and
- *              GTT framebuffer first (the loop's contract).
- * R300_R2VB_NVERTS sets the count, clamped below 2^16 (the SWTCL VAP
+/* Gated self-test for the R2VB direct-VAP path.  R300_R2VB_TIMING picks the
+ * mode:
+ *   capture -- emit the loop and flush with RADEON_FLUSH_NOOP, so the IB is
+ *              captured by R300_TRACE and never reaches DRM_RADEON_CS.  The
+ *              packets can be decoded and verified with zero hardware risk.
+ *              This is the structural preflight.
+ *   submit  -- a real flush with a bounded fence wait, timed; additionally
+ *              requires R300_RAW_SUBMIT_ACCEPTED=1.  This is the hazard-gated
+ *              measurement that decides whether R2VB beats the gallivm CPU
+ *              baseline; a draw the CS validator passes can still hang
+ *              reset-less silicon.
+ * Both modes fire only from r300_flush (from_flush), where a real draw has
+ * already left its framebuffer (with the depth buffer), fragment program, and
+ * SU/RS setup in this CS, so the appended loop draws against bound state and
+ * passes the kernel validator -- firing at context create would emit a bare,
+ * stateless loop the validator rejects ("No buffer for z buffer").  The capture
+ * and the submit therefore decode and time the same composed IB.  It fires once
+ * per process and returns true when it consumed the CS, so the caller skips its
+ * own flush.  R300_R2VB_NVERTS sets the count, clamped below 2^16 (the SWTCL VAP
  * NUM_VERTICES field width). */
-void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300)
+bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
+                                           bool from_flush)
 {
+    static bool fired = false;
     const char *mode = getenv("R300_R2VB_TIMING");
     if (!mode)
-        return;
+        return false;
     bool do_submit = strcmp(mode, "submit") == 0;
+    if (!from_flush || fired)
+        return false;
     if (do_submit) {
         const char *gate = getenv("R300_RAW_SUBMIT_ACCEPTED");
         if (!gate || strcmp(gate, "1") != 0) {
             fprintf(stderr,
                     "r2vb selftest: submit mode needs R300_RAW_SUBMIT_ACCEPTED=1\n");
-            return;
+            return false;
         }
     }
 
@@ -185,8 +195,11 @@ void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300)
     templ.usage = PIPE_USAGE_DEFAULT;
     struct pipe_resource *res = pscreen->resource_create(pscreen, &templ);
     if (!res)
-        return;
+        return false;
 
+    /* Burn the one-shot only once the GTT BO exists and the loop runs, so a
+     * missing env gate or a failed allocation can still fire on a later flush. */
+    fired = true;
     r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, num_vertices);
 
     if (do_submit) {
@@ -216,4 +229,5 @@ void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300)
                 num_vertices);
     }
     pipe_resource_reference(&res, NULL);
+    return true;
 }
