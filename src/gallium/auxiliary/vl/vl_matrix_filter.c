@@ -58,7 +58,8 @@ create_frag_shader(struct vl_matrix_filter *filter, unsigned num_offsets,
    struct vl_nir_fs fs;
    unsigned i;
 
-   vl_nir_fs_begin(&fs, filter->pipe, 1, 1, "vl:matrix_filter_fs");
+   vl_nir_fs_begin(&fs, filter->pipe, 1, "vl:matrix_filter_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
    nir_builder *b = &fs.b;
 
    /* Separable neighbourhood convolution: sum_i matrix[i] * tex(tc + offset[i]),
@@ -75,7 +76,7 @@ create_frag_shader(struct vl_matrix_filter *filter, unsigned num_offsets,
       nir_def *coord = is_vec_zero(offsets[i])
          ? vtex
          : nir_fadd(b, vtex, nir_imm_vec2(b, offsets[i].x, offsets[i].y));
-      nir_def *texel = vl_nir_tex2d(&fs, 0, coord);
+      nir_def *texel = vl_nir_tex(&fs, 0, coord);
       sum = nir_ffma(b, texel,
                      nir_imm_vec4(b, matrix_values[i], matrix_values[i],
                                   matrix_values[i], matrix_values[i]),
