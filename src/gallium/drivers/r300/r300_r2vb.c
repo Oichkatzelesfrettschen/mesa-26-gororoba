@@ -159,14 +159,15 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                  RADEON_PRIO_COLOR_BUFFER,
                                  RADEON_DOMAIN_GTT);
 
-    /* 64 dwords for the single-BO loop: stage 1 = 43, stage 2 = 6, stage 3 = 15.
+    /* 66 dwords for the single-BO loop: stage 1 = 43, stage 2 = 6, stage 3 = 17.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
      * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
      * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
-     * vertices (twelve dwords); SU_CULL_MODE and SC_CLIP_RULE add four dwords.
-     * The stage-3 color-target switch adds nine dwords (COLOROFFSET0 + reloc +
-     * COLORPITCH0 + the SC_SCISSORS pair). */
-    BEGIN_CS(stage3_color_bo ? 73 : 64);
+     * vertices (twelve dwords); SU_CULL_MODE and SC_CLIP_RULE add four dwords;
+     * the stage-3 VF_MAX_VTX_INDX re-assert adds two.  The stage-3 color-target
+     * switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 + the
+     * SC_SCISSORS pair). */
+    BEGIN_CS(stage3_color_bo ? 75 : 66);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -321,6 +322,12 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
            (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
            (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) |
            (0xf << R300_WRITE_ENA_SHIFT));
+    /* Re-assert the vertex-index bound for the re-ingest draw.  Stage 1 set
+     * VAP_VF_MAX_VTX_INDX to 2 for its three-vertex covering triangle; stage 3
+     * draws num_vertices vertices from the GTT array, so an inherited bound of 2
+     * clamps every index above 2 and the DRAW_VBUF fetches a degenerate vertex
+     * set that rasterizes nothing.  Bound it to the actual highest index. */
+    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
     OUT_CS_PKT3(R300_PACKET3_3D_LOAD_VBPNTR, 3);
     OUT_CS(1 | R300_VC_FORCE_PREFETCH);
     OUT_CS(4 | (4 << 8));
