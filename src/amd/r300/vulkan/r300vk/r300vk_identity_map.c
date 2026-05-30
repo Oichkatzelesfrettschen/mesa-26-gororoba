@@ -876,7 +876,8 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * the FS samples the input texture across its full extent. */   struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
-      /* Leaks ignored here for brevity, weggli audit handles it */
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&in_sv, NULL);
       return false;
    }
 
@@ -1145,7 +1146,9 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    /* Fullscreen quad VBO + velems: identical to identity-map. */   struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
-      /* Leaks ignored here for brevity, weggli audit handles it */
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&sv_a, NULL);
+      pipe_sampler_view_reference(&sv_b, NULL);
       return false;
    }
 
@@ -2397,7 +2400,8 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
     * identity-map orchestrator's quad. */   struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
-      /* Leaks ignored here for brevity, weggli audit handles it */
+      pipe_resource_reference(&tex[0], NULL);
+      pipe_resource_reference(&tex[1], NULL);
       return false;
    }
 
