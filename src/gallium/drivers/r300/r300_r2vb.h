@@ -6,6 +6,7 @@
 #ifndef R300_R2VB_H
 #define R300_R2VB_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct r300_context;
@@ -29,10 +30,14 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        uint32_t output_gart_bo_offset,
                                        uint32_t num_vertices);
 
-/* Gated Phase-4 self-test (R300_R2VB_TIMING=capture|submit), called once from
- * r300_create_context.  capture mode NOOP-flushes so the IB is R300_TRACE-
- * captured without a DRM submit; submit mode times a real flush and additionally
- * requires R300_RAW_SUBMIT_ACCEPTED=1.  No-op when R300_R2VB_TIMING is unset. */
-void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300);
+/* Gated self-test (R300_R2VB_TIMING=capture|submit), fired once from r300_flush
+ * with from_flush=true so the loop appends to a CS a real draw has populated.
+ * capture mode NOOP-flushes so the IB is R300_TRACE-captured without a DRM
+ * submit; submit mode times a real flush and additionally requires
+ * R300_RAW_SUBMIT_ACCEPTED=1.  Returns true when it consumed the CS (the caller
+ * then skips its own flush); no-op returning false when R300_R2VB_TIMING is
+ * unset, from_flush is false, or it has already fired. */
+bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
+                                           bool from_flush);
 
 #endif
