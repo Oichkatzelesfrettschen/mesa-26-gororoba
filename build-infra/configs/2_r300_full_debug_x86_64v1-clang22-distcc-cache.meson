@@ -79,11 +79,11 @@ gallium-rusticl = false
 valgrind = 'enabled'
 libunwind = 'enabled'
 
-# Perfetto enabled for the debug profile: the track-event timeline correlates
-# r300 CS submits, blitter passes, and the r300vk queue against ftrace/GPU
-# events during an RCA.  It clones the large perfetto proto subproject, so build
-# this profile off the larger /home prefix, never the space-constrained tmpfs.
-perfetto = true
+# Perfetto stays disabled here because Meson 1.11 aborts configure on the
+# generated perfetto install-data tagging before Ninja reaches the r300 driver
+# build.  Keep the Vostro debug lane buildable first; re-enable perfetto only
+# after the subproject install-tag failure is fixed in the supported toolchain.
+perfetto = false
 video-codecs = ['mpeg12dec']
 gallium-va = 'enabled'
 vulkan-layers = []
