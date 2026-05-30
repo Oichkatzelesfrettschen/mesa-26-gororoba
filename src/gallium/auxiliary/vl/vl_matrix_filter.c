@@ -52,7 +52,7 @@ create_vert_shader(struct vl_matrix_filter *filter)
    struct ureg_src i_vpos;
    struct ureg_dst o_vpos, o_vtex;
 
-   shader = ureg_create(PIPE_SHADER_VERTEX);
+   shader = ureg_create(MESA_SHADER_VERTEX);
    if (!shader)
       return NULL;
 
@@ -86,7 +86,7 @@ create_frag_shader(struct vl_matrix_filter *filter, unsigned num_offsets,
    struct ureg_dst o_fragment;
    unsigned i;
 
-   shader = ureg_create(PIPE_SHADER_FRAGMENT);
+   shader = ureg_create(MESA_SHADER_FRAGMENT);
    if (!shader) {
       return NULL;
    }
@@ -292,9 +292,9 @@ vl_matrix_filter_render(struct vl_matrix_filter *filter,
 
    filter->pipe->bind_rasterizer_state(filter->pipe, filter->rs_state);
    filter->pipe->bind_blend_state(filter->pipe, filter->blend);
-   filter->pipe->bind_sampler_states(filter->pipe, PIPE_SHADER_FRAGMENT,
+   filter->pipe->bind_sampler_states(filter->pipe, MESA_SHADER_FRAGMENT,
                                      0, 1, &filter->sampler);
-   filter->pipe->set_sampler_views(filter->pipe, PIPE_SHADER_FRAGMENT,
+   filter->pipe->set_sampler_views(filter->pipe, MESA_SHADER_FRAGMENT,
                                    0, 1, 0, false, &src);
    filter->pipe->bind_vs_state(filter->pipe, filter->vs);
    filter->pipe->bind_fs_state(filter->pipe, filter->fs);
@@ -303,5 +303,5 @@ vl_matrix_filter_render(struct vl_matrix_filter *filter,
    filter->pipe->set_vertex_buffers(filter->pipe, 0, 1, 0, false, &filter->quad);
    filter->pipe->bind_vertex_elements_state(filter->pipe, filter->ves);
 
-   util_draw_arrays(filter->pipe, PIPE_PRIM_QUADS, 0, 4);
+   util_draw_arrays(filter->pipe, MESA_PRIM_QUADS, 0, 4);
 }

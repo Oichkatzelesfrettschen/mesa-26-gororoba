@@ -112,7 +112,7 @@ create_ref_vert_shader(struct vl_mc *r)
    struct ureg_dst o_vmv[2];
    unsigned i;
 
-   shader = ureg_create(PIPE_SHADER_VERTEX);
+   shader = ureg_create(MESA_SHADER_VERTEX);
    if (!shader)
       return NULL;
 
@@ -169,7 +169,7 @@ create_ref_frag_shader(struct vl_mc *r)
    struct ureg_dst fragment;
    unsigned label;
 
-   shader = ureg_create(PIPE_SHADER_FRAGMENT);
+   shader = ureg_create(MESA_SHADER_FRAGMENT);
    if (!shader)
       return NULL;
 
@@ -241,7 +241,7 @@ create_ycbcr_vert_shader(struct vl_mc *r, vl_mc_ycbcr_vert_shader vs_callback, v
 
    unsigned label;
 
-   shader = ureg_create(PIPE_SHADER_VERTEX);
+   shader = ureg_create(MESA_SHADER_VERTEX);
    if (!shader)
       return NULL;
 
@@ -320,7 +320,7 @@ create_ycbcr_frag_shader(struct vl_mc *r, float scale, bool invert,
    struct ureg_dst fragment;
    unsigned label;
 
-   shader = ureg_create(PIPE_SHADER_FRAGMENT);
+   shader = ureg_create(MESA_SHADER_FRAGMENT);
    if (!shader)
       return NULL;
 
@@ -621,12 +621,12 @@ vl_mc_render_ref(struct vl_mc *renderer, struct vl_mc_buffer *buffer, struct pip
    renderer->pipe->bind_vs_state(renderer->pipe, renderer->vs_ref);
    renderer->pipe->bind_fs_state(renderer->pipe, renderer->fs_ref);
 
-   renderer->pipe->set_sampler_views(renderer->pipe, PIPE_SHADER_FRAGMENT,
+   renderer->pipe->set_sampler_views(renderer->pipe, MESA_SHADER_FRAGMENT,
                                      0, 1, 0, false, &ref);
-   renderer->pipe->bind_sampler_states(renderer->pipe, PIPE_SHADER_FRAGMENT,
+   renderer->pipe->bind_sampler_states(renderer->pipe, MESA_SHADER_FRAGMENT,
                                        0, 1, &renderer->sampler_ref);
 
-   util_draw_arrays_instanced(renderer->pipe, PIPE_PRIM_QUADS, 0, 4, 0,
+   util_draw_arrays_instanced(renderer->pipe, MESA_PRIM_QUADS, 0, 4, 0,
                               renderer->buffer_width / VL_MACROBLOCK_WIDTH *
                               renderer->buffer_height / VL_MACROBLOCK_HEIGHT);
 
@@ -648,11 +648,11 @@ vl_mc_render_ycbcr(struct vl_mc *renderer, struct vl_mc_buffer *buffer, unsigned
    renderer->pipe->bind_vs_state(renderer->pipe, renderer->vs_ycbcr);
    renderer->pipe->bind_fs_state(renderer->pipe, renderer->fs_ycbcr);
 
-   util_draw_arrays_instanced(renderer->pipe, PIPE_PRIM_QUADS, 0, 4, 0, num_instances);
+   util_draw_arrays_instanced(renderer->pipe, MESA_PRIM_QUADS, 0, 4, 0, num_instances);
    
    if (buffer->surface_cleared) {
       renderer->pipe->bind_blend_state(renderer->pipe, renderer->blend_sub[mask]);
       renderer->pipe->bind_fs_state(renderer->pipe, renderer->fs_ycbcr_sub);
-      util_draw_arrays_instanced(renderer->pipe, PIPE_PRIM_QUADS, 0, 4, 0, num_instances);
+      util_draw_arrays_instanced(renderer->pipe, MESA_PRIM_QUADS, 0, 4, 0, num_instances);
    }
 }
