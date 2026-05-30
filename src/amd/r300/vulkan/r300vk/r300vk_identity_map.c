@@ -50,6 +50,64 @@ identity_map_debug_enabled(void)
          fprintf(stderr, "ident_map: " fmt "\n", ##__VA_ARGS__); \
    } while (0)
 
+static void
+r300vk_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
+                              const void *src_map, unsigned src_stride,
+                              unsigned width, unsigned height,
+                              unsigned bpp, uint64_t total_elements)
+{
+   const uint8_t *src_bytes = (const uint8_t *)src_map;
+   uint8_t       *dst_bytes = (uint8_t *)dst_map;
+   const unsigned row_bytes = width * bpp;
+   uint64_t remaining = total_elements * bpp;
+   for (unsigned r = 0; r < height && remaining > 0; r++) {
+      const uint64_t copy_bytes = (remaining > row_bytes) ? row_bytes : remaining;
+      memcpy(dst_bytes + r * dst_stride,
+             src_bytes + r * src_stride,
+             (size_t)copy_bytes);
+      remaining -= copy_bytes;
+   }
+}
+
+static void
+r300vk_identity_map_setup_draw_state(struct pipe_context *pipe,
+                                      unsigned width, unsigned height,
+                                      struct pipe_surface *rt_surf,
+                                      void *blend_cso, void *rs_cso,
+                                      void *dsa_cso, void *vs_cso,
+                                      void *fs_cso, void *velems_cso)
+{
+   struct pipe_framebuffer_state fb;
+   memset(&fb, 0, sizeof(fb));
+   fb.width            = width;
+   fb.height           = height;
+   fb.nr_cbufs         = 1;
+   fb.cbufs[0]         = *rt_surf;
+   pipe->set_framebuffer_state(pipe, &fb);
+
+   struct pipe_viewport_state vp;
+   memset(&vp, 0, sizeof(vp));
+   vp.scale[0]     = (float)width  * 0.5f;
+   vp.scale[1]     = (float)height * 0.5f;
+   vp.scale[2]     = 0.5f;
+   vp.translate[0] = (float)width  * 0.5f;
+   vp.translate[1] = (float)height * 0.5f;
+   vp.translate[2] = 0.5f;
+   pipe->set_viewport_states(pipe, 0, 1, &vp);
+
+   struct pipe_scissor_state sc = {0};
+   sc.maxx = width;
+   sc.maxy = height;
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+
+   pipe->bind_blend_state(pipe, blend_cso);
+   pipe->bind_rasterizer_state(pipe, rs_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, dsa_cso);
+   pipe->bind_vs_state(pipe, vs_cso);
+   pipe->bind_fs_state(pipe, fs_cso);
+   pipe->bind_vertex_elements_state(pipe, velems_cso);
+}
+
 struct pipe_sampler_view *
 r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
                                                struct pipe_resource *src_buf,
@@ -119,13 +177,10 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
       pipe_resource_reference(&tex, NULL);
       return NULL;
    }
-   const uint8_t *src_bytes = (const uint8_t *)src_map;
-   uint8_t       *dst_bytes = (uint8_t *)dst_map;
-   const unsigned row_bytes = width * bpp;
-   for (unsigned r = 0; r < height; r++)
-      memcpy(dst_bytes + r * dst_xfer->stride,
-             src_bytes + r * row_bytes,
-             row_bytes);
+   r300vk_identity_map_copy_rows(dst_map, dst_xfer->stride,
+                                 src_map, width * bpp,
+                                 width, height, bpp,
+                                 (uint64_t)width * height);
    pipe->texture_unmap(pipe, dst_xfer);
    pipe->buffer_unmap(pipe, src_xfer);
 
@@ -210,6 +265,7 @@ derive_raster_extent(uint32_t total_invocations,
    *out_width  = axis_cap;
    *out_height = (total_invocations + axis_cap - 1) / axis_cap;
 }
+
 
 bool
 r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
@@ -448,42 +504,11 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   /* Bind the framebuffer.  set_framebuffer_state copies surf_templ into
-    * the framebuffer state structure; the surface lifetime is tied to the
-    * texture, which the local pipe_resource_reference keeps alive until
-    * after the draw. */
-   struct pipe_framebuffer_state fb;
-   memset(&fb, 0, sizeof(fb));
-   fb.width            = width;
-   fb.height           = height;
-   fb.nr_cbufs         = 1;
-   fb.cbufs[0]         = surf_templ;
-   pipe->set_framebuffer_state(pipe, &fb);
-
-   /* Viewport: identity NDC -> pixel mapping over (0, 0)..(width, height). */
-   struct pipe_viewport_state vp;
-   memset(&vp, 0, sizeof(vp));
-   vp.scale[0]     = (float)width  * 0.5f;
-   vp.scale[1]     = (float)height * 0.5f;
-   vp.scale[2]     = 0.5f;
-   vp.translate[0] = (float)width  * 0.5f;
-   vp.translate[1] = (float)height * 0.5f;
-   vp.translate[2] = 0.5f;
-   pipe->set_viewport_states(pipe, 0, 1, &vp);
-
-   struct pipe_scissor_state sc = {0};
-   sc.minx = 0; sc.miny = 0;
-   sc.maxx = width;
-   sc.maxy = height;
-   pipe->set_scissor_states(pipe, 0, 1, &sc);
-
-   /* Bind the cached state CSOs and the per-pipeline VS / FS. */
-   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
-   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
-   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
-   pipe->bind_vs_state(pipe, pl->vs_cso);
-   pipe->bind_fs_state(pipe, pl->fs_cso);
-   pipe->bind_vertex_elements_state(pipe, velems_cso);
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
                              &device->identity_map_sampler_cso);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &in_sv);
@@ -548,14 +573,11 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                             &out_box, &out_xfer);
          if (out_bytes) {
-            const uint8_t *src_rows = (const uint8_t *)rt_map;
-            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
-            const unsigned bpp = util_format_get_blocksize(fmt);
-            const unsigned row_bytes = width * bpp;
-            for (unsigned r = 0; r < height; r++)
-               memcpy(dst_bytes + r * row_bytes,
-                      src_rows + r * rt_xfer->stride,
-                      row_bytes);
+            r300vk_identity_map_copy_rows(out_bytes, width * util_format_get_blocksize(fmt),
+                                          rt_map, rt_xfer->stride,
+                                          width, height,
+                                          util_format_get_blocksize(fmt),
+                                          total_invocations);
             pipe->buffer_unmap(pipe, out_xfer);
             copy_ok = true;
          }
@@ -787,31 +809,13 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   struct pipe_framebuffer_state fb;
-   memset(&fb, 0, sizeof(fb));
-   fb.width = width;  fb.height = height;
-   fb.nr_cbufs = 1;   fb.cbufs[0] = surf_templ;
-   pipe->set_framebuffer_state(pipe, &fb);
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
 
-   struct pipe_viewport_state vp;
-   memset(&vp, 0, sizeof(vp));
-   vp.scale[0] = (float)width  * 0.5f; vp.scale[1] = (float)height * 0.5f;
-   vp.scale[2] = 0.5f;
-   vp.translate[0] = (float)width * 0.5f; vp.translate[1] = (float)height * 0.5f;
-   vp.translate[2] = 0.5f;
-   pipe->set_viewport_states(pipe, 0, 1, &vp);
-
-   struct pipe_scissor_state sc = {0};
-   sc.maxx = width; sc.maxy = height;
-   pipe->set_scissor_states(pipe, 0, 1, &sc);
-
-   /* Bind state + two sampler stages -- this is the binary-map-specific change. */
-   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
-   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
-   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
-   pipe->bind_vs_state(pipe, pl->vs_cso);
-   pipe->bind_fs_state(pipe, pl->fs_cso);
-   pipe->bind_vertex_elements_state(pipe, velems_cso);
+   /* Bind two sampler stages -- this is the binary-map-specific change. */
    void *samplers[2] = { device->identity_map_sampler_cso,
                          device->identity_map_sampler_cso };
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
@@ -855,14 +859,11 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                             &out_box, &out_xfer);
          if (out_bytes) {
-            const uint8_t *src_rows = (const uint8_t *)rt_map;
-            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
-            const unsigned bpp = util_format_get_blocksize(fmt);
-            const unsigned row_bytes = width * bpp;
-            for (unsigned r = 0; r < height; r++)
-               memcpy(dst_bytes + r * row_bytes,
-                      src_rows + r * rt_xfer->stride,
-                      row_bytes);
+            r300vk_identity_map_copy_rows(out_bytes, width * util_format_get_blocksize(fmt),
+                                          rt_map, rt_xfer->stride,
+                                          width, height,
+                                          util_format_get_blocksize(fmt),
+                                          total_invocations);
             pipe->buffer_unmap(pipe, out_xfer);
             copy_ok = true;
          }
@@ -1050,30 +1051,12 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   struct pipe_framebuffer_state fb;
-   memset(&fb, 0, sizeof(fb));
-   fb.width = width;  fb.height = height;
-   fb.nr_cbufs = 1;   fb.cbufs[0] = surf_templ;
-   pipe->set_framebuffer_state(pipe, &fb);
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
 
-   struct pipe_viewport_state vp;
-   memset(&vp, 0, sizeof(vp));
-   vp.scale[0] = (float)width  * 0.5f; vp.scale[1] = (float)height * 0.5f;
-   vp.scale[2] = 0.5f;
-   vp.translate[0] = (float)width * 0.5f; vp.translate[1] = (float)height * 0.5f;
-   vp.translate[2] = 0.5f;
-   pipe->set_viewport_states(pipe, 0, 1, &vp);
-
-   struct pipe_scissor_state sc = {0};
-   sc.maxx = width; sc.maxy = height;
-   pipe->set_scissor_states(pipe, 0, 1, &sc);
-
-   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
-   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
-   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
-   pipe->bind_vs_state(pipe, pl->vs_cso);
-   pipe->bind_fs_state(pipe, pl->fs_cso);
-   pipe->bind_vertex_elements_state(pipe, velems_cso);
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
                              &device->identity_map_sampler_cso);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &in_sv);
@@ -1130,14 +1113,11 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                             &out_box, &out_xfer);
          if (out_bytes) {
-            const uint8_t *src_rows = (const uint8_t *)rt_map;
-            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
-            const unsigned bpp = util_format_get_blocksize(fmt);
-            const unsigned row_bytes = width * bpp;
-            for (unsigned r = 0; r < height; r++)
-               memcpy(dst_bytes + r * row_bytes,
-                      src_rows + r * rt_xfer->stride,
-                      row_bytes);
+            r300vk_identity_map_copy_rows(out_bytes, width * util_format_get_blocksize(fmt),
+                                          rt_map, rt_xfer->stride,
+                                          width, height,
+                                          util_format_get_blocksize(fmt),
+                                          total_invocations);
             pipe->buffer_unmap(pipe, out_xfer);
             copy_ok = true;
          }
@@ -1329,12 +1309,10 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
          IDM_LOG("predstore early-return rt-seed-map-failed");
          return false;
       }
-      const uint8_t *src_bytes = (const uint8_t *)out_map;
-      uint8_t       *dst_bytes = (uint8_t *)rt_seed;
-      const unsigned row_bytes = width * bpp;
-      for (unsigned r = 0; r < height; r++)
-         memcpy(dst_bytes + r * rt_xfer->stride, src_bytes + r * row_bytes,
-                row_bytes);
+      r300vk_identity_map_copy_rows(rt_seed, rt_xfer->stride,
+                                    out_map, width * bpp,
+                                    width, height, bpp,
+                                    total_invocations);
       pipe->texture_unmap(pipe, rt_xfer);
       pipe->buffer_unmap(pipe, out_xfer);
    }
@@ -1388,30 +1366,11 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   struct pipe_framebuffer_state fb;
-   memset(&fb, 0, sizeof(fb));
-   fb.width = width;  fb.height = height;
-   fb.nr_cbufs = 1;   fb.cbufs[0] = surf_templ;
-   pipe->set_framebuffer_state(pipe, &fb);
-
-   struct pipe_viewport_state vp;
-   memset(&vp, 0, sizeof(vp));
-   vp.scale[0] = (float)width  * 0.5f; vp.scale[1] = (float)height * 0.5f;
-   vp.scale[2] = 0.5f;
-   vp.translate[0] = (float)width * 0.5f; vp.translate[1] = (float)height * 0.5f;
-   vp.translate[2] = 0.5f;
-   pipe->set_viewport_states(pipe, 0, 1, &vp);
-
-   struct pipe_scissor_state sc = {0};
-   sc.maxx = width; sc.maxy = height;
-   pipe->set_scissor_states(pipe, 0, 1, &sc);
-
-   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
-   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
-   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
-   pipe->bind_vs_state(pipe, pl->vs_cso);
-   pipe->bind_fs_state(pipe, pl->fs_cso);
-   pipe->bind_vertex_elements_state(pipe, velems_cso);
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
    void *samplers[2] = { device->identity_map_sampler_cso,
                          device->identity_map_sampler_cso };
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
@@ -1437,6 +1396,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    struct pipe_box copy_box;
    memset(&copy_box, 0, sizeof(copy_box));
    copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   bool copy_ok = false;
    {
       struct pipe_transfer *rt_xfer = NULL;
       const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
@@ -1453,18 +1413,17 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                             &out_box, &out_xfer);
          if (out_bytes) {
-            const uint8_t *src_rows = (const uint8_t *)rt_map;
-            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
-            const unsigned row_bytes = width * bpp;
-            for (unsigned r = 0; r < height; r++)
-               memcpy(dst_bytes + r * row_bytes,
-                      src_rows + r * rt_xfer->stride, row_bytes);
+            r300vk_identity_map_copy_rows(out_bytes, width * bpp,
+                                          rt_map, rt_xfer->stride,
+                                          width, height, bpp,
+                                          total_invocations);
             pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("predstore copy issued");
+   IDM_LOG("predstore copy issued copy_ok=%d", (int)copy_ok);
 
    struct pipe_sampler_view *no_views[2] = { NULL, NULL };
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 2, no_views);
@@ -1478,8 +1437,8 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    pipe_sampler_view_reference(&sv_pred, NULL);
    pipe_resource_reference(&vb, NULL);
    pipe_resource_reference(&rt, NULL);
-   IDM_LOG("predstore orchestrator done OK");
-   return true;
+   IDM_LOG("predstore orchestrator done copy_ok=%d", (int)copy_ok);
+   return copy_ok;
 }
 
 /* Blend-acc-reduction orchestrator.  Decomposes
@@ -1714,54 +1673,18 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    surf_templ.format  = fmt;
    surf_templ.texture = rt;
 
-   struct pipe_framebuffer_state fb;
-   memset(&fb, 0, sizeof(fb));
-   fb.width = M;  fb.height = 1;
-   fb.nr_cbufs = 1; fb.cbufs[0] = surf_templ;
-   pipe->set_framebuffer_state(pipe, &fb);
+   r300vk_identity_map_setup_draw_state(pipe, M, 1, &surf_templ,
+                                        device->blend_acc_reduction_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
 
-   struct pipe_viewport_state vp;
-   memset(&vp, 0, sizeof(vp));
-   vp.scale[0] = (float)M * 0.5f; vp.scale[1] = 0.5f;
-   vp.scale[2] = 0.5f;
-   vp.translate[0] = (float)M * 0.5f; vp.translate[1] = 0.5f;
-   vp.translate[2] = 0.5f;
-   pipe->set_viewport_states(pipe, 0, 1, &vp);
-
-   struct pipe_scissor_state sc = {0};
-   sc.maxx = M; sc.maxy = 1;
-   pipe->set_scissor_states(pipe, 0, 1, &sc);
-
-   /* Clear the 1xM RT to 0 before the blend-add draw.  resource_create
-    * leaves the texture contents implementation-defined; for blend ADD
-    * (dest + src) to produce the correct per-bin sum, dest MUST start at 0.
-    * Without this clear an uninitialized dest adds its garbage contents into
-    * every bin's accumulation (observed empirically as inflated readback
-    * values).  An explicit pipe->clear with the COLOR0 mask zeroes the RT
-    * through the RB3D fast-clear path before the per-point fragments
-    * accumulate. */
+   /* Clear the 1xM RT to 0 before the blend-add draw. */
    {
       union pipe_color_union zero;
       memset(&zero, 0, sizeof(zero));
-      /* pipe_context::clear args: buffers + color_clear_mask +
-       * stencil_clear_mask + scissor_state + color + depth + stencil. */
       pipe->clear(pipe, PIPE_CLEAR_COLOR0, ~0u, 0, NULL, &zero, 0.0, 0);
    }
-
-   /* Difference 3: blend state = ADD/(ONE,ONE) instead of disabled. */
-   if (!device->blend_acc_reduction_blend_cso) {
-      IDM_LOG("blend_acc early-return no-cached-blend-cso");
-      pipe->delete_vertex_elements_state(pipe, velems_cso);
-      pipe_resource_reference(&vb, NULL);
-      pipe_resource_reference(&rt, NULL);
-      return false;
-   }
-   pipe->bind_blend_state(pipe, device->blend_acc_reduction_blend_cso);
-   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
-   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
-   pipe->bind_vs_state(pipe, pl->vs_cso);
-   pipe->bind_fs_state(pipe, pl->fs_cso);
-   pipe->bind_vertex_elements_state(pipe, velems_cso);
 
    struct pipe_vertex_buffer vb_state;
    memset(&vb_state, 0, sizeof(vb_state));
@@ -1800,7 +1723,9 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                             &out_box, &out_xfer);
          if (out_bytes) {
-            memcpy(out_bytes, rt_map, (size_t)out_byte_size);
+            r300vk_identity_map_copy_rows(out_bytes, (unsigned)out_byte_size,
+                                          rt_map, rt_xfer->stride,
+                                          M, 1, 4, M);
             pipe->buffer_unmap(pipe, out_xfer);
             copy_ok = true;
          }
@@ -2051,33 +1976,11 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    surf_templ.format  = fmt;
    surf_templ.texture = rt;
 
-   struct pipe_framebuffer_state fb;
-   memset(&fb, 0, sizeof(fb));
-   fb.width = N;  fb.height = 1;
-   fb.nr_cbufs = 1; fb.cbufs[0] = surf_templ;
-   pipe->set_framebuffer_state(pipe, &fb);
-
-   struct pipe_viewport_state vp;
-   memset(&vp, 0, sizeof(vp));
-   vp.scale[0] = (float)N * 0.5f; vp.scale[1] = 0.5f;
-   vp.scale[2] = 0.5f;
-   vp.translate[0] = (float)N * 0.5f; vp.translate[1] = 0.5f;
-   vp.translate[2] = 0.5f;
-   pipe->set_viewport_states(pipe, 0, 1, &vp);
-
-   struct pipe_scissor_state sc = {0};
-   sc.maxx = N; sc.maxy = 1;
-   pipe->set_scissor_states(pipe, 0, 1, &sc);
-
-   /* No blend (identity_map_blend_cso, ADD disabled); no depth buffer
-    * attached; rasterizer + DSA reuse the identity-map shape so depth
-    * test passes trivially -- ZPASS counts every non-KILLed fragment. */
-   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
-   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
-   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
-   pipe->bind_vs_state(pipe, pl->vs_cso);
-   pipe->bind_fs_state(pipe, pl->fs_cso);
-   pipe->bind_vertex_elements_state(pipe, velems_cso);
+   r300vk_identity_map_setup_draw_state(pipe, N, 1, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
 
    struct pipe_vertex_buffer vb_state;
    memset(&vb_state, 0, sizeof(vb_state));
@@ -2367,12 +2270,10 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
          IDM_LOG("multipass early-return seed-tex-map-failed");
          return false;
       }
-      const uint8_t *src_bytes = (const uint8_t *)in_map;
-      uint8_t       *dst_bytes = (uint8_t *)t_map;
-      const unsigned row_bytes = width * bpp;
-      for (unsigned r = 0; r < height; r++)
-         memcpy(dst_bytes + r * t_xfer->stride, src_bytes + r * row_bytes,
-                row_bytes);
+      r300vk_identity_map_copy_rows(t_map, t_xfer->stride,
+                                    in_map, width * bpp,
+                                    width, height, bpp,
+                                    total_invocations);
       pipe->texture_unmap(pipe, t_xfer);
       pipe->buffer_unmap(pipe, in_xfer);
    }
@@ -2525,12 +2426,10 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                             &out_box, &out_xfer);
          if (out_bytes) {
-            const uint8_t *src_rows = (const uint8_t *)rt_map;
-            uint8_t       *dst_bytes = (uint8_t *)out_bytes;
-            const unsigned row_bytes = width * bpp;
-            for (unsigned r = 0; r < height; r++)
-               memcpy(dst_bytes + r * row_bytes,
-                      src_rows + r * rt_xfer->stride, row_bytes);
+            r300vk_identity_map_copy_rows(out_bytes, width * bpp,
+                                          rt_map, rt_xfer->stride,
+                                          width, height, bpp,
+                                          total_invocations);
             pipe->buffer_unmap(pipe, out_xfer);
             copy_ok = true;
          }

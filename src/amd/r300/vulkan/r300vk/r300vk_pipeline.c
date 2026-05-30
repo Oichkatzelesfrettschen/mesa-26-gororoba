@@ -69,6 +69,38 @@ r300vk_vertex_fetch_size(enum pipe_format format)
 }
 
 static VkResult
+r300vk_validate_vertex_input(struct r300vk_device *device,
+                              const VkPipelineVertexInputStateCreateInfo *vi,
+                              uint32_t *used_binding_mask)
+{
+   if (!vi) return VK_SUCCESS;
+
+   for (uint32_t i = 0; i < vi->vertexBindingDescriptionCount; i++) {
+      const VkVertexInputBindingDescription *desc =
+         &vi->pVertexBindingDescriptions[i];
+      if (desc->binding >= R300VK_MAX_VERTEX_BINDINGS)
+         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                          "r300vk: vertex binding %u exceeds %u",
+                          desc->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
+   }
+
+   for (uint32_t i = 0; i < vi->vertexAttributeDescriptionCount; i++) {
+      const VkVertexInputAttributeDescription *attr =
+         &vi->pVertexAttributeDescriptions[i];
+      if (attr->binding >= R300VK_MAX_VERTEX_BINDINGS)
+         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                          "r300vk: vertex attribute binding %u exceeds %u",
+                          attr->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
+      if (!r300vk_find_vertex_binding_desc(vi, attr->binding))
+         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                          "r300vk: vertex attribute binding %u has no "
+                          "matching binding description", attr->binding);
+      *used_binding_mask |= BITFIELD_BIT(attr->binding);
+   }
+   return VK_SUCCESS;
+}
+
+static VkResult
 r300vk_reserve_vs_system_value_streams(
    struct r300vk_device *device,
    struct r300vk_pipeline *pl,
@@ -84,8 +116,7 @@ r300vk_reserve_vs_system_value_streams(
    if (!needs_vertex_id && !needs_instance_id)
       return VK_SUCCESS;
 
-   const uint32_t synth_count =
-      (needs_vertex_id ? 1u : 0u) + (needs_instance_id ? 1u : 0u);
+   const uint32_t synth_count = (uint32_t)needs_vertex_id + (uint32_t)needs_instance_id;
    const uint32_t app_attr_count =
       vi ? vi->vertexAttributeDescriptionCount : 0;
    uint32_t used_binding_mask = 0;
@@ -95,30 +126,9 @@ r300vk_reserve_vs_system_value_streams(
                        "r300vk: vertex attribute count %u exceeds %u",
                        app_attr_count, PIPE_MAX_ATTRIBS);
 
-   if (vi) {
-      for (uint32_t i = 0; i < vi->vertexBindingDescriptionCount; i++) {
-         const VkVertexInputBindingDescription *desc =
-            &vi->pVertexBindingDescriptions[i];
-         if (desc->binding >= R300VK_MAX_VERTEX_BINDINGS)
-            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                             "r300vk: vertex binding %u exceeds %u",
-                             desc->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
-      }
-
-      for (uint32_t i = 0; i < vi->vertexAttributeDescriptionCount; i++) {
-         const VkVertexInputAttributeDescription *attr =
-            &vi->pVertexAttributeDescriptions[i];
-         if (attr->binding >= R300VK_MAX_VERTEX_BINDINGS)
-            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                             "r300vk: vertex attribute binding %u exceeds %u",
-                             attr->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
-         if (!r300vk_find_vertex_binding_desc(vi, attr->binding))
-            return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                             "r300vk: vertex attribute binding %u has no "
-                             "matching binding description", attr->binding);
-         used_binding_mask |= BITFIELD_BIT(attr->binding);
-      }
-   }
+   VkResult val_res = r300vk_validate_vertex_input(device, vi, &used_binding_mask);
+   if (val_res != VK_SUCCESS)
+      return val_res;
 
    if (app_attr_count > PIPE_MAX_ATTRIBS - synth_count)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
@@ -140,19 +150,29 @@ r300vk_reserve_vs_system_value_streams(
                        "r300vk: no vertex buffer binding available for "
                        "the synthetic VS system-value stream");
 
-   *vertex_id_slot = needs_vertex_id ? (int)app_attr_count : -1;
-   *instance_id_slot =
-      needs_instance_id ? (int)(app_attr_count + (needs_vertex_id ? 1 : 0)) : -1;
+   uint32_t current_slot = app_attr_count;
+   uint32_t synth_index = 0;
 
    pl->needs_vertex_id_stream = needs_vertex_id;
+   if (needs_vertex_id) {
+      *vertex_id_slot = (int)current_slot;
+      pl->vertex_id_slot = (uint8_t)current_slot;
+      pl->vertex_id_vb_binding = synth_bindings[synth_index++];
+      current_slot++;
+   } else {
+      pl->vertex_id_slot = 0;
+      pl->vertex_id_vb_binding = 0;
+   }
+
    pl->needs_instance_id_stream = needs_instance_id;
-   pl->vertex_id_slot = (uint8_t)app_attr_count;
-   pl->instance_id_slot = (uint8_t)(app_attr_count + (needs_vertex_id ? 1 : 0));
-   uint32_t synth_index = 0;
-   pl->vertex_id_vb_binding =
-      needs_vertex_id ? synth_bindings[synth_index++] : 0;
-   pl->instance_id_vb_binding =
-      needs_instance_id ? synth_bindings[synth_index++] : 0;
+   if (needs_instance_id) {
+      *instance_id_slot = (int)current_slot;
+      pl->instance_id_slot = (uint8_t)current_slot;
+      pl->instance_id_vb_binding = synth_bindings[synth_index++];
+   } else {
+      pl->instance_id_slot = 0;
+      pl->instance_id_vb_binding = 0;
+   }
 
    return VK_SUCCESS;
 }
@@ -278,6 +298,51 @@ r300vk_compile_shader(struct r300vk_device *device,
 /* Build and create the vertex elements CSO.  Extracted to keep
  * r300vk_create_one_pipeline within the CCN budget. */
 static VkResult
+r300vk_populate_vertex_element(struct r300vk_device *device,
+                                struct r300vk_pipeline *pl,
+                                const VkPipelineVertexInputStateCreateInfo *vi,
+                                uint32_t attr_index,
+                                struct pipe_vertex_element *ve)
+{
+   const VkVertexInputAttributeDescription *attr =
+      &vi->pVertexAttributeDescriptions[attr_index];
+   if (attr->binding >= R300VK_MAX_VERTEX_BINDINGS)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r300vk: vertex attribute binding %u exceeds %u",
+                       attr->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
+
+   enum pipe_format elem_fmt = vk_format_to_pipe_format(attr->format);
+   if (elem_fmt == PIPE_FORMAT_NONE)
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                       "r300vk: unsupported vertex attribute format %d "
+                       "at location %u", attr->format, attr->location);
+   const uint32_t attr_size = r300vk_vertex_fetch_size(elem_fmt);
+   if (attr->offset > UINT32_MAX - attr_size)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r300vk: vertex attribute offset %u exceeds "
+                       "representable binding extent", attr->offset);
+
+   ve->src_offset          = (uint16_t)attr->offset;
+   ve->vertex_buffer_index = (uint8_t)attr->binding;
+   ve->src_format          = (uint8_t)elem_fmt;
+   const VkVertexInputBindingDescription *binding_desc =
+      r300vk_find_vertex_binding_desc(vi, attr->binding);
+   if (!binding_desc)
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: vertex attribute binding %u has no "
+                       "matching binding description", attr->binding);
+
+   ve->src_stride = binding_desc->stride;
+   pl->vertex_stride[attr->binding] = binding_desc->stride;
+   pl->vertex_binding_extent[attr->binding] =
+      MAX2(pl->vertex_binding_extent[attr->binding],
+           attr->offset + attr_size);
+   pl->vertex_binding_mask |= BITFIELD_BIT(attr->binding);
+
+   return VK_SUCCESS;
+}
+
+static VkResult
 r300vk_build_velems_cso(struct r300vk_device *device,
                          struct r300vk_pipeline *pl,
                          const VkPipelineVertexInputStateCreateInfo *vi)
@@ -304,40 +369,9 @@ r300vk_build_velems_cso(struct r300vk_device *device,
 
    memset(ve, 0, sizeof(ve));
    for (uint32_t i = 0; i < n; i++) {
-      const VkVertexInputAttributeDescription *attr =
-         &vi->pVertexAttributeDescriptions[i];
-      if (attr->binding >= R300VK_MAX_VERTEX_BINDINGS)
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "r300vk: vertex attribute binding %u exceeds %u",
-                          attr->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
-
-      enum pipe_format elem_fmt = vk_format_to_pipe_format(attr->format);
-      if (elem_fmt == PIPE_FORMAT_NONE)
-         return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
-                          "r300vk: unsupported vertex attribute format %d "
-                          "at location %u", attr->format, attr->location);
-      const uint32_t attr_size = r300vk_vertex_fetch_size(elem_fmt);
-      if (attr->offset > UINT32_MAX - attr_size)
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "r300vk: vertex attribute offset %u exceeds "
-                          "representable binding extent", attr->offset);
-
-      ve[i].src_offset          = (uint16_t)attr->offset;
-      ve[i].vertex_buffer_index = (uint8_t)attr->binding;
-      ve[i].src_format          = (uint8_t)elem_fmt;
-      const VkVertexInputBindingDescription *binding_desc =
-         r300vk_find_vertex_binding_desc(vi, attr->binding);
-      if (!binding_desc)
-         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: vertex attribute binding %u has no "
-                          "matching binding description", attr->binding);
-
-      ve[i].src_stride = binding_desc->stride;
-      pl->vertex_stride[attr->binding] = binding_desc->stride;
-      pl->vertex_binding_extent[attr->binding] =
-         MAX2(pl->vertex_binding_extent[attr->binding],
-              attr->offset + attr_size);
-      pl->vertex_binding_mask |= BITFIELD_BIT(attr->binding);
+      VkResult res = r300vk_populate_vertex_element(device, pl, vi, i, &ve[i]);
+      if (res != VK_SUCCESS)
+         return res;
    }
 
    /* Append synthetic VS-system-value elements (R32_SINT, one int per element)
@@ -370,6 +404,74 @@ r300vk_build_velems_cso(struct r300vk_device *device,
 }
 
 static VkResult
+r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
+                                        struct r300vk_pipeline *pl)
+{
+   struct pipe_blend_state bs = {0};
+   bs.rt[0].rgb_func        = PIPE_BLEND_ADD;
+   bs.rt[0].rgb_src_factor  = PIPE_BLENDFACTOR_ONE;
+   bs.rt[0].rgb_dst_factor  = PIPE_BLENDFACTOR_ZERO;
+   bs.rt[0].alpha_func      = PIPE_BLEND_ADD;
+   bs.rt[0].alpha_src_factor = PIPE_BLENDFACTOR_ONE;
+   bs.rt[0].alpha_dst_factor = PIPE_BLENDFACTOR_ZERO;
+   bs.rt[0].colormask       = PIPE_MASK_RGBA;
+   pl->blend_cso = device->pipe->create_blend_state(device->pipe, &bs);
+   if (!pl->blend_cso)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   struct pipe_rasterizer_state rs = {0};
+   rs.fill_front  = PIPE_POLYGON_MODE_FILL;
+   rs.fill_back   = PIPE_POLYGON_MODE_FILL;
+   rs.cull_face   = PIPE_FACE_NONE;
+   rs.front_ccw   = true;
+   rs.depth_clip_near = true;
+   rs.depth_clip_far  = true;
+   pl->rasterizer_cso = device->pipe->create_rasterizer_state(device->pipe, &rs);
+   if (!pl->rasterizer_cso)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   struct pipe_depth_stencil_alpha_state dsa = {0};
+   pl->dsa_cso = device->pipe->create_depth_stencil_alpha_state(device->pipe, &dsa);
+   if (!pl->dsa_cso)
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   return VK_SUCCESS;
+}
+
+static void
+r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
+                             const VkGraphicsPipelineCreateInfo *info)
+{
+   bool dynamic_viewport = false;
+   bool dynamic_scissor = false;
+   if (info->pDynamicState) {
+      for (uint32_t d = 0; d < info->pDynamicState->dynamicStateCount; d++) {
+         switch (info->pDynamicState->pDynamicStates[d]) {
+         case VK_DYNAMIC_STATE_VIEWPORT:
+            dynamic_viewport = true;
+            break;
+         case VK_DYNAMIC_STATE_SCISSOR:
+            dynamic_scissor = true;
+            break;
+         default:
+            break;
+         }
+      }
+   }
+   const VkPipelineViewportStateCreateInfo *vp_state = info->pViewportState;
+   if (vp_state && !dynamic_viewport &&
+       vp_state->pViewports && vp_state->viewportCount > 0) {
+      pl->static_viewport = vp_state->pViewports[0];
+      pl->has_static_viewport = true;
+   }
+   if (vp_state && !dynamic_scissor &&
+       vp_state->pScissors && vp_state->scissorCount > 0) {
+      pl->static_scissor = vp_state->pScissors[0];
+      pl->has_static_scissor = true;
+   }
+}
+
+static VkResult
 r300vk_create_one_pipeline(struct r300vk_device *device,
                              const VkGraphicsPipelineCreateInfo *info,
                              const VkAllocationCallbacks *pAllocator,
@@ -399,42 +501,10 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
          FAIL_PIPELINE(r);
    }
 
-   {
-      struct pipe_blend_state bs = {0};
-      bs.rt[0].rgb_func        = PIPE_BLEND_ADD;
-      bs.rt[0].rgb_src_factor  = PIPE_BLENDFACTOR_ONE;
-      bs.rt[0].rgb_dst_factor  = PIPE_BLENDFACTOR_ZERO;
-      bs.rt[0].alpha_func      = PIPE_BLEND_ADD;
-      bs.rt[0].alpha_src_factor = PIPE_BLENDFACTOR_ONE;
-      bs.rt[0].alpha_dst_factor = PIPE_BLENDFACTOR_ZERO;
-      bs.rt[0].colormask       = PIPE_MASK_RGBA;
-      pl->blend_cso = device->pipe->create_blend_state(device->pipe, &bs);
-      if (!pl->blend_cso)
-         FAIL_PIPELINE(vk_error(device, VK_ERROR_INITIALIZATION_FAILED));
-   }
+   VkResult cso_res = r300vk_init_graphics_pipeline_cso_state(device, pl);
+   if (cso_res != VK_SUCCESS)
+      FAIL_PIPELINE(cso_res);
 
-   {
-      struct pipe_rasterizer_state rs = {0};
-      rs.fill_front  = PIPE_POLYGON_MODE_FILL;
-      rs.fill_back   = PIPE_POLYGON_MODE_FILL;
-      rs.cull_face   = PIPE_FACE_NONE;
-      rs.front_ccw   = true;
-      rs.depth_clip_near = true;
-      rs.depth_clip_far  = true;
-      pl->rasterizer_cso = device->pipe->create_rasterizer_state(device->pipe, &rs);
-      if (!pl->rasterizer_cso)
-         FAIL_PIPELINE(vk_error(device, VK_ERROR_INITIALIZATION_FAILED));
-   }
-
-   {
-      struct pipe_depth_stencil_alpha_state dsa = {0};
-      pl->dsa_cso = device->pipe->create_depth_stencil_alpha_state(device->pipe, &dsa);
-      if (!pl->dsa_cso)
-         FAIL_PIPELINE(vk_error(device, VK_ERROR_INITIALIZATION_FAILED));
-   }
-
-   /* Build the velems CSO when there is application vertex input OR a synthetic
-    * system-value stream to append (a VertexIndex-only VS has no app input). */
    if (info->pVertexInputState || pl->needs_vertex_id_stream ||
        pl->needs_instance_id_stream) {
       VkResult r = r300vk_build_velems_cso(device, pl, info->pVertexInputState);
@@ -448,38 +518,7 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
                   ? info->pInputAssemblyState->topology
                   : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-   /* Capture pipeline-static viewport/scissor so the draw replay can apply it.
-    * A state is dynamic only if listed in pDynamicState; otherwise its value
-    * lives in pViewportState and no CmdSetViewport/CmdSetScissor is issued.
-    * pViewportState is itself absent when rasterizerDiscardEnable is set, in
-    * which case nothing rasterizes and the captured viewport is unused. */
-   bool dynamic_viewport = false;
-   bool dynamic_scissor = false;
-   if (info->pDynamicState) {
-      for (uint32_t d = 0; d < info->pDynamicState->dynamicStateCount; d++) {
-         switch (info->pDynamicState->pDynamicStates[d]) {
-         case VK_DYNAMIC_STATE_VIEWPORT:
-            dynamic_viewport = true;
-            break;
-         case VK_DYNAMIC_STATE_SCISSOR:
-            dynamic_scissor = true;
-            break;
-         default:
-            break;
-         }
-      }
-   }
-   const VkPipelineViewportStateCreateInfo *vp_state = info->pViewportState;
-   if (vp_state && !dynamic_viewport &&
-       vp_state->pViewports && vp_state->viewportCount > 0) {
-      pl->static_viewport = vp_state->pViewports[0];
-      pl->has_static_viewport = true;
-   }
-   if (vp_state && !dynamic_scissor &&
-       vp_state->pScissors && vp_state->scissorCount > 0) {
-      pl->static_scissor = vp_state->pScissors[0];
-      pl->has_static_scissor = true;
-   }
+   r300vk_capture_dynamic_state(pl, info);
 
    *pPipeline = r300vk_pipeline_to_handle(pl);
    return VK_SUCCESS;
@@ -527,7 +566,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_zpass_reduction_pattern *zpass,
                                struct r300_compute_multipass_scan_pattern *multiscan,
                                struct r300_compute_predicated_store_pattern *predstore,
-                               struct r300_compute_multitap_gather_pattern *gather)
+                               struct r300_compute_multitap_gather_pattern *gather,
+                               uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
    if (!mod)
@@ -542,33 +582,14 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    if (!nir)
       return false;
 
-   /* vk_spirv_to_nir emits storage-buffer access in deref form
-    * (store_deref / load_deref through nir_var_mem_ssbo), with
-    * ssbo_addr_format set as the LOWERING TARGET for a later
-    * nir_lower_explicit_io pass.  The classifier and the identity-map
-    * detector both pattern-match on load_ssbo / store_ssbo intrinsics, so
-    * the lowering must run before they walk the NIR -- otherwise the detector
-    * misses the identity shape and r300vk_identity_map_dispatch_replay never
-    * runs (the dispatch lifecycle stays clean but every readback mismatches).
-    * UBO derefs are lowered in the same pass; only the SSBO intrinsics feed
-    * the detectors. */
+   local_size[0] = nir->info.workgroup_size[0];
+   local_size[1] = nir->info.workgroup_size[1];
+   local_size[2] = nir->info.workgroup_size[2];
+
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_ubo | nir_var_mem_ssbo,
             nir_address_format_32bit_index_offset);
 
-   /* CSE + DCE between explicit_io and the detectors canonicalize the NIR so
-    * the detectors' intrinsic counting and value-def matching are reliable.
-    * nir_lower_explicit_io emits an independent address computation for each
-    * load_ssbo / store_ssbo, and a kernel can carry duplicate loads; CSE
-    * merges the duplicates so the single-store / single-load counts the
-    * detectors require are exact, and DCE drops dead access.  This does NOT
-    * make the per-intrinsic offset chains identical -- the load offset def and
-    * the store offset def stay distinct even for out[gid] = in[gid], which is
-    * why r300_nir_detect_identity_map matches on value-def identity (store
-    * value == load def) and deliberately does not gate on offset equality.
-    * The loop runs to fixpoint (it stops when neither pass reports progress);
-    * it is bounded by the NIR size, which is small for the single-statement
-    * kernels the detectors pattern-match. */
    bool progress;
    do {
       progress = false;
@@ -577,12 +598,6 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    } while (progress);
 
    r300_nir_classify_compute(nir, adm);
-   /* Identity-map + binary-map detection are independent of admission so
-    * the orchestrator can use them to select the appropriate compute-as-
-    * raster lowering shape for an admitted kernel.  The two detectors are
-    * mutually exclusive in their match conditions (identity-map requires
-    * the store value to be a load_ssbo def; binary-map requires the store
-    * value to be a binary ALU op def) so at most one fires. */
    r300_nir_detect_identity_map(nir, ident);
    r300_nir_detect_binary_map(nir, binmap);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
@@ -590,46 +605,6 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
    r300_nir_detect_predicated_store_pattern(nir, predstore);
    r300_nir_detect_multitap_gather_pattern(nir, gather);
-
-   /* R300VK_DEBUG=identity_map -- log what the classifier + detector decided,
-    * so triage can pin whether identity_map was recognised at all and which
-    * bindings it captured. */
-   {
-      const char *flags = getenv("R300VK_DEBUG");
-      if (flags && strstr(flags, "identity_map")) {
-         unsigned ssbo_loads = 0, ssbo_stores = 0, image_stores = 0;
-         nir_foreach_function_impl (impl, nir) {
-            nir_foreach_block (block, impl) {
-               nir_foreach_instr (instr, block) {
-                  if (instr->type != nir_instr_type_intrinsic)
-                     continue;
-                  const nir_intrinsic_instr *in =
-                     nir_instr_as_intrinsic(instr);
-                  if (in->intrinsic == nir_intrinsic_load_ssbo)
-                     ssbo_loads++;
-                  else if (in->intrinsic == nir_intrinsic_store_ssbo)
-                     ssbo_stores++;
-                  else if (in->intrinsic == nir_intrinsic_image_deref_store ||
-                           in->intrinsic == nir_intrinsic_image_store)
-                     image_stores++;
-               }
-            }
-         }
-         fprintf(stderr,
-                 "ident_map: classify admit=%d reason=%d detect "
-                 "is_identity_map=%d in_binding=%u out_binding=%u "
-                 "is_binary_map=%d binmap_in_a=%u binmap_in_b=%u "
-                 "binmap_out=%u binmap_op=%u "
-                 "(ssbo_loads=%u ssbo_stores=%u image_stores=%u)\n",
-                 (int)adm->admissible, (int)adm->reason,
-                 (int)ident->is_identity_map,
-                 ident->input_ssbo_binding, ident->output_ssbo_binding,
-                 (int)binmap->is_binary_map,
-                 binmap->input_a_ssbo_binding, binmap->input_b_ssbo_binding,
-                 binmap->output_ssbo_binding, (unsigned)binmap->alu_op,
-                 ssbo_loads, ssbo_stores, image_stores);
-      }
-   }
 
    ralloc_free(nir);
    return true;
@@ -1366,6 +1341,110 @@ r300vk_multitap_gather_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
+
+
+static bool
+r300vk_synthesize_compute_shaders(struct r300vk_device *device,
+                                  struct r300vk_pipeline *pl)
+{
+   if (pl->identity_map.is_identity_map) {
+      if (!r300vk_identity_map_synthesize_shaders(device, pl))
+         pl->identity_map.is_identity_map = false;
+      return true;
+   }
+   if (pl->binary_map.is_binary_map) {
+      if (!r300vk_binary_map_synthesize_shaders(device, pl))
+         pl->binary_map.is_binary_map = false;
+      return true;
+   }
+   if (pl->blend_acc_reduction.is_blend_acc_reduction) {
+      if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
+         pl->blend_acc_reduction.is_blend_acc_reduction = false;
+      return true;
+   }
+   if (pl->zpass_reduction.is_zpass_reduction) {
+      if (!r300vk_zpass_reduction_synthesize_shaders(device, pl))
+         pl->zpass_reduction.is_zpass_reduction = false;
+      return true;
+   }
+   if (pl->multipass_scan.is_multipass_scan) {
+      if (!r300vk_multipass_scan_synthesize_shaders(device, pl))
+         pl->multipass_scan.is_multipass_scan = false;
+      return true;
+   }
+   if (pl->predicated_store.is_predicated_store) {
+      if (!r300vk_predicated_store_synthesize_shaders(device, pl))
+         pl->predicated_store.is_predicated_store = false;
+      return true;
+   }
+   if (pl->multitap_gather.is_multitap_gather) {
+      if (!r300vk_multitap_gather_synthesize_shaders(device, pl))
+         pl->multitap_gather.is_multitap_gather = false;
+      return true;
+   }
+
+   return true;
+}
+
+static VkResult
+r300vk_create_one_compute_pipeline(struct r300vk_device *device,
+                                    const VkComputePipelineCreateInfo *pCreateInfo,
+                                    const VkAllocationCallbacks *pAllocator,
+                                    struct r300vk_pipeline **out_pipeline,
+                                    uint32_t i)
+{
+   struct r300_compute_admission adm;
+   struct r300_compute_identity_pattern ident = {0};
+   struct r300_compute_binary_map_pattern binmap = {0};
+   struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
+   struct r300_compute_zpass_reduction_pattern zpass = {0};
+   struct r300_compute_multipass_scan_pattern multiscan = {0};
+   struct r300_compute_predicated_store_pattern predstore = {0};
+   struct r300_compute_multitap_gather_pattern gather = {0};
+   uint32_t local_size[3];
+
+   if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
+                                       &adm, &ident, &binmap, &blendacc, &zpass,
+                                       &multiscan, &predstore, &gather,
+                                       local_size))
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r300vk: SPIR-V to NIR failed for compute kernel %u",
+                       i);
+
+   if (!adm.admissible)
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: compute kernel %u rejected by the RS482 "
+                       "substrate classifier (%s: %s)", i,
+                       r300_compute_reject_name(adm.reason),
+                       adm.detail ? adm.detail : "unsupported construct");
+
+   struct r300vk_pipeline *pl =
+      vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pl), 8,
+                 VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!pl)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vk_object_base_init(&device->vk, &pl->base, VK_OBJECT_TYPE_PIPELINE);
+   pl->is_compute = true;
+   pl->admission = adm;
+   pl->identity_map = ident;
+   pl->binary_map = binmap;
+   pl->blend_acc_reduction = blendacc;
+   pl->zpass_reduction = zpass;
+   pl->multipass_scan = multiscan;
+   pl->predicated_store = predstore;
+   pl->multitap_gather = gather;
+   pl->local_size_x = local_size[0];
+   pl->local_size_y = local_size[1];
+   pl->local_size_z = local_size[2];
+
+   r300vk_synthesize_compute_shaders(device, pl);
+
+   *out_pipeline = pl;
+   return VK_SUCCESS;
+}
+
+
 VkResult
 r300vk_CreateComputePipelines(VkDevice _device,
                               VkPipelineCache pipelineCache,
@@ -1376,18 +1455,10 @@ r300vk_CreateComputePipelines(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
    (void)pipelineCache;
-   (void)pAllocator;
 
-   /* createInfoCount == 0 is a no-op that succeeds: there is no pPipelines
-    * entry to write and nothing to reject, matching vk_common_CreateComputePipelines. */
    if (createInfoCount == 0)
       return VK_SUCCESS;
 
-   /* The COMPUTE queue is exposed only under the experimental hybrid-compute
-    * gate, so a conformant run never reaches this entry point.  Pre-NULL every
-    * slot: an inadmissible kernel or an allocation failure leaves its slot
-    * VK_NULL_HANDLE per the spec contract, and the diagnostic names WHY a
-    * kernel cannot lower to the compute-as-raster substrate. */
    for (uint32_t i = 0; i < createInfoCount; i++)
       pPipelines[i] = VK_NULL_HANDLE;
 
@@ -1398,93 +1469,11 @@ r300vk_CreateComputePipelines(VkDevice _device,
                        "hybrid-compute path)");
 
    for (uint32_t i = 0; i < createInfoCount; i++) {
-      struct r300_compute_admission adm;
-      struct r300_compute_identity_pattern ident = {0};
-      struct r300_compute_binary_map_pattern binmap = {0};
-      struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
-      struct r300_compute_zpass_reduction_pattern zpass = {0};
-      struct r300_compute_multipass_scan_pattern multiscan = {0};
-      struct r300_compute_predicated_store_pattern predstore = {0};
-      struct r300_compute_multitap_gather_pattern gather = {0};
-      if (!r300vk_classify_compute_kernel(device, &pCreateInfos[i].stage,
-                                          &adm, &ident, &binmap, &blendacc, &zpass,
-                                          &multiscan, &predstore, &gather))
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "r300vk: SPIR-V to NIR failed for compute kernel %u",
-                          i);
-
-      if (!adm.admissible)
-         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: compute kernel %u rejected by the RS482 "
-                          "substrate classifier (%s: %s)", i,
-                          r300_compute_reject_name(adm.reason),
-                          adm.detail ? adm.detail : "unsupported construct");
-
-      /* The kernel is admissible against the substrate.  Create a compute
-       * pipeline object: a valid VkPipeline that CmdDispatch can bind and
-       * submit.  When the kernel matches the identity-map pattern, the
-       * dispatch replay lowers it onto the compute-as-raster substrate as a
-       * fullscreen-quad fragment draw (VS+FS synthesis lands in the next
-       * stage); otherwise the dispatch remains the no-op object lifecycle.
-       * vk_zalloc2 leaves every CSO pointer NULL, which r300vk_DestroyPipeline
-       * frees conditionally. */
-      struct r300vk_pipeline *pl =
-         vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pl), 8,
-                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-      if (!pl)
-         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-      vk_object_base_init(&device->vk, &pl->base, VK_OBJECT_TYPE_PIPELINE);
-      pl->is_compute = true;
-      pl->identity_map = ident;
-      pl->binary_map = binmap;
-      pl->blend_acc_reduction = blendacc;
-      pl->zpass_reduction = zpass;
-      pl->multipass_scan = multiscan;
-      pl->predicated_store = predstore;
-      pl->multitap_gather = gather;
-      /* When the kernel matches the identity-map pattern, synthesize the
-       * fullscreen-quad VS + texture-sampling FS pair the dispatch replay
-       * will bind.  A synthesis failure demotes the pipeline back to a no-op
-       * compute object: vkCreateComputePipelines still succeeds (the kernel
-       * is admitted; the lowering is the optimization) and the dispatch path
-       * falls back to the no-op compute semantics.  Detector mutual-exclusivity
-       * matters here -- at most one of identity_map / binary_map /
-       * blend_acc_reduction can fire for a given kernel because their match
-       * conditions are structurally disjoint (identity-map: store value is
-       * a load_ssbo def; binary-map: store value is a binary ALU op def;
-       * blend-acc: kernel carries 1 ssbo_atomic-iadd, 0 store_ssbo).  The
-       * else-if chain protects against the impossible "two detectors fired"
-       * case by giving identity-map priority.  Zpass discriminates from
-       * blend-acc by NOT consuming the load_ssbo def as the atomic value
-       * (it consumes a constant 1 gated by an nir_if from the load), so the
-       * two reductions stay structurally disjoint.  Multipass-scan
-       * discriminates from all four by carrying a nir_loop (they are all
-       * loop-free), so its detector cannot collide with theirs.
-       * Multitap-gather carries >= 3 load_ssbo and an iadd-tree store value,
-       * disjoint from binary-map (exactly 2 loads), identity-map (1 load), the
-       * atomic reductions, predicated-store (conditional), and multipass
-       * (loop). */
-      if (pl->identity_map.is_identity_map &&
-          !r300vk_identity_map_synthesize_shaders(device, pl))
-         pl->identity_map.is_identity_map = false;
-      else if (pl->binary_map.is_binary_map &&
-               !r300vk_binary_map_synthesize_shaders(device, pl))
-         pl->binary_map.is_binary_map = false;
-      else if (pl->blend_acc_reduction.is_blend_acc_reduction &&
-               !r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
-         pl->blend_acc_reduction.is_blend_acc_reduction = false;
-      else if (pl->zpass_reduction.is_zpass_reduction &&
-               !r300vk_zpass_reduction_synthesize_shaders(device, pl))
-         pl->zpass_reduction.is_zpass_reduction = false;
-      else if (pl->multipass_scan.is_multipass_scan &&
-               !r300vk_multipass_scan_synthesize_shaders(device, pl))
-         pl->multipass_scan.is_multipass_scan = false;
-      else if (pl->predicated_store.is_predicated_store &&
-               !r300vk_predicated_store_synthesize_shaders(device, pl))
-         pl->predicated_store.is_predicated_store = false;
-      else if (pl->multitap_gather.is_multitap_gather &&
-               !r300vk_multitap_gather_synthesize_shaders(device, pl))
-         pl->multitap_gather.is_multitap_gather = false;
+      struct r300vk_pipeline *pl = NULL;
+      VkResult result = r300vk_create_one_compute_pipeline(device, &pCreateInfos[i],
+                                                            pAllocator, &pl, i);
+      if (result != VK_SUCCESS)
+         return result;
       pPipelines[i] = r300vk_pipeline_to_handle(pl);
    }
 
