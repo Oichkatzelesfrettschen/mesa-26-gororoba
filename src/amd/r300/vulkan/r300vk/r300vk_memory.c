@@ -80,16 +80,13 @@ r300vk_MapMemory(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
    VK_FROM_HANDLE(r300vk_device_memory, mem, _memory);
-
-   /* Map-before-bind: Vulkan permits mapping HOST_VISIBLE VkDeviceMemory before
-    * (or without) binding it to a buffer or image, and deqp's default allocator
-    * does exactly this.  The resource-backed model has no storage until a bind,
-    * so lazily create the memory's own host-visible pipe_buffer here.  A later
-    * BindBufferMemory2 makes the VkBuffer reference this same resource, so writes
-    * made through the map reach the bound buffer (single shared storage, no
-    * copy).  Image binds install their tiled resource and never reach this lazy
-    * path once bound. */
    if (!mem->resource) {
+      /* Map-before-bind: Vulkan permits mapping HOST_VISIBLE VkDeviceMemory before
+       * (or without) binding it to a buffer or image, and deqp's default allocator
+       * does exactly this.  The resource-backed model has no storage until a bind,
+       * so lazily create the memory's own host-visible pipe_buffer here.  A later
+       * BindBufferMemory2 will copy this memory's slice into the VkBuffer's own
+       * GPU-private resource (maintaining offset-freedom for replay). */
       struct pipe_resource tmpl = {
          .target     = PIPE_BUFFER,
          .format     = PIPE_FORMAT_R8_UNORM,
@@ -124,12 +121,19 @@ r300vk_MapMemory(VkDevice _device,
    void *ptr;
 
    if (mem->resource->target == PIPE_BUFFER) {
-      /* resource_offset: byte offset into the pipe_resource.  MapMemory's
-       * offset is relative to the VkDeviceMemory object; memory_offset is
-       * where the buffer starts within that object. */
-      if (offset < mem->memory_offset)
-         return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
-      unsigned resource_offset = (unsigned)(offset - mem->memory_offset);
+      /* resource_offset: byte offset into the pipe_resource.  If the memory
+       * was mapped BEFORE bind (owns_buffer), mem->resource is the full
+       * VkDeviceMemory and we map relative to its start.  Otherwise,
+       * mem->resource is borrowed from a bound VkBuffer and we map relative
+       * to the buffer's start (offset - memory_offset). */
+      unsigned resource_offset;
+      if (mem->owns_buffer) {
+         resource_offset = (unsigned)offset;
+      } else {
+         if (offset < mem->memory_offset)
+            return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+         resource_offset = (unsigned)(offset - mem->memory_offset);
+      }
       unsigned map_size = size == VK_WHOLE_SIZE
                           ? mem->resource->width0 - resource_offset
                           : (unsigned)size;
@@ -209,21 +213,22 @@ r300vk_UnmapMemory(VkDevice _device,
  * copy reads/writes the live map_ptr directly, so the map and its transfer stay
  * valid -- the lazy buffer is host-only, so there is no second transfer on it
  * and no concurrent GPU access. */
-static void
-r300vk_sync_owned_buffer(struct r300vk_device *device,
-                         struct r300vk_device_memory *mem,
-                         bool host_to_buffer)
+static VkResult
+r300vk_sync_owns_buffer(struct r300vk_device *device,
+                        struct r300vk_device_memory *mem,
+                        bool host_to_buffer)
 {
    if (!mem->owns_buffer || !mem->bound_resource || !mem->map_ptr)
-      return;
+      return VK_SUCCESS;
 
-   unsigned avail = (mem->memory_offset < mem->size)
-                    ? (unsigned)(mem->size - mem->memory_offset) : 0;
+   /* Range check: verify the bound buffer's slice fits within the
+    * VkDeviceMemory allocation before reading/writing hp. */
+   if (mem->memory_offset + (VkDeviceSize)mem->bound_resource->width0 > mem->size)
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
    unsigned bytes = (unsigned)mem->bound_resource->width0;
-   if (bytes > avail)
-      bytes = avail;
    if (!bytes)
-      return;
+      return VK_SUCCESS;
 
    struct pipe_box box;
    u_box_1d(0, bytes, &box);
@@ -232,13 +237,15 @@ r300vk_sync_owned_buffer(struct r300vk_device *device,
                                        host_to_buffer ? PIPE_MAP_WRITE : PIPE_MAP_READ,
                                        &box, &bt);
    if (!bp)
-      return;
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+
    char *hp = (char *)mem->map_ptr + mem->memory_offset;
    if (host_to_buffer)
       memcpy(bp, hp, bytes);
    else
       memcpy(hp, bp, bytes);
    device->pipe->buffer_unmap(device->pipe, bt);
+   return VK_SUCCESS;
 }
 
 VkResult
@@ -251,7 +258,9 @@ r300vk_FlushMappedMemoryRanges(VkDevice _device,
     * bound VkBuffer's GPU resource. */
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
       VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
-      r300vk_sync_owned_buffer(device, mem, true /* host -> buffer */);
+      VkResult result = r300vk_sync_owns_buffer(device, mem, true /* host -> buffer */);
+      if (result != VK_SUCCESS)
+         return result;
    }
    return VK_SUCCESS;
 }
@@ -266,7 +275,9 @@ r300vk_InvalidateMappedMemoryRanges(VkDevice _device,
     * the live host map before the app reads through the host ptr. */
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
       VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
-      r300vk_sync_owned_buffer(device, mem, false /* buffer -> host */);
+      VkResult result = r300vk_sync_owns_buffer(device, mem, false /* buffer -> host */);
+      if (result != VK_SUCCESS)
+         return result;
    }
    return VK_SUCCESS;
 }
@@ -284,18 +295,18 @@ r300vk_BindBufferMemory2(VkDevice _device,
       if (mem->owns_buffer) {
          /* Map-before-bind: the memory has its own host pipe_buffer
           * (mem->resource) and a live map.  Vulkan keeps that map valid across
-          * this bind, and the deqp pattern writes the buffer's bytes through the
-          * host ptr AFTER the bind, then flushes.  So keep the map live, record
-          * the VkBuffer's create-time resource as bound_resource, and seed it
-          * with whatever the map already holds (covers a write-BEFORE-bind app);
-          * post-bind host writes and the GPU readback are carried both ways by
-          * Flush/InvalidateMappedMemoryRanges.  The slice copy at memory_offset
-          * keeps every consumer reading buf->resource from byte 0, so no
-          * draw/descriptor/compute path needs the bind offset and the shipping
-          * dispatch path is untouched. */
+          * this bind.  Seed the VkBuffer's resource with whatever the map
+          * already holds (covers a write-BEFORE-bind app).  The slice copy at
+          * memory_offset keeps every consumer reading buf->resource from byte 0,
+          * so the dispatch path stays offset-free and untouched. */
+         if (pBindInfos[i].memoryOffset + buf->size > mem->size)
+            return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
          mem->memory_offset = pBindInfos[i].memoryOffset;
          pipe_resource_reference(&mem->bound_resource, buf->resource);
-         r300vk_sync_owned_buffer(device, mem, true /* host -> buffer (seed) */);
+         VkResult result = r300vk_sync_owns_buffer(device, mem, true /* host -> buffer (seed) */);
+         if (result != VK_SUCCESS)
+            return result;
       } else {
          /* No prior owned map: the memory borrows the buffer's create-time
           * resource.  Byte-for-byte the path the shipping compute/dispatch
@@ -316,9 +327,13 @@ r300vk_BindImageMemory2(VkDevice _device,
                          uint32_t bindInfoCount,
                          const VkBindImageMemoryInfo *pBindInfos)
 {
+   VK_FROM_HANDLE(r300vk_device, device, _device);
    for (uint32_t i = 0; i < bindInfoCount; i++) {
       VK_FROM_HANDLE(r300vk_image, img, pBindInfos[i].image);
       VK_FROM_HANDLE(r300vk_device_memory, mem, pBindInfos[i].memory);
+
+      if (pBindInfos[i].memoryOffset + img->size > mem->size)
+         return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
       /* If the memory was mapped before bind, vkMapMemory created its own lazy
        * HOST_VISIBLE pipe_buffer and a transfer that borrows it.  Vulkan
@@ -328,6 +343,7 @@ r300vk_BindImageMemory2(VkDevice _device,
        * texture below. */
       mem->memory_offset = pBindInfos[i].memoryOffset;
       pipe_resource_reference(&mem->resource, img->resource);
+      mem->owns_buffer = false;
    }
    return VK_SUCCESS;
 }
