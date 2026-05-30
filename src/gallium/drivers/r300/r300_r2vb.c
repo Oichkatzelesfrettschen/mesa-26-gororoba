@@ -65,13 +65,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                  RADEON_PRIO_COLOR_BUFFER,
                                  RADEON_DOMAIN_GTT);
 
-    /* 56 dwords for the single-BO loop: stage 1 = 35, stage 2 = 6, stage 3 = 15.
+    /* 58 dwords for the single-BO loop: stage 1 = 37, stage 2 = 6, stage 3 = 15.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
      * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
      * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
      * vertices (twelve dwords).  The stage-3 color-target switch adds nine dwords
      * (COLOROFFSET0 + reloc + COLORPITCH0 + the SC_SCISSORS pair). */
-    BEGIN_CS(stage3_color_bo ? 65 : 56);
+    BEGIN_CS(stage3_color_bo ? 67 : 58);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -114,6 +114,16 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     OUT_CS_RELOC(output_gart_bo);
     OUT_CS_REG(R300_RB3D_COLORPITCH0,
                num_vertices | R300_COLOR_FORMAT_ARGB32323232);
+    /* Write the fragment output as FP32x4, not the caller's 8-bit format.  The
+     * fragment program's gl_FragColor is cast to the color buffer per
+     * US_OUT_FMT_0; inheriting the caller's C4_8 (ARGB8888) format truncates each
+     * channel to 8 bits, so an FP32x4 BO reads back ~0.  C4_32_FP with the BGRA
+     * channel select (matching the ARGB32323232 memory order) stores each
+     * fragment as four 32-bit floats, so the re-ingest reads the synthesized
+     * vertex (x,y,z,w) from memory order (b,g,r,a).  Stage 3 inherits this. */
+    OUT_CS_REG(R300_US_OUT_FMT_0,
+               R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
+               R300_C2_SEL_R | R300_C3_SEL_A);
     /* Self-supplied covering geometry.  Declare one FP32x4 position stream with
      * pre-divided window coordinates (VTX_XY_FMT), then emit a single covering
      * triangle (0,0),(2*num_vertices,0),(0,2) in-IB via 3D_DRAW_IMMD.  At the
