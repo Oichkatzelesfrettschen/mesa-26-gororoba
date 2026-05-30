@@ -39,6 +39,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_DRAW_INDIRECT,
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
+   R300VK_CMD_COPY_BUFFER_TO_IMAGE,
    R300VK_CMD_FILL_BUFFER,
    R300VK_CMD_COPY_BUFFER,
    R300VK_CMD_UPDATE_BUFFER,
@@ -100,6 +101,16 @@ struct r300vk_cmd_draw_indirect {
 struct r300vk_cmd_copy_image_to_buf {
    struct r300vk_image  *src;
    struct r300vk_buffer *dst;
+   VkBufferImageCopy2    region;
+};
+
+/* One region of a vkCmdCopyBufferToImage2.  Replayed as a tile-iterated CPU
+ * upload: map the source buffer once, then map each touched destination image
+ * tile for write.  This mirrors r300vk_copy_image_region_to_buffer, so
+ * multi-tile images are handled by the same tile walk in the opposite direction. */
+struct r300vk_cmd_copy_buf_to_image {
+   struct r300vk_buffer *src;
+   struct r300vk_image  *dst;
    VkBufferImageCopy2    region;
 };
 
@@ -194,6 +205,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_draw                 draw;
       struct r300vk_cmd_draw_indirect        draw_indirect;
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
+      struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
       struct r300vk_cmd_fill_buffer          fill_buffer;
       struct r300vk_cmd_copy_buffer          copy_buffer;
       struct r300vk_cmd_update_buffer        update_buffer;

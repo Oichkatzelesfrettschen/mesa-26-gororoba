@@ -66,8 +66,12 @@ r300vk_supported_image_usage(struct r300vk_device *device,
    if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_DEPTH_STENCIL))
       usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
+   /* Any format with an image use is also a transfer source (CmdCopyImageToBuffer2
+    * CPU readback) and destination (CmdCopyBufferToImage2 CPU upload): both walk
+    * the same r300g tile transfer-map path. */
    if (usage)
-      usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 
    return usage;
 }
