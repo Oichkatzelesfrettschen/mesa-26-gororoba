@@ -88,7 +88,7 @@ struct video_buffer_private
    struct pipe_video_buffer *video_buffer;
 
    struct pipe_sampler_view *sampler_view_planes[VL_NUM_COMPONENTS];
-   struct pipe_surface      *surfaces[VL_MAX_SURFACES];
+   struct pipe_surface      surfaces[VL_MAX_SURFACES];
 
    struct vl_mpeg12_buffer *buffer;
 };
@@ -107,9 +107,6 @@ destroy_video_buffer_private(void *private)
    for (i = 0; i < VL_NUM_COMPONENTS; ++i)
       pipe_sampler_view_reference(&priv->sampler_view_planes[i], NULL);
 
-   for (i = 0; i < VL_MAX_SURFACES; ++i)
-      pipe_surface_reference(&priv->surfaces[i], NULL);
-
    if (priv->buffer)
       vl_mpeg12_destroy_buffer(priv->buffer);
 
@@ -122,7 +119,7 @@ get_video_buffer_private(struct vl_mpeg12_decoder *dec, struct pipe_video_buffer
    struct pipe_context *pipe = dec->context;
    struct video_buffer_private *priv;
    struct pipe_sampler_view **sv;
-   struct pipe_surface **surf;
+   struct pipe_surface *surf;
    unsigned i;
 
    priv = vl_video_buffer_get_associated_data(buf, &dec->base);
@@ -139,10 +136,13 @@ get_video_buffer_private(struct vl_mpeg12_decoder *dec, struct pipe_video_buffer
       if (sv[i])
          priv->sampler_view_planes[i] = pipe->create_sampler_view(pipe, sv[i]->texture, sv[i]);
 
+   /* mesa-26 get_surfaces returns the buffer's value-embedded surfaces; cache a
+    * copy for the decode-target setup.  The textures stay owned by the video
+    * buffer (this private data is destroyed with it), so the copies hold no
+    * reference of their own. */
    surf = buf->get_surfaces(buf);
    for (i = 0; i < VL_MAX_SURFACES; ++i)
-      if (surf[i])
-         priv->surfaces[i] = pipe->create_surface(pipe, surf[i]->texture, surf[i]);
+      priv->surfaces[i] = surf[i];
 
    vl_video_buffer_set_associated_data(buf, &dec->base, priv, destroy_video_buffer_private);
 
@@ -166,7 +166,7 @@ init_zscan_buffer(struct vl_mpeg12_decoder *dec, struct vl_mpeg12_buffer *buffer
 {
    struct pipe_resource *res, res_tmpl;
    struct pipe_sampler_view sv_tmpl;
-   struct pipe_surface **destination;
+   struct pipe_surface *destination;
 
    unsigned i;
 
@@ -205,7 +205,7 @@ init_zscan_buffer(struct vl_mpeg12_decoder *dec, struct vl_mpeg12_buffer *buffer
 
    for (i = 0; i < VL_NUM_COMPONENTS; ++i)
       if (!vl_zscan_init_buffer(i == 0 ? &dec->zscan_y : &dec->zscan_c,
-                                &buffer->zscan[i], buffer->zscan_source, destination[i]))
+                                &buffer->zscan[i], buffer->zscan_source, &destination[i]))
          goto error_plane;
 
    return true;
@@ -389,7 +389,7 @@ MotionVectorToPipe(const struct pipe_mpeg12_macroblock *mb, unsigned vector,
          break;
 
       default:
-         unreachable("TODO: Support DUALPRIME and 16x8");
+         UNREACHABLE("TODO: Support DUALPRIME and 16x8");
       }
    } else {
       mv.top.x = mv.top.y = 0;
@@ -745,7 +745,7 @@ vl_mpeg12_decode_bitstream(struct pipe_video_codec *decoder,
    vl_mpg12_bs_decode(&buf->bs, target, desc, num_buffers, buffers, sizes);
 }
 
-static void
+static int
 vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
                     struct pipe_video_buffer *target,
                     struct pipe_picture_desc *picture)
@@ -754,7 +754,7 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
    struct pipe_mpeg12_picture_desc *desc = (struct pipe_mpeg12_picture_desc *)picture;
    struct pipe_sampler_view **ref_frames[2];
    struct pipe_sampler_view **mc_source_sv;
-   struct pipe_surface **target_surfaces;
+   struct pipe_surface *target_surfaces;
    struct pipe_vertex_buffer vb[3];
    struct vl_mpeg12_buffer *buf;
 
@@ -786,15 +786,15 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
 
    dec->context->bind_vertex_elements_state(dec->context, dec->ves_mv);
    for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
-      if (!target_surfaces[i]) continue;
+      if (!target_surfaces[i].texture) continue;
 
-      vl_mc_set_surface(&buf->mc[i], target_surfaces[i]);
+      vl_mc_set_surface(&buf->mc[i], &target_surfaces[i]);
 
       for (j = 0; j < VL_MAX_REF_FRAMES; ++j) {
          if (!ref_frames[j] || !ref_frames[j][i]) continue;
 
          vb[2] = vl_vb_get_mv(&buf->vertex_stream, j);
-         dec->context->set_vertex_buffers(dec->context, 0, 3, 0, false, vb);
+         dec->context->set_vertex_buffers(dec->context, 3, vb);
 
          vl_mc_render_ref(i ? &dec->mc_c : &dec->mc_y, &buf->mc[i], ref_frames[j][i]);
       }
@@ -805,7 +805,7 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
       if (!buf->num_ycbcr_blocks[i]) continue;
 
       vb[1] = vl_vb_get_ycbcr(&buf->vertex_stream, i);
-      dec->context->set_vertex_buffers(dec->context, 0, 2, 0, false, vb);
+      dec->context->set_vertex_buffers(dec->context, 2, vb);
 
       vl_zscan_render(i ? &dec->zscan_c : & dec->zscan_y, &buf->zscan[i] , buf->num_ycbcr_blocks[i]);
 
@@ -816,21 +816,21 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
    plane_order = vl_video_buffer_plane_order(target->buffer_format);
    mc_source_sv = dec->mc_source->get_sampler_view_planes(dec->mc_source);
    for (i = 0, component = 0; component < VL_NUM_COMPONENTS; ++i) {
-      if (!target_surfaces[i]) continue;
+      if (!target_surfaces[i].texture) continue;
 
-      nr_components = util_format_get_nr_components(target_surfaces[i]->texture->format);
+      nr_components = util_format_get_nr_components(target_surfaces[i].texture->format);
       for (j = 0; j < nr_components; ++j, ++component) {
          unsigned plane = plane_order[component];
          if (!buf->num_ycbcr_blocks[plane]) continue;
 
          vb[1] = vl_vb_get_ycbcr(&buf->vertex_stream, plane);
-         dec->context->set_vertex_buffers(dec->context, 0, 2, 0, false, vb);
+         dec->context->set_vertex_buffers(dec->context, 2, vb);
 
          if (dec->base.entrypoint <= PIPE_VIDEO_ENTRYPOINT_IDCT)
             vl_idct_prepare_stage2(i ? &dec->idct_c : &dec->idct_y, &buf->idct[plane]);
          else {
             dec->context->set_sampler_views(dec->context,
-                                            MESA_SHADER_FRAGMENT, 0, 1, 0, false,
+                                            MESA_SHADER_FRAGMENT, 0, 1, 0,
                                             &mc_source_sv[plane]);
             dec->context->bind_sampler_states(dec->context,
                                               MESA_SHADER_FRAGMENT,
@@ -842,6 +842,8 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
    dec->context->flush(dec->context, NULL, 0);
    ++dec->current_buffer;
    dec->current_buffer %= 4;
+
+   return 0;
 }
 
 static void
@@ -889,7 +891,8 @@ init_pipe_state(struct vl_mpeg12_decoder *dec)
    sampler.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
    sampler.compare_mode = PIPE_TEX_COMPARE_NONE;
    sampler.compare_func = PIPE_FUNC_ALWAYS;
-   sampler.normalized_coords = 1;
+   /* mesa-26 inverted the sense to unnormalized_coords; the memset default 0
+    * keeps normalized coordinates. */
    dec->sampler_ycbcr = dec->context->create_sampler_state(dec->context, &sampler);
    if (!dec->sampler_ycbcr)
       return false;
@@ -965,15 +968,11 @@ init_idct(struct vl_mpeg12_decoder *dec, const struct format_config* format_conf
 
    struct pipe_sampler_view *matrix = NULL;
 
-   nr_of_idct_render_targets = dec->context->screen->get_param
-   (
-      dec->context->screen, PIPE_CAP_MAX_RENDER_TARGETS
-   );
-   
-   max_inst = dec->context->screen->get_shader_param
-   (
-      dec->context->screen, MESA_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_INSTRUCTIONS
-   );
+   nr_of_idct_render_targets =
+      dec->context->screen->caps.max_render_targets;
+
+   max_inst =
+      dec->context->screen->shader_caps[MESA_SHADER_FRAGMENT].max_instructions;
 
    // Just assume we need 32 inst per render target, not 100% true, but should work in most cases
    if (nr_of_idct_render_targets >= 4 && max_inst >= 32*4)
@@ -1064,45 +1063,54 @@ init_mc_source_widthout_idct(struct vl_mpeg12_decoder *dec, const struct format_
 
 static void
 mc_vert_shader_callback(void *priv, struct vl_mc *mc,
-                        struct ureg_program *shader,
+                        nir_builder *b,
                         unsigned first_output,
-                        struct ureg_dst tex)
+                        nir_def *tex)
 {
    struct vl_mpeg12_decoder *dec = priv;
-   struct ureg_dst o_vtex;
 
    assert(priv && mc);
-   assert(shader);
 
    if (dec->base.entrypoint <= PIPE_VIDEO_ENTRYPOINT_IDCT) {
       struct vl_idct *idct = mc == &dec->mc_y ? &dec->idct_y : &dec->idct_c;
-      vl_idct_stage2_vert_shader(idct, shader, first_output, tex);
+      vl_idct_stage2_vert_shader(idct, b, first_output, tex);
    } else {
-      o_vtex = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, first_output);
-      ureg_MOV(shader, ureg_writemask(o_vtex, TGSI_WRITEMASK_XY), ureg_src(tex));
+      /* Motion-compensation-only: pass the macroblock position through as the
+       * source texcoord the fragment callback samples. */
+      nir_variable *o_vtex = nir_variable_create(b->shader, nir_var_shader_out,
+                                                 glsl_vec4_type(), "mc_vtex");
+      o_vtex->data.location = VARYING_SLOT_VAR0 + first_output;
+      nir_store_var(b, o_vtex, nir_trim_vector(b, tex, 2), 0x3);
    }
 }
 
-static void
+static nir_def *
 mc_frag_shader_callback(void *priv, struct vl_mc *mc,
-                        struct ureg_program *shader,
-                        unsigned first_input,
-                        struct ureg_dst dst)
+                        nir_builder *b,
+                        unsigned first_input)
 {
    struct vl_mpeg12_decoder *dec = priv;
-   struct ureg_src src, sampler;
 
    assert(priv && mc);
-   assert(shader);
 
    if (dec->base.entrypoint <= PIPE_VIDEO_ENTRYPOINT_IDCT) {
       struct vl_idct *idct = mc == &dec->mc_y ? &dec->idct_y : &dec->idct_c;
-      vl_idct_stage2_frag_shader(idct, shader, first_input, dst);
-   } else {
-      src = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, first_input, TGSI_INTERPOLATE_LINEAR);
-      sampler = ureg_DECL_sampler(shader, 0);
-      ureg_TEX(shader, dst, TGSI_TEXTURE_2D, src, sampler);
+      return vl_idct_stage2_frag_shader(idct, b, first_input);
    }
+
+   /* Motion-compensation-only: sample the reference plane at the passed-through
+    * texcoord and return it as the ycbcr source value. */
+   nir_variable *in = nir_variable_create(b->shader, nir_var_shader_in,
+                                          glsl_vec4_type(), "mc_src");
+   in->data.location = VARYING_SLOT_VAR0 + first_input;
+   const struct glsl_type *st =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sv = nir_variable_create(b->shader, nir_var_uniform, st, "mc_ref");
+   sv->data.binding = 0;
+   nir_deref_instr *samp = nir_build_deref_var(b, sv);
+
+   nir_def *coord = nir_trim_vector(b, nir_load_var(b, in), 2);
+   return nir_tex(b, coord, .texture_deref = samp, .sampler_deref = samp);
 }
 
 struct pipe_video_codec *
@@ -1122,7 +1130,7 @@ vl_create_mpeg12_decoder(struct pipe_context *context,
 
    dec->base = *templat;
    dec->base.context = context;
-   dec->context = pipe_create_multimedia_context(context->screen);
+   dec->context = pipe_create_multimedia_context(context->screen, false);
 
    dec->base.destroy = vl_mpeg12_destroy;
    dec->base.begin_frame = vl_mpeg12_begin_frame;
