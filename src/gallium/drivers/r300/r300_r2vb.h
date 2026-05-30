@@ -20,15 +20,24 @@ struct r300_resource;
  * target and pass 2 re-ingests as the vertex array via an in-IB LOAD_VBPNTR,
  * consumed by the VAP in TCL_BYPASS.
  *
+ * stage3_color_bo is an optional separate 2D target: when non-NULL the stage-3
+ * re-ingested draw renders into it (stage3_width x stage3_height) instead of
+ * overwriting output_gart_bo, so a CPU readback of stage3_color_bo evidences the
+ * VAP fetch (stage 3) rather than only the stage-1 render.  Pass NULL,0,0 for the
+ * legacy single-BO loop.
+ *
  * This sequence issues raw PM4 vertex/draw packets; on the RS482 hazard lane a
- * live submit is gated behind the safe-regs evidence bundle, so the function is
- * built but not yet wired to a caller.  The CB-write -> barrier -> vertex-fetch
- * data path is coherency-validated through the GL oracle; the gallivm-free
- * direct-VAP timing is the remaining hazard-gated measurement. */
+ * live submit is gated behind the safe-regs evidence bundle.  The CB-write ->
+ * barrier -> vertex-fetch data path is coherency-validated through the GL
+ * oracle; the gallivm-free direct-VAP timing is the remaining hazard-gated
+ * measurement. */
 void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        struct r300_resource *output_gart_bo,
                                        uint32_t output_gart_bo_offset,
-                                       uint32_t num_vertices);
+                                       uint32_t num_vertices,
+                                       struct r300_resource *stage3_color_bo,
+                                       uint32_t stage3_width,
+                                       uint32_t stage3_height);
 
 /* Gated self-test (R300_R2VB_TIMING=capture|submit), fired once from r300_flush
  * with from_flush=true so the loop appends to a CS a real draw has populated.
