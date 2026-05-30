@@ -393,6 +393,8 @@ files_libgalliumvl = files(
   'vl/vl_idct.h',
   'vl/vl_matrix_filter.c',
   'vl/vl_matrix_filter.h',
+  'vl/vl_nir.c',
+  'vl/vl_nir.h',
   'vl/vl_mc.c',
   'vl/vl_mc.h',
   'vl/vl_mpeg12_bitstream.c',
