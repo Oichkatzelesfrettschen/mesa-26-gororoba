@@ -1689,6 +1689,12 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
       c->semantics = &rc.v->outputs;
    }
 
+   /* Direct-NIR video shaders bypass the GL state tracker's sampler lowering,
+    * but nir_to_rc reads sampler_index/texture_index from the lowered texture
+    * instructions. Lower them here so both tracked GL shaders and g3dvl decode
+    * shaders reach RC translation with resolved sampler operands. */
+   NIR_PASS(_, s, nir_lower_samplers);
+
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
       static const nir_lower_sysvals_to_varyings_options sysval_options = {
          .frag_coord = true,
