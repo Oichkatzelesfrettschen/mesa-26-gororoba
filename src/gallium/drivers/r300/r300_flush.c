@@ -14,6 +14,7 @@
 #include "r300_context.h"
 #include "r300_cs.h"
 #include "r300_emit.h"
+#include "r300_r2vb.h"
 
 
 static void r300_flush_and_cleanup(struct r300_context *r300, unsigned flags,
@@ -59,6 +60,16 @@ void r300_flush(struct pipe_context *pipe,
                 struct pipe_fence_handle **fence)
 {
     struct r300_context *r300 = r300_context(pipe);
+
+    /* The gated R2VB self-test fires once here, after a real draw has left its
+     * framebuffer (with the depth buffer), fragment program, and SU/RS setup in
+     * the CS, so the loop's draws pass the kernel validator.  It appends the
+     * loop, flushes (NOOP-capture or timed submit), and returns true to mark the
+     * CS consumed, so the normal flush below is skipped for that one flush. */
+    if (r300->dirty_hw &&
+        r300_emit_rs482_r2vb_capture_selftest(r300, true)) {
+        r300->dirty_hw = 0;
+    }
 
     if (r300->dirty_hw) {
         r300_flush_and_cleanup(r300, flags, fence);

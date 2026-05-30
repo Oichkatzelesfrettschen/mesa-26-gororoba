@@ -28,7 +28,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "util/os_time.h"
 #include "util/u_inlines.h"
 
 #include "r300_context.h"
@@ -52,10 +51,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                              RADEON_PRIO_COLOR_BUFFER,
                              RADEON_DOMAIN_GTT);
 
-    /* 31 dwords: stage 1 = 10, stage 2 = 6, stage 3 = 15.  OUT_CS_REG and
-     * OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,1) emits one header
-     * plus its one value; the LOAD_VBPNTR body is seven dwords. */
-    BEGIN_CS(31);
+    /* 36 dwords: stage 1 = 15, stage 2 = 6, stage 3 = 15.  OUT_CS_REG and
+     * OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N) emits one header
+     * plus its N values; the LOAD_VBPNTR body is seven dwords. */
+    BEGIN_CS(36);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -74,6 +73,25 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * microcode lives in the US instruction registers (r300_emit_fs in
      * r300_emit.c), never as a relocatable BO; this function deliberately does
      * not hand-roll the compiler's fragment-shader emit. */
+    /* Disable depth: this color-only vertex render needs no Z test, and the
+     * radeon CS validator (r300_cs_track_check) defaults z_enabled true with a
+     * NULL z buffer, so a draw with ZB_CNTL R300_Z_ENABLE still set but no depth
+     * BO bound is rejected ("No buffer for z buffer").  Clearing R300_Z_ENABLE
+     * makes the loop pass the validator regardless of the preceding draw's depth
+     * state. */
+    OUT_CS_REG(R300_ZB_CNTL, 0);
+    /* Scissor to the num_vertices x 1 GTT target.  The CS validator derives the
+     * color-buffer bound from SC_SCISSORS_BR (r300_cs_track_check:
+     * maxy = (BR_Y >> 13) + 1, less the 1440 R300_SCISSORS_OFFSET on pre-RV515),
+     * then rejects the draw if pitch * cpp * maxy exceeds the BO.  The GTT BO is
+     * one row of num_vertices FP32x4 texels, so height 1 yields maxy = 1 and the
+     * exact-fit bound passes; inheriting the caller's full-height scissor would
+     * fail ("Buffer too small for color buffer").  Encoded like
+     * r300_emit_scissor_state for the non-r500 path. */
+    OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
+    OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
+    OUT_CS(((num_vertices + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
+           ((1 + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
     OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
     OUT_CS_RELOC(output_gart_bo);
     OUT_CS_REG(R300_RB3D_COLORPITCH0,
@@ -132,32 +150,42 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     END_CS;
 }
 
-/* Gated Phase-4 self-test for the R2VB direct-VAP path.  R300_R2VB_TIMING picks
- * the mode:
- *   capture -- emit the loop into a fresh GTT buffer and flush with
- *              RADEON_FLUSH_NOOP, so the IB is captured by R300_TRACE and never
- *              reaches DRM_RADEON_CS.  The packets can be decoded and verified
- *              with zero hardware risk.  This is the structural preflight.
- *   submit  -- a real flush with a fence wait, timed; additionally requires
- *              R300_RAW_SUBMIT_ACCEPTED=1.  This is the hazard-gated measurement
- *              that decides whether R2VB beats the gallivm CPU baseline; a draw
- *              that the CS validator passes can still hang reset-less silicon, so
- *              the caller must have bound the vertex-compute fragment program and
- *              GTT framebuffer first (the loop's contract).
- * R300_R2VB_NVERTS sets the count, clamped below 2^16 (the SWTCL VAP
+/* Gated self-test for the R2VB direct-VAP path.  R300_R2VB_TIMING picks the
+ * mode:
+ *   capture -- emit the loop and flush with RADEON_FLUSH_NOOP, so the IB is
+ *              captured by R300_TRACE and never reaches DRM_RADEON_CS.  The
+ *              packets can be decoded and verified with zero hardware risk.
+ *              This is the structural preflight.
+ *   submit  -- a real flush with a bounded fence wait, timed; additionally
+ *              requires R300_RAW_SUBMIT_ACCEPTED=1.  This is the hazard-gated
+ *              measurement that decides whether R2VB beats the gallivm CPU
+ *              baseline; a draw the CS validator passes can still hang
+ *              reset-less silicon.
+ * Both modes fire only from r300_flush (from_flush), where a real draw has
+ * already left its framebuffer, fragment program, and SU/RS setup in this CS.
+ * The loop deliberately does not emit the fragment microcode (the compiler's
+ * job), so it needs that state already present; firing at context create would
+ * append the loop to an empty CS with no shader bound.  The capture and the
+ * submit therefore decode and time the same composed IB.  It fires once per
+ * process and returns true when it consumed the CS, so the caller skips its own
+ * flush.  R300_R2VB_NVERTS sets the count, clamped below 2^16 (the SWTCL VAP
  * NUM_VERTICES field width). */
-void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300)
+bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
+                                           bool from_flush)
 {
+    static bool fired = false;
     const char *mode = getenv("R300_R2VB_TIMING");
     if (!mode)
-        return;
+        return false;
     bool do_submit = strcmp(mode, "submit") == 0;
+    if (!from_flush || fired)
+        return false;
     if (do_submit) {
         const char *gate = getenv("R300_RAW_SUBMIT_ACCEPTED");
         if (!gate || strcmp(gate, "1") != 0) {
             fprintf(stderr,
                     "r2vb selftest: submit mode needs R300_RAW_SUBMIT_ACCEPTED=1\n");
-            return;
+            return false;
         }
     }
 
@@ -186,28 +214,39 @@ void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300)
     templ.usage = PIPE_USAGE_DEFAULT;
     struct pipe_resource *res = pscreen->resource_create(pscreen, &templ);
     if (!res)
-        return;
+        return false;
 
+    /* Burn the one-shot only once the GTT BO exists and the loop runs, so a
+     * missing env gate or a failed allocation can still fire on a later flush. */
+    fired = true;
     r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, num_vertices);
 
     if (do_submit) {
         struct pipe_fence_handle *fence = NULL;
         struct timespec t0, t1;
+        bool signalled = false;
+        int flush_rc;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        r300->rws->cs_flush(&r300->cs, 0, &fence);
+        flush_rc = r300->rws->cs_flush(&r300->cs, 0, &fence);
         if (fence) {
-            r300->rws->fence_wait(r300->rws, fence, OS_TIMEOUT_INFINITE);
+            /* Bounded wait, never OS_TIMEOUT_INFINITE: a wedged GPU must not hang
+             * the process.  fence_wait returns false on timeout, so signalled=0
+             * marks a likely hang for the caller's evidence capture. */
+            signalled = r300->rws->fence_wait(r300->rws, fence,
+                                              (uint64_t)5 * 1000 * 1000 * 1000);
             r300->rws->fence_reference(r300->rws, &fence, NULL);
         }
         clock_gettime(CLOCK_MONOTONIC, &t1);
         double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +
                     (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
-        fprintf(stderr, "r2vb_direct_vap_timing nverts=%u submit_ms=%.4f\n",
-                num_vertices, ms);
+        fprintf(stderr, "r2vb_direct_vap_timing nverts=%u submit_ms=%.4f "
+                "flush_rc=%d fence=%d signalled=%d\n",
+                num_vertices, ms, flush_rc, fence != NULL, signalled);
     } else {
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
         fprintf(stderr, "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP)\n",
                 num_vertices);
     }
     pipe_resource_reference(&res, NULL);
+    return true;
 }
