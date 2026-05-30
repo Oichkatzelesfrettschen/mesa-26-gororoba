@@ -51,10 +51,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                              RADEON_PRIO_COLOR_BUFFER,
                              RADEON_DOMAIN_GTT);
 
-    /* 31 dwords: stage 1 = 10, stage 2 = 6, stage 3 = 15.  OUT_CS_REG and
+    /* 33 dwords: stage 1 = 12, stage 2 = 6, stage 3 = 15.  OUT_CS_REG and
      * OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,1) emits one header
      * plus its one value; the LOAD_VBPNTR body is seven dwords. */
-    BEGIN_CS(31);
+    BEGIN_CS(33);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -73,6 +73,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * microcode lives in the US instruction registers (r300_emit_fs in
      * r300_emit.c), never as a relocatable BO; this function deliberately does
      * not hand-roll the compiler's fragment-shader emit. */
+    /* Disable depth: this color-only vertex render needs no Z test, and the
+     * radeon CS validator (r300_cs_track_check) defaults z_enabled true with a
+     * NULL z buffer, so a draw with ZB_CNTL R300_Z_ENABLE still set but no depth
+     * BO bound is rejected ("No buffer for z buffer").  Clearing R300_Z_ENABLE
+     * makes the loop pass the validator regardless of the preceding draw's depth
+     * state. */
+    OUT_CS_REG(R300_ZB_CNTL, 0);
     OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
     OUT_CS_RELOC(output_gart_bo);
     OUT_CS_REG(R300_RB3D_COLORPITCH0,
@@ -143,13 +150,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
  *              baseline; a draw the CS validator passes can still hang
  *              reset-less silicon.
  * Both modes fire only from r300_flush (from_flush), where a real draw has
- * already left its framebuffer (with the depth buffer), fragment program, and
- * SU/RS setup in this CS, so the appended loop draws against bound state and
- * passes the kernel validator -- firing at context create would emit a bare,
- * stateless loop the validator rejects ("No buffer for z buffer").  The capture
- * and the submit therefore decode and time the same composed IB.  It fires once
- * per process and returns true when it consumed the CS, so the caller skips its
- * own flush.  R300_R2VB_NVERTS sets the count, clamped below 2^16 (the SWTCL VAP
+ * already left its framebuffer, fragment program, and SU/RS setup in this CS.
+ * The loop deliberately does not emit the fragment microcode (the compiler's
+ * job), so it needs that state already present; firing at context create would
+ * append the loop to an empty CS with no shader bound.  The capture and the
+ * submit therefore decode and time the same composed IB.  It fires once per
+ * process and returns true when it consumed the CS, so the caller skips its own
+ * flush.  R300_R2VB_NVERTS sets the count, clamped below 2^16 (the SWTCL VAP
  * NUM_VERTICES field width). */
 bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
                                            bool from_flush)
