@@ -371,6 +371,29 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
         }
     }
 
+    /* Diagnostic readback of BO_A (the stage-1 render target = the stage-3
+     * vertex source).  Stage 3 reads this BO, it does not write it, so after the
+     * loop it still holds stage 1's fragment output.  Dumping the first slots
+     * localizes a zero-coverage stage-3 result: if these are the known vertices
+     * the caller wrote, stage 1 is correct and the fault is in stage 3 (the
+     * re-ingest or the redirect); if they are sentinel or garbage, stage 1 never
+     * filled BO_A (the covering geometry did not rasterize the slots). */
+    if (observe) {
+        struct pipe_transfer *a_xfer = NULL;
+        struct pipe_box abox = {.x = 0, .y = 0, .z = 0,
+                                .width = num_vertices * 16, .height = 1, .depth = 1};
+        const float *av = r300->context.buffer_map(&r300->context, res, 0,
+                                                   PIPE_MAP_READ, &abox, &a_xfer);
+        if (av) {
+            uint32_t n = num_vertices < 8 ? num_vertices : 8;
+            for (uint32_t i = 0; i < n; i++)
+                fprintf(stderr, "r2vb_stage1_bo_a slot=%u m0=%.3f m1=%.3f "
+                        "m2=%.3f m3=%.3f\n", i, av[i * 4 + 0], av[i * 4 + 1],
+                        av[i * 4 + 2], av[i * 4 + 3]);
+            r300->context.buffer_unmap(&r300->context, a_xfer);
+        }
+    }
+
     pipe_resource_reference(&stage3, NULL);
     pipe_resource_reference(&res, NULL);
     return true;
