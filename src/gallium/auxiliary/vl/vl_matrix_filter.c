@@ -29,8 +29,6 @@
 
 #include "pipe/p_context.h"
 
-#include "tgsi/tgsi_ureg.h"
-
 #include "util/u_draw.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
@@ -39,34 +37,12 @@
 #include "vl_types.h"
 #include "vl_vertex_buffers.h"
 #include "vl_matrix_filter.h"
-
-enum VS_OUTPUT
-{
-   VS_O_VPOS = 0,
-   VS_O_VTEX = 0
-};
+#include "vl_nir.h"
 
 static void *
 create_vert_shader(struct vl_matrix_filter *filter)
 {
-   struct ureg_program *shader;
-   struct ureg_src i_vpos;
-   struct ureg_dst o_vpos, o_vtex;
-
-   shader = ureg_create(MESA_SHADER_VERTEX);
-   if (!shader)
-      return NULL;
-
-   i_vpos = ureg_DECL_vs_input(shader, 0);
-   o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
-   o_vtex = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX);
-
-   ureg_MOV(shader, o_vpos, i_vpos);
-   ureg_MOV(shader, o_vtex, i_vpos);
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, filter->pipe);
+   return vl_nir_vs_passthrough(filter->pipe, 1, "vl:matrix_filter_vs");
 }
 
 static inline bool
@@ -79,54 +55,34 @@ static void *
 create_frag_shader(struct vl_matrix_filter *filter, unsigned num_offsets,
                    struct vertex2f *offsets, const float *matrix_values)
 {
-   struct ureg_program *shader;
-   struct ureg_src i_vtex;
-   struct ureg_src sampler;
-   struct ureg_dst tmp;
-   struct ureg_dst t_sum;
-   struct ureg_dst o_fragment;
+   struct vl_nir_fs fs;
    unsigned i;
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader) {
-      return NULL;
-   }
+   vl_nir_fs_begin(&fs, filter->pipe, 1, 1, "vl:matrix_filter_fs");
+   nir_builder *b = &fs.b;
 
-   i_vtex = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
-   sampler = ureg_DECL_sampler(shader, 0);
-   ureg_DECL_sampler_view(shader, 0, TGSI_TEXTURE_2D,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT,
-                          TGSI_RETURN_TYPE_FLOAT);
+   /* Separable neighbourhood convolution: sum_i matrix[i] * tex(tc + offset[i]),
+    * accumulated in-shader (one FP24 MAC per non-zero tap, the monograph P3
+    * primitive).  Zero-weight taps and the zero offset are folded as in the
+    * fixed grid; the offsets already land on the A3 sample grid. */
+   nir_def *vtex = nir_trim_vector(b, fs.texcoord[0], 2);
+   nir_def *sum = nir_imm_vec4(b, 0.0f, 0.0f, 0.0f, 0.0f);
 
-   tmp = ureg_DECL_temporary(shader);
-   t_sum = ureg_DECL_temporary(shader);
-   o_fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   ureg_MOV(shader, t_sum, ureg_imm1f(shader, 0.0f));
    for (i = 0; i < num_offsets; ++i) {
       if (matrix_values[i] == 0.0f)
          continue;
 
-      if (!is_vec_zero(offsets[i])) {
-         ureg_ADD(shader, ureg_writemask(tmp, TGSI_WRITEMASK_XY),
-                  i_vtex, ureg_imm2f(shader, offsets[i].x, offsets[i].y));
-         ureg_MOV(shader, ureg_writemask(tmp, TGSI_WRITEMASK_ZW),
-                  ureg_imm1f(shader, 0.0f));
-         ureg_TEX(shader, tmp, TGSI_TEXTURE_2D, ureg_src(tmp), sampler);
-      } else {
-         ureg_TEX(shader, tmp, TGSI_TEXTURE_2D, i_vtex, sampler);
-      }
-      ureg_MAD(shader, t_sum, ureg_src(tmp), ureg_imm1f(shader, matrix_values[i]),
-               ureg_src(t_sum));
+      nir_def *coord = is_vec_zero(offsets[i])
+         ? vtex
+         : nir_fadd(b, vtex, nir_imm_vec2(b, offsets[i].x, offsets[i].y));
+      nir_def *texel = vl_nir_tex2d(&fs, 0, coord);
+      sum = nir_ffma(b, texel,
+                     nir_imm_vec4(b, matrix_values[i], matrix_values[i],
+                                  matrix_values[i], matrix_values[i]),
+                     sum);
    }
 
-   ureg_MOV(shader, o_fragment, ureg_src(t_sum));
-
-   ureg_END(shader);
-
-   return ureg_create_shader_and_destroy(shader, filter->pipe);
+   return vl_nir_fs_finish(&fs, filter->pipe, sum);
 }
 
 bool
