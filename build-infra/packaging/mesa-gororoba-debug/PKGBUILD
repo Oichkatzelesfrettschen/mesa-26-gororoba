@@ -41,8 +41,24 @@ sha256sums=('SKIP')
 _prefix=/opt/share/mesa-26-gororoba
 
 build() {
-  export CC=clang
-  export CXX=clang++
+  # Ride the distcc+ccache fabric (the 1_r300/2_r300 default) for fast rebuilds:
+  # source the Vostro distcc-cache env to set CCACHE_PREFIX=distcc + DISTCC_HOSTS
+  # (the LAN volunteers, ALIENWARE/x570-5600X3D), then compile through ccache so a
+  # cache miss fans out to distcc.  ccache is the compiler -- it hashes the
+  # preprocessed source, not distcc's mtime, so the AGENTS.md "never wrap distcc in
+  # a script" hazard does not apply; this is the warm-incremental ccache-first
+  # path, no pump.  Falls back to plain clang if the env is absent (off-LAN host).
+  if [ -f mesa-gororoba/build-infra/env/vostro1000-x86-64-v1-clang22-ccache-distcc.env ]; then
+    # shellcheck disable=SC1091
+    . mesa-gororoba/build-infra/env/vostro1000-x86-64-v1-clang22-ccache-distcc.env || true
+  fi
+  if command -v ccache >/dev/null 2>&1; then
+    export CC='ccache clang'
+    export CXX='ccache clang++'
+  else
+    export CC=clang
+    export CXX=clang++
+  fi
   export CC_LD=lld
   export CXX_LD=lld
 
