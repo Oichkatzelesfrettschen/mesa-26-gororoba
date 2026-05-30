@@ -129,6 +129,11 @@ struct r300vk_pipeline {
     * store. */
    struct r300_compute_multitap_gather_pattern multitap_gather;
 
+   struct r300_compute_admission admission;
+   uint32_t local_size_x;
+   uint32_t local_size_y;
+   uint32_t local_size_z;
+
    void                   *vs_cso;
    void                   *fs_cso;
    void                   *blend_cso;

@@ -252,12 +252,306 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
 /* CCN is proportional to the number of command types dispatched; one case
  * per r300vk_cmd_type is the minimum correct structure. */
 static void
+r300vk_replay_bind_descriptor_sets(struct r300vk_device *device,
+                                    const struct r300vk_cmd_entry *e,
+                                    const struct r300vk_cmd_bind_descriptor_sets **last_bind_dsets)
+{
+   *last_bind_dsets = &e->bind_dsets;
+}
+
+static VkResult
+r300vk_replay_dispatch(struct r300vk_device *device,
+                        const struct r300vk_cmd_entry *e,
+                        const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets)
+{
+   const struct r300vk_cmd_dispatch *d = &e->dispatch;
+   const struct r300vk_pipeline *pl = d->pipeline;
+   bool ok = false;
+
+   if (pl->identity_map.is_identity_map)
+      ok = r300vk_identity_map_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->binary_map.is_binary_map)
+      ok = r300vk_binary_map_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->blend_acc_reduction.is_blend_acc_reduction)
+      ok = r300vk_blend_acc_reduction_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->zpass_reduction.is_zpass_reduction)
+      ok = r300vk_zpass_reduction_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->multipass_scan.is_multipass_scan)
+      ok = r300vk_multipass_scan_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->predicated_store.is_predicated_store)
+      ok = r300vk_predicated_store_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->multitap_gather.is_multitap_gather)
+      ok = r300vk_multitap_gather_dispatch_replay(device, pl, d, last_bind_dsets);
+
+   return ok ? VK_SUCCESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
+}
+
+static void
+r300vk_replay_end_render_pass(struct r300vk_device *device,
+                               bool *skip_render_pass,
+                               uint32_t *tile_origin_x,
+                               uint32_t *tile_origin_y,
+                               uint32_t *tile_width,
+                               uint32_t *tile_height)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (*skip_render_pass) {
+      *skip_render_pass = false;
+      return;
+   }
+   struct pipe_framebuffer_state empty;
+   memset(&empty, 0, sizeof(empty));
+   pipe->set_framebuffer_state(pipe, &empty);
+   *tile_origin_x = 0;
+   *tile_origin_y = 0;
+   *tile_width = 0;
+   *tile_height = 0;
+}
+
+static void
+r300vk_replay_pipeline_barrier(struct r300vk_device *device,
+                                const struct r300vk_cmd_entry *e,
+                                bool skip_render_pass)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (skip_render_pass)
+      return;
+   pipe->flush(pipe, NULL, 0);
+   if (identity_map_debug_enabled()) {
+      fprintf(stderr,
+              "ident_map: pipeline_barrier flush honored "
+              "(dispatch-barrier-dispatch visibility)\n");
+   }
+   if (e->barrier.image)
+      e->barrier.image->resource_state.layout = e->barrier.new_layout;
+}
+
+static void
+r300vk_replay_draw(struct r300vk_device *device,
+                    const struct r300vk_cmd_entry *e,
+                    const struct r300vk_pipeline *bound_pipeline,
+                    struct pipe_vertex_buffer *vb_cache,
+                    VkDeviceSize *vb_sizes,
+                    uint32_t vb_max_used,
+                    bool *vb_dirty,
+                    uint32_t tile_origin_x,
+                    uint32_t tile_origin_y,
+                    uint32_t tile_width,
+                    uint32_t tile_height,
+                    struct util_dynarray *transient_vbs)
+{
+   struct pipe_context *pipe = device->pipe;
+
+   /* Resolve pipeline-static viewport/scissor before the draw. */
+   if (bound_pipeline && bound_pipeline->has_static_viewport) {
+      struct pipe_viewport_state pv;
+      viewport_vk_to_gallium(&bound_pipeline->static_viewport,
+                             (float)tile_origin_x, (float)tile_origin_y,
+                             &pv);
+      pipe->set_viewport_states(pipe, 0, 1, &pv);
+   }
+   if (bound_pipeline && bound_pipeline->has_static_scissor) {
+      struct pipe_scissor_state sc;
+      r300vk_scissor_vk_to_tile(&bound_pipeline->static_scissor,
+                                tile_origin_x, tile_origin_y,
+                                tile_width, tile_height, &sc);
+      pipe->set_scissor_states(pipe, 0, 1, &sc);
+   }
+
+   struct pipe_vertex_buffer draw_vb_cache[R300VK_MAX_VERTEX_BINDINGS];
+   memcpy(draw_vb_cache, vb_cache, sizeof(draw_vb_cache));
+   uint32_t draw_vb_max_used = vb_max_used;
+   bool draw_vb_dirty = *vb_dirty;
+   bool synthetic_streams_ready = true;
+
+   /* Supply the synthetic VS-system-value stream(s) for this draw. */
+   if (bound_pipeline && bound_pipeline->needs_vertex_id_stream) {
+      synthetic_streams_ready =
+         r300vk_bind_synthetic_index_stream(
+            device, pipe, draw_vb_cache,
+            bound_pipeline->vertex_id_vb_binding, e->draw.first,
+            e->draw.count, transient_vbs);
+      if (synthetic_streams_ready) {
+         if (bound_pipeline->vertex_id_vb_binding + 1u > draw_vb_max_used)
+            draw_vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
+         draw_vb_dirty = true;
+      }
+   }
+   if (synthetic_streams_ready && bound_pipeline &&
+       bound_pipeline->needs_instance_id_stream) {
+      synthetic_streams_ready =
+         r300vk_bind_synthetic_index_stream(
+            device, pipe, draw_vb_cache,
+            bound_pipeline->instance_id_vb_binding,
+            e->draw.first_instance, e->draw.instances, transient_vbs);
+      if (synthetic_streams_ready) {
+         if (bound_pipeline->instance_id_vb_binding + 1u >
+             draw_vb_max_used)
+            draw_vb_max_used =
+               bound_pipeline->instance_id_vb_binding + 1u;
+         draw_vb_dirty = true;
+      }
+   }
+   /* Flush the draw VB state. */
+   if (draw_vb_dirty) {
+      pipe->set_vertex_buffers(pipe, draw_vb_max_used, draw_vb_cache);
+      *vb_dirty = synthetic_streams_ready &&
+                 (bound_pipeline &&
+                  (bound_pipeline->needs_vertex_id_stream ||
+                   bound_pipeline->needs_instance_id_stream));
+   }
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = vk_topology_to_mesa(e->draw.topology);
+   info.index_size     = 0;
+   info.instance_count = e->draw.instances;
+   info.start_instance = e->draw.first_instance;
+   struct pipe_draw_start_count_bias draw = {
+      .start      = e->draw.first,
+      .count      = synthetic_streams_ready ?
+         r300vk_robust_vertex_count(bound_pipeline, vb_cache,
+                                     vb_sizes, e->draw.first,
+                                     e->draw.count) : 0,
+      .index_bias = 0,
+   };
+   if (draw.count > 0)
+      pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+}
+
+static void
+r300vk_replay_bind_vertex_buffers(struct r300vk_device *device,
+                                   const struct r300vk_cmd_entry *e,
+                                   struct pipe_vertex_buffer *vb_cache,
+                                   VkDeviceSize *vb_sizes,
+                                   uint32_t *vb_max_used,
+                                   bool *vb_dirty)
+{
+   uint32_t first = e->bind_vbufs.first_binding;
+   uint32_t count = e->bind_vbufs.binding_count;
+   for (uint32_t b = 0; b < count; b++) {
+      vb_cache[first + b].is_user_buffer  = false;
+      vb_cache[first + b].buffer_offset   = (unsigned)e->bind_vbufs.offsets[b];
+      vb_cache[first + b].buffer.resource = e->bind_vbufs.buffers[b]->resource;
+      vb_sizes[first + b] = e->bind_vbufs.buffers[b]->size;
+      if (first + b + 1 > *vb_max_used)
+         *vb_max_used = first + b + 1;
+   }
+   *vb_dirty = true;
+}
+
+static void
+r300vk_replay_set_viewport(struct r300vk_device *device,
+                            const struct r300vk_cmd_entry *e,
+                            uint32_t tile_origin_x,
+                            uint32_t tile_origin_y)
+{
+   struct pipe_context *pipe = device->pipe;
+   struct pipe_viewport_state pv;
+   viewport_vk_to_gallium(&e->set_vp.vp, (float)tile_origin_x,
+                          (float)tile_origin_y, &pv);
+   pipe->set_viewport_states(pipe, 0, 1, &pv);
+}
+
+static void
+r300vk_replay_set_scissor(struct r300vk_device *device,
+                           const struct r300vk_cmd_entry *e,
+                           uint32_t tile_origin_x,
+                           uint32_t tile_origin_y,
+                           uint32_t tile_width,
+                           uint32_t tile_height)
+{
+   struct pipe_context *pipe = device->pipe;
+   struct pipe_scissor_state sc;
+   r300vk_scissor_vk_to_tile(&e->set_sc.scissor, tile_origin_x,
+                             tile_origin_y, tile_width, tile_height,
+                             &sc);
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+}
+
+static void
+r300vk_replay_bind_pipeline(struct r300vk_device *device,
+                             const struct r300vk_cmd_entry *e,
+                             const struct r300vk_pipeline **bound_pipeline,
+                             bool *vb_dirty)
+{
+   struct pipe_context *pipe = device->pipe;
+   const struct r300vk_pipeline *pl = e->bind_pipeline.pipeline;
+   *bound_pipeline = pl;
+   pipe->bind_blend_state(pipe, pl->blend_cso);
+   pipe->bind_rasterizer_state(pipe, pl->rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, pl->dsa_cso);
+   pipe->bind_vs_state(pipe, pl->vs_cso);
+   pipe->bind_fs_state(pipe, pl->fs_cso);
+   pipe->bind_vertex_elements_state(pipe, pl->velems_cso);
+   /* Changing vertex elements requires a subsequent set_vertex_buffers
+    * before the next draw per p_context.h.  Vulkan allows CmdBindPipeline
+    * without a follow-up CmdBindVertexBuffers, so force a VB flush. */
+   *vb_dirty = true;
+}
+
+static void
+r300vk_replay_begin_render_pass(struct r300vk_device *device,
+                                 const struct r300vk_cmd_entry *e,
+                                 unsigned tile_pass,
+                                 uint32_t *tile_origin_x,
+                                 uint32_t *tile_origin_y,
+                                 uint32_t *tile_width,
+                                 uint32_t *tile_height,
+                                 bool *skip_render_pass)
+{
+   struct pipe_context *pipe = device->pipe;
+   struct pipe_framebuffer_state fb;
+   memset(&fb, 0, sizeof(fb));
+   fb.width  = e->begin_rp.width;
+   fb.height = e->begin_rp.height;
+   *skip_render_pass = false;
+   if (e->begin_rp.color_image) {
+      const struct r300vk_image *img = e->begin_rp.color_image;
+      const uint32_t tile_count = r300vk_image_tile_count(img);
+      if (tile_pass >= tile_count) {
+         *skip_render_pass = true;
+         return;
+      }
+
+      const uint32_t tile_col = r300vk_image_tile_col(img, tile_pass);
+      const uint32_t tile_row = r300vk_image_tile_row(img, tile_pass);
+      *tile_origin_x = r300vk_image_tile_origin_x(img, tile_col);
+      *tile_origin_y = r300vk_image_tile_origin_y(img, tile_row);
+      *tile_width = img->tile_cols ? img->tile_width[tile_col] : fb.width;
+      *tile_height = img->tile_rows ? img->tile_height[tile_row] : fb.height;
+      fb.width = *tile_width;
+      fb.height = *tile_height;
+
+      fb.nr_cbufs = 1;
+      fb.cbufs[0].texture     = img->tiles[tile_pass]
+                                ? img->tiles[tile_pass]
+                                : img->resource;
+      fb.cbufs[0].format      = e->begin_rp.color_format;
+      fb.cbufs[0].level       = 0;
+      fb.cbufs[0].first_layer = 0;
+      fb.cbufs[0].last_layer  = 0;
+   } else if (tile_pass > 0) {
+      *skip_render_pass = true;
+      return;
+   }
+   pipe->set_framebuffer_state(pipe, &fb);
+
+   if (e->begin_rp.color_image &&
+       e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+      union pipe_color_union cv;
+      memcpy(cv.f, e->begin_rp.clear_color.float32, sizeof(cv.f));
+      pipe->clear(pipe, PIPE_CLEAR_COLOR0, 0xF, 0, NULL, &cv, 0.0, 0);
+   }
+}
+
+static VkResult
 r300vk_replay_gpu(struct r300vk_device *device,
                   const struct r300vk_cmd_buffer *cmd,
                   struct util_dynarray *transient_vbs)
 {
    struct pipe_context *pipe = device->pipe;
    const uint32_t tile_pass_count = r300vk_cmd_tile_pass_count(cmd);
+   VkResult result = VK_SUCCESS;
 
    for (uint32_t tile_pass = 0; tile_pass < tile_pass_count; tile_pass++) {
       uint32_t tile_origin_x = 0;
@@ -266,10 +560,6 @@ r300vk_replay_gpu(struct r300vk_device *device,
       uint32_t tile_height = 0;
       bool skip_render_pass = false;
 
-      /* VB cache: defers set_vertex_buffers to DRAW time so that it always
-       * follows bind_vertex_elements_state (Gallium p_context.h line 417).
-       * Accumulating here also preserves lower binding slots when firstBinding > 0
-       * without clobbering slots outside the current CmdBindVertexBuffers range. */
       struct pipe_vertex_buffer vb_cache[R300VK_MAX_VERTEX_BINDINGS];
       VkDeviceSize vb_sizes[R300VK_MAX_VERTEX_BINDINGS];
       uint32_t vb_max_used = 0;
@@ -283,373 +573,74 @@ r300vk_replay_gpu(struct r300vk_device *device,
          const struct r300vk_cmd_entry *e = &cmd->entries[i];
 
          switch (e->type) {
-
-      case R300VK_CMD_BEGIN_RENDER_PASS: {
-         struct pipe_framebuffer_state fb;
-         memset(&fb, 0, sizeof(fb));
-         fb.width  = e->begin_rp.width;
-         fb.height = e->begin_rp.height;
-         skip_render_pass = false;
-         if (e->begin_rp.color_image) {
-            const struct r300vk_image *img = e->begin_rp.color_image;
-            const uint32_t tile_count = r300vk_image_tile_count(img);
-            if (tile_pass >= tile_count) {
-               skip_render_pass = true;
-               break;
-            }
-
-            const uint32_t tile_col = r300vk_image_tile_col(img, tile_pass);
-            const uint32_t tile_row = r300vk_image_tile_row(img, tile_pass);
-            tile_origin_x = r300vk_image_tile_origin_x(img, tile_col);
-            tile_origin_y = r300vk_image_tile_origin_y(img, tile_row);
-            tile_width = img->tile_cols ? img->tile_width[tile_col] : fb.width;
-            tile_height = img->tile_rows ? img->tile_height[tile_row] : fb.height;
-            fb.width = tile_width;
-            fb.height = tile_height;
-
-            fb.nr_cbufs = 1;
-            fb.cbufs[0].texture     = img->tiles[tile_pass]
-                                      ? img->tiles[tile_pass]
-                                      : img->resource;
-            fb.cbufs[0].format      = e->begin_rp.color_format;
-            fb.cbufs[0].level       = 0;
-            fb.cbufs[0].first_layer = 0;
-            fb.cbufs[0].last_layer  = 0;
-         } else if (tile_pass > 0) {
-            skip_render_pass = true;
-            break;
-         }
-         pipe->set_framebuffer_state(pipe, &fb);
-
-         if (e->begin_rp.color_image &&
-             e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-            union pipe_color_union cv;
-            memcpy(cv.f, e->begin_rp.clear_color.float32, sizeof(cv.f));
-            pipe->clear(pipe, PIPE_CLEAR_COLOR0, 0xF, 0, NULL, &cv, 0.0, 0);
-         }
-         break;
-      }
-
-      case R300VK_CMD_BIND_PIPELINE: {
-         if (skip_render_pass)
-            break;
-         const struct r300vk_pipeline *pl = e->bind_pipeline.pipeline;
-         bound_pipeline = pl;
-         pipe->bind_blend_state(pipe, pl->blend_cso);
-         pipe->bind_rasterizer_state(pipe, pl->rasterizer_cso);
-         pipe->bind_depth_stencil_alpha_state(pipe, pl->dsa_cso);
-         pipe->bind_vs_state(pipe, pl->vs_cso);
-         pipe->bind_fs_state(pipe, pl->fs_cso);
-         pipe->bind_vertex_elements_state(pipe, pl->velems_cso);
-         /* Changing vertex elements requires a subsequent set_vertex_buffers
-          * before the next draw per p_context.h.  Vulkan allows CmdBindPipeline
-          * without a follow-up CmdBindVertexBuffers, so force a VB flush. */
-         vb_dirty = true;
-         break;
-      }
-
-      case R300VK_CMD_SET_VIEWPORT: {
-         if (skip_render_pass)
-            break;
-         struct pipe_viewport_state pv;
-         viewport_vk_to_gallium(&e->set_vp.vp, (float)tile_origin_x,
-                                (float)tile_origin_y, &pv);
-         pipe->set_viewport_states(pipe, 0, 1, &pv);
-         break;
-      }
-
-      case R300VK_CMD_SET_SCISSOR: {
-         if (skip_render_pass)
-            break;
-         struct pipe_scissor_state sc;
-         r300vk_scissor_vk_to_tile(&e->set_sc.scissor, tile_origin_x,
-                                   tile_origin_y, tile_width, tile_height,
-                                   &sc);
-         pipe->set_scissor_states(pipe, 0, 1, &sc);
-         break;
-      }
-
-      case R300VK_CMD_BIND_VERTEX_BUFFERS: {
-         if (skip_render_pass)
-            break;
-         /* Accumulate into the VB cache rather than calling set_vertex_buffers
-          * immediately.  set_vertex_buffers must follow bind_vertex_elements_state
-          * per p_context.h; deferring to DRAW guarantees the Gallium ordering
-          * contract regardless of the order CmdBindPipeline and
-          * CmdBindVertexBuffers appear in the Vulkan recording. */
-         uint32_t first = e->bind_vbufs.first_binding;
-         uint32_t count = e->bind_vbufs.binding_count;
-         for (uint32_t b = 0; b < count; b++) {
-            vb_cache[first + b].is_user_buffer  = false;
-            vb_cache[first + b].buffer_offset   = (unsigned)e->bind_vbufs.offsets[b];
-            vb_cache[first + b].buffer.resource = e->bind_vbufs.buffers[b]->resource;
-            vb_sizes[first + b] = e->bind_vbufs.buffers[b]->size;
-            if (first + b + 1 > vb_max_used)
-               vb_max_used = first + b + 1;
-         }
-         vb_dirty = true;
-         break;
-      }
-
-      case R300VK_CMD_DRAW: {
-         if (skip_render_pass)
+         case R300VK_CMD_BEGIN_RENDER_PASS:
+            r300vk_replay_begin_render_pass(device, e, tile_pass,
+                                            &tile_origin_x, &tile_origin_y,
+                                            &tile_width, &tile_height,
+                                            &skip_render_pass);
             break;
 
-         /* Resolve pipeline-static viewport/scissor before the draw.  A static
-          * state is not supplied by any CmdSetViewport/CmdSetScissor, so the
-          * SET_VIEWPORT/SET_SCISSOR replay never set it and the pipe viewport
-          * is still zero (scale 0 collapses the primitive to a point).  Apply
-          * it here with the live tile origin -- the same per-tile transform the
-          * dynamic path uses -- so a static pipeline rasterizes.  A dynamic
-          * state leaves has_static_* false and keeps the replay-supplied value;
-          * a pipeline that mixes one static and one dynamic state updates only
-          * the static one here. */
-         if (bound_pipeline && bound_pipeline->has_static_viewport) {
-            struct pipe_viewport_state pv;
-            viewport_vk_to_gallium(&bound_pipeline->static_viewport,
-                                   (float)tile_origin_x, (float)tile_origin_y,
-                                   &pv);
-            pipe->set_viewport_states(pipe, 0, 1, &pv);
-         }
-         if (bound_pipeline && bound_pipeline->has_static_scissor) {
-            struct pipe_scissor_state sc;
-            r300vk_scissor_vk_to_tile(&bound_pipeline->static_scissor,
-                                      tile_origin_x, tile_origin_y,
-                                      tile_width, tile_height, &sc);
-            pipe->set_scissor_states(pipe, 0, 1, &sc);
-         }
-
-         struct pipe_vertex_buffer draw_vb_cache[R300VK_MAX_VERTEX_BINDINGS];
-         memcpy(draw_vb_cache, vb_cache, sizeof(draw_vb_cache));
-         uint32_t draw_vb_max_used = vb_max_used;
-         bool draw_vb_dirty = vb_dirty;
-         bool synthetic_streams_ready = true;
-
-         /* Supply the synthetic VS-system-value stream(s) for this draw: the
-          * vertex-id stream steps per vertex (firstVertex + i), the instance-id
-          * stream per instance (firstInstance + i).  The velems CSO already
-          * carries the matching element + instance_divisor. */
-         if (bound_pipeline && bound_pipeline->needs_vertex_id_stream) {
-            synthetic_streams_ready =
-               r300vk_bind_synthetic_index_stream(
-                  device, pipe, draw_vb_cache,
-                  bound_pipeline->vertex_id_vb_binding, e->draw.first,
-                  e->draw.count, transient_vbs);
-            if (synthetic_streams_ready) {
-               if (bound_pipeline->vertex_id_vb_binding + 1u > draw_vb_max_used)
-                  draw_vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
-               draw_vb_dirty = true;
-            }
-         }
-         if (synthetic_streams_ready && bound_pipeline &&
-             bound_pipeline->needs_instance_id_stream) {
-            synthetic_streams_ready =
-               r300vk_bind_synthetic_index_stream(
-                  device, pipe, draw_vb_cache,
-                  bound_pipeline->instance_id_vb_binding,
-                  e->draw.first_instance, e->draw.instances, transient_vbs);
-            if (synthetic_streams_ready) {
-               if (bound_pipeline->instance_id_vb_binding + 1u >
-                   draw_vb_max_used)
-                  draw_vb_max_used =
-                     bound_pipeline->instance_id_vb_binding + 1u;
-               draw_vb_dirty = true;
-            }
-         }
-         /* Flush the draw VB state after bind_vertex_elements_state (set by
-          * BIND_PIPELINE above in the stream) so the Gallium ordering holds.
-          * draw_vb_max_used tracks the highest slot index written so only the
-          * live range is submitted.  Synthetic streams are draw-local overlays;
-          * vb_dirty restores the application VB cache before a later draw that
-          * does not use the same overlay. */
-         if (draw_vb_dirty) {
-            pipe->set_vertex_buffers(pipe, draw_vb_max_used, draw_vb_cache);
-            vb_dirty = synthetic_streams_ready &&
-                       (bound_pipeline &&
-                        (bound_pipeline->needs_vertex_id_stream ||
-                         bound_pipeline->needs_instance_id_stream));
-         }
-         struct pipe_draw_info info;
-         memset(&info, 0, sizeof(info));
-         /* Topology was snapshotted at record time so the correct primitive
-          * mode is used even if a different pipeline is bound before submit. */
-         info.mode           = vk_topology_to_mesa(e->draw.topology);
-         info.index_size     = 0;
-         info.instance_count = e->draw.instances;
-         info.start_instance = e->draw.first_instance;
-         struct pipe_draw_start_count_bias draw = {
-            .start      = e->draw.first,
-            .count      = synthetic_streams_ready ?
-               r300vk_robust_vertex_count(bound_pipeline, vb_cache,
-                                           vb_sizes, e->draw.first,
-                                           e->draw.count) : 0,
-            .index_bias = 0,
-         };
-         if (draw.count > 0)
-            pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
-         break;
-      }
-
-      case R300VK_CMD_END_RENDER_PASS: {
-         if (skip_render_pass) {
-            skip_render_pass = false;
+         case R300VK_CMD_BIND_PIPELINE:
+            if (skip_render_pass) break;
+            r300vk_replay_bind_pipeline(device, e, &bound_pipeline, &vb_dirty);
             break;
-         }
-         struct pipe_framebuffer_state empty;
-         memset(&empty, 0, sizeof(empty));
-         pipe->set_framebuffer_state(pipe, &empty);
-         tile_origin_x = 0;
-         tile_origin_y = 0;
-         tile_width = 0;
-         tile_height = 0;
-         break;
-      }
 
-      case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
-         /* Handled in the CPU readback pass after flush+fence. */
-         break;
-
-      case R300VK_CMD_PIPELINE_BARRIER: {
-         if (skip_render_pass)
+         case R300VK_CMD_SET_VIEWPORT:
+            if (skip_render_pass) break;
+            r300vk_replay_set_viewport(device, e, tile_origin_x, tile_origin_y);
             break;
-         /* RS482/RS485 is UMA with no auxiliary compression surfaces
-          * (no CMASK, no HTILE, no DCC -- R3xx predates those features).
-          * A layout transition here has no aux decompression step; the
-          * only hardware action is a CS flush to create a submit boundary.
-          *
-          * Flush analysis: pipe->flush() submits the current CS, then
-          * r300_flush_and_cleanup() re-marks every state atom dirty through
-          * r300_mark_atom_dirty() -- r300g has no single dirty bitmask; each
-          * atom carries its own dirty flag walked by foreach_atom.
-          * r300_emit_dirty_state() then re-emits all dirty atoms (framebuffer,
-          * blend, rasterizer, DSA, vertex elements) before the next draw_vbo
-          * call, so state remains
-          * coherent across the flush boundary.  vb_dirty is local
-          * replay-loop state tracking whether the VB cache needs pushing
-          * before the next draw; it is not reset by the flush and continues
-          * to work correctly.
-          *
-          * The submit-time flush in r300vk_queue_driver_submit already
-          * provides the ordering guarantee for the render->readback path,
-          * but an explicit flush here satisfies the Vulkan memory-ordering
-          * contract at barrier granularity for future multi-submit cases. */
-         pipe->flush(pipe, NULL, 0);
 
-         /* Make the barrier resolution observable: a producer-barrier-consumer
-          * dispatch pair (the M-K visibility contract) needs the flush to be
-          * confirmed, not assumed.  Gated by the same R300VK_DEBUG token the
-          * compute-as-raster orchestrators use. */
-         if (identity_map_debug_enabled()) {
-            fprintf(stderr,
-                    "ident_map: pipeline_barrier flush honored "
-                    "(dispatch-barrier-dispatch visibility)\n");
-         }
-
-         /* Update the resource-state ledger so commands after this barrier
-          * observe the new layout.  On RS482/RS485 there is no aux surface
-          * state to transition; this is a pure bookkeeping update. */
-         if (e->barrier.image)
-            e->barrier.image->resource_state.layout = e->barrier.new_layout;
-         break;
-      }
-
-      case R300VK_CMD_BIND_DESCRIPTOR_SETS:
-         /* Track the most recent bind for the dispatch lowering to consume:
-          * the identity-map orchestrator walks this entry's set handles +
-          * dynamic offsets to resolve the kernel's input + output ssbo
-          * bindings to pipe_resource pointers.  A no-op kernel reads no
-          * descriptors so the tracking is harmless there. */
-         last_bind_dsets = &e->bind_dsets;
-         break;
-
-      case R300VK_CMD_DISPATCH:
-         if (skip_render_pass)
+         case R300VK_CMD_SET_SCISSOR:
+            if (skip_render_pass) break;
+            r300vk_replay_set_scissor(device, e, tile_origin_x, tile_origin_y,
+                                      tile_width, tile_height);
             break;
-         /* Identity-map kernels lower onto the fullscreen-quad fragment
-          * draw via the identity-map orchestrator; binary-map kernels
-          * lower onto the same skeleton with two sampler stages via the
-          * binary-map orchestrator; any other admitted kernel falls
-          * through to the no-op compute lifecycle (the same empty-CS
-          * submit boundary the no-op compute lifecycle established). */
-         if (e->dispatch.pipeline &&
-             e->dispatch.pipeline->identity_map.is_identity_map &&
-             last_bind_dsets) {
-            r300vk_identity_map_dispatch_replay(device,
-                                                e->dispatch.pipeline,
-                                                &e->dispatch,
-                                                last_bind_dsets);
-         } else if (e->dispatch.pipeline &&
-                    e->dispatch.pipeline->binary_map.is_binary_map &&
-                    last_bind_dsets) {
-            r300vk_binary_map_dispatch_replay(device,
-                                              e->dispatch.pipeline,
-                                              &e->dispatch,
-                                              last_bind_dsets);
-         } else if (e->dispatch.pipeline &&
-                    e->dispatch.pipeline->blend_acc_reduction.is_blend_acc_reduction &&
-                    last_bind_dsets) {
-            r300vk_blend_acc_reduction_dispatch_replay(device,
-                                                       e->dispatch.pipeline,
-                                                       &e->dispatch,
-                                                       last_bind_dsets);
-         } else if (e->dispatch.pipeline &&
-                    e->dispatch.pipeline->zpass_reduction.is_zpass_reduction &&
-                    last_bind_dsets) {
-            r300vk_zpass_reduction_dispatch_replay(device,
-                                                   e->dispatch.pipeline,
-                                                   &e->dispatch,
-                                                   last_bind_dsets);
-         } else if (e->dispatch.pipeline &&
-                    e->dispatch.pipeline->multipass_scan.is_multipass_scan &&
-                    last_bind_dsets) {
-            r300vk_multipass_scan_dispatch_replay(device,
-                                                  e->dispatch.pipeline,
-                                                  &e->dispatch,
-                                                  last_bind_dsets);
-         } else if (e->dispatch.pipeline &&
-                    e->dispatch.pipeline->predicated_store.is_predicated_store &&
-                    last_bind_dsets) {
-            r300vk_predicated_store_dispatch_replay(device,
-                                                    e->dispatch.pipeline,
-                                                    &e->dispatch,
-                                                    last_bind_dsets);
-         } else if (e->dispatch.pipeline &&
-                    e->dispatch.pipeline->multitap_gather.is_multitap_gather &&
-                    last_bind_dsets) {
-            r300vk_multitap_gather_dispatch_replay(device,
-                                                   e->dispatch.pipeline,
-                                                   &e->dispatch,
-                                                   last_bind_dsets);
+
+         case R300VK_CMD_BIND_VERTEX_BUFFERS:
+            if (skip_render_pass) break;
+            r300vk_replay_bind_vertex_buffers(device, e, vb_cache, vb_sizes,
+                                              &vb_max_used, &vb_dirty);
+            break;
+
+         case R300VK_CMD_DRAW:
+            if (skip_render_pass) break;
+            r300vk_replay_draw(device, e, bound_pipeline, vb_cache, vb_sizes,
+                               vb_max_used, &vb_dirty, tile_origin_x,
+                               tile_origin_y, tile_width, tile_height,
+                               transient_vbs);
+            break;
+
+         case R300VK_CMD_END_RENDER_PASS:
+            r300vk_replay_end_render_pass(device, &skip_render_pass,
+                                          &tile_origin_x, &tile_origin_y,
+                                          &tile_width, &tile_height);
+            break;
+
+         case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
+            break;
+
+         case R300VK_CMD_PIPELINE_BARRIER:
+            r300vk_replay_pipeline_barrier(device, e, skip_render_pass);
+            break;
+
+         case R300VK_CMD_BIND_DESCRIPTOR_SETS:
+            r300vk_replay_bind_descriptor_sets(device, e, &last_bind_dsets);
+            break;
+
+         case R300VK_CMD_DISPATCH:
+            result = r300vk_replay_dispatch(device, e, last_bind_dsets);
+            if (result != VK_SUCCESS)
+               return result;
+            pipe->flush(pipe, NULL, 0);
+            break;
+
+         default: break;
          }
-         /* The *_dispatch_replay calls above return false when the
-          * compute-as-raster lowering fails to produce the kernel's output
-          * (resource create/map failure, or a partial ping-pong pass); the
-          * orchestrator logs the failure.  The fence still signals below, so
-          * a failed lowering currently surfaces to the application as a
-          * completed dispatch with unwritten output.
-          *
-          * TODO: escalate a false *_dispatch_replay return to a submit-level
-          *       VkResult through r300vk_queue_driver_submit so the
-          *       application learns the dispatch did not write its output.
-          *       reason -- the correct VkResult and the submit error path
-          *       need on-hardware verification before changing submit
-          *       semantics on the RS482 target.
-          *       tracking -- r300vk_queue_driver_submit and the
-          *       r300vk_*_dispatch_replay bool contract. */
-         /* The no-op compute kernel emits no GPU work, so this proves the
-          * Vulkan compute object lifecycle (pipeline create, bind, dispatch
-          * record, submit, fence), not GPU activation.  A dispatch is still an
-          * execution boundary: the flush submits any preceding work in a mixed
-          * graphics+compute command buffer, and is a harmless no-op on the
-          * empty compute-only CS.  The submit-time flush in
-          * r300vk_queue_driver_submit signals the fence either way; lowering
-          * the kernel onto the compute-as-raster substrate (the draw that
-          * produces the kernel's output) is the next stage. */
-         pipe->flush(pipe, NULL, 0);
+      }
+      if (result != VK_SUCCESS)
          break;
-      }
-      }
    }
+   return result;
 }
 
 static bool
@@ -770,6 +761,7 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
    struct r300vk_device *device = container_of(queue->vk.base.device,
                                                struct r300vk_device, vk);
    struct pipe_context  *pipe   = device->pipe;
+   VkResult result = VK_SUCCESS;
 
    /* Synthetic VS-system-value vertex buffers allocated during replay; held
     * until after the submit fence, then released. */
@@ -795,21 +787,28 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
          mesa_logw_once("r300vk: cs-direct-emit backend requested via "
                         "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
                         "implemented; using pipe_context replay backend");
-      r300vk_replay_gpu(device, cmd, &transient_vbs);
+      result = r300vk_replay_gpu(device, cmd, &transient_vbs);
+      if (result != VK_SUCCESS)
+         break;
    }
 
-   struct pipe_fence_handle *fence = NULL;
-   pipe->flush(pipe, &fence, 0);
-   if (fence) {
-      device->screen->fence_finish(device->screen, NULL, fence,
-                                   OS_TIMEOUT_INFINITE);
-      device->screen->fence_reference(device->screen, &fence, NULL);
+   if (result == VK_SUCCESS) {
+      struct pipe_fence_handle *fence = NULL;
+      pipe->flush(pipe, &fence, 0);
+      if (fence) {
+         device->screen->fence_finish(device->screen, NULL, fence,
+                                      OS_TIMEOUT_INFINITE);
+         device->screen->fence_reference(device->screen, &fence, NULL);
+      }
    }
 
    /* GPU is done with the draws; release the synthetic VS-system-value streams. */
    util_dynarray_foreach(&transient_vbs, struct pipe_resource *, pres)
       pipe_resource_reference(pres, NULL);
    util_dynarray_fini(&transient_vbs);
+
+   if (result != VK_SUCCESS)
+      return result;
 
    for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
       struct r300vk_cmd_buffer *cmd =
