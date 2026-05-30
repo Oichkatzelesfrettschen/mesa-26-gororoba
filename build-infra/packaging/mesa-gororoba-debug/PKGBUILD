@@ -1,0 +1,95 @@
+# mesa-gororoba-debug: the debug twin of mesa-gororoba.  Same feature set (r300
+# GL + gallium-va MPEG-2 decode + amd_r300/r300vk Vulkan ICD) built with full
+# debug info and assertions, installed into /opt/share/mesa-26-gororoba so it sits
+# ALONGSIDE the release /usr install rather than replacing it.  Point a probe at
+# it explicitly (LD_LIBRARY_PATH, LIBGL_DRIVERS_PATH, LIBVA_DRIVERS_PATH); it
+# carries no provides/conflicts/replaces, so it never becomes the system driver.
+#
+# The prefix is wiped before each install (pre_install/pre_upgrade in the .install
+# hook): a prefix-tree install leaves stale objects when the file set changes
+# across builds, and a stale debug driver is worse than none -- gdb resolves to
+# the wrong sources.  Mirrors the 2_r300 debug meson profile (debugoptimized,
+# b_ndebug=false, frame pointers, libunwind/valgrind/perfetto on).
+pkgname=mesa-gororoba-debug
+pkgver=26.2.0
+pkgrel=3
+epoch=2
+# Same pin policy as the release package: update _commit per build, or override
+# with #branch=main for rapid iteration.
+_commit=0dc3c275f112c3552fdde57492eecd8771aef038
+pkgdesc='Mesa (mesa-26-gororoba fork) DEBUG build: r300 GL + gallium-va MPEG-2 decode + amd_r300/r300vk, full debug info, installed to /opt/share/mesa-26-gororoba (parallel to the /usr release)'
+arch=('x86_64')
+url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
+license=('MIT')
+depends=(
+  expat glibc libdrm libelf libgcc libglvnd libstdc++ libx11 libxcb libxext
+  libxdamage libxshmfence libxxf86vm libva llvm-libs lm_sensors spirv-tools
+  wayland zlib zstd vulkan-icd-loader libunwind valgrind
+)
+makedepends=(
+  clang llvm meson ninja glslang spirv-tools python-mako python-ply
+  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
+  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
+)
+# Parallel /opt/share install: no provides/conflicts/replaces, so it never
+# shadows the system mesa.  Keep debug symbols; no strip, no LTO.
+options=('!strip' '!lto' 'debug' 'staticlibs')
+install="${pkgname}.install"
+source=("mesa-gororoba::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}")
+sha256sums=('SKIP')
+
+_prefix=/opt/share/mesa-26-gororoba
+
+build() {
+  export CC=clang
+  export CXX=clang++
+  export CC_LD=lld
+  export CXX_LD=lld
+
+  # x86-64 psABI baseline (K8 Turion) as the release build, but full debug info
+  # (-g3), no optimization-driven inlining loss (-Og keeps the code debuggable
+  # while staying runnable), and frame pointers for clean backtraces.
+  export CFLAGS='-march=x86-64 -mtune=generic -Og -g3 -pipe -fno-plt -fno-omit-frame-pointer -fexceptions -ffunction-sections -fdata-sections'
+  export CXXFLAGS="${CFLAGS} -Wp,-D_GLIBCXX_ASSERTIONS"
+  export LDFLAGS='-fuse-ld=lld -Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro -Wl,-z,now'
+  export RUSTFLAGS='-C target-cpu=x86-64'
+
+  meson setup mesa-gororoba build \
+    --prefix="${_prefix}" \
+    --sysconfdir=/etc \
+    --buildtype=debug \
+    --wrap-mode=nofallback \
+    -D b_ndebug=false \
+    -D b_lto=false \
+    -D platforms=x11,wayland \
+    -D gallium-drivers=r300,llvmpipe \
+    -D vulkan-drivers=amd_r300 \
+    -D r300vk-gallium-backend=true \
+    -D gallium-rusticl=false \
+    -D llvm=enabled \
+    -D draw-use-llvm=true \
+    -D egl=enabled \
+    -D gbm=enabled \
+    -D glx=dri \
+    -D gles1=enabled \
+    -D gles2=enabled \
+    -D opengl=true \
+    -D glvnd=enabled \
+    -D gallium-va=enabled \
+    -D video-codecs=mpeg12dec \
+    -D valgrind=enabled \
+    -D libunwind=enabled
+
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "${pkgdir}"
+
+  if [ -f mesa-gororoba/docs/license.rst ]; then
+    install -Dm644 mesa-gororoba/docs/license.rst \
+      "${pkgdir}/usr/share/licenses/${pkgname}/license.rst"
+  else
+    echo "WARNING: docs/license.rst not found; license not installed"
+  fi
+}

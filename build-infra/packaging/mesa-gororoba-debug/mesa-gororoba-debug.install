@@ -1,0 +1,33 @@
+# Wipe the debug prefix before (re)installing.  A prefix-tree install does not
+# remove objects that disappeared between builds, so a stale .so or a renamed
+# driver lingers and gdb resolves to the wrong sources -- worse than no debug
+# build.  rm -rf the whole tree so each install is exactly the current build.
+_debug_prefix=/opt/share/mesa-26-gororoba
+
+pre_install() {
+  rm -rf "${_debug_prefix}"
+}
+
+pre_upgrade() {
+  rm -rf "${_debug_prefix}"
+}
+
+post_install() {
+  cat <<MSG
+mesa-gororoba-debug installed to ${_debug_prefix} (parallel to the /usr release).
+Point a probe at it explicitly, e.g.:
+  LD_LIBRARY_PATH=${_debug_prefix}/lib \\
+  LIBGL_DRIVERS_PATH=${_debug_prefix}/lib/dri \\
+  LIBVA_DRIVERS_PATH=${_debug_prefix}/lib/dri LIBVA_DRIVER_NAME=r300 \\
+  gdb --args <consumer>
+It carries no provides/conflicts/replaces; the system driver stays the release.
+MSG
+}
+
+post_upgrade() {
+  post_install
+}
+
+pre_remove() {
+  rm -rf "${_debug_prefix}"
+}
