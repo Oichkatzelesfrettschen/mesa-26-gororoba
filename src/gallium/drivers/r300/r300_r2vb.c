@@ -32,6 +32,7 @@
 
 #include "r300_context.h"
 #include "r300_cs.h"
+#include "r300_emit.h"
 #include "r300_reg.h"
 #include "r300_r2vb.h"
 
@@ -345,6 +346,24 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
     r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, num_vertices,
                                       stage3 ? r300_resource(stage3) : NULL,
                                       s3dim, s3dim);
+
+    /* Replicate r300_flush_and_cleanup's pre-flush finalization.  The self-test
+     * submits with a bare cs_flush instead of going through
+     * r300_flush_and_cleanup, so it must emit the same HyperZ/query end and the
+     * GB_MSPOS multisample sample positions the normal flush emits.  Without
+     * them the submission renders nothing -- the inherited caller draw and the
+     * loop's own draws both produce no fragments (GPU vgt stays idle), which is
+     * why an otherwise well-formed IB read back all zeros. */
+    r300_emit_hyperz_end(r300);
+    r300_emit_query_end(r300);
+    {
+        CS_LOCALS(r300);
+        BEGIN_CS(3);
+        OUT_CS_REG_SEQ(R300_GB_MSPOS0, 2);
+        OUT_CS(0x66666666);
+        OUT_CS(0x6666666);
+        END_CS;
+    }
 
     if (do_submit) {
         struct pipe_fence_handle *fence = NULL;
