@@ -86,6 +86,14 @@ ntr_temp(struct ntr_compile *c)
 
 static void ntr_emit_cf_list(struct ntr_compile *c, struct exec_list *list);
 
+static void
+ntr_fail_unsupported_op(struct ntr_compile *c, const char *what,
+                        const char *name)
+{
+   rc_error(c->compiler, "r300: unsupported %s in nir_to_rc: %s\n",
+            what, name);
+}
+
 static unsigned
 ntr_rc_register_index(struct ntr_compile *c, int index)
 {
@@ -1006,8 +1014,9 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
          break;
 
       default:
-         fprintf(stderr, "Unknown NIR opcode: %s\n", nir_op_infos[instr->op].name);
-         UNREACHABLE("Unknown NIR opcode");
+         ntr_fail_unsupported_op(c, "NIR ALU opcode",
+                                 nir_op_infos[instr->op].name);
+         return;
       }
    }
 }
@@ -1120,13 +1129,17 @@ ntr_emit_load_input(struct ntr_compile *c, nir_intrinsic_instr *instr)
          break;
 
       default:
-         UNREACHABLE("bad barycentric interp intrinsic\n");
-      }
-      break;
+         ntr_fail_unsupported_op(c, "barycentric intrinsic",
+                                 nir_intrinsic_infos[bary_instr->intrinsic].name);
+         return;
+     }
+     break;
    }
 
    default:
-      UNREACHABLE("bad load input intrinsic\n");
+      ntr_fail_unsupported_op(c, "load-input intrinsic",
+                              nir_intrinsic_infos[instr->intrinsic].name);
+      return;
    }
 }
 
@@ -1171,8 +1184,10 @@ ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_frag_coord:
    case nir_intrinsic_load_point_coord:
    case nir_intrinsic_load_front_face:
-      UNREACHABLE("system value should have been lowered to a varying");
-      break;
+      rc_error(c->compiler,
+               "r300: system value should have been lowered before nir_to_rc: %s\n",
+               nir_intrinsic_infos[instr->intrinsic].name);
+      return;
 
    case nir_intrinsic_load_input:
    case nir_intrinsic_load_interpolated_input:
@@ -1220,10 +1235,9 @@ ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
       break;
 
    default:
-      fprintf(stderr, "Unknown intrinsic: ");
-      nir_print_instr(&instr->instr, stderr);
-      fprintf(stderr, "\n");
-      break;
+      ntr_fail_unsupported_op(c, "NIR intrinsic",
+                              nir_intrinsic_infos[instr->intrinsic].name);
+      return;
    }
 }
 
@@ -1292,7 +1306,9 @@ ntr_emit_texture(struct ntr_compile *c, nir_tex_instr *instr)
       tex_opcode = RC_OPCODE_TXD;
       break;
    default:
-      UNREACHABLE("unsupported tex op");
+      rc_error(c->compiler, "r300: unsupported texture op in nir_to_rc: %u\n",
+               instr->op);
+      return;
    }
 
    struct ntr_tex_operand_state s = {.i = 0};
@@ -1335,10 +1351,10 @@ ntr_emit_jump(struct ntr_compile *c, nir_jump_instr *jump)
       break;
 
    default:
-      fprintf(stderr, "Unknown jump instruction: ");
-      nir_print_instr(&jump->instr, stderr);
-      fprintf(stderr, "\n");
-      abort();
+      rc_error(c->compiler,
+               "r300: unsupported jump instruction in nir_to_rc: %u\n",
+               jump->type);
+      return;
    }
 }
 
@@ -1410,7 +1426,11 @@ ntr_emit_if(struct ntr_compile *c, nir_if *if_stmt)
 static void
 ntr_emit_loop(struct ntr_compile *c, nir_loop *loop)
 {
-   assert(!nir_loop_has_continue_construct(loop));
+   if (nir_loop_has_continue_construct(loop)) {
+      rc_error(c->compiler,
+               "r300: continue constructs must be lowered before nir_to_rc emission.\n");
+      return;
+   }
    ntr_BGNLOOP(c);
    ntr_emit_cf_list(c, &loop->body);
    ntr_ENDLOOP(c);
@@ -1421,9 +1441,14 @@ ntr_emit_block(struct ntr_compile *c, nir_block *block)
 {
    nir_foreach_instr (instr, block) {
       ntr_emit_instr(c, instr);
+      if (c->compiler->Error)
+         return;
    }
 
    /* Set up the if condition for ntr_emit_if(). */
+   if (c->compiler->Error)
+      return;
+
    nir_if *nif = nir_block_get_following_if(block);
    if (nif)
       c->if_cond = ntr_get_src(c, nif->condition);
@@ -1449,6 +1474,9 @@ ntr_emit_cf_list(struct ntr_compile *c, struct exec_list *list)
       default:
          UNREACHABLE("unknown CF type");
       }
+
+      if (c->compiler->Error)
+         return;
    }
 }
 
@@ -1741,6 +1769,12 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
       NIR_PASS(_, s, nir_to_rc_lower_tex);
    }
 
+   /* The direct RC emitter walks loop bodies only.  Lower NIR's explicit
+    * continue-list form while the shader is still in SSA so later
+    * nir_convert_from_ssa/nir_legacy_trivialize do not get re-SSA'd by the
+    * continue lowering implementation. */
+   NIR_PASS(_, s, nir_lower_continue_constructs);
+
    bool progress;
    do {
       progress = false;
@@ -1821,23 +1855,25 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
    nir_function_impl *impl = nir_shader_get_entrypoint(c->s);
    ntr_emit_impl(c, impl);
 
-   /* For FS, populate the FS-specific compiler outputs. */
-   if (s->info.stage == MESA_SHADER_FRAGMENT) {
-      struct r300_fragment_program_compiler *fc =
-         (struct r300_fragment_program_compiler *)compiler;
-      rc.f->uses_discard = s->info.fs.uses_discard;
-      fc->OutputDepth = c->fs_output_depth_index >= 0 ? c->fs_output_depth_index
-                                                      : c->num_outputs;
-      for (unsigned i = 0; i < ARRAY_SIZE(c->fs_output_color_index); i++) {
-         fc->OutputColor[i] = c->fs_output_color_index[i] >= 0
-                                ? c->fs_output_color_index[i]
-                                : c->num_outputs;
+   if (!compiler->Error) {
+      /* For FS, populate the FS-specific compiler outputs. */
+      if (s->info.stage == MESA_SHADER_FRAGMENT) {
+         struct r300_fragment_program_compiler *fc =
+            (struct r300_fragment_program_compiler *)compiler;
+         rc.f->uses_discard = s->info.fs.uses_discard;
+         fc->OutputDepth = c->fs_output_depth_index >= 0 ? c->fs_output_depth_index
+                                                         : c->num_outputs;
+         for (unsigned i = 0; i < ARRAY_SIZE(c->fs_output_color_index); i++) {
+            fc->OutputColor[i] = c->fs_output_color_index[i] >= 0
+                                  ? c->fs_output_color_index[i]
+                                  : c->num_outputs;
+         }
+      } else if (s->info.stage == MESA_SHADER_VERTEX) {
+         rc.v->num_inputs = s->num_inputs;
       }
-   } else if (s->info.stage == MESA_SHADER_VERTEX) {
-      rc.v->num_inputs = s->num_inputs;
-   }
 
-   rc_calculate_inputs_outputs(compiler);
+      rc_calculate_inputs_outputs(compiler);
+   }
 
    ralloc_free(c);
    ralloc_free(s);

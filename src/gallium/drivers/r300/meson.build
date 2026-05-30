@@ -169,4 +169,20 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  test(
+    'r300-nir-to-rc',
+    executable(
+      'r300_nir_to_rc_test',
+      files('compiler/tests/r300_nir_to_rc_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
 endif
