@@ -248,19 +248,28 @@ r300vk_DestroyImage(VkDevice _device,
    vk_free2(&device->vk.alloc, pAllocator, img);
 }
 
+VkDeviceSize
+r300vk_image_memory_size(const struct r300vk_image *img)
+{
+   const VkExtent3D *ext = &img->vk.extent;
+
+   return (VkDeviceSize)ext->width * ext->height *
+          MAX2(1u, img->vk.samples) *
+          util_format_get_blocksize(vk_format_to_pipe_format(img->vk.format));
+}
+
 void
 r300vk_GetImageMemoryRequirements2(VkDevice _device,
                                     const VkImageMemoryRequirementsInfo2 *pInfo,
                                     VkMemoryRequirements2 *pMemoryRequirements)
 {
    VK_FROM_HANDLE(r300vk_image, img, pInfo->image);
-   const VkExtent3D *ext = &img->vk.extent;
 
-   /* 4096-byte alignment satisfies r300g tiling requirements. */
+   /* 4096-byte alignment satisfies r300g tiling requirements.  The reported
+    * size must match the bind-time bound check in BindImageMemory2, so both
+    * read it from r300vk_image_memory_size(). */
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
-      .size           = (VkDeviceSize)ext->width * ext->height *
-                        MAX2(1u, img->vk.samples) *
-                        util_format_get_blocksize(vk_format_to_pipe_format(img->vk.format)),
+      .size           = r300vk_image_memory_size(img),
       .alignment      = 4096,
       /* r300g places a single-sample render-target texture in
        * RADEON_DOMAIN_VRAM | RADEON_DOMAIN_GTT (r300_texture.c domain
