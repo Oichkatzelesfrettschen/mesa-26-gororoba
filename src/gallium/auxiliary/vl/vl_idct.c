@@ -154,7 +154,8 @@ idct_pad4(nir_builder *b, nir_def *v)
 static void *
 idct_create_fs(struct vl_idct *idct, nir_builder *b)
 {
-   idct->pipe->screen->finalize_nir(idct->pipe->screen, b->shader, true);
+   if (idct->pipe->screen->finalize_nir)
+      idct->pipe->screen->finalize_nir(idct->pipe->screen, b->shader, true);
 
    struct pipe_shader_state state = {0};
    state.type = PIPE_SHADER_IR_NIR;
@@ -180,7 +181,7 @@ create_mismatch_vert_shader(struct vl_idct *idct)
 
    /* o_vpos.xy = vpos*scale + scale (the +7/VL_BLOCK_WIDTH half-block centring
     * folded into the MAD); o_vpos.zw = 1. */
-   nir_def *pos_xy = nir_ffma(&b, vpos, scale, scale);
+   nir_def *pos_xy = nir_fmad(&b, vpos, scale, scale);
    nir_variable *ov_pos = nir_variable_create(b.shader, nir_var_shader_out,
                                               glsl_vec4_type(), "pos_out");
    ov_pos->data.location = VARYING_SLOT_POS;

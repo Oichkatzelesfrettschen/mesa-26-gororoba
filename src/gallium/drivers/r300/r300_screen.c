@@ -5,6 +5,7 @@
  */
 
 #include "compiler/nir/nir.h"
+#include "compiler/glsl_types.h"
 #include "util/format/u_format.h"
 #include "util/format/u_format_s3tc.h"
 #include "util/u_screen.h"
@@ -618,6 +619,9 @@ static void r300_destroy_screen(struct pipe_screen* pscreen)
     if (rws)
       rws->destroy(rws);
 
+    /* Balance the ref taken in r300_screen_create. */
+    glsl_type_singleton_decref();
+
     FREE(r300screen);
 }
 
@@ -684,6 +688,15 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         FREE(r300screen);
         return NULL;
     }
+
+    /* The GL state tracker refs the glsl type singleton, but the video path
+     * creates this screen through pipe_create_multimedia_context with no state
+     * tracker.  tgsi_to_nir -- reached when util_blitter builds its clear/copy
+     * shaders -- then allocates from a NULL glsl type linear context and faults.
+     * Ref it here so every r300 screen has the type system regardless of the
+     * frontend; r300_destroy_screen drops the ref.  Matches lp_screen.c and
+     * si_gfx_screen.c. */
+    glsl_type_singleton_init_or_ref();
 
     rws->query_info(rws, &r300screen->info);
 

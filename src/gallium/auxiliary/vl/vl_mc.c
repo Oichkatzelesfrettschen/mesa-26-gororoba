@@ -93,7 +93,8 @@ calc_line(nir_builder *b)
 static void *
 mc_create_fs(struct vl_mc *r, nir_builder *b)
 {
-   r->pipe->screen->finalize_nir(r->pipe->screen, b->shader, true);
+   if (r->pipe->screen->finalize_nir)
+      r->pipe->screen->finalize_nir(r->pipe->screen, b->shader, true);
 
    struct pipe_shader_state state = {0};
    state.type = PIPE_SHADER_IR_NIR;
@@ -129,9 +130,9 @@ create_ref_vert_shader(struct vl_mc *r)
    for (unsigned i = 0; i < 2; ++i) {
       nir_def *mv = vmv[i];
       nir_def *o = nir_vec4(&b,
-         nir_ffma(&b, nir_channel(&b, mv_scale, 0), nir_channel(&b, mv, 0),
+         nir_fmad(&b, nir_channel(&b, mv_scale, 0), nir_channel(&b, mv, 0),
                   nir_channel(&b, t_vpos, 0)),
-         nir_ffma(&b, nir_channel(&b, mv_scale, 1), nir_channel(&b, mv, 1),
+         nir_fmad(&b, nir_channel(&b, mv_scale, 1), nir_channel(&b, mv, 1),
                   nir_channel(&b, t_vpos, 1)),
          nir_fmul(&b, nir_channel(&b, mv_scale, 2), nir_channel(&b, mv, 2)),
          nir_fmul(&b, nir_channel(&b, mv_scale, 3), nir_channel(&b, mv, 3)));
@@ -298,7 +299,7 @@ create_ycbcr_frag_shader(struct vl_mc *r, float scale, bool invert,
    nir_def *src = nir_trim_vector(&b, fs_callback(callback_priv, r, &b, VS_O_VTEX), 3);
    nir_def *fz3 = nir_replicate(&b, flags_z, 3);
    nir_def *scaled = (scale != 1.0f)
-      ? nir_ffma(&b, src, nir_replicate(&b, nir_imm_float(&b, scale), 3), fz3)
+      ? nir_fmad(&b, src, nir_replicate(&b, nir_imm_float(&b, scale), 3), fz3)
       : nir_fadd(&b, src, fz3);
    nir_def *rgb = nir_fmul(&b, scaled,
       nir_replicate(&b, nir_imm_float(&b, invert ? -1.0f : 1.0f), 3));
