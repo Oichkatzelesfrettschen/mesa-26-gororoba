@@ -84,5 +84,6 @@ libunwind = 'enabled'
 # events during an RCA.  It clones the large perfetto proto subproject, so build
 # this profile off the larger /home prefix, never the space-constrained tmpfs.
 perfetto = true
-video-codecs = []
+video-codecs = ['mpeg12dec']
+gallium-va = 'enabled'
 vulkan-layers = []
