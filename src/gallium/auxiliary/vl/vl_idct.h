@@ -30,7 +30,7 @@
 
 #include "pipe/p_state.h"
 
-#include "tgsi/tgsi_ureg.h"
+#include "compiler/nir/nir_builder.h"
 
 /* shader based inverse distinct cosinus transformation
  * expect usage of vl_vertex_buffers as a todo list
@@ -79,13 +79,18 @@ struct vl_idct_buffer
 struct pipe_sampler_view *
 vl_idct_upload_matrix(struct pipe_context *pipe, float scale);
 
+/* The second IDCT pass runs inside the motion-compensation ycbcr shaders: the
+ * vertex half emits the four matrix/source addresses into the shared builder at
+ * generic slot first_output (from the macroblock position tex), and the
+ * fragment half samples the intermediate and transpose matrix and returns the
+ * reconstructed residual as an SSA def. */
 void
-vl_idct_stage2_vert_shader(struct vl_idct *idct, struct ureg_program *shader,
-                           unsigned first_output, struct ureg_dst tex);
+vl_idct_stage2_vert_shader(struct vl_idct *idct, nir_builder *b,
+                           unsigned first_output, nir_def *tex);
 
-void
-vl_idct_stage2_frag_shader(struct vl_idct *idct, struct ureg_program *shader,
-                           unsigned first_input, struct ureg_dst fragment);
+nir_def *
+vl_idct_stage2_frag_shader(struct vl_idct *idct, nir_builder *b,
+                           unsigned first_input);
 
 /* init an idct instance */
 bool
