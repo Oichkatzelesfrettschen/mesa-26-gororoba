@@ -26,6 +26,27 @@ r300_get_video_param(struct pipe_screen *screen,
                      enum pipe_video_entrypoint entrypoint,
                      enum pipe_video_cap param)
 {
+   /* The VA frontend probes the profile-independent caps with
+    * PIPE_VIDEO_PROFILE_UNKNOWN before it has selected a codec.  In particular
+    * vlVaCreateSurfaces2 sets interlaced = !SUPPORTS_PROGRESSIVE, so reporting
+    * that cap only for the MPEG12 profile leaves it 0 and allocates every
+    * decode target as a two-layer interlaced array (array_size=2,
+    * height halved) that the g3dvl shader decoder -- which renders progressive
+    * frames only and asserts !target->interlaced -- cannot draw into.  Answer
+    * the profile-independent caps for any profile; gate only the codec-specific
+    * caps on MPEG-1/MPEG-2. */
+   switch (param) {
+   case PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE:
+      return 1;
+   case PIPE_VIDEO_CAP_MAX_WIDTH:
+   case PIPE_VIDEO_CAP_MAX_HEIGHT:
+      /* The decode surfaces are sampled as 2D textures, so the frame size is
+       * bounded by the max 2D texture: 2048 on R300/R400, 4096 on R500. */
+      return vl_video_buffer_max_size(screen);
+   default:
+      break;
+   }
+
    /* Only MPEG-1/MPEG-2 decode exists on this hardware. */
    if (u_reduce_video_profile(profile) != PIPE_VIDEO_FORMAT_MPEG12)
       return 0;
@@ -37,13 +58,6 @@ r300_get_video_param(struct pipe_screen *screen,
       return entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM ||
              entrypoint == PIPE_VIDEO_ENTRYPOINT_IDCT ||
              entrypoint == PIPE_VIDEO_ENTRYPOINT_MC;
-   case PIPE_VIDEO_CAP_MAX_WIDTH:
-   case PIPE_VIDEO_CAP_MAX_HEIGHT:
-      /* The decode surfaces are sampled as 2D textures, so the frame size is
-       * bounded by the max 2D texture: 2048 on R300/R400, 4096 on R500. */
-      return vl_video_buffer_max_size(screen);
-   case PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE:
-      return 1;
    default:
       return 0;
    }
