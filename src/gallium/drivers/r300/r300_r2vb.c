@@ -65,13 +65,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                  RADEON_PRIO_COLOR_BUFFER,
                                  RADEON_DOMAIN_GTT);
 
-    /* 58 dwords for the single-BO loop: stage 1 = 37, stage 2 = 6, stage 3 = 15.
+    /* 60 dwords for the single-BO loop: stage 1 = 39, stage 2 = 6, stage 3 = 15.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
      * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
      * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
      * vertices (twelve dwords).  The stage-3 color-target switch adds nine dwords
      * (COLOROFFSET0 + reloc + COLORPITCH0 + the SC_SCISSORS pair). */
-    BEGIN_CS(stage3_color_bo ? 67 : 58);
+    BEGIN_CS(stage3_color_bo ? 69 : 60);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -131,7 +131,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * the bound wpos fragment program writes its synthesized vertex into each
      * BO slot from gl_FragCoord regardless of what the caller last drew.  The
      * embedded vertices need no relocation -- they travel in the command stream
-     * -- so this draw is independent of any vertex-array BO. */
+     * -- so this draw is independent of any vertex-array BO.
+     *
+     * Disable clipping (R300_CLIP_DISABLE), as r300_blitter_draw_rectangle does
+     * for its immediate-mode draw: with VTX_XY_FMT the vertices are pre-divided
+     * window coordinates, so the clipper -- which expects clip space -- would
+     * otherwise reject the whole triangle and produce no fragments. */
+    OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
     OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
     OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
     OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_0, 1);
