@@ -19,6 +19,7 @@
 #include "r300_screen_buffer.h"
 #include "r300_state_inlines.h"
 #include "r300_public.h"
+#include "r300_video.h"
 
 #include "draw/draw_context.h"
 
@@ -727,6 +728,9 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300screen->screen.fence_reference = r300_fence_reference;
     r300screen->screen.fence_finish = r300_fence_finish;
     r300screen->screen.query_memory_info = r300_query_memory_info;
+    r300screen->screen.get_video_param = r300_get_video_param;
+    r300screen->screen.is_video_format_supported =
+        vl_video_buffer_is_format_supported;
 
     r300screen->screen.nir_options[MESA_SHADER_VERTEX] =
         !r300screen->caps.has_tcl ? &gallivm_compiler_options :

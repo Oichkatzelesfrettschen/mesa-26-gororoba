@@ -79,7 +79,11 @@ if get_option('r300vk-gallium-backend') and with_gallium_r300
   # u_default_texture_subdata, etc.) that libr300.a references but does
   # not define.  Must be in link_with (not dependencies) because meson
   # tracks it as a static_library object, not a declare_dependency.
-  libr300vk_link_with += [libgallium]
+  # libgalliumvl resolves the g3dvl video backend symbols the r300 screen and
+  # context now reference (vl_create_mpeg12_decoder via r300_video.c,
+  # vl_video_buffer_is_format_supported via r300_screen.c); --gc-sections drops
+  # the decode kernels when the codec is disabled.
+  libr300vk_link_with += [libgallium, libgalliumvl]
   libr300vk_c_args += ['-DR300VK_GALLIUM_BACKEND']
 endif
 
