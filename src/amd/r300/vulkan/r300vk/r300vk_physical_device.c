@@ -383,40 +383,48 @@ r300vk_physical_device_destroy(struct vk_physical_device *const device_base)
 
 /* CCN reflects the multi-step DRM device probing sequence: filter by node
  * type, PCI vendor/device IDs, and capability query, each with an exit path. */
-VkResult
-r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
-                                          struct _drmDevice *const drm_device,
-                                          struct vk_physical_device **const device_out)
+
+static int
+r300vk_open_radeon_render_node(struct vk_instance *instance,
+                               struct _drmDevice *const drm_device)
 {
    if (!(drm_device->available_nodes & (1 << DRM_NODE_RENDER)) ||
        drm_device->bustype != DRM_BUS_PCI ||
        drm_device->deviceinfo.pci->vendor_id != R300VK_VENDOR_ID_ATI ||
        !r300vk_pci_device_id_is_supported(drm_device->deviceinfo.pci->device_id)) {
-      return VK_ERROR_INCOMPATIBLE_DRIVER;
+      return -1;
    }
-
-   struct r300vk_instance *const instance =
-      container_of(instance_base, struct r300vk_instance, vk);
 
    const char *const render_node_path = drm_device->nodes[DRM_NODE_RENDER];
    int render_node_fd = open(render_node_path, O_RDWR | O_CLOEXEC);
-   if (render_node_fd < 0) {
-      return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-                       "Failed to open the DRM render node '%s'", render_node_path);
-   }
+   if (render_node_fd < 0)
+      return -1;
 
    drmVersionPtr const drm_version = drmGetVersion(render_node_fd);
    if (drm_version == NULL) {
       close(render_node_fd);
-      return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-                       "Failed to get DRM version for '%s'", render_node_path);
+      return -1;
    }
    const bool is_radeon = strcmp(drm_version->name, "radeon") == 0;
    drmFreeVersion(drm_version);
    if (!is_radeon) {
       close(render_node_fd);
-      return VK_ERROR_INCOMPATIBLE_DRIVER;
+      return -1;
    }
+
+   return render_node_fd;
+}
+
+VkResult
+r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_base,
+                                          struct _drmDevice *const drm_device,
+                                          struct vk_physical_device **const device_out)
+{   int render_node_fd = r300vk_open_radeon_render_node(instance_base, drm_device);
+   if (render_node_fd < 0)
+      return VK_ERROR_INCOMPATIBLE_DRIVER;
+
+   struct r300vk_instance *const instance =
+      container_of(instance_base, struct r300vk_instance, vk);
 
    struct r300vk_physical_device *const device =
       vk_alloc(&instance->vk.alloc, sizeof(*device), alignof(struct r300vk_physical_device),
@@ -661,6 +669,37 @@ r300vk_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
    }
 }
 
+
+static bool
+r300vk_image_usage_supported(VkImageUsageFlags usage,
+                             VkFormatFeatureFlags2 features)
+{
+   if ((usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
+       !(features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT))
+      return false;
+   if ((usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
+       !(features & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT))
+      return false;
+   if ((usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
+       !(features & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT))
+      return false;
+   if ((usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
+       !(features & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT))
+      return false;
+   if ((usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+       !(features & VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT))
+      return false;
+   if ((usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
+       !(features & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
+      return false;
+
+   if (usage & (VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))
+      return false;
+
+   return true;
+}
+
 static VkResult
 r300vk_get_image_format_properties(
    const struct r300vk_physical_device *const device,
@@ -683,29 +722,7 @@ r300vk_get_image_format_properties(
    }
 
    if (image_features == 0)
-      goto unsupported;
-
-   if ((info->usage & VK_IMAGE_USAGE_SAMPLED_BIT) &&
-       !(image_features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT))
-      goto unsupported;
-   if ((info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
-       !(image_features & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT))
-      goto unsupported;
-   if ((info->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) &&
-       !(image_features & VK_FORMAT_FEATURE_2_DEPTH_STENCIL_ATTACHMENT_BIT))
-      goto unsupported;
-   if ((info->usage & VK_IMAGE_USAGE_STORAGE_BIT) &&
-       !(image_features & VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT))
-      goto unsupported;
-   if ((info->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
-       !(image_features & VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT))
-      goto unsupported;
-   if ((info->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
-       !(image_features & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
-      goto unsupported;
-
-   if (info->usage & (VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
-                      VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))
+      goto unsupported;   if (!r300vk_image_usage_supported(info->usage, image_features))
       goto unsupported;
 
    VkExtent3D max_extent;
