@@ -35,11 +35,10 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 
-#include "tgsi/tgsi_ureg.h"
-
 #include "vl_defines.h"
 #include "vl_types.h"
 
+#include "vl_nir.h"
 #include "vl_zscan.h"
 #include "vl_vertex_buffers.h"
 
@@ -119,138 +118,106 @@ const int vl_zscan_h265_up_right_diagonal[] =
 static void *
 create_vert_shader(struct vl_zscan *zscan)
 {
-   struct ureg_program *shader;
-   struct ureg_src scale;
-   struct ureg_src vrect, vpos, block_num;
-   struct ureg_dst tmp;
-   struct ureg_dst o_vpos;
-   struct ureg_dst *o_vtex;
+   const nir_shader_compiler_options *options =
+      zscan->pipe->screen->nir_options[MESA_SHADER_VERTEX];
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, options, "vl:zscan_vs");
    unsigned i;
 
-   shader = ureg_create(MESA_SHADER_VERTEX);
-   if (!shader)
-      return NULL;
+   /* vrect is the quad corner, vpos the block position, block_num the linear
+    * block index; NIR loads expand each vertex input to vec4. */
+   nir_variable *iv_rect = nir_variable_create(b.shader, nir_var_shader_in,
+                                              glsl_vec4_type(), "vrect");
+   iv_rect->data.location = VERT_ATTRIB_GENERIC0 + VS_I_RECT;
+   nir_variable *iv_pos = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "vpos");
+   iv_pos->data.location = VERT_ATTRIB_GENERIC0 + VS_I_VPOS;
+   nir_variable *iv_block = nir_variable_create(b.shader, nir_var_shader_in,
+                                               glsl_vec4_type(), "block_num");
+   iv_block->data.location = VERT_ATTRIB_GENERIC0 + VS_I_BLOCK_NUM;
 
-   o_vtex = MALLOC(zscan->num_channels * sizeof(struct ureg_dst));
+   nir_def *vrect = nir_load_var(&b, iv_rect);
+   nir_def *vpos = nir_load_var(&b, iv_pos);
+   nir_def *block_num = nir_channel(&b, nir_load_var(&b, iv_block), 0);
 
-   scale = ureg_imm2f(shader,
+   /* o_vpos.xy = (vpos + vrect) * scale; zw = 1. */
+   nir_def *scale = nir_imm_vec2(&b,
       (float)VL_BLOCK_WIDTH / zscan->buffer_width,
       (float)VL_BLOCK_HEIGHT / zscan->buffer_height);
+   nir_def *vp_xy = nir_fmul(&b,
+      nir_fadd(&b, nir_trim_vector(&b, vpos, 2), nir_trim_vector(&b, vrect, 2)),
+      scale);
+   nir_variable *ov_pos = nir_variable_create(b.shader, nir_var_shader_out,
+                                             glsl_vec4_type(), "pos_out");
+   ov_pos->data.location = VARYING_SLOT_POS;
+   nir_store_var(&b, ov_pos,
+      nir_vec4(&b, nir_channel(&b, vp_xy, 0), nir_channel(&b, vp_xy, 1),
+               nir_imm_float(&b, 1.0f), nir_imm_float(&b, 1.0f)), 0xf);
 
-   vrect = ureg_DECL_vs_input(shader, VS_I_RECT);
-   vpos = ureg_DECL_vs_input(shader, VS_I_VPOS);
-   block_num = ureg_DECL_vs_input(shader, VS_I_BLOCK_NUM);
-
-   tmp = ureg_DECL_temporary(shader);
-
-   o_vpos = ureg_DECL_output(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS);
-
-   for (i = 0; i < zscan->num_channels; ++i)
-      o_vtex[i] = ureg_DECL_output(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX + i);
-
-   /*
-    * o_vpos.xy = (vpos + vrect) * scale
-    * o_vpos.zw = 1.0f
-    *
-    * tmp.xy = InstanceID / blocks_per_line
-    * tmp.x = frac(tmp.x)
-    * tmp.y = floor(tmp.y)
-    *
-    * o_vtex.x = vrect.x / blocks_per_line + tmp.x
-    * o_vtex.y = vrect.y
-    * o_vtex.z = tmp.z * blocks_per_line / blocks_total
-    */
-   ureg_ADD(shader, ureg_writemask(tmp, TGSI_WRITEMASK_XY), vpos, vrect);
-   ureg_MUL(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_XY), ureg_src(tmp), scale);
-   ureg_MOV(shader, ureg_writemask(o_vpos, TGSI_WRITEMASK_ZW), ureg_imm1f(shader, 1.0f));
-
-   ureg_MUL(shader, ureg_writemask(tmp, TGSI_WRITEMASK_XW), ureg_scalar(block_num, TGSI_SWIZZLE_X),
-            ureg_imm1f(shader, 1.0f / zscan->blocks_per_line));
-
-   ureg_FRC(shader, ureg_writemask(tmp, TGSI_WRITEMASK_Y), ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_X));
-   ureg_FLR(shader, ureg_writemask(tmp, TGSI_WRITEMASK_W), ureg_src(tmp));
+   /* block_num / blocks_per_line splits into the block column (frac) and row
+    * (floor); the per-plane texcoord addresses the scan/coefficient planes. */
+   nir_def *bn =
+      nir_fmul(&b, block_num, nir_imm_float(&b, 1.0f / zscan->blocks_per_line));
+   nir_def *frac_bn = nir_ffract(&b, bn);
+   nir_def *floor_bn = nir_ffloor(&b, bn);
 
    for (i = 0; i < zscan->num_channels; ++i) {
-      ureg_ADD(shader, ureg_writemask(tmp, TGSI_WRITEMASK_X), ureg_scalar(ureg_src(tmp), TGSI_SWIZZLE_Y),
-               ureg_imm1f(shader, 1.0f / (zscan->blocks_per_line * VL_BLOCK_WIDTH)
-                * ((signed)i - (signed)zscan->num_channels / 2)));
+      float chan_off = 1.0f / (zscan->blocks_per_line * VL_BLOCK_WIDTH)
+         * ((signed)i - (signed)zscan->num_channels / 2);
+      nir_def *tx = nir_fadd(&b, frac_bn, nir_imm_float(&b, chan_off));
 
-      ureg_MAD(shader, ureg_writemask(o_vtex[i], TGSI_WRITEMASK_X), vrect,
-               ureg_imm1f(shader, 1.0f / zscan->blocks_per_line), ureg_src(tmp));
-      ureg_MOV(shader, ureg_writemask(o_vtex[i], TGSI_WRITEMASK_Y), vrect);
-      ureg_MOV(shader, ureg_writemask(o_vtex[i], TGSI_WRITEMASK_Z), vpos);
-      ureg_MUL(shader, ureg_writemask(o_vtex[i], TGSI_WRITEMASK_W), ureg_src(tmp),
-               ureg_imm1f(shader, (float)zscan->blocks_per_line / zscan->blocks_total));
+      nir_def *ox = nir_ffma(&b, nir_channel(&b, vrect, 0),
+         nir_imm_float(&b, 1.0f / zscan->blocks_per_line), tx);
+      nir_def *oy = nir_channel(&b, vrect, 1);
+      nir_def *oz = nir_channel(&b, vpos, 2);
+      nir_def *ow = nir_fmul(&b, floor_bn,
+         nir_imm_float(&b, (float)zscan->blocks_per_line / zscan->blocks_total));
+
+      nir_variable *ov_tex = nir_variable_create(b.shader, nir_var_shader_out,
+                                                glsl_vec4_type(), "tex_out");
+      ov_tex->data.location = VARYING_SLOT_VAR0 + i;
+      nir_store_var(&b, ov_tex, nir_vec4(&b, ox, oy, oz, ow), 0xf);
    }
 
-   ureg_release_temporary(shader, tmp);
-   ureg_END(shader);
-
-   FREE(o_vtex);
-
-   return ureg_create_shader_and_destroy(shader, zscan->pipe);
+   return vl_nir_vs_finish(&b, zscan->pipe);
 }
 
 static void *
 create_frag_shader(struct vl_zscan *zscan)
 {
-   struct ureg_program *shader;
-   struct ureg_src *vtex;
-
-   struct ureg_src samp_src, samp_scan, samp_quant;
-
-   struct ureg_dst *tmp;
-   struct ureg_dst quant, fragment;
-
+   struct vl_nir_fs fs;
+   nir_def *coeff[VL_NIR_MAX_TC], *quant[VL_NIR_MAX_TC];
    unsigned i;
 
-   shader = ureg_create(MESA_SHADER_FRAGMENT);
-   if (!shader)
-      return NULL;
+   vl_nir_fs_begin(&fs, zscan->pipe, zscan->num_channels, "vl:zscan_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);   /* coefficient plane */
+   vl_nir_sampler(&fs, 1, GLSL_SAMPLER_DIM_2D);   /* zigzag scan plane */
+   vl_nir_sampler(&fs, 2, GLSL_SAMPLER_DIM_3D);   /* dequant matrix */
+   nir_builder *b = &fs.b;
 
-   vtex = MALLOC(zscan->num_channels * sizeof(struct ureg_src));
-   tmp = MALLOC(zscan->num_channels * sizeof(struct ureg_dst));
-
-   for (i = 0; i < zscan->num_channels; ++i)
-      vtex[i] = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX + i, TGSI_INTERPOLATE_LINEAR);
-
-   samp_src = ureg_DECL_sampler(shader, 0);
-   samp_scan = ureg_DECL_sampler(shader, 1);
-   samp_quant = ureg_DECL_sampler(shader, 2);
-
-   for (i = 0; i < zscan->num_channels; ++i)
-      tmp[i] = ureg_DECL_temporary(shader);
-   quant = ureg_DECL_temporary(shader);
-
-   fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
-
-   /*
-    * tmp.x = tex(vtex, 1)
-    * tmp.y = vtex.z
-    * fragment = tex(tmp, 0) * quant
-    */
-   for (i = 0; i < zscan->num_channels; ++i)
-      ureg_TEX(shader, ureg_writemask(tmp[i], TGSI_WRITEMASK_X), TGSI_TEXTURE_2D, vtex[i], samp_scan);
-
-   for (i = 0; i < zscan->num_channels; ++i)
-      ureg_MOV(shader, ureg_writemask(tmp[i], TGSI_WRITEMASK_Y), ureg_scalar(vtex[i], TGSI_SWIZZLE_W));
-
+   /* Per plane: the scan texture maps the raster column to the zigzag source
+    * column; fetch the coefficient there and multiply by the dequant matrix
+    * value (3D) scaled by 16.  Inverse scan + inverse quant -- the monograph
+    * gather + MAC -- packed one plane per output channel. */
    for (i = 0; i < zscan->num_channels; ++i) {
-      ureg_TEX(shader, ureg_writemask(tmp[0], TGSI_WRITEMASK_X << i), TGSI_TEXTURE_2D, ureg_src(tmp[i]), samp_src);
-      ureg_TEX(shader, ureg_writemask(quant, TGSI_WRITEMASK_X << i), TGSI_TEXTURE_3D, vtex[i], samp_quant);
+      nir_def *vt = fs.texcoord[i];
+      nir_def *scan =
+         nir_channel(b, vl_nir_tex(&fs, 1, nir_trim_vector(b, vt, 2)), 0);
+      nir_def *src_coord = nir_vec2(b, scan, nir_channel(b, vt, 3));
+      coeff[i] = nir_channel(b, vl_nir_tex(&fs, 0, src_coord), 0);
+      nir_def *q =
+         nir_channel(b, vl_nir_tex(&fs, 2, nir_trim_vector(b, vt, 3)), 0);
+      quant[i] = nir_fmul(b, q, nir_imm_float(b, 16.0f));
    }
 
-   ureg_MUL(shader, quant, ureg_src(quant), ureg_imm1f(shader, 16.0f));
-   ureg_MUL(shader, fragment, ureg_src(tmp[0]), ureg_src(quant));
+   nir_def *chan[4];
+   for (i = 0; i < 4; ++i)
+      chan[i] = (i < zscan->num_channels)
+         ? nir_fmul(b, coeff[i], quant[i])
+         : nir_imm_float(b, 0.0f);
 
-   for (i = 0; i < zscan->num_channels; ++i)
-      ureg_release_temporary(shader, tmp[i]);
-   ureg_END(shader);
-
-   FREE(vtex);
-   FREE(tmp);
-
-   return ureg_create_shader_and_destroy(shader, zscan->pipe);
+   return vl_nir_fs_finish(&fs, zscan->pipe,
+      nir_vec4(b, chan[0], chan[1], chan[2], chan[3]));
 }
 
 static bool
@@ -533,7 +500,7 @@ vl_zscan_init_buffer(struct vl_zscan *zscan, struct vl_zscan_buffer *buffer,
 
    memset(&sv_tmpl, 0, sizeof(sv_tmpl));
    u_sampler_view_default_template(&sv_tmpl, res, res->format);
-   sv_tmpl.swizzle_r = sv_tmpl.swizzle_g = sv_tmpl.swizzle_b = sv_tmpl.swizzle_a = TGSI_SWIZZLE_X;
+   sv_tmpl.swizzle_r = sv_tmpl.swizzle_g = sv_tmpl.swizzle_b = sv_tmpl.swizzle_a = PIPE_SWIZZLE_X;
    buffer->quant = zscan->pipe->create_sampler_view(zscan->pipe, res, &sv_tmpl);
    pipe_resource_reference(&res, NULL);
    if (!buffer->quant)
