@@ -51,10 +51,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                              RADEON_PRIO_COLOR_BUFFER,
                              RADEON_DOMAIN_GTT);
 
-    /* 33 dwords: stage 1 = 12, stage 2 = 6, stage 3 = 15.  OUT_CS_REG and
-     * OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,1) emits one header
-     * plus its one value; the LOAD_VBPNTR body is seven dwords. */
-    BEGIN_CS(33);
+    /* 36 dwords: stage 1 = 15, stage 2 = 6, stage 3 = 15.  OUT_CS_REG and
+     * OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N) emits one header
+     * plus its N values; the LOAD_VBPNTR body is seven dwords. */
+    BEGIN_CS(36);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -80,6 +80,18 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * makes the loop pass the validator regardless of the preceding draw's depth
      * state. */
     OUT_CS_REG(R300_ZB_CNTL, 0);
+    /* Scissor to the num_vertices x 1 GTT target.  The CS validator derives the
+     * color-buffer bound from SC_SCISSORS_BR (r300_cs_track_check:
+     * maxy = (BR_Y >> 13) + 1, less the 1440 R300_SCISSORS_OFFSET on pre-RV515),
+     * then rejects the draw if pitch * cpp * maxy exceeds the BO.  The GTT BO is
+     * one row of num_vertices FP32x4 texels, so height 1 yields maxy = 1 and the
+     * exact-fit bound passes; inheriting the caller's full-height scissor would
+     * fail ("Buffer too small for color buffer").  Encoded like
+     * r300_emit_scissor_state for the non-r500 path. */
+    OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
+    OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
+    OUT_CS(((num_vertices + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
+           ((1 + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
     OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
     OUT_CS_RELOC(output_gart_bo);
     OUT_CS_REG(R300_RB3D_COLORPITCH0,
