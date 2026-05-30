@@ -14,7 +14,11 @@
 void *
 vl_nir_vs_finish(nir_builder *b, struct pipe_context *pipe)
 {
-   pipe->screen->finalize_nir(pipe->screen, b->shader, true);
+   /* finalize_nir is an optional screen hook; r300 lowers NIR inside
+    * create_*_state (nir_to_rc) and leaves the hook NULL.  Skip it when absent,
+    * the same guard tgsi_to_nir uses. */
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, b->shader, true);
 
    struct pipe_shader_state state = {0};
    state.type = PIPE_SHADER_IR_NIR;
@@ -96,7 +100,8 @@ vl_nir_fs_finish(struct vl_nir_fs *fs, struct pipe_context *pipe,
                  nir_def *color)
 {
    nir_store_var(&fs->b, fs->out_color, color, 0xf);
-   pipe->screen->finalize_nir(pipe->screen, fs->b.shader, true);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, fs->b.shader, true);
 
    struct pipe_shader_state state = {0};
    state.type = PIPE_SHADER_IR_NIR;

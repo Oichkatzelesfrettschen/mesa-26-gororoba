@@ -77,7 +77,7 @@ create_frag_shader(struct vl_matrix_filter *filter, unsigned num_offsets,
          ? vtex
          : nir_fadd(b, vtex, nir_imm_vec2(b, offsets[i].x, offsets[i].y));
       nir_def *texel = vl_nir_tex(&fs, 0, coord);
-      sum = nir_ffma(b, texel,
+      sum = nir_fmad(b, texel,
                      nir_imm_vec4(b, matrix_values[i], matrix_values[i],
                                   matrix_values[i], matrix_values[i]),
                      sum);
