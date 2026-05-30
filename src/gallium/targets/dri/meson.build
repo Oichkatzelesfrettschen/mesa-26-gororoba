@@ -69,7 +69,8 @@ shared_glapi_lib = libgallium_dri
 
 if with_gallium_va
   va_drivers = []
-  foreach d : [[with_gallium_r600, 'r600'],
+  foreach d : [[with_gallium_r300, 'r300'],
+              [with_gallium_r600, 'r600'],
               [with_gallium_radeonsi, 'radeonsi'],
               [with_gallium_nouveau, 'nouveau'],
               [with_gallium_virgl, 'virtio_gpu'],
