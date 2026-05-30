@@ -259,10 +259,13 @@ create_ycbcr_vert_shader(struct vl_mc *r, vl_mc_ycbcr_vert_shader vs_callback, v
       o_flags_w = nir_bcsel(&b, do_split, new_flags_w, o_flags_w);
    }
 
-   /* Override o_vpos.y (calc_position stored the unadjusted value). */
+   /* Override o_vpos.y by rewriting the full position.  nir_store_var must
+    * keep the vec4 destination width even when only one channel changes. */
    nir_variable *o_vpos = nir_get_variable_with_location(b.shader,
       nir_var_shader_out, VARYING_SLOT_POS, glsl_vec4_type());
-   nir_store_var(&b, o_vpos, o_vpos_y, 0x2);
+   nir_store_var(&b, o_vpos,
+      nir_vec4(&b, nir_channel(&b, t_vpos, 0), o_vpos_y,
+               nir_imm_float(&b, 1.0f), nir_imm_float(&b, 1.0f)), 0xf);
 
    nir_variable *o_flags = nir_variable_create(b.shader, nir_var_shader_out,
       glsl_vec4_type(), "flags_out");
