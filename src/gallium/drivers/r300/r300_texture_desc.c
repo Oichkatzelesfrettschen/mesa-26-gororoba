@@ -257,6 +257,14 @@ static void r300_setup_miptree(struct r300_screen *screen,
 
         if (base->target == PIPE_TEXTURE_CUBE)
             size = layer_size * 6;
+        else if (base->target == PIPE_TEXTURE_1D_ARRAY ||
+                 base->target == PIPE_TEXTURE_2D_ARRAY)
+            /* Array layers are counted by array_size, not depth0 (which is 1 for
+             * a 2D array).  The g3dvl MPEG decoder allocates a 2D-array video
+             * surface (array_size=2 for interlaced fields), so the texture must
+             * cover every layer or the per-layer offset below points past the
+             * allocation. */
+            size = layer_size * base->array_size;
         else
             size = layer_size * u_minify(tex->tex.depth0, i);
 
@@ -649,6 +657,12 @@ unsigned r300_texture_get_offset(struct r300_resource *tex,
     switch (tex->b.target) {
         case PIPE_TEXTURE_3D:
         case PIPE_TEXTURE_CUBE:
+        case PIPE_TEXTURE_1D_ARRAY:
+        case PIPE_TEXTURE_2D_ARRAY:
+            /* Array layers share the 3D/cube per-layer offset: each layer is one
+             * layer_size_in_bytes slice.  The g3dvl MPEG decoder transfers a
+             * 2D-array video surface with box->z as the layer, so an array target
+             * must take this path rather than asserting layer==0. */
             return offset + layer * tex->tex.layer_size_in_bytes[level];
 
         default:
