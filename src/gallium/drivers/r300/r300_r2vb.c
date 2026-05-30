@@ -177,7 +177,12 @@ void r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300)
     templ.height0 = 1;
     templ.depth0 = 1;
     templ.array_size = 1;
-    templ.bind = PIPE_BIND_VERTEX_BUFFER;
+    /* PIPE_BIND_CUSTOM is load-bearing: r300_buffer_create puts a plain vertex
+     * buffer in RAM (rbuf->buf == NULL) on a no-TCL part like RS482, since SWTCL
+     * vertices are CPU-side.  The R2VB path needs a real GART BO the GPU renders
+     * to and fetches from, and PIPE_BIND_CUSTOM is the flag r300 uses to force
+     * the winsys allocation instead of the RAM path. */
+    templ.bind = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_CUSTOM;
     templ.usage = PIPE_USAGE_DEFAULT;
     struct pipe_resource *res = pscreen->resource_create(pscreen, &templ);
     if (!res)
