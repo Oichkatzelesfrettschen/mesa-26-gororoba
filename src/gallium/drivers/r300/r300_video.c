@@ -15,6 +15,7 @@
 
 #include "util/u_video.h"
 
+#include "vl/vl_video_buffer.h"
 #include "vl/vl_mpeg12_decoder.h"
 
 #include "r300_video.h"
@@ -38,8 +39,9 @@ r300_get_video_param(struct pipe_screen *screen,
              entrypoint == PIPE_VIDEO_ENTRYPOINT_MC;
    case PIPE_VIDEO_CAP_MAX_WIDTH:
    case PIPE_VIDEO_CAP_MAX_HEIGHT:
-      /* Bounded by the maximum 2D texture the decode surfaces are sampled as. */
-      return 2048;
+      /* The decode surfaces are sampled as 2D textures, so the frame size is
+       * bounded by the max 2D texture: 2048 on R300/R400, 4096 on R500. */
+      return vl_video_buffer_max_size(screen);
    case PIPE_VIDEO_CAP_SUPPORTS_PROGRESSIVE:
       return 1;
    default:
