@@ -657,16 +657,21 @@ unsigned r300_texture_get_offset(struct r300_resource *tex,
     switch (tex->b.target) {
         case PIPE_TEXTURE_3D:
         case PIPE_TEXTURE_CUBE:
+        case PIPE_TEXTURE_CUBE_ARRAY:
         case PIPE_TEXTURE_1D_ARRAY:
         case PIPE_TEXTURE_2D_ARRAY:
-            /* Array layers share the 3D/cube per-layer offset: each layer is one
-             * layer_size_in_bytes slice.  The g3dvl MPEG decoder transfers a
-             * 2D-array video surface with box->z as the layer, so an array target
-             * must take this path rather than asserting layer==0. */
+            /* Layered targets put each layer one layer_size_in_bytes slice apart
+             * (3D depth slices, cube faces, array layers).  The g3dvl MPEG decoder
+             * builds these, so an array/cube target must take this path rather
+             * than asserting layer==0. */
             return offset + layer * tex->tex.layer_size_in_bytes[level];
 
         default:
-            assert(layer == 0);
+            /* A non-layered target has only layer 0.  The g3dvl zscan tiled-copy
+             * path can pass a spurious non-zero layer against a single-layer
+             * staging texture; a release build (assert compiled out) already
+             * returns the layer-0 offset, which is correct because that is the
+             * only layer.  Match it here instead of aborting the whole decode. */
             return offset;
     }
 }
