@@ -59,7 +59,10 @@ Remaining drift building `libgalliumvl.a` (~86 errors, 2 files truncated at
 
 ## Milestones (a clean libgalliumvl.a is milestone 1 of 3)
 
-1. Decode kernels compile: `libgalliumvl.a` builds clean (the drift above).
+1. DONE -- Decode kernels compile: `libgalliumvl.a` links clean on the
+   `1_r300_full_release_x86_64v1-clang22-distcc-cache` toolchain, `-Werror`, 0
+   `ureg_`/`tgsi_` residual across all five kernels.  All five (matrix_filter,
+   zscan, mc, idct, mpeg12_decoder) are pure NIR.
 2. r300 backend wiring: add `r300_get_video_param` + `screen.get_video_param` +
    `screen.is_video_format_supported = vl_video_buffer_is_format_supported` +
    `context.create_video_codec` (-> `vl_create_mpeg12_decoder`) to the mesa-26
@@ -68,8 +71,30 @@ Remaining drift building `libgalliumvl.a` (~86 errors, 2 files truncated at
 3. Hazard-gated runtime: `vainfo` shows the MPEG-2 profile, then end-to-end decode
    of a clip on vostro (tasks 14/28), NIR->RC budget compile-verify (task 27).
 
-Only after milestone 1 builds clean does this branch become a merge candidate; the
-backend (milestone 2) makes va advertise a profile, and milestone 3 is "it plays."
+### A clean build is NOT validated NIR (the gate between milestone 1 and 3)
+
+Every `create_*_shader` runs at decoder-INIT (`create_fs_state` ->
+`finalize_nir` -> `nir_to_rc`), not at build time.  The release build also has
+`-DNDEBUG`, so `nir_validate` never runs.  So milestone 1 proves only that the C
+is well-formed and the vtable arities match -- it proves NOTHING about whether
+the NIR is valid (no undef reads, consistent slots, right component counts) or
+whether it lowers to r300 RC within budget.  The first real NIR test is task 27,
+at decoder-init, and it is earlier and cheaper than the milestone-3 decode oracle.
+
+MUST do milestone 2 against the DEBUG r300 prefix (`2_r300...debug`), not release:
+the debug build runs `nir_validate` at `finalize_nir` (asserts with a location on
+malformed NIR) and surfaces RC-budget failures as a clear error.  `vainfo`-level
+init then validates and lowers all thirteen shaders before a clip is needed.
+Suspect for a budget bust: `create_stage1_frag_shader` (four render targets x
+four channels of `matrix_mul` plus ~16 TEX) against RS482's R300-class (not R500)
+fragment limits.
+
+MERGE BAR: do NOT merge thirteen never-instantiated shaders to main.  This branch
+becomes a merge candidate only after decoder-init validates and lowers to RC on
+the debug build -- one small step past milestone 1.  If hardware output is garbage
+while the pipeline runs clean, re-derive the unpacked-varying slot map first (the
+single structural deviation from the proven shader; internally consistent, so the
+highest-probability bug site, not a confirmed one).
 
 ## Remaining-class API contracts (mesa 26, verified against source)
 
