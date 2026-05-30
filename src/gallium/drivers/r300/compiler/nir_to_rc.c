@@ -1689,6 +1689,16 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
       c->semantics = &rc.v->outputs;
    }
 
+   /* nir_to_rc reads instr->sampler_index/texture_index, which nir_lower_samplers
+    * fills in from the sampler/texture deref sources.  GL shaders arrive already
+    * lowered by the state tracker (st_nir_lower_samplers), but the g3dvl video
+    * shaders (vl_zscan/vl_mc/vl_idct) are built directly as NIR and bypass it, so
+    * their deref sources survive.  nir_gather_types types those derefs uint, and
+    * nir_lower_int_to_float asserts on a surviving uint deref.  Run the pass here
+    * so both paths reach codegen with a resolved sampler index; it is a no-op on
+    * the already-lowered GL shaders. */
+   NIR_PASS(_, s, nir_lower_samplers);
+
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
       static const nir_lower_sysvals_to_varyings_options sysval_options = {
          .frag_coord = true,
