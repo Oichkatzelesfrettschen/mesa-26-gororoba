@@ -107,6 +107,126 @@ Done so far on this branch: superseded `vl_decoder.c` deleted; `p_compiler.h` ->
   radeonsi `si_*`), not by counting args.  Do LAST, one site at a time, each
   against its reference caller.
 
+## Pure-NIR shader conversion (directive: deprecate TGSI completely)
+
+The render/state plumbing above is IR-agnostic and stays.  The ureg/TGSI shader
+GENERATORS (~13 builders, ~293 ureg ops: idct 125, mc 99, zscan 39,
+matrix_filter 25, mpeg12_decoder 5) are rewritten as `nir_builder`.  r300 is
+NIR-native (`r300_screen.c` advertises `PIPE_SHADER_IR_NIR`; `r300_fs.c` lowers
+via `nir_to_rc`), so NIR feeds `create_fs_state`/`create_vs_state` directly.
+
+HAZARD (advisor-flagged): from-scratch NIR decode math compiles clean but can be
+garbage; the only oracle is the hazard-gated Vostro probe (tasks 14/28).  Derive
+each shader from the monograph math, build on the `1_r300` clang-22/distcc/ccache
+toolchain, then differentially validate on hardware.
+
+### r300-native NIR builder template (verified: `r300_fs.c:174`, `vl_compositor_cs.c:119`)
+
+```c
+const nir_shader_compiler_options *opt =
+    pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opt, "vl:NAME");
+/* texture+sampler: one glsl_sampler_type var, nir_var_uniform, .data.binding=i */
+const struct glsl_type *st = glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false,
+                                               GLSL_TYPE_FLOAT);
+nir_variable *samp = nir_variable_create(b.shader, nir_var_uniform, st, "samp");
+samp->data.binding = 0;
+nir_deref_instr *sd = nir_build_deref_var(&b, samp);
+/* input varying texcoord, output color */
+nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                        glsl_vec4_type(), "tc");
+in->data.location = VARYING_SLOT_VAR0;                 /* TGSI GENERIC[0] */
+nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                        glsl_vec4_type(), "col");
+out->data.location = FRAG_RESULT_COLOR;
+/* ... build dataflow ... */
+nir_store_var(&b, out, result, 0xf);
+struct pipe_shader_state s = {0};
+s.type = PIPE_SHADER_IR_NIR;
+s.ir.nir = b.shader;
+return pipe->create_fs_state(pipe, &s);   /* r300 finalizes + nir_to_rc */
+```
+
+### ureg -> nir_builder op atlas
+
+| ureg (TGSI) | nir_builder | Notes |
+|---|---|---|
+| `ureg_create(MESA_SHADER_FRAGMENT)` | `nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opt, name)` | opt from `screen->nir_options[stage]` |
+| `ureg_DECL_vs_input(u, i)` | `nir_variable_create(.., nir_var_shader_in, vec4, ..)`, `.location=VERT_ATTRIB_GENERIC0+i`; `nir_load_var` | |
+| `ureg_DECL_fs_input(GENERIC, k, LINEAR)` | in var `.location=VARYING_SLOT_VAR0+k`; `nir_load_var` | interp is default smooth |
+| `ureg_DECL_output(POSITION,0)` (VS) | out var `.location=VARYING_SLOT_POS` | |
+| `ureg_DECL_output(GENERIC,k)` (VS) | out var `.location=VARYING_SLOT_VAR0+k` | |
+| `ureg_DECL_output(COLOR,0)` (FS) | out var `.location=FRAG_RESULT_COLOR` | |
+| `ureg_DECL_sampler(i)`+`_sampler_view` | one `glsl_sampler_type` uniform var, `.binding=i`, `nir_build_deref_var` | combined in NIR |
+| `ureg_DECL_system_value(POSITION)` | `nir_load_frag_coord(&b)` | replaces PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL branch -- always sysval |
+| `ureg_MOV(dst,src)` | direct SSA use / `nir_mov` | |
+| `ureg_ADD` | `nir_fadd` | |
+| `ureg_MUL` | `nir_fmul` | |
+| `ureg_MAD(d,a,b,c)` | `nir_ffma(b,a,b,c)` | a*b+c |
+| `ureg_TEX(d,2D,coord,samp)` | `nir_tex(&b, coord, .texture_deref=sd, .sampler_deref=sd)` | coord = vec2 (xy) |
+| `ureg_imm1f/2f/4f` | `nir_imm_float/vec2/vec4` | |
+| `ureg_writemask(d, XY)` | `nir_channels(def, 0x3)` / component build | |
+| `ureg_END`+`ureg_create_shader_and_destroy` | `s.type=IR_NIR; s.ir.nir=b.shader; create_fs_state` | |
+
+### Worked: vl_matrix_filter shaders in NIR (separable conv = monograph P3)
+
+VS passthrough (`pos -> {POSITION, GENERIC0=pos}`):
+
+```c
+nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
+    pipe->screen->nir_options[MESA_SHADER_VERTEX], "vl:mf_vs");
+nir_variable *ip = nir_variable_create(b.shader, nir_var_shader_in,
+    glsl_vec4_type(), "ipos"); ip->data.location = VERT_ATTRIB_GENERIC0;
+nir_variable *op = nir_variable_create(b.shader, nir_var_shader_out,
+    glsl_vec4_type(), "opos"); op->data.location = VARYING_SLOT_POS;
+nir_variable *ot = nir_variable_create(b.shader, nir_var_shader_out,
+    glsl_vec4_type(), "otex"); ot->data.location = VARYING_SLOT_VAR0;
+nir_def *p = nir_load_var(&b, ip);
+nir_store_var(&b, op, p, 0xf);
+nir_store_var(&b, ot, p, 0xf);     /* vl quad: texcoord == position */
+```
+
+FS (`sum_i matrix[i] * TEX(vtex + offsets[i])`, the >= rank-1 P3 convolution):
+
+```c
+/* template header above; samp at binding 0, in tc=VAR0, out col=COLOR */
+nir_def *vtex = nir_trim_vector(&b, nir_load_var(&b, in), 2);   /* xy */
+nir_def *sum  = nir_imm_vec4(&b, 0, 0, 0, 0);
+for (i = 0; i < num_offsets; ++i) {
+    if (matrix_values[i] == 0.0f) continue;
+    nir_def *c = is_vec_zero(offsets[i]) ? vtex :
+        nir_fadd(&b, vtex, nir_imm_vec2(&b, offsets[i].x, offsets[i].y));
+    nir_def *t = nir_tex(&b, c, .texture_deref = sd, .sampler_deref = sd);
+    sum = nir_ffma(&b, t, nir_imm_vec4(&b, matrix_values[i], matrix_values[i],
+                                       matrix_values[i], matrix_values[i]), sum);
+}
+nir_store_var(&b, out, sum, 0xf);
+```
+
+The blend ADD/ONE/ONE state (A8) still accumulates across the instanced quads, so
+per-pass output is one tap; identical numerics to the TGSI version, ALU/TEX within
+D6.  `nir_ffma` is the FP24 MAC (L1); the offsets land on the A3 grid.
+
+### Per-kernel order + monograph anchor
+
+1. `vl_matrix_filter` (above) -- P3 separable convolution.  Validated template.
+2. `vl_zscan` -- gather/scatter by zigzag index texture; inverse-quant MAC + clamp.
+3. `vl_mc` -- `calc_line` interlace select (`frac(pos.y/2) >= 0.5`, now
+   `nir_load_frag_coord`), half-pel bilinear (L3), residual ADD + `MOV_SAT`
+   (`nir_fsat`).
+4. `vl_idct` -- separable DCT-III matrix-MAC, two passes (Theorem S4); the 125-op
+   kernel; stage/transpose intermediate via the multipass surface.
+5. `vl_mpeg12_decoder` -- orchestration; 5 ureg ops are glue, wire the NIR shaders.
+
+### Hardware validation loop (every shader)
+
+```sh
+# build on the 1_r300 clang-22 + distcc + ccache toolchain
+ninja -C build-port src/gallium/auxiliary/libgalliumvl.a   # NIR->RC compile-verify (task 27)
+# then on cachyos-vostro1000 (hazard-gated, tasks 14/28): vainfo MPEG2 profile,
+# decode a known clip, diff frames vs a reference decoder (the only correctness oracle)
+```
+
 ## Build / iterate / verify order
 
 1. Wire meson; build vl/ kernels (video enabled) under the canonical clang-22
