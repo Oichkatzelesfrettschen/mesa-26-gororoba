@@ -2267,6 +2267,18 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
        nir_shader *clone = nir_shader_clone(NULL, vs->state.ir.nir);
        ralloc_free(vs->state.ir.nir);
        ntr_fixup_varying_slots(clone, nir_var_shader_out);
+       /* nir_to_tgsi assigns each output its TGSI register from
+        * var->data.driver_location but never assigns the locations itself.
+        * The optimization pipeline above does not preserve the output
+        * driver_locations a directly-built NIR shader carries, so without a
+        * fresh assignment every output collapses onto register OUT[0]:
+        * nir_to_tgsi then packs POSITION and the generics together, the
+        * VS body writes them all to OUT[0], and draw's position_output (the
+        * POSITION declaration's scan index) no longer matches the written
+        * register -- draw_llvm's outputs[position_output] is null and the
+        * viewport/clip stage dereferences it.  Assign output locations here so
+        * each output gets a distinct register before translation. */
+       nir_assign_io_var_locations(clone, nir_var_shader_out);
        vs->state.tokens = nir_to_tgsi(clone, pipe->screen);
        vs->state.type = PIPE_SHADER_IR_TGSI;
     }
