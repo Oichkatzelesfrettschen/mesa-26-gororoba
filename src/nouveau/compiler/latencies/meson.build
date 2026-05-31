@@ -58,3 +58,12 @@ libnak_latencies_rs = static_library(
   rust_abi : 'rust',
   rust_args : rust_global_args,
 )
+
+if with_tests
+  test(
+    'nouveau_lat_rs_gen',
+    prog_python,
+    args : [files('test_lat_rs_gen.py')],
+    suite : ['nouveau'],
+  )
+endif
