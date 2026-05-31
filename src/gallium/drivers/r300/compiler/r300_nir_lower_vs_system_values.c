@@ -3,11 +3,13 @@
  *
  * Lower VS system values to synthetic vertex inputs.
  *
- * The RC vertex path has no system-value input slot.  A caller that reserves
- * an ordinary vertex attribute slot can supply VertexIndex or InstanceIndex as
- * per-vertex data and run this pass before nir_to_rc().  After nir_lower_io
- * lowers the synthetic variable, ntr_emit_load_input reads from RC input
- * slot == driver_location because it keys load_input on nir_intrinsic_base.
+ * RS480-family parts keep num_vert_fpus = 0, so r300g ordinary draws route
+ * vertex work through Gallium Draw SW-TCL.  The RC vertex path has no
+ * system-value input slot.  A caller that reserves an ordinary vertex
+ * attribute slot can supply VertexIndex or InstanceIndex as per-vertex data
+ * and run this pass before nir_to_rc().  After nir_lower_io lowers the
+ * synthetic variable, ntr_emit_load_input reads from RC input slot ==
+ * driver_location because it keys load_input on nir_intrinsic_base.
  *
  * The pass runs only when the caller reserved a slot for a given system value
  * (slot >= 0).  Without a reserved slot, the intrinsic remains in the shader
