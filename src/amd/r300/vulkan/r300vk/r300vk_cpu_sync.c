@@ -119,7 +119,14 @@ r300vk_cpu_sync_wait(struct vk_device *device,
 
 const struct vk_sync_type r300vk_cpu_sync_type = {
    .size     = sizeof(struct r300vk_cpu_sync),
+   /* GPU_WAIT lets this CPU-backed sync stand in for a binary semaphore:
+    * get_semaphore_sync_type (vk_semaphore.c) requires GPU_WAIT | BINARY, and
+    * vk_common_CreateSemaphore asserts a match.  On the single-queue serialized
+    * CPU-replay model a queue wait on a semaphore is satisfied by submit
+    * ordering, so advertising GPU_WAIT is honest -- the wait is already complete
+    * by the time the next submit replays (the software-rasterizer pattern). */
    .features = VK_SYNC_FEATURE_BINARY     |
+               VK_SYNC_FEATURE_GPU_WAIT   |
                VK_SYNC_FEATURE_CPU_WAIT   |
                VK_SYNC_FEATURE_CPU_RESET  |
                VK_SYNC_FEATURE_CPU_SIGNAL |
