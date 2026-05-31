@@ -706,10 +706,10 @@ wsi_configure_native_image(const struct wsi_swapchain *chain,
          __vk_append_struct(&info->create, &info->drm_mod_list);
       } else {
          vk_free(&chain->alloc, image_modifiers);
-         /* TODO: Add a proper error here */
-         assert(!"Failed to find a supported modifier!  This should never "
-                 "happen because LINEAR should always be available");
-         goto fail_oom;
+         result = vk_errorf(NULL, VK_ERROR_INITIALIZATION_FAILED,
+                            "Failed to find a supported modifier! This should never "
+                            "happen because LINEAR should always be available");
+         goto fail_modifier;
       }
    }
 
@@ -718,8 +718,10 @@ wsi_configure_native_image(const struct wsi_swapchain *chain,
    return VK_SUCCESS;
 
 fail_oom:
+   result = VK_ERROR_OUT_OF_HOST_MEMORY;
+fail_modifier:
    wsi_destroy_image_info(chain, info);
-   return VK_ERROR_OUT_OF_HOST_MEMORY;
+   return result;
 }
 
 static VkResult
