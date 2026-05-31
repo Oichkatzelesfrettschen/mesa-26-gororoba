@@ -93,6 +93,9 @@ calc_line(nir_builder *b)
 static void *
 mc_create_fs(struct vl_mc *r, nir_builder *b)
 {
+   nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+   nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b->shader, nir_var_shader_out);
    if (r->pipe->screen->finalize_nir)
       r->pipe->screen->finalize_nir(r->pipe->screen, b->shader, true);
 

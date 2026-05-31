@@ -154,6 +154,9 @@ idct_pad4(nir_builder *b, nir_def *v)
 static void *
 idct_create_fs(struct vl_idct *idct, nir_builder *b)
 {
+   nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+   nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b->shader, nir_var_shader_out);
    if (idct->pipe->screen->finalize_nir)
       idct->pipe->screen->finalize_nir(idct->pipe->screen, b->shader, true);
 

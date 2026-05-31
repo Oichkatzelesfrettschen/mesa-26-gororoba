@@ -14,6 +14,15 @@
 void *
 vl_nir_vs_finish(nir_builder *b, struct pipe_context *pipe)
 {
+   /* nir_builder shaders must gather info and have IO var locations assigned
+    * before being consumed: nir_to_tgsi (SW-TCL VS) and nir_to_rc (FS) both
+    * key TGSI register / interpolator indices off var->data.driver_location,
+    * which they read but never assign.  Without this every input/output
+    * collapses onto slot 0 (no POSITION export, all texcoords on interp 0). */
+   nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+   nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b->shader, nir_var_shader_out);
+
    /* finalize_nir is an optional screen hook; r300 lowers NIR inside
     * create_*_state (nir_to_rc) and leaves the hook NULL.  Skip it when absent,
     * the same guard tgsi_to_nir uses. */
@@ -100,6 +109,9 @@ vl_nir_fs_finish(struct vl_nir_fs *fs, struct pipe_context *pipe,
                  nir_def *color)
 {
    nir_store_var(&fs->b, fs->out_color, color, 0xf);
+   nir_shader_gather_info(fs->b.shader, nir_shader_get_entrypoint(fs->b.shader));
+   nir_assign_io_var_locations(fs->b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(fs->b.shader, nir_var_shader_out);
    if (pipe->screen->finalize_nir)
       pipe->screen->finalize_nir(pipe->screen, fs->b.shader, true);
 
