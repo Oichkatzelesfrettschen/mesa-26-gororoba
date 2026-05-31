@@ -603,6 +603,57 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
    }
 }
 
+static void
+r300vk_replay_clear_attachments(struct r300vk_device *device,
+                                const struct r300vk_cmd_entry *render_pass,
+                                const struct r300vk_cmd_clear_attachments *clear,
+                                unsigned tile_pass,
+                                uint32_t tile_origin_x,
+                                uint32_t tile_origin_y,
+                                uint32_t tile_width,
+                                uint32_t tile_height)
+{
+   if (!render_pass || !render_pass->begin_rp.color_image)
+      return;
+
+   const struct r300vk_image *img = render_pass->begin_rp.color_image;
+   const int64_t req_min_x = clear->rect.offset.x;
+   const int64_t req_min_y = clear->rect.offset.y;
+   const int64_t req_max_x = req_min_x + clear->rect.extent.width;
+   const int64_t req_max_y = req_min_y + clear->rect.extent.height;
+   const int64_t tile_min_x = tile_origin_x;
+   const int64_t tile_min_y = tile_origin_y;
+   const int64_t tile_max_x = tile_min_x + tile_width;
+   const int64_t tile_max_y = tile_min_y + tile_height;
+   const int64_t clip_min_x = MAX2(req_min_x, tile_min_x);
+   const int64_t clip_min_y = MAX2(req_min_y, tile_min_y);
+   const int64_t clip_max_x = MIN2(req_max_x, tile_max_x);
+   const int64_t clip_max_y = MIN2(req_max_y, tile_max_y);
+
+   if (clip_max_x <= clip_min_x || clip_max_y <= clip_min_y)
+      return;
+
+   struct pipe_surface surf;
+   memset(&surf, 0, sizeof(surf));
+   surf.texture     = img->tiles[tile_pass] ? img->tiles[tile_pass] :
+                                             img->resource;
+   surf.format      = render_pass->begin_rp.color_format;
+   surf.level       = 0;
+   surf.first_layer = 0;
+   surf.last_layer  = 0;
+
+   union pipe_color_union color;
+   memset(&color, 0, sizeof(color));
+   memcpy(&color, &clear->color, sizeof(clear->color));
+
+   device->pipe->clear_render_target(device->pipe, &surf, &color,
+                                     (unsigned)(clip_min_x - tile_min_x),
+                                     (unsigned)(clip_min_y - tile_min_y),
+                                     (unsigned)(clip_max_x - clip_min_x),
+                                     (unsigned)(clip_max_y - clip_min_y),
+                                     false);
+}
+
 static VkResult
 r300vk_replay_gpu(struct r300vk_device *device,
                   const struct r300vk_cmd_buffer *cmd,
@@ -625,6 +676,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
       bool vb_dirty = false;
       const struct r300vk_pipeline *bound_pipeline = NULL;
       const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets = NULL;
+      const struct r300vk_cmd_entry *current_render_pass = NULL;
       memset(vb_cache, 0, sizeof(vb_cache));
       memset(vb_sizes, 0, sizeof(vb_sizes));
 
@@ -637,6 +689,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                             &tile_origin_x, &tile_origin_y,
                                             &tile_width, &tile_height,
                                             &skip_render_pass);
+            current_render_pass = e;
             break;
 
          case R300VK_CMD_BIND_PIPELINE:
@@ -711,6 +764,15 @@ r300vk_replay_gpu(struct r300vk_device *device,
             r300vk_replay_end_render_pass(device, &skip_render_pass,
                                           &tile_origin_x, &tile_origin_y,
                                           &tile_width, &tile_height);
+            current_render_pass = NULL;
+            break;
+
+         case R300VK_CMD_CLEAR_ATTACHMENTS:
+            if (skip_render_pass) break;
+            r300vk_replay_clear_attachments(device, current_render_pass,
+                                            &e->clear_attachments, tile_pass,
+                                            tile_origin_x, tile_origin_y,
+                                            tile_width, tile_height);
             break;
 
          case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
