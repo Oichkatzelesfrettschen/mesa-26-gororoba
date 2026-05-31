@@ -49,6 +49,26 @@ void r300_nir_classify_compute(const struct nir_shader *s,
 /* Human-readable name of a rejection reason (static string). */
 const char *r300_compute_reject_name(enum r300_compute_reject reason);
 
+/* Enum-keyed reject-reason registry.  The detail field on struct
+ * r300_compute_admission names the SPECIFIC offending construct (an intrinsic or
+ * opcode name) found while classifying; this registry names the CATEGORY-level
+ * reason keyed by the enum: a stable machine key and the absent hardware
+ * capability that makes the construct unlowerable.  One row exists per enum
+ * value; a build-time assert in r300_compute_admission.c keeps the table and the
+ * enum from diverging. */
+struct r300_compute_reject_row {
+   enum r300_compute_reject reason;
+   const char *key;               /* stable machine-readable key */
+   const char *substrate_absence; /* the absent hardware capability */
+};
+
+/* Registry row for a reason; never NULL for a valid enum value. */
+const struct r300_compute_reject_row *
+r300_compute_reject_lookup(enum r300_compute_reject reason);
+
+/* The absent hardware capability behind a rejection (static string). */
+const char *r300_compute_reject_substrate_absence(enum r300_compute_reject reason);
+
 /* Identity-map pattern recognized at compute-pipeline-create time so the
  * dispatch-replay can lower the kernel to a fullscreen-quad fragment draw that
  * samples in_tex (NEAREST) and writes the RB3D color export.  The pattern is

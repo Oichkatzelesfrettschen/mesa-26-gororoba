@@ -15,6 +15,7 @@
 #include "r300_compute_admission.h"
 
 #include "compiler/nir/nir.h"
+#include "util/macros.h"
 
 static bool
 identity_map_debug_enabled(void)
@@ -1006,16 +1007,52 @@ r300_nir_classify_compute(const nir_shader *s,
    }
 }
 
+/* Enum-keyed reject-reason registry: one row per r300_compute_reject value,
+ * ordered by enum value.  key is the stable token a consumer switches on;
+ * substrate_absence is the hardware capability the RS482 compute-as-raster
+ * substrate lacks, which is why the construct cannot lower.  This is the single
+ * source of truth for both r300_compute_reject_name and the substrate-absence
+ * reason -- the classifier's per-site detail string names the specific
+ * construct, this names the category. */
+static const struct r300_compute_reject_row r300_compute_reject_registry[] = {
+   { R300_COMPUTE_ADMIT, "admit",
+     "admissible: the kernel maps onto a compute-as-raster substrate verb" },
+   { R300_COMPUTE_REJECT_SHARED_MEMORY, "shared-memory",
+     "R3xx has no LDS; fragment lanes share no workgroup-local memory" },
+   { R300_COMPUTE_REJECT_BARRIER, "barrier",
+     "fragments are not a synchronized workgroup; no control or memory barrier exists" },
+   { R300_COMPUTE_REJECT_GENERAL_ATOMIC, "general-atomic",
+     "the only atomics are blend ADD/MIN/MAX/SUB, the stencil increment, and the ZPASS reduction; no arbitrary-address atomic exists" },
+   { R300_COMPUTE_REJECT_RW_STORAGE, "rw-storage",
+     "the substrate has texture-load input and one RB3D color export; no scatter or arbitrary read-write storage exists" },
+   { R300_COMPUTE_REJECT_FP64, "fp64",
+     "the fragment ALU is FP24 (s1e7m16); no double-precision path exists" },
+};
+
+const struct r300_compute_reject_row *
+r300_compute_reject_lookup(enum r300_compute_reject reason)
+{
+   /* One row per enum value: this guard fails the build if a reason is added to
+    * the enum without a registry row -- the divergence the registry prevents.
+    * STATIC_ASSERT is a do/while statement, so it lives inside a function. */
+   STATIC_ASSERT(ARRAY_SIZE(r300_compute_reject_registry) ==
+                 R300_COMPUTE_REJECT_FP64 + 1);
+   for (unsigned i = 0; i < ARRAY_SIZE(r300_compute_reject_registry); i++) {
+      if (r300_compute_reject_registry[i].reason == reason)
+         return &r300_compute_reject_registry[i];
+   }
+   /* Not reachable for a valid enum value; the admit row is the safe default. */
+   return &r300_compute_reject_registry[0];
+}
+
 const char *
 r300_compute_reject_name(enum r300_compute_reject reason)
 {
-   switch (reason) {
-   case R300_COMPUTE_ADMIT:                 return "admit";
-   case R300_COMPUTE_REJECT_SHARED_MEMORY:  return "shared-memory";
-   case R300_COMPUTE_REJECT_BARRIER:        return "barrier";
-   case R300_COMPUTE_REJECT_GENERAL_ATOMIC: return "general-atomic";
-   case R300_COMPUTE_REJECT_RW_STORAGE:     return "rw-storage";
-   case R300_COMPUTE_REJECT_FP64:           return "fp64";
-   }
-   return "unknown";
+   return r300_compute_reject_lookup(reason)->key;
+}
+
+const char *
+r300_compute_reject_substrate_absence(enum r300_compute_reject reason)
+{
+   return r300_compute_reject_lookup(reason)->substrate_absence;
 }
