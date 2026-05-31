@@ -22,6 +22,7 @@ extern "C" {
 struct r300vk_pipeline;
 struct r300vk_image;
 struct r300vk_buffer;
+struct r300vk_event;
 struct r300vk_descriptor_set;
 struct r300vk_cmd_bind_descriptor_sets;
 
@@ -40,6 +41,8 @@ enum r300vk_cmd_type {
    R300VK_CMD_FILL_BUFFER,
    R300VK_CMD_COPY_BUFFER,
    R300VK_CMD_UPDATE_BUFFER,
+   R300VK_CMD_SET_EVENT,
+   R300VK_CMD_RESET_EVENT,
    R300VK_CMD_PIPELINE_BARRIER,
    R300VK_CMD_DISPATCH,
    R300VK_CMD_BIND_DESCRIPTOR_SETS,
@@ -118,6 +121,14 @@ struct r300vk_cmd_update_buffer {
    void                 *data;
 };
 
+/* One vkCmdSetEvent2 / vkCmdResetEvent2.  Replayed in the post-fence CPU pass as
+ * a host status write to the event, so a GetEventStatus after submit observes
+ * it.  The event object outlives the command buffer's use (spec rule), so the
+ * recorder keeps a plain pointer. */
+struct r300vk_cmd_event {
+   struct r300vk_event *event;
+};
+
 /* One image layout transition from a vkCmdPipelineBarrier2 call, so the
  * resource-state ledger can be updated at replay time.  vkCmdPipelineBarrier2
  * records one entry per VkImageMemoryBarrier2 in the dependency, so every
@@ -172,6 +183,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_fill_buffer          fill_buffer;
       struct r300vk_cmd_copy_buffer          copy_buffer;
       struct r300vk_cmd_update_buffer        update_buffer;
+      struct r300vk_cmd_event                event;
       struct r300vk_cmd_pipeline_barrier     barrier;
       struct r300vk_cmd_dispatch             dispatch;
       struct r300vk_cmd_bind_descriptor_sets bind_dsets;
