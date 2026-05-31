@@ -411,7 +411,7 @@ def main() -> None:
             args.filter_func = compile_filter(args.filter)
         except Exception as e:
             print(f"Error: Invalid filter: {e}")
-            return
+            raise SystemExit(2)
 
     args.func(args)
 
