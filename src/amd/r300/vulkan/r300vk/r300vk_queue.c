@@ -9,6 +9,7 @@
 #include "r300vk_image.h"
 #include "r300vk_buffer.h"
 #include "r300vk_object.h"
+#include "r300vk_descriptor.h"
 #include "r300vk_identity_map.h"
 
 #include <stdlib.h>
@@ -327,10 +328,53 @@ r300vk_replay_pipeline_barrier(struct r300vk_device *device,
       e->barrier.image->resource_state.layout = e->barrier.new_layout;
 }
 
+/* Bind the first uniform-buffer descriptor in the bound sets to the r300
+ * constant file at CONST[0] for both stages, so a graphics shader's
+ * load_ubo(0, ...) reads it.  r300 has a single constant file, so only index 0
+ * is addressable -- the pipeline-compile guard rejects shaders needing more, and
+ * this binds the first UBO found.  r300vk buffers are host-visible Gallium
+ * PIPE_BUFFERs, so cb.buffer feeds r300_set_constant_buffer directly (it reads
+ * malloced_buffer with no GPU upload), matching the compute identity-map path. */
+static void
+r300vk_bind_descriptor_ubo(struct r300vk_device *device,
+                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!binds)
+      return;
+
+   for (uint32_t s = 0; s < binds->set_count; s++) {
+      const struct r300vk_descriptor_set *set = binds->sets[s];
+      if (!set || !set->layout)
+         continue;
+      for (uint32_t b = 0; b < set->layout->binding_count; b++) {
+         const struct r300vk_dsl_binding *bnd = &set->layout->bindings[b];
+         if (bnd->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+            continue;
+         const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
+         VK_FROM_HANDLE(r300vk_buffer, buf, desc->buf.buffer);
+         if (!buf || !buf->resource)
+            continue;
+
+         struct pipe_constant_buffer cb;
+         memset(&cb, 0, sizeof(cb));
+         cb.buffer        = buf->resource;
+         cb.buffer_offset = (unsigned)desc->buf.offset;
+         cb.buffer_size   = desc->buf.range == VK_WHOLE_SIZE
+                            ? (unsigned)(buf->size - desc->buf.offset)
+                            : (unsigned)desc->buf.range;
+         pipe->set_constant_buffer(pipe, MESA_SHADER_VERTEX, 0, &cb);
+         pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
+         return;
+      }
+   }
+}
+
 static void
 r300vk_replay_draw(struct r300vk_device *device,
                     const struct r300vk_cmd_entry *e,
                     const struct r300vk_pipeline *bound_pipeline,
+                    const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets,
                     struct pipe_vertex_buffer *vb_cache,
                     VkDeviceSize *vb_sizes,
                     uint32_t vb_max_used,
@@ -427,8 +471,10 @@ r300vk_replay_draw(struct r300vk_device *device,
                                      e->draw.count) : 0,
       .index_bias = 0,
    };
-   if (draw.count > 0)
+   if (draw.count > 0) {
+      r300vk_bind_descriptor_ubo(device, last_bind_dsets);
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   }
 }
 
 static void
@@ -617,7 +663,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
          case R300VK_CMD_DRAW:
             if (skip_render_pass) break;
-            r300vk_replay_draw(device, e, bound_pipeline, vb_cache, vb_sizes,
+            r300vk_replay_draw(device, e, bound_pipeline, last_bind_dsets,
+                               vb_cache, vb_sizes,
                                vb_max_used, &vb_dirty, tile_origin_x,
                                tile_origin_y, tile_width, tile_height,
                                transient_vbs);
@@ -650,7 +697,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
                synth.draw.first          = args->firstVertex;
                synth.draw.first_instance = args->firstInstance;
                synth.draw.topology       = di->topology;
-               r300vk_replay_draw(device, &synth, bound_pipeline, vb_cache,
+               r300vk_replay_draw(device, &synth, bound_pipeline,
+                                  last_bind_dsets, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
                                   tile_height, transient_vbs);

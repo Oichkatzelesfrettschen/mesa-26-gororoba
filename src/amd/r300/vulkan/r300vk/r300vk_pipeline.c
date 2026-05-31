@@ -20,6 +20,7 @@
 #include "vk_util.h"
 
 #include "compiler/nir/nir.h"
+#include "compiler/nir/nir_builder.h"
 #include "compiler/spirv/nir_spirv.h"
 #include "r300/r300_compute_admission.h"
 #include "pipe/p_context.h"
@@ -185,6 +186,63 @@ static const struct spirv_to_nir_options r300vk_spirv_opts = {
    .shared_addr_format     = nir_address_format_32bit_offset,
 };
 
+/* r300 has one constant file (RC_FILE_CONSTANT); ntr_emit_load_ubo addresses
+ * UBO index 0 only.  vk_spirv_to_nir leaves each UBO descriptor at its
+ * layout-assigned buffer index, which is non-zero for any binding the SPIR-V did
+ * not place first, so even a single-UBO shader would otherwise trip nir_to_rc's
+ * index-0 assert.  r300vk_bind_descriptor_ubo binds the one bound uniform buffer
+ * at CONST[0], so rewrite every load_ubo[_vec4] buffer index to 0.  A shader
+ * that reads more than one distinct UBO, or indexes a UBO array dynamically,
+ * cannot be packed into the single constant file: return false so the pipeline
+ * is rejected at create time (VK_ERROR_FEATURE_NOT_PRESENT) rather than aliased
+ * to CONST[0] or aborted in the assert. */
+static bool
+r300vk_nir_remap_single_ubo_to_index0(nir_shader *nir)
+{
+   int64_t seen_index = -1;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_ubo &&
+                intr->intrinsic != nir_intrinsic_load_ubo_vec4)
+               continue;
+            if (!nir_src_is_const(intr->src[0]))
+               return false;
+            uint64_t idx = nir_src_as_uint(intr->src[0]);
+            if (seen_index < 0)
+               seen_index = (int64_t)idx;
+            else if ((uint64_t)seen_index != idx)
+               return false;
+         }
+      }
+   }
+   if (seen_index <= 0)
+      return true;
+
+   nir_foreach_function_impl(impl, nir) {
+      bool progress = false;
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_ubo &&
+                intr->intrinsic != nir_intrinsic_load_ubo_vec4)
+               continue;
+            b.cursor = nir_before_instr(instr);
+            nir_src_rewrite(&intr->src[0], nir_imm_int(&b, 0));
+            progress = true;
+         }
+      }
+      nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+   return true;
+}
+
 static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
@@ -216,6 +274,32 @@ r300vk_compile_shader(struct r300vk_device *device,
                        "r300vk: vk_spirv_to_nir failed for %s shader",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
+
+   /* vk_spirv_to_nir emits UBO/SSBO access as a vulkan_resource_index ->
+    * load_vulkan_descriptor -> cast -> load_deref chain (ubo_addr_format =
+    * 32bit_index_offset above).  nir_to_rc (the FS path) and nir_to_tgsi (the
+    * SW-TCL VS path on RS480-family) have no handler for those intrinsics, so an
+    * unlowered chain dummy-shaders the FS or aborts the VS.  Lower it to
+    * load_ubo/load_ssbo, which ntr_emit_load_ubo consumes; r300 carries a single
+    * UBO at index 0 (nir_lower_uniforms_to_ubo), so a multi-binding shader still
+    * narrows at that index-0 assert.  The compute-classify path matches. */
+   NIR_PASS(_, nir, nir_lower_explicit_io,
+            nir_var_mem_ubo | nir_var_mem_ssbo,
+            nir_address_format_32bit_index_offset);
+   /* nir_lower_explicit_io leaves load_ubo with a byte offset, but nir_to_rc's
+    * ntr_emit_load_ubo addresses the constant file by vec4 index (it handles
+    * load_ubo_vec4 and applies the component shift).  Convert to load_ubo_vec4,
+    * the same form r300g's GL uniforms-to-UBO path feeds nir_to_rc. */
+   NIR_PASS(_, nir, nir_lower_ubo_vec4);
+
+   if (!r300vk_nir_remap_single_ubo_to_index0(nir)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: %s shader needs multiple UBOs or a dynamic UBO "
+                       "index; r300 has a single constant file",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
+   }
 
    /* vk_spirv_to_nir sets data.location for VS inputs (VERT_ATTRIB_GENERIC0+n)
     * but leaves data.driver_location at zero for all variables.  nir_lower_io
