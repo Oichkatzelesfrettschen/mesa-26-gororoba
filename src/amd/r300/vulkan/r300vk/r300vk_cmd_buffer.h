@@ -37,6 +37,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_DRAW,
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
+   R300VK_CMD_FILL_BUFFER,
    R300VK_CMD_PIPELINE_BARRIER,
    R300VK_CMD_DISPATCH,
    R300VK_CMD_BIND_DESCRIPTOR_SETS,
@@ -82,6 +83,16 @@ struct r300vk_cmd_copy_image_to_buf {
    struct r300vk_image  *src;
    struct r300vk_buffer *dst;
    VkBufferImageCopy2    region;
+};
+
+/* One vkCmdFillBuffer: fill [offset, offset+size) of a buffer with a repeated
+ * 32-bit value.  Replayed as a CPU map-and-fill in the post-fence pass; size
+ * may be VK_WHOLE_SIZE, resolved to the buffer tail at replay. */
+struct r300vk_cmd_fill_buffer {
+   struct r300vk_buffer *buffer;
+   VkDeviceSize          offset;
+   VkDeviceSize          size;
+   uint32_t              data;
 };
 
 /* One image layout transition from a vkCmdPipelineBarrier2 call, so the
@@ -135,6 +146,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_bind_vertex_buffers  bind_vbufs;
       struct r300vk_cmd_draw                 draw;
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
+      struct r300vk_cmd_fill_buffer          fill_buffer;
       struct r300vk_cmd_pipeline_barrier     barrier;
       struct r300vk_cmd_dispatch             dispatch;
       struct r300vk_cmd_bind_descriptor_sets bind_dsets;
