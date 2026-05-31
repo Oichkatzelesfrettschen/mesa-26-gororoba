@@ -282,7 +282,7 @@ vk_meta_draw_volume(struct vk_command_buffer *cmd,
    VkResult result = create_vertex_buffer(cmd, meta, x_scale, y_scale,
                                           1, rect, &vtx_buffer);
    if (unlikely(result != VK_SUCCESS)) {
-      /* TODO: Report error */
+      vk_command_buffer_set_error(cmd, result);
       return;
    }
 
@@ -322,7 +322,7 @@ vk_meta_draw_rects(struct vk_command_buffer *cmd,
                                              count, &rects[next_rect],
                                              &vtx_buffer);
       if (unlikely(result != VK_SUCCESS)) {
-         /* TODO: Report error */
+         vk_command_buffer_set_error(cmd, result);
          return;
       }
 
