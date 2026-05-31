@@ -79,18 +79,23 @@ impl ${to_camel(reg_file)}Latency${sm.upper()} {
 ## A mere convenience to convert snake_case to CamelCase. Numbers are prefixed
 ## with "_".
 def to_camel(snake_str):
+    if not snake_str:
+        return snake_str
     result = ''.join(word.title() for word in snake_str.split('_'))
     return result if not result[0].isdigit() else '_' + result
 
-def reader(csvfile):
+def parse_csv(iterable):
     """Wrapper around csv.reader that skips comments and blanks."""
+    for line in csv.reader(iterable):
+        if line and not line[0].startswith('#'):
+            yield line
+
+def reader(csvfile):
     # csv.reader actually reads the file one line at a time (it was designed to
     # open excel generated sheets), so hold the file until all of the lines are
     # read.
     with open(csvfile, 'r') as f:
-        for line in csv.reader(f):
-            if line and not line[0].startswith('#'):
-                yield line
+        yield from parse_csv(f)
 
 class Fld(object):
     def __init__(self, line):
