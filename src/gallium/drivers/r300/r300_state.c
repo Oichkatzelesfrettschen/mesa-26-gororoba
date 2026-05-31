@@ -433,6 +433,28 @@ static unsigned blend_read_enable(unsigned eqRGB, unsigned eqA,
     return blend_control;
 }
 
+/* An intensity or luminance render target (I8/L8/R8 take the I8 hardware format,
+ * COLORMASK_RRRR) has no independent alpha channel: the single stored component
+ * is replicated to the alpha the blender reads, so a SRC_ALPHA or DST_ALPHA
+ * factor aliases to the color value instead of a real alpha.  An additive pass
+ * with rgb_src_factor == SRC_ALPHA then squares the color.  Neutralize every
+ * alpha-derived factor to its constant for such targets, paralleling the
+ * DST_ALPHA -> ONE handling already applied to alpha-less RGBX formats. */
+static unsigned r300_blend_factor_no_alpha(unsigned factor)
+{
+    switch (factor) {
+    case PIPE_BLENDFACTOR_SRC_ALPHA:
+    case PIPE_BLENDFACTOR_DST_ALPHA:
+    case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
+        return PIPE_BLENDFACTOR_ONE;
+    case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
+    case PIPE_BLENDFACTOR_INV_DST_ALPHA:
+        return PIPE_BLENDFACTOR_ZERO;
+    default:
+        return factor;
+    }
+}
+
 /* Create a new blend state based on the CSO blend state.
  *
  * This encompasses alpha blending, logic/raster ops, and blend dithering. */
@@ -449,6 +471,8 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
     uint32_t alpha_blend_control_noclamp = 0; /* R300_RB3D_ABLEND: 0x4e08 */
     uint32_t alpha_blend_control_noalpha = 0; /* R300_RB3D_ABLEND: 0x4e08 */
     uint32_t alpha_blend_control_noalpha_noclamp = 0; /* R300_RB3D_ABLEND: 0x4e08 */
+    uint32_t blend_control_intensity = 0;     /* R300_RB3D_CBLEND: 0x4e04 */
+    uint32_t alpha_blend_control_intensity = 0; /* R300_RB3D_ABLEND: 0x4e08 */
     uint32_t rop = 0;                 /* R300_RB3D_ROPCNTL: 0x4e18 */
     uint32_t dither = 0;              /* R300_RB3D_DITHER_CTL: 0x4e50 */
     int i;
@@ -485,6 +509,13 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
         dstRGBX = PIPE_BLENDFACTOR_ZERO;
         break;
     }
+
+    /* Intensity/luminance targets (COLORMASK_RRRR) have no independent alpha,
+     * so neutralize the source alpha factors as well, not just the dest ones. */
+    unsigned srcRGBI = r300_blend_factor_no_alpha(srcRGB);
+    unsigned dstRGBI = r300_blend_factor_no_alpha(dstRGB);
+    unsigned srcAI = r300_blend_factor_no_alpha(srcA);
+    unsigned dstAI = r300_blend_factor_no_alpha(dstA);
 
     /* Get blending register values. */
     if (state->rt[0].blend_enable) {
@@ -548,6 +579,25 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
             alpha_blend_control_noalpha |= r300_translate_blend_function(eqA, true);
             alpha_blend_control_noalpha_noclamp |= r300_translate_blend_function(eqA, false);
         }
+
+        /* Intensity/luminance variant (clamped): neutralized source and dest
+         * alpha factors so SRC_ALPHA cannot alias to the replicated color. */
+        blend_control_intensity =
+            R300_ALPHA_BLEND_ENABLE |
+            (r300_translate_blend_factor(srcRGBI) << R300_SRC_BLEND_SHIFT) |
+            (r300_translate_blend_factor(dstRGBI) << R300_DST_BLEND_SHIFT);
+        blend_control_intensity |= blend_eq;
+        blend_control_intensity |= blend_read_enable(eqRGB, eqA, dstRGBI, dstAI,
+                                                     srcRGBI, srcAI, r300screen->caps.is_r500);
+        blend_control_intensity |= blend_discard_conditionally(eqRGB, eqA, dstRGBI, dstAI,
+                                                               srcRGBI, srcAI);
+        if (srcAI != srcRGBI || dstAI != dstRGBI || eqA != eqRGB) {
+            blend_control_intensity |= R300_SEPARATE_ALPHA_ENABLE;
+            alpha_blend_control_intensity =
+                (r300_translate_blend_factor(srcAI) << R300_SRC_BLEND_SHIFT) |
+                (r300_translate_blend_factor(dstAI) << R300_DST_BLEND_SHIFT);
+            alpha_blend_control_intensity |= r300_translate_blend_function(eqA, true);
+        }
     }
 
     /* PIPE_LOGICOP_* don't need to be translated, fortunately. */
@@ -583,12 +633,15 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
 
         for (i = 0; i < COLORMASK_NUM_SWIZZLES; i++) {
             bool has_alpha = i != COLORMASK_RGBX && i != COLORMASK_BGRX;
+            bool intensity = i == COLORMASK_RRRR;
 
             BEGIN_CB(blend->cb_clamp[i], 8);
             OUT_CB_REG(R300_RB3D_ROPCNTL, rop);
             OUT_CB_REG_SEQ(R300_RB3D_CBLEND, 3);
-            OUT_CB(has_alpha ? blend_control : blend_control_noalpha);
-            OUT_CB(has_alpha ? alpha_blend_control : alpha_blend_control_noalpha);
+            OUT_CB(intensity ? blend_control_intensity :
+                   has_alpha ? blend_control : blend_control_noalpha);
+            OUT_CB(intensity ? alpha_blend_control_intensity :
+                   has_alpha ? alpha_blend_control : alpha_blend_control_noalpha);
             OUT_CB(func[i](state->rt[0].colormask));
             OUT_CB_REG(R300_RB3D_DITHER_CTL, dither);
             END_CB;
