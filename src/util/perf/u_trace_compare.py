@@ -357,7 +357,7 @@ def compile_filter(expr: str):
     tree = ast.parse(expr, mode='eval')
 
     for node in ast.walk(tree):
-        if type(node) not in allowed_nodes:
+        if not isinstance(node, tuple(allowed_nodes)):
             raise ValueError(f"Forbidden AST node: {type(node).__name__}")
         if isinstance(node, ast.Name) and node.id not in allowed_names:
             raise ValueError(f"Forbidden name: {node.id}")
