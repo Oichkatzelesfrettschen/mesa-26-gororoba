@@ -340,6 +340,10 @@ def details(args) -> None:
         print(event)
 
 
+class FilterCompileError(Exception):
+    pass
+
+
 def compile_filter(expr: str):
     allowed_nodes = {
         ast.Expression, ast.BinOp, ast.UnaryOp, ast.Compare,
@@ -354,24 +358,27 @@ def compile_filter(expr: str):
     }
     allowed_names = {'params', 'int', 'float', 'str', 'bool', 'len'}
 
-    tree = ast.parse(expr, mode='eval')
+    try:
+        tree = ast.parse(expr, mode='eval')
+    except SyntaxError as e:
+        raise FilterCompileError(f"Syntax error in filter: {e}") from e
 
     for node in ast.walk(tree):
         if not isinstance(node, tuple(allowed_nodes)):
-            raise ValueError(f"Forbidden AST node: {type(node).__name__}")
+            raise FilterCompileError(f"Forbidden AST node: {type(node).__name__}")
         if isinstance(node, ast.Name) and node.id not in allowed_names:
-            raise ValueError(f"Forbidden name: {node.id}")
+            raise FilterCompileError(f"Forbidden name: {node.id}")
         if isinstance(node, ast.Attribute) and node.attr.startswith('_'):
-            raise ValueError(f"Forbidden attribute access: {node.attr}")
+            raise FilterCompileError(f"Forbidden attribute access: {node.attr}")
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
                 if node.func.id not in allowed_names:
-                    raise ValueError(f"Forbidden function call: {node.func.id}")
+                    raise FilterCompileError(f"Forbidden function call: {node.func.id}")
             elif isinstance(node.func, ast.Attribute):
                 if node.func.attr.startswith('_'):
-                    raise ValueError(f"Forbidden method call: {node.func.attr}")
+                    raise FilterCompileError(f"Forbidden method call: {node.func.attr}")
             else:
-                raise ValueError(f"Forbidden function call type: {type(node.func).__name__}")
+                raise FilterCompileError(f"Forbidden function call type: {type(node.func).__name__}")
 
     code = compile(tree, '<string>', 'eval')
     safe_builtins = {'int': int, 'float': float, 'str': str, 'bool': bool, 'len': len}
@@ -409,7 +416,7 @@ def main() -> None:
     if hasattr(args, 'filter') and args.filter:
         try:
             args.filter_func = compile_filter(args.filter)
-        except Exception as e:
+        except FilterCompileError as e:
             print(f"Error: Invalid filter: {e}")
             raise SystemExit(2)
 
