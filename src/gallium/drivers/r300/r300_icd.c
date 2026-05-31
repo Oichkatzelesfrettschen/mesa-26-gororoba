@@ -26,9 +26,9 @@ r300_vs_get_hw_code(void *vs_cso, struct r300_vs_hw_code *out)
       return false;
 
    /* SW-TCL path: draw_vs is non-NULL and shader->code.length is 0.
-    * RS482/RS485 has caps.has_tcl = true, so this branch is normally not
-    * taken; guard it to avoid emitting zero-length VS programs on unexpected
-    * configurations. */
+    * RS482/RS485 keeps caps.has_tcl = false, so this guard is the normal
+    * result there: the ICD must not try to emit a zero-length hardware VS
+    * program for a Gallium Draw vertex shader. */
    struct r300_vertex_program_code *code = &vs->shader->code;
    if (code->length == 0)
       return false;
