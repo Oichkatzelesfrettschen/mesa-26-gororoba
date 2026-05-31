@@ -624,9 +624,18 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * buffer bits on the format not being depth/stencil. */
    const bool is_depth_or_stencil = util_format_is_depth_or_stencil(pipe_format);
 
+   /* RS482 routes all vertex fetch through the SW-TCL Gallium draw module, which
+    * fetches in software and handles pure-integer vertex formats too.  r300g's
+    * is_format_supported gates pure-integer out of its SW-TCL vertex branch (the
+    * legacy GL path never exposed integer attributes), so admit a non-srgb,
+    * non-depth/stencil pure-integer format here: it is a valid vertex format the
+    * draw module fetches, which is what VERTEX_BUFFER advertises. */
+   const bool vertex_fetchable =
+      r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
+                                    PIPE_BIND_VERTEX_BUFFER) ||
+      util_format_is_pure_integer(pipe_format);
    if (!is_depth_or_stencil && !util_format_is_srgb(pipe_format) &&
-       r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
-                                     PIPE_BIND_VERTEX_BUFFER)) {
+       vertex_fetchable) {
       buffer_features |= VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
    }
 
@@ -732,7 +741,9 @@ r300vk_get_image_format_properties(
    }
 
    if (image_features == 0)
-      goto unsupported;   if (!r300vk_image_usage_supported(info->usage, image_features))
+      goto unsupported;
+
+   if (!r300vk_image_usage_supported(info->usage, image_features))
       goto unsupported;
 
    VkExtent3D max_extent;
