@@ -39,6 +39,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_FILL_BUFFER,
    R300VK_CMD_COPY_BUFFER,
+   R300VK_CMD_UPDATE_BUFFER,
    R300VK_CMD_PIPELINE_BARRIER,
    R300VK_CMD_DISPATCH,
    R300VK_CMD_BIND_DESCRIPTOR_SETS,
@@ -107,6 +108,16 @@ struct r300vk_cmd_copy_buffer {
    VkDeviceSize          size;
 };
 
+/* One vkCmdUpdateBuffer.  The inline source bytes are caller-owned only for the
+ * call, so the recorder copies them into a malloc'd block (data); the cmd buffer
+ * frees it at reset and destroy because the buffer may be submitted repeatedly. */
+struct r300vk_cmd_update_buffer {
+   struct r300vk_buffer *buffer;
+   VkDeviceSize          offset;
+   VkDeviceSize          size;
+   void                 *data;
+};
+
 /* One image layout transition from a vkCmdPipelineBarrier2 call, so the
  * resource-state ledger can be updated at replay time.  vkCmdPipelineBarrier2
  * records one entry per VkImageMemoryBarrier2 in the dependency, so every
@@ -160,6 +171,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_fill_buffer          fill_buffer;
       struct r300vk_cmd_copy_buffer          copy_buffer;
+      struct r300vk_cmd_update_buffer        update_buffer;
       struct r300vk_cmd_pipeline_barrier     barrier;
       struct r300vk_cmd_dispatch             dispatch;
       struct r300vk_cmd_bind_descriptor_sets bind_dsets;
