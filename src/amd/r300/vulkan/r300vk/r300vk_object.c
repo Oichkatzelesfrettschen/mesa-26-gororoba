@@ -27,6 +27,7 @@
 #include "r300vk_device.h"
 #include "r300vk_buffer.h"
 #include "r300vk_entrypoints.h"
+#include "r300vk_object.h"
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -38,14 +39,6 @@
  * vk_sampler.h / vk_buffer_view.h), so declare them here. */
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_query_pool, base, VkQueryPool,
                                VK_OBJECT_TYPE_QUERY_POOL)
-
-struct r300vk_event {
-   struct vk_object_base base;
-   VkResult              status;   /* VK_EVENT_SET or VK_EVENT_RESET */
-};
-
-VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_event, base, VkEvent,
-                               VK_OBJECT_TYPE_EVENT)
 
 struct r300vk_buffer_view {
    struct vk_object_base base;

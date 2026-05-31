@@ -7,6 +7,7 @@
 #include "r300vk_descriptor.h"
 #include "r300vk_device.h"
 #include "r300vk_entrypoints.h"
+#include "r300vk_object.h"
 #include "r300vk_framebuffer.h"
 #include "r300vk_image.h"
 #include "r300vk_pipeline.h"
@@ -484,6 +485,47 @@ r300vk_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
    e->update_buffer.offset = dstOffset;
    e->update_buffer.size   = dataSize;
    e->update_buffer.data   = copy;
+}
+
+void
+r300vk_CmdSetEvent2(VkCommandBuffer commandBuffer,
+                    VkEvent _event,
+                    const VkDependencyInfo *pDependencyInfo)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_event, event, _event);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type        = R300VK_CMD_SET_EVENT;
+   e->event.event = event;
+}
+
+void
+r300vk_CmdResetEvent2(VkCommandBuffer commandBuffer,
+                      VkEvent _event,
+                      VkPipelineStageFlags2 stageMask)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_event, event, _event);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type        = R300VK_CMD_RESET_EVENT;
+   e->event.event = event;
+}
+
+void
+r300vk_CmdWaitEvents2(VkCommandBuffer commandBuffer,
+                      uint32_t eventCount,
+                      const VkEvent *pEvents,
+                      const VkDependencyInfo *pDependencyInfos)
+{
+   /* The post-fence CPU pass replays entries in recorded order, so any event a
+    * prior CmdSetEvent2 in this submit signalled is already applied by the time
+    * a wait would run; the wait is a no-op on the single-queue serialized model.
+    * (Cross-submit GPU-side event gating of later GPU work is not modelled --
+    * GPU draws replay before the CPU pass; the host event contract is honoured.) */
 }
 
 void
