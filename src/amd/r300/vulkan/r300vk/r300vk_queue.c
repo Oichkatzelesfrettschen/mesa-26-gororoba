@@ -343,6 +343,18 @@ r300vk_replay_draw(struct r300vk_device *device,
 {
    struct pipe_context *pipe = device->pipe;
 
+   /* A graphics pipeline with no fragment stage (rasterizer discard or
+    * depth-only) leaves fs_cso NULL -- a failed fragment compile would instead
+    * have failed pipeline creation, so NULL here means no fragment stage.  Such
+    * a draw produces no color in r300vk's color-attachment model.  It must be
+    * skipped rather than entered: on the RS482 SW-TCL path r300_update_derived_state
+    * compiles the hardware vertex shader only when caps.has_tcl is set (it is
+    * not), yet r300_update_rs_block unconditionally dereferences r300_vs()->shader
+    * and r300_fs()->shader, so a no-fragment draw NULL-derefs in the RS block
+    * (dEQP-VK.api.descriptor_set.descriptor_set_layout_lifetime.graphics). */
+   if (!bound_pipeline || !bound_pipeline->vs_cso || !bound_pipeline->fs_cso)
+      return;
+
    /* Resolve pipeline-static viewport/scissor before the draw. */
    if (bound_pipeline && bound_pipeline->has_static_viewport) {
       struct pipe_viewport_state pv;
