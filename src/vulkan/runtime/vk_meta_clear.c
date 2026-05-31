@@ -242,14 +242,14 @@ vk_meta_clear_attachments(struct vk_command_buffer *cmd,
    VkPipelineLayout layout;
    result = get_clear_pipeline_layout(device, meta, &layout);
    if (unlikely(result != VK_SUCCESS)) {
-      /* TODO: Report error */
+      vk_command_buffer_set_error(cmd, result);
       return;
    }
 
    VkPipeline pipeline;
    result = get_clear_pipeline(device, meta, &key, layout, &pipeline);
    if (unlikely(result != VK_SUCCESS)) {
-      /* TODO: Report error */
+      vk_command_buffer_set_error(cmd, result);
       return;
    }
 
@@ -469,7 +469,7 @@ clear_image_level_layers(struct vk_command_buffer *cmd,
    VkImageView image_view;
    result = vk_meta_create_image_view(cmd, meta, &view_info, &image_view);
    if (unlikely(result != VK_SUCCESS)) {
-      /* TODO: Report error */
+      vk_command_buffer_set_error(cmd, result);
       return;
    }
 
