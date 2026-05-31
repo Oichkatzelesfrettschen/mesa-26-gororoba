@@ -715,6 +715,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
          case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
          case R300VK_CMD_COPY_BUFFER_TO_IMAGE:
+         case R300VK_CMD_CLEAR_COLOR_IMAGE:
          case R300VK_CMD_FILL_BUFFER:
          case R300VK_CMD_COPY_BUFFER:
          case R300VK_CMD_UPDATE_BUFFER:
@@ -934,6 +935,53 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
    return true;
 }
 
+/* vkCmdClearColorImage as a tile-iterated CPU fill.  Pack the clear value to the
+ * image format once, then write that texel to every position of each tile. */
+static bool
+r300vk_clear_color_image(struct r300vk_device *device,
+                         const struct r300vk_image *img,
+                         const VkClearColorValue *color)
+{
+   struct pipe_context *pipe = device->pipe;
+   const enum pipe_format fmt = img->resource->format;
+   const unsigned bpp = util_format_get_blocksize(fmt);
+
+   uint8_t packed[16] = {0};
+   if (util_format_is_pure_uint(fmt))
+      util_format_pack_rgba(fmt, packed, color->uint32, 1);
+   else if (util_format_is_pure_sint(fmt))
+      util_format_pack_rgba(fmt, packed, color->int32, 1);
+   else
+      util_format_pack_rgba(fmt, packed, color->float32, 1);
+
+   for (uint32_t tile_row = 0; tile_row < img->tile_rows; tile_row++) {
+      for (uint32_t tile_col = 0; tile_col < img->tile_cols; tile_col++) {
+         const uint32_t tile_index = tile_row * img->tile_cols + tile_col;
+         struct pipe_resource *tile = img->tiles[tile_index];
+         if (!tile)
+            continue;
+         const unsigned tile_w = img->tile_width[tile_col];
+         const unsigned tile_h = img->tile_height[tile_row];
+
+         struct pipe_box box;
+         u_box_2d(0, 0, (int)tile_w, (int)tile_h, &box);
+
+         struct pipe_transfer *xfer = NULL;
+         uint8_t *map = pipe->texture_map(pipe, tile, 0, PIPE_MAP_WRITE,
+                                          &box, &xfer);
+         if (!map)
+            continue;
+         for (unsigned y = 0; y < tile_h; y++) {
+            uint8_t *row = map + y * xfer->stride;
+            for (unsigned x = 0; x < tile_w; x++)
+               memcpy(row + x * bpp, packed, bpp);
+         }
+         pipe->texture_unmap(pipe, xfer);
+      }
+   }
+   return true;
+}
+
 /* vkCmdFillBuffer as a CPU map-and-fill: write the repeated 32-bit value over
  * [offset, offset+size) of the buffer, resolving VK_WHOLE_SIZE to the tail and
  * rounding the byte count down to a 32-bit multiple per the spec. */
@@ -1043,6 +1091,9 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
          struct pipe_resource     *src    = e->copy_buf_img.src->resource;
          r300vk_copy_buffer_region_to_image(device, src,
                                             e->copy_buf_img.dst, region);
+      } else if (e->type == R300VK_CMD_CLEAR_COLOR_IMAGE) {
+         r300vk_clear_color_image(device, e->clear_color_image.image,
+                                  &e->clear_color_image.color);
       } else if (e->type == R300VK_CMD_FILL_BUFFER) {
          r300vk_fill_buffer(device, &e->fill_buffer);
       } else if (e->type == R300VK_CMD_COPY_BUFFER) {

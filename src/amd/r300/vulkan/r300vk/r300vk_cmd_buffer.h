@@ -40,6 +40,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_COPY_BUFFER_TO_IMAGE,
+   R300VK_CMD_CLEAR_COLOR_IMAGE,
    R300VK_CMD_FILL_BUFFER,
    R300VK_CMD_COPY_BUFFER,
    R300VK_CMD_UPDATE_BUFFER,
@@ -112,6 +113,16 @@ struct r300vk_cmd_copy_buf_to_image {
    struct r300vk_buffer *src;
    struct r300vk_image  *dst;
    VkBufferImageCopy2    region;
+};
+
+/* One vkCmdClearColorImage subresource range.  Replayed as a tile-iterated CPU
+ * fill: pack the clear value to the image format once, then write it to every
+ * texel of each tile.  r300vk images are single mip and single layer, so the
+ * range covers the whole image. */
+struct r300vk_cmd_clear_color_image {
+   struct r300vk_image    *image;
+   VkClearColorValue       color;
+   VkImageSubresourceRange range;
 };
 
 /* One vkCmdFillBuffer: fill [offset, offset+size) of a buffer with a repeated
@@ -206,6 +217,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_draw_indirect        draw_indirect;
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
+      struct r300vk_cmd_clear_color_image    clear_color_image;
       struct r300vk_cmd_fill_buffer          fill_buffer;
       struct r300vk_cmd_copy_buffer          copy_buffer;
       struct r300vk_cmd_update_buffer        update_buffer;
