@@ -295,6 +295,28 @@ r300vk_CmdDraw(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdDrawIndirect(VkCommandBuffer commandBuffer,
+                       VkBuffer _buffer,
+                       VkDeviceSize offset,
+                       uint32_t drawCount,
+                       uint32_t stride)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, buffer, _buffer);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type                     = R300VK_CMD_DRAW_INDIRECT;
+   e->draw_indirect.buffer     = buffer;
+   e->draw_indirect.offset     = offset;
+   e->draw_indirect.draw_count = drawCount;
+   e->draw_indirect.stride     = stride;
+   e->draw_indirect.topology   = cmd->bound_pipeline
+                                 ? cmd->bound_pipeline->topology
+                                 : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
+void
 r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
                    uint32_t groupCountX,
                    uint32_t groupCountY,

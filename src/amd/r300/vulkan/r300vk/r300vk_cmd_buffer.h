@@ -36,6 +36,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_SET_SCISSOR,
    R300VK_CMD_BIND_VERTEX_BUFFERS,
    R300VK_CMD_DRAW,
+   R300VK_CMD_DRAW_INDIRECT,
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_FILL_BUFFER,
@@ -82,6 +83,18 @@ struct r300vk_cmd_draw {
    uint32_t            instances;
    uint32_t            first_instance;
    VkPrimitiveTopology topology; /* snapshotted from bound pipeline at record time */
+};
+
+/* One vkCmdDrawIndirect.  The draw parameters live in a buffer read at execution
+ * time, so replay CPU-maps it (r300vk buffers are host-visible), reads each
+ * VkDrawIndirectCommand at offset + i*stride, and runs the normal draw path per
+ * command.  topology is snapshotted from the bound pipeline like the direct draw. */
+struct r300vk_cmd_draw_indirect {
+   struct r300vk_buffer *buffer;
+   VkDeviceSize          offset;
+   uint32_t              draw_count;
+   uint32_t              stride;
+   VkPrimitiveTopology   topology;
 };
 
 struct r300vk_cmd_copy_image_to_buf {
@@ -179,6 +192,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_set_scissor          set_sc;
       struct r300vk_cmd_bind_vertex_buffers  bind_vbufs;
       struct r300vk_cmd_draw                 draw;
+      struct r300vk_cmd_draw_indirect        draw_indirect;
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_fill_buffer          fill_buffer;
       struct r300vk_cmd_copy_buffer          copy_buffer;
