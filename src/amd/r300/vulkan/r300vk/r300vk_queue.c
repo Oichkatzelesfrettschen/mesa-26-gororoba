@@ -617,6 +617,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
             break;
 
          case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
+         case R300VK_CMD_FILL_BUFFER:
+            /* Buffer/image transfers run in the post-fence CPU pass. */
             break;
 
          case R300VK_CMD_PIPELINE_BARRIER:
@@ -736,20 +738,52 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
    return true;
 }
 
-/* CPU-side image-to-buffer copies executed after the GPU fence completes. */
+/* vkCmdFillBuffer as a CPU map-and-fill: write the repeated 32-bit value over
+ * [offset, offset+size) of the buffer, resolving VK_WHOLE_SIZE to the tail and
+ * rounding the byte count down to a 32-bit multiple per the spec. */
+static void
+r300vk_fill_buffer(struct r300vk_device *device,
+                   const struct r300vk_cmd_fill_buffer *fb)
+{
+   struct pipe_context  *pipe = device->pipe;
+   struct pipe_resource *buf  = fb->buffer ? fb->buffer->resource : NULL;
+   if (!buf)
+      return;
+
+   const uint64_t total = fb->buffer->size;
+   const uint64_t offset = fb->offset;
+   if (offset >= total)
+      return;
+   uint64_t size = (fb->size == VK_WHOLE_SIZE) ? (total - offset) : fb->size;
+   size = MIN2(size, total - offset) & ~(uint64_t)3;
+   if (size == 0)
+      return;
+
+   struct pipe_transfer *xfer = NULL;
+   uint32_t *map = pipe_buffer_map_range(pipe, buf, (unsigned)offset,
+                                         (unsigned)size, PIPE_MAP_WRITE, &xfer);
+   if (!map)
+      return;
+   for (uint64_t i = 0; i < size / 4; i++)
+      map[i] = fb->data;
+   pipe_buffer_unmap(pipe, xfer);
+}
+
+/* CPU-side buffer/image transfers executed after the GPU fence completes. */
 static void
 r300vk_replay_cpu_readback(struct r300vk_device *device,
                             const struct r300vk_cmd_buffer *cmd)
 {
    for (uint32_t i = 0; i < cmd->entry_count; i++) {
       const struct r300vk_cmd_entry *e = &cmd->entries[i];
-      if (e->type != R300VK_CMD_COPY_IMAGE_TO_BUFFER)
-         continue;
-
-      const VkBufferImageCopy2 *region = &e->copy_img_buf.region;
-      struct pipe_resource     *dst    = e->copy_img_buf.dst->resource;
-      r300vk_copy_image_region_to_buffer(device, e->copy_img_buf.src,
-                                         dst, region);
+      if (e->type == R300VK_CMD_COPY_IMAGE_TO_BUFFER) {
+         const VkBufferImageCopy2 *region = &e->copy_img_buf.region;
+         struct pipe_resource     *dst    = e->copy_img_buf.dst->resource;
+         r300vk_copy_image_region_to_buffer(device, e->copy_img_buf.src,
+                                            dst, region);
+      } else if (e->type == R300VK_CMD_FILL_BUFFER) {
+         r300vk_fill_buffer(device, &e->fill_buffer);
+      }
    }
 }
 
