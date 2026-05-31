@@ -331,10 +331,15 @@ static void r300_init_states(struct pipe_context *pipe)
         } else if (!r300->screen->caps.has_tcl) {
             /* RSxxx:
              * Static VAP setup since r300_emit_vs_state() is never called.
+             * HB_VERT_FPU only adjusts the probe count in this TCL_BYPASS path;
+             * it does not promote RS482 into the full hardware-TCL route.
              */
             OUT_CB_REG(R300_VAP_CNTL, R300_PVS_NUM_SLOTS(10) |
                                       R300_PVS_NUM_CNTLRS(5) |
-                                      R300_PVS_NUM_FPUS(2) |
+                                      R300_PVS_NUM_FPUS(
+                                          r300->screen->hb_tcl &&
+                                          r300->screen->hb_vert_fpu_probe ?
+                                          r300->screen->hb_vert_fpu_probe : 2) |
                                       R300_PVS_VF_MAX_VTX_NUM(5));
         }
         END_CB;

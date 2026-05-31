@@ -3,26 +3,21 @@
  *
  * r300_r2vb.c -- RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop.
  *
- * Current Mesa RS482 ordinary draws keep num_vert_fpus = 0 and has_tcl = false,
- * so a normal draw transforms vertices on the CPU through Gallium Draw SW-TCL
- * instead of the hardware PVS route.  The R2VB idea moves the
- * transform onto the fragment ALU: pass 1 renders the
- * transformed (clip-space) vertices into a GTT buffer through the color buffer,
- * a cache barrier makes them visible, and pass 2 re-ingests that same buffer as
- * the vertex array via an in-IB LOAD_VBPNTR, drawn by the VAP in TCL_BYPASS (the
- * pre-transformed path current RS482 SWTCL draws already use instead of hardware
- * PVS).
+ * RS482 ordinary draws keep num_vert_fpus = 0 and has_tcl = false, so r300g
+ * transforms vertices on the CPU through Gallium Draw SW-TCL instead of the
+ * hardware PVS route.  The R2VB loop moves the transform onto the fragment ALU:
+ * pass 1 renders the transformed (clip-space) vertices into a GTT buffer
+ * through the color buffer, a cache barrier makes them visible, and pass 2
+ * re-ingests that same buffer as the vertex array via an in-IB LOAD_VBPNTR,
+ * drawn by the VAP in TCL_BYPASS.
  *
  * Scope and safety.  The CB-write -> barrier -> vertex-fetch data path is
- * coherency-validated through the steinmarder GL oracle (a fragment-rendered
- * buffer, round-tripped into the vertex array, rasters the correct geometry).
- * What is unmeasured is the gallivm-free direct-VAP draw timing -- and emitting
- * that draw is a raw PM4 submit, which the RS482 hazard policy gates behind the
- * safe-regs evidence bundle.  This function is therefore built and grounded in
- * the driver's own verified emitters but is NOT yet wired to a caller; a live
- * submit waits on the hazard gate.  Constants are the real r300_reg.h values and
- * the barrier matches r300_emit_gpu_flush / the cb_flush_clean sequence in
- * r300_context.c; no speculative fallback defines.
+ * coherency-validated through a GL oracle: a fragment-rendered buffer,
+ * round-tripped into the vertex array, rasters the correct geometry.  The
+ * Gallium Draw-free direct-VAP timing requires a raw PM4 submit, so live submit
+ * is gated by R300_RAW_SUBMIT_ACCEPTED=1.  Constants are the real r300_reg.h
+ * values, and the barrier matches r300_emit_gpu_flush / the cb_flush_clean
+ * sequence in r300_context.c; no speculative fallback defines.
  */
 
 #include <stdlib.h>
@@ -153,7 +148,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * renders into this separate 2D BO instead of overwriting the stage-1 vertex
      * data in output_gart_bo, so a CPU readback of stage3_color_bo shows where
      * the re-ingested vertices rasterized -- evidence of the VAP fetch (stage 3),
-     * not just the stage-1 render.  NULL keeps the legacy single-BO loop. */
+     * not just the stage-1 render.  NULL selects the single-BO loop. */
     if (stage3_color_bo)
         r300->rws->cs_add_buffer(&r300->cs, stage3_color_bo->buf,
                                  RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
@@ -350,15 +345,15 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     END_CS;
 }
 
-/* Gated self-test for the R2VB direct-VAP path.  R300_R2VB_TIMING picks the
- * mode:
+/* Gated self-test for the RS482 HB_TCL umbrella.  R300_HB_TCL=1 names the
+ * hybrid-TCL experiment surface; R300_R2VB_TIMING picks the transport mode:
  *   capture -- emit the loop and flush with RADEON_FLUSH_NOOP, so the IB is
  *              captured by R300_TRACE and never reaches DRM_RADEON_CS.  The
  *              packets can be decoded and verified with zero hardware risk.
  *              This is the structural preflight.
  *   submit  -- a real flush with a bounded fence wait, timed; additionally
  *              requires R300_RAW_SUBMIT_ACCEPTED=1.  This is the hazard-gated
- *              measurement that decides whether R2VB beats the gallivm CPU
+ *              measurement that decides whether R2VB beats the Gallium Draw CPU
  *              baseline; a draw the CS validator passes can still hang
  *              reset-less silicon.
  * Both modes fire only from r300_flush (from_flush), where a real draw has
@@ -381,12 +376,13 @@ struct r2vb_selftest_config {
 static void
 r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
 {
+    const char *hb_tcl = getenv("R300_HB_TCL");
     const char *mode = getenv("R300_R2VB_TIMING");
-    cfg->enabled = (mode != NULL);
+    cfg->enabled = (hb_tcl && strcmp(hb_tcl, "1") == 0) || (mode != NULL);
     if (!cfg->enabled)
         return;
 
-    cfg->do_submit = (strcmp(mode, "submit") == 0);
+    cfg->do_submit = (mode && strcmp(mode, "submit") == 0);
     
     cfg->num_vertices = 64;
     const char *nv = getenv("R300_R2VB_NVERTS");
@@ -472,12 +468,15 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
         double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +
                     (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
         fprintf(stderr, "r2vb_direct_vap_timing nverts=%u submit_ms=%.4f "
-                "flush_rc=%d signalled=%d\n",
-                cfg.num_vertices, ms, flush_rc, signalled);
+                "flush_rc=%d signalled=%d hb_tcl=1 hb_vert_fpu=%u\n",
+                cfg.num_vertices, ms, flush_rc, signalled,
+                r300->screen->hb_vert_fpu_probe);
     } else {
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
-        fprintf(stderr, "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP)\n",
-                cfg.num_vertices);
+        fprintf(stderr,
+                "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP) "
+                "hb_tcl=1 hb_vert_fpu=%u\n",
+                cfg.num_vertices, r300->screen->hb_vert_fpu_probe);
     }
 
     if (stage3)
