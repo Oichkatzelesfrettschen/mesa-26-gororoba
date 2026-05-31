@@ -1355,6 +1355,9 @@ void r300_init_render_functions(struct r300_context *r300)
     if (r300->screen->caps.has_tcl) {
         r300->context.draw_vbo = r300_draw_vbo;
     } else {
+        /* RS48x IGPs keep the vertex transform in Gallium Draw, but the
+         * post-Draw stream still goes through hardware LOAD_VBPNTR/PSC fetch,
+         * TCL_BYPASS VAP setup, and the normal raster/fragment/backend path. */
         r300->context.draw_vbo = r300_swtcl_draw_vbo;
     }
 
