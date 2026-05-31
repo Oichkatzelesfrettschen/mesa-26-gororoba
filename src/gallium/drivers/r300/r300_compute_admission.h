@@ -84,6 +84,9 @@ struct r300_compute_identity_pattern {
    bool       is_identity_map;
    uint32_t   input_ssbo_binding;   /* binding index of the load_ssbo source */
    uint32_t   output_ssbo_binding;  /* binding index of the store_ssbo dest */
+   uint8_t    value_components;     /* stored value vector width */
+   uint8_t    value_bit_size;       /* stored value component width */
+   bool       value_is_float;       /* store_ssbo src_type base == nir_type_float */
 };
 
 /* Detect the identity-map pattern in a classify-admitted kernel.  Pure
@@ -112,6 +115,9 @@ struct r300_compute_binary_map_pattern {
    uint32_t   input_b_ssbo_binding;
    uint32_t   output_ssbo_binding;
    uint16_t   alu_op;     /* nir_op enum value, only valid if is_binary_map */
+   uint8_t    value_components; /* store_ssbo value vector width */
+   uint8_t    value_bit_size;   /* store_ssbo value component width */
+   bool       value_is_float;   /* result type, not a promise of FP32 exactness */
 };
 
 void r300_nir_detect_binary_map(const struct nir_shader *s,
