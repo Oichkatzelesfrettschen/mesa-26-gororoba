@@ -185,6 +185,33 @@ static const struct spirv_to_nir_options r300vk_spirv_opts = {
    .shared_addr_format     = nir_address_format_32bit_offset,
 };
 
+/* r300 has one constant file (RC_FILE_CONSTANT); ntr_emit_load_ubo can only
+ * address UBO index 0.  After nir_lower_explicit_io a load_ubo whose buffer
+ * index is non-constant or non-zero (a multi-binding descriptor shader) would
+ * trip that assert and abort the process.  Detect it so the pipeline fails
+ * cleanly with VK_ERROR_FEATURE_NOT_PRESENT instead -- the single-UBO shader is
+ * supported, the multi-binding one is honestly unsupported, neither crashes. */
+static bool
+r300vk_nir_uses_unaddressable_ubo(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_ubo &&
+                intr->intrinsic != nir_intrinsic_load_ubo_vec4)
+               continue;
+            if (!nir_src_is_const(intr->src[0]) ||
+                nir_src_as_uint(intr->src[0]) != 0)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
 static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
@@ -228,6 +255,15 @@ r300vk_compile_shader(struct r300vk_device *device,
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_ubo | nir_var_mem_ssbo,
             nir_address_format_32bit_index_offset);
+
+   if (r300vk_nir_uses_unaddressable_ubo(nir)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: %s shader needs a UBO at index != 0; r300 has a "
+                       "single constant file",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
+   }
 
    /* vk_spirv_to_nir sets data.location for VS inputs (VERT_ATTRIB_GENERIC0+n)
     * but leaves data.driver_location at zero for all variables.  nir_lower_io
