@@ -31,6 +31,36 @@ PACKET3_NAMES = {
 }
 
 
+# r300 PACKET0 register writes that reference a BO the radeon kernel CS parser
+# binds at DRM_RADEON_CS submit: the color and depth render-target offsets and
+# the texture base offsets.  Matched by exact name family, not a blanket
+# "OFFSET": R300_SE_VPORT_*OFFSET is a float viewport offset (0x1d9c+),
+# R300_GA_OFFSET / R300_SU_DEPTH_OFFSET / R300_US_CODE_OFFSET are immediate
+# pixel/poly/shader offsets -- none of those are BO relocation targets.
+ADDRESS_REGISTER_RE = re.compile(
+    r"^R300_(RB3D_COLOROFFSET[0-9]+|ZB_DEPTHOFFSET|RB3D_DEPTHOFFSET|TX_OFFSET_[0-9]+)$")
+
+# PACKET3 opcodes whose payload carries BO base references the kernel binds:
+# 3D_LOAD_VBPNTR (vertex-buffer bases) and INDX_BUFFER (index-buffer base).
+ADDRESS_PACKET3_OPCODES = {0x2F00, 0x3300}
+
+
+def address_view_note(view):
+    """Capture-stage label for a relocation-target field.
+
+    The field references a BO the kernel binds at DRM_RADEON_CS submit; view
+    records which capture stage this IB is from -- cpu = before the submit
+    ioctl, gpu = after.  The label does not assert the value's form: comparing
+    the same field across the two stages is what shows whether the kernel
+    rewrote the dword in place (whether the captured value is a BO-relative
+    offset or an absolute VA is capture- and kernel-path-dependent)."""
+    if view == "cpu":
+        return "reloc_target/pre-submit"
+    if view == "gpu":
+        return "reloc_target/post-submit"
+    return "reloc_target/view-unknown"
+
+
 def c_string(raw):
     return raw.split(b"\0", 1)[0].decode("ascii", "replace")
 
@@ -91,7 +121,7 @@ def load_register_names(mesa_root):
     return names
 
 
-def decode_packet0(index, word, dwords, register_names):
+def decode_packet0(index, word, dwords, register_names, view):
     count = ((word >> 16) & 0x3FFF) + 1
     one_reg = bool(word & (1 << 15))
     start_reg = (word & 0x7FFF) << 2
@@ -100,11 +130,16 @@ def decode_packet0(index, word, dwords, register_names):
     writes = []
     for offset, value in enumerate(values):
         reg = start_reg if one_reg else start_reg + offset * 4
-        writes.append({
+        name = register_names.get(reg, "")
+        write = {
             "reg": f"0x{reg:04x}",
-            "name": register_names.get(reg, ""),
+            "name": name,
             "value": f"0x{value:08x}",
-        })
+        }
+        if ADDRESS_REGISTER_RE.match(name):
+            write["address"] = True
+            write["view_note"] = address_view_note(view)
+        writes.append(write)
     return {
         "index": index,
         "packet": "PACKET0",
@@ -117,12 +152,12 @@ def decode_packet0(index, word, dwords, register_names):
     }
 
 
-def decode_packet3(index, word, dwords):
+def decode_packet3(index, word, dwords, view):
     count = ((word >> 16) & 0x3FFF) + 1
     opcode = word & 0xFF00
     end = index + 1 + count
     payload = dwords[index + 1:min(end, len(dwords))]
-    return {
+    item = {
         "index": index,
         "packet": "PACKET3",
         "header": f"0x{word:08x}",
@@ -133,9 +168,13 @@ def decode_packet3(index, word, dwords):
         "payload": [f"0x{value:08x}" for value in payload],
         "next_index": min(end, len(dwords)),
     }
+    if opcode in ADDRESS_PACKET3_OPCODES:
+        item["carries_reloc_addresses"] = True
+        item["view_note"] = address_view_note(view)
+    return item
 
 
-def decode_ib(dwords, register_names):
+def decode_ib(dwords, register_names, view):
     decoded = []
     index = 0
     while index < len(dwords):
@@ -150,11 +189,11 @@ def decode_ib(dwords, register_names):
             })
             index += 1
         elif packet_type == 0:
-            item = decode_packet0(index, word, dwords, register_names)
+            item = decode_packet0(index, word, dwords, register_names, view)
             decoded.append(item)
             index = max(item["next_index"], index + 1)
         elif packet_type == 0xC0000000:
-            item = decode_packet3(index, word, dwords)
+            item = decode_packet3(index, word, dwords, view)
             decoded.append(item)
             index = max(item["next_index"], index + 1)
         else:
@@ -168,23 +207,26 @@ def decode_ib(dwords, register_names):
     return decoded
 
 
-def print_text(header, decoded):
+def print_text(header, decoded, view):
     print(f"run_id {header['run_id']}")
     print(f"mesa {header['mesa_commit']}")
     print(f"kernel {header['kernel_release']}")
     print(f"pci_id 0x{header['pci_id']:04x}")
     print(f"dwords {header['dword_count']}")
+    print(f"view {view}")
     for item in decoded:
         if item["packet"] == "PACKET0":
             trunc = " truncated=1" if item["truncated"] else ""
             print(f"{item['index']:05d}: PACKET0 count={item['count']} one_reg={int(item['one_reg'])}{trunc}")
             for write in item["writes"]:
                 suffix = f" {write['name']}" if write["name"] else ""
-                print(f"         {write['reg']}{suffix} = {write['value']}")
+                note = f"  [{write['view_note']}]" if write.get("address") else ""
+                print(f"         {write['reg']}{suffix} = {write['value']}{note}")
         elif item["packet"] == "PACKET3":
             suffix = f" {item['name']}" if item["name"] else ""
             trunc = " truncated=1" if item["truncated"] else ""
-            print(f"{item['index']:05d}: PACKET3 {item['opcode']}{suffix} count={item['count']}{trunc}")
+            reloc = f"  [reloc-addresses: {item['view_note']}]" if item.get("carries_reloc_addresses") else ""
+            print(f"{item['index']:05d}: PACKET3 {item['opcode']}{suffix} count={item['count']}{trunc}{reloc}")
             for offset, value in enumerate(item["payload"]):
                 print(f"         +{offset:02d} {value}")
         else:
@@ -203,20 +245,38 @@ def main():
     parser.add_argument("ib", type=Path, help="pre_ib.bin or patched_ib.bin")
     parser.add_argument("--jsonl", action="store_true", help="emit one JSON object per packet")
     parser.add_argument("--mesa-root", type=Path, default=None)
+    parser.add_argument(
+        "--view", choices=["cpu", "gpu", "auto"], default="auto",
+        help="address-field view: cpu=pre-reloc BO offsets, gpu=post-reloc "
+             "absolute VAs, auto=infer from the filename (pre_ib/patched_ib)")
     args = parser.parse_args()
+
+    # The capture writes pre_ib.bin before DRM_RADEON_CS (CPU view: the driver's
+    # BO-relative offsets) and patched_ib.bin after the kernel relocates it (GPU
+    # view: absolute VAs).  auto reads that from the filename; an unrecognised
+    # name leaves the view unknown so address fields are flagged but not asserted.
+    view = args.view
+    if view == "auto":
+        name = args.ib.name
+        if "pre_ib" in name:
+            view = "cpu"
+        elif "patched_ib" in name:
+            view = "gpu"
+        else:
+            view = "unknown"
 
     mesa_root = args.mesa_root or find_mesa_root(Path(__file__))
     header, dwords = read_ib(args.ib)
-    decoded = decode_ib(dwords, load_register_names(mesa_root))
+    decoded = decode_ib(dwords, load_register_names(mesa_root), view)
 
     if args.jsonl:
-        print(json.dumps({"type": "header", **header}, sort_keys=True))
+        print(json.dumps({"type": "header", "view": view, **header}, sort_keys=True))
         for item in decoded:
             item = dict(item)
             item.pop("next_index", None)
             print(json.dumps(item, sort_keys=True))
     else:
-        print_text(header, decoded)
+        print_text(header, decoded, view)
 
 
 if __name__ == "__main__":
