@@ -17,26 +17,10 @@
 #include "r300_r2vb.h"
 
 
-static void r300_flush_and_cleanup(struct r300_context *r300, unsigned flags,
-                                   struct pipe_fence_handle **fence)
+static void r300_rearm_after_hardware_flush(struct r300_context *r300)
 {
     struct r300_atom *atom;
 
-    r300_emit_hyperz_end(r300);
-    r300_emit_query_end(r300);
-    if (r300->screen->caps.is_r500)
-        r500_emit_index_bias(r300, 0);
-
-    /* The DDX doesn't set these regs. */
-    {
-        CS_LOCALS(r300);
-        OUT_CS_REG_SEQ(R300_GB_MSPOS0, 2);
-        OUT_CS(0x66666666);
-        OUT_CS(0x6666666);
-    }
-
-    r300->flush_counter++;
-    r300->rws->cs_flush(&r300->cs, flags, fence);
     r300->dirty_hw = 0;
 
     /* New kitchen sink, baby. */
@@ -55,6 +39,28 @@ static void r300_flush_and_cleanup(struct r300_context *r300, unsigned flags,
     }
 }
 
+static void r300_flush_and_cleanup(struct r300_context *r300, unsigned flags,
+                                   struct pipe_fence_handle **fence)
+{
+    r300_emit_hyperz_end(r300);
+    r300_emit_query_end(r300);
+    if (r300->screen->caps.is_r500)
+        r500_emit_index_bias(r300, 0);
+
+    /* The DDX doesn't set these regs. */
+    {
+        CS_LOCALS(r300);
+        OUT_CS_REG_SEQ(R300_GB_MSPOS0, 2);
+        OUT_CS(0x66666666);
+        OUT_CS(0x6666666);
+    }
+
+    r300->flush_counter++;
+    r300->rws->cs_flush(&r300->cs, flags, fence);
+    r300->dirty_hw = 0;
+    r300_rearm_after_hardware_flush(r300);
+}
+
 void r300_flush(struct pipe_context *pipe,
                 unsigned flags,
                 struct pipe_fence_handle **fence)
@@ -71,7 +77,7 @@ void r300_flush(struct pipe_context *pipe,
     if (r300->dirty_hw &&
         !r300->screen->caps.has_tcl &&
         r300_emit_rs482_r2vb_capture_selftest(r300, true)) {
-        r300->dirty_hw = 0;
+        r300_rearm_after_hardware_flush(r300);
     }
 
     if (r300->dirty_hw) {

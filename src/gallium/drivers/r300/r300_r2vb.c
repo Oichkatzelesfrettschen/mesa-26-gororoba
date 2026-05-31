@@ -351,8 +351,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     END_CS;
 }
 
-/* Gated self-test for the R2VB direct-VAP path.  R300_R2VB_TIMING picks the
- * mode:
+/* Gated self-test for the RS482 HB_TCL umbrella.  R300_HB_TCL=1 names the
+ * hybrid-TCL experiment surface; R300_R2VB_TIMING picks the transport mode:
  *   capture -- emit the loop and flush with RADEON_FLUSH_NOOP, so the IB is
  *              captured by R300_TRACE and never reaches DRM_RADEON_CS.  The
  *              packets can be decoded and verified with zero hardware risk.
@@ -382,12 +382,13 @@ struct r2vb_selftest_config {
 static void
 r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
 {
+    const char *hb_tcl = getenv("R300_HB_TCL");
     const char *mode = getenv("R300_R2VB_TIMING");
-    cfg->enabled = (mode != NULL);
+    cfg->enabled = (hb_tcl && strcmp(hb_tcl, "1") == 0) || (mode != NULL);
     if (!cfg->enabled)
         return;
 
-    cfg->do_submit = (strcmp(mode, "submit") == 0);
+    cfg->do_submit = (mode && strcmp(mode, "submit") == 0);
     
     cfg->num_vertices = 64;
     const char *nv = getenv("R300_R2VB_NVERTS");
@@ -473,12 +474,15 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
         double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +
                     (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
         fprintf(stderr, "r2vb_direct_vap_timing nverts=%u submit_ms=%.4f "
-                "flush_rc=%d signalled=%d\n",
-                cfg.num_vertices, ms, flush_rc, signalled);
+                "flush_rc=%d signalled=%d hb_tcl=1 hb_vert_fpu=%u\n",
+                cfg.num_vertices, ms, flush_rc, signalled,
+                r300->screen->hb_vert_fpu_probe);
     } else {
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
-        fprintf(stderr, "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP)\n",
-                cfg.num_vertices);
+        fprintf(stderr,
+                "r2vb_capture nverts=%u (no-submit; RADEON_FLUSH_NOOP) "
+                "hb_tcl=1 hb_vert_fpu=%u\n",
+                cfg.num_vertices, r300->screen->hb_vert_fpu_probe);
     }
 
     if (stage3)
