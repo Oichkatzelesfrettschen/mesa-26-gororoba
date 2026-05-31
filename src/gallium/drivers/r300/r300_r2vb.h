@@ -19,6 +19,8 @@ struct r300_resource;
  * output_gart_bo is a GTT buffer that pass 1 renders into as an FP32x4 color
  * target and pass 2 re-ingests as the vertex array via an in-IB LOAD_VBPNTR,
  * consumed by the VAP in TCL_BYPASS.
+ * A future hazard-gated PVS-bank proof lane would only replace that stage-1
+ * producer; the barrier and the re-ingest/oracle half stay the same.
  *
  * stage3_color_bo is an optional separate 2D target: when non-NULL the stage-3
  * re-ingested draw renders into it (stage3_width x stage3_height) instead of
