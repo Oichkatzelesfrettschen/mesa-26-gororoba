@@ -42,9 +42,21 @@ r300vk_cmd_append(struct r300vk_cmd_buffer *cmd)
    return &cmd->entries[cmd->entry_count++];
 }
 
+/* Free the per-entry heap data the recorder owns (vkCmdUpdateBuffer's inline
+ * source copy) before the entries are discarded or the array is freed. */
+static void
+r300vk_cmd_buffer_free_entry_data(struct r300vk_cmd_buffer *cmd)
+{
+   for (uint32_t i = 0; i < cmd->entry_count; i++) {
+      if (cmd->entries[i].type == R300VK_CMD_UPDATE_BUFFER)
+         free(cmd->entries[i].update_buffer.data);
+   }
+}
+
 static void
 r300vk_cmd_buffer_reset_recording_state(struct r300vk_cmd_buffer *cmd)
 {
+   r300vk_cmd_buffer_free_entry_data(cmd);
    cmd->entry_count             = 0;
    cmd->bound_pipeline          = NULL;
    cmd->bound_compute_pipeline  = NULL;
@@ -88,6 +100,7 @@ r300vk_cmd_buffer_destroy(struct vk_command_buffer *base)
 {
    struct r300vk_cmd_buffer *cmd =
       container_of(base, struct r300vk_cmd_buffer, base);
+   r300vk_cmd_buffer_free_entry_data(cmd);
    free(cmd->entries);
    vk_command_buffer_finish(base);
    vk_free(&cmd->base.pool->alloc, cmd);
@@ -437,6 +450,40 @@ r300vk_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
       e->copy_buffer.dst_offset = r->dstOffset;
       e->copy_buffer.size       = r->size;
    }
+}
+
+void
+r300vk_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
+                       VkBuffer dstBuffer,
+                       VkDeviceSize dstOffset,
+                       VkDeviceSize dataSize,
+                       const void *pData)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, buf, dstBuffer);
+
+   if (dataSize == 0)
+      return;
+
+   /* pData is caller-owned only for this call, so copy it now; the cmd buffer
+    * frees the copy at reset/destroy. */
+   void *copy = malloc(dataSize);
+   if (!copy) {
+      vk_command_buffer_set_error(&cmd->base, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
+   memcpy(copy, pData, dataSize);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) {
+      free(copy);
+      return;
+   }
+   e->type                 = R300VK_CMD_UPDATE_BUFFER;
+   e->update_buffer.buffer = buf;
+   e->update_buffer.offset = dstOffset;
+   e->update_buffer.size   = dataSize;
+   e->update_buffer.data   = copy;
 }
 
 void

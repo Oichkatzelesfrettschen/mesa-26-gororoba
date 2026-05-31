@@ -619,6 +619,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
          case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
          case R300VK_CMD_FILL_BUFFER:
          case R300VK_CMD_COPY_BUFFER:
+         case R300VK_CMD_UPDATE_BUFFER:
             /* Buffer/image transfers run in the post-fence CPU pass. */
             break;
 
@@ -811,6 +812,26 @@ r300vk_copy_buffer_region(struct r300vk_device *device,
       pipe_buffer_unmap(pipe, dxfer);
 }
 
+/* vkCmdUpdateBuffer as a CPU memcpy of the recorded inline data into the buffer. */
+static void
+r300vk_update_buffer(struct r300vk_device *device,
+                     const struct r300vk_cmd_update_buffer *ub)
+{
+   struct pipe_context  *pipe = device->pipe;
+   struct pipe_resource *buf  = ub->buffer ? ub->buffer->resource : NULL;
+   const unsigned size = (unsigned)ub->size;
+   if (!buf || !ub->data || size == 0)
+      return;
+
+   struct pipe_transfer *xfer = NULL;
+   uint8_t *map = pipe_buffer_map_range(pipe, buf, (unsigned)ub->offset, size,
+                                        PIPE_MAP_WRITE, &xfer);
+   if (!map)
+      return;
+   memcpy(map, ub->data, size);
+   pipe_buffer_unmap(pipe, xfer);
+}
+
 /* CPU-side buffer/image transfers executed after the GPU fence completes. */
 static void
 r300vk_replay_cpu_readback(struct r300vk_device *device,
@@ -827,6 +848,8 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
          r300vk_fill_buffer(device, &e->fill_buffer);
       } else if (e->type == R300VK_CMD_COPY_BUFFER) {
          r300vk_copy_buffer_region(device, &e->copy_buffer);
+      } else if (e->type == R300VK_CMD_UPDATE_BUFFER) {
+         r300vk_update_buffer(device, &e->update_buffer);
       }
    }
 }
