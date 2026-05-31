@@ -4,9 +4,10 @@
  *
  * Lower VS system values to synthetic vertex inputs for the SW-TCL route.
  *
- * RS480-family parts have no hardware vertex shader (num_vert_fpus = 0,
- * r300_chipset.c:131), so gl_VertexIndex / gl_InstanceIndex cannot be produced
- * by a PVS, and r300_nir_to_rc_direct rejects the intrinsics outright.  The
+ * RS480-family parts keep num_vert_fpus = 0, so current Mesa ordinary draws do
+ * not use the hardware PVS route.  gl_VertexIndex / gl_InstanceIndex therefore
+ * cannot be produced by that path, and r300_nir_to_rc_direct rejects the
+ * intrinsics outright.  The
  * driver can instead supply the value as an ordinary per-vertex attribute
  * (firstVertex + i, or index-buffer value + vertexOffset) at a driver_location
  * it reserves; this pass rewrites the system-value intrinsic into a read of

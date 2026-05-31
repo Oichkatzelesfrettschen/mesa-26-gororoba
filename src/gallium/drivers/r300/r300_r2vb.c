@@ -4,13 +4,15 @@
  *
  * r300_r2vb.c -- RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop.
  *
- * RS482 has no hardware vertex shader (num_vert_fpus = 0), so a normal draw
- * transforms vertices on the CPU through the gallivm SWTCL draw module.  The
- * R2VB idea moves the transform onto the fragment ALU: pass 1 renders the
+ * Current Mesa RS482 ordinary draws keep num_vert_fpus = 0 and has_tcl = false,
+ * so a normal draw transforms vertices on the CPU through the gallivm SWTCL
+ * draw module instead of the hardware PVS route.  The R2VB idea moves the
+ * transform onto the fragment ALU: pass 1 renders the
  * transformed (clip-space) vertices into a GTT buffer through the color buffer,
  * a cache barrier makes them visible, and pass 2 re-ingests that same buffer as
  * the vertex array via an in-IB LOAD_VBPNTR, drawn by the VAP in TCL_BYPASS (the
- * pre-transformed, no-PVS path RS482 already uses for every SWTCL draw).
+ * pre-transformed path current RS482 SWTCL draws already use instead of hardware
+ * PVS).
  *
  * Scope and safety.  The CB-write -> barrier -> vertex-fetch data path is
  * coherency-validated through the steinmarder GL oracle (a fragment-rendered
