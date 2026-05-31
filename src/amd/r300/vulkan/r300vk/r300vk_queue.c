@@ -623,6 +623,42 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                transient_vbs);
             break;
 
+         case R300VK_CMD_DRAW_INDIRECT: {
+            if (skip_render_pass) break;
+            const struct r300vk_cmd_draw_indirect *di = &e->draw_indirect;
+            if (!di->buffer || !di->buffer->resource || di->draw_count == 0)
+               break;
+            /* CPU-read the VkDrawIndirectCommand array (r300vk buffers are
+             * host-visible) and run the normal draw path per command. */
+            const unsigned stride =
+               di->stride ? di->stride : (unsigned)sizeof(VkDrawIndirectCommand);
+            const unsigned span = (di->draw_count - 1u) * stride +
+                                  (unsigned)sizeof(VkDrawIndirectCommand);
+            struct pipe_transfer *ixfer = NULL;
+            const uint8_t *imap =
+               pipe_buffer_map_range(pipe, di->buffer->resource,
+                                     (unsigned)di->offset, span,
+                                     PIPE_MAP_READ, &ixfer);
+            if (!imap) break;
+            for (uint32_t d = 0; d < di->draw_count; d++) {
+               const VkDrawIndirectCommand *args =
+                  (const VkDrawIndirectCommand *)(imap + (size_t)d * stride);
+               struct r300vk_cmd_entry synth;
+               synth.type                = R300VK_CMD_DRAW;
+               synth.draw.count          = args->vertexCount;
+               synth.draw.instances      = args->instanceCount;
+               synth.draw.first          = args->firstVertex;
+               synth.draw.first_instance = args->firstInstance;
+               synth.draw.topology       = di->topology;
+               r300vk_replay_draw(device, &synth, bound_pipeline, vb_cache,
+                                  vb_sizes, vb_max_used, &vb_dirty,
+                                  tile_origin_x, tile_origin_y, tile_width,
+                                  tile_height, transient_vbs);
+            }
+            pipe_buffer_unmap(pipe, ixfer);
+            break;
+         }
+
          case R300VK_CMD_END_RENDER_PASS:
             r300vk_replay_end_render_pass(device, &skip_render_pass,
                                           &tile_origin_x, &tile_origin_y,
