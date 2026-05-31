@@ -438,6 +438,13 @@ struct radeon_info {
    /* Render backends (color + depth blocks). */
    uint32_t r300_num_gb_pipes;
    uint32_t r300_num_z_pipes;
+   struct {
+      uint32_t agp_base_2;
+      uint32_t gart_feature_id;
+      uint32_t gart_base;
+      bool from_debugfs;
+      bool valid;
+   } rs480_gart_mc;
    uint32_t r600_gb_backend_map; /* R600 harvest config */
    bool r600_gb_backend_map_valid;
    uint32_t r600_num_banks;

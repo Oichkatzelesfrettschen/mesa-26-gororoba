@@ -26,7 +26,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
 #include <radeon_surface.h>
+
+#define RS480_GART_FEATURE_ID_REG 0x002b
+#define RS480_GART_BASE_REG       0x002c
+#define RS480_AGP_BASE_2_REG      0x0164
 
 static struct hash_table *fd_tab = NULL;
 static simple_mtx_t fd_tab_mutex = SIMPLE_MTX_INITIALIZER;
@@ -107,6 +113,119 @@ static bool radeon_get_drm_value(int fd, unsigned request,
       return false;
    }
    return true;
+}
+
+static bool radeon_read_register(int fd, unsigned reg_offset, uint32_t *out)
+{
+   uint32_t reg = reg_offset;
+
+   if (!radeon_get_drm_value(fd, RADEON_INFO_READ_REG, NULL, &reg))
+      return false;
+
+   *out = reg;
+   return true;
+}
+
+static bool
+radeon_get_rs480_candidate_gart_mc_path(int fd, char *path, size_t path_size)
+{
+   static const char fallback[] = "/sys/kernel/debug/radeon_rs480_candidate_gart_mc_regs";
+   drmDevicePtr dev = NULL;
+
+   if (drmGetDevice2(fd, 0, &dev) == 0) {
+      if (dev->available_nodes & (1 << DRM_NODE_PRIMARY)) {
+         const char *primary_path = dev->nodes[DRM_NODE_PRIMARY];
+         const char *node = primary_path ? strrchr(primary_path, '/') : NULL;
+         unsigned card_index;
+
+         if (node && sscanf(node + 1, "card%u", &card_index) == 1) {
+            int written =
+               snprintf(path, path_size,
+                        "/sys/kernel/debug/dri/%u/radeon_rs480_candidate_gart_mc_regs",
+                        card_index);
+
+            if (written >= 0 && (size_t)written < path_size &&
+                access(path, R_OK) == 0) {
+               drmFreeDevice(&dev);
+               return true;
+            }
+         }
+      }
+      drmFreeDevice(&dev);
+   }
+
+   int written = snprintf(path, path_size, "%s", fallback);
+
+   if (written < 0 || (size_t)written >= path_size)
+      return false;
+
+   return access(path, R_OK) == 0;
+}
+
+static bool
+radeon_rs480_debugfs_key_equals(const char *line, const char *sep,
+                                const char *key)
+{
+   size_t key_len = strlen(key);
+
+   return (size_t)(sep - line) == key_len && !strncmp(line, key, key_len);
+}
+
+static void
+radeon_query_rs480_gart_mc_info(struct radeon_drm_winsys *ws)
+{
+   char path[256];
+   FILE *f;
+   char line[256];
+   unsigned found = 0;
+
+   ws->info.rs480_gart_mc.valid = false;
+   ws->info.rs480_gart_mc.from_debugfs = false;
+
+   if (radeon_read_register(ws->fd, RS480_AGP_BASE_2_REG,
+                            &ws->info.rs480_gart_mc.agp_base_2) &&
+       radeon_read_register(ws->fd, RS480_GART_FEATURE_ID_REG,
+                            &ws->info.rs480_gart_mc.gart_feature_id) &&
+       radeon_read_register(ws->fd, RS480_GART_BASE_REG,
+                            &ws->info.rs480_gart_mc.gart_base)) {
+      ws->info.rs480_gart_mc.valid = true;
+      return;
+   }
+
+   if (!radeon_get_rs480_candidate_gart_mc_path(ws->fd, path, sizeof(path)))
+      return;
+
+   f = fopen(path, "r");
+   if (!f)
+      return;
+
+   while (fgets(line, sizeof(line), f)) {
+      char *sep = strstr(line, " = ");
+      char *end = NULL;
+      unsigned long value;
+
+      if (!sep)
+         continue;
+
+      value = strtoul(sep + 3, &end, 0);
+      if (end == sep + 3 || value > UINT32_MAX)
+         continue;
+
+      if (radeon_rs480_debugfs_key_equals(line, sep, "AGP_BASE_2")) {
+         ws->info.rs480_gart_mc.agp_base_2 = value;
+         found |= 1u << 0;
+      } else if (radeon_rs480_debugfs_key_equals(line, sep, "GART_FEATURE_ID")) {
+         ws->info.rs480_gart_mc.gart_feature_id = value;
+         found |= 1u << 1;
+      } else if (radeon_rs480_debugfs_key_equals(line, sep, "GART_BASE")) {
+         ws->info.rs480_gart_mc.gart_base = value;
+         found |= 1u << 2;
+      }
+   }
+
+   fclose(f);
+   ws->info.rs480_gart_mc.from_debugfs = found == 0x7;
+   ws->info.rs480_gart_mc.valid = found == 0x7;
 }
 
 static void get_hs_info(struct radeon_info *info)
@@ -462,6 +581,9 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
                                 "Z pipe count",
                                 &ws->info.r300_num_z_pipes))
          return false;
+
+      if (ws->info.family == CHIP_RS480)
+         radeon_query_rs480_gart_mc_info(ws);
    }
    else if (ws->gen >= DRV_R600) {
       uint32_t tiling_config = 0;
@@ -878,7 +1000,7 @@ static bool radeon_read_registers(struct radeon_winsys *rws,
    for (i = 0; i < num_registers; i++) {
       uint32_t reg = reg_offset + i*4;
 
-      if (!radeon_get_drm_value(ws->fd, RADEON_INFO_READ_REG, NULL, &reg))
+      if (!radeon_read_register(ws->fd, reg, &reg))
          return false;
       out[i] = reg;
    }
