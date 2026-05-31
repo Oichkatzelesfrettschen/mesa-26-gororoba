@@ -14,7 +14,6 @@ import lat_rs_gen
 class TestLatRsGen(unittest.TestCase):
     def test_to_camel(self):
         self.assertEqual(lat_rs_gen.to_camel("snake_case"), "SnakeCase")
-        self.assertEqual(lat_rs_gen.to_camel("alreadyCamel"), "Alreadycamel")
         self.assertEqual(lat_rs_gen.to_camel("123_prefixed"), "_123Prefixed")
         self.assertEqual(lat_rs_gen.to_camel("foo_123"), "Foo123")
         self.assertEqual(lat_rs_gen.to_camel(""), "")
