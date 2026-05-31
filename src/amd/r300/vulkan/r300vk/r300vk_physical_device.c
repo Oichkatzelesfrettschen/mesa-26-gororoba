@@ -772,11 +772,19 @@ r300vk_get_image_format_properties(
       goto unsupported;
    }
 
+   /* r300vk has no multisample path: the image model is single-sample r300g
+    * tiles with a CPU transfer/clear replay and no MSAA resolve, so every image
+    * format supports exactly one sample.  Reporting more lets a test build a
+    * multisample image and then resolve it (CmdResolveImage), which the runtime
+    * lowers through an unimplemented destination path and crashes.  The VK 1.0
+    * framebuffer*SampleCounts device limits keep the required 4x minimum; this is
+    * the per-format image capability, which is honestly single-sample.  The two
+    * differ until a real MSAA path exists -- a known, deferred conformance gap. */
    *image_properties = (VkImageFormatProperties){
       .maxExtent = max_extent,
       .maxMipLevels = max_mip_levels,
       .maxArrayLayers = max_array_layers,
-      .sampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS,
+      .sampleCounts = VK_SAMPLE_COUNT_1_BIT,
       .maxResourceSize = UINT32_MAX,
    };
    return VK_SUCCESS;
