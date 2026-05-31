@@ -28,6 +28,7 @@
 
 
 import argparse
+import ast
 from collections import namedtuple
 from dataclasses import dataclass
 import os
@@ -339,6 +340,52 @@ def details(args) -> None:
         print(event)
 
 
+class FilterCompileError(Exception):
+    pass
+
+
+def compile_filter(expr: str):
+    allowed_nodes = {
+        ast.Expression, ast.BinOp, ast.UnaryOp, ast.Compare,
+        ast.BoolOp, ast.Constant, ast.Name, ast.Subscript,
+        ast.Attribute, ast.Call, ast.Load,
+        ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
+        ast.USub, ast.UAdd, ast.Not,
+        ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+        ast.In, ast.NotIn,
+        ast.And, ast.Or,
+        ast.Dict, ast.List, ast.Set, ast.keyword
+    }
+    allowed_names = {'params', 'int', 'float', 'str', 'bool', 'len'}
+
+    try:
+        tree = ast.parse(expr, mode='eval')
+    except SyntaxError as e:
+        raise FilterCompileError(f"Syntax error in filter: {e}") from e
+
+    for node in ast.walk(tree):
+        if not isinstance(node, tuple(allowed_nodes)):
+            raise FilterCompileError(f"Forbidden AST node: {type(node).__name__}")
+        if isinstance(node, ast.Name) and node.id not in allowed_names:
+            raise FilterCompileError(f"Forbidden name: {node.id}")
+        if isinstance(node, ast.Attribute) and node.attr.startswith('_'):
+            raise FilterCompileError(f"Forbidden attribute access: {node.attr}")
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id not in allowed_names:
+                    raise FilterCompileError(f"Forbidden function call: {node.func.id}")
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr.startswith('_'):
+                    raise FilterCompileError(f"Forbidden method call: {node.func.attr}")
+            else:
+                raise FilterCompileError(f"Forbidden function call type: {type(node.func).__name__}")
+
+    code = compile(tree, '<string>', 'eval')
+    safe_builtins = {'int': int, 'float': float, 'str': str, 'bool': bool, 'len': len}
+
+    return lambda params: eval(code, {'__builtins__': {}}, {'params': params, **safe_builtins})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers()
@@ -367,7 +414,11 @@ def main() -> None:
 
     args.filter_func = None
     if hasattr(args, 'filter') and args.filter:
-        args.filter_func = eval(f"lambda params: {args.filter}")
+        try:
+            args.filter_func = compile_filter(args.filter)
+        except FilterCompileError as e:
+            print(f"Error: Invalid filter: {e}")
+            raise SystemExit(2)
 
     args.func(args)
 
