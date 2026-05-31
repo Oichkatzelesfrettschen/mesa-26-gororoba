@@ -103,6 +103,46 @@ build_fp64(void)
    return b.shader;
 }
 
+static nir_shader *
+build_identity_map_f32vec4(void)
+{
+   nir_builder b = cs_builder("cs_identity_map_f32vec4");
+   nir_def *in = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_store_ssbo(&b, in, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_binary_map_f32vec4(void)
+{
+   nir_builder b = cs_builder("cs_binary_map_f32vec4");
+   nir_def *a = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *c = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *sum = nir_fadd(&b, a, c);
+   nir_store_ssbo(&b, sum, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+prepare_detect_shader(nir_shader *nir)
+{
+   NIR_PASS(_, nir, nir_lower_explicit_io,
+            nir_var_mem_ubo | nir_var_mem_ssbo,
+            nir_address_format_32bit_index_offset);
+
+   bool progress;
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_dce);
+      NIR_PASS(progress, nir, nir_opt_cse);
+   } while (progress);
+}
+
 static void
 case_verdict(nir_shader *nir, bool want_admit, enum r300_compute_reject want,
              const char *label)
@@ -114,6 +154,42 @@ case_verdict(nir_shader *nir, bool want_admit, enum r300_compute_reject want,
    CHECK(a.admissible == want_admit, label);
    if (!want_admit)
       CHECK(a.reason == want, "  rejection reason matches");
+   ralloc_free(nir);
+}
+
+static void
+case_identity_metadata(void)
+{
+   nir_shader *nir = build_identity_map_f32vec4();
+   struct r300_compute_admission adm;
+   struct r300_compute_identity_pattern ident = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "float4 identity-map kernel admits");
+   r300_nir_detect_identity_map(nir, &ident);
+   CHECK(ident.is_identity_map, "float4 identity-map shape detected");
+   CHECK(ident.value_components == 4, "identity-map metadata records vec4 width");
+   CHECK(ident.value_bit_size == 32, "identity-map metadata records 32-bit lanes");
+   ralloc_free(nir);
+}
+
+static void
+case_binary_metadata(void)
+{
+   nir_shader *nir = build_binary_map_f32vec4();
+   struct r300_compute_admission adm;
+   struct r300_compute_binary_map_pattern binmap = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "float4 binary-map kernel admits");
+   r300_nir_detect_binary_map(nir, &binmap);
+   CHECK(binmap.is_binary_map, "float4 binary-map shape detected");
+   CHECK(binmap.alu_op == nir_op_fadd, "binary-map metadata records fadd opcode");
+   CHECK(binmap.value_components == 4, "binary-map metadata records vec4 width");
+   CHECK(binmap.value_bit_size == 32, "binary-map metadata records 32-bit lanes");
+   CHECK(binmap.value_is_float, "binary-map metadata records float result");
    ralloc_free(nir);
 }
 
@@ -131,6 +207,8 @@ main(void)
                 R300_COMPUTE_REJECT_GENERAL_ATOMIC, "ssbo atomic rejects");
    case_verdict(build_fp64(), false, R300_COMPUTE_REJECT_FP64,
                 "fp64 arithmetic rejects");
+   case_identity_metadata();
+   case_binary_metadata();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

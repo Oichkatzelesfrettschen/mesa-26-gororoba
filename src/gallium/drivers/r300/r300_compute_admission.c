@@ -65,6 +65,20 @@ is_rw_storage_store(nir_intrinsic_op op)
    }
 }
 
+static bool
+intrinsic_base_type_is_float(const nir_intrinsic_instr *intr,
+                             nir_alu_type fallback_type)
+{
+   nir_alu_type type = fallback_type;
+
+   if (nir_intrinsic_has_src_type(intr))
+      type = nir_intrinsic_src_type(intr);
+   else if (nir_intrinsic_has_dest_type(intr))
+      type = nir_intrinsic_dest_type(intr);
+
+   return nir_alu_type_get_base_type(type) == nir_type_float;
+}
+
 /* Walk the kernel and detect the identity-map structural pattern:
  * exactly one store_ssbo whose value source is the SSA def of exactly one
  * load_ssbo.  The store's binding is the canonical 0 the classifier already
@@ -82,6 +96,9 @@ r300_nir_detect_identity_map(const nir_shader *s,
    out->is_identity_map     = false;
    out->input_ssbo_binding  = 0;
    out->output_ssbo_binding = 0;
+   out->value_components    = 0;
+   out->value_bit_size      = 0;
+   out->value_is_float      = false;
 
    const nir_intrinsic_instr *store = NULL;
    const nir_intrinsic_instr *load  = NULL;
@@ -168,6 +185,11 @@ r300_nir_detect_identity_map(const nir_shader *s,
       out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
    if (nir_src_is_const(store->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->value_components = store->num_components;
+   out->value_bit_size = store->src[0].ssa->bit_size;
+   out->value_is_float = intrinsic_base_type_is_float(
+      store, nir_intrinsic_has_dest_type(load) ? nir_intrinsic_dest_type(load)
+                                               : nir_type_invalid);
    out->is_identity_map = true;
 }
 
@@ -203,6 +225,9 @@ r300_nir_detect_binary_map(const nir_shader *s,
    out->input_b_ssbo_binding  = 0;
    out->output_ssbo_binding   = 0;
    out->alu_op                = 0;
+   out->value_components      = 0;
+   out->value_bit_size        = 0;
+   out->value_is_float        = false;
 
    const nir_intrinsic_instr *store = NULL;
    const nir_intrinsic_instr *load_a = NULL;
@@ -284,6 +309,10 @@ r300_nir_detect_binary_map(const nir_shader *s,
       out->input_b_ssbo_binding = nir_src_as_uint(load_b->src[0]);
    if (nir_src_is_const(store->src[1]))
       out->output_ssbo_binding  = nir_src_as_uint(store->src[1]);
+   out->value_components = store->num_components;
+   out->value_bit_size = store->src[0].ssa->bit_size;
+   out->value_is_float = intrinsic_base_type_is_float(
+      store, nir_op_infos[alu->op].output_type);
 }
 
 /* Blend-add reduction detector.  Recognises the histogram / accumulator shape

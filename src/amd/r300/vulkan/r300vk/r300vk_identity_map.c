@@ -50,6 +50,51 @@ identity_map_debug_enabled(void)
          fprintf(stderr, "ident_map: " fmt "\n", ##__VA_ARGS__); \
    } while (0)
 
+static bool
+r300vk_idm_exact_opt_in_enabled(const char *env_name, const char *expected)
+{
+   const char *gate = getenv(env_name);
+   return gate && strcmp(gate, expected) == 0;
+}
+
+static bool
+r300vk_idm_format_supported(struct pipe_screen *screen, enum pipe_format fmt)
+{
+   return screen &&
+          screen->is_format_supported(screen, fmt, PIPE_TEXTURE_2D, 0, 0,
+                                      PIPE_BIND_SAMPLER_VIEW) &&
+          screen->is_format_supported(screen, fmt, PIPE_TEXTURE_2D, 0, 0,
+                                      PIPE_BIND_RENDER_TARGET);
+}
+
+static enum pipe_format
+r300vk_identity_map_replay_format(struct r300vk_device *device,
+                                  const struct r300vk_pipeline *pl)
+{
+   /* The identity-map theorem only proves bit-exact transport for UNORM8/16
+    * and FP16 through the TEX -> fragment-temp -> RT path.  Keep FP32x4 behind
+    * an exact opt-in: the R2VB ARGB32323232 proof covers CB/VB transport, not
+    * this sampled fragment path, so FP32x4 here is an exploration lane rather
+    * than a default correctness claim.
+    *
+    * After nir_lower_explicit_io the load_ssbo/store_ssbo identity pair retains
+    * the vec4x32 width but not a reliable scalar base type.  The gate therefore
+    * keys on a 4x32 transport shape only; using it for non-float payloads is a
+    * user hazard accepted explicitly through the opt-in. */
+   if (device && pl &&
+       r300vk_idm_exact_opt_in_enabled(R300VK_IDENTITY_MAP_FP32X4_ENV,
+                                       R300VK_IDENTITY_MAP_FP32X4_ENV_VALUE) &&
+       pl->identity_map.value_components == 4 &&
+       pl->identity_map.value_bit_size == 32 &&
+       r300vk_idm_format_supported(device->screen,
+                                   PIPE_FORMAT_R32G32B32A32_FLOAT)) {
+      IDM_LOG("using experimental fp32x4 identity carrier");
+      return PIPE_FORMAT_R32G32B32A32_FLOAT;
+   }
+
+   return PIPE_FORMAT_R8G8B8A8_UNORM;
+}
+
 static void
 r300vk_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
                               const void *src_map, unsigned src_stride,
@@ -802,12 +847,11 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   /* RGBA8 UNORM: 4 bytes per texel, bit-exact UNORM8 round-trip on FP24
-    * (NEAREST sampling returns the stored texel unmodified, so the UNORM8
-    * value survives the FP24 ALU).  A future expansion lets the kernel's
-    * element type pick FP16 or R8_UNORM; the bit-exactness bound applies
-    * to all three. */
-   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+   /* Default carrier is RGBA8 UNORM because the FP24 identity theorem proves a
+    * bit-exact round-trip there.  A float4x32 kernel may opt into the
+    * experimental FP32x4 transport lane explicitly; that mode is capability-
+    * checked and treated as exploratory transport, not as an exactness proof. */
+   const enum pipe_format fmt = r300vk_identity_map_replay_format(device, pl);
 
    /* Wrap the input buffer as a 2D sampler view.  The view holds the
     * texture's only strong reference; drop the view at the end and the
