@@ -8,6 +8,7 @@
 #include "r300vk_pipeline.h"
 #include "r300vk_image.h"
 #include "r300vk_buffer.h"
+#include "r300vk_object.h"
 #include "r300vk_identity_map.h"
 
 #include <stdlib.h>
@@ -620,7 +621,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
          case R300VK_CMD_FILL_BUFFER:
          case R300VK_CMD_COPY_BUFFER:
          case R300VK_CMD_UPDATE_BUFFER:
-            /* Buffer/image transfers run in the post-fence CPU pass. */
+         case R300VK_CMD_SET_EVENT:
+         case R300VK_CMD_RESET_EVENT:
+            /* Buffer/image transfers and event signals run in the post-fence
+             * CPU pass. */
             break;
 
          case R300VK_CMD_PIPELINE_BARRIER:
@@ -850,6 +854,12 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
          r300vk_copy_buffer_region(device, &e->copy_buffer);
       } else if (e->type == R300VK_CMD_UPDATE_BUFFER) {
          r300vk_update_buffer(device, &e->update_buffer);
+      } else if (e->type == R300VK_CMD_SET_EVENT) {
+         if (e->event.event)
+            e->event.event->status = VK_EVENT_SET;
+      } else if (e->type == R300VK_CMD_RESET_EVENT) {
+         if (e->event.event)
+            e->event.event->status = VK_EVENT_RESET;
       }
    }
 }
