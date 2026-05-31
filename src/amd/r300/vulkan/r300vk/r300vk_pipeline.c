@@ -444,6 +444,7 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
 {
    bool dynamic_viewport = false;
    bool dynamic_scissor = false;
+   bool dynamic_raster_discard = false;
    if (info->pDynamicState) {
       for (uint32_t d = 0; d < info->pDynamicState->dynamicStateCount; d++) {
          switch (info->pDynamicState->pDynamicStates[d]) {
@@ -453,12 +454,26 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
          case VK_DYNAMIC_STATE_SCISSOR:
             dynamic_scissor = true;
             break;
+         case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
+            dynamic_raster_discard = true;
+            break;
          default:
             break;
          }
       }
    }
-   const VkPipelineViewportStateCreateInfo *vp_state = info->pViewportState;
+
+   /* pViewportState is ignored when rasterization is statically discarded, and
+    * the app may then leave it NULL or pass a garbage pointer
+    * (dEQP-VK.api.pipeline.pipeline_invalid_pointers_unused_structs.graphics).
+    * Read it only when rasterization can run: discard disabled, or made dynamic
+    * so a later draw may enable it (in which case the app must supply a valid
+    * pViewportState). */
+   const VkPipelineRasterizationStateCreateInfo *rs = info->pRasterizationState;
+   const bool raster_discarded =
+      rs && rs->rasterizerDiscardEnable && !dynamic_raster_discard;
+   const VkPipelineViewportStateCreateInfo *vp_state =
+      raster_discarded ? NULL : info->pViewportState;
    if (vp_state && !dynamic_viewport &&
        vp_state->pViewports && vp_state->viewportCount > 0) {
       pl->static_viewport = vp_state->pViewports[0];
