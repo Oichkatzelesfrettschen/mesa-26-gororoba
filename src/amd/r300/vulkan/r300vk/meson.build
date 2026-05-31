@@ -64,6 +64,7 @@ if get_option('r300vk-gallium-backend') and with_gallium_r300
     'r300vk_descriptor.c',
     'r300vk_identity_map.c',
     'r300vk_pipeline.c',
+    'r300vk_object.c',
   )
   libr300vk_deps += [
     idep_nir,
