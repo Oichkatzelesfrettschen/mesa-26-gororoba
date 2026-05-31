@@ -436,6 +436,46 @@ r300vk_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
+                             const VkCopyBufferToImageInfo2 *pCopyBufferToImageInfo)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, src, pCopyBufferToImageInfo->srcBuffer);
+   VK_FROM_HANDLE(r300vk_image, dst, pCopyBufferToImageInfo->dstImage);
+
+   for (uint32_t i = 0; i < pCopyBufferToImageInfo->regionCount; i++) {
+      struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+      if (!e) return;
+      e->type                = R300VK_CMD_COPY_BUFFER_TO_IMAGE;
+      e->copy_buf_img.src    = src;
+      e->copy_buf_img.dst    = dst;
+      e->copy_buf_img.region = pCopyBufferToImageInfo->pRegions[i];
+   }
+}
+
+void
+r300vk_CmdClearColorImage(VkCommandBuffer commandBuffer,
+                          VkImage image,
+                          VkImageLayout imageLayout,
+                          const VkClearColorValue *pColor,
+                          uint32_t rangeCount,
+                          const VkImageSubresourceRange *pRanges)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_image, img, image);
+   (void)imageLayout;
+
+   for (uint32_t i = 0; i < rangeCount; i++) {
+      struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+      if (!e) return;
+      e->type                    = R300VK_CMD_CLEAR_COLOR_IMAGE;
+      e->clear_color_image.image = img;
+      e->clear_color_image.color = *pColor;
+      e->clear_color_image.range = pRanges[i];
+   }
+}
+
+void
 r300vk_CmdFillBuffer(VkCommandBuffer commandBuffer,
                      VkBuffer dstBuffer,
                      VkDeviceSize dstOffset,

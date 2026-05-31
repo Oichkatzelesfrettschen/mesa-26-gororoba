@@ -714,6 +714,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
             break;
 
          case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
+         case R300VK_CMD_COPY_BUFFER_TO_IMAGE:
+         case R300VK_CMD_CLEAR_COLOR_IMAGE:
          case R300VK_CMD_FILL_BUFFER:
          case R300VK_CMD_COPY_BUFFER:
          case R300VK_CMD_UPDATE_BUFFER:
@@ -840,6 +842,146 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
    return true;
 }
 
+/* The inverse of r300vk_copy_image_region_to_buffer: a tile-iterated CPU upload.
+ * Map the source buffer once, then for every destination image tile touched by
+ * the region, map that tile PIPE_MAP_WRITE and copy the matching linear rows.
+ * Iterating tiles keeps split images correct instead of writing only tile zero. */
+static bool
+r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
+                                   struct pipe_resource *src,
+                                   const struct r300vk_image *dst_img,
+                                   const VkBufferImageCopy2 *region)
+{
+   struct pipe_context *pipe = device->pipe;
+
+   const unsigned bpp = util_format_get_blocksize(dst_img->resource->format);
+   const unsigned row_pitch = (region->bufferRowLength
+                               ? region->bufferRowLength
+                               : region->imageExtent.width) * bpp;
+   const unsigned src_size = row_pitch * region->imageExtent.height;
+
+   struct pipe_transfer *src_xfer = NULL;
+   const uint8_t *src_map = pipe_buffer_map_range(pipe, src,
+                                                  (unsigned)region->bufferOffset,
+                                                  src_size,
+                                                  PIPE_MAP_READ,
+                                                  &src_xfer);
+   if (!src_map)
+      return false;
+
+   const int64_t req_min_x = region->imageOffset.x;
+   const int64_t req_min_y = region->imageOffset.y;
+   const int64_t req_max_x = req_min_x + region->imageExtent.width;
+   const int64_t req_max_y = req_min_y + region->imageExtent.height;
+
+   for (uint32_t tile_row = 0; tile_row < dst_img->tile_rows; tile_row++) {
+      const uint32_t tile_origin_y =
+         r300vk_image_tile_origin_y(dst_img, tile_row);
+      const int64_t tile_min_y = tile_origin_y;
+      const int64_t tile_max_y = tile_min_y + dst_img->tile_height[tile_row];
+      const int64_t copy_min_y = MAX2(req_min_y, tile_min_y);
+      const int64_t copy_max_y = MIN2(req_max_y, tile_max_y);
+      if (copy_max_y <= copy_min_y)
+         continue;
+
+      for (uint32_t tile_col = 0; tile_col < dst_img->tile_cols; tile_col++) {
+         const uint32_t tile_origin_x =
+            r300vk_image_tile_origin_x(dst_img, tile_col);
+         const int64_t tile_min_x = tile_origin_x;
+         const int64_t tile_max_x = tile_min_x + dst_img->tile_width[tile_col];
+         const int64_t copy_min_x = MAX2(req_min_x, tile_min_x);
+         const int64_t copy_max_x = MIN2(req_max_x, tile_max_x);
+         if (copy_max_x <= copy_min_x)
+            continue;
+
+         const uint32_t tile_index = tile_row * dst_img->tile_cols + tile_col;
+         struct pipe_resource *dst = dst_img->tiles[tile_index];
+         if (!dst)
+            continue;
+
+         struct pipe_box dst_box;
+         u_box_2d((int)(copy_min_x - tile_min_x),
+                  (int)(copy_min_y - tile_min_y),
+                  (int)(copy_max_x - copy_min_x),
+                  (int)(copy_max_y - copy_min_y),
+                  &dst_box);
+
+         struct pipe_transfer *dst_xfer = NULL;
+         uint8_t *dst_map =
+            pipe->texture_map(pipe, dst,
+                              region->imageSubresource.mipLevel,
+                              PIPE_MAP_WRITE,
+                              &dst_box, &dst_xfer);
+         if (!dst_map)
+            continue;
+
+         const uint8_t *tile_src =
+            src_map +
+            (copy_min_y - req_min_y) * row_pitch +
+            (copy_min_x - req_min_x) * bpp;
+         const unsigned copy_width_bytes = (copy_max_x - copy_min_x) * bpp;
+         const unsigned copy_height = copy_max_y - copy_min_y;
+         for (unsigned row = 0; row < copy_height; row++) {
+            memcpy(dst_map + row * dst_xfer->stride,
+                   tile_src + row * row_pitch,
+                   copy_width_bytes);
+         }
+
+         pipe->texture_unmap(pipe, dst_xfer);
+      }
+   }
+
+   pipe->buffer_unmap(pipe, src_xfer);
+   return true;
+}
+
+/* vkCmdClearColorImage as a tile-iterated CPU fill.  Pack the clear value to the
+ * image format once, then write that texel to every position of each tile. */
+static bool
+r300vk_clear_color_image(struct r300vk_device *device,
+                         const struct r300vk_image *img,
+                         const VkClearColorValue *color)
+{
+   struct pipe_context *pipe = device->pipe;
+   const enum pipe_format fmt = img->resource->format;
+   const unsigned bpp = util_format_get_blocksize(fmt);
+
+   uint8_t packed[16] = {0};
+   if (util_format_is_pure_uint(fmt))
+      util_format_pack_rgba(fmt, packed, color->uint32, 1);
+   else if (util_format_is_pure_sint(fmt))
+      util_format_pack_rgba(fmt, packed, color->int32, 1);
+   else
+      util_format_pack_rgba(fmt, packed, color->float32, 1);
+
+   for (uint32_t tile_row = 0; tile_row < img->tile_rows; tile_row++) {
+      for (uint32_t tile_col = 0; tile_col < img->tile_cols; tile_col++) {
+         const uint32_t tile_index = tile_row * img->tile_cols + tile_col;
+         struct pipe_resource *tile = img->tiles[tile_index];
+         if (!tile)
+            continue;
+         const unsigned tile_w = img->tile_width[tile_col];
+         const unsigned tile_h = img->tile_height[tile_row];
+
+         struct pipe_box box;
+         u_box_2d(0, 0, (int)tile_w, (int)tile_h, &box);
+
+         struct pipe_transfer *xfer = NULL;
+         uint8_t *map = pipe->texture_map(pipe, tile, 0, PIPE_MAP_WRITE,
+                                          &box, &xfer);
+         if (!map)
+            continue;
+         for (unsigned y = 0; y < tile_h; y++) {
+            uint8_t *row = map + y * xfer->stride;
+            for (unsigned x = 0; x < tile_w; x++)
+               memcpy(row + x * bpp, packed, bpp);
+         }
+         pipe->texture_unmap(pipe, xfer);
+      }
+   }
+   return true;
+}
+
 /* vkCmdFillBuffer as a CPU map-and-fill: write the repeated 32-bit value over
  * [offset, offset+size) of the buffer, resolving VK_WHOLE_SIZE to the tail and
  * rounding the byte count down to a 32-bit multiple per the spec. */
@@ -944,6 +1086,14 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
          struct pipe_resource     *dst    = e->copy_img_buf.dst->resource;
          r300vk_copy_image_region_to_buffer(device, e->copy_img_buf.src,
                                             dst, region);
+      } else if (e->type == R300VK_CMD_COPY_BUFFER_TO_IMAGE) {
+         const VkBufferImageCopy2 *region = &e->copy_buf_img.region;
+         struct pipe_resource     *src    = e->copy_buf_img.src->resource;
+         r300vk_copy_buffer_region_to_image(device, src,
+                                            e->copy_buf_img.dst, region);
+      } else if (e->type == R300VK_CMD_CLEAR_COLOR_IMAGE) {
+         r300vk_clear_color_image(device, e->clear_color_image.image,
+                                  &e->clear_color_image.color);
       } else if (e->type == R300VK_CMD_FILL_BUFFER) {
          r300vk_fill_buffer(device, &e->fill_buffer);
       } else if (e->type == R300VK_CMD_COPY_BUFFER) {

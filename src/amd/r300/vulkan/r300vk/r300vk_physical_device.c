@@ -604,17 +604,21 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
          image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
    }
 
-   /* r300vk implements one Vulkan image transfer operation:
-    * CmdCopyImageToBuffer2.  Submit first flushes and waits for the GPU, then
-    * the readback pass maps each r300g tile with pipe->texture_map.  Therefore
-    * every image format that can be allocated for r300vk's attachment or
-    * sampled-image paths is a transfer source, including depth/stencil formats
-    * that only advertise PIPE_BIND_DEPTH_STENCIL.  r300vk has no command replay
-    * path for transfer destinations, image-to-image copies, resolves, or blits,
-    * so do not infer TRANSFER_DST or BLIT bits from Gallium render or sampler
-    * support. */
-   if (supports_depth_stencil || supports_sampler_view || supports_render_target)
+   /* r300vk implements image transfer in both directions on the same r300g tile
+    * transfer-map path: CmdCopyImageToBuffer2 for CPU readback and
+    * CmdCopyBufferToImage2 for CPU upload.  Submit flushes and waits for the GPU,
+    * then the CPU transfer pass maps each tile with pipe->texture_map.  Every
+    * format allocatable for an attachment or sampled-image path is therefore both
+    * a transfer source and destination, including depth/stencil formats that only
+    * advertise PIPE_BIND_DEPTH_STENCIL.  BLIT_SRC/DST and image-to-image copy bits
+    * stay withheld until those replay paths exist. */
+   if (supports_depth_stencil || supports_sampler_view || supports_render_target) {
       image_features |= VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
+      /* The transfer-dst upload is texel-addressed; block-compressed formats
+       * need block-aware addressing before they can be advertised. */
+      if (!util_format_is_compressed(pipe_format))
+         image_features |= VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+   }
 
    /* Depth/stencil formats carry no buffer features: a VkBuffer cannot hold a
     * depth/stencil format and the spec requires bufferFeatures == 0 for them
