@@ -24,6 +24,9 @@
 
 #include "draw/draw_context.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 /* Return the identifier behind whom the brave coders responsible for this
  * amalgamation of code, sweat, and duct tape, routinely obscure their names.
  *
@@ -66,6 +69,12 @@ static const char* chip_families[] = {
     "ATI RV560",
     "ATI RV570"
 };
+
+static bool r300_is_rs48x_hb_family(const struct r300_screen *r300screen)
+{
+    return r300screen->caps.family == CHIP_RC410 ||
+           r300screen->caps.family == CHIP_RS480;
+}
 
 static const char* r300_get_family_name(struct r300_screen* r300screen)
 {
@@ -728,6 +737,31 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         r300screen->options.ieeemath = true;
     if (SCREEN_DBG_ON(r300screen, DBG_FFMATH))
         r300screen->options.ffmath = true;
+
+    const char *hb_tcl = getenv("R300_HB_TCL");
+    if (!r300screen->caps.has_tcl &&
+        r300_is_rs48x_hb_family(r300screen) &&
+        hb_tcl && strcmp(hb_tcl, "1") == 0) {
+        r300screen->hb_tcl = true;
+
+        const char *hb_vert_fpu = getenv("R300_HB_VERT_FPU");
+        if (hb_vert_fpu) {
+            char *end = NULL;
+            long probe = strtol(hb_vert_fpu, &end, 0);
+
+            if (end && *end == '\0' && probe > 0 && probe < 32) {
+                r300screen->hb_vert_fpu_probe = (unsigned)probe;
+            } else {
+                fprintf(stderr,
+                        "r300: ignoring R300_HB_VERT_FPU=%s; use an integer in [1, 31]\n",
+                        hb_vert_fpu);
+            }
+        }
+
+        fprintf(stderr,
+                "r300: enabling RS482 HB_TCL experiment (hb_vert_fpu=%u)\n",
+                r300screen->hb_vert_fpu_probe);
+    }
 
     r300screen->rws = rws;
     r300screen->screen.destroy = r300_destroy_screen;

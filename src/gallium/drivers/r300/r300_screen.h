@@ -40,6 +40,10 @@ struct r300_screen {
 #define OPT_BOOL(name, dflt, description) bool name : 1;
 #include "r300_debug_options.h"
     } options;
+
+    /* RS482 hybrid-TCL instrumentation stays separate from caps.has_tcl. */
+    bool hb_tcl;
+    unsigned hb_vert_fpu_probe;
 };
 
 
