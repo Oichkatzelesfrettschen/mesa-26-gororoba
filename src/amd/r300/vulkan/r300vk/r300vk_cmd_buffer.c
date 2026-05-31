@@ -400,6 +400,25 @@ r300vk_CmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdFillBuffer(VkCommandBuffer commandBuffer,
+                     VkBuffer dstBuffer,
+                     VkDeviceSize dstOffset,
+                     VkDeviceSize size,
+                     uint32_t data)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, buf, dstBuffer);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type               = R300VK_CMD_FILL_BUFFER;
+   e->fill_buffer.buffer = buf;
+   e->fill_buffer.offset = dstOffset;
+   e->fill_buffer.size   = size;
+   e->fill_buffer.data   = data;
+}
+
+void
 r300vk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
                             const VkDependencyInfo *pDependencyInfo)
 {
