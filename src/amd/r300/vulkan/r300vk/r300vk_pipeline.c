@@ -1414,9 +1414,10 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    if (!adm.admissible)
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                        "r300vk: compute kernel %u rejected by the RS482 "
-                       "substrate classifier (%s: %s)", i,
+                       "substrate classifier (%s: %s -- %s)", i,
                        r300_compute_reject_name(adm.reason),
-                       adm.detail ? adm.detail : "unsupported construct");
+                       adm.detail ? adm.detail : "unsupported construct",
+                       r300_compute_reject_substrate_absence(adm.reason));
 
    struct r300vk_pipeline *pl =
       vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pl), 8,
