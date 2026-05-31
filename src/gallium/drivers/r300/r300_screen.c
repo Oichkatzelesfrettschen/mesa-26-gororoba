@@ -712,6 +712,21 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300_init_debug(r300screen);
     r300_parse_chipset(r300screen->info.pci_id, &r300screen->caps);
 
+    if (SCREEN_DBG_ON(r300screen, DBG_INFO) &&
+        r300screen->caps.family == CHIP_RS480) {
+        if (r300screen->info.rs480_gart_mc.valid) {
+            SCREEN_DBG(r300screen, DBG_INFO,
+                       "r300: RS480 GART/MC (%s): AGP_BASE_2=0x%08x GART_FEATURE_ID=0x%08x GART_BASE=0x%08x\n",
+                       r300screen->info.rs480_gart_mc.from_debugfs ? "debugfs" : "ioctl",
+                       r300screen->info.rs480_gart_mc.agp_base_2,
+                       r300screen->info.rs480_gart_mc.gart_feature_id,
+                       r300screen->info.rs480_gart_mc.gart_base);
+        } else {
+            SCREEN_DBG(r300screen, DBG_INFO,
+                       "r300: RS480 GART/MC unavailable via ioctl or debugfs fallback.\n");
+        }
+    }
+
     /* driconf is optional for callers that do not use DRI2 (e.g. Vulkan ICDs).
      * When config->options is NULL the CALLOC'd r300screen->options fields are
      * already false, matching every OPT_BOOL default in r300_debug_options.h. */
