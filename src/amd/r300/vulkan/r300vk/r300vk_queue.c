@@ -618,6 +618,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
          case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
          case R300VK_CMD_FILL_BUFFER:
+         case R300VK_CMD_COPY_BUFFER:
             /* Buffer/image transfers run in the post-fence CPU pass. */
             break;
 
@@ -769,6 +770,47 @@ r300vk_fill_buffer(struct r300vk_device *device,
    pipe_buffer_unmap(pipe, xfer);
 }
 
+/* vkCmdCopyBuffer2 region as a CPU memcpy.  Distinct buffers map src READ and
+ * dst WRITE and memcpy; an aliasing src==dst copy maps the union of both ranges
+ * once and memmoves so overlap is well defined. */
+static void
+r300vk_copy_buffer_region(struct r300vk_device *device,
+                          const struct r300vk_cmd_copy_buffer *cb)
+{
+   struct pipe_context  *pipe = device->pipe;
+   struct pipe_resource *src  = cb->src ? cb->src->resource : NULL;
+   struct pipe_resource *dst  = cb->dst ? cb->dst->resource : NULL;
+   const unsigned size = (unsigned)cb->size;
+   if (!src || !dst || size == 0)
+      return;
+
+   if (src == dst) {
+      const uint64_t lo = MIN2(cb->src_offset, cb->dst_offset);
+      const uint64_t hi = MAX2(cb->src_offset, cb->dst_offset) + size;
+      struct pipe_transfer *xfer = NULL;
+      uint8_t *map = pipe_buffer_map_range(pipe, dst, (unsigned)lo,
+                                           (unsigned)(hi - lo),
+                                           PIPE_MAP_READ | PIPE_MAP_WRITE, &xfer);
+      if (!map)
+         return;
+      memmove(map + (cb->dst_offset - lo), map + (cb->src_offset - lo), size);
+      pipe_buffer_unmap(pipe, xfer);
+      return;
+   }
+
+   struct pipe_transfer *sxfer = NULL, *dxfer = NULL;
+   const uint8_t *smap = pipe_buffer_map_range(pipe, src, (unsigned)cb->src_offset,
+                                               size, PIPE_MAP_READ, &sxfer);
+   uint8_t *dmap = pipe_buffer_map_range(pipe, dst, (unsigned)cb->dst_offset,
+                                         size, PIPE_MAP_WRITE, &dxfer);
+   if (smap && dmap)
+      memcpy(dmap, smap, size);
+   if (smap)
+      pipe_buffer_unmap(pipe, sxfer);
+   if (dmap)
+      pipe_buffer_unmap(pipe, dxfer);
+}
+
 /* CPU-side buffer/image transfers executed after the GPU fence completes. */
 static void
 r300vk_replay_cpu_readback(struct r300vk_device *device,
@@ -783,6 +825,8 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
                                             dst, region);
       } else if (e->type == R300VK_CMD_FILL_BUFFER) {
          r300vk_fill_buffer(device, &e->fill_buffer);
+      } else if (e->type == R300VK_CMD_COPY_BUFFER) {
+         r300vk_copy_buffer_region(device, &e->copy_buffer);
       }
    }
 }
