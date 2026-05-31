@@ -217,6 +217,18 @@ r300vk_compile_shader(struct r300vk_device *device,
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
 
+   /* vk_spirv_to_nir emits UBO/SSBO access as a vulkan_resource_index ->
+    * load_vulkan_descriptor -> cast -> load_deref chain (ubo_addr_format =
+    * 32bit_index_offset above).  nir_to_rc (the FS path) and nir_to_tgsi (the
+    * SW-TCL VS path on RS480-family) have no handler for those intrinsics, so an
+    * unlowered chain dummy-shaders the FS or aborts the VS.  Lower it to
+    * load_ubo/load_ssbo, which ntr_emit_load_ubo consumes; r300 carries a single
+    * UBO at index 0 (nir_lower_uniforms_to_ubo), so a multi-binding shader still
+    * narrows at that index-0 assert.  The compute-classify path matches. */
+   NIR_PASS(_, nir, nir_lower_explicit_io,
+            nir_var_mem_ubo | nir_var_mem_ssbo,
+            nir_address_format_32bit_index_offset);
+
    /* vk_spirv_to_nir sets data.location for VS inputs (VERT_ATTRIB_GENERIC0+n)
     * but leaves data.driver_location at zero for all variables.  nir_lower_io
     * (called inside r300g's nir_to_rc via r300_nir_lower_for_rc) uses
