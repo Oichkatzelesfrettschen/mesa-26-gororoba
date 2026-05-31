@@ -476,6 +476,31 @@ r300vk_CmdClearColorImage(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdClearAttachments(VkCommandBuffer commandBuffer,
+                           uint32_t attachmentCount,
+                           const VkClearAttachment *pAttachments,
+                           uint32_t rectCount,
+                           const VkClearRect *pRects)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+
+   for (uint32_t attachment = 0; attachment < attachmentCount; attachment++) {
+      if (!(pAttachments[attachment].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
+         continue;
+
+      for (uint32_t rect = 0; rect < rectCount; rect++) {
+         struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+         if (!e)
+            return;
+
+         e->type                    = R300VK_CMD_CLEAR_ATTACHMENTS;
+         e->clear_attachments.color = pAttachments[attachment].clearValue.color;
+         e->clear_attachments.rect  = pRects[rect].rect;
+      }
+   }
+}
+
+void
 r300vk_CmdFillBuffer(VkCommandBuffer commandBuffer,
                      VkBuffer dstBuffer,
                      VkDeviceSize dstOffset,
