@@ -49,3 +49,10 @@ not yet wired to a caller.  The caller binds the "vertex compute" fragment
 program, the GART framebuffer, and the pass-1 geometry through the normal r300
 pipe state path before calling the loop; see the contract comment in
 ``r300_r2vb.c``.
+
+That split is deliberate.  Today stage 1 is fragment-generated, and stages 2-3
+are the producer-agnostic barrier plus ``LOAD_VBPNTR`` / ``TCL_BYPASS`` oracle
+half.  If a future hazard-gated RS482 audit proves the PVS bank can safely
+produce the same FP32x4 clip-space buffer, only stage 1 changes; the current
+R2VB implementation is not itself evidence that hardware PVS already works on
+the normal RS482 Mesa route.

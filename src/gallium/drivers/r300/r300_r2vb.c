@@ -43,7 +43,7 @@ r2vb_create_selftest_bo(struct r300_context *r300, uint32_t width_bytes,
     struct pipe_screen *pscreen = r300->context.screen;
     struct pipe_resource templ = {0};
     templ.target = PIPE_BUFFER;
-    templ.format = PIPE_FORMAT_R8_UNORM;
+    templ.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
     templ.width0 = width_bytes;
     templ.height0 = 1;
     templ.depth0 = 1;
@@ -186,7 +186,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * lives in the US instruction registers (r300_emit_fs in r300_emit.c), never
      * as a relocatable BO; this function deliberately does not hand-roll the
      * compiler's fragment-shader emit, and the covering triangle's vertex values
-     * are ignored by a wpos-only program that writes from gl_FragCoord. */
+     * are ignored by a wpos-only program that writes from gl_FragCoord.
+     *
+     * If a future hazard-gated audit proves the RS482 PVS bank is writable and
+     * executable, only this producer half changes.  Stages 2 and 3 only consume a
+     * clip-space FP32x4 vertex buffer, so the barrier and re-ingest/oracle half
+     * stay valid whether stage 1 was fragment-generated or produced by an explicit
+     * PVS experiment. */
     /* Disable depth: this color-only vertex render needs no Z test, and the
      * radeon CS validator (r300_cs_track_check) defaults z_enabled true with a
      * NULL z buffer, so a draw with ZB_CNTL R300_Z_ENABLE still set but no depth
