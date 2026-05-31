@@ -41,6 +41,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_COPY_BUFFER_TO_IMAGE,
    R300VK_CMD_CLEAR_COLOR_IMAGE,
+   R300VK_CMD_CLEAR_ATTACHMENTS,
    R300VK_CMD_FILL_BUFFER,
    R300VK_CMD_COPY_BUFFER,
    R300VK_CMD_UPDATE_BUFFER,
@@ -123,6 +124,14 @@ struct r300vk_cmd_clear_color_image {
    struct r300vk_image    *image;
    VkClearColorValue       color;
    VkImageSubresourceRange range;
+};
+
+/* One color clear rect from vkCmdClearAttachments.  Replayed in the active
+ * render pass with the rect clipped to each r300vk tile.  Depth/stencil aspects
+ * are intentionally ignored until r300vk has a depth/stencil attachment model. */
+struct r300vk_cmd_clear_attachments {
+   VkClearColorValue color;
+   VkRect2D          rect;
 };
 
 /* One vkCmdFillBuffer: fill [offset, offset+size) of a buffer with a repeated
@@ -218,6 +227,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
       struct r300vk_cmd_clear_color_image    clear_color_image;
+      struct r300vk_cmd_clear_attachments    clear_attachments;
       struct r300vk_cmd_fill_buffer          fill_buffer;
       struct r300vk_cmd_copy_buffer          copy_buffer;
       struct r300vk_cmd_update_buffer        update_buffer;
