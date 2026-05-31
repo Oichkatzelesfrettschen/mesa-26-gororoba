@@ -419,6 +419,27 @@ r300vk_CmdFillBuffer(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+                      const VkCopyBufferInfo2 *pCopyBufferInfo)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, src, pCopyBufferInfo->srcBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, dst, pCopyBufferInfo->dstBuffer);
+
+   for (uint32_t i = 0; i < pCopyBufferInfo->regionCount; i++) {
+      const VkBufferCopy2 *r = &pCopyBufferInfo->pRegions[i];
+      struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+      if (!e) return;
+      e->type                  = R300VK_CMD_COPY_BUFFER;
+      e->copy_buffer.src        = src;
+      e->copy_buffer.dst        = dst;
+      e->copy_buffer.src_offset = r->srcOffset;
+      e->copy_buffer.dst_offset = r->dstOffset;
+      e->copy_buffer.size       = r->size;
+   }
+}
+
+void
 r300vk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
                             const VkDependencyInfo *pDependencyInfo)
 {
