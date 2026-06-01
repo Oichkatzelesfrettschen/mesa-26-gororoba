@@ -40,6 +40,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_COPY_BUFFER_TO_IMAGE,
+   R300VK_CMD_COPY_IMAGE,
    R300VK_CMD_CLEAR_COLOR_IMAGE,
    R300VK_CMD_CLEAR_ATTACHMENTS,
    R300VK_CMD_FILL_BUFFER,
@@ -114,6 +115,16 @@ struct r300vk_cmd_copy_buf_to_image {
    struct r300vk_buffer *src;
    struct r300vk_image  *dst;
    VkBufferImageCopy2    region;
+};
+
+/* One region of a vkCmdCopyImage2.  Replayed as image -> linear staging buffer
+ * -> image, reusing the two tile-iterated transfer paths.  The full region is
+ * staged before any destination write, so same-image copies never overwrite
+ * source texels before they are read. */
+struct r300vk_cmd_copy_image {
+   struct r300vk_image *src;
+   struct r300vk_image *dst;
+   VkImageCopy2         region;
 };
 
 /* One vkCmdClearColorImage subresource range.  Replayed as a tile-iterated CPU
@@ -226,6 +237,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_draw_indirect        draw_indirect;
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
+      struct r300vk_cmd_copy_image           copy_image;
       struct r300vk_cmd_clear_color_image    clear_color_image;
       struct r300vk_cmd_clear_attachments    clear_attachments;
       struct r300vk_cmd_fill_buffer          fill_buffer;

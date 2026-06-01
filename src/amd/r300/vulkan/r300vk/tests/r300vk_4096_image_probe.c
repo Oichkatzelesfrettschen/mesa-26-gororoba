@@ -191,7 +191,8 @@ check_format_contract(struct probe_context *ctx)
 
    const VkFormatFeatureFlags required_optimal =
       VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-      VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+      VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+      VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
    if ((format_props.optimalTilingFeatures & required_optimal) !=
        required_optimal) {
       char detail[160];
@@ -201,17 +202,16 @@ check_format_contract(struct probe_context *ctx)
       return 1;
    }
    if (format_props.optimalTilingFeatures &
-       (VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
-        VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+       (VK_FORMAT_FEATURE_BLIT_SRC_BIT |
         VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
       char detail[160];
       snprintf(detail, sizeof(detail), "optimalTilingFeatures=0x%x",
                format_props.optimalTilingFeatures);
-      probe_result("unsupported_transfer_features_absent", "fail", detail);
+      probe_result("unsupported_blit_features_absent", "fail", detail);
       return 1;
    }
-   probe_result("unsupported_transfer_features_absent", "pass",
-                "transfer-dst and blit format bits are absent");
+   probe_result("unsupported_blit_features_absent", "pass",
+                "blit format bits are absent");
 
    VkImageFormatProperties props;
    VkResult result =
@@ -255,17 +255,15 @@ check_format_contract(struct probe_context *ctx)
    result = vkGetPhysicalDeviceImageFormatProperties(
       ctx->physical_device, VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_TYPE_2D,
       VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0, &props);
-   if (result == VK_SUCCESS)
-      return probe_unexpected_success("transfer_dst_format_unsupported");
-   if (result != VK_ERROR_FORMAT_NOT_SUPPORTED)
-      return probe_fail("transfer_dst_format_unsupported", result);
-   probe_result("transfer_dst_format_unsupported", "pass",
-                "transfer-dst usage rejected by image-format query");
+   if (result != VK_SUCCESS)
+      return probe_fail("transfer_dst_format_supported", result);
+   probe_result("transfer_dst_format_supported", "pass",
+                "transfer-dst usage accepted by image-format query");
    return 0;
 }
 
 static int
-check_create_reject_contract(struct probe_context *ctx)
+check_create_contract(struct probe_context *ctx)
 {
    VkImage image = VK_NULL_HANDLE;
    VkImageCreateInfo image_info = {
@@ -296,14 +294,11 @@ check_create_reject_contract(struct probe_context *ctx)
    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
    image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
    result = vkCreateImage(ctx->device, &image_info, NULL, &image);
-   if (result == VK_SUCCESS) {
-      vkDestroyImage(ctx->device, image, NULL);
-      return probe_unexpected_success("transfer_dst_create_unsupported");
-   }
-   if (result != VK_ERROR_FORMAT_NOT_SUPPORTED)
-      return probe_fail("transfer_dst_create_unsupported", result);
-   probe_result("transfer_dst_create_unsupported", "pass",
-                "transfer-dst-only image rejected by vkCreateImage");
+   if (result != VK_SUCCESS)
+      return probe_fail("transfer_dst_create_supported", result);
+   vkDestroyImage(ctx->device, image, NULL);
+   probe_result("transfer_dst_create_supported", "pass",
+                "transfer-dst-only image accepted by vkCreateImage");
    return 0;
 }
 
@@ -732,7 +727,7 @@ main(void)
    if (!status)
       status |= check_format_contract(&ctx);
    if (!status)
-      status |= check_create_reject_contract(&ctx);
+      status |= check_create_contract(&ctx);
    if (!status)
       status |= run_4096_clear_copy_probe(&ctx);
 
