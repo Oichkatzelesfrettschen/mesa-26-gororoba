@@ -43,6 +43,7 @@ identity_map_debug_enabled(void)
 
 #include "util/os_time.h"
 
+#include <limits.h>
 #include <string.h>
 
 /* Convert a VkViewport to Gallium's scale/translate form.
@@ -777,6 +778,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
          case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
          case R300VK_CMD_COPY_BUFFER_TO_IMAGE:
+         case R300VK_CMD_COPY_IMAGE:
          case R300VK_CMD_CLEAR_COLOR_IMAGE:
          case R300VK_CMD_FILL_BUFFER:
          case R300VK_CMD_COPY_BUFFER:
@@ -812,6 +814,34 @@ r300vk_replay_gpu(struct r300vk_device *device,
 }
 
 static bool
+r300vk_linear_region_span(const VkExtent3D *extent,
+                          VkDeviceSize buffer_offset,
+                          uint32_t buffer_row_length,
+                          unsigned bpp,
+                          unsigned *row_pitch_out,
+                          unsigned *span_out)
+{
+   if (extent->width == 0 || extent->height == 0 || bpp == 0)
+      return false;
+
+   const uint64_t row_texels =
+      buffer_row_length ? buffer_row_length : extent->width;
+   const uint64_t row_pitch = row_texels * bpp;
+   const uint64_t last_row_bytes = (uint64_t)extent->width * bpp;
+   const uint64_t span = ((uint64_t)extent->height - 1) * row_pitch +
+                         last_row_bytes;
+
+   if (row_pitch > UINT_MAX || span > UINT_MAX ||
+       buffer_offset > UINT_MAX ||
+       buffer_offset > UINT_MAX - span)
+      return false;
+
+   *row_pitch_out = (unsigned)row_pitch;
+   *span_out = (unsigned)span;
+   return true;
+}
+
+static bool
 r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
                                    const struct r300vk_image *src_img,
                                    struct pipe_resource *dst,
@@ -824,10 +854,14 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
     * non-RGBA8 formats (R8, RG16, RGBA16F) map and copy correctly.
     * bufferRowLength == 0 means tightly packed per the Vulkan spec. */
    unsigned bpp = util_format_get_blocksize(src_img->resource->format);
-   unsigned row_pitch = (region->bufferRowLength
-                         ? region->bufferRowLength
-                         : region->imageExtent.width) * bpp;
-   unsigned dst_size = row_pitch * region->imageExtent.height;
+   unsigned row_pitch = 0;
+   unsigned dst_size = 0;
+   if (!r300vk_linear_region_span(&region->imageExtent,
+                                  region->bufferOffset,
+                                  region->bufferRowLength,
+                                  bpp, &row_pitch, &dst_size) ||
+       (uint64_t)region->bufferOffset + dst_size > dst->width0)
+      return false;
 
    struct pipe_transfer *dst_xfer = NULL;
    uint8_t *dst_map = pipe_buffer_map_range(pipe, dst,
@@ -917,10 +951,14 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
    struct pipe_context *pipe = device->pipe;
 
    const unsigned bpp = util_format_get_blocksize(dst_img->resource->format);
-   const unsigned row_pitch = (region->bufferRowLength
-                               ? region->bufferRowLength
-                               : region->imageExtent.width) * bpp;
-   const unsigned src_size = row_pitch * region->imageExtent.height;
+   unsigned row_pitch = 0;
+   unsigned src_size = 0;
+   if (!r300vk_linear_region_span(&region->imageExtent,
+                                  region->bufferOffset,
+                                  region->bufferRowLength,
+                                  bpp, &row_pitch, &src_size) ||
+       (uint64_t)region->bufferOffset + src_size > src->width0)
+      return false;
 
    struct pipe_transfer *src_xfer = NULL;
    const uint8_t *src_map = pipe_buffer_map_range(pipe, src,
@@ -995,6 +1033,71 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
 
    pipe->buffer_unmap(pipe, src_xfer);
    return true;
+}
+
+/* vkCmdCopyImage2 as image -> linear staging buffer -> image.  The staging
+ * buffer lets the existing source and destination tile walks run independently,
+ * avoiding a fragile source-tile x destination-tile cross product. */
+static bool
+r300vk_copy_image_region_to_image(struct r300vk_device *device,
+                                  const struct r300vk_image *src_img,
+                                  const struct r300vk_image *dst_img,
+                                  const VkImageCopy2 *region)
+{
+   struct pipe_context *pipe = device->pipe;
+   const unsigned src_bpp = util_format_get_blocksize(src_img->resource->format);
+   const unsigned dst_bpp = util_format_get_blocksize(dst_img->resource->format);
+
+   if (src_bpp == 0 || src_bpp != dst_bpp)
+      return false;
+
+   unsigned row_pitch = 0;
+   unsigned staging_size = 0;
+   if (!r300vk_linear_region_span(&region->extent, 0, 0, dst_bpp,
+                                  &row_pitch, &staging_size) ||
+       row_pitch == 0)
+      return false;
+
+   struct pipe_resource tmpl;
+   memset(&tmpl, 0, sizeof(tmpl));
+   tmpl.target     = PIPE_BUFFER;
+   tmpl.format     = PIPE_FORMAT_R8_UNORM;
+   tmpl.width0     = staging_size;
+   tmpl.height0    = 1;
+   tmpl.depth0     = 1;
+   tmpl.array_size = 1;
+   tmpl.usage      = PIPE_USAGE_STAGING;
+
+   struct pipe_resource *staging =
+      pipe->screen->resource_create(pipe->screen, &tmpl);
+   if (!staging)
+      return false;
+
+   const VkBufferImageCopy2 download = {
+      .sType             = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+      .bufferOffset      = 0,
+      .bufferRowLength   = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource  = region->srcSubresource,
+      .imageOffset       = region->srcOffset,
+      .imageExtent       = region->extent,
+   };
+   const VkBufferImageCopy2 upload = {
+      .sType             = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+      .bufferOffset      = 0,
+      .bufferRowLength   = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource  = region->dstSubresource,
+      .imageOffset       = region->dstOffset,
+      .imageExtent       = region->extent,
+   };
+
+   const bool ok =
+      r300vk_copy_image_region_to_buffer(device, src_img, staging, &download) &&
+      r300vk_copy_buffer_region_to_image(device, staging, dst_img, &upload);
+
+   pipe_resource_reference(&staging, NULL);
+   return ok;
 }
 
 /* vkCmdClearColorImage as a tile-iterated CPU fill.  Pack the clear value to the
@@ -1153,6 +1256,10 @@ r300vk_replay_cpu_readback(struct r300vk_device *device,
          struct pipe_resource     *src    = e->copy_buf_img.src->resource;
          r300vk_copy_buffer_region_to_image(device, src,
                                             e->copy_buf_img.dst, region);
+      } else if (e->type == R300VK_CMD_COPY_IMAGE) {
+         const VkImageCopy2 *region = &e->copy_image.region;
+         r300vk_copy_image_region_to_image(device, e->copy_image.src,
+                                           e->copy_image.dst, region);
       } else if (e->type == R300VK_CMD_CLEAR_COLOR_IMAGE) {
          r300vk_clear_color_image(device, e->clear_color_image.image,
                                   &e->clear_color_image.color);

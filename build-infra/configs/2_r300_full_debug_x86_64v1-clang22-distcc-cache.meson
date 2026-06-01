@@ -2,8 +2,8 @@
 # DEBUG sibling of 1_r300_full_release_x86_64v1-clang22-distcc-cache.  Same r300
 # API/loader surface and same x86-64-v1/clang22/distcc-cache lane.  Beyond the
 # release profile it carries debug-only instrumentation surfaces: debugoptimized
-# buildtype with live assertions, frame pointers and the release-only -Os
-# dropped, valgrind + libunwind annotations, the perfetto track-event timeline,
+# buildtype with live assertions, frame pointers, valgrind + libunwind
+# annotations, the perfetto track-event timeline,
 # and the full platform set.  It deliberately keeps r300's SW-TCL on the C draw
 # interpreter (no llvmpipe, draw-use-llvm=false) so the vertex path stays
 # instrumentable.  Conformance and silicon evidence use the release profile.
@@ -25,15 +25,13 @@
 buildtype = 'debugoptimized'
 b_ndebug = 'false'
 # -fno-emulated-tls matches profile 1_ (the GL stack's libglapi needs native
-# TLS under clang).  Unlike 1_, the debug profile omits -fno-semantic-
-# interposition and forces -fno-omit-frame-pointer: clang at -O2 (debugoptimized)
-# drops the frame pointer by default, which breaks gdb/libunwind RCA backtraces,
-# so pin it on and keep cross-object inlining minimal so a fault lands on its
-# true frame.
-c_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-ffunction-sections', '-fdata-sections']
-cpp_args = ['-march=x86-64', '-mtune=generic', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
-c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
-cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
+# TLS under clang).  The debug profile forces -fno-omit-frame-pointer: clang at
+# -O2 (debugoptimized) drops the frame pointer by default, which breaks
+# gdb/libunwind RCA backtraces, so pin it on.
+c_args = ['-march=x86-64', '-mtune=generic', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
 [project options]
 platforms = ['x11', 'wayland']

@@ -53,6 +53,21 @@ r300vk_screen_supports_format(struct r300vk_device *device,
                                               bindings);
 }
 
+static bool
+r300vk_format_supports_transfer_dst(enum pipe_format pipe_fmt)
+{
+   if (util_format_is_compressed(pipe_fmt) ||
+       util_format_is_depth_or_stencil(pipe_fmt) ||
+       util_format_is_snorm(pipe_fmt))
+      return false;
+
+   const struct util_format_description *desc =
+      util_format_description(pipe_fmt);
+   return desc && desc->nr_channels > 0 &&
+          (desc->channel[0].type != UTIL_FORMAT_TYPE_FLOAT ||
+           desc->channel[0].size < 32);
+}
+
 static VkImageUsageFlags
 r300vk_supported_image_usage(struct r300vk_device *device,
                              enum pipe_format pipe_fmt)
@@ -66,12 +81,16 @@ r300vk_supported_image_usage(struct r300vk_device *device,
    if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_DEPTH_STENCIL))
       usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
-   /* Any format with an image use is also a transfer source (CmdCopyImageToBuffer2
-    * CPU readback) and destination (CmdCopyBufferToImage2 CPU upload): both walk
-    * the same r300g tile transfer-map path. */
-   if (usage)
-      usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-               VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   /* Image transfers walk r300g's mappable tile resources after submit.  Every
+    * image format that has a real hardware use can be read back as a transfer
+    * source.  Transfer destinations are narrower because the same feature bit
+    * also enables image-to-image copy; expose it only for formats covered by the
+    * staging copy and CPU upload paths. */
+   if (usage) {
+      usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+      if (r300vk_format_supports_transfer_dst(pipe_fmt))
+         usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   }
 
    return usage;
 }
@@ -90,12 +109,12 @@ r300vk_image_pipe_bind(struct r300vk_device *device,
    if (usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)
       bind |= PIPE_BIND_DEPTH_STENCIL;
 
-   /* CmdCopyImageToBuffer2 only needs a mappable image resource, but r300g's
-    * texture constructor still wants the resource classified by a real
-    * hardware use.  A transfer-source-only image uses the strongest supported
-    * bind class in the same order as r300vk_supported_image_usage:
-    * depth/stencil, render-target, sampler-view. */
-   if (bind == 0 && (usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+   /* Transfer-only images still need a real r300g texture bind class.  Use the
+    * strongest supported image role so transfer sources and destinations are
+    * backed by mappable tile resources. */
+   if (bind == 0 &&
+       (usage & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT))) {
       if (r300vk_screen_supports_format(device, pipe_fmt,
                                         PIPE_BIND_DEPTH_STENCIL))
          bind = PIPE_BIND_DEPTH_STENCIL;
