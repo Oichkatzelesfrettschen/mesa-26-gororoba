@@ -1,42 +1,40 @@
-# mesa-gororoba: a side-by-side Mesa build from the mesa-26-gororoba fork.  It
-# ships the r300 Gallium GL driver, the llvmpipe software fallback, and the
-# amd_r300 (r300vk) Vulkan ICD under /opt/mesa-26-gororoba so stock mesa can stay
-# installed for A/B comparisons.  Use mesa-26-gororoba-run for loader-visible
-# probes such as glxinfo, eglinfo, glesinfo, vainfo, and vulkaninfo.
+# mesa-gororoba: a system Mesa replacement build from the mesa-26-gororoba fork.
+# It installs the r300 Gallium GL driver, the llvmpipe software fallback, and
+# the amd_r300 (r300vk) Vulkan ICD into the normal Mesa loader paths so RS482
+# daily-driver testing uses the fork by default.
 #
 # Scope is deliberately RS482-focused: r300 hardware GL + llvmpipe fallback +
-# the r300vk Vulkan ICD.  radv (vulkan-radeon) is inert on pre-GCN RS482 and
-# stays a separate stock package; OpenCL (rusticl) is not built.  Build for the
-# x86-64 psABI baseline so the artifact runs on the K8 Turion 64 X2 in the
-# Vostro (no SSE4.2/AVX).  llvm major MUST match the target host's llvm-libs
-# (built and run against llvm 22): a major mismatch makes every llvmpipe path
-# fail to dlopen libLLVM.so.<major>.  The .install scriptlet warns on mismatch.
+# the r300vk Vulkan ICD.  OpenCL (rusticl) is not built.  Build for the x86-64
+# psABI baseline so the artifact runs on the K8 Turion 64 X2 in the Vostro
+# (no SSE4.2/AVX).  llvm major MUST match the target host's llvm-libs (built and
+# run against llvm 22): a major mismatch makes every llvmpipe path fail to
+# dlopen libLLVM.so.<major>.
 #
 # Two lanes, do not confuse them:
 #   * DEV / rapid iteration: build the devenv tree (ninja -C <builddir>) and run
 #     via VK_DRIVER_FILES (Vulkan) or LIBGL_DRIVERS_PATH+LD_LIBRARY_PATH (GL).
 #     Incremental, seconds per file.  This package is NOT for per-file iteration.
-#   * RELEASE / proper install: this PKGBUILD -> /opt/mesa-26-gororoba.  Full
-#     build (~4 min on a fast x86-64 host).  Promote here once a change is
-#     stable.
+#   * RELEASE / system install: this PKGBUILD -> /usr, replacing stock mesa.
+#     Promote here once a change is stable enough for normal desktop and
+#     headless probe use on the target RS482 host.
 #
 # Install / reinstall:
 #   sudo pacman -U mesa-gororoba-*.pkg.tar.zst
-# Run probes without changing the system default:
+# Run probes with the RS482-focused loader overrides:
 #   mesa-26-gororoba-run glxinfo -B
-#   mesa-26-gororoba-run eglinfo
-#   mesa-26-gororoba-run vainfo
+#   mesa-26-gororoba-run eglinfo -B -p surfaceless
+#   mesa-26-gororoba-run vainfo --display drm --device /dev/dri/renderD128
 #   mesa-26-gororoba-run vulkaninfo --summary
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=4
+pkgrel=7
 epoch=2
 # Pinned to the merged-main tip.  Update per build; the source is the public
 # fork, not a local path.  For rapid iteration override with #branch=main and
 # rebuild.
-_commit=1a5eea6e5ae1939694476a95d888d3981f6bcb54
-pkgdesc='Mesa side-by-side /opt build: r300 GL + llvmpipe + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
+_commit=8e1f7ad60a3366e1c63d590db104466c0ea413fe
+pkgdesc='Mesa system replacement: r300 GL + llvmpipe + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -52,20 +50,32 @@ makedepends=(
   libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
   git
 )
-# Parallel /opt install: no provides/conflicts/replaces.  Stock mesa remains the
-# system default and this package is selected explicitly through wrapper/env
-# files.  That keeps comparison probes reproducible and avoids pacman conflicts
-# on normal system upgrades.
+provides=(
+  "mesa=${epoch}:${pkgver}-${pkgrel}"
+  "libva-mesa-driver=${epoch}:${pkgver}-${pkgrel}"
+  "mesa-libgl=${epoch}:${pkgver}-${pkgrel}"
+  libva-driver
+  opengl-driver
+  vulkan-driver
+)
+conflicts=(mesa vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+replaces=(mesa vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 options=('!lto' '!debug' 'strip')
 install="${pkgname}.install"
 source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}"
         'mesa-26-gororoba-env.sh'
-        'mesa-26-gororoba-run')
+        'mesa-26-gororoba-run'
+        'mesa-26-gororoba-profile.sh'
+        '90-mesa-gororoba-r300.conf'
+        '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
-            'b20eb01633d61e3a1a3d4efd8edf66409b93a0e439718acf294c1ee4f3e7af7e'
-            '1aba100cad006b67b31be2c5c31814e25a58d74c320d556678136bef726138c9')
+            '6bd7461fef995b5edd94f444dda1ee86a5c43edf4790f3edfce27da6ced57ea5'
+            '1aba100cad006b67b31be2c5c31814e25a58d74c320d556678136bef726138c9'
+            '091cafc777b91f59d6fcabf2c2229655d6c79c439fc3a2f77a960ba68190b849'
+            '1a0958f6197fbc2dc60a88efe714d1996d67c05bfa67e7f7c5b4a74506fe2ba1'
+            'db99ee65f746c9f122477d2cb4e47a184a0153012c992b74e1f1cf0e65187ebd')
 
-_prefix=/opt/mesa-26-gororoba
+_prefix=/usr
 
 build() {
   # Build through the Vostro distcc+ccache fabric when the checked-out source
@@ -102,6 +112,7 @@ build() {
     --sysconfdir=/etc \
     --buildtype=release \
     --wrap-mode=nofallback \
+    -D optimization=2 \
     -D b_ndebug=true \
     -D b_lto=false \
     -D platforms=x11,wayland \
@@ -133,16 +144,22 @@ package() {
     "${pkgdir}/usr/bin/mesa-26-gororoba-run"
   install -Dm644 mesa-26-gororoba-env.sh \
     "${pkgdir}/etc/opt/mesa-26-gororoba/mesa-26-gororoba-env.sh"
+  install -Dm644 mesa-26-gororoba-profile.sh \
+    "${pkgdir}/etc/profile.d/mesa-26-gororoba.sh"
+  install -Dm644 90-mesa-gororoba-r300.conf \
+    "${pkgdir}/usr/share/environment.d/90-mesa-gororoba-r300.conf"
+  install -Dm644 20-rs482-modesetting-glamor.conf \
+    "${pkgdir}/usr/share/mesa-26-gororoba/xorg/20-rs482-modesetting-glamor.conf"
 
-  # Compatibility aliases for older build-infra and local scripts.  The
-  # canonical prefix is the FHS-style /opt/mesa-26-gororoba; /opt/local was the
-  # build-infra staging prefix and /opt/share was used by an older debug package.
+  # Compatibility aliases for older build-infra and local scripts.  Release
+  # artifacts live in the system Mesa prefix; debug artifacts keep their own
+  # opt prefix.
   install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share" "${pkgdir}/usr/share"
-  ln -s /opt/mesa-26-gororoba \
+  ln -s /usr \
     "${pkgdir}/opt/local/mesa-26-gororoba"
-  ln -s /opt/mesa-26-gororoba \
+  ln -s /usr \
     "${pkgdir}/opt/share/mesa-26-gororoba"
-  ln -s /opt/mesa-26-gororoba \
+  ln -s /usr \
     "${pkgdir}/usr/share/mesa-26-gororoba"
 
   # Mesa ships its license summary as docs/license.rst (Arch/CachyOS practice).

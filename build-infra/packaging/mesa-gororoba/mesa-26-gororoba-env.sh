@@ -1,7 +1,7 @@
-# Source this file to select the side-by-side mesa-26-gororoba install for the
-# current shell, or use mesa-26-gororoba-run to scope it to one command.
+# Source this file to select the RS482-focused mesa-gororoba loader policy, or
+# use mesa-26-gororoba-run to scope it to one command.
 
-GOROROBA_MESA_PREFIX=${GOROROBA_MESA_PREFIX:-/opt/mesa-26-gororoba}
+GOROROBA_MESA_PREFIX=${GOROROBA_MESA_PREFIX:-/usr}
 
 mesa_26_gororoba_prepend_path() {
   var_name=$1
@@ -21,8 +21,11 @@ mesa_26_gororoba_prepend_path LIBVA_DRIVERS_PATH "${GOROROBA_MESA_PREFIX}/lib/dr
 mesa_26_gororoba_prepend_path GBM_BACKENDS_PATH "${GOROROBA_MESA_PREFIX}/lib/gbm"
 mesa_26_gororoba_prepend_path __EGL_VENDOR_LIBRARY_DIRS "${GOROROBA_MESA_PREFIX}/share/glvnd/egl_vendor.d"
 
+export __EGL_VENDOR_LIBRARY_FILENAMES="${__EGL_VENDOR_LIBRARY_FILENAMES:-${GOROROBA_MESA_PREFIX}/share/glvnd/egl_vendor.d/50_mesa.json}"
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-${GOROROBA_MESA_PREFIX}/share/vulkan/icd.d/r300_icd.x86_64.json}"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-${VK_DRIVER_FILES}}"
+export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-r300}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-0}"
 export LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME:-r300}"
 
 unset -f mesa_26_gororoba_prepend_path
