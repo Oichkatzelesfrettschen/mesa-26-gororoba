@@ -1,5 +1,3 @@
-# Maintainer: Terascale Functionalists
-#
 # mesa-gororoba-debug: the debug twin of mesa-gororoba.  Same feature set (r300
 # GL + gallium-va MPEG-2 decode + amd_r300/r300vk Vulkan ICD) built with full
 # debug info and assertions, installed into /opt/mesa-26-gororoba-debug so it
@@ -26,8 +24,10 @@ depends=(
   wayland zlib zstd vulkan-icd-loader libunwind valgrind
 )
 makedepends=(
-  clang llvm meson ninja glslang python-mako python-ply git
-  wayland-protocols libxrandr xorgproto libxml2 lld
+  clang llvm meson ninja glslang spirv-tools python-mako python-ply
+  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
+  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
+  git
 )
 # Parallel /opt install: no provides/conflicts/replaces, so it never shadows the
 # system mesa.  Keep debug symbols; no strip, no LTO.
@@ -108,15 +108,15 @@ package() {
   install -Dm755 mesa-26-gororoba-debug-run \
     "${pkgdir}/usr/bin/mesa-26-gororoba-debug-run"
   install -Dm644 mesa-26-gororoba-debug-env.sh \
-    "${pkgdir}${_prefix}/share/mesa-26-gororoba-debug/mesa-26-gororoba-debug-env.sh"
-  install -Dm644 mesa-26-gororoba-debug-env.sh \
     "${pkgdir}/etc/opt/mesa-26-gororoba-debug/mesa-26-gororoba-debug-env.sh"
 
-  install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share"
+  install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share" "${pkgdir}/usr/share"
   ln -s /opt/mesa-26-gororoba-debug \
     "${pkgdir}/opt/local/mesa-26-gororoba-debug"
   ln -s /opt/mesa-26-gororoba-debug \
     "${pkgdir}/opt/share/mesa-26-gororoba-debug"
+  ln -s /opt/mesa-26-gororoba-debug \
+    "${pkgdir}/usr/share/mesa-26-gororoba-debug"
 
   if [ -f mesa-gororoba/docs/license.rst ]; then
     install -Dm644 mesa-gororoba/docs/license.rst \

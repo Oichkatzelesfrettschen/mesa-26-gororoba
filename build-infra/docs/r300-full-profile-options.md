@@ -56,9 +56,9 @@ system Mesa at `/usr/lib` is left untouched by these `/opt/local` profiles.
 The package-managed release PKGBUILD uses `/opt/mesa-26-gororoba` as the FHS
 canonical add-on prefix and ships compatibility aliases for older local scripts:
 `/opt/local/mesa-26-gororoba` and `/opt/share/mesa-26-gororoba` both point at
-that prefix, while `/usr/share/mesa-26-gororoba` points at the package metadata
-and opt-in loader environment under the prefix.  The debug package follows the
-same pattern at `/opt/mesa-26-gororoba-debug`.  Use
+that prefix, while `/usr/share/mesa-26-gororoba` points at the same canonical
+prefix for older script compatibility.  The debug package follows the same
+pattern at `/opt/mesa-26-gororoba-debug`.  Use
 `mesa-26-gororoba-run <probe>` or `mesa-26-gororoba-debug-run <probe>` to select
 the side-by-side driver for one command without replacing stock Mesa.
 

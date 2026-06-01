@@ -12,6 +12,7 @@ Point a probe at it explicitly:
 Compatibility aliases are package-managed:
   /opt/local/mesa-26-gororoba-debug -> ${_debug_prefix}
   /opt/share/mesa-26-gororoba-debug -> ${_debug_prefix}
+  /usr/share/mesa-26-gororoba-debug -> ${_debug_prefix}
 It carries no provides/conflicts/replaces; stock mesa remains the system default.
 MSG
 }
