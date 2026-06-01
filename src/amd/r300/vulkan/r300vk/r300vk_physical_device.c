@@ -559,6 +559,21 @@ r300vk_screen_supports_format(const struct r300vk_physical_device *const device,
 #endif
 }
 
+static bool
+r300vk_format_supports_transfer_dst(enum pipe_format pipe_format)
+{
+   if (util_format_is_compressed(pipe_format) ||
+       util_format_is_depth_or_stencil(pipe_format) ||
+       util_format_is_snorm(pipe_format))
+      return false;
+
+   const struct util_format_description *desc =
+      util_format_description(pipe_format);
+   return desc && desc->nr_channels > 0 &&
+          (desc->channel[0].type != UTIL_FORMAT_TYPE_FLOAT ||
+           desc->channel[0].size < 32);
+}
+
 static void
 r300vk_get_format_properties(const struct r300vk_physical_device *const device,
                              VkFormat vk_format,
@@ -604,8 +619,6 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
          image_features |= VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BLEND_BIT;
    }
 
-   const bool is_depth_or_stencil = util_format_is_depth_or_stencil(pipe_format);
-
    /* r300vk implements image transfer in both directions on the same r300g tile
     * transfer-map path: CmdCopyImageToBuffer2 for CPU readback and
     * CmdCopyBufferToImage2 / clear commands for CPU-written destinations.  Submit
@@ -613,22 +626,13 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * with pipe->texture_map.  Every format allocatable for an attachment or
     * sampled-image path is a transfer source, including depth/stencil formats
     * that only advertise PIPE_BIND_DEPTH_STENCIL.  TRANSFER_DST is narrower:
-    * advertise it only where every destination path opened by the bit is
-    * implemented and lossless.  BLIT_SRC/DST and image-to-image copy bits stay
-    * withheld until those replay paths exist. */
+    * advertise it only where the CPU upload and staging image-copy paths have a
+    * lossless byte layout.  BLIT_SRC/DST stay withheld until those replay paths
+    * exist. */
    if (supports_depth_stencil || supports_sampler_view || supports_render_target) {
       image_features |= VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
 
-      const struct util_format_description *desc =
-         util_format_description(pipe_format);
-      const bool has_fp32_channel =
-         desc && desc->nr_channels > 0 &&
-         desc->channel[0].type == UTIL_FORMAT_TYPE_FLOAT &&
-         desc->channel[0].size >= 32;
-
-      if (!util_format_is_compressed(pipe_format) &&
-          !is_depth_or_stencil &&
-          !has_fp32_channel)
+      if (r300vk_format_supports_transfer_dst(pipe_format))
          image_features |= VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
    }
 
@@ -638,6 +642,8 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * is_format_supported can accept a depth format's underlying bits as a
     * vertex/texel fetch (e.g. Z16_UNORM read as a 16-bit unorm), so gate the
     * buffer bits on the format not being depth/stencil. */
+   const bool is_depth_or_stencil = util_format_is_depth_or_stencil(pipe_format);
+
    /* RS482 routes all vertex fetch through the SW-TCL Gallium draw module, which
     * fetches in software and handles pure-integer vertex formats too.  r300g's
     * is_format_supported gates pure-integer out of its SW-TCL vertex branch (the

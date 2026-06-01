@@ -454,6 +454,24 @@ r300vk_CmdCopyBufferToImage2(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdCopyImage2(VkCommandBuffer commandBuffer,
+                     const VkCopyImageInfo2 *pCopyImageInfo)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_image, src, pCopyImageInfo->srcImage);
+   VK_FROM_HANDLE(r300vk_image, dst, pCopyImageInfo->dstImage);
+
+   for (uint32_t i = 0; i < pCopyImageInfo->regionCount; i++) {
+      struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+      if (!e) return;
+      e->type               = R300VK_CMD_COPY_IMAGE;
+      e->copy_image.src     = src;
+      e->copy_image.dst     = dst;
+      e->copy_image.region  = pCopyImageInfo->pRegions[i];
+   }
+}
+
+void
 r300vk_CmdClearColorImage(VkCommandBuffer commandBuffer,
                           VkImage image,
                           VkImageLayout imageLayout,
