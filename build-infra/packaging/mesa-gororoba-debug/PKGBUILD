@@ -13,7 +13,7 @@ pkgrel=4
 epoch=2
 # Same pin policy as the release package: update _commit per build, or override
 # with #branch=main for rapid iteration.
-_commit=102dbd859f97a1abdcde59704f7fed08091f1d50
+_commit=1a5eea6e5ae1939694476a95d888d3981f6bcb54
 pkgdesc='Mesa DEBUG side-by-side /opt build: r300 GL + amd_r300/r300vk, full debug info'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
