@@ -1,5 +1,3 @@
-# Maintainer: Terascale Functionalists
-#
 # mesa-gororoba: a side-by-side Mesa build from the mesa-26-gororoba fork.  It
 # ships the r300 Gallium GL driver, the llvmpipe software fallback, and the
 # amd_r300 (r300vk) Vulkan ICD under /opt/mesa-26-gororoba so stock mesa can stay
@@ -49,8 +47,10 @@ depends=(
   wayland zlib zstd vulkan-icd-loader
 )
 makedepends=(
-  clang llvm meson ninja glslang python-mako python-ply git
-  wayland-protocols libxrandr xorgproto libxml2 lld
+  clang llvm meson ninja glslang spirv-tools python-mako python-ply
+  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
+  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
+  git
 )
 # Parallel /opt install: no provides/conflicts/replaces.  Stock mesa remains the
 # system default and this package is selected explicitly through wrapper/env
@@ -121,8 +121,6 @@ package() {
   install -Dm755 mesa-26-gororoba-run \
     "${pkgdir}/usr/bin/mesa-26-gororoba-run"
   install -Dm644 mesa-26-gororoba-env.sh \
-    "${pkgdir}${_prefix}/share/mesa-26-gororoba/mesa-26-gororoba-env.sh"
-  install -Dm644 mesa-26-gororoba-env.sh \
     "${pkgdir}/etc/opt/mesa-26-gororoba/mesa-26-gororoba-env.sh"
 
   # Compatibility aliases for older build-infra and local scripts.  The
@@ -133,7 +131,7 @@ package() {
     "${pkgdir}/opt/local/mesa-26-gororoba"
   ln -s /opt/mesa-26-gororoba \
     "${pkgdir}/opt/share/mesa-26-gororoba"
-  ln -s /opt/mesa-26-gororoba/share/mesa-26-gororoba \
+  ln -s /opt/mesa-26-gororoba \
     "${pkgdir}/usr/share/mesa-26-gororoba"
 
   # Mesa ships its license summary as docs/license.rst (Arch/CachyOS practice).
