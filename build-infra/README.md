@@ -18,7 +18,7 @@ plus forward-looking `release`/`profile` variants.  See
 
 ## Unified generic lane (recommended)
 
-One portable, `-Os` lane replaces the per-host `-march` matrix
+One portable, `-O2` lane replaces the per-host `-march` matrix
 (`btver1`/`k8`/`znver3`/`x86-64-v1`).  `configs/gororoba-terakan.meson`
 + `env/generic-x86-64-os.env` build a `-march=x86-64 -mtune=generic`
 driver that runs on every machine in the fabric (x130e Bobcat, x570
@@ -28,9 +28,12 @@ not fragmented by target.
 Toolchain: clang (auto-detected, prefers 22), ccache+distcc in the
 canonical ccache-first ordering (`CCACHE_PREFIX=distcc`, no pump --
 pump is removed upstream and incompatible with ccache), and the
-fastest available linker (mold, else lld, else default).  `-Os` plus
-orthogonal performance flags (`-fno-semantic-interposition`,
-`-fomit-frame-pointer`, `-pipe`) and the required `-fno-emulated-tls`.
+fastest available linker (mold, else lld, else default) through `CC_LD` /
+`CXX_LD`, not through architecture flags.  The safe default is `-O2` with
+`-march=x86-64 -mtune=generic`, `_FORTIFY_SOURCE=2`, stack hardening, CFI
+branch protection, and the required `-fno-emulated-tls`.  Do not add `-pipe`,
+LTO, `-fno-plt`, `-march=native`, or host-specific `-mtune` to the canonical
+lane.
 
 One config file, three modes via Make targets -- builddir lifecycle is
 the only difference between clean and rebuild:
@@ -44,15 +47,15 @@ make clean configure build install $P
 # rebuild (incremental ninja against the existing builddir, then install):
 make build install $P
 
-# stable release (layers -Doptimization=2 + thin-LTO over the -Os base,
+# stable release (layers -Doptimization=2 over the generic base,
 # no separate config file):
 make clean configure build install $P MODE=stable
 ```
 
 `install` is incremental (`meson install --no-rebuild --only-changed`).
 Verify the optimization level actually resolved with
-`meson configure <builddir> | grep optimization` (expect `s`, or `2`
-for `MODE=stable`).
+`meson configure <builddir> | grep optimization` (expect `2` for the safe
+default).
 
 ## Layout
 
