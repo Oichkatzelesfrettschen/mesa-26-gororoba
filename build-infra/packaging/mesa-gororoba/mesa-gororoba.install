@@ -19,7 +19,7 @@ Consequences to know:
   * compatibility aliases are package-managed:
       /opt/local/mesa-26-gororoba -> /opt/mesa-26-gororoba
       /opt/share/mesa-26-gororoba -> /opt/mesa-26-gororoba
-      /usr/share/mesa-26-gororoba -> /opt/mesa-26-gororoba/share/mesa-26-gororoba
+      /usr/share/mesa-26-gororoba -> /opt/mesa-26-gororoba
 EOF
 }
 
