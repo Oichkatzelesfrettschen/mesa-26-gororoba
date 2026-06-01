@@ -83,11 +83,13 @@ build() {
   # x86-64 psABI baseline so the artifact runs on the K8 Turion (no SSE4.2/AVX).
   # Exported here so they override any host-native -march the build host's
   # makepkg.conf injects; meson folds CFLAGS/CXXFLAGS/LDFLAGS into its arg base.
-  # -g1 keeps minimal frame info for crash triage; target-cpu=x86-64 guards any
-  # Rust translation unit from emitting K8-incompatible code.
-  export CFLAGS='-march=x86-64 -mtune=generic -O2 -pipe -fno-plt -fexceptions -ffunction-sections -fdata-sections -g1'
+  # Keep the default machine-neutral: no -pipe, no LTO, no -fno-plt, no
+  # native tune.  target-cpu=x86-64 guards any Rust translation unit from
+  # emitting K8-incompatible code.
+  export CPPFLAGS='-D_FORTIFY_SOURCE=2'
+  export CFLAGS='-march=x86-64 -mtune=generic -O2 -fexceptions -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security'
   export CXXFLAGS="${CFLAGS} -Wp,-D_GLIBCXX_ASSERTIONS"
-  export LDFLAGS='-fuse-ld=lld -Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro -Wl,-z,now -Wl,--gc-sections'
+  export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
   export RUSTFLAGS='-C target-cpu=x86-64'
 
   meson setup "${pkgname}" build \

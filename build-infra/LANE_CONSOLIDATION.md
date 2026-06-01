@@ -2,7 +2,7 @@
 
 Plan to collapse the per-host/per-march build lanes onto the single generic
 `gororoba-terakan.meson` + `generic-x86-64-os.env` lane.  The canonical lane and
-its `MODE=stable` thin-LTO option already exist; this document is the durable
+its `MODE=stable` option already exists; this document is the durable
 execution plan for retiring the superseded lanes, derived from a full survey of
 `configs/` and `env/`.  The file edits beyond this lane MUST land with a build
 verification (a `meson setup` `-O`-level check and one clean build), so the bulk
@@ -12,25 +12,24 @@ correctness fixes.
 ## Canonical lane
 
 ```sh
-# default: -Os, no LTO
+# default: -O2, no LTO
 make build install PROFILE=gororoba-terakan HOSTENV=generic-x86-64-os
-# stable: thin-LTO -O2 release
+# stable: -O2 release
 make ... MODE=stable
 ```
 
-The optimization LEVEL is owned by `gororoba-terakan.meson` (`optimization='s'`
--> -Os); `generic-x86-64-os.env` carries only orthogonal flags (it no longer
-hardcodes `-Os`, which would override `MODE=stable`'s `-Doptimization=2` because
-the last `-O` on the clang line wins).  Clean vs incremental needs no config
-conditional: `meson setup --reconfigure` + ninja's dependency graph handle it;
-`meson install --no-rebuild --only-changed` is the incremental install.
+The optimization level is owned by the Meson profile or package recipe.  The
+portable default is `-O2`; `generic-x86-64-os.env` carries only machine-neutral
+hardening and the required clang native-TLS flag.  Clean vs incremental needs no
+config conditional: `meson setup --reconfigure` + ninja's dependency graph handle
+it; `meson install --no-rebuild --only-changed` is the incremental install.
 
 ## MODE matrix
 
 | MODE | level source | LTO | use |
 |---|---|---|---|
-| (default) | `optimization='s'` (config) -> -Os | none | daily builds, probes |
-| stable | `-Doptimization=2` (CLI) | thin | long-lived install |
+| (default) | `optimization='2'` (config) -> -O2 | none | daily builds, probes |
+| stable | `-Doptimization=2` (CLI) | none | long-lived install |
 | (debug) | `terakan-distcc-no-rusticl-debug.meson` profile | none | debug artifact (separate prefix) |
 
 ## Retire (superseded; delete after the lane is verified)
@@ -73,9 +72,8 @@ already carry the `<home>` sentinel and need no change.
 
 ## Acceptance gate (run before deleting any file)
 
-1. `meson setup` the canonical lane (default and `MODE=stable`) and confirm the
-   resolved level: `ninja -C <builddir> -v | grep -m1 ' -O'` shows `-Os` for the
-   default and `-O2` for `MODE=stable` (this is the regression the `-Os`-in-CFLAGS
-   removal fixes; verify it, do not assume it).
+1. `meson setup` the canonical lane and confirm the resolved level:
+   `ninja -C <builddir> -v | grep -m1 ' -O'` shows `-O2`.  Verify the flag, do
+   not assume it.
 2. One clean build + install on the canonical lane succeeds.
 3. Each KEEP config still configures (`meson setup --reconfigure`).

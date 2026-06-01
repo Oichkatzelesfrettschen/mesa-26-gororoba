@@ -65,9 +65,10 @@ build() {
   # x86-64 psABI baseline (K8 Turion) as the release build, but full debug info
   # (-g3), no optimization-driven inlining loss (-Og keeps the code debuggable
   # while staying runnable), and frame pointers for clean backtraces.
-  export CFLAGS='-march=x86-64 -mtune=generic -Og -g3 -pipe -fno-plt -fno-omit-frame-pointer -fexceptions -ffunction-sections -fdata-sections'
+  export CPPFLAGS='-D_FORTIFY_SOURCE=2'
+  export CFLAGS='-march=x86-64 -mtune=generic -Og -g3 -fno-omit-frame-pointer -fexceptions -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security'
   export CXXFLAGS="${CFLAGS} -Wp,-D_GLIBCXX_ASSERTIONS"
-  export LDFLAGS='-fuse-ld=lld -Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro -Wl,-z,now'
+  export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
   export RUSTFLAGS='-C target-cpu=x86-64'
 
   meson setup mesa-gororoba build \

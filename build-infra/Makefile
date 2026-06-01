@@ -95,12 +95,11 @@ endif
 # generated toolchain overlay keeps compiler package suffixes host-local
 # instead of committing one LLVM major into every native file.
 SETUP_ARGS := --native-file=$(CONFIG) --native-file=$(TOOLCHAIN_NATIVE) --reconfigure
-# MODE=stable layers a thin-LTO release over a config's default optimization
-# level without a second config file: these meson command-line overrides win
-# over the native-file value.  Default (unset / clean / rebuild) keeps the
-# config level -- the unified generic lane is -Os via optimization='s'.
+# MODE=stable pins the same safe -O2 release level through a command-line
+# override without enabling LTO.  Default (unset / clean / rebuild) keeps the
+# config level.
 ifeq ($(MODE),stable)
-SETUP_ARGS += -Doptimization=2 -Db_lto=true -Db_lto_mode=thin
+SETUP_ARGS += -Doptimization=2 -Db_lto=false
 endif
 MESON_SETUP_LOCAL_UNSET := CCACHE_PREFIX DISTCC_HOSTS DISTCC_PUMP INCLUDE_SERVER_PORT INCLUDE_SERVER_ARGS INCLUDE_SERVER_PID
 LOCKED_TOOL_ENV := \

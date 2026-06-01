@@ -32,8 +32,11 @@ run `clean`; use them only when the builddir itself needs regeneration.
 
 `configs/1_r300_full_release_x86_64v1-clang22-distcc-cache.meson` and its `2_`
 debug sibling pin the maximal r300 component set, x86-64-v1 code generation,
-`-Os` (release only), `-fno-emulated-tls` for the libglapi clang link, section
-splitting, lld, and relro/now link hardening.  `env/vostro1000-x86-64-v1-clang22-ccache-distcc.env` pins LLVM 22,
+`-O2` release codegen, `-fno-emulated-tls` for the libglapi clang link, stack
+hardening, format-security warnings as errors, and relro link hardening.  The
+canonical lane deliberately avoids `-pipe`, LTO, `-fno-plt`, `-march=native`,
+and host-specific tuning so artifacts remain portable from K8 through modern
+CachyOS and Debian hosts.  `env/vostro1000-x86-64-v1-clang22-ccache-distcc.env` pins LLVM 22,
 sets `CCACHE_PREFIX=distcc`, probes TCP distccd volunteers, and uses plain
 distcc hosts without `,cpp` because `,cpp` belongs to pump mode.  The Makefile
 sets `JOBS=36` for this host environment so Ninja has enough work to keep the

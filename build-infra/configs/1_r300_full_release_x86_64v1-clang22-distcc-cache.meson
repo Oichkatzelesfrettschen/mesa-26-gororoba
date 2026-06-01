@@ -28,20 +28,19 @@
 # Pair with the vostro1000-x86-64-v1-clang22-ccache-distcc HOSTENV: clang 22
 # over ccache-first distcc, x86-64-v1 baseline ISA.  x86-64-v1 is a safe subset
 # of the Turion 64 X2, so remote distcc volunteers never emit instructions the
-# Vostro cannot run.  -Os keeps the artifact small for the space-constrained
-# Vostro runtime lane.
+# Vostro cannot run.  -O2 is the portable default shared with the packaging lane.
 
 [built-in options]
 buildtype = 'release'
 b_ndebug = 'true'
 # -fno-emulated-tls: clang on linux x86_64 otherwise emulates TLS and the
 # libglapi link fails; this profile builds the GL stack (opengl=true), so it
-# needs the native-TLS model.  -fno-semantic-interposition lets the compiler
-# inline global calls across the final shared objects (a release-perf win).
-c_args = ['-march=x86-64', '-mtune=generic', '-Os', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fno-semantic-interposition', '-fexceptions', '-ffunction-sections', '-fdata-sections']
-cpp_args = ['-march=x86-64', '-mtune=generic', '-Os', '-pipe', '-fno-plt', '-fno-emulated-tls', '-fno-semantic-interposition', '-fexceptions', '-ffunction-sections', '-fdata-sections', '-Wp,-D_GLIBCXX_ASSERTIONS']
-c_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
-cpp_link_args = ['-fuse-ld=lld', '-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro', '-Wl,-z,now', '-Wl,--gc-sections']
+# needs the native-TLS model.  The default is machine-neutral and hardened:
+# no -pipe, no LTO, no -fno-plt, no native tune, and no frame-pointer omission.
+c_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
 [project options]
 platforms = ['x11', 'wayland']
