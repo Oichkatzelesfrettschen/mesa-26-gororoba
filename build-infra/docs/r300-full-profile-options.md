@@ -53,6 +53,15 @@ install prefix: release builds to `/opt/local/mesa-26-gororoba`, debug builds to
 `/opt/local/mesa-26-gororoba-debug`; neither prefix is inside the repo and
 system Mesa at `/usr/lib` is left untouched by these `/opt/local` profiles.
 
+The package-managed release PKGBUILD uses `/opt/mesa-26-gororoba` as the FHS
+canonical add-on prefix and ships compatibility aliases for older local scripts:
+`/opt/local/mesa-26-gororoba` and `/opt/share/mesa-26-gororoba` both point at
+that prefix, while `/usr/share/mesa-26-gororoba` points at the package metadata
+and opt-in loader environment under the prefix.  The debug package follows the
+same pattern at `/opt/mesa-26-gororoba-debug`.  Use
+`mesa-26-gororoba-run <probe>` or `mesa-26-gororoba-debug-run <probe>` to select
+the side-by-side driver for one command without replacing stock Mesa.
+
 Concurrent builds serialize through a lock: the Makefile wraps `ninja` in
 `flock -x -w 7200 $(HOME)/.cache/mesa-26-gororoba/mesa-build.lock`, so a second
 `make build` waits (up to two hours) for an in-flight build instead of

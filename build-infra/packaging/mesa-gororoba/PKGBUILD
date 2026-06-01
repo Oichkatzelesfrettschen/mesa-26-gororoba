@@ -1,10 +1,10 @@
 # Maintainer: Terascale Functionalists
 #
-# mesa-gororoba: a drop-in replacement for the stock `mesa` package built from
-# the mesa-26-gororoba fork.  It ships the r300 Gallium GL driver, the llvmpipe
-# software fallback, and the amd_r300 (r300vk) Vulkan ICD, installed into /usr
-# the same way stock mesa is, so the loader/glvnd pick them up natively without
-# the /etc/environment + /etc/profile.d driver-path overrides.
+# mesa-gororoba: a side-by-side Mesa build from the mesa-26-gororoba fork.  It
+# ships the r300 Gallium GL driver, the llvmpipe software fallback, and the
+# amd_r300 (r300vk) Vulkan ICD under /opt/mesa-26-gororoba so stock mesa can stay
+# installed for A/B comparisons.  Use mesa-26-gororoba-run for loader-visible
+# probes such as glxinfo, eglinfo, glesinfo, vainfo, and vulkaninfo.
 #
 # Scope is deliberately RS482-focused: r300 hardware GL + llvmpipe fallback +
 # the r300vk Vulkan ICD.  radv (vulkan-radeon) is inert on pre-GCN RS482 and
@@ -18,29 +18,27 @@
 #   * DEV / rapid iteration: build the devenv tree (ninja -C <builddir>) and run
 #     via VK_DRIVER_FILES (Vulkan) or LIBGL_DRIVERS_PATH+LD_LIBRARY_PATH (GL).
 #     Incremental, seconds per file.  This package is NOT for per-file iteration.
-#   * RELEASE / proper install: this PKGBUILD -> /usr.  Full build (~4 min on a
-#     fast x86-64 host).  Promote here once a change is stable.
+#   * RELEASE / proper install: this PKGBUILD -> /opt/mesa-26-gororoba.  Full
+#     build (~4 min on a fast x86-64 host).  Promote here once a change is
+#     stable.
 #
 # Install / reinstall:
-#   sudo pacman -U mesa-gororoba-*.pkg.tar.zst        # answer "y" to remove mesa
-#   sudo pacman -U --overwrite '*' mesa-gororoba-*.pkg.tar.zst   # if a file
-#                                                     # conflict with another
-#                                                     # package needs forcing
-# Replacing system mesa means every `pacman -Syu` that bumps stock mesa
-# conflicts; add `IgnorePkg = mesa-gororoba` to /etc/pacman.conf (or maintain a
-# local repo with repo-add and rebuild on upstream bumps).  Rollback: stock is
-# cached in /var/cache/pacman/pkg (pacman -U .../mesa-2:26.1.1-1-*.pkg.tar.zst).
+#   sudo pacman -U mesa-gororoba-*.pkg.tar.zst
+# Run probes without changing the system default:
+#   mesa-26-gororoba-run glxinfo -B
+#   mesa-26-gororoba-run eglinfo
+#   mesa-26-gororoba-run vainfo
+#   mesa-26-gororoba-run vulkaninfo --summary
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=3
+pkgrel=4
 epoch=2
-# Pinned to the merged-main tip carrying the restored r300 g3dvl MPEG-1/2
-# gallium-va shader decode + the r300 video backend (PR #347).  Update per build;
-# the source is the public fork, not a local path.  For rapid iteration override
-# with #branch=main and rebuild.
-_commit=28001f1dec9d528ce89f45ac514f93a609d11262
-pkgdesc='Mesa (mesa-26-gororoba fork): r300 GL + gallium-va MPEG-2 decode + llvmpipe + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
+# Pinned to the merged-main tip.  Update per build; the source is the public
+# fork, not a local path.  For rapid iteration override with #branch=main and
+# rebuild.
+_commit=102dbd859f97a1abdcde59704f7fed08091f1d50
+pkgdesc='Mesa side-by-side /opt build: r300 GL + llvmpipe + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -51,27 +49,23 @@ depends=(
   wayland zlib zstd vulkan-icd-loader
 )
 makedepends=(
-  clang llvm meson ninja glslang spirv-tools python-mako python-ply
-  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
-  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
+  clang llvm meson ninja glslang python-mako python-ply git
+  wayland-protocols libxrandr xorgproto libxml2 lld
 )
-# Drop-in for the stock GL package.  radv/opencl/lib32 stay their own stock
-# packages; their dependents read `mesa`/`opengl-driver`/`libva-driver`, which
-# we provide.  The gallium-va driver is now a real backend: RS482 decodes
-# MPEG-1/2 through the restored g3dvl shader decoder (no UVD -- the 3D pipe is
-# the decoder), so VA-API consumers (mpv, firefox, vlc) get hardware MPEG-2
-# decode where stock mesa offers none.  The decode NIR is pending on-hardware
-# validation; until the Vostro decoder-init + decode probe pass, treat MPEG-2
-# acceleration as build-complete, not runtime-proven.
-provides=("mesa=${epoch}:${pkgver}-${pkgrel}"
-          "libva-mesa-driver=${epoch}:${pkgver}-${pkgrel}"
-          'mesa-libgl' 'opengl-driver' 'libva-driver' 'vulkan-driver')
-conflicts=('mesa' 'libva-mesa-driver')
-replaces=('mesa' 'libva-mesa-driver')
+# Parallel /opt install: no provides/conflicts/replaces.  Stock mesa remains the
+# system default and this package is selected explicitly through wrapper/env
+# files.  That keeps comparison probes reproducible and avoids pacman conflicts
+# on normal system upgrades.
 options=('!lto' '!debug' 'strip')
 install="${pkgname}.install"
-source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}")
-sha256sums=('SKIP')
+source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}"
+        'mesa-26-gororoba-env.sh'
+        'mesa-26-gororoba-run')
+sha256sums=('SKIP'
+            'b20eb01633d61e3a1a3d4efd8edf66409b93a0e439718acf294c1ee4f3e7af7e'
+            '1aba100cad006b67b31be2c5c31814e25a58d74c320d556678136bef726138c9')
+
+_prefix=/opt/mesa-26-gororoba
 
 build() {
   # clang + lld toolchain.
@@ -93,7 +87,7 @@ build() {
   export RUSTFLAGS='-C target-cpu=x86-64'
 
   meson setup "${pkgname}" build \
-    --prefix=/usr \
+    --prefix="${_prefix}" \
     --sysconfdir=/etc \
     --buildtype=release \
     --wrap-mode=nofallback \
@@ -123,6 +117,24 @@ build() {
 
 package() {
   meson install -C build --destdir "${pkgdir}"
+
+  install -Dm755 mesa-26-gororoba-run \
+    "${pkgdir}/usr/bin/mesa-26-gororoba-run"
+  install -Dm644 mesa-26-gororoba-env.sh \
+    "${pkgdir}${_prefix}/share/mesa-26-gororoba/mesa-26-gororoba-env.sh"
+  install -Dm644 mesa-26-gororoba-env.sh \
+    "${pkgdir}/etc/opt/mesa-26-gororoba/mesa-26-gororoba-env.sh"
+
+  # Compatibility aliases for older build-infra and local scripts.  The
+  # canonical prefix is the FHS-style /opt/mesa-26-gororoba; /opt/local was the
+  # build-infra staging prefix and /opt/share was used by an older debug package.
+  install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share" "${pkgdir}/usr/share"
+  ln -s /opt/mesa-26-gororoba \
+    "${pkgdir}/opt/local/mesa-26-gororoba"
+  ln -s /opt/mesa-26-gororoba \
+    "${pkgdir}/opt/share/mesa-26-gororoba"
+  ln -s /opt/mesa-26-gororoba/share/mesa-26-gororoba \
+    "${pkgdir}/usr/share/mesa-26-gororoba"
 
   # Mesa ships its license summary as docs/license.rst (Arch/CachyOS practice).
   # A missing license is a packaging defect, not something to swallow silently.
