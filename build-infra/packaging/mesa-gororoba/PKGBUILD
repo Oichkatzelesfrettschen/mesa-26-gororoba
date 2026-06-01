@@ -35,7 +35,7 @@ epoch=2
 # Pinned to the merged-main tip.  Update per build; the source is the public
 # fork, not a local path.  For rapid iteration override with #branch=main and
 # rebuild.
-_commit=102dbd859f97a1abdcde59704f7fed08091f1d50
+_commit=1a5eea6e5ae1939694476a95d888d3981f6bcb54
 pkgdesc='Mesa side-by-side /opt build: r300 GL + llvmpipe + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
@@ -68,9 +68,20 @@ sha256sums=('SKIP'
 _prefix=/opt/mesa-26-gororoba
 
 build() {
-  # clang + lld toolchain.
-  export CC=clang
-  export CXX=clang++
+  # Build through the Vostro distcc+ccache fabric when the checked-out source
+  # carries that host env; the emitted code stays x86-64 generic through the
+  # flags below.
+  if [ -f "${pkgname}/build-infra/env/vostro1000-x86-64-v1-clang22-ccache-distcc.env" ]; then
+    # shellcheck disable=SC1091
+    . "${pkgname}/build-infra/env/vostro1000-x86-64-v1-clang22-ccache-distcc.env" || true
+  fi
+  if command -v ccache >/dev/null 2>&1; then
+    export CC='ccache clang'
+    export CXX='ccache clang++'
+  else
+    export CC=clang
+    export CXX=clang++
+  fi
   export CC_LD=lld
   export CXX_LD=lld
 
