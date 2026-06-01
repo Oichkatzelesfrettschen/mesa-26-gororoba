@@ -27,6 +27,12 @@
 #include "winsys/radeon_winsys.h"
 #include "r300/r300_public.h"
 
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+r300vk_GetDeviceProcAddr(VkDevice _device, const char *pName)
+{
+   VK_FROM_HANDLE(vk_device, device, _device);
+   return vk_device_get_proc_addr(device, pName);
+}
 
 VkResult
 r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
