@@ -1,23 +1,22 @@
+# Maintainer: Terascale Functionalists
+#
 # mesa-gororoba-debug: the debug twin of mesa-gororoba.  Same feature set (r300
 # GL + gallium-va MPEG-2 decode + amd_r300/r300vk Vulkan ICD) built with full
-# debug info and assertions, installed into /opt/share/mesa-26-gororoba so it sits
-# ALONGSIDE the release /usr install rather than replacing it.  Point a probe at
-# it explicitly (LD_LIBRARY_PATH, LIBGL_DRIVERS_PATH, LIBVA_DRIVERS_PATH); it
-# carries no provides/conflicts/replaces, so it never becomes the system driver.
+# debug info and assertions, installed into /opt/mesa-26-gororoba-debug so it
+# sits alongside the release /opt install and stock mesa.  Use
+# mesa-26-gororoba-debug-run for loader-visible probes; it carries no
+# provides/conflicts/replaces, so it never becomes the system driver.
 #
-# The prefix is wiped before each install (pre_install/pre_upgrade in the .install
-# hook): a prefix-tree install leaves stale objects when the file set changes
-# across builds, and a stale debug driver is worse than none -- gdb resolves to
-# the wrong sources.  Mirrors the 2_r300 debug meson profile (debugoptimized,
-# b_ndebug=false, frame pointers, libunwind/valgrind/perfetto on).
+# Mirrors the 2_r300 debug meson profile (debugoptimized, b_ndebug=false, frame
+# pointers, libunwind/valgrind/perfetto on).
 pkgname=mesa-gororoba-debug
 pkgver=26.2.0
-pkgrel=3
+pkgrel=4
 epoch=2
 # Same pin policy as the release package: update _commit per build, or override
 # with #branch=main for rapid iteration.
-_commit=0dc3c275f112c3552fdde57492eecd8771aef038
-pkgdesc='Mesa (mesa-26-gororoba fork) DEBUG build: r300 GL + gallium-va MPEG-2 decode + amd_r300/r300vk, full debug info, installed to /opt/share/mesa-26-gororoba (parallel to the /usr release)'
+_commit=102dbd859f97a1abdcde59704f7fed08091f1d50
+pkgdesc='Mesa DEBUG side-by-side /opt build: r300 GL + amd_r300/r300vk, full debug info'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -27,18 +26,21 @@ depends=(
   wayland zlib zstd vulkan-icd-loader libunwind valgrind
 )
 makedepends=(
-  clang llvm meson ninja glslang spirv-tools python-mako python-ply
-  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
-  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
+  clang llvm meson ninja glslang python-mako python-ply git
+  wayland-protocols libxrandr xorgproto libxml2 lld
 )
-# Parallel /opt/share install: no provides/conflicts/replaces, so it never
-# shadows the system mesa.  Keep debug symbols; no strip, no LTO.
+# Parallel /opt install: no provides/conflicts/replaces, so it never shadows the
+# system mesa.  Keep debug symbols; no strip, no LTO.
 options=('!strip' '!lto' 'debug' 'staticlibs')
 install="${pkgname}.install"
-source=("mesa-gororoba::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}")
-sha256sums=('SKIP')
+source=("mesa-gororoba::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}"
+        'mesa-26-gororoba-debug-env.sh'
+        'mesa-26-gororoba-debug-run')
+sha256sums=('SKIP'
+            '2e8d4efb42d9c9de15236d1936191b68ddc5cda1fd8a24769c69ce88b5de9e61'
+            'e2a1785277b814e1d1ffcff8aca1a11029fe632502180e5d1c6074cdee286aa9')
 
-_prefix=/opt/share/mesa-26-gororoba
+_prefix=/opt/mesa-26-gororoba-debug
 
 build() {
   # Ride the distcc+ccache fabric (the 1_r300/2_r300 default) for fast rebuilds:
@@ -102,6 +104,19 @@ build() {
 
 package() {
   meson install -C build --destdir "${pkgdir}"
+
+  install -Dm755 mesa-26-gororoba-debug-run \
+    "${pkgdir}/usr/bin/mesa-26-gororoba-debug-run"
+  install -Dm644 mesa-26-gororoba-debug-env.sh \
+    "${pkgdir}${_prefix}/share/mesa-26-gororoba-debug/mesa-26-gororoba-debug-env.sh"
+  install -Dm644 mesa-26-gororoba-debug-env.sh \
+    "${pkgdir}/etc/opt/mesa-26-gororoba-debug/mesa-26-gororoba-debug-env.sh"
+
+  install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share"
+  ln -s /opt/mesa-26-gororoba-debug \
+    "${pkgdir}/opt/local/mesa-26-gororoba-debug"
+  ln -s /opt/mesa-26-gororoba-debug \
+    "${pkgdir}/opt/share/mesa-26-gororoba-debug"
 
   if [ -f mesa-gororoba/docs/license.rst ]; then
     install -Dm644 mesa-gororoba/docs/license.rst \
