@@ -24,9 +24,12 @@ make -C build-infra build PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cach
 make -C build-infra install PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
 ```
 
-The release prefix is `/opt/local/mesa-26-gororoba`.  The debug prefix is
-`/opt/local/mesa-26-gororoba-debug`.  The `rebuild-*` convenience targets first
-run `clean`; use them only when the builddir itself needs regeneration.
+The build-infra install prefix is `/opt/local/mesa-26-gororoba`.  The debug
+prefix is `/opt/local/mesa-26-gororoba-debug`.  The package-managed install uses
+the FHS-style `/opt/mesa-26-gororoba` and `/opt/mesa-26-gororoba-debug`
+prefixes, with `/opt/local/...` compatibility aliases.  The `rebuild-*`
+convenience targets first run `clean`; use them only when the builddir itself
+needs regeneration.
 
 ## How
 

@@ -1,21 +1,25 @@
-# mesa-gororoba install scriptlet: surface the non-obvious consequences of
-# replacing system mesa with a scope-limited fork build.
+# mesa-gororoba install scriptlet: surface the non-obvious consequences of a
+# side-by-side Mesa fork build.
 
 _notes() {
   cat <<'EOF'
-mesa-gororoba replaces stock `mesa` with an RS482-scoped fork build:
+mesa-gororoba installed an RS482-scoped fork build under /opt/mesa-26-gororoba:
   * GL: r300 hardware + llvmpipe software fallback (egl/glx/gles/gbm/glvnd).
-  * Vulkan: amd_r300 (r300vk) ICD at /usr/share/vulkan/icd.d/r300_icd.x86_64.json.
+  * Vulkan: amd_r300 (r300vk) ICD under /opt/mesa-26-gororoba/share/vulkan/icd.d.
+  * Wrapper: mesa-26-gororoba-run scopes loader variables to one command.
 Consequences to know:
   * llvm coupling: llvmpipe links libLLVM.so of the build host's llvm major.
     If the installed llvm-libs major differs, llvmpipe paths fail to dlopen --
     rebuild mesa-gororoba against the current llvm.
-  * libva-driver is provided as a no-backend virtual (RS482 has no VA-API state
-    tracker); VA-API consumers install but get no hardware video decode.
-  * `pacman -Syu` will conflict whenever stock mesa bumps.  Add to
-    /etc/pacman.conf:  IgnorePkg = mesa-gororoba
-    (or keep a local repo and rebuild on upstream bumps).
-  * Rollback: pacman -U /var/cache/pacman/pkg/mesa-2:*-x86_64.pkg.tar.zst
+  * stock mesa remains the system default.  Compare explicitly, for example:
+      mesa-26-gororoba-run glxinfo -B
+      mesa-26-gororoba-run eglinfo
+      mesa-26-gororoba-run vainfo
+      mesa-26-gororoba-run vulkaninfo --summary
+  * compatibility aliases are package-managed:
+      /opt/local/mesa-26-gororoba -> /opt/mesa-26-gororoba
+      /opt/share/mesa-26-gororoba -> /opt/mesa-26-gororoba
+      /usr/share/mesa-26-gororoba -> /opt/mesa-26-gororoba/share/mesa-26-gororoba
 EOF
 }
 
