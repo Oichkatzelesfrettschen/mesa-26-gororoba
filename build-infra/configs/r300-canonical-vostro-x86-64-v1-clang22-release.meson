@@ -41,7 +41,6 @@ platforms = ['x11']
 gallium-drivers = ['r300']
 vulkan-drivers = ['amd_r300']
 r300vk-gallium-backend = true
-tools = ['r300']
 
 gallium-rusticl = false
 llvm = 'disabled'

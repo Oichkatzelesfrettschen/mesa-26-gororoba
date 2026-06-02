@@ -75,7 +75,7 @@ if with_vdrm
   subdir('virtio/vdrm')
 endif
 if (with_gallium_radeonsi or with_amd_vk or with_amd_r300_vk or with_amd_terascale_vk or
-    with_gallium_r300 or with_gallium_r600 or with_tools.contains('r300'))
+    with_gallium_r300 or with_gallium_r600)
   subdir('amd')
 endif
 if with_any_broadcom
