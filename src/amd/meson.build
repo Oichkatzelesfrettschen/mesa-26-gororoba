@@ -49,7 +49,3 @@ if with_amd_r300_vk
     subdir('r300/vulkan/r300vk')
   endif
 endif
-
-if with_tools.contains('r300')
-  subdir('r300/tools')
-endif

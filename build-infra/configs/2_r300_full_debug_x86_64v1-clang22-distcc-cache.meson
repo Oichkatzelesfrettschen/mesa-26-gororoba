@@ -41,7 +41,6 @@ platforms = ['x11', 'wayland']
 gallium-drivers = ['r300']
 vulkan-drivers = ['amd_r300']
 r300vk-gallium-backend = true
-tools = ['r300']
 
 # Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
 opengl = true
