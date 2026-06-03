@@ -195,10 +195,13 @@ r300vk_CreateImage(VkDevice _device,
 
    vk_image_init(&device->vk, &img->vk, pCreateInfo);
 
-   /* R300-class hardware only supports flat 2D images: one layer and one mip
-    * level.  The 4096 Vulkan 1.0 floor is represented as one, two, or four
-    * hardware-sized 2D resources, and 4x MSAA is passed through to r300g per
-    * tile.  Reject unsupported shapes so callers see a clear error rather
+   /* R300-class hardware only supports flat 2D images: one layer, one mip
+    * level, and a single sample.  The 4096 Vulkan 1.0 floor is represented as
+    * one, two, or four hardware-sized 2D resources.  r300vk has no multisample
+    * path (no MSAA resolve), and r300vk_get_image_format_properties reports
+    * VK_SAMPLE_COUNT_1_BIT, so reject more than one sample here: a 4x image
+    * would otherwise reach the unimplemented CmdResolveImage destination path
+    * and crash.  Reject unsupported shapes so callers see a clear error rather
     * than silently incorrect behavior. */
    if (pCreateInfo->arrayLayers > 1) {
       vk_image_finish(&img->vk);
@@ -214,12 +217,11 @@ r300vk_CreateImage(VkDevice _device,
                        "r300vk: mipLevels %u > 1 unsupported",
                        pCreateInfo->mipLevels);
    }
-   if (pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT &&
-       pCreateInfo->samples != VK_SAMPLE_COUNT_4_BIT) {
+   if (pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
       return vk_errorf(device, VK_ERROR_UNKNOWN,
-                       "r300vk: samples 0x%x unsupported",
+                       "r300vk: samples 0x%x unsupported (single-sample only)",
                        pCreateInfo->samples);
    }
 
