@@ -537,6 +537,58 @@ r300vk_CmdFillBuffer(VkCommandBuffer commandBuffer,
    e->fill_buffer.data   = data;
 }
 
+/* Occlusion query begin/end.  r300 supports one occlusion query at a time; the
+ * replay brackets the spanned draws with an r300 PIPE_QUERY_OCCLUSION_COUNTER.
+ * The VkQueryControlFlags (PRECISE) refinement is a no-op: r300's ZPASS counter
+ * is always exact, so a precise result is what the non-precise path returns. */
+void
+r300vk_CmdBeginQuery(VkCommandBuffer commandBuffer,
+                     VkQueryPool queryPool,
+                     uint32_t query,
+                     VkQueryControlFlags flags)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(vk_query_pool, vk_pool, queryPool);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type        = R300VK_CMD_BEGIN_QUERY;
+   e->query.pool  = r300vk_query_pool(vk_pool);
+   e->query.query = query;
+}
+
+void
+r300vk_CmdEndQuery(VkCommandBuffer commandBuffer,
+                   VkQueryPool queryPool,
+                   uint32_t query)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(vk_query_pool, vk_pool, queryPool);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type        = R300VK_CMD_END_QUERY;
+   e->query.pool  = r300vk_query_pool(vk_pool);
+   e->query.query = query;
+}
+
+void
+r300vk_CmdResetQueryPool(VkCommandBuffer commandBuffer,
+                         VkQueryPool queryPool,
+                         uint32_t firstQuery,
+                         uint32_t queryCount)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(vk_query_pool, vk_pool, queryPool);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type                         = R300VK_CMD_RESET_QUERY_POOL;
+   e->reset_query_pool.pool        = r300vk_query_pool(vk_pool);
+   e->reset_query_pool.first_query = firstQuery;
+   e->reset_query_pool.query_count = queryCount;
+}
+
 void
 r300vk_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
                       const VkCopyBufferInfo2 *pCopyBufferInfo)
