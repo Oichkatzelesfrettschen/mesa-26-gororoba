@@ -38,6 +38,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_DRAW,
    R300VK_CMD_DRAW_INDIRECT,
    R300VK_CMD_DRAW_INDEXED,
+   R300VK_CMD_DRAW_INDEXED_INDIRECT,
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_COPY_BUFFER_TO_IMAGE,
@@ -123,6 +124,23 @@ struct r300vk_cmd_draw_indexed {
    int32_t               vertex_offset;
    uint32_t              instances;
    uint32_t              first_instance;
+   VkPrimitiveTopology   topology;
+};
+
+/* One vkCmdDrawIndexedIndirect.  Combines the indirect-args buffer of
+ * r300vk_cmd_draw_indirect with the bound index state of r300vk_cmd_draw_indexed:
+ * replay CPU-reads a VkDrawIndexedIndirectCommand at offset + i*stride and
+ * synthesizes one R300VK_CMD_DRAW_INDEXED per command against the snapshotted
+ * index buffer. */
+struct r300vk_cmd_draw_indexed_indirect {
+   struct r300vk_buffer *buffer;       /* indirect-args buffer */
+   VkDeviceSize          offset;
+   uint32_t              draw_count;
+   uint32_t              stride;
+   struct r300vk_buffer *index_buffer; /* bound index buffer, snapshotted */
+   VkDeviceSize          index_offset;
+   VkDeviceSize          index_range;
+   uint32_t              index_size;   /* 1, 2, or 4 bytes per index */
    VkPrimitiveTopology   topology;
 };
 
@@ -278,6 +296,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_draw                 draw;
       struct r300vk_cmd_draw_indirect        draw_indirect;
       struct r300vk_cmd_draw_indexed         draw_indexed;
+      struct r300vk_cmd_draw_indexed_indirect draw_indexed_indirect;
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
       struct r300vk_cmd_copy_image           copy_image;

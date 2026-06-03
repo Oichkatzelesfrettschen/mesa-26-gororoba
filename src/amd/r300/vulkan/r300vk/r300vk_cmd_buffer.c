@@ -390,6 +390,35 @@ r300vk_CmdDrawIndexed(VkCommandBuffer commandBuffer,
                                     : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+/* vkCmdDrawIndexedIndirect snapshots the indirect-args buffer and the index
+ * buffer bound by vkCmdBindIndexBuffer[2] (like vkCmdDrawIndexed); replay reads
+ * each VkDrawIndexedIndirectCommand and runs the indexed draw path per command. */
+void
+r300vk_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
+                              VkBuffer _buffer,
+                              VkDeviceSize offset,
+                              uint32_t drawCount,
+                              uint32_t stride)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, buffer, _buffer);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type                                = R300VK_CMD_DRAW_INDEXED_INDIRECT;
+   e->draw_indexed_indirect.buffer        = buffer;
+   e->draw_indexed_indirect.offset        = offset;
+   e->draw_indexed_indirect.draw_count    = drawCount;
+   e->draw_indexed_indirect.stride        = stride;
+   e->draw_indexed_indirect.index_buffer  = cmd->bound_index_buffer;
+   e->draw_indexed_indirect.index_offset  = cmd->bound_index_offset;
+   e->draw_indexed_indirect.index_range   = cmd->bound_index_range;
+   e->draw_indexed_indirect.index_size    = cmd->bound_index_size;
+   e->draw_indexed_indirect.topology      = cmd->bound_pipeline
+                                            ? cmd->bound_pipeline->topology
+                                            : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
 void
 r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
                    uint32_t groupCountX,
