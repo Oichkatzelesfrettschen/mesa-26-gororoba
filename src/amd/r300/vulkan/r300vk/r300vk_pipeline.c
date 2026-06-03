@@ -533,9 +533,11 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
       for (uint32_t d = 0; d < info->pDynamicState->dynamicStateCount; d++) {
          switch (info->pDynamicState->pDynamicStates[d]) {
          case VK_DYNAMIC_STATE_VIEWPORT:
+         case VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT:
             dynamic_viewport = true;
             break;
          case VK_DYNAMIC_STATE_SCISSOR:
+         case VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT:
             dynamic_scissor = true;
             break;
          case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
