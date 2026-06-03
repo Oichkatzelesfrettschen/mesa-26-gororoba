@@ -312,6 +312,15 @@ create_stage1_vert_shader(struct vl_idct *idct)
     * matrix sampled transposed (the 0.0 start lane is the matrix origin). */
    nir_def *l_addr[2], *r_addr[2];
    calc_addr(&b, l_addr, t_tex, t_start, false, false, idct->buffer_width / 4);
+   /* The source coefficient plane is fetched NEAREST at a non-power-of-two column
+    * coordinate (buffer_width/4); r300 resolves the texel edge one texel low and
+    * reads the horizontal DC into slot 4, so a flat block reconstructs as
+    * horizontal frequency 4.  Bias the stepped (column) lane to the texel centre;
+    * floor(R+0.5)=R keeps round-to-nearest hardware exact.  The matrix lane uses a
+    * power-of-two divisor and stays exact. */
+   nir_def *l_center = nir_imm_vec2(&b, 2.0f / idct->buffer_width, 0.0f);
+   l_addr[0] = nir_fadd(&b, l_addr[0], l_center);
+   l_addr[1] = nir_fadd(&b, l_addr[1], l_center);
    calc_addr(&b, r_addr, vrect, nir_imm_vec2(&b, 0.0f, 0.0f), true, true,
              VL_BLOCK_WIDTH / 4);
 
