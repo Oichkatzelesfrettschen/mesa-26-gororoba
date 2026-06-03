@@ -785,9 +785,12 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                             &tile_width, &tile_height,
                                             &skip_render_pass);
             current_render_pass = e;
-            /* loadOp == CLEAR writes the color image, which a later host
-             * copy-image-to-buffer may read. */
-            *gpu_pending = true;
+            /* Only loadOp == CLEAR emits a GPU write at begin (the color-image
+             * clear) that a later host copy-image-to-buffer could read; a LOAD
+             * pass emits nothing here, and its draws set gpu_pending themselves.
+             * Gating avoids a needless drain before an in-order host transfer. */
+            if (e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+               *gpu_pending = true;
             break;
 
          case R300VK_CMD_BIND_PIPELINE:
