@@ -559,6 +559,20 @@ r300vk_screen_supports_format(const struct r300vk_physical_device *const device,
 #endif
 }
 
+/* True when a Gallium pipe_screen is attached.  Loader-only builds have no
+ * screen, so capabilities that depend on the r300g screen and its SW-TCL draw
+ * module must gate on this rather than advertising support no backend provides. */
+static bool
+r300vk_has_gallium_screen(const struct r300vk_physical_device *const device)
+{
+#ifdef R300VK_GALLIUM_BACKEND
+   return device->screen != NULL;
+#else
+   (void)device;
+   return false;
+#endif
+}
+
 static bool
 r300vk_format_supports_transfer_dst(enum pipe_format pipe_format)
 {
@@ -647,13 +661,19 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
    /* RS482 routes all vertex fetch through the SW-TCL Gallium draw module, which
     * fetches in software and handles pure-integer vertex formats too.  r300g's
     * is_format_supported gates pure-integer out of its SW-TCL vertex branch (the
-    * legacy GL path never exposed integer attributes), so admit a non-srgb,
-    * non-depth/stencil pure-integer format here: it is a valid vertex format the
-    * draw module fetches, which is what VERTEX_BUFFER advertises. */
+    * legacy GL path never exposed integer attributes), so admit a pure-integer
+    * format the draw module can fetch.  Two bounds keep the override honest: it
+    * needs a live Gallium screen (a loader-only build has no draw module, so no
+    * software fetch), and the draw translator rewrites integer inputs to
+    * R32G32B32A32_*, so a component wider than 32 bits (R64_*) has no fetch path
+    * and must not be advertised. */
    const bool vertex_fetchable =
       r300vk_screen_supports_format(device, pipe_format, PIPE_BUFFER,
                                     PIPE_BIND_VERTEX_BUFFER) ||
-      util_format_is_pure_integer(pipe_format);
+      (r300vk_has_gallium_screen(device) &&
+       util_format_is_pure_integer(pipe_format) &&
+       util_format_get_component_bits(pipe_format,
+                                      UTIL_FORMAT_COLORSPACE_RGB, 0) <= 32);
    if (!is_depth_or_stencil && !util_format_is_srgb(pipe_format) &&
        vertex_fetchable) {
       buffer_features |= VK_FORMAT_FEATURE_2_VERTEX_BUFFER_BIT;
