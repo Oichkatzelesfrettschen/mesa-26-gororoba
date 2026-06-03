@@ -110,7 +110,17 @@ create_vert_shader(struct vl_zscan *zscan)
          nir_imm_float(&b, 1.0f / zscan->blocks_per_line), tx);
       nir_def *oy = nir_channel(&b, vrect, 1);
       nir_def *oz = nir_channel(&b, vpos, 2);
-      nir_def *ow = nir_fmul(&b, floor_bn,
+      /* The coefficient plane is fetched NEAREST.  The source-row coordinate
+       * floor(block_num/blocks_per_line)*blocks_per_line/blocks_total is a
+       * non-power-of-two ratio (R/396 at CIF) that sits on a texel edge; r300
+       * resolves it one block-row low, so block K samples block K-8.  On 4:2:0
+       * (K-8) mod 6 == (K mod 6)-2, so the top luma blocks read the chroma
+       * blocks (DC 0 on neutral gray) and lose their coefficients; block-row 0
+       * clamps and reads correctly.  The column ratio is power-of-two and exact.
+       * Bias the row to the texel centre so the edge residual cannot cross a
+       * block-row boundary; floor(R+0.5)=R keeps every other driver correct. */
+      nir_def *ow = nir_fmul(&b,
+         nir_fadd(&b, floor_bn, nir_imm_float(&b, 0.5f)),
          nir_imm_float(&b, (float)zscan->blocks_per_line / zscan->blocks_total));
 
       nir_variable *ov_tex = nir_variable_create(b.shader, nir_var_shader_out,
