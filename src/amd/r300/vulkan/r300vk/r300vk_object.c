@@ -99,9 +99,15 @@ r300vk_CreateBufferView(VkDevice _device,
    view->buffer = buffer;
    view->format = pCreateInfo->format;
    view->offset = pCreateInfo->offset;
-   view->range  = (pCreateInfo->range == VK_WHOLE_SIZE && buffer)
-                  ? buffer->size - pCreateInfo->offset
-                  : pCreateInfo->range;
+   if (pCreateInfo->range == VK_WHOLE_SIZE) {
+      /* Resolve VK_WHOLE_SIZE to the buffer tail; clamp so an offset past the
+       * end (invalid usage) yields 0 rather than wrapping VkDeviceSize to a
+       * huge range. */
+      view->range = (buffer && pCreateInfo->offset <= buffer->size)
+                    ? buffer->size - pCreateInfo->offset : 0;
+   } else {
+      view->range = pCreateInfo->range;
+   }
 
    *pView = r300vk_buffer_view_to_handle(view);
    return VK_SUCCESS;
