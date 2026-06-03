@@ -37,6 +37,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_BIND_VERTEX_BUFFERS,
    R300VK_CMD_DRAW,
    R300VK_CMD_DRAW_INDIRECT,
+   R300VK_CMD_DRAW_INDEXED,
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_COPY_BUFFER_TO_IMAGE,
@@ -103,6 +104,25 @@ struct r300vk_cmd_draw_indirect {
    VkDeviceSize          offset;
    uint32_t              draw_count;
    uint32_t              stride;
+   VkPrimitiveTopology   topology;
+};
+
+/* One vkCmdDrawIndexed.  The index buffer bound by vkCmdBindIndexBuffer[2] is
+ * snapshotted here at record time (like topology), so replay needs no separate
+ * index-bind command in the stream.  index_offset is the byte offset of the
+ * bound range and index_range its byte length; replay folds the offset into the
+ * gallium element start (pipe_draw_start_count_bias.start is in index elements)
+ * and clamps index_count against index_range for robustBufferAccess. */
+struct r300vk_cmd_draw_indexed {
+   struct r300vk_buffer *index_buffer;
+   VkDeviceSize          index_offset;
+   VkDeviceSize          index_range;
+   uint32_t              index_size;   /* 1, 2, or 4 bytes per index */
+   uint32_t              index_count;
+   uint32_t              first_index;
+   int32_t               vertex_offset;
+   uint32_t              instances;
+   uint32_t              first_instance;
    VkPrimitiveTopology   topology;
 };
 
@@ -257,6 +277,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_bind_vertex_buffers  bind_vbufs;
       struct r300vk_cmd_draw                 draw;
       struct r300vk_cmd_draw_indirect        draw_indirect;
+      struct r300vk_cmd_draw_indexed         draw_indexed;
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
       struct r300vk_cmd_copy_image           copy_image;
@@ -282,6 +303,12 @@ struct r300vk_cmd_buffer {
    struct r300vk_pipeline   *bound_pipeline;
    struct r300vk_pipeline   *bound_compute_pipeline;
    struct r300vk_image      *current_color_image;
+   /* Index buffer bound by vkCmdBindIndexBuffer[2], snapshotted into each
+    * R300VK_CMD_DRAW_INDEXED entry at record time. */
+   struct r300vk_buffer     *bound_index_buffer;
+   VkDeviceSize              bound_index_offset;
+   VkDeviceSize              bound_index_range;
+   uint32_t                  bound_index_size;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_cmd_buffer, base.base, VkCommandBuffer,
