@@ -51,7 +51,12 @@ enum r300vk_cmd_type {
    R300VK_CMD_PIPELINE_BARRIER,
    R300VK_CMD_DISPATCH,
    R300VK_CMD_BIND_DESCRIPTOR_SETS,
+   R300VK_CMD_BEGIN_QUERY,
+   R300VK_CMD_END_QUERY,
+   R300VK_CMD_RESET_QUERY_POOL,
 };
+
+struct r300vk_query_pool;
 
 struct r300vk_cmd_begin_render_pass {
    struct r300vk_image  *color_image;
@@ -225,6 +230,23 @@ struct r300vk_cmd_bind_descriptor_sets {
    uint32_t                      dynamic_offsets[R300VK_MAX_DYNAMIC_OFFSETS];
 };
 
+/* One vkCmdBeginQuery / vkCmdEndQuery.  r300 supports only occlusion queries;
+ * the replay brackets the spanned draws of a single-tile submit with one r300
+ * occlusion query and stores the count into pool->queries[query] at end-query.
+ * The pool outlives the command buffer's use (spec rule), so a plain pointer. */
+struct r300vk_cmd_query {
+   struct r300vk_query_pool *pool;
+   uint32_t                  query;
+};
+
+/* One vkCmdResetQueryPool range.  Replayed as a host clear of the slots'
+ * availability and result (tile-independent, applied once per submit). */
+struct r300vk_cmd_reset_query_pool {
+   struct r300vk_query_pool *pool;
+   uint32_t                  first_query;
+   uint32_t                  query_count;
+};
+
 struct r300vk_cmd_entry {
    enum r300vk_cmd_type type;
    union {
@@ -247,6 +269,8 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_pipeline_barrier     barrier;
       struct r300vk_cmd_dispatch             dispatch;
       struct r300vk_cmd_bind_descriptor_sets bind_dsets;
+      struct r300vk_cmd_query                query;
+      struct r300vk_cmd_reset_query_pool     reset_query_pool;
    };
 };
 

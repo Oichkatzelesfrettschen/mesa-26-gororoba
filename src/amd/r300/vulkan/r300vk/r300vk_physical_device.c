@@ -359,6 +359,10 @@ r300vk_physical_device_init_features(struct vk_features *features)
    features->largePoints = true;
    features->wideLines = true;
    features->samplerAnisotropy = true;
+   /* r300's ZPASS occlusion counter returns an exact sample count, so a precise
+    * occlusion query is what the replay records (basic occlusion queries need no
+    * feature bit).  Pipeline-statistics queries stay unsupported. */
+   features->occlusionQueryPrecise = true;
 }
 
 void
