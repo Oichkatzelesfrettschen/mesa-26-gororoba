@@ -214,42 +214,19 @@ static const struct spirv_to_nir_options r300vk_spirv_opts = {
    .shared_addr_format     = nir_address_format_32bit_offset,
 };
 
-/* r300 has one constant file (RC_FILE_CONSTANT); ntr_emit_load_ubo addresses
- * UBO index 0 only.  vk_spirv_to_nir leaves each UBO descriptor at its
- * layout-assigned buffer index, which is non-zero for any binding the SPIR-V did
- * not place first, so even a single-UBO shader would otherwise trip nir_to_rc's
- * index-0 assert.  r300vk_bind_descriptor_ubo binds the one bound uniform buffer
- * at CONST[0], so rewrite every load_ubo[_vec4] buffer index to 0.  A shader
- * that reads more than one distinct UBO, or indexes a UBO array dynamically,
- * cannot be packed into the single constant file: return false so the pipeline
- * is rejected at create time (VK_ERROR_FEATURE_NOT_PRESENT) rather than aliased
- * to CONST[0] or aborted in the assert. */
-static bool
+/* r300 has one constant file (RC_FILE_CONSTANT), and ntr_emit_load_ubo asserts
+ * the UBO block index is 0.  r300vk_nir_lower_vulkan_resource_index_single has
+ * already rejected any shader that needs more than the single uniform buffer
+ * r300vk_bind_descriptor_ubo binds at CONST[0], and lowered the surviving
+ * descriptor chain to a constant block-0 address.  nir_lower_explicit_io then
+ * rebuilds that block index as a vec construct + component extract (block =
+ * vec2(addr.x, ...).x), i.e. a mov of a vec, not a load_const, and no pass folds
+ * it back to a constant before nir_to_rc consumes it.  Force every
+ * load_ubo[_vec4] block index to a literal 0 so the index-0 assert holds; the
+ * single bound buffer lives at CONST[0]. */
+static void
 r300vk_nir_remap_single_ubo_to_index0(nir_shader *nir)
 {
-   int64_t seen_index = -1;
-   nir_foreach_function_impl(impl, nir) {
-      nir_foreach_block(block, impl) {
-         nir_foreach_instr(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_load_ubo &&
-                intr->intrinsic != nir_intrinsic_load_ubo_vec4)
-               continue;
-            if (!nir_src_is_const(intr->src[0]))
-               return false;
-            uint64_t idx = nir_src_as_uint(intr->src[0]);
-            if (seen_index < 0)
-               seen_index = (int64_t)idx;
-            else if ((uint64_t)seen_index != idx)
-               return false;
-         }
-      }
-   }
-   if (seen_index <= 0)
-      return true;
-
    nir_foreach_function_impl(impl, nir) {
       bool progress = false;
       nir_builder b = nir_builder_create(impl);
@@ -264,6 +241,103 @@ r300vk_nir_remap_single_ubo_to_index0(nir_shader *nir)
             b.cursor = nir_before_instr(instr);
             nir_src_rewrite(&intr->src[0], nir_imm_int(&b, 0));
             progress = true;
+         }
+      }
+      nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+}
+
+/* r300 exposes a single constant file per stage, and r300vk_bind_descriptor_ubo
+ * binds the one bound uniform buffer at CONST[0].  vk_spirv_to_nir emits each
+ * UBO access as a vulkan_resource_index -> load_vulkan_descriptor -> deref ->
+ * load chain, carrying the resource address in 32bit_index_offset form, where
+ * component .x is the constant-file block index and .y the base offset.
+ * nir_lower_explicit_io derives load_ubo's block index from that chain, which is
+ * a non-constant SSA value, so r300vk_nir_remap_single_ubo_to_index0 cannot fold
+ * it to index 0 and the pipeline is rejected.  Lower the chain here, before
+ * explicit I/O, so the single supported UBO resolves to a literal block 0:
+ *   vulkan_resource_index(set, binding) -> imm ivec2(0, 0)
+ *   load_vulkan_descriptor(addr)        -> addr   (identity for index_offset)
+ * The byte offset inside the buffer is applied at bind time through
+ * pipe_constant_buffer::buffer_offset, so the in-shader base offset is 0.  The
+ * post-explicit-I/O remap then sees only block 0 and is a no-op safety net.
+ *
+ * Reject every descriptor shape r300's single read-only constant file cannot
+ * represent, so the pipeline fails create with VK_ERROR_FEATURE_NOT_PRESENT
+ * rather than aliasing distinct buffers onto CONST[0] and rendering garbage:
+ *   - a storage-buffer descriptor (the constant file is read-only),
+ *   - a vulkan_resource_reindex (a dynamically indexed descriptor array),
+ *   - a non-constant or non-zero resource array index,
+ *   - more than one distinct (set, binding) uniform buffer.
+ */
+static bool
+r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir)
+{
+   int64_t seen_set = -1;
+   uint32_t seen_binding = 0;
+
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+            /* A dynamically indexed descriptor array reindexes the resource;
+             * r300 binds one buffer, so this cannot be satisfied. */
+            if (intr->intrinsic == nir_intrinsic_vulkan_resource_reindex)
+               return false;
+
+            if (intr->intrinsic != nir_intrinsic_vulkan_resource_index)
+               continue;
+
+            /* The constant file is read-only: a storage buffer (or any
+             * non-uniform-buffer descriptor) cannot be mapped onto it. */
+            if (nir_intrinsic_desc_type(intr) != nir_descriptor_type_uniform_buffer)
+               return false;
+
+            /* Only the constant, zeroth array element resolves to the single
+             * bound buffer; a dynamic or non-zero index names a buffer r300
+             * never binds. */
+            if (!nir_src_is_const(intr->src[0]) ||
+                nir_src_as_uint(intr->src[0]) != 0)
+               return false;
+
+            uint32_t set = nir_intrinsic_desc_set(intr);
+            uint32_t binding = nir_intrinsic_binding(intr);
+            if (seen_set < 0) {
+               seen_set = (int64_t)set;
+               seen_binding = binding;
+            } else if ((uint32_t)seen_set != set || seen_binding != binding) {
+               return false;
+            }
+         }
+      }
+   }
+
+   /* No UBO descriptor access in this shader: nothing to lower. */
+   if (seen_set < 0)
+      return true;
+
+   nir_foreach_function_impl(impl, nir) {
+      bool progress = false;
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            b.cursor = nir_before_instr(instr);
+
+            if (intr->intrinsic == nir_intrinsic_vulkan_resource_index) {
+               nir_def_rewrite_uses(&intr->def, nir_imm_ivec2(&b, 0, 0));
+               nir_instr_remove(instr);
+               progress = true;
+            } else if (intr->intrinsic == nir_intrinsic_load_vulkan_descriptor) {
+               nir_def_rewrite_uses(&intr->def, intr->src[0].ssa);
+               nir_instr_remove(instr);
+               progress = true;
+            }
          }
       }
       nir_progress(progress, impl, nir_metadata_control_flow);
@@ -303,14 +377,26 @@ r300vk_compile_shader(struct r300vk_device *device,
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
 
-   /* vk_spirv_to_nir emits UBO/SSBO access as a vulkan_resource_index ->
-    * load_vulkan_descriptor -> cast -> load_deref chain (ubo_addr_format =
-    * 32bit_index_offset above).  nir_to_rc (the FS path) and nir_to_tgsi (the
-    * SW-TCL VS path on RS480-family) have no handler for those intrinsics, so an
-    * unlowered chain dummy-shaders the FS or aborts the VS.  Lower it to
-    * load_ubo/load_ssbo, which ntr_emit_load_ubo consumes; r300 carries a single
-    * UBO at index 0 (nir_lower_uniforms_to_ubo), so a multi-binding shader still
-    * narrows at that index-0 assert.  The compute-classify path matches. */
+   /* Resolve the descriptor resource chain (vulkan_resource_index ->
+    * load_vulkan_descriptor) to a constant block-0 address, or reject the
+    * pipeline when the shader needs a resource r300's single read-only constant
+    * file cannot represent.  See r300vk_nir_lower_vulkan_resource_index_single. */
+   if (!r300vk_nir_lower_vulkan_resource_index_single(nir)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: %s shader uses a descriptor resource r300's "
+                       "single read-only constant file cannot represent "
+                       "(storage buffer, multiple UBOs, or a dynamic UBO index)",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
+   }
+
+   /* With the descriptor chain resolved to constant block 0, lower the UBO
+    * deref/load to load_ubo, which ntr_emit_load_ubo (the FS nir_to_rc path)
+    * and the SW-TCL VS nir_to_tgsi path consume.  An unlowered
+    * vulkan_resource_index chain would otherwise dummy-shader the FS or abort
+    * the VS.  nir_var_mem_ssbo stays for completeness; a storage-buffer
+    * descriptor is already rejected above, so none remain. */
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_ubo | nir_var_mem_ssbo,
             nir_address_format_32bit_index_offset);
@@ -320,14 +406,9 @@ r300vk_compile_shader(struct r300vk_device *device,
     * the same form r300g's GL uniforms-to-UBO path feeds nir_to_rc. */
    NIR_PASS(_, nir, nir_lower_ubo_vec4);
 
-   if (!r300vk_nir_remap_single_ubo_to_index0(nir)) {
-      ralloc_free(nir);
-      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: %s shader needs multiple UBOs or a dynamic UBO "
-                       "index; r300 has a single constant file",
-                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
-                       ? "vertex" : "fragment");
-   }
+   /* The single supported UBO is bound at CONST[0]; pin every load_ubo[_vec4]
+    * block index to a literal 0 for ntr_emit_load_ubo's index-0 assert. */
+   r300vk_nir_remap_single_ubo_to_index0(nir);
 
    /* vk_spirv_to_nir sets data.location for VS inputs (VERT_ATTRIB_GENERIC0+n)
     * but leaves data.driver_location at zero for all variables.  nir_lower_io
