@@ -3,18 +3,22 @@
  *
  * Lower VS system values to synthetic vertex inputs.
  *
- * RS480-family parts keep num_vert_fpus = 0, so r300g ordinary draws route
- * vertex work through Gallium Draw SW-TCL.  The RC vertex path has no
- * system-value input slot.  A caller that reserves an ordinary vertex
- * attribute slot can supply VertexIndex or InstanceIndex as per-vertex data
- * and run this pass before nir_to_rc().  After nir_lower_io lowers the
- * synthetic variable, ntr_emit_load_input reads from RC input slot ==
- * driver_location because it keys load_input on nir_intrinsic_base.
+ * RS480-family parts keep num_vert_fpus = 0 and has_tcl = false, so r300g
+ * ordinary draws use the Gallium Draw SW-TCL path instead of the hardware
+ * VAP/PVS vertex-shader route.  gl_VertexIndex / gl_InstanceIndex therefore
+ * cannot be produced by PVS microcode, and the NIR-to-RC translator rejects
+ * unsupported VS system-value intrinsics outright.  The caller can instead
+ * supply the value as an ordinary per-vertex attribute (firstVertex + i, or
+ * index-buffer value + vertexOffset) at a reserved driver_location; this pass
+ * rewrites the system-value intrinsic into a read of that attribute.  After
+ * nir_lower_io lowers the synthetic variable, ntr_emit_load_input reads from
+ * RC input slot == driver_location because it keys load_input on
+ * nir_intrinsic_base.
  *
  * The pass runs only when the caller reserved a slot for a given system value
- * (slot >= 0).  Without a reserved slot, the intrinsic remains in the shader
- * so nir_to_rc reports a deterministic compiler error instead of aliasing
- * user attribute 0.
+ * (slot >= 0).  When no slot is provided the intrinsic is left untouched, so
+ * the deterministic NIR-to-RC rejection still applies on paths that cannot
+ * supply a synthetic attribute.
  */
 
 #include "r300_nir.h"

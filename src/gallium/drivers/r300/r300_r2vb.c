@@ -9,17 +9,19 @@
  * pass 1 renders the transformed (clip-space) vertices into a GTT buffer
  * through the color buffer, a cache barrier makes them visible, and pass 2
  * re-ingests that same buffer as the vertex array via an in-IB LOAD_VBPNTR,
- * drawn by the VAP in TCL_BYPASS.
+ * drawn by the VAP in TCL_BYPASS (the
+ * pre-transformed path where the VAP fetches already-transformed vertices and
+ * does not execute PVS microcode).
  *
- * Scope and safety.  The CB-write -> barrier -> vertex-fetch data path is
- * coherency-validated through a GL oracle: a fragment-rendered buffer,
- * round-tripped into the vertex array, rasters the correct geometry.  The
- * Gallium Draw-free direct-VAP timing requires a raw PM4 submit, so live submit
- * is gated by R300_RAW_SUBMIT_ACCEPTED=1.  Constants are the real r300_reg.h
- * values, and the barrier matches r300_emit_gpu_flush / the cb_flush_clean
- * sequence in r300_context.c; no speculative fallback defines.
+ * Scope and safety.  The data path is the driver's ordinary color-buffer write,
+ * the cb_flush_clean barrier, a LOAD_VBPNTR vertex fetch, and a TCL_BYPASS draw.
+ * Capture mode uses RADEON_FLUSH_NOOP so the IB can be decoded without a DRM
+ * submit; live submit requires R300_RAW_SUBMIT_ACCEPTED=1.  Constants are the
+ * real r300_reg.h values, and the barrier matches r300_emit_gpu_flush / the
+ * cb_flush_clean sequence in r300_context.c; no speculative fallback defines.
  */
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -135,6 +137,23 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
 {
     CS_LOCALS(r300);
 
+    assert(num_vertices > 0 && num_vertices <= 65535);
+    assert(r300->screen->caps.num_vert_fpus == 0);
+    assert(!r300->screen->caps.has_tcl);
+    assert(!stage3_color_bo || (stage3_width > 0 && stage3_height > 0));
+
+    if (num_vertices == 0 || num_vertices > 65535)
+        return;
+    if (r300->screen->caps.has_tcl || r300->screen->caps.num_vert_fpus != 0)
+        return;
+    if (stage3_color_bo && (stage3_width == 0 || stage3_height == 0))
+        return;
+
+    /* FP32x4 linear color targets need an even-pixel pitch; the scissor remains
+     * the logical vertex count so the padding pixel is not rendered. */
+    uint32_t output_pitch = align(num_vertices, 2);
+    uint32_t stage3_pitch = align(stage3_width, 2);
+
     /* The output BO is both the pass-1 color target and the pass-2 vertex array,
      * so register it in the command stream once, read+write, before any
      * relocation or lookup -- the radeon winsys returns -1 from cs_lookup_buffer
@@ -155,7 +174,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                  RADEON_PRIO_COLOR_BUFFER,
                                  RADEON_DOMAIN_GTT);
 
-    /* 66 dwords for the single-BO loop: stage 1 = 43, stage 2 = 6, stage 3 = 17.
+    /* 64 dwords for the single-BO loop: stage 1 = 43, stage 2 = 6, stage 3 = 15.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
      * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
      * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
@@ -163,7 +182,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * the stage-3 VF_MAX_VTX_INDX re-assert adds two.  The stage-3 color-target
      * switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 + the
      * SC_SCISSORS pair). */
-    BEGIN_CS(stage3_color_bo ? 75 : 66);
+    BEGIN_CS(stage3_color_bo ? 73 : 64);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -175,8 +194,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * caller's flush, leaving the BO unwritten, so the loop no longer depends on
      * the caller's post-flush vertex-array state.
      *
-     * Contract (the build-out boundary, not a stub): the caller still binds the
-     * "vertex compute" fragment program through the normal r300 pipe state path,
+     * Producer contract: the caller still binds the "vertex compute" fragment
+     * program through the normal r300 pipe state path,
      * so r300_emit_dirty_state has emitted the US instruction state, the RS
      * interpolator state, and the GA/SU setup into this same IB.  The US microcode
      * lives in the US instruction registers (r300_emit_fs in r300_emit.c), never
@@ -184,11 +203,10 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * compiler's fragment-shader emit, and the covering triangle's vertex values
      * are ignored by a wpos-only program that writes from gl_FragCoord.
      *
-     * If a future hazard-gated audit proves the RS482 PVS bank is writable and
-     * executable, only this producer half changes.  Stages 2 and 3 only consume a
-     * clip-space FP32x4 vertex buffer, so the barrier and re-ingest/oracle half
-     * stay valid whether stage 1 was fragment-generated or produced by an explicit
-     * PVS experiment. */
+     * A hazard-gated proof of a writable and executable RS482 PVS bank changes
+     * only this producer half.  Stages 2 and 3 only consume a clip-space FP32x4
+     * vertex buffer, so the barrier and re-ingest/oracle half stay valid whether
+     * stage 1 was fragment-generated or produced by an explicit PVS experiment. */
     /* Disable depth: this color-only vertex render needs no Z test, and the
      * radeon CS validator (r300_cs_track_check) defaults z_enabled true with a
      * NULL z buffer, so a draw with ZB_CNTL R300_Z_ENABLE still set but no depth
@@ -211,7 +229,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
     OUT_CS_RELOC(output_gart_bo);
     OUT_CS_REG(R300_RB3D_COLORPITCH0,
-               num_vertices | R300_COLOR_FORMAT_ARGB32323232);
+               output_pitch | R300_COLOR_FORMAT_ARGB32323232);
     /* Write the fragment output as FP32x4, not the caller's 8-bit format.  The
      * fragment program's gl_FragColor is cast to the color buffer per
      * US_OUT_FMT_0; inheriting the caller's C4_8 (ARGB8888) format truncates each
@@ -298,7 +316,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS_REG(R300_RB3D_COLOROFFSET0, 0);
         OUT_CS_RELOC(stage3_color_bo);
         OUT_CS_REG(R300_RB3D_COLORPITCH0,
-                   stage3_width | R300_COLOR_FORMAT_ARGB32323232);
+                   stage3_pitch | R300_COLOR_FORMAT_ARGB32323232);
         OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
         OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
         OUT_CS(((stage3_width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
@@ -383,7 +401,7 @@ r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
         return;
 
     cfg->do_submit = (mode && strcmp(mode, "submit") == 0);
-    
+
     cfg->num_vertices = 64;
     const char *nv = getenv("R300_R2VB_NVERTS");
     if (nv) {
@@ -402,6 +420,7 @@ r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
             if (d > 0 && d <= 2048)
                 cfg->s3dim = (uint32_t)d;
         }
+        cfg->s3dim = align(cfg->s3dim, 2);
     }
 }
 
@@ -424,7 +443,8 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
         }
     }
 
-    struct pipe_resource *res = r2vb_create_selftest_bo(r300, cfg.num_vertices * 16, 0);
+    struct pipe_resource *res =
+        r2vb_create_selftest_bo(r300, align(cfg.num_vertices, 2) * 16, 0);
     if (!res)
         return false;
 
