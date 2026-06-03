@@ -14,7 +14,6 @@
 #include "r300_context.h"
 #include "r300_cs.h"
 #include "r300_emit.h"
-#include "r300_r2vb.h"
 
 
 static void r300_rearm_after_hardware_flush(struct r300_context *r300)
@@ -75,19 +74,6 @@ void r300_flush(struct pipe_context *pipe,
                 struct pipe_fence_handle **fence)
 {
     struct r300_context *r300 = r300_context(pipe);
-
-    /* The gated R2VB self-test fires once here, after a real no-TCL draw has left
-     * its framebuffer (with the depth buffer), fragment program, and SU/RS setup
-     * in the CS, so the loop's draws pass the kernel validator.  It appends the
-     * loop, flushes (NOOP-capture or timed submit), and returns true to mark the
-     * CS consumed, so the normal flush below is skipped for that one flush.
-     * HWTCL parts already have the hardware-PVS route this RS482 experiment is
-     * deliberately not assuming. */
-    if (r300->dirty_hw &&
-        !r300->screen->caps.has_tcl &&
-        r300_emit_rs482_r2vb_capture_selftest(r300, true)) {
-        r300_rearm_after_hardware_flush(r300);
-    }
 
     if (r300->dirty_hw) {
         r300_flush_and_cleanup(r300, flags, fence);
