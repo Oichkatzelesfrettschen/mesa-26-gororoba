@@ -117,7 +117,7 @@ create_vert_shader(struct vl_zscan *zscan)
        * (K-8) mod 6 == (K mod 6)-2, so the top luma blocks read the chroma
        * blocks (DC 0 on neutral gray) and lose their coefficients; block-row 0
        * clamps and reads correctly.  The column ratio is power-of-two and exact.
-       * Bias the row to the texel centre so the edge residual cannot cross a
+       * Bias the row to the texel center so the edge residual cannot cross a
        * block-row boundary; floor(R+0.5)=R keeps every other driver correct. */
       nir_def *ow = nir_fmul(&b,
          nir_fadd(&b, floor_bn, nir_imm_float(&b, 0.5f)),
