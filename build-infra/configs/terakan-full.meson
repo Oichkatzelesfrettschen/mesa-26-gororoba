@@ -25,7 +25,7 @@ amd-use-llvm        = true
 gallium-extra-hud   = true
 gallium-va          = 'enabled'
 
-# GLX stack: auto-pick dri vs direct (upstream Mesa default is sane).
+# GLX stack: DRI-based (the upstream Mesa default for a hardware driver).
 glx                 = 'dri'
 
 # Maximal GL/EGL/GBM/GLES/glvnd surface for r600/x130e testing parity with the

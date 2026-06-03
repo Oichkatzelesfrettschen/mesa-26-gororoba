@@ -107,7 +107,7 @@ build() {
   export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
   export RUSTFLAGS='-C target-cpu=x86-64'
 
-  meson setup "${pkgname}" build \
+  meson setup build "${pkgname}" \
     --prefix="${_prefix}" \
     --sysconfdir=/etc \
     --buildtype=release \

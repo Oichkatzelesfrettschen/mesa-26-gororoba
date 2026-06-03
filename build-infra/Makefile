@@ -605,7 +605,7 @@ install-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
 # (atomic swap over stock mesa; --overwrite forces any file collision).  Build
 # on a fast x86-64 host whose llvm major matches the target's llvm-libs.
 # Override the pinned source commit with GOROROBA_COMMIT=<sha>.  Artifacts live
-# under ../../build/ (the sanctioned build area), not as workspace siblings.
+# under ../build/ (the sanctioned build area), not as workspace siblings.
 GOROROBA_PKG_SRC   ?= $(CURDIR)/packaging/mesa-gororoba
 GOROROBA_PKG_DIR   ?= $(abspath $(CURDIR)/../build/mesa-gororoba-pkg)
 GOROROBA_REPO_DIR  ?= $(abspath $(CURDIR)/../build/mesa-gororoba-repo)
