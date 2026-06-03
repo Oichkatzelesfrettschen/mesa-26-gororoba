@@ -695,6 +695,27 @@ nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
    return false;
 }
 
+/* Recover the input + output STORAGE_BUFFER bindings positionally when the
+ * detector left both at 0.  After nir_lower_explicit_io the load_ssbo /
+ * store_ssbo binding source is a Vulkan descriptor handle, not a constant, so
+ * the detectors cannot record the binding indices and the pattern structs keep
+ * their zero-initialized defaults.  Resolving {0,0} directly maps both the
+ * input and the output descriptor to binding 0, so the kernel would read its
+ * own output buffer as input.  The contract for the recovered shapes is a
+ * single input/value storage buffer followed by a single output storage buffer,
+ * so the first STORAGE_BUFFER is the input and the second is the output. */
+static bool
+idm_recover_in_out_bindings(const struct r300vk_descriptor_set *set,
+                            uint32_t *in_binding, uint32_t *out_binding)
+{
+   if (*in_binding == *out_binding && *in_binding == 0) {
+      if (!nth_storage_buffer_binding(set, 0, in_binding) ||
+          !nth_storage_buffer_binding(set, 1, out_binding))
+         return false;
+   }
+   return true;
+}
+
 /* Map the kernel's total invocation count onto a 2D raster grid: a single
  * row up to the texture-axis cap (R300 = 2048), then add rows as needed.
  * The bit-exact identity-map lowering bounds this at 2048 x 2048 per dispatch
@@ -852,6 +873,21 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * experimental FP32x4 transport lane explicitly; that mode is capability-
     * checked and treated as exploratory transport, not as an exactness proof. */
    const enum pipe_format fmt = r300vk_identity_map_replay_format(device, pl);
+
+   /* derive_raster_extent maps one invocation to one texel of
+    * util_format_get_blocksize(fmt) bytes, so the carrier's element size must
+    * equal the kernel's stored element size.  A vec4x32 store (16 bytes) on the
+    * default RGBA8 carrier (4 bytes) would sample only the first quarter of each
+    * element and leave the rest stale; the opt-in FP32x4 carrier (16 bytes)
+    * matches and is selected by replay_format above.  Reject a mismatch rather
+    * than transport a fraction of each element. */
+   const unsigned element_bytes =
+      pl->identity_map.value_components * (pl->identity_map.value_bit_size / 8u);
+   if (element_bytes != 0 && util_format_get_blocksize(fmt) != element_bytes) {
+      IDM_LOG("early-return carrier-blocksize=%u != element-bytes=%u",
+              util_format_get_blocksize(fmt), element_bytes);
+      return false;
+   }
 
    /* Wrap the input buffer as a 2D sampler view.  The view holds the
     * texture's only strong reference; drop the view at the end and the
@@ -1303,7 +1339,13 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("gather early-return no-set-or-layout");
       return false;
    }
-   uint32_t bindings[2] = { pl->multitap_gather.input_ssbo_binding, pl->multitap_gather.output_ssbo_binding };
+   uint32_t in_binding  = pl->multitap_gather.input_ssbo_binding;
+   uint32_t out_binding = pl->multitap_gather.output_ssbo_binding;
+   if (!idm_recover_in_out_bindings(set, &in_binding, &out_binding)) {
+      IDM_LOG("gather early-return layout-has-fewer-than-two-storage-buffers");
+      return false;
+   }
+   uint32_t bindings[2] = { in_binding, out_binding };
    const struct r300vk_descriptor *descs[2] = {0};
    struct r300vk_buffer *bufs[2] = {0};
    if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
@@ -1846,9 +1888,16 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   /* Detector binding-index priority + positional fallback (same policy
-    * as r300vk_binary_map_dispatch_replay). */
-   uint32_t bindings[2] = { pl->blend_acc_reduction.value_ssbo_binding, pl->blend_acc_reduction.output_ssbo_binding };
+   /* Detector binding-index priority with a positional fallback (same policy
+    * as r300vk_binary_map_dispatch_replay): value = first STORAGE_BUFFER,
+    * output = second, when the detector could not record constant indices. */
+   uint32_t value_binding  = pl->blend_acc_reduction.value_ssbo_binding;
+   uint32_t output_binding = pl->blend_acc_reduction.output_ssbo_binding;
+   if (!idm_recover_in_out_bindings(set, &value_binding, &output_binding)) {
+      IDM_LOG("blend_acc early-return layout-has-fewer-than-two-storage-buffers");
+      return false;
+   }
+   uint32_t bindings[2] = { value_binding, output_binding };
    const struct r300vk_descriptor *descs[2] = {0};
    struct r300vk_buffer *bufs[2] = {0};
    if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
@@ -2052,7 +2101,13 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
       IDM_LOG("zpass early-return no-set-or-layout");
       return false;
    }
-   uint32_t bindings[2] = { pl->zpass_reduction.value_ssbo_binding, pl->zpass_reduction.output_ssbo_binding };
+   uint32_t value_binding  = pl->zpass_reduction.value_ssbo_binding;
+   uint32_t output_binding = pl->zpass_reduction.output_ssbo_binding;
+   if (!idm_recover_in_out_bindings(set, &value_binding, &output_binding)) {
+      IDM_LOG("zpass early-return layout-has-fewer-than-two-storage-buffers");
+      return false;
+   }
+   uint32_t bindings[2] = { value_binding, output_binding };
    const struct r300vk_descriptor *descs[2] = {0};
    struct r300vk_buffer *bufs[2] = {0};
    if (!r300vk_idm_resolve_buffers(set, 2, bindings, descs, bufs))
