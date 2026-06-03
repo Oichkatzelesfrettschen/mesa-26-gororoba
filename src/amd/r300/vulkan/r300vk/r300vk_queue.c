@@ -733,8 +733,18 @@ r300vk_replay_gpu(struct r300vk_device *device,
              * host-visible) and run the normal draw path per command. */
             const unsigned stride =
                di->stride ? di->stride : (unsigned)sizeof(VkDrawIndirectCommand);
-            const unsigned span = (di->draw_count - 1u) * stride +
-                                  (unsigned)sizeof(VkDrawIndirectCommand);
+            /* Bound the mapped extent against the buffer before the unsigned
+             * cast: an app may record an offset/draw_count that runs past the
+             * BO, and pipe_buffer_map_range would otherwise map past the
+             * resource (the kernel CS validator rejects the same overflow in
+             * evergreen_cs.c evergreen_packet3_check PACKET3_DRAW_INDIRECT).
+             * Compute span in 64-bit; the subtract form avoids add overflow. */
+            const uint64_t span64 = (uint64_t)(di->draw_count - 1u) * stride +
+                                    sizeof(VkDrawIndirectCommand);
+            if (di->offset > UINT_MAX || span64 > di->buffer->size ||
+                di->offset > di->buffer->size - span64)
+               break;
+            const unsigned span = (unsigned)span64;
             struct pipe_transfer *ixfer = NULL;
             const uint8_t *imap =
                pipe_buffer_map_range(pipe, di->buffer->resource,
@@ -1167,6 +1177,12 @@ r300vk_fill_buffer(struct r300vk_device *device,
    size = MIN2(size, total - offset) & ~(uint64_t)3;
    if (size == 0)
       return;
+   /* pipe_buffer_map_range takes unsigned offsets; size is already clamped to
+    * the buffer, but guard the offset cast and the vkCmdFillBuffer 4-byte
+    * dstOffset alignment so a >4 GiB descriptor or a misaligned offset cannot
+    * map at a truncated or unaligned address. */
+   if (offset > UINT_MAX || size > UINT_MAX || (offset & 3u) != 0)
+      return;
 
    struct pipe_transfer *xfer = NULL;
    uint32_t *map = pipe_buffer_map_range(pipe, buf, (unsigned)offset,
@@ -1190,6 +1206,14 @@ r300vk_copy_buffer_region(struct r300vk_device *device,
    struct pipe_resource *dst  = cb->dst ? cb->dst->resource : NULL;
    const unsigned size = (unsigned)cb->size;
    if (!src || !dst || size == 0)
+      return;
+   /* Reject a region running past either buffer; pipe_buffer_map_range takes
+    * unsigned offsets, so validate the 64-bit extent before the cast (the
+    * buffer-to-image copies bounds-check the same way).  The subtract form
+    * avoids a 64-bit add overflow on a malformed offset/size. */
+   if (cb->size > cb->src->size || cb->src_offset > cb->src->size - cb->size ||
+       cb->size > cb->dst->size || cb->dst_offset > cb->dst->size - cb->size ||
+       cb->src_offset > UINT_MAX || cb->dst_offset > UINT_MAX)
       return;
 
    if (src == dst) {
@@ -1228,6 +1252,11 @@ r300vk_update_buffer(struct r300vk_device *device,
    struct pipe_resource *buf  = ub->buffer ? ub->buffer->resource : NULL;
    const unsigned size = (unsigned)ub->size;
    if (!buf || !ub->data || size == 0)
+      return;
+   /* Reject an update running past the buffer; validate in 64-bit before the
+    * unsigned offset cast. */
+   if (ub->size > ub->buffer->size ||
+       ub->offset > ub->buffer->size - ub->size || ub->offset > UINT_MAX)
       return;
 
    struct pipe_transfer *xfer = NULL;
