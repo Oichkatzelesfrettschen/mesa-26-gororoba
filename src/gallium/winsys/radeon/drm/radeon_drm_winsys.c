@@ -200,24 +200,32 @@ radeon_query_rs480_gart_mc_info(struct radeon_drm_winsys *ws)
       return;
 
    while (fgets(line, sizeof(line), f)) {
-      char *sep = strstr(line, " = ");
+      /* Parse "KEY<sep>0xVALUE".  Accept both the DKMS validation-lane debugfs
+       * form "KEY = 0xVALUE" and the mainline kernel rs400_debugfs_gart_info_show
+       * form "KEY 0xVALUE" (space-separated, no '='): the key ends at the first
+       * space/tab/'=', then the value starts after the separator run. */
+      char *key_end = line;
+      while (*key_end && *key_end != ' ' && *key_end != '\t' && *key_end != '=')
+         key_end++;
+      if (key_end == line || *key_end == '\0')
+         continue;
+
+      const char *val = key_end;
+      while (*val == ' ' || *val == '\t' || *val == '=')
+         val++;
+
       char *end = NULL;
-      unsigned long value;
-
-      if (!sep)
+      unsigned long value = strtoul(val, &end, 0);
+      if (end == val || value > UINT32_MAX)
          continue;
 
-      value = strtoul(sep + 3, &end, 0);
-      if (end == sep + 3 || value > UINT32_MAX)
-         continue;
-
-      if (radeon_rs480_debugfs_key_equals(line, sep, "AGP_BASE_2")) {
+      if (radeon_rs480_debugfs_key_equals(line, key_end, "AGP_BASE_2")) {
          ws->info.rs480_gart_mc.agp_base_2 = value;
          found |= 1u << 0;
-      } else if (radeon_rs480_debugfs_key_equals(line, sep, "GART_FEATURE_ID")) {
+      } else if (radeon_rs480_debugfs_key_equals(line, key_end, "GART_FEATURE_ID")) {
          ws->info.rs480_gart_mc.gart_feature_id = value;
          found |= 1u << 1;
-      } else if (radeon_rs480_debugfs_key_equals(line, sep, "GART_BASE")) {
+      } else if (radeon_rs480_debugfs_key_equals(line, key_end, "GART_BASE")) {
          ws->info.rs480_gart_mc.gart_base = value;
          found |= 1u << 2;
       }
