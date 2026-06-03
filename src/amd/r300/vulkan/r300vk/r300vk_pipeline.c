@@ -15,6 +15,7 @@
 #include "vk_format.h"
 #include "vk_log.h"
 #include "vk_nir.h"
+#include "vk_pipeline_layout.h"
 #include "vk_object.h"
 #include "vk_util.h"
 
@@ -22,6 +23,8 @@
 #include "compiler/nir/nir_builder.h"
 #include "compiler/spirv/nir_spirv.h"
 #include "r300/r300_compute_admission.h"
+#include "r300/r300_screen.h"
+#include "r300/compiler/r300_nir.h"
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
@@ -372,6 +375,149 @@ r300vk_nir_uses_push_constants(nir_shader *nir)
    return false;
 }
 
+/* True if the shader reads a uniform buffer.  Called before
+ * r300vk_nir_lower_vulkan_resource_index_single rewrites the chain away, to
+ * detect a push-constant + UBO collision: both resolve to CONST[0] and r300's
+ * single constant file cannot hold both. */
+static bool
+r300vk_nir_uses_ubo(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_vulkan_resource_index &&
+                nir_intrinsic_desc_type(intr) ==
+                   nir_descriptor_type_uniform_buffer)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
+/* Lower push-constant loads onto the single constant file.  nir_lower_explicit_io
+ * with push_const has turned each access into load_push_constant(offset) with a
+ * BASE/RANGE; rewrite it to load_ubo(block 0, BASE + offset) so it flows through
+ * the same nir_lower_ubo_vec4 + index-0 path as the descriptor UBO.  Replay binds
+ * the running push-constant window at CONST[0] (r300vk_bind_push_constants), and a
+ * push-constant + UBO collision is already rejected, so block 0 is unambiguous. */
+static void
+r300vk_nir_lower_push_constant_to_ubo0(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      bool progress = false;
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_push_constant)
+               continue;
+            b.cursor = nir_before_instr(instr);
+            nir_def *off = intr->src[0].ssa;
+            unsigned base = nir_intrinsic_base(intr);
+            if (base)
+               off = nir_iadd_imm(&b, off, base);
+            nir_def *val =
+               nir_load_ubo(&b, intr->def.num_components, intr->def.bit_size,
+                            nir_imm_int(&b, 0), off,
+                            .align_mul = nir_intrinsic_align_mul(intr),
+                            .align_offset = nir_intrinsic_align_offset(intr),
+                            .range_base = 0, .range = 128);
+            nir_def_rewrite_uses(&intr->def, val);
+            nir_instr_remove(instr);
+            progress = true;
+         }
+      }
+      nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+}
+
+/* R300's constant file (RC_FILE_CONSTANT) is float-typed and the ISA has no native
+ * integers (r300_screen.c caps->integers = false).  nir_lower_int_to_float rewrites
+ * integer load_const literals to their float value but SKIPS intrinsics, so an
+ * integer push-constant value reaches the shader as raw bits while the literals it
+ * is compared against become floats -- e.g. switch(kind) compares the bit pattern
+ * 0x00000002 (a denormal) against 2.0f and never matches, so the shader takes the
+ * wrong path and renders the wrong color.  Reject a push-constant block whose
+ * loaded member is not float.  Inspect load_deref SITES (not the block variable
+ * type) so a declared-but-never-loaded integer member does not force rejection.
+ * Must run before nir_lower_explicit_io, which erases the per-member deref type. */
+static bool
+r300vk_nir_push_const_all_float(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_deref)
+               continue;
+            nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+            if (!deref)
+               continue;
+            nir_variable *var = nir_deref_instr_get_variable(deref);
+            if (!var || var->data.mode != nir_var_mem_push_const)
+               continue;
+            if (glsl_get_base_type(glsl_without_array(deref->type)) !=
+                GLSL_TYPE_FLOAT)
+               return false;
+         }
+      }
+   }
+   return true;
+}
+
+/* r300's constant file is addressed by a compile-time vec4 slot plus component.
+ * After nir_lower_ubo_vec4 a non-constant byte offset becomes a runtime
+ * vector_extract the SW-TCL nir_to_tgsi float-ARL path (no native integers) cannot
+ * map to a static constant fetch -- it floors a non-zero integer index's float bit
+ * pattern to slot 0 -- and a vec4-width access that straddles a 16-byte slot
+ * becomes a two-load bcsel with runtime component selection.  Accept only constant
+ * offsets that fit within one 16-byte slot; reject the rest.  Runs after
+ * nir_lower_explicit_io; BASE is 0 for push constants, so src[0] is the full byte
+ * offset. */
+static bool
+r300vk_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
+{
+   /* color[i] in a statically-bounded loop carries a non-constant push-constant
+    * offset until the loop is unrolled.  Run the same r300_optimize_nir that
+    * r300_create_vs_state runs later, on a clone, so a loop-bounded constant access
+    * folds to a constant offset and is not mistaken for a genuinely dynamic one
+    * (dynamic_index_vert indexes by a gl_Position-derived value that never folds). */
+   nir_shader *check = nir_shader_clone(NULL, nir);
+   r300_optimize_nir(check, r300_screen(pscreen));
+
+   bool ok = true;
+   nir_foreach_function_impl(impl, check) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_push_constant)
+               continue;
+            if (!nir_src_is_const(intr->src[0])) {
+               ok = false;
+               continue;
+            }
+            uint32_t off = (uint32_t)nir_src_as_uint(intr->src[0]);
+            unsigned byte_width =
+               intr->def.num_components * (intr->def.bit_size / 8u);
+            if ((off & 15u) + byte_width > 16u)
+               ok = false;
+         }
+      }
+   }
+   ralloc_free(check);
+   return ok;
+}
+
 static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
@@ -404,6 +550,20 @@ r300vk_compile_shader(struct r300vk_device *device,
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
 
+   /* Push constants and a UBO both resolve to CONST[0]; r300's single constant
+    * file cannot host both, so reject the pair before the lowering below rewrites
+    * the UBO chain away.  A shader using only one of them is supported. */
+   const bool uses_push_const = r300vk_nir_uses_push_constants(nir);
+   if (uses_push_const && r300vk_nir_uses_ubo(nir)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: %s shader uses both push constants and a uniform "
+                       "buffer; r300's single constant file holds only one at "
+                       "CONST[0]",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
+   }
+
    /* Resolve the descriptor resource chain (vulkan_resource_index ->
     * load_vulkan_descriptor) to a constant block-0 address, or reject the
     * pipeline when the shader needs a resource r300's single read-only constant
@@ -418,19 +578,37 @@ r300vk_compile_shader(struct r300vk_device *device,
                        ? "vertex" : "fragment");
    }
 
-   /* r300's single constant file already hosts the one UBO at CONST[0], and
-    * nir_to_rc has no load_push_constant handler, so a push-constant read would
-    * survive nir_lower_explicit_io (which lowers only UBO/SSBO) as an unlowered
-    * load_deref and crash the backend.  Reject the pipeline cleanly instead.
-    * vkCmdPushConstants still records the bytes (r300vk_CmdPushConstants); only
-    * lowering them onto the constant file remains. */
-   if (r300vk_nir_uses_push_constants(nir)) {
-      ralloc_free(nir);
-      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: %s shader reads push constants, which r300's "
-                       "single read-only constant file does not yet host",
-                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
-                       ? "vertex" : "fragment");
+   /* A push-constants-only shader maps onto the same single constant file: lower
+    * the push_const derefs to load_push_constant, then onto load_ubo(block 0) so
+    * the UBO path below (nir_lower_ubo_vec4 + the index-0 pin) carries them.
+    * Replay binds the running push-constant window at CONST[0]
+    * (r300vk_bind_push_constants).  A push-constant + UBO collision was rejected
+    * above, so block 0 is unambiguous.  r300's float-only constant file and static
+    * vec4-slot addressing cannot represent an integer push constant or a
+    * dynamic/slot-straddling offset, so reject those shapes rather than render
+    * wrong pixels (correct-or-clean-reject). */
+   if (uses_push_const) {
+      if (!r300vk_nir_push_const_all_float(nir)) {
+         ralloc_free(nir);
+         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                          "r300vk: %s shader reads a non-float push constant; "
+                          "r300's constant file (RC_FILE_CONSTANT) is float-typed",
+                          stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                          ? "vertex" : "fragment");
+      }
+      NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
+               nir_address_format_32bit_offset);
+      if (!r300vk_nir_push_const_shape_ok(device->screen, nir)) {
+         ralloc_free(nir);
+         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                          "r300vk: %s shader uses a dynamic or slot-straddling "
+                          "push-constant offset; r300 constant-file addressing is "
+                          "static and 16-byte-slot granular",
+                          stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                          ? "vertex" : "fragment");
+      }
+      r300vk_nir_lower_push_constant_to_ubo0(nir);
+      pl->uses_push_constants = true;
    }
 
    /* With the descriptor chain resolved to constant block 0, lower the UBO
@@ -774,6 +952,18 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
                              r300vk_pipeline_to_handle(pl), pAllocator); \
       return (r); \
    } while (0)
+
+   /* r300 exposes a single constant-buffer slot (max_const_buffers = 1) and binds
+    * one flat push-constant window at CONST[0]; it cannot represent more than one
+    * push-constant range (per-stage divergent or overlapping ranges share the slot
+    * and alias).  Reject a multi-range layout at create time rather than render
+    * wrong pixels. */
+   VK_FROM_HANDLE(vk_pipeline_layout, pc_layout, info->layout);
+   if (pc_layout && pc_layout->push_range_count > 1)
+      FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                              "r300vk: %u push-constant ranges; r300's single "
+                              "constant slot supports at most one",
+                              pc_layout->push_range_count));
 
    for (uint32_t i = 0; i < info->stageCount; i++) {
       VkResult r = r300vk_compile_shader(device, &info->pStages[i], pl,
