@@ -871,6 +871,62 @@ r300vk_replay_gpu(struct r300vk_device *device,
             break;
          }
 
+         case R300VK_CMD_DRAW_INDEXED_INDIRECT: {
+            if (skip_render_pass) break;
+            const struct r300vk_cmd_draw_indexed_indirect *di =
+               &e->draw_indexed_indirect;
+            if (!di->buffer || !di->buffer->resource || di->draw_count == 0)
+               break;
+            /* CPU-read the VkDrawIndexedIndirectCommand array (r300vk buffers are
+             * host-visible) and run the indexed draw path per command, exactly as
+             * R300VK_CMD_DRAW_INDIRECT does for the non-indexed form. */
+            const unsigned stride =
+               di->stride ? di->stride
+                          : (unsigned)sizeof(VkDrawIndexedIndirectCommand);
+            /* Bound the mapped extent against the buffer before the unsigned cast;
+             * the kernel CS validator rejects the same overrun in evergreen_cs.c
+             * evergreen_packet3_check.  Compute span in 64-bit; the subtract form
+             * avoids add overflow. */
+            const uint64_t span64 =
+               (uint64_t)(di->draw_count - 1u) * stride +
+               sizeof(VkDrawIndexedIndirectCommand);
+            if (di->offset > UINT_MAX || span64 > di->buffer->size ||
+                di->offset > di->buffer->size - span64)
+               break;
+            const unsigned span = (unsigned)span64;
+            struct pipe_transfer *ixfer = NULL;
+            const uint8_t *imap =
+               pipe_buffer_map_range(pipe, di->buffer->resource,
+                                     (unsigned)di->offset, span,
+                                     PIPE_MAP_READ, &ixfer);
+            if (!imap) break;
+            for (uint32_t d = 0; d < di->draw_count; d++) {
+               const VkDrawIndexedIndirectCommand *args =
+                  (const VkDrawIndexedIndirectCommand *)(imap +
+                                                         (size_t)d * stride);
+               struct r300vk_cmd_entry synth;
+               synth.type                        = R300VK_CMD_DRAW_INDEXED;
+               synth.draw_indexed.index_buffer   = di->index_buffer;
+               synth.draw_indexed.index_offset   = di->index_offset;
+               synth.draw_indexed.index_range    = di->index_range;
+               synth.draw_indexed.index_size     = di->index_size;
+               synth.draw_indexed.index_count    = args->indexCount;
+               synth.draw_indexed.first_index    = args->firstIndex;
+               synth.draw_indexed.vertex_offset  = args->vertexOffset;
+               synth.draw_indexed.instances      = args->instanceCount;
+               synth.draw_indexed.first_instance = args->firstInstance;
+               synth.draw_indexed.topology       = di->topology;
+               r300vk_replay_draw(device, &synth, bound_pipeline,
+                                  last_bind_dsets, vb_cache,
+                                  vb_sizes, vb_max_used, &vb_dirty,
+                                  tile_origin_x, tile_origin_y, tile_width,
+                                  tile_height, transient_vbs);
+            }
+            pipe_buffer_unmap(pipe, ixfer);
+            *gpu_pending = true;
+            break;
+         }
+
          case R300VK_CMD_END_RENDER_PASS:
             r300vk_replay_end_render_pass(device, &skip_render_pass,
                                           &tile_origin_x, &tile_origin_y,
