@@ -719,6 +719,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
       const struct r300vk_pipeline *bound_pipeline = NULL;
       const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets = NULL;
       const struct r300vk_cmd_entry *current_render_pass = NULL;
+      /* The single active r300 occlusion query, if a vkCmdBeginQuery is open.
+       * r300 supports one query at a time, and occlusion handling is confined to
+       * single-tile submits (tile_pass_count == 1, so this loop runs once). */
+      struct pipe_query *active_oq = NULL;
       memset(vb_cache, 0, sizeof(vb_cache));
       memset(vb_sizes, 0, sizeof(vb_sizes));
 
@@ -869,8 +873,67 @@ r300vk_replay_gpu(struct r300vk_device *device,
             *gpu_pending = true;
             break;
 
+         case R300VK_CMD_BEGIN_QUERY:
+            /* Occlusion only, single-tile only: a multi-tile render pass would
+             * re-walk this entry and re-begin, but r300 allows one query at a
+             * time.  Map the Vulkan occlusion type to the r300 ZPASS counter and
+             * bracket the draws that follow. */
+            if (tile_pass_count != 1 || active_oq != NULL ||
+                e->query.pool->vk.query_type != VK_QUERY_TYPE_OCCLUSION)
+               break;
+            active_oq = pipe->create_query(pipe, PIPE_QUERY_OCCLUSION_COUNTER, 0);
+            if (active_oq)
+               pipe->begin_query(pipe, active_oq);
+            break;
+
+         case R300VK_CMD_END_QUERY: {
+            if (!active_oq)
+               break;
+            pipe->end_query(pipe, active_oq);
+            /* wait=true flushes and fences, so the sample count is ready to
+             * store into the pool slot the host later reads. */
+            union pipe_query_result qres;
+            memset(&qres, 0, sizeof(qres));
+            if (pipe->get_query_result(pipe, active_oq, true, &qres) &&
+                e->query.query < e->query.pool->vk.query_count) {
+               struct r300vk_query *slot =
+                  &e->query.pool->queries[e->query.query];
+               slot->result    = qres.u64;
+               slot->available = true;
+            }
+            pipe->destroy_query(pipe, active_oq);
+            active_oq = NULL;
+            break;
+         }
+
+         case R300VK_CMD_RESET_QUERY_POOL: {
+            /* Host bookkeeping, applied once per submit (tile-independent):
+             * clear availability and result over the reset range. */
+            if (tile_pass != 0)
+               break;
+            struct r300vk_query_pool *qp = e->reset_query_pool.pool;
+            const uint32_t first = e->reset_query_pool.first_query;
+            uint32_t n = e->reset_query_pool.query_count;
+            if (first < qp->vk.query_count) {
+               if (n > qp->vk.query_count - first)
+                  n = qp->vk.query_count - first;
+               for (uint32_t k = 0; k < n; k++) {
+                  qp->queries[first + k].result    = 0;
+                  qp->queries[first + k].available = false;
+               }
+            }
+            break;
+         }
+
          default: break;
          }
+      }
+      /* A vkCmdBeginQuery with no matching end before submit is invalid usage;
+       * end and destroy the dangling query so the pipe handle is not leaked. */
+      if (active_oq) {
+         pipe->end_query(pipe, active_oq);
+         pipe->destroy_query(pipe, active_oq);
+         active_oq = NULL;
       }
       if (result != VK_SUCCESS)
          break;

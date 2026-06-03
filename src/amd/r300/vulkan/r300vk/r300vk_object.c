@@ -24,6 +24,8 @@
  * contract.  The descriptor and query paths read this state when they are wired.
  */
 
+#include <string.h>
+
 #include "r300vk_device.h"
 #include "r300vk_buffer.h"
 #include "r300vk_entrypoints.h"
@@ -34,11 +36,6 @@
 #include "vk_object.h"
 #include "vk_query_pool.h"
 #include "vk_sampler.h"
-
-/* vk_query_pool.h defines the base struct but not its handle casts (unlike
- * vk_sampler.h / vk_buffer_view.h), so declare them here. */
-VK_DEFINE_NONDISP_HANDLE_CASTS(vk_query_pool, base, VkQueryPool,
-                               VK_OBJECT_TYPE_QUERY_POOL)
 
 struct r300vk_buffer_view {
    struct vk_object_base base;
@@ -134,8 +131,13 @@ r300vk_CreateQueryPool(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
 
+   /* Allocate the vk_query_pool base plus one r300vk_query per query, so the
+    * replay and GetQueryPoolResults have per-slot result + availability storage.
+    * vk_query_pool_create zero-initializes the allocation. */
+   const size_t size = sizeof(struct r300vk_query_pool) +
+                       (size_t)pCreateInfo->queryCount * sizeof(struct r300vk_query);
    struct vk_query_pool *pool =
-      vk_query_pool_create(&device->vk, pCreateInfo, pAllocator, sizeof(*pool));
+      vk_query_pool_create(&device->vk, pCreateInfo, pAllocator, size);
    if (!pool)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -154,6 +156,65 @@ r300vk_DestroyQueryPool(VkDevice _device,
       return;
 
    vk_query_pool_destroy(&device->vk, pAllocator, pool);
+}
+
+/* Copy occlusion results recorded by the replay into the caller's buffer.  Each
+ * query writes a result word (32- or 64-bit per VK_QUERY_RESULT_64_BIT) at
+ * pData + i*stride, optionally followed by an availability word
+ * (VK_QUERY_RESULT_WITH_AVAILABILITY_BIT).  The serialized CPU-replay queue
+ * retires every submitted query before the host returns, so VK_QUERY_RESULT_WAIT
+ * never blocks; an unavailable slot is one reset but never ended. */
+VkResult
+r300vk_GetQueryPoolResults(VkDevice _device,
+                           VkQueryPool _pool,
+                           uint32_t firstQuery,
+                           uint32_t queryCount,
+                           size_t dataSize,
+                           void *pData,
+                           VkDeviceSize stride,
+                           VkQueryResultFlags flags)
+{
+   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(vk_query_pool, vk_pool, _pool);
+   struct r300vk_query_pool *pool = r300vk_query_pool(vk_pool);
+   const bool b64        = (flags & VK_QUERY_RESULT_64_BIT) != 0;
+   const bool want_avail = (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != 0;
+   const unsigned rsize  = b64 ? sizeof(uint64_t) : sizeof(uint32_t);
+   VkResult result = VK_SUCCESS;
+   (void)device;
+   (void)dataSize;
+
+   for (uint32_t i = 0; i < queryCount; i++) {
+      const struct r300vk_query *q = &pool->queries[firstQuery + i];
+      const bool available = q->available;
+      uint8_t *slot = (uint8_t *)pData + (size_t)i * stride;
+
+      /* Write the result word when the query is available, when the caller
+       * accepts a partial result, or when it asked to wait (never blocks here). */
+      if (available || (flags & (VK_QUERY_RESULT_PARTIAL_BIT |
+                                 VK_QUERY_RESULT_WAIT_BIT))) {
+         const uint64_t value = available ? q->result : 0;
+         if (b64) {
+            const uint64_t v = value;
+            memcpy(slot, &v, sizeof(v));
+         } else {
+            const uint32_t v = (uint32_t)value;
+            memcpy(slot, &v, sizeof(v));
+         }
+      }
+      if (want_avail) {
+         if (b64) {
+            const uint64_t v = available ? 1 : 0;
+            memcpy(slot + rsize, &v, sizeof(v));
+         } else {
+            const uint32_t v = available ? 1u : 0u;
+            memcpy(slot + rsize, &v, sizeof(v));
+         }
+      }
+      if (!available && !(flags & VK_QUERY_RESULT_WAIT_BIT))
+         result = VK_NOT_READY;
+   }
+   return result;
 }
 
 VkResult
