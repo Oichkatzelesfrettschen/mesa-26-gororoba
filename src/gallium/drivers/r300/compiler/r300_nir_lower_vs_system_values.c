@@ -4,21 +4,21 @@
  *
  * Lower VS system values to synthetic vertex inputs for the SW-TCL route.
  *
- * RS480-family parts keep num_vert_fpus = 0, so current Mesa ordinary draws do
- * not use the hardware PVS route.  gl_VertexIndex / gl_InstanceIndex therefore
- * cannot be produced by that path, and r300_nir_to_rc_direct rejects the
- * intrinsics outright.  The
- * driver can instead supply the value as an ordinary per-vertex attribute
- * (firstVertex + i, or index-buffer value + vertexOffset) at a driver_location
- * it reserves; this pass rewrites the system-value intrinsic into a read of
- * that attribute.  After nir_lower_io lowers the synthetic variable, the value
- * arrives in RC input slot == driver_location, because r300_nir_to_rc_direct
- * keys load_input on nir_intrinsic_base.
+ * RS480-family parts keep num_vert_fpus = 0 and has_tcl = false, so ordinary
+ * draws use the SW-TCL path instead of the hardware VAP/PVS vertex-shader
+ * route.  gl_VertexIndex / gl_InstanceIndex therefore cannot be produced by PVS
+ * microcode, and the NIR-to-RC translator rejects unsupported VS system-value
+ * intrinsics outright.  The driver can instead supply the value as an ordinary
+ * per-vertex attribute (firstVertex + i, or index-buffer value + vertexOffset)
+ * at a driver_location it reserves; this pass rewrites the system-value
+ * intrinsic into a read of that attribute.  After nir_lower_io lowers the
+ * synthetic variable, the value arrives in RC input slot == driver_location,
+ * because nir_to_rc() keys load_input on nir_intrinsic_base.
  *
  * The pass runs only when the caller reserved a slot for a given system value
  * (slot >= 0).  When no slot is provided the intrinsic is left untouched, so
- * the deterministic r300_nir_to_rc_direct rejection still applies on paths that
- * cannot supply a synthetic attribute.
+ * the deterministic NIR-to-RC rejection still applies on paths that cannot
+ * supply a synthetic attribute.
  */
 
 #include "r300_nir.h"
