@@ -110,7 +110,13 @@ create_vert_shader(struct vl_zscan *zscan)
          nir_imm_float(&b, 1.0f / zscan->blocks_per_line), tx);
       nir_def *oy = nir_channel(&b, vrect, 1);
       nir_def *oz = nir_channel(&b, vpos, 2);
-      nir_def *ow = nir_fmul(&b, floor_bn,
+      /* RS482/r300 fetch the coefficient plane in FP24.  The source-row term
+       * floor(block_num/blocks_per_line)*blocks_per_line/blocks_total is a
+       * non-power-of-two ratio, so the truncating ADD rounds it a fraction of a
+       * texel low and the NEAREST fetch lands one block-row early.  Bias to the
+       * texel centre; the column term uses a power-of-two divisor and is exact. */
+      nir_def *ow = nir_fmul(&b,
+         nir_fadd(&b, floor_bn, nir_imm_float(&b, 0.5f)),
          nir_imm_float(&b, (float)zscan->blocks_per_line / zscan->blocks_total));
 
       nir_variable *ov_tex = nir_variable_create(b.shader, nir_var_shader_out,
