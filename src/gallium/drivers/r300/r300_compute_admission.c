@@ -18,6 +18,13 @@
 #include "compiler/nir/nir.h"
 #include "util/macros.h"
 
+/* Recursion bound for the def-graph walkers below.  A balanced integer
+ * add-reduction tree of depth D has up to 2^D load leaves; depth 8 admits up
+ * to 256 leaves, far past the three-tap box kernel and the predicate chains the
+ * detectors actually match, so the bound never truncates a real match.  It
+ * exists only to keep the walk total on adversarial or malformed NIR. */
+#define R300_COMPUTE_DETECT_MAX_DEPTH 8u
+
 static bool
 identity_map_debug_enabled(void)
 {
@@ -66,6 +73,19 @@ is_rw_storage_store(nir_intrinsic_op op)
    }
 }
 
+/* SSBO atomics are two NIR intrinsics: ssbo_atomic (the load-op-store forms --
+ * add/min/max/and/or/xor/exchange) and ssbo_atomic_swap (compare-and-swap).
+ * Every detector here either rejects all atomics or recognizes exactly one
+ * ssbo_atomic of a named op, so both must count toward the atomic tally;
+ * omitting the swap form would let a kernel carrying a compare-and-swap slip
+ * past a "no atomic" or "exactly one atomic" gate. */
+static bool
+is_ssbo_atomic(nir_intrinsic_op op)
+{
+   return op == nir_intrinsic_ssbo_atomic ||
+          op == nir_intrinsic_ssbo_atomic_swap;
+}
+
 static bool
 intrinsic_base_type_is_float(const nir_intrinsic_instr *intr,
                              nir_alu_type fallback_type)
@@ -77,6 +97,10 @@ intrinsic_base_type_is_float(const nir_intrinsic_instr *intr,
    else if (nir_intrinsic_has_dest_type(intr))
       type = nir_intrinsic_dest_type(intr);
 
+   /* nir_type_invalid carries no base type; treat an absent type as non-float
+    * rather than feeding nir_type_invalid into nir_alu_type_get_base_type. */
+   if (type == nir_type_invalid)
+      return false;
    return nir_alu_type_get_base_type(type) == nir_type_float;
 }
 
@@ -174,6 +198,17 @@ r300_nir_detect_identity_map(const nir_shader *s,
               (int)nir_src_is_const(load->src[0]),
               (int)nir_src_is_const(store->src[1]));
    if (!value_eq_load)
+      return;
+
+   /* The store's write mask must cover every component.  The downstream
+    * carriers copy whole elements sized from util_format_get_blocksize (the
+    * default R8G8B8A8 path and the opt-in R32G32B32A32 FP32x4 path selected in
+    * r300vk_identity_map_replay_format), so a partial-mask store -- one writing
+    * only some lanes of its vec -- cannot be transported faithfully: the
+    * unwritten lanes would receive carrier bytes.  Admit only a fully-written
+    * store; a masked store falls through to the no-op compute lifecycle. */
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
       return;
    /* The binding source for load_ssbo / store_ssbo is a
     * load_vulkan_descriptor (or similar) handle after nir_lower_explicit_io
@@ -281,6 +316,13 @@ r300_nir_detect_binary_map(const nir_shader *s,
    const bool ba = (s0 == &load_b->def && s1 == &load_a->def);
    if (!ab && !ba)
       return;
+
+   /* Require a full store write mask, as the identity-map detector does: the
+    * binary-map carrier copies whole elements, so a partial-lane store would be
+    * transported with carrier bytes in the unwritten lanes. */
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return;
    /* Like the identity-map detector, this detector does NOT gate on offset
     * equality.  nir_lower_explicit_io with nir_address_format_32bit_index_offset
     * emits independent address-computation chains per intrinsic, so the load_a,
@@ -371,8 +413,12 @@ r300_nir_detect_blend_acc_reduction(const nir_shader *s,
             if (instr->type != nir_instr_type_intrinsic)
                continue;
             const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
-               atomic = intr;
+            if (is_ssbo_atomic(intr->intrinsic)) {
+               /* Capture only the load-op form as the candidate reducer; a
+                * compare-and-swap still counts, forcing the tally past one so
+                * the exactly-one-atomic gate below rejects it. */
+               if (intr->intrinsic == nir_intrinsic_ssbo_atomic)
+                  atomic = intr;
                atomic_count++;
             } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
                load = intr;
@@ -385,6 +431,10 @@ r300_nir_detect_blend_acc_reduction(const nir_shader *s,
    }
 
    if (atomic_count != 1 || load_count != 1 || store_count != 0)
+      return;
+   /* A lone ssbo_atomic_swap satisfies the count but is not the recognized
+    * load-op reducer, so atomic stays NULL.  Reject before dereferencing it. */
+   if (!atomic)
       return;
 
    /* nir_intrinsic_atomic_op index carries the per-atomic operation
@@ -424,7 +474,7 @@ r300_nir_detect_blend_acc_reduction(const nir_shader *s,
 static bool
 def_derives_from(const nir_def *def, const nir_def *root, unsigned depth)
 {
-   if (!def || depth >= 8)
+   if (!def || depth >= R300_COMPUTE_DETECT_MAX_DEPTH)
       return false;
    if (def == root)
       return true;
@@ -490,9 +540,14 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
             if (instr->type != nir_instr_type_intrinsic)
                continue;
             const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
-               atomic = intr;
-               atomic_block = block;
+            if (is_ssbo_atomic(intr->intrinsic)) {
+               /* Only the load-op form is the candidate counter; a
+                * compare-and-swap counts toward the tally but leaves atomic
+                * NULL, so the exactly-one gate plus the NULL guard reject it. */
+               if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+                  atomic = intr;
+                  atomic_block = block;
+               }
                atomic_count++;
             } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
                load = intr;
@@ -505,6 +560,8 @@ r300_nir_detect_zpass_reduction(const nir_shader *s,
    }
 
    if (atomic_count != 1 || load_count != 1 || store_count != 0)
+      return;
+   if (!atomic)
       return;
    if (nir_intrinsic_atomic_op(atomic) != nir_atomic_op_iadd)
       return;
@@ -632,7 +689,7 @@ r300_nir_detect_multipass_scan_pattern(const nir_shader *s,
          nir_foreach_instr (instr, block) {
             if (instr->type == nir_instr_type_intrinsic) {
                const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-               if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+               if (is_ssbo_atomic(intr->intrinsic)) {
                   atomic_count++;
                } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
                   if (!first_load)
@@ -708,7 +765,7 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
             if (instr->type != nir_instr_type_intrinsic)
                continue;
             const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+            if (is_ssbo_atomic(intr->intrinsic)) {
                atomic_count++;
             } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
                if (!first_load)
@@ -773,7 +830,7 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
 static int
 multitap_add_tree_taps(const nir_def *def, uint32_t *binding, unsigned depth)
 {
-   if (!def || depth >= 8)
+   if (!def || depth >= R300_COMPUTE_DETECT_MAX_DEPTH)
       return -1;
    const nir_intrinsic_instr *intr =
       nir_def_as_intrinsic_or_null((nir_def *)def);
@@ -818,7 +875,7 @@ multitap_add_tree_taps(const nir_def *def, uint32_t *binding, unsigned depth)
 static int
 multitap_verify_box3_offsets(const nir_def *def, const nir_def *base, unsigned depth)
 {
-   if (!def || depth >= 8)
+   if (!def || depth >= R300_COMPUTE_DETECT_MAX_DEPTH)
       return 0;
    const nir_intrinsic_instr *intr =
       nir_def_as_intrinsic_or_null((nir_def *)def);
@@ -880,7 +937,7 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
                store_count++;
             } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
                load_count++;
-            } else if (intr->intrinsic == nir_intrinsic_ssbo_atomic) {
+            } else if (is_ssbo_atomic(intr->intrinsic)) {
                atomic_count++;
             }
          }
@@ -898,6 +955,13 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
    uint32_t binding = 0xffffffff;
    const int taps = multitap_add_tree_taps(store->src[0].ssa, &binding, 0);
    if (taps != 3 || binding == 0xffffffff)
+      return;
+
+   /* Every SSBO load must be a tap leaf of the reduction tree.  A stray
+    * load_ssbo outside the tree (load_count > taps) is an input the box-3
+    * multi-TEX lowering does not sample, so the kernel is not faithfully the
+    * recognized neighborhood convolution; reject rather than mis-replay. */
+   if (load_count != (unsigned)taps)
       return;
 
    /* Kernel must be exactly the 3-tap box filter {-1, 0, 1} relative to the
