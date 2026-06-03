@@ -654,10 +654,51 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
                                      false);
 }
 
+/* Executes one host-side transfer/event command (buffer fill, buffer copy,
+ * inline update, image copy/clear, host event signal).  Defined alongside the
+ * post-fence CPU pass; forward-declared so the in-submission-order replay can
+ * share the exact same execution and stay byte-for-byte consistent with the
+ * deferred path. */
+static void r300vk_replay_host_entry(struct r300vk_device *device,
+                                     const struct r300vk_cmd_entry *e);
+
+/* Drains GPU work flushed since the last drain so a following host transfer
+ * observes finished output (a host READ) or is correctly ordered ahead of a
+ * later GPU read (a host WRITE).  The flush submits the command stream and the
+ * fence_finish blocks until the GPU retires it, mirroring the submit-level
+ * drain.  No-op when nothing is pending, so a transfer-only run pays one fence
+ * at most per host op that actually follows un-fenced GPU work. */
+static void
+r300vk_drain_gpu(struct r300vk_device *device, bool *gpu_pending)
+{
+   if (!*gpu_pending)
+      return;
+
+   struct pipe_fence_handle *fence = NULL;
+   device->pipe->flush(device->pipe, &fence, 0);
+   if (fence) {
+      device->screen->fence_finish(device->screen, NULL, fence,
+                                   OS_TIMEOUT_INFINITE);
+      device->screen->fence_reference(device->screen, &fence, NULL);
+   }
+   *gpu_pending = false;
+}
+
+/* Replays one command buffer's GPU work.  When inorder_host is set, the submit
+ * has no multi-tile render pass (every cmd buffer is tile_pass_count == 1), so
+ * host transfers run here in submission order -- draining gpu_pending first --
+ * instead of in the post-fence CPU pass.  That ordering lets a later in-submit
+ * dispatch/draw observe a prior vkCmdFillBuffer/CopyBuffer/UpdateBuffer.  When
+ * inorder_host is clear, a multi-tile render pass re-walks this entry list per
+ * tile, so host transfers must stay in the post-fence pass and are skipped
+ * here.  gpu_pending is threaded across the whole submit so a host transfer in
+ * a later cmd buffer drains GPU work emitted by an earlier one. */
 static VkResult
 r300vk_replay_gpu(struct r300vk_device *device,
                   const struct r300vk_cmd_buffer *cmd,
-                  struct util_dynarray *transient_vbs)
+                  struct util_dynarray *transient_vbs,
+                  bool inorder_host,
+                  bool *gpu_pending)
 {
    struct pipe_context *pipe = device->pipe;
    const uint32_t tile_pass_count = r300vk_cmd_tile_pass_count(cmd);
@@ -690,6 +731,9 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                             &tile_width, &tile_height,
                                             &skip_render_pass);
             current_render_pass = e;
+            /* loadOp == CLEAR writes the color image, which a later host
+             * copy-image-to-buffer may read. */
+            *gpu_pending = true;
             break;
 
          case R300VK_CMD_BIND_PIPELINE:
@@ -721,6 +765,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                vb_max_used, &vb_dirty, tile_origin_x,
                                tile_origin_y, tile_width, tile_height,
                                transient_vbs);
+            *gpu_pending = true;
             break;
 
          case R300VK_CMD_DRAW_INDIRECT: {
@@ -767,6 +812,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   tile_height, transient_vbs);
             }
             pipe_buffer_unmap(pipe, ixfer);
+            *gpu_pending = true;
             break;
          }
 
@@ -783,6 +829,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                             &e->clear_attachments, tile_pass,
                                             tile_origin_x, tile_origin_y,
                                             tile_width, tile_height);
+            *gpu_pending = true;
             break;
 
          case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
@@ -794,8 +841,15 @@ r300vk_replay_gpu(struct r300vk_device *device,
          case R300VK_CMD_UPDATE_BUFFER:
          case R300VK_CMD_SET_EVENT:
          case R300VK_CMD_RESET_EVENT:
-            /* Buffer/image transfers and event signals run in the post-fence
-             * CPU pass. */
+            /* Without a multi-tile render pass in the submit, run host
+             * transfers and event signals in submission order so a later
+             * dispatch/draw observes a prior fill/copy/update, draining GPU
+             * work first.  With a multi-tile render pass present the entry list
+             * is re-walked per tile, so they stay in the post-fence CPU pass. */
+            if (!inorder_host)
+               break;
+            r300vk_drain_gpu(device, gpu_pending);
+            r300vk_replay_host_entry(device, e);
             break;
 
          case R300VK_CMD_PIPELINE_BARRIER:
@@ -811,6 +865,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
             if (result != VK_SUCCESS)
                return result;
             pipe->flush(pipe, NULL, 0);
+            *gpu_pending = true;
             break;
 
          default: break;
@@ -1267,44 +1322,55 @@ r300vk_update_buffer(struct r300vk_device *device,
    pipe_buffer_unmap(pipe, xfer);
 }
 
-/* CPU-side buffer/image transfers executed after the GPU fence completes. */
+/* Executes one host-side transfer/event command on the CPU.  Shared by the
+ * post-fence readback pass and the in-submission-order replay, so both run the
+ * exact same code; the caller is responsible for fencing prior GPU work before
+ * a transfer that reads GPU output. */
+static void
+r300vk_replay_host_entry(struct r300vk_device *device,
+                         const struct r300vk_cmd_entry *e)
+{
+   if (e->type == R300VK_CMD_COPY_IMAGE_TO_BUFFER) {
+      const VkBufferImageCopy2 *region = &e->copy_img_buf.region;
+      struct pipe_resource     *dst    = e->copy_img_buf.dst->resource;
+      r300vk_copy_image_region_to_buffer(device, e->copy_img_buf.src,
+                                         dst, region);
+   } else if (e->type == R300VK_CMD_COPY_BUFFER_TO_IMAGE) {
+      const VkBufferImageCopy2 *region = &e->copy_buf_img.region;
+      struct pipe_resource     *src    = e->copy_buf_img.src->resource;
+      r300vk_copy_buffer_region_to_image(device, src,
+                                         e->copy_buf_img.dst, region);
+   } else if (e->type == R300VK_CMD_COPY_IMAGE) {
+      const VkImageCopy2 *region = &e->copy_image.region;
+      r300vk_copy_image_region_to_image(device, e->copy_image.src,
+                                        e->copy_image.dst, region);
+   } else if (e->type == R300VK_CMD_CLEAR_COLOR_IMAGE) {
+      r300vk_clear_color_image(device, e->clear_color_image.image,
+                               &e->clear_color_image.color);
+   } else if (e->type == R300VK_CMD_FILL_BUFFER) {
+      r300vk_fill_buffer(device, &e->fill_buffer);
+   } else if (e->type == R300VK_CMD_COPY_BUFFER) {
+      r300vk_copy_buffer_region(device, &e->copy_buffer);
+   } else if (e->type == R300VK_CMD_UPDATE_BUFFER) {
+      r300vk_update_buffer(device, &e->update_buffer);
+   } else if (e->type == R300VK_CMD_SET_EVENT) {
+      if (e->event.event)
+         e->event.event->status = VK_EVENT_SET;
+   } else if (e->type == R300VK_CMD_RESET_EVENT) {
+      if (e->event.event)
+         e->event.event->status = VK_EVENT_RESET;
+   }
+}
+
+/* CPU-side buffer/image transfers executed after the GPU fence completes.  Used
+ * only when a multi-tile render pass forces the deferred two-pass model; the
+ * single-tile path runs these in submission order during r300vk_replay_gpu. */
 static void
 r300vk_replay_cpu_readback(struct r300vk_device *device,
                             const struct r300vk_cmd_buffer *cmd)
 {
-   for (uint32_t i = 0; i < cmd->entry_count; i++) {
-      const struct r300vk_cmd_entry *e = &cmd->entries[i];
-      if (e->type == R300VK_CMD_COPY_IMAGE_TO_BUFFER) {
-         const VkBufferImageCopy2 *region = &e->copy_img_buf.region;
-         struct pipe_resource     *dst    = e->copy_img_buf.dst->resource;
-         r300vk_copy_image_region_to_buffer(device, e->copy_img_buf.src,
-                                            dst, region);
-      } else if (e->type == R300VK_CMD_COPY_BUFFER_TO_IMAGE) {
-         const VkBufferImageCopy2 *region = &e->copy_buf_img.region;
-         struct pipe_resource     *src    = e->copy_buf_img.src->resource;
-         r300vk_copy_buffer_region_to_image(device, src,
-                                            e->copy_buf_img.dst, region);
-      } else if (e->type == R300VK_CMD_COPY_IMAGE) {
-         const VkImageCopy2 *region = &e->copy_image.region;
-         r300vk_copy_image_region_to_image(device, e->copy_image.src,
-                                           e->copy_image.dst, region);
-      } else if (e->type == R300VK_CMD_CLEAR_COLOR_IMAGE) {
-         r300vk_clear_color_image(device, e->clear_color_image.image,
-                                  &e->clear_color_image.color);
-      } else if (e->type == R300VK_CMD_FILL_BUFFER) {
-         r300vk_fill_buffer(device, &e->fill_buffer);
-      } else if (e->type == R300VK_CMD_COPY_BUFFER) {
-         r300vk_copy_buffer_region(device, &e->copy_buffer);
-      } else if (e->type == R300VK_CMD_UPDATE_BUFFER) {
-         r300vk_update_buffer(device, &e->update_buffer);
-      } else if (e->type == R300VK_CMD_SET_EVENT) {
-         if (e->event.event)
-            e->event.event->status = VK_EVENT_SET;
-      } else if (e->type == R300VK_CMD_RESET_EVENT) {
-         if (e->event.event)
-            e->event.event->status = VK_EVENT_RESET;
-      }
-   }
+   for (uint32_t i = 0; i < cmd->entry_count; i++)
+      r300vk_replay_host_entry(device, &cmd->entries[i]);
 }
 
 VkResult
@@ -1321,6 +1387,26 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
     * until after the submit fence, then released. */
    struct util_dynarray transient_vbs;
    util_dynarray_init(&transient_vbs, NULL);
+
+   /* A multi-tile render pass re-walks its command buffer's entry list once per
+    * tile, so host transfers in such a submit must stay in the post-fence CPU
+    * pass (running them inside the tiled walk would repeat them per tile).  When
+    * no command buffer in the submit needs more than one tile, host transfers
+    * run in submission order during replay so a later in-submit dispatch/draw
+    * observes a prior fill/copy/update.  gpu_pending is threaded across all
+    * command buffers so a host transfer drains GPU work emitted by an earlier
+    * one. */
+   bool inorder_host = true;
+   for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
+      struct r300vk_cmd_buffer *cmd =
+         container_of(submit->command_buffers[ci],
+                      struct r300vk_cmd_buffer, base);
+      if (r300vk_cmd_tile_pass_count(cmd) > 1) {
+         inorder_host = false;
+         break;
+      }
+   }
+   bool gpu_pending = false;
 
    for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
       struct r300vk_cmd_buffer *cmd =
@@ -1341,7 +1427,8 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
          mesa_logw_once("r300vk: cs-direct-emit backend requested via "
                         "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
                         "implemented; using pipe_context replay backend");
-      result = r300vk_replay_gpu(device, cmd, &transient_vbs);
+      result = r300vk_replay_gpu(device, cmd, &transient_vbs, inorder_host,
+                                 &gpu_pending);
       if (result != VK_SUCCESS)
          break;
    }
@@ -1364,11 +1451,15 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
    if (result != VK_SUCCESS)
       return result;
 
-   for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
-      struct r300vk_cmd_buffer *cmd =
-         container_of(submit->command_buffers[ci],
-                      struct r300vk_cmd_buffer, base);
-      r300vk_replay_cpu_readback(device, cmd);
+   /* Deferred host transfers for the tiled path only; the single-tile path
+    * already ran them in submission order during replay. */
+   if (!inorder_host) {
+      for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
+         struct r300vk_cmd_buffer *cmd =
+            container_of(submit->command_buffers[ci],
+                         struct r300vk_cmd_buffer, base);
+         r300vk_replay_cpu_readback(device, cmd);
+      }
    }
 
    /* In IMMEDIATE submit mode (VK_DEVICE_TIMELINE_MODE_NONE), the vk_queue
