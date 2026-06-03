@@ -436,6 +436,15 @@ r300vk_CmdPushConstants(VkCommandBuffer commandBuffer,
                         const void *pValues)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   /* layout/stageFlags do not separate storage: r300 has one constant file per
+    * stage fed from the same window, so the bytes land in one buffer. */
+   (void)layout;
+   (void)stageFlags;
+   /* A zero-size update with a NULL pValues is legal; memcpy(dst, NULL, 0) is
+    * undefined behavior, so guard it.  The cast keeps offset + size from
+    * wrapping before the bound check. */
+   if (size == 0 || pValues == NULL)
+      return;
    if ((uint64_t)offset + size > sizeof(cmd->push_constants))
       return;
    memcpy(&cmd->push_constants[offset], pValues, size);
@@ -674,6 +683,7 @@ r300vk_CmdBeginQuery(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
    VK_FROM_HANDLE(vk_query_pool, vk_pool, queryPool);
+   (void)flags;   /* PRECISE is a no-op: r300's ZPASS counter is always exact. */
 
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;

@@ -24,6 +24,7 @@
  * contract.  The descriptor and query paths read this state when they are wired.
  */
 
+#include <stdint.h>
 #include <string.h>
 
 #include "r300vk_device.h"
@@ -133,7 +134,9 @@ r300vk_CreateQueryPool(VkDevice _device,
 
    /* Allocate the vk_query_pool base plus one r300vk_query per query, so the
     * replay and GetQueryPoolResults have per-slot result + availability storage.
-    * vk_query_pool_create zero-initializes the allocation. */
+    * vk_query_pool_create zero-initializes the allocation.  queryCount is a
+    * uint32_t and r300vk_query is a few bytes, so on the 64-bit target the
+    * array is at most ~2^36 bytes and cannot overflow the size_t allocation. */
    const size_t size = sizeof(struct r300vk_query_pool) +
                        (size_t)pCreateInfo->queryCount * sizeof(struct r300vk_query);
    struct vk_query_pool *pool =
