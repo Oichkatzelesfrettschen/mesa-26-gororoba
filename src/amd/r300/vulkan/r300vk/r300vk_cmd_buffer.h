@@ -328,6 +328,13 @@ struct r300vk_cmd_buffer {
    VkDeviceSize              bound_index_offset;
    VkDeviceSize              bound_index_range;
    uint32_t                  bound_index_size;
+   /* Push-constant window written by vkCmdPushConstants.  Sized to the advertised
+    * maxPushConstantsSize (128).  r300's single read-only constant file already
+    * hosts the one UBO at CONST[0], so a shader that reads push constants is
+    * rejected at pipeline compile; this storage exists so the entrypoint is not a
+    * NULL-trampoline crash and the bytes are available once push-constant
+    * lowering onto the constant file lands. */
+   uint8_t                   push_constants[128];
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_cmd_buffer, base.base, VkCommandBuffer,
