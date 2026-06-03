@@ -329,33 +329,37 @@ r300vk_replay_pipeline_barrier(struct r300vk_device *device,
       e->barrier.image->resource_state.layout = e->barrier.new_layout;
 }
 
-/* Bind the first uniform-buffer descriptor in the bound sets to the r300
- * constant file at CONST[0] for both stages, so a graphics shader's
- * load_ubo(0, ...) reads it.  r300 has a single constant file, so only index 0
- * is addressable -- the pipeline-compile guard rejects shaders needing more, and
- * this binds the first UBO found.  r300vk buffers are host-visible Gallium
- * PIPE_BUFFERs, so cb.buffer feeds r300_set_constant_buffer directly (it reads
- * malloced_buffer with no GPU upload), matching the compute identity-map path. */
+/* Bind one stage's selected uniform buffer to its r300 constant file at
+ * CONST[0], so that stage's load_ubo(0, ...) reads it.  Match the exact
+ * (ubo_set, ubo_binding) the shader read: a set may declare several UBO bindings
+ * while the shader reads only a later one, and binding the first UBO in layout
+ * order would feed CONST[0] the wrong buffer.  The set index in binds->sets[] is
+ * relative to binds->first_set, so the absolute Vulkan set number is
+ * first_set + s.  r300vk buffers are host-visible Gallium PIPE_BUFFERs, so
+ * cb.buffer feeds r300_set_constant_buffer directly (it reads malloced_buffer
+ * with no GPU upload), matching the compute identity-map path. */
 static void
-r300vk_bind_descriptor_ubo(struct r300vk_device *device,
-                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+r300vk_bind_one_stage_ubo(struct r300vk_device *device,
+                          const struct r300vk_cmd_bind_descriptor_sets *binds,
+                          mesa_shader_stage stage,
+                          uint32_t ubo_set, uint32_t ubo_binding)
 {
    struct pipe_context *pipe = device->pipe;
-   if (!binds)
-      return;
-
    for (uint32_t s = 0; s < binds->set_count; s++) {
+      if (binds->first_set + s != ubo_set)
+         continue;
       const struct r300vk_descriptor_set *set = binds->sets[s];
       if (!set || !set->layout)
          continue;
       for (uint32_t b = 0; b < set->layout->binding_count; b++) {
          const struct r300vk_dsl_binding *bnd = &set->layout->bindings[b];
-         if (bnd->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+         if (bnd->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+             bnd->binding != ubo_binding)
             continue;
          const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
          VK_FROM_HANDLE(r300vk_buffer, buf, desc->buf.buffer);
          if (!buf || !buf->resource)
-            continue;
+            return;
 
          struct pipe_constant_buffer cb;
          memset(&cb, 0, sizeof(cb));
@@ -364,11 +368,29 @@ r300vk_bind_descriptor_ubo(struct r300vk_device *device,
          cb.buffer_size   = desc->buf.range == VK_WHOLE_SIZE
                             ? (unsigned)(buf->size - desc->buf.offset)
                             : (unsigned)desc->buf.range;
-         pipe->set_constant_buffer(pipe, MESA_SHADER_VERTEX, 0, &cb);
-         pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
+         pipe->set_constant_buffer(pipe, stage, 0, &cb);
          return;
       }
    }
+}
+
+/* r300 has separate vertex and fragment constant files, so bind each stage's
+ * selected UBO independently.  The two stages may read different bindings -- even
+ * two bindings of the same buffer (dEQP-VK.ubo.link_by_binding) -- so neither is
+ * forced onto the other.  A stage that reads no UBO binds nothing. */
+static void
+r300vk_bind_descriptor_ubo(struct r300vk_device *device,
+                           const struct r300vk_pipeline *pipeline,
+                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!binds || !pipeline)
+      return;
+   if (pipeline->vs_has_ubo)
+      r300vk_bind_one_stage_ubo(device, binds, MESA_SHADER_VERTEX,
+                                pipeline->vs_ubo_set, pipeline->vs_ubo_binding);
+   if (pipeline->fs_has_ubo)
+      r300vk_bind_one_stage_ubo(device, binds, MESA_SHADER_FRAGMENT,
+                                pipeline->fs_ubo_set, pipeline->fs_ubo_binding);
 }
 
 /* Bind the running push-constant window at CONST[0] for both stages -- the slot a
@@ -542,11 +564,12 @@ r300vk_replay_draw(struct r300vk_device *device,
    if (draw.count > 0) {
       /* Push constants and the descriptor UBO are mutually exclusive (the
        * collision is rejected at compile); bind whichever this pipeline uses at
-       * CONST[0]. */
+       * CONST[0].  The descriptor UBO bind takes the pipeline so it can select
+       * the shader-chosen (set, binding) rather than the first UBO in layout. */
       if (bound_pipeline && bound_pipeline->uses_push_constants)
          r300vk_bind_push_constants(device, push_const);
       else
-         r300vk_bind_descriptor_ubo(device, last_bind_dsets);
+         r300vk_bind_descriptor_ubo(device, bound_pipeline, last_bind_dsets);
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
    }
 }
