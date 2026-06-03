@@ -316,6 +316,80 @@ r300vk_CmdDrawIndirect(VkCommandBuffer commandBuffer,
                                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+static uint32_t
+r300vk_index_type_bytes(VkIndexType type)
+{
+   switch (type) {
+   case VK_INDEX_TYPE_UINT8:  return 1;
+   case VK_INDEX_TYPE_UINT16: return 2;
+   case VK_INDEX_TYPE_UINT32: return 4;
+   default:                   return 2;
+   }
+}
+
+/* vkCmdBindIndexBuffer[2] only update the recording cmd-buffer's bound-index
+ * state; each following vkCmdDrawIndexed snapshots it into its command entry.
+ * vk_common provides CmdBindIndexBuffer2KHR by forwarding to the base
+ * CmdBindIndexBuffer, so both are implemented to cover either routing. */
+void
+r300vk_CmdBindIndexBuffer(VkCommandBuffer commandBuffer,
+                          VkBuffer _buffer,
+                          VkDeviceSize offset,
+                          VkIndexType indexType)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, buffer, _buffer);
+   cmd->bound_index_buffer = buffer;
+   cmd->bound_index_offset = offset;
+   cmd->bound_index_size   = r300vk_index_type_bytes(indexType);
+   cmd->bound_index_range  = (buffer && buffer->size > offset)
+                             ? buffer->size - offset : 0;
+}
+
+void
+r300vk_CmdBindIndexBuffer2(VkCommandBuffer commandBuffer,
+                           VkBuffer _buffer,
+                           VkDeviceSize offset,
+                           VkDeviceSize size,
+                           VkIndexType indexType)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_buffer, buffer, _buffer);
+   cmd->bound_index_buffer = buffer;
+   cmd->bound_index_offset = offset;
+   cmd->bound_index_size   = r300vk_index_type_bytes(indexType);
+   VkDeviceSize avail = (buffer && buffer->size > offset)
+                        ? buffer->size - offset : 0;
+   cmd->bound_index_range  = (size == VK_WHOLE_SIZE || size > avail)
+                             ? avail : size;
+}
+
+void
+r300vk_CmdDrawIndexed(VkCommandBuffer commandBuffer,
+                      uint32_t indexCount,
+                      uint32_t instanceCount,
+                      uint32_t firstIndex,
+                      int32_t vertexOffset,
+                      uint32_t firstInstance)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type                        = R300VK_CMD_DRAW_INDEXED;
+   e->draw_indexed.index_buffer   = cmd->bound_index_buffer;
+   e->draw_indexed.index_offset   = cmd->bound_index_offset;
+   e->draw_indexed.index_range    = cmd->bound_index_range;
+   e->draw_indexed.index_size     = cmd->bound_index_size;
+   e->draw_indexed.index_count    = indexCount;
+   e->draw_indexed.first_index    = firstIndex;
+   e->draw_indexed.vertex_offset  = vertexOffset;
+   e->draw_indexed.instances      = instanceCount;
+   e->draw_indexed.first_instance = firstInstance;
+   e->draw_indexed.topology       = cmd->bound_pipeline
+                                    ? cmd->bound_pipeline->topology
+                                    : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+}
+
 void
 r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
                    uint32_t groupCountX,

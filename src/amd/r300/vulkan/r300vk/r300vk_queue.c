@@ -388,6 +388,22 @@ r300vk_replay_draw(struct r300vk_device *device,
 {
    struct pipe_context *pipe = device->pipe;
 
+   /* Unify the direct and indexed draw parameters so the descriptor bind,
+    * synthetic VS streams, viewport/scissor, and robustness clamp below apply
+    * to both.  An indexed draw's "first/count" are the first index and index
+    * count; the index buffer itself is set on pipe_draw_info further down. */
+   const bool indexed = (e->type == R300VK_CMD_DRAW_INDEXED);
+   const uint32_t draw_first      = indexed ? e->draw_indexed.first_index
+                                            : e->draw.first;
+   const uint32_t draw_count      = indexed ? e->draw_indexed.index_count
+                                            : e->draw.count;
+   const uint32_t draw_instances  = indexed ? e->draw_indexed.instances
+                                            : e->draw.instances;
+   const uint32_t draw_first_inst = indexed ? e->draw_indexed.first_instance
+                                            : e->draw.first_instance;
+   const VkPrimitiveTopology draw_topology = indexed ? e->draw_indexed.topology
+                                                     : e->draw.topology;
+
    /* A graphics pipeline with no fragment stage (rasterizer discard or
     * depth-only) leaves fs_cso NULL -- a failed fragment compile would instead
     * have failed pipeline creation, so NULL here means no fragment stage.  Such
@@ -427,8 +443,8 @@ r300vk_replay_draw(struct r300vk_device *device,
       synthetic_streams_ready =
          r300vk_bind_synthetic_index_stream(
             device, pipe, draw_vb_cache,
-            bound_pipeline->vertex_id_vb_binding, e->draw.first,
-            e->draw.count, transient_vbs);
+            bound_pipeline->vertex_id_vb_binding, draw_first,
+            draw_count, transient_vbs);
       if (synthetic_streams_ready) {
          if (bound_pipeline->vertex_id_vb_binding + 1u > draw_vb_max_used)
             draw_vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
@@ -441,7 +457,7 @@ r300vk_replay_draw(struct r300vk_device *device,
          r300vk_bind_synthetic_index_stream(
             device, pipe, draw_vb_cache,
             bound_pipeline->instance_id_vb_binding,
-            e->draw.first_instance, e->draw.instances, transient_vbs);
+            draw_first_inst, draw_instances, transient_vbs);
       if (synthetic_streams_ready) {
          if (bound_pipeline->instance_id_vb_binding + 1u >
              draw_vb_max_used)
@@ -460,18 +476,52 @@ r300vk_replay_draw(struct r300vk_device *device,
    }
    struct pipe_draw_info info;
    memset(&info, 0, sizeof(info));
-   info.mode           = vk_topology_to_mesa(e->draw.topology);
-   info.index_size     = 0;
-   info.instance_count = e->draw.instances;
-   info.start_instance = e->draw.first_instance;
-   struct pipe_draw_start_count_bias draw = {
-      .start      = e->draw.first,
-      .count      = synthetic_streams_ready ?
+   info.mode           = vk_topology_to_mesa(draw_topology);
+   info.instance_count = draw_instances;
+   info.start_instance = draw_first_inst;
+   struct pipe_draw_start_count_bias draw = { .index_bias = 0 };
+
+   if (indexed) {
+      const struct r300vk_cmd_draw_indexed *di = &e->draw_indexed;
+      if (!di->index_buffer || !di->index_buffer->resource ||
+          di->index_size == 0)
+         return;
+      info.index_size       = di->index_size;
+      info.index.resource   = di->index_buffer->resource;
+      info.has_user_indices = false;
+      /* pipe_draw_start_count_bias.start is in index elements; the
+       * vkCmdBindIndexBuffer byte offset is guaranteed a multiple of the index
+       * size, so fold it into start.  index_bias is the vertexOffset added to
+       * every fetched index.  Clamp the count to the bound range -- the indexed
+       * analog of r300vk_robust_vertex_count -- so the index fetch cannot read
+       * past the buffer end (the kernel CS validator rejects the same overrun).
+       *
+       * TODO: gl_VertexIndex on an indexed draw reaches the shader as the
+       *       fetched index value + vertexOffset.  RS480/RS482 has no hardware
+       *       vertex shader (num_vert_fpus == 0, SW-TCL), so gl_VertexIndex is
+       *       supplied through a synthetic vertex-input stream, and
+       *       r300vk_bind_synthetic_index_stream fills it with firstVertex + i --
+       *       the non-indexed sequence.  Build the stream from di->index_buffer
+       *       for the R300VK_CMD_DRAW_INDEXED + needs_vertex_id_stream case. */
+      const uint64_t start_elem =
+         (uint64_t)di->first_index + di->index_offset / di->index_size;
+      const uint64_t end_elem =
+         (di->index_offset + di->index_range) / di->index_size;
+      const uint64_t usable = end_elem > start_elem ? end_elem - start_elem : 0;
+      draw.start = (unsigned)start_elem;
+      draw.count = synthetic_streams_ready
+                   ? (di->index_count < usable ? di->index_count
+                                               : (unsigned)usable)
+                   : 0;
+      draw.index_bias = di->vertex_offset;
+   } else {
+      info.index_size = 0;
+      draw.start      = draw_first;
+      draw.count      = synthetic_streams_ready ?
          r300vk_robust_vertex_count(bound_pipeline, vb_cache,
-                                     vb_sizes, e->draw.first,
-                                     e->draw.count) : 0,
-      .index_bias = 0,
-   };
+                                     vb_sizes, draw_first,
+                                     draw_count) : 0;
+   }
    if (draw.count > 0) {
       r300vk_bind_descriptor_ubo(device, last_bind_dsets);
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
@@ -764,6 +814,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
             break;
 
          case R300VK_CMD_DRAW:
+         case R300VK_CMD_DRAW_INDEXED:
             if (skip_render_pass) break;
             r300vk_replay_draw(device, e, bound_pipeline, last_bind_dsets,
                                vb_cache, vb_sizes,

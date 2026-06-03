@@ -713,6 +713,14 @@ static void r300_bind_blend_state(struct pipe_context* pipe,
 static void r300_delete_blend_state(struct pipe_context* pipe,
                                     void* state)
 {
+    struct r300_context* r300 = r300_context(pipe);
+
+    /* util_blitter_save_blend() snapshots r300->blend_state.state and restores it on
+     * the next clear; drop the reference so the restore cannot rebind a freed state.
+     * Inert on the GL path, where the state tracker unbinds before delete. */
+    if (r300->blend_state.state == state)
+        r300->blend_state.state = NULL;
+
     FREE(state);
 }
 
@@ -974,6 +982,14 @@ static void r300_bind_dsa_state(struct pipe_context* pipe,
 static void r300_delete_dsa_state(struct pipe_context* pipe,
                                   void* state)
 {
+    struct r300_context* r300 = r300_context(pipe);
+
+    /* util_blitter_save_depth_stencil_alpha() snapshots r300->dsa_state.state and
+     * restores it on the next clear; drop the reference so the restore cannot rebind a
+     * freed state.  Inert on the GL path, which unbinds before delete. */
+    if (r300->dsa_state.state == state)
+        r300->dsa_state.state = NULL;
+
     FREE(state);
 }
 
@@ -1383,8 +1399,15 @@ static void r300_bind_fs_state(struct pipe_context* pipe, void* shader)
 /* Delete fragment shader state. */
 static void r300_delete_fs_state(struct pipe_context* pipe, void* shader)
 {
+    struct r300_context* r300 = r300_context(pipe);
     struct r300_fragment_shader* fs = (struct r300_fragment_shader*)shader;
     struct r300_fragment_shader_code *tmp, *ptr = fs->first;
+
+    /* util_blitter_save_fragment_shader() snapshots r300->fs.state and restores it
+     * on the next clear; drop the reference so the restore cannot rebind a freed
+     * shader.  Inert on the GL path, where the state tracker unbinds before delete. */
+    if (r300->fs.state == fs)
+        r300->fs.state = NULL;
 
     while (ptr) {
         tmp = ptr;
@@ -1714,6 +1737,20 @@ static void r300_bind_rs_state(struct pipe_context* pipe, void* state)
 /* Free rasterizer state. */
 static void r300_delete_rs_state(struct pipe_context* pipe, void* state)
 {
+    struct r300_context* r300 = r300_context(pipe);
+
+    /* The rasterizer is referenced twice: r300->rs_state.state, which
+     * util_blitter_save_rasterizer() snapshots and restores on the next clear, and
+     * draw->rasterizer/draw->rast_handle, which r300_bind_rs_state() points at
+     * &rs->rs_draw inside this CSO.  Drop both before freeing so neither the blitter
+     * restore nor a draw-module clip update reads freed memory.  Inert on the GL path,
+     * which unbinds before delete. */
+    if (r300->rs_state.state == state) {
+        if (r300->draw)
+            draw_set_rasterizer_state(r300->draw, NULL, NULL);
+        r300->rs_state.state = NULL;
+    }
+
     FREE(state);
 }
 
@@ -2216,6 +2253,16 @@ static void r300_bind_vertex_elements_state(struct pipe_context *pipe,
 
 static void r300_delete_vertex_elements_state(struct pipe_context *pipe, void *state)
 {
+    struct r300_context *r300 = r300_context(pipe);
+
+    /* util_blitter_save_vertex_elements() snapshots r300->velems and restores it
+     * through r300_bind_vertex_elements_state(), which dereferences velems->count
+     * and velems->velem; drop the reference so the restore cannot read freed memory.
+     * The draw module copies the element array in draw_set_vertex_elements() rather
+     * than retaining it, so only the r300->velems reference needs clearing. */
+    if (r300->velems == state)
+        r300->velems = NULL;
+
     FREE(state);
 }
 
@@ -2357,6 +2404,20 @@ static void r300_delete_vs_state(struct pipe_context* pipe, void* shader)
 {
     struct r300_context* r300 = r300_context(pipe);
     struct r300_vertex_shader* vs = (struct r300_vertex_shader*)shader;
+
+    /* Drop every live reference to this shader before freeing it.  The GL state
+     * tracker unbinds a shader before deleting it, so vs_state.state never aliases
+     * the CSO being deleted on that path; a pipe consumer that deletes a still-bound
+     * VS does, and the SW-TCL path keeps a second reference inside the draw module.
+     * util_blitter_save_vertex_shader() snapshots r300->vs_state.state on the next
+     * clear and restores it through r300_bind_vs_state(), which hands vs->draw_vs to
+     * draw_bind_vertex_shader() and calls through its prepare() pointer -- a
+     * use-after-free if the shader was freed in the meantime. */
+    if (r300->vs_state.state == vs) {
+        if (!r300->screen->caps.has_tcl)
+            draw_bind_vertex_shader(r300->draw, NULL);
+        r300->vs_state.state = NULL;
+    }
 
     if (r300->screen->caps.has_tcl) {
         while (vs->shader) {
