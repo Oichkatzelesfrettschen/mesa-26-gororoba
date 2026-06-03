@@ -419,6 +419,28 @@ r300vk_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
                                             : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
+/* Record push constants into the command buffer's window.  vk_common forwards
+ * CmdPushConstants to this driver base entrypoint, so leaving it unimplemented
+ * makes the call jump to a NULL dispatch slot (SIGSEGV).  r300 has a single
+ * read-only constant file already bound to the one UBO at CONST[0], so a shader
+ * that reads push constants is rejected at pipeline compile
+ * (r300vk_compile_shader); the bytes recorded here are unused until push-constant
+ * lowering onto the constant file lands.  Stage flags do not separate storage --
+ * r300 has one constant file per stage fed from the same window. */
+void
+r300vk_CmdPushConstants(VkCommandBuffer commandBuffer,
+                        VkPipelineLayout layout,
+                        VkShaderStageFlags stageFlags,
+                        uint32_t offset,
+                        uint32_t size,
+                        const void *pValues)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   if ((uint64_t)offset + size > sizeof(cmd->push_constants))
+      return;
+   memcpy(&cmd->push_constants[offset], pValues, size);
+}
+
 void
 r300vk_CmdDispatch(VkCommandBuffer commandBuffer,
                    uint32_t groupCountX,

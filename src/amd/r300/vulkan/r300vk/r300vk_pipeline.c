@@ -345,6 +345,33 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir)
    return true;
 }
 
+/* True if the shader reads push constants.  vk_spirv_to_nir (with
+ * push_const_addr_format set) leaves the access as a load_deref of a
+ * nir_var_mem_push_const variable; r300vk's nir_lower_explicit_io call lowers
+ * only UBO/SSBO, so that deref would reach nir_to_rc, which has no push-constant
+ * handler and would treat it as an unknown load_deref.  Check the variable mode
+ * and the lowered load_push_constant intrinsic so the test holds wherever it
+ * runs in the pipeline. */
+static bool
+r300vk_nir_uses_push_constants(nir_shader *nir)
+{
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_push_const)
+      return true;
+
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            if (nir_instr_as_intrinsic(instr)->intrinsic ==
+                nir_intrinsic_load_push_constant)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
 static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
@@ -387,6 +414,21 @@ r300vk_compile_shader(struct r300vk_device *device,
                        "r300vk: %s shader uses a descriptor resource r300's "
                        "single read-only constant file cannot represent "
                        "(storage buffer, multiple UBOs, or a dynamic UBO index)",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
+   }
+
+   /* r300's single constant file already hosts the one UBO at CONST[0], and
+    * nir_to_rc has no load_push_constant handler, so a push-constant read would
+    * survive nir_lower_explicit_io (which lowers only UBO/SSBO) as an unlowered
+    * load_deref and crash the backend.  Reject the pipeline cleanly instead.
+    * vkCmdPushConstants still records the bytes (r300vk_CmdPushConstants); only
+    * lowering them onto the constant file remains. */
+   if (r300vk_nir_uses_push_constants(nir)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: %s shader reads push constants, which r300's "
+                       "single read-only constant file does not yet host",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
    }
