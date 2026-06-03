@@ -419,14 +419,14 @@ r300vk_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
                                             : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 }
 
-/* Record push constants into the command buffer's window.  vk_common forwards
+/* Record a push-constant window update into the entry stream.  vk_common forwards
  * CmdPushConstants to this driver base entrypoint, so leaving it unimplemented
- * makes the call jump to a NULL dispatch slot (SIGSEGV).  r300 has a single
- * read-only constant file already bound to the one UBO at CONST[0], so a shader
- * that reads push constants is rejected at pipeline compile
- * (r300vk_compile_shader); the bytes recorded here are unused until push-constant
- * lowering onto the constant file lands.  Stage flags do not separate storage --
- * r300 has one constant file per stage fed from the same window. */
+ * makes the call jump to a NULL dispatch slot (SIGSEGV).  Replay applies these in
+ * order into a running 128-byte buffer that a push-constants-only pipeline binds
+ * at CONST[0] (r300vk_bind_push_constants); a pipeline that reads both push
+ * constants and a UBO is rejected at compile, since r300's single constant file
+ * cannot host both.  Stage flags do not separate storage -- r300 has one constant
+ * file per stage fed from the same window. */
 void
 r300vk_CmdPushConstants(VkCommandBuffer commandBuffer,
                         VkPipelineLayout layout,
@@ -440,14 +440,20 @@ r300vk_CmdPushConstants(VkCommandBuffer commandBuffer,
     * stage fed from the same window, so the bytes land in one buffer. */
    (void)layout;
    (void)stageFlags;
-   /* A zero-size update with a NULL pValues is legal; memcpy(dst, NULL, 0) is
-    * undefined behavior, so guard it.  The cast keeps offset + size from
-    * wrapping before the bound check. */
+   struct r300vk_cmd_push_constants tmp;
+   /* A zero-size update may pass pValues == NULL, and memcpy(dst, NULL, 0) is
+    * undefined behavior; guard it.  128 == advertised maxPushConstantsSize; ignore
+    * an out-of-window write rather than overflow the fixed entry payload. */
    if (size == 0 || pValues == NULL)
       return;
-   if ((uint64_t)offset + size > sizeof(cmd->push_constants))
+   if ((uint64_t)offset + size > sizeof(tmp.data))
       return;
-   memcpy(&cmd->push_constants[offset], pValues, size);
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type                  = R300VK_CMD_PUSH_CONSTANTS;
+   e->push_constants.offset = offset;
+   e->push_constants.size   = size;
+   memcpy(e->push_constants.data, pValues, size);
 }
 
 void

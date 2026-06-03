@@ -371,11 +371,28 @@ r300vk_bind_descriptor_ubo(struct r300vk_device *device,
    }
 }
 
+/* Bind the running push-constant window at CONST[0] for both stages -- the slot a
+ * push-constants-only pipeline's lowered load_ubo(0, ...) reads.
+ * r300_set_constant_buffer reads cb.user_buffer directly, so the bytes need no
+ * GPU upload. */
+static void
+r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data)
+{
+   struct pipe_context *pipe = device->pipe;
+   struct pipe_constant_buffer cb;
+   memset(&cb, 0, sizeof(cb));
+   cb.user_buffer = data;
+   cb.buffer_size = 128;
+   pipe->set_constant_buffer(pipe, MESA_SHADER_VERTEX, 0, &cb);
+   pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
+}
+
 static void
 r300vk_replay_draw(struct r300vk_device *device,
                     const struct r300vk_cmd_entry *e,
                     const struct r300vk_pipeline *bound_pipeline,
                     const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets,
+                    const uint8_t *push_const,
                     struct pipe_vertex_buffer *vb_cache,
                     VkDeviceSize *vb_sizes,
                     uint32_t vb_max_used,
@@ -523,7 +540,13 @@ r300vk_replay_draw(struct r300vk_device *device,
                                      draw_count) : 0;
    }
    if (draw.count > 0) {
-      r300vk_bind_descriptor_ubo(device, last_bind_dsets);
+      /* Push constants and the descriptor UBO are mutually exclusive (the
+       * collision is rejected at compile); bind whichever this pipeline uses at
+       * CONST[0]. */
+      if (bound_pipeline && bound_pipeline->uses_push_constants)
+         r300vk_bind_push_constants(device, push_const);
+      else
+         r300vk_bind_descriptor_ubo(device, last_bind_dsets);
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
    }
 }
@@ -766,6 +789,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
       VkDeviceSize vb_sizes[R300VK_MAX_VERTEX_BINDINGS];
       uint32_t vb_max_used = 0;
       bool vb_dirty = false;
+      /* Running push-constant window, applied by R300VK_CMD_PUSH_CONSTANTS entries
+       * in stream order and bound at CONST[0] for a push-constants-only pipeline.
+       * Re-accumulated each tile pass since the entry list is re-walked per tile. */
+      uint8_t replay_pc[128] = {0};
       const struct r300vk_pipeline *bound_pipeline = NULL;
       const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets = NULL;
       const struct r300vk_cmd_entry *current_render_pass = NULL;
@@ -820,12 +847,21 @@ r300vk_replay_gpu(struct r300vk_device *device,
          case R300VK_CMD_DRAW_INDEXED:
             if (skip_render_pass) break;
             r300vk_replay_draw(device, e, bound_pipeline, last_bind_dsets,
-                               vb_cache, vb_sizes,
+                               replay_pc, vb_cache, vb_sizes,
                                vb_max_used, &vb_dirty, tile_origin_x,
                                tile_origin_y, tile_width, tile_height,
                                transient_vbs);
             *gpu_pending = true;
             break;
+
+         case R300VK_CMD_PUSH_CONSTANTS: {
+            /* Apply the window update unconditionally (pure state, not gated by
+             * skip_render_pass) so a later tile pass or draw sees it. */
+            const struct r300vk_cmd_push_constants *pc = &e->push_constants;
+            if ((uint64_t)pc->offset + pc->size <= sizeof(replay_pc))
+               memcpy(replay_pc + pc->offset, pc->data, pc->size);
+            break;
+         }
 
          case R300VK_CMD_DRAW_INDIRECT: {
             if (skip_render_pass) break;
@@ -865,7 +901,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                synth.draw.first_instance = args->firstInstance;
                synth.draw.topology       = di->topology;
                r300vk_replay_draw(device, &synth, bound_pipeline,
-                                  last_bind_dsets, vb_cache,
+                                  last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
                                   tile_height, transient_vbs);
@@ -921,7 +957,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                synth.draw_indexed.first_instance = args->firstInstance;
                synth.draw_indexed.topology       = di->topology;
                r300vk_replay_draw(device, &synth, bound_pipeline,
-                                  last_bind_dsets, vb_cache,
+                                  last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
                                   tile_height, transient_vbs);

@@ -166,6 +166,10 @@ struct r300vk_pipeline {
     * r300_nir_lower_vs_system_values_to_inputs rewrote the intrinsic to read it. */
    bool                    needs_vertex_id_stream;
    bool                    needs_instance_id_stream;
+   /* The shader reads push constants, lowered onto CONST[0]; replay binds the
+    * running push-constant window there instead of the descriptor UBO (the two
+    * are mutually exclusive -- a pipeline using both is rejected at compile). */
+   bool                    uses_push_constants;
    uint8_t                 vertex_id_slot;          /* velem index == driver_location */
    uint8_t                 instance_id_slot;
    uint8_t                 vertex_id_vb_binding;    /* synthetic vertex_buffer_index */

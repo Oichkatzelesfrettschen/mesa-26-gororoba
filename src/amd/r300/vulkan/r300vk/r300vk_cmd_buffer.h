@@ -39,6 +39,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_DRAW_INDIRECT,
    R300VK_CMD_DRAW_INDEXED,
    R300VK_CMD_DRAW_INDEXED_INDIRECT,
+   R300VK_CMD_PUSH_CONSTANTS,
    R300VK_CMD_END_RENDER_PASS,
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_COPY_BUFFER_TO_IMAGE,
@@ -142,6 +143,16 @@ struct r300vk_cmd_draw_indexed_indirect {
    VkDeviceSize          index_range;
    uint32_t              index_size;   /* 1, 2, or 4 bytes per index */
    VkPrimitiveTopology   topology;
+};
+
+/* One vkCmdPushConstants.  Recorded into the entry stream so replay applies the
+ * window updates in order before each draw; the replay loop keeps a running
+ * 128-byte (maxPushConstantsSize) buffer that a push-constants-only pipeline
+ * binds at CONST[0].  data carries the size bytes written at offset. */
+struct r300vk_cmd_push_constants {
+   uint32_t              offset;
+   uint32_t              size;
+   uint8_t               data[128];
 };
 
 struct r300vk_cmd_copy_image_to_buf {
@@ -297,6 +308,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_draw_indirect        draw_indirect;
       struct r300vk_cmd_draw_indexed         draw_indexed;
       struct r300vk_cmd_draw_indexed_indirect draw_indexed_indirect;
+      struct r300vk_cmd_push_constants       push_constants;
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
       struct r300vk_cmd_copy_image           copy_image;
@@ -328,13 +340,6 @@ struct r300vk_cmd_buffer {
    VkDeviceSize              bound_index_offset;
    VkDeviceSize              bound_index_range;
    uint32_t                  bound_index_size;
-   /* Push-constant window written by vkCmdPushConstants.  Sized to the advertised
-    * maxPushConstantsSize (128).  r300's single read-only constant file already
-    * hosts the one UBO at CONST[0], so a shader that reads push constants is
-    * rejected at pipeline compile; this storage exists so the entrypoint is not a
-    * NULL-trampoline crash and the bytes are available once push-constant
-    * lowering onto the constant file lands. */
-   uint8_t                   push_constants[128];
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_cmd_buffer, base.base, VkCommandBuffer,
