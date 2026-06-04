@@ -692,12 +692,21 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
       buffer_features |= VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT;
    }
 
-   /* r300vk creates r300g-tiled textures regardless of VkImageTiling
-    * (r300vk_image.c has no linear-layout path), so advertising linear-tiling
-    * image features would promise a row-major layout the driver never
-    * produces.  Report linear-tiling images as unsupported; only optimal
-    * tiling carries the image feature set. */
-   properties->linearTilingFeatures = 0;
+   /* VK_IMAGE_TILING_LINEAR is backed by a single PIPE_BIND_LINEAR row-major
+    * r300g tile, but only as transfer staging: deqp's draw readback copies an
+    * optimal render target into a linear TRANSFER_DST image and maps it.
+    * Advertise linear transfer features exactly where r300vk_CreateImage's
+    * linear accept gate allows the image -- a real image format with a lossless
+    * transfer-destination byte layout.  Sampled, color, and depth/stencil
+    * features stay optimal-only because the linear tile carries no swizzle. */
+   VkFormatFeatureFlags2 linear_features = 0;
+   if ((supports_sampler_view || supports_render_target) &&
+       r300vk_format_supports_transfer_dst(pipe_format)) {
+      linear_features = VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
+                        VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
+   }
+
+   properties->linearTilingFeatures = linear_features;
    properties->optimalTilingFeatures = image_features;
    properties->bufferFeatures = buffer_features;
 }

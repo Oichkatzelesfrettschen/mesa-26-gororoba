@@ -30,6 +30,9 @@ struct r300vk_image {
    uint32_t                      tile_rows;
    uint32_t                      tile_width[2];
    uint32_t                      tile_height[2];
+   /* Row stride r300g chose for a VK_IMAGE_TILING_LINEAR image's single tile,
+    * reported verbatim by GetImageSubresourceLayout.  Zero for optimal tiling. */
+   uint32_t                      linear_row_pitch;
    struct r300vk_resource_state  resource_state;
 };
 
@@ -59,6 +62,23 @@ VkDeviceSize r300vk_image_memory_size(const struct r300vk_image *img);
 void r300vk_GetImageMemoryRequirements2(VkDevice device,
                                          const VkImageMemoryRequirementsInfo2 *pInfo,
                                          VkMemoryRequirements2 *pMemoryRequirements);
+
+/* vkGetImageSubresourceLayout is what deqp calls to learn a linear staging
+ * image's rowPitch before mapping it.  The runtime's vk_common base forwards to
+ * the 2KHR slot, and the core/KHR/EXT names are distinct dispatch slots, so all
+ * three are defined over one shared layout helper. */
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetImageSubresourceLayout2(VkDevice device, VkImage image,
+                                  const VkImageSubresource2 *pSubresource,
+                                  VkSubresourceLayout2 *pLayout);
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetImageSubresourceLayout2KHR(VkDevice device, VkImage image,
+                                     const VkImageSubresource2 *pSubresource,
+                                     VkSubresourceLayout2 *pLayout);
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetImageSubresourceLayout2EXT(VkDevice device, VkImage image,
+                                     const VkImageSubresource2 *pSubresource,
+                                     VkSubresourceLayout2 *pLayout);
 
 VkResult r300vk_CreateImageView(VkDevice device,
                                  const VkImageViewCreateInfo *pCreateInfo,

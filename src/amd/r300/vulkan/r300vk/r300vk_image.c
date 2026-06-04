@@ -6,6 +6,13 @@
 #include "r300vk_image.h"
 #include "r300vk_device.h"
 
+/* r300g internals: a linear image reads its row stride from the backing
+ * r300_resource (r300_texture_desc::stride_in_bytes), which the Vulkan layer
+ * must report verbatim so a CPU readback maps the same pitch the transfer map
+ * returns.  The gallium-backed ICD statically links r300g, so reaching the
+ * r300_resource() cast here matches how r300vk_pipeline.c uses r300_screen.h. */
+#include "r300/r300_context.h"
+
 #include "vk_alloc.h"
 #include "vk_format.h"
 #include "vk_log.h"
@@ -135,10 +142,21 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
                                    enum pipe_format pipe_fmt,
                                    unsigned pipe_bind)
 {
-   img->tile_cols = r300vk_split_image_axis(info->extent.width,
-                                            img->tile_width);
-   img->tile_rows = r300vk_split_image_axis(info->extent.height,
-                                            img->tile_height);
+   /* A linear image is one row-major tile (the accept gate bounds its extent to
+    * one tile), allocated PIPE_USAGE_STAGING so r300g keeps it CPU-mappable.
+    * Optimal images keep the up-to-2x2 spatial-subdivision tiling. */
+   const bool is_linear = (pipe_bind & PIPE_BIND_LINEAR) != 0;
+   if (is_linear) {
+      img->tile_cols = 1;
+      img->tile_rows = 1;
+      img->tile_width[0] = info->extent.width;
+      img->tile_height[0] = info->extent.height;
+   } else {
+      img->tile_cols = r300vk_split_image_axis(info->extent.width,
+                                               img->tile_width);
+      img->tile_rows = r300vk_split_image_axis(info->extent.height,
+                                               img->tile_height);
+   }
    if (img->tile_cols == 0 || img->tile_rows == 0)
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: image extent %ux%u exceeds the 4096 floor",
@@ -150,7 +168,7 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
             .target     = PIPE_TEXTURE_2D,
             .format     = pipe_fmt,
             .bind       = pipe_bind,
-            .usage      = PIPE_USAGE_DEFAULT,
+            .usage      = is_linear ? PIPE_USAGE_STAGING : PIPE_USAGE_DEFAULT,
             .width0     = img->tile_width[x],
             .height0    = img->tile_height[y],
             .depth0     = 1,
@@ -169,6 +187,12 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
       }
    }
 
+   /* Report exactly the stride r300g chose for the linear tile.  The transfer
+    * map returns this pitch, so GetImageSubresourceLayout and the readback walk
+    * the same row layout. */
+   if (is_linear)
+      img->linear_row_pitch = r300_resource(img->tiles[0])->tex.stride_in_bytes[0];
+
    img->resource = img->tiles[0];
    return VK_SUCCESS;
 }
@@ -182,7 +206,14 @@ r300vk_CreateImage(VkDevice _device,
    VK_FROM_HANDLE(r300vk_device, device, _device);
    struct r300vk_image *img;
 
-   if (pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL)
+   /* r300vk renders into r300g-tiled (optimal) resources.  A linear image
+    * exists only as transfer staging: deqp's draw readback copies an optimal
+    * render target into a VK_IMAGE_TILING_LINEAR TRANSFER_DST image, then maps
+    * it and walks rowPitch-sized rows.  r300g produces a row-major single tile
+    * when PIPE_BIND_LINEAR is set, so accept linear here and constrain it to
+    * that staging shape below (2D, transfer-only usage, within one tile). */
+   const bool is_linear = pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR;
+   if (pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL && !is_linear)
       return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "r300vk: image tiling %d unsupported",
                        pCreateInfo->tiling);
@@ -233,8 +264,30 @@ r300vk_CreateImage(VkDevice _device,
                        "r300vk: unsupported image format %d", pCreateInfo->format);
    }
 
-   const VkImageUsageFlags supported_usage =
+   VkImageUsageFlags supported_usage =
       r300vk_supported_image_usage(device, pipe_fmt);
+
+   /* A linear image is transfer-only staging inside a single r300g tile.  Mask
+    * its advertised usage to the transfer bits and reject any shape the
+    * single-tile row-major path cannot back: non-2D, an extent past one tile,
+    * or a format without a lossless transfer-destination byte layout (the same
+    * predicate that gates linearTilingFeatures). */
+   if (is_linear) {
+      supported_usage &= (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+      if (pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
+          pCreateInfo->extent.width > R300VK_R3XX_MAX_RENDER_DIMENSION ||
+          pCreateInfo->extent.height > R300VK_R3XX_MAX_RENDER_DIMENSION ||
+          !r300vk_format_supports_transfer_dst(pipe_fmt)) {
+         vk_image_finish(&img->vk);
+         vk_free2(&device->vk.alloc, pAllocator, img);
+         return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                          "r300vk: linear image unsupported (format %d type %d %ux%u)",
+                          pCreateInfo->format, pCreateInfo->imageType,
+                          pCreateInfo->extent.width, pCreateInfo->extent.height);
+      }
+   }
+
    if ((pCreateInfo->usage & ~supported_usage) != 0) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
@@ -244,10 +297,14 @@ r300vk_CreateImage(VkDevice _device,
                        pCreateInfo->format);
    }
 
+   unsigned pipe_bind =
+      r300vk_image_pipe_bind(device, pipe_fmt, pCreateInfo->usage);
+   if (is_linear)
+      pipe_bind |= PIPE_BIND_LINEAR;
+
    VkResult result =
-      r300vk_image_create_tile_resources(
-         device, img, pCreateInfo, pipe_fmt,
-         r300vk_image_pipe_bind(device, pipe_fmt, pCreateInfo->usage));
+      r300vk_image_create_tile_resources(device, img, pCreateInfo, pipe_fmt,
+                                         pipe_bind);
    if (result != VK_SUCCESS) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
@@ -278,9 +335,71 @@ r300vk_image_memory_size(const struct r300vk_image *img)
 {
    const VkExtent3D *ext = &img->vk.extent;
 
+   /* A linear image's bytes are r300g's row-major tile: stride times height.
+    * Reporting the same value GetImageSubresourceLayout returns keeps the
+    * BindImageMemory2 bound check and the deqp readback walk consistent. */
+   if (img->vk.tiling == VK_IMAGE_TILING_LINEAR)
+      return (VkDeviceSize)img->linear_row_pitch * ext->height;
+
    return (VkDeviceSize)ext->width * ext->height *
           MAX2(1u, img->vk.samples) *
           util_format_get_blocksize(vk_format_to_pipe_format(img->vk.format));
+}
+
+static void
+r300vk_image_subresource_layout(VkImage _image,
+                                VkSubresourceLayout2 *pLayout)
+{
+   VK_FROM_HANDLE(r300vk_image, img, _image);
+   VkSubresourceLayout *layout = &pLayout->subresourceLayout;
+
+   /* r300vk images are single mip level and single array layer (r300vk_CreateImage
+    * rejects mipLevels > 1 and arrayLayers > 1), so the queried subresource is
+    * always level 0 / layer 0 and pSubresource selects no other layout. */
+   if (img->vk.tiling == VK_IMAGE_TILING_LINEAR) {
+      /* The single linear tile is row-major from offset 0.  rowPitch is the
+       * stride r300g's transfer map returns, so the mapped readback walks the
+       * same rows.  One 2D layer, no depth, so array/depth pitch are the layer
+       * size. */
+      layout->offset = 0;
+      layout->rowPitch = img->linear_row_pitch;
+      layout->size = (VkDeviceSize)img->linear_row_pitch * img->vk.extent.height;
+      layout->arrayPitch = layout->size;
+      layout->depthPitch = layout->size;
+   } else {
+      /* vkGetImageSubresourceLayout is defined only for linear tiling; an
+       * optimal image carries an implementation-private swizzle.  deqp queries
+       * layout only on its linear staging copy, so report a zeroed layout. */
+      layout->offset = 0;
+      layout->rowPitch = 0;
+      layout->size = 0;
+      layout->arrayPitch = 0;
+      layout->depthPitch = 0;
+   }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetImageSubresourceLayout2(VkDevice device, VkImage image,
+                                  const VkImageSubresource2 *pSubresource,
+                                  VkSubresourceLayout2 *pLayout)
+{
+   r300vk_image_subresource_layout(image, pLayout);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetImageSubresourceLayout2KHR(VkDevice device, VkImage image,
+                                     const VkImageSubresource2 *pSubresource,
+                                     VkSubresourceLayout2 *pLayout)
+{
+   r300vk_image_subresource_layout(image, pLayout);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetImageSubresourceLayout2EXT(VkDevice device, VkImage image,
+                                     const VkImageSubresource2 *pSubresource,
+                                     VkSubresourceLayout2 *pLayout)
+{
+   r300vk_image_subresource_layout(image, pLayout);
 }
 
 void
