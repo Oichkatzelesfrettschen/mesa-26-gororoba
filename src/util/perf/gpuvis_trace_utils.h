@@ -358,7 +358,47 @@ static int exec_tracecmd_argv( char *const argv[], bool background, const char *
     int ret = -1;
     int pipefd[ 2 ] = { -1, -1 };
 
-    if ( !background && !log_path )
+    /* Background launch (the slow "trace-cmd extract") double-forks: the worker
+     * reparents to init and is reaped there, never lingering as a zombie in the
+     * embedding application.  That is the reaping the old system("... &") shell
+     * used to provide.  The intermediate child exits at once, so the caller
+     * reaps only it and never blocks on the worker. */
+    if ( background )
+    {
+        pid_t mid = fork();
+        if ( mid == -1 )
+            return -1;
+
+        if ( mid == 0 )
+        {
+            pid_t worker = fork();
+            if ( worker == 0 )
+            {
+                if ( log_path )
+                {
+                    int fd = open( log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644 );
+                    if ( fd != -1 )
+                    {
+                        dup2( fd, STDOUT_FILENO );
+                        dup2( fd, STDERR_FILENO );
+                        close( fd );
+                    }
+                }
+
+                execvp( argv[ 0 ], argv );
+                _exit( 127 );
+            }
+
+            _exit( worker == -1 ? 1 : 0 );
+        }
+
+        while ( waitpid( mid, NULL, 0 ) == -1 && errno == EINTR )
+            continue;
+
+        return 0;
+    }
+
+    if ( !log_path )
     {
         if ( pipe( pipefd ) == -1 )
             return -1;
@@ -387,7 +427,7 @@ static int exec_tracecmd_argv( char *const argv[], bool background, const char *
                 close( fd );
             }
         }
-        else if ( !background )
+        else
         {
             dup2( pipefd[ 1 ], STDOUT_FILENO );
             dup2( pipefd[ 1 ], STDERR_FILENO );
@@ -398,9 +438,6 @@ static int exec_tracecmd_argv( char *const argv[], bool background, const char *
         execvp( argv[ 0 ], argv );
         _exit( 127 );
     }
-
-    if ( background )
-        return 0;
 
     if ( !log_path )
     {
