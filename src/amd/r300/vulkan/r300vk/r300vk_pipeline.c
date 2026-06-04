@@ -1005,6 +1005,22 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
          FAIL_PIPELINE(r);
    }
 
+   /* r300 has separate vertex and fragment constant files, so a single shader
+    * using both push constants and a UBO is the only true CONST[0] collision,
+    * and r300vk_compile_shader already rejects that per stage.  A pipeline that
+    * splits them across stages (push constants in one, a UBO in the other) is
+    * representable in hardware, but the replay is not split: it binds the
+    * push-constant window to BOTH stages' CONST[0] (r300vk_bind_push_constants)
+    * whenever any stage uses push constants, which then cannot also bind the
+    * other stage's UBO.  Reject the cross-stage mix rather than silently
+    * overwrite the UBO stage's CONST[0] with the push-constant window. */
+   if (pl->uses_push_constants && (pl->vs_has_ubo || pl->fs_has_ubo))
+      FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                              "r300vk: pipeline uses push constants in one stage "
+                              "and a uniform buffer in another; the replay binds "
+                              "the push-constant window to both stages' CONST[0] "
+                              "and cannot also bind a per-stage UBO"));
+
    VkResult cso_res = r300vk_init_graphics_pipeline_cso_state(device, pl);
    if (cso_res != VK_SUCCESS)
       FAIL_PIPELINE(cso_res);
