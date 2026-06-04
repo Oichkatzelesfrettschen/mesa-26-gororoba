@@ -418,6 +418,35 @@ r300vk_nir_lower_push_constant_to_ubo0(nir_shader *nir)
       }
       nir_progress(progress, impl, nir_metadata_control_flow);
    }
+
+   /* nir_to_tgsi sizes the TGSI constant file from nir_var_mem_ubo VARIABLES
+    * (glsl_get_explicit_size of the interface type), not from the load_ubo
+    * accesses emitted above.  The rewrite leaves load_ubo(block 0, ...) with no
+    * backing UBO variable, so nir_to_tgsi declares an empty constant file
+    * (file_max[TGSI_FILE_CONSTANT] == -1) and the gallivm draw backend
+    * (draw-use-llvm) asserts on the CONST[0] read in lp_build_emit_fetch_src
+    * (Register.Index <= file_max); the C draw path skips that bounds check and
+    * hides the gap.  Declare a block-0 UBO sized to the 128-byte push-constant
+    * window (maxPushConstantsSize, the same .range bound above) so the constant
+    * file covers every push slot, mirroring nir_lower_uniforms_to_ubo's default
+    * UBO. */
+   const struct glsl_type *push_ubo_type =
+      glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(128, 16), 16);
+   nir_variable *push_ubo =
+      nir_variable_create(nir, nir_var_mem_ubo, push_ubo_type, "push_const_ubo0");
+   push_ubo->data.driver_location = 0;
+   push_ubo->data.binding = 0;
+   push_ubo->data.explicit_binding = 1;
+   struct glsl_struct_field push_field = {
+      .type = push_ubo_type,
+      .name = "data",
+      .location = -1,
+   };
+   push_ubo->interface_type =
+      glsl_interface_type(&push_field, 1, GLSL_INTERFACE_PACKING_STD430, false,
+                          "__r300vk_push_const_ubo0");
+   nir->info.num_ubos = MAX2(nir->info.num_ubos, 1);
+   nir->info.first_ubo_is_default_ubo = true;
 }
 
 /* R300's constant file (RC_FILE_CONSTANT) is float-typed and the ISA has no native
