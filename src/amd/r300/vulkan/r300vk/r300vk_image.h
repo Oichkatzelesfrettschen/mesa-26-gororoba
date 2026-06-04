@@ -64,21 +64,15 @@ void r300vk_GetImageMemoryRequirements2(VkDevice device,
                                          VkMemoryRequirements2 *pMemoryRequirements);
 
 /* vkGetImageSubresourceLayout is what deqp calls to learn a linear staging
- * image's rowPitch before mapping it.  The runtime's vk_common base forwards to
- * the 2KHR slot, and the core/KHR/EXT names are distinct dispatch slots, so all
- * three are defined over one shared layout helper. */
+ * image's rowPitch before mapping it.  The runtime vk_common base forwards the
+ * v1 call to the dispatch table's GetImageSubresourceLayout2KHR slot.  That
+ * name, ...2EXT (VK_EXT_host_image_copy), and the core ...2 are aliases that
+ * share one device dispatch slot, so the driver defines only the core form and
+ * the generated entrypoint table dispatches all three names to it. */
 VKAPI_ATTR void VKAPI_CALL
 r300vk_GetImageSubresourceLayout2(VkDevice device, VkImage image,
                                   const VkImageSubresource2 *pSubresource,
                                   VkSubresourceLayout2 *pLayout);
-VKAPI_ATTR void VKAPI_CALL
-r300vk_GetImageSubresourceLayout2KHR(VkDevice device, VkImage image,
-                                     const VkImageSubresource2 *pSubresource,
-                                     VkSubresourceLayout2 *pLayout);
-VKAPI_ATTR void VKAPI_CALL
-r300vk_GetImageSubresourceLayout2EXT(VkDevice device, VkImage image,
-                                     const VkImageSubresource2 *pSubresource,
-                                     VkSubresourceLayout2 *pLayout);
 
 VkResult r300vk_CreateImageView(VkDevice device,
                                  const VkImageViewCreateInfo *pCreateInfo,
