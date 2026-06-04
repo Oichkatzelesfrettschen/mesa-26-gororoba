@@ -351,7 +351,7 @@ static bool r300_is_format_supported(struct pipe_screen* screen,
 	 * disabled, so default behavior is unchanged.
 	 */
         (is_r500 ||
-         (is_ati2n && r300_screen(screen)->experimental_ati2n) ||
+         (!is_r400 && is_ati2n && r300_screen(screen)->experimental_ati2n) ||
          !is_ati2n) &&
         r300_is_sampler_format_supported(format)) {
         retval |= PIPE_BIND_SAMPLER_VIEW;
