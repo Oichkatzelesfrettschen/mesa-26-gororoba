@@ -62,6 +62,17 @@ r300vk_cmd_buffer_reset_recording_state(struct r300vk_cmd_buffer *cmd)
    cmd->bound_pipeline          = NULL;
    cmd->bound_compute_pipeline  = NULL;
    cmd->current_color_image     = NULL;
+
+   /* The bound index buffer holds a pointer to an r300vk_buffer that the app
+    * may destroy before re-recording.  vkResetCommandBuffer / vkBeginCommandBuffer
+    * return the buffer to the initial state where that binding is undefined, so
+    * drop it here.  A re-recorded vkCmdDrawIndexed without a fresh
+    * vkCmdBindIndexBuffer then snapshots a NULL buffer with index_size 0, which
+    * the replay's index guard skips, rather than dereferencing a freed buffer. */
+   cmd->bound_index_buffer      = NULL;
+   cmd->bound_index_offset      = 0;
+   cmd->bound_index_size        = 0;
+   cmd->bound_index_range       = 0;
 }
 
 static VkResult
@@ -323,7 +334,11 @@ r300vk_index_type_bytes(VkIndexType type)
    case VK_INDEX_TYPE_UINT8:  return 1;
    case VK_INDEX_TYPE_UINT16: return 2;
    case VK_INDEX_TYPE_UINT32: return 4;
-   default:                   return 2;
+   /* Fail closed on VK_INDEX_TYPE_NONE_KHR and any unrecognized value: a 0
+    * stride sets bound_index_size to 0, and the indexed-draw replay guard
+    * (di->index_size == 0) skips the draw rather than fetch with a guessed
+    * stride.  Returning 2 here would silently reinterpret the indices. */
+   default:                   return 0;
    }
 }
 
