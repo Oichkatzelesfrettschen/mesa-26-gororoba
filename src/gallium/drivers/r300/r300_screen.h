@@ -44,6 +44,11 @@ struct r300_screen {
     /* RS482 hybrid-TCL instrumentation stays separate from caps.has_tcl. */
     bool hb_tcl;
     unsigned hb_vert_fpu_probe;
+
+    /* R300_EXPERIMENTAL_ATI2N opt-in, read once at screen create.  Gates ATI2N
+     * (RGTC2) sampler advertisement on R300-class parts; see
+     * r300_is_format_supported. */
+    bool experimental_ati2n;
 };
 
 
