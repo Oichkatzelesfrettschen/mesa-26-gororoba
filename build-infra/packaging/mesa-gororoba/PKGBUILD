@@ -107,6 +107,10 @@ build() {
   export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
   export RUSTFLAGS='-C target-cpu=x86-64'
 
+  # Idempotent across repeated build() invocations (e.g. makepkg -e): a stale
+  # build/ from a prior run would make meson setup abort with "already
+  # configured".
+  rm -rf build
   meson setup build "${pkgname}" \
     --prefix="${_prefix}" \
     --sysconfdir=/etc \
@@ -147,20 +151,21 @@ package() {
   install -Dm644 mesa-26-gororoba-profile.sh \
     "${pkgdir}/etc/profile.d/mesa-26-gororoba.sh"
   install -Dm644 90-mesa-gororoba-r300.conf \
-    "${pkgdir}/usr/share/environment.d/90-mesa-gororoba-r300.conf"
+    "${pkgdir}/usr/lib/environment.d/90-mesa-gororoba-r300.conf"
   install -Dm644 20-rs482-modesetting-glamor.conf \
     "${pkgdir}/usr/share/mesa-26-gororoba/xorg/20-rs482-modesetting-glamor.conf"
 
   # Compatibility aliases for older build-infra and local scripts.  Release
   # artifacts live in the system Mesa prefix; debug artifacts keep their own
-  # opt prefix.
-  install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share" "${pkgdir}/usr/share"
+  # opt prefix.  /usr/share/mesa-26-gororoba is NOT aliased to /usr: it is a real
+  # directory holding the staged xorg.conf.d sample (see below), and a symlink
+  # there would land the sample at /usr/xorg through the link and drop the
+  # directory.
+  install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share"
   ln -s /usr \
     "${pkgdir}/opt/local/mesa-26-gororoba"
   ln -s /usr \
     "${pkgdir}/opt/share/mesa-26-gororoba"
-  ln -s /usr \
-    "${pkgdir}/usr/share/mesa-26-gororoba"
 
   # Mesa ships its license summary as docs/license.rst (Arch/CachyOS practice).
   # A missing license is a packaging defect, not something to swallow silently.
