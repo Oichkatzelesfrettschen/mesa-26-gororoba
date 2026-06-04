@@ -345,10 +345,13 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
 }
 
 static const struct vk_device_extension_table r300vk_device_extensions_supported = {
-   /* Empty: the loader-visible skeleton advertises no device extensions
-    * until the device layer and WSI bring-up wire VK_KHR_swapchain and
-    * the external-memory family. */
-   0
+   /* Host-side query reset is a CPU clear of the per-slot query storage
+    * (r300vk_ResetQueryPool); it needs no GPU-side encoding, so the
+    * always-available host queue model supports it directly.  Advertising it
+    * also exposes the core vkResetQueryPool entrypoint on this Vulkan 1.0
+    * device.  WSI (VK_KHR_swapchain) and the external-memory family stay
+    * withheld until the device layer brings them up. */
+   .EXT_host_query_reset = true,
 };
 
 static void
@@ -363,6 +366,10 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * occlusion query is what the replay records (basic occlusion queries need no
     * feature bit).  Pipeline-statistics queries stay unsupported. */
    features->occlusionQueryPrecise = true;
+   /* Host query reset clears the per-slot CPU query storage; the serialized
+    * replay queue retires all prior work before the host call returns, so the
+    * clear never races a GPU-side query write. */
+   features->hostQueryReset = true;
 }
 
 void
