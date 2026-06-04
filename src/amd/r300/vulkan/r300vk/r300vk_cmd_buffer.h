@@ -57,6 +57,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_BEGIN_QUERY,
    R300VK_CMD_END_QUERY,
    R300VK_CMD_RESET_QUERY_POOL,
+   R300VK_CMD_COPY_QUERY_POOL_RESULTS,
 };
 
 struct r300vk_query_pool;
@@ -296,6 +297,21 @@ struct r300vk_cmd_reset_query_pool {
    uint32_t                  query_count;
 };
 
+/* One vkCmdCopyQueryPoolResults.  r300vk assigns no buffer device address, so
+ * the vk_common implementation (which resolves the buffer through
+ * vk_buffer_address and asserts on a zero device address) cannot run; copy on
+ * the host from the same per-slot storage GetQueryPoolResults reads, into the
+ * destination buffer's mapped resource at replay. */
+struct r300vk_cmd_copy_query_pool_results {
+   struct r300vk_query_pool *pool;
+   struct r300vk_buffer     *dst;
+   uint32_t                  first_query;
+   uint32_t                  query_count;
+   VkDeviceSize              dst_offset;
+   VkDeviceSize              stride;
+   VkQueryResultFlags        flags;
+};
+
 struct r300vk_cmd_entry {
    enum r300vk_cmd_type type;
    union {
@@ -323,6 +339,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_bind_descriptor_sets bind_dsets;
       struct r300vk_cmd_query                query;
       struct r300vk_cmd_reset_query_pool     reset_query_pool;
+      struct r300vk_cmd_copy_query_pool_results copy_query_pool_results;
    };
 };
 
