@@ -346,14 +346,18 @@ struct funcinfo_t
     uint32_t count = 0;
 };
 static std::unordered_map< pid_t, std::unordered_map< const char *, funcinfo_t > > g_hotfuncs;
-#endif // __cplusplus
 
+// Only the C++ hot-function accounting path (gpuvis_count_hot_func_calls_internal_)
+// reads the raw tid, so gpuvis_gettid stays inside the C++ block.  A C translation
+// unit that defines GPUVIS_TRACE_IMPLEMENTATION would otherwise carry it as an
+// unused static function.
 static pid_t gpuvis_gettid()
 {
     return ( pid_t )syscall( SYS_gettid );
 }
+#endif // __cplusplus
 
-static int exec_tracecmd_argv( char *const argv[], bool background, const char *log_path )
+static int exec_tracecmd_argv( const char *const argv[], bool background, const char *log_path )
 {
     int ret = -1;
     int pipefd[ 2 ] = { -1, -1 };
@@ -385,7 +389,7 @@ static int exec_tracecmd_argv( char *const argv[], bool background, const char *
                     }
                 }
 
-                execvp( argv[ 0 ], argv );
+                execvp( argv[ 0 ], ( char *const * )argv );
                 _exit( 127 );
             }
 
@@ -435,7 +439,7 @@ static int exec_tracecmd_argv( char *const argv[], bool background, const char *
             close( pipefd[ 1 ] );
         }
 
-        execvp( argv[ 0 ], argv );
+        execvp( argv[ 0 ], ( char *const * )argv );
         _exit( 127 );
     }
 
@@ -684,8 +688,8 @@ GPUVIS_EXTERN int gpuvis_start_tracing( unsigned int kbuffersize )
         kbuffersize = 16 * 1024;
     snprintf( kbufstr, sizeof( kbufstr ), "%u", kbuffersize );
 
-    char *const argv[] = {
-        ( char * )"trace-cmd", "start", "-b", kbufstr, "-D", "-i",
+    const char *const argv[] = {
+        "trace-cmd", "start", "-b", kbufstr, "-D", "-i",
         "-e", "sched:sched_switch",
         "-e", "sched:sched_process_fork",
         "-e", "sched:sched_process_exec",
@@ -742,21 +746,21 @@ GPUVIS_EXTERN int gpuvis_trigger_capture_and_keep_tracing( char *filename, size_
         exename = exename ? ( exename + 1 ) : "trace";
 
         // Stop tracing
-        char *const stop_argv[] = { ( char * )"trace-cmd", "stop", NULL };
+        const char *const stop_argv[] = { "trace-cmd", "stop", NULL };
         exec_tracecmd_argv( stop_argv, false, NULL );
 
         // Save the trace data to something like "glxgears_2017-10-13_17-52-56.dat"
         char outfile[ PATH_MAX ];
         snprintf( outfile, sizeof( outfile ), "%s_%s.dat", exename, datetime );
 
-        char *const extract_argv[] = { ( char * )"trace-cmd", "extract", "-k", "-o", outfile, NULL };
+        const char *const extract_argv[] = { "trace-cmd", "extract", "-k", "-o", outfile, NULL };
         ret = exec_tracecmd_argv( extract_argv, true, "/tmp/blah.log" );
 
         if ( filename && !ret )
             snprintf( filename, size, "%s_%s.dat", exename, datetime );
 
         // Restart tracing
-        char *const restart_argv[] = { ( char * )"trace-cmd", "restart", NULL };
+        const char *const restart_argv[] = { "trace-cmd", "restart", NULL };
         exec_tracecmd_argv( restart_argv, false, NULL );
     }
 
@@ -767,11 +771,11 @@ GPUVIS_EXTERN int gpuvis_stop_tracing()
 {
     flush_hot_func_calls();
 
-    char *const reset_argv[] = { ( char * )"trace-cmd", "reset", NULL };
+    const char *const reset_argv[] = { "trace-cmd", "reset", NULL };
     int ret = exec_tracecmd_argv( reset_argv, false, NULL );
 
     // Try freeing any snapshot buffers as well
-    char *const snapshot_argv[] = { ( char * )"trace-cmd", "snapshot", "-f", NULL };
+    const char *const snapshot_argv[] = { "trace-cmd", "snapshot", "-f", NULL };
     exec_tracecmd_argv( snapshot_argv, false, NULL );
 
     return ret;
