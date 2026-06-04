@@ -409,6 +409,26 @@ r300vk_nir_uses_ubo(nir_shader *nir)
    return false;
 }
 
+/* True if the shader samples a texture (any tex instruction).  RS480-family has
+ * no hardware vertex texture units; the vertex shader runs in software through
+ * the Gallium draw module, and r300vk binds no sampler views/states to that
+ * draw module, so a tex executed by the SW-TCL vertex shader dereferences a NULL
+ * sampler in tgsi_exec fetch_texel and segfaults at draw.  r300vk_compile_shader
+ * uses this to reject a vertex shader that samples rather than crash. */
+static bool
+r300vk_nir_uses_texture(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_tex)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
 /* Lower push-constant loads onto the single constant file.  nir_lower_explicit_io
  * with push_const has turned each access into load_push_constant(offset) with a
  * BASE/RANGE; rewrite it to load_ubo(block 0, BASE + offset) so it flows through
@@ -697,6 +717,22 @@ r300vk_compile_shader(struct r300vk_device *device,
     * inside r300g's nir_to_rc uses driver_location as the RC input base, so
     * all inputs would collapse to IN[0] without this assignment. */
    if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
+      /* RS480-family has no hardware vertex texture units, and the SW-TCL draw
+       * module that runs the vertex shader has no sampler views bound by r300vk,
+       * so a vertex texture fetch reaches tgsi_exec fetch_texel with a NULL
+       * sampler (vs_exec_run_linear -> r300_swtcl_draw_vbo) and segfaults at
+       * draw.  Reject a vertex shader that samples rather than crash.  A
+       * conformant vertex-texturing path must bind the draw module's
+       * PIPE_SHADER_VERTEX sampler views and sampler state before this gate can
+       * be removed. */
+      if (r300vk_nir_uses_texture(nir)) {
+         ralloc_free(nir);
+         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                          "r300vk: vertex shader samples a texture; the RS480 "
+                          "SW-TCL vertex path binds no sampler and cannot fetch "
+                          "from a vertex stage");
+      }
+
       /* vk_spirv_to_nir leaves gl_VertexIndex / gl_InstanceIndex as a load_deref
        * of a nir_var_system_value variable and never gathers system_values_read,
        * so nir->info cannot be trusted to flag the read here.  Scan the NIR for
@@ -1594,10 +1630,10 @@ r300vk_zpass_reduction_synthesize_shaders(struct r300vk_device *device,
  * this FS pass_count times, swapping the sampler/target RT pair each pass, so
  * the texel doubles once per pass and lands at in * 2^pass_count.
  *
- * First-cut limitation: the FS hard-codes the doubling step, matching the
- * probe kernel `x = x * 2u`.  The detector records step_op so a future cut can
- * generalise to other per-iteration scales; the doubling-only synthesis
- * mirrors the iadd-first scoping of the blend-acc reduction. */
+ * Supported shape: the FS hard-codes the doubling step, matching the probe
+ * kernel `x = x * 2u`.  Other per-iteration scales need a distinct lowering
+ * shape keyed by step_op; the doubling-only synthesis mirrors the iadd-first
+ * scoping of the blend-acc reduction. */
 static void *
 r300vk_synthesize_multipass_scan_fs(struct pipe_context *pipe)
 {
