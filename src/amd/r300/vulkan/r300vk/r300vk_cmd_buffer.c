@@ -745,6 +745,36 @@ r300vk_CmdResetQueryPool(VkCommandBuffer commandBuffer,
    e->reset_query_pool.query_count = queryCount;
 }
 
+/* r300vk has no buffer device address, so the runtime's vk_common
+ * CmdCopyQueryPoolResults (which resolves dstBuffer via vk_buffer_address and
+ * asserts on a zero device address) cannot run.  Record the copy and resolve it
+ * on the host at replay, after the end-query store, from the per-slot storage. */
+void
+r300vk_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer,
+                               VkQueryPool queryPool,
+                               uint32_t firstQuery,
+                               uint32_t queryCount,
+                               VkBuffer dstBuffer,
+                               VkDeviceSize dstOffset,
+                               VkDeviceSize stride,
+                               VkQueryResultFlags flags)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(vk_query_pool, vk_pool, queryPool);
+   VK_FROM_HANDLE(r300vk_buffer, dst, dstBuffer);
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type                              = R300VK_CMD_COPY_QUERY_POOL_RESULTS;
+   e->copy_query_pool_results.pool        = r300vk_query_pool(vk_pool);
+   e->copy_query_pool_results.dst         = dst;
+   e->copy_query_pool_results.first_query = firstQuery;
+   e->copy_query_pool_results.query_count = queryCount;
+   e->copy_query_pool_results.dst_offset  = dstOffset;
+   e->copy_query_pool_results.stride      = stride;
+   e->copy_query_pool_results.flags       = flags;
+}
+
 void
 r300vk_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
                       const VkCopyBufferInfo2 *pCopyBufferInfo)
