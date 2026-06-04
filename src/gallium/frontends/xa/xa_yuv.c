@@ -92,8 +92,8 @@ xa_yuv_bind_samplers(struct xa_context *r, struct xa_surface *yuv[])
 	    r->pipe->create_sampler_view(r->pipe, yuv[i]->tex, &view_templ);
     }
     r->num_bound_samplers = 3;
-    cso_set_samplers(r->cso, PIPE_SHADER_FRAGMENT, 3, (const struct pipe_sampler_state **)samplers);
-    r->pipe->set_sampler_views(r->pipe, PIPE_SHADER_FRAGMENT, 0, 3, 0, false, r->bound_sampler_views);
+    cso_set_samplers(r->cso, MESA_SHADER_FRAGMENT, 3, (const struct pipe_sampler_state **)samplers);
+    r->pipe->set_sampler_views(r->pipe, MESA_SHADER_FRAGMENT, 0, 3, 0, false, r->bound_sampler_views);
 }
 
 static void
@@ -101,7 +101,7 @@ xa_yuv_fs_constants(struct xa_context *r, const float conversion_matrix[])
 {
     const int param_bytes = 16 * sizeof(float);
 
-    renderer_set_constants(r, PIPE_SHADER_FRAGMENT,
+    renderer_set_constants(r, MESA_SHADER_FRAGMENT,
 			   conversion_matrix, param_bytes);
 }
 

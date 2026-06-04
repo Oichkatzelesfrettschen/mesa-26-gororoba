@@ -93,7 +93,7 @@ renderer_draw(struct xa_context *r)
     memcpy(velems.velems, r->velems, sizeof(r->velems[0]) * velems.count);
 
     cso_set_vertex_elements(r->cso, &velems);
-    util_draw_user_vertex_buffer(r->cso, r->buffer, PIPE_PRIM_QUADS,
+    util_draw_user_vertex_buffer(r->cso, r->buffer, MESA_PRIM_QUADS,
                                  num_verts,	/* verts */
                                  r->attrs_per_vertex);	/* attribs/vert */
     r->buffer_size = 0;
@@ -361,7 +361,7 @@ renderer_bind_destination(struct xa_context *r,
 	r->fb_width = width;
 	r->fb_height = height;
 
-	renderer_set_constants(r, PIPE_SHADER_VERTEX,
+	renderer_set_constants(r, MESA_SHADER_VERTEX,
 			       vs_consts, sizeof vs_consts);
     }
 
@@ -374,7 +374,7 @@ renderer_set_constants(struct xa_context *r,
 		       int shader_type, const float *params, int param_bytes)
 {
     struct pipe_resource **cbuf =
-	(shader_type == PIPE_SHADER_VERTEX) ? &r->vs_const_buffer :
+	(shader_type == MESA_SHADER_VERTEX) ? &r->vs_const_buffer :
 	&r->fs_const_buffer;
 
     pipe_resource_reference(cbuf, NULL);
@@ -434,7 +434,7 @@ renderer_copy_prepare(struct xa_context *r,
 	sampler.min_img_filter = PIPE_TEX_FILTER_NEAREST;
 	sampler.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
 	sampler.normalized_coords = 1;
-        cso_set_samplers(r->cso, PIPE_SHADER_FRAGMENT, 1, &p_sampler);
+        cso_set_samplers(r->cso, MESA_SHADER_FRAGMENT, 1, &p_sampler);
         r->num_bound_samplers = 1;
     }
 
@@ -446,7 +446,7 @@ renderer_copy_prepare(struct xa_context *r,
 	u_sampler_view_default_template(&templ,
 					src_texture, src_texture->format);
 	src_view = pipe->create_sampler_view(pipe, src_texture, &templ);
-	pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 1, 0, false, &src_view);
+	pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, false, &src_view);
 	pipe_sampler_view_reference(&src_view, NULL);
     }
 
@@ -530,7 +530,7 @@ renderer_draw_yuv(struct xa_context *r,
    memcpy(velems.velems, r->velems, sizeof(r->velems[0]) * velems.count);
 
    cso_set_vertex_elements(r->cso, &velems);
-   util_draw_user_vertex_buffer(r->cso, r->buffer, PIPE_PRIM_QUADS,
+   util_draw_user_vertex_buffer(r->cso, r->buffer, MESA_PRIM_QUADS,
                                 4,	/* verts */
                                 num_attribs);	/* attribs/vert */
    r->buffer_size = 0;
@@ -543,7 +543,7 @@ renderer_begin_solid(struct xa_context *r)
 {
     r->buffer_size = 0;
     r->attrs_per_vertex = 1;
-    renderer_set_constants(r, PIPE_SHADER_FRAGMENT, r->solid_color,
+    renderer_set_constants(r, MESA_SHADER_FRAGMENT, r->solid_color,
                            4 * sizeof(float));
 }
 
@@ -579,7 +579,7 @@ renderer_begin_textures(struct xa_context *r)
     r->attrs_per_vertex = 1 + r->num_bound_samplers;
     r->buffer_size = 0;
     if (r->has_solid_src || r->has_solid_mask)
-       renderer_set_constants(r, PIPE_SHADER_FRAGMENT, r->solid_color,
+       renderer_set_constants(r, MESA_SHADER_FRAGMENT, r->solid_color,
                               4 * sizeof(float));
 }
 
