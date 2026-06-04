@@ -378,26 +378,18 @@ r300vk_image_subresource_layout(VkImage _image,
    }
 }
 
+/* GetImageSubresourceLayout2, ...2KHR (KHR_maintenance5) and ...2EXT
+ * (EXT_host_image_copy) are aliases of one entrypoint: the generated device
+ * entrypoint table maps all three names to a single dispatch slot.  Defining a
+ * driver function for more than one alias makes
+ * vk_device_dispatch_table_from_entrypoints fill that slot twice and trip its
+ * assert(disp[disp_index] == NULL) at vkCreateDevice, aborting every r300vk
+ * device.  Define only the core form, as every other Mesa driver does; the
+ * table dispatches the KHR/EXT names to it. */
 VKAPI_ATTR void VKAPI_CALL
 r300vk_GetImageSubresourceLayout2(VkDevice device, VkImage image,
                                   const VkImageSubresource2 *pSubresource,
                                   VkSubresourceLayout2 *pLayout)
-{
-   r300vk_image_subresource_layout(image, pLayout);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r300vk_GetImageSubresourceLayout2KHR(VkDevice device, VkImage image,
-                                     const VkImageSubresource2 *pSubresource,
-                                     VkSubresourceLayout2 *pLayout)
-{
-   r300vk_image_subresource_layout(image, pLayout);
-}
-
-VKAPI_ATTR void VKAPI_CALL
-r300vk_GetImageSubresourceLayout2EXT(VkDevice device, VkImage image,
-                                     const VkImageSubresource2 *pSubresource,
-                                     VkSubresourceLayout2 *pLayout)
 {
    r300vk_image_subresource_layout(image, pLayout);
 }
