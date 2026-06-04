@@ -152,7 +152,7 @@ create_vs(struct pipe_context *pipe, unsigned vs_traits)
     boolean is_mask_src = (vs_traits & VS_MASK_SRC) != 0;
     unsigned input_slot = 0;
 
-    ureg = ureg_create(PIPE_SHADER_VERTEX);
+    ureg = ureg_create(MESA_SHADER_VERTEX);
     if (ureg == NULL)
 	return 0;
 
@@ -366,7 +366,7 @@ create_fs(struct pipe_context *pipe, unsigned fs_traits)
     (void)print_fs_traits;
 #endif
 
-    ureg = ureg_create(PIPE_SHADER_FRAGMENT);
+    ureg = ureg_create(MESA_SHADER_FRAGMENT);
     if (ureg == NULL)
 	return 0;
 
@@ -439,9 +439,9 @@ cache_destroy(struct pipe_context *pipe,
     while (!cso_hash_iter_is_null(iter)) {
 	void *shader = (void *)cso_hash_iter_data(iter);
 
-	if (processor == PIPE_SHADER_FRAGMENT) {
+	if (processor == MESA_SHADER_FRAGMENT) {
 	    pipe->delete_fs_state(pipe, shader);
-	} else if (processor == PIPE_SHADER_VERTEX) {
+	} else if (processor == MESA_SHADER_VERTEX) {
 	    pipe->delete_vs_state(pipe, shader);
 	}
 	iter = cso_hash_erase(hash, iter);
@@ -452,8 +452,8 @@ cache_destroy(struct pipe_context *pipe,
 void
 xa_shaders_destroy(struct xa_shaders *sc)
 {
-    cache_destroy(sc->r->pipe, &sc->vs_hash, PIPE_SHADER_VERTEX);
-    cache_destroy(sc->r->pipe, &sc->fs_hash, PIPE_SHADER_FRAGMENT);
+    cache_destroy(sc->r->pipe, &sc->vs_hash, MESA_SHADER_VERTEX);
+    cache_destroy(sc->r->pipe, &sc->fs_hash, MESA_SHADER_FRAGMENT);
 
     FREE(sc);
 }
@@ -467,7 +467,7 @@ shader_from_cache(struct pipe_context *pipe,
     struct cso_hash_iter iter = cso_hash_find(hash, key);
 
     if (cso_hash_iter_is_null(iter)) {
-	if (type == PIPE_SHADER_VERTEX)
+	if (type == MESA_SHADER_VERTEX)
 	    shader = create_vs(pipe, key);
 	else
 	    shader = create_fs(pipe, key);
@@ -484,9 +484,9 @@ xa_shaders_get(struct xa_shaders *sc, unsigned vs_traits, unsigned fs_traits)
     struct xa_shader shader = { NULL, NULL };
     void *vs, *fs;
 
-    vs = shader_from_cache(sc->r->pipe, PIPE_SHADER_VERTEX,
+    vs = shader_from_cache(sc->r->pipe, MESA_SHADER_VERTEX,
 			   &sc->vs_hash, vs_traits);
-    fs = shader_from_cache(sc->r->pipe, PIPE_SHADER_FRAGMENT,
+    fs = shader_from_cache(sc->r->pipe, MESA_SHADER_FRAGMENT,
 			   &sc->fs_hash, fs_traits);
 
     debug_assert(vs && fs);
