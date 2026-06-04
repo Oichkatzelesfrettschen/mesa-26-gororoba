@@ -220,6 +220,35 @@ r300vk_GetQueryPoolResults(VkDevice _device,
    return result;
 }
 
+/* Host-side query reset (VK_EXT_host_query_reset / core vkResetQueryPool).  The
+ * CPU-replay queue drains every prior submit before returning to the host, so
+ * when the application calls this the recorded results are already retired and
+ * no GPU-side write races the clear.  Clear the per-slot result and availability
+ * over [firstQuery, firstQuery+queryCount) exactly as the
+ * R300VK_CMD_RESET_QUERY_POOL replay does, so a subsequent vkGetQueryPoolResults
+ * sees the slots unavailable.  The range is bounds-clamped against the pool to
+ * match the command-buffer reset's defensive clamp. */
+void
+r300vk_ResetQueryPool(VkDevice _device,
+                      VkQueryPool _pool,
+                      uint32_t firstQuery,
+                      uint32_t queryCount)
+{
+   VK_FROM_HANDLE(vk_query_pool, vk_pool, _pool);
+   struct r300vk_query_pool *pool = r300vk_query_pool(vk_pool);
+   (void)_device;
+
+   if (firstQuery >= vk_pool->query_count)
+      return;
+   uint32_t n = queryCount;
+   if (n > vk_pool->query_count - firstQuery)
+      n = vk_pool->query_count - firstQuery;
+   for (uint32_t i = 0; i < n; i++) {
+      pool->queries[firstQuery + i].result    = 0;
+      pool->queries[firstQuery + i].available = false;
+   }
+}
+
 VkResult
 r300vk_CreateEvent(VkDevice _device,
                    const VkEventCreateInfo *pCreateInfo,
