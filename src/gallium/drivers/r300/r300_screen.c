@@ -351,7 +351,7 @@ static bool r300_is_format_supported(struct pipe_screen* screen,
 	 * disabled, so default behavior is unchanged.
 	 */
         (is_r500 ||
-         (is_ati2n && getenv("R300_EXPERIMENTAL_ATI2N")) ||
+         (is_ati2n && r300_screen(screen)->experimental_ati2n) ||
          !is_ati2n) &&
         r300_is_sampler_format_supported(format)) {
         retval |= PIPE_BIND_SAMPLER_VIEW;
@@ -752,6 +752,10 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         r300screen->options.ieeemath = true;
     if (SCREEN_DBG_ON(r300screen, DBG_FFMATH))
         r300screen->options.ffmath = true;
+
+    /* Read the experimental ATI2N opt-in once here rather than on every
+     * r300_is_format_supported query for an RGTC2/LATC2 format. */
+    r300screen->experimental_ati2n = getenv("R300_EXPERIMENTAL_ATI2N") != NULL;
 
     const char *hb_tcl = getenv("R300_HB_TCL");
     if (!r300screen->caps.has_tcl &&
