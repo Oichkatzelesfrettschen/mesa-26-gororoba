@@ -1,0 +1,75 @@
+# libva-r300: stock libva with one added driver-name-map entry so VA-API
+# auto-detects the r300 Gallium VA driver on the radeon kernel driver.
+#
+# Why: libva's va/drm/va_drm_utils.c maps the "radeon" kernel driver to the VA
+# driver candidates { "r600", "radeonsi" } only.  RS482 (CHIP_RS480, no UVD) is
+# served by mesa's r300_drv_video.so (g3dvl MPEG-2 VLD), which libva never tries,
+# so vaInitialize() fails unless LIBVA_DRIVER_NAME=r300 is forced.  The patch
+# appends "r300" to the radeon candidate list (and bumps MAX_NAMES 2->3); r600
+# and radeonsi are still tried first, so this is safe for all radeon hardware --
+# r300 is only reached as a fallback, and on RS482 it is the only VA driver that
+# exists.  This restores the r300 VA codec support the fork carries from the
+# mesa 21.3.3-era g3dvl port; the gap was always libva-side, never mesa-side.
+#
+# Build/install (on the RS482 host):
+#   updpkgsums && makepkg -si
+# Verify auto-detect WITHOUT the env override:
+#   unset LIBVA_DRIVER_NAME; vainfo --display drm --device /dev/dri/renderD128
+
+pkgname=libva-r300
+pkgver=2.23.0
+pkgrel=1
+pkgdesc='libva with the radeon->r300 VA driver-name map entry (RS482 g3dvl MPEG-2 auto-detect)'
+arch=('x86_64')
+url='https://github.com/intel/libva'
+license=('MIT')
+depends=(libdrm libgl libx11 libxext libxfixes wayland)
+makedepends=(meson ninja wayland-protocols clang lld)
+provides=("libva=${pkgver}-${pkgrel}" libva-driver)
+conflicts=(libva)
+replaces=(libva)
+source=("https://github.com/intel/libva/releases/download/${pkgver}/libva-${pkgver}.tar.bz2"
+        'add-radeon-r300-va-driver-map.patch')
+sha256sums=('9ac190a87017bfd49743248f5df7cf3b18a99a9962175caf6bbe3f1ea41b6dbb'
+            '4d5c1d4d6de7be542035358cec5990650546637e25b0995a86b312a3a4ef2496')
+
+prepare() {
+  cd "libva-${pkgver}"
+  patch -p1 < "${srcdir}/add-radeon-r300-va-driver-map.patch"
+}
+
+build() {
+  # Match the mesa-gororoba fabric: ccache+clang+lld when available, x86-64 psABI
+  # baseline so the artifact runs on the K8 Turion 64 X2 (no SSE4.2/AVX).
+  if command -v ccache >/dev/null 2>&1; then
+    export CC='ccache clang'
+    export CXX='ccache clang++'
+  else
+    export CC=clang
+    export CXX=clang++
+  fi
+  export CC_LD=lld CXX_LD=lld
+  export CFLAGS='-march=x86-64 -mtune=generic -O2 -fexceptions -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security'
+  export CXXFLAGS="${CFLAGS}"
+  export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
+
+  meson setup build "libva-${pkgver}" \
+    --prefix=/usr \
+    --sysconfdir=/etc \
+    --buildtype=release \
+    --wrap-mode=nofallback \
+    -D driverdir=/usr/lib/dri \
+    -D disable_drm=false \
+    -D with_x11=yes \
+    -D with_glx=yes \
+    -D with_wayland=yes \
+    -D with_win32=no \
+    -D enable_docs=false
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "${pkgdir}"
+  install -Dm644 "libva-${pkgver}/COPYING" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING"
+}
