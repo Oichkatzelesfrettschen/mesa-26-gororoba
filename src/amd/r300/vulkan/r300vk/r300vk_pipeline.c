@@ -610,6 +610,20 @@ r300vk_compile_shader(struct r300vk_device *device,
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
 
+   /* vk_spirv_to_nir lowers SPIR-V Private-storage-class variables to
+    * nir_var_shader_temp and then deletes every non-entrypoint function
+    * (nir_remove_non_cmat_call_entrypoints), so each Private variable ends up
+    * used only in the one remaining function yet still carries the shader_temp
+    * mode.  r300's nir_to_tgsi path promotes locals with nir_lower_vars_to_ssa
+    * and nir_lower_locals_to_regs, both of which act on nir_var_function_temp
+    * and skip shader_temp; a surviving load_deref of the Private variable would
+    * reach ntt_get_alu_src with an unassigned ureg and trip the
+    * TGSI_FILE_NULL assert in ureg_swizzle -- an abort under asserts, a wrong
+    * constant-file read once asserts are compiled out.  Localize the
+    * single-function Private variables to function_temp so the ntt local
+    * promotion passes own them. */
+   NIR_PASS(_, nir, nir_lower_global_vars_to_local);
+
    /* Push constants and a UBO both resolve to CONST[0]; r300's single constant
     * file cannot host both, so reject the pair before the lowering below rewrites
     * the UBO chain away.  A shader using only one of them is supported. */
