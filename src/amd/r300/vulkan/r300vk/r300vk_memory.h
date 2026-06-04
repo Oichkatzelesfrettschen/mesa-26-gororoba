@@ -56,6 +56,10 @@ struct r300vk_device_memory {
    struct pipe_resource  *resource;  /* NULL until first map or BindBufferMemory2/BindImageMemory2 */
    struct pipe_resource  *bound_resource;  /* owns_buffer: the bound VkBuffer's resource, synced
                                             * with the host map at Flush/Invalidate */
+   struct pipe_resource  *bound_image_tile; /* owns_buffer + linear image: the bound image's single
+                                             * row-major tile, pulled into the host map at Invalidate */
+   uint32_t               bound_image_row_pitch; /* linear-image row stride; 0 when the binding is a
+                                                  * buffer or an optimal image (no host-linear layout) */
    struct pipe_resource  *mapped_resource; /* holds a ref on the resource currently mapped,
                                             * keeping it alive if mem->resource is rebound */
    struct pipe_transfer  *transfer;  /* non-NULL while mapped */

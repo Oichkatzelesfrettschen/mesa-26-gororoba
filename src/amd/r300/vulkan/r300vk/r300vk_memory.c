@@ -65,6 +65,7 @@ r300vk_FreeMemory(VkDevice _device,
    pipe_resource_reference(&mem->mapped_resource, NULL);
    pipe_resource_reference(&mem->resource, NULL);
    pipe_resource_reference(&mem->bound_resource, NULL);
+   pipe_resource_reference(&mem->bound_image_tile, NULL);
 
    vk_object_base_finish(&mem->base);
    vk_free2(&device->vk.alloc, pAllocator, mem);
@@ -248,6 +249,48 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
    return VK_SUCCESS;
 }
 
+/* Pull a map-before-bind linear image's tile into the live host map.  The
+ * companion to r300vk_sync_owns_buffer for the image case: an owns_buffer
+ * allocation later bound to a linear image keeps its host map on the lazy
+ * buffer, while the image's pixels live in a separate row-major r300g tile that
+ * a GPU copy fills.  The tile stride equals bound_image_row_pitch, which is the
+ * pitch GetImageSubresourceLayout reported and r300vk_image_memory_size sized,
+ * so copy every tile row into the map at memory_offset.  Only image -> host
+ * (Invalidate) is implemented; a host -> image upload path is not yet exercised
+ * and is intentionally absent rather than shipped untested. */
+static VkResult
+r300vk_sync_owns_image(struct r300vk_device *device,
+                       struct r300vk_device_memory *mem)
+{
+   if (!mem->owns_buffer || !mem->bound_image_tile ||
+       mem->bound_image_row_pitch == 0 || !mem->map_ptr)
+      return VK_SUCCESS;
+
+   struct pipe_resource *tile = mem->bound_image_tile;
+   const unsigned pitch = mem->bound_image_row_pitch;
+   const unsigned height = tile->height0;
+
+   if (mem->memory_offset + (VkDeviceSize)pitch * height > mem->size)
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+   struct pipe_box box;
+   u_box_origin_2d(tile->width0, height, &box);
+   struct pipe_transfer *xfer = NULL;
+   const uint8_t *src = device->pipe->texture_map(device->pipe, tile, 0,
+                                                  PIPE_MAP_READ, &box, &xfer);
+   if (!src)
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+
+   uint8_t *dst = (uint8_t *)mem->map_ptr + mem->memory_offset;
+   const unsigned row_bytes =
+      pitch < (unsigned)xfer->stride ? pitch : (unsigned)xfer->stride;
+   for (unsigned row = 0; row < height; row++)
+      memcpy(dst + (size_t)row * pitch, src + (size_t)row * xfer->stride, row_bytes);
+
+   device->pipe->texture_unmap(device->pipe, xfer);
+   return VK_SUCCESS;
+}
+
 VkResult
 r300vk_FlushMappedMemoryRanges(VkDevice _device,
                                 uint32_t memoryRangeCount,
@@ -276,6 +319,11 @@ r300vk_InvalidateMappedMemoryRanges(VkDevice _device,
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
       VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
       VkResult result = r300vk_sync_owns_buffer(device, mem, false /* buffer -> host */);
+      if (result != VK_SUCCESS)
+         return result;
+      /* A linear image bound to an owns_buffer allocation needs the image -> host
+       * pull instead; one of the two syncs is a no-op for any given binding. */
+      result = r300vk_sync_owns_image(device, mem);
       if (result != VK_SUCCESS)
          return result;
    }
@@ -335,15 +383,27 @@ r300vk_BindImageMemory2(VkDevice _device,
       if (pBindInfos[i].memoryOffset + r300vk_image_memory_size(img) > mem->size)
          return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
-      /* If the memory was mapped before bind, vkMapMemory created its own lazy
-       * HOST_VISIBLE pipe_buffer and a transfer that borrows it.  Vulkan
-       * permits keeping that map alive across this bind; mapped_resource
-       * holds a reference on the lazy buffer so the still-live transfer stays
-       * valid even after mem->resource is replaced by the image's tiled
-       * texture below. */
       mem->memory_offset = pBindInfos[i].memoryOffset;
-      pipe_resource_reference(&mem->resource, img->resource);
-      mem->owns_buffer = false;
+
+      if (mem->owns_buffer && img->vk.tiling == VK_IMAGE_TILING_LINEAR) {
+         /* Map-before-bind linear image: vkMapMemory already created the
+          * memory's own host pipe_buffer and a live map (the deqp default
+          * allocator maps before bind).  The image's pixels live in its own
+          * r300g tile, written by a GPU copy, so the host map and the tile are
+          * separate storage -- mirror the owns_buffer VkBuffer path: keep the
+          * live map, record the tile, and re-sync at Invalidate.  HOST_COHERENT
+          * memory means the app may not call Invalidate, but deqp's image
+          * readback does (verified on RS482), and that is the only point a
+          * stale host map can be refreshed from a row-major tile. */
+         pipe_resource_reference(&mem->bound_image_tile, img->resource);
+         mem->bound_image_row_pitch = img->linear_row_pitch;
+      } else {
+         /* Map-after-bind (or optimal tiling): borrow the image's tiled
+          * resource as mem->resource so a later vkMapMemory maps the texture
+          * directly through the texture branch. */
+         pipe_resource_reference(&mem->resource, img->resource);
+         mem->owns_buffer = false;
+      }
    }
    return VK_SUCCESS;
 }
