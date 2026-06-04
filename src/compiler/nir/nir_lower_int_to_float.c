@@ -78,6 +78,19 @@ check_for_lowered_ffloor(nir_alu_instr *fadd)
    return false;
 }
 
+/* Truncating integer quotient evaluated in floating point.  Signed and
+ * unsigned division both truncate toward zero in the no-integer float model.
+ * nir_lower_int_to_float runs after nir_opt_algebraic, so fdiv is hand-lowered
+ * here when the target lowers it (frcp + fmul instead of fdiv).
+ */
+static nir_def *
+lower_int_to_float_trunc_quotient(nir_builder *b, nir_def *x, nir_def *y)
+{
+   if (b->shader->options->lower_fdiv)
+      return nir_ftrunc(b, nir_fmul(b, x, nir_frcp(b, y)));
+   return nir_ftrunc(b, nir_fdiv(b, x, y));
+}
+
 static bool
 lower_alu_instr(nir_builder *b, nir_alu_instr *alu)
 {
@@ -177,16 +190,42 @@ lower_alu_instr(nir_builder *b, nir_alu_instr *alu)
       alu->op = nir_op_fmul;
       break;
 
-   case nir_op_idiv: {
+   case nir_op_idiv:
+   case nir_op_udiv: {
       nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
       nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
+      rep = lower_int_to_float_trunc_quotient(b, x, y);
+      break;
+   }
 
-      /* Hand-lower fdiv, since lower_int_to_float is after nir_opt_algebraic. */
-      if (b->shader->options->lower_fdiv) {
-         rep = nir_ftrunc(b, nir_fmul(b, x, nir_frcp(b, y)));
-      } else {
-         rep = nir_ftrunc(b, nir_fdiv(b, x, y));
-      }
+   case nir_op_irem:
+   case nir_op_umod: {
+      /* Truncated remainder r = x - y * trunc(x / y).  This is C-style '%',
+       * carrying the sign of the dividend.  Unsigned umod coincides because
+       * trunc equals floor for non-negative operands.
+       */
+      nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
+      nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
+      nir_def *q = lower_int_to_float_trunc_quotient(b, x, y);
+      rep = nir_fsub(b, x, nir_fmul(b, y, q));
+      break;
+   }
+
+   case nir_op_imod: {
+      /* Floored modulo, carrying the sign of the divisor.  Start from the
+       * truncated remainder r and add y when r and y differ in sign, which is
+       * exactly r * y < 0 (r == 0 yields r * y == 0, so no correction).  This
+       * avoids ffloor, which the r300 fragment path (nir_to_rc) does not lower
+       * once nir_lower_int_to_float has run; the truncated quotient reuses the
+       * idiv ftrunc form that nir_to_rc already lowers.
+       */
+      nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
+      nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
+      nir_def *q = lower_int_to_float_trunc_quotient(b, x, y);
+      nir_def *r = nir_fsub(b, x, nir_fmul(b, y, q));
+      nir_def *zero = nir_imm_float(b, 0.0);
+      rep = nir_fadd(b, r,
+                     nir_bcsel(b, nir_flt(b, nir_fmul(b, r, y), zero), y, zero));
       break;
    }
 
