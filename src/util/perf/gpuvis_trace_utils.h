@@ -308,10 +308,13 @@ static inline void gpuvis_trace_blockf_end( struct GpuvisTraceBlockf *block ) {}
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <limits.h>
 #include <fcntl.h>
 #include <sys/vfs.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <linux/magic.h>
 #include <sys/syscall.h>
 
@@ -343,45 +346,127 @@ struct funcinfo_t
     uint32_t count = 0;
 };
 static std::unordered_map< pid_t, std::unordered_map< const char *, funcinfo_t > > g_hotfuncs;
-#endif // __cplusplus
 
+// Only the C++ hot-function accounting path (gpuvis_count_hot_func_calls_internal_)
+// reads the raw tid, so gpuvis_gettid stays inside the C++ block.  A C translation
+// unit that defines GPUVIS_TRACE_IMPLEMENTATION would otherwise carry it as an
+// unused static function.
 static pid_t gpuvis_gettid()
 {
     return ( pid_t )syscall( SYS_gettid );
 }
+#endif // __cplusplus
 
-static int exec_tracecmd( const char *cmd )
+static int exec_tracecmd_argv( const char *const argv[], bool background, const char *log_path )
 {
-    int ret;
+    int ret = -1;
+    int pipefd[ 2 ] = { -1, -1 };
 
-    FILE *fh = popen( cmd, "r" );
-    if ( !fh )
+    /* Background launch (the slow "trace-cmd extract") double-forks: the worker
+     * reparents to init and is reaped there, never lingering as a zombie in the
+     * embedding application.  That is the reaping the old system("... &") shell
+     * used to provide.  The intermediate child exits at once, so the caller
+     * reaps only it and never blocks on the worker. */
+    if ( background )
     {
-        //$ TODO: popen() failed: errno
-        ret = -1;
-    }
-    else
-    {
-        char buf[ 8192 ];
+        pid_t mid = fork();
+        if ( mid == -1 )
+            return -1;
 
-        while ( fgets( buf, sizeof( buf ), fh ) )
+        if ( mid == 0 )
         {
-            //$ TODO
-            printf( "%s: %s", __func__, buf );
+            pid_t worker = fork();
+            if ( worker == 0 )
+            {
+                if ( log_path )
+                {
+                    int fd = open( log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644 );
+                    if ( fd != -1 )
+                    {
+                        dup2( fd, STDOUT_FILENO );
+                        dup2( fd, STDERR_FILENO );
+                        close( fd );
+                    }
+                }
+
+                execvp( argv[ 0 ], ( char *const * )argv );
+                _exit( 127 );
+            }
+
+            _exit( worker == -1 ? 1 : 0 );
         }
 
-        if ( feof( fh ) )
-        {
-            int pclose_ret = pclose( fh );
+        while ( waitpid( mid, NULL, 0 ) == -1 && errno == EINTR )
+            continue;
 
-            ret = WEXITSTATUS( pclose_ret );
+        return 0;
+    }
+
+    if ( !log_path )
+    {
+        if ( pipe( pipefd ) == -1 )
+            return -1;
+    }
+
+    pid_t pid = fork();
+    if ( pid == -1 )
+    {
+        if ( pipefd[ 0 ] != -1 )
+        {
+            close( pipefd[ 0 ] );
+            close( pipefd[ 1 ] );
+        }
+        return -1;
+    }
+
+    if ( pid == 0 )
+    {
+        if ( log_path )
+        {
+            int fd = open( log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644 );
+            if ( fd != -1 )
+            {
+                dup2( fd, STDOUT_FILENO );
+                dup2( fd, STDERR_FILENO );
+                close( fd );
+            }
         }
         else
         {
-            //$ TODO: Failed to read pipe to end: errno
-            pclose( fh );
-            ret = -1;
+            dup2( pipefd[ 1 ], STDOUT_FILENO );
+            dup2( pipefd[ 1 ], STDERR_FILENO );
+            close( pipefd[ 0 ] );
+            close( pipefd[ 1 ] );
         }
+
+        execvp( argv[ 0 ], ( char *const * )argv );
+        _exit( 127 );
+    }
+
+    if ( !log_path )
+    {
+        close( pipefd[ 1 ] );
+        FILE *fh = fdopen( pipefd[ 0 ], "r" );
+        if ( fh )
+        {
+            char buf[ 8192 ];
+            while ( fgets( buf, sizeof( buf ), fh ) )
+            {
+                printf( "exec_tracecmd: %s", buf );
+            }
+            fclose( fh );
+        }
+        else
+        {
+            close( pipefd[ 0 ] );
+        }
+    }
+
+    int status;
+    if ( waitpid( pid, &status, 0 ) != -1 )
+    {
+        if ( WIFEXITED( status ) )
+            ret = WEXITSTATUS( status );
     }
 
     return ret;
@@ -597,40 +682,39 @@ GPUVIS_EXTERN int gpuvis_trace_end_ctx_vprintf( unsigned int ctx, const char *fm
 
 GPUVIS_EXTERN int gpuvis_start_tracing( unsigned int kbuffersize )
 {
-    static const char fmt[] =
-        "trace-cmd start -b %u -D -i "
-        // https://github.com/mikesart/gpuvis/wiki/TechDocs-Linux-Scheduler
-        " -e sched:sched_switch"
-        " -e sched:sched_process_fork"
-        " -e sched:sched_process_exec"
-        " -e sched:sched_process_exit"
-        " -e drm:drm_vblank_event"
-        " -e drm:drm_vblank_event_queued"
-        " -e drm:drm_vblank_event_delivered"
-        // https://github.com/mikesart/gpuvis/wiki/TechDocs-AMDGpu
-        " -e amdgpu:amdgpu_vm_flush"
-        " -e amdgpu:amdgpu_cs_ioctl"
-        " -e amdgpu:amdgpu_sched_run_job"
-        " -e *fence:*fence_signaled"
-        // https://github.com/mikesart/gpuvis/wiki/TechDocs-Intel
-        " -e i915:i915_flip_request"
-        " -e i915:i915_flip_complete"
-        " -e i915:intel_gpu_freq_change"
-        " -e i915:i915_gem_request_add"
-        " -e i915:i915_gem_request_submit"  // Require CONFIG_DRM_I915_LOW_LEVEL_TRACEPOINTS
-        " -e i915:i915_gem_request_in"      // Kconfig option to be enabled.
-        " -e i915:i915_gem_request_out"     //
-        " -e i915:intel_engine_notify"
-        " -e i915:i915_gem_request_wait_begin"
-        " -e i915:i915_gem_request_wait_end 2>&1";
-    char cmd[ 8192 ];
+    char kbufstr[ 16 ];
 
     if ( !kbuffersize )
         kbuffersize = 16 * 1024;
+    snprintf( kbufstr, sizeof( kbufstr ), "%u", kbuffersize );
 
-    snprintf( cmd, sizeof( cmd ), fmt, kbuffersize );
+    const char *const argv[] = {
+        "trace-cmd", "start", "-b", kbufstr, "-D", "-i",
+        "-e", "sched:sched_switch",
+        "-e", "sched:sched_process_fork",
+        "-e", "sched:sched_process_exec",
+        "-e", "sched:sched_process_exit",
+        "-e", "drm:drm_vblank_event",
+        "-e", "drm:drm_vblank_event_queued",
+        "-e", "drm:drm_vblank_event_delivered",
+        "-e", "amdgpu:amdgpu_vm_flush",
+        "-e", "amdgpu:amdgpu_cs_ioctl",
+        "-e", "amdgpu:amdgpu_sched_run_job",
+        "-e", "*fence:*fence_signaled",
+        "-e", "i915:i915_flip_request",
+        "-e", "i915:i915_flip_complete",
+        "-e", "i915:intel_gpu_freq_change",
+        "-e", "i915:i915_gem_request_add",
+        "-e", "i915:i915_gem_request_submit",
+        "-e", "i915:i915_gem_request_in",
+        "-e", "i915:i915_gem_request_out",
+        "-e", "i915:intel_engine_notify",
+        "-e", "i915:i915_gem_request_wait_begin",
+        "-e", "i915:i915_gem_request_wait_end",
+        NULL
+    };
 
-    return exec_tracecmd( cmd );
+    return exec_tracecmd_argv( argv, false, NULL );
 }
 
 GPUVIS_EXTERN int gpuvis_trigger_capture_and_keep_tracing( char *filename, size_t size )
@@ -645,7 +729,6 @@ GPUVIS_EXTERN int gpuvis_trigger_capture_and_keep_tracing( char *filename, size_
     if ( gpuvis_tracing_on() )
     {
         char datetime[ 128 ];
-        char cmd[ PATH_MAX ];
         char exebuf[ PATH_MAX ];
         const char *exename = NULL;
         time_t t = time( NULL );
@@ -663,21 +746,22 @@ GPUVIS_EXTERN int gpuvis_trigger_capture_and_keep_tracing( char *filename, size_
         exename = exename ? ( exename + 1 ) : "trace";
 
         // Stop tracing
-        exec_tracecmd( "trace-cmd stop 2>&1" );
+        const char *const stop_argv[] = { "trace-cmd", "stop", NULL };
+        exec_tracecmd_argv( stop_argv, false, NULL );
 
         // Save the trace data to something like "glxgears_2017-10-13_17-52-56.dat"
-        snprintf( cmd, sizeof( cmd ),
-                  "trace-cmd extract -k -o \"%s_%s.dat\" > /tmp/blah.log 2>&1 &",
-                  exename, datetime );
-        cmd[ sizeof( cmd ) - 1 ] = 0;
+        char outfile[ PATH_MAX ];
+        snprintf( outfile, sizeof( outfile ), "%s_%s.dat", exename, datetime );
 
-        ret = system( cmd );
+        const char *const extract_argv[] = { "trace-cmd", "extract", "-k", "-o", outfile, NULL };
+        ret = exec_tracecmd_argv( extract_argv, true, "/tmp/blah.log" );
 
         if ( filename && !ret )
             snprintf( filename, size, "%s_%s.dat", exename, datetime );
 
         // Restart tracing
-        exec_tracecmd( "trace-cmd restart 2>&1" );
+        const char *const restart_argv[] = { "trace-cmd", "restart", NULL };
+        exec_tracecmd_argv( restart_argv, false, NULL );
     }
 
     return ret;
@@ -687,10 +771,12 @@ GPUVIS_EXTERN int gpuvis_stop_tracing()
 {
     flush_hot_func_calls();
 
-    int ret = exec_tracecmd( "trace-cmd reset 2>&1");
+    const char *const reset_argv[] = { "trace-cmd", "reset", NULL };
+    int ret = exec_tracecmd_argv( reset_argv, false, NULL );
 
     // Try freeing any snapshot buffers as well
-    exec_tracecmd( "trace-cmd snapshot -f 2>&1" );
+    const char *const snapshot_argv[] = { "trace-cmd", "snapshot", "-f", NULL };
+    exec_tracecmd_argv( snapshot_argv, false, NULL );
 
     return ret;
 }
