@@ -40,6 +40,22 @@ struct r300vk_pipeline {
    bool                    vs_hw_valid;
    bool                    fs_hw_valid;
 
+   /* The UBO descriptor (set, binding) each stage selects, if any.  r300 has
+    * separate vertex and fragment constant files, so each stage binds its own
+    * selected uniform buffer at CONST[0].  The replay binds this exact (set,
+    * binding) rather than the first UBO in layout order, which is the wrong
+    * buffer when a set declares several UBOs and the shader reads a later one.
+    * Tracking it per stage lets the vertex and fragment shader read different
+    * bindings -- including two bindings of one buffer, as
+    * dEQP-VK.ubo.link_by_binding does.  r300vk_compile_shader records the slot
+    * for the stage it compiles. */
+   bool                    vs_has_ubo;
+   uint32_t                vs_ubo_set;
+   uint32_t                vs_ubo_binding;
+   bool                    fs_has_ubo;
+   uint32_t                fs_ubo_set;
+   uint32_t                fs_ubo_binding;
+
    /* A compute pipeline created under the experimental hybrid-compute gate.
     * The no-op kernel carries no graphics CSOs; lowering the kernel onto the
     * compute-as-raster substrate is a later stage. */

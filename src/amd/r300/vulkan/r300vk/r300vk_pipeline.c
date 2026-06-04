@@ -274,10 +274,15 @@ r300vk_nir_remap_single_ubo_to_index0(nir_shader *nir)
  *   - more than one distinct (set, binding) uniform buffer.
  */
 static bool
-r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir)
+r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
+                                              bool *out_has_ubo,
+                                              uint32_t *out_set,
+                                              uint32_t *out_binding)
 {
    int64_t seen_set = -1;
    uint32_t seen_binding = 0;
+
+   *out_has_ubo = false;
 
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
@@ -321,6 +326,12 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir)
    /* No UBO descriptor access in this shader: nothing to lower. */
    if (seen_set < 0)
       return true;
+
+   /* Report the one (set, binding) the shader selects so the replay binds that
+    * buffer to CONST[0], not the first UBO the set happens to declare. */
+   *out_has_ubo = true;
+   *out_set = (uint32_t)seen_set;
+   *out_binding = seen_binding;
 
    nir_foreach_function_impl(impl, nir) {
       bool progress = false;
@@ -568,7 +579,11 @@ r300vk_compile_shader(struct r300vk_device *device,
     * load_vulkan_descriptor) to a constant block-0 address, or reject the
     * pipeline when the shader needs a resource r300's single read-only constant
     * file cannot represent.  See r300vk_nir_lower_vulkan_resource_index_single. */
-   if (!r300vk_nir_lower_vulkan_resource_index_single(nir)) {
+   bool stage_has_ubo = false;
+   uint32_t stage_ubo_set = 0, stage_ubo_binding = 0;
+   if (!r300vk_nir_lower_vulkan_resource_index_single(nir, &stage_has_ubo,
+                                                      &stage_ubo_set,
+                                                      &stage_ubo_binding)) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                        "r300vk: %s shader uses a descriptor resource r300's "
@@ -576,6 +591,24 @@ r300vk_compile_shader(struct r300vk_device *device,
                        "(storage buffer, multiple UBOs, or a dynamic UBO index)",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
+   }
+
+   /* Record which UBO (set, binding) this stage reads so the replay binds that
+    * exact descriptor to the stage's CONST[0].  r300 has separate vertex and
+    * fragment constant files, so the two stages may select different bindings
+    * (and dEQP-VK.ubo.link_by_binding reads two bindings of one buffer across
+    * the stages); each is bound independently rather than forcing one buffer
+    * onto both. */
+   if (stage_has_ubo) {
+      if (stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT) {
+         pl->vs_has_ubo = true;
+         pl->vs_ubo_set = stage_ubo_set;
+         pl->vs_ubo_binding = stage_ubo_binding;
+      } else {
+         pl->fs_has_ubo = true;
+         pl->fs_ubo_set = stage_ubo_set;
+         pl->fs_ubo_binding = stage_ubo_binding;
+      }
    }
 
    /* A push-constants-only shader maps onto the same single constant file: lower
