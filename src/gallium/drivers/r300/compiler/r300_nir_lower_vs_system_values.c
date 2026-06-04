@@ -35,8 +35,9 @@ struct lower_vs_sysval_state {
  * of the two the SW-TCL synthetic-attribute path handles.
  *
  * spirv_to_nir emits gl_VertexIndex / gl_InstanceIndex as a load_deref of a
- * nir_var_system_value variable (vtn_variables.c maps both to
- * SYSTEM_VALUE_VERTEX_ID / SYSTEM_VALUE_INSTANCE_ID).  nir_lower_system_values,
+ * nir_var_system_value variable (vtn_variables.c maps gl_VertexIndex to
+ * SYSTEM_VALUE_VERTEX_ID and gl_InstanceIndex to SYSTEM_VALUE_INSTANCE_INDEX --
+ * note INSTANCE_INDEX, not INSTANCE_ID).  nir_lower_system_values,
  * when a driver runs it, rewrites that to the load_vertex_id / load_instance_id
  * intrinsic.  The SW-TCL route runs neither nir_lower_system_values nor a
  * gather of system_values_read before lowering, so both forms must be matched
@@ -57,9 +58,17 @@ vs_sysval_of_intrinsic(const nir_intrinsic_instr *intr)
       if (!sv)
          return SYSTEM_VALUE_MAX;
       gl_system_value sysval = (gl_system_value)sv->data.location;
-      if (sysval == SYSTEM_VALUE_VERTEX_ID ||
+      if (sysval == SYSTEM_VALUE_VERTEX_ID)
+         return SYSTEM_VALUE_VERTEX_ID;
+      /* Vulkan gl_InstanceIndex is SYSTEM_VALUE_INSTANCE_INDEX (the instance
+       * number plus firstInstance), not SYSTEM_VALUE_INSTANCE_ID.  The synthetic
+       * attribute carries that full value, so normalize it to the instance
+       * synthetic.  Matching only INSTANCE_ID misses every Vulkan VS that reads
+       * gl_InstanceIndex and lets the load_deref reach nir_to_tgsi, where the
+       * unhandled intrinsic leaves a TGSI_FILE_NULL source and asserts. */
+      if (sysval == SYSTEM_VALUE_INSTANCE_INDEX ||
           sysval == SYSTEM_VALUE_INSTANCE_ID)
-         return sysval;
+         return SYSTEM_VALUE_INSTANCE_ID;
       return SYSTEM_VALUE_MAX;
    }
    default:
