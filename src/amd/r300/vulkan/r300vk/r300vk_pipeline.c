@@ -359,6 +359,96 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
    return true;
 }
 
+/* Lower a fragment subpassLoad into a normalized NEAREST texture() fetch.
+ *
+ * subpassLoad(input) reads the input attachment's texel at the fragment's own
+ * framebuffer pixel and reaches NIR as an image_deref_load on a
+ * GLSL_SAMPLER_DIM_SUBPASS image.  The stock nir_lower_input_attachments rewrites
+ * it to nir_texop_txf (texelFetch), but r300 is GLSL 1.20 with no texelFetch:
+ * nir_to_rc accepts only TEX/TXL/TXB/TXD, so a txf would fail the fragment
+ * compile.  Rewrite instead to
+ *
+ *   texture(input, gl_FragCoord.xy * inv_extent),   inv_extent = (1/W, 1/H)
+ *
+ * a plain nir_texop_tex r300 can emit.  texelFetch(input,(i,j)) equals a NEAREST
+ * texture() at ((i+0.5)/W,(j+0.5)/H); gl_FragCoord.xy is the fragment center
+ * (i+0.5, j+0.5), so the product lands on that texel center.  The r300 fragment
+ * ALU is FP24 (16-bit mantissa): the product error is at most W*2^-17 (about 0.03
+ * texel at W=4096), well inside the half-texel NEAREST margin, so the correct
+ * texel is always resolved.  inv_extent is read from the fragment CONST[0]
+ * (load_ubo block 0, offset 0); the replay binds (1/W,1/H) there per draw, the
+ * same slot the keystone UBO uses -- so an input-attachment shader that also
+ * reads an app UBO or push constants is rejected at compile (one CONST[0]).
+ * nir_lower_samplers (in nir_to_rc) assigns the Gallium unit from the input
+ * variable's data.binding, which the replay binds the input image to.  A
+ * multisample subpass input (GLSL_SAMPLER_DIM_SUBPASS_MS) is left unlowered so
+ * the pipeline reject path catches it -- r300 is single-sample. */
+static bool
+r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
+                               uint32_t *out_binding)
+{
+   bool progress = false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *load = nir_instr_as_intrinsic(instr);
+            if (load->intrinsic != nir_intrinsic_image_deref_load)
+               continue;
+            nir_deref_instr *deref = nir_src_as_deref(load->src[0]);
+            if (!deref || !glsl_type_is_image(deref->type) ||
+                glsl_get_sampler_dim(deref->type) != GLSL_SAMPLER_DIM_SUBPASS)
+               continue;
+
+            nir_variable *var = nir_deref_instr_get_variable(deref);
+            *out_has_input = true;
+            *out_binding = var ? var->data.binding : 0;
+            const enum glsl_base_type rbt =
+               glsl_get_sampler_result_type(deref->type);
+
+            b.cursor = nir_before_instr(instr);
+            nir_def *fragcoord_xy = nir_build_frag_coord(&b, 2);
+            nir_def *inv_extent = nir_load_ubo(&b, 2, 32,
+                                               nir_imm_int(&b, 0),
+                                               nir_imm_int(&b, 0),
+                                               .align_mul = 8,
+                                               .range_base = 0, .range = 8);
+            nir_def *coord = nir_fmul(&b, fragcoord_xy, inv_extent);
+
+            /* Texture deref to the same variable, retyped as sampler2D so
+             * nir_lower_samplers reads the dim; it keys the unit on
+             * var->data.binding regardless of the variable's image mode. */
+            nir_deref_instr *tex_deref = nir_build_deref_var(&b, var);
+            tex_deref->type =
+               glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, rbt);
+
+            nir_tex_instr *tex = nir_tex_instr_create(nir, 3);
+            tex->op = nir_texop_tex;
+            tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+            tex->coord_components = 2;
+            tex->is_array = false;
+            tex->is_shadow = false;
+            tex->dest_type = nir_get_nir_type_for_glsl_base_type(rbt);
+            tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_texture_deref,
+                                              &tex_deref->def);
+            tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_sampler_deref,
+                                              &tex_deref->def);
+            tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
+            nir_def_init(&tex->instr, &tex->def,
+                         nir_tex_instr_dest_size(tex), load->def.bit_size);
+            nir_builder_instr_insert(&b, &tex->instr);
+            nir_def_rewrite_uses(&load->def, &tex->def);
+            nir_instr_remove(instr);
+            progress = true;
+         }
+      }
+      nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+   return progress;
+}
+
 /* True if the shader reads push constants.  vk_spirv_to_nir (with
  * push_const_addr_format set) leaves the access as a load_deref of a
  * nir_var_mem_push_const variable; r300vk's nir_lower_explicit_io call lowers
@@ -624,6 +714,17 @@ r300vk_compile_shader(struct r300vk_device *device,
     * promotion passes own them. */
    NIR_PASS(_, nir, nir_lower_global_vars_to_local);
 
+   /* Lower a fragment subpassLoad to a normalized texture() (r300 has no
+    * texelFetch) before the constant/UBO lowering below.  It injects inv_extent
+    * at CONST[0], so the collision check below rejects an input-attachment shader
+    * that also reads an app UBO or push constants.  Runs before
+    * nir_lower_explicit_io/nir_lower_ubo_vec4 so the emitted load_ubo(0) follows
+    * the same vec4-slot path as the keystone UBO. */
+   bool stage_has_input = false;
+   uint32_t stage_input_binding = 0;
+   if (stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT)
+      r300vk_nir_lower_subpass_input(nir, &stage_has_input, &stage_input_binding);
+
    /* Push constants and a UBO both resolve to CONST[0]; r300's single constant
     * file cannot host both, so reject the pair before the lowering below rewrites
     * the UBO chain away.  A shader using only one of them is supported. */
@@ -636,6 +737,21 @@ r300vk_compile_shader(struct r300vk_device *device,
                        "CONST[0]",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
+   }
+
+   /* A lowered subpassLoad reads inv_extent from CONST[0]; an input-attachment
+    * fragment shader that also reads an app UBO or push constants would need two
+    * CONST[0] contents.  Reject rather than render wrong pixels. */
+   if (stage_has_input && (uses_push_const || r300vk_nir_uses_ubo(nir))) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: fragment shader combines a subpass input with a "
+                       "uniform buffer or push constants; r300's single CONST[0] "
+                       "holds only the input's inv_extent");
+   }
+   if (stage_has_input) {
+      pl->fs_has_input_attachment = true;
+      pl->fs_input_attachment_binding = stage_input_binding;
    }
 
    /* Resolve the descriptor resource chain (vulkan_resource_index ->

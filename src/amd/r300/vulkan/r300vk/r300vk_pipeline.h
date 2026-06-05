@@ -56,6 +56,13 @@ struct r300vk_pipeline {
    uint32_t                fs_ubo_set;
    uint32_t                fs_ubo_binding;
 
+   /* The fragment shader reads a subpass input attachment (subpassLoad), lowered
+    * to a normalized texture() at gl_FragCoord*inv_extent.  The replay binds the
+    * input image at this Gallium sampler unit (the descriptor binding) and the
+    * inv_extent vec2 at the fragment CONST[0]. */
+   bool                    fs_has_input_attachment;
+   uint32_t                fs_input_attachment_binding;
+
    /* A compute pipeline created under the experimental hybrid-compute gate.
     * The no-op kernel carries no graphics CSOs; lowering the kernel onto the
     * compute-as-raster substrate is a later stage. */
