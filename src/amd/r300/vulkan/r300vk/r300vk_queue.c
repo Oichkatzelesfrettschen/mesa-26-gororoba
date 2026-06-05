@@ -39,6 +39,7 @@ identity_map_debug_enabled(void)
 #include "util/macros.h"
 
 #include "vulkan/util/vk_util.h"
+#include "vk_format.h"
 
 #include "util/os_time.h"
 
@@ -635,6 +636,140 @@ r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data)
    pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
 }
 
+/* r300 exposes a small fixed number of fragment texture units; a sampler unit a
+ * shader can name is always inside this bound, so the array sizes the per-draw
+ * bookkeeping without a heap allocation. */
+#define R300VK_MAX_FS_SAMPLER_UNITS 16
+
+/* Map one resolved VkComponentSwizzle to a Gallium PIPE_SWIZZLE.  vk_image_view
+ * pre-resolves VK_COMPONENT_SWIZZLE_IDENTITY to the explicit R/G/B/A, so only the
+ * concrete cases appear here; the image view's component remap must reach the
+ * sampler or a swizzled view (e.g. an R8 sampled as rrr1) would read the wrong
+ * channels. */
+static unsigned
+vk_swizzle_to_pipe(VkComponentSwizzle s)
+{
+   switch (s) {
+   case VK_COMPONENT_SWIZZLE_G:    return PIPE_SWIZZLE_Y;
+   case VK_COMPONENT_SWIZZLE_B:    return PIPE_SWIZZLE_Z;
+   case VK_COMPONENT_SWIZZLE_A:    return PIPE_SWIZZLE_W;
+   case VK_COMPONENT_SWIZZLE_ZERO: return PIPE_SWIZZLE_0;
+   case VK_COMPONENT_SWIZZLE_ONE:  return PIPE_SWIZZLE_1;
+   case VK_COMPONENT_SWIZZLE_R:
+   default:                        return PIPE_SWIZZLE_X;
+   }
+}
+
+/* The transient fragment sampler views bound for one draw, recorded so the same
+ * draw can release them after draw_vbo returns. */
+struct r300vk_bound_textures {
+   struct pipe_sampler_view *views[R300VK_MAX_FS_SAMPLER_UNITS];
+   unsigned                  units[R300VK_MAX_FS_SAMPLER_UNITS];
+   unsigned                  count;
+};
+
+/* Bind every fragment combined-image-sampler in the bound descriptor sets to its
+ * Gallium texture unit, so an app fragment shader's texture()/texelFetch reads
+ * the descriptor's image instead of the unbound-sampler default.  nir_lower_samplers
+ * (run inside r300g's nir_to_rc) assigns each sampler the Gallium unit
+ * deref->var->data.binding, so the unit IS the descriptor's binding number.  Only
+ * the fragment stage is bound: the RS480 SW-TCL vertex path has no sampler and a
+ * vertex texture fetch is rejected at pipeline compile.
+ *
+ * Single-tile images only.  An image wider than the 2048 sampler cap is split
+ * into tiles[] (the oversize-blit partition), and a sampler view over either the
+ * whole resource (TX_WIDTH wraps past 2048) or one tile (wrong texels outside it)
+ * would sample garbage; that case needs the per-tile render composition and is
+ * left unbound here, preserving its prior unsampled behavior rather than
+ * sampling wrong.  Records the bound (unit, view) pairs for the caller to release. */
+static void
+r300vk_bind_descriptor_textures(struct r300vk_device *device,
+                                const struct r300vk_pipeline *pipeline,
+                                const struct r300vk_cmd_bind_descriptor_sets *binds,
+                                struct r300vk_bound_textures *bound)
+{
+   struct pipe_context *pipe = device->pipe;
+   bound->count = 0;
+   if (!binds || !pipeline)
+      return;
+
+   for (uint32_t s = 0; s < binds->set_count; s++) {
+      const struct r300vk_descriptor_set *set = binds->sets[s];
+      if (!set || !set->layout)
+         continue;
+      for (uint32_t b = 0; b < set->layout->binding_count; b++) {
+         const struct r300vk_dsl_binding *bnd = &set->layout->bindings[b];
+         if (bnd->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+            continue;
+         const unsigned unit = bnd->binding;
+         if (unit >= R300VK_MAX_FS_SAMPLER_UNITS ||
+             bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
+            continue;
+
+         const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
+         VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
+         if (!iv || !iv->vk.image)
+            continue;
+         /* The sampler view below is built as PIPE_TEXTURE_2D, so only a plain 2D
+          * view is correct here.  A cube / array / 1D view would alias the wrong
+          * target; leave it unbound (its prior unsampled behavior) rather than
+          * sample the wrong texels. */
+         if (iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
+            continue;
+         struct r300vk_image *img =
+            container_of(iv->vk.image, struct r300vk_image, vk);
+         if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
+            continue;
+
+         struct vk_sampler *vks = vk_sampler_from_handle(desc->img.sampler);
+         void *samp_cso = vks ? r300vk_sampler_from_vk(vks)->pipe_cso : NULL;
+         if (!samp_cso)
+            continue;
+
+         const enum pipe_format fmt = vk_format_to_pipe_format(iv->vk.format);
+         if (fmt == PIPE_FORMAT_NONE)
+            continue;
+
+         struct pipe_sampler_view sv_templ;
+         memset(&sv_templ, 0, sizeof(sv_templ));
+         sv_templ.format    = fmt;
+         sv_templ.target    = PIPE_TEXTURE_2D;
+         sv_templ.swizzle_r = vk_swizzle_to_pipe(iv->vk.swizzle.r);
+         sv_templ.swizzle_g = vk_swizzle_to_pipe(iv->vk.swizzle.g);
+         sv_templ.swizzle_b = vk_swizzle_to_pipe(iv->vk.swizzle.b);
+         sv_templ.swizzle_a = vk_swizzle_to_pipe(iv->vk.swizzle.a);
+         struct pipe_sampler_view *view =
+            pipe->create_sampler_view(pipe, img->resource, &sv_templ);
+         if (!view)
+            continue;
+
+         pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, unit, 1, &samp_cso);
+         pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, unit, 1, 0, &view);
+
+         bound->units[bound->count] = unit;
+         bound->views[bound->count] = view;
+         bound->count++;
+      }
+   }
+}
+
+/* Release the transient sampler views bound for one draw.  Unbind each unit
+ * first so the pipe_context drops its internal reference before the view's last
+ * reference is dropped -- the identity-map teardown order. */
+static void
+r300vk_unbind_descriptor_textures(struct r300vk_device *device,
+                                  struct r300vk_bound_textures *bound)
+{
+   struct pipe_context *pipe = device->pipe;
+   struct pipe_sampler_view *no_view = NULL;
+   for (unsigned i = 0; i < bound->count; i++) {
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, bound->units[i],
+                              0, 1, &no_view);
+      pipe_sampler_view_reference(&bound->views[i], NULL);
+   }
+   bound->count = 0;
+}
+
 static void
 r300vk_replay_draw(struct r300vk_device *device,
                     const struct r300vk_cmd_entry *e,
@@ -796,7 +931,15 @@ r300vk_replay_draw(struct r300vk_device *device,
          r300vk_bind_push_constants(device, push_const);
       else
          r300vk_bind_descriptor_ubo(device, bound_pipeline, last_bind_dsets);
+
+      /* Bind fragment textures for this draw, then release them after: the
+       * sampler views are transient (created over the descriptor's image at
+       * draw time), so they must not outlive the draw that referenced them. */
+      struct r300vk_bound_textures bound_tex;
+      r300vk_bind_descriptor_textures(device, bound_pipeline, last_bind_dsets,
+                                      &bound_tex);
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      r300vk_unbind_descriptor_textures(device, &bound_tex);
    }
 }
 

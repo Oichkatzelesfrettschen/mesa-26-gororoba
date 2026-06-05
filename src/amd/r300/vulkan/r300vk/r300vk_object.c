@@ -38,6 +38,10 @@
 #include "vk_query_pool.h"
 #include "vk_sampler.h"
 
+#include "pipe/p_context.h"
+#include "pipe/p_state.h"
+#include "pipe/p_defines.h"
+
 struct r300vk_buffer_view {
    struct vk_object_base base;
    struct r300vk_buffer *buffer;   /* the texel buffer this view selects */
@@ -49,6 +53,71 @@ struct r300vk_buffer_view {
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_buffer_view, base, VkBufferView,
                                VK_OBJECT_TYPE_BUFFER_VIEW)
 
+/* VkSamplerAddressMode -> PIPE_TEX_WRAP_x.  r300 honors every Vulkan 1.0 wrap
+ * mode; MIRROR_CLAMP_TO_EDGE needs the maintenance1/1.2 promotion the loader
+ * already validated before the call reaches here. */
+static unsigned
+vk_address_mode_to_pipe(VkSamplerAddressMode mode)
+{
+   switch (mode) {
+   case VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:      return PIPE_TEX_WRAP_MIRROR_REPEAT;
+   case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:        return PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+   case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:      return PIPE_TEX_WRAP_CLAMP_TO_BORDER;
+   case VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE: return PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE;
+   case VK_SAMPLER_ADDRESS_MODE_REPEAT:
+   default:                                           return PIPE_TEX_WRAP_REPEAT;
+   }
+}
+
+/* VkCompareOp shares GL's ordering (NEVER=0 .. ALWAYS=7), and PIPE_FUNC_x is the
+ * same enumeration, but switch explicitly so a future divergence is a compile
+ * error rather than a silent miscompare. */
+static unsigned
+vk_compare_op_to_pipe(VkCompareOp op)
+{
+   switch (op) {
+   case VK_COMPARE_OP_LESS:             return PIPE_FUNC_LESS;
+   case VK_COMPARE_OP_EQUAL:            return PIPE_FUNC_EQUAL;
+   case VK_COMPARE_OP_LESS_OR_EQUAL:    return PIPE_FUNC_LEQUAL;
+   case VK_COMPARE_OP_GREATER:          return PIPE_FUNC_GREATER;
+   case VK_COMPARE_OP_NOT_EQUAL:        return PIPE_FUNC_NOTEQUAL;
+   case VK_COMPARE_OP_GREATER_OR_EQUAL: return PIPE_FUNC_GEQUAL;
+   case VK_COMPARE_OP_ALWAYS:           return PIPE_FUNC_ALWAYS;
+   case VK_COMPARE_OP_NEVER:
+   default:                             return PIPE_FUNC_NEVER;
+   }
+}
+
+/* Map the full VkSamplerCreateInfo to a pipe_sampler_state.  The runtime
+ * vk_sampler keeps the address modes and border color but drops the filter,
+ * mipmap, and compare fields, so the mapping is done here at create time while
+ * pCreateInfo is in hand, and the resulting CSO is cached on the sampler. */
+static void
+r300vk_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
+                             struct pipe_sampler_state *ss)
+{
+   memset(ss, 0, sizeof(*ss));
+   ss->wrap_s = vk_address_mode_to_pipe(ci->addressModeU);
+   ss->wrap_t = vk_address_mode_to_pipe(ci->addressModeV);
+   ss->wrap_r = vk_address_mode_to_pipe(ci->addressModeW);
+   ss->min_img_filter = ci->minFilter == VK_FILTER_LINEAR
+                        ? PIPE_TEX_FILTER_LINEAR : PIPE_TEX_FILTER_NEAREST;
+   ss->mag_img_filter = ci->magFilter == VK_FILTER_LINEAR
+                        ? PIPE_TEX_FILTER_LINEAR : PIPE_TEX_FILTER_NEAREST;
+   ss->min_mip_filter = ci->mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR
+                        ? PIPE_TEX_MIPFILTER_LINEAR : PIPE_TEX_MIPFILTER_NEAREST;
+   ss->unnormalized_coords = ci->unnormalizedCoordinates ? 1 : 0;
+   ss->lod_bias = ci->mipLodBias;
+   ss->min_lod  = ci->minLod;
+   ss->max_lod  = ci->maxLod;
+   if (ci->anisotropyEnable && ci->maxAnisotropy > 1.0f)
+      ss->max_anisotropy = (unsigned)ci->maxAnisotropy;
+   if (ci->compareEnable) {
+      ss->compare_mode = PIPE_TEX_COMPARE_R_TO_TEXTURE;
+      ss->compare_func = vk_compare_op_to_pipe(ci->compareOp);
+   }
+}
+
 VkResult
 r300vk_CreateSampler(VkDevice _device,
                      const VkSamplerCreateInfo *pCreateInfo,
@@ -57,12 +126,22 @@ r300vk_CreateSampler(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
 
-   struct vk_sampler *sampler =
-      vk_sampler_create(&device->vk, pCreateInfo, pAllocator, sizeof(*sampler));
-   if (!sampler)
+   struct vk_sampler *vks =
+      vk_sampler_create(&device->vk, pCreateInfo, pAllocator,
+                        sizeof(struct r300vk_sampler));
+   if (!vks)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   *pSampler = vk_sampler_to_handle(sampler);
+   /* Build the Gallium sampler CSO now so the draw replay can bind it directly.
+    * device->pipe is the same context r300vk_CreateGraphicsPipelines uses to
+    * create its blend/raster/dsa/vs/fs CSOs from an API thread, so a sampler CSO
+    * built here follows the existing serialized-pipe-access model. */
+   struct r300vk_sampler *sampler = r300vk_sampler_from_vk(vks);
+   struct pipe_sampler_state ss;
+   r300vk_sampler_state_from_vk(pCreateInfo, &ss);
+   sampler->pipe_cso = device->pipe->create_sampler_state(device->pipe, &ss);
+
+   *pSampler = vk_sampler_to_handle(vks);
    return VK_SUCCESS;
 }
 
@@ -72,11 +151,15 @@ r300vk_DestroySampler(VkDevice _device,
                       const VkAllocationCallbacks *pAllocator)
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
-   VK_FROM_HANDLE(vk_sampler, sampler, _sampler);
-   if (!sampler)
+   VK_FROM_HANDLE(vk_sampler, vks, _sampler);
+   if (!vks)
       return;
 
-   vk_sampler_destroy(&device->vk, pAllocator, sampler);
+   struct r300vk_sampler *sampler = r300vk_sampler_from_vk(vks);
+   if (sampler->pipe_cso)
+      device->pipe->delete_sampler_state(device->pipe, sampler->pipe_cso);
+
+   vk_sampler_destroy(&device->vk, pAllocator, vks);
 }
 
 VkResult
