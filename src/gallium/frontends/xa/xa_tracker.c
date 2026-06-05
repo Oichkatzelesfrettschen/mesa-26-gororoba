@@ -228,6 +228,76 @@ xa_tracker_create(int drm_fd)
     return NULL;
 }
 
+XA_EXPORT struct xa_tracker *
+xa_tracker_create_sw(void)
+{
+    struct xa_tracker *xa = calloc(1, sizeof(struct xa_tracker));
+    enum xa_surface_type stype;
+    unsigned int num_formats;
+
+    if (!xa)
+        return NULL;
+
+    /* pipe_loader_sw_probe_null creates a null-winsys sw device (llvmpipe or
+     * softpipe).  Unlike xa_tracker_create, no DRM fd is required.  The device
+     * is released via pipe_loader_release in xa_tracker_destroy. */
+    if (pipe_loader_sw_probe_null(&xa->dev))
+        xa->screen = pipe_loader_create_screen(xa->dev, false);
+
+    if (!xa->screen)
+        goto out_no_screen;
+
+    xa->default_ctx = xa_context_create(xa);
+    if (!xa->default_ctx)
+        goto out_no_pipe;
+
+    num_formats = 0;
+    for (stype = 0; stype < XA_LAST_SURFACE_TYPE; ++stype)
+        num_formats += num_preferred[stype];
+
+    num_formats += 1;
+    xa->supported_formats = calloc(num_formats, sizeof(*xa->supported_formats));
+    if (!xa->supported_formats)
+        goto out_sf_alloc_fail;
+
+    xa->supported_formats[0] = xa_format_unknown;
+    num_formats = 1;
+    memset(xa->format_map, 0, sizeof(xa->format_map));
+
+    for (stype = 0; stype < XA_LAST_SURFACE_TYPE; ++stype) {
+        unsigned int bind = stype_bind[stype];
+        enum xa_formats xa_format;
+        int i;
+
+        for (i = 0; i < num_preferred[stype]; ++i) {
+            xa_format = preferred[stype][i];
+
+            struct xa_format_descriptor fdesc =
+                xa_get_pipe_format(xa, xa_format);
+
+            if (xa->screen->is_format_supported(xa->screen, fdesc.format,
+                                                PIPE_TEXTURE_2D, 0, 0, bind)) {
+                if (xa->format_map[stype][0] == 0)
+                    xa->format_map[stype][0] = num_formats;
+                xa->format_map[stype][1] = num_formats;
+                xa->supported_formats[num_formats++] = xa_format;
+            }
+        }
+    }
+    return xa;
+
+ out_sf_alloc_fail:
+    xa_context_destroy(xa->default_ctx);
+ out_no_pipe:
+    xa->screen->destroy(xa->screen);
+ out_no_screen:
+    if (xa->dev)
+        pipe_loader_release(&xa->dev, 1);
+
+    free(xa);
+    return NULL;
+}
+
 XA_EXPORT void
 xa_tracker_destroy(struct xa_tracker *xa)
 {

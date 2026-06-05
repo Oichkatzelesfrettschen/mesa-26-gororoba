@@ -49,6 +49,7 @@ libxatracker = shared_library(
   dependencies : [
     idep_mesautil,
     driver_r300, driver_nouveau, driver_i915, driver_svga, driver_freedreno,
+    driver_swrast,
   ],
   version : _xa_version,
   install : true,
