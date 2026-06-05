@@ -1,33 +1,34 @@
 # build-infra/Makefile -- mesa-26-gororoba build entry point
 #
-# Consolidates the 9 legacy build-*/ dirs into a single infra that
-# selects a PROFILE -> meson config file -> builddir under
+# Selects a PROFILE -> meson config file -> builddir under
 # ../build/mesa-<profile>/.
 #
 # Usage:
-#   make configure PROFILE=terakan-full      # first time, or after config edits
-#   make build     PROFILE=terakan-full      # incremental ninja
-#   make rebuild-terakan-full                # clean + build (common loop)
-#   make clean     PROFILE=terakan-full      # drop the builddir only
-#   make distclean PROFILE=terakan-full      # drop builddir + archive install prefix
-#   make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
-#                                                # warm/incremental: ccache + distcc
-#   make rebuild-terakan-distcc-no-rusticl-pump
-#                                                # cold/clean: distcc-pump + direct clang
-#   make install   PROFILE=terakan-full      # meson install --no-rebuild
-#   make audit     PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump
+#   make configure PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache
+#   make build     PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache
+#   make rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache
+#   make rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache
+#   make install   PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache
+#   make audit     PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc
 #   make list                                # show available PROFILEs
+#
+# Canonical profiles:
+#   1_r300_full_release_x86_64v1-clang22-distcc-cache  r300 + amd_r300 release (vostro)
+#   2_r300_full_debug_x86_64v1-clang22-distcc-cache    r300 + amd_r300 debug (vostro)
+#   3_terakan_full_release_x86_64v1-clang22-distcc-cache  r600 + terascale release + Rusticl (x130e)
+#   4_terakan_full_debug_x86_64v1-clang22-distcc-cache    r600 + terascale debug + Rusticl (x130e)
+#   5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache  r600 + terascale release, no Rusticl
+#   6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache    r600 + terascale debug, no Rusticl
 #
 # See also:
 #   build-infra/README.md                    -- how to use
 #   build-infra/configs/*.meson              -- canonical option sets
 #   build-infra/env/*.env                    -- per-host toolchain env
-#   ../../steinmarder/docs/workspace/mesa-fork-synthesis.md
 
 SHELL := /bin/bash
 
 # --- configurable parameters -------------------------------------------------
-PROFILE  ?= terakan-full
+PROFILE  ?= 1_r300_full_release_x86_64v1-clang22-distcc-cache
 HOSTENV  ?= btver1
 BUILDDIR ?= $(abspath $(CURDIR)/../build/mesa-$(PROFILE))
 INSTALL_NAMESPACE ?= mesa
@@ -46,19 +47,6 @@ PAIR_BUILDDIR  = $(word 3,$1)
 PAIR_PREFIX    = $(word 4,$1)
 PAIR_NAMESPACE = $(word 5,$1)
 
-TERAKAN_PAIR_RELEASE := \
-    terakan-distcc-no-rusticl \
-    btver1-ccache-no-pump \
-    $(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-ccache-no-pump) \
-    /opt/local/mesa-26-gororoba \
-    mesa-26-gororoba
-
-TERAKAN_PAIR_DEBUG := \
-    terakan-distcc-no-rusticl-debug \
-    btver1-ccache-no-pump \
-    $(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-debug-ccache-no-pump) \
-    /opt/local/mesa-26-gororoba-debug \
-    mesa-26-gororoba-debug
 ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
 JOBS     ?= 8
 else ifneq (,$(filter $(HOSTENV),vostro1000-x86-64-v1-clang22-ccache-distcc))
@@ -81,11 +69,7 @@ TOPSRC   := $(abspath $(CURDIR)/..)
 CONFIG   := $(CURDIR)/configs/$(PROFILE).meson
 ENVFILE  := $(CURDIR)/env/$(HOSTENV).env
 TOOLCHAIN_NATIVE := $(BUILDDIR)/gororoba-toolchain.meson
-ifeq ($(PROFILE),terakan-distcc-no-rusticl-pump)
-COMPILER_CHAIN ?= distcc
-else
 COMPILER_CHAIN ?= ccache
-endif
 
 ifeq (,$(wildcard $(CONFIG)))
 $(error unknown PROFILE='$(PROFILE)'; see `make list`)
@@ -116,18 +100,18 @@ LOCKED_TOOL_ENV := \
 
 .PHONY: list vostro-prefix-check audit configure build build-generated build-pump clean distclean install \
         artifact-check test \
-        rebuild-terakan-full rebuild-terakan-distcc rebuild-terakan-distcc-no-rusticl \
-        rebuild-terakan-distcc-no-rusticl-ccache-no-pump \
-        rebuild-terakan-distcc-no-rusticl-ccache-no-pump-pair \
-        install-terakan-distcc-no-rusticl-ccache-no-pump-pair \
-        rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump \
-        rebuild-terakan-distcc-no-rusticl-pump \
-        rebuild-terakan-minimal \
-        rebuild-base-debug rebuild-terakan-release rebuild-terakan-profile \
         rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache \
         install-1_r300_full_release_x86_64v1-clang22-distcc-cache \
         rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache \
         install-2_r300_full_debug_x86_64v1-clang22-distcc-cache \
+        rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+        install-3_terakan_full_release_x86_64v1-clang22-distcc-cache \
+        rebuild-4_terakan_full_debug_x86_64v1-clang22-distcc-cache \
+        install-4_terakan_full_debug_x86_64v1-clang22-distcc-cache \
+        rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+        install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
+        rebuild-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache \
+        install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache \
         pkg-mesa-gororoba deploy-mesa-gororoba \
         help
 
@@ -144,10 +128,6 @@ help:
 	@echo "  artifact-check    list installed Terakan/r600 artifacts under \$$(PREFIX)"
 	@echo "  test              ninja -C \$$(BUILDDIR) test"
 	@echo "  rebuild-<profile> clean + configure + build for that profile"
-	@echo "  rebuild-terakan-distcc-no-rusticl-ccache-no-pump"
-	@echo "                    warm/incremental no-rusticl lane: ccache -> distcc -> clang"
-	@echo "  rebuild-terakan-distcc-no-rusticl-pump"
-	@echo "                    cold/clean no-rusticl lane: distcc-pump -> distcc -> clang"
 	@echo "  list              show available PROFILEs and HOSTENVs"
 	@echo ""
 	@echo "profile:   $(PROFILE)"
@@ -457,15 +437,6 @@ test:
 	env $(LOCKED_TOOL_ENV) \
 	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) test
 
-# Pair-member loops.  Each takes one PAIR_<NAME> list and threads
-# PROFILE + HOSTENV + BUILDDIR + PREFIX + INSTALL_NAMESPACE through
-# to the sub-make.  Threading PREFIX through configure (not just
-# install) ensures meson-private/install.dat is generated at the
-# correct prefix on the first configure, removing the prior
-# "configure to default prefix, then retarget at install" hazard
-# where install.dat retained the configure-time prefix and the
-# binaries landed under /opt/local/<NAMESPACE>-<PROFILE>/ instead
-# of the requested PREFIX.
 define CLEAN_CONFIGURE_BUILD_PAIR
 	$(MAKE) clean \
 	    PROFILE=$(call PAIR_PROFILE,$1) \
@@ -496,88 +467,6 @@ define INSTALL_PAIR
 	    INSTALL_NAMESPACE=$(call PAIR_NAMESPACE,$1)
 endef
 
-# common single-command loops (clean + configure + build)
-rebuild-terakan-full:
-	$(MAKE) clean PROFILE=terakan-full
-	$(MAKE) configure PROFILE=terakan-full
-	$(MAKE) build     PROFILE=terakan-full
-
-rebuild-terakan-distcc:
-	$(MAKE) clean PROFILE=terakan-distcc
-	$(MAKE) configure PROFILE=terakan-distcc
-	$(MAKE) build     PROFILE=terakan-distcc
-
-# Same as terakan-distcc but with gallium-rusticl=false.  Use this
-# when the rusticl rust frontend fails to build due to bindgen drift
-# (see docs/workspace/rusticl-bindgen-drift.md in steinmarder).
-rebuild-terakan-distcc-no-rusticl:
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl
-	$(MAKE) build     PROFILE=terakan-distcc-no-rusticl
-
-# Future clean-rebuild lane for x130e.  This intentionally does NOT use
-# distcc-pump, and it writes to a distinct builddir so it cannot disturb an
-# active mesa-terakan-distcc-no-rusticl build.  `clean` removes only BUILDDIR;
-# ccache and sccache live under ~/.cache via env/btver1-ccache-no-pump.env.
-rebuild-terakan-distcc-no-rusticl-ccache-no-pump:
-	$(call CLEAN_CONFIGURE_BUILD_PAIR,$(TERAKAN_PAIR_RELEASE))
-
-# Pair target: build BOTH the release-default canonical AND the
-# debug variant in the same invocation.  Release goes to
-# /opt/local/mesa-26-gororoba/ (timing-sensitive probe target),
-# debug goes to /opt/local/mesa-26-gororoba-debug/ (interactive
-# bringup target).  Both builds use the same ccache + distcc
-# fabric so ccache hits across them give near-incremental
-# wall-clock on the second pass.  Installs run only after both build
-# trees succeed so the active release/debug pair does not get half
-# updated by a late debug failure.
-rebuild-terakan-distcc-no-rusticl-ccache-no-pump-pair:
-	$(MAKE) rebuild-terakan-distcc-no-rusticl-ccache-no-pump
-	$(MAKE) rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump
-	$(call INSTALL_PAIR,$(TERAKAN_PAIR_RELEASE))
-	$(call INSTALL_PAIR,$(TERAKAN_PAIR_DEBUG))
-
-rebuild-terakan-distcc-no-rusticl-debug-ccache-no-pump:
-	$(call CLEAN_CONFIGURE_BUILD_PAIR,$(TERAKAN_PAIR_DEBUG))
-
-# Install-only convenience targets.  Use these after the pair build
-# trees are already populated (e.g., when fixing the install routing
-# without redoing the 60-minute compile pass).
-install-terakan-distcc-no-rusticl-ccache-no-pump-pair:
-	$(call INSTALL_PAIR,$(TERAKAN_PAIR_RELEASE))
-	$(call INSTALL_PAIR,$(TERAKAN_PAIR_DEBUG))
-
-# Cold clean lane for x130e.  Configure and generated Meson/Ninja outputs are
-# completed before the include server starts; the heavy C/C++ compile then runs
-# under distcc-pump with direct clang.  This avoids generated-header changes
-# invalidating pump's include snapshot.
-rebuild-terakan-distcc-no-rusticl-pump:
-	$(MAKE) clean PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) configure PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) build-generated PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
-	$(MAKE) build-pump PROFILE=terakan-distcc-no-rusticl-pump HOSTENV=btver1-distcc-pump BUILDDIR=$(abspath $(CURDIR)/../build/mesa-terakan-distcc-no-rusticl-pump)
-
-rebuild-terakan-minimal:
-	$(MAKE) clean PROFILE=terakan-minimal
-	$(MAKE) configure PROFILE=terakan-minimal
-	$(MAKE) build     PROFILE=terakan-minimal
-
-rebuild-base-debug:
-	$(MAKE) clean PROFILE=base-debug
-	$(MAKE) configure PROFILE=base-debug
-	$(MAKE) build     PROFILE=base-debug
-
-# forward-looking variants (configs to be added as they are validated)
-rebuild-terakan-release:
-	$(MAKE) clean PROFILE=terakan-release
-	$(MAKE) configure PROFILE=terakan-release
-	$(MAKE) build     PROFILE=terakan-release
-
-rebuild-terakan-profile:
-	$(MAKE) clean PROFILE=terakan-profile
-	$(MAKE) configure PROFILE=terakan-profile
-	$(MAKE) build     PROFILE=terakan-profile
-
 # Canonical full-feature r300 RELEASE build: maximal GL/GLES surface plus the
 # amd_r300 ICD in one artifact (profile 1_).  Installs to the release prefix.
 rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache:
@@ -597,6 +486,47 @@ rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
 
 install-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
 	$(MAKE) install PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+
+# Canonical r600/terakan RELEASE build: maximal terakan stack (r600, zink,
+# softpipe, llvmpipe, amd_terascale) plus Rusticl in one artifact (profile 3_).
+# Installs to the release prefix.
+rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache:
+	$(MAKE) -j1 clean PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+
+install-3_terakan_full_release_x86_64v1-clang22-distcc-cache:
+	$(MAKE) install PROFILE=3_terakan_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+
+# Canonical r600/terakan DEBUG build: same surface, assertions live (-O2 -g),
+# Rusticl live, installs to the -debug prefix (profile 4_).
+rebuild-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
+	$(MAKE) -j1 clean PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+
+install-4_terakan_full_debug_x86_64v1-clang22-distcc-cache:
+	$(MAKE) install PROFILE=4_terakan_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+
+# r600/terakan RELEASE build without Rusticl: use when bindgen drift makes
+# Rusticl unbuildable (profile 5_).  Installs to the release prefix.
+rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache:
+	$(MAKE) -j1 clean PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) -j1 configure PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+	$(MAKE) build PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+
+install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache:
+	$(MAKE) install PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+
+# r600/terakan DEBUG build without Rusticl: use when bindgen drift makes
+# Rusticl unbuildable (profile 6_).  Installs to the -debug prefix.
+rebuild-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
+	$(MAKE) -j1 clean PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+
+install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
+	$(MAKE) install PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
 
 # mesa-gororoba CachyOS-style /usr drop-in package (r300 GL + llvmpipe +
 # amd_r300/r300vk Vulkan ICD), built -march=x86-64 so it runs on the K8 Vostro.

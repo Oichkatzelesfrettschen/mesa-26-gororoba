@@ -1,0 +1,95 @@
+# 3_terakan_full_release_x86_64v1-clang22-distcc-cache: the maximal-feature
+# r600/terakan RELEASE profile for the CachyOS x130e (AMD E-300 Bobcat,
+# Radeon HD 6310 PALM, Evergreen / TeraScale-2 VLIW5).  This is the canonical
+# terakan full RELEASE build: it enables every r600/terakan-reachable API and
+# loader surface -- r600 Gallium, zink, softpipe, llvmpipe, the amd_terascale
+# Vulkan ICD, Rusticl/OpenCL, gallium-va, gallium-xa, and the full GL/GLES
+# stack -- in one artifact.  Pair with 4_terakan_full_debug for the
+# assertions-live RCA sibling.
+#
+# Why release: GL/GLES conformance and silicon evidence must run against
+# buildtype='release'.  A debugoptimized build keeps assertions live and takes
+# -O0-shaped error paths, so a driver assert can abort a CTS/Piglit case that
+# release would pass, contaminating the pass/fail baseline.
+#
+# Why Rusticl included: the release profile is the conformance and measurement
+# artifact, so Rusticl/OpenCL is present and exercisable.  Use profile
+# 5_terakan_norusticl_release when bindgen drift makes Rusticl unbuildable.
+#
+# Why maximal: the r600 + zink + softpipe + llvmpipe surface covers both the
+# hardware PALM path (r600_dri.so) and software fallbacks; amd-use-llvm and
+# draw-use-llvm are true so gallivm is the vertex back-end.  Vulkan layers,
+# perfetto, valgrind, and libunwind are excluded to keep the artifact lean and
+# prevent debug instrumentation from contaminating measurements.
+#
+# Pair with the vostro1000-x86-64-v1-clang22-ccache-distcc HOSTENV: clang 22
+# over ccache-first distcc, x86-64-v1 baseline ISA.  x86-64-v1 is a safe
+# subset of the Bobcat E-300, so remote distcc volunteers never emit
+# instructions the x130e cannot run.  -O2 is the portable default shared with
+# the packaging lane.
+
+[built-in options]
+buildtype = 'release'
+b_ndebug = 'true'
+# -fno-emulated-tls: clang on linux x86_64 otherwise emulates TLS and the
+# libglapi link fails; this profile builds the GL stack (opengl=true), so it
+# needs the native-TLS model.  The default is machine-neutral and hardened:
+# no -pipe, no LTO, no -fno-plt, no native tune, and no frame-pointer omission.
+c_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+
+[project options]
+# Maximal terakan stack: r600 hardware + zink/softpipe/llvmpipe software
+# fallbacks, plus the amd_terascale Vulkan ICD.  LLVM is required for gallivm,
+# the r600 LLVM shader compiler, and Rusticl.
+platforms = ['x11', 'wayland']
+gallium-drivers = ['r600', 'zink', 'softpipe', 'llvmpipe']
+vulkan-drivers = ['amd_terascale']
+llvm = 'enabled'
+amd-use-llvm = true
+draw-use-llvm = true
+
+# Maximal OpenGL/GLES surface: PALM exposes desktop GL 4.x via r600 + LLVM
+# shader compiler; build the full desktop GL, GLES1, and GLES2 entrypoints
+# so every context type a conformance lane can request is present.
+opengl = true
+gles1 = 'enabled'
+gles2 = 'enabled'
+
+# Loader and window-system surfaces.  GLVND vendor dispatch, GLX over DRI, EGL,
+# and GBM.  egl-native-platform='drm' makes EGL_DEFAULT_DISPLAY use the DRM
+# native platform for the renderD128 headless path the Piglit/deqp lane runs on;
+# x11/wayland callers select their platform explicitly.
+glvnd = 'enabled'
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'drm'
+gbm = 'enabled'
+
+# r600 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
+shader-cache = 'enabled'
+gallium-extra-hud = true
+lmsensors = 'enabled'
+
+# Rusticl/OpenCL: the Rust-based OpenCL frontend.  This profile includes it so
+# the release artifact covers every compute surface PALM can expose.  Disable by
+# switching to 5_terakan_norusticl_release when bindgen drift blocks the build.
+gallium-rusticl = true
+gallium-rusticl-enable-drivers = ['auto']
+
+# gallium-va video decode (UVD / VAVP on PALM) and gallium-xa 2D/Xv frontend
+# (xa_nir.c).  All codecs enabled via 'all'.
+gallium-va = 'enabled'
+video-codecs = ['all']
+gallium-xa = true
+
+# Promote warnings to errors in this project's new and modified code.
+werror = true
+
+# Lean release artifact: no debug instrumentation, no Vulkan layers.
+vulkan-layers = []
+perfetto = false
+valgrind = 'disabled'
+libunwind = 'disabled'

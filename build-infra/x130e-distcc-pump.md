@@ -12,16 +12,16 @@ Current verified state:
 
 - Source tree: `~/workspaces/mesa/mesa-26-gororoba`.
 - Warm build tree:
-  `~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump`.
-- Pump build tree:
-  `~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump`.
+  `~/workspaces/mesa/build/mesa-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache`.
+- Pump build tree (historical; distcc-pump removed upstream):
+  `~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-pump` (archived).
 - Active distcc SSH worker: `@x570-5600X3D.local/16,lzo`.
 - Active Ubuntu WSL TCP worker: `ALIENWARE.local/32,lzo`.
 - distcc host specs for this lane use mDNS `.local` names only; do not use raw DHCP addresses.
 - Compiler: a coherent installed `clang` / `clang++` / `llvm-config`
   family selected by the Makefile-generated Meson native overlay.
-- Warm profile: `build-infra/configs/terakan-distcc-no-rusticl.meson`.
-- Pump profile: `build-infra/configs/terakan-distcc-no-rusticl-pump.meson`.
+- Warm profile: `build-infra/configs/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson`.
+- Pump profile: removed upstream (distcc-pump is incompatible with ccache; use warm lane).
 - Default install prefix: `/opt/local/mesa-<profile>`.
   Pass `PREFIX=/opt/local/mesa-26-gororoba` only when intentionally
   installing into the shared active tree.
@@ -42,8 +42,8 @@ The canonical split is:
 
 | Use case | C/C++ chain | Rust chain | Host options | Command |
 | --- | --- | --- | --- | --- |
-| Warm incremental | `ccache -> distcc -> clang`, no pump | `sccache -> rustc` | `lzo`, includes x570 + WSL + localhost + zeroconf | `make rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
-| Cold clean | `distcc-pump -> distcc -> clang`, no ccache | `sccache -> rustc` | verified x570 mDNS worker with shell-derived `cpp,lzo` | `make rebuild-terakan-distcc-no-rusticl-pump` |
+| Warm incremental | `ccache -> distcc -> clang`, no pump | `sccache -> rustc` | `lzo`, includes x570 + WSL + localhost + zeroconf | `make rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache` |
+| Cold clean | distcc-pump removed upstream | `sccache -> rustc` | use warm lane instead | (no pump target) |
 
 Warm/no-pump compiler wiring is generated at configure time:
 
@@ -114,39 +114,26 @@ Use the warm lane for normal edit/build/probe loops:
 
 ```sh
 cd ~/workspaces/mesa/mesa-26-gororoba/build-infra
-make rebuild-terakan-distcc-no-rusticl-ccache-no-pump
+make rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache
 ```
 
-Use the pump lane for cold clean builds where remote preprocessing is
-worth more than cache hits:
+Or the Rusticl-enabled variant when Rusticl is buildable:
 
 ```sh
-cd ~/workspaces/mesa/mesa-26-gororoba/build-infra
-make rebuild-terakan-distcc-no-rusticl-pump
+make rebuild-3_terakan_full_release_x86_64v1-clang22-distcc-cache
 ```
-
-The pump target intentionally runs in three phases:
-
-1. Configure normally.
-2. Prebuild generated Meson/Ninja targets outside the include-server lifetime.
-3. Run the heavy compile under `distcc-pump`.
-
-That split prevents generated headers such as `u_format_gen.h` from
-changing while pump's include server is snapshotting dependencies.
 
 Install with root privileges only after the user-owned build converges.
 Do not commit or build the repo as root:
 
 ```sh
-sudo meson install --no-rebuild -C ~/workspaces/mesa/build/mesa-terakan-distcc-no-rusticl-ccache-no-pump
+make install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache
 ```
 
 Verify the installed artifacts:
 
 ```sh
-find /usr/local/mesa-terakan-distcc-no-rusticl -maxdepth 5 -type f \
-  \( -name "libvulkan_terascale.so" -o -name "r600_dri.so" -o -name "libgallium-*.so" -o -name "terascale_icd*.json" \) \
-  -printf "%p %TY-%Tm-%Td %TH:%TM:%TS %s bytes\n" | sort
+make artifact-check PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache PREFIX=/opt/local/mesa-26-gororoba
 ```
 
 The Makefile sources `build-infra/env/*.env` for configure/build targets.
