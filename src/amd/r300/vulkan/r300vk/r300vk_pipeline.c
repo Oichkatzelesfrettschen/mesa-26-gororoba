@@ -1555,7 +1555,25 @@ r300vk_synthesize_dp4_fs(struct pipe_context *pipe, uint8_t components)
    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                            glsl_vec4_type(), "color");
    out->data.location = FRAG_RESULT_COLOR;
-   nir_store_var(&b, out, nir_replicate(&b, dot, 4), 0xf);
+   /* R300 has no FP32 render target (hardware-confirmed: an FP32 color FBO is
+    * incomplete), so the scalar dot cannot be written as an IEEE-754 float.
+    * Carry it as a 3-byte little-endian integer in RGBA8: r=dot%256,
+    * g=(dot/256)%256, b=(dot/65536)%256.  The dot is an integer <= 2^17 for
+    * <=7-bit (quantized) operands and stays exact through this FP24 encode
+    * (every intermediate <= 2^24).  The dispatch-replay's UNORM8 RT round-trips
+    * each byte and copies them to the kernel's uint output SSBO.  This is the
+    * same encode the surfaceless-EGL dp4 probe proved 6/6 byte-exact. */
+   nir_def *fl256 = nir_ffloor(&b, nir_fmul_imm(&b, dot, 1.0 / 256.0));
+   nir_def *enc_r = nir_fsub(&b, dot, nir_fmul_imm(&b, fl256, 256.0));
+   nir_def *enc_g = nir_fsub(&b, fl256,
+      nir_fmul_imm(&b, nir_ffloor(&b, nir_fmul_imm(&b, fl256, 1.0 / 256.0)), 256.0));
+   nir_def *flh = nir_ffloor(&b, nir_fmul_imm(&b, dot, 1.0 / 65536.0));
+   nir_def *enc_b = nir_fsub(&b, flh,
+      nir_fmul_imm(&b, nir_ffloor(&b, nir_fmul_imm(&b, flh, 1.0 / 256.0)), 256.0));
+   nir_def *enc = nir_vec4(&b,
+      nir_fmul_imm(&b, enc_r, 1.0 / 255.0), nir_fmul_imm(&b, enc_g, 1.0 / 255.0),
+      nir_fmul_imm(&b, enc_b, 1.0 / 255.0), nir_imm_float(&b, 0.0));
+   nir_store_var(&b, out, enc, 0xf);
 
    nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
    nir_assign_io_var_locations(b.shader, nir_var_shader_in);

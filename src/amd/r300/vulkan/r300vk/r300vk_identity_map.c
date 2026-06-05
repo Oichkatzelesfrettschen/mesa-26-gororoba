@@ -1066,7 +1066,9 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
                                       const struct r300vk_cmd_dispatch *dispatch,
                                       const struct r300vk_cmd_bind_descriptor_sets *binds,
                                       uint32_t cap_in_a, uint32_t cap_in_b,
-                                      uint32_t cap_out)
+                                      uint32_t cap_out,
+                                      enum pipe_format input_fmt,
+                                      enum pipe_format output_fmt)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -1169,11 +1171,14 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+   /* input_fmt is the per-element sampler-view format (UNORM8 4B for binary-map,
+    * R32G32B32A32_FLOAT 16B for the dp4 vec4 inputs); fmt = output_fmt is the RT
+    * and copy-back element format (UNORM8 for both). */
+   const enum pipe_format fmt = output_fmt;
    struct pipe_sampler_view *sv_a =
       r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
                                                      (unsigned)desc_in_a->buf.offset,
-                                                     width, height, fmt);
+                                                     width, height, input_fmt);
    if (!sv_a) {
       IDM_LOG("bin_map early-return wrap-input-a-failed");
       return false;
@@ -1181,7 +1186,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *sv_b =
       r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_b->resource,
                                                      (unsigned)desc_in_b->buf.offset,
-                                                     width, height, fmt);
+                                                     width, height, input_fmt);
    if (!sv_b) {
       pipe_sampler_view_reference(&sv_a, NULL);
       IDM_LOG("bin_map early-return wrap-input-b-failed");
@@ -1319,7 +1324,8 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
       device, pl, dispatch, binds,
       pl->binary_map.input_a_ssbo_binding,
       pl->binary_map.input_b_ssbo_binding,
-      pl->binary_map.output_ssbo_binding);
+      pl->binary_map.output_ssbo_binding,
+      PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_FORMAT_R8G8B8A8_UNORM);
 }
 
 bool
@@ -1328,11 +1334,20 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
                            const struct r300vk_cmd_dispatch *dispatch,
                            const struct r300vk_cmd_bind_descriptor_sets *binds)
 {
+   /* The dp4 vec4 inputs are sampled as R32G32B32A32_FLOAT.  R300 supports FP32
+    * texture sampling but NOT FP32 render targets (so the dot output is RGBA8
+    * integer-encoded by the FS, not an FP32 RT).  Bail if this variant lacks
+    * FP32 sampler support rather than mis-sample the inputs as bytes. */
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
    return r300vk_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->dp4.input_a_ssbo_binding,
       pl->dp4.input_b_ssbo_binding,
-      pl->dp4.output_ssbo_binding);
+      pl->dp4.output_ssbo_binding,
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R8G8B8A8_UNORM);
 }
 
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
