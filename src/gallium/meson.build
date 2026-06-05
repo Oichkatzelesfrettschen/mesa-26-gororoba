@@ -218,6 +218,9 @@ if with_glx == 'xlib'
   subdir('frontends/glx/xlib')
   subdir('targets/libgl-xlib')
 endif
+if with_gallium_xa
+  subdir('frontends/xa')
+endif
 if with_gallium_va
   subdir('frontends/va')
   if not with_dri
