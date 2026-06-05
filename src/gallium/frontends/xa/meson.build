@@ -35,7 +35,7 @@ xa_tracker_h = configure_file(
 libxa_st = static_library(
   'xa_st',
   [xa_tracker_h, files(
-    'xa_composite.c', 'xa_context.c', 'xa_renderer.c', 'xa_tgsi.c',
+    'xa_composite.c', 'xa_context.c', 'xa_renderer.c', 'xa_nir.c',
     'xa_tracker.c', 'xa_yuv.c',
   )],
   gnu_symbol_visibility : 'hidden',

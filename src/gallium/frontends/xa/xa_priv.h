@@ -214,7 +214,7 @@ xa_pixel_to_float4_a8(uint32_t pixel, float *color)
 }
 
 /*
- * xa_tgsi.c
+ * xa_nir.c
  */
 
 extern struct xa_shaders *xa_shaders_create(struct xa_context *);
