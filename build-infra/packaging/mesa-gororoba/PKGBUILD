@@ -30,10 +30,9 @@ pkgname=mesa-gororoba
 pkgver=26.2.0
 pkgrel=7
 epoch=2
-# Pinned to the merged-main tip.  Update per build; the source is the public
-# fork, not a local path.  For rapid iteration override with #branch=main and
-# rebuild.
-_commit=8e1f7ad60a3366e1c63d590db104466c0ea413fe
+# Tracks the latest main HEAD via #branch=main in source below; the source is
+# the public fork, not a local path.  To pin a reproducible build instead,
+# replace #branch=main with #commit=<sha>.
 pkgdesc='Mesa system replacement: r300 GL + llvmpipe + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
@@ -62,7 +61,7 @@ conflicts=(mesa vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1'
 replaces=(mesa vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 options=('!lto' '!debug' 'strip')
 install="${pkgname}.install"
-source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}"
+source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#branch=main"
         'mesa-26-gororoba-env.sh'
         'mesa-26-gororoba-run'
         'mesa-26-gororoba-profile.sh'

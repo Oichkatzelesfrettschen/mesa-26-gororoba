@@ -56,6 +56,16 @@ r300vk_CreateRenderPass(VkDevice _device,
       rp->color_attachment_count = sp->colorAttachmentCount;
       for (uint32_t i = 0; i < sp->colorAttachmentCount; i++)
          rp->color_attachment_refs[i] = sp->pColorAttachments[i].attachment;
+
+      /* Parse subpass 0 input attachments.  subpassLoad reads these images at
+       * the fragment's own coordinate; the replay binds them as fragment
+       * textures.  Excess input attachments beyond the fixed storage are simply
+       * not recorded -- the lowering binds only the slots it can resolve, and an
+       * unresolved subpassLoad keeps its prior (rejected) behavior. */
+      rp->input_attachment_count = MIN2(sp->inputAttachmentCount,
+                                        PIPE_MAX_COLOR_BUFS);
+      for (uint32_t i = 0; i < rp->input_attachment_count; i++)
+         rp->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
    }
 
    *pRenderPass = r300vk_render_pass_to_handle(rp);
