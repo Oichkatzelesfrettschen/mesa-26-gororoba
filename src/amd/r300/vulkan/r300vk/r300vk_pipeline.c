@@ -595,23 +595,50 @@ r300vk_nir_push_const_all_float(nir_shader *nir)
    return true;
 }
 
-/* r300's constant file is addressed by a compile-time vec4 slot plus component.
- * After nir_lower_ubo_vec4 a non-constant byte offset becomes a runtime
- * vector_extract the SW-TCL nir_to_tgsi float-ARL path (no native integers) cannot
- * map to a static constant fetch -- it floors a non-zero integer index's float bit
- * pattern to slot 0 -- and a vec4-width access that straddles a 16-byte slot
- * becomes a two-load bcsel with runtime component selection.  Accept only constant
- * offsets that fit within one 16-byte slot; reject the rest.  Runs after
- * nir_lower_explicit_io; BASE is 0 for push constants, so src[0] is the full byte
- * offset. */
+/* r300's constant file is addressed by a compile-time vec4 slot plus component,
+ * so a runtime (dynamically-indexed) offset cannot be represented.  Two distinct
+ * shader shapes trip this: a push-constant offset and a UBO byte offset.  After
+ * nir_lower_ubo_vec4 a non-constant offset becomes a runtime vector_extract the
+ * SW-TCL nir_to_tgsi float-ARL path (no native integers) cannot map to a static
+ * constant fetch -- it floors a non-zero integer index's float bit pattern to
+ * slot 0 -- and nir_lower_int_to_float (which nir_to_rc runs next, r300 having no
+ * native integers) has no float lowering for the ushr/iand/udiv a dynamic offset
+ * decomposes into: it asserts on a debug build and mistranslates on release.
+ *
+ * Accept only a constant offset at src[off_src]; when straddle is set, also
+ * require it to fit within one 16-byte slot (a vec4 access crossing a slot
+ * boundary becomes a two-load bcsel with runtime component selection).  A
+ * loop-bounded constant access (color[i] in a statically-bounded loop) carries a
+ * non-constant offset until the loop unrolls, so a cheap pre-pass first checks
+ * whether any offset is even non-constant and returns early otherwise; only then
+ * pay for a clone + r300_optimize_nir (the same pass r300_create_*_state runs
+ * later) to fold the loop-bounded case before judging it genuinely dynamic
+ * (dynamic_index_vert indexes by a gl_Position-derived value that never folds).
+ *
+ * Shared by the push-constant gate (load_push_constant, src[0], slot-straddle
+ * checked) and the UBO-offset gate (load_ubo_vec4, src[1]); together with the
+ * dynamic-UBO-index reject in r300vk_nir_lower_vulkan_resource_index_single (the
+ * index selects which UBO, the offset selects where within it) they form the
+ * complete "r300 constant-file representability" gate. */
 static bool
-r300vk_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
+r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
+                          nir_intrinsic_op op, unsigned off_src, bool straddle)
 {
-   /* color[i] in a statically-bounded loop carries a non-constant push-constant
-    * offset until the loop is unrolled.  Run the same r300_optimize_nir that
-    * r300_create_vs_state runs later, on a clone, so a loop-bounded constant access
-    * folds to a constant offset and is not mistaken for a genuinely dynamic one
-    * (dynamic_index_vert indexes by a gl_Position-derived value that never folds). */
+   bool maybe_dynamic = false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == op && !nir_src_is_const(intr->src[off_src]))
+               maybe_dynamic = true;
+         }
+      }
+   }
+   if (!maybe_dynamic)
+      return true;
+
    nir_shader *check = nir_shader_clone(NULL, nir);
    r300_optimize_nir(check, r300_screen(pscreen));
 
@@ -622,22 +649,33 @@ r300vk_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
             if (instr->type != nir_instr_type_intrinsic)
                continue;
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_load_push_constant)
+            if (intr->intrinsic != op)
                continue;
-            if (!nir_src_is_const(intr->src[0])) {
+            if (!nir_src_is_const(intr->src[off_src])) {
                ok = false;
                continue;
             }
-            uint32_t off = (uint32_t)nir_src_as_uint(intr->src[0]);
-            unsigned byte_width =
-               intr->def.num_components * (intr->def.bit_size / 8u);
-            if ((off & 15u) + byte_width > 16u)
-               ok = false;
+            if (straddle) {
+               uint32_t off = (uint32_t)nir_src_as_uint(intr->src[off_src]);
+               unsigned byte_width =
+                  intr->def.num_components * (intr->def.bit_size / 8u);
+               if ((off & 15u) + byte_width > 16u)
+                  ok = false;
+            }
          }
       }
    }
    ralloc_free(check);
    return ok;
+}
+
+/* BASE is 0 for push constants (after nir_lower_explicit_io), so src[0] is the
+ * full byte offset; slot-straddle matters. */
+static bool
+r300vk_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
+{
+   return r300vk_nir_offsets_static(pscreen, nir,
+                                    nir_intrinsic_load_push_constant, 0, true);
 }
 
 static VkResult
@@ -813,6 +851,21 @@ r300vk_compile_shader(struct r300vk_device *device,
    /* The single supported UBO is bound at CONST[0]; pin every load_ubo[_vec4]
     * block index to a literal 0 for ntr_emit_load_ubo's index-0 assert. */
    r300vk_nir_remap_single_ubo_to_index0(nir);
+
+   /* Reject a dynamic UBO offset (ubo.arr[i], a runtime-indexed member) the same
+    * way push constants are gated: r300's static vec4-slot constant file cannot
+    * address load_ubo_vec4's src[1] offset at runtime.  Complements the
+    * dynamic-UBO-index reject above -- the index selects which UBO, the offset
+    * selects where within it; r300 can represent neither dynamically. */
+   if (!r300vk_nir_offsets_static(device->screen, nir,
+                                  nir_intrinsic_load_ubo_vec4, 1, false)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: %s shader uses a dynamic uniform-buffer offset; "
+                       "r300's constant file is addressed by a static vec4 slot",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
+   }
 
    /* vk_spirv_to_nir sets data.location for VS inputs (VERT_ATTRIB_GENERIC0+n)
     * but leaves data.driver_location at zero for all variables.  nir_lower_io
