@@ -44,6 +44,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_COPY_IMAGE_TO_BUFFER,
    R300VK_CMD_COPY_BUFFER_TO_IMAGE,
    R300VK_CMD_COPY_IMAGE,
+   R300VK_CMD_BLIT_IMAGE,
    R300VK_CMD_CLEAR_COLOR_IMAGE,
    R300VK_CMD_CLEAR_ATTACHMENTS,
    R300VK_CMD_FILL_BUFFER,
@@ -180,6 +181,20 @@ struct r300vk_cmd_copy_image {
    struct r300vk_image *src;
    struct r300vk_image *dst;
    VkImageCopy2         region;
+};
+
+/* One region of a vkCmdBlitImage2.  Unlike the copy commands, a blit can scale
+ * and filter, so it is replayed on the GPU through pipe->blit (r300_blit ->
+ * util_blitter), which carries the scale, filter, and format cast the CPU tile
+ * walk does not.  r300 samples the blit source as a texture, so the source is
+ * bounded by the r300 sampler cap (pipe_screen caps.max_texture_2d_size: 2048
+ * on r300-class, 4096 on r500); a source past that cap or a tile-split image
+ * cannot be sampled and is handled by the guarded fallback at replay time. */
+struct r300vk_cmd_blit_image {
+   struct r300vk_image *src;
+   struct r300vk_image *dst;
+   VkImageBlit2         region;
+   VkFilter             filter;
 };
 
 /* One vkCmdClearColorImage subresource range.  Replayed as a tile-iterated CPU
@@ -328,6 +343,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_copy_image_to_buf    copy_img_buf;
       struct r300vk_cmd_copy_buf_to_image    copy_buf_img;
       struct r300vk_cmd_copy_image           copy_image;
+      struct r300vk_cmd_blit_image           blit_image;
       struct r300vk_cmd_clear_color_image    clear_color_image;
       struct r300vk_cmd_clear_attachments    clear_attachments;
       struct r300vk_cmd_fill_buffer          fill_buffer;

@@ -289,6 +289,99 @@ r300vk_replay_dispatch(struct r300vk_device *device,
    return ok ? VK_SUCCESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
 
+/* Replay one vkCmdBlitImage2 region on the GPU through pipe->blit.  A blit
+ * scales and filters, which the CPU tile-copy paths do not, so r300_blit ->
+ * util_blitter does the work; r300_blit saves and restores its own pipe state,
+ * so this only builds the pipe_blit_info and issues the blit.  The flip and
+ * box-normalization follow the canonical Gallium translation (negative source
+ * width/height expresses a mirror, which pipe_blit_info permits on the source).
+ *
+ * r300 samples the blit source as a texture, so a source larger than the r300
+ * sampler cap (pipe_screen caps.max_texture_2d_size: 2048 on r300-class), or
+ * either image split across tiles[], cannot be sampled through one pipe->blit.
+ * That case is skipped here.
+ *
+ * TODO: a blit whose source exceeds caps.max_texture_2d_size, or whose source
+ *       or destination is tile-split, needs a CPU sampler fallback (point or
+ *       bilinear in software) because pipe->blit samples the source as a single
+ *       texture and r300 can neither create nor sample one past the cap.
+ *       Reason: the cap is the r300 sampler-engine limit, the same wall that
+ *       bounds an r300 GL texture, so no GL-creatable image and no CTS
+ *       blit_image case (defaultSize 64) reaches it.
+ *       Tracking: r300vk_replay_blit sampler-cap CPU fallback. */
+static void
+r300vk_replay_blit(struct r300vk_device *device,
+                   const struct r300vk_cmd_entry *e)
+{
+   struct pipe_context *pipe = device->pipe;
+   const struct r300vk_cmd_blit_image *b = &e->blit_image;
+   const struct r300vk_image *src = b->src;
+   const struct r300vk_image *dst = b->dst;
+
+   if (!src->resource || !dst->resource)
+      return;
+
+   const unsigned max_tex = device->screen->caps.max_texture_2d_size;
+   if (src->tile_cols != 1 || src->tile_rows != 1 ||
+       dst->tile_cols != 1 || dst->tile_rows != 1 ||
+       src->vk.extent.width > max_tex || src->vk.extent.height > max_tex)
+      return;
+
+   const enum pipe_format src_fmt = src->resource->format;
+   const enum pipe_format dst_fmt = dst->resource->format;
+
+   struct pipe_blit_info info;
+   memset(&info, 0, sizeof(info));
+   info.src.resource = src->resource;
+   info.dst.resource = dst->resource;
+   info.src.format   = src_fmt;
+   info.dst.format   = dst_fmt;
+   info.src.level    = 0;
+   info.dst.level    = 0;
+   info.mask   = util_format_is_depth_or_stencil(src_fmt) ? PIPE_MASK_ZS
+                                                          : PIPE_MASK_RGBA;
+   info.filter = b->filter == VK_FILTER_NEAREST ? PIPE_TEX_FILTER_NEAREST
+                                                : PIPE_TEX_FILTER_LINEAR;
+
+   /* r300vk images are 2D, single-layer, single-mip: z=0, depth=1.  The two
+    * offsets per axis may be in either order; normalize the destination to a
+    * positive box and let the corresponding source endpoint carry the sign so
+    * a mirrored blit becomes a negative source width/height. */
+   const VkOffset3D *so = b->region.srcOffsets;
+   const VkOffset3D *dof = b->region.dstOffsets;
+
+   if (dof[0].x <= dof[1].x) {
+      info.dst.box.x     = dof[0].x;
+      info.dst.box.width = dof[1].x - dof[0].x;
+      info.src.box.x     = so[0].x;
+      info.src.box.width = so[1].x - so[0].x;
+   } else {
+      info.dst.box.x     = dof[1].x;
+      info.dst.box.width = dof[0].x - dof[1].x;
+      info.src.box.x     = so[1].x;
+      info.src.box.width = so[0].x - so[1].x;
+   }
+
+   if (dof[0].y <= dof[1].y) {
+      info.dst.box.y      = dof[0].y;
+      info.dst.box.height = dof[1].y - dof[0].y;
+      info.src.box.y      = so[0].y;
+      info.src.box.height = so[1].y - so[0].y;
+   } else {
+      info.dst.box.y      = dof[1].y;
+      info.dst.box.height = dof[0].y - dof[1].y;
+      info.src.box.y      = so[1].y;
+      info.src.box.height = so[0].y - so[1].y;
+   }
+
+   info.src.box.z     = 0;
+   info.dst.box.z     = 0;
+   info.src.box.depth = 1;
+   info.dst.box.depth = 1;
+
+   pipe->blit(pipe, &info);
+}
+
 static void
 r300vk_replay_end_render_pass(struct r300vk_device *device,
                                bool *skip_render_pass,
@@ -1039,6 +1132,20 @@ r300vk_replay_gpu(struct r300vk_device *device,
             result = r300vk_replay_dispatch(device, e, last_bind_dsets);
             if (result != VK_SUCCESS)
                return result;
+            pipe->flush(pipe, NULL, 0);
+            *gpu_pending = true;
+            break;
+
+         case R300VK_CMD_BLIT_IMAGE:
+            /* A blit is a standalone GPU op outside any render pass.  The entry
+             * list is re-walked once per tile pass, so run it only in the
+             * single-tile-pass case (every CTS blit and every real single-submit
+             * blit); a cmd buffer that also carried a multi-tile render pass
+             * would otherwise replay the blit once per pass.  This mirrors the
+             * single-tile guard on the occlusion-query path below. */
+            if (tile_pass_count != 1)
+               break;
+            r300vk_replay_blit(device, e);
             pipe->flush(pipe, NULL, 0);
             *gpu_pending = true;
             break;
