@@ -767,12 +767,12 @@ stale value.
 
 Profiles live in `build-infra/configs/`:
 
-- `terakan-full.meson`    r600+zink+soft+llvm, rusticl+HUD+VA (full stack)
-- `terakan-distcc.meson`  r600-only, rusticl-enabled historical lane
-- `terakan-distcc-no-rusticl.meson`  daily warm lane, no Rusticl
-- `terakan-distcc-no-rusticl-pump.meson`  cold clean pump lane, no Rusticl
-- `terakan-minimal.meson` r600-only, no HUD, NIR scratchpad
-- `base-debug.meson`      stock Mesa reference (no terakan)
+- `1_r300_full_release_x86_64v1-clang22-distcc-cache.meson`  maximal r300 + amd_r300 ICD, release (vostro)
+- `2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson`    maximal r300 + amd_r300 ICD, debug (vostro)
+- `3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson`  r600+zink+soft+llvm+amd_terascale + Rusticl, release (x130e)
+- `4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson`    r600+zink+soft+llvm+amd_terascale + Rusticl, debug (x130e)
+- `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson`  same as 3_ without Rusticl, release (x130e fallback)
+- `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson`    same as 4_ without Rusticl, debug (x130e fallback)
 
 Host-envs in `build-infra/env/` (`btver1-ccache-no-pump.env`,
 `btver1-distcc-pump.env`, `sapphire.env`, `zen4.env`) set the lane-specific
