@@ -38,9 +38,8 @@ libxa_st = static_library(
     'xa_composite.c', 'xa_context.c', 'xa_renderer.c', 'xa_tgsi.c',
     'xa_tracker.c', 'xa_yuv.c',
   )],
-  c_args : ['-pedantic'],
   gnu_symbol_visibility : 'hidden',
-  dependencies : idep_mesautil,
+  dependencies : [idep_nir, idep_nir_headers, idep_mesautil],
   include_directories : [inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux],
 )
 
