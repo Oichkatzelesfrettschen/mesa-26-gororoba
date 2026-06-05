@@ -829,14 +829,16 @@ r300vk_get_image_format_properties(
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_3D:
-      max_extent = (VkExtent3D){
-         device->vk.properties.maxImageDimension3D,
-         device->vk.properties.maxImageDimension3D,
-         device->vk.properties.maxImageDimension3D,
-      };
-      max_mip_levels = 1;
-      max_array_layers = 1;
-      break;
+      /* r300vk backs every image with a single PIPE_TEXTURE_2D resource of
+       * depth0 == 1 (r300vk_image_create_tile_resources), so a 3D image's
+       * depth slices have no storage and any depth > 1 access reads or writes
+       * the wrong slice.  Report VK_IMAGE_TYPE_3D unsupported so this query,
+       * vkCreateImage, and the transfer/blit replay agree, and a 3D image test
+       * is NotSupported rather than silently incorrect.  This is a deliberate,
+       * deferred conformance gap: VK 1.0 requires maxImageDimension3D >= 256,
+       * which r300vk reports as a device limit but cannot honor per format
+       * until a real 3D resource path exists. */
+      goto unsupported;
    default:
       goto unsupported;
    }
