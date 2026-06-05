@@ -901,3 +901,10 @@ option(
   description : 'Enable Gallium-backed r300g device/submit path in r300vk. ' +
                 'Requires R300VK_GALLIUM_SUBMIT_ACCEPTED=1 for hardware CS submit runs.',
 )
+
+option(
+  'gallium-xa',
+  type : 'boolean',
+  value : false,
+  description : 'Enable the XA state tracker (X 2D acceleration / Xv) for r300/RS482 (restoration in progress).',
+)

@@ -82,8 +82,6 @@ xa_context_destroy(struct xa_context *r)
     }
 
     xa_ctx_sampler_views_destroy(r);
-    if (r->srf)
-        pipe_surface_reference(&r->srf, NULL);
 
     if (r->cso) {
 	cso_destroy_context(r->cso);
@@ -189,27 +187,19 @@ int
 xa_ctx_srf_create(struct xa_context *ctx, struct xa_surface *dst)
 {
     struct pipe_screen *screen = ctx->pipe->screen;
-    struct pipe_surface srf_templ;
 
     /*
      * Cache surfaces unless we change render target
      */
-    if (ctx->srf) {
-        if (ctx->srf->texture == dst->tex)
-            return XA_ERR_NONE;
-
-        pipe_surface_reference(&ctx->srf, NULL);
-    }
+    if (ctx->srf.texture == dst->tex)
+        return XA_ERR_NONE;
 
     if (!screen->is_format_supported(screen,  dst->tex->format,
 				     PIPE_TEXTURE_2D, 0, 0,
 				     PIPE_BIND_RENDER_TARGET))
 	return -XA_ERR_INVAL;
 
-    u_surface_default_template(&srf_templ, dst->tex);
-    ctx->srf = ctx->pipe->create_surface(ctx->pipe, dst->tex, &srf_templ);
-    if (!ctx->srf)
-	return -XA_ERR_NORES;
+    u_surface_default_template(&ctx->srf, dst->tex);
 
     return XA_ERR_NONE;
 }
@@ -234,7 +224,7 @@ xa_copy_prepare(struct xa_context *ctx,
 	int ret = xa_ctx_srf_create(ctx, dst);
 	if (ret != XA_ERR_NONE)
 	    return ret;
-	renderer_copy_prepare(ctx, ctx->srf, src->tex,
+	renderer_copy_prepare(ctx, &ctx->srf, src->tex,
 			      src->fdesc.xa_format,
 			      dst->fdesc.xa_format);
 	ctx->simple_copy = 0;
@@ -305,7 +295,7 @@ xa_solid_prepare(struct xa_context *ctx, struct xa_surface *dst,
     if (ret != XA_ERR_NONE)
 	return ret;
 
-    if (ctx->srf->format == PIPE_FORMAT_L8_UNORM)
+    if (ctx->srf.format == PIPE_FORMAT_L8_UNORM)
 	xa_pixel_to_float4_a8(fg, ctx->solid_color);
     else
 	xa_pixel_to_float4(fg, ctx->solid_color);
@@ -324,11 +314,11 @@ xa_solid_prepare(struct xa_context *ctx, struct xa_surface *dst,
     vs_traits = VS_SRC_SRC | VS_COMPOSITE;
     fs_traits = FS_SRC_SRC | VS_COMPOSITE;
 
-    renderer_bind_destination(ctx, ctx->srf);
+    renderer_bind_destination(ctx, &ctx->srf);
     bind_solid_blend_state(ctx);
     cso_set_samplers(ctx->cso, MESA_SHADER_FRAGMENT, 0, NULL);
     ctx->pipe->set_sampler_views(ctx->pipe, MESA_SHADER_FRAGMENT, 0, 0,
-                                 XA_MAX_SAMPLERS, false, NULL);
+                                 XA_MAX_SAMPLERS, NULL);
 
     shader = xa_shaders_get(ctx->shaders, vs_traits, fs_traits);
     cso_set_vertex_shader_handle(ctx->cso, shader.vs);
@@ -352,7 +342,7 @@ xa_solid_done(struct xa_context *ctx)
 {
     renderer_draw_flush(ctx);
     ctx->comp = NULL;
-    ctx->has_solid_src = FALSE;
+    ctx->has_solid_src = false;
     ctx->num_bound_samplers = 0;
 }
 
@@ -383,7 +373,7 @@ xa_fence_wait(struct xa_fence *fence, uint64_t timeout)
 
     if (fence->pipe_fence) {
 	struct pipe_screen *screen = fence->xa->screen;
-	boolean timed_out;
+	bool timed_out;
 
 	timed_out = !screen->fence_finish(screen, NULL, fence->pipe_fence, timeout);
 	if (timed_out)

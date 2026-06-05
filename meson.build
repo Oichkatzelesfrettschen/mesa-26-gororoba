@@ -771,6 +771,7 @@ if dep_va.found()
                                 dependencies: dep_va_headers).split('.')
 endif
 with_gallium_va = dep_va.found()
+with_gallium_xa = get_option('gallium-xa')
 
 va_drivers_path = get_option('va-libs-path')
 if va_drivers_path == ''

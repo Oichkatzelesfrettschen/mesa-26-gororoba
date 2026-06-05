@@ -35,7 +35,7 @@
 #include "util/u_draw_quad.h"
 
 #define floatsEqual(x, y) (fabsf(x - y) <= 0.00001f * MIN2(fabsf(x), fabsf(y)))
-#define floatIsZero(x) (floatsEqual((x) + 1, 1))
+#define floatIsZero(x) (floatsEqual((x) + 1.0f, 1.0f))
 
 #define NUM_COMPONENTS 4
 
@@ -45,11 +45,11 @@ void
 renderer_set_constants(struct xa_context *r,
 		       int shader_type, const float *params, int param_bytes);
 
-static inline boolean
+static inline bool
 is_affine(const float *matrix)
 {
     return floatIsZero(matrix[2]) && floatIsZero(matrix[5])
-	&& floatsEqual(matrix[8], 1);
+	&& floatsEqual(matrix[8], 1.0f);
 }
 
 static inline void
@@ -320,8 +320,9 @@ void
 renderer_bind_destination(struct xa_context *r,
 			  struct pipe_surface *surface)
 {
-    int width = surface->width;
-    int height = surface->height;
+    unsigned width, height;
+
+    pipe_surface_size(surface, &width, &height);
 
     struct pipe_framebuffer_state fb;
     struct pipe_viewport_state viewport;
@@ -331,11 +332,10 @@ renderer_bind_destination(struct xa_context *r,
     /* Framebuffer uses actual surface width/height
      */
     memset(&fb, 0, sizeof fb);
-    fb.width = surface->width;
-    fb.height = surface->height;
+    fb.width = width;
+    fb.height = height;
     fb.nr_cbufs = 1;
-    fb.cbufs[0] = surface;
-    fb.zsbuf = 0;
+    fb.cbufs[0] = *surface;
 
     /* Viewport just touches the bit we're interested in:
      */
@@ -445,7 +445,7 @@ renderer_copy_prepare(struct xa_context *r,
 	u_sampler_view_default_template(&templ,
 					src_texture, src_texture->format);
 	src_view = pipe->create_sampler_view(pipe, src_texture, &templ);
-	pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, false, &src_view);
+	pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &src_view);
 	pipe_sampler_view_reference(&src_view, NULL);
     }
 
