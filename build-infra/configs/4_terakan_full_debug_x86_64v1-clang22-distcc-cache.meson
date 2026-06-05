@@ -1,0 +1,102 @@
+# 4_terakan_full_debug_x86_64v1-clang22-distcc-cache: the maximal-feature
+# r600/terakan DEBUG sibling of 3_terakan_full_release_x86_64v1-clang22-distcc-cache.
+# Same r600/terakan API/loader surface and same x86-64-v1/clang22/distcc-cache
+# lane.  Beyond the release profile it carries debug-only instrumentation:
+# debugoptimized buildtype with live assertions, frame pointers, valgrind +
+# libunwind annotations, the perfetto track-event timeline, the standalone
+# nir/glsl compiler tools plus dlclose-skip, the in-tree unit tests, the
+# overlay and device-select Vulkan layers, and Rusticl.  Conformance and silicon
+# evidence use the release profile (3_) instead.
+#
+# Why a separate debug profile: driver RCA and shader disassembly need assertions
+# live (b_ndebug='false') and a debugoptimized build (-O2 -g, real frame
+# pointers, intact error paths) so a gdb backtrace through r600_emit, the VLIW5
+# shader compiler, and the terakan queue lands on the true fault site instead of
+# an optimizer-folded address.
+#
+# Install to the -debug prefix (/opt/local/mesa-26-gororoba-debug) so the
+# release and debug artifacts never share object files or install paths.
+#
+# Feature set, exclusions, and HOSTENV pairing are identical to profile 3_;
+# see that file's header for the full rationale.
+
+[built-in options]
+buildtype = 'debugoptimized'
+b_ndebug = 'false'
+# -fno-emulated-tls matches profile 3_ (the GL stack's libglapi needs native
+# TLS under clang).  The debug profile forces -fno-omit-frame-pointer: clang at
+# -O2 (debugoptimized) drops the frame pointer by default, which breaks
+# gdb/libunwind RCA backtraces, so pin it on.
+c_args = ['-march=x86-64', '-mtune=generic', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+
+[project options]
+# Maximal terakan stack: r600 hardware + zink/softpipe/llvmpipe software
+# fallbacks, plus the amd_terascale Vulkan ICD.  LLVM is required for gallivm,
+# the r600 LLVM shader compiler, and Rusticl.
+platforms = ['x11', 'wayland']
+gallium-drivers = ['r600', 'zink', 'softpipe', 'llvmpipe']
+vulkan-drivers = ['amd_terascale']
+llvm = 'enabled'
+amd-use-llvm = true
+draw-use-llvm = true
+
+# Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
+opengl = true
+gles1 = 'enabled'
+gles2 = 'enabled'
+
+# Loader and window-system surfaces (GLVND, GLX-DRI, EGL, GBM).
+glvnd = 'enabled'
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'drm'
+gbm = 'enabled'
+
+# r600 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
+shader-cache = 'enabled'
+gallium-extra-hud = true
+lmsensors = 'enabled'
+
+# Rusticl/OpenCL with live assertions.  The debug profile carries it so OpenCL
+# faults on PALM land on the correct libclc / r600 pipe site.
+gallium-rusticl = true
+gallium-rusticl-enable-drivers = ['auto']
+
+# gallium-va video decode (UVD / VAVP on PALM) and gallium-xa 2D/Xv frontend.
+gallium-va = 'enabled'
+video-codecs = ['all']
+gallium-xa = true
+
+# Promote warnings to errors in this project's new and modified code.
+werror = true
+
+# Maximal debug instrumentation (debug profile only; release stays lean).
+# valgrind builds the VALGRIND_* client-request annotations so memcheck can see
+# BO/transfer lifetimes; libunwind gives reliable symbolized stack traces for
+# u_debug_stack and gdb.
+valgrind = 'enabled'
+libunwind = 'enabled'
+
+# Perfetto track-event timeline.  r600 is not a perfetto GPU datasource, so
+# this captures the CPU-side driver timeline; datasources stays 'auto'.
+# If Meson aborts configure on the perfetto subproject install-data tagging,
+# drop perfetto back to false -- that is a toolchain blocker, not an r600 one.
+perfetto = true
+datasources = ['auto']
+
+# Standalone compiler RCA tools: nir and glsl build the offline NIR/GLSL
+# compilers so an r600 RC fault can be reproduced off the X server; dlclose-skip
+# keeps dlopened drivers resident so a gdb backtrace through the pipe-loaded
+# r600 driver keeps its symbols.
+tools = ['nir', 'glsl', 'dlclose-skip']
+
+# Build the in-tree unit tests (the r600 compiler and NIR tests) so a compiler
+# fault can be reproduced by a deterministic test instead of only through the
+# live driver.
+build-tests = true
+
+# r600/terakan debug layers: overlay (the on-screen HUD) and device-select.
+vulkan-layers = ['overlay', 'device-select']

@@ -1,0 +1,68 @@
+# 5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache: identical to
+# 3_terakan_full_release_x86_64v1-clang22-distcc-cache except Rusticl/OpenCL
+# is disabled.  Use this profile when bindgen drift or a Rust toolchain gap
+# makes Rusticl unbuildable while r600 + zink + softpipe + llvmpipe + terascale
+# Vulkan must still ship in release form.
+#
+# When Rusticl builds cleanly, prefer 3_terakan_full_release.  This profile
+# exists so the terakan stack is never held hostage by an upstream Rust/bindgen
+# API break.  All other options, compiler flags, HOSTENV, and install prefix are
+# identical to profile 3_.  See that file's header for the full rationale.
+
+[built-in options]
+buildtype = 'release'
+b_ndebug = 'true'
+# -fno-emulated-tls: clang on linux x86_64 otherwise emulates TLS and the
+# libglapi link fails; this profile builds the GL stack (opengl=true), so it
+# needs the native-TLS model.  The default is machine-neutral and hardened:
+# no -pipe, no LTO, no -fno-plt, no native tune, and no frame-pointer omission.
+c_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-O2', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+
+[project options]
+# Maximal terakan stack without Rusticl: r600 hardware + zink/softpipe/llvmpipe
+# software fallbacks, plus the amd_terascale Vulkan ICD.
+platforms = ['x11', 'wayland']
+gallium-drivers = ['r600', 'zink', 'softpipe', 'llvmpipe']
+vulkan-drivers = ['amd_terascale']
+llvm = 'enabled'
+amd-use-llvm = true
+draw-use-llvm = true
+
+# Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
+opengl = true
+gles1 = 'enabled'
+gles2 = 'enabled'
+
+# Loader and window-system surfaces (GLVND, GLX-DRI, EGL, GBM).
+glvnd = 'enabled'
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'drm'
+gbm = 'enabled'
+
+# r600 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
+shader-cache = 'enabled'
+gallium-extra-hud = true
+lmsensors = 'enabled'
+
+# Rusticl disabled: use this profile when bindgen drift blocks the Rust
+# front-end build.  gallium-rusticl-enable-drivers is omitted because it has no
+# effect when gallium-rusticl=false.
+gallium-rusticl = false
+
+# gallium-va video decode (UVD / VAVP on PALM) and gallium-xa 2D/Xv frontend.
+gallium-va = 'enabled'
+video-codecs = ['all']
+gallium-xa = true
+
+# Promote warnings to errors in this project's new and modified code.
+werror = true
+
+# Lean release artifact: no debug instrumentation, no Vulkan layers.
+vulkan-layers = []
+perfetto = false
+valgrind = 'disabled'
+libunwind = 'disabled'
