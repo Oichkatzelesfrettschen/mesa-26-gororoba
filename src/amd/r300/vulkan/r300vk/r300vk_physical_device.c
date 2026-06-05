@@ -21,6 +21,7 @@
 #ifdef R300VK_GALLIUM_BACKEND
 #include "pipe/p_defines.h"
 #include "pipe/p_screen.h"
+#include "r300/r300_context.h"
 #include "r300/r300_public.h"
 #include "r300/r300_screen.h"
 #include "winsys/radeon_winsys.h"
@@ -582,6 +583,20 @@ r300vk_has_gallium_screen(const struct r300vk_physical_device *const device)
 #endif
 }
 
+/* True when r300's blitter (util_blitter, reached through pipe->blit) accepts
+ * the format's resource layout.  Wraps the r300g predicate so the loader-only
+ * build, which has no Gallium blitter, advertises no BLIT feature. */
+static bool
+r300vk_format_blit_supported(enum pipe_format pipe_format)
+{
+#ifdef R300VK_GALLIUM_BACKEND
+   return r300_is_blit_supported(pipe_format);
+#else
+   (void)pipe_format;
+   return false;
+#endif
+}
+
 static bool
 r300vk_format_supports_transfer_dst(enum pipe_format pipe_format)
 {
@@ -650,14 +665,29 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * sampled-image path is a transfer source, including depth/stencil formats
     * that only advertise PIPE_BIND_DEPTH_STENCIL.  TRANSFER_DST is narrower:
     * advertise it only where the CPU upload and staging image-copy paths have a
-    * lossless byte layout.  BLIT_SRC/DST stay withheld until those replay paths
-    * exist. */
+    * lossless byte layout. */
    if (supports_depth_stencil || supports_sampler_view || supports_render_target) {
       image_features |= VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT;
 
       if (r300vk_format_supports_transfer_dst(pipe_format))
          image_features |= VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT;
    }
+
+   /* BLIT_SRC/DST advertise the GPU blit (r300vk_replay_blit -> pipe->blit ->
+    * util_blitter), which scales, filters, and format-casts a region.
+    * r300_is_blit_supported gates the resource layouts r300's blitter accepts
+    * (plain, S3TC, RGTC).  A blit source is sampled, so BLIT_SRC needs
+    * PIPE_BIND_SAMPLER_VIEW; a blit destination is rendered, so BLIT_DST needs
+    * PIPE_BIND_RENDER_TARGET.  Pairing each bit with its bind keeps a
+    * sample-only format (a compressed layout, which r300 cannot render to)
+    * BLIT_SRC without falsely advertising BLIT_DST.  The replay samples the
+    * source as a texture, so a source past the r300 sampler cap is handled by
+    * the guarded fallback in r300vk_replay_blit; no CTS blit_image case reaches
+    * that cap. */
+   if (supports_sampler_view && r300vk_format_blit_supported(pipe_format))
+      image_features |= VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
+   if (supports_render_target && r300vk_format_blit_supported(pipe_format))
+      image_features |= VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
 
    /* Depth/stencil formats carry no buffer features: a VkBuffer cannot hold a
     * depth/stencil format and the spec requires bufferFeatures == 0 for them

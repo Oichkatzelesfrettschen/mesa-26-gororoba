@@ -626,6 +626,28 @@ r300vk_CmdCopyImage2(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdBlitImage2(VkCommandBuffer commandBuffer,
+                     const VkBlitImageInfo2 *pBlitImageInfo)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_image, src, pBlitImageInfo->srcImage);
+   VK_FROM_HANDLE(r300vk_image, dst, pBlitImageInfo->dstImage);
+
+   /* One entry per region; the filter is per-call, so it is copied into each
+    * entry.  The GPU blit and the sampler-cap fallback decision happen at
+    * replay, where the pipe_screen is reachable. */
+   for (uint32_t i = 0; i < pBlitImageInfo->regionCount; i++) {
+      struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+      if (!e) return;
+      e->type               = R300VK_CMD_BLIT_IMAGE;
+      e->blit_image.src     = src;
+      e->blit_image.dst     = dst;
+      e->blit_image.region  = pBlitImageInfo->pRegions[i];
+      e->blit_image.filter  = pBlitImageInfo->filter;
+   }
+}
+
+void
 r300vk_CmdClearColorImage(VkCommandBuffer commandBuffer,
                           VkImage image,
                           VkImageLayout imageLayout,
