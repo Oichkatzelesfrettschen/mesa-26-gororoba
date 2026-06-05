@@ -715,7 +715,14 @@ rc_make_conversion_swizzle(unsigned int old_mask, unsigned int new_mask)
 unsigned int
 rc_src_reg_is_immediate(struct radeon_compiler *c, unsigned int file, unsigned int index)
 {
+   /* A CONSTANT register can index the externally-bound constant/UBO block,
+    * whose entries are not added to Program.Constants -- for a shader whose only
+    * constants live in that block, Count is 0 and Constants is NULL.  Such a
+    * register is by definition not an inline immediate, so bound the index the
+    * same way rc_get_constant_value() does rather than dereferencing past the
+    * array. */
    return file == RC_FILE_CONSTANT &&
+          index < c->Program.Constants.Count &&
           c->Program.Constants.Constants[index].Type == RC_CONSTANT_IMMEDIATE;
 }
 
