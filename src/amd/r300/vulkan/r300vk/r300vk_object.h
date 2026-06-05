@@ -8,6 +8,7 @@
 
 #include "vk_object.h"
 #include "vk_query_pool.h"
+#include "vk_sampler.h"
 
 #include <vulkan/vulkan_core.h>
 
@@ -60,6 +61,23 @@ struct r300vk_event {
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_event, base, VkEvent,
                                VK_OBJECT_TYPE_EVENT)
+
+/* r300vk extends the runtime vk_sampler -- which drops the VkFilter / mipmap /
+ * compare fields after vk_sampler_create -- with the pre-built Gallium sampler
+ * state object.  vkCreateSampler maps the full VkSamplerCreateInfo to a
+ * pipe_sampler_state once and caches the CSO here; the draw replay binds it for
+ * a fragment combined-image-sampler.  vk stays first so a VkSampler handle
+ * round-trips through vk_sampler_{to,from}_handle. */
+struct r300vk_sampler {
+   struct vk_sampler vk;
+   void             *pipe_cso;
+};
+
+static inline struct r300vk_sampler *
+r300vk_sampler_from_vk(struct vk_sampler *sampler)
+{
+   return (struct r300vk_sampler *)sampler;
+}
 
 #ifdef __cplusplus
 }
