@@ -119,6 +119,41 @@ tex2d(nir_builder *b, nir_deref_instr *samp, nir_def *coord)
     return nir_tex(b, coord, .texture_deref = samp, .sampler_deref = samp);
 }
 
+/* nir_to_rc / nir_to_tgsi size the external constant file from a declared UBO
+ * variable's interface_type (ntr_setup_uniforms reads
+ * glsl_get_explicit_size(var->interface_type)), not from load_ubo usage.  The
+ * builder reads constants by raw vec4 slot, so without this declaration ubo_size
+ * is 0, ntr_add_constants allocates no RC_CONSTANT_EXTERNAL, r300's
+ * externals_count stays 0, and the driver binds zero constants -- the fragment
+ * shader reads the solid colour and the YUV->RGB matrix as 0.  Declare the
+ * default UBO sized to the slots the shader reads, mirroring
+ * nir_lower_uniforms_to_ubo.  The vertex shader does not need this: nir_to_tgsi
+ * feeds the SW-TCL draw module, which reads the bound constant buffer directly. */
+static void
+declare_const_ubo(nir_shader *s, unsigned num_slots)
+{
+    if (!num_slots)
+        return;
+
+    const struct glsl_type *type =
+        glsl_array_type(glsl_vec4_type(), num_slots, 16);
+    nir_variable *ubo =
+        nir_variable_create(s, nir_var_mem_ubo, type, "xa_const_block");
+    ubo->data.binding = 0;
+    ubo->data.explicit_binding = 1;
+
+    struct glsl_struct_field field = {
+        .type = type,
+        .name = "data",
+        .location = -1,
+    };
+    ubo->interface_type =
+        glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false,
+                            "xa_const_interface");
+    s->info.num_ubos = 1;
+    s->info.first_ubo_is_default_ubo = true;
+}
+
 /* nir_to_tgsi (SW-TCL VS) and nir_to_rc (FS) key TGSI register / interpolator
  * indices off var->data.driver_location, which they read but never assign; the
  * gather_info + assign_io_var_locations pass below assigns it, else every IO
@@ -133,8 +168,10 @@ tex2d(nir_builder *b, nir_deref_instr *samp, nir_def *coord)
  * failure in lp_build_sample_soa.  Populate the bitsets here for every sampler
  * uniform variable, mirroring gl_nir_lower_samplers_as_deref. */
 static void
-finalize(struct pipe_context *pipe, nir_builder *b)
+finalize(struct pipe_context *pipe, nir_builder *b, unsigned num_const_slots)
 {
+    declare_const_ubo(b->shader, num_const_slots);
+
     nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
     nir_assign_io_var_locations(b->shader, nir_var_shader_in);
     nir_assign_io_var_locations(b->shader, nir_var_shader_out);
@@ -191,7 +228,7 @@ create_vs(struct pipe_context *pipe, unsigned vs_traits)
         }
     }
 
-    finalize(pipe, &b);
+    finalize(pipe, &b, 0);
     struct pipe_shader_state state = {0};
     state.type = PIPE_SHADER_IR_NIR;
     state.ir.nir = b.shader;
@@ -219,7 +256,7 @@ create_yuv_shader(struct pipe_context *pipe)
     rgb = nir_ffma_weak(&b, nir_replicate(&b, v, 4), load_const(&b, 2), rgb);
 
     nir_store_var(&b, decl_io(&b, nir_var_shader_out, FRAG_RESULT_COLOR, "col"), rgb, 0xf);
-    finalize(pipe, &b);
+    finalize(pipe, &b, 4);
     struct pipe_shader_state state = {0};
     state.type = PIPE_SHADER_IR_NIR;
     state.ir.nir = b.shader;
@@ -329,7 +366,7 @@ create_fs(struct pipe_context *pipe, unsigned fs_traits)
         result = nir_replicate(&b, nir_channel(&b, result, 3), 4);
 
     nir_store_var(&b, decl_io(&b, nir_var_shader_out, FRAG_RESULT_COLOR, "col"), result, 0xf);
-    finalize(pipe, &b);
+    finalize(pipe, &b, cur_constant);
     struct pipe_shader_state state = {0};
     state.type = PIPE_SHADER_IR_NIR;
     state.ir.nir = b.shader;
