@@ -311,6 +311,30 @@ struct r300_compute_multitap_gather_pattern {
 void r300_nir_detect_multitap_gather_pattern(const struct nir_shader *s,
                                              struct r300_compute_multitap_gather_pattern *out);
 
+/* Quantized dot-product (DP4) pattern: out[gid] = dot(in_a[gid], in_b[gid]).
+ * One store_ssbo whose value is the def of an nir_op_fdot{2,3,4} of two distinct
+ * load_ssbo defs, with no atomic / loop / if.  On RS482 this lowers to the US
+ * fragment ALU DP4 instruction.  The dot runs in FP24, so it is BYTE-EXACT when
+ * the operands are quantized to <= 7-bit magnitude (4*127^2 = 64516 < 2^17,
+ * hardware-confirmed by the surfaceless-EGL dp4 probe) and the ordinary
+ * FP24-precise float dot otherwise -- the detector admits the SHAPE; the
+ * quantized-exactness contract is on the runtime operand range, not visible at
+ * classify time.  components is the dot width (2, 3, or 4) and dot_op carries the
+ * nir_op so the orchestrator picks the FS dot form.  Bindings stay 0 when the
+ * post-explicit_io binding sources are not constants (the orchestrator's
+ * positional fallback recovers them: binding 0 = a, 1 = b, 2 = output). */
+struct r300_compute_dp4_pattern {
+   bool       is_dp4;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+   uint16_t   dot_op;       /* nir_op_fdot{2,3,4}, only valid if is_dp4 */
+   uint8_t    components;   /* dot width: 2, 3, or 4 */
+};
+
+void r300_nir_detect_dp4_pattern(const struct nir_shader *s,
+                                 struct r300_compute_dp4_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif
