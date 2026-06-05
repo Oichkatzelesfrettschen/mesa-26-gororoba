@@ -1050,19 +1050,26 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
  * applies the detected ALU op, and writes via RB3D color export -- the rest of
  * the pipeline state (blend / raster / dsa / sampler / VBO / framebuffer /
  * viewport / scissor) is identical to the identity-map path. */
-bool
-r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
-                                  const struct r300vk_pipeline *pl,
-                                  const struct r300vk_cmd_dispatch *dispatch,
-                                  const struct r300vk_cmd_bind_descriptor_sets *binds)
+/* Shared 2-in / 1-out compute-as-raster replay core.  Wraps two input SSBOs as
+ * sampler views at fragment stages 0 + 1, draws the fullscreen quad with the
+ * pipeline's synthesized VS + FS (pl->fs_cso -- the binary-map ALU FS or the
+ * DP4 dot FS), and copies the RB3D color export back to the output SSBO.  The
+ * caller passes the three ssbo bindings its detector captured; binary-map and
+ * dp4 are thin wrappers that differ only in which captured bindings they pass
+ * and which FS pl->fs_cso already holds. */
+static bool
+r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
+                                      const struct r300vk_pipeline *pl,
+                                      const struct r300vk_cmd_dispatch *dispatch,
+                                      const struct r300vk_cmd_bind_descriptor_sets *binds,
+                                      uint32_t cap_in_a, uint32_t cap_in_b,
+                                      uint32_t cap_out)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
-   IDM_LOG("bin_map entry pl=%p is_binary_map=%d alu_op=%u "
+   IDM_LOG("2in1out entry pl=%p cap_in_a=%u cap_in_b=%u cap_out=%u "
            "set_count=%u gx=%u gy=%u gz=%u",
-           (const void *)pl,
-           pl ? (int)pl->binary_map.is_binary_map : -1,
-           pl ? (unsigned)pl->binary_map.alu_op : 0,
+           (const void *)pl, cap_in_a, cap_in_b, cap_out,
            binds ? binds->set_count : 0,
            dispatch ? dispatch->group_count_x : 0,
            dispatch ? dispatch->group_count_y : 0,
@@ -1102,9 +1109,9 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
     *      post-explicit_io handles instead of constants), fall back to
     *      positional layout iteration: input_a = 1st STORAGE_BUFFER,
     *      input_b = 2nd, output = 3rd. */
-   uint32_t in_a_binding = pl->binary_map.input_a_ssbo_binding;
-   uint32_t in_b_binding = pl->binary_map.input_b_ssbo_binding;
-   uint32_t out_binding  = pl->binary_map.output_ssbo_binding;
+   uint32_t in_a_binding = cap_in_a;
+   uint32_t in_b_binding = cap_in_b;
+   uint32_t out_binding  = cap_out;
    const bool detector_captured = (in_a_binding != 0 || in_b_binding != 0 ||
                                    out_binding  != 0);
    if (!detector_captured) {
@@ -1293,6 +1300,36 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
    pipe_resource_reference(&rt, NULL);
    IDM_LOG("bin_map orchestrator done copy_ok=%d", (int)copy_ok);
    return copy_ok;
+}
+
+/* Binary-map and DP4 share the 2-in / 1-out replay core above; each passes the
+ * three ssbo bindings its detector captured.  binary-map's FS reduces the two
+ * sampled texels with the detected ALU op; dp4's FS dots them (pl->fs_cso
+ * already holds the right synthesized FS). */
+bool
+r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
+                                  const struct r300vk_pipeline *pl,
+                                  const struct r300vk_cmd_dispatch *dispatch,
+                                  const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   return r300vk_two_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->binary_map.input_a_ssbo_binding,
+      pl->binary_map.input_b_ssbo_binding,
+      pl->binary_map.output_ssbo_binding);
+}
+
+bool
+r300vk_dp4_dispatch_replay(struct r300vk_device *device,
+                           const struct r300vk_pipeline *pl,
+                           const struct r300vk_cmd_dispatch *dispatch,
+                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   return r300vk_two_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->dp4.input_a_ssbo_binding,
+      pl->dp4.input_b_ssbo_binding,
+      pl->dp4.output_ssbo_binding);
 }
 
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler

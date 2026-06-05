@@ -275,6 +275,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_identity_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->binary_map.is_binary_map)
       ok = r300vk_binary_map_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->dp4.is_dp4)
+      ok = r300vk_dp4_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->blend_acc_reduction.is_blend_acc_reduction)
       ok = r300vk_blend_acc_reduction_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->zpass_reduction.is_zpass_reduction)

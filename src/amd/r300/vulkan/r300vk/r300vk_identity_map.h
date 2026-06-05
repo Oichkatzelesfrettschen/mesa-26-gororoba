@@ -96,6 +96,14 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
                                   const struct r300vk_cmd_dispatch *dispatch,
                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* DP4 (quantized-dot) orchestrator entry: shares the 2-in / 1-out replay core
+ * with binary-map; pl->fs_cso holds the pure-NIR DP4 FS. */
+bool
+r300vk_dp4_dispatch_replay(struct r300vk_device *device,
+                           const struct r300vk_pipeline *pl,
+                           const struct r300vk_cmd_dispatch *dispatch,
+                           const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* Blend-acc-reduction orchestrator entry: descriptor walk to resolve
  * the (value-input, histogram-output) buffer pair, stage a per-point VBO
  * carrying (pos, packed-RGBA8-value) per gid, bind the blend-enabled
