@@ -1277,6 +1277,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_multipass_scan_pattern *multiscan,
                                struct r300_compute_predicated_store_pattern *predstore,
                                struct r300_compute_multitap_gather_pattern *gather,
+                               struct r300_compute_dp4_pattern *dp4,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1315,6 +1316,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
    r300_nir_detect_predicated_store_pattern(nir, predstore);
    r300_nir_detect_multitap_gather_pattern(nir, gather);
+   r300_nir_detect_dp4_pattern(nir, dp4);
 
    ralloc_free(nir);
    return true;
@@ -1506,6 +1508,83 @@ r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
       return false;
 
    pl->fs_cso = r300vk_synthesize_binary_map_fs(pipe, pl->binary_map.alu_op);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+/* Pure-NIR DP4 fragment program (no ureg/TGSI -- r300g's nir_to_rc consumes the
+ * NIR directly).  Samples in_a, in_b at the fullscreen texcoord and writes
+ * dot(a,b) to the RB3D color export; the dot lowers to the US DP4 instruction,
+ * byte-exact for <=7-bit (quantized) operands (4*127^2=64516<2^17, hardware-
+ * confirmed).  Built with the same nir_builder pattern as the vl_nir FS helpers
+ * (compiler/nir/nir_builder.h), gather_info + assign_io_var_locations before
+ * create_fs_state because nir_to_rc keys interpolators off driver_location. */
+static void *
+r300vk_synthesize_dp4_fs(struct pipe_context *pipe, uint8_t components)
+{
+   const nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_dp4");
+
+   nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+   in_tc->data.location = VARYING_SLOT_VAR0;
+   nir_def *coord = nir_load_var(&b, in_tc);
+
+   nir_def *tex[2];
+   for (unsigned s = 0; s < 2; s++) {
+      nir_variable *samp = nir_variable_create(
+         b.shader, nir_var_uniform,
+         glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+         "samp");
+      samp->data.binding = s;
+      nir_deref_instr *d = nir_build_deref_var(&b, samp);
+      tex[s] = nir_tex(&b, coord, .texture_deref = d, .sampler_deref = d);
+   }
+
+   unsigned c = components ? components : 4;
+   nir_def *a  = (c == 4) ? tex[0] : nir_channels(&b, tex[0], BITFIELD_MASK(c));
+   nir_def *bb = (c == 4) ? tex[1] : nir_channels(&b, tex[1], BITFIELD_MASK(c));
+   nir_def *dot = nir_fdot(&b, a, bb);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, nir_replicate(&b, dot, 4), 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, b.shader, true);
+
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = b.shader };
+   return pipe->create_fs_state(pipe, &state);
+}
+
+/* DP4 VS+FS synthesis: the passthrough VS shared with binary-map plus the
+ * pure-NIR DP4 FS.  Reuses the device-cached identity-map state CSOs. */
+static bool
+r300vk_dp4_synthesize_shaders(struct r300vk_device *device,
+                              struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_dp4_fs(pipe, pl->dp4.components);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -2067,6 +2146,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->binary_map.is_binary_map = false;
       return true;
    }
+   if (pl->dp4.is_dp4) {
+      if (!r300vk_dp4_synthesize_shaders(device, pl))
+         pl->dp4.is_dp4 = false;
+      return true;
+   }
    if (pl->blend_acc_reduction.is_blend_acc_reduction) {
       if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
@@ -2111,11 +2195,12 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_multipass_scan_pattern multiscan = {0};
    struct r300_compute_predicated_store_pattern predstore = {0};
    struct r300_compute_multitap_gather_pattern gather = {0};
+   struct r300_compute_dp4_pattern dp4_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &blendacc, &zpass,
-                                       &multiscan, &predstore, &gather,
+                                       &multiscan, &predstore, &gather, &dp4_pat,
                                        local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
@@ -2140,6 +2225,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->admission = adm;
    pl->identity_map = ident;
    pl->binary_map = binmap;
+   pl->dp4 = dp4_pat;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;

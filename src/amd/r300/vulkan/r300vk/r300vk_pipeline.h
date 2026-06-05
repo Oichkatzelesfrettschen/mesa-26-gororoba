@@ -84,6 +84,11 @@ struct r300vk_pipeline {
     * out per element. */
    struct r300_compute_binary_map_pattern binary_map;
 
+   /* Quantized dot-product (DP4) kernel detected at pipeline-create time:
+    * out[gid] = dot(in_a[gid], in_b[gid]).  Lowered to a fullscreen draw whose
+    * pure-NIR FS samples in_a + in_b and writes their FP24 DP4 to the RT. */
+   struct r300_compute_dp4_pattern dp4;
+
    /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
     * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])
