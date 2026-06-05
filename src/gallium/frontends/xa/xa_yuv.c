@@ -92,7 +92,7 @@ xa_yuv_bind_samplers(struct xa_context *r, struct xa_surface *yuv[])
     }
     r->num_bound_samplers = 3;
     cso_set_samplers(r->cso, MESA_SHADER_FRAGMENT, 3, (const struct pipe_sampler_state **)samplers);
-    r->pipe->set_sampler_views(r->pipe, MESA_SHADER_FRAGMENT, 0, 3, 0, false, r->bound_sampler_views);
+    r->pipe->set_sampler_views(r->pipe, MESA_SHADER_FRAGMENT, 0, 3, 0, r->bound_sampler_views);
 }
 
 static void
@@ -130,7 +130,7 @@ xa_yuv_planar_blit(struct xa_context *r,
     if (ret != XA_ERR_NONE)
 	return -XA_ERR_NORES;
 
-    renderer_bind_destination(r, r->srf);
+    renderer_bind_destination(r, &r->srf);
     xa_yuv_bind_blend_state(r);
     xa_yuv_bind_shaders(r);
     xa_yuv_bind_samplers(r, yuv);

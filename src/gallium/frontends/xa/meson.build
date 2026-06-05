@@ -41,7 +41,7 @@ libxa_st = static_library(
   c_args : ['-pedantic'],
   gnu_symbol_visibility : 'hidden',
   dependencies : idep_mesautil,
-  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
+  include_directories : [inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux],
 )
 
 install_headers('xa_composite.h', 'xa_context.h')
