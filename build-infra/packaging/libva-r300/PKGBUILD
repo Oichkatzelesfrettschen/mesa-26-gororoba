@@ -23,11 +23,19 @@ pkgdesc='libva with the radeon->r300 VA driver-name map entry (RS482 g3dvl MPEG-
 arch=('x86_64')
 url='https://github.com/intel/libva'
 license=('MIT')
-depends=(libdrm libgl libx11 libxext libxfixes wayland)
+depends=(libdrm libglvnd libx11 libxext libxfixes wayland)
 makedepends=(meson ninja wayland-protocols clang lld)
-provides=("libva=${pkgver}-${pkgrel}" libva-driver)
+provides=(
+  "libva=${pkgver}-${pkgrel}"
+  libva.so=2-64
+  libva-drm.so=2-64
+  libva-x11.so=2-64
+  libva-glx.so=2-64
+  libva-wayland.so=2-64
+)
 conflicts=(libva)
 replaces=(libva)
+backup=('etc/libva.conf')
 source=("https://github.com/intel/libva/releases/download/${pkgver}/libva-${pkgver}.tar.bz2"
         'add-radeon-r300-va-driver-map.patch')
 sha256sums=('9ac190a87017bfd49743248f5df7cf3b18a99a9962175caf6bbe3f1ea41b6dbb'
@@ -53,6 +61,7 @@ build() {
   export CXXFLAGS="${CFLAGS}"
   export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
 
+  rm -rf build
   meson setup build "libva-${pkgver}" \
     --prefix=/usr \
     --sysconfdir=/etc \
