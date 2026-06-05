@@ -255,6 +255,17 @@ r300vk_CreateImage(VkDevice _device,
                        "r300vk: samples 0x%x unsupported (single-sample only)",
                        pCreateInfo->samples);
    }
+   /* Every tile resource is PIPE_TEXTURE_2D with depth0 == 1, so a 3D image's
+    * depth slices have no storage.  r300vk_get_image_format_properties already
+    * reports VK_IMAGE_TYPE_3D unsupported; reject it here too so a caller that
+    * skips the format query fails cleanly instead of silently collapsing the
+    * depth to one slice. */
+   if (pCreateInfo->imageType == VK_IMAGE_TYPE_3D) {
+      vk_image_finish(&img->vk);
+      vk_free2(&device->vk.alloc, pAllocator, img);
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: image type 3D unsupported (no depth-slice storage)");
+   }
 
    enum pipe_format pipe_fmt = vk_format_to_pipe_format(pCreateInfo->format);
    if (pipe_fmt == PIPE_FORMAT_NONE) {
