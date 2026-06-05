@@ -975,6 +975,117 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
 }
 
+/* Quantized dot-product (DP4) detector.  Mirrors the binary-map two-load pattern
+ * with the ALU op set narrowed to the float dot opcodes: store_ssbo's value is
+ * the def of an nir_op_fdot{2,3,4} whose two sources are the defs of two distinct
+ * load_ssbo intrinsics -- out[gid] = dot(in_a[gid], in_b[gid]).
+ *
+ * On RS482 this lowers to the US fragment ALU DP4 instruction.  The dot runs in
+ * FP24, byte-exact for <= 7-bit-magnitude (quantized) operands (4*127^2 = 64516
+ * < 2^17, hardware-confirmed) and the ordinary FP24-precise float dot otherwise.
+ *
+ * Discriminator from every prior admitted shape: a dot opcode (NOT in
+ * binary_map_op_admitted's simple-binary set, so binary-map rejects it) with
+ * exactly two load_ssbo inputs and no atomic / loop / if.  identity-map's store
+ * value is a load directly; binary-map's a simple binary op; multitap's an
+ * add-reduction of >= 3 load leaves; blend-acc / ZPASS carry an atomic; multipass
+ * a loop; predicated-store an if. */
+static bool
+dp4_op_admitted(uint16_t op, uint8_t *components)
+{
+   switch (op) {
+   case nir_op_fdot2: *components = 2; return true;
+   case nir_op_fdot3: *components = 3; return true;
+   case nir_op_fdot4: *components = 4; return true;
+   default:
+      return false;
+   }
+}
+
+void
+r300_nir_detect_dp4_pattern(const nir_shader *s,
+                            struct r300_compute_dp4_pattern *out)
+{
+   out->is_dp4               = false;
+   out->input_a_ssbo_binding = 0;
+   out->input_b_ssbo_binding = 0;
+   out->output_ssbo_binding  = 0;
+   out->dot_op               = 0;
+   out->components           = 0;
+
+   const nir_intrinsic_instr *store  = NULL;
+   const nir_intrinsic_instr *load_a = NULL;
+   const nir_intrinsic_instr *load_b = NULL;
+   unsigned store_count = 0, load_count = 0, atomic_count = 0;
+   bool has_loop = false, in_if = false;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
+            if (p->type == nir_cf_node_loop)
+               has_loop = true;
+            if (p->type == nir_cf_node_if)
+               in_if = true;
+         }
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (load_count == 0)
+                  load_a = intr;
+               else if (load_count == 1)
+                  load_b = intr;
+               load_count++;
+            } else if (is_ssbo_atomic(intr->intrinsic)) {
+               atomic_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 2 || atomic_count != 0 ||
+       has_loop || in_if)
+      return;
+   if (!store->src[0].ssa)
+      return;
+
+   /* Store value must come from a float dot op (not a simple binary op -- that's
+    * binary-map -- and not a load directly -- that's identity-map). */
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!alu)
+      return;
+   uint8_t comps = 0;
+   if (!dp4_op_admitted(alu->op, &comps))
+      return;
+
+   /* The dot's two inputs must be the two collected load_ssbo defs, order-
+    * independent -- the same two-input test the binary-map detector uses. */
+   if (nir_op_infos[alu->op].num_inputs != 2)
+      return;
+   const nir_def *s0 = alu->src[0].src.ssa;
+   const nir_def *s1 = alu->src[1].src.ssa;
+   if (!((s0 == &load_a->def && s1 == &load_b->def) ||
+         (s0 == &load_b->def && s1 == &load_a->def)))
+      return;
+
+   out->dot_op     = (uint16_t)alu->op;
+   out->components = comps;
+   /* Capture constant binding indices when present; the orchestrator's
+    * descriptor-set layout fallback picks the first-three STORAGE_BUFFER
+    * bindings when these stay at the defaults (same policy as binary-map). */
+   if (nir_src_is_const(load_a->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load_a->src[0]);
+   if (nir_src_is_const(load_b->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load_b->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->is_dp4 = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
