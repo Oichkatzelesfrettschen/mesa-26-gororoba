@@ -186,10 +186,11 @@ struct r300vk_cmd_copy_image {
 /* One region of a vkCmdBlitImage2.  Unlike the copy commands, a blit can scale
  * and filter, so it is replayed on the GPU through pipe->blit (r300_blit ->
  * util_blitter), which carries the scale, filter, and format cast the CPU tile
- * walk does not.  r300 samples the blit source as a texture, so the source is
- * bounded by the r300 sampler cap (pipe_screen caps.max_texture_2d_size: 2048
- * on r300-class, 4096 on r500); a source past that cap or a tile-split image
- * cannot be sampled and is handled by the guarded fallback at replay time. */
+ * walk does not.  r300 samples the blit source as a texture and takes TX_WIDTH
+ * from the source resource, so r300vk tiles every optimal image at the sampler
+ * cap and r300vk_replay_blit walks the source and destination tile grids,
+ * issuing one pipe->blit per tile pair so a source larger than the cap is still
+ * sampled one in-cap tile at a time. */
 struct r300vk_cmd_blit_image {
    struct r300vk_image *src;
    struct r300vk_image *dst;

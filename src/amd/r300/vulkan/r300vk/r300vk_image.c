@@ -24,20 +24,30 @@
 #include "util/macros.h"
 #include "util/u_inlines.h"
 
+/* Split one image axis into r300g tiles no wider than max_tile.  max_tile is
+ * the per-tile dimension ceiling: a tile is both rendered to (CB limit, 2560 on
+ * r300-class) and sampled as a blit source (sampler cap max_texture_2d_size,
+ * 2048 on r300-class / 4096 on r500), so the binding limit is the smaller of
+ * the two.  r300 samples the whole source resource, taking TX_WIDTH from the
+ * resource width and wrapping past the 11-bit field, so a tile wider than the
+ * sampler cap cannot be sampled at all.  Splitting at the cap keeps every tile
+ * directly samplable, which is what lets a blit source larger than the cap be
+ * blitted tile-by-tile.  The Vulkan floor maxImageDimension2D is 4096 and the
+ * cap is at least 2048, so an axis is at most two tiles and tiles[2] suffices. */
 static uint32_t
-r300vk_split_image_axis(uint32_t extent, uint32_t tiles[2])
+r300vk_split_image_axis(uint32_t extent, uint32_t max_tile, uint32_t tiles[2])
 {
    if (extent == 0 || extent > R300VK_VK10_MIN_IMAGE_DIMENSION_2D)
       return 0;
 
-   if (extent <= R300VK_R3XX_MAX_RENDER_DIMENSION) {
+   if (extent <= max_tile) {
       tiles[0] = extent;
       tiles[1] = 0;
       return 1;
    }
 
-   tiles[0] = R300VK_R3XX_MAX_RENDER_DIMENSION;
-   tiles[1] = extent - R300VK_R3XX_MAX_RENDER_DIMENSION;
+   tiles[0] = max_tile;
+   tiles[1] = extent - max_tile;
    return 2;
 }
 
@@ -152,10 +162,17 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
       img->tile_width[0] = info->extent.width;
       img->tile_height[0] = info->extent.height;
    } else {
+      /* Bound a tile by the smaller of the sampler cap and the render limit so
+       * every optimal tile can be both a blit source (sampled) and a render
+       * target.  On r300-class the sampler cap (2048) is the smaller; on r500
+       * both are 4096. */
+      const uint32_t max_tile =
+         MIN2(device->screen->caps.max_texture_2d_size,
+              R300VK_R3XX_MAX_RENDER_DIMENSION);
       img->tile_cols = r300vk_split_image_axis(info->extent.width,
-                                               img->tile_width);
+                                               max_tile, img->tile_width);
       img->tile_rows = r300vk_split_image_axis(info->extent.height,
-                                               img->tile_height);
+                                               max_tile, img->tile_height);
    }
    if (img->tile_cols == 0 || img->tile_rows == 0)
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,

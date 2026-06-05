@@ -683,9 +683,9 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * PIPE_BIND_RENDER_TARGET.  Pairing each bit with its bind keeps a
     * sample-only format (a compressed layout, which r300 cannot render to)
     * BLIT_SRC without falsely advertising BLIT_DST.  The replay samples the
-    * source as a texture, so a source past the r300 sampler cap is handled by
-    * the guarded fallback in r300vk_replay_blit; no CTS blit_image case reaches
-    * that cap. */
+    * source as a texture, and r300vk tiles every optimal image at the sampler
+    * cap, so r300vk_replay_blit blits a source past the cap one in-cap tile at a
+    * time and honors the advertised maxImageDimension2D up to the 4096 floor. */
    if (supports_sampler_view && r300vk_format_blit_supported(pipe_format))
       image_features |= VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
    if (supports_render_target && r300vk_format_blit_supported(pipe_format))
