@@ -27,11 +27,11 @@ depends=(libdrm libglvnd libx11 libxext libxfixes wayland)
 makedepends=(meson ninja wayland-protocols clang lld)
 provides=(
   "libva=${pkgver}-${pkgrel}"
-  libva.so
-  libva-drm.so
-  libva-x11.so
-  libva-glx.so
-  libva-wayland.so
+  libva.so=2-64
+  libva-drm.so=2-64
+  libva-x11.so=2-64
+  libva-glx.so=2-64
+  libva-wayland.so=2-64
 )
 conflicts=(libva)
 replaces=(libva)
