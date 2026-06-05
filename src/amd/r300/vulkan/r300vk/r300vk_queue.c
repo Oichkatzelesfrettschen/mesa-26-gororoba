@@ -289,26 +289,104 @@ r300vk_replay_dispatch(struct r300vk_device *device,
    return ok ? VK_SUCCESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }
 
+/* Map a coordinate through the blit's affine relation, rounded to nearest.
+ * Given input range [a0,a1] and output range [b0,b1], returns the output for
+ * input x: b0 + (x-a0)*(b1-b0)/(a1-a0).  a1 != a0; either range may descend
+ * (a mirrored blit makes the source endpoints descend), so the division is done
+ * on magnitudes with the sign restored.  Exact for a 1:1 or integer-ratio blit;
+ * a fractional ratio rounds, which is where a tile seam can land one texel off. */
+static int32_t
+r300vk_blit_affine(int32_t x, int32_t a0, int32_t a1, int32_t b0, int32_t b1)
+{
+   int64_t num = (int64_t)(x - a0) * (b1 - b0);
+   int64_t den = (int64_t)a1 - a0;
+   if (den < 0) { den = -den; num = -num; }
+   int64_t q = num / den;
+   int64_t rem = num - q * den;
+   if (2 * (rem < 0 ? -rem : rem) >= den)
+      q += num < 0 ? -1 : 1;
+   return b0 + (int32_t)q;
+}
+
+/* The per-axis cut list for the tiled blit: the destination coordinates where a
+ * sub-blit must start or end, with the source coordinate the affine map sends
+ * each one to.  Cuts land at the destination box edges, the destination tile
+ * boundary, and the destination pre-image of the source tile boundary, so every
+ * resulting interval lies within one destination tile and maps into one source
+ * tile.  An axis is at most two tiles, so at most four cuts (three intervals). */
+struct r300vk_blit_axis {
+   uint32_t count;
+   int32_t  dst[4];
+   int32_t  src[4];
+};
+
+static void
+r300vk_blit_build_axis(int32_t d_lo, int32_t d_hi,
+                       int32_t s_lo, int32_t s_hi,
+                       int32_t dst_bound, int32_t src_bound,
+                       struct r300vk_blit_axis *ax)
+{
+   int32_t cuts[4];
+   uint32_t n = 0;
+   cuts[n++] = d_lo;
+   cuts[n++] = d_hi;
+
+   /* Destination tile boundary, if the box straddles it. */
+   if (dst_bound > d_lo && dst_bound < d_hi)
+      cuts[n++] = dst_bound;
+
+   /* Destination coordinate whose source pre-image is the source tile boundary,
+    * so the source side of each interval stays inside one source tile. */
+   if (src_bound > 0) {
+      const int32_t s_min = MIN2(s_lo, s_hi);
+      const int32_t s_max = MAX2(s_lo, s_hi);
+      if (src_bound > s_min && src_bound < s_max) {
+         const int32_t dcut =
+            r300vk_blit_affine(src_bound, s_lo, s_hi, d_lo, d_hi);
+         if (dcut > d_lo && dcut < d_hi)
+            cuts[n++] = dcut;
+      }
+   }
+
+   /* Insertion-sort the (at most four) cuts and drop duplicates. */
+   for (uint32_t i = 1; i < n; i++) {
+      const int32_t v = cuts[i];
+      uint32_t j = i;
+      while (j > 0 && cuts[j - 1] > v) { cuts[j] = cuts[j - 1]; j--; }
+      cuts[j] = v;
+   }
+
+   ax->count = 0;
+   for (uint32_t i = 0; i < n; i++) {
+      if (i > 0 && cuts[i] == cuts[i - 1])
+         continue;
+      ax->dst[ax->count] = cuts[i];
+      ax->src[ax->count] = r300vk_blit_affine(cuts[i], d_lo, d_hi, s_lo, s_hi);
+      ax->count++;
+   }
+}
+
 /* Replay one vkCmdBlitImage2 region on the GPU through pipe->blit.  A blit
  * scales and filters, which the CPU tile-copy paths do not, so r300_blit ->
- * util_blitter does the work; r300_blit saves and restores its own pipe state,
- * so this only builds the pipe_blit_info and issues the blit.  The flip and
- * box-normalization follow the canonical Gallium translation (negative source
- * width/height expresses a mirror, which pipe_blit_info permits on the source).
+ * util_blitter does the work; r300_blit saves and restores its own pipe state.
  *
- * r300 samples the blit source as a texture, so a source larger than the r300
- * sampler cap (pipe_screen caps.max_texture_2d_size: 2048 on r300-class), or
- * either image split across tiles[], cannot be sampled through one pipe->blit.
- * That case is skipped here.
+ * r300 samples the blit source as a texture and takes TX_WIDTH/TX_HEIGHT from
+ * the source resource, so a source resource wider than the sampler cap wraps the
+ * 11-bit field and samples garbage.  r300vk therefore tiles every optimal image
+ * at the sampler cap (see r300vk_split_image_axis), and this walks the source
+ * and destination tile grids together: each sub-blit reads one source tile and
+ * writes one destination tile, both within the cap.  The cut list places every
+ * sub-blit's source inside one source tile and destination inside one
+ * destination tile.  The destination box is normalized positive per axis; the
+ * source endpoint carries the sign so a mirrored blit becomes a negative source
+ * width/height, exactly as pipe_blit_info expects.
  *
- * TODO: a blit whose source exceeds caps.max_texture_2d_size, or whose source
- *       or destination is tile-split, needs a CPU sampler fallback (point or
- *       bilinear in software) because pipe->blit samples the source as a single
- *       texture and r300 can neither create nor sample one past the cap.
- *       Reason: the cap is the r300 sampler-engine limit, the same wall that
- *       bounds an r300 GL texture, so no GL-creatable image and no CTS
- *       blit_image case (defaultSize 64) reaches it.
- *       Tracking: r300vk_replay_blit sampler-cap CPU fallback. */
+ * A 1:1 or integer-ratio blit tiles exactly.  A blit that scales by a
+ * fractional ratio from a tile-split source has an irreducible seam: the two
+ * source tiles are separate textures, so a LINEAR sample cannot interpolate
+ * across the boundary and a rounded cut can shift a NEAREST sample one texel.
+ * This is a silicon limit (the sampler cannot address past the cap in one view),
+ * not a driver defect. */
 static void
 r300vk_replay_blit(struct r300vk_device *device,
                    const struct r300vk_cmd_entry *e)
@@ -321,65 +399,121 @@ r300vk_replay_blit(struct r300vk_device *device,
    if (!src->resource || !dst->resource)
       return;
 
-   const unsigned max_tex = device->screen->caps.max_texture_2d_size;
-   if (src->tile_cols != 1 || src->tile_rows != 1 ||
-       dst->tile_cols != 1 || dst->tile_rows != 1 ||
-       src->vk.extent.width > max_tex || src->vk.extent.height > max_tex)
-      return;
-
    const enum pipe_format src_fmt = src->resource->format;
    const enum pipe_format dst_fmt = dst->resource->format;
+   const unsigned mask = util_format_is_depth_or_stencil(src_fmt) ? PIPE_MASK_ZS
+                                                                  : PIPE_MASK_RGBA;
+   const enum pipe_tex_filter filter =
+      b->filter == VK_FILTER_NEAREST ? PIPE_TEX_FILTER_NEAREST
+                                     : PIPE_TEX_FILTER_LINEAR;
 
-   struct pipe_blit_info info;
-   memset(&info, 0, sizeof(info));
-   info.src.resource = src->resource;
-   info.dst.resource = dst->resource;
-   info.src.format   = src_fmt;
-   info.dst.format   = dst_fmt;
-   info.src.level    = 0;
-   info.dst.level    = 0;
-   info.mask   = util_format_is_depth_or_stencil(src_fmt) ? PIPE_MASK_ZS
-                                                          : PIPE_MASK_RGBA;
-   info.filter = b->filter == VK_FILTER_NEAREST ? PIPE_TEX_FILTER_NEAREST
-                                                : PIPE_TEX_FILTER_LINEAR;
-
-   /* r300vk images are 2D, single-layer, single-mip: z=0, depth=1.  The two
-    * offsets per axis may be in either order; normalize the destination to a
-    * positive box and let the corresponding source endpoint carry the sign so
-    * a mirrored blit becomes a negative source width/height. */
    const VkOffset3D *so = b->region.srcOffsets;
    const VkOffset3D *dof = b->region.dstOffsets;
 
+   /* Normalize each axis: destination ascending, source endpoint following. */
+   int32_t dx_lo, dx_hi, sx_lo, sx_hi, dy_lo, dy_hi, sy_lo, sy_hi;
    if (dof[0].x <= dof[1].x) {
-      info.dst.box.x     = dof[0].x;
-      info.dst.box.width = dof[1].x - dof[0].x;
-      info.src.box.x     = so[0].x;
-      info.src.box.width = so[1].x - so[0].x;
+      dx_lo = dof[0].x; dx_hi = dof[1].x; sx_lo = so[0].x; sx_hi = so[1].x;
    } else {
-      info.dst.box.x     = dof[1].x;
-      info.dst.box.width = dof[0].x - dof[1].x;
-      info.src.box.x     = so[1].x;
-      info.src.box.width = so[0].x - so[1].x;
+      dx_lo = dof[1].x; dx_hi = dof[0].x; sx_lo = so[1].x; sx_hi = so[0].x;
    }
-
    if (dof[0].y <= dof[1].y) {
-      info.dst.box.y      = dof[0].y;
-      info.dst.box.height = dof[1].y - dof[0].y;
-      info.src.box.y      = so[0].y;
-      info.src.box.height = so[1].y - so[0].y;
+      dy_lo = dof[0].y; dy_hi = dof[1].y; sy_lo = so[0].y; sy_hi = so[1].y;
    } else {
-      info.dst.box.y      = dof[1].y;
-      info.dst.box.height = dof[0].y - dof[1].y;
-      info.src.box.y      = so[1].y;
-      info.src.box.height = so[0].y - so[1].y;
+      dy_lo = dof[1].y; dy_hi = dof[0].y; sy_lo = so[1].y; sy_hi = so[0].y;
    }
 
-   info.src.box.z     = 0;
-   info.dst.box.z     = 0;
-   info.src.box.depth = 1;
-   info.dst.box.depth = 1;
+   /* A zero-area destination or source contributes nothing and would divide by
+    * zero in the affine map. */
+   if (dx_lo == dx_hi || dy_lo == dy_hi || sx_lo == sx_hi || sy_lo == sy_hi)
+      return;
 
-   pipe->blit(pipe, &info);
+   const int32_t src_bound_x = src->tile_cols == 2 ? (int32_t)src->tile_width[0] : 0;
+   const int32_t src_bound_y = src->tile_rows == 2 ? (int32_t)src->tile_height[0] : 0;
+   const int32_t dst_bound_x = dst->tile_cols == 2 ? (int32_t)dst->tile_width[0] : 0;
+   const int32_t dst_bound_y = dst->tile_rows == 2 ? (int32_t)dst->tile_height[0] : 0;
+
+   struct r300vk_blit_axis ax, ay;
+   r300vk_blit_build_axis(dx_lo, dx_hi, sx_lo, sx_hi, dst_bound_x, src_bound_x, &ax);
+   r300vk_blit_build_axis(dy_lo, dy_hi, sy_lo, sy_hi, dst_bound_y, src_bound_y, &ay);
+
+   /* A cap-sized (2048x2048) blit fills much of the r300 command stream, and
+    * the kernel CS parser rejects a submission that batches several of them
+    * ("Failed to initialize parser"), silently dropping every sub-blit but the
+    * last.  When the blit is tiled, flush after each sub-blit so each one is its
+    * own in-limit command stream.  A single-cell (in-cap) blit batches with the
+    * surrounding replay and is submitted by the queue flush, unchanged. */
+   const uint32_t ncells = (ax.count - 1) * (ay.count - 1);
+
+   for (uint32_t j = 0; j + 1 < ay.count; j++) {
+      for (uint32_t i = 0; i + 1 < ax.count; i++) {
+         const int32_t cdx0 = ax.dst[i], cdx1 = ax.dst[i + 1];
+         const int32_t cdy0 = ay.dst[j], cdy1 = ay.dst[j + 1];
+         const int32_t csx0 = ax.src[i], csx1 = ax.src[i + 1];
+         const int32_t csy0 = ay.src[j], csy1 = ay.src[j + 1];
+
+         if (cdx0 == cdx1 || cdy0 == cdy1 || csx0 == csx1 || csy0 == csy1)
+            continue;
+
+         /* Each cell lies in one destination tile (cuts include the destination
+          * boundary) and maps into one source tile (cuts include the source
+          * boundary pre-image); pick the tile by the cell's lower corner. */
+         const uint32_t dcol = dst->tile_cols == 2 && cdx0 >= dst_bound_x ? 1 : 0;
+         const uint32_t drow = dst->tile_rows == 2 && cdy0 >= dst_bound_y ? 1 : 0;
+         const uint32_t scol = src->tile_cols == 2 &&
+                               MIN2(csx0, csx1) >= src_bound_x ? 1 : 0;
+         const uint32_t srow = src->tile_rows == 2 &&
+                               MIN2(csy0, csy1) >= src_bound_y ? 1 : 0;
+
+         struct pipe_resource *sres = src->tiles[srow * src->tile_cols + scol];
+         struct pipe_resource *dres = dst->tiles[drow * dst->tile_cols + dcol];
+         if (!sres || !dres)
+            continue;
+
+         const int32_t sox = (int32_t)r300vk_image_tile_origin_x(src, scol);
+         const int32_t soy = (int32_t)r300vk_image_tile_origin_y(src, srow);
+         const int32_t dox = (int32_t)r300vk_image_tile_origin_x(dst, dcol);
+         const int32_t doy = (int32_t)r300vk_image_tile_origin_y(dst, drow);
+
+         /* The destination cuts are exact, so a cell sits inside its
+          * destination tile.  A fractional-ratio source coordinate is rounded,
+          * so clamp the source endpoints into the source tile: a 1:1 or
+          * integer-ratio blit is unaffected, and a fractional one trims at most
+          * the one-texel seam sliver instead of sampling past the tile. */
+         const int32_t sxmax = sox + (int32_t)src->tile_width[scol];
+         const int32_t symax = soy + (int32_t)src->tile_height[srow];
+         const int32_t lsx0 = CLAMP(csx0, sox, sxmax);
+         const int32_t lsx1 = CLAMP(csx1, sox, sxmax);
+         const int32_t lsy0 = CLAMP(csy0, soy, symax);
+         const int32_t lsy1 = CLAMP(csy1, soy, symax);
+         if (lsx0 == lsx1 || lsy0 == lsy1)
+            continue;
+
+         struct pipe_blit_info info;
+         memset(&info, 0, sizeof(info));
+         info.src.resource = sres;
+         info.dst.resource = dres;
+         info.src.format   = src_fmt;
+         info.dst.format   = dst_fmt;
+         info.mask         = mask;
+         info.filter       = filter;
+         info.dst.box.x      = cdx0 - dox;
+         info.dst.box.width  = cdx1 - cdx0;
+         info.dst.box.y      = cdy0 - doy;
+         info.dst.box.height = cdy1 - cdy0;
+         info.src.box.x      = lsx0 - sox;
+         info.src.box.width  = lsx1 - lsx0;
+         info.src.box.y      = lsy0 - soy;
+         info.src.box.height = lsy1 - lsy0;
+         info.src.box.depth  = 1;
+         info.dst.box.depth  = 1;
+
+         pipe->blit(pipe, &info);
+
+         if (ncells > 1)
+            pipe->flush(pipe, NULL, 0);
+      }
+   }
 }
 
 static void
