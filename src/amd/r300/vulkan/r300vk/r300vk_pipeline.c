@@ -1548,8 +1548,13 @@ r300vk_synthesize_dp4_fs(struct pipe_context *pipe, uint8_t components)
    }
 
    unsigned c = components ? components : 4;
-   nir_def *a  = (c == 4) ? tex[0] : nir_channels(&b, tex[0], BITFIELD_MASK(c));
-   nir_def *bb = (c == 4) ? tex[1] : nir_channels(&b, tex[1], BITFIELD_MASK(c));
+   /* tex[s] is a vec4 sample; trim to the kernel's dot width (2/3/4).
+    * nir_trim_vector returns the def unchanged when c == 4, so the
+    * full-width DP4 case adds no extract.  Trimming via the helper (rather
+    * than nir_channels(BITFIELD_MASK(c))) avoids feeding the macro's ~0u
+    * branch into nir_component_mask_t, which would be a u16 truncation. */
+   nir_def *a  = nir_trim_vector(&b, tex[0], c);
+   nir_def *bb = nir_trim_vector(&b, tex[1], c);
    nir_def *dot = nir_fdot(&b, a, bb);
 
    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
