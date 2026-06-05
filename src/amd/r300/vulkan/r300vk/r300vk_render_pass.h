@@ -33,6 +33,11 @@ struct r300vk_render_pass {
    struct r300vk_render_pass_attachment attachments[PIPE_MAX_COLOR_BUFS + 1];
    uint32_t                            color_attachment_refs[PIPE_MAX_COLOR_BUFS];
    uint32_t                            color_attachment_count;
+   /* Subpass 0 input-attachment slots, the images a fragment shader's
+    * subpassLoad reads.  Resolved against the r300vk_framebuffer attachment
+    * array at CmdBeginRenderPass like the color refs above. */
+   uint32_t                            input_attachment_refs[PIPE_MAX_COLOR_BUFS];
+   uint32_t                            input_attachment_count;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_render_pass, base, VkRenderPass,
