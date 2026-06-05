@@ -1054,9 +1054,17 @@ r300_nir_detect_dp4_pattern(const nir_shader *s,
    if (!store->src[0].ssa)
       return;
 
-   /* Store value must come from a float dot op (not a simple binary op -- that's
-    * binary-map -- and not a load directly -- that's identity-map). */
-   const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
+   /* The dot result is carried back as an RGBA8 integer-encode: R300 has no FP32
+    * render target (hardware-confirmed -- an FP32 color FBO is incomplete), so
+    * an IEEE-754 float dot cannot be written exactly.  The admissible shape is
+    * therefore the UINT-output dot, out_uint[gid] = uint(dot(a,b)), whose store
+    * value is f2u32(fdot(a,b)) -- the integer reads back exactly from the encode.
+    * A plain float-output dot is NOT admissible.  Require the f2u32 cast and
+    * unwrap it to the underlying dot op. */
+   const nir_alu_instr *cast = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!cast || cast->op != nir_op_f2u32)
+      return;
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(cast->src[0].src.ssa);
    if (!alu)
       return;
    uint8_t comps = 0;
