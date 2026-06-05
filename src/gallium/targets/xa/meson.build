@@ -38,7 +38,7 @@ libxatracker = shared_library(
   gnu_symbol_visibility : 'hidden',
   link_args : [xa_link_args, ld_args_gc_sections],
   include_directories : [
-    inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_util, inc_gallium_winsys, inc_gallium_drivers,
+    inc_include, inc_src, inc_mesa, inc_gallium, inc_gallium_aux, inc_util, inc_gallium_winsys, inc_gallium_drivers,
   ],
   link_whole : [libxa_st],
   link_with : [
@@ -48,7 +48,7 @@ libxatracker = shared_library(
   link_depends : xa_link_depends,
   dependencies : [
     idep_mesautil,
-    driver_nouveau, driver_i915, driver_svga, driver_freedreno,
+    driver_r300, driver_nouveau, driver_i915, driver_svga, driver_freedreno,
   ],
   version : _xa_version,
   install : true,
