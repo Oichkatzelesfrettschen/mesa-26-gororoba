@@ -144,16 +144,37 @@ r300vk_idm_resolve_buffers(const struct r300vk_descriptor_set *set,
 }
 
 
+/* Global invocation count = workgroup count x local workgroup size, per axis.
+ * The dispatch records group_count_{x,y,z}; the pipeline records the kernel's
+ * local_size_{x,y,z} (its SPIR-V LocalSize execution mode).  A kernel indexes
+ * gl_GlobalInvocationID over gl_NumWorkGroups * gl_WorkGroupSize, so the raster
+ * substrate must emit one fragment per (group x local) invocation, not one per
+ * workgroup -- a kernel with local_size_x=64 and group_count_x=4 has 256
+ * invocations, and laying out only 4 fragments leaves elements 4..255 reading
+ * zero.  A zero local_size means the SPIR-V omitted the LocalSize literal;
+ * treat it as 1 so a degenerate pipeline maps to its group count rather than
+ * collapsing the whole grid to zero invocations. */
+static uint64_t
+r300vk_idm_total_invocations(const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_pipeline *pl)
+{
+   const uint64_t lsx = pl->local_size_x ? pl->local_size_x : 1u;
+   const uint64_t lsy = pl->local_size_y ? pl->local_size_y : 1u;
+   const uint64_t lsz = pl->local_size_z ? pl->local_size_z : 1u;
+   return (uint64_t)dispatch->group_count_x * lsx *
+          (uint64_t)dispatch->group_count_y * lsy *
+          (uint64_t)dispatch->group_count_z * lsz;
+}
+
 static bool
 r300vk_idm_compute_raster_grid(const struct r300vk_cmd_dispatch *dispatch,
+                               const struct r300vk_pipeline *pl,
                                uint64_t *out_invocations,
                                unsigned *out_width,
                                unsigned *out_height)
 {
    const uint64_t total_invocations =
-      (uint64_t)dispatch->group_count_x *
-      (uint64_t)dispatch->group_count_y *
-      (uint64_t)dispatch->group_count_z;
+      r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -848,9 +869,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * is enforced after derive_raster_extent below; here we only need to
     * keep the multiplication exact. */
    const uint64_t total_invocations =
-      (uint64_t)dispatch->group_count_x *
-      (uint64_t)dispatch->group_count_y *
-      (uint64_t)dispatch->group_count_z;
+      r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -1156,9 +1175,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    }
 
    const uint64_t total_invocations =
-      (uint64_t)dispatch->group_count_x *
-      (uint64_t)dispatch->group_count_y *
-      (uint64_t)dispatch->group_count_z;
+      r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("bin_map early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -1408,9 +1425,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
    struct r300vk_buffer *out_buf = bufs[1];
 
    const uint64_t total_invocations =
-      (uint64_t)dispatch->group_count_x *
-      (uint64_t)dispatch->group_count_y *
-      (uint64_t)dispatch->group_count_z;
+      r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u) {
       IDM_LOG("gather early-return total_invocations=%llu out-of-bounds (1D box-3 limit)",
               (unsigned long long)total_invocations);
@@ -1658,9 +1673,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    }
 
    const uint64_t total_invocations =
-      (uint64_t)dispatch->group_count_x *
-      (uint64_t)dispatch->group_count_y *
-      (uint64_t)dispatch->group_count_z;
+      r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("predstore early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -1975,9 +1988,7 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    /* Total invocations from the dispatch grid (64-bit product guard +
     * 2048 x 2048 axis cap). */
    const uint64_t total_invocations =
-      (uint64_t)dispatch->group_count_x *
-      (uint64_t)dispatch->group_count_y *
-      (uint64_t)dispatch->group_count_z;
+      r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("blend_acc early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
@@ -2180,7 +2191,7 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    }
    uint64_t total_invocations = 0;
    unsigned width = 0, height = 0;
-   if (!r300vk_idm_compute_raster_grid(dispatch, &total_invocations, &width, &height))
+   if (!r300vk_idm_compute_raster_grid(dispatch, pl, &total_invocations, &width, &height))
       return false;
    const uint32_t N = (uint32_t)total_invocations;
    IDM_LOG("dispatch N=%u", N);
@@ -2437,9 +2448,7 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    IDM_LOG("multipass pass_count=%u", pass_count);
 
    const uint64_t total_invocations =
-      (uint64_t)dispatch->group_count_x *
-      (uint64_t)dispatch->group_count_y *
-      (uint64_t)dispatch->group_count_z;
+      r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
       IDM_LOG("multipass early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
