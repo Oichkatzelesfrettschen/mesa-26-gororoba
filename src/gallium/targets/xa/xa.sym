@@ -31,6 +31,7 @@
 		xa_surface_unmap;
 		xa_surface_unref;
 		xa_tracker_create;
+		xa_tracker_create_sw;
 		xa_tracker_destroy;
 		xa_tracker_version;
 		xa_yuv_planar_blit;

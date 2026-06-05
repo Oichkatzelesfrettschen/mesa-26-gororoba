@@ -3,10 +3,14 @@
 # API/loader surface and same x86-64-v1/clang22/distcc-cache lane.  Beyond the
 # release profile it carries debug-only instrumentation surfaces: debugoptimized
 # buildtype with live assertions, frame pointers, valgrind + libunwind
-# annotations, the perfetto track-event timeline,
-# and the full platform set.  It deliberately keeps r300's SW-TCL on the C draw
-# interpreter (no llvmpipe, draw-use-llvm=false) so the vertex path stays
-# instrumentable.  Conformance and silicon evidence use the release profile.
+# annotations, the perfetto track-event timeline, the standalone nir/glsl
+# compiler tools plus dlclose-skip, the in-tree unit tests, the overlay and
+# device-select vulkan layers, and the full platform set.  It carries the whole
+# restored r300 surface -- the r300 gallium driver and amd_r300 Vulkan ICD, the
+# gallium-va MPEG-2 decode, and the gallium-xa 2D/Xv frontend -- with assertions
+# live.  It deliberately keeps r300's SW-TCL on the C draw interpreter (no
+# llvmpipe, draw-use-llvm=false) so the vertex path stays instrumentable.
+# Conformance and silicon evidence use the release profile.
 #
 # Why a separate debug profile: driver RCA and shader disassembly need assertions
 # live (b_ndebug='false') and a debugoptimized build (-O2 -g, real frame
@@ -76,11 +80,33 @@ gallium-rusticl = false
 valgrind = 'enabled'
 libunwind = 'enabled'
 
-# Perfetto stays disabled here because Meson 1.11 aborts configure on the
-# generated perfetto install-data tagging before Ninja reaches the r300 driver
-# build.  Keep the Vostro debug lane buildable first; re-enable perfetto only
-# after the subproject install-tag failure is fixed in the supported toolchain.
-perfetto = false
+# Perfetto track-event timeline.  r300/radeon is not a perfetto GPU datasource
+# (only panfrost/intel/freedreno are), so this captures the CPU-side driver
+# timeline, not GPU counters; datasources stays 'auto'.  If Meson aborts configure
+# on the perfetto subproject install-data tagging, drop perfetto back to false --
+# that is a toolchain blocker, not an r300 one.
+perfetto = true
+datasources = ['auto']
+
+# Standalone compiler RCA tools: nir and glsl build the offline NIR/GLSL
+# compilers (so an r300 RC fault can be reproduced off the X server), and
+# dlclose-skip keeps dlopened drivers resident so a gdb backtrace through the
+# pipe-loaded r300 driver keeps its symbols.
+tools = ['nir', 'glsl', 'dlclose-skip']
+
+# Build the in-tree unit tests (the r300 compiler and NIR tests), so a compiler
+# fault can be reproduced by a deterministic test instead of only through the
+# live driver.
+build-tests = true
+
+# r300vk debug layers: overlay (the on-screen HUD) and device-select.  These are
+# the mesa-shipped layers; Khronos validation is a separate package.
+vulkan-layers = ['overlay', 'device-select']
+
+# The restored r300 feature surface this debug lane must instrument: gallium-va
+# MPEG-2 decode (the pure-NIR g3dvl kernels) and the gallium-xa 2D/Xv frontend
+# (xa_nir.c).  Both are the "built back up" extras; the debug profile carries
+# them with assertions live so an RC or xa fault lands on its true site.
 video-codecs = ['mpeg12dec']
 gallium-va = 'enabled'
-vulkan-layers = []
+gallium-xa = true

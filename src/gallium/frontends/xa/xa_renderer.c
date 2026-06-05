@@ -92,6 +92,13 @@ renderer_draw(struct xa_context *r)
     velems.count = r->attrs_per_vertex;
     memcpy(velems.velems, r->velems, sizeof(r->velems[0]) * velems.count);
 
+    /* Mesa 23+ moved stride from pipe_vertex_buffer.stride onto
+     * pipe_vertex_element.src_stride.  attrs_per_vertex varies per draw
+     * call (1 solid / 2 one-tex / 3 two-tex), so the stride is set here
+     * where the current count is known rather than in renderer_init_state. */
+    for (unsigned idx = 0; idx < velems.count; idx++)
+        velems.velems[idx].src_stride = r->attrs_per_vertex * 4 * sizeof(float);
+
     cso_set_vertex_elements(r->cso, &velems);
     util_draw_user_vertex_buffer(r->cso, r->buffer, MESA_PRIM_QUADS,
                                  num_verts,	/* verts */
@@ -527,6 +534,11 @@ renderer_draw_yuv(struct xa_context *r,
    struct cso_velems_state velems;
    velems.count = num_attribs;
    memcpy(velems.velems, r->velems, sizeof(r->velems[0]) * velems.count);
+
+   /* Same Mesa 23+ src_stride requirement as renderer_draw: stride was moved
+    * from pipe_vertex_buffer onto pipe_vertex_element.src_stride. */
+   for (unsigned idx = 0; idx < velems.count; idx++)
+      velems.velems[idx].src_stride = num_attribs * 4 * sizeof(float);
 
    cso_set_vertex_elements(r->cso, &velems);
    util_draw_user_vertex_buffer(r->cso, r->buffer, MESA_PRIM_QUADS,

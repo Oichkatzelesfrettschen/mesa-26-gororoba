@@ -1827,6 +1827,11 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
     * shaders reach RC translation with resolved sampler operands. */
    NIR_PASS(_, s, nir_lower_samplers);
 
+   /* Convert byte-addressed load_ubo to vec4-indexed load_ubo_vec4.  r300
+    * hardware exposes only a constant file indexed in vec4 units; nir_to_rc
+    * emits RC_FILE_CONSTANT addresses from load_ubo_vec4 index. */
+   NIR_PASS(_, s, nir_lower_ubo_vec4);
+
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
       static const nir_lower_sysvals_to_varyings_options sysval_options = {
          .frag_coord = true,

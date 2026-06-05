@@ -220,6 +220,7 @@ if with_glx == 'xlib'
 endif
 if with_gallium_xa
   subdir('frontends/xa')
+  subdir('targets/xa')
 endif
 if with_gallium_va
   subdir('frontends/va')

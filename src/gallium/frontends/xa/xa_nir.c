@@ -77,9 +77,13 @@ struct xa_shaders {
 static nir_def *
 load_const(nir_builder *b, unsigned slot)
 {
-    /* r300's nir_to_rc consumes only vec4-indexed load_ubo_vec4 (no
-     * nir_lower_ubo_vec4 runs), so the offset is the vec4 slot, not a byte. */
-    return nir_load_ubo_vec4(b, 4, 32, nir_imm_int(b, 0), nir_imm_int(b, slot));
+    /* Standard byte-addressed load_ubo; the byte offset is slot * 16 for vec4
+     * alignment.  Backends that use nir_to_rc (r300) run nir_lower_ubo_vec4
+     * in their compile pipeline, which converts this to load_ubo_vec4 before
+     * RC translation. */
+    return nir_load_ubo(b, 4, 32, nir_imm_int(b, 0), nir_imm_int(b, slot * 16),
+                        .align_mul = 16, .align_offset = 0,
+                        .range_base = 0, .range = ~0u);
 }
 
 static nir_variable *
@@ -118,13 +122,31 @@ tex2d(nir_builder *b, nir_deref_instr *samp, nir_def *coord)
 /* nir_to_tgsi (SW-TCL VS) and nir_to_rc (FS) key TGSI register / interpolator
  * indices off var->data.driver_location, which they read but never assign; the
  * gather_info + assign_io_var_locations pass below assigns it, else every IO
- * collapses onto slot 0.  finalize_nir is a screen hook r300 leaves NULL. */
+ * collapses onto slot 0.  finalize_nir is a screen hook r300 leaves NULL.
+ *
+ * nir_shader_gather_info counts sampler uniforms into info.num_textures but
+ * does NOT set info.textures_used or info.samplers_used -- those are normally
+ * populated by gl_nir_lower_samplers_as_deref in the GLSL pipeline.  Gallium
+ * drivers (including llvmpipe) read these bitsets in make_variant_key to size
+ * the sampler region of the shader variant key.  A zero count leaves the key
+ * region un-zeroed on the stack, giving garbage format values and an assertion
+ * failure in lp_build_sample_soa.  Populate the bitsets here for every sampler
+ * uniform variable, mirroring gl_nir_lower_samplers_as_deref. */
 static void
 finalize(struct pipe_context *pipe, nir_builder *b)
 {
     nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
     nir_assign_io_var_locations(b->shader, nir_var_shader_in);
     nir_assign_io_var_locations(b->shader, nir_var_shader_out);
+
+    nir_foreach_uniform_variable(var, b->shader) {
+        if (glsl_type_is_sampler(glsl_without_array(var->type))) {
+            unsigned count = MAX2(glsl_type_get_sampler_count(var->type), 1);
+            BITSET_SET_COUNT(b->shader->info.textures_used, var->data.binding, count);
+            BITSET_SET_COUNT(b->shader->info.samplers_used, var->data.binding, count);
+        }
+    }
+
     if (pipe->screen->finalize_nir)
         pipe->screen->finalize_nir(pipe->screen, b->shader, true);
 }
@@ -148,7 +170,7 @@ create_vs(struct pipe_context *pipe, unsigned vs_traits)
     nir_def *pos = nir_load_var(&b,
         decl_io(&b, nir_var_shader_in, VERT_ATTRIB_GENERIC0 + input_slot++, "vpos"));
     nir_store_var(&b, decl_io(&b, nir_var_shader_out, VARYING_SLOT_POS, "opos"),
-                  nir_ffma(&b, pos, load_const(&b, 0), load_const(&b, 1)), 0xf);
+                  nir_ffma_weak(&b, pos, load_const(&b, 0), load_const(&b, 1)), 0xf);
 
     if (is_yuv) {
         nir_def *tc = nir_load_var(&b,
@@ -192,9 +214,9 @@ create_yuv_shader(struct pipe_context *pipe)
     /* RGB = matrow3 (bias) + y.x*matrow0 + u.x*matrow1 + v.x*matrow2: the
      * YUV->RGB affine, rows in const buffer 0 (BT.601, written by xa_yuv.c). */
     nir_def *rgb = load_const(&b, 3);
-    rgb = nir_ffma(&b, nir_replicate(&b, y, 4), load_const(&b, 0), rgb);
-    rgb = nir_ffma(&b, nir_replicate(&b, u, 4), load_const(&b, 1), rgb);
-    rgb = nir_ffma(&b, nir_replicate(&b, v, 4), load_const(&b, 2), rgb);
+    rgb = nir_ffma_weak(&b, nir_replicate(&b, y, 4), load_const(&b, 0), rgb);
+    rgb = nir_ffma_weak(&b, nir_replicate(&b, u, 4), load_const(&b, 1), rgb);
+    rgb = nir_ffma_weak(&b, nir_replicate(&b, v, 4), load_const(&b, 2), rgb);
 
     nir_store_var(&b, decl_io(&b, nir_var_shader_out, FRAG_RESULT_COLOR, "col"), rgb, 0xf);
     finalize(pipe, &b);

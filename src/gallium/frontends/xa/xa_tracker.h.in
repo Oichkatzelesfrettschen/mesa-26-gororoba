@@ -161,6 +161,10 @@ extern void xa_tracker_version(int *major, int *minor, int *patch);
 
 extern struct xa_tracker *xa_tracker_create(int drm_fd);
 
+/* Create an xa_tracker backed by the null software winsys (llvmpipe/softpipe).
+ * No DRM fd is required.  Intended for offline correctness testing. */
+extern struct xa_tracker *xa_tracker_create_sw(void);
+
 extern void xa_tracker_destroy(struct xa_tracker *xa);
 
 extern int xa_format_check_supported(struct xa_tracker *xa,
