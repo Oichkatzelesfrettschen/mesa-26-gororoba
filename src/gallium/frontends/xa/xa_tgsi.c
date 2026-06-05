@@ -29,12 +29,12 @@
 
 #include "util/format/u_formats.h"
 #include "pipe/p_context.h"
+#include "pipe/p_screen.h"
 #include "pipe/p_state.h"
-#include "pipe/p_shader_tokens.h"
 
 #include "util/u_memory.h"
 
-#include "tgsi/tgsi_ureg.h"
+#include "compiler/nir/nir_builder.h"
 
 #include "cso_cache/cso_context.h"
 #include "cso_cache/cso_hash.h"
@@ -64,38 +64,6 @@
  * OUT[0] = color
  */
 
-static void
-print_fs_traits(int fs_traits)
-{
-    const char *strings[] = {
-	"FS_COMPOSITE",		/* = 1 << 0, */
-	"FS_MASK",		/* = 1 << 1, */
-	"FS_SRC_SRC",	        /* = 1 << 2, */
-	"FS_MASK_SRC",	        /* = 1 << 3, */
-	"FS_YUV",	        /* = 1 << 4, */
-	"FS_SRC_REPEAT_NONE",	/* = 1 << 5, */
-	"FS_MASK_REPEAT_NONE",	/* = 1 << 6, */
-	"FS_SRC_SWIZZLE_RGB",	/* = 1 << 7, */
-	"FS_MASK_SWIZZLE_RGB",	/* = 1 << 8, */
-	"FS_SRC_SET_ALPHA",	/* = 1 << 9, */
-	"FS_MASK_SET_ALPHA",	/* = 1 << 10, */
-	"FS_SRC_LUMINANCE",	/* = 1 << 11, */
-	"FS_MASK_LUMINANCE",	/* = 1 << 12, */
-	"FS_DST_LUMINANCE",     /* = 1 << 13, */
-        "FS_CA",                /* = 1 << 14, */
-    };
-    int i, k;
-
-    debug_printf("%s: ", __func__);
-
-    for (i = 0, k = 1; k < (1 << 16); i++, k <<= 1) {
-	if (fs_traits & k)
-	    debug_printf("%s, ", strings[i]);
-    }
-
-    debug_printf("\n");
-}
-
 struct xa_shaders {
     struct xa_context *r;
 
@@ -103,48 +71,71 @@ struct xa_shaders {
     struct cso_hash fs_hash;
 };
 
-static inline void
-src_in_mask(struct ureg_program *ureg,
-	    struct ureg_dst dst,
-	    struct ureg_src src,
-	    struct ureg_src mask,
-	    unsigned mask_luminance, bool component_alpha)
+/* The XA shaders read their parameters from constant buffer 0, written per draw
+ * by renderer_set_constants(); each parameter is the vec4 at index slot of
+ * UBO block 0. */
+static nir_def *
+load_const(nir_builder *b, unsigned slot)
 {
-    if (mask_luminance)
-        if (component_alpha) {
-            ureg_MOV(ureg, dst, src);
-            ureg_MUL(ureg, ureg_writemask(dst, TGSI_WRITEMASK_W),
-                     src, ureg_scalar(mask, TGSI_SWIZZLE_X));
-        } else {
-            ureg_MUL(ureg, dst, src, ureg_scalar(mask, TGSI_SWIZZLE_X));
-        }
-    else if (!component_alpha)
-        ureg_MUL(ureg, dst, src, ureg_scalar(mask, TGSI_SWIZZLE_W));
-    else
-        ureg_MUL(ureg, dst, src, mask);
+    /* r300's nir_to_rc consumes only vec4-indexed load_ubo_vec4 (no
+     * nir_lower_ubo_vec4 runs), so the offset is the vec4 slot, not a byte. */
+    return nir_load_ubo_vec4(b, 4, 32, nir_imm_int(b, 0), nir_imm_int(b, slot));
 }
 
-static struct ureg_src
-vs_normalize_coords(struct ureg_program *ureg,
-		    struct ureg_src coords,
-		    struct ureg_src const0, struct ureg_src const1)
+static nir_variable *
+decl_io(nir_builder *b, nir_variable_mode mode, int location, const char *name)
 {
-    struct ureg_dst tmp = ureg_DECL_temporary(ureg);
-    struct ureg_src ret;
+    nir_variable *v = nir_variable_create(b->shader, mode, glsl_vec4_type(), name);
+    v->data.location = location;
+    return v;
+}
 
-    ureg_MAD(ureg, tmp, coords, const0, const1);
-    ret = ureg_src(tmp);
-    ureg_release_temporary(ureg, tmp);
-    return ret;
+/* A GENERIC[idx] fragment-shader texcoord input, trimmed to the xy used for 2D
+ * sampling and the in-bounds test. */
+static nir_def *
+fs_texcoord(nir_builder *b, unsigned idx)
+{
+    return nir_trim_vector(b,
+        nir_load_var(b, decl_io(b, nir_var_shader_in, VARYING_SLOT_VAR0 + idx, "tc")), 2);
+}
+
+static nir_deref_instr *
+decl_sampler(nir_builder *b, unsigned binding)
+{
+    const struct glsl_type *t =
+        glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+    nir_variable *s = nir_variable_create(b->shader, nir_var_uniform, t, "samp");
+    s->data.binding = binding;
+    return nir_build_deref_var(b, s);
+}
+
+static nir_def *
+tex2d(nir_builder *b, nir_deref_instr *samp, nir_def *coord)
+{
+    return nir_tex(b, coord, .texture_deref = samp, .sampler_deref = samp);
+}
+
+/* nir_to_tgsi (SW-TCL VS) and nir_to_rc (FS) key TGSI register / interpolator
+ * indices off var->data.driver_location, which they read but never assign; the
+ * gather_info + assign_io_var_locations pass below assigns it, else every IO
+ * collapses onto slot 0.  finalize_nir is a screen hook r300 leaves NULL. */
+static void
+finalize(struct pipe_context *pipe, nir_builder *b)
+{
+    nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+    nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+    nir_assign_io_var_locations(b->shader, nir_var_shader_out);
+    if (pipe->screen->finalize_nir)
+        pipe->screen->finalize_nir(pipe->screen, b->shader, true);
 }
 
 static void *
 create_vs(struct pipe_context *pipe, unsigned vs_traits)
 {
-    struct ureg_program *ureg;
-    struct ureg_src src;
-    struct ureg_dst dst;
-    struct ureg_src const0, const1;
+    const nir_shader_compiler_options *opt =
+        pipe->screen->nir_options[MESA_SHADER_VERTEX];
+    nir_builder b =
+        nir_builder_init_simple_shader(MESA_SHADER_VERTEX, opt, "xa_vs");
     bool is_composite = (vs_traits & VS_COMPOSITE) != 0;
     bool has_mask = (vs_traits & VS_MASK) != 0;
     bool is_yuv = (vs_traits & VS_YUV) != 0;
@@ -152,270 +143,175 @@ create_vs(struct pipe_context *pipe, unsigned vs_traits)
     bool is_mask_src = (vs_traits & VS_MASK_SRC) != 0;
     unsigned input_slot = 0;
 
-    ureg = ureg_create(MESA_SHADER_VERTEX);
-    if (ureg == NULL)
-	return 0;
-
-    const0 = ureg_DECL_constant(ureg, 0);
-    const1 = ureg_DECL_constant(ureg, 1);
-
-    /* it has to be either a fill or a composite op */
-    src = ureg_DECL_vs_input(ureg, input_slot++);
-    dst = ureg_DECL_output(ureg, TGSI_SEMANTIC_POSITION, 0);
-    src = vs_normalize_coords(ureg, src, const0, const1);
-    ureg_MOV(ureg, dst, src);
+    /* CONST[0] = (2/dst_w, 2/dst_h, 1, 1), CONST[1] = (-1, -1, 0, 0): the
+     * pixel-to-clip affine.  o_pos = pos * const0 + const1. */
+    nir_def *pos = nir_load_var(&b,
+        decl_io(&b, nir_var_shader_in, VERT_ATTRIB_GENERIC0 + input_slot++, "vpos"));
+    nir_store_var(&b, decl_io(&b, nir_var_shader_out, VARYING_SLOT_POS, "opos"),
+                  nir_ffma(&b, pos, load_const(&b, 0), load_const(&b, 1)), 0xf);
 
     if (is_yuv) {
-	src = ureg_DECL_vs_input(ureg, input_slot++);
-	dst = ureg_DECL_output(ureg, TGSI_SEMANTIC_GENERIC, 0);
-	ureg_MOV(ureg, dst, src);
+        nir_def *tc = nir_load_var(&b,
+            decl_io(&b, nir_var_shader_in, VERT_ATTRIB_GENERIC0 + input_slot++, "vyuv"));
+        nir_store_var(&b, decl_io(&b, nir_var_shader_out, VARYING_SLOT_VAR0, "oyuv"), tc, 0xf);
     }
 
     if (is_composite) {
         if (!is_src_src || (has_mask && !is_mask_src)) {
-            src = ureg_DECL_vs_input(ureg, input_slot++);
-            dst = ureg_DECL_output(ureg, TGSI_SEMANTIC_GENERIC, 0);
-            ureg_MOV(ureg, dst, src);
+            nir_def *tc = nir_load_var(&b,
+                decl_io(&b, nir_var_shader_in, VERT_ATTRIB_GENERIC0 + input_slot++, "vsrc"));
+            nir_store_var(&b, decl_io(&b, nir_var_shader_out, VARYING_SLOT_VAR0, "osrc"), tc, 0xf);
         }
-
         if (!is_src_src && (has_mask && !is_mask_src)) {
-            src = ureg_DECL_vs_input(ureg, input_slot++);
-            dst = ureg_DECL_output(ureg, TGSI_SEMANTIC_GENERIC, 1);
-            ureg_MOV(ureg, dst, src);
+            nir_def *tc = nir_load_var(&b,
+                decl_io(&b, nir_var_shader_in, VERT_ATTRIB_GENERIC0 + input_slot++, "vmask"));
+            nir_store_var(&b, decl_io(&b, nir_var_shader_out, VARYING_SLOT_VAR1, "omask"), tc, 0xf);
         }
     }
 
-    ureg_END(ureg);
-
-    return ureg_create_shader_and_destroy(ureg, pipe);
+    finalize(pipe, &b);
+    struct pipe_shader_state state = {0};
+    state.type = PIPE_SHADER_IR_NIR;
+    state.ir.nir = b.shader;
+    return pipe->create_vs_state(pipe, &state);
 }
 
 static void *
-create_yuv_shader(struct pipe_context *pipe, struct ureg_program *ureg)
+create_yuv_shader(struct pipe_context *pipe)
 {
-    struct ureg_src y_sampler, u_sampler, v_sampler;
-    struct ureg_src pos;
-    struct ureg_src matrow0, matrow1, matrow2, matrow3;
-    struct ureg_dst y, u, v, rgb;
-    struct ureg_dst out = ureg_DECL_output(ureg,
-					   TGSI_SEMANTIC_COLOR,
-					   0);
+    const nir_shader_compiler_options *opt =
+        pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+    nir_builder b =
+        nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opt, "xa_yuv_fs");
 
-    pos = ureg_DECL_fs_input(ureg,
-			     TGSI_SEMANTIC_GENERIC, 0,
-			     TGSI_INTERPOLATE_PERSPECTIVE);
+    nir_def *pos = fs_texcoord(&b, 0);
+    nir_def *y = nir_channel(&b, tex2d(&b, decl_sampler(&b, 0), pos), 0);
+    nir_def *u = nir_channel(&b, tex2d(&b, decl_sampler(&b, 1), pos), 0);
+    nir_def *v = nir_channel(&b, tex2d(&b, decl_sampler(&b, 2), pos), 0);
 
-    rgb = ureg_DECL_temporary(ureg);
-    y = ureg_DECL_temporary(ureg);
-    u = ureg_DECL_temporary(ureg);
-    v = ureg_DECL_temporary(ureg);
+    /* RGB = matrow3 (bias) + y.x*matrow0 + u.x*matrow1 + v.x*matrow2: the
+     * YUV->RGB affine, rows in const buffer 0 (BT.601, written by xa_yuv.c). */
+    nir_def *rgb = load_const(&b, 3);
+    rgb = nir_ffma(&b, nir_replicate(&b, y, 4), load_const(&b, 0), rgb);
+    rgb = nir_ffma(&b, nir_replicate(&b, u, 4), load_const(&b, 1), rgb);
+    rgb = nir_ffma(&b, nir_replicate(&b, v, 4), load_const(&b, 2), rgb);
 
-    y_sampler = ureg_DECL_sampler(ureg, 0);
-    u_sampler = ureg_DECL_sampler(ureg, 1);
-    v_sampler = ureg_DECL_sampler(ureg, 2);
-
-    ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
-                           TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                           TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-    ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D,
-                           TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                           TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-    ureg_DECL_sampler_view(ureg, 2, TGSI_TEXTURE_2D,
-                           TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                           TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-
-    matrow0 = ureg_DECL_constant(ureg, 0);
-    matrow1 = ureg_DECL_constant(ureg, 1);
-    matrow2 = ureg_DECL_constant(ureg, 2);
-    matrow3 = ureg_DECL_constant(ureg, 3);
-
-    ureg_TEX(ureg, y, TGSI_TEXTURE_2D, pos, y_sampler);
-    ureg_TEX(ureg, u, TGSI_TEXTURE_2D, pos, u_sampler);
-    ureg_TEX(ureg, v, TGSI_TEXTURE_2D, pos, v_sampler);
-
-    ureg_MOV(ureg, rgb, matrow3);
-    ureg_MAD(ureg, rgb,
-	     ureg_scalar(ureg_src(y), TGSI_SWIZZLE_X), matrow0, ureg_src(rgb));
-    ureg_MAD(ureg, rgb,
-	     ureg_scalar(ureg_src(u), TGSI_SWIZZLE_X), matrow1, ureg_src(rgb));
-    ureg_MAD(ureg, rgb,
-	     ureg_scalar(ureg_src(v), TGSI_SWIZZLE_X), matrow2, ureg_src(rgb));
-
-    ureg_MOV(ureg, out, ureg_src(rgb));
-
-    ureg_release_temporary(ureg, rgb);
-    ureg_release_temporary(ureg, y);
-    ureg_release_temporary(ureg, u);
-    ureg_release_temporary(ureg, v);
-
-    ureg_END(ureg);
-
-    return ureg_create_shader_and_destroy(ureg, pipe);
+    nir_store_var(&b, decl_io(&b, nir_var_shader_out, FRAG_RESULT_COLOR, "col"), rgb, 0xf);
+    finalize(pipe, &b);
+    struct pipe_shader_state state = {0};
+    state.type = PIPE_SHADER_IR_NIR;
+    state.ir.nir = b.shader;
+    return pipe->create_fs_state(pipe, &state);
 }
 
-static inline void
-xrender_tex(struct ureg_program *ureg,
-	    struct ureg_dst dst,
-	    struct ureg_src coords,
-	    struct ureg_src sampler,
-	    const struct ureg_src *imm0,
-	    bool repeat_none, bool swizzle, bool set_alpha)
+/* src * mask, respecting mask-luminance (mask in .x not .w) and component-alpha
+ * (per-channel rather than broadcast-alpha) modes. */
+static nir_def *
+src_in_mask(nir_builder *b, nir_def *src, nir_def *mask,
+            bool mask_luminance, bool component_alpha)
 {
-    if (repeat_none) {
-	struct ureg_dst tmp0 = ureg_DECL_temporary(ureg);
-	struct ureg_dst tmp1 = ureg_DECL_temporary(ureg);
-
-	ureg_SGT(ureg, tmp1, ureg_swizzle(coords,
-					  TGSI_SWIZZLE_X,
-					  TGSI_SWIZZLE_Y,
-					  TGSI_SWIZZLE_X,
-					  TGSI_SWIZZLE_Y), ureg_scalar(*imm0,
-								       TGSI_SWIZZLE_X));
-	ureg_SLT(ureg, tmp0,
-		 ureg_swizzle(coords, TGSI_SWIZZLE_X, TGSI_SWIZZLE_Y,
-			      TGSI_SWIZZLE_X, TGSI_SWIZZLE_Y), ureg_scalar(*imm0,
-									   TGSI_SWIZZLE_W));
-	ureg_MIN(ureg, tmp0, ureg_src(tmp0), ureg_src(tmp1));
-	ureg_MIN(ureg, tmp0, ureg_scalar(ureg_src(tmp0), TGSI_SWIZZLE_X),
-		 ureg_scalar(ureg_src(tmp0), TGSI_SWIZZLE_Y));
-	ureg_TEX(ureg, tmp1, TGSI_TEXTURE_2D, coords, sampler);
-	if (swizzle)
-	    ureg_MOV(ureg, tmp1, ureg_swizzle(ureg_src(tmp1),
-					      TGSI_SWIZZLE_Z,
-					      TGSI_SWIZZLE_Y, TGSI_SWIZZLE_X,
-					      TGSI_SWIZZLE_W));
-	if (set_alpha)
-	    ureg_MOV(ureg,
-		     ureg_writemask(tmp1, TGSI_WRITEMASK_W),
-		     ureg_scalar(*imm0, TGSI_SWIZZLE_W));
-	ureg_MUL(ureg, dst, ureg_src(tmp1), ureg_src(tmp0));
-	ureg_release_temporary(ureg, tmp0);
-	ureg_release_temporary(ureg, tmp1);
-    } else {
-	if (swizzle) {
-	    struct ureg_dst tmp = ureg_DECL_temporary(ureg);
-
-	    ureg_TEX(ureg, tmp, TGSI_TEXTURE_2D, coords, sampler);
-	    ureg_MOV(ureg, dst, ureg_swizzle(ureg_src(tmp),
-					     TGSI_SWIZZLE_Z,
-					     TGSI_SWIZZLE_Y, TGSI_SWIZZLE_X,
-					     TGSI_SWIZZLE_W));
-	    ureg_release_temporary(ureg, tmp);
-	} else {
-	    ureg_TEX(ureg, dst, TGSI_TEXTURE_2D, coords, sampler);
-	}
-	if (set_alpha)
-	    ureg_MOV(ureg,
-		     ureg_writemask(dst, TGSI_WRITEMASK_W),
-		     ureg_scalar(*imm0, TGSI_SWIZZLE_W));
+    if (mask_luminance) {
+        if (component_alpha)
+            return nir_vector_insert_imm(b, src,
+                nir_fmul(b, nir_channel(b, src, 3), nir_channel(b, mask, 0)), 3);
+        return nir_fmul(b, src, nir_replicate(b, nir_channel(b, mask, 0), 4));
     }
+    if (!component_alpha)
+        return nir_fmul(b, src, nir_replicate(b, nir_channel(b, mask, 3), 4));
+    return nir_fmul(b, src, mask);
 }
 
-static void
-read_input(struct ureg_program *ureg,
-           struct ureg_dst dst,
-           const struct ureg_src *imm0,
-           bool repeat_none, bool swizzle, bool set_alpha,
+/* Texture fetch with optional BGR->RGB swizzle, forced alpha=1, and
+ * clamp-to-border kill (coord outside [0,1) -> 0). */
+static nir_def *
+xrender_tex(nir_builder *b, nir_def *coord, nir_deref_instr *samp,
+            bool repeat_none, bool swizzle, bool set_alpha)
+{
+    nir_def *texel = tex2d(b, samp, coord);
+    if (swizzle)
+        texel = nir_swizzle(b, texel, (unsigned[]){2, 1, 0, 3}, 4);
+    if (set_alpha)
+        texel = nir_vector_insert_imm(b, texel, nir_imm_float(b, 1.0f), 3);
+    if (repeat_none) {
+        nir_def *cx = nir_channel(b, coord, 0), *cy = nir_channel(b, coord, 1);
+        nir_def *zero = nir_imm_float(b, 0.0f), *one = nir_imm_float(b, 1.0f);
+        /* in = (0<cx) && (cx<1) && (0<cy) && (cy<1), as float 0/1 (SGT/SLT->MIN). */
+        nir_def *inx = nir_fmin(b, nir_b2f32(b, nir_flt(b, zero, cx)),
+                                   nir_b2f32(b, nir_flt(b, cx, one)));
+        nir_def *iny = nir_fmin(b, nir_b2f32(b, nir_flt(b, zero, cy)),
+                                   nir_b2f32(b, nir_flt(b, cy, one)));
+        texel = nir_fmul(b, texel, nir_replicate(b, nir_fmin(b, inx, iny), 4));
+    }
+    return texel;
+}
+
+/* Either a solid color from the next constant slot (is_src), or a sampled and
+ * xrender_tex-processed texture from the next sampler/texcoord pair. */
+static nir_def *
+read_input(nir_builder *b, bool repeat_none, bool swizzle, bool set_alpha,
            bool is_src, unsigned *cur_constant, unsigned *cur_sampler)
 {
-    struct ureg_src input, sampler;
+    if (is_src)
+        return load_const(b, (*cur_constant)++);
 
-    if (is_src) {
-        input = ureg_DECL_constant(ureg, (*cur_constant)++);
-        ureg_MOV(ureg, dst, input);
-    } else {
-        sampler = ureg_DECL_sampler(ureg, *cur_sampler);
-        ureg_DECL_sampler_view(ureg, *cur_sampler, TGSI_TEXTURE_2D,
-                               TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                               TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
-        input = ureg_DECL_fs_input(ureg,
-                                   TGSI_SEMANTIC_GENERIC, (*cur_sampler)++,
-                                   TGSI_INTERPOLATE_PERSPECTIVE);
-        xrender_tex(ureg, dst, input, sampler, imm0,
-                    repeat_none, swizzle, set_alpha);
-    }
+    unsigned idx = (*cur_sampler)++;
+    return xrender_tex(b, fs_texcoord(b, idx), decl_sampler(b, idx),
+                       repeat_none, swizzle, set_alpha);
 }
 
 static void *
 create_fs(struct pipe_context *pipe, unsigned fs_traits)
 {
-    struct ureg_program *ureg;
-    struct ureg_dst src, mask;
-    struct ureg_dst out;
-    struct ureg_src imm0 = { 0 };
-    unsigned has_mask = (fs_traits & FS_MASK) != 0;
-    unsigned is_yuv = (fs_traits & FS_YUV) != 0;
-    unsigned src_repeat_none = (fs_traits & FS_SRC_REPEAT_NONE) != 0;
-    unsigned mask_repeat_none = (fs_traits & FS_MASK_REPEAT_NONE) != 0;
-    unsigned src_swizzle = (fs_traits & FS_SRC_SWIZZLE_RGB) != 0;
-    unsigned mask_swizzle = (fs_traits & FS_MASK_SWIZZLE_RGB) != 0;
-    unsigned src_set_alpha = (fs_traits & FS_SRC_SET_ALPHA) != 0;
-    unsigned mask_set_alpha = (fs_traits & FS_MASK_SET_ALPHA) != 0;
-    unsigned src_luminance = (fs_traits & FS_SRC_LUMINANCE) != 0;
-    unsigned mask_luminance = (fs_traits & FS_MASK_LUMINANCE) != 0;
-    unsigned dst_luminance = (fs_traits & FS_DST_LUMINANCE) != 0;
-    unsigned is_src_src = (fs_traits & FS_SRC_SRC) != 0;
-    unsigned is_mask_src = (fs_traits & FS_MASK_SRC) != 0;
+    bool has_mask = (fs_traits & FS_MASK) != 0;
+    bool is_yuv = (fs_traits & FS_YUV) != 0;
+    bool src_repeat_none = (fs_traits & FS_SRC_REPEAT_NONE) != 0;
+    bool mask_repeat_none = (fs_traits & FS_MASK_REPEAT_NONE) != 0;
+    bool src_swizzle = (fs_traits & FS_SRC_SWIZZLE_RGB) != 0;
+    bool mask_swizzle = (fs_traits & FS_MASK_SWIZZLE_RGB) != 0;
+    bool src_set_alpha = (fs_traits & FS_SRC_SET_ALPHA) != 0;
+    bool mask_set_alpha = (fs_traits & FS_MASK_SET_ALPHA) != 0;
+    bool src_luminance = (fs_traits & FS_SRC_LUMINANCE) != 0;
+    bool mask_luminance = (fs_traits & FS_MASK_LUMINANCE) != 0;
+    bool dst_luminance = (fs_traits & FS_DST_LUMINANCE) != 0;
+    bool is_src_src = (fs_traits & FS_SRC_SRC) != 0;
+    bool is_mask_src = (fs_traits & FS_MASK_SRC) != 0;
     bool component_alpha = (fs_traits & FS_CA) != 0;
-    unsigned cur_sampler = 0;
-    unsigned cur_constant = 0;
-
-#if 0
-    print_fs_traits(fs_traits);
-#else
-    (void)print_fs_traits;
-#endif
-
-    ureg = ureg_create(MESA_SHADER_FRAGMENT);
-    if (ureg == NULL)
-	return 0;
+    unsigned cur_sampler = 0, cur_constant = 0;
 
     if (is_yuv)
-       return create_yuv_shader(pipe, ureg);
+        return create_yuv_shader(pipe);
 
-    out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+    const nir_shader_compiler_options *opt =
+        pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+    nir_builder b =
+        nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opt, "xa_fs");
 
-    if (src_repeat_none || mask_repeat_none ||
-	src_set_alpha || mask_set_alpha || src_luminance) {
-	imm0 = ureg_imm4f(ureg, 0, 0, 0, 1);
-    }
+    nir_def *src = read_input(&b, src_repeat_none, src_swizzle, src_set_alpha,
+                              is_src_src, &cur_constant, &cur_sampler);
 
-    src = (has_mask || src_luminance || dst_luminance) ?
-        ureg_DECL_temporary(ureg) : out;
+    /* L8 source: collapse the luma (src.x) into (0, 0, 0, luma). */
+    if (src_luminance)
+        src = nir_vec4(&b, nir_imm_float(&b, 0.0f), nir_imm_float(&b, 0.0f),
+                       nir_imm_float(&b, 0.0f), nir_channel(&b, src, 0));
 
-    read_input(ureg, src, &imm0, src_repeat_none, src_swizzle,
-               src_set_alpha, is_src_src, &cur_constant, &cur_sampler);
-
-    if (src_luminance) {
-	ureg_MOV(ureg, src, ureg_scalar(ureg_src(src), TGSI_SWIZZLE_X));
-	ureg_MOV(ureg, ureg_writemask(src, TGSI_WRITEMASK_XYZ),
-		 ureg_scalar(imm0, TGSI_SWIZZLE_X));
-	if (!has_mask && !dst_luminance)
-	    ureg_MOV(ureg, out, ureg_src(src));
-    }
-
+    nir_def *result = src;
     if (has_mask) {
-	mask = ureg_DECL_temporary(ureg);
-        read_input(ureg, mask, &imm0, mask_repeat_none,
-                   mask_swizzle, mask_set_alpha, is_mask_src, &cur_constant,
-                   &cur_sampler);
-
-	src_in_mask(ureg, (dst_luminance) ? src : out, ureg_src(src),
-		    ureg_src(mask), mask_luminance, component_alpha);
-
-	ureg_release_temporary(ureg, mask);
+        nir_def *mask = read_input(&b, mask_repeat_none, mask_swizzle,
+                                   mask_set_alpha, is_mask_src,
+                                   &cur_constant, &cur_sampler);
+        result = src_in_mask(&b, src, mask, mask_luminance, component_alpha);
     }
 
-    if (dst_luminance) {
-	/*
-	 * Make sure the alpha channel goes into the output L8 surface.
-	 */
-	ureg_MOV(ureg, out, ureg_scalar(ureg_src(src), TGSI_SWIZZLE_W));
-    }
+    /* L8 destination: the alpha/luma channel is what the L8 surface stores. */
+    if (dst_luminance)
+        result = nir_replicate(&b, nir_channel(&b, result, 3), 4);
 
-    ureg_END(ureg);
-
-    return ureg_create_shader_and_destroy(ureg, pipe);
+    nir_store_var(&b, decl_io(&b, nir_var_shader_out, FRAG_RESULT_COLOR, "col"), result, 0xf);
+    finalize(pipe, &b);
+    struct pipe_shader_state state = {0};
+    state.type = PIPE_SHADER_IR_NIR;
+    state.ir.nir = b.shader;
+    return pipe->create_fs_state(pipe, &state);
 }
 
 struct xa_shaders *
