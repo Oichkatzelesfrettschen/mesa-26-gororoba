@@ -83,6 +83,13 @@ gallium-rusticl = false
 # MPEG-4 (the h264_legacy compute-as-raster path) lands as a later codec addition.
 video-codecs = ['mpeg12dec']
 gallium-va = 'enabled'
+
+# gallium-xa: the restored 2D-acceleration / Xv frontend (xa_nir.c, pure NIR).
+# RS482 has no 2D engine, so XA runs EXA solid/copy/composite and the Xv
+# yuv_planar_blit on the 3D pipe; it is the on-screen end of the gallium-va decode
+# path.  Built into libxatracker.so.
+gallium-xa = true
+
 vulkan-layers = []
 perfetto = false
 valgrind = 'disabled'
