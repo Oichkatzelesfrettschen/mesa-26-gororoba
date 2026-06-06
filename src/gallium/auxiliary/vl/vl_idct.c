@@ -427,6 +427,20 @@ vl_idct_stage2_vert_shader(struct vl_idct *idct, nir_builder *b,
    calc_addr(b, r_addr, nir_trim_vector(b, tex, 2), t_start, true, false,
              idct->buffer_height / 4);
 
+   /* The second intermediate texel is r_addr[0] stepped by one texel along the
+    * row lane (calc_addr adds 1/(buffer_height/4); buffer_height/4 is
+    * non-power-of-two, e.g. 72 for a 288-tall luma intermediate).  r300 resolves
+    * that NPOT-stepped NEAREST coordinate one texel low: the FP24 rounding of
+    * 1/(buffer_height/4) lands the product just below the integer row, so the
+    * fetch reads the previous (first) texel's region instead of the second,
+    * dropping the upper vertical-frequency half of the block.  Bias the second
+    * texel's row lane to the texel centre (+0.5/(buffer_height/4)); floor of the
+    * centred coordinate is exact, and the +0.5 is inert on hardware whose NEAREST
+    * is already exact.  This mirrors the l_center column bias the first pass uses
+    * for the same NPOT source-read reason. */
+   nir_def *r_center = nir_imm_vec2(b, 0.0f, 0.5f / (idct->buffer_height / 4.0f));
+   r_addr[1] = nir_fadd(b, r_addr[1], r_center);
+
    nir_def *outs[4] = {
       l_addr[0], l_addr[1],
       nir_vec3(b, nir_channel(b, r_addr[0], 0), nir_channel(b, r_addr[0], 1), tex_z),
