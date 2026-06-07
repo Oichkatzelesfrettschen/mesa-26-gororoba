@@ -201,9 +201,10 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = true,
       .has_subnormal     = true,
       .is_native_compute = false, /* emulated via integer limb arithmetic on FP24 substrate */
-      .evidence          = R300_EVIDENCE_NUMERIC_DERIVED,
+      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "2-limb base-64: c0=a0*b0<=3969, c1=a0*b1+a1*b0<=3906, "
-                           "c2=a1*b1<=961; all < 2^17; carry steps exact; RNE from guard/sticky/lsb",
+                           "c2=a1*b1<=961; all < 2^17; carry limbs (r0,r1,r2) 12/12 exact on RS482 "
+                           "(rs482_fp16_pow2_carry_exactness_20260607); classification 15/15 exact",
    },
 };
 
@@ -327,20 +328,22 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       .op_name         = "IEEE16_CLASSIFY_LUT",
       .domain          = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
-      .status          = R300_VOP_NUMERIC_DERIVED,
+      .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "FP16 bit[15]=sign, bits[14:10]=exp(0..31), bits[9:0]=mantissa; "
-                         "class determined by (exp==0, exp==31, mantissa==0) partition",
-      .mesa_hook       = NULL,  /* no NIR detector yet; requires fp16-class-LUT probe first */
-      .retained_bundle = NULL,
+                         "class determined by (exp==0, exp==31, mantissa==0) partition; "
+                         "15/15 bit patterns exact on RS482 (rs482_fp16_pow2_carry_exactness_20260607)",
+      .mesa_hook       = NULL,
+      .retained_bundle = "steinmarder:src/re/r300/results/rs482_fp16_pow2_carry_exactness_20260607",
    },
    {
       .op_name         = "IEEE16_MUL_RNE",
       .domain          = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
-      .status          = R300_VOP_NUMERIC_DERIVED,
+      .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "2-limb base-64: c1=a0*b1+a1*b0 <= 2*63*31=3906 < 2^17; "
-                         "RNE via guard/sticky/lsb from limb carry triple",
-      .mesa_hook       = NULL,  /* no NIR detector yet; requires fp16-mul-rne-probe first */
-      .retained_bundle = NULL,
+                         "carry limbs (r0,r1,r2) 12/12 exact on RS482; "
+                         "RNE round from guard/sticky/lsb (rs482_fp16_pow2_carry_exactness_20260607)",
+      .mesa_hook       = NULL,
+      .retained_bundle = "steinmarder:src/re/r300/results/rs482_fp16_pow2_carry_exactness_20260607",
    },
    /* NULL sentinel -- keep last */
    { .op_name = NULL },
