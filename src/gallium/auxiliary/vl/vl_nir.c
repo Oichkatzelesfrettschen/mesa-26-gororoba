@@ -109,6 +109,11 @@ vl_nir_fs_finish(struct vl_nir_fs *fs, struct pipe_context *pipe,
                  nir_def *color)
 {
    nir_store_var(&fs->b, fs->out_color, color, 0xf);
+   /* Lower the deref-combined samplers to indexed tex so nir_shader_gather_info
+    * records textures_used/samplers_used.  nir_to_rc tolerates raw sampler derefs,
+    * but a SoA NIR backend (llvmpipe) keys its sampler static state on
+    * BITSET_LAST_BIT(info.textures_used) and snapshots nothing when it is empty. */
+   NIR_PASS(_, fs->b.shader, nir_lower_samplers);
    nir_shader_gather_info(fs->b.shader, nir_shader_get_entrypoint(fs->b.shader));
    nir_assign_io_var_locations(fs->b.shader, nir_var_shader_in);
    nir_assign_io_var_locations(fs->b.shader, nir_var_shader_out);
