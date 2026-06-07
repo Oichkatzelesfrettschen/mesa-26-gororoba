@@ -756,6 +756,104 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
    }
 }
 
+/* Bind the single input attachment the FS reads via the lowered subpassLoad.
+ *
+ * The NIR pass r300vk_nir_lower_subpass_input rewrites subpassLoad into a
+ * normalized texture() read: tex_coord = gl_FragCoord.xy * inv_extent, where
+ * inv_extent = {1/W, 1/H, 0, 0} sits in FS CONST[0].  This function supplies
+ * both the sampler view and the constant.
+ *
+ * inv_extent must outlive the draw_vbo call; pass a float[4] allocated in the
+ * caller's frame (r300vk_replay_draw), which matches the lifetime rule in
+ * r300vk_multitap_gather_dispatch_replay: "the float4 is consumed before this
+ * stack frame unwinds at the draw below."
+ *
+ * The collision check at pipeline compile (r300vk_compile_shader) ensures the
+ * FS cannot combine subpassInput with UBO or push_const, so FS CONST[0] is
+ * always free for inv_extent here.  A VS using push_const is still valid --
+ * r300vk_bind_push_constants set VS+FS CONST[0]; this call overrides FS CONST[0]
+ * only.  The identity sampler (NEAREST, CLAMP_TO_EDGE, normalized coords) is the
+ * correct choice because the lowered coordinate is already in [0,1].  Identity
+ * swizzle (XYZW) is used because subpassLoad returns the raw attachment value
+ * without component remapping (Vulkan spec, section "Input Attachment Reads"). */
+static void
+r300vk_bind_input_attachment(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pipeline,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds,
+                             struct r300vk_bound_textures *bound,
+                             float *inv_extent)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!binds || !pipeline)
+      return;
+
+   for (uint32_t s = 0; s < binds->set_count; s++) {
+      const struct r300vk_descriptor_set *set = binds->sets[s];
+      if (!set || !set->layout)
+         continue;
+      for (uint32_t b = 0; b < set->layout->binding_count; b++) {
+         const struct r300vk_dsl_binding *bnd = &set->layout->bindings[b];
+         if (bnd->type != VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT ||
+             bnd->binding != pipeline->fs_input_attachment_binding)
+            continue;
+
+         const unsigned unit = bnd->binding;
+         if (unit >= R300VK_MAX_FS_SAMPLER_UNITS ||
+             bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
+            return;
+
+         const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
+         VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
+         if (!iv || !iv->vk.image)
+            return;
+         if (iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
+            return;
+
+         struct r300vk_image *img =
+            container_of(iv->vk.image, struct r300vk_image, vk);
+         if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
+            return;
+
+         const enum pipe_format fmt = vk_format_to_pipe_format(iv->vk.format);
+         if (fmt == PIPE_FORMAT_NONE)
+            return;
+
+         struct pipe_sampler_view sv_templ;
+         memset(&sv_templ, 0, sizeof(sv_templ));
+         sv_templ.format    = fmt;
+         sv_templ.target    = PIPE_TEXTURE_2D;
+         sv_templ.swizzle_r = PIPE_SWIZZLE_X;
+         sv_templ.swizzle_g = PIPE_SWIZZLE_Y;
+         sv_templ.swizzle_b = PIPE_SWIZZLE_Z;
+         sv_templ.swizzle_a = PIPE_SWIZZLE_W;
+         struct pipe_sampler_view *view =
+            pipe->create_sampler_view(pipe, img->resource, &sv_templ);
+         if (!view)
+            return;
+
+         inv_extent[0] = 1.0f / (float)img->vk.extent.width;
+         inv_extent[1] = 1.0f / (float)img->vk.extent.height;
+         inv_extent[2] = 0.0f;
+         inv_extent[3] = 0.0f;
+
+         struct pipe_constant_buffer cb;
+         memset(&cb, 0, sizeof(cb));
+         cb.user_buffer = inv_extent;
+         cb.buffer_size = 4 * sizeof(float);
+         pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
+
+         pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, unit, 1,
+                                   &device->identity_map_sampler_cso);
+         pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, unit, 1, 0, &view);
+
+         bound->units[bound->count] = unit;
+         bound->views[bound->count] = view;
+         bound->count++;
+         return;
+      }
+   }
+}
+
 /* Release the transient sampler views bound for one draw.  Unbind each unit
  * first so the pipe_context drops its internal reference before the view's last
  * reference is dropped -- the identity-map teardown order. */
@@ -941,6 +1039,17 @@ r300vk_replay_draw(struct r300vk_device *device,
       struct r300vk_bound_textures bound_tex;
       r300vk_bind_descriptor_textures(device, bound_pipeline, last_bind_dsets,
                                       &bound_tex);
+
+      /* Input attachment: override FS CONST[0] with inv_extent and bind the
+       * subpass color image.  Done after r300vk_bind_descriptor_textures so
+       * it can append to bound_tex without that function resetting bound->count.
+       * ia_inv_extent lives in this frame, valid through draw_vbo below -- the
+       * same lifetime contract as r300vk_multitap_gather_dispatch_replay. */
+      float ia_inv_extent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+      if (bound_pipeline && bound_pipeline->fs_has_input_attachment)
+         r300vk_bind_input_attachment(device, bound_pipeline, last_bind_dsets,
+                                      &bound_tex, ia_inv_extent);
+
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
       r300vk_unbind_descriptor_textures(device, &bound_tex);
    }
