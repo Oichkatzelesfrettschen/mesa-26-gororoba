@@ -40,6 +40,8 @@ files_r300 = files(
   'r300_texture_desc.h',
   'r300_texture.h',
   'r300_compute_admission.c',
+  'r300_carrier_policy.c',
+  'r300_numeric_domain.c',
   'r300_transfer.c',
   'r300_transfer.h',
   'r300_vs.c',
