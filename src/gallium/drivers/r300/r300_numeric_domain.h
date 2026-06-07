@@ -35,12 +35,15 @@ extern "C" {
  * TRUNCATE is the FP24 RTZ model for out-of-window floating-point ops.
  * CLAMP is the UNORM/stencil saturation model.
  * BIASED is the 6-bit bilinear weight model whose rounding is
- * implementation-dependent within the TX hardware. */
+ * implementation-dependent within the TX hardware.
+ * RNE is round-to-nearest-even (IEEE 754 default mode), emulated in FP24
+ * via integer limb arithmetic for domains such as IEEE_FP16_VIRTUAL. */
 enum r300_rounding_model {
    R300_ROUND_EXACT,     /* no rounding: result equals the mathematical value */
    R300_ROUND_TRUNCATE,  /* truncate toward zero: FP24 RTZ out-of-window ops */
    R300_ROUND_CLAMP,     /* saturate on overflow: U8, stencil, UNORM paths */
    R300_ROUND_BIASED,    /* hardware-defined: TX 6-bit bilinear interpolation */
+   R300_ROUND_RNE,       /* round-to-nearest-even: IEEE 754 default, emulated */
 };
 
 /* Evidence tier for a domain or virtual op claim.  Tier values match the repo
@@ -154,6 +157,17 @@ enum r300_numeric_domain {
     * FLT16 remain probe targets.  Not a compute domain; a source transform
     * that feeds the PFS. */
    R300_NUM_DOMAIN_VAP_FORMAT_INGEST,
+
+   /* Virtual IEEE FP16 arithmetic emulated on the FP24 substrate.
+    * Significand multiply uses 2-limb base-64 column arithmetic: for normal
+    * FP16 inputs (a,b in [1024..2047]), split a=a1*64+a0, b=b1*64+b0;
+    * columns c0=a0*b0<=3969, c1=a0*b1+a1*b0<=3906, c2=a1*b1<=961 are all
+    * < 2^17 = 131072 (FP24 exact integer window), so each column and carry
+    * step is FP24-exact.  Rounding is RNE, extracted from the carry triple.
+    * Subnormals, NaN, Inf, and signed zero handled by an integer classifier.
+    * is_native_compute=false: FP24 hardware does not natively implement IEEE
+    * FP16 semantics (RTZ vs RNE, flush-to-zero vs subnormal diverge). */
+   R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
 
    /* Sentinel: count of domain values.  Keep last. */
    R300_NUM_DOMAIN_COUNT,

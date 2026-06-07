@@ -226,4 +226,24 @@ if with_tests
     ),
     suite : ['r300'],
   )
+
+  # CPU oracle for the virtual IEEE FP16 machine (R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL).
+  # Tests domain catalog registration, all 65536 FP16 classifications, and
+  # representative multiply pairs (2-limb base-64 vs direct reference).
+  # Hardware not run; RS482 silicon probing is the next gate.
+  test(
+    'r300-fp16-limb-oracle',
+    executable(
+      'r300_fp16_limb_oracle',
+      files('compiler/tests/r300_fp16_limb_oracle.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
 endif
