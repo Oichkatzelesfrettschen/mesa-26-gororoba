@@ -93,6 +93,11 @@ calc_line(nir_builder *b)
 static void *
 mc_create_fs(struct vl_mc *r, nir_builder *b)
 {
+   /* Lower deref-combined samplers to indexed form so nir_shader_gather_info
+    * fills textures_used/samplers_used correctly before the shader reaches
+    * the driver; without this, tgsi_scan rejects the resulting TGSI because
+    * two instructions address the same sampler with different texture targets. */
+   NIR_PASS(_, b->shader, nir_lower_samplers);
    nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
    nir_assign_io_var_locations(b->shader, nir_var_shader_in);
    nir_assign_io_var_locations(b->shader, nir_var_shader_out);
