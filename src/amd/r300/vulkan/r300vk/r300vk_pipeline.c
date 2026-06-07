@@ -2287,14 +2287,11 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
                        i);
 
-   if (!adm.admissible)
-      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: compute kernel %u rejected by the RS482 "
-                       "substrate classifier (%s: %s -- %s)", i,
-                       r300_compute_reject_name(adm.reason),
-                       adm.detail ? adm.detail : "unsupported construct",
-                       r300_compute_reject_substrate_absence(adm.reason));
-
+   /* Kernels the RS482 substrate classifier cannot map to a raster pattern are
+    * still valid VkPipeline objects.  vkCreateComputePipelines does not permit
+    * VK_ERROR_FEATURE_NOT_PRESENT; the dispatch path returns
+    * VK_ERROR_OUT_OF_DEVICE_MEMORY for inadmissible pipelines dispatched at
+    * replay time, keeping the object lifecycle correct. */
    struct r300vk_pipeline *pl =
       vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pl), 8,
                  VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
