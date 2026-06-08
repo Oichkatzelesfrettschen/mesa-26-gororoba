@@ -22,20 +22,23 @@ Current verified state:
   family selected by the Makefile-generated Meson native overlay.
 - Warm profile: `build-infra/configs/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson`.
 - Pump profile: removed upstream (distcc-pump is incompatible with ccache; use warm lane).
+  Any distcc-pump details later in this document are historical-only; the pump
+  lane is not an active workflow -- follow the warm (ccache-first) lane above.
 - Default install prefix: `/opt/local/mesa-<profile>`.
   Pass `PREFIX=/opt/local/mesa-26-gororoba` only when intentionally
   installing into the shared active tree.
 
-The no-Rusticl profile enables the daily Terakan/r600 lane:
+The no-Rusticl profile (5_) enables the daily Terakan/r600 release lane (its
+option set, matching configs/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson):
 
-- `gallium-drivers=[r600]`
+- `gallium-drivers=[r600, zink, softpipe, llvmpipe]`
 - `vulkan-drivers=[amd_terascale]`
 - `gallium-rusticl=false`
 - `amd-use-llvm=true`
 - `gallium-extra-hud=true`
-- `glx=auto`
-- `buildtype=debug`
-- `b_ndebug=false`
+- `glx=dri`
+- `buildtype=release`
+- `b_ndebug=true`
 
 Use the build-infra native file, not the legacy `/tmp/distcc-wrap` native files.
 The canonical split is:

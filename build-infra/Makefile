@@ -29,7 +29,12 @@ SHELL := /bin/bash
 
 # --- configurable parameters -------------------------------------------------
 PROFILE  ?= 1_r300_full_release_x86_64v1-clang22-distcc-cache
-HOSTENV  ?= btver1
+# Default HOSTENV must match the default PROFILE's lane.  The default profile is
+# the numbered r300 vostro release (clang22), so the default env is the vostro
+# clang22 env, not the x130e btver1 env -- otherwise a bare `make configure`
+# builds the r300 vostro profile with -march=btver1 and no LLVM-22 pin.  x130e
+# terakan lanes (profiles 3_-6_) pass HOSTENV=btver1* explicitly.
+HOSTENV  ?= vostro1000-x86-64-v1-clang22-ccache-distcc
 BUILDDIR ?= $(abspath $(CURDIR)/../build/mesa-$(PROFILE))
 INSTALL_NAMESPACE ?= mesa
 # Keep profile lanes isolated by default because meson install does not remove
@@ -144,7 +149,7 @@ list:
 
 vostro-prefix-check:
 	@case "$(PROFILE):$(PREFIX)" in \
-		r300*-vostro-*:/usr/local/mesa-26-gororoba*) \
+		[12]_r300_*:/usr/local/mesa-26-gororoba*|r300*-vostro-*:/usr/local/mesa-26-gororoba*) \
 			echo "Vostro r300/r300vk profiles install under /opt/local/mesa-26-gororoba*; refusing PREFIX=$(PREFIX)" >&2; \
 			exit 2 ;; \
 	esac
