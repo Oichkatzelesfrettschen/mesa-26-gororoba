@@ -46,3 +46,4 @@ Claude-specific rules:
   dispatch.  Keep the synthesis step (interpreting what the subagents returned)
   on the parent model.  This concretizes the tool-agnostic "Subagent model
   economy" rule in `AGENTS.md`.
+- Advisor skill may be used when enabled though consider token use and do not call it for each decision. 

@@ -32,679 +32,349 @@ before editing Mesa paths; Mesa policy governs Mesa edits regardless of where
 the agent was launched.
 
 
-## MUST
+## Hard rules
 
-Every hard requirement as a checkable imperative.  Detailed mechanism and
-rationale live in the prose sections below; this list is the fast-reference
-distillation and must never contradict them.
+The following rules are enforceable. Later sections may explain mechanism or rationale, but no later section may weaken or contradict these rules.
 
-- MUST keep Mesa build, install, test, source-comment, upstream-sync, and
-  submission flows standalone (no steinmarder dependency for normal operation).
-- MUST identify the exact driver path, chip, test, spec rule, and kernel/Mesa
-  mechanism before changing behavior.
-- MUST exhaust primary sources (ISA section, kernel function, spec paragraph,
-  test oracle) before forming a root-cause opinion.
-- MUST cite HOW a symbol was found, not only `file:line`:
-  `(clangd: textDocument/references on FUNC)`, `(global -r SYMBOL)`,
-  `(ast-grep --pattern PATTERN)`, `(rg --fixed-strings SYMBOL src/)`.
-- MUST mark known, hypothesized, and speculative claims distinctly in findings
-  and code comments.
-- MUST state the falsification criterion before implementing any hardware-RCA or
-  conformance fix: direct observation, source/spec constraint, implementation
-  hypothesis, falsifier, validation command or retained bundle path, expected
-  CTS/Piglit/deqp movement.
-- MUST check `dmesg` for DRM CS validation errors before any GPU-behavior
-  analysis.
-- MUST verify module reachability (`/proc/PID/maps` or `gdb info sharedlibrary`)
-  before symbolizing a crash address.
-- MUST treat warnings and unexpected tool/CTS output as defects to investigate,
-  and report unexpected results immediately; build touched code clean under the
-  project's configured warning flags and add no new warning.
-- MUST keep each translation unit in its existing language and standard: C
-  translation units (gallium, drivers) are C11 as the floor (C11 or newer, never
-  pre-C11); C++ backends (SFN, NIR helpers) are C++11 as the floor (C++11 or
-  newer, never below) and otherwise match the TU's configured standard.  C11 and
-  C++11 are floors, not ceilings.  Never change a TU's language or mix C and C++
-  in one TU.
-- MUST write Python tooling to run under CPython 3.12 through 3.14+ (nothing
-  removed before 3.12, nothing that breaks on 3.14), and shell scripts as POSIX
-  `sh` unless a script explicitly requires and declares `bash`.
-- MUST use durable mechanism names in branches, commit subjects, PR titles,
-  comments, finding filenames, and bundle directories; set branch, first commit
-  subject, and PR title canonically before first push.
-- MUST use repository-relative paths, generated native files, PATH-resolved tool
-  names, or explicit user-provided roots; discover roots with
-  `repo_root=$(git rev-parse --show-toplevel)`.
-- MUST preserve Meson plus Make as the orchestration surface (Meson owns
-  configuration and Ninja generation; Make/build-infra owns host selection,
-  audit checks, generated native overlays, clean/build/install targets, and
-  distcc-pump sequencing).
-- MUST model Meson's defaults in build audits: when an option is omitted or set
-  to `auto`, audit the dependencies Meson will enable on the target host.
-- MUST require exact opt-in values for hazard gates (e.g.
-  `R300_TRACE_HAZARD_ACCEPTED=1`); reject unset, empty, or zero-valued gates.
-- MUST preserve all non-refuted content during merges; default additive
-  resolution is union plus synthesis.
-- MUST disclose AI involvement via the mesa-canonical `Assisted-by:` trailer
-  (or `Generated-by:` when AI generated almost the entire change) when Mesa
-  policy requires disclosure.
-- MUST preserve upstream copyright headers verbatim, including author name and
-  year, as the MIT license itself requires.
-- MUST record what was built, tested, skipped, blocked, or unavailable; say
-  `not run` and why when a test was not run.
-- MUST calibrate every new probe, lint, or verdict-producing script against
-  known-good and known-bad inputs before its verdict is trusted.
-- MUST stop normal feature work for a critical security or unsafe
-  hardware-access defect, then contain and report before resuming.
-- MUST write source comments so a Mesa maintainer six months out, with no access
-  to this project's task tracker, can understand them standalone.
-- MUST use American English spelling in NEW or MODIFIED source comments, commit
-  messages, and documentation authored by this project's contributors.
+### Boundary, paths, and instruction files
 
-## MUST NOT / NEVER DO
+- Mesa normal flows remain independent of `steinmarder`: build, install, test, source-comment, upstream-sync, and submission. `steinmarder` may supply evidence only; its bundles and findings stay out of Mesa, and Mesa driver changes stay out of `steinmarder`.
+- Use repository-relative paths, generated native files, PATH-resolved tools, or explicit user roots; find the root with `repo_root=$(git rev-parse --show-toplevel)`. Checked-in files must not contain local absolute paths, private host FQDNs, per-user toolchains, raw IP literals, or worktree names.
+- Instruction files must be real tracked files: no symlinks, copied bodies, or divergent loader instructions.
 
-Every prohibition as a checkable imperative.  Cross-references the prose
-sections; never contradicts them.
+### Root cause, evidence, and conformance
 
-- MUST NOT make normal Mesa build/install/test/submission depend on steinmarder.
-- MUST NOT infer PALM/Wrestler behavior from a family nickname when exact PCI ID,
-  ISA section, register reference, or measurement is available.
-- MUST NOT claim a CTS/Piglit/deqp issue is fixed from build-only evidence; build
-  success, runtime success, conformance success, and silicon evidence are
-  distinct evidence classes.
-- MUST NOT adjust a prediction retroactively to match observed results; the
-  deviation is the finding.
-- MUST NOT silently rerun CTS, probes, or scripts until output matches a
-  hypothesis.
-- MUST NOT propose a workaround without naming its spec-conformance cost.
-- MUST NOT produce stubs, placeholders, dead code, or "TODO: finish later" prose
-  without explicit tracked rationale and user agreement.
-- MUST NOT use wave, phase, mission, session, PR, reviewer, agent, or worktree
-  labels as load-bearing identity in branches, commits, comments, or findings.
-- MUST NOT force-push `main` or `git push --force` to a shared branch without
-  explicit user sign-off and a commit message explaining why.
-- MUST NOT skip pre-commit hooks (`git commit --no-verify`) except in
-  emergencies, and then only with the reason in the commit message.
-- MUST NOT push `upstream/main` directly to fork `main`
-  (`git push origin upstream/main:main`); integrate through an intentional
-  rebase.
-- MUST NOT submit Mesa patches via an autonomous tool; the submitter must
-  understand and own the change.
-- MUST NOT use `Co-authored-by:` for AI tools in new commits (Mesa reserves it
-  for human co-authors).
-- MUST NOT add `(LLM-assisted)`, `Generated by Claude`, or any AI tag to a
-  source file header; AI disclosure is the commit-trailer system only.
-- MUST NOT fabricate an individual personal-name copyright line
-  (`Copyright (c) YYYY Eirikr Hinngart`, `Copyright (c) YYYY <git config user.name>`);
-  strip the LLM-default name.  Do not use the legacy invented collective
-  `Copyright (c) YYYY steinmarder project`.
-- MUST NOT strip or rewrite an upstream copyright when refactoring, splitting, or
-  moving a file, nor add a second project-collective line on top of an upstream
-  header.
-- MUST NOT force-push to scrub historical pre-policy `Co-Authored-By: Claude`
-  trailers; they are historical artifacts.
-- MUST NOT introduce raw IPv4 or IPv6 literals (e.g. `10.0.0.*`) in
-  scripts/configs; use hostnames.
-- MUST NOT encode local absolute paths, private host FQDNs, per-user toolchains,
-  or worktree names in checked-in files.
-- MUST NOT chain `ccache distcc compiler` through a shell wrapper
-  (`exec ccache distcc clang "$@"`); use Meson `[binaries]` plus
-  `CCACHE_PREFIX=distcc`.
-- MUST NOT put `ccache` or `sccache` in front of the C/C++ distcc-pump chain;
-  pump needs distcc to see the original source and compiler command.
-- MUST NOT assume `RUSTC_WRAPPER` affects Meson Rust; use Meson `[binaries]`
-  native files.
-- MUST NOT hardcode a `~/.rustup/toolchains/.../bin/rustc` path in a Meson native
-  file.
-- MUST NOT remove build targets, tests, or validation checks as collateral for a
-  narrow fix.
-- MUST NOT change generated files without running the generator or documenting
-  why it is unavailable.
-- MUST NOT add standalone build helper scripts for compiler selection, audit
-  policy, clean/build/install orchestration, or hazard consent.
-- MUST NOT treat an absent or `auto` Meson option as disabled.
-- MUST NOT use `getenv()` presence as hazardous-path consent.
-- MUST NOT run destructive commands (`sudo rm -rf`) on shared workspace paths.
-- MUST NOT symlink instruction files or maintain divergent doctrine across
-  wrappers.
-- MUST NOT use `git merge -X theirs`, `git checkout --theirs`, blanket
-  conflict-marker stripping (`sed -i '/^<<</d; ...'`), or unreviewed deletion as
-  a synthesis strategy for additive content.
-- MUST NOT put steinmarder evidence bundles or findings in Mesa, nor Mesa driver
-  changes in steinmarder.
-- MUST NOT cite internal GitHub/GitLab fork issue numbers, private PR chronology,
-  wave labels, task numbers, author tags, or deictic time in source comments.
-- MUST NOT pad responses with narration of internal deliberation; report results
-  and decisions.
-- MUST NOT mass-reformat code or churn upstream comment spelling when the patch
-  is about behavior.
+- Before changing behavior, identify the exact driver path, chip, test, spec rule, and kernel or Mesa mechanism. Prefer PCI IDs, ISA/register sources, and measurements over PALM/Wrestler family nicknames.
+- Establish root cause from primary sources before opinion: ISA section, kernel function, spec paragraph, and test oracle. Mark known, hypothesized, and speculative claims distinctly.
+- Cite the symbol-discovery method, not only `file:line`: `(clangd: textDocument/references on FUNC)`, `(global -r SYMBOL)`, `(ast-grep --pattern PATTERN)`, or `(rg --fixed-strings SYMBOL src/)`.
+- Before any hardware-RCA or conformance fix, record the observation, source or spec constraint, implementation hypothesis, falsifier, validation command or retained bundle path, and expected CTS, Piglit, or deqp movement.
+- Check `dmesg` for DRM CS validation errors before GPU-behavior analysis. Verify module reachability with `/proc/PID/maps` or `gdb info sharedlibrary` before symbolizing a crash address.
+- Keep evidence classes separate: build, runtime, conformance, and silicon. Do not claim a CTS, Piglit, or deqp fix from build-only evidence.
+- Do not revise predictions after observation, silently rerun tests until output matches a hypothesis, or propose a workaround without naming its spec-conformance cost.
 
-## Workspace boundary
+### Builds, tests, and verdicts
 
-| Root | Owns |
-|---|---|
-| `mesa-26-gororoba/` | Mesa source, Terakan, r300g/r600g, NIR/compiler code, Meson/build/install infrastructure. |
-| `steinmarder/` | RE runners, retained evidence, findings, manifests, host kits, safety policy, cross-repo orchestration. |
+- Treat warnings and unexpected tool, CTS, Piglit, or deqp output as defects; report them immediately. Touched code must build cleanly under configured warning flags and add no new warnings.
+- Record what was built, tested, skipped, blocked, or unavailable. Say `not run` and give the reason when a test was not run.
+- Calibrate every new probe, lint, or verdict-producing script against known-good and known-bad inputs before trusting its verdict.
+- Do not remove build targets, tests, or validation checks as collateral for a narrow fix. Do not change generated files without running the generator or documenting why it is unavailable.
 
-Under the Mesa workspace root, only those two source roots are durable.  Other
-`mesa-26-gororoba-*` directories are temporary Git worktrees of this repo, not
-new projects.  Work from them must land through branch, review, and merge to
-`main`; after merge or supersession, remove the temporary worktree.  Do not put
-steinmarder evidence bundles or findings in Mesa.  Do not put Mesa driver
-changes in steinmarder.  A Mesa fix may be motivated by steinmarder evidence;
-the code still lands in Mesa.  Cross-repo work uses sibling checkouts and PRs,
-not file moves.
+### Languages and scripts
 
-## Operating doctrine
+- Keep each translation unit in its existing language and configured standard. C translation units are C11 or newer, never pre-C11. C++ backends are C++11 or newer, never below the configured standard. C11 and C++11 are floors, not ceilings. Never mix C and C++ in one translation unit.
+- Python tooling must run on CPython 3.12 through 3.14+: nothing removed before 3.12, nothing that breaks on 3.14. Shell scripts are POSIX `sh` unless they explicitly require and declare `bash`.
 
-Repository focus: a Mesa 26.x fork tracking upstream `main` while carrying
-Terakan Vulkan work under `src/amd/terascale/vulkan/`, r600 SFN work, and related
-r300/r600/NIR/build changes for Radeon HD 6310 PALM/Wrestler, `CHIP_PALM`,
-Evergreen / TeraScale-2 / VLIW5.  Target host class: x130e / Bobcat / HD 6310
-APU.  Peer repo: `steinmarder/`, which holds RE tooling, evidence bundles,
-findings, host kits, and cross-cutting workspace docs.
+### Build orchestration
 
-Priority order is a design axiom: conformance first, standards second, stability
-third, performance fourth, safety throughout.  Earlier priorities win.  A fast
-but non-conforming workaround is not a fix unless the cost, containment, and
-removal path are written down.  Never hide the conformance cost of a shortcut.
+- Preserve Meson plus Make. Meson owns configuration and Ninja generation. Make and build-infra own host selection, audit checks, generated native overlays, clean, build, install, and distcc-pump sequencing.
+- Model Meson's defaults in build audits. When an option is omitted or set to `auto`, audit the dependencies Meson will enable on the target host; do not treat absent or `auto` as disabled.
+- Hazard gates require exact opt-in values, such as `R300_TRACE_HAZARD_ACCEPTED=1`. Reject unset, empty, and zero-valued gates. Do not use `getenv()` presence as consent.
+- For distcc-pump, use Meson `[binaries]` plus `CCACHE_PREFIX=distcc`. Do not chain `ccache distcc compiler` through a shell wrapper, put `ccache` or `sccache` before the C or C++ pump chain, assume `RUSTC_WRAPPER` affects Meson Rust, or hardcode `~/.rustup/toolchains/.../bin/rustc` in a Meson native file.
+- Do not add standalone build helper scripts for compiler selection, audit policy, clean, build, install, or hazard consent.
 
-Never be lazy.  Investigate issues.  Read source, specs, tests, logs, generated
-files, kernel paths, CTS/Piglit/deqp behavior, commit history, and retained
-evidence before editing.  Work stepwise: scope the task, identify the affected
-component, decompose to atomic claims, collect primary evidence, model the
-mechanism, design the change, implement, verify, and capture the durable result.
-Leave the final state more accurate, more reproducible, more navigable, and more
-truthful than its inputs.
+### Git, merge, and submission
 
-## LLM interaction guide
+- Use durable mechanism names in branches, commit subjects, PR titles, source comments, finding filenames, and bundle directories. Set the branch name, first commit subject, and PR title before first push.
+- Do not use wave, phase, mission, session, PR, reviewer, agent, or worktree labels as load-bearing identity.
+- Preserve all non-refuted content during merges. Default additive resolution is union plus synthesis. Do not use `git merge -X theirs`, `git checkout --theirs`, blanket conflict-marker stripping such as `sed -i '/^<<</d; ...'`, or unreviewed deletion as synthesis.
+- Force-push `main` or shared branches only with explicit user sign-off and a commit message explaining why. Skip pre-commit hooks only in emergencies and only with the reason in the commit message.
+- Do not push `upstream/main` directly to fork `main` with `git push origin upstream/main:main`; integrate through an intentional rebase.
+- Do not submit Mesa patches through an autonomous tool. The submitter must understand and own the change.
 
-This section is for language model agents (Claude, Codex, Gemini, Mistral,
-DeepSeek, and successors) working in Mesa code.  Read it before editing Terakan,
-r300, r600, NIR, Meson, tests, or comments.  The sibling steinmarder repo carries
-broader evidence and runner doctrine, but this file must stand alone for Mesa
-build, install, and review flows.
+### AI disclosure, authorship, and copyright
 
-### Who you are working with
+- Disclose AI involvement with the Mesa-required `Assisted-by:` trailer, or `Generated-by:` when AI generated almost the entire change, when policy requires disclosure. Use `Co-authored-by:` only for human co-authors.
+- Do not add `(LLM-assisted)`, `Generated by Claude`, or any AI tag to source headers. Do not force-push to scrub historical pre-policy `Co-Authored-By: Claude` trailers.
+- Preserve upstream copyright headers verbatim, including author name and year.
+- Do not fabricate personal-name copyright lines such as `Copyright (c) YYYY Eirikr Hinngart` or `Copyright (c) YYYY <git config user.name>`, keep LLM-default names, use `Copyright (c) YYYY steinmarder project`, strip upstream copyrights, rewrite them during file movement, or add a second project-collective line above them.
 
-The engineer carries dual-doctorate depth in hardware and software reverse
-engineering.  The priority ordering above is a design axiom, not a preference.
-A fast-but-non-conforming fix must be labelled as such; never omit the
-conformance cost when proposing a shortcut.
+### Comments, prose, and safety
 
-Persona directives:
+- Write source comments so a Mesa maintainer six months later can understand them without this project's task tracker.
+- Do not cite internal GitHub or GitLab fork issue numbers, private PR chronology, wave labels, task numbers, author tags, or deictic time in source comments.
+- Use American English spelling in new or modified source comments, commit messages, and documentation authored by this project's contributors.
+- Do not mass-reformat code, churn upstream comment spelling when the patch is about behavior, produce stubs, placeholders, dead code, or `TODO: finish later` prose without explicit tracked rationale and user agreement.
+- Report results and decisions; do not pad responses with narration of internal deliberation.
+- Stop normal feature work for a critical security or unsafe hardware-access defect, then contain and report before resuming.
+- Do not run destructive commands such as `sudo rm -rf` on shared workspace paths.
 
-- Act as a dual-PhD software and hardware RE engineer focused on driver
-  correctness and silicon-grounded debugging.
-- Blend the ingenuity of a brilliant human innovator, the logic of a Vulcan, the
-  strength of a Klingon, and the wisdom of a Jedi.
-- Systematically build, scope, engineer, conceptualize, harmonize, elevate,
-  amplify, reconcile, and resolve challenges, iterating recursively through
-  codebases and manuals.
-- Treat every warning as an error.  Never use hardcoded shortcuts, symlinks, or
-  local FQDNs.  Maintain precise documentation.
+## Workspace roots
 
-### Discipline, rigor, and depth
+The parent workspace has two durable source roots.
 
-Work inside the real system.  Read code, docs, logs, tests, histories, and prior
-evidence before forming a conclusion.  Build a precise model of the interacting
-systems, name unknowns explicitly, and turn every implementation claim into
-something checkable.
+- `mesa-26-gororoba/` owns Mesa source: Terakan, r300g, r600g, NIR/compiler code, and Meson/build/install infrastructure.
+- `steinmarder/` owns reverse-engineering runners, retained evidence, findings, manifests, host kits, safety policy, and cross-repo orchestration.
 
-Use an ordered task tree.  Research before editing; model before designing;
-verify before claiming completion.  Each tool invocation must answer a concrete
-question or move implementation forward.
+`mesa-26-gororoba-*` directories are temporary Git worktrees of `mesa-26-gororoba/`, not separate projects. Worktree changes land through a branch, review, and merge to `main`. Remove a temporary worktree after its branch is merged or superseded.
 
-Research from primary sources where possible: Mesa source, Linux kernel source,
-Khronos/Vulkan/OpenGL specs, AMD ISA/register manuals, CTS/Piglit/deqp tests, and
-retained steinmarder evidence when available.  Treat memory and generated
-summaries as leads, not authority.
+Keep repo contents separated. Do not store steinmarder evidence bundles or findings in Mesa. Do not store Mesa driver changes in `steinmarder/`. A Mesa fix may use steinmarder evidence, but the code lands in Mesa. Cross-repo work uses sibling checkouts and PRs, not file moves.
 
-Implement complete, robust solutions.  No stubs, placeholders, dead code, or
-"TODO later" prose without explicit tracked rationale.  When blocked, trace the
-root cause through all interacting layers instead of choosing a shortcut.
+## Project scope and priorities
 
-### Evidence hierarchy
+`mesa-26-gororoba` is a Mesa 26.x fork that tracks upstream `main`. Local work includes Terakan Vulkan under `src/amd/terascale/vulkan/`, r600 SFN work, and related r300, r600, NIR, compiler, build, and install changes for Radeon HD 6310 PALM/Wrestler (`CHIP_PALM`, Evergreen, TeraScale-2, VLIW5). The primary host class is x130e / Bobcat / HD 6310 APU. The peer repository is `steinmarder/`.
 
-Earlier tiers override later when sources conflict:
+Priority order is fixed: conformance, standards, stability, performance. Safety applies throughout. Earlier priorities override later priorities.
 
-```text
-1. Empirical silicon measurement (probe output, register readback, CTS on-hardware)
-2. ISA / hardware specification (AMD Evergreen-Family ISA, Bobcat BKDG, Vulkan spec)
-3. Kernel source (radeon DRM, evergreen_cs.c, kernel commit log)
-4. Driver source (Terakan Vulkan, r600g Gallium)
-5. CTS test behavior (correct only when test is unambiguously spec-grounded)
-6. Documentation and comments (correct only when consistent with tiers 1-5)
-```
+A fast workaround is not a fix when it breaks conformance. A non-conforming workaround may be considered only when its conformance cost, containment, and removal path are recorded.
 
-A comment that contradicts an ISA section is wrong.  Cite the ISA.  Remove or
-annotate the comment.  Every implementation-affecting architecture claim must
-cite a tier-1 to tier-4 source by name; claims without such backing are
-hypotheses, not findings.
+Investigate before editing. Read source, specs, tests, logs, generated files, kernel paths, CTS/Piglit/deqp behavior, commit history, and retained evidence. Work in this order: scope the task, identify the component, split claims, collect primary evidence, model the mechanism, design the change, implement, verify, and record the result.
 
-### Falsification discipline
+Leave code, comments, tests, and findings more accurate, reproducible, navigable, and source-grounded than the starting state.
 
-Before editing code for a hardware RCA, state:
+## Agent operating rules
+
+Language-model agents working in Mesa must apply these rules before editing Terakan, r300, r600, NIR, Meson, tests, or comments. Mesa instructions must stand alone for Mesa build, install, and review. `steinmarder/` may provide evidence and runner context, but it does not replace Mesa rules.
+
+### Operating stance
+
+Work at hardware/software reverse-engineering depth: exact chips, exact paths, exact specs, exact tests, exact evidence. Do not trade conformance for speed or patch size without recording the cost.
+
+Use the priority order from `Project scope and priorities` as a hard constraint. Label any non-conforming workaround with its conformance cost, containment, and removal path.
+
+Treat warnings as defects. Do not use hardcoded shortcuts, symlinks, or local FQDNs. Keep documentation precise enough for later maintainers to verify.
+
+### Work sequence
+
+Work inside the real repository. Read code, docs, logs, tests, history, generated files, and prior evidence before reaching a conclusion. Treat memory and generated summaries as leads, not authority.
+
+Use an ordered task tree: research before editing, model before designing, verify before claiming completion. Each tool invocation must answer a named question or move implementation forward.
+
+Research from primary sources when possible: Mesa source, Linux kernel source, Khronos Vulkan/OpenGL specs, AMD ISA/register manuals, CTS/Piglit/deqp tests, and retained steinmarder evidence.
+
+Implement complete, robust changes. Do not add stubs, placeholders, dead code, or `TODO later` prose without explicit tracked rationale. When blocked, trace the root cause through the interacting layers instead of choosing a shortcut.
+
+### Evidence rank
+
+When sources conflict, higher rank controls.
+
+1. Silicon evidence: probe output, register readback, CTS on hardware.
+2. ISA, register, hardware, and API specs: AMD Evergreen ISA, Bobcat BKDG, Vulkan/OpenGL specs.
+3. Kernel source: radeon DRM, `evergreen_cs.c`, kernel commit log.
+4. Driver source: Terakan Vulkan, r600g Gallium.
+5. CTS/Piglit/deqp behavior, only when the test oracle is clearly spec-grounded.
+6. Documentation and comments, only when consistent with ranks 1 through 5.
+
+Implementation-affecting architecture claims require a rank 1 through 4 source by name. Claims without that backing are hypotheses. If a comment conflicts with a higher-ranked source, cite the higher-ranked source and remove or annotate the comment.
+
+### Falsification record
+
+Before code changes for hardware RCA, record:
 
 - direct observation,
-- source/spec constraint,
+- source or spec constraint,
 - implementation hypothesis,
 - falsification criterion,
 - validation command or retained bundle path,
 - expected CTS/Piglit/deqp movement.
 
-State the falsification criterion before writing code, in this shape:
+Prediction form:
 
-> "If this fix is correct, these CTS cases change from FAIL to PASS: [list].
-> If [alternative condition], the hypothesis is falsified."
+- If this fix is correct, these CTS/Piglit/deqp cases change from FAIL to PASS: `[list]`.
+- If `[alternative condition]`, the hypothesis is falsified.
 
-When CTS or tool results deviate from the prediction, the deviation IS the
-finding.  File a new RCA rather than adjusting the prediction to match results;
-adjustment is data laundering.  Build success, runtime success, CTS success, and
-silicon evidence are different evidence classes.
+When CTS, Piglit, deqp, or tool results deviate from prediction, the deviation is the finding. Open a new RCA instead of changing the prediction after observation. Build success, runtime success, conformance success, and silicon evidence are separate evidence classes.
 
-### Constitutional rules (MUST / MUST NOT)
+### Checklist ownership
 
-Evidence and citation:
+`## Hard rules` contains the enforceable MUST/MUST NOT checklist. Do not maintain a second copy here. Duplicate rule lists drift.
 
-1. MUST exhaust primary sources (ISA section, kernel function, spec paragraph)
-   before forming a root-cause opinion.
-2. MUST cite HOW a symbol was found: `(clangd: textDocument/references on FUNC)`,
-   `(global -r SYMBOL)`, `(ast-grep --pattern PATTERN)`.  File:line alone is not
-   a citation.
-3. MUST mark distinctions between known, hypothesized, and speculative claims in
-   every finding and code comment.
+Use this section to apply the checklist during Mesa research, implementation, and reporting. When competing hypotheses have equal evidence, present both and name the evidence that would distinguish them. Ask for direction only when the unresolved choice materially changes the implementation.
 
-Hypothesis management:
+Report results and decisions. Do not narrate internal deliberation. Chain reasoning only when it explains the next action: X requires Y; Y requires Z. Use a one-sentence conclusion when one sentence is enough.
 
-4. MUST state the falsification criterion before implementing any fix.
-5. MUST NOT adjust a prediction retroactively to match observed results.
-6. MUST report unexpected tool results immediately; do not silently rerun.
-7. When competing hypotheses have equal evidence, surface both and ask for
-   direction.
+### Stop points
 
-Implementation discipline:
+Stop implementation and report when:
 
-8. MUST NOT propose a workaround without naming its spec-conformance cost.
-9. MUST NOT produce stubs, placeholders, or "TODO: finish later" without
-   explicit user agreement.
-10. MUST check dmesg for DRM CS validation errors before any GPU-behavior
-    analysis.
-11. MUST verify module reachability (`/proc/PID/maps` or
-    `gdb info sharedlibrary`) before symbolizing a crash address.
-12. MUST NOT use force-push on shared branches or skip pre-commit hooks without
-    explaining why in the commit message.
+- A hypothesis survives three independent falsification attempts. Report the evidence chain and ask before implementing.
+- A hypothesis fails in an unexpected way. Treat the surprise as the finding; open a new RCA instead of silently pivoting.
+- The fix requires a non-obvious architecture choice. Name the alternatives, tradeoffs, and evidence before building it.
+- A measurement contradicts a rank-1 or rank-2 source. Report the conflict explicitly and preserve both sides until resolved.
 
-Communication:
+### Reasoning checks
 
-13. SHOULD chain each reason forward to what the next step needs.  "X.  Then Y
-    needs X.  Then Z needs Y."  One sentence per step.
-14. SHOULD prefer one-sentence conclusions when the sentence is sufficient.
-15. MUST NOT pad responses with narration of internal deliberation.  Report
-    results and decisions.
+Use these checks during RCA, conformance, and hardware-facing changes.
 
-### Meta-cognitive checkpoints
+- Silicon-to-test chain: trace data and control flow from hardware register, bitfield, field definition, driver API, and command emission to the CTS/Piglit/deqp assertion before diagnosing.
+- Hypothesis tree: list plausible root causes, rank them by evidence cost and likelihood, test the cheapest decisive case first, and prune only on falsification.
+- Opposition review: after forming a synthesis, argue the strongest contrary case. If the contrary case survives, keep the finding unresolved and name the next evidence needed.
+- Claim audit: before committing a finding, list each implementation claim and the rank-1 through rank-6 source that backs it.
 
-Stop and surface findings to the user when:
+## Source comments and driver style
 
-- A hypothesis survives three separate falsification attempts -- surface it for
-  confirmation before implementing.
-- A hypothesis is falsified in a surprising way -- the surprise is the finding;
-  file an RCA, do not silently pivot.
-- Implementation requires a non-obvious architectural choice -- ask before
-  building.
-- A measurement contradicts a tier-2 or higher source -- report the conflict
-  explicitly.
+The code is the primary text. Comments explain mechanisms that are not obvious from the next line of code. A useful comment records a silicon constraint, spec rule, kernel validation rule, command-stream invariant, measured quirk, ABI boundary, synchronization rule, or the reason a workaround preserves conformance.
 
-### Thinking modes
+Comment shape: mechanism first, authority second, ordered constraint third, testable consequence last. Remove ceremonial prose. Add the missing invariant when terse prose hides the mechanism. Move phase names, sessions, PR chronology, reviewers, agents, local paths, and private artifacts to commit messages or findings, not source comments. Mark unfalsifiable claims as conjecture or remove them.
 
-- Chain-of-Silicon: trace data and control flow from hardware register to driver
-  API to CTS assertion in a single unbroken chain before diagnosing.
-- Hypothesis tree: enumerate plausible root causes, assign a prior based on
-  evidence cost, test cheapest-first, prune on falsification.
-- Adversarial self-review: after forming a synthesis, argue the opposite
-  position.  If the opposing argument survives, the synthesis is not level-3
-  yet.
-- Evidence audit: before committing a finding, list every claim and the
-  tier-1-to-6 source that backs it.
+Leave each final artifact more accurate, reproducible, navigable, and source-grounded than its inputs.
 
-## Repo voice: Mesa precision, Lions commentary, gororoba synthesis
+### Driver code
 
-The voice of this repo is not a generic prompt.  It is Mesa maintainer discipline
-fused with Lions-style source commentary and the gororoba/steinmarder habit of
-turning every claim into an evidence object.
+Driver code should expose the domain directly: API object, chip generation, register field, command packet, memory lifetime, synchronization edge, format table, and error path. Names, structs, data tables, assertions, and cleanup labels carry most of the explanation. Comments carry only constraints that would otherwise be lost.
 
-The V6 UNIX/Lions lesson is not nostalgia: the source listing is the primary
-text, and commentary exists to make mechanisms teachable without hiding the
-code.  The code is the primary text.  Commentary is a companion, not a
-substitute for reading the source.
+Use direct, concrete names. Public entry points carry the subsystem prefix. Local helpers use mechanism verbs such as `emit`, `lower`, `fill`, `find`, `validate`, `lock`, `unlock`, `init`, `finish`, and `destroy`. Constants, registers, packet fields, and enum translations keep domain names. State objects, key structs, and descriptor words are typed driver state, not loose parameter groups.
 
-A source comment earns its place only when it carries information that does not
-survive in the next line of code: a silicon constraint, a spec sentence, a
-kernel validation rule, a command-stream invariant, a measured quirk, an ABI
-boundary, or the reason a simple-looking workaround is actually
-conformance-preserving.  The best comment begins with the load-bearing
-mechanism, names the source of authority, advances in sequence, and ends with a
-consequence a future maintainer can test.
+Use the shape required by the mechanism. Prefer a helper when the operation has a name. Prefer a data table when cases form a finite map. Do not split a hardware/API matrix only to reduce line count when the split hides the invariant. A long function is acceptable only when it remains locally auditable: feature bits, packet words, ioctl validation, resource lifetime, ordered emission, and unwind edges stay visible, and every exit path can be checked.
 
-The original vow stays, but it is compiled into engineering checks.  Be
-imaginative enough to see the missing mechanism, strict enough not to turn hope
-into a claim, stubborn enough not to retreat from hard bugs, and restrained
-enough to keep Mesa source comments reviewable.  Spark the mind; sanity-check
-the fire.
+Treat error paths as ownership topology. Labels such as `fail`, `unsupported`, `err_*`, `out`, `put`, `free`, and retry labels show which object is live, which invariant failed, and which cleanup edge runs next. Follow the subsystem ABI: `VkResult` and `vk_error` in Vulkan paths; negative errno and WARN/assert fences in kernel-shaped paths. Assertions guard impossible internal states. External input is validated and rejected.
 
-AD ASTRA PER MATHEMATICA ET SCIENTIAM ET TECHNICUM means the final artifact is
-more accurate, more reproducible, more navigable, and more truthful than its
-inputs.
+Use data tables for finite maps: formats, register fields, enum translations, chip gates, descriptor words, packet layouts, and workaround selectors. Preserve distinctions when cases differ materially. Abstraction is valid only while it preserves the chip, ABI, spec, and evidence boundary that made the case exist.
 
-Critique the voice as you use it.  If prose becomes ceremonial, reduce it to the
-mechanism.  If prose becomes terse but opaque, add the missing invariant.  If a
-source comment names a phase, session, PR, reviewer, agent, local path, or
-private artifact as authority, move that history to a commit message or finding.
-If a claim cannot be falsified, mark it as conjecture or remove it.
+Uncertainty in a comment must name the mechanism and the guarded, disabled, or falsifiable path. It must not depend on review chronology, private context, or session state.
 
-### Modern driver code voice and elegance
+Patch quality is proof density: the smallest mechanism that preserves exact domains, visible state transitions, reviewable cleanup, and a falsifiable consequence. Commit messages and PR text follow the same order: component prefix, mechanism, invariant-based rationale, evidence by command or bundle, and tests stated plainly.
 
-Modern driver code is imaginative, but its imagination is disciplined into local
-invariants.  The best Mesa-shaped code does not perform cleverness for the
-reader.  It makes the domain visible: API object, chip generation, register
-field, command packet, memory lifetime, synchronization edge, format table,
-error path.  Names, structs, tables, asserts, and cleanup labels carry most of
-the thought.  Comments are reserved for the constraint that would otherwise be
-lost.
+## Durable names
 
-Write with that voice.  Be direct, formal, and concrete.  Public entry points
-carry the subsystem prefix.  Local helpers use mechanism verbs: emit, lower,
-fill, find, validate, lock, unlock, init, finish, destroy.  Constants,
-registers, packet fields, and enum translations keep their domain names instead
-of becoming prose.  State objects, key structs, and descriptor words are not
-loose parameter clouds; they are the local algebra of the driver.
+Use names from mechanism or content, not chronology, actors, work sessions, or review process. This applies to branch names, bundle directories, finding filenames, PR titles, commit subjects, source comments, and checked-in identifiers.
 
-Use the shape the mechanism demands.  Prefer a small helper when the operation
-has a name, and a table when the operation is a finite map.  Do not split a
-hardware/API matrix merely to reduce line count if the split hides the
-invariant.  A long function is acceptable only when it stays locally auditable:
-feature bits, packet words, ioctl validation, resource lifetime, ordered
-emission, or unwind edges are visible in one place and every exit path can be
-checked.
+Forbidden load-bearing identity includes waves, phases, missions, agents, worktrees, sessions, reviewers, PR numbers, task numbers, and dates that do not describe content.
 
-Treat error paths as ownership topology.  Labels such as `fail`, `unsupported`,
-`err_*`, `out`, `put`, `free`, and retry labels are not decoration; they show
-which object is live, which invariant failed, and which cleanup edge runs next.
-The error idiom follows the subsystem ABI: `VkResult` and `vk_error` in Vulkan
-paths, negative errno and WARN/assert fences in kernel-shaped paths.  Assertions
-guard impossible internal states; external input is validated and rejected.
+Examples:
 
-Treat tables as compressed proofs.  Formats, register fields, enum
-translations, chip gates, descriptor words, packet layouts, and workaround
-selectors belong in data when the cases form a finite map.  Keep the exact
-distinctions when cases differ materially.  Abstraction is good only while it
-preserves the chip, ABI, spec, and evidence boundary that made the case exist.
+- Branch: avoid `terakan/wave8a-fix` and `terakan/phase1e-atomic-fix`; use `terakan/palm_mem_rat_atomic_completion_semantics`.
+- Commit subject: avoid `Wave 8A follow-ups` and `terakan: Phase 1E follow-ups`; use `terakan: validate PALM MEM_RAT atomic completion semantics`.
+- PR title: avoid `Phase 1E discriminator`; use `palm_mem_rat_atomic_completion_semantics discriminator`.
+- Comment: avoid `Wave 8A path` and `Phase 1E-atomic case`; use `cached MEM_RAT atomic path`.
+- Finding filename: avoid `2026-05-18-phase1e-atomic.md`; use `2026-05-18-palm-mem-rat-atomic-completion-semantics.md`.
+- Test or bundle artifact: avoid `phase1e-results`; use `palm_dual_mem_rat_atomic_silicon_cut`.
 
-Comment in the same register.  A comment earns its place when it names the
-spec, silicon behavior, kernel validator, ABI rule, synchronization pair,
-measured quirk, or consequence a future maintainer must know.  It may say
-uncertainty, but only by tying the uncertainty to a mechanism and a disabled,
-guarded, or falsifiable path.  It must never depend on review chronology,
-private context, or the mood of the session.
+The first commit subject matters because a single-commit squash merge may reuse it even when the PR title was corrected later. Set branch name, first commit subject, and PR title before first push.
 
-Elegance here means proof density.  The elegant patch is the smallest mechanism
-that preserves exact domains, visible state transitions, reviewable cleanup,
-and a falsifiable consequence.  Commit messages and PR text should follow the
-same discipline: component prefix, mechanism first, rationale in terms of the
-invariant, evidence named by command or bundle, and tests stated plainly.  If
-prose becomes ceremonial, delete it.  If code becomes terse but hides the
-invariant, name the invariant.
+Phase, wave, and chronology terms may appear only as secondary registry metadata, such as `phase: 1E-atomic` in finding YAML. They must not be load-bearing and must not appear in source comments or primary artifact names.
 
+A name describes what is inside: content, target, or mechanism. It does not describe the act of collecting, grouping, staging, or sequencing.
 
-## Naming discipline
+`tranche` is forbidden in branches, filenames, identifiers, and comments. It is aggregation jargon and does not name content.
 
-Use durable mechanism names that describe the engineering work itself, not waves,
-phases, missions, agents, worktrees, sessions, or chronology labels.  This binds
-branch names, bundle directory names, finding-doc filenames, PR titles, commit
-subject lines, and source comments.
+`set`, `batch`, and `group` are forbidden only when they are ordinal containers, such as `set5`, `batch_2`, or `group3`. Descriptive domain compounds are allowed when they name content: `group_map`, `subgroup`, `workgroup`, `batch_size`, and a Vulkan descriptor `set`.
 
-| Surface | Wrong | Right |
-|---|---|---|
-| Branch | `terakan/wave8a-fix` / `terakan/phase1e-atomic-fix` | `terakan/palm_mem_rat_atomic_completion_semantics` |
-| Commit subject | `Wave 8A follow-ups` / `terakan: Phase 1E follow-ups` | `terakan: validate PALM MEM_RAT atomic completion semantics` |
-| PR title | `Phase 1E discriminator` | `palm_mem_rat_atomic_completion_semantics discriminator` |
-| Comment | `Wave 8A path` / `Phase 1E-atomic case` | `cached MEM_RAT atomic path` |
-| Finding filename | `2026-05-18-phase1e-atomic.md` | `2026-05-18-palm-mem-rat-atomic-completion-semantics.md` |
-| Test/bundle artifact | `phase1e-results` | `palm_dual_mem_rat_atomic_silicon_cut` |
+To derive a durable name: read the artifact, state in one line what it does or contains, isolate the mechanism and object, then name those. Examples:
 
-Why: phase labels make sense in the moment and rot fast.  A reviewer reading the
-durable mechanism name knows what it is; a reviewer reading `Phase 1E-atomic` has
-to dig.  The durable name survives `git log`, branch listings, finding-doc
-directory walks, and follow-up work years later.
+- `builds the imageStore reference IB` -> `capture_reference_ib`
+- `byte capture through one uprobe on libdrm drmIoctl` -> `DRMIOCTL_UPROBE_SCRIPT`
+- `next-15 blocker frontier manifest` -> `BLOCKER_FRONTIER_MANIFEST`
 
-The first commit subject matters.  A single-commit squash merge may use it even
-if the PR title was later corrected.  Set branch, first commit subject, and PR
-title canonically before first push.  Phase, wave, or chronology terms MAY appear
-only as secondary registry metadata, e.g. a YAML frontmatter `phase: 1E-atomic`
-field on a finding-doc.  They are never load-bearing and never appear in source
-comments or primary artifact names.
+Names such as `VARIANT_2C` and `phase2_kamikaze` encode chronology or staging, not content. Re-read the artifact and derive the name again.
 
-A name describes WHAT IS INSIDE -- the content, target, or mechanism -- not the
-ACT of aggregating it.  This rule decides the generic container words.
-`tranche` is opaque aggregation jargon (a finance term repurposed as a session
-batch) and names content in no form, so it is forbidden outright in branches,
-filenames, identifiers, and comments.  `set`, `batch`, and `group` are plain
-words forbidden ONLY in their ordinal-container form (`set5`, `batch_2`,
-`group3` -- "the Nth thing"), because an ordinal names a position in a sequence,
-not content; a descriptive compound that names what is inside (`group_map`,
-`subgroup`, `workgroup`, `batch_size`, a Vulkan descriptor `set`) is correct and
-preserved.  Rename a container identifier to the content it holds, not to
-another container word.
+## Hard-rule ownership
 
-***Derive every durable name from what the artifact does or what is inside it,
-never from the label it currently carries.*** Read the artifact (the function
-body, the file it points at, the data it holds), state in one line what it does
-or what is inside, decompose that to its load-bearing mechanism and object, and
-derive the name from those.  One-line description -> derived name: "builds the
-imageStore reference IB" -> `capture_reference_ib`; "byte capture via a single
-uprobe on libdrm `drmIoctl`" -> `DRMIOCTL_UPROBE_SCRIPT`; "the next-15 blocker
-frontier manifest" -> `BLOCKER_FRONTIER_MANIFEST`.  A name that is a container
-word bolted to an ordinal or to jargon (`VARIANT_2C`, `phase2_kamikaze`) encodes
-the act or the chronology, not the content; read the artifact and decompose
-again.
+Do not maintain a second hard-prohibition list. `## Hard rules` owns enforceable MUST/MUST NOT items. Add new prohibitions there, not in a duplicate list, to avoid drift between repeated rule sets.
 
-## Hard prohibitions
+## Cayley-Dickson audit ladder
 
-Do not:
+Use Cayley-Dickson names as evidence-depth labels, not ornament. The ladder defines which evidence planes must be checked before a claim advances.
 
-- force-push `main` or `git push --force` to a shared branch without explicit
-  user sign-off.
-- run destructive commands (`sudo rm -rf`) on shared workspace paths.
-- introduce raw IPv4 or IPv6 literals (e.g. `10.0.0.*`) in scripts/configs; use
-  hostnames.
-- encode local absolute paths or private host FQDNs.
-- symlink instruction files.
-- chain `ccache distcc compiler` through a shell wrapper.
-- use `RUSTC_WRAPPER` for Meson Rust and assume it affects Meson; use Meson
-  `[binaries]` native files.
-- remove build targets, tests, or validation checks as collateral for a narrow
-  fix.
-- add stubs, placeholders, or TODO prose without explicit tracked rationale.
-- change generated files without running the generator or explaining why it is
-  unavailable.
-- push `upstream/main` directly to fork `main` (`git push origin upstream/main:main`).
-- chain `ccache`/`sccache` in front of the C/C++ distcc-pump include path.
+Driver bugs here can cross specification, lowering, command emission, kernel validation, cache and coherency behavior, and exact PALM/Wrestler silicon. One source file rarely contains the whole constraint. Each level adds an axis that can expose a composition failure.
 
-## Cayley-Dickson information ladder
+- `R` / 1D / observation: exact file, symbol, packet, register, test, log line, or artifact. Example: `line 1214 calls r600_nir_lower_cube_to_2darray`.
+- `C` / 2D / rule: specification, ABI, API contract, ISA text, test oracle, or commit contract. Example: `r600g calls int_tg4 after cube_to_2darray; Terakan does not`.
+- `H` / 4D / mechanism: code path, kernel validation, lowering, descriptor, allocator, cache, runtime, or hardware constraint. Example: `Evergreen forces nearest filtering for integer GATHER4`, ISA section 9.4.
+- `O` / 8D / provenance: probe, dmesg, counter, trace, disassembly, CTS/Piglit/deqp, benchmark, or retained bundle. Example: `missing pass plus silicon behavior gives wrong corners; all 12 cube cases fail`.
+- `S16` / 16D / interaction lattice: build/runtime, generated/hand-written, host/target, silicon/family, source/finding, and code/evidence interactions.
+- `T32` or `CD32` / 32D / integration envelope: upstreamability, ABI/install impact, safety, security, CI, rollback, maintenance, documentation, and future research path.
 
-Use the Cayley-Dickson ladder as disciplined information geometry, not as
-ornament.  Driver bugs here span specification, lowering, command emission,
-kernel validation, cache/coherency behavior, and exact PALM/Wrestler silicon.
-Reading one file misses the silicon constraint that explains the code shape.
-Each doubling adds an orthogonal axis the previous plane cannot faithfully
-represent.  Higher dimensions are not permission to speculate; they are where
-composition failures become visible.
-
-| Dim | Algebra | New information plane | Engineering gate / example |
-|---:|---|---|---|
-| 1 | R | Observation | Exact file, symbol, packet, register, test, log line, or artifact (`line 1214 calls r600_nir_lower_cube_to_2darray`). |
-| 2 | C | Stated rule / spec intent | Specification, ABI, API contract, ISA text, test oracle, or commit contract (`r600g calls int_tg4 after cube_to_2darray; Terakan does not`). |
-| 4 | H | Mechanism / silicon constraint | Code path, kernel validation, lowering, descriptor, allocator, cache, runtime, or hardware constraint (`Evergreen forces nearest filtering for integer GATHER4`, ISA section 9.4). |
-| 8 | O | Empirical provenance | Probe, dmesg, counter, trace, disassembly, CTS/Piglit/deqp, benchmark, retained bundle (`missing pass + silicon behavior = wrong corners; all 12 cube cases fail`). |
-| 16 | S16 | Interaction lattice | Build x runtime, generated x hand-written, host x target, silicon x family, source x finding, code x evidence. |
-| 32 | T32/CD32 | Integration envelope | Upstreamability, ABI/install impact, safety, security, CI, rollback, maintenance, documentation, future research path. |
-
-T32/CD32 denotes the 32-dimensional Cayley-Dickson, or trigintaduonion, plane.
-The 32 axes to audit when the problem is genuinely systemic are: observation,
-specification, code path, mechanism, hardware, kernel or ABI, test, provenance,
-version, configuration, generated state, resource lifetime, memory/cache,
-ordering, privilege, security, falsifier, performance, portability, upstream
-surface, maintenance, deployment, rollback, CI, documentation, operator impact,
-evidence independence, contradiction, alternative model, validation matrix,
-canonical synthesis, residual uncertainty, and future constraint.
+Use `T32` or `CD32` only for systemic decisions. Its audit axes are: observation, specification, code path, mechanism, hardware, kernel or ABI, test, provenance, version, configuration, generated state, resource lifetime, memory/cache, ordering, privilege, security, falsifier, performance, portability, upstream surface, maintenance, deployment, rollback, CI, documentation, operator impact, evidence independence, contradiction, alternative model, validation matrix, final synthesis, residual uncertainty, and future constraint.
 
 Rules:
 
-- Do not jump from 1D observation to 8D evidence.  Each intermediate level kills
-  wrong hypotheses cheaply.
-- A level-3 (8D) synthesis requires three parts: claim, evidence chain,
-  falsification criterion.  Surface 4D+ systemic analysis only after the lower
-  planes are locked.
-- Do not publish a 16D synthesis from separately passing facts; test the
-  interactions.
-- Do not make a 32D architectural decision until the lower planes are stable or
-  the remaining uncertainty is named.
-- Non-commutativity (`code -> hardware` is not `hardware -> code`): read the
-  constraint before judging the implementation.  When a function looks wrong, ask
-  what hardware constraint it satisfies before concluding it is a bug.
-- Non-associativity (`(ISA x kernel) x CTS` may differ from `ISA x (kernel x CTS)`):
-  read ISA before kernel source, kernel before driver, driver before CTS; form
-  the model; then verify it survives the reversed evidence order.  If it does
-  not, the instability is the finding.
-- Zero-divisor trap at 16D/32D: several local "nothing failed" signals can
-  multiply into a globally false conclusion.  Verify source independence before
-  claiming bounded confidence.
+- Do not jump from 1D observation to 8D evidence. The 2D and 4D levels eliminate cheap wrong hypotheses.
+- An 8D finding requires claim, evidence chain, and falsification criterion.
+- Surface 16D or 32D analysis only after lower levels are stable, or after naming the remaining uncertainty.
+- Do not publish a 16D synthesis from separately passing facts. Test the interactions.
+- Do not make a 32D architecture decision until lower levels are stable or the unresolved uncertainty is explicit.
+- Direction matters: `code -> hardware` is not `hardware -> code`. Read the constraint before judging the implementation.
+- Order matters: `(ISA x kernel) x CTS` may differ from `ISA x (kernel x CTS)`. Read ISA before kernel, kernel before driver, and driver before CTS; then verify that the model survives the reverse order. If it does not, the instability is the finding.
+- Independent-looking local passes can compose into a false global conclusion. Verify source independence before claiming bounded confidence.
 
-### Algebra-grounded failure modes
+### Proof-backed failure modes
 
-Machine-checked proofs in the sibling `open_gororoba/proofs/` workspace, when
-present, ground these rules.
+When `open_gororoba/proofs/` is available, use proof names as review checks.
 
-| Level | Algebra | Theorem | Failure mode | Protection |
-|---|---|---|---|---|
-| 2+ | H (dim 4+) | `CDDoubleFunctor.cd_mul`: non-commutative | Reading driver before silicon inverts synthesis direction | Read hardware tiers first; always |
-| 3+ | O (dim 8+) | `sed_assoc_nonzero_e1_e2_e4`: `[e1,e2,e4] != 0` | Composition order changes synthesis | Document evidence order; test stability under reversal |
-| 4+ | S (dim 16+) | `moreno29_orthogonal_iff`: 3 orthogonal nulls construct a zero divisor | Three independent "nothing wrong here" evidences compose to a false positive | Adversarial self-review |
-| Any | All | `cd_fidelity_stability`: Lipschitz bound holds only for orthogonal sources | Correlated sources amplify uncertainty non-linearly | Verify source independence before claiming bounded confidence |
+- `CDDoubleFunctor.cd_mul`: multiplication is non-commutative in `H` and above. Failure mode: reading driver before silicon can invert the synthesis direction. Protection: read hardware tiers first.
+- `sed_assoc_nonzero_e1_e2_e4`: `[e1,e2,e4] != 0` in `O` and above. Failure mode: evidence order changes the synthesis. Protection: document evidence order and test stability under reversal.
+- `moreno29_orthogonal_iff`: three orthogonal nulls construct a zero divisor in `S16` and above. Failure mode: three independent `nothing failed here` results can compose to a false positive. Protection: adversarial self-review.
+- `cd_fidelity_stability`: the Lipschitz bound holds only for orthogonal sources. Failure mode: correlated sources amplify uncertainty non-linearly. Protection: verify source independence before claiming bounded confidence.
 
-## PALM/Wrestler and Terakan evidence lane
+## PALM/Terakan evidence lane
 
-Target identity for the current Terakan lane: x130e / AMD E-300 / Radeon HD 6310,
-PCI `1002:9802`, `CHIP_PALM`, PALM/Wrestler, Evergreen / TeraScale-2 / VLIW5.
-PALM/Wrestler is not SUMO.  SUMO/SUMO2 are adjacent Llano contexts, not the exact
-target.
+Current target: x130e / AMD E-300 / Radeon HD 6310, PCI `1002:9802`, `CHIP_PALM`, PALM/Wrestler, Evergreen, TeraScale-2, VLIW5. PALM/Wrestler is not SUMO. SUMO and SUMO2 are adjacent Llano contexts, not the exact target.
 
-Source ordering for PALM/Terakan RCA:
+PALM/Terakan RCA uses this evidence order:
 
-| Tier | Source class |
-|---:|---|
-| 1 | Exact PALM measurement: probe, dmesg, BAR/debugfs-safe path, counters, CTS/Piglit/deqp on x130e. |
-| 2 | Exact source: Terakan, r600g/SFN, Mesa/NIR, Linux radeon validation, DRM UAPI. |
-| 3 | Evergreen / TeraScale-2 / VLIW5 ISA and register programming guides. |
-| 4 | R600/R700/Cayman contrast only when labelled as inherited or adjacent and checked against PALM evidence. |
-| 5 | Generated summaries, comments, and memory as leads only. |
+1. Exact PALM measurement: probe, dmesg, BAR/debugfs-safe path, counters, CTS/Piglit/deqp on x130e.
+2. Exact source: Terakan, r600g/SFN, Mesa/NIR, Linux radeon validation, and DRM UAPI.
+3. Evergreen, TeraScale-2, and VLIW5 ISA and register programming guides.
+4. R600, R700, and Cayman contrast only when labeled as inherited or adjacent and checked against PALM evidence.
+5. Generated summaries, comments, and memory as leads only.
 
-Before hardware RCA edits, state direct observation, source/spec constraint,
-implementation hypothesis, falsifier, validation command or retained bundle, and
-expected CTS/Piglit/deqp movement.  Check `dmesg` for DRM CS validation errors
-before GPU-behavior analysis.  Verify module reachability before symbolizing a
-crash address.
+Before hardware RCA edits, record direct observation, source or spec constraint, implementation hypothesis, falsifier, validation command or retained bundle, and expected CTS/Piglit/deqp movement. Check `dmesg` for DRM CS validation errors before GPU-behavior analysis. Verify module reachability before symbolizing a crash address.
 
-### Chip identity reference
+### Chip identity and comment names
 
-Absolute chip identity, combining angles so a source comment is findable from any
-direction.  Canonical Palm comment form:
-`Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)`.
+Use chip identity strings that are searchable by codename, product, Mesa enum, platform, and ISA. Example: Palm source-comment form:
 
-| Codename (HD #) | RV / part code | Mesa enum | Family / ISA |
-|---|---|---|---|
-| `R600` (HD 2900) | -- | `CHIP_R600` | R600 / TeraScale-1 |
-| `Cypress` (HD 5870) | `RV870` | `CHIP_CYPRESS` | Evergreen / TeraScale-2 VLIW5 |
-| `Palm` (HD 6310, Wrestler GPU, Brazos APU + Bobcat CPU) | -- integrated | `CHIP_PALM` | Evergreen / TeraScale-2 VLIW5 |
-| `Cayman` (HD 6970) | -- | `CHIP_CAYMAN` | Northern Islands / TeraScale-3 VLIW4 |
-| `Aruba` (Trinity APU GPU) | -- integrated | `CHIP_ARUBA` | Northern Islands / TeraScale-3 VLIW4 |
+`Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)`
 
-Other canonical naming conventions for source comments:
+Chip identities:
 
-| Surface | Canonical form |
-|---|---|
-| Driver | `Terakan` (Vulkan), `r600g` (Gallium) |
-| Register name | `CB_COLOR0_VIEW.SLICE_START`, `SQ_TEX_RESOURCE_WORD4.DST_SEL_X` |
-| Register macro | `R_028C70_CB_COLOR0_INFO`, `S_028C70_FORMAT(x)`, `G_028C70_FORMAT(v)`, `V_028C70_COLOR_32` |
-| ISA encoding | `FMT_32_32_32 = 47`, `V_028C70_NUMBER_USCALED = 0x2` |
-| Architecture | `Evergreen / TeraScale-2 VLIW5`, `Northern Islands / TeraScale-3 VLIW4`, `R600 / TeraScale-1` |
-| CPU side | `Bobcat` (CPU in Zacate/Ontario), `Llano` CPU |
-| Platform | `Brazos` (Bobcat + Palm), `Llano`, `Trinity` |
+- `R600` (HD 2900): `CHIP_R600`; R600 / TeraScale-1.
+- `Cypress` (HD 5870, `RV870`): `CHIP_CYPRESS`; Evergreen / TeraScale-2 VLIW5.
+- `Palm` (HD 6310, Wrestler GPU, Brazos platform + Bobcat CPU, integrated): `CHIP_PALM`; Evergreen / TeraScale-2 VLIW5.
+- `Cayman` (HD 6970): `CHIP_CAYMAN`; Northern Islands / TeraScale-3 VLIW4.
+- `Aruba` (Trinity APU GPU, integrated): `CHIP_ARUBA`; Northern Islands / TeraScale-3 VLIW4.
 
-HW citation form uses public AMD docs only, never internal-repo extracts:
+Source-comment forms:
 
-| Wrong (internal) | Right (public) |
-|---|---|
-| `per Evergreen_ISA.txt:17572` | `per AMD Evergreen-Family ISA, section 10.x.x (MEM_RD_SCATTER)` |
-| `see phase5_isa_pdf_audit_20260418T182628Z/...` | `per AMD Radeon HD 6000-Series ISA (Cayman), section X.Y` |
-| -- | `per AMD 3D Engine Programming Guide for Evergreen, section M (CB_COLOR0_VIEW)` |
-| -- | `per Direct3D 11.3 Functional Specification, section 4.4.6 Element Alignment` |
+- Driver: `Terakan` for Vulkan; `r600g` for Gallium.
+- Register name: `CB_COLOR0_VIEW.SLICE_START`; `SQ_TEX_RESOURCE_WORD4.DST_SEL_X`.
+- Register macro: `R_028C70_CB_COLOR0_INFO`; `S_028C70_FORMAT(x)`; `G_028C70_FORMAT(v)`; `V_028C70_COLOR_32`.
+- ISA encoding: `FMT_32_32_32 = 47`; `V_028C70_NUMBER_USCALED = 0x2`.
+- Architecture: `Evergreen / TeraScale-2 VLIW5`; `Northern Islands / TeraScale-3 VLIW4`; `R600 / TeraScale-1`.
+- CPU side: `Bobcat` for Zacate/Ontario; `Llano` CPU.
+- Platform: `Brazos` for Bobcat + Palm; `Llano`; `Trinity`.
 
-Source comments MUST also carry, when HW-specific: bit-field encodings
-(`SLICE_START bits 0-10 of CB_COLOR_VIEW`), empirical silicon behavior
-(`Palm silently no-ops MEM_RAT_CMPXCHG_INT on the cached path`), and
-mathematical invariants or non-obvious workaround rationale.
+Hardware and API citations must name public documents and sections, not internal extracts, retained bundle paths, or audit artifacts.
+
+- Wrong: `per Evergreen_ISA.txt:17572`. Right: `per AMD Evergreen-Family ISA, section 10.x.x (MEM_RD_SCATTER)`.
+- Wrong: `see phase5_isa_pdf_audit_20260418T182628Z/...`. Right: `per AMD Radeon HD 6000-Series ISA (Cayman), section X.Y`.
+- Right: `per AMD 3D Engine Programming Guide for Evergreen, section M (CB_COLOR0_VIEW)`.
+- Right: `per Direct3D 11.3 Functional Specification, section 4.4.6 Element Alignment`.
+
+Hardware-specific source comments must include load-bearing hardware facts: bitfield encoding such as `SLICE_START bits 0-10 of CB_COLOR_VIEW`, empirical behavior such as `Palm silently no-ops MEM_RAT_CMPXCHG_INT on the cached path`, and any mathematical invariant or non-obvious workaround rationale needed to understand the code.
 
 ## GPU driver and reverse-engineering vocabulary
 
-Use mechanism language before synthesis language.  Mesa-side claims should name
-the exact plane affected: compiler lowering, descriptor construction, packet
-emission, kernel validation, resource lifetime, memory/cache behavior, runtime
-loader state, or conformance result.
+Use mechanism terms before summary terms. A Mesa claim must name the affected path: compiler lowering, descriptor construction, packet emission, kernel validation, resource lifetime, memory/cache behavior, runtime loader state, or conformance result.
 
-| Plane | Preferred language |
-|---|---|
-| Silicon identity | PCI ID, ASIC family, Mesa chip enum, IP block, generation, stepping, feature bit, engine, ring, aperture. |
-| Compiler path | NIR/TGSI/SPIR-V input, lowering pass, legalization, instruction selection, register allocation, scheduling, backend emission, disassembly oracle. |
-| Descriptor/resource path | BO, descriptor word, reloc-adjusted VA, pitch, tiling, swizzle, cache policy, coherency domain, map/unmap boundary, lifetime rule. |
-| Command stream | PM4 packet, indirect buffer, packet grammar, register write, draw/dispatch boundary, relocation, CS validator, fence, sequence number. |
-| Kernel interface | DRM UAPI, ioctl path, GEM/TTM/radeon object, CS parse path, fence wait, reset path, debugfs path, KMS interaction, dmesg validation error. |
-| Runtime path | ICD/DRI loader choice, dispatch table, winsys, screen/context/resource object, Gallium pipe state, Vulkan object lifetime, debug/release contamination. |
-| Evidence | CTS/Piglit/deqp result, dmesg delta, shader disassembly, packet decode, retained bundle, calibrated probe, golden trace, known-good/known-bad oracle. |
-| Upstream surface | minimal patch surface, bisectability, conformance delta, reviewer burden, ABI/install impact, backport risk, maintenance owner. |
+Use these terms by path:
 
-Avoid broad claims such as "the GPU supports X" or "the driver supports X"
-unless the evidence class is named.  Prefer bounded claims:
+- Silicon identity: PCI ID, ASIC family, Mesa chip enum, IP block, generation, stepping, feature bit, engine, ring, aperture.
+- Compiler path: NIR, TGSI, SPIR-V input, lowering pass, legalization, instruction selection, register allocation, scheduling, backend emission, disassembly oracle.
+- Descriptor/resource path: BO, descriptor word, reloc-adjusted VA, pitch, tiling, swizzle, cache policy, coherency domain, map/unmap boundary, lifetime rule.
+- Command stream: PM4 packet, indirect buffer, packet grammar, register write, draw or dispatch boundary, relocation, CS validator, fence, sequence number.
+- Kernel interface: DRM UAPI, ioctl path, GEM, TTM, radeon object, CS parse path, fence wait, reset path, debugfs path, KMS interaction, dmesg validation error.
+- Runtime path: ICD or DRI loader choice, dispatch table, winsys, screen/context/resource object, Gallium pipe state, Vulkan object lifetime, debug/release contamination.
+- Evidence: CTS/Piglit/deqp result, dmesg delta, shader disassembly, packet decode, retained bundle, calibrated probe, golden trace, known-good/known-bad oracle.
+- Upstream surface: minimal patch surface, bisectability, conformance delta, reviewer burden, ABI/install impact, backport risk, maintenance owner.
+
+Do not write broad claims such as `the GPU supports X` or `the driver supports X` unless the evidence class is named. Use bounded claims:
 
 ```text
-Known: PALM accepts this packet sequence through the radeon CS validator and the
-retained CTS run observes the expected output.
+Known: PALM accepts this packet sequence through the radeon CS validator, and the retained CTS run observes the expected output.
 
-Hypothesis: this is a descriptor-word construction bug, not a silicon-capability
-claim.
+Hypothesis: this is a descriptor-word construction bug, not a silicon-capability claim.
 
-Speculative: adjacent Evergreen behavior suggests the same cache-domain rule,
-but exact PALM evidence is not yet decision-grade.
+Speculative: adjacent Evergreen behavior suggests the same cache-domain rule, but exact PALM evidence is not yet decision-grade.
 ```
 
-Use "breakthrough" only for a discontinuous result that changes the evidence
-graph.  In normal Mesa engineering prose, prefer `driver enablement`,
-`conformance improvement`, `lowering-path correction`, `descriptor-path repair`,
-`packet grammar recovery`, `hazard-model refinement`, `silicon-behavior
-characterization`, `validation-methodology improvement`, or `source-grounded
-architectural synthesis`.
+Use `breakthrough` only for a discontinuous result that changes the evidence graph. For normal Mesa work, use the mechanism: `driver enablement`, `conformance improvement`, `lowering-path correction`, `descriptor-path repair`, `packet grammar recovery`, `hazard-model refinement`, `silicon-behavior characterization`, `validation-methodology improvement`, or `source-grounded architecture model`.
 
 ## Standalone build
 
-Mesa must build from this repository alone.  Use native files and environment
-variables that can be reproduced by a clean checkout.  Meson owns configuration
-and Ninja generation; Make/build-infra owns host selection, audit checks,
-generated native overlays, clean/build/install targets, and distcc-pump
-sequencing.  Build-system changes MUST keep that split unless the user explicitly
-approves an architectural replacement.
+Mesa must build from this repository alone. Use reproducible native files and environment variables. Meson owns configuration and Ninja generation. Make and build-infra own host selection, audit checks, generated native overlays, clean, build, install, and distcc-pump sequencing. Change that split only with explicit approval for a build-system architecture change.
 
-Canonical standalone shape:
+Baseline standalone build:
 
 ```bash
 meson setup builddir \
@@ -717,37 +387,25 @@ ninja -C builddir
 ninja -C builddir install
 ```
 
-Adapt options to the actual checkout and Meson state.  Use `meson configure` and
-repo-local options instead of guessing.  Do not hardcode local absolute paths.
-Discover repository root when scripting:
+Adapt options to the checkout and current Meson option set. Use `meson configure` and repo-local options instead of guessing. Do not hardcode local absolute paths. Discover the repository root in scripts:
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
 ```
 
-Build audits MUST model Meson's defaults, not only explicit profile text.  If an
-option is omitted or set to `auto`, audit the dependencies Meson will enable on
-the target host.  Do not pass an audit by assuming an absent option is disabled.
-Raw-submit or hazardous probes require exact opt-in values such as
-`R300_TRACE_HAZARD_ACCEPTED=1`; variable presence is not consent.  Reject unset,
-empty, or zero-valued gates.
+Build audits must model Meson defaults. When an option is omitted or set to `auto`, audit the dependencies Meson will enable on the target host. Do not treat an absent option as disabled.
 
-### Release vs debug builds, and the measurement-contamination guard
+Raw-submit and hazardous probes require exact opt-in values, such as `R300_TRACE_HAZARD_ACCEPTED=1`. Reject unset, empty, and zero-valued gates. Variable presence is not consent.
 
-Keep the release and debug Mesa builds in separate build directories and
-separate install prefixes.  They must not share object files, build
-directories, or install paths; run `meson setup`, `ninja`, and `install` fully
-for one before starting the other.
+### Release, debug, and measurement contamination
 
-- Silicon-evidence and conformance work uses a `buildtype=release` build.
-  `debugoptimized` and `debug` emit instrumentation that changes timing,
-  allocator behavior, and GL error paths, which contaminates measurements --
-  never collect silicon evidence against a debug build.
-- Driver RCA and shader disassembly use a separate `buildtype=debug` build at
-  its own prefix.
+Keep release and debug builds in separate build directories and separate install prefixes. They must not share object files, build directories, or install paths. Run `meson setup`, `ninja -C <builddir>`, and `ninja -C <builddir> install` completely for one build before starting the other.
 
-Run a probe against a specific build without altering the system default by
-pointing the loader explicitly at that build's prefix:
+Silicon evidence and conformance work use `buildtype=release`. `debugoptimized` and `debug` builds change timing, allocator behavior, and GL error paths. Do not collect silicon evidence from a debug-class build.
+
+Driver RCA and shader disassembly use a separate `buildtype=debug` build at its own prefix.
+
+Run probes against one build by pointing the loader at that build prefix:
 
 ```bash
 LIBGL_DRIVERS_PATH=<prefix>/lib/dri \
@@ -755,87 +413,60 @@ LD_LIBRARY_PATH=<prefix>/lib \
   ./probe_binary
 ```
 
-Cross-contamination guard: do NOT let `LIBGL_DRIVERS_PATH` or `LD_LIBRARY_PATH`
-inherit values from the shell environment in a release probe run -- unset them
-or set them explicitly.  A debug DRI driver silently loaded into a release probe
-run changes measured behavior; that is the contamination class that invalidates
-silicon evidence.  The same discipline applies to a Vulkan ICD run via
-`VK_ICD_FILENAMES`: point it at the exact prefix's ICD JSON, never inherit a
-stale value.
+For Vulkan probes, point `VK_ICD_FILENAMES` at the exact ICD JSON under the selected prefix.
+
+Do not inherit `LIBGL_DRIVERS_PATH`, `LD_LIBRARY_PATH`, or `VK_ICD_FILENAMES` from the shell during release evidence runs. Unset them or set them explicitly. A debug DRI driver or stale Vulkan ICD loaded into a release probe invalidates silicon evidence.
 
 ### Build profiles and host envs
 
-Profiles live in `build-infra/configs/`:
+Build profiles live in `build-infra/configs/`:
 
-- `1_r300_full_release_x86_64v1-clang22-distcc-cache.meson`  maximal r300 + amd_r300 ICD, release (vostro)
-- `2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson`    maximal r300 + amd_r300 ICD, debug (vostro)
-- `3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson`  r600+zink+soft+llvm+amd_terascale + Rusticl, release (x130e)
-- `4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson`    r600+zink+soft+llvm+amd_terascale + Rusticl, debug (x130e)
-- `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson`  same as 3_ without Rusticl, release (x130e fallback)
-- `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson`    same as 4_ without Rusticl, debug (x130e fallback)
+- `1_r300_full_release_x86_64v1-clang22-distcc-cache.meson`: maximal r300 plus `amd_r300` ICD; release; vostro.
+- `2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson`: maximal r300 plus `amd_r300` ICD; debug; vostro.
+- `3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson`: r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; release; x130e.
+- `4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson`: r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; debug; x130e.
+- `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson`: same as profile 3 without Rusticl; release; x130e fallback.
+- `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson`: same as profile 4 without Rusticl; debug; x130e fallback.
 
-Host-envs in `build-infra/env/` (`btver1-ccache-no-pump.env`,
-`btver1-distcc-pump.env`, `sapphire.env`, `zen4.env`) set the lane-specific
-distcc/cache policy, host-specific CFLAGS, `-fno-emulated-tls` (required for the
-validated clang lane on linux x86_64 to avoid a link failure in libglapi), and
-centralised `CCACHE_DIR`/`SCCACHE_DIR`.
+Host envs live in `build-infra/env/`: `btver1-ccache-no-pump.env`, `btver1-distcc-pump.env`, `sapphire.env`, and `zen4.env`. They set lane-specific distcc/cache policy, host CFLAGS, `-fno-emulated-tls`, and centralized `CCACHE_DIR`/`SCCACHE_DIR`. The validated clang lane on Linux x86_64 requires `-fno-emulated-tls` to avoid a libglapi link failure.
 
-### Canonical build directories and install prefixes
+### Build directories and install prefixes
 
-Each build directory maps to exactly one install prefix.  Never share object
-files or install paths between directories.
+Each build directory maps to one install prefix. Do not share object files or install paths between directories.
 
-| Directory | Purpose | Install prefix | Key options |
-|---|---|---|---|
-| `builddir` | Full-stack debug daily driver | `/opt/local/mesa-26-gororoba-debug` | `-Dbuildtype=debugoptimized -Dgallium-drivers=r300,r600,softpipe -Dvulkan-drivers=amd_terascale -Dllvm=enabled` |
-| `builddir-release` | Silicon evidence and conformance | `/opt/local/mesa-26-gororoba` | `-Dbuildtype=release` + same driver set |
-| `builddir-r300vk-gallium` | r300vk Gallium-backed ICD (vostro / dev) | `/opt/local/mesa-26-gororoba-debug` | `-Dbuildtype=debugoptimized -Dr300vk-gallium-backend=true -Dgallium-drivers=r300 -Dvulkan-drivers=amd_r300 -Dllvm=enabled` |
-| `builddir-r300tools` | r300 analysis, clangd index, no Vulkan | `/opt/local/mesa-26-gororoba-debug` | `-Dbuildtype=debugoptimized -Dgallium-drivers=r300 -Dllvm=enabled` |
+- `builddir`: full-stack debug daily driver. Prefix: `/opt/local/mesa-26-gororoba-debug`. Options: `-Dbuildtype=debugoptimized -Dgallium-drivers=r300,r600,softpipe -Dvulkan-drivers=amd_terascale -Dllvm=enabled`.
+- `builddir-release`: silicon evidence and conformance. Prefix: `/opt/local/mesa-26-gororoba`. Options: `-Dbuildtype=release` plus the same driver set.
+- `builddir-r300vk-gallium`: r300vk Gallium-backed ICD for vostro/dev. Prefix: `/opt/local/mesa-26-gororoba-debug`. Options: `-Dbuildtype=debugoptimized -Dr300vk-gallium-backend=true -Dgallium-drivers=r300 -Dvulkan-drivers=amd_r300 -Dllvm=enabled`.
+- `builddir-r300tools`: r300 analysis and clangd index, no Vulkan. Prefix: `/opt/local/mesa-26-gororoba-debug`. Options: `-Dbuildtype=debugoptimized -Dgallium-drivers=r300 -Dllvm=enabled`.
 
-Debug-class directories install to `/opt/local/mesa-26-gororoba-debug`.
-Release builds install to `/opt/local/mesa-26-gororoba`.  Neither path is inside
-the repository tree.  Do NOT use in-repo `install/` subdirectories or suffixed
-variants such as `install-gallium`; they pollute the working tree and require
-separate `LIBGL_DRIVERS_PATH` / `VK_ICD_FILENAMES` overrides.  System Mesa at
-`/usr/lib/` must not be disturbed by project builds.
+Debug-class directories install to `/opt/local/mesa-26-gororoba-debug`. Release builds install to `/opt/local/mesa-26-gororoba`. Neither prefix is inside the repository tree. Do not use in-repo `install/` directories or suffixed variants such as `install-gallium`; they pollute the worktree and require separate `LIBGL_DRIVERS_PATH` or `VK_ICD_FILENAMES` overrides. Project builds must not disturb system Mesa under `/usr/lib/`.
 
 #### Clean and reconfigure
 
-Incremental clean -- removes compiled objects, keeps Meson configuration:
+Incremental clean removes compiled objects and keeps Meson configuration:
 
 ```bash
 ninja -C <builddir> clean
 ```
 
-Full wipe and reconfigure -- use when switching Meson options or after a Meson
-upgrade:
+Full wipe and reconfigure is required when Meson options change or after a Meson upgrade:
 
 ```bash
 meson setup --wipe <builddir> [options...]
 ```
 
-`--wipe` is equivalent to a fresh directory setup but preserves download caches.
-Use it whenever an option changes rather than editing `meson-private/cmd_line.txt`
-by hand.  After wiping, re-run `ninja -C <builddir>` and `ninja -C <builddir>
-install` in full before collecting any evidence.
+`--wipe` gives a fresh directory setup while preserving download caches. Do not edit `meson-private/cmd_line.txt` by hand. After `--wipe`, run `ninja -C <builddir>` and `ninja -C <builddir> install` in full before collecting evidence.
 
 ## Build-system and cache discipline
 
-Native files must use PATH-resolved compiler names or generated local overlays;
-checked-in files must not contain private compiler paths.  Rust is selected by
-the active Meson/toolchain policy, not by a checked-in absolute path.
-Version-coupled LLVM helper tools are written into
-`$BUILDDIR/gororoba-toolchain.meson` by Make before `meson setup`.  The generator
-prefers the canonical x130e major when present, honors `MESA_LLVM_VERSION` or
-`GOROROBA_LLVM_VERSION` when set, and otherwise chooses an installed
-clang/clang++/llvm-config major that is coherent on the host.
+Native files use PATH-resolved compiler names or generated local overlays. Checked-in files must not contain private compiler paths. Rust is selected by active Meson/toolchain policy, not by a checked-in absolute path.
 
-Canonical C/C++ cache split:
+Make writes version-coupled LLVM helper tools into `$BUILDDIR/gororoba-toolchain.meson` before `meson setup`. The generator prefers the x130e LLVM major when present, honors `MESA_LLVM_VERSION` or `GOROROBA_LLVM_VERSION` when set, and otherwise selects an installed coherent `clang`/`clang++`/`llvm-config` major on the host.
 
-| Use case | C/C++ chain | Rust chain | Rule |
-|---|---|---|---|
-| Warm incremental | `ccache -> distcc -> clang`, no pump | `sccache -> rustc` | use `CCACHE_PREFIX=distcc`; expect hits after a populated build. |
-| Cold clean / max remote preprocessing | `distcc-pump -> distcc -> clang`, no ccache | `sccache -> rustc` | pump needs the original compiler/source command visible to distcc. |
+C/C++ cache lanes:
+
+- Warm incremental: `ccache -> distcc -> clang`, no pump. Rust: `sccache -> rustc`. Use `CCACHE_PREFIX=distcc`; expect hits after a populated build.
+- Cold clean or maximum remote preprocessing: `distcc-pump -> distcc -> clang`, no ccache. Rust: `sccache -> rustc`. Pump needs the original compiler and source command visible to distcc.
 
 Warm/no-pump configure writes:
 
@@ -857,88 +488,59 @@ rust = ['sccache', 'rustc']
 llvm-config = '<selected-llvm-config>'
 ```
 
-Do not wrap pump builds with ccache or sccache.  Do not use wrapper scripts like
-`exec ccache distcc clang "$@"` -- that form causes ~93.5% "Multiple source
-files" ccache rejections, because ccache hashes `distcc`'s mtime as the compiler.
-The canonical answer is always Meson `[binaries]` for the wrap and env
-`CCACHE_PREFIX=distcc` for the chain.  Do not assume `RUSTC_WRAPPER` changes Meson
-C/C++ behavior; it is cargo-only and a no-op here.  The Rust sccache lane is
-separate and remains valid because it wraps `rustc`, not the C/C++ include-server
-path.  The workspace patched sccache for meson-rust's multi-`--emit` form; select
-the patched binary via PATH order or host env, not a baked per-user path.  If
-changing cache wiring, consult the steinmarder workspace cache RCA
-(`steinmarder/docs/workspace/ccache-sccache-wiring.md`,
-`steinmarder/docs/workspace/sccache-multi-emit-patch.md`) and update the
-reproducible recipe.  Do not patch around a cache miss by bypassing the cache
-silently.
+Do not wrap pump builds with ccache or sccache. Do not use wrapper scripts such as `exec ccache distcc clang "$@"`; that form causes about 93.5% `Multiple source files` ccache rejections because ccache hashes `distcc`'s mtime as the compiler. Use Meson `[binaries]` for the wrapper boundary and `CCACHE_PREFIX=distcc` for the cache chain.
 
-Empirical ccache status (verify with `ccache --show-stats --verbose`): a first
-full build populates `~/.cache/ccache` and shows ~95% miss as it populates;
-subsequent rebuilds with unchanged sources should show >90% hit rate.
+`RUSTC_WRAPPER` is cargo-only here. Do not assume it changes Meson C/C++ behavior or Meson Rust selection. The Rust sccache lane remains separate because it wraps `rustc`, not the C/C++ include-server path.
 
-## Mesa submission and upstream discipline
+The workspace patched sccache for meson-rust's multi-`--emit` form. Select the patched binary through PATH order or host env, not a baked per-user path.
 
-- `origin` is this fork.
-- `upstream` is freedesktop.org Mesa (mesa/mesa).
-- Never push `upstream/main` directly to fork `main`
-  (`git push origin upstream/main:main`); integrate through an intentional
-  rebase and record what diverged.
-- Separate upstreamable fixes from local evidence/bring-up scaffolding.
-- Keep Terakan changes reviewable by mechanism, not by batch size.
+When cache wiring changes, consult `steinmarder/docs/workspace/ccache-sccache-wiring.md` and `steinmarder/docs/workspace/sccache-multi-emit-patch.md`, then update the reproducible recipe. Do not bypass cache misses silently.
 
-Upstreamability, conformance, and reviewability matter even when a change is
-fork-local.  Source of truth: `docs/submittingpatches.rst` (mesa-26 branch).
-Mesa patch discipline applies unless a fork-local task explicitly narrows scope:
-patches should not mix behavior with formatting churn, should affect one
-component when possible, must not introduce build breaks, should remain
-bisectable, must be tested prudently, and should use clean history without fixup
-commits when presented for review.  Commit subjects use a component prefix and a
-concise mechanism.  Bodies make the mechanism reviewable: name the invariant or
-bug, describe the change at the level a maintainer needs, cite the evidence, and
-state the tests without turning the message into a template.
+Check ccache state with:
 
-Use `Closes:` for GitLab issue URLs and `Fixes:` only for an earlier commit that
-introduced the defect.  Use `Backport-to:` or the supported Mesa stable mechanism
-only when appropriate.  Do not submit patches autonomously (per
-`docs/submittingpatches.rst`).  The submitter must understand the code, own the
-change, and disclose AI assistance in commit trailers when Mesa policy requires
-it.
+```bash
+ccache --show-stats --verbose
+```
 
-### AI-assistance commit trailers
+Expected status: a first full build populates `~/.cache/ccache` and shows about 95% misses while filling the cache. Later rebuilds with unchanged sources should show more than 90% hits.
 
-Mesa explicitly forbids `Co-authored-by:` for AI tools (it is reserved for HUMAN
-co-authors -- see `docs/submittingpatches.rst`).  This project's development is a
-multi-LLM-human-in-the-loop chain.  The canonical concise form lists the ACTUAL
-tools used per commit (not every tool every time):
+## Submission and upstream
+
+`origin` names this fork. `upstream` names freedesktop.org Mesa (`mesa/mesa`).
+
+Do not push `upstream/main` directly to fork `main` with `git push origin upstream/main:main`. Sync through an intentional rebase and record any divergence.
+
+Separate upstreamable fixes from local evidence and bring-up scaffolding. Keep Terakan and R300VK changes reviewable by mechanism, not batch size.
+
+Use `docs/submittingpatches.rst` on the mesa-26 branch for Mesa submission rules. Apply those rules unless a fork-local task explicitly narrows scope. Patches must not mix behavior with formatting churn, should affect one component when possible, must not break builds, should remain bisectable, must be tested prudently, and must be presented without fixup commits for review.
+
+Commit subjects use a component prefix and a concise mechanism. Commit bodies name the invariant or bug, describe the change at maintainer-review depth, cite evidence, and state tests without turning the message into a template.
+
+Use `Closes:` for GitLab issue URLs. Use `Fixes:` only for the earlier commit that introduced the defect. Use `Backport-to:` or the current Mesa stable marker only when appropriate.
+
+Do not submit Mesa patches through an autonomous tool. The submitter must understand and own the change, and must add AI disclosure trailers when Mesa policy requires them.
+
+### AI-assistance trailers
+
+Mesa reserves `Co-authored-by:` for human co-authors. Do not use it for AI tools.
+
+List only tools used for the commit:
 
 ```text
 Assisted-by: Claude (Opus/Sonnet 4.x), ChatGPT Codex (5.x), Gemini (Flash/Pro 3.x), Mistral, Ollama, DeepSeek
 ```
 
-- Use `Assisted-by:` for mixed human/AI work.
-- Use `Generated-by:` when AI generated almost the entire change.
-- Trivial or mechanical changes MAY omit disclosure per Mesa policy.
-- Source file headers never carry AI labels; disclosure is the commit-trailer
-  system only.
+Use `Assisted-by:` for mixed human/AI work. Use `Generated-by:` when AI generated almost the entire change. Trivial or mechanical changes may omit disclosure when Mesa policy allows omission. Source headers never carry AI labels; disclosure belongs in commit trailers only.
 
-Past commits on this project (pre-policy) used `Co-Authored-By: Claude Opus 4.7
-(1M context) <noreply@anthropic.com>`, which violates Mesa policy.  Resolution:
-existing commits are HISTORICAL ARTIFACTS -- do NOT force-push to rewrite git
-history; the trailers remain in the log.  NEW commits MUST use `Assisted-by:`.
-Patch files checked into the tree as historical artifacts
-(`src/re/r600/results/.../*.patch`, kernel-module patch series under `src/amd/...`
-and embedded DKMS sources) MAY retain the original trailer; they are snapshots
-and must not be rewritten.
+Historical pre-policy commits with `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` remain historical artifacts. Do not force-push to rewrite them. New commits use `Assisted-by:` or `Generated-by:`.
 
-### File-header copyright and SPDX policy
+Checked-in patch snapshots may retain original trailers: `src/re/r600/results/.../*.patch`, kernel-module patch series under `src/amd/...`, and embedded DKMS sources. They are snapshots and must not be rewritten only for trailer policy.
 
-Source of truth: `docs/submittingpatches.rst` (mesa-26 branch).  The project
-layers a collective-copyright convention on top of Mesa's SPDX-only baseline.
-Per-file headers are optional; many Mesa files use SPDX-only with no Copyright
-line, which is also fine.
+### File headers, copyright, and SPDX
 
-NEW source files in this workspace, when a header is appropriate (match
-adjacent-file style):
+Use `docs/submittingpatches.rst` on the mesa-26 branch for Mesa header rules. Per-file headers are optional; many Mesa files use SPDX-only headers with no copyright line.
+
+For new source files, match adjacent-file style. When a copyright header is appropriate, use:
 
 ```c
 /*
@@ -949,208 +551,102 @@ adjacent-file style):
  */
 ```
 
-- MUST use either the form above OR `/* SPDX-License-Identifier: MIT */` alone,
-  depending on adjacent-file style.
-- MUST NOT fabricate an individual personal-name Copyright line.  LLM templates
-  default to `Copyright (c) YYYY <git config user.name>` (e.g.
-  `Eirikr Hinngart`, `eirikr`) -- ALWAYS strip.
-- MUST NOT add `(LLM-assisted)`, `Generated by Claude`, or any AI tag to the file
-  header.
-- MUST NOT use the legacy invented collective `Copyright (c) YYYY steinmarder
-  project`; use `Terascale Functionalists` instead.
+When adjacent files use SPDX-only style, use:
 
-EXISTING source files with upstream copyrights (Vitaliy "Triang3l" Kuzmin-authored
-Terakan files, mesa-tree files from prior contributors, any pre-existing header
-with a non-project author name):
+```c
+/* SPDX-License-Identifier: MIT */
+```
 
-- MUST PRESERVE the existing copyright header verbatim, including author name and
-  year.  The MIT license itself requires preservation: "The above copyright
-  notice and this permission notice shall be included in all copies or
-  substantial portions of the Software."
-- MUST NOT strip or rewrite the upstream copyright when refactoring, splitting,
-  or moving the file.
-- When ADDING new content to an upstream file, the upstream copyright stays; do
-  NOT add a second project-collective Copyright line on top of the upstream
-  header.
+Do not fabricate individual personal-name copyright lines such as `Copyright (c) YYYY <git config user.name>`, `Copyright (c) YYYY Eirikr Hinngart`, or `Copyright (c) YYYY eirikr`. Strip LLM-template defaults.
 
-## Comment, commit, and markdown doctrine
+Do not add `(LLM-assisted)`, `Generated by Claude`, or any AI label to a file header. Do not use `Copyright (c) YYYY steinmarder project`; use `Terascale Functionalists` when a project collective line is appropriate.
 
-Follow the local style first: `.editorconfig`, `.clang-format`, adjacent code,
-and repo-local build rules override generic taste.  For Mesa-shaped C/C++, the
-baseline is 3-space indentation, no tabs, 78-column code where practical, short
-Doxygen-shaped function comments when useful, and comments that quote or name spec
-text when that is the durable source of truth.  Do not mass-reformat code when the
-patch is about behavior.
+Preserve existing upstream headers verbatim, including author name and year. This applies to Vitaliy "Triang3l" Kuzmin-authored Terakan files, Mesa-tree files from prior contributors, and any pre-existing header with a non-project author. The MIT license requires preserving copyright and permission notices in copied or substantial portions.
 
-Use American English spelling in new or modified source comments, commit
-messages, and documentation authored by this project's contributors (e.g.,
-"honor" not "honour", "behavior" not "behaviour", "initialize" not "initialise").
-This rule scopes to NEW or MODIFIED text only.  The tree carries many upstream
-Mesa files whose comments were authored in British or other English variants (for
-example `src/egl/main/eglcontext.c` uses "honour").  Do NOT edit upstream comments
-solely to change spelling -- churn-only spelling edits across upstream code are
-explicitly discouraged because they create needless merge conflict surface against
-the upstream synchronization lane.  Quoted spec text, kernel symbol names, and
-diagnostics that mirror hardware identifiers stay verbatim regardless of spelling.
-When a contributor is making a substantive edit to upstream code anyway (changing
-behavior or extending a function), they MAY align the touched comment lines to
-American English in the same commit; when the substantive edit is unrelated to
-comment text, leave the existing spelling alone.
+Do not strip or rewrite an upstream header when refactoring, splitting, or moving a file. When adding content to an upstream file, keep the existing upstream header and do not add a second project-collective copyright line above it.
 
-Source comments MUST NOT contain task numbers, private issue numbers, PR numbers,
-companion-PR breadcrumbs (`companion to PR #...`), wave/phase/mission/session
-labels (`Phase 4.4`, `Step 1 of Phase 3`), worktree names, agent names
-(`@triang3l`, `(eirikr)`), local absolute paths, local/private host FQDNs, raw
-private IPs, author tags, deictic time (`as of today`, `currently`, `previously`,
-`will be exercised when Phase 5 lands`), date-stamped claim/LI/Q tags
-(`C-2026-04-19-06`, `LI-2026-04-17-02`, `(2026-05-15)`), deictic chip references
-(`this chip family`, `our GPU`), internal-repo paths
-(`per Evergreen_ISA.txt:17572`), or internal evidence paths as authority.  Move
-each of those to the commit message or finding-doc as indicated.  Source comments
-MUST name durable mechanisms: exact chip, ISA/register rule, API/spec rule, kernel
-validator, test class, or measured behavior.
+## Comments, commits, and Markdown
 
-Preferred comment shape:
+Follow local style first: `.editorconfig`, `.clang-format`, adjacent code, and repo-local build rules override generic taste. Mesa-shaped C/C++ uses 3-space indentation, no tabs, 78-column code where practical, short Doxygen-shaped function comments when useful, and comments that name the spec or source rule when that rule controls the code. Do not mass-reformat code when the patch is about behavior.
+
+Use American English spelling in new or modified source comments, commit messages, and project-authored documentation: `honor`, `behavior`, `initialize`. This rule applies only to new or modified text. Do not edit upstream comments solely for spelling; churn-only spelling edits create unnecessary merge conflicts. Quoted spec text, kernel symbol names, diagnostics, and hardware identifiers stay verbatim. When a substantive edit already changes a comment line, the touched line may be aligned to American English; otherwise leave existing spelling alone.
+
+Source comments must not contain unstable or private references: task numbers, private issue numbers, PR numbers, companion-PR breadcrumbs, wave/phase/mission/session labels, worktree names, agent names, author tags, local absolute paths, private host FQDNs, raw private IPs, deictic time, dated claim/LI/Q tags, deictic chip names, internal-repo source paths, or internal evidence paths as authority.
+
+Examples of forbidden source-comment authority include `companion to PR #...`, `Phase 4.4`, `Step 1 of Phase 3`, `@triang3l`, `(eirikr)`, `as of today`, `currently`, `will be exercised when Phase 5 lands`, `C-2026-04-19-06`, `LI-2026-04-17-02`, `this chip family`, `our GPU`, and `per Evergreen_ISA.txt:17572`.
+
+Source comments name durable mechanisms: exact chip, ISA/register rule, API/spec rule, kernel validator, test class, or measured behavior.
+
+Commit messages and finding documents may carry chronology when useful. Source comments do not.
+
+Preferred shape:
 
 ```text
-The kernel treats WORD0 as the per-BO byte offset.  It adds the relocation base
+The kernel treats WORD0 as the per-BO byte offset. It adds the relocation base
 before validation, so the shader sees the caller's intended buffer address.
 ```
 
-Bad comment shape:
+Bad shape:
 
 ```text
 Phase 8 workaround from the agent branch.
 ```
 
-Mesa-like comments are not necessarily one-liners.  Use short labels for obvious
-local sections, and compact multi-sentence blocks when the code depends on
-hardware behavior, API rules, kernel validation, empirical evidence, or non-local
-invariants.  The common rule is mechanism over decoration.
+Use short labels for obvious local sections. Use compact multi-sentence blocks only when the code depends on hardware behavior, API rules, kernel validation, empirical evidence, or non-local invariants. Mechanism controls comment length.
 
-Do not frame source comments with decorative delimiter lines, banner boxes, ASCII
-art, or long punctuation runs.  Start with the first useful sentence and end after
-the last useful sentence; do not wrap it in `/* ----- */`, `// =====`,
-`/* --- label --- */`, or similar borders:
+Do not frame comments with decorative delimiter lines, banner boxes, ASCII art, or long punctuation runs. Avoid wrappers such as `/* ----- */`, `// =====`, and `/* --- label --- */`. Start with the first useful sentence and stop after the last useful sentence.
 
-```text
-/* ---------------------------------------------------------------------------
- * Single-slot ramp texture cache for R300-class gradient draws.
- * -------------------------------------------------------------------------- */
-```
+When extending Triang3l-authored Terakan files, match the file cadence: shorter line lengths, fewer subclauses, and comments only when they carry silicon, spec, or test information.
 
-When extending Triang3l-authored Terakan files, match the file's cadence: shorter
-line lengths, fewer subclauses, and comments only where they carry silicon/spec/
-test information.
+Commit messages and PR titles are mechanism-named and component-prefixed when project style expects it. The body makes the invariant, change, evidence, and tests reviewable. `Fixes:`, backport notes, AI disclosure, and review trailers stay where Mesa expects them. Do not mix formatting churn with logic changes. Each commit should be buildable, reviewable, and bisectable unless a stated migration plan says otherwise.
 
-Commit messages and PR titles MUST be mechanism-named and component-prefixed when
-the project style expects it.  Keep the subject concise.  Use the body to make a
-maintainer understand the invariant, the change, the evidence, and the tests as
-one reviewable story; `Fixes:`, backport notes, AI-assistance disclosure, and
-review trailers stay in the body where Mesa expects them.  Do not mix formatting
-churn with logic changes.  Every commit should be buildable, reviewable, and
-bisectable unless a stated migration plan says otherwise.
+### Source comment shape
 
-Markdown loaded by agents MUST have exactly one H1, heading depth at most three,
-language tags on code fences, specific cross-references, and rule text in MUST /
-MUST NOT / SHOULD form.  Do not use emoji, ASCII banners, relative slice
-references (`see above` / `see below`), or vague future promises in rule files.
+Use these examples as style anchors: the WORD0 fix block in `src/amd/terascale/vulkan/terakan_dispatch.c` near `PKT3_SET_RESOURCE` and `desc[0] - bo->va`, and the inline silicon notes in `terakan_format.c` and `sfn_instr_mem.cpp`.
 
-### Commenting voice
+A mechanism comment has this order:
 
-The voice this repo already uses, sharpened a little.  Anchor examples: the WORD0
-fix block in `src/amd/terascale/vulkan/terakan_dispatch.c` (the `PKT3_SET_RESOURCE`
-emit, around the `desc[0] - bo->va` write) and the in-line silicon notes in
-`terakan_format.c` / `sfn_instr_mem.cpp`:
+1. Load-bearing claim: `WORD0 carries the per-BO byte offset.`
+2. Public or source authority by name: `evergreen_packet3_check`, AMD ISA chapter, register macro, or spec section.
+3. Consequence, with an inline code fragment when clearer than prose: `ib[WORD0] = reloc->gpu_offset + offset`.
+4. Test reference when the comment explains a fixed failure: CTS case or `dEQP-VK.<group>.*`.
+5. Env knobs or flags, grouped at the end of the block when relevant.
 
-- A short paragraph opens with the load-bearing claim ("WORD0 carries the per-BO
-  byte offset.").
-- Then the primary-source citation, by name -- the kernel function
-  (`evergreen_packet3_check`), the ISA chapter, the register macro
-  (`R_028C70_CB_COLOR0_INFO`) -- not an internal-repo file extract.
-- Then the consequence in one or two lines, with a fragment of code inlined when
-  that is clearer than prose: `ib[WORD0] = reloc->gpu_offset + offset`.
-- A CTS test name or `dEQP-VK.<group>.*` reference when the comment exists to
-  explain a test failure being fixed.
-- Env knobs / flags described together at the bottom of the block.
-- Conversational where appropriate ("Palm silently no-ops `MEM_RAT_CMPXCHG_INT` on
-  the cached path") and never abstract ("Set the flag").
+Default to short comments. A one-line trailing comment on the load-bearing line is better than a function-header paragraph unless the whole function encodes a non-obvious invariant.
 
-Structural distillate:
+Use one thought per comment. Stack separate comments when steps are distinct. Do not fuse separate steps into one multi-clause sentence.
 
-- Default short.  One-line trailing comments on the load-bearing line beat a
-  function-header paragraph, unless the function as a whole encodes a non-obvious
-  invariant.
-- One thought per comment; stack them when steps are distinct, rather than fusing
-  them into a multi-clause sentence.
-- Do not paraphrase the next line of code.  If the code reads, the comment is
-  about WHY the code is shaped that way -- the silicon constraint, the spec
-  section, the measurement -- not what it does.
-- When the code is mechanical, no comment.  Comments earn their place by carrying
-  information that does not survive in the code itself.
-- Anchor citations by name (AMD Evergreen-Family ISA section,
-  `SQ_TEX_RESOURCE_WORD4.DST_SEL_X`, Vulkan spec section) rather than by line
-  number or repo-internal path.
-- Multi-paragraph blocks reserved for genuine silicon-quirk reasoning.
+Do not paraphrase the next line of code. If the code already says what happens, the comment explains why the code has that shape: silicon constraint, spec section, kernel validator, measurement, or non-local invariant.
 
-Prose-level distillate (the part that makes a comment feel like everything just
-makes sense):
+Do not comment mechanical code. Comments earn space by carrying information that does not survive in code alone.
 
-- State mechanism in the active voice ("the kernel reads WORD0 and adds the
-  relocation offset"), not in the passive ("WORD0 is combined with the offset").
-  The hardware does things; say so.
-- Let sequence be the explanation.  "X.  Then Y.  Then Z." -- one sentence per
-  step, each doing one thing -- beats one sentence with three clauses.
-- Chain each reason by what the next step needs ("...so the descriptor write can
-  resolve the relocation"), so the comment moves forward instead of cataloguing
-  facts in parallel.
+Name citations by authority, not by internal line number or private path: AMD Evergreen-Family ISA section, `SQ_TEX_RESOURCE_WORD4.DST_SEL_X`, Vulkan spec section, or kernel function.
 
-Example shape:
+Use active voice and sequence. `The kernel reads WORD0. Then it adds reloc->gpu_offset. Then the shader sees the intended VA.` is better than one passive sentence with three clauses.
+
+Example:
 
 ```text
-The kernel reads WORD0 as a byte offset.  It adds reloc->gpu_offset.
-The buffer base reaches the shader at the right VA -- any per-element
-offset the caller asked for survives the relocation.
+The kernel reads WORD0 as a byte offset. It adds reloc->gpu_offset.
+The buffer base reaches the shader at the right VA; any per-element
+offset requested by the caller survives relocation.
 ```
 
-This composes with the no-task-#-no-PR-#-no-Phase-X.Y-no-deictic-refs rules above.
-Together: short, active, sequenced, primary-source-grounded, time-invariant.
+Multi-paragraph comment blocks are reserved for genuine silicon-quirk reasoning.
 
-### TODO bodies stay mechanism-only
+### TODO comments
 
-AGENTS.md is the style guide for source comments; it is not a TODO tracker.
-Deferred engineering work goes in the source file at the line that names the
-affected mechanism, with the literal `TODO:` / `FIXME:` / `XXX:` / `HACK:` /
-`PLACEHOLDER:` tag at the start of the comment.  Adding "TODO: do X eventually" to
-AGENTS.md, even as commentary, is forbidden.  Examples in this section name the
-comment SHAPE, not real action items.
+Rule files are not TODO trackers. Deferred work belongs in the source file at the affected mechanism, using `TODO:`, `FIXME:`, `XXX:`, `HACK:`, or `PLACEHOLDER:` at the start of the comment. Do not add real future-work TODOs to rule files. Examples in this section describe comment shape only.
 
-Legitimate TODO/FIXME/XXX/HACK/PLACEHOLDER tags must name three things in
-mechanism terms:
+A TODO-family comment must name three mechanism elements:
 
-- the missing work, in terms of the function, register, ISA section, kernel
-  symbol, or spec chapter that needs the change;
-- the reason for deferral, in terms of the silicon, ABI, or evidence constraint
-  that blocks completing it now;
-- the tracking artifact, in terms of a durable name (function, register,
-  `gitlab.freedesktop.org` issue URL, spec chapter, silicon-constraint name).
+- missing work: function, register, ISA section, kernel symbol, or spec chapter that needs the change;
+- deferral reason: silicon, ABI, or evidence constraint blocking completion now;
+- tracking artifact: durable function name, register name, `gitlab.freedesktop.org` issue URL, spec chapter, or silicon-constraint name.
 
-The same comment must not embed any of the following:
+A TODO-family comment must not contain reviewer breadcrumbs, PR-thread references, phase/wave/mission labels, AGENTS.md rule numbers, or deictic references such as `currently`, `previously`, `this driver`, or `our GPU`.
 
-- reviewer breadcrumbs (`reviewer P1 badge`, `Sourcery flagged`),
-- PR-thread references (`PR thread that introduced this`, `the install-prefix work that surfaced this`),
-- internal phase, wave, or mission labels (`Wave 5C`, `Phase 1E-atomic`, `mission-r300-breakthrough`),
-- AGENTS.md rule-number citations (`Per AGENTS.md rule 9a, ...`),
-- time-relative or deictic references (`currently`, `previously`, `this driver`, `our GPU`).
-
-The chronology prohibition and the deictic prohibition bind TODO bodies as
-strictly as ordinary comments.  Reviewer feedback, PR chronology, and phase labels
-belong in the commit message and the PR description; the source comment carries
-mechanism only.  The placeholders `<missing-work>`, `<reason>`, and
-`<tracking-artifact>` below are deliberately generic so a reader does not mistake
-the example for a real action item.
-
-Wrong shape (project chronology smuggled into the source):
+Wrong shape:
 
 ```text
 /* TODO: ...  Reason for deferral: outside this PR's scope.
@@ -1158,51 +654,44 @@ Wrong shape (project chronology smuggled into the source):
  */
 ```
 
-Right shape (all three mechanism elements named):
+Right shape:
 
 ```text
 /* TODO: missing work --
- *           <one or two lines naming the function, register, ISA
- *           section, kernel symbol, or spec chapter that needs the
- *           change>.
+ *           <function, register, ISA section, kernel symbol, or spec
+ *           chapter that needs the change>.
  *       reason --
- *           <one or two lines naming the silicon, ABI, or evidence
- *           constraint that blocks completing the change now>.
+ *           <silicon, ABI, or evidence constraint blocking completion>.
  *       tracking-artifact --
- *           <a durable name: function, register, gitlab.freedesktop.org
- *           issue URL, spec chapter, or silicon-constraint name>.
+ *           <durable function, register, gitlab.freedesktop.org issue
+ *           URL, spec chapter, or silicon-constraint name>.
  */
 ```
 
-### Markdown finding-doc rules
+Reviewer feedback, PR chronology, and phase labels belong in the commit message or PR description. Source comments carry mechanism only.
 
-Markdown bodies MAY carry chronology (every finding-doc has dated frontmatter --
-`last_verified`, `evidence_class`, dated filename, ordered predecessors).  That is
-intentional.  PR# / task# references MUST triangulate with a durable identifier:
+### Finding documents and agent-loaded Markdown
 
-| Wrong (PR# alone) | Right (durable primary + PR# cross-link) |
-|---|---|
-| `the fix landed via mesa PR #34` | `landed in commit f230cb07db6 (terakan_buffer.c::terakan_CreateBuffer size-zero guard); PR #34 / branch fix/w9-buffer-size-zero-guard for cross-link` |
-| `see issue #157` | `see filed-finding 2026-05-15-induced-lockup-recovery-test-results.md (PR #41 if still open)` |
+Finding documents may carry chronology: dated frontmatter, `last_verified`, `evidence_class`, dated filenames, and ordered predecessors. PR or task references must be paired with a durable identifier.
 
-### LLM-readable markdown style (for memory/finding-docs/AGENTS.md)
+Examples:
 
-- MUST use heading depth <= 3 levels.
-- MUST use exactly one H1 per file (the document title).
-- MUST include frontmatter on programmatically-loaded files.
-- MUST use language tags on code fences (` ```bash`, ` ```c`).
-- SHOULD prefer tables over bullet lists for 3+ comparable items.
-- MUST NOT use emoji, ASCII boxes, banner dividers in rules text.
-- MUST NOT use "see above" / "see below" -- the file may be slice-loaded.
-- MUST use MUST / MUST NOT / SHOULD imperative voice in rules.
+- Wrong: `the fix landed via mesa PR #34`
+- Right: `landed in commit f230cb07db6 (terakan_buffer.c::terakan_CreateBuffer size-zero guard); PR #34 / branch fix/w9-buffer-size-zero-guard for cross-link`
+- Wrong: `see issue #157`
+- Right: `see filed-finding 2026-05-15-induced-lockup-recovery-test-results.md (PR #41 if still open)`
 
-### Comment-hygiene linter and git hook
+Markdown loaded by agents must use exactly one H1, heading depth no deeper than `###`, frontmatter on programmatically loaded files, language tags on code fences, exact cross-references, and rule text in `MUST`, `MUST NOT`, or `SHOULD` form.
 
-Comment-hygiene enforcement must not make a clean Mesa checkout depend on the
-sibling steinmarder tree.  If the linter is mirrored or vendored into this repo,
-wire it through the local pre-commit framework and make it a normal Mesa-side
-gate.  If the only implementation is in steinmarder, treat it as an advisory
-support tool until the Mesa-side mirror exists.
+Use tables only when columns carry independent comparison value. Prefer bullets for simple ownership, lookup, and rule lists.
+
+Do not use emoji, ASCII boxes, banner dividers, `see above`, `see below`, or vague future promises in rule files. Slice-loaded text must stand without nearby context.
+
+### Comment-hygiene linter and Git hook
+
+Comment-hygiene enforcement must not make a clean Mesa checkout depend on `steinmarder/`.
+
+If the linter is mirrored or vendored into Mesa, wire it through the local pre-commit framework and treat it as a Mesa-side gate. If the only implementation is in `steinmarder/`, treat it as advisory until the Mesa-side mirror exists.
 
 Advisory sibling invocation, when the checkout layout provides it:
 
@@ -1210,159 +699,210 @@ Advisory sibling invocation, when the checkout layout provides it:
 ../steinmarder/src/re/r600/scripts/lint/comment_hygiene_lint.py --staged
 ```
 
-Do not install a blocking Git hook in Mesa that points at a missing sibling path.
-A hook that depends on an external checkout violates the standalone Mesa rule and
-turns "comment hygiene" into an environment accident.  NEW commits still MUST
-follow this policy; the linter is an enforcement aid, not the source of truth.
+Do not install a blocking Git hook in Mesa that points at a missing sibling path. A hook that depends on an external checkout violates Mesa independence and turns comment hygiene into an environment accident.
 
-Existing in-flight PRs MAY keep breadcrumb comments; do NOT force-push to scrub
-them.  NEW commits MUST follow this policy.
+New commits must follow this policy even when no linter runs. The linter enforces part of the policy; it does not define it.
 
+Existing in-flight PRs may keep breadcrumb comments. Do not force-push only to scrub them. New commits must follow this policy.
 
-## RE and evidence boundary
+## Evidence boundary
 
-All driver-RCA evidence lives in steinmarder, not here.  Before proposing a
-Terakan fix, consult the sibling evidence when available:
+Driver-RCA evidence lives in `steinmarder/`, not in Mesa. Before proposing a Mesa driver fix, consult sibling evidence when the checkout is available. This applies to Terakan, r300g, r600g, R300VK, shared NIR/compiler paths, build infrastructure, and cross-driver conformance work.
 
-- `steinmarder/src/re/r600/findings/CLAIMS.md` -- live claims tracker
-- `steinmarder/src/re/r600/findings/active/` -- open RCAs
-- `steinmarder/src/re/r600/results/` -- capture bundles + index.csv
-- `steinmarder/src/re/r600/docs/rca/` -- cross-cutting RCAs
+Primary sibling references are grouped by lane.
+
+Shared workspace references:
+
 - `steinmarder/GPU_ARCHITECTURE_BASELINES.md`
 - `steinmarder/AGENTS_README.md`
 - `steinmarder/AGENT_RULES.md`
-- `steinmarder/docs/workspace/host-setup.md` -- extended host setup recipe
-- `steinmarder/docs/workspace/ccache-sccache-wiring.md` -- cache RCA
-- `steinmarder/docs/workspace/sccache-multi-emit-patch.md` -- sccache RCA + rebuild
-- `steinmarder/docs/workspace/mesa-fork-synthesis.md` -- 4-profile consolidation
-- `steinmarder/docs/workspace/mesa-fork-upstream-divergence.md` -- upstream rebase cadence
-- `steinmarder/docs/workspace/hostname-policy.md` -- raw-IP ban
+- `steinmarder/docs/workspace/host-setup.md`
+- `steinmarder/docs/workspace/ccache-sccache-wiring.md`
+- `steinmarder/docs/workspace/sccache-multi-emit-patch.md`
+- `steinmarder/docs/workspace/mesa-fork-synthesis.md`
+- `steinmarder/docs/workspace/mesa-fork-upstream-divergence.md`
+- `steinmarder/docs/workspace/hostname-policy.md`
 
-Steinmarder evidence may be cited by durable bundle path, finding filename, public
-spec name, exact hardware identity, or commit SHA.  Do not copy bundles, findings,
-host kits, or local orchestration into Mesa.  Mesa source comments should prefer
-public specs, source symbols, DRM/Khronos names, and freedesktop.org references.
-Freedesktop.org bug and issue references (e.g. `https://gitlab.freedesktop.org/...`
-URLs and GitLab issue numbers on freedesktop.org) are required and allowed.  Do
-not cite internal GitHub/GitLab issue numbers from this fork or from steinmarder.
-Empirical fork evidence belongs in findings or commit messages unless the source
-code needs the mechanism to be intelligible.
+r600 and Terakan references:
 
-## Tool discipline for RCA and audits
+- `steinmarder/src/re/r600/`
+- `steinmarder/src/re/r600/findings/CLAIMS.md`
+- `steinmarder/src/re/r600/findings/active/`
+- `steinmarder/src/re/r600/results/`
+- `steinmarder/src/re/r600/docs/rca/`
 
-Use the strongest tool that matches the claim.
+r300 and R300VK references:
 
-Subagent model economy: dispatch background and fan-out subagents (read-only
-search, file location, summarize-and-cite) on the smallest capable model, not
-the largest.  Escalate to a larger model only for a task that genuinely needs it
--- deep synthesis, a hazardous or hard-to-reverse decision, cross-file reasoning
--- and record the reason for the escalation.  A search-and-summarize fan-out on a
-large model is a cost defect, not rigor; the parent does the synthesis.  For
-Claude Code specifically the concrete default is in `CLAUDE.md`.
+- `steinmarder/src/re/300/`
+- `steinmarder/src/re/300/findings/CLAIMS.md`
+- `steinmarder/src/re/300/findings/active/`
+- `steinmarder/src/re/300/results/`
+- `steinmarder/src/re/300/docs/rca/`
 
-Tier S, required when available and relevant:
+Use the repository’s exact path spelling. Do not invent an alias such as `steinmarder/src/re/r300/` unless that path exists. If both `src/re/300/` and another r300-named path exist, cite the exact path used by the evidence.
 
-- `clangd` or LSP for definitions, references, call hierarchy, and symbol
-  reachability.
+Steinmarder evidence may be cited by durable bundle path, finding filename, public spec name, exact hardware identity, or commit SHA. Do not copy bundles, findings, host kits, or local orchestration files into Mesa.
+
+Mesa source comments prefer public specs, source symbols, DRM/Khronos names, freedesktop.org references, and exact hardware identity. Freedesktop.org GitLab issue URLs and issue numbers are allowed. Internal GitHub or GitLab issue numbers from this fork or from `steinmarder/` are not source-comment authority.
+
+Empirical fork evidence belongs in findings or commit messages unless the source code needs the mechanism to be intelligible.
+
+## Tooling for RCA and audits
+
+Use the strongest available tool that matches the claim. Do not use a weaker text search when a structural, indexed, flow-sensitive, binary, or empirical tool is required.
+
+### Tool availability
+
+When a relevant tool is missing, do not treat absence as evidence. Determine the package or install path, update the installation requirements document for the affected module, and record the validation command. If the tool cannot be installed in the current environment, record `not run` and why.
+
+Tool requirement updates must name:
+
+- tool command or package name;
+- reason the tool is needed;
+- install source or package manager when known;
+- expected version or version floor when required;
+- validation command, such as `<tool> --version`;
+- module, script, or audit that depends on it.
+
+### Tool classes
+
+Source navigation and reachability:
+
+- `clangd`, LSP, `read-tags`, `ctags`, GNU Global/`gtags`, `cscope`, `rg`, `git grep`, `fd`, `git log -S`, `git log -G`, `git blame`.
+
+Structural search and source transformation:
+
+- `ast-grep`, Semgrep, Coccinelle/`spatch`, `weggli`, `comby`, Tree-sitter CLI.
+
+Static analysis, complexity, and source metrics:
+
+- compiler diagnostics, warnings-as-errors, `clang-tidy`, `scan-build`, `cppcheck`, `sparse`, `smatch`, Infer, CodeQL, `lizard`, `scc`, `cflow`.
+
+Mesa, shader, and generated-state evidence:
+
+- Mesa build logs, CTS/Piglit/deqp logs, NIR dumps, shader disassembly, packet decode, generated-file checks, known-good/known-bad test inputs.
+
+Binary, reverse-engineering, and symbolization:
+
+- `gdb`, `addr2line`, `objdump`, `nm`, `readelf`, LIEF, `binwalk`, radare2/`r2`/`radiff2`, Rizin, Ghidra.
+
+Tracing, profiling, and runtime inspection:
+
+- `strace`, `ltrace`, `perfetto`, `trace-cmd`, LTTng, SystemTap/`stap`, `bpftrace`, `bcc-tools`, Sysprof, Valgrind, Heaptrack, Hotspot, `python-ptrace`, Frida, `frida-tools`.
+
+Fuzzing and input mutation:
+
+- honggfuzz, AFL++, Radamsa.
+
+C unit and integration support:
+
+- Check, shellcheck where applicable, project-native test runners, calibrated probes.
+
+### Tool tiers
+
+Tier S tools are required when available and relevant:
+
+- `clangd` or LSP for definitions, references, call hierarchy, and symbol reachability.
 - GNU Global, `cscope`, or equivalent indexes for large C trees.
 - `ast-grep` or Semgrep for structural patterns and class-of-bug audits.
-- `rg`, `git grep`, and `fd` for text, comments, strings, generated path
-  discovery, and fallback search.
+- `rg`, `git grep`, and `fd` for text, comments, strings, generated paths, and fallback search.
 - `git log -S`, `git log -G`, and `git blame` for evolution.
 
-Tier A, flow-sensitive:
+Tier A tools are flow-sensitive or build-sensitive:
 
-- Compiler diagnostics, warnings-as-errors, and static analysis where viable.
-- Coccinelle for cross-file consistency checks.
-- Mesa, kernel, and CTS/Piglit/deqp runner logs.
-- Shader disassembly, packet decode, and NIR dumps.
-- Generated-file checks.
+- compiler diagnostics, warnings-as-errors, and static analysis where viable;
+- Coccinelle for cross-file consistency checks;
+- Mesa, kernel, CTS, Piglit, and deqp runner logs;
+- shader disassembly, packet decode, and NIR dumps;
+- generated-file checks.
 
-Tier C, empirical:
+Tier C tools are empirical:
 
-- CTS/Piglit/deqp, dmesg, hardware counters, retained bundles,
-  perf/ftrace/bpftrace where relevant, and minimal reproducers when hardware
-  policy permits.
+- CTS/Piglit/deqp, `dmesg`, hardware counters, retained bundles, perf/ftrace/bpftrace, and minimal reproducers when hardware policy permits.
 
-When an audit reports a code claim, cite how the symbol/path was found, not only
-`file:line`.  For example: `(clangd: references on FUNC)`, `(global -r SYMBOL)`,
-or `(rg --fixed-strings SYMBOL src/)`.  Every new probe, lint, or
-verdict-producing script must be calibrated against known-good and known-bad
-inputs before its verdict is trusted.
+When an audit reports a code claim, cite how the symbol or path was found, not only `file:line`. Examples: `(clangd: references on FUNC)`, `(global -r SYMBOL)`, `(rg --fixed-strings SYMBOL src/)`.
+
+Every new probe, lint, or verdict-producing script must be calibrated against known-good and known-bad inputs before its verdict is trusted.
+
+### Agent coordination
+
+Use at most three concurrent subagents. Assign each subagent a bounded read-only task, input scope, expected output, and citation requirement. The parent agent owns synthesis, conflict resolution, implementation choices, and final claims.
+
+Use small or local models for search, file location, summarization, and citation fan-out. Escalate to a larger model only for deep synthesis, hazardous decisions, hard-to-reverse changes, or cross-file mechanism reasoning. Record the escalation reason when it affects the work record.
+
+Do not let subagents make load-bearing implementation decisions, push commits, delete files, alter build configuration, or suppress warnings. Subagents collect evidence; the parent evaluates it.
+
+### Retained tools and probes
+
+Retained analysis tools, probes, linters, and verdict-producing scripts must be real programs integrated into the repository’s native build or validation flow when they become required. They must not be hardcoded demonstrations.
+
+A retained tool must have:
+
+- clear inputs and outputs;
+- deterministic behavior where practical;
+- known-good and known-bad calibration cases;
+- documented dependencies;
+- documented safety gates for hazardous hardware access;
+- a validation command;
+- a maintainer-readable failure mode.
+
+Do not add a retained script that only proves one handpicked case unless it is explicitly documented as a temporary reproducer.
 
 ## Validation expectations
 
-| Changed surface | Minimum validation |
-|---|---|
-| Terakan source | targeted build plus relevant runtime/CTS when available. |
-| r300/r600 source | targeted build plus Piglit/CTS/deqp or documented hardware gate. |
-| NIR/lowering/compiler | build plus shader/compiler tests and affected conformance tests. |
-| Meson/build files | clean setup or reconfigure plus Ninja target and artifact/install check. |
-| Generated files | run generator or document why it is unavailable; verify generated diff. |
-| Source comments/docs | comment hygiene, markdown structure, and source-reference audit. |
-| scripts | shellcheck if applicable + known-good/known-bad path. |
+Minimum validation depends on the changed surface.
 
-Do not claim a test passed if it was not run.  Say `not run` and why.  If a test
-is blocked by hardware safety, say which gate is required.  If CTS/Piglit/deqp
-moves unexpectedly, the deviation is evidence, not noise.
+- Terakan source: targeted build plus relevant runtime or CTS when available.
+- r300/r600 source: targeted build plus Piglit, CTS, deqp, or documented hardware gate.
+- NIR, lowering, and compiler code: build plus shader/compiler tests and affected conformance tests.
+- Meson and build files: clean setup or reconfigure plus Ninja target and artifact/install check.
+- Generated files: run the generator or document why unavailable; verify the generated diff.
+- Source comments and docs: comment hygiene, Markdown structure, and source-reference audit.
+- Scripts: shellcheck when applicable plus known-good and known-bad paths.
+
+Do not claim a test passed if it was not run. Say `not run` and why. If a test is blocked by hardware safety, name the required gate. If CTS/Piglit/deqp movement differs from prediction, treat the deviation as evidence.
 
 ## Security and hardware stop-line
 
-Critical security defects and unsafe hardware-access defects interrupt normal
-feature work.  Stop, contain, and report before continuing if a change exposes:
+Critical security defects and unsafe hardware-access defects stop normal feature work. Contain and report before continuing if a change exposes:
 
-- hardcoded secrets, tokens, credentials, or private request bodies;
+- secrets, tokens, credentials, or private request bodies;
 - SQL injection or unsanitized query construction;
-- command injection through shell wrappers, generated scripts, hooks, or test
-  runners;
+- command injection through shell wrappers, generated scripts, hooks, or test runners;
 - path traversal or unchecked filesystem writes;
-- sensitive data in logs, manifests, bundles, test output, or generated
-  artifacts;
+- sensitive data in logs, manifests, bundles, test output, or generated artifacts;
 - missing authentication or authorization on sensitive paths;
 - insecure deserialization or SSRF;
-- unsafe MMIO, BAR, `/dev/mem`, raw-submit, reset, or privileged debugfs access
-  outside the lane's explicit gate.
+- unsafe MMIO, BAR, `/dev/mem`, raw-submit, reset, or privileged debugfs access outside the lane’s explicit gate.
 
-Never pass untrusted input to `sh -c`, `bash -c`, `eval`, generated shell
-fragments, or unchecked path concatenation.  Use allow-lists, normalization,
-containment checks, and exact opt-in gates.  Do not log secrets or raw tokens.
-If a critical issue is found, contain and report it before normal feature work
-resumes.
-
+Never pass untrusted input to `sh -c`, `bash -c`, `eval`, generated shell fragments, or unchecked path concatenation. Use allow-lists, normalization, containment checks, and exact opt-in gates. Do not log secrets or raw tokens.
 
 ## Synthesis over selection
 
-When merging changes from parallel branches or review findings, preserve all
-non-refuted content.  Do not use wave/phase chronology to decide which branch
-wins.  Mechanism and evidence decide.  The default for additive content at the
-same location is union plus synthesis.  Selection is allowed only when the
-discarded side is empirically refuted (tier-1 to tier-3 source: silicon
-measurement, ISA spec, or kernel source) or genuinely superseded, verified by
-line-level diff and recorded rationale.
+When merging parallel branches or review findings, preserve all non-refuted content. Mechanism and evidence decide; wave, phase, chronology, branch age, and author do not.
 
-| Verb | Required action |
-|---|---|
-| Analyze | Identify what each side contributes before editing.  Every differing line is a candidate for preservation. |
-| Reconcile | Preserve all non-refuted content; selection needs proof of refutation or supersession. |
-| Resolve | Finish the merge; leave no half-merged state or hidden follow-up.  Record outstanding items explicitly if the session cannot finish. |
-| Expand | Surface links between findings, code paths, and tests; do not paste two sections side by side without explaining how they relate. |
-| Harmonize | Use one durable mechanism name for the same thing across the synthesized artifact. |
-| Infuse | Add the check, citation, or rule that prevents the same failure class. |
+Default additive resolution is union plus synthesis. Selection is allowed only when the discarded side is empirically refuted by tier-1 through tier-3 evidence or genuinely superseded by a verified line-level diff and recorded rationale.
 
-A synthesis MUST contribute new value: a unified mental model, terminology map,
-cross-reference, stronger rule, validation matrix, or refined evidence tier.  A
-paste of A next to B is not synthesis.
+Merge actions:
 
-After every merge resolution, read the staged diff adversarially and ask: "What
-content from each source did this resolution drop that was not empirically
-refuted?"  If the answer is anything other than nothing, restore it, refute it by
-name and citation, or record it as an explicit follow-up.
+- Analyze: identify what each side contributes before editing. Every differing line is a candidate for preservation.
+- Reconcile: preserve non-refuted content. Selection requires proof of refutation or supersession.
+- Resolve: finish the merge; leave no half-merged state. Record outstanding items explicitly when a session cannot finish.
+- Expand: connect findings, code paths, and tests. Do not paste two sections side by side without explaining their relationship.
+- Harmonize: use one durable mechanism name for the same thing across the synthesized artifact.
+- Infuse: add the check, citation, rule, lint, or test that prevents the same failure class.
+
+A synthesis must add value: unified model, terminology map, cross-reference, stronger rule, validation matrix, or refined evidence tier. A paste of A next to B is not synthesis.
+
+After every merge resolution, read the staged diff adversarially:
 
 ```bash
 git diff --staged
 ```
 
-Forbidden shortcuts for additive content (they select, they do not synthesize):
+Ask what non-refuted content from each source was dropped. If anything was dropped, restore it, refute it by name and citation, or record it as explicit follow-up.
+
+Forbidden additive-content shortcuts:
 
 ```bash
 git merge -X theirs branch/feature-a
@@ -1370,134 +910,190 @@ git checkout --theirs file
 sed -i '/^<<<<<<< /d; /^=======$/d; /^>>>>>>> /d' file
 ```
 
-The `sed` form silently drops the `|||||||` base block and anything between it and
-`=======`.  Right patterns: cherry-pick with `--no-commit`, inspect every hunk,
-and commit only after adversarial diff review:
+Those forms select instead of synthesizing. The `sed` form can silently drop the `|||||||` base block and any content between it and `=======`.
+
+Preferred pattern:
 
 ```bash
 git cherry-pick --no-commit <sha>
-git diff --staged   # adversarial read: verify every hunk is intentional
+git diff --staged
 git commit
 ```
 
-To close a PR as superseded with explicit evidence preservation, cherry-pick the
-relevant SHA `--no-commit`, verify hunks, add the cross-link in the synthesis PR
-commit message, and only then close the superseded PR.  For additive markdown
-synthesis, compare each source against the merged result after the hand merge:
+For a superseded PR, cherry-pick the relevant SHA with `--no-commit`, verify hunks, add the cross-link in the synthesis PR commit message, and only then close the superseded PR.
+
+For additive Markdown synthesis, compare each source against the merged result after hand merge:
 
 ```bash
 comm -23 <(sort -u source_a.txt) <(sort -u merged.txt) > only_in_a.txt
 comm -23 <(sort -u source_b.txt) <(sort -u merged.txt) > only_in_b.txt
 ```
 
-Both files should be empty unless the missing lines are explicitly refuted or
-tracked.  `comm` is only a dropped-line detector; it does not preserve narrative
-order, so still read the merged section by hand.  Cross-references: steinmarder
-`AGENTS_README.md` "Synthesis Doctrine" and `AGENT_RULES.md` "Rule: Synthesis Over
-Selection" for the gate-oriented check method.
+`only_in_a.txt` and `only_in_b.txt` should be empty unless missing lines are explicitly refuted or tracked. `comm` detects dropped lines only; it does not preserve narrative order. Read the merged section by hand.
+
+Use steinmarder `AGENTS_README.md` “Synthesis Doctrine” and `AGENT_RULES.md` “Rule: Synthesis Over Selection” for the gate-oriented merge check when available.
 
 ## Regression-on-fix discipline
 
-A targeted fix for issue A must not regress unrelated behavior B.  After any change
-to a script, runner, build file, lowering pass, or descriptor path:
+A targeted fix for issue A must not regress unrelated behavior B. After changes to scripts, runners, build files, lowering passes, descriptor paths, or comments:
 
-- re-read `git diff --staged` with adversarial intent;
-- verify every removed line was intentional, duplicated elsewhere, or refuted;
+- read `git diff --staged` adversarially;
+- verify each removed line was intentional, duplicated elsewhere, or refuted;
 - compare test labels with the commands they run;
-- verify every symbol named in comments/docs against source;
+- verify every symbol named in comments or docs against source;
 - enumerate every override mechanism before documenting one;
 - check optional tool availability before configuring for it;
-- calibrate every new verdict-producing probe, lint, or runner on known-good and
-  known-bad inputs.
+- calibrate each new verdict-producing probe, lint, or runner on known-good and known-bad inputs.
 
-If a reviewer finds a defect, fix the class, not just the instance.  Add the rule,
-lint, test, or documented check that would have caught it.
+When a reviewer finds a defect, fix the class, not only the instance. Add the rule, lint, test, or documented check that would have caught it.
 
-## Workspace cleanup and deletion-readiness (strict clean)
+## Strict clean and deletion readiness
 
-When the user asks to clean, clean-and-merge, prune, or assess any repo for
-deletion, apply the canonical strict-clean checklist in
-[`docs/strict-clean-definition.md`](docs/strict-clean-definition.md) before any
-deletion.  A repository is deletion-ready only when all of its applicable
-conditions hold: clean working tree; on the synced canonical primary branch
-(no commits ahead or behind); local and remote owned branches reviewed and
-reconciled (content represented on primary or explicitly discardable); owned PRs
-merged or explicitly closed; linked/hidden/nested worktrees inventoried and any
-unique work reconciled; meaningful build/validation gate passed (warnings as
-errors where supported) or its absence recorded; and removal only by reversible
-trash movement unless permanent deletion is explicitly requested.
+When asked to clean, clean-and-merge, prune, or assess a repository for deletion, apply `docs/strict-clean-definition.md` before deleting anything.
 
-## Multi-CLI wrappers
+A repository is deletion-ready only when all applicable conditions hold:
 
-- `CLAUDE.md` imports this file with `@AGENTS.md` and carries Claude-specific
-  loading notes.
-- `GEMINI.md` imports this file with `@AGENTS.md` and carries Gemini-specific
-  loading notes.
-- Do not symlink either file.
-- Do not maintain divergent doctrine across wrappers.
-- Do not duplicate this full body into the wrappers unless a future tool loses
-  Markdown import support.
+- working tree is clean;
+- checkout is on the synced primary branch;
+- primary branch has no unreviewed ahead or behind commits;
+- local and remote owned branches are reviewed and reconciled;
+- unique branch content is represented on primary or explicitly discardable;
+- owned PRs are merged or explicitly closed;
+- linked, hidden, and nested worktrees are inventoried;
+- unique worktree content is reconciled;
+- meaningful build or validation gate passed, with warnings as errors where supported, or absence is recorded;
+- removal uses reversible trash movement unless permanent deletion is explicitly requested.
+
+## Multi-CLI loaders
+
+`AGENTS.md` owns Mesa rules. Tool-specific root files only load it and add tool-specific loading notes.
+
+- `CLAUDE.md` loads `@AGENTS.md` and may contain Claude-specific loading notes.
+- `GEMINI.md` loads `@AGENTS.md` and may contain Gemini-specific loading notes when Gemini CLI is used.
+- Do not symlink loader files.
+- Do not duplicate this body into loader files.
+- Do not maintain different doctrine across loader files.
 
 ## Key subsystems
 
-| Area | Path |
-|---|---|
-| Terakan Vulkan | `src/amd/terascale/vulkan/` |
-| Gallium r600 (SFN + VLIW5) | `src/gallium/drivers/r600/` |
-| Gallium r300 | `src/gallium/drivers/r300/` |
-| Rusticl/OpenCL (Rust) | `src/gallium/frontends/rusticl/` when enabled |
-| winsys/drm | `src/gallium/winsys/`, `src/drm-shim/` where applicable |
-| NIR/compiler plumbing | `src/compiler/`, `src/gallium/auxiliary/`, affected lowering paths |
-| Build entry | `build-infra/`, `meson.build`, `meson.options` / `meson_options.txt`, native files, install scripts |
+Use these root paths for first-pass scope:
 
-`rust-toolchain.toml` is an upstream Mesa file (`channel = "nightly"`); the active
-build selects Rust through the Meson/toolchain policy, not by a checked-in
-absolute path.  Keep subsystem-specific rules close to the subsystem when they are
-too narrow for this root file.
+- Terakan Vulkan: `src/amd/terascale/vulkan/`
+- Gallium r600, SFN, and VLIW5: `src/gallium/drivers/r600/`
+- Gallium r300: `src/gallium/drivers/r300/`
+- Rusticl/OpenCL when enabled: `src/gallium/frontends/rusticl/`
+- winsys/drm: `src/gallium/winsys/`, `src/drm-shim/` where applicable
+- NIR and compiler plumbing: `src/compiler/`, `src/gallium/auxiliary/`, affected lowering paths
+- Build entry: `build-infra/`, `meson.build`, `meson.options`, `meson_options.txt`, native files, install scripts
 
-!!Do not turn this file into a dump of every lane-specific rule.  When a rule
-becomes local to a subdirectory, move it into that lane's README or path-scoped
-agent doc and leave a pointer here!!
+`rust-toolchain.toml` is an upstream Mesa file with `channel = "nightly"`. Active builds select Rust through Meson and toolchain policy, not checked-in absolute paths.
 
-## FINAL MANDATORY PHILOSOPHY AND MINDFUL ENGINEERING FOUNDATIONS
-## {{{{{{CONTINUE PAYING GRANULAR ATTENTION TO PRIOR CONTEXT AND THE DETAILS NEXT: NOTHING GETS LEFT BEHIND}}}}}
+Keep subsystem-specific rules near the subsystem when they are too narrow for this root file. Do not turn `AGENTS.md` into a dump of lane-local rules. Move narrow rules into a lane README or path-scoped agent doc and leave a pointer here.
 
-*****[[[[[{{{{{_____ [Reminder of who you are:
-YOU ARE a dual-PhD-wielding software developer and engineer focused on reverse engineering hardware and software systems to improve conformance, compliance, standards alignment, stability, high performance, safety, and production-grade correctness — while preserving mindfulness, humane collaboration, fulfilling work, and successful engineering outcomes.]
+## Engineering foundations
 
-## [EXCEL, ACHIEVE, BUILD, AND ENGINEER CLEVERLY:]
+The project motto is:
 
-- *never* be lazy: investigate issues, falsify assumptions, and trace behavior to source.
-- *never* rely on local users, hardcoded shortcuts, symlinks, local-only paths, machine-specific FQDNs, or unreproducible environment assumptions.
-- *always treat warnings as defects* and warnings-as-errors in spirit; configure builds to continue far enough to reveal the full failure surface rather than masking downstream breakage.
-- *iteratively refine and update* canonical repo documentation, source comments, probes, tests, and implementation notes in the native style of the repository.
-- *systematically build, scope, engineer, conceptualize, harmonize, reconcile, and resolve* gaps, conflicts, regressions, TODOs, FIXMEs, and architectural debt; keep TODOwrite/task tracking aligned with the real implementation state.
-- *integrate-yet-modularize*: unify overlapping content, preserve useful distinctions, collapse redundancy, clarify boundaries, and separate concerns without losing the larger system synthesis.
-- persist through ambiguity and implement **robust, real solutions**; NEVER stop at demos, decorative abstractions, or plausibility sketches.
-- pay attention to detail and notice anomalies as you go.
-- explain the interconnected components clearly: call paths, dataflow, control flow, state ownership, ABI/UAPI boundaries, register paths, command streams, synchronization points, error paths, and known deficiencies.
-- *comment and annotate appropriately* as you build: comments should capture invariants, hardware behavior, protocol constraints, errata, non-obvious tradeoffs, and why the implementation is shaped as it is.
-- *TODOs, FIXMEs, and similar markers are evidence-bearing artifacts*: analyze their local context, historical intent, architectural implications, and testability. They are not merely hooks; they are captured fragments of design pressure, defect knowledge, or future enablement.
-- iterate with rigor and invention: combine source reading, build/test evidence, empirical probes, online research, primary documentation, community findings, forum archaeology, and adversarial review.
-- combine intellectual rigor with careful validation and appropriate scope control: pursue genuinely novel, hardware-grounded insights without drifting into unsupported speculation.
-- intensify analysis where warranted: visualize the complete system — repository layout, build graph, generated artifacts, file contents, driver architecture, probe outputs, logs, packet formats, register maps, IR/lowering paths, and integrated behavior.
-- cultivate the engineering mindspace required to clarify, design, implement, and validate: the inventiveness of a brilliant human engineer, the logic of a Vulcan, the grit of 5% Klingon, the wisdom of 5% Jedi, and the discipline of a production systems maintainer.
-- approach tasks stepwise from first principles: define scope, identify assumptions, derive constraints, inspect primary sources, decompose atomics, test hypotheses, and advance with evidence.
-- push boldly forward through each next step: resolve, fix, modularize, harmonize, test, document, and upstream the result where appropriate.
-- scrutinize, clarify, explore, deep dive, analyze, interpret, merge, dedupe, refactor, validate, and let each subsystem join the cry:
+`AD ASTRA PER MATHEMATICA ET SCIENTIAM ET TECHNICUM`
 
-  **AD ASTRA PER MATHEMATICA ET SCIENTIAM ET TECHNICUM!**
+Meaning for repository work: advance only through mathematics, science, and engineering. Creative insight is welcome, but every insight must be reduced to mechanism, evidence, implementation, and validation.
 
-- Where content overlaps, unify it. Where arguments diverge, reconcile and strengthen them. Where ideas repeat, collapse redundancy while preserving depth. Where parameters are absent, surface them. Where models are implicit, extract, derive, and test them.
+Use disciplined imagination. Generate bold hypotheses, then constrain them with source, specification, silicon behavior, build results, tests, and adversarial review. A useful idea becomes repository value only after it is expressed as code, documentation, probe methodology, validation data, or a clearer model of the system.
 
-- Every missed parameter sweep, unresolved gap, symbolic mutation, undeveloped theoretical link, unvalidated hardware assumption, register-level ambiguity, command-stream uncertainty, ABI hazard, build-system fault, test lacuna, or probe limitation must be surfaced, scoped, and validated where possible.
+Final artifacts must be more accurate, reproducible, navigable, testable, and source-grounded than their inputs.
 
-- All produced content — inline, attached, generated, patched, or referenced — must undergo synthesis: from atomic definitions through derivation, transformation, implementation, validation, and theory emergence.
+### Engineering posture
 
-- The result must not merely merge existing content; it must evolve it.
+Investigate before asserting. Trace behavior to source, specification, test oracle, log, generated artifact, kernel path, command stream, retained evidence, or silicon measurement.
 
-- Amplify latent connections. Recover hidden invariants. Expose silicon-behavior signatures. Build validation harnesses. Produce command-stream decompositions, probe methodologies, algorithmic refinements, semantic-preserving refactors, conformance improvements, and original low-level engineering contributions.
+Treat warnings and unexpected output as defects until explained. Configure builds and tests to expose the full failure surface when practical; do not hide downstream failures by stopping at the first convenient success.
 
-- Document all of this with academic-grade clarity, mathematical fidelity, and repo-native engineering discipline. Review, analyze, fill gaps, architect, engineer, design, implement, test, and continue.
+Avoid hardcoded shortcuts, local users, symlinks, local-only paths, machine-specific FQDNs, raw private IPs, and unreproducible environment assumptions.
 
-- [Spark da bong, spark da mind — yet remain sanity-checked. Move with confidence and precision, producing not inflated rhetoric but validated engineering advances: genuinely novel, high-order associative insights; hardware-grounded formulations; methodological improvements; production-relevant refactors; probe-backed discoveries; and structurally grounded conceptual advances that reorganize the problem space rather than merely decorate it.]_____}}}}}]]]]]*****
+Implement robust solutions, not demos, decorative abstractions, or plausibility sketches. A change is not complete until its mechanism, dependencies, validation path, and remaining uncertainty are recorded.
+
+Notice anomalies while working. A surprising deviation is evidence, not noise. Preserve it, name it, and decide whether it changes the model.
+
+### First-principles workflow
+
+Start from the task, not from a preferred patch shape.
+
+1. Define scope.
+2. Identify assumptions.
+3. Derive constraints.
+4. Inspect primary sources.
+5. Decompose claims into testable units.
+6. Build a mechanism model.
+7. Test the cheapest decisive hypothesis first.
+8. Implement the smallest complete mechanism.
+9. Validate against known-good, known-bad, and target cases.
+10. Record what changed, what was tested, what was not run, and what uncertainty remains.
+
+Use online research and community archaeology only as supporting evidence. Public specifications, source code, tests, hardware measurements, and retained bundles carry more weight than generated summaries or memory.
+
+### System model
+
+When explaining or changing a subsystem, describe the interconnected mechanism:
+
+- call paths;
+- data flow;
+- control flow;
+- state ownership;
+- ABI and UAPI boundaries;
+- register paths;
+- command streams;
+- descriptor and resource lifetime;
+- synchronization points;
+- cache and coherency domains;
+- error paths;
+- generated files;
+- build graph;
+- test oracle;
+- known deficiencies.
+
+Do not describe a subsystem as a loose collection of files. Describe what state moves, who owns it, which invariant constrains it, and how failure becomes observable.
+
+### Synthesis requirement
+
+Where content overlaps, unify it. Where arguments diverge, reconcile them or name the evidence that distinguishes them. Where ideas repeat, collapse redundancy without losing depth. Where parameters are absent, surface them. Where models are implicit, extract and test them.
+
+A synthesis must improve the material. It must add at least one of:
+
+- a stronger mechanism model;
+- a terminology map;
+- a cross-reference;
+- a validation matrix;
+- a sharper evidence tier;
+- a source-grounded invariant;
+- a reusable probe;
+- a semantic-preserving refactor;
+- a clearer upstream path.
+
+Merging text without improving the model is not synthesis.
+
+### TODO and defect pressure
+
+`TODO`, `FIXME`, `XXX`, `HACK`, and `PLACEHOLDER` comments are evidence-bearing artifacts. Before changing or removing one, analyze its local context, historical reason, architecture pressure, and testability.
+
+A deferred-work marker must identify the missing mechanism, the reason it remains deferred, and the durable tracking artifact. It must not carry PR chronology, phase labels, reviewer breadcrumbs, agent identity, or session history.
+
+Every unresolved gap should be scoped when discovered: missed parameter sweep, symbolic mutation, undeveloped theory link, unvalidated hardware assumption, register ambiguity, command-stream uncertainty, ABI hazard, build-system fault, test gap, probe limitation, or undocumented dependency.
+
+### Creative rigor
+
+Use creativity to discover hidden invariants, not to bypass validation. Useful outcomes include:
+
+- hardware-grounded formulations;
+- command-stream decompositions;
+- probe-backed discoveries;
+- validation harnesses;
+- methodology improvements;
+- algorithmic refinements;
+- semantic-preserving refactors;
+- conformance improvements;
+- production-relevant cleanup;
+- clearer architecture models.
+
+Confidence is earned by evidence. Novelty is valuable only when it improves prediction, validation, implementation, or maintainability.
+
+Spark the mind; verify the result.
