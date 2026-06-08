@@ -109,6 +109,12 @@ const struct r300_carrier_policy r300_carrier_zpass = {
 const struct r300_carrier_policy *
 r300_carrier_dp4_select(unsigned max_operand_magnitude)
 {
+   /* The U8 carrier proves exactness only for operands in 0..255.  An operand
+    * magnitude above 255 leaves the U8 domain, so neither carrier's exactness
+    * bound holds -- return NULL to reject rather than hand back a policy that
+    * over-promises exactness. */
+   if (max_operand_magnitude > 255)
+      return NULL;
    return (max_operand_magnitude <= 127) ? &r300_carrier_dp4_u7
                                          : &r300_carrier_dp4_u8_boundary;
 }
