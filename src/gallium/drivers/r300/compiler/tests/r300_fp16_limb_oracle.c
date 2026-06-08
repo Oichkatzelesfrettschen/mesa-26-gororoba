@@ -355,26 +355,44 @@ fp16_mul_2limb(int r_sign, int ea, int eb, uint32_t sa, uint32_t sb)
    if (biased_exp >= 31)
       return (uint16_t)((r_sign << 15) | 0x7c00u);
 
-   /* Underflow: biased_exp <= 0 -- subnormal or zero output.
-    * Oracle tests avoid deep underflow; return zero for simplicity. */
-   if (biased_exp <= 0)
-      return (uint16_t)(r_sign << 15);
+   /* Underflow / subnormal output.  The domain advertises has_subnormal, so the
+    * 2-limb path reproduces IEEE gradual underflow instead of flushing to zero:
+    * denormalize the significand by shifting right (1 - biased_exp) places,
+    * folding the shifted-out bits into guard/sticky, then RNE.  This matches the
+    * double-precision reference (fp16_mul_ref).  Only a product that rounds below
+    * the minimum subnormal becomes signed zero. */
+   uint32_t r_mant;
+   int r_exp;
+   if (biased_exp <= 0) {
+      int right = 1 - biased_exp;
+      if (right >= 11)
+         return (uint16_t)(r_sign << 15);
+      for (int i = 0; i < right; i++) {
+         sticky |= guard;
+         guard   = sig_out & 1;
+         sig_out >>= 1;
+      }
+      r_exp  = 0;
+      r_mant = sig_out & 0x3ff;
+   } else {
+      r_exp  = biased_exp;
+      r_mant = sig_out & 0x3ff;  /* strip implicit-1 */
+   }
 
-   /* RNE rounding on sig_out (10-bit mantissa field after stripping implicit-1). */
-   uint32_t r_mant = sig_out & 0x3ff;
-   uint32_t lsb    = r_mant & 1;
-
+   /* RNE rounding.  A carry out of the 10-bit field promotes a subnormal to the
+    * minimum normal (r_exp 0 -> 1), the correct IEEE result. */
+   uint32_t lsb = r_mant & 1;
    if (guard && (sticky || lsb)) {
       r_mant++;
       if (r_mant >= 0x400) {
          r_mant = 0;
-         biased_exp++;
-         if (biased_exp >= 31)
+         r_exp++;
+         if (r_exp >= 31)
             return (uint16_t)((r_sign << 15) | 0x7c00u);
       }
    }
 
-   return (uint16_t)((r_sign << 15) | ((uint32_t)biased_exp << 10) | r_mant);
+   return (uint16_t)((r_sign << 15) | ((uint32_t)r_exp << 10) | r_mant);
 }
 
 /* Top-level 2-limb multiply: handles all FP16 special cases, then delegates
@@ -484,6 +502,16 @@ static const struct {
    { 0x5640u, 0x5640u, "100.0 * 100.0 = 10000.0" },
    /* 1.0009765625 * 1.0009765625 -- exercises mantissa rounding */
    { 0x3c01u, 0x3c01u, "1+eps * 1+eps (mantissa rounding)" },
+   /* Gradual-underflow outputs: products whose exponent falls below the minimum
+    * normal (2^-14) must round to a subnormal, not flush to zero, because the
+    * domain advertises has_subnormal.  These exercise the 2-limb underflow path
+    * against the double-precision reference. */
+   /* min_normal (2^-14) * 0.5 (0x3800) = 2^-15 subnormal (0x0200) */
+   { 0x0400u, 0x3800u, "min_normal * 0.5 = 2^-15 subnormal" },
+   /* min_normal (2^-14) * 0.25 (0x3400) = 2^-16 subnormal (0x0100) */
+   { 0x0400u, 0x3400u, "min_normal * 0.25 = 2^-16 subnormal" },
+   /* subnormal input 2^-15 (0x0200) * 1.0 = 2^-15 subnormal (0x0200) */
+   { 0x0200u, 0x3c00u, "subnormal * 1.0 = subnormal" },
 };
 
 static void
