@@ -7,10 +7,10 @@ Use the repository's `build-infra` entrypoint for day-to-day work.
 | Task | Command |
 |---|---|
 | List supported profiles/host envs | `make -C build-infra list` |
-| Host/toolchain audit before building | `make -C build-infra audit PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump` |
-| Configure + build + install (profile lane) | `make -C build-infra clean configure build install PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump` |
-| Incremental rebuild (warm lane) | `make -C build-infra rebuild-terakan-distcc-no-rusticl-ccache-no-pump` |
-| Run Meson/Ninja test target for current builddir | `make -C build-infra test PROFILE=terakan-distcc-no-rusticl HOSTENV=btver1-ccache-no-pump` |
+| Host/toolchain audit before building | `make -C build-infra audit PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=btver1-ccache-no-pump` |
+| Configure + build + install (profile lane) | `make -C build-infra clean configure build install PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=btver1-ccache-no-pump` |
+| Incremental rebuild (warm lane) | `make -C build-infra rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=btver1-ccache-no-pump` |
+| Run Meson/Ninja test target for current builddir | `make -C build-infra test PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=btver1-ccache-no-pump` |
 | Run full Meson tests directly | `meson test -C <builddir> --print-errorlogs` |
 | Run a single Meson test | `meson test -C <builddir> --list` then `meson test -C <builddir> <test_name> --print-errorlogs` |
 | Run one r300vk validation probe | `VK_ICD_FILENAMES=/opt/local/mesa-26-gororoba/share/vulkan/icd.d/r300_icd.x86_64.json src/amd/r300/vulkan/r300vk/tests/run_r300vk_4096_validation.sh /tmp/r300vk-4096-validation` |
