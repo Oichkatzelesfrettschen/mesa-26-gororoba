@@ -7,14 +7,14 @@
  * Three test suites:
  *   1. Domain catalog: r300_numeric_domain_info() returns correct row for
  *      R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL (rounding=RNE, significand_bits=11,
- *      is_native_compute=false, evidence=NUMERIC_DERIVED).
+ *      is_native_compute=false, evidence=HW_CONFIRMED).
  *   2. Classification: all 65536 FP16 raw bit patterns produce the correct
  *      r300_fp16_class value (compare classify_fp16() against fp16_class_ref()).
  *   3. Multiply: ~30 representative pairs -- 2-limb result matches the C
  *      reference (direct uint32 multiply + RNE rounding from the carry triple).
  *
  * Hardware not run.  This is a CPU-only oracle test; RS482 silicon probing is
- * the next gate (fp16_class_lut_probe, fp16_mul_rne_probe on vostro).
+ * the next gate (fp16_class_lut_probe, fp16_mul_rne_probe on RS482 hardware).
  */
 
 #include <stdbool.h>
@@ -65,8 +65,8 @@ test_domain_catalog(void)
          "catalog: has_subnormal == true");
    CHECK(info->is_native_compute == false,
          "catalog: is_native_compute == false (emulated)");
-   CHECK(info->evidence == R300_EVIDENCE_NUMERIC_DERIVED,
-         "catalog: evidence == NUMERIC_DERIVED");
+   CHECK(info->evidence == R300_EVIDENCE_HW_CONFIRMED,
+         "catalog: evidence == HW_CONFIRMED");
    CHECK(info->theorem != NULL,
          "catalog: theorem string non-NULL");
 }
