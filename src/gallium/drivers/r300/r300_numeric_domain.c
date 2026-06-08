@@ -333,7 +333,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "class determined by (exp==0, exp==31, mantissa==0) partition; "
                          "15/15 bit patterns exact on RS482 (rs482_fp16_pow2_carry_exactness_20260607)",
       .mesa_hook       = NULL,
-      .retained_bundle = "steinmarder:src/re/r300/results/rs482_fp16_pow2_carry_exactness_20260607",
+      .retained_bundle = NULL,  /* bundle named in .theorem; fork evidence paths stay out of Mesa metadata */
    },
    {
       .op_name         = "IEEE16_MUL_RNE",
@@ -343,7 +343,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "carry limbs (r0,r1,r2) 12/12 exact on RS482; "
                          "RNE round from guard/sticky/lsb (rs482_fp16_pow2_carry_exactness_20260607)",
       .mesa_hook       = NULL,
-      .retained_bundle = "steinmarder:src/re/r300/results/rs482_fp16_pow2_carry_exactness_20260607",
+      .retained_bundle = NULL,  /* bundle named in .theorem; fork evidence paths stay out of Mesa metadata */
    },
    /* NULL sentinel -- keep last */
    { .op_name = NULL },
