@@ -16,8 +16,11 @@ Six numbered profiles in `build-infra/configs/`:
 | `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 4_ without Rusticl | debug |
 
 All six use `HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` and
-`COMPILER_CHAIN=ccache`.  Release configs install to `/opt/local/mesa-26-gororoba`;
-debug configs install to `/opt/local/mesa-26-gororoba-debug`.
+`COMPILER_CHAIN=ccache`.  `make install PROFILE=...` lands in the isolated
+per-profile prefix `/opt/local/mesa-<profile>` by default; the shared active
+trees `/opt/local/mesa-26-gororoba` (release) and
+`/opt/local/mesa-26-gororoba-debug` (debug) are used only by the
+`install-<profile>` targets or when an explicit `PREFIX=` is passed.
 
 ## Layout
 

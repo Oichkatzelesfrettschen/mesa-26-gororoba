@@ -43,6 +43,14 @@ egl = 'enabled'
 egl-native-platform = 'drm'
 gbm = 'enabled'
 
+# display-info disabled: this is the no-Rusticl fallback advertised for the
+# cross-host workflow (build on a CachyOS box with libdisplay-info.so.3, install
+# onto the x130e runtime which ships .so.2).  Meson's auto feature probe would
+# otherwise link the build host's .so.3 and the rsync'd r600/terascale binaries
+# would fail to load on x130e.  Disabling it is also safe for a native x130e
+# build (the radeon stack does not require libdisplay-info).
+display-info = 'disabled'
+
 # r600 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
 shader-cache = 'enabled'
 gallium-extra-hud = true
