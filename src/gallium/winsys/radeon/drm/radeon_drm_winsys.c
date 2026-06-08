@@ -200,10 +200,11 @@ radeon_query_rs480_gart_mc_info(struct radeon_drm_winsys *ws)
       return;
 
    while (fgets(line, sizeof(line), f)) {
-      /* Parse "KEY<sep>0xVALUE".  Accept both the DKMS validation-lane debugfs
-       * form "KEY = 0xVALUE" and the mainline kernel rs400_debugfs_gart_info_show
-       * form "KEY 0xVALUE" (space-separated, no '='): the key ends at the first
-       * space/tab/'=', then the value starts after the separator run. */
+      /* Parse "KEY<sep>0xVALUE".  Accept both the out-of-tree radeon debugfs
+       * form "KEY = 0xVALUE" (key=value with an '=' separator) and the mainline
+       * kernel rs400_debugfs_gart_info_show form "KEY 0xVALUE" (space-separated,
+       * no '='): the key ends at the first space/tab/'=', then the value starts
+       * after the separator run. */
       char *key_end = line;
       while (*key_end && *key_end != ' ' && *key_end != '\t' && *key_end != '=')
          key_end++;
