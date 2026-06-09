@@ -212,7 +212,7 @@ Install must avoid root-side rebuilds. If `ninja install` dirties build targets
 same distcc environment, then install as root with:
 
 ```sh
-meson install --no-rebuild -C ~/workspaces/mesa/build/mesa-terakan-distcc-pump-no-rusticl
+meson install --no-rebuild -C ~/workspaces/mesa/build/mesa-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache
 ```
 
 Installed files were copied to `/usr/local/mesa-debug` at 2026-04-26T01:23:48Z.
