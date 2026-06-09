@@ -12,20 +12,35 @@ Both profiles build the same API surface:
 - OpenGL: desktop GL, GLES1, GLES2
 - Window systems and loader surfaces: GLVND, GLX DRI, EGL, GBM
 - Platforms: X11, Wayland, surfaceless, DRM, XCB
+- Video and presentation: r300 Gallium-VA MPEG-1/MPEG-2 decode and the restored
+  Gallium-XA 2D/Xv frontend
 - Tooling: r300 tools, shader cache, Gallium HUD/lm-sensors
 
-Both profiles deliberately exclude software and unrelated frontends:
+Both profiles deliberately exclude software rasterizers and unrelated driver
+frontends:
 
 - `llvm = 'disabled'`
 - `draw-use-llvm = false`
 - no `swrast`, `llvmpipe`, `softpipe`, zink, r600, radeonsi, or terakan
-- no Rusticl, D3D10 UMD, VA, MediaFoundation, video codecs, Vulkan layers,
-  perfetto, libunwind, or valgrind
+- no Rusticl, D3D10 UMD, MediaFoundation, or unrelated video codecs
 
 The release profile uses `buildtype = 'release'`, `b_ndebug = 'true'`, and
-`-Os` for the space-constrained Vostro runtime lane.  The debug profile uses
+`-O2` for the Vostro runtime lane.  The debug profile uses
 `buildtype = 'debugoptimized'`, `b_ndebug = 'false'`, and the same x86-64-v1
-ISA/linker policy without release-only `-Os` in the native-file arguments.
+ISA/linker policy with frame pointers for RCA.  The debug profile adds
+debug-only instrumentation and tooling: Valgrind annotations, libunwind,
+Perfetto CPU-side timeline hooks, standalone compiler tools, in-tree tests, and
+the mesa overlay/device-select Vulkan layers.  The release profile keeps those
+out of the artifact.
+
+The release and debug profiles intentionally keep `llvm = 'disabled'` and
+`draw-use-llvm = false` until the no-LLVM RS482 SW-TCL baseline has a retained
+measurement.  A Vostro experiment branch named
+`r300/rs482-swtcl-draw-jit-release` demonstrated the alternate profile shape
+(`llvm = 'enabled'`, `draw-use-llvm = true`) for Gallium draw JIT throughput, but
+that branch is an after-baseline performance lane.  It is not the canonical
+release profile because draw LLVM changes the SW-TCL execution substrate being
+measured.
 
 `egl-native-platform = 'drm'` makes `EGL_DEFAULT_DISPLAY` use the DRM native
 platform, the renderD128 headless path the Piglit/deqp lane runs on; X11 and
@@ -75,19 +90,19 @@ and the documented `/builddir`/`/builddir-*` Meson directories, the clangd
 
 ## Historical options
 
-Older Mesa branches exposed additional Gallium frontends that are not available
-in the current Mesa 26 tree:
+Older Mesa branches exposed additional Gallium frontends.  `gallium-xa` has
+since been restored in this fork for the r300 lane; the remaining rows are still
+branch-archeology items, not missing toggles in the current profile.
 
 | option | present in old release option files | current status |
 |---|---|---|
 | `gallium-nine` | Mesa 22.3, 23.3, 24.3 | absent by Mesa 25.3 and current Mesa 26 |
-| `gallium-xa` | Mesa 22.3, 23.3, 24.3 | absent by Mesa 25.3 and current Mesa 26 |
+| `gallium-xa` | Mesa 22.3, 23.3, 24.3 | restored in this fork for r300 2D/Xv |
 | `gallium-vdpau` | Mesa 22.3, 23.3, 24.3 | absent by Mesa 25.3 and current Mesa 26 |
 | `gallium-omx` | Mesa 22.3, 23.3 | absent by Mesa 24.3, 25.3, and current Mesa 26 |
 
-Those are branch-archeology items, not missing toggles in the current profile.
-Restoring them would mean carrying old state trackers forward as source code,
-not adding Meson options to this build profile.
+Restoring any remaining frontend means carrying old state trackers forward as
+source code, not adding Meson options to this build profile.
 
 `osmesa` still exists in older releases, but this r300 profile does not enable
 it because the lane is intentionally no-swrast/no-llvmpipe.  If a future

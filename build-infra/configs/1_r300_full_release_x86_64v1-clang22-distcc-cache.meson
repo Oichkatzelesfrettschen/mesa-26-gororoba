@@ -22,8 +22,9 @@
 # pass/fail baseline.
 #
 # Deliberately EXCLUDED: swrast/llvmpipe/softpipe/zink/r600/radeonsi/terakan
-# (this is the r300 lane), Rusticl, video codecs, Vulkan layers, perfetto,
-# libunwind, and valgrind (not needed for r300 and they enlarge the artifact).
+# (this is the r300 lane), Rusticl, unrelated video codecs, Vulkan layers,
+# perfetto, libunwind, and valgrind.  MPEG-2 decode and XA/Xv remain included
+# because they are r300/RS482 surfaces.
 #
 # Pair with the vostro1000-x86-64-v1-clang22-ccache-distcc HOSTENV: clang 22
 # over ccache-first distcc, x86-64-v1 baseline ISA.  x86-64-v1 is a safe subset
