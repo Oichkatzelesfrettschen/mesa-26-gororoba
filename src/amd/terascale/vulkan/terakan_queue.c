@@ -310,6 +310,8 @@ static VkResult
 terakan_queue_ensure_wsi_hw_wait_supported(struct terakan_queue * const queue,
                                            bool * const supported_out)
 {
+   *supported_out = false;
+
    if (queue->wsi_hw_wait_probe_state > 0) {
       *supported_out = true;
       return VK_SUCCESS;
