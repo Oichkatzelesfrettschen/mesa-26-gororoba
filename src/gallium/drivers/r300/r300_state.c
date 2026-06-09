@@ -16,6 +16,7 @@
 #include "util/u_blend.h"
 
 #include "nir/tgsi_to_nir.h"
+#include "nir/nir_to_tgsi.h"
 
 #include "util/detect.h"
 
@@ -29,6 +30,7 @@
 #include "r300_fs.h"
 #include "r300_texture.h"
 #include "r300_vs.h"
+#include "compiler/nir_to_rc.h"
 #include "compiler/r300_nir.h"
 
 /* r300_state: Functions used to initialize state context by translating
@@ -2305,7 +2307,8 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
         * nir_to_tgsi then packs POSITION and the generics together, the
         * VS body writes them all to OUT[0], and draw's position_output (the
         * POSITION declaration's scan index) no longer matches the written
-        * register.  Assign output locations here so
+        * register -- draw_llvm's outputs[position_output] is null and the
+        * viewport/clip stage dereferences it.  Assign output locations here so
         * each output gets a distinct register before translation. */
        nir_assign_io_var_locations(clone, nir_var_shader_out);
        vs->state.tokens = nir_to_tgsi(clone, pipe->screen);
