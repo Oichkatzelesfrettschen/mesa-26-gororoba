@@ -1035,19 +1035,19 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
 
    bool const scalar_buffer_store =
       uav_op_base == RatInstr::STORE_TYPED && coord_components == 1 && value_components == 1;
-   /* Use uav_op_base (low 5 bits), not full uav_op, so my elem-size encoding
-    * in bits [6:5] doesn't leak into the RAT opcode field which would
+   /* Use uav_op_base (low 5 bits), not full uav_op, so the ELEM_SIZE
+    * encoding in bits [6:5] does not leak into the RAT opcode field and
     * trigger the disassembler's bounds-check assertion. */
    unsigned const rat_opcode = scalar_buffer_store ? RatInstr::STORE_RAW : uav_op_base;
 
-   /* ELEM_SIZE encodes "doublewords per array element" via bits {0,1,3}
-    * for {1,2,4} dwords (Evergreen_ISA.pdf §10.18; "3 is not supported").
+   /* ELEM_SIZE encodes "doublewords per array element" via values {0,1,3}
+    * for {1,2,4} dwords per the AMD Evergreen-Family ISA MEM_RAT encoding;
+    * 3 dwords is not supported.
     * Hardcoded ELEM_SIZE=0 (= 1 dword) caused MEM_RAT_STORE_TYPED on
     * multi-dword UINT formats (notably r32g32_uint) to drop the FIRST
     * dword (R channel) in cold-context silicon state -- silicon strictly
     * honored "1 dword" while COMP_MASK said "all N channels".  In
-    * warm-context, silicon's optional fallback cache wrote all dwords,
-    * producing the previously-mysterious non-monotonic latch behavior.
+    * warm-context, silicon's optional fallback cache wrote all dwords.
     *
     * The terakan NIR lowering pass encodes the format-derived
     * elem_size_minus_one in uav_op high bits [6:5]; recover it here.
@@ -1055,7 +1055,7 @@ RatInstr::emit_uav_store_r600(nir_intrinsic_instr *intr, Shader& shader)
     * coarse: shaders pass uvec4 to imageStore even for narrower
     * formats, so the NIR vec component count = always 4 for terakan.
     * The format-derived signal carried via uav_op is the only correct
-    * source.  See steinmarder finding tranche-16 + CLAIMS C-2026-04-22-43.
+    * source.
     *
     * For non-terakan (gallium r600 OpenGL/CL) callers that don't encode
     * elem_size in uav_op, the high bits stay 0 -> elem_size_minus_one = 0
@@ -1824,15 +1824,15 @@ RatInstr::emit_image_store(nir_intrinsic_instr *intrin, Shader& shader)
        *   r8_uint     with comp_mask=0x1 -> max diff 63 (all wrong)
        *
        * In the same multi-dword case we ALSO need ELEM_SIZE to encode
-       * the actual dword count (Evergreen_ISA.pdf §10.18: "Number of
-       * doublewords per array element, minus one. ... value in [1,2,4]
-       * (3 is not supported)").  Hardcoded ELEM_SIZE=0 (= 1 dword)
+       * the actual dword count.  The AMD Evergreen-Family ISA MEM_RAT
+       * encoding supports 1, 2, or 4 doublewords per array element; 3
+       * doublewords is not supported.  Hardcoded ELEM_SIZE=0 (= 1 dword)
        * caused MEM_RAT_STORE_TYPED on r32g32_uint to drop the FIRST
        * dword (R channel) in cold-context silicon state -- silicon
        * strictly honored "1 dword per element" while COMP_MASK said
        * "all 4 channels", and only the second dword (G) landed.
        * In warm-context, silicon's optional fallback cache wrote
-    * both dwords, producing the non-monotonic latch behavior.
+       * both dwords.
        *
        * Empirical evidence (Wrestler HD 6310, 2026-04-22):
        *   r32g32_uint truly-solo with elem_size=0 -> R_actual = 0
@@ -1845,10 +1845,7 @@ RatInstr::emit_image_store(nir_intrinsic_instr *intrin, Shader& shader)
        * advertisement, those formats should not be reported as
        * STORAGE_IMAGE-capable; this code conservatively leaves
        * elem_size=0 for them.
-       *
-       * See steinmarder finding
-       * 2026-04-22-tranche16-silicon-drops-r-dword-cold-context.md
-       * and CLAIMS C-2026-04-22-43. */
+       */
       unsigned const channels = util_format_get_nr_components(store_format);
       unsigned const texel_bytes = util_format_get_blocksize(store_format);
       if (channels > 0 && channels <= 4 && texel_bytes >= 4 * channels) {

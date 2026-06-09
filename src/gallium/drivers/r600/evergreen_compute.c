@@ -87,7 +87,7 @@ static void evergreen_set_rat(struct r600_pipe_compute *pipe,
 
 	rctx = pipe->ctx;
 
-	COMPUTE_DBG(rctx->screen, "bind rat: %i \n", id);
+	COMPUTE_DBG(rctx->screen, "bind rat: %u \n", id);
 
 	/* Create the RAT surface */
 	memset(&rat_templ, 0, sizeof(rat_templ));
@@ -166,6 +166,9 @@ static void *evergreen_create_compute_state(struct pipe_context *ctx,
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct r600_pipe_compute *shader = CALLOC_STRUCT(r600_pipe_compute);
+
+	if (!shader)
+		return NULL;
 
 	shader->ctx = rctx;
 	shader->local_size = cso->static_shared_mem;
@@ -387,7 +390,7 @@ static void compute_emit_cs(struct r600_context *rctx,
 
 	/* Use compute_cb_target_mask (set by evergreen_set_rat) instead of
 	 * evergreen_construct_rat_mask which only sees image/buffer RAT enabled
-	 * masks (set via set_shader_images) — not the global pool RAT. */
+	 * masks (set via set_shader_images), not the global pool RAT. */
 	rat_mask = rctx->compute_cb_target_mask;
 	radeon_compute_set_context_reg(cs, R_028238_CB_TARGET_MASK,
 						rat_mask);
@@ -424,7 +427,7 @@ static void compute_emit_cs(struct r600_context *rctx,
 		radeon_emit(cs, rat_cb->cb_color_fmask_slice); /* R_028C88_CB_COLOR0_FMASK_SLICE */
 		radeon_emit(cs, 0);                            /* R_028C8C_CB_COLOR0_CLEAR_WORD0 */
 		radeon_emit(cs, 0);                            /* R_028C90_CB_COLOR0_CLEAR_WORD1 */
-		/* Reloc for CB_COLOR0_BASE — kernel patches this DW with gpu_address>>8 */
+		/* Reloc for CB_COLOR0_BASE; the kernel patches this DW with gpu_address>>8. */
 		radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
 		radeon_emit(cs, rat_reloc);
 		/* Reloc for CB_COLOR0_ATTRIB */
@@ -480,7 +483,7 @@ static void compute_emit_cs(struct r600_context *rctx,
 	r600_flush_emit(rctx);
 	rctx->b.flags = 0;
 
-	/* Flush compute — required on Evergreen and Cayman. */
+	/* Flush compute; required on Evergreen and Cayman. */
 	radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
 	radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_CS_PARTIAL_FLUSH) | EVENT_INDEX(4));
 
@@ -842,8 +845,8 @@ void *r600_compute_global_transfer_map(struct pipe_context *ctx,
 	dst = (struct pipe_resource*)item->real_buffer;
 
 	COMPUTE_DBG(rctx->screen, "* r600_compute_global_transfer_map()\n"
-			"level = %u, usage = %u, box(x = %u, y = %u, z = %u "
-			"width = %u, height = %u, depth = %u)\n", level, usage,
+			"level = %u, usage = %u, box(x = %d, y = %d, z = %d "
+			"width = %d, height = %d, depth = %d)\n", level, usage,
 			box->x, box->y, box->z, box->width, box->height,
 			box->depth);
 	COMPUTE_DBG(rctx->screen, "Buffer id = %"PRIi64" offset = "
@@ -917,6 +920,9 @@ struct pipe_resource *r600_compute_global_buffer_create(struct pipe_screen *scre
 	result = (struct r600_resource_global*)
 	CALLOC(sizeof(struct r600_resource_global), 1);
 	rscreen = (struct r600_screen*)screen;
+
+	if (!result)
+		return NULL;
 
 	COMPUTE_DBG(rscreen, "*** r600_compute_global_buffer_create\n");
 	COMPUTE_DBG(rscreen, "width = %u array_size = %u\n", templ->width0,
