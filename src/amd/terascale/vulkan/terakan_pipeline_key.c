@@ -29,7 +29,8 @@ terakan_shader_stage_key_fill(struct terakan_shader_stage_key *key,
       key->keep_statistic_info = 1;
 
    struct vk_pipeline_robustness_state rs;
-   vk_pipeline_robustness_state_fill(&device->vk, &rs, NULL, stage_info->pNext);
+   vk_pipeline_robustness_state_fill(&device->vk.robustness_state, &rs, NULL,
+                                     stage_info->pNext);
 
    if (rs.storage_buffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT)
       key->storage_robustness2 = 1;

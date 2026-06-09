@@ -160,7 +160,7 @@ terakan_queue_submission_context_init(
 struct terakan_queue_completion_signal {
    struct list_head link;
 
-   struct terakan_sync_completion * sync;
+   struct vk_sync * sync;
    uint64_t value;
 };
 

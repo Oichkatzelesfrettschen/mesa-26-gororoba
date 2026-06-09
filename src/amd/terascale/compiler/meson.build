@@ -32,6 +32,8 @@ amd_terascale_compiler_files = files(
   '../../../gallium/drivers/r600/sfn/sfn_defines.h',
   '../../../gallium/drivers/r600/sfn/sfn_debug.cpp',
   '../../../gallium/drivers/r600/sfn/sfn_debug.h',
+  '../../../gallium/drivers/r600/sfn/sfn_fill_bytecode.cpp',
+  '../../../gallium/drivers/r600/sfn/sfn_fill_bytecode.h',
   '../../../gallium/drivers/r600/sfn/sfn_instr.cpp',
   '../../../gallium/drivers/r600/sfn/sfn_instr.h',
   '../../../gallium/drivers/r600/sfn/sfn_instr_alu.cpp',

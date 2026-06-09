@@ -32,6 +32,7 @@
 #include "terakan_physical_device.h"
 
 #include "util/bitscan.h"
+#include "util/cache_ops.h"
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "vk_alloc.h"

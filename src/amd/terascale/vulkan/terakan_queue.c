@@ -165,12 +165,31 @@ terakan_queue_completion_thread_func(void * queue_ptr)
          device->completion_lost = true;
       } else {
          struct terakan_queue_completion_signal * signal;
+         bool signal_success = true;
          LIST_FOR_EACH_ENTRY (signal, &submission->signals, link) {
-            assert(signal->value <= signal->sync->pending_value);
-            assert(signal->value > signal->sync->current_value);
-            signal->sync->current_value = signal->value;
+            if (signal->sync->type == &terakan_sync_completion_type) {
+               struct terakan_sync_completion * const sync =
+                  container_of(signal->sync, struct terakan_sync_completion, vk);
+               assert(signal->value <= sync->pending_value);
+               assert(signal->value > sync->current_value);
+               sync->current_value = signal->value;
+            } else {
+               mtx_unlock(&device->completion_mutex);
+               VkResult const signal_result =
+                  vk_sync_signal(&device->vk, signal->sync, signal->value);
+               mtx_lock(&device->completion_mutex);
+               if (signal_result != VK_SUCCESS) {
+                  vk_device_set_lost(&device->vk,
+                                     "Failed to signal an external submission sync with result %s",
+                                     vk_Result_to_str(signal_result));
+                  device->completion_lost = true;
+                  signal_success = false;
+                  break;
+               }
+            }
          }
-         terakan_queue_completion_event_updates_apply(&submission->event_updates);
+         if (signal_success)
+            terakan_queue_completion_event_updates_apply(&submission->event_updates);
       }
 
       /* Recycle the submission. */
@@ -1286,7 +1305,18 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
          submit_signal_sync = submit_signal->sync;
          submit_signal_value = submit_signal->signal_value;
       }
-      assert(submit_signal_sync->type == &terakan_sync_completion_type);
+      if (submit_signal_sync->type != &terakan_sync_completion_type &&
+          submit_signal_sync->type->signal == NULL) {
+         vk_device_set_lost(&device->vk,
+                            "Submission signal sync type does not support CPU signaling");
+         mtx_lock(&device->completion_mutex);
+         list_splice(&completion_signals, &queue->completion_signals_free);
+         device->completion_lost = true;
+         mtx_unlock(&device->completion_mutex);
+         cnd_broadcast(&device->completion_condition);
+         terakan_queue_completion_event_updates_free(device, &completion_event_updates);
+         return VK_ERROR_DEVICE_LOST;
+      }
 
       struct terakan_queue_completion_signal * completion_signal;
       mtx_lock(&device->completion_mutex);
@@ -1315,8 +1345,7 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
             return VK_ERROR_DEVICE_LOST;
          }
       }
-      completion_signal->sync =
-         container_of(submit_signal_sync, struct terakan_sync_completion, vk);
+      completion_signal->sync = submit_signal_sync;
       completion_signal->value = submit_signal_value;
       list_add(&completion_signal->link, &completion_signals);
    }
@@ -1469,11 +1498,12 @@ terakan_queue_submit(struct vk_queue * const queue_base, struct vk_queue_submit 
       if (submit_signal->sync->type == &vk_sync_dummy_type) {
          continue;
       }
-      assert(submit_signal->sync->type == &terakan_sync_completion_type);
-      struct terakan_sync_completion * const submit_signal_sync =
-         container_of(submit_signal->sync, struct terakan_sync_completion, vk);
-      assert(submit_signal_sync->pending_value < submit_signal->signal_value);
-      submit_signal_sync->pending_value = submit_signal->signal_value;
+      if (submit_signal->sync->type == &terakan_sync_completion_type) {
+         struct terakan_sync_completion * const submit_signal_sync =
+            container_of(submit_signal->sync, struct terakan_sync_completion, vk);
+         assert(submit_signal_sync->pending_value < submit_signal->signal_value);
+         submit_signal_sync->pending_value = submit_signal->signal_value;
+      }
    }
 
    if (internal_bo_timeline_signal_needed) {
