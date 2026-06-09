@@ -66,6 +66,13 @@ struct compute_memory_pool* compute_memory_pool_new(
 				CALLOC(sizeof(struct list_head), 1);
 	pool->unallocated_list = (struct list_head *)
 				CALLOC(sizeof(struct list_head), 1);
+	if (!pool->item_list || !pool->unallocated_list) {
+		free(pool->item_list);
+		free(pool->unallocated_list);
+		free(pool);
+		return NULL;
+	}
+
 	list_inithead(pool->item_list);
 	list_inithead(pool->unallocated_list);
 	return pool;
@@ -148,9 +155,10 @@ static int compute_memory_grow_defrag_pool(struct compute_memory_pool *pool,
 				"  Falling back to using 'shadow'\n");
 
 			compute_memory_shadow(pool, pipe, 1);
-			pool->shadow = realloc(pool->shadow, new_size_in_dw * 4);
-			if (pool->shadow == NULL)
+			uint32_t *shadow = realloc(pool->shadow, new_size_in_dw * 4);
+			if (shadow == NULL)
 				return -1;
+			pool->shadow = shadow;
 
 			pool->size_in_dw = new_size_in_dw;
 			/* Release the old buffer */

@@ -6,6 +6,7 @@
 #include "memory_pool.h"
 
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,6 +43,11 @@ refill_pool(struct memory_pool *pool)
       blocksize = 2 * POOL_LARGE_ALLOC;
 
    newblock = malloc(blocksize);
+   if (!newblock) {
+      fprintf(stderr, "r300/compiler: out of memory allocating %u pool bytes\n", blocksize);
+      abort();
+   }
+
    newblock->next = pool->blocks;
    pool->blocks = newblock;
 
@@ -70,6 +76,10 @@ memory_pool_malloc(struct memory_pool *pool, unsigned int bytes)
       return ptr;
    } else {
       struct memory_block *block = malloc(bytes + sizeof(struct memory_block));
+      if (!block) {
+         fprintf(stderr, "r300/compiler: out of memory allocating %u pool bytes\n", bytes);
+         abort();
+      }
 
       block->next = pool->blocks;
       pool->blocks = block;
