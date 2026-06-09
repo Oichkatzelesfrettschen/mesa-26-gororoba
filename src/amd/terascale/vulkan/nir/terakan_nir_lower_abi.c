@@ -585,9 +585,8 @@ terakan_nir_buffer_uav_coord(nir_builder * const b, nir_def * coord,
       nir_src_as_const_value(nir_src_for_ssa(uav_array_index));
 
    if (const_array_idx != NULL) {
-      /* KCACHE fast-path: constant array index folds into a static vec4
-       * offset in bank 15 (push constants).  1-cycle ALU read instead of
-       * a 20-40 cycle VFETCH. */
+      /* A constant array index folds the push-constant lookup into one
+       * KCACHE bank-15 vec4 component. */
       uint32_t const byte_offset =
          offsetof(struct terakan_push_constants_driver,
                   buffer_uav_base_granularity_offset) +

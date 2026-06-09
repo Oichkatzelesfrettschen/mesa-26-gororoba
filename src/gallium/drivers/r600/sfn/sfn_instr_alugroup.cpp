@@ -102,6 +102,12 @@ AluGroup::add_trans_instructions(AluInstr *instr)
    if (instr->has_alu_flag(alu_is_lds))
       return false;
 
+   /* A VLIW5 group with an inline literal in a vector slot uses the literal
+    * path for the T slot, so a trans instruction cannot execute in the same
+    * group. */
+   if (m_readports_reserver.m_nliterals > 0)
+      return false;
+
    auto opinfo = alu_ops.find(instr->opcode());
    assert(opinfo != alu_ops.end());
 
@@ -362,6 +368,15 @@ AluGroup::update_readport_reserver_trans(AluReadportReservation& readports_evalu
 bool
 AluGroup::try_readport(AluInstr *instr, AluBankSwizzle cycle)
 {
+   /* A vector instruction with an inline literal would make the T slot carry
+    * the literal instead of the already scheduled trans instruction. */
+   if (m_slots[4]) {
+      for (unsigned i = 0; i < instr->n_sources(); ++i) {
+         if (instr->psrc(i) && instr->psrc(i)->as_literal())
+            return false;
+      }
+   }
+
    int preferred_chan = instr->dest_chan();
    AluReadportReservation readports_evaluator = m_readports_reserver;
    bool readport_ok = readports_evaluator.schedule_vec_instruction(*instr, cycle);
