@@ -1937,7 +1937,7 @@ terakan_meta_query_copy_init_offsets(VkQueryPipelineStatisticFlags const flags,
        * boundaries of the result (for any calculations involving those offsets to behave safely).
        */
       offsets_32_bit_out[counter_index] =
-         flags & (VkQueryPipelineStatisticFlagBits)((uint32_t)1 << counter_index)
+         (flags & (VkQueryPipelineStatisticFlagBits)((uint32_t)1 << counter_index))
             ? (int8_t)end_to_next_vk_counter--
             : 1;
    }

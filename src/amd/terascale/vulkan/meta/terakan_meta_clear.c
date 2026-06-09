@@ -463,8 +463,9 @@ terakan_CmdClearAttachments(VkCommandBuffer const commandBuffer, uint32_t const 
    terakan_meta_begin_2d_immediate_rects(
       command_writer,
       TERAKAN_META_PA_CL_VTE_CNTL_2D |
-         (depth_stencil_clear_aspects & VK_IMAGE_ASPECT_DEPTH_BIT ? S_028818_VPORT_Z_OFFSET_ENA(1)
-                                                                  : 0),
+         ((depth_stencil_clear_aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
+             ? S_028818_VPORT_Z_OFFSET_ENA(1)
+             : 0),
       TERAKAN_META_DB_RENDER_OVERRIDE_DEFAULT, false);
 
    terakan_meta_set_vs(command_writer, TERAKAN_META_SHADER_POSITION_AND_LAYER_FROM_INDEX_VS);
