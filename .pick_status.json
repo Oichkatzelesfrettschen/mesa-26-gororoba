@@ -444,10 +444,10 @@
         "description": "ir3/shared_ra: use ir3_cursor instead of instr in reload helpers",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "fa22b0901af548d5e1433ad4cdbda314182137c5",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "5674327297af8d00d44871aff1a36abfc4465dcd",
@@ -544,10 +544,10 @@
         "description": "anv: fix arc artifacts on Farming simulator 2022",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "e60e5fe5efb08cf9eb78b747a0143d148d175e41",
@@ -564,10 +564,10 @@
         "description": "llvmpipe: always set view_index for linear rasterizer",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "b6b13bf9dfe2973f6aab3a6ef87995c310fe2244",
@@ -1344,10 +1344,10 @@
         "description": "tu: Fix LRZ+FDM offset+secondaries",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "f4812dc11d48204091260914d481784eb55a75eb",
@@ -1384,10 +1384,10 @@
         "description": "tu: Add capture/replay for sparse buffers and descriptor buffer.",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "8feed47fce263438d1b2546e8f3475a4e0caa8d6",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "917058a4c5a68ddf3befb899c7daa03171cceddf",
@@ -1624,10 +1624,10 @@
         "description": "lavapipe: rework immutable samplers",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "965beb520c8274ec1875feb567b9b3526bb7f6d0",
@@ -2194,20 +2194,20 @@
         "description": "nvk: Extend tiled_shadow to be multiplanar",
         "nominated": true,
         "nomination_type": 4,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "29ffb84501082305e872bd2ec7df7fa8f2dfc100",
         "description": "nvk: Calculate and stash the plane offset and alignment at create time",
         "nominated": true,
         "nomination_type": 4,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "7f5767a2f2ccaeb9570d73f946455c7ef2d2f554",
@@ -2224,10 +2224,10 @@
         "description": "zink: Assert if we try to use a dedicated allocation with offset > 0",
         "nominated": true,
         "nomination_type": 4,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "d8b525466ca4d51a75d460f84697dd497d7c5a43",
@@ -2304,10 +2304,10 @@
         "description": "pan/kmod: Fix minor version number check for USER_MMIO_OFFSET ioctl",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "590ad83b980e37e87bab6bcc7574e154729066ec",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "b64cd520f7858814374e19b8a2ca2f36e6871367",
@@ -2874,10 +2874,10 @@
         "description": "anv: fix null pointer access",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "595889018ad4fa3e2c593a13d640c9eee26336c7",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "da7ed1c5769ffb60c791d67e52688487a7627fcd",
@@ -2894,50 +2894,50 @@
         "description": "pvr: record deferred RTA clears for secondary cmdbuf subcmds",
         "nominated": true,
         "nomination_type": 4,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "ecd4e93456dedaa6a30054fa939f57a3dd7551e2",
         "description": "pvr: add deferred RTA clear command to list after checking it's not NULL",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "2eabbbe57d1215695310ed8ce101be6a448a557e",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "40e0f0f9338198441518f9769cbdc08488eca37f",
         "description": "pvr: properly handle deferred RTA clears for 2D array view of 3D image",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "95820584d06e067766283ccb76c33a75c383a203",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "43b22a477ca41f9731c4ab463cc6b7799efe9372",
         "description": "pvr: do not setup deferred RTA clear for active render targets",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "95820584d06e067766283ccb76c33a75c383a203",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "08c13564d68101519bfecd45d94af7072050b6ed",
         "description": "pvr: Revert don't csb emit multi-layer clear attachments without rta support",
         "nominated": true,
         "nomination_type": 4,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "69680f3d66dc89f19dc150facbca1281dd95dec6",
@@ -2954,10 +2954,10 @@
         "description": "pvr: increase maxPerStageResources for new maxPerStageDescriptorStorageBuffers",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "35f57a27396c116fc5e9984ac1254d26b83ad2c4",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "a3e3bf0ac22bd622f13abca0b5d3c24548d62c97",
@@ -3174,10 +3174,10 @@
         "description": "mediafoundation: Test compile steps v/s step , and set build flag",
         "nominated": true,
         "nomination_type": 4,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "06ebe40ca148a326a072769ab116fb2ae439238f",
@@ -3204,10 +3204,10 @@
         "description": "rusticl: link the C++ runtime statically",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "5512680581f25cf4b3b3e9e8be6d5e9813ecd4ae",
@@ -3244,10 +3244,10 @@
         "description": "brw: Fix max_dispatch_width collection for CS with variable size",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "2acc2f18ea74e5f59b1e6f67fec49fd0c6b1e466",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "bdbf4ed7399bb581b8f13e3b56155005101669b1",
@@ -3574,10 +3574,10 @@
         "description": "pan/bi: fix memory access alignment",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "2f2738dc9020d2e46dd0154ee9eb7f1f38481803",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "0319be8b0237f243f0bd55a12beaacfd0aa580f4",
@@ -4114,20 +4114,20 @@
         "description": "pco: amend tg4 lowering",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "46c9239c11147b835659df2dedaa1e72263b99b2",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "35f57a27396c116fc5e9984ac1254d26b83ad2c4",
         "description": "pvr: increase value of maxPerStageDescriptorStorageBuffers",
         "nominated": true,
         "nomination_type": 4,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "7d59c62fded7638dbe8b7e0737a8ba491bf6438c",
@@ -4694,10 +4694,10 @@
         "description": "radv: re-introduce DGC+multiview support and enable it for vkd3d-proton only",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "2d78546d59c18b81a3c06df4a0e10130af4c79db",
@@ -4944,10 +4944,10 @@
         "description": "Revert \"d3d12: Video sliced encode: Use same ID3D12Fence/different per slice values as optimization\"",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "b83a931cb17567e878b1fb135f8f12736b37ca13",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "0b99d1db0ba8d1ed956b5c0153c96aa8659017a6",
@@ -5034,10 +5034,10 @@
         "description": "zink: Guard bo map/unmap on map_count.",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "f9f60aa84451bf8f38a102e0481292b084fd655a",
@@ -5784,10 +5784,10 @@
         "description": "ac,radeonsi,radv: fix print IB assertion fail for reserved fields",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "1c75cd958f4c57fe84020c330779b1f95b182924",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "c5edb9004654168492db8ed942117fecc5ecd64b",
@@ -6154,10 +6154,10 @@
         "description": "drirc: use anv_disable_drm_ccs_modifiers for any GTK version",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "806fcc6193e305c22366baa17ccf88c8e1da1bda",
@@ -6304,10 +6304,10 @@
         "description": "radv: fix GPU hangs with PS epilogs and secondaries properly",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "1a00587c44ecb97d9978cd6bed8e76e56c6697f5",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "9d17a7bdb44a12ae28c5d50ad6395b08f38ebcab",
@@ -7234,10 +7234,10 @@
         "description": "anv: fix debug printfs on hang",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "0932d0c7e0158544261dd88de30b939aa2ddd207",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "3256fab5a363f9bf4e749cd8f7473405334a2816",
@@ -7294,10 +7294,10 @@
         "description": "panvk: do not enable extension without required feature",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "e9c2c3240949196a5584ed1c54df4b9bb75dcbf3",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "8cb89853b8f9993febb848ac83c5f6cf85aec11a",
@@ -7394,20 +7394,20 @@
         "description": "radeonsi: remove old, unsupported cap",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "420fe1e7f9ef56177c8f45e98e057488a2b57646",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "b062062430b0ee0c560e46e28f5c1da7555f5591",
         "description": "nouveau: do not report unsupported feature",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "c3cbe610dfd978c2f25124017a54196757401434",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "9931034dca07492b072ce3f4ef6f3bde4d2d0e1d",
@@ -7474,10 +7474,10 @@
         "description": "pan/lib: fix up afbc and linear layout",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "c2c91e78fdc7e121a54796636c09ab8d76451df4",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "c6b3fc6930f7b49398293c6889d01b553f13b379",
@@ -8184,10 +8184,10 @@
         "description": "radv: Fix gnu-empty-initializer errors in 480a94fb",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "480a94fb16ab87bffcade54389a588082120f0bb",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "cc212f6beb1cffb6f98c7941cfd45ccdf5ff5aa8",
@@ -8264,20 +8264,20 @@
         "description": "tu/query_pool: Avoid CP counter conflict with autotune",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "f78541b765e42125b846bb936ead4439ff5fe915",
         "description": "tu/autotune: Allocate performance counters from low-to-high",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "24849eef9f55a072eca342a48ff46471e3b89422",
@@ -8294,10 +8294,10 @@
         "description": "tu/autotune: Fail gracefully when CP counters are unavailable",
         "nominated": true,
         "nomination_type": 1,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "c2708afbc7e91da54183c72d5e8c89a452356073",
@@ -8354,10 +8354,10 @@
         "description": "panvk: drop out-of-date TODO",
         "nominated": true,
         "nomination_type": 2,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": "d36e6af32900cd0dc7d1d56bda42b37bf86bd732",
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "f949e3b81976826b8e0e36c428bd214cae281a3b",
@@ -8424,10 +8424,10 @@
         "description": "vulkan: add an option to lower SHADER_RECORD_INDEX to non-uniform",
         "nominated": true,
         "nomination_type": 4,
-        "resolution": 0,
+        "resolution": 1,
         "main_sha": null,
         "because_sha": null,
-        "notes": null
+        "notes": "MERGED: exact upstream commit is reachable from current main after the upstream rebase."
     },
     {
         "sha": "49d29d4f109fafb2ecacb3d5ec61faec45dacfc1",
@@ -8845,9 +8845,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan compute UAV lowering and r600 SFN guard supersede this frontier input; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: current Terakan compute UAV lowering and r600 SFN guard supersede this frontier input; see replacement commit validation."
     },
     {
         "sha": "82a26594364a716be2fbd42aeaf00c5690cb518e",
@@ -8855,9 +8855,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: r600 SFN T-slot literal scheduling is preserved through the reviewed replacement guard; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: r600 SFN T-slot literal scheduling is preserved through the reviewed replacement guard; see replacement commit validation."
     },
     {
         "sha": "32f4fcb75a93a4c9fd6e4411ef39bae69bcbefb5",
@@ -8865,9 +8865,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: paired revert is superseded by the reviewed r600 SFN T-slot literal guard; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: paired revert is superseded by the reviewed r600 SFN T-slot literal guard; see replacement commit validation."
     },
     {
         "sha": "069ced5a5d49a9ce2c9b7c74cf62eb6792feafbc",
@@ -8875,9 +8875,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: current r600 SFN system-value lowering coverage supersedes this frontier input; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: current r600 SFN system-value lowering coverage supersedes this frontier input; see replacement commit validation."
     },
     {
         "sha": "8950aed7ead4c9a47c98ba11cbbf363ed7d324dc",
@@ -8885,9 +8885,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: current r600 SFN ALU group scheduling bounds supersede this frontier input; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: current r600 SFN ALU group scheduling bounds supersede this frontier input; see replacement commit validation."
     },
     {
         "sha": "f55140399beeb5f802898497d25652a9df4409c1",
@@ -8895,9 +8895,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: retained Terakan profiling needs are covered by current instrumentation boundaries; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: retained Terakan profiling needs are covered by current instrumentation boundaries; see replacement commit validation."
     },
     {
         "sha": "62c70637d6aa9f108de1dc73eb83581e7d8bcc3c",
@@ -8905,9 +8905,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan KCACHE push-constant handling supersedes this frontier input; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: current Terakan KCACHE push-constant handling supersedes this frontier input; see replacement commit validation."
     },
     {
         "sha": "a1df323da03194684e25d68ef21bfd7697c3a355",
@@ -8915,9 +8915,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan KCACHE lowering and scalarization behavior supersede this frontier input; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: current Terakan KCACHE lowering and scalarization behavior supersede this frontier input; see replacement commit validation."
     },
     {
         "sha": "5fc395f393b4babad616576798b11959419ab845",
@@ -8925,9 +8925,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan query-result synchronization supersedes this frontier input; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: current Terakan query-result synchronization supersedes this frontier input; see replacement commit validation."
     },
     {
         "sha": "a54f416d38e826a13226bbb017baaa0b3429bf17",
@@ -8935,9 +8935,9 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan pipeline-cache wiring supersedes this frontier input; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: current Terakan pipeline-cache wiring supersedes this frontier input; see replacement commit validation."
     },
     {
         "sha": "29106f3c94e053e3124032f931c6ecff3f990d56",
@@ -8945,8 +8945,8 @@
         "nominated": true,
         "nomination_type": 0,
         "resolution": 2,
-        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "main_sha": "f64784742d8119810e680202b76fc22621dbbf94",
         "because_sha": null,
-        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan profile-counter boundary supersedes this frontier input; see replacement commit validation."
+        "notes": "DENOMINATED by f64784742d81: current Terakan profile-counter boundary supersedes this frontier input; see replacement commit validation."
     }
 ]
