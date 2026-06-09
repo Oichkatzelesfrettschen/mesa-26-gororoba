@@ -8838,5 +8838,115 @@
         "main_sha": null,
         "because_sha": null,
         "notes": null
+    },
+    {
+        "sha": "f0b7093dcf8740b705b25630c406c65a4ba62ffd",
+        "description": "terakan: refine compute UAV tracking and NIR binding resolution",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan compute UAV lowering and r600 SFN guard supersede this frontier input; see replacement commit validation."
+    },
+    {
+        "sha": "82a26594364a716be2fbd42aeaf00c5690cb518e",
+        "description": "r600/sfn: enforce T-slot literal monopoly",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: r600 SFN T-slot literal scheduling is preserved through the reviewed replacement guard; see replacement commit validation."
+    },
+    {
+        "sha": "32f4fcb75a93a4c9fd6e4411ef39bae69bcbefb5",
+        "description": "Revert \"r600/sfn: enforce T-slot literal monopoly\"",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: paired revert is superseded by the reviewed r600 SFN T-slot literal guard; see replacement commit validation."
+    },
+    {
+        "sha": "069ced5a5d49a9ce2c9b7c74cf62eb6792feafbc",
+        "description": "r600/sfn: add nir_lower_compute_system_values to finalize_nir_common",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: current r600 SFN system-value lowering coverage supersedes this frontier input; see replacement commit validation."
+    },
+    {
+        "sha": "8950aed7ead4c9a47c98ba11cbbf363ed7d324dc",
+        "description": "r600/sfn: fix off-by-one in ALU clause capacity limit",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: current r600 SFN ALU group scheduling bounds supersede this frontier input; see replacement commit validation."
+    },
+    {
+        "sha": "f55140399beeb5f802898497d25652a9df4409c1",
+        "description": "r600/terakan: add TERAKAN_DEBUG=profile hot-path CPU timing counters",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: retained Terakan profiling needs are covered by current instrumentation boundaries; see replacement commit validation."
+    },
+    {
+        "sha": "62c70637d6aa9f108de1dc73eb83581e7d8bcc3c",
+        "description": "r600/terakan: constant-index KCACHE fast-path for UAV base offsets",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan KCACHE push-constant handling supersedes this frontier input; see replacement commit validation."
+    },
+    {
+        "sha": "a1df323da03194684e25d68ef21bfd7697c3a355",
+        "description": "r600/terakan: stop vectorizing KCACHE loads in NIR",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan KCACHE lowering and scalarization behavior supersede this frontier input; see replacement commit validation."
+    },
+    {
+        "sha": "5fc395f393b4babad616576798b11959419ab845",
+        "description": "r600/terakan: fix query reset vs CopyQueryPoolResults race",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan query-result synchronization supersedes this frontier input; see replacement commit validation."
+    },
+    {
+        "sha": "a54f416d38e826a13226bbb017baaa0b3429bf17",
+        "description": "r600/terakan: wire device-level pipeline memory cache",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan pipeline-cache wiring supersedes this frontier input; see replacement commit validation."
+    },
+    {
+        "sha": "29106f3c94e053e3124032f931c6ecff3f990d56",
+        "description": "r600/terakan: track IB dword count in profile counters",
+        "nominated": true,
+        "nomination_type": 0,
+        "resolution": 2,
+        "main_sha": "3285e4a0cc99346bfc494b2df1fe96eb632a2af0",
+        "because_sha": null,
+        "notes": "DENOMINATED by 3285e4a0cc99: current Terakan profile-counter boundary supersedes this frontier input; see replacement commit validation."
     }
 ]
