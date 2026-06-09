@@ -1016,14 +1016,12 @@ terakan_physical_device_get_capabilities(
     * boundary.
     *
     * terakan_nir_mem_access_size_align widens sub-32-bit SSBO and
-    * global memory accesses to 32-bit and routes partial-dword stores
-    * through scalar RMW.  The compare-and-swap shaped RMW path is
-    * rewritten by terakan_nir_lower_cmpxchg_to_speculative_xchg because
-    * Palm (Wrestler GPU, CHIP_PALM, Evergreen / TeraScale-2 VLIW5)
-    * cached MEM_RAT_CMPXCHG_INT silently no-ops.  CTS 16-bit storage
-    * patterns do not race multiple invocations on the same dword, so
-    * the widened RMW path is sufficient for the advertised storage
-    * buffer features. */
+    * global memory accesses to 32-bit.  For partial-dword stores,
+    * nir_lower_mem_access_bit_sizes updates the containing dword with
+    * cached-RAT integer merge atomics (`iand` + `ior`), which are distinct
+    * from Palm's unreliable native CMPXCHG path.  General compare-and-swap
+    * remains governed by TERAKAN_PALM_CMPXCHG_POLICY and is not required
+    * for this feature advertisement. */
    extensions_out->KHR_16bit_storage = true;
    features_out->storageBuffer16BitAccess = true;
    features_out->uniformAndStorageBuffer16BitAccess = true;
