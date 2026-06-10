@@ -61,6 +61,7 @@ if get_option('r300vk-gallium-backend') and with_gallium_r300
     'r300vk_cmd_buffer.c',
     'r300vk_descriptor.c',
     'r300vk_identity_map.c',
+    'r300vk_dp4_fs_nir.c',
     'r300vk_pipeline.c',
     'r300vk_object.c',
   )
@@ -107,6 +108,25 @@ libvulkan_r300 = shared_library(
   gnu_symbol_visibility : 'hidden',
   install : true,
 )
+
+# Build-time guard for the DP4 compute-as-raster fragment shader shape: the FS
+# NIR builder must give the 2D sampler a 2-component coordinate (a vec4 coord
+# trips nir_build_tex_struct's assert and aborted every DP4 compute pipeline
+# create on an asserts-enabled build).  Compiles the extracted builder against
+# NIR alone, no pipe_context.
+if with_tests
+  test(
+    'r300vk-dp4-fs-nir',
+    executable(
+      'r300vk_dp4_fs_nir_test',
+      files('r300vk_dp4_fs_nir.c', 'tests/r300vk_dp4_fs_nir_test.c'),
+      include_directories : [inc_include, inc_src, include_directories('.')],
+      dependencies : [idep_nir, idep_mesautil],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300vk'],
+  )
+endif
 
 # ICD JSON manifest.  The loader discovers ICDs by scanning
 # /usr/share/vulkan/icd.d/ for *.json files and following the
