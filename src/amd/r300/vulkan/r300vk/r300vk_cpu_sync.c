@@ -124,13 +124,18 @@ const struct vk_sync_type r300vk_cpu_sync_type = {
     * vk_common_CreateSemaphore asserts a match.  On the single-queue serialized
     * CPU-replay model a queue wait on a semaphore is satisfied by submit
     * ordering, so advertising GPU_WAIT is honest -- the wait is already complete
-    * by the time the next submit replays (the software-rasterizer pattern). */
-   .features = VK_SYNC_FEATURE_BINARY     |
-               VK_SYNC_FEATURE_GPU_WAIT   |
-               VK_SYNC_FEATURE_CPU_WAIT   |
-               VK_SYNC_FEATURE_CPU_RESET  |
-               VK_SYNC_FEATURE_CPU_SIGNAL |
-               VK_SYNC_FEATURE_WAIT_ANY   |
+    * by the time the next submit replays (the software-rasterizer pattern).
+    * GPU_MULTI_WAIT is honest on the same basis (a submit waits on all of its
+    * prior submits' work, which is already retired) and is required of the
+    * point sync type by vk_sync_timeline_type_validate, so the timeline
+    * emulation that backs VK_KHR_timeline_semaphore needs it. */
+   .features = VK_SYNC_FEATURE_BINARY        |
+               VK_SYNC_FEATURE_GPU_WAIT       |
+               VK_SYNC_FEATURE_GPU_MULTI_WAIT |
+               VK_SYNC_FEATURE_CPU_WAIT       |
+               VK_SYNC_FEATURE_CPU_RESET      |
+               VK_SYNC_FEATURE_CPU_SIGNAL     |
+               VK_SYNC_FEATURE_WAIT_ANY       |
                VK_SYNC_FEATURE_WAIT_PENDING,
    .init     = r300vk_cpu_sync_init,
    .finish   = r300vk_cpu_sync_finish,
