@@ -108,7 +108,7 @@ build() {
 }
 
 package() {
-  meson install -C build --destdir "${pkgdir}"
+  meson install -C build --no-rebuild --destdir "${pkgdir}"
 
   install -Dm755 mesa-26-gororoba-debug-run \
     "${pkgdir}/usr/bin/mesa-26-gororoba-debug-run"
