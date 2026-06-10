@@ -48,6 +48,11 @@ VkResult r300vk_CreateRenderPass(VkDevice device,
                                   const VkAllocationCallbacks *pAllocator,
                                   VkRenderPass *pRenderPass);
 
+VkResult r300vk_CreateRenderPass2(VkDevice device,
+                                   const VkRenderPassCreateInfo2 *pCreateInfo,
+                                   const VkAllocationCallbacks *pAllocator,
+                                   VkRenderPass *pRenderPass);
+
 void r300vk_DestroyRenderPass(VkDevice device,
                                VkRenderPass renderPass,
                                const VkAllocationCallbacks *pAllocator);

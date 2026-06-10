@@ -140,20 +140,20 @@ r300vk_EndCommandBuffer(VkCommandBuffer commandBuffer)
    return vk_command_buffer_end(&cmd->base);
 }
 
-void
-r300vk_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
-                           const VkRenderPassBeginInfo *pRenderPassBegin,
-                           VkSubpassContents contents)
+/* Shared body for the VkRenderPass begin entry points, both the 1.0 form and
+ * the VK_KHR_create_renderpass2 form.  Both receive the same
+ * VkRenderPassBeginInfo; the 2.0 VkSubpassBeginInfo carries only the subpass
+ * contents, which the single-subpass replay does not branch on.  Resolves the
+ * first colour attachment to its pipe_resource and pipe_format and records the
+ * R300VK_CMD_BEGIN_RENDER_PASS replay entry; skips the slot for
+ * VK_ATTACHMENT_UNUSED. */
+static void
+r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
+                                const VkRenderPassBeginInfo *pRenderPassBegin)
 {
-   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
-   VK_FROM_HANDLE(r300vk_render_pass, rp,
-                  pRenderPassBegin->renderPass);
-   VK_FROM_HANDLE(r300vk_framebuffer, fb,
-                  pRenderPassBegin->framebuffer);
+   VK_FROM_HANDLE(r300vk_render_pass, rp, pRenderPassBegin->renderPass);
+   VK_FROM_HANDLE(r300vk_framebuffer, fb, pRenderPassBegin->framebuffer);
 
-   /* Resolve the first color attachment to the underlying pipe_resource
-    * and its pipe_format for framebuffer setup at replay time.  Skip the
-    * slot if the subpass uses VK_ATTACHMENT_UNUSED. */
    struct r300vk_image *color_image = NULL;
    enum pipe_format color_format = PIPE_FORMAT_NONE;
    VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -188,14 +188,52 @@ r300vk_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    cmd->current_color_image = color_image;
 }
 
-void
-r300vk_CmdEndRenderPass(VkCommandBuffer commandBuffer)
+static void
+r300vk_record_end_render_pass(struct r300vk_cmd_buffer *cmd)
 {
-   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
    e->type = R300VK_CMD_END_RENDER_PASS;
    cmd->current_color_image = NULL;
+}
+
+void
+r300vk_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
+                           const VkRenderPassBeginInfo *pRenderPassBegin,
+                           VkSubpassContents contents)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   r300vk_record_begin_render_pass(cmd, pRenderPassBegin);
+}
+
+void
+r300vk_CmdEndRenderPass(VkCommandBuffer commandBuffer)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   r300vk_record_end_render_pass(cmd);
+}
+
+/* VK_KHR_create_renderpass2 begin/end.  r300vk renders a single subpass, so the
+ * VkSubpassBeginInfo/VkSubpassEndInfo carry nothing the replay needs.  These
+ * reuse the same record helpers as the 1.0 entry points and operate on r300vk's
+ * own r300vk_render_pass / r300vk_framebuffer objects, so the common-runtime
+ * render-pass emulation (which reads vk_render_pass / vk_framebuffer, not these
+ * bespoke types) is never reached. */
+void
+r300vk_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
+                            const VkRenderPassBeginInfo *pRenderPassBegin,
+                            const VkSubpassBeginInfo *pSubpassBeginInfo)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   r300vk_record_begin_render_pass(cmd, pRenderPassBegin);
+}
+
+void
+r300vk_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
+                          const VkSubpassEndInfo *pSubpassEndInfo)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   r300vk_record_end_render_pass(cmd);
 }
 
 /* VK_KHR_dynamic_rendering names the colour attachment as a VkImageView
