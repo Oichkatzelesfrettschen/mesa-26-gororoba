@@ -381,24 +381,23 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       .op_name         = "QADD",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
-      .status          = R300_VOP_NUMERIC_DERIVED,
-      .theorem         = "quaternion addition a+b = componentwise vec4 add, zero DP4.  The "
-                         "binary-map detector recognizes the shape (nir_op_fadd of two "
-                         "load_ssbo vec4s) but its dispatch is UNORM8 byte-domain; a "
-                         "float-quaternion QADD reuses the QMUL FP16-RT / FP32-readback "
-                         "dispatch with a vec4-add FS (the next increment)",
-      .mesa_hook       = NULL,  /* shape = binary_map(fadd); FP-domain dispatch pending */
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "quaternion addition a+b = componentwise vec4 add, zero DP4; "
+                         "served by the binary-map detector (nir_op_fadd of two load_ssbo "
+                         "vec4s).  A value_is_float binary map now dispatches in the FP "
+                         "domain (FP32 sampler, FP16 RT, FP32 readback) instead of UNORM8, "
+                         "HW-confirmed 4/4 on RS482 by qadd_vk_probe",
+      .mesa_hook       = "r300_nir_detect_binary_map",
       .retained_bundle = NULL,
    },
    {
       .op_name         = "QSUB",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
-      .status          = R300_VOP_NUMERIC_DERIVED,
-      .theorem         = "quaternion subtraction a-b = componentwise vec4 sub, zero DP4.  "
-                         "Shape = binary_map(nir_op_fsub); like QADD the float-quaternion "
-                         "form needs the FP16-RT / FP32-readback dispatch, not the UNORM8 "
-                         "binary-map dispatch",
-      .mesa_hook       = NULL,  /* shape = binary_map(fsub); FP-domain dispatch pending */
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "quaternion subtraction a-b = componentwise vec4 sub, zero DP4; "
+                         "binary-map(nir_op_fsub) on the same FP-domain dispatch as QADD, "
+                         "HW-confirmed 4/4 on RS482 by qsub_vk_probe",
+      .mesa_hook       = "r300_nir_detect_binary_map",
       .retained_bundle = NULL,
    },
    {
