@@ -385,6 +385,15 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * vk_common provides GetRenderingAreaGranularity.  The maintenance5 property
     * query reports the conservative (all-false) rasterization capabilities. */
    .KHR_maintenance5 = true,
+   /* VK_KHR_timeline_semaphore: a timeline emulated on the GPU-fence-backed
+    * binary cpu_sync (sync_types[1]); the GetSemaphoreCounterValue /
+    * WaitSemaphores / SignalSemaphore entry points come from vk_common. */
+   .KHR_timeline_semaphore = true,
+   /* VK_EXT_robustness2 for nullDescriptor: the descriptor replay skips a
+    * VK_NULL_HANDLE view/buffer, leaving the unit unbound (which reads zero on
+    * the r300 PFS), so a null descriptor is safe to access.  robustBufferAccess2
+    * and robustImageAccess2 stay false. */
+   .EXT_robustness2 = true,
 };
 
 static void
@@ -414,6 +423,13 @@ r300vk_physical_device_init_features(struct vk_features *features)
    /* The maintenance5 entry points (CmdBindIndexBuffer2, the two subresource
     * layout getters) are implemented, so advertise the gating feature. */
    features->maintenance5 = true;
+   /* Timeline semaphores are emulated on the binary cpu_sync (sync_types[1]);
+    * zink_screen requires this feature or feats12.timelineSemaphore. */
+   features->timelineSemaphore = true;
+   /* nullDescriptor: the descriptor replay tolerates a VK_NULL_HANDLE binding
+    * (skipped, unit left unbound -> reads zero on r300).  zink_screen rejects a
+    * device without it. */
+   features->nullDescriptor = true;
 }
 
 void
@@ -507,8 +523,14 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    device->screen = device->rws->screen;
 #endif
 
+   /* Slot 0 is the GPU-fence-backed binary cpu_sync; slot 1 is a timeline
+    * emulated on it (radeon has no DRM_CAP_SYNCOBJ, so no hardware timeline).
+    * vk_sync_timeline_get_type returns the wrapper type by value, so it is
+    * stored on the physical device and the table points at its embedded sync. */
+   device->timeline_sync_type = vk_sync_timeline_get_type(&r300vk_cpu_sync_type);
    device->sync_types[0] = &r300vk_cpu_sync_type;
-   device->sync_types[1] = NULL;
+   device->sync_types[1] = &device->timeline_sync_type.sync;
+   device->sync_types[2] = NULL;
 
    struct vk_features features;
    r300vk_physical_device_init_features(&features);
