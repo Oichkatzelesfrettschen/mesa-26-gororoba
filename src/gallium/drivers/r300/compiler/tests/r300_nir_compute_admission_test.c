@@ -136,6 +136,37 @@ build_binary_map_f32vec4(void)
    return b.shader;
 }
 
+/* Quaternion Hamilton product q1*q2 in the canonical four-dot form the QMUL
+ * detector admits: each output lane is a DP4 of q1 against a sign-permutation
+ * of q2.  bad_sign flips one permutation lane so the negative case exercises the
+ * detector's exact-permutation check.  Channels are q2.(x,y,z,w) = (w2,x2,y2,z2)
+ * in the (w,x,y,z) quaternion layout. */
+static nir_shader *
+build_qmul_form(bool bad_sign)
+{
+   nir_builder b = cs_builder("cs_qmul_f32vec4");
+   nir_def *q1 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *q2 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *x = nir_channel(&b, q2, 0), *y = nir_channel(&b, q2, 1);
+   nir_def *z = nir_channel(&b, q2, 2), *w = nir_channel(&b, q2, 3);
+   nir_def *nx = nir_fneg(&b, x), *ny = nir_fneg(&b, y);
+   nir_def *nz = nir_fneg(&b, z), *nw = nir_fneg(&b, w);
+
+   nir_def *pw = nir_vec4(&b, x, bad_sign ? y : ny, nz, nw);
+   nir_def *px = nir_vec4(&b, y, x, w, nz);
+   nir_def *py = nir_vec4(&b, z, nw, x, y);
+   nir_def *pz = nir_vec4(&b, w, z, ny, x);
+   (void)nx;
+
+   nir_def *prod = nir_vec4(&b, nir_fdot(&b, q1, pw), nir_fdot(&b, q1, px),
+                            nir_fdot(&b, q1, py), nir_fdot(&b, q1, pz));
+   nir_store_ssbo(&b, prod, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 prepare_detect_shader(nir_shader *nir)
 {
@@ -201,6 +232,34 @@ case_binary_metadata(void)
    ralloc_free(nir);
 }
 
+static void
+case_qmul_metadata(void)
+{
+   nir_shader *nir = build_qmul_form(false);
+   struct r300_compute_admission adm;
+   struct r300_compute_qmul_pattern qmul = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "float4 qmul kernel admits");
+   r300_nir_detect_qmul_pattern(nir, &qmul);
+   CHECK(qmul.is_qmul, "qmul Hamilton shape detected");
+   CHECK(qmul.input_a_ssbo_binding == 0, "qmul metadata records q1 binding 0");
+   CHECK(qmul.input_b_ssbo_binding == 1, "qmul metadata records q2 binding 1");
+   CHECK(qmul.output_ssbo_binding == 2, "qmul metadata records output binding 2");
+   ralloc_free(nir);
+
+   /* A single flipped permutation sign is a different algebra; the detector's
+    * exact-permutation check must reject it so the substrate's Hamilton FS never
+    * silently recomputes a kernel that meant something else. */
+   nir_shader *bad = build_qmul_form(true);
+   struct r300_compute_qmul_pattern bad_qmul = {0};
+   prepare_detect_shader(bad);
+   r300_nir_detect_qmul_pattern(bad, &bad_qmul);
+   CHECK(!bad_qmul.is_qmul, "qmul rejects a wrong-sign permutation");
+   ralloc_free(bad);
+}
+
 int
 main(void)
 {
@@ -219,6 +278,7 @@ main(void)
                 "fp64 arithmetic rejects");
    case_identity_metadata();
    case_binary_metadata();
+   case_qmul_metadata();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

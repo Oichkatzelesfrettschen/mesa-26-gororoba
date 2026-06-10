@@ -1095,6 +1095,161 @@ r300_nir_detect_dp4_pattern(const nir_shader *s,
    out->is_dp4 = true;
 }
 
+/* Resolve one component of a Hamilton permutation vec4 to a signed channel of
+ * the base quaternion q2.  The component is q2.channel or -q2.channel, possibly
+ * reached through an nir_op_mov (what nir_channel emits) and/or an nir_op_fneg;
+ * compose the swizzles through each so the result is the lane of q2 the
+ * component ultimately reads and whether it is negated.  Returns false if the
+ * component is anything other than a +/- channel of base. */
+static bool
+qmul_signed_b_channel(const nir_def *base, const nir_alu_src *as,
+                      unsigned *chan_out, bool *neg_out)
+{
+   bool neg = false;
+   unsigned swz = as->swizzle[0];
+   nir_def *d = as->src.ssa;
+
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(d);
+   if (alu && alu->op == nir_op_fneg) {
+      neg = true;
+      swz = alu->src[0].swizzle[swz];
+      d = alu->src[0].src.ssa;
+      alu = nir_def_as_alu_or_null(d);
+   }
+   if (alu && alu->op == nir_op_mov) {
+      swz = alu->src[0].swizzle[swz];
+      d = alu->src[0].src.ssa;
+   }
+   if (d != base)
+      return false;
+
+   *chan_out = swz;
+   *neg_out = neg;
+   return true;
+}
+
+void
+r300_nir_detect_qmul_pattern(const nir_shader *s,
+                             struct r300_compute_qmul_pattern *out)
+{
+   out->is_qmul              = false;
+   out->input_a_ssbo_binding = 0;
+   out->input_b_ssbo_binding = 0;
+   out->output_ssbo_binding  = 0;
+
+   const nir_intrinsic_instr *store  = NULL;
+   const nir_intrinsic_instr *load_a = NULL;
+   const nir_intrinsic_instr *load_b = NULL;
+   unsigned store_count = 0, load_count = 0, atomic_count = 0;
+   bool has_loop = false, in_if = false;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
+            if (p->type == nir_cf_node_loop)
+               has_loop = true;
+            if (p->type == nir_cf_node_if)
+               in_if = true;
+         }
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (load_count == 0)
+                  load_a = intr;
+               else if (load_count == 1)
+                  load_b = intr;
+               load_count++;
+            } else if (is_ssbo_atomic(intr->intrinsic)) {
+               atomic_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 2 || atomic_count != 0 ||
+       has_loop || in_if)
+      return;
+   if (!store->src[0].ssa)
+      return;
+   /* The product writes the whole quaternion; a partial-lane store would carry
+    * render-target bytes in the unwritten lanes. */
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return;
+
+   /* Store value assembles the four product lanes. */
+   const nir_alu_instr *vec = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!vec || vec->op != nir_op_vec4)
+      return;
+
+   /* The four Hamilton rows in (w,x,y,z) layout: for output lane i, the
+    * (q2 channel, sign) of each of the four permuted dot operands.  Verified
+    * against the catalog self-check (1,2,3,4)*(5,6,7,8) = (-60,12,30,24):
+    *   w = q1 . ( x2,-y2,-z2,-w2)
+    *   x = q1 . ( y2, x2, w2,-z2)
+    *   y = q1 . ( z2,-w2, x2, y2)
+    *   z = q1 . ( w2, z2,-y2, x2). */
+   static const struct { uint8_t chan; bool neg; } hamilton[4][4] = {
+      { {0, false}, {1, true},  {2, true},  {3, true}  },
+      { {1, false}, {0, false}, {3, false}, {2, true}  },
+      { {2, false}, {3, true},  {0, false}, {1, false} },
+      { {3, false}, {2, false}, {1, true},  {0, false} },
+   };
+
+   const nir_def *q1 = &load_a->def;
+   const nir_def *q2 = &load_b->def;
+
+   for (unsigned lane = 0; lane < 4; lane++) {
+      const nir_alu_instr *dot = nir_def_as_alu_or_null(vec->src[lane].src.ssa);
+      if (!dot || dot->op != nir_op_fdot4)
+         return;
+
+      /* One dot input is q1 used directly; the other is the permuted q2.  fdot
+       * is commutative, so accept either operand order. */
+      const nir_alu_src *q1_src = NULL, *perm_src = NULL;
+      for (unsigned k = 0; k < 2; k++) {
+         if (dot->src[k].src.ssa == q1)
+            q1_src = &dot->src[k];
+         else
+            perm_src = &dot->src[k];
+      }
+      if (!q1_src || !perm_src)
+         return;
+
+      /* q1 must be dotted identity-swizzled (the Hamilton rows permute q2, not
+       * q1), and the permuted q2 must enter the dot directly: a non-identity
+       * swizzle on either operand would change the product. */
+      for (unsigned c = 0; c < 4; c++)
+         if (q1_src->swizzle[c] != c || perm_src->swizzle[c] != c)
+            return;
+
+      const nir_alu_instr *perm = nir_def_as_alu_or_null(perm_src->src.ssa);
+      if (!perm || perm->op != nir_op_vec4)
+         return;
+      for (unsigned j = 0; j < 4; j++) {
+         unsigned chan;
+         bool neg;
+         if (!qmul_signed_b_channel(q2, &perm->src[j], &chan, &neg))
+            return;
+         if (chan != hamilton[lane][j].chan || neg != hamilton[lane][j].neg)
+            return;
+      }
+   }
+
+   if (nir_src_is_const(load_a->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load_a->src[0]);
+   if (nir_src_is_const(load_b->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load_b->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->is_qmul = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
