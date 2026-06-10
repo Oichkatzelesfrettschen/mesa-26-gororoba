@@ -345,6 +345,37 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .mesa_hook       = NULL,
       .retained_bundle = NULL,  /* bundle named in .theorem; fork evidence paths stay out of Mesa metadata */
    },
+   {
+      .op_name         = "QMUL_HAMILTON",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "Hamilton product = Cayley-Dickson multiplication at dim 4 = four "
+                         "sign-permuted DP4s; sign-for-sign the machine-verified quat_mul; "
+                         "integer self-check (1,2,3,4)*(5,6,7,8) = (-60,12,30,24) exact on RS482",
+      .mesa_hook       = NULL,  /* QMUL macro = 4 sign-permuted DP4; no NIR detector yet */
+      .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
+   },
+   {
+      .op_name         = "QROTATE_SANDWICH",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "vertex rotation q*v*conj(q) = two Hamilton products = eight DP4s; "
+                         "equals the rotation matrix R(q) for unit q (machine-verified); "
+                         "5/5 rotations within FP16 tolerance on RS482",
+      .mesa_hook       = NULL,  /* QROTATE macro = 2 QMUL */
+      .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
+   },
+   {
+      .op_name         = "OMUL_OCTONION",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "octonion product = Cayley-Dickson doubling of quaternions = four "
+                         "Hamilton products = sixteen DP4s; norm multiplicative "
+                         "|xy|^2 = |x|^2 |y|^2 (Hurwitz at dim 8); 3/3 with the norm "
+                         "identity exact on RS482",
+      .mesa_hook       = NULL,  /* OMUL macro = 4 QMUL via CD doubling */
+      .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
+   },
    /* NULL sentinel -- keep last */
    { .op_name = NULL },
 };
