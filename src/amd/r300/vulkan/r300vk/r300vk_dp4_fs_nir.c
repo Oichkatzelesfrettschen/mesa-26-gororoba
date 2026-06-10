@@ -80,3 +80,69 @@ r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
 
    return b.shader;
 }
+
+/* Quaternion Hamilton product as four DP4s -- the Cayley-Dickson dim-4 multiply
+ * (QMUL_HAMILTON).  Samples q1, q2 at the fullscreen texcoord and writes q1*q2
+ * to the FP16 color export.  Each output lane is one DP4 of q1 against a
+ * sign-permuted swizzle of q2; the four permutations are the rows of the
+ * Hamilton matrix in (w,x,y,z) layout, verified against the catalog self-check
+ * (1,2,3,4)*(5,6,7,8) = (-60,12,30,24).  The negated lanes are native fneg in a
+ * vec4 constructor, which nir_to_rc lowers correctly since the srcmod-fold
+ * register-dest fix (before it, a negated variable lane read back zero). */
+nir_shader *
+r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qmul");
+
+   nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+   in_tc->data.location = VARYING_SLOT_VAR0;
+   /* 2D sampler takes a 2-component coordinate; nir_tex asserts coord_components
+    * matches the sampler dimension, so trim the vec4 varying to xy. */
+   nir_def *coord = nir_trim_vector(&b, nir_load_var(&b, in_tc), 2);
+
+   nir_def *q[2];
+   for (unsigned s = 0; s < 2; s++) {
+      nir_variable *samp = nir_variable_create(
+         b.shader, nir_var_uniform,
+         glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+         "samp");
+      samp->data.binding = s;
+      nir_deref_instr *d = nir_build_deref_var(&b, samp);
+      q[s] = nir_tex(&b, coord, .texture_deref = d, .sampler_deref = d);
+   }
+
+   /* q2 channels in (w,x,y,z) = (.x,.y,.z,.w). */
+   nir_def *w2 = nir_channel(&b, q[1], 0);
+   nir_def *x2 = nir_channel(&b, q[1], 1);
+   nir_def *y2 = nir_channel(&b, q[1], 2);
+   nir_def *z2 = nir_channel(&b, q[1], 3);
+
+   nir_def *perm_w = nir_vec4(&b, w2, nir_fneg(&b, x2), nir_fneg(&b, y2),
+                              nir_fneg(&b, z2));
+   nir_def *perm_x = nir_vec4(&b, x2, w2, z2, nir_fneg(&b, y2));
+   nir_def *perm_y = nir_vec4(&b, y2, nir_fneg(&b, z2), w2, x2);
+   nir_def *perm_z = nir_vec4(&b, z2, y2, nir_fneg(&b, x2), w2);
+
+   nir_def *prod = nir_vec4(&b, nir_fdot(&b, q[0], perm_w),
+                            nir_fdot(&b, q[0], perm_x),
+                            nir_fdot(&b, q[0], perm_y),
+                            nir_fdot(&b, q[0], perm_z));
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   /* The product is a four-component quaternion; write it straight to the color
+    * export.  The substrate renders quaternion results to an FP16 (RGBA16F)
+    * target -- R300 has no FP32 RT, but FP16 carries each lane for the admitted
+    * operand range -- so no per-byte encode is needed here, unlike the scalar
+    * DP4 path. */
+   nir_store_var(&b, out, prod, 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}
