@@ -1,11 +1,14 @@
 # mesa-gororoba: a system Mesa replacement build from the mesa-26-gororoba fork.
-# It installs the r300 Gallium GL driver, the llvmpipe software fallback, and
-# the amd_r300 (r300vk) Vulkan ICD into the normal Mesa loader paths so RS482
-# daily-driver testing uses the fork by default.
+# It installs the r300 Gallium GL driver, the llvmpipe software fallback, the
+# zink GL-on-Vulkan Gallium driver, the XA/Xv 2D-acceleration state tracker
+# (libxatracker), and the amd_r300 (r300vk) Vulkan ICD into the normal Mesa
+# loader paths so RS482 daily-driver testing uses the fork by default.
 #
 # Scope is deliberately RS482-focused: r300 hardware GL + llvmpipe fallback +
-# the r300vk Vulkan ICD.  OpenCL (rusticl) is not built.  Build for the x86-64
-# psABI baseline so the artifact runs on the K8 Turion 64 X2 in the Vostro
+# the r300vk Vulkan ICD + zink riding that ICD for the GL-atop-Vulkan lane +
+# XA/Xv and gallium-va MPEG-2 decode on the 3D pipe.  OpenCL (rusticl) is not
+# built.  Build for the x86-64 psABI baseline so the artifact runs on the K8
+# Turion 64 X2 in the Vostro
 # (no SSE4.2/AVX).  llvm major MUST match the target host's llvm-libs (built and
 # run against llvm 22): a major mismatch makes every llvmpipe path fail to
 # dlopen libLLVM.so.<major>.
@@ -28,12 +31,12 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=7
+pkgrel=8
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
 # replace #branch=main with #commit=<sha>.
-pkgdesc='Mesa system replacement: r300 GL + llvmpipe + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
+pkgdesc='Mesa system replacement: r300 GL + llvmpipe + zink + XA/Xv + VA MPEG-2 + amd_r300/r300vk Vulkan ICD, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -119,7 +122,7 @@ build() {
     -D b_ndebug=true \
     -D b_lto=false \
     -D platforms=x11,wayland \
-    -D gallium-drivers=r300,llvmpipe \
+    -D gallium-drivers=r300,llvmpipe,zink \
     -D vulkan-drivers=amd_r300 \
     -D r300vk-gallium-backend=true \
     -D gallium-rusticl=false \
@@ -134,6 +137,7 @@ build() {
     -D glvnd=enabled \
     -D gallium-va=enabled \
     -D video-codecs=mpeg12dec \
+    -D gallium-xa=true \
     -D valgrind=disabled \
     -D libunwind=disabled
 
