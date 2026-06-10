@@ -8,6 +8,7 @@
 #define R300_SCREEN_H
 
 #include "r300_chipset.h"
+#include "r300_hb_tcl.h"
 #include "winsys/radeon_winsys.h"
 #include "pipe/p_screen.h"
 #include "util/disk_cache.h"
@@ -41,9 +42,10 @@ struct r300_screen {
 #include "r300_debug_options.h"
     } options;
 
-    /* RS482 hybrid-TCL instrumentation stays separate from caps.has_tcl. */
-    bool hb_tcl;
-    unsigned hb_vert_fpu_probe;
+    /* RS482 hybrid-TCL VAP resource config, kept separate from caps.has_tcl.
+     * Populated once at screen create by r300_hb_tcl_init; the static
+     * TCL_BYPASS VAP_CNTL setup reads it through r300_hb_tcl_vap_cntl. */
+    struct r300_hb_tcl_config hb_tcl;
 
     /* R300_EXPERIMENTAL_ATI2N opt-in, read once at screen create.  Gates ATI2N
      * (RGTC2) sampler advertisement on R300-class parts; see
