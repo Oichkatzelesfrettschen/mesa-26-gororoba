@@ -16,7 +16,6 @@
 #include "util/u_blend.h"
 
 #include "nir/tgsi_to_nir.h"
-#include "nir/nir_to_tgsi.h"
 
 #include "util/detect.h"
 
@@ -30,7 +29,6 @@
 #include "r300_fs.h"
 #include "r300_texture.h"
 #include "r300_vs.h"
-#include "compiler/nir_to_rc.h"
 #include "compiler/r300_nir.h"
 
 /* r300_state: Functions used to initialize state context by translating
@@ -2290,30 +2288,15 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
                 return NULL;
             }
         }
-    } else {
-       /* r300_draw_init_vertex_shader needs TGSI tokens.
-        * Apply the +9 varying shift to keep VS outputs aligned with the
-        * FS inputs (which always go through nir_to_rc and pick up the
-        * same shift), then go through the stock gallium nir_to_tgsi.
-        */
-       nir_shader *clone = nir_shader_clone(NULL, vs->state.ir.nir);
-       ralloc_free(vs->state.ir.nir);
-       ntr_fixup_varying_slots(clone, nir_var_shader_out);
-       /* nir_to_tgsi assigns each output its TGSI register from
-        * var->data.driver_location but never assigns the locations itself.
-        * The optimization pipeline above does not preserve the output
-        * driver_locations a directly-built NIR shader carries, so without a
-        * fresh assignment every output collapses onto register OUT[0]:
-        * nir_to_tgsi then packs POSITION and the generics together, the
-        * VS body writes them all to OUT[0], and draw's position_output (the
-        * POSITION declaration's scan index) no longer matches the written
-        * register -- draw_llvm's outputs[position_output] is null and the
-        * viewport/clip stage dereferences it.  Assign output locations here so
-        * each output gets a distinct register before translation. */
-       nir_assign_io_var_locations(clone, nir_var_shader_out);
-       vs->state.tokens = nir_to_tgsi(clone, pipe->screen);
-       vs->state.type = PIPE_SHADER_IR_TGSI;
     }
+
+    /* Keep vs->state.ir.nir live across both routes.  r300_draw_init_vertex_shader
+     * (SW-TCL) clones it and assigns the rasterizer output driver_locations
+     * through r300_draw_fill_vs_outputs, and the draw module runs its own
+     * nir_to_tgsi; r300_translate_vertex_shader (HW-TCL) consumes it directly.
+     * Converting to TGSI and ralloc_free()ing the NIR here would leave the
+     * SW-TCL clone in r300_draw_init_vertex_shader reading freed memory, and
+     * r300_delete_vs_state would then free vs->state.ir.nir a second time. */
 
     vs->first = vs->shader = CALLOC_STRUCT(r300_vertex_shader_code);
     if (r300->screen->caps.has_tcl) {
