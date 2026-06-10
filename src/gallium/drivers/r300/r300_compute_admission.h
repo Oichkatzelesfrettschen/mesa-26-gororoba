@@ -361,6 +361,25 @@ struct r300_compute_qmul_pattern {
 void r300_nir_detect_qmul_pattern(const struct nir_shader *s,
                                   struct r300_compute_qmul_pattern *out);
 
+/* Quaternion rotation (QROTATE) pattern: out[gid] = q[gid] * embed(v[gid]) *
+ * conj(q[gid]), the sandwich that rotates the vec3 v by the unit quaternion q.
+ * The admissible shape is two nested canonical Hamilton products: the store is
+ * the outer product of the inner product t = q*embed(v) against conj(q), where
+ * embed(v) = (0, vx, vy, vz) and conj(q) = (qw, -qx, -qy, -qz).  The matcher
+ * recovers each product's operands and verifies conj(q) and embed(v) against
+ * the two load_ssbos, so it admits only a true rotation sandwich -- eight DP4s
+ * the substrate's two-Hamilton FS reproduces.  Bindings stay 0 when the sources
+ * are not constants (the orchestrator's positional fallback: q=0, v=1, out=2). */
+struct r300_compute_qrotate_pattern {
+   bool       is_qrotate;
+   uint32_t   input_q_ssbo_binding;   /* unit quaternion */
+   uint32_t   input_v_ssbo_binding;   /* vector to rotate (vec3 in a vec4) */
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qrotate_pattern(const struct nir_shader *s,
+                                     struct r300_compute_qrotate_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

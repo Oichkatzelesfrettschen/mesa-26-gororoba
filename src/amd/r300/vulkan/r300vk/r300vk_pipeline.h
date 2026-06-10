@@ -95,6 +95,13 @@ struct r300vk_pipeline {
     * the kernel's vec4 FP32 output buffer. */
    struct r300_compute_qmul_pattern qmul;
 
+   /* Quaternion rotation (QROTATE) kernel detected at pipeline-create time:
+    * out[gid] = q[gid] * embed(v[gid]) * conj(q[gid]), the sandwich = two Hamilton
+    * products = eight DP4s.  Lowered to a fullscreen draw whose synthesized FS
+    * (r300vk_build_qrotate_fs_nir) emits the sandwich to an FP16 render target,
+    * unpacked into the kernel's vec4 FP32 output buffer. */
+   struct r300_compute_qrotate_pattern qrotate;
+
    /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
     * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])

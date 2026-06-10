@@ -1250,6 +1250,232 @@ r300_nir_detect_qmul_pattern(const nir_shader *s,
    out->is_qmul = true;
 }
 
+/* The Hamilton permutation rows in (w,x,y,z) layout, shared by the QROTATE
+ * matcher below; identical to the table inlined in the QMUL detector. */
+static const struct { uint8_t chan; bool neg; } r300_hamilton_rows[4][4] = {
+   { {0, false}, {1, true},  {2, true},  {3, true}  },
+   { {1, false}, {0, false}, {3, false}, {2, true}  },
+   { {2, false}, {3, true},  {0, false}, {1, false} },
+   { {3, false}, {2, false}, {1, true},  {0, false} },
+};
+
+/* Resolve an alu_src to a signed channel (base.chan or -base.chan) reached
+ * through an nir_op_mov / nir_op_fneg, discovering the base def.  Always sets
+ * the outputs; the caller checks that the base is the one it expects. */
+static void
+resolve_signed_channel(const nir_alu_src *as, const nir_def **base,
+                       unsigned *chan, bool *neg)
+{
+   bool n = false;
+   unsigned swz = as->swizzle[0];
+   nir_def *d = as->src.ssa;
+
+   /* Unwrap a chain of nir_op_fneg / nir_op_mov, toggling the sign through each
+    * fneg.  The rotation sandwich folds conj(q) into the outer permutation as a
+    * double fneg (the conjugate's negate composed with the Hamilton row's), so a
+    * single-level unwrap would stop at the inner fneg instead of reaching q. */
+   for (;;) {
+      const nir_alu_instr *alu = nir_def_as_alu_or_null(d);
+      if (alu && alu->op == nir_op_fneg) {
+         n = !n;
+         swz = alu->src[0].swizzle[swz];
+         d = alu->src[0].src.ssa;
+         continue;
+      }
+      if (alu && alu->op == nir_op_mov) {
+         swz = alu->src[0].swizzle[swz];
+         d = alu->src[0].src.ssa;
+         continue;
+      }
+      break;
+   }
+   *base = d;
+   *chan = swz;
+   *neg = n;
+}
+
+/* The outer permutation rows of the rotation sandwich: perm_i(conj(q)) expressed
+ * over q's channels, the Hamilton row composed with the conjugate's sign (negate
+ * on x,y,z).  The inner rows are the plain Hamilton rows (r300_hamilton_rows)
+ * applied to embed(v), where channel 0 of a row means the constant 0. */
+static const struct { uint8_t chan; bool neg; } qrotate_outer_rows[4][4] = {
+   { {0, false}, {1, false}, {2, false}, {3, false} },
+   { {1, true},  {0, false}, {3, true},  {2, false} },
+   { {2, true},  {3, false}, {0, false}, {1, true}  },
+   { {3, true},  {2, true},  {1, false}, {0, false} },
+};
+
+void
+r300_nir_detect_qrotate_pattern(const nir_shader *s,
+                                struct r300_compute_qrotate_pattern *out)
+{
+   out->is_qrotate          = false;
+   out->input_q_ssbo_binding = 0;
+   out->input_v_ssbo_binding = 0;
+   out->output_ssbo_binding  = 0;
+
+   const nir_intrinsic_instr *store  = NULL;
+   const nir_intrinsic_instr *load_a = NULL;
+   const nir_intrinsic_instr *load_b = NULL;
+   unsigned store_count = 0, load_count = 0, atomic_count = 0;
+   bool has_loop = false, in_if = false;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
+            if (p->type == nir_cf_node_loop)
+               has_loop = true;
+            if (p->type == nir_cf_node_if)
+               in_if = true;
+         }
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (load_count == 0)
+                  load_a = intr;
+               else if (load_count == 1)
+                  load_b = intr;
+               load_count++;
+            } else if (is_ssbo_atomic(intr->intrinsic)) {
+               atomic_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 2 || atomic_count != 0 ||
+       has_loop || in_if)
+      return;
+   if (!store->src[0].ssa)
+      return;
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return;
+
+   /* The compiler folds embed(v) (the scalar-part 0 into the inner permutations)
+    * and conj(q) (a double fneg into the outer permutations), so the sandwich
+    * reaches here as two nested products over the raw q and v loads, not over
+    * explicit embed/conj vec4s.  Match the folded form directly. */
+   const nir_alu_instr *outer = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!outer || outer->op != nir_op_vec4)
+      return;
+
+   /* Outer: out[lane] = dot(t, P_lane) where P_lane references q's channels with
+    * the conj-composed signs (qrotate_outer_rows) and t -- the inner product --
+    * is the common other operand. */
+   const nir_def *t = NULL, *qd = NULL;
+   for (unsigned lane = 0; lane < 4; lane++) {
+      const nir_alu_instr *dot = nir_def_as_alu_or_null(outer->src[lane].src.ssa);
+      if (!dot || dot->op != nir_op_fdot4)
+         return;
+      const nir_alu_src *perm_src = NULL, *t_src = NULL;
+      const nir_def *base = NULL;
+      for (unsigned k = 0; k < 2 && !perm_src; k++) {
+         const nir_alu_instr *cand = nir_def_as_alu_or_null(dot->src[k].src.ssa);
+         if (!cand || cand->op != nir_op_vec4)
+            continue;
+         const nir_def *b0 = NULL;
+         bool shared = true;
+         for (unsigned j = 0; j < 4; j++) {
+            const nir_def *b;
+            unsigned c;
+            bool n;
+            resolve_signed_channel(&cand->src[j], &b, &c, &n);
+            if (j == 0)
+               b0 = b;
+            else if (b != b0)
+               shared = false;
+         }
+         if (shared && (b0 == &load_a->def || b0 == &load_b->def)) {
+            perm_src = &dot->src[k];
+            t_src = &dot->src[1 - k];
+            base = b0;
+         }
+      }
+      if (!perm_src)
+         return;
+      for (unsigned c = 0; c < 4; c++)
+         if (perm_src->swizzle[c] != c || t_src->swizzle[c] != c)
+            return;
+      const nir_alu_instr *perm = nir_def_as_alu_or_null(perm_src->src.ssa);
+      for (unsigned j = 0; j < 4; j++) {
+         const nir_def *b;
+         unsigned c;
+         bool n;
+         resolve_signed_channel(&perm->src[j], &b, &c, &n);
+         if (b != base || c != qrotate_outer_rows[lane][j].chan ||
+             n != qrotate_outer_rows[lane][j].neg)
+            return;
+      }
+      if (lane == 0) {
+         t = t_src->src.ssa;
+         qd = base;
+      } else if (t_src->src.ssa != t || base != qd) {
+         return;
+      }
+   }
+
+   /* Inner: t[lane] = dot(q, P_lane), the Hamilton row applied to embed(v) --
+    * channel 0 of the row is the constant 0 (the scalar part), the others are
+    * v.(chan-1) with the row's sign. */
+   const nir_alu_instr *inner = nir_def_as_alu_or_null(t);
+   if (!inner || inner->op != nir_op_vec4)
+      return;
+   const nir_def *vd = (qd == &load_a->def) ? &load_b->def : &load_a->def;
+   for (unsigned lane = 0; lane < 4; lane++) {
+      const nir_alu_instr *dot = nir_def_as_alu_or_null(inner->src[lane].src.ssa);
+      if (!dot || dot->op != nir_op_fdot4)
+         return;
+      const nir_alu_src *perm_src = NULL, *q_src = NULL;
+      for (unsigned k = 0; k < 2; k++) {
+         if (dot->src[k].src.ssa == qd)
+            q_src = &dot->src[k];
+         else
+            perm_src = &dot->src[k];
+      }
+      if (!q_src || !perm_src)
+         return;
+      for (unsigned c = 0; c < 4; c++)
+         if (q_src->swizzle[c] != c || perm_src->swizzle[c] != c)
+            return;
+      const nir_alu_instr *perm = nir_def_as_alu_or_null(perm_src->src.ssa);
+      if (!perm || perm->op != nir_op_vec4)
+         return;
+      for (unsigned j = 0; j < 4; j++) {
+         uint8_t hc = r300_hamilton_rows[lane][j].chan;
+         bool hn = r300_hamilton_rows[lane][j].neg;
+         if (hc == 0) {
+            nir_def *cd = perm->src[j].src.ssa;
+            if (!nir_def_is_const(cd) ||
+                nir_def_as_load_const(cd)->value[perm->src[j].swizzle[0]].f32 != 0.0f)
+               return;
+         } else {
+            const nir_def *b;
+            unsigned c;
+            bool n;
+            resolve_signed_channel(&perm->src[j], &b, &c, &n);
+            if (b != vd || c != (unsigned)(hc - 1) || n != hn)
+               return;
+         }
+      }
+   }
+
+   const nir_intrinsic_instr *q_load = (qd == &load_a->def) ? load_a : load_b;
+   const nir_intrinsic_instr *v_load = (qd == &load_a->def) ? load_b : load_a;
+   if (nir_src_is_const(q_load->src[0]))
+      out->input_q_ssbo_binding = nir_src_as_uint(q_load->src[0]);
+   if (nir_src_is_const(v_load->src[0]))
+      out->input_v_ssbo_binding = nir_src_as_uint(v_load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->is_qrotate = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
