@@ -156,6 +156,40 @@ main(void)
       }
    }
 
+   /* Each octonion-product pass is two Hamilton products over the four sampled
+    * quaternion halves a,b,c,d (bindings 0..3): the lower half a*c - conj(d)*b
+    * and the upper half d*a + b*conj(c).  So each pass samples four 2-component-
+    * coord inputs and contains exactly eight DP4s; a dropped product would halve
+    * the fdot4 count.  Two passes fill the eight-wide octonion result. */
+   {
+      nir_shader *s = r300vk_build_omul_lo_fs_nir(&options);
+      CHECK(s != NULL, "omul_lo builds a shader");
+      if (s) {
+         nir_validate_shader(s, "r300vk omul_lo fs");
+         unsigned tex = 0, bad = 0;
+         count_tex(s, &tex, &bad);
+         CHECK(tex == 4 && bad == 0,
+               "omul_lo: four 2D tex ops, each a 2-component coord");
+         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
+         CHECK(dp4 == 8, "omul_lo: exactly eight DP4s (two Hamilton products)");
+         ralloc_free(s);
+      }
+   }
+   {
+      nir_shader *s = r300vk_build_omul_hi_fs_nir(&options);
+      CHECK(s != NULL, "omul_hi builds a shader");
+      if (s) {
+         nir_validate_shader(s, "r300vk omul_hi fs");
+         unsigned tex = 0, bad = 0;
+         count_tex(s, &tex, &bad);
+         CHECK(tex == 4 && bad == 0,
+               "omul_hi: four 2D tex ops, each a 2-component coord");
+         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
+         CHECK(dp4 == 8, "omul_hi: exactly eight DP4s (two Hamilton products)");
+         ralloc_free(s);
+      }
+   }
+
    glsl_type_singleton_decref();
 
    if (g_failures) {

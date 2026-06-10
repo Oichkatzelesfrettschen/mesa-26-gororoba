@@ -275,3 +275,91 @@ r300vk_build_qnorm_fs_nir(const nir_shader_compiler_options *opts)
 
    return b.shader;
 }
+
+/* The quaternion conjugate (w, -x, -y, -z) -- the Cayley-Dickson involution that
+ * the octonion product mixes into two of its four Hamilton products. */
+static nir_def *
+quat_conj(nir_builder *b, nir_def *q)
+{
+   return nir_vec4(b, nir_channel(b, q, 0), nir_fneg(b, nir_channel(b, q, 1)),
+                   nir_fneg(b, nir_channel(b, q, 2)), nir_fneg(b, nir_channel(b, q, 3)));
+}
+
+/* Sample the four quaternion halves of two octonions x=(a,b) and y=(c,d) at the
+ * fullscreen texcoord from sampler bindings 0..3 (a, b, c, d).  Both octonion-
+ * product passes read all four, so fold the shared varying + sampler setup. */
+static void
+sample_octonion_halves(nir_builder *b, nir_def **a, nir_def **bb,
+                       nir_def **c, nir_def **d)
+{
+   nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+   in_tc->data.location = VARYING_SLOT_VAR0;
+   nir_def *coord = nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+
+   nir_def *t[4];
+   for (unsigned s = 0; s < 4; s++) {
+      nir_variable *samp = nir_variable_create(
+         b->shader, nir_var_uniform,
+         glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+         "samp");
+      samp->data.binding = s;
+      nir_deref_instr *dref = nir_build_deref_var(b, samp);
+      t[s] = nir_tex(b, coord, .texture_deref = dref, .sampler_deref = dref);
+   }
+   *a = t[0]; *bb = t[1]; *c = t[2]; *d = t[3];
+}
+
+/* OMUL lower half: the first quaternion of the octonion product (a,b)*(c,d) is
+ * a*c - conj(d)*b (Cayley-Dickson doubling).  Two Hamilton products = eight DP4s,
+ * differenced, to the FP16 color export.  Samples a,b,c,d at bindings 0..3. */
+nir_shader *
+r300vk_build_omul_lo_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_omul_lo");
+
+   nir_def *a, *bb, *c, *d;
+   sample_octonion_halves(&b, &a, &bb, &c, &d);
+   nir_def *ac  = hamilton_product(&b, a, c);
+   nir_def *dcb = hamilton_product(&b, quat_conj(&b, d), bb);
+   nir_def *lo  = nir_fsub(&b, ac, dcb);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, lo, 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}
+
+/* OMUL upper half: the second quaternion of (a,b)*(c,d) is d*a + b*conj(c).  Two
+ * Hamilton products = eight DP4s, summed, to the FP16 color export.  Samples
+ * a,b,c,d at bindings 0..3, like the lower-half pass. */
+nir_shader *
+r300vk_build_omul_hi_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_omul_hi");
+
+   nir_def *a, *bb, *c, *d;
+   sample_octonion_halves(&b, &a, &bb, &c, &d);
+   nir_def *da  = hamilton_product(&b, d, a);
+   nir_def *bcc = hamilton_product(&b, bb, quat_conj(&b, c));
+   nir_def *hi  = nir_fadd(&b, da, bcc);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, hi, 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}
