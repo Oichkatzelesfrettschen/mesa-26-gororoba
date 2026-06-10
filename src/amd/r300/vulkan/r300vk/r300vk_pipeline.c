@@ -1337,6 +1337,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_predicated_store_pattern *predstore,
                                struct r300_compute_multitap_gather_pattern *gather,
                                struct r300_compute_dp4_pattern *dp4,
+                               struct r300_compute_qmul_pattern *qmul,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1356,6 +1357,17 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    local_size[1] = nir->info.workgroup_size[1];
    local_size[2] = nir->info.workgroup_size[2];
 
+   /* SSA-lower the kernel's local temporaries before pattern detection.  A
+    * GLSL/SPIR-V kernel that stages its inputs in locals -- vec4 a = q1[gid];
+    * b = q2[gid]; out[gid] = f(a, b) -- reaches here with function_temp
+    * load_deref/store_deref, so the arithmetic reads the deref loads, not the
+    * load_ssbo defs the detectors key on.  Without this the substrate only ever
+    * recognized kernels that inline their buffer reads.  vars_to_ssa needs the
+    * copies split and lowered first. */
+   NIR_PASS(_, nir, nir_split_var_copies);
+   NIR_PASS(_, nir, nir_lower_var_copies);
+   NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_ubo | nir_var_mem_ssbo,
             nir_address_format_32bit_index_offset);
@@ -1363,6 +1375,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    bool progress;
    do {
       progress = false;
+      NIR_PASS(progress, nir, nir_opt_copy_prop);
       NIR_PASS(progress, nir, nir_opt_dce);
       NIR_PASS(progress, nir, nir_opt_cse);
    } while (progress);
@@ -1376,6 +1389,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_predicated_store_pattern(nir, predstore);
    r300_nir_detect_multitap_gather_pattern(nir, gather);
    r300_nir_detect_dp4_pattern(nir, dp4);
+   r300_nir_detect_qmul_pattern(nir, qmul);
 
    ralloc_free(nir);
    return true;
@@ -1610,6 +1624,48 @@ r300vk_dp4_synthesize_shaders(struct r300vk_device *device,
       return false;
 
    pl->fs_cso = r300vk_synthesize_dp4_fs(pipe, pl->dp4.components);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+/* QMUL FS: the Hamilton-product fragment program built by r300vk_build_qmul_fs_nir
+ * (r300vk_dp4_fs_nir.c) -- four sign-permuted DP4s writing the four-lane product
+ * to the FP16 color export.  Finalize for the screen and create the gallium
+ * state, as the DP4 FS does. */
+static void *
+r300vk_synthesize_qmul_fs(struct pipe_context *pipe)
+{
+   nir_shader *s = r300vk_build_qmul_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, s, true);
+
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = s };
+   return pipe->create_fs_state(pipe, &state);
+}
+
+/* QMUL VS+FS synthesis: the passthrough VS shared with DP4 plus the Hamilton FS.
+ * Reuses the device-cached identity-map state CSOs. */
+static bool
+r300vk_qmul_synthesize_shaders(struct r300vk_device *device,
+                               struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_qmul_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -2176,6 +2232,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->dp4.is_dp4 = false;
       return true;
    }
+   if (pl->qmul.is_qmul) {
+      if (!r300vk_qmul_synthesize_shaders(device, pl))
+         pl->qmul.is_qmul = false;
+      return true;
+   }
    if (pl->blend_acc_reduction.is_blend_acc_reduction) {
       if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
@@ -2221,12 +2282,13 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_predicated_store_pattern predstore = {0};
    struct r300_compute_multitap_gather_pattern gather = {0};
    struct r300_compute_dp4_pattern dp4_pat = {0};
+   struct r300_compute_qmul_pattern qmul_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
-                                       local_size))
+                                       &qmul_pat, local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
                        i);
@@ -2248,6 +2310,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->identity_map = ident;
    pl->binary_map = binmap;
    pl->dp4 = dp4_pat;
+   pl->qmul = qmul_pat;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;
