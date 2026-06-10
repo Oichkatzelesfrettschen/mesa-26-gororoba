@@ -335,6 +335,32 @@ struct r300_compute_dp4_pattern {
 void r300_nir_detect_dp4_pattern(const struct nir_shader *s,
                                  struct r300_compute_dp4_pattern *out);
 
+/* Quaternion Hamilton-product (QMUL) pattern: out[gid] = q1[gid] * q2[gid],
+ * the Cayley-Dickson dim-4 multiply (QMUL_HAMILTON in r300_virtual_op_catalog).
+ * The admissible shape is the canonical four-dot form: one whole-vec4 store_ssbo
+ * whose value is nir_vec4(d0,d1,d2,d3), each di an nir_op_fdot4 of one input
+ * load_ssbo (q1, used identity-swizzled) against a vec4 sign-permutation of the
+ * other load_ssbo (q2).  The four permutations must be exactly the Hamilton
+ * matrix rows in (w,x,y,z) layout -- the detector verifies the (channel, sign)
+ * of all sixteen permuted operands, so it admits only a true quaternion product,
+ * never a structurally-similar kernel the substrate's Hamilton FS would silently
+ * recompute differently.  A natural component-wise quat_mul that the compiler
+ * lowers to an fmul/fadd tree is NOT this shape; the kernel must be written as
+ * the four sign-permuted dots (the form r300vk_build_qmul_fs_nir emits).  The
+ * dot runs in FP24 and is exact for operands inside the FP24 window; the result
+ * carries to the substrate's FP16 quaternion render target.  Bindings stay 0
+ * when the post-explicit_io sources are not constants (the orchestrator's
+ * positional fallback recovers q1=0, q2=1, output=2). */
+struct r300_compute_qmul_pattern {
+   bool       is_qmul;
+   uint32_t   input_a_ssbo_binding;   /* q1 */
+   uint32_t   input_b_ssbo_binding;   /* q2 */
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qmul_pattern(const struct nir_shader *s,
+                                  struct r300_compute_qmul_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

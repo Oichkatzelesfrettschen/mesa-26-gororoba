@@ -352,7 +352,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "Hamilton product = Cayley-Dickson multiplication at dim 4 = four "
                          "sign-permuted DP4s; sign-for-sign the machine-verified quat_mul; "
                          "integer self-check (1,2,3,4)*(5,6,7,8) = (-60,12,30,24) exact on RS482",
-      .mesa_hook       = NULL,  /* QMUL macro = 4 sign-permuted DP4; no NIR detector yet */
+      .mesa_hook       = "r300_nir_detect_qmul_pattern",  /* QMUL = 4 sign-permuted DP4s; canonical 4-dot detector */
       .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
    },
    {
