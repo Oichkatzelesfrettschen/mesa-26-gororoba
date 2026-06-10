@@ -167,6 +167,48 @@ build_qmul_form(bool bad_sign)
    return b.shader;
 }
 
+/* Quaternion rotation sandwich q*embed(v)*conj(q) in the FOLDED two-Hamilton
+ * form the QROTATE detector admits -- the shape the compiler produces after it
+ * folds embed(v)'s 0 into the inner permutations and conj(q)'s negate into the
+ * outer permutations.  The inner permutations are the Hamilton rows applied to
+ * embed(v) (channel 0 -> the constant 0, others -> v.(chan-1)); the outer
+ * permutations are the Hamilton rows composed with the conjugate over q. */
+static nir_shader *
+build_qrotate_form(void)
+{
+   nir_builder b = cs_builder("cs_qrotate_f32vec4");
+   nir_def *q = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *v = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *zero = nir_imm_float(&b, 0.0f);
+   nir_def *vx = nir_channel(&b, v, 0), *vy = nir_channel(&b, v, 1),
+           *vz = nir_channel(&b, v, 2);
+   nir_def *nvx = nir_fneg(&b, vx), *nvy = nir_fneg(&b, vy), *nvz = nir_fneg(&b, vz);
+
+   nir_def *ip0 = nir_vec4(&b, zero, nvx, nvy, nvz);
+   nir_def *ip1 = nir_vec4(&b, vx, zero, vz, nvy);
+   nir_def *ip2 = nir_vec4(&b, vy, nvz, zero, vx);
+   nir_def *ip3 = nir_vec4(&b, vz, vy, nvx, zero);
+   nir_def *t = nir_vec4(&b, nir_fdot(&b, q, ip0), nir_fdot(&b, q, ip1),
+                         nir_fdot(&b, q, ip2), nir_fdot(&b, q, ip3));
+
+   nir_def *qx = nir_channel(&b, q, 0), *qy = nir_channel(&b, q, 1),
+           *qz = nir_channel(&b, q, 2), *qw = nir_channel(&b, q, 3);
+   nir_def *nqy = nir_fneg(&b, qy), *nqz = nir_fneg(&b, qz), *nqw = nir_fneg(&b, qw);
+
+   nir_def *op0 = nir_vec4(&b, qx, qy, qz, qw);
+   nir_def *op1 = nir_vec4(&b, nqy, qx, nqw, qz);
+   nir_def *op2 = nir_vec4(&b, nqz, qw, qx, nqy);
+   nir_def *op3 = nir_vec4(&b, nqw, nqz, qy, qx);
+   nir_def *out = nir_vec4(&b, nir_fdot(&b, t, op0), nir_fdot(&b, t, op1),
+                           nir_fdot(&b, t, op2), nir_fdot(&b, t, op3));
+
+   nir_store_ssbo(&b, out, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 prepare_detect_shader(nir_shader *nir)
 {
@@ -260,6 +302,33 @@ case_qmul_metadata(void)
    ralloc_free(bad);
 }
 
+static void
+case_qrotate_metadata(void)
+{
+   nir_shader *nir = build_qrotate_form();
+   struct r300_compute_admission adm;
+   struct r300_compute_qrotate_pattern qr = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "float4 qrotate kernel admits");
+   r300_nir_detect_qrotate_pattern(nir, &qr);
+   CHECK(qr.is_qrotate, "qrotate sandwich shape detected");
+   CHECK(qr.input_q_ssbo_binding == 0, "qrotate metadata records q binding 0");
+   CHECK(qr.input_v_ssbo_binding == 1, "qrotate metadata records v binding 1");
+   CHECK(qr.output_ssbo_binding == 2, "qrotate metadata records output binding 2");
+   ralloc_free(nir);
+
+   /* A single Hamilton product (no sandwich) must NOT be read as a rotation; the
+    * outer match would have to find an inner Hamilton product as one operand. */
+   nir_shader *plain = build_qmul_form(false);
+   struct r300_compute_qrotate_pattern qr2 = {0};
+   prepare_detect_shader(plain);
+   r300_nir_detect_qrotate_pattern(plain, &qr2);
+   CHECK(!qr2.is_qrotate, "qrotate rejects a plain Hamilton product");
+   ralloc_free(plain);
+}
+
 int
 main(void)
 {
@@ -279,6 +348,7 @@ main(void)
    case_identity_metadata();
    case_binary_metadata();
    case_qmul_metadata();
+   case_qrotate_metadata();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

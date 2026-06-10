@@ -359,10 +359,12 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .op_name         = "QROTATE_SANDWICH",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
-      .theorem         = "vertex rotation q*v*conj(q) = two Hamilton products = eight DP4s; "
-                         "equals the rotation matrix R(q) for unit q (machine-verified); "
-                         "5/5 rotations within FP16 tolerance on RS482",
-      .mesa_hook       = NULL,  /* QROTATE macro = 2 QMUL */
+      .theorem         = "vertex rotation q*v*conj(q) = two Hamilton products = eight DP4s.  "
+                         "The sandwich (quat_rotate) and the rotation matrix R(q) "
+                         "(matrix_rotate) are both defined in open_gororoba but their "
+                         "equivalence is not yet machine-verified (ROCQ gap); HW-confirmed "
+                         "4/4 by qrotate_vk_probe vs a CPU sandwich on RS482",
+      .mesa_hook       = "r300_nir_detect_qrotate_pattern",  /* QROTATE = nested 2-Hamilton sandwich detector */
       .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
    },
    {
@@ -375,6 +377,73 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "identity exact on RS482",
       .mesa_hook       = NULL,  /* OMUL macro = 4 QMUL via CD doubling */
       .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
+   },
+   {
+      .op_name         = "QADD",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "quaternion addition a+b = componentwise vec4 add, zero DP4.  The "
+                         "binary-map detector recognizes the shape (nir_op_fadd of two "
+                         "load_ssbo vec4s) but its dispatch is UNORM8 byte-domain; a "
+                         "float-quaternion QADD reuses the QMUL FP16-RT / FP32-readback "
+                         "dispatch with a vec4-add FS (the next increment)",
+      .mesa_hook       = NULL,  /* shape = binary_map(fadd); FP-domain dispatch pending */
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "QSUB",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "quaternion subtraction a-b = componentwise vec4 sub, zero DP4.  "
+                         "Shape = binary_map(nir_op_fsub); like QADD the float-quaternion "
+                         "form needs the FP16-RT / FP32-readback dispatch, not the UNORM8 "
+                         "binary-map dispatch",
+      .mesa_hook       = NULL,  /* shape = binary_map(fsub); FP-domain dispatch pending */
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "QDOT",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "quaternion inner product <a,b> = dot(a,b) = one DP4; served by "
+                         "the dp4 detector (f2u32(fdot4) store) and HW-confirmed 4/4 by "
+                         "reuse of the dp4 dispatch",
+      .mesa_hook       = "r300_nir_detect_dp4_pattern",
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "QCONJ",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "quaternion conjugate conj(a) = (a.x,-a.y,-a.z,-a.w) = "
+                         "a * vec4(1,-1,-1,-1), zero DP4; involution conj(conj a)=a and "
+                         "antimorphism conj(p*q)=conj(q)*conj(p) machine-verified "
+                         "(open_gororoba CayleyDicksonAlgebra.v quat_conj_involution:68, "
+                         "quat_conj_antimorphism:150)",
+      .mesa_hook       = NULL,  /* unary sign-mask multiply; NIR detector pending */
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "QNORM",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "quaternion squared norm |a|^2 = dot(a,a) = one DP4; "
+                         "a*conj(a) = (|a|^2,0,0,0) machine-verified (open_gororoba "
+                         "CayleyDicksonAlgebra.v quat_norm_conjugate:84); the single-load "
+                         "DP4 variant of QDOT",
+      .mesa_hook       = NULL,  /* self-dot (one load); NIR detector pending */
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "QNORMALIZE",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "quaternion normalize a/|a| = a * rsqrt(|a|^2); one DP4 (QNORM) "
+                         "plus scalar RSQ and a vec4 scale -- the unit-quaternion form "
+                         "QROTATE requires.  open_gororoba has no normalization lemma yet "
+                         "(ROCQ gap recorded in the quaternion-ISA design finding)",
+      .mesa_hook       = NULL,  /* QNORM + RSQ + scale; NIR detector pending */
+      .retained_bundle = NULL,
    },
    /* NULL sentinel -- keep last */
    { .op_name = NULL },

@@ -1338,6 +1338,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_multitap_gather_pattern *gather,
                                struct r300_compute_dp4_pattern *dp4,
                                struct r300_compute_qmul_pattern *qmul,
+                               struct r300_compute_qrotate_pattern *qrotate,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1390,6 +1391,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_multitap_gather_pattern(nir, gather);
    r300_nir_detect_dp4_pattern(nir, dp4);
    r300_nir_detect_qmul_pattern(nir, qmul);
+   r300_nir_detect_qrotate_pattern(nir, qrotate);
 
    ralloc_free(nir);
    return true;
@@ -1666,6 +1668,45 @@ r300vk_qmul_synthesize_shaders(struct r300vk_device *device,
       return false;
 
    pl->fs_cso = r300vk_synthesize_qmul_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+/* QROTATE FS: the sandwich q*embed(v)*conj(q) built by r300vk_build_qrotate_fs_nir
+ * -- two Hamilton products, eight DP4s, to the FP16 color export. */
+static void *
+r300vk_synthesize_qrotate_fs(struct pipe_context *pipe)
+{
+   nir_shader *s = r300vk_build_qrotate_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, s, true);
+
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = s };
+   return pipe->create_fs_state(pipe, &state);
+}
+
+/* QROTATE VS+FS synthesis: the passthrough VS plus the sandwich FS. */
+static bool
+r300vk_qrotate_synthesize_shaders(struct r300vk_device *device,
+                                  struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_qrotate_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -2237,6 +2278,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->qmul.is_qmul = false;
       return true;
    }
+   if (pl->qrotate.is_qrotate) {
+      if (!r300vk_qrotate_synthesize_shaders(device, pl))
+         pl->qrotate.is_qrotate = false;
+      return true;
+   }
    if (pl->blend_acc_reduction.is_blend_acc_reduction) {
       if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
@@ -2283,12 +2329,13 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_multitap_gather_pattern gather = {0};
    struct r300_compute_dp4_pattern dp4_pat = {0};
    struct r300_compute_qmul_pattern qmul_pat = {0};
+   struct r300_compute_qrotate_pattern qrotate_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
-                                       &qmul_pat, local_size))
+                                       &qmul_pat, &qrotate_pat, local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
                        i);
@@ -2311,6 +2358,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->binary_map = binmap;
    pl->dp4 = dp4_pat;
    pl->qmul = qmul_pat;
+   pl->qrotate = qrotate_pat;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;
