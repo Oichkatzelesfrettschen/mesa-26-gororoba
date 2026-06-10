@@ -33,6 +33,16 @@ struct r300vk_physical_device {
     * when the physical device is destroyed. */
    int render_node_fd;
 
+   /* DRM node device IDs for VK_EXT_physical_device_drm.  Zink's
+    * display-device selection (zink_get_display_device) matches the EGL DRM
+    * fd's render major/minor against drmRenderMajor/drmRenderMinor, so without
+    * these the pdev is rejected before any feature check. */
+   bool    has_primary_node;
+   int64_t primary_node_major;
+   int64_t primary_node_minor;
+   int64_t render_node_major;
+   int64_t render_node_minor;
+
    /* Experimental hybrid-compute queue gate, read once from the environment
     * at physical-device creation.  Caching it keeps the advertised queue
     * flags consistent across queries even if the environment changes
