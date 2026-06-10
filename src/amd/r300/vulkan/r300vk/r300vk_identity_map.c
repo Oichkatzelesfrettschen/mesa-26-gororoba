@@ -1360,6 +1360,30 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
                                   const struct r300vk_cmd_dispatch *dispatch,
                                   const struct r300vk_cmd_bind_descriptor_sets *binds)
 {
+   /* A 32-bit float componentwise op -- the quaternion QADD/QSUB tier -- cannot
+    * use the UNORM8 byte path: sampling FP32 SSBO bytes as UNORM8 misreads them,
+    * and an unbounded float sum does not fit [0,1].  Sample the inputs as FP32,
+    * render to an FP16 target (R300 has no FP32 RT), and unpack into the vec4
+    * FP32 output, exactly as QMUL does; the binary-map FS is format-agnostic
+    * (it samples, applies the op, and writes, with no byte encode), so the same
+    * synthesized shader serves both domains. */
+   if (pl->binary_map.value_is_float && pl->binary_map.value_bit_size == 32) {
+      if (!device->screen->is_format_supported(device->screen,
+             PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+             PIPE_BIND_SAMPLER_VIEW))
+         return false;
+      if (!device->screen->is_format_supported(device->screen,
+             PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+             PIPE_BIND_RENDER_TARGET))
+         return false;
+      return r300vk_two_in_one_out_dispatch_replay(
+         device, pl, dispatch, binds,
+         pl->binary_map.input_a_ssbo_binding,
+         pl->binary_map.input_b_ssbo_binding,
+         pl->binary_map.output_ssbo_binding,
+         PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT);
+   }
    return r300vk_two_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->binary_map.input_a_ssbo_binding,
