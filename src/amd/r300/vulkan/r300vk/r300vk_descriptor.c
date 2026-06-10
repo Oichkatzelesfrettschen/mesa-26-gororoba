@@ -21,6 +21,7 @@
 
 #include "vk_alloc.h"
 #include "vk_descriptor_set_layout.h"
+#include "vk_descriptor_update_template.h"
 #include "vk_log.h"
 
 #include <stdlib.h>
@@ -411,5 +412,69 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
       memcpy(&dst_set->descriptors[dst_base],
              &src_set->descriptors[src_base],
              span * sizeof(struct r300vk_descriptor));
+   }
+}
+
+/* VK_KHR_descriptor_update_template.  vk_common_CreateDescriptorUpdateTemplate
+ * builds the vk_descriptor_update_template -- the entry array carrying each
+ * entry's binding, array element, count, type, and a source offset/stride into
+ * pData -- but the update writes driver descriptor state, so the runtime leaves
+ * it to the driver.  Each entry names array_count descriptors laid out in pData
+ * at offset + j*stride; applying each as a single-descriptor
+ * VkWriteDescriptorSet through r300vk_UpdateDescriptorSets reuses that path's
+ * binding lookup, linear-span capping, and per-type bounds checks.  Reading
+ * each descriptor at its own pData address makes this correct for an arbitrary
+ * stride, which a tightly packed pImageInfo/pBufferInfo array could not honour. */
+void
+r300vk_UpdateDescriptorSetWithTemplate(VkDevice _device,
+                                       VkDescriptorSet descriptorSet,
+                                       VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+                                       const void *pData)
+{
+   VK_FROM_HANDLE(vk_descriptor_update_template, templ, descriptorUpdateTemplate);
+
+   for (uint32_t e = 0; e < templ->entry_count; e++) {
+      const struct vk_descriptor_template_entry *entry = &templ->entries[e];
+
+      for (uint32_t j = 0; j < entry->array_count; j++) {
+         const void *src = (const uint8_t *)pData + entry->offset +
+                           (size_t)j * entry->stride;
+
+         VkWriteDescriptorSet write = {
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet          = descriptorSet,
+            .dstBinding      = entry->binding,
+            .dstArrayElement = entry->array_element + j,
+            .descriptorCount = 1,
+            .descriptorType  = entry->type,
+         };
+
+         switch (entry->type) {
+         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+            write.pBufferInfo = src;
+            break;
+         case VK_DESCRIPTOR_TYPE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+            write.pImageInfo = src;
+            break;
+         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+            write.pTexelBufferView = src;
+            break;
+         default:
+            /* An unsupported descriptor type (e.g. inline uniform block) records
+             * slot->type and reads no data in r300vk_UpdateDescriptorSets'
+             * default case, so leave the info pointers NULL. */
+            break;
+         }
+
+         r300vk_UpdateDescriptorSets(_device, 1, &write, 0, NULL);
+      }
    }
 }
