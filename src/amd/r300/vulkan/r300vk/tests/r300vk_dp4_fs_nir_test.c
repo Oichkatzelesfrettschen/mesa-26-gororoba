@@ -190,6 +190,29 @@ main(void)
       }
    }
 
+   /* The MRT octonion FS does both halves in one draw: four sampled inputs, all
+    * sixteen DP4s (four Hamilton products), and two color outputs (DATA0 = lower
+    * half, DATA1 = upper half).  A regression that dropped a product or an output
+    * trips the fdot4 or output count. */
+   {
+      nir_shader *s = r300vk_build_omul_mrt_fs_nir(&options);
+      CHECK(s != NULL, "omul_mrt builds a shader");
+      if (s) {
+         nir_validate_shader(s, "r300vk omul_mrt fs");
+         unsigned tex = 0, bad = 0;
+         count_tex(s, &tex, &bad);
+         CHECK(tex == 4 && bad == 0,
+               "omul_mrt: four 2D tex ops, each a 2-component coord");
+         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
+         CHECK(dp4 == 16, "omul_mrt: exactly sixteen DP4s (four Hamilton products)");
+         unsigned outs = 0;
+         nir_foreach_shader_out_variable(var, s)
+            outs++;
+         CHECK(outs == 2, "omul_mrt: two color outputs (DATA0 + DATA1)");
+         ralloc_free(s);
+      }
+   }
+
    glsl_type_singleton_decref();
 
    if (g_failures) {

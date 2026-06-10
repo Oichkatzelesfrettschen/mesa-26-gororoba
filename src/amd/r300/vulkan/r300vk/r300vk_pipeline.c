@@ -1802,7 +1802,11 @@ r300vk_qnorm_synthesize_shaders(struct r300vk_device *device,
 
 /* OMUL VS+FS synthesis: the passthrough VS plus BOTH octonion-product half FSs.
  * fs_cso holds the lower-half FS (a*c - conj(d)*b), fs_cso2 the upper-half FS
- * (d*a + b*conj(c)); the two-pass dispatch runs one then the other. */
+ * (d*a + b*conj(c)); the two-pass dispatch (route A) runs one then the other.
+ * When the screen advertises two-plus render targets AND an FP16 render target,
+ * also synthesize the single-pass MRT FS into fs_cso_mrt -- its presence is the
+ * gate the dispatch uses to prefer route B (both halves in one draw).  A failed
+ * MRT-FS create is non-fatal: route A still works, so fs_cso_mrt stays NULL. */
 static bool
 r300vk_omul_synthesize_shaders(struct r300vk_device *device,
                                struct r300vk_pipeline *pl)
@@ -1841,6 +1845,22 @@ r300vk_omul_synthesize_shaders(struct r300vk_device *device,
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
       return false;
+   }
+
+   /* Route B (single-pass MRT) fast path, only when the hardware can bind two
+    * simultaneous FP16 render targets.  R300 advertises four, so this is taken
+    * on RS480; on a screen that advertised one it stays NULL and route A runs. */
+   if (pipe->screen->caps.max_render_targets >= 2 &&
+       pipe->screen->is_format_supported(pipe->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET)) {
+      nir_shader *mrt = r300vk_build_omul_mrt_fs_nir(
+         pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
+      if (pipe->screen->finalize_nir)
+         pipe->screen->finalize_nir(pipe->screen, mrt, true);
+      struct pipe_shader_state mrt_state = { .type = PIPE_SHADER_IR_NIR,
+                                             .ir.nir = mrt };
+      pl->fs_cso_mrt = pipe->create_fs_state(pipe, &mrt_state);
    }
    return true;
 }
@@ -2579,6 +2599,8 @@ r300vk_DestroyPipeline(VkDevice _device,
       device->pipe->delete_fs_state(device->pipe, pl->fs_cso);
    if (pl->fs_cso2)
       device->pipe->delete_fs_state(device->pipe, pl->fs_cso2);
+   if (pl->fs_cso_mrt)
+      device->pipe->delete_fs_state(device->pipe, pl->fs_cso_mrt);
    if (pl->blend_cso)
       device->pipe->delete_blend_state(device->pipe, pl->blend_cso);
    if (pl->rasterizer_cso)

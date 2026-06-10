@@ -363,3 +363,38 @@ r300vk_build_omul_hi_fs_nir(const nir_shader_compiler_options *opts)
 
    return b.shader;
 }
+
+/* OMUL both halves in ONE pass via multiple render targets: write the lower half
+ * a*c - conj(d)*b to color output 0 (FRAG_RESULT_DATA0) and the upper half
+ * d*a + b*conj(c) to color output 1 (FRAG_RESULT_DATA1).  Sixteen DP4s -- all
+ * four Hamilton products -- in a single draw.  The MRT dispatch route uses this
+ * when the screen supports two simultaneous FP16 render targets; otherwise the
+ * substrate falls back to the two single-output passes (omul_lo + omul_hi). */
+nir_shader *
+r300vk_build_omul_mrt_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_omul_mrt");
+
+   nir_def *a, *bb, *c, *d;
+   sample_octonion_halves(&b, &a, &bb, &c, &d);
+   nir_def *lo = nir_fsub(&b, hamilton_product(&b, a, c),
+                          hamilton_product(&b, quat_conj(&b, d), bb));
+   nir_def *hi = nir_fadd(&b, hamilton_product(&b, d, a),
+                          hamilton_product(&b, bb, quat_conj(&b, c)));
+
+   nir_variable *out0 = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "color0");
+   out0->data.location = FRAG_RESULT_DATA0;
+   nir_store_var(&b, out0, lo, 0xf);
+   nir_variable *out1 = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "color1");
+   out1->data.location = FRAG_RESULT_DATA1;
+   nir_store_var(&b, out1, hi, 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}

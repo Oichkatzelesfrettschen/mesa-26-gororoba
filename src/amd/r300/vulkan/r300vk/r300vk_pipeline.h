@@ -199,6 +199,10 @@ struct r300vk_pipeline {
    /* Second fragment CSO for the two-pass octonion product (OMUL): fs_cso holds
     * the lower-half FS, fs_cso2 the upper-half FS.  NULL for single-pass ops. */
    void                   *fs_cso2;
+   /* MRT fragment CSO for the single-pass OMUL route: both halves in one draw.
+    * Non-NULL only when the screen supports two simultaneous FP16 render targets,
+    * which is exactly the gate the dispatch uses to prefer route B over A. */
+   void                   *fs_cso_mrt;
    void                   *blend_cso;
    void                   *rasterizer_cso;
    void                   *dsa_cso;

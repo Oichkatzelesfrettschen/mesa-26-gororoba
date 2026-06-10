@@ -1757,6 +1757,56 @@ r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
 
+/* Unpack an FP16 (R16G16B16A16_FLOAT) render target into a vec4 FP32 output
+ * buffer at out_offset.  R300 has no FP32 render target, so every octonion-half
+ * result rides an FP16 target and converts here; shared by the two-pass route
+ * and the MRT route.  Clamps to total so the trailing padding lanes of the last
+ * raster row never overrun the output. */
+static bool
+omul_copy_fp16_rt_to_buffer(struct pipe_context *pipe, struct pipe_resource *rt,
+                            struct pipe_resource *out_res, unsigned out_offset,
+                            unsigned width, unsigned height, uint64_t total)
+{
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   bool copy_ok = false;
+   struct pipe_transfer *rt_xfer = NULL;
+   const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                          &copy_box, &rt_xfer);
+   if (rt_map) {
+      struct pipe_transfer *out_xfer = NULL;
+      struct pipe_box out_box;
+      memset(&out_box, 0, sizeof(out_box));
+      const unsigned buf_bs =
+         util_format_get_blocksize(PIPE_FORMAT_R32G32B32A32_FLOAT);
+      out_box.x      = out_offset;
+      out_box.width  = width * height * buf_bs;
+      out_box.height = 1;
+      out_box.depth  = 1;
+      void *out_bytes = pipe->buffer_map(pipe, out_res, 0,
+                                         PIPE_MAP_WRITE |
+                                         PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                         &out_box, &out_xfer);
+      if (out_bytes) {
+         uint8_t *dst = out_bytes;
+         const uint8_t *src = rt_map;
+         uint64_t remaining = total;
+         for (unsigned r = 0; r < height && remaining; r++) {
+            unsigned n = remaining < width ? (unsigned)remaining : width;
+            util_format_unpack_rgba(PIPE_FORMAT_R16G16B16A16_FLOAT, dst, src, n);
+            dst += (size_t)n * buf_bs;
+            src += rt_xfer->stride;
+            remaining -= n;
+         }
+         pipe->buffer_unmap(pipe, out_xfer);
+         copy_ok = true;
+      }
+      pipe->texture_unmap(pipe, rt_xfer);
+   }
+   return copy_ok;
+}
+
 /* Run one octonion-product pass on the compute-as-raster substrate: bind the
  * four input sampler views (a,b,c,d), draw the fullscreen quad through pass_fs,
  * and unpack the FP16 render-target result into out_res at out_offset.  R300 has
@@ -1818,45 +1868,8 @@ omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
    pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
    pipe->flush(pipe, NULL, 0);
 
-   struct pipe_box copy_box;
-   memset(&copy_box, 0, sizeof(copy_box));
-   copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
-   bool copy_ok = false;
-   {
-      struct pipe_transfer *rt_xfer = NULL;
-      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
-                                             &copy_box, &rt_xfer);
-      if (rt_map) {
-         struct pipe_transfer *out_xfer = NULL;
-         struct pipe_box out_box;
-         memset(&out_box, 0, sizeof(out_box));
-         const unsigned buf_bs =
-            util_format_get_blocksize(PIPE_FORMAT_R32G32B32A32_FLOAT);
-         out_box.x      = out_offset;
-         out_box.width  = width * height * buf_bs;
-         out_box.height = 1;
-         out_box.depth  = 1;
-         void *out_bytes = pipe->buffer_map(pipe, out_res, 0,
-                                            PIPE_MAP_WRITE |
-                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                            &out_box, &out_xfer);
-         if (out_bytes) {
-            uint8_t *dst = out_bytes;
-            const uint8_t *src = rt_map;
-            uint64_t remaining = total;
-            for (unsigned r = 0; r < height && remaining; r++) {
-               unsigned n = remaining < width ? (unsigned)remaining : width;
-               util_format_unpack_rgba(rtfmt, dst, src, n);
-               dst += (size_t)n * buf_bs;
-               src += rt_xfer->stride;
-               remaining -= n;
-            }
-            pipe->buffer_unmap(pipe, out_xfer);
-            copy_ok = true;
-         }
-         pipe->texture_unmap(pipe, rt_xfer);
-      }
-   }
+   bool copy_ok = omul_copy_fp16_rt_to_buffer(pipe, rt, out_res, out_offset,
+                                              width, height, total);
 
    struct pipe_sampler_view *no_views[4] = { NULL, NULL, NULL, NULL };
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 4, no_views);
@@ -1868,14 +1881,120 @@ omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
    return copy_ok;
 }
 
-/* OMUL dispatch replay (route A: two passes).  The octonion product fills an
- * eight-wide result, but the substrate's FS writes one vec4 per draw, so two
- * passes -- the lower half a*c - conj(d)*b and the upper d*a + b*conj(c) -- each
- * sample the four quaternion inputs a,b,c,d and write one output half.  Both
- * passes share the four sampler views and the fullscreen quad; only the
- * synthesized FS (pl->fs_cso for the lower half, pl->fs_cso2 for the upper) and
- * the output buffer differ.  A future MRT route would write both halves in one
- * pass when the screen supports two simultaneous FP16 render targets. */
+/* Run the octonion product in ONE pass via two render targets: bind the four
+ * input sampler views, draw through the MRT FS (which writes the lower half to
+ * color output 0 and the upper to output 1), and unpack both FP16 targets into
+ * the two output halves.  Half the draws and one set of sampler binds versus the
+ * two-pass route; used when the screen supports two simultaneous FP16 render
+ * targets.  The single-cbuf setup_draw_state helper cannot bind two targets, so
+ * the framebuffer + viewport + scissor + state binds are inlined here. */
+static bool
+omul_run_mrt_pass(struct pipe_context *pipe, struct pipe_screen *screen,
+                  struct r300vk_device *device,
+                  struct pipe_sampler_view *views[4], void *mrt_fs, void *vs_cso,
+                  struct pipe_resource *vb, void *velems_cso,
+                  struct pipe_resource *out_lo_res, unsigned out_lo_offset,
+                  struct pipe_resource *out_hi_res, unsigned out_hi_offset,
+                  unsigned width, unsigned height, uint64_t total)
+{
+   const enum pipe_format rtfmt = PIPE_FORMAT_R16G16B16A16_FLOAT;
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = rtfmt;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt0 = screen->resource_create(screen, &rt_templ);
+   struct pipe_resource *rt1 = screen->resource_create(screen, &rt_templ);
+   if (!rt0 || !rt1) {
+      pipe_resource_reference(&rt0, NULL);
+      pipe_resource_reference(&rt1, NULL);
+      return false;
+   }
+
+   /* Two-cbuf framebuffer.  The blend CSO has independent_blend_enable = 0, so
+    * its rt[0] colormask (RGBA) applies to both targets. */
+   struct pipe_framebuffer_state fb;
+   memset(&fb, 0, sizeof(fb));
+   fb.width    = width;
+   fb.height   = height;
+   fb.nr_cbufs = 2;
+   fb.cbufs[0].format  = rtfmt;
+   fb.cbufs[0].texture = rt0;
+   fb.cbufs[1].format  = rtfmt;
+   fb.cbufs[1].texture = rt1;
+   pipe->set_framebuffer_state(pipe, &fb);
+
+   struct pipe_viewport_state vp;
+   memset(&vp, 0, sizeof(vp));
+   vp.scale[0]     = (float)width  * 0.5f;
+   vp.scale[1]     = (float)height * 0.5f;
+   vp.scale[2]     = 0.5f;
+   vp.translate[0] = (float)width  * 0.5f;
+   vp.translate[1] = (float)height * 0.5f;
+   vp.translate[2] = 0.5f;
+   pipe->set_viewport_states(pipe, 0, 1, &vp);
+   struct pipe_scissor_state sc = {0};
+   sc.maxx = width;
+   sc.maxy = height;
+   pipe->set_scissor_states(pipe, 0, 1, &sc);
+
+   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_vs_state(pipe, vs_cso);
+   pipe->bind_fs_state(pipe, mrt_fs);
+   pipe->bind_vertex_elements_state(pipe, velems_cso);
+
+   void *samplers[4] = { device->identity_map_sampler_cso,
+                         device->identity_map_sampler_cso,
+                         device->identity_map_sampler_cso,
+                         device->identity_map_sampler_cso };
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 4, samplers);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 4, 0, views);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.instance_count = 1;
+   info.max_index      = 3;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+
+   bool ok_lo = omul_copy_fp16_rt_to_buffer(pipe, rt0, out_lo_res, out_lo_offset,
+                                            width, height, total);
+   bool ok_hi = omul_copy_fp16_rt_to_buffer(pipe, rt1, out_hi_res, out_hi_offset,
+                                            width, height, total);
+
+   struct pipe_sampler_view *no_views[4] = { NULL, NULL, NULL, NULL };
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 4, no_views);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe_resource_reference(&rt0, NULL);
+   pipe_resource_reference(&rt1, NULL);
+   return ok_lo && ok_hi;
+}
+
+/* OMUL dispatch replay.  The octonion product fills an eight-wide result.  When
+ * the screen supports two simultaneous FP16 render targets the dispatch prefers
+ * route B (omul_run_mrt_pass: both halves in one draw via the MRT FS held in
+ * pl->fs_cso_mrt); otherwise it falls back to route A, two single-output passes
+ * sharing the four sampler views and the fullscreen quad (pl->fs_cso for the
+ * lower half a*c - conj(d)*b, pl->fs_cso2 for the upper d*a + b*conj(c)).  Both
+ * routes are capability-gated, not parallel: R300 is a single graphics pipe, so
+ * running both would serialize and waste work -- B is just the cheaper path. */
 bool
 r300vk_omul_dispatch_replay(struct r300vk_device *device,
                             const struct r300vk_pipeline *pl,
@@ -1956,18 +2075,38 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   bool ok_lo = omul_run_pass(pipe, screen, device, views, pl->fs_cso,
-                              pl->vs_cso, vb, velems_cso, buf[4]->resource,
-                              (unsigned)desc[4]->buf.offset, width, height, total);
-   bool ok_hi = omul_run_pass(pipe, screen, device, views, pl->fs_cso2,
-                              pl->vs_cso, vb, velems_cso, buf[5]->resource,
-                              (unsigned)desc[5]->buf.offset, width, height, total);
+   /* Route B (MRT) is preferred when its FS was synthesized; R300VK_OMUL_FORCE_2PASS
+    * forces the route-A fallback on the same hardware to exercise both paths. */
+   bool ok;
+   if (pl->fs_cso_mrt && !getenv("R300VK_OMUL_FORCE_2PASS")) {
+      /* Route B: both halves in one MRT pass (synthesized only when the screen
+       * supports two simultaneous FP16 render targets, so its presence is the
+       * capability gate). */
+      IDM_LOG("omul route=B (MRT 1-pass) w=%u h=%u total=%llu",
+              width, height, (unsigned long long)total);
+      ok = omul_run_mrt_pass(pipe, screen, device, views, pl->fs_cso_mrt,
+                             pl->vs_cso, vb, velems_cso,
+                             buf[4]->resource, (unsigned)desc[4]->buf.offset,
+                             buf[5]->resource, (unsigned)desc[5]->buf.offset,
+                             width, height, total);
+   } else {
+      /* Route A: two single-output passes (the screen lacks 2-RT MRT support). */
+      IDM_LOG("omul route=A (2-pass) w=%u h=%u total=%llu",
+              width, height, (unsigned long long)total);
+      bool ok_lo = omul_run_pass(pipe, screen, device, views, pl->fs_cso,
+                                 pl->vs_cso, vb, velems_cso, buf[4]->resource,
+                                 (unsigned)desc[4]->buf.offset, width, height, total);
+      bool ok_hi = omul_run_pass(pipe, screen, device, views, pl->fs_cso2,
+                                 pl->vs_cso, vb, velems_cso, buf[5]->resource,
+                                 (unsigned)desc[5]->buf.offset, width, height, total);
+      ok = ok_lo && ok_hi;
+   }
 
    pipe->delete_vertex_elements_state(pipe, velems_cso);
    for (unsigned i = 0; i < 4; i++)
       pipe_sampler_view_reference(&views[i], NULL);
    pipe_resource_reference(&vb, NULL);
-   return ok_lo && ok_hi;
+   return ok;
 }
 
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
