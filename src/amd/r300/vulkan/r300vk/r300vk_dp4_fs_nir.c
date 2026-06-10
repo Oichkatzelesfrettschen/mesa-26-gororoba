@@ -81,14 +81,32 @@ r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
    return b.shader;
 }
 
-/* Quaternion Hamilton product as four DP4s -- the Cayley-Dickson dim-4 multiply
- * (QMUL_HAMILTON).  Samples q1, q2 at the fullscreen texcoord and writes q1*q2
- * to the FP16 color export.  Each output lane is one DP4 of q1 against a
- * sign-permuted swizzle of q2; the four permutations are the rows of the
- * Hamilton matrix in (w,x,y,z) layout, verified against the catalog self-check
+/* The quaternion Hamilton product q1*q2 as four sign-permuted DP4s -- the
+ * Cayley-Dickson dim-4 multiply.  Each output lane is one DP4 of q1 against a
+ * sign-permuted swizzle of q2; the four permutations are the Hamilton-matrix
+ * rows in (w,x,y,z) layout, verified against the catalog self-check
  * (1,2,3,4)*(5,6,7,8) = (-60,12,30,24).  The negated lanes are native fneg in a
  * vec4 constructor, which nir_to_rc lowers correctly since the srcmod-fold
- * register-dest fix (before it, a negated variable lane read back zero). */
+ * register-dest fix (before it, a negated variable lane read back zero).
+ * Shared by QMUL (one product) and QROTATE (two products = the sandwich). */
+static nir_def *
+hamilton_product(nir_builder *b, nir_def *q1, nir_def *q2)
+{
+   nir_def *w2 = nir_channel(b, q2, 0), *x2 = nir_channel(b, q2, 1);
+   nir_def *y2 = nir_channel(b, q2, 2), *z2 = nir_channel(b, q2, 3);
+
+   nir_def *perm_w = nir_vec4(b, w2, nir_fneg(b, x2), nir_fneg(b, y2),
+                              nir_fneg(b, z2));
+   nir_def *perm_x = nir_vec4(b, x2, w2, z2, nir_fneg(b, y2));
+   nir_def *perm_y = nir_vec4(b, y2, nir_fneg(b, z2), w2, x2);
+   nir_def *perm_z = nir_vec4(b, z2, y2, nir_fneg(b, x2), w2);
+
+   return nir_vec4(b, nir_fdot(b, q1, perm_w), nir_fdot(b, q1, perm_x),
+                   nir_fdot(b, q1, perm_y), nir_fdot(b, q1, perm_z));
+}
+
+/* QMUL_HAMILTON: sample q1, q2 at the fullscreen texcoord and write q1*q2 to the
+ * FP16 color export -- one Hamilton product, four DP4s. */
 nir_shader *
 r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts)
 {
@@ -113,22 +131,7 @@ r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts)
       q[s] = nir_tex(&b, coord, .texture_deref = d, .sampler_deref = d);
    }
 
-   /* q2 channels in (w,x,y,z) = (.x,.y,.z,.w). */
-   nir_def *w2 = nir_channel(&b, q[1], 0);
-   nir_def *x2 = nir_channel(&b, q[1], 1);
-   nir_def *y2 = nir_channel(&b, q[1], 2);
-   nir_def *z2 = nir_channel(&b, q[1], 3);
-
-   nir_def *perm_w = nir_vec4(&b, w2, nir_fneg(&b, x2), nir_fneg(&b, y2),
-                              nir_fneg(&b, z2));
-   nir_def *perm_x = nir_vec4(&b, x2, w2, z2, nir_fneg(&b, y2));
-   nir_def *perm_y = nir_vec4(&b, y2, nir_fneg(&b, z2), w2, x2);
-   nir_def *perm_z = nir_vec4(&b, z2, y2, nir_fneg(&b, x2), w2);
-
-   nir_def *prod = nir_vec4(&b, nir_fdot(&b, q[0], perm_w),
-                            nir_fdot(&b, q[0], perm_x),
-                            nir_fdot(&b, q[0], perm_y),
-                            nir_fdot(&b, q[0], perm_z));
+   nir_def *prod = hamilton_product(&b, q[0], q[1]);
 
    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                            glsl_vec4_type(), "color");
@@ -139,6 +142,59 @@ r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts)
     * operand range -- so no per-byte encode is needed here, unlike the scalar
     * DP4 path. */
    nir_store_var(&b, out, prod, 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}
+
+/* QROTATE_SANDWICH: rotate the vec3 v by the unit quaternion q as
+ * q * embed(v) * conj(q) -- two Hamilton products, eight DP4s.  Samples q
+ * (binding 0) and v (binding 1); embed(v) = (0, vx, vy, vz) and conj(q) =
+ * (qw, -qx, -qy, -qz) in (w,x,y,z) layout.  The product's vector lanes carry
+ * the rotated v (the scalar lane is ~0 for a unit q).  Writes the result to the
+ * FP16 color export, like QMUL. */
+nir_shader *
+r300vk_build_qrotate_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qrotate");
+
+   nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+   in_tc->data.location = VARYING_SLOT_VAR0;
+   nir_def *coord = nir_trim_vector(&b, nir_load_var(&b, in_tc), 2);
+
+   nir_def *tex[2];
+   for (unsigned s = 0; s < 2; s++) {
+      nir_variable *samp = nir_variable_create(
+         b.shader, nir_var_uniform,
+         glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+         "samp");
+      samp->data.binding = s;
+      nir_deref_instr *d = nir_build_deref_var(&b, samp);
+      tex[s] = nir_tex(&b, coord, .texture_deref = d, .sampler_deref = d);
+   }
+   nir_def *q = tex[0], *v = tex[1];
+
+   nir_def *embed_v = nir_vec4(&b, nir_imm_float(&b, 0.0f),
+                               nir_channel(&b, v, 0), nir_channel(&b, v, 1),
+                               nir_channel(&b, v, 2));
+   nir_def *conj_q = nir_vec4(&b, nir_channel(&b, q, 0),
+                              nir_fneg(&b, nir_channel(&b, q, 1)),
+                              nir_fneg(&b, nir_channel(&b, q, 2)),
+                              nir_fneg(&b, nir_channel(&b, q, 3)));
+
+   /* q * embed(v) * conj(q). */
+   nir_def *t = hamilton_product(&b, q, embed_v);
+   nir_def *rotated = hamilton_product(&b, t, conj_q);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, rotated, 0xf);
 
    nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
    nir_assign_io_var_locations(b.shader, nir_var_shader_in);
