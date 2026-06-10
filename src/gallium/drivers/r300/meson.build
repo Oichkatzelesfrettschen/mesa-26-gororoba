@@ -9,6 +9,8 @@ files_r300 = files(
   'r300_context.c',
   'r300_context.h',
   'r300_cs.h',
+  'r300_hb_tcl.c',
+  'r300_hb_tcl.h',
   'r300_video.c',
   'r300_video.h',
   'r300_debug.c',
