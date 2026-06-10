@@ -9,10 +9,14 @@
  * instruction's coord_components equals the sampler dimension's coordinate
  * count (2 for 2D), so an asserts-enabled build aborted at every DP4 compute
  * pipeline create.  This test builds the same FS NIR via the extracted
- * r300vk_build_dp4_fs_nir for each dot width and pins two invariants: the
- * shader passes nir_validate, and every 2D texture op receives a 2-component
- * coordinate.  A regression to the vec4 coordinate fails this test (or aborts
- * it inside the builder) before it can ship.
+ * r300vk_build_dp4_fs_nir for each dot width and pins the coordinate shape two
+ * ways: the explicit per-op check below counts every 2D texture coordinate that
+ * is not 2-component, and under an asserts-enabled build nir_build_tex_struct
+ * aborts inside the builder the moment a vec4 coordinate reaches the 2D sampler.
+ * nir_validate runs too, but as a general well-formedness pass; it does not
+ * assert coord_components against the sampler dimension, so it is not the
+ * coord-shape net.  A regression to the vec4 coordinate fails this test (or
+ * aborts inside the builder) before it can ship.
  */
 
 #include <stdio.h>
@@ -78,7 +82,7 @@ main(void)
       if (!s)
          continue;
 
-      nir_validate_shader(s, "r300vk dp4 fs"); /* aborts on a malformed shader */
+      nir_validate_shader(s, "r300vk dp4 fs"); /* general well-formedness, not the coord-shape check */
 
       unsigned tex = 0, bad = 0;
       count_tex(s, &tex, &bad);
