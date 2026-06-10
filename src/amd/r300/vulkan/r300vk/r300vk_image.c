@@ -422,6 +422,27 @@ r300vk_GetImageSubresourceLayout2(VkDevice device, VkImage image,
    r300vk_image_subresource_layout(image, pLayout);
 }
 
+/* VK_KHR_maintenance5: the subresource layout of an image that has not been
+ * created (VkDeviceImageSubresourceInfo carries the VkImageCreateInfo).  r300g
+ * derives the row pitch from the realized pipe_resource, so the honest answer
+ * realizes the image transiently, reads its layout, and frees it -- no device
+ * memory is bound, only the resource metadata is allocated.  A create the chip
+ * cannot honour (multi-mip, array, or 3D, which r300vk_CreateImage rejects)
+ * yields a zeroed layout, the same as the optimal-tiling case. */
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetDeviceImageSubresourceLayout(VkDevice _device,
+                                       const VkDeviceImageSubresourceInfo *pInfo,
+                                       VkSubresourceLayout2 *pLayout)
+{
+   VkImage image;
+   if (r300vk_CreateImage(_device, pInfo->pCreateInfo, NULL, &image) != VK_SUCCESS) {
+      pLayout->subresourceLayout = (VkSubresourceLayout){0};
+      return;
+   }
+   r300vk_image_subresource_layout(image, pLayout);
+   r300vk_DestroyImage(_device, image, NULL);
+}
+
 void
 r300vk_GetImageMemoryRequirements2(VkDevice _device,
                                     const VkImageMemoryRequirementsInfo2 *pInfo,
