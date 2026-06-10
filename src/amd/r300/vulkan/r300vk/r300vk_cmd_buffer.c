@@ -19,6 +19,7 @@
 #include "vk_format.h"
 #include "vk_log.h"
 #include "vk_object.h"
+#include "vk_util.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -164,13 +165,29 @@ r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
       if (att_idx != VK_ATTACHMENT_UNUSED &&
           att_idx < fb->attachment_count &&
           att_idx < rp->attachment_count) {
-         VK_FROM_HANDLE(r300vk_image_view, iv, fb->attachments[att_idx]);
-         color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
-         color_format = vk_format_to_pipe_format(rp->attachments[att_idx].format);
-         load_op      = rp->attachments[att_idx].load_op;
-         if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
-             pRenderPassBegin->clearValueCount > att_idx)
-            clear_color = pRenderPassBegin->pClearValues[att_idx].color;
+         /* A normal framebuffer holds the view; an imageless one
+          * (VK_KHR_imageless_framebuffer) supplies the views at begin time in a
+          * VkRenderPassAttachmentBeginInfo chained on pRenderPassBegin. */
+         VkImageView view_handle;
+         if (fb->imageless) {
+            const VkRenderPassAttachmentBeginInfo *attach_begin =
+               vk_find_struct_const(pRenderPassBegin,
+                                    RENDER_PASS_ATTACHMENT_BEGIN_INFO);
+            view_handle = (attach_begin && att_idx < attach_begin->attachmentCount)
+                          ? attach_begin->pAttachments[att_idx]
+                          : VK_NULL_HANDLE;
+         } else {
+            view_handle = fb->attachments[att_idx];
+         }
+         if (view_handle != VK_NULL_HANDLE) {
+            VK_FROM_HANDLE(r300vk_image_view, iv, view_handle);
+            color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
+            color_format = vk_format_to_pipe_format(rp->attachments[att_idx].format);
+            load_op      = rp->attachments[att_idx].load_op;
+            if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+                pRenderPassBegin->clearValueCount > att_idx)
+               clear_color = pRenderPassBegin->pClearValues[att_idx].color;
+         }
       }
    }
 

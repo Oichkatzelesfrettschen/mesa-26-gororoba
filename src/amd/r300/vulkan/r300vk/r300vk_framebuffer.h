@@ -19,12 +19,15 @@ extern "C" {
 /* r300vk_framebuffer stores the raw VkImageView handles for the attachments
  * alongside the dimensions.  The command recorder resolves the handles to
  * r300vk_image_view pointers and then to pipe_resource pointers at
- * CmdBeginRenderPass time. */
+ * CmdBeginRenderPass time.  An imageless framebuffer (VK_KHR_imageless_
+ * framebuffer) carries no views: attachments[] stays empty and the actual
+ * views arrive at begin time in a VkRenderPassAttachmentBeginInfo. */
 struct r300vk_framebuffer {
    struct vk_object_base  base;
    uint32_t               width;
    uint32_t               height;
    uint32_t               attachment_count;
+   bool                   imageless;
    VkImageView            attachments[PIPE_MAX_COLOR_BUFS + 1];
 };
 
