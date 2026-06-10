@@ -13,6 +13,8 @@
 
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
+#include "util/list.h"
+#include "util/simple_mtx.h"
 #include "winsys/radeon_winsys.h"
 
 #ifdef __cplusplus
@@ -60,6 +62,16 @@ struct r300vk_device {
    struct r300vk_queue    queue;
    bool                   use_cs_backend;
    bool                   hybrid_compute_enabled;
+
+   /* Every live VkDeviceMemory, linked through r300vk_device_memory::
+    * device_link.  The submit path walks it to give HOST_COHERENT semantics
+    * to owns_buffer maps: device access happens only inside the synchronous
+    * vkQueueSubmit, so syncing host -> bound resource at submit entry and
+    * bound resource -> host after the GPU fence retires is exactly the
+    * visibility coherent memory promises.  memory_list_lock guards the list
+    * against Allocate/Free on other threads. */
+   struct list_head       memory_list;
+   simple_mtx_t           memory_list_lock;
 
    /* Cached gallium state CSOs every identity-map compute dispatch reuses
     * (blend = passthrough, rasterizer = no-cull / fill-solid, dsa = depth+

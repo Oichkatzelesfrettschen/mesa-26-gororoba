@@ -19,6 +19,12 @@
 
 #include <string.h>
 
+static VkResult r300vk_sync_owns_buffer(struct r300vk_device *device,
+                                        struct r300vk_device_memory *mem,
+                                        bool host_to_buffer,
+                                        VkDeviceSize range_offset,
+                                        VkDeviceSize range_size);
+
 VkResult
 r300vk_AllocateMemory(VkDevice _device,
                       const VkMemoryAllocateInfo *pAllocateInfo,
@@ -38,6 +44,10 @@ r300vk_AllocateMemory(VkDevice _device,
                        VK_OBJECT_TYPE_DEVICE_MEMORY);
    mem->size = pAllocateInfo->allocationSize;
 
+   simple_mtx_lock(&device->memory_list_lock);
+   list_addtail(&mem->device_link, &device->memory_list);
+   simple_mtx_unlock(&device->memory_list_lock);
+
    *pMemory = r300vk_device_memory_to_handle(mem);
    return VK_SUCCESS;
 }
@@ -51,6 +61,10 @@ r300vk_FreeMemory(VkDevice _device,
    VK_FROM_HANDLE(r300vk_device_memory, mem, _memory);
    if (!mem)
       return;
+
+   simple_mtx_lock(&device->memory_list_lock);
+   list_del(&mem->device_link);
+   simple_mtx_unlock(&device->memory_list_lock);
 
    if (mem->transfer) {
       /* Free a still-mapped allocation: unmap against the transfer's own
@@ -102,6 +116,44 @@ r300vk_MapMemory(VkDevice _device,
       if (!mem->resource)
          return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
       mem->owns_buffer = true;
+   }
+
+   /* Promote a borrowed buffer binding to owned host storage when the map
+    * range exceeds the bound slice.  Mapping the full VkDeviceMemory is always
+    * legal for host-visible memory, and zink's allocator depends on it: it
+    * over-allocates memory relative to the buffer (e.g. a 2 MB allocation
+    * backing a 1 MB slab buffer bound at offset 0) and maps the whole
+    * allocation once.  A map served from the borrowed bound resource can cover
+    * only that buffer's bytes, so give the memory its own allocation-sized
+    * host buffer, remember the borrowed resource as bound_resource, and seed
+    * the host view from it after the map below succeeds.  From then on the
+    * allocation behaves exactly like a map-before-bind owns_buffer memory:
+    * Flush/Invalidate and the submit-boundary sync keep the two in step. */
+   bool promoted = false;
+   if (!mem->owns_buffer && mem->resource->target == PIPE_BUFFER) {
+      VkDeviceSize slice_end = mem->memory_offset + mem->resource->width0;
+      VkDeviceSize req_end = (size == VK_WHOLE_SIZE) ? mem->size : offset + size;
+      if (offset < mem->memory_offset || req_end > slice_end) {
+         struct pipe_resource tmpl = {
+            .target     = PIPE_BUFFER,
+            .format     = PIPE_FORMAT_R8_UNORM,
+            .bind       = PIPE_BIND_VERTEX_BUFFER,
+            .usage      = PIPE_USAGE_DYNAMIC,
+            .width0     = (unsigned)mem->size,
+            .height0    = 1,
+            .depth0     = 1,
+            .array_size = 1,
+         };
+         struct pipe_resource *owned =
+            device->screen->resource_create(device->screen, &tmpl);
+         if (!owned)
+            return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+         pipe_resource_reference(&mem->bound_resource, mem->resource);
+         pipe_resource_reference(&mem->resource, NULL);
+         mem->resource = owned;
+         mem->owns_buffer = true;
+         promoted = true;
+      }
    }
 
    /* Unmap any stale mapping from a previous vkMapMemory call.  Vulkan
@@ -177,6 +229,17 @@ r300vk_MapMemory(VkDevice _device,
    pipe_resource_reference(&mem->mapped_resource, mem->transfer->resource);
 
    mem->map_ptr = ptr;
+
+   /* A promotion left the host view zero-filled; pull the bound buffer's
+    * current bytes into it so the map shows what the buffer already holds
+    * (a bind-time seed in the opposite direction). */
+   if (promoted) {
+      VkResult seed = r300vk_sync_owns_buffer(device, mem, false /* buffer -> host */,
+                                              0, VK_WHOLE_SIZE);
+      if (seed != VK_SUCCESS)
+         return seed;
+   }
+
    *ppData = ptr;
    return VK_SUCCESS;
 }
@@ -317,6 +380,26 @@ r300vk_sync_owns_image(struct r300vk_device *device,
 
    device->pipe->texture_unmap(device->pipe, xfer);
    return VK_SUCCESS;
+}
+
+void
+r300vk_device_memory_sync_bound(struct r300vk_device *device,
+                                bool host_to_buffer)
+{
+   simple_mtx_lock(&device->memory_list_lock);
+   list_for_each_entry(struct r300vk_device_memory, mem,
+                       &device->memory_list, device_link) {
+      if (!mem->owns_buffer || !mem->map_ptr)
+         continue;
+      if (mem->bound_resource)
+         r300vk_sync_owns_buffer(device, mem, host_to_buffer, 0, VK_WHOLE_SIZE);
+      /* Image tiles have only the image -> host direction (the host -> image
+       * upload path is intentionally absent until exercised); pull them on the
+       * submit-exit sync so a rendered linear image reaches the live map. */
+      if (!host_to_buffer && mem->bound_image_tile)
+         r300vk_sync_owns_image(device, mem);
+   }
+   simple_mtx_unlock(&device->memory_list_lock);
 }
 
 VkResult
