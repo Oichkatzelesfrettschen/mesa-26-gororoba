@@ -380,6 +380,11 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * sources the colour view from the VkRenderPassAttachmentBeginInfo at begin
     * time.  Gated by the imagelessFramebuffer feature below. */
    .KHR_imageless_framebuffer = true,
+   /* VK_KHR_maintenance5: r300vk implements CmdBindIndexBuffer2,
+    * GetImageSubresourceLayout2, and GetDeviceImageSubresourceLayout, and
+    * vk_common provides GetRenderingAreaGranularity.  The maintenance5 property
+    * query reports the conservative (all-false) rasterization capabilities. */
+   .KHR_maintenance5 = true,
 };
 
 static void
@@ -406,6 +411,9 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * IMAGELESS flag and the begin path reads the views from the
     * VkRenderPassAttachmentBeginInfo, so advertise the gating feature. */
    features->imagelessFramebuffer = true;
+   /* The maintenance5 entry points (CmdBindIndexBuffer2, the two subresource
+    * layout getters) are implemented, so advertise the gating feature. */
+   features->maintenance5 = true;
 }
 
 void

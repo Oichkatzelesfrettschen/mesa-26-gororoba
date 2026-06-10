@@ -74,6 +74,14 @@ r300vk_GetImageSubresourceLayout2(VkDevice device, VkImage image,
                                   const VkImageSubresource2 *pSubresource,
                                   VkSubresourceLayout2 *pLayout);
 
+/* VK_KHR_maintenance5: subresource layout of an image described by a
+ * VkImageCreateInfo that has not been created.  Like GetImageSubresourceLayout2,
+ * only the core form is defined; the ...KHR alias shares its dispatch slot. */
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetDeviceImageSubresourceLayout(VkDevice device,
+                                       const VkDeviceImageSubresourceInfo *pInfo,
+                                       VkSubresourceLayout2 *pLayout);
+
 VkResult r300vk_CreateImageView(VkDevice device,
                                  const VkImageViewCreateInfo *pCreateInfo,
                                  const VkAllocationCallbacks *pAllocator,
