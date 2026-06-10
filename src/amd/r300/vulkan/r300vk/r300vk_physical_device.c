@@ -402,6 +402,11 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * the r300 PFS), so a null descriptor is safe to access.  robustBufferAccess2
     * and robustImageAccess2 stay false. */
    .EXT_robustness2 = true,
+   /* VK_KHR_swapchain through Mesa's common WSI in software mode
+    * (r300vk_init_wsi): swapchain entry points come from
+    * wsi_device_entrypoints, already layered into the device dispatch.
+    * Presentation copies the CPU-reachable swapchain image out via xcb-shm. */
+   .KHR_swapchain = true,
 };
 
 static void
@@ -440,11 +445,52 @@ r300vk_physical_device_init_features(struct vk_features *features)
    features->nullDescriptor = true;
 }
 
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+r300vk_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
+{
+   VK_FROM_HANDLE(r300vk_physical_device, pdevice, physicalDevice);
+   return vk_instance_get_proc_addr_unchecked(pdevice->vk.instance, pName);
+}
+
+/* Mesa common WSI in software mode, the lavapipe pattern: sw_device makes the
+ * swapchain allocate CPU-reachable images and present through the xcb-shm
+ * path, so the radeon winsys needs no dma-buf, modifier, or external-memory
+ * support.  wants_linear keeps the swapchain images row-major, the layout the
+ * present copy reads and the one r300vk's single-tile linear images provide. */
+static VkResult
+r300vk_init_wsi(struct r300vk_physical_device *device)
+{
+   VkResult result =
+      wsi_device_init(&device->wsi_device,
+                      r300vk_physical_device_to_handle(device),
+                      r300vk_wsi_proc_addr,
+                      &device->vk.instance->alloc,
+                      -1, NULL,
+                      &(struct wsi_device_options){.sw_device = true});
+   if (result != VK_SUCCESS)
+      return result;
+
+   device->wsi_device.wants_linear = true;
+   device->vk.wsi_device = &device->wsi_device;
+   return VK_SUCCESS;
+}
+
+static void
+r300vk_finish_wsi(struct r300vk_physical_device *device)
+{
+   if (device->vk.wsi_device == NULL)
+      return;
+   device->vk.wsi_device = NULL;
+   wsi_device_finish(&device->wsi_device, &device->vk.instance->alloc);
+}
+
 void
 r300vk_physical_device_destroy(struct vk_physical_device *const device_base)
 {
    struct r300vk_physical_device *const device =
       container_of(device_base, struct r300vk_physical_device, vk);
+
+   r300vk_finish_wsi(device);
 
 #ifdef R300VK_GALLIUM_BACKEND
    if (device->screen)
@@ -620,6 +666,18 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
 
    device->vk.supported_sync_types = device->sync_types;
    device->hybrid_compute_enabled = r300vk_hybrid_compute_enabled();
+
+   result = r300vk_init_wsi(device);
+   if (result != VK_SUCCESS) {
+      vk_physical_device_finish(&device->vk);
+#ifdef R300VK_GALLIUM_BACKEND
+      if (device->screen)
+         device->screen->destroy(device->screen);
+#endif
+      close(render_node_fd);
+      vk_free(&instance->vk.alloc, device);
+      return result;
+   }
 
    if (instance->debug_flags & R300VK_DEBUG_STARTUP) {
       fprintf(stderr,
