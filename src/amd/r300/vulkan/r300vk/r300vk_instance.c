@@ -12,6 +12,7 @@
 #include "util/u_debug.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
+#include "wsi_common.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -30,18 +31,26 @@ static const struct debug_control r300vk_debug_options[] = {
  * alias automatically and the runtime fills it from
  * pdev->properties.
  *
- * KHR_device_group_creation, debug-utils, external-memory-capabilities,
- * and the WSI surface family are not advertised because the
+ * KHR_device_group_creation, debug-utils, and
+ * external-memory-capabilities are not advertised because the
  * corresponding vkEnumeratePhysicalDeviceGroupsKHR /
  * vkCreateDebugUtilsMessengerEXT /
- * vkGetPhysicalDeviceExternalBufferPropertiesKHR /
- * vkCreate*SurfaceKHR entrypoints are not implemented.  Promising an
- * extension without its entrypoints violates Vulkan 1.4 spec ch. 36
- * "Extensions" and produces VK_ERROR_FEATURE_NOT_PRESENT crashes in
- * application code paths that take the advertised feature flag as a
- * green light. */
+ * vkGetPhysicalDeviceExternalBufferPropertiesKHR entrypoints are not
+ * implemented.  Promising an extension without its entrypoints violates
+ * Vulkan 1.4 spec ch. 36 "Extensions" and produces
+ * VK_ERROR_FEATURE_NOT_PRESENT crashes in application code paths that
+ * take the advertised feature flag as a green light. */
 static const struct vk_instance_extension_table r300vk_instance_extensions_supported = {
    .KHR_get_physical_device_properties2 = true,
+   /* The VK_KHR_surface family backs presentation through Mesa's common WSI
+    * in software mode (wsi_device_init with sw_device on the physical
+    * device): the vkCreate*SurfaceKHR entrypoints and surface queries come
+    * from wsi_instance_entrypoints, layered into the instance dispatch in
+    * r300vk_instance_init.  X11 surfaces only; presentation runs the xcb-shm
+    * CPU path, no DRM modifiers or dma-buf involved. */
+   .KHR_surface = true,
+   .KHR_xcb_surface = true,
+   .KHR_xlib_surface = true,
 };
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -93,6 +102,11 @@ r300vk_instance_init(struct r300vk_instance *const instance,
    struct vk_instance_dispatch_table dispatch_table;
    vk_instance_dispatch_table_from_entrypoints(&dispatch_table,
                                                &r300vk_instance_entrypoints, true);
+   /* The common WSI's vkCreate*SurfaceKHR / vkGetPhysicalDeviceSurface* fill
+    * every slot the driver leaves empty; without this overlay a GLX/EGL client
+    * calls a NULL instance entrypoint at surface creation. */
+   vk_instance_dispatch_table_from_entrypoints(&dispatch_table,
+                                               &wsi_instance_entrypoints, false);
 
    VkResult result = vk_instance_init(&instance->vk, &r300vk_instance_extensions_supported,
                                       &dispatch_table, create_info, allocator);

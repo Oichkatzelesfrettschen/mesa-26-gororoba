@@ -296,14 +296,19 @@ r300vk_CreateImage(VkDevice _device,
    VkImageUsageFlags supported_usage =
       r300vk_supported_image_usage(device, pipe_fmt);
 
-   /* A linear image is transfer-only staging inside a single r300g tile.  Mask
-    * its advertised usage to the transfer bits and reject any shape the
-    * single-tile row-major path cannot back: non-2D, an extent past one tile,
-    * or a format without a lossless transfer-destination byte layout (the same
-    * predicate that gates linearTilingFeatures). */
+   /* A linear image lives inside a single r300g tile: transfer staging, plus
+    * colour-attachment and sampled use when the format's oracle bits allow
+    * them -- r300 renders to and samples from row-major surfaces (scanout on
+    * this silicon is linear), and the common WSI's software swapchain creates
+    * exactly such images (linear, COLOR_ATTACHMENT | TRANSFER, one tile).
+    * Reject any shape the single-tile row-major path cannot back: non-2D, an
+    * extent past one tile, or a format without a lossless transfer-destination
+    * byte layout (the same predicate that gates linearTilingFeatures). */
    if (is_linear) {
       supported_usage &= (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                          VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                          VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                          VK_IMAGE_USAGE_SAMPLED_BIT);
       if (pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
           pCreateInfo->extent.width > R300VK_R3XX_MAX_RENDER_DIMENSION ||
           pCreateInfo->extent.height > R300VK_R3XX_MAX_RENDER_DIMENSION ||

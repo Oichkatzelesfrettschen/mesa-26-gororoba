@@ -9,6 +9,7 @@
 #include "vk_physical_device.h"
 #include "vk_sync.h"
 #include "vk_sync_timeline.h"
+#include "wsi_common.h"
 
 #include <stdint.h>
 
@@ -68,6 +69,12 @@ struct r300vk_physical_device {
     * support DRM_CAP_SYNCOBJ (confirmed on kernel 6.18 radeon driver).  Slot 0
     * is the binary sync, slot 1 the timeline emulation above. */
    const struct vk_sync_type *sync_types[3];
+
+   /* Mesa common WSI in software mode (the lavapipe pattern): swapchain
+    * images are CPU-reachable and presentation runs the xcb-shm path, so no
+    * dma-buf, DRM modifier, or external-memory support is required of the
+    * radeon winsys.  vk.wsi_device points here after r300vk_init_wsi. */
+   struct wsi_device wsi_device;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_physical_device, vk.base, VkPhysicalDevice,
