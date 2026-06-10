@@ -3281,8 +3281,9 @@ generate_fragment(struct llvmpipe_context *lp,
    LLVMSetFunctionCallConv(function, LLVMCCallConv);
 
    variant->function[partial_mask] = function;
-   variant->function_name[partial_mask] = MALLOC(strlen(func_name)+1);
-   strcpy(variant->function_name[partial_mask], func_name);
+   size_t func_name_len = strlen(func_name) + 1;
+   variant->function_name[partial_mask] = MALLOC(func_name_len);
+   memcpy(variant->function_name[partial_mask], func_name, func_name_len);
 
    /* XXX: need to propagate noalias down into color param now we are
     * passing a pointer-to-pointer?
