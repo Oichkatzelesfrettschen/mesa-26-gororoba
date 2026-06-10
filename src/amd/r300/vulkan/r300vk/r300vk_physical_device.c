@@ -353,6 +353,11 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * device.  WSI (VK_KHR_swapchain) and the external-memory family stay
     * withheld until the device layer brings them up. */
    .EXT_host_query_reset = true,
+   /* VK_KHR_dynamic_rendering: r300vk_CmdBeginRendering / r300vk_CmdEndRendering
+    * translate VkRenderingInfo into the same colour-attachment framebuffer the
+    * render-pass replay drives, so a render target needs no VkRenderPass or
+    * VkFramebuffer object. */
+   .KHR_dynamic_rendering = true,
 };
 
 static void
@@ -371,6 +376,10 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * replay queue retires all prior work before the host call returns, so the
     * clear never races a GPU-side query write. */
    features->hostQueryReset = true;
+   /* The dynamic-rendering command path (r300vk_CmdBeginRendering) records the
+    * colour-attachment framebuffer from VkRenderingInfo, so advertise the
+    * feature bit that gates VK_KHR_dynamic_rendering. */
+   features->dynamicRendering = true;
 }
 
 void

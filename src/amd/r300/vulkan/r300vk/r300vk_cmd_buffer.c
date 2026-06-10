@@ -198,6 +198,64 @@ r300vk_CmdEndRenderPass(VkCommandBuffer commandBuffer)
    cmd->current_color_image = NULL;
 }
 
+/* VK_KHR_dynamic_rendering names the colour attachment as a VkImageView
+ * directly on VkRenderingInfo, with no VkFramebuffer or VkRenderPass object.
+ * The framebuffer setup it needs is identical to the render-pass path, so this
+ * records the same R300VK_CMD_BEGIN_RENDER_PASS entry that
+ * r300vk_replay_begin_render_pass consumes: colour attachment 0 resolved to its
+ * pipe_resource and pipe_format, the render-area far corner as the framebuffer
+ * extent, and the load-op clear value.  It binds attachment 0 only; depth and
+ * stencil are the single-cbuf limit the replay's framebuffer state already
+ * carries, not one this entry point introduces. */
+void
+r300vk_CmdBeginRendering(VkCommandBuffer commandBuffer,
+                          const VkRenderingInfo *pRenderingInfo)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+
+   struct r300vk_image *color_image = NULL;
+   enum pipe_format color_format = PIPE_FORMAT_NONE;
+   VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+   VkClearColorValue clear_color = {0};
+
+   if (pRenderingInfo->colorAttachmentCount > 0) {
+      const VkRenderingAttachmentInfo *att = &pRenderingInfo->pColorAttachments[0];
+      if (att->imageView != VK_NULL_HANDLE) {
+         VK_FROM_HANDLE(r300vk_image_view, iv, att->imageView);
+         color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
+         color_format = vk_format_to_pipe_format(iv->vk.format);
+         load_op      = att->loadOp;
+         if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+            clear_color = att->clearValue.color;
+      }
+   }
+
+   const VkRect2D *area = &pRenderingInfo->renderArea;
+
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+
+   e->type = R300VK_CMD_BEGIN_RENDER_PASS;
+   e->begin_rp.color_image  = color_image;
+   e->begin_rp.color_format = color_format;
+   e->begin_rp.width        = area->offset.x + area->extent.width;
+   e->begin_rp.height       = area->offset.y + area->extent.height;
+   e->begin_rp.load_op      = load_op;
+   e->begin_rp.clear_color  = clear_color;
+
+   cmd->current_color_image = color_image;
+}
+
+void
+r300vk_CmdEndRendering(VkCommandBuffer commandBuffer)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return;
+   e->type = R300VK_CMD_END_RENDER_PASS;
+   cmd->current_color_image = NULL;
+}
+
 void
 r300vk_CmdBindPipeline(VkCommandBuffer commandBuffer,
                         VkPipelineBindPoint pipelineBindPoint,
