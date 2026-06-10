@@ -62,6 +62,24 @@ count_tex(nir_shader *s, unsigned *tex_out, unsigned *bad_coord_out)
    *bad_coord_out = bad;
 }
 
+/* Count ALU instructions of a given opcode -- used to pin the Hamilton FS to
+ * exactly four DP4s (one fdot4 per output quaternion lane). */
+static unsigned
+count_alu_op(nir_shader *s, nir_op op)
+{
+   unsigned n = 0;
+   nir_foreach_function_impl(impl, s) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_alu &&
+                nir_instr_as_alu(instr)->op == op)
+               n++;
+         }
+      }
+   }
+   return n;
+}
+
 int
 main(void)
 {
@@ -92,6 +110,29 @@ main(void)
       CHECK(tex == 2 && bad == 0, name);
 
       ralloc_free(s);
+   }
+
+   /* The Hamilton-product FS: two quaternion samplers (2-component coords, the
+    * same coord-shape invariant as the DP4 FS) and exactly four DP4s -- one
+    * fdot4 per output lane of q1*q2.  A regression that drops a lane or adds a
+    * fifth dot (for example from a botched sign-permutation rewrite) trips the
+    * fdot4 count. */
+   {
+      nir_shader *s = r300vk_build_qmul_fs_nir(&options);
+      CHECK(s != NULL, "qmul builds a shader");
+      if (s) {
+         nir_validate_shader(s, "r300vk qmul fs");
+
+         unsigned tex = 0, bad = 0;
+         count_tex(s, &tex, &bad);
+         CHECK(tex == 2 && bad == 0,
+               "qmul: two 2D tex ops, each a 2-component coord");
+
+         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
+         CHECK(dp4 == 4, "qmul: exactly four DP4s (one per quaternion lane)");
+
+         ralloc_free(s);
+      }
    }
 
    glsl_type_singleton_decref();
