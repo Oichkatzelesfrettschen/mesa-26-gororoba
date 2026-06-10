@@ -436,18 +436,26 @@ vl_idct_stage2_vert_shader(struct vl_idct *idct, nir_builder *b,
    calc_addr(b, r_addr, nir_trim_vector(b, tex, 2), t_start, true, false,
              idct->buffer_height / 4);
 
-   /* The second intermediate texel is r_addr[0] stepped by one texel along the
-    * row lane (calc_addr adds 1/(buffer_height/4); buffer_height/4 is
-    * non-power-of-two, e.g. 72 for a 288-tall luma intermediate).  r300 resolves
-    * that NPOT-stepped NEAREST coordinate one texel low: the FP24 rounding of
-    * 1/(buffer_height/4) lands the product just below the integer row, so the
-    * fetch reads the previous (first) texel's region instead of the second,
-    * dropping the upper vertical-frequency half of the block.  Bias the second
-    * texel's row lane to the texel centre (+0.5/(buffer_height/4)); floor of the
-    * centred coordinate is exact, and the +0.5 is inert on hardware whose NEAREST
-    * is already exact.  This mirrors the l_center column bias the first pass uses
-    * for the same NPOT source-read reason. */
+   /* The intermediate carries each block-row as a row-lane texel pair: texel 2k
+    * holds vertical frequencies 0..3, texel 2k+1 holds 4..7.  t_start.y puts the
+    * pair's first texel on the row boundary 2k exactly in exact arithmetic, but
+    * the intermediate height buffer_height/4 is non-power-of-two (72 for a
+    * 288-tall source), so FP24 resolves vpos.y * VL_BLOCK_HEIGHT/buffer_height
+    * just below the boundary whenever the fraction is not exactly representable;
+    * NEAREST then fetches row 2k-1, the previous block's high-frequency texel,
+    * and the reconstruction loses vertical frequencies 0..3 for that block-row.
+    * Measured on RS480: the uncentered pair lands (2k-1, 2k+1) for 32 of 36
+    * block-rows of a 288-tall plane; only rows whose fraction is dyadic
+    * (k = 0, 9, 18, 27) resolve exactly.  Bias BOTH texels' row lanes to the
+    * texel center (+0.5/(buffer_height/4)): floor of a centered coordinate is
+    * exact, the 1/size step between the texels keeps the pair (2k, 2k+1), and
+    * the bias is inert on hardware whose NEAREST is already exact.  This mirrors
+    * the l_center bias the first pass applies to its source reads for the same
+    * NPOT reason.  Centering only the second texel leaves the pair (2k-1, 2k+1)
+    * and is NOT sufficient; centering only the first regresses against an
+    * uncentered first-pass write -- the two passes' biases are co-dependent. */
    nir_def *r_center = nir_imm_vec2(b, 0.0f, 0.5f / (idct->buffer_height / 4.0f));
+   r_addr[0] = nir_fadd(b, r_addr[0], r_center);
    r_addr[1] = nir_fadd(b, r_addr[1], r_center);
 
    nir_def *outs[4] = {
