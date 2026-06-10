@@ -1476,6 +1476,287 @@ r300vk_qrotate_dispatch_replay(struct r300vk_device *device,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
 
+/* Shared 1-in / 1-out compute-as-raster replay core.  Same skeleton as
+ * r300vk_two_in_one_out_dispatch_replay but a single input sampler stage and a
+ * two-buffer positional fallback (input = first STORAGE_BUFFER, output =
+ * second).  The single-lane quaternion ops -- QCONJ (sign flip) and QNORM (self
+ * dot) -- sample one FP32 quaternion, render through the synthesized FS to an
+ * FP16 target, and unpack into the kernel's vec4 FP32 output, the same FP16-RT /
+ * FP32-readback conversion QMUL uses.  The caller passes the input + output
+ * bindings its detector captured (0,0 triggers the positional fallback) and the
+ * three formats. */
+static bool
+r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
+                                      const struct r300vk_pipeline *pl,
+                                      const struct r300vk_cmd_dispatch *dispatch,
+                                      const struct r300vk_cmd_bind_descriptor_sets *binds,
+                                      uint32_t cap_in, uint32_t cap_out,
+                                      enum pipe_format input_fmt,
+                                      enum pipe_format output_fmt,
+                                      enum pipe_format output_buffer_fmt)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   IDM_LOG("1in1out entry pl=%p cap_in=%u cap_out=%u set_count=%u gx=%u gy=%u gz=%u",
+           (const void *)pl, cap_in, cap_out,
+           binds ? binds->set_count : 0,
+           dispatch ? dispatch->group_count_x : 0,
+           dispatch ? dispatch->group_count_y : 0,
+           dispatch ? dispatch->group_count_z : 0);
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0) {
+      IDM_LOG("1in1out early-return null-or-empty-binds");
+      return false;
+   }
+   if (!pl->vs_cso || !pl->fs_cso) {
+      IDM_LOG("1in1out early-return no-vs-or-fs-cso");
+      return false;
+   }
+   if (binds->first_set != 0) {
+      IDM_LOG("1in1out early-return first_set=%u (only slot 0)", binds->first_set);
+      return false;
+   }
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout) {
+      IDM_LOG("1in1out early-return no-set-or-layout");
+      return false;
+   }
+
+   /* Binding resolution, same priority as the 2-in core: captured constant
+    * bindings win; all-zero means the detector saw opaque post-explicit_io
+    * handles, so fall back to positional layout iteration (input = 1st
+    * STORAGE_BUFFER, output = 2nd). */
+   uint32_t in_binding  = cap_in;
+   uint32_t out_binding = cap_out;
+   const bool detector_captured = (in_binding != 0 || out_binding != 0);
+   if (!detector_captured) {
+      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
+          !nth_storage_buffer_binding(set, 1, &out_binding)) {
+         IDM_LOG("1in1out early-return layout-has-fewer-than-two-storage-buffers");
+         return false;
+      }
+   }
+   IDM_LOG("1in1out bindings: in=%u out=%u source=%s",
+           in_binding, out_binding, detector_captured ? "detector" : "positional");
+
+   const struct r300vk_descriptor *desc_in =
+      find_descriptor_by_binding(set, in_binding);
+   const struct r300vk_descriptor *desc_out =
+      find_descriptor_by_binding(set, out_binding);
+   if (!desc_in || !desc_out) {
+      IDM_LOG("1in1out early-return descriptor-walk-miss");
+      return false;
+   }
+   if (!desc_in->buf.buffer || !desc_out->buf.buffer) {
+      IDM_LOG("1in1out early-return null-vkbuffer-handle");
+      return false;
+   }
+   VK_FROM_HANDLE(r300vk_buffer, buf_in,  desc_in->buf.buffer);
+   VK_FROM_HANDLE(r300vk_buffer, buf_out, desc_out->buf.buffer);
+   if (!buf_in || !buf_out || !buf_in->resource || !buf_out->resource) {
+      IDM_LOG("1in1out early-return null-pipe-resource");
+      return false;
+   }
+
+   const uint64_t total_invocations =
+      r300vk_idm_total_invocations(dispatch, pl);
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("1in1out early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
+      return false;
+   }
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total_invocations, &width, &height);
+   if (width > 2048 || height > 2048) {
+      IDM_LOG("1in1out early-return extent-exceeds-2048-cap");
+      return false;
+   }
+
+   const enum pipe_format fmt = output_fmt;
+   struct pipe_sampler_view *sv =
+      r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in->resource,
+                                                     (unsigned)desc_in->buf.offset,
+                                                     width, height, input_fmt);
+   if (!sv) {
+      IDM_LOG("1in1out early-return wrap-input-failed");
+      return false;
+   }
+
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = fmt;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      IDM_LOG("1in1out early-return rt-create-failed");
+      pipe_sampler_view_reference(&sv, NULL);
+      return false;
+   }
+
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = fmt;
+   surf_templ.texture = rt;
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      pipe_resource_reference(&rt, NULL);
+      pipe_sampler_view_reference(&sv, NULL);
+      return false;
+   }
+
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
+                             &device->identity_map_sampler_cso);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &sv);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.instance_count = 1;
+   info.max_index      = 3;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+   IDM_LOG("1in1out draw_vbo mode=triangle_strip count=4");
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+   IDM_LOG("1in1out post-flush, beginning rt->buffer copy");
+
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   bool copy_ok = false;
+   {
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (unsigned)desc_out->buf.offset;
+         /* output_buffer_fmt == PIPE_FORMAT_NONE means the output SSBO element
+          * format equals the RT format (raw byte copy); otherwise the RT carries
+          * the result in output_fmt and each row unpacks to output_buffer_fmt
+          * (R32G32B32A32_FLOAT -- the FP16->FP32 conversion the substrate needs,
+          * R300 having no FP32 RT). */
+         const enum pipe_format buf_fmt =
+            output_buffer_fmt == PIPE_FORMAT_NONE ? fmt : output_buffer_fmt;
+         const unsigned buf_bs = util_format_get_blocksize(buf_fmt);
+         out_box.width  = width * height * buf_bs;
+         out_box.height = 1;
+         out_box.depth  = 1;
+         void *out_bytes = pipe->buffer_map(pipe, buf_out->resource, 0,
+                                            PIPE_MAP_WRITE |
+                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                            &out_box, &out_xfer);
+         if (out_bytes) {
+            if (buf_fmt == fmt) {
+               r300vk_identity_map_copy_rows(out_bytes, width * buf_bs,
+                                             rt_map, rt_xfer->stride,
+                                             width, height, buf_bs,
+                                             total_invocations);
+            } else {
+               uint8_t *dst = out_bytes;
+               const uint8_t *src = rt_map;
+               uint64_t remaining = total_invocations;
+               for (unsigned r = 0; r < height && remaining; r++) {
+                  unsigned n = remaining < width ? (unsigned)remaining : width;
+                  util_format_unpack_rgba(fmt, dst, src, n);
+                  dst += (size_t)n * buf_bs;
+                  src += rt_xfer->stride;
+                  remaining -= n;
+               }
+            }
+            pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+   IDM_LOG("1in1out rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+           (const void *)buf_out->resource, (const void *)rt,
+           copy_box.width, copy_box.height);
+
+   struct pipe_sampler_view *no_view = NULL;
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, &no_view);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&sv, NULL);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&rt, NULL);
+   IDM_LOG("1in1out orchestrator done copy_ok=%d", (int)copy_ok);
+   return copy_ok;
+}
+
+/* QCONJ dispatch replay: the quaternion conjugate on the substrate.  One input
+ * quaternion sampled R32G32B32A32_FLOAT, the synthesized sign-flip FS
+ * (r300vk_build_qconj_fs_nir) writes (a.x,-a.y,-a.z,-a.w) to an FP16 render
+ * target, and the copy-back unpacks it into the kernel's vec4 FP32 output. */
+bool
+r300vk_qconj_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_one_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->qconj.input_ssbo_binding, pl->qconj.output_ssbo_binding,
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
+}
+
+/* QNORM dispatch replay: the quaternion squared norm on the substrate.  Same
+ * one-in/one-out skeleton as QCONJ; the synthesized self-dot FS
+ * (r300vk_build_qnorm_fs_nir) writes vec4(dot(a,a)) to the FP16 target, unpacked
+ * into the kernel's vec4 FP32 output (the kernel reads lane 0). */
+bool
+r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_one_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->qnorm.input_ssbo_binding, pl->qnorm.output_ssbo_binding,
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
+}
+
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
  * view, two storage buffers) plus a per-dispatch fragment constant carrying
  * the neighbor texel displacement.  The synthesized FS

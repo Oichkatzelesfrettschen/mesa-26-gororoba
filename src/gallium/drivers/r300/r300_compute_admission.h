@@ -380,6 +380,35 @@ struct r300_compute_qrotate_pattern {
 void r300_nir_detect_qrotate_pattern(const struct nir_shader *s,
                                      struct r300_compute_qrotate_pattern *out);
 
+/* Quaternion conjugate (QCONJ) pattern: out[gid] = (a.x, -a.y, -a.z, -a.w), the
+ * conjugate that negates the three vector lanes of a[gid] and keeps the scalar
+ * lane.  Zero DP4 -- a sign flip exact in FP24 -- but carried through the FP16
+ * quaternion render target like the other single-lane ops.  Binding stays 0 when
+ * the post-explicit_io sources are not constants (the orchestrator's positional
+ * fallback: input=0, output=1). */
+struct r300_compute_qconj_pattern {
+   bool       is_qconj;
+   uint32_t   input_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qconj_pattern(const struct nir_shader *s,
+                                   struct r300_compute_qconj_pattern *out);
+
+/* Quaternion squared-norm (QNORM) pattern: out[gid] = vec4(dot(a[gid], a[gid])),
+ * the squared norm broadcast across four lanes so the substrate's vec4 FP16
+ * readback carries it (the kernel reads lane 0).  One DP4 -- a self-dot.  Binding
+ * stays 0 when the sources are not constants (positional fallback: input=0,
+ * output=1). */
+struct r300_compute_qnorm_pattern {
+   bool       is_qnorm;
+   uint32_t   input_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qnorm_pattern(const struct nir_shader *s,
+                                   struct r300_compute_qnorm_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

@@ -102,6 +102,18 @@ struct r300vk_pipeline {
     * unpacked into the kernel's vec4 FP32 output buffer. */
    struct r300_compute_qrotate_pattern qrotate;
 
+   /* Quaternion conjugate (QCONJ) kernel detected at pipeline-create time:
+    * out[gid] = (a.x, -a.y, -a.z, -a.w).  Lowered to a fullscreen draw whose
+    * synthesized FS (r300vk_build_qconj_fs_nir) sign-flips the sampled quaternion
+    * to an FP16 render target, unpacked into the kernel's vec4 FP32 output. */
+   struct r300_compute_qconj_pattern qconj;
+
+   /* Quaternion squared-norm (QNORM) kernel detected at pipeline-create time:
+    * out[gid] = vec4(dot(a[gid], a[gid])).  Lowered to a fullscreen draw whose
+    * synthesized FS (r300vk_build_qnorm_fs_nir) writes the broadcast self-dot to
+    * an FP16 render target, unpacked into the kernel's vec4 FP32 output. */
+   struct r300_compute_qnorm_pattern qnorm;
+
    /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
     * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])

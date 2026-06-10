@@ -202,3 +202,76 @@ r300vk_build_qrotate_fs_nir(const nir_shader_compiler_options *opts)
 
    return b.shader;
 }
+
+/* Sample one float quaternion at the fullscreen texcoord from sampler binding 0.
+ * QCONJ and QNORM both read a single input; this folds the shared varying +
+ * sampler setup so each builder only states its arithmetic. */
+static nir_def *
+sample_single_quaternion(nir_builder *b)
+{
+   nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+   in_tc->data.location = VARYING_SLOT_VAR0;
+   nir_def *coord = nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+
+   nir_variable *samp = nir_variable_create(
+      b->shader, nir_var_uniform,
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+      "samp");
+   samp->data.binding = 0;
+   nir_deref_instr *d = nir_build_deref_var(b, samp);
+   return nir_tex(b, coord, .texture_deref = d, .sampler_deref = d);
+}
+
+/* QCONJ: write the quaternion conjugate (a.x, -a.y, -a.z, -a.w) of the single
+ * sampled input to the FP16 color export -- a sign flip on the vector lanes,
+ * zero DP4.  The negated lanes are native fneg in the vec4 constructor (correct
+ * since the nir_to_rc srcmod-fold register-dest fix). */
+nir_shader *
+r300vk_build_qconj_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qconj");
+
+   nir_def *a = sample_single_quaternion(&b);
+   nir_def *conj = nir_vec4(&b, nir_channel(&b, a, 0),
+                            nir_fneg(&b, nir_channel(&b, a, 1)),
+                            nir_fneg(&b, nir_channel(&b, a, 2)),
+                            nir_fneg(&b, nir_channel(&b, a, 3)));
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, conj, 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}
+
+/* QNORM: write the squared norm dot(a, a) broadcast across all four lanes to the
+ * FP16 color export -- one DP4.  The substrate reads lane 0; broadcasting keeps
+ * the vec4 readback path (the kernel's output SSBO is vec4 FP32). */
+nir_shader *
+r300vk_build_qnorm_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qnorm");
+
+   nir_def *a = sample_single_quaternion(&b);
+   nir_def *n = nir_fdot(&b, a, a);
+   nir_def *bn = nir_vec4(&b, n, n, n, n);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, bn, 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}

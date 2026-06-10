@@ -123,6 +123,25 @@ r300vk_qrotate_dispatch_replay(struct r300vk_device *device,
                                const struct r300vk_cmd_dispatch *dispatch,
                                const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* QCONJ (quaternion conjugate) orchestrator entry: shares a 1-in / 1-out replay
+ * core with QNORM, sampling one FP32 quaternion and unpacking the FP16 sign-flip
+ * result into the kernel's vec4 FP32 output; pl->fs_cso holds the synthesized
+ * conjugate FS (r300vk_build_qconj_fs_nir). */
+bool
+r300vk_qconj_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds);
+
+/* QNORM (quaternion squared norm) orchestrator entry: same 1-in / 1-out FP16-RT
+ * core as QCONJ; pl->fs_cso holds the synthesized self-dot FS
+ * (r300vk_build_qnorm_fs_nir), which broadcasts dot(a,a) across the vec4. */
+bool
+r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* Blend-acc-reduction orchestrator entry: descriptor walk to resolve
  * the (value-input, histogram-output) buffer pair, stage a per-point VBO
  * carrying (pos, packed-RGBA8-value) per gid, bind the blend-enabled
