@@ -3,6 +3,7 @@
  */
 
 #include "r300vk_pipeline.h"
+#include "r300vk_format.h"
 #include "util/u_simple_shaders.h"
 #include "pipe/p_shader_tokens.h"
 #include "tgsi/tgsi_from_mesa.h"
@@ -1037,7 +1038,7 @@ r300vk_populate_vertex_element(struct r300vk_device *device,
                        "r300vk: vertex attribute binding %u exceeds %u",
                        attr->binding, R300VK_MAX_VERTEX_BINDINGS - 1);
 
-   enum pipe_format elem_fmt = vk_format_to_pipe_format(attr->format);
+   enum pipe_format elem_fmt = r300vk_vk_format_to_pipe_format(attr->format);
    if (elem_fmt == PIPE_FORMAT_NONE)
       return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "r300vk: unsupported vertex attribute format %d "
