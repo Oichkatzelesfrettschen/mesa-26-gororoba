@@ -80,11 +80,28 @@ r300_hb_tcl_init(struct r300_screen *screen)
    cfg->enabled = true;
    cfg->vert_fpu = r300_hb_tcl_parse_vert_fpu();
 
+   /* Route force.  has_tcl selects the hardware-TCL path everywhere it is
+    * tested: r300_create_context skips draw_create (no Gallium SW-TCL), the
+    * vertex NIR options switch from gallivm to the r300 VS compiler,
+    * r300_emit_vs_state uploads the PVS program and clears TCL_BYPASS, and the
+    * draw dispatch uses the hardware-TCL primitive path.  num_vert_fpus drives
+    * the PVS_NUM_FPUS that r300_emit_vs_state programs, so it moves with the
+    * route or the emit would request zero FPUs.
+    *
+    * has_hardware_tcl is deliberately left as the chipset set it (false for
+    * RS48x): that flag means the silicon is proven to execute PVS, which is the
+    * open question this route exists to test, not something this assertion
+    * grants.  The resulting has_tcl && !has_hardware_tcl state is the honest
+    * "attempting hardware TCL on unproven silicon" configuration; the only
+    * has_hardware_tcl readers gate on !has_tcl, so they stay inert here. */
+   screen->caps.has_tcl = true;
+   screen->caps.num_vert_fpus = cfg->vert_fpu;
+
    fprintf(stderr,
-           "r300: RS48x HB_TCL experiment on; VAP_CNTL=0x%08x "
-           "(slots=%u cntlrs=%u fpus=%u vf_max=%u)\n",
-           r300_hb_tcl_vap_cntl(cfg),
-           cfg->num_slots, cfg->num_cntlrs, cfg->vert_fpu, cfg->vf_max_vtx_num);
+           "r300: RS48x HB_TCL route force on; has_tcl=true num_vert_fpus=%u "
+           "(has_hardware_tcl stays %u; PVS execution is unproven and under "
+           "test)\n",
+           cfg->vert_fpu, screen->caps.has_hardware_tcl);
 }
 
 uint32_t

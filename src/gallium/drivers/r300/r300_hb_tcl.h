@@ -12,28 +12,35 @@
 struct r300_screen;
 
 /*
- * RS48x hybrid-TCL VAP resource configuration for the no-hardware-TCL path.
+ * RS48x hybrid-TCL VAP resource configuration and route control.
  *
- * A part with caps.has_tcl == false never calls r300_emit_vs_state(), so the
- * VAP front-end keeps a single static R300_VAP_CNTL written once at context
- * setup.  That word allocates the vertex-engine resources: slot, controller,
- * and FPU counts plus the max vertex number.  This descriptor owns those
- * values so they live in one validated place instead of an inline expression,
- * and so the experimental PVS_NUM_FPUS probe (R300_HB_VERT_FPU) is clamped to
- * the 4-bit field width before it can reach the register.
+ * Two states.  When the gate is off (the default), caps.has_tcl stays false:
+ * the part never calls r300_emit_vs_state(), and the VAP front-end keeps a
+ * single static R300_VAP_CNTL written once at context setup.  This descriptor
+ * owns that word's fields so they live in one validated place instead of an
+ * inline expression, and so the PVS_NUM_FPUS probe is clamped before it can
+ * reach the register.  The default config reproduces the historical bypass
+ * word 0x0014025a exactly.
  *
- * vert_fpu is the PVS_NUM_FPUS field (R300_VAP_CNTL bits 11:8).  The field is
- * four bits wide, so the only legal values are 0..15; a probe outside that
- * range would shift set bits past bit 11 into the reserved span below
- * VF_MAX_VTX_NUM (bit 18) and corrupt the register.  The default is 2, which
- * reproduces the historical bypass value exactly.
+ * When R300_HB_TCL=1 takes effect on an RS48x HB part, r300_hb_tcl_init forces
+ * caps.has_tcl = true and caps.num_vert_fpus = vert_fpu: the driver then takes
+ * the hardware-TCL route (no Gallium draw, r300 VS compiler, PVS upload,
+ * TCL_BYPASS cleared) so PVS execution becomes reachable and testable.
+ * caps.has_hardware_tcl is left false, so the configuration honestly reads
+ * "attempting hardware TCL on silicon whose PVS is unproven."
+ *
+ * vert_fpu is the PVS_NUM_FPUS field (R300_VAP_CNTL bits 11:8) and the value
+ * r300_emit_vs_state programs on the route.  The field is four bits wide, so
+ * the only legal values are 0..15; a probe outside that range would shift set
+ * bits past bit 11 into the reserved span below VF_MAX_VTX_NUM (bit 18) and
+ * corrupt the register.  The default is 2.
  */
 struct r300_hb_tcl_config {
-   bool enabled;             /* R300_HB_TCL=1 took effect on an RS48x HB part */
-   unsigned vert_fpu;        /* PVS_NUM_FPUS, clamped to [0, 15] */
-   unsigned num_slots;       /* PVS_NUM_SLOTS */
-   unsigned num_cntlrs;      /* PVS_NUM_CNTLRS */
-   unsigned vf_max_vtx_num;  /* PVS_VF_MAX_VTX_NUM */
+   bool enabled;             /* R300_HB_TCL=1 forced the hardware-TCL route */
+   unsigned vert_fpu;        /* PVS_NUM_FPUS / num_vert_fpus, clamped to [0, 15] */
+   unsigned num_slots;       /* PVS_NUM_SLOTS (bypass word only) */
+   unsigned num_cntlrs;      /* PVS_NUM_CNTLRS (bypass word only) */
+   unsigned vf_max_vtx_num;  /* PVS_VF_MAX_VTX_NUM (bypass word only) */
 };
 
 /* PVS_NUM_FPUS is R300_VAP_CNTL bits 11:8: four bits, values 0..15. */
