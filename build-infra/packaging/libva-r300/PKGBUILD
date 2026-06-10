@@ -78,7 +78,7 @@ build() {
 }
 
 package() {
-  meson install -C build --destdir "${pkgdir}"
+  meson install -C build --no-rebuild --destdir "${pkgdir}"
   install -Dm644 "libva-${pkgver}/COPYING" \
     "${pkgdir}/usr/share/licenses/${pkgname}/COPYING"
 }
