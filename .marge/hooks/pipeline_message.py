@@ -239,20 +239,24 @@ async def search_job_log_for_errors(session, project_id, job):
         "success",
         "unknown-section",
     ]
+    # Precompute lowered ignore strings once; "error_msg      : None" has a
+    # capital N so the list is not uniformly lowercase by construction.
+    ignore_list_lower = tuple(s.lower() for s in ignore_list)
     job_log = await get_job_log(session, project_id, job["id"])
 
     for line in reversed(job_log.splitlines()):
-        if "fatal" in line.lower():
+        line_lower = line.lower()
+        if "fatal" in line_lower:
             # remove date and formatting before fatal message
-            log_error_message = line[line.lower().find("fatal") :]
+            log_error_message = line[line_lower.find("fatal") :]
             break
 
-        if "error" in line.lower():
-            if any(ignore.lower() in line.lower() for ignore in ignore_list):
+        if "error" in line_lower:
+            if any(ignore in line_lower for ignore in ignore_list_lower):
                 continue
 
             # remove date and formatting before error message
-            log_error_message = line[line.lower().find("error") :].strip()
+            log_error_message = line[line_lower.find("error") :].strip()
 
             # if there is no further info after the word error then it's not helpful
             # so reset the message and try again.
@@ -262,7 +266,7 @@ async def search_job_log_for_errors(session, project_id, job):
             break
 
         # timeout msg from .gitlab-ci/lava/lava_job_submitter.py
-        if "expected to take at least" in line.lower():
+        if "expected to take at least" in line_lower:
             log_error_message = line
             break
 
