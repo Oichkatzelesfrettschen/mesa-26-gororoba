@@ -121,6 +121,16 @@ struct r300vk_pipeline {
     * half to an FP16 render target, unpacked into the kernel's vec4 FP32 output. */
    struct r300_compute_omul_pattern omul;
 
+   /* Octonion elementwise-algebra kernels detected at pipeline-create time.
+    * OADD/OSUB: out = (a,b) (+|-) (c,d), four inputs / two output halves.  OCONJ:
+    * conj((a,b)) = (conj(a), -b), two inputs / two halves.  ONORM: |(a,b)|^2 =
+    * dot(a,a)+dot(b,b) broadcast, two inputs / one output.  OADD/OSUB and OCONJ
+    * fill both halves in one MRT pass (fs_cso_mrt); ONORM rides the 2-in/1-out
+    * core (fs_cso). */
+   struct r300_compute_oaddsub_pattern oaddsub;
+   struct r300_compute_oconj_pattern oconj;
+   struct r300_compute_onorm_pattern onorm;
+
    /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
     * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])
