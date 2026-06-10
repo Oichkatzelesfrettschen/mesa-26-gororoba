@@ -81,6 +81,14 @@ r300vk_GetBufferMemoryRequirements2(VkDevice _device,
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size           = buf->size,
       .alignment      = 4,
-      .memoryTypeBits = 1,  /* GTT heap index 0 */
+      /* Both advertised memory types back a buffer validly.  RS482 is UMA --
+       * the GART aperture and the BIOS-carved shared-VRAM partition are one
+       * physical pool -- and r300vk_AllocateMemory records only the size; the
+       * storage belongs to the buffer's own pipe resource, bound identically
+       * for either type.  Reporting only the host-visible type starved
+       * device-local-heap clients: zink allocates vertex/index buffers from
+       * its DEVICE_LOCAL heap (type 1), and an empty intersection with
+       * memoryTypeBits aborts zink_resource's allocate_bo. */
+      .memoryTypeBits = 0x3,
    };
 }
