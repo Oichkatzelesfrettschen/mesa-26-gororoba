@@ -50,6 +50,9 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    if (!device)
       return vk_error(pdevice, VK_ERROR_OUT_OF_HOST_MEMORY);
 
+   list_inithead(&device->memory_list);
+   simple_mtx_init(&device->memory_list_lock, mtx_plain);
+
    /* Four-table dispatch, highest precedence first.  Secondary command buffer
     * support is implemented by recording into r300vk_cmd_buffer (vk_cmd_enqueue
     * path), then replaying recorded entries against the pipe_context at submit
@@ -202,6 +205,8 @@ r300vk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
     * the radeon_winsys backing store and closes the internal DRM fd). */
    device->pipe->destroy(device->pipe);
    device->screen->destroy(device->screen);
+
+   simple_mtx_destroy(&device->memory_list_lock);
 
    vk_device_finish(&device->vk);
    vk_free2(&device->vk.alloc, pAllocator, device);

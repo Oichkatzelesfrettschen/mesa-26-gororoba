@@ -10,6 +10,7 @@
 #include "r300vk_buffer.h"
 #include "r300vk_object.h"
 #include "r300vk_descriptor.h"
+#include "r300vk_memory.h"
 #include "r300vk_identity_map.h"
 
 #include <stdlib.h>
@@ -2187,6 +2188,13 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
    struct pipe_context  *pipe   = device->pipe;
    VkResult result = VK_SUCCESS;
 
+   /* Submit-boundary coherence, entry half: push every owns_buffer host map
+    * into its bound resource so the replay reads the app's latest writes.
+    * HOST_COHERENT memory promises visibility without an explicit flush, and
+    * on this device all GPU access happens inside this synchronous submit, so
+    * the submit boundary is exactly where that promise is kept. */
+   r300vk_device_memory_sync_bound(device, true /* host -> buffer */);
+
    /* Synthetic VS-system-value vertex buffers allocated during replay; held
     * until after the submit fence, then released. */
    struct util_dynarray transient_vbs;
@@ -2265,6 +2273,12 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
          r300vk_replay_cpu_readback(device, cmd);
       }
    }
+
+   /* Submit-boundary coherence, exit half: the GPU fence retired above, so
+    * pull every bound resource back into its owns_buffer host map -- a
+    * coherent-memory reader polls the map after the fence without calling
+    * vkInvalidateMappedMemoryRanges. */
+   r300vk_device_memory_sync_bound(device, false /* buffer -> host */);
 
    /* In IMMEDIATE submit mode (VK_DEVICE_TIMELINE_MODE_NONE), the vk_queue
     * runtime calls vk_sync_signal_unwrap before driver_submit, which strips

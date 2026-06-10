@@ -11,6 +11,7 @@
 #include "vk_object.h"
 
 #include "pipe/p_state.h"
+#include "util/list.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,10 +69,22 @@ struct r300vk_device_memory {
                                          * memory's own host pipe_buffer for the
                                          * map-before-bind case (vs borrowing a
                                          * bound buffer/image resource) */
+   struct list_head       device_link;  /* in r300vk_device::memory_list, for the
+                                         * submit-boundary coherence sync */
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_device_memory, base,
                                 VkDeviceMemory, VK_OBJECT_TYPE_DEVICE_MEMORY)
+
+struct r300vk_device;
+
+/* Sync every owns_buffer allocation's live host map with its bound resource:
+ * host_to_buffer pushes app writes into the bound VkBuffer's GPU resource
+ * (submit entry), !host_to_buffer pulls GPU results back into the map (submit
+ * exit, after the fence retires) -- the submit-boundary realization of
+ * HOST_COHERENT memory on this synchronous-submit device. */
+void r300vk_device_memory_sync_bound(struct r300vk_device *device,
+                                     bool host_to_buffer);
 
 VkResult r300vk_AllocateMemory(VkDevice device,
                                 const VkMemoryAllocateInfo *pAllocateInfo,
