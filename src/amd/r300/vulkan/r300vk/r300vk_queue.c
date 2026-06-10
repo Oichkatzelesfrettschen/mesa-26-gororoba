@@ -3,6 +3,7 @@
  */
 
 #include "r300vk_device.h"
+#include "r300vk_format.h"
 #include "r300vk_cmd_buffer.h"
 #include "r300vk_pipeline.h"
 #include "r300vk_image.h"
@@ -732,7 +733,7 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
          if (!samp_cso)
             continue;
 
-         const enum pipe_format fmt = vk_format_to_pipe_format(iv->vk.format);
+         const enum pipe_format fmt = r300vk_vk_format_to_pipe_format(iv->vk.format);
          if (fmt == PIPE_FORMAT_NONE)
             continue;
 
@@ -817,7 +818,7 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
          if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
             return;
 
-         const enum pipe_format fmt = vk_format_to_pipe_format(iv->vk.format);
+         const enum pipe_format fmt = r300vk_vk_format_to_pipe_format(iv->vk.format);
          if (fmt == PIPE_FORMAT_NONE)
             return;
 

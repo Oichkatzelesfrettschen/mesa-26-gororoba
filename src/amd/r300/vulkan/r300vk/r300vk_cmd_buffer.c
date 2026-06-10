@@ -3,6 +3,7 @@
  */
 
 #include "r300vk_cmd_buffer.h"
+#include "r300vk_format.h"
 #include "r300vk_descriptor.h"
 #include "r300vk_device.h"
 #include "r300vk_entrypoints.h"
@@ -182,7 +183,7 @@ r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
          if (view_handle != VK_NULL_HANDLE) {
             VK_FROM_HANDLE(r300vk_image_view, iv, view_handle);
             color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
-            color_format = vk_format_to_pipe_format(rp->attachments[att_idx].format);
+            color_format = r300vk_vk_format_to_pipe_format(rp->attachments[att_idx].format);
             load_op      = rp->attachments[att_idx].load_op;
             if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
                 pRenderPassBegin->clearValueCount > att_idx)
@@ -278,7 +279,7 @@ r300vk_CmdBeginRendering(VkCommandBuffer commandBuffer,
       if (att->imageView != VK_NULL_HANDLE) {
          VK_FROM_HANDLE(r300vk_image_view, iv, att->imageView);
          color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
-         color_format = vk_format_to_pipe_format(iv->vk.format);
+         color_format = r300vk_vk_format_to_pipe_format(iv->vk.format);
          load_op      = att->loadOp;
          if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
             clear_color = att->clearValue.color;

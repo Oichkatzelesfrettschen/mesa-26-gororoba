@@ -4,6 +4,7 @@
  */
 
 #include "r300vk_image.h"
+#include "r300vk_format.h"
 #include "r300vk_device.h"
 
 /* r300g internals: a linear image reads its row stride from the backing
@@ -284,7 +285,7 @@ r300vk_CreateImage(VkDevice _device,
                        "r300vk: image type 3D unsupported (no depth-slice storage)");
    }
 
-   enum pipe_format pipe_fmt = vk_format_to_pipe_format(pCreateInfo->format);
+   enum pipe_format pipe_fmt = r300vk_vk_format_to_pipe_format(pCreateInfo->format);
    if (pipe_fmt == PIPE_FORMAT_NONE) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
@@ -371,7 +372,7 @@ r300vk_image_memory_size(const struct r300vk_image *img)
 
    return (VkDeviceSize)ext->width * ext->height *
           MAX2(1u, img->vk.samples) *
-          util_format_get_blocksize(vk_format_to_pipe_format(img->vk.format));
+          util_format_get_blocksize(r300vk_vk_format_to_pipe_format(img->vk.format));
 }
 
 static void

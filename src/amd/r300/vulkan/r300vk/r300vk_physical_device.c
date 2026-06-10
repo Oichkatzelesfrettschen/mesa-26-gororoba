@@ -3,6 +3,7 @@
  */
 
 #include "r300vk_physical_device.h"
+#include "r300vk_format.h"
 #include "r300vk_cpu_sync.h"
 
 #include "r300vk_entrypoints.h"
@@ -723,7 +724,7 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
    memset(properties, 0, sizeof(*properties));
    properties->sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3;
 
-   const enum pipe_format pipe_format = vk_format_to_pipe_format(vk_format);
+   const enum pipe_format pipe_format = r300vk_vk_format_to_pipe_format(vk_format);
    if (pipe_format == PIPE_FORMAT_NONE)
       return;
 
