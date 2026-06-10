@@ -104,6 +104,16 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
                            const struct r300vk_cmd_dispatch *dispatch,
                            const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* QMUL (quaternion Hamilton product) orchestrator entry: shares the 2-in / 1-out
+ * replay core with DP4 but renders to an FP16 target and unpacks it into the
+ * kernel's vec4 FP32 output buffer; pl->fs_cso holds the synthesized Hamilton
+ * FS (r300vk_build_qmul_fs_nir). */
+bool
+r300vk_qmul_dispatch_replay(struct r300vk_device *device,
+                            const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* Blend-acc-reduction orchestrator entry: descriptor walk to resolve
  * the (value-input, histogram-output) buffer pair, stage a per-point VBO
  * carrying (pos, packed-RGBA8-value) per gid, bind the blend-enabled

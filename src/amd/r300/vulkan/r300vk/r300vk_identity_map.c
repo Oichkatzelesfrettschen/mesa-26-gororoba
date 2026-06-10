@@ -1084,7 +1084,8 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
                                       uint32_t cap_in_a, uint32_t cap_in_b,
                                       uint32_t cap_out,
                                       enum pipe_format input_fmt,
-                                      enum pipe_format output_fmt)
+                                      enum pipe_format output_fmt,
+                                      enum pipe_format output_buffer_fmt)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
@@ -1284,7 +1285,16 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
          out_box.x      = (unsigned)desc_out->buf.offset;
-         out_box.width  = width * height * util_format_get_blocksize(fmt);
+         /* The render target carries the result in output_fmt; the output SSBO
+          * element format is output_buffer_fmt (PIPE_FORMAT_NONE means it equals
+          * the RT format -- the raw byte copy the encode-into-RT patterns use).
+          * When they differ -- QMUL renders the quaternion to an FP16 RT but the
+          * kernel's output is vec4 FP32 -- unpack each RT row to RGBA32_FLOAT,
+          * the only conversion the substrate needs (R300 has no FP32 RT). */
+         const enum pipe_format buf_fmt =
+            output_buffer_fmt == PIPE_FORMAT_NONE ? fmt : output_buffer_fmt;
+         const unsigned buf_bs = util_format_get_blocksize(buf_fmt);
+         out_box.width  = width * height * buf_bs;
          out_box.height = 1;
          out_box.depth  = 1;
          void *out_bytes = pipe->buffer_map(pipe, buf_out->resource, 0,
@@ -1292,11 +1302,27 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                             &out_box, &out_xfer);
          if (out_bytes) {
-            r300vk_identity_map_copy_rows(out_bytes, width * util_format_get_blocksize(fmt),
-                                          rt_map, rt_xfer->stride,
-                                          width, height,
-                                          util_format_get_blocksize(fmt),
-                                          total_invocations);
+            if (buf_fmt == fmt) {
+               r300vk_identity_map_copy_rows(out_bytes, width * buf_bs,
+                                             rt_map, rt_xfer->stride,
+                                             width, height, buf_bs,
+                                             total_invocations);
+            } else {
+               /* util_format_unpack_rgba unpacks each RT row to RGBA32_FLOAT, so
+                * output_buffer_fmt must be R32G32B32A32_FLOAT.  Clamp to
+                * total_invocations so the trailing padding lanes of the last
+                * raster row never overrun the output buffer. */
+               uint8_t *dst = out_bytes;
+               const uint8_t *src = rt_map;
+               uint64_t remaining = total_invocations;
+               for (unsigned r = 0; r < height && remaining; r++) {
+                  unsigned n = remaining < width ? (unsigned)remaining : width;
+                  util_format_unpack_rgba(fmt, dst, src, n);
+                  dst += (size_t)n * buf_bs;
+                  src += rt_xfer->stride;
+                  remaining -= n;
+               }
+            }
             pipe->buffer_unmap(pipe, out_xfer);
             copy_ok = true;
          }
@@ -1339,7 +1365,8 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
       pl->binary_map.input_a_ssbo_binding,
       pl->binary_map.input_b_ssbo_binding,
       pl->binary_map.output_ssbo_binding,
-      PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_FORMAT_R8G8B8A8_UNORM);
+      PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_FORMAT_R8G8B8A8_UNORM,
+      PIPE_FORMAT_NONE);
 }
 
 bool
@@ -1361,7 +1388,40 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
       pl->dp4.input_a_ssbo_binding,
       pl->dp4.input_b_ssbo_binding,
       pl->dp4.output_ssbo_binding,
-      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R8G8B8A8_UNORM);
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R8G8B8A8_UNORM,
+      PIPE_FORMAT_NONE);
+}
+
+/* QMUL dispatch replay: the quaternion Hamilton product on the compute-as-raster
+ * substrate.  Same two-in/one-out skeleton as DP4, but the inputs are the two
+ * quaternions sampled as R32G32B32A32_FLOAT and the synthesized Hamilton FS
+ * (r300vk_build_qmul_fs_nir) writes the four-lane product to an FP16
+ * (R16G16B16A16_FLOAT) render target -- R300 samples FP32 but has no FP32 RT,
+ * and the substrate's quaternion result is FP16-precise.  The copy-back unpacks
+ * the FP16 target into the kernel's vec4 FP32 output buffer.  Bail unless both
+ * the FP32 sampler view and the FP16 render target are supported rather than
+ * mis-format the pass. */
+bool
+r300vk_qmul_dispatch_replay(struct r300vk_device *device,
+                            const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_two_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->qmul.input_a_ssbo_binding,
+      pl->qmul.input_b_ssbo_binding,
+      pl->qmul.output_ssbo_binding,
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
 
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler

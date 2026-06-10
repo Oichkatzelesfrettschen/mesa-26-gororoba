@@ -88,6 +88,13 @@ struct r300vk_pipeline {
     * pure-NIR FS samples in_a + in_b and writes their FP24 DP4 to the RT. */
    struct r300_compute_dp4_pattern dp4;
 
+   /* Quaternion Hamilton-product (QMUL) kernel detected at pipeline-create time:
+    * out[gid] = q1[gid] * q2[gid], the Cayley-Dickson dim-4 multiply.  Lowered to
+    * a fullscreen draw whose synthesized FS (r300vk_build_qmul_fs_nir) emits the
+    * product as four sign-permuted DP4s to an FP16 render target, unpacked into
+    * the kernel's vec4 FP32 output buffer. */
+   struct r300_compute_qmul_pattern qmul;
+
    /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
     * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])
