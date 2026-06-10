@@ -1395,7 +1395,7 @@ lvp_get_properties(const struct lvp_physical_device *device, struct vk_propertie
 #endif
 
    /* Vulkan 1.0 */
-   strcpy(p->deviceName, device->pscreen->get_name(device->pscreen));
+   snprintf(p->deviceName, sizeof(p->deviceName), "%s", device->pscreen->get_name(device->pscreen));
    lvp_device_get_cache_uuid(p->pipelineCacheUUID);
 
    /* Vulkan 1.1 */

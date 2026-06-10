@@ -1328,8 +1328,13 @@ static VkResult screenshot_QueuePresentKHR(
             uint32_t name_len = strlen(instance_data->filename);
             const char *suffix_ptr = &instance_data->filename[name_len - SUFFIX_SIZE];
             if (!strcmp(suffix_ptr, SUFFIX)) {
-                  rename_file = false;
-                  strcpy(filename, instance_data->filename);
+                  if (name_len < sizeof(filename)) {
+                     rename_file = false;
+                     memcpy(filename, instance_data->filename, name_len + 1);
+                  } else {
+                     LOG(ERROR, "mesa-screenshot: client filename too long (%u chars), "
+                                "using frame counter name instead\n", name_len);
+                  }
             }
          }
          if (rename_file) {
@@ -1337,7 +1342,7 @@ static VkResult screenshot_QueuePresentKHR(
             strcat(filename, SUFFIX);
          }
          path_size_used += strlen(filename);
-         if(path_size_used <= LARGE_BUFFER_SIZE+STANDARD_BUFFER_SIZE) {
+         if(path_size_used < LARGE_BUFFER_SIZE+STANDARD_BUFFER_SIZE) {
             strcat(full_path, filename);
             pSemaphoreWaitBeforePresent = pPresentInfo->pWaitSemaphores;
             semaphoreWaitBeforePresentCount = pPresentInfo->waitSemaphoreCount;

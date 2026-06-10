@@ -360,13 +360,18 @@ static const char *
 parse_output_dir(const char *str)
 {
    static char output_dir[LARGE_BUFFER_SIZE];
-   strcpy(output_dir, str);
-   uint32_t last_char_index = strlen(str)-1;
-   // Ensure we're in bounds and the last character is '/'
-   if (last_char_index > 0 &&
-       str[last_char_index] != '/' &&
-       last_char_index < LARGE_BUFFER_SIZE-1) {
-      output_dir[last_char_index+1] = '/';
+   size_t len = strlen(str);
+   /* Reserve one byte for a possible trailing '/' and one for the NUL. */
+   if (len >= LARGE_BUFFER_SIZE - 1) {
+      LOG(ERROR, "mesa-screenshot: output_dir path too long (%zu chars, max %d)\n",
+          len, LARGE_BUFFER_SIZE - 2);
+      return NULL;
+   }
+   memcpy(output_dir, str, len + 1);
+   /* Append '/' if the path does not already end with one. */
+   if (len > 0 && output_dir[len - 1] != '/') {
+      output_dir[len]     = '/';
+      output_dir[len + 1] = '\0';
    }
    DIR *dir = opendir(output_dir);
    if (!dir) {

@@ -387,8 +387,9 @@ generate_compute(struct llvmpipe_context *lp,
    }
 
    variant->function = function;
-   variant->function_name = MALLOC(strlen(func_name)+1);
-   strcpy(variant->function_name, func_name);
+   size_t func_name_len = strlen(func_name) + 1;
+   variant->function_name = MALLOC(func_name_len);
+   memcpy(variant->function_name, func_name, func_name_len);
 
 
    for (i = 0; i < CS_ARG_MAX - !is_mesh; ++i) {
