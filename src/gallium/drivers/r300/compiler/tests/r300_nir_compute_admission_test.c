@@ -318,6 +318,53 @@ build_omul_form(void)
    return b.shader;
 }
 
+static nir_def *
+ld(nir_builder *b, unsigned binding)
+{
+   return nir_load_ssbo(b, 4, 32, nir_imm_int(b, binding), nir_imm_int(b, 0),
+                        .align_mul = 16, .align_offset = 0);
+}
+static void
+st(nir_builder *b, nir_def *v, unsigned binding)
+{
+   nir_store_ssbo(b, v, nir_imm_int(b, binding), nir_imm_int(b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+}
+
+/* Octonion add/sub: o_lo = a (+|-) c, o_hi = b (+|-) d.  Loads a,b,c,d in order. */
+static nir_shader *
+build_oaddsub_form(bool is_sub)
+{
+   nir_builder b = cs_builder("cs_oaddsub_f32vec4");
+   nir_def *a = ld(&b, 0), *bb = ld(&b, 1), *c = ld(&b, 2), *d = ld(&b, 3);
+   st(&b, is_sub ? nir_fsub(&b, a, c) : nir_fadd(&b, a, c), 4);
+   st(&b, is_sub ? nir_fsub(&b, bb, d) : nir_fadd(&b, bb, d), 5);
+   return b.shader;
+}
+
+/* Octonion conjugate: o_lo = (a.x,-a.y,-a.z,-a.w), o_hi = -b. */
+static nir_shader *
+build_oconj_form(void)
+{
+   nir_builder b = cs_builder("cs_oconj_f32vec4");
+   nir_def *a = ld(&b, 0), *bb = ld(&b, 1);
+   st(&b, nir_vec4(&b, nir_channel(&b, a, 0), nir_fneg(&b, nir_channel(&b, a, 1)),
+                   nir_fneg(&b, nir_channel(&b, a, 2)), nir_fneg(&b, nir_channel(&b, a, 3))), 2);
+   st(&b, nir_fneg(&b, bb), 3);
+   return b.shader;
+}
+
+/* Octonion squared norm: out = vec4(dot(a,a) + dot(b,b)). */
+static nir_shader *
+build_onorm_form(void)
+{
+   nir_builder b = cs_builder("cs_onorm_f32vec4");
+   nir_def *a = ld(&b, 0), *bb = ld(&b, 1);
+   nir_def *n = nir_fadd(&b, nir_fdot(&b, a, a), nir_fdot(&b, bb, bb));
+   st(&b, nir_vec4(&b, n, n, n, n), 2);
+   return b.shader;
+}
+
 static void
 prepare_detect_shader(nir_shader *nir)
 {
@@ -528,6 +575,54 @@ case_omul_metadata(void)
    ralloc_free(plain);
 }
 
+static void
+case_octonion_algebra_metadata(void)
+{
+   /* OADD and OSUB share the detector with an is_sub flag. */
+   for (unsigned sub = 0; sub < 2; sub++) {
+      nir_shader *nir = build_oaddsub_form(sub != 0);
+      struct r300_compute_oaddsub_pattern p = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_oaddsub_pattern(nir, &p);
+      CHECK(p.is_oaddsub, sub ? "osub shape detected" : "oadd shape detected");
+      CHECK(p.is_sub == (sub != 0), "oaddsub records the operator");
+      CHECK(p.input_a_ssbo_binding == 0 && p.input_d_ssbo_binding == 3 &&
+            p.output_lo_ssbo_binding == 4 && p.output_hi_ssbo_binding == 5,
+            "oaddsub records its six bindings");
+      ralloc_free(nir);
+   }
+
+   nir_shader *cj = build_oconj_form();
+   struct r300_compute_oconj_pattern pc = {0};
+   prepare_detect_shader(cj);
+   r300_nir_detect_oconj_pattern(cj, &pc);
+   CHECK(pc.is_oconj, "oconj (conj(a), -b) shape detected");
+   CHECK(pc.input_a_ssbo_binding == 0 && pc.input_b_ssbo_binding == 1 &&
+         pc.output_lo_ssbo_binding == 2 && pc.output_hi_ssbo_binding == 3,
+         "oconj records its four bindings");
+   ralloc_free(cj);
+
+   nir_shader *nm = build_onorm_form();
+   struct r300_compute_onorm_pattern pn = {0};
+   prepare_detect_shader(nm);
+   r300_nir_detect_onorm_pattern(nm, &pn);
+   CHECK(pn.is_onorm, "onorm dot(a,a)+dot(b,b) shape detected");
+   CHECK(pn.input_a_ssbo_binding == 0 && pn.input_b_ssbo_binding == 1 &&
+         pn.output_ssbo_binding == 2, "onorm records its three bindings");
+   ralloc_free(nm);
+
+   /* Cross-rejection: the eight-wide octonion product is not an elementwise op. */
+   nir_shader *om = build_omul_form();
+   struct r300_compute_oaddsub_pattern oa = {0};
+   struct r300_compute_oconj_pattern oc = {0};
+   prepare_detect_shader(om);
+   r300_nir_detect_oaddsub_pattern(om, &oa);
+   r300_nir_detect_oconj_pattern(om, &oc);
+   CHECK(!oa.is_oaddsub, "oaddsub rejects the octonion product");
+   CHECK(!oc.is_oconj, "oconj rejects the octonion product");
+   ralloc_free(om);
+}
+
 int
 main(void)
 {
@@ -551,6 +646,7 @@ main(void)
    case_qconj_metadata();
    case_qnorm_metadata();
    case_omul_metadata();
+   case_octonion_algebra_metadata();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

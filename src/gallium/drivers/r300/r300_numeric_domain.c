@@ -383,6 +383,51 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
    },
    {
+      .op_name         = "OADD",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "octonion addition (a,b)+(c,d) = (a+c, b+d), componentwise vec8 "
+                         "add over two output halves, zero DP4.  Admitted by "
+                         "r300_nir_detect_oaddsub_pattern (is_sub=false) and filled in one "
+                         "MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe oadd",
+      .mesa_hook       = "r300_nir_detect_oaddsub_pattern",
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "OSUB",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "octonion subtraction (a,b)-(c,d) = (a-c, b-d), componentwise vec8 "
+                         "sub, zero DP4.  The is_sub=true form of the oaddsub detector, same "
+                         "single MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe osub",
+      .mesa_hook       = "r300_nir_detect_oaddsub_pattern",
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "OCONJ",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "octonion conjugate conj((a,b)) = (conj(a), -b) = Cayley-Dickson "
+                         "involution: the lower half is the quaternion conjugate of a "
+                         "(scalar lane kept, vector lanes negated), the upper half the full "
+                         "negation of b; zero DP4.  Admitted by r300_nir_detect_oconj_pattern, "
+                         "filled in one MRT pass; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe",
+      .mesa_hook       = "r300_nir_detect_oconj_pattern",
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "ONORM",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "octonion squared norm |(a,b)|^2 = dot(a,a) + dot(b,b), broadcast "
+                         "to four lanes; two DP4s.  The norm whose multiplicativity "
+                         "|xy|^2=|x|^2|y|^2 OMUL confirms (Hurwitz at dim 8).  Admitted by "
+                         "r300_nir_detect_onorm_pattern and dispatched on the 2-in/1-out "
+                         "core; HW-confirmed 4/4 on RS482 by oct_alg_vk_probe onorm",
+      .mesa_hook       = "r300_nir_detect_onorm_pattern",
+      .retained_bundle = NULL,
+   },
+   {
       .op_name         = "QADD",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,

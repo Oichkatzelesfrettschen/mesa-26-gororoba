@@ -1891,7 +1891,8 @@ omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
 static bool
 omul_run_mrt_pass(struct pipe_context *pipe, struct pipe_screen *screen,
                   struct r300vk_device *device,
-                  struct pipe_sampler_view *views[4], void *mrt_fs, void *vs_cso,
+                  struct pipe_sampler_view **views, unsigned nviews,
+                  void *mrt_fs, void *vs_cso,
                   struct pipe_resource *vb, void *velems_cso,
                   struct pipe_resource *out_lo_res, unsigned out_lo_offset,
                   struct pipe_resource *out_hi_res, unsigned out_hi_offset,
@@ -1954,8 +1955,8 @@ omul_run_mrt_pass(struct pipe_context *pipe, struct pipe_screen *screen,
                          device->identity_map_sampler_cso,
                          device->identity_map_sampler_cso,
                          device->identity_map_sampler_cso };
-   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 4, samplers);
-   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 4, 0, views);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, nviews, samplers);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, nviews, 0, views);
 
    struct pipe_vertex_buffer vb_state;
    memset(&vb_state, 0, sizeof(vb_state));
@@ -1977,7 +1978,7 @@ omul_run_mrt_pass(struct pipe_context *pipe, struct pipe_screen *screen,
                                             width, height, total);
 
    struct pipe_sampler_view *no_views[4] = { NULL, NULL, NULL, NULL };
-   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 4, no_views);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, nviews, no_views);
    pipe->set_vertex_buffers(pipe, 0, NULL);
    struct pipe_framebuffer_state empty_fb;
    memset(&empty_fb, 0, sizeof(empty_fb));
@@ -2084,7 +2085,7 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
        * capability gate). */
       IDM_LOG("omul route=B (MRT 1-pass) w=%u h=%u total=%llu",
               width, height, (unsigned long long)total);
-      ok = omul_run_mrt_pass(pipe, screen, device, views, pl->fs_cso_mrt,
+      ok = omul_run_mrt_pass(pipe, screen, device, views, 4, pl->fs_cso_mrt,
                              pl->vs_cso, vb, velems_cso,
                              buf[4]->resource, (unsigned)desc[4]->buf.offset,
                              buf[5]->resource, (unsigned)desc[5]->buf.offset,
@@ -2101,6 +2102,211 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
                                  (unsigned)desc[5]->buf.offset, width, height, total);
       ok = ok_lo && ok_hi;
    }
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   for (unsigned i = 0; i < 4; i++)
+      pipe_sampler_view_reference(&views[i], NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
+/* Resolve n STORAGE_BUFFER bindings to descriptors + buffers for the octonion
+ * elementwise ops: captured constant bindings in bind[] win; all-zero falls back
+ * to the first n STORAGE_BUFFERs in declaration order (the inputs precede the
+ * outputs in every octonion kernel). */
+static bool
+octonion_resolve_buffers(const struct r300vk_descriptor_set *set, uint32_t *bind,
+                         unsigned n, const struct r300vk_descriptor **desc,
+                         struct r300vk_buffer **buf)
+{
+   bool any = false;
+   for (unsigned i = 0; i < n; i++)
+      if (bind[i] != 0)
+         any = true;
+   if (!any) {
+      for (unsigned i = 0; i < n; i++)
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+   }
+   for (unsigned i = 0; i < n; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer)
+         return false;
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+   return true;
+}
+
+/* ONORM dispatch: |(a,b)|^2 = dot(a,a)+dot(b,b).  Two inputs, one output -- the
+ * 2-in/1-out core with the synthesized self-dot-sum FS in pl->fs_cso. */
+bool
+r300vk_onorm_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_two_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->onorm.input_a_ssbo_binding, pl->onorm.input_b_ssbo_binding,
+      pl->onorm.output_ssbo_binding,
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
+}
+
+/* OCONJ dispatch: conj((a,b)) = (conj(a), -b) in one MRT pass.  Two inputs a,b
+ * sampled at stages 0,1; the MRT FS (pl->fs_cso_mrt) writes conj(a) to o_lo and
+ * -b to o_hi. */
+bool
+r300vk_oconj_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso_mrt || binds->first_set != 0)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW) ||
+       !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   uint32_t bind[4] = { pl->oconj.input_a_ssbo_binding,
+                        pl->oconj.input_b_ssbo_binding,
+                        pl->oconj.output_lo_ssbo_binding,
+                        pl->oconj.output_hi_ssbo_binding };
+   const struct r300vk_descriptor *desc[4];
+   struct r300vk_buffer *buf[4];
+   if (!octonion_resolve_buffers(set, bind, 4, desc, buf))
+      return false;
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0 || total > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   struct pipe_sampler_view *views[2] = { NULL, NULL };
+   for (unsigned i = 0; i < 2; i++) {
+      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
+         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      if (!views[i]) {
+         for (unsigned k = 0; k < i; k++)
+            pipe_sampler_view_reference(&views[k], NULL);
+         return false;
+      }
+   }
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      for (unsigned i = 0; i < 2; i++)
+         pipe_sampler_view_reference(&views[i], NULL);
+      return false;
+   }
+
+   bool ok = omul_run_mrt_pass(pipe, screen, device, views, 2, pl->fs_cso_mrt,
+                               pl->vs_cso, vb, velems_cso,
+                               buf[2]->resource, (unsigned)desc[2]->buf.offset,
+                               buf[3]->resource, (unsigned)desc[3]->buf.offset,
+                               width, height, total);
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   for (unsigned i = 0; i < 2; i++)
+      pipe_sampler_view_reference(&views[i], NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
+/* OADD/OSUB dispatch: out = (a,b) (+|-) (c,d) in one MRT pass.  The four inputs
+ * are bound as stage0=a, stage1=c, stage2=b, stage3=d so the MRT FS reads a
+ * contiguous pair per half (o_lo = stage0 op stage1 = a op c, o_hi = stage2 op
+ * stage3 = b op d). */
+bool
+r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
+                               const struct r300vk_pipeline *pl,
+                               const struct r300vk_cmd_dispatch *dispatch,
+                               const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso_mrt || binds->first_set != 0)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW) ||
+       !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   uint32_t bind[6] = { pl->oaddsub.input_a_ssbo_binding,
+                        pl->oaddsub.input_b_ssbo_binding,
+                        pl->oaddsub.input_c_ssbo_binding,
+                        pl->oaddsub.input_d_ssbo_binding,
+                        pl->oaddsub.output_lo_ssbo_binding,
+                        pl->oaddsub.output_hi_ssbo_binding };
+   const struct r300vk_descriptor *desc[6];
+   struct r300vk_buffer *buf[6];
+   if (!octonion_resolve_buffers(set, bind, 6, desc, buf))
+      return false;
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0 || total > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   /* View order a,c,b,d so the contiguous-pair MRT FS computes o_lo=a op c and
+    * o_hi=b op d.  src[] indexes buf[]: a=0, c=2, b=1, d=3. */
+   const unsigned src[4] = { 0, 2, 1, 3 };
+   struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
+   for (unsigned i = 0; i < 4; i++) {
+      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[src[i]]->resource, (unsigned)desc[src[i]]->buf.offset,
+         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      if (!views[i]) {
+         for (unsigned k = 0; k < i; k++)
+            pipe_sampler_view_reference(&views[k], NULL);
+         return false;
+      }
+   }
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      for (unsigned i = 0; i < 4; i++)
+         pipe_sampler_view_reference(&views[i], NULL);
+      return false;
+   }
+
+   bool ok = omul_run_mrt_pass(pipe, screen, device, views, 4, pl->fs_cso_mrt,
+                               pl->vs_cso, vb, velems_cso,
+                               buf[4]->resource, (unsigned)desc[4]->buf.offset,
+                               buf[5]->resource, (unsigned)desc[5]->buf.offset,
+                               width, height, total);
 
    pipe->delete_vertex_elements_state(pipe, velems_cso);
    for (unsigned i = 0; i < 4; i++)

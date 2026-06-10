@@ -398,3 +398,93 @@ r300vk_build_omul_mrt_fs_nir(const nir_shader_compiler_options *opts)
 
    return b.shader;
 }
+
+/* The fullscreen texcoord trimmed to the 2D sampler's (s,t); shared by the
+ * octonion elementwise FSs that sample arbitrary stages. */
+static nir_def *
+make_fs_coord(nir_builder *b)
+{
+   nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+   in_tc->data.location = VARYING_SLOT_VAR0;
+   return nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+}
+
+/* Sample the 2D input at sampler binding `stage`. */
+static nir_def *
+sample_stage(nir_builder *b, nir_def *coord, unsigned stage)
+{
+   nir_variable *samp = nir_variable_create(
+      b->shader, nir_var_uniform,
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+      "samp");
+   samp->data.binding = stage;
+   nir_deref_instr *d = nir_build_deref_var(b, samp);
+   return nir_tex(b, coord, .texture_deref = d, .sampler_deref = d);
+}
+
+static nir_shader *
+fs_finalize(nir_builder *b)
+{
+   nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+   nir_assign_io_var_locations(b->shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b->shader, nir_var_shader_out);
+   return b->shader;
+}
+
+static void
+store_color_at(nir_builder *b, nir_def *val, int location, const char *name)
+{
+   nir_variable *out = nir_variable_create(b->shader, nir_var_shader_out,
+                                           glsl_vec4_type(), name);
+   out->data.location = location;
+   nir_store_var(b, out, val, 0xf);
+}
+
+/* ONORM: |(a,b)|^2 = dot(a,a) + dot(b,b) broadcast across four lanes; a at
+ * sampler stage 0, b at stage 1.  Two DP4s.  The kernel reads lane 0. */
+nir_shader *
+r300vk_build_onorm_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_onorm");
+   nir_def *coord = make_fs_coord(&b);
+   nir_def *a = sample_stage(&b, coord, 0), *bb = sample_stage(&b, coord, 1);
+   nir_def *n = nir_fadd(&b, nir_fdot(&b, a, a), nir_fdot(&b, bb, bb));
+   store_color_at(&b, nir_vec4(&b, n, n, n, n), FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}
+
+/* OCONJ as one MRT pass: conj(a) = (a.x,-a.y,-a.z,-a.w) to color output 0, -b to
+ * output 1.  a at sampler stage 0, b at stage 1. */
+nir_shader *
+r300vk_build_oconj_mrt_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_oconj_mrt");
+   nir_def *coord = make_fs_coord(&b);
+   nir_def *a = sample_stage(&b, coord, 0), *bb = sample_stage(&b, coord, 1);
+   nir_def *lo = nir_vec4(&b, nir_channel(&b, a, 0), nir_fneg(&b, nir_channel(&b, a, 1)),
+                          nir_fneg(&b, nir_channel(&b, a, 2)), nir_fneg(&b, nir_channel(&b, a, 3)));
+   store_color_at(&b, lo, FRAG_RESULT_DATA0, "color0");
+   store_color_at(&b, nir_fneg(&b, bb), FRAG_RESULT_DATA1, "color1");
+   return fs_finalize(&b);
+}
+
+/* OADD/OSUB as one MRT pass: the lower half a (+|-) c to color output 0 and the
+ * upper b (+|-) d to output 1.  The dispatch binds the four inputs as
+ * stage0=a, stage1=c, stage2=b, stage3=d so each half reads a contiguous pair. */
+nir_shader *
+r300vk_build_oaddsub_mrt_fs_nir(const nir_shader_compiler_options *opts, bool is_sub)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, opts, is_sub ? "r300vk_osub_mrt" : "r300vk_oadd_mrt");
+   nir_def *coord = make_fs_coord(&b);
+   nir_def *s0 = sample_stage(&b, coord, 0), *s1 = sample_stage(&b, coord, 1);
+   nir_def *s2 = sample_stage(&b, coord, 2), *s3 = sample_stage(&b, coord, 3);
+   nir_def *lo = is_sub ? nir_fsub(&b, s0, s1) : nir_fadd(&b, s0, s1);
+   nir_def *hi = is_sub ? nir_fsub(&b, s2, s3) : nir_fadd(&b, s2, s3);
+   store_color_at(&b, lo, FRAG_RESULT_DATA0, "color0");
+   store_color_at(&b, hi, FRAG_RESULT_DATA1, "color1");
+   return fs_finalize(&b);
+}

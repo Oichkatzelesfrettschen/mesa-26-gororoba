@@ -153,6 +153,26 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
                             const struct r300vk_cmd_dispatch *dispatch,
                             const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* Octonion elementwise-algebra orchestrator entries.  ONORM rides the 2-in/1-out
+ * core (pl->fs_cso = the self-dot-sum FS).  OCONJ and OADD/OSUB write both output
+ * halves in one MRT pass (pl->fs_cso_mrt): OCONJ samples two inputs, OADD/OSUB
+ * four (bound a,c,b,d so each half reads a contiguous sampler pair). */
+bool
+r300vk_onorm_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds);
+bool
+r300vk_oconj_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds);
+bool
+r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
+                               const struct r300vk_pipeline *pl,
+                               const struct r300vk_cmd_dispatch *dispatch,
+                               const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* Blend-acc-reduction orchestrator entry: descriptor walk to resolve
  * the (value-input, histogram-output) buffer pair, stage a per-point VBO
  * carrying (pos, packed-RGBA8-value) per gid, bind the blend-enabled

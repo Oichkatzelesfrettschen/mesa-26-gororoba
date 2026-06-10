@@ -432,6 +432,54 @@ struct r300_compute_omul_pattern {
 void r300_nir_detect_omul_pattern(const struct nir_shader *s,
                                   struct r300_compute_omul_pattern *out);
 
+/* Octonion componentwise add/sub (OADD/OSUB): out = (a,b) (+|-) (c,d), the lower
+ * half a (+|-) c and the upper b (+|-) d combined by the same op.  Four input
+ * SSBOs a,b,c,d (read in declaration order) and two output halves; is_sub picks
+ * the operator.  Bindings stay 0 when the sources are not constants (positional
+ * fallback a=0..d=3, o_lo=4, o_hi=5). */
+struct r300_compute_oaddsub_pattern {
+   bool       is_oaddsub;
+   bool       is_sub;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   input_c_ssbo_binding;
+   uint32_t   input_d_ssbo_binding;
+   uint32_t   output_lo_ssbo_binding;
+   uint32_t   output_hi_ssbo_binding;
+};
+
+void r300_nir_detect_oaddsub_pattern(const struct nir_shader *s,
+                                     struct r300_compute_oaddsub_pattern *out);
+
+/* Octonion conjugate (OCONJ): conj((a,b)) = (conj(a), -b) -- the lower half is
+ * the quaternion conjugate of a (scalar lane kept, vector lanes negated) and the
+ * upper half is the full negation of b.  Two input SSBOs a,b and two output
+ * halves.  Bindings stay 0 when not constant (positional: a=0, b=1, o_lo=2,
+ * o_hi=3). */
+struct r300_compute_oconj_pattern {
+   bool       is_oconj;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   output_lo_ssbo_binding;
+   uint32_t   output_hi_ssbo_binding;
+};
+
+void r300_nir_detect_oconj_pattern(const struct nir_shader *s,
+                                   struct r300_compute_oconj_pattern *out);
+
+/* Octonion squared norm (ONORM): |(a,b)|^2 = dot(a,a) + dot(b,b), broadcast to
+ * four lanes (the kernel reads lane 0).  Two input SSBOs a,b and one output.  Two
+ * DP4s.  Bindings stay 0 when not constant (positional: a=0, b=1, out=2). */
+struct r300_compute_onorm_pattern {
+   bool       is_onorm;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_onorm_pattern(const struct nir_shader *s,
+                                   struct r300_compute_onorm_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

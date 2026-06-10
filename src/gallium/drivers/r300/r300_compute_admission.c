@@ -1818,6 +1818,236 @@ r300_nir_detect_omul_pattern(const nir_shader *s,
    out->is_omul = true;
 }
 
+/* Collect the load_ssbo and store_ssbo intrinsics of a kernel in program order,
+ * with the no-loop / no-if / no-atomic checks the octonion elementwise ops share.
+ * loads[]/stores[] are filled up to their caps; the counts report the totals so
+ * the caller can require an exact shape. */
+static void
+collect_loads_stores(const nir_shader *s,
+                     const nir_intrinsic_instr **loads, unsigned max_loads,
+                     unsigned *nload,
+                     const nir_intrinsic_instr **stores, unsigned max_stores,
+                     unsigned *nstore, unsigned *natomic,
+                     bool *has_loop, bool *in_if)
+{
+   *nload = *nstore = *natomic = 0;
+   *has_loop = *in_if = false;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
+            if (p->type == nir_cf_node_loop)
+               *has_loop = true;
+            if (p->type == nir_cf_node_if)
+               *in_if = true;
+         }
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               if (*nstore < max_stores)
+                  stores[*nstore] = intr;
+               (*nstore)++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (*nload < max_loads)
+                  loads[*nload] = intr;
+               (*nload)++;
+            } else if (is_ssbo_atomic(intr->intrinsic)) {
+               (*natomic)++;
+            }
+         }
+      }
+   }
+}
+
+static bool
+store_is_full_width(const nir_intrinsic_instr *st)
+{
+   if (!st->src[0].ssa)
+      return false;
+   return !nir_intrinsic_has_write_mask(st) ||
+          nir_intrinsic_write_mask(st) == BITFIELD_MASK(st->num_components);
+}
+
+/* True if `alu` (fadd or fsub) reduces the two identity-swizzled loads x and y.
+ * fsub is non-commutative so x must be the minuend; fadd accepts either order. */
+static bool
+oaddsub_operands_match(const nir_alu_instr *alu, const nir_def *x,
+                       const nir_def *y)
+{
+   for (unsigned c = 0; c < 4; c++)
+      if (alu->src[0].swizzle[c] != c || alu->src[1].swizzle[c] != c)
+         return false;
+   const nir_def *s0 = alu->src[0].src.ssa, *s1 = alu->src[1].src.ssa;
+   if (alu->op == nir_op_fsub)
+      return s0 == x && s1 == y;
+   return (s0 == x && s1 == y) || (s0 == y && s1 == x);
+}
+
+void
+r300_nir_detect_oaddsub_pattern(const nir_shader *s,
+                                struct r300_compute_oaddsub_pattern *out)
+{
+   out->is_oaddsub             = false;
+   out->is_sub                 = false;
+   out->input_a_ssbo_binding   = 0;
+   out->input_b_ssbo_binding   = 0;
+   out->input_c_ssbo_binding   = 0;
+   out->input_d_ssbo_binding   = 0;
+   out->output_lo_ssbo_binding = 0;
+   out->output_hi_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *load[4], *store[2];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 4, &nload, store, 2, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 4 || nstore != 2 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]) || !store_is_full_width(store[1]))
+      return;
+
+   /* o_lo = a (+|-) c, o_hi = b (+|-) d -- the octonion componentwise add/sub,
+    * with the two halves combined by the SAME op.  Loads are read in declaration
+    * order a,b,c,d (load[0..3]); the lower half reduces a with c, the upper b
+    * with d. */
+   const nir_alu_instr *lo = nir_def_as_alu_or_null(store[0]->src[0].ssa);
+   const nir_alu_instr *hi = nir_def_as_alu_or_null(store[1]->src[0].ssa);
+   if (!lo || !hi)
+      return;
+   if (lo->op != nir_op_fadd && lo->op != nir_op_fsub)
+      return;
+   if (hi->op != lo->op)
+      return;
+   if (!oaddsub_operands_match(lo, &load[0]->def, &load[2]->def) ||
+       !oaddsub_operands_match(hi, &load[1]->def, &load[3]->def))
+      return;
+
+   out->is_sub = (lo->op == nir_op_fsub);
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(load[2]->src[0]))
+      out->input_c_ssbo_binding = nir_src_as_uint(load[2]->src[0]);
+   if (nir_src_is_const(load[3]->src[0]))
+      out->input_d_ssbo_binding = nir_src_as_uint(load[3]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_lo_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   if (nir_src_is_const(store[1]->src[1]))
+      out->output_hi_ssbo_binding = nir_src_as_uint(store[1]->src[1]);
+   out->is_oaddsub = true;
+}
+
+void
+r300_nir_detect_oconj_pattern(const nir_shader *s,
+                              struct r300_compute_oconj_pattern *out)
+{
+   out->is_oconj               = false;
+   out->input_a_ssbo_binding   = 0;
+   out->input_b_ssbo_binding   = 0;
+   out->output_lo_ssbo_binding = 0;
+   out->output_hi_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *load[2], *store[2];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 2, &nload, store, 2, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 2 || nstore != 2 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]) || !store_is_full_width(store[1]))
+      return;
+
+   /* The octonion conjugate conj((a,b)) = (conj(a), -b): the lower half keeps
+    * a's scalar lane and negates its three vector lanes (a vec4 of signed
+    * channels), the upper half negates ALL of b (a whole-vector fneg). */
+   const nir_alu_instr *lo = nir_def_as_alu_or_null(store[0]->src[0].ssa);
+   if (!lo || lo->op != nir_op_vec4)
+      return;
+   for (unsigned lane = 0; lane < 4; lane++) {
+      const nir_def *base;
+      unsigned chan;
+      bool neg;
+      resolve_signed_channel(&lo->src[lane], &base, &chan, &neg);
+      if (base != &load[0]->def || chan != lane || neg != (lane != 0))
+         return;
+   }
+   const nir_alu_instr *hi = nir_def_as_alu_or_null(store[1]->src[0].ssa);
+   if (!hi || hi->op != nir_op_fneg)
+      return;
+   if (hi->src[0].src.ssa != &load[1]->def)
+      return;
+   for (unsigned c = 0; c < 4; c++)
+      if (hi->src[0].swizzle[c] != c)
+         return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_lo_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   if (nir_src_is_const(store[1]->src[1]))
+      out->output_hi_ssbo_binding = nir_src_as_uint(store[1]->src[1]);
+   out->is_oconj = true;
+}
+
+void
+r300_nir_detect_onorm_pattern(const nir_shader *s,
+                              struct r300_compute_onorm_pattern *out)
+{
+   out->is_onorm               = false;
+   out->input_a_ssbo_binding   = 0;
+   out->input_b_ssbo_binding   = 0;
+   out->output_ssbo_binding    = 0;
+
+   const nir_intrinsic_instr *load[2], *store[1];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 2, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 2 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]))
+      return;
+
+   /* The octonion squared norm |(a,b)|^2 = dot(a,a) + dot(b,b), broadcast to four
+    * lanes (the kernel reads lane 0).  The store is a vec4 splat of one scalar
+    * fadd of the two self-dots. */
+   const nir_alu_instr *vec = nir_def_as_alu_or_null(store[0]->src[0].ssa);
+   if (!vec || vec->op != nir_op_vec4)
+      return;
+   const nir_def *scalar = vec->src[0].src.ssa;
+   for (unsigned lane = 0; lane < 4; lane++)
+      if (vec->src[lane].src.ssa != scalar || vec->src[lane].swizzle[0] != 0)
+         return;
+   const nir_alu_instr *sum = nir_def_as_alu_or_null(scalar);
+   if (!sum || sum->op != nir_op_fadd)
+      return;
+   const nir_alu_instr *d0 = nir_def_as_alu_or_null(sum->src[0].src.ssa);
+   const nir_alu_instr *d1 = nir_def_as_alu_or_null(sum->src[1].src.ssa);
+   if (!d0 || d0->op != nir_op_fdot4 || !d1 || d1->op != nir_op_fdot4)
+      return;
+   /* Each dot is a self-dot of one load; the two halves cover both loads in
+    * either order (fadd is commutative). */
+   const nir_def *b0 = d0->src[0].src.ssa, *b1 = d1->src[0].src.ssa;
+   if (d0->src[1].src.ssa != b0 || d1->src[1].src.ssa != b1)
+      return;
+   bool ok = (b0 == &load[0]->def && b1 == &load[1]->def) ||
+             (b0 == &load[1]->def && b1 == &load[0]->def);
+   if (!ok)
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_onorm = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)

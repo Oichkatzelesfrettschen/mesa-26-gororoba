@@ -74,6 +74,19 @@ nir_shader *r300vk_build_omul_hi_fs_nir(const nir_shader_compiler_options *opts)
  * targets; otherwise it falls back to the two single-output passes. */
 nir_shader *r300vk_build_omul_mrt_fs_nir(const nir_shader_compiler_options *opts);
 
+/* Octonion elementwise-algebra fragment programs.
+ * ONORM: |(a,b)|^2 = dot(a,a)+dot(b,b) broadcast (a stage 0, b stage 1), one
+ *   color output; two DP4s.
+ * OCONJ (MRT): conj(a)=(a.x,-a.y,-a.z,-a.w) to output 0 and -b to output 1
+ *   (a stage 0, b stage 1).
+ * OADD/OSUB (MRT): the lower half a (+|-) c to output 0 and the upper b (+|-) d
+ *   to output 1; the dispatch binds stage0=a, stage1=c, stage2=b, stage3=d so
+ *   each half reads a contiguous sampler pair.  is_sub picks the operator. */
+nir_shader *r300vk_build_onorm_fs_nir(const nir_shader_compiler_options *opts);
+nir_shader *r300vk_build_oconj_mrt_fs_nir(const nir_shader_compiler_options *opts);
+nir_shader *r300vk_build_oaddsub_mrt_fs_nir(const nir_shader_compiler_options *opts,
+                                            bool is_sub);
+
 #ifdef __cplusplus
 }
 #endif
