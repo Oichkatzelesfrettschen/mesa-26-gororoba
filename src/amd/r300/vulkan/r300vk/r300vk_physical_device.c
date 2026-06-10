@@ -367,6 +367,14 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * r300vk_UpdateDescriptorSetWithTemplate applies each entry through
     * r300vk_UpdateDescriptorSets, reusing the descriptor-write bounds checks. */
    .KHR_descriptor_update_template = true,
+   /* VK_KHR_maintenance1: a capabilities extension with no feature struct and a
+    * single new entry point, vkTrimCommandPool, which vk_common provides.  Its
+    * load-bearing capability for a GL-on-Vulkan client is a negative viewport
+    * height (the y-flip): viewport_vk_to_gallium already derives scale[1] and
+    * translate[1] from the signed VkViewport::height, so a flipped viewport
+    * lands correctly.  The 2D-array-from-3D and 2D/3D copy capabilities are
+    * vacuous here because r300vk does not expose 3D images. */
+   .KHR_maintenance1 = true,
 };
 
 static void
