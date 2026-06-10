@@ -38,7 +38,7 @@ source=("mesa-gororoba::git+https://github.com/Oichkatzelesfrettschen/mesa-26-go
         'mesa-26-gororoba-debug-env.sh'
         'mesa-26-gororoba-debug-run')
 sha256sums=('SKIP'
-            '2e8d4efb42d9c9de15236d1936191b68ddc5cda1fd8a24769c69ce88b5de9e61'
+            '40688a33a6dad2c92f44212bb8dce8c0bad80678248ba7b719a83e999c2271fc'
             'e2a1785277b814e1d1ffcff8aca1a11029fe632502180e5d1c6074cdee286aa9')
 
 _prefix=/opt/mesa-26-gororoba-debug
@@ -87,7 +87,7 @@ build() {
     -D r300vk-gallium-backend=true \
     -D gallium-rusticl=false \
     -D llvm=enabled \
-    -D draw-use-llvm=false \
+    -D draw-use-llvm=true \
     -D egl=enabled \
     -D gbm=enabled \
     -D glx=dri \

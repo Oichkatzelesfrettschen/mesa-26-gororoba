@@ -25,5 +25,10 @@ mesa_26_gororoba_prepend_path __EGL_VENDOR_LIBRARY_DIRS "${GOROROBA_MESA_PREFIX}
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-${GOROROBA_MESA_PREFIX}/share/vulkan/icd.d/r300_icd.x86_64.json}"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-${VK_DRIVER_FILES}}"
 export LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME:-r300}"
+# Pin the Gallium Draw module to its C path: the r300 vertex stage runs
+# software TCL, and the in-development software vertex FPU must be the
+# code that executes, not the LLVM draw JIT.  Override with
+# DRAW_USE_LLVM=1 to compare against the JIT.
+export DRAW_USE_LLVM="${DRAW_USE_LLVM:-0}"
 
 unset -f mesa_26_gororoba_prepend_path
