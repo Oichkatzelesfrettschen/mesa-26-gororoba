@@ -363,6 +363,10 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * the 1.0 render-pass path onto r300vk's own render-pass object, so the 2.0
     * surface needs no common-runtime emulation. */
    .KHR_create_renderpass2 = true,
+   /* VK_KHR_descriptor_update_template: vk_common builds the template object;
+    * r300vk_UpdateDescriptorSetWithTemplate applies each entry through
+    * r300vk_UpdateDescriptorSets, reusing the descriptor-write bounds checks. */
+   .KHR_descriptor_update_template = true,
 };
 
 static void
