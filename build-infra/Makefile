@@ -28,12 +28,15 @@
 SHELL := /bin/bash
 
 # --- configurable parameters -------------------------------------------------
-PROFILE  ?= 1_r300_full_release_x86_64v1-clang22-distcc-cache
+PROFILE  ?= 2_r300_full_debug_x86_64v1-clang22-distcc-cache
 # Default HOSTENV must match the default PROFILE's lane.  The default profile is
-# the numbered r300 vostro release (clang22), so the default env is the vostro
-# clang22 env, not the x130e btver1 env -- otherwise a bare `make configure`
-# builds the r300 vostro profile with -march=btver1 and no LLVM-22 pin.  x130e
-# terakan lanes (profiles 3_-6_) pass HOSTENV=btver1* explicitly.
+# the maximal r300 vostro debug build (clang22, asserts live plus valgrind,
+# libunwind, and perfetto), so the default env is the vostro clang22 env, not
+# the x130e btver1 env -- otherwise a bare `make configure` builds the r300
+# vostro profile with -march=btver1 and no LLVM-22 pin.  The release sibling
+# (1_r300_full_release, the conformance-baseline profile) and the x130e terakan
+# lanes live under configs/alternates/ and pass their PROFILE (and
+# HOSTENV=btver1* for terakan) explicitly.
 HOSTENV  ?= vostro1000-x86-64-v1-clang22-ccache-distcc
 BUILDDIR ?= $(abspath $(CURDIR)/../build/mesa-$(PROFILE))
 INSTALL_NAMESPACE ?= mesa
@@ -71,12 +74,16 @@ GENERATED_TARGET_REGEX ?= ^(src/git_sha1[.]h|src/(compiler|vulkan|amd/terascale)
 
 # --- internal paths ---------------------------------------------------------
 TOPSRC   := $(abspath $(CURDIR)/..)
-CONFIG   := $(CURDIR)/configs/$(PROFILE).meson
+# The default profile sits at the top of configs/; every other profile (the
+# release r300 sibling and the x130e terakan lanes) sits in configs/alternates/.
+# Resolve PROFILE against both directories so a bare basename still names a
+# profile and the per-profile rebuild-/install- targets need no path prefix.
+CONFIG   := $(firstword $(wildcard $(CURDIR)/configs/$(PROFILE).meson $(CURDIR)/configs/alternates/$(PROFILE).meson))
 ENVFILE  := $(CURDIR)/env/$(HOSTENV).env
 TOOLCHAIN_NATIVE := $(BUILDDIR)/gororoba-toolchain.meson
 COMPILER_CHAIN ?= ccache
 
-ifeq (,$(wildcard $(CONFIG)))
+ifeq (,$(CONFIG))
 $(error unknown PROFILE='$(PROFILE)'; see `make list`)
 endif
 
@@ -103,7 +110,7 @@ LOCKED_TOOL_ENV := \
     DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
     SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
-.PHONY: list vostro-prefix-check audit configure build build-generated build-pump clean distclean install \
+.PHONY: list vostro-prefix-check audit configure build build-generated build-pump clean clean-all distclean install \
         artifact-check test \
         rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache \
         install-1_r300_full_release_x86_64v1-clang22-distcc-cache \
@@ -124,9 +131,10 @@ help:
 	@echo "usage: make <target> PROFILE=<profile> [HOSTENV=<env>] [BUILDDIR=<path>] [PREFIX=<path>]"
 	@echo ""
 	@echo "targets:"
-	@echo "  configure         meson setup the builddir from configs/\$$(PROFILE).meson"
+	@echo "  configure         meson setup the builddir from configs/[alternates/]\$$(PROFILE).meson"
 	@echo "  build             ninja -C \$$(BUILDDIR)"
-	@echo "  clean             rm -rf \$$(BUILDDIR)"
+	@echo "  clean             rm -rf \$$(BUILDDIR) (active profile only)"
+	@echo "  clean-all         rm -rf the whole repo-local build/ tree (all profiles)"
 	@echo "  distclean         clean + archive \$$(PREFIX) aside"
 	@echo "  audit             verify host tools, env policy, and profile requirements"
 	@echo "  install           sudo meson install --no-rebuild -C \$$(BUILDDIR)"
@@ -142,8 +150,8 @@ help:
 	@echo "compiler chain: $(COMPILER_CHAIN)"
 
 list:
-	@echo "available PROFILEs (configs/*.meson):"; \
-	for f in configs/*.meson; do echo "  $$(basename $$f .meson)"; done
+	@echo "available PROFILEs (configs/*.meson + configs/alternates/*.meson):"; \
+	for f in configs/*.meson configs/alternates/*.meson; do echo "  $$(basename $$f .meson)"; done
 	@echo "available HOSTENVs (env/*.env):"; \
 	for f in env/*.env; do echo "  $$(basename $$f .env)"; done
 
@@ -404,6 +412,13 @@ build-pump:
 clean:
 	rm -rf $(BUILDDIR)
 	@echo "cleaned: $(BUILDDIR)"
+
+# Remove the entire repo-local build/ tree (every profile's builddir), not just
+# the active PROFILE's.  The tree is gitignored (/build), so this only drops
+# regenerable artifacts and never touches the source or an installed PREFIX.
+clean-all:
+	rm -rf $(abspath $(CURDIR)/../build)
+	@echo "cleaned: $(abspath $(CURDIR)/../build) (all profile builddirs)"
 
 distclean: clean
 	@if [ -e "$(PREFIX)" ]; then \

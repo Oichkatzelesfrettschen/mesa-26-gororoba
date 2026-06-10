@@ -418,14 +418,17 @@ Do not inherit `LIBGL_DRIVERS_PATH`, `LD_LIBRARY_PATH`, or `VK_ICD_FILENAMES` fr
 
 ### Build profiles and host envs
 
-Build profiles live in `build-infra/configs/`:
+The default build profile lives at the top of `build-infra/configs/`; the other
+profiles live in `build-infra/configs/alternates/`.  The Makefile resolves a
+bare `PROFILE=` name against both directories, so `make` invocations name a
+profile by basename regardless of which directory holds it.
 
-- `1_r300_full_release_x86_64v1-clang22-distcc-cache.meson`: maximal r300 plus `amd_r300` ICD; release; vostro.
-- `2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson`: maximal r300 plus `amd_r300` ICD; debug; vostro.
-- `3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson`: r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; release; x130e.
-- `4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson`: r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; debug; x130e.
-- `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson`: same as profile 3 without Rusticl; release; x130e fallback.
-- `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson`: same as profile 4 without Rusticl; debug; x130e fallback.
+- `2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson` (DEFAULT, in `configs/`): maximal r300 plus `amd_r300` ICD; debug; vostro.
+- `1_r300_full_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): maximal r300 plus `amd_r300` ICD; release; vostro. The conformance-baseline profile: GL/GLES/Piglit and silicon-evidence runs use this, because an asserts-live debug build can abort a case release would pass.
+- `3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; release; x130e.
+- `4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): r600, zink, softpipe, LLVM, `amd_terascale`, and Rusticl; debug; x130e.
+- `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): same as profile 3 without Rusticl; release; x130e fallback.
+- `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): same as profile 4 without Rusticl; debug; x130e fallback.
 
 Host envs live in `build-infra/env/`: `btver1-ccache-no-pump.env`, `btver1-distcc-pump.env`, `sapphire.env`, and `zen4.env`. They set lane-specific distcc/cache policy, host CFLAGS, `-fno-emulated-tls`, and centralized `CCACHE_DIR`/`SCCACHE_DIR`. The validated clang lane on Linux x86_64 requires `-fno-emulated-tls` to avoid a libglapi link failure.
 

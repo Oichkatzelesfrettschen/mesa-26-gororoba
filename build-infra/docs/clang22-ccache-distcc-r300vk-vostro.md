@@ -33,7 +33,7 @@ needs regeneration.
 
 ## How
 
-`configs/1_r300_full_release_x86_64v1-clang22-distcc-cache.meson` and its `2_`
+`configs/alternates/1_r300_full_release_x86_64v1-clang22-distcc-cache.meson` and its `2_`
 debug sibling pin the maximal r300 component set, x86-64-v1 code generation,
 `-O2` release codegen, `-fno-emulated-tls` for the libglapi clang link, stack
 hardening, format-security warnings as errors, and relro link hardening.  The

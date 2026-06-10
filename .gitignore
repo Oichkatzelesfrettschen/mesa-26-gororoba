@@ -13,10 +13,11 @@
 *.ini
 build-infra/shadercache.bin
 
-# In-tree Meson build directories.  The build-infra Makefile builds out-of-tree
-# under ../../build/mesa-<profile>/ (outside the repo), but a hand-run
-# `meson setup builddir` (the canonical shape in AGENTS.md) lands in-tree, so
-# guard the documented builddir names against accidental commits.
+# Build-artifact directories.  The build-infra Makefile builds into the
+# repo-local build/mesa-<profile>/ tree (the /build entry above ignores it), and
+# `make clean` removes the active profile's subdir there.  A hand-run `meson
+# setup builddir` (the canonical shape in AGENTS.md) instead lands in-tree as
+# builddir/, so guard the documented builddir names against accidental commits.
 /builddir
 /builddir-*/
 # clangd / tooling compilation database, regenerated from any build directory.
