@@ -202,14 +202,6 @@ DestroyDRIDrawable(Display *dpy, GLXDrawable drawable)
 #endif
 }
 
-/* TODO: delete these after more refactoring */
-#if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL) && !defined(GLX_USE_WINDOWSGL)
-int
-dri3_get_buffer_age(__GLXDRIdrawable *pdraw);
-int
-kopper_get_buffer_age(__GLXDRIdrawable *pdraw);
-#endif
-
 /**
  * Get a drawable's attribute.
  *

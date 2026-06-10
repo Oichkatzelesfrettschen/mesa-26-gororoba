@@ -453,8 +453,6 @@ drisw_wait_x(struct glx_context *context)
 }
 
 int
-kopper_get_buffer_age(__GLXDRIdrawable *pdraw);
-int
 kopper_get_buffer_age(__GLXDRIdrawable *pdraw)
 {
    return kopperQueryBufferAge(pdraw->dri_drawable);

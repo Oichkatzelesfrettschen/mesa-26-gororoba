@@ -622,6 +622,13 @@ extern __GLXDRIdrawable *
 dri2GetGlxDrawableFromXDrawableId(Display *dpy, XID id);
 #endif
 
+#if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL) && !defined(GLX_USE_WINDOWSGL)
+extern int
+dri3_get_buffer_age(__GLXDRIdrawable *pdraw);
+extern int
+kopper_get_buffer_age(__GLXDRIdrawable *pdraw);
+#endif
+
 extern GLubyte *__glXFlushRenderBuffer(struct glx_context *, GLubyte *);
 
 extern void __glXSendLargeChunk(struct glx_context * gc, GLint requestNumber,

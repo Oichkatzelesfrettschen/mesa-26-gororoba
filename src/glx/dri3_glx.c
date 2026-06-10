@@ -374,8 +374,6 @@ dri3_swap_buffers(__GLXDRIdrawable *pdraw, int64_t target_msc, int64_t divisor,
 }
 
 int
-dri3_get_buffer_age(__GLXDRIdrawable *pdraw);
-int
 dri3_get_buffer_age(__GLXDRIdrawable *pdraw)
 {
    struct dri3_drawable *priv = (struct dri3_drawable *)pdraw;

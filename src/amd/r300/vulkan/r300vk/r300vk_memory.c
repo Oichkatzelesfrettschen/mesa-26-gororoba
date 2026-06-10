@@ -208,16 +208,26 @@ r300vk_UnmapMemory(VkDevice _device,
 }
 
 /* Sync the live host map and the bound VkBuffer's GPU resource for an
- * owns_buffer (map-before-bind) allocation.  host_to_buffer copies the map's
- * slice at memory_offset into bound_resource (Flush and the bind-time seed);
- * !host_to_buffer copies bound_resource back into the map (Invalidate).  The
- * copy reads/writes the live map_ptr directly, so the map and its transfer stay
- * valid -- the lazy buffer is host-only, so there is no second transfer on it
- * and no concurrent GPU access. */
+ * owns_buffer (map-before-bind) allocation.  host_to_buffer copies the map into
+ * bound_resource (Flush and the bind-time seed); !host_to_buffer copies
+ * bound_resource back into the map (Invalidate).  The copy reads/writes the live
+ * map_ptr directly, so the map and its transfer stay valid -- the lazy buffer is
+ * host-only, so there is no second transfer on it and no concurrent GPU access.
+ *
+ * range_offset and range_size name the touched window in VkDeviceMemory space,
+ * exactly like VkMappedMemoryRange::offset/size; range_size == VK_WHOLE_SIZE
+ * means to the end of the allocation.  Only the part of the bound slice
+ * [memory_offset, memory_offset + width0) that overlaps that window is mapped
+ * and copied, so a Flush/Invalidate of one sub-range never touches bytes the
+ * caller did not name.  An empty intersection copies nothing and succeeds.  The
+ * bind-time seed passes the whole allocation (offset 0, VK_WHOLE_SIZE) so the
+ * intersection yields the full slice. */
 static VkResult
 r300vk_sync_owns_buffer(struct r300vk_device *device,
                         struct r300vk_device_memory *mem,
-                        bool host_to_buffer)
+                        bool host_to_buffer,
+                        VkDeviceSize range_offset,
+                        VkDeviceSize range_size)
 {
    if (!mem->owns_buffer || !mem->bound_resource || !mem->map_ptr)
       return VK_SUCCESS;
@@ -227,12 +237,30 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
    if (mem->memory_offset + (VkDeviceSize)mem->bound_resource->width0 > mem->size)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
-   unsigned bytes = (unsigned)mem->bound_resource->width0;
-   if (!bytes)
+   /* Intersect the requested window with the bound slice, all in 64-bit memory
+    * space.  range_size == VK_WHOLE_SIZE, a range_offset past the allocation, or
+    * a range_offset + range_size that overflows or runs past the end all clamp
+    * range_end to mem->size; the allocation-bounds check above already proved the
+    * slice end fits in mem->size.  Test the addend against the remaining space
+    * (mem->size - range_offset) so the sum itself never wraps. */
+   VkDeviceSize range_end;
+   if (range_size == VK_WHOLE_SIZE || range_offset >= mem->size ||
+       range_size > mem->size - range_offset)
+      range_end = mem->size;
+   else
+      range_end = range_offset + range_size;
+   VkDeviceSize slice_begin = mem->memory_offset;
+   VkDeviceSize slice_end = slice_begin + (VkDeviceSize)mem->bound_resource->width0;
+   VkDeviceSize intersect_begin = range_offset > slice_begin ? range_offset : slice_begin;
+   VkDeviceSize intersect_end = range_end < slice_end ? range_end : slice_end;
+   if (intersect_begin >= intersect_end)
       return VK_SUCCESS;
 
+   unsigned buffer_offset = (unsigned)(intersect_begin - slice_begin);
+   unsigned bytes = (unsigned)(intersect_end - intersect_begin);
+
    struct pipe_box box;
-   u_box_1d(0, bytes, &box);
+   u_box_1d(buffer_offset, bytes, &box);
    struct pipe_transfer *bt = NULL;
    void *bp = device->pipe->buffer_map(device->pipe, mem->bound_resource, 0,
                                        host_to_buffer ? PIPE_MAP_WRITE : PIPE_MAP_READ,
@@ -240,7 +268,7 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
    if (!bp)
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 
-   char *hp = (char *)mem->map_ptr + mem->memory_offset;
+   char *hp = (char *)mem->map_ptr + intersect_begin;
    if (host_to_buffer)
       memcpy(bp, hp, bytes);
    else
@@ -301,7 +329,9 @@ r300vk_FlushMappedMemoryRanges(VkDevice _device,
     * bound VkBuffer's GPU resource. */
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
       VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
-      VkResult result = r300vk_sync_owns_buffer(device, mem, true /* host -> buffer */);
+      VkResult result = r300vk_sync_owns_buffer(device, mem, true /* host -> buffer */,
+                                                pMemoryRanges[i].offset,
+                                                pMemoryRanges[i].size);
       if (result != VK_SUCCESS)
          return result;
    }
@@ -318,7 +348,9 @@ r300vk_InvalidateMappedMemoryRanges(VkDevice _device,
     * the live host map before the app reads through the host ptr. */
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
       VK_FROM_HANDLE(r300vk_device_memory, mem, pMemoryRanges[i].memory);
-      VkResult result = r300vk_sync_owns_buffer(device, mem, false /* buffer -> host */);
+      VkResult result = r300vk_sync_owns_buffer(device, mem, false /* buffer -> host */,
+                                                pMemoryRanges[i].offset,
+                                                pMemoryRanges[i].size);
       if (result != VK_SUCCESS)
          return result;
       /* A linear image bound to an owns_buffer allocation needs the image -> host
@@ -352,7 +384,8 @@ r300vk_BindBufferMemory2(VkDevice _device,
 
          mem->memory_offset = pBindInfos[i].memoryOffset;
          pipe_resource_reference(&mem->bound_resource, buf->resource);
-         VkResult result = r300vk_sync_owns_buffer(device, mem, true /* host -> buffer (seed) */);
+         VkResult result = r300vk_sync_owns_buffer(device, mem, true /* host -> buffer (seed) */,
+                                                   0, VK_WHOLE_SIZE);
          if (result != VK_SUCCESS)
             return result;
       } else {
