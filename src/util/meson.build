@@ -460,6 +460,7 @@ if with_tests
 
   files_util_tests = files(
     'tests/bitset_test.cpp',
+    'tests/blend_test.cpp',
     'tests/blob_test.cpp',
     'tests/dag_test.cpp',
     'tests/fast_idiv_by_const_test.cpp',
@@ -470,6 +471,7 @@ if with_tests
     'tests/int_min_max.cpp',
     'tests/linear_test.cpp',
     'tests/list_test.cpp',
+    'tests/log_test.cpp',
     'tests/lut_test.cpp',
     'tests/mesa-blake3_test.cpp',
     'tests/os_mman_test.cpp',
@@ -487,6 +489,7 @@ if with_tests
     'tests/u_debug_stack_test.cpp',
     'tests/u_debug_test.cpp',
     'tests/u_dl_test.cpp',
+    'tests/u_format_helpers_test.cpp',
     'tests/u_memstream_test.cpp',
     'tests/u_printf_test.cpp',
     'tests/u_qsort_test.cpp',
@@ -518,6 +521,17 @@ if with_tests
     protocol : 'gtest',
     is_parallel : false,
     timeout : 180,
+  )
+
+  test(
+    'parson_tests',
+    executable(
+      'parson_tests',
+      files('tests/parson_test.cpp'),
+      dependencies : [idep_mesautil, idep_parson, idep_gtest],
+    ),
+    suite : ['util'],
+    protocol : 'gtest',
   )
 
   process_test_exe = executable(

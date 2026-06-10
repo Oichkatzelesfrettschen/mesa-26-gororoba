@@ -73,8 +73,8 @@ static const struct debug_control mesa_log_control_options[] = {
    { NULL, 0 },
 };
 
-static inline const char *
-level_to_str(enum mesa_log_level l)
+const char *
+mesa_log_level_to_string(enum mesa_log_level l)
 {
    switch (l) {
    case MESA_LOG_ERROR: return "error";
@@ -86,6 +86,12 @@ level_to_str(enum mesa_log_level l)
    }
 
    UNREACHABLE("bad mesa_log_level");
+}
+
+static inline const char *
+level_to_str(enum mesa_log_level l)
+{
+   return mesa_log_level_to_string(l);
 }
 
 static enum mesa_log_level

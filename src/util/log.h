@@ -123,6 +123,9 @@ void mesa_log_stream_printf(struct log_stream *stream, const char *format, ...) 
 void _mesa_log_multiline(enum mesa_log_level level, const char *tag, const char *lines);
 #define mesa_log_multiline(level, lines) _mesa_log_multiline(level, (MESA_LOG_TAG), lines)
 
+const char *
+mesa_log_level_to_string(enum mesa_log_level level);
+
 #if !MESA_DEBUG
 /* Suppres -Wunused */
 static inline void PRINTFLIKE(1, 2)
