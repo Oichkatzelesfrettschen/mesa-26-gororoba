@@ -413,24 +413,28 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       .op_name         = "QCONJ",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
-      .status          = R300_VOP_NUMERIC_DERIVED,
-      .theorem         = "quaternion conjugate conj(a) = (a.x,-a.y,-a.z,-a.w) = "
-                         "a * vec4(1,-1,-1,-1), zero DP4; involution conj(conj a)=a and "
-                         "antimorphism conj(p*q)=conj(q)*conj(p) machine-verified "
-                         "(open_gororoba CayleyDicksonAlgebra.v quat_conj_involution:68, "
-                         "quat_conj_antimorphism:150)",
-      .mesa_hook       = NULL,  /* unary sign-mask multiply; NIR detector pending */
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "quaternion conjugate conj(a) = (a.x,-a.y,-a.z,-a.w), zero DP4; "
+                         "involution conj(conj a)=a and antimorphism conj(p*q)=conj(q)*"
+                         "conj(p) machine-verified (open_gororoba CayleyDicksonAlgebra.v "
+                         "quat_conj_involution:68, quat_conj_antimorphism:150).  The "
+                         "single-load vec4 sign flip is admitted by r300_nir_detect_qconj_"
+                         "pattern and dispatched on the 1-in/1-out FP16-RT core, HW-"
+                         "confirmed 4/4 (exact) on RS482 by qconj_vk_probe",
+      .mesa_hook       = "r300_nir_detect_qconj_pattern",
       .retained_bundle = NULL,
    },
    {
       .op_name         = "QNORM",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
-      .status          = R300_VOP_NUMERIC_DERIVED,
+      .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion squared norm |a|^2 = dot(a,a) = one DP4; "
                          "a*conj(a) = (|a|^2,0,0,0) machine-verified (open_gororoba "
-                         "CayleyDicksonAlgebra.v quat_norm_conjugate:84); the single-load "
-                         "DP4 variant of QDOT",
-      .mesa_hook       = NULL,  /* self-dot (one load); NIR detector pending */
+                         "CayleyDicksonAlgebra.v quat_norm_conjugate:84).  Admitted as the "
+                         "single-load self-dot splat vec4(dot(a,a)) by r300_nir_detect_"
+                         "qnorm_pattern and dispatched on the 1-in/1-out FP16-RT core, HW-"
+                         "confirmed 4/4 on RS482 by qnorm_vk_probe (the kernel reads lane 0)",
+      .mesa_hook       = "r300_nir_detect_qnorm_pattern",
       .retained_bundle = NULL,
    },
    {

@@ -209,6 +209,40 @@ build_qrotate_form(void)
    return b.shader;
 }
 
+/* Quaternion conjugate (a.x, -a.y, -a.z, -a.w) of a single input quaternion.
+ * bad_sign leaves a.y un-negated so the negative case exercises the detector's
+ * exact-sign check (the scalar lane stays positive, the three vector lanes
+ * negate). */
+static nir_shader *
+build_qconj_form(bool bad_sign)
+{
+   nir_builder b = cs_builder("cs_qconj_f32vec4");
+   nir_def *a = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *ax = nir_channel(&b, a, 0), *ay = nir_channel(&b, a, 1),
+           *az = nir_channel(&b, a, 2), *aw = nir_channel(&b, a, 3);
+   nir_def *conj = nir_vec4(&b, ax, bad_sign ? ay : nir_fneg(&b, ay),
+                            nir_fneg(&b, az), nir_fneg(&b, aw));
+   nir_store_ssbo(&b, conj, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+/* Quaternion squared norm dot(a, a) broadcast to four lanes -- the QNORM splat
+ * the substrate's vec4 FP16 readback carries. */
+static nir_shader *
+build_qnorm_form(void)
+{
+   nir_builder b = cs_builder("cs_qnorm_f32vec4");
+   nir_def *a = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *n = nir_fdot(&b, a, a);
+   nir_def *bn = nir_vec4(&b, n, n, n, n);
+   nir_store_ssbo(&b, bn, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 prepare_detect_shader(nir_shader *nir)
 {
@@ -329,6 +363,66 @@ case_qrotate_metadata(void)
    ralloc_free(plain);
 }
 
+static void
+case_qconj_metadata(void)
+{
+   nir_shader *nir = build_qconj_form(false);
+   struct r300_compute_admission adm;
+   struct r300_compute_qconj_pattern qc = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "float4 qconj kernel admits");
+   r300_nir_detect_qconj_pattern(nir, &qc);
+   CHECK(qc.is_qconj, "qconj sign-flip shape detected");
+   CHECK(qc.input_ssbo_binding == 0, "qconj metadata records input binding 0");
+   CHECK(qc.output_ssbo_binding == 1, "qconj metadata records output binding 1");
+   ralloc_free(nir);
+
+   /* A conjugate that fails to negate one vector lane is the identity on that
+    * lane, a different map; the exact-sign check must reject it. */
+   nir_shader *bad = build_qconj_form(true);
+   struct r300_compute_qconj_pattern bad_qc = {0};
+   prepare_detect_shader(bad);
+   r300_nir_detect_qconj_pattern(bad, &bad_qc);
+   CHECK(!bad_qc.is_qconj, "qconj rejects an un-negated vector lane");
+   ralloc_free(bad);
+
+   /* A two-input kernel is not a unary conjugate; the single-load shape gate
+    * must reject the binary-map form. */
+   nir_shader *bin = build_binary_map_f32vec4();
+   struct r300_compute_qconj_pattern bin_qc = {0};
+   prepare_detect_shader(bin);
+   r300_nir_detect_qconj_pattern(bin, &bin_qc);
+   CHECK(!bin_qc.is_qconj, "qconj rejects a two-input kernel");
+   ralloc_free(bin);
+}
+
+static void
+case_qnorm_metadata(void)
+{
+   nir_shader *nir = build_qnorm_form();
+   struct r300_compute_admission adm;
+   struct r300_compute_qnorm_pattern qn = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "float4 qnorm kernel admits");
+   r300_nir_detect_qnorm_pattern(nir, &qn);
+   CHECK(qn.is_qnorm, "qnorm self-dot splat shape detected");
+   CHECK(qn.input_ssbo_binding == 0, "qnorm metadata records input binding 0");
+   CHECK(qn.output_ssbo_binding == 1, "qnorm metadata records output binding 1");
+   ralloc_free(nir);
+
+   /* The conjugate splats no dot; it must not read as a squared norm. */
+   nir_shader *conj = build_qconj_form(false);
+   struct r300_compute_qnorm_pattern conj_qn = {0};
+   prepare_detect_shader(conj);
+   r300_nir_detect_qnorm_pattern(conj, &conj_qn);
+   CHECK(!conj_qn.is_qnorm, "qnorm rejects a conjugate (no self-dot)");
+   ralloc_free(conj);
+}
+
 int
 main(void)
 {
@@ -349,6 +443,8 @@ main(void)
    case_binary_metadata();
    case_qmul_metadata();
    case_qrotate_metadata();
+   case_qconj_metadata();
+   case_qnorm_metadata();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

@@ -45,6 +45,17 @@ nir_shader *r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts);
  * FP16 color export; the result's vector lanes are the rotated v. */
 nir_shader *r300vk_build_qrotate_fs_nir(const nir_shader_compiler_options *opts);
 
+/* Build the quaternion-conjugate fragment program (QCONJ) as standalone NIR.
+ * Samples one input quaternion (binding 0) and writes (a.x, -a.y, -a.z, -a.w) to
+ * the FP16 color export -- a sign flip on the three vector lanes, zero DP4. */
+nir_shader *r300vk_build_qconj_fs_nir(const nir_shader_compiler_options *opts);
+
+/* Build the quaternion squared-norm fragment program (QNORM) as standalone NIR.
+ * Samples one input quaternion (binding 0) and writes vec4(dot(a, a)) -- the
+ * squared norm broadcast across four lanes -- to the FP16 color export, one
+ * DP4.  The kernel reads lane 0; the broadcast keeps the vec4 readback path. */
+nir_shader *r300vk_build_qnorm_fs_nir(const nir_shader_compiler_options *opts);
+
 #ifdef __cplusplus
 }
 #endif

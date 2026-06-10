@@ -1476,6 +1476,136 @@ r300_nir_detect_qrotate_pattern(const nir_shader *s,
    out->is_qrotate = true;
 }
 
+/* Collect the lone store_ssbo and load_ssbo of a one-input / one-output kernel,
+ * rejecting any loop, nested if, atomic, second load, or second store.  The
+ * single-lane quaternion ops (QCONJ, QNORM) share this preamble: one input
+ * quaternion, one output, no control flow.  Returns true with *store and *load
+ * set only when the shape is exactly one full-width store of one load. */
+static bool
+collect_unary_ssbo_shape(const nir_shader *s,
+                         const nir_intrinsic_instr **store_out,
+                         const nir_intrinsic_instr **load_out)
+{
+   const nir_intrinsic_instr *store = NULL, *load = NULL;
+   unsigned store_count = 0, load_count = 0, atomic_count = 0;
+   bool has_loop = false, in_if = false;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
+            if (p->type == nir_cf_node_loop)
+               has_loop = true;
+            if (p->type == nir_cf_node_if)
+               in_if = true;
+         }
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               load = intr;
+               load_count++;
+            } else if (is_ssbo_atomic(intr->intrinsic)) {
+               atomic_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 1 || atomic_count != 0 ||
+       has_loop || in_if)
+      return false;
+   if (!store->src[0].ssa)
+      return false;
+   /* A partial-lane store would leave render-target bytes in the unwritten
+    * lanes; the quaternion result is the whole vec4. */
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return false;
+
+   *store_out = store;
+   *load_out = load;
+   return true;
+}
+
+void
+r300_nir_detect_qconj_pattern(const nir_shader *s,
+                              struct r300_compute_qconj_pattern *out)
+{
+   out->is_qconj            = false;
+   out->input_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *store, *load;
+   if (!collect_unary_ssbo_shape(s, &store, &load))
+      return;
+
+   /* Store value = vec4(a.x, -a.y, -a.z, -a.w): the quaternion conjugate keeps
+    * the scalar lane and negates the three vector lanes.  Each vec4 lane must be
+    * a signed channel of the single load -- lane 0 is +channel 0, lanes 1..3 are
+    * -channel lane.  resolve_signed_channel unwraps the fneg/mov the compiler
+    * leaves on a negated lane (the same helper the rotation sandwich uses). */
+   const nir_alu_instr *vec = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!vec || vec->op != nir_op_vec4)
+      return;
+   for (unsigned lane = 0; lane < 4; lane++) {
+      const nir_def *base;
+      unsigned chan;
+      bool neg;
+      resolve_signed_channel(&vec->src[lane], &base, &chan, &neg);
+      if (base != &load->def || chan != lane || neg != (lane != 0))
+         return;
+   }
+
+   if (nir_src_is_const(load->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->is_qconj = true;
+}
+
+void
+r300_nir_detect_qnorm_pattern(const nir_shader *s,
+                              struct r300_compute_qnorm_pattern *out)
+{
+   out->is_qnorm            = false;
+   out->input_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *store, *load;
+   if (!collect_unary_ssbo_shape(s, &store, &load))
+      return;
+
+   /* Store value = vec4(dot(a, a)): the squared norm broadcast to four lanes so
+    * the substrate's vec4 FP16 readback carries it (the kernel reads lane 0).
+    * After CSE the four vec4 lanes reference one scalar fdot4 def whose two
+    * operands are the same load, identity-swizzled.  Match that splat. */
+   const nir_alu_instr *vec = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!vec || vec->op != nir_op_vec4)
+      return;
+   const nir_def *scalar = vec->src[0].src.ssa;
+   for (unsigned lane = 0; lane < 4; lane++)
+      if (vec->src[lane].src.ssa != scalar || vec->src[lane].swizzle[0] != 0)
+         return;
+   const nir_alu_instr *dot = nir_def_as_alu_or_null(scalar);
+   if (!dot || dot->op != nir_op_fdot4)
+      return;
+   if (dot->src[0].src.ssa != &load->def || dot->src[1].src.ssa != &load->def)
+      return;
+   for (unsigned c = 0; c < 4; c++)
+      if (dot->src[0].swizzle[c] != c || dot->src[1].swizzle[c] != c)
+         return;
+
+   if (nir_src_is_const(load->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->is_qnorm = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
