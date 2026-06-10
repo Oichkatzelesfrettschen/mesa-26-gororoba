@@ -1592,7 +1592,11 @@ r300vk_synthesize_dp4_fs(struct pipe_context *pipe, uint8_t components)
    nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
                                              glsl_vec4_type(), "tc");
    in_tc->data.location = VARYING_SLOT_VAR0;
-   nir_def *coord = nir_load_var(&b, in_tc);
+   /* The varying is a vec4, but a 2D sampler takes a 2-component (s,t)
+    * coordinate.  nir_tex asserts coord_components equals the sampler
+    * dimension's coordinate count, so trim the load to xy before building
+    * the texture instruction. */
+   nir_def *coord = nir_trim_vector(&b, nir_load_var(&b, in_tc), 2);
 
    nir_def *tex[2];
    for (unsigned s = 0; s < 2; s++) {
