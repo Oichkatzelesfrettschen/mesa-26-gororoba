@@ -1,6 +1,7 @@
 # mesa-gororoba-debug: the debug twin of mesa-gororoba.  Same feature set (r300
-# GL + gallium-va MPEG-2 decode + amd_r300/r300vk Vulkan ICD) built with full
-# debug info and assertions, installed into /opt/mesa-26-gororoba-debug so it
+# GL + llvmpipe + zink + XA/Xv + gallium-va MPEG-2 decode + amd_r300/r300vk
+# Vulkan ICD) built with full debug info and assertions, installed into
+# /opt/mesa-26-gororoba-debug so it
 # sits alongside the release /opt install and stock mesa.  Use
 # mesa-26-gororoba-debug-run for loader-visible probes; it carries no
 # provides/conflicts/replaces, so it never becomes the system driver.
@@ -9,11 +10,11 @@
 # pointers, libunwind/valgrind/perfetto on).
 pkgname=mesa-gororoba-debug
 pkgver=26.2.0
-pkgrel=4
+pkgrel=5
 epoch=2
 # Same pin policy as the release package: update _commit per build, or override
 # with #branch=main for rapid iteration.
-_commit=1a5eea6e5ae1939694476a95d888d3981f6bcb54
+_commit=898ccf17f9b931371519b10ce290d8a05e7e2725
 pkgdesc='Mesa DEBUG side-by-side /opt build: r300 GL + amd_r300/r300vk, full debug info'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
@@ -81,12 +82,12 @@ build() {
     -D b_ndebug=false \
     -D b_lto=false \
     -D platforms=x11,wayland \
-    -D gallium-drivers=r300,llvmpipe \
+    -D gallium-drivers=r300,llvmpipe,zink \
     -D vulkan-drivers=amd_r300 \
     -D r300vk-gallium-backend=true \
     -D gallium-rusticl=false \
     -D llvm=enabled \
-    -D draw-use-llvm=true \
+    -D draw-use-llvm=false \
     -D egl=enabled \
     -D gbm=enabled \
     -D glx=dri \
@@ -96,6 +97,7 @@ build() {
     -D glvnd=enabled \
     -D gallium-va=enabled \
     -D video-codecs=mpeg12dec \
+    -D gallium-xa=true \
     -D valgrind=enabled \
     -D libunwind=enabled
 
