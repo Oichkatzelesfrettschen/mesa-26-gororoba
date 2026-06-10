@@ -20,7 +20,7 @@ Current verified state:
 - distcc host specs for this lane use mDNS `.local` names only; do not use raw DHCP addresses.
 - Compiler: a coherent installed `clang` / `clang++` / `llvm-config`
   family selected by the Makefile-generated Meson native overlay.
-- Warm profile: `build-infra/configs/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson`.
+- Warm profile: `build-infra/configs/alternates/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson`.
 - Pump profile: removed upstream (distcc-pump is incompatible with ccache; use warm lane).
   Any distcc-pump details later in this document are historical-only; the pump
   lane is not an active workflow -- follow the warm (ccache-first) lane above.
@@ -29,7 +29,7 @@ Current verified state:
   installing into the shared active tree.
 
 The no-Rusticl profile (5_) enables the daily Terakan/r600 release lane (its
-option set, matching configs/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson):
+option set, matching configs/alternates/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson):
 
 - `gallium-drivers=[r600, zink, softpipe, llvmpipe]`
 - `vulkan-drivers=[amd_terascale]`
@@ -200,7 +200,7 @@ export CXXFLAGS="$CFLAGS"
 export LDFLAGS=""
 
 meson setup \
-  --native-file="$PWD/build-infra/configs/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson" \
+  --native-file="$PWD/build-infra/configs/alternates/5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson" \
   --prefix="$PREFIX" \
   "$BUILDDIR" "$PWD"
 

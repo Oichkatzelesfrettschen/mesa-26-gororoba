@@ -4,21 +4,28 @@ Canonical build infrastructure for the gororoba Mesa fork.
 
 ## Canonical profiles
 
-Six numbered profiles in `build-infra/configs/`:
+The default profile sits at the top of `build-infra/configs/`; the other five
+live in `build-infra/configs/alternates/` and are selected by passing
+`PROFILE=` explicitly.  The Makefile resolves a bare profile name against both
+directories, so the per-profile `rebuild-`/`install-` targets need no path
+prefix.
 
-| Profile | Target | Surface | Type |
-|---|---|---|---|
-| `1_r300_full_release_x86_64v1-clang22-distcc-cache` | vostro (RS482, r300) | maximal r300 + amd_r300 ICD | release |
-| `2_r300_full_debug_x86_64v1-clang22-distcc-cache` | vostro (RS482, r300) | maximal r300 + amd_r300 ICD | debug |
-| `3_terakan_full_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | r600+zink+soft+llvm+amd_terascale + Rusticl | release |
-| `4_terakan_full_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | r600+zink+soft+llvm+amd_terascale + Rusticl | debug |
-| `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 3_ without Rusticl | release |
-| `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 4_ without Rusticl | debug |
+| Profile | Target | Surface | Type | Location |
+|---|---|---|---|---|
+| `2_r300_full_debug_x86_64v1-clang22-distcc-cache` (default) | vostro (RS482, r300) | maximal r300 + amd_r300 ICD | debug | `configs/` |
+| `1_r300_full_release_x86_64v1-clang22-distcc-cache` | vostro (RS482, r300) | maximal r300 + amd_r300 ICD | release (conformance baseline) | `configs/alternates/` |
+| `3_terakan_full_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | r600+zink+soft+llvm+amd_terascale + Rusticl | release | `configs/alternates/` |
+| `4_terakan_full_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | r600+zink+soft+llvm+amd_terascale + Rusticl | debug | `configs/alternates/` |
+| `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 3_ without Rusticl | release | `configs/alternates/` |
+| `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 4_ without Rusticl | debug | `configs/alternates/` |
 
-All six use `HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` and
-`COMPILER_CHAIN=ccache`.  `make install PROFILE=...` lands in the isolated
-per-profile prefix `/opt/local/mesa-<profile>` by default; the shared active
-trees `/opt/local/mesa-26-gororoba` (release) and
+The r300 profiles use `HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` and
+`COMPILER_CHAIN=ccache`; the x130e terakan lanes pass `HOSTENV=btver1*`
+explicitly.  Conformance and silicon-evidence runs use the release profile
+(`1_r300_full_release`, now under `alternates/`) because an asserts-live debug
+build can abort a CTS/Piglit case that release would pass.  `make install
+PROFILE=...` lands in the isolated per-profile prefix `/opt/local/mesa-<profile>`
+by default; the shared active trees `/opt/local/mesa-26-gororoba` (release) and
 `/opt/local/mesa-26-gororoba-debug` (debug) are used only by the
 `install-<profile>` targets or when an explicit `PREFIX=` is passed.
 
@@ -29,12 +36,13 @@ build-infra/
 |-- Makefile                       # entry point
 |-- README.md                      # this file
 |-- configs/
-|   |-- 1_r300_full_release_x86_64v1-clang22-distcc-cache.meson
-|   |-- 2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson
-|   |-- 3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson
-|   |-- 4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson
-|   |-- 5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson
-|   +-- 6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson
+|   |-- 2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson   # default profile
+|   +-- alternates/                # non-default profiles; pass PROFILE= explicitly
+|       |-- 1_r300_full_release_x86_64v1-clang22-distcc-cache.meson
+|       |-- 3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson
+|       |-- 4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson
+|       |-- 5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson
+|       +-- 6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson
 +-- env/
     |-- vostro1000-x86-64-v1-clang22-ccache-distcc.env  # primary vostro + x130e lane
     |-- btver1.env                 # x130e (Bobcat) LLVM-family + distcc
@@ -43,8 +51,11 @@ build-infra/
     +-- ...                        # additional host envs
 ```
 
-Build outputs land OUTSIDE the source tree at `../../build/mesa-<profile>/`,
-so `git clean -xdf` in gororoba does not nuke ongoing builds.
+Build outputs land in the gitignored repo-local `build/mesa-<profile>/` tree, so
+they never appear in `git status`, and `make clean` removes the active profile's
+subdir.  Each worktree gets its own `build/`, so parallel profile builds do not
+collide.  (`git clean -xdf` also removes them since they are ignored; prefer
+`make clean` to drop one profile without touching the others or the source.)
 
 ## Build-system policy
 
