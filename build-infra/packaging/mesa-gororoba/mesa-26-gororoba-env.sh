@@ -27,5 +27,10 @@ export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-${VK_DRIVER_FILES}}"
 export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-r300}"
 export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-0}"
 export LIBVA_DRIVER_NAME="${LIBVA_DRIVER_NAME:-r300}"
+# Pin the Gallium Draw module to its C path: the r300 vertex stage runs
+# software TCL, and the in-development software vertex FPU must be the
+# code that executes, not the LLVM draw JIT.  Override with
+# DRAW_USE_LLVM=1 to compare against the JIT.
+export DRAW_USE_LLVM="${DRAW_USE_LLVM:-0}"
 
 unset -f mesa_26_gororoba_prepend_path

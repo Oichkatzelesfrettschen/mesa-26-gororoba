@@ -71,10 +71,10 @@ source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-goror
         '90-mesa-gororoba-r300.conf'
         '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
-            '6bd7461fef995b5edd94f444dda1ee86a5c43edf4790f3edfce27da6ced57ea5'
+            '0c12e545fce6324fcca354a33934f042a15b05bb40993e1637becfdf494d80ec'
             '1aba100cad006b67b31be2c5c31814e25a58d74c320d556678136bef726138c9'
             '091cafc777b91f59d6fcabf2c2229655d6c79c439fc3a2f77a960ba68190b849'
-            '1a0958f6197fbc2dc60a88efe714d1996d67c05bfa67e7f7c5b4a74506fe2ba1'
+            'ccc7ad98af4aa71573d9131bfee76714f7c43eb41f4af05b0ddd776cae2a98df'
             'db99ee65f746c9f122477d2cb4e47a184a0153012c992b74e1f1cf0e65187ebd')
 
 _prefix=/usr
@@ -127,7 +127,7 @@ build() {
     -D r300vk-gallium-backend=true \
     -D gallium-rusticl=false \
     -D llvm=enabled \
-    -D draw-use-llvm=false \
+    -D draw-use-llvm=true \
     -D egl=enabled \
     -D gbm=enabled \
     -D glx=dri \
