@@ -375,6 +375,11 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * lands correctly.  The 2D-array-from-3D and 2D/3D copy capabilities are
     * vacuous here because r300vk does not expose 3D images. */
    .KHR_maintenance1 = true,
+   /* VK_KHR_imageless_framebuffer: r300vk_CreateFramebuffer accepts the
+    * IMAGELESS flag and stores no views, and r300vk_record_begin_render_pass
+    * sources the colour view from the VkRenderPassAttachmentBeginInfo at begin
+    * time.  Gated by the imagelessFramebuffer feature below. */
+   .KHR_imageless_framebuffer = true,
 };
 
 static void
@@ -397,6 +402,10 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * colour-attachment framebuffer from VkRenderingInfo, so advertise the
     * feature bit that gates VK_KHR_dynamic_rendering. */
    features->dynamicRendering = true;
+   /* Imageless framebuffers carry no views; r300vk_CreateFramebuffer records the
+    * IMAGELESS flag and the begin path reads the views from the
+    * VkRenderPassAttachmentBeginInfo, so advertise the gating feature. */
+   features->imagelessFramebuffer = true;
 }
 
 void

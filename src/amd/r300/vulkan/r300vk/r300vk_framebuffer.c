@@ -42,7 +42,13 @@ r300vk_CreateFramebuffer(VkDevice _device,
    fb->width            = pCreateInfo->width;
    fb->height           = pCreateInfo->height;
    fb->attachment_count = pCreateInfo->attachmentCount;
-   if (pCreateInfo->attachmentCount > 0)
+   /* VK_KHR_imageless_framebuffer: an imageless framebuffer describes attachment
+    * formats via VkFramebufferAttachmentsCreateInfo and supplies the real views
+    * at begin time, so pAttachments is absent (NULL) even though attachmentCount
+    * is set -- copying it would dereference NULL.  The begin path reads the
+    * views from the VkRenderPassAttachmentBeginInfo instead. */
+   fb->imageless = (pCreateInfo->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT) != 0;
+   if (!fb->imageless && pCreateInfo->attachmentCount > 0)
       memcpy(fb->attachments, pCreateInfo->pAttachments,
              pCreateInfo->attachmentCount * sizeof(VkImageView));
 
