@@ -17,6 +17,15 @@
 #   * DEV / rapid iteration: build the devenv tree (ninja -C <builddir>) and run
 #     via VK_DRIVER_FILES (Vulkan) or LIBGL_DRIVERS_PATH+LD_LIBRARY_PATH (GL).
 #     Incremental, seconds per file.  This package is NOT for per-file iteration.
+# Build profile: debugoptimized (-O2 -g) with assertions live (b_ndebug=false)
+# and valgrind, libunwind, and perfetto/gpuvis tracing enabled.  This is the
+# deliberate current default: the installed /usr stack stays debuggable so a
+# crash on the daily driver gives symbols, a firing assertion, and valgrind
+# locality without a separate build.  It is -O2, so not a performance cliff,
+# but assertions can abort a CTS case that a pure release build would pass --
+# the canonical 1_r300 measurement profile stays buildtype=release for clean
+# conformance baselines; this package is the debuggable daily driver.
+#
 #   * RELEASE / system install: this PKGBUILD -> /usr, replacing stock mesa.
 #     Promote here once a change is stable enough for normal desktop and
 #     headless probe use on the target RS482 host.
@@ -31,12 +40,12 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=8
+pkgrel=9
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
 # replace #branch=main with #commit=<sha>.
-pkgdesc='Mesa system replacement: r300 GL + zink + XA/Xv + VA MPEG-2 + amd_r300/r300vk Vulkan ICD, no LLVM, x86-64 baseline'
+pkgdesc='Mesa system replacement: r300 GL + zink + XA/Xv + VA MPEG-2 + amd_r300/r300vk Vulkan ICD, no LLVM, debugoptimized+asserts+valgrind/libunwind/perfetto, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -62,7 +71,7 @@ provides=(
 )
 conflicts=(mesa vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 replaces=(mesa vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
-options=('!lto' '!debug' 'strip')
+options=('!lto' '!strip')
 install="${pkgname}.install"
 source=("${pkgname}::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#branch=main"
         'mesa-26-gororoba-env.sh'
@@ -104,7 +113,7 @@ build() {
   # native tune.  target-cpu=x86-64 guards any Rust translation unit from
   # emitting K8-incompatible code.
   export CPPFLAGS='-D_FORTIFY_SOURCE=2'
-  export CFLAGS='-march=x86-64 -mtune=generic -O2 -fexceptions -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security'
+  export CFLAGS='-march=x86-64 -mtune=generic -O2 -g -fexceptions -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security'
   export CXXFLAGS="${CFLAGS} -Wp,-D_GLIBCXX_ASSERTIONS"
   export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
   export RUSTFLAGS='-C target-cpu=x86-64'
@@ -116,10 +125,10 @@ build() {
   meson setup build "${pkgname}" \
     --prefix="${_prefix}" \
     --sysconfdir=/etc \
-    --buildtype=release \
-    --wrap-mode=nofallback \
+    --buildtype=debugoptimized \
+    --wrap-mode=nodownload \
     -D optimization=2 \
-    -D b_ndebug=true \
+    -D b_ndebug=false \
     -D b_lto=false \
     -D platforms=x11,wayland \
     -D gallium-drivers=r300,zink \
@@ -138,8 +147,10 @@ build() {
     -D gallium-va=enabled \
     -D video-codecs=mpeg12dec \
     -D gallium-xa=true \
-    -D valgrind=disabled \
-    -D libunwind=disabled
+    -D valgrind=enabled \
+    -D libunwind=enabled \
+    -D perfetto=true \
+    -D gpuvis=true
 
   meson compile -C build
 }
