@@ -358,6 +358,11 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * render-pass replay drives, so a render target needs no VkRenderPass or
     * VkFramebuffer object. */
    .KHR_dynamic_rendering = true,
+   /* VK_KHR_create_renderpass2: r300vk_CreateRenderPass2 and the
+    * r300vk_CmdBeginRenderPass2 / r300vk_CmdEndRenderPass2 entry points mirror
+    * the 1.0 render-pass path onto r300vk's own render-pass object, so the 2.0
+    * surface needs no common-runtime emulation. */
+   .KHR_create_renderpass2 = true,
 };
 
 static void
