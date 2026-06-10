@@ -371,11 +371,15 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .op_name         = "OMUL_OCTONION",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
-      .theorem         = "octonion product = Cayley-Dickson doubling of quaternions = four "
-                         "Hamilton products = sixteen DP4s; norm multiplicative "
-                         "|xy|^2 = |x|^2 |y|^2 (Hurwitz at dim 8); 3/3 with the norm "
-                         "identity exact on RS482",
-      .mesa_hook       = NULL,  /* OMUL macro = 4 QMUL via CD doubling */
+      .theorem         = "octonion product (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) "
+                         "= Cayley-Dickson doubling = four Hamilton products = sixteen DP4s; "
+                         "norm multiplicative |xy|^2 = |x|^2 |y|^2 (Hurwitz at dim 8).  "
+                         "r300_nir_detect_omul_pattern admits the eight-wide kernel (four "
+                         "quaternion inputs, two output halves), the two synthesized FS "
+                         "passes (r300vk_build_omul_lo/hi_fs_nir) emit the halves, and the "
+                         "two-pass dispatch fills the result -- HW-confirmed 4/4 exact on "
+                         "RS482 by omul_vk_probe, the Hurwitz norm holding exactly",
+      .mesa_hook       = "r300_nir_detect_omul_pattern",
       .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
    },
    {

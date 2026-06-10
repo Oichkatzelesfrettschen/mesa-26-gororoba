@@ -1342,6 +1342,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_qrotate_pattern *qrotate,
                                struct r300_compute_qconj_pattern *qconj,
                                struct r300_compute_qnorm_pattern *qnorm,
+                               struct r300_compute_omul_pattern *omul,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1397,6 +1398,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_qrotate_pattern(nir, qrotate);
    r300_nir_detect_qconj_pattern(nir, qconj);
    r300_nir_detect_qnorm_pattern(nir, qnorm);
+   r300_nir_detect_omul_pattern(nir, omul);
 
    ralloc_free(nir);
    return true;
@@ -1791,6 +1793,51 @@ r300vk_qnorm_synthesize_shaders(struct r300vk_device *device,
 
    pl->fs_cso = r300vk_synthesize_qnorm_fs(pipe);
    if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+/* OMUL VS+FS synthesis: the passthrough VS plus BOTH octonion-product half FSs.
+ * fs_cso holds the lower-half FS (a*c - conj(d)*b), fs_cso2 the upper-half FS
+ * (d*a + b*conj(c)); the two-pass dispatch runs one then the other. */
+static bool
+r300vk_omul_synthesize_shaders(struct r300vk_device *device,
+                               struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   nir_shader *lo = r300vk_build_omul_lo_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, lo, true);
+   struct pipe_shader_state lo_state = { .type = PIPE_SHADER_IR_NIR, .ir.nir = lo };
+   pl->fs_cso = pipe->create_fs_state(pipe, &lo_state);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+
+   nir_shader *hi = r300vk_build_omul_hi_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, hi, true);
+   struct pipe_shader_state hi_state = { .type = PIPE_SHADER_IR_NIR, .ir.nir = hi };
+   pl->fs_cso2 = pipe->create_fs_state(pipe, &hi_state);
+   if (!pl->fs_cso2) {
+      pipe->delete_fs_state(pipe, pl->fs_cso);
+      pl->fs_cso = NULL;
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
       return false;
@@ -2376,6 +2423,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->qnorm.is_qnorm = false;
       return true;
    }
+   if (pl->omul.is_omul) {
+      if (!r300vk_omul_synthesize_shaders(device, pl))
+         pl->omul.is_omul = false;
+      return true;
+   }
    if (pl->blend_acc_reduction.is_blend_acc_reduction) {
       if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
@@ -2425,13 +2477,15 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_qrotate_pattern qrotate_pat = {0};
    struct r300_compute_qconj_pattern qconj_pat = {0};
    struct r300_compute_qnorm_pattern qnorm_pat = {0};
+   struct r300_compute_omul_pattern omul_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
                                        &qmul_pat, &qrotate_pat,
-                                       &qconj_pat, &qnorm_pat, local_size))
+                                       &qconj_pat, &qnorm_pat, &omul_pat,
+                                       local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
                        i);
@@ -2457,6 +2511,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->qrotate = qrotate_pat;
    pl->qconj = qconj_pat;
    pl->qnorm = qnorm_pat;
+   pl->omul = omul_pat;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;
@@ -2522,6 +2577,8 @@ r300vk_DestroyPipeline(VkDevice _device,
       device->pipe->delete_vs_state(device->pipe, pl->vs_cso);
    if (pl->fs_cso)
       device->pipe->delete_fs_state(device->pipe, pl->fs_cso);
+   if (pl->fs_cso2)
+      device->pipe->delete_fs_state(device->pipe, pl->fs_cso2);
    if (pl->blend_cso)
       device->pipe->delete_blend_state(device->pipe, pl->blend_cso);
    if (pl->rasterizer_cso)

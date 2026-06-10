@@ -409,6 +409,29 @@ struct r300_compute_qnorm_pattern {
 void r300_nir_detect_qnorm_pattern(const struct nir_shader *s,
                                    struct r300_compute_qnorm_pattern *out);
 
+/* Octonion product (OMUL) pattern.  An octonion (a,b) is two quaternions; the
+ * Cayley-Dickson product (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) is four
+ * Hamilton products = sixteen DP4s.  The admissible kernel presents the four
+ * quaternion halves a,b,c,d as four input SSBOs (read in that order) and the two
+ * output halves o_lo, o_hi as two output SSBOs, so the substrate keeps its 1:1
+ * element-to-texel raster: the lower store is the folded a*c - conj(d)*b and the
+ * upper store the folded d*a + b*conj(c), each verified against the Hamilton rows
+ * (and, for the second conjugate, the conj-composed rotation rows).  Bindings
+ * stay 0 when the sources are not constants (positional fallback: a=0..d=3,
+ * o_lo=4, o_hi=5). */
+struct r300_compute_omul_pattern {
+   bool       is_omul;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   input_c_ssbo_binding;
+   uint32_t   input_d_ssbo_binding;
+   uint32_t   output_lo_ssbo_binding;
+   uint32_t   output_hi_ssbo_binding;
+};
+
+void r300_nir_detect_omul_pattern(const struct nir_shader *s,
+                                  struct r300_compute_omul_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

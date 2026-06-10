@@ -1250,9 +1250,16 @@ r300_nir_detect_qmul_pattern(const nir_shader *s,
    out->is_qmul = true;
 }
 
-/* The Hamilton permutation rows in (w,x,y,z) layout, shared by the QROTATE
- * matcher below; identical to the table inlined in the QMUL detector. */
-static const struct { uint8_t chan; bool neg; } r300_hamilton_rows[4][4] = {
+/* One lane of a permutation row: which channel of the base quaternion the lane
+ * reads, and whether it is negated.  Named (not anonymous) so the Hamilton and
+ * conj-composed rotation tables share a type with the OMUL matcher helpers that
+ * take a row as a parameter; two separate anonymous struct declarations are
+ * incompatible pointer types in C. */
+struct r300_perm_entry { uint8_t chan; bool neg; };
+
+/* The Hamilton permutation rows in (w,x,y,z) layout, shared by the QROTATE and
+ * OMUL matchers below; identical to the table inlined in the QMUL detector. */
+static const struct r300_perm_entry r300_hamilton_rows[4][4] = {
    { {0, false}, {1, true},  {2, true},  {3, true}  },
    { {1, false}, {0, false}, {3, false}, {2, true}  },
    { {2, false}, {3, true},  {0, false}, {1, false} },
@@ -1298,7 +1305,7 @@ resolve_signed_channel(const nir_alu_src *as, const nir_def **base,
  * over q's channels, the Hamilton row composed with the conjugate's sign (negate
  * on x,y,z).  The inner rows are the plain Hamilton rows (r300_hamilton_rows)
  * applied to embed(v), where channel 0 of a row means the constant 0. */
-static const struct { uint8_t chan; bool neg; } qrotate_outer_rows[4][4] = {
+static const struct r300_perm_entry qrotate_outer_rows[4][4] = {
    { {0, false}, {1, false}, {2, false}, {3, false} },
    { {1, true},  {0, false}, {3, true},  {2, false} },
    { {2, true},  {3, false}, {0, false}, {1, true}  },
@@ -1604,6 +1611,211 @@ r300_nir_detect_qnorm_pattern(const nir_shader *s,
    if (nir_src_is_const(store->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
    out->is_qnorm = true;
+}
+
+/* True if `def` is a vec4 whose four lanes are the signed channels of `base`
+ * given by row[] (chan, neg), each reached through resolve_signed_channel (so
+ * the fneg/mov the compiler folds onto a negated lane is unwrapped).  The
+ * permutation tables are the Hamilton rows (a plain product) or the conj-
+ * composed rotation rows (a product against a conjugated operand). */
+static bool
+omul_match_perm(const nir_def *def, const nir_def *base,
+                const struct r300_perm_entry row[4])
+{
+   const nir_alu_instr *v = nir_def_as_alu_or_null(def);
+   if (!v || v->op != nir_op_vec4)
+      return false;
+   for (unsigned j = 0; j < 4; j++) {
+      const nir_def *b;
+      unsigned c;
+      bool n;
+      resolve_signed_channel(&v->src[j], &b, &c, &n);
+      if (b != base || c != row[j].chan || n != row[j].neg)
+         return false;
+   }
+   return true;
+}
+
+/* Match a Hamilton-lane dot of an identity-swizzled `id_base` load against a
+ * permutation vec4 over `perm_base` given by row[].  Both operands enter the
+ * fdot4 identity-swizzled (the permutation lives inside the vec4); fdot is
+ * commutative, so accept either operand order. */
+static bool
+omul_match_id_perm_dot(const nir_def *dot_def,
+                       const nir_def *id_base, const nir_def *perm_base,
+                       const struct r300_perm_entry row[4])
+{
+   const nir_alu_instr *dot = nir_def_as_alu_or_null(dot_def);
+   if (!dot || dot->op != nir_op_fdot4)
+      return false;
+   for (unsigned k = 0; k < 2; k++) {
+      const nir_alu_src *id_src = &dot->src[k];
+      const nir_alu_src *perm_src = &dot->src[1 - k];
+      if (id_src->src.ssa != id_base)
+         continue;
+      bool id_ident = true, perm_ident = true;
+      for (unsigned c = 0; c < 4; c++) {
+         if (id_src->swizzle[c] != c)
+            id_ident = false;
+         if (perm_src->swizzle[c] != c)
+            perm_ident = false;
+      }
+      if (id_ident && perm_ident &&
+          omul_match_perm(perm_src->src.ssa, perm_base, row))
+         return true;
+   }
+   return false;
+}
+
+/* Match a Hamilton-lane dot whose BOTH operands are permutation vec4s -- the
+ * conj(d)*b lane of the octonion product, where conj(d) folds to a vec4 (the
+ * Hamilton row 0 over d, the conjugate pattern) instead of staying a plain load.
+ * Accept either operand order; require both identity-swizzled into the dot. */
+static bool
+omul_match_two_perm_dot(const nir_def *dot_def,
+                        const nir_def *base1,
+                        const struct r300_perm_entry row1[4],
+                        const nir_def *base2,
+                        const struct r300_perm_entry row2[4])
+{
+   const nir_alu_instr *dot = nir_def_as_alu_or_null(dot_def);
+   if (!dot || dot->op != nir_op_fdot4)
+      return false;
+   for (unsigned c = 0; c < 4; c++)
+      if (dot->src[0].swizzle[c] != c || dot->src[1].swizzle[c] != c)
+         return false;
+   const nir_def *o0 = dot->src[0].src.ssa, *o1 = dot->src[1].src.ssa;
+   return (omul_match_perm(o0, base1, row1) && omul_match_perm(o1, base2, row2)) ||
+          (omul_match_perm(o1, base1, row1) && omul_match_perm(o0, base2, row2));
+}
+
+/* Match one half of the octonion product: a vec4 of four Hamilton-lane dots
+ * combined by `combine` (fsub for the lower half a*c - conj(d)*b, fadd for the
+ * upper d*a + b*conj(c)).  The first product P is an identity-load Hamilton dot
+ * (p_id against the Hamilton rows of p_perm).  The second product Q is either
+ * the two-perm conj(d)*b form (q_is_two_perm: conj(d) = Hamilton row 0 over
+ * q_conj_base, against the Hamilton rows of q_perm) or another identity-load
+ * Hamilton dot over the q_row table (q_id against q_row of q_perm). */
+static bool
+omul_match_half(const nir_def *store_val, nir_op combine,
+                const nir_def *p_id, const nir_def *p_perm,
+                const nir_def *q_id, const nir_def *q_perm, bool q_is_two_perm,
+                const nir_def *q_conj_base,
+                const struct r300_perm_entry q_row[4])
+{
+   const nir_alu_instr *top = nir_def_as_alu_or_null(store_val);
+   if (!top || top->op != combine)
+      return false;
+   const nir_alu_instr *pvec = nir_def_as_alu_or_null(top->src[0].src.ssa);
+   const nir_alu_instr *qvec = nir_def_as_alu_or_null(top->src[1].src.ssa);
+   if (!pvec || pvec->op != nir_op_vec4 || !qvec || qvec->op != nir_op_vec4)
+      return false;
+   for (unsigned lane = 0; lane < 4; lane++) {
+      if (!omul_match_id_perm_dot(pvec->src[lane].src.ssa, p_id, p_perm,
+                                  r300_hamilton_rows[lane]))
+         return false;
+      if (q_is_two_perm) {
+         if (!omul_match_two_perm_dot(qvec->src[lane].src.ssa,
+                                      q_conj_base, r300_hamilton_rows[0],
+                                      q_perm, r300_hamilton_rows[lane]))
+            return false;
+      } else {
+         const struct r300_perm_entry *row =
+            q_row == NULL ? r300_hamilton_rows[lane] : qrotate_outer_rows[lane];
+         if (!omul_match_id_perm_dot(qvec->src[lane].src.ssa, q_id, q_perm, row))
+            return false;
+      }
+   }
+   return true;
+}
+
+void
+r300_nir_detect_omul_pattern(const nir_shader *s,
+                             struct r300_compute_omul_pattern *out)
+{
+   out->is_omul                = false;
+   out->input_a_ssbo_binding   = 0;
+   out->input_b_ssbo_binding   = 0;
+   out->input_c_ssbo_binding   = 0;
+   out->input_d_ssbo_binding   = 0;
+   out->output_lo_ssbo_binding = 0;
+   out->output_hi_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *store_lo = NULL, *store_hi = NULL;
+   const nir_intrinsic_instr *load[4] = { NULL, NULL, NULL, NULL };
+   unsigned store_count = 0, load_count = 0, atomic_count = 0;
+   bool has_loop = false, in_if = false;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         for (const nir_cf_node *p = block->cf_node.parent; p; p = p->parent) {
+            if (p->type == nir_cf_node_loop)
+               has_loop = true;
+            if (p->type == nir_cf_node_if)
+               in_if = true;
+         }
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               if (store_count == 0)
+                  store_lo = intr;
+               else if (store_count == 1)
+                  store_hi = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (load_count < 4)
+                  load[load_count] = intr;
+               load_count++;
+            } else if (is_ssbo_atomic(intr->intrinsic)) {
+               atomic_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 2 || load_count != 4 || atomic_count != 0 ||
+       has_loop || in_if)
+      return;
+   if (!store_lo->src[0].ssa || !store_hi->src[0].ssa)
+      return;
+   for (unsigned i = 0; i < 2; i++) {
+      const nir_intrinsic_instr *st = i == 0 ? store_lo : store_hi;
+      if (nir_intrinsic_has_write_mask(st) &&
+          nir_intrinsic_write_mask(st) != BITFIELD_MASK(st->num_components))
+         return;
+   }
+
+   /* Canonical input order: the kernel reads a,b,c,d in declaration order, so
+    * the four collected loads are a,b,c,d.  o_lo = a*c - conj(d)*b is a Hamilton
+    * difference (a identity-dotted against the Hamilton rows of c, minus conj(d)
+    * -- a vec4, Hamilton row 0 over d -- dotted against the Hamilton rows of b).
+    * o_hi = d*a + b*conj(c) is a Hamilton sum (d against the rows of a, plus b
+    * against the conj-composed rotation rows of c). */
+   const nir_def *a = &load[0]->def, *b = &load[1]->def;
+   const nir_def *c = &load[2]->def, *d = &load[3]->def;
+
+   if (!omul_match_half(store_lo->src[0].ssa, nir_op_fsub,
+                        a, c, NULL, b, true, d, NULL))
+      return;
+   if (!omul_match_half(store_hi->src[0].ssa, nir_op_fadd,
+                        d, a, b, c, false, NULL, qrotate_outer_rows[0]))
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(load[2]->src[0]))
+      out->input_c_ssbo_binding = nir_src_as_uint(load[2]->src[0]);
+   if (nir_src_is_const(load[3]->src[0]))
+      out->input_d_ssbo_binding = nir_src_as_uint(load[3]->src[0]);
+   if (nir_src_is_const(store_lo->src[1]))
+      out->output_lo_ssbo_binding = nir_src_as_uint(store_lo->src[1]);
+   if (nir_src_is_const(store_hi->src[1]))
+      out->output_hi_ssbo_binding = nir_src_as_uint(store_hi->src[1]);
+   out->is_omul = true;
 }
 
 void

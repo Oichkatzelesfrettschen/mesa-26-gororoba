@@ -1757,6 +1757,219 @@ r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
 
+/* Run one octonion-product pass on the compute-as-raster substrate: bind the
+ * four input sampler views (a,b,c,d), draw the fullscreen quad through pass_fs,
+ * and unpack the FP16 render-target result into out_res at out_offset.  R300 has
+ * no FP32 render target, so the quaternion-lane result rides an FP16 target and
+ * the copy-back unpacks each row to RGBA32_FLOAT, the kernel's output format.
+ * The vb/velems fullscreen quad is shared across the two passes. */
+static bool
+omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
+              struct r300vk_device *device,
+              struct pipe_sampler_view *views[4], void *pass_fs, void *vs_cso,
+              struct pipe_resource *vb, void *velems_cso,
+              struct pipe_resource *out_res, unsigned out_offset,
+              unsigned width, unsigned height, uint64_t total)
+{
+   const enum pipe_format rtfmt = PIPE_FORMAT_R16G16B16A16_FLOAT;
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = rtfmt;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt)
+      return false;
+
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = rtfmt;
+   surf_templ.texture = rt;
+
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        vs_cso, pass_fs, velems_cso);
+
+   void *samplers[4] = { device->identity_map_sampler_cso,
+                         device->identity_map_sampler_cso,
+                         device->identity_map_sampler_cso,
+                         device->identity_map_sampler_cso };
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 4, samplers);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 4, 0, views);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.instance_count = 1;
+   info.max_index      = 3;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   bool copy_ok = false;
+   {
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         const unsigned buf_bs =
+            util_format_get_blocksize(PIPE_FORMAT_R32G32B32A32_FLOAT);
+         out_box.x      = out_offset;
+         out_box.width  = width * height * buf_bs;
+         out_box.height = 1;
+         out_box.depth  = 1;
+         void *out_bytes = pipe->buffer_map(pipe, out_res, 0,
+                                            PIPE_MAP_WRITE |
+                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                            &out_box, &out_xfer);
+         if (out_bytes) {
+            uint8_t *dst = out_bytes;
+            const uint8_t *src = rt_map;
+            uint64_t remaining = total;
+            for (unsigned r = 0; r < height && remaining; r++) {
+               unsigned n = remaining < width ? (unsigned)remaining : width;
+               util_format_unpack_rgba(rtfmt, dst, src, n);
+               dst += (size_t)n * buf_bs;
+               src += rt_xfer->stride;
+               remaining -= n;
+            }
+            pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+
+   struct pipe_sampler_view *no_views[4] = { NULL, NULL, NULL, NULL };
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 4, no_views);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe_resource_reference(&rt, NULL);
+   return copy_ok;
+}
+
+/* OMUL dispatch replay (route A: two passes).  The octonion product fills an
+ * eight-wide result, but the substrate's FS writes one vec4 per draw, so two
+ * passes -- the lower half a*c - conj(d)*b and the upper d*a + b*conj(c) -- each
+ * sample the four quaternion inputs a,b,c,d and write one output half.  Both
+ * passes share the four sampler views and the fullscreen quad; only the
+ * synthesized FS (pl->fs_cso for the lower half, pl->fs_cso2 for the upper) and
+ * the output buffer differ.  A future MRT route would write both halves in one
+ * pass when the screen supports two simultaneous FP16 render targets. */
+bool
+r300vk_omul_dispatch_replay(struct r300vk_device *device,
+                            const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso || !pl->fs_cso2)
+      return false;
+   if (binds->first_set != 0)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   /* Six bindings: a,b,c,d inputs then o_lo,o_hi outputs.  Captured constants
+    * win; all-zero means opaque post-explicit_io handles, so fall back to the
+    * first six STORAGE_BUFFERs in declaration order. */
+   uint32_t bind[6] = { pl->omul.input_a_ssbo_binding,
+                        pl->omul.input_b_ssbo_binding,
+                        pl->omul.input_c_ssbo_binding,
+                        pl->omul.input_d_ssbo_binding,
+                        pl->omul.output_lo_ssbo_binding,
+                        pl->omul.output_hi_ssbo_binding };
+   if (bind[0] == 0 && bind[1] == 0 && bind[2] == 0 && bind[3] == 0 &&
+       bind[4] == 0 && bind[5] == 0) {
+      for (unsigned i = 0; i < 6; i++)
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+   }
+
+   const struct r300vk_descriptor *desc[6];
+   struct r300vk_buffer *buf[6];
+   for (unsigned i = 0; i < 6; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer)
+         return false;
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0 || total > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
+   for (unsigned i = 0; i < 4; i++) {
+      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
+         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      if (!views[i]) {
+         for (unsigned k = 0; k < i; k++)
+            pipe_sampler_view_reference(&views[k], NULL);
+         return false;
+      }
+   }
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      for (unsigned i = 0; i < 4; i++)
+         pipe_sampler_view_reference(&views[i], NULL);
+      return false;
+   }
+
+   bool ok_lo = omul_run_pass(pipe, screen, device, views, pl->fs_cso,
+                              pl->vs_cso, vb, velems_cso, buf[4]->resource,
+                              (unsigned)desc[4]->buf.offset, width, height, total);
+   bool ok_hi = omul_run_pass(pipe, screen, device, views, pl->fs_cso2,
+                              pl->vs_cso, vb, velems_cso, buf[5]->resource,
+                              (unsigned)desc[5]->buf.offset, width, height, total);
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   for (unsigned i = 0; i < 4; i++)
+      pipe_sampler_view_reference(&views[i], NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok_lo && ok_hi;
+}
+
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
  * view, two storage buffers) plus a per-dispatch fragment constant carrying
  * the neighbor texel displacement.  The synthesized FS

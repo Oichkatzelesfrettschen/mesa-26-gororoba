@@ -243,6 +243,81 @@ build_qnorm_form(void)
    return b.shader;
 }
 
+/* The four Hamilton second-operand permutations of q (w,x,y,z layout), the
+ * vec4s the canonical 4-dot product dots the first operand against. */
+static void
+ham_perms(nir_builder *b, nir_def *q, nir_def *out[4])
+{
+   nir_def *x = nir_channel(b, q, 0), *y = nir_channel(b, q, 1);
+   nir_def *z = nir_channel(b, q, 2), *w = nir_channel(b, q, 3);
+   nir_def *ny = nir_fneg(b, y), *nz = nir_fneg(b, z), *nw = nir_fneg(b, w);
+   out[0] = nir_vec4(b, x, ny, nz, nw);
+   out[1] = nir_vec4(b, y, x, w, nz);
+   out[2] = nir_vec4(b, z, nw, x, y);
+   out[3] = nir_vec4(b, w, z, ny, x);
+}
+static nir_def *
+ham_prod(nir_builder *b, nir_def *p, nir_def *q)
+{
+   nir_def *pm[4];
+   ham_perms(b, q, pm);
+   return nir_vec4(b, nir_fdot(b, p, pm[0]), nir_fdot(b, p, pm[1]),
+                   nir_fdot(b, p, pm[2]), nir_fdot(b, p, pm[3]));
+}
+static nir_def *
+qconj4(nir_builder *b, nir_def *q)
+{
+   return nir_vec4(b, nir_channel(b, q, 0), nir_fneg(b, nir_channel(b, q, 1)),
+                   nir_fneg(b, nir_channel(b, q, 2)), nir_fneg(b, nir_channel(b, q, 3)));
+}
+/* The four conj-composed (rotation outer) permutations of q -- the Hamilton rows
+ * folded with a conjugate over the SAME load, the form the compiler collapses
+ * b*conj(q) into (the perm channels stay references to q, not to a conj(q)
+ * intermediate vec4 that CSE could alias with another product's row). */
+static void
+qrot_perms(nir_builder *b, nir_def *q, nir_def *out[4])
+{
+   nir_def *x = nir_channel(b, q, 0), *y = nir_channel(b, q, 1);
+   nir_def *z = nir_channel(b, q, 2), *w = nir_channel(b, q, 3);
+   nir_def *ny = nir_fneg(b, y), *nz = nir_fneg(b, z), *nw = nir_fneg(b, w);
+   out[0] = nir_vec4(b, x, y, z, w);
+   out[1] = nir_vec4(b, ny, x, nw, z);
+   out[2] = nir_vec4(b, nz, w, x, ny);
+   out[3] = nir_vec4(b, nw, nz, y, x);
+}
+static nir_def *
+qrot_prod(nir_builder *b, nir_def *p, nir_def *q)
+{
+   nir_def *pm[4];
+   qrot_perms(b, q, pm);
+   return nir_vec4(b, nir_fdot(b, p, pm[0]), nir_fdot(b, p, pm[1]),
+                   nir_fdot(b, p, pm[2]), nir_fdot(b, p, pm[3]));
+}
+
+/* Octonion product (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) split into
+ * four quaternion input loads (a,b,c,d in order) and two output stores (o_lo,
+ * o_hi) -- the eight-wide form the OMUL detector admits.  Sixteen DP4s total. */
+static nir_shader *
+build_omul_form(void)
+{
+   nir_builder b = cs_builder("cs_omul_f32vec4");
+   nir_def *a = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *bb = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *c = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *d = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 3), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *olo = nir_fsub(&b, ham_prod(&b, a, c), ham_prod(&b, qconj4(&b, d), bb));
+   nir_def *ohi = nir_fadd(&b, ham_prod(&b, d, a), qrot_prod(&b, bb, c));
+   nir_store_ssbo(&b, olo, nir_imm_int(&b, 4), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   nir_store_ssbo(&b, ohi, nir_imm_int(&b, 5), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 prepare_detect_shader(nir_shader *nir)
 {
@@ -423,6 +498,36 @@ case_qnorm_metadata(void)
    ralloc_free(conj);
 }
 
+static void
+case_omul_metadata(void)
+{
+   nir_shader *nir = build_omul_form();
+   struct r300_compute_admission adm;
+   struct r300_compute_omul_pattern om = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "float4 omul kernel admits");
+   r300_nir_detect_omul_pattern(nir, &om);
+   CHECK(om.is_omul, "omul octonion-product shape detected");
+   CHECK(om.input_a_ssbo_binding == 0, "omul records a binding 0");
+   CHECK(om.input_b_ssbo_binding == 1, "omul records b binding 1");
+   CHECK(om.input_c_ssbo_binding == 2, "omul records c binding 2");
+   CHECK(om.input_d_ssbo_binding == 3, "omul records d binding 3");
+   CHECK(om.output_lo_ssbo_binding == 4, "omul records o_lo binding 4");
+   CHECK(om.output_hi_ssbo_binding == 5, "omul records o_hi binding 5");
+   ralloc_free(nir);
+
+   /* A plain Hamilton product (one store, two loads) is not an octonion
+    * product; the four-load / two-store shape gate must reject it. */
+   nir_shader *plain = build_qmul_form(false);
+   struct r300_compute_omul_pattern om2 = {0};
+   prepare_detect_shader(plain);
+   r300_nir_detect_omul_pattern(plain, &om2);
+   CHECK(!om2.is_omul, "omul rejects a plain Hamilton product");
+   ralloc_free(plain);
+}
+
 int
 main(void)
 {
@@ -445,6 +550,7 @@ main(void)
    case_qrotate_metadata();
    case_qconj_metadata();
    case_qnorm_metadata();
+   case_omul_metadata();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
