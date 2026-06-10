@@ -888,18 +888,33 @@ ntr_emit_scalar(struct ntr_compile *c, rc_opcode op, struct ntr_alu_dst dst,
 /* Attempt to fold a source modifier directly into the SSA temp map, avoiding
  * a MOV instruction when the source comes from an inline-able file.  Returns
  * true and updates c->ssa_temp on success; the caller emits a MOV on false.
- * src must already carry the modifier (for example, ntr_abs or ntr_negate). */
+ * src must already carry the modifier (for example, ntr_abs or ntr_negate).
+ *
+ * Folding records def -> mod(src) for later inlining and elides the MOV.  That
+ * is sound only when every consumer reads the value through the SSA temp map.
+ * nir_lower_vec_to_regs lowers a vec4 lane fed by fneg/fabs into a store_reg,
+ * so nir_legacy chases the modifier op's def to a hardware register (or, for a
+ * direct output store, to an output) and ntr_get_alu_dest returns that register
+ * as dst.  Then the MOV is the write that materializes the lane; skipping it
+ * drops it -- the negated channels of vec4(u.x,-u.y,-u.z,-u.w) read back zero.
+ * Fold only when the chased dest is still SSA and dst is the plain temporary
+ * those SSA reads resolve to. */
 static bool
-ntr_try_fold_srcmod_to_ssa(struct ntr_compile *c, nir_def *def,
+ntr_try_fold_srcmod_to_ssa(struct ntr_compile *c, nir_alu_instr *instr,
+                           struct rc_dst_register dst,
                            struct rc_src_register src)
 {
+   nir_legacy_alu_dest chased = nir_legacy_chase_alu_dest(&instr->def);
+   if (!chased.dest.is_ssa || dst.File != RC_FILE_TEMPORARY)
+      return false;
+
    if (src.RelAddr)
       return false;
 
    switch (src.File) {
    case RC_FILE_INPUT:
    case RC_FILE_CONSTANT:
-      c->ssa_temp[def->index] = src;
+      c->ssa_temp[instr->def.index] = src;
       return true;
    default:
       return false;
@@ -982,7 +997,7 @@ ntr_emit_alu_special(struct ntr_compile *c, nir_alu_instr *instr, struct ntr_alu
       if (c->lower_fabs)
          ntr_emit_alu_op2(c, RC_OPCODE_MAX, dst, src[0], ntr_negate(src[0]));
       else if (dst.saturate != RC_SATURATE_NONE ||
-               !ntr_try_fold_srcmod_to_ssa(c, &instr->def, ntr_abs(src[0])))
+               !ntr_try_fold_srcmod_to_ssa(c, instr, dst.reg, ntr_abs(src[0])))
          ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_abs(src[0]));
       break;
 
@@ -996,7 +1011,7 @@ ntr_emit_alu_special(struct ntr_compile *c, nir_alu_instr *instr, struct ntr_alu
          break;
 
       if (dst.saturate != RC_SATURATE_NONE ||
-          !ntr_try_fold_srcmod_to_ssa(c, &instr->def, ntr_negate(src[0])))
+          !ntr_try_fold_srcmod_to_ssa(c, instr, dst.reg, ntr_negate(src[0])))
          ntr_emit_alu_op1(c, RC_OPCODE_MOV, dst, ntr_negate(src[0]));
       break;
 
