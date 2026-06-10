@@ -87,7 +87,7 @@ build() {
     -D r300vk-gallium-backend=true \
     -D gallium-rusticl=false \
     -D llvm=enabled \
-    -D draw-use-llvm=true \
+    -D draw-use-llvm=false \
     -D egl=enabled \
     -D gbm=enabled \
     -D glx=dri \
