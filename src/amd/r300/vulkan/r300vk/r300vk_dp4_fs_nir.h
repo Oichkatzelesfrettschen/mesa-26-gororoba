@@ -67,6 +67,13 @@ nir_shader *r300vk_build_qnorm_fs_nir(const nir_shader_compiler_options *opts);
 nir_shader *r300vk_build_omul_lo_fs_nir(const nir_shader_compiler_options *opts);
 nir_shader *r300vk_build_omul_hi_fs_nir(const nir_shader_compiler_options *opts);
 
+/* Build the single-pass multiple-render-target octonion product: both halves in
+ * one FS, the lower half to color output 0 (FRAG_RESULT_DATA0) and the upper to
+ * color output 1 (FRAG_RESULT_DATA1) -- sixteen DP4s in one draw.  The dispatch's
+ * MRT route uses this when the screen supports two simultaneous FP16 render
+ * targets; otherwise it falls back to the two single-output passes. */
+nir_shader *r300vk_build_omul_mrt_fs_nir(const nir_shader_compiler_options *opts);
+
 #ifdef __cplusplus
 }
 #endif
