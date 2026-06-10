@@ -142,6 +142,17 @@ r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
                              const struct r300vk_cmd_dispatch *dispatch,
                              const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* OMUL (octonion product) orchestrator entry: the eight-wide Cayley-Dickson
+ * product runs as two passes -- the lower-half FS (pl->fs_cso) and the upper-half
+ * FS (pl->fs_cso2), each sampling the four quaternion inputs a,b,c,d and writing
+ * one output half to an FP16 render target unpacked into the kernel's vec4 FP32
+ * output.  Both passes share four sampler views and the fullscreen quad. */
+bool
+r300vk_omul_dispatch_replay(struct r300vk_device *device,
+                            const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* Blend-acc-reduction orchestrator entry: descriptor walk to resolve
  * the (value-input, histogram-output) buffer pair, stage a per-point VBO
  * carrying (pos, packed-RGBA8-value) per gid, bind the blend-enabled

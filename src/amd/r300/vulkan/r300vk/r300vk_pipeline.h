@@ -114,6 +114,13 @@ struct r300vk_pipeline {
     * an FP16 render target, unpacked into the kernel's vec4 FP32 output. */
    struct r300_compute_qnorm_pattern qnorm;
 
+   /* Octonion-product (OMUL) kernel detected at pipeline-create time:
+    * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
+    * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in
+    * fs_cso2), each sampling the four quaternion inputs and writing one output
+    * half to an FP16 render target, unpacked into the kernel's vec4 FP32 output. */
+   struct r300_compute_omul_pattern omul;
+
    /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
     * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])
@@ -189,6 +196,9 @@ struct r300vk_pipeline {
 
    void                   *vs_cso;
    void                   *fs_cso;
+   /* Second fragment CSO for the two-pass octonion product (OMUL): fs_cso holds
+    * the lower-half FS, fs_cso2 the upper-half FS.  NULL for single-pass ops. */
+   void                   *fs_cso2;
    void                   *blend_cso;
    void                   *rasterizer_cso;
    void                   *dsa_cso;

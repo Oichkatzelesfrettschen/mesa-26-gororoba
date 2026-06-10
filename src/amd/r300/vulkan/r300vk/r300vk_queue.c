@@ -286,6 +286,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_qconj_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qnorm.is_qnorm)
       ok = r300vk_qnorm_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->omul.is_omul)
+      ok = r300vk_omul_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->blend_acc_reduction.is_blend_acc_reduction)
       ok = r300vk_blend_acc_reduction_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->zpass_reduction.is_zpass_reduction)
