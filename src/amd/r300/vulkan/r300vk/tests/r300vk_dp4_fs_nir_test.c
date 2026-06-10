@@ -135,6 +135,27 @@ main(void)
       }
    }
 
+   /* The rotation FS is the sandwich q*embed(v)*conj(q) = two Hamilton products,
+    * so it samples two inputs (q, v) with 2-component coords and contains
+    * exactly eight DP4s.  A drop to four would mean only one product emitted. */
+   {
+      nir_shader *s = r300vk_build_qrotate_fs_nir(&options);
+      CHECK(s != NULL, "qrotate builds a shader");
+      if (s) {
+         nir_validate_shader(s, "r300vk qrotate fs");
+
+         unsigned tex = 0, bad = 0;
+         count_tex(s, &tex, &bad);
+         CHECK(tex == 2 && bad == 0,
+               "qrotate: two 2D tex ops, each a 2-component coord");
+
+         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
+         CHECK(dp4 == 8, "qrotate: exactly eight DP4s (two Hamilton products)");
+
+         ralloc_free(s);
+      }
+   }
+
    glsl_type_singleton_decref();
 
    if (g_failures) {

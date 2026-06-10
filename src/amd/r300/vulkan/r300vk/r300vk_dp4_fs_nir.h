@@ -39,6 +39,12 @@ nir_shader *r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
  * output format -- not the DP4 path's 3-byte RGBA8 scalar encode. */
 nir_shader *r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts);
 
+/* Build the quaternion-rotation fragment program (QROTATE_SANDWICH) as standalone
+ * NIR.  Samples a unit quaternion q (binding 0) and a vector v (binding 1) and
+ * writes q * embed(v) * conj(q) -- two Hamilton products, eight DP4s -- to the
+ * FP16 color export; the result's vector lanes are the rotated v. */
+nir_shader *r300vk_build_qrotate_fs_nir(const nir_shader_compiler_options *opts);
+
 #ifdef __cplusplus
 }
 #endif
