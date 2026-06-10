@@ -549,7 +549,7 @@ TARGET_HOST        ?= cachyos-vostro1000
 
 pkg-mesa-gororoba:
 	mkdir -p "$(GOROROBA_PKG_DIR)/tmp" "$(GOROROBA_REPO_DIR)"
-	cp "$(GOROROBA_PKG_SRC)"/* "$(GOROROBA_PKG_DIR)/"
+	find "$(GOROROBA_PKG_SRC)" -maxdepth 1 -type f -exec cp -t "$(GOROROBA_PKG_DIR)/" {} +
 	[ -z "$(GOROROBA_COMMIT)" ] || sed -i 's/^_commit=.*/_commit=$(GOROROBA_COMMIT)/' "$(GOROROBA_PKG_DIR)/PKGBUILD"
 	cd "$(GOROROBA_PKG_DIR)" && TMPDIR="$(GOROROBA_PKG_DIR)/tmp" SRCDEST="$(GOROROBA_PKG_DIR)" BUILDDIR="$(GOROROBA_PKG_DIR)" makepkg -f --noconfirm --skipinteg
 	cp "$(GOROROBA_PKG_DIR)"/mesa-gororoba-*.pkg.tar.zst "$(GOROROBA_REPO_DIR)/"
