@@ -126,7 +126,7 @@ build() {
     --prefix="${_prefix}" \
     --sysconfdir=/etc \
     --buildtype=debugoptimized \
-    --wrap-mode=nodownload \
+    --wrap-mode=default \
     -D optimization=2 \
     -D b_ndebug=false \
     -D b_lto=false \
@@ -150,7 +150,8 @@ build() {
     -D valgrind=enabled \
     -D libunwind=enabled \
     -D perfetto=true \
-    -D gpuvis=true
+    -D gpuvis=true \
+    -D allow-fallback-for=perfetto
 
   meson compile -C build
 }
