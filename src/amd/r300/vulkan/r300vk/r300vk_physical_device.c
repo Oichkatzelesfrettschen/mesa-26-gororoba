@@ -33,6 +33,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <unistd.h>
 #include <xf86drm.h>
 
@@ -353,6 +355,11 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * device.  WSI (VK_KHR_swapchain) and the external-memory family stay
     * withheld until the device layer brings them up. */
    .EXT_host_query_reset = true,
+   /* VK_EXT_physical_device_drm: exposes the render/primary node major/minor in
+    * VkPhysicalDeviceDrmPropertiesEXT.  Zink's display-device selection matches
+    * the EGL DRM fd against these to pick this pdev, so without it
+    * zink-on-r300vk fails at "choose pdev" before any feature check. */
+   .EXT_physical_device_drm = true,
    /* VK_KHR_dynamic_rendering: r300vk_CmdBeginRendering / r300vk_CmdEndRendering
     * translate VkRenderingInfo into the same colour-attachment framebuffer the
     * render-pass replay drives, so a render target needs no VkRenderPass or
@@ -507,6 +514,28 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    device->pci_device_id = drm_device->deviceinfo.pci->device_id;
    device->render_node_fd = render_node_fd;
 
+   /* DRM node device IDs for VK_EXT_physical_device_drm.  fstat the render fd
+    * for its major/minor and stat the primary node path when the DRM device
+    * exposes one; Zink matches the EGL render-node fd against these. */
+   device->has_primary_node = false;
+   device->primary_node_major = 0;
+   device->primary_node_minor = 0;
+   device->render_node_major = 0;
+   device->render_node_minor = 0;
+   {
+      struct stat node_stat;
+      if (fstat(render_node_fd, &node_stat) == 0) {
+         device->render_node_major = major(node_stat.st_rdev);
+         device->render_node_minor = minor(node_stat.st_rdev);
+      }
+      if ((drm_device->available_nodes & (1 << DRM_NODE_PRIMARY)) &&
+          stat(drm_device->nodes[DRM_NODE_PRIMARY], &node_stat) == 0) {
+         device->has_primary_node = true;
+         device->primary_node_major = major(node_stat.st_rdev);
+         device->primary_node_minor = minor(node_stat.st_rdev);
+      }
+   }
+
 #ifdef R300VK_GALLIUM_BACKEND
    struct pipe_screen_config screen_config = {0};
    device->rws = radeon_drm_winsys_create(render_node_fd, &screen_config,
@@ -555,6 +584,15 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    r300vk_physical_device_init_properties(&properties, device->pci_vendor_id,
                                           device->pci_device_id,
                                           gart_size_kb);
+
+   /* VK_EXT_physical_device_drm: fill the DRM node IDs Zink matches the EGL DRM
+    * fd against (init_properties zeroed the rest of the struct). */
+   properties.drmHasRender    = true;
+   properties.drmRenderMajor  = device->render_node_major;
+   properties.drmRenderMinor  = device->render_node_minor;
+   properties.drmHasPrimary   = device->has_primary_node;
+   properties.drmPrimaryMajor = device->primary_node_major;
+   properties.drmPrimaryMinor = device->primary_node_minor;
 
    /* Driver entrypoints only; vk_physical_device_init merges
     * vk_common_physical_device_entrypoints itself at
