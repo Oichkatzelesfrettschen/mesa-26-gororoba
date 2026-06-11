@@ -100,6 +100,12 @@ nir_shader *r300vk_build_odiv_hi_fs_nir(const nir_shader_compiler_options *opts)
 nir_shader *r300vk_build_odiv_l_lo_fs_nir(const nir_shader_compiler_options *opts);
 nir_shader *r300vk_build_odiv_l_hi_fs_nir(const nir_shader_compiler_options *opts);
 
+/* OTRANS (octonion sandwich x*v*conj(x)) second-pass half fragment programs:
+ * out = t*conj(x) where t = x*v (pass 1 uses the OMUL half-shaders).  Sample t at
+ * stages 0,1 and x at stages 2,3; conj(x) is formed inline. */
+nir_shader *r300vk_build_otrans_p2_lo_fs_nir(const nir_shader_compiler_options *opts);
+nir_shader *r300vk_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts);
+
 #ifdef __cplusplus
 }
 #endif

@@ -580,3 +580,43 @@ r300vk_build_odiv_l_hi_fs_nir(const nir_shader_compiler_options *opts)
    store_color_at(&b, hi, FRAG_RESULT_COLOR, "color");
    return fs_finalize(&b);
 }
+
+/* OTRANS second-pass lower half: out = t * conj(x), where t = x*v is the first
+ * pass and conj(x) = (conj(xlo), -xhi).  The octonion sandwich x*v*conj(x) is two
+ * chained products (32 DP4s) -- too long for one pass even split, so OTRANS runs
+ * pass 1 (t = x*v, the existing OMUL half-shaders) to a scratch buffer, then this
+ * pass.  Samples t = (tlo,thi) at stages 0,1 and x = (xlo,xhi) at stages 2,3.
+ * out.lo = tlo*conj(xlo) - conj(-xhi)*thi (the OMUL lower half of t and conj(x)). */
+nir_shader *
+r300vk_build_otrans_p2_lo_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_otrans_p2_lo");
+
+   nir_def *tlo, *thi, *xlo, *xhi;
+   sample_octonion_halves(&b, &tlo, &thi, &xlo, &xhi);   /* t at 0,1; x at 2,3 */
+   nir_def *cx_lo = quat_conj(&b, xlo);   /* conj(x).lo */
+   nir_def *cx_hi = nir_fneg(&b, xhi);    /* conj(x).hi = -xhi */
+   nir_def *lo = nir_fsub(&b, hamilton_product(&b, tlo, cx_lo),
+                          hamilton_product(&b, quat_conj(&b, cx_hi), thi));
+   store_color_at(&b, lo, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}
+
+/* OTRANS second-pass upper half: out.hi = (-xhi)*tlo + thi*conj(conj(xlo)) =
+ * (-xhi)*tlo + thi*xlo (the OMUL upper half of t and conj(x)). */
+nir_shader *
+r300vk_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_otrans_p2_hi");
+
+   nir_def *tlo, *thi, *xlo, *xhi;
+   sample_octonion_halves(&b, &tlo, &thi, &xlo, &xhi);   /* t at 0,1; x at 2,3 */
+   nir_def *cx_lo = quat_conj(&b, xlo);   /* conj(x).lo */
+   nir_def *cx_hi = nir_fneg(&b, xhi);    /* conj(x).hi = -xhi */
+   nir_def *hi = nir_fadd(&b, hamilton_product(&b, cx_hi, tlo),
+                          hamilton_product(&b, thi, quat_conj(&b, cx_lo)));
+   store_color_at(&b, hi, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}

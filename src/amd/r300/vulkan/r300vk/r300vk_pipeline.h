@@ -137,6 +137,12 @@ struct r300vk_pipeline {
     * dim-8-only op (no zero divisors). */
    struct r300_compute_odiv_pattern odiv;
 
+   /* Octonion sandwich transform (OTRANS): out = x*v*conj(x), two chained
+    * octonion products.  Four inputs (xlo,xhi,vlo,vhi), two output halves; the
+    * dispatch runs t = x*v to a scratch buffer (fs_cso/fs_cso2), then
+    * out = t*conj(x) (fs_cso3/fs_cso4). */
+   struct r300_compute_otrans_pattern otrans;
+
    /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
     * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])
@@ -219,6 +225,11 @@ struct r300vk_pipeline {
     * Non-NULL only when the screen supports two simultaneous FP16 render targets,
     * which is exactly the gate the dispatch uses to prefer route B over A. */
    void                   *fs_cso_mrt;
+   /* Third and fourth fragment CSOs for the OTRANS second pass (out = t*conj(x)):
+    * fs_cso3 the lower-half FS, fs_cso4 the upper-half FS.  fs_cso/fs_cso2 hold
+    * the first-pass OMUL(x,v) half-shaders.  NULL for non-OTRANS ops. */
+   void                   *fs_cso3;
+   void                   *fs_cso4;
    void                   *blend_cso;
    void                   *rasterizer_cso;
    void                   *dsa_cso;

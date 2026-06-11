@@ -2210,6 +2210,191 @@ r300_nir_detect_odiv_pattern(const nir_shader *s,
    out->is_odiv = true;
 }
 
+/* conj(-q) over q: conj(-q) = -conj(q) = (-q.x, q.y, q.z, q.w), the negation of
+ * the Hamilton row-0 conjugate.  The OTRANS outer product t*conj(x) carries this
+ * on its conj(x).hi = -xhi lane, where the kernel's fneg-then-conjugate folds to
+ * a single permutation of xhi with the negated-conjugate signs. */
+static const struct r300_perm_entry otrans_neg_conj_row[4] = {
+   {0, true}, {1, false}, {2, false}, {3, false},
+};
+
+/* Find the identity-load Hamilton difference (combine == fsub) or sum (fadd) that
+ * equals one half of the inner octonion product OMUL((xlo,xhi),(vlo,vhi)) -- the
+ * intermediate t = x*v.  The lower half is xlo*vlo - conj(vhi)*xhi, the upper
+ * vhi*xlo + xhi*conj(vlo); both reuse the OMUL half-matcher over the raw loads. */
+static const nir_def *
+otrans_find_inner_half(const nir_shader *s, nir_op combine,
+                       const nir_def *xlo, const nir_def *xhi,
+                       const nir_def *vlo, const nir_def *vhi)
+{
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op != combine)
+               continue;
+            if (combine == nir_op_fsub) {
+               if (omul_match_half(&alu->def, nir_op_fsub, xlo, vlo, NULL, xhi,
+                                   true, vhi, NULL))
+                  return &alu->def;
+            } else if (omul_match_half(&alu->def, nir_op_fadd, vhi, xlo, xhi, vlo,
+                                       false, NULL, qrotate_outer_rows[0])) {
+               return &alu->def;
+            }
+         }
+      }
+   }
+   return NULL;
+}
+
+/* The whole-vector fneg of `base` (an identity-swizzled negation of all four
+ * lanes) -- conj(x).hi = -xhi, the kernel's `ch`. */
+static const nir_def *
+otrans_find_vec_fneg(const nir_shader *s, const nir_def *base)
+{
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op != nir_op_fneg || alu->def.num_components != 4 ||
+                alu->src[0].src.ssa != base)
+               continue;
+            bool id = true;
+            for (unsigned c = 0; c < 4; c++)
+               if (alu->src[0].swizzle[c] != c)
+                  id = false;
+            if (id)
+               return &alu->def;
+         }
+      }
+   }
+   return NULL;
+}
+
+/* Match the OTRANS outer lower half: olo = qm(tl, conj(xlo)) - qm(conj(-xhi), th).
+ * conj(xlo) folds into the conj-composed rotation rows over xlo (the P product),
+ * and conj(-xhi) is the negated Hamilton row 0 over xhi (the two-perm Q). */
+static bool
+otrans_match_outer_lo(const nir_def *store_val, const nir_def *tl,
+                      const nir_def *th, const nir_def *xlo, const nir_def *xhi)
+{
+   const nir_alu_instr *top = nir_def_as_alu_or_null(store_val);
+   if (!top || top->op != nir_op_fsub)
+      return false;
+   const nir_alu_instr *pvec = nir_def_as_alu_or_null(top->src[0].src.ssa);
+   const nir_alu_instr *qvec = nir_def_as_alu_or_null(top->src[1].src.ssa);
+   if (!pvec || pvec->op != nir_op_vec4 || !qvec || qvec->op != nir_op_vec4)
+      return false;
+   for (unsigned lane = 0; lane < 4; lane++) {
+      if (!omul_match_id_perm_dot(pvec->src[lane].src.ssa, tl, xlo,
+                                  qrotate_outer_rows[lane]))
+         return false;
+      if (!omul_match_two_perm_dot(qvec->src[lane].src.ssa,
+                                   xhi, otrans_neg_conj_row,
+                                   th, r300_hamilton_rows[lane]))
+         return false;
+   }
+   return true;
+}
+
+/* Match the OTRANS outer upper half: ohi = qm(-xhi, tl) + qm(th, xlo).  Both are
+ * identity-load Hamilton dots -- ch = -xhi against the Hamilton rows of tl, and th
+ * against the Hamilton rows of xlo (conj(conj(xlo)) = xlo).  fadd is commutative,
+ * so accept either summand order. */
+static bool
+otrans_match_outer_hi(const nir_def *store_val, const nir_def *tl,
+                      const nir_def *th, const nir_def *ch, const nir_def *xlo)
+{
+   const nir_alu_instr *top = nir_def_as_alu_or_null(store_val);
+   if (!top || top->op != nir_op_fadd)
+      return false;
+   const nir_alu_instr *v0 = nir_def_as_alu_or_null(top->src[0].src.ssa);
+   const nir_alu_instr *v1 = nir_def_as_alu_or_null(top->src[1].src.ssa);
+   if (!v0 || v0->op != nir_op_vec4 || !v1 || v1->op != nir_op_vec4)
+      return false;
+   for (unsigned order = 0; order < 2; order++) {
+      const nir_alu_instr *pvec = order == 0 ? v0 : v1;
+      const nir_alu_instr *qvec = order == 0 ? v1 : v0;
+      bool ok = true;
+      for (unsigned lane = 0; lane < 4 && ok; lane++) {
+         if (!omul_match_id_perm_dot(pvec->src[lane].src.ssa, ch, tl,
+                                     r300_hamilton_rows[lane]) ||
+             !omul_match_id_perm_dot(qvec->src[lane].src.ssa, th, xlo,
+                                     r300_hamilton_rows[lane]))
+            ok = false;
+      }
+      if (ok)
+         return true;
+   }
+   return false;
+}
+
+void
+r300_nir_detect_otrans_pattern(const nir_shader *s,
+                               struct r300_compute_otrans_pattern *out)
+{
+   out->is_otrans              = false;
+   out->input_xlo_ssbo_binding = 0;
+   out->input_xhi_ssbo_binding = 0;
+   out->input_vlo_ssbo_binding = 0;
+   out->input_vhi_ssbo_binding = 0;
+   out->output_lo_ssbo_binding = 0;
+   out->output_hi_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *load[4], *store[2];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 4, &nload, store, 2, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 4 || nstore != 2 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]) || !store_is_full_width(store[1]))
+      return;
+
+   /* Loads in declaration order: x = (xlo,xhi), v = (vlo,vhi). */
+   const nir_def *xlo = &load[0]->def, *xhi = &load[1]->def;
+   const nir_def *vlo = &load[2]->def, *vhi = &load[3]->def;
+
+   /* The intermediate octonion t = x*v -- its two halves as the Hamilton
+    * difference (lower) and sum (upper) over the raw loads. */
+   const nir_def *tl = otrans_find_inner_half(s, nir_op_fsub, xlo, xhi, vlo, vhi);
+   const nir_def *th = otrans_find_inner_half(s, nir_op_fadd, xlo, xhi, vlo, vhi);
+   if (!tl || !th)
+      return;
+
+   /* conj(x).hi = -xhi, the whole-vector negate the outer product multiplies. */
+   const nir_def *ch = otrans_find_vec_fneg(s, xhi);
+   if (!ch)
+      return;
+
+   /* The two stores are the eight-wide product OMUL((tl,th), conj(x)).  The lower
+    * store is the fsub of the conj-folded P and the negated-conjugate Q; the upper
+    * is the fadd of two identity-load Hamilton dots.  Matching both makes the
+    * sandwich admission sound: only x*v*conj(x) reaches here. */
+   if (!otrans_match_outer_lo(store[0]->src[0].ssa, tl, th, xlo, xhi))
+      return;
+   if (!otrans_match_outer_hi(store[1]->src[0].ssa, tl, th, ch, xlo))
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_xlo_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_xhi_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(load[2]->src[0]))
+      out->input_vlo_ssbo_binding = nir_src_as_uint(load[2]->src[0]);
+   if (nir_src_is_const(load[3]->src[0]))
+      out->input_vhi_ssbo_binding = nir_src_as_uint(load[3]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_lo_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   if (nir_src_is_const(store[1]->src[1]))
+      out->output_hi_ssbo_binding = nir_src_as_uint(store[1]->src[1]);
+   out->is_otrans = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)

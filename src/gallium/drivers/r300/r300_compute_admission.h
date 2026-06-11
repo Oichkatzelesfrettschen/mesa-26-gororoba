@@ -506,6 +506,29 @@ struct r300_compute_odiv_pattern {
 void r300_nir_detect_odiv_pattern(const struct nir_shader *s,
                                   struct r300_compute_odiv_pattern *out);
 
+/* Octonion sandwich transform (OTRANS): out = x * v * conj(x), the octonion analog
+ * of the quaternion rotation sandwich.  Two chained octonion products -- t = x*v,
+ * then out = t*conj(x) -- so 32 DP4s materializing the intermediate octonion t.
+ * Parenthesis-safe by the flexible law (conj(x) in R[x]).  The kernel reads
+ * x = (xlo,xhi) and v = (vlo,vhi) and writes the two halves; the detector finds
+ * the two OMUL(x,v) halves (tl,th), then verifies the stores are OMUL((tl,th),
+ * conj(x)) where conj(x) = (conj(xlo), -xhi) folds into the permutation rows.  The
+ * dispatch runs t = x*v to a scratch buffer, then out = t*conj(x).  Four input
+ * SSBOs (xlo,xhi,vlo,vhi), two output halves; bindings stay 0 when the sources are
+ * not constants (positional fallback xlo=0..vhi=3, o_lo=4, o_hi=5). */
+struct r300_compute_otrans_pattern {
+   bool       is_otrans;
+   uint32_t   input_xlo_ssbo_binding;
+   uint32_t   input_xhi_ssbo_binding;
+   uint32_t   input_vlo_ssbo_binding;
+   uint32_t   input_vhi_ssbo_binding;
+   uint32_t   output_lo_ssbo_binding;
+   uint32_t   output_hi_ssbo_binding;
+};
+
+void r300_nir_detect_otrans_pattern(const struct nir_shader *s,
+                                    struct r300_compute_otrans_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif
