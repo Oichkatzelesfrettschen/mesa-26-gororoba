@@ -354,4 +354,16 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
 }
 #endif
 
+bool
+r300vk_ieee16_classify_dispatch_replay(struct r300vk_device *device,
+                                       const struct r300vk_pipeline *pl,
+                                       const struct r300vk_cmd_dispatch *dispatch,
+                                       const struct r300vk_cmd_bind_descriptor_sets *binds);
+
+bool
+r300vk_ieee16_mul_dispatch_replay(struct r300vk_device *device,
+                                  const struct r300vk_pipeline *pl,
+                                  const struct r300vk_cmd_dispatch *dispatch,
+                                  const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #endif /* R300VK_IDENTITY_MAP_H */

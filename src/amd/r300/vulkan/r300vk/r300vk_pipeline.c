@@ -642,8 +642,8 @@ r300vk_nir_push_const_all_float(nir_shader *nir)
  * loop-bounded constant access (color[i] in a statically-bounded loop) carries a
  * non-constant offset until the loop unrolls, so a cheap pre-pass first checks
  * whether any offset is even non-constant and returns early otherwise; only then
- * pay for a clone + r300_optimize_nir (the same pass r300_create_*_state runs
- * later) to fold the loop-bounded case before judging it genuinely dynamic
+ * pay for a clone + r300_optimize_nir (the same optimization pass used by
+ * r300_create_*_state) to fold the loop-bounded case before judging it dynamic
  * (dynamic_index_vert indexes by a gl_Position-derived value that never folds).
  *
  * Shared by the push-constant gate (load_push_constant, src[0], slot-straddle
@@ -1091,7 +1091,7 @@ r300vk_build_velems_cso(struct r300vk_device *device,
                          const VkPipelineVertexInputStateCreateInfo *vi)
 {
    struct pipe_vertex_element ve[PIPE_MAX_ATTRIBS];
-   uint32_t n;
+   uint32_t n = 0;
    VkResult result = r300vk_vertex_element_count(device, vi, &n);
    if (result != VK_SUCCESS)
       return result;
@@ -1312,8 +1312,8 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
    if (!pl->blend_cso)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
 
-   /* Translate the pipeline-static rasterization state.  Fields a dynamic
-    * state later overrides still get their static value here: the replay
+   /* Translate the pipeline-static rasterization state.  Fields covered by
+    * dynamic state still get their static value here: the replay
     * overlays only the R300VK_DYN_* bits the pipeline declared dynamic AND
     * the command buffer actually set. */
    const VkPipelineRasterizationStateCreateInfo *vk_rs =
@@ -1488,7 +1488,7 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
     * the app may then leave it NULL or pass a garbage pointer
     * (dEQP-VK.api.pipeline.pipeline_invalid_pointers_unused_structs.graphics).
     * Read it only when rasterization can run: discard disabled, or made dynamic
-    * so a later draw may enable it (in which case the app must supply a valid
+    * so command recording may enable it (in which case the app must supply a valid
     * pViewportState). */
    const VkPipelineRasterizationStateCreateInfo *rs = info->pRasterizationState;
    const bool raster_discarded =
@@ -1649,6 +1649,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_otrans_pattern *otrans,
                                struct r300_compute_qfmadd_pattern *qfmadd,
                                struct r300_compute_qfmmul_pattern *qfmmul,
+                               struct r300_compute_ieee16_classify_pattern *ieee16_classify,
+                               struct r300_compute_ieee16_mul_pattern *ieee16_mul,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1717,6 +1719,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_otrans_pattern(nir, otrans);
    r300_nir_detect_qfmadd_pattern(nir, qfmadd);
    r300_nir_detect_qfmmul_pattern(nir, qfmmul);
+   r300_nir_detect_ieee16_classify(nir, ieee16_classify);
+   r300_nir_detect_ieee16_mul(nir, ieee16_mul);
 
    ralloc_free(nir);
    return true;
@@ -1953,11 +1957,9 @@ r300vk_synthesize_unary_map_fs(struct pipe_context *pipe, float c0, float c1)
    return ureg_create_shader_and_destroy(ureg, pipe);
 }
 
-/* Synthesise the unary-map VS + FS.  The unary affine map reuses the identity
- * 1-in/1-out dispatch replay, so mirror this pattern's input/output bindings +
- * value format into identity_map (the replay reads them from there) and bind
- * the MAD fragment program; the same fullscreen draw then computes
- * out = tex*c0 + c1 instead of a copy. */
+/* Synthesize the unary-map VS + FS.  The dispatch replay uses the unary-map
+ * metadata directly and binds the affine fragment program, so the same
+ * fullscreen draw computes out = tex*c0 + c1 instead of a copy. */
 static bool
 r300vk_unary_map_synthesize_shaders(struct r300vk_device *device,
                                     struct r300vk_pipeline *pl)
@@ -1980,11 +1982,6 @@ r300vk_unary_map_synthesize_shaders(struct r300vk_device *device,
       return false;
    }
 
-   pl->identity_map.input_ssbo_binding  = pl->unary_map.input_ssbo_binding;
-   pl->identity_map.output_ssbo_binding = pl->unary_map.output_ssbo_binding;
-   pl->identity_map.value_components    = pl->unary_map.value_components;
-   pl->identity_map.value_bit_size      = pl->unary_map.value_bit_size;
-   pl->identity_map.value_is_float      = pl->unary_map.value_is_float;
    return true;
 }
 
@@ -1996,14 +1993,19 @@ r300vk_unary_map_synthesize_shaders(struct r300vk_device *device,
 static void *
 r300vk_synthesize_dp4_fs(struct pipe_context *pipe, uint8_t components)
 {
-   nir_shader *s = r300vk_build_dp4_fs_nir(
+   nir_shader *fs_nir = r300vk_build_dp4_fs_nir(
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT], components);
+   if (!fs_nir)
+      return NULL;
    if (pipe->screen->finalize_nir)
-      pipe->screen->finalize_nir(pipe->screen, s, true);
+      pipe->screen->finalize_nir(pipe->screen, fs_nir, true);
 
    struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
-                                      .ir.nir = s };
-   return pipe->create_fs_state(pipe, &state);
+                                      .ir.nir = fs_nir };
+   void *fs_cso = pipe->create_fs_state(pipe, &state);
+   if (!fs_cso)
+      ralloc_free(fs_nir);
+   return fs_cso;
 }
 
 /* DP4 VS+FS synthesis: the passthrough VS shared with binary-map plus the
@@ -3155,6 +3157,78 @@ r300vk_multitap_gather_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
+static void *
+r300vk_synthesize_ieee16_classify_fs(struct pipe_context *pipe)
+{
+   nir_shader *s = r300vk_build_ieee16_classify_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, s, true);
+
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = s };
+   return pipe->create_fs_state(pipe, &state);
+}
+
+static bool
+r300vk_ieee16_classify_synthesize_shaders(struct r300vk_device *device,
+                                          struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_ieee16_classify_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+static void *
+r300vk_synthesize_ieee16_mul_fs(struct pipe_context *pipe)
+{
+   nir_shader *s = r300vk_build_ieee16_mul_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, s, true);
+
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = s };
+   return pipe->create_fs_state(pipe, &state);
+}
+
+static bool
+r300vk_ieee16_mul_synthesize_shaders(struct r300vk_device *device,
+                                     struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_ieee16_mul_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
 
 
 static bool
@@ -3286,6 +3360,16 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->multitap_gather.is_multitap_gather = false;
       return true;
    }
+   if (pl->ieee16_classify.is_ieee16_classify) {
+      if (!r300vk_ieee16_classify_synthesize_shaders(device, pl))
+         pl->ieee16_classify.is_ieee16_classify = false;
+      return true;
+   }
+   if (pl->ieee16_mul.is_ieee16_mul) {
+      if (!r300vk_ieee16_mul_synthesize_shaders(device, pl))
+         pl->ieee16_mul.is_ieee16_mul = false;
+      return true;
+   }
 
    return true;
 }
@@ -3323,6 +3407,8 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_otrans_pattern otrans_pat = {0};
    struct r300_compute_qfmadd_pattern qfmadd_pat = {0};
    struct r300_compute_qfmmul_pattern qfmmul_pat = {0};
+   struct r300_compute_ieee16_classify_pattern ieee16_classify_pat = {0};
+   struct r300_compute_ieee16_mul_pattern ieee16_mul_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
@@ -3334,7 +3420,9 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
                                        &omul_pat,
                                        &oaddsub_pat, &oconj_pat, &onorm_pat,
                                        &odiv_pat, &otrans_pat,
-                                       &qfmadd_pat, &qfmmul_pat, local_size))
+                                       &qfmadd_pat, &qfmmul_pat,
+                                       &ieee16_classify_pat, &ieee16_mul_pat,
+                                       local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
                        i);
@@ -3373,6 +3461,8 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->otrans = otrans_pat;
    pl->qfmadd = qfmadd_pat;
    pl->qfmmul = qfmmul_pat;
+   pl->ieee16_classify = ieee16_classify_pat;
+   pl->ieee16_mul = ieee16_mul_pat;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;

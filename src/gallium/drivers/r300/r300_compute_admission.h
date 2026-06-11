@@ -26,7 +26,8 @@ enum r300_compute_reject {
    R300_COMPUTE_REJECT_GENERAL_ATOMIC, /* only blend-add/min/max/sub, stencil, ZPASS exist */
    R300_COMPUTE_REJECT_RW_STORAGE,     /* only texture-load + RT-export, no scatter */
    R300_COMPUTE_REJECT_FP64,           /* ALU is FP24; no double precision */
-};
+   R300_COMPUTE_REJECT_FP16,           /* no native FP16 RT or arithmetic; virtual-FP16 only */
+   };
 
 /* Result of classifying a compute nir_shader.  classify-only: the analysis
  * never mutates the shader and never lowers or executes it. */
@@ -100,8 +101,8 @@ void r300_nir_detect_identity_map(const struct nir_shader *s,
  * result of a single ALU op whose two sources are exactly the SSA defs of
  * two distinct load_ssbo intrinsics.  The recognized ALU op set is bounded
  * by what the FP24 fragment ALU reproduces exactly: iadd / isub / imul /
- * imin / imax / umin / umax / fadd / fsub / fmul / fmin / fmax for the first
- * cut; richer arithmetic is a later extension.
+ * imin / imax / umin / umax / fadd / fsub / fmul / fmin / fmax for the bounded
+ * FP24 map; richer arithmetic needs its own carrier and exactness audit.
  *
  * alu_op carries the NIR opcode value so the orchestrator's FS synthesis
  * picks the right PFS instruction; the bindings are 0 when the post-
@@ -140,6 +141,8 @@ struct r300_compute_unary_map_pattern {
    bool       is_unary_map;
    uint32_t   input_ssbo_binding;
    uint32_t   output_ssbo_binding;
+   bool       input_ssbo_binding_valid;
+   bool       output_ssbo_binding_valid;
    float      mul_const;          /* c0 scale; 1.0 for a pure bias */
    float      add_const;          /* c1 bias; 0.0 for a pure scale */
    uint8_t    value_components;   /* store_ssbo value vector width */
@@ -423,7 +426,7 @@ void r300_nir_detect_mat4vec_pattern(const struct nir_shader *s,
 
 /* Quaternion-scalar product (QFMUL) pattern: out[gid] = a[gid] * s, where a is a
  * per-element vec4 quaternion and s is a BROADCAST scalar (a 1-component load at a
- * fixed offset, the same value for every element).  Recognised by the asymmetry:
+ * fixed offset, the same value for every element).  Recognized by the asymmetry:
  * the store value is an fmul whose operands are one 4-component identity-swizzled
  * load (the quaternion) and one 1-component splat-swizzled load (the scalar).
  * Like MAT4VEC's broadcast matrix, the broadcast scalar belongs in the fragment
@@ -433,6 +436,9 @@ struct r300_compute_qfmul_pattern {
    uint32_t   scalar_ssbo_binding;
    uint32_t   quat_ssbo_binding;
    uint32_t   output_ssbo_binding;
+   bool       scalar_ssbo_binding_valid;
+   bool       quat_ssbo_binding_valid;
+   bool       output_ssbo_binding_valid;
 };
 
 void r300_nir_detect_qfmul_pattern(const struct nir_shader *s,
@@ -649,6 +655,28 @@ struct r300_compute_qfmmul_pattern {
 
 void r300_nir_detect_qfmmul_pattern(const struct nir_shader *s,
                                     struct r300_compute_qfmmul_pattern *out);
+
+/* Virtual IEEE FP16 classification pattern (IEEE16_CLASSIFY_LUT):
+ * out[gid] = classify(in[gid]). Samples 1-component raw bits, writes vec4 color carrier. */
+struct r300_compute_ieee16_classify_pattern {
+   bool       is_ieee16_classify;
+   uint32_t   input_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_ieee16_classify(const struct nir_shader *s,
+                                     struct r300_compute_ieee16_classify_pattern *out);
+
+/* Virtual IEEE FP16 significand multiplication (IEEE16_MUL_RNE):
+ * out[gid] = normal_mul(ua[gid], ub[gid]). Samples 2-component significands, writes 2-limb carry. */
+struct r300_compute_ieee16_mul_pattern {
+   bool       is_ieee16_mul;
+   uint32_t   input_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_ieee16_mul(const struct nir_shader *s,
+                                struct r300_compute_ieee16_mul_pattern *out);
 
 #ifdef __cplusplus
 }

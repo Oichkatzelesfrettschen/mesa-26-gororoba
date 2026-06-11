@@ -62,6 +62,17 @@ enum r300_carrier_encoding {
     * count.  Used for ZPASS reduction.  The counter value is read back as
     * a u64 from the occlusion-query result and written to the output SSBO. */
    R300_CARRIER_ENC_UINT32_COUNTER,
+
+   /* U16 byte-level integer encoding. A uint16 result packed into R, G bytes.
+    * B, A channels are unused or metadata. */
+   R300_CARRIER_ENC_RGBA8_U16,
+
+   /* U24 byte-level integer encoding. A uint24 result packed into R, G, B bytes.
+    * A channel is unused or metadata. */
+   R300_CARRIER_ENC_RGBA8_U24,
+
+   /* Raw FP16 bitwise storage packed into RGBA8: raw bits in R/G, B/A carry class/flags. */
+   R300_CARRIER_ENC_FP16_RAWBITS_RGBA8,
 };
 
 /* Full carrier policy for one virtual op family.  One instance per admitted
@@ -111,6 +122,10 @@ extern const struct r300_carrier_policy r300_carrier_dp4_u7;
 extern const struct r300_carrier_policy r300_carrier_dp4_u8_boundary;
 extern const struct r300_carrier_policy r300_carrier_blend_acc;
 extern const struct r300_carrier_policy r300_carrier_zpass;
+extern const struct r300_carrier_policy r300_carrier_ieee16_classify;
+extern const struct r300_carrier_policy r300_carrier_ieee16_mul;
+extern const struct r300_carrier_policy r300_carrier_ieee16_result;
+extern const struct r300_carrier_policy r300_carrier_ieee16_debug;
 
 /* Select the appropriate DP4 carrier policy given the maximum operand
  * magnitude.  Returns r300_carrier_dp4_u7 (exact) when max_operand_magnitude

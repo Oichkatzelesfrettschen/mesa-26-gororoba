@@ -70,9 +70,10 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .has_inf           = false,
       .has_subnormal     = false,
       .is_native_compute = true,
-      .evidence          = R300_EVIDENCE_NUMERIC_DERIVED,
+      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
       .theorem           = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17 for Q16_16 add; "
-                           "(2^6-1)^2 = 3969, 4*3969 = 15876 < 2^17 per 6-bit limb column",
+                           "(2^6-1)^2 = 3969, 4*3969 = 15876 < 2^17 per 6-bit limb column; "
+                           "limb arithmetic verified on RS482 (rs482_fp16_pow2_carry_exactness_20260607)",
    },
    {
       .domain            = R300_NUM_DOMAIN_U7_DOT,
@@ -332,7 +333,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "FP16 bit[15]=sign, bits[14:10]=exp(0..31), bits[9:0]=mantissa; "
                          "class determined by (exp==0, exp==31, mantissa==0) partition; "
                          "15/15 bit patterns exact on RS482 (rs482_fp16_pow2_carry_exactness_20260607)",
-      .mesa_hook       = NULL,
+      .mesa_hook       = "r300_nir_lower_ieee16_classify",
       .retained_bundle = NULL,  /* bundle named in .theorem; fork evidence paths stay out of Mesa metadata */
    },
    {
@@ -342,7 +343,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .theorem         = "2-limb base-64: c1=a0*b1+a1*b0 <= 2*63*31=3906 < 2^17; "
                          "carry limbs (r0,r1,r2) 12/12 exact on RS482; "
                          "RNE round from guard/sticky/lsb (rs482_fp16_pow2_carry_exactness_20260607)",
-      .mesa_hook       = NULL,
+      .mesa_hook       = "r300_nir_lower_ieee16_mul_normal_rne",
       .retained_bundle = NULL,  /* bundle named in .theorem; fork evidence paths stay out of Mesa metadata */
    },
    {

@@ -8,9 +8,9 @@
  * walk every detector reuses, factored out so the detector bodies read as the
  * shape they match rather than the bookkeeping that finds it.
  *
- * Kept header-only (static inline) so the detectors can be split across
- * translation units later without exporting these symbols from libr300 or
- * tripping -Werror=unused-function in a unit that matches only one shape.  They
+ * Kept header-only (static inline) so each detector can reuse only the matchers
+ * it needs without exporting these symbols from libr300 or tripping
+ * -Werror=unused-function in a translation unit that matches one shape.  They
  * call NIR core (and each other) but nothing from the detector bodies, so the
  * dependency runs one way: detectors -> matchers, never back.
  */

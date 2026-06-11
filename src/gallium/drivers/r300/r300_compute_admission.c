@@ -134,8 +134,8 @@ r300_nir_detect_identity_map(const nir_shader *s,
     *       the store and load offset defs to their root gl_GlobalInvocationID
     *       extract and comparing those, replacing the SSA-def-identity
     *       offset_eq.  Reason: SSA-def identity under-approximates
-    *       post-explicit_io offset equality, so a genuine scatter cannot
-    *       currently be distinguished from a gather.  Tracking:
+    *       post-explicit_io offset equality, leaving scatter and gather shapes
+    *       equivalent to this detector.  Tracking:
     *       r300_nir_detect_identity_map offset gate. */
    const bool offset_eq = (store->src[2].ssa == load->src[1].ssa);
    if (identity_map_debug_enabled())
@@ -297,8 +297,8 @@ r300_nir_detect_binary_map(const nir_shader *s,
     * TODO: gate on semantic offset equivalence by walking the store and load
     *       offset defs to their root gl_GlobalInvocationID extract, replacing
     *       SSA-def identity.  Reason: SSA-def identity under-approximates
-    *       post-explicit_io offset equality, so a genuine scatter is currently
-    *       indistinguishable from a gather.  Tracking:
+    *       post-explicit_io offset equality, leaving scatter and gather shapes
+    *       equivalent to this detector.  Tracking:
     *       r300_nir_detect_binary_map offset gate. */
 
    out->is_binary_map = true;
@@ -318,21 +318,38 @@ r300_nir_detect_binary_map(const nir_shader *s,
       store, nir_op_infos[alu->op].output_type);
 }
 
-/* Read the scalar float constant feeding ALU operand i, honouring its swizzle.
- * Returns false when the operand is not a compile-time constant. */
 static bool
-unary_alu_src_fconst(const nir_alu_instr *alu, unsigned i, float *v)
+unary_alu_src_is_identity_load(const nir_alu_instr *alu, unsigned i,
+                               const nir_def *load_def, unsigned components)
 {
-   if (!nir_src_is_const(alu->src[i].src))
+   if (alu->src[i].src.ssa != load_def)
       return false;
-   *v = nir_src_comp_as_float(alu->src[i].src, alu->src[i].swizzle[0]);
+   for (unsigned c = 0; c < components; c++) {
+      if (alu->src[i].swizzle[c] != c)
+         return false;
+   }
    return true;
 }
 
-static inline const nir_def *
-unary_alu_src_def(const nir_alu_instr *alu, unsigned i)
+/* Read a uniform float constant feeding ALU operand i.  The unary-map fragment
+ * program broadcasts one c0/c1 scalar across the output lanes, so vector
+ * constants must be identical on every live lane before the pattern is admitted.
+ */
+static bool
+unary_alu_src_uniform_fconst(const nir_alu_instr *alu, unsigned i,
+                             unsigned components, float *v)
 {
-   return alu->src[i].src.ssa;
+   if (!nir_src_is_const(alu->src[i].src))
+      return false;
+   const float first = nir_src_comp_as_float(alu->src[i].src,
+                                             alu->src[i].swizzle[0]);
+   for (unsigned c = 1; c < components; c++) {
+      if (nir_src_comp_as_float(alu->src[i].src,
+                                alu->src[i].swizzle[c]) != first)
+         return false;
+   }
+   *v = first;
+   return true;
 }
 
 /* Single-input affine unary-map detector.  Mirrors the identity-map walk (one
@@ -351,6 +368,8 @@ r300_nir_detect_unary_map(const nir_shader *s,
    out->is_unary_map        = false;
    out->input_ssbo_binding  = 0;
    out->output_ssbo_binding = 0;
+   out->input_ssbo_binding_valid  = false;
+   out->output_ssbo_binding_valid = false;
    out->mul_const           = 1.0f;
    out->add_const           = 0.0f;
    out->value_components    = 0;
@@ -391,55 +410,62 @@ r300_nir_detect_unary_map(const nir_shader *s,
       return;
 
    const nir_def *load_def = &load->def;
+   const unsigned components = store->num_components;
    float c0 = 1.0f, c1 = 0.0f;
    bool matched = false;
 
    if (alu->op == nir_op_ffma) {
       /* ffma(a, b, c) = a*b + c: one of a,b is the load, the other is c0; c=c1. */
       float k;
-      if (unary_alu_src_def(alu, 0) == load_def &&
-          unary_alu_src_fconst(alu, 1, &k) && unary_alu_src_fconst(alu, 2, &c1)) {
+      if (unary_alu_src_is_identity_load(alu, 0, load_def, components) &&
+          unary_alu_src_uniform_fconst(alu, 1, components, &k) &&
+          unary_alu_src_uniform_fconst(alu, 2, components, &c1)) {
          c0 = k;
          matched = true;
-      } else if (unary_alu_src_def(alu, 1) == load_def &&
-                 unary_alu_src_fconst(alu, 0, &k) && unary_alu_src_fconst(alu, 2, &c1)) {
+      } else if (unary_alu_src_is_identity_load(alu, 1, load_def, components) &&
+                 unary_alu_src_uniform_fconst(alu, 0, components, &k) &&
+                 unary_alu_src_uniform_fconst(alu, 2, components, &c1)) {
          c0 = k;
          matched = true;
       }
    } else if (alu->op == nir_op_fmul) {
       /* fmul(load, c0): pure scale, c1 = 0. */
       float k;
-      if (unary_alu_src_def(alu, 0) == load_def && unary_alu_src_fconst(alu, 1, &k)) {
+      if (unary_alu_src_is_identity_load(alu, 0, load_def, components) &&
+          unary_alu_src_uniform_fconst(alu, 1, components, &k)) {
          c0 = k;
          matched = true;
-      } else if (unary_alu_src_def(alu, 1) == load_def && unary_alu_src_fconst(alu, 0, &k)) {
+      } else if (unary_alu_src_is_identity_load(alu, 1, load_def, components) &&
+                 unary_alu_src_uniform_fconst(alu, 0, components, &k)) {
          c0 = k;
          matched = true;
       }
    } else if (alu->op == nir_op_fadd) {
       /* fadd(X, c1): X is either the load (c0 = 1) or fmul(load, c0). */
       float k;
-      const nir_def *x = NULL;
-      if (unary_alu_src_fconst(alu, 1, &k)) {
+      int x_src = -1;
+      if (unary_alu_src_uniform_fconst(alu, 1, components, &k)) {
          c1 = k;
-         x = unary_alu_src_def(alu, 0);
-      } else if (unary_alu_src_fconst(alu, 0, &k)) {
+         x_src = 0;
+      } else if (unary_alu_src_uniform_fconst(alu, 0, components, &k)) {
          c1 = k;
-         x = unary_alu_src_def(alu, 1);
+         x_src = 1;
       }
-      if (x == load_def) {
+      if (x_src >= 0 &&
+          unary_alu_src_is_identity_load(alu, (unsigned)x_src, load_def,
+                                         components)) {
          c0 = 1.0f;
          matched = true;
-      } else if (x) {
-         const nir_alu_instr *mul = nir_def_as_alu_or_null((nir_def *)x);
+      } else if (x_src >= 0) {
+         const nir_alu_instr *mul = nir_def_as_alu_or_null(alu->src[x_src].src.ssa);
          if (mul && mul->op == nir_op_fmul) {
             float m;
-            if (unary_alu_src_def(mul, 0) == load_def &&
-                unary_alu_src_fconst(mul, 1, &m)) {
+            if (unary_alu_src_is_identity_load(mul, 0, load_def, components) &&
+                unary_alu_src_uniform_fconst(mul, 1, components, &m)) {
                c0 = m;
                matched = true;
-            } else if (unary_alu_src_def(mul, 1) == load_def &&
-                       unary_alu_src_fconst(mul, 0, &m)) {
+            } else if (unary_alu_src_is_identity_load(mul, 1, load_def, components) &&
+                       unary_alu_src_uniform_fconst(mul, 0, components, &m)) {
                c0 = m;
                matched = true;
             }
@@ -456,13 +482,21 @@ r300_nir_detect_unary_map(const nir_shader *s,
        nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
       return;
 
+   if (store->num_components != 4 || store->src[0].ssa->bit_size != 32 ||
+       !intrinsic_base_type_is_float(store, nir_op_infos[alu->op].output_type))
+      return;
+
    /* Capture constant bindings when present; the orchestrator's positional
     * descriptor-set fallback resolves them otherwise (input 0, output 1; an
     * in-place kernel binds the same buffer to both). */
-   if (nir_src_is_const(load->src[0]))
+   if (nir_src_is_const(load->src[0])) {
       out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
-   if (nir_src_is_const(store->src[1]))
+      out->input_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(store->src[1])) {
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+      out->output_ssbo_binding_valid = true;
+   }
    out->value_components = store->num_components;
    out->value_bit_size = store->src[0].ssa->bit_size;
    out->value_is_float = intrinsic_base_type_is_float(
@@ -2020,7 +2054,7 @@ r300_nir_detect_oaddsub_pattern(const nir_shader *s,
    out->output_lo_ssbo_binding = 0;
    out->output_hi_ssbo_binding = 0;
 
-   const nir_intrinsic_instr *load[4], *store[2];
+   const nir_intrinsic_instr *load[4] = {0}, *store[2] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 4, &nload, store, 2, &nstore, &natomic,
@@ -2072,7 +2106,7 @@ r300_nir_detect_oconj_pattern(const nir_shader *s,
    out->output_lo_ssbo_binding = 0;
    out->output_hi_ssbo_binding = 0;
 
-   const nir_intrinsic_instr *load[2], *store[2];
+   const nir_intrinsic_instr *load[2] = {0}, *store[2] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 2, &nload, store, 2, &nstore, &natomic,
@@ -2125,7 +2159,7 @@ r300_nir_detect_onorm_pattern(const nir_shader *s,
    out->input_b_ssbo_binding   = 0;
    out->output_ssbo_binding    = 0;
 
-   const nir_intrinsic_instr *load[2], *store[1];
+   const nir_intrinsic_instr *load[2] = {0}, *store[1] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 2, &nload, store, 1, &nstore, &natomic,
@@ -2213,7 +2247,7 @@ r300_nir_detect_odiv_pattern(const nir_shader *s,
    out->output_lo_ssbo_binding = 0;
    out->output_hi_ssbo_binding = 0;
 
-   const nir_intrinsic_instr *load[4], *store[2];
+   const nir_intrinsic_instr *load[4] = {0}, *store[2] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 4, &nload, store, 2, &nstore, &natomic,
@@ -2468,7 +2502,7 @@ r300_nir_detect_otrans_pattern(const nir_shader *s,
    out->output_lo_ssbo_binding = 0;
    out->output_hi_ssbo_binding = 0;
 
-   const nir_intrinsic_instr *load[4], *store[2];
+   const nir_intrinsic_instr *load[4] = {0}, *store[2] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 4, &nload, store, 2, &nstore, &natomic,
@@ -2556,7 +2590,7 @@ r300_nir_detect_qfmadd_pattern(const nir_shader *s,
    out->input_c_ssbo_binding = 0;
    out->output_ssbo_binding  = 0;
 
-   const nir_intrinsic_instr *load[3], *store[1];
+   const nir_intrinsic_instr *load[3] = {0}, *store[1] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 3, &nload, store, 1, &nstore, &natomic,
@@ -2600,7 +2634,7 @@ r300_nir_detect_qfmmul_pattern(const nir_shader *s,
    out->input_c_ssbo_binding = 0;
    out->output_ssbo_binding  = 0;
 
-   const nir_intrinsic_instr *load[3], *store[1];
+   const nir_intrinsic_instr *load[3] = {0}, *store[1] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 3, &nload, store, 1, &nstore, &natomic,
@@ -2655,7 +2689,7 @@ r300_nir_detect_qdiv_pattern(const nir_shader *s,
    out->input_b_ssbo_binding = 0;
    out->output_ssbo_binding  = 0;
 
-   const nir_intrinsic_instr *load[2], *store[1];
+   const nir_intrinsic_instr *load[2] = {0}, *store[1] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 2, &nload, store, 1, &nstore, &natomic,
@@ -2803,7 +2837,7 @@ r300_nir_detect_mat4vec_pattern(const nir_shader *s,
    out->vertex_ssbo_binding = 1;
    out->output_ssbo_binding = 2;
 
-   const nir_intrinsic_instr *load[5], *store[1];
+   const nir_intrinsic_instr *load[5] = {0}, *store[1] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 5, &nload, store, 1, &nstore, &natomic,
@@ -2912,8 +2946,11 @@ r300_nir_detect_qfmul_pattern(const nir_shader *s,
    out->scalar_ssbo_binding = 0;
    out->quat_ssbo_binding   = 1;
    out->output_ssbo_binding = 2;
+   out->scalar_ssbo_binding_valid = false;
+   out->quat_ssbo_binding_valid   = false;
+   out->output_ssbo_binding_valid = false;
 
-   const nir_intrinsic_instr *load[2], *store[1];
+   const nir_intrinsic_instr *load[2] = {0}, *store[1] = {0};
    unsigned nload, nstore, natomic;
    bool has_loop, in_if;
    collect_loads_stores(s, load, 2, &nload, store, 1, &nstore, &natomic,
@@ -2932,14 +2969,14 @@ r300_nir_detect_qfmul_pattern(const nir_shader *s,
    const nir_def *quat_def = NULL, *scal_def = NULL;
    for (unsigned k = 0; k < 2; k++) {
       const nir_def *d = mul->src[k].src.ssa;
-      if (d->num_components == 4) {
+      if (d->num_components == 4 && d->bit_size == 32) {
          bool ident = true;
          for (unsigned c = 0; c < 4; c++)
             if (mul->src[k].swizzle[c] != c)
                ident = false;
          if (ident)
             quat_def = d;
-      } else if (d->num_components == 1) {
+      } else if (d->num_components == 1 && d->bit_size == 32) {
          bool splat = true;
          for (unsigned c = 0; c < 4; c++)
             if (mul->src[k].swizzle[c] != 0)
@@ -2960,15 +2997,30 @@ r300_nir_detect_qfmul_pattern(const nir_shader *s,
    }
    if (!quat_load || !scal_load)
       return;
-   if (quat_load->def.num_components != 4 || scal_load->def.num_components != 1)
+   if (mul->def.bit_size != 32 || store[0]->src[0].ssa->bit_size != 32 ||
+       quat_load->def.num_components != 4 || quat_load->def.bit_size != 32 ||
+       scal_load->def.num_components != 1 || scal_load->def.bit_size != 32)
       return;
 
-   if (nir_src_is_const(scal_load->src[0]))
+   const nir_def *scalar_offset_base = NULL;
+   uint32_t scalar_offset_delta = 0;
+   if (!mat4vec_offset_split(scal_load->src[1].ssa, &scalar_offset_base,
+                             &scalar_offset_delta) ||
+       scalar_offset_delta != 0)
+      return;
+
+   if (nir_src_is_const(scal_load->src[0])) {
       out->scalar_ssbo_binding = nir_src_as_uint(scal_load->src[0]);
-   if (nir_src_is_const(quat_load->src[0]))
+      out->scalar_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(quat_load->src[0])) {
       out->quat_ssbo_binding = nir_src_as_uint(quat_load->src[0]);
-   if (nir_src_is_const(store[0]->src[1]))
+      out->quat_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(store[0]->src[1])) {
       out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+      out->output_ssbo_binding_valid = true;
+   }
    out->is_qfmul = true;
 }
 
@@ -3117,16 +3169,18 @@ static const struct r300_compute_reject_row r300_compute_reject_registry[] = {
      "the substrate has texture-load input and one RB3D color export; no scatter or arbitrary read-write storage exists" },
    { R300_COMPUTE_REJECT_FP64, "fp64",
      "the fragment ALU is FP24 (s1e7m16); no double-precision path exists" },
-};
+   { R300_COMPUTE_REJECT_FP16, "fp16",
+     "r300 has no native FP16 support; only emulated virtual-FP16 delegates are admissible" },
+   };
 
-const struct r300_compute_reject_row *
-r300_compute_reject_lookup(enum r300_compute_reject reason)
-{
+   const struct r300_compute_reject_row *
+   r300_compute_reject_lookup(enum r300_compute_reject reason)
+   {
    /* One row per enum value: this guard fails the build if a reason is added to
-    * the enum without a registry row -- the divergence the registry prevents.
-    * STATIC_ASSERT is a do/while statement, so it lives inside a function. */
+   * the enum without a registry row -- the divergence the registry prevents.
+   * STATIC_ASSERT is a do/while statement, so it lives inside a function. */
    STATIC_ASSERT(ARRAY_SIZE(r300_compute_reject_registry) ==
-                 R300_COMPUTE_REJECT_FP64 + 1);
+                R300_COMPUTE_REJECT_FP16 + 1);
    for (unsigned i = 0; i < ARRAY_SIZE(r300_compute_reject_registry); i++) {
       if (r300_compute_reject_registry[i].reason == reason)
          return &r300_compute_reject_registry[i];
@@ -3145,4 +3199,95 @@ const char *
 r300_compute_reject_substrate_absence(enum r300_compute_reject reason)
 {
    return r300_compute_reject_lookup(reason)->substrate_absence;
+}
+
+void
+r300_nir_detect_ieee16_classify(const nir_shader *s,
+                                struct r300_compute_ieee16_classify_pattern *out)
+{
+   out->is_ieee16_classify   = false;
+   out->input_ssbo_binding   = 0;
+   out->output_ssbo_binding  = 0;
+
+   const nir_intrinsic_instr *load[1] = {0}, *store[1] = {0};
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 1, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 1 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+
+   /* Find the ldexp ALU opcode representing the classify placeholder */
+   bool found_ldexp = false;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *v = nir_instr_as_alu(instr);
+            if (v->op == nir_op_ldexp && v->def.num_components == 4) {
+               found_ldexp = true;
+               break;
+            }
+         }
+         if (found_ldexp)
+            break;
+      }
+   }
+   if (!found_ldexp)
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_ieee16_classify = true;
+}
+
+void
+r300_nir_detect_ieee16_mul(const nir_shader *s,
+                           struct r300_compute_ieee16_mul_pattern *out)
+{
+   out->is_ieee16_mul        = false;
+   out->input_ssbo_binding   = 0;
+   out->output_ssbo_binding  = 0;
+
+   const nir_intrinsic_instr *load[1] = {0}, *store[1] = {0};
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 1, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 1 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+
+   /* Find the fpow ALU opcode representing the multiply placeholder */
+   bool found_fpow = false;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *v = nir_instr_as_alu(instr);
+            if (v->op == nir_op_fpow && v->def.num_components == 4) {
+               found_fpow = true;
+               break;
+            }
+         }
+         if (found_fpow)
+            break;
+      }
+   }
+   if (!found_fpow)
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_ieee16_mul = true;
+}
+    out->input_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_ieee16_mul = true;
 }

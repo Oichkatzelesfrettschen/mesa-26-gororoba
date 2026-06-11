@@ -327,6 +327,10 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_predicated_store_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->multitap_gather.is_multitap_gather)
       ok = r300vk_multitap_gather_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->ieee16_classify.is_ieee16_classify)
+      ok = r300vk_ieee16_classify_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->ieee16_mul.is_ieee16_mul)
+      ok = r300vk_ieee16_mul_dispatch_replay(device, pl, d, last_bind_dsets);
 
    return ok ? VK_SUCCESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
 }

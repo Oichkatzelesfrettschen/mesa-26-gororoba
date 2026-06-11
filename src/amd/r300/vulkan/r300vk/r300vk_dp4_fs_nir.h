@@ -125,6 +125,8 @@ nir_shader *r300vk_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *
  * QFMADD out = a*b + c (one pass); QFMMUL out = a*b*c = (a*b)*c (one pass). */
 nir_shader *r300vk_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts);
 nir_shader *r300vk_build_qfmmul_fs_nir(const nir_shader_compiler_options *opts);
+nir_shader *r300vk_build_ieee16_classify_fs_nir(const nir_shader_compiler_options *opts);
+nir_shader *r300vk_build_ieee16_mul_fs_nir(const nir_shader_compiler_options *opts);
 
 #ifdef __cplusplus
 }

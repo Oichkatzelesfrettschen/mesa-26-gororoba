@@ -156,6 +156,8 @@ struct r300vk_pipeline {
     * product (QFMMUL): out = a*b*c.  Both three-in/one-out, one pass (fs_cso). */
    struct r300_compute_qfmadd_pattern qfmadd;
    struct r300_compute_qfmmul_pattern qfmmul;
+   struct r300_compute_ieee16_classify_pattern ieee16_classify;
+   struct r300_compute_ieee16_mul_pattern ieee16_mul;
 
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
