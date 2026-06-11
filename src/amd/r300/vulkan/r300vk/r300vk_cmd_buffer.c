@@ -428,6 +428,15 @@ r300vk_cmd_append_dyn(struct r300vk_cmd_buffer *cmd, uint32_t flag)
    struct r300vk_cmd_set_dynamic *d = r300vk_cmd_append_dyn(cmd, flag); \
    if (!d) return
 
+static void
+r300vk_record_bind_vertex_buffers(struct r300vk_cmd_buffer *cmd,
+                                  uint32_t firstBinding,
+                                  uint32_t bindingCount,
+                                  const VkBuffer *pBuffers,
+                                  const VkDeviceSize *pOffsets,
+                                  const VkDeviceSize *pSizes,
+                                  const VkDeviceSize *pStrides);
+
 void
 r300vk_CmdSetLineStipple(VkCommandBuffer commandBuffer,
                          uint32_t lineStippleFactor,
@@ -590,8 +599,9 @@ r300vk_CmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t firstBindin
                              const VkDeviceSize *pOffsets, const VkDeviceSize *pSizes,
                              const VkDeviceSize *pStrides)
 {
-   r300vk_CmdBindVertexBuffers(commandBuffer, firstBinding, bindingCount,
-                               pBuffers, pOffsets);
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   r300vk_record_bind_vertex_buffers(cmd, firstBinding, bindingCount,
+                                     pBuffers, pOffsets, pSizes, pStrides);
 }
 
 void
@@ -626,14 +636,15 @@ r300vk_CmdSetScissor(VkCommandBuffer commandBuffer,
    e->set_sc.scissor = pScissors[0];
 }
 
-void
-r300vk_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
-                             uint32_t firstBinding,
-                             uint32_t bindingCount,
-                             const VkBuffer *pBuffers,
-                             const VkDeviceSize *pOffsets)
+static void
+r300vk_record_bind_vertex_buffers(struct r300vk_cmd_buffer *cmd,
+                                  uint32_t firstBinding,
+                                  uint32_t bindingCount,
+                                  const VkBuffer *pBuffers,
+                                  const VkDeviceSize *pOffsets,
+                                  const VkDeviceSize *pSizes,
+                                  const VkDeviceSize *pStrides)
 {
-   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
 
@@ -644,11 +655,26 @@ r300vk_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
    e->type                      = R300VK_CMD_BIND_VERTEX_BUFFERS;
    e->bind_vbufs.first_binding  = first;
    e->bind_vbufs.binding_count  = count;
+   e->bind_vbufs.has_strides    = pStrides != NULL;
    for (uint32_t i = 0; i < count; i++) {
       VK_FROM_HANDLE(r300vk_buffer, buf, pBuffers[i]);
       e->bind_vbufs.buffers[i] = buf;
       e->bind_vbufs.offsets[i] = pOffsets[i];
+      e->bind_vbufs.strides[i] = pStrides ? pStrides[i] : 0;
+      e->bind_vbufs.sizes[i]   = pSizes ? pSizes[i] : VK_WHOLE_SIZE;
    }
+}
+
+void
+r300vk_CmdBindVertexBuffers(VkCommandBuffer commandBuffer,
+                             uint32_t firstBinding,
+                             uint32_t bindingCount,
+                             const VkBuffer *pBuffers,
+                             const VkDeviceSize *pOffsets)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   r300vk_record_bind_vertex_buffers(cmd, firstBinding, bindingCount,
+                                     pBuffers, pOffsets, NULL, NULL);
 }
 
 void

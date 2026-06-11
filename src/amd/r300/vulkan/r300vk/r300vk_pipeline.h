@@ -246,6 +246,12 @@ struct r300vk_pipeline {
    void                   *rasterizer_cso;
    void                   *dsa_cso;
    void                   *velems_cso;
+   /* The element array velems_cso was created from, kept so the replay can
+    * rebuild a transient CSO with vkCmdBindVertexBuffers2 strides patched in
+    * (VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE makes the bind-time
+    * strides authoritative over the vertex-input description's). */
+   struct pipe_vertex_element velems_template[PIPE_MAX_ATTRIBS];
+   uint32_t                velems_count;
    VkPrimitiveTopology     topology;
 
    /* The pipe-state templates the fixed CSOs above were created from, kept so
