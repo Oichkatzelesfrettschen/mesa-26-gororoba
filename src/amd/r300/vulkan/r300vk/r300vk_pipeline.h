@@ -107,9 +107,9 @@ struct r300vk_pipeline {
    /* General 4x4 vertex transform (MAT4VEC) detected at pipeline-create time:
     * out[gid] = M * v[gid], four DP4s of v against the broadcast matrix rows --
     * the absent vertex FPU's transform on the FP24 fragment ALU.  The synthesized
-    * FS (r300vk_build_mat4vec_fs_nir) samples the matrix broadcast at stage 0 and
-    * the per-element vertex at stage 1; the dispatch wraps the matrix as a 4x1
-    * sampler view. */
+    * FS reads the broadcast matrix from the fragment constant file (CONST[0..3])
+    * and the per-element vertex from sampler stage 0; the dispatch uploads the
+    * matrix as the fragment constant buffer. */
    struct r300_compute_mat4vec_pattern mat4vec;
 
    /* Quaternion rotation (QROTATE) kernel detected at pipeline-create time:

@@ -1868,12 +1868,13 @@ omul_copy_fp16_rt_to_buffer(struct pipe_context *pipe, struct pipe_resource *rt,
  * the copy-back unpacks each row to RGBA32_FLOAT, the kernel's output format.
  * The vb/velems fullscreen quad is shared across the two passes. */
 static bool
-omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
-              struct r300vk_device *device,
-              struct pipe_sampler_view *views[4], void *pass_fs, void *vs_cso,
-              struct pipe_resource *vb, void *velems_cso,
-              struct pipe_resource *out_res, unsigned out_offset,
-              unsigned width, unsigned height, uint64_t total)
+omul_run_pass_cb(struct pipe_context *pipe, struct pipe_screen *screen,
+                 struct r300vk_device *device,
+                 struct pipe_sampler_view *views[4], void *pass_fs, void *vs_cso,
+                 struct pipe_resource *vb, void *velems_cso,
+                 struct pipe_resource *out_res, unsigned out_offset,
+                 unsigned width, unsigned height, uint64_t total,
+                 const void *cb_data, unsigned cb_size)
 {
    const enum pipe_format rtfmt = PIPE_FORMAT_R16G16B16A16_FLOAT;
    struct pipe_resource rt_templ;
@@ -1908,6 +1909,18 @@ omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 4, samplers);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 4, 0, views);
 
+   /* Optional fragment CONST[0..] upload (the broadcast-matrix lowering puts the
+    * 4x4 in the constant file instead of a texture).  user_buffer maps straight
+    * into r300_set_constant_buffer with no GPU upload and is consumed at the draw
+    * below, so cb_data only needs to outlive this call. */
+   if (cb_data) {
+      struct pipe_constant_buffer cb;
+      memset(&cb, 0, sizeof(cb));
+      cb.user_buffer = cb_data;
+      cb.buffer_size = cb_size;
+      pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
+   }
+
    struct pipe_vertex_buffer vb_state;
    memset(&vb_state, 0, sizeof(vb_state));
    vb_state.buffer.resource = vb;
@@ -1927,12 +1940,29 @@ omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
 
    struct pipe_sampler_view *no_views[4] = { NULL, NULL, NULL, NULL };
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 4, no_views);
+   if (cb_data)
+      pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, NULL);
    pipe->set_vertex_buffers(pipe, 0, NULL);
    struct pipe_framebuffer_state empty_fb;
    memset(&empty_fb, 0, sizeof(empty_fb));
    pipe->set_framebuffer_state(pipe, &empty_fb);
    pipe_resource_reference(&rt, NULL);
    return copy_ok;
+}
+
+/* The 4-sampler / no-constant fast path used by every elementwise op: forwards
+ * to omul_run_pass_cb with no fragment constant buffer. */
+static bool
+omul_run_pass(struct pipe_context *pipe, struct pipe_screen *screen,
+              struct r300vk_device *device,
+              struct pipe_sampler_view *views[4], void *pass_fs, void *vs_cso,
+              struct pipe_resource *vb, void *velems_cso,
+              struct pipe_resource *out_res, unsigned out_offset,
+              unsigned width, unsigned height, uint64_t total)
+{
+   return omul_run_pass_cb(pipe, screen, device, views, pass_fs, vs_cso, vb,
+                           velems_cso, out_res, out_offset, width, height,
+                           total, NULL, 0);
 }
 
 /* Run the octonion product in ONE pass via two render targets: bind the four
@@ -2166,13 +2196,15 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
 
 /* MAT4VEC dispatch replay: the general 4x4 vertex transform out = M*v on the
  * compute-as-raster substrate.  Unlike the per-element ops, the matrix is
- * BROADCAST -- the same four rows for every vertex -- so it is wrapped as a 4x1
- * sampler view (row i at texel i) at stage 0, while the vertices are wrapped at
- * the dispatch extent at stage 1.  The synthesized FS (r300vk_build_mat4vec_fs_nir)
- * samples the four rows at their fixed texel centres, dots each against the
- * per-element vertex, and writes the transformed position to the FP16 RT,
+ * BROADCAST -- the same four rows for every vertex -- so rather than wrap it as a
+ * texture it is mapped once and uploaded into the fragment constant file
+ * (CONST[0..3] = the four rows); the vertices are the only sampler, wrapped at
+ * the dispatch extent.  The synthesized FS reads each const row, dots it against
+ * the per-element vertex, and writes the transformed position to the FP16 RT,
  * unpacked into the kernel's vec4 FP32 output -- the same FP16-RT/FP32-readback
- * core as QMUL, via omul_run_pass with a single output. */
+ * core as QMUL, via omul_run_pass_cb with the matrix as its constant buffer.
+ * Dropping the matrix texture removes four TEX and their four coordinate-staging
+ * MOVs, leaving 1 TEX + 4 DP4. */
 bool
 r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
                                const struct r300vk_pipeline *pl,
@@ -2228,36 +2260,50 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
    if (width > 2048 || height > 2048)
       return false;
 
+   /* The matrix is broadcast (one 4x4 for every element), so it goes into the
+    * fragment constant file rather than a texture: map its 16 floats once and
+    * hand them to the pass as CONST[0..3].  Only the per-element vertices need a
+    * sampler (stage 0).  This drops the four matrix-row TEX and their four
+    * coordinate-staging MOVs the texture variant compiled to. */
+   float matrix[16];
+   {
+      struct pipe_transfer *mxfer = NULL;
+      struct pipe_box mbox;
+      memset(&mbox, 0, sizeof(mbox));
+      mbox.x      = (int)desc[0]->buf.offset;
+      mbox.width  = (int)sizeof(matrix);
+      mbox.height = 1;
+      mbox.depth  = 1;
+      void *mptr = pipe->buffer_map(pipe, buf[0]->resource, 0, PIPE_MAP_READ,
+                                    &mbox, &mxfer);
+      if (!mptr)
+         return false;
+      memcpy(matrix, mptr, sizeof(matrix));
+      pipe->buffer_unmap(pipe, mxfer);
+   }
+
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
-   /* views[0] = the broadcast matrix as a 4x1 texture (one texel per row);
-    * views[1] = the per-element vertices at the dispatch extent. */
+   /* views[0] = the per-element vertices at the dispatch extent. */
    views[0] = r300vk_identity_map_wrap_input_as_sampler_view(
-      device, buf[0]->resource, (unsigned)desc[0]->buf.offset,
-      4, 1, PIPE_FORMAT_R32G32B32A32_FLOAT);
-   views[1] = r300vk_identity_map_wrap_input_as_sampler_view(
       device, buf[1]->resource, (unsigned)desc[1]->buf.offset,
       width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
-   if (!views[0] || !views[1]) {
-      pipe_sampler_view_reference(&views[0], NULL);
-      pipe_sampler_view_reference(&views[1], NULL);
+   if (!views[0])
       return false;
-   }
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;
    if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
       pipe_sampler_view_reference(&views[0], NULL);
-      pipe_sampler_view_reference(&views[1], NULL);
       return false;
    }
 
-   bool ok = omul_run_pass(pipe, screen, device, views, pl->fs_cso, pl->vs_cso,
-                           vb, velems_cso, buf[2]->resource,
-                           (unsigned)desc[2]->buf.offset, width, height, total);
+   bool ok = omul_run_pass_cb(pipe, screen, device, views, pl->fs_cso,
+                              pl->vs_cso, vb, velems_cso, buf[2]->resource,
+                              (unsigned)desc[2]->buf.offset, width, height, total,
+                              matrix, sizeof(matrix));
 
    pipe->delete_vertex_elements_state(pipe, velems_cso);
    pipe_sampler_view_reference(&views[0], NULL);
-   pipe_sampler_view_reference(&views[1], NULL);
    pipe_resource_reference(&vb, NULL);
    return ok;
 }

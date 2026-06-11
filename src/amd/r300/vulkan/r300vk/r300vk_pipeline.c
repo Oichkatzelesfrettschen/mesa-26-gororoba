@@ -2024,20 +2024,44 @@ r300vk_qdiv_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* MAT4VEC FS: the general 4x4 vertex transform built by r300vk_build_mat4vec_fs_nir
- * -- four DP4s of the per-element vertex against the broadcast matrix rows, to the
- * FP16 color export.  Same finalize+CSO as QMUL. */
+/* MAT4VEC FS: the general 4x4 vertex transform -- four DP4s of the per-element
+ * vertex against the broadcast matrix rows, to the FP16 color export. */
 static void *
 r300vk_synthesize_mat4vec_fs(struct pipe_context *pipe)
 {
-   nir_shader *s = r300vk_build_mat4vec_fs_nir(
-      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]);
-   if (pipe->screen->finalize_nir)
-      pipe->screen->finalize_nir(pipe->screen, s, true);
+   /* The 4x4 is uniform across every element, so it lives in the constant file
+    * (CONST[0..3] = the four rows) rather than a texture: the dispatch uploads
+    * the 64 bytes per draw and each output lane is one DP4 of a const row with
+    * the per-element vertex.  That compiles to 1 TEX + 4 DP4.  The texture-matrix
+    * variant needed 4 extra TEX (one per row) plus 4 coordinate-staging MOVs to
+    * sample them at the fixed texel centres -- eight instructions and four
+    * texture-cache fetches a const-file read does not cost.  The vertex is the
+    * only sampler (stage 0), fetched at the interpolated fullscreen coord. */
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
 
-   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
-                                      .ir.nir = s };
-   return pipe->create_fs_state(pipe, &state);
+   struct ureg_src row[4];
+   for (unsigned i = 0; i < 4; i++)
+      row[i] = ureg_DECL_constant(ureg, i);
+
+   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                           TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst vtx = ureg_DECL_temporary(ureg);
+
+   ureg_TEX(ureg, ureg_writemask(vtx, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tc, samp);
+   ureg_DP4(ureg, ureg_writemask(out, TGSI_WRITEMASK_X), row[0], ureg_src(vtx));
+   ureg_DP4(ureg, ureg_writemask(out, TGSI_WRITEMASK_Y), row[1], ureg_src(vtx));
+   ureg_DP4(ureg, ureg_writemask(out, TGSI_WRITEMASK_Z), row[2], ureg_src(vtx));
+   ureg_DP4(ureg, ureg_writemask(out, TGSI_WRITEMASK_W), row[3], ureg_src(vtx));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
 }
 
 /* MAT4VEC VS+FS synthesis: the passthrough VS shared with DP4 plus the transform
