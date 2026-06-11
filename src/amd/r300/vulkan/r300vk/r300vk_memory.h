@@ -12,6 +12,7 @@
 
 #include "pipe/p_state.h"
 #include "util/list.h"
+#include "util/u_dynarray.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,8 +26,8 @@ extern "C" {
  *   - MapMemory, when the memory is mapped before any bind, creates the
  *     memory's own HOST_VISIBLE pipe_buffer and sets owns_buffer.  Vulkan
  *     permits mapping VkDeviceMemory before (or without) binding a resource.
- *   - BindBufferMemory2, when owns_buffer is set, records the bound VkBuffer's
- *     create-time resource in bound_resource and seeds it with whatever the map
+ *   - BindBufferMemory2, when owns_buffer is set, appends the bound VkBuffer's
+ *     create-time resource to bound_buffers and seeds it with whatever the map
  *     already holds.  The host map stays live across the bind, and consumers
  *     read buf->resource offset-free (the slice copy carries memoryOffset), so
  *     no draw/descriptor/compute path needs the bind offset; otherwise the
@@ -36,27 +37,45 @@ extern "C" {
  * Map persistence and coherency: Vulkan keeps a map valid across bind, and the
  * standard deqp pattern is map -> bind -> WRITE-via-host-ptr -> flush (and
  * render -> invalidate -> READ-via-host-ptr).  The host map lives on the lazy
- * pipe_buffer (mem->resource); the bound VkBuffer has its own GPU-side resource
- * (bound_resource).  They are kept in sync only at the explicit barriers:
- * FlushMappedMemoryRanges copies the live map (host) -> bound_resource (so a
- * post-bind host write reaches the GPU buffer), and InvalidateMappedMemoryRanges
- * copies bound_resource (GPU) -> the live map (so a copyImageToBuffer result
- * reaches the host read).  The lazy buffer is host-only -- the GPU never touches
- * it -- so the map needs no PIPE_MAP_PERSISTENT/COHERENT.
+ * pipe_buffer (mem->resource); each bound VkBuffer has its own GPU-side
+ * resource, recorded as a bound_buffers slice.  They are kept in sync only at
+ * the explicit barriers: FlushMappedMemoryRanges copies the live map (host) ->
+ * each slice's resource (so a post-bind host write reaches the GPU buffer), and
+ * InvalidateMappedMemoryRanges copies each slice's resource (GPU) -> the live
+ * map (so a copyImageToBuffer result reaches the host read).  The lazy buffer is
+ * host-only -- the GPU never touches it -- so the map needs no
+ * PIPE_MAP_PERSISTENT/COHERENT.
+ *
+ * One allocation, many buffers: a suballocating client (zink slabs upload
+ * buffers this way) binds several VkBuffers at distinct memoryOffsets within
+ * one VkDeviceMemory.  Every binding must keep receiving host writes for the
+ * allocation's lifetime, so the bindings live in the bound_buffers array --
+ * tracking only the most recent bind would orphan every earlier buffer's
+ * resource from the sync (its vertex data would read back as zeros after the
+ * next buffer binds). */
+struct r300vk_bound_buffer_slice {
+   struct pipe_resource *resource;  /* the bound VkBuffer's resource (referenced) */
+   VkDeviceSize          offset;    /* VkBindBufferMemoryInfo::memoryOffset */
+};
+
+/*
  *
  * memory_offset records the VkBindBufferMemoryInfo/VkBindImageMemoryInfo
  * memoryOffset.  For a borrowed bound resource (owns_buffer == false) the
  * pipe_resource starts at the buffer, so MapMemory uses
  * resource_offset = MapMemory.offset - memory_offset.  For an owns_buffer
  * allocation the resource IS the whole VkDeviceMemory; the sync copies the
- * buffer's slice at memory_offset, so consumers read bound_resource from byte 0. */
+ * buffer's slice at its bind offset, so consumers read each bound buffer's
+ * resource from byte 0. */
 struct r300vk_device_memory {
    struct vk_object_base  base;
    VkDeviceSize           size;
-   VkDeviceSize           memory_offset;  /* from BindBufferMemory2/BindImageMemory2 */
+   VkDeviceSize           memory_offset;  /* most recent bind's memoryOffset: the borrow-map
+                                           * base for buffers, the slice base for images */
    struct pipe_resource  *resource;  /* NULL until first map or BindBufferMemory2/BindImageMemory2 */
-   struct pipe_resource  *bound_resource;  /* owns_buffer: the bound VkBuffer's resource, synced
-                                            * with the host map at Flush/Invalidate */
+   struct util_dynarray   bound_buffers;  /* owns_buffer: r300vk_bound_buffer_slice per bound
+                                           * VkBuffer, each synced with the host map at
+                                           * Flush/Invalidate and the submit boundary */
    struct pipe_resource  *bound_image_tile; /* owns_buffer + linear image: the bound image's single
                                              * row-major tile, pulled into the host map at Invalidate */
    uint32_t               bound_image_row_pitch; /* linear-image row stride; 0 when the binding is a
@@ -87,6 +106,14 @@ struct r300vk_device;
  * HOST_COHERENT memory on this synchronous-submit device. */
 void r300vk_device_memory_sync_bound(struct r300vk_device *device,
                                      bool host_to_buffer);
+
+/* Drop every bound_buffers slice whose resource is the given one, across all
+ * live allocations.  DestroyBuffer must call this: a suballocating client
+ * recycles (destroys and re-creates) buffers within a live allocation, and a
+ * dead buffer's slice left in the array would keep copying its stale resource
+ * back over the host map at the next buffer -> host sync. */
+void r300vk_device_memory_drop_buffer_slices(struct r300vk_device *device,
+                                             struct pipe_resource *resource);
 
 VkResult r300vk_AllocateMemory(VkDevice device,
                                 const VkMemoryAllocateInfo *pAllocateInfo,

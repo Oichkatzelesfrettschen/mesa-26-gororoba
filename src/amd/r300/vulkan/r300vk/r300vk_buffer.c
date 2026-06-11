@@ -5,6 +5,7 @@
 
 #include "r300vk_buffer.h"
 #include "r300vk_device.h"
+#include "r300vk_memory.h"
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -66,6 +67,11 @@ r300vk_DestroyBuffer(VkDevice _device,
    if (!buf)
       return;
 
+   /* A suballocating client recycles buffers within a live allocation; the
+    * memory's per-buffer sync slice must die with the buffer, or the next
+    * buffer -> host sync copies the dead resource's stale bytes back over
+    * the live host map. */
+   r300vk_device_memory_drop_buffer_slices(device, buf->resource);
    pipe_resource_reference(&buf->resource, NULL);
    vk_object_base_finish(&buf->base);
    vk_free2(&device->vk.alloc, pAllocator, buf);
