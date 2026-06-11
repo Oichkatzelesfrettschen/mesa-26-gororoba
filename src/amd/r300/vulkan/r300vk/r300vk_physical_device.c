@@ -367,6 +367,13 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * the EGL DRM fd against these to pick this pdev, so without it
     * zink-on-r300vk fails at "choose pdev" before any feature check. */
    .EXT_physical_device_drm = true,
+   /* VK_EXT_pci_bus_info: the common WSI's same-GPU check
+    * (wsi_device_matches_drm_fd) compares VkPhysicalDevicePCIBusInfoPropertiesEXT
+    * against the PCI address behind the DRI3 fd the X server returns.  A zeroed
+    * struct mismatches the real device address, wsi_drm_image_needs_buffer_blit
+    * then reports a cross-GPU configuration, and every swapchain is routed
+    * through the prime-blit buffer path instead of native dma-buf images. */
+   .EXT_pci_bus_info = true,
    /* VK_KHR_dynamic_rendering: r300vk_CmdBeginRendering / r300vk_CmdEndRendering
     * translate VkRenderingInfo into the same colour-attachment framebuffer the
     * render-pass replay drives, so a render target needs no VkRenderPass or
@@ -676,6 +683,16 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    properties.drmHasPrimary   = device->has_primary_node;
    properties.drmPrimaryMajor = device->primary_node_major;
    properties.drmPrimaryMinor = device->primary_node_minor;
+
+   /* VK_EXT_pci_bus_info: the PCI address of the enumerated DRM device.  The
+    * common WSI matches these against the DRI3 fd's PCI address to decide
+    * same-GPU presentation (native dma-buf images) versus the cross-GPU
+    * prime-blit buffer path.  bustype DRM_BUS_PCI is guaranteed by
+    * r300vk_open_radeon_render_node, so businfo.pci is always populated. */
+   properties.pciDomain   = drm_device->businfo.pci->domain;
+   properties.pciBus      = drm_device->businfo.pci->bus;
+   properties.pciDevice   = drm_device->businfo.pci->dev;
+   properties.pciFunction = drm_device->businfo.pci->func;
 
    /* Driver entrypoints first, then the WSI surface queries
     * (vkGetPhysicalDeviceSurfaceSupportKHR and friends live at
