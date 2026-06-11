@@ -109,6 +109,11 @@ nir_shader *r300vk_build_odiv_l_hi_fs_nir(const nir_shader_compiler_options *opt
 nir_shader *r300vk_build_otrans_p2_lo_fs_nir(const nir_shader_compiler_options *opts);
 nir_shader *r300vk_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts);
 
+/* QFM fused fragment programs (three inputs sampled at stages 0,1,2):
+ * QFMADD out = a*b + c (one pass); QFMMUL out = a*b*c = (a*b)*c (one pass). */
+nir_shader *r300vk_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts);
+nir_shader *r300vk_build_qfmmul_fs_nir(const nir_shader_compiler_options *opts);
+
 #ifdef __cplusplus
 }
 #endif

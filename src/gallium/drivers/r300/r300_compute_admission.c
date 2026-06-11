@@ -2455,6 +2455,134 @@ r300_nir_detect_otrans_pattern(const nir_shader *s,
    out->is_otrans = true;
 }
 
+/* True if `def` is the Hamilton product a*b: a vec4 whose four lanes are the
+ * identity-load Hamilton dots of a against the permuted rows of b.  The single-
+ * quaternion building block of the QFM fused ops, reusing the OMUL lane matcher. */
+static bool
+qmul_match(const nir_def *def, const nir_def *a, const nir_def *b)
+{
+   const nir_alu_instr *v = nir_def_as_alu_or_null(def);
+   if (!v || v->op != nir_op_vec4)
+      return false;
+   for (unsigned lane = 0; lane < 4; lane++)
+      if (!omul_match_id_perm_dot(v->src[lane].src.ssa, a, b,
+                                  r300_hamilton_rows[lane]))
+         return false;
+   return true;
+}
+
+/* True if `src` reads `base` identity-swizzled (all four lanes in order). */
+static bool
+qfm_is_identity(const nir_alu_src *src, const nir_def *base)
+{
+   if (src->src.ssa != base)
+      return false;
+   for (unsigned c = 0; c < 4; c++)
+      if (src->swizzle[c] != c)
+         return false;
+   return true;
+}
+
+void
+r300_nir_detect_qfmadd_pattern(const nir_shader *s,
+                               struct r300_compute_qfmadd_pattern *out)
+{
+   out->is_qfmadd           = false;
+   out->input_a_ssbo_binding = 0;
+   out->input_b_ssbo_binding = 0;
+   out->input_c_ssbo_binding = 0;
+   out->output_ssbo_binding  = 0;
+
+   const nir_intrinsic_instr *load[3], *store[1];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 3, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 3 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]))
+      return;
+
+   /* Store = a*b + c: the Hamilton product of the first two loads plus the third.
+    * fadd is commutative, so the product and the addend appear in either order. */
+   const nir_def *a = &load[0]->def, *b = &load[1]->def, *c = &load[2]->def;
+   const nir_alu_instr *top = nir_def_as_alu_or_null(store[0]->src[0].ssa);
+   if (!top || top->op != nir_op_fadd)
+      return;
+   bool ok = (qmul_match(top->src[0].src.ssa, a, b) &&
+              qfm_is_identity(&top->src[1], c)) ||
+             (qmul_match(top->src[1].src.ssa, a, b) &&
+              qfm_is_identity(&top->src[0], c));
+   if (!ok)
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(load[2]->src[0]))
+      out->input_c_ssbo_binding = nir_src_as_uint(load[2]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_qfmadd = true;
+}
+
+void
+r300_nir_detect_qfmmul_pattern(const nir_shader *s,
+                               struct r300_compute_qfmmul_pattern *out)
+{
+   out->is_qfmmul           = false;
+   out->input_a_ssbo_binding = 0;
+   out->input_b_ssbo_binding = 0;
+   out->input_c_ssbo_binding = 0;
+   out->output_ssbo_binding  = 0;
+
+   const nir_intrinsic_instr *load[3], *store[1];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 3, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 3 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]))
+      return;
+
+   /* Store = (a*b)*c: find the intermediate t = a*b (the inner Hamilton product),
+    * then verify the store is t*c.  Associativity in H makes (a*b)*c = a*(b*c), so
+    * the canonical left-folded form is the admissible one. */
+   const nir_def *a = &load[0]->def, *b = &load[1]->def, *c = &load[2]->def;
+   const nir_def *t = NULL;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *v = nir_instr_as_alu(instr);
+            if (v->op == nir_op_vec4 && qmul_match(&v->def, a, b)) {
+               t = &v->def;
+               break;
+            }
+         }
+         if (t)
+            break;
+      }
+   }
+   if (!t)
+      return;
+   if (!qmul_match(store[0]->src[0].ssa, t, c))
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(load[2]->src[0]))
+      out->input_c_ssbo_binding = nir_src_as_uint(load[2]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_qfmmul = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)

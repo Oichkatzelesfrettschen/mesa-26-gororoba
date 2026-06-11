@@ -1349,6 +1349,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_onorm_pattern *onorm,
                                struct r300_compute_odiv_pattern *odiv,
                                struct r300_compute_otrans_pattern *otrans,
+                               struct r300_compute_qfmadd_pattern *qfmadd,
+                               struct r300_compute_qfmmul_pattern *qfmmul,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1411,6 +1413,8 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_onorm_pattern(nir, onorm);
    r300_nir_detect_odiv_pattern(nir, odiv);
    r300_nir_detect_otrans_pattern(nir, otrans);
+   r300_nir_detect_qfmadd_pattern(nir, qfmadd);
+   r300_nir_detect_qfmmul_pattern(nir, qfmmul);
 
    ralloc_free(nir);
    return true;
@@ -2048,6 +2052,37 @@ r300vk_otrans_synthesize_shaders(struct r300vk_device *device,
           pl->fs_cso3 != NULL && pl->fs_cso4 != NULL;
 }
 
+/* QFMADD / QFMMUL synthesis: passthrough VS + the single fused FS into fs_cso. */
+static bool
+r300vk_qfmadd_synthesize_shaders(struct r300vk_device *device,
+                                 struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe || !r300vk_device_init_identity_map_state(device))
+      return false;
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+   pl->fs_cso = r300vk_make_fs_cso(pipe, r300vk_build_qfmadd_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]));
+   return pl->fs_cso != NULL;
+}
+
+static bool
+r300vk_qfmmul_synthesize_shaders(struct r300vk_device *device,
+                                 struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe || !r300vk_device_init_identity_map_state(device))
+      return false;
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+   pl->fs_cso = r300vk_make_fs_cso(pipe, r300vk_build_qfmmul_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT]));
+   return pl->fs_cso != NULL;
+}
+
 /* Synthesize the fullscreen-quad VS + texture-sampling FS pair that lowers an
  * identity-map compute kernel onto the compute-as-raster substrate.  The VS
  * passes through a POSITION attribute and one GENERIC varying (texture
@@ -2661,6 +2696,16 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->otrans.is_otrans = false;
       return true;
    }
+   if (pl->qfmadd.is_qfmadd) {
+      if (!r300vk_qfmadd_synthesize_shaders(device, pl))
+         pl->qfmadd.is_qfmadd = false;
+      return true;
+   }
+   if (pl->qfmmul.is_qfmmul) {
+      if (!r300vk_qfmmul_synthesize_shaders(device, pl))
+         pl->qfmmul.is_qfmmul = false;
+      return true;
+   }
    if (pl->blend_acc_reduction.is_blend_acc_reduction) {
       if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
@@ -2717,6 +2762,8 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_onorm_pattern onorm_pat = {0};
    struct r300_compute_odiv_pattern odiv_pat = {0};
    struct r300_compute_otrans_pattern otrans_pat = {0};
+   struct r300_compute_qfmadd_pattern qfmadd_pat = {0};
+   struct r300_compute_qfmmul_pattern qfmmul_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
@@ -2726,7 +2773,8 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
                                        &qconj_pat, &qnorm_pat, &qnormalize_pat,
                                        &omul_pat,
                                        &oaddsub_pat, &oconj_pat, &onorm_pat,
-                                       &odiv_pat, &otrans_pat, local_size))
+                                       &odiv_pat, &otrans_pat,
+                                       &qfmadd_pat, &qfmmul_pat, local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
                        i);
@@ -2759,6 +2807,8 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->onorm = onorm_pat;
    pl->odiv = odiv_pat;
    pl->otrans = otrans_pat;
+   pl->qfmadd = qfmadd_pat;
+   pl->qfmmul = qfmmul_pat;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;

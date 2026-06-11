@@ -2550,6 +2550,104 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
    return ok;
 }
 
+/* Shared three-in/one-out fused-quaternion dispatch: bind a,b,c as FP32 sampler
+ * views (the fourth sampler slot is a harmless duplicate of view 0 the FS never
+ * reads), draw the single-output FS to an FP16 target, and unpack into the
+ * kernel's vec4 FP32 output.  QFMADD (a*b+c) and QFMMUL (a*b*c) differ only in the
+ * FS, both one pass under the 64-ALU fragment limit. */
+static bool
+r300vk_qfm3_run(struct r300vk_device *device, const struct r300vk_pipeline *pl,
+                const struct r300vk_cmd_dispatch *dispatch,
+                const struct r300vk_cmd_bind_descriptor_sets *binds,
+                uint32_t a_bind, uint32_t b_bind, uint32_t c_bind,
+                uint32_t out_bind, void *fs_cso)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !fs_cso || binds->first_set != 0)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW) ||
+       !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   uint32_t bind[4] = { a_bind, b_bind, c_bind, out_bind };
+   const struct r300vk_descriptor *desc[4];
+   struct r300vk_buffer *buf[4];
+   if (!octonion_resolve_buffers(set, bind, 4, desc, buf))
+      return false;
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0 || total > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
+   for (unsigned i = 0; i < 3; i++) {
+      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
+         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      if (!views[i]) {
+         for (unsigned k = 0; k < i; k++)
+            pipe_sampler_view_reference(&views[k], NULL);
+         return false;
+      }
+   }
+   pipe_sampler_view_reference(&views[3], views[0]); /* dummy stage 3, FS ignores */
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   bool ok = r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso);
+   if (ok)
+      ok = omul_run_pass(pipe, screen, device, views, fs_cso, pl->vs_cso, vb,
+                         velems_cso, buf[3]->resource,
+                         (unsigned)desc[3]->buf.offset, width, height, total);
+
+   if (velems_cso)
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+   for (unsigned i = 0; i < 4; i++)
+      pipe_sampler_view_reference(&views[i], NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
+/* QFMADD dispatch: out = a*b + c in one pass (pl->fs_cso is the QFMADD FS). */
+bool
+r300vk_qfmadd_dispatch_replay(struct r300vk_device *device,
+                              const struct r300vk_pipeline *pl,
+                              const struct r300vk_cmd_dispatch *dispatch,
+                              const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   return r300vk_qfm3_run(device, pl, dispatch, binds,
+                          pl->qfmadd.input_a_ssbo_binding,
+                          pl->qfmadd.input_b_ssbo_binding,
+                          pl->qfmadd.input_c_ssbo_binding,
+                          pl->qfmadd.output_ssbo_binding, pl->fs_cso);
+}
+
+/* QFMMUL dispatch: out = a*b*c = (a*b)*c in one pass (pl->fs_cso is the QFMMUL FS). */
+bool
+r300vk_qfmmul_dispatch_replay(struct r300vk_device *device,
+                              const struct r300vk_pipeline *pl,
+                              const struct r300vk_cmd_dispatch *dispatch,
+                              const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   return r300vk_qfm3_run(device, pl, dispatch, binds,
+                          pl->qfmmul.input_a_ssbo_binding,
+                          pl->qfmmul.input_b_ssbo_binding,
+                          pl->qfmmul.input_c_ssbo_binding,
+                          pl->qfmmul.output_ssbo_binding, pl->fs_cso);
+}
+
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
  * view, two storage buffers) plus a per-dispatch fragment constant carrying
  * the neighbor texel displacement.  The synthesized FS
