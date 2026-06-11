@@ -106,6 +106,58 @@ const struct r300_carrier_policy r300_carrier_zpass = {
    .requires_fp32_rt    = false,
 };
 
+const struct r300_carrier_policy r300_carrier_ieee16_classify = {
+   .name                = "ieee16-classify",
+   .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+   .encoding            = R300_CARRIER_ENC_FP16_RAWBITS_RGBA8,
+   .value_format        = PIPE_FORMAT_R32_FLOAT,
+   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .input_stride        = 4,
+   .output_stride       = 4,
+   .max_exact_result    = 65535,  /* all 16-bit patterns */
+   .encodes_full_uint32 = false,
+   .requires_fp32_rt    = false,
+};
+
+const struct r300_carrier_policy r300_carrier_ieee16_mul = {
+   .name                = "ieee16-mul",
+   .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+   .encoding            = R300_CARRIER_ENC_RGBA8_U24,
+   .value_format        = PIPE_FORMAT_R32G32_FLOAT,
+   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .input_stride        = 8,
+   .output_stride       = 4,
+   .max_exact_result    = 4190209, /* 2047 * 2047 */
+   .encodes_full_uint32 = false,
+   .requires_fp32_rt    = false,
+};
+
+const struct r300_carrier_policy r300_carrier_ieee16_result = {
+   .name                = "ieee16-result",
+   .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+   .encoding            = R300_CARRIER_ENC_RGBA8_U16,
+   .value_format        = PIPE_FORMAT_R32_FLOAT,
+   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .input_stride        = 4,
+   .output_stride       = 4,
+   .max_exact_result    = 65535,
+   .encodes_full_uint32 = false,
+   .requires_fp32_rt    = false,
+};
+
+const struct r300_carrier_policy r300_carrier_ieee16_debug = {
+   .name                = "ieee16-debug",
+   .domain              = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+   .encoding            = R300_CARRIER_ENC_RGBA8_UINT,
+   .value_format        = PIPE_FORMAT_R32_FLOAT,
+   .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
+   .input_stride        = 4,
+   .output_stride       = 4,
+   .max_exact_result    = 0,
+   .encodes_full_uint32 = true,
+   .requires_fp32_rt    = false,
+};
+
 const struct r300_carrier_policy *
 r300_carrier_dp4_select(unsigned max_operand_magnitude)
 {

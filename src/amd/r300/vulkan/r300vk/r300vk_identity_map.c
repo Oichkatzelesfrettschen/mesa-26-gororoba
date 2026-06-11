@@ -112,7 +112,7 @@ r300vk_identity_map_copy_rows(void *dst_map, unsigned dst_stride,
 }
 
 
-/* Defined later in this file; resolve_buffers calls it before that point. */
+/* Forward declaration used by buffer-resolution helpers. */
 static const struct r300vk_descriptor *
 find_descriptor_by_binding(const struct r300vk_descriptor_set *set,
                            uint32_t binding_index);
@@ -787,7 +787,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * recorded sets[] array starts at, so a non-zero first_set means
     * binds->sets[0] is for slot first_set, not slot 0, and the orchestrator
     * would resolve the wrong set if it indexed [0] blindly.  Multi-set support
-    * is a later generalization. */
+    * requires set-index-aware binding capture. */
    if (binds->first_set != 0) {
       IDM_LOG("early-return first_set=%u (only slot 0 supported)",
               binds->first_set);
@@ -859,8 +859,8 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    /* The total work-item count is the grid-size product.  The kernel's
     * local_size is folded into the per-invocation index space already (the
     * compute-grid-to-raster-grid mapping takes the full group count).  The
-    * first cut fixes local_size = 1 to keep the readback oracle simple; a
-    * later generalization widens the index domain to local_size > 1. */
+    * readback oracle accepts local_size = 1; local_size > 1 requires
+    * index-domain validation before this replay path can accept it. */
    /* 64-bit product so 2^32-wrapping group counts cannot smuggle a
     * small non-zero total past the zero-check.  The 2048*2048 axis cap
     * is enforced after derive_raster_extent below; here we only need to
@@ -1062,19 +1062,49 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    return copy_ok;
 }
 
-/* Unary affine-map orchestrator.  The unary map (out[i] = in[i]*c0 + c1) is the
- * identity 1-in/1-out fullscreen draw with a scale+bias fragment program rather
- * than a copy: r300vk_unary_map_synthesize_shaders bound the MAD FS as
- * pl->fs_cso and mirrored the input/output bindings + value format into
- * pl->identity_map, so the identity replay resolves the buffers and runs the
- * same draw -- the bound FS is the only difference.  Delegate to it. */
+static bool
+r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
+                                      const struct r300vk_pipeline *pl,
+                                      const struct r300vk_cmd_dispatch *dispatch,
+                                      const struct r300vk_cmd_bind_descriptor_sets *binds,
+                                      uint32_t cap_in, uint32_t cap_out,
+                                      bool detector_captured,
+                                      enum pipe_format input_fmt,
+                                      enum pipe_format output_fmt,
+                                      enum pipe_format output_buffer_fmt);
+
+/* Unary affine-map replay for vec4 FP32.  The generated fragment program applies
+ * c0/c1 to the sampled vector, writes through the FP16 render-target carrier,
+ * and unpacks to the kernel's FP32 output.  Other component counts or bit widths
+ * need their own carrier and reject here rather than sampling bytes as UNORM
+ * colors. */
 bool
 r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
                                  const struct r300vk_pipeline *pl,
                                  const struct r300vk_cmd_dispatch *dispatch,
                                  const struct r300vk_cmd_bind_descriptor_sets *binds)
 {
-   return r300vk_identity_map_dispatch_replay(device, pl, dispatch, binds);
+   if (pl->unary_map.value_is_float && pl->unary_map.value_bit_size == 32 &&
+       pl->unary_map.value_components == 4) {
+      if (!device->screen->is_format_supported(device->screen,
+             PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+             PIPE_BIND_SAMPLER_VIEW))
+         return false;
+      if (!device->screen->is_format_supported(device->screen,
+             PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+             PIPE_BIND_RENDER_TARGET))
+         return false;
+      return r300vk_one_in_one_out_dispatch_replay(
+         device, pl, dispatch, binds,
+         pl->unary_map.input_ssbo_binding,
+         pl->unary_map.output_ssbo_binding,
+         pl->unary_map.input_ssbo_binding_valid &&
+         pl->unary_map.output_ssbo_binding_valid,
+         PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+         PIPE_FORMAT_R32G32B32A32_FLOAT);
+   }
+
+   return false;
 }
 
 /* Binary-map orchestrator: same shape as r300vk_identity_map_dispatch_replay
@@ -1535,6 +1565,7 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
                                       const struct r300vk_cmd_dispatch *dispatch,
                                       const struct r300vk_cmd_bind_descriptor_sets *binds,
                                       uint32_t cap_in, uint32_t cap_out,
+                                      bool detector_captured,
                                       enum pipe_format input_fmt,
                                       enum pipe_format output_fmt,
                                       enum pipe_format output_buffer_fmt)
@@ -1571,7 +1602,6 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
     * STORAGE_BUFFER, output = 2nd). */
    uint32_t in_binding  = cap_in;
    uint32_t out_binding = cap_out;
-   const bool detector_captured = (in_binding != 0 || out_binding != 0);
    if (!detector_captured) {
       if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
           !nth_storage_buffer_binding(set, 1, &out_binding)) {
@@ -1772,6 +1802,7 @@ r300vk_qconj_dispatch_replay(struct r300vk_device *device,
    return r300vk_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qconj.input_ssbo_binding, pl->qconj.output_ssbo_binding,
+      pl->qconj.input_ssbo_binding != 0 || pl->qconj.output_ssbo_binding != 0,
       PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
@@ -1797,6 +1828,7 @@ r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
    return r300vk_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qnorm.input_ssbo_binding, pl->qnorm.output_ssbo_binding,
+      pl->qnorm.input_ssbo_binding != 0 || pl->qnorm.output_ssbo_binding != 0,
       PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
@@ -1822,7 +1854,55 @@ r300vk_qnormalize_dispatch_replay(struct r300vk_device *device,
    return r300vk_one_in_one_out_dispatch_replay(
       device, pl, dispatch, binds,
       pl->qnormalize.input_ssbo_binding, pl->qnormalize.output_ssbo_binding,
+      pl->qnormalize.input_ssbo_binding != 0 ||
+      pl->qnormalize.output_ssbo_binding != 0,
       PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
+}
+
+bool
+r300vk_ieee16_classify_dispatch_replay(struct r300vk_device *device,
+                                       const struct r300vk_pipeline *pl,
+                                       const struct r300vk_cmd_dispatch *dispatch,
+                                       const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_one_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->ieee16_classify.input_ssbo_binding, pl->ieee16_classify.output_ssbo_binding,
+      pl->ieee16_classify.input_ssbo_binding != 0 ||
+      pl->ieee16_classify.output_ssbo_binding != 0,
+      PIPE_FORMAT_R32_FLOAT, PIPE_FORMAT_R8G8B8A8_UNORM,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
+}
+
+bool
+r300vk_ieee16_mul_dispatch_replay(struct r300vk_device *device,
+                                  const struct r300vk_pipeline *pl,
+                                  const struct r300vk_cmd_dispatch *dispatch,
+                                  const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_one_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->ieee16_mul.input_ssbo_binding, pl->ieee16_mul.output_ssbo_binding,
+      pl->ieee16_mul.input_ssbo_binding != 0 ||
+      pl->ieee16_mul.output_ssbo_binding != 0,
+      PIPE_FORMAT_R32G32_FLOAT, PIPE_FORMAT_R8G8B8A8_UNORM,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
 
@@ -2326,8 +2406,10 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
 /* QFMUL dispatch replay: out[gid] = a[gid] * s.  The scalar s is BROADCAST, so it
  * is mapped once and uploaded into the fragment constant file (CONST[0].x) the
  * way MAT4VEC handles its broadcast matrix; only the per-element quaternions need
- * a sampler.  Three bindings: scalar, quaternions, output (defaults 0,1,2 with a
- * positional fallback). */
+ * a sampler.  Three bindings: scalar, quaternions, output.  The detector's
+ * binding indices win only when all three binding sources were constants;
+ * otherwise the roles are recovered from the first three STORAGE_BUFFER
+ * declarations in semantic order. */
 bool
 r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
                              const struct r300vk_pipeline *pl,
@@ -2356,17 +2438,23 @@ r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
    uint32_t bind[3] = { pl->qfmul.scalar_ssbo_binding,
                         pl->qfmul.quat_ssbo_binding,
                         pl->qfmul.output_ssbo_binding };
+   const bool detector_captured =
+      pl->qfmul.scalar_ssbo_binding_valid &&
+      pl->qfmul.quat_ssbo_binding_valid &&
+      pl->qfmul.output_ssbo_binding_valid;
+   if (!detector_captured) {
+      for (unsigned i = 0; i < 3; i++) {
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+      }
+   }
+
    const struct r300vk_descriptor *desc[3];
    struct r300vk_buffer *buf[3];
    for (unsigned i = 0; i < 3; i++) {
       desc[i] = find_descriptor_by_binding(set, bind[i]);
-      if (!desc[i] || !desc[i]->buf.buffer) {
-         if (!nth_storage_buffer_binding(set, i, &bind[i]))
-            return false;
-         desc[i] = find_descriptor_by_binding(set, bind[i]);
-         if (!desc[i] || !desc[i]->buf.buffer)
-            return false;
-      }
+      if (!desc[i] || !desc[i]->buf.buffer)
+         return false;
       buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
       if (!buf[i] || !buf[i]->resource)
          return false;

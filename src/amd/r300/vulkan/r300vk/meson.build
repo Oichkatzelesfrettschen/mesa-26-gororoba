@@ -114,7 +114,7 @@ libvulkan_r300 = shared_library(
 # trips nir_build_tex_struct's assert and aborted every DP4 compute pipeline
 # create on an asserts-enabled build).  Compiles the extracted builder against
 # NIR alone, no pipe_context.
-if with_tests
+if with_tests and get_option('r300vk-gallium-backend') and with_gallium_r300
   test(
     'r300vk-dp4-fs-nir',
     executable(

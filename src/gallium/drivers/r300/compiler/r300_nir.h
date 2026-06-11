@@ -147,6 +147,12 @@ extern bool r300_nir_lower_bool_to_float(struct nir_shader *shader);
 
 extern bool r300_nir_lower_bool_to_float_fs(struct nir_shader *shader);
 
+extern bool r300_nir_lower_ieee16_classify(struct nir_shader *shader);
+
+extern bool r300_nir_lower_ieee16_mul(struct nir_shader *shader);
+
+extern bool r300_nir_lower_ieee16_mul_normal_rne(struct nir_shader *shader);
+
 extern bool r300_nir_prepare_presubtract(struct nir_shader *shader);
 
 extern bool r300_nir_opt_algebraic_late(struct nir_shader *shader);
@@ -162,6 +168,10 @@ extern bool r300_nir_lower_flrp(nir_shader *shader);
 extern bool r300_nir_lower_comparison_fs(nir_shader *shader);
 
 extern bool r300_nir_add_wpos(nir_shader *shader, nir_variable **wpos_var_out);
+
+extern nir_def *r300_nir_build_carrier_pack(nir_builder *b,
+                                            const struct r300_carrier_policy *policy,
+                                            nir_def *value);
 
 /* Report VS load_vertex_id/load_instance_id reads across the deref and
  * intrinsic forms that can reach the r300 NIR-to-RC path. */

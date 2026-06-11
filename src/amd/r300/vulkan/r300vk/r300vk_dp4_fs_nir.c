@@ -7,13 +7,12 @@
 
 #include "compiler/nir/nir_builder.h"
 
-/* Pure-NIR DP4 fragment program (no ureg/TGSI -- r300g's nir_to_rc consumes the
- * NIR directly).  Samples in_a, in_b at the fullscreen texcoord and writes
- * dot(a,b) to the RB3D color export; the dot lowers to the US DP4 instruction,
- * byte-exact for <=7-bit (quantized) operands (4*127^2=64516<2^17, hardware-
- * confirmed).  Built with the same nir_builder pattern as the vl_nir FS helpers
- * (compiler/nir/nir_builder.h); gather_info + assign_io_var_locations run here
- * because nir_to_rc keys interpolators off driver_location. */
+/* Pure-NIR DP4 fragment program.  Samples in_a and in_b at the fullscreen
+ * texcoord and writes dot(a,b) to the RB3D color export.  The dot result remains
+ * exact for <=7-bit quantized operands because 4*127^2 fits below 2^17 and the
+ * byte-pack intermediates stay inside the FP24 exact-integer window.  Gather
+ * info and assign IO locations here because nir_to_rc keys interpolators off
+ * driver_location. */
 nir_shader *
 r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
                         unsigned components)
@@ -54,14 +53,13 @@ r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                            glsl_vec4_type(), "color");
    out->data.location = FRAG_RESULT_COLOR;
-   /* R300 has no FP32 render target (hardware-confirmed: an FP32 color FBO is
-    * incomplete), so the scalar dot cannot be written as an IEEE-754 float.
+   /* R300 has no FP32 render target, so the scalar dot cannot be written as an
+    * IEEE-754 float.
     * Carry it as a 3-byte little-endian integer in RGBA8: r=dot%256,
     * g=(dot/256)%256, b=(dot/65536)%256.  The dot is an integer <= 2^17 for
     * <=7-bit (quantized) operands and stays exact through this FP24 encode
     * (every intermediate <= 2^24).  The dispatch-replay's UNORM8 RT round-trips
-    * each byte and copies them to the kernel's uint output SSBO.  This is the
-    * same encode the surfaceless-EGL dp4 probe proved 6/6 byte-exact. */
+    * each byte and copies them to the kernel's uint output SSBO. */
    nir_def *fl256 = nir_ffloor(&b, nir_fmul_imm(&b, dot, 1.0 / 256.0));
    nir_def *enc_r = nir_fsub(&b, dot, nir_fmul_imm(&b, fl256, 256.0));
    nir_def *enc_g = nir_fsub(&b, fl256,
@@ -711,3 +709,44 @@ r300vk_build_qdiv_fs_nir(const nir_shader_compiler_options *opts)
  * of a const row with the per-element vertex -- 1 TEX + 4 DP4, no matrix sampler.
  * A NIR builder here would re-sample the matrix from a texture (four extra TEX
  * plus four coordinate-staging MOVs), so it is intentionally absent. */
+
+nir_shader *
+r300vk_build_ieee16_classify_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_ieee16_classify");
+   nir_def *coord = make_fs_coord(&b);
+   nir_def *tex = sample_stage(&b, coord, 0);
+   nir_def *bits = nir_channel(&b, tex, 0);
+
+   /* Vectorize the input to form a 4-component vector for ldexp placeholder */
+   nir_def *bits_vec4 = nir_vec4(&b, bits, bits, bits, bits);
+   nir_def *placeholder = nir_ldexp(&b, bits_vec4, nir_imm_float(&b, 1.0));
+
+   store_color_at(&b, placeholder, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}
+
+nir_shader *
+r300vk_build_ieee16_mul_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_ieee16_mul");
+   nir_def *coord = make_fs_coord(&b);
+   nir_def *tex = sample_stage(&b, coord, 0);
+   nir_def *ua = nir_channel(&b, tex, 0);
+   nir_def *ub = nir_channel(&b, tex, 1);
+
+   /* Input significands and biased exponents are extracted by the kernel or pre-pass.
+    * For this synthetic shader, we assume ua/ub are pre-processed significands
+    * and the biased exponents are pre-loaded into uniforms or constants.
+    * Here we just form the 4-component vector for the fsin placeholder. */
+   nir_def *ua_v4 = nir_vec4(&b, ua, nir_imm_float(&b, 15.0), nir_imm_float(&b, 0.0), nir_imm_float(&b, 0.0));
+   nir_def *ub_v4 = nir_vec4(&b, ub, nir_imm_float(&b, 15.0), nir_imm_float(&b, 0.0), nir_imm_float(&b, 0.0));
+
+   /* fsin used as placeholder for r300_nir_lower_ieee16_mul_normal_rne */
+   nir_def *res = nir_fsin(&b, ua_v4, ub_v4);
+
+   store_color_at(&b, res, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}

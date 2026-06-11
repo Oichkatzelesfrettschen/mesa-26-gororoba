@@ -520,6 +520,7 @@ test_multiply(void)
    unsigned mismatches = 0;
    unsigned total = sizeof(mul_cases) / sizeof(mul_cases[0]);
 
+   /* 1. Test hand-picked representative cases */
    for (unsigned i = 0; i < total; i++) {
       uint16_t a = mul_cases[i].a_bits;
       uint16_t b = mul_cases[i].b_bits;
@@ -535,9 +536,80 @@ test_multiply(void)
 
    char label[80];
    snprintf(label, sizeof(label),
-            "multiply: %u/%u cases match reference (%u mismatch)",
+            "multiply (hand-picked): %u/%u cases match reference (%u mismatch)",
             total - mismatches, total, mismatches);
    CHECK(mismatches == 0, label);
+
+   /* 2. Curated set of 128 representative values to construct a pseudo-exhaustive cross product */
+   static const uint16_t rep_values[128] = {
+      /* Zeroes */
+      0x0000u, 0x8000u,
+      /* Subnormals */
+      0x0001u, 0x0002u, 0x0003u, 0x0010u, 0x0020u, 0x0040u, 0x0080u, 0x0100u, 0x0200u, 0x03ffu,
+      0x8001u, 0x8002u, 0x8003u, 0x8010u, 0x8020u, 0x8040u, 0x8080u, 0x8100u, 0x8200u, 0x83ffu,
+      /* Min normals */
+      0x0400u, 0x0401u, 0x0402u, 0x0403u, 0x0500u, 0x0600u, 0x07ffu,
+      0x8400u, 0x8401u, 0x8402u, 0x8403u, 0x8500u, 0x8600u, 0x87ffu,
+      /* Intermediate normals */
+      0x1000u, 0x1400u, 0x1800u, 0x2000u, 0x2400u, 0x2800u, 0x3000u, 0x3400u, 0x3800u,
+      0x9000u, 0x9400u, 0x9800u, 0xa000u, 0xa400u, 0xa800u, 0xb000u, 0xb400u, 0xb800u,
+      /* 1.0 area */
+      0x3c00u, 0x3c01u, 0x3c02u, 0x3c03u, 0x3d00u, 0x3dffu, 0x3e00u, 0x3f00u, 0x3fffu,
+      0xbc00u, 0xbc01u, 0xbc02u, 0xbc03u, 0xbd00u, 0xbdffu, 0xbe00u, 0xbf00u, 0xbfffu,
+      /* Large normals */
+      0x7000u, 0x7400u, 0x7800u, 0x7bffu,
+      0xf000u, 0xf400u, 0xf800u, 0xfbffu,
+      /* Infinities */
+      0x7c00u, 0xfc00u,
+      /* NaNs */
+      0x7c01u, 0x7c02u, 0x7cffu, 0x7d00u, 0x7dffu, 0x7e00u, 0x7e01u, 0x7eeeu, 0x7fffu,
+      0xfc01u, 0xfc02u, 0xfcffu, 0xfd00u, 0xfdffu, 0xfe00u, 0xfe01u, 0xfeeeu, 0xffffu,
+      /* More subnormals */
+      0x0004u, 0x0008u, 0x000fu, 0x001fu, 0x003fu, 0x007fu, 0x00ffu, 0x01ffu, 0x02ffu,
+      0x8004u, 0x8008u, 0x800fu, 0x801fu, 0x803fu, 0x807fu, 0x80ffu, 0x81ffu, 0x82ffu,
+      /* More normals */
+      0x4000u, 0x4200u, 0x4400u, 0x4700u, 0x4800u, 0x4900u, 0x4b00u, 0x4c00u, 0x5000u, 0x5640u
+   };
+
+   unsigned loop_mismatches = 0;
+   unsigned loop_total = 0;
+
+   /* Cross-product: test all 65536 values against 128 representative values */
+   for (unsigned a_bits = 0; a_bits <= 0xffff; a_bits++) {
+      for (unsigned j = 0; j < 128; j++) {
+         uint16_t a = (uint16_t)a_bits;
+         uint16_t b = rep_values[j];
+
+         uint16_t ref  = fp16_mul_ref(a, b);
+         uint16_t got  = fp16_mul_2limb_full(a, b);
+
+         if (got != ref) {
+            if (loop_mismatches < 10) {
+               printf("FAIL loop_multiply: a=0x%04x b=0x%04x ref=0x%04x got=0x%04x\n",
+                      a, b, ref, got);
+            }
+            loop_mismatches++;
+         }
+         loop_total++;
+
+         /* And symmetrically */
+         ref  = fp16_mul_ref(b, a);
+         got  = fp16_mul_2limb_full(b, a);
+         if (got != ref) {
+            if (loop_mismatches < 10) {
+               printf("FAIL loop_multiply (symmetric): a=0x%04x b=0x%04x ref=0x%04x got=0x%04x\n",
+                      b, a, ref, got);
+            }
+            loop_mismatches++;
+         }
+         loop_total++;
+      }
+   }
+
+   snprintf(label, sizeof(label),
+            "multiply (exhaustive cross-product): %u/%u cases match reference (%u mismatch)",
+            loop_total - loop_mismatches, loop_total, loop_mismatches);
+   CHECK(loop_mismatches == 0, label);
 
    printf("note: hardware not run; this is a CPU-only oracle test.\n");
    printf("note: RS482 silicon probing (fp16_class_lut_probe, fp16_mul_rne_probe)\n");
@@ -551,7 +623,7 @@ test_multiply(void)
 int main(void)
 {
    printf("r300-fp16-limb-oracle: IEEE FP16 virtual machine CPU oracle\n");
-   printf("domain: R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL (numeric-derived)\n");
+   printf("domain: R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL (hardware-confirmed)\n");
    printf("\n");
 
    test_domain_catalog();

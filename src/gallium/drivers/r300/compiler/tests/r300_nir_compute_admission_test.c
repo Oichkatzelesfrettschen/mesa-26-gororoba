@@ -143,17 +143,36 @@ build_binary_map_f32vec4(void)
  * asymmetry -- a 4-component quaternion against a 1-component scalar -- is exactly
  * what separates QFMUL from the equal-width elementwise binary map. */
 static nir_shader *
-build_qfmul_form(void)
+build_qfmul_variant(unsigned bit_size, bool scalar_per_element_offset,
+                    uint32_t scalar_offset)
 {
    nir_builder b = cs_builder("cs_qfmul_f32vec4");
-   nir_def *s = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
-                              .align_mul = 4, .align_offset = 0);
-   nir_def *a = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
-                              .align_mul = 16, .align_offset = 0);
+   const unsigned scalar_bytes = bit_size / 8;
+   const unsigned quat_bytes = 4 * scalar_bytes;
+   nir_def *scalar_offset_def = NULL;
+   if (scalar_per_element_offset) {
+      scalar_offset_def = nir_imul(&b, nir_load_global_invocation_index(&b, 32),
+                                   nir_imm_int(&b, (int)scalar_bytes));
+   } else {
+      scalar_offset_def = nir_imm_int(&b, (int)scalar_offset);
+   }
+   nir_def *s = nir_load_ssbo(&b, 1, bit_size, nir_imm_int(&b, 0),
+                              scalar_offset_def, .align_mul = scalar_bytes,
+                              .align_offset = 0);
+   nir_def *a = nir_load_ssbo(&b, 4, bit_size, nir_imm_int(&b, 1),
+                              nir_imm_int(&b, 0), .align_mul = quat_bytes,
+                              .align_offset = 0);
    nir_def *prod = nir_fmul(&b, a, s);
    nir_store_ssbo(&b, prod, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
-                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+                  .write_mask = 0xf, .align_mul = quat_bytes,
+                  .align_offset = 0);
    return b.shader;
+}
+
+static nir_shader *
+build_qfmul_form(void)
+{
+   return build_qfmul_variant(32, false, 0);
 }
 
 /* Single-input affine unary map: out[gid] = in[gid] * 2.0 + 1.0 (scalar float,
@@ -168,6 +187,27 @@ build_unary_map_scalar(void)
                          nir_imm_float(&b, 1.0f));
    nir_store_ssbo(&b, y, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
                   .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_unary_map_vec4(bool non_uniform_const, bool swizzled_input,
+                     uint32_t output_binding)
+{
+   nir_builder b = cs_builder("cs_unary_map_vec4");
+   nir_def *x = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   if (swizzled_input) {
+      const unsigned swiz[4] = { 1, 0, 2, 3 };
+      x = nir_swizzle(&b, x, swiz, 4);
+   }
+   nir_def *scale = non_uniform_const ?
+      nir_imm_vec4(&b, 1.0f, 2.0f, 3.0f, 4.0f) :
+      nir_imm_vec4(&b, 2.0f, 2.0f, 2.0f, 2.0f);
+   nir_def *bias = nir_imm_vec4(&b, 1.0f, 1.0f, 1.0f, 1.0f);
+   nir_def *y = nir_fadd(&b, nir_fmul(&b, x, scale), bias);
+   nir_store_ssbo(&b, y, nir_imm_int(&b, output_binding), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
    return b.shader;
 }
 
@@ -480,6 +520,9 @@ case_qfmul_metadata(void)
    CHECK(qf.scalar_ssbo_binding == 0, "qfmul metadata records scalar binding 0");
    CHECK(qf.quat_ssbo_binding == 1, "qfmul metadata records quaternion binding 1");
    CHECK(qf.output_ssbo_binding == 2, "qfmul metadata records output binding 2");
+   CHECK(qf.scalar_ssbo_binding_valid && qf.quat_ssbo_binding_valid &&
+         qf.output_ssbo_binding_valid,
+         "qfmul metadata records explicit binding-zero roles");
 
    /* The 4-vs-1 width asymmetry must steer the kernel away from the binary-map
     * carrier: its orchestrator samples both inputs per-element, so reading the
@@ -499,6 +542,28 @@ case_qfmul_metadata(void)
    r300_nir_detect_qfmul_pattern(bin, &bin_qf);
    CHECK(!bin_qf.is_qfmul, "qfmul rejects an equal-width binary map");
    ralloc_free(bin);
+
+   nir_shader *scalar_delta = build_qfmul_variant(32, false, 4);
+   struct r300_compute_qfmul_pattern delta_qf = {0};
+   prepare_detect_shader(scalar_delta);
+   r300_nir_detect_qfmul_pattern(scalar_delta, &delta_qf);
+   CHECK(!delta_qf.is_qfmul, "qfmul rejects a nonzero scalar byte offset");
+   ralloc_free(scalar_delta);
+
+   nir_shader *per_element_scalar = build_qfmul_variant(32, true, 0);
+   struct r300_compute_qfmul_pattern per_element_qf = {0};
+   prepare_detect_shader(per_element_scalar);
+   r300_nir_detect_qfmul_pattern(per_element_scalar, &per_element_qf);
+   CHECK(!per_element_qf.is_qfmul,
+         "qfmul rejects a per-invocation scalar offset");
+   ralloc_free(per_element_scalar);
+
+   nir_shader *fp16 = build_qfmul_variant(16, false, 0);
+   struct r300_compute_qfmul_pattern fp16_qf = {0};
+   prepare_detect_shader(fp16);
+   r300_nir_detect_qfmul_pattern(fp16, &fp16_qf);
+   CHECK(!fp16_qf.is_qfmul, "qfmul rejects non-32-bit operands");
+   ralloc_free(fp16);
 }
 
 static void
@@ -513,16 +578,56 @@ case_unary_metadata(void)
    r300_nir_classify_compute(nir, &adm);
    CHECK(adm.admissible, "scalar unary affine-map kernel admits");
    r300_nir_detect_unary_map(nir, &umap);
-   CHECK(umap.is_unary_map, "unary affine-map shape detected");
-   CHECK(umap.mul_const == 2.0f, "unary-map metadata records c0 scale 2.0");
-   CHECK(umap.add_const == 1.0f, "unary-map metadata records c1 bias 1.0");
-   CHECK(umap.value_components == 1, "unary-map metadata records scalar width");
-   CHECK(umap.value_bit_size == 32, "unary-map metadata records 32-bit lane");
-   CHECK(umap.value_is_float, "unary-map metadata records float result");
+   CHECK(!umap.is_unary_map,
+         "scalar unary-map rejected until a scalar carrier exists");
    /* One load means it is not the two-input binary-map shape. */
    r300_nir_detect_binary_map(nir, &binmap);
    CHECK(!binmap.is_binary_map, "unary-map shape is not a binary map");
    ralloc_free(nir);
+
+   nir_shader *vec_uniform = build_unary_map_vec4(false, false, 1);
+   struct r300_compute_unary_map_pattern vec_map = {0};
+   prepare_detect_shader(vec_uniform);
+   r300_nir_detect_unary_map(vec_uniform, &vec_map);
+   CHECK(vec_map.is_unary_map, "vec4 unary-map accepts uniform constants");
+   CHECK(vec_map.mul_const == 2.0f, "vec4 unary-map records c0 scale 2.0");
+   CHECK(vec_map.add_const == 1.0f, "vec4 unary-map records c1 bias 1.0");
+   CHECK(vec_map.value_components == 4, "vec4 unary-map records vector width");
+   CHECK(vec_map.value_bit_size == 32, "vec4 unary-map records 32-bit lane");
+   CHECK(vec_map.value_is_float, "vec4 unary-map records float result");
+   CHECK(vec_map.input_ssbo_binding_valid,
+         "vec4 unary-map records real input binding 0");
+   CHECK(vec_map.output_ssbo_binding_valid,
+         "vec4 unary-map records real output binding 1");
+   ralloc_free(vec_uniform);
+
+   nir_shader *inplace = build_unary_map_vec4(false, false, 0);
+   struct r300_compute_unary_map_pattern same_binding = {0};
+   prepare_detect_shader(inplace);
+   r300_nir_detect_unary_map(inplace, &same_binding);
+   CHECK(same_binding.is_unary_map, "in-place unary-map shape detected");
+   CHECK(same_binding.input_ssbo_binding_valid &&
+         same_binding.output_ssbo_binding_valid,
+         "in-place unary-map preserves explicit zero bindings");
+   CHECK(same_binding.input_ssbo_binding == 0 &&
+         same_binding.output_ssbo_binding == 0,
+         "in-place unary-map records binding zero for input and output");
+   ralloc_free(inplace);
+
+   nir_shader *vec_non_uniform = build_unary_map_vec4(true, false, 1);
+   struct r300_compute_unary_map_pattern non_uniform = {0};
+   prepare_detect_shader(vec_non_uniform);
+   r300_nir_detect_unary_map(vec_non_uniform, &non_uniform);
+   CHECK(!non_uniform.is_unary_map,
+         "vec4 unary-map rejects non-uniform constants");
+   ralloc_free(vec_non_uniform);
+
+   nir_shader *vec_swizzled = build_unary_map_vec4(false, true, 1);
+   struct r300_compute_unary_map_pattern swizzled = {0};
+   prepare_detect_shader(vec_swizzled);
+   r300_nir_detect_unary_map(vec_swizzled, &swizzled);
+   CHECK(!swizzled.is_unary_map, "vec4 unary-map rejects swizzled inputs");
+   ralloc_free(vec_swizzled);
 
    /* A genuine two-input binary map must NOT match the unary detector. */
    nir_shader *bin = build_binary_map_f32vec4();

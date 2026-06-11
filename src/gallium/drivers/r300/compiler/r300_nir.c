@@ -266,6 +266,10 @@ r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
    NIR_PASS(_, s, nir_lower_var_copies);
    NIR_PASS(_, s, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
+   NIR_PASS(_, s, r300_nir_lower_ieee16_classify);
+   NIR_PASS(_, s, r300_nir_lower_ieee16_mul);
+   NIR_PASS(_, s, r300_nir_lower_ieee16_mul_normal_rne);
+
    /* FIXME: this could be probably moved earlier... */
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
       if (is_r500) {
@@ -350,4 +354,53 @@ r300_nir_add_wpos(nir_shader *nir, nir_variable **wpos_var_out)
    }
 
    return nir_progress(true, impl, nir_metadata_control_flow);
+}
+
+nir_def *
+r300_nir_build_carrier_pack(nir_builder *b,
+                            const struct r300_carrier_policy *policy,
+                            nir_def *value)
+{
+   switch (policy->encoding) {
+   case R300_CARRIER_ENC_RGBA8_UINT:
+   case R300_CARRIER_ENC_RGBA8_U24: {
+      /* 3-byte LE integer encoding: r=v%256, g=(v/256)%256, b=(v/65536)%256 */
+      nir_def *fl256 = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 256.0));
+      nir_def *enc_r = nir_fsub(b, value, nir_fmul_imm(b, fl256, 256.0));
+      nir_def *enc_g = nir_fsub(b, fl256,
+         nir_fmul_imm(b, nir_ffloor(b, nir_fmul_imm(b, fl256, 1.0 / 256.0)), 256.0));
+      nir_def *flh = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 65536.0));
+      nir_def *enc_b = nir_fsub(b, flh,
+         nir_fmul_imm(b, nir_ffloor(b, nir_fmul_imm(b, flh, 1.0 / 256.0)), 256.0));
+
+      nir_def *a = nir_imm_float(b, 0.0);
+      if (policy->encodes_full_uint32) {
+         /* 4-byte LE: A = (v/16777216)%256 */
+         nir_def *fla = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 16777216.0));
+         a = nir_fsub(b, fla,
+            nir_fmul_imm(b, nir_ffloor(b, nir_fmul_imm(b, fla, 1.0 / 256.0)), 256.0));
+         a = nir_fmul_imm(b, a, 1.0 / 255.0);
+      }
+
+      return nir_vec4(b,
+         nir_fmul_imm(b, enc_r, 1.0 / 255.0),
+         nir_fmul_imm(b, enc_g, 1.0 / 255.0),
+         nir_fmul_imm(b, enc_b, 1.0 / 255.0),
+         a);
+   }
+   case R300_CARRIER_ENC_RGBA8_U16: {
+      /* 2-byte LE: R = v%256, G = v/256 */
+      nir_def *res_g = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 256.0));
+      nir_def *res_r = nir_fsub(b, value, nir_fmul_imm(b, res_g, 256.0));
+      return nir_vec4(b,
+         nir_fmul_imm(b, res_r, 1.0 / 255.0),
+         nir_fmul_imm(b, res_g, 1.0 / 255.0),
+         nir_imm_float(b, 0.0),
+         nir_imm_float(b, 1.0)); /* A=1.0 as "normal result" flag */
+   }
+   case R300_CARRIER_ENC_IDENTITY:
+   case R300_CARRIER_ENC_RGBA8_UNORM:
+   default:
+      return value;
+   }
 }
