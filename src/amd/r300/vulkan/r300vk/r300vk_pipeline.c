@@ -1325,6 +1325,18 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
          rs.depth_clip_near = clip_info->depthClipEnable;
          rs.depth_clip_far  = clip_info->depthClipEnable;
       }
+      /* VK_EXT_line_rasterization: r300 draws Bresenham lines natively and
+       * the GL 2.1 line-stipple hardware backs stippled Bresenham; the
+       * rectangular and smooth modes stay unadvertised. */
+      const VkPipelineRasterizationLineStateCreateInfo *line_info =
+         vk_find_struct_const(vk_rs->pNext,
+                              PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO);
+      if (line_info && line_info->stippledLineEnable) {
+         rs.line_stipple_enable  = true;
+         rs.line_stipple_factor  = line_info->lineStippleFactor
+                                   ? line_info->lineStippleFactor - 1 : 0;
+         rs.line_stipple_pattern = line_info->lineStipplePattern;
+      }
       rs.cull_face = r300vk_cull_mode_to_pipe(vk_rs->cullMode);
       rs.front_ccw = vk_rs->frontFace == VK_FRONT_FACE_COUNTER_CLOCKWISE;
       rs.line_width = vk_rs->lineWidth != 0.0f ? vk_rs->lineWidth : 1.0f;
@@ -1446,6 +1458,9 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
             break;
          case VK_DYNAMIC_STATE_LINE_WIDTH:
             pl->dyn_mask |= R300VK_DYN_LINE_WIDTH;
+            break;
+         case VK_DYNAMIC_STATE_LINE_STIPPLE_EXT:
+            pl->dyn_mask |= R300VK_DYN_LINE_STIPPLE;
             break;
          default:
             break;

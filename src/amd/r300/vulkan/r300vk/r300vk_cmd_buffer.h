@@ -361,6 +361,7 @@ struct r300vk_cmd_copy_query_pool_results {
 #define R300VK_DYN_BLEND_CONST   (1u << 13)
 #define R300VK_DYN_LINE_WIDTH    (1u << 14)
 #define R300VK_DYN_DEPTH_BIAS_EN (1u << 15)
+#define R300VK_DYN_LINE_STIPPLE  (1u << 16)
 
 struct r300vk_cmd_set_dynamic {
    uint32_t            flags;
@@ -380,6 +381,8 @@ struct r300vk_cmd_set_dynamic {
    VkBool32            bias_enable;
    float               blend_const[4];
    float               line_width;
+   uint32_t            stipple_factor;
+   uint16_t            stipple_pattern;
 };
 
 struct r300vk_cmd_entry {
