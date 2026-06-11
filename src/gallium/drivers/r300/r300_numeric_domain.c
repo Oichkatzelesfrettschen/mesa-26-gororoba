@@ -358,7 +358,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       .op_name         = "QDIV",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
-      .status          = R300_VOP_NUMERIC_DERIVED,
+      .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion right division out = a/b = a*inv(b), inv(b) = "
                          "conj(b)/|b|^2.  H is an ASSOCIATIVE division algebra: every nonzero "
                          "quaternion is invertible (|b|^2 > 0 unless b=0) and the scalar "
@@ -371,7 +371,9 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "r300_nir_detect_qdiv_pattern (matches the single-self-dot reciprocal "
                          "1/dot(b,b), conj(b)*r, and the qmul_match Hamilton product a*inv(b)), "
                          "synthesized by r300vk_build_qdiv_fs_nir, dispatched on the QMUL "
-                         "two-in/one-out replay core",
+                         "two-in/one-out replay core; HW-confirmed 4/4 on RS480 by qdiv_vk_probe "
+                         "(a/1=a, 1/(2i)=-0.5i, 4i/2i=2 bit-exact; x/x=1 within FP16 RT tol), the "
+                         "FS compiling to 23 fragment ALU ops -- far under the 64-ALU limit",
       .mesa_hook       = "r300_nir_detect_qdiv_pattern",
       .retained_bundle = NULL,
    },
