@@ -461,6 +461,10 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * the single attachment are core Vulkan pipeline state the r300 RB3D
     * blend hardware implements. */
    features->independentBlend = true;
+   /* Gates VK_EXT_extended_dynamic_state: zink selects its dynamic-state draw
+    * template only when the feature reports true, and the vkCmdSet* family
+    * records R300VK_CMD_SET_DYNAMIC_STATE replay entries. */
+   features->extendedDynamicState = true;
 }
 
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
