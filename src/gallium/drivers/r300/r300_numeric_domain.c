@@ -392,6 +392,32 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
    },
    {
+      .op_name         = "MAT4VEC",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "general 4x4 vertex transform out[j] = M * p[j], component i = "
+                         "dot(row_i, p_j) -- four DP4s per vertex, one fullscreen invocation, "
+                         "the absent vertex FPU's core operation run on the PRESENT FP24 "
+                         "fragment ALU.  RS480 has num_vert_fpus = 0 (r300_chipset.c never sets "
+                         "it for CHIP_RS480, so has_hardware_tcl = num_vert_fpus>0 = false): the "
+                         "vertex engine is a breadboard, FPUs ABSENT not gated.  But the MVP "
+                         "transform IS a vec4 of four DP4s, and DP4 is HW-confirmed on the "
+                         "fragment ALU, so the transform routes through the compute-as-raster "
+                         "substrate.  The scalar decomposition is ALREADY HW-confirmed 16/16 "
+                         "byte-exact (dp4_mvp_probe: invocation j*4+i = dot(row_i, p_j) via the "
+                         "existing DP4 op, integer operands keep the FP24 dot exact, each "
+                         "4-term dot < 2^17).  MAT4VEC promotes that to a first-class op: matrix "
+                         "broadcast at sampler stage 0 (a 4-texel constant), vertices per-element "
+                         "at stage 1, the synthesized FS sampling row_i at the four fixed texel "
+                         "centres and emitting vec4(dot(row_i, p)) to the FP16 RT / FP32 readback "
+                         "(QMUL two-in/one-out replay core, matrix rows in place of the Hamilton "
+                         "permutations).  This is the bridge: the vertex transform wired into the "
+                         "FP24 ALU through the breadboard hole.  Position precision is the FP24 "
+                         "snapped-coordinate budget; per-element matrix is the skinning extension",
+      .mesa_hook       = NULL,  /* scalar form HW-confirmed via DP4 (dp4_mvp); vec4 detector+FS+broadcast-matrix dispatch is the next build */
+      .retained_bundle = NULL,
+   },
+   {
       .op_name         = "OMUL_OCTONION",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
