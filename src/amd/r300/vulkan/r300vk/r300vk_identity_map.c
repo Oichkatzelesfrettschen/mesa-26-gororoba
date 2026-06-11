@@ -2308,6 +2308,107 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
    return ok;
 }
 
+/* QFMUL dispatch replay: out[gid] = a[gid] * s.  The scalar s is BROADCAST, so it
+ * is mapped once and uploaded into the fragment constant file (CONST[0].x) the
+ * way MAT4VEC handles its broadcast matrix; only the per-element quaternions need
+ * a sampler.  Three bindings: scalar, quaternions, output (defaults 0,1,2 with a
+ * positional fallback). */
+bool
+r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso)
+      return false;
+   if (binds->first_set != 0)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   uint32_t bind[3] = { pl->qfmul.scalar_ssbo_binding,
+                        pl->qfmul.quat_ssbo_binding,
+                        pl->qfmul.output_ssbo_binding };
+   const struct r300vk_descriptor *desc[3];
+   struct r300vk_buffer *buf[3];
+   for (unsigned i = 0; i < 3; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer) {
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+         desc[i] = find_descriptor_by_binding(set, bind[i]);
+         if (!desc[i] || !desc[i]->buf.buffer)
+            return false;
+      }
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0 || total > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   /* Map the one broadcast float into CONST[0].x; the rest of the vec4 is zero
+    * (the FS reads only .x). */
+   float cbuf[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+   {
+      struct pipe_transfer *sxfer = NULL;
+      struct pipe_box sbox;
+      memset(&sbox, 0, sizeof(sbox));
+      sbox.x      = (int)desc[0]->buf.offset;
+      sbox.width  = (int)sizeof(float);
+      sbox.height = 1;
+      sbox.depth  = 1;
+      void *sptr = pipe->buffer_map(pipe, buf[0]->resource, 0, PIPE_MAP_READ,
+                                    &sbox, &sxfer);
+      if (!sptr)
+         return false;
+      memcpy(&cbuf[0], sptr, sizeof(float));
+      pipe->buffer_unmap(pipe, sxfer);
+   }
+
+   struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
+   views[0] = r300vk_identity_map_wrap_input_as_sampler_view(
+      device, buf[1]->resource, (unsigned)desc[1]->buf.offset,
+      width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+   if (!views[0])
+      return false;
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      pipe_sampler_view_reference(&views[0], NULL);
+      return false;
+   }
+
+   bool ok = omul_run_pass_cb(pipe, screen, device, views, pl->fs_cso,
+                              pl->vs_cso, vb, velems_cso, buf[2]->resource,
+                              (unsigned)desc[2]->buf.offset, width, height, total,
+                              cbuf, sizeof(cbuf));
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&views[0], NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
 /* Resolve n STORAGE_BUFFER bindings to descriptors + buffers for the octonion
  * elementwise ops: captured constant bindings in bind[] win; all-zero falls back
  * to the first n STORAGE_BUFFERs in declaration order (the inputs precede the

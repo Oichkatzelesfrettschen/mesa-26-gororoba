@@ -1635,6 +1635,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_qmul_pattern *qmul,
                                struct r300_compute_qdiv_pattern *qdiv,
                                struct r300_compute_mat4vec_pattern *mat4vec,
+                               struct r300_compute_qfmul_pattern *qfmul,
                                struct r300_compute_qrotate_pattern *qrotate,
                                struct r300_compute_qconj_pattern *qconj,
                                struct r300_compute_qnorm_pattern *qnorm,
@@ -1701,6 +1702,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_qmul_pattern(nir, qmul);
    r300_nir_detect_qdiv_pattern(nir, qdiv);
    r300_nir_detect_mat4vec_pattern(nir, mat4vec);
+   r300_nir_detect_qfmul_pattern(nir, qfmul);
    r300_nir_detect_qrotate_pattern(nir, qrotate);
    r300_nir_detect_qconj_pattern(nir, qconj);
    r300_nir_detect_qnorm_pattern(nir, qnorm);
@@ -2095,6 +2097,61 @@ r300vk_mat4vec_synthesize_shaders(struct r300vk_device *device,
       return false;
 
    pl->fs_cso = r300vk_synthesize_mat4vec_fs(pipe);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+/* QFMUL FS: out = a * s, the per-element quaternion a sampled at stage 0 times
+ * the BROADCAST scalar s read from the fragment constant file (CONST[0].x), the
+ * way MAT4VEC reads its broadcast matrix from the const file.  One TEX + one MUL;
+ * the scalar costs no per-element fetch. */
+static void *
+r300vk_synthesize_qfmul_fs(struct pipe_context *pipe)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src scal = ureg_DECL_constant(ureg, 0);   /* s in CONST[0].x */
+   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                           TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out  = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst quat = ureg_DECL_temporary(ureg);
+
+   ureg_TEX(ureg, ureg_writemask(quat, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tc, samp);
+   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_XYZW),
+            ureg_src(quat), ureg_scalar(scal, TGSI_SWIZZLE_X));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* QFMUL VS+FS synthesis: shared passthrough VS + the scalar-product FS.  The
+ * dispatch uploads the broadcast scalar to CONST[0] and wraps the quaternions
+ * per-element. */
+static bool
+r300vk_qfmul_synthesize_shaders(struct r300vk_device *device,
+                                struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_qfmul_fs(pipe);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -3060,6 +3117,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->mat4vec.is_mat4vec = false;
       return true;
    }
+   if (pl->qfmul.is_qfmul) {
+      if (!r300vk_qfmul_synthesize_shaders(device, pl))
+         pl->qfmul.is_qfmul = false;
+      return true;
+   }
    if (pl->qrotate.is_qrotate) {
       if (!r300vk_qrotate_synthesize_shaders(device, pl))
          pl->qrotate.is_qrotate = false;
@@ -3168,6 +3230,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_qmul_pattern qmul_pat = {0};
    struct r300_compute_qdiv_pattern qdiv_pat = {0};
    struct r300_compute_mat4vec_pattern mat4vec_pat = {0};
+   struct r300_compute_qfmul_pattern qfmul_pat = {0};
    struct r300_compute_qrotate_pattern qrotate_pat = {0};
    struct r300_compute_qconj_pattern qconj_pat = {0};
    struct r300_compute_qnorm_pattern qnorm_pat = {0};
@@ -3185,7 +3248,8 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
-                                       &qmul_pat, &qdiv_pat, &mat4vec_pat, &qrotate_pat,
+                                       &qmul_pat, &qdiv_pat, &mat4vec_pat, &qfmul_pat,
+                                       &qrotate_pat,
                                        &qconj_pat, &qnorm_pat, &qnormalize_pat,
                                        &omul_pat,
                                        &oaddsub_pat, &oconj_pat, &onorm_pat,
@@ -3215,6 +3279,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->qmul = qmul_pat;
    pl->qdiv = qdiv_pat;
    pl->mat4vec = mat4vec_pat;
+   pl->qfmul = qfmul_pat;
    pl->qrotate = qrotate_pat;
    pl->qconj = qconj_pat;
    pl->qnorm = qnorm_pat;

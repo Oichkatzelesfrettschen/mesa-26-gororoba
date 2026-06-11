@@ -136,6 +136,26 @@ build_binary_map_f32vec4(void)
    return b.shader;
 }
 
+/* QFMUL: out[gid] = a[gid] * s, a per-element vec4 quaternion (binding 1) times a
+ * BROADCAST scalar s (binding 0, a one-float buffer).  nir_fmul broadcasts the
+ * 1-component scalar across the vec4, so the fmul's scalar source carries a
+ * 1-component def with the splat swizzle (.xxxx) the detector keys on.  The width
+ * asymmetry -- a 4-component quaternion against a 1-component scalar -- is exactly
+ * what separates QFMUL from the equal-width elementwise binary map. */
+static nir_shader *
+build_qfmul_form(void)
+{
+   nir_builder b = cs_builder("cs_qfmul_f32vec4");
+   nir_def *s = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *a = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *prod = nir_fmul(&b, a, s);
+   nir_store_ssbo(&b, prod, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
 /* Quaternion Hamilton product q1*q2 in the canonical four-dot form the QMUL
  * detector admits: each output lane is a DP4 of q1 against a sign-permutation
  * of q2.  bad_sign flips one permutation lane so the negative case exercises the
@@ -431,6 +451,42 @@ case_binary_metadata(void)
 }
 
 static void
+case_qfmul_metadata(void)
+{
+   nir_shader *nir = build_qfmul_form();
+   struct r300_compute_admission adm;
+   struct r300_compute_qfmul_pattern qf = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "float4 qfmul kernel admits");
+   r300_nir_detect_qfmul_pattern(nir, &qf);
+   CHECK(qf.is_qfmul, "qfmul scalar-broadcast shape detected");
+   CHECK(qf.scalar_ssbo_binding == 0, "qfmul metadata records scalar binding 0");
+   CHECK(qf.quat_ssbo_binding == 1, "qfmul metadata records quaternion binding 1");
+   CHECK(qf.output_ssbo_binding == 2, "qfmul metadata records output binding 2");
+
+   /* The 4-vs-1 width asymmetry must steer the kernel away from the binary-map
+    * carrier: its orchestrator samples both inputs per-element, so reading the
+    * one-float scalar buffer across the whole raster extent would run off its
+    * end.  The binary-map width-equality guard declines it, handing it here. */
+   struct r300_compute_binary_map_pattern binmap = {0};
+   r300_nir_detect_binary_map(nir, &binmap);
+   CHECK(!binmap.is_binary_map, "qfmul broadcast is not an equal-width binary map");
+   ralloc_free(nir);
+
+   /* The converse: an equal-width vec4+vec4 binary map is a genuine elementwise
+    * carrier, not a scalar broadcast; the qfmul detector's 1-component splat
+    * requirement must reject it so the two classes stay disjoint. */
+   nir_shader *bin = build_binary_map_f32vec4();
+   struct r300_compute_qfmul_pattern bin_qf = {0};
+   prepare_detect_shader(bin);
+   r300_nir_detect_qfmul_pattern(bin, &bin_qf);
+   CHECK(!bin_qf.is_qfmul, "qfmul rejects an equal-width binary map");
+   ralloc_free(bin);
+}
+
+static void
 case_qmul_metadata(void)
 {
    nir_shader *nir = build_qmul_form(false);
@@ -641,6 +697,7 @@ main(void)
                 "fp64 arithmetic rejects");
    case_identity_metadata();
    case_binary_metadata();
+   case_qfmul_metadata();
    case_qmul_metadata();
    case_qrotate_metadata();
    case_qconj_metadata();

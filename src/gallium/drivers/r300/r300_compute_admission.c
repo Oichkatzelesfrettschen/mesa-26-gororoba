@@ -317,6 +317,16 @@ r300_nir_detect_binary_map(const nir_shader *s,
    if (!ab && !ba)
       return;
 
+   /* Both operands must be per-element values of the same width.  The binary-map
+    * orchestrator wraps in_a and in_b as per-element samplers spanning the whole
+    * raster extent, so a 1-component operand multiplied against a 4-component one
+    * -- out[gid] = a[gid] * s, the broadcast scalar -- is not a binary map: its
+    * narrow buffer holds one value, and sampling it per-element reads past the
+    * end.  That shape is QFMUL's (the scalar rides the fragment constant file);
+    * the width asymmetry hands the kernel to r300_nir_detect_qfmul_pattern. */
+   if (load_a->def.num_components != load_b->def.num_components)
+      return;
+
    /* Require a full store write mask, as the identity-map detector does: the
     * binary-map carrier copies whole elements, so a partial-lane store would be
     * transported with carrier bytes in the unwritten lanes. */
@@ -2833,6 +2843,80 @@ r300_nir_detect_mat4vec_pattern(const nir_shader *s,
    if (nir_src_is_const(store[0]->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
    out->is_mat4vec = true;
+}
+
+/* QFMUL: out[gid] = a[gid] * s, a per-element vec4 quaternion times a BROADCAST
+ * scalar.  Two loads, one store; the store value is an fmul whose operands are a
+ * 4-component identity-swizzled load (the quaternion) and a 1-component
+ * splat-swizzled load (the scalar).  The 1-component load is the broadcast s
+ * (one value for every element) and belongs in the fragment constant file, the
+ * way MAT4VEC's broadcast matrix does. */
+void
+r300_nir_detect_qfmul_pattern(const nir_shader *s,
+                              struct r300_compute_qfmul_pattern *out)
+{
+   out->is_qfmul            = false;
+   out->scalar_ssbo_binding = 0;
+   out->quat_ssbo_binding   = 1;
+   out->output_ssbo_binding = 2;
+
+   const nir_intrinsic_instr *load[2], *store[1];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 2, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 2 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]))
+      return;
+
+   const nir_alu_instr *mul = nir_def_as_alu_or_null(store[0]->src[0].ssa);
+   if (!mul || mul->op != nir_op_fmul)
+      return;
+
+   /* One operand is the 4-component identity-swizzled quaternion, the other the
+    * 1-component splat-swizzled (component 0 four times) broadcast scalar. */
+   const nir_def *quat_def = NULL, *scal_def = NULL;
+   for (unsigned k = 0; k < 2; k++) {
+      const nir_def *d = mul->src[k].src.ssa;
+      if (d->num_components == 4) {
+         bool ident = true;
+         for (unsigned c = 0; c < 4; c++)
+            if (mul->src[k].swizzle[c] != c)
+               ident = false;
+         if (ident)
+            quat_def = d;
+      } else if (d->num_components == 1) {
+         bool splat = true;
+         for (unsigned c = 0; c < 4; c++)
+            if (mul->src[k].swizzle[c] != 0)
+               splat = false;
+         if (splat)
+            scal_def = d;
+      }
+   }
+   if (!quat_def || !scal_def)
+      return;
+
+   const nir_intrinsic_instr *quat_load = NULL, *scal_load = NULL;
+   for (unsigned j = 0; j < 2; j++) {
+      if (&load[j]->def == quat_def)
+         quat_load = load[j];
+      if (&load[j]->def == scal_def)
+         scal_load = load[j];
+   }
+   if (!quat_load || !scal_load)
+      return;
+   if (quat_load->def.num_components != 4 || scal_load->def.num_components != 1)
+      return;
+
+   if (nir_src_is_const(scal_load->src[0]))
+      out->scalar_ssbo_binding = nir_src_as_uint(scal_load->src[0]);
+   if (nir_src_is_const(quat_load->src[0]))
+      out->quat_ssbo_binding = nir_src_as_uint(quat_load->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_qfmul = true;
 }
 
 void

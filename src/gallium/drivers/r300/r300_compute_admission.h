@@ -392,6 +392,23 @@ struct r300_compute_mat4vec_pattern {
 void r300_nir_detect_mat4vec_pattern(const struct nir_shader *s,
                                      struct r300_compute_mat4vec_pattern *out);
 
+/* Quaternion-scalar product (QFMUL) pattern: out[gid] = a[gid] * s, where a is a
+ * per-element vec4 quaternion and s is a BROADCAST scalar (a 1-component load at a
+ * fixed offset, the same value for every element).  Recognised by the asymmetry:
+ * the store value is an fmul whose operands are one 4-component identity-swizzled
+ * load (the quaternion) and one 1-component splat-swizzled load (the scalar).
+ * Like MAT4VEC's broadcast matrix, the broadcast scalar belongs in the fragment
+ * constant file rather than a per-element sampler. */
+struct r300_compute_qfmul_pattern {
+   bool       is_qfmul;
+   uint32_t   scalar_ssbo_binding;
+   uint32_t   quat_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qfmul_pattern(const struct nir_shader *s,
+                                   struct r300_compute_qfmul_pattern *out);
+
 /* Quaternion rotation (QROTATE) pattern: out[gid] = q[gid] * embed(v[gid]) *
  * conj(q[gid]), the sandwich that rotates the vec3 v by the unit quaternion q.
  * The admissible shape is two nested canonical Hamilton products: the store is
