@@ -2,29 +2,32 @@
 # GL + zink + XA/Xv + gallium-va MPEG-2 decode + amd_r300/r300vk Vulkan ICD,
 # no llvmpipe/LLVM) built with full debug info and assertions.
 #
-# Packaging model (mesa-git): when installed, this debug build BECOMES the
-# active system Mesa, exactly like the release mesa-gororoba and upstream
-# mesa-git.  It differs only in where the real files live: because it is
-# debugoptimized (-Og -g3, assertions, frame pointers), the artifacts stay in
-# /opt/mesa-26-gororoba-debug instead of polluting the stock /usr tree, and the
-# stock /usr loader paths (libGL/EGL/GLX/GBM, lib/dri, the Vulkan ICD + layers,
-# the glvnd EGL vendor json) are symlinked into that /opt tree by package().
-# provides/conflicts/replaces therefore mirror the release package and also
-# supersede it, so exactly one gororoba Mesa owns the /usr paths at a time.
-# Revert to the release driver with `pacman -U mesa-gororoba` (or reinstall
-# stock `mesa`).  For a one-command scoped probe without changing the system
-# default, mesa-26-gororoba-debug-run still pins the loader to the /opt tree.
+# Build model: REPACK, not from-git.  The build-infra meson builddir is the only
+# build infrastructure -- build/refresh it with
+#   make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache
+# (or `make build ... PREFIX=/opt/mesa-26-gororoba-debug`), then this PKGBUILD
+# packages that exact builddir.  It deliberately does NOT clone+build from a
+# pinned git commit: the in-development r300vk compute kernels live only in the
+# working tree the builddir was compiled from, so a hermetic git build would
+# ship a different binary than the one under test.  _builddir/_srcroot select the
+# canonical Vostro builddir + source root and are overridable from the make env.
 #
-# Mirrors the 2_r300 debug meson profile (debugoptimized, b_ndebug=false, frame
-# pointers, libunwind/valgrind/perfetto on).
+# Packaging model (mesa-git): when installed, this debug build BECOMES the active
+# system Mesa, exactly like the release mesa-gororoba and upstream mesa-git.  It
+# differs only in where the real files live: because it is debugoptimized (-Og
+# -g3, assertions, frame pointers), the artifacts stay in /opt/mesa-26-gororoba-debug
+# instead of the stock /usr tree, and the stock /usr loader paths (libGL/EGL/GLX/
+# GBM, lib/dri, the Vulkan ICD + layers, the glvnd EGL vendor json) are symlinked
+# into that /opt tree by package().  provides/conflicts/replaces therefore mirror
+# the release package and also supersede it, so exactly one gororoba Mesa owns the
+# /usr paths at a time.  Revert with `pacman -U mesa-gororoba` (release) or
+# `pacman -S mesa` (stock).  mesa-26-gororoba-debug-run still pins the loader to
+# the /opt tree for a scoped probe without changing the system default.
 pkgname=mesa-gororoba-debug
 pkgver=26.2.0
 pkgrel=6
 epoch=2
-# Same pin policy as the release package: update _commit per build, or override
-# with #branch=main for rapid iteration.
-_commit=898ccf17f9b931371519b10ce290d8a05e7e2725
-pkgdesc='Mesa DEBUG system driver: r300 GL + amd_r300/r300vk, full debug info, files under /opt'
+pkgdesc='Mesa DEBUG system driver: r300 GL + amd_r300/r300vk, full debug info, files under /opt (build-infra repack)'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -33,12 +36,9 @@ depends=(
   libxdamage libxshmfence libxxf86vm libva lm_sensors spirv-tools
   wayland zlib zstd vulkan-icd-loader libunwind valgrind
 )
-makedepends=(
-  clang llvm meson ninja glslang spirv-tools python-mako python-ply
-  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
-  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
-  git
-)
+# No toolchain makedepends: the build-infra builddir is already compiled; this
+# package only stages and symlinks it with meson install --no-rebuild.
+makedepends=(meson ninja)
 # System-driver metadata, mirroring the release mesa-gororoba package and
 # additionally superseding it: installing the debug package takes over the
 # system /usr Mesa from stock mesa OR the release build.  conflicts blocks
@@ -54,83 +54,25 @@ provides=(
 )
 conflicts=(mesa mesa-gororoba vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 replaces=(mesa mesa-gororoba vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
-# Keep debug symbols; no strip, no LTO.  staticlibs keeps the .a archives in the
-# /opt tree for gdb work; they are deliberately NOT mirrored into /usr (the
-# system driver needs only the runtime .so and the loader json).
-options=('!strip' '!lto' 'debug' 'staticlibs')
+# Keep debug symbols; no strip, no LTO.  !buildflags: this package compiles
+# nothing (repack only), so makepkg's CFLAGS/LDFLAGS injection is irrelevant.
+# The .a archives the builddir produced land in /opt for gdb work but are NOT
+# mirrored into /usr (the system driver needs only the runtime .so and json).
+options=('!strip' '!lto' 'debug' 'staticlibs' '!buildflags')
 install="${pkgname}.install"
-source=("mesa-gororoba::git+https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba.git#commit=${_commit}"
-        'mesa-26-gororoba-debug-env.sh'
+# Only the loader-helper scripts are package sources; the binaries come from the
+# prebuilt build-infra builddir (see _builddir), not from a git checkout.
+source=('mesa-26-gororoba-debug-env.sh'
         'mesa-26-gororoba-debug-run')
-sha256sums=('SKIP'
-            '40688a33a6dad2c92f44212bb8dce8c0bad80678248ba7b719a83e999c2271fc'
+sha256sums=('40688a33a6dad2c92f44212bb8dce8c0bad80678248ba7b719a83e999c2271fc'
             'e2a1785277b814e1d1ffcff8aca1a11029fe632502180e5d1c6074cdee286aa9')
 
 _prefix=/opt/mesa-26-gororoba-debug
-
-build() {
-  # Ride the distcc+ccache fabric (the 1_r300/2_r300 default) for fast rebuilds:
-  # source the Vostro distcc-cache env to set CCACHE_PREFIX=distcc + DISTCC_HOSTS
-  # (the LAN volunteers, ALIENWARE/x570-5600X3D), then compile through ccache so a
-  # cache miss fans out to distcc.  ccache is the compiler -- it hashes the
-  # preprocessed source, not distcc's mtime, so the AGENTS.md "never wrap distcc in
-  # a script" hazard does not apply; this is the warm-incremental ccache-first
-  # path, no pump.  Falls back to plain clang if the env is absent (off-LAN host).
-  if [ -f mesa-gororoba/build-infra/env/vostro1000-x86-64-v1-clang22-ccache-distcc.env ]; then
-    # shellcheck disable=SC1091
-    . mesa-gororoba/build-infra/env/vostro1000-x86-64-v1-clang22-ccache-distcc.env || true
-  fi
-  if command -v ccache >/dev/null 2>&1; then
-    export CC='ccache clang'
-    export CXX='ccache clang++'
-  else
-    export CC=clang
-    export CXX=clang++
-  fi
-  export CC_LD=lld
-  export CXX_LD=lld
-
-  # x86-64 psABI baseline (K8 Turion) as the release build, but full debug info
-  # (-g3), no optimization-driven inlining loss (-Og keeps the code debuggable
-  # while staying runnable), and frame pointers for clean backtraces.
-  export CPPFLAGS='-D_FORTIFY_SOURCE=2'
-  export CFLAGS='-march=x86-64 -mtune=generic -Og -g3 -fno-omit-frame-pointer -fexceptions -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security'
-  export CXXFLAGS="${CFLAGS} -Wp,-D_GLIBCXX_ASSERTIONS"
-  export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
-  export RUSTFLAGS='-C target-cpu=x86-64'
-
-  meson setup mesa-gororoba build \
-    --prefix="${_prefix}" \
-    --sysconfdir=/etc \
-    --buildtype=debug \
-    --wrap-mode=nofallback \
-    -D b_ndebug=false \
-    -D b_lto=false \
-    -D platforms=x11,wayland \
-    -D gallium-drivers=r300,zink \
-    -D vulkan-drivers=amd_r300 \
-    -D r300vk-gallium-backend=true \
-    -D gallium-rusticl=false \
-    -D llvm=disabled \
-    -D draw-use-llvm=false \
-    -D egl=enabled \
-    -D gbm=enabled \
-    -D glx=dri \
-    -D gles1=enabled \
-    -D gles2=enabled \
-    -D opengl=true \
-    -D glvnd=enabled \
-    -D gallium-va=enabled \
-    -D video-codecs=mpeg12dec \
-    -D gallium-xa=true \
-    -D valgrind=enabled \
-    -D libunwind=enabled
-
-  # Fan out across the distcc workers: meson compile defaults ninja to
-  # local-cores+2 (4 on the K8), which starves the remote slots.
-  # GOROROBA_DISTCC_JOBS is the slot-sum exported by the host env.
-  meson compile -C build -j "${GOROROBA_DISTCC_JOBS:-$(nproc)}"
-}
+# The canonical build-infra builddir to repack, and the source root for the
+# license file.  Override from the make/env (GOROROBA_DEBUG_BUILDDIR /
+# GOROROBA_DEBUG_SRCROOT) when packaging on a different host.
+_builddir="${GOROROBA_DEBUG_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-2_r300_full_debug_x86_64v1-clang22-distcc-cache}"
+_srcroot="${GOROROBA_DEBUG_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
 
 # Link every entry of ${_prefix}/<rel> into ${pkgdir}/usr/<rel> as a symlink
 # back to the absolute /opt path, so the stock GL/EGL/GLX/GBM/Vulkan/VA loaders
@@ -147,7 +89,6 @@ _link_into_usr() {
   install -dm755 "${dst}"
   for entry in "${src}"/*; do
     [ -e "${entry}" ] || [ -L "${entry}" ] || continue
-    # Skip real subdirectories (linked by their own pass) and dev archives.
     if [ -d "${entry}" ] && [ ! -L "${entry}" ]; then
       continue
     fi
@@ -160,11 +101,19 @@ _link_into_usr() {
 }
 
 package() {
-  meson install -C build --no-rebuild --destdir "${pkgdir}"
+  if [ ! -f "${_builddir}/build.ninja" ]; then
+    echo "ERROR: build-infra builddir not found at ${_builddir}" >&2
+    echo "       build it first: make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache" >&2
+    return 1
+  fi
 
-  install -Dm755 mesa-26-gororoba-debug-run \
+  # Stage the prebuilt /opt tree.  --no-rebuild: never recompile here; the
+  # build-infra builddir is authoritative and already carries the in-dev kernels.
+  meson install -C "${_builddir}" --no-rebuild --destdir "${pkgdir}"
+
+  install -Dm755 "${srcdir}/mesa-26-gororoba-debug-run" \
     "${pkgdir}/usr/bin/mesa-26-gororoba-debug-run"
-  install -Dm644 mesa-26-gororoba-debug-env.sh \
+  install -Dm644 "${srcdir}/mesa-26-gororoba-debug-env.sh" \
     "${pkgdir}/etc/opt/mesa-26-gororoba-debug/mesa-26-gororoba-debug-env.sh"
 
   # System-driver activation: mirror the loadable artifacts from the /opt tree
@@ -188,10 +137,10 @@ package() {
   ln -s /opt/mesa-26-gororoba-debug \
     "${pkgdir}/usr/share/mesa-26-gororoba-debug"
 
-  if [ -f mesa-gororoba/docs/license.rst ]; then
-    install -Dm644 mesa-gororoba/docs/license.rst \
+  if [ -f "${_srcroot}/docs/license.rst" ]; then
+    install -Dm644 "${_srcroot}/docs/license.rst" \
       "${pkgdir}/usr/share/licenses/${pkgname}/license.rst"
   else
-    echo "WARNING: docs/license.rst not found; license not installed"
+    echo "WARNING: ${_srcroot}/docs/license.rst not found; license not installed"
   fi
 }
