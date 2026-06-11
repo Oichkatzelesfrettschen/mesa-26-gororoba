@@ -116,6 +116,41 @@ r300vk_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
       ss->compare_mode = PIPE_TEX_COMPARE_R_TO_TEXTURE;
       ss->compare_func = vk_compare_op_to_pipe(ci->compareOp);
    }
+
+   /* Border colour: the standard VkBorderColor palette maps to constant
+    * float/int values; VK_EXT_custom_border_color supplies the value in a
+    * chained VkSamplerCustomBorderColorCreateInfoEXT.  r300 stores a full
+    * per-sampler border colour (TX_BORDER_COLOR), so both pass through. */
+   switch (ci->borderColor) {
+   case VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK:
+      ss->border_color.f[3] = 1.0f;
+      break;
+   case VK_BORDER_COLOR_INT_OPAQUE_BLACK:
+      ss->border_color.i[3] = 1;
+      break;
+   case VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE:
+      ss->border_color.f[0] = ss->border_color.f[1] = 1.0f;
+      ss->border_color.f[2] = ss->border_color.f[3] = 1.0f;
+      break;
+   case VK_BORDER_COLOR_INT_OPAQUE_WHITE:
+      ss->border_color.i[0] = ss->border_color.i[1] = 1;
+      ss->border_color.i[2] = ss->border_color.i[3] = 1;
+      break;
+   case VK_BORDER_COLOR_FLOAT_CUSTOM_EXT:
+   case VK_BORDER_COLOR_INT_CUSTOM_EXT: {
+      const VkSamplerCustomBorderColorCreateInfoEXT *custom =
+         vk_find_struct_const(ci->pNext,
+                              SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT);
+      if (custom)
+         memcpy(&ss->border_color, &custom->customBorderColor,
+                sizeof(ss->border_color));
+      break;
+   }
+   case VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
+   case VK_BORDER_COLOR_INT_TRANSPARENT_BLACK:
+   default:
+      break;
+   }
 }
 
 VkResult

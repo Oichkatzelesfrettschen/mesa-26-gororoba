@@ -352,6 +352,13 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
    snprintf(props->driverName, sizeof(props->driverName), "%s", "r300vk");
    snprintf(props->driverInfo, sizeof(props->driverInfo), "%s", "Mesa r300vk");
    props->conformanceVersion = (VkConformanceVersion){0, 0, 0, 0};
+   /* VK_EXT_custom_border_color: the border colour lives in the sampler CSO,
+    * so the count is bounded only by sampler objects; report the 1.0-era
+    * sampler allocation floor.  VK_EXT_line_rasterization: r300's line
+    * rasteriser walks at 1/16th-pixel steps (4 sub-pixel bits, the GL
+    * subpixel precision the chip family advertises). */
+   props->maxCustomBorderColorSamplers = 4000;
+   props->lineSubPixelPrecisionBits = 4;
 }
 
 static const struct vk_device_extension_table r300vk_device_extensions_supported = {
@@ -435,6 +442,14 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * template; the create-time parse maps the extension's explicit
     * depthClipEnable onto them.  zink emits a per-draw warning without it. */
    .EXT_depth_clip_enable = true,
+   /* VK_EXT_custom_border_color: r300 keeps a full per-sampler border colour
+    * (TX_BORDER_COLOR); the sampler CSO carries it through
+    * pipe_sampler_state.border_color, format-independent. */
+   .EXT_custom_border_color = true,
+   /* VK_EXT_line_rasterization: Bresenham (plus GL line-stipple hardware for
+    * the stippled variant) is what the silicon draws; rectangular and smooth
+    * modes stay false. */
+   .EXT_line_rasterization = true,
    /* dma-buf export, the wsi-drm substrate: external images are single-tile
     * SHARED|SCANOUT linear BOs and vkGetMemoryFdKHR exports them through the
     * winsys PRIME path -- the contract the r300g/GL DRI3 oracle measured
@@ -453,6 +468,10 @@ r300vk_physical_device_init_features(struct vk_features *features)
    /* Logic ops run in r300's ROP unit (RB3D_ROPCNTL); the blend CSO carries
     * logicop_enable/logicop_func and r300g programs the ROP3 code. */
    features->logicOp = true;
+   features->customBorderColors = true;
+   features->customBorderColorWithoutFormat = true;
+   features->bresenhamLines = true;
+   features->stippledBresenhamLines = true;
    features->depthClipEnable = true;
    features->largePoints = true;
    features->wideLines = true;

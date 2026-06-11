@@ -429,6 +429,16 @@ r300vk_cmd_append_dyn(struct r300vk_cmd_buffer *cmd, uint32_t flag)
    if (!d) return
 
 void
+r300vk_CmdSetLineStipple(VkCommandBuffer commandBuffer,
+                         uint32_t lineStippleFactor,
+                         uint16_t lineStipplePattern)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_LINE_STIPPLE);
+   d->stipple_factor  = lineStippleFactor;
+   d->stipple_pattern = lineStipplePattern;
+}
+
+void
 r300vk_CmdSetCullMode(VkCommandBuffer commandBuffer, VkCullModeFlags cullMode)
 {
    R300VK_DYN_RECORD(R300VK_DYN_CULL);

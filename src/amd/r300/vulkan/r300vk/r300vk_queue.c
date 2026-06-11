@@ -940,6 +940,8 @@ struct r300vk_dyn_overlay {
    VkBool32            bias_enable;
    float               blend_const[4];
    float               line_width;
+   uint32_t            stipple_factor;
+   uint16_t            stipple_pattern;
    /* Transient CSOs currently bound in place of the pipeline's fixed ones;
     * deleted only after the replacement is bound (create-bind-delete-old). */
    void               *rs_cso;
@@ -949,7 +951,7 @@ struct r300vk_dyn_overlay {
 
 #define R300VK_DYN_RS_BITS (R300VK_DYN_CULL | R300VK_DYN_FRONT_FACE | \
                             R300VK_DYN_LINE_WIDTH | R300VK_DYN_DEPTH_BIAS | \
-                            R300VK_DYN_DEPTH_BIAS_EN)
+                            R300VK_DYN_DEPTH_BIAS_EN | R300VK_DYN_LINE_STIPPLE)
 #define R300VK_DYN_DSA_BITS (R300VK_DYN_DEPTH_TEST | R300VK_DYN_DEPTH_WRITE | \
                              R300VK_DYN_DEPTH_OP | R300VK_DYN_STENCIL_TEST | \
                              R300VK_DYN_STENCIL_OP | \
@@ -978,6 +980,10 @@ r300vk_dyn_overlay_merge(struct r300vk_dyn_overlay *ov,
    if (f & R300VK_DYN_BLEND_CONST)
       memcpy(ov->blend_const, d->blend_const, sizeof(ov->blend_const));
    if (f & R300VK_DYN_LINE_WIDTH)   ov->line_width = d->line_width;
+   if (f & R300VK_DYN_LINE_STIPPLE) {
+      ov->stipple_factor  = d->stipple_factor;
+      ov->stipple_pattern = d->stipple_pattern;
+   }
 
    const uint32_t face_bits = f & (R300VK_DYN_STENCIL_OP |
                                    R300VK_DYN_STENCIL_CMP_MASK |
@@ -1038,6 +1044,13 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
          rs.front_ccw = ov->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE;
       if (eff & R300VK_DYN_LINE_WIDTH)
          rs.line_width = ov->line_width != 0.0f ? ov->line_width : 1.0f;
+      /* Stipple enable is pipeline-static; the dynamic state carries only
+       * factor and pattern. */
+      if ((eff & R300VK_DYN_LINE_STIPPLE) && rs.line_stipple_enable) {
+         rs.line_stipple_factor  = ov->stipple_factor
+                                   ? ov->stipple_factor - 1 : 0;
+         rs.line_stipple_pattern = ov->stipple_pattern;
+      }
       const bool bias = (eff & R300VK_DYN_DEPTH_BIAS_EN)
                         ? (bool)ov->bias_enable : pl->rs_template.offset_tri;
       rs.offset_tri = rs.offset_line = rs.offset_point = bias;
