@@ -5,6 +5,7 @@
 
 #include "r300vk_image.h"
 #include "r300vk_format.h"
+#include "frontend/winsys_handle.h"
 #include "r300vk_device.h"
 
 /* r300g internals: a linear image reads its row stride from the backing
@@ -290,6 +291,25 @@ r300vk_CreateImage(VkDevice _device,
                        "r300vk: image type 3D unsupported (no depth-slice storage)");
    }
 
+   /* dma-buf export: wsi-drm swapchain images arrive with
+    * VkExternalMemoryImageCreateInfo.  The backing resource must be a real,
+    * non-suballocated BO with KMS-visible layout, so force the single-tile
+    * linear SHARED|SCANOUT shape (the oracle contract: GEM_CREATE +
+    * SET_TILING + PRIME_HANDLE_TO_FD once, then nothing but CS per frame).
+    * One tile bounds the extent at the sampler limit. */
+   const VkExternalMemoryImageCreateInfo *ext_info =
+      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+   const bool external = ext_info && ext_info->handleTypes != 0;
+   if (external &&
+       (pCreateInfo->extent.width  > R300VK_R3XX_MAX_TEXTURE_DIMENSION ||
+        pCreateInfo->extent.height > R300VK_R3XX_MAX_TEXTURE_DIMENSION)) {
+      vk_image_finish(&img->vk);
+      vk_free2(&device->vk.alloc, pAllocator, img);
+      return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
+                       "r300vk: external image %ux%u exceeds the single-tile export bound",
+                       pCreateInfo->extent.width, pCreateInfo->extent.height);
+   }
+
    enum pipe_format pipe_fmt = r300vk_vk_format_to_pipe_format(pCreateInfo->format);
    if (pipe_fmt == PIPE_FORMAT_NONE) {
       vk_image_finish(&img->vk);
@@ -346,6 +366,8 @@ r300vk_CreateImage(VkDevice _device,
       r300vk_image_pipe_bind(device, pipe_fmt, pCreateInfo->usage);
    if (is_linear)
       pipe_bind |= PIPE_BIND_LINEAR;
+   if (external)
+      pipe_bind |= PIPE_BIND_SHARED | PIPE_BIND_SCANOUT | PIPE_BIND_LINEAR;
 
    VkResult result =
       r300vk_image_create_tile_resources(device, img, pCreateInfo, pipe_fmt,
@@ -354,6 +376,17 @@ r300vk_CreateImage(VkDevice _device,
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
       return result;
+   }
+
+   img->external = external;
+   if (external) {
+      /* Record the BO's real row pitch for vkGetImageSubresourceLayout: the
+       * KMS handle query fills stride without exporting an fd. */
+      struct winsys_handle wh = { .type = WINSYS_HANDLE_TYPE_KMS };
+      if (device->screen->resource_get_handle(device->screen, NULL,
+                                              img->resource, &wh,
+                                              PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
+         img->external_stride = wh.stride;
    }
 
    *pImage = r300vk_image_to_handle(img);
@@ -401,6 +434,16 @@ r300vk_image_subresource_layout(VkImage _image,
    /* r300vk images are single mip level and single array layer (r300vk_CreateImage
     * rejects mipLevels > 1 and arrayLayers > 1), so the queried subresource is
     * always level 0 / layer 0 and pSubresource selects no other layout. */
+   if (img->external && img->external_stride) {
+      /* Exported BO: the winsys-reported pitch is the layout KMS/DRI3 sees. */
+      layout->offset = 0;
+      layout->rowPitch = img->external_stride;
+      layout->size = (VkDeviceSize)img->external_stride * img->vk.extent.height;
+      layout->arrayPitch = layout->size;
+      layout->depthPitch = layout->size;
+      return;
+   }
+
    if (img->vk.tiling == VK_IMAGE_TILING_LINEAR) {
       /* The single linear tile is row-major from offset 0.  rowPitch is the
        * stride r300g's transfer map returns, so the mapped readback walks the

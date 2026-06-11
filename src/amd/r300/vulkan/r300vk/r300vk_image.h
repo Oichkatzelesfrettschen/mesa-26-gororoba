@@ -24,6 +24,13 @@ extern "C" {
  * the separate readback buffer in the triangle probe path. */
 struct r300vk_image {
    struct vk_image               vk;  /* must be first; contains vk_object_base */
+
+   /* dma-buf export (the wsi-drm substrate): created with
+    * VkExternalMemoryImageCreateInfo, backed by a single SHARED|SCANOUT
+    * linear pipe resource so PRIME export hands X a KMS-displayable BO.
+    * external_stride is the winsys-reported row pitch of that BO. */
+   bool     external;
+   uint32_t external_stride;
    struct pipe_resource         *resource;
    struct pipe_resource         *tiles[4];
    uint32_t                      tile_cols;

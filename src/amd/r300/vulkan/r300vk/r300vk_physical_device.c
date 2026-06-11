@@ -418,6 +418,13 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * drives cull/front-face/topology/depth/stencil through vkCmdSet*; all of
     * those record R300VK_CMD_SET_DYNAMIC_STATE entries the replay merges. */
    .EXT_extended_dynamic_state = true,
+   /* dma-buf export, the wsi-drm substrate: external images are single-tile
+    * SHARED|SCANOUT linear BOs and vkGetMemoryFdKHR exports them through the
+    * winsys PRIME path -- the contract the r300g/GL DRI3 oracle measured
+    * (export once per swapchain image, then only CS per frame). */
+   .KHR_external_memory = true,
+   .KHR_external_memory_fd = true,
+   .EXT_external_memory_dma_buf = true,
 };
 
 static void
@@ -1085,6 +1092,19 @@ unsupported:
    return VK_ERROR_FORMAT_NOT_SUPPORTED;
 }
 
+VKAPI_ATTR void VKAPI_CALL
+r300vk_GetPhysicalDeviceExternalBufferProperties(
+   VkPhysicalDevice physicalDevice,
+   const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
+   VkExternalBufferProperties *pExternalBufferProperties)
+{
+   /* Buffer export is not wired; images carry the dma-buf path (their BOs are
+    * real winsys resources, while buffers ride the CPU-replay storage model).
+    * Zeroed properties is the spec's "unsupported handle type" answer. */
+   pExternalBufferProperties->externalMemoryProperties =
+      (VkExternalMemoryProperties){0};
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 r300vk_GetPhysicalDeviceImageFormatProperties2(
    VkPhysicalDevice physicalDevice,
@@ -1093,10 +1113,18 @@ r300vk_GetPhysicalDeviceImageFormatProperties2(
 {
    VK_FROM_HANDLE(r300vk_physical_device, device, physicalDevice);
 
+   /* dma-buf (and the opaque-fd alias of the same PRIME fd) is exportable for
+    * 2D images; every other handle type stays rejected.  Import is accepted
+    * only as the round-trip of an exported BO (dedicated allocations). */
    const VkPhysicalDeviceExternalImageFormatInfo *external_info =
       vk_find_struct_const(pImageFormatInfo->pNext,
                            PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
-   if (external_info && external_info->handleType != 0)
+   const VkExternalMemoryHandleTypeFlags supported_handles =
+      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT |
+      VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+   if (external_info && external_info->handleType != 0 &&
+       (!(external_info->handleType & supported_handles) ||
+        pImageFormatInfo->type != VK_IMAGE_TYPE_2D))
       return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
    VkResult result =
@@ -1109,8 +1137,15 @@ r300vk_GetPhysicalDeviceImageFormatProperties2(
       vk_find_struct(pImageFormatProperties->pNext,
                      EXTERNAL_IMAGE_FORMAT_PROPERTIES);
    if (external_properties) {
-      external_properties->externalMemoryProperties =
-         (VkExternalMemoryProperties){0};
+      VkExternalMemoryProperties props = {0};
+      if (external_info && (external_info->handleType & supported_handles)) {
+         props.externalMemoryFeatures =
+            VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
+            VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
+         props.exportFromImportedHandleTypes = 0;
+         props.compatibleHandleTypes = supported_handles;
+      }
+      external_properties->externalMemoryProperties = props;
    }
 
    return VK_SUCCESS;
