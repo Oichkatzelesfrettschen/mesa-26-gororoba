@@ -192,6 +192,40 @@ r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
       }
    }
 
+   /* Resolve the subpass depth/stencil attachment the same way: through the
+    * framebuffer (or the imageless begin-info) to its r300vk_image. */
+   struct r300vk_image *ds_image = NULL;
+   enum pipe_format ds_format = PIPE_FORMAT_NONE;
+   VkAttachmentLoadOp ds_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+   float clear_depth = 0.0f;
+   uint32_t clear_stencil = 0;
+   const uint32_t ds_idx = rp->depth_stencil_attachment_ref;
+   if (ds_idx != VK_ATTACHMENT_UNUSED &&
+       ds_idx < fb->attachment_count && ds_idx < rp->attachment_count) {
+      VkImageView ds_view_handle;
+      if (fb->imageless) {
+         const VkRenderPassAttachmentBeginInfo *attach_begin =
+            vk_find_struct_const(pRenderPassBegin,
+                                 RENDER_PASS_ATTACHMENT_BEGIN_INFO);
+         ds_view_handle = (attach_begin && ds_idx < attach_begin->attachmentCount)
+                          ? attach_begin->pAttachments[ds_idx]
+                          : VK_NULL_HANDLE;
+      } else {
+         ds_view_handle = fb->attachments[ds_idx];
+      }
+      if (ds_view_handle != VK_NULL_HANDLE) {
+         VK_FROM_HANDLE(r300vk_image_view, ds_iv, ds_view_handle);
+         ds_image   = container_of(ds_iv->vk.image, struct r300vk_image, vk);
+         ds_format  = r300vk_vk_format_to_pipe_format(rp->attachments[ds_idx].format);
+         ds_load_op = rp->attachments[ds_idx].load_op;
+         if (ds_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+             pRenderPassBegin->clearValueCount > ds_idx) {
+            clear_depth   = pRenderPassBegin->pClearValues[ds_idx].depthStencil.depth;
+            clear_stencil = pRenderPassBegin->pClearValues[ds_idx].depthStencil.stencil;
+         }
+      }
+   }
+
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
 
@@ -202,6 +236,11 @@ r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
    e->begin_rp.height       = fb->height;
    e->begin_rp.load_op      = load_op;
    e->begin_rp.clear_color  = clear_color;
+   e->begin_rp.ds_image      = ds_image;
+   e->begin_rp.ds_format     = ds_format;
+   e->begin_rp.ds_load_op    = ds_load_op;
+   e->begin_rp.clear_depth   = clear_depth;
+   e->begin_rp.clear_stencil = clear_stencil;
 
    cmd->current_color_image = color_image;
 }
@@ -286,6 +325,29 @@ r300vk_CmdBeginRendering(VkCommandBuffer commandBuffer,
       }
    }
 
+   /* VkRenderingInfo names the depth attachment directly.  A combined
+    * depth/stencil image arrives on pDepthAttachment (and pStencilAttachment
+    * references the same image); the depth attachment's view format carries
+    * the combined pipe format after the r300 stencil-low twin remap. */
+   struct r300vk_image *ds_image = NULL;
+   enum pipe_format ds_format = PIPE_FORMAT_NONE;
+   VkAttachmentLoadOp ds_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+   float clear_depth = 0.0f;
+   uint32_t clear_stencil = 0;
+   const VkRenderingAttachmentInfo *ds_att = pRenderingInfo->pDepthAttachment
+                                             ? pRenderingInfo->pDepthAttachment
+                                             : pRenderingInfo->pStencilAttachment;
+   if (ds_att && ds_att->imageView != VK_NULL_HANDLE) {
+      VK_FROM_HANDLE(r300vk_image_view, ds_iv, ds_att->imageView);
+      ds_image   = container_of(ds_iv->vk.image, struct r300vk_image, vk);
+      ds_format  = r300vk_vk_format_to_pipe_format(ds_iv->vk.format);
+      ds_load_op = ds_att->loadOp;
+      if (ds_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+         clear_depth   = ds_att->clearValue.depthStencil.depth;
+         clear_stencil = ds_att->clearValue.depthStencil.stencil;
+      }
+   }
+
    const VkRect2D *area = &pRenderingInfo->renderArea;
 
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
@@ -298,6 +360,11 @@ r300vk_CmdBeginRendering(VkCommandBuffer commandBuffer,
    e->begin_rp.height       = area->offset.y + area->extent.height;
    e->begin_rp.load_op      = load_op;
    e->begin_rp.clear_color  = clear_color;
+   e->begin_rp.ds_image      = ds_image;
+   e->begin_rp.ds_format     = ds_format;
+   e->begin_rp.ds_load_op    = ds_load_op;
+   e->begin_rp.clear_depth   = clear_depth;
+   e->begin_rp.clear_stencil = clear_stencil;
 
    cmd->current_color_image = color_image;
 }

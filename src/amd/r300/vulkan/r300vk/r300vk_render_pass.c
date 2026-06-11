@@ -26,6 +26,7 @@ r300vk_CreateRenderPass(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &rp->base, VK_OBJECT_TYPE_RENDER_PASS);
+   rp->depth_stencil_attachment_ref = VK_ATTACHMENT_UNUSED;
 
    if (pCreateInfo->attachmentCount > PIPE_MAX_COLOR_BUFS + 1) {
       vk_object_base_finish(&rp->base);
@@ -66,6 +67,9 @@ r300vk_CreateRenderPass(VkDevice _device,
                                         PIPE_MAX_COLOR_BUFS);
       for (uint32_t i = 0; i < rp->input_attachment_count; i++)
          rp->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
+      rp->depth_stencil_attachment_ref =
+         sp->pDepthStencilAttachment ? sp->pDepthStencilAttachment->attachment
+                                     : VK_ATTACHMENT_UNUSED;
    }
 
    *pRenderPass = r300vk_render_pass_to_handle(rp);
@@ -95,6 +99,7 @@ r300vk_CreateRenderPass2(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &rp->base, VK_OBJECT_TYPE_RENDER_PASS);
+   rp->depth_stencil_attachment_ref = VK_ATTACHMENT_UNUSED;
 
    if (pCreateInfo->attachmentCount > PIPE_MAX_COLOR_BUFS + 1) {
       vk_object_base_finish(&rp->base);
@@ -130,6 +135,9 @@ r300vk_CreateRenderPass2(VkDevice _device,
                                         PIPE_MAX_COLOR_BUFS);
       for (uint32_t i = 0; i < rp->input_attachment_count; i++)
          rp->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
+      rp->depth_stencil_attachment_ref =
+         sp->pDepthStencilAttachment ? sp->pDepthStencilAttachment->attachment
+                                     : VK_ATTACHMENT_UNUSED;
    }
 
    *pRenderPass = r300vk_render_pass_to_handle(rp);

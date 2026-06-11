@@ -70,6 +70,15 @@ struct r300vk_cmd_begin_render_pass {
    uint32_t              width;
    uint32_t              height;
    enum pipe_format      color_format;
+   /* Depth/stencil attachment; NULL when the pass has none, in which case
+    * every draw in the pass runs with depth and stencil tests disabled (the
+    * Vulkan no-attachment semantics, and the only defined r300g behaviour
+    * since no zsbuf is bound). */
+   struct r300vk_image  *ds_image;
+   enum pipe_format      ds_format;
+   VkAttachmentLoadOp    ds_load_op;
+   float                 clear_depth;
+   uint32_t              clear_stencil;
 };
 
 struct r300vk_cmd_bind_pipeline {
