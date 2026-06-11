@@ -247,7 +247,13 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    props->framebufferNoAttachmentsSampleCounts =
       R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
 
-   props->maxColorAttachments = 4;
+   /* The replay's framebuffer state binds colour attachment 0 only, so one is
+    * the honest count (four over-promised what the replay never delivered).
+    * One attachment also makes independentBlend vacuously true: r300 shares a
+    * single blend state across its MRT cbufs, so raising this past one again
+    * requires either real per-attachment blend handling in the replay or
+    * dropping independentBlend. */
+   props->maxColorAttachments = 1;
    props->sampledImageColorSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
    props->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
    props->sampledImageDepthSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
@@ -443,6 +449,13 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * (skipped, unit left unbound -> reads zero on r300).  zink_screen rejects a
     * device without it. */
    features->nullDescriptor = true;
+   /* With maxColorAttachments == 1 there is no second attachment to blend
+    * differently, so per-attachment-independent blend state is vacuously
+    * satisfied.  zink keys GL's EXT_blend_equation_separate (a GL 2.0
+    * requirement) on this feature, and separate RGB/alpha blend equations on
+    * the single attachment are core Vulkan pipeline state the r300 RB3D
+    * blend hardware implements. */
+   features->independentBlend = true;
 }
 
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
