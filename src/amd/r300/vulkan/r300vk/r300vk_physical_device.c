@@ -818,21 +818,6 @@ r300vk_format_blit_supported(enum pipe_format pipe_format)
 #endif
 }
 
-static bool
-r300vk_format_supports_transfer_dst(enum pipe_format pipe_format)
-{
-   if (util_format_is_compressed(pipe_format) ||
-       util_format_is_depth_or_stencil(pipe_format) ||
-       util_format_is_snorm(pipe_format))
-      return false;
-
-   const struct util_format_description *desc =
-      util_format_description(pipe_format);
-   return desc && desc->nr_channels > 0 &&
-          (desc->channel[0].type != UTIL_FORMAT_TYPE_FLOAT ||
-           desc->channel[0].size < 32);
-}
-
 static void
 r300vk_get_format_properties(const struct r300vk_physical_device *const device,
                              VkFormat vk_format,
@@ -1021,8 +1006,15 @@ r300vk_image_usage_supported(VkImageUsageFlags usage,
        !(features & VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT))
       return false;
 
-   if (usage & (VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
-                VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT))
+   /* Input attachments ride the sampled path (subpassLoad lowers to a
+    * normalized texture read), so sampled capability is input-attachment
+    * capability -- the same grant vkCreateImage makes.  Lazily-allocated
+    * transient attachments have no backing model in the synchronous replay,
+    * so TRANSIENT stays rejected on both sides. */
+   if ((usage & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) &&
+       !(features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT))
+      return false;
+   if (usage & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT)
       return false;
 
    return true;
@@ -1092,6 +1084,16 @@ r300vk_get_image_format_properties(
       goto unsupported;
    default:
       goto unsupported;
+   }
+
+   /* A linear image is one row-major r300g tile, so its extent is bounded by
+    * the single-tile limit vkCreateImage's linear accept gate enforces.
+    * Report the same bound here so the two stay one contract. */
+   if (info->tiling == VK_IMAGE_TILING_LINEAR) {
+      max_extent.width = MIN2(max_extent.width,
+                              R300VK_R3XX_MAX_RENDER_DIMENSION);
+      max_extent.height = MIN2(max_extent.height,
+                               R300VK_R3XX_MAX_RENDER_DIMENSION);
    }
 
    /* r300vk has no multisample path: the image model is single-sample r300g

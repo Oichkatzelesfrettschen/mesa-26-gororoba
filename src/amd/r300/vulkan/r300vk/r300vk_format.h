@@ -50,6 +50,28 @@ r300vk_vk_format_to_pipe_format(VkFormat vk_format)
    }
 }
 
+/* The single authority on the transfer-destination contract, shared by the
+ * format-properties advertise, the image-format-properties usage gate, and
+ * vkCreateImage's usage accept so all three agree.  The replay's
+ * buffer<->image and image<->image copies move raw bytes through pipe
+ * texture_map with no per-texel conversion, so any plain format with a
+ * defined byte layout transfers losslessly -- snorm and 32-bit-float
+ * semantics never enter a memcpy.  Two real constraints remain excluded:
+ * block-compressed formats need block-unit row arithmetic the texel-based
+ * tile walks do not implement, and combined depth/stencil formats need the
+ * per-aspect repacking described in the depth-aspect TODO above. */
+static inline bool
+r300vk_format_supports_transfer_dst(enum pipe_format pipe_format)
+{
+   if (util_format_is_compressed(pipe_format) ||
+       util_format_is_depth_or_stencil(pipe_format))
+      return false;
+
+   const struct util_format_description *desc =
+      util_format_description(pipe_format);
+   return desc && desc->nr_channels > 0;
+}
+
 #ifdef __cplusplus
 }
 #endif
