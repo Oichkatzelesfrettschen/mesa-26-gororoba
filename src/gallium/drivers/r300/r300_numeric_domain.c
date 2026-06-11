@@ -360,10 +360,12 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "vertex rotation q*v*conj(q) = two Hamilton products = eight DP4s.  "
-                         "The sandwich (quat_rotate) and the rotation matrix R(q) "
-                         "(matrix_rotate) are both defined in open_gororoba but their "
-                         "equivalence is not yet machine-verified (ROCQ gap); HW-confirmed "
-                         "4/4 by qrotate_vk_probe vs a CPU sandwich on RS482",
+                         "The sandwich equals the rotation matrix R(q) v for a unit q: "
+                         "MACHINE-VERIFIED in open_gororoba -- cd_quat_rotate_eq_matrix "
+                         "(CDQuatRotationMatrix.v, on the substrate's CDQuat type) and "
+                         "C876_quat_rotation_eq_matrix (C876_QuaternionRotation.v, on the Quat "
+                         "type).  HW-confirmed 4/4 by qrotate_vk_probe vs a CPU sandwich on "
+                         "RS482",
       .mesa_hook       = "r300_nir_detect_qrotate_pattern",  /* QROTATE = nested 2-Hamilton sandwich detector */
       .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
    },
