@@ -1757,6 +1757,31 @@ r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
 
+/* QNORMALIZE dispatch: the same one-in/one-out skeleton as QNORM; the synthesized
+ * normalize FS (r300vk_build_qnormalize_fs_nir) scales the sampled quaternion by
+ * the US RSQ of its squared norm, written to the FP16 target and unpacked into the
+ * kernel's vec4 FP32 output. */
+bool
+r300vk_qnormalize_dispatch_replay(struct r300vk_device *device,
+                                  const struct r300vk_pipeline *pl,
+                                  const struct r300vk_cmd_dispatch *dispatch,
+                                  const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_one_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->qnormalize.input_ssbo_binding, pl->qnormalize.output_ssbo_binding,
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
+}
+
 /* Unpack an FP16 (R16G16B16A16_FLOAT) render target into a vec4 FP32 output
  * buffer at out_offset.  R300 has no FP32 render target, so every octonion-half
  * result rides an FP16 target and converts here; shared by the two-pass route
