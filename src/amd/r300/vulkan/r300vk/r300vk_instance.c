@@ -51,6 +51,10 @@ static const struct vk_instance_extension_table r300vk_instance_extensions_suppo
    .KHR_surface = true,
    .KHR_xcb_surface = true,
    .KHR_xlib_surface = true,
+   /* Required by the device-level external-memory family; the physical-device
+    * query entry points come from the generated dispatch and
+    * r300vk_GetPhysicalDeviceImageFormatProperties2's external handling. */
+   .KHR_external_memory_capabilities = true,
 };
 
 VKAPI_ATTR VkResult VKAPI_CALL

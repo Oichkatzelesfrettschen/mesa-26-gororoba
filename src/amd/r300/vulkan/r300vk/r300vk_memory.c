@@ -16,6 +16,8 @@
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "util/u_inlines.h"
+#include "frontend/winsys_handle.h"
+#include "vk_util.h"
 
 #include <string.h>
 
@@ -43,6 +45,17 @@ r300vk_AllocateMemory(VkDevice _device,
    vk_object_base_init(&device->vk, &mem->base,
                        VK_OBJECT_TYPE_DEVICE_MEMORY);
    mem->size = pAllocateInfo->allocationSize;
+
+   /* Dedicated-image allocations carry the image whose BO vkGetMemoryFdKHR
+    * exports (the wsi-drm swapchain pattern: one image, one allocation, one
+    * PRIME fd).  The image outlives the allocation per valid usage, so a raw
+    * pointer suffices. */
+   const VkMemoryDedicatedAllocateInfo *dedicated =
+      vk_find_struct_const(pAllocateInfo->pNext, MEMORY_DEDICATED_ALLOCATE_INFO);
+   if (dedicated && dedicated->image != VK_NULL_HANDLE) {
+      VK_FROM_HANDLE(r300vk_image, dimg, dedicated->image);
+      mem->dedicated_image = dimg;
+   }
 
    simple_mtx_lock(&device->memory_list_lock);
    list_addtail(&mem->device_link, &device->memory_list);
@@ -521,5 +534,45 @@ r300vk_BindImageMemory2(VkDevice _device,
          mem->owns_buffer = false;
       }
    }
+   return VK_SUCCESS;
+}
+
+VkResult
+r300vk_GetMemoryFdKHR(VkDevice _device,
+                      const VkMemoryGetFdInfoKHR *pGetFdInfo,
+                      int *pFd)
+{
+   VK_FROM_HANDLE(r300vk_device, device, _device);
+   VK_FROM_HANDLE(r300vk_device_memory, mem, pGetFdInfo->memory);
+
+   if (pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+       pGetFdInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
+      return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+
+   /* Export the dedicated image's BO through the winsys PRIME path -- the
+    * same drmPrimeHandleToFD route r300g/GL presents through (the DRI3
+    * oracle: two such exports per swapchain, then only CS per frame). */
+   if (!mem->dedicated_image || !mem->dedicated_image->resource)
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+   struct winsys_handle wh = { .type = WINSYS_HANDLE_TYPE_FD };
+   if (!device->screen->resource_get_handle(device->screen, device->pipe,
+                                            mem->dedicated_image->resource,
+                                            &wh,
+                                            PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+   *pFd = (int)wh.handle;
+   return VK_SUCCESS;
+}
+
+VkResult
+r300vk_GetMemoryFdPropertiesKHR(VkDevice _device,
+                                VkExternalMemoryHandleTypeFlagBits handleType,
+                                int fd,
+                                VkMemoryFdPropertiesKHR *pMemoryFdProperties)
+{
+   /* Both advertised memory types back an imported dma-buf on the UMA pool. */
+   pMemoryFdProperties->memoryTypeBits = 0x3;
    return VK_SUCCESS;
 }

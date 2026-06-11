@@ -69,6 +69,8 @@ struct r300vk_device_memory {
                                          * memory's own host pipe_buffer for the
                                          * map-before-bind case (vs borrowing a
                                          * bound buffer/image resource) */
+   struct r300vk_image   *dedicated_image; /* VkMemoryDedicatedAllocateInfo image:
+                                            * the BO vkGetMemoryFdKHR exports */
    struct list_head       device_link;  /* in r300vk_device::memory_list, for the
                                          * submit-boundary coherence sync */
 };
@@ -116,6 +118,15 @@ VkResult r300vk_InvalidateMappedMemoryRanges(VkDevice device,
 VkResult r300vk_BindBufferMemory2(VkDevice device,
                                    uint32_t bindInfoCount,
                                    const VkBindBufferMemoryInfo *pBindInfos);
+
+VkResult r300vk_GetMemoryFdKHR(VkDevice device,
+                               const VkMemoryGetFdInfoKHR *pGetFdInfo,
+                               int *pFd);
+
+VkResult r300vk_GetMemoryFdPropertiesKHR(VkDevice device,
+                                         VkExternalMemoryHandleTypeFlagBits handleType,
+                                         int fd,
+                                         VkMemoryFdPropertiesKHR *pMemoryFdProperties);
 
 VkResult r300vk_BindImageMemory2(VkDevice device,
                                   uint32_t bindInfoCount,
