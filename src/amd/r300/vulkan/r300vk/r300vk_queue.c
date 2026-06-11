@@ -217,6 +217,8 @@ static uint32_t
 r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
                            const struct pipe_vertex_buffer *vb_cache,
                            const VkDeviceSize *vb_sizes,
+                           const VkDeviceSize *vb_strides,
+                           uint32_t vb_strides_mask,
                            uint32_t first_vertex,
                            uint32_t vertex_count)
 {
@@ -228,7 +230,9 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
       if (!(pl->vertex_binding_mask & BITFIELD_BIT(b)))
          continue;
 
-      const uint32_t stride = pl->vertex_stride[b];
+      const uint32_t stride = (vb_strides_mask & BITFIELD_BIT(b))
+                              ? (uint32_t)vb_strides[b]
+                              : pl->vertex_stride[b];
       const uint32_t extent = pl->vertex_binding_extent[b];
       if (extent == 0 || !vb_cache[b].buffer.resource)
          return 0;
@@ -946,6 +950,7 @@ struct r300vk_dyn_overlay {
     * deleted only after the replacement is bound (create-bind-delete-old). */
    void               *rs_cso;
    void               *dsa_cso;
+   void               *velems_cso;
    bool                dirty;
 };
 
@@ -1150,6 +1155,10 @@ r300vk_dyn_overlay_cleanup(struct r300vk_device *device,
       pipe->delete_depth_stencil_alpha_state(pipe, ov->dsa_cso);
       ov->dsa_cso = NULL;
    }
+   if (ov->velems_cso) {
+      pipe->delete_vertex_elements_state(pipe, ov->velems_cso);
+      ov->velems_cso = NULL;
+   }
 }
 
 static void
@@ -1168,7 +1177,9 @@ r300vk_replay_draw(struct r300vk_device *device,
                     uint32_t tile_height,
                     struct util_dynarray *transient_vbs,
                     struct r300vk_dyn_overlay *dyn,
-                    bool render_pass_has_zs)
+                    bool render_pass_has_zs,
+                    const VkDeviceSize *vb_strides,
+                    uint32_t vb_strides_mask)
 {
    struct pipe_context *pipe = device->pipe;
 
@@ -1212,6 +1223,51 @@ r300vk_replay_draw(struct r300vk_device *device,
    if (dyn)
       r300vk_dyn_overlay_apply(device, bound_pipeline, dyn,
                                render_pass_has_zs);
+
+   /* Dynamic vertex strides: when a vkCmdBindVertexBuffers2 stride differs
+    * from the vertex-input description's, rebuild the element CSO with the
+    * bind-time strides patched in (the dynamic-stride state makes them
+    * authoritative).  Synthetic VS-system-value bindings sit on reserved
+    * driver bindings no app bind reaches, so they never patch. */
+   if (dyn && bound_pipeline && bound_pipeline->velems_count) {
+      bool patch = false;
+      for (uint32_t i = 0; i < bound_pipeline->velems_count; i++) {
+         const uint8_t b = bound_pipeline->velems_template[i].vertex_buffer_index;
+         if (b < R300VK_MAX_VERTEX_BINDINGS &&
+             (vb_strides_mask & BITFIELD_BIT(b)) &&
+             bound_pipeline->velems_template[i].src_stride !=
+             (uint16_t)vb_strides[b]) {
+            patch = true;
+            break;
+         }
+      }
+      if (patch) {
+         struct pipe_vertex_element ve[PIPE_MAX_ATTRIBS];
+         memcpy(ve, bound_pipeline->velems_template,
+                sizeof(ve[0]) * bound_pipeline->velems_count);
+         for (uint32_t i = 0; i < bound_pipeline->velems_count; i++) {
+            const uint8_t b = ve[i].vertex_buffer_index;
+            if (b < R300VK_MAX_VERTEX_BINDINGS &&
+                (vb_strides_mask & BITFIELD_BIT(b)))
+               ve[i].src_stride = (uint16_t)vb_strides[b];
+         }
+         void *new_velems =
+            pipe->create_vertex_elements_state(pipe,
+                                               bound_pipeline->velems_count, ve);
+         if (new_velems) {
+            pipe->bind_vertex_elements_state(pipe, new_velems);
+            if (dyn->velems_cso)
+               pipe->delete_vertex_elements_state(pipe, dyn->velems_cso);
+            dyn->velems_cso = new_velems;
+            *vb_dirty = true;
+         }
+      } else if (dyn->velems_cso) {
+         pipe->bind_vertex_elements_state(pipe, bound_pipeline->velems_cso);
+         pipe->delete_vertex_elements_state(pipe, dyn->velems_cso);
+         dyn->velems_cso = NULL;
+         *vb_dirty = true;
+      }
+   }
 
    /* Resolve pipeline-static viewport/scissor before the draw. */
    if (bound_pipeline && bound_pipeline->has_static_viewport) {
@@ -1316,8 +1372,8 @@ r300vk_replay_draw(struct r300vk_device *device,
       draw.start      = draw_first;
       draw.count      = synthetic_streams_ready ?
          r300vk_robust_vertex_count(bound_pipeline, vb_cache,
-                                     vb_sizes, draw_first,
-                                     draw_count) : 0;
+                                     vb_sizes, vb_strides, vb_strides_mask,
+                                     draw_first, draw_count) : 0;
    }
    if (draw.count > 0) {
       /* Push constants and the descriptor UBO are mutually exclusive (the
@@ -1364,6 +1420,8 @@ r300vk_replay_bind_vertex_buffers(struct r300vk_device *device,
                                    const struct r300vk_cmd_entry *e,
                                    struct pipe_vertex_buffer *vb_cache,
                                    VkDeviceSize *vb_sizes,
+                                   VkDeviceSize *vb_strides,
+                                   uint32_t *vb_strides_mask,
                                    uint32_t *vb_max_used,
                                    bool *vb_dirty)
 {
@@ -1373,7 +1431,17 @@ r300vk_replay_bind_vertex_buffers(struct r300vk_device *device,
       vb_cache[first + b].is_user_buffer  = false;
       vb_cache[first + b].buffer_offset   = (unsigned)e->bind_vbufs.offsets[b];
       vb_cache[first + b].buffer.resource = e->bind_vbufs.buffers[b]->resource;
-      vb_sizes[first + b] = e->bind_vbufs.buffers[b]->size;
+      /* pSizes narrows the bound range below the whole buffer; the robust
+       * clamp consumes (size - offset), so fold the range end in here. */
+      const VkDeviceSize whole = e->bind_vbufs.buffers[b]->size;
+      const VkDeviceSize range = e->bind_vbufs.sizes[b];
+      vb_sizes[first + b] = (range != VK_WHOLE_SIZE &&
+                             e->bind_vbufs.offsets[b] + range < whole)
+                            ? e->bind_vbufs.offsets[b] + range : whole;
+      if (e->bind_vbufs.has_strides) {
+         vb_strides[first + b] = e->bind_vbufs.strides[b];
+         *vb_strides_mask |= BITFIELD_BIT(first + b);
+      }
       if (first + b + 1 > *vb_max_used)
          *vb_max_used = first + b + 1;
    }
@@ -1706,6 +1774,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
       struct pipe_vertex_buffer vb_cache[R300VK_MAX_VERTEX_BINDINGS];
       VkDeviceSize vb_sizes[R300VK_MAX_VERTEX_BINDINGS];
+      VkDeviceSize vb_strides[R300VK_MAX_VERTEX_BINDINGS];
+      uint32_t vb_strides_mask = 0;
       uint32_t vb_max_used = 0;
       bool vb_dirty = false;
       /* Running push-constant window, applied by R300VK_CMD_PUSH_CONSTANTS entries
@@ -1730,6 +1800,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
       struct pipe_query *active_oq = NULL;
       memset(vb_cache, 0, sizeof(vb_cache));
       memset(vb_sizes, 0, sizeof(vb_sizes));
+      memset(vb_strides, 0, sizeof(vb_strides));
 
       for (uint32_t i = 0; i < cmd->entry_count; i++) {
          const struct r300vk_cmd_entry *e = &cmd->entries[i];
@@ -1794,6 +1865,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
          case R300VK_CMD_BIND_VERTEX_BUFFERS:
             if (skip_render_pass) break;
             r300vk_replay_bind_vertex_buffers(device, e, vb_cache, vb_sizes,
+                                              vb_strides, &vb_strides_mask,
                                               &vb_max_used, &vb_dirty);
             break;
 
@@ -1806,7 +1878,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                tile_origin_y, tile_width, tile_height,
                                transient_vbs, &dyn_ov,
                                current_render_pass &&
-                               current_render_pass->begin_rp.ds_image);
+                               current_render_pass->begin_rp.ds_image,
+                               vb_strides, vb_strides_mask);
             *gpu_pending = true;
             break;
 
@@ -1862,7 +1935,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   tile_origin_x, tile_origin_y, tile_width,
                                   tile_height, transient_vbs, &dyn_ov,
                                   current_render_pass &&
-                                  current_render_pass->begin_rp.ds_image);
+                                  current_render_pass->begin_rp.ds_image,
+                                  vb_strides, vb_strides_mask);
             }
             pipe_buffer_unmap(pipe, ixfer);
             *gpu_pending = true;
@@ -1920,7 +1994,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   tile_origin_x, tile_origin_y, tile_width,
                                   tile_height, transient_vbs, &dyn_ov,
                                   current_render_pass &&
-                                  current_render_pass->begin_rp.ds_image);
+                                  current_render_pass->begin_rp.ds_image,
+                                  vb_strides, vb_strides_mask);
             }
             pipe_buffer_unmap(pipe, ixfer);
             *gpu_pending = true;

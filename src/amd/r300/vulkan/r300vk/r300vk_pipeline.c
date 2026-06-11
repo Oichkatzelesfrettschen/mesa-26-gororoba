@@ -1122,6 +1122,8 @@ r300vk_build_velems_cso(struct r300vk_device *device,
       velem_count++;
    }
 
+   memcpy(pl->velems_template, ve, sizeof(ve));
+   pl->velems_count = velem_count;
    pl->velems_cso =
       device->pipe->create_vertex_elements_state(device->pipe, velem_count, ve);
    if (!pl->velems_cso)

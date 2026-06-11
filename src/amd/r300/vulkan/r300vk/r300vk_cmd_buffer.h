@@ -98,6 +98,12 @@ struct r300vk_cmd_bind_vertex_buffers {
    uint32_t              binding_count;
    struct r300vk_buffer *buffers[R300VK_MAX_VERTEX_BINDINGS];
    VkDeviceSize          offsets[R300VK_MAX_VERTEX_BINDINGS];
+   /* vkCmdBindVertexBuffers2 payload: with the dynamic-stride state the
+    * bind-time strides are authoritative over the pipeline's vertex-input
+    * description, and sizes bound the robustness clamp below whole-buffer. */
+   VkDeviceSize          strides[R300VK_MAX_VERTEX_BINDINGS];
+   VkDeviceSize          sizes[R300VK_MAX_VERTEX_BINDINGS];
+   bool                  has_strides;
 };
 
 struct r300vk_cmd_draw {
