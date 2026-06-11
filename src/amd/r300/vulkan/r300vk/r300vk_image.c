@@ -206,34 +206,15 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
    return VK_SUCCESS;
 }
 
-VkResult
-r300vk_CreateImage(VkDevice _device,
-                   const VkImageCreateInfo *pCreateInfo,
-                   const VkAllocationCallbacks *pAllocator,
-                   VkImage *pImage)
+static VkResult
+r300vk_image_validate_shape(struct r300vk_device *device,
+                            const VkImageCreateInfo *info,
+                            bool is_linear,
+                            bool external)
 {
-   VK_FROM_HANDLE(r300vk_device, device, _device);
-   struct r300vk_image *img;
-
-   /* r300vk renders into r300g-tiled (optimal) resources.  A linear image
-    * exists only as transfer staging: deqp's draw readback copies an optimal
-    * render target into a VK_IMAGE_TILING_LINEAR TRANSFER_DST image, then maps
-    * it and walks rowPitch-sized rows.  r300g produces a row-major single tile
-    * when PIPE_BIND_LINEAR is set, so accept linear here and constrain it to
-    * that staging shape below (2D, transfer-only usage, within one tile). */
-   const bool is_linear = pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR;
-   if (pCreateInfo->tiling != VK_IMAGE_TILING_OPTIMAL && !is_linear)
+   if (info->tiling != VK_IMAGE_TILING_OPTIMAL && !is_linear)
       return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
-                       "r300vk: image tiling %d unsupported",
-                       pCreateInfo->tiling);
-
-   img = vk_zalloc2(&device->vk.alloc, pAllocator,
-                    sizeof(*img), 8,
-                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (!img)
-      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   vk_image_init(&device->vk, &img->vk, pCreateInfo);
+                       "r300vk: image tiling %d unsupported", info->tiling);
 
    /* R300-class hardware only supports flat 2D images: one layer, one mip
     * level, and a single sample.  The 4096 Vulkan 1.0 floor is represented as
@@ -243,65 +224,54 @@ r300vk_CreateImage(VkDevice _device,
     * would otherwise reach the unimplemented CmdResolveImage destination path
     * and crash.  Reject unsupported shapes so callers see a clear error rather
     * than silently incorrect behavior. */
-   if (pCreateInfo->arrayLayers > 1) {
-      vk_image_finish(&img->vk);
-      vk_free2(&device->vk.alloc, pAllocator, img);
+   if (info->arrayLayers > 1)
       return vk_errorf(device, VK_ERROR_UNKNOWN,
                        "r300vk: arrayLayers %u > 1 unsupported",
-                       pCreateInfo->arrayLayers);
-   }
-   if (pCreateInfo->mipLevels > 1) {
-      vk_image_finish(&img->vk);
-      vk_free2(&device->vk.alloc, pAllocator, img);
+                       info->arrayLayers);
+   if (info->mipLevels > 1)
       return vk_errorf(device, VK_ERROR_UNKNOWN,
                        "r300vk: mipLevels %u > 1 unsupported",
-                       pCreateInfo->mipLevels);
-   }
-   if (pCreateInfo->samples != VK_SAMPLE_COUNT_1_BIT) {
-      vk_image_finish(&img->vk);
-      vk_free2(&device->vk.alloc, pAllocator, img);
+                       info->mipLevels);
+   if (info->samples != VK_SAMPLE_COUNT_1_BIT)
       return vk_errorf(device, VK_ERROR_UNKNOWN,
                        "r300vk: samples 0x%x unsupported (single-sample only)",
-                       pCreateInfo->samples);
-   }
+                       info->samples);
    /* Every tile resource is PIPE_TEXTURE_2D with depth0 == 1, so a 3D image's
     * depth slices have no storage.  r300vk_get_image_format_properties already
     * reports VK_IMAGE_TYPE_3D unsupported; reject it here too so a caller that
     * skips the format query fails cleanly instead of silently collapsing the
     * depth to one slice. */
-   if (pCreateInfo->imageType == VK_IMAGE_TYPE_3D) {
-      vk_image_finish(&img->vk);
-      vk_free2(&device->vk.alloc, pAllocator, img);
+   if (info->imageType == VK_IMAGE_TYPE_3D)
       return vk_errorf(device, VK_ERROR_UNKNOWN,
                        "r300vk: image type 3D unsupported (no depth-slice storage)");
-   }
 
-   /* dma-buf export: wsi-drm swapchain images arrive with
-    * VkExternalMemoryImageCreateInfo.  The backing resource must be a real,
-    * non-suballocated BO with KMS-visible layout, so force the single-tile
-    * linear SHARED|SCANOUT shape (the oracle contract: GEM_CREATE +
-    * SET_TILING + PRIME_HANDLE_TO_FD once, then nothing but CS per frame).
-    * One tile bounds the extent at the sampler limit. */
-   const VkExternalMemoryImageCreateInfo *ext_info =
-      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
-   const bool external = ext_info && ext_info->handleTypes != 0;
+   /* dma-buf export: the backing resource must be a real, non-suballocated BO
+    * with KMS-visible layout, so the extent is bounded to one tile (the
+    * oracle contract: GEM_CREATE + SET_TILING + PRIME_HANDLE_TO_FD once, then
+    * nothing but CS per frame). */
    if (external &&
-       (pCreateInfo->extent.width  > R300VK_R3XX_MAX_TEXTURE_DIMENSION ||
-        pCreateInfo->extent.height > R300VK_R3XX_MAX_TEXTURE_DIMENSION)) {
-      vk_image_finish(&img->vk);
-      vk_free2(&device->vk.alloc, pAllocator, img);
+       (info->extent.width  > R300VK_R3XX_MAX_TEXTURE_DIMENSION ||
+        info->extent.height > R300VK_R3XX_MAX_TEXTURE_DIMENSION))
       return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "r300vk: external image %ux%u exceeds the single-tile export bound",
-                       pCreateInfo->extent.width, pCreateInfo->extent.height);
-   }
+                       info->extent.width, info->extent.height);
 
-   enum pipe_format pipe_fmt = r300vk_vk_format_to_pipe_format(pCreateInfo->format);
-   if (pipe_fmt == PIPE_FORMAT_NONE) {
-      vk_image_finish(&img->vk);
-      vk_free2(&device->vk.alloc, pAllocator, img);
+   return VK_SUCCESS;
+}
+
+/* Resolve the backing pipe format and the usage set the format supports;
+ * a linear image narrows usage to what its single row-major tile can back. */
+static VkResult
+r300vk_image_resolve_format_usage(struct r300vk_device *device,
+                                  const VkImageCreateInfo *info,
+                                  bool is_linear,
+                                  enum pipe_format *pipe_fmt_out,
+                                  VkImageUsageFlags *supported_usage_out)
+{
+   enum pipe_format pipe_fmt = r300vk_vk_format_to_pipe_format(info->format);
+   if (pipe_fmt == PIPE_FORMAT_NONE)
       return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
-                       "r300vk: unsupported image format %d", pCreateInfo->format);
-   }
+                       "r300vk: unsupported image format %d", info->format);
 
    VkImageUsageFlags supported_usage =
       r300vk_supported_image_usage(device, pipe_fmt);
@@ -319,35 +289,87 @@ r300vk_CreateImage(VkDevice _device,
       /* INPUT_ATTACHMENT rides the sampled path: r300vk lowers subpassLoad to
        * a normalized texture read, so any sampled-capable image serves as an
        * input attachment.  zink requests it on every swapchain image, and the
-       * software swapchain's images are linear, so excluding it here rejected
+       * software swapchain\'s images are linear, so excluding it here rejected
        * vkCreateSwapchainKHR outright. */
       supported_usage &= (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                           VK_IMAGE_USAGE_SAMPLED_BIT |
                           VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
-      if ((pCreateInfo->imageType != VK_IMAGE_TYPE_2D &&
-           pCreateInfo->imageType != VK_IMAGE_TYPE_1D) ||
-          pCreateInfo->extent.width > R300VK_R3XX_MAX_RENDER_DIMENSION ||
-          pCreateInfo->extent.height > R300VK_R3XX_MAX_RENDER_DIMENSION ||
-          !r300vk_format_supports_transfer_dst(pipe_fmt)) {
-         vk_image_finish(&img->vk);
-         vk_free2(&device->vk.alloc, pAllocator, img);
+      if ((info->imageType != VK_IMAGE_TYPE_2D &&
+           info->imageType != VK_IMAGE_TYPE_1D) ||
+          info->extent.width > R300VK_R3XX_MAX_RENDER_DIMENSION ||
+          info->extent.height > R300VK_R3XX_MAX_RENDER_DIMENSION ||
+          !r300vk_format_supports_transfer_dst(pipe_fmt))
          return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                           "r300vk: linear image unsupported (format %d type %d %ux%u)",
-                          pCreateInfo->format, pCreateInfo->imageType,
-                          pCreateInfo->extent.width, pCreateInfo->extent.height);
-      }
+                          info->format, info->imageType,
+                          info->extent.width, info->extent.height);
    }
 
-   if ((pCreateInfo->usage & ~supported_usage) != 0) {
-      vk_image_finish(&img->vk);
-      vk_free2(&device->vk.alloc, pAllocator, img);
+   if ((info->usage & ~supported_usage) != 0)
       return vk_errorf(device, VK_ERROR_FORMAT_NOT_SUPPORTED,
                        "r300vk: unsupported image usage 0x%x for format %d",
-                       pCreateInfo->usage & ~supported_usage,
-                       pCreateInfo->format);
-   }
+                       info->usage & ~supported_usage, info->format);
+
+   *pipe_fmt_out = pipe_fmt;
+   *supported_usage_out = supported_usage;
+   return VK_SUCCESS;
+}
+
+/* Record the BO\'s real row pitch for vkGetImageSubresourceLayout: the KMS
+ * handle query fills stride without exporting an fd.  Single-tile images
+ * carry the BO in tiles[0] with resource NULL (the replay\'s own
+ * tiles[0]-or-resource pattern); export must follow it. */
+static void
+r300vk_image_capture_external_stride(struct r300vk_device *device,
+                                     struct r300vk_image *img)
+{
+   struct pipe_resource *bo = img->tiles[0] ? img->tiles[0] : img->resource;
+   struct winsys_handle wh = { .type = WINSYS_HANDLE_TYPE_KMS };
+   if (bo &&
+       device->screen->resource_get_handle(device->screen, NULL, bo, &wh,
+                                           PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
+      img->external_stride = wh.stride;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+r300vk_CreateImage(VkDevice _device,
+                   const VkImageCreateInfo *pCreateInfo,
+                   const VkAllocationCallbacks *pAllocator,
+                   VkImage *pImage)
+{
+   VK_FROM_HANDLE(r300vk_device, device, _device);
+
+   /* r300vk renders into r300g-tiled (optimal) resources.  A linear image
+    * exists only as transfer staging plus the software swapchain\'s
+    * attachment shape; the resolve stage below constrains it to one tile. */
+   const bool is_linear = pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR;
+   /* dma-buf export: wsi-drm swapchain images arrive with
+    * VkExternalMemoryImageCreateInfo. */
+   const VkExternalMemoryImageCreateInfo *ext_info =
+      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+   const bool external = ext_info && ext_info->handleTypes != 0;
+
+   VkResult result =
+      r300vk_image_validate_shape(device, pCreateInfo, is_linear, external);
+   if (result != VK_SUCCESS)
+      return result;
+
+   enum pipe_format pipe_fmt;
+   VkImageUsageFlags supported_usage;
+   result = r300vk_image_resolve_format_usage(device, pCreateInfo, is_linear,
+                                              &pipe_fmt, &supported_usage);
+   if (result != VK_SUCCESS)
+      return result;
+
+   struct r300vk_image *img =
+      vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*img), 8,
+                 VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!img)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   vk_image_init(&device->vk, &img->vk, pCreateInfo);
 
    unsigned pipe_bind =
       r300vk_image_pipe_bind(device, pipe_fmt, pCreateInfo->usage);
@@ -356,9 +378,8 @@ r300vk_CreateImage(VkDevice _device,
    if (external)
       pipe_bind |= PIPE_BIND_SHARED | PIPE_BIND_SCANOUT | PIPE_BIND_LINEAR;
 
-   VkResult result =
-      r300vk_image_create_tile_resources(device, img, pCreateInfo, pipe_fmt,
-                                         pipe_bind);
+   result = r300vk_image_create_tile_resources(device, img, pCreateInfo,
+                                               pipe_fmt, pipe_bind);
    if (result != VK_SUCCESS) {
       vk_image_finish(&img->vk);
       vk_free2(&device->vk.alloc, pAllocator, img);
@@ -366,18 +387,8 @@ r300vk_CreateImage(VkDevice _device,
    }
 
    img->external = external;
-   if (external) {
-      /* Record the BO's real row pitch for vkGetImageSubresourceLayout: the
-       * KMS handle query fills stride without exporting an fd. */
-      /* Single-tile images carry the BO in tiles[0] with resource NULL (the
-       * replay's own tiles[0]-or-resource pattern); export must follow it. */
-      struct pipe_resource *bo = img->tiles[0] ? img->tiles[0] : img->resource;
-      struct winsys_handle wh = { .type = WINSYS_HANDLE_TYPE_KMS };
-      if (bo &&
-          device->screen->resource_get_handle(device->screen, NULL, bo, &wh,
-                                              PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
-         img->external_stride = wh.stride;
-   }
+   if (external)
+      r300vk_image_capture_external_stride(device, img);
 
    *pImage = r300vk_image_to_handle(img);
    return VK_SUCCESS;
