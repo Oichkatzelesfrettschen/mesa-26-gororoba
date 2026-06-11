@@ -482,13 +482,20 @@ r300vk_wsi_proc_addr(VkPhysicalDevice physicalDevice, const char *pName)
 static VkResult
 r300vk_init_wsi(struct r300vk_physical_device *device)
 {
+   /* GPU-resident present by default: the render-node fd lets the common WSI
+    * take the DRM/DRI3 path, presenting the dma-buf-exported scanout images
+    * the export substrate provides -- the contract the GL oracle measured.
+    * R300VK_WSI_SW=1 falls back to the xcb-shm CPU copy, the proven
+    * bring-up baseline. */
+   const char *wsi_sw_env = getenv("R300VK_WSI_SW");
+   const bool wsi_sw = wsi_sw_env && wsi_sw_env[0] == '1';
    VkResult result =
       wsi_device_init(&device->wsi_device,
                       r300vk_physical_device_to_handle(device),
                       r300vk_wsi_proc_addr,
                       &device->vk.instance->alloc,
-                      -1, NULL,
-                      &(struct wsi_device_options){.sw_device = true});
+                      wsi_sw ? -1 : device->render_node_fd, NULL,
+                      &(struct wsi_device_options){.sw_device = wsi_sw});
    if (result != VK_SUCCESS)
       return result;
 
