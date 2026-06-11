@@ -625,6 +625,21 @@ r300vk_bind_one_stage_ubo(struct r300vk_device *device,
          cb.buffer_size   = desc->buf.range == VK_WHOLE_SIZE
                             ? (unsigned)(buf->size - desc->buf.offset)
                             : (unsigned)desc->buf.range;
+         if (device->dbg_log_draws && stage == MESA_SHADER_VERTEX) {
+            struct pipe_transfer *cx = NULL;
+            const float *cf = pipe_buffer_map_range(pipe, buf->resource,
+                                                    cb.buffer_offset,
+                                                    MIN2(cb.buffer_size, 32),
+                                                    PIPE_MAP_READ, &cx);
+            if (cf) {
+               fprintf(stderr, "r300vk vs-ubo: off=%u size=%u "
+                       "c0=[%g %g %g %g][%g %g %g %g]\n",
+                       cb.buffer_offset, cb.buffer_size,
+                       cf[0], cf[1], cf[2], cf[3],
+                       cf[4], cf[5], cf[6], cf[7]);
+               pipe_buffer_unmap(pipe, cx);
+            }
+         }
          pipe->set_constant_buffer(pipe, stage, 0, &cb);
          return;
       }
@@ -1608,6 +1623,56 @@ r300vk_drain_gpu(struct r300vk_device *device, bool *gpu_pending)
  * tile, so host transfers must stay in the post-fence pass and are skipped
  * here.  gpu_pending is threaded across the whole submit so a host transfer in
  * a later cmd buffer drains GPU work emitted by an earlier one. */
+/* Sample the colour attachment after the pass's GPU work flushes: a grid of
+ * 16 texels plus a count of texels differing from the corner.  Distinguishes
+ * "geometry never landed" (uniform clear colour) from "present path loses
+ * content" (varied pixels here, black on screen). */
+static void
+r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
+                                 const struct r300vk_cmd_entry *rp,
+                                 unsigned tile_pass,
+                                 uint32_t tile_width,
+                                 uint32_t tile_height)
+{
+   struct pipe_context *pipe = device->pipe;
+   const struct r300vk_image *img = rp->begin_rp.color_image;
+   struct pipe_resource *tex = img->tiles[tile_pass] ? img->tiles[tile_pass]
+                                                     : img->resource;
+   if (!tex || !tile_width || !tile_height)
+      return;
+
+   pipe->flush(pipe, NULL, 0);
+
+   struct pipe_box box;
+   u_box_2d(0, 0, tile_width, tile_height, &box);
+   struct pipe_transfer *xfer = NULL;
+   const uint8_t *map = pipe->texture_map(pipe, tex, 0, PIPE_MAP_READ,
+                                          &box, &xfer);
+   if (!map)
+      return;
+
+   const unsigned bpp = util_format_get_blocksize(tex->format);
+   uint32_t corner = 0;
+   memcpy(&corner, map, MIN2(bpp, 4));
+   unsigned diff = 0;
+   uint32_t samples[16];
+   for (unsigned i = 0; i < 16; i++) {
+      const unsigned sx = (tile_width  * (i % 4)) / 4 + tile_width / 8;
+      const unsigned sy = (tile_height * (i / 4)) / 4 + tile_height / 8;
+      uint32_t px = 0;
+      memcpy(&px, map + sy * xfer->stride + sx * bpp, MIN2(bpp, 4));
+      samples[i] = px;
+      if (px != corner)
+         diff++;
+   }
+   pipe->texture_unmap(pipe, xfer);
+
+   fprintf(stderr, "r300vk pixels: tile=%u %ux%u corner=%08x diff=%u "
+           "s=[%08x %08x %08x %08x ...]\n",
+           tile_pass, tile_width, tile_height, corner, diff,
+           samples[0], samples[5], samples[10], samples[15]);
+}
+
 static VkResult
 r300vk_replay_gpu(struct r300vk_device *device,
                   const struct r300vk_cmd_buffer *cmd,
@@ -1850,6 +1915,12 @@ r300vk_replay_gpu(struct r300vk_device *device,
          }
 
          case R300VK_CMD_END_RENDER_PASS:
+            if (device->dbg_log_pixels && !skip_render_pass &&
+                current_render_pass && current_render_pass->begin_rp.color_image)
+               r300vk_dbg_log_attachment_pixels(device,
+                                                current_render_pass,
+                                                tile_pass,
+                                                tile_width, tile_height);
             r300vk_replay_end_render_pass(device, &skip_render_pass,
                                           &tile_origin_x, &tile_origin_y,
                                           &tile_width, &tile_height);
