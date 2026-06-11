@@ -123,6 +123,16 @@ r300vk_qdiv_dispatch_replay(struct r300vk_device *device,
                             const struct r300vk_cmd_dispatch *dispatch,
                             const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* MAT4VEC (general 4x4 vertex transform) orchestrator entry: the matrix is
+ * broadcast as a 4x1 sampler view (row i at texel i), the vertices per-element at
+ * the dispatch extent; pl->fs_cso holds the synthesized transform FS
+ * (r300vk_build_mat4vec_fs_nir), run through the QMUL FP16-RT/FP32-readback core. */
+bool
+r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
+                               const struct r300vk_pipeline *pl,
+                               const struct r300vk_cmd_dispatch *dispatch,
+                               const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* QROTATE (quaternion rotation sandwich) orchestrator entry: same FP16-RT /
  * FP32-readback 2-in / 1-out core as QMUL, with q and v as the two inputs;
  * pl->fs_cso holds the synthesized sandwich FS (r300vk_build_qrotate_fs_nir). */

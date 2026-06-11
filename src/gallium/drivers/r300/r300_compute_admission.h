@@ -376,6 +376,22 @@ struct r300_compute_qdiv_pattern {
 void r300_nir_detect_qdiv_pattern(const struct nir_shader *s,
                                   struct r300_compute_qdiv_pattern *out);
 
+/* General 4x4 vertex transform (MAT4VEC): out[gid] = M * v[gid], component i =
+ * dot(row_i, v).  The matrix M is four contiguous vec4 rows read at constant
+ * offsets 0/16/32/48 from one binding (broadcast across all elements); v is the
+ * per-element load that appears in all four dots; the store is the vec4 of the
+ * four row-dots.  The absent vertex FPU's transform expressed as four DP4s on
+ * the fragment ALU. */
+struct r300_compute_mat4vec_pattern {
+   bool       is_mat4vec;
+   uint32_t   matrix_ssbo_binding;
+   uint32_t   vertex_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_mat4vec_pattern(const struct nir_shader *s,
+                                     struct r300_compute_mat4vec_pattern *out);
+
 /* Quaternion rotation (QROTATE) pattern: out[gid] = q[gid] * embed(v[gid]) *
  * conj(q[gid]), the sandwich that rotates the vec3 v by the unit quaternion q.
  * The admissible shape is two nested canonical Hamilton products: the store is

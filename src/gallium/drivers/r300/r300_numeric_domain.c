@@ -414,7 +414,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "permutations).  This is the bridge: the vertex transform wired into the "
                          "FP24 ALU through the breadboard hole.  Position precision is the FP24 "
                          "snapped-coordinate budget; per-element matrix is the skinning extension",
-      .mesa_hook       = NULL,  /* scalar form HW-confirmed via DP4 (dp4_mvp); vec4 detector+FS+broadcast-matrix dispatch is the next build */
+      .mesa_hook       = "r300_nir_detect_mat4vec_pattern",  /* vec4 op wired: 5-load detector (4 broadcast matrix rows + per-element vertex) + broadcast-matrix dispatch */
       .retained_bundle = NULL,
    },
    {
