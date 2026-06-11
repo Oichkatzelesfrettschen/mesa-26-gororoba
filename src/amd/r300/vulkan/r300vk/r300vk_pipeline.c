@@ -1346,6 +1346,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_oaddsub_pattern *oaddsub,
                                struct r300_compute_oconj_pattern *oconj,
                                struct r300_compute_onorm_pattern *onorm,
+                               struct r300_compute_odiv_pattern *odiv,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1405,6 +1406,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_oaddsub_pattern(nir, oaddsub);
    r300_nir_detect_oconj_pattern(nir, oconj);
    r300_nir_detect_onorm_pattern(nir, onorm);
+   r300_nir_detect_odiv_pattern(nir, odiv);
 
    ralloc_free(nir);
    return true;
@@ -1947,6 +1949,27 @@ r300vk_oaddsub_synthesize_shaders(struct r300vk_device *device,
       pl->fs_cso_mrt = r300vk_make_fs_cso(pipe, r300vk_build_oaddsub_mrt_fs_nir(
          pipe->screen->nir_options[MESA_SHADER_FRAGMENT], pl->oaddsub.is_sub));
    return true;
+}
+
+/* ODIV: passthrough VS + the two division half-FSs (fs_cso = lower half, fs_cso2 =
+ * upper half), each forming inv(y) from the reciprocal of |y|^2 and emitting one
+ * half of the product.  Division is two single-output passes rather than one MRT
+ * pass: the combined form is 73 ALU ops, over the 64-ALU R300 fragment limit. */
+static bool
+r300vk_odiv_synthesize_shaders(struct r300vk_device *device,
+                               struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe || !r300vk_device_init_identity_map_state(device))
+      return false;
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+   const struct nir_shader_compiler_options *opts =
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
+   pl->fs_cso  = r300vk_make_fs_cso(pipe, r300vk_build_odiv_lo_fs_nir(opts));
+   pl->fs_cso2 = r300vk_make_fs_cso(pipe, r300vk_build_odiv_hi_fs_nir(opts));
+   return pl->fs_cso != NULL && pl->fs_cso2 != NULL;
 }
 
 /* Synthesize the fullscreen-quad VS + texture-sampling FS pair that lowers an
@@ -2547,6 +2570,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->onorm.is_onorm = false;
       return true;
    }
+   if (pl->odiv.is_odiv) {
+      if (!r300vk_odiv_synthesize_shaders(device, pl))
+         pl->odiv.is_odiv = false;
+      return true;
+   }
    if (pl->blend_acc_reduction.is_blend_acc_reduction) {
       if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
@@ -2600,6 +2628,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_oaddsub_pattern oaddsub_pat = {0};
    struct r300_compute_oconj_pattern oconj_pat = {0};
    struct r300_compute_onorm_pattern onorm_pat = {0};
+   struct r300_compute_odiv_pattern odiv_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
@@ -2608,7 +2637,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
                                        &qmul_pat, &qrotate_pat,
                                        &qconj_pat, &qnorm_pat, &omul_pat,
                                        &oaddsub_pat, &oconj_pat, &onorm_pat,
-                                       local_size))
+                                       &odiv_pat, local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
                        i);
@@ -2638,6 +2667,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->oaddsub = oaddsub_pat;
    pl->oconj = oconj_pat;
    pl->onorm = onorm_pat;
+   pl->odiv = odiv_pat;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;

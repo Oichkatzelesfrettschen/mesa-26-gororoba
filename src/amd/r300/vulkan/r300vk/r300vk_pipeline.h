@@ -131,6 +131,12 @@ struct r300vk_pipeline {
    struct r300_compute_oconj_pattern oconj;
    struct r300_compute_onorm_pattern onorm;
 
+   /* Octonion right division (ODIV): out = x*inv(y), inv(y) = conj(y)/|y|^2.
+    * Four inputs (xlo,xhi,ylo,yhi), two output halves; one MRT pass forms the
+    * reciprocal-scaled conjugate and the eight-wide product.  Division stays a
+    * dim-8-only op (no zero divisors). */
+   struct r300_compute_odiv_pattern odiv;
+
    /* Blend-add reduction kernel detected at pipeline-create time.  Recognized
     * shape:
     *   atomicAdd(out_data[gid & MASK], in_data[gid])

@@ -2315,6 +2315,88 @@ r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
    return ok;
 }
 
+/* ODIV dispatch: out = x / y = x * inv(y) in two single-output passes.  The four
+ * inputs are bound straight -- stage0=xlo, stage1=xhi, stage2=ylo, stage3=yhi --
+ * and each FS forms inv(y) = conj(y)*rcp(|y|^2): pl->fs_cso writes the lower half
+ * to o_lo, pl->fs_cso2 the upper half to o_hi.  Division splits into two passes
+ * because the combined MRT form is 73 ALU ops, over the 64-ALU R300 limit. */
+bool
+r300vk_odiv_dispatch_replay(struct r300vk_device *device,
+                            const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso || !pl->fs_cso2 || binds->first_set != 0)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW) ||
+       !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   uint32_t bind[6] = { pl->odiv.input_xlo_ssbo_binding,
+                        pl->odiv.input_xhi_ssbo_binding,
+                        pl->odiv.input_ylo_ssbo_binding,
+                        pl->odiv.input_yhi_ssbo_binding,
+                        pl->odiv.output_lo_ssbo_binding,
+                        pl->odiv.output_hi_ssbo_binding };
+   const struct r300vk_descriptor *desc[6];
+   struct r300vk_buffer *buf[6];
+   if (!octonion_resolve_buffers(set, bind, 6, desc, buf))
+      return false;
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0 || total > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
+   for (unsigned i = 0; i < 4; i++) {
+      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
+         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      if (!views[i]) {
+         for (unsigned k = 0; k < i; k++)
+            pipe_sampler_view_reference(&views[k], NULL);
+         return false;
+      }
+   }
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      for (unsigned i = 0; i < 4; i++)
+         pipe_sampler_view_reference(&views[i], NULL);
+      return false;
+   }
+
+   /* Route A: the lower half to o_lo, then the upper half to o_hi.  Each pass
+    * recomputes inv(y); the reciprocal is a few ALU ops, far cheaper than the
+    * instruction budget the combined MRT form would need. */
+   bool ok_lo = omul_run_pass(pipe, screen, device, views, pl->fs_cso,
+                              pl->vs_cso, vb, velems_cso, buf[4]->resource,
+                              (unsigned)desc[4]->buf.offset, width, height, total);
+   bool ok_hi = omul_run_pass(pipe, screen, device, views, pl->fs_cso2,
+                              pl->vs_cso, vb, velems_cso, buf[5]->resource,
+                              (unsigned)desc[5]->buf.offset, width, height, total);
+   bool ok = ok_lo && ok_hi;
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   for (unsigned i = 0; i < 4; i++)
+      pipe_sampler_view_reference(&views[i], NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
  * view, two storage buffers) plus a per-dispatch fragment constant carrying
  * the neighbor texel displacement.  The synthesized FS
