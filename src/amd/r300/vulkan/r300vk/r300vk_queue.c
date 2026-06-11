@@ -998,7 +998,8 @@ r300vk_dyn_overlay_merge(struct r300vk_dyn_overlay *ov,
 static void
 r300vk_dyn_overlay_apply(struct r300vk_device *device,
                          const struct r300vk_pipeline *pl,
-                         struct r300vk_dyn_overlay *ov)
+                         struct r300vk_dyn_overlay *ov,
+                         bool has_zs)
 {
    if (!ov->dirty || !pl)
       return;
@@ -1031,8 +1032,14 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
       pipe->delete_rasterizer_state(pipe, ov->rs_cso);
    ov->rs_cso = new_rs_cso;
 
+   /* A pass without a depth/stencil attachment runs with both tests
+    * disabled: Vulkan's no-attachment semantics, and the only defined r300g
+    * behaviour since no zsbuf is bound (depth-testing against nothing would
+    * kill every fragment). */
+   const bool template_uses_zs = pl->dsa_template.depth_enabled ||
+                                 pl->dsa_template.stencil[0].enabled;
    void *new_dsa_cso = NULL;
-   if (eff & R300VK_DYN_DSA_BITS) {
+   if ((eff & R300VK_DYN_DSA_BITS) || (!has_zs && template_uses_zs)) {
       struct pipe_depth_stencil_alpha_state dsa = pl->dsa_template;
       if (eff & R300VK_DYN_DEPTH_TEST)
          dsa.depth_enabled = ov->depth_test;
@@ -1058,6 +1065,12 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
          if ((eff & R300VK_DYN_STENCIL_WR_MASK) &&
              (fc->set & R300VK_DYN_STENCIL_WR_MASK))
             st->writemask = (uint8_t)fc->wr_mask;
+      }
+      if (!has_zs) {
+         dsa.depth_enabled   = false;
+         dsa.depth_writemask = false;
+         dsa.stencil[0].enabled = false;
+         dsa.stencil[1].enabled = false;
       }
       new_dsa_cso = pipe->create_depth_stencil_alpha_state(pipe, &dsa);
    }
@@ -1119,7 +1132,8 @@ r300vk_replay_draw(struct r300vk_device *device,
                     uint32_t tile_width,
                     uint32_t tile_height,
                     struct util_dynarray *transient_vbs,
-                    struct r300vk_dyn_overlay *dyn)
+                    struct r300vk_dyn_overlay *dyn,
+                    bool render_pass_has_zs)
 {
    struct pipe_context *pipe = device->pipe;
 
@@ -1161,7 +1175,8 @@ r300vk_replay_draw(struct r300vk_device *device,
    /* Overlay the merged vkCmdSet* shadow onto this pipeline's rs/dsa state
     * before any draw-time binds. */
    if (dyn)
-      r300vk_dyn_overlay_apply(device, bound_pipeline, dyn);
+      r300vk_dyn_overlay_apply(device, bound_pipeline, dyn,
+                               render_pass_has_zs);
 
    /* Resolve pipeline-static viewport/scissor before the draw. */
    if (bound_pipeline && bound_pipeline->has_static_viewport) {
@@ -1418,13 +1433,39 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
       *skip_render_pass = true;
       return;
    }
+
+   /* Bind the depth/stencil attachment as the zsbuf.  The attachment has the
+    * render area's extent (render-pass rule), so its tile layout matches the
+    * colour image's and the same tile_pass index selects the matching tile. */
+   if (e->begin_rp.ds_image) {
+      const struct r300vk_image *ds = e->begin_rp.ds_image;
+      const uint32_t ds_tile_count = r300vk_image_tile_count(ds);
+      if (tile_pass < ds_tile_count) {
+         fb.zsbuf.texture     = ds->tiles[tile_pass] ? ds->tiles[tile_pass]
+                                                     : ds->resource;
+         fb.zsbuf.format      = e->begin_rp.ds_format;
+         fb.zsbuf.level       = 0;
+         fb.zsbuf.first_layer = 0;
+         fb.zsbuf.last_layer  = 0;
+      }
+   }
    pipe->set_framebuffer_state(pipe, &fb);
 
+   unsigned clear_bits = 0;
    if (e->begin_rp.color_image &&
-       e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+       e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
+      clear_bits |= PIPE_CLEAR_COLOR0;
+   if (fb.zsbuf.texture &&
+       e->begin_rp.ds_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+      clear_bits |= PIPE_CLEAR_DEPTH;
+      if (util_format_has_stencil(util_format_description(e->begin_rp.ds_format)))
+         clear_bits |= PIPE_CLEAR_STENCIL;
+   }
+   if (clear_bits) {
       union pipe_color_union cv;
       memcpy(cv.f, e->begin_rp.clear_color.float32, sizeof(cv.f));
-      pipe->clear(pipe, PIPE_CLEAR_COLOR0, 0xF, 0, NULL, &cv, 0.0, 0);
+      pipe->clear(pipe, clear_bits, 0xF, 0, NULL, &cv,
+                  e->begin_rp.clear_depth, e->begin_rp.clear_stencil);
    }
 }
 
@@ -1567,6 +1608,9 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                             &tile_width, &tile_height,
                                             &skip_render_pass);
             current_render_pass = e;
+            /* The pass boundary can change zsbuf presence, which feeds the
+             * depth/stencil clamp; re-overlay at the next draw. */
+            dyn_ov.dirty = true;
             /* Only loadOp == CLEAR emits a GPU write at begin (the color-image
              * clear) that a later host copy-image-to-buffer could read; a LOAD
              * pass emits nothing here, and its draws set gpu_pending themselves.
@@ -1614,7 +1658,9 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                replay_pc, vb_cache, vb_sizes,
                                vb_max_used, &vb_dirty, tile_origin_x,
                                tile_origin_y, tile_width, tile_height,
-                               transient_vbs, &dyn_ov);
+                               transient_vbs, &dyn_ov,
+                               current_render_pass &&
+                               current_render_pass->begin_rp.ds_image);
             *gpu_pending = true;
             break;
 
@@ -1668,7 +1714,9 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, transient_vbs, &dyn_ov);
+                                  tile_height, transient_vbs, &dyn_ov,
+                                  current_render_pass &&
+                                  current_render_pass->begin_rp.ds_image);
             }
             pipe_buffer_unmap(pipe, ixfer);
             *gpu_pending = true;
@@ -1724,7 +1772,9 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, transient_vbs, &dyn_ov);
+                                  tile_height, transient_vbs, &dyn_ov,
+                                  current_render_pass &&
+                                  current_render_pass->begin_rp.ds_image);
             }
             pipe_buffer_unmap(pipe, ixfer);
             *gpu_pending = true;

@@ -38,6 +38,10 @@ struct r300vk_render_pass {
     * array at CmdBeginRenderPass like the color refs above. */
    uint32_t                            input_attachment_refs[PIPE_MAX_COLOR_BUFS];
    uint32_t                            input_attachment_count;
+   /* Subpass 0 depth/stencil attachment index, VK_ATTACHMENT_UNUSED when the
+    * subpass has none.  The replay binds it as the framebuffer zsbuf; a draw
+    * in a pass without one runs with depth and stencil tests disabled. */
+   uint32_t                            depth_stencil_attachment_ref;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_render_pass, base, VkRenderPass,
