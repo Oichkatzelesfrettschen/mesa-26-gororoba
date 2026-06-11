@@ -1132,33 +1132,17 @@ r300vk_get_image_format_properties(
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_2D:
-      /* Mip chains live on a single tile, so sampled images report the
-       * sampler dimension with its full chain; attachment-only images are
-       * bounded by the 2560 framebuffer cap; pure-transfer images keep the
-       * multi-tile 4096 reach at one level. */
-      if (info->usage & VK_IMAGE_USAGE_SAMPLED_BIT) {
-         max_extent = (VkExtent3D){
-            R300VK_R3XX_MAX_TEXTURE_DIMENSION,
-            R300VK_R3XX_MAX_TEXTURE_DIMENSION, 1,
-         };
-         max_mip_levels =
-            util_logbase2(R300VK_R3XX_MAX_TEXTURE_DIMENSION) + 1;
-      } else if (info->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
-         max_extent = (VkExtent3D){
-            R300VK_R3XX_MAX_RENDER_DIMENSION,
-            R300VK_R3XX_MAX_RENDER_DIMENSION, 1,
-         };
-         max_mip_levels =
-            util_logbase2(R300VK_R3XX_MAX_TEXTURE_DIMENSION) + 1;
-      } else {
-         max_extent = (VkExtent3D){
-            device->vk.properties.maxImageDimension2D,
-            device->vk.properties.maxImageDimension2D,
-            1,
-         };
-         max_mip_levels = 1;
-      }
+      /* The flat multi-tile reach.  Usage-keyed extents were measured to
+       * break zink's surfaceless framebuffer (its internal sampled-usage
+       * probe at the device dimension must succeed), so the dimension stays
+       * uniform and the mip ceiling reflects the real vkCreateImage
+       * acceptance: chains live on one tile, so 12 levels (2048-base). */
+      max_extent = (VkExtent3D){
+         device->vk.properties.maxImageDimension2D,
+         device->vk.properties.maxImageDimension2D,
+         1,
+      };
+      max_mip_levels = util_logbase2(R300VK_R3XX_MAX_TEXTURE_DIMENSION) + 1;
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_3D:
