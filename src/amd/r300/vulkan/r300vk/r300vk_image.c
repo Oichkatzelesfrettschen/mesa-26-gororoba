@@ -92,8 +92,13 @@ r300vk_supported_image_usage(struct r300vk_device *device,
 {
    VkImageUsageFlags usage = 0;
 
-   if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_SAMPLER_VIEW))
-      usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+   if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_SAMPLER_VIEW)) {
+      /* Input attachments ride the sampled path: r300vk lowers subpassLoad to
+       * a normalized texture read, so sampled capability is input-attachment
+       * capability.  zink requests INPUT_ATTACHMENT on every swapchain image. */
+      usage |= VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+   }
    if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_RENDER_TARGET))
       usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
    if (r300vk_screen_supports_format(device, pipe_fmt, PIPE_BIND_DEPTH_STENCIL))
