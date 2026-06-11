@@ -1409,7 +1409,7 @@ r300vk_replay_draw(struct r300vk_device *device,
          r300vk_bind_input_attachment(device, bound_pipeline, last_bind_dsets,
                                       &bound_tex, ia_inv_extent);
 
-      if (device->dbg_log_draws)
+      if (device->dbg_log_draws) {
          fprintf(stderr,
                  "r300vk draw: mode=%u count=%u start=%u inst=%u topo=%d "
                  "dyn_topo=%d dyn_mask=0x%x dyn_flags=0x%x zs=%d\n",
@@ -1417,6 +1417,49 @@ r300vk_replay_draw(struct r300vk_device *device,
                  (int)draw_topology, dyn_topology ? 1 : 0,
                  bound_pipeline ? bound_pipeline->dyn_mask : 0,
                  dyn ? dyn->flags : 0, render_pass_has_zs ? 1 : 0);
+         /* Per-element fetch parameters plus the first two vertices each
+          * element would fetch, so a flat-output draw can be split into
+          * "zink uploaded constant data" vs "the fetch offset/stride is
+          * wrong".  Reads through the same pipe mapping the draw uses. */
+         for (uint32_t i = 0;
+              bound_pipeline && i < bound_pipeline->velems_count; i++) {
+            const struct pipe_vertex_element *ve =
+               &bound_pipeline->velems_template[i];
+            const uint8_t b = ve->vertex_buffer_index;
+            if (b >= R300VK_MAX_VERTEX_BINDINGS ||
+                !draw_vb_cache[b].buffer.resource)
+               continue;
+            const uint32_t eff_stride =
+               (vb_strides_mask & BITFIELD_BIT(b))
+               ? (uint32_t)vb_strides[b] : ve->src_stride;
+            const uint64_t fetch_off =
+               (uint64_t)draw_vb_cache[b].buffer_offset + ve->src_offset +
+               (uint64_t)(indexed ? 0 : draw.start) * eff_stride;
+            fprintf(stderr,
+                    "r300vk ve[%u]: bind=%u fmt=%u src_off=%u tmpl_stride=%u "
+                    "eff_stride=%u vb_off=%u vb_size=%llu fetch_off=%llu res=%p",
+                    i, b, (unsigned)ve->src_format, ve->src_offset,
+                    ve->src_stride, eff_stride,
+                    draw_vb_cache[b].buffer_offset,
+                    (unsigned long long)vb_sizes[b],
+                    (unsigned long long)fetch_off,
+                    (void *)draw_vb_cache[b].buffer.resource);
+            struct pipe_transfer *vx = NULL;
+            const float *vf = pipe_buffer_map_range(
+               pipe, draw_vb_cache[b].buffer.resource, (unsigned)fetch_off,
+               eff_stride ? eff_stride + 16 : 16, PIPE_MAP_READ, &vx);
+            if (vf) {
+               fprintf(stderr, " v0=[%g %g %g %g] v1=[%g %g %g %g]",
+                       vf[0], vf[1], vf[2], vf[3],
+                       eff_stride ? vf[eff_stride / 4 + 0] : vf[0],
+                       eff_stride ? vf[eff_stride / 4 + 1] : vf[1],
+                       eff_stride ? vf[eff_stride / 4 + 2] : vf[2],
+                       eff_stride ? vf[eff_stride / 4 + 3] : vf[3]);
+               pipe_buffer_unmap(pipe, vx);
+            }
+            fprintf(stderr, "\n");
+         }
+      }
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
       r300vk_unbind_descriptor_textures(device, &bound_tex);
    }

@@ -45,6 +45,7 @@ r300vk_AllocateMemory(VkDevice _device,
    vk_object_base_init(&device->vk, &mem->base,
                        VK_OBJECT_TYPE_DEVICE_MEMORY);
    mem->size = pAllocateInfo->allocationSize;
+   util_dynarray_init(&mem->bound_buffers, NULL);
 
    /* Dedicated-image allocations carry the image whose BO vkGetMemoryFdKHR
     * exports (the wsi-drm swapchain pattern: one image, one allocation, one
@@ -91,11 +92,41 @@ r300vk_FreeMemory(VkDevice _device,
    }
    pipe_resource_reference(&mem->mapped_resource, NULL);
    pipe_resource_reference(&mem->resource, NULL);
-   pipe_resource_reference(&mem->bound_resource, NULL);
+   util_dynarray_foreach(&mem->bound_buffers,
+                         struct r300vk_bound_buffer_slice, slice)
+      pipe_resource_reference(&slice->resource, NULL);
+   util_dynarray_fini(&mem->bound_buffers);
    pipe_resource_reference(&mem->bound_image_tile, NULL);
 
    vk_object_base_finish(&mem->base);
    vk_free2(&device->vk.alloc, pAllocator, mem);
+}
+
+void
+r300vk_device_memory_drop_buffer_slices(struct r300vk_device *device,
+                                        struct pipe_resource *resource)
+{
+   if (!resource)
+      return;
+   simple_mtx_lock(&device->memory_list_lock);
+   list_for_each_entry(struct r300vk_device_memory, mem,
+                       &device->memory_list, device_link) {
+      unsigned kept = 0;
+      util_dynarray_foreach(&mem->bound_buffers,
+                            struct r300vk_bound_buffer_slice, slice) {
+         if (slice->resource == resource) {
+            pipe_resource_reference(&slice->resource, NULL);
+         } else {
+            *util_dynarray_element(&mem->bound_buffers,
+                                   struct r300vk_bound_buffer_slice, kept) =
+               *slice;
+            kept++;
+         }
+      }
+      mem->bound_buffers.size =
+         kept * sizeof(struct r300vk_bound_buffer_slice);
+   }
+   simple_mtx_unlock(&device->memory_list_lock);
 }
 
 VkResult
@@ -138,8 +169,8 @@ r300vk_MapMemory(VkDevice _device,
     * backing a 1 MB slab buffer bound at offset 0) and maps the whole
     * allocation once.  A map served from the borrowed bound resource can cover
     * only that buffer's bytes, so give the memory its own allocation-sized
-    * host buffer, remember the borrowed resource as bound_resource, and seed
-    * the host view from it after the map below succeeds.  From then on the
+    * host buffer, record the borrowed resource as a bound_buffers slice, and
+    * seed the host view from it after the map below succeeds.  From then on the
     * allocation behaves exactly like a map-before-bind owns_buffer memory:
     * Flush/Invalidate and the submit-boundary sync keep the two in step. */
    bool promoted = false;
@@ -161,7 +192,18 @@ r300vk_MapMemory(VkDevice _device,
             device->screen->resource_create(device->screen, &tmpl);
          if (!owned)
             return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
-         pipe_resource_reference(&mem->bound_resource, mem->resource);
+         /* The borrowed resource becomes the first bound_buffers slice: the
+          * promotion is exactly a retroactive map-before-bind, so the bound
+          * buffer keeps syncing through the same per-slice path. */
+         struct r300vk_bound_buffer_slice slice = {
+            .resource = NULL,
+            .offset = mem->memory_offset,
+         };
+         pipe_resource_reference(&slice.resource, mem->resource);
+         simple_mtx_lock(&device->memory_list_lock);
+         util_dynarray_append_typed(&mem->bound_buffers,
+                                    struct r300vk_bound_buffer_slice, slice);
+         simple_mtx_unlock(&device->memory_list_lock);
          pipe_resource_reference(&mem->resource, NULL);
          mem->resource = owned;
          mem->owns_buffer = true;
@@ -253,6 +295,16 @@ r300vk_MapMemory(VkDevice _device,
          return seed;
    }
 
+   if (device->dbg_log_draws)
+      fprintf(stderr, "r300vk map: mem=%p off=%llu size=%llu owns=%d prom=%d "
+              "res=%p slices=%u moff=%llu\n",
+              (void *)mem, (unsigned long long)offset,
+              (unsigned long long)size, mem->owns_buffer, promoted,
+              (void *)mem->resource,
+              (unsigned)util_dynarray_num_elements(
+                 &mem->bound_buffers, struct r300vk_bound_buffer_slice),
+              (unsigned long long)mem->memory_offset);
+
    *ppData = ptr;
    return VK_SUCCESS;
 }
@@ -263,6 +315,12 @@ r300vk_UnmapMemory(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
    VK_FROM_HANDLE(r300vk_device_memory, mem, _memory);
+
+   if (device->dbg_log_draws)
+      fprintf(stderr, "r300vk unmap: mem=%p owns=%d res=%p slices=%u\n",
+              (void *)mem, mem->owns_buffer, (void *)mem->resource,
+              (unsigned)util_dynarray_num_elements(
+                 &mem->bound_buffers, struct r300vk_bound_buffer_slice));
 
    if (!mem->transfer)
       return;
@@ -283,34 +341,35 @@ r300vk_UnmapMemory(VkDevice _device,
    pipe_resource_reference(&mem->mapped_resource, NULL);
 }
 
-/* Sync the live host map and the bound VkBuffer's GPU resource for an
+/* Sync the live host map with one bound VkBuffer's GPU resource for an
  * owns_buffer (map-before-bind) allocation.  host_to_buffer copies the map into
- * bound_resource (Flush and the bind-time seed); !host_to_buffer copies
- * bound_resource back into the map (Invalidate).  The copy reads/writes the live
+ * the slice's resource (Flush and the bind-time seed); !host_to_buffer copies
+ * the resource back into the map (Invalidate).  The copy reads/writes the live
  * map_ptr directly, so the map and its transfer stay valid -- the lazy buffer is
  * host-only, so there is no second transfer on it and no concurrent GPU access.
  *
  * range_offset and range_size name the touched window in VkDeviceMemory space,
  * exactly like VkMappedMemoryRange::offset/size; range_size == VK_WHOLE_SIZE
  * means to the end of the allocation.  Only the part of the bound slice
- * [memory_offset, memory_offset + width0) that overlaps that window is mapped
+ * [slice->offset, slice->offset + width0) that overlaps that window is mapped
  * and copied, so a Flush/Invalidate of one sub-range never touches bytes the
  * caller did not name.  An empty intersection copies nothing and succeeds.  The
  * bind-time seed passes the whole allocation (offset 0, VK_WHOLE_SIZE) so the
  * intersection yields the full slice. */
 static VkResult
-r300vk_sync_owns_buffer(struct r300vk_device *device,
-                        struct r300vk_device_memory *mem,
-                        bool host_to_buffer,
-                        VkDeviceSize range_offset,
-                        VkDeviceSize range_size)
+r300vk_sync_one_buffer_slice(struct r300vk_device *device,
+                             struct r300vk_device_memory *mem,
+                             const struct r300vk_bound_buffer_slice *slice,
+                             bool host_to_buffer,
+                             VkDeviceSize range_offset,
+                             VkDeviceSize range_size)
 {
-   if (!mem->owns_buffer || !mem->bound_resource || !mem->map_ptr)
+   if (!mem->map_ptr || !slice->resource)
       return VK_SUCCESS;
 
    /* Range check: verify the bound buffer's slice fits within the
     * VkDeviceMemory allocation before reading/writing hp. */
-   if (mem->memory_offset + (VkDeviceSize)mem->bound_resource->width0 > mem->size)
+   if (slice->offset + (VkDeviceSize)slice->resource->width0 > mem->size)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    /* Intersect the requested window with the bound slice, all in 64-bit memory
@@ -325,8 +384,8 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
       range_end = mem->size;
    else
       range_end = range_offset + range_size;
-   VkDeviceSize slice_begin = mem->memory_offset;
-   VkDeviceSize slice_end = slice_begin + (VkDeviceSize)mem->bound_resource->width0;
+   VkDeviceSize slice_begin = slice->offset;
+   VkDeviceSize slice_end = slice_begin + (VkDeviceSize)slice->resource->width0;
    VkDeviceSize intersect_begin = range_offset > slice_begin ? range_offset : slice_begin;
    VkDeviceSize intersect_end = range_end < slice_end ? range_end : slice_end;
    if (intersect_begin >= intersect_end)
@@ -338,7 +397,7 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
    struct pipe_box box;
    u_box_1d(buffer_offset, bytes, &box);
    struct pipe_transfer *bt = NULL;
-   void *bp = device->pipe->buffer_map(device->pipe, mem->bound_resource, 0,
+   void *bp = device->pipe->buffer_map(device->pipe, slice->resource, 0,
                                        host_to_buffer ? PIPE_MAP_WRITE : PIPE_MAP_READ,
                                        &box, &bt);
    if (!bp)
@@ -350,6 +409,33 @@ r300vk_sync_owns_buffer(struct r300vk_device *device,
    else
       memcpy(hp, bp, bytes);
    device->pipe->buffer_unmap(device->pipe, bt);
+   return VK_SUCCESS;
+}
+
+/* Sync the requested window against every bound buffer slice.  A suballocating
+ * client binds several VkBuffers at distinct offsets in one allocation; each
+ * keeps its own GPU resource, so each slice that intersects the window gets its
+ * own copy.  Slices never overlap under suballocation; an app that deliberately
+ * aliases overlapping buffer binds gets whichever slice syncs last, matching
+ * the no-stronger guarantee aliased memory has under Vulkan without barriers. */
+static VkResult
+r300vk_sync_owns_buffer(struct r300vk_device *device,
+                        struct r300vk_device_memory *mem,
+                        bool host_to_buffer,
+                        VkDeviceSize range_offset,
+                        VkDeviceSize range_size)
+{
+   if (!mem->owns_buffer || !mem->map_ptr)
+      return VK_SUCCESS;
+
+   util_dynarray_foreach(&mem->bound_buffers,
+                         struct r300vk_bound_buffer_slice, slice) {
+      VkResult result = r300vk_sync_one_buffer_slice(device, mem, slice,
+                                                     host_to_buffer,
+                                                     range_offset, range_size);
+      if (result != VK_SUCCESS)
+         return result;
+   }
    return VK_SUCCESS;
 }
 
@@ -404,8 +490,17 @@ r300vk_device_memory_sync_bound(struct r300vk_device *device,
                        &device->memory_list, device_link) {
       if (!mem->owns_buffer || !mem->map_ptr)
          continue;
-      if (mem->bound_resource)
-         r300vk_sync_owns_buffer(device, mem, host_to_buffer, 0, VK_WHOLE_SIZE);
+      if (device->dbg_log_draws) {
+         util_dynarray_foreach(&mem->bound_buffers,
+                               struct r300vk_bound_buffer_slice, slice)
+            fprintf(stderr, "r300vk sync: mem=%p dir=%s bound=%p moff=%llu "
+                    "w0=%u\n",
+                    (void *)mem, host_to_buffer ? "h2b" : "b2h",
+                    (void *)slice->resource,
+                    (unsigned long long)slice->offset,
+                    slice->resource ? slice->resource->width0 : 0);
+      }
+      r300vk_sync_owns_buffer(device, mem, host_to_buffer, 0, VK_WHOLE_SIZE);
       /* Image tiles have only the image -> host direction (the host -> image
        * upload path is intentionally absent until exercised); pull them on the
        * submit-exit sync so a rendered linear image reaches the live map. */
@@ -478,10 +573,32 @@ r300vk_BindBufferMemory2(VkDevice _device,
          if (pBindInfos[i].memoryOffset + buf->size > mem->size)
             return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
+         if (device->dbg_log_draws)
+            fprintf(stderr, "r300vk bind-buf: mem=%p buf=%p res=%p moff=%llu "
+                    "bufsize=%llu OWNS slices=%u\n",
+                    (void *)mem, (void *)buf, (void *)buf->resource,
+                    (unsigned long long)pBindInfos[i].memoryOffset,
+                    (unsigned long long)buf->size,
+                    (unsigned)util_dynarray_num_elements(
+                       &mem->bound_buffers,
+                       struct r300vk_bound_buffer_slice));
          mem->memory_offset = pBindInfos[i].memoryOffset;
-         pipe_resource_reference(&mem->bound_resource, buf->resource);
-         VkResult result = r300vk_sync_owns_buffer(device, mem, true /* host -> buffer (seed) */,
-                                                   0, VK_WHOLE_SIZE);
+         struct r300vk_bound_buffer_slice slice = {
+            .resource = NULL,
+            .offset = pBindInfos[i].memoryOffset,
+         };
+         pipe_resource_reference(&slice.resource, buf->resource);
+         /* memory_list_lock covers every bound_buffers mutation: the drop
+          * helper and the submit-boundary sync walk the array under it. */
+         simple_mtx_lock(&device->memory_list_lock);
+         util_dynarray_append_typed(&mem->bound_buffers,
+                                    struct r300vk_bound_buffer_slice, slice);
+         simple_mtx_unlock(&device->memory_list_lock);
+         /* Seed from the local slice value: an append from another bind can
+          * grow-realloc the array, so a pointer into it would dangle. */
+         VkResult result = r300vk_sync_one_buffer_slice(
+            device, mem, &slice,
+            true /* host -> buffer (seed) */, 0, VK_WHOLE_SIZE);
          if (result != VK_SUCCESS)
             return result;
       } else {
@@ -492,6 +609,13 @@ r300vk_BindBufferMemory2(VkDevice _device,
           * mapped_resource holds a reference on the old resource until
           * UnmapMemory (preventing use-after-free when mem->resource is
           * overwritten below). */
+         if (device->dbg_log_draws)
+            fprintf(stderr, "r300vk bind-buf: mem=%p buf=%p res=%p moff=%llu "
+                    "bufsize=%llu BORROW prev_res=%p prev_moff=%llu\n",
+                    (void *)mem, (void *)buf, (void *)buf->resource,
+                    (unsigned long long)pBindInfos[i].memoryOffset,
+                    (unsigned long long)buf->size, (void *)mem->resource,
+                    (unsigned long long)mem->memory_offset);
          mem->memory_offset = pBindInfos[i].memoryOffset;
          pipe_resource_reference(&mem->resource, buf->resource);
       }
