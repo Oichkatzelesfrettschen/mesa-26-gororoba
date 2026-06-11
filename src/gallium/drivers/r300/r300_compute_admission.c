@@ -2675,6 +2675,62 @@ r300_nir_detect_qdiv_pattern(const nir_shader *s,
    out->is_qdiv = true;
 }
 
+/* Resolve a scalar integer def to a constant, walking the imul / ishl / iadd of
+ * constants that the SSBO address lowering leaves UNFOLDED.  The classify path
+ * runs copy-prop/dce/cse but not constant folding, so m[k]'s byte offset arrives
+ * as index*16 (an imul or ishl of small constants), not a folded const -- exactly
+ * the MAT4VEC matrix-row offsets. */
+static bool
+mat4vec_resolve_u32(const nir_def *d, uint32_t *out)
+{
+   if (nir_def_is_const(d)) {
+      *out = nir_def_as_load_const(d)->value[0].u32;
+      return true;
+   }
+   const nir_alu_instr *a = nir_def_as_alu_or_null(d);
+   if (!a)
+      return false;
+   uint32_t x, y;
+   if ((a->op == nir_op_imul || a->op == nir_op_ishl || a->op == nir_op_iadd) &&
+       mat4vec_resolve_u32(a->src[0].src.ssa, &x) &&
+       mat4vec_resolve_u32(a->src[1].src.ssa, &y)) {
+      *out = a->op == nir_op_imul ? x * y
+           : a->op == nir_op_ishl ? x << y
+           :                        x + y;
+      return true;
+   }
+   return false;
+}
+
+/* Decompose a Vulkan SSBO byte offset into a runtime base def plus a constant
+ * delta.  The descriptor lowering builds each matrix-row offset as
+ * iadd(descriptor_base, rowindex*16): descriptor_base is the buffer's runtime
+ * base offset (a load_vulkan_descriptor .y component) shared by every access to
+ * that buffer, and rowindex*16 folds to a constant through the imul/ishl walk.
+ * A fully constant offset (no descriptor base, e.g. a 0-based test kernel)
+ * returns base = NULL so the caller can still match it. */
+static bool
+mat4vec_offset_split(const nir_def *d, const nir_def **base, uint32_t *delta)
+{
+   const nir_alu_instr *a = nir_def_as_alu_or_null(d);
+   if (a && a->op == nir_op_iadd) {
+      uint32_t cx, cy;
+      bool rx = mat4vec_resolve_u32(a->src[0].src.ssa, &cx);
+      bool ry = mat4vec_resolve_u32(a->src[1].src.ssa, &cy);
+      if (rx && ry) { *base = NULL;               *delta = cx + cy; return true; }
+      if (ry)       { *base = a->src[0].src.ssa;  *delta = cy;      return true; }
+      if (rx)       { *base = a->src[1].src.ssa;  *delta = cx;      return true; }
+      return false;
+   }
+   uint32_t c;
+   if (mat4vec_resolve_u32(d, &c)) {
+      *base = NULL;
+      *delta = c;
+      return true;
+   }
+   return false;
+}
+
 void
 r300_nir_detect_mat4vec_pattern(const nir_shader *s,
                                 struct r300_compute_mat4vec_pattern *out)
@@ -2746,25 +2802,32 @@ r300_nir_detect_mat4vec_pattern(const nir_shader *s,
       if (!rload[lane])
          return;
 
-   /* The four rows read constant byte offsets 0/16/32/48 from one binding -- the
-    * four contiguous vec4 rows of the broadcast matrix.  Each offset appears once. */
-   if (!nir_src_is_const(rload[0]->src[0]))
-      return;
-   uint32_t mbind = nir_src_as_uint(rload[0]->src[0]);
-   bool seen[4] = {false, false, false, false};
+   /* The four rows must come from ONE buffer (the matrix) and row k must sit at
+    * byte offset base + k*16, so the dispatch -- which wraps texel k at offset
+    * k*16 into output lane k -- matches the kernel's row-to-lane mapping.  The
+    * binding handle is an opaque post-descriptor-lowering value (a mov of the
+    * load_vulkan_descriptor .x component), not a constant, so require the four
+    * row bindings to be the SAME ssa def and resolve the binding positionally in
+    * the dispatch.  The byte offset is iadd(descriptor_base, k*16): descriptor_
+    * base is the buffer's runtime base (the .y descriptor component) shared by
+    * every row, while k*16 folds to a constant -- so split each offset into that
+    * shared base plus a constant delta and require the bases to agree. */
+   const nir_def *mbind_def = rload[0]->src[0].ssa;
+   const nir_def *obase = NULL;   /* shared runtime SSBO base offset of the matrix */
    for (unsigned lane = 0; lane < 4; lane++) {
-      if (!nir_src_is_const(rload[lane]->src[0]) ||
-          nir_src_as_uint(rload[lane]->src[0]) != mbind)
+      if (rload[lane]->src[0].ssa != mbind_def)
          return;
-      if (!nir_src_is_const(rload[lane]->src[1]))
+      const nir_def *base = NULL;
+      uint32_t delta = 0;
+      if (!mat4vec_offset_split(rload[lane]->src[1].ssa, &base, &delta) ||
+          delta != lane * 16u || (lane && base != obase))
          return;
-      uint32_t off = nir_src_as_uint(rload[lane]->src[1]);
-      if (off % 16 != 0 || off / 16 > 3 || seen[off / 16])
-         return;
-      seen[off / 16] = true;
+      if (lane == 0)
+         obase = base;
    }
 
-   out->matrix_ssbo_binding = mbind;
+   if (nir_src_is_const(rload[0]->src[0]))
+      out->matrix_ssbo_binding = nir_src_as_uint(rload[0]->src[0]);
    if (nir_src_is_const(vload->src[0]))
       out->vertex_ssbo_binding = nir_src_as_uint(vload->src[0]);
    if (nir_src_is_const(store[0]->src[1]))

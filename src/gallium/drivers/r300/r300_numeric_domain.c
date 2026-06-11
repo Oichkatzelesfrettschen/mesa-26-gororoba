@@ -394,7 +394,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       .op_name         = "MAT4VEC",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
-      .status          = R300_VOP_NUMERIC_DERIVED,
+      .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "general 4x4 vertex transform out[j] = M * p[j], component i = "
                          "dot(row_i, p_j) -- four DP4s per vertex, one fullscreen invocation, "
                          "the absent vertex FPU's core operation run on the PRESENT FP24 "
@@ -413,8 +413,11 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "(QMUL two-in/one-out replay core, matrix rows in place of the Hamilton "
                          "permutations).  This is the bridge: the vertex transform wired into the "
                          "FP24 ALU through the breadboard hole.  Position precision is the FP24 "
-                         "snapped-coordinate budget; per-element matrix is the skinning extension",
-      .mesa_hook       = "r300_nir_detect_mat4vec_pattern",  /* vec4 op wired: 5-load detector (4 broadcast matrix rows + per-element vertex) + broadcast-matrix dispatch */
+                         "snapped-coordinate budget; per-element matrix is the skinning extension.  "
+                         "The first-class op is HW-confirmed 4/4 byte-exact on RS482 (mat4vec_vk_"
+                         "probe: matrix {2,0,0,5; 0,3,0,7; 0,0,4,9; 0,0,0,1} times four vertices, "
+                         "GPU == CPU oracle to maxabs 0.0, QMUL control unregressed)",
+      .mesa_hook       = "r300_nir_detect_mat4vec_pattern",  /* vec4 op HW-confirmed 4/4: 5-load detector (4 broadcast matrix rows + per-element vertex) maps each row offset to descriptor-base + lane*16, broadcast-matrix dispatch */
       .retained_bundle = NULL,
    },
    {
