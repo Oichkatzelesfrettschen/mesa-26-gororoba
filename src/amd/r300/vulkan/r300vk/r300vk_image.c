@@ -72,21 +72,6 @@ r300vk_screen_supports_format(struct r300vk_device *device,
                                               bindings);
 }
 
-static bool
-r300vk_format_supports_transfer_dst(enum pipe_format pipe_fmt)
-{
-   if (util_format_is_compressed(pipe_fmt) ||
-       util_format_is_depth_or_stencil(pipe_fmt) ||
-       util_format_is_snorm(pipe_fmt))
-      return false;
-
-   const struct util_format_description *desc =
-      util_format_description(pipe_fmt);
-   return desc && desc->nr_channels > 0 &&
-          (desc->channel[0].type != UTIL_FORMAT_TYPE_FLOAT ||
-           desc->channel[0].size < 32);
-}
-
 static VkImageUsageFlags
 r300vk_supported_image_usage(struct r300vk_device *device,
                              enum pipe_format pipe_fmt)
@@ -326,9 +311,10 @@ r300vk_CreateImage(VkDevice _device,
     * them -- r300 renders to and samples from row-major surfaces (scanout on
     * this silicon is linear), and the common WSI's software swapchain creates
     * exactly such images (linear, COLOR_ATTACHMENT | TRANSFER, one tile).
-    * Reject any shape the single-tile row-major path cannot back: non-2D, an
+    * Reject any shape the single-tile row-major path cannot back: 3D, an
     * extent past one tile, or a format without a lossless transfer-destination
-    * byte layout (the same predicate that gates linearTilingFeatures). */
+    * byte layout (the same predicate that gates linearTilingFeatures).  A 1D
+    * image is a single row, so it always fits the row-major tile. */
    if (is_linear) {
       /* INPUT_ATTACHMENT rides the sampled path: r300vk lowers subpassLoad to
        * a normalized texture read, so any sampled-capable image serves as an
@@ -340,7 +326,8 @@ r300vk_CreateImage(VkDevice _device,
                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                           VK_IMAGE_USAGE_SAMPLED_BIT |
                           VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
-      if (pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
+      if ((pCreateInfo->imageType != VK_IMAGE_TYPE_2D &&
+           pCreateInfo->imageType != VK_IMAGE_TYPE_1D) ||
           pCreateInfo->extent.width > R300VK_R3XX_MAX_RENDER_DIMENSION ||
           pCreateInfo->extent.height > R300VK_R3XX_MAX_RENDER_DIMENSION ||
           !r300vk_format_supports_transfer_dst(pipe_fmt)) {
