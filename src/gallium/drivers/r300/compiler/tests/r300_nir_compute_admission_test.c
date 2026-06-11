@@ -156,6 +156,21 @@ build_qfmul_form(void)
    return b.shader;
 }
 
+/* Single-input affine unary map: out[gid] = in[gid] * 2.0 + 1.0 (scalar float,
+ * the 00_admissible_fma kernel shape -- one load, fmul by c0, fadd c1, store). */
+static nir_shader *
+build_unary_map_scalar(void)
+{
+   nir_builder b = cs_builder("cs_unary_map_scalar");
+   nir_def *x = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *y = nir_fadd(&b, nir_fmul(&b, x, nir_imm_float(&b, 2.0f)),
+                         nir_imm_float(&b, 1.0f));
+   nir_store_ssbo(&b, y, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* Quaternion Hamilton product q1*q2 in the canonical four-dot form the QMUL
  * detector admits: each output lane is a DP4 of q1 against a sign-permutation
  * of q2.  bad_sign flips one permutation lane so the negative case exercises the
@@ -487,6 +502,38 @@ case_qfmul_metadata(void)
 }
 
 static void
+case_unary_metadata(void)
+{
+   nir_shader *nir = build_unary_map_scalar();
+   struct r300_compute_admission adm;
+   struct r300_compute_unary_map_pattern umap = {0};
+   struct r300_compute_binary_map_pattern binmap = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "scalar unary affine-map kernel admits");
+   r300_nir_detect_unary_map(nir, &umap);
+   CHECK(umap.is_unary_map, "unary affine-map shape detected");
+   CHECK(umap.mul_const == 2.0f, "unary-map metadata records c0 scale 2.0");
+   CHECK(umap.add_const == 1.0f, "unary-map metadata records c1 bias 1.0");
+   CHECK(umap.value_components == 1, "unary-map metadata records scalar width");
+   CHECK(umap.value_bit_size == 32, "unary-map metadata records 32-bit lane");
+   CHECK(umap.value_is_float, "unary-map metadata records float result");
+   /* One load means it is not the two-input binary-map shape. */
+   r300_nir_detect_binary_map(nir, &binmap);
+   CHECK(!binmap.is_binary_map, "unary-map shape is not a binary map");
+   ralloc_free(nir);
+
+   /* A genuine two-input binary map must NOT match the unary detector. */
+   nir_shader *bin = build_binary_map_f32vec4();
+   struct r300_compute_unary_map_pattern not_unary = {0};
+   prepare_detect_shader(bin);
+   r300_nir_detect_unary_map(bin, &not_unary);
+   CHECK(!not_unary.is_unary_map, "two-input binary map rejected by unary detector");
+   ralloc_free(bin);
+}
+
+static void
 case_qmul_metadata(void)
 {
    nir_shader *nir = build_qmul_form(false);
@@ -698,6 +745,7 @@ main(void)
    case_identity_metadata();
    case_binary_metadata();
    case_qfmul_metadata();
+   case_unary_metadata();
    case_qmul_metadata();
    case_qrotate_metadata();
    case_qconj_metadata();

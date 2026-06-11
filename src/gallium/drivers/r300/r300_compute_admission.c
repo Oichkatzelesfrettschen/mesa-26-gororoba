@@ -318,6 +318,160 @@ r300_nir_detect_binary_map(const nir_shader *s,
       store, nir_op_infos[alu->op].output_type);
 }
 
+/* Read the scalar float constant feeding ALU operand i, honouring its swizzle.
+ * Returns false when the operand is not a compile-time constant. */
+static bool
+unary_alu_src_fconst(const nir_alu_instr *alu, unsigned i, float *v)
+{
+   if (!nir_src_is_const(alu->src[i].src))
+      return false;
+   *v = nir_src_comp_as_float(alu->src[i].src, alu->src[i].swizzle[0]);
+   return true;
+}
+
+static inline const nir_def *
+unary_alu_src_def(const nir_alu_instr *alu, unsigned i)
+{
+   return alu->src[i].src.ssa;
+}
+
+/* Single-input affine unary-map detector.  Mirrors the identity-map walk (one
+ * store_ssbo + one load_ssbo) but the store value is an affine ALU of the load
+ * with constant scale c0 and bias c1, not the load def itself.  Three forms:
+ *   ffma(load, c0, c1)               -> c0, c1 captured
+ *   fadd(fmul(load, c0), c1)         -> c0, c1 captured
+ *   fmul(load, c0)                   -> c1 = 0
+ *   fadd(load, c1)                   -> c0 = 1
+ * Each form's mul/add operands are commutative, so both operand orders match.
+ * Pure read-only NIR walk. */
+void
+r300_nir_detect_unary_map(const nir_shader *s,
+                          struct r300_compute_unary_map_pattern *out)
+{
+   out->is_unary_map        = false;
+   out->input_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+   out->mul_const           = 1.0f;
+   out->add_const           = 0.0f;
+   out->value_components    = 0;
+   out->value_bit_size      = 0;
+   out->value_is_float      = false;
+
+   const nir_intrinsic_instr *store = NULL;
+   const nir_intrinsic_instr *load  = NULL;
+   unsigned store_count = 0;
+   unsigned load_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               load = intr;
+               load_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 1)
+      return;
+   if (!store->src[0].ssa)
+      return;
+
+   /* The store value must be an ALU op (a plain load def is the identity-map
+    * case r300_nir_detect_identity_map handles). */
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!alu)
+      return;
+
+   const nir_def *load_def = &load->def;
+   float c0 = 1.0f, c1 = 0.0f;
+   bool matched = false;
+
+   if (alu->op == nir_op_ffma) {
+      /* ffma(a, b, c) = a*b + c: one of a,b is the load, the other is c0; c=c1. */
+      float k;
+      if (unary_alu_src_def(alu, 0) == load_def &&
+          unary_alu_src_fconst(alu, 1, &k) && unary_alu_src_fconst(alu, 2, &c1)) {
+         c0 = k;
+         matched = true;
+      } else if (unary_alu_src_def(alu, 1) == load_def &&
+                 unary_alu_src_fconst(alu, 0, &k) && unary_alu_src_fconst(alu, 2, &c1)) {
+         c0 = k;
+         matched = true;
+      }
+   } else if (alu->op == nir_op_fmul) {
+      /* fmul(load, c0): pure scale, c1 = 0. */
+      float k;
+      if (unary_alu_src_def(alu, 0) == load_def && unary_alu_src_fconst(alu, 1, &k)) {
+         c0 = k;
+         matched = true;
+      } else if (unary_alu_src_def(alu, 1) == load_def && unary_alu_src_fconst(alu, 0, &k)) {
+         c0 = k;
+         matched = true;
+      }
+   } else if (alu->op == nir_op_fadd) {
+      /* fadd(X, c1): X is either the load (c0 = 1) or fmul(load, c0). */
+      float k;
+      const nir_def *x = NULL;
+      if (unary_alu_src_fconst(alu, 1, &k)) {
+         c1 = k;
+         x = unary_alu_src_def(alu, 0);
+      } else if (unary_alu_src_fconst(alu, 0, &k)) {
+         c1 = k;
+         x = unary_alu_src_def(alu, 1);
+      }
+      if (x == load_def) {
+         c0 = 1.0f;
+         matched = true;
+      } else if (x) {
+         const nir_alu_instr *mul = nir_def_as_alu_or_null((nir_def *)x);
+         if (mul && mul->op == nir_op_fmul) {
+            float m;
+            if (unary_alu_src_def(mul, 0) == load_def &&
+                unary_alu_src_fconst(mul, 1, &m)) {
+               c0 = m;
+               matched = true;
+            } else if (unary_alu_src_def(mul, 1) == load_def &&
+                       unary_alu_src_fconst(mul, 0, &m)) {
+               c0 = m;
+               matched = true;
+            }
+         }
+      }
+   }
+
+   if (!matched)
+      return;
+
+   /* Full write mask, as the identity/binary detectors require: the carrier
+    * copies whole elements, so a partial-lane store would carry stale bytes. */
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return;
+
+   /* Capture constant bindings when present; the orchestrator's positional
+    * descriptor-set fallback resolves them otherwise (input 0, output 1; an
+    * in-place kernel binds the same buffer to both). */
+   if (nir_src_is_const(load->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->value_components = store->num_components;
+   out->value_bit_size = store->src[0].ssa->bit_size;
+   out->value_is_float = intrinsic_base_type_is_float(
+      store, nir_op_infos[alu->op].output_type);
+   out->mul_const = c0;
+   out->add_const = c1;
+   out->is_unary_map = true;
+}
+
 /* Blend-add reduction detector.  Recognises the histogram / accumulator shape
  * that lowers to RB3D COMB_FCN_ADD blend accumulation:
  *
