@@ -147,6 +147,16 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
     * mid-process.  The physical-device value is the single source of truth. */
    device->hybrid_compute_enabled = pdevice->hybrid_compute_enabled;
 
+   /* R300VK_DEBUG: comma-separated draw-path isolation switches, parsed once
+    * so the replay hot path reads device flags only.  no_overlay binds only
+    * the pipeline's static CSOs (dynamic-state shadow ignored); no_topo
+    * replays the recorded per-draw topology without the dynamic override;
+    * log_draws emits one stderr line per replayed draw. */
+   const char *dbg = getenv("R300VK_DEBUG");
+   device->dbg_no_dyn_overlay   = dbg && strstr(dbg, "no_overlay");
+   device->dbg_no_topo_override = dbg && strstr(dbg, "no_topo");
+   device->dbg_log_draws        = dbg && strstr(dbg, "log_draws");
+
    *pDevice = r300vk_device_to_handle(device);
    return VK_SUCCESS;
 
