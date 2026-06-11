@@ -221,8 +221,11 @@ struct r300vk_cmd_clear_color_image {
  * render pass with the rect clipped to each r300vk tile.  Depth/stencil aspects
  * are intentionally ignored until r300vk has a depth/stencil attachment model. */
 struct r300vk_cmd_clear_attachments {
-   VkClearColorValue color;
-   VkRect2D          rect;
+   VkImageAspectFlags aspect;
+   VkClearColorValue  color;
+   float              depth;
+   uint32_t           stencil;
+   VkRect2D           rect;
 };
 
 /* One vkCmdFillBuffer: fill [offset, offset+size) of a buffer with a repeated

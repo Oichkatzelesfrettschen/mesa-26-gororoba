@@ -1038,7 +1038,9 @@ r300vk_CmdClearAttachments(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
 
    for (uint32_t attachment = 0; attachment < attachmentCount; attachment++) {
-      if (!(pAttachments[attachment].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
+      const VkImageAspectFlags aspect = pAttachments[attachment].aspectMask;
+      if (!(aspect & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT |
+                      VK_IMAGE_ASPECT_STENCIL_BIT)))
          continue;
 
       for (uint32_t rect = 0; rect < rectCount; rect++) {
@@ -1046,9 +1048,14 @@ r300vk_CmdClearAttachments(VkCommandBuffer commandBuffer,
          if (!e)
             return;
 
-         e->type                    = R300VK_CMD_CLEAR_ATTACHMENTS;
-         e->clear_attachments.color = pAttachments[attachment].clearValue.color;
-         e->clear_attachments.rect  = pRects[rect].rect;
+         e->type                      = R300VK_CMD_CLEAR_ATTACHMENTS;
+         e->clear_attachments.aspect  = aspect;
+         e->clear_attachments.color   = pAttachments[attachment].clearValue.color;
+         e->clear_attachments.depth   =
+            pAttachments[attachment].clearValue.depthStencil.depth;
+         e->clear_attachments.stencil =
+            pAttachments[attachment].clearValue.depthStencil.stencil;
+         e->clear_attachments.rect    = pRects[rect].rect;
       }
    }
 }

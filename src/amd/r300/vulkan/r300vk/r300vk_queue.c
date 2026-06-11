@@ -1003,6 +1003,13 @@ r300vk_dyn_overlay_apply(struct r300vk_device *device,
 {
    if (!ov->dirty || !pl)
       return;
+   if (device->dbg_no_dyn_overlay) {
+      struct pipe_context *dbg_pipe = device->pipe;
+      dbg_pipe->bind_rasterizer_state(dbg_pipe, pl->rasterizer_cso);
+      dbg_pipe->bind_depth_stencil_alpha_state(dbg_pipe, pl->dsa_cso);
+      ov->dirty = false;
+      return;
+   }
 
    struct pipe_context *pipe = device->pipe;
    const uint32_t eff = ov->flags & pl->dyn_mask;
@@ -1154,7 +1161,7 @@ r300vk_replay_draw(struct r300vk_device *device,
     * vkCmdSetPrimitiveTopology in effect overrides it when the pipeline
     * declared topology dynamic. */
    const bool dyn_topology =
-      bound_pipeline && dyn &&
+      bound_pipeline && dyn && !device->dbg_no_topo_override &&
       (dyn->flags & bound_pipeline->dyn_mask & R300VK_DYN_TOPOLOGY);
    const VkPrimitiveTopology draw_topology =
       dyn_topology ? dyn->topology
@@ -1311,6 +1318,14 @@ r300vk_replay_draw(struct r300vk_device *device,
          r300vk_bind_input_attachment(device, bound_pipeline, last_bind_dsets,
                                       &bound_tex, ia_inv_extent);
 
+      if (device->dbg_log_draws)
+         fprintf(stderr,
+                 "r300vk draw: mode=%u count=%u start=%u inst=%u topo=%d "
+                 "dyn_topo=%d dyn_mask=0x%x dyn_flags=0x%x zs=%d\n",
+                 info.mode, draw.count, draw.start, draw_instances,
+                 (int)draw_topology, dyn_topology ? 1 : 0,
+                 bound_pipeline ? bound_pipeline->dyn_mask : 0,
+                 dyn ? dyn->flags : 0, render_pass_has_zs ? 1 : 0);
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
       r300vk_unbind_descriptor_textures(device, &bound_tex);
    }
@@ -1479,7 +1494,8 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
                                 uint32_t tile_width,
                                 uint32_t tile_height)
 {
-   if (!render_pass || !render_pass->begin_rp.color_image)
+   if (!render_pass ||
+       (!render_pass->begin_rp.color_image && !render_pass->begin_rp.ds_image))
       return;
 
    const struct r300vk_image *img = render_pass->begin_rp.color_image;
@@ -1499,25 +1515,58 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
    if (clip_max_x <= clip_min_x || clip_max_y <= clip_min_y)
       return;
 
-   struct pipe_surface surf;
-   memset(&surf, 0, sizeof(surf));
-   surf.texture     = img->tiles[tile_pass] ? img->tiles[tile_pass] :
-                                             img->resource;
-   surf.format      = render_pass->begin_rp.color_format;
-   surf.level       = 0;
-   surf.first_layer = 0;
-   surf.last_layer  = 0;
+   if ((clear->aspect & VK_IMAGE_ASPECT_COLOR_BIT) && img) {
+      struct pipe_surface surf;
+      memset(&surf, 0, sizeof(surf));
+      surf.texture     = img->tiles[tile_pass] ? img->tiles[tile_pass] :
+                                                img->resource;
+      surf.format      = render_pass->begin_rp.color_format;
+      surf.level       = 0;
+      surf.first_layer = 0;
+      surf.last_layer  = 0;
 
-   union pipe_color_union color;
-   memset(&color, 0, sizeof(color));
-   memcpy(&color, &clear->color, sizeof(clear->color));
+      union pipe_color_union color;
+      memset(&color, 0, sizeof(color));
+      memcpy(&color, &clear->color, sizeof(clear->color));
 
-   device->pipe->clear_render_target(device->pipe, &surf, &color,
-                                     (unsigned)(clip_min_x - tile_min_x),
-                                     (unsigned)(clip_min_y - tile_min_y),
-                                     (unsigned)(clip_max_x - clip_min_x),
-                                     (unsigned)(clip_max_y - clip_min_y),
-                                     false);
+      device->pipe->clear_render_target(device->pipe, &surf, &color,
+                                        (unsigned)(clip_min_x - tile_min_x),
+                                        (unsigned)(clip_min_y - tile_min_y),
+                                        (unsigned)(clip_max_x - clip_min_x),
+                                        (unsigned)(clip_max_y - clip_min_y),
+                                        false);
+   }
+
+   /* Depth/stencil aspect: clear the matching zsbuf tile region.  zink
+    * defers GL clears and applies them as vkCmdClearAttachments once draws
+    * arrive, so a missing depth clear leaves the fresh tile at ~0.0 and a
+    * LESS test kills every fragment. */
+   const struct r300vk_image *ds = render_pass->begin_rp.ds_image;
+   if ((clear->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT |
+                         VK_IMAGE_ASPECT_STENCIL_BIT)) && ds &&
+       tile_pass < r300vk_image_tile_count(ds)) {
+      struct pipe_surface zsurf;
+      memset(&zsurf, 0, sizeof(zsurf));
+      zsurf.texture     = ds->tiles[tile_pass] ? ds->tiles[tile_pass]
+                                               : ds->resource;
+      zsurf.format      = render_pass->begin_rp.ds_format;
+      zsurf.level       = 0;
+      zsurf.first_layer = 0;
+      zsurf.last_layer  = 0;
+
+      unsigned zs_flags = 0;
+      if (clear->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)
+         zs_flags |= PIPE_CLEAR_DEPTH;
+      if (clear->aspect & VK_IMAGE_ASPECT_STENCIL_BIT)
+         zs_flags |= PIPE_CLEAR_STENCIL;
+      device->pipe->clear_depth_stencil(device->pipe, &zsurf, zs_flags,
+                                        clear->depth, clear->stencil,
+                                        (unsigned)(clip_min_x - tile_min_x),
+                                        (unsigned)(clip_min_y - tile_min_y),
+                                        (unsigned)(clip_max_x - clip_min_x),
+                                        (unsigned)(clip_max_y - clip_min_y),
+                                        false);
+   }
 }
 
 /* Executes one host-side transfer/event command (buffer fill, buffer copy,

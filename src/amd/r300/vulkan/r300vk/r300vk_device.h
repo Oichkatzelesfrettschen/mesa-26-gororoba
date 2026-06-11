@@ -62,6 +62,11 @@ struct r300vk_device {
    struct r300vk_queue    queue;
    bool                   use_cs_backend;
    bool                   hybrid_compute_enabled;
+   /* R300VK_DEBUG comma-list, parsed once at device create: draw-path
+    * isolation switches for live triage on target hardware. */
+   bool                   dbg_no_dyn_overlay;   /* "no_overlay": static CSOs only */
+   bool                   dbg_no_topo_override; /* "no_topo": recorded topology only */
+   bool                   dbg_log_draws;        /* "log_draws": per-draw state line */
 
    /* Every live VkDeviceMemory, linked through r300vk_device_memory::
     * device_link.  The submit path walks it to give HOST_COHERENT semantics
