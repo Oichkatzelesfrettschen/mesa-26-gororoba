@@ -755,6 +755,20 @@ r300vk_compile_shader(struct r300vk_device *device,
     * promotion passes own them. */
    NIR_PASS(_, nir, nir_lower_global_vars_to_local);
 
+   /* r300 has no indexable register file, so a dynamic index into a local
+    * array or matrix (mat3 m; m[i], or float a[4]; a[i]) cannot be emitted:
+    * the function_temp indirect deref reaches nir_lower_locals_to_regs inside
+    * nir_to_rc, which cannot represent indirect register addressing, and the
+    * compile aborts.  The native GL path never hits this -- st/mesa lowers
+    * function_temp indirects up front because r300 advertises no indirect-temp
+    * addressing -- but the SPIR-V path bypasses st, so the deref survives.
+    * Lower it here to the same if/else selection trees nir_to_rc already
+    * applies to shader_in, for both local temps and (dynamically-indexed)
+    * shader outputs.  Runs before the constant/UBO lowering so a lowered
+    * select chain sees the original loads. */
+   NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+            nir_var_function_temp | nir_var_shader_out, UINT32_MAX);
+
    /* Lower a fragment subpassLoad to a normalized texture() (r300 has no
     * texelFetch) before the constant/UBO lowering below.  It injects inv_extent
     * at CONST[0], so the collision check below rejects an input-attachment shader
