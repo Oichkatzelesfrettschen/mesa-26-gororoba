@@ -413,6 +413,11 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * wsi_device_entrypoints, already layered into the device dispatch.
     * Presentation copies the CPU-reachable swapchain image out via xcb-shm. */
    .KHR_swapchain = true,
+   /* VK_EXT_extended_dynamic_state: zink's draw path loads
+    * vkCmdBindVertexBuffers2 unconditionally and, with the extension present,
+    * drives cull/front-face/topology/depth/stencil through vkCmdSet*; all of
+    * those record R300VK_CMD_SET_DYNAMIC_STATE entries the replay merges. */
+   .EXT_extended_dynamic_state = true,
 };
 
 static void

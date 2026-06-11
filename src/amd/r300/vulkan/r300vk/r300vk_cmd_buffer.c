@@ -339,6 +339,184 @@ r300vk_CmdBindPipeline(VkCommandBuffer commandBuffer,
    cmd->bound_pipeline  = pl;
 }
 
+
+/* Dynamic-state recording.  Each vkCmdSet* appends one R300VK_CMD_SET_DYNAMIC_
+ * STATE entry naming its field in flags; the replay walker merges them in
+ * order.  VK_EXT_extended_dynamic_state is required in practice: zink loads
+ * vkCmdBindVertexBuffers2 unconditionally (its binding-stride flag is
+ * hardwired) and drives cull/front-face/topology/depth/stencil dynamically. */
+static struct r300vk_cmd_set_dynamic *
+r300vk_cmd_append_dyn(struct r300vk_cmd_buffer *cmd, uint32_t flag)
+{
+   struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+   if (!e) return NULL;
+   memset(&e->set_dyn, 0, sizeof(e->set_dyn));
+   e->type = R300VK_CMD_SET_DYNAMIC_STATE;
+   e->set_dyn.flags = flag;
+   return &e->set_dyn;
+}
+
+#define R300VK_DYN_RECORD(flag) \
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer); \
+   struct r300vk_cmd_set_dynamic *d = r300vk_cmd_append_dyn(cmd, flag); \
+   if (!d) return
+
+void
+r300vk_CmdSetCullMode(VkCommandBuffer commandBuffer, VkCullModeFlags cullMode)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_CULL);
+   d->cull = cullMode;
+}
+
+void
+r300vk_CmdSetFrontFace(VkCommandBuffer commandBuffer, VkFrontFace frontFace)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_FRONT_FACE);
+   d->front = frontFace;
+}
+
+void
+r300vk_CmdSetPrimitiveTopology(VkCommandBuffer commandBuffer,
+                               VkPrimitiveTopology primitiveTopology)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_TOPOLOGY);
+   d->topology = primitiveTopology;
+}
+
+void
+r300vk_CmdSetDepthTestEnable(VkCommandBuffer commandBuffer, VkBool32 depthTestEnable)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_DEPTH_TEST);
+   d->depth_test = depthTestEnable;
+}
+
+void
+r300vk_CmdSetDepthWriteEnable(VkCommandBuffer commandBuffer, VkBool32 depthWriteEnable)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_DEPTH_WRITE);
+   d->depth_write = depthWriteEnable;
+}
+
+void
+r300vk_CmdSetDepthCompareOp(VkCommandBuffer commandBuffer, VkCompareOp depthCompareOp)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_DEPTH_OP);
+   d->depth_op = depthCompareOp;
+}
+
+void
+r300vk_CmdSetDepthBoundsTestEnable(VkCommandBuffer commandBuffer,
+                                   VkBool32 depthBoundsTestEnable)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_DEPTH_BOUNDS);
+   d->depth_bounds = depthBoundsTestEnable;
+}
+
+void
+r300vk_CmdSetStencilTestEnable(VkCommandBuffer commandBuffer, VkBool32 stencilTestEnable)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_STENCIL_TEST);
+   d->stencil_test = stencilTestEnable;
+}
+
+void
+r300vk_CmdSetStencilOp(VkCommandBuffer commandBuffer, VkStencilFaceFlags faceMask,
+                       VkStencilOp failOp, VkStencilOp passOp,
+                       VkStencilOp depthFailOp, VkCompareOp compareOp)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_STENCIL_OP);
+   d->face_mask = faceMask;
+   d->sfail = failOp; d->spass = passOp;
+   d->sdepth_fail = depthFailOp; d->scompare = compareOp;
+}
+
+void
+r300vk_CmdSetStencilCompareMask(VkCommandBuffer commandBuffer,
+                                VkStencilFaceFlags faceMask, uint32_t compareMask)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_STENCIL_CMP_MASK);
+   d->face_mask = faceMask;
+   d->cmp_mask = compareMask;
+}
+
+void
+r300vk_CmdSetStencilWriteMask(VkCommandBuffer commandBuffer,
+                              VkStencilFaceFlags faceMask, uint32_t writeMask)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_STENCIL_WR_MASK);
+   d->face_mask = faceMask;
+   d->wr_mask = writeMask;
+}
+
+void
+r300vk_CmdSetStencilReference(VkCommandBuffer commandBuffer,
+                              VkStencilFaceFlags faceMask, uint32_t reference)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_STENCIL_REF);
+   d->face_mask = faceMask;
+   d->ref = reference;
+}
+
+void
+r300vk_CmdSetDepthBias(VkCommandBuffer commandBuffer, float depthBiasConstantFactor,
+                       float depthBiasClamp, float depthBiasSlopeFactor)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_DEPTH_BIAS);
+   d->bias_const = depthBiasConstantFactor;
+   d->bias_clamp = depthBiasClamp;
+   d->bias_slope = depthBiasSlopeFactor;
+}
+
+void
+r300vk_CmdSetDepthBiasEnable(VkCommandBuffer commandBuffer, VkBool32 depthBiasEnable)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_DEPTH_BIAS_EN);
+   d->bias_enable = depthBiasEnable;
+}
+
+void
+r300vk_CmdSetBlendConstants(VkCommandBuffer commandBuffer, const float blendConstants[4])
+{
+   R300VK_DYN_RECORD(R300VK_DYN_BLEND_CONST);
+   memcpy(d->blend_const, blendConstants, sizeof(d->blend_const));
+}
+
+void
+r300vk_CmdSetLineWidth(VkCommandBuffer commandBuffer, float lineWidth)
+{
+   R300VK_DYN_RECORD(R300VK_DYN_LINE_WIDTH);
+   d->line_width = lineWidth;
+}
+
+/* The WithCount forms carry the same single-slot payload as the 1.0 calls. */
+void
+r300vk_CmdSetViewportWithCount(VkCommandBuffer commandBuffer,
+                               uint32_t viewportCount, const VkViewport *pViewports)
+{
+   r300vk_CmdSetViewport(commandBuffer, 0, viewportCount, pViewports);
+}
+
+void
+r300vk_CmdSetScissorWithCount(VkCommandBuffer commandBuffer,
+                              uint32_t scissorCount, const VkRect2D *pScissors)
+{
+   r300vk_CmdSetScissor(commandBuffer, 0, scissorCount, pScissors);
+}
+
+/* The sizes are robustness ranges the replay's buffer-size snapshot already
+ * bounds, and under zink's ZINK_DYNAMIC_STATE template the strides equal the
+ * bound pipeline's vertex-element strides, which the velems CSO carries; the
+ * 1.0 recording therefore captures everything the replay consumes. */
+void
+r300vk_CmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t firstBinding,
+                             uint32_t bindingCount, const VkBuffer *pBuffers,
+                             const VkDeviceSize *pOffsets, const VkDeviceSize *pSizes,
+                             const VkDeviceSize *pStrides)
+{
+   r300vk_CmdBindVertexBuffers(commandBuffer, firstBinding, bindingCount,
+                               pBuffers, pOffsets);
+}
+
 void
 r300vk_CmdSetViewport(VkCommandBuffer commandBuffer,
                        uint32_t firstViewport,
