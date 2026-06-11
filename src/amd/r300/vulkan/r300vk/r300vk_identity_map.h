@@ -114,6 +114,15 @@ r300vk_qmul_dispatch_replay(struct r300vk_device *device,
                             const struct r300vk_cmd_dispatch *dispatch,
                             const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* QDIV (quaternion division) orchestrator entry: the same 2-in / 1-out FP16-RT /
+ * FP32-readback core as QMUL, with the dividend a and divisor b as the two inputs;
+ * pl->fs_cso holds the synthesized division FS (r300vk_build_qdiv_fs_nir). */
+bool
+r300vk_qdiv_dispatch_replay(struct r300vk_device *device,
+                            const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* QROTATE (quaternion rotation sandwich) orchestrator entry: same FP16-RT /
  * FP32-readback 2-in / 1-out core as QMUL, with q and v as the two inputs;
  * pl->fs_cso holds the synthesized sandwich FS (r300vk_build_qrotate_fs_nir). */

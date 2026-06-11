@@ -96,6 +96,14 @@ struct r300vk_pipeline {
     * the kernel's vec4 FP32 output buffer. */
    struct r300_compute_qmul_pattern qmul;
 
+   /* Quaternion division (QDIV) kernel detected at pipeline-create time:
+    * out[gid] = a[gid] / b[gid] = a * inv(b), inv(b) = conj(b)*rcp(dot(b,b)).  The
+    * dim-4 sibling of ODIV, but one pass: the synthesized FS
+    * (r300vk_build_qdiv_fs_nir) emits a single Hamilton product over the scaled
+    * conjugate (four DP4s plus the US RCP) to an FP16 render target, unpacked into
+    * the kernel's vec4 FP32 output buffer.  Same two-in/one-out dispatch as QMUL. */
+   struct r300_compute_qdiv_pattern qdiv;
+
    /* Quaternion rotation (QROTATE) kernel detected at pipeline-create time:
     * out[gid] = q[gid] * embed(v[gid]) * conj(q[gid]), the sandwich = two Hamilton
     * products = eight DP4s.  Lowered to a fullscreen draw whose synthesized FS

@@ -361,6 +361,21 @@ struct r300_compute_qmul_pattern {
 void r300_nir_detect_qmul_pattern(const struct nir_shader *s,
                                   struct r300_compute_qmul_pattern *out);
 
+/* Quaternion division (QDIV): out = a / b = a * inv(b), inv(b) = conj(b)/|b|^2.
+ * Two input quaternions a,b and one output; the divisor b is inverted via the
+ * scalar reciprocal r = 1/dot(b,b) (the US RCP) scaling conj(b), then the Hamilton
+ * product a*inv(b) (four DP4s).  Bindings stay 0 when the sources are not
+ * constants (positional fallback a=0, b=1, output=2). */
+struct r300_compute_qdiv_pattern {
+   bool       is_qdiv;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qdiv_pattern(const struct nir_shader *s,
+                                  struct r300_compute_qdiv_pattern *out);
+
 /* Quaternion rotation (QROTATE) pattern: out[gid] = q[gid] * embed(v[gid]) *
  * conj(q[gid]), the sandwich that rotates the vec3 v by the unit quaternion q.
  * The admissible shape is two nested canonical Hamilton products: the store is

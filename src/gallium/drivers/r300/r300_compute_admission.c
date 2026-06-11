@@ -2584,6 +2584,98 @@ r300_nir_detect_qfmmul_pattern(const nir_shader *s,
 }
 
 void
+r300_nir_detect_qdiv_pattern(const nir_shader *s,
+                             struct r300_compute_qdiv_pattern *out)
+{
+   out->is_qdiv              = false;
+   out->input_a_ssbo_binding = 0;
+   out->input_b_ssbo_binding = 0;
+   out->output_ssbo_binding  = 0;
+
+   const nir_intrinsic_instr *load[2], *store[1];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 2, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 2 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]))
+      return;
+
+   /* a / b = a * inv(b), inv(b) = conj(b) * (1/dot(b,b)).  Loads in declaration
+    * order: a = dividend, b = divisor. */
+   const nir_def *a = &load[0]->def, *b = &load[1]->def;
+
+   /* Find the reciprocal r = 1 / dot(b,b).  A single self-dot reciprocal is the
+    * signature of quaternion division -- the octonion ODIV reciprocates a sum of
+    * two self-dots, so the single term distinguishes the dim-4 divide.  Only a
+    * divide produces it; matching it plus the Hamilton product of a against the
+    * scaled conjugate makes the admission sound. */
+   const nir_def *r = NULL;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op != nir_op_fdiv)
+               continue;
+            nir_def *num = alu->src[0].src.ssa;
+            if (!nir_def_is_const(num) ||
+                nir_def_as_load_const(num)->value[alu->src[0].swizzle[0]].f32 != 1.0f)
+               continue;
+            if (odiv_is_self_dot(alu->src[1].src.ssa, b))
+               r = &alu->def;
+         }
+      }
+   }
+   if (!r)
+      return;
+
+   /* The inverse ib = conj(b) * r.xxxx: conj(b) is the Hamilton row-0 permutation
+    * of b (w positive, x/y/z negated) and r broadcasts across all four lanes. */
+   const nir_def *ib = NULL;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *mul = nir_instr_as_alu(instr);
+            if (mul->op != nir_op_fmul)
+               continue;
+            const nir_alu_src *other;
+            if (odiv_is_scalar_splat(&mul->src[1], r))
+               other = &mul->src[0];
+            else if (odiv_is_scalar_splat(&mul->src[0], r))
+               other = &mul->src[1];
+            else
+               continue;
+            bool ident = true;
+            for (unsigned k = 0; k < 4; k++)
+               if (other->swizzle[k] != k)
+                  ident = false;
+            if (ident && omul_match_perm(other->src.ssa, b, r300_hamilton_rows[0]))
+               ib = &mul->def;
+         }
+      }
+   }
+   if (!ib)
+      return;
+
+   /* out = a * ib, the Hamilton product (four sign-permuted DP4s). */
+   if (!qmul_match(store[0]->src[0].ssa, a, ib))
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_qdiv = true;
+}
+
+void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
 {

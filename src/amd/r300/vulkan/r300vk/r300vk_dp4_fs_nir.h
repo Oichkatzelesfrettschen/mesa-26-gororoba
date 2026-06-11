@@ -39,6 +39,13 @@ nir_shader *r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
  * output format -- not the DP4 path's 3-byte RGBA8 scalar encode. */
 nir_shader *r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts);
 
+/* Build the quaternion-division fragment program (QDIV) as standalone NIR.  Samples
+ * the dividend a (binding 0) and divisor b (binding 1) and writes a*inv(b),
+ * inv(b) = conj(b)*rcp(dot(b,b)) -- one Hamilton product (four DP4s) over the scaled
+ * conjugate, one pass (a quaternion divide stays under the 64-ALU limit, unlike the
+ * octonion ODIV which splits across two passes) -- to the FP16 color export. */
+nir_shader *r300vk_build_qdiv_fs_nir(const nir_shader_compiler_options *opts);
+
 /* Build the quaternion-rotation fragment program (QROTATE_SANDWICH) as standalone
  * NIR.  Samples a unit quaternion q (binding 0) and a vector v (binding 1) and
  * writes q * embed(v) * conj(q) -- two Hamilton products, eight DP4s -- to the
