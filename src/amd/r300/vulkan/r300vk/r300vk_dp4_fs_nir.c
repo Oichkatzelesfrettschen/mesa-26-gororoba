@@ -704,3 +704,41 @@ r300vk_build_qdiv_fs_nir(const nir_shader_compiler_options *opts)
    store_color_at(&b, out, FRAG_RESULT_COLOR, "color");
    return fs_finalize(&b);
 }
+
+/* MAT4VEC: the general 4x4 vertex transform out = M * v, component i =
+ * dot(row_i, v) -- four DP4s, the absent vertex FPU's core operation run on the
+ * present FP24 fragment ALU.  The matrix M is BROADCAST (the same four rows for
+ * every vertex), so it is sampled at stage 0 from a four-texel-wide constant
+ * texture at the four fixed texel centres (k+0.5)/4, which NEAREST resolves to
+ * row k exactly; the per-element vertex v is sampled at stage 1 at the
+ * fullscreen interpolated coordinate (the element this fragment maps to).  The
+ * transformed position writes to the FP16 colour export, unpacked into the
+ * kernel's vec4 FP32 output -- the same readback as QMUL. */
+nir_shader *
+r300vk_build_mat4vec_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_mat4vec");
+   nir_def *coord = make_fs_coord(&b);
+
+   /* One matrix sampler (stage 0); sample its four row texels at the centres. */
+   nir_variable *msamp = nir_variable_create(
+      b.shader, nir_var_uniform,
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+      "mat");
+   msamp->data.binding = 0;
+   nir_deref_instr *md = nir_build_deref_var(&b, msamp);
+   nir_def *row[4];
+   for (unsigned i = 0; i < 4; i++) {
+      nir_def *mc = nir_imm_vec2(&b, (i + 0.5f) / 4.0f, 0.5f);
+      row[i] = nir_tex(&b, mc, .texture_deref = md, .sampler_deref = md);
+   }
+
+   /* The per-element vertex at stage 1, fullscreen coord. */
+   nir_def *v = sample_stage(&b, coord, 1);
+
+   nir_def *out = nir_vec4(&b, nir_fdot(&b, row[0], v), nir_fdot(&b, row[1], v),
+                           nir_fdot(&b, row[2], v), nir_fdot(&b, row[3], v));
+   store_color_at(&b, out, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}

@@ -46,6 +46,13 @@ nir_shader *r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts);
  * octonion ODIV which splits across two passes) -- to the FP16 color export. */
 nir_shader *r300vk_build_qdiv_fs_nir(const nir_shader_compiler_options *opts);
 
+/* Build the general 4x4 vertex-transform fragment program (MAT4VEC) as standalone
+ * NIR.  Samples the broadcast matrix M at sampler binding 0 (a four-texel constant,
+ * row i at texel i) and the per-element vertex v at binding 1, and writes
+ * vec4(dot(row_i, v)) -- four DP4s, the vertex FPU's transform on the FP24 ALU --
+ * to the FP16 colour export. */
+nir_shader *r300vk_build_mat4vec_fs_nir(const nir_shader_compiler_options *opts);
+
 /* Build the quaternion-rotation fragment program (QROTATE_SANDWICH) as standalone
  * NIR.  Samples a unit quaternion q (binding 0) and a vector v (binding 1) and
  * writes q * embed(v) * conj(q) -- two Hamilton products, eight DP4s -- to the

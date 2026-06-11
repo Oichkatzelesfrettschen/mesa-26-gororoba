@@ -2676,6 +2676,103 @@ r300_nir_detect_qdiv_pattern(const nir_shader *s,
 }
 
 void
+r300_nir_detect_mat4vec_pattern(const nir_shader *s,
+                                struct r300_compute_mat4vec_pattern *out)
+{
+   out->is_mat4vec          = false;
+   out->matrix_ssbo_binding = 0;
+   out->vertex_ssbo_binding = 1;
+   out->output_ssbo_binding = 2;
+
+   const nir_intrinsic_instr *load[5], *store[1];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 5, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 5 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]))
+      return;
+
+   /* Store value = vec4 of four fdot4 lanes, each a (matrix row) . v with both
+    * operands identity-swizzled (the transform permutes nothing -- unlike the
+    * Hamilton product -- so a non-identity swizzle would change the dot). */
+   const nir_alu_instr *vec = nir_def_as_alu_or_null(store[0]->src[0].ssa);
+   if (!vec || vec->op != nir_op_vec4)
+      return;
+   const nir_alu_instr *dot[4];
+   for (unsigned lane = 0; lane < 4; lane++) {
+      dot[lane] = nir_def_as_alu_or_null(vec->src[lane].src.ssa);
+      if (!dot[lane] || dot[lane]->op != nir_op_fdot4)
+         return;
+      for (unsigned k = 0; k < 2; k++)
+         for (unsigned c = 0; c < 4; c++)
+            if (dot[lane]->src[k].swizzle[c] != c)
+               return;
+   }
+
+   /* The vertex v is the def common to all four dots; each matrix row is the
+    * other operand of its dot (fdot is commutative, so accept either order). */
+   const nir_def *v = NULL;
+   for (unsigned k = 0; k < 2 && !v; k++) {
+      const nir_def *cand = dot[0]->src[k].src.ssa;
+      bool in_all = true;
+      for (unsigned lane = 1; lane < 4; lane++)
+         if (dot[lane]->src[0].src.ssa != cand &&
+             dot[lane]->src[1].src.ssa != cand)
+            in_all = false;
+      if (in_all)
+         v = cand;
+   }
+   if (!v)
+      return;
+   const nir_def *rowdef[4];
+   for (unsigned lane = 0; lane < 4; lane++)
+      rowdef[lane] = (dot[lane]->src[0].src.ssa == v) ? dot[lane]->src[1].src.ssa
+                                                      : dot[lane]->src[0].src.ssa;
+
+   /* Map v and the four rows back to their load_ssbo intrinsics. */
+   const nir_intrinsic_instr *vload = NULL, *rload[4] = {NULL, NULL, NULL, NULL};
+   for (unsigned j = 0; j < 5; j++) {
+      if (&load[j]->def == v)
+         vload = load[j];
+      for (unsigned lane = 0; lane < 4; lane++)
+         if (&load[j]->def == rowdef[lane])
+            rload[lane] = load[j];
+   }
+   if (!vload)
+      return;
+   for (unsigned lane = 0; lane < 4; lane++)
+      if (!rload[lane])
+         return;
+
+   /* The four rows read constant byte offsets 0/16/32/48 from one binding -- the
+    * four contiguous vec4 rows of the broadcast matrix.  Each offset appears once. */
+   if (!nir_src_is_const(rload[0]->src[0]))
+      return;
+   uint32_t mbind = nir_src_as_uint(rload[0]->src[0]);
+   bool seen[4] = {false, false, false, false};
+   for (unsigned lane = 0; lane < 4; lane++) {
+      if (!nir_src_is_const(rload[lane]->src[0]) ||
+          nir_src_as_uint(rload[lane]->src[0]) != mbind)
+         return;
+      if (!nir_src_is_const(rload[lane]->src[1]))
+         return;
+      uint32_t off = nir_src_as_uint(rload[lane]->src[1]);
+      if (off % 16 != 0 || off / 16 > 3 || seen[off / 16])
+         return;
+      seen[off / 16] = true;
+   }
+
+   out->matrix_ssbo_binding = mbind;
+   if (nir_src_is_const(vload->src[0]))
+      out->vertex_ssbo_binding = nir_src_as_uint(vload->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_mat4vec = true;
+}
+
+void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)
 {

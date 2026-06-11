@@ -2164,6 +2164,104 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
    return ok;
 }
 
+/* MAT4VEC dispatch replay: the general 4x4 vertex transform out = M*v on the
+ * compute-as-raster substrate.  Unlike the per-element ops, the matrix is
+ * BROADCAST -- the same four rows for every vertex -- so it is wrapped as a 4x1
+ * sampler view (row i at texel i) at stage 0, while the vertices are wrapped at
+ * the dispatch extent at stage 1.  The synthesized FS (r300vk_build_mat4vec_fs_nir)
+ * samples the four rows at their fixed texel centres, dots each against the
+ * per-element vertex, and writes the transformed position to the FP16 RT,
+ * unpacked into the kernel's vec4 FP32 output -- the same FP16-RT/FP32-readback
+ * core as QMUL, via omul_run_pass with a single output. */
+bool
+r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
+                               const struct r300vk_pipeline *pl,
+                               const struct r300vk_cmd_dispatch *dispatch,
+                               const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso)
+      return false;
+   if (binds->first_set != 0)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   /* Three bindings: matrix, vertices, output.  The detector captures the matrix
+    * binding (and defaults vertices=1, output=2); if a lookup misses, fall back
+    * to the first three STORAGE_BUFFERs in declaration order. */
+   uint32_t bind[3] = { pl->mat4vec.matrix_ssbo_binding,
+                        pl->mat4vec.vertex_ssbo_binding,
+                        pl->mat4vec.output_ssbo_binding };
+   const struct r300vk_descriptor *desc[3];
+   struct r300vk_buffer *buf[3];
+   for (unsigned i = 0; i < 3; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer) {
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+         desc[i] = find_descriptor_by_binding(set, bind[i]);
+         if (!desc[i] || !desc[i]->buf.buffer)
+            return false;
+      }
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0 || total > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
+   /* views[0] = the broadcast matrix as a 4x1 texture (one texel per row);
+    * views[1] = the per-element vertices at the dispatch extent. */
+   views[0] = r300vk_identity_map_wrap_input_as_sampler_view(
+      device, buf[0]->resource, (unsigned)desc[0]->buf.offset,
+      4, 1, PIPE_FORMAT_R32G32B32A32_FLOAT);
+   views[1] = r300vk_identity_map_wrap_input_as_sampler_view(
+      device, buf[1]->resource, (unsigned)desc[1]->buf.offset,
+      width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+   if (!views[0] || !views[1]) {
+      pipe_sampler_view_reference(&views[0], NULL);
+      pipe_sampler_view_reference(&views[1], NULL);
+      return false;
+   }
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      pipe_sampler_view_reference(&views[0], NULL);
+      pipe_sampler_view_reference(&views[1], NULL);
+      return false;
+   }
+
+   bool ok = omul_run_pass(pipe, screen, device, views, pl->fs_cso, pl->vs_cso,
+                           vb, velems_cso, buf[2]->resource,
+                           (unsigned)desc[2]->buf.offset, width, height, total);
+
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&views[0], NULL);
+   pipe_sampler_view_reference(&views[1], NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
 /* Resolve n STORAGE_BUFFER bindings to descriptors + buffers for the octonion
  * elementwise ops: captured constant bindings in bind[] win; all-zero falls back
  * to the first n STORAGE_BUFFERs in declaration order (the inputs precede the
