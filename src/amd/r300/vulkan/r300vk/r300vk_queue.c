@@ -2153,18 +2153,25 @@ r300vk_linear_region_span(const VkExtent3D *extent,
                           VkDeviceSize buffer_offset,
                           uint32_t buffer_row_length,
                           unsigned bpp,
+                          unsigned block_w,
+                          unsigned block_h,
                           unsigned *row_pitch_out,
                           unsigned *span_out)
 {
    if (extent->width == 0 || extent->height == 0 || bpp == 0)
       return false;
 
+   /* bpp is bytes per format block; extents and bufferRowLength are texels
+    * (Vulkan buffer-image addressing), so a block-compressed format walks
+    * DIV_ROUND_UP(texels, block) block columns and rows.  Plain formats have
+    * 1x1 blocks and reduce to the texel arithmetic. */
    const uint64_t row_texels =
       buffer_row_length ? buffer_row_length : extent->width;
-   const uint64_t row_pitch = row_texels * bpp;
-   const uint64_t last_row_bytes = (uint64_t)extent->width * bpp;
-   const uint64_t span = ((uint64_t)extent->height - 1) * row_pitch +
-                         last_row_bytes;
+   const uint64_t row_pitch = DIV_ROUND_UP(row_texels, block_w) * bpp;
+   const uint64_t last_row_bytes =
+      (uint64_t)DIV_ROUND_UP(extent->width, block_w) * bpp;
+   const uint64_t block_rows = DIV_ROUND_UP(extent->height, block_h);
+   const uint64_t span = (block_rows - 1) * row_pitch + last_row_bytes;
 
    if (row_pitch > UINT_MAX || span > UINT_MAX ||
        buffer_offset > UINT_MAX ||
@@ -2189,12 +2196,14 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
     * non-RGBA8 formats (R8, RG16, RGBA16F) map and copy correctly.
     * bufferRowLength == 0 means tightly packed per the Vulkan spec. */
    unsigned bpp = util_format_get_blocksize(src_img->resource->format);
+   const unsigned bw = util_format_get_blockwidth(src_img->resource->format);
+   const unsigned bh = util_format_get_blockheight(src_img->resource->format);
    unsigned row_pitch = 0;
    unsigned dst_size = 0;
    if (!r300vk_linear_region_span(&region->imageExtent,
                                   region->bufferOffset,
                                   region->bufferRowLength,
-                                  bpp, &row_pitch, &dst_size) ||
+                                  bpp, bw, bh, &row_pitch, &dst_size) ||
        (uint64_t)region->bufferOffset + dst_size > dst->width0)
       return false;
 
@@ -2207,16 +2216,22 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
    if (!dst_map)
       return false;
 
-   const int64_t req_min_x = region->imageOffset.x;
-   const int64_t req_min_y = region->imageOffset.y;
-   const int64_t req_max_x = req_min_x + region->imageExtent.width;
-   const int64_t req_max_y = req_min_y + region->imageExtent.height;
+   /* All rect arithmetic below runs in BLOCK space: offsets are block-aligned
+    * per the Vulkan compressed-copy rules, extents block-ceil at image edges,
+    * and plain formats reduce to texels through their 1x1 blocks. */
+   const int64_t req_min_x = region->imageOffset.x / bw;
+   const int64_t req_min_y = region->imageOffset.y / bh;
+   const int64_t req_max_x =
+      req_min_x + DIV_ROUND_UP(region->imageExtent.width, bw);
+   const int64_t req_max_y =
+      req_min_y + DIV_ROUND_UP(region->imageExtent.height, bh);
 
    for (uint32_t tile_row = 0; tile_row < src_img->tile_rows; tile_row++) {
       const uint32_t tile_origin_y =
          r300vk_image_tile_origin_y(src_img, tile_row);
-      const int64_t tile_min_y = tile_origin_y;
-      const int64_t tile_max_y = tile_min_y + src_img->tile_height[tile_row];
+      const int64_t tile_min_y = tile_origin_y / bh;
+      const int64_t tile_max_y =
+         tile_min_y + DIV_ROUND_UP(src_img->tile_height[tile_row], bh);
       const int64_t copy_min_y = MAX2(req_min_y, tile_min_y);
       const int64_t copy_max_y = MIN2(req_max_y, tile_max_y);
       if (copy_max_y <= copy_min_y)
@@ -2225,8 +2240,9 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
       for (uint32_t tile_col = 0; tile_col < src_img->tile_cols; tile_col++) {
          const uint32_t tile_origin_x =
             r300vk_image_tile_origin_x(src_img, tile_col);
-         const int64_t tile_min_x = tile_origin_x;
-         const int64_t tile_max_x = tile_min_x + src_img->tile_width[tile_col];
+         const int64_t tile_min_x = tile_origin_x / bw;
+         const int64_t tile_max_x =
+            tile_min_x + DIV_ROUND_UP(src_img->tile_width[tile_col], bw);
          const int64_t copy_min_x = MAX2(req_min_x, tile_min_x);
          const int64_t copy_max_x = MIN2(req_max_x, tile_max_x);
          if (copy_max_x <= copy_min_x)
@@ -2237,11 +2253,17 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
          if (!src)
             continue;
 
+         /* The gallium box is texel-addressed; block-ceil extents clamp to
+          * the tile's texel size at image edges. */
          struct pipe_box src_box;
-         u_box_2d((int)(copy_min_x - tile_min_x),
-                  (int)(copy_min_y - tile_min_y),
-                  (int)(copy_max_x - copy_min_x),
-                  (int)(copy_max_y - copy_min_y),
+         u_box_2d((int)((copy_min_x - tile_min_x) * bw),
+                  (int)((copy_min_y - tile_min_y) * bh),
+                  (int)MIN2((copy_max_x - copy_min_x) * bw,
+                            src_img->tile_width[tile_col] -
+                            (copy_min_x - tile_min_x) * bw),
+                  (int)MIN2((copy_max_y - copy_min_y) * bh,
+                            src_img->tile_height[tile_row] -
+                            (copy_min_y - tile_min_y) * bh),
                   &src_box);
 
          struct pipe_transfer *src_xfer = NULL;
@@ -2286,12 +2308,14 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
    struct pipe_context *pipe = device->pipe;
 
    const unsigned bpp = util_format_get_blocksize(dst_img->resource->format);
+   const unsigned bw = util_format_get_blockwidth(dst_img->resource->format);
+   const unsigned bh = util_format_get_blockheight(dst_img->resource->format);
    unsigned row_pitch = 0;
    unsigned src_size = 0;
    if (!r300vk_linear_region_span(&region->imageExtent,
                                   region->bufferOffset,
                                   region->bufferRowLength,
-                                  bpp, &row_pitch, &src_size) ||
+                                  bpp, bw, bh, &row_pitch, &src_size) ||
        (uint64_t)region->bufferOffset + src_size > src->width0)
       return false;
 
@@ -2304,16 +2328,20 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
    if (!src_map)
       return false;
 
-   const int64_t req_min_x = region->imageOffset.x;
-   const int64_t req_min_y = region->imageOffset.y;
-   const int64_t req_max_x = req_min_x + region->imageExtent.width;
-   const int64_t req_max_y = req_min_y + region->imageExtent.height;
+   /* BLOCK-space rect arithmetic, mirroring the image -> buffer walker. */
+   const int64_t req_min_x = region->imageOffset.x / bw;
+   const int64_t req_min_y = region->imageOffset.y / bh;
+   const int64_t req_max_x =
+      req_min_x + DIV_ROUND_UP(region->imageExtent.width, bw);
+   const int64_t req_max_y =
+      req_min_y + DIV_ROUND_UP(region->imageExtent.height, bh);
 
    for (uint32_t tile_row = 0; tile_row < dst_img->tile_rows; tile_row++) {
       const uint32_t tile_origin_y =
          r300vk_image_tile_origin_y(dst_img, tile_row);
-      const int64_t tile_min_y = tile_origin_y;
-      const int64_t tile_max_y = tile_min_y + dst_img->tile_height[tile_row];
+      const int64_t tile_min_y = tile_origin_y / bh;
+      const int64_t tile_max_y =
+         tile_min_y + DIV_ROUND_UP(dst_img->tile_height[tile_row], bh);
       const int64_t copy_min_y = MAX2(req_min_y, tile_min_y);
       const int64_t copy_max_y = MIN2(req_max_y, tile_max_y);
       if (copy_max_y <= copy_min_y)
@@ -2322,8 +2350,9 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
       for (uint32_t tile_col = 0; tile_col < dst_img->tile_cols; tile_col++) {
          const uint32_t tile_origin_x =
             r300vk_image_tile_origin_x(dst_img, tile_col);
-         const int64_t tile_min_x = tile_origin_x;
-         const int64_t tile_max_x = tile_min_x + dst_img->tile_width[tile_col];
+         const int64_t tile_min_x = tile_origin_x / bw;
+         const int64_t tile_max_x =
+            tile_min_x + DIV_ROUND_UP(dst_img->tile_width[tile_col], bw);
          const int64_t copy_min_x = MAX2(req_min_x, tile_min_x);
          const int64_t copy_max_x = MIN2(req_max_x, tile_max_x);
          if (copy_max_x <= copy_min_x)
@@ -2335,10 +2364,14 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
             continue;
 
          struct pipe_box dst_box;
-         u_box_2d((int)(copy_min_x - tile_min_x),
-                  (int)(copy_min_y - tile_min_y),
-                  (int)(copy_max_x - copy_min_x),
-                  (int)(copy_max_y - copy_min_y),
+         u_box_2d((int)((copy_min_x - tile_min_x) * bw),
+                  (int)((copy_min_y - tile_min_y) * bh),
+                  (int)MIN2((copy_max_x - copy_min_x) * bw,
+                            dst_img->tile_width[tile_col] -
+                            (copy_min_x - tile_min_x) * bw),
+                  (int)MIN2((copy_max_y - copy_min_y) * bh,
+                            dst_img->tile_height[tile_row] -
+                            (copy_min_y - tile_min_y) * bh),
                   &dst_box);
 
          struct pipe_transfer *dst_xfer = NULL;
@@ -2382,16 +2415,34 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
    struct pipe_context *pipe = device->pipe;
    const unsigned src_bpp = util_format_get_blocksize(src_img->resource->format);
    const unsigned dst_bpp = util_format_get_blocksize(dst_img->resource->format);
+   const unsigned src_bw = util_format_get_blockwidth(src_img->resource->format);
+   const unsigned src_bh = util_format_get_blockheight(src_img->resource->format);
+   const unsigned dst_bw = util_format_get_blockwidth(dst_img->resource->format);
+   const unsigned dst_bh = util_format_get_blockheight(dst_img->resource->format);
 
+   /* Vulkan only permits image copies between formats of equal block byte
+    * size; one block of the compressed side corresponds to one texel of the
+    * uncompressed side. */
    if (src_bpp == 0 || src_bpp != dst_bpp)
       return false;
 
    unsigned row_pitch = 0;
    unsigned staging_size = 0;
-   if (!r300vk_linear_region_span(&region->extent, 0, 0, dst_bpp,
+   if (!r300vk_linear_region_span(&region->extent, 0, 0, src_bpp,
+                                  src_bw, src_bh,
                                   &row_pitch, &staging_size) ||
        row_pitch == 0)
       return false;
+
+   /* The copy extent is in source texels; the destination consumes the same
+    * BLOCK count, so its texel extent scales by the block-dimension ratio
+    * (compressed -> plain shrinks by the source block, plain -> compressed
+    * grows by the destination block). */
+   const VkExtent3D dst_extent = {
+      .width  = DIV_ROUND_UP(region->extent.width, src_bw) * dst_bw,
+      .height = DIV_ROUND_UP(region->extent.height, src_bh) * dst_bh,
+      .depth  = region->extent.depth,
+   };
 
    struct pipe_resource tmpl;
    memset(&tmpl, 0, sizeof(tmpl));
@@ -2424,7 +2475,7 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
       .bufferImageHeight = 0,
       .imageSubresource  = region->dstSubresource,
       .imageOffset       = region->dstOffset,
-      .imageExtent       = region->extent,
+      .imageExtent       = dst_extent,
    };
 
    const bool ok =

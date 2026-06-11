@@ -373,10 +373,20 @@ r300vk_CreateImage(VkDevice _device,
 
    unsigned pipe_bind =
       r300vk_image_pipe_bind(device, pipe_fmt, pCreateInfo->usage);
-   if (is_linear)
-      pipe_bind |= PIPE_BIND_LINEAR;
+   /* Every tile is row-major: the replay's transfers, clears, and copies are
+    * CPU passes through pipe texture_map, and r300g maps a tiled texture by
+    * DETILING THROUGH A BLIT (r300_transfer.c) whose copy path reinterprets
+    * formats by block size (r300_resource_copy_region: 8-byte texels ride
+    * R16G16B16A16_UNORM through the FP24 ALU, 16-byte texels have no remap at
+    * all) -- exact for 8-bit channels, lossy or undefined past them.  Linear
+    * tiles make every map a direct mapping, so the byte-exact transfer
+    * contract (r300vk_format_supports_transfer_dst) holds for every format,
+    * including 32-bit float and block-compressed data.  r300 renders to and
+    * samples from row-major surfaces (scanout is linear), trading sampler
+    * cache locality for transfer correctness on this CPU-replay device. */
+   pipe_bind |= PIPE_BIND_LINEAR;
    if (external)
-      pipe_bind |= PIPE_BIND_SHARED | PIPE_BIND_SCANOUT | PIPE_BIND_LINEAR;
+      pipe_bind |= PIPE_BIND_SHARED | PIPE_BIND_SCANOUT;
 
    result = r300vk_image_create_tile_resources(device, img, pCreateInfo,
                                                pipe_fmt, pipe_bind);
