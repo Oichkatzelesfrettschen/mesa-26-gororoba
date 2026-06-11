@@ -359,6 +359,16 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
     * subpixel precision the chip family advertises). */
    props->maxCustomBorderColorSamplers = 4000;
    props->lineSubPixelPrecisionBits = 4;
+   /* VK_KHR_maintenance2: r300 clips points against the cull volume like all
+    * user-clip geometry. */
+   props->pointClippingBehavior =
+      VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
+   /* VK_KHR_depth_stencil_resolve: single-sample device, so SAMPLE_ZERO is
+    * the whole honest mode set and independent resolve is vacuous. */
+   props->supportedDepthResolveModes   = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+   props->supportedStencilResolveModes = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+   props->independentResolveNone = true;
+   props->independentResolve     = true;
 }
 
 static const struct vk_device_extension_table r300vk_device_extensions_supported = {
@@ -381,6 +391,23 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * then reports a cross-GPU configuration, and every swapchain is routed
     * through the prime-blit buffer path instead of native dma-buf images. */
    .EXT_pci_bus_info = true,
+   /* VK_KHR_maintenance2: capability bundle with no new entry points r300vk
+    * must implement (vk_common provides the input-attachment-aspect and
+    * tessellation-domain plumbing; point clipping behaviour is reported in
+    * the properties below).  zink lists it in the GL3-era dependency closure
+    * alongside image_format_list and depth_stencil_resolve. */
+   .KHR_maintenance2 = true,
+   /* VK_KHR_image_format_list: validation-time metadata only -- the
+    * VkImageFormatListCreateInfo chained on VkImageCreateInfo narrows the
+    * MUTABLE view-format set.  r300vk creates single-format images and
+    * ignores the list, which is a conforming implementation (the list is a
+    * promise from the app, not an obligation on the driver). */
+   .KHR_image_format_list = true,
+   /* VK_KHR_depth_stencil_resolve: with no multisample path every image is
+    * single-sample, so the only honest resolve mode set is SAMPLE_ZERO
+    * (reported in the properties); requires create_renderpass2, already
+    * advertised. */
+   .KHR_depth_stencil_resolve = true,
    /* VK_KHR_dynamic_rendering: r300vk_CmdBeginRendering / r300vk_CmdEndRendering
     * translate VkRenderingInfo into the same colour-attachment framebuffer the
     * render-pass replay drives, so a render target needs no VkRenderPass or
