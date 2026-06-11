@@ -56,6 +56,19 @@ struct r300_capabilities {
      * - Extended fragment shader registers
      * - 3DC texture compression (RGTC2) */
     bool is_r400;
+    /* R300_HB_R400_US on an RS48x part: the fragment-shader command-stream
+     * emit treats the US block as R400-class (R400_US_CODE_BANK/EXT writes,
+     * extended-address registers when the program needs code banks) while
+     * is_r400 stays false, so texture-format admission and the vertex
+     * compiler keep their R300-class configuration.  Set only by
+     * r300_hb_r400_us_init; execution is unproven and under test. */
+    bool hb_r400_us;
+    /* R300_HB_R400_US=2 additionally lifts the fragment compiler to the R400
+     * envelope (64 temps, 512 ALU/TEX slots, r390_mode code banks).  Kept
+     * separate from the emission probe: the envelope changes register
+     * allocation even for programs that fit R300 limits, so the two effects
+     * must be testable independently. */
+    bool hb_r400_us_envelope;
     /* Whether or not this is an RV515 or newer; R500s have many differences
      * that require extra consideration, compared to their rv350 cousins:
      * - Extra bit of width and height on texture sizes
