@@ -305,10 +305,16 @@ r300vk_CreateImage(VkDevice _device,
     * extent past one tile, or a format without a lossless transfer-destination
     * byte layout (the same predicate that gates linearTilingFeatures). */
    if (is_linear) {
+      /* INPUT_ATTACHMENT rides the sampled path: r300vk lowers subpassLoad to
+       * a normalized texture read, so any sampled-capable image serves as an
+       * input attachment.  zink requests it on every swapchain image, and the
+       * software swapchain's images are linear, so excluding it here rejected
+       * vkCreateSwapchainKHR outright. */
       supported_usage &= (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                          VK_IMAGE_USAGE_SAMPLED_BIT);
+                          VK_IMAGE_USAGE_SAMPLED_BIT |
+                          VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
       if (pCreateInfo->imageType != VK_IMAGE_TYPE_2D ||
           pCreateInfo->extent.width > R300VK_R3XX_MAX_RENDER_DIMENSION ||
           pCreateInfo->extent.height > R300VK_R3XX_MAX_RENDER_DIMENSION ||
