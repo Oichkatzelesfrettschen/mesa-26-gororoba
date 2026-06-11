@@ -681,3 +681,26 @@ r300vk_build_qfmmul_fs_nir(const nir_shader_compiler_options *opts)
    store_color_at(&b, out, FRAG_RESULT_COLOR, "color");
    return fs_finalize(&b);
 }
+
+/* QDIV: out = a / b = a * inv(b), inv(b) = conj(b) * rcp(dot(b,b)).  The dim-4
+ * sibling of ODIV, but a quaternion is a division algebra with an associative
+ * product, so the divide is one Hamilton product (four DP4s) over the scaled
+ * conjugate of the divisor -- well under the 64-ALU fragment limit, no MRT split.
+ * The reciprocal is the R300 US RCP; |b|^2 > 0 for any nonzero quaternion.  Samples
+ * a at sampler stage 0, b at stage 1; writes a*inv(b) to the FP16 color export. */
+nir_shader *
+r300vk_build_qdiv_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qdiv");
+   nir_def *coord = make_fs_coord(&b);
+   nir_def *a = sample_stage(&b, coord, 0);
+   nir_def *bb = sample_stage(&b, coord, 1);
+
+   nir_def *r = nir_frcp(&b, nir_fdot(&b, bb, bb));
+   nir_def *r4 = nir_vec4(&b, r, r, r, r);
+   nir_def *ib = nir_fmul(&b, quat_conj(&b, bb), r4);   /* inv(b) = conj(b)*r */
+   nir_def *out = hamilton_product(&b, a, ib);
+   store_color_at(&b, out, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}

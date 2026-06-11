@@ -1448,6 +1448,35 @@ r300vk_qmul_dispatch_replay(struct r300vk_device *device,
       PIPE_FORMAT_R32G32B32A32_FLOAT);
 }
 
+/* QDIV dispatch replay: the quaternion quotient a/b on the substrate.  Identical
+ * two-in/one-out skeleton to QMUL -- the dividend a and divisor b sampled as
+ * R32G32B32A32_FLOAT, the synthesized division FS (r300vk_build_qdiv_fs_nir) writes
+ * a*inv(b) to an FP16 render target, and the copy-back unpacks it into the kernel's
+ * vec4 FP32 output.  Bail unless both the FP32 sampler view and the FP16 render
+ * target are supported. */
+bool
+r300vk_qdiv_dispatch_replay(struct r300vk_device *device,
+                            const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_two_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->qdiv.input_a_ssbo_binding,
+      pl->qdiv.input_b_ssbo_binding,
+      pl->qdiv.output_ssbo_binding,
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
+}
+
 /* QROTATE dispatch replay: rotate v by q on the substrate.  Same two-in/one-out
  * skeleton as QMUL -- inputs are the unit quaternion q and the vector v sampled
  * as R32G32B32A32_FLOAT, the synthesized sandwich FS (r300vk_build_qrotate_fs_nir)

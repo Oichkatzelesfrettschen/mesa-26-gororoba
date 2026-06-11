@@ -356,6 +356,26 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = NULL,  /* RS482 surfaceless-EGL probe; fork evidence paths stay out of Mesa metadata */
    },
    {
+      .op_name         = "QDIV",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "quaternion right division out = a/b = a*inv(b), inv(b) = "
+                         "conj(b)/|b|^2.  H is an ASSOCIATIVE division algebra: every nonzero "
+                         "quaternion is invertible (|b|^2 > 0 unless b=0) and the scalar "
+                         "reciprocal r = 1/|b|^2 (US RCP) scaling conj(b) is a true two-sided "
+                         "inverse -- ROCQ ground open_gororoba CDInverse.v quat_mul_inv_r and "
+                         "quat_mul_inv_l (quat_norm_sq q <> 0).  ONE pass, unlike the octonion "
+                         "ODIV: a single Hamilton product a*inv(b) (four DP4s plus the "
+                         "reciprocal) stays well under the 64-ALU R300 fragment limit "
+                         "(R300_PFS_MAX_ALU_INST), so no MRT split is needed.  Admitted by "
+                         "r300_nir_detect_qdiv_pattern (matches the single-self-dot reciprocal "
+                         "1/dot(b,b), conj(b)*r, and the qmul_match Hamilton product a*inv(b)), "
+                         "synthesized by r300vk_build_qdiv_fs_nir, dispatched on the QMUL "
+                         "two-in/one-out replay core",
+      .mesa_hook       = "r300_nir_detect_qdiv_pattern",
+      .retained_bundle = NULL,
+   },
+   {
       .op_name         = "QROTATE_SANDWICH",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
