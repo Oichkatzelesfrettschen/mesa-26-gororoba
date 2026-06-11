@@ -144,16 +144,17 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
                                    enum pipe_format pipe_fmt,
                                    unsigned pipe_bind)
 {
-   /* A linear image is one row-major tile (the accept gate bounds its extent to
-    * one tile), allocated PIPE_USAGE_STAGING so r300g keeps it CPU-mappable.
-    * Optimal images keep the up-to-2x2 spatial-subdivision tiling. */
-   const bool is_linear = (pipe_bind & PIPE_BIND_LINEAR) != 0;
-   if (is_linear) {
-      img->tile_cols = 1;
-      img->tile_rows = 1;
-      img->tile_width[0] = info->extent.width;
-      img->tile_height[0] = info->extent.height;
-   } else {
+   /* Every tile is row-major (PIPE_BIND_LINEAR is universal since the
+    * transfer-exactness change), so the linear bit selects only the staging
+    * memory class for API-linear images.  The spatial split ALWAYS applies:
+    * keying the no-split shortcut on the linear bit collapsed every image
+    * into one tile once the bit became universal, and a 4096 single tile is
+    * unbindable as a framebuffer (r300_set_framebuffer_state refuses past
+    * 2560) -- zink's surfaceless backbuffer then renders into nothing.
+    * API-linear images stay effectively single-tile because their accept
+    * gate bounds the extent within one tile. */
+   const bool is_linear = info->tiling == VK_IMAGE_TILING_LINEAR;
+   {
       /* Bound a tile by the smaller of the sampler cap and the render limit so
        * every optimal tile can be both a blit source (sampled) and a render
        * target.  On r300-class the sampler cap (2048) is the smaller; on r500
