@@ -58,6 +58,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_END_QUERY,
    R300VK_CMD_RESET_QUERY_POOL,
    R300VK_CMD_COPY_QUERY_POOL_RESULTS,
+   R300VK_CMD_SET_DYNAMIC_STATE,
 };
 
 struct r300vk_query_pool;
@@ -327,9 +328,52 @@ struct r300vk_cmd_copy_query_pool_results {
    VkQueryResultFlags        flags;
 };
 
+
+/* One recorded vkCmdSet* dynamic-state call.  flags names which fields the
+ * entry carries; the replay walker merges entries into its shadow and applies
+ * the result at draw time (transient rasterizer/DSA CSOs, stencil ref, blend
+ * colour, topology override). */
+#define R300VK_DYN_CULL          (1u << 0)
+#define R300VK_DYN_FRONT_FACE    (1u << 1)
+#define R300VK_DYN_TOPOLOGY      (1u << 2)
+#define R300VK_DYN_DEPTH_TEST    (1u << 3)
+#define R300VK_DYN_DEPTH_WRITE   (1u << 4)
+#define R300VK_DYN_DEPTH_OP      (1u << 5)
+#define R300VK_DYN_DEPTH_BOUNDS  (1u << 6)
+#define R300VK_DYN_STENCIL_TEST  (1u << 7)
+#define R300VK_DYN_STENCIL_OP    (1u << 8)
+#define R300VK_DYN_STENCIL_CMP_MASK (1u << 9)
+#define R300VK_DYN_STENCIL_WR_MASK  (1u << 10)
+#define R300VK_DYN_STENCIL_REF   (1u << 11)
+#define R300VK_DYN_DEPTH_BIAS    (1u << 12)
+#define R300VK_DYN_BLEND_CONST   (1u << 13)
+#define R300VK_DYN_LINE_WIDTH    (1u << 14)
+#define R300VK_DYN_DEPTH_BIAS_EN (1u << 15)
+
+struct r300vk_cmd_set_dynamic {
+   uint32_t            flags;
+   VkCullModeFlags     cull;
+   VkFrontFace         front;
+   VkPrimitiveTopology topology;
+   VkBool32            depth_test;
+   VkBool32            depth_write;
+   VkCompareOp         depth_op;
+   VkBool32            depth_bounds;
+   VkBool32            stencil_test;
+   VkStencilFaceFlags  face_mask;     /* for the per-face stencil fields */
+   VkStencilOp         sfail, spass, sdepth_fail;
+   VkCompareOp         scompare;
+   uint32_t            cmp_mask, wr_mask, ref;
+   float               bias_const, bias_clamp, bias_slope;
+   VkBool32            bias_enable;
+   float               blend_const[4];
+   float               line_width;
+};
+
 struct r300vk_cmd_entry {
    enum r300vk_cmd_type type;
    union {
+      struct r300vk_cmd_set_dynamic            set_dyn;
       struct r300vk_cmd_begin_render_pass    begin_rp;
       struct r300vk_cmd_bind_pipeline        bind_pipeline;
       struct r300vk_cmd_set_viewport         set_vp;
