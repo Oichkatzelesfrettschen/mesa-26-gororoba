@@ -203,12 +203,23 @@ create_ref_frag_shader(struct vl_mc *r)
    nir_def *texel = nir_tex(&b, nir_vec2(&b, ref_x, ref_y),
                             .texture_deref = samp, .sampler_deref = samp);
 
+   /* frag_w is the prediction weight (1.0 for a single reference, 0.5 for each
+    * half of a bidirectional B-frame average).  It used to ride the output alpha
+    * and be applied by the SRC_ALPHA blend, but a single-component render target
+    * (R8/I8/L8 take the I8 hardware format with the COLORMASK_RRRR swizzle) has no
+    * independent alpha: the blender reads the replicated color as the alpha, so
+    * SRC_ALPHA cannot deliver the weight there.  Pre-multiply the weight into the
+    * color and write a unit alpha; the additive blend then sums two halves to the
+    * (fwd + bwd) / 2 average on every render-target format. */
+   nir_def *wrgb = nir_fmul(&b, nir_trim_vector(&b, texel, 3),
+                            nir_replicate(&b, frag_w, 3));
+
    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                            glsl_vec4_type(), "color");
    out->data.location = FRAG_RESULT_COLOR;
    nir_store_var(&b, out,
-      nir_vec4(&b, nir_channel(&b, texel, 0), nir_channel(&b, texel, 1),
-               nir_channel(&b, texel, 2), frag_w), 0xf);
+      nir_vec4(&b, nir_channel(&b, wrgb, 0), nir_channel(&b, wrgb, 1),
+               nir_channel(&b, wrgb, 2), nir_imm_float(&b, 1.0f)), 0xf);
 
    return mc_create_fs(r, &b);
 }
