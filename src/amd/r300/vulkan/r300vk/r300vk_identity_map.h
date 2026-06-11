@@ -151,6 +151,19 @@ r300vk_qnormalize_dispatch_replay(struct r300vk_device *device,
                                   const struct r300vk_cmd_dispatch *dispatch,
                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* QFM fused orchestrator entries (three inputs a,b,c bound straight, one output):
+ * QFMADD out = a*b + c; QFMMUL out = a*b*c.  Both one single-output pass. */
+bool
+r300vk_qfmadd_dispatch_replay(struct r300vk_device *device,
+                              const struct r300vk_pipeline *pl,
+                              const struct r300vk_cmd_dispatch *dispatch,
+                              const struct r300vk_cmd_bind_descriptor_sets *binds);
+bool
+r300vk_qfmmul_dispatch_replay(struct r300vk_device *device,
+                              const struct r300vk_pipeline *pl,
+                              const struct r300vk_cmd_dispatch *dispatch,
+                              const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* OMUL (octonion product) orchestrator entry: the eight-wide Cayley-Dickson
  * product runs as two passes -- the lower-half FS (pl->fs_cso) and the upper-half
  * FS (pl->fs_cso2), each sampling the four quaternion inputs a,b,c,d and writing

@@ -544,6 +544,35 @@ struct r300_compute_otrans_pattern {
 void r300_nir_detect_otrans_pattern(const struct nir_shader *s,
                                     struct r300_compute_otrans_pattern *out);
 
+/* Quaternion fused multiply-add (QFMADD): out = a*b + c, the Hamilton product of
+ * a and b plus the quaternion c.  Four DP4s plus a vec4 add.  Three input SSBOs
+ * (a,b,c in declaration order) and one output; bindings stay 0 when the sources
+ * are not constants (positional fallback: a=0, b=1, c=2, out=3). */
+struct r300_compute_qfmadd_pattern {
+   bool       is_qfmadd;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   input_c_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qfmadd_pattern(const struct nir_shader *s,
+                                    struct r300_compute_qfmadd_pattern *out);
+
+/* Quaternion fused triple product (QFMMUL): out = a*b*c = (a*b)*c, two chained
+ * Hamilton products (eight DP4s) in one pass -- associativity in H makes the
+ * parenthesization irrelevant.  Three input SSBOs (a,b,c) and one output. */
+struct r300_compute_qfmmul_pattern {
+   bool       is_qfmmul;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   input_c_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qfmmul_pattern(const struct nir_shader *s,
+                                    struct r300_compute_qfmmul_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif

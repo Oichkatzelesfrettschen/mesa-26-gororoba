@@ -645,3 +645,39 @@ r300vk_build_otrans_p2_hi_fs_nir(const nir_shader_compiler_options *opts)
    store_color_at(&b, hi, FRAG_RESULT_COLOR, "color");
    return fs_finalize(&b);
 }
+
+/* QFMADD: out = a*b + c, the Hamilton product of a and b plus the quaternion c.
+ * Four DP4s plus a vec4 add, one pass.  Samples a,b,c at sampler stages 0,1,2.
+ * (The ADD of c could ride the RB3D COMB_FCN_ADD blend over a c-preloaded target,
+ * a substrate-native FMA; here it is a straightforward ALU add.) */
+nir_shader *
+r300vk_build_qfmadd_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qfmadd");
+   nir_def *coord = make_fs_coord(&b);
+   nir_def *a = sample_stage(&b, coord, 0);
+   nir_def *bb = sample_stage(&b, coord, 1);
+   nir_def *c = sample_stage(&b, coord, 2);
+   nir_def *out = nir_fadd(&b, hamilton_product(&b, a, bb), c);
+   store_color_at(&b, out, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}
+
+/* QFMMUL: out = a*b*c = (a*b)*c, two chained Hamilton products (eight DP4s) in one
+ * pass -- well under the 64-ALU fragment limit, and associativity in H makes the
+ * parenthesization irrelevant.  Samples a,b,c at sampler stages 0,1,2. */
+nir_shader *
+r300vk_build_qfmmul_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qfmmul");
+   nir_def *coord = make_fs_coord(&b);
+   nir_def *a = sample_stage(&b, coord, 0);
+   nir_def *bb = sample_stage(&b, coord, 1);
+   nir_def *c = sample_stage(&b, coord, 2);
+   nir_def *t = hamilton_product(&b, a, bb);
+   nir_def *out = hamilton_product(&b, t, c);
+   store_color_at(&b, out, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}

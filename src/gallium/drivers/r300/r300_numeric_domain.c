@@ -565,6 +565,67 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .mesa_hook       = "r300_nir_detect_qnormalize_pattern",
       .retained_bundle = NULL,
    },
+   {
+      .op_name         = "QFMADD",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "quaternion fused multiply-add out = a*b + c: the Hamilton "
+                         "product (four DP4s) plus the quaternion c, one pass.  Three "
+                         "input SSBOs a,b,c, one output.  Admitted by r300_nir_detect_"
+                         "qfmadd_pattern (the fadd of a qmul(a,b) vec4 and the identity-"
+                         "loaded c) and dispatched on the three-in/one-out FP16-RT core.  "
+                         "The +c could ride the RB3D COMB_FCN_ADD blend over a c-preloaded "
+                         "target (a substrate-native FMA, the blend-acc path already drives "
+                         "it); here it is a straightforward ALU add.  HW-confirmed 4/4 on "
+                         "RS482 by qfmadd_vk_probe vs a CPU Hamilton-product-plus-add",
+      .mesa_hook       = "r300_nir_detect_qfmadd_pattern",
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "QFMMUL",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "quaternion fused triple product out = a*b*c = (a*b)*c: two "
+                         "chained Hamilton products (eight DP4s) in one pass, well under "
+                         "the 64-ALU R300 fragment limit.  Associativity in H makes the "
+                         "parenthesization irrelevant (quat_mul_assoc, open_gororoba "
+                         "CayleyDicksonAlgebra.v) -- unlike the octonion OTRANS, no scratch "
+                         "intermediate is needed.  Three input SSBOs a,b,c, one output.  "
+                         "Admitted by r300_nir_detect_qfmmul_pattern (find t = qmul(a,b), "
+                         "verify the store is qmul(t,c)) and dispatched on the three-in/"
+                         "one-out core.  HW-confirmed 4/4 on RS482 by qfmmul_vk_probe",
+      .mesa_hook       = "r300_nir_detect_qfmmul_pattern",
+      .retained_bundle = NULL,
+   },
+   {
+      /* QF scalar tier (quaternion x real scalar): each is 0 DP4 -- componentwise
+       * over the broadcast scalar, covered by the FP binary_map path or a single
+       * vec4 op.  Catalogued for completeness; no dedicated detector needed. */
+      .op_name         = "QFMUL",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "quaternion-scalar product s*a = a * splat(s): a vec4 MUL by the "
+                         "broadcast scalar, 0 DP4.  The FP binary_map path (value_is_float "
+                         "vec4*vec4) covers it when s is presented as a splatted vec4; "
+                         "QFADD/QFSUB are masked adds on the real part, QFDIV = a*rcp(s), "
+                         "QFTRANS = s*a + t*(1,0,0,0) a MAD -- all 0 DP4 componentwise, the "
+                         "scalar tier of the quaternion ISA",
+      .mesa_hook       = NULL,  /* componentwise; FP binary_map covers the vec4 forms */
+      .retained_bundle = NULL,
+   },
+   {
+      /* QFM derived fused ops: compositions of the built primitives. */
+      .op_name         = "QFMSUB",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "fused multiply-sub a*b - c (QMUL then vec4 SUB, four DP4s) and the "
+                         "remaining QFM ops -- QFMDIV = (a*b)/c (QMUL then QDIV, nine DP4s), "
+                         "QFMTRANS = affine(q*v*conj(q)) (QROTATE then MAD, eight DP4s) -- "
+                         "compose the HW-confirmed QMUL/QDIV/QROTATE primitives; QFMSUB is "
+                         "the QFMADD detector with fsub, the others are multi-pass chains",
+      .mesa_hook       = NULL,  /* composition of QMUL/QDIV/QROTATE; QFMSUB = QFMADD w/ fsub */
+      .retained_bundle = NULL,
+   },
    /* NULL sentinel -- keep last */
    { .op_name = NULL },
 };

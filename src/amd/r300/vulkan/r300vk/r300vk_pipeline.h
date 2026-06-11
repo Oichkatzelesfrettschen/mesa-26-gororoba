@@ -120,6 +120,11 @@ struct r300vk_pipeline {
     * squared norm. */
    struct r300_compute_qnormalize_pattern qnormalize;
 
+   /* Quaternion fused multiply-add (QFMADD): out = a*b + c, and fused triple
+    * product (QFMMUL): out = a*b*c.  Both three-in/one-out, one pass (fs_cso). */
+   struct r300_compute_qfmadd_pattern qfmadd;
+   struct r300_compute_qfmmul_pattern qfmmul;
+
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
     * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in
