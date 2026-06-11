@@ -1626,6 +1626,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_admission *adm,
                                struct r300_compute_identity_pattern *ident,
                                struct r300_compute_binary_map_pattern *binmap,
+                               struct r300_compute_unary_map_pattern *unary,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
                                struct r300_compute_zpass_reduction_pattern *zpass,
                                struct r300_compute_multipass_scan_pattern *multiscan,
@@ -1693,6 +1694,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_classify_compute(nir, adm);
    r300_nir_detect_identity_map(nir, ident);
    r300_nir_detect_binary_map(nir, binmap);
+   r300_nir_detect_unary_map(nir, unary);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
@@ -1911,6 +1913,78 @@ r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
       pl->vs_cso = NULL;
       return false;
    }
+   return true;
+}
+
+/* Synthesise the single-sampler affine fragment program for the unary-map
+ * lowering: out = sample(in) * c0 + c1.
+ *   TEX tmp, IN[0], SAMP[0]   (sample in, NEAREST)
+ *   MUL tmp, tmp, {c0,c0,c0,c0}
+ *   ADD OUT[0], tmp, {c1,c1,c1,c1}
+ *   END
+ * Scale/bias are baked as immediates from the detector's captured c0/c1.  MUL +
+ * ADD (not a single MAD) stays within the opcode set the binary-map FS already
+ * uses.  Cost: 1 TEX + 2 ALU. */
+static void *
+r300vk_synthesize_unary_map_fs(struct pipe_context *pipe, float c0, float c1)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+
+   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                            TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst tmp = ureg_DECL_temporary(ureg);
+   struct ureg_src c0s = ureg_imm4f(ureg, c0, c0, c0, c0);
+   struct ureg_src c1s = ureg_imm4f(ureg, c1, c1, c1, c1);
+
+   ureg_TEX(ureg, ureg_writemask(tmp, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp);
+   ureg_MUL(ureg, ureg_writemask(tmp, TGSI_WRITEMASK_XYZW),
+            ureg_src(tmp), c0s);
+   ureg_ADD(ureg, out, ureg_src(tmp), c1s);
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* Synthesise the unary-map VS + FS.  The unary affine map reuses the identity
+ * 1-in/1-out dispatch replay, so mirror this pattern's input/output bindings +
+ * value format into identity_map (the replay reads them from there) and bind
+ * the MAD fragment program; the same fullscreen draw then computes
+ * out = tex*c0 + c1 instead of a copy. */
+static bool
+r300vk_unary_map_synthesize_shaders(struct r300vk_device *device,
+                                    struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_unary_map_fs(pipe, pl->unary_map.mul_const,
+                                               pl->unary_map.add_const);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+
+   pl->identity_map.input_ssbo_binding  = pl->unary_map.input_ssbo_binding;
+   pl->identity_map.output_ssbo_binding = pl->unary_map.output_ssbo_binding;
+   pl->identity_map.value_components    = pl->unary_map.value_components;
+   pl->identity_map.value_bit_size      = pl->unary_map.value_bit_size;
+   pl->identity_map.value_is_float      = pl->unary_map.value_is_float;
    return true;
 }
 
@@ -3097,6 +3171,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->binary_map.is_binary_map = false;
       return true;
    }
+   if (pl->unary_map.is_unary_map) {
+      if (!r300vk_unary_map_synthesize_shaders(device, pl))
+         pl->unary_map.is_unary_map = false;
+      return true;
+   }
    if (pl->dp4.is_dp4) {
       if (!r300vk_dp4_synthesize_shaders(device, pl))
          pl->dp4.is_dp4 = false;
@@ -3221,6 +3300,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_admission adm;
    struct r300_compute_identity_pattern ident = {0};
    struct r300_compute_binary_map_pattern binmap = {0};
+   struct r300_compute_unary_map_pattern unary_pat = {0};
    struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
    struct r300_compute_zpass_reduction_pattern zpass = {0};
    struct r300_compute_multipass_scan_pattern multiscan = {0};
@@ -3246,7 +3326,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
-                                       &adm, &ident, &binmap, &blendacc, &zpass,
+                                       &adm, &ident, &binmap, &unary_pat, &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
                                        &qmul_pat, &qdiv_pat, &mat4vec_pat, &qfmul_pat,
                                        &qrotate_pat,
@@ -3275,6 +3355,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->admission = adm;
    pl->identity_map = ident;
    pl->binary_map = binmap;
+   pl->unary_map = unary_pat;
    pl->dp4 = dp4_pat;
    pl->qmul = qmul_pat;
    pl->qdiv = qdiv_pat;

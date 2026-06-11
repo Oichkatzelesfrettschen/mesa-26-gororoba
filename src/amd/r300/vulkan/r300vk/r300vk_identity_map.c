@@ -1062,6 +1062,21 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    return copy_ok;
 }
 
+/* Unary affine-map orchestrator.  The unary map (out[i] = in[i]*c0 + c1) is the
+ * identity 1-in/1-out fullscreen draw with a scale+bias fragment program rather
+ * than a copy: r300vk_unary_map_synthesize_shaders bound the MAD FS as
+ * pl->fs_cso and mirrored the input/output bindings + value format into
+ * pl->identity_map, so the identity replay resolves the buffers and runs the
+ * same draw -- the bound FS is the only difference.  Delegate to it. */
+bool
+r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
+                                 const struct r300vk_pipeline *pl,
+                                 const struct r300vk_cmd_dispatch *dispatch,
+                                 const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   return r300vk_identity_map_dispatch_replay(device, pl, dispatch, binds);
+}
+
 /* Binary-map orchestrator: same shape as r300vk_identity_map_dispatch_replay
  * above but with two input ssbos wrapped as separate sampler views and bound
  * at fragment-stage sampler stages 0 + 1.  The synthesised FS
