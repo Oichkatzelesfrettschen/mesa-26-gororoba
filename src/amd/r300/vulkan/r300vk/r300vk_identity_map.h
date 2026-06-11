@@ -142,6 +142,15 @@ r300vk_qnorm_dispatch_replay(struct r300vk_device *device,
                              const struct r300vk_cmd_dispatch *dispatch,
                              const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* QNORMALIZE (quaternion normalize) orchestrator entry: same 1-in / 1-out FP16-RT
+ * core as QNORM; pl->fs_cso holds the synthesized normalize FS
+ * (r300vk_build_qnormalize_fs_nir), a * rsqrt(dot(a,a)). */
+bool
+r300vk_qnormalize_dispatch_replay(struct r300vk_device *device,
+                                  const struct r300vk_pipeline *pl,
+                                  const struct r300vk_cmd_dispatch *dispatch,
+                                  const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* OMUL (octonion product) orchestrator entry: the eight-wide Cayley-Dickson
  * product runs as two passes -- the lower-half FS (pl->fs_cso) and the upper-half
  * FS (pl->fs_cso2), each sampling the four quaternion inputs a,b,c,d and writing

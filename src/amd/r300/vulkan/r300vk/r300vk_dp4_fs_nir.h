@@ -56,6 +56,9 @@ nir_shader *r300vk_build_qconj_fs_nir(const nir_shader_compiler_options *opts);
  * DP4.  The kernel reads lane 0; the broadcast keeps the vec4 readback path. */
 nir_shader *r300vk_build_qnorm_fs_nir(const nir_shader_compiler_options *opts);
 
+/* QNORMALIZE FS: out = a * rsqrt(dot(a,a)) = a / |a|.  One DP4 + US RSQ + scale. */
+nir_shader *r300vk_build_qnormalize_fs_nir(const nir_shader_compiler_options *opts);
+
 /* Build the two octonion-product (OMUL) passes as standalone NIR.  An octonion
  * (a,b) is two quaternions; the product (a,b)*(c,d) = (a*c - conj(d)*b,
  * d*a + b*conj(c)) is four Hamilton products = sixteen DP4s, the Cayley-Dickson

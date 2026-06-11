@@ -114,6 +114,12 @@ struct r300vk_pipeline {
     * an FP16 render target, unpacked into the kernel's vec4 FP32 output. */
    struct r300_compute_qnorm_pattern qnorm;
 
+   /* Quaternion normalize (QNORMALIZE) kernel: out[gid] = a * rsqrt(dot(a,a)).
+    * Same one-in/one-out skeleton as QNORM; the synthesized FS
+    * (r300vk_build_qnormalize_fs_nir) scales the quaternion by the US RSQ of its
+    * squared norm. */
+   struct r300_compute_qnormalize_pattern qnormalize;
+
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
     * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in

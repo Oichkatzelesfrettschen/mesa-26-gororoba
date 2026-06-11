@@ -276,6 +276,31 @@ r300vk_build_qnorm_fs_nir(const nir_shader_compiler_options *opts)
    return b.shader;
 }
 
+/* QNORMALIZE: out = a * rsqrt(dot(a,a)) = a / |a|, the unit quaternion in a's
+ * direction.  One DP4 for the squared norm, the US RSQ for the reciprocal length,
+ * one vec4 scale.  ROCQ ground: quat_normalize_unit (QuatNormalize.v). */
+nir_shader *
+r300vk_build_qnormalize_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qnormalize");
+
+   nir_def *a = sample_single_quaternion(&b);
+   nir_def *r = nir_frsq(&b, nir_fdot(&b, a, a));
+   nir_def *out_val = nir_fmul(&b, a, nir_vec4(&b, r, r, r, r));
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, out_val, 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}
+
 /* The quaternion conjugate (w, -x, -y, -z) -- the Cayley-Dickson involution that
  * the octonion product mixes into two of its four Hamilton products. */
 static nir_def *

@@ -409,6 +409,21 @@ struct r300_compute_qnorm_pattern {
 void r300_nir_detect_qnorm_pattern(const struct nir_shader *s,
                                    struct r300_compute_qnorm_pattern *out);
 
+/* Quaternion normalize (QNORMALIZE) pattern: out[gid] = a * rsqrt(dot(a,a)) =
+ * a / |a|, the unit quaternion in a's direction.  One DP4 for the squared norm,
+ * the US RSQ for the reciprocal length, one vec4 scale.  ROCQ ground:
+ * quat_normalize_unit (QuatNormalize.v) proves |normalize(a)|^2 = 1.  Binding
+ * stays 0 when the sources are not constants (positional fallback: input=0,
+ * output=1). */
+struct r300_compute_qnormalize_pattern {
+   bool       is_qnormalize;
+   uint32_t   input_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_qnormalize_pattern(const struct nir_shader *s,
+                                        struct r300_compute_qnormalize_pattern *out);
+
 /* Octonion product (OMUL) pattern.  An octonion (a,b) is two quaternions; the
  * Cayley-Dickson product (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) is four
  * Hamilton products = sixteen DP4s.  The admissible kernel presents the four

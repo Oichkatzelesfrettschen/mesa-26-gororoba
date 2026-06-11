@@ -551,12 +551,18 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
    {
       .op_name         = "QNORMALIZE",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
-      .status          = R300_VOP_NUMERIC_DERIVED,
+      .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "quaternion normalize a/|a| = a * rsqrt(|a|^2); one DP4 (QNORM) "
-                         "plus scalar RSQ and a vec4 scale -- the unit-quaternion form "
-                         "QROTATE requires.  open_gororoba has no normalization lemma yet "
-                         "(ROCQ gap recorded in the quaternion-ISA design finding)",
-      .mesa_hook       = NULL,  /* QNORM + RSQ + scale; NIR detector pending */
+                         "plus the US RSQ (the substrate's reciprocal-square-root, new to "
+                         "this op) and a vec4 scale -- the unit-quaternion form QROTATE "
+                         "requires.  ROCQ ground: quat_normalize_unit (open_gororoba "
+                         "QuatNormalize.v) proves |normalize(a)|^2 = 1 for nonzero a, via "
+                         "quat_norm_sq_scale + sqrt_sqrt (the corpus previously had no "
+                         "normalization lemma -- this op closed that gap).  Admitted as the "
+                         "single-load fmul(a, frsq(dot(a,a)).xxxx) by r300_nir_detect_"
+                         "qnormalize_pattern and dispatched on the 1-in/1-out FP16-RT core, "
+                         "HW-confirmed 4/4 on RS482 by qnormalize_vk_probe (|out| = 1)",
+      .mesa_hook       = "r300_nir_detect_qnormalize_pattern",
       .retained_bundle = NULL,
    },
    /* NULL sentinel -- keep last */

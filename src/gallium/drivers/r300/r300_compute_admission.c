@@ -1613,6 +1613,66 @@ r300_nir_detect_qnorm_pattern(const nir_shader *s,
    out->is_qnorm = true;
 }
 
+void
+r300_nir_detect_qnormalize_pattern(const nir_shader *s,
+                                   struct r300_compute_qnormalize_pattern *out)
+{
+   out->is_qnormalize       = false;
+   out->input_ssbo_binding  = 0;
+   out->output_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *store, *load;
+   if (!collect_unary_ssbo_shape(s, &store, &load))
+      return;
+
+   /* Store value = a * rsqrt(dot(a,a)): the quaternion scaled by its reciprocal
+    * length.  The fmul reads a -- the identity-swizzled load -- on one side and
+    * the reciprocal-sqrt scalar broadcast (xxxx) on the other.  That scalar is
+    * frsq(fdot4(a,a)): the US RSQ over the one-DP4 squared norm. */
+   const nir_alu_instr *mul = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!mul || mul->op != nir_op_fmul)
+      return;
+   const nir_def *a = &load->def;
+
+   const nir_def *rsplat = NULL;
+   for (unsigned k = 0; k < 2; k++) {
+      const nir_alu_src *as = &mul->src[k];        /* candidate a operand */
+      const nir_alu_src *rs = &mul->src[1 - k];    /* candidate rsqrt splat */
+      bool a_id = as->src.ssa == a;
+      bool r_splat = true;
+      for (unsigned c = 0; c < 4; c++) {
+         if (as->swizzle[c] != c)
+            a_id = false;
+         if (rs->swizzle[c] != 0)
+            r_splat = false;
+      }
+      if (a_id && r_splat) {
+         rsplat = rs->src.ssa;
+         break;
+      }
+   }
+   if (!rsplat)
+      return;
+
+   const nir_alu_instr *rsq = nir_def_as_alu_or_null(rsplat);
+   if (!rsq || rsq->op != nir_op_frsq)
+      return;
+   const nir_alu_instr *dot = nir_def_as_alu_or_null(rsq->src[0].src.ssa);
+   if (!dot || dot->op != nir_op_fdot4)
+      return;
+   if (dot->src[0].src.ssa != a || dot->src[1].src.ssa != a)
+      return;
+   for (unsigned c = 0; c < 4; c++)
+      if (dot->src[0].swizzle[c] != c || dot->src[1].swizzle[c] != c)
+         return;
+
+   if (nir_src_is_const(load->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->is_qnormalize = true;
+}
+
 /* True if `def` is a vec4 whose four lanes are the signed channels of `base`
  * given by row[] (chan, neg), each reached through resolve_signed_channel (so
  * the fneg/mov the compiler folds onto a negated lane is unwrapped).  The
