@@ -1225,6 +1225,16 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
    rs.line_width  = 1.0f;
    rs.point_size  = 1.0f;
    if (vk_rs) {
+      /* VK_EXT_depth_clip_enable: explicit clip control overrides the
+       * default-on near/far clip (r300vk does not expose depthClampEnable,
+       * so the implicit inverse-of-clamp rule never fires). */
+      const VkPipelineRasterizationDepthClipStateCreateInfoEXT *clip_info =
+         vk_find_struct_const(vk_rs->pNext,
+                              PIPELINE_RASTERIZATION_DEPTH_CLIP_STATE_CREATE_INFO_EXT);
+      if (clip_info) {
+         rs.depth_clip_near = clip_info->depthClipEnable;
+         rs.depth_clip_far  = clip_info->depthClipEnable;
+      }
       rs.cull_face = r300vk_cull_mode_to_pipe(vk_rs->cullMode);
       rs.front_ccw = vk_rs->frontFace == VK_FRONT_FACE_COUNTER_CLOCKWISE;
       rs.line_width = vk_rs->lineWidth != 0.0f ? vk_rs->lineWidth : 1.0f;

@@ -425,6 +425,16 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
     * drives cull/front-face/topology/depth/stencil through vkCmdSet*; all of
     * those record R300VK_CMD_SET_DYNAMIC_STATE entries the replay merges. */
    .EXT_extended_dynamic_state = true,
+   /* VK_EXT_scalar_block_layout: the descriptor-UBO and push-constant paths
+    * load CONST[0] by byte offset through the keystone lowering, so packing
+    * tighter than std140 changes only the offsets the compiler already
+    * computes.  zink lists the feature among its base requirements. */
+   .EXT_scalar_block_layout = true,
+   /* VK_EXT_depth_clip_enable: r300's clip block is programmed through the
+    * rasterizer CSO's depth_clip_near/far, captured in the pipeline rs
+    * template; the create-time parse maps the extension's explicit
+    * depthClipEnable onto them.  zink emits a per-draw warning without it. */
+   .EXT_depth_clip_enable = true,
    /* dma-buf export, the wsi-drm substrate: external images are single-tile
     * SHARED|SCANOUT linear BOs and vkGetMemoryFdKHR exports them through the
     * winsys PRIME path -- the contract the r300g/GL DRI3 oracle measured
@@ -439,6 +449,8 @@ r300vk_physical_device_init_features(struct vk_features *features)
 {
    memset(features, 0, sizeof(*features));
    features->robustBufferAccess = true;
+   features->scalarBlockLayout = true;
+   features->depthClipEnable = true;
    features->largePoints = true;
    features->wideLines = true;
    features->samplerAnisotropy = true;
