@@ -450,6 +450,9 @@ r300vk_physical_device_init_features(struct vk_features *features)
    memset(features, 0, sizeof(*features));
    features->robustBufferAccess = true;
    features->scalarBlockLayout = true;
+   /* Logic ops run in r300's ROP unit (RB3D_ROPCNTL); the blend CSO carries
+    * logicop_enable/logicop_func and r300g programs the ROP3 code. */
+   features->logicOp = true;
    features->depthClipEnable = true;
    features->largePoints = true;
    features->wideLines = true;

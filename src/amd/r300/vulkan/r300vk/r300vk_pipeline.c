@@ -1129,6 +1129,47 @@ r300vk_build_velems_cso(struct r300vk_device *device,
    return VK_SUCCESS;
 }
 
+/* VkBlendFactor and PIPE_BLENDFACTOR_* enumerate differently (gallium splits
+ * the inverted factors into a high band), so the map is explicit.  Dual-source
+ * SRC1 factors are unreachable: the dualSrcBlend feature stays false. */
+static unsigned
+r300vk_blend_factor_to_pipe(VkBlendFactor f)
+{
+   switch (f) {
+   case VK_BLEND_FACTOR_ONE:                 return PIPE_BLENDFACTOR_ONE;
+   case VK_BLEND_FACTOR_SRC_COLOR:           return PIPE_BLENDFACTOR_SRC_COLOR;
+   case VK_BLEND_FACTOR_SRC_ALPHA:           return PIPE_BLENDFACTOR_SRC_ALPHA;
+   case VK_BLEND_FACTOR_DST_ALPHA:           return PIPE_BLENDFACTOR_DST_ALPHA;
+   case VK_BLEND_FACTOR_DST_COLOR:           return PIPE_BLENDFACTOR_DST_COLOR;
+   case VK_BLEND_FACTOR_SRC_ALPHA_SATURATE:  return PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE;
+   case VK_BLEND_FACTOR_CONSTANT_COLOR:      return PIPE_BLENDFACTOR_CONST_COLOR;
+   case VK_BLEND_FACTOR_CONSTANT_ALPHA:      return PIPE_BLENDFACTOR_CONST_ALPHA;
+   case VK_BLEND_FACTOR_ZERO:                return PIPE_BLENDFACTOR_ZERO;
+   case VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR: return PIPE_BLENDFACTOR_INV_SRC_COLOR;
+   case VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA: return PIPE_BLENDFACTOR_INV_SRC_ALPHA;
+   case VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA: return PIPE_BLENDFACTOR_INV_DST_ALPHA;
+   case VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR: return PIPE_BLENDFACTOR_INV_DST_COLOR;
+   case VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR:
+      return PIPE_BLENDFACTOR_INV_CONST_COLOR;
+   case VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA:
+      return PIPE_BLENDFACTOR_INV_CONST_ALPHA;
+   default:                                  return PIPE_BLENDFACTOR_ONE;
+   }
+}
+
+/* VkBlendOp and PIPE_BLEND_* share value order (ADD=0 .. MAX=4); proven
+ * statically like the compare-op map. */
+static unsigned
+r300vk_blend_op_to_pipe(VkBlendOp op)
+{
+   STATIC_ASSERT((unsigned)VK_BLEND_OP_ADD == PIPE_BLEND_ADD &&
+                 (unsigned)VK_BLEND_OP_SUBTRACT == PIPE_BLEND_SUBTRACT &&
+                 (unsigned)VK_BLEND_OP_REVERSE_SUBTRACT == PIPE_BLEND_REVERSE_SUBTRACT &&
+                 (unsigned)VK_BLEND_OP_MIN == PIPE_BLEND_MIN &&
+                 (unsigned)VK_BLEND_OP_MAX == PIPE_BLEND_MAX);
+   return (unsigned)op <= PIPE_BLEND_MAX ? (unsigned)op : PIPE_BLEND_ADD;
+}
+
 unsigned
 r300vk_cull_mode_to_pipe(VkCullModeFlags cull)
 {
@@ -1194,6 +1235,12 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
                                         struct r300vk_pipeline *pl,
                                         const VkGraphicsPipelineCreateInfo *info)
 {
+   /* Translate the pipeline-static colour-blend state for the single render
+    * target (maxColorAttachments == 1).  VkColorComponentFlags shares the
+    * R/G/B/A bit order with PIPE_MASK_*; absent state (rasterizer discard or
+    * no colour attachment) leaves blending off with a full writemask. */
+   const VkPipelineColorBlendStateCreateInfo *vk_cb_state =
+      info ? info->pColorBlendState : NULL;
    struct pipe_blend_state bs = {0};
    bs.rt[0].rgb_func        = PIPE_BLEND_ADD;
    bs.rt[0].rgb_src_factor  = PIPE_BLENDFACTOR_ONE;
@@ -1202,6 +1249,49 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
    bs.rt[0].alpha_src_factor = PIPE_BLENDFACTOR_ONE;
    bs.rt[0].alpha_dst_factor = PIPE_BLENDFACTOR_ZERO;
    bs.rt[0].colormask       = PIPE_MASK_RGBA;
+   STATIC_ASSERT(VK_COLOR_COMPONENT_R_BIT == PIPE_MASK_R &&
+                 VK_COLOR_COMPONENT_G_BIT == PIPE_MASK_G &&
+                 VK_COLOR_COMPONENT_B_BIT == PIPE_MASK_B &&
+                 VK_COLOR_COMPONENT_A_BIT == PIPE_MASK_A);
+   if (vk_cb_state && vk_cb_state->attachmentCount > 0 &&
+       vk_cb_state->pAttachments) {
+      const VkPipelineColorBlendAttachmentState *att =
+         &vk_cb_state->pAttachments[0];
+      bs.rt[0].blend_enable     = att->blendEnable;
+      bs.rt[0].rgb_func         = r300vk_blend_op_to_pipe(att->colorBlendOp);
+      bs.rt[0].rgb_src_factor   = r300vk_blend_factor_to_pipe(att->srcColorBlendFactor);
+      bs.rt[0].rgb_dst_factor   = r300vk_blend_factor_to_pipe(att->dstColorBlendFactor);
+      bs.rt[0].alpha_func       = r300vk_blend_op_to_pipe(att->alphaBlendOp);
+      bs.rt[0].alpha_src_factor = r300vk_blend_factor_to_pipe(att->srcAlphaBlendFactor);
+      bs.rt[0].alpha_dst_factor = r300vk_blend_factor_to_pipe(att->dstAlphaBlendFactor);
+      bs.rt[0].colormask        = att->colorWriteMask & PIPE_MASK_RGBA;
+   }
+   /* VkLogicOp and PIPE_LOGICOP_* do NOT share value order (gallium follows
+    * the GL truth-table encoding: COPY is 12 there, 3 in Vulkan), so the map
+    * is explicit.  r300 implements all sixteen in the ROP unit
+    * (RB3D_ROPCNTL). */
+   if (vk_cb_state && vk_cb_state->logicOpEnable) {
+      bs.logicop_enable = true;
+      switch (vk_cb_state->logicOp) {
+      case VK_LOGIC_OP_CLEAR:         bs.logicop_func = PIPE_LOGICOP_CLEAR; break;
+      case VK_LOGIC_OP_AND:           bs.logicop_func = PIPE_LOGICOP_AND; break;
+      case VK_LOGIC_OP_AND_REVERSE:   bs.logicop_func = PIPE_LOGICOP_AND_REVERSE; break;
+      case VK_LOGIC_OP_COPY:          bs.logicop_func = PIPE_LOGICOP_COPY; break;
+      case VK_LOGIC_OP_AND_INVERTED:  bs.logicop_func = PIPE_LOGICOP_AND_INVERTED; break;
+      case VK_LOGIC_OP_NO_OP:         bs.logicop_func = PIPE_LOGICOP_NOOP; break;
+      case VK_LOGIC_OP_XOR:           bs.logicop_func = PIPE_LOGICOP_XOR; break;
+      case VK_LOGIC_OP_OR:            bs.logicop_func = PIPE_LOGICOP_OR; break;
+      case VK_LOGIC_OP_NOR:           bs.logicop_func = PIPE_LOGICOP_NOR; break;
+      case VK_LOGIC_OP_EQUIVALENT:    bs.logicop_func = PIPE_LOGICOP_EQUIV; break;
+      case VK_LOGIC_OP_INVERT:        bs.logicop_func = PIPE_LOGICOP_INVERT; break;
+      case VK_LOGIC_OP_OR_REVERSE:    bs.logicop_func = PIPE_LOGICOP_OR_REVERSE; break;
+      case VK_LOGIC_OP_COPY_INVERTED: bs.logicop_func = PIPE_LOGICOP_COPY_INVERTED; break;
+      case VK_LOGIC_OP_OR_INVERTED:   bs.logicop_func = PIPE_LOGICOP_OR_INVERTED; break;
+      case VK_LOGIC_OP_NAND:          bs.logicop_func = PIPE_LOGICOP_NAND; break;
+      case VK_LOGIC_OP_SET:           bs.logicop_func = PIPE_LOGICOP_SET; break;
+      default:                        bs.logicop_func = PIPE_LOGICOP_COPY; break;
+      }
+   }
    pl->blend_cso = device->pipe->create_blend_state(device->pipe, &bs);
    if (!pl->blend_cso)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
