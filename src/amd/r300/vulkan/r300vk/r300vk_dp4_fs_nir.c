@@ -543,3 +543,40 @@ r300vk_build_odiv_hi_fs_nir(const nir_shader_compiler_options *opts)
    store_color_at(&b, hi, FRAG_RESULT_COLOR, "color");
    return fs_finalize(&b);
 }
+
+/* ODIV_L lower half (left division, route A): out = inv(y)*x = OMUL((c,d),(a,b))
+ * with (c,d) = inv(y) and (a,b) = x, so out.lo = c*a - conj(b)*d.  Left division
+ * differs from right (octonions are non-commutative + non-associative) but stays
+ * parenthesis-safe (Artin).  Same two-pass split and inverse recompute as ODIV. */
+nir_shader *
+r300vk_build_odiv_l_lo_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_odiv_l_lo");
+
+   nir_def *a, *bb, *yl, *yh;
+   sample_octonion_halves(&b, &a, &bb, &yl, &yh);   /* a=xlo, bb=xhi, yl=ylo, yh=yhi */
+   nir_def *c, *d;
+   odiv_inverse_halves(&b, yl, yh, &c, &d);
+   nir_def *lo = nir_fsub(&b, hamilton_product(&b, c, a),
+                          hamilton_product(&b, quat_conj(&b, bb), d));
+   store_color_at(&b, lo, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}
+
+/* ODIV_L upper half (left division, route A): out.hi = b*c + d*conj(a). */
+nir_shader *
+r300vk_build_odiv_l_hi_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_odiv_l_hi");
+
+   nir_def *a, *bb, *yl, *yh;
+   sample_octonion_halves(&b, &a, &bb, &yl, &yh);   /* a=xlo, bb=xhi, yl=ylo, yh=yhi */
+   nir_def *c, *d;
+   odiv_inverse_halves(&b, yl, yh, &c, &d);
+   nir_def *hi = nir_fadd(&b, hamilton_product(&b, bb, c),
+                          hamilton_product(&b, d, quat_conj(&b, a)));
+   store_color_at(&b, hi, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}

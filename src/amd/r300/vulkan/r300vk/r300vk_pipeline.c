@@ -1954,7 +1954,9 @@ r300vk_oaddsub_synthesize_shaders(struct r300vk_device *device,
 /* ODIV: passthrough VS + the two division half-FSs (fs_cso = lower half, fs_cso2 =
  * upper half), each forming inv(y) from the reciprocal of |y|^2 and emitting one
  * half of the product.  Division is two single-output passes rather than one MRT
- * pass: the combined form is 73 ALU ops, over the 64-ALU R300 fragment limit. */
+ * pass: the combined form is 73 ALU ops, over the 64-ALU R300 fragment limit.  The
+ * detected handedness picks the half-shaders -- left division inv(y)*x swaps the
+ * OMUL operands versus right division x*inv(y); the dispatch stays the same. */
 static bool
 r300vk_odiv_synthesize_shaders(struct r300vk_device *device,
                                struct r300vk_pipeline *pl)
@@ -1967,8 +1969,13 @@ r300vk_odiv_synthesize_shaders(struct r300vk_device *device,
       return false;
    const struct nir_shader_compiler_options *opts =
       pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
-   pl->fs_cso  = r300vk_make_fs_cso(pipe, r300vk_build_odiv_lo_fs_nir(opts));
-   pl->fs_cso2 = r300vk_make_fs_cso(pipe, r300vk_build_odiv_hi_fs_nir(opts));
+   if (pl->odiv.is_left) {
+      pl->fs_cso  = r300vk_make_fs_cso(pipe, r300vk_build_odiv_l_lo_fs_nir(opts));
+      pl->fs_cso2 = r300vk_make_fs_cso(pipe, r300vk_build_odiv_l_hi_fs_nir(opts));
+   } else {
+      pl->fs_cso  = r300vk_make_fs_cso(pipe, r300vk_build_odiv_lo_fs_nir(opts));
+      pl->fs_cso2 = r300vk_make_fs_cso(pipe, r300vk_build_odiv_hi_fs_nir(opts));
+   }
    return pl->fs_cso != NULL && pl->fs_cso2 != NULL;
 }
 
