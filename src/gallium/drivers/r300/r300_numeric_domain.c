@@ -468,6 +468,28 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = NULL,
    },
    {
+      .op_name         = "OTRANS",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "octonion sandwich transform out = x*v*conj(x), the octonion "
+                         "analog of the quaternion rotation sandwich.  Two chained "
+                         "octonion products t = x*v then out = t*conj(x) (32 DP4s).  "
+                         "Parenthesis-safe by the flexible law (x*y)*x = x*(y*x) since "
+                         "conj(x) in R[x] -- ROCQ ground oct_flexible CDPowerAssociative.v, "
+                         "schafer1954_octonion_flexibility Schafer1954.v, Brown Thm 3.3(iv) "
+                         "Brown1972ChapterIII.v.  Norm scales as |out| = |x|^2 |v| "
+                         "(oct_norm_mul + conj-norm invariance); for a unit x the sandwich "
+                         "is norm-preserving.  Admitted by r300_nir_detect_otrans_pattern "
+                         "(finds the OMUL(x,v) halves tl,th, then verifies the stores are "
+                         "OMUL((tl,th),conj(x)) with conj(x) = (conj(xlo),-xhi) folded into "
+                         "the rotation rows).  Dispatched as four single-output passes "
+                         "through a scratch intermediate t (32 DP4s far exceed the 64-ALU "
+                         "R300 fragment limit): pass 1 t=x*v, pass 2 t*conj(x).  HW-confirmed "
+                         "4/4 on RS482 by otrans_vk_probe vs a CPU sandwich",
+      .mesa_hook       = "r300_nir_detect_otrans_pattern",
+      .retained_bundle = NULL,
+   },
+   {
       .op_name         = "QADD",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,

@@ -2397,6 +2397,134 @@ r300vk_odiv_dispatch_replay(struct r300vk_device *device,
    return ok;
 }
 
+/* Allocate a scratch FP32x4 buffer holding `total` octonion-half elements -- the
+ * intermediate t = x*v that OTRANS materializes between its two products.  STAGING
+ * usage so the FP16->FP32 copy-back (write) and the input-wrap (read) both take
+ * the direct CPU-map path, matching the other octonion-half transfers. */
+static struct pipe_resource *
+otrans_create_scratch(struct pipe_screen *screen, uint64_t total)
+{
+   struct pipe_resource bt;
+   memset(&bt, 0, sizeof(bt));
+   bt.target     = PIPE_BUFFER;
+   bt.format     = PIPE_FORMAT_R8_UNORM;
+   bt.bind       = PIPE_BIND_SAMPLER_VIEW;
+   bt.usage      = PIPE_USAGE_STAGING;
+   bt.width0     = (unsigned)(total * 16);
+   bt.height0    = 1;
+   bt.depth0     = 1;
+   bt.array_size = 1;
+   return screen->resource_create(screen, &bt);
+}
+
+/* OTRANS dispatch: out = x*v*conj(x) as two octonion products through a scratch
+ * intermediate t.  The four inputs bind straight -- stage0=xlo, stage1=xhi,
+ * stage2=vlo, stage3=vhi.  Pass 1 runs t = x*v (the OMUL half-shaders) to two
+ * scratch FP32 buffers; pass 2 runs out = t*conj(x), sampling t at stages 0,1 and
+ * x at stages 2,3 and forming conj(x) inline.  Four single-output passes: the
+ * combined sandwich is 32 DP4s, far past the 64-ALU R300 fragment limit. */
+bool
+r300vk_otrans_dispatch_replay(struct r300vk_device *device,
+                              const struct r300vk_pipeline *pl,
+                              const struct r300vk_cmd_dispatch *dispatch,
+                              const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0)
+      return false;
+   if (!pl->vs_cso || !pl->fs_cso || !pl->fs_cso2 || !pl->fs_cso3 ||
+       !pl->fs_cso4 || binds->first_set != 0)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R32G32B32A32_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW) ||
+       !screen->is_format_supported(screen, PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                    PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_RENDER_TARGET))
+      return false;
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout)
+      return false;
+
+   uint32_t bind[6] = { pl->otrans.input_xlo_ssbo_binding,
+                        pl->otrans.input_xhi_ssbo_binding,
+                        pl->otrans.input_vlo_ssbo_binding,
+                        pl->otrans.input_vhi_ssbo_binding,
+                        pl->otrans.output_lo_ssbo_binding,
+                        pl->otrans.output_hi_ssbo_binding };
+   const struct r300vk_descriptor *desc[6];
+   struct r300vk_buffer *buf[6];
+   if (!octonion_resolve_buffers(set, bind, 6, desc, buf))
+      return false;
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0 || total > 2048u * 2048u)
+      return false;
+   unsigned width = 0, height = 0;
+   derive_raster_extent((uint32_t)total, &width, &height);
+   if (width > 2048 || height > 2048)
+      return false;
+
+   /* x and v inputs as FP32 sampler views for pass 1 (OMUL(x,v)). */
+   struct pipe_sampler_view *xv[4] = { NULL, NULL, NULL, NULL };
+   for (unsigned i = 0; i < 4; i++) {
+      xv[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
+         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      if (!xv[i]) {
+         for (unsigned k = 0; k < i; k++)
+            pipe_sampler_view_reference(&xv[k], NULL);
+         return false;
+      }
+   }
+
+   struct pipe_resource *t_lo = otrans_create_scratch(screen, total);
+   struct pipe_resource *t_hi = otrans_create_scratch(screen, total);
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   bool ok = t_lo && t_hi &&
+             r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso);
+
+   /* Pass 1: t = x*v to the scratch halves. */
+   if (ok)
+      ok = omul_run_pass(pipe, screen, device, xv, pl->fs_cso, pl->vs_cso, vb,
+                         velems_cso, t_lo, 0, width, height, total) &&
+           omul_run_pass(pipe, screen, device, xv, pl->fs_cso2, pl->vs_cso, vb,
+                         velems_cso, t_hi, 0, width, height, total);
+
+   /* Pass 2: out = t*conj(x), sampling t at 0,1 and x at 2,3. */
+   if (ok) {
+      struct pipe_sampler_view *tx[4] = { NULL, NULL, NULL, NULL };
+      tx[0] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, t_lo, 0, width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      tx[1] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, t_hi, 0, width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      tx[2] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[0]->resource, (unsigned)desc[0]->buf.offset, width, height,
+         PIPE_FORMAT_R32G32B32A32_FLOAT);
+      tx[3] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[1]->resource, (unsigned)desc[1]->buf.offset, width, height,
+         PIPE_FORMAT_R32G32B32A32_FLOAT);
+      ok = tx[0] && tx[1] && tx[2] && tx[3] &&
+           omul_run_pass(pipe, screen, device, tx, pl->fs_cso3, pl->vs_cso, vb,
+                         velems_cso, buf[4]->resource,
+                         (unsigned)desc[4]->buf.offset, width, height, total) &&
+           omul_run_pass(pipe, screen, device, tx, pl->fs_cso4, pl->vs_cso, vb,
+                         velems_cso, buf[5]->resource,
+                         (unsigned)desc[5]->buf.offset, width, height, total);
+      for (unsigned i = 0; i < 4; i++)
+         pipe_sampler_view_reference(&tx[i], NULL);
+   }
+
+   if (velems_cso)
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+   for (unsigned i = 0; i < 4; i++)
+      pipe_sampler_view_reference(&xv[i], NULL);
+   pipe_resource_reference(&vb, NULL);
+   pipe_resource_reference(&t_lo, NULL);
+   pipe_resource_reference(&t_hi, NULL);
+   return ok;
+}
+
 /* Multi-tap gather orchestrator: identity-map skeleton (one input sampler
  * view, two storage buffers) plus a per-dispatch fragment constant carrying
  * the neighbor texel displacement.  The synthesized FS
