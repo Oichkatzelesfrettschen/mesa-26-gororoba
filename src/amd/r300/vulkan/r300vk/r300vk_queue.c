@@ -789,6 +789,9 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
          sv_templ.swizzle_g = vk_swizzle_to_pipe(iv->vk.swizzle.g);
          sv_templ.swizzle_b = vk_swizzle_to_pipe(iv->vk.swizzle.b);
          sv_templ.swizzle_a = vk_swizzle_to_pipe(iv->vk.swizzle.a);
+         sv_templ.u.tex.first_level = iv->vk.base_mip_level;
+         sv_templ.u.tex.last_level  = iv->vk.base_mip_level +
+                                      iv->vk.level_count - 1;
          struct pipe_sampler_view *view =
             pipe->create_sampler_view(pipe, img->resource, &sv_templ);
          if (!view)
@@ -1514,8 +1517,14 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
    struct pipe_context *pipe = device->pipe;
    struct pipe_framebuffer_state fb;
    memset(&fb, 0, sizeof(fb));
-   fb.width  = e->begin_rp.width;
-   fb.height = e->begin_rp.height;
+   /* r300_set_framebuffer_state refuses dimensions past the silicon render
+    * cap and leaves the previous state bound; the begin clear would then
+    * run against stale buffers (r300_clear dereferences the stale zsbuf).
+    * The advertised maxFramebuffer limits match the cap, so a larger
+    * recorded area is app-side invalid usage; clamping keeps the replay
+    * self-consistent instead of corrupting r300g state. */
+   fb.width  = MIN2(e->begin_rp.width, R300VK_R3XX_MAX_RENDER_DIMENSION);
+   fb.height = MIN2(e->begin_rp.height, R300VK_R3XX_MAX_RENDER_DIMENSION);
    *skip_render_pass = false;
    if (e->begin_rp.color_image) {
       const struct r300vk_image *img = e->begin_rp.color_image;
@@ -2226,12 +2235,18 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
    const int64_t req_max_y =
       req_min_y + DIV_ROUND_UP(region->imageExtent.height, bh);
 
+   /* Mip chains exist only on single-tile images (origin 0), so scaling the
+    * tile dimensions by the level keeps the walk correct on every level. */
+   const uint32_t src_mip = region->imageSubresource.mipLevel;
+
    for (uint32_t tile_row = 0; tile_row < src_img->tile_rows; tile_row++) {
       const uint32_t tile_origin_y =
          r300vk_image_tile_origin_y(src_img, tile_row);
+      const uint32_t tile_h_eff =
+         MAX2(src_img->tile_height[tile_row] >> src_mip, 1u);
       const int64_t tile_min_y = tile_origin_y / bh;
       const int64_t tile_max_y =
-         tile_min_y + DIV_ROUND_UP(src_img->tile_height[tile_row], bh);
+         tile_min_y + DIV_ROUND_UP(tile_h_eff, bh);
       const int64_t copy_min_y = MAX2(req_min_y, tile_min_y);
       const int64_t copy_max_y = MIN2(req_max_y, tile_max_y);
       if (copy_max_y <= copy_min_y)
@@ -2240,9 +2255,11 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
       for (uint32_t tile_col = 0; tile_col < src_img->tile_cols; tile_col++) {
          const uint32_t tile_origin_x =
             r300vk_image_tile_origin_x(src_img, tile_col);
+         const uint32_t tile_w_eff =
+            MAX2(src_img->tile_width[tile_col] >> src_mip, 1u);
          const int64_t tile_min_x = tile_origin_x / bw;
          const int64_t tile_max_x =
-            tile_min_x + DIV_ROUND_UP(src_img->tile_width[tile_col], bw);
+            tile_min_x + DIV_ROUND_UP(tile_w_eff, bw);
          const int64_t copy_min_x = MAX2(req_min_x, tile_min_x);
          const int64_t copy_max_x = MIN2(req_max_x, tile_max_x);
          if (copy_max_x <= copy_min_x)
@@ -2259,11 +2276,9 @@ r300vk_copy_image_region_to_buffer(struct r300vk_device *device,
          u_box_2d((int)((copy_min_x - tile_min_x) * bw),
                   (int)((copy_min_y - tile_min_y) * bh),
                   (int)MIN2((copy_max_x - copy_min_x) * bw,
-                            src_img->tile_width[tile_col] -
-                            (copy_min_x - tile_min_x) * bw),
+                            tile_w_eff - (copy_min_x - tile_min_x) * bw),
                   (int)MIN2((copy_max_y - copy_min_y) * bh,
-                            src_img->tile_height[tile_row] -
-                            (copy_min_y - tile_min_y) * bh),
+                            tile_h_eff - (copy_min_y - tile_min_y) * bh),
                   &src_box);
 
          struct pipe_transfer *src_xfer = NULL;
@@ -2336,12 +2351,16 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
    const int64_t req_max_y =
       req_min_y + DIV_ROUND_UP(region->imageExtent.height, bh);
 
+   const uint32_t dst_mip = region->imageSubresource.mipLevel;
+
    for (uint32_t tile_row = 0; tile_row < dst_img->tile_rows; tile_row++) {
       const uint32_t tile_origin_y =
          r300vk_image_tile_origin_y(dst_img, tile_row);
+      const uint32_t tile_h_eff =
+         MAX2(dst_img->tile_height[tile_row] >> dst_mip, 1u);
       const int64_t tile_min_y = tile_origin_y / bh;
       const int64_t tile_max_y =
-         tile_min_y + DIV_ROUND_UP(dst_img->tile_height[tile_row], bh);
+         tile_min_y + DIV_ROUND_UP(tile_h_eff, bh);
       const int64_t copy_min_y = MAX2(req_min_y, tile_min_y);
       const int64_t copy_max_y = MIN2(req_max_y, tile_max_y);
       if (copy_max_y <= copy_min_y)
@@ -2350,9 +2369,11 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
       for (uint32_t tile_col = 0; tile_col < dst_img->tile_cols; tile_col++) {
          const uint32_t tile_origin_x =
             r300vk_image_tile_origin_x(dst_img, tile_col);
+         const uint32_t tile_w_eff =
+            MAX2(dst_img->tile_width[tile_col] >> dst_mip, 1u);
          const int64_t tile_min_x = tile_origin_x / bw;
          const int64_t tile_max_x =
-            tile_min_x + DIV_ROUND_UP(dst_img->tile_width[tile_col], bw);
+            tile_min_x + DIV_ROUND_UP(tile_w_eff, bw);
          const int64_t copy_min_x = MAX2(req_min_x, tile_min_x);
          const int64_t copy_max_x = MIN2(req_max_x, tile_max_x);
          if (copy_max_x <= copy_min_x)
@@ -2367,11 +2388,9 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
          u_box_2d((int)((copy_min_x - tile_min_x) * bw),
                   (int)((copy_min_y - tile_min_y) * bh),
                   (int)MIN2((copy_max_x - copy_min_x) * bw,
-                            dst_img->tile_width[tile_col] -
-                            (copy_min_x - tile_min_x) * bw),
+                            tile_w_eff - (copy_min_x - tile_min_x) * bw),
                   (int)MIN2((copy_max_y - copy_min_y) * bh,
-                            dst_img->tile_height[tile_row] -
-                            (copy_min_y - tile_min_y) * bh),
+                            tile_h_eff - (copy_min_y - tile_min_y) * bh),
                   &dst_box);
 
          struct pipe_transfer *dst_xfer = NULL;
@@ -2491,7 +2510,8 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
 static bool
 r300vk_clear_color_image(struct r300vk_device *device,
                          const struct r300vk_image *img,
-                         const VkClearColorValue *color)
+                         const VkClearColorValue *color,
+                         const VkImageSubresourceRange *range)
 {
    struct pipe_context *pipe = device->pipe;
    const enum pipe_format fmt = img->resource->format;
@@ -2505,29 +2525,36 @@ r300vk_clear_color_image(struct r300vk_device *device,
    else
       util_format_pack_rgba(fmt, packed, color->float32, 1);
 
+   const uint32_t base_mip = range ? range->baseMipLevel : 0;
+   const uint32_t mip_count =
+      (range && range->levelCount != VK_REMAINING_MIP_LEVELS)
+      ? range->levelCount : img->vk.mip_levels - base_mip;
+
    for (uint32_t tile_row = 0; tile_row < img->tile_rows; tile_row++) {
       for (uint32_t tile_col = 0; tile_col < img->tile_cols; tile_col++) {
          const uint32_t tile_index = tile_row * img->tile_cols + tile_col;
          struct pipe_resource *tile = img->tiles[tile_index];
          if (!tile)
             continue;
-         const unsigned tile_w = img->tile_width[tile_col];
-         const unsigned tile_h = img->tile_height[tile_row];
+         for (uint32_t m = base_mip; m < base_mip + mip_count; m++) {
+            const unsigned tile_w = MAX2(img->tile_width[tile_col] >> m, 1u);
+            const unsigned tile_h = MAX2(img->tile_height[tile_row] >> m, 1u);
 
-         struct pipe_box box;
-         u_box_2d(0, 0, (int)tile_w, (int)tile_h, &box);
+            struct pipe_box box;
+            u_box_2d(0, 0, (int)tile_w, (int)tile_h, &box);
 
-         struct pipe_transfer *xfer = NULL;
-         uint8_t *map = pipe->texture_map(pipe, tile, 0, PIPE_MAP_WRITE,
-                                          &box, &xfer);
-         if (!map)
-            continue;
-         for (unsigned y = 0; y < tile_h; y++) {
-            uint8_t *row = map + y * xfer->stride;
-            for (unsigned x = 0; x < tile_w; x++)
-               memcpy(row + x * bpp, packed, bpp);
+            struct pipe_transfer *xfer = NULL;
+            uint8_t *map = pipe->texture_map(pipe, tile, m, PIPE_MAP_WRITE,
+                                             &box, &xfer);
+            if (!map)
+               continue;
+            for (unsigned y = 0; y < tile_h; y++) {
+               uint8_t *row = map + y * xfer->stride;
+               for (unsigned x = 0; x < tile_w; x++)
+                  memcpy(row + x * bpp, packed, bpp);
+            }
+            pipe->texture_unmap(pipe, xfer);
          }
-         pipe->texture_unmap(pipe, xfer);
       }
    }
    return true;
@@ -2733,7 +2760,8 @@ r300vk_replay_host_entry(struct r300vk_device *device,
                                         e->copy_image.dst, region);
    } else if (e->type == R300VK_CMD_CLEAR_COLOR_IMAGE) {
       r300vk_clear_color_image(device, e->clear_color_image.image,
-                               &e->clear_color_image.color);
+                               &e->clear_color_image.color,
+                               &e->clear_color_image.range);
    } else if (e->type == R300VK_CMD_FILL_BUFFER) {
       r300vk_fill_buffer(device, &e->fill_buffer);
    } else if (e->type == R300VK_CMD_COPY_BUFFER) {

@@ -182,7 +182,9 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
             .height0    = img->tile_height[y],
             .depth0     = 1,
             .array_size = 1,
-            .last_level = 0,
+            /* The accept gate admits mipLevels > 1 only when one tile backs
+             * the image, so a multi-tile split always sees last_level 0. */
+            .last_level = info->mipLevels - 1,
             .nr_samples = info->samples,
          };
 
@@ -228,9 +230,18 @@ r300vk_image_validate_shape(struct r300vk_device *device,
       return vk_errorf(device, VK_ERROR_UNKNOWN,
                        "r300vk: arrayLayers %u > 1 unsupported",
                        info->arrayLayers);
-   if (info->mipLevels > 1)
+   /* Mip chains ride a single r300g resource (last_level > 0), so they are
+    * accepted exactly where one tile backs the whole image: optimal tiling
+    * within the sampler dimension.  A larger image splits into tiles whose
+    * seams no per-tile chain can cross, and a linear image is transfer
+    * staging with no mip consumer. */
+   if (info->mipLevels > 1 &&
+       (info->tiling != VK_IMAGE_TILING_OPTIMAL ||
+        info->extent.width  > R300VK_R3XX_MAX_TEXTURE_DIMENSION ||
+        info->extent.height > R300VK_R3XX_MAX_TEXTURE_DIMENSION))
       return vk_errorf(device, VK_ERROR_UNKNOWN,
-                       "r300vk: mipLevels %u > 1 unsupported",
+                       "r300vk: mipLevels %u unsupported for this shape "
+                       "(mips need one optimal tile)",
                        info->mipLevels);
    if (info->samples != VK_SAMPLE_COUNT_1_BIT)
       return vk_errorf(device, VK_ERROR_UNKNOWN,
@@ -430,9 +441,15 @@ r300vk_image_memory_size(const struct r300vk_image *img)
    if (img->vk.tiling == VK_IMAGE_TILING_LINEAR)
       return (VkDeviceSize)img->linear_row_pitch * ext->height;
 
-   return (VkDeviceSize)ext->width * ext->height *
-          MAX2(1u, img->vk.samples) *
-          util_format_get_blocksize(r300vk_vk_format_to_pipe_format(img->vk.format));
+   const unsigned bpp =
+      util_format_get_blocksize(r300vk_vk_format_to_pipe_format(img->vk.format));
+   VkDeviceSize total = 0;
+   for (uint32_t level = 0; level < img->vk.mip_levels; level++) {
+      const VkDeviceSize w = MAX2(ext->width >> level, 1u);
+      const VkDeviceSize h = MAX2(ext->height >> level, 1u);
+      total += w * h * MAX2(1u, img->vk.samples) * bpp;
+   }
+   return total;
 }
 
 static void
