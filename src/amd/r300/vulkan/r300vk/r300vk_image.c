@@ -382,9 +382,12 @@ r300vk_CreateImage(VkDevice _device,
    if (external) {
       /* Record the BO's real row pitch for vkGetImageSubresourceLayout: the
        * KMS handle query fills stride without exporting an fd. */
+      /* Single-tile images carry the BO in tiles[0] with resource NULL (the
+       * replay's own tiles[0]-or-resource pattern); export must follow it. */
+      struct pipe_resource *bo = img->tiles[0] ? img->tiles[0] : img->resource;
       struct winsys_handle wh = { .type = WINSYS_HANDLE_TYPE_KMS };
-      if (device->screen->resource_get_handle(device->screen, NULL,
-                                              img->resource, &wh,
+      if (bo &&
+          device->screen->resource_get_handle(device->screen, NULL, bo, &wh,
                                               PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
          img->external_stride = wh.stride;
    }

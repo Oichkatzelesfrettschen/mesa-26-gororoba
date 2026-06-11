@@ -552,12 +552,16 @@ r300vk_GetMemoryFdKHR(VkDevice _device,
    /* Export the dedicated image's BO through the winsys PRIME path -- the
     * same drmPrimeHandleToFD route r300g/GL presents through (the DRI3
     * oracle: two such exports per swapchain, then only CS per frame). */
-   if (!mem->dedicated_image || !mem->dedicated_image->resource)
+   struct pipe_resource *bo = NULL;
+   if (mem->dedicated_image)
+      bo = mem->dedicated_image->tiles[0] ? mem->dedicated_image->tiles[0]
+                                          : mem->dedicated_image->resource;
+   if (!bo)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
    struct winsys_handle wh = { .type = WINSYS_HANDLE_TYPE_FD };
    if (!device->screen->resource_get_handle(device->screen, device->pipe,
-                                            mem->dedicated_image->resource,
+                                            bo,
                                             &wh,
                                             PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
