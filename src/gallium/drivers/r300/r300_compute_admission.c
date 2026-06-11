@@ -2082,6 +2082,7 @@ r300_nir_detect_odiv_pattern(const nir_shader *s,
                              struct r300_compute_odiv_pattern *out)
 {
    out->is_odiv                = false;
+   out->is_left                = false;
    out->input_xlo_ssbo_binding = 0;
    out->input_xhi_ssbo_binding = 0;
    out->input_ylo_ssbo_binding = 0;
@@ -2174,15 +2175,25 @@ r300_nir_detect_odiv_pattern(const nir_shader *s,
    if (!c || !d)
       return;
 
-   /* The eight-wide product x * inv(y), where inv(y) = (c, d): exactly the OMUL
-    * fold with x's halves as a,b and the inverse halves as c,d.  o_lo = a*c -
-    * conj(d)*b, o_hi = d*a + b*conj(c). */
-   if (!omul_match_half(store[0]->src[0].ssa, nir_op_fsub,
-                        xlo, c, NULL, xhi, true, d, NULL))
+   /* The eight-wide product of x and inv(y) = (c, d), an OMUL fold.  Right
+    * division x*inv(y) folds with x's halves as the first operand (a,b) and the
+    * inverse as (c,d): o_lo = a*c - conj(d)*b, o_hi = d*a + b*conj(c).  Left
+    * division inv(y)*x swaps the operands -- (c,d) first, x = (a,b) second:
+    * o_lo = c*a - conj(b)*d, o_hi = b*c + d*conj(a).  Try right, then left;
+    * the two folds are structurally distinct so a kernel matches exactly one. */
+   const bool right =
+      omul_match_half(store[0]->src[0].ssa, nir_op_fsub,
+                      xlo, c, NULL, xhi, true, d, NULL) &&
+      omul_match_half(store[1]->src[0].ssa, nir_op_fadd,
+                      d, xlo, xhi, c, false, NULL, qrotate_outer_rows[0]);
+   const bool left = !right &&
+      omul_match_half(store[0]->src[0].ssa, nir_op_fsub,
+                      c, xlo, NULL, d, true, xhi, NULL) &&
+      omul_match_half(store[1]->src[0].ssa, nir_op_fadd,
+                      xhi, c, d, xlo, false, NULL, qrotate_outer_rows[0]);
+   if (!right && !left)
       return;
-   if (!omul_match_half(store[1]->src[0].ssa, nir_op_fadd,
-                        d, xlo, xhi, c, false, NULL, qrotate_outer_rows[0]))
-      return;
+   out->is_left = left;
 
    if (nir_src_is_const(load[0]->src[0]))
       out->input_xlo_ssbo_binding = nir_src_as_uint(load[0]->src[0]);

@@ -442,11 +442,28 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "dispatched in two single-output passes -- the combined MRT form is "
                          "73 ALU ops, over the 64-ALU R300 fragment limit (R300_PFS_MAX_ALU_INST), "
                          "so each pass recomputes inv(y) and emits one half; HW-confirmed 4/4 on "
-                         "RS482 by odiv_vk_probe.  Left division inv(y)*x differs (non-commutative + "
-                         "non-associative; each side parenthesis-safe by Artin/alternative) "
-                         "-- a sibling op.  Division stays DIM-8-ONLY: at dim 16 conj/N is "
-                         "only a pseudo-inverse (sedenion zero divisors, Moreno G2 / "
+                         "RS482 by odiv_vk_probe.  Left division inv(y)*x is the ODIV_L "
+                         "sibling (same detector, is_left).  Division stays DIM-8-ONLY: at dim "
+                         "16 conj/N is only a pseudo-inverse (sedenion zero divisors, Moreno G2 / "
                          "de Marrais box-kites; oct_norm_mul holds, sed_norm_fails)",
+      .mesa_hook       = "r300_nir_detect_odiv_pattern",
+      .retained_bundle = NULL,
+   },
+   {
+      .op_name         = "ODIV_L",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "octonion left division out = y\\x = inv(y)*x, inv(y) = "
+                         "conj(y)/|y|^2.  Differs from right division x*inv(y) because "
+                         "octonions are non-commutative AND non-associative, but each side is "
+                         "parenthesis-safe (Artin: x,y generate an associative subalgebra "
+                         "containing inv(y) -- ROCQ ground oct_flexible CDPowerAssociative.v, "
+                         "brown1972_oct_inv_mul_left/right Brown1972ChapterV.v).  Same detector "
+                         "r300_nir_detect_odiv_pattern (sets is_left when the stores fold as "
+                         "OMUL(inv(y),x) -- operands swapped vs right) and same two-pass split "
+                         "under the 64-ALU limit; the synthesize step picks odiv_l_lo/hi.  The "
+                         "identity is y*out == x (left), vs out*y == x for right.  HW-confirmed "
+                         "4/4 on RS482 by odiv_l_vk_probe.  DIM-8-ONLY (same Hurwitz wall)",
       .mesa_hook       = "r300_nir_detect_odiv_pattern",
       .retained_bundle = NULL,
    },

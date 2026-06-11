@@ -95,6 +95,11 @@ nir_shader *r300vk_build_oaddsub_mrt_fs_nir(const nir_shader_compiler_options *o
 nir_shader *r300vk_build_odiv_lo_fs_nir(const nir_shader_compiler_options *opts);
 nir_shader *r300vk_build_odiv_hi_fs_nir(const nir_shader_compiler_options *opts);
 
+/* ODIV_L (octonion left division) half fragment programs: out = inv(y)*x.  Same
+ * inverse + two-pass structure as ODIV, with the OMUL operands swapped. */
+nir_shader *r300vk_build_odiv_l_lo_fs_nir(const nir_shader_compiler_options *opts);
+nir_shader *r300vk_build_odiv_l_hi_fs_nir(const nir_shader_compiler_options *opts);
+
 #ifdef __cplusplus
 }
 #endif
