@@ -121,6 +121,35 @@ struct r300_compute_binary_map_pattern {
 void r300_nir_detect_binary_map(const struct nir_shader *s,
                                 struct r300_compute_binary_map_pattern *out);
 
+/* Single-input affine unary-map pattern: out[gid] = in[gid] * c0 + c1, one
+ * store_ssbo whose value is an affine function of exactly one load_ssbo def with
+ * constant scale and bias.  The recognized NIR shapes are the three forms an
+ * `in*c0 + c1` GLSL kernel lowers to: nir_op_ffma(load, c0, c1),
+ * nir_op_fadd(nir_op_fmul(load, c0), c1), and the degenerate nir_op_fmul(load,
+ * c0) (c1 = 0) / nir_op_fadd(load, c1) (c0 = 1).  This is the gap between
+ * identity_map (store value IS the load def, no ALU) and binary_map (store value
+ * is an ALU of TWO load defs): a one-input elementwise scale-and-bias.  On RS482
+ * it lowers to the identity-map substrate with the fragment program multiplying
+ * the sampled texel by c0 and adding c1 before the RB3D color export -- one
+ * extra FP24 MAD over the identity copy.  c0/c1 run in FP24 and carry to the
+ * substrate's float render target; exact for operands inside the FP24 window.
+ * Bindings stay 0 when the post-explicit_io sources are not constants (the
+ * orchestrator's positional fallback recovers input=0, output=1; an in-place
+ * kernel like d[i]=d[i]*c0+c1 binds the same buffer to both). */
+struct r300_compute_unary_map_pattern {
+   bool       is_unary_map;
+   uint32_t   input_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+   float      mul_const;          /* c0 scale; 1.0 for a pure bias */
+   float      add_const;          /* c1 bias; 0.0 for a pure scale */
+   uint8_t    value_components;   /* store_ssbo value vector width */
+   uint8_t    value_bit_size;     /* store_ssbo value component width */
+   bool       value_is_float;     /* result base type is float */
+};
+
+void r300_nir_detect_unary_map(const struct nir_shader *s,
+                               struct r300_compute_unary_map_pattern *out);
+
 /* Blend-add-reduction kernel pattern: a kernel whose store value is an
  * atomicAdd of a load_ssbo result, where the atomic's target buffer is a
  * small output histogram and the atomic's offset folds the dispatch grid into
