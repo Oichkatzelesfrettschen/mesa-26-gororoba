@@ -898,6 +898,212 @@ r300vk_unbind_descriptor_textures(struct r300vk_device *device,
    bound->count = 0;
 }
 
+/* The replay-side dynamic-state overlay.  vkCmdSet* calls are recorded as
+ * R300VK_CMD_SET_DYNAMIC_STATE entries; the walker merges them in stream
+ * order into this shadow and, at each draw, overlays the bound pipeline's
+ * rs/dsa templates with the fields that are BOTH set in the command buffer
+ * and declared dynamic by that pipeline (Vulkan's static-else-dynamic rule).
+ * Stencil per-face fields keep separate front/back values because successive
+ * vkCmdSetStencil* calls may target either face mask. */
+struct r300vk_dyn_face {
+   uint32_t    set;          /* R300VK_DYN_STENCIL_* bits set on this face */
+   VkStencilOp sfail, spass, sdepth_fail;
+   VkCompareOp scompare;
+   uint32_t    cmp_mask, wr_mask, ref;
+};
+
+struct r300vk_dyn_overlay {
+   uint32_t            flags;  /* accumulated R300VK_DYN_* set bits */
+   VkCullModeFlags     cull;
+   VkFrontFace         front_face;
+   VkPrimitiveTopology topology;
+   VkBool32            depth_test, depth_write;
+   VkCompareOp         depth_op;
+   VkBool32            stencil_test;
+   struct r300vk_dyn_face face[2];   /* 0 = front, 1 = back */
+   float               bias_const, bias_clamp, bias_slope;
+   VkBool32            bias_enable;
+   float               blend_const[4];
+   float               line_width;
+   /* Transient CSOs currently bound in place of the pipeline's fixed ones;
+    * deleted only after the replacement is bound (create-bind-delete-old). */
+   void               *rs_cso;
+   void               *dsa_cso;
+   bool                dirty;
+};
+
+#define R300VK_DYN_RS_BITS (R300VK_DYN_CULL | R300VK_DYN_FRONT_FACE | \
+                            R300VK_DYN_LINE_WIDTH | R300VK_DYN_DEPTH_BIAS | \
+                            R300VK_DYN_DEPTH_BIAS_EN)
+#define R300VK_DYN_DSA_BITS (R300VK_DYN_DEPTH_TEST | R300VK_DYN_DEPTH_WRITE | \
+                             R300VK_DYN_DEPTH_OP | R300VK_DYN_STENCIL_TEST | \
+                             R300VK_DYN_STENCIL_OP | \
+                             R300VK_DYN_STENCIL_CMP_MASK | \
+                             R300VK_DYN_STENCIL_WR_MASK)
+
+static void
+r300vk_dyn_overlay_merge(struct r300vk_dyn_overlay *ov,
+                         const struct r300vk_cmd_set_dynamic *d)
+{
+   const uint32_t f = d->flags;
+   ov->flags |= f;
+   if (f & R300VK_DYN_CULL)         ov->cull = d->cull;
+   if (f & R300VK_DYN_FRONT_FACE)   ov->front_face = d->front;
+   if (f & R300VK_DYN_TOPOLOGY)     ov->topology = d->topology;
+   if (f & R300VK_DYN_DEPTH_TEST)   ov->depth_test = d->depth_test;
+   if (f & R300VK_DYN_DEPTH_WRITE)  ov->depth_write = d->depth_write;
+   if (f & R300VK_DYN_DEPTH_OP)     ov->depth_op = d->depth_op;
+   if (f & R300VK_DYN_STENCIL_TEST) ov->stencil_test = d->stencil_test;
+   if (f & R300VK_DYN_DEPTH_BIAS) {
+      ov->bias_const = d->bias_const;
+      ov->bias_clamp = d->bias_clamp;
+      ov->bias_slope = d->bias_slope;
+   }
+   if (f & R300VK_DYN_DEPTH_BIAS_EN) ov->bias_enable = d->bias_enable;
+   if (f & R300VK_DYN_BLEND_CONST)
+      memcpy(ov->blend_const, d->blend_const, sizeof(ov->blend_const));
+   if (f & R300VK_DYN_LINE_WIDTH)   ov->line_width = d->line_width;
+
+   const uint32_t face_bits = f & (R300VK_DYN_STENCIL_OP |
+                                   R300VK_DYN_STENCIL_CMP_MASK |
+                                   R300VK_DYN_STENCIL_WR_MASK |
+                                   R300VK_DYN_STENCIL_REF);
+   if (face_bits) {
+      for (unsigned i = 0; i < 2; i++) {
+         const VkStencilFaceFlags want =
+            i == 0 ? VK_STENCIL_FACE_FRONT_BIT : VK_STENCIL_FACE_BACK_BIT;
+         if (!(d->face_mask & want))
+            continue;
+         struct r300vk_dyn_face *fc = &ov->face[i];
+         fc->set |= face_bits;
+         if (f & R300VK_DYN_STENCIL_OP) {
+            fc->sfail = d->sfail;
+            fc->spass = d->spass;
+            fc->sdepth_fail = d->sdepth_fail;
+            fc->scompare = d->scompare;
+         }
+         if (f & R300VK_DYN_STENCIL_CMP_MASK) fc->cmp_mask = d->cmp_mask;
+         if (f & R300VK_DYN_STENCIL_WR_MASK)  fc->wr_mask = d->wr_mask;
+         if (f & R300VK_DYN_STENCIL_REF)      fc->ref = d->ref;
+      }
+   }
+   ov->dirty = true;
+}
+
+/* Bind the draw's effective rasterizer/DSA state and the always-set-state
+ * pair (stencil ref, blend colour).  Transient CSOs replace the pipeline's
+ * fixed ones only when an effective dynamic field differs the template;
+ * the old transient is deleted after its replacement is bound, and r300g's
+ * delete_rs/dsa_state unbind-if-bound covers the final cleanup. */
+static void
+r300vk_dyn_overlay_apply(struct r300vk_device *device,
+                         const struct r300vk_pipeline *pl,
+                         struct r300vk_dyn_overlay *ov)
+{
+   if (!ov->dirty || !pl)
+      return;
+
+   struct pipe_context *pipe = device->pipe;
+   const uint32_t eff = ov->flags & pl->dyn_mask;
+
+   void *new_rs_cso = NULL;
+   if (eff & R300VK_DYN_RS_BITS) {
+      struct pipe_rasterizer_state rs = pl->rs_template;
+      if (eff & R300VK_DYN_CULL)
+         rs.cull_face = r300vk_cull_mode_to_pipe(ov->cull);
+      if (eff & R300VK_DYN_FRONT_FACE)
+         rs.front_ccw = ov->front_face == VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      if (eff & R300VK_DYN_LINE_WIDTH)
+         rs.line_width = ov->line_width != 0.0f ? ov->line_width : 1.0f;
+      const bool bias = (eff & R300VK_DYN_DEPTH_BIAS_EN)
+                        ? (bool)ov->bias_enable : pl->rs_template.offset_tri;
+      rs.offset_tri = rs.offset_line = rs.offset_point = bias;
+      if (eff & R300VK_DYN_DEPTH_BIAS) {
+         rs.offset_units = ov->bias_const;
+         rs.offset_scale = ov->bias_slope;
+         rs.offset_clamp = ov->bias_clamp;
+      }
+      new_rs_cso = pipe->create_rasterizer_state(pipe, &rs);
+   }
+   pipe->bind_rasterizer_state(pipe, new_rs_cso ? new_rs_cso
+                                                : pl->rasterizer_cso);
+   if (ov->rs_cso)
+      pipe->delete_rasterizer_state(pipe, ov->rs_cso);
+   ov->rs_cso = new_rs_cso;
+
+   void *new_dsa_cso = NULL;
+   if (eff & R300VK_DYN_DSA_BITS) {
+      struct pipe_depth_stencil_alpha_state dsa = pl->dsa_template;
+      if (eff & R300VK_DYN_DEPTH_TEST)
+         dsa.depth_enabled = ov->depth_test;
+      if (eff & R300VK_DYN_DEPTH_WRITE)
+         dsa.depth_writemask = ov->depth_write;
+      if (eff & R300VK_DYN_DEPTH_OP)
+         dsa.depth_func = r300vk_compare_op_to_pipe(ov->depth_op);
+      for (unsigned i = 0; i < 2; i++) {
+         struct pipe_stencil_state *st = &dsa.stencil[i];
+         const struct r300vk_dyn_face *fc = &ov->face[i];
+         if (eff & R300VK_DYN_STENCIL_TEST)
+            st->enabled = ov->stencil_test;
+         if ((eff & R300VK_DYN_STENCIL_OP) &&
+             (fc->set & R300VK_DYN_STENCIL_OP)) {
+            st->func     = r300vk_compare_op_to_pipe(fc->scompare);
+            st->fail_op  = r300vk_stencil_op_to_pipe(fc->sfail);
+            st->zpass_op = r300vk_stencil_op_to_pipe(fc->spass);
+            st->zfail_op = r300vk_stencil_op_to_pipe(fc->sdepth_fail);
+         }
+         if ((eff & R300VK_DYN_STENCIL_CMP_MASK) &&
+             (fc->set & R300VK_DYN_STENCIL_CMP_MASK))
+            st->valuemask = (uint8_t)fc->cmp_mask;
+         if ((eff & R300VK_DYN_STENCIL_WR_MASK) &&
+             (fc->set & R300VK_DYN_STENCIL_WR_MASK))
+            st->writemask = (uint8_t)fc->wr_mask;
+      }
+      new_dsa_cso = pipe->create_depth_stencil_alpha_state(pipe, &dsa);
+   }
+   pipe->bind_depth_stencil_alpha_state(pipe, new_dsa_cso ? new_dsa_cso
+                                                          : pl->dsa_cso);
+   if (ov->dsa_cso)
+      pipe->delete_depth_stencil_alpha_state(pipe, ov->dsa_cso);
+   ov->dsa_cso = new_dsa_cso;
+
+   struct pipe_stencil_ref sref;
+   const bool dyn_ref = (eff & R300VK_DYN_STENCIL_REF) != 0;
+   sref.ref_value[0] = (dyn_ref && (ov->face[0].set & R300VK_DYN_STENCIL_REF))
+                       ? (uint8_t)ov->face[0].ref
+                       : (uint8_t)pl->static_stencil_ref_front;
+   sref.ref_value[1] = (dyn_ref && (ov->face[1].set & R300VK_DYN_STENCIL_REF))
+                       ? (uint8_t)ov->face[1].ref
+                       : (uint8_t)pl->static_stencil_ref_back;
+   pipe->set_stencil_ref(pipe, sref);
+
+   struct pipe_blend_color bc;
+   memcpy(bc.color, (eff & R300VK_DYN_BLEND_CONST) ? ov->blend_const
+                                                   : pl->static_blend_const,
+          sizeof(bc.color));
+   pipe->set_blend_color(pipe, &bc);
+
+   ov->dirty = false;
+}
+
+/* Delete the transient CSOs at the end of a tile pass.  r300g's
+ * delete_rs/dsa_state unbind-if-bound, so deleting a still-bound transient
+ * is safe; the next pipeline bind supplies fresh state. */
+static void
+r300vk_dyn_overlay_cleanup(struct r300vk_device *device,
+                           struct r300vk_dyn_overlay *ov)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (ov->rs_cso) {
+      pipe->delete_rasterizer_state(pipe, ov->rs_cso);
+      ov->rs_cso = NULL;
+   }
+   if (ov->dsa_cso) {
+      pipe->delete_depth_stencil_alpha_state(pipe, ov->dsa_cso);
+      ov->dsa_cso = NULL;
+   }
+}
+
 static void
 r300vk_replay_draw(struct r300vk_device *device,
                     const struct r300vk_cmd_entry *e,
@@ -912,7 +1118,8 @@ r300vk_replay_draw(struct r300vk_device *device,
                     uint32_t tile_origin_y,
                     uint32_t tile_width,
                     uint32_t tile_height,
-                    struct util_dynarray *transient_vbs)
+                    struct util_dynarray *transient_vbs,
+                    struct r300vk_dyn_overlay *dyn)
 {
    struct pipe_context *pipe = device->pipe;
 
@@ -929,8 +1136,15 @@ r300vk_replay_draw(struct r300vk_device *device,
                                             : e->draw.instances;
    const uint32_t draw_first_inst = indexed ? e->draw_indexed.first_instance
                                             : e->draw.first_instance;
-   const VkPrimitiveTopology draw_topology = indexed ? e->draw_indexed.topology
-                                                     : e->draw.topology;
+   /* The recorded per-draw topology is the pipeline's static value; a
+    * vkCmdSetPrimitiveTopology in effect overrides it when the pipeline
+    * declared topology dynamic. */
+   const bool dyn_topology =
+      bound_pipeline && dyn &&
+      (dyn->flags & bound_pipeline->dyn_mask & R300VK_DYN_TOPOLOGY);
+   const VkPrimitiveTopology draw_topology =
+      dyn_topology ? dyn->topology
+                   : (indexed ? e->draw_indexed.topology : e->draw.topology);
 
    /* A graphics pipeline with no fragment stage (rasterizer discard or
     * depth-only) leaves fs_cso NULL -- a failed fragment compile would instead
@@ -943,6 +1157,11 @@ r300vk_replay_draw(struct r300vk_device *device,
     * (dEQP-VK.api.descriptor_set.descriptor_set_layout_lifetime.graphics). */
    if (!bound_pipeline || !bound_pipeline->vs_cso || !bound_pipeline->fs_cso)
       return;
+
+   /* Overlay the merged vkCmdSet* shadow onto this pipeline's rs/dsa state
+    * before any draw-time binds. */
+   if (dyn)
+      r300vk_dyn_overlay_apply(device, bound_pipeline, dyn);
 
    /* Resolve pipeline-static viewport/scissor before the draw. */
    if (bound_pipeline && bound_pipeline->has_static_viewport) {
@@ -1153,6 +1372,7 @@ r300vk_replay_bind_pipeline(struct r300vk_device *device,
    *vb_dirty = true;
 }
 
+
 static void
 r300vk_replay_begin_render_pass(struct r300vk_device *device,
                                  const struct r300vk_cmd_entry *e,
@@ -1325,6 +1545,9 @@ r300vk_replay_gpu(struct r300vk_device *device,
        * Re-accumulated each tile pass since the entry list is re-walked per tile. */
       uint8_t replay_pc[128] = {0};
       const struct r300vk_pipeline *bound_pipeline = NULL;
+      /* Merged vkCmdSet* shadow, re-accumulated each tile pass since the
+       * entry list is re-walked per tile. */
+      struct r300vk_dyn_overlay dyn_ov = {0};
       const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets = NULL;
       const struct r300vk_cmd_entry *current_render_pass = NULL;
       /* The single active r300 occlusion query, if a vkCmdBeginQuery is open.
@@ -1355,6 +1578,16 @@ r300vk_replay_gpu(struct r300vk_device *device,
          case R300VK_CMD_BIND_PIPELINE:
             if (skip_render_pass) break;
             r300vk_replay_bind_pipeline(device, e, &bound_pipeline, &vb_dirty);
+            /* The bind installed the pipeline's fixed CSOs; re-overlay the
+             * merged shadow (and the static stencil ref / blend colour) at
+             * the next draw. */
+            dyn_ov.dirty = true;
+            break;
+
+         case R300VK_CMD_SET_DYNAMIC_STATE:
+            /* Pure state, not gated by skip_render_pass: the shadow must be
+             * current when a later tile pass or render pass draws. */
+            r300vk_dyn_overlay_merge(&dyn_ov, &e->set_dyn);
             break;
 
          case R300VK_CMD_SET_VIEWPORT:
@@ -1381,7 +1614,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                replay_pc, vb_cache, vb_sizes,
                                vb_max_used, &vb_dirty, tile_origin_x,
                                tile_origin_y, tile_width, tile_height,
-                               transient_vbs);
+                               transient_vbs, &dyn_ov);
             *gpu_pending = true;
             break;
 
@@ -1435,7 +1668,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, transient_vbs);
+                                  tile_height, transient_vbs, &dyn_ov);
             }
             pipe_buffer_unmap(pipe, ixfer);
             *gpu_pending = true;
@@ -1491,7 +1724,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, transient_vbs);
+                                  tile_height, transient_vbs, &dyn_ov);
             }
             pipe_buffer_unmap(pipe, ixfer);
             *gpu_pending = true;
@@ -1545,8 +1778,10 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
          case R300VK_CMD_DISPATCH:
             result = r300vk_replay_dispatch(device, e, last_bind_dsets);
-            if (result != VK_SUCCESS)
+            if (result != VK_SUCCESS) {
+               r300vk_dyn_overlay_cleanup(device, &dyn_ov);
                return result;
+            }
             pipe->flush(pipe, NULL, 0);
             *gpu_pending = true;
             break;
@@ -1627,6 +1862,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
          pipe->destroy_query(pipe, active_oq);
          active_oq = NULL;
       }
+      r300vk_dyn_overlay_cleanup(device, &dyn_ov);
       if (result != VK_SUCCESS)
          break;
    }

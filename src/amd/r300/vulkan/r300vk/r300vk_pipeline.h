@@ -7,6 +7,7 @@
 
 #include "r300vk_private.h"
 
+#include "pipe/p_state.h"
 #include "vk_object.h"
 
 #include "r300/r300_public.h"
@@ -246,6 +247,19 @@ struct r300vk_pipeline {
    void                   *dsa_cso;
    void                   *velems_cso;
    VkPrimitiveTopology     topology;
+
+   /* The pipe-state templates the fixed CSOs above were created from, kept so
+    * the replay can rebuild a transient CSO with dynamic fields overlaid.
+    * dyn_mask names the R300VK_DYN_* states the pipeline declared dynamic:
+    * a vkCmdSet* value applies to a draw only when the bound pipeline made
+    * that state dynamic (Vulkan's static-else-dynamic rule), so the replay
+    * masks its merged shadow with this before overlaying. */
+   struct pipe_rasterizer_state          rs_template;
+   struct pipe_depth_stencil_alpha_state dsa_template;
+   uint32_t                dyn_mask;
+   float                   static_blend_const[4];
+   uint32_t                static_stencil_ref_front;
+   uint32_t                static_stencil_ref_back;
    uint32_t                vertex_stride[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_extent[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_mask;
@@ -280,6 +294,13 @@ struct r300vk_pipeline {
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_pipeline, base, VkPipeline,
                                 VK_OBJECT_TYPE_PIPELINE)
+
+/* Vulkan-to-gallium fixed-function enum converters, shared by the pipeline's
+ * static CSO translation and the replay's dynamic-state overlay so both build
+ * identical pipe state from the same Vulkan values. */
+unsigned r300vk_cull_mode_to_pipe(VkCullModeFlags cull);
+unsigned r300vk_compare_op_to_pipe(VkCompareOp op);
+unsigned r300vk_stencil_op_to_pipe(VkStencilOp op);
 
 VkResult r300vk_CreateGraphicsPipelines(VkDevice device,
                                          VkPipelineCache pipelineCache,

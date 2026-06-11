@@ -3,6 +3,7 @@
  */
 
 #include "r300vk_pipeline.h"
+#include "r300vk_cmd_buffer.h"
 #include "r300vk_format.h"
 #include "util/u_simple_shaders.h"
 #include "pipe/p_shader_tokens.h"
@@ -1128,9 +1129,70 @@ r300vk_build_velems_cso(struct r300vk_device *device,
    return VK_SUCCESS;
 }
 
+unsigned
+r300vk_cull_mode_to_pipe(VkCullModeFlags cull)
+{
+   switch (cull) {
+   case VK_CULL_MODE_FRONT_BIT:          return PIPE_FACE_FRONT;
+   case VK_CULL_MODE_BACK_BIT:           return PIPE_FACE_BACK;
+   case VK_CULL_MODE_FRONT_AND_BACK:     return PIPE_FACE_FRONT_AND_BACK;
+   default:                              return PIPE_FACE_NONE;
+   }
+}
+
+/* VkCompareOp and PIPE_FUNC_* share value order (NEVER=0 .. ALWAYS=7); keep
+ * the static proof rather than an identity cast so an enum change breaks the
+ * build, not rendering. */
+unsigned
+r300vk_compare_op_to_pipe(VkCompareOp op)
+{
+   STATIC_ASSERT((unsigned)VK_COMPARE_OP_NEVER == PIPE_FUNC_NEVER &&
+                 (unsigned)VK_COMPARE_OP_LESS == PIPE_FUNC_LESS &&
+                 (unsigned)VK_COMPARE_OP_EQUAL == PIPE_FUNC_EQUAL &&
+                 (unsigned)VK_COMPARE_OP_LESS_OR_EQUAL == PIPE_FUNC_LEQUAL &&
+                 (unsigned)VK_COMPARE_OP_GREATER == PIPE_FUNC_GREATER &&
+                 (unsigned)VK_COMPARE_OP_NOT_EQUAL == PIPE_FUNC_NOTEQUAL &&
+                 (unsigned)VK_COMPARE_OP_GREATER_OR_EQUAL == PIPE_FUNC_GEQUAL &&
+                 (unsigned)VK_COMPARE_OP_ALWAYS == PIPE_FUNC_ALWAYS);
+   return (unsigned)op & 0x7;
+}
+
+/* VkStencilOp and PIPE_STENCIL_OP_* do NOT share order (Vulkan places the
+ * wrap variants after INVERT, gallium before), so this map is explicit. */
+unsigned
+r300vk_stencil_op_to_pipe(VkStencilOp op)
+{
+   switch (op) {
+   case VK_STENCIL_OP_ZERO:                return PIPE_STENCIL_OP_ZERO;
+   case VK_STENCIL_OP_REPLACE:             return PIPE_STENCIL_OP_REPLACE;
+   case VK_STENCIL_OP_INCREMENT_AND_CLAMP: return PIPE_STENCIL_OP_INCR;
+   case VK_STENCIL_OP_DECREMENT_AND_CLAMP: return PIPE_STENCIL_OP_DECR;
+   case VK_STENCIL_OP_INVERT:              return PIPE_STENCIL_OP_INVERT;
+   case VK_STENCIL_OP_INCREMENT_AND_WRAP:  return PIPE_STENCIL_OP_INCR_WRAP;
+   case VK_STENCIL_OP_DECREMENT_AND_WRAP:  return PIPE_STENCIL_OP_DECR_WRAP;
+   case VK_STENCIL_OP_KEEP:
+   default:                                return PIPE_STENCIL_OP_KEEP;
+   }
+}
+
+static void
+r300vk_stencil_face_to_pipe(const VkStencilOpState *vk_face,
+                            bool enabled,
+                            struct pipe_stencil_state *out)
+{
+   out->enabled   = enabled;
+   out->func      = r300vk_compare_op_to_pipe(vk_face->compareOp);
+   out->fail_op   = r300vk_stencil_op_to_pipe(vk_face->failOp);
+   out->zpass_op  = r300vk_stencil_op_to_pipe(vk_face->passOp);
+   out->zfail_op  = r300vk_stencil_op_to_pipe(vk_face->depthFailOp);
+   out->valuemask = (uint8_t)vk_face->compareMask;
+   out->writemask = (uint8_t)vk_face->writeMask;
+}
+
 static VkResult
 r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
-                                        struct r300vk_pipeline *pl)
+                                        struct r300vk_pipeline *pl,
+                                        const VkGraphicsPipelineCreateInfo *info)
 {
    struct pipe_blend_state bs = {0};
    bs.rt[0].rgb_func        = PIPE_BLEND_ADD;
@@ -1144,6 +1206,12 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
    if (!pl->blend_cso)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
 
+   /* Translate the pipeline-static rasterization state.  Fields a dynamic
+    * state later overrides still get their static value here: the replay
+    * overlays only the R300VK_DYN_* bits the pipeline declared dynamic AND
+    * the command buffer actually set. */
+   const VkPipelineRasterizationStateCreateInfo *vk_rs =
+      info ? info->pRasterizationState : NULL;
    struct pipe_rasterizer_state rs = {0};
    rs.fill_front  = PIPE_POLYGON_MODE_FILL;
    rs.fill_back   = PIPE_POLYGON_MODE_FILL;
@@ -1151,14 +1219,57 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
    rs.front_ccw   = true;
    rs.depth_clip_near = true;
    rs.depth_clip_far  = true;
+   /* Vulkan's scissor test always applies; the replay supplies the rectangle
+    * (pipeline-static or CmdSetScissor) translated to live tile space. */
+   rs.scissor     = true;
+   rs.line_width  = 1.0f;
+   rs.point_size  = 1.0f;
+   if (vk_rs) {
+      rs.cull_face = r300vk_cull_mode_to_pipe(vk_rs->cullMode);
+      rs.front_ccw = vk_rs->frontFace == VK_FRONT_FACE_COUNTER_CLOCKWISE;
+      rs.line_width = vk_rs->lineWidth != 0.0f ? vk_rs->lineWidth : 1.0f;
+      if (vk_rs->depthBiasEnable) {
+         rs.offset_tri   = true;
+         rs.offset_line  = true;
+         rs.offset_point = true;
+         rs.offset_units = vk_rs->depthBiasConstantFactor;
+         rs.offset_scale = vk_rs->depthBiasSlopeFactor;
+         rs.offset_clamp = vk_rs->depthBiasClamp;
+      }
+   }
+   pl->rs_template = rs;
    pl->rasterizer_cso = device->pipe->create_rasterizer_state(device->pipe, &rs);
    if (!pl->rasterizer_cso)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
 
+   /* Translate the pipeline-static depth/stencil state.  pDepthStencilState
+    * is valid only when the pipeline rasterizes and a depth/stencil
+    * attachment may be present; absent state leaves both tests disabled,
+    * which is also Vulkan's no-attachment behavior. */
+   const VkPipelineDepthStencilStateCreateInfo *vk_ds =
+      info ? info->pDepthStencilState : NULL;
    struct pipe_depth_stencil_alpha_state dsa = {0};
+   if (vk_ds) {
+      dsa.depth_enabled   = vk_ds->depthTestEnable;
+      dsa.depth_writemask = vk_ds->depthWriteEnable;
+      dsa.depth_func      = r300vk_compare_op_to_pipe(vk_ds->depthCompareOp);
+      r300vk_stencil_face_to_pipe(&vk_ds->front, vk_ds->stencilTestEnable,
+                                  &dsa.stencil[0]);
+      r300vk_stencil_face_to_pipe(&vk_ds->back, vk_ds->stencilTestEnable,
+                                  &dsa.stencil[1]);
+      pl->static_stencil_ref_front = vk_ds->front.reference;
+      pl->static_stencil_ref_back  = vk_ds->back.reference;
+   }
+   pl->dsa_template = dsa;
    pl->dsa_cso = device->pipe->create_depth_stencil_alpha_state(device->pipe, &dsa);
    if (!pl->dsa_cso)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+
+   const VkPipelineColorBlendStateCreateInfo *vk_cb =
+      info ? info->pColorBlendState : NULL;
+   if (vk_cb)
+      memcpy(pl->static_blend_const, vk_cb->blendConstants,
+             sizeof(pl->static_blend_const));
 
    return VK_SUCCESS;
 }
@@ -1183,6 +1294,58 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
             break;
          case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
             dynamic_raster_discard = true;
+            break;
+         /* The R300VK_DYN_* family: a vkCmdSet* value applies to a draw only
+          * when the bound pipeline declared that state dynamic, so the replay
+          * masks its merged Set* shadow with dyn_mask before overlaying the
+          * pipeline's rs/dsa templates. */
+         case VK_DYNAMIC_STATE_CULL_MODE:
+            pl->dyn_mask |= R300VK_DYN_CULL;
+            break;
+         case VK_DYNAMIC_STATE_FRONT_FACE:
+            pl->dyn_mask |= R300VK_DYN_FRONT_FACE;
+            break;
+         case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY:
+            pl->dyn_mask |= R300VK_DYN_TOPOLOGY;
+            break;
+         case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE:
+            pl->dyn_mask |= R300VK_DYN_DEPTH_TEST;
+            break;
+         case VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE:
+            pl->dyn_mask |= R300VK_DYN_DEPTH_WRITE;
+            break;
+         case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP:
+            pl->dyn_mask |= R300VK_DYN_DEPTH_OP;
+            break;
+         case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE:
+            pl->dyn_mask |= R300VK_DYN_DEPTH_BOUNDS;
+            break;
+         case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE:
+            pl->dyn_mask |= R300VK_DYN_STENCIL_TEST;
+            break;
+         case VK_DYNAMIC_STATE_STENCIL_OP:
+            pl->dyn_mask |= R300VK_DYN_STENCIL_OP;
+            break;
+         case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK:
+            pl->dyn_mask |= R300VK_DYN_STENCIL_CMP_MASK;
+            break;
+         case VK_DYNAMIC_STATE_STENCIL_WRITE_MASK:
+            pl->dyn_mask |= R300VK_DYN_STENCIL_WR_MASK;
+            break;
+         case VK_DYNAMIC_STATE_STENCIL_REFERENCE:
+            pl->dyn_mask |= R300VK_DYN_STENCIL_REF;
+            break;
+         case VK_DYNAMIC_STATE_DEPTH_BIAS:
+            pl->dyn_mask |= R300VK_DYN_DEPTH_BIAS;
+            break;
+         case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE:
+            pl->dyn_mask |= R300VK_DYN_DEPTH_BIAS_EN;
+            break;
+         case VK_DYNAMIC_STATE_BLEND_CONSTANTS:
+            pl->dyn_mask |= R300VK_DYN_BLEND_CONST;
+            break;
+         case VK_DYNAMIC_STATE_LINE_WIDTH:
+            pl->dyn_mask |= R300VK_DYN_LINE_WIDTH;
             break;
          default:
             break;
@@ -1271,7 +1434,7 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
                               "the push-constant window to both stages' CONST[0] "
                               "and cannot also bind a per-stage UBO"));
 
-   VkResult cso_res = r300vk_init_graphics_pipeline_cso_state(device, pl);
+   VkResult cso_res = r300vk_init_graphics_pipeline_cso_state(device, pl, info);
    if (cso_res != VK_SUCCESS)
       FAIL_PIPELINE(cso_res);
 
