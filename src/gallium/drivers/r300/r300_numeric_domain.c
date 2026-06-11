@@ -651,19 +651,30 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = NULL,
    },
    {
-      /* QF scalar tier (quaternion x real scalar): each is 0 DP4 -- componentwise
-       * over the broadcast scalar, covered by the FP binary_map path or a single
-       * vec4 op.  Catalogued for completeness; no dedicated detector needed. */
+      /* QF scalar tier (quaternion x real scalar), the broadcast-operand lever. */
       .op_name         = "QFMUL",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
-      .status          = R300_VOP_NUMERIC_DERIVED,
-      .theorem         = "quaternion-scalar product s*a = a * splat(s): a vec4 MUL by the "
-                         "broadcast scalar, 0 DP4.  The FP binary_map path (value_is_float "
-                         "vec4*vec4) covers it when s is presented as a splatted vec4; "
-                         "QFADD/QFSUB are masked adds on the real part, QFDIV = a*rcp(s), "
-                         "QFTRANS = s*a + t*(1,0,0,0) a MAD -- all 0 DP4 componentwise, the "
-                         "scalar tier of the quaternion ISA",
-      .mesa_hook       = NULL,  /* componentwise; FP binary_map covers the vec4 forms */
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "quaternion-scalar product out[gid] = a[gid] * s: a per-element vec4 "
+                         "quaternion times ONE uniform scalar broadcast across all four lanes, "
+                         "0 DP4 -- a single vec4 MUL.  The lever is where s lives: a uniform "
+                         "broadcast belongs in the fragment constant file (CONST[0].x), not a "
+                         "per-element texture, exactly as MAT4VEC parks its broadcast matrix in "
+                         "CONST[0..3].  The synthesized FS is one TEX (the quaternion at sampler "
+                         "stage 0) and one MUL against CONST[0].x -- no second sampler, no "
+                         "per-fragment fetch for the scalar.  This is NOT the FP binary_map path: "
+                         "binary_map wraps BOTH operands as per-element samplers spanning the whole "
+                         "raster extent, so the one-float scalar buffer would be sampled past its "
+                         "end; the binary_map detector now declines the 4-vs-1 component-width "
+                         "asymmetry (width-equality guard) and hands the kernel to the dedicated "
+                         "QFMUL detector.  The vec4*scalar fmul lowers OpVectorTimesScalar to a "
+                         "4-component fmul whose scalar operand is a 1-component splat; the detector "
+                         "keys on that identity-swizzled-vec4 + splat-swizzled-scalar shape.  "
+                         "HW-confirmed 4/4 byte-exact on RS482 (qfmul_vk_probe: s = 2.5 times four "
+                         "quaternions, GPU == CPU oracle to maxabs 0.0).  QFADD/QFSUB are masked "
+                         "adds on the real part, QFDIV = a*rcp(s), QFTRANS = s*a + t*(1,0,0,0) a "
+                         "MAD -- the remaining scalar-tier forms, 0 DP4 componentwise",
+      .mesa_hook       = "r300_nir_detect_qfmul_pattern",  /* broadcast scalar -> CONST[0].x, 1 TEX + 1 MUL FS; binary_map width-guard keeps the classes disjoint */
       .retained_bundle = NULL,
    },
    {

@@ -134,6 +134,18 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
                                const struct r300vk_cmd_dispatch *dispatch,
                                const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* QFMUL (quaternion scalar-broadcast multiply) orchestrator entry: the uniform
+ * scalar is uploaded into the fragment constant file (CONST[0].x), the
+ * per-element quaternion is the only sampler; pl->fs_cso holds the synthesized
+ * 1-TEX + 1-MUL FS, run through the QMUL FP16-RT / FP32-readback core.  The same
+ * broadcast-operand-to-constant-file lever as MAT4VEC, dim-1 scalar instead of a
+ * 4x4 matrix. */
+bool
+r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             const struct r300vk_cmd_dispatch *dispatch,
+                             const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* QROTATE (quaternion rotation sandwich) orchestrator entry: same FP16-RT /
  * FP32-readback 2-in / 1-out core as QMUL, with q and v as the two inputs;
  * pl->fs_cso holds the synthesized sandwich FS (r300vk_build_qrotate_fs_nir). */

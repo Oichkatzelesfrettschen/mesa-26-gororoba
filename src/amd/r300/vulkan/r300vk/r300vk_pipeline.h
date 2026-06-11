@@ -112,6 +112,14 @@ struct r300vk_pipeline {
     * matrix as the fragment constant buffer. */
    struct r300_compute_mat4vec_pattern mat4vec;
 
+   /* Quaternion scalar-broadcast multiply (QFMUL) detected at pipeline-create
+    * time: out[gid] = q[gid] * s, a per-element quaternion times one uniform
+    * scalar broadcast across all four lanes.  The same broadcast-operand lever
+    * as MAT4VEC: the uniform scalar rides the fragment constant file (CONST[0].x)
+    * instead of a per-fragment texture fetch, so the synthesized FS is one TEX
+    * (the quaternion) and one MUL against the constant -- no second sampler. */
+   struct r300_compute_qfmul_pattern qfmul;
+
    /* Quaternion rotation (QROTATE) kernel detected at pipeline-create time:
     * out[gid] = q[gid] * embed(v[gid]) * conj(q[gid]), the sandwich = two Hamilton
     * products = eight DP4s.  Lowered to a fullscreen draw whose synthesized FS

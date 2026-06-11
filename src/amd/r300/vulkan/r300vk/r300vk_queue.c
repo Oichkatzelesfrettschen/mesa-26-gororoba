@@ -289,6 +289,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_qdiv_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->mat4vec.is_mat4vec)
       ok = r300vk_mat4vec_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->qfmul.is_qfmul)
+      ok = r300vk_qfmul_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qrotate.is_qrotate)
       ok = r300vk_qrotate_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qconj.is_qconj)
