@@ -21,6 +21,7 @@
 #include "r300_state_inlines.h"
 #include "r300_public.h"
 #include "r300_video.h"
+#include "r300_hb_r400_us.h"
 
 #include "draw/draw_context.h"
 
@@ -752,6 +753,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300screen->experimental_ati2n = getenv("R300_EXPERIMENTAL_ATI2N") != NULL;
 
     r300_hb_tcl_init(r300screen);
+    r300_hb_r400_us_init(r300screen);
 
     r300screen->rws = rws;
     r300screen->screen.destroy = r300_destroy_screen;

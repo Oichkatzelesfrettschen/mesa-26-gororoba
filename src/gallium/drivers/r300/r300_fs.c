@@ -252,6 +252,11 @@ static void r300_emit_fs_code_to_buffer(
         }
     } else { /* r300 */
         struct r300_fragment_program_code *code = &generic_code->code.r300;
+        /* The HB_R400_US route makes an RS48x part emit the R400 US register
+         * set without reclassifying the chip; both flags select the same
+         * R400-class emission here. */
+        const bool us_r400 = r300->screen->caps.is_r400 ||
+                             r300->screen->caps.hb_r400_us;
         unsigned int alu_length = code->alu.length;
         unsigned int alu_iterations = ((alu_length - 1) / 64) + 1;
         unsigned int tex_length = code->tex.length;
@@ -263,9 +268,9 @@ static void r300_emit_fs_code_to_buffer(
 
         shader->cb_code_size = 15 +
             /* R400_US_CODE_BANK */
-            (r300->screen->caps.is_r400 ? 2 * (iterations + 1): 0) +
+            (us_r400 ? 2 * (iterations + 1): 0) +
             /* R400_US_CODE_EXT */
-            (r300->screen->caps.is_r400 ? 2 : 0) +
+            (us_r400 ? 2 : 0) +
             /* R300_US_ALU_{RGB,ALPHA}_{INST,ADDR}_0, R400_US_ALU_EXT_ADDR_0 */
             (code->r390_mode ? (5 * alu_iterations) : 4) +
             /* R400_US_ALU_EXT_ADDR_[0-63] */
@@ -284,7 +289,7 @@ static void r300_emit_fs_code_to_buffer(
 
         if (code->r390_mode) {
             OUT_CB_REG(R400_US_CODE_EXT, code->r400_code_offset_ext);
-        } else if (r300->screen->caps.is_r400) {
+        } else if (us_r400) {
             /* This register appears to affect shaders even if r390_mode is
              * disabled, so it needs to be set to 0 for shaders that
              * don't use r390_mode. */
@@ -300,7 +305,7 @@ static void r300_emit_fs_code_to_buffer(
             unsigned int bank_tex_length = (tex_length < 32 ? tex_length : 32);
             unsigned int bank_tex_offset = bank * 32;
 
-            if (r300->screen->caps.is_r400) {
+            if (us_r400) {
                 OUT_CB_REG(R400_US_CODE_BANK, code->r390_mode ?
                                 (bank << R400_BANK_SHIFT) | R400_R390_MODE_ENABLE : 0);//2
             }
@@ -341,7 +346,7 @@ static void r300_emit_fs_code_to_buffer(
 
         /* R400_US_CODE_BANK needs to be reset to 0, otherwise some shaders
          * will be rendered incorrectly. */
-        if (r300->screen->caps.is_r400) {
+        if (us_r400) {
             OUT_CB_REG(R400_US_CODE_BANK,
                 code->r390_mode ? R400_R390_MODE_ENABLE : 0);
         }
@@ -400,7 +405,8 @@ static void r300_translate_fragment_shader(
     if (!shader->dummy)
         compiler.Base.debug = &r300->context.debug;
     compiler.Base.is_r500 = r300->screen->caps.is_r500;
-    compiler.Base.is_r400 = r300->screen->caps.is_r400;
+    compiler.Base.is_r400 = r300->screen->caps.is_r400 ||
+                            r300->screen->caps.hb_r400_us_envelope;
     compiler.Base.disable_optimizations = DBG_ON(r300, DBG_NO_OPT);
     compiler.Base.has_half_swizzles = true;
     compiler.Base.has_presub = true;
