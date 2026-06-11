@@ -2048,6 +2048,157 @@ r300_nir_detect_onorm_pattern(const nir_shader *s,
    out->is_onorm = true;
 }
 
+/* True if `def` is fdot4(base, base) (a self-dot), both operands identity-
+ * swizzled -- the per-quaternion term of an octonion squared norm. */
+static bool
+odiv_is_self_dot(const nir_def *def, const nir_def *base)
+{
+   const nir_alu_instr *a = nir_def_as_alu_or_null(def);
+   if (!a || a->op != nir_op_fdot4)
+      return false;
+   if (a->src[0].src.ssa != base || a->src[1].src.ssa != base)
+      return false;
+   for (unsigned c = 0; c < 4; c++)
+      if (a->src[0].swizzle[c] != c || a->src[1].swizzle[c] != c)
+         return false;
+   return true;
+}
+
+/* True if `src` reads `scalar` broadcast across all four lanes (scalar.xxxx) --
+ * the reciprocal r applied to a quaternion in inv(y) = conj(y)*r. */
+static bool
+odiv_is_scalar_splat(const nir_alu_src *src, const nir_def *scalar)
+{
+   if (src->src.ssa != scalar)
+      return false;
+   for (unsigned c = 0; c < 4; c++)
+      if (src->swizzle[c] != 0)
+         return false;
+   return true;
+}
+
+void
+r300_nir_detect_odiv_pattern(const nir_shader *s,
+                             struct r300_compute_odiv_pattern *out)
+{
+   out->is_odiv                = false;
+   out->input_xlo_ssbo_binding = 0;
+   out->input_xhi_ssbo_binding = 0;
+   out->input_ylo_ssbo_binding = 0;
+   out->input_yhi_ssbo_binding = 0;
+   out->output_lo_ssbo_binding = 0;
+   out->output_hi_ssbo_binding = 0;
+
+   const nir_intrinsic_instr *load[4], *store[2];
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 4, &nload, store, 2, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 4 || nstore != 2 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store_is_full_width(store[0]) || !store_is_full_width(store[1]))
+      return;
+
+   /* Loads in declaration order: x = (xlo,xhi), y = (ylo,yhi). */
+   const nir_def *xlo = &load[0]->def, *xhi = &load[1]->def;
+   const nir_def *ylo = &load[2]->def, *yhi = &load[3]->def;
+
+   /* Find the reciprocal r = 1 / (dot(ylo,ylo) + dot(yhi,yhi)) and the two
+    * inverse halves c = conj(ylo)*r, d = (-yhi)*r by walking the ALU.  The
+    * reciprocal of the octonion squared norm is the signature of division: only
+    * a divide produces it, and matching it (plus the OMUL of x against the
+    * scaled conjugate) makes the admission sound. */
+   const nir_def *r = NULL;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if (alu->op != nir_op_fdiv)
+               continue;
+            nir_def *num = alu->src[0].src.ssa;
+            if (!nir_def_is_const(num) ||
+                nir_def_as_load_const(num)->value[alu->src[0].swizzle[0]].f32 != 1.0f)
+               continue;
+            const nir_alu_instr *denom = nir_def_as_alu_or_null(alu->src[1].src.ssa);
+            if (!denom || denom->op != nir_op_fadd)
+               continue;
+            const nir_def *t0 = denom->src[0].src.ssa, *t1 = denom->src[1].src.ssa;
+            if ((odiv_is_self_dot(t0, ylo) && odiv_is_self_dot(t1, yhi)) ||
+                (odiv_is_self_dot(t0, yhi) && odiv_is_self_dot(t1, ylo)))
+               r = &alu->def;
+         }
+      }
+   }
+   if (!r)
+      return;
+
+   /* c = conj(ylo) * r.xxxx and d = fneg(yhi) * r.xxxx -- the inverse halves. */
+   const nir_def *c = NULL, *d = NULL;
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            const nir_alu_instr *mul = nir_instr_as_alu(instr);
+            if (mul->op != nir_op_fmul)
+               continue;
+            const nir_alu_src *other;
+            if (odiv_is_scalar_splat(&mul->src[1], r))
+               other = &mul->src[0];
+            else if (odiv_is_scalar_splat(&mul->src[0], r))
+               other = &mul->src[1];
+            else
+               continue;
+            for (unsigned k = 0; k < 4; k++)
+               if (other->swizzle[k] != k)
+                  goto next_mul;
+            if (omul_match_perm(other->src.ssa, ylo, r300_hamilton_rows[0]))
+               c = &mul->def;          /* conj(ylo)*r */
+            else {
+               const nir_alu_instr *ng = nir_def_as_alu_or_null(other->src.ssa);
+               if (ng && ng->op == nir_op_fneg && ng->src[0].src.ssa == yhi) {
+                  bool id = true;
+                  for (unsigned k = 0; k < 4; k++)
+                     if (ng->src[0].swizzle[k] != k)
+                        id = false;
+                  if (id)
+                     d = &mul->def;    /* (-yhi)*r */
+               }
+            }
+            next_mul:;
+         }
+      }
+   }
+   if (!c || !d)
+      return;
+
+   /* The eight-wide product x * inv(y), where inv(y) = (c, d): exactly the OMUL
+    * fold with x's halves as a,b and the inverse halves as c,d.  o_lo = a*c -
+    * conj(d)*b, o_hi = d*a + b*conj(c). */
+   if (!omul_match_half(store[0]->src[0].ssa, nir_op_fsub,
+                        xlo, c, NULL, xhi, true, d, NULL))
+      return;
+   if (!omul_match_half(store[1]->src[0].ssa, nir_op_fadd,
+                        d, xlo, xhi, c, false, NULL, qrotate_outer_rows[0]))
+      return;
+
+   if (nir_src_is_const(load[0]->src[0]))
+      out->input_xlo_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
+   if (nir_src_is_const(load[1]->src[0]))
+      out->input_xhi_ssbo_binding = nir_src_as_uint(load[1]->src[0]);
+   if (nir_src_is_const(load[2]->src[0]))
+      out->input_ylo_ssbo_binding = nir_src_as_uint(load[2]->src[0]);
+   if (nir_src_is_const(load[3]->src[0]))
+      out->input_yhi_ssbo_binding = nir_src_as_uint(load[3]->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_lo_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   if (nir_src_is_const(store[1]->src[1]))
+      out->output_hi_ssbo_binding = nir_src_as_uint(store[1]->src[1]);
+   out->is_odiv = true;
+}
+
 void
 r300_nir_classify_compute(const nir_shader *s,
                           struct r300_compute_admission *out)

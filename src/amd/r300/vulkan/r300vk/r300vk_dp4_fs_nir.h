@@ -87,6 +87,14 @@ nir_shader *r300vk_build_oconj_mrt_fs_nir(const nir_shader_compiler_options *opt
 nir_shader *r300vk_build_oaddsub_mrt_fs_nir(const nir_shader_compiler_options *opts,
                                             bool is_sub);
 
+/* ODIV (octonion right division) fragment programs: out = x * inv(y),
+ * inv(y) = conj(y)/|y|^2.  Samples x at stages 0,1 and y at stages 2,3, forms the
+ * inverse from the scalar reciprocal rcp(|y|^2), and emits one half of the
+ * eight-wide product x*inv(y) per pass.  Division runs as two single-output passes
+ * because the combined MRT form exceeds the 64-ALU R300 fragment limit. */
+nir_shader *r300vk_build_odiv_lo_fs_nir(const nir_shader_compiler_options *opts);
+nir_shader *r300vk_build_odiv_hi_fs_nir(const nir_shader_compiler_options *opts);
+
 #ifdef __cplusplus
 }
 #endif

@@ -488,3 +488,58 @@ r300vk_build_oaddsub_mrt_fs_nir(const nir_shader_compiler_options *opts, bool is
    store_color_at(&b, hi, FRAG_RESULT_DATA1, "color1");
    return fs_finalize(&b);
 }
+
+/* The two inverse halves of octonion y = (ylo,yhi): inv(y) = conj(y)/|y|^2, where
+ * the scalar reciprocal r = rcp(dot(ylo,ylo)+dot(yhi,yhi)) is the R300 US RCP and
+ * |y|^2 > 0 for any nonzero octonion (dim 8 has no zero divisors).  Returns
+ * c = conj(ylo)*r and d = (-yhi)*r.  Both ODIV half-passes recompute this; the
+ * reciprocal is a handful of ALU ops, cheaper than carrying it across a target. */
+static void
+odiv_inverse_halves(nir_builder *b, nir_def *ylo, nir_def *yhi,
+                    nir_def **c, nir_def **d)
+{
+   nir_def *nrm = nir_fadd(b, nir_fdot(b, ylo, ylo), nir_fdot(b, yhi, yhi));
+   nir_def *r = nir_frcp(b, nrm);
+   nir_def *r4 = nir_vec4(b, r, r, r, r);
+   *c = nir_fmul(b, quat_conj(b, ylo), r4);    /* inv(y).lo = conj(ylo)*r */
+   *d = nir_fmul(b, nir_fneg(b, yhi), r4);     /* inv(y).hi = (-yhi)*r */
+}
+
+/* ODIV lower half (route A): out.lo = a*c - conj(d)*b for x = (a,b), inv(y) = (c,d).
+ * Octonion division as ONE MRT pass needs 73 ALU ops -- over R300_PFS_MAX_ALU_INST
+ * (64), the R300-class fragment limit -- so division runs as two single-output
+ * passes, each recomputing the shared reciprocal and emitting one half (eight DP4s
+ * plus the inverse).  Samples x = (a,b) at stages 0,1 and y = (ylo,yhi) at 2,3. */
+nir_shader *
+r300vk_build_odiv_lo_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_odiv_lo");
+
+   nir_def *a, *bb, *yl, *yh;
+   sample_octonion_halves(&b, &a, &bb, &yl, &yh);   /* a=xlo, bb=xhi, yl=ylo, yh=yhi */
+   nir_def *c, *d;
+   odiv_inverse_halves(&b, yl, yh, &c, &d);
+   nir_def *lo = nir_fsub(&b, hamilton_product(&b, a, c),
+                          hamilton_product(&b, quat_conj(&b, d), bb));
+   store_color_at(&b, lo, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}
+
+/* ODIV upper half (route A): out.hi = d*a + b*conj(c).  See the lower-half pass for
+ * why division uses two single-output passes instead of one MRT pass. */
+nir_shader *
+r300vk_build_odiv_hi_fs_nir(const nir_shader_compiler_options *opts)
+{
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_odiv_hi");
+
+   nir_def *a, *bb, *yl, *yh;
+   sample_octonion_halves(&b, &a, &bb, &yl, &yh);   /* a=xlo, bb=xhi, yl=ylo, yh=yhi */
+   nir_def *c, *d;
+   odiv_inverse_halves(&b, yl, yh, &c, &d);
+   nir_def *hi = nir_fadd(&b, hamilton_product(&b, d, a),
+                          hamilton_product(&b, bb, quat_conj(&b, c)));
+   store_color_at(&b, hi, FRAG_RESULT_COLOR, "color");
+   return fs_finalize(&b);
+}

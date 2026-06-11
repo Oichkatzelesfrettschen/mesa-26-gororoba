@@ -173,6 +173,16 @@ r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
                                const struct r300vk_cmd_dispatch *dispatch,
                                const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* ODIV (octonion division) orchestrator entry: out = x*inv(y), inv(y) =
+ * conj(y)/|y|^2, in one MRT pass (pl->fs_cso_mrt forms the reciprocal-scaled
+ * conjugate and the eight-wide product).  Four inputs bound straight
+ * (xlo,xhi,ylo,yhi), two output halves. */
+bool
+r300vk_odiv_dispatch_replay(struct r300vk_device *device,
+                            const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* Blend-acc-reduction orchestrator entry: descriptor walk to resolve
  * the (value-input, histogram-output) buffer pair, stage a per-point VBO
  * carrying (pos, packed-RGBA8-value) per gid, bind the blend-enabled

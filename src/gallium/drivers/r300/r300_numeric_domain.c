@@ -428,6 +428,29 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = NULL,
    },
    {
+      .op_name         = "ODIV",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "octonion right division out = x/y = x*inv(y), inv(y) = "
+                         "conj(y)/|y|^2.  Valid for EVERY nonzero octonion: dim 8 is a "
+                         "division algebra (no zero divisors, |y|^2 > 0 unless y=0), so the "
+                         "scalar reciprocal r = 1/|y|^2 (US RCP) and the eight-wide product "
+                         "x*inv(y) (OMUL fold) compose a true inverse -- ROCQ ground "
+                         "open_gororoba Brown1972ChapterV.v brown1972_oct_inv_mul_left/right "
+                         "(N(y)<>0).  Admitted by r300_nir_detect_odiv_pattern (matches the "
+                         "reciprocal of the norm + the OMUL of x against conj(y)*r) and "
+                         "dispatched in two single-output passes -- the combined MRT form is "
+                         "73 ALU ops, over the 64-ALU R300 fragment limit (R300_PFS_MAX_ALU_INST), "
+                         "so each pass recomputes inv(y) and emits one half; HW-confirmed 4/4 on "
+                         "RS482 by odiv_vk_probe.  Left division inv(y)*x differs (non-commutative + "
+                         "non-associative; each side parenthesis-safe by Artin/alternative) "
+                         "-- a sibling op.  Division stays DIM-8-ONLY: at dim 16 conj/N is "
+                         "only a pseudo-inverse (sedenion zero divisors, Moreno G2 / "
+                         "de Marrais box-kites; oct_norm_mul holds, sed_norm_fails)",
+      .mesa_hook       = "r300_nir_detect_odiv_pattern",
+      .retained_bundle = NULL,
+   },
+   {
       .op_name         = "QADD",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,

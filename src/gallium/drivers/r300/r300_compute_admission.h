@@ -480,6 +480,28 @@ struct r300_compute_onorm_pattern {
 void r300_nir_detect_onorm_pattern(const struct nir_shader *s,
                                    struct r300_compute_onorm_pattern *out);
 
+/* Octonion right division (ODIV): out = x / y = x * inv(y) where the inverse is
+ * inv(y) = conj(y)/|y|^2, valid for every nonzero octonion (dim 8 is a division
+ * algebra; |y|^2 = dot(ylo,ylo)+dot(yhi,yhi) > 0 unless y = 0).  The kernel reads
+ * x = (xlo,xhi) and y = (ylo,yhi) and writes the two product halves; the scalar
+ * reciprocal r = 1/|y|^2 scales conj(y) into inv(y), then the eight-wide product
+ * x*inv(y) is the OMUL fold.  Four input SSBOs (xlo,xhi,ylo,yhi), two output
+ * halves; bindings stay 0 when the sources are not constants (positional
+ * fallback xlo=0..yhi=3, o_lo=4, o_hi=5).  Division stays a dim-8-only op: at dim
+ * 16 conj/N is only a pseudo-inverse (sedenion zero divisors). */
+struct r300_compute_odiv_pattern {
+   bool       is_odiv;
+   uint32_t   input_xlo_ssbo_binding;
+   uint32_t   input_xhi_ssbo_binding;
+   uint32_t   input_ylo_ssbo_binding;
+   uint32_t   input_yhi_ssbo_binding;
+   uint32_t   output_lo_ssbo_binding;
+   uint32_t   output_hi_ssbo_binding;
+};
+
+void r300_nir_detect_odiv_pattern(const struct nir_shader *s,
+                                  struct r300_compute_odiv_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif
