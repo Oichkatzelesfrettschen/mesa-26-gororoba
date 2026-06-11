@@ -67,6 +67,7 @@ struct r300vk_device {
    bool                   dbg_no_dyn_overlay;   /* "no_overlay": static CSOs only */
    bool                   dbg_no_topo_override; /* "no_topo": recorded topology only */
    bool                   dbg_log_draws;        /* "log_draws": per-draw state line */
+   bool                   dbg_log_pixels;       /* "log_pixels": attachment sample at end-pass */
 
    /* Every live VkDeviceMemory, linked through r300vk_device_memory::
     * device_link.  The submit path walks it to give HOST_COHERENT semantics

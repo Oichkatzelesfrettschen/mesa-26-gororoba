@@ -156,6 +156,7 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
    device->dbg_no_dyn_overlay   = dbg && strstr(dbg, "no_overlay");
    device->dbg_no_topo_override = dbg && strstr(dbg, "no_topo");
    device->dbg_log_draws        = dbg && strstr(dbg, "log_draws");
+   device->dbg_log_pixels       = dbg && strstr(dbg, "log_pixels");
 
    *pDevice = r300vk_device_to_handle(device);
    return VK_SUCCESS;
