@@ -641,12 +641,18 @@ r300vk_physical_device_try_create_for_drm(struct vk_instance *const instance_bas
    properties.drmPrimaryMajor = device->primary_node_major;
    properties.drmPrimaryMinor = device->primary_node_minor;
 
-   /* Driver entrypoints only; vk_physical_device_init merges
+   /* Driver entrypoints first, then the WSI surface queries
+    * (vkGetPhysicalDeviceSurfaceSupportKHR and friends live at
+    * physical-device level in wsi_physical_device_entrypoints; without this
+    * overlay zink's kopper_CreateSurface calls a NULL pointer right after
+    * surface creation).  vk_physical_device_init merges
     * vk_common_physical_device_entrypoints itself at
     * src/vulkan/runtime/vk_physical_device.c:53-55. */
    struct vk_physical_device_dispatch_table dispatch_table;
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &r300vk_physical_device_entrypoints, true);
+   vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
+                                                      &wsi_physical_device_entrypoints, false);
 
    VkResult result = vk_physical_device_init(&device->vk, &instance->vk,
                                              &r300vk_device_extensions_supported,
