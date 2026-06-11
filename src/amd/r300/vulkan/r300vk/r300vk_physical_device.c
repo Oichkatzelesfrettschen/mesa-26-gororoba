@@ -237,8 +237,14 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    props->maxInterpolationOffset = 0.4375f;
    props->subPixelInterpolationOffsetBits = 4;
 
-   props->maxFramebufferWidth = R300VK_VK10_MIN_FRAMEBUFFER_DIMENSION;
-   props->maxFramebufferHeight = R300VK_VK10_MIN_FRAMEBUFFER_DIMENSION;
+   /* r300_set_framebuffer_state refuses any framebuffer wider or taller
+    * than 2560 on R3xx-class silicon (the non-r400/r500 branch), so the
+    * Vulkan 1.0 floor of 4096 cannot be honoured: a 4096 render area binds
+    * nothing and every draw into it is silently lost.  Report the silicon
+    * truth instead, the same honest-under-floor call as
+    * maxColorAttachments == 1. */
+   props->maxFramebufferWidth = R300VK_R3XX_MAX_RENDER_DIMENSION;
+   props->maxFramebufferHeight = R300VK_R3XX_MAX_RENDER_DIMENSION;
    props->maxFramebufferLayers = 1;
 
    props->framebufferColorSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
@@ -1124,12 +1130,33 @@ r300vk_get_image_format_properties(
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_2D:
-      max_extent = (VkExtent3D){
-         device->vk.properties.maxImageDimension2D,
-         device->vk.properties.maxImageDimension2D,
-         1,
-      };
-      max_mip_levels = 1;
+      /* Mip chains live on a single tile, so sampled images report the
+       * sampler dimension with its full chain; attachment-only images are
+       * bounded by the 2560 framebuffer cap; pure-transfer images keep the
+       * multi-tile 4096 reach at one level. */
+      if (info->usage & VK_IMAGE_USAGE_SAMPLED_BIT) {
+         max_extent = (VkExtent3D){
+            R300VK_R3XX_MAX_TEXTURE_DIMENSION,
+            R300VK_R3XX_MAX_TEXTURE_DIMENSION, 1,
+         };
+         max_mip_levels =
+            util_logbase2(R300VK_R3XX_MAX_TEXTURE_DIMENSION) + 1;
+      } else if (info->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
+         max_extent = (VkExtent3D){
+            R300VK_R3XX_MAX_RENDER_DIMENSION,
+            R300VK_R3XX_MAX_RENDER_DIMENSION, 1,
+         };
+         max_mip_levels =
+            util_logbase2(R300VK_R3XX_MAX_TEXTURE_DIMENSION) + 1;
+      } else {
+         max_extent = (VkExtent3D){
+            device->vk.properties.maxImageDimension2D,
+            device->vk.properties.maxImageDimension2D,
+            1,
+         };
+         max_mip_levels = 1;
+      }
       max_array_layers = 1;
       break;
    case VK_IMAGE_TYPE_3D:
