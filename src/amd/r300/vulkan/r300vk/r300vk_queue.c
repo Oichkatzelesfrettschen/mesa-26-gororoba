@@ -1640,6 +1640,12 @@ r300vk_replay_gpu(struct r300vk_device *device,
       struct r300vk_dyn_overlay dyn_ov = {0};
       const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets = NULL;
       const struct r300vk_cmd_entry *current_render_pass = NULL;
+      /* Viewport/scissor recorded BEFORE the render pass begins translate
+       * against zero tile dimensions (the scissor clamps to empty), so the
+       * last-seen entries re-apply at pass begin once tile geometry is
+       * known.  zink legally records both ahead of CmdBeginRendering. */
+      const struct r300vk_cmd_entry *last_viewport = NULL;
+      const struct r300vk_cmd_entry *last_scissor = NULL;
       /* The single active r300 occlusion query, if a vkCmdBeginQuery is open.
        * r300 supports one query at a time, and occlusion handling is confined to
        * single-tile submits (tile_pass_count == 1, so this loop runs once). */
@@ -1660,6 +1666,17 @@ r300vk_replay_gpu(struct r300vk_device *device,
             /* The pass boundary can change zsbuf presence, which feeds the
              * depth/stencil clamp; re-overlay at the next draw. */
             dyn_ov.dirty = true;
+            /* Re-apply state recorded before the pass began: its tile
+             * translation ran against zero tile dimensions (empty scissor). */
+            if (!skip_render_pass) {
+               if (last_viewport)
+                  r300vk_replay_set_viewport(device, last_viewport,
+                                             tile_origin_x, tile_origin_y);
+               if (last_scissor)
+                  r300vk_replay_set_scissor(device, last_scissor,
+                                            tile_origin_x, tile_origin_y,
+                                            tile_width, tile_height);
+            }
             /* Only loadOp == CLEAR emits a GPU write at begin (the color-image
              * clear) that a later host copy-image-to-buffer could read; a LOAD
              * pass emits nothing here, and its draws set gpu_pending themselves.
@@ -1684,11 +1701,13 @@ r300vk_replay_gpu(struct r300vk_device *device,
             break;
 
          case R300VK_CMD_SET_VIEWPORT:
+            last_viewport = e;
             if (skip_render_pass) break;
             r300vk_replay_set_viewport(device, e, tile_origin_x, tile_origin_y);
             break;
 
          case R300VK_CMD_SET_SCISSOR:
+            last_scissor = e;
             if (skip_render_pass) break;
             r300vk_replay_set_scissor(device, e, tile_origin_x, tile_origin_y,
                                       tile_width, tile_height);
