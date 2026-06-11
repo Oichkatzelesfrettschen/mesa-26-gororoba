@@ -237,14 +237,16 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    props->maxInterpolationOffset = 0.4375f;
    props->subPixelInterpolationOffsetBits = 4;
 
-   /* r300_set_framebuffer_state refuses any framebuffer wider or taller
-    * than 2560 on R3xx-class silicon (the non-r400/r500 branch), so the
-    * Vulkan 1.0 floor of 4096 cannot be honoured: a 4096 render area binds
-    * nothing and every draw into it is silently lost.  Report the silicon
-    * truth instead, the same honest-under-floor call as
-    * maxColorAttachments == 1. */
-   props->maxFramebufferWidth = R300VK_R3XX_MAX_RENDER_DIMENSION;
-   props->maxFramebufferHeight = R300VK_R3XX_MAX_RENDER_DIMENSION;
+   /* The Vulkan 1.0 floor.  r300_set_framebuffer_state refuses anything
+    * wider or taller than 2560, but reporting 2560 here breaks zink's
+    * surfaceless default-framebuffer completeness (measured: every GL FBO
+    * context fails "Framebuffer is not complete" with 2560 advertised), so
+    * the floor stays and the replay clamps recorded render areas to the
+    * silicon cap instead -- the stale-zsbuf clear crash is prevented by the
+    * clamp, and an oversize bind degrades to the r300g refusal warning
+    * rather than corrupting state. */
+   props->maxFramebufferWidth = R300VK_VK10_MIN_FRAMEBUFFER_DIMENSION;
+   props->maxFramebufferHeight = R300VK_VK10_MIN_FRAMEBUFFER_DIMENSION;
    props->maxFramebufferLayers = 1;
 
    props->framebufferColorSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
