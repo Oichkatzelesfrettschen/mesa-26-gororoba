@@ -63,12 +63,18 @@ struct r300_capabilities {
      * compiler keep their R300-class configuration.  Set only by
      * r300_hb_r400_us_init; execution is unproven and under test. */
     bool hb_r400_us;
-    /* R300_HB_R400_US=2 additionally lifts the fragment compiler to the R400
-     * envelope (64 temps, 512 ALU/TEX slots, r390_mode code banks).  Kept
+    /* R300_HB_R400_US=2 additionally lifts the fragment compiler to the full
+     * R400 envelope (64 temps, 512 ALU/TEX slots, r390_mode code banks).  Kept
      * separate from the emission probe: the envelope changes register
      * allocation even for programs that fit R300 limits, so the two effects
      * must be testable independently. */
     bool hb_r400_us_envelope;
+    /* R300_HB_R400_US=3 lifts only the ALU/TEX slot count to 512 and the
+     * r390_mode code-bank emission, while the temp file stays at the proven
+     * R300 size of 32.  A >64-instruction shader that stays within 32 temps
+     * then exercises code banks without touching the unproven upper temp file
+     * (regs 32..63), which is the safer first silicon rung. */
+    bool hb_r400_us_alu_only;
     /* Whether or not this is an RV515 or newer; R500s have many differences
      * that require extra consideration, compared to their rv350 cousins:
      * - Extra bit of width and height on texture sizes

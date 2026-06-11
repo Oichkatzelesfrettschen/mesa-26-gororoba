@@ -405,19 +405,30 @@ static void r300_translate_fragment_shader(
     if (!shader->dummy)
         compiler.Base.debug = &r300->context.debug;
     compiler.Base.is_r500 = r300->screen->caps.is_r500;
-    compiler.Base.is_r400 = r300->screen->caps.is_r400 ||
-                            r300->screen->caps.hb_r400_us_envelope;
+    /* The R400 instruction envelope (512 ALU/TEX slots + r390_mode code banks)
+     * is gated by is_r400 in the compiler.  The HB route opens it on an RS48x
+     * part two ways: hb_r400_us_alu_only lifts the ALU/TEX slot count and the
+     * code-bank emission while leaving the temp file at the proven R300 size of
+     * 32, so a >64-instruction shader that stays within 32 temps exercises code
+     * banks without touching the unproven upper temp file; hb_r400_us_envelope
+     * additionally raises the temp file to the full R400 64. */
+    const bool us_envelope = r300->screen->caps.is_r400 ||
+                             r300->screen->caps.hb_r400_us_envelope ||
+                             r300->screen->caps.hb_r400_us_alu_only;
+    const bool us_full_temps = r300->screen->caps.is_r400 ||
+                               r300->screen->caps.hb_r400_us_envelope;
+    compiler.Base.is_r400 = us_envelope;
     compiler.Base.disable_optimizations = DBG_ON(r300, DBG_NO_OPT);
     compiler.Base.has_half_swizzles = true;
     compiler.Base.has_presub = true;
     compiler.Base.has_omod = true;
     compiler.Base.max_temp_regs =
-        compiler.Base.is_r500 ? 128 : (compiler.Base.is_r400 ? 64 : 32);
+        compiler.Base.is_r500 ? 128 : (us_full_temps ? 64 : 32);
     compiler.Base.max_constants = compiler.Base.is_r500 ? 256 : 32;
     compiler.Base.max_alu_insts =
-        (compiler.Base.is_r500 || compiler.Base.is_r400) ? 512 : 64;
+        (compiler.Base.is_r500 || us_envelope) ? 512 : 64;
     compiler.Base.max_tex_insts =
-        (compiler.Base.is_r500 || compiler.Base.is_r400) ? 512 : 32;
+        (compiler.Base.is_r500 || us_envelope) ? 512 : 32;
     compiler.AllocateHwInputs = &allocate_hardware_inputs;
     compiler.UserData = &shader->inputs;
 

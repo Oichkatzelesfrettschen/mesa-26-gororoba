@@ -27,6 +27,7 @@ r300_hb_r400_us_init(struct r300_screen *screen)
 {
    screen->caps.hb_r400_us = false;
    screen->caps.hb_r400_us_envelope = false;
+   screen->caps.hb_r400_us_alu_only = false;
 
    const char *hb_us = getenv("R300_HB_R400_US");
    if (screen->caps.is_r400 ||
@@ -34,24 +35,31 @@ r300_hb_r400_us_init(struct r300_screen *screen)
        !hb_us)
       return;
 
-   /* Two rungs so the register-surface probe and the compiler envelope are
-    * falsifiable independently.  "1": emission-only -- programs still compile
-    * to the R300 envelope, the emit adds the R400_US_CODE_BANK/EXT writes an
-    * R400-class part always issues (zero for non-code-bank programs), so a
-    * rendering change isolates the registers' effect on this silicon.  "2":
-    * also lift the fragment compiler to the R400 envelope (64 temps, 512
-    * ALU/TEX, r390_mode code banks), which changes register allocation even
-    * for small programs and engages bank switching for large ones. */
+   /* Three rungs so the register-surface probe, the code-bank ALU lift, and
+    * the full compiler envelope are falsifiable independently.  "1":
+    * emission-only -- programs still compile to the R300 envelope, the emit
+    * adds the R400_US_CODE_BANK/EXT writes an R400-class part always issues
+    * (zero for non-code-bank programs), so a rendering change isolates the
+    * registers' effect on this silicon.  "2": also lift the fragment compiler
+    * to the FULL R400 envelope (64 temps, 512 ALU/TEX, r390_mode code banks).
+    * "3": lift only the ALU/TEX slot count to 512 and the code-bank emission,
+    * keeping the temp file at the proven R300 size of 32 -- a >64-instruction
+    * shader within 32 temps exercises code banks without the unproven upper
+    * temp file, the safer first silicon rung between "1" and "2". */
    if (strcmp(hb_us, "1") == 0) {
       screen->caps.hb_r400_us = true;
    } else if (strcmp(hb_us, "2") == 0) {
       screen->caps.hb_r400_us = true;
       screen->caps.hb_r400_us_envelope = true;
+   } else if (strcmp(hb_us, "3") == 0) {
+      screen->caps.hb_r400_us = true;
+      screen->caps.hb_r400_us_alu_only = true;
    } else {
       fprintf(stderr,
               "r300: ignoring R300_HB_R400_US=%s; use 1 (R400 US register "
-              "emission probe) or 2 (emission + R400 fragment compiler "
-              "envelope)\n", hb_us);
+              "emission probe), 2 (emission + full R400 compiler envelope), or "
+              "3 (emission + 512 ALU/TEX code banks, temps kept at 32)\n",
+              hb_us);
       return;
    }
 
@@ -60,9 +68,11 @@ r300_hb_r400_us_init(struct r300_screen *screen)
     * which this route puts under test.  Only the fragment-shader compile and
     * emit read the hb_r400_us flags, so the probe surface is exactly the US
     * block. */
+   const char *mode = screen->caps.hb_r400_us_envelope ? " + full compiler envelope"
+                    : screen->caps.hb_r400_us_alu_only  ? " + 512 ALU/TEX code banks (temps=32)"
+                    : "";
    fprintf(stderr,
            "r300: RS48x HB_R400_US route force on (emission%s); the US block "
            "is treated as R400-class; execution on this silicon is unproven "
-           "and under test\n",
-           screen->caps.hb_r400_us_envelope ? " + compiler envelope" : "");
+           "and under test\n", mode);
 }
