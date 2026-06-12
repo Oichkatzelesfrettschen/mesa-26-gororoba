@@ -2171,8 +2171,12 @@ r300vk_qdiv_synthesize_shaders(struct r300vk_device *device,
 
 /* MULTILIMB column FS: one convolution column of the 7-bit-limb u32
  * multiply.  Samples factor a (stage 0) and factor b (stage 1) as RGBA8
- * texels, recovers the four bytes (v * 255 -- byte-exact on RS482 per the
- * DP4 byte-pack lane), extracts the five 7-bit limbs of each factor with
+ * texels, recovers the four bytes with the SNAPPED form
+ * floor(v * 255 + 0.5) -- the raw v * 255 product double-rounds through the
+ * UNORM divide and can land a hair below the integer, which shatters every
+ * downstream floor (the on-target probe measured exactly that; the
+ * snap-before-arithmetic rule from the AFFINE_IOTA lane applies to sampled
+ * bytes too) -- and extracts the five 7-bit limbs of each factor with
  * byte-local floor arithmetic (every intermediate <= 2^11, exact in FP24):
  *
  *    f0 = floor(B0/128)  g1 = floor(B1/64)  g2 = floor(B2/32)  g3 = floor(B3/16)
@@ -2265,8 +2269,12 @@ r300vk_synthesize_multilimb_fs(struct pipe_context *pipe, unsigned column)
    struct ureg_dst bytes_b = ureg_DECL_temporary(ureg);
    ureg_TEX(ureg, bytes_a, TGSI_TEXTURE_2D, tc, samp[0]);
    ureg_TEX(ureg, bytes_b, TGSI_TEXTURE_2D, tc, samp[1]);
-   ureg_MUL(ureg, bytes_a, ureg_src(bytes_a), ureg_imm1f(ureg, 255.0f));
-   ureg_MUL(ureg, bytes_b, ureg_src(bytes_b), ureg_imm1f(ureg, 255.0f));
+   ureg_MAD(ureg, bytes_a, ureg_src(bytes_a), ureg_imm1f(ureg, 255.0f),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, bytes_a, ureg_src(bytes_a));
+   ureg_MAD(ureg, bytes_b, ureg_src(bytes_b), ureg_imm1f(ureg, 255.0f),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, bytes_b, ureg_src(bytes_b));
 
    struct ureg_dst fl_a = ureg_DECL_temporary(ureg);
    struct ureg_dst la01 = ureg_DECL_temporary(ureg);
