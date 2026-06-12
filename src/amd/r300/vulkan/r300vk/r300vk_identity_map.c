@@ -472,6 +472,14 @@ r300vk_idm_create_fullscreen_vbo(struct pipe_context *pipe,
    return true;
 }
 
+/* Copy a rendered RT back into a linear buffer, row by row, bounded by the
+ * kernel's element count.  copy_bytes_per_row is the DESTINATION stride
+ * (packed rows: width * blocksize); total_elements bounds the final
+ * partial row.  The original form passed copy_bytes_per_row * height as
+ * the destination stride and copy_bytes_per_row as the element count,
+ * which landed every row after the first outside the mapped box -- single-
+ * row folds masked it until the log4 verb's 16-row output measured row 0
+ * exact and rows 1+ untouched on silicon. */
 static bool
 r300vk_identity_map_readback_rt(struct pipe_context *pipe,
                                 struct pipe_resource *rt,
@@ -479,7 +487,8 @@ r300vk_identity_map_readback_rt(struct pipe_context *pipe,
                                 unsigned out_offset,
                                 unsigned width, unsigned height,
                                 enum pipe_format fmt,
-                                unsigned copy_bytes_per_row)
+                                unsigned copy_bytes_per_row,
+                                uint64_t total_elements)
 {
    bool copy_ok = false;
    struct pipe_box copy_box;
@@ -495,18 +504,19 @@ r300vk_identity_map_readback_rt(struct pipe_context *pipe,
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
       out_box.x      = out_offset;
-      out_box.width  = copy_bytes_per_row * height;
+      out_box.width  = (int)(total_elements *
+                             util_format_get_blocksize(fmt));
       out_box.height = 1; out_box.depth = 1;
       void *out_bytes = pipe->buffer_map(pipe, out_buf, 0,
                                          PIPE_MAP_WRITE |
                                          PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                          &out_box, &out_xfer);
       if (out_bytes) {
-         r300vk_identity_map_copy_rows(out_bytes, copy_bytes_per_row * height,
+         r300vk_identity_map_copy_rows(out_bytes, copy_bytes_per_row,
                                        rt_map, rt_xfer->stride,
                                        width, height,
                                        util_format_get_blocksize(fmt),
-                                       copy_bytes_per_row);
+                                       total_elements);
          pipe->buffer_unmap(pipe, out_xfer);
          copy_ok = true;
       }
@@ -4432,7 +4442,8 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    bool copy_ok = r300vk_identity_map_readback_rt(pipe, tex[src_idx], out_buf->resource,
                                                   (unsigned)out_desc->buf.offset,
                                                   width, height, fmt,
-                                                  width * util_format_get_blocksize(fmt));
+                                                  width * util_format_get_blocksize(fmt),
+                                                  total_invocations);
 
    IDM_LOG("multipass copy issued final_tex=%u", src_idx);
 
@@ -5349,40 +5360,11 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
       pipe->flush(pipe, NULL, 0);
       pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, NULL);
 
-      /* Inline bounded row copy: r300vk_identity_map_readback_rt passes
-       * bytes_per_row * height as the DESTINATION stride, which lands every
-       * row after the first outside the mapped box for multi-row outputs
-       * (this verb's first silicon run measured exactly that: row 0 exact,
-       * rows 1+ untouched). */
-      struct pipe_box copy_box;
-      memset(&copy_box, 0, sizeof(copy_box));
-      copy_box.width = out_w;
-      copy_box.height = out_h;
-      copy_box.depth = 1;
-      struct pipe_transfer *rt_xfer = NULL;
-      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
-                                             &copy_box, &rt_xfer);
-      if (rt_map) {
-         struct pipe_transfer *out_xfer = NULL;
-         struct pipe_box out_box;
-         memset(&out_box, 0, sizeof(out_box));
-         out_box.x      = (int)desc[1]->buf.offset;
-         out_box.width  = (int)(out_total * 4u);
-         out_box.height = 1;
-         out_box.depth  = 1;
-         void *out_bytes = pipe->buffer_map(pipe, buf[1]->resource, 0,
-                                            PIPE_MAP_WRITE |
-                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                            &out_box, &out_xfer);
-         if (out_bytes) {
-            r300vk_identity_map_copy_rows(out_bytes, out_w * 4u, rt_map,
-                                          rt_xfer->stride, out_w, out_h, 4u,
-                                          out_total);
-            pipe->buffer_unmap(pipe, out_xfer);
-            copy_ok = true;
-         }
-         pipe->texture_unmap(pipe, rt_xfer);
-      }
+      copy_ok = r300vk_identity_map_readback_rt(pipe, rt, buf[1]->resource,
+                                                (unsigned)desc[1]->buf.offset,
+                                                out_w, out_h,
+                                                PIPE_FORMAT_R8G8B8A8_UNORM,
+                                                out_w * 4u, out_total);
    }
 
    pipe->set_vertex_buffers(pipe, 0, NULL);
