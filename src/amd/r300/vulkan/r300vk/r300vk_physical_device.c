@@ -1307,6 +1307,17 @@ r300vk_GetPhysicalDeviceMemoryProperties2(VkPhysicalDevice physicalDevice,
    };
 
    m->memoryTypeCount = 2;
+   /* This is a UMA integrated part with no GPU/CPU cache coherency in
+    * hardware.  The radeon kernel disables GART snooping globally
+    * (rs400_gart_enable writes AGP_MODE_CNTL REQ_TYPE_SNOOP_DIS) and marks
+    * every GART page unsnooped, the K8 host core reports no self-snoop, and
+    * the K8 NPT Family 0Fh host does not support atomic read-modify-write
+    * HyperTransport commands.  HOST_COHERENT is honest only because the
+    * driver never allows concurrent CPU and GPU access to the same memory:
+    * all GPU work for a submit runs inside one synchronous
+    * r300vk_queue_driver_submit, which copies each host map into its bound
+    * resource at the submit entry and back at the fence.  The coherency
+    * promise is kept by serialization and explicit copy, not by snoop. */
    m->memoryTypes[0] = (VkMemoryType){
       .propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
