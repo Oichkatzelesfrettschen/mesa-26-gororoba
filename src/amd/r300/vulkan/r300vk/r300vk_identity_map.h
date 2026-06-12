@@ -79,16 +79,6 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
                                     const struct r300vk_cmd_dispatch *dispatch,
                                     const struct r300vk_cmd_bind_descriptor_sets *binds);
 
-/* CONSTFILL dispatch replay: out[gid] = C, the degenerate store.  No input
- * sampler, no fragment shader -- the constant's four bytes ride the RGBA8
- * carrier as unorm channels, an RB3D clear writes them to every pixel, and the
- * cleared RT is copied into the output ssbo. */
-bool
-r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
-                                  const struct r300vk_pipeline *pl,
-                                  const struct r300vk_cmd_dispatch *dispatch,
-                                  const struct r300vk_cmd_bind_descriptor_sets *binds);
-
 /* Binary-map dispatch replay: lowers an admitted compute kernel of the
  * shape out[i] = f(a[i], b[i]) onto a fullscreen-quad fragment draw that
  * samples in_a (sampler 0) + in_b (sampler 1), applies the synthesised

@@ -179,51 +179,6 @@ r300_nir_detect_identity_map(const nir_shader *s,
    out->is_identity_map = true;
 }
 
-/* CONSTFILL: out[gid] = C, a plain store_ssbo of a compile-time constant with no
- * load -- a memset / fill, the degenerate store pattern.  Exactly one store_ssbo
- * whose value is a load_const, zero load_ssbo, no atomic / loop / conditional,
- * full-width store.  The constant is identical for every element, so the
- * lowering needs no per-element fetch and no fragment shader at all: it is a
- * framebuffer clear to C, copied back to the buffer.  Disjoint from identity-map
- * (whose store value is a load_ssbo def, not a constant) and from every
- * load-bearing detector (const-fill has zero loads). */
-void
-r300_nir_detect_const_fill_pattern(const nir_shader *s,
-                                   struct r300_compute_const_fill_pattern *out)
-{
-   out->is_const_fill       = false;
-   out->output_ssbo_binding = 0;
-   out->value_components    = 0;
-   out->value_bit_size      = 0;
-   out->value_is_float      = false;
-   memset(out->value, 0, sizeof(out->value));
-
-   const nir_intrinsic_instr *loads[1], *stores[1];
-   unsigned nload, nstore, natomic;
-   bool has_loop, in_if;
-   collect_loads_stores(s, loads, 1, &nload, stores, 1, &nstore, &natomic,
-                        &has_loop, &in_if);
-   if (nstore != 1 || nload != 0 || natomic != 0 || has_loop || in_if)
-      return;
-
-   const nir_intrinsic_instr *store = stores[0];
-   if (!store->src[0].ssa || !store_is_full_width(store))
-      return;
-   /* The stored value must be a compile-time constant (a load_const def). */
-   if (!nir_src_is_const(store->src[0]))
-      return;
-
-   const unsigned ncomp = store->num_components;
-   for (unsigned c = 0; c < ncomp && c < 4; c++)
-      out->value[c] = nir_src_comp_as_uint(store->src[0], c);
-   out->value_components = (uint8_t)ncomp;
-   out->value_bit_size   = (uint8_t)store->src[0].ssa->bit_size;
-   out->value_is_float   = intrinsic_base_type_is_float(store, nir_type_invalid);
-   if (nir_src_is_const(store->src[1]))
-      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
-   out->is_const_fill = true;
-}
-
 /* Texture-pair binary-map detector.  Mirrors the identity-map pattern at one
  * level of indirection: store_ssbo's value is the def of a single ALU op whose
  * two sources are the defs of two distinct load_ssbo intrinsics.
