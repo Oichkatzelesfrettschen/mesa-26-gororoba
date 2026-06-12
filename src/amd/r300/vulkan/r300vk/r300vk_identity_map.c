@@ -189,6 +189,33 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
       cls = (stride == 1 && offset == 0) ? R300_GRID_INDEX_LINEAR
                                          : R300_GRID_INDEX_STRIDED;
       break;
+   case R300_COMPUTE_INDEX_VALUE_AFFINE_3D: {
+      /* Per-axis maximum of ax * x + ay * y + az * z + b over the dispatch
+       * grid.  Under the canonical flatten the replay validates
+       * (ay == ax * tx, az == ax * tx * ty) this equals the 1D strided
+       * bound ax * (total - 1) + b exactly; non-canonical strides are
+       * bounded here all the same and then refused at replay. */
+      const uint64_t tx = (uint64_t)dispatch->group_count_x *
+                          (pl->local_size_x ? pl->local_size_x : 1u);
+      const uint64_t ty = (uint64_t)dispatch->group_count_y *
+                          (pl->local_size_y ? pl->local_size_y : 1u);
+      const uint64_t tz = (uint64_t)dispatch->group_count_z *
+                          (pl->local_size_z ? pl->local_size_z : 1u);
+      if (!tx || !ty || !tz) {
+         *out_reason = "empty-grid";
+         return false;
+      }
+      const uint64_t max_value = (uint64_t)ip->stride * (tx - 1) +
+                                 (uint64_t)ip->stride_y * (ty - 1) +
+                                 (uint64_t)ip->stride_z * (tz - 1) +
+                                 ip->offset;
+      if (max_value > R300_FP24_EXACT_INT_CEILING) {
+         *out_reason =
+            "index-ceiling (materialized 3D index exceeds FP24 2^17)";
+         return false;
+      }
+      return true;
+   }
    case R300_COMPUTE_INDEX_VALUE_GENERAL:
    default:
       /* The index reaches a stored value through a non-affine chain: no
@@ -4626,37 +4653,75 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   /* The classified affine is a function of gl_GlobalInvocationID.x (or the
-    * scalar invocation index), and the replay equates that with the linear
-    * fragment index.  The two coincide only for one-dimensional dispatches:
-    * a multi-dimensional grid makes id.x a per-row coordinate, and replaying
-    * it as the linear index would write values the kernel never computed.
-    * Reject anything but a pure-x dispatch; the 3D grid fold belongs to the
-    * coordinate-consumption lane, not this linear-index verb. */
-   if (dispatch->group_count_y > 1 || dispatch->group_count_z > 1 ||
-       pl->local_size_y > 1 || pl->local_size_z > 1) {
-      IDM_LOG("iota early-return non-1d dispatch gy=%u gz=%u lsy=%u lsz=%u",
-              dispatch->group_count_y, dispatch->group_count_z,
-              pl->local_size_y, pl->local_size_z);
-      return false;
+   /* Shape validation.  The fragment program computes
+    * v = stride * (y_r * width + x) + offset over the folded raster.  Two
+    * admitted shapes make that equal the kernel's stored value:
+    *
+    *  1D (stride_y == stride_z == 0): the affine rides id.x, which equals
+    *  the linear invocation index only for pure-x dispatches; multi-
+    *  dimensional grids are refused (id.x is a per-row coordinate there).
+    *
+    *  3D (canonical flatten): the kernel computes
+    *  flat = id.z * (tx * ty) + id.y * tx + id.x scaled by stride, i.e.
+    *  ay == ax * tx and az == ax * tx * ty for the dispatch's own per-axis
+    *  totals.  Under the interleave row-fold (width = tx,
+    *  height = ty * tz, y_r = z * ty + y) the raster linear index
+    *  y_r * width + x equals flat exactly, so the silicon-proven 1D
+    *  fragment program runs verbatim.  Non-canonical strides are refused:
+    *  a wrong fold would write values the kernel never computed. */
+   const uint64_t tx = (uint64_t)dispatch->group_count_x *
+                       (pl->local_size_x ? pl->local_size_x : 1u);
+   const uint64_t ty = (uint64_t)dispatch->group_count_y *
+                       (pl->local_size_y ? pl->local_size_y : 1u);
+   const uint64_t tz = (uint64_t)dispatch->group_count_z *
+                       (pl->local_size_z ? pl->local_size_z : 1u);
+   const uint32_t stride = pl->affine_iota.stride ? pl->affine_iota.stride : 1;
+   const bool is_3d = pl->affine_iota.stride_y || pl->affine_iota.stride_z;
+   unsigned width, height;
+   if (is_3d) {
+      if ((uint64_t)pl->affine_iota.stride_y != (uint64_t)stride * tx ||
+          (uint64_t)pl->affine_iota.stride_z != (uint64_t)stride * tx * ty) {
+         IDM_LOG("iota early-return non-canonical flatten ay=%u az=%u "
+                 "tx=%llu ty=%llu",
+                 pl->affine_iota.stride_y, pl->affine_iota.stride_z,
+                 (unsigned long long)tx, (unsigned long long)ty);
+         return false;
+      }
+      struct r300_grid_fold fold3;
+      if (!r300_grid_fold_3d((uint32_t)tx, (uint32_t)ty, (uint32_t)tz,
+                             &fold3)) {
+         IDM_LOG("iota early-return 3d-fold tx=%llu ty=%llu tz=%llu",
+                 (unsigned long long)tx, (unsigned long long)ty,
+                 (unsigned long long)tz);
+         return false;
+      }
+      width = fold3.width;
+      height = fold3.height;
+   } else {
+      if (ty > 1 || tz > 1) {
+         IDM_LOG("iota early-return non-1d dispatch of 1d affine ty=%llu "
+                 "tz=%llu", (unsigned long long)ty, (unsigned long long)tz);
+         return false;
+      }
+      struct r300_grid_fold fold;
+      if (!r300_grid_fold_1d(tx, &fold)) {
+         IDM_LOG("iota early-return fold total=%llu",
+                 (unsigned long long)tx);
+         return false;
+      }
+      width = fold.width;
+      height = fold.height;
    }
 
    /* Defence in depth: the queue-level index gate already bounded the
-    * materialized value by the FP24 exact-integer ceiling; re-check here so
-    * a direct caller cannot bypass it. */
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
-   const uint32_t stride = pl->affine_iota.stride ? pl->affine_iota.stride : 1;
+    * materialized value by the FP24 exact-integer ceiling; re-check on the
+    * flattened total so a direct caller cannot bypass it. */
+   const uint64_t total = tx * ty * tz;
    if (!r300_grid_strided_index_exact(total, stride, pl->affine_iota.offset)) {
       IDM_LOG("iota early-return index-ceiling total=%llu stride=%u offset=%u",
               (unsigned long long)total, stride, pl->affine_iota.offset);
       return false;
    }
-   struct r300_grid_fold fold;
-   if (!r300_grid_fold_1d(total, &fold)) {
-      IDM_LOG("iota early-return fold total=%llu", (unsigned long long)total);
-      return false;
-   }
-   const unsigned width = fold.width, height = fold.height;
 
    struct pipe_resource *vb = NULL;
    void *velems_cso = NULL;

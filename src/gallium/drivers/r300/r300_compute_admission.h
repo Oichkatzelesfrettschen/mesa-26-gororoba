@@ -765,6 +765,13 @@ enum r300_compute_index_consumption {
    R300_COMPUTE_INDEX_NONE = 0,
    R300_COMPUTE_INDEX_ADDRESS_ONLY,
    R300_COMPUTE_INDEX_VALUE_AFFINE,
+   /* Per-component affine: ax * id.x + ay * id.y + az * id.z + b with at
+    * least one of ay, az nonzero -- the kernel-side 3D flatten.  The
+    * dispatch gate bounds ax(tx-1) + ay(ty-1) + az(tz-1) + b by 2^17, and
+    * the replay accepts only the canonical flatten (ay == ax * dim_x,
+    * az == ax * dim_x * dim_y), under which that bound equals the 1D
+    * strided bound on the flattened total exactly. */
+   R300_COMPUTE_INDEX_VALUE_AFFINE_3D,
    R300_COMPUTE_INDEX_VALUE_GENERAL,
 };
 
@@ -776,7 +783,9 @@ enum r300_compute_index_consumption {
 struct r300_compute_index_pattern {
    enum r300_compute_index_consumption consumption;
    bool       stride_valid;
-   uint32_t   stride;
+   uint32_t   stride;     /* ax: the id.x coefficient */
+   uint32_t   stride_y;   /* ay: the id.y coefficient (VALUE_AFFINE_3D) */
+   uint32_t   stride_z;   /* az: the id.z coefficient (VALUE_AFFINE_3D) */
    uint32_t   offset;
    bool       uses_component_y;
    bool       uses_component_z;
@@ -796,7 +805,9 @@ struct r300_compute_affine_iota_pattern {
    bool       is_affine_iota;
    uint32_t   output_ssbo_binding;  /* binding of the store_ssbo dest */
    bool       output_ssbo_binding_valid;
-   uint32_t   stride;               /* a in a * gid + b */
+   uint32_t   stride;               /* ax in ax * id.x + ay * id.y + az * id.z + b */
+   uint32_t   stride_y;             /* ay; 0 for the 1D linear form */
+   uint32_t   stride_z;             /* az; 0 for the 1D linear form */
    uint32_t   offset;               /* b */
 };
 

@@ -1397,6 +1397,27 @@ build_index_value_linear_with_base(void)
    return b.shader;
 }
 
+/* out[flat] = flat with the canonical 3D flatten baked as constants:
+ * flat = id.z * (16 * 8) + id.y * 16 + id.x.  Per-component affine must
+ * report strides (1, 16, 128). */
+static nir_shader *
+build_index_value_flatten_3d(void)
+{
+   nir_builder b = cs_builder("cs_index_value_flatten_3d");
+   nir_def *id = nir_load_global_invocation_id(&b, 32);
+   nir_def *x = nir_channel(&b, id, 0);
+   nir_def *y = nir_channel(&b, id, 1);
+   nir_def *z = nir_channel(&b, id, 2);
+   nir_def *flat = nir_iadd(&b,
+                            nir_iadd(&b, nir_imul(&b, z, nir_imm_int(&b, 128)),
+                                     nir_imul(&b, y, nir_imm_int(&b, 16))),
+                            x);
+   nir_def *off = nir_imul(&b, flat, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, flat, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 case_index_consumption(void)
 {
@@ -1453,6 +1474,20 @@ case_index_consumption(void)
          "vec3 id channel feeding the address classifies ADDRESS_ONLY");
    CHECK(p.uses_component_y, "channel .y consumption is reported");
    ralloc_free(cy);
+
+   nir_shader *f3 = build_index_value_flatten_3d();
+   r300_nir_classify_index_consumption(f3, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE_3D,
+         "canonical 3D flatten classifies VALUE_AFFINE_3D");
+   CHECK(p.stride_valid && p.stride == 1 && p.stride_y == 16 &&
+         p.stride_z == 128 && p.offset == 0,
+         "3D flatten captures strides (1, 16, 128)");
+   struct r300_compute_affine_iota_pattern it3 = {0};
+   r300_nir_detect_affine_iota_pattern(f3, &it3);
+   CHECK(it3.is_affine_iota && it3.stride == 1 && it3.stride_y == 16 &&
+         it3.stride_z == 128,
+         "affine-iota detector carries the 3D strides");
+   ralloc_free(f3);
 
    /* FP24 exact-ceiling guard boundaries (pure arithmetic, no NIR). */
    CHECK(r300_grid_linear_index_exact(131072),
