@@ -398,4 +398,19 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
                                    const struct r300vk_cmd_dispatch *dispatch,
                                    const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* AFFINE_IOTA dispatch replay: out[gid] = stride * gid + offset, the first
+ * verb that materializes the work-item index as an FP24 value.  Draws a quad
+ * whose texcoord varying is in TEXEL units (vertex corners 0..width and
+ * 0..height) so the interpolated value at each fragment centre is
+ * (x + 0.5, y + 0.5) without any FP24 division; the FS evaluates the affine
+ * and byte-decomposes the integer result into an RGBA8 render target whose
+ * raw little-endian bytes are copied to the kernel's u32 output SSBO.  The
+ * dispatch index-exactness gate has already bounded
+ * stride * (total - 1) + offset by 2^17 before this runs. */
+bool
+r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
+                                   const struct r300vk_pipeline *pl,
+                                   const struct r300vk_cmd_dispatch *dispatch,
+                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #endif /* R300VK_IDENTITY_MAP_H */

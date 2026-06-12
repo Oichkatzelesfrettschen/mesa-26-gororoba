@@ -173,6 +173,12 @@ struct r300vk_pipeline {
     * the 2^17 exact-integer ceiling (r300_grid_index_exact). */
    struct r300_compute_index_pattern index_consumption;
 
+   /* Affine-iota kernel detected at pipeline-create time: out[gid] =
+    * stride * gid + offset with zero loads.  The replay carries the index as
+    * a texel-unit varying, evaluates the affine in the FP24 fragment ALU,
+    * and byte-decomposes the integer result into an RGBA8 render target. */
+   struct r300_compute_affine_iota_pattern affine_iota;
+
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
     * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in

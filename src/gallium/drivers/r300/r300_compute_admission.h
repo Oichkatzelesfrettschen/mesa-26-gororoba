@@ -782,6 +782,27 @@ struct r300_compute_index_pattern {
    bool       uses_component_z;
 };
 
+/* Affine-iota pattern: out[gid] = stride * gid + offset, a pure function of
+ * the invocation index -- one store_ssbo, ZERO loads, the stored value an
+ * affine chain of the index with constant coefficients.  The first verb that
+ * materializes the work-item index as an FP24 VALUE: the replay carries the
+ * index as a texel-unit vertex varying, evaluates stride * gid + offset in
+ * the fragment ALU, and byte-decomposes the result into an RGBA8 carrier
+ * (exact while the maximum value stays at or below 2^17 -- the dispatch gate
+ * enforces r300_grid_strided_index_exact).  Integer 32-bit single-component
+ * stores only: the byte decomposition writes the little-endian integer, not
+ * an IEEE-754 bit pattern, so a float store is not this shape. */
+struct r300_compute_affine_iota_pattern {
+   bool       is_affine_iota;
+   uint32_t   output_ssbo_binding;  /* binding of the store_ssbo dest */
+   bool       output_ssbo_binding_valid;
+   uint32_t   stride;               /* a in a * gid + b */
+   uint32_t   offset;               /* b */
+};
+
+void r300_nir_detect_affine_iota_pattern(const struct nir_shader *s,
+                                         struct r300_compute_affine_iota_pattern *out);
+
 /* Classify how a compute kernel consumes its invocation index.  Pure
  * read-only analysis: walks the use chains of every invocation-index
  * intrinsic (global/local invocation id and index, workgroup id) and reports

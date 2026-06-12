@@ -298,6 +298,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_identity_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->const_fill.is_const_fill)
       ok = r300vk_const_fill_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->affine_iota.is_affine_iota)
+      ok = r300vk_affine_iota_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->binary_map.is_binary_map)
       ok = r300vk_binary_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->unary_map.is_unary_map)

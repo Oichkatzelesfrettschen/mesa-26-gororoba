@@ -4528,3 +4528,215 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
            (unsigned long long)total_invocations, (unsigned long long)fill_bytes);
    return true;
 }
+
+/* Fullscreen quad whose texcoord varying is in TEXEL units: corners carry
+ * (0, 0) .. (width, height) instead of 0..1, so linear interpolation lands
+ * exactly (x + 0.5, y + 0.5) at each fragment centre without any FP24
+ * division by the raster extent.  The vertex endpoints are small integers
+ * (<= 2048), exact in the SW-TCL FP32 vertex path by construction; whether
+ * the rasterizer interpolator delivers the texel-centre values exactly is
+ * the index-addressing probe's question, not an assumption made here. */
+static bool
+r300vk_idm_create_texel_index_vbo(struct pipe_context *pipe,
+                                  unsigned width, unsigned height,
+                                  struct pipe_resource **out_vb,
+                                  void **out_velems_cso)
+{
+   struct pipe_screen *screen = pipe->screen;
+   const float w = (float)width, h = (float)height;
+   const float verts[16] = {
+      -1.0f, -1.0f, 0.0f, 0.0f,
+       1.0f, -1.0f, w,    0.0f,
+      -1.0f,  1.0f, 0.0f, h,
+       1.0f,  1.0f, w,    h,
+   };
+   struct pipe_resource vb_templ;
+   memset(&vb_templ, 0, sizeof(vb_templ));
+   vb_templ.target     = PIPE_BUFFER;
+   vb_templ.format     = PIPE_FORMAT_R8_UNORM;
+   vb_templ.width0     = sizeof(verts);
+   vb_templ.height0    = 1;
+   vb_templ.depth0     = 1;
+   vb_templ.array_size = 1;
+   vb_templ.usage      = PIPE_USAGE_STREAM;
+   vb_templ.bind       = PIPE_BIND_VERTEX_BUFFER;
+   struct pipe_resource *vb = screen->resource_create(screen, &vb_templ);
+   if (!vb)
+      return false;
+   pipe->buffer_subdata(pipe, vb, PIPE_MAP_WRITE, 0, sizeof(verts), verts);
+
+   struct pipe_vertex_element velems[2];
+   memset(&velems, 0, sizeof(velems));
+   velems[0].src_offset = 0; velems[0].src_stride = 16;
+   velems[0].vertex_buffer_index = 0;
+   velems[0].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   velems[1].src_offset = 8; velems[1].src_stride = 16;
+   velems[1].vertex_buffer_index = 0;
+   velems[1].src_format = PIPE_FORMAT_R32G32_FLOAT;
+   void *velems_cso = pipe->create_vertex_elements_state(pipe, 2, velems);
+   if (!velems_cso) {
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+   *out_vb = vb;
+   *out_velems_cso = velems_cso;
+   return true;
+}
+
+bool
+r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
+                                   const struct r300vk_pipeline *pl,
+                                   const struct r300vk_cmd_dispatch *dispatch,
+                                   const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device ? device->pipe : NULL;
+   struct pipe_screen  *screen = device ? device->screen : NULL;
+   const struct r300vk_descriptor_set *set = NULL;
+   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R8G8B8A8_UNORM,
+                                    PIPE_TEXTURE_2D, 0, 0,
+                                    PIPE_BIND_RENDER_TARGET))
+      return false;
+
+   /* One binding: the output.  The detector's captured binding wins when the
+    * post-explicit_io store binding source was a constant; otherwise the
+    * single STORAGE_BUFFER in declaration order is the output. */
+   uint32_t out_binding = pl->affine_iota.output_ssbo_binding;
+   if (!pl->affine_iota.output_ssbo_binding_valid) {
+      if (!nth_storage_buffer_binding(set, 0, &out_binding)) {
+         IDM_LOG("iota early-return no-output-binding");
+         return false;
+      }
+   }
+   const struct r300vk_descriptor *out_desc =
+      find_descriptor_by_binding(set, out_binding);
+   if (!out_desc || !out_desc->buf.buffer) {
+      IDM_LOG("iota early-return descriptor-walk-miss");
+      return false;
+   }
+   struct r300vk_buffer *out_buf =
+      r300vk_buffer_from_handle(out_desc->buf.buffer);
+   if (!out_buf || !out_buf->resource) {
+      IDM_LOG("iota early-return null-pipe-resource");
+      return false;
+   }
+
+   /* Defence in depth: the queue-level index gate already bounded the
+    * materialized value by the FP24 exact-integer ceiling; re-check here so
+    * a direct caller cannot bypass it. */
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const uint32_t stride = pl->affine_iota.stride ? pl->affine_iota.stride : 1;
+   if (!r300_grid_strided_index_exact(total, stride, pl->affine_iota.offset)) {
+      IDM_LOG("iota early-return index-ceiling total=%llu stride=%u offset=%u",
+              (unsigned long long)total, stride, pl->affine_iota.offset);
+      return false;
+   }
+   struct r300_grid_fold fold;
+   if (!r300_grid_fold_1d(total, &fold)) {
+      IDM_LOG("iota early-return fold total=%llu", (unsigned long long)total);
+      return false;
+   }
+   const unsigned width = fold.width, height = fold.height;
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_texel_index_vbo(pipe, width, height, &vb,
+                                          &velems_cso))
+      return false;
+
+   const enum pipe_format rtfmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = rtfmt;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = rtfmt;
+   surf_templ.texture = rt;
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
+
+   /* CONST[0] = (width, stride, offset, 0): the dispatch-known scalars the
+    * FS affine reads.  user_buffer is consumed at the draw below. */
+   const float cb_data[4] = { (float)width, (float)stride,
+                              (float)pl->affine_iota.offset, 0.0f };
+   struct pipe_constant_buffer cb;
+   memset(&cb, 0, sizeof(cb));
+   cb.user_buffer = cb_data;
+   cb.buffer_size = sizeof(cb_data);
+   pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.instance_count = 1;
+   info.max_index      = 3;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+
+   /* The RGBA8 texel bytes ARE the little-endian u32 elements; copy raw
+    * rows bounded by the kernel's element count. */
+   bool copy_ok = false;
+   struct pipe_box copy_box;
+   memset(&copy_box, 0, sizeof(copy_box));
+   copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+   struct pipe_transfer *rt_xfer = NULL;
+   const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                          &copy_box, &rt_xfer);
+   if (rt_map) {
+      struct pipe_transfer *out_xfer = NULL;
+      struct pipe_box out_box;
+      memset(&out_box, 0, sizeof(out_box));
+      out_box.x      = (unsigned)out_desc->buf.offset;
+      out_box.width  = (unsigned)(total * 4u);
+      out_box.height = 1; out_box.depth = 1;
+      void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                         PIPE_MAP_WRITE |
+                                         PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                         &out_box, &out_xfer);
+      if (out_bytes) {
+         r300vk_identity_map_copy_rows(out_bytes, width * 4u, rt_map,
+                                       rt_xfer->stride, width, height, 4u,
+                                       total);
+         pipe->buffer_unmap(pipe, out_xfer);
+         copy_ok = true;
+      }
+      pipe->texture_unmap(pipe, rt_xfer);
+   }
+
+   pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, NULL);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_resource_reference(&rt, NULL);
+   pipe_resource_reference(&vb, NULL);
+   IDM_LOG("iota done total=%llu stride=%u offset=%u copy_ok=%d",
+           (unsigned long long)total, stride, pl->affine_iota.offset,
+           (int)copy_ok);
+   return copy_ok;
+}
