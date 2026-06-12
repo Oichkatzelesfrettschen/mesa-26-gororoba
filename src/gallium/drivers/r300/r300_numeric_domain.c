@@ -717,6 +717,57 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = "cachyos_vostro1000_rs482_affine_iota_index_20260612",
    },
    {
+      /* 32x32 -> 64-bit integer multiply on the FP24 ALU: each factor splits
+       * into five 7-bit limbs and the product's nine convolution columns
+       * c_k = sum_{i+j=k} a_i * b_j each stay <= 5 * 127^2 = 80645 < 2^17,
+       * an exact FP24 integer (the U7_DOT property extended to five terms).
+       * Carry propagation over the byte-decomposed columns is integer
+       * bookkeeping outside the FP24 ALU (host-side today; a multipass
+       * chain when a replay verb lands). */
+      .op_name         = "MULTILIMB7_U32_MUL",
+      .domain          = R300_NUM_DOMAIN_U7_DOT,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "a * b for 32-bit a, b via five 7-bit limbs: every "
+                         "convolution column <= 5 * 127^2 < 2^17 is FP24-exact; "
+                         "probe: four pairs including 0xFFFFFFFF^2 assembled "
+                         "bit-exact to the 64-bit product",
+      .mesa_hook       = NULL,
+      .retained_bundle = "cachyos_vostro1000_rs482_multilimb_log4_stencilcas_20260612",
+   },
+   {
+      /* One log4 tree level per LINEAR tap at a 2x2 texel corner: the 6-bit
+       * filter weights put 0.25 on-grid, so the tap is the exact quarter sum.
+       * The recorded LIMIT is the UNORM8 render-target quantization between
+       * levels: a level is byte-exact iff its 2x2 sum is divisible by 4. */
+      .op_name         = "LOG4_BILINEAR_REDUCE",
+      .domain          = R300_NUM_DOMAIN_TX_INT6_WEIGHT,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "sum/4 per 2x2 via one LINEAR corner tap, exact iff "
+                         "sum mod 4 == 0 (UNORM8 inter-level carrier); off-grid "
+                         "sums quantize within one byte; UNORM8 payloads only "
+                         "(float payloads point-sample on RS482)",
+      .mesa_hook       = NULL,
+      .retained_bundle = "cachyos_vostro1000_rs482_multilimb_log4_stencilcas_20260612",
+   },
+   {
+      /* Versioned CAS: GL exposes ONE stencil ref, so REPLACE writes the
+       * value the EQUAL test compared against -- the arbitrary-value swap
+       * "test expect, write new" is impossible by API algebra, not by
+       * silicon.  The expressible primitive advances exactly the cells at
+       * version v to v + 1 and returns the success count from the same
+       * draw's ZPASS query. */
+      .op_name         = "STENCIL_VERSIONED_CAS",
+      .domain          = R300_NUM_DOMAIN_U8_STENCIL,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "func EQUAL v + op INCR + SAMPLES_PASSED: cells at "
+                         "version v advance to v + 1 and the query returns the "
+                         "swap-success count in one draw; probe ladder "
+                         "advance(0) = all, advance(0) = none, advance(1) = all, "
+                         "end state EQUAL 2 = all",
+      .mesa_hook       = NULL,
+      .retained_bundle = "cachyos_vostro1000_rs482_multilimb_log4_stencilcas_20260612",
+   },
+   {
       /* QFM derived fused ops: compositions of the built primitives. */
       .op_name         = "QFMSUB",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
