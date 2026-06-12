@@ -1104,6 +1104,31 @@ r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
          PIPE_FORMAT_R32G32B32A32_FLOAT);
    }
 
+   /* Scalar carrier: one float per element.  The input SSBO wraps as an
+    * R32_FLOAT sampler view (one texel per element, TEX yields the value in
+    * the X channel); the channel-uniform affine FS computes the map on every
+    * channel; the FP16x4 RT carries the result and readback gathers the X
+    * lane into the 4-byte-stride output buffer. */
+   if (pl->unary_map.value_is_float && pl->unary_map.value_bit_size == 32 &&
+       pl->unary_map.value_components == 1) {
+      if (!device->screen->is_format_supported(device->screen,
+             PIPE_FORMAT_R32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+             PIPE_BIND_SAMPLER_VIEW))
+         return false;
+      if (!device->screen->is_format_supported(device->screen,
+             PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+             PIPE_BIND_RENDER_TARGET))
+         return false;
+      return r300vk_one_in_one_out_dispatch_replay(
+         device, pl, dispatch, binds,
+         pl->unary_map.input_ssbo_binding,
+         pl->unary_map.output_ssbo_binding,
+         pl->unary_map.input_ssbo_binding_valid &&
+         pl->unary_map.output_ssbo_binding_valid,
+         PIPE_FORMAT_R32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+         PIPE_FORMAT_R32_FLOAT);
+   }
+
    return false;
 }
 
@@ -1744,6 +1769,28 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
                                              rt_map, rt_xfer->stride,
                                              width, height, buf_bs,
                                              total_invocations);
+               copy_ok = true;
+            } else if (buf_fmt == PIPE_FORMAT_R32_FLOAT) {
+               /* Scalar carrier: util_format_unpack_rgba always yields four
+                * floats per pixel, so unpack each row to a staging buffer and
+                * gather the X lane at the 4-byte output stride. */
+               float *row_rgba = malloc((size_t)width * 4 * sizeof(float));
+               if (row_rgba) {
+                  float *dst = out_bytes;
+                  const uint8_t *src = rt_map;
+                  uint64_t remaining = total_invocations;
+                  for (unsigned r = 0; r < height && remaining; r++) {
+                     unsigned n = remaining < width ? (unsigned)remaining : width;
+                     util_format_unpack_rgba(fmt, row_rgba, src, n);
+                     for (unsigned i = 0; i < n; i++)
+                        dst[i] = row_rgba[4 * i];
+                     dst += n;
+                     src += rt_xfer->stride;
+                     remaining -= n;
+                  }
+                  free(row_rgba);
+                  copy_ok = true;
+               }
             } else {
                uint8_t *dst = out_bytes;
                const uint8_t *src = rt_map;
@@ -1755,9 +1802,9 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
                   src += rt_xfer->stride;
                   remaining -= n;
                }
+               copy_ok = true;
             }
             pipe->buffer_unmap(pipe, out_xfer);
-            copy_ok = true;
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -4300,4 +4347,111 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    IDM_LOG("multipass orchestrator done passes_ok=%d copy_ok=%d",
            (int)passes_ok, (int)copy_ok);
    return passes_ok && copy_ok;
+}
+
+bool
+r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
+                                   const struct r300vk_pipeline *pl,
+                                   const struct r300vk_cmd_dispatch *dispatch,
+                                   const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe = device->pipe;
+   IDM_LOG("constfill entry pl=%p is_const_fill=%d gx=%u gy=%u gz=%u",
+           (const void *)pl,
+           pl ? (int)pl->const_fill.is_const_fill : -1,
+           dispatch ? dispatch->group_count_x : 0,
+           dispatch ? dispatch->group_count_y : 0,
+           dispatch ? dispatch->group_count_z : 0);
+   if (!pipe || !pl || !dispatch || !binds || binds->set_count == 0) {
+      IDM_LOG("constfill early-return null-or-empty-binds");
+      return false;
+   }
+   if (binds->first_set != 0) {
+      IDM_LOG("constfill early-return first_set=%u (only slot 0 supported)",
+              binds->first_set);
+      return false;
+   }
+
+   /* Only scalar single-component fills are reconstructable from the 4-byte
+    * const_value.  Multi-component fills where components differ would need
+    * all component bytes, but the pattern struct stores only component 0. */
+   if (pl->const_fill.value_components != 1 || pl->const_fill.value_bit_size != 32) {
+      IDM_LOG("constfill early-return unsupported components=%u bits=%u",
+              pl->const_fill.value_components, pl->const_fill.value_bit_size);
+      return false;
+   }
+
+   const struct r300vk_descriptor_set *set = binds->sets[0];
+   if (!set || !set->layout) {
+      IDM_LOG("constfill early-return no-set-or-layout");
+      return false;
+   }
+
+   uint32_t out_binding = pl->const_fill.output_ssbo_binding;
+   if (!pl->const_fill.output_ssbo_binding_valid) {
+      if (!nth_storage_buffer_binding(set, 0, &out_binding)) {
+         IDM_LOG("constfill early-return no-output-binding");
+         return false;
+      }
+      IDM_LOG("constfill recovered binding from layout: out=%u", out_binding);
+   }
+
+   const struct r300vk_descriptor *out_desc = find_descriptor_by_binding(set, out_binding);
+   IDM_LOG("constfill out_binding=%u out_desc=%p", out_binding, (const void *)out_desc);
+   if (!out_desc || !out_desc->buf.buffer) {
+      IDM_LOG("constfill early-return descriptor-walk-miss");
+      return false;
+   }
+
+   VK_FROM_HANDLE(r300vk_buffer, out_buf, out_desc->buf.buffer);
+   if (!out_buf || !out_buf->resource) {
+      IDM_LOG("constfill early-return null-pipe-resource");
+      return false;
+   }
+
+   const uint64_t total_invocations = r300vk_idm_total_invocations(dispatch, pl);
+   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+      IDM_LOG("constfill early-return total_invocations=%llu out-of-bounds",
+              (unsigned long long)total_invocations);
+      return false;
+   }
+
+   /* 4 bytes per invocation (1 component × 32 bits). */
+   const unsigned element_bytes = 4u;
+   const uint64_t fill_bytes = total_invocations * element_bytes;
+   if (fill_bytes > UINT32_MAX) {
+      IDM_LOG("constfill early-return fill_bytes overflow");
+      return false;
+   }
+
+   struct pipe_box out_box;
+   memset(&out_box, 0, sizeof(out_box));
+   out_box.x      = (int)out_desc->buf.offset;
+   out_box.width  = (int)fill_bytes;
+   out_box.height = 1;
+   out_box.depth  = 1;
+
+   struct pipe_transfer *xfer = NULL;
+   void *ptr = pipe->buffer_map(pipe, out_buf->resource, 0,
+                                PIPE_MAP_WRITE | PIPE_MAP_DISCARD_RANGE,
+                                &out_box, &xfer);
+   if (!ptr) {
+      IDM_LOG("constfill early-return buffer-map-failed");
+      return false;
+   }
+
+   /* Fill: the four const_value bytes are the u32 constant in host byte order.
+    * Write them to every element slot without invoking the GPU. */
+   uint8_t *dst = ptr;
+   for (uint64_t i = 0; i < total_invocations; i++) {
+      dst[i * 4 + 0] = pl->const_fill.const_value[0];
+      dst[i * 4 + 1] = pl->const_fill.const_value[1];
+      dst[i * 4 + 2] = pl->const_fill.const_value[2];
+      dst[i * 4 + 3] = pl->const_fill.const_value[3];
+   }
+
+   pipe->buffer_unmap(pipe, xfer);
+   IDM_LOG("constfill done total_invocations=%llu fill_bytes=%llu",
+           (unsigned long long)total_invocations, (unsigned long long)fill_bytes);
+   return true;
 }

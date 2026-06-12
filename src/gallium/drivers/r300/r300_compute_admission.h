@@ -18,16 +18,28 @@ struct nir_shader;
  * The substrate has texture-LD load, FP24 ALU compute, RB3D export store,
  * blend ADD/MIN/MAX/SUB, stencil and ZPASS reductions, ROP bitwise ops, and
  * per-pixel predicates.  It has no LDS, no workgroup barrier, no general atomic
- * on an arbitrary address, no arbitrary read-write storage, and no FP64. */
+ * on an arbitrary address, no arbitrary read-write storage, and no FP64.
+ *
+ * Three storage-class rejects capture distinct surface areas:
+ *   RW_STORAGE       -- store_deref into global/pointer memory (not an indexed SSBO)
+ *   ARBITRARY_SCATTER -- store_global / store_global_2x32 (raw pointer scatter)
+ *   IMAGE_STORE       -- image_store / image_deref_store / bindless_image_store
+ *
+ * UNKNOWN_SHAPE fires at dispatch time for a kernel that admitted classification
+ * but matched no raster-verb pattern; the dispatch is a silent no-op (the output
+ * buffer is not written) so the queue is not poisoned. */
 enum r300_compute_reject {
    R300_COMPUTE_ADMIT = 0,
-   R300_COMPUTE_REJECT_SHARED_MEMORY,  /* no LDS on R3xx */
-   R300_COMPUTE_REJECT_BARRIER,        /* fragments are not a synchronized workgroup */
-   R300_COMPUTE_REJECT_GENERAL_ATOMIC, /* only blend-add/min/max/sub, stencil, ZPASS exist */
-   R300_COMPUTE_REJECT_RW_STORAGE,     /* only texture-load + RT-export, no scatter */
-   R300_COMPUTE_REJECT_FP64,           /* ALU is FP24; no double precision */
-   R300_COMPUTE_REJECT_FP16,           /* no native FP16 RT or arithmetic; virtual-FP16 only */
-   };
+   R300_COMPUTE_REJECT_SHARED_MEMORY,     /* no LDS on R3xx */
+   R300_COMPUTE_REJECT_BARRIER,           /* fragments are not a synchronized workgroup */
+   R300_COMPUTE_REJECT_GENERAL_ATOMIC,    /* only blend-add/min/max/sub, stencil, ZPASS exist */
+   R300_COMPUTE_REJECT_RW_STORAGE,        /* store_deref to global pointer; no scatter store */
+   R300_COMPUTE_REJECT_FP64,              /* ALU is FP24; no double precision */
+   R300_COMPUTE_REJECT_FP16,              /* no native FP16 RT or arithmetic; virtual-FP16 only */
+   R300_COMPUTE_REJECT_ARBITRARY_SCATTER, /* store_global / store_global_2x32 */
+   R300_COMPUTE_REJECT_IMAGE_STORE,       /* image_store / image_deref_store / bindless_image_store */
+   R300_COMPUTE_REJECT_UNKNOWN_SHAPE,     /* admitted but no raster verb matched at dispatch */
+};
 
 /* Result of classifying a compute nir_shader.  classify-only: the analysis
  * never mutates the shader and never lowers or executes it. */

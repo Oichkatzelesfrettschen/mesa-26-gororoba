@@ -482,7 +482,13 @@ r300_nir_detect_unary_map(const nir_shader *s,
        nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
       return;
 
-   if (store->num_components != 4 || store->src[0].ssa->bit_size != 32 ||
+   /* Two carrier widths exist: vec4 (R32G32B32A32_FLOAT sampler -> FP16x4 RT)
+    * and scalar (R32_FLOAT sampler -> X lane of the FP16x4 RT).  The affine
+    * fragment program is channel-uniform, so any width whose carrier transports
+    * whole elements is admissible; 2/3-component stores stay rejected because
+    * no carrier policy covers them. */
+   if ((store->num_components != 4 && store->num_components != 1) ||
+       store->src[0].ssa->bit_size != 32 ||
        !intrinsic_base_type_is_float(store, nir_op_infos[alu->op].output_type))
       return;
 
@@ -3105,8 +3111,12 @@ r300_nir_classify_compute(const nir_shader *s,
                 * through to the no-op compute lifecycle.  Arbitrary
                 * SCATTER -- a store_global / image_store / store_deref to
                 * mem_global -- still rejects below. */
-               if (is_rw_storage_store(intr->intrinsic)) {
-                  reject(out, R300_COMPUTE_REJECT_RW_STORAGE, name);
+               if (is_arbitrary_scatter(intr->intrinsic)) {
+                  reject(out, R300_COMPUTE_REJECT_ARBITRARY_SCATTER, name);
+                  return;
+               }
+               if (is_image_store(intr->intrinsic)) {
+                  reject(out, R300_COMPUTE_REJECT_IMAGE_STORE, name);
                   return;
                }
                /* A store_deref into global storage is arbitrary scatter; a
@@ -3171,6 +3181,12 @@ static const struct r300_compute_reject_row r300_compute_reject_registry[] = {
      "the fragment ALU is FP24 (s1e7m16); no double-precision path exists" },
    { R300_COMPUTE_REJECT_FP16, "fp16",
      "r300 has no native FP16 support; only emulated virtual-FP16 delegates are admissible" },
+   { R300_COMPUTE_REJECT_ARBITRARY_SCATTER, "arbitrary-scatter",
+     "store_global / store_global_2x32 writes to an arbitrary pointer; the substrate has no pointer-addressed write path" },
+   { R300_COMPUTE_REJECT_IMAGE_STORE, "image-store",
+     "image_store / image_deref_store / bindless_image_store; the substrate export is a single 2D RT, not a random-access texel write" },
+   { R300_COMPUTE_REJECT_UNKNOWN_SHAPE, "unknown-shape",
+     "kernel admitted classification but matched no raster-verb pattern at dispatch; dispatch is a silent no-op" },
    };
 
    const struct r300_compute_reject_row *
@@ -3180,7 +3196,7 @@ static const struct r300_compute_reject_row r300_compute_reject_registry[] = {
    * the enum without a registry row -- the divergence the registry prevents.
    * STATIC_ASSERT is a do/while statement, so it lives inside a function. */
    STATIC_ASSERT(ARRAY_SIZE(r300_compute_reject_registry) ==
-                R300_COMPUTE_REJECT_FP16 + 1);
+                R300_COMPUTE_REJECT_UNKNOWN_SHAPE + 1);
    for (unsigned i = 0; i < ARRAY_SIZE(r300_compute_reject_registry); i++) {
       if (r300_compute_reject_registry[i].reason == reason)
          return &r300_compute_reject_registry[i];

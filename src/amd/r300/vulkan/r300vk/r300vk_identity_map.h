@@ -366,4 +366,18 @@ r300vk_ieee16_mul_dispatch_replay(struct r300vk_device *device,
                                   const struct r300vk_cmd_dispatch *dispatch,
                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* Constant-fill dispatch replay: fills the output SSBO with the compile-time
+ * constant bytes stored in pl->const_fill.const_value at pipeline-create time.
+ * No GPU work is issued; the output buffer is mapped and written directly by
+ * the CPU.  Supported for value_components == 1 and value_bit_size == 32
+ * (scalar u32 fill, 4 bytes per invocation).  Returns false for shapes the
+ * CPU fill cannot reconstruct faithfully (multi-component fills where
+ * const_value cannot encode all component bytes); the caller then treats the
+ * dispatch as a no-op per R300_COMPUTE_REJECT_UNKNOWN_SHAPE. */
+bool
+r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
+                                   const struct r300vk_pipeline *pl,
+                                   const struct r300vk_cmd_dispatch *dispatch,
+                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #endif /* R300VK_IDENTITY_MAP_H */

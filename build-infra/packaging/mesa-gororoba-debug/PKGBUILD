@@ -1,6 +1,12 @@
-# mesa-gororoba-debug: the debug twin of mesa-gororoba.  Same feature set (r300
-# GL + zink + XA/Xv + gallium-va MPEG-2 decode + amd_r300/r300vk Vulkan ICD,
-# no llvmpipe/LLVM) built with full debug info and assertions.
+# mesa-gororoba-debug: the DEFAULT r300 Mesa installation for the Vostro 1000
+# (RS482, AMD Turion 64 X2).  This is the canonical install target: assertions
+# live, full debug info, frame pointers, and the complete r300 feature surface
+# (desktop GL 2.1 + GLES1/2, GLVND, EGL/GBM, GLX-DRI, gallium-va MPEG-2
+# decode, gallium-xa XA tracker / libxatracker.so, amd_r300/r300vk Vulkan ICD,
+# overlay + device-select Vulkan layers, nir/glsl offline compiler tools,
+# valgrind annotations, libunwind backtraces, perfetto CPU timeline, no LLVM).
+# The release sibling (mesa-gororoba, profile 1_) is the conformance-baseline
+# build; it lives in configs/alternates/ and is NOT the default install target.
 #
 # Build model: REPACK, not from-git.  The build-infra meson builddir is the only
 # build infrastructure -- build/refresh it with
@@ -14,20 +20,21 @@
 #
 # Packaging model (mesa-git): when installed, this debug build BECOMES the active
 # system Mesa, exactly like the release mesa-gororoba and upstream mesa-git.  It
-# differs only in where the real files live: because it is debugoptimized (-Og
+# differs only in where the real files live: because it is debugoptimized (-O2
 # -g3, assertions, frame pointers), the artifacts stay in /opt/mesa-26-gororoba-debug
 # instead of the stock /usr tree, and the stock /usr loader paths (libGL/EGL/GLX/
-# GBM, lib/dri, the Vulkan ICD + layers, the glvnd EGL vendor json) are symlinked
-# into that /opt tree by package().  provides/conflicts/replaces therefore mirror
-# the release package and also supersede it, so exactly one gororoba Mesa owns the
-# /usr paths at a time.  Revert with `pacman -U mesa-gororoba` (release) or
-# `pacman -S mesa` (stock).  mesa-26-gororoba-debug-run still pins the loader to
-# the /opt tree for a scoped probe without changing the system default.
+# GBM, lib/dri, libxatracker, the Vulkan ICD + layers, the glvnd EGL vendor json)
+# are symlinked into that /opt tree by package().  provides/conflicts/replaces
+# therefore mirror the release package and also supersede it, so exactly one
+# gororoba Mesa owns the /usr paths at a time.  Revert with
+# `pacman -U mesa-gororoba` (release) or `pacman -S mesa` (stock).
+# mesa-26-gororoba-debug-run still pins the loader to the /opt tree for a scoped
+# probe without changing the system default.
 pkgname=mesa-gororoba-debug
 pkgver=26.2.0
-pkgrel=6
+pkgrel=7
 epoch=2
-pkgdesc='Mesa DEBUG system driver: r300 GL + amd_r300/r300vk, full debug info, files under /opt (build-infra repack)'
+pkgdesc='Mesa r300 system driver (default debug install): GL+GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD, assertions live, files under /opt'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -119,7 +126,7 @@ package() {
   # System-driver activation: mirror the loadable artifacts from the /opt tree
   # into the stock /usr loader paths as symlinks.  These links are what make the
   # debug build the system Mesa and what conflicts with stock mesa's real files.
-  _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r300
+  _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r300/libxatracker
   _link_into_usr lib/dri                       # r300_dri.so, zink_dri.so, r300_drv_video.so (VA)
   _link_into_usr lib/gbm                       # gbm backends, if built
   _link_into_usr share/vulkan/icd.d            # r300 Vulkan ICD manifest

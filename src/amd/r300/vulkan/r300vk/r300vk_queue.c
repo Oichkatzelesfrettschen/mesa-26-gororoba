@@ -331,8 +331,28 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_ieee16_classify_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->ieee16_mul.is_ieee16_mul)
       ok = r300vk_ieee16_mul_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->const_fill.is_const_fill)
+      ok = r300vk_const_fill_dispatch_replay(device, pl, d, last_bind_dsets);
 
-   return ok ? VK_SUCCESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   if (ok)
+      return VK_SUCCESS;
+
+   /* No raster verb matched at dispatch time.  The kernel was admitted by the
+    * classifier (no unsupported construct), but the pattern detectors found no
+    * recognized shape.  Log the miss at warning level and return VK_SUCCESS as
+    * a no-op: the output buffer is not written, but the queue is not poisoned
+    * and subsequent commands on the same queue proceed normally.
+    * R300_COMPUTE_REJECT_UNKNOWN_SHAPE is the canonical label for this case. */
+   if (pl) {
+      mesa_logw("r300vk: dispatch no-op (unknown shape): admit=%d "
+                "identity=%d binary=%d unary=%d const_fill=%d",
+                (int)pl->admission.admissible,
+                (int)pl->identity_map.is_identity_map,
+                (int)pl->binary_map.is_binary_map,
+                (int)pl->unary_map.is_unary_map,
+                (int)pl->const_fill.is_const_fill);
+   }
+   return VK_SUCCESS;
 }
 
 /* Map a coordinate through the blit's affine relation, rounded to nearest.

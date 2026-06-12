@@ -159,6 +159,13 @@ struct r300vk_pipeline {
    struct r300_compute_ieee16_classify_pattern ieee16_classify;
    struct r300_compute_ieee16_mul_pattern ieee16_mul;
 
+   /* Constant-fill (CONSTFILL) kernel detected at pipeline-create time:
+    * out[gid] = C for every element, where C is a compile-time constant.
+    * Lowers to a direct CPU buffer fill: no GPU draw is needed since the
+    * constant is known at pipeline-create time.  The four bytes of the
+    * constant are in const_fill.const_value[0..3] (R=byte 0). */
+   struct r300_compute_const_fill_pattern const_fill;
+
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
     * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in

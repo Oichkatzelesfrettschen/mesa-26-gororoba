@@ -44,7 +44,9 @@ c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro'
 cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
 [project options]
-platforms = ['x11', 'wayland']
+# Full platform set matches profile 2_: x11, wayland, drm (DRM-native EGL
+# surfaceless for headless deqp/piglit), surfaceless (EGL_PLATFORM_SURFACELESS_MESA).
+platforms = ['x11', 'wayland', 'drm', 'surfaceless']
 gallium-drivers = ['r300']
 vulkan-drivers = ['amd_r300']
 r300vk-gallium-backend = true

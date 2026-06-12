@@ -1097,7 +1097,7 @@ main(void)
                 "control barrier rejects");
    case_verdict(build_general_atomic(), false,
                 R300_COMPUTE_REJECT_GENERAL_ATOMIC, "ssbo atomic rejects");
-   case_verdict(build_global_scatter(), false, R300_COMPUTE_REJECT_RW_STORAGE,
+   case_verdict(build_global_scatter(), false, R300_COMPUTE_REJECT_ARBITRARY_SCATTER,
                 "global scatter rejects");
    case_verdict(build_fp64(), false, R300_COMPUTE_REJECT_FP64,
                 "fp64 arithmetic rejects");

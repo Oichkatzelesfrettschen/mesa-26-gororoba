@@ -76,7 +76,16 @@ make audit PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
            HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc
 ```
 
-r300 RELEASE build (vostro, canonical measurement lane):
+r300 DEBUG build (vostro, **default install target** -- assertions live,
+gallium-xa XA tracker, valgrind/libunwind/perfetto instrumentation):
+```bash
+make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache
+# Package and install as the system Mesa (replaces stock mesa or release build):
+cd build-infra/packaging/mesa-gororoba-debug && makepkg --noconfirm && yes | sudo pacman -U mesa-gororoba-debug-*.pkg.tar.zst
+```
+
+r300 RELEASE build (vostro, conformance-baseline -- use only for CTS/Piglit/deqp runs
+where assertions-live behavior would contaminate pass/fail):
 ```bash
 make rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache
 make install-1_r300_full_release_x86_64v1-clang22-distcc-cache

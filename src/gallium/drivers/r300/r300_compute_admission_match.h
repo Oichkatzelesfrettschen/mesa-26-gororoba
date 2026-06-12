@@ -25,24 +25,34 @@
 extern "C" {
 #endif
 
-/* True for a scatter the substrate cannot do.  A plain store_ssbo is NOT here:
- * the ComputeGrid->RasterGrid functor maps the kernel's buffer-output write to
- * a coordinate-indexed RB3D export, so it is the expected admissible output.
- * Storage-image stores and raw global-pointer stores are arbitrary scatter
- * beyond a single RT coordinate and have no lowering. */
+/* True for a raw-pointer scatter write (store_global / store_global_2x32).
+ * These address arbitrary memory through a 64-bit pointer; the RB3D substrate
+ * has no pointer-addressed write path.  Fires R300_COMPUTE_REJECT_ARBITRARY_SCATTER. */
+static inline bool
+is_arbitrary_scatter(nir_intrinsic_op op)
+{
+   return op == nir_intrinsic_store_global ||
+          op == nir_intrinsic_store_global_2x32;
+}
+
+/* True for a storage-image write intrinsic.  Image stores address a
+ * two-dimensional texel grid; the substrate export is a single 2D RT, so
+ * arbitrary image-coordinate writes have no lowering.
+ * Fires R300_COMPUTE_REJECT_IMAGE_STORE. */
+static inline bool
+is_image_store(nir_intrinsic_op op)
+{
+   return op == nir_intrinsic_image_store ||
+          op == nir_intrinsic_image_deref_store ||
+          op == nir_intrinsic_bindless_image_store;
+}
+
+/* Union of the two scatter forms above.  Used by callers that need a single
+ * predicate without caring which reject class fires. */
 static inline bool
 is_rw_storage_store(nir_intrinsic_op op)
 {
-   switch (op) {
-   case nir_intrinsic_store_global:
-   case nir_intrinsic_store_global_2x32:
-   case nir_intrinsic_image_store:
-   case nir_intrinsic_image_deref_store:
-   case nir_intrinsic_bindless_image_store:
-      return true;
-   default:
-      return false;
-   }
+   return is_arbitrary_scatter(op) || is_image_store(op);
 }
 
 /* SSBO atomics are two NIR intrinsics: ssbo_atomic (the load-op-store forms --
