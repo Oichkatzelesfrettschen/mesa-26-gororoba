@@ -166,6 +166,13 @@ struct r300vk_pipeline {
     * constant are in const_fill.const_value[0..3] (R=byte 0). */
    struct r300_compute_const_fill_pattern const_fill;
 
+   /* Invocation-index consumption classified at pipeline-create time.
+    * Address-only consumption rides raster texel position (the full
+    * 2048x2048 fold is honest); value consumption must materialize
+    * stride * gid + offset in FP24, so the dispatch-time guard bounds it by
+    * the 2^17 exact-integer ceiling (r300_grid_index_exact). */
+   struct r300_compute_index_pattern index_consumption;
+
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
     * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in

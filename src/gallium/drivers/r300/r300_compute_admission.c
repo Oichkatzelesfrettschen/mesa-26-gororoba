@@ -3655,3 +3655,282 @@ r300_nir_detect_const_fill_pattern(const nir_shader *s,
    out->value_bit_size   = bit_size;
    out->is_const_fill    = true;
 }
+
+/* Invocation-index consumption classifier.
+ *
+ * Walks the SSA use chains of every invocation-index intrinsic and reports
+ * whether any chain escapes the addressing path (load_ssbo / store_ssbo /
+ * load_ubo offset operands) into a stored VALUE.  Address-only consumption is
+ * carried by raster texel position at replay time, so it needs no FP24 index
+ * materialization; value consumption must materialize a * gid + b in the
+ * FP24 fragment ALU and is bounded by the exact-integer ceiling at dispatch
+ * (r300_grid_strided_index_exact).
+ *
+ * The walk tracks an affine state (value = a * gid + b) through the
+ * recognized transparent ops: mov / vecN composition, int-float conversions,
+ * iadd / fadd with a constant, imul / amul / fmul with a constant, and ishl
+ * by a constant.  Any other producer invalidates the affine state; an
+ * invalid-affine def reaching a stored value classifies VALUE_GENERAL.  The
+ * walk is bounded; overflow of the visited set classifies VALUE_GENERAL,
+ * never a weaker class. */
+
+#define R300_INDEX_WALK_MAX_DEFS 256u
+
+struct index_walk_entry {
+   const nir_def *def;
+   bool affine_valid;
+   uint64_t a;
+   uint64_t b;
+};
+
+struct index_walk_state {
+   struct index_walk_entry queue[R300_INDEX_WALK_MAX_DEFS];
+   unsigned head, tail;
+   const nir_def *visited[R300_INDEX_WALK_MAX_DEFS];
+   unsigned nvisited;
+   bool overflow;
+   bool address_use;
+   bool value_use_general;
+   bool value_use_affine;
+   uint64_t value_a, value_b;
+   bool uses_component_y;
+   bool uses_component_z;
+};
+
+static bool
+index_walk_push(struct index_walk_state *st, const nir_def *def,
+                bool affine_valid, uint64_t a, uint64_t b)
+{
+   for (unsigned i = 0; i < st->nvisited; i++) {
+      if (st->visited[i] == def)
+         return true; /* first reaching state wins; DAG revisits are rare */
+   }
+   if (st->nvisited >= R300_INDEX_WALK_MAX_DEFS ||
+       st->tail >= R300_INDEX_WALK_MAX_DEFS) {
+      st->overflow = true;
+      return false;
+   }
+   st->visited[st->nvisited++] = def;
+   st->queue[st->tail].def = def;
+   st->queue[st->tail].affine_valid = affine_valid;
+   st->queue[st->tail].a = a;
+   st->queue[st->tail].b = b;
+   st->tail++;
+   return true;
+}
+
+/* Constant operand of a two-source ALU op as a non-negative integer, given
+ * that operand `other` is the one not carrying the tracked def.  Returns
+ * false when the operand is not constant or not an exact non-negative
+ * integer (float ops accept only integral values; the affine bound math is
+ * integer-exactness math). */
+static bool
+index_walk_const_operand(const nir_alu_instr *alu, unsigned other,
+                         bool is_float, uint64_t *out)
+{
+   if (!nir_src_is_const(alu->src[other].src))
+      return false;
+   if (is_float) {
+      const double v = nir_src_as_float(alu->src[other].src);
+      if (v < 0.0 || v != (double)(uint64_t)v)
+         return false;
+      *out = (uint64_t)v;
+   } else {
+      const int64_t v = nir_src_as_int(alu->src[other].src);
+      if (v < 0)
+         return false;
+      *out = (uint64_t)v;
+   }
+   return true;
+}
+
+/* Affine state of an ALU result given the tracked operand's state.  Returns
+ * false when the op is not affine-transparent (the result def is still
+ * walked, with affine_valid = false). */
+static bool
+index_walk_alu_affine(const nir_alu_instr *alu, unsigned operand,
+                      bool in_valid, uint64_t in_a, uint64_t in_b,
+                      uint64_t *out_a, uint64_t *out_b)
+{
+   if (!in_valid)
+      return false;
+   *out_a = in_a;
+   *out_b = in_b;
+   switch (alu->op) {
+   case nir_op_mov:
+   case nir_op_u2f32:
+   case nir_op_i2f32:
+   case nir_op_f2u32:
+   case nir_op_f2i32:
+   case nir_op_u2u32:
+   case nir_op_i2i32:
+      return true;
+   case nir_op_iadd:
+   case nir_op_fadd: {
+      uint64_t c;
+      if (!index_walk_const_operand(alu, operand ^ 1,
+                                    alu->op == nir_op_fadd, &c))
+         return false;
+      *out_b = in_b + c;
+      return *out_b <= UINT32_MAX;
+   }
+   case nir_op_imul:
+   case nir_op_amul:
+   case nir_op_fmul: {
+      uint64_t c;
+      if (!index_walk_const_operand(alu, operand ^ 1,
+                                    alu->op == nir_op_fmul, &c))
+         return false;
+      *out_a = in_a * c;
+      *out_b = in_b * c;
+      return *out_a <= UINT32_MAX && *out_b <= UINT32_MAX;
+   }
+   case nir_op_ishl: {
+      uint64_t c;
+      if (operand != 0 || !index_walk_const_operand(alu, 1, false, &c) ||
+          c >= 32)
+         return false;
+      *out_a = in_a << c;
+      *out_b = in_b << c;
+      return *out_a <= UINT32_MAX && *out_b <= UINT32_MAX;
+   }
+   default:
+      if (nir_op_is_vec(alu->op))
+         return true; /* lane composition preserves the carried lane's affine */
+      return false;
+   }
+}
+
+static bool
+index_intrinsic_produces_id(const nir_intrinsic_instr *intr)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_global_invocation_id:
+   case nir_intrinsic_load_global_invocation_index:
+   case nir_intrinsic_load_local_invocation_id:
+   case nir_intrinsic_load_local_invocation_index:
+   case nir_intrinsic_load_workgroup_id:
+      return true;
+   default:
+      return false;
+   }
+}
+
+void
+r300_nir_classify_index_consumption(const nir_shader *s,
+                                    struct r300_compute_index_pattern *out)
+{
+   memset(out, 0, sizeof(*out));
+   out->consumption = R300_COMPUTE_INDEX_NONE;
+
+   struct index_walk_state st;
+   memset(&st, 0, sizeof(st));
+
+   bool any_index = false;
+   nir_foreach_function_impl(impl, (nir_shader *)s) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (!index_intrinsic_produces_id(intr))
+               continue;
+            any_index = true;
+            index_walk_push(&st, &intr->def, true, 1, 0);
+         }
+      }
+   }
+   if (!any_index)
+      return;
+
+   while (st.head < st.tail && !st.overflow) {
+      const struct index_walk_entry e = st.queue[st.head++];
+
+      nir_foreach_use_including_if(src, (nir_def *)e.def) {
+         if (nir_src_is_if(src)) {
+            st.value_use_general = true; /* control flow on the index */
+            continue;
+         }
+         const nir_instr *parent = nir_src_use_instr(src);
+
+         if (parent->type == nir_instr_type_alu) {
+            const nir_alu_instr *alu = nir_instr_as_alu(parent);
+            const unsigned ninputs = nir_op_infos[alu->op].num_inputs;
+            unsigned operand = ninputs;
+            for (unsigned i = 0; i < ninputs; i++) {
+               if (&alu->src[i].src == src) {
+                  operand = i;
+                  break;
+               }
+            }
+            if (operand == ninputs)
+               continue;
+            const unsigned nread =
+               nir_ssa_alu_instr_src_components(alu, operand);
+            for (unsigned ch = 0; ch < nread; ch++) {
+               if (alu->src[operand].swizzle[ch] == 1)
+                  st.uses_component_y = true;
+               else if (alu->src[operand].swizzle[ch] >= 2)
+                  st.uses_component_z = true;
+            }
+            uint64_t a = 0, b = 0;
+            const bool affine = index_walk_alu_affine(alu, operand,
+                                                      e.affine_valid,
+                                                      e.a, e.b, &a, &b);
+            index_walk_push(&st, &alu->def, affine, a, b);
+            continue;
+         }
+
+         if (parent->type == nir_instr_type_intrinsic) {
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(parent);
+            switch (intr->intrinsic) {
+            case nir_intrinsic_load_ssbo:
+            case nir_intrinsic_load_ubo:
+               st.address_use = true;
+               continue;
+            case nir_intrinsic_store_ssbo:
+               if (src == &intr->src[0]) {
+                  /* The index reaches the stored value. */
+                  if (e.affine_valid && e.a <= UINT32_MAX &&
+                      e.b <= UINT32_MAX) {
+                     if (st.value_use_affine &&
+                         (st.value_a != e.a || st.value_b != e.b)) {
+                        st.value_use_general = true;
+                     } else {
+                        st.value_use_affine = true;
+                        st.value_a = e.a;
+                        st.value_b = e.b;
+                     }
+                  } else {
+                     st.value_use_general = true;
+                  }
+               } else {
+                  st.address_use = true;
+               }
+               continue;
+            default:
+               st.value_use_general = true;
+               continue;
+            }
+         }
+
+         /* phi, tex, or any other consumer: no affine bound derivable. */
+         st.value_use_general = true;
+      }
+   }
+
+   out->uses_component_y = st.uses_component_y;
+   out->uses_component_z = st.uses_component_z;
+   if (st.overflow || st.value_use_general) {
+      out->consumption = R300_COMPUTE_INDEX_VALUE_GENERAL;
+      return;
+   }
+   if (st.value_use_affine) {
+      out->consumption = R300_COMPUTE_INDEX_VALUE_AFFINE;
+      out->stride_valid = true;
+      out->stride = (uint32_t)st.value_a;
+      out->offset = (uint32_t)st.value_b;
+      return;
+   }
+   out->consumption = R300_COMPUTE_INDEX_ADDRESS_ONLY;
+}
