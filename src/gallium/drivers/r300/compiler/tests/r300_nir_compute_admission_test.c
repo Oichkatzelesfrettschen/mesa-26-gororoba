@@ -832,6 +832,181 @@ case_const_fill_metadata(void)
    ralloc_free(cfn2);
 }
 
+/* 0xDEADBEEF fill: all four bytes differ, exercising R/G/B/A channel ordering. */
+static nir_shader *
+build_const_fill_deadbeef(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_deadbeef");
+   nir_def *c = nir_imm_int(&b, 0xDEADBEEF);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* 0x00000000 fill: zero sentinel exercises the all-zero byte path. */
+static nir_shader *
+build_const_fill_zero(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_zero");
+   nir_def *c = nir_imm_int(&b, 0x00000000);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* 0xFFFFFFFF fill: saturation ceiling -- all bytes are 0xFF. */
+static nir_shader *
+build_const_fill_ff(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_ff");
+   nir_def *c = nir_imm_int(&b, 0xFFFFFFFF);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Fill at binding 7: non-default binding, verifies output_ssbo_binding capture. */
+static nir_shader *
+build_const_fill_binding7(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_binding7");
+   nir_def *c = nir_imm_int(&b, 0x11223344);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 7), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Negative: stored value is a load_ssbo result, not a load_const.
+ * The detector's nir_def_is_const guard must reject this. */
+static nir_shader *
+build_const_fill_alu_stored(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_alu_stored");
+   nir_def *val = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                                .align_mul = 4, .align_offset = 0);
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Negative: two store_ssbo with constants.  collect_loads_stores counts nstore=2;
+ * the nstore != 1 guard must reject this shape. */
+static nir_shader *
+build_const_fill_two_stores(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_two_stores");
+   nir_def *c = nir_imm_int(&b, 0x42424242);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_constfill_regression(void)
+{
+   /* --- Byte extraction: 0xDEADBEEF (all bytes distinct) ---
+    * LE decomposition: R=byte0=0xEF, G=byte1=0xBE, B=byte2=0xAD, A=byte3=0xDE.
+    * All four bytes differ so a channel-swap or mask truncation produces a
+    * detectable mismatch. */
+   {
+      nir_shader *nir = build_const_fill_deadbeef();
+      struct r300_compute_const_fill_pattern cf = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_const_fill_pattern(nir, &cf);
+      CHECK(cf.is_const_fill, "deadbeef fill: shape detected");
+      CHECK(cf.const_value[0] == 0xEF, "deadbeef fill: byte0 R=0xEF");
+      CHECK(cf.const_value[1] == 0xBE, "deadbeef fill: byte1 G=0xBE");
+      CHECK(cf.const_value[2] == 0xAD, "deadbeef fill: byte2 B=0xAD");
+      CHECK(cf.const_value[3] == 0xDE, "deadbeef fill: byte3 A=0xDE");
+      ralloc_free(nir);
+   }
+
+   /* --- Byte extraction: 0x00000000 (all-zero) --- */
+   {
+      nir_shader *nir = build_const_fill_zero();
+      struct r300_compute_const_fill_pattern cf = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_const_fill_pattern(nir, &cf);
+      CHECK(cf.is_const_fill, "zero fill: shape detected");
+      CHECK(cf.const_value[0] == 0x00 && cf.const_value[1] == 0x00 &&
+            cf.const_value[2] == 0x00 && cf.const_value[3] == 0x00,
+            "zero fill: all bytes are 0x00");
+      ralloc_free(nir);
+   }
+
+   /* --- Byte extraction: 0xFFFFFFFF (saturation ceiling) --- */
+   {
+      nir_shader *nir = build_const_fill_ff();
+      struct r300_compute_const_fill_pattern cf = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_const_fill_pattern(nir, &cf);
+      CHECK(cf.is_const_fill, "0xffffffff fill: shape detected");
+      CHECK(cf.const_value[0] == 0xFF && cf.const_value[1] == 0xFF &&
+            cf.const_value[2] == 0xFF && cf.const_value[3] == 0xFF,
+            "0xffffffff fill: all bytes are 0xFF");
+      ralloc_free(nir);
+   }
+
+   /* --- Binding capture at non-zero binding 7 --- */
+   {
+      nir_shader *nir = build_const_fill_binding7();
+      struct r300_compute_const_fill_pattern cf = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_const_fill_pattern(nir, &cf);
+      CHECK(cf.is_const_fill, "binding-7 fill: shape detected");
+      CHECK(cf.output_ssbo_binding_valid, "binding-7 fill: binding captured");
+      CHECK(cf.output_ssbo_binding == 7, "binding-7 fill: binding is 7");
+      /* 0x11223344 LE: R=0x44, G=0x33, B=0x22, A=0x11 */
+      CHECK(cf.const_value[0] == 0x44 && cf.const_value[1] == 0x33 &&
+            cf.const_value[2] == 0x22 && cf.const_value[3] == 0x11,
+            "binding-7 fill: byte extraction correct");
+      ralloc_free(nir);
+   }
+
+   /* --- Negative: stored value is a load_ssbo result, not a compile-time constant.
+    * nir_def_is_const returns false for a load_ssbo def; the detector must reject. */
+   {
+      nir_shader *nir = build_const_fill_alu_stored();
+      struct r300_compute_const_fill_pattern cf = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_const_fill_pattern(nir, &cf);
+      CHECK(!cf.is_const_fill, "non-constant stored value: detector rejects");
+      ralloc_free(nir);
+   }
+
+   /* --- Negative: two store_ssbo intrinsics.  nstore == 2 != 1; detector rejects. */
+   {
+      nir_shader *nir = build_const_fill_two_stores();
+      struct r300_compute_const_fill_pattern cf = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_const_fill_pattern(nir, &cf);
+      CHECK(!cf.is_const_fill, "two stores: detector rejects (nstore != 1)");
+      ralloc_free(nir);
+   }
+
+   /* --- Discrimination: binary-map (two loads + one store) must NOT match CONSTFILL
+    * (nload != 0 triggers the early return). */
+   {
+      nir_shader *bin = build_binary_map_f32vec4();
+      struct r300_compute_const_fill_pattern cfb = {0};
+      prepare_detect_shader(bin);
+      r300_nir_detect_const_fill_pattern(bin, &cfb);
+      CHECK(!cfb.is_const_fill, "binary-map rejected by const-fill (has loads)");
+
+      /* Reciprocal: binary-map detector must NOT match a const-fill kernel
+       * (zero loads, so neither input binding is a load_ssbo). */
+      nir_shader *cfn3 = build_const_fill_deadbeef();
+      struct r300_compute_binary_map_pattern bmcf = {0};
+      prepare_detect_shader(cfn3);
+      r300_nir_detect_binary_map(cfn3, &bmcf);
+      CHECK(!bmcf.is_binary_map, "const-fill rejected by binary-map (zero loads)");
+      ralloc_free(bin);
+      ralloc_free(cfn3);
+   }
+}
+
 static void
 case_omul_metadata(void)
 {
@@ -937,6 +1112,7 @@ main(void)
    case_omul_metadata();
    case_octonion_algebra_metadata();
    case_const_fill_metadata();
+   case_constfill_regression();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
