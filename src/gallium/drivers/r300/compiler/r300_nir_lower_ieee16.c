@@ -149,17 +149,18 @@ lower_ieee16_mul_normal_rne_instr(nir_builder *b, nir_alu_instr *alu, void *data
    if (alu->op != nir_op_fsin)
       return false;
 
-   /* fsin used as placeholder for virtual normal-normal multiply */
+   /* fsin used as placeholder for virtual normal-normal multiply.  fsin has
+    * exactly one source, so both operands ride in the one vec4. */
    if (alu->def.num_components != 4)
       return false;
 
    b->cursor = nir_before_instr(&alu->instr);
 
-   /* Source layout: [significand, biased_exp, unused, unused] */
+   /* Source layout: [significand_a, biased_exp_a, significand_b, biased_exp_b] */
    nir_def *sa = nir_channel(b, alu->src[0].src.ssa, 0);
    nir_def *ea = nir_channel(b, alu->src[0].src.ssa, 1);
-   nir_def *sb = nir_channel(b, alu->src[1].src.ssa, 0);
-   nir_def *eb = nir_channel(b, alu->src[1].src.ssa, 1);
+   nir_def *sb = nir_channel(b, alu->src[0].src.ssa, 2);
+   nir_def *eb = nir_channel(b, alu->src[0].src.ssa, 3);
 
    /* 2-limb significand multiply */
    nir_def *a1 = nir_ffloor(b, nir_fmul_imm(b, sa, 1.0 / 64.0));
@@ -197,7 +198,6 @@ lower_ieee16_mul_normal_rne_instr(nir_builder *b, nir_alu_instr *alu, void *data
    nir_def *gv = nir_ffloor(b, nir_fmul(b, r1, g_sh));
    nir_def *guard = nir_fsub(b, gv, nir_fmul_imm(b, nir_ffloor(b, nir_fmul_imm(b, gv, 0.5)), 2.0));
 
-   nir_def *s_mask = nir_bcsel(b, r2_ge_512, nir_imm_float(b, 15.0), nir_imm_float(b, 7.0));
    nir_def *r1_low = nir_fsub(b, r1, nir_fmul(b, nir_ffloor(b, nir_fmul(b, r1, g_sh)),
                                               nir_bcsel(b, r2_ge_512, nir_imm_float(b, 16.0), nir_imm_float(b, 8.0))));
    nir_def *sticky = nir_bcsel(b, nir_fgt_imm(b, nir_fadd(b, r1_low, r0), 0.0), nir_imm_float(b, 1.0), nir_imm_float(b, 0.0));
