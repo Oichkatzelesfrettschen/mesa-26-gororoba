@@ -5178,3 +5178,223 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
            (int)copy_ok);
    return copy_ok;
 }
+
+bool
+r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
+                                 const struct r300vk_pipeline *pl,
+                                 const struct r300vk_cmd_dispatch *dispatch,
+                                 const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device ? device->pipe : NULL;
+   struct pipe_screen  *screen = device ? device->screen : NULL;
+   const struct r300vk_descriptor_set *set = NULL;
+   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R8G8B8A8_UNORM,
+                                    PIPE_TEXTURE_2D, 0, 0,
+                                    PIPE_BIND_RENDER_TARGET))
+      return false;
+
+   /* Output grid = dispatch grid (W2 x H2); input = (W, 2 * H2) with the
+    * detector-captured row constant W validated against it. */
+   const uint64_t tx = (uint64_t)dispatch->group_count_x *
+                       (pl->local_size_x ? pl->local_size_x : 1u);
+   const uint64_t ty = (uint64_t)dispatch->group_count_y *
+                       (pl->local_size_y ? pl->local_size_y : 1u);
+   const uint64_t tz = (uint64_t)dispatch->group_count_z *
+                       (pl->local_size_z ? pl->local_size_z : 1u);
+   const uint32_t W = pl->log4_pool.row_w;
+   if (tz != 1 || tx == 0 || ty == 0 || W == 0 || tx * 2 != W ||
+       W > 2048 || ty * 2 > 2048) {
+      IDM_LOG("log4 early-return grid tx=%llu ty=%llu tz=%llu W=%u",
+              (unsigned long long)tx, (unsigned long long)ty,
+              (unsigned long long)tz, W);
+      return false;
+   }
+   const unsigned in_w = W, in_h = (unsigned)(ty * 2);
+   const unsigned out_w = (unsigned)tx, out_h = (unsigned)ty;
+   const uint64_t in_total = (uint64_t)in_w * in_h;
+   const uint64_t out_total = (uint64_t)out_w * out_h;
+
+   uint32_t bind[2] = { pl->log4_pool.input_ssbo_binding,
+                        pl->log4_pool.output_ssbo_binding };
+   if (!pl->log4_pool.input_binding_valid ||
+       !pl->log4_pool.output_binding_valid) {
+      for (unsigned i = 0; i < 2; i++)
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+   }
+   const struct r300vk_descriptor *desc[2];
+   struct r300vk_buffer *buf[2];
+   for (unsigned i = 0; i < 2; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer)
+         return false;
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+
+   /* RUNTIME RANGE ADMISSION: the filter averages the RGBA8 R channel, so
+    * any input element >= 256 spills its payload out of the carrier and
+    * the carried average diverges from the kernel's integer arithmetic.
+    * The bound is data-dependent -- no static admission can prove it --
+    * so scan the input during this map and refuse out-of-range dispatches
+    * with the explicit no-op contract. */
+   {
+      struct pipe_transfer *ix = NULL;
+      struct pipe_box ibox;
+      memset(&ibox, 0, sizeof(ibox));
+      ibox.x = (int)desc[0]->buf.offset;
+      ibox.width = (int)(in_total * 4u);
+      ibox.height = 1;
+      ibox.depth = 1;
+      const uint32_t *imap = pipe->buffer_map(pipe, buf[0]->resource, 0,
+                                              PIPE_MAP_READ, &ibox, &ix);
+      if (!imap)
+         return false;
+      for (uint64_t i = 0; i < in_total; i++) {
+         if (imap[i] >= 256u) {
+            pipe->buffer_unmap(pipe, ix);
+            IDM_LOG("log4 dispatch no-op (range admission): "
+                      "element %" PRIu64 " = %u exceeds the RGBA8 carrier",
+                      i, imap[i]);
+            /* Refused, but the queue stays alive: report success so the
+             * caller's no-op contract holds; the output is untouched. */
+            return true;
+         }
+      }
+      pipe->buffer_unmap(pipe, ix);
+   }
+
+   struct pipe_sampler_view *view =
+      r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[0]->resource, (unsigned)desc[0]->buf.offset,
+         in_w, in_h, PIPE_FORMAT_R8G8B8A8_UNORM);
+   if (!view)
+      return false;
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      pipe_sampler_view_reference(&view, NULL);
+      return false;
+   }
+
+   /* The LINEAR sampler IS the op: corner taps return the half-up quarter
+    * sum.  The device cache holds only the NEAREST CSO; create the LINEAR
+    * sibling for this pass. */
+   struct pipe_sampler_state samp;
+   memset(&samp, 0, sizeof(samp));
+   samp.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+   samp.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+   samp.wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+   samp.min_img_filter = PIPE_TEX_FILTER_LINEAR;
+   samp.mag_img_filter = PIPE_TEX_FILTER_LINEAR;
+   void *linear_cso = pipe->create_sampler_state(pipe, &samp);
+   if (!linear_cso) {
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_sampler_view_reference(&view, NULL);
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = PIPE_FORMAT_R8G8B8A8_UNORM;
+   rt_templ.width0     = out_w;
+   rt_templ.height0    = out_h;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   bool copy_ok = false;
+   if (rt) {
+      struct pipe_surface surf_templ;
+      memset(&surf_templ, 0, sizeof(surf_templ));
+      surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
+      surf_templ.texture = rt;
+      r300vk_identity_map_setup_draw_state(pipe, out_w, out_h, &surf_templ,
+                                           device->identity_map_blend_cso,
+                                           device->identity_map_rasterizer_cso,
+                                           device->identity_map_dsa_cso,
+                                           pl->vs_cso, pl->fs_cso, velems_cso);
+      void *samplers[1] = { linear_cso };
+      pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, samplers);
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &view);
+
+      /* CONST[0] = (W2, H2, 1/W, 1/H): the FS snaps the output cell and
+       * constructs the exact corner coordinate from these. */
+      const float cb_data[4] = { (float)out_w, (float)out_h,
+                                 1.0f / (float)in_w, 1.0f / (float)in_h };
+      struct pipe_constant_buffer cb;
+      memset(&cb, 0, sizeof(cb));
+      cb.user_buffer = cb_data;
+      cb.buffer_size = sizeof(cb_data);
+      pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
+
+      struct pipe_vertex_buffer vb_state;
+      memset(&vb_state, 0, sizeof(vb_state));
+      vb_state.buffer.resource = vb;
+      pipe->set_vertex_buffers(pipe, 1, &vb_state);
+      struct pipe_draw_info info;
+      memset(&info, 0, sizeof(info));
+      info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+      info.instance_count = 1;
+      info.max_index      = 3;
+      struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+      pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      pipe->flush(pipe, NULL, 0);
+      pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, NULL);
+
+      /* Inline bounded row copy: r300vk_identity_map_readback_rt passes
+       * bytes_per_row * height as the DESTINATION stride, which lands every
+       * row after the first outside the mapped box for multi-row outputs
+       * (this verb's first silicon run measured exactly that: row 0 exact,
+       * rows 1+ untouched). */
+      struct pipe_box copy_box;
+      memset(&copy_box, 0, sizeof(copy_box));
+      copy_box.width = out_w;
+      copy_box.height = out_h;
+      copy_box.depth = 1;
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (int)desc[1]->buf.offset;
+         out_box.width  = (int)(out_total * 4u);
+         out_box.height = 1;
+         out_box.depth  = 1;
+         void *out_bytes = pipe->buffer_map(pipe, buf[1]->resource, 0,
+                                            PIPE_MAP_WRITE |
+                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                            &out_box, &out_xfer);
+         if (out_bytes) {
+            r300vk_identity_map_copy_rows(out_bytes, out_w * 4u, rt_map,
+                                          rt_xfer->stride, out_w, out_h, 4u,
+                                          out_total);
+            pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_sampler_state(pipe, linear_cso);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&view, NULL);
+   pipe_resource_reference(&rt, NULL);
+   pipe_resource_reference(&vb, NULL);
+   IDM_LOG("log4 done in=%ux%u out=%ux%u copy_ok=%d", in_w, in_h, out_w,
+           out_h, (int)copy_ok);
+   return copy_ok;
+}

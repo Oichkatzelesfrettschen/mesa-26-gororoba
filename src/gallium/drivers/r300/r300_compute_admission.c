@@ -4312,3 +4312,247 @@ r300_nir_detect_cas_pattern(const nir_shader *s,
    }
    out->is_cas = true;
 }
+
+/* Resolve a byte-offset def to a per-component affine of the invocation id
+ * plus at most one opaque descriptor-base term:
+ * off = ax * id.x + ay * id.y + az * id.z + b (+ base).  Mirrors the
+ * scalar lanes of the index-consumption scan recursively over the offset
+ * chain; anything outside the transparent op set fails.  The single base
+ * term absorbs the post-explicit-io descriptor add (load_vulkan_descriptor
+ * component + 0). */
+struct log4_affine {
+   uint64_t ax, ay, az, b;
+   bool has_base;
+};
+
+static bool
+log4_resolve_offset(const nir_def *def, unsigned channel, unsigned depth,
+                    struct log4_affine *out)
+{
+   if (depth > 12 || channel > 3)
+      return false;
+   memset(out, 0, sizeof(*out));
+
+   if (nir_def_instr(def)->type == nir_instr_type_load_const) {
+      const nir_load_const_instr *lc = nir_def_as_load_const((nir_def *)def);
+      out->b = lc->value[channel].u32;
+      return true;
+   }
+   if (nir_def_instr(def)->type == nir_instr_type_intrinsic) {
+      const nir_intrinsic_instr *intr =
+         nir_instr_as_intrinsic(nir_def_instr(def));
+      if (index_intrinsic_is_zero_base(intr))
+         return true; /* the zero vector */
+      if (index_intrinsic_produces_id(intr)) {
+         /* The consumer's swizzle channel selects the unit lane. */
+         out->ax = channel == 0;
+         out->ay = channel == 1;
+         out->az = channel >= 2;
+         return true;
+      }
+      if (intr->intrinsic == nir_intrinsic_load_vulkan_descriptor) {
+         out->has_base = true;
+         return true;
+      }
+      return false;
+   }
+   if (nir_def_instr(def)->type != nir_instr_type_alu)
+      return false;
+
+   const nir_alu_instr *alu = nir_instr_as_alu(nir_def_instr(def));
+   struct log4_affine a, b;
+   /* Each recursion threads the channel through the operand's swizzle, so
+    * a vec-channel read at ANY use edge (imul 2, id.y; iadd id, base; a
+    * bare mov) resolves the right lane. */
+   switch (alu->op) {
+   case nir_op_mov:
+   case nir_op_u2u32:
+   case nir_op_i2i32:
+      if (!log4_resolve_offset(alu->src[0].src.ssa,
+                               alu->src[0].swizzle[channel], depth + 1, &a))
+         return false;
+      *out = a;
+      return true;
+   case nir_op_iadd:
+      if (!log4_resolve_offset(alu->src[0].src.ssa,
+                               alu->src[0].swizzle[channel], depth + 1, &a) ||
+          !log4_resolve_offset(alu->src[1].src.ssa,
+                               alu->src[1].swizzle[channel], depth + 1, &b))
+         return false;
+      if (a.has_base && b.has_base)
+         return false;
+      out->ax = a.ax + b.ax;
+      out->ay = a.ay + b.ay;
+      out->az = a.az + b.az;
+      out->b = a.b + b.b;
+      out->has_base = a.has_base || b.has_base;
+      return true;
+   case nir_op_imul:
+   case nir_op_amul: {
+      unsigned ci = 2;
+      if (nir_src_is_const(alu->src[1].src))
+         ci = 1;
+      else if (nir_src_is_const(alu->src[0].src))
+         ci = 0;
+      if (ci == 2)
+         return false;
+      const int64_t cv = nir_src_as_int(alu->src[ci].src);
+      if (cv < 0)
+         return false;
+      if (!log4_resolve_offset(alu->src[ci ^ 1].src.ssa,
+                               alu->src[ci ^ 1].swizzle[channel], depth + 1,
+                               &a) ||
+          a.has_base)
+         return false;
+      out->ax = a.ax * (uint64_t)cv;
+      out->ay = a.ay * (uint64_t)cv;
+      out->az = a.az * (uint64_t)cv;
+      out->b = a.b * (uint64_t)cv;
+      return true;
+   }
+   case nir_op_ishl: {
+      if (!nir_src_is_const(alu->src[1].src))
+         return false;
+      const uint64_t c = nir_src_as_uint(alu->src[1].src);
+      if (c >= 32 ||
+          !log4_resolve_offset(alu->src[0].src.ssa,
+                               alu->src[0].swizzle[channel], depth + 1, &a) ||
+          a.has_base)
+         return false;
+      out->ax = a.ax << c;
+      out->ay = a.ay << c;
+      out->az = a.az << c;
+      out->b = a.b << c;
+      return true;
+   }
+   default:
+      return false;
+   }
+}
+
+/* Flatten a sum tree under the >> 2 into its leaves: the four load defs
+ * plus one constant 2.  Any other leaf fails. */
+static bool
+log4_collect_sum(const nir_def *def, const nir_intrinsic_instr *load[4],
+                 bool seen[4], bool *seen_two, unsigned depth)
+{
+   if (depth > 8)
+      return false;
+   if (nir_def_instr(def)->type == nir_instr_type_load_const) {
+      if (*seen_two ||
+          nir_def_as_load_const((nir_def *)def)->value[0].u32 != 2)
+         return false;
+      *seen_two = true;
+      return true;
+   }
+   if (nir_def_instr(def)->type == nir_instr_type_intrinsic) {
+      for (unsigned i = 0; i < 4; i++) {
+         if (def == &load[i]->def) {
+            if (seen[i])
+               return false;
+            seen[i] = true;
+            return true;
+         }
+      }
+      return false;
+   }
+   if (nir_def_instr(def)->type != nir_instr_type_alu)
+      return false;
+   const nir_alu_instr *alu = nir_instr_as_alu(nir_def_instr(def));
+   if (alu->op != nir_op_iadd)
+      return false;
+   return log4_collect_sum(alu->src[0].src.ssa, load, seen, seen_two,
+                           depth + 1) &&
+          log4_collect_sum(alu->src[1].src.ssa, load, seen, seen_two,
+                           depth + 1);
+}
+
+void
+r300_nir_detect_log4_pool_pattern(const nir_shader *s,
+                                  struct r300_compute_log4_pool_pattern *out)
+{
+   memset(out, 0, sizeof(*out));
+
+   const nir_intrinsic_instr *load[4] = {0};
+   const nir_intrinsic_instr *store[1] = {0};
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 4, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 4 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store[0] || !store[0]->src[0].ssa)
+      return;
+   const nir_def *val = store[0]->src[0].ssa;
+   if (val->num_components != 1 || val->bit_size != 32)
+      return;
+
+   /* The half-up form: (sum of the four loads + 2) >> 2. */
+   const nir_alu_instr *shr = nir_def_as_alu_or_null(val);
+   if (!shr || shr->op != nir_op_ushr ||
+       !nir_src_is_const(shr->src[1].src) ||
+       nir_src_as_uint(shr->src[1].src) != 2)
+      return;
+   bool seen[4] = { false, false, false, false };
+   bool seen_two = false;
+   if (!log4_collect_sum(shr->src[0].src.ssa, load, seen, &seen_two, 0) ||
+       !seen_two || !seen[0] || !seen[1] || !seen[2] || !seen[3])
+      return;
+
+   /* Load offsets: shared strides (8, 8W), base deltas {0, 4, 4W, 4W + 4}. */
+   struct log4_affine off[4];
+   for (unsigned i = 0; i < 4; i++) {
+      if (!log4_resolve_offset(load[i]->src[1].ssa, 0, 0, &off[i]))
+         return;
+      if (off[i].az != 0)
+         return;
+   }
+   const uint64_t sx = off[0].ax, sy = off[0].ay;
+   if (sx != 8 || sy == 0 || (sy & 7) != 0)
+      return;
+   for (unsigned i = 1; i < 4; i++)
+      if (off[i].ax != sx || off[i].ay != sy)
+         return;
+   const uint64_t base = off[0].b < off[1].b ? (off[0].b < off[2].b
+                            ? (off[0].b < off[3].b ? off[0].b : off[3].b)
+                            : (off[2].b < off[3].b ? off[2].b : off[3].b))
+                                             : (off[1].b < off[2].b
+                            ? (off[1].b < off[3].b ? off[1].b : off[3].b)
+                            : (off[2].b < off[3].b ? off[2].b : off[3].b));
+   const uint64_t half_row = sy / 2; /* 4W bytes */
+   bool want[4] = { false, false, false, false };
+   for (unsigned i = 0; i < 4; i++) {
+      const uint64_t d = off[i].b - base;
+      unsigned slot = 4;
+      if (d == 0)
+         slot = 0;
+      else if (d == 4)
+         slot = 1;
+      else if (d == half_row)
+         slot = 2;
+      else if (d == half_row + 4)
+         slot = 3;
+      if (slot == 4 || want[slot])
+         return;
+      want[slot] = true;
+   }
+   const uint64_t row_w = sy / 8; /* W elements: sy = 8W bytes */
+
+   /* Store offset: strides (4, 4 * W/2) -- the half-extent output grid. */
+   struct log4_affine so;
+   if (!log4_resolve_offset(store[0]->src[2].ssa, 0, 0, &so) || so.az != 0 ||
+       so.ax != 4 || so.ay != 2 * row_w)
+      return;
+
+   out->row_w = (uint32_t)row_w;
+   if (nir_src_is_const(load[0]->src[0])) {
+      out->input_ssbo_binding = (uint32_t)nir_src_as_uint(load[0]->src[0]);
+      out->input_binding_valid = true;
+   }
+   if (nir_src_is_const(store[0]->src[1])) {
+      out->output_ssbo_binding =
+         (uint32_t)nir_src_as_uint(store[0]->src[1]);
+      out->output_binding_valid = true;
+   }
+   out->is_log4_pool = true;
+}

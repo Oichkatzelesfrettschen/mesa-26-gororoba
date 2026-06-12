@@ -837,6 +837,28 @@ struct r300_compute_cas_pattern {
 void r300_nir_detect_cas_pattern(const struct nir_shader *s,
                                  struct r300_compute_cas_pattern *out);
 
+/* log4 2x2 average-pool pattern (one tree level):
+ * out[y * W2 + x] = (in[2y*W + 2x] + in[2y*W + 2x + 1] + in[(2y+1)*W + 2x]
+ *                  + in[(2y+1)*W + 2x + 1] + 2) >> 2
+ * -- exactly the TX bilinear corner tap's measured half-up conversion
+ * (log4round calibration, 27/27).  The detector captures the row constant
+ * W off the load-offset affines; the replay validates W against the
+ * dispatch grid, RANGE-SCANS the input (elements >= 256 spill out of the
+ * RGBA8 R channel the filter averages -- a data-dependent bound no static
+ * admission can prove; out-of-range dispatches refuse with the explicit
+ * no-op), and runs one LINEAR corner-tap pass. */
+struct r300_compute_log4_pool_pattern {
+   bool       is_log4_pool;
+   uint32_t   input_ssbo_binding;
+   bool       input_binding_valid;
+   uint32_t   output_ssbo_binding;
+   bool       output_binding_valid;
+   uint32_t   row_w;   /* input row width W in elements */
+};
+
+void r300_nir_detect_log4_pool_pattern(const struct nir_shader *s,
+                                       struct r300_compute_log4_pool_pattern *out);
+
 /* Multilimb u32 multiply pattern: out[gid] = a[gid] * b[gid] for
  * single-component 32-bit integers -- the binary-map imul shape, routed to
  * the exact multilimb orchestrator instead of the FP24-bounded elementwise
