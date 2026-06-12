@@ -699,6 +699,24 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = "cachyos_vostro1000_rs482_constfill_rb3d_roundtrip_20260611",
    },
    {
+      /* First verb that materializes the work-item index as an FP24 VALUE:
+       * a single oversized triangle carries a texel-unit varying, the
+       * fragment program snaps each interpolated coordinate with FLR
+       * (absorbing sub-texel plane-equation error), reconstructs the linear
+       * index, evaluates the affine, and byte-decomposes little-endian into
+       * the RGBA8 export.  One-dimensional dispatches only; the dispatch
+       * gate bounds stride * (total - 1) + offset by 2^17. */
+      .op_name         = "AFFINE_IOTA",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "out[gid] = stride * gid + offset, gid from per-axis "
+                         "FLR-snapped texel-unit varying; exact for "
+                         "stride * (total - 1) + offset <= 2^17 (probe: 131072 "
+                         "elements byte-exact at the ceiling, explicit no-op above)",
+      .mesa_hook       = "r300_nir_detect_affine_iota_pattern",
+      .retained_bundle = "cachyos_vostro1000_rs482_affine_iota_index_20260612",
+   },
+   {
       /* QFM derived fused ops: compositions of the built primitives. */
       .op_name         = "QFMSUB",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,

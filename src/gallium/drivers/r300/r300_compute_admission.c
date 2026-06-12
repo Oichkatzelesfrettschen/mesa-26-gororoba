@@ -3687,6 +3687,7 @@ struct index_walk_state {
    struct index_walk_entry queue[R300_INDEX_WALK_MAX_DEFS];
    unsigned head, tail;
    const nir_def *visited[R300_INDEX_WALK_MAX_DEFS];
+   struct index_walk_entry states[R300_INDEX_WALK_MAX_DEFS];
    unsigned nvisited;
    bool overflow;
    bool address_use;
@@ -3710,6 +3711,10 @@ index_walk_push(struct index_walk_state *st, const nir_def *def,
       st->overflow = true;
       return false;
    }
+   st->states[st->nvisited].def = def;
+   st->states[st->nvisited].affine_valid = affine_valid;
+   st->states[st->nvisited].a = a;
+   st->states[st->nvisited].b = b;
    st->visited[st->nvisited++] = def;
    st->queue[st->tail].def = def;
    st->queue[st->tail].affine_valid = affine_valid;
@@ -3717,6 +3722,17 @@ index_walk_push(struct index_walk_state *st, const nir_def *def,
    st->queue[st->tail].b = b;
    st->tail++;
    return true;
+}
+
+/* Affine state of a tracked def, if the walk has registered one. */
+static const struct index_walk_entry *
+index_walk_lookup(const struct index_walk_state *st, const nir_def *def)
+{
+   for (unsigned i = 0; i < st->nvisited; i++) {
+      if (st->visited[i] == def)
+         return &st->states[i];
+   }
+   return NULL;
 }
 
 /* Constant operand of a two-source ALU op as a non-negative integer, given
@@ -3748,7 +3764,8 @@ index_walk_const_operand(const nir_alu_instr *alu, unsigned other,
  * false when the op is not affine-transparent (the result def is still
  * walked, with affine_valid = false). */
 static bool
-index_walk_alu_affine(const nir_alu_instr *alu, unsigned operand,
+index_walk_alu_affine(const struct index_walk_state *st,
+                      const nir_alu_instr *alu, unsigned operand,
                       bool in_valid, uint64_t in_a, uint64_t in_b,
                       uint64_t *out_a, uint64_t *out_b)
 {
@@ -3769,8 +3786,20 @@ index_walk_alu_affine(const nir_alu_instr *alu, unsigned operand,
    case nir_op_fadd: {
       uint64_t c;
       if (!index_walk_const_operand(alu, operand ^ 1,
-                                    alu->op == nir_op_fadd, &c))
-         return false;
+                                    alu->op == nir_op_fadd, &c)) {
+         /* Not a constant: the sum of two AFFINE states is affine, so an
+          * add whose other operand is itself a tracked def with a known
+          * state combines (a1 + a2) * gid + (b1 + b2).  This is what makes
+          * the system-value lowering's global_id + base_global_id shape
+          * classifiable: the base intrinsic registers as the zero affine. */
+         const struct index_walk_entry *other =
+            index_walk_lookup(st, alu->src[operand ^ 1].src.ssa);
+         if (!other || !other->affine_valid)
+            return false;
+         *out_a = in_a + other->a;
+         *out_b = in_b + other->b;
+         return *out_a <= UINT32_MAX && *out_b <= UINT32_MAX;
+      }
       *out_b = in_b + c;
       return *out_b <= UINT32_MAX;
    }
@@ -3816,6 +3845,24 @@ index_intrinsic_produces_id(const nir_intrinsic_instr *intr)
    }
 }
 
+/* Base offsets the system-value lowering adds to the invocation id.  The
+ * replay substrate does not implement vkCmdDispatchBase, so the base is the
+ * zero vector; tracking it as the zero affine lets global_id + base fold to
+ * the identity affine instead of poisoning the chain.  If DispatchBase ever
+ * lands, the dispatch-time guard must add the recorded base into the
+ * materialized-value bound before this stays sound. */
+static bool
+index_intrinsic_is_zero_base(const nir_intrinsic_instr *intr)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_base_global_invocation_id:
+   case nir_intrinsic_load_base_workgroup_id:
+      return true;
+   default:
+      return false;
+   }
+}
+
 void
 r300_nir_classify_index_consumption(const nir_shader *s,
                                     struct r300_compute_index_pattern *out)
@@ -3833,6 +3880,10 @@ r300_nir_classify_index_consumption(const nir_shader *s,
             if (instr->type != nir_instr_type_intrinsic)
                continue;
             const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (index_intrinsic_is_zero_base(intr)) {
+               index_walk_push(&st, &intr->def, true, 0, 0);
+               continue;
+            }
             if (!index_intrinsic_produces_id(intr))
                continue;
             any_index = true;
@@ -3874,7 +3925,7 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                   st.uses_component_z = true;
             }
             uint64_t a = 0, b = 0;
-            const bool affine = index_walk_alu_affine(alu, operand,
+            const bool affine = index_walk_alu_affine(&st, alu, operand,
                                                       e.affine_valid,
                                                       e.a, e.b, &a, &b);
             index_walk_push(&st, &alu->def, affine, a, b);
