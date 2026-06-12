@@ -335,8 +335,6 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_ieee16_classify_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->ieee16_mul.is_ieee16_mul)
       ok = r300vk_ieee16_mul_dispatch_replay(device, pl, d, last_bind_dsets);
-   else if (pl->const_fill.is_const_fill)
-      ok = r300vk_const_fill_dispatch_replay(device, pl, d, last_bind_dsets);
 
    if (ok)
       return VK_SUCCESS;

@@ -78,12 +78,6 @@ struct r300vk_pipeline {
     * bound descriptor sets. */
    struct r300_compute_identity_pattern identity_map;
 
-   /* Constant-fill (memset) kernel detected at pipeline-create time: out[gid] = C.
-    * The degenerate store needs no input sampler and no fragment shader; the
-    * dispatch clears a transient RT to the constant (the four bytes ride RGBA8 as
-    * unorm channels) and copies it into the output ssbo. */
-   struct r300_compute_const_fill_pattern const_fill;
-
    /* Texture-pair binary-map kernel detected at pipeline-create time.  Same
     * orchestrator skeleton as identity_map but with two sampler stages (in_a
     * + in_b) and a synthesized FS containing two TEX + one ALU + one MOV
