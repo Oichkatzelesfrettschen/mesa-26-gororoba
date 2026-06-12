@@ -770,6 +770,24 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = "cachyos_vostro1000_rs482_multilimb_log4_stencilcas_20260612",
    },
    {
+      /* CAS ROUTE A: per-element constant-operand compare-and-swap on the
+       * US select path -- per-cell exclusivity is structural (one fragment
+       * per guard), so no ZB involvement; the bytewise SEQ compare has no
+       * 2^17 ceiling.  The contended multi-pass form rides the separate
+       * stencil-backed STENCIL_VERSIONED_CAS mechanism. */
+      .op_name         = "CAS_CONST_U32",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "old = comp_swap(guard[gid], C_expect, C_new): "
+                         "snapped guard bytes, one vec4 SEQ vs the expect "
+                         "bytes, three predicate multiplies, per-channel "
+                         "select; pre-image copy returns old; probe 10/10 "
+                         "patterns x 4096 elements exact incl one-bit deltas "
+                         "and the operand-order discriminator",
+      .mesa_hook       = "r300_nir_detect_cas_pattern",
+      .retained_bundle = "cachyos_vostro1000_rs482_cas_const_verb_20260612",
+   },
+   {
       /* QFM derived fused ops: compositions of the built primitives. */
       .op_name         = "QFMSUB",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,

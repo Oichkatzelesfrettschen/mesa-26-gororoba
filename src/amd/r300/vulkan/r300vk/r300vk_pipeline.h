@@ -187,6 +187,12 @@ struct r300vk_pipeline {
    struct r300_compute_multilimb_mul_pattern multilimb_mul;
    void *multilimb_fs[9];
 
+   /* Constant-operand compare-and-swap (CAS ROUTE A):
+    * old = atomicCompSwap(guard[gid], C_expect, C_new); result[gid] = old.
+    * The replay copies the guard pre-image to the result buffer, draws the
+    * bytewise-SEQ select into a guard render target, and copies it back. */
+   struct r300_compute_cas_pattern cas;
+
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
     * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in
