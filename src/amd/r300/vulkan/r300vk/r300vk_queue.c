@@ -271,7 +271,8 @@ r300vk_replay_bind_descriptor_sets(struct r300vk_device *device,
 static VkResult
 r300vk_replay_dispatch(struct r300vk_device *device,
                         const struct r300vk_cmd_entry *e,
-                        const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets)
+                        const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets,
+                        const uint8_t *push_data)
 {
    const struct r300vk_cmd_dispatch *d = &e->dispatch;
    const struct r300vk_pipeline *pl = d->pipeline;
@@ -282,7 +283,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
    else if (pl->binary_map.is_binary_map)
       ok = r300vk_binary_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->unary_map.is_unary_map)
-      ok = r300vk_unary_map_dispatch_replay(device, pl, d, last_bind_dsets);
+      ok = r300vk_unary_map_dispatch_replay(device, pl, d, last_bind_dsets,
+                                            push_data);
    else if (pl->dp4.is_dp4)
       ok = r300vk_dp4_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qmul.is_qmul)
@@ -2138,7 +2140,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
             break;
 
          case R300VK_CMD_DISPATCH:
-            result = r300vk_replay_dispatch(device, e, last_bind_dsets);
+            result = r300vk_replay_dispatch(device, e, last_bind_dsets,
+                                            replay_pc);
             if (result != VK_SUCCESS) {
                r300vk_dyn_overlay_cleanup(device, &dyn_ov);
                return result;

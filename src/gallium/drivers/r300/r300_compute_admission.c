@@ -331,24 +331,108 @@ unary_alu_src_is_identity_load(const nir_alu_instr *alu, unsigned i,
    return true;
 }
 
-/* Read a uniform float constant feeding ALU operand i.  The unary-map fragment
- * program broadcasts one c0/c1 scalar across the output lanes, so vector
- * constants must be identical on every live lane before the pattern is admitted.
- */
-static bool
-unary_alu_src_uniform_fconst(const nir_alu_instr *alu, unsigned i,
-                             unsigned components, float *v)
+/* A uniform constant operand of the affine ALU: either a literal float whose
+ * value is known at pipeline-create time, or a push-constant scalar whose
+ * value arrives at command-record time and is therefore recorded by byte
+ * offset into the push window. */
+struct unary_const_operand {
+   bool     from_push;
+   float    literal;       /* valid when !from_push */
+   uint32_t push_offset;   /* push-window byte offset, when from_push */
+};
+
+/* Walk component comp of def through mov and vecN wrappers to the scalar
+ * (def, component) pair it ultimately reads.  A broadcast of a scalar reaches
+ * an ALU operand either as a swizzled direct read or wrapped in
+ * vecN(s.x, s.x, ...) / mov chains depending on which builder or frontend
+ * produced it; resolving both forms to the origin lets the uniformity test
+ * compare origins instead of surface shapes. */
+static const nir_def *
+unary_resolve_scalar_origin(const nir_def *def, unsigned comp,
+                            unsigned *out_comp)
 {
-   if (!nir_src_is_const(alu->src[i].src))
-      return false;
-   const float first = nir_src_comp_as_float(alu->src[i].src,
-                                             alu->src[i].swizzle[0]);
+   for (;;) {
+      const nir_instr *parent = nir_def_instr(def);
+      if (parent->type != nir_instr_type_alu)
+         break;
+      const nir_alu_instr *alu = nir_instr_as_alu((nir_instr *)parent);
+      if (alu->op == nir_op_mov) {
+         comp = alu->src[0].swizzle[comp];
+         def = alu->src[0].src.ssa;
+      } else if (nir_op_is_vec(alu->op)) {
+         const nir_def *elem = alu->src[comp].src.ssa;
+         comp = alu->src[comp].swizzle[0];
+         def = elem;
+      } else {
+         break;
+      }
+   }
+   *out_comp = comp;
+   return def;
+}
+
+/* Match a uniform constant feeding ALU operand i.  The unary-map fragment
+ * program broadcasts one c0/c1 scalar across the output lanes, so the operand
+ * is uniform exactly when (literal case) every live lane reads the same value
+ * or (push case) every live lane selects the same component of one
+ * load_push_constant whose offset folds to a compile-time constant.  The push
+ * offset must land a whole float inside the 128-byte window (the Vulkan
+ * minimum push size and the window the dispatch replay binds at FS CONST[0],
+ * eight vec4 slots); an offset past that has no constant-file address. */
+static bool
+unary_alu_src_const_operand(const nir_alu_instr *alu, unsigned i,
+                            unsigned components,
+                            struct unary_const_operand *op)
+{
+   if (nir_src_is_const(alu->src[i].src)) {
+      const float first = nir_src_comp_as_float(alu->src[i].src,
+                                                alu->src[i].swizzle[0]);
+      for (unsigned c = 1; c < components; c++) {
+         if (nir_src_comp_as_float(alu->src[i].src,
+                                   alu->src[i].swizzle[c]) != first)
+            return false;
+      }
+      op->from_push = false;
+      op->literal = first;
+      op->push_offset = 0;
+      return true;
+   }
+
+   /* Resolve each live lane through mov and vecN splats to its scalar origin
+    * (a builder- or SPIR-V-expanded broadcast reaches the ALU as
+    * vec4(c.x, c.x, c.x, c.x) rather than a swizzled direct read); the
+    * operand is uniform exactly when every lane lands on the same component
+    * of the same def. */
+   unsigned comp = 0;
+   const nir_def *base =
+      unary_resolve_scalar_origin(alu->src[i].src.ssa,
+                                  alu->src[i].swizzle[0], &comp);
    for (unsigned c = 1; c < components; c++) {
-      if (nir_src_comp_as_float(alu->src[i].src,
-                                alu->src[i].swizzle[c]) != first)
+      unsigned lane_comp = 0;
+      const nir_def *lane =
+         unary_resolve_scalar_origin(alu->src[i].src.ssa,
+                                     alu->src[i].swizzle[c], &lane_comp);
+      if (lane != base || lane_comp != comp)
          return false;
    }
-   *v = first;
+
+   const nir_instr *parent = nir_def_instr(base);
+   if (parent->type != nir_instr_type_intrinsic)
+      return false;
+   const nir_intrinsic_instr *push =
+      nir_instr_as_intrinsic((nir_instr *)parent);
+   if (push->intrinsic != nir_intrinsic_load_push_constant)
+      return false;
+   if (push->def.bit_size != 32 || !nir_src_is_const(push->src[0]))
+      return false;
+   const uint64_t byte_offset = (uint64_t)nir_intrinsic_base(push) +
+                                nir_src_as_uint(push->src[0]) +
+                                (uint64_t)comp * 4;
+   if (byte_offset + 4 > 128)
+      return false;
+   op->from_push = true;
+   op->literal = 0.0f;
+   op->push_offset = (uint32_t)byte_offset;
    return true;
 }
 
@@ -372,6 +456,10 @@ r300_nir_detect_unary_map(const nir_shader *s,
    out->output_ssbo_binding_valid = false;
    out->mul_const           = 1.0f;
    out->add_const           = 0.0f;
+   out->mul_const_from_push = false;
+   out->add_const_from_push = false;
+   out->mul_const_push_offset = 0;
+   out->add_const_push_offset = 0;
    out->value_components    = 0;
    out->value_bit_size      = 0;
    out->value_is_float      = false;
@@ -411,62 +499,50 @@ r300_nir_detect_unary_map(const nir_shader *s,
 
    const nir_def *load_def = &load->def;
    const unsigned components = store->num_components;
-   float c0 = 1.0f, c1 = 0.0f;
+   struct unary_const_operand c0 = { .from_push = false, .literal = 1.0f };
+   struct unary_const_operand c1 = { .from_push = false, .literal = 0.0f };
    bool matched = false;
 
    if (alu->op == nir_op_ffma) {
       /* ffma(a, b, c) = a*b + c: one of a,b is the load, the other is c0; c=c1. */
-      float k;
       if (unary_alu_src_is_identity_load(alu, 0, load_def, components) &&
-          unary_alu_src_uniform_fconst(alu, 1, components, &k) &&
-          unary_alu_src_uniform_fconst(alu, 2, components, &c1)) {
-         c0 = k;
+          unary_alu_src_const_operand(alu, 1, components, &c0) &&
+          unary_alu_src_const_operand(alu, 2, components, &c1)) {
          matched = true;
       } else if (unary_alu_src_is_identity_load(alu, 1, load_def, components) &&
-                 unary_alu_src_uniform_fconst(alu, 0, components, &k) &&
-                 unary_alu_src_uniform_fconst(alu, 2, components, &c1)) {
-         c0 = k;
+                 unary_alu_src_const_operand(alu, 0, components, &c0) &&
+                 unary_alu_src_const_operand(alu, 2, components, &c1)) {
          matched = true;
       }
    } else if (alu->op == nir_op_fmul) {
       /* fmul(load, c0): pure scale, c1 = 0. */
-      float k;
       if (unary_alu_src_is_identity_load(alu, 0, load_def, components) &&
-          unary_alu_src_uniform_fconst(alu, 1, components, &k)) {
-         c0 = k;
+          unary_alu_src_const_operand(alu, 1, components, &c0)) {
          matched = true;
       } else if (unary_alu_src_is_identity_load(alu, 1, load_def, components) &&
-                 unary_alu_src_uniform_fconst(alu, 0, components, &k)) {
-         c0 = k;
+                 unary_alu_src_const_operand(alu, 0, components, &c0)) {
          matched = true;
       }
    } else if (alu->op == nir_op_fadd) {
       /* fadd(X, c1): X is either the load (c0 = 1) or fmul(load, c0). */
-      float k;
       int x_src = -1;
-      if (unary_alu_src_uniform_fconst(alu, 1, components, &k)) {
-         c1 = k;
+      if (unary_alu_src_const_operand(alu, 1, components, &c1)) {
          x_src = 0;
-      } else if (unary_alu_src_uniform_fconst(alu, 0, components, &k)) {
-         c1 = k;
+      } else if (unary_alu_src_const_operand(alu, 0, components, &c1)) {
          x_src = 1;
       }
       if (x_src >= 0 &&
           unary_alu_src_is_identity_load(alu, (unsigned)x_src, load_def,
                                          components)) {
-         c0 = 1.0f;
          matched = true;
       } else if (x_src >= 0) {
          const nir_alu_instr *mul = nir_def_as_alu_or_null(alu->src[x_src].src.ssa);
          if (mul && mul->op == nir_op_fmul) {
-            float m;
             if (unary_alu_src_is_identity_load(mul, 0, load_def, components) &&
-                unary_alu_src_uniform_fconst(mul, 1, components, &m)) {
-               c0 = m;
+                unary_alu_src_const_operand(mul, 1, components, &c0)) {
                matched = true;
             } else if (unary_alu_src_is_identity_load(mul, 1, load_def, components) &&
-                       unary_alu_src_uniform_fconst(mul, 0, components, &m)) {
-               c0 = m;
+                       unary_alu_src_const_operand(mul, 0, components, &c0)) {
                matched = true;
             }
          }
@@ -507,8 +583,12 @@ r300_nir_detect_unary_map(const nir_shader *s,
    out->value_bit_size = store->src[0].ssa->bit_size;
    out->value_is_float = intrinsic_base_type_is_float(
       store, nir_op_infos[alu->op].output_type);
-   out->mul_const = c0;
-   out->add_const = c1;
+   out->mul_const = c0.from_push ? 1.0f : c0.literal;
+   out->add_const = c1.from_push ? 0.0f : c1.literal;
+   out->mul_const_from_push = c0.from_push;
+   out->add_const_from_push = c1.from_push;
+   out->mul_const_push_offset = c0.from_push ? (uint16_t)c0.push_offset : 0;
+   out->add_const_push_offset = c1.from_push ? (uint16_t)c1.push_offset : 0;
    out->is_unary_map = true;
 }
 
@@ -975,14 +1055,23 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
 }
 
-/* Count the load_ssbo leaves of a pure integer add-reduction tree.  An iadd
- * node recurses into both inputs; a load_ssbo def is a tap leaf worth 1; any
- * other def (a non-load, non-iadd) makes the tree impure and returns -1.
- * Depth-bounded like def_derives_from for the small kernels the detector
- * pattern-matches.  Verifies that all load_ssbo leaves pull from the same
- * binding (captured in *binding). */
+/* The maximum tap-leaf count the gather walker collects: box-3 is the only
+ * realized kernel, but the tree walk caps collection rather than recursion so
+ * an oversized reduction reports its true count and fails the == 3 check. */
+#define R300_MULTITAP_MAX_TAPS 8
+
+/* Collect the load_ssbo leaves of a pure integer add-reduction tree into
+ * taps[].  An iadd node recurses into both inputs; a load_ssbo def is a tap
+ * leaf worth 1; any other def (a non-load, non-iadd) makes the tree impure
+ * and returns -1.  Depth-bounded like def_derives_from for the small kernels
+ * the detector pattern-matches.  All leaves must pull from the same SSBO:
+ * post-explicit_io the binding source is an opaque descriptor-chain def
+ * shared between the taps (CSE folds the identical chains), so the test is
+ * def equality, which also covers inline-constant bindings. */
 static int
-multitap_add_tree_taps(const nir_def *def, uint32_t *binding, unsigned depth)
+multitap_add_tree_taps(const nir_def *def,
+                       const nir_intrinsic_instr **taps, unsigned *tap_count,
+                       unsigned depth)
 {
    if (!def || depth >= R300_COMPUTE_DETECT_MAX_DEPTH)
       return -1;
@@ -991,22 +1080,22 @@ multitap_add_tree_taps(const nir_def *def, uint32_t *binding, unsigned depth)
    if (intr) {
       if (intr->intrinsic != nir_intrinsic_load_ssbo)
          return -1;
-      if (!nir_src_is_const(intr->src[0]))
+      if (*tap_count > 0 && taps[0]->src[0].ssa != intr->src[0].ssa)
          return -1;
-      uint32_t b = nir_src_as_uint(intr->src[0]);
-      if (*binding == 0xffffffff)
-         *binding = b;
-      else if (*binding != b)
+      if (*tap_count >= R300_MULTITAP_MAX_TAPS)
          return -1;
+      taps[(*tap_count)++] = intr;
       return 1;
    }
    const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)def);
    if (!alu || alu->op != nir_op_iadd)
       return -1;
-   const int l = multitap_add_tree_taps(alu->src[0].src.ssa, binding, depth + 1);
+   const int l = multitap_add_tree_taps(alu->src[0].src.ssa, taps, tap_count,
+                                        depth + 1);
    if (l < 0)
       return -1;
-   const int r = multitap_add_tree_taps(alu->src[1].src.ssa, binding, depth + 1);
+   const int r = multitap_add_tree_taps(alu->src[1].src.ssa, taps, tap_count,
+                                        depth + 1);
    if (r < 0)
       return -1;
    return l + r;
@@ -1022,41 +1111,181 @@ multitap_add_tree_taps(const nir_def *def, uint32_t *binding, unsigned depth)
  * fragment draw applying a canonical box kernel over the input bound as a 2D
  * texture; fadd is excluded from the first cut because the per-byte UNORM8
  * integer-sum envelope is the exact-realizable form. */
-/* Verify that the add-reduction tree's load_ssbo leaves use exactly the
- * box-3 offsets {base-4, base, base+4} relative to the store's offset def.
- * Returns a bitmask of found offsets (bit 0 for base-4, bit 1 for base, bit 2
- * for base+4). */
+/* Classify one tap's byte offset against the store's byte offset in the
+ * DIRECT form: the tap offset is the store offset def itself (center) or
+ * iadd(store_offset, +/-4) (edge).  Returns the box-3 bit (bit 0 for -4,
+ * bit 1 for center, bit 2 for +4) or 0 for no match. */
 static int
-multitap_verify_box3_offsets(const nir_def *def, const nir_def *base, unsigned depth)
+multitap_tap_bit_direct(const nir_def *offset, const nir_def *base)
 {
-   if (!def || depth >= R300_COMPUTE_DETECT_MAX_DEPTH)
-      return 0;
-   const nir_intrinsic_instr *intr =
-      nir_def_as_intrinsic_or_null((nir_def *)def);
-   if (intr) {
-      if (intr->intrinsic != nir_intrinsic_load_ssbo)
-         return 0;
-      const nir_def *offset = intr->src[1].ssa;
-      if (offset == base)
-         return (1 << 1); /* base (offset 0) */
-      /* Check for base +/- 4 via ALU iadd. */
-      const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)offset);
-      if (alu && alu->op == nir_op_iadd) {
-         for (int i = 0; i < 2; i++) {
-            if (alu->src[i].src.ssa == base && nir_src_is_const(alu->src[1-i].src)) {
-               int32_t val = (int32_t)nir_src_as_int(alu->src[1-i].src);
-               if (val == -4) return (1 << 0);
-               if (val == 4)  return (1 << 2);
+   if (offset == base)
+      return (1 << 1);
+   const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)offset);
+   if (alu && alu->op == nir_op_iadd) {
+      for (int i = 0; i < 2; i++) {
+         if (alu->src[i].src.ssa == base && nir_src_is_const(alu->src[1-i].src)) {
+            int32_t val = (int32_t)nir_src_as_int(alu->src[1-i].src);
+            if (val == -4) return (1 << 0);
+            if (val == 4)  return (1 << 2);
+         }
+      }
+   }
+   return 0;
+}
+
+/* Match def = index scaled by the 4-byte u32 element stride -- imul/amul by
+ * constant 4 or ishl by constant 2 -- and return the index (ssa def plus the
+ * swizzle component the scalar ALU selected). */
+static bool
+multitap_match_scaled_index(const nir_def *def, const nir_def **idx_ssa,
+                            unsigned *idx_comp)
+{
+   const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)def);
+   if (!alu)
+      return false;
+   if (alu->op == nir_op_imul || alu->op == nir_op_amul) {
+      for (int i = 0; i < 2; i++) {
+         if (nir_src_is_const(alu->src[i].src) &&
+             nir_src_comp_as_uint(alu->src[i].src, alu->src[i].swizzle[0]) == 4) {
+            *idx_ssa = alu->src[1 - i].src.ssa;
+            *idx_comp = alu->src[1 - i].swizzle[0];
+            return true;
+         }
+      }
+      return false;
+   }
+   if (alu->op == nir_op_ishl &&
+       nir_src_is_const(alu->src[1].src) &&
+       nir_src_comp_as_uint(alu->src[1].src, alu->src[1].swizzle[0]) == 2) {
+      *idx_ssa = alu->src[0].src.ssa;
+      *idx_comp = alu->src[0].swizzle[0];
+      return true;
+   }
+   return false;
+}
+
+/* Resolve (idx_ssa, idx_comp) against the center index: the center itself
+ * (delta 0), iadd(center, +/-1), or isub(center, 1).  SPIR-V OpISub reaches
+ * NIR as nir_op_isub and the classify prep runs no algebraic pass that would
+ * canonicalize it to iadd(center, -1), so `gid - 1u` must match as isub
+ * directly (hardware-observed in the box-3 kernel's lowered NIR). */
+static bool
+multitap_match_index_delta(const nir_def *idx_ssa, unsigned idx_comp,
+                           const nir_def *center_ssa, unsigned center_comp,
+                           int *delta)
+{
+   if (idx_ssa == center_ssa && idx_comp == center_comp) {
+      *delta = 0;
+      return true;
+   }
+   const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)idx_ssa);
+   if (!alu)
+      return false;
+   if (alu->op == nir_op_iadd) {
+      for (int i = 0; i < 2; i++) {
+         if (alu->src[i].src.ssa == center_ssa &&
+             alu->src[i].swizzle[0] == center_comp &&
+             nir_src_is_const(alu->src[1 - i].src)) {
+            const int64_t val = nir_src_comp_as_int(alu->src[1 - i].src,
+                                                    alu->src[1 - i].swizzle[0]);
+            if (val == -1 || val == 1) {
+               *delta = (int)val;
+               return true;
             }
          }
       }
-      return 0;
+      return false;
    }
-   const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)def);
+   if (alu->op == nir_op_isub &&
+       alu->src[0].src.ssa == center_ssa &&
+       alu->src[0].swizzle[0] == center_comp &&
+       nir_src_is_const(alu->src[1].src)) {
+      const int64_t val = nir_src_comp_as_int(alu->src[1].src,
+                                              alu->src[1].swizzle[0]);
+      if (val == 1 || val == -1) {
+         *delta = -(int)val;
+         return true;
+      }
+   }
+   return false;
+}
+
+/* Classify one tap's byte offset in the DESCRIPTOR-BASE form the
+ * post-explicit_io SPIR-V shape carries: every ssbo byte offset is
+ * iadd(descriptor_base, scaled_index) where scaled_index = element_index * 4.
+ * The store offset shares its scaled_index def with the center tap (CSE folds
+ * the identical scale chains) while its descriptor base belongs to the OUTPUT
+ * buffer, so store/tap offsets never compare equal directly; the edge taps
+ * scale iadd(element_index, +/-1) by the same stride.  All taps must share
+ * one descriptor base (*tap_base, captured from the first tap). */
+static int
+multitap_tap_bit_desc_base(const nir_def *offset,
+                           const nir_def *center_idx_ssa,
+                           unsigned center_idx_comp,
+                           const nir_def **tap_base)
+{
+   const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)offset);
    if (!alu || alu->op != nir_op_iadd)
       return 0;
-   return multitap_verify_box3_offsets(alu->src[0].src.ssa, base, depth + 1) |
-          multitap_verify_box3_offsets(alu->src[1].src.ssa, base, depth + 1);
+   for (int i = 0; i < 2; i++) {
+      const nir_def *scaled = alu->src[i].src.ssa;
+      const nir_def *base   = alu->src[1 - i].src.ssa;
+      const nir_def *idx_ssa = NULL;
+      unsigned idx_comp = 0;
+      int delta = 0;
+      if (!multitap_match_scaled_index(scaled, &idx_ssa, &idx_comp))
+         continue;
+      if (!multitap_match_index_delta(idx_ssa, idx_comp,
+                                      center_idx_ssa, center_idx_comp, &delta))
+         continue;
+      if (!*tap_base)
+         *tap_base = base;
+      else if (*tap_base != base)
+         return 0;
+      return 1 << (delta + 1);
+   }
+   return 0;
+}
+
+/* Verify the collected tap loads form exactly the centered box-3
+ * {index-1, index, index+1} relative to the store's element index, in either
+ * the direct form (tap offset = store offset def +/- 4; the shape a
+ * pre-scaled synthetic kernel builds) or the descriptor-base form (the shape
+ * real SPIR-V reaches after nir_lower_explicit_io).  Returns the full 0x7
+ * mask exactly when all three taps land on distinct box-3 positions. */
+static int
+multitap_verify_box3_offsets(const nir_intrinsic_instr *const *taps,
+                             unsigned tap_count, const nir_def *store_offset)
+{
+   int mask = 0;
+   for (unsigned t = 0; t < tap_count; t++)
+      mask |= multitap_tap_bit_direct(taps[t]->src[1].ssa, store_offset);
+   if (mask == 0x7)
+      return mask;
+
+   /* Descriptor-base form: split the store offset as iadd(out_base, scaled)
+    * trying both operand orders; the assignment whose scaled half is a
+    * stride-4 scale of an index is the element-index half. */
+   const nir_alu_instr *store_alu =
+      nir_def_as_alu_or_null((nir_def *)store_offset);
+   if (!store_alu || store_alu->op != nir_op_iadd)
+      return mask;
+   for (int i = 0; i < 2; i++) {
+      const nir_def *center_idx_ssa = NULL;
+      unsigned center_idx_comp = 0;
+      if (!multitap_match_scaled_index(store_alu->src[i].src.ssa,
+                                       &center_idx_ssa, &center_idx_comp))
+         continue;
+      const nir_def *tap_base = NULL;
+      mask = 0;
+      for (unsigned t = 0; t < tap_count; t++)
+         mask |= multitap_tap_bit_desc_base(taps[t]->src[1].ssa,
+                                            center_idx_ssa, center_idx_comp,
+                                            &tap_base);
+      if (mask == 0x7)
+         return mask;
+   }
+   return 0;
 }
 
 void
@@ -1104,28 +1333,34 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
       return;
 
    /* Store value must be an integer add-reduction whose every leaf is a
-    * load_ssbo def, with at least three taps.  All taps must pull from the
-    * same SSBO binding. */
-   uint32_t binding = 0xffffffff;
-   const int taps = multitap_add_tree_taps(store->src[0].ssa, &binding, 0);
-   if (taps != 3 || binding == 0xffffffff)
+    * load_ssbo def, with at least three taps, all pulling from the same SSBO
+    * (same binding source def). */
+   const nir_intrinsic_instr *taps[R300_MULTITAP_MAX_TAPS] = {0};
+   unsigned tap_count = 0;
+   const int tap_total =
+      multitap_add_tree_taps(store->src[0].ssa, taps, &tap_count, 0);
+   if (tap_total != 3 || tap_count != 3)
       return;
 
    /* Every SSBO load must be a tap leaf of the reduction tree.  A stray
     * load_ssbo outside the tree (load_count > taps) is an input the box-3
     * multi-TEX lowering does not sample, so the kernel is not faithfully the
     * recognized neighborhood convolution; reject rather than mis-replay. */
-   if (load_count != (unsigned)taps)
+   if (load_count != tap_count)
       return;
 
    /* Kernel must be exactly the 3-tap box filter {-1, 0, 1} relative to the
     * store index. */
-   if (multitap_verify_box3_offsets(store->src[0].ssa, store->src[2].ssa, 0) != 0x7)
+   if (multitap_verify_box3_offsets(taps, tap_count, store->src[2].ssa) != 0x7)
       return;
 
    out->is_multitap_gather = true;
-   out->tap_count = (uint16_t)taps;
-   out->input_ssbo_binding = binding;
+   out->tap_count = (uint16_t)tap_count;
+   /* Bindings stay 0 when the post-explicit_io sources are opaque descriptor
+    * defs; the orchestrator's positional layout fallback recovers input = 1st
+    * STORAGE_BUFFER, output = 2nd. */
+   if (nir_src_is_const(taps[0]->src[0]))
+      out->input_ssbo_binding = nir_src_as_uint(taps[0]->src[0]);
    if (nir_src_is_const(store->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
 }

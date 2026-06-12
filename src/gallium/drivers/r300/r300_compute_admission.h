@@ -157,6 +157,17 @@ struct r300_compute_unary_map_pattern {
    bool       output_ssbo_binding_valid;
    float      mul_const;          /* c0 scale; 1.0 for a pure bias */
    float      add_const;          /* c1 bias; 0.0 for a pure scale */
+   /* Each affine constant is either a literal (load_const; value in
+    * mul_const/add_const above) or a push-constant scalar whose value is only
+    * known at command-record time.  For a push-derived constant the detector
+    * records the byte offset into the push window instead; the synthesized
+    * fragment program reads it from the constant file (the dispatch replay
+    * binds the push window at FS CONST[0], so byte offset N maps to
+    * CONST[N/16] component (N%16)/4) rather than baking an immediate. */
+   bool       mul_const_from_push;
+   bool       add_const_from_push;
+   uint16_t   mul_const_push_offset; /* byte offset of c0 in the push window */
+   uint16_t   add_const_push_offset; /* byte offset of c1 in the push window */
    uint8_t    value_components;   /* store_ssbo value vector width */
    uint8_t    value_bit_size;     /* store_ssbo value component width */
    bool       value_is_float;     /* result base type is float */

@@ -1682,6 +1682,11 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    NIR_PASS(_, nir, nir_lower_var_copies);
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
 
+   /* Push-constant reads must reach the detectors as load_push_constant with
+    * a foldable offset, not as opaque push_const derefs -- the unary-map
+    * detector keys c0/c1 capture on that intrinsic. */
+   NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
+            nir_address_format_32bit_offset);
    NIR_PASS(_, nir, nir_lower_explicit_io,
             nir_var_mem_ubo | nir_var_mem_ssbo,
             nir_address_format_32bit_index_offset);
@@ -1692,7 +1697,22 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
       NIR_PASS(progress, nir, nir_opt_copy_prop);
       NIR_PASS(progress, nir, nir_opt_dce);
       NIR_PASS(progress, nir, nir_opt_cse);
+      /* Fold the explicit_io offset arithmetic to inline constants: the
+       * detectors capture bindings and push offsets only from
+       * nir_src_is_const sources, and a SPIR-V access chain reaches here as
+       * iadd/imul trees over immediates that copy-prop alone never folds. */
+      NIR_PASS(progress, nir, nir_opt_constant_folding);
    } while (progress);
+
+   /* Detector-eye view of the kernel: R300VK_DEBUG=classify_nir dumps the
+    * exact NIR the classify + pattern detectors walk, the first thing to
+    * read when a kernel that should match a raster verb dispatches as an
+    * unknown-shape no-op. */
+   {
+      const char *dbg = getenv("R300VK_DEBUG");
+      if (dbg && strstr(dbg, "classify_nir"))
+         nir_print_shader(nir, stderr);
+   }
 
    r300_nir_classify_compute(nir, adm);
    r300_nir_detect_identity_map(nir, ident);
@@ -1925,14 +1945,28 @@ r300vk_binary_map_synthesize_shaders(struct r300vk_device *device,
 /* Synthesise the single-sampler affine fragment program for the unary-map
  * lowering: out = sample(in) * c0 + c1.
  *   TEX tmp, IN[0], SAMP[0]   (sample in, NEAREST)
- *   MUL tmp, tmp, {c0,c0,c0,c0}
- *   ADD OUT[0], tmp, {c1,c1,c1,c1}
+ *   MUL tmp, tmp, c0.broadcast
+ *   ADD OUT[0], tmp, c1.broadcast
  *   END
- * Scale/bias are baked as immediates from the detector's captured c0/c1.  MUL +
- * ADD (not a single MAD) stays within the opcode set the binary-map FS already
- * uses.  Cost: 1 TEX + 2 ALU. */
+ * A literal constant bakes as an immediate from the detector's captured
+ * value.  A push-derived constant has no value at pipeline-create time, so it
+ * reads the constant file instead: the dispatch replay binds the 128-byte
+ * push window at FS CONST[0], mapping push byte offset N to CONST[N/16]
+ * component (N%16)/4.  MUL + ADD (not a single MAD) stays within the opcode
+ * set the binary-map FS already uses.  Cost: 1 TEX + 2 ALU. */
+static struct ureg_src
+r300vk_unary_map_const_src(struct ureg_program *ureg, bool from_push,
+                           uint16_t push_offset, float literal)
+{
+   if (!from_push)
+      return ureg_imm4f(ureg, literal, literal, literal, literal);
+   return ureg_scalar(ureg_DECL_constant(ureg, push_offset / 16),
+                      (push_offset % 16) / 4);
+}
+
 static void *
-r300vk_synthesize_unary_map_fs(struct pipe_context *pipe, float c0, float c1)
+r300vk_synthesize_unary_map_fs(struct pipe_context *pipe,
+                               const struct r300_compute_unary_map_pattern *um)
 {
    struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
    if (!ureg)
@@ -1947,8 +1981,10 @@ r300vk_synthesize_unary_map_fs(struct pipe_context *pipe, float c0, float c1)
                                             TGSI_INTERPOLATE_PERSPECTIVE);
    struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
    struct ureg_dst tmp = ureg_DECL_temporary(ureg);
-   struct ureg_src c0s = ureg_imm4f(ureg, c0, c0, c0, c0);
-   struct ureg_src c1s = ureg_imm4f(ureg, c1, c1, c1, c1);
+   struct ureg_src c0s = r300vk_unary_map_const_src(
+      ureg, um->mul_const_from_push, um->mul_const_push_offset, um->mul_const);
+   struct ureg_src c1s = r300vk_unary_map_const_src(
+      ureg, um->add_const_from_push, um->add_const_push_offset, um->add_const);
 
    ureg_TEX(ureg, ureg_writemask(tmp, TGSI_WRITEMASK_XYZW),
             TGSI_TEXTURE_2D, tex, samp);
@@ -1976,8 +2012,7 @@ r300vk_unary_map_synthesize_shaders(struct r300vk_device *device,
    if (!pl->vs_cso)
       return false;
 
-   pl->fs_cso = r300vk_synthesize_unary_map_fs(pipe, pl->unary_map.mul_const,
-                                               pl->unary_map.add_const);
+   pl->fs_cso = r300vk_synthesize_unary_map_fs(pipe, &pl->unary_map);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -3435,7 +3470,17 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
     * still valid VkPipeline objects.  vkCreateComputePipelines does not permit
     * VK_ERROR_FEATURE_NOT_PRESENT; inadmissible pipelines dispatched at replay
     * time are silent no-ops (R300_COMPUTE_REJECT_UNKNOWN_SHAPE) that return
-    * VK_SUCCESS without writing the output buffer, keeping the queue alive. */
+    * VK_SUCCESS without writing the output buffer, keeping the queue alive.
+    * The reject reason still surfaces here through the debug messenger so an
+    * app (or probe harness) can see WHY the kernel will no-op without
+    * grepping driver logs. */
+   if (!adm.admissible) {
+      vk_logw(VK_LOG_OBJS(&device->vk.base),
+              "r300vk: compute kernel %u is not lowerable to the RS482 raster "
+              "substrate: %s (%s); dispatches will no-op",
+              i, r300_compute_reject_name(adm.reason),
+              adm.detail ? adm.detail : "no detail");
+   }
    struct r300vk_pipeline *pl =
       vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*pl), 8,
                  VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
