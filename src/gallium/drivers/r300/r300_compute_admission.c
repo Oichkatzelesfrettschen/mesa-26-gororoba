@@ -3291,6 +3291,14 @@ r300_nir_classify_compute(const nir_shader *s,
    r300_nir_detect_zpass_reduction(s, &zpass);
    const bool admit_ssbo_atomic_zpass = zpass.is_zpass_reduction;
 
+   /* Constant-operand comp_swap admit-precheck (CAS ROUTE A): same
+    * admit-on-shape pattern, keyed on ssbo_atomic_swap with both data
+    * operands compile-time constants.  Mutually exclusive with the other
+    * two flags by intrinsic (they admit ssbo_atomic, never the swap). */
+   struct r300_compute_cas_pattern cas = {0};
+   r300_nir_detect_cas_pattern(s, &cas);
+   const bool admit_ssbo_atomic_swap_cas = cas.is_cas;
+
    /* Workgroup shared memory: no LDS on R3xx. */
    if (s->info.shared_size > 0) {
       reject(out, R300_COMPUTE_REJECT_SHARED_MEMORY,
@@ -3329,6 +3337,10 @@ r300_nir_classify_compute(const nir_shader *s,
                        admit_ssbo_atomic_zpass) &&
                       intr->intrinsic == nir_intrinsic_ssbo_atomic) {
                      continue;  /* blend-acc OR ZPASS lowering will handle it */
+                  }
+                  if (admit_ssbo_atomic_swap_cas &&
+                      intr->intrinsic == nir_intrinsic_ssbo_atomic_swap) {
+                     continue;  /* the constant-operand CAS verb handles it */
                   }
                   reject(out, R300_COMPUTE_REJECT_GENERAL_ATOMIC, name);
                   return;
@@ -3921,6 +3933,24 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                         address_use = true;
                   continue;
                }
+               if (intr->intrinsic == nir_intrinsic_ssbo_atomic ||
+                   intr->intrinsic == nir_intrinsic_ssbo_atomic_swap) {
+                  /* Buffer index and byte offset are ADDRESSING, carried by
+                   * texel position at replay like any load/store; the data
+                   * operands (value, and compare for the swap) would
+                   * materialize the index and have no admitted carrier. */
+                  for (unsigned i = 0;
+                       i < nir_intrinsic_infos[intr->intrinsic].num_srcs;
+                       i++) {
+                     if (!index_walk_lookup(&st, intr->src[i].ssa))
+                        continue;
+                     if (i < 2)
+                        address_use = true;
+                     else
+                        value_general = true;
+                  }
+                  continue;
+               }
                /* Any other intrinsic consuming a tracked def: no bound. */
                for (unsigned i = 0;
                     i < nir_intrinsic_infos[intr->intrinsic].num_srcs; i++)
@@ -4218,4 +4248,67 @@ r300_nir_detect_multilimb_mul_pattern(const nir_shader *s,
    if (nir_src_is_const(store[0]->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
    out->is_multilimb_mul = true;
+}
+
+/* Constant-operand compare-and-swap detector.  Exactly one
+ * ssbo_atomic_swap with ATOMIC_OP cmpxchg whose compare (src[2]) and new
+ * (src[3]) operands are 32-bit compile-time constants, exactly one
+ * store_ssbo whose stored value is the atomic's def (the returned old),
+ * zero load_ssbo, no loop or conditional.  The guard and result bindings
+ * come off constant sources where available; the orchestrator's positional
+ * fallback (guard = first STORAGE_BUFFER, result = second) recovers them
+ * otherwise. */
+void
+r300_nir_detect_cas_pattern(const nir_shader *s,
+                            struct r300_compute_cas_pattern *out)
+{
+   memset(out, 0, sizeof(*out));
+
+   const nir_intrinsic_instr *swap = NULL;
+   const nir_intrinsic_instr *store = NULL;
+   unsigned nswap = 0, nstore = 0, nload = 0, nother = 0;
+   nir_foreach_function_impl(impl, (nir_shader *)s) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_ssbo_atomic_swap) {
+               swap = intr;
+               nswap++;
+            } else if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               nstore++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               nload++;
+            } else if (strstr(nir_intrinsic_infos[intr->intrinsic].name,
+                              "atomic")) {
+               nother++;
+            }
+         }
+      }
+   }
+   if (nswap != 1 || nstore != 1 || nload != 0 || nother != 0)
+      return;
+   if (nir_intrinsic_atomic_op(swap) != nir_atomic_op_cmpxchg)
+      return;
+   if (swap->def.bit_size != 32 || swap->def.num_components != 1)
+      return;
+   if (!nir_src_is_const(swap->src[2]) || !nir_src_is_const(swap->src[3]))
+      return;
+   /* The stored value must be the atomic's returned old. */
+   if (store->src[0].ssa != &swap->def)
+      return;
+
+   out->expect    = (uint32_t)nir_src_as_uint(swap->src[2]);
+   out->value_new = (uint32_t)nir_src_as_uint(swap->src[3]);
+   if (nir_src_is_const(swap->src[0])) {
+      out->guard_ssbo_binding = (uint32_t)nir_src_as_uint(swap->src[0]);
+      out->guard_binding_valid = true;
+   }
+   if (nir_src_is_const(store->src[1])) {
+      out->result_ssbo_binding = (uint32_t)nir_src_as_uint(store->src[1]);
+      out->result_binding_valid = true;
+   }
+   out->is_cas = true;
 }

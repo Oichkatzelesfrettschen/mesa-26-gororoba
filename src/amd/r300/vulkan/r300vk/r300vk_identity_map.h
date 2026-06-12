@@ -425,4 +425,14 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
                                      const struct r300vk_cmd_dispatch *dispatch,
                                      const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* CAS dispatch replay: old = atomicCompSwap(guard[gid], C_expect, C_new);
+ * result[gid] = old.  Copies the guard pre-image to the result buffer (the
+ * returned old values), draws the bytewise-SEQ select into a guard render
+ * target, and copies the post-image back into the guard buffer. */
+bool
+r300vk_cas_dispatch_replay(struct r300vk_device *device,
+                           const struct r300vk_pipeline *pl,
+                           const struct r300vk_cmd_dispatch *dispatch,
+                           const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #endif /* R300VK_IDENTITY_MAP_H */

@@ -1585,6 +1585,58 @@ case_multilimb_mul(void)
    ralloc_free(iota);
 }
 
+/* old = atomicCompSwap(g[gid], 0xDEADBEEF, 0x00FF10AA); r[gid] = old. */
+static nir_shader *
+build_cas_const_u32(bool const_operands)
+{
+   nir_builder b = cs_builder("cs_cas_const_u32");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_intrinsic_instr *swap =
+      nir_intrinsic_instr_create(b.shader, nir_intrinsic_ssbo_atomic_swap);
+   swap->num_components = 1;
+   nir_def_init(&swap->instr, &swap->def, 1, 32);
+   nir_intrinsic_set_atomic_op(swap, nir_atomic_op_cmpxchg);
+   swap->src[0] = nir_src_for_ssa(nir_imm_int(&b, 0));
+   swap->src[1] = nir_src_for_ssa(off);
+   swap->src[2] = nir_src_for_ssa(const_operands ? nir_imm_int(&b, 0xDEADBEEF)
+                                                 : gid);
+   swap->src[3] = nir_src_for_ssa(nir_imm_int(&b, 0x00FF10AA));
+   nir_builder_instr_insert(&b, &swap->instr);
+   nir_store_ssbo(&b, &swap->def, nir_imm_int(&b, 1), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_cas(void)
+{
+   printf("constant-operand CAS detector\n");
+   struct r300_compute_cas_pattern cp = {0};
+
+   nir_shader *cas = build_cas_const_u32(true);
+   r300_nir_detect_cas_pattern(cas, &cp);
+   CHECK(cp.is_cas, "constant-operand comp_swap detects CAS");
+   CHECK(cp.expect == 0xDEADBEEF && cp.value_new == 0x00FF10AA,
+         "CAS captures expect and new");
+   CHECK(cp.guard_binding_valid && cp.guard_ssbo_binding == 0 &&
+         cp.result_binding_valid && cp.result_ssbo_binding == 1,
+         "CAS records guard and result bindings");
+   struct r300_compute_admission adm;
+   r300_nir_classify_compute(cas, &adm);
+   CHECK(adm.admissible, "constant-operand comp_swap ADMITS classification");
+   ralloc_free(cas);
+
+   nir_shader *gen = build_cas_const_u32(false);
+   r300_nir_detect_cas_pattern(gen, &cp);
+   CHECK(!cp.is_cas, "non-constant compare rejects CAS");
+   r300_nir_classify_compute(gen, &adm);
+   CHECK(!adm.admissible &&
+         adm.reason == R300_COMPUTE_REJECT_GENERAL_ATOMIC,
+         "non-constant comp_swap still rejects GENERAL_ATOMIC");
+   ralloc_free(gen);
+}
+
 int
 main(void)
 {
@@ -1618,6 +1670,7 @@ main(void)
    case_index_consumption();
    case_affine_iota();
    case_multilimb_mul();
+   case_cas();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

@@ -5005,3 +5005,176 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
            (unsigned long long)total, (int)ok);
    return ok;
 }
+
+bool
+r300vk_cas_dispatch_replay(struct r300vk_device *device,
+                           const struct r300vk_pipeline *pl,
+                           const struct r300vk_cmd_dispatch *dispatch,
+                           const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device ? device->pipe : NULL;
+   struct pipe_screen  *screen = device ? device->screen : NULL;
+   const struct r300vk_descriptor_set *set = NULL;
+   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R8G8B8A8_UNORM,
+                                    PIPE_TEXTURE_2D, 0, 0,
+                                    PIPE_BIND_RENDER_TARGET))
+      return false;
+
+   /* Two bindings: guard, result.  Captured constants win; the positional
+    * fallback (guard = first STORAGE_BUFFER, result = second) recovers
+    * post-explicit_io handles. */
+   uint32_t bind[2] = { pl->cas.guard_ssbo_binding,
+                        pl->cas.result_ssbo_binding };
+   if (!pl->cas.guard_binding_valid || !pl->cas.result_binding_valid) {
+      for (unsigned i = 0; i < 2; i++)
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+   }
+   const struct r300vk_descriptor *desc[2];
+   struct r300vk_buffer *buf[2];
+   for (unsigned i = 0; i < 2; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer)
+         return false;
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   struct r300_grid_fold fold;
+   if (!r300_grid_fold_1d(total, &fold))
+      return false;
+   const unsigned width = fold.width, height = fold.height;
+
+   /* The returned old IS the guard pre-image: copy it to the result buffer
+    * before the swap draw mutates the guard. */
+   {
+      struct pipe_transfer *gx = NULL, *rx = NULL;
+      struct pipe_box gbox, rbox;
+      memset(&gbox, 0, sizeof(gbox));
+      gbox.x = (int)desc[0]->buf.offset;
+      gbox.width = (int)(total * 4u);
+      gbox.height = 1; gbox.depth = 1;
+      rbox = gbox;
+      rbox.x = (int)desc[1]->buf.offset;
+      const void *gmap = pipe->buffer_map(pipe, buf[0]->resource, 0,
+                                          PIPE_MAP_READ, &gbox, &gx);
+      if (!gmap)
+         return false;
+      void *rmap = pipe->buffer_map(pipe, buf[1]->resource, 0,
+                                    PIPE_MAP_WRITE |
+                                    PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                    &rbox, &rx);
+      if (!rmap) {
+         pipe->buffer_unmap(pipe, gx);
+         return false;
+      }
+      memcpy(rmap, gmap, (size_t)(total * 4u));
+      pipe->buffer_unmap(pipe, rx);
+      pipe->buffer_unmap(pipe, gx);
+   }
+
+   struct pipe_sampler_view *view =
+      r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[0]->resource, (unsigned)desc[0]->buf.offset,
+         width, height, PIPE_FORMAT_R8G8B8A8_UNORM);
+   if (!view)
+      return false;
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      pipe_sampler_view_reference(&view, NULL);
+      return false;
+   }
+
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = PIPE_FORMAT_R8G8B8A8_UNORM;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (!rt) {
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_sampler_view_reference(&view, NULL);
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+
+   struct pipe_surface surf_templ;
+   memset(&surf_templ, 0, sizeof(surf_templ));
+   surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
+   surf_templ.texture = rt;
+   r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                        device->identity_map_blend_cso,
+                                        device->identity_map_rasterizer_cso,
+                                        device->identity_map_dsa_cso,
+                                        pl->vs_cso, pl->fs_cso, velems_cso);
+   void *samplers[1] = { device->identity_map_sampler_cso };
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, samplers);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &view);
+
+   struct pipe_vertex_buffer vb_state;
+   memset(&vb_state, 0, sizeof(vb_state));
+   vb_state.buffer.resource = vb;
+   pipe->set_vertex_buffers(pipe, 1, &vb_state);
+   struct pipe_draw_info info;
+   memset(&info, 0, sizeof(info));
+   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.instance_count = 1;
+   info.max_index      = 3;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+   pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+   pipe->flush(pipe, NULL, 0);
+
+   /* The RGBA8 post-image bytes ARE the swapped little-endian u32 guards. */
+   bool copy_ok = false;
+   {
+      struct pipe_box copy_box;
+      memset(&copy_box, 0, sizeof(copy_box));
+      copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+      struct pipe_transfer *rt_xfer = NULL;
+      const void *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                             &copy_box, &rt_xfer);
+      if (rt_map) {
+         struct pipe_transfer *out_xfer = NULL;
+         struct pipe_box out_box;
+         memset(&out_box, 0, sizeof(out_box));
+         out_box.x      = (int)desc[0]->buf.offset;
+         out_box.width  = (int)(total * 4u);
+         out_box.height = 1; out_box.depth = 1;
+         void *out_bytes = pipe->buffer_map(pipe, buf[0]->resource, 0,
+                                            PIPE_MAP_WRITE, &out_box,
+                                            &out_xfer);
+         if (out_bytes) {
+            r300vk_identity_map_copy_rows(out_bytes, width * 4u, rt_map,
+                                          rt_xfer->stride, width, height, 4u,
+                                          total);
+            pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      }
+   }
+
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&view, NULL);
+   pipe_resource_reference(&rt, NULL);
+   pipe_resource_reference(&vb, NULL);
+   IDM_LOG("cas done total=%llu expect=0x%08x new=0x%08x copy_ok=%d",
+           (unsigned long long)total, pl->cas.expect, pl->cas.value_new,
+           (int)copy_ok);
+   return copy_ok;
+}

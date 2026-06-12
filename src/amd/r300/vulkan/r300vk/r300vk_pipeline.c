@@ -1655,6 +1655,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_index_pattern *index_consumption,
                                struct r300_compute_affine_iota_pattern *affine_iota,
                                struct r300_compute_multilimb_mul_pattern *multilimb_mul,
+                               struct r300_compute_cas_pattern *cas,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1759,6 +1760,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_classify_index_consumption(nir, index_consumption);
    r300_nir_detect_affine_iota_pattern(nir, affine_iota);
    r300_nir_detect_multilimb_mul_pattern(nir, multilimb_mul);
+   r300_nir_detect_cas_pattern(nir, cas);
 
    ralloc_free(nir);
    return true;
@@ -2364,6 +2366,87 @@ r300vk_multilimb_synthesize_shaders(struct r300vk_device *device,
    /* The dispatch validation prologue requires a non-NULL fs_cso; the
     * column draws bind multilimb_fs[k] explicitly. */
    pl->fs_cso = pl->multilimb_fs[0];
+   return true;
+}
+
+/* CAS FS: guard' = (guard == C_expect) ? C_new : guard, decided BYTEWISE.
+ * Sample the guard texel, snap the bytes (floor(v * 255 + 0.5) -- the
+ * sampled-byte snap rule), compare all four channels against the expect
+ * bytes with one vec4 SEQ (silicon-confirmed exact for byte operands),
+ * combine the four lanes into one predicate with three multiplies, and
+ * select per channel with out = guard + t * (new - guard).  Every operand
+ * is a byte (<= 255) or a 0/1 predicate; all arithmetic exact in FP24. */
+static void *
+r300vk_synthesize_cas_fs(struct pipe_context *pipe, uint32_t expect,
+                         uint32_t value_new)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                           TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+
+   struct ureg_src expb = ureg_imm4f(ureg,
+      (float)(expect & 0xFF), (float)((expect >> 8) & 0xFF),
+      (float)((expect >> 16) & 0xFF), (float)((expect >> 24) & 0xFF));
+   struct ureg_src newb = ureg_imm4f(ureg,
+      (float)(value_new & 0xFF), (float)((value_new >> 8) & 0xFF),
+      (float)((value_new >> 16) & 0xFF), (float)((value_new >> 24) & 0xFF));
+
+   struct ureg_dst g = ureg_DECL_temporary(ureg);
+   struct ureg_dst eq = ureg_DECL_temporary(ureg);
+   struct ureg_dst t = ureg_DECL_temporary(ureg);
+   struct ureg_dst d = ureg_DECL_temporary(ureg);
+
+   ureg_TEX(ureg, g, TGSI_TEXTURE_2D, tc, samp);
+   ureg_MAD(ureg, g, ureg_src(g), ureg_imm1f(ureg, 255.0f),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, g, ureg_src(g));
+
+   ureg_SEQ(ureg, eq, ureg_src(g), expb);
+   ureg_MUL(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
+            ureg_scalar(ureg_src(eq), TGSI_SWIZZLE_X),
+            ureg_scalar(ureg_src(eq), TGSI_SWIZZLE_Y));
+   ureg_MUL(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
+            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X),
+            ureg_scalar(ureg_src(eq), TGSI_SWIZZLE_Z));
+   ureg_MUL(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
+            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X),
+            ureg_scalar(ureg_src(eq), TGSI_SWIZZLE_W));
+
+   ureg_ADD(ureg, d, newb, ureg_negate(ureg_src(g)));
+   ureg_MAD(ureg, d, ureg_src(d), ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X),
+            ureg_src(g));
+   ureg_MUL(ureg, out, ureg_src(d), ureg_imm1f(ureg, 1.0f / 255.0f));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+static bool
+r300vk_cas_synthesize_shaders(struct r300vk_device *device,
+                              struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+   pl->fs_cso = r300vk_synthesize_cas_fs(pipe, pl->cas.expect,
+                                         pl->cas.value_new);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
    return true;
 }
 
@@ -3607,6 +3690,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->multilimb_mul.is_multilimb_mul = false;
       return true;
    }
+   if (pl->cas.is_cas) {
+      if (!r300vk_cas_synthesize_shaders(device, pl))
+         pl->cas.is_cas = false;
+      return true;
+   }
    if (pl->binary_map.is_binary_map) {
       if (!r300vk_binary_map_synthesize_shaders(device, pl))
          pl->binary_map.is_binary_map = false;
@@ -3785,6 +3873,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_index_pattern index_pat = {0};
    struct r300_compute_affine_iota_pattern affine_iota_pat = {0};
    struct r300_compute_multilimb_mul_pattern multilimb_pat = {0};
+   struct r300_compute_cas_pattern cas_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
@@ -3801,6 +3890,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
                                        &ieee16_classify_pat, &ieee16_mul_pat,
                                        &constfill_pat, &index_pat,
                                        &affine_iota_pat, &multilimb_pat,
+                                       &cas_pat,
                                        local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
@@ -3856,6 +3946,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->index_consumption = index_pat;
    pl->affine_iota = affine_iota_pat;
    pl->multilimb_mul = multilimb_pat;
+   pl->cas = cas_pat;
    /* The multilimb path is exact for every u32 operand pair; the binary-map
     * imul lowering is only exact below the FP24 window.  When both detect
     * the same kernel, multilimb wins and the elementwise route is cleared. */

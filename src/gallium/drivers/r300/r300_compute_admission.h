@@ -814,6 +814,29 @@ struct r300_compute_affine_iota_pattern {
 void r300_nir_detect_affine_iota_pattern(const struct nir_shader *s,
                                          struct r300_compute_affine_iota_pattern *out);
 
+/* Constant-operand compare-and-swap pattern (CAS ROUTE A):
+ * old = atomicCompSwap(guard[gid], C_expect, C_new); result[gid] = old.
+ * Per-element guards addressed by the invocation index need no bus
+ * atomicity (one fragment per cell); the replay samples the guard,
+ * compares the four bytes against C_expect with per-channel SEQ
+ * (silicon-confirmed exact for all u32 -- the byteseq calibration), and
+ * selects C_new or the original bytes into the guard render target; the
+ * pre-image is copied to the result buffer first (the returned old).
+ * Only the constant-operand comp_swap is admitted; every other atomic
+ * stays R300_COMPUTE_REJECT_GENERAL_ATOMIC. */
+struct r300_compute_cas_pattern {
+   bool       is_cas;
+   uint32_t   guard_ssbo_binding;
+   bool       guard_binding_valid;
+   uint32_t   result_ssbo_binding;
+   bool       result_binding_valid;
+   uint32_t   expect;
+   uint32_t   value_new;
+};
+
+void r300_nir_detect_cas_pattern(const struct nir_shader *s,
+                                 struct r300_compute_cas_pattern *out);
+
 /* Multilimb u32 multiply pattern: out[gid] = a[gid] * b[gid] for
  * single-component 32-bit integers -- the binary-map imul shape, routed to
  * the exact multilimb orchestrator instead of the FP24-bounded elementwise
