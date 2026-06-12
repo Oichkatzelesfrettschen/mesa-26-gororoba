@@ -18,6 +18,7 @@
 #include "nir_builder.h"
 
 #include "r300_compute_admission.h"
+#include "r300_grid_fold.h"
 
 static unsigned g_failures;
 
@@ -1307,6 +1308,142 @@ case_octonion_algebra_metadata(void)
    ralloc_free(om);
 }
 
+/* Index-consumption builders.  The classifier separates address-only index
+ * use (carried by texel position at replay, 2048x2048 honest) from value use
+ * (must materialize a * gid + b in FP24, bounded by the 2^17 exact-integer
+ * ceiling at dispatch). */
+
+/* out[gid] = in[gid]: the index feeds only load/store offsets. */
+static nir_shader *
+build_index_address_only(void)
+{
+   nir_builder b = cs_builder("cs_index_address_only");
+   nir_def *off = nir_imul(&b, nir_load_global_invocation_index(&b, 32),
+                           nir_imm_int(&b, 4));
+   nir_def *in = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), off,
+                               .align_mul = 4, .align_offset = 0);
+   nir_store_ssbo(&b, in, nir_imm_int(&b, 1), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[gid] = gid: the linear index is the stored value (stride 1, offset 0). */
+static nir_shader *
+build_index_value_linear(void)
+{
+   nir_builder b = cs_builder("cs_index_value_linear");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, gid, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[gid] = gid * 4 + 2: affine value consumption with captured stride. */
+static nir_shader *
+build_index_value_strided(void)
+{
+   nir_builder b = cs_builder("cs_index_value_strided");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *val = nir_iadd(&b, nir_imul(&b, gid, nir_imm_int(&b, 4)),
+                           nir_imm_int(&b, 2));
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[gid] = gid * gid: no affine bound is derivable. */
+static nir_shader *
+build_index_value_general(void)
+{
+   nir_builder b = cs_builder("cs_index_value_general");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *val = nir_imul(&b, gid, gid);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[id.y] = in[id.y]: a vec3 id channel beyond .x feeds the address. */
+static nir_shader *
+build_index_coord_y(void)
+{
+   nir_builder b = cs_builder("cs_index_coord_y");
+   nir_def *id = nir_load_global_invocation_id(&b, 32);
+   nir_def *off = nir_imul(&b, nir_channel(&b, id, 1), nir_imm_int(&b, 4));
+   nir_def *in = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), off,
+                               .align_mul = 4, .align_offset = 0);
+   nir_store_ssbo(&b, in, nir_imm_int(&b, 1), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_index_consumption(void)
+{
+   printf("index-consumption classifier\n");
+
+   nir_shader *none = build_const_fill_u32();
+   struct r300_compute_index_pattern p = {0};
+   r300_nir_classify_index_consumption(none, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_NONE,
+         "const-fill kernel classifies INDEX_NONE");
+   ralloc_free(none);
+
+   nir_shader *addr = build_index_address_only();
+   r300_nir_classify_index_consumption(addr, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_ADDRESS_ONLY,
+         "offset-only index use classifies ADDRESS_ONLY");
+   CHECK(!p.uses_component_y && !p.uses_component_z,
+         "scalar invocation index reads no y/z channel");
+   ralloc_free(addr);
+
+   nir_shader *lin = build_index_value_linear();
+   r300_nir_classify_index_consumption(lin, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "stored index classifies VALUE_AFFINE");
+   CHECK(p.stride_valid && p.stride == 1 && p.offset == 0,
+         "stored index captures stride 1 offset 0");
+   ralloc_free(lin);
+
+   nir_shader *str = build_index_value_strided();
+   r300_nir_classify_index_consumption(str, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "gid*4+2 classifies VALUE_AFFINE");
+   CHECK(p.stride_valid && p.stride == 4 && p.offset == 2,
+         "gid*4+2 captures stride 4 offset 2");
+   ralloc_free(str);
+
+   nir_shader *gen = build_index_value_general();
+   r300_nir_classify_index_consumption(gen, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_GENERAL,
+         "gid*gid classifies VALUE_GENERAL");
+   ralloc_free(gen);
+
+   nir_shader *cy = build_index_coord_y();
+   r300_nir_classify_index_consumption(cy, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_ADDRESS_ONLY,
+         "vec3 id channel feeding the address classifies ADDRESS_ONLY");
+   CHECK(p.uses_component_y, "channel .y consumption is reported");
+   ralloc_free(cy);
+
+   /* FP24 exact-ceiling guard boundaries (pure arithmetic, no NIR). */
+   CHECK(r300_grid_linear_index_exact(131072),
+         "linear total 2^17 admits (largest index 2^17 - 1)");
+   CHECK(!r300_grid_linear_index_exact(131073),
+         "linear total 2^17 + 1 rejects");
+   CHECK(r300_grid_strided_index_exact(32768, 4, 0),
+         "strided 4 * (2^15 - 1) admits");
+   CHECK(!r300_grid_strided_index_exact(32770, 4, 0),
+         "strided 4 * (2^15 + 1) rejects");
+   CHECK(r300_grid_index_exact(R300_GRID_INDEX_NONE, 2048u * 2048u, 0, 0),
+         "position-addressed 2048x2048 fold admits");
+   CHECK(!r300_grid_index_exact(R300_GRID_INDEX_LINEAR, 2048u * 2048u, 0, 0),
+         "linear-indexed 2048x2048 fold rejects");
+}
+
 int
 main(void)
 {
@@ -1337,6 +1474,7 @@ main(void)
    case_octonion_algebra_metadata();
    case_const_fill_metadata();
    case_constfill_regression();
+   case_index_consumption();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

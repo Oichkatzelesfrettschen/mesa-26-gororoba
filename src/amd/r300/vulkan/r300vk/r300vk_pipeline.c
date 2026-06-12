@@ -1652,6 +1652,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_ieee16_classify_pattern *ieee16_classify,
                                struct r300_compute_ieee16_mul_pattern *ieee16_mul,
                                struct r300_compute_const_fill_pattern *constfill,
+                               struct r300_compute_index_pattern *index_consumption,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1743,6 +1744,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_ieee16_classify(nir, ieee16_classify);
    r300_nir_detect_ieee16_mul(nir, ieee16_mul);
    r300_nir_detect_const_fill_pattern(nir, constfill);
+   r300_nir_classify_index_consumption(nir, index_consumption);
 
    ralloc_free(nir);
    return true;
@@ -3451,6 +3453,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_ieee16_classify_pattern ieee16_classify_pat = {0};
    struct r300_compute_ieee16_mul_pattern ieee16_mul_pat = {0};
    struct r300_compute_const_fill_pattern constfill_pat = {0};
+   struct r300_compute_index_pattern index_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
@@ -3465,7 +3468,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
                                        &odiv_pat, &otrans_pat,
                                        &qfmadd_pat, &qfmmul_pat,
                                        &ieee16_classify_pat, &ieee16_mul_pat,
-                                       &constfill_pat,
+                                       &constfill_pat, &index_pat,
                                        local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
@@ -3518,6 +3521,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->ieee16_classify = ieee16_classify_pat;
    pl->ieee16_mul = ieee16_mul_pat;
    pl->const_fill = constfill_pat;
+   pl->index_consumption = index_pat;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;

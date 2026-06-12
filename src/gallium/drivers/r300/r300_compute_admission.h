@@ -740,6 +740,58 @@ struct r300_compute_ieee16_mul_pattern {
 void r300_nir_detect_ieee16_mul(const struct nir_shader *s,
                                 struct r300_compute_ieee16_mul_pattern *out);
 
+/* How the kernel consumes the work-item invocation index.  The FP24 fragment
+ * ALU represents every integer only up to 2^17, so the index-exactness bound
+ * a dispatch must satisfy depends on whether the index is ever materialized
+ * as an FP24 VALUE, not on whether the kernel reads the index at all:
+ *
+ *   NONE          -- no invocation-index intrinsic; output addressed purely by
+ *                    texel position (CONSTFILL shape).
+ *   ADDRESS_ONLY  -- index defs feed only load_ssbo / store_ssbo offset
+ *                    chains.  The raster replay carries addressing as texel
+ *                    position (each axis <= 2048, exact), so the full
+ *                    2048x2048 fold is honest.
+ *   VALUE_AFFINE  -- an index def reaches a store_ssbo VALUE source through
+ *                    an affine chain a * gid + b with constant a, b.  The
+ *                    replay must materialize a * gid + b in FP24; the
+ *                    dispatch-time guard bounds a * (total - 1) + b by 2^17
+ *                    (r300_grid_strided_index_exact).
+ *   VALUE_GENERAL -- an index def reaches a stored value through a non-affine
+ *                    chain (index-squared, control flow, an unrecognized
+ *                    intrinsic).  No exactness bound is derivable; the
+ *                    dispatch replay must not claim index identity.
+ */
+enum r300_compute_index_consumption {
+   R300_COMPUTE_INDEX_NONE = 0,
+   R300_COMPUTE_INDEX_ADDRESS_ONLY,
+   R300_COMPUTE_INDEX_VALUE_AFFINE,
+   R300_COMPUTE_INDEX_VALUE_GENERAL,
+};
+
+/* Result of classifying invocation-index consumption.  stride / offset carry
+ * the affine coefficients (value = stride * gid + offset) and are valid only
+ * for VALUE_AFFINE.  uses_component_y / uses_component_z report whether any
+ * vec3 index channel beyond .x is read, which selects the COORD fold bound
+ * (per-axis) over the linear-total bound at dispatch time. */
+struct r300_compute_index_pattern {
+   enum r300_compute_index_consumption consumption;
+   bool       stride_valid;
+   uint32_t   stride;
+   uint32_t   offset;
+   bool       uses_component_y;
+   bool       uses_component_z;
+};
+
+/* Classify how a compute kernel consumes its invocation index.  Pure
+ * read-only analysis: walks the use chains of every invocation-index
+ * intrinsic (global/local invocation id and index, workgroup id) and reports
+ * whether any chain escapes the addressing path into a stored value.
+ * Conservative: an unrecognized consumer or a use-graph larger than the
+ * internal traversal bound classifies as VALUE_GENERAL, never as a weaker
+ * class. */
+void r300_nir_classify_index_consumption(const struct nir_shader *s,
+                                         struct r300_compute_index_pattern *out);
+
 #ifdef __cplusplus
 }
 #endif
