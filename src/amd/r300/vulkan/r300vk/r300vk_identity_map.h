@@ -36,6 +36,20 @@ struct r300vk_pipeline;
 struct r300vk_cmd_dispatch;
 struct r300vk_cmd_bind_descriptor_sets;
 
+/* Dispatch-time index-exactness gate.  Maps the pipeline's classified
+ * invocation-index consumption onto the grid-fold guard
+ * (r300_grid_index_exact): position-addressed kernels are bounded by the
+ * 2048x2048 raster fold, kernels that materialize stride * gid + offset in
+ * the FP24 fragment ALU are bounded by the 2^17 exact-integer ceiling, and
+ * kernels whose index reaches a stored value non-affinely have no derivable
+ * bound and never pass.  Returns true when the dispatch's invocation count
+ * is honest for the kernel's consumption class; a false return means the
+ * replay must not draw (index identity would corrupt silently). */
+bool
+r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const char **out_reason);
+
 /* Wrap the contents of a PIPE_BUFFER pipe_resource as a transient
  * PIPE_TEXTURE_2D + a pipe_sampler_view configured for NEAREST sampling.
  * The texture is allocated linear-tiled, populated by

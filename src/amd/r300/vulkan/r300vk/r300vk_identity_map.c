@@ -13,6 +13,8 @@
 #include "r300vk_buffer.h"
 #include "r300vk_cmd_buffer.h"
 
+#include "r300/r300_grid_fold.h"
+
 #include "compiler/shader_enums.h"
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
@@ -163,6 +165,49 @@ r300vk_idm_total_invocations(const struct r300vk_cmd_dispatch *dispatch,
           (uint64_t)dispatch->group_count_z * lsz;
 }
 
+bool
+r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const char **out_reason)
+{
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const struct r300_compute_index_pattern *ip = &pl->index_consumption;
+   enum r300_grid_index_class cls;
+   uint32_t stride = 1, offset = 0;
+
+   *out_reason = NULL;
+   switch (ip->consumption) {
+   case R300_COMPUTE_INDEX_NONE:
+      cls = R300_GRID_INDEX_NONE;
+      break;
+   case R300_COMPUTE_INDEX_ADDRESS_ONLY:
+      cls = R300_GRID_INDEX_COORD;
+      break;
+   case R300_COMPUTE_INDEX_VALUE_AFFINE:
+      stride = ip->stride_valid ? ip->stride : 1;
+      offset = ip->stride_valid ? ip->offset : 0;
+      cls = (stride == 1 && offset == 0) ? R300_GRID_INDEX_LINEAR
+                                         : R300_GRID_INDEX_STRIDED;
+      break;
+   case R300_COMPUTE_INDEX_VALUE_GENERAL:
+   default:
+      /* The index reaches a stored value through a non-affine chain: no
+       * exactness bound is derivable, so no honest fold exists at any
+       * invocation count. */
+      *out_reason = "index-value-general (no derivable FP24 bound)";
+      return false;
+   }
+
+   if (!r300_grid_index_exact(cls, total, stride, offset)) {
+      *out_reason = (cls == R300_GRID_INDEX_LINEAR ||
+                     cls == R300_GRID_INDEX_STRIDED)
+                       ? "index-ceiling (materialized index exceeds FP24 2^17)"
+                       : "raster-fold (invocations exceed 2048x2048)";
+      return false;
+   }
+   return true;
+}
+
 static bool
 r300vk_idm_compute_raster_grid(const struct r300vk_cmd_dispatch *dispatch,
                                const struct r300vk_pipeline *pl,
@@ -172,21 +217,15 @@ r300vk_idm_compute_raster_grid(const struct r300vk_cmd_dispatch *dispatch,
 {
    const uint64_t total_invocations =
       r300vk_idm_total_invocations(dispatch, pl);
-   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
+   struct r300_grid_fold fold;
+   if (!r300_grid_fold_1d(total_invocations, &fold)) {
       IDM_LOG("early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
       return false;
    }
    *out_invocations = total_invocations;
-
-   unsigned width = 2048;
-   unsigned height = (unsigned)((total_invocations + 2047) / 2048);
-   if (total_invocations <= 2048) {
-      width = (unsigned)total_invocations;
-      height = 1;
-   }
-   *out_width = width;
-   *out_height = height;
+   *out_width = fold.width;
+   *out_height = fold.height;
    return true;
 }
 
@@ -743,14 +782,16 @@ static void
 derive_raster_extent(uint32_t total_invocations,
                      unsigned *out_width, unsigned *out_height)
 {
-   const unsigned axis_cap = 2048;
-   if (total_invocations <= axis_cap) {
-      *out_width  = total_invocations ? total_invocations : 1;
+   struct r300_grid_fold fold;
+   if (!r300_grid_fold_1d(total_invocations ? total_invocations : 1, &fold)) {
+      /* Callers bounds-check total against 2048x2048 before folding; an
+       * out-of-range count here is a caller bug, not a recoverable state. */
+      *out_width  = 1;
       *out_height = 1;
       return;
    }
-   *out_width  = axis_cap;
-   *out_height = (total_invocations + axis_cap - 1) / axis_cap;
+   *out_width  = fold.width;
+   *out_height = fold.height;
 }
 
 
