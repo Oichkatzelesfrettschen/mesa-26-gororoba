@@ -1380,6 +1380,23 @@ build_index_coord_y(void)
    return b.shader;
 }
 
+/* The system-value lowering's real shape: (global_id + base_global_id).x as
+ * the stored value, with the addressing chain off the same sum.  The base
+ * intrinsic must register as the zero affine so the sum folds to identity. */
+static nir_shader *
+build_index_value_linear_with_base(void)
+{
+   nir_builder b = cs_builder("cs_index_value_linear_base");
+   nir_def *id = nir_load_global_invocation_id(&b, 32);
+   nir_def *base = nir_load_base_global_invocation_id(&b, 32);
+   nir_def *sum = nir_iadd(&b, id, base);
+   nir_def *gid = nir_channel(&b, sum, 0);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, gid, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 case_index_consumption(void)
 {
@@ -1421,6 +1438,14 @@ case_index_consumption(void)
    CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_GENERAL,
          "gid*gid classifies VALUE_GENERAL");
    ralloc_free(gen);
+
+   nir_shader *wb = build_index_value_linear_with_base();
+   r300_nir_classify_index_consumption(wb, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "(global_id + zero base).x stored classifies VALUE_AFFINE");
+   CHECK(p.stride_valid && p.stride == 1 && p.offset == 0,
+         "zero base folds to identity affine");
+   ralloc_free(wb);
 
    nir_shader *cy = build_index_coord_y();
    r300_nir_classify_index_consumption(cy, &p);

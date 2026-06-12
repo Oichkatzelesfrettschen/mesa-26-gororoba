@@ -1684,6 +1684,16 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    NIR_PASS(_, nir, nir_lower_var_copies);
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
 
+   /* SPIR-V delivers gl_GlobalInvocationID as a system-value VARIABLE read
+    * through load_deref; the index-consumption classifier and the affine-iota
+    * detector walk the load_global_invocation_id intrinsic.  Lower the
+    * variable form to the intrinsic before detection -- without this every
+    * real kernel classifies INDEX_NONE and the index-exactness gate is
+    * inert.  Plain system-value lowering only: the compute variant that
+    * decomposes the global id into workgroup_id * size + local_id would
+    * destroy the affine chain the classifier proves. */
+   NIR_PASS(_, nir, nir_lower_system_values);
+
    /* Push-constant reads must reach the detectors as load_push_constant with
     * a foldable offset, not as opaque push_const derefs -- the unary-map
     * detector keys c0/c1 capture on that intrinsic. */
