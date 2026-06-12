@@ -578,8 +578,18 @@ case_unary_metadata(void)
    r300_nir_classify_compute(nir, &adm);
    CHECK(adm.admissible, "scalar unary affine-map kernel admits");
    r300_nir_detect_unary_map(nir, &umap);
-   CHECK(!umap.is_unary_map,
-         "scalar unary-map rejected until a scalar carrier exists");
+   CHECK(umap.is_unary_map,
+         "scalar unary-map detected via the R32_FLOAT scalar carrier");
+   CHECK(umap.value_components == 1, "scalar unary-map records scalar width");
+   CHECK(umap.value_bit_size == 32, "scalar unary-map records 32-bit lane");
+   CHECK(umap.mul_const == 2.0f, "scalar unary-map records c0 scale 2.0");
+   CHECK(umap.add_const == 1.0f, "scalar unary-map records c1 bias 1.0");
+   CHECK(umap.input_ssbo_binding_valid &&
+         umap.input_ssbo_binding == 0,
+         "scalar unary-map records input binding 0");
+   CHECK(umap.output_ssbo_binding_valid &&
+         umap.output_ssbo_binding == 1,
+         "scalar unary-map records output binding 1");
    /* One load means it is not the two-input binary-map shape. */
    r300_nir_detect_binary_map(nir, &binmap);
    CHECK(!binmap.is_binary_map, "unary-map shape is not a binary map");
