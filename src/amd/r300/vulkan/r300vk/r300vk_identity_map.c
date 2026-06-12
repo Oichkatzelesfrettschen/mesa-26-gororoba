@@ -4622,6 +4622,21 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
+   /* The classified affine is a function of gl_GlobalInvocationID.x (or the
+    * scalar invocation index), and the replay equates that with the linear
+    * fragment index.  The two coincide only for one-dimensional dispatches:
+    * a multi-dimensional grid makes id.x a per-row coordinate, and replaying
+    * it as the linear index would write values the kernel never computed.
+    * Reject anything but a pure-x dispatch; the 3D grid fold belongs to the
+    * coordinate-consumption lane, not this linear-index verb. */
+   if (dispatch->group_count_y > 1 || dispatch->group_count_z > 1 ||
+       pl->local_size_y > 1 || pl->local_size_z > 1) {
+      IDM_LOG("iota early-return non-1d dispatch gy=%u gz=%u lsy=%u lsz=%u",
+              dispatch->group_count_y, dispatch->group_count_z,
+              pl->local_size_y, pl->local_size_z);
+      return false;
+   }
+
    /* Defence in depth: the queue-level index gate already bounded the
     * materialized value by the FP24 exact-integer ceiling; re-check here so
     * a direct caller cannot bypass it. */
