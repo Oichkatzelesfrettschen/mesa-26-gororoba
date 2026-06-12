@@ -32,7 +32,7 @@
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug
 pkgver=26.2.0
-pkgrel=7
+pkgrel=8
 epoch=2
 pkgdesc='Mesa r300 system driver (default debug install): GL+GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD, assertions live, files under /opt'
 arch=('x86_64')
@@ -129,6 +129,13 @@ package() {
   _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r300/libxatracker
   _link_into_usr lib/dri                       # r300_dri.so, zink_dri.so, r300_drv_video.so (VA)
   _link_into_usr lib/gbm                       # gbm backends, if built
+  # pkg-config surface: the glvnd build emits only gbm.pc and dri.pc (the
+  # egl/gl family belongs to libglvnd), and both slots are mesa-owned files
+  # this package already conflicts/replaces.  The .pc contents carry the
+  # /opt prefix, so linking them is the whole developer-surface fix --
+  # pkg-config --cflags gbm resolves the /opt include with no header
+  # symlinks (the GL/EGL include directories stay libglvnd's).
+  _link_into_usr lib/pkgconfig                 # gbm.pc, dri.pc
   _link_into_usr share/vulkan/icd.d            # r300 Vulkan ICD manifest
   _link_into_usr share/vulkan/implicit_layer.d
   _link_into_usr share/vulkan/explicit_layer.d
