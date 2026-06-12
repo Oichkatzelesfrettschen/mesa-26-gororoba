@@ -278,10 +278,28 @@ r300vk_replay_dispatch(struct r300vk_device *device,
    const struct r300vk_pipeline *pl = d->pipeline;
    bool ok = false;
 
+   /* Index-exactness gate: a dispatch whose invocation count exceeds the
+    * honest bound for the kernel's classified index consumption must not
+    * draw -- index identity would corrupt silently in FP24.  Like
+    * UNKNOWN_SHAPE, the dispatch becomes an explicit logged no-op rather
+    * than a poisoned queue. */
+   const char *index_reject = NULL;
+   if (!r300vk_dispatch_index_exact(pl, d, &index_reject)) {
+      mesa_logw("r300vk: dispatch no-op (index exactness): %s "
+                "consumption=%d stride=%u offset=%u gx=%u gy=%u gz=%u",
+                index_reject ? index_reject : "unknown",
+                (int)pl->index_consumption.consumption,
+                pl->index_consumption.stride, pl->index_consumption.offset,
+                d->group_count_x, d->group_count_y, d->group_count_z);
+      return VK_SUCCESS;
+   }
+
    if (pl->identity_map.is_identity_map)
       ok = r300vk_identity_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->const_fill.is_const_fill)
       ok = r300vk_const_fill_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->affine_iota.is_affine_iota)
+      ok = r300vk_affine_iota_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->binary_map.is_binary_map)
       ok = r300vk_binary_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->unary_map.is_unary_map)

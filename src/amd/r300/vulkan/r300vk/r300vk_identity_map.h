@@ -36,6 +36,20 @@ struct r300vk_pipeline;
 struct r300vk_cmd_dispatch;
 struct r300vk_cmd_bind_descriptor_sets;
 
+/* Dispatch-time index-exactness gate.  Maps the pipeline's classified
+ * invocation-index consumption onto the grid-fold guard
+ * (r300_grid_index_exact): position-addressed kernels are bounded by the
+ * 2048x2048 raster fold, kernels that materialize stride * gid + offset in
+ * the FP24 fragment ALU are bounded by the 2^17 exact-integer ceiling, and
+ * kernels whose index reaches a stored value non-affinely have no derivable
+ * bound and never pass.  Returns true when the dispatch's invocation count
+ * is honest for the kernel's consumption class; a false return means the
+ * replay must not draw (index identity would corrupt silently). */
+bool
+r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
+                            const struct r300vk_cmd_dispatch *dispatch,
+                            const char **out_reason);
+
 /* Wrap the contents of a PIPE_BUFFER pipe_resource as a transient
  * PIPE_TEXTURE_2D + a pipe_sampler_view configured for NEAREST sampling.
  * The texture is allocated linear-tiled, populated by
@@ -380,6 +394,21 @@ r300vk_ieee16_mul_dispatch_replay(struct r300vk_device *device,
  * dispatch as a no-op per R300_COMPUTE_REJECT_UNKNOWN_SHAPE. */
 bool
 r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
+                                   const struct r300vk_pipeline *pl,
+                                   const struct r300vk_cmd_dispatch *dispatch,
+                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
+
+/* AFFINE_IOTA dispatch replay: out[gid] = stride * gid + offset, the first
+ * verb that materializes the work-item index as an FP24 value.  Draws a quad
+ * whose texcoord varying is in TEXEL units (vertex corners 0..width and
+ * 0..height) so the interpolated value at each fragment centre is
+ * (x + 0.5, y + 0.5) without any FP24 division; the FS evaluates the affine
+ * and byte-decomposes the integer result into an RGBA8 render target whose
+ * raw little-endian bytes are copied to the kernel's u32 output SSBO.  The
+ * dispatch index-exactness gate has already bounded
+ * stride * (total - 1) + offset by 2^17 before this runs. */
+bool
+r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
                                    const struct r300vk_pipeline *pl,
                                    const struct r300vk_cmd_dispatch *dispatch,
                                    const struct r300vk_cmd_bind_descriptor_sets *binds);

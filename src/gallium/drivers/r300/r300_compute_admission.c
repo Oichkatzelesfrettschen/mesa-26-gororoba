@@ -3934,3 +3934,52 @@ r300_nir_classify_index_consumption(const nir_shader *s,
    }
    out->consumption = R300_COMPUTE_INDEX_ADDRESS_ONLY;
 }
+
+/* Affine-iota detector: out[gid] = stride * gid + offset with zero loads.
+ * The shape gate is structural (one full-width single-component 32-bit
+ * integer store_ssbo, no load / atomic / loop / conditional); the affinity
+ * and its coefficients come from the index-consumption classifier, which
+ * already proves the stored value is an affine chain of the invocation
+ * index with in-range constant coefficients.  A float store is rejected:
+ * the RGBA8 byte-decomposition carrier writes the little-endian integer,
+ * not an IEEE-754 bit pattern. */
+void
+r300_nir_detect_affine_iota_pattern(const nir_shader *s,
+                                    struct r300_compute_affine_iota_pattern *out)
+{
+   memset(out, 0, sizeof(*out));
+
+   const nir_intrinsic_instr *store[1] = {0};
+   const nir_intrinsic_instr *dummy_load[1] = {0};
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, dummy_load, 0, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 0 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store[0] || !store[0]->src[0].ssa)
+      return;
+
+   const nir_def *val = store[0]->src[0].ssa;
+   if (val->num_components != 1 || val->bit_size != 32)
+      return;
+   if (nir_intrinsic_has_write_mask(store[0]) &&
+       nir_intrinsic_write_mask(store[0]) !=
+          BITFIELD_MASK(store[0]->num_components))
+      return;
+   if (intrinsic_base_type_is_float(store[0], nir_type_invalid))
+      return;
+
+   struct r300_compute_index_pattern ip;
+   r300_nir_classify_index_consumption(s, &ip);
+   if (ip.consumption != R300_COMPUTE_INDEX_VALUE_AFFINE || !ip.stride_valid)
+      return;
+
+   if (nir_src_is_const(store[0]->src[1])) {
+      out->output_ssbo_binding       = nir_src_as_uint(store[0]->src[1]);
+      out->output_ssbo_binding_valid = true;
+   }
+   out->stride         = ip.stride;
+   out->offset         = ip.offset;
+   out->is_affine_iota = true;
+}

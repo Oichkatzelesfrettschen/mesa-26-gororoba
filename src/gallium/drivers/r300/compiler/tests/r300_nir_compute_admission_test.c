@@ -1444,6 +1444,42 @@ case_index_consumption(void)
          "linear-indexed 2048x2048 fold rejects");
 }
 
+static void
+case_affine_iota(void)
+{
+   printf("affine-iota detector\n");
+   struct r300_compute_affine_iota_pattern it = {0};
+
+   nir_shader *lin = build_index_value_linear();
+   r300_nir_detect_affine_iota_pattern(lin, &it);
+   CHECK(it.is_affine_iota, "out[gid] = gid detects affine-iota");
+   CHECK(it.stride == 1 && it.offset == 0,
+         "iota captures stride 1 offset 0");
+   ralloc_free(lin);
+
+   nir_shader *str = build_index_value_strided();
+   r300_nir_detect_affine_iota_pattern(str, &it);
+   CHECK(it.is_affine_iota, "out[gid] = gid*4+2 detects affine-iota");
+   CHECK(it.stride == 4 && it.offset == 2,
+         "iota captures stride 4 offset 2");
+   ralloc_free(str);
+
+   nir_shader *gen = build_index_value_general();
+   r300_nir_detect_affine_iota_pattern(gen, &it);
+   CHECK(!it.is_affine_iota, "gid*gid rejects affine-iota");
+   ralloc_free(gen);
+
+   nir_shader *addr = build_index_address_only();
+   r300_nir_detect_affine_iota_pattern(addr, &it);
+   CHECK(!it.is_affine_iota, "load-bearing identity shape rejects affine-iota");
+   ralloc_free(addr);
+
+   nir_shader *cf = build_const_fill_u32();
+   r300_nir_detect_affine_iota_pattern(cf, &it);
+   CHECK(!it.is_affine_iota, "const-fill (no index) rejects affine-iota");
+   ralloc_free(cf);
+}
+
 int
 main(void)
 {
@@ -1475,6 +1511,7 @@ main(void)
    case_const_fill_metadata();
    case_constfill_regression();
    case_index_consumption();
+   case_affine_iota();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
