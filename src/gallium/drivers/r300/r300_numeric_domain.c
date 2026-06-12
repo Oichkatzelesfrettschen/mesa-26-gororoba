@@ -690,13 +690,13 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
        * and the identity-map readback copy. */
       .op_name         = "CONSTFILL",
       .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
-      .status          = R300_VOP_NUMERIC_DERIVED,
+      .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "out[gid] = C for all gid: degenerate store is a clear; "
                          "C rides the RGBA8 RB3D clear color, the RT-to-buffer "
                          "identity-map readback copy delivers C to every element; "
                          "no per-element fragment ALU needed",
       .mesa_hook       = "r300_nir_detect_const_fill_pattern",
-      .retained_bundle = NULL,
+      .retained_bundle = "cachyos_vostro1000_rs482_constfill_rb3d_roundtrip_20260611",
    },
    {
       /* QFM derived fused ops: compositions of the built primitives. */
