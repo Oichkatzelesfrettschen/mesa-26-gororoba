@@ -729,10 +729,12 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "a * b for 32-bit a, b via five 7-bit limbs: every "
                          "convolution column <= 5 * 127^2 < 2^17 is FP24-exact; "
-                         "probe: four pairs including 0xFFFFFFFF^2 assembled "
-                         "bit-exact to the 64-bit product",
-      .mesa_hook       = NULL,
-      .retained_bundle = "cachyos_vostro1000_rs482_multilimb_log4_stencilcas_20260612",
+                         "GL probe: 0xFFFFFFFF^2 assembled bit-exact; Vulkan "
+                         "replay verb: 1024/1024 elements exact end-to-end "
+                         "(low-32 wraparound), sampled bytes snapped with "
+                         "floor(v * 255 + 0.5) before limb extraction",
+      .mesa_hook       = "r300_nir_detect_multilimb_mul_pattern",
+      .retained_bundle = "cachyos_vostro1000_rs482_multilimb_mul_verb_20260612",
    },
    {
       /* One log4 tree level per LINEAR tap at a 2x2 texel corner: the 6-bit

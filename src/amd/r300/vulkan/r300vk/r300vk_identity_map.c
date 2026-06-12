@@ -4759,3 +4759,184 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
            (int)copy_ok);
    return copy_ok;
 }
+
+bool
+r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
+                                     const struct r300vk_pipeline *pl,
+                                     const struct r300vk_cmd_dispatch *dispatch,
+                                     const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_context *pipe   = device ? device->pipe : NULL;
+   struct pipe_screen  *screen = device ? device->screen : NULL;
+   const struct r300vk_descriptor_set *set = NULL;
+   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+      return false;
+   for (unsigned k = 0; k < 9; k++)
+      if (!pl->multilimb_fs[k])
+         return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R8G8B8A8_UNORM,
+                                    PIPE_TEXTURE_2D, 0, 0,
+                                    PIPE_BIND_RENDER_TARGET))
+      return false;
+
+   /* Three bindings: a, b, out.  Captured constants win when all three were
+    * constant sources; otherwise the first three STORAGE_BUFFERs in
+    * declaration order carry the roles. */
+   uint32_t bind[3] = { pl->multilimb_mul.input_a_ssbo_binding,
+                        pl->multilimb_mul.input_b_ssbo_binding,
+                        pl->multilimb_mul.output_ssbo_binding };
+   if (bind[0] == bind[1]) {
+      for (unsigned i = 0; i < 3; i++)
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+   }
+   const struct r300vk_descriptor *desc[3];
+   struct r300vk_buffer *buf[3];
+   for (unsigned i = 0; i < 3; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer)
+         return false;
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   struct r300_grid_fold fold;
+   if (!r300_grid_fold_1d(total, &fold))
+      return false;
+   const unsigned width = fold.width, height = fold.height;
+
+   /* Each u32 element is one RGBA8 texel of factor bytes. */
+   struct pipe_sampler_view *views[2] = { NULL, NULL };
+   for (unsigned i = 0; i < 2; i++) {
+      views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
+         device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
+         width, height, PIPE_FORMAT_R8G8B8A8_UNORM);
+      if (!views[i]) {
+         pipe_sampler_view_reference(&views[0], NULL);
+         return false;
+      }
+   }
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      pipe_sampler_view_reference(&views[0], NULL);
+      pipe_sampler_view_reference(&views[1], NULL);
+      return false;
+   }
+
+   uint64_t *acc = calloc(total, sizeof(uint64_t));
+   if (!acc) {
+      pipe->delete_vertex_elements_state(pipe, velems_cso);
+      pipe_sampler_view_reference(&views[0], NULL);
+      pipe_sampler_view_reference(&views[1], NULL);
+      pipe_resource_reference(&vb, NULL);
+      return false;
+   }
+
+   bool ok = true;
+   for (unsigned k = 0; k < 9 && ok; k++) {
+      struct pipe_resource rt_templ;
+      memset(&rt_templ, 0, sizeof(rt_templ));
+      rt_templ.target     = PIPE_TEXTURE_2D;
+      rt_templ.format     = PIPE_FORMAT_R8G8B8A8_UNORM;
+      rt_templ.width0     = width;
+      rt_templ.height0    = height;
+      rt_templ.depth0     = 1;
+      rt_templ.array_size = 1;
+      rt_templ.usage      = PIPE_USAGE_DEFAULT;
+      rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+      struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+      if (!rt) {
+         ok = false;
+         break;
+      }
+      struct pipe_surface surf_templ;
+      memset(&surf_templ, 0, sizeof(surf_templ));
+      surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
+      surf_templ.texture = rt;
+      r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                           device->identity_map_blend_cso,
+                                           device->identity_map_rasterizer_cso,
+                                           device->identity_map_dsa_cso,
+                                           pl->vs_cso, pl->multilimb_fs[k],
+                                           velems_cso);
+      void *samplers[2] = { device->identity_map_sampler_cso,
+                            device->identity_map_sampler_cso };
+      pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 2, 0, views);
+
+      struct pipe_vertex_buffer vb_state;
+      memset(&vb_state, 0, sizeof(vb_state));
+      vb_state.buffer.resource = vb;
+      pipe->set_vertex_buffers(pipe, 1, &vb_state);
+      struct pipe_draw_info info;
+      memset(&info, 0, sizeof(info));
+      info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+      info.instance_count = 1;
+      info.max_index      = 3;
+      struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+      pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      pipe->flush(pipe, NULL, 0);
+
+      struct pipe_box copy_box;
+      memset(&copy_box, 0, sizeof(copy_box));
+      copy_box.width = width; copy_box.height = height; copy_box.depth = 1;
+      struct pipe_transfer *rt_xfer = NULL;
+      const uint8_t *rt_map = pipe->texture_map(pipe, rt, 0, PIPE_MAP_READ,
+                                                &copy_box, &rt_xfer);
+      if (rt_map) {
+         uint64_t idx = 0;
+         for (unsigned r = 0; r < height && idx < total; r++) {
+            const uint8_t *row = rt_map + (size_t)r * rt_xfer->stride;
+            for (unsigned x = 0; x < width && idx < total; x++, idx++) {
+               const uint64_t col = (uint64_t)row[x * 4] +
+                                    ((uint64_t)row[x * 4 + 1] << 8) +
+                                    ((uint64_t)row[x * 4 + 2] << 16);
+               acc[idx] += col << (7u * k);
+            }
+         }
+         pipe->texture_unmap(pipe, rt_xfer);
+      } else {
+         ok = false;
+      }
+      pipe_resource_reference(&rt, NULL);
+   }
+
+   if (ok) {
+      struct pipe_transfer *out_xfer = NULL;
+      struct pipe_box out_box;
+      memset(&out_box, 0, sizeof(out_box));
+      out_box.x      = (unsigned)desc[2]->buf.offset;
+      out_box.width  = (unsigned)(total * 4u);
+      out_box.height = 1; out_box.depth = 1;
+      uint32_t *out_bytes = pipe->buffer_map(pipe, buf[2]->resource, 0,
+                                             PIPE_MAP_WRITE |
+                                             PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                             &out_box, &out_xfer);
+      if (out_bytes) {
+         /* The kernel's u32 store keeps the low 32 bits of the exact
+          * product, matching SPIR-V OpIMul wraparound semantics. */
+         for (uint64_t i = 0; i < total; i++)
+            out_bytes[i] = (uint32_t)acc[i];
+         pipe->buffer_unmap(pipe, out_xfer);
+      } else {
+         ok = false;
+      }
+   }
+
+   free(acc);
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&views[0], NULL);
+   pipe_sampler_view_reference(&views[1], NULL);
+   pipe_resource_reference(&vb, NULL);
+   IDM_LOG("multilimb done total=%llu ok=%d",
+           (unsigned long long)total, (int)ok);
+   return ok;
+}

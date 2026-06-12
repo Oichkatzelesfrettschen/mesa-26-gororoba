@@ -1654,6 +1654,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_const_fill_pattern *constfill,
                                struct r300_compute_index_pattern *index_consumption,
                                struct r300_compute_affine_iota_pattern *affine_iota,
+                               struct r300_compute_multilimb_mul_pattern *multilimb_mul,
                                uint32_t local_size[3])
 {
    VK_FROM_HANDLE(r300vk_shader_module, mod, stage_info->module);
@@ -1757,6 +1758,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_const_fill_pattern(nir, constfill);
    r300_nir_classify_index_consumption(nir, index_consumption);
    r300_nir_detect_affine_iota_pattern(nir, affine_iota);
+   r300_nir_detect_multilimb_mul_pattern(nir, multilimb_mul);
 
    ralloc_free(nir);
    return true;
@@ -2164,6 +2166,204 @@ r300vk_qdiv_synthesize_shaders(struct r300vk_device *device,
       pl->vs_cso = NULL;
       return false;
    }
+   return true;
+}
+
+/* MULTILIMB column FS: one convolution column of the 7-bit-limb u32
+ * multiply.  Samples factor a (stage 0) and factor b (stage 1) as RGBA8
+ * texels, recovers the four bytes with the SNAPPED form
+ * floor(v * 255 + 0.5) -- the raw v * 255 product double-rounds through the
+ * UNORM divide and can land a hair below the integer, which shatters every
+ * downstream floor (the on-target probe measured exactly that; the
+ * snap-before-arithmetic rule from the AFFINE_IOTA lane applies to sampled
+ * bytes too) -- and extracts the five 7-bit limbs of each factor with
+ * byte-local floor arithmetic (every intermediate <= 2^11, exact in FP24):
+ *
+ *    f0 = floor(B0/128)  g1 = floor(B1/64)  g2 = floor(B2/32)  g3 = floor(B3/16)
+ *    l0 = B0 - 128 f0
+ *    l1 = f0 + 2 B1 - 128 g1
+ *    l2 = g1 + 4 B2 - 128 g2
+ *    l3 = g2 + 8 B3 - 128 g3
+ *    l4 = g3
+ *
+ * then evaluates c_k = sum_{i+j=k} la_i * lb_j (at most five terms, each
+ * <= 127^2, so c_k <= 80645 < 2^17 stays exact) and byte-decomposes the
+ * 17-bit column little-endian into the RGBA8 export.  The dispatch reads
+ * the nine columns back and assembles the carries on the host. */
+static void
+multilimb_extract_limbs(struct ureg_program *ureg, struct ureg_src bytes,
+                        struct ureg_dst floors, struct ureg_dst limbs01,
+                        struct ureg_dst limbs234)
+{
+   /* floors = floor(bytes * (1/128, 1/64, 1/32, 1/16)) per lane. */
+   struct ureg_src inv = ureg_imm4f(ureg, 1.0f / 128.0f, 1.0f / 64.0f,
+                                    1.0f / 32.0f, 1.0f / 16.0f);
+   struct ureg_dst t = ureg_DECL_temporary(ureg);
+   ureg_MUL(ureg, t, bytes, inv);
+   ureg_FLR(ureg, floors, ureg_src(t));
+
+   struct ureg_src f = ureg_src(floors);
+   struct ureg_src m128 = ureg_imm1f(ureg, -128.0f);
+   /* limbs01.x = B0 - 128 f0 */
+   ureg_MAD(ureg, ureg_writemask(limbs01, TGSI_WRITEMASK_X),
+            ureg_scalar(f, TGSI_SWIZZLE_X), m128,
+            ureg_scalar(bytes, TGSI_SWIZZLE_X));
+   /* limbs01.y = (f0 + 2 B1) - 128 g1 */
+   ureg_MAD(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
+            ureg_scalar(bytes, TGSI_SWIZZLE_Y), ureg_imm1f(ureg, 2.0f),
+            ureg_scalar(f, TGSI_SWIZZLE_X));
+   ureg_MAD(ureg, ureg_writemask(limbs01, TGSI_WRITEMASK_Y),
+            ureg_scalar(f, TGSI_SWIZZLE_Y), m128,
+            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X));
+   /* limbs234.x = (g1 + 4 B2) - 128 g2 */
+   ureg_MAD(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
+            ureg_scalar(bytes, TGSI_SWIZZLE_Z), ureg_imm1f(ureg, 4.0f),
+            ureg_scalar(f, TGSI_SWIZZLE_Y));
+   ureg_MAD(ureg, ureg_writemask(limbs234, TGSI_WRITEMASK_X),
+            ureg_scalar(f, TGSI_SWIZZLE_Z), m128,
+            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X));
+   /* limbs234.y = (g2 + 8 B3) - 128 g3 */
+   ureg_MAD(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
+            ureg_scalar(bytes, TGSI_SWIZZLE_W), ureg_imm1f(ureg, 8.0f),
+            ureg_scalar(f, TGSI_SWIZZLE_Z));
+   ureg_MAD(ureg, ureg_writemask(limbs234, TGSI_WRITEMASK_Y),
+            ureg_scalar(f, TGSI_SWIZZLE_W), m128,
+            ureg_scalar(ureg_src(t), TGSI_SWIZZLE_X));
+   /* limbs234.z = g3 */
+   ureg_MOV(ureg, ureg_writemask(limbs234, TGSI_WRITEMASK_Z),
+            ureg_scalar(f, TGSI_SWIZZLE_W));
+   ureg_release_temporary(ureg, t);
+}
+
+static struct ureg_src
+multilimb_limb(struct ureg_src limbs01, struct ureg_src limbs234, unsigned i)
+{
+   switch (i) {
+   case 0: return ureg_scalar(limbs01, TGSI_SWIZZLE_X);
+   case 1: return ureg_scalar(limbs01, TGSI_SWIZZLE_Y);
+   case 2: return ureg_scalar(limbs234, TGSI_SWIZZLE_X);
+   case 3: return ureg_scalar(limbs234, TGSI_SWIZZLE_Y);
+   default: return ureg_scalar(limbs234, TGSI_SWIZZLE_Z);
+   }
+}
+
+static void *
+r300vk_synthesize_multilimb_fs(struct pipe_context *pipe, unsigned column)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp[2];
+   for (unsigned s = 0; s < 2; s++) {
+      samp[s] = ureg_DECL_sampler(ureg, s);
+      ureg_DECL_sampler_view(ureg, s, TGSI_TEXTURE_2D,
+                             TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                             TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   }
+   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                           TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+
+   struct ureg_dst bytes_a = ureg_DECL_temporary(ureg);
+   struct ureg_dst bytes_b = ureg_DECL_temporary(ureg);
+   ureg_TEX(ureg, bytes_a, TGSI_TEXTURE_2D, tc, samp[0]);
+   ureg_TEX(ureg, bytes_b, TGSI_TEXTURE_2D, tc, samp[1]);
+   ureg_MAD(ureg, bytes_a, ureg_src(bytes_a), ureg_imm1f(ureg, 255.0f),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, bytes_a, ureg_src(bytes_a));
+   ureg_MAD(ureg, bytes_b, ureg_src(bytes_b), ureg_imm1f(ureg, 255.0f),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, bytes_b, ureg_src(bytes_b));
+
+   struct ureg_dst fl_a = ureg_DECL_temporary(ureg);
+   struct ureg_dst la01 = ureg_DECL_temporary(ureg);
+   struct ureg_dst la234 = ureg_DECL_temporary(ureg);
+   struct ureg_dst fl_b = ureg_DECL_temporary(ureg);
+   struct ureg_dst lb01 = ureg_DECL_temporary(ureg);
+   struct ureg_dst lb234 = ureg_DECL_temporary(ureg);
+   multilimb_extract_limbs(ureg, ureg_src(bytes_a), fl_a, la01, la234);
+   multilimb_extract_limbs(ureg, ureg_src(bytes_b), fl_b, lb01, lb234);
+
+   /* c = sum over the column's limb pairs. */
+   struct ureg_dst c = ureg_DECL_temporary(ureg);
+   bool first = true;
+   for (unsigned i = 0; i < 5; i++) {
+      if (column < i || column - i > 4)
+         continue;
+      const unsigned j = column - i;
+      struct ureg_src ai = multilimb_limb(ureg_src(la01), ureg_src(la234), i);
+      struct ureg_src bj = multilimb_limb(ureg_src(lb01), ureg_src(lb234), j);
+      if (first) {
+         ureg_MUL(ureg, ureg_writemask(c, TGSI_WRITEMASK_X), ai, bj);
+         first = false;
+      } else {
+         ureg_MAD(ureg, ureg_writemask(c, TGSI_WRITEMASK_X), ai, bj,
+                  ureg_scalar(ureg_src(c), TGSI_SWIZZLE_X));
+      }
+   }
+
+   /* Byte-decompose c <= 80645 < 2^17 little-endian into the RGBA8 export. */
+   struct ureg_dst e = ureg_DECL_temporary(ureg);
+   struct ureg_dst v = ureg_DECL_temporary(ureg);
+   struct ureg_src csrc = ureg_scalar(ureg_src(c), TGSI_SWIZZLE_X);
+   ureg_MUL(ureg, ureg_writemask(v, TGSI_WRITEMASK_X), csrc,
+            ureg_imm1f(ureg, 1.0f / 256.0f));
+   ureg_FLR(ureg, ureg_writemask(v, TGSI_WRITEMASK_Y),
+            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_X));
+   ureg_MUL(ureg, ureg_writemask(v, TGSI_WRITEMASK_X), csrc,
+            ureg_imm1f(ureg, 1.0f / 65536.0f));
+   ureg_FLR(ureg, ureg_writemask(v, TGSI_WRITEMASK_Z),
+            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_X));
+   ureg_MAD(ureg, ureg_writemask(e, TGSI_WRITEMASK_X),
+            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Y),
+            ureg_imm1f(ureg, -256.0f), csrc);
+   ureg_MAD(ureg, ureg_writemask(e, TGSI_WRITEMASK_Y),
+            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Z),
+            ureg_imm1f(ureg, -256.0f),
+            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Y));
+   ureg_MOV(ureg, ureg_writemask(e, TGSI_WRITEMASK_Z),
+            ureg_scalar(ureg_src(v), TGSI_SWIZZLE_Z));
+   ureg_MUL(ureg, ureg_writemask(out, TGSI_WRITEMASK_XYZ), ureg_src(e),
+            ureg_imm1f(ureg, 1.0f / 255.0f));
+   ureg_MOV(ureg, ureg_writemask(out, TGSI_WRITEMASK_W),
+            ureg_imm1f(ureg, 0.0f));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* MULTILIMB VS+FS synthesis: shared passthrough VS + one specialized column
+ * program per convolution column.  Any column failing to compile clears the
+ * pattern so the kernel falls to the binary-map or no-op lifecycle. */
+static bool
+r300vk_multilimb_synthesize_shaders(struct r300vk_device *device,
+                                    struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   for (unsigned k = 0; k < 9; k++) {
+      pl->multilimb_fs[k] = r300vk_synthesize_multilimb_fs(pipe, k);
+      if (!pl->multilimb_fs[k]) {
+         for (unsigned j = 0; j < k; j++) {
+            pipe->delete_fs_state(pipe, pl->multilimb_fs[j]);
+            pl->multilimb_fs[j] = NULL;
+         }
+         pipe->delete_vs_state(pipe, pl->vs_cso);
+         pl->vs_cso = NULL;
+         return false;
+      }
+   }
+   /* The dispatch validation prologue requires a non-NULL fs_cso; the
+    * column draws bind multilimb_fs[k] explicitly. */
+   pl->fs_cso = pl->multilimb_fs[0];
    return true;
 }
 
@@ -3402,6 +3602,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->identity_map.is_identity_map = false;
       return true;
    }
+   if (pl->multilimb_mul.is_multilimb_mul) {
+      if (!r300vk_multilimb_synthesize_shaders(device, pl))
+         pl->multilimb_mul.is_multilimb_mul = false;
+      return true;
+   }
    if (pl->binary_map.is_binary_map) {
       if (!r300vk_binary_map_synthesize_shaders(device, pl))
          pl->binary_map.is_binary_map = false;
@@ -3579,6 +3784,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_const_fill_pattern constfill_pat = {0};
    struct r300_compute_index_pattern index_pat = {0};
    struct r300_compute_affine_iota_pattern affine_iota_pat = {0};
+   struct r300_compute_multilimb_mul_pattern multilimb_pat = {0};
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
@@ -3594,7 +3800,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
                                        &qfmadd_pat, &qfmmul_pat,
                                        &ieee16_classify_pat, &ieee16_mul_pat,
                                        &constfill_pat, &index_pat,
-                                       &affine_iota_pat,
+                                       &affine_iota_pat, &multilimb_pat,
                                        local_size))
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r300vk: SPIR-V to NIR failed for compute kernel %u",
@@ -3649,6 +3855,12 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->const_fill = constfill_pat;
    pl->index_consumption = index_pat;
    pl->affine_iota = affine_iota_pat;
+   pl->multilimb_mul = multilimb_pat;
+   /* The multilimb path is exact for every u32 operand pair; the binary-map
+    * imul lowering is only exact below the FP24 window.  When both detect
+    * the same kernel, multilimb wins and the elementwise route is cleared. */
+   if (pl->multilimb_mul.is_multilimb_mul)
+      pl->binary_map.is_binary_map = false;
    pl->blend_acc_reduction = blendacc;
    pl->zpass_reduction = zpass;
    pl->multipass_scan = multiscan;
@@ -3722,6 +3934,9 @@ r300vk_DestroyPipeline(VkDevice _device,
       device->pipe->delete_fs_state(device->pipe, pl->fs_cso3);
    if (pl->fs_cso4)
       device->pipe->delete_fs_state(device->pipe, pl->fs_cso4);
+   for (unsigned k = 0; k < 9; k++)
+      if (pl->multilimb_fs[k] && pl->multilimb_fs[k] != pl->fs_cso)
+         device->pipe->delete_fs_state(device->pipe, pl->multilimb_fs[k]);
    if (pl->blend_cso)
       device->pipe->delete_blend_state(device->pipe, pl->blend_cso);
    if (pl->rasterizer_cso)

@@ -4034,3 +4034,53 @@ r300_nir_detect_affine_iota_pattern(const nir_shader *s,
    out->offset         = ip.offset;
    out->is_affine_iota = true;
 }
+
+/* Multilimb u32 multiply detector: the binary-map imul shape narrowed to
+ * single-component 32-bit integer operands.  One store_ssbo whose value is
+ * an imul (or amul) of exactly the two load_ssbo defs.  Bindings are read
+ * off constant sources where available; the orchestrator's positional
+ * fallback (a = first STORAGE_BUFFER, b = second, out = third) recovers
+ * them otherwise. */
+void
+r300_nir_detect_multilimb_mul_pattern(const nir_shader *s,
+                                      struct r300_compute_multilimb_mul_pattern *out)
+{
+   memset(out, 0, sizeof(*out));
+
+   const nir_intrinsic_instr *load[2] = {0};
+   const nir_intrinsic_instr *store[1] = {0};
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, load, 2, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 2 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store[0] || !store[0]->src[0].ssa || !load[0] || !load[1])
+      return;
+
+   const nir_def *val = store[0]->src[0].ssa;
+   if (val->num_components != 1 || val->bit_size != 32)
+      return;
+   if (intrinsic_base_type_is_float(store[0], nir_type_invalid))
+      return;
+
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(val);
+   if (!alu || (alu->op != nir_op_imul && alu->op != nir_op_amul))
+      return;
+   const nir_def *sa = alu->src[0].src.ssa;
+   const nir_def *sb = alu->src[1].src.ssa;
+   const bool direct = sa == &load[0]->def && sb == &load[1]->def;
+   const bool swapped = sa == &load[1]->def && sb == &load[0]->def;
+   if (!direct && !swapped)
+      return;
+
+   const nir_intrinsic_instr *la = direct ? load[0] : load[1];
+   const nir_intrinsic_instr *lb = direct ? load[1] : load[0];
+   if (nir_src_is_const(la->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(la->src[0]);
+   if (nir_src_is_const(lb->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(lb->src[0]);
+   if (nir_src_is_const(store[0]->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
+   out->is_multilimb_mul = true;
+}

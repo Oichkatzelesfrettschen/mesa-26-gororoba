@@ -179,6 +179,14 @@ struct r300vk_pipeline {
     * and byte-decomposes the integer result into an RGBA8 render target. */
    struct r300_compute_affine_iota_pattern affine_iota;
 
+   /* Multilimb u32 multiply: out[gid] = a[gid] * b[gid], exact for ALL u32
+    * operands via 7-bit-limb convolution columns on the FP24 ALU
+    * (MULTILIMB7_U32_MUL, HW-confirmed).  Takes precedence over the
+    * FP24-bounded binary-map imul lowering for this shape.  multilimb_fs
+    * holds one specialized column program per convolution column k. */
+   struct r300_compute_multilimb_mul_pattern multilimb_mul;
+   void *multilimb_fs[9];
+
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
     * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in
