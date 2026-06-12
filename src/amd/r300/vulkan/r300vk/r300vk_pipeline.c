@@ -2171,7 +2171,7 @@ r300vk_qdiv_synthesize_shaders(struct r300vk_device *device,
  * in the FP24 fragment ALU.  The texel-unit varying interpolates to
  * (x + 0.5, y + 0.5) at fragment centres; the dispatch-known scalars ride
  * the fragment constant file as CONST[0] = (width, stride, offset, unused).
- * gid = (tc.y - 0.5) * width + (tc.x - 0.5); v = gid * stride + offset; the
+ * gid = floor(tc.y) * width + floor(tc.x); v = gid * stride + offset; the
  * integer result is byte-decomposed little-endian into the RGBA8 export:
  * r = v mod 256, g = floor(v/256) mod 256, b = floor(v/65536).  Every
  * intermediate is an exact FP24 integer while v <= 2^17 (the dispatch gate
@@ -2193,14 +2193,20 @@ r300vk_synthesize_affine_iota_fs(struct pipe_context *pipe)
    struct ureg_dst v = ureg_DECL_temporary(ureg);
    struct ureg_dst e = ureg_DECL_temporary(ureg);
 
-   /* imm = (-0.5, 1/256, 1/65536, 1/255); imm2 = (-256, 0, -, -) */
-   struct ureg_src imm = ureg_imm4f(ureg, -0.5f, 1.0f / 256.0f,
+   /* imm = (unused, 1/256, 1/65536, 1/255); imm2 = (-256, 0, -, -) */
+   struct ureg_src imm = ureg_imm4f(ureg, 0.0f, 1.0f / 256.0f,
                                     1.0f / 65536.0f, 1.0f / 255.0f);
    struct ureg_src imm2 = ureg_imm4f(ureg, -256.0f, 0.0f, 0.0f, 0.0f);
 
-   /* t.xy = tc.xy - 0.5: fragment-centre varying back to integer coords. */
-   ureg_ADD(ureg, ureg_writemask(t, TGSI_WRITEMASK_XY), tc,
-            ureg_scalar(imm, TGSI_SWIZZLE_X));
+   /* t.xy = floor(tc.xy): SNAP the interpolated texel-centre varying back to
+    * the integer coordinate.  The rasterizer interpolant carries x + 0.5
+    * plus a sub-texel plane-equation error (the RS482 probe measured cliff
+    * flips at byte boundaries when the raw value fed the decompose), and
+    * floor absorbs any error below half a texel, so every downstream
+    * operand is an exact FP24 integer.  Snapping per axis matters: the
+    * combined linear index exceeds 2^16 where a +0.5 round-bias would no
+    * longer be representable, but per-axis coordinates stay <= 2048. */
+   ureg_FLR(ureg, ureg_writemask(t, TGSI_WRITEMASK_XY), tc);
    /* t.x = t.y * width + t.x: the linear gid. */
    ureg_MAD(ureg, ureg_writemask(t, TGSI_WRITEMASK_X),
             ureg_scalar(ureg_src(t), TGSI_SWIZZLE_Y),

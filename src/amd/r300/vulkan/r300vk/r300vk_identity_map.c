@@ -4529,13 +4529,18 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
    return true;
 }
 
-/* Fullscreen quad whose texcoord varying is in TEXEL units: corners carry
- * (0, 0) .. (width, height) instead of 0..1, so linear interpolation lands
- * exactly (x + 0.5, y + 0.5) at each fragment centre without any FP24
- * division by the raster extent.  The vertex endpoints are small integers
- * (<= 2048), exact in the SW-TCL FP32 vertex path by construction; whether
- * the rasterizer interpolator delivers the texel-centre values exactly is
- * the index-addressing probe's question, not an assumption made here. */
+/* Single oversized triangle whose texcoord varying is in TEXEL units: the
+ * covered raster interpolates to exactly (x + 0.5, y + 0.5) at each fragment
+ * centre without any FP24 division by the raster extent.  ONE triangle, not
+ * a two-triangle strip: the RS482 probe showed the strip's second triangle
+ * interpolating a hair low (every mismatch sat exactly on the strip diagonal
+ * x = W * (1 - y/H)), because the second plane equation anchors at a far
+ * vertex and the longer extrapolation drops the sub-ULP the byte-decompose
+ * floor cliff needs.  A single triangle anchored at the origin covers every
+ * fragment from one plane equation -- the lane the probe measured exact
+ * through the full 2^17 ceiling.  The overshoot corners ((3,-1) and (-1,3)
+ * in clip space, texel values 2W and 2H) stay inside the FP24 exact-integer
+ * window and inside the guard band. */
 static bool
 r300vk_idm_create_texel_index_vbo(struct pipe_context *pipe,
                                   unsigned width, unsigned height,
@@ -4544,11 +4549,10 @@ r300vk_idm_create_texel_index_vbo(struct pipe_context *pipe,
 {
    struct pipe_screen *screen = pipe->screen;
    const float w = (float)width, h = (float)height;
-   const float verts[16] = {
-      -1.0f, -1.0f, 0.0f, 0.0f,
-       1.0f, -1.0f, w,    0.0f,
-      -1.0f,  1.0f, 0.0f, h,
-       1.0f,  1.0f, w,    h,
+   const float verts[12] = {
+      -1.0f, -1.0f, 0.0f,     0.0f,
+       3.0f, -1.0f, 2.0f * w, 0.0f,
+      -1.0f,  3.0f, 0.0f,     2.0f * h,
    };
    struct pipe_resource vb_templ;
    memset(&vb_templ, 0, sizeof(vb_templ));
@@ -4705,10 +4709,10 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
 
    struct pipe_draw_info info;
    memset(&info, 0, sizeof(info));
-   info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+   info.mode           = MESA_PRIM_TRIANGLES;
    info.instance_count = 1;
-   info.max_index      = 3;
-   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+   info.max_index      = 2;
+   struct pipe_draw_start_count_bias draw = { .start = 0, .count = 3 };
    pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
    pipe->flush(pipe, NULL, 0);
 
