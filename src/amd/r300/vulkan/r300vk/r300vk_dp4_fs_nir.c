@@ -737,15 +737,16 @@ r300vk_build_ieee16_mul_fs_nir(const nir_shader_compiler_options *opts)
    nir_def *ua = nir_channel(&b, tex, 0);
    nir_def *ub = nir_channel(&b, tex, 1);
 
-   /* Input significands and biased exponents are extracted by the kernel or pre-pass.
-    * For this synthetic shader, we assume ua/ub are pre-processed significands
-    * and the biased exponents are pre-loaded into uniforms or constants.
-    * Here we just form the 4-component vector for the fsin placeholder. */
-   nir_def *ua_v4 = nir_vec4(&b, ua, nir_imm_float(&b, 15.0), nir_imm_float(&b, 0.0), nir_imm_float(&b, 0.0));
-   nir_def *ub_v4 = nir_vec4(&b, ub, nir_imm_float(&b, 15.0), nir_imm_float(&b, 0.0), nir_imm_float(&b, 0.0));
+   /* Input significands and biased exponents are extracted by the kernel or
+    * pre-pass; the biased exponents here are the synthetic 15 (FP16 bias for a
+    * normal in [1, 2)).  fsin is a one-source opcode, so the placeholder packs
+    * both operands into a single vec4 [sig_a, exp_a, sig_b, exp_b] that
+    * r300_nir_lower_ieee16_mul_normal_rne unpacks by channel. */
+   nir_def *packed = nir_vec4(&b, ua, nir_imm_float(&b, 15.0),
+                              ub, nir_imm_float(&b, 15.0));
 
    /* fsin used as placeholder for r300_nir_lower_ieee16_mul_normal_rne */
-   nir_def *res = nir_fsin(&b, ua_v4, ub_v4);
+   nir_def *res = nir_fsin(&b, packed);
 
    store_color_at(&b, res, FRAG_RESULT_COLOR, "color");
    return fs_finalize(&b);
