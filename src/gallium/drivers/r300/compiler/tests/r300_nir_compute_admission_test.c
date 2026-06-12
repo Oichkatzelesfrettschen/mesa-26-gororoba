@@ -753,6 +753,85 @@ case_qnorm_metadata(void)
    ralloc_free(conj);
 }
 
+/* Constant-fill kernel: out_buffer[gid] = 0x42424242u (no loads). */
+static nir_shader *
+build_const_fill_u32(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_u32");
+   nir_def *c = nir_imm_int(&b, 0x42424242);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Constant-fill vec4 kernel: out_buffer[gid] = (0x01, 0x02, 0x03, 0x04) (no loads). */
+static nir_shader *
+build_const_fill_vec4(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_vec4");
+   nir_def *c = nir_imm_ivec4(&b, 0x01010101, 0x02020202, 0x03030303, 0x04040404);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_const_fill_metadata(void)
+{
+   /* Scalar uint32 constant fill: verify admission and detection metadata. */
+   nir_shader *nir = build_const_fill_u32();
+   struct r300_compute_admission adm;
+   struct r300_compute_const_fill_pattern cf = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "const-fill u32 kernel admits");
+   r300_nir_detect_const_fill_pattern(nir, &cf);
+   CHECK(cf.is_const_fill, "const-fill u32 shape detected");
+   CHECK(cf.value_components == 1, "const-fill records scalar width");
+   CHECK(cf.value_bit_size == 32, "const-fill records 32-bit lane");
+   /* 0x42424242 in LE bytes: R=0x42, G=0x42, B=0x42, A=0x42 */
+   CHECK(cf.const_value[0] == 0x42 && cf.const_value[1] == 0x42 &&
+         cf.const_value[2] == 0x42 && cf.const_value[3] == 0x42,
+         "const-fill records RGBA8 bytes of 0x42424242");
+   ralloc_free(nir);
+
+   /* Vec4 constant fill: verify detection of vec4 constant. */
+   nir_shader *nir4 = build_const_fill_vec4();
+   struct r300_compute_const_fill_pattern cf4 = {0};
+
+   prepare_detect_shader(nir4);
+   r300_nir_detect_const_fill_pattern(nir4, &cf4);
+   CHECK(cf4.is_const_fill, "const-fill vec4 shape detected");
+   CHECK(cf4.value_components == 4, "const-fill vec4 records vec4 width");
+   CHECK(cf4.output_ssbo_binding_valid, "const-fill vec4 records binding");
+   ralloc_free(nir4);
+
+   /* Discrimination: identity-map must NOT match CONSTFILL (it has a load). */
+   nir_shader *ident = build_identity_map_f32vec4();
+   struct r300_compute_const_fill_pattern cfi = {0};
+   prepare_detect_shader(ident);
+   r300_nir_detect_const_fill_pattern(ident, &cfi);
+   CHECK(!cfi.is_const_fill, "const-fill rejects identity-map (has a load)");
+   ralloc_free(ident);
+
+   /* Discrimination: CONSTFILL must NOT match identity-map (no load). */
+   nir_shader *cfn = build_const_fill_u32();
+   struct r300_compute_identity_pattern ident2 = {0};
+   prepare_detect_shader(cfn);
+   r300_nir_detect_identity_map(cfn, &ident2);
+   CHECK(!ident2.is_identity_map, "identity-map rejects const-fill (zero loads)");
+   ralloc_free(cfn);
+
+   /* Discrimination: unary-map must NOT match CONSTFILL. */
+   nir_shader *cfn2 = build_const_fill_u32();
+   struct r300_compute_unary_map_pattern um = {0};
+   prepare_detect_shader(cfn2);
+   r300_nir_detect_unary_map(cfn2, &um);
+   CHECK(!um.is_unary_map, "unary-map rejects const-fill (zero loads)");
+   ralloc_free(cfn2);
+}
+
 static void
 case_omul_metadata(void)
 {
@@ -857,6 +936,7 @@ main(void)
    case_qnorm_metadata();
    case_omul_metadata();
    case_octonion_algebra_metadata();
+   case_const_fill_metadata();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
