@@ -214,7 +214,7 @@ lower_ieee16_mul_normal_rne_instr(nir_builder *b, nir_alu_instr *alu, void *data
    nir_def *exp_final = nir_bcsel(b, sig_ovf, nir_fadd_imm(b, biased_exp, 1.0), biased_exp);
 
    /* Result carrier: bits [15:10] = exp, bits [9:0] = mantissa (sig & 0x3ff) */
-   nir_def *mantissa = nir_fsub(b, sig_final, 1024.0);
+   nir_def *mantissa = nir_fsub(b, sig_final, nir_imm_float(b, 1024.0));
    nir_def *res_bits = nir_fadd(b, nir_fmul_imm(b, exp_final, 1024.0), mantissa);
 
    /* Encode to RGBA8_U16 carrier: R = bits & 0xff, G = bits >> 8 */
