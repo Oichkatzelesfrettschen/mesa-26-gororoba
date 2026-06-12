@@ -1625,6 +1625,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                const VkPipelineShaderStageCreateInfo *stage_info,
                                struct r300_compute_admission *adm,
                                struct r300_compute_identity_pattern *ident,
+                               struct r300_compute_const_fill_pattern *const_fill,
                                struct r300_compute_binary_map_pattern *binmap,
                                struct r300_compute_unary_map_pattern *unary,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
@@ -1716,6 +1717,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
 
    r300_nir_classify_compute(nir, adm);
    r300_nir_detect_identity_map(nir, ident);
+   r300_nir_detect_const_fill_pattern(nir, const_fill);
    r300_nir_detect_binary_map(nir, binmap);
    r300_nir_detect_unary_map(nir, unary);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
@@ -3272,6 +3274,10 @@ static bool
 r300vk_synthesize_compute_shaders(struct r300vk_device *device,
                                   struct r300vk_pipeline *pl)
 {
+   /* CONSTFILL lowers to a framebuffer clear: no vs/fs CSO to synthesize, the
+    * dispatch is self-contained.  Report success so the pipeline stays valid. */
+   if (pl->const_fill.is_const_fill)
+      return true;
    if (pl->identity_map.is_identity_map) {
       if (!r300vk_identity_map_synthesize_shaders(device, pl))
          pl->identity_map.is_identity_map = false;
@@ -3420,6 +3426,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
 {
    struct r300_compute_admission adm;
    struct r300_compute_identity_pattern ident = {0};
+   struct r300_compute_const_fill_pattern const_fill_pat = {0};
    struct r300_compute_binary_map_pattern binmap = {0};
    struct r300_compute_unary_map_pattern unary_pat = {0};
    struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
@@ -3450,7 +3457,8 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    uint32_t local_size[3];
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
-                                       &adm, &ident, &binmap, &unary_pat, &blendacc, &zpass,
+                                       &adm, &ident, &const_fill_pat, &binmap, &unary_pat,
+                                       &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
                                        &qmul_pat, &qdiv_pat, &mat4vec_pat, &qfmul_pat,
                                        &qrotate_pat,
@@ -3491,6 +3499,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->is_compute = true;
    pl->admission = adm;
    pl->identity_map = ident;
+   pl->const_fill = const_fill_pat;
    pl->binary_map = binmap;
    pl->unary_map = unary_pat;
    pl->dp4 = dp4_pat;

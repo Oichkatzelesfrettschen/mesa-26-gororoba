@@ -109,6 +109,23 @@ struct r300_compute_identity_pattern {
 void r300_nir_detect_identity_map(const struct nir_shader *s,
                                   struct r300_compute_identity_pattern *out);
 
+/* Constant-fill (memset) pattern: exactly one store_ssbo whose value is a
+ * compile-time constant, with NO load -- the degenerate `out[gid] = C`.  The
+ * constant is the same for every element, so the lowering needs no per-element
+ * fetch and no fragment shader: it is a framebuffer clear to C.  Disjoint from
+ * identity-map (whose store value is a load_ssbo def) and from every
+ * load-bearing detector (const-fill has zero loads). */
+struct r300_compute_const_fill_pattern {
+   bool       is_const_fill;
+   uint32_t   output_ssbo_binding;  /* binding index of the store_ssbo dest */
+   uint8_t    value_components;     /* stored constant vector width */
+   uint8_t    value_bit_size;       /* stored constant component width */
+   bool       value_is_float;       /* store_ssbo src_type base == nir_type_float */
+   uint32_t   value[4];             /* the broadcast constant, per component (raw bits) */
+};
+void r300_nir_detect_const_fill_pattern(const struct nir_shader *s,
+                                        struct r300_compute_const_fill_pattern *out);
+
 /* Texture-pair binary-map pattern: exactly one store_ssbo whose value is the
  * result of a single ALU op whose two sources are exactly the SSA defs of
  * two distinct load_ssbo intrinsics.  The recognized ALU op set is bounded
