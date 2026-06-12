@@ -803,6 +803,26 @@ struct r300_compute_affine_iota_pattern {
 void r300_nir_detect_affine_iota_pattern(const struct nir_shader *s,
                                          struct r300_compute_affine_iota_pattern *out);
 
+/* Multilimb u32 multiply pattern: out[gid] = a[gid] * b[gid] for
+ * single-component 32-bit integers -- the binary-map imul shape, routed to
+ * the exact multilimb orchestrator instead of the FP24-bounded elementwise
+ * map.  Each factor splits into five 7-bit limbs extracted byte-locally
+ * from the RGBA8 carrier; the product's nine convolution columns
+ * c_k = sum_{i+j=k} a_i * b_j each stay <= 5 * 127^2 = 80645 < 2^17, an
+ * exact FP24 integer (MULTILIMB7_U32_MUL in the virtual-op catalog,
+ * HW-confirmed bit-exact through 0xFFFFFFFF^2).  The dispatch computes one
+ * column per fragment pass and the host assembles the carries, writing the
+ * low 32 bits of the exact 64-bit product. */
+struct r300_compute_multilimb_mul_pattern {
+   bool       is_multilimb_mul;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_multilimb_mul_pattern(const struct nir_shader *s,
+                                           struct r300_compute_multilimb_mul_pattern *out);
+
 /* Classify how a compute kernel consumes its invocation index.  Pure
  * read-only analysis: walks the use chains of every invocation-index
  * intrinsic (global/local invocation id and index, workgroup id) and reports

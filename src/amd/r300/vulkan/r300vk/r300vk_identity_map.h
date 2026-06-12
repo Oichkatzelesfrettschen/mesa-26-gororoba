@@ -413,4 +413,16 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
                                    const struct r300vk_cmd_dispatch *dispatch,
                                    const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* MULTILIMB u32-multiply dispatch replay: out[gid] = a[gid] * b[gid], exact
+ * for every u32 pair.  Nine fullscreen passes (one specialized column FS
+ * each) compute the 7-bit-limb convolution columns on the FP24 ALU into
+ * RGBA8 targets; the host reads the columns back, propagates the carries in
+ * 64-bit integers, and writes the low 32 bits of the exact product to the
+ * output SSBO. */
+bool
+r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
+                                     const struct r300vk_pipeline *pl,
+                                     const struct r300vk_cmd_dispatch *dispatch,
+                                     const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #endif /* R300VK_IDENTITY_MAP_H */

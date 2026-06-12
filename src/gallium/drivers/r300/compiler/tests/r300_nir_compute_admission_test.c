@@ -1505,6 +1505,51 @@ case_affine_iota(void)
    ralloc_free(cf);
 }
 
+/* out[gid] = a[gid] * b[gid] for u32: the multilimb-multiply shape. */
+static nir_shader *
+build_multilimb_mul_u32(void)
+{
+   nir_builder b = cs_builder("cs_multilimb_mul_u32");
+   nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *c = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *prod = nir_imul(&b, a, c);
+   nir_store_ssbo(&b, prod, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_multilimb_mul(void)
+{
+   printf("multilimb-mul detector\n");
+   struct r300_compute_multilimb_mul_pattern mm = {0};
+
+   nir_shader *mul = build_multilimb_mul_u32();
+   r300_nir_detect_multilimb_mul_pattern(mul, &mm);
+   CHECK(mm.is_multilimb_mul, "u32 imul of two loads detects multilimb");
+   CHECK(mm.input_a_ssbo_binding == 0 && mm.input_b_ssbo_binding == 1 &&
+         mm.output_ssbo_binding == 2,
+         "multilimb records its three bindings");
+   /* The same kernel also matches binary-map imul; the pipeline clears the
+    * elementwise route when multilimb fires.  Pin that both detect. */
+   struct r300_compute_binary_map_pattern bm = {0};
+   r300_nir_detect_binary_map(mul, &bm);
+   CHECK(bm.is_binary_map, "binary-map also detects the imul shape");
+   ralloc_free(mul);
+
+   nir_shader *add = build_binary_map_f32vec4();
+   r300_nir_detect_multilimb_mul_pattern(add, &mm);
+   CHECK(!mm.is_multilimb_mul, "vec4 fadd rejects multilimb");
+   ralloc_free(add);
+
+   nir_shader *iota = build_index_value_linear();
+   r300_nir_detect_multilimb_mul_pattern(iota, &mm);
+   CHECK(!mm.is_multilimb_mul, "zero-load iota shape rejects multilimb");
+   ralloc_free(iota);
+}
+
 int
 main(void)
 {
@@ -1537,6 +1582,7 @@ main(void)
    case_constfill_regression();
    case_index_consumption();
    case_affine_iota();
+   case_multilimb_mul();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
