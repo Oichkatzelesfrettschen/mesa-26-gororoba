@@ -100,12 +100,16 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
  * identity 1-in/1-out replay core -- r300vk_unary_map_synthesize_shaders
  * mirrored the bindings + value format into pl->identity_map and bound the MAD
  * fragment program as pl->fs_cso, so the same fullscreen draw scales+biases the
- * sampled texel instead of copying it. */
+ * sampled texel instead of copying it.  push_data is the queue walk's running
+ * 128-byte push-constant window; a pattern with a push-derived c0/c1 binds it
+ * at FS CONST[0] so the synthesized constant-file reads see the pushed
+ * values. */
 bool
 r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
                                  const struct r300vk_pipeline *pl,
                                  const struct r300vk_cmd_dispatch *dispatch,
-                                 const struct r300vk_cmd_bind_descriptor_sets *binds);
+                                 const struct r300vk_cmd_bind_descriptor_sets *binds,
+                                 const uint8_t *push_data);
 
 /* DP4 (quantized-dot) orchestrator entry: shares the 2-in / 1-out replay core
  * with binary-map; pl->fs_cso holds the pure-NIR DP4 FS. */

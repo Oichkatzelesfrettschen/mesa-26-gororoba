@@ -1073,63 +1073,88 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
                                       enum pipe_format output_fmt,
                                       enum pipe_format output_buffer_fmt);
 
-/* Unary affine-map replay for vec4 FP32.  The generated fragment program applies
- * c0/c1 to the sampled vector, writes through the FP16 render-target carrier,
- * and unpacks to the kernel's FP32 output.  Other component counts or bit widths
- * need their own carrier and reject here rather than sampling bytes as UNORM
- * colors. */
+/* Unary affine-map replay for vec4 and scalar FP32.  The generated fragment
+ * program applies c0/c1 to the sampled value, writes through the FP16
+ * render-target carrier, and unpacks to the kernel's FP32 output.  Other
+ * component counts or bit widths need their own carrier and reject here
+ * rather than sampling bytes as UNORM colors. */
 bool
 r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
                                  const struct r300vk_pipeline *pl,
                                  const struct r300vk_cmd_dispatch *dispatch,
-                                 const struct r300vk_cmd_bind_descriptor_sets *binds)
+                                 const struct r300vk_cmd_bind_descriptor_sets *binds,
+                                 const uint8_t *push_data)
 {
+   const bool uses_push = pl->unary_map.mul_const_from_push ||
+                          pl->unary_map.add_const_from_push;
+   bool ok = false;
+
+   /* A push-derived c0/c1 reads the constant file: bind the queue walk's
+    * 128-byte push window at FS CONST[0] so the FS const-file reads (byte
+    * offset N -> CONST[N/16] component (N%16)/4) see the pushed values.  The
+    * window lives on the caller's stack and the draw flushes inside the
+    * replay core, so user_buffer needs no copy; clear the binding after the
+    * draw so a later draw cannot read a stale window. */
+   if (uses_push) {
+      if (!push_data) {
+         IDM_LOG("unary_map early-return push-derived constants without a "
+                 "push window");
+         return false;
+      }
+      struct pipe_constant_buffer cb;
+      memset(&cb, 0, sizeof(cb));
+      cb.user_buffer = push_data;
+      cb.buffer_size = 128;
+      device->pipe->set_constant_buffer(device->pipe, MESA_SHADER_FRAGMENT, 0,
+                                        &cb);
+   }
+
    if (pl->unary_map.value_is_float && pl->unary_map.value_bit_size == 32 &&
        pl->unary_map.value_components == 4) {
-      if (!device->screen->is_format_supported(device->screen,
+      if (device->screen->is_format_supported(device->screen,
              PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
-             PIPE_BIND_SAMPLER_VIEW))
-         return false;
-      if (!device->screen->is_format_supported(device->screen,
+             PIPE_BIND_SAMPLER_VIEW) &&
+          device->screen->is_format_supported(device->screen,
              PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
-             PIPE_BIND_RENDER_TARGET))
-         return false;
-      return r300vk_one_in_one_out_dispatch_replay(
-         device, pl, dispatch, binds,
-         pl->unary_map.input_ssbo_binding,
-         pl->unary_map.output_ssbo_binding,
-         pl->unary_map.input_ssbo_binding_valid &&
-         pl->unary_map.output_ssbo_binding_valid,
-         PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
-         PIPE_FORMAT_R32G32B32A32_FLOAT);
-   }
-
-   /* Scalar carrier: one float per element.  The input SSBO wraps as an
-    * R32_FLOAT sampler view (one texel per element, TEX yields the value in
-    * the X channel); the channel-uniform affine FS computes the map on every
-    * channel; the FP16x4 RT carries the result and readback gathers the X
-    * lane into the 4-byte-stride output buffer. */
-   if (pl->unary_map.value_is_float && pl->unary_map.value_bit_size == 32 &&
-       pl->unary_map.value_components == 1) {
-      if (!device->screen->is_format_supported(device->screen,
+             PIPE_BIND_RENDER_TARGET)) {
+         ok = r300vk_one_in_one_out_dispatch_replay(
+            device, pl, dispatch, binds,
+            pl->unary_map.input_ssbo_binding,
+            pl->unary_map.output_ssbo_binding,
+            pl->unary_map.input_ssbo_binding_valid &&
+            pl->unary_map.output_ssbo_binding_valid,
+            PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+            PIPE_FORMAT_R32G32B32A32_FLOAT);
+      }
+   } else if (pl->unary_map.value_is_float &&
+              pl->unary_map.value_bit_size == 32 &&
+              pl->unary_map.value_components == 1) {
+      /* Scalar carrier: one float per element.  The input SSBO wraps as an
+       * R32_FLOAT sampler view (one texel per element, TEX yields the value
+       * in the X channel); the channel-uniform affine FS computes the map on
+       * every channel; the FP16x4 RT carries the result and readback gathers
+       * the X lane into the 4-byte-stride output buffer. */
+      if (device->screen->is_format_supported(device->screen,
              PIPE_FORMAT_R32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
-             PIPE_BIND_SAMPLER_VIEW))
-         return false;
-      if (!device->screen->is_format_supported(device->screen,
+             PIPE_BIND_SAMPLER_VIEW) &&
+          device->screen->is_format_supported(device->screen,
              PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
-             PIPE_BIND_RENDER_TARGET))
-         return false;
-      return r300vk_one_in_one_out_dispatch_replay(
-         device, pl, dispatch, binds,
-         pl->unary_map.input_ssbo_binding,
-         pl->unary_map.output_ssbo_binding,
-         pl->unary_map.input_ssbo_binding_valid &&
-         pl->unary_map.output_ssbo_binding_valid,
-         PIPE_FORMAT_R32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
-         PIPE_FORMAT_R32_FLOAT);
+             PIPE_BIND_RENDER_TARGET)) {
+         ok = r300vk_one_in_one_out_dispatch_replay(
+            device, pl, dispatch, binds,
+            pl->unary_map.input_ssbo_binding,
+            pl->unary_map.output_ssbo_binding,
+            pl->unary_map.input_ssbo_binding_valid &&
+            pl->unary_map.output_ssbo_binding_valid,
+            PIPE_FORMAT_R32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+            PIPE_FORMAT_R32_FLOAT);
+      }
    }
 
-   return false;
+   if (uses_push)
+      device->pipe->set_constant_buffer(device->pipe, MESA_SHADER_FRAGMENT, 0,
+                                        NULL);
+   return ok;
 }
 
 /* Binary-map orchestrator: same shape as r300vk_identity_map_dispatch_replay
@@ -1624,14 +1649,21 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
    /* Binding resolution, same priority as the 2-in core: captured constant
     * bindings win; all-zero means the detector saw opaque post-explicit_io
     * handles, so fall back to positional layout iteration (input = 1st
-    * STORAGE_BUFFER, output = 2nd). */
+    * STORAGE_BUFFER, output = 2nd).  A single-storage-buffer layout is the
+    * in-place kernel (d[i] = f(d[i])): the one buffer serves both roles,
+    * which is exact because the input is snapshot into the sampler texture
+    * before the draw writes the buffer back. */
    uint32_t in_binding  = cap_in;
    uint32_t out_binding = cap_out;
    if (!detector_captured) {
-      if (!nth_storage_buffer_binding(set, 0, &in_binding) ||
-          !nth_storage_buffer_binding(set, 1, &out_binding)) {
-         IDM_LOG("1in1out early-return layout-has-fewer-than-two-storage-buffers");
+      if (!nth_storage_buffer_binding(set, 0, &in_binding)) {
+         IDM_LOG("1in1out early-return layout-has-no-storage-buffer");
          return false;
+      }
+      if (!nth_storage_buffer_binding(set, 1, &out_binding)) {
+         out_binding = in_binding;
+         IDM_LOG("1in1out single-buffer layout: in-place binding %u",
+                 in_binding);
       }
    }
    IDM_LOG("1in1out bindings: in=%u out=%u source=%s",

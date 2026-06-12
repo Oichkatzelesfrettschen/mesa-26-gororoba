@@ -190,6 +190,119 @@ build_unary_map_scalar(void)
    return b.shader;
 }
 
+/* Push-derived affine unary map: out[gid] = in[gid] * pc.c0 + pc.c1, the
+ * post-explicit_io shape of a kernel reading its scale/bias from a
+ * push_constant block.  c0 reads at byte offset c0_off, c1 at c1_off; a
+ * dynamic_offset variant feeds a non-constant offset to the c1 load so the
+ * detector's compile-time-offset requirement is exercised. */
+static nir_shader *
+build_unary_map_scalar_push(uint32_t c0_off, uint32_t c1_off,
+                            bool dynamic_offset, bool literal_c0)
+{
+   nir_builder b = cs_builder("cs_unary_map_scalar_push");
+   nir_def *x = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *c0 = literal_c0 ?
+      nir_imm_float(&b, 2.0f) :
+      nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, c0_off),
+                             .base = 0, .range = 128);
+   /* The dynamic-offset variant keys the c1 read on the invocation id (NOT a
+    * second load_ssbo, which would trip the one-load structural guard before
+    * the offset check ever ran). */
+   nir_def *c1_offset = dynamic_offset ?
+      nir_channel(&b, nir_load_global_invocation_id(&b, 32), 0) :
+      nir_imm_int(&b, c1_off);
+   nir_def *c1 = nir_load_push_constant(&b, 1, 32, c1_offset,
+                                        .base = 0, .range = 128);
+   nir_def *y = nir_fadd(&b, nir_fmul(&b, x, c0), c1);
+   nir_store_ssbo(&b, y, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Vec4 push-derived unary map: the scalar push constants broadcast across the
+ * vec4 lanes, the splat the nir builder expresses as an all-lanes-equal
+ * swizzle of the scalar load_push_constant def. */
+static nir_shader *
+build_unary_map_vec4_push(void)
+{
+   nir_builder b = cs_builder("cs_unary_map_vec4_push");
+   nir_def *x = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *c0 = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0),
+                                        .base = 0, .range = 128);
+   nir_def *c1 = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 4),
+                                        .base = 0, .range = 128);
+   const unsigned splat[4] = { 0, 0, 0, 0 };
+   nir_def *y = nir_fadd(&b, nir_fmul(&b, x, nir_swizzle(&b, c0, splat, 4)),
+                         nir_swizzle(&b, c1, splat, 4));
+   nir_store_ssbo(&b, y, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+/* Box-3 multi-tap gather, direct-offset shape: every tap offset is the store
+ * offset def itself or iadd(store_offset, +/-4) -- the pre-scaled form a
+ * synthetic kernel builds without descriptor-base arithmetic. */
+static nir_shader *
+build_multitap_box3_direct(void)
+{
+   nir_builder b = cs_builder("cs_multitap_box3_direct");
+   nir_def *gid = nir_channel(&b, nir_load_global_invocation_id(&b, 32), 0);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_def *bind = nir_imm_int(&b, 0);
+   nir_def *t_l = nir_load_ssbo(&b, 1, 32, bind, nir_iadd_imm(&b, off, -4),
+                                .align_mul = 4, .align_offset = 0);
+   nir_def *t_c = nir_load_ssbo(&b, 1, 32, bind, off,
+                                .align_mul = 4, .align_offset = 0);
+   nir_def *t_r = nir_load_ssbo(&b, 1, 32, bind, nir_iadd_imm(&b, off, 4),
+                                .align_mul = 4, .align_offset = 0);
+   nir_def *sum = nir_iadd(&b, nir_iadd(&b, t_l, t_c), t_r);
+   nir_store_ssbo(&b, sum, nir_imm_int(&b, 1), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Box-3 multi-tap gather, descriptor-base shape: the post-explicit_io SPIR-V
+ * form where every ssbo byte offset is iadd(descriptor_base, index*4), the
+ * input and output bases are DIFFERENT opaque defs, and the edge taps scale
+ * iadd(gid, +/-1).  The opaque bases here are push-constant loads standing in
+ * for the descriptor-chain defs real lowering produces.  bad_delta moves the
+ * right tap to gid+2 so the exact-box-3 check is exercised.  The left tap is
+ * isub(gid, 1), the exact opcode SPIR-V OpISub reaches the detector as (no
+ * algebraic canonicalization runs in the classify prep). */
+static nir_shader *
+build_multitap_box3_desc_base(bool bad_delta)
+{
+   nir_builder b = cs_builder("cs_multitap_box3_desc_base");
+   nir_def *gid = nir_channel(&b, nir_load_global_invocation_id(&b, 32), 0);
+   nir_def *in_base = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0),
+                                             .base = 0, .range = 128);
+   nir_def *out_base = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 4),
+                                              .base = 0, .range = 128);
+   nir_def *stride = nir_imm_int(&b, 4);
+   nir_def *scaled = nir_imul(&b, gid, stride);
+   nir_def *off_l = nir_iadd(&b, in_base,
+                             nir_imul(&b, nir_isub(&b, gid, nir_imm_int(&b, 1)),
+                                      stride));
+   nir_def *off_c = nir_iadd(&b, in_base, scaled);
+   nir_def *off_r = nir_iadd(&b, in_base,
+                             nir_imul(&b, nir_iadd_imm(&b, gid,
+                                                       bad_delta ? 2 : 1),
+                                      stride));
+   nir_def *bind = nir_imm_int(&b, 0);
+   nir_def *t_l = nir_load_ssbo(&b, 1, 32, bind, off_l,
+                                .align_mul = 4, .align_offset = 0);
+   nir_def *t_c = nir_load_ssbo(&b, 1, 32, bind, off_c,
+                                .align_mul = 4, .align_offset = 0);
+   nir_def *t_r = nir_load_ssbo(&b, 1, 32, bind, off_r,
+                                .align_mul = 4, .align_offset = 0);
+   nir_def *sum = nir_iadd(&b, nir_iadd(&b, t_l, t_c), t_r);
+   nir_store_ssbo(&b, sum, nir_imm_int(&b, 1), nir_iadd(&b, out_base, scaled),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 static nir_shader *
 build_unary_map_vec4(bool non_uniform_const, bool swizzled_input,
                      uint32_t output_binding)
@@ -452,6 +565,9 @@ prepare_detect_shader(nir_shader *nir)
       progress = false;
       NIR_PASS(progress, nir, nir_opt_dce);
       NIR_PASS(progress, nir, nir_opt_cse);
+      /* Parity with the r300vk classify prep: fold offset arithmetic to the
+       * inline constants the detectors capture from. */
+      NIR_PASS(progress, nir, nir_opt_constant_folding);
    } while (progress);
 }
 
@@ -646,6 +762,102 @@ case_unary_metadata(void)
    r300_nir_detect_unary_map(bin, &not_unary);
    CHECK(!not_unary.is_unary_map, "two-input binary map rejected by unary detector");
    ralloc_free(bin);
+}
+
+static void
+case_unary_push_metadata(void)
+{
+   /* Both constants push-derived at offsets 0 / 4. */
+   nir_shader *nir = build_unary_map_scalar_push(0, 4, false, false);
+   struct r300_compute_admission adm;
+   struct r300_compute_unary_map_pattern umap = {0};
+   prepare_detect_shader(nir);
+   r300_nir_classify_compute(nir, &adm);
+   CHECK(adm.admissible, "push-constant unary affine-map kernel admits");
+   r300_nir_detect_unary_map(nir, &umap);
+   CHECK(umap.is_unary_map, "push-derived scalar unary-map detected");
+   CHECK(umap.mul_const_from_push, "c0 recorded as push-derived");
+   CHECK(umap.add_const_from_push, "c1 recorded as push-derived");
+   CHECK(umap.mul_const_push_offset == 0, "c0 push offset 0 recorded");
+   CHECK(umap.add_const_push_offset == 4, "c1 push offset 4 recorded");
+   CHECK(umap.value_components == 1, "push-derived map records scalar width");
+   ralloc_free(nir);
+
+   /* Mixed: literal c0, push-derived c1 at a non-zero offset. */
+   nir_shader *mixed = build_unary_map_scalar_push(0, 12, false, true);
+   struct r300_compute_unary_map_pattern mixed_map = {0};
+   prepare_detect_shader(mixed);
+   r300_nir_detect_unary_map(mixed, &mixed_map);
+   CHECK(mixed_map.is_unary_map, "mixed literal/push unary-map detected");
+   CHECK(!mixed_map.mul_const_from_push, "literal c0 stays literal");
+   CHECK(mixed_map.mul_const == 2.0f, "literal c0 value 2.0 recorded");
+   CHECK(mixed_map.add_const_from_push, "mixed c1 recorded as push-derived");
+   CHECK(mixed_map.add_const_push_offset == 12, "c1 push offset 12 recorded");
+   ralloc_free(mixed);
+
+   /* A push read at a dynamic offset has no compile-time constant-file
+    * address: the shape must not match. */
+   nir_shader *dyn = build_unary_map_scalar_push(0, 4, true, false);
+   struct r300_compute_unary_map_pattern dyn_map = {0};
+   prepare_detect_shader(dyn);
+   r300_nir_detect_unary_map(dyn, &dyn_map);
+   CHECK(!dyn_map.is_unary_map,
+         "dynamic push-constant offset rejected by unary detector");
+   ralloc_free(dyn);
+
+   /* An offset past the 128-byte push window has no FS CONST[0..7] slot. */
+   nir_shader *oob = build_unary_map_scalar_push(0, 128, false, false);
+   struct r300_compute_unary_map_pattern oob_map = {0};
+   prepare_detect_shader(oob);
+   r300_nir_detect_unary_map(oob, &oob_map);
+   CHECK(!oob_map.is_unary_map,
+         "push offset past the 128-byte window rejected");
+   ralloc_free(oob);
+
+   /* Vec4 splat of scalar push constants: all-lanes-equal swizzle matches. */
+   nir_shader *vec = build_unary_map_vec4_push();
+   struct r300_compute_unary_map_pattern vec_map = {0};
+   prepare_detect_shader(vec);
+   r300_nir_detect_unary_map(vec, &vec_map);
+   CHECK(vec_map.is_unary_map, "vec4 splat push unary-map detected");
+   CHECK(vec_map.mul_const_from_push && vec_map.add_const_from_push,
+         "vec4 splat records both constants as push-derived");
+   CHECK(vec_map.mul_const_push_offset == 0 &&
+         vec_map.add_const_push_offset == 4,
+         "vec4 splat records push offsets 0 and 4");
+   CHECK(vec_map.value_components == 4, "vec4 splat records vector width");
+   ralloc_free(vec);
+}
+
+static void
+case_multitap_metadata(void)
+{
+   nir_shader *direct = build_multitap_box3_direct();
+   struct r300_compute_multitap_gather_pattern dmap = {0};
+   prepare_detect_shader(direct);
+   r300_nir_detect_multitap_gather_pattern(direct, &dmap);
+   CHECK(dmap.is_multitap_gather, "direct-offset box-3 gather detected");
+   CHECK(dmap.tap_count == 3, "direct gather records 3 taps");
+   CHECK(dmap.input_ssbo_binding == 0 && dmap.output_ssbo_binding == 1,
+         "direct gather records constant bindings 0 -> 1");
+   ralloc_free(direct);
+
+   nir_shader *desc = build_multitap_box3_desc_base(false);
+   struct r300_compute_multitap_gather_pattern smap = {0};
+   prepare_detect_shader(desc);
+   r300_nir_detect_multitap_gather_pattern(desc, &smap);
+   CHECK(smap.is_multitap_gather,
+         "descriptor-base box-3 gather detected (post-explicit_io shape)");
+   CHECK(smap.tap_count == 3, "descriptor-base gather records 3 taps");
+   ralloc_free(desc);
+
+   nir_shader *bad = build_multitap_box3_desc_base(true);
+   struct r300_compute_multitap_gather_pattern bmap = {0};
+   prepare_detect_shader(bad);
+   r300_nir_detect_multitap_gather_pattern(bad, &bmap);
+   CHECK(!bmap.is_multitap_gather,
+         "gid+2 tap rejected: the realized kernel is exactly box-3");
+   ralloc_free(bad);
 }
 
 static void
@@ -1115,6 +1327,8 @@ main(void)
    case_binary_metadata();
    case_qfmul_metadata();
    case_unary_metadata();
+   case_unary_push_metadata();
+   case_multitap_metadata();
    case_qmul_metadata();
    case_qrotate_metadata();
    case_qconj_metadata();
