@@ -656,6 +656,45 @@ struct r300_compute_qfmmul_pattern {
 void r300_nir_detect_qfmmul_pattern(const struct nir_shader *s,
                                     struct r300_compute_qfmmul_pattern *out);
 
+/* Constant-fill (CONSTFILL) pattern: out[gid] = C for every element, where C is a
+ * compile-time constant with zero loads.  The degenerate SSBO-store is the limiting
+ * case of the identity-map where the stored value is independent of gid and memory --
+ * a framebuffer CLEAR, not a fragment program.  On RS482 this lowers to an RB3D
+ * color-buffer clear using the constant bytes as the RGBA8 clear color, followed by
+ * the standard RT-to-buffer copy that the identity-map readback path already provides.
+ * No per-element fragment draw is needed: the clear fills the entire render target with
+ * the same four bytes per texel, so every element of the output SSBO receives C.
+ *
+ * Theorem: "degenerate store is a clear" -- out[gid] = C for all gid.
+ *
+ * Discriminator from every other admitted shape:
+ *   load_count == 0 (identity-map, unary-map, binary-map all require >= 1 load_ssbo).
+ *   The stored value's producing instruction type is nir_instr_type_load_const.
+ *   No atomics (rules out blend-acc and ZPASS), no loop (rules out multipass),
+ *   no if (rules out predicated-store).
+ *
+ * const_value[0..3] holds the four bytes of the RGBA8 clear color in little-endian
+ * component order (R=byte 0, G=byte 1, B=byte 2, A=byte 3).  For a uint32_t value V
+ * the bytes are the four uint8_t components of V as written by the shader.  For a
+ * vec4 float constant the bytes come from the RB3D RGBA8 encoding the substrate uses
+ * for the RT carrier; the caller converts from the NIR constant representation.
+ *
+ * output_ssbo_binding is 0 when the post-explicit_io store_ssbo binding source is not
+ * a constant (the orchestrator's positional fallback recovers it: binding 0 = output).
+ * value_components carries the stored vector width (1 for uint32_t fill, 4 for vec4).
+ * value_bit_size is the per-component width in bits. */
+struct r300_compute_const_fill_pattern {
+   bool       is_const_fill;
+   uint32_t   output_ssbo_binding;
+   bool       output_ssbo_binding_valid;
+   uint8_t    const_value[4];    /* RGBA8 bytes of the constant, R=byte 0 */
+   uint8_t    value_components;
+   uint8_t    value_bit_size;
+};
+
+void r300_nir_detect_const_fill_pattern(const struct nir_shader *s,
+                                        struct r300_compute_const_fill_pattern *out);
+
 /* Virtual IEEE FP16 classification pattern (IEEE16_CLASSIFY_LUT):
  * out[gid] = classify(in[gid]). Samples 1-component raw bits, writes vec4 color carrier. */
 struct r300_compute_ieee16_classify_pattern {

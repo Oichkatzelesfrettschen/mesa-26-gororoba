@@ -11,6 +11,7 @@
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_search.h"
 #include "pipe/p_screen.h"
+#include "r300_carrier_policy.h"
 #include "r300_screen.h"
 
 static inline bool

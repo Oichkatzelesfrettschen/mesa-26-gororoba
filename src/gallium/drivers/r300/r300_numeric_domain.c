@@ -679,6 +679,26 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .retained_bundle = NULL,
    },
    {
+      /* Degenerate constant-fill: out[gid] = C for every element.  The
+       * stored value is a compile-time constant, so no fragment ALU is
+       * needed -- the entire output is the same four bytes.  The hardware
+       * primitive is an RB3D color-buffer clear (C rides the RGBA8 clear
+       * color channels) followed by the standard RT-to-buffer copy that the
+       * identity-map readback path provides.  Theorem: "degenerate store is
+       * a clear."  Not a compute domain -- no FP24 ALU participates; this is
+       * a degenerate SSBO-store verb realized entirely by the RB3D clear unit
+       * and the identity-map readback copy. */
+      .op_name         = "CONSTFILL",
+      .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "out[gid] = C for all gid: degenerate store is a clear; "
+                         "C rides the RGBA8 RB3D clear color, the RT-to-buffer "
+                         "identity-map readback copy delivers C to every element; "
+                         "no per-element fragment ALU needed",
+      .mesa_hook       = "r300_nir_detect_const_fill_pattern",
+      .retained_bundle = NULL,
+   },
+   {
       /* QFM derived fused ops: compositions of the built primitives. */
       .op_name         = "QFMSUB",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,

@@ -3286,8 +3286,121 @@ r300_nir_detect_ieee16_mul(const nir_shader *s,
       out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
    out->is_ieee16_mul = true;
 }
-    out->input_ssbo_binding = nir_src_as_uint(load[0]->src[0]);
-   if (nir_src_is_const(store[0]->src[1]))
-      out->output_ssbo_binding = nir_src_as_uint(store[0]->src[1]);
-   out->is_ieee16_mul = true;
+
+/* Constant-fill (CONSTFILL) detector.  Recognises the degenerate shape
+ *
+ *     out_buffer[gid] = C;     // C is a compile-time constant, no loads
+ *
+ * which is the limiting case of the identity-map where the stored value is
+ * independent of gid and independent of any memory read.  On RS482 this lowers
+ * to an RB3D color-buffer clear (the constant bytes ride the RGBA8 clear color
+ * channels) followed by the standard RT-to-buffer copy; no per-element fragment
+ * program is needed.
+ *
+ * Detection invariants:
+ *   1. Exactly 1 store_ssbo, 0 load_ssbo, 0 ssbo_atomic.
+ *   2. No loop and no if-branch (the constant is unconditional; a conditional
+ *      constant store is the predicated-store shape, not CONSTFILL).
+ *   3. The store's value SSA def is produced by a nir_instr_type_load_const
+ *      instruction -- a NIR compile-time immediate, not a loaded value.
+ *
+ * Discriminator from every prior admitted shape:
+ *   load_count == 0 rules out identity-map (1 load), unary-map (1 load),
+ *   binary-map (2 loads), multitap (>= 3 loads), dp4/qmul/qrotate and all
+ *   their derivatives (>= 2 loads), blend-acc / ZPASS (1 atomic each), and
+ *   multipass (1 load + a loop).  The absent atomic rules out the reduction
+ *   shapes; the absent loop/if rules out multipass and predicated-store.
+ *
+ * const_value[0..3] carries the four bytes of the RGBA8 clear color.  For a
+ * scalar uint32_t constant the bytes are the four uint8_t octets in host byte
+ * order (R=byte 0, G=byte 1, B=byte 2, A=byte 3); for a vec4 float constant
+ * the bytes come from the first component's bit pattern in the same layout.
+ * The orchestrator reinterprets these bytes for the RB3D clear color register.
+ *
+ * output_ssbo_binding is 0 when the post-explicit_io store_ssbo binding source
+ * is not a constant; the orchestrator's positional fallback recovers it
+ * (binding 0 = output). */
+void
+r300_nir_detect_const_fill_pattern(const nir_shader *s,
+                                   struct r300_compute_const_fill_pattern *out)
+{
+   out->is_const_fill             = false;
+   out->output_ssbo_binding       = 0;
+   out->output_ssbo_binding_valid = false;
+   out->const_value[0]            = 0;
+   out->const_value[1]            = 0;
+   out->const_value[2]            = 0;
+   out->const_value[3]            = 0;
+   out->value_components          = 0;
+   out->value_bit_size            = 0;
+
+   const nir_intrinsic_instr *store[1] = {0};
+   /* A single-slot dummy array; collect_loads_stores will not write to it
+    * because the discriminator gate nload != 0 catches any load_ssbo, but a
+    * non-NULL pointer avoids pointer-arithmetic UB in the collector. */
+   const nir_intrinsic_instr *dummy_load[1] = {0};
+   unsigned nload, nstore, natomic;
+   bool has_loop, in_if;
+   collect_loads_stores(s, dummy_load, 0, &nload, store, 1, &nstore, &natomic,
+                        &has_loop, &in_if);
+   if (nload != 0 || nstore != 1 || natomic != 0 || has_loop || in_if)
+      return;
+   if (!store[0])
+      return;
+
+   /* The store's value source must be produced by a load_const instruction
+    * (a NIR compile-time immediate).  Any other producer (an ALU op, a load
+    * intrinsic, or a system value) means the value is not a pure compile-time
+    * constant and is not the CONSTFILL degenerate shape. */
+   const nir_def *val = store[0]->src[0].ssa;
+   if (!val || !nir_def_is_const(val))
+      return;
+
+   /* Full write mask: the RB3D clear writes the entire texel.  A
+    * partial-mask store cannot be transported faithfully as a clear because
+    * the unmasked lanes would receive the clear color's bytes.  Accept only
+    * a fully-written store; a partial-mask store falls through to the no-op
+    * compute lifecycle. */
+   if (nir_intrinsic_has_write_mask(store[0]) &&
+       nir_intrinsic_write_mask(store[0]) != BITFIELD_MASK(store[0]->num_components))
+      return;
+
+   /* Extract the constant bytes for the RGBA8 clear color.  The RB3D clear
+    * register takes four uint8 channels; for a scalar uint32 constant the
+    * first component's four bytes are the clear channels; for a vec4 the
+    * first component's low byte lands in R.  Extract from the load_const's
+    * imm[] array using the first component only; the orchestrator reinterprets
+    * these bytes for the clear register. */
+   const nir_load_const_instr *lc = nir_def_as_load_const(val);
+   const uint8_t bit_size = val->bit_size;
+   if (bit_size == 32) {
+      /* 32-bit component: use the raw four bytes. */
+      const uint32_t raw = lc->value[0].u32;
+      out->const_value[0] = (uint8_t)(raw >>  0);
+      out->const_value[1] = (uint8_t)(raw >>  8);
+      out->const_value[2] = (uint8_t)(raw >> 16);
+      out->const_value[3] = (uint8_t)(raw >> 24);
+   } else if (bit_size == 8) {
+      out->const_value[0] = lc->value[0].u8;
+      out->const_value[1] = 0;
+      out->const_value[2] = 0;
+      out->const_value[3] = 0;
+   } else if (bit_size == 16) {
+      const uint16_t raw = lc->value[0].u16;
+      out->const_value[0] = (uint8_t)(raw >> 0);
+      out->const_value[1] = (uint8_t)(raw >> 8);
+      out->const_value[2] = 0;
+      out->const_value[3] = 0;
+   } else {
+      /* Unsupported bit width for clear-color encoding: fall through. */
+      return;
+   }
+
+   if (nir_src_is_const(store[0]->src[1])) {
+      out->output_ssbo_binding       = nir_src_as_uint(store[0]->src[1]);
+      out->output_ssbo_binding_valid = true;
+   }
+   out->value_components = store[0]->num_components;
+   out->value_bit_size   = bit_size;
+   out->is_const_fill    = true;
 }
