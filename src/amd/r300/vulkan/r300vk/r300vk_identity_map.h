@@ -435,4 +435,14 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
                            const struct r300vk_cmd_dispatch *dispatch,
                            const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* log4 2x2 average-pool dispatch replay: one LINEAR corner-tap fullscreen
+ * pass at half extent.  Runtime range admission: the input is range-scanned
+ * during its host-side map and any element >= 256 refuses the dispatch (the
+ * RGBA8 R channel is the filter's carrier; the bound is data-dependent). */
+bool
+r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
+                                 const struct r300vk_pipeline *pl,
+                                 const struct r300vk_cmd_dispatch *dispatch,
+                                 const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 #endif /* R300VK_IDENTITY_MAP_H */

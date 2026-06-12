@@ -304,6 +304,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_multilimb_mul_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->cas.is_cas)
       ok = r300vk_cas_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->log4_pool.is_log4_pool)
+      ok = r300vk_log4_pool_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->binary_map.is_binary_map)
       ok = r300vk_binary_map_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->unary_map.is_unary_map)

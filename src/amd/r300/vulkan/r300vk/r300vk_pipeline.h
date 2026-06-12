@@ -193,6 +193,11 @@ struct r300vk_pipeline {
     * bytewise-SEQ select into a guard render target, and copies it back. */
    struct r300_compute_cas_pattern cas;
 
+   /* log4 2x2 average pool: one LINEAR corner-tap pass; runtime range
+    * admission (elements >= 256 refuse -- the RGBA8 R channel is the
+    * filter's carrier). */
+   struct r300_compute_log4_pool_pattern log4_pool;
+
    /* Octonion-product (OMUL) kernel detected at pipeline-create time:
     * (a,b)*(c,d) = (a*c - conj(d)*b, d*a + b*conj(c)) = sixteen DP4s.  Lowered to
     * two fullscreen draws (the lower-half FS in fs_cso, the upper-half FS in

@@ -748,8 +748,8 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "sum mod 4 == 0 (UNORM8 inter-level carrier); off-grid "
                          "sums quantize within one byte; UNORM8 payloads only "
                          "(float payloads point-sample on RS482)",
-      .mesa_hook       = NULL,
-      .retained_bundle = "cachyos_vostro1000_rs482_multilimb_log4_stencilcas_20260612",
+      .mesa_hook       = "r300_nir_detect_log4_pool_pattern",
+      .retained_bundle = "cachyos_vostro1000_rs482_log4_pool_verb_20260612",
    },
    {
       /* Versioned CAS: GL exposes ONE stencil ref, so REPLACE writes the
