@@ -32,9 +32,9 @@
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug
 pkgver=26.2.0
-pkgrel=8
+pkgrel=9
 epoch=2
-pkgdesc='Mesa r300 system driver (default debug install): GL+GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD, assertions live, files under /opt'
+pkgdesc='Mesa r300 system driver (default debug install): r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD + overlay/device-select layers, assertions live, files under /opt'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -51,16 +51,23 @@ makedepends=(meson ninja)
 # system /usr Mesa from stock mesa OR the release build.  conflicts blocks
 # co-installation (the /usr symlinks would clash with stock mesa's real files);
 # replaces makes `pacman -U` migrate cleanly off whichever Mesa is present.
+# Mesa-git convention: declare every stock-Mesa slot this build provides so a
+# pacman -U cleanly takes them over.  Beyond the GL/VA/libgl trio this build
+# also ships the mesa Vulkan layers (vulkan-layers=overlay,device-select ->
+# VkLayer_MESA_overlay + VkLayer_MESA_device_select), so it provides and
+# supersedes the stock layer packages too.
 provides=(
   "mesa=${epoch}:${pkgver}-${pkgrel}"
   "libva-mesa-driver=${epoch}:${pkgver}-${pkgrel}"
   "mesa-libgl=${epoch}:${pkgver}-${pkgrel}"
+  "vulkan-mesa-layers=${epoch}:${pkgver}-${pkgrel}"
+  vulkan-mesa-device-select
   libva-driver
   opengl-driver
   vulkan-driver
 )
-conflicts=(mesa mesa-gororoba vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
-replaces=(mesa mesa-gororoba vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+conflicts=(mesa mesa-gororoba vulkan-mesa-layers vulkan-mesa-device-select vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+replaces=(mesa mesa-gororoba vulkan-mesa-layers vulkan-mesa-device-select vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 # Keep debug symbols; no strip, no LTO.  !buildflags: this package compiles
 # nothing (repack only), so makepkg's CFLAGS/LDFLAGS injection is irrelevant.
 # The .a archives the builddir produced land in /opt for gdb work but are NOT
@@ -127,6 +134,16 @@ package() {
   # into the stock /usr loader paths as symlinks.  These links are what make the
   # debug build the system Mesa and what conflicts with stock mesa's real files.
   _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r300/libxatracker
+
+  # Indirect GLX vendor link (mesa-git package() convention): glvnd resolves
+  # libGLX_indirect.so.0 for indirect rendering to the mesa GLX vendor.  The
+  # libGLX_mesa.so.0 it targets is itself a /usr symlink into the /opt tree from
+  # the lib pass above; point the indirect link straight at the /opt object so
+  # it resolves regardless of link-walk order.
+  if [ -e "${pkgdir}${_prefix}/lib/libGLX_mesa.so.0" ]; then
+    ln -sfn "${_prefix}/lib/libGLX_mesa.so.0" \
+      "${pkgdir}/usr/lib/libGLX_indirect.so.0"
+  fi
   _link_into_usr lib/dri                       # r300_dri.so, zink_dri.so, r300_drv_video.so (VA)
   _link_into_usr lib/gbm                       # gbm backends, if built
   # pkg-config surface: the glvnd build emits only gbm.pc and dri.pc (the

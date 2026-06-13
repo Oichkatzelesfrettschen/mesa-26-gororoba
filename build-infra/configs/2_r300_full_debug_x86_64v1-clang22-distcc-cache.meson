@@ -38,15 +38,19 @@ c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro'
 cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
 [project options]
-# Full platform set: x11 (XCB-backed GLX/EGL), wayland, drm (DRM-native
-# EGL surfaceless for headless deqp/piglit), surfaceless (EGL_PLATFORM_SURFACELESS_MESA
-# for no-display headless probes and renderD128-only Vulkan).  XCB is Mesa's
+# Window-system platforms only.  Current Mesa's platforms option accepts just
+# the window systems (x11, wayland, ...); the DRM-native and surfaceless EGL
+# platforms are no longer listed here -- they build unconditionally with
+# egl=enabled and the default is chosen by egl-native-platform (set to 'drm'
+# below for headless deqp/piglit and renderD128-only Vulkan).  XCB is Mesa's
 # internal transport for the x11 platform and is not a separate option.
-platforms = ['x11', 'wayland', 'drm', 'surfaceless']
-# r300 only: no llvmpipe.  Building llvmpipe forces draw-use-llvm=true, which
-# routes r300's SW-TCL through the gallivm JIT instead of the C draw interpreter
-# -- the exact path this debug profile exists to instrument and extend.
-gallium-drivers = ['r300']
+platforms = ['x11', 'wayland']
+# r300 plus zink: zink rides the amd_r300 (r300vk) Vulkan ICD to expose GL atop
+# Vulkan on RS482, the GL-on-Vulkan lane this debug build is the install target
+# for.  No llvmpipe -- building it would force draw-use-llvm=true and route
+# r300's SW-TCL through the gallivm JIT instead of the C draw interpreter this
+# profile instruments; zink itself needs no llvm.
+gallium-drivers = ['r300', 'zink']
 vulkan-drivers = ['amd_r300']
 r300vk-gallium-backend = true
 
