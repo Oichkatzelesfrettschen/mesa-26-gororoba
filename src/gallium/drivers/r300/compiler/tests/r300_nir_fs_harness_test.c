@@ -192,6 +192,75 @@ build_fs_fog(void)
    return b.shader;
 }
 
+/* Build a fragment shader that samples a 2D sampler with a projective
+ * coordinate, optionally with an LOD bias.  The projector and (when present)
+ * the bias arrive in one varying so nothing constant-folds and the projector
+ * survives to nir_to_rc.
+ *
+ * nir_to_rc_lower_txp keeps a plain projective tex as the hardware
+ * RC_OPCODE_TXP (the TMU performs the perspective divide at full precision),
+ * but a projector combined with a bias makes tex->op == nir_texop_txb, which
+ * the gate cannot fit in TXP, so nir_lower_tex divides the coordinate on the
+ * FP24 ALU (RCP + MUL) and samples with RC_OPCODE_TXB.  This is the split that
+ * decides whether textureProj runs at TMU precision or on the FP24 fragment
+ * ALU. */
+static nir_shader *
+build_fs_texproj(bool with_bias)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options, "r300_nir_fs_harness_texproj");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+
+   const struct glsl_type *sampler2d =
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sampler =
+      nir_variable_create(b.shader, nir_var_uniform, sampler2d, "s");
+   sampler->data.binding = 0;
+
+   nir_variable *in0 =
+      nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_coord");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+
+   nir_variable *out =
+      nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   /* coord.xy, bias in .z, projector in .w -- all from the varying. */
+   nir_def *pq = nir_load_var(&b, in0);
+   nir_def *coord = nir_trim_vector(&b, pq, 2);
+   nir_def *proj = nir_channel(&b, pq, 3);
+   nir_def *bias = nir_channel(&b, pq, 2);
+
+   nir_deref_instr *tex_deref = nir_build_deref_var(&b, sampler);
+
+   const unsigned nsrc = with_bias ? 5 : 4;
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, nsrc);
+   tex->op = with_bias ? nir_texop_txb : nir_texop_tex;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->coord_components = 2;
+   tex->dest_type = nir_type_float32;
+
+   unsigned i = 0;
+   tex->src[i++] =
+      nir_tex_src_for_ssa(nir_tex_src_texture_deref, &tex_deref->def);
+   tex->src[i++] =
+      nir_tex_src_for_ssa(nir_tex_src_sampler_deref, &tex_deref->def);
+   tex->src[i++] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
+   tex->src[i++] = nir_tex_src_for_ssa(nir_tex_src_projector, proj);
+   if (with_bias)
+      tex->src[i++] = nir_tex_src_for_ssa(nir_tex_src_bias, bias);
+
+   nir_def_init(&tex->instr, &tex->def, nir_tex_instr_dest_size(tex), 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+
+   nir_store_var(&b, out, &tex->def, 0xf);
+   return b.shader;
+}
+
 /* Run the production NIR-to-RC lowering and emitter as a fragment program.
  *
  * Production runs r300_optimize_nir() at shader-state creation
@@ -395,6 +464,51 @@ case_fog_packing_well_formed(void)
    teardown_fs(&c, &rs);
 }
 
+/* A plain projective sample (textureProj, no bias) fits the nir_to_rc_lower_txp
+ * gate, so it stays a hardware RC_OPCODE_TXP: the TMU does the perspective
+ * divide at full precision and no FP24 ALU reciprocal is emitted. */
+static void
+case_textureproj_uses_hw_txp(void)
+{
+   struct r300_fragment_program_compiler c;
+   struct rc_regalloc_state rs;
+   run_fs(&c, &rs, build_fs_texproj(false));
+
+   CHECK(!c.Base.Error, "plain textureProj fragment compiles without error");
+   if (getenv("R300_FS_HARNESS_DUMP"))
+      dump_program(&c.Base, "textureProj (no bias)");
+   CHECK(count_opcode(&c.Base, RC_OPCODE_TXP) >= 1,
+         "plain textureProj emits hardware RC_OPCODE_TXP");
+   CHECK(count_opcode(&c.Base, RC_OPCODE_RCP) == 0,
+         "plain textureProj emits no FP24 ALU RCP (divide stays in the TMU)");
+
+   teardown_fs(&c, &rs);
+}
+
+/* textureProj with an LOD bias cannot be a single TXP, so nir_lower_tex divides
+ * the coordinate on the FP24 fragment ALU (RCP + MUL) and samples with
+ * RC_OPCODE_TXB.  This is the path whose FP24 reciprocal precision the
+ * textureProj-bias piglit cases exercise -- not a TMU-precision divide. */
+static void
+case_textureproj_bias_lowers_to_fp24_rcp(void)
+{
+   struct r300_fragment_program_compiler c;
+   struct rc_regalloc_state rs;
+   run_fs(&c, &rs, build_fs_texproj(true));
+
+   CHECK(!c.Base.Error, "textureProj+bias fragment compiles without error");
+   if (getenv("R300_FS_HARNESS_DUMP"))
+      dump_program(&c.Base, "textureProj (bias)");
+   CHECK(count_opcode(&c.Base, RC_OPCODE_TXP) == 0,
+         "textureProj+bias does not use hardware TXP");
+   CHECK(count_opcode(&c.Base, RC_OPCODE_RCP) >= 1,
+         "textureProj+bias divides the coordinate with an FP24 ALU RCP");
+   CHECK(count_opcode(&c.Base, RC_OPCODE_TXB) >= 1,
+         "textureProj+bias samples with RC_OPCODE_TXB after the divide");
+
+   teardown_fs(&c, &rs);
+}
+
 int
 main(void)
 {
@@ -402,6 +516,8 @@ main(void)
    case_fmad_emits_mad();
    case_flrp_lowers_to_mad();
    case_fog_packing_well_formed();
+   case_textureproj_uses_hw_txp();
+   case_textureproj_bias_lowers_to_fp24_rcp();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
