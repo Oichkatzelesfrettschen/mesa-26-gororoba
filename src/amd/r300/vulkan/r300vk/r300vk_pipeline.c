@@ -1378,6 +1378,14 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
    rs.front_ccw   = true;
    rs.depth_clip_near = true;
    rs.depth_clip_far  = true;
+   /* Vulkan clip space is half-z: NDC z is [0,1], not GL's [-1,1].  The r300
+    * backend reads clip_halfz to set the depth clip range (r300_set_rs_state ->
+    * r300->clip_halfz, consumed by the SW-TCL draw clip stage), and
+    * viewport_vk_to_gallium already maps [0,1] to [minDepth,maxDepth] directly.
+    * Without clip_halfz the near-plane clip admits NDC z in [-1,0) that Vulkan
+    * discards; setting it tightens the near clip to z=0 without changing the
+    * (already correct) window-depth values. */
+   rs.clip_halfz  = true;
    /* Vulkan's scissor test always applies; the replay supplies the rectangle
     * (pipeline-static or CmdSetScissor) translated to live tile space. */
    rs.scissor     = true;
