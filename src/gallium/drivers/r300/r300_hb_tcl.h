@@ -25,9 +25,12 @@ struct r300_screen;
  * When R300_HB_TCL=1 takes effect on an RS48x HB part, r300_hb_tcl_init forces
  * caps.has_tcl = true and caps.num_vert_fpus = vert_fpu: the driver then takes
  * the hardware-TCL route (no Gallium draw, r300 VS compiler, PVS upload,
- * TCL_BYPASS cleared) so PVS execution becomes reachable and testable.
- * caps.has_hardware_tcl is left false, so the configuration honestly reads
- * "attempting hardware TCL on silicon whose PVS is unproven."
+ * TCL_BYPASS cleared) so the PVS upload and draw path become reachable.  A live
+ * draw-correlation oracle on RS482 reached that path and found the first
+ * hardware-TCL draw hangs the GPU ring with no kernel recovery, so this route
+ * is an experimental harness, not a usable rendering path.  caps.has_hardware_tcl
+ * is left false, which honestly reads "attempting hardware TCL on silicon that
+ * does not execute it."
  *
  * vert_fpu is the PVS_NUM_FPUS field (R300_VAP_CNTL bits 11:8) and the value
  * r300_emit_vs_state programs on the route.  The field is four bits wide, so

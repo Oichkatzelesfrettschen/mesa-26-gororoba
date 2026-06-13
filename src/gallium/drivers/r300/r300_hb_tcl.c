@@ -89,18 +89,25 @@ r300_hb_tcl_init(struct r300_screen *screen)
     * route or the emit would request zero FPUs.
     *
     * has_hardware_tcl is deliberately left as the chipset set it (false for
-    * RS48x): that flag means the silicon is proven to execute PVS, which is the
-    * open question this route exists to test, not something this assertion
-    * grants.  The resulting has_tcl && !has_hardware_tcl state is the honest
-    * "attempting hardware TCL on unproven silicon" configuration; the only
-    * has_hardware_tcl readers gate on !has_tcl, so they stay inert here. */
+    * RS48x): that flag means the silicon is proven to execute PVS, and a live
+    * draw-correlation oracle on RS482 falsified that.  The PVS upload and draw
+    * path are reached, but the first hardware-TCL draw hangs the GPU ring (the
+    * fence never signals, the framebuffer is never written) and the radeon
+    * driver performs no kernel recovery; the manual reset path then freezes the
+    * host through VAP soft-reset MMIO on the wedged engine.  This route is
+    * retained only as the experimental harness that produced that result -- it
+    * is not a usable rendering path, and each draw attempt costs one physical
+    * reboot.  The has_tcl && !has_hardware_tcl state stays the honest
+    * "attempting hardware TCL on silicon that does not execute it"
+    * configuration; the only has_hardware_tcl readers gate on !has_tcl, so they
+    * stay inert here. */
    screen->caps.has_tcl = true;
    screen->caps.num_vert_fpus = cfg->vert_fpu;
 
    fprintf(stderr,
            "r300: RS48x HB_TCL route force on; has_tcl=true num_vert_fpus=%u "
-           "(has_hardware_tcl stays %u; PVS execution is unproven and under "
-           "test)\n",
+           "(has_hardware_tcl stays %u; the first hardware-TCL draw is known to "
+           "hang the RS482 ring with no kernel recovery -- experimental only)\n",
            cfg->vert_fpu, screen->caps.has_hardware_tcl);
 }
 
