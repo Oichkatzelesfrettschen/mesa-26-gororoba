@@ -44,9 +44,11 @@ c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro'
 cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
 [project options]
-# Full platform set matches profile 2_: x11, wayland, drm (DRM-native EGL
-# surfaceless for headless deqp/piglit), surfaceless (EGL_PLATFORM_SURFACELESS_MESA).
-platforms = ['x11', 'wayland', 'drm', 'surfaceless']
+# Window-system platforms only (matches profile 2_).  Current Mesa's platforms
+# option lists only window systems; the DRM-native and surfaceless EGL platforms
+# build unconditionally with egl=enabled and the default is egl-native-platform
+# ('drm', set below) for headless deqp/piglit and renderD128-only Vulkan.
+platforms = ['x11', 'wayland']
 gallium-drivers = ['r300']
 vulkan-drivers = ['amd_r300']
 r300vk-gallium-backend = true
