@@ -255,13 +255,14 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    props->framebufferNoAttachmentsSampleCounts =
       R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
 
-   /* The replay's framebuffer state binds colour attachment 0 only, so one is
-    * the honest count (four over-promised what the replay never delivered).
-    * One attachment also makes independentBlend vacuously true: r300 shares a
-    * single blend state across its MRT cbufs, so raising this past one again
-    * requires either real per-attachment blend handling in the replay or
-    * dropping independentBlend. */
-   props->maxColorAttachments = 1;
+   /* R300 binds up to four simultaneous colour buffers (COLOROFFSET0..3 /
+    * US_OUT_FMT_0..3), and the replay now binds every subpass colour attachment
+    * at its own cbuf slot, so four is the honest count and matches the gallium
+    * max_render_targets cap.  r300 shares one blend state and colour mask across
+    * all cbufs (RB3D_CBLEND), so independentBlend is advertised false; Vulkan
+    * then requires every attachment's blend state to be identical, which makes
+    * binding pAttachments[0] for all of them spec-correct. */
+   props->maxColorAttachments = 4;
    props->sampledImageColorSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
    props->sampledImageIntegerSampleCounts = VK_SAMPLE_COUNT_1_BIT;
    props->sampledImageDepthSampleCounts = R300VK_VK10_REQUIRED_SAMPLE_COUNTS;
@@ -537,13 +538,16 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * (skipped, unit left unbound -> reads zero on r300).  zink_screen rejects a
     * device without it. */
    features->nullDescriptor = true;
-   /* With maxColorAttachments == 1 there is no second attachment to blend
-    * differently, so per-attachment-independent blend state is vacuously
-    * satisfied.  zink keys GL's EXT_blend_equation_separate (a GL 2.0
-    * requirement) on this feature, and separate RGB/alpha blend equations on
-    * the single attachment are core Vulkan pipeline state the r300 RB3D
-    * blend hardware implements. */
-   features->independentBlend = true;
+   /* r300 programs one RB3D_CBLEND blend state and one colour mask shared
+    * across all bound cbufs (the gallium r300 blend atom emits state->rt[0]
+    * only), so it cannot blend separate attachments differently.  With MRT now
+    * reachable (maxColorAttachments == 4) this must be false: Vulkan then
+    * requires every colour-blend attachment to be identical, matching what the
+    * hardware does.  zink maps this to PIPE_CAP_INDEPENDENT_BLEND_FUNC only
+    * (per-draw-buffer blend, GL 3.0+/ARB_draw_buffers_blend), which r300 lacks;
+    * EXT_blend_equation_separate is the separate-RGB/alpha cap and is
+    * independent of this bit, so dropping it loses no honest GL surface. */
+   features->independentBlend = false;
    /* Gates VK_EXT_extended_dynamic_state: zink selects its dynamic-state draw
     * template only when the feature reports true, and the vkCmdSet* family
     * records R300VK_CMD_SET_DYNAMIC_STATE replay entries. */
