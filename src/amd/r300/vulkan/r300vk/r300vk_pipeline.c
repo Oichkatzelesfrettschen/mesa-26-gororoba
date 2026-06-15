@@ -402,6 +402,12 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
    bool progress = false;
    bool have_first_binding = false;
    uint32_t first_binding = 0;
+   /* One synthesized sampler variable backs every subpassLoad of the single
+    * permitted input attachment.  Created lazily so the texture deref's type
+    * matches its own variable (nir_validate requires deref->type == var->type);
+    * the original subpass-input image variable and its derefs stay
+    * self-consistent and become dead, removed by later DCE. */
+   nir_variable *sampler_var = NULL;
    nir_foreach_function_impl(impl, nir) {
       nir_builder b = nir_builder_create(impl);
       nir_foreach_block(block, impl) {
@@ -441,19 +447,26 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
 
             b.cursor = nir_before_instr(instr);
             nir_def *fragcoord_xy = nir_build_frag_coord(&b, 2);
-            nir_def *inv_extent = nir_load_ubo(&b, 2, 32,
+            nir_def *inv_extent = nir_load_ubo(&b, 2, 32, nir_imm_int(&b, 0),
                                                nir_imm_int(&b, 0),
-                                               nir_imm_int(&b, 0),
-                                               .align_mul = 8,
-                                               .range_base = 0, .range = 8);
+                                               .align_mul = 8, .range_base = 0,
+                                               .range = 8);
             nir_def *coord = nir_fmul(&b, fragcoord_xy, inv_extent);
 
-            /* Texture deref to the same variable, retyped as sampler2D so
-             * nir_lower_samplers reads the dim; it keys the unit on
-             * var->data.binding regardless of the variable's image mode. */
-            nir_deref_instr *tex_deref = nir_build_deref_var(&b, var);
-            tex_deref->type =
-               glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, rbt);
+            /* Build (once) a 2D sampler variable at the same descriptor
+             * binding and sample it: r300 has no input-attachment hardware, so
+             * subpassLoad is a NEAREST texture fetch at the fragment centre.
+             * nir_lower_samplers keys the unit on var->data.binding. */
+            if (!sampler_var) {
+               sampler_var = nir_variable_create(
+                  nir, nir_var_uniform,
+                  glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, rbt),
+                  "r300vk_subpass_input");
+               sampler_var->data.binding = binding;
+               if (var)
+                  sampler_var->data.descriptor_set = var->data.descriptor_set;
+            }
+            nir_deref_instr *tex_deref = nir_build_deref_var(&b, sampler_var);
 
             nir_tex_instr *tex = nir_tex_instr_create(nir, 3);
             tex->op = nir_texop_tex;
@@ -550,6 +563,38 @@ r300vk_nir_uses_texture(nir_shader *nir)
    return false;
 }
 
+/* Declare a block-0 nir_var_mem_ubo variable sized to size_bytes.  nir_to_rc
+ * sizes the constant file from nir_var_mem_ubo VARIABLES (glsl_get_explicit_size
+ * of the interface type), not from the load_ubo accesses a lowering pass emits.
+ * A shader that reaches nir_to_rc with a load_ubo(block 0) but no backing UBO
+ * variable makes ntr_setup_uniforms count zero externals (externals_count == 0),
+ * so the wpos viewport-transform STATE constants rc_transform_fragment_wpos adds
+ * (RC_STATE_R300_VIEWPORT_SCALE/OFFSET) take hardware constant registers c0/c1 --
+ * the very registers a CONST[0] load_ubo reads.  The replay's CONST[0] upload then
+ * overwrites the viewport scale and gl_FragCoord reconstructs to garbage.  One
+ * declared external vec4 pushes those state constants above c0. */
+static void
+r300vk_declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
+{
+   const struct glsl_type *ubo_type =
+      glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(size_bytes, 16), 16);
+   nir_variable *ubo =
+      nir_variable_create(nir, nir_var_mem_ubo, ubo_type, "r300vk_block0_ubo");
+   ubo->data.driver_location = 0;
+   ubo->data.binding = 0;
+   ubo->data.explicit_binding = 1;
+   struct glsl_struct_field field = {
+      .type = ubo_type,
+      .name = "data",
+      .location = -1,
+   };
+   ubo->interface_type =
+      glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false,
+                          "__r300vk_block0_ubo");
+   nir->info.num_ubos = MAX2(nir->info.num_ubos, 1);
+   nir->info.first_ubo_is_default_ubo = true;
+}
+
 /* Lower push-constant loads onto the single constant file.  nir_lower_explicit_io
  * with push_const has turned each access into load_push_constant(offset) with a
  * BASE/RANGE; rewrite it to load_ubo(block 0, BASE + offset) so it flows through
@@ -588,34 +633,14 @@ r300vk_nir_lower_push_constant_to_ubo0(nir_shader *nir)
       nir_progress(progress, impl, nir_metadata_control_flow);
    }
 
-   /* nir_to_tgsi sizes the TGSI constant file from nir_var_mem_ubo VARIABLES
-    * (glsl_get_explicit_size of the interface type), not from the load_ubo
-    * accesses emitted above.  The rewrite leaves load_ubo(block 0, ...) with no
-    * backing UBO variable, so nir_to_tgsi declares an empty constant file
-    * (file_max[TGSI_FILE_CONSTANT] == -1) and the gallivm draw backend
-    * (draw-use-llvm) asserts on the CONST[0] read in lp_build_emit_fetch_src
-    * (Register.Index <= file_max); the C draw path skips that bounds check and
-    * hides the gap.  Declare a block-0 UBO sized to the 128-byte push-constant
-    * window (maxPushConstantsSize, the same .range bound above) so the constant
-    * file covers every push slot, mirroring nir_lower_uniforms_to_ubo's default
-    * UBO. */
-   const struct glsl_type *push_ubo_type =
-      glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(128, 16), 16);
-   nir_variable *push_ubo =
-      nir_variable_create(nir, nir_var_mem_ubo, push_ubo_type, "push_const_ubo0");
-   push_ubo->data.driver_location = 0;
-   push_ubo->data.binding = 0;
-   push_ubo->data.explicit_binding = 1;
-   struct glsl_struct_field push_field = {
-      .type = push_ubo_type,
-      .name = "data",
-      .location = -1,
-   };
-   push_ubo->interface_type =
-      glsl_interface_type(&push_field, 1, GLSL_INTERFACE_PACKING_STD430, false,
-                          "__r300vk_push_const_ubo0");
-   nir->info.num_ubos = MAX2(nir->info.num_ubos, 1);
-   nir->info.first_ubo_is_default_ubo = true;
+   /* Declare a block-0 UBO sized to the 128-byte push-constant window
+    * (maxPushConstantsSize, the same .range bound above) so the constant file
+    * covers every push slot.  Without it nir_to_tgsi/nir_to_rc would size an
+    * empty constant file from the (absent) UBO variable and the gallivm draw
+    * backend (draw-use-llvm) would assert on the CONST[0] read in
+    * lp_build_emit_fetch_src (Register.Index <= file_max).  See
+    * r300vk_declare_block0_ubo for the externals_count mechanism. */
+   r300vk_declare_block0_ubo(nir, 128);
 }
 
 /* R300's constant file (RC_FILE_CONSTANT) is float-typed and the ISA has no native
@@ -736,6 +761,11 @@ r300vk_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
    return r300vk_nir_offsets_static(pscreen, nir,
                                     nir_intrinsic_load_push_constant, 0, true);
 }
+
+/* Defined below; the input-attachment path needs the identity NEAREST sampler
+ * CSO that this lazily creates, so the FS compile ensures it exists. */
+static bool
+r300vk_device_init_identity_map_state(struct r300vk_device *device);
 
 static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
@@ -860,6 +890,26 @@ r300vk_compile_shader(struct r300vk_device *device,
    if (stage_has_input) {
       pl->fs_has_input_attachment = true;
       pl->fs_input_attachment_binding = stage_input_binding;
+      /* The lowered subpassLoad reads inv_extent from a CONST[0] load_ubo but
+       * leaves no UBO variable behind.  Declare one vec4 of block-0 UBO so
+       * externals_count >= 1 and the gl_FragCoord wpos viewport-transform state
+       * constants land above c0 instead of colliding with inv_extent there
+       * (which would corrupt the window-space coordinate the sample uses).
+       * A subpass input combined with an app UBO or push constants was rejected
+       * above, so this is the only block-0 UBO. */
+      r300vk_declare_block0_ubo(nir, 16);
+      /* r300vk_bind_input_attachment binds device->identity_map_sampler_cso
+       * (NEAREST, CLAMP_TO_EDGE) as the input-attachment sampler at draw time.
+       * That CSO is created lazily and otherwise only by the compute identity-map
+       * paths, so a graphics-only input-attachment pipeline would bind a NULL
+       * sampler and the fragment texture fetch would read undefined data.  Create
+       * it now so the draw has a valid sampler. */
+      if (!r300vk_device_init_identity_map_state(device)) {
+         ralloc_free(nir);
+         return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                          "r300vk: failed to create the input-attachment sampler "
+                          "state");
+      }
    }
 
    /* Resolve the descriptor resource chain (vulkan_resource_index ->

@@ -30,6 +30,7 @@ struct r300vk_cmd_bind_descriptor_sets;
 
 enum r300vk_cmd_type {
    R300VK_CMD_BEGIN_RENDER_PASS,
+   R300VK_CMD_NEXT_SUBPASS,
    R300VK_CMD_BIND_PIPELINE,
    R300VK_CMD_SET_VIEWPORT,
    R300VK_CMD_SET_SCISSOR,
@@ -444,6 +445,19 @@ struct r300vk_cmd_entry {
    };
 };
 
+struct r300vk_render_pass;
+
+/* One render-pass attachment resolved to its backing image at CmdBeginRenderPass:
+ * each subpass binds its targets by indexing this by attachment number, so a
+ * subpass transition needs no second framebuffer walk (and imageless views,
+ * supplied only at begin time, are captured here). */
+struct r300vk_resolved_attachment {
+   struct r300vk_image *image;
+   enum pipe_format     format;
+   VkAttachmentLoadOp   load_op;
+   VkClearValue         clear;
+};
+
 struct r300vk_cmd_buffer {
    struct vk_command_buffer  base;  /* must be first; dispatchable */
    struct r300vk_cmd_entry  *entries;
@@ -458,6 +472,15 @@ struct r300vk_cmd_buffer {
    VkDeviceSize              bound_index_offset;
    VkDeviceSize              bound_index_range;
    uint32_t                  bound_index_size;
+
+   /* Active classic render pass (NULL outside one / in dynamic rendering).  Set
+    * at CmdBeginRenderPass, advanced by CmdNextSubpass, cleared at
+    * CmdEndRenderPass; drives binding each subpass's own framebuffer. */
+   const struct r300vk_render_pass  *current_render_pass;
+   uint32_t                          current_subpass;
+   uint32_t                          current_rp_width;
+   uint32_t                          current_rp_height;
+   struct r300vk_resolved_attachment current_attachments[PIPE_MAX_COLOR_BUFS + 1];
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_cmd_buffer, base.base, VkCommandBuffer,

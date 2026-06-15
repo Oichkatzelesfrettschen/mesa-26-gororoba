@@ -2012,6 +2012,43 @@ r300vk_replay_gpu(struct r300vk_device *device,
                }
             break;
 
+         case R300VK_CMD_NEXT_SUBPASS:
+            /* Render-to-texture barrier so this subpass samples the prior
+             * subpass's output coherently as an input attachment.
+             * PIPE_TEXTURE_BARRIER_SAMPLER marks r300's gpu_flush and
+             * texture_cache_inval atoms dirty (r300_texture_barrier); the
+             * gpu_flush atom flushes the RB3D colour cache to memory and the
+             * texcache-invalidate atom drops stale texture lines, both emitted
+             * before this subpass's first draw -- so the sample reads the prior
+             * subpass's writes.  The RB3D cache is physical, not framebuffer-
+             * scoped, so the flush resolves the prior colour writes even though
+             * the framebuffer is rebound below.  Then bind this subpass's
+             * framebuffer at the same tile_pass and re-apply the in-flight
+             * viewport/scissor, mirroring the begin path. */
+            device->pipe->texture_barrier(device->pipe,
+                                          PIPE_TEXTURE_BARRIER_SAMPLER);
+            r300vk_replay_begin_render_pass(device, e, tile_pass,
+                                            &tile_origin_x, &tile_origin_y,
+                                            &tile_width, &tile_height,
+                                            &skip_render_pass);
+            current_render_pass = e;
+            dyn_ov.dirty = true;
+            if (!skip_render_pass) {
+               if (last_viewport)
+                  r300vk_replay_set_viewport(device, last_viewport,
+                                             tile_origin_x, tile_origin_y);
+               if (last_scissor)
+                  r300vk_replay_set_scissor(device, last_scissor,
+                                            tile_origin_x, tile_origin_y,
+                                            tile_width, tile_height);
+            }
+            for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
+               if (e->begin_rp.load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+                  *gpu_pending = true;
+                  break;
+               }
+            break;
+
          case R300VK_CMD_BIND_PIPELINE:
             if (skip_render_pass) break;
             r300vk_replay_bind_pipeline(device, e, &bound_pipeline, &vb_dirty);
