@@ -309,6 +309,7 @@ r300vk_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
                            VkSubpassContents contents)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)contents;
    r300vk_record_begin_render_pass(cmd, pRenderPassBegin);
 }
 
@@ -331,6 +332,7 @@ r300vk_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
                             const VkSubpassBeginInfo *pSubpassBeginInfo)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)pSubpassBeginInfo;
    r300vk_record_begin_render_pass(cmd, pRenderPassBegin);
 }
 
@@ -339,6 +341,7 @@ r300vk_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
                           const VkSubpassEndInfo *pSubpassEndInfo)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)pSubpassEndInfo;
    r300vk_record_end_render_pass(cmd);
 }
 
@@ -352,6 +355,7 @@ void
 r300vk_CmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)contents;
    r300vk_record_next_subpass(cmd);
 }
 
@@ -361,6 +365,8 @@ r300vk_CmdNextSubpass2(VkCommandBuffer commandBuffer,
                         const VkSubpassEndInfo *pSubpassEndInfo)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   (void)pSubpassBeginInfo;
+   (void)pSubpassEndInfo;
    r300vk_record_next_subpass(cmd);
 }
 
