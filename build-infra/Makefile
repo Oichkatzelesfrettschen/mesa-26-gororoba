@@ -168,7 +168,7 @@ audit: vostro-prefix-check
 	warn() { echo "WARN  $$*" >&2; warnings=$$((warnings + 1)); }; \
 	ok() { echo "OK    $$*"; }; \
 	need_command() { if command -v "$$1" >/dev/null 2>&1; then ok "command $$1"; else fail "missing command $$1"; fi; }; \
-	need_file() { if [ -e "$$1" ]; then ok "path $$1"; else fail "missing path $$1"; fi; }; \
+	need_file() { if [ -f "$$1" ]; then ok "file $$1"; else fail "missing file $$1"; fi; }; \
 	llvm_version_major() { \
 		case "$$1" in \
 			clang|clang++) "$$1" --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9]*\).*/\1/p;q' ;; \
@@ -229,6 +229,8 @@ audit: vostro-prefix-check
 	echo "hostenv: $(HOSTENV)"; \
 	echo "topsrc:  $(TOPSRC)"; echo; \
 	need_file "$(CONFIG)"; need_file "$(ENVFILE)"; \
+	if [ -f "$(ENVFILE)" ]; then . "$(ENVFILE)" || fail "cannot source host env $(ENVFILE)"; else fail "cannot source host env $(ENVFILE)"; fi; \
+	if [ "$$failures" -gt 0 ]; then echo; echo "Terakan host audit failed: $$failures failure(s), $$warnings warning(s)." >&2; exit 1; fi; \
 	if grep -Eq 'gallium-rusticl[[:space:]]*=[[:space:]]*true' "$(CONFIG)"; then rusticl_enabled=1; else rusticl_enabled=0; fi; \
 	if grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)"; then needs_llvm_config=0; else needs_llvm_config=1; fi; \
 	if ! grep -Eq "^[[:space:]]*platforms[[:space:]]*=" "$(CONFIG)"; then wayland_platform=1; \
