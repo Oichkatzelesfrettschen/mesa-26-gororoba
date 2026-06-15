@@ -993,6 +993,9 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
       return;
 
    for (uint32_t s = 0; s < binds->set_count; s++) {
+      const uint32_t descriptor_set = binds->first_set + s;
+      if (descriptor_set != pipeline->fs_input_attachment_set)
+         continue;
       const struct r300vk_descriptor_set *set = binds->sets[s];
       if (!set || !set->layout)
          continue;

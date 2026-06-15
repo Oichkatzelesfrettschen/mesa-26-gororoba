@@ -390,20 +390,22 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
  * multisample subpass input (GLSL_SAMPLER_DIM_SUBPASS_MS) is left unlowered so
  * the pipeline reject path catches it -- r300 is single-sample.
  *
- * The replay binds one input attachment per pipeline (the single
- * out_binding), so reading two distinct input bindings cannot be honoured:
+ * The replay binds one input attachment per pipeline (the single descriptor
+ * identity), so reading two distinct input descriptors cannot be honored:
  * out_multiple_bindings reports that for the caller to reject.  r300's FP24
  * fragment ALU has no integer texture path either, so an integer
  * (isubpassInput/usubpassInput) result type sets out_has_integer and the load
  * is left unlowered for the same reject path. */
 static bool
 r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
+                               uint32_t *out_set,
                                uint32_t *out_binding,
                                bool *out_multiple_bindings,
                                bool *out_has_integer)
 {
    bool progress = false;
-   bool have_first_binding = false;
+   bool have_first_descriptor = false;
+   uint32_t first_set = 0;
    uint32_t first_binding = 0;
    /* One synthesized sampler variable backs every subpassLoad of the single
     * permitted input attachment.  Created lazily so the texture deref's type
@@ -426,17 +428,21 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
                continue;
 
             nir_variable *var = nir_deref_instr_get_variable(deref);
+            const uint32_t descriptor_set = var ? var->data.descriptor_set : 0;
             const uint32_t binding = var ? var->data.binding : 0;
             const enum glsl_base_type rbt =
                glsl_get_sampler_result_type(deref->type);
 
             *out_has_input = true;
-            if (have_first_binding && binding != first_binding)
+            if (have_first_descriptor &&
+                (descriptor_set != first_set || binding != first_binding))
                *out_multiple_bindings = true;
-            if (!have_first_binding) {
-               have_first_binding = true;
+            if (!have_first_descriptor) {
+               have_first_descriptor = true;
+               first_set = descriptor_set;
                first_binding = binding;
             }
+            *out_set = descriptor_set;
             *out_binding = binding;
 
             /* An integer subpass input would lower to an integer texel fetch the
@@ -466,8 +472,7 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
                   glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, rbt),
                   "r300vk_subpass_input");
                sampler_var->data.binding = binding;
-               if (var)
-                  sampler_var->data.descriptor_set = var->data.descriptor_set;
+               sampler_var->data.descriptor_set = descriptor_set;
             }
             nir_deref_instr *tex_deref = nir_build_deref_var(&b, sampler_var);
 
@@ -837,12 +842,14 @@ r300vk_compile_shader(struct r300vk_device *device,
     * nir_lower_explicit_io/nir_lower_ubo_vec4 so the emitted load_ubo(0) follows
     * the same vec4-slot path as the keystone UBO. */
    bool stage_has_input = false;
+   uint32_t stage_input_set = 0;
    uint32_t stage_input_binding = 0;
    bool stage_input_multiple = false;
    bool stage_input_integer = false;
    if (stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT)
-      r300vk_nir_lower_subpass_input(nir, &stage_has_input, &stage_input_binding,
-                                     &stage_input_multiple, &stage_input_integer);
+      r300vk_nir_lower_subpass_input(nir, &stage_has_input, &stage_input_set,
+                                     &stage_input_binding, &stage_input_multiple,
+                                     &stage_input_integer);
 
    /* r300 has no integer texture path: an isubpassInput/usubpassInput cannot be
     * read on the FP24 fragment ALU.  Reject rather than emit a malformed tex. */
@@ -854,8 +861,8 @@ r300vk_compile_shader(struct r300vk_device *device,
                        "texture path");
    }
 
-   /* The replay binds a single input attachment (fs_input_attachment_binding)
-    * per pipeline, so a fragment shader reading two distinct input bindings
+   /* The replay binds a single input attachment descriptor per pipeline, so a
+    * fragment shader reading two distinct input descriptors
     * would leave the others reading whatever was last bound.  Reject rather than
     * render the wrong attachment. */
    if (stage_has_input && stage_input_multiple) {
@@ -892,6 +899,7 @@ r300vk_compile_shader(struct r300vk_device *device,
    }
    if (stage_has_input) {
       pl->fs_has_input_attachment = true;
+      pl->fs_input_attachment_set = stage_input_set;
       pl->fs_input_attachment_binding = stage_input_binding;
       /* The lowered subpassLoad reads inv_extent from a CONST[0] load_ubo but
        * leaves no UBO variable behind.  Declare one vec4 of block-0 UBO so

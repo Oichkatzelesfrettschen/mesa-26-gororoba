@@ -47,8 +47,8 @@ r300vk_render_pass_alloc_subpasses(struct r300vk_device *device,
    return VK_SUCCESS;
 }
 
-/* An attachment that is both a colour output and an input in the SAME subpass is
- * a feedback loop r300 cannot read coherently (it binds input attachments as
+/* An attachment that is both an output and an input in the same subpass is a
+ * feedback loop r300 cannot read coherently (it binds input attachments as
  * fragment textures), so it is rejected.  Across subpasses it is fine: subpass N
  * reads subpass M<N's output after the pass flushes between them.  Returns the
  * aliasing attachment index, or VK_ATTACHMENT_UNUSED when none overlaps. */
@@ -62,6 +62,8 @@ r300vk_subpass_self_dependency(const struct r300vk_subpass *sp)
          if (sp->color_attachment_refs[j] == sp->input_attachment_refs[i])
             return sp->input_attachment_refs[i];
       }
+      if (sp->depth_stencil_attachment_ref == sp->input_attachment_refs[i])
+         return sp->input_attachment_refs[i];
    }
    return VK_ATTACHMENT_UNUSED;
 }
@@ -85,7 +87,7 @@ r300vk_render_pass_finalize(struct r300vk_device *device,
       if (dep != VK_ATTACHMENT_UNUSED) {
          r300vk_render_pass_destroy_partial(device, pAllocator, rp);
          return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: attachment %u is both a colour and an input "
+                          "r300vk: attachment %u is both an output and an input "
                           "attachment in subpass %u; r300 cannot read an "
                           "attachment it is concurrently writing", dep, s);
       }
@@ -115,7 +117,7 @@ r300vk_render_pass_finalize(struct r300vk_device *device,
    return VK_SUCCESS;
 }
 
-/* Reject a subpass whose colour or input count exceeds the fixed storage. */
+/* Reject a subpass whose color or input count exceeds the fixed storage. */
 static VkResult
 r300vk_subpass_bounds_ok(struct r300vk_device *device,
                          const VkAllocationCallbacks *pAllocator,
@@ -208,7 +210,7 @@ r300vk_CreateRenderPass(VkDevice _device,
 
 /* VK_KHR_create_renderpass2.  The 2.0 create info chains sType onto the
  * attachment, subpass, and attachment-reference structs but exposes the same
- * fields r300 consumes (format, load/store op, final layout; subpass 0 colour
+ * fields r300 consumes (format, load/store op, final layout; subpass 0 color
  * and input references), so this mirrors r300vk_CreateRenderPass onto the 2.0
  * structures and produces the identical r300vk_render_pass.  A bespoke 2.0
  * entry point on r300vk's own object keeps the common-runtime emulation, which

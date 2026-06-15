@@ -59,9 +59,10 @@ struct r300vk_pipeline {
 
    /* The fragment shader reads a subpass input attachment (subpassLoad), lowered
     * to a normalized texture() at gl_FragCoord*inv_extent.  The replay binds the
-    * input image at this Gallium sampler unit (the descriptor binding) and the
-    * inv_extent vec2 at the fragment CONST[0]. */
+    * input image from this descriptor (set, binding); the binding is also the
+    * Gallium sampler unit.  The inv_extent vec2 is bound at fragment CONST[0]. */
    bool                    fs_has_input_attachment;
+   uint32_t                fs_input_attachment_set;
    uint32_t                fs_input_attachment_binding;
 
    /* A compute pipeline created under the experimental hybrid-compute gate.
