@@ -978,10 +978,27 @@ case_qnorm_metadata(void)
 }
 
 /* Constant-fill kernel: out_buffer[gid] = 0x42424242u (no loads). */
+static nir_def *
+const_fill_store_offset(nir_builder *b, unsigned element_bytes)
+{
+   return nir_imul(b, nir_load_global_invocation_index(b, 32),
+                   nir_imm_int(b, (int)element_bytes));
+}
+
 static nir_shader *
 build_const_fill_u32(void)
 {
    nir_builder b = cs_builder("cs_const_fill_u32");
+   nir_def *c = nir_imm_int(&b, 0x42424242);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), const_fill_store_offset(&b, 4),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_const_fill_constant_address(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_constant_address");
    nir_def *c = nir_imm_int(&b, 0x42424242);
    nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
                   .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
@@ -994,7 +1011,7 @@ build_const_fill_vec4(void)
 {
    nir_builder b = cs_builder("cs_const_fill_vec4");
    nir_def *c = nir_imm_ivec4(&b, 0x01010101, 0x02020202, 0x03030303, 0x04040404);
-   nir_store_ssbo(&b, c, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 1), const_fill_store_offset(&b, 16),
                   .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
    return b.shader;
 }
@@ -1020,15 +1037,13 @@ case_const_fill_metadata(void)
          "const-fill records RGBA8 bytes of 0x42424242");
    ralloc_free(nir);
 
-   /* Vec4 constant fill: verify detection of vec4 constant. */
+   /* Vec4 constant fill is not replayable until all lanes are packed. */
    nir_shader *nir4 = build_const_fill_vec4();
    struct r300_compute_const_fill_pattern cf4 = {0};
 
    prepare_detect_shader(nir4);
    r300_nir_detect_const_fill_pattern(nir4, &cf4);
-   CHECK(cf4.is_const_fill, "const-fill vec4 shape detected");
-   CHECK(cf4.value_components == 4, "const-fill vec4 records vec4 width");
-   CHECK(cf4.output_ssbo_binding_valid, "const-fill vec4 records binding");
+   CHECK(!cf4.is_const_fill, "const-fill vec4 rejects until lanes are packed");
    ralloc_free(nir4);
 
    /* Discrimination: identity-map must NOT match CONSTFILL (it has a load). */
@@ -1062,7 +1077,7 @@ build_const_fill_deadbeef(void)
 {
    nir_builder b = cs_builder("cs_const_fill_deadbeef");
    nir_def *c = nir_imm_int(&b, 0xDEADBEEF);
-   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), const_fill_store_offset(&b, 4),
                   .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
    return b.shader;
 }
@@ -1073,7 +1088,7 @@ build_const_fill_zero(void)
 {
    nir_builder b = cs_builder("cs_const_fill_zero");
    nir_def *c = nir_imm_int(&b, 0x00000000);
-   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), const_fill_store_offset(&b, 4),
                   .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
    return b.shader;
 }
@@ -1084,7 +1099,7 @@ build_const_fill_ff(void)
 {
    nir_builder b = cs_builder("cs_const_fill_ff");
    nir_def *c = nir_imm_int(&b, 0xFFFFFFFF);
-   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), const_fill_store_offset(&b, 4),
                   .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
    return b.shader;
 }
@@ -1095,7 +1110,18 @@ build_const_fill_binding7(void)
 {
    nir_builder b = cs_builder("cs_const_fill_binding7");
    nir_def *c = nir_imm_int(&b, 0x11223344);
-   nir_store_ssbo(&b, c, nir_imm_int(&b, 7), nir_imm_int(&b, 0),
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 7), const_fill_store_offset(&b, 4),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* Negative: out[gid * 2] = C is not a contiguous const-fill replay. */
+static nir_shader *
+build_const_fill_strided_address(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_strided_address");
+   nir_def *c = nir_imm_int(&b, 0x01020304);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), const_fill_store_offset(&b, 8),
                   .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
    return b.shader;
 }
@@ -1186,6 +1212,26 @@ case_constfill_regression(void)
       CHECK(cf.const_value[0] == 0x44 && cf.const_value[1] == 0x33 &&
             cf.const_value[2] == 0x22 && cf.const_value[3] == 0x11,
             "binding-7 fill: byte extraction correct");
+      ralloc_free(nir);
+   }
+
+   /* --- Negative: non-contiguous output byte offset. --- */
+   {
+      nir_shader *nir = build_const_fill_strided_address();
+      struct r300_compute_const_fill_pattern cf = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_const_fill_pattern(nir, &cf);
+      CHECK(!cf.is_const_fill, "strided-address fill: detector rejects");
+      ralloc_free(nir);
+   }
+
+   /* --- Negative: a fixed output byte offset is not out[gid]. --- */
+   {
+      nir_shader *nir = build_const_fill_constant_address();
+      struct r300_compute_const_fill_pattern cf = {0};
+      prepare_detect_shader(nir);
+      r300_nir_detect_const_fill_pattern(nir, &cf);
+      CHECK(!cf.is_const_fill, "constant-address fill: detector rejects");
       ralloc_free(nir);
    }
 
@@ -1537,7 +1583,7 @@ case_index_consumption(void)
 {
    printf("index-consumption classifier\n");
 
-   nir_shader *none = build_const_fill_u32();
+   nir_shader *none = build_const_fill_constant_address();
    struct r300_compute_index_pattern p = {0};
    r300_nir_classify_index_consumption(none, &p);
    CHECK(p.consumption == R300_COMPUTE_INDEX_NONE,
@@ -1748,7 +1794,7 @@ case_affine_iota(void)
    CHECK(!it.is_affine_iota, "load-bearing identity shape rejects affine-iota");
    ralloc_free(addr);
 
-   nir_shader *cf = build_const_fill_u32();
+   nir_shader *cf = build_const_fill_constant_address();
    it = detect_affine_iota(cf);
    CHECK(!it.is_affine_iota, "const-fill (no index) rejects affine-iota");
    ralloc_free(cf);
