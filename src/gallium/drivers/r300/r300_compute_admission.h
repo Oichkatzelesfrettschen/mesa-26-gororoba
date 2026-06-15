@@ -783,7 +783,11 @@ enum r300_compute_index_consumption {
  * affine_global_invocation_only reports whether the materialized value comes
  * only from global invocation ID/index plus zero dispatch-base intrinsics.
  * AFFINE_IOTA needs that stronger source identity because its replay cannot
- * materialize local-invocation or workgroup IDs from the flat raster index. */
+ * materialize local-invocation or workgroup IDs from the flat raster index.
+ *
+ * store_offset_* reports a common store_ssbo byte-offset affine when every
+ * tracked store offset has one.  AFFINE_IOTA uses it to prove the destination
+ * is out[gid] instead of a constant or unrelated output slot. */
 struct r300_compute_index_pattern {
    enum r300_compute_index_consumption consumption;
    bool       stride_valid;
@@ -794,6 +798,12 @@ struct r300_compute_index_pattern {
    bool       uses_component_y;
    bool       uses_component_z;
    bool       affine_global_invocation_only;
+   bool       store_offset_valid;
+   bool       store_offset_global_invocation_only;
+   uint32_t   store_offset_stride;
+   uint32_t   store_offset_stride_y;
+   uint32_t   store_offset_stride_z;
+   uint32_t   store_offset_offset;
 };
 
 /* Affine-iota pattern: out[gid] = stride * gid + offset, a pure function of
@@ -814,6 +824,10 @@ struct r300_compute_affine_iota_pattern {
    uint32_t   stride_y;             /* ay; 0 for the 1D linear form */
    uint32_t   stride_z;             /* az; 0 for the 1D linear form */
    uint32_t   offset;               /* b */
+   uint32_t   output_offset_stride;  /* store byte offset ax */
+   uint32_t   output_offset_stride_y;
+   uint32_t   output_offset_stride_z;
+   uint32_t   output_offset_offset;
 };
 
 void r300_nir_detect_affine_iota_pattern(const struct nir_shader *s,

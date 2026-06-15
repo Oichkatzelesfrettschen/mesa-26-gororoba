@@ -3880,6 +3880,10 @@ r300_nir_classify_index_consumption(const nir_shader *s,
    bool address_use = false;
    uint64_t vax = 0, vay = 0, vaz = 0, vb = 0;
    bool value_global_only = false;
+   bool store_offset_affine = false;
+   bool store_offset_general = false;
+   bool store_offset_global_only = false;
+   uint64_t oax = 0, oay = 0, oaz = 0, ob = 0;
 
    nir_foreach_function_impl(impl, (nir_shader *)s) {
       nir_foreach_block(block, impl) {
@@ -3922,6 +3926,28 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                      index_walk_lookup(&st, intr->src[2].ssa);
                   if (o)
                      address_use = true;
+                  if (o) {
+                     if (o->affine_valid && !o->vec_seed &&
+                         index_entry_in_range(o)) {
+                        if (store_offset_affine &&
+                            (oax != o->ax || oay != o->ay ||
+                             oaz != o->az || ob != o->b)) {
+                           store_offset_general = true;
+                        } else {
+                           store_offset_global_only =
+                              store_offset_affine ?
+                              (store_offset_global_only && o->global_only) :
+                              o->global_only;
+                           store_offset_affine = true;
+                           oax = o->ax;
+                           oay = o->ay;
+                           oaz = o->az;
+                           ob = o->b;
+                        }
+                     } else {
+                        store_offset_general = true;
+                     }
+                  }
                   if (v) {
                      if (v->affine_valid && !v->vec_seed &&
                          index_entry_in_range(v)) {
@@ -4161,6 +4187,14 @@ r300_nir_classify_index_consumption(const nir_shader *s,
 
    out->uses_component_y = st.uses_component_y;
    out->uses_component_z = st.uses_component_z;
+   if (store_offset_affine && !store_offset_general) {
+      out->store_offset_valid = true;
+      out->store_offset_global_invocation_only = store_offset_global_only;
+      out->store_offset_stride = (uint32_t)oax;
+      out->store_offset_stride_y = (uint32_t)oay;
+      out->store_offset_stride_z = (uint32_t)oaz;
+      out->store_offset_offset = (uint32_t)ob;
+   }
    if (st.overflow || value_general || st.value_use_general) {
       out->consumption = R300_COMPUTE_INDEX_VALUE_GENERAL;
       return;
@@ -4221,6 +4255,12 @@ r300_nir_detect_affine_iota_pattern(const nir_shader *s,
         ip.consumption != R300_COMPUTE_INDEX_VALUE_AFFINE_3D) ||
        !ip.stride_valid || !ip.affine_global_invocation_only)
       return;
+   if (!ip.store_offset_valid || !ip.store_offset_global_invocation_only ||
+       ip.store_offset_stride != 4 || ip.store_offset_offset != 0)
+      return;
+   if (ip.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE &&
+       (ip.store_offset_stride_y || ip.store_offset_stride_z))
+      return;
 
    if (nir_src_is_const(store[0]->src[1])) {
       out->output_ssbo_binding       = nir_src_as_uint(store[0]->src[1]);
@@ -4230,6 +4270,10 @@ r300_nir_detect_affine_iota_pattern(const nir_shader *s,
    out->stride_y       = ip.stride_y;
    out->stride_z       = ip.stride_z;
    out->offset         = ip.offset;
+   out->output_offset_stride   = ip.store_offset_stride;
+   out->output_offset_stride_y = ip.store_offset_stride_y;
+   out->output_offset_stride_z = ip.store_offset_stride_z;
+   out->output_offset_offset   = ip.store_offset_offset;
    out->is_affine_iota = true;
 }
 

@@ -74,13 +74,16 @@ r300_grid_linear_index_exact(uint64_t total_invocations)
 /* True when a * gid + b stays inside the FP24 exact-integer window for
  * every gid in [0, total_invocations - 1].  Integer products and sums in
  * FP24 are exact exactly while the result remains representable, so checking
- * the maximum value suffices. */
+ * the maximum value suffices.  A zero stride is a literal constant-value
+ * affine, not an absent stride; only b needs the FP24 value bound. */
 static inline bool
 r300_grid_strided_index_exact(uint64_t total_invocations,
                                 uint32_t stride, uint32_t offset)
 {
-   if (total_invocations == 0 || stride == 0)
+   if (total_invocations == 0)
       return false;
+   if (stride == 0)
+      return offset <= R300_FP24_EXACT_INT_CEILING;
    const uint64_t max_value =
       (uint64_t)stride * (total_invocations - 1) + offset;
    return max_value <= R300_FP24_EXACT_INT_CEILING;
