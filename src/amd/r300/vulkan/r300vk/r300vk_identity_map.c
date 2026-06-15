@@ -959,6 +959,25 @@ single_storage_buffer_binding(const struct r300vk_descriptor_set *set,
    return found;
 }
 
+static bool
+single_storage_buffer_binding_excluding(const struct r300vk_descriptor_set *set,
+                                        uint32_t excluded_binding,
+                                        uint32_t *out_binding)
+{
+   bool found = false;
+   for (uint32_t i = 0; i < set->layout->binding_count; i++) {
+      const struct r300vk_dsl_binding *binding = &set->layout->bindings[i];
+      if (!storage_buffer_binding_is_compute_usable(binding) ||
+          binding->binding == excluded_binding)
+         continue;
+      if (found)
+         return false;
+      *out_binding = binding->binding;
+      found = true;
+   }
+   return found;
+}
+
 /* Recover the input + output STORAGE_BUFFER bindings positionally when the
  * detector left both at 0.  After nir_lower_explicit_io the load_ssbo /
  * store_ssbo binding source is a Vulkan descriptor handle, not a constant, so
@@ -5425,11 +5444,20 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
 
    uint32_t bind[2] = { pl->log4_pool.input_ssbo_binding,
                         pl->log4_pool.output_ssbo_binding };
-   if (!pl->log4_pool.input_binding_valid &&
-       !nth_storage_buffer_binding(set, 0, &bind[0]))
-      return false;
-   if (!pl->log4_pool.output_binding_valid &&
-       !nth_storage_buffer_binding(set, 1, &bind[1]))
+   const bool input_known = pl->log4_pool.input_binding_valid;
+   const bool output_known = pl->log4_pool.output_binding_valid;
+   if (!input_known && !output_known) {
+      if (!nth_storage_buffer_binding(set, 0, &bind[0]) ||
+          !nth_storage_buffer_binding(set, 1, &bind[1]))
+         return false;
+   } else if (!input_known) {
+      if (!single_storage_buffer_binding_excluding(set, bind[1], &bind[0]))
+         return false;
+   } else if (!output_known) {
+      if (!single_storage_buffer_binding_excluding(set, bind[0], &bind[1]))
+         return false;
+   }
+   if (bind[0] == bind[1])
       return false;
    const struct r300vk_descriptor *desc[2];
    struct r300vk_buffer *buf[2];
