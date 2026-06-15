@@ -2013,14 +2013,16 @@ r300vk_replay_gpu(struct r300vk_device *device,
             break;
 
          case R300VK_CMD_NEXT_SUBPASS:
-            /* Drain the prior subpass so its colour writes complete before this
-             * subpass samples them as an input attachment (the draw binds the
-             * prior output as a fragment texture, and r300 invalidates the
-             * texture cache on that sampler bind).  Then bind this subpass's
-             * framebuffer at the same tile_pass and re-apply the in-flight
-             * viewport/scissor, mirroring the begin path. */
-            *gpu_pending = true;
-            r300vk_drain_gpu(device, gpu_pending);
+            /* Render-to-texture barrier: flush the prior subpass's RB3D colour
+             * writes and invalidate the texture cache so this subpass samples
+             * the prior output coherently as an input attachment.  A CPU drain
+             * waits for GPU completion but does NOT flush those caches, so a
+             * drawn (as opposed to cleared) prior output would read stale; the
+             * barrier is the correct same-context render-to-texture primitive.
+             * Then bind this subpass's framebuffer at the same tile_pass and
+             * re-apply the in-flight viewport/scissor, mirroring the begin path. */
+            device->pipe->texture_barrier(device->pipe,
+                                          PIPE_TEXTURE_BARRIER_SAMPLER);
             r300vk_replay_begin_render_pass(device, e, tile_pass,
                                             &tile_origin_x, &tile_origin_y,
                                             &tile_width, &tile_height,
