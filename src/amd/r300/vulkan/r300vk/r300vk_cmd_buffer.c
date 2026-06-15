@@ -330,6 +330,25 @@ r300vk_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
    r300vk_record_end_render_pass(cmd);
 }
 
+/* r300vk replays only subpass 0 (r300vk_CreateRenderPass rejects only a later
+ * subpass that reads input attachments), so advancing to a later subpass needs
+ * no recorded action -- subsequent draws continue against the subpass-0
+ * framebuffer.  These overrides exist so CmdNextSubpass does NOT fall through to
+ * the common-runtime vk_common_CmdNextSubpass2, which dereferences the
+ * vk_render_pass / vk_command_buffer subpass state that r300vk's bespoke
+ * CmdBeginRenderPass never populates (a NULL-pass SIGSEGV in end_subpass). */
+void
+r300vk_CmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents)
+{
+}
+
+void
+r300vk_CmdNextSubpass2(VkCommandBuffer commandBuffer,
+                        const VkSubpassBeginInfo *pSubpassBeginInfo,
+                        const VkSubpassEndInfo *pSubpassEndInfo)
+{
+}
+
 /* VK_KHR_dynamic_rendering names the colour attachment as a VkImageView
  * directly on VkRenderingInfo, with no VkFramebuffer or VkRenderPass object.
  * The framebuffer setup it needs is identical to the render-pass path, so this
