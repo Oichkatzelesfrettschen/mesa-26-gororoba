@@ -303,12 +303,8 @@ fp16_mul_ref(uint16_t a_bits, uint16_t b_bits)
    if (biased_exp <= 0) {
       /* Denormalize: shift right by (1 - biased_exp). */
       int right = 1 - biased_exp;
-      if (right >= 11) {
-         /* Flush to zero (or round up to min subnormal for exact ties).
-          * For simplicity, flush to zero; the oracle tests avoid this edge. */
-         return (uint16_t)(r_sign << 15);
-      }
-      /* Accumulate sticky bits from the right shift. */
+      /* Accumulate sticky bits from the right shift.  The RNE decision for the
+       * minimum subnormal still depends on guard/sticky when right >= 11. */
       for (int i = 0; i < right; i++) {
          sticky |= guard;
          guard   = sig & 1;
@@ -399,8 +395,6 @@ fp16_mul_2limb(int r_sign, int ea, int eb, uint32_t sa, uint32_t sb)
    int r_exp;
    if (biased_exp <= 0) {
       int right = 1 - biased_exp;
-      if (right >= 11)
-         return (uint16_t)(r_sign << 15);
       for (int i = 0; i < right; i++) {
          sticky |= guard;
          guard   = sig_out & 1;
@@ -544,6 +538,8 @@ static const struct {
    { 0x0400u, 0x3800u, "min_normal * 0.5 = 2^-15 subnormal" },
    /* min_normal (2^-14) * 0.25 (0x3400) = 2^-16 subnormal (0x0100) */
    { 0x0400u, 0x3400u, "min_normal * 0.25 = 2^-16 subnormal" },
+   /* Slightly above half of the minimum subnormal rounds up to 0x0001. */
+   { 0x0400u, 0x1001u, "min_normal * 0x1001 rounds to min subnormal" },
    /* subnormal input 2^-15 (0x0200) * 1.0 = 2^-15 subnormal (0x0200) */
    { 0x0200u, 0x3c00u, "subnormal * 1.0 = subnormal" },
 };
@@ -573,6 +569,11 @@ test_multiply(void)
             "multiply (hand-picked): %u/%u cases match reference (%u mismatch)",
             total - mismatches, total, mismatches);
    CHECK(mismatches == 0, label);
+
+   CHECK(fp16_mul_ref(0x0400u, 0x1001u) == 0x0001u,
+         "multiply reference: half-min-subnormal RNE boundary rounds up");
+   CHECK(fp16_mul_2limb_full(0x0400u, 0x1001u) == 0x0001u,
+         "multiply 2-limb: half-min-subnormal RNE boundary rounds up");
 
    /* 2. Curated set of 128 representative values to construct a pseudo-exhaustive cross product */
    static const uint16_t rep_values[128] = {
