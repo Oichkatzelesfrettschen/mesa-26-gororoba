@@ -1136,6 +1136,28 @@ r300vk_CmdClearColorImage(VkCommandBuffer commandBuffer,
 }
 
 void
+r300vk_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer,
+                                 VkImage image,
+                                 VkImageLayout imageLayout,
+                                 const VkClearDepthStencilValue *pDepthStencil,
+                                 uint32_t rangeCount,
+                                 const VkImageSubresourceRange *pRanges)
+{
+   VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
+   VK_FROM_HANDLE(r300vk_image, img, image);
+   (void)imageLayout;
+
+   for (uint32_t i = 0; i < rangeCount; i++) {
+      struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
+      if (!e) return;
+      e->type                            = R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE;
+      e->clear_depth_stencil_image.image = img;
+      e->clear_depth_stencil_image.value = *pDepthStencil;
+      e->clear_depth_stencil_image.range = pRanges[i];
+   }
+}
+
+void
 r300vk_CmdClearAttachments(VkCommandBuffer commandBuffer,
                            uint32_t attachmentCount,
                            const VkClearAttachment *pAttachments,

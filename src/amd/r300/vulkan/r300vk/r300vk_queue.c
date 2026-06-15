@@ -37,6 +37,7 @@ identity_map_debug_enabled(void)
 #include "util/u_dynarray.h"
 #include "util/box.h"
 #include "util/format/u_format.h"
+#include "util/u_pack_color.h"
 #include "util/log.h"
 #include "util/macros.h"
 
@@ -2206,6 +2207,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
          case R300VK_CMD_COPY_BUFFER_TO_IMAGE:
          case R300VK_CMD_COPY_IMAGE:
          case R300VK_CMD_CLEAR_COLOR_IMAGE:
+         case R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE:
          case R300VK_CMD_FILL_BUFFER:
          case R300VK_CMD_COPY_BUFFER:
          case R300VK_CMD_UPDATE_BUFFER:
@@ -2830,6 +2832,94 @@ r300vk_clear_color_image(struct r300vk_device *device,
    return true;
 }
 
+/* vkCmdClearDepthStencilImage as a tile-iterated CPU fill.  r300 backs the
+ * depth/stencil formats with one interleaved word (depth in bits [31:8],
+ * stencil in [7:0] for S8_UINT_Z24; depth-only for X8Z24/Z16), so the clear
+ * packs depth+stencil with util_pack_z_stencil and masks the word to the aspects
+ * actually being cleared -- a depth-only clear keeps stencil and vice versa, so
+ * those need a read-modify-write (mapped READ_WRITE); clearing the whole word is
+ * a plain fill. */
+static bool
+r300vk_clear_depth_stencil_image(struct r300vk_device *device,
+                                 const struct r300vk_image *img,
+                                 const VkClearDepthStencilValue *ds,
+                                 VkImageAspectFlags aspect,
+                                 const VkImageSubresourceRange *range)
+{
+   struct pipe_context *pipe = device->pipe;
+   const enum pipe_format fmt = img->resource->format;
+   const unsigned bpp = util_format_get_blocksize(fmt);
+   if (bpp == 0 || bpp > 4)
+      return false;
+
+   const uint32_t packed =
+      util_pack_z_stencil(fmt, ds->depth, (uint8_t)ds->stencil);
+
+   /* Which bits each aspect occupies in the r300 word. */
+   uint32_t depth_mask = 0, stencil_mask = 0;
+   if (fmt == PIPE_FORMAT_S8_UINT_Z24_UNORM) {
+      depth_mask = 0xFFFFFF00u; stencil_mask = 0x000000FFu;
+   } else if (fmt == PIPE_FORMAT_X8Z24_UNORM) {
+      depth_mask = 0xFFFFFF00u;          /* X8 low byte is don't-care */
+   } else if (fmt == PIPE_FORMAT_Z16_UNORM) {
+      depth_mask = 0x0000FFFFu;
+   } else {
+      return false;                      /* no float depth on this silicon */
+   }
+   const uint32_t write_mask =
+      ((aspect & VK_IMAGE_ASPECT_DEPTH_BIT)   ? depth_mask   : 0) |
+      ((aspect & VK_IMAGE_ASPECT_STENCIL_BIT) ? stencil_mask : 0);
+   if (write_mask == 0)
+      return true;
+   const uint32_t word_mask =
+      (bpp >= 4) ? 0xFFFFFFFFu : ((1u << (bpp * 8)) - 1u);
+   const bool full_word = (write_mask & word_mask) == word_mask;
+   const unsigned map_flags = full_word ? PIPE_MAP_WRITE : PIPE_MAP_READ_WRITE;
+
+   const uint32_t base_mip = range ? range->baseMipLevel : 0;
+   const uint32_t mip_count =
+      (range && range->levelCount != VK_REMAINING_MIP_LEVELS)
+      ? range->levelCount : img->vk.mip_levels - base_mip;
+
+   for (uint32_t tile_row = 0; tile_row < img->tile_rows; tile_row++) {
+      for (uint32_t tile_col = 0; tile_col < img->tile_cols; tile_col++) {
+         const uint32_t tile_index = tile_row * img->tile_cols + tile_col;
+         struct pipe_resource *tile = img->tiles[tile_index];
+         if (!tile)
+            continue;
+         for (uint32_t m = base_mip; m < base_mip + mip_count; m++) {
+            const unsigned tile_w = MAX2(img->tile_width[tile_col] >> m, 1u);
+            const unsigned tile_h = MAX2(img->tile_height[tile_row] >> m, 1u);
+
+            struct pipe_box box;
+            u_box_2d(0, 0, (int)tile_w, (int)tile_h, &box);
+
+            struct pipe_transfer *xfer = NULL;
+            uint8_t *map = pipe->texture_map(pipe, tile, m, map_flags,
+                                             &box, &xfer);
+            if (!map)
+               continue;
+            for (unsigned y = 0; y < tile_h; y++) {
+               uint8_t *row = map + y * xfer->stride;
+               for (unsigned x = 0; x < tile_w; x++) {
+                  uint8_t *texel = row + x * bpp;
+                  if (full_word) {
+                     memcpy(texel, &packed, bpp);
+                  } else {
+                     uint32_t w = 0;
+                     memcpy(&w, texel, bpp);
+                     w = (w & ~write_mask) | (packed & write_mask);
+                     memcpy(texel, &w, bpp);
+                  }
+               }
+            }
+            pipe->texture_unmap(pipe, xfer);
+         }
+      }
+   }
+   return true;
+}
+
 /* vkCmdFillBuffer as a CPU map-and-fill: write the repeated 32-bit value over
  * [offset, offset+size) of the buffer, resolving VK_WHOLE_SIZE to the tail and
  * rounding the byte count down to a 32-bit multiple per the spec. */
@@ -3032,6 +3122,12 @@ r300vk_replay_host_entry(struct r300vk_device *device,
       r300vk_clear_color_image(device, e->clear_color_image.image,
                                &e->clear_color_image.color,
                                &e->clear_color_image.range);
+   } else if (e->type == R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE) {
+      r300vk_clear_depth_stencil_image(
+         device, e->clear_depth_stencil_image.image,
+         &e->clear_depth_stencil_image.value,
+         e->clear_depth_stencil_image.range.aspectMask,
+         &e->clear_depth_stencil_image.range);
    } else if (e->type == R300VK_CMD_FILL_BUFFER) {
       r300vk_fill_buffer(device, &e->fill_buffer);
    } else if (e->type == R300VK_CMD_COPY_BUFFER) {
