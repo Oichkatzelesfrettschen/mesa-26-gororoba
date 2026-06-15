@@ -13,6 +13,7 @@
 #include "vk_object.h"
 #include "vk_util.h"
 
+#include <stdint.h>
 #include <string.h>
 
 /* Tear down a render pass that failed validation partway through creation.
@@ -29,17 +30,38 @@ r300vk_render_pass_destroy_partial(struct r300vk_device *device,
    vk_free2(&device->vk.alloc, pAllocator, rp);
 }
 
+static bool
+r300vk_render_pass_subpass_storage_size(uint32_t subpass_count,
+                                        size_t *storage_size)
+{
+   if ((size_t)subpass_count > SIZE_MAX / sizeof(struct r300vk_subpass))
+      return false;
+
+   *storage_size = (size_t)subpass_count * sizeof(struct r300vk_subpass);
+   return true;
+}
+
 static VkResult
 r300vk_render_pass_alloc_subpasses(struct r300vk_device *device,
                                    const VkAllocationCallbacks *pAllocator,
                                    struct r300vk_render_pass *rp,
                                    uint32_t subpass_count)
 {
+   size_t subpass_storage_size = 0;
+
    if (subpass_count == 0)
       return VK_SUCCESS;
 
+   if (!r300vk_render_pass_subpass_storage_size(subpass_count,
+                                                &subpass_storage_size)) {
+      r300vk_render_pass_destroy_partial(device, pAllocator, rp);
+      return vk_errorf(device, VK_ERROR_OUT_OF_HOST_MEMORY,
+                       "r300vk: subpassCount %u overflows subpass storage",
+                       subpass_count);
+   }
+
    rp->subpasses = vk_zalloc2(&device->vk.alloc, pAllocator,
-                              subpass_count * sizeof(*rp->subpasses), 8,
+                              subpass_storage_size, 8,
                               VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!rp->subpasses) {
       r300vk_render_pass_destroy_partial(device, pAllocator, rp);

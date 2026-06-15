@@ -6,6 +6,7 @@
  */
 
 #include <stdio.h>
+#include <stdint.h>
 
 #include "../r300vk_render_pass.c"
 
@@ -73,6 +74,35 @@ check_input_aspect_override(void)
             &rp, &aspect_info, 2, 0, 0) ==
          (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT),
          "unmatched input aspect override falls back to attachment format");
+}
+
+static void
+check_subpass_storage_size(void)
+{
+   size_t storage_size = 1;
+   CHECK(r300vk_render_pass_subpass_storage_size(0, &storage_size) &&
+         storage_size == 0,
+         "zero subpasses require no storage");
+
+   CHECK(r300vk_render_pass_subpass_storage_size(3, &storage_size) &&
+         storage_size == 3 * sizeof(struct r300vk_subpass),
+         "subpass storage size uses checked size_t multiplication");
+
+   const size_t max_count = SIZE_MAX / sizeof(struct r300vk_subpass);
+   if (max_count < UINT32_MAX) {
+      CHECK(r300vk_render_pass_subpass_storage_size((uint32_t)max_count,
+                                                    &storage_size) &&
+            storage_size == max_count * sizeof(struct r300vk_subpass),
+            "maximum non-overflowing subpass count is accepted");
+      CHECK(!r300vk_render_pass_subpass_storage_size((uint32_t)max_count + 1,
+                                                     &storage_size),
+            "overflowing subpass storage size is rejected");
+   } else {
+      CHECK(r300vk_render_pass_subpass_storage_size(UINT32_MAX,
+                                                    &storage_size) &&
+            storage_size == (size_t)UINT32_MAX * sizeof(struct r300vk_subpass),
+            "uint32 subpass count fits in wide size_t storage");
+   }
 }
 
 /* Pin the same-subpass feedback matrix: writable output aliases reject, while
@@ -145,6 +175,7 @@ main(void)
          "mixed depth and non-depth/stencil aspect mask is rejected");
 
    check_input_aspect_override();
+   check_subpass_storage_size();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);
