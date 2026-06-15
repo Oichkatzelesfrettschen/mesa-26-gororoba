@@ -10,6 +10,8 @@
 #include "vk_log.h"
 #include "vk_object.h"
 
+#include <string.h>
+
 /* Tear down a render pass that failed validation partway through creation.
  * Every reject path below allocated rp and ran vk_object_base_init, so the
  * cleanup is identical; factoring it keeps each reject site to the error it
@@ -23,24 +25,94 @@ r300vk_render_pass_destroy_partial(struct r300vk_device *device,
    vk_free2(&device->vk.alloc, pAllocator, rp);
 }
 
-/* Reject a subpass 0 input attachment that also serves as a colour attachment
- * in the same subpass.  r300 renders a single subpass in one pass and binds the
- * input attachments as fragment textures; reading an attachment the same draw
- * is writing is a feedback loop the hardware cannot resolve coherently, so it is
- * rejected rather than rendered with stale texels.  Returns the aliasing
- * attachment index, or VK_ATTACHMENT_UNUSED when no overlap exists. */
+/* An attachment that is both a colour output and an input in the SAME subpass is
+ * a feedback loop r300 cannot read coherently (it binds input attachments as
+ * fragment textures), so it is rejected.  Across subpasses it is fine: subpass N
+ * reads subpass M<N's output after the pass flushes between them.  Returns the
+ * aliasing attachment index, or VK_ATTACHMENT_UNUSED when none overlaps. */
 static uint32_t
-r300vk_render_pass_self_dependency(const struct r300vk_render_pass *rp)
+r300vk_subpass_self_dependency(const struct r300vk_subpass *sp)
 {
-   for (uint32_t i = 0; i < rp->input_attachment_count; i++) {
-      if (rp->input_attachment_refs[i] == VK_ATTACHMENT_UNUSED)
+   for (uint32_t i = 0; i < sp->input_attachment_count; i++) {
+      if (sp->input_attachment_refs[i] == VK_ATTACHMENT_UNUSED)
          continue;
-      for (uint32_t j = 0; j < rp->color_attachment_count; j++) {
-         if (rp->color_attachment_refs[j] == rp->input_attachment_refs[i])
-            return rp->input_attachment_refs[i];
+      for (uint32_t j = 0; j < sp->color_attachment_count; j++) {
+         if (sp->color_attachment_refs[j] == sp->input_attachment_refs[i])
+            return sp->input_attachment_refs[i];
       }
    }
    return VK_ATTACHMENT_UNUSED;
+}
+
+/* After every subpass's references are stored in rp->subpasses, validate each
+ * subpass's self-dependency, compute first_use_subpass (the subpass where each
+ * attachment's loadOp applies), and mirror subpass 0 into the legacy members the
+ * begin recorder reads.  Shared by the 1.0 and 2.0 create paths. */
+static VkResult
+r300vk_render_pass_finalize(struct r300vk_device *device,
+                            const VkAllocationCallbacks *pAllocator,
+                            struct r300vk_render_pass *rp)
+{
+   for (uint32_t a = 0; a < PIPE_MAX_COLOR_BUFS + 1; a++)
+      rp->first_use_subpass[a] = R300VK_ATTACHMENT_NO_FIRST_USE;
+
+   for (uint32_t s = 0; s < rp->subpass_count; s++) {
+      const struct r300vk_subpass *sp = &rp->subpasses[s];
+
+      const uint32_t dep = r300vk_subpass_self_dependency(sp);
+      if (dep != VK_ATTACHMENT_UNUSED) {
+         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
+         return vk_errorf(device, VK_ERROR_UNKNOWN,
+                          "r300vk: attachment %u is both a colour and an input "
+                          "attachment in subpass %u; r300 cannot read an "
+                          "attachment it is concurrently writing", dep, s);
+      }
+
+      for (uint32_t i = 0; i < sp->color_attachment_count; i++) {
+         const uint32_t a = sp->color_attachment_refs[i];
+         if (a != VK_ATTACHMENT_UNUSED && a < PIPE_MAX_COLOR_BUFS + 1 &&
+             rp->first_use_subpass[a] == R300VK_ATTACHMENT_NO_FIRST_USE)
+            rp->first_use_subpass[a] = (uint8_t)s;
+      }
+      const uint32_t ds = sp->depth_stencil_attachment_ref;
+      if (ds != VK_ATTACHMENT_UNUSED && ds < PIPE_MAX_COLOR_BUFS + 1 &&
+          rp->first_use_subpass[ds] == R300VK_ATTACHMENT_NO_FIRST_USE)
+         rp->first_use_subpass[ds] = (uint8_t)s;
+   }
+
+   if (rp->subpass_count > 0) {
+      const struct r300vk_subpass *s0 = &rp->subpasses[0];
+      rp->color_attachment_count = s0->color_attachment_count;
+      memcpy(rp->color_attachment_refs, s0->color_attachment_refs,
+             sizeof(rp->color_attachment_refs));
+      rp->input_attachment_count = s0->input_attachment_count;
+      memcpy(rp->input_attachment_refs, s0->input_attachment_refs,
+             sizeof(rp->input_attachment_refs));
+      rp->depth_stencil_attachment_ref = s0->depth_stencil_attachment_ref;
+   }
+   return VK_SUCCESS;
+}
+
+/* Reject a subpass whose colour or input count exceeds the fixed storage. */
+static VkResult
+r300vk_subpass_bounds_ok(struct r300vk_device *device,
+                         const VkAllocationCallbacks *pAllocator,
+                         struct r300vk_render_pass *rp, uint32_t s,
+                         uint32_t color_count, uint32_t input_count)
+{
+   if (color_count > PIPE_MAX_COLOR_BUFS) {
+      r300vk_render_pass_destroy_partial(device, pAllocator, rp);
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: subpass %u colorAttachmentCount %u exceeds r300 "
+                       "fixed storage %u", s, color_count, PIPE_MAX_COLOR_BUFS);
+   }
+   if (input_count > PIPE_MAX_COLOR_BUFS) {
+      r300vk_render_pass_destroy_partial(device, pAllocator, rp);
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: subpass %u inputAttachmentCount %u exceeds r300 "
+                       "fixed storage %u", s, input_count, PIPE_MAX_COLOR_BUFS);
+   }
+   return VK_SUCCESS;
 }
 
 VkResult
@@ -76,61 +148,39 @@ r300vk_CreateRenderPass(VkDevice _device,
       rp->attachments[i].final_layout = pCreateInfo->pAttachments[i].finalLayout;
    }
 
-   /* r300vk replays only subpass 0.  A later subpass that reads input
-    * attachments would need those reads honoured against subpass-0 output, which
-    * this single-subpass path cannot do, so reject rather than silently drop the
-    * usage.  Later subpasses without input attachments stay out of the way of
-    * the subpass-0 replay. */
-   for (uint32_t s = 1; s < pCreateInfo->subpassCount; s++) {
-      if (pCreateInfo->pSubpasses[s].inputAttachmentCount > 0) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: subpass %u reads input attachments; r300vk "
-                          "replays only subpass 0", s);
-      }
+   /* Store every subpass's colour, input, and depth/stencil references.  A
+    * later subpass that reads an input attachment is now supported: the replay
+    * flushes between subpasses and binds the prior output as a fragment texture
+    * (subpassLoad reads it at the same coordinate). */
+   if (pCreateInfo->subpassCount > R300VK_MAX_SUBPASSES) {
+      r300vk_render_pass_destroy_partial(device, pAllocator, rp);
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: subpassCount %u exceeds r300vk replay storage %u",
+                       pCreateInfo->subpassCount, R300VK_MAX_SUBPASSES);
    }
-
-   /* Parse subpass 0 color attachment references. */
-   if (pCreateInfo->subpassCount > 0) {
-      const VkSubpassDescription *sp = &pCreateInfo->pSubpasses[0];
-      if (sp->colorAttachmentCount > PIPE_MAX_COLOR_BUFS) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: subpass colorAttachmentCount %u exceeds r300 fixed storage %u",
-                          sp->colorAttachmentCount, PIPE_MAX_COLOR_BUFS);
-      }
-      rp->color_attachment_count = sp->colorAttachmentCount;
+   rp->subpass_count = pCreateInfo->subpassCount;
+   for (uint32_t s = 0; s < pCreateInfo->subpassCount; s++) {
+      const VkSubpassDescription *sp = &pCreateInfo->pSubpasses[s];
+      VkResult r = r300vk_subpass_bounds_ok(device, pAllocator, rp, s,
+                                            sp->colorAttachmentCount,
+                                            sp->inputAttachmentCount);
+      if (r != VK_SUCCESS)
+         return r;
+      struct r300vk_subpass *d = &rp->subpasses[s];
+      d->color_attachment_count = sp->colorAttachmentCount;
       for (uint32_t i = 0; i < sp->colorAttachmentCount; i++)
-         rp->color_attachment_refs[i] = sp->pColorAttachments[i].attachment;
-
-      /* Parse subpass 0 input attachments.  subpassLoad reads these images at
-       * the fragment's own coordinate; the replay binds them as fragment
-       * textures.  Reject an inputAttachmentCount past the fixed storage rather
-       * than clamping it -- a silent clamp would drop the trailing references
-       * and leave those subpassLoads reading whatever was bound, matching the
-       * colorAttachment overflow reject above. */
-      if (sp->inputAttachmentCount > PIPE_MAX_COLOR_BUFS) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: subpass inputAttachmentCount %u exceeds r300 fixed storage %u",
-                          sp->inputAttachmentCount, PIPE_MAX_COLOR_BUFS);
-      }
-      rp->input_attachment_count = sp->inputAttachmentCount;
-      for (uint32_t i = 0; i < rp->input_attachment_count; i++)
-         rp->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
-      rp->depth_stencil_attachment_ref =
+         d->color_attachment_refs[i] = sp->pColorAttachments[i].attachment;
+      d->input_attachment_count = sp->inputAttachmentCount;
+      for (uint32_t i = 0; i < sp->inputAttachmentCount; i++)
+         d->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
+      d->depth_stencil_attachment_ref =
          sp->pDepthStencilAttachment ? sp->pDepthStencilAttachment->attachment
                                      : VK_ATTACHMENT_UNUSED;
-
-      uint32_t self_dep = r300vk_render_pass_self_dependency(rp);
-      if (self_dep != VK_ATTACHMENT_UNUSED) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: attachment %u is both a colour and an input "
-                          "attachment in subpass 0; r300 cannot read an "
-                          "attachment it is concurrently writing", self_dep);
-      }
    }
+
+   VkResult r = r300vk_render_pass_finalize(device, pAllocator, rp);
+   if (r != VK_SUCCESS)
+      return r;
 
    *pRenderPass = r300vk_render_pass_to_handle(rp);
    return VK_SUCCESS;
@@ -176,50 +226,35 @@ r300vk_CreateRenderPass2(VkDevice _device,
       rp->attachments[i].final_layout = pCreateInfo->pAttachments[i].finalLayout;
    }
 
-   for (uint32_t s = 1; s < pCreateInfo->subpassCount; s++) {
-      if (pCreateInfo->pSubpasses[s].inputAttachmentCount > 0) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: subpass %u reads input attachments; r300vk "
-                          "replays only subpass 0", s);
-      }
+   if (pCreateInfo->subpassCount > R300VK_MAX_SUBPASSES) {
+      r300vk_render_pass_destroy_partial(device, pAllocator, rp);
+      return vk_errorf(device, VK_ERROR_UNKNOWN,
+                       "r300vk: subpassCount %u exceeds r300vk replay storage %u",
+                       pCreateInfo->subpassCount, R300VK_MAX_SUBPASSES);
    }
-
-   /* Parse subpass 0 color and input attachment references. */
-   if (pCreateInfo->subpassCount > 0) {
-      const VkSubpassDescription2 *sp = &pCreateInfo->pSubpasses[0];
-      if (sp->colorAttachmentCount > PIPE_MAX_COLOR_BUFS) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: subpass colorAttachmentCount %u exceeds r300 fixed storage %u",
-                          sp->colorAttachmentCount, PIPE_MAX_COLOR_BUFS);
-      }
-      rp->color_attachment_count = sp->colorAttachmentCount;
+   rp->subpass_count = pCreateInfo->subpassCount;
+   for (uint32_t s = 0; s < pCreateInfo->subpassCount; s++) {
+      const VkSubpassDescription2 *sp = &pCreateInfo->pSubpasses[s];
+      VkResult r = r300vk_subpass_bounds_ok(device, pAllocator, rp, s,
+                                            sp->colorAttachmentCount,
+                                            sp->inputAttachmentCount);
+      if (r != VK_SUCCESS)
+         return r;
+      struct r300vk_subpass *d = &rp->subpasses[s];
+      d->color_attachment_count = sp->colorAttachmentCount;
       for (uint32_t i = 0; i < sp->colorAttachmentCount; i++)
-         rp->color_attachment_refs[i] = sp->pColorAttachments[i].attachment;
-
-      if (sp->inputAttachmentCount > PIPE_MAX_COLOR_BUFS) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: subpass inputAttachmentCount %u exceeds r300 fixed storage %u",
-                          sp->inputAttachmentCount, PIPE_MAX_COLOR_BUFS);
-      }
-      rp->input_attachment_count = sp->inputAttachmentCount;
-      for (uint32_t i = 0; i < rp->input_attachment_count; i++)
-         rp->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
-      rp->depth_stencil_attachment_ref =
+         d->color_attachment_refs[i] = sp->pColorAttachments[i].attachment;
+      d->input_attachment_count = sp->inputAttachmentCount;
+      for (uint32_t i = 0; i < sp->inputAttachmentCount; i++)
+         d->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
+      d->depth_stencil_attachment_ref =
          sp->pDepthStencilAttachment ? sp->pDepthStencilAttachment->attachment
                                      : VK_ATTACHMENT_UNUSED;
-
-      uint32_t self_dep = r300vk_render_pass_self_dependency(rp);
-      if (self_dep != VK_ATTACHMENT_UNUSED) {
-         r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-         return vk_errorf(device, VK_ERROR_UNKNOWN,
-                          "r300vk: attachment %u is both a colour and an input "
-                          "attachment in subpass 0; r300 cannot read an "
-                          "attachment it is concurrently writing", self_dep);
-      }
    }
+
+   VkResult r = r300vk_render_pass_finalize(device, pAllocator, rp);
+   if (r != VK_SUCCESS)
+      return r;
 
    *pRenderPass = r300vk_render_pass_to_handle(rp);
    return VK_SUCCESS;
