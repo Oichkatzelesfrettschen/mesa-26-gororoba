@@ -375,13 +375,16 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
  *
  * a plain nir_texop_tex r300 can emit.  texelFetch(input,(i,j)) equals a NEAREST
  * texture() at ((i+0.5)/W,(j+0.5)/H); gl_FragCoord.xy is the fragment center
- * (i+0.5, j+0.5), so the product lands on that texel center.  The r300 fragment
- * ALU is FP24 (16-bit mantissa): the product error is at most W*2^-17 (about 0.03
- * texel at W=4096), well inside the half-texel NEAREST margin, so the correct
- * texel is always resolved.  inv_extent is read from the fragment CONST[0]
- * (load_ubo block 0, offset 0); the replay binds (1/W,1/H) there per draw, the
- * same slot the keystone UBO uses -- so an input-attachment shader that also
- * reads an app UBO or push constants is rejected at compile (one CONST[0]).
+ * (i+0.5, j+0.5), so the product lands on that texel center.  Replay translates
+ * viewport state into tile-local framebuffer coordinates, so W/H are the bound
+ * pipe_resource dimensions: the full image for a single-tile attachment or the
+ * matching split tile for a tiled attachment.  The r300 fragment ALU is FP24
+ * (16-bit mantissa): the product error is at most W*2^-17 (about 0.03 texel at
+ * W=4096), well inside the half-texel NEAREST margin, so the correct texel is
+ * always resolved.  inv_extent is read from the fragment CONST[0] (load_ubo
+ * block 0, offset 0); the replay binds (1/W,1/H) there per draw, the same slot
+ * the keystone UBO uses -- so an input-attachment shader that also reads an app
+ * UBO or push constants is rejected at compile (one CONST[0]).
  * nir_lower_samplers (in nir_to_rc) assigns the Gallium unit from the input
  * variable's data.binding, which the replay binds the input image to.  A
  * multisample subpass input (GLSL_SAMPLER_DIM_SUBPASS_MS) is left unlowered so
