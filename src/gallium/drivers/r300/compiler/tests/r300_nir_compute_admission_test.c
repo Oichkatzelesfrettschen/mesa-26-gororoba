@@ -1339,6 +1339,17 @@ build_index_value_linear(void)
    return b.shader;
 }
 
+/* out[0] = gid: affine value, but not a per-invocation output slot. */
+static nir_shader *
+build_index_value_constant_address(void)
+{
+   nir_builder b = cs_builder("cs_index_value_constant_address");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_store_ssbo(&b, gid, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* out[gid] = gid * 4 + 2: affine value consumption with captured stride. */
 static nir_shader *
 build_index_value_strided(void)
@@ -1347,6 +1358,20 @@ build_index_value_strided(void)
    nir_def *gid = nir_load_global_invocation_index(&b, 32);
    nir_def *val = nir_iadd(&b, nir_imul(&b, gid, nir_imm_int(&b, 4)),
                            nir_imm_int(&b, 2));
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[gid] = 0 * gid + 17: literal zero stride with an indexed destination. */
+static nir_shader *
+build_index_value_zero_stride(void)
+{
+   nir_builder b = cs_builder("cs_index_value_zero_stride");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *val = nir_iadd(&b, nir_imul(&b, gid, nir_imm_int(&b, 0)),
+                           nir_imm_int(&b, 17));
    nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
    nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
                   .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
@@ -1521,7 +1546,18 @@ case_index_consumption(void)
          "stored index captures stride 1 offset 0");
    CHECK(p.affine_global_invocation_only,
          "stored global index keeps AFFINE_IOTA source identity");
+   CHECK(p.store_offset_valid && p.store_offset_global_invocation_only &&
+         p.store_offset_stride == 4 && p.store_offset_offset == 0,
+         "stored global index records out[gid] byte offset");
    ralloc_free(lin);
+
+   nir_shader *fixed_addr = build_index_value_constant_address();
+   r300_nir_classify_index_consumption(fixed_addr, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "constant-address iota value still classifies VALUE_AFFINE");
+   CHECK(!p.store_offset_valid,
+         "constant-address iota value has no tracked out[gid] offset");
+   ralloc_free(fixed_addr);
 
    nir_shader *str = build_index_value_strided();
    r300_nir_classify_index_consumption(str, &p);
@@ -1530,6 +1566,17 @@ case_index_consumption(void)
    CHECK(p.stride_valid && p.stride == 4 && p.offset == 2,
          "gid*4+2 captures stride 4 offset 2");
    ralloc_free(str);
+
+   nir_shader *zero_stride = build_index_value_zero_stride();
+   r300_nir_classify_index_consumption(zero_stride, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "zero-stride value classifies VALUE_AFFINE");
+   CHECK(p.stride_valid && p.stride == 0 && p.offset == 17,
+         "zero-stride value preserves literal stride 0");
+   CHECK(p.store_offset_valid && p.store_offset_stride == 4 &&
+         p.store_offset_offset == 0,
+         "zero-stride value records out[gid] byte offset");
+   ralloc_free(zero_stride);
 
    nir_shader *gen = build_index_value_general();
    r300_nir_classify_index_consumption(gen, &p);
@@ -1587,11 +1634,14 @@ case_index_consumption(void)
    CHECK(p.stride_valid && p.stride == 0 && p.stride_y == 16 &&
          p.stride_z == 128 && p.offset == 0,
          "3D flatten without x stride preserves stride 0");
+   CHECK(p.store_offset_valid && p.store_offset_stride == 0 &&
+         p.store_offset_stride_y == 64 && p.store_offset_stride_z == 512 &&
+         p.store_offset_offset == 0,
+         "3D flatten without x stride records y/z-only byte offset");
    struct r300_compute_affine_iota_pattern it_yz = {0};
    r300_nir_detect_affine_iota_pattern(yz, &it_yz);
-   CHECK(it_yz.is_affine_iota && it_yz.stride == 0 &&
-         it_yz.stride_y == 16 && it_yz.stride_z == 128,
-         "affine-iota detector carries zero x stride");
+   CHECK(!it_yz.is_affine_iota,
+         "y/z-only output address rejects affine-iota");
    ralloc_free(yz);
 
    nir_shader *wg = build_index_value_workgroup_x();
@@ -1619,54 +1669,77 @@ case_index_consumption(void)
          "strided 4 * (2^15 - 1) admits");
    CHECK(!r300_grid_strided_index_exact(32770, 4, 0),
          "strided 4 * (2^15 + 1) rejects");
+   CHECK(r300_grid_strided_index_exact(2048u * 2048u, 0, 17),
+         "zero-stride affine admits representable constant value");
+   CHECK(!r300_grid_strided_index_exact(1, 0,
+                                        R300_FP24_EXACT_INT_CEILING + 1),
+         "zero-stride affine rejects unrepresentable constant value");
    CHECK(r300_grid_index_exact(R300_GRID_INDEX_NONE, 2048u * 2048u, 0, 0),
          "position-addressed 2048x2048 fold admits");
    CHECK(!r300_grid_index_exact(R300_GRID_INDEX_LINEAR, 2048u * 2048u, 0, 0),
          "linear-indexed 2048x2048 fold rejects");
 }
 
+static struct r300_compute_affine_iota_pattern
+detect_affine_iota(nir_shader *shader)
+{
+   struct r300_compute_affine_iota_pattern pattern = {0};
+   r300_nir_detect_affine_iota_pattern(shader, &pattern);
+   return pattern;
+}
+
 static void
 case_affine_iota(void)
 {
    printf("affine-iota detector\n");
-   struct r300_compute_affine_iota_pattern it = {0};
 
    nir_shader *lin = build_index_value_linear();
-   r300_nir_detect_affine_iota_pattern(lin, &it);
+   struct r300_compute_affine_iota_pattern it = detect_affine_iota(lin);
    CHECK(it.is_affine_iota, "out[gid] = gid detects affine-iota");
    CHECK(it.stride == 1 && it.offset == 0,
          "iota captures stride 1 offset 0");
    ralloc_free(lin);
 
+   nir_shader *fixed_addr = build_index_value_constant_address();
+   it = detect_affine_iota(fixed_addr);
+   CHECK(!it.is_affine_iota, "out[0] = gid rejects affine-iota");
+   ralloc_free(fixed_addr);
+
    nir_shader *str = build_index_value_strided();
-   r300_nir_detect_affine_iota_pattern(str, &it);
+   it = detect_affine_iota(str);
    CHECK(it.is_affine_iota, "out[gid] = gid*4+2 detects affine-iota");
    CHECK(it.stride == 4 && it.offset == 2,
          "iota captures stride 4 offset 2");
    ralloc_free(str);
 
+   nir_shader *zero_stride = build_index_value_zero_stride();
+   it = detect_affine_iota(zero_stride);
+   CHECK(it.is_affine_iota && it.stride == 0 && it.offset == 17,
+         "out[gid] = 0*gid+17 detects affine-iota");
+   ralloc_free(zero_stride);
+
    nir_shader *gen = build_index_value_general();
-   r300_nir_detect_affine_iota_pattern(gen, &it);
+   it = detect_affine_iota(gen);
    CHECK(!it.is_affine_iota, "gid*gid rejects affine-iota");
    ralloc_free(gen);
 
    nir_shader *addr = build_index_address_only();
-   r300_nir_detect_affine_iota_pattern(addr, &it);
+   it = detect_affine_iota(addr);
    CHECK(!it.is_affine_iota, "load-bearing identity shape rejects affine-iota");
    ralloc_free(addr);
 
    nir_shader *cf = build_const_fill_u32();
-   r300_nir_detect_affine_iota_pattern(cf, &it);
+   it = detect_affine_iota(cf);
    CHECK(!it.is_affine_iota, "const-fill (no index) rejects affine-iota");
    ralloc_free(cf);
 
    nir_shader *wg = build_index_value_workgroup_x();
-   r300_nir_detect_affine_iota_pattern(wg, &it);
+   it = detect_affine_iota(wg);
    CHECK(!it.is_affine_iota, "workgroup id value rejects affine-iota");
    ralloc_free(wg);
 
    nir_shader *local = build_index_value_local_index();
-   r300_nir_detect_affine_iota_pattern(local, &it);
+   it = detect_affine_iota(local);
    CHECK(!it.is_affine_iota, "local index value rejects affine-iota");
    ralloc_free(local);
 }

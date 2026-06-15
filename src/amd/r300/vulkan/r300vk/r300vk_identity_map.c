@@ -23,6 +23,7 @@
 #include "util/u_inlines.h"
 #include "util/u_surface.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -165,17 +166,101 @@ r300vk_idm_total_invocations(const struct r300vk_cmd_dispatch *dispatch,
           (uint64_t)dispatch->group_count_z * lsz;
 }
 
+static void
+r300vk_set_index_reject(const char **out_reason, const char *reason)
+{
+   if (out_reason)
+      *out_reason = reason;
+}
+
+static bool
+r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
+                                        const struct r300vk_cmd_dispatch *dispatch,
+                                        const char **out_reason)
+{
+   if (!pl->affine_iota.is_affine_iota)
+      return true;
+
+   const uint64_t tx = (uint64_t)dispatch->group_count_x *
+                       (pl->local_size_x ? pl->local_size_x : 1u);
+   const uint64_t ty = (uint64_t)dispatch->group_count_y *
+                       (pl->local_size_y ? pl->local_size_y : 1u);
+   const uint64_t tz = (uint64_t)dispatch->group_count_z *
+                       (pl->local_size_z ? pl->local_size_z : 1u);
+   if (!tx || !ty || !tz) {
+      r300vk_set_index_reject(out_reason, "empty-grid");
+      return false;
+   }
+
+   const uint32_t stride = pl->affine_iota.stride;
+   const bool is_3d = pl->affine_iota.stride_y ||
+                      pl->affine_iota.stride_z;
+   if (pl->affine_iota.output_offset_stride != 4 ||
+       pl->affine_iota.output_offset_offset != 0) {
+      r300vk_set_index_reject(out_reason,
+                              "affine-iota output offset is not out[gid]");
+      return false;
+   }
+
+   if (is_3d) {
+      if ((uint64_t)pl->affine_iota.stride_y != (uint64_t)stride * tx ||
+          (uint64_t)pl->affine_iota.stride_z != (uint64_t)stride * tx * ty ||
+          (uint64_t)pl->affine_iota.output_offset_stride_y != 4ull * tx ||
+          (uint64_t)pl->affine_iota.output_offset_stride_z !=
+             4ull * tx * ty) {
+         r300vk_set_index_reject(out_reason,
+                                 "affine-iota non-canonical 3D flatten");
+         return false;
+      }
+      struct r300_grid_fold fold;
+      if (tx > UINT32_MAX || ty > UINT32_MAX || tz > UINT32_MAX ||
+          !r300_grid_fold_3d((uint32_t)tx, (uint32_t)ty, (uint32_t)tz,
+                             &fold)) {
+         r300vk_set_index_reject(out_reason,
+                                 "raster-fold (affine-iota 3D grid)");
+         return false;
+      }
+      return true;
+   }
+
+   if (pl->affine_iota.output_offset_stride_y ||
+       pl->affine_iota.output_offset_stride_z) {
+      r300vk_set_index_reject(out_reason,
+                              "affine-iota 1D output offset has y/z stride");
+      return false;
+   }
+   if (ty > 1 || tz > 1) {
+      r300vk_set_index_reject(out_reason,
+                              "affine-iota non-1D dispatch");
+      return false;
+   }
+   struct r300_grid_fold fold;
+   if (tx > UINT32_MAX || !r300_grid_fold_1d(tx, &fold)) {
+      r300vk_set_index_reject(out_reason,
+                              "raster-fold (affine-iota 1D grid)");
+      return false;
+   }
+   return true;
+}
+
 bool
 r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
                             const struct r300vk_cmd_dispatch *dispatch,
                             const char **out_reason)
 {
+   r300vk_set_index_reject(out_reason, NULL);
+   if (!pl || !dispatch) {
+      r300vk_set_index_reject(out_reason, "null dispatch state");
+      return false;
+   }
+   if (pl->const_fill.is_const_fill)
+      return true;
+
    const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
    const struct r300_compute_index_pattern *ip = &pl->index_consumption;
    enum r300_grid_index_class cls;
    uint32_t stride = 1, offset = 0;
 
-   *out_reason = NULL;
    switch (ip->consumption) {
    case R300_COMPUTE_INDEX_NONE:
       cls = R300_GRID_INDEX_NONE;
@@ -202,7 +287,7 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
       const uint64_t tz = (uint64_t)dispatch->group_count_z *
                           (pl->local_size_z ? pl->local_size_z : 1u);
       if (!tx || !ty || !tz) {
-         *out_reason = "empty-grid";
+         r300vk_set_index_reject(out_reason, "empty-grid");
          return false;
       }
       const uint64_t max_value = (uint64_t)ip->stride * (tx - 1) +
@@ -210,29 +295,32 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
                                  (uint64_t)ip->stride_z * (tz - 1) +
                                  ip->offset;
       if (max_value > R300_FP24_EXACT_INT_CEILING) {
-         *out_reason =
-            "index-ceiling (materialized 3D index exceeds FP24 2^17)";
+         r300vk_set_index_reject(out_reason,
+            "index-ceiling (materialized 3D index exceeds FP24 2^17)");
          return false;
       }
-      return true;
+      return r300vk_affine_iota_dispatch_shape_exact(pl, dispatch,
+                                                     out_reason);
    }
    case R300_COMPUTE_INDEX_VALUE_GENERAL:
    default:
       /* The index reaches a stored value through a non-affine chain: no
        * exactness bound is derivable, so no honest fold exists at any
        * invocation count. */
-      *out_reason = "index-value-general (no derivable FP24 bound)";
+      r300vk_set_index_reject(out_reason,
+                              "index-value-general (no derivable FP24 bound)");
       return false;
    }
 
    if (!r300_grid_index_exact(cls, total, stride, offset)) {
-      *out_reason = (cls == R300_GRID_INDEX_LINEAR ||
-                     cls == R300_GRID_INDEX_STRIDED)
-                       ? "index-ceiling (materialized index exceeds FP24 2^17)"
-                       : "raster-fold (invocations exceed 2048x2048)";
+      r300vk_set_index_reject(out_reason,
+         (cls == R300_GRID_INDEX_LINEAR ||
+          cls == R300_GRID_INDEX_STRIDED)
+            ? "index-ceiling (materialized index exceeds FP24 2^17)"
+            : "raster-fold (invocations exceed 2048x2048)");
       return false;
    }
-   return true;
+   return r300vk_affine_iota_dispatch_shape_exact(pl, dispatch, out_reason);
 }
 
 static bool
@@ -790,6 +878,26 @@ nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
       }
    }
    return false;
+}
+
+/* Output-only shapes have no input binding to disambiguate a positional
+ * fallback.  When the detector cannot recover a constant store binding, the
+ * layout must contain exactly one STORAGE_BUFFER or the destination is not
+ * recoverable without risking writes to an unrelated buffer. */
+static bool
+single_storage_buffer_binding(const struct r300vk_descriptor_set *set,
+                              uint32_t *out_binding)
+{
+   bool found = false;
+   for (uint32_t i = 0; i < set->layout->binding_count; i++) {
+      if (set->layout->bindings[i].type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+         continue;
+      if (found)
+         return false;
+      *out_binding = set->layout->bindings[i].binding;
+      found = true;
+   }
+   return found;
 }
 
 /* Recover the input + output STORAGE_BUFFER bindings positionally when the
@@ -4503,8 +4611,8 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
 
    uint32_t out_binding = pl->const_fill.output_ssbo_binding;
    if (!pl->const_fill.output_ssbo_binding_valid) {
-      if (!nth_storage_buffer_binding(set, 0, &out_binding)) {
-         IDM_LOG("constfill early-return no-output-binding");
+      if (!single_storage_buffer_binding(set, &out_binding)) {
+         IDM_LOG("constfill early-return ambiguous-output-binding");
          return false;
       }
       IDM_LOG("constfill recovered binding from layout: out=%u", out_binding);
@@ -4524,17 +4632,21 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
    }
 
    const uint64_t total_invocations = r300vk_idm_total_invocations(dispatch, pl);
-   if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
-      IDM_LOG("constfill early-return total_invocations=%llu out-of-bounds",
+   if (total_invocations == 0) {
+      IDM_LOG("constfill early-return total_invocations=%llu",
               (unsigned long long)total_invocations);
       return false;
    }
 
-   /* 4 bytes per invocation (1 component × 32 bits). */
+   /* 4 bytes per invocation (1 component x 32 bits). */
    const unsigned element_bytes = 4u;
-   const uint64_t fill_bytes = total_invocations * element_bytes;
-   if (fill_bytes > UINT32_MAX) {
+   if (total_invocations > UINT64_MAX / element_bytes) {
       IDM_LOG("constfill early-return fill_bytes overflow");
+      return false;
+   }
+   const uint64_t fill_bytes = total_invocations * element_bytes;
+   if (fill_bytes > INT_MAX) {
+      IDM_LOG("constfill early-return fill_bytes map-range-overflow");
       return false;
    }
 
@@ -4649,8 +4761,8 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
     * single STORAGE_BUFFER in declaration order is the output. */
    uint32_t out_binding = pl->affine_iota.output_ssbo_binding;
    if (!pl->affine_iota.output_ssbo_binding_valid) {
-      if (!nth_storage_buffer_binding(set, 0, &out_binding)) {
-         IDM_LOG("iota early-return no-output-binding");
+      if (!single_storage_buffer_binding(set, &out_binding)) {
+         IDM_LOG("iota early-return ambiguous-output-binding");
          return false;
       }
    }
@@ -4692,12 +4804,24 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
    const uint32_t stride = pl->affine_iota.stride;
    const bool is_3d = pl->affine_iota.stride_y || pl->affine_iota.stride_z;
    unsigned width, height;
+   if (pl->affine_iota.output_offset_stride != 4 ||
+       pl->affine_iota.output_offset_offset != 0) {
+      IDM_LOG("iota early-return output-offset-not-gid ax=%u b=%u",
+              pl->affine_iota.output_offset_stride,
+              pl->affine_iota.output_offset_offset);
+      return false;
+   }
    if (is_3d) {
       if ((uint64_t)pl->affine_iota.stride_y != (uint64_t)stride * tx ||
-          (uint64_t)pl->affine_iota.stride_z != (uint64_t)stride * tx * ty) {
+          (uint64_t)pl->affine_iota.stride_z != (uint64_t)stride * tx * ty ||
+          (uint64_t)pl->affine_iota.output_offset_stride_y != 4ull * tx ||
+          (uint64_t)pl->affine_iota.output_offset_stride_z !=
+             4ull * tx * ty) {
          IDM_LOG("iota early-return non-canonical flatten ay=%u az=%u "
-                 "tx=%llu ty=%llu",
+                 "oay=%u oaz=%u tx=%llu ty=%llu",
                  pl->affine_iota.stride_y, pl->affine_iota.stride_z,
+                 pl->affine_iota.output_offset_stride_y,
+                 pl->affine_iota.output_offset_stride_z,
                  (unsigned long long)tx, (unsigned long long)ty);
          return false;
       }
@@ -4712,6 +4836,13 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
       width = fold3.width;
       height = fold3.height;
    } else {
+      if (pl->affine_iota.output_offset_stride_y ||
+          pl->affine_iota.output_offset_stride_z) {
+         IDM_LOG("iota early-return 1d-output-offset-yz ay=%u az=%u",
+                 pl->affine_iota.output_offset_stride_y,
+                 pl->affine_iota.output_offset_stride_z);
+         return false;
+      }
       if (ty > 1 || tz > 1) {
          IDM_LOG("iota early-return non-1d dispatch of 1d affine ty=%llu "
                  "tz=%llu", (unsigned long long)ty, (unsigned long long)tz);
@@ -4813,7 +4944,7 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
       out_box.height = 1; out_box.depth = 1;
       void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
                                          PIPE_MAP_WRITE |
-                                         PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                         PIPE_MAP_DISCARD_RANGE,
                                          &out_box, &out_xfer);
       if (out_bytes) {
          r300vk_identity_map_copy_rows(out_bytes, width * 4u, rt_map,

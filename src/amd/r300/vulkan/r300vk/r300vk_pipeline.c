@@ -2642,9 +2642,10 @@ r300vk_cas_synthesize_shaders(struct r300vk_device *device,
 }
 
 /* AFFINE_IOTA FS: out[gid] = stride * gid + offset, the index materialized
- * in the FP24 fragment ALU.  The texel-unit varying interpolates to
- * (x + 0.5, y + 0.5) at fragment centres; the dispatch-known scalars ride
- * the fragment constant file as CONST[0] = (width, stride, offset, unused).
+ * in the FP24 fragment ALU.  The RS482 affine_iota_index probe validates the
+ * texel-unit varying path at (x + 0.5, y + 0.5) fragment centers; the
+ * dispatch-known scalars ride the fragment constant file as CONST[0] =
+ * (width, stride, offset, unused).
  * gid = floor(tc.y) * width + floor(tc.x); v = gid * stride + offset; the
  * integer result is byte-decomposed little-endian into the RGBA8 export:
  * r = v mod 256, g = floor(v/256) mod 256, b = floor(v/65536).  Every
@@ -2672,7 +2673,7 @@ r300vk_synthesize_affine_iota_fs(struct pipe_context *pipe)
                                     1.0f / 65536.0f, 1.0f / 255.0f);
    struct ureg_src imm2 = ureg_imm4f(ureg, -256.0f, 0.0f, 0.0f, 0.0f);
 
-   /* t.xy = floor(tc.xy): SNAP the interpolated texel-centre varying back to
+   /* t.xy = floor(tc.xy): SNAP the interpolated texel-center varying back to
     * the integer coordinate.  The rasterizer interpolant carries x + 0.5
     * plus a sub-texel plane-equation error (the RS482 probe measured cliff
     * flips at byte boundaries when the raw value fed the decompose), and

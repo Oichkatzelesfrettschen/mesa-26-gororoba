@@ -384,8 +384,9 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       mesa_logw("r300vk: dispatch no-op (index exactness): %s "
                 "consumption=%d stride=%u offset=%u gx=%u gy=%u gz=%u",
                 index_reject ? index_reject : "unknown",
-                (int)pl->index_consumption.consumption,
-                pl->index_consumption.stride, pl->index_consumption.offset,
+                pl ? (int)pl->index_consumption.consumption : -1,
+                pl ? pl->index_consumption.stride : 0,
+                pl ? pl->index_consumption.offset : 0,
                 d->group_count_x, d->group_count_y, d->group_count_z);
       return VK_SUCCESS;
    }
