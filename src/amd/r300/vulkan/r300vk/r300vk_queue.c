@@ -374,6 +374,16 @@ r300vk_replay_dispatch(struct r300vk_device *device,
    const struct r300vk_pipeline *pl = d->pipeline;
    bool ok = false;
 
+   if (!pl)
+      return VK_SUCCESS;
+
+   if (!pl->admission.admissible) {
+      mesa_logw("r300vk: dispatch no-op (admission): %s (%s)",
+                r300_compute_reject_name(pl->admission.reason),
+                pl->admission.detail ? pl->admission.detail : "no detail");
+      return VK_SUCCESS;
+   }
+
    /* Index-exactness gate: a dispatch whose invocation count exceeds the
     * honest bound for the kernel's classified index consumption must not
     * draw -- index identity would corrupt silently in FP24.  Like

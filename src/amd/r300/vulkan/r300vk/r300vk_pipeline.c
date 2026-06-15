@@ -3868,6 +3868,9 @@ static bool
 r300vk_synthesize_compute_shaders(struct r300vk_device *device,
                                   struct r300vk_pipeline *pl)
 {
+   if (!pl->admission.admissible)
+      return true;
+
    /* CONSTFILL lowers to a framebuffer clear: no vs/fs CSO to synthesize, the
     * dispatch is self-contained.  Report success so the pipeline stays valid. */
    if (pl->const_fill.is_const_fill)
