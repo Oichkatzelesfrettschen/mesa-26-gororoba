@@ -1011,15 +1011,7 @@ r300vk_compile_shader(struct r300vk_device *device,
     * the block variable) and the replay converts them.  A dynamic/slot-straddling
     * offset still cannot be represented and is rejected below. */
    if (uses_push_const) {
-      /* Only the fragment shader needs the conversion: it compiles through
-       * nir_to_rc (float-only, integers float-encoded by nir_lower_int_to_float).
-       * The SW-TCL vertex shader runs on the draw module's TGSI executor, which
-       * has native integers and reads the raw push window, so its integer reads
-       * must NOT be converted.  Classifying only the FS also keeps an overlapping
-       * range a vertex shader reads as int but the fragment shader reads as float
-       * unconverted for the fragment side. */
-      if (stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT)
-         pl->push_const_int_word_mask |= r300vk_classify_push_const_ints(nir);
+      pl->push_const_int_word_mask |= r300vk_classify_push_const_ints(nir);
       NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
                nir_address_format_32bit_offset);
       if (!r300vk_nir_push_const_shape_ok(device->screen, nir)) {
