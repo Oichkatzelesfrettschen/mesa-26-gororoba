@@ -305,8 +305,8 @@ r300_nir_detect_binary_map(const nir_shader *s,
    out->is_binary_map = true;
    out->alu_op = (uint16_t)alu->op;
    /* Capture constant binding indices when present; the orchestrator's
-    * descriptor-set layout fallback picks the first-three STORAGE_BUFFER
-    * bindings when these stay at the defaults. */
+    * descriptor-set layout fallback picks the first three compute-visible
+    * STORAGE_BUFFER bindings when these stay at the defaults. */
    if (nir_src_is_const(load_a->src[0]))
       out->input_a_ssbo_binding = nir_src_as_uint(load_a->src[0]);
    if (nir_src_is_const(load_b->src[0]))
@@ -1363,7 +1363,7 @@ r300_nir_detect_multitap_gather_pattern(const nir_shader *s,
    out->tap_count = (uint16_t)tap_count;
    /* Bindings stay 0 when the post-explicit_io sources are opaque descriptor
     * defs; the orchestrator's positional layout fallback recovers input = 1st
-    * STORAGE_BUFFER, output = 2nd. */
+    * compute-visible STORAGE_BUFFER, output = 2nd. */
    if (nir_src_is_const(taps[0]->src[0]))
       out->input_ssbo_binding = nir_src_as_uint(taps[0]->src[0]);
    if (nir_src_is_const(store->src[1]))
@@ -1478,8 +1478,9 @@ r300_nir_detect_dp4_pattern(const nir_shader *s,
    out->dot_op     = (uint16_t)alu->op;
    out->components = comps;
    /* Capture constant binding indices when present; the orchestrator's
-    * descriptor-set layout fallback picks the first-three STORAGE_BUFFER
-    * bindings when these stay at the defaults (same policy as binary-map). */
+    * descriptor-set layout fallback picks the first three compute-visible
+    * STORAGE_BUFFER bindings when these stay at the defaults (same policy as
+    * binary-map). */
    if (nir_src_is_const(load_a->src[0]))
       out->input_a_ssbo_binding = nir_src_as_uint(load_a->src[0]);
    if (nir_src_is_const(load_b->src[0]))
@@ -4271,8 +4272,8 @@ r300_nir_detect_affine_iota_pattern(const nir_shader *s,
  * single-component 32-bit integer operands.  One store_ssbo whose value is
  * an imul (or amul) of exactly the two load_ssbo defs.  Bindings are read
  * off constant sources where available; the orchestrator's positional
- * fallback (a = first STORAGE_BUFFER, b = second, out = third) recovers
- * them otherwise. */
+ * fallback (a = first compute-visible STORAGE_BUFFER, b = second, out = third)
+ * recovers them otherwise. */
 void
 r300_nir_detect_multilimb_mul_pattern(const nir_shader *s,
                                       struct r300_compute_multilimb_mul_pattern *out)
@@ -4323,8 +4324,8 @@ r300_nir_detect_multilimb_mul_pattern(const nir_shader *s,
  * store_ssbo whose stored value is the atomic's def (the returned old),
  * zero load_ssbo, no loop or conditional.  The guard and result bindings
  * come off constant sources where available; the orchestrator's positional
- * fallback (guard = first STORAGE_BUFFER, result = second) recovers them
- * otherwise. */
+ * fallback (guard = first compute-visible STORAGE_BUFFER, result = second)
+ * recovers them otherwise. */
 void
 r300_nir_detect_cas_pattern(const nir_shader *s,
                             struct r300_compute_cas_pattern *out)

@@ -905,13 +905,22 @@ find_descriptor_by_binding(const struct r300vk_descriptor_set *set,
    return NULL;
 }
 
-/* Walk the descriptor-set layout and pick the Nth STORAGE_BUFFER binding's
- * binding index.  Used to resolve the identity-map kernel's input + output
- * ssbo bindings when the NIR detector cannot recover them as constants
- * (the post-explicit_io binding source is a Vulkan descriptor handle, not
- * a nir_load_const).  The bindings array is sorted by binding index per
- * r300vk_CreateDescriptorSetLayout, so the Nth STORAGE_BUFFER seen during
- * a forward walk is the Nth declared in the layout. */
+static bool
+storage_buffer_binding_is_compute_usable(const struct r300vk_dsl_binding *binding)
+{
+   return binding->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER &&
+          binding->count > 0 &&
+          (binding->stage_flags & VK_SHADER_STAGE_COMPUTE_BIT);
+}
+
+/* Walk the descriptor-set layout and pick the Nth compute-visible
+ * STORAGE_BUFFER binding's binding index.  Used to resolve the identity-map
+ * kernel's input + output ssbo bindings when the NIR detector cannot recover
+ * them as constants (the post-explicit_io binding source is a Vulkan
+ * descriptor handle, not a nir_load_const).  The bindings array is sorted by
+ * binding index per r300vk_CreateDescriptorSetLayout, so the Nth usable
+ * STORAGE_BUFFER seen during a forward walk is the Nth declared for compute
+ * replay in the layout. */
 static bool
 nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
                            unsigned which,
@@ -919,7 +928,7 @@ nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
 {
    unsigned seen = 0;
    for (uint32_t i = 0; i < set->layout->binding_count; i++) {
-      if (set->layout->bindings[i].type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+      if (storage_buffer_binding_is_compute_usable(&set->layout->bindings[i])) {
          if (seen == which) {
             *out_binding = set->layout->bindings[i].binding;
             return true;
@@ -932,15 +941,15 @@ nth_storage_buffer_binding(const struct r300vk_descriptor_set *set,
 
 /* Output-only shapes have no input binding to disambiguate a positional
  * fallback.  When the detector cannot recover a constant store binding, the
- * layout must contain exactly one STORAGE_BUFFER or the destination is not
- * recoverable without risking writes to an unrelated buffer. */
+ * layout must contain exactly one compute-visible STORAGE_BUFFER or the
+ * destination is not recoverable without risking writes to an unrelated buffer. */
 static bool
 single_storage_buffer_binding(const struct r300vk_descriptor_set *set,
                               uint32_t *out_binding)
 {
    bool found = false;
    for (uint32_t i = 0; i < set->layout->binding_count; i++) {
-      if (set->layout->bindings[i].type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+      if (!storage_buffer_binding_is_compute_usable(&set->layout->bindings[i]))
          continue;
       if (found)
          return false;
@@ -957,8 +966,9 @@ single_storage_buffer_binding(const struct r300vk_descriptor_set *set,
  * their zero-initialized defaults.  Resolving {0,0} directly maps both the
  * input and the output descriptor to binding 0, so the kernel would read its
  * own output buffer as input.  The contract for the recovered shapes is a
- * single input/value storage buffer followed by a single output storage buffer,
- * so the first STORAGE_BUFFER is the input and the second is the output. */
+ * single compute-visible input/value storage buffer followed by a single
+ * compute-visible output storage buffer, so the first usable STORAGE_BUFFER is
+ * the input and the second is the output. */
 static bool
 idm_recover_in_out_bindings(const struct r300vk_descriptor_set *set,
                             uint32_t *in_binding, uint32_t *out_binding)
@@ -1048,10 +1058,10 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
     * sources were constants -- which they are NOT after
     * nir_lower_explicit_io with nir_address_format_32bit_index_offset (the
     * binding is a load_vulkan_descriptor handle).  Fall back to the
-    * descriptor-set layout: input = first STORAGE_BUFFER, output = second.
-    * This is the contract the identity-map kernel class follows: a single
-    * input storage buffer and a single output storage buffer, declared in
-    * that order. */
+    * descriptor-set layout: input = first compute-visible STORAGE_BUFFER,
+    * output = second.  This is the contract the identity-map kernel class
+    * follows: a single compute-visible input storage buffer and a single
+    * compute-visible output storage buffer, declared in that order. */
    uint32_t in_binding = pl->identity_map.input_ssbo_binding;
    uint32_t out_binding = pl->identity_map.output_ssbo_binding;
    if (in_binding == out_binding && in_binding == 0) {
@@ -1463,8 +1473,8 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
     *  (2) When all three captured indices are zero (Vulkan forbids duplicate
     *      bindings within a set, so all-zero means the detector saw opaque
     *      post-explicit_io handles instead of constants), fall back to
-    *      positional layout iteration: input_a = 1st STORAGE_BUFFER,
-    *      input_b = 2nd, output = 3rd. */
+    *      positional layout iteration: input_a = 1st compute-visible
+    *      STORAGE_BUFFER, input_b = 2nd, output = 3rd. */
    uint32_t in_a_binding = cap_in_a;
    uint32_t in_b_binding = cap_in_b;
    uint32_t out_binding  = cap_out;
@@ -1841,8 +1851,9 @@ r300vk_qrotate_dispatch_replay(struct r300vk_device *device,
 
 /* Shared 1-in / 1-out compute-as-raster replay core.  Same skeleton as
  * r300vk_two_in_one_out_dispatch_replay but a single input sampler stage and a
- * two-buffer positional fallback (input = first STORAGE_BUFFER, output =
- * second).  The single-lane quaternion ops -- QCONJ (sign flip) and QNORM (self
+ * two-buffer positional fallback (input = first compute-visible
+ * STORAGE_BUFFER, output = second).  The single-lane quaternion ops -- QCONJ
+ * (sign flip) and QNORM (self
  * dot) -- sample one FP32 quaternion, render through the synthesized FS to an
  * FP16 target, and unpack into the kernel's vec4 FP32 output, the same FP16-RT /
  * FP32-readback conversion QMUL uses.  The caller passes the input + output
@@ -1888,10 +1899,10 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
    /* Binding resolution, same priority as the 2-in core: captured constant
     * bindings win; all-zero means the detector saw opaque post-explicit_io
     * handles, so fall back to positional layout iteration (input = 1st
-    * STORAGE_BUFFER, output = 2nd).  A single-storage-buffer layout is the
-    * in-place kernel (d[i] = f(d[i])): the one buffer serves both roles,
-    * which is exact because the input is snapshot into the sampler texture
-    * before the draw writes the buffer back. */
+    * compute-visible STORAGE_BUFFER, output = 2nd).  A single-storage-buffer
+    * layout is the in-place kernel (d[i] = f(d[i])): the one buffer serves both
+    * roles, which is exact because the input is snapshot into the sampler
+    * texture before the draw writes the buffer back. */
    uint32_t in_binding  = cap_in;
    uint32_t out_binding = cap_out;
    if (!detector_captured) {
@@ -2520,7 +2531,7 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
 
    /* Six bindings: a,b,c,d inputs then o_lo,o_hi outputs.  Captured constants
     * win; all-zero means opaque post-explicit_io handles, so fall back to the
-    * first six STORAGE_BUFFERs in declaration order. */
+    * first six compute-visible STORAGE_BUFFERs in declaration order. */
    uint32_t bind[6] = { pl->omul.input_a_ssbo_binding,
                         pl->omul.input_b_ssbo_binding,
                         pl->omul.input_c_ssbo_binding,
@@ -2645,7 +2656,7 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
 
    /* Three bindings: matrix, vertices, output.  The detector captures the matrix
     * binding (and defaults vertices=1, output=2); if a lookup misses, fall back
-    * to the first three STORAGE_BUFFERs in declaration order. */
+    * to the first three compute-visible STORAGE_BUFFERs in declaration order. */
    uint32_t bind[3] = { pl->mat4vec.matrix_ssbo_binding,
                         pl->mat4vec.vertex_ssbo_binding,
                         pl->mat4vec.output_ssbo_binding };
@@ -2726,8 +2737,8 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
  * way MAT4VEC handles its broadcast matrix; only the per-element quaternions need
  * a sampler.  Three bindings: scalar, quaternions, output.  The detector's
  * binding indices win only when all three binding sources were constants;
- * otherwise the roles are recovered from the first three STORAGE_BUFFER
- * declarations in semantic order. */
+ * otherwise the roles are recovered from the first three compute-visible
+ * STORAGE_BUFFER declarations in semantic order. */
 bool
 r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
                              const struct r300vk_pipeline *pl,
@@ -2832,8 +2843,8 @@ r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
 
 /* Resolve n STORAGE_BUFFER bindings to descriptors + buffers for the octonion
  * elementwise ops: captured constant bindings in bind[] win; all-zero falls back
- * to the first n STORAGE_BUFFERs in declaration order (the inputs precede the
- * outputs in every octonion kernel). */
+ * to the first n compute-visible STORAGE_BUFFERs in declaration order (the
+ * inputs precede the outputs in every octonion kernel). */
 static bool
 octonion_resolve_buffers(const struct r300vk_descriptor_set *set, uint32_t *bind,
                          unsigned n, const struct r300vk_descriptor **desc,
@@ -3930,8 +3941,9 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
    }
 
    /* Detector binding-index priority with a positional fallback (same policy
-    * as r300vk_binary_map_dispatch_replay): value = first STORAGE_BUFFER,
-    * output = second, when the detector could not record constant indices. */
+    * as r300vk_binary_map_dispatch_replay): value = first compute-visible
+    * STORAGE_BUFFER, output = second, when the detector could not record
+    * constant indices. */
    uint32_t value_binding  = pl->blend_acc_reduction.value_ssbo_binding;
    uint32_t output_binding = pl->blend_acc_reduction.output_ssbo_binding;
    if (!idm_recover_in_out_bindings(set, &value_binding, &output_binding)) {
@@ -4808,7 +4820,7 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
 
    /* One binding: the output.  The detector's captured binding wins when the
     * post-explicit_io store binding source was a constant; otherwise the
-    * single STORAGE_BUFFER in declaration order is the output. */
+    * single compute-visible STORAGE_BUFFER in declaration order is the output. */
    uint32_t out_binding = pl->affine_iota.output_ssbo_binding;
    if (!pl->affine_iota.output_ssbo_binding_valid) {
       if (!single_storage_buffer_binding(set, &out_binding)) {
@@ -5040,8 +5052,8 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
       return false;
 
    /* Three bindings: a, b, out.  Captured constants win when all three were
-    * constant sources; otherwise the first three STORAGE_BUFFERs in
-    * declaration order carry the roles. */
+    * constant sources; otherwise the first three compute-visible
+    * STORAGE_BUFFERs in declaration order carry the roles. */
    uint32_t bind[3] = { pl->multilimb_mul.input_a_ssbo_binding,
                         pl->multilimb_mul.input_b_ssbo_binding,
                         pl->multilimb_mul.output_ssbo_binding };
@@ -5218,8 +5230,8 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
       return false;
 
    /* Two bindings: guard, result.  Captured constants win; the positional
-    * fallback (guard = first STORAGE_BUFFER, result = second) recovers
-    * post-explicit_io handles. */
+    * fallback (guard = first compute-visible STORAGE_BUFFER, result = second)
+    * recovers post-explicit_io handles. */
    uint32_t bind[2] = { pl->cas.guard_ssbo_binding,
                         pl->cas.result_ssbo_binding };
    if (!pl->cas.guard_binding_valid || !pl->cas.result_binding_valid) {
