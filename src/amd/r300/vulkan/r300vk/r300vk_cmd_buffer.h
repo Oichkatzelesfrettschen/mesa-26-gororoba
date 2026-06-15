@@ -66,13 +66,13 @@ enum r300vk_cmd_type {
 struct r300vk_query_pool;
 
 struct r300vk_cmd_begin_render_pass {
-   /* Up to PIPE_MAX_COLOR_BUFS colour attachments, indexed by attachment slot
+   /* Up to PIPE_MAX_COLOR_BUFS color attachments, indexed by attachment slot
     * so a fragment-shader output at location i targets color_image[i] (the
     * R300 ROP binds COLOROFFSET0+4*i and US_OUT_FMT_i in the same slot order).
-    * A slot for VK_ATTACHMENT_UNUSED stays NULL; color_count is one past the
-    * highest bound slot.  Every bound attachment shares the render area's
-    * extent (the Vulkan render-pass rule), so they share one tile layout and
-    * the same tile_pass selects the matching tile in each. */
+    * A slot for VK_ATTACHMENT_UNUSED stays NULL here; replay fills holes before
+    * a later bound slot with throwaway cbufs because r300g cannot represent NULL
+    * MRT holes.  Replay selects each attachment tile from the pass origin, so
+    * different full image extents can have different final-tile sizes. */
    uint32_t              color_count;
    struct r300vk_image  *color_image[PIPE_MAX_COLOR_BUFS];
    VkAttachmentLoadOp    load_op[PIPE_MAX_COLOR_BUFS];
