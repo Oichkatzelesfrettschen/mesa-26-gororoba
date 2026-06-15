@@ -2014,21 +2014,17 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
          case R300VK_CMD_NEXT_SUBPASS:
             /* Render-to-texture barrier so this subpass samples the prior
-             * subpass's output coherently as an input attachment.  Two steps,
-             * and the order matters:
-             *  1. pipe->flush while the PRIOR subpass's framebuffer is still
-             *     bound, so its RB3D colour writes are resolved to the
-             *     attachment's memory now.  texture_barrier alone only marks the
-             *     gpu_flush/texcache-invalidate atoms dirty, and they emit at the
-             *     next draw -- by which point this subpass's framebuffer is bound,
-             *     so a DRAWN (not cleared) prior output flushed against the wrong
-             *     target and read stale.  A cleared prior output happened to work
-             *     because the clear blit flushed synchronously.
-             *  2. texture_barrier to invalidate the texture cache so the sample
-             *     of the just-flushed attachment is not served from a stale line.
-             * Then bind this subpass's framebuffer at the same tile_pass and
-             * re-apply the in-flight viewport/scissor, mirroring the begin path. */
-            device->pipe->flush(device->pipe, NULL, 0);
+             * subpass's output coherently as an input attachment.
+             * PIPE_TEXTURE_BARRIER_SAMPLER marks r300's gpu_flush and
+             * texture_cache_inval atoms dirty (r300_texture_barrier); the
+             * gpu_flush atom flushes the RB3D colour cache to memory and the
+             * texcache-invalidate atom drops stale texture lines, both emitted
+             * before this subpass's first draw -- so the sample reads the prior
+             * subpass's writes.  The RB3D cache is physical, not framebuffer-
+             * scoped, so the flush resolves the prior colour writes even though
+             * the framebuffer is rebound below.  Then bind this subpass's
+             * framebuffer at the same tile_pass and re-apply the in-flight
+             * viewport/scissor, mirroring the begin path. */
             device->pipe->texture_barrier(device->pipe,
                                           PIPE_TEXTURE_BARRIER_SAMPLER);
             r300vk_replay_begin_render_pass(device, e, tile_pass,
