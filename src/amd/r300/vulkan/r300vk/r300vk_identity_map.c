@@ -243,6 +243,56 @@ r300vk_affine_iota_dispatch_shape_exact(const struct r300vk_pipeline *pl,
    return true;
 }
 
+static bool
+r300vk_const_fill_output_offset_exact(const struct r300vk_pipeline *pl,
+                                      const struct r300vk_cmd_dispatch *dispatch,
+                                      const char **out_reason)
+{
+   const struct r300_compute_index_pattern *ip = &pl->index_consumption;
+   if (!ip->store_offset_valid || !ip->store_offset_global_invocation_only ||
+       ip->store_offset_stride != 4 || ip->store_offset_offset != 0) {
+      r300vk_set_index_reject(out_reason,
+                              "const-fill output offset is not out[gid]");
+      return false;
+   }
+
+   if (!ip->store_offset_stride_y && !ip->store_offset_stride_z)
+      return true;
+
+   const uint64_t tx = (uint64_t)dispatch->group_count_x *
+                       (pl->local_size_x ? pl->local_size_x : 1u);
+   const uint64_t ty = (uint64_t)dispatch->group_count_y *
+                       (pl->local_size_y ? pl->local_size_y : 1u);
+   const uint64_t tz = (uint64_t)dispatch->group_count_z *
+                       (pl->local_size_z ? pl->local_size_z : 1u);
+   if (!tx || !ty || !tz) {
+      r300vk_set_index_reject(out_reason, "empty-grid");
+      return false;
+   }
+
+   if (tx > UINT64_MAX / 4ull || tx > UINT64_MAX / ty ||
+       tx * ty > UINT64_MAX / 4ull) {
+      r300vk_set_index_reject(out_reason,
+                              "const-fill output offset overflows");
+      return false;
+   }
+
+   const uint64_t expected_y = 4ull * tx;
+   const uint64_t expected_z = 4ull * tx * ty;
+   if ((ip->store_offset_stride_y &&
+        (uint64_t)ip->store_offset_stride_y != expected_y) ||
+       (ip->store_offset_stride_z &&
+        (uint64_t)ip->store_offset_stride_z != expected_z) ||
+       (ty > 1 && (uint64_t)ip->store_offset_stride_y != expected_y) ||
+       (tz > 1 && (uint64_t)ip->store_offset_stride_z != expected_z)) {
+      r300vk_set_index_reject(out_reason,
+                              "const-fill non-canonical output flatten");
+      return false;
+   }
+
+   return true;
+}
+
 bool
 r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
                             const struct r300vk_cmd_dispatch *dispatch,
@@ -254,16 +304,8 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
       return false;
    }
    const struct r300_compute_index_pattern *ip = &pl->index_consumption;
-   if (pl->const_fill.is_const_fill) {
-      if (!ip->store_offset_valid || !ip->store_offset_global_invocation_only ||
-          ip->store_offset_stride != 4 || ip->store_offset_offset != 0 ||
-          ip->store_offset_stride_y || ip->store_offset_stride_z) {
-         r300vk_set_index_reject(out_reason,
-                                 "const-fill output offset is not out[gid]");
-         return false;
-      }
-      return true;
-   }
+   if (pl->const_fill.is_const_fill)
+      return r300vk_const_fill_output_offset_exact(pl, dispatch, out_reason);
 
    const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
    enum r300_grid_index_class cls;
