@@ -1418,6 +1418,54 @@ build_index_value_flatten_3d(void)
    return b.shader;
 }
 
+/* out[gid] = id.x + id.y through a swizzled vector add. */
+static nir_shader *
+build_index_value_swizzled_vector_sum(void)
+{
+   nir_builder b = cs_builder("cs_index_value_swizzled_vector_sum");
+   nir_def *id = nir_load_global_invocation_id(&b, 32);
+   const unsigned yxz[3] = { 1, 0, 2 };
+   nir_def *sum = nir_iadd(&b, id, nir_swizzle(&b, id, yxz, 3));
+   nir_def *val = nir_channel(&b, sum, 0);
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[gid] = vec2(id.x, id.y).y: a vector constructor lane extraction. */
+static nir_shader *
+build_index_value_vec_lane_y(void)
+{
+   nir_builder b = cs_builder("cs_index_value_vec_lane_y");
+   nir_def *id = nir_load_global_invocation_id(&b, 32);
+   nir_def *xy = nir_vec2(&b, nir_channel(&b, id, 0),
+                          nir_channel(&b, id, 1));
+   nir_def *val = nir_channel(&b, xy, 1);
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[flat] = id.z * (16 * 8) + id.y * 16: no id.x term. */
+static nir_shader *
+build_index_value_yz_flatten_3d(void)
+{
+   nir_builder b = cs_builder("cs_index_value_yz_flatten_3d");
+   nir_def *id = nir_load_global_invocation_id(&b, 32);
+   nir_def *y = nir_channel(&b, id, 1);
+   nir_def *z = nir_channel(&b, id, 2);
+   nir_def *flat = nir_iadd(&b, nir_imul(&b, z, nir_imm_int(&b, 128)),
+                            nir_imul(&b, y, nir_imm_int(&b, 16)));
+   nir_def *off = nir_imul(&b, flat, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, flat, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 case_index_consumption(void)
 {
@@ -1488,6 +1536,32 @@ case_index_consumption(void)
          it3.stride_z == 128,
          "affine-iota detector carries the 3D strides");
    ralloc_free(f3);
+
+   nir_shader *swz = build_index_value_swizzled_vector_sum();
+   r300_nir_classify_index_consumption(swz, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_GENERAL,
+         "swizzled vector affine sum rejects as VALUE_GENERAL");
+   ralloc_free(swz);
+
+   nir_shader *lane = build_index_value_vec_lane_y();
+   r300_nir_classify_index_consumption(lane, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_GENERAL,
+         "vec constructor lane extraction rejects as VALUE_GENERAL");
+   ralloc_free(lane);
+
+   nir_shader *yz = build_index_value_yz_flatten_3d();
+   r300_nir_classify_index_consumption(yz, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE_3D,
+         "3D flatten without x stride classifies VALUE_AFFINE_3D");
+   CHECK(p.stride_valid && p.stride == 0 && p.stride_y == 16 &&
+         p.stride_z == 128 && p.offset == 0,
+         "3D flatten without x stride preserves stride 0");
+   struct r300_compute_affine_iota_pattern it_yz = {0};
+   r300_nir_detect_affine_iota_pattern(yz, &it_yz);
+   CHECK(it_yz.is_affine_iota && it_yz.stride == 0 &&
+         it_yz.stride_y == 16 && it_yz.stride_z == 128,
+         "affine-iota detector carries zero x stride");
+   ralloc_free(yz);
 
    /* FP24 exact-ceiling guard boundaries (pure arithmetic, no NIR). */
    CHECK(r300_grid_linear_index_exact(131072),

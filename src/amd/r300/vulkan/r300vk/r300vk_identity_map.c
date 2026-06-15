@@ -4689,7 +4689,7 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
                        (pl->local_size_y ? pl->local_size_y : 1u);
    const uint64_t tz = (uint64_t)dispatch->group_count_z *
                        (pl->local_size_z ? pl->local_size_z : 1u);
-   const uint32_t stride = pl->affine_iota.stride ? pl->affine_iota.stride : 1;
+   const uint32_t stride = pl->affine_iota.stride;
    const bool is_3d = pl->affine_iota.stride_y || pl->affine_iota.stride_z;
    unsigned width, height;
    if (is_3d) {

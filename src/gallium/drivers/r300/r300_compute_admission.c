@@ -4021,11 +4021,19 @@ r300_nir_classify_index_consumption(const nir_shader *s,
             }
             if ((alu->op == nir_op_iadd || alu->op == nir_op_fadd) &&
                 in0_vec && in1_vec && alu->def.num_components > 1) {
-               r = *in[0];
-               r.def = &alu->def;
-               r.s += in[1]->s;
-               r.b += in[1]->b;
-               r.affine_valid = index_entry_in_range(&r);
+               bool identity = true;
+               for (unsigned ch = 0; ch < alu->def.num_components; ch++) {
+                  if (alu->src[0].swizzle[ch] != ch ||
+                      alu->src[1].swizzle[ch] != ch)
+                     identity = false;
+               }
+               if (identity) {
+                  r = *in[0];
+                  r.def = &alu->def;
+                  r.s += in[1]->s;
+                  r.b += in[1]->b;
+                  r.affine_valid = index_entry_in_range(&r);
+               }
                index_walk_push(&st, &r);
                continue;
             }
@@ -4112,7 +4120,8 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                break;
             }
             default:
-               if (nir_op_is_vec(alu->op) && sc_ok[0]) {
+               if (nir_op_is_vec(alu->op) && alu->def.num_components == 1 &&
+                   sc_ok[0]) {
                   /* Lane composition preserves the carried lane. */
                   r = sc[0];
                   r.def = &alu->def;
