@@ -22,9 +22,10 @@ _Static_assert((R300_PVS_NUM_SLOTS(R300_HB_TCL_DEFAULT_NUM_SLOTS) |
                "HB_TCL default VAP_CNTL drifted from the historical bypass word 0x0014025a");
 
 /*
- * RC410 and RS480 are the RS48x integrated parts that expose the PVS control
- * surface without a usable hardware vertex FPU.  The hybrid-TCL probe is gated
- * to them so it cannot perturb a part that runs an ordinary route.
+ * RC410 and RS480 are the RS48x integrated parts Mesa gates here:
+ * r300_chipset.c leaves num_vert_fpus at 0, so ordinary contexts keep the
+ * no-TCL route.  The hybrid-TCL probe is gated to them so it cannot perturb a
+ * part that runs the ordinary hardware-TCL route.
  */
 static bool
 r300_hb_tcl_is_hb_family(const struct r300_screen *screen)
@@ -89,16 +90,18 @@ r300_hb_tcl_init(struct r300_screen *screen)
     * route or the emit would request zero FPUs.
     *
     * has_hardware_tcl is deliberately left as the chipset set it (false for
-    * RS48x): that flag means the silicon is proven to execute PVS, and a live
-    * draw-correlation oracle on RS482 falsified that.  The PVS upload and draw
-    * path are reached, but the first hardware-TCL draw hangs the GPU ring (the
-    * fence never signals, the framebuffer is never written) and the radeon
-    * driver performs no kernel recovery; the manual reset path then freezes the
-    * host through VAP soft-reset MMIO on the wedged engine.  This route is
-    * retained only as the experimental harness that produced that result -- it
-    * is not a usable rendering path, and each draw attempt costs one physical
-    * reboot.  The has_tcl && !has_hardware_tcl state stays the honest
-    * "attempting hardware TCL on silicon that does not execute it"
+    * RS48x): that flag means the full hardware-TCL vertex path is proven to
+    * execute.  The measured RS482 draw-correlation oracle reached the PVS upload
+    * and draw path through this route, then the first hardware-TCL draw wedged
+    * the ring before a fence signal or framebuffer verdict.  That observation
+    * proves this route is not usable on the measured RS482 system; it does not
+    * distinguish a non-executing PVS from a PVS-internal hang, bad VAP resource
+    * setup, or another hardware-TCL command-stream fault.  The manual
+    * radeon_gpu_reset lever was tested on that wedged RS482 ring and froze the
+    * host through the r300_asic_reset VAP/GA soft-reset path, so this harness
+    * remains attended and one physical reboot per wedge on the measured RS482
+    * path.  The has_tcl && !has_hardware_tcl state stays the honest
+    * "attempting hardware TCL while PVS execution remains unproven"
     * configuration; the only has_hardware_tcl readers gate on !has_tcl, so they
     * stay inert here. */
    screen->caps.has_tcl = true;
@@ -106,8 +109,9 @@ r300_hb_tcl_init(struct r300_screen *screen)
 
    fprintf(stderr,
            "r300: RS48x HB_TCL route force on; has_tcl=true num_vert_fpus=%u "
-           "(has_hardware_tcl stays %u; the first hardware-TCL draw is known to "
-           "hang the RS482 ring with no kernel recovery -- experimental only)\n",
+           "(has_hardware_tcl stays %u; the measured RS482 first hardware-TCL "
+           "draw wedges before a fence or framebuffer verdict; PVS execution "
+           "remains unproven -- experimental only)\n",
            cfg->vert_fpu, screen->caps.has_hardware_tcl);
 }
 
