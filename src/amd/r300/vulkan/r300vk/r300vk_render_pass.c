@@ -7,8 +7,11 @@
 #include "r300vk_device.h"
 
 #include "vk_alloc.h"
+#include "vk_format.h"
+#include "vk_image.h"
 #include "vk_log.h"
 #include "vk_object.h"
+#include "vk_util.h"
 
 #include <string.h>
 
@@ -47,11 +50,73 @@ r300vk_render_pass_alloc_subpasses(struct r300vk_device *device,
    return VK_SUCCESS;
 }
 
-/* An attachment that is both an output and an input in the same subpass is a
- * feedback loop r300 cannot read coherently (it binds input attachments as
- * fragment textures), so it is rejected.  Across subpasses it is fine: subpass N
- * reads subpass M<N's output after the pass flushes between them.  Returns the
- * aliasing attachment index, or VK_ATTACHMENT_UNUSED when none overlaps. */
+/* An attachment that is both a writable output and an input in the same subpass
+ * is a feedback loop r300 cannot read coherently: input attachments are bound as
+ * fragment textures.  A read-only depth/stencil attachment can be sampled by
+ * subpassLoad because the subpass does not write the sampled aspect.  Across
+ * subpasses it is fine: subpass N reads subpass M<N's output after the pass
+ * flushes between them.  Returns the aliasing attachment index, or
+ * VK_ATTACHMENT_UNUSED when none overlaps. */
+/* Vulkan 1.0 input attachment references lack aspectMask, so derive the
+ * sampled aspects from the render-pass attachment format. */
+static VkImageAspectFlags
+r300vk_render_pass_attachment_aspects(const struct r300vk_render_pass *rp,
+                                      uint32_t attachment)
+{
+   if (attachment == VK_ATTACHMENT_UNUSED || attachment >= rp->attachment_count)
+      return 0;
+
+   return vk_format_aspects(rp->attachments[attachment].format);
+}
+
+/* VK_KHR_maintenance2 lets vkCreateRenderPass override the sampled aspect for
+ * a depth/stencil input attachment.  Preserve that v1 metadata before falling
+ * back to the format-derived Vulkan 1.0 aspect set. */
+static VkImageAspectFlags
+r300vk_render_pass_input_attachment_aspects(
+   const struct r300vk_render_pass *rp,
+   const VkRenderPassInputAttachmentAspectCreateInfo *aspect_info,
+   uint32_t subpass, uint32_t input_attachment_index, uint32_t attachment)
+{
+   if (aspect_info) {
+      for (uint32_t i = 0; i < aspect_info->aspectReferenceCount; i++) {
+         const VkInputAttachmentAspectReference *ref =
+            &aspect_info->pAspectReferences[i];
+
+         if (ref->subpass == subpass &&
+             ref->inputAttachmentIndex == input_attachment_index)
+            return ref->aspectMask;
+      }
+   }
+
+   return r300vk_render_pass_attachment_aspects(rp, attachment);
+}
+
+/* Mixed depth/stencil layouts are read-only only for the named aspect.  Reject
+ * unknown aspect masks so malformed metadata cannot bypass feedback checks. */
+static bool
+r300vk_depth_stencil_layout_is_read_only_for_aspects(
+   const struct r300vk_subpass *sp, VkImageAspectFlags aspects)
+{
+   const VkImageAspectFlags ds_aspects =
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
+   if ((aspects & ds_aspects) == 0 || (aspects & ~ds_aspects) != 0)
+      return false;
+
+   if ((aspects & VK_IMAGE_ASPECT_DEPTH_BIT) &&
+       !vk_image_layout_is_read_only(sp->depth_stencil_attachment_layout,
+                                     VK_IMAGE_ASPECT_DEPTH_BIT))
+      return false;
+
+   if ((aspects & VK_IMAGE_ASPECT_STENCIL_BIT) &&
+       !vk_image_layout_is_read_only(sp->depth_stencil_stencil_layout,
+                                     VK_IMAGE_ASPECT_STENCIL_BIT))
+      return false;
+
+   return true;
+}
+
 static uint32_t
 r300vk_subpass_self_dependency(const struct r300vk_subpass *sp)
 {
@@ -62,7 +127,9 @@ r300vk_subpass_self_dependency(const struct r300vk_subpass *sp)
          if (sp->color_attachment_refs[j] == sp->input_attachment_refs[i])
             return sp->input_attachment_refs[i];
       }
-      if (sp->depth_stencil_attachment_ref == sp->input_attachment_refs[i])
+      if (sp->depth_stencil_attachment_ref == sp->input_attachment_refs[i] &&
+          !r300vk_depth_stencil_layout_is_read_only_for_aspects(
+             sp, sp->input_attachment_aspects[i]))
          return sp->input_attachment_refs[i];
    }
    return VK_ATTACHMENT_UNUSED;
@@ -181,6 +248,11 @@ r300vk_CreateRenderPass(VkDevice _device,
                                          pCreateInfo->subpassCount);
    if (r != VK_SUCCESS)
       return r;
+
+   const VkRenderPassInputAttachmentAspectCreateInfo *input_aspect_info =
+      vk_find_struct_const(pCreateInfo->pNext,
+                           RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO);
+
    for (uint32_t s = 0; s < pCreateInfo->subpassCount; s++) {
       const VkSubpassDescription *sp = &pCreateInfo->pSubpasses[s];
       r = r300vk_subpass_bounds_ok(device, pAllocator, rp, s,
@@ -193,11 +265,22 @@ r300vk_CreateRenderPass(VkDevice _device,
       for (uint32_t i = 0; i < sp->colorAttachmentCount; i++)
          d->color_attachment_refs[i] = sp->pColorAttachments[i].attachment;
       d->input_attachment_count = sp->inputAttachmentCount;
-      for (uint32_t i = 0; i < sp->inputAttachmentCount; i++)
+      for (uint32_t i = 0; i < sp->inputAttachmentCount; i++) {
          d->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
+         d->input_attachment_aspects[i] =
+            r300vk_render_pass_input_attachment_aspects(
+               rp, input_aspect_info, s, i,
+               sp->pInputAttachments[i].attachment);
+      }
       d->depth_stencil_attachment_ref =
          sp->pDepthStencilAttachment ? sp->pDepthStencilAttachment->attachment
                                      : VK_ATTACHMENT_UNUSED;
+      if (sp->pDepthStencilAttachment) {
+         d->depth_stencil_attachment_layout =
+            vk_image_layout_depth_only(sp->pDepthStencilAttachment->layout);
+         d->depth_stencil_stencil_layout =
+            vk_image_layout_stencil_only(sp->pDepthStencilAttachment->layout);
+      }
    }
 
    r = r300vk_render_pass_finalize(device, pAllocator, rp);
@@ -265,11 +348,25 @@ r300vk_CreateRenderPass2(VkDevice _device,
       for (uint32_t i = 0; i < sp->colorAttachmentCount; i++)
          d->color_attachment_refs[i] = sp->pColorAttachments[i].attachment;
       d->input_attachment_count = sp->inputAttachmentCount;
-      for (uint32_t i = 0; i < sp->inputAttachmentCount; i++)
+      for (uint32_t i = 0; i < sp->inputAttachmentCount; i++) {
          d->input_attachment_refs[i] = sp->pInputAttachments[i].attachment;
+         d->input_attachment_aspects[i] = sp->pInputAttachments[i].aspectMask;
+         if (d->input_attachment_aspects[i] == 0)
+            d->input_attachment_aspects[i] =
+               r300vk_render_pass_attachment_aspects(
+                  rp, sp->pInputAttachments[i].attachment);
+      }
       d->depth_stencil_attachment_ref =
          sp->pDepthStencilAttachment ? sp->pDepthStencilAttachment->attachment
                                      : VK_ATTACHMENT_UNUSED;
+      if (sp->pDepthStencilAttachment) {
+         d->depth_stencil_attachment_layout =
+            vk_image_layout_depth_only(sp->pDepthStencilAttachment->layout);
+         d->depth_stencil_stencil_layout =
+            vk_image_layout_stencil_only(
+               vk_att_ref_stencil_layout(sp->pDepthStencilAttachment,
+                                         pCreateInfo->pAttachments));
+      }
    }
 
    r = r300vk_render_pass_finalize(device, pAllocator, rp);

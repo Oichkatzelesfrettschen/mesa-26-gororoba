@@ -126,6 +126,19 @@ if with_tests and get_option('r300vk-gallium-backend') and with_gallium_r300
     ),
     suite : ['r300vk'],
   )
+  test(
+    'r300vk-render-pass-feedback',
+    executable(
+      'r300vk_render_pass_feedback_test',
+      files('tests/r300vk_render_pass_feedback_test.c'),
+      include_directories : [libr300vk_inc, include_directories('.')],
+      dependencies : libr300vk_deps,
+      link_with : libr300vk_link_with,
+      c_args : libr300vk_c_args,
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300vk'],
+  )
 endif
 
 # ICD JSON manifest.  The loader discovers ICDs by scanning

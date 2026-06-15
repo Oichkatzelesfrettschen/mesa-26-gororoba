@@ -38,8 +38,11 @@ struct r300vk_subpass {
    uint32_t color_attachment_refs[PIPE_MAX_COLOR_BUFS];
    uint32_t color_attachment_count;
    uint32_t input_attachment_refs[PIPE_MAX_COLOR_BUFS];
+   VkImageAspectFlags input_attachment_aspects[PIPE_MAX_COLOR_BUFS];
    uint32_t input_attachment_count;
    uint32_t depth_stencil_attachment_ref;  /* VK_ATTACHMENT_UNUSED if none */
+   VkImageLayout depth_stencil_attachment_layout;
+   VkImageLayout depth_stencil_stencil_layout;
 };
 
 struct r300vk_render_pass {
