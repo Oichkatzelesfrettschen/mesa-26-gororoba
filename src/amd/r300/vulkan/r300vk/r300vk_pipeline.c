@@ -385,10 +385,13 @@ r300vk_nir_lower_vulkan_resource_index_single(nir_shader *nir,
  * block 0, offset 0); the replay binds (1/W,1/H) there per draw, the same slot
  * the keystone UBO uses -- so an input-attachment shader that also reads an app
  * UBO or push constants is rejected at compile (one CONST[0]).
- * nir_lower_samplers (in nir_to_rc) assigns the Gallium unit from the input
- * variable's data.binding, which the replay binds the input image to.  A
- * multisample subpass input (GLSL_SAMPLER_DIM_SUBPASS_MS) is left unlowered so
- * the pipeline reject path catches it -- r300 is single-sample.
+ * nir_lower_samplers (in nir_to_rc) assigns the Gallium unit from the synthetic
+ * sampler variable's data.binding.  The descriptor identity stays separate:
+ * replay matches the original (set, binding), while the texture fetch uses
+ * R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT because r300g sampler updates must start
+ * at unit zero.  A multisample subpass input (GLSL_SAMPLER_DIM_SUBPASS_MS) is
+ * left unlowered so the pipeline reject path catches it -- r300 is
+ * single-sample.
  *
  * The replay binds one input attachment per pipeline (the single descriptor
  * identity), so reading two distinct input descriptors cannot be honored:
@@ -462,16 +465,15 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
                                                .range = 8);
             nir_def *coord = nir_fmul(&b, fragcoord_xy, inv_extent);
 
-            /* Build (once) a 2D sampler variable at the same descriptor
-             * binding and sample it: r300 has no input-attachment hardware, so
-             * subpassLoad is a NEAREST texture fetch at the fragment centre.
-             * nir_lower_samplers keys the unit on var->data.binding. */
+            /* Build (once) a 2D sampler variable and sample it: r300 has no
+             * input-attachment hardware, so subpassLoad is a NEAREST texture
+             * fetch at the fragment center. */
             if (!sampler_var) {
                sampler_var = nir_variable_create(
                   nir, nir_var_uniform,
                   glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, rbt),
                   "r300vk_subpass_input");
-               sampler_var->data.binding = binding;
+               sampler_var->data.binding = R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT;
                sampler_var->data.descriptor_set = descriptor_set;
             }
             nir_deref_instr *tex_deref = nir_build_deref_var(&b, sampler_var);
@@ -841,6 +843,9 @@ r300vk_compile_shader(struct r300vk_device *device,
     * that also reads an app UBO or push constants.  Runs before
     * nir_lower_explicit_io/nir_lower_ubo_vec4 so the emitted load_ubo(0) follows
     * the same vec4-slot path as the keystone UBO. */
+   const bool stage_had_texture =
+      stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
+      r300vk_nir_uses_texture(nir);
    bool stage_has_input = false;
    uint32_t stage_input_set = 0;
    uint32_t stage_input_binding = 0;
@@ -871,6 +876,19 @@ r300vk_compile_shader(struct r300vk_device *device,
                        "r300vk: fragment shader reads more than one distinct "
                        "input attachment; the replay binds a single input "
                        "attachment per pipeline");
+   }
+
+   /* The lowered subpass input occupies sampler unit zero to satisfy r300g's
+    * sampler-update contract.  Until ordinary texture descriptors are gathered
+    * into one unit-zero sampler array, an app texture in the same fragment
+    * shader can collide with the input attachment; reject rather than let the
+    * last replay bind decide which image the shader samples. */
+   if (stage_has_input && stage_had_texture) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: fragment shader combines a subpass input with "
+                       "a sampled image; r300vk reserves sampler unit zero for "
+                       "the lowered input attachment");
    }
 
    /* Push constants and a UBO both resolve to CONST[0]; r300's single constant
