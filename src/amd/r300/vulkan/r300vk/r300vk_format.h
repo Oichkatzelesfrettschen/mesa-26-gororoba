@@ -30,24 +30,16 @@ extern "C" {
  * advertise, vkCreateImage's pipe_resource template, and the replay's sampler
  * views all agree on the same backing layout.
  *
- * TODO: depth/stencil is excluded from TRANSFER_DST below because the depth
- *       aspect needs an 8-bit repack.  Vulkan's depth-aspect buffer layout for
- *       D24_UNORM_S8_UINT / X8_D24_UNORM_PACK32 puts D24 in bits [23:0]; r300's
- *       S8_UINT_Z24_UNORM / X8Z24_UNORM store depth in bits [31:8] and
- *       stencil/pad in [7:0] (util_pack_z shifts depth << 8, u_pack_color.h).
- *       Per-aspect read-modify-write at the two r300vk_queue.c copy choke points
- *       closes it (verified layout, steinmarder finding
- *       rs482-r300vk-depth-transfer-repack-first-principles):
- *         depth   buf->img: img = (img & 0x000000FF) | ((buf & 0x00FFFFFF) << 8)
- *         depth   img->buf: buf = (img >> 8) & 0x00FFFFFF
- *         stencil buf->img: img = (img & 0xFFFFFF00) | (s8 & 0xFF)
- *         stencil img->buf: s8  = img & 0xFF
- *       in r300vk_copy_buffer_region_to_image and
- *       r300vk_copy_image_region_to_buffer; Z16_UNORM needs no repack.  Admit
- *       Z16/X8Z24/S8_UINT_Z24 in r300vk_format_supports_transfer_dst only once
- *       the repack lands and a depth-transfer probe verifies it byte-exact
- *       against the NVIDIA oracle, so it can never regress to silent wrong
- *       depth. */
+ * Depth/stencil host transfer: Vulkan's depth-aspect buffer layout for
+ * D24_UNORM_S8_UINT / X8_D24_UNORM_PACK32 puts D24 in bits [23:0], but r300's
+ * S8_UINT_Z24_UNORM / X8Z24_UNORM store depth in bits [31:8] and stencil/pad in
+ * [7:0] (util_pack_z shifts depth << 8, u_pack_color.h), so the two differ by an
+ * 8-bit shift.  r300vk_copy_buffer_region_to_image and
+ * r300vk_copy_image_region_to_buffer carry the per-aspect read-modify-write
+ * (r300vk_zs_pack_texel / r300vk_zs_unpack_texel) that bridges it, so Z16/X8Z24/
+ * S8_UINT_Z24 are TRANSFER_DST-capable below.  Verified byte-exact against the
+ * NVIDIA oracle; see steinmarder finding
+ * rs482-r300vk-depth-transfer-repack-first-principles. */
 static inline enum pipe_format
 r300vk_vk_format_to_pipe_format(VkFormat vk_format)
 {
@@ -69,14 +61,18 @@ r300vk_vk_format_to_pipe_format(VkFormat vk_format)
  * defined byte layout transfers losslessly -- snorm and 32-bit-float
  * semantics never enter a memcpy.  Block-compressed formats transfer in
  * block units (the tile walks and the buffer-image span run their rect
- * arithmetic in block space).  The one real constraint remaining excluded:
- * combined depth/stencil formats need the per-aspect repacking described in
- * the depth-aspect TODO above. */
+ * arithmetic in block space).  Combined depth/stencil is admitted only for the
+ * three formats r300 actually backs (Z16, X8Z24, S8_UINT_Z24): Z16 copies raw,
+ * the other two are repacked per aspect by the copy paths (see the depth/stencil
+ * note above).  Any other depth/stencil format (e.g. float depth) is unsupported
+ * on this silicon regardless. */
 static inline bool
 r300vk_format_supports_transfer_dst(enum pipe_format pipe_format)
 {
    if (util_format_is_depth_or_stencil(pipe_format))
-      return false;
+      return pipe_format == PIPE_FORMAT_Z16_UNORM ||
+             pipe_format == PIPE_FORMAT_X8Z24_UNORM ||
+             pipe_format == PIPE_FORMAT_S8_UINT_Z24_UNORM;
 
    const struct util_format_description *desc =
       util_format_description(pipe_format);

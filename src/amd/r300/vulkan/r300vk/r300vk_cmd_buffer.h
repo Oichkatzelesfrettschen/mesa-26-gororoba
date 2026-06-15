@@ -45,6 +45,7 @@ enum r300vk_cmd_type {
    R300VK_CMD_COPY_IMAGE,
    R300VK_CMD_BLIT_IMAGE,
    R300VK_CMD_CLEAR_COLOR_IMAGE,
+   R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE,
    R300VK_CMD_CLEAR_ATTACHMENTS,
    R300VK_CMD_FILL_BUFFER,
    R300VK_CMD_COPY_BUFFER,
@@ -229,6 +230,12 @@ struct r300vk_cmd_clear_color_image {
    struct r300vk_image    *image;
    VkClearColorValue       color;
    VkImageSubresourceRange range;
+};
+
+struct r300vk_cmd_clear_depth_stencil_image {
+   struct r300vk_image       *image;
+   VkClearDepthStencilValue   value;
+   VkImageSubresourceRange    range;   /* range.aspectMask selects depth/stencil */
 };
 
 /* One color clear rect from vkCmdClearAttachments.  Replayed in the active
@@ -422,6 +429,7 @@ struct r300vk_cmd_entry {
       struct r300vk_cmd_copy_image           copy_image;
       struct r300vk_cmd_blit_image           blit_image;
       struct r300vk_cmd_clear_color_image    clear_color_image;
+      struct r300vk_cmd_clear_depth_stencil_image clear_depth_stencil_image;
       struct r300vk_cmd_clear_attachments    clear_attachments;
       struct r300vk_cmd_fill_buffer          fill_buffer;
       struct r300vk_cmd_copy_buffer          copy_buffer;
