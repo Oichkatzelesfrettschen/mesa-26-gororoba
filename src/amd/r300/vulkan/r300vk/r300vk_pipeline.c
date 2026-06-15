@@ -402,6 +402,12 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
    bool progress = false;
    bool have_first_binding = false;
    uint32_t first_binding = 0;
+   /* One synthesized sampler variable backs every subpassLoad of the single
+    * permitted input attachment.  Created lazily so the texture deref's type
+    * matches its own variable (nir_validate requires deref->type == var->type);
+    * the original subpass-input image variable and its derefs stay
+    * self-consistent and become dead, removed by later DCE. */
+   nir_variable *sampler_var = NULL;
    nir_foreach_function_impl(impl, nir) {
       nir_builder b = nir_builder_create(impl);
       nir_foreach_block(block, impl) {
@@ -448,12 +454,20 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
                                                .range_base = 0, .range = 8);
             nir_def *coord = nir_fmul(&b, fragcoord_xy, inv_extent);
 
-            /* Texture deref to the same variable, retyped as sampler2D so
-             * nir_lower_samplers reads the dim; it keys the unit on
-             * var->data.binding regardless of the variable's image mode. */
-            nir_deref_instr *tex_deref = nir_build_deref_var(&b, var);
-            tex_deref->type =
-               glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, rbt);
+            /* Build (once) a 2D sampler variable at the same descriptor
+             * binding and sample it: r300 has no input-attachment hardware, so
+             * subpassLoad is a NEAREST texture fetch at the fragment centre.
+             * nir_lower_samplers keys the unit on var->data.binding. */
+            if (!sampler_var) {
+               sampler_var = nir_variable_create(
+                  nir, nir_var_uniform,
+                  glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, rbt),
+                  "r300vk_subpass_input");
+               sampler_var->data.binding = binding;
+               if (var)
+                  sampler_var->data.descriptor_set = var->data.descriptor_set;
+            }
+            nir_deref_instr *tex_deref = nir_build_deref_var(&b, sampler_var);
 
             nir_tex_instr *tex = nir_tex_instr_create(nir, 3);
             tex->op = nir_texop_tex;
