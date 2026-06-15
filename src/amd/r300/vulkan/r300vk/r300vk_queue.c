@@ -1098,9 +1098,8 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
              bnd->binding != pipeline->fs_input_attachment_binding)
             continue;
 
-         const unsigned unit = bnd->binding;
-         if (unit >= R300VK_MAX_FS_SAMPLER_UNITS ||
-             bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
+         const unsigned unit = R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT;
+         if (bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
             return;
 
          const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];

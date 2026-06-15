@@ -20,6 +20,10 @@
 extern "C" {
 #endif
 
+enum {
+   R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT = 0,
+};
+
 /* r300vk_pipeline stores Gallium CSO handles compiled from SPIR-V through
  * vk_spirv_to_nir() -> r300g's internal nir_to_rc path.
  * The ICD does NOT call nir_to_tgsi; r300g handles the NIR lowering
@@ -59,8 +63,10 @@ struct r300vk_pipeline {
 
    /* The fragment shader reads a subpass input attachment (subpassLoad), lowered
     * to a normalized texture() at gl_FragCoord*inv_extent.  The replay binds the
-    * input image from this descriptor (set, binding); the binding is also the
-    * Gallium sampler unit.  The inv_extent vec2 is bound at fragment CONST[0]. */
+    * input image from this descriptor (set, binding); r300's Gallium callbacks
+    * require sampler updates to start at unit zero, so the lowered texture uses
+    * R300VK_INPUT_ATTACHMENT_SAMPLER_UNIT.  The inv_extent vec2 is bound at
+    * fragment CONST[0]. */
    bool                    fs_has_input_attachment;
    uint32_t                fs_input_attachment_set;
    uint32_t                fs_input_attachment_binding;
