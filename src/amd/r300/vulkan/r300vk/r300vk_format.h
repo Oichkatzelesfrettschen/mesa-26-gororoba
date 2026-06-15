@@ -30,13 +30,24 @@ extern "C" {
  * advertise, vkCreateImage's pipe_resource template, and the replay's sampler
  * views all agree on the same backing layout.
  *
- * TODO: the depth-aspect buffer copy layout (Vulkan "Copying Data Between
- *       Buffers and Images": D24 in bits 0..23 of a 32-bit word) does not
- *       match S8_UINT_Z24_UNORM's depth-in-bits-8..31 storage, so
- *       r300vk_replay_cpu_readback and the CopyBufferToImage path must repack
- *       the depth aspect when depth-aspect transfers start being exercised;
- *       the replay binds no depth attachment yet, so no current consumer hits
- *       this. */
+ * TODO: depth/stencil is excluded from TRANSFER_DST below because the depth
+ *       aspect needs an 8-bit repack.  Vulkan's depth-aspect buffer layout for
+ *       D24_UNORM_S8_UINT / X8_D24_UNORM_PACK32 puts D24 in bits [23:0]; r300's
+ *       S8_UINT_Z24_UNORM / X8Z24_UNORM store depth in bits [31:8] and
+ *       stencil/pad in [7:0] (util_pack_z shifts depth << 8, u_pack_color.h).
+ *       Per-aspect read-modify-write at the two r300vk_queue.c copy choke points
+ *       closes it (verified layout, steinmarder finding
+ *       rs482-r300vk-depth-transfer-repack-first-principles):
+ *         depth   buf->img: img = (img & 0x000000FF) | ((buf & 0x00FFFFFF) << 8)
+ *         depth   img->buf: buf = (img >> 8) & 0x00FFFFFF
+ *         stencil buf->img: img = (img & 0xFFFFFF00) | (s8 & 0xFF)
+ *         stencil img->buf: s8  = img & 0xFF
+ *       in r300vk_copy_buffer_region_to_image and
+ *       r300vk_copy_image_region_to_buffer; Z16_UNORM needs no repack.  Admit
+ *       Z16/X8Z24/S8_UINT_Z24 in r300vk_format_supports_transfer_dst only once
+ *       the repack lands and a depth-transfer probe verifies it byte-exact
+ *       against the NVIDIA oracle, so it can never regress to silent wrong
+ *       depth. */
 static inline enum pipe_format
 r300vk_vk_format_to_pipe_format(VkFormat vk_format)
 {
