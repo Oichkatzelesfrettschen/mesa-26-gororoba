@@ -7,7 +7,10 @@
  * Three test suites:
  *   1. Domain catalog: r300_numeric_domain_info() returns correct row for
  *      R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL (rounding=RNE, significand_bits=11,
- *      is_native_compute=false, evidence=HW_CONFIRMED).
+ *      is_native_compute=false, evidence=HW_CONFIRMED), keeps the five-term
+ *      U7 convolution domain distinct from the four-term U7 dot domain, and
+ *      ships no retained external evidence identifiers in the virtual-op
+ *      catalog.
  *   2. Classification: all 65536 FP16 raw bit patterns produce the correct
  *      r300_fp16_class value (compare classify_fp16() against fp16_class_ref()).
  *   3. Multiply: ~30 representative pairs -- 2-limb result matches the C
@@ -48,27 +51,58 @@ static int g_failures = 0;
 static void
 test_domain_catalog(void)
 {
-   const struct r300_numeric_domain_info *info =
+   const struct r300_numeric_domain_info *fp16_info =
       r300_numeric_domain_info(R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL);
 
-   CHECK(info->domain == R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
+   CHECK(fp16_info->domain == R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
          "catalog: domain field matches enum value");
-   CHECK(info->rounding == R300_ROUND_RNE,
+   CHECK(fp16_info->rounding == R300_ROUND_RNE,
          "catalog: rounding == R300_ROUND_RNE");
-   CHECK(info->significand_bits == 11,
+   CHECK(fp16_info->significand_bits == 11,
          "catalog: significand_bits == 11");
-   CHECK(info->has_nan == true,
+   CHECK(fp16_info->has_nan == true,
          "catalog: has_nan == true");
-   CHECK(info->has_inf == true,
+   CHECK(fp16_info->has_inf == true,
          "catalog: has_inf == true");
-   CHECK(info->has_subnormal == true,
+   CHECK(fp16_info->has_subnormal == true,
          "catalog: has_subnormal == true");
-   CHECK(info->is_native_compute == false,
+   CHECK(fp16_info->is_native_compute == false,
          "catalog: is_native_compute == false (emulated)");
-   CHECK(info->evidence == R300_EVIDENCE_HW_CONFIRMED,
+   CHECK(fp16_info->evidence == R300_EVIDENCE_HW_CONFIRMED,
          "catalog: evidence == HW_CONFIRMED");
-   CHECK(info->theorem != NULL,
+   CHECK(fp16_info->theorem != NULL,
          "catalog: theorem string non-NULL");
+
+   const struct r300_numeric_domain_info *u7_dot =
+      r300_numeric_domain_info(R300_NUM_DOMAIN_U7_DOT);
+   const struct r300_numeric_domain_info *u7_conv5 =
+      r300_numeric_domain_info(R300_NUM_DOMAIN_U7_CONV5);
+
+   CHECK(u7_dot->exact_int_bound == 64516,
+         "catalog: U7 dot exact bound covers four terms");
+   CHECK(u7_conv5->exact_int_bound == 80645,
+         "catalog: U7 conv5 exact bound covers five terms");
+   CHECK(u7_conv5->rounding == R300_ROUND_EXACT,
+         "catalog: U7 conv5 is exact");
+
+   const struct r300_virtual_op_info *multilimb = NULL;
+   unsigned non_null_retained_bundles = 0;
+   for (unsigned op_index = 0; r300_virtual_op_catalog[op_index].op_name; op_index++) {
+      const struct r300_virtual_op_info *op = &r300_virtual_op_catalog[op_index];
+      if (strcmp(op->op_name, "MULTILIMB7_U32_MUL") == 0)
+         multilimb = op;
+      if (op->retained_bundle != NULL) {
+         printf("FAIL catalog: %s retained_bundle must be NULL\n", op->op_name);
+         non_null_retained_bundles++;
+      }
+   }
+
+   CHECK(multilimb != NULL,
+         "catalog: MULTILIMB7_U32_MUL row exists");
+   CHECK(multilimb != NULL && multilimb->domain == R300_NUM_DOMAIN_U7_CONV5,
+         "catalog: MULTILIMB7_U32_MUL uses five-term U7 domain");
+   CHECK(non_null_retained_bundles == 0,
+         "catalog: retained external evidence identifiers are not shipped");
 }
 
 /* -------------------------------------------------------------------------
