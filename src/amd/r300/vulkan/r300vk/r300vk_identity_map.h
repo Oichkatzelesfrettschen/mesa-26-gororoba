@@ -401,7 +401,7 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
 /* AFFINE_IOTA dispatch replay: out[gid] = stride * gid + offset, the first
  * verb that materializes the work-item index as an FP24 value.  Draws a quad
  * whose texcoord varying is in TEXEL units (vertex corners 0..width and
- * 0..height) so the interpolated value at each fragment centre is
+ * 0..height) so the interpolated value at each fragment center is
  * (x + 0.5, y + 0.5) without any FP24 division; the FS evaluates the affine
  * and byte-decomposes the integer result into an RGBA8 render target whose
  * raw little-endian bytes are copied to the kernel's u32 output SSBO.  The

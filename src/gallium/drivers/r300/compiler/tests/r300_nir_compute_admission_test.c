@@ -1466,6 +1466,33 @@ build_index_value_yz_flatten_3d(void)
    return b.shader;
 }
 
+/* out[gid] = WorkGroupID.x: index-derived, but not the flat invocation id. */
+static nir_shader *
+build_index_value_workgroup_x(void)
+{
+   nir_builder b = cs_builder("cs_index_value_workgroup_x");
+   nir_def *wg = nir_load_workgroup_id(&b);
+   nir_def *val = nir_channel(&b, wg, 0);
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+/* out[gid] = LocalInvocationIndex: index-derived, but not the flat id. */
+static nir_shader *
+build_index_value_local_index(void)
+{
+   nir_builder b = cs_builder("cs_index_value_local_index");
+   nir_def *val = nir_load_local_invocation_index(&b);
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 case_index_consumption(void)
 {
@@ -1492,6 +1519,8 @@ case_index_consumption(void)
          "stored index classifies VALUE_AFFINE");
    CHECK(p.stride_valid && p.stride == 1 && p.offset == 0,
          "stored index captures stride 1 offset 0");
+   CHECK(p.affine_global_invocation_only,
+         "stored global index keeps AFFINE_IOTA source identity");
    ralloc_free(lin);
 
    nir_shader *str = build_index_value_strided();
@@ -1514,6 +1543,8 @@ case_index_consumption(void)
          "(global_id + zero base).x stored classifies VALUE_AFFINE");
    CHECK(p.stride_valid && p.stride == 1 && p.offset == 0,
          "zero base folds to identity affine");
+   CHECK(p.affine_global_invocation_only,
+         "zero base preserves global invocation source identity");
    ralloc_free(wb);
 
    nir_shader *cy = build_index_coord_y();
@@ -1562,6 +1593,22 @@ case_index_consumption(void)
          it_yz.stride_y == 16 && it_yz.stride_z == 128,
          "affine-iota detector carries zero x stride");
    ralloc_free(yz);
+
+   nir_shader *wg = build_index_value_workgroup_x();
+   r300_nir_classify_index_consumption(wg, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "workgroup id value still classifies as affine index-derived");
+   CHECK(!p.affine_global_invocation_only,
+         "workgroup id value is not AFFINE_IOTA source identity");
+   ralloc_free(wg);
+
+   nir_shader *local = build_index_value_local_index();
+   r300_nir_classify_index_consumption(local, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "local index value still classifies as affine index-derived");
+   CHECK(!p.affine_global_invocation_only,
+         "local index value is not AFFINE_IOTA source identity");
+   ralloc_free(local);
 
    /* FP24 exact-ceiling guard boundaries (pure arithmetic, no NIR). */
    CHECK(r300_grid_linear_index_exact(131072),
@@ -1612,6 +1659,16 @@ case_affine_iota(void)
    r300_nir_detect_affine_iota_pattern(cf, &it);
    CHECK(!it.is_affine_iota, "const-fill (no index) rejects affine-iota");
    ralloc_free(cf);
+
+   nir_shader *wg = build_index_value_workgroup_x();
+   r300_nir_detect_affine_iota_pattern(wg, &it);
+   CHECK(!it.is_affine_iota, "workgroup id value rejects affine-iota");
+   ralloc_free(wg);
+
+   nir_shader *local = build_index_value_local_index();
+   r300_nir_detect_affine_iota_pattern(local, &it);
+   CHECK(!it.is_affine_iota, "local index value rejects affine-iota");
+   ralloc_free(local);
 }
 
 /* out[gid] = a[gid] * b[gid] for u32: the multilimb-multiply shape. */
