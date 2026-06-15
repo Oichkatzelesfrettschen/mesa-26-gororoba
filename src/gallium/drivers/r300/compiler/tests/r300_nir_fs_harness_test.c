@@ -271,7 +271,7 @@ static void
 run_fs(struct r300_fragment_program_compiler *c, struct rc_regalloc_state *rs,
        nir_shader *nir)
 {
-   struct r300_screen screen;
+   struct r300_screen screen = {0};
    struct pipe_screen *ps = fake_r300_screen(&screen);
    const struct r300_fragment_program_external_state ext = {0};
    struct r300_fragment_shader_code fs_code = {0};

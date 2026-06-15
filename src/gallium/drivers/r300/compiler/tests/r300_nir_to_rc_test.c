@@ -199,7 +199,7 @@ find_first_opcode(struct radeon_compiler *compiler, rc_opcode opcode)
 static void
 case_unsupported_intrinsic_sets_error(void)
 {
-   struct nir_to_rc_vs_test_compiler tc;
+   struct nir_to_rc_vs_test_compiler tc = {0};
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
@@ -219,7 +219,7 @@ case_unsupported_intrinsic_sets_error(void)
 static void
 case_fsub_emits_add_with_negated_rhs(void)
 {
-   struct nir_to_rc_vs_test_compiler tc;
+   struct nir_to_rc_vs_test_compiler tc = {0};
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
@@ -249,7 +249,7 @@ case_fsub_emits_add_with_negated_rhs(void)
 static void
 case_fcsel_gt_emits_cmp_with_negated_condition(void)
 {
-   struct nir_to_rc_vs_test_compiler tc;
+   struct nir_to_rc_vs_test_compiler tc = {0};
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
@@ -282,7 +282,7 @@ case_fcsel_gt_emits_cmp_with_negated_condition(void)
 static void
 case_continue_construct_is_lowered_before_emit(void)
 {
-   struct nir_to_rc_vs_test_compiler tc;
+   struct nir_to_rc_vs_test_compiler tc = {0};
    nir_to_rc_vs_test_init(&tc);
    union r300_shader_code rc = {.v = &tc.code};
 
