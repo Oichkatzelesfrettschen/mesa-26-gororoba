@@ -762,6 +762,11 @@ r300vk_nir_push_const_shape_ok(struct pipe_screen *pscreen, nir_shader *nir)
                                     nir_intrinsic_load_push_constant, 0, true);
 }
 
+/* Defined below; the input-attachment path needs the identity NEAREST sampler
+ * CSO that this lazily creates, so the FS compile ensures it exists. */
+static bool
+r300vk_device_init_identity_map_state(struct r300vk_device *device);
+
 static VkResult
 r300vk_compile_shader(struct r300vk_device *device,
                        const VkPipelineShaderStageCreateInfo *stage_info,
@@ -893,6 +898,18 @@ r300vk_compile_shader(struct r300vk_device *device,
        * A subpass input combined with an app UBO or push constants was rejected
        * above, so this is the only block-0 UBO. */
       r300vk_declare_block0_ubo(nir, 16);
+      /* r300vk_bind_input_attachment binds device->identity_map_sampler_cso
+       * (NEAREST, CLAMP_TO_EDGE) as the input-attachment sampler at draw time.
+       * That CSO is created lazily and otherwise only by the compute identity-map
+       * paths, so a graphics-only input-attachment pipeline would bind a NULL
+       * sampler and the fragment texture fetch would read undefined data.  Create
+       * it now so the draw has a valid sampler. */
+      if (!r300vk_device_init_identity_map_state(device)) {
+         ralloc_free(nir);
+         return vk_errorf(device, VK_ERROR_OUT_OF_DEVICE_MEMORY,
+                          "r300vk: failed to create the input-attachment sampler "
+                          "state");
+      }
    }
 
    /* Resolve the descriptor resource chain (vulkan_resource_index ->
