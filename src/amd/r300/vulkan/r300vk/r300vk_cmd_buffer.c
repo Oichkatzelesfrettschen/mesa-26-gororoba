@@ -256,8 +256,12 @@ r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
 
    cmd->current_render_pass = rp;
    cmd->current_subpass     = 0;
-   cmd->current_rp_width    = fb->width;
-   cmd->current_rp_height   = fb->height;
+   cmd->current_rp_width =
+      pRenderPassBegin->renderArea.offset.x +
+      pRenderPassBegin->renderArea.extent.width;
+   cmd->current_rp_height =
+      pRenderPassBegin->renderArea.offset.y +
+      pRenderPassBegin->renderArea.extent.height;
    const uint32_t att_count =
       MIN2(rp->attachment_count, (uint32_t)(PIPE_MAX_COLOR_BUFS + 1));
    for (uint32_t a = 0; a < PIPE_MAX_COLOR_BUFS + 1; a++)
@@ -375,7 +379,7 @@ r300vk_CmdNextSubpass2(VkCommandBuffer commandBuffer,
  * The framebuffer setup it needs is identical to the render-pass path, so this
  * records the same R300VK_CMD_BEGIN_RENDER_PASS entry that
  * r300vk_replay_begin_render_pass consumes: color attachment 0 resolved to its
- * pipe_resource and pipe_format, the render-area far corner as the framebuffer
+ * pipe_resource and pipe_format, the render-area far corner as the replay
  * extent, and the load-op clear value.  Each color attachment is bound at its
  * own slot so a fragment-shader output at location i targets attachment i;
  * depth/stencil is the single zsbuf the replay's framebuffer state carries. */

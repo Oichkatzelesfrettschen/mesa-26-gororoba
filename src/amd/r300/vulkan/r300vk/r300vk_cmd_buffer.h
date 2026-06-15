@@ -239,9 +239,9 @@ struct r300vk_cmd_clear_depth_stencil_image {
    VkImageSubresourceRange    range;   /* range.aspectMask selects depth/stencil */
 };
 
-/* One color clear rect from vkCmdClearAttachments.  Replayed in the active
- * render pass with the rect clipped to each r300vk tile.  Depth/stencil aspects
- * are intentionally ignored until r300vk has a depth/stencil attachment model. */
+/* One clear rect from vkCmdClearAttachments.  Replayed in the active render
+ * pass with the rect clipped to each r300vk render-area tile; color uses the
+ * named subpass slot, while depth/stencil clears the bound zsbuf tile. */
 struct r300vk_cmd_clear_attachments {
    VkImageAspectFlags aspect;
    /* For a colour clear, the subpass colour-attachment slot to clear (the

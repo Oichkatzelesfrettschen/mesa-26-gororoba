@@ -132,27 +132,6 @@ r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
 }
 
 static uint32_t
-r300vk_image_tile_count(const struct r300vk_image *img)
-{
-   if (!img || img->tile_cols == 0 || img->tile_rows == 0)
-      return 1;
-
-   return img->tile_cols * img->tile_rows;
-}
-
-static uint32_t
-r300vk_image_tile_col(const struct r300vk_image *img, uint32_t tile_pass)
-{
-   return img && img->tile_cols ? tile_pass % img->tile_cols : 0;
-}
-
-static uint32_t
-r300vk_image_tile_row(const struct r300vk_image *img, uint32_t tile_pass)
-{
-   return img && img->tile_cols ? tile_pass / img->tile_cols : 0;
-}
-
-static uint32_t
 r300vk_image_tile_origin_x(const struct r300vk_image *img, uint32_t tile_col)
 {
    return img && tile_col > 0 ? img->tile_width[0] : 0;
@@ -234,11 +213,108 @@ r300vk_image_tile_resource_for_origin(const struct r300vk_image *img,
    return img->tiles[tile_index] ? img->tiles[tile_index] : img->resource;
 }
 
-/* The first bound color attachment is only a tile-pass numbering reference.
- * Each attachment still selects its own tile from the pass origin, because two
- * images can share the render area while their full image extents split into
- * different final-tile sizes.  Depth-only passes use the depth/stencil image as
- * the reference. */
+#define R300VK_RENDER_AREA_MAX_CUTS (PIPE_MAX_COLOR_BUFS + 3)
+
+static void
+r300vk_render_area_insert_cut(uint32_t *cuts, uint32_t *count, uint32_t cut)
+{
+   for (uint32_t i = 0; i < *count; i++) {
+      if (cuts[i] == cut)
+         return;
+      if (cuts[i] > cut) {
+         if (*count >= R300VK_RENDER_AREA_MAX_CUTS)
+            return;
+         memmove(&cuts[i + 1], &cuts[i], (*count - i) * sizeof(cuts[0]));
+         cuts[i] = cut;
+         (*count)++;
+         return;
+      }
+   }
+
+   if (*count < R300VK_RENDER_AREA_MAX_CUTS) {
+      cuts[*count] = cut;
+      (*count)++;
+   }
+}
+
+static void
+r300vk_begin_rp_add_image_tile_cuts(const struct r300vk_image *img,
+                                    uint32_t area_width,
+                                    uint32_t area_height,
+                                    uint32_t *x_cuts,
+                                    uint32_t *x_count,
+                                    uint32_t *y_cuts,
+                                    uint32_t *y_count)
+{
+   if (!img)
+      return;
+
+   if (img->tile_cols > 1 && img->tile_width[0] < area_width)
+      r300vk_render_area_insert_cut(x_cuts, x_count, img->tile_width[0]);
+   if (img->tile_rows > 1 && img->tile_height[0] < area_height)
+      r300vk_render_area_insert_cut(y_cuts, y_count, img->tile_height[0]);
+}
+
+static void
+r300vk_begin_rp_collect_tile_cuts(const struct r300vk_cmd_begin_render_pass *rp,
+                                  uint32_t *x_cuts,
+                                  uint32_t *x_count,
+                                  uint32_t *y_cuts,
+                                  uint32_t *y_count)
+{
+   *x_count = 0;
+   *y_count = 0;
+
+   if (rp->width == 0 || rp->height == 0)
+      return;
+
+   r300vk_render_area_insert_cut(x_cuts, x_count, 0);
+   r300vk_render_area_insert_cut(x_cuts, x_count, rp->width);
+   r300vk_render_area_insert_cut(y_cuts, y_count, 0);
+   r300vk_render_area_insert_cut(y_cuts, y_count, rp->height);
+
+   for (uint32_t slot = 0; slot < rp->color_count; slot++)
+      r300vk_begin_rp_add_image_tile_cuts(rp->color_image[slot], rp->width,
+                                          rp->height, x_cuts, x_count,
+                                          y_cuts, y_count);
+   r300vk_begin_rp_add_image_tile_cuts(rp->ds_image, rp->width, rp->height,
+                                       x_cuts, x_count, y_cuts, y_count);
+}
+
+static bool
+r300vk_begin_rp_tile_geometry(const struct r300vk_cmd_begin_render_pass *rp,
+                              uint32_t tile_pass,
+                              uint32_t *tile_origin_x,
+                              uint32_t *tile_origin_y,
+                              uint32_t *tile_width,
+                              uint32_t *tile_height)
+{
+   uint32_t x_cuts[R300VK_RENDER_AREA_MAX_CUTS];
+   uint32_t y_cuts[R300VK_RENDER_AREA_MAX_CUTS];
+   uint32_t x_count = 0;
+   uint32_t y_count = 0;
+
+   r300vk_begin_rp_collect_tile_cuts(rp, x_cuts, &x_count, y_cuts, &y_count);
+   if (x_count < 2 || y_count < 2)
+      return false;
+
+   const uint32_t tile_cols = x_count - 1;
+   const uint32_t tile_rows = y_count - 1;
+   if (tile_pass >= tile_cols * tile_rows)
+      return false;
+
+   const uint32_t tile_col = tile_pass % tile_cols;
+   const uint32_t tile_row = tile_pass / tile_cols;
+   *tile_origin_x = x_cuts[tile_col];
+   *tile_origin_y = y_cuts[tile_row];
+   *tile_width = x_cuts[tile_col + 1] - *tile_origin_x;
+   *tile_height = y_cuts[tile_row + 1] - *tile_origin_y;
+   return *tile_width != 0 && *tile_height != 0;
+}
+
+/* Return a representative attachment for optional diagnostics and quick
+ * render-pass presence checks.  Replay tile selection uses the render-area
+ * cut grid above, not this image's tile numbering. */
 static struct r300vk_image *
 r300vk_begin_rp_ref_image(const struct r300vk_cmd_begin_render_pass *rp)
 {
@@ -251,11 +327,16 @@ r300vk_begin_rp_ref_image(const struct r300vk_cmd_begin_render_pass *rp)
 static uint32_t
 r300vk_begin_rp_tile_pass_count(const struct r300vk_cmd_begin_render_pass *rp)
 {
-   uint32_t pass_count = 1;
-   for (uint32_t slot = 0; slot < rp->color_count; slot++)
-      pass_count = MAX2(pass_count,
-                        r300vk_image_tile_count(rp->color_image[slot]));
-   return MAX2(pass_count, r300vk_image_tile_count(rp->ds_image));
+   uint32_t x_cuts[R300VK_RENDER_AREA_MAX_CUTS];
+   uint32_t y_cuts[R300VK_RENDER_AREA_MAX_CUTS];
+   uint32_t x_count = 0;
+   uint32_t y_count = 0;
+
+   r300vk_begin_rp_collect_tile_cuts(rp, x_cuts, &x_count, y_cuts, &y_count);
+   if (x_count < 2 || y_count < 2)
+      return 0;
+
+   return (x_count - 1) * (y_count - 1);
 }
 
 static uint32_t
@@ -996,7 +1077,8 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
                              const struct r300vk_pipeline *pipeline,
                              const struct r300vk_cmd_bind_descriptor_sets *binds,
                              struct r300vk_bound_textures *bound,
-                             uint32_t tile_pass,
+                             uint32_t tile_origin_x,
+                             uint32_t tile_origin_y,
                              float *inv_extent)
 {
    struct pipe_context *pipe = device->pipe;
@@ -1032,18 +1114,18 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
             container_of(iv->vk.image, struct r300vk_image, vk);
          if (!img->resource)
             return;
-         const uint32_t tile_count = r300vk_image_tile_count(img);
-         if (tile_pass >= tile_count)
-            return;
 
-         const uint32_t tile_col = r300vk_image_tile_col(img, tile_pass);
-         const uint32_t tile_row = r300vk_image_tile_row(img, tile_pass);
+         uint32_t input_tile_origin_x = 0;
+         uint32_t input_tile_origin_y = 0;
+         uint32_t input_width = 0;
+         uint32_t input_height = 0;
          struct pipe_resource *input_resource =
-            img->tiles[tile_pass] ? img->tiles[tile_pass] : img->resource;
-         const uint32_t input_width =
-            img->tile_cols ? img->tile_width[tile_col] : img->vk.extent.width;
-         const uint32_t input_height =
-            img->tile_rows ? img->tile_height[tile_row] : img->vk.extent.height;
+            r300vk_image_tile_resource_for_origin(img, tile_origin_x,
+                                                  tile_origin_y,
+                                                  &input_tile_origin_x,
+                                                  &input_tile_origin_y,
+                                                  &input_width,
+                                                  &input_height);
          if (!input_resource || input_width == 0 || input_height == 0)
             return;
 
@@ -1362,7 +1444,6 @@ r300vk_replay_draw(struct r300vk_device *device,
                     uint32_t tile_origin_y,
                     uint32_t tile_width,
                     uint32_t tile_height,
-                    uint32_t tile_pass,
                     struct util_dynarray *transient_vbs,
                     struct r300vk_dyn_overlay *dyn,
                     bool render_pass_has_zs,
@@ -1588,7 +1669,8 @@ r300vk_replay_draw(struct r300vk_device *device,
       float ia_inv_extent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
       if (bound_pipeline && bound_pipeline->fs_has_input_attachment)
          r300vk_bind_input_attachment(device, bound_pipeline, last_bind_dsets,
-                                      &bound_tex, tile_pass, ia_inv_extent);
+                                      &bound_tex, tile_origin_x, tile_origin_y,
+                                      ia_inv_extent);
 
       if (device->dbg_log_draws) {
          fprintf(stderr,
@@ -1789,168 +1871,134 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
    struct pipe_framebuffer_state fb;
    struct pipe_resource *dummy_cbufs[PIPE_MAX_COLOR_BUFS] = {0};
    memset(&fb, 0, sizeof(fb));
-   /* r300_set_framebuffer_state refuses dimensions past the silicon render
-    * cap and leaves the previous state bound; the begin clear would then
-    * run against stale buffers (r300_clear dereferences the stale zsbuf).
-    * The advertised maxFramebuffer limits match the cap, so a larger
-    * recorded area is app-side invalid usage; clamping keeps the replay
-    * self-consistent instead of corrupting r300g state. */
-   fb.width  = MIN2(e->begin_rp.width, R300VK_R3XX_MAX_RENDER_DIMENSION);
-   fb.height = MIN2(e->begin_rp.height, R300VK_R3XX_MAX_RENDER_DIMENSION);
    *skip_render_pass = false;
 
-   struct r300vk_image *ref = r300vk_begin_rp_ref_image(&e->begin_rp);
-   if (ref) {
-      const uint32_t tile_count = r300vk_image_tile_count(ref);
-      if (tile_pass >= tile_count) {
+   if (!r300vk_begin_rp_tile_geometry(&e->begin_rp, tile_pass,
+                                      tile_origin_x, tile_origin_y,
+                                      tile_width, tile_height)) {
+      *skip_render_pass = true;
+      return;
+   }
+
+   if (*tile_width > R300VK_R3XX_MAX_RENDER_DIMENSION ||
+       *tile_height > R300VK_R3XX_MAX_RENDER_DIMENSION) {
+      *skip_render_pass = true;
+      return;
+   }
+   fb.width = *tile_width;
+   fb.height = *tile_height;
+
+   for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++) {
+      const struct r300vk_image *img = e->begin_rp.color_image[slot];
+      if (!img)
+         continue;
+
+      uint32_t attachment_tile_index = 0;
+      uint32_t attachment_tile_origin_x = 0;
+      uint32_t attachment_tile_origin_y = 0;
+      uint32_t attachment_remaining_width = 0;
+      uint32_t attachment_remaining_height = 0;
+      if (!r300vk_image_tile_for_origin(img, *tile_origin_x, *tile_origin_y,
+                                        &attachment_tile_index,
+                                        &attachment_tile_origin_x,
+                                        &attachment_tile_origin_y,
+                                        &attachment_remaining_width,
+                                        &attachment_remaining_height)) {
          *skip_render_pass = true;
          return;
       }
+      *tile_width = MIN2(*tile_width, attachment_remaining_width);
+      *tile_height = MIN2(*tile_height, attachment_remaining_height);
+   }
 
-      const uint32_t tile_col = r300vk_image_tile_col(ref, tile_pass);
-      const uint32_t tile_row = r300vk_image_tile_row(ref, tile_pass);
-      *tile_origin_x = r300vk_image_tile_origin_x(ref, tile_col);
-      *tile_origin_y = r300vk_image_tile_origin_y(ref, tile_row);
-      if (*tile_origin_x >= fb.width || *tile_origin_y >= fb.height) {
+   if (e->begin_rp.ds_image) {
+      uint32_t ds_tile_index = 0;
+      uint32_t ds_tile_origin_x = 0;
+      uint32_t ds_tile_origin_y = 0;
+      uint32_t ds_remaining_width = 0;
+      uint32_t ds_remaining_height = 0;
+      if (!r300vk_image_tile_for_origin(e->begin_rp.ds_image,
+                                        *tile_origin_x, *tile_origin_y,
+                                        &ds_tile_index, &ds_tile_origin_x,
+                                        &ds_tile_origin_y,
+                                        &ds_remaining_width,
+                                        &ds_remaining_height)) {
          *skip_render_pass = true;
          return;
       }
+      *tile_width = MIN2(*tile_width, ds_remaining_width);
+      *tile_height = MIN2(*tile_height, ds_remaining_height);
+   }
 
-      *tile_width = fb.width - *tile_origin_x;
-      *tile_height = fb.height - *tile_origin_y;
+   if (*tile_width == 0 || *tile_height == 0) {
+      *skip_render_pass = true;
+      return;
+   }
+   fb.width = *tile_width;
+   fb.height = *tile_height;
 
-      uint32_t ref_tile_index = 0;
-      uint32_t ref_tile_origin_x = 0;
-      uint32_t ref_tile_origin_y = 0;
-      uint32_t ref_remaining_width = 0;
-      uint32_t ref_remaining_height = 0;
-      if (!r300vk_image_tile_for_origin(ref, *tile_origin_x, *tile_origin_y,
-                                        &ref_tile_index, &ref_tile_origin_x,
-                                        &ref_tile_origin_y,
-                                        &ref_remaining_width,
-                                        &ref_remaining_height)) {
-         *skip_render_pass = true;
-         return;
+   /* Bind each color attachment at its own slot so fragment output i lands
+    * on attachment i (R300 ROP order COLOROFFSET0+4*i).  r300g substitutes
+    * another bound cbuf for NULL holes in r300_get_nonnull_cb(), so unused
+    * MRT slots before a later attachment bind throwaway render targets. */
+   for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
+      if (e->begin_rp.color_image[slot])
+         fb.nr_cbufs = slot + 1;
+
+   enum pipe_format dummy_format = PIPE_FORMAT_R8G8B8A8_UNORM;
+   for (uint32_t slot = 0; slot < fb.nr_cbufs; slot++) {
+      if (e->begin_rp.color_format[slot] != PIPE_FORMAT_NONE) {
+         dummy_format = e->begin_rp.color_format[slot];
+         break;
       }
-      *tile_width = MIN2(*tile_width, ref_remaining_width);
-      *tile_height = MIN2(*tile_height, ref_remaining_height);
+   }
 
-      for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++) {
-         const struct r300vk_image *img = e->begin_rp.color_image[slot];
-         if (!img)
-            continue;
-
-         uint32_t attachment_tile_index = 0;
-         uint32_t attachment_tile_origin_x = 0;
-         uint32_t attachment_tile_origin_y = 0;
-         uint32_t attachment_remaining_width = 0;
-         uint32_t attachment_remaining_height = 0;
-         if (!r300vk_image_tile_for_origin(img, *tile_origin_x, *tile_origin_y,
-                                           &attachment_tile_index,
-                                           &attachment_tile_origin_x,
-                                           &attachment_tile_origin_y,
-                                           &attachment_remaining_width,
-                                           &attachment_remaining_height)) {
-            *skip_render_pass = true;
-            return;
-         }
-         *tile_width = MIN2(*tile_width, attachment_remaining_width);
-         *tile_height = MIN2(*tile_height, attachment_remaining_height);
-      }
-
-      if (e->begin_rp.ds_image) {
-         uint32_t ds_tile_index = 0;
-         uint32_t ds_tile_origin_x = 0;
-         uint32_t ds_tile_origin_y = 0;
-         uint32_t ds_remaining_width = 0;
-         uint32_t ds_remaining_height = 0;
-         if (!r300vk_image_tile_for_origin(e->begin_rp.ds_image,
-                                           *tile_origin_x, *tile_origin_y,
-                                           &ds_tile_index, &ds_tile_origin_x,
-                                           &ds_tile_origin_y,
-                                           &ds_remaining_width,
-                                           &ds_remaining_height)) {
-            *skip_render_pass = true;
-            return;
-         }
-         *tile_width = MIN2(*tile_width, ds_remaining_width);
-         *tile_height = MIN2(*tile_height, ds_remaining_height);
-      }
-
-      if (*tile_width == 0 || *tile_height == 0) {
-         *skip_render_pass = true;
-         return;
-      }
-
-      fb.width = *tile_width;
-      fb.height = *tile_height;
-
-      /* Bind each color attachment at its own slot so fragment output i lands
-       * on attachment i (R300 ROP order COLOROFFSET0+4*i).  r300g substitutes
-       * another bound cbuf for NULL holes in r300_get_nonnull_cb(), so unused
-       * MRT slots before a later attachment bind throwaway render targets. */
-      for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
-         if (e->begin_rp.color_image[slot])
-            fb.nr_cbufs = slot + 1;
-
-      enum pipe_format dummy_format = PIPE_FORMAT_R8G8B8A8_UNORM;
-      for (uint32_t slot = 0; slot < fb.nr_cbufs; slot++) {
-         if (e->begin_rp.color_format[slot] != PIPE_FORMAT_NONE) {
-            dummy_format = e->begin_rp.color_format[slot];
-            break;
-         }
-      }
-
-      for (uint32_t slot = 0; slot < fb.nr_cbufs; slot++) {
-         const struct r300vk_image *img = e->begin_rp.color_image[slot];
-         if (!img) {
-            struct pipe_resource tmpl = {
-               .target     = PIPE_TEXTURE_2D,
-               .format     = dummy_format,
-               .bind       = PIPE_BIND_RENDER_TARGET,
-               .usage      = PIPE_USAGE_DEFAULT,
-               .width0     = fb.width,
-               .height0    = fb.height,
-               .depth0     = 1,
-               .array_size = 1,
-            };
-            dummy_cbufs[slot] = device->screen->resource_create(device->screen,
-                                                                &tmpl);
-            if (!dummy_cbufs[slot]) {
-               *skip_render_pass = true;
-               goto out_release_dummy_cbufs;
-            }
-            fb.cbufs[slot].texture = dummy_cbufs[slot];
-            fb.cbufs[slot].format = dummy_format;
-            fb.cbufs[slot].level = 0;
-            fb.cbufs[slot].first_layer = 0;
-            fb.cbufs[slot].last_layer = 0;
-            continue;
-         }
-
-         uint32_t attachment_tile_origin_x = 0;
-         uint32_t attachment_tile_origin_y = 0;
-         uint32_t attachment_remaining_width = 0;
-         uint32_t attachment_remaining_height = 0;
-         fb.cbufs[slot].texture =
-            r300vk_image_tile_resource_for_origin(img, *tile_origin_x,
-                                                  *tile_origin_y,
-                                                  &attachment_tile_origin_x,
-                                                  &attachment_tile_origin_y,
-                                                  &attachment_remaining_width,
-                                                  &attachment_remaining_height);
-         if (!fb.cbufs[slot].texture) {
+   for (uint32_t slot = 0; slot < fb.nr_cbufs; slot++) {
+      const struct r300vk_image *img = e->begin_rp.color_image[slot];
+      if (!img) {
+         struct pipe_resource tmpl = {
+            .target     = PIPE_TEXTURE_2D,
+            .format     = dummy_format,
+            .bind       = PIPE_BIND_RENDER_TARGET,
+            .usage      = PIPE_USAGE_DEFAULT,
+            .width0     = fb.width,
+            .height0    = fb.height,
+            .depth0     = 1,
+            .array_size = 1,
+         };
+         dummy_cbufs[slot] = device->screen->resource_create(device->screen,
+                                                             &tmpl);
+         if (!dummy_cbufs[slot]) {
             *skip_render_pass = true;
             goto out_release_dummy_cbufs;
          }
-         fb.cbufs[slot].format      = e->begin_rp.color_format[slot];
-         fb.cbufs[slot].level       = 0;
+         fb.cbufs[slot].texture = dummy_cbufs[slot];
+         fb.cbufs[slot].format = dummy_format;
+         fb.cbufs[slot].level = 0;
          fb.cbufs[slot].first_layer = 0;
-         fb.cbufs[slot].last_layer  = 0;
+         fb.cbufs[slot].last_layer = 0;
+         continue;
       }
-   } else if (tile_pass > 0) {
-      *skip_render_pass = true;
-      return;
+
+      uint32_t attachment_tile_origin_x = 0;
+      uint32_t attachment_tile_origin_y = 0;
+      uint32_t attachment_remaining_width = 0;
+      uint32_t attachment_remaining_height = 0;
+      fb.cbufs[slot].texture =
+         r300vk_image_tile_resource_for_origin(img, *tile_origin_x,
+                                               *tile_origin_y,
+                                               &attachment_tile_origin_x,
+                                               &attachment_tile_origin_y,
+                                               &attachment_remaining_width,
+                                               &attachment_remaining_height);
+      if (!fb.cbufs[slot].texture) {
+         *skip_render_pass = true;
+         goto out_release_dummy_cbufs;
+      }
+      fb.cbufs[slot].format      = e->begin_rp.color_format[slot];
+      fb.cbufs[slot].level       = 0;
+      fb.cbufs[slot].first_layer = 0;
+      fb.cbufs[slot].last_layer  = 0;
    }
 
    /* Bind the depth/stencil attachment as the zsbuf at the same pass origin. */
@@ -1986,14 +2034,11 @@ static void
 r300vk_replay_clear_attachments(struct r300vk_device *device,
                                 const struct r300vk_cmd_entry *render_pass,
                                 const struct r300vk_cmd_clear_attachments *clear,
-                                unsigned tile_pass,
                                 uint32_t tile_origin_x,
                                 uint32_t tile_origin_y,
                                 uint32_t tile_width,
                                 uint32_t tile_height)
 {
-   (void)tile_pass;
-
    if (!render_pass ||
        (!r300vk_begin_rp_ref_image(&render_pass->begin_rp) &&
         !render_pass->begin_rp.ds_image))
@@ -2065,12 +2110,24 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
     * LESS test kills every fragment. */
    const struct r300vk_image *ds = render_pass->begin_rp.ds_image;
    if ((clear->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT |
-                         VK_IMAGE_ASPECT_STENCIL_BIT)) && ds &&
-       tile_pass < r300vk_image_tile_count(ds)) {
+                         VK_IMAGE_ASPECT_STENCIL_BIT)) && ds) {
+      uint32_t ds_tile_origin_x = 0;
+      uint32_t ds_tile_origin_y = 0;
+      uint32_t ds_remaining_width = 0;
+      uint32_t ds_remaining_height = 0;
+      struct pipe_resource *ds_resource =
+         r300vk_image_tile_resource_for_origin(ds, tile_origin_x,
+                                               tile_origin_y,
+                                               &ds_tile_origin_x,
+                                               &ds_tile_origin_y,
+                                               &ds_remaining_width,
+                                               &ds_remaining_height);
+      if (!ds_resource)
+         return;
+
       struct pipe_surface zsurf;
       memset(&zsurf, 0, sizeof(zsurf));
-      zsurf.texture     = ds->tiles[tile_pass] ? ds->tiles[tile_pass]
-                                               : ds->resource;
+      zsurf.texture     = ds_resource;
       zsurf.format      = render_pass->begin_rp.ds_format;
       zsurf.level       = 0;
       zsurf.first_layer = 0;
@@ -2083,8 +2140,10 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
          zs_flags |= PIPE_CLEAR_STENCIL;
       device->pipe->clear_depth_stencil(device->pipe, &zsurf, zs_flags,
                                         clear->depth, clear->stencil,
-                                        (unsigned)(clip_min_x - tile_min_x),
-                                        (unsigned)(clip_min_y - tile_min_y),
+                                        (unsigned)(clip_min_x -
+                                                   ds_tile_origin_x),
+                                        (unsigned)(clip_min_y -
+                                                   ds_tile_origin_y),
                                         (unsigned)(clip_max_x - clip_min_x),
                                         (unsigned)(clip_max_y - clip_min_y),
                                         false);
@@ -2138,6 +2197,8 @@ static void
 r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
                                  const struct r300vk_cmd_entry *rp,
                                  unsigned tile_pass,
+                                 uint32_t tile_origin_x,
+                                 uint32_t tile_origin_y,
                                  uint32_t tile_width,
                                  uint32_t tile_height)
 {
@@ -2145,8 +2206,17 @@ r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
    const struct r300vk_image *img = r300vk_begin_rp_ref_image(&rp->begin_rp);
    if (!img)
       return;
-   struct pipe_resource *tex = img->tiles[tile_pass] ? img->tiles[tile_pass]
-                                                     : img->resource;
+
+   uint32_t attachment_tile_origin_x = 0;
+   uint32_t attachment_tile_origin_y = 0;
+   uint32_t attachment_remaining_width = 0;
+   uint32_t attachment_remaining_height = 0;
+   struct pipe_resource *tex =
+      r300vk_image_tile_resource_for_origin(img, tile_origin_x, tile_origin_y,
+                                            &attachment_tile_origin_x,
+                                            &attachment_tile_origin_y,
+                                            &attachment_remaining_width,
+                                            &attachment_remaining_height);
    if (!tex || !tile_width || !tile_height)
       return;
 
@@ -2277,7 +2347,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
              * subpass's writes.  The RB3D cache is physical, not framebuffer-
              * scoped, so the flush resolves the prior colour writes even though
              * the framebuffer is rebound below.  Then bind this subpass's
-             * framebuffer at the same tile_pass and re-apply the in-flight
+             * framebuffer at the same pass origin and re-apply the in-flight
              * viewport/scissor, mirroring the begin path. */
             device->pipe->texture_barrier(device->pipe,
                                           PIPE_TEXTURE_BARRIER_SAMPLER);
@@ -2345,8 +2415,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                replay_pc, vb_cache, vb_sizes,
                                vb_max_used, &vb_dirty, tile_origin_x,
                                tile_origin_y, tile_width, tile_height,
-                               tile_pass, transient_vbs, &dyn_ov,
-                               current_render_pass &&
+                               transient_vbs, &dyn_ov, current_render_pass &&
                                current_render_pass->begin_rp.ds_image,
                                vb_strides, vb_strides_mask);
             *gpu_pending = true;
@@ -2402,7 +2471,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, tile_pass, transient_vbs, &dyn_ov,
+                                  tile_height, transient_vbs, &dyn_ov,
                                   current_render_pass &&
                                   current_render_pass->begin_rp.ds_image,
                                   vb_strides, vb_strides_mask);
@@ -2461,7 +2530,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, tile_pass, transient_vbs, &dyn_ov,
+                                  tile_height, transient_vbs, &dyn_ov,
                                   current_render_pass &&
                                   current_render_pass->begin_rp.ds_image,
                                   vb_strides, vb_strides_mask);
@@ -2478,6 +2547,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
                r300vk_dbg_log_attachment_pixels(device,
                                                 current_render_pass,
                                                 tile_pass,
+                                                tile_origin_x,
+                                                tile_origin_y,
                                                 tile_width, tile_height);
             r300vk_replay_end_render_pass(device, &skip_render_pass,
                                           &tile_origin_x, &tile_origin_y,
@@ -2488,7 +2559,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
          case R300VK_CMD_CLEAR_ATTACHMENTS:
             if (skip_render_pass) break;
             r300vk_replay_clear_attachments(device, current_render_pass,
-                                            &e->clear_attachments, tile_pass,
+                                            &e->clear_attachments,
                                             tile_origin_x, tile_origin_y,
                                             tile_width, tile_height);
             *gpu_pending = true;
