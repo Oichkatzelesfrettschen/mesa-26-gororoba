@@ -779,7 +779,11 @@ enum r300_compute_index_consumption {
  * the affine coefficients (value = stride * gid + offset) and are valid only
  * for VALUE_AFFINE.  uses_component_y / uses_component_z report whether any
  * vec3 index channel beyond .x is read, which selects the COORD fold bound
- * (per-axis) over the linear-total bound at dispatch time. */
+ * (per-axis) over the linear-total bound at dispatch time.
+ * affine_global_invocation_only reports whether the materialized value comes
+ * only from global invocation ID/index plus zero dispatch-base intrinsics.
+ * AFFINE_IOTA needs that stronger source identity because its replay cannot
+ * materialize local-invocation or workgroup IDs from the flat raster index. */
 struct r300_compute_index_pattern {
    enum r300_compute_index_consumption consumption;
    bool       stride_valid;
@@ -789,6 +793,7 @@ struct r300_compute_index_pattern {
    uint32_t   offset;
    bool       uses_component_y;
    bool       uses_component_z;
+   bool       affine_global_invocation_only;
 };
 
 /* Affine-iota pattern: out[gid] = stride * gid + offset, a pure function of

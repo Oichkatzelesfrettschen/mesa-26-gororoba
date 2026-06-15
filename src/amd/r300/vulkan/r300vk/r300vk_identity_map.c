@@ -4572,16 +4572,16 @@ r300vk_const_fill_dispatch_replay(struct r300vk_device *device,
 
 /* Single oversized triangle whose texcoord varying is in TEXEL units: the
  * covered raster interpolates to exactly (x + 0.5, y + 0.5) at each fragment
- * centre without any FP24 division by the raster extent.  ONE triangle, not
- * a two-triangle strip: the RS482 probe showed the strip's second triangle
- * interpolating a hair low (every mismatch sat exactly on the strip diagonal
- * x = W * (1 - y/H)), because the second plane equation anchors at a far
- * vertex and the longer extrapolation drops the sub-ULP the byte-decompose
- * floor cliff needs.  A single triangle anchored at the origin covers every
- * fragment from one plane equation -- the lane the probe measured exact
- * through the full 2^17 ceiling.  The overshoot corners ((3,-1) and (-1,3)
- * in clip space, texel values 2W and 2H) stay inside the FP24 exact-integer
- * window and inside the guard band. */
+ * center without any FP24 division by the raster extent.  ONE triangle, not
+ * a two-triangle strip: the RS482 affine_iota_index probe showed the strip's
+ * second triangle interpolating a hair low (every mismatch sat exactly on the
+ * strip diagonal x = W * (1 - y/H)), because the second plane equation
+ * anchors at a far vertex and the longer extrapolation drops the sub-ULP the
+ * byte-decompose floor cliff needs.  A single triangle anchored at the origin
+ * covers every fragment from one plane equation -- the lane the probe measured
+ * exact through the full 2^17 ceiling.  The overshoot corners ((3,-1) and
+ * (-1,3) in clip space, texel values 2W and 2H) stay inside the FP24
+ * exact-integer window and inside the guard band. */
 static bool
 r300vk_idm_create_texel_index_vbo(struct pipe_context *pipe,
                                   unsigned width, unsigned height,

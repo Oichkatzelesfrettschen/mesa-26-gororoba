@@ -3697,6 +3697,7 @@ r300_nir_detect_const_fill_pattern(const nir_shader *s,
 struct index_walk_entry {
    const nir_def *def;
    bool affine_valid;
+   bool global_only;
    bool vec_seed;
    uint64_t s;
    uint64_t ax, ay, az, b;
@@ -3815,6 +3816,18 @@ index_intrinsic_produces_id(const nir_intrinsic_instr *intr)
    }
 }
 
+static bool
+index_intrinsic_is_global_invocation(const nir_intrinsic_instr *intr)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_global_invocation_id:
+   case nir_intrinsic_load_global_invocation_index:
+      return true;
+   default:
+      return false;
+   }
+}
+
 /* Base offsets the system-value lowering adds to the invocation id.  The
  * replay substrate does not implement vkCmdDispatchBase, so the base is the
  * zero vector; tracking it as the zero seed lets global_id + base fold to
@@ -3866,6 +3879,7 @@ r300_nir_classify_index_consumption(const nir_shader *s,
    bool value_affine = false;
    bool address_use = false;
    uint64_t vax = 0, vay = 0, vaz = 0, vb = 0;
+   bool value_global_only = false;
 
    nir_foreach_function_impl(impl, (nir_shader *)s) {
       nir_foreach_block(block, impl) {
@@ -3882,8 +3896,11 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                   if (index_intrinsic_is_zero_base(intr)) {
                      seed.vec_seed = true;
                      seed.s = 0;
+                     seed.global_only = true;
                   } else {
                      any_index = true;
+                     seed.global_only =
+                        index_intrinsic_is_global_invocation(intr);
                      if (intr->def.num_components > 1) {
                         seed.vec_seed = true;
                         seed.s = 1;
@@ -3913,6 +3930,9 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                              vb != v->b)) {
                            value_general = true;
                         } else {
+                           value_global_only =
+                              value_affine ? (value_global_only && v->global_only)
+                                           : v->global_only;
                            value_affine = true;
                            vax = v->ax;
                            vay = v->ay;
@@ -4032,6 +4052,7 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                   r.def = &alu->def;
                   r.s += in[1]->s;
                   r.b += in[1]->b;
+                  r.global_only = in[0]->global_only && in[1]->global_only;
                   r.affine_valid = index_entry_in_range(&r);
                }
                index_walk_push(&st, &r);
@@ -4077,10 +4098,12 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                   r.ay += sc[t ^ 1].ay;
                   r.az += sc[t ^ 1].az;
                   r.b += sc[t ^ 1].b;
+                  r.global_only = sc[t].global_only && sc[t ^ 1].global_only;
                } else if (index_walk_const_operand(alu, t ^ 1,
                                                    alu->op == nir_op_fadd,
                                                    &c)) {
                   r.b += c;
+                  r.global_only = sc[t].global_only;
                } else {
                   break;
                }
@@ -4148,6 +4171,7 @@ r300_nir_classify_index_consumption(const nir_shader *s,
       out->stride_y = (uint32_t)vay;
       out->stride_z = (uint32_t)vaz;
       out->offset = (uint32_t)vb;
+      out->affine_global_invocation_only = value_global_only;
       out->consumption = (vay || vaz) ? R300_COMPUTE_INDEX_VALUE_AFFINE_3D
                                       : R300_COMPUTE_INDEX_VALUE_AFFINE;
       return;
@@ -4195,7 +4219,7 @@ r300_nir_detect_affine_iota_pattern(const nir_shader *s,
    r300_nir_classify_index_consumption(s, &ip);
    if ((ip.consumption != R300_COMPUTE_INDEX_VALUE_AFFINE &&
         ip.consumption != R300_COMPUTE_INDEX_VALUE_AFFINE_3D) ||
-       !ip.stride_valid)
+       !ip.stride_valid || !ip.affine_global_invocation_only)
       return;
 
    if (nir_src_is_const(store[0]->src[1])) {
