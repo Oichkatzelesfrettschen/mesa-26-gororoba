@@ -658,35 +658,58 @@ r300vk_nir_lower_push_constant_to_ubo0(nir_shader *nir)
  * integer load_const literals to their float value but SKIPS intrinsics, so an
  * integer push-constant value reaches the shader as raw bits while the literals it
  * is compared against become floats -- e.g. switch(kind) compares the bit pattern
- * 0x00000002 (a denormal) against 2.0f and never matches, so the shader takes the
- * wrong path and renders the wrong color.  Reject a push-constant block whose
- * loaded member is not float.  Inspect load_deref SITES (not the block variable
- * type) so a declared-but-never-loaded integer member does not force rejection.
- * Must run before nir_lower_explicit_io, which erases the per-member deref type. */
-static bool
-r300vk_nir_push_const_all_float(nir_shader *nir)
+ * 0x00000002 (a denormal) against 2.0f and never matches.  Rather than reject,
+ * the replay converts each integer push-constant word from its raw int bits to
+ * the float value those float-encoded integer ops expect; classify which words
+ * are integer here so the replay knows what to convert.
+ *
+ * Mark one bit per 4-byte word a leaf integer (or bool) member occupies.  Walks
+ * the block layout (explicit std140/std430 offsets), so an integer member that
+ * is declared but never read is converted harmlessly; words past the 128-byte
+ * (32-word) window are ignored (a larger push range is rejected elsewhere). */
+static void
+r300vk_mark_push_const_int_words(const struct glsl_type *type,
+                                 unsigned base_off, uint32_t *mask)
 {
-   nir_foreach_function_impl(impl, nir) {
-      nir_foreach_block(block, impl) {
-         nir_foreach_instr(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_load_deref)
-               continue;
-            nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
-            if (!deref)
-               continue;
-            nir_variable *var = nir_deref_instr_get_variable(deref);
-            if (!var || var->data.mode != nir_var_mem_push_const)
-               continue;
-            if (glsl_get_base_type(glsl_without_array(deref->type)) !=
-                GLSL_TYPE_FLOAT)
-               return false;
+   if (glsl_type_is_array(type)) {
+      const struct glsl_type *elem = glsl_get_array_element(type);
+      unsigned stride = glsl_get_explicit_stride(type);
+      for (unsigned i = 0; i < glsl_get_length(type); i++)
+         r300vk_mark_push_const_int_words(elem, base_off + i * stride, mask);
+   } else if (glsl_type_is_struct(type) || glsl_type_is_interface(type)) {
+      for (unsigned i = 0; i < glsl_get_length(type); i++)
+         r300vk_mark_push_const_int_words(
+            glsl_get_struct_field(type, i),
+            base_off + glsl_get_struct_field_offset(type, i), mask);
+   } else {
+      const enum glsl_base_type bt = glsl_get_base_type(type);
+      if (bt != GLSL_TYPE_INT && bt != GLSL_TYPE_UINT && bt != GLSL_TYPE_BOOL)
+         return;
+      /* A matrix column has the explicit stride; a scalar/vector packs its
+       * components contiguously at 4 bytes each. */
+      const unsigned cols = glsl_type_is_matrix(type)
+                            ? glsl_get_matrix_columns(type) : 1;
+      const unsigned col_stride = glsl_type_is_matrix(type)
+                                  ? glsl_get_explicit_stride(type) : 0;
+      const unsigned rows = glsl_get_vector_elements(type);
+      for (unsigned c = 0; c < cols; c++)
+         for (unsigned r = 0; r < rows; r++) {
+            const unsigned word = (base_off + c * col_stride + r * 4) / 4;
+            if (word < 32)
+               *mask |= 1u << word;
          }
-      }
    }
-   return true;
+}
+
+/* Integer-word mask for the shader's push-constant block, or 0 if it has none.
+ * Run before nir_lower_explicit_io removes the block variable. */
+static uint32_t
+r300vk_classify_push_const_ints(nir_shader *nir)
+{
+   uint32_t mask = 0;
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_push_const)
+      r300vk_mark_push_const_int_words(var->type, 0, &mask);
+   return mask;
 }
 
 /* r300's constant file is addressed by a compile-time vec4 slot plus component,
@@ -982,19 +1005,13 @@ r300vk_compile_shader(struct r300vk_device *device,
     * the UBO path below (nir_lower_ubo_vec4 + the index-0 pin) carries them.
     * Replay binds the running push-constant window at CONST[0]
     * (r300vk_bind_push_constants).  A push-constant + UBO collision was rejected
-    * above, so block 0 is unambiguous.  r300's float-only constant file and static
-    * vec4-slot addressing cannot represent an integer push constant or a
-    * dynamic/slot-straddling offset, so reject those shapes rather than render
-    * wrong pixels (correct-or-clean-reject). */
+    * above, so block 0 is unambiguous.  r300's constant file is float-only, so an
+    * integer push-constant word is uploaded as the float value its lowered ops
+    * expect: classify the integer words here (before nir_lower_explicit_io drops
+    * the block variable) and the replay converts them.  A dynamic/slot-straddling
+    * offset still cannot be represented and is rejected below. */
    if (uses_push_const) {
-      if (!r300vk_nir_push_const_all_float(nir)) {
-         ralloc_free(nir);
-         return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                          "r300vk: %s shader reads a non-float push constant; "
-                          "r300's constant file (RC_FILE_CONSTANT) is float-typed",
-                          stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
-                          ? "vertex" : "fragment");
-      }
+      pl->push_const_int_word_mask |= r300vk_classify_push_const_ints(nir);
       NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_push_const,
                nir_address_format_32bit_offset);
       if (!r300vk_nir_push_const_shape_ok(device->screen, nir)) {
