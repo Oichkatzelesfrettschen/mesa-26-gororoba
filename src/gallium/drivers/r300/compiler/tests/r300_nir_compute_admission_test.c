@@ -1016,6 +1016,20 @@ build_const_fill_vec4(void)
    return b.shader;
 }
 
+static nir_shader *
+build_const_fill_narrow_slot(unsigned bit_size)
+{
+   nir_builder b =
+      cs_builder(bit_size == 8 ? "cs_const_fill_u8_slot" :
+                                  "cs_const_fill_u16_slot");
+   nir_def *c = nir_imm_intN_t(&b, bit_size == 8 ? 0x7f : 0x1234,
+                               bit_size);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0), const_fill_store_offset(&b, 4),
+                  .write_mask = 0x1, .align_mul = bit_size / 8,
+                  .align_offset = 0);
+   return b.shader;
+}
+
 static void
 case_const_fill_metadata(void)
 {
@@ -1045,6 +1059,23 @@ case_const_fill_metadata(void)
    r300_nir_detect_const_fill_pattern(nir4, &cf4);
    CHECK(!cf4.is_const_fill, "const-fill vec4 rejects until lanes are packed");
    ralloc_free(nir4);
+
+   /* Narrow scalar fills are not replayable until byte stride is explicit. */
+   nir_shader *nir8 = build_const_fill_narrow_slot(8);
+   struct r300_compute_const_fill_pattern cf8 = {0};
+
+   prepare_detect_shader(nir8);
+   r300_nir_detect_const_fill_pattern(nir8, &cf8);
+   CHECK(!cf8.is_const_fill, "const-fill u8 rejects until byte stride is represented");
+   ralloc_free(nir8);
+
+   nir_shader *nir16 = build_const_fill_narrow_slot(16);
+   struct r300_compute_const_fill_pattern cf16 = {0};
+
+   prepare_detect_shader(nir16);
+   r300_nir_detect_const_fill_pattern(nir16, &cf16);
+   CHECK(!cf16.is_const_fill, "const-fill u16 rejects until byte stride is represented");
+   ralloc_free(nir16);
 
    /* Discrimination: identity-map must NOT match CONSTFILL (it has a load). */
    nir_shader *ident = build_identity_map_f32vec4();

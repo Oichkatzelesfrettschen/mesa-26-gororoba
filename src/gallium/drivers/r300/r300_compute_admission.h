@@ -696,16 +696,14 @@ void r300_nir_detect_qfmmul_pattern(const struct nir_shader *s,
  *   No atomics (rules out blend-acc and ZPASS), no loop (rules out multipass),
  *   no if (rules out predicated-store).
  *
- * const_value[0..3] holds the four bytes of the RGBA8 clear color in little-endian
- * component order (R=byte 0, G=byte 1, B=byte 2, A=byte 3).  For a uint32_t value V
- * the bytes are the four uint8_t components of V as written by the shader.  For a
- * vec4 float constant the bytes come from the RB3D RGBA8 encoding the substrate uses
- * for the RT carrier; the caller converts from the NIR constant representation.
+ * const_value[0..3] holds the four bytes of the scalar uint32_t clear value in
+ * little-endian component order (R=byte 0, G=byte 1, B=byte 2, A=byte 3).
+ * Vector and sub-32-bit fills are rejected until a replay path can represent
+ * every stored lane and byte stride explicitly.
  *
  * output_ssbo_binding is 0 when the post-explicit_io store_ssbo binding source is not
  * a constant (the orchestrator's positional fallback recovers it: binding 0 = output).
- * value_components carries the stored vector width (1 for uint32_t fill, 4 for vec4).
- * value_bit_size is the per-component width in bits. */
+ * value_components is 1 and value_bit_size is 32 for admitted fills. */
 struct r300_compute_const_fill_pattern {
    bool       is_const_fill;
    uint32_t   output_ssbo_binding;
