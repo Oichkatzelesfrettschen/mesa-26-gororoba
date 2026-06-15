@@ -3631,8 +3631,7 @@ r300_nir_detect_const_fill_pattern(const nir_shader *s,
    struct r300_compute_index_pattern ip;
    r300_nir_classify_index_consumption(s, &ip);
    if (!ip.store_offset_valid || !ip.store_offset_global_invocation_only ||
-       ip.store_offset_stride != 4 || ip.store_offset_offset != 0 ||
-       ip.store_offset_stride_y || ip.store_offset_stride_z)
+       ip.store_offset_stride != 4 || ip.store_offset_offset != 0)
       return;
 
    const nir_load_const_instr *lc = nir_def_as_load_const(val);

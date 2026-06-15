@@ -1030,6 +1030,48 @@ build_const_fill_narrow_slot(unsigned bit_size)
    return b.shader;
 }
 
+static nir_def *
+const_fill_flatten_offset(nir_builder *b, unsigned width, unsigned height,
+                          bool include_z)
+{
+   nir_def *id = nir_load_global_invocation_id(b, 32);
+   nir_def *x = nir_channel(b, id, 0);
+   nir_def *y = nir_channel(b, id, 1);
+   nir_def *flat =
+      nir_iadd(b, nir_imul(b, y, nir_imm_int(b, (int)width)), x);
+
+   if (include_z) {
+      nir_def *z = nir_channel(b, id, 2);
+      flat = nir_iadd(b, nir_imul(b, z,
+                                  nir_imm_int(b, (int)(width * height))),
+                      flat);
+   }
+
+   return nir_imul(b, flat, nir_imm_int(b, 4));
+}
+
+static nir_shader *
+build_const_fill_flatten_2d(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_flatten_2d");
+   nir_def *c = nir_imm_int(&b, 0x42424242);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0),
+                  const_fill_flatten_offset(&b, 16, 1, false),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_const_fill_flatten_3d(void)
+{
+   nir_builder b = cs_builder("cs_const_fill_flatten_3d");
+   nir_def *c = nir_imm_int(&b, 0x11223344);
+   nir_store_ssbo(&b, c, nir_imm_int(&b, 0),
+                  const_fill_flatten_offset(&b, 16, 8, true),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 static void
 case_const_fill_metadata(void)
 {
@@ -1050,6 +1092,34 @@ case_const_fill_metadata(void)
          cf.const_value[2] == 0x42 && cf.const_value[3] == 0x42,
          "const-fill records RGBA8 bytes of 0x42424242");
    ralloc_free(nir);
+
+   nir_shader *nir2d = build_const_fill_flatten_2d();
+   struct r300_compute_const_fill_pattern cf2d = {0};
+   struct r300_compute_index_pattern ip2d = {0};
+
+   prepare_detect_shader(nir2d);
+   r300_nir_detect_const_fill_pattern(nir2d, &cf2d);
+   r300_nir_classify_index_consumption(nir2d, &ip2d);
+   CHECK(cf2d.is_const_fill, "const-fill canonical 2D flatten detected");
+   CHECK(ip2d.store_offset_valid && ip2d.store_offset_stride == 4 &&
+         ip2d.store_offset_stride_y == 64 &&
+         ip2d.store_offset_stride_z == 0,
+         "const-fill canonical 2D flatten records output offset strides");
+   ralloc_free(nir2d);
+
+   nir_shader *nir3d = build_const_fill_flatten_3d();
+   struct r300_compute_const_fill_pattern cf3d = {0};
+   struct r300_compute_index_pattern ip3d = {0};
+
+   prepare_detect_shader(nir3d);
+   r300_nir_detect_const_fill_pattern(nir3d, &cf3d);
+   r300_nir_classify_index_consumption(nir3d, &ip3d);
+   CHECK(cf3d.is_const_fill, "const-fill canonical 3D flatten detected");
+   CHECK(ip3d.store_offset_valid && ip3d.store_offset_stride == 4 &&
+         ip3d.store_offset_stride_y == 64 &&
+         ip3d.store_offset_stride_z == 512,
+         "const-fill canonical 3D flatten records output offset strides");
+   ralloc_free(nir3d);
 
    /* Vec4 constant fill is not replayable until all lanes are packed. */
    nir_shader *nir4 = build_const_fill_vec4();
