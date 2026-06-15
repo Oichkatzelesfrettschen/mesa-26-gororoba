@@ -253,11 +253,19 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
       r300vk_set_index_reject(out_reason, "null dispatch state");
       return false;
    }
-   if (pl->const_fill.is_const_fill)
+   const struct r300_compute_index_pattern *ip = &pl->index_consumption;
+   if (pl->const_fill.is_const_fill) {
+      if (!ip->store_offset_valid || !ip->store_offset_global_invocation_only ||
+          ip->store_offset_stride != 4 || ip->store_offset_offset != 0 ||
+          ip->store_offset_stride_y || ip->store_offset_stride_z) {
+         r300vk_set_index_reject(out_reason,
+                                 "const-fill output offset is not out[gid]");
+         return false;
+      }
       return true;
+   }
 
    const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
-   const struct r300_compute_index_pattern *ip = &pl->index_consumption;
    enum r300_grid_index_class cls;
    uint32_t stride = 1, offset = 0;
 
