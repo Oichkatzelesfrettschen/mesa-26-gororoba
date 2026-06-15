@@ -3705,11 +3705,32 @@ struct index_walk_state {
    bool uses_component_z;
 };
 
+/* A zero coefficient erases the index source before the source-identity gate:
+ * local_id * 0 and workgroup_id * 0 are constants, not local/workgroup reads. */
+static void
+index_entry_normalize_source_identity(struct index_walk_entry *e)
+{
+   if (!e->affine_valid)
+      return;
+
+   if (e->vec_seed) {
+      if (e->s == 0)
+         e->global_only = true;
+      return;
+   }
+
+   if (e->ax == 0 && e->ay == 0 && e->az == 0)
+      e->global_only = true;
+}
+
 static bool
 index_walk_push(struct index_walk_state *st, const struct index_walk_entry *e)
 {
+   struct index_walk_entry normalized = *e;
+   index_entry_normalize_source_identity(&normalized);
+
    for (unsigned i = 0; i < st->nvisited; i++) {
-      if (st->visited[i] == e->def)
+      if (st->visited[i] == normalized.def)
          return true; /* first reaching state wins; DAG revisits are rare */
    }
    if (st->nvisited >= R300_INDEX_WALK_MAX_DEFS ||
@@ -3717,9 +3738,9 @@ index_walk_push(struct index_walk_state *st, const struct index_walk_entry *e)
       st->overflow = true;
       return false;
    }
-   st->states[st->nvisited] = *e;
-   st->visited[st->nvisited++] = e->def;
-   st->queue[st->tail++] = *e;
+   st->states[st->nvisited] = normalized;
+   st->visited[st->nvisited++] = normalized.def;
+   st->queue[st->tail++] = normalized;
    return true;
 }
 

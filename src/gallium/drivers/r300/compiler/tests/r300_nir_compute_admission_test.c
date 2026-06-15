@@ -1679,6 +1679,77 @@ build_index_value_local_index(void)
    return b.shader;
 }
 
+static nir_shader *
+build_index_value_global_id_deref(void)
+{
+   nir_builder b = cs_builder("cs_index_value_global_id_deref");
+   b.shader->info.workgroup_size[0] = 8;
+   b.shader->info.workgroup_size[1] = 1;
+   b.shader->info.workgroup_size[2] = 1;
+
+   nir_variable *global_id =
+      nir_variable_create(b.shader, nir_var_system_value, glsl_uvec_type(3),
+                          "gl_GlobalInvocationID");
+   global_id->data.location = SYSTEM_VALUE_GLOBAL_INVOCATION_ID;
+
+   nir_def *id = nir_channel(&b, nir_load_var(&b, global_id), 0);
+   nir_def *off = nir_imul(&b, id, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, id, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_index_value_global_plus_zero_local(void)
+{
+   nir_builder b = cs_builder("cs_index_value_global_plus_zero_local");
+   nir_def *id = nir_channel(&b, nir_load_global_invocation_id(&b, 32), 0);
+   nir_def *local_zero =
+      nir_imul(&b, nir_load_local_invocation_index(&b), nir_imm_int(&b, 0));
+   nir_def *val = nir_iadd(&b, id, local_zero);
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_index_value_global_plus_zero_workgroup(void)
+{
+   nir_builder b = cs_builder("cs_index_value_global_plus_zero_workgroup");
+   nir_def *id = nir_channel(&b, nir_load_global_invocation_id(&b, 32), 0);
+   nir_def *workgroup_x = nir_channel(&b, nir_load_workgroup_id(&b), 0);
+   nir_def *workgroup_zero = nir_imul(&b, workgroup_x, nir_imm_int(&b, 0));
+   nir_def *val = nir_iadd(&b, id, workgroup_zero);
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static unsigned
+count_intrinsic(nir_shader *shader, nir_intrinsic_op op)
+{
+   unsigned count = 0;
+
+   nir_foreach_function_impl (impl, shader) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == op)
+               count++;
+         }
+      }
+   }
+
+   return count;
+}
+
 static void
 case_index_consumption(void)
 {
@@ -1827,6 +1898,26 @@ case_index_consumption(void)
          "local index value is not AFFINE_IOTA source identity");
    ralloc_free(local);
 
+   nir_shader *zero_local = build_index_value_global_plus_zero_local();
+   r300_nir_classify_index_consumption(zero_local, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "zeroed local term still classifies VALUE_AFFINE");
+   CHECK(p.stride_valid && p.stride == 1 && p.offset == 0,
+         "zeroed local term preserves global stride 1");
+   CHECK(p.affine_global_invocation_only,
+         "zeroed local term is source-free for AFFINE_IOTA");
+   ralloc_free(zero_local);
+
+   nir_shader *zero_workgroup = build_index_value_global_plus_zero_workgroup();
+   r300_nir_classify_index_consumption(zero_workgroup, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_AFFINE,
+         "zeroed workgroup term still classifies VALUE_AFFINE");
+   CHECK(p.stride_valid && p.stride == 1 && p.offset == 0,
+         "zeroed workgroup term preserves global stride 1");
+   CHECK(p.affine_global_invocation_only,
+         "zeroed workgroup term is source-free for AFFINE_IOTA");
+   ralloc_free(zero_workgroup);
+
    /* FP24 exact-ceiling guard boundaries (pure arithmetic, no NIR). */
    CHECK(r300_grid_linear_index_exact(131072),
          "linear total 2^17 admits (largest index 2^17 - 1)");
@@ -1853,6 +1944,37 @@ detect_affine_iota(nir_shader *shader)
    struct r300_compute_affine_iota_pattern pattern = {0};
    r300_nir_detect_affine_iota_pattern(shader, &pattern);
    return pattern;
+}
+
+static void
+case_compute_global_id_system_value_lowering(void)
+{
+   printf("compute global-id system-value lowering\n");
+
+   static const nir_shader_compiler_options plain_options;
+
+   nir_shader *plain = build_index_value_global_id_deref();
+   plain->options = &plain_options;
+   CHECK(count_intrinsic(plain, nir_intrinsic_load_deref) > 0,
+         "pre-lowering compute global-id uses a system-value deref");
+   NIR_PASS(_, plain, nir_lower_system_values);
+   CHECK(count_intrinsic(plain, nir_intrinsic_load_deref) == 0,
+         "plain system-value lowering removes the global-id deref");
+   CHECK(count_intrinsic(plain, nir_intrinsic_load_global_invocation_id) > 0,
+         "plain system-value lowering emits compute global-id intrinsic");
+   CHECK(count_intrinsic(plain, nir_intrinsic_load_local_invocation_id) == 0 &&
+         count_intrinsic(plain, nir_intrinsic_load_workgroup_id) == 0,
+         "plain system-value lowering avoids local/workgroup decomposition");
+   struct r300_compute_index_pattern plain_index = {0};
+   r300_nir_classify_index_consumption(plain, &plain_index);
+   CHECK(plain_index.affine_global_invocation_only,
+         "plain system-value lowering keeps affine-iota source identity");
+   struct r300_compute_affine_iota_pattern plain_iota =
+      detect_affine_iota(plain);
+   CHECK(plain_iota.is_affine_iota && plain_iota.stride == 1 &&
+         plain_iota.offset == 0,
+         "plain system-value lowering detects affine-iota");
+   ralloc_free(plain);
 }
 
 static void
@@ -1909,6 +2031,18 @@ case_affine_iota(void)
    it = detect_affine_iota(local);
    CHECK(!it.is_affine_iota, "local index value rejects affine-iota");
    ralloc_free(local);
+
+   nir_shader *zero_local = build_index_value_global_plus_zero_local();
+   it = detect_affine_iota(zero_local);
+   CHECK(it.is_affine_iota && it.stride == 1 && it.offset == 0,
+         "zeroed local term detects affine-iota");
+   ralloc_free(zero_local);
+
+   nir_shader *zero_workgroup = build_index_value_global_plus_zero_workgroup();
+   it = detect_affine_iota(zero_workgroup);
+   CHECK(it.is_affine_iota && it.stride == 1 && it.offset == 0,
+         "zeroed workgroup term detects affine-iota");
+   ralloc_free(zero_workgroup);
 }
 
 /* out[gid] = a[gid] * b[gid] for u32: the multilimb-multiply shape. */
@@ -2165,6 +2299,7 @@ main(void)
    case_const_fill_metadata();
    case_constfill_regression();
    case_index_consumption();
+   case_compute_global_id_system_value_lowering();
    case_affine_iota();
    case_multilimb_mul();
    case_log4_pool();
