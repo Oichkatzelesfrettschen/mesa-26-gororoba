@@ -179,8 +179,8 @@ r300vk_resolve_attachment(const struct r300vk_render_pass *rp,
  * outputs and depth/stencil target taken from the cmd buffer's resolved
  * attachment table.  An attachment's loadOp clear is applied only at the subpass
  * where it is first used (rp->first_use_subpass); a later subpass that re-binds
- * an already-used attachment LOADs it.  Returns the first bound colour image,
- * the tile-geometry reference.  Shared by CmdBeginRenderPass (subpass 0) and
+ * an already-used attachment LOADs it.  Returns the first bound color image
+ * for draw debug sampling.  Shared by CmdBeginRenderPass (subpass 0) and
  * CmdNextSubpass. */
 static struct r300vk_image *
 r300vk_record_subpass_framebuffer(struct r300vk_cmd_buffer *cmd,
@@ -370,13 +370,13 @@ r300vk_CmdNextSubpass2(VkCommandBuffer commandBuffer,
    r300vk_record_next_subpass(cmd);
 }
 
-/* VK_KHR_dynamic_rendering names the colour attachment as a VkImageView
+/* VK_KHR_dynamic_rendering names the color attachment as a VkImageView
  * directly on VkRenderingInfo, with no VkFramebuffer or VkRenderPass object.
  * The framebuffer setup it needs is identical to the render-pass path, so this
  * records the same R300VK_CMD_BEGIN_RENDER_PASS entry that
- * r300vk_replay_begin_render_pass consumes: colour attachment 0 resolved to its
+ * r300vk_replay_begin_render_pass consumes: color attachment 0 resolved to its
  * pipe_resource and pipe_format, the render-area far corner as the framebuffer
- * extent, and the load-op clear value.  Each colour attachment is bound at its
+ * extent, and the load-op clear value.  Each color attachment is bound at its
  * own slot so a fragment-shader output at location i targets attachment i;
  * depth/stencil is the single zsbuf the replay's framebuffer state carries. */
 void
@@ -385,8 +385,10 @@ r300vk_CmdBeginRendering(VkCommandBuffer commandBuffer,
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
 
-   /* Resolve every colour attachment into its slot; a null view leaves the
-    * slot NULL (the replay binds it as an empty cbuf, preserving slot order). */
+   /* Resolve every color attachment into its slot.  A null view leaves the
+    * slot NULL here; replay fills holes before later bound attachments with
+    * throwaway cbufs to preserve slot order without letting r300g duplicate a
+    * real attachment into the hole. */
    struct r300vk_image *color_image[PIPE_MAX_COLOR_BUFS] = {0};
    enum pipe_format color_format[PIPE_MAX_COLOR_BUFS];
    VkAttachmentLoadOp load_op[PIPE_MAX_COLOR_BUFS];
