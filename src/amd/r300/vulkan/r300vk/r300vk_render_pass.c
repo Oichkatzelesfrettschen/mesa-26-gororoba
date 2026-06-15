@@ -22,7 +22,29 @@ r300vk_render_pass_destroy_partial(struct r300vk_device *device,
                                    struct r300vk_render_pass *rp)
 {
    vk_object_base_finish(&rp->base);
+   vk_free2(&device->vk.alloc, pAllocator, rp->subpasses);
    vk_free2(&device->vk.alloc, pAllocator, rp);
+}
+
+static VkResult
+r300vk_render_pass_alloc_subpasses(struct r300vk_device *device,
+                                   const VkAllocationCallbacks *pAllocator,
+                                   struct r300vk_render_pass *rp,
+                                   uint32_t subpass_count)
+{
+   if (subpass_count == 0)
+      return VK_SUCCESS;
+
+   rp->subpasses = vk_zalloc2(&device->vk.alloc, pAllocator,
+                              subpass_count * sizeof(*rp->subpasses), 8,
+                              VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!rp->subpasses) {
+      r300vk_render_pass_destroy_partial(device, pAllocator, rp);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
+   rp->subpass_count = subpass_count;
+   return VK_SUCCESS;
 }
 
 /* An attachment that is both a colour output and an input in the SAME subpass is
@@ -148,22 +170,20 @@ r300vk_CreateRenderPass(VkDevice _device,
       rp->attachments[i].final_layout = pCreateInfo->pAttachments[i].finalLayout;
    }
 
-   /* Store every subpass's colour, input, and depth/stencil references.  A
+   /* Store every subpass's color, input, and depth/stencil references.  A
     * later subpass that reads an input attachment is now supported: the replay
     * flushes between subpasses and binds the prior output as a fragment texture
     * (subpassLoad reads it at the same coordinate). */
-   if (pCreateInfo->subpassCount > R300VK_MAX_SUBPASSES) {
-      r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-      return vk_errorf(device, VK_ERROR_UNKNOWN,
-                       "r300vk: subpassCount %u exceeds r300vk replay storage %u",
-                       pCreateInfo->subpassCount, R300VK_MAX_SUBPASSES);
-   }
-   rp->subpass_count = pCreateInfo->subpassCount;
+   VkResult r =
+      r300vk_render_pass_alloc_subpasses(device, pAllocator, rp,
+                                         pCreateInfo->subpassCount);
+   if (r != VK_SUCCESS)
+      return r;
    for (uint32_t s = 0; s < pCreateInfo->subpassCount; s++) {
       const VkSubpassDescription *sp = &pCreateInfo->pSubpasses[s];
-      VkResult r = r300vk_subpass_bounds_ok(device, pAllocator, rp, s,
-                                            sp->colorAttachmentCount,
-                                            sp->inputAttachmentCount);
+      r = r300vk_subpass_bounds_ok(device, pAllocator, rp, s,
+                                   sp->colorAttachmentCount,
+                                   sp->inputAttachmentCount);
       if (r != VK_SUCCESS)
          return r;
       struct r300vk_subpass *d = &rp->subpasses[s];
@@ -178,7 +198,7 @@ r300vk_CreateRenderPass(VkDevice _device,
                                      : VK_ATTACHMENT_UNUSED;
    }
 
-   VkResult r = r300vk_render_pass_finalize(device, pAllocator, rp);
+   r = r300vk_render_pass_finalize(device, pAllocator, rp);
    if (r != VK_SUCCESS)
       return r;
 
@@ -226,18 +246,16 @@ r300vk_CreateRenderPass2(VkDevice _device,
       rp->attachments[i].final_layout = pCreateInfo->pAttachments[i].finalLayout;
    }
 
-   if (pCreateInfo->subpassCount > R300VK_MAX_SUBPASSES) {
-      r300vk_render_pass_destroy_partial(device, pAllocator, rp);
-      return vk_errorf(device, VK_ERROR_UNKNOWN,
-                       "r300vk: subpassCount %u exceeds r300vk replay storage %u",
-                       pCreateInfo->subpassCount, R300VK_MAX_SUBPASSES);
-   }
-   rp->subpass_count = pCreateInfo->subpassCount;
+   VkResult r =
+      r300vk_render_pass_alloc_subpasses(device, pAllocator, rp,
+                                         pCreateInfo->subpassCount);
+   if (r != VK_SUCCESS)
+      return r;
    for (uint32_t s = 0; s < pCreateInfo->subpassCount; s++) {
       const VkSubpassDescription2 *sp = &pCreateInfo->pSubpasses[s];
-      VkResult r = r300vk_subpass_bounds_ok(device, pAllocator, rp, s,
-                                            sp->colorAttachmentCount,
-                                            sp->inputAttachmentCount);
+      r = r300vk_subpass_bounds_ok(device, pAllocator, rp, s,
+                                   sp->colorAttachmentCount,
+                                   sp->inputAttachmentCount);
       if (r != VK_SUCCESS)
          return r;
       struct r300vk_subpass *d = &rp->subpasses[s];
@@ -252,7 +270,7 @@ r300vk_CreateRenderPass2(VkDevice _device,
                                      : VK_ATTACHMENT_UNUSED;
    }
 
-   VkResult r = r300vk_render_pass_finalize(device, pAllocator, rp);
+   r = r300vk_render_pass_finalize(device, pAllocator, rp);
    if (r != VK_SUCCESS)
       return r;
 
@@ -271,5 +289,6 @@ r300vk_DestroyRenderPass(VkDevice _device,
       return;
 
    vk_object_base_finish(&rp->base);
+   vk_free2(&device->vk.alloc, pAllocator, rp->subpasses);
    vk_free2(&device->vk.alloc, pAllocator, rp);
 }

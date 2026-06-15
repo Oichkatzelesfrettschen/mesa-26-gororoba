@@ -178,18 +178,25 @@ r300vk_begin_rp_ref_image(const struct r300vk_cmd_begin_render_pass *rp)
 }
 
 static uint32_t
+r300vk_begin_rp_tile_pass_count(const struct r300vk_cmd_begin_render_pass *rp)
+{
+   return MAX2(r300vk_image_tile_count(r300vk_begin_rp_ref_image(rp)),
+               r300vk_image_tile_count(rp->ds_image));
+}
+
+static uint32_t
 r300vk_cmd_tile_pass_count(const struct r300vk_cmd_buffer *cmd)
 {
    uint32_t pass_count = 1;
 
    for (uint32_t i = 0; i < cmd->entry_count; i++) {
       const struct r300vk_cmd_entry *entry = &cmd->entries[i];
-      if (entry->type != R300VK_CMD_BEGIN_RENDER_PASS)
+      if (entry->type != R300VK_CMD_BEGIN_RENDER_PASS &&
+          entry->type != R300VK_CMD_NEXT_SUBPASS)
          continue;
 
       pass_count = MAX2(pass_count,
-                        r300vk_image_tile_count(
-                           r300vk_begin_rp_ref_image(&entry->begin_rp)));
+                        r300vk_begin_rp_tile_pass_count(&entry->begin_rp));
    }
 
    return pass_count;
@@ -881,9 +888,10 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
 /* Bind the single input attachment the FS reads via the lowered subpassLoad.
  *
  * The NIR pass r300vk_nir_lower_subpass_input rewrites subpassLoad into a
- * normalized texture() read: tex_coord = gl_FragCoord.xy * inv_extent, where
- * inv_extent = {1/W, 1/H, 0, 0} sits in FS CONST[0].  This function supplies
- * both the sampler view and the constant.
+ * normalized texture() read: tex_coord = gl_FragCoord.xy * inv_extent.  Replay
+ * translates the viewport into tile-local coordinates, so split images bind the
+ * matching tile resource and use that tile's {1/W, 1/H, 0, 0} in FS CONST[0].
+ * This function supplies both the sampler view and the constant.
  *
  * inv_extent must outlive the draw_vbo call; pass a float[4] allocated in the
  * caller's frame (r300vk_replay_draw), which matches the lifetime rule in
@@ -903,6 +911,7 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
                              const struct r300vk_pipeline *pipeline,
                              const struct r300vk_cmd_bind_descriptor_sets *binds,
                              struct r300vk_bound_textures *bound,
+                             uint32_t tile_pass,
                              float *inv_extent)
 {
    struct pipe_context *pipe = device->pipe;
@@ -933,7 +942,21 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
 
          struct r300vk_image *img =
             container_of(iv->vk.image, struct r300vk_image, vk);
-         if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
+         if (!img->resource)
+            return;
+         const uint32_t tile_count = r300vk_image_tile_count(img);
+         if (tile_pass >= tile_count)
+            return;
+
+         const uint32_t tile_col = r300vk_image_tile_col(img, tile_pass);
+         const uint32_t tile_row = r300vk_image_tile_row(img, tile_pass);
+         struct pipe_resource *input_resource =
+            img->tiles[tile_pass] ? img->tiles[tile_pass] : img->resource;
+         const uint32_t input_width =
+            img->tile_cols ? img->tile_width[tile_col] : img->vk.extent.width;
+         const uint32_t input_height =
+            img->tile_rows ? img->tile_height[tile_row] : img->vk.extent.height;
+         if (!input_resource || input_width == 0 || input_height == 0)
             return;
 
          const enum pipe_format fmt = r300vk_vk_format_to_pipe_format(iv->vk.format);
@@ -949,12 +972,12 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
          sv_templ.swizzle_b = PIPE_SWIZZLE_Z;
          sv_templ.swizzle_a = PIPE_SWIZZLE_W;
          struct pipe_sampler_view *view =
-            pipe->create_sampler_view(pipe, img->resource, &sv_templ);
+            pipe->create_sampler_view(pipe, input_resource, &sv_templ);
          if (!view)
             return;
 
-         inv_extent[0] = 1.0f / (float)img->vk.extent.width;
-         inv_extent[1] = 1.0f / (float)img->vk.extent.height;
+         inv_extent[0] = 1.0f / (float)input_width;
+         inv_extent[1] = 1.0f / (float)input_height;
          inv_extent[2] = 0.0f;
          inv_extent[3] = 0.0f;
 
@@ -1251,6 +1274,7 @@ r300vk_replay_draw(struct r300vk_device *device,
                     uint32_t tile_origin_y,
                     uint32_t tile_width,
                     uint32_t tile_height,
+                    uint32_t tile_pass,
                     struct util_dynarray *transient_vbs,
                     struct r300vk_dyn_overlay *dyn,
                     bool render_pass_has_zs,
@@ -1476,7 +1500,7 @@ r300vk_replay_draw(struct r300vk_device *device,
       float ia_inv_extent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
       if (bound_pipeline && bound_pipeline->fs_has_input_attachment)
          r300vk_bind_input_attachment(device, bound_pipeline, last_bind_dsets,
-                                      &bound_tex, ia_inv_extent);
+                                      &bound_tex, tile_pass, ia_inv_extent);
 
       if (device->dbg_log_draws) {
          fprintf(stderr,
@@ -2091,7 +2115,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                replay_pc, vb_cache, vb_sizes,
                                vb_max_used, &vb_dirty, tile_origin_x,
                                tile_origin_y, tile_width, tile_height,
-                               transient_vbs, &dyn_ov,
+                               tile_pass, transient_vbs, &dyn_ov,
                                current_render_pass &&
                                current_render_pass->begin_rp.ds_image,
                                vb_strides, vb_strides_mask);
@@ -2148,7 +2172,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, transient_vbs, &dyn_ov,
+                                  tile_height, tile_pass, transient_vbs, &dyn_ov,
                                   current_render_pass &&
                                   current_render_pass->begin_rp.ds_image,
                                   vb_strides, vb_strides_mask);
@@ -2207,7 +2231,7 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                   last_bind_dsets, replay_pc, vb_cache,
                                   vb_sizes, vb_max_used, &vb_dirty,
                                   tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, transient_vbs, &dyn_ov,
+                                  tile_height, tile_pass, transient_vbs, &dyn_ov,
                                   current_render_pass &&
                                   current_render_pass->begin_rp.ds_image,
                                   vb_strides, vb_strides_mask);
