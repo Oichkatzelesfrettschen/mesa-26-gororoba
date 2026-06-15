@@ -1065,10 +1065,11 @@ r300_nir_detect_predicated_store_pattern(const nir_shader *s,
  * taps[].  An iadd node recurses into both inputs; a load_ssbo def is a tap
  * leaf worth 1; any other def (a non-load, non-iadd) makes the tree impure
  * and returns -1.  Depth-bounded like def_derives_from for the small kernels
- * the detector pattern-matches.  All leaves must pull from the same SSBO:
- * post-explicit_io the binding source is an opaque descriptor-chain def
+ * the detector pattern-matches.  The collected prefix must pull from the same
+ * SSBO: post-explicit_io the binding source is an opaque descriptor-chain def
  * shared between the taps (CSE folds the identical chains), so the test is
- * def equality, which also covers inline-constant bindings. */
+ * def equality, which also covers inline-constant bindings.  Leaves beyond the
+ * bounded prefix are still counted; the caller rejects them by tap_total. */
 static int
 multitap_add_tree_taps(const nir_def *def,
                        const nir_intrinsic_instr **taps, unsigned *tap_count,
@@ -1081,11 +1082,14 @@ multitap_add_tree_taps(const nir_def *def,
    if (intr) {
       if (intr->intrinsic != nir_intrinsic_load_ssbo)
          return -1;
-      if (*tap_count > 0 && taps[0]->src[0].ssa != intr->src[0].ssa)
-         return -1;
-      if (*tap_count >= R300_MULTITAP_MAX_TAPS)
-         return -1;
-      taps[(*tap_count)++] = intr;
+      /* Count every pure load leaf; store only the bounded prefix needed by
+       * the exact box-3 detector.  Oversized pure reductions then fail the
+       * tap_total == 3 check instead of being reported as impure trees. */
+      if (*tap_count < R300_MULTITAP_MAX_TAPS) {
+         if (*tap_count > 0 && taps[0]->src[0].ssa != intr->src[0].ssa)
+            return -1;
+         taps[(*tap_count)++] = intr;
+      }
       return 1;
    }
    const nir_alu_instr *alu = nir_def_as_alu_or_null((nir_def *)def);
