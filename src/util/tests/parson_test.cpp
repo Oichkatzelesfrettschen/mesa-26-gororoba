@@ -5,12 +5,7 @@
 
 #include <gtest/gtest.h>
 
-#include <errno.h>
-#include <stdlib.h>
-#include <unistd.h>
-
 #include <string>
-#include <vector>
 
 #include "util/parson.h"
 
@@ -22,28 +17,14 @@ class ParsonMissingFileTest : public ::testing::Test {
 protected:
    void SetUp() override
    {
-      std::string template_path = ::testing::TempDir();
-      if (template_path.empty() || template_path.back() != '/')
-         template_path += '/';
-      template_path += "parson_test.XXXXXX";
+      const testing::internal::FilePath temp_dir(::testing::TempDir());
+      const testing::internal::FilePath missing_file =
+         testing::internal::FilePath::GenerateUniqueFileName(
+            temp_dir, testing::internal::FilePath("parson_test_missing"),
+            "json");
 
-      temp_dir_template.assign(template_path.begin(), template_path.end());
-      temp_dir_template.push_back('\0');
-      char *created_dir = mkdtemp(temp_dir_template.data());
-      ASSERT_NE(created_dir, nullptr);
-
-      temp_dir = created_dir;
-      missing_path = temp_dir + "/missing.json";
-
-      errno = 0;
-      ASSERT_EQ(access(missing_path.c_str(), F_OK), -1);
-      ASSERT_EQ(errno, ENOENT);
-   }
-
-   void TearDown() override
-   {
-      if (!temp_dir.empty())
-         EXPECT_EQ(rmdir(temp_dir.c_str()), 0);
+      ASSERT_FALSE(missing_file.FileOrDirectoryExists());
+      missing_path = missing_file.string();
    }
 
    const char *
@@ -53,8 +34,6 @@ protected:
    }
 
 private:
-   std::vector<char> temp_dir_template;
-   std::string temp_dir;
    std::string missing_path;
 };
 
