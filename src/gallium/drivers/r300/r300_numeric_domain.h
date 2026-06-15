@@ -108,6 +108,13 @@ enum r300_numeric_domain {
     * end-to-end r300vk Vulkan DP4 readback (4/4 byte-exact). */
    R300_NUM_DOMAIN_U7_DOT,
 
+   /* Unsigned 7-bit five-term convolution column: 0 <= a_i, b_i <= 127,
+    * with at most five terms in any output column.
+    * Theorem: 5*(2^7-1)^2 = 80645 < 2^17 = 131072.
+    * This is the exactness domain for 32x32 -> 64-bit multiply split into
+    * five 7-bit limbs; it is wider than the four-term DP4 domain. */
+   R300_NUM_DOMAIN_U7_CONV5,
+
    /* Signed 8-bit magnitude dot product: |a_i|, |b_i| <= 127.
     * Theorem: |sum| <= 4*(2^7-1)^2 = 64516 < 2^17.
     * Hardware-confirmed as part of the dp4 probe (signed cancellation and
@@ -207,7 +214,7 @@ struct r300_virtual_op_info {
    enum r300_vop_status        status;
    const char                 *theorem;          /* bound proof or NULL */
    const char                 *mesa_hook;        /* NIR detector function name or NULL */
-   const char                 *retained_bundle;  /* steinmarder bundle path or NULL */
+   const char                 *retained_bundle;  /* reserved; checked-in Mesa rows use NULL */
 };
 
 /* The known virtual op catalog.  Terminated by a row with op_name == NULL.

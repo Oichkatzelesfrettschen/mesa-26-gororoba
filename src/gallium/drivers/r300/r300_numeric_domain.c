@@ -89,6 +89,19 @@ static const struct r300_numeric_domain_info r300_numeric_domain_table[] = {
       .theorem           = "4*(2^7-1)^2 = 64516 < 2^17 = 131072",
    },
    {
+      .domain            = R300_NUM_DOMAIN_U7_CONV5,
+      .name              = "u7-conv5",
+      .rounding          = R300_ROUND_EXACT,
+      .exact_int_bound   = 80645,  /* 5*(2^7-1)^2 = 5*127^2 = 80645 */
+      .significand_bits  = 0,
+      .has_nan           = false,
+      .has_inf           = false,
+      .has_subnormal     = false,
+      .is_native_compute = true,
+      .evidence          = R300_EVIDENCE_HW_CONFIRMED,
+      .theorem           = "5*(2^7-1)^2 = 80645 < 2^17 = 131072",
+   },
+   {
       .domain            = R300_NUM_DOMAIN_I8_MAG_DOT,
       .name              = "i8-mag-dot",
       .rounding          = R300_ROUND_EXACT,
@@ -223,8 +236,9 @@ r300_numeric_domain_info(enum r300_numeric_domain domain)
 /* Virtual op catalog for the RS482 compute-as-raster substrate.
  *
  * Each row records one named virtual op: domain, status, theorem, Mesa
- * detection hook, and (when available) the sibling steinmarder retained
- * bundle path.  The catalog is the C-side representation of the TSV substrate
+ * detection hook, and a retained_bundle field that stays NULL in checked-in
+ * Mesa rows.  External evidence paths belong in retained bundles, not compiled
+ * metadata.  The catalog is the C-side representation of the TSV substrate
  * table; the two must be kept in sync when a new op is confirmed.
  *
  * Terminated by a row with op_name == NULL. */
@@ -696,7 +710,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "identity-map readback copy delivers C to every element; "
                          "no per-element fragment ALU needed",
       .mesa_hook       = "r300_nir_detect_const_fill_pattern",
-      .retained_bundle = "cachyos_vostro1000_rs482_constfill_rb3d_roundtrip_20260611",
+      .retained_bundle = NULL,
    },
    {
       /* First verb that materializes the work-item index as an FP24 VALUE:
@@ -714,18 +728,17 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "stride * (total - 1) + offset <= 2^17 (probe: 131072 "
                          "elements byte-exact at the ceiling, explicit no-op above)",
       .mesa_hook       = "r300_nir_detect_affine_iota_pattern",
-      .retained_bundle = "cachyos_vostro1000_rs482_affine_iota_index_20260612",
+      .retained_bundle = NULL,
    },
    {
       /* 32x32 -> 64-bit integer multiply on the FP24 ALU: each factor splits
        * into five 7-bit limbs and the product's nine convolution columns
        * c_k = sum_{i+j=k} a_i * b_j each stay <= 5 * 127^2 = 80645 < 2^17,
-       * an exact FP24 integer (the U7_DOT property extended to five terms).
+       * an exact FP24 integer (the U7_CONV5 property).
        * Carry propagation over the byte-decomposed columns is integer
-       * bookkeeping outside the FP24 ALU (host-side today; a multipass
-       * chain when a replay verb lands). */
+       * bookkeeping outside the FP24 ALU in the single-pass catalog entry. */
       .op_name         = "MULTILIMB7_U32_MUL",
-      .domain          = R300_NUM_DOMAIN_U7_DOT,
+      .domain          = R300_NUM_DOMAIN_U7_CONV5,
       .status          = R300_VOP_HW_CONFIRMED,
       .theorem         = "a * b for 32-bit a, b via five 7-bit limbs: every "
                          "convolution column <= 5 * 127^2 < 2^17 is FP24-exact; "
@@ -734,7 +747,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "(low-32 wraparound), sampled bytes snapped with "
                          "floor(v * 255 + 0.5) before limb extraction",
       .mesa_hook       = "r300_nir_detect_multilimb_mul_pattern",
-      .retained_bundle = "cachyos_vostro1000_rs482_multilimb_mul_verb_20260612",
+      .retained_bundle = NULL,
    },
    {
       /* One log4 tree level per LINEAR tap at a 2x2 texel corner: the 6-bit
@@ -749,25 +762,28 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "sums quantize within one byte; UNORM8 payloads only "
                          "(float payloads point-sample on RS482)",
       .mesa_hook       = "r300_nir_detect_log4_pool_pattern",
-      .retained_bundle = "cachyos_vostro1000_rs482_log4_pool_verb_20260612",
+      .retained_bundle = NULL,
    },
    {
       /* Versioned CAS: GL exposes ONE stencil ref, so REPLACE writes the
        * value the EQUAL test compared against -- the arbitrary-value swap
        * "test expect, write new" is impossible by API algebra, not by
        * silicon.  The expressible primitive advances exactly the cells at
-       * version v to v + 1 and returns the success count from the same
-       * draw's ZPASS query. */
+       * version v, where v < 255, to v + 1 and returns the success count from
+       * the same draw's ZPASS query.  Version 255 is a saturating terminal
+       * state for INCR, not an advance. */
       .op_name         = "STENCIL_VERSIONED_CAS",
       .domain          = R300_NUM_DOMAIN_U8_STENCIL,
       .status          = R300_VOP_HW_CONFIRMED,
-      .theorem         = "func EQUAL v + op INCR + SAMPLES_PASSED: cells at "
-                         "version v advance to v + 1 and the query returns the "
-                         "swap-success count in one draw; probe ladder "
+      .theorem         = "func EQUAL v + op INCR + SAMPLES_PASSED for "
+                         "0 <= v < 255: cells at version v advance to v + 1 "
+                         "and the query returns the swap-success count in one "
+                         "draw; v == 255 is the saturating terminal state; "
+                         "probe ladder "
                          "advance(0) = all, advance(0) = none, advance(1) = all, "
                          "end state EQUAL 2 = all",
       .mesa_hook       = NULL,
-      .retained_bundle = "cachyos_vostro1000_rs482_multilimb_log4_stencilcas_20260612",
+      .retained_bundle = NULL,
    },
    {
       /* CAS ROUTE A: per-element constant-operand compare-and-swap on the
@@ -785,7 +801,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "patterns x 4096 elements exact incl one-bit deltas "
                          "and the operand-order discriminator",
       .mesa_hook       = "r300_nir_detect_cas_pattern",
-      .retained_bundle = "cachyos_vostro1000_rs482_cas_const_verb_20260612",
+      .retained_bundle = NULL,
    },
    {
       /* QFM derived fused ops: compositions of the built primitives. */
