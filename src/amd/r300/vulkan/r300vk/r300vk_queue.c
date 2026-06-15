@@ -163,6 +163,19 @@ r300vk_image_tile_origin_y(const struct r300vk_image *img, uint32_t tile_row)
    return img && tile_row > 0 ? img->tile_height[0] : 0;
 }
 
+/* The colour attachments of a render pass share the render area's extent and
+ * therefore one tile layout, so the first bound attachment is the reference for
+ * tile geometry, tile-pass counting, and debug sampling.  Returns NULL for a
+ * pass with no colour attachment (depth-only or attachment-less). */
+static struct r300vk_image *
+r300vk_begin_rp_ref_image(const struct r300vk_cmd_begin_render_pass *rp)
+{
+   for (uint32_t slot = 0; slot < rp->color_count; slot++)
+      if (rp->color_image[slot])
+         return rp->color_image[slot];
+   return NULL;
+}
+
 static uint32_t
 r300vk_cmd_tile_pass_count(const struct r300vk_cmd_buffer *cmd)
 {
@@ -174,7 +187,8 @@ r300vk_cmd_tile_pass_count(const struct r300vk_cmd_buffer *cmd)
          continue;
 
       pass_count = MAX2(pass_count,
-                        r300vk_image_tile_count(entry->begin_rp.color_image));
+                        r300vk_image_tile_count(
+                           r300vk_begin_rp_ref_image(&entry->begin_rp)));
    }
 
    return pass_count;
@@ -1602,6 +1616,51 @@ r300vk_replay_bind_pipeline(struct r300vk_device *device,
    *vb_dirty = true;
 }
 
+/* Apply the begin load-op clears for a freshly bound render pass.  pipe->clear
+ * paints one colour across every bound cbuf, so distinct per-attachment clear
+ * colours go through clear_render_target per slot; depth/stencil uses
+ * pipe->clear.  The common single-attachment case keeps the original combined
+ * colour+ds clear so its CMASK fast-fill path is unchanged. */
+static void
+r300vk_replay_begin_clears(struct pipe_context *pipe,
+                           struct pipe_framebuffer_state *fb,
+                           const struct r300vk_cmd_begin_render_pass *brp)
+{
+   unsigned ds_bits = 0;
+   if (fb->zsbuf.texture && brp->ds_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+      ds_bits |= PIPE_CLEAR_DEPTH;
+      if (util_format_has_stencil(util_format_description(brp->ds_format)))
+         ds_bits |= PIPE_CLEAR_STENCIL;
+   }
+
+   const bool single_color =
+      fb->nr_cbufs == 1 && fb->cbufs[0].texture &&
+      brp->load_op[0] == VK_ATTACHMENT_LOAD_OP_CLEAR;
+
+   if (single_color) {
+      union pipe_color_union cv;
+      memcpy(cv.f, brp->clear_color[0].float32, sizeof(cv.f));
+      pipe->clear(pipe, PIPE_CLEAR_COLOR0 | ds_bits, 0xF, 0, NULL, &cv,
+                  brp->clear_depth, brp->clear_stencil);
+      return;
+   }
+
+   for (uint32_t slot = 0; slot < brp->color_count; slot++) {
+      if (!fb->cbufs[slot].texture ||
+          brp->load_op[slot] != VK_ATTACHMENT_LOAD_OP_CLEAR)
+         continue;
+      union pipe_color_union cv;
+      memcpy(cv.f, brp->clear_color[slot].float32, sizeof(cv.f));
+      pipe->clear_render_target(pipe, &fb->cbufs[slot], &cv,
+                                0, 0, fb->width, fb->height, false);
+   }
+   if (ds_bits) {
+      union pipe_color_union cv;
+      memset(&cv, 0, sizeof(cv));
+      pipe->clear(pipe, ds_bits, 0xF, 0, NULL, &cv,
+                  brp->clear_depth, brp->clear_stencil);
+   }
+}
 
 static void
 r300vk_replay_begin_render_pass(struct r300vk_device *device,
@@ -1625,31 +1684,42 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
    fb.width  = MIN2(e->begin_rp.width, R300VK_R3XX_MAX_RENDER_DIMENSION);
    fb.height = MIN2(e->begin_rp.height, R300VK_R3XX_MAX_RENDER_DIMENSION);
    *skip_render_pass = false;
-   if (e->begin_rp.color_image) {
-      const struct r300vk_image *img = e->begin_rp.color_image;
-      const uint32_t tile_count = r300vk_image_tile_count(img);
+   /* All colour attachments share the render area's extent and one tile layout;
+    * the reference (first bound) image drives the tile geometry, and the same
+    * tile_pass selects the matching tile in each attachment. */
+   struct r300vk_image *ref = r300vk_begin_rp_ref_image(&e->begin_rp);
+   if (ref) {
+      const uint32_t tile_count = r300vk_image_tile_count(ref);
       if (tile_pass >= tile_count) {
          *skip_render_pass = true;
          return;
       }
 
-      const uint32_t tile_col = r300vk_image_tile_col(img, tile_pass);
-      const uint32_t tile_row = r300vk_image_tile_row(img, tile_pass);
-      *tile_origin_x = r300vk_image_tile_origin_x(img, tile_col);
-      *tile_origin_y = r300vk_image_tile_origin_y(img, tile_row);
-      *tile_width = img->tile_cols ? img->tile_width[tile_col] : fb.width;
-      *tile_height = img->tile_rows ? img->tile_height[tile_row] : fb.height;
+      const uint32_t tile_col = r300vk_image_tile_col(ref, tile_pass);
+      const uint32_t tile_row = r300vk_image_tile_row(ref, tile_pass);
+      *tile_origin_x = r300vk_image_tile_origin_x(ref, tile_col);
+      *tile_origin_y = r300vk_image_tile_origin_y(ref, tile_row);
+      *tile_width = ref->tile_cols ? ref->tile_width[tile_col] : fb.width;
+      *tile_height = ref->tile_rows ? ref->tile_height[tile_row] : fb.height;
       fb.width = *tile_width;
       fb.height = *tile_height;
 
-      fb.nr_cbufs = 1;
-      fb.cbufs[0].texture     = img->tiles[tile_pass]
-                                ? img->tiles[tile_pass]
-                                : img->resource;
-      fb.cbufs[0].format      = e->begin_rp.color_format;
-      fb.cbufs[0].level       = 0;
-      fb.cbufs[0].first_layer = 0;
-      fb.cbufs[0].last_layer  = 0;
+      /* Bind each colour attachment at its own slot so fragment output i lands
+       * on attachment i (R300 ROP order COLOROFFSET0+4*i).  An unbound slot
+       * (VK_ATTACHMENT_UNUSED) keeps a null cbuf, which r300g tolerates. */
+      fb.nr_cbufs = e->begin_rp.color_count;
+      for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++) {
+         const struct r300vk_image *img = e->begin_rp.color_image[slot];
+         if (!img)
+            continue;
+         fb.cbufs[slot].texture     = img->tiles[tile_pass]
+                                      ? img->tiles[tile_pass]
+                                      : img->resource;
+         fb.cbufs[slot].format      = e->begin_rp.color_format[slot];
+         fb.cbufs[slot].level       = 0;
+         fb.cbufs[slot].first_layer = 0;
+         fb.cbufs[slot].last_layer  = 0;
+      }
    } else if (tile_pass > 0) {
       *skip_render_pass = true;
       return;
@@ -1671,23 +1741,7 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
       }
    }
    pipe->set_framebuffer_state(pipe, &fb);
-
-   unsigned clear_bits = 0;
-   if (e->begin_rp.color_image &&
-       e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
-      clear_bits |= PIPE_CLEAR_COLOR0;
-   if (fb.zsbuf.texture &&
-       e->begin_rp.ds_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-      clear_bits |= PIPE_CLEAR_DEPTH;
-      if (util_format_has_stencil(util_format_description(e->begin_rp.ds_format)))
-         clear_bits |= PIPE_CLEAR_STENCIL;
-   }
-   if (clear_bits) {
-      union pipe_color_union cv;
-      memcpy(cv.f, e->begin_rp.clear_color.float32, sizeof(cv.f));
-      pipe->clear(pipe, clear_bits, 0xF, 0, NULL, &cv,
-                  e->begin_rp.clear_depth, e->begin_rp.clear_stencil);
-   }
+   r300vk_replay_begin_clears(pipe, &fb, &e->begin_rp);
 }
 
 static void
@@ -1701,10 +1755,17 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
                                 uint32_t tile_height)
 {
    if (!render_pass ||
-       (!render_pass->begin_rp.color_image && !render_pass->begin_rp.ds_image))
+       (!r300vk_begin_rp_ref_image(&render_pass->begin_rp) &&
+        !render_pass->begin_rp.ds_image))
       return;
 
-   const struct r300vk_image *img = render_pass->begin_rp.color_image;
+   /* A colour clear names its target subpass slot; select that attachment.
+    * Depth/stencil clears ignore the slot. */
+   const uint32_t color_slot = clear->color_attachment;
+   const struct r300vk_image *img =
+      color_slot < render_pass->begin_rp.color_count
+         ? render_pass->begin_rp.color_image[color_slot]
+         : NULL;
    const int64_t req_min_x = clear->rect.offset.x;
    const int64_t req_min_y = clear->rect.offset.y;
    const int64_t req_max_x = req_min_x + clear->rect.extent.width;
@@ -1726,7 +1787,7 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
       memset(&surf, 0, sizeof(surf));
       surf.texture     = img->tiles[tile_pass] ? img->tiles[tile_pass] :
                                                 img->resource;
-      surf.format      = render_pass->begin_rp.color_format;
+      surf.format      = render_pass->begin_rp.color_format[color_slot];
       surf.level       = 0;
       surf.first_layer = 0;
       surf.last_layer  = 0;
@@ -1826,7 +1887,9 @@ r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
                                  uint32_t tile_height)
 {
    struct pipe_context *pipe = device->pipe;
-   const struct r300vk_image *img = rp->begin_rp.color_image;
+   const struct r300vk_image *img = r300vk_begin_rp_ref_image(&rp->begin_rp);
+   if (!img)
+      return;
    struct pipe_resource *tex = img->tiles[tile_pass] ? img->tiles[tile_pass]
                                                      : img->resource;
    if (!tex || !tile_width || !tile_height)
@@ -1936,12 +1999,16 @@ r300vk_replay_gpu(struct r300vk_device *device,
                                             tile_origin_x, tile_origin_y,
                                             tile_width, tile_height);
             }
-            /* Only loadOp == CLEAR emits a GPU write at begin (the color-image
-             * clear) that a later host copy-image-to-buffer could read; a LOAD
-             * pass emits nothing here, and its draws set gpu_pending themselves.
-             * Gating avoids a needless drain before an in-order host transfer. */
-            if (e->begin_rp.load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
-               *gpu_pending = true;
+            /* Only loadOp == CLEAR emits a GPU write at begin (a colour-image
+             * clear on any attachment) that a later host copy-image-to-buffer
+             * could read; a LOAD pass emits nothing here, and its draws set
+             * gpu_pending themselves.  Gating avoids a needless drain before an
+             * in-order host transfer. */
+            for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
+               if (e->begin_rp.load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+                  *gpu_pending = true;
+                  break;
+               }
             break;
 
          case R300VK_CMD_BIND_PIPELINE:
@@ -2114,7 +2181,8 @@ r300vk_replay_gpu(struct r300vk_device *device,
 
          case R300VK_CMD_END_RENDER_PASS:
             if (device->dbg_log_pixels && !skip_render_pass &&
-                current_render_pass && current_render_pass->begin_rp.color_image)
+                current_render_pass &&
+                r300vk_begin_rp_ref_image(&current_render_pass->begin_rp))
                r300vk_dbg_log_attachment_pixels(device,
                                                 current_render_pass,
                                                 tile_pass,

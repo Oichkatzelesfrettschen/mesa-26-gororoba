@@ -1304,10 +1304,13 @@ r300vk_init_graphics_pipeline_cso_state(struct r300vk_device *device,
                                         struct r300vk_pipeline *pl,
                                         const VkGraphicsPipelineCreateInfo *info)
 {
-   /* Translate the pipeline-static colour-blend state for the single render
-    * target (maxColorAttachments == 1).  VkColorComponentFlags shares the
-    * R/G/B/A bit order with PIPE_MASK_*; absent state (rasterizer discard or
-    * no colour attachment) leaves blending off with a full writemask. */
+   /* Translate the pipeline-static colour-blend state.  r300 shares one blend
+    * state and colour mask across all MRT cbufs, so independentBlend is false
+    * and Vulkan guarantees every pAttachments[] entry is identical; taking
+    * pAttachments[0] is therefore correct for all bound attachments.
+    * VkColorComponentFlags shares the R/G/B/A bit order with PIPE_MASK_*; absent
+    * state (rasterizer discard or no colour attachment) leaves blending off with
+    * a full writemask. */
    const VkPipelineColorBlendStateCreateInfo *vk_cb_state =
       info ? info->pColorBlendState : NULL;
    struct pipe_blend_state bs = {0};

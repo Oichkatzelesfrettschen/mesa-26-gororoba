@@ -142,13 +142,54 @@ r300vk_EndCommandBuffer(VkCommandBuffer commandBuffer)
    return vk_command_buffer_end(&cmd->base);
 }
 
+/* Resolve one subpass colour-attachment slot through the framebuffer (or the
+ * imageless begin-info) to its image, pipe format, load op, and clear colour.
+ * Leaves the outputs at their not-bound defaults (NULL image, FORMAT_NONE,
+ * DONT_CARE) for VK_ATTACHMENT_UNUSED or a null view. */
+static void
+r300vk_record_resolve_rp_color_slot(
+   const struct r300vk_render_pass *rp,
+   const struct r300vk_framebuffer *fb,
+   const VkRenderPassAttachmentBeginInfo *attach_begin,
+   const VkRenderPassBeginInfo *pRenderPassBegin,
+   uint32_t slot,
+   struct r300vk_image **out_image,
+   enum pipe_format *out_format,
+   VkAttachmentLoadOp *out_load_op,
+   VkClearColorValue *out_clear)
+{
+   *out_image   = NULL;
+   *out_format  = PIPE_FORMAT_NONE;
+   *out_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+   memset(out_clear, 0, sizeof(*out_clear));
+
+   uint32_t att_idx = rp->color_attachment_refs[slot];
+   if (att_idx == VK_ATTACHMENT_UNUSED ||
+       att_idx >= fb->attachment_count || att_idx >= rp->attachment_count)
+      return;
+
+   VkImageView view_handle = fb->imageless
+      ? ((attach_begin && att_idx < attach_begin->attachmentCount)
+            ? attach_begin->pAttachments[att_idx] : VK_NULL_HANDLE)
+      : fb->attachments[att_idx];
+   if (view_handle == VK_NULL_HANDLE)
+      return;
+
+   VK_FROM_HANDLE(r300vk_image_view, iv, view_handle);
+   *out_image   = container_of(iv->vk.image, struct r300vk_image, vk);
+   *out_format  = r300vk_vk_format_to_pipe_format(rp->attachments[att_idx].format);
+   *out_load_op = rp->attachments[att_idx].load_op;
+   if (*out_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+       pRenderPassBegin->clearValueCount > att_idx)
+      *out_clear = pRenderPassBegin->pClearValues[att_idx].color;
+}
+
 /* Shared body for the VkRenderPass begin entry points, both the 1.0 form and
  * the VK_KHR_create_renderpass2 form.  Both receive the same
  * VkRenderPassBeginInfo; the 2.0 VkSubpassBeginInfo carries only the subpass
- * contents, which the single-subpass replay does not branch on.  Resolves the
- * first colour attachment to its pipe_resource and pipe_format and records the
- * R300VK_CMD_BEGIN_RENDER_PASS replay entry; skips the slot for
- * VK_ATTACHMENT_UNUSED. */
+ * contents, which the single-subpass replay does not branch on.  Resolves every
+ * colour attachment to its slot and records the R300VK_CMD_BEGIN_RENDER_PASS
+ * replay entry. */
 static void
 r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
                                 const VkRenderPassBeginInfo *pRenderPassBegin)
@@ -156,40 +197,32 @@ r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
    VK_FROM_HANDLE(r300vk_render_pass, rp, pRenderPassBegin->renderPass);
    VK_FROM_HANDLE(r300vk_framebuffer, fb, pRenderPassBegin->framebuffer);
 
-   struct r300vk_image *color_image = NULL;
-   enum pipe_format color_format = PIPE_FORMAT_NONE;
-   VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-   VkClearColorValue clear_color = {0};
+   /* A normal framebuffer holds the views; an imageless one
+    * (VK_KHR_imageless_framebuffer) supplies them at begin time in a
+    * VkRenderPassAttachmentBeginInfo chained on pRenderPassBegin. */
+   const VkRenderPassAttachmentBeginInfo *attach_begin =
+      fb->imageless ? vk_find_struct_const(pRenderPassBegin,
+                                           RENDER_PASS_ATTACHMENT_BEGIN_INFO)
+                    : NULL;
 
-   if (rp->color_attachment_count > 0) {
-      uint32_t att_idx = rp->color_attachment_refs[0];
-      if (att_idx != VK_ATTACHMENT_UNUSED &&
-          att_idx < fb->attachment_count &&
-          att_idx < rp->attachment_count) {
-         /* A normal framebuffer holds the view; an imageless one
-          * (VK_KHR_imageless_framebuffer) supplies the views at begin time in a
-          * VkRenderPassAttachmentBeginInfo chained on pRenderPassBegin. */
-         VkImageView view_handle;
-         if (fb->imageless) {
-            const VkRenderPassAttachmentBeginInfo *attach_begin =
-               vk_find_struct_const(pRenderPassBegin,
-                                    RENDER_PASS_ATTACHMENT_BEGIN_INFO);
-            view_handle = (attach_begin && att_idx < attach_begin->attachmentCount)
-                          ? attach_begin->pAttachments[att_idx]
-                          : VK_NULL_HANDLE;
-         } else {
-            view_handle = fb->attachments[att_idx];
-         }
-         if (view_handle != VK_NULL_HANDLE) {
-            VK_FROM_HANDLE(r300vk_image_view, iv, view_handle);
-            color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
-            color_format = r300vk_vk_format_to_pipe_format(rp->attachments[att_idx].format);
-            load_op      = rp->attachments[att_idx].load_op;
-            if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR &&
-                pRenderPassBegin->clearValueCount > att_idx)
-               clear_color = pRenderPassBegin->pClearValues[att_idx].color;
-         }
-      }
+   /* Resolve every colour attachment in the subpass into its slot, so a
+    * fragment-shader output at location i lands on color_image[i].  A slot left
+    * unbound (VK_ATTACHMENT_UNUSED or a null view) stays NULL; the replay binds
+    * it as an empty cbuf so the slot ordering is preserved. */
+   struct r300vk_image *color_image[PIPE_MAX_COLOR_BUFS] = {0};
+   enum pipe_format color_format[PIPE_MAX_COLOR_BUFS];
+   VkAttachmentLoadOp load_op[PIPE_MAX_COLOR_BUFS];
+   VkClearColorValue clear_color[PIPE_MAX_COLOR_BUFS] = {0};
+   struct r300vk_image *ref_color = NULL;
+   uint32_t color_count =
+      MIN2(rp->color_attachment_count, (uint32_t)PIPE_MAX_COLOR_BUFS);
+   for (uint32_t slot = 0; slot < color_count; slot++) {
+      r300vk_record_resolve_rp_color_slot(rp, fb, attach_begin, pRenderPassBegin,
+                                          slot, &color_image[slot],
+                                          &color_format[slot], &load_op[slot],
+                                          &clear_color[slot]);
+      if (color_image[slot] && !ref_color)
+         ref_color = color_image[slot];
    }
 
    /* Resolve the subpass depth/stencil attachment the same way: through the
@@ -230,19 +263,23 @@ r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
    if (!e) return;
 
    e->type = R300VK_CMD_BEGIN_RENDER_PASS;
-   e->begin_rp.color_image  = color_image;
-   e->begin_rp.color_format = color_format;
+   memset(&e->begin_rp, 0, sizeof(e->begin_rp));
+   e->begin_rp.color_count = color_count;
+   for (uint32_t slot = 0; slot < color_count; slot++) {
+      e->begin_rp.color_image[slot]  = color_image[slot];
+      e->begin_rp.color_format[slot] = color_format[slot];
+      e->begin_rp.load_op[slot]      = load_op[slot];
+      e->begin_rp.clear_color[slot]  = clear_color[slot];
+   }
    e->begin_rp.width        = fb->width;
    e->begin_rp.height       = fb->height;
-   e->begin_rp.load_op      = load_op;
-   e->begin_rp.clear_color  = clear_color;
    e->begin_rp.ds_image      = ds_image;
    e->begin_rp.ds_format     = ds_format;
    e->begin_rp.ds_load_op    = ds_load_op;
    e->begin_rp.clear_depth   = clear_depth;
    e->begin_rp.clear_stencil = clear_stencil;
 
-   cmd->current_color_image = color_image;
+   cmd->current_color_image = ref_color;
 }
 
 static void
@@ -299,30 +336,41 @@ r300vk_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
  * records the same R300VK_CMD_BEGIN_RENDER_PASS entry that
  * r300vk_replay_begin_render_pass consumes: colour attachment 0 resolved to its
  * pipe_resource and pipe_format, the render-area far corner as the framebuffer
- * extent, and the load-op clear value.  It binds attachment 0 only; depth and
- * stencil are the single-cbuf limit the replay's framebuffer state already
- * carries, not one this entry point introduces. */
+ * extent, and the load-op clear value.  Each colour attachment is bound at its
+ * own slot so a fragment-shader output at location i targets attachment i;
+ * depth/stencil is the single zsbuf the replay's framebuffer state carries. */
 void
 r300vk_CmdBeginRendering(VkCommandBuffer commandBuffer,
                           const VkRenderingInfo *pRenderingInfo)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
 
-   struct r300vk_image *color_image = NULL;
-   enum pipe_format color_format = PIPE_FORMAT_NONE;
-   VkAttachmentLoadOp load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-   VkClearColorValue clear_color = {0};
+   /* Resolve every colour attachment into its slot; a null view leaves the
+    * slot NULL (the replay binds it as an empty cbuf, preserving slot order). */
+   struct r300vk_image *color_image[PIPE_MAX_COLOR_BUFS] = {0};
+   enum pipe_format color_format[PIPE_MAX_COLOR_BUFS];
+   VkAttachmentLoadOp load_op[PIPE_MAX_COLOR_BUFS];
+   VkClearColorValue clear_color[PIPE_MAX_COLOR_BUFS] = {0};
+   struct r300vk_image *ref_color = NULL;
+   uint32_t color_count =
+      MIN2(pRenderingInfo->colorAttachmentCount, (uint32_t)PIPE_MAX_COLOR_BUFS);
+   for (uint32_t slot = 0; slot < color_count; slot++) {
+      color_format[slot] = PIPE_FORMAT_NONE;
+      load_op[slot]      = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 
-   if (pRenderingInfo->colorAttachmentCount > 0) {
-      const VkRenderingAttachmentInfo *att = &pRenderingInfo->pColorAttachments[0];
-      if (att->imageView != VK_NULL_HANDLE) {
-         VK_FROM_HANDLE(r300vk_image_view, iv, att->imageView);
-         color_image  = container_of(iv->vk.image, struct r300vk_image, vk);
-         color_format = r300vk_vk_format_to_pipe_format(iv->vk.format);
-         load_op      = att->loadOp;
-         if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
-            clear_color = att->clearValue.color;
-      }
+      const VkRenderingAttachmentInfo *att =
+         &pRenderingInfo->pColorAttachments[slot];
+      if (att->imageView == VK_NULL_HANDLE)
+         continue;
+
+      VK_FROM_HANDLE(r300vk_image_view, iv, att->imageView);
+      color_image[slot]  = container_of(iv->vk.image, struct r300vk_image, vk);
+      color_format[slot] = r300vk_vk_format_to_pipe_format(iv->vk.format);
+      load_op[slot]      = att->loadOp;
+      if (load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR)
+         clear_color[slot] = att->clearValue.color;
+      if (!ref_color)
+         ref_color = color_image[slot];
    }
 
    /* VkRenderingInfo names the depth attachment directly.  A combined
@@ -354,19 +402,23 @@ r300vk_CmdBeginRendering(VkCommandBuffer commandBuffer,
    if (!e) return;
 
    e->type = R300VK_CMD_BEGIN_RENDER_PASS;
-   e->begin_rp.color_image  = color_image;
-   e->begin_rp.color_format = color_format;
+   memset(&e->begin_rp, 0, sizeof(e->begin_rp));
+   e->begin_rp.color_count = color_count;
+   for (uint32_t slot = 0; slot < color_count; slot++) {
+      e->begin_rp.color_image[slot]  = color_image[slot];
+      e->begin_rp.color_format[slot] = color_format[slot];
+      e->begin_rp.load_op[slot]      = load_op[slot];
+      e->begin_rp.clear_color[slot]  = clear_color[slot];
+   }
    e->begin_rp.width        = area->offset.x + area->extent.width;
    e->begin_rp.height       = area->offset.y + area->extent.height;
-   e->begin_rp.load_op      = load_op;
-   e->begin_rp.clear_color  = clear_color;
    e->begin_rp.ds_image      = ds_image;
    e->begin_rp.ds_format     = ds_format;
    e->begin_rp.ds_load_op    = ds_load_op;
    e->begin_rp.clear_depth   = clear_depth;
    e->begin_rp.clear_stencil = clear_stencil;
 
-   cmd->current_color_image = color_image;
+   cmd->current_color_image = ref_color;
 }
 
 void
@@ -1086,6 +1138,8 @@ r300vk_CmdClearAttachments(VkCommandBuffer commandBuffer,
 
          e->type                      = R300VK_CMD_CLEAR_ATTACHMENTS;
          e->clear_attachments.aspect  = aspect;
+         e->clear_attachments.color_attachment =
+            pAttachments[attachment].colorAttachment;
          e->clear_attachments.color   = pAttachments[attachment].clearValue.color;
          e->clear_attachments.depth   =
             pAttachments[attachment].clearValue.depthStencil.depth;

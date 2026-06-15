@@ -64,12 +64,20 @@ enum r300vk_cmd_type {
 struct r300vk_query_pool;
 
 struct r300vk_cmd_begin_render_pass {
-   struct r300vk_image  *color_image;
-   VkAttachmentLoadOp    load_op;
-   VkClearColorValue     clear_color;
+   /* Up to PIPE_MAX_COLOR_BUFS colour attachments, indexed by attachment slot
+    * so a fragment-shader output at location i targets color_image[i] (the
+    * R300 ROP binds COLOROFFSET0+4*i and US_OUT_FMT_i in the same slot order).
+    * A slot for VK_ATTACHMENT_UNUSED stays NULL; color_count is one past the
+    * highest bound slot.  Every bound attachment shares the render area's
+    * extent (the Vulkan render-pass rule), so they share one tile layout and
+    * the same tile_pass selects the matching tile in each. */
+   uint32_t              color_count;
+   struct r300vk_image  *color_image[PIPE_MAX_COLOR_BUFS];
+   VkAttachmentLoadOp    load_op[PIPE_MAX_COLOR_BUFS];
+   VkClearColorValue     clear_color[PIPE_MAX_COLOR_BUFS];
+   enum pipe_format      color_format[PIPE_MAX_COLOR_BUFS];
    uint32_t              width;
    uint32_t              height;
-   enum pipe_format      color_format;
    /* Depth/stencil attachment; NULL when the pass has none, in which case
     * every draw in the pass runs with depth and stencil tests disabled (the
     * Vulkan no-attachment semantics, and the only defined r300g behaviour
@@ -228,6 +236,10 @@ struct r300vk_cmd_clear_color_image {
  * are intentionally ignored until r300vk has a depth/stencil attachment model. */
 struct r300vk_cmd_clear_attachments {
    VkImageAspectFlags aspect;
+   /* For a colour clear, the subpass colour-attachment slot to clear (the
+    * VkClearAttachment::colorAttachment index); selects color_image[slot] in
+    * the bound render pass.  Ignored for depth/stencil aspects. */
+   uint32_t           color_attachment;
    VkClearColorValue  color;
    float              depth;
    uint32_t           stencil;
