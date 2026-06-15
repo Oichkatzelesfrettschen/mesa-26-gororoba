@@ -503,13 +503,16 @@ r300vk_identity_map_readback_rt(struct pipe_context *pipe,
       struct pipe_transfer *out_xfer = NULL;
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
+      const uint64_t total_bytes =
+         total_elements * util_format_get_blocksize(fmt);
       out_box.x      = out_offset;
-      out_box.width  = (int)(total_elements *
-                             util_format_get_blocksize(fmt));
+      out_box.width  = (int)total_bytes;
       out_box.height = 1; out_box.depth = 1;
+      unsigned map_flags = PIPE_MAP_WRITE | PIPE_MAP_DISCARD_RANGE;
+      if (out_offset == 0 && total_bytes >= out_buf->width0)
+         map_flags = PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE;
       void *out_bytes = pipe->buffer_map(pipe, out_buf, 0,
-                                         PIPE_MAP_WRITE |
-                                         PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                         map_flags,
                                          &out_box, &out_xfer);
       if (out_bytes) {
          r300vk_identity_map_copy_rows(out_bytes, copy_bytes_per_row,
@@ -5229,12 +5232,12 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
 
    uint32_t bind[2] = { pl->log4_pool.input_ssbo_binding,
                         pl->log4_pool.output_ssbo_binding };
-   if (!pl->log4_pool.input_binding_valid ||
-       !pl->log4_pool.output_binding_valid) {
-      for (unsigned i = 0; i < 2; i++)
-         if (!nth_storage_buffer_binding(set, i, &bind[i]))
-            return false;
-   }
+   if (!pl->log4_pool.input_binding_valid &&
+       !nth_storage_buffer_binding(set, 0, &bind[0]))
+      return false;
+   if (!pl->log4_pool.output_binding_valid &&
+       !nth_storage_buffer_binding(set, 1, &bind[1]))
+      return false;
    const struct r300vk_descriptor *desc[2];
    struct r300vk_buffer *buf[2];
    for (unsigned i = 0; i < 2; i++) {

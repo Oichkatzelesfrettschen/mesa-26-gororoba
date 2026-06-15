@@ -1585,6 +1585,132 @@ case_multilimb_mul(void)
    ralloc_free(iota);
 }
 
+enum log4_pool_variant {
+   LOG4_POOL_BASELINE,
+   LOG4_POOL_MIXED_INPUT_BINDING,
+   LOG4_POOL_INPUT_CONSTANT_BASE,
+   LOG4_POOL_OUTPUT_CONSTANT_BASE,
+   LOG4_POOL_VECTOR_LOAD,
+};
+
+static nir_def *
+log4_iadd_scalar(nir_builder *b, nir_def *a, unsigned a_chan, nir_def *c,
+                 unsigned c_chan)
+{
+   nir_alu_instr *alu = nir_alu_instr_create(b->shader, nir_op_iadd);
+   alu->src[0].src = nir_src_for_ssa(a);
+   alu->src[0].swizzle[0] = a_chan;
+   alu->src[1].src = nir_src_for_ssa(c);
+   alu->src[1].swizzle[0] = c_chan;
+   nir_def_init(&alu->instr, &alu->def, 1, 32);
+   nir_builder_instr_insert(b, &alu->instr);
+   return &alu->def;
+}
+
+static nir_def *
+log4_byte_offset(nir_builder *b, unsigned row_w, unsigned delta,
+                 unsigned base)
+{
+   nir_def *id = nir_load_global_invocation_id(b, 32);
+   nir_def *x = nir_channel(b, id, 0);
+   nir_def *y = nir_channel(b, id, 1);
+   nir_def *x_bytes = nir_imul(b, x, nir_imm_int(b, 8));
+   nir_def *y_bytes = nir_imul(b, y, nir_imm_int(b, (int)(row_w * 8u)));
+   nir_def *off = nir_iadd(b, x_bytes, y_bytes);
+   if (delta || base)
+      off = nir_iadd_imm(b, off, (int)(delta + base));
+   return off;
+}
+
+static nir_def *
+log4_store_offset(nir_builder *b, unsigned row_w, unsigned base)
+{
+   nir_def *id = nir_load_global_invocation_id(b, 32);
+   nir_def *x = nir_channel(b, id, 0);
+   nir_def *y = nir_channel(b, id, 1);
+   nir_def *x_bytes = nir_imul(b, x, nir_imm_int(b, 4));
+   nir_def *y_bytes = nir_imul(b, y, nir_imm_int(b, (int)(2u * row_w)));
+   nir_def *off = nir_iadd(b, x_bytes, y_bytes);
+   if (base)
+      off = nir_iadd_imm(b, off, (int)base);
+   return off;
+}
+
+static nir_shader *
+build_log4_pool_variant(enum log4_pool_variant variant)
+{
+   nir_builder b = cs_builder("cs_log4_pool");
+   const unsigned row_w = 8;
+   const unsigned half_row = row_w * 4u;
+   const unsigned input_base =
+      variant == LOG4_POOL_INPUT_CONSTANT_BASE ? 4u : 0u;
+   const unsigned output_base =
+      variant == LOG4_POOL_OUTPUT_CONSTANT_BASE ? 4u : 0u;
+   const unsigned deltas[4] = { 0, 4, half_row, half_row + 4 };
+   nir_def *load[4];
+
+   for (unsigned i = 0; i < 4; i++) {
+      const int binding_index =
+         variant == LOG4_POOL_MIXED_INPUT_BINDING && i == 3 ? 2 : 0;
+      const unsigned components =
+         variant == LOG4_POOL_VECTOR_LOAD && i == 0 ? 4 : 1;
+      nir_def *binding = nir_imm_int(&b, binding_index);
+      load[i] = nir_load_ssbo(&b, components,
+                              32, binding,
+                              log4_byte_offset(&b, row_w, deltas[i],
+                                               input_base),
+                              .align_mul = 4, .align_offset = 0);
+   }
+
+   nir_def *sum_lo = log4_iadd_scalar(&b, load[0], 0, load[1], 0);
+   nir_def *sum_hi = log4_iadd_scalar(&b, load[2], 0, load[3], 0);
+   nir_def *sum = log4_iadd_scalar(&b, sum_lo, 0, sum_hi, 0);
+   sum = nir_iadd_imm(&b, sum, 2);
+   nir_def *avg = nir_ushr(&b, sum, nir_imm_int(&b, 2));
+   nir_store_ssbo(&b, avg, nir_imm_int(&b, 1),
+                  log4_store_offset(&b, row_w, output_base),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_log4_pool(void)
+{
+   printf("log4 average-pool detector\n");
+   struct r300_compute_log4_pool_pattern lp = {0};
+
+   nir_shader *base = build_log4_pool_variant(LOG4_POOL_BASELINE);
+   r300_nir_detect_log4_pool_pattern(base, &lp);
+   CHECK(lp.is_log4_pool, "log4 scalar 2x2 average detects");
+   CHECK(lp.row_w == 8 && lp.input_binding_valid &&
+         lp.input_ssbo_binding == 0 && lp.output_binding_valid &&
+         lp.output_ssbo_binding == 1,
+         "log4 captures row width and constant bindings");
+   ralloc_free(base);
+
+   nir_shader *mixed = build_log4_pool_variant(LOG4_POOL_MIXED_INPUT_BINDING);
+   r300_nir_detect_log4_pool_pattern(mixed, &lp);
+   CHECK(!lp.is_log4_pool, "log4 mixed input SSBO bindings reject");
+   ralloc_free(mixed);
+
+   nir_shader *input_base =
+      build_log4_pool_variant(LOG4_POOL_INPUT_CONSTANT_BASE);
+   r300_nir_detect_log4_pool_pattern(input_base, &lp);
+   CHECK(!lp.is_log4_pool, "log4 nonzero input byte base rejects");
+   ralloc_free(input_base);
+
+   nir_shader *output_base =
+      build_log4_pool_variant(LOG4_POOL_OUTPUT_CONSTANT_BASE);
+   r300_nir_detect_log4_pool_pattern(output_base, &lp);
+   CHECK(!lp.is_log4_pool, "log4 nonzero output byte base rejects");
+   ralloc_free(output_base);
+
+   nir_shader *vector = build_log4_pool_variant(LOG4_POOL_VECTOR_LOAD);
+   r300_nir_detect_log4_pool_pattern(vector, &lp);
+   CHECK(!lp.is_log4_pool, "log4 swizzled vector SSBO load rejects");
+   ralloc_free(vector);
+}
+
 /* old = atomicCompSwap(g[gid], 0xDEADBEEF, 0x00FF10AA); r[gid] = old. */
 static nir_shader *
 build_cas_const_u32(bool const_operands)
@@ -1670,6 +1796,7 @@ main(void)
    case_index_consumption();
    case_affine_iota();
    case_multilimb_mul();
+   case_log4_pool();
    case_cas();
 
    if (g_failures) {

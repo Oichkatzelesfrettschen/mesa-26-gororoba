@@ -4467,6 +4467,16 @@ log4_collect_sum(const nir_def *def, const nir_intrinsic_instr *load[4],
                            depth + 1);
 }
 
+static bool
+log4_same_ssbo_source(nir_src a, nir_src b)
+{
+   if (nir_src_is_const(a) || nir_src_is_const(b))
+      return nir_src_is_const(a) && nir_src_is_const(b) &&
+             nir_src_as_uint(a) == nir_src_as_uint(b);
+
+   return a.ssa && b.ssa && a.ssa == b.ssa;
+}
+
 void
 r300_nir_detect_log4_pool_pattern(const nir_shader *s,
                                   struct r300_compute_log4_pool_pattern *out)
@@ -4486,6 +4496,14 @@ r300_nir_detect_log4_pool_pattern(const nir_shader *s,
    const nir_def *val = store[0]->src[0].ssa;
    if (val->num_components != 1 || val->bit_size != 32)
       return;
+   for (unsigned i = 0; i < 4; i++) {
+      if (!load[i] || load[i]->def.num_components != 1 ||
+          load[i]->def.bit_size != 32)
+         return;
+      if (i != 0 &&
+          !log4_same_ssbo_source(load[i]->src[0], load[0]->src[0]))
+         return;
+   }
 
    /* The half-up form: (sum of the four loads + 2) >> 2. */
    const nir_alu_instr *shr = nir_def_as_alu_or_null(val);
@@ -4519,6 +4537,8 @@ r300_nir_detect_log4_pool_pattern(const nir_shader *s,
                                              : (off[1].b < off[2].b
                             ? (off[1].b < off[3].b ? off[1].b : off[3].b)
                             : (off[2].b < off[3].b ? off[2].b : off[3].b));
+   if (base != 0)
+      return;
    const uint64_t half_row = sy / 2; /* 4W bytes */
    bool want[4] = { false, false, false, false };
    for (unsigned i = 0; i < 4; i++) {
@@ -4541,7 +4561,7 @@ r300_nir_detect_log4_pool_pattern(const nir_shader *s,
    /* Store offset: strides (4, 4 * W/2) -- the half-extent output grid. */
    struct log4_affine so;
    if (!log4_resolve_offset(store[0]->src[2].ssa, 0, 0, &so) || so.az != 0 ||
-       so.ax != 4 || so.ay != 2 * row_w)
+       so.b != 0 || so.ax != 4 || so.ay != 2 * row_w)
       return;
 
    out->row_w = (uint32_t)row_w;
