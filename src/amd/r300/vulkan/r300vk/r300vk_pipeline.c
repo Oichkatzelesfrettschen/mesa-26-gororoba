@@ -447,11 +447,10 @@ r300vk_nir_lower_subpass_input(nir_shader *nir, bool *out_has_input,
 
             b.cursor = nir_before_instr(instr);
             nir_def *fragcoord_xy = nir_build_frag_coord(&b, 2);
-            nir_def *inv_extent = nir_load_ubo(&b, 2, 32,
-                                               nir_imm_int(&b, 0),
-                                               nir_imm_int(&b, 0),
-                                               .align_mul = 8,
-                                               .range_base = 0, .range = 8);
+            /* DIAGNOSTIC (not for merge): hardcode inv_extent for the 64x64
+             * deqp images to test whether the CONST[0] inv_extent is the
+             * collapse.  Restore the load_ubo below once confirmed. */
+            nir_def *inv_extent = nir_imm_vec2(&b, 1.0f / 64.0f, 1.0f / 64.0f);
             nir_def *coord = nir_fmul(&b, fragcoord_xy, inv_extent);
 
             /* Build (once) a 2D sampler variable at the same descriptor
