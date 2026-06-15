@@ -11,6 +11,7 @@
  * never lowers or executes anything.
  */
 
+#include <math.h>
 #include <string.h>
 
 #include "r300_compute_admission.h"
@@ -3757,9 +3758,12 @@ index_walk_const_operand(const nir_alu_instr *alu, unsigned other,
       return false;
    if (is_float) {
       const double v = nir_src_as_float(alu->src[other].src);
-      if (v < 0.0 || v != (double)(uint64_t)v)
+      if (!isfinite(v) || v < 0.0 || v > (double)UINT32_MAX)
          return false;
-      *out = (uint64_t)v;
+      const uint64_t iv = (uint64_t)v;
+      if (v != (double)iv)
+         return false;
+      *out = iv;
    } else {
       const int64_t v = nir_src_as_int(alu->src[other].src);
       if (v < 0)
@@ -4114,26 +4118,27 @@ r300_nir_classify_index_consumption(const nir_shader *s,
                const unsigned t = sc_ok[0] ? 0 : 1;
                if (!sc_ok[t])
                   break;
-               r = sc[t];
-               r.def = &alu->def;
+               struct index_walk_entry sum = sc[t];
+               sum.def = &alu->def;
                uint64_t c;
                if (in[t ^ 1]) {
                   if (!sc_ok[t ^ 1])
                      break; /* tracked but unresolvable: poison */
-                  r.ax += sc[t ^ 1].ax;
-                  r.ay += sc[t ^ 1].ay;
-                  r.az += sc[t ^ 1].az;
-                  r.b += sc[t ^ 1].b;
-                  r.global_only = sc[t].global_only && sc[t ^ 1].global_only;
+                  sum.ax += sc[t ^ 1].ax;
+                  sum.ay += sc[t ^ 1].ay;
+                  sum.az += sc[t ^ 1].az;
+                  sum.b += sc[t ^ 1].b;
+                  sum.global_only = sc[t].global_only && sc[t ^ 1].global_only;
                } else if (index_walk_const_operand(alu, t ^ 1,
                                                    alu->op == nir_op_fadd,
                                                    &c)) {
-                  r.b += c;
-                  r.global_only = sc[t].global_only;
+                  sum.b += c;
+                  sum.global_only = sc[t].global_only;
                } else {
                   break;
                }
-               r.affine_valid = index_entry_in_range(&r);
+               sum.affine_valid = index_entry_in_range(&sum);
+               r = sum;
                break;
             }
             case nir_op_imul:

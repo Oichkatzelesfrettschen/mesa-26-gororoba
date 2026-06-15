@@ -11,6 +11,7 @@
  * shader.
  */
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -1364,6 +1365,19 @@ build_index_value_strided(void)
    return b.shader;
 }
 
+static nir_shader *
+build_index_value_float_nan_constant(void)
+{
+   nir_builder b = cs_builder("cs_index_value_float_nan_constant");
+   nir_def *gid = nir_load_global_invocation_index(&b, 32);
+   nir_def *val = nir_fadd(&b, nir_u2f32(&b, gid),
+                           nir_imm_float(&b, NAN));
+   nir_def *off = nir_imul(&b, gid, nir_imm_int(&b, 4));
+   nir_store_ssbo(&b, val, nir_imm_int(&b, 0), off,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* out[gid] = 0 * gid + 17: literal zero stride with an indexed destination. */
 static nir_shader *
 build_index_value_zero_stride(void)
@@ -1566,6 +1580,12 @@ case_index_consumption(void)
    CHECK(p.stride_valid && p.stride == 4 && p.offset == 2,
          "gid*4+2 captures stride 4 offset 2");
    ralloc_free(str);
+
+   nir_shader *nan = build_index_value_float_nan_constant();
+   r300_nir_classify_index_consumption(nan, &p);
+   CHECK(p.consumption == R300_COMPUTE_INDEX_VALUE_GENERAL,
+         "non-finite float constant rejects as VALUE_GENERAL");
+   ralloc_free(nan);
 
    nir_shader *zero_stride = build_index_value_zero_stride();
    r300_nir_classify_index_consumption(zero_stride, &p);
