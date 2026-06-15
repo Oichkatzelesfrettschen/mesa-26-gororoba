@@ -920,21 +920,19 @@ r300vk_bind_descriptor_ubo(struct r300vk_device *device,
  * r300_set_constant_buffer reads cb.user_buffer directly, so the bytes need no
  * GPU upload.
  *
- * The fragment shader compiles through nir_to_rc (float-only; integers are
- * float-encoded by nir_lower_int_to_float), so each push-constant word it reads
- * as an integer (int_word_mask, classified at compile from the FS only) is
- * converted from its raw int bits to (float)value -- exact for |value| < 2^24,
- * the FP24 integer-exact envelope (int and uint coincide there).  The vertex
- * shader runs on the draw module's TGSI executor, which has native integers, so
- * it reads the RAW window.  The FS conversion goes into the caller's scratch
- * (valid through draw_vbo); the recorded window stays intact for the next
- * draw. */
+ * r300's constant file is float-only: nir_lower_int_to_float represents an
+ * integer by its float value, so each push-constant word the shader reads as an
+ * integer (int_word_mask, classified at compile) is converted from its raw int
+ * bits to (float)value here.  The conversion is exact for |value| < 2^24, the
+ * FP24 integer-exact envelope; int and uint coincide in that range.  Convert
+ * into the caller's scratch (valid through draw_vbo) so the recorded window is
+ * left intact for the next draw. */
 static void
 r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data,
                            uint32_t int_word_mask, uint8_t *scratch)
 {
    struct pipe_context *pipe = device->pipe;
-   const uint8_t *fs_data = data;
+   const uint8_t *bind_data = data;
    if (int_word_mask) {
       memcpy(scratch, data, 128);
       for (unsigned w = 0; w < 32; w++) {
@@ -945,19 +943,14 @@ r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data,
          float fv = (float)iv;
          memcpy(scratch + w * 4, &fv, sizeof(fv));
       }
-      fs_data = scratch;
+      bind_data = scratch;
    }
-   struct pipe_constant_buffer vs_cb;
-   memset(&vs_cb, 0, sizeof(vs_cb));
-   vs_cb.user_buffer = data;
-   vs_cb.buffer_size = 128;
-   pipe->set_constant_buffer(pipe, MESA_SHADER_VERTEX, 0, &vs_cb);
-
-   struct pipe_constant_buffer fs_cb;
-   memset(&fs_cb, 0, sizeof(fs_cb));
-   fs_cb.user_buffer = fs_data;
-   fs_cb.buffer_size = 128;
-   pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &fs_cb);
+   struct pipe_constant_buffer cb;
+   memset(&cb, 0, sizeof(cb));
+   cb.user_buffer = bind_data;
+   cb.buffer_size = 128;
+   pipe->set_constant_buffer(pipe, MESA_SHADER_VERTEX, 0, &cb);
+   pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
 }
 
 /* r300 exposes a small fixed number of fragment texture units; a sampler unit a
