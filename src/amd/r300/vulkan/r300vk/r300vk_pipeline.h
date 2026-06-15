@@ -371,6 +371,13 @@ struct r300vk_pipeline {
     * running push-constant window there instead of the descriptor UBO (the two
     * are mutually exclusive -- a pipeline using both is rejected at compile). */
    bool                    uses_push_constants;
+   /* One bit per 4-byte word of the 128-byte push-constant window: set when the
+    * shader loads that word as an integer.  r300's constant file is float-only
+    * and nir_lower_int_to_float represents an integer by its float value, but
+    * leaves external push-constant VALUES as raw int bits; the replay converts
+    * the marked words int->float before binding CONST[0] so the FP24 ALU sees
+    * the value the lowered integer ops expect. */
+   uint32_t                push_const_int_word_mask;
    uint8_t                 vertex_id_slot;
    uint8_t                 instance_id_slot;
    uint8_t                 vertex_id_vb_binding;
