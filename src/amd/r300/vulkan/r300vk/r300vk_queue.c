@@ -69,6 +69,71 @@ viewport_vk_to_gallium(const VkViewport *vp,
    pv->swizzle_w    = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W;
 }
 
+static void
+r300vk_clear_synthetic_stream(struct pipe_vertex_buffer *vb_cache,
+                              uint8_t binding)
+{
+   if (binding < R300VK_MAX_VERTEX_BINDINGS)
+      memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
+}
+
+static bool
+r300vk_bind_synthetic_identity_stream(struct r300vk_device *device,
+                                      struct pipe_context *pipe,
+                                      struct pipe_vertex_buffer *vb_cache,
+                                      uint8_t binding,
+                                      uint32_t total_count,
+                                      struct util_dynarray *transient_vbs)
+{
+   if (total_count == 0)
+      return true;
+
+   if (binding >= R300VK_MAX_VERTEX_BINDINGS)
+      return false;
+
+   if (total_count > UINT32_MAX / sizeof(int32_t)) {
+      r300vk_clear_synthetic_stream(vb_cache, binding);
+      return false;
+   }
+
+   struct pipe_resource tmpl = {
+      .target     = PIPE_BUFFER,
+      .format     = PIPE_FORMAT_R8_UNORM,
+      .bind       = PIPE_BIND_VERTEX_BUFFER,
+      .usage      = PIPE_USAGE_STREAM,
+      .width0     = (uint64_t)total_count * sizeof(int32_t),
+      .height0    = 1,
+      .depth0     = 1,
+      .array_size = 1,
+   };
+   struct pipe_resource *res =
+      device->screen->resource_create(device->screen, &tmpl);
+   if (!res) {
+      r300vk_clear_synthetic_stream(vb_cache, binding);
+      return false;
+   }
+
+   struct pipe_transfer *xfer = NULL;
+   int32_t *map = pipe_buffer_map(pipe, res,
+                                  PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                  &xfer);
+   if (!map) {
+      r300vk_clear_synthetic_stream(vb_cache, binding);
+      pipe_resource_reference(&res, NULL);
+      return false;
+   }
+
+   for (uint32_t i = 0; i < total_count; i++)
+      map[i] = (int32_t)i;
+   pipe_buffer_unmap(pipe, xfer);
+
+   vb_cache[binding].is_user_buffer  = false;
+   vb_cache[binding].buffer_offset   = 0;
+   vb_cache[binding].buffer.resource = res;
+   util_dynarray_append(transient_vbs, res);
+   return true;
+}
+
 /* Allocate a transient vertex buffer for a synthetic VS-system-value stream.
  * Gallium applies draw.start and start_instance while fetching vertex elements,
  * so the buffer must be indexable through base + count rather than only count
@@ -84,51 +149,114 @@ r300vk_bind_synthetic_index_stream(struct r300vk_device *device,
    if (count == 0)
       return true;
 
-   if (binding >= R300VK_MAX_VERTEX_BINDINGS)
-      return false;
-
    if (count > UINT32_MAX - base) {
-      memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
+      r300vk_clear_synthetic_stream(vb_cache, binding);
       return false;
    }
 
-   const uint32_t total_count = base + count;
-   struct pipe_resource tmpl = {
-      .target     = PIPE_BUFFER,
-      .format     = PIPE_FORMAT_R8_UNORM,
-      .bind       = PIPE_BIND_VERTEX_BUFFER,
-      .usage      = PIPE_USAGE_STREAM,
-      .width0     = (uint64_t)total_count * sizeof(int32_t),
-      .height0    = 1,
-      .depth0     = 1,
-      .array_size = 1,
-   };
-   struct pipe_resource *res =
-      device->screen->resource_create(device->screen, &tmpl);
-   if (!res) {
-      memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
-      return false;
+   return r300vk_bind_synthetic_identity_stream(device, pipe, vb_cache, binding,
+                                                base + count, transient_vbs);
+}
+
+static uint32_t
+r300vk_index_value_load(const uint8_t *ptr, uint32_t index_size)
+{
+   switch (index_size) {
+   case 1:
+      return *ptr;
+   case 2: {
+      uint16_t value;
+      memcpy(&value, ptr, sizeof(value));
+      return value;
    }
-
-   struct pipe_transfer *xfer = NULL;
-   int32_t *map = pipe_buffer_map(pipe, res,
-                                  PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                  &xfer);
-   if (!map) {
-      memset(&vb_cache[binding], 0, sizeof(vb_cache[binding]));
-      pipe_resource_reference(&res, NULL);
-      return false;
+   case 4: {
+      uint32_t value;
+      memcpy(&value, ptr, sizeof(value));
+      return value;
    }
+   default:
+      return 0;
+   }
+}
 
-   for (uint32_t i = 0; i < total_count; i++)
-      map[i] = (int32_t)i;
-   pipe_buffer_unmap(pipe, xfer);
+/* Indexed SW-TCL fetches the synthetic VertexIndex attribute through the same
+ * index buffer as app vertex attributes, so the stream must be an identity
+ * table over the fetched index + vertexOffset domain. */
+static bool
+r300vk_indexed_vertex_index_stream_count(
+   struct pipe_context *pipe,
+   const struct r300vk_cmd_draw_indexed *draw,
+   uint32_t start_elem,
+   uint32_t count,
+   uint32_t *total_count)
+{
+   *total_count = 0;
 
-   vb_cache[binding].is_user_buffer  = false;
-   vb_cache[binding].buffer_offset   = 0;
-   vb_cache[binding].buffer.resource = res;
-   util_dynarray_append(transient_vbs, res);
+   if (count == 0)
+      return true;
+
+   if (!draw->index_buffer || !draw->index_buffer->resource ||
+       draw->index_size == 0)
+      return false;
+
+   const uint64_t index_offset64 = (uint64_t)start_elem * draw->index_size;
+   const uint64_t index_span64 =
+      (uint64_t)(count - 1u) * draw->index_size + draw->index_size;
+   if (index_offset64 > UINT_MAX || index_span64 > UINT_MAX ||
+       index_span64 > draw->index_buffer->size ||
+       index_offset64 > draw->index_buffer->size - index_span64)
+      return false;
+
+   struct pipe_transfer *index_xfer = NULL;
+   const uint8_t *indices =
+      pipe_buffer_map_range(pipe, draw->index_buffer->resource,
+                            (unsigned)index_offset64,
+                            (unsigned)index_span64, PIPE_MAP_READ,
+                            &index_xfer);
+   if (!indices)
+      return false;
+
+   int64_t max_vertex_index = -1;
+   for (uint32_t i = 0; i < count; i++) {
+      const uint32_t index =
+         r300vk_index_value_load(indices + (uint64_t)i * draw->index_size,
+                                 draw->index_size);
+      const int64_t vertex_index = (int64_t)index + draw->vertex_offset;
+      if (vertex_index < 0 ||
+          vertex_index > (int64_t)(UINT32_MAX / sizeof(int32_t)) - 1) {
+         pipe_buffer_unmap(pipe, index_xfer);
+         return false;
+      }
+
+      if (vertex_index > max_vertex_index)
+         max_vertex_index = vertex_index;
+   }
+   pipe_buffer_unmap(pipe, index_xfer);
+
+   *total_count = (uint32_t)max_vertex_index + 1u;
    return true;
+}
+
+static bool
+r300vk_bind_synthetic_indexed_vertex_index_stream(
+   struct r300vk_device *device,
+   struct pipe_context *pipe,
+   struct pipe_vertex_buffer *vb_cache,
+   uint8_t binding,
+   const struct r300vk_cmd_draw_indexed *draw,
+   uint32_t start_elem,
+   uint32_t count,
+   struct util_dynarray *transient_vbs)
+{
+   uint32_t total_count = 0;
+   if (!r300vk_indexed_vertex_index_stream_count(pipe, draw, start_elem, count,
+                                                 &total_count)) {
+      r300vk_clear_synthetic_stream(vb_cache, binding);
+      return false;
+   }
+
+   return r300vk_bind_synthetic_identity_stream(device, pipe, vb_cache, binding,
+                                                total_count, transient_vbs);
 }
 
 static uint32_t
@@ -1695,7 +1823,7 @@ r300vk_replay_draw(struct r300vk_device *device,
    bool synthetic_streams_ready = true;
 
    /* Supply the synthetic VS-system-value stream(s) for this draw. */
-   if (bound_pipeline && bound_pipeline->needs_vertex_id_stream) {
+   if (!indexed && bound_pipeline && bound_pipeline->needs_vertex_id_stream) {
       synthetic_streams_ready =
          r300vk_bind_synthetic_index_stream(
             device, pipe, draw_vb_cache,
@@ -1722,14 +1850,6 @@ r300vk_replay_draw(struct r300vk_device *device,
          draw_vb_dirty = true;
       }
    }
-   /* Flush the draw VB state. */
-   if (draw_vb_dirty) {
-      pipe->set_vertex_buffers(pipe, draw_vb_max_used, draw_vb_cache);
-      *vb_dirty = synthetic_streams_ready &&
-                 (bound_pipeline &&
-                  (bound_pipeline->needs_vertex_id_stream ||
-                   bound_pipeline->needs_instance_id_stream));
-   }
    struct pipe_draw_info info;
    memset(&info, 0, sizeof(info));
    info.mode           = vk_topology_to_mesa(draw_topology);
@@ -1750,26 +1870,35 @@ r300vk_replay_draw(struct r300vk_device *device,
        * size, so fold it into start.  index_bias is the vertexOffset added to
        * every fetched index.  Clamp the count to the bound range -- the indexed
        * analog of r300vk_robust_vertex_count -- so the index fetch cannot read
-       * past the buffer end (the kernel CS validator rejects the same overrun).
-       *
-       * TODO: gl_VertexIndex on an indexed draw reaches the shader as the
-       *       fetched index value + vertexOffset.  RS480/RS482 has no hardware
-       *       vertex shader (num_vert_fpus == 0, SW-TCL), so gl_VertexIndex is
-       *       supplied through a synthetic vertex-input stream, and
-       *       r300vk_bind_synthetic_index_stream fills it with firstVertex + i --
-       *       the non-indexed sequence.  Build the stream from di->index_buffer
-       *       for the R300VK_CMD_DRAW_INDEXED + needs_vertex_id_stream case. */
+       * past the buffer end (the kernel CS validator rejects the same overrun). */
       const uint64_t start_elem =
          (uint64_t)di->first_index + di->index_offset / di->index_size;
       const uint64_t end_elem =
          (di->index_offset + di->index_range) / di->index_size;
       const uint64_t usable = end_elem > start_elem ? end_elem - start_elem : 0;
+      if (start_elem > UINT_MAX)
+         return;
       draw.start = (unsigned)start_elem;
       draw.count = synthetic_streams_ready
                    ? (di->index_count < usable ? di->index_count
                                                : (unsigned)usable)
                    : 0;
       draw.index_bias = di->vertex_offset;
+      if (synthetic_streams_ready && bound_pipeline &&
+          bound_pipeline->needs_vertex_id_stream) {
+         synthetic_streams_ready =
+            r300vk_bind_synthetic_indexed_vertex_index_stream(
+               device, pipe, draw_vb_cache,
+               bound_pipeline->vertex_id_vb_binding, di, draw.start,
+               draw.count, transient_vbs);
+         if (synthetic_streams_ready) {
+            if (bound_pipeline->vertex_id_vb_binding + 1u > draw_vb_max_used)
+               draw_vb_max_used = bound_pipeline->vertex_id_vb_binding + 1u;
+            draw_vb_dirty = true;
+         } else {
+            draw.count = 0;
+         }
+      }
    } else {
       info.index_size = 0;
       draw.start      = draw_first;
@@ -1777,6 +1906,13 @@ r300vk_replay_draw(struct r300vk_device *device,
          r300vk_robust_vertex_count(bound_pipeline, vb_cache,
                                      vb_sizes, vb_strides, vb_strides_mask,
                                      draw_first, draw_count) : 0;
+   }
+   if (draw.count > 0 && draw_vb_dirty) {
+      pipe->set_vertex_buffers(pipe, draw_vb_max_used, draw_vb_cache);
+      *vb_dirty = synthetic_streams_ready &&
+                 (bound_pipeline &&
+                  (bound_pipeline->needs_vertex_id_stream ||
+                   bound_pipeline->needs_instance_id_stream));
    }
    if (draw.count > 0) {
       /* Push constants and the descriptor UBO are mutually exclusive (the
@@ -2755,7 +2891,8 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
           * Compute span in 64-bit; the subtract form avoids add overflow. */
          const uint64_t span64 = (uint64_t)(di->draw_count - 1u) * stride +
                                  sizeof(VkDrawIndirectCommand);
-         if (di->offset > UINT_MAX || span64 > di->buffer->size ||
+         if (di->offset > UINT_MAX || span64 > UINT_MAX ||
+             span64 > di->buffer->size ||
              di->offset > di->buffer->size - span64)
             break;
          const unsigned span = (unsigned)span64;
@@ -2809,7 +2946,8 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          const uint64_t span64 =
             (uint64_t)(di->draw_count - 1u) * stride +
             sizeof(VkDrawIndexedIndirectCommand);
-         if (di->offset > UINT_MAX || span64 > di->buffer->size ||
+         if (di->offset > UINT_MAX || span64 > UINT_MAX ||
+             span64 > di->buffer->size ||
              di->offset > di->buffer->size - span64)
             break;
          const unsigned span = (unsigned)span64;
