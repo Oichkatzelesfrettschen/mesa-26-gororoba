@@ -388,12 +388,27 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * the CP microengine until the 3D engine is idle and the caches are evicted,
      * so the VAP reads the freshly written GTT data and not stale memory.  Both
      * the ZB and RB3D flushes are part of the verified sequence; emitting only
-     * the RB3D half would be a subset, not the driver's full barrier. */
-    OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT, R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
-                                           R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
-    OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT, R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
-                                               R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
-    OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+     * the RB3D half would be a subset, not the driver's full barrier.
+     *
+     * R300_R2VB_BARRIER neuters individual components for timing bisection (the
+     * dword count is unchanged -- a neutered register just gets a no-op value).
+     * Substrings "nozb", "norb", "nowait" zero the ZB flush, RB3D flush, and the
+     * WAIT_UNTIL idle-clean respectively.  This breaks CB->VAP coherency, so it is
+     * valid ONLY for the no-readback throughput shape, to find which part of the
+     * barrier carries the fixed per-submit GPU cost. */
+    const char *r2vb_bar = getenv("R300_R2VB_BARRIER");
+    uint32_t r2vb_zb = (r2vb_bar && strstr(r2vb_bar, "nozb"))
+                           ? 0
+                           : (R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                              R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+    uint32_t r2vb_rb = (r2vb_bar && strstr(r2vb_bar, "norb"))
+                           ? 0
+                           : (R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                              R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+    uint32_t r2vb_wait = (r2vb_bar && strstr(r2vb_bar, "nowait")) ? 0 : RADEON_WAIT_3D_IDLECLEAN;
+    OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT, r2vb_zb);
+    OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT, r2vb_rb);
+    OUT_CS_REG(RADEON_WAIT_UNTIL, r2vb_wait);
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
