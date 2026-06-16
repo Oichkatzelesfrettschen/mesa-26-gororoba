@@ -573,6 +573,22 @@ r300vk_nir_uses_texture(nir_shader *nir)
    return false;
 }
 
+/* Match r300_create_vs_state's NIR optimization point before deciding whether
+ * a vertex texture instruction can reach the SW-TCL draw module. */
+static bool
+r300vk_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
+                                            nir_shader *nir)
+{
+   if (!r300vk_nir_uses_texture(nir))
+      return false;
+
+   nir_shader *check = nir_shader_clone(NULL, nir);
+   r300_optimize_nir(check, r300_screen(pscreen));
+   bool uses_texture = r300vk_nir_uses_texture(check);
+   ralloc_free(check);
+   return uses_texture;
+}
+
 static bool
 r300vk_nir_uses_sampler_set_above_zero(nir_shader *nir, uint32_t *out_set,
                                        uint32_t *out_binding)
@@ -1120,7 +1136,7 @@ r300vk_compile_shader(struct r300vk_device *device,
        * conformant vertex-texturing path must bind the draw module's
        * PIPE_SHADER_VERTEX sampler views and sampler state before this gate can
        * be removed. */
-      if (r300vk_nir_uses_texture(nir)) {
+      if (r300vk_nir_uses_live_texture_after_r300_opt(device->screen, nir)) {
          ralloc_free(nir);
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                           "r300vk: vertex shader samples a texture; the RS480 "
