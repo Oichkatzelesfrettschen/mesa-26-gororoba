@@ -209,13 +209,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         }
     }
 
-    /* 68 dwords for the single-BO loop: stage 1 = 47, stage 2 = 6, stage 3 = 15.
+    /* 70 dwords for the single-BO loop: stage 1 = 47, stage 2 = 6, stage 3 = 17.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
      * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
      * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
      * vertices (twelve dwords); SU_CULL_MODE, SC_CLIP_RULE, GA_POINT_SIZE, and
-     * GA_POINT_MINMAX add eight dwords; the stage-3 VF_MAX_VTX_INDX re-assert adds
-     * two.  The stage-3
+     * GA_POINT_MINMAX add eight dwords; the stage-3 VAP_VTX_SIZE reset and
+     * VF_MAX_VTX_INDX re-assert add four.  The stage-3
      * color-target switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 +
      * the SC_SCISSORS pair).  The identity-wpos override adds five dwords per
      * viewport state constant the bound FS carries (zero for a passthrough FS).
@@ -223,7 +223,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * embeds num_vertices two-float4 points (num_vertices*8 dwords) where the base
      * counts assumed three one-float4 triangle vertices (twelve dwords) plus a
      * four-dword PSC override: net (num_vertices*8 - 16). */
-    BEGIN_CS((stage3_color_bo ? 77 : 68) + r2vb_vp_override_dwords +
+    BEGIN_CS((stage3_color_bo ? 79 : 70) + r2vb_vp_override_dwords +
              (int)num_vertices * 8 - 16);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
@@ -317,22 +317,14 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     OUT_CS_REG(R300_SU_CULL_MODE, 0);
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
     /* Pin the fixed point size to one pixel (both registers pack 1/6-pixel units,
-     * so size 1 = 6).  This makes the stage-1 producer's own points -- one per
-     * output slot -- a deterministic one pixel rather than the size inherited
-     * from the trigger draw, keeping the slot-to-pixel mapping exact.
-     *
-     * It does NOT by itself fix a POINTS re-ingest (stage 3).  r300 cannot disable
-     * the per-vertex point-size output (r300_state.c notes this and clamps via
-     * GA_POINT_MINMAX), so for a primitive whose *_VTX_FMT_0 advertises
-     * PT_SIZE_PRESENT, GA reads each point's size from a vertex component.  The
-     * re-ingested GTT vertices carry no point-size component, and in TCL_BYPASS
-     * neither GA_POINT_SIZE nor the GA_POINT_MINMAX clamp takes effect on that
-     * path (measured: pinning both moved a 16-point readback only 104 -> 110
-     * texels, far from 16).  A correct POINTS re-ingest needs PT_SIZE_PRESENT
-     * cleared in the GA raster vertex format (GB_VAP_RASTER_VTX_FMT_0 / VAP_
-     * OUTPUT_VTX_FMT_0, 0x4000 / 0x2090), which is derived from the bound FS
-     * inputs -- left as a separate step.  The line and triangle topologies do not
-     * consume point size and rasterize pixel-exact already. */
+     * so size 1 = 6).  GA_POINT_SIZE is the fallback size used when the vertex
+     * carries no per-vertex point size, and GA_POINT_MINMAX MIN = MAX = 1 clamps
+     * any size to one pixel.  This is the fallback the stage-3 re-ingest relies on
+     * once VAP_VTX_SIZE is reset to a position-only vertex (see stage 3): with no
+     * trailing point-size component, GA takes this fixed value and a POINTS
+     * re-ingest rasterizes one texel per vertex.  It also pins the stage-1
+     * producer's own points to one pixel, keeping the slot-to-pixel mapping exact.
+     * Both are don't-cares for the line and triangle topologies. */
     OUT_CS_REG(R300_GA_POINT_SIZE, (6 << R300_POINTSIZE_Y_SHIFT) |
                                        (6 << R300_POINTSIZE_X_SHIFT));
     OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
@@ -440,6 +432,17 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
            (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
            (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
            (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) | (0xf << R300_WRITE_ENA_SHIFT));
+    /* Reset the output vertex size to one FP32x4 stream.  Stage 1's producer set
+     * VAP_VTX_SIZE = 8 for its two streams (position + attribute); the re-ingest
+     * declares a single FP32x4 stream, so an inherited size of 8 makes the VAP
+     * emit eight-dword output vertices -- the four real position dwords plus four
+     * dwords read from the next vertex as trailing outputs.  Position (the first
+     * four dwords) still reads correctly, so the filled and line topologies are
+     * unaffected, but a POINTS draw consumes its per-vertex point size from that
+     * trailing garbage and smears each point across the framebuffer.  Size 4 emits
+     * position only, so point size falls back to the fixed GA_POINT_SIZE (pinned
+     * to one pixel above) and each point rasterizes to one texel. */
+    OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
     /* Re-assert the vertex-index bound for the re-ingest draw.  VAP_VF_MAX_VTX_
      * INDX clamps every fetched index; a stale lower bound (from an inherited
      * draw or a smaller producer) would fold high-index vertices onto a low one
@@ -600,8 +603,7 @@ static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r
         for (uint32_t i = 0; i < n; i++)
             r2vb_set_vert(s->attrs[i], x0 + step * (float)i, y0 + step * (float)i);
         snprintf(s->expect, sizeof s->expect,
-                 "%u points on diagonal; stage-1 BO is exact, but stage-3 POINTS "
-                 "size is OPEN (PT_SIZE_PRESENT in TCL_BYPASS)", n);
+                 "expect %u 1-px points on diagonal: written~%u bbox~10,10,53,53", n, n);
         return true;
     }
     return false;
