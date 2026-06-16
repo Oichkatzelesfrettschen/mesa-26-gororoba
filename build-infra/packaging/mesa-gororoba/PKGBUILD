@@ -185,6 +185,16 @@ package() {
   ln -s /usr \
     "${pkgdir}/opt/share/mesa-26-gororoba"
 
+  # Own the runtime linker-path drop-in (same file the debug variant owns) and
+  # point it at this /usr drop-in's lib dir.  /usr/lib is already a standard
+  # ldconfig path so the entry is a no-op for the release, but owning the file
+  # means a swap from the debug variant rewrites the path away from the debug
+  # /opt tree (whose lib dir the swap deletes) instead of orphaning it -- which
+  # is what black-screened the console on reboot.  The .install re-runs ldconfig.
+  install -dm755 "${pkgdir}/etc/ld.so.conf.d"
+  printf '%s\n' '/usr/lib' \
+    > "${pkgdir}/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf"
+
   # Mesa ships its license summary as docs/license.rst (Arch/CachyOS practice).
   # A missing license is a packaging defect, not something to swallow silently.
   if [ -f "${pkgname}/docs/license.rst" ]; then

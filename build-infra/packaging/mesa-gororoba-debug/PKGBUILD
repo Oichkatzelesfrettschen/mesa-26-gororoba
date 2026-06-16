@@ -180,6 +180,17 @@ package() {
   ln -s /opt/mesa-26-gororoba-debug \
     "${pkgdir}/usr/share/mesa-26-gororoba-debug"
 
+  # Own the runtime linker-path drop-in and point it at THIS variant's live lib
+  # dir.  The debug /opt tree carries its own bundled dependency libs; without
+  # this on the linker path, ldconfig cannot resolve the 64-bit libgbm.so.1 the
+  # X modesetting driver dlopens, and the console black-screens on reboot.
+  # Packaging it (vs an unowned, variant-specific conf) means a debug<->release
+  # swap rewrites the path to the installed variant and the .install scriptlet
+  # re-runs ldconfig, so reboots stay safe regardless of which variant is in.
+  install -dm755 "${pkgdir}/etc/ld.so.conf.d"
+  printf '%s\n' '/opt/local/mesa-26-gororoba-debug/lib' \
+    > "${pkgdir}/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf"
+
   if [ -f "${_srcroot}/docs/license.rst" ]; then
     install -Dm644 "${_srcroot}/docs/license.rst" \
       "${pkgdir}/usr/share/licenses/${pkgname}/license.rst"
