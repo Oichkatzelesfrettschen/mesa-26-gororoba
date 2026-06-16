@@ -1002,5 +1002,13 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_EXEC");
         exec = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    return exec && v == R2VB_ROUTE_PASSTHROUGH;
+    /* R300_R2VB_INSPECT reaches the exec function too, where it dumps the routing
+     * state and falls back -- no submit -- so the no-submit capture does not need
+     * the suspected-hang R300_R2VB_EXEC opt-in. */
+    static int inspect = -1;
+    if (inspect < 0) {
+        const char *e = getenv("R300_R2VB_INSPECT");
+        inspect = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return (exec || inspect) && v == R2VB_ROUTE_PASSTHROUGH;
 }

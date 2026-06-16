@@ -937,10 +937,60 @@ static void r300_draw_vbo(struct pipe_context* pipe,
  * cheaper than the gallivm per-vertex interpreter.  Returns true if it handled
  * the draw (executed, or intentionally skipped on a flush failure as the HW-TCL
  * path does); false to fall back to gallivm. */
+/* No-submit first-principles capture of the VAP-stream + RS-routing the direct-VB
+ * path would feed the VAP under TCL_BYPASS, decoded to the fields that matter for
+ * the suspected hang.  Pure CPU inspection of the bound state atoms -- no CS emit,
+ * no GPU work -- so it is safe on any boot.  Axioms it surfaces:
+ *  A1 VAP_PROG_STREAM_CNTL: per fetched element, DATA_TYPE + DST_VEC_LOC (which
+ *     VAP output vector the element lands in) -- this is the velems CSO stream.
+ *  A3 VAP_OUTPUT_VTX_FMT_0/1: which output vectors the VAP declares present.
+ *  A4 RS_COUNT / RS_IP: which VAP output vectors the rasteriser routes to FS
+ *     inputs.  The chain is consistent iff every RS source vector is produced by
+ *     a stream element's DST_VEC_LOC and position lands where SU/GA expects. */
+static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
+{
+    struct r300_vertex_stream_state *vs =
+        (struct r300_vertex_stream_state *)r300->vertex_stream_state.state;
+    struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
+
+    fprintf(stderr, "r2vb_inspect velems_count=%u nvb=%u\n",
+            r300->velems ? r300->velems->count : 0, r300->nr_vertex_buffers);
+    if (vs) {
+        fprintf(stderr, "r2vb_inspect vap_stream count=%u\n", vs->count);
+        for (unsigned i = 0; i < vs->count && i < 8; i++) {
+            uint32_t c = vs->vap_prog_stream_cntl[i];
+            for (unsigned e = 0; e < 2; e++) {
+                uint32_t f = c >> (e * 16);
+                fprintf(stderr,
+                        "  stream[%u].e%u raw=0x%08x data_type=%u dst_vec_loc=%u last=%u\n",
+                        i, e, c, f & 0xf, (f >> 8) & 0x1f, (f >> 13) & 1);
+            }
+        }
+    }
+    if (rs) {
+        fprintf(stderr,
+                "r2vb_inspect vap_out_vtx_fmt0=0x%08x pos=%u ptsize=%u fmt1=0x%08x "
+                "rs_count=0x%08x rs_inst_count=0x%08x\n",
+                rs->vap_out_vtx_fmt[0], rs->vap_out_vtx_fmt[0] & 1,
+                (rs->vap_out_vtx_fmt[0] >> 16) & 1, rs->vap_out_vtx_fmt[1], rs->count,
+                rs->inst_count);
+        for (unsigned i = 0; i < 8; i++)
+            if (rs->ip[i] || rs->inst[i])
+                fprintf(stderr, "  rs[%u] ip=0x%08x inst=0x%08x\n", i, rs->ip[i], rs->inst[i]);
+    }
+}
+
 static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                                             const struct pipe_draw_info *info,
                                             const struct pipe_draw_start_count_bias *draw)
 {
+    /* Capture+decode mode: dump the routing state and fall back to gallivm (which
+     * renders correctly), so the suspected-hang emit never reaches the GPU. */
+    if (getenv("R300_R2VB_INSPECT")) {
+        r300_r2vb_inspect_passthrough(r300);
+        return false;
+    }
+
 #define R2VB_BAIL(reason) do { if (getenv("R300_R2VB_ROUTE_DEBUG")) \
     fprintf(stderr, "r2vb_passthrough_fallback reason=%s nvb=%u\n", (reason), \
             r300->nr_vertex_buffers); return false; } while (0)
