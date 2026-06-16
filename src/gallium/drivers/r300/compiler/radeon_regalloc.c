@@ -8,6 +8,8 @@
 #include "radeon_list.h"
 #include "util/macros.h"
 
+#include <assert.h>
+
 #define VERBOSE 0
 
 #define DBG(...)                       \
