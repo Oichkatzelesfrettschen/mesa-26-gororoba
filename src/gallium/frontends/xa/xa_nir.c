@@ -89,9 +89,15 @@ load_const(nir_builder *b, unsigned slot)
 static nir_variable *
 decl_io(nir_builder *b, nir_variable_mode mode, int location, const char *name)
 {
-    nir_variable *v = nir_variable_create(b->shader, mode, glsl_vec4_type(), name);
-    v->data.location = location;
-    return v;
+    nir_foreach_variable_with_modes(var, b->shader, mode) {
+        if (var->data.location == location)
+            return var;
+    }
+
+    nir_variable *var =
+        nir_variable_create(b->shader, mode, glsl_vec4_type(), name);
+    var->data.location = location;
+    return var;
 }
 
 /* A GENERIC[idx] fragment-shader texcoord input, trimmed to the xy used for 2D
@@ -108,9 +114,18 @@ decl_sampler(nir_builder *b, unsigned binding)
 {
     const struct glsl_type *t =
         glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
-    nir_variable *s = nir_variable_create(b->shader, nir_var_uniform, t, "samp");
-    s->data.binding = binding;
-    return nir_build_deref_var(b, s);
+
+    nir_foreach_uniform_variable(var, b->shader) {
+        if (var->data.binding == binding &&
+            glsl_type_is_sampler(glsl_without_array(var->type)))
+            return nir_build_deref_var(b, var);
+    }
+
+    nir_variable *sampler =
+        nir_variable_create(b->shader, nir_var_uniform, t, "samp");
+    sampler->data.binding = binding;
+    sampler->data.explicit_binding = 1;
+    return nir_build_deref_var(b, sampler);
 }
 
 static nir_def *
