@@ -953,9 +953,13 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
         (struct r300_vertex_stream_state *)r300->vertex_stream_state.state;
     struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
 
+    /* velems->format_size / vertex_size_dwords are populated only for has_tcl
+     * (r300_create_vertex_elements_state), so on SWTCL they are 0; compute the
+     * per-vertex dword count from the element formats directly, as that HWTCL
+     * path does (align(blocksize,4)/4 per element). */
     unsigned vap_vtx_size = 0;
     for (unsigned i = 0; r300->velems && i < r300->velems->count; i++)
-        vap_vtx_size += r300->velems->format_size[i] / 4;
+        vap_vtx_size += align(util_format_get_blocksize(r300->velems->velem[i].src_format), 4) / 4;
     fprintf(stderr, "r2vb_inspect velems_count=%u nvb=%u would_emit_vap_vtx_size=%u\n",
             r300->velems ? r300->velems->count : 0, r300->nr_vertex_buffers, vap_vtx_size);
     if (vs) {
@@ -1110,7 +1114,7 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
          * stride that is the suspected VAP/GA stall.  Set it explicitly. */
         unsigned vap_vtx_size = 0;
         for (unsigned i = 0; i < r300->velems->count; i++)
-            vap_vtx_size += r300->velems->format_size[i] / 4;
+            vap_vtx_size += align(util_format_get_blocksize(r300->velems->velem[i].src_format), 4) / 4;
         /* +2 dwords over the 9 emit_draw_arrays spares for this register write. */
         if (r300_prepare_for_rendering(r300,
                                        PREP_EMIT_STATES | PREP_VALIDATE_VBOS | PREP_EMIT_VARRAYS,
