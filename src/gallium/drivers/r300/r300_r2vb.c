@@ -904,6 +904,24 @@ static bool r300_vs_is_passthrough(struct r300_context *r300)
     return true;
 }
 
+/* The direct-VB re-ingest emits LOAD_VBPNTR with a buffer relocation, so every
+ * vertex buffer backing the bound elements must be a real winsys BO.  r300vk
+ * feeds the SWTCL path user buffers (CPU pointers, no ->buf), which would fault
+ * the relocation, so execution is gated on this; a user-buffer draw falls back to
+ * gallivm (whose draw module reads the CPU pointers directly). */
+static bool r300_r2vb_vbos_are_real_bos(struct r300_context *r300)
+{
+    if (!r300->velems)
+        return false;
+    for (unsigned i = 0; i < r300->velems->count; i++) {
+        unsigned vbi = r300->velems->velem[i].vertex_buffer_index;
+        struct pipe_resource *res = r300->vertex_buffer[vbi].buffer.resource;
+        if (r300->vertex_buffer[vbi].is_user_buffer || !res || !r300_resource(res)->buf)
+            return false;
+    }
+    return true;
+}
+
 enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
                                                const struct pipe_draw_info *info,
                                                const struct pipe_draw_start_count_bias *draw)
@@ -1002,5 +1020,5 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_EXEC");
         exec = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    return exec && v == R2VB_ROUTE_PASSTHROUGH;
+    return exec && v == R2VB_ROUTE_PASSTHROUGH && r300_r2vb_vbos_are_real_bos(r300);
 }
