@@ -305,6 +305,22 @@ configure: vostro-prefix-check
 		done; \
 		return 1; \
 	}; \
+	find_versioned_tool() { \
+		tool="$$1"; version="$$2"; \
+		for candidate in "$$tool-$$version" "$$tool$$version"; do \
+			if command -v "$$candidate" >/dev/null 2>&1; then \
+				printf '%s\n' "$$candidate"; return 0; \
+			fi; \
+		done; \
+		return 1; \
+	}; \
+	find_compiler_tool() { \
+		case "$(COMPILER_CHAIN)" in \
+			ccache|distcc) find_versioned_tool "$$1" "$$2" ;; \
+			direct) find_tool "$$1" "$$2" ;; \
+			*) return 1 ;; \
+		esac; \
+	}; \
 	resolve_tool() { \
 		tool_name="$$(find_tool "$$1" "$$2")" || return 1; \
 		command -v "$$tool_name"; \
@@ -312,8 +328,8 @@ configure: vostro-prefix-check
 	has_core() { \
 		version="$$1"; \
 		need_config="$${2:-1}"; \
-		find_tool clang "$$version" >/dev/null 2>&1 && \
-		find_tool clang++ "$$version" >/dev/null 2>&1 && \
+		find_compiler_tool clang "$$version" >/dev/null 2>&1 && \
+		find_compiler_tool clang++ "$$version" >/dev/null 2>&1 && \
 		{ [ "$$need_config" -eq 0 ] || find_tool llvm-config "$$version" >/dev/null 2>&1; }; \
 	}; \
 	if grep -Eq "^[[:space:]]*llvm[[:space:]]*=[[:space:]]*'disabled'" "$(CONFIG)"; then needs_llvm_config=0; else needs_llvm_config=1; fi; \
@@ -342,8 +358,8 @@ configure: vostro-prefix-check
 		fi; \
 	fi; \
 	[ -n "$$llvm_version" ] || { echo "no matching LLVM compiler family found on PATH" >&2; exit 1; }; \
-	clang_cmd="$$(find_tool clang "$$llvm_version")"; \
-	clangxx_cmd="$$(find_tool clang++ "$$llvm_version")"; \
+	clang_cmd="$$(find_compiler_tool clang "$$llvm_version")"; \
+	clangxx_cmd="$$(find_compiler_tool clang++ "$$llvm_version")"; \
 	clang_direct_cmd="$$(resolve_tool clang "$$llvm_version")"; \
 	clangxx_direct_cmd="$$(resolve_tool clang++ "$$llvm_version")"; \
 	llvm_config_cmd=""; \
