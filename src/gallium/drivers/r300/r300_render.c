@@ -929,12 +929,16 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                                             const struct pipe_draw_info *info,
                                             const struct pipe_draw_start_count_bias *draw)
 {
+#define R2VB_BAIL(reason) do { if (getenv("R300_R2VB_ROUTE_DEBUG")) \
+    fprintf(stderr, "r2vb_passthrough_fallback reason=%s nvb=%u\n", (reason), \
+            r300->nr_vertex_buffers); return false; } while (0)
+
     if (r300_vs(r300)->shader->dummy)
-        return false;
+        R2VB_BAIL("dummy_vs");
 
     unsigned nvb = r300->nr_vertex_buffers;
     if (nvb > PIPE_MAX_ATTRIBS || !r300->uploader)
-        return false;
+        R2VB_BAIL("nvb_or_uploader");
 
     struct pipe_vertex_buffer saved[PIPE_MAX_ATTRIBS];
     struct pipe_resource *uploaded[PIPE_MAX_ATTRIBS] = {0};
@@ -942,7 +946,7 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
     bool any_swap = false, ok = true;
 
     if (!r300->velems || r300->velems->count == 0)
-        return false;
+        R2VB_BAIL("no_velems");
 
     /* r300_emit_buffer_validate (reached via PREP_VALIDATE_VBOS) iterates ALL of
      * vertex_buffer[0..nr_vertex_buffers] and adds buffer.resource.  In the SWTCL
@@ -957,7 +961,7 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
     for (unsigned i = 0; i < r300->velems->count; i++) {
         unsigned vbi = r300->velems->velem[i].vertex_buffer_index;
         if (vbi >= nvb)
-            return false; /* element points outside the bound buffers */
+            R2VB_BAIL("velem_vbi_oob"); /* element points outside the bound buffers */
         referenced[vbi] = true;
         ref_stride[vbi] = MAX2(ref_stride[vbi], r300->velems->velem[i].src_stride);
     }
@@ -979,8 +983,8 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
 
         if (vb->is_user_buffer) {
             if (!vb->buffer.user || !ref_stride[vbi]) {
-                ok = false;
-                break;
+                if (getenv("R300_R2VB_ROUTE_DEBUG")) fprintf(stderr,"r2vb_passthrough_fallback reason=user_no_data vbi=%u\n",vbi);
+                ok = false; break;
             }
             unsigned size = vb->buffer_offset + (draw->start + draw->count) * ref_stride[vbi];
             unsigned out_off = 0;
@@ -1001,8 +1005,8 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
             vb->buffer.resource = out_res;
         } else if (!vb->buffer.resource || !r300_resource(vb->buffer.resource)->buf) {
             /* Referenced slot with no real BO -- cannot re-ingest; fall back. */
-            ok = false;
-            break;
+            if (getenv("R300_R2VB_ROUTE_DEBUG")) fprintf(stderr,"r2vb_passthrough_fallback reason=ref_no_bo vbi=%u\n",vbi);
+            ok = false; break;
         }
     }
 
