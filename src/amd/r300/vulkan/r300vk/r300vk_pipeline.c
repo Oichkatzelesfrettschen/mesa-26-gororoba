@@ -715,7 +715,7 @@ r300vk_classify_push_const_ints(nir_shader *nir)
 /* r300's constant file is addressed by a compile-time vec4 slot plus component,
  * so a runtime (dynamically-indexed) offset cannot be represented.  Two distinct
  * shader shapes trip this: a push-constant offset and a UBO byte offset.  After
- * nir_lower_ubo_vec4 a non-constant offset becomes a runtime vector_extract the
+ * nir_lower_ubo_vec4 a non-constant offset becomes a runtime vector_extract; the
  * SW-TCL nir_to_tgsi float-ARL path (no native integers) cannot map to a static
  * constant fetch -- it floors a non-zero integer index's float bit pattern to
  * slot 0 -- and nir_lower_int_to_float (which nir_to_rc runs next, r300 having no
@@ -727,8 +727,8 @@ r300vk_classify_push_const_ints(nir_shader *nir)
  * boundary becomes a two-load bcsel with runtime component selection).  A
  * loop-bounded constant access (color[i] in a statically-bounded loop) carries a
  * non-constant offset until the loop unrolls, so a cheap pre-pass first checks
- * whether any offset is even non-constant and returns early otherwise; only then
- * pay for a clone + r300_optimize_nir (the same optimization pass used by
+ * whether every constant access fits and whether any offset is non-constant; only
+ * then pay for a clone + r300_optimize_nir (the same optimization pass used by
  * r300_create_*_state) to fold the loop-bounded case before judging it dynamic
  * (dynamic_index_vert indexes by a gl_Position-derived value that never folds).
  *
@@ -738,29 +738,30 @@ r300vk_classify_push_const_ints(nir_shader *nir)
  * index selects which UBO, the offset selects where within it) they form the
  * complete "r300 constant-file representability" gate. */
 static bool
-r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
-                          nir_intrinsic_op op, unsigned off_src, bool straddle)
+r300vk_nir_static_offset_ok(nir_intrinsic_instr *intr, unsigned off_src,
+                            bool straddle, bool *maybe_dynamic)
 {
-   bool maybe_dynamic = false;
-   nir_foreach_function_impl(impl, nir) {
-      nir_foreach_block(block, impl) {
-         nir_foreach_instr(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic == op && !nir_src_is_const(intr->src[off_src]))
-               maybe_dynamic = true;
-         }
-      }
+   if (!nir_src_is_const(intr->src[off_src])) {
+      *maybe_dynamic = true;
+      return true;
    }
-   if (!maybe_dynamic)
+
+   if (!straddle)
       return true;
 
-   nir_shader *check = nir_shader_clone(NULL, nir);
-   r300_optimize_nir(check, r300_screen(pscreen));
+   uint32_t off = (uint32_t)nir_src_as_uint(intr->src[off_src]);
+   unsigned byte_width = intr->def.num_components * (intr->def.bit_size / 8u);
+   return (off & 15u) + byte_width <= 16u;
+}
 
-   bool ok = true;
-   nir_foreach_function_impl(impl, check) {
+static bool
+r300vk_nir_scan_static_offsets(nir_shader *nir, nir_intrinsic_op op,
+                               unsigned off_src, bool straddle,
+                               bool *maybe_dynamic)
+{
+   *maybe_dynamic = false;
+
+   nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
             if (instr->type != nir_instr_type_intrinsic)
@@ -768,22 +769,36 @@ r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
             if (intr->intrinsic != op)
                continue;
-            if (!nir_src_is_const(intr->src[off_src])) {
-               ok = false;
-               continue;
-            }
-            if (straddle) {
-               uint32_t off = (uint32_t)nir_src_as_uint(intr->src[off_src]);
-               unsigned byte_width =
-                  intr->def.num_components * (intr->def.bit_size / 8u);
-               if ((off & 15u) + byte_width > 16u)
-                  ok = false;
-            }
+            if (!r300vk_nir_static_offset_ok(intr, off_src, straddle,
+                                             maybe_dynamic))
+               return false;
+            if (*maybe_dynamic)
+               return true;
          }
       }
    }
+
+   return true;
+}
+
+static bool
+r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
+                          nir_intrinsic_op op, unsigned off_src, bool straddle)
+{
+   bool maybe_dynamic = false;
+   if (!r300vk_nir_scan_static_offsets(nir, op, off_src, straddle,
+                                       &maybe_dynamic))
+      return false;
+   if (!maybe_dynamic)
+      return true;
+
+   nir_shader *check = nir_shader_clone(NULL, nir);
+   r300_optimize_nir(check, r300_screen(pscreen));
+
+   bool ok = r300vk_nir_scan_static_offsets(check, op, off_src, straddle,
+                                            &maybe_dynamic);
    ralloc_free(check);
-   return ok;
+   return ok && !maybe_dynamic;
 }
 
 /* BASE is 0 for push constants (after nir_lower_explicit_io), so src[0] is the
