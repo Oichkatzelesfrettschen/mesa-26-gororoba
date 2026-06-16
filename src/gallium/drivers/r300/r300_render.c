@@ -916,6 +916,94 @@ static void r300_draw_vbo(struct pipe_context* pipe,
  ***************************************************************************/
 
 /* SW TCL elements, using Draw. */
+/* Execute a PASSTHROUGH-classified draw via the direct-VB route: re-ingest the
+ * application vertex arrays at TCL_BYPASS, skipping the gallivm draw module.
+ * r300vk feeds the SWTCL path USER vertex buffers (CPU pointers, no winsys BO);
+ * a LOAD_VBPNTR relocation needs a BO, so upload each used user buffer's range to
+ * one via r300->uploader, swap r300->vertex_buffer to the uploads for the emit,
+ * then restore and unref.  The upload is a memcpy of already-mapped data, far
+ * cheaper than the gallivm per-vertex interpreter.  Returns true if it handled
+ * the draw (executed, or intentionally skipped on a flush failure as the HW-TCL
+ * path does); false to fall back to gallivm. */
+static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
+                                            const struct pipe_draw_info *info,
+                                            const struct pipe_draw_start_count_bias *draw)
+{
+    if (r300_vs(r300)->shader->dummy)
+        return false;
+
+    unsigned nvb = r300->nr_vertex_buffers;
+    if (nvb > PIPE_MAX_ATTRIBS || !r300->uploader)
+        return false;
+
+    struct pipe_vertex_buffer saved[PIPE_MAX_ATTRIBS];
+    struct pipe_resource *uploaded[PIPE_MAX_ATTRIBS] = {0};
+    bool swapped[PIPE_MAX_ATTRIBS] = {0};
+    bool any_swap = false, ok = true;
+
+    /* Upload each used user vertex buffer to a BO. */
+    for (unsigned vbi = 0; vbi < nvb; vbi++) {
+        struct pipe_vertex_buffer *vb = &r300->vertex_buffer[vbi];
+        if (!vb->is_user_buffer || !vb->buffer.user)
+            continue;
+        unsigned stride = 0;
+        for (unsigned i = 0; i < r300->velems->count; i++)
+            if (r300->velems->velem[i].vertex_buffer_index == vbi)
+                stride = MAX2(stride, r300->velems->velem[i].src_stride);
+        if (!stride)
+            continue; /* slot not referenced by the bound elements */
+        unsigned size = vb->buffer_offset + (draw->start + draw->count) * stride;
+        unsigned out_off = 0;
+        struct pipe_resource *out_res = NULL;
+        /* _ref so out_res gains a reference we own; the CS keeps its own via
+         * cs_add_buffer during the emit, so dropping ours afterward is safe. */
+        u_upload_data_ref(r300->uploader, 0, size, 4, vb->buffer.user, &out_off, &out_res);
+        if (!out_res) {
+            ok = false;
+            break;
+        }
+        saved[vbi] = *vb;
+        swapped[vbi] = true;
+        any_swap = true;
+        uploaded[vbi] = out_res;
+        vb->is_user_buffer = false;
+        vb->buffer_offset = out_off + saved[vbi].buffer_offset;
+        vb->buffer.resource = out_res;
+    }
+
+    if (ok) {
+        if (any_swap)
+            u_upload_unmap(r300->uploader);
+        /* Force the vertex-array validate + emit to pick up the swapped buffers
+         * (r300_emit_buffer_validate adds the BOs only when this is set). */
+        r300->vertex_arrays_dirty = true;
+        if (r300_prepare_for_rendering(r300,
+                                       PREP_EMIT_STATES | PREP_VALIDATE_VBOS | PREP_EMIT_VARRAYS,
+                                       NULL, 9, draw->start, 0, -1))
+            r300_emit_draw_arrays(r300, info->mode, draw->count);
+        if (getenv("R300_R2VB_ROUTE_DEBUG")) {
+            static bool once = false;
+            if (!once) {
+                once = true;
+                fprintf(stderr, "r2vb_passthrough_executed count=%u uploaded_vbs=%d (direct-VB, "
+                                "gallivm skipped)\n", draw->count, any_swap);
+            }
+        }
+    }
+
+    /* Restore the original (user) buffers and release the uploads.  Mark the
+     * arrays dirty so the next draw re-emits against the restored state. */
+    for (unsigned vbi = 0; vbi < nvb; vbi++) {
+        if (swapped[vbi]) {
+            r300->vertex_buffer[vbi] = saved[vbi];
+            pipe_resource_reference(&uploaded[vbi], NULL);
+        }
+    }
+    if (any_swap)
+        r300->vertex_arrays_dirty = true;
+    return ok;
+}
+
 static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
                                 const struct pipe_draw_info *info,
                                 unsigned drawid_offset,
@@ -963,25 +1051,15 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
      * to gallivm with zero behaviour change.  This is the single choke point for
      * both GL and r300vk-Vulkan draws -- r300vk replays through this same gallium
      * draw_vbo, so no separate Vulkan-side wiring is needed. */
-    if (r300_r2vb_route_draw(r300, info, &draw)) {
-        /* Passthrough direct-VB execution.  The classifier guaranteed the simple
-         * class (non-indexed, single-instance, count < 2^16, proven topology) and
-         * an identity VS, so the application's vertices are already clip-space.
-         * Re-ingest the app vertex arrays and draw at TCL_BYPASS, skipping the
-         * gallivm draw module entirely.  This mirrors the HW-TCL r300_draw_arrays
-         * path; on RS482 PREP_EMIT_STATES emits no PVS (vs_state is never dirtied
-         * when !has_tcl), so the emitted state is SWTCL-correct.  Nine spare
-         * dwords for r300_emit_draw_arrays, as in r300_draw_arrays. */
-        if (r300_vs(r300)->shader->dummy)
-            return;
-        if (r300_prepare_for_rendering(r300,
-                                       PREP_EMIT_STATES | PREP_VALIDATE_VBOS | PREP_EMIT_VARRAYS,
-                                       NULL, 9, draw.start, 0, -1))
-            r300_emit_draw_arrays(r300, info->mode, draw.count);
-    } else {
-        draw_vbo(r300->draw, info, drawid_offset, NULL, &draw, 1, 0);
-        draw_flush(r300->draw);
-    }
+    /* Passthrough direct-VB route: re-ingest the app vertex arrays at TCL_BYPASS,
+     * skipping the gallivm draw module.  Falls back to gallivm if the route
+     * declines or cannot execute the draw. */
+    if (r300_r2vb_route_draw(r300, info, &draw) &&
+        r300_r2vb_exec_passthrough_draw(r300, info, &draw))
+        return;
+
+    draw_vbo(r300->draw, info, drawid_offset, NULL, &draw, 1, 0);
+    draw_flush(r300->draw);
 }
 
 /* Object for rendering using Draw. */
