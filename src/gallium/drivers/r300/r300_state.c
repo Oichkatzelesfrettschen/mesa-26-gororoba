@@ -2464,6 +2464,13 @@ static void r300_set_constant_buffer(struct pipe_context *pipe,
         } else if (r300->draw) {
             draw_set_mapped_constant_buffer(r300->draw, MESA_SHADER_VERTEX,
                 0, mapped, cb->buffer_size);
+            /* Mirror UBO[0] for the R2VB MVP route: the VS transform matrix lives
+             * here (load_ubo_vec4 rows), and the SWTCL path keeps it only in the
+             * draw module otherwise. */
+            if (index == 0) {
+                r300->swtcl_vs_const0_ptr = mapped;
+                r300->swtcl_vs_const0_size = cb->buffer_size;
+            }
         }
     } else if (shader == MESA_SHADER_FRAGMENT) {
         r300_mark_atom_dirty(r300, &r300->fs_constants);

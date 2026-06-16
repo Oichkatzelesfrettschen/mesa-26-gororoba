@@ -636,6 +636,13 @@ struct r300_context {
     /* const tracking for VS */
     int vs_const_base;
 
+    /* SWTCL VS constant-buffer CPU shadow.  On has_tcl=false the VS constants go
+     * to the gallivm draw module (r300_set_constant_buffer), not r300->vs_constants,
+     * so the R2VB MVP route stashes the mapped UBO[0] pointer + size here to read
+     * the transform matrix the bound VS would multiply by. */
+    const void *swtcl_vs_const0_ptr;
+    unsigned swtcl_vs_const0_size;
+
     /* Vertex array state info */
     bool vertex_arrays_dirty;
     bool vertex_arrays_indexed;

@@ -973,6 +973,22 @@ static void r300_vs_dump_nir_shape(struct r300_context *r300)
     for (unsigned in = 0; in < nir_num_intrinsics; in++)
         if (intr_hist[in])
             fprintf(stderr, "  intr   %-28s x%u\n", nir_intrinsic_infos[in].name, intr_hist[in]);
+
+    /* Extract the MVP the route would feed the transform-FS: the matrix is the
+     * four load_ubo_vec4 rows of VS UBO[0], stashed as the SWTCL VS constant
+     * shadow (r300_set_constant_buffer).  Print it as four vec4s; GLSL stores
+     * mat4 column-major, so row r here is column r (offset r*16 bytes), which is
+     * what load_ubo_vec4 row r reads. */
+    if (r300->swtcl_vs_const0_ptr && r300->swtcl_vs_const0_size >= 64) {
+        const float *m = (const float *)r300->swtcl_vs_const0_ptr;
+        fprintf(stderr, "r2vb_vs_dump mvp_ubo0 size=%u\n", r300->swtcl_vs_const0_size);
+        for (unsigned r = 0; r < 4; r++)
+            fprintf(stderr, "  mvp_col%u %.4f %.4f %.4f %.4f\n", r, m[r * 4 + 0],
+                    m[r * 4 + 1], m[r * 4 + 2], m[r * 4 + 3]);
+    } else {
+        fprintf(stderr, "r2vb_vs_dump mvp_ubo0 NOT_BOUND ptr=%p size=%u\n",
+                r300->swtcl_vs_const0_ptr, r300->swtcl_vs_const0_size);
+    }
     nir_print_shader(nir, stderr);
 }
 
