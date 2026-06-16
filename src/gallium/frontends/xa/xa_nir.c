@@ -124,11 +124,12 @@ tex2d(nir_builder *b, nir_deref_instr *samp, nir_def *coord)
  * glsl_get_explicit_size(var->interface_type)), not from load_ubo usage.  The
  * builder reads constants by raw vec4 slot, so without this declaration ubo_size
  * is 0, ntr_add_constants allocates no RC_CONSTANT_EXTERNAL, r300's
- * externals_count stays 0, and the driver binds zero constants -- the fragment
- * shader reads the solid colour and the YUV->RGB matrix as 0.  Declare the
- * default UBO sized to the slots the shader reads, mirroring
- * nir_lower_uniforms_to_ubo.  The vertex shader does not need this: nir_to_tgsi
- * feeds the SW-TCL draw module, which reads the bound constant buffer directly. */
+ * externals_count stays 0, and r300_emit_vs_constants() or
+ * r300_emit_fs_constants() uploads no default-constant data.  Declare the
+ * default UBO sized to the slots each shader reads, mirroring
+ * nir_lower_uniforms_to_ubo.  The declaration is required for HW-TCL vertex
+ * shaders through r300_translate_vertex_shader() and for fragment shaders;
+ * SW-TCL remains compatible because nir_to_tgsi accepts the same declaration. */
 static void
 declare_const_ubo(nir_shader *s, unsigned num_slots)
 {
@@ -228,7 +229,7 @@ create_vs(struct pipe_context *pipe, unsigned vs_traits)
         }
     }
 
-    finalize(pipe, &b, 0);
+    finalize(pipe, &b, 2);
     struct pipe_shader_state state = {0};
     state.type = PIPE_SHADER_IR_NIR;
     state.ir.nir = b.shader;
@@ -377,6 +378,8 @@ struct xa_shaders *
 xa_shaders_create(struct xa_context *r)
 {
     struct xa_shaders *sc = CALLOC_STRUCT(xa_shaders);
+    if (!sc)
+        return NULL;
 
     sc->r = r;
     cso_hash_init(&sc->vs_hash);
