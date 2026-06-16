@@ -3729,14 +3729,80 @@ r300vk_update_buffer(struct r300vk_device *device,
    pipe_buffer_unmap(pipe, xfer);
 }
 
+static void
+r300vk_write_query_result_field(struct pipe_context *pipe,
+                                struct pipe_resource *buf,
+                                unsigned offset,
+                                unsigned size,
+                                uint64_t value)
+{
+   struct pipe_transfer *xfer = NULL;
+   uint8_t *map = pipe_buffer_map_range(pipe, buf, offset, size,
+                                        PIPE_MAP_WRITE, &xfer);
+   if (!map)
+      return;
+
+   if (size == sizeof(uint64_t)) {
+      const uint64_t v = value;
+      memcpy(map, &v, sizeof(v));
+   } else {
+      const uint32_t v = (uint32_t)value;
+      memcpy(map, &v, sizeof(v));
+   }
+
+   pipe_buffer_unmap(pipe, xfer);
+}
+
+static bool
+r300vk_query_result_layout_in_bounds(
+   const struct r300vk_cmd_copy_query_pool_results *cq,
+   uint32_t query_index, unsigned result_size, unsigned per_query,
+   bool write_availability, uint64_t total, uint64_t *byte_offset)
+{
+   if (cq->stride && query_index > UINT64_MAX / cq->stride)
+      return false;
+
+   const uint64_t stride_offset = (uint64_t)query_index * cq->stride;
+   if (cq->dst_offset > UINT64_MAX - stride_offset)
+      return false;
+
+   const uint64_t offset = cq->dst_offset + stride_offset;
+   const uint64_t mapped_span = write_availability ? per_query : result_size;
+   /* pipe_buffer_map_range takes unsigned offsets and sizes.  Bound the full
+    * written layout before any field map so offset + per_query cannot overflow
+    * or wrap after the unsigned offset cast. */
+   if (mapped_span > UINT_MAX || mapped_span > total ||
+       offset > total - mapped_span || offset > UINT_MAX - mapped_span)
+      return false;
+
+   *byte_offset = offset;
+   return true;
+}
+
+static void
+r300vk_write_query_result_word(struct pipe_context *pipe,
+                               struct pipe_resource *buf,
+                               uint64_t byte_offset,
+                               unsigned result_size,
+                               bool write_result,
+                               const struct r300vk_query *query)
+{
+   if (!write_result)
+      return;
+
+   r300vk_write_query_result_field(pipe, buf, (unsigned)byte_offset,
+                                   result_size,
+                                   query->available ? query->result : 0);
+}
+
 /* vkCmdCopyQueryPoolResults on the host: write each query's result word (and an
  * availability word when VK_QUERY_RESULT_WITH_AVAILABILITY_BIT is set) into the
  * destination buffer at dst_offset + i*stride, mirroring
  * r300vk_GetQueryPoolResults.  The serialized CPU replay has stored the
  * end-query results into the pool slots before this host entry runs, so
  * VK_QUERY_RESULT_WAIT never blocks; an unavailable slot is one reset but never
- * ended.  Each query maps its own destination span, so the stride gap between
- * entries is left unmodified, as the spec allows when availability is absent. */
+ * ended.  Each written field maps only its own destination word, so the stride
+ * gap between entries and any unavailable result word are left unmodified. */
 static void
 r300vk_copy_query_pool_results(struct r300vk_device *device,
                                const struct r300vk_cmd_copy_query_pool_results *cq)
@@ -3749,6 +3815,8 @@ r300vk_copy_query_pool_results(struct r300vk_device *device,
 
    const bool b64        = (cq->flags & VK_QUERY_RESULT_64_BIT) != 0;
    const bool want_avail = (cq->flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != 0;
+   const bool force_result = (cq->flags & (VK_QUERY_RESULT_PARTIAL_BIT |
+                                           VK_QUERY_RESULT_WAIT_BIT)) != 0;
    const unsigned rsize  = b64 ? sizeof(uint64_t) : sizeof(uint32_t);
    const unsigned per_query = rsize * (want_avail ? 2u : 1u);
    const uint64_t total  = cq->dst->size;
@@ -3756,41 +3824,25 @@ r300vk_copy_query_pool_results(struct r300vk_device *device,
    for (uint32_t i = 0; i < cq->query_count; i++) {
       if (cq->first_query + i >= pool->vk.query_count)
          break;
-      const uint64_t byte_off = cq->dst_offset + (uint64_t)i * cq->stride;
-      /* pipe_buffer_map_range takes unsigned offsets; reject a span past the
-       * buffer or a >4 GiB offset before the cast. */
-      if (byte_off > UINT_MAX || byte_off + per_query > total)
-         break;
 
       const struct r300vk_query *q = &pool->queries[cq->first_query + i];
       const bool available = q->available;
-
-      struct pipe_transfer *xfer = NULL;
-      uint8_t *map = pipe_buffer_map_range(pipe, buf, (unsigned)byte_off,
-                                           per_query, PIPE_MAP_WRITE, &xfer);
-      if (!map)
+      const bool write_result = available || force_result;
+      if (!write_result && !want_avail)
          continue;
-      if (available || (cq->flags & (VK_QUERY_RESULT_PARTIAL_BIT |
-                                     VK_QUERY_RESULT_WAIT_BIT))) {
-         const uint64_t value = available ? q->result : 0;
-         if (b64) {
-            const uint64_t v = value;
-            memcpy(map, &v, sizeof(v));
-         } else {
-            const uint32_t v = (uint32_t)value;
-            memcpy(map, &v, sizeof(v));
-         }
-      }
+
+      uint64_t byte_off;
+      if (!r300vk_query_result_layout_in_bounds(cq, i, rsize, per_query,
+                                                want_avail, total, &byte_off))
+         break;
+
+      r300vk_write_query_result_word(pipe, buf, byte_off, rsize, write_result,
+                                     q);
       if (want_avail) {
-         if (b64) {
-            const uint64_t v = available ? 1 : 0;
-            memcpy(map + rsize, &v, sizeof(v));
-         } else {
-            const uint32_t v = available ? 1u : 0u;
-            memcpy(map + rsize, &v, sizeof(v));
-         }
+         const uint64_t avail_off = byte_off + rsize;
+         r300vk_write_query_result_field(pipe, buf, (unsigned)avail_off, rsize,
+                                         available ? 1 : 0);
       }
-      pipe_buffer_unmap(pipe, xfer);
    }
 }
 
