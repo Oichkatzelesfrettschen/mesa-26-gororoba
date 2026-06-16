@@ -1005,7 +1005,7 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
             vb->buffer.resource = out_res;
         } else if (!vb->buffer.resource || !r300_resource(vb->buffer.resource)->buf) {
             /* Referenced slot with no real BO -- cannot re-ingest; fall back. */
-            if (getenv("R300_R2VB_ROUTE_DEBUG")) fprintf(stderr,"r2vb_passthrough_fallback reason=ref_no_bo vbi=%u\n",vbi);
+            if (getenv("R300_R2VB_ROUTE_DEBUG")) fprintf(stderr,"r2vb_passthrough_fallback reason=ref_no_bo vbi=%u res=%p user=%d nvb=%u\n",vbi,(void*)vb->buffer.resource,vb->is_user_buffer,nvb);
             ok = false; break;
         }
     }
