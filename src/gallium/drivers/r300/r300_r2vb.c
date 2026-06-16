@@ -30,6 +30,7 @@
 
 #include "util/u_inlines.h"
 #include "compiler/nir/nir.h"
+#include "compiler/nir/nir_builder.h"
 
 #include "r300_context.h"
 #include "r300_cs.h"
@@ -132,6 +133,122 @@ static void r2vb_report_bo_a_diagnostic(struct r300_context *r300, struct pipe_r
                 i, av[i * 4 + 0], av[i * 4 + 1], av[i * 4 + 2], av[i * 4 + 3]);
 
     r300->context.buffer_unmap(&r300->context, a_xfer);
+}
+
+/* Build (once) the 4-DP4 transform fragment program: gl_FragColor = M * in_attr,
+ * where in_attr is the per-slot input vertex delivered as a flat GENERIC input
+ * and M's four rows live in FS const file 0 (the route sets them per draw from
+ * the transposed MVP).  r300 lowers an FS load_ubo(binding 0) to RC_FILE_CONSTANT
+ * (nir_to_rc: lower_uniforms_to_ubo + nir_lower_ubo_vec4 -> ntr_emit_load_ubo),
+ * so each fdot4(row, in) compiles to one DP4 reading the const file.  Cached on
+ * the context; create_fs_state takes ownership of the NIR and precompiles, so
+ * RADEON_DEBUG=fp prints the four-DP4 r300 program at creation -- no submit. */
+static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
+{
+    if (r300->r2vb_transform_fs)
+        return r300->r2vb_transform_fs;
+
+    const nir_shader_compiler_options *options =
+        r300->screen->screen.nir_options[MESA_SHADER_FRAGMENT];
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options,
+                                                   "r300 r2vb mvp transform FS");
+
+    nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                           glsl_vec4_type(), "in_vtx");
+    in->data.location = VARYING_SLOT_VAR0;
+    in->data.interpolation = INTERP_MODE_FLAT;
+    nir_def *v = nir_load_var(&b, in);
+
+    nir_def *zero = nir_imm_int(&b, 0);
+    nir_def *comp[4];
+    for (unsigned r = 0; r < 4; r++) {
+        /* Matrix row r from FS UBO[0] at byte offset r*16; one DP4 per output. */
+        nir_def *row = nir_load_ubo(&b, 4, 32, zero, nir_imm_int(&b, r * 16),
+                                    .align_mul = 16, .range = 64);
+        comp[r] = nir_fdot(&b, row, v);
+    }
+    nir_def *o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
+
+    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "out_color");
+    out->data.location = FRAG_RESULT_COLOR;
+    nir_store_var(&b, out, o, 0xf);
+
+    if (getenv("R300_R2VB_VS_DUMP"))
+        nir_print_shader(b.shader, stderr);
+
+    struct pipe_shader_state st = {0};
+    st.type = PIPE_SHADER_IR_NIR;
+    st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
+    r300->r2vb_transform_fs = r300->context.create_fs_state(&r300->context, &st);
+    return r300->r2vb_transform_fs;
+}
+
+/* Data-independent producer position stream: one window-space point per output
+ * slot at pixel (slot+0.5, 0.5, 0, 1), FP32x4.  Reused across draws, grown when
+ * a draw needs more slots.  PIPE_BIND_CUSTOM forces a real winsys BO (the SWTCL
+ * path otherwise keeps vertex resources as a CPU shadow with no ->buf, which a
+ * LOAD_VBPNTR cannot fetch). */
+static struct pipe_resource *r300_r2vb_get_slot_pos_bo(struct r300_context *r300,
+                                                       unsigned count)
+{
+    if (r300->r2vb_slot_pos_bo && r300->r2vb_slot_pos_count >= count)
+        return r300->r2vb_slot_pos_bo;
+
+    pipe_resource_reference(&r300->r2vb_slot_pos_bo, NULL);
+    unsigned cap = align(count, 64);
+    struct pipe_screen *pscreen = r300->context.screen;
+    struct pipe_resource templ = {0};
+    templ.target = PIPE_BUFFER;
+    templ.format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+    templ.width0 = cap * 16;
+    templ.height0 = 1;
+    templ.depth0 = 1;
+    templ.array_size = 1;
+    templ.bind = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_CUSTOM;
+    templ.usage = PIPE_USAGE_DEFAULT;
+    struct pipe_resource *bo = pscreen->resource_create(pscreen, &templ);
+    if (!bo)
+        return NULL;
+
+    struct pipe_transfer *xfer = NULL;
+    struct pipe_box box = { .width = cap * 16, .height = 1, .depth = 1 };
+    float *map = r300->context.buffer_map(&r300->context, bo, 0, PIPE_MAP_WRITE, &box, &xfer);
+    if (map) {
+        for (unsigned s = 0; s < cap; s++) {
+            map[s * 4 + 0] = (float)s + 0.5f;
+            map[s * 4 + 1] = 0.5f;
+            map[s * 4 + 2] = 0.0f;
+            map[s * 4 + 3] = 1.0f;
+        }
+        r300->context.buffer_unmap(&r300->context, xfer);
+    }
+    r300->r2vb_slot_pos_bo = bo;
+    r300->r2vb_slot_pos_count = cap;
+    return bo;
+}
+
+/* No-submit self-check for the MVP producer components: build the transform-FS
+ * (create_fs_state precompiles it, so RADEON_DEBUG=fp prints the 4-DP4 program)
+ * and the slot-pixel BO, then read back the first slots to confirm the position
+ * sequence.  Pure CPU setup; no draw, no GPU work. */
+static void r300_r2vb_mvp_init_selftest(struct r300_context *r300, unsigned count)
+{
+    void *fs = r300_r2vb_get_transform_fs(r300);
+    struct pipe_resource *bo = r300_r2vb_get_slot_pos_bo(r300, count);
+    fprintf(stderr, "r2vb_mvp_init transform_fs=%p slot_pos_bo=%p req_count=%u cap=%u\n",
+            fs, (void *)bo, count, r300->r2vb_slot_pos_count);
+    if (!bo)
+        return;
+    struct pipe_transfer *xfer = NULL;
+    struct pipe_box box = { .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
+    const float *m = r300->context.buffer_map(&r300->context, bo, 0, PIPE_MAP_READ, &box, &xfer);
+    if (m) {
+        for (unsigned s = 0; s < count && s < 4; s++)
+            fprintf(stderr, "  slot[%u] pos=%.1f,%.1f,%.1f,%.1f\n", s, m[s * 4 + 0],
+                    m[s * 4 + 1], m[s * 4 + 2], m[s * 4 + 3]);
+        r300->context.buffer_unmap(&r300->context, xfer);
+    }
 }
 
 void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
@@ -1161,6 +1278,11 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
         if (!dumped) {
             dumped = true;
             r300_vs_dump_nir_shape(r300);
+            /* For an MVP candidate, also build the transform-FS + slot-pixel BO
+             * (no submit) so RADEON_DEBUG=fp prints the 4-DP4 program and the BO
+             * positions are confirmed before the producer pass is wired. */
+            if (r300_vs_is_mvp(r300))
+                r300_r2vb_mvp_init_selftest(r300, draw->count);
         }
     }
     /* Periodic verdict distribution so a real workload shows how much of its draw

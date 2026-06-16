@@ -643,6 +643,14 @@ struct r300_context {
     const void *swtcl_vs_const0_ptr;
     unsigned swtcl_vs_const0_size;
 
+    /* R2VB MVP transform cache: a 4-DP4 fragment program that computes
+     * gl_Position = mat4 * in_attr on the fragment ALU (the matrix in FS const
+     * file 0), and a data-independent slot-pixel position buffer reused across
+     * draws.  Built lazily, owned by the context. */
+    void *r2vb_transform_fs;
+    struct pipe_resource *r2vb_slot_pos_bo;
+    unsigned r2vb_slot_pos_count;
+
     /* Vertex array state info */
     bool vertex_arrays_dirty;
     bool vertex_arrays_indexed;
