@@ -632,6 +632,7 @@ static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r
 struct r2vb_selftest_config {
     bool enabled;
     bool do_submit;
+    bool nowait;
     bool observe;
     uint32_t num_vertices;
     uint32_t s3dim;
@@ -647,6 +648,11 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
         return;
 
     cfg->do_submit = (mode && strcmp(mode, "submit") == 0);
+    /* NOWAIT: submit and hand the fence back to the caller (r300_flush's out
+     * param -> r300vk's Vulkan fence) instead of waiting via the raw winsys
+     * BO-wait poll, so the GPU completion is timed through the fast fence path. */
+    const char *nw = getenv("R300_R2VB_NOWAIT");
+    cfg->nowait = cfg->do_submit && nw && strcmp(nw, "1") == 0;
 
     /* R300_R2VB_PRIM selects the re-ingest topology and its canonical shape
      * (default triangles -- the proven baseline).  R300_R2VB_NVERTS scales only
@@ -677,7 +683,9 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
     }
 }
 
-bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_flush)
+bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_flush,
+                                           unsigned flush_flags,
+                                           struct pipe_fence_handle **out_fence)
 {
     static bool fired = false;
     struct r2vb_selftest_config cfg;
@@ -768,6 +776,25 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         OUT_CS(0x66666666);
         OUT_CS(0x6666666);
         END_CS;
+    }
+
+    if (cfg.nowait) {
+        /* Submit and hand the fence to the caller's out param (becomes r300vk's
+         * Vulkan fence); do NOT wait here.  The application's vkWaitForFences then
+         * times GPU completion through the fast fence path.  A fence cannot signal
+         * before the GPU retires the work, so if that wait is sub-millisecond the
+         * R2VB GPU work is genuinely fast and the earlier ~505 ms was purely the
+         * raw winsys BO-wait poll. */
+        int flush_rc = r300->rws->cs_flush(&r300->cs, flush_flags, out_fence);
+        fprintf(stderr,
+                "r2vb_nowait_submit nverts=%u flush_rc=%d gave_fence=%d "
+                "(GPU completion timed by app vkWaitForFences) hb_vert_fpu=%u\n",
+                cfg.num_vertices, flush_rc, out_fence && *out_fence ? 1 : 0,
+                r300->screen->caps.num_vert_fpus);
+        free(heap_attrs);
+        pipe_resource_reference(&stage3, NULL);
+        pipe_resource_reference(&res, NULL);
+        return true;
     }
 
     if (cfg.do_submit) {

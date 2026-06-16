@@ -11,6 +11,7 @@
 
 struct r300_context;
 struct r300_resource;
+struct pipe_fence_handle;
 
 /* Emit the RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop into the
  * current command stream.  The caller binds the r300 fragment-shader state (the
@@ -63,6 +64,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
  * when it consumed the CS; no-op returning false when the umbrella is disabled,
  * from_flush is false, or it has already fired. */
 bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300,
-                                           bool from_flush);
+                                           bool from_flush,
+                                           unsigned flush_flags,
+                                           struct pipe_fence_handle **out_fence);
 
 #endif

@@ -81,7 +81,7 @@ void r300_flush(struct pipe_context *pipe,
      * real draw has left its framebuffer + fragment program in this CS.  Returns
      * true when it has consumed the CS (so skip the normal flush below).
      * Experiment-gated instrumentation, not a driver feature. */
-    if (r300_emit_rs482_r2vb_capture_selftest(r300, true))
+    if (r300_emit_rs482_r2vb_capture_selftest(r300, true, flags, fence))
         return;
 
     if (r300->dirty_hw) {
