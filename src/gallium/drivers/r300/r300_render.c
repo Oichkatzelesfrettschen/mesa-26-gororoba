@@ -941,34 +941,50 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
     bool swapped[PIPE_MAX_ATTRIBS] = {0};
     bool any_swap = false, ok = true;
 
-    /* Upload each used user vertex buffer to a BO. */
+    if (!r300->velems || r300->velems->count == 0)
+        return false;
+
+    /* Neutralise EVERY user-buffer slot, not just the referenced ones:
+     * r300_emit_buffer_validate (reached via PREP_VALIDATE_VBOS) iterates all
+     * vertex_buffer[0..nr_vertex_buffers] and adds buffer.resource, but for a
+     * user buffer the union aliases a CPU pointer, so an unreferenced stale user
+     * slot would feed a garbage resource to cs_add_buffer.  Upload referenced
+     * user buffers to a BO; NULL out unreferenced user slots so the validate
+     * loop skips them.  Real-BO slots are left as-is. */
     for (unsigned vbi = 0; vbi < nvb; vbi++) {
         struct pipe_vertex_buffer *vb = &r300->vertex_buffer[vbi];
-        if (!vb->is_user_buffer || !vb->buffer.user)
-            continue;
+        if (!vb->is_user_buffer)
+            continue; /* real BO or empty slot */
         unsigned stride = 0;
         for (unsigned i = 0; i < r300->velems->count; i++)
             if (r300->velems->velem[i].vertex_buffer_index == vbi)
                 stride = MAX2(stride, r300->velems->velem[i].src_stride);
-        if (!stride)
-            continue; /* slot not referenced by the bound elements */
-        unsigned size = vb->buffer_offset + (draw->start + draw->count) * stride;
-        unsigned out_off = 0;
-        struct pipe_resource *out_res = NULL;
-        /* _ref so out_res gains a reference we own; the CS keeps its own via
-         * cs_add_buffer during the emit, so dropping ours afterward is safe. */
-        u_upload_data_ref(r300->uploader, 0, size, 4, vb->buffer.user, &out_off, &out_res);
-        if (!out_res) {
-            ok = false;
-            break;
-        }
+
         saved[vbi] = *vb;
         swapped[vbi] = true;
         any_swap = true;
-        uploaded[vbi] = out_res;
-        vb->is_user_buffer = false;
-        vb->buffer_offset = out_off + saved[vbi].buffer_offset;
-        vb->buffer.resource = out_res;
+
+        if (stride && vb->buffer.user) {
+            unsigned size = vb->buffer_offset + (draw->start + draw->count) * stride;
+            unsigned out_off = 0;
+            struct pipe_resource *out_res = NULL;
+            /* _ref so out_res gains a reference we own; the CS keeps its own via
+             * cs_add_buffer during the emit, so dropping ours afterward is safe. */
+            u_upload_data_ref(r300->uploader, 0, size, 4, vb->buffer.user, &out_off, &out_res);
+            if (!out_res) {
+                ok = false;
+                break;
+            }
+            uploaded[vbi] = out_res;
+            vb->is_user_buffer = false;
+            vb->buffer_offset = out_off + saved[vbi].buffer_offset;
+            vb->buffer.resource = out_res;
+        } else {
+            /* Unreferenced (or empty) user slot: make the validate loop skip it. */
+            vb->is_user_buffer = false;
+            vb->buffer_offset = 0;
+            vb->buffer.resource = NULL;
+        }
     }
 
     if (ok) {
