@@ -875,6 +875,27 @@ static bool r300_vs_is_passthrough(struct r300_context *r300)
     if (!impl)
         return false;
 
+    unsigned dbg_alu = 0, dbg_nonmov = 0;
+    bool pass = true;
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_alu) {
+                dbg_alu++;
+                if (nir_instr_as_alu(instr)->op != nir_op_mov)
+                    dbg_nonmov++;
+            }
+        }
+    }
+    if (getenv("R300_R2VB_VS_DEBUG")) {
+        static bool once = false;
+        if (!once) {
+            once = true;
+            fprintf(stderr, "r2vb_vs_scan info_name=%s alu=%u nonmov_alu=%u\n",
+                    nir->info.name ? nir->info.name : "?", dbg_alu, dbg_nonmov);
+        }
+    }
+    (void)pass;
+
     nir_foreach_block(block, impl) {
         nir_foreach_instr(instr, block) {
             switch (instr->type) {
