@@ -14,6 +14,7 @@
 #include "r300_context.h"
 #include "r300_cs.h"
 #include "r300_emit.h"
+#include "r300_r2vb.h"
 
 
 static void r300_rearm_after_hardware_flush(struct r300_context *r300)
@@ -74,6 +75,14 @@ void r300_flush(struct pipe_context *pipe,
                 struct pipe_fence_handle **fence)
 {
     struct r300_context *r300 = r300_context(pipe);
+
+    /* RS482 Wiring-A (R2VB direct-VAP) hardware-handoff probe.  Fires once per
+     * process, only under the R300_HB_TCL / R300_R2VB_TIMING env gates, after a
+     * real draw has left its framebuffer + fragment program in this CS.  Returns
+     * true when it has consumed the CS (so skip the normal flush below).
+     * Experiment-gated instrumentation, not a driver feature. */
+    if (r300_emit_rs482_r2vb_capture_selftest(r300, true, flags, fence))
+        return;
 
     if (r300->dirty_hw) {
         r300_flush_and_cleanup(r300, flags, fence);

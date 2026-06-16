@@ -20,6 +20,7 @@
 
 #include "r300_cs.h"
 #include "r300_context.h"
+#include "r300_r2vb.h"
 #include "r300_screen_buffer.h"
 #include "r300_emit.h"
 #include "r300_reg.h"
@@ -311,6 +312,18 @@ static bool immd_is_good_idea(struct r300_context *r300,
     /* Buffers can only be used for read by r300 (except query buffers, but
      * those can't be bound by an gallium frontend as vertex buffers). */
     return true;
+}
+
+/* Reserve CS space and emit dirty state for the R2VB MVP producer.  That code
+ * lives in r300_r2vb.c and cannot see the static prepare_for_rendering or its
+ * flags enum; this thin wrapper runs the real reserve + emit_dirty_state path
+ * (proper space accounting and validation) so a freshly bound transform-FS and
+ * its const file reach the IB -- the raw r300_emit_dirty_state route left an
+ * empty IB (RS4xx zero_ib).  cs_dwords reserves room for the producer the caller
+ * emits next. */
+bool r300_r2vb_prepare_states(struct r300_context *r300, unsigned cs_dwords)
+{
+    return r300_prepare_for_rendering(r300, PREP_EMIT_STATES, NULL, cs_dwords, 0, 0, -1);
 }
 
 /*****************************************************************************
@@ -915,6 +928,303 @@ static void r300_draw_vbo(struct pipe_context* pipe,
  ***************************************************************************/
 
 /* SW TCL elements, using Draw. */
+/* WARNING -- R300_R2VB_EXEC is experimental and SUSPECTED to hang the GPU.  On
+ * the first silicon run where this actually executed (vertex data uploaded from
+ * the SWTCL malloced_buffer shadow), the reset-less RS482 went unresponsive
+ * during the route-on draw.  The likely cause: r300_update_derived_state set the
+ * RS interpolators and VAP_OUTPUT_VTX_FMT for the gallivm draw-module OUTPUT
+ * vertex layout, which is not guaranteed to match the application vertex-element
+ * layout this path feeds straight to the VAP; a mismatch can stall the VAP/GA.
+ * Correctly executing the route needs the RS / VAP-output-format state rebuilt
+ * for the app velems (or a proof the passthrough layouts coincide) before it is
+ * safe to enable.  Gated off by default (R300_R2VB_EXEC), so ordinary drawing is
+ * unaffected.
+ *
+ * Execute a PASSTHROUGH-classified draw via the direct-VB route: re-ingest the
+ * application vertex arrays at TCL_BYPASS, skipping the gallivm draw module.
+ * r300vk feeds the SWTCL path USER vertex buffers (CPU pointers, no winsys BO);
+ * a LOAD_VBPNTR relocation needs a BO, so upload each used user buffer's range to
+ * one via r300->uploader, swap r300->vertex_buffer to the uploads for the emit,
+ * then restore and unref.  The upload is a memcpy of already-mapped data, far
+ * cheaper than the gallivm per-vertex interpreter.  Returns true if it handled
+ * the draw (executed, or intentionally skipped on a flush failure as the HW-TCL
+ * path does); false to fall back to gallivm. */
+/* No-submit first-principles capture of the VAP-stream + RS-routing the direct-VB
+ * path would feed the VAP under TCL_BYPASS, decoded to the fields that matter for
+ * the suspected hang.  Pure CPU inspection of the bound state atoms -- no CS emit,
+ * no GPU work -- so it is safe on any boot.  Axioms it surfaces:
+ *  A1 VAP_PROG_STREAM_CNTL: per fetched element, DATA_TYPE + DST_VEC_LOC (which
+ *     VAP output vector the element lands in) -- this is the velems CSO stream.
+ *  A3 VAP_OUTPUT_VTX_FMT_0/1: which output vectors the VAP declares present.
+ *  A4 RS_COUNT / RS_IP: which VAP output vectors the rasteriser routes to FS
+ *     inputs.  The chain is consistent iff every RS source vector is produced by
+ *     a stream element's DST_VEC_LOC and position lands where SU/GA expects. */
+static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
+{
+    struct r300_vertex_stream_state *vs =
+        (struct r300_vertex_stream_state *)r300->vertex_stream_state.state;
+    struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
+
+    /* velems->format_size / vertex_size_dwords are populated only for has_tcl
+     * (r300_create_vertex_elements_state), so on SWTCL they are 0; compute the
+     * per-vertex dword count from the element formats directly, as that HWTCL
+     * path does (align(blocksize,4)/4 per element). */
+    unsigned vap_vtx_size = 0;
+    for (unsigned i = 0; r300->velems && i < r300->velems->count; i++)
+        vap_vtx_size += align(util_format_get_blocksize(r300->velems->velem[i].src_format), 4) / 4;
+    fprintf(stderr, "r2vb_inspect velems_count=%u nvb=%u would_emit_vap_vtx_size=%u\n",
+            r300->velems ? r300->velems->count : 0, r300->nr_vertex_buffers, vap_vtx_size);
+    /* The LOAD_VBPNTR SIZE field r300_emit_vertex_arrays emits per array comes
+     * from velems->format_size[i], which r300_create_vertex_elements_state fills
+     * only under has_tcl -- so on SWTCL it is zero and every array fetches zero
+     * dwords.  Report the live value next to the format-derived size so a
+     * SIZE=0 (the malformed fetch) is visible in the no-submit capture. */
+    for (unsigned i = 0; r300->velems && i < r300->velems->count; i++)
+        fprintf(stderr,
+                "  velem[%u] vbi=%u src_stride=%u src_offset=%u "
+                "format_size_live=%u format_size_expect=%u\n",
+                i, r300->velems->velem[i].vertex_buffer_index,
+                r300->velems->velem[i].src_stride, r300->velems->velem[i].src_offset,
+                r300->velems->format_size[i],
+                align(util_format_get_blocksize(r300->velems->velem[i].src_format), 4));
+    if (vs) {
+        fprintf(stderr, "r2vb_inspect vap_stream count=%u\n", vs->count);
+        for (unsigned i = 0; i < vs->count && i < 8; i++) {
+            uint32_t c = vs->vap_prog_stream_cntl[i];
+            for (unsigned e = 0; e < 2; e++) {
+                uint32_t f = c >> (e * 16);
+                fprintf(stderr,
+                        "  stream[%u].e%u raw=0x%08x data_type=%u dst_vec_loc=%u last=%u\n",
+                        i, e, c, f & 0xf, (f >> 8) & 0x1f, (f >> 13) & 1);
+            }
+        }
+    }
+    /* Viewport/VTE: the SWTCL path leaves vte_control = VTX_XY_FMT (no HW
+     * transform) for gallivm's window-space output; the route needs the HW
+     * viewport transform for clip-space app verts.  Report both the bound
+     * vte_control and r300->viewport scale/offset the route would program. */
+    {
+        struct r300_viewport_state *vps =
+            (struct r300_viewport_state *)r300->viewport_state.state;
+        const struct pipe_viewport_state *vp = &r300->viewport;
+        fprintf(stderr,
+                "r2vb_inspect bound_vte_control=0x%08x vp_scale=%.3f,%.3f,%.3f "
+                "vp_translate=%.3f,%.3f,%.3f\n",
+                vps ? vps->vte_control : 0u, vp->scale[0], vp->scale[1], vp->scale[2],
+                vp->translate[0], vp->translate[1], vp->translate[2]);
+    }
+    if (rs) {
+        fprintf(stderr,
+                "r2vb_inspect vap_out_vtx_fmt0=0x%08x pos=%u ptsize=%u fmt1=0x%08x "
+                "rs_count=0x%08x rs_inst_count=0x%08x\n",
+                rs->vap_out_vtx_fmt[0], rs->vap_out_vtx_fmt[0] & 1,
+                (rs->vap_out_vtx_fmt[0] >> 16) & 1, rs->vap_out_vtx_fmt[1], rs->count,
+                rs->inst_count);
+        for (unsigned i = 0; i < 8; i++)
+            if (rs->ip[i] || rs->inst[i])
+                fprintf(stderr, "  rs[%u] ip=0x%08x inst=0x%08x\n", i, rs->ip[i], rs->inst[i]);
+    }
+}
+
+static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
+                                            const struct pipe_draw_info *info,
+                                            const struct pipe_draw_start_count_bias *draw)
+{
+    /* Capture+decode mode: dump the routing state and fall back to gallivm (which
+     * renders correctly), so the suspected-hang emit never reaches the GPU. */
+    if (getenv("R300_R2VB_INSPECT")) {
+        r300_r2vb_inspect_passthrough(r300);
+        return false;
+    }
+
+#define R2VB_BAIL(reason) do { if (getenv("R300_R2VB_ROUTE_DEBUG")) \
+    fprintf(stderr, "r2vb_passthrough_fallback reason=%s nvb=%u\n", (reason), \
+            r300->nr_vertex_buffers); return false; } while (0)
+
+    if (r300_vs(r300)->shader->dummy)
+        R2VB_BAIL("dummy_vs");
+
+    unsigned nvb = r300->nr_vertex_buffers;
+    if (nvb > PIPE_MAX_ATTRIBS || !r300->uploader)
+        R2VB_BAIL("nvb_or_uploader");
+
+    struct pipe_vertex_buffer saved[PIPE_MAX_ATTRIBS];
+    struct pipe_resource *uploaded[PIPE_MAX_ATTRIBS] = {0};
+    bool swapped[PIPE_MAX_ATTRIBS] = {0};
+    bool any_swap = false, ok = true;
+
+    if (!r300->velems || r300->velems->count == 0)
+        R2VB_BAIL("no_velems");
+
+    /* r300_emit_buffer_validate (reached via PREP_VALIDATE_VBOS) iterates ALL of
+     * vertex_buffer[0..nr_vertex_buffers] and adds buffer.resource.  In the SWTCL
+     * context that array carries user buffers (the union aliases a CPU pointer)
+     * and stale slots from earlier binds (a dangling resource whose ->buf is
+     * NULL), either of which faults cs_add_buffer.  So normalise every slot the
+     * loop will touch: a velem-referenced user buffer is uploaded to a BO; every
+     * UNREFERENCED slot is NULLed so the validate loop skips it.  Velem-referenced
+     * real-BO slots are left as-is (they carry a valid ->buf).  Restored after. */
+    bool referenced[PIPE_MAX_ATTRIBS] = {0};
+    unsigned ref_stride[PIPE_MAX_ATTRIBS] = {0};
+    for (unsigned i = 0; i < r300->velems->count; i++) {
+        unsigned vbi = r300->velems->velem[i].vertex_buffer_index;
+        if (vbi >= nvb)
+            R2VB_BAIL("velem_vbi_oob"); /* element points outside the bound buffers */
+        referenced[vbi] = true;
+        ref_stride[vbi] = MAX2(ref_stride[vbi], r300->velems->velem[i].src_stride);
+    }
+
+    for (unsigned vbi = 0; vbi < nvb && ok; vbi++) {
+        struct pipe_vertex_buffer *vb = &r300->vertex_buffer[vbi];
+
+        if (!referenced[vbi]) {
+            if (vb->is_user_buffer || vb->buffer.resource) {
+                saved[vbi] = *vb;
+                swapped[vbi] = true;
+                any_swap = true;
+                vb->is_user_buffer = false;
+                vb->buffer_offset = 0;
+                vb->buffer.resource = NULL;
+            }
+            continue;
+        }
+
+        /* Determine the vertex data source for this referenced slot:
+         *  - a user buffer: the CPU pointer directly;
+         *  - a real-BO resource (->buf set): used as-is, no upload;
+         *  - a CPU-only resource (malloced_buffer, ->buf NULL): r300's SWTCL path
+         *    keeps real-resource vertex buffers as a CPU shadow with no winsys BO
+         *    (r300_set_vertex_buffers_swtcl), which is what r300vk binds; upload
+         *    that shadow.
+         * Anything else cannot be re-ingested -> fall back. */
+        const void *cpu_src = NULL;
+        bool real_bo = false;
+        if (vb->is_user_buffer) {
+            cpu_src = vb->buffer.user;
+        } else if (vb->buffer.resource) {
+            struct r300_resource *rr = r300_resource(vb->buffer.resource);
+            if (rr->buf)
+                real_bo = true;
+            else
+                cpu_src = rr->malloced_buffer;
+        }
+
+        if (real_bo)
+            continue; /* already a BO; the validate loop will add it */
+
+        if (!cpu_src || !ref_stride[vbi]) {
+            if (getenv("R300_R2VB_ROUTE_DEBUG"))
+                fprintf(stderr, "r2vb_passthrough_fallback reason=no_cpu_src vbi=%u res=%p user=%d\n",
+                        vbi, (void *)vb->buffer.resource, vb->is_user_buffer);
+            ok = false;
+            break;
+        }
+
+        unsigned size = vb->buffer_offset + (draw->start + draw->count) * ref_stride[vbi];
+        unsigned out_off = 0;
+        struct pipe_resource *out_res = NULL;
+        /* _ref so out_res gains a reference we own; the CS keeps its own via
+         * cs_add_buffer during the emit, so dropping ours afterward is safe. */
+        u_upload_data_ref(r300->uploader, 0, size, 4, cpu_src, &out_off, &out_res);
+        if (!out_res) {
+            ok = false;
+            break;
+        }
+        saved[vbi] = *vb;
+        swapped[vbi] = true;
+        any_swap = true;
+        uploaded[vbi] = out_res;
+        vb->is_user_buffer = false;
+        vb->buffer_offset = out_off + saved[vbi].buffer_offset;
+        vb->buffer.resource = out_res;
+    }
+
+    if (ok) {
+        if (any_swap)
+            u_upload_unmap(r300->uploader);
+        /* Force the vertex-array validate + emit to pick up the swapped buffers
+         * (r300_emit_buffer_validate adds the BOs only when this is set). */
+        r300->vertex_arrays_dirty = true;
+        /* SWTCL leaves velems->format_size[] and ->vertex_size_dwords zero:
+         * r300_create_vertex_elements_state fills them only under has_tcl, but
+         * r300_emit_vertex_arrays (reached here via PREP_EMIT_VARRAYS) emits each
+         * array's LOAD_VBPNTR SIZE field from format_size[i].  A zero SIZE makes
+         * the VAP fetch zero dwords per array -- the malformed fetch behind the
+         * suspected stall.  Populate them from the bound element formats using
+         * the same align(blocksize, 4) the has_tcl path computes; this is derived
+         * per-CSO data, so filling it is idempotent and the gallivm SWTCL path
+         * does not read it (it fetches through r300->vertex_info instead).
+         *
+         * VAP_VTX_SIZE is the matching per-vertex dword count the VAP fetches
+         * under TCL_BYPASS.  Neither r300_emit_states (no vs_state when !has_tcl)
+         * nor r300_emit_draw_arrays emits it, and the inherited value is the
+         * gallivm draw-module output size, so set it explicitly alongside. */
+        unsigned vap_vtx_size = 0;
+        r300->velems->vertex_size_dwords = 0;
+        for (unsigned i = 0; i < r300->velems->count; i++) {
+            unsigned fs =
+                align(util_format_get_blocksize(r300->velems->velem[i].src_format), 4);
+            r300->velems->format_size[i] = fs;
+            r300->velems->vertex_size_dwords += fs / 4;
+            vap_vtx_size += fs / 4;
+        }
+        /* Viewport transform.  gallivm's draw module applies the viewport on the
+         * CPU and emits window-space vertices, so the SWTCL path sets VAP_VTE_CNTL
+         * to VTX_XY_FMT|VTX_Z_FMT (pre-divided, no HW transform) and returns
+         * early without populating the viewport scale/offset
+         * (r300_set_viewport_states, the if(r300->draw) branch).  The direct-VB
+         * route instead feeds the application's clip-space vertices, so the VAP
+         * must run the hardware viewport transform: VTX_W0_FMT does the perspective
+         * divide, and the VPORT scale/offset map NDC to window.  Emit the transform
+         * for this draw from r300->viewport (the same values the has_tcl branch
+         * would program), then restore VTX_XY_FMT after the draw so the next gallivm
+         * draw -- whose vertices are already window-space -- is not transformed
+         * twice.  Reserve covers VAP_VTX_SIZE(2) + VPORT seq(7) + VTE(2) + the
+         * restore(2) + emit_draw_arrays. */
+        const struct pipe_viewport_state *vp = &r300->viewport;
+        float vport6[6] = {vp->scale[0], vp->translate[0], vp->scale[1],
+                           vp->translate[1], vp->scale[2], vp->translate[2]};
+        if (r300_prepare_for_rendering(r300,
+                                       PREP_EMIT_STATES | PREP_VALIDATE_VBOS | PREP_EMIT_VARRAYS,
+                                       NULL, 24, draw->start, 0, -1)) {
+            CS_LOCALS(r300);
+            BEGIN_CS(2 + 7 + 2);
+            OUT_CS_REG(R300_VAP_VTX_SIZE, vap_vtx_size);
+            OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6);
+            OUT_CS_TABLE(vport6, 6);
+            OUT_CS_REG(R300_VAP_VTE_CNTL,
+                       R300_VTX_W0_FMT | R300_VPORT_X_SCALE_ENA | R300_VPORT_X_OFFSET_ENA |
+                           R300_VPORT_Y_SCALE_ENA | R300_VPORT_Y_OFFSET_ENA |
+                           R300_VPORT_Z_SCALE_ENA | R300_VPORT_Z_OFFSET_ENA);
+            END_CS;
+            r300_emit_draw_arrays(r300, info->mode, draw->count);
+            BEGIN_CS(2);
+            OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+            END_CS;
+        }
+        if (getenv("R300_R2VB_ROUTE_DEBUG")) {
+            static bool once = false;
+            if (!once) {
+                once = true;
+                fprintf(stderr, "r2vb_passthrough_executed count=%u uploaded_vbs=%d (direct-VB, "
+                                "gallivm skipped)\n", draw->count, any_swap);
+            }
+        }
+    }
+
+    /* Restore the original (user) buffers and release the uploads.  Mark the
+     * arrays dirty so the next draw re-emits against the restored state. */
+    for (unsigned vbi = 0; vbi < nvb; vbi++) {
+        if (swapped[vbi]) {
+            r300->vertex_buffer[vbi] = saved[vbi];
+            pipe_resource_reference(&uploaded[vbi], NULL);
+        }
+    }
+    if (any_swap)
+        r300->vertex_arrays_dirty = true;
+    return ok;
+}
+
 static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
                                 const struct pipe_draw_info *info,
                                 unsigned drawid_offset,
@@ -954,6 +1264,20 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
     }
 
     r300_update_derived_state(r300);
+
+    /* RS482 fragment-ALU R2VB vertex route (experiment-gated by R300_R2VB_ROUTE).
+     * Classifies the draw against the simple-draw class and, once the producer is
+     * built, would transform + re-ingest it instead of running the gallivm CPU
+     * draw module.  Returns false today (classifier only), so this falls through
+     * to gallivm with zero behaviour change.  This is the single choke point for
+     * both GL and r300vk-Vulkan draws -- r300vk replays through this same gallium
+     * draw_vbo, so no separate Vulkan-side wiring is needed. */
+    /* Passthrough direct-VB route: re-ingest the app vertex arrays at TCL_BYPASS,
+     * skipping the gallivm draw module.  Falls back to gallivm if the route
+     * declines or cannot execute the draw. */
+    if (r300_r2vb_route_draw(r300, info, &draw) &&
+        r300_r2vb_exec_passthrough_draw(r300, info, &draw))
+        return;
 
     draw_vbo(r300->draw, info, drawid_offset, NULL, &draw, 1, 0);
     draw_flush(r300->draw);
