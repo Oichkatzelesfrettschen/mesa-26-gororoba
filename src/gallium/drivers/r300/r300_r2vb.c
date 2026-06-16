@@ -785,34 +785,6 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
                 "gpu_ms=%.4f gpu_Mvps=%.3f flush_rc=%d signalled=%d hb_vert_fpu=%u\n",
                 cfg.num_vertices, total_ms, enqueue_ms, submit_ms, gpu_ms, mvps, flush_rc,
                 signalled, r300->screen->caps.num_vert_fpus);
-
-        /* Fence-latency baseline.  Time a trivial submit -- one register write,
-         * no draw, no barrier -- the same three-way way.  If this idle-queue
-         * fence also retires in ~the same gpu_ms, the ~500 ms is fence-detection
-         * latency on a quiescent GPU (a synchronous-wait artifact a pipelined
-         * workload never pays), not R2VB transform or barrier cost. */
-        struct pipe_fence_handle *base_fence = NULL;
-        struct timespec b0, b1;
-        bool base_signalled = false;
-        {
-            CS_LOCALS(r300);
-            BEGIN_CS(2);
-            OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
-            END_CS;
-        }
-        clock_gettime(CLOCK_MONOTONIC, &b0);
-        r300->rws->cs_flush(&r300->cs, 0, &base_fence);
-        r300->rws->cs_sync_flush(&r300->cs);
-        if (base_fence) {
-            base_signalled =
-                r300->rws->fence_wait(r300->rws, base_fence, (uint64_t)5 * 1000 * 1000 * 1000);
-            r300->rws->fence_reference(r300->rws, &base_fence, NULL);
-        }
-        clock_gettime(CLOCK_MONOTONIC, &b1);
-        double base_ms =
-            (double)(b1.tv_sec - b0.tv_sec) * 1e3 + (double)(b1.tv_nsec - b0.tv_nsec) / 1e6;
-        fprintf(stderr, "r2vb_fence_baseline trivial_submit_ms=%.4f signalled=%d\n", base_ms,
-                base_signalled);
     } else {
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
         fprintf(stderr,
