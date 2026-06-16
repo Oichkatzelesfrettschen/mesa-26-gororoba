@@ -209,12 +209,13 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         }
     }
 
-    /* 66 dwords for the single-BO loop: stage 1 = 45, stage 2 = 6, stage 3 = 15.
+    /* 68 dwords for the single-BO loop: stage 1 = 47, stage 2 = 6, stage 3 = 15.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
      * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
      * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
-     * vertices (twelve dwords); SU_CULL_MODE, SC_CLIP_RULE, and GA_POINT_SIZE add
-     * six dwords; the stage-3 VF_MAX_VTX_INDX re-assert adds two.  The stage-3
+     * vertices (twelve dwords); SU_CULL_MODE, SC_CLIP_RULE, GA_POINT_SIZE, and
+     * GA_POINT_MINMAX add eight dwords; the stage-3 VF_MAX_VTX_INDX re-assert adds
+     * two.  The stage-3
      * color-target switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 +
      * the SC_SCISSORS pair).  The identity-wpos override adds five dwords per
      * viewport state constant the bound FS carries (zero for a passthrough FS).
@@ -222,7 +223,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * embeds num_vertices two-float4 points (num_vertices*8 dwords) where the base
      * counts assumed three one-float4 triangle vertices (twelve dwords) plus a
      * four-dword PSC override: net (num_vertices*8 - 16). */
-    BEGIN_CS((stage3_color_bo ? 75 : 66) + r2vb_vp_override_dwords +
+    BEGIN_CS((stage3_color_bo ? 77 : 68) + r2vb_vp_override_dwords +
              (int)num_vertices * 8 - 16);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
@@ -315,17 +316,22 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * rasterizer never runs, and the GTT color BO reads back all zero. */
     OUT_CS_REG(R300_SU_CULL_MODE, 0);
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
-    /* Pin the point size to one pixel (GA_POINT_SIZE packs 1/6-pixel units, so
-     * size 1 = 6 in both X and Y).  The stage-1 producer rasterizes one point per
-     * slot, and a POINTS re-ingest (stage 3) rasterizes the GTT vertices as
-     * points; either inherits the caller's last GA_POINT_SIZE otherwise, which on
-     * a triangle trigger draw is an arbitrary value that smears each point across
-     * several pixels (and, for the re-ingest, off the intended position).  One
-     * pixel keeps the producer's slot-to-pixel mapping exact and makes a POINTS
-     * topology rasterize one texel per vertex; it is a don't-care for the line
-     * and triangle topologies. */
+    /* Pin the point size to one pixel.  r300 cannot disable the per-vertex
+     * point-size output, so GA takes each point's size from a vertex component
+     * and clamps it to [GA_POINT_MINMAX.MIN, .MAX] (r300_state.c, the non-per-
+     * vertex branch sets MIN = MAX = the fixed size).  The re-ingested GTT
+     * vertices carry no point-size component, so without the clamp GA reads an
+     * undefined size and smears each point across many pixels, off-position.
+     * Both registers pack 1/6-pixel units, so size 1 = 6.  GA_POINT_SIZE sets the
+     * nominal size and GA_POINT_MINMAX MIN = MAX = 1 forces every rasterized
+     * point to exactly one pixel regardless of the vertex value.  This keeps the
+     * stage-1 producer's slot-to-pixel mapping exact and makes a POINTS re-ingest
+     * rasterize one texel per vertex; both are don't-cares for the line and
+     * triangle topologies. */
     OUT_CS_REG(R300_GA_POINT_SIZE, (6 << R300_POINTSIZE_Y_SHIFT) |
                                        (6 << R300_POINTSIZE_X_SHIFT));
+    OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
+                                         (6 << R300_GA_POINT_MINMAX_MAX_SHIFT));
     /* Self-supplied producer geometry: one POINT per output slot.  Declare one
      * FP32x4 position stream with pre-divided window coordinates (VTX_XY_FMT),
      * then emit num_vertices points at (slot+0.5, 0.5) in-IB via 3D_DRAW_IMMD.
