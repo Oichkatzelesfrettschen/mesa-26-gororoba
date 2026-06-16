@@ -67,6 +67,60 @@ check_straddle_flag_is_explicit(void)
    ralloc_free(shader);
 }
 
+static nir_variable *
+add_block0_ubo(nir_shader *shader, unsigned size_bytes, const char *name)
+{
+   const struct glsl_type *ubo_type = r300vk_block0_ubo_type(size_bytes);
+   nir_variable *ubo =
+      nir_variable_create(shader, nir_var_mem_ubo, ubo_type, name);
+
+   ubo->data.driver_location = 0;
+   ubo->interface_type = r300vk_block0_ubo_interface_type(ubo_type);
+   return ubo;
+}
+
+static unsigned
+block0_ubo_count(nir_shader *shader)
+{
+   unsigned count = 0;
+
+   nir_foreach_variable_with_modes(var, shader, nir_var_mem_ubo) {
+      if (var->data.driver_location == 0)
+         count++;
+   }
+
+   return count;
+}
+
+static unsigned
+block0_ubo_interface_size(nir_shader *shader)
+{
+   nir_variable *ubo = r300vk_find_block0_ubo(shader);
+
+   return ubo ? r300vk_ubo_interface_size(ubo) : 0;
+}
+
+static void
+check_block0_ubo_declaration(void)
+{
+   nir_shader *shader = push_const_load_shader(0, 4);
+   r300vk_declare_block0_ubo(shader, 128);
+   CHECK(block0_ubo_count(shader) == 1,
+         "block-0 UBO declaration creates one compiler-visible block");
+   CHECK(block0_ubo_interface_size(shader) >= 128,
+         "block-0 UBO declaration covers the push-constant window");
+   ralloc_free(shader);
+
+   shader = push_const_load_shader(0, 4);
+   add_block0_ubo(shader, 16, "app_ubo0");
+   r300vk_declare_block0_ubo(shader, 128);
+   CHECK(block0_ubo_count(shader) == 1,
+         "block-0 UBO declaration reuses a prior app block");
+   CHECK(block0_ubo_interface_size(shader) >= 128,
+         "reused block-0 UBO declaration expands to the push window");
+   ralloc_free(shader);
+}
+
 static nir_shader *
 vertex_texture_shader(bool live_texture)
 {
@@ -118,6 +172,8 @@ check_vertex_texture_gate(void)
 int
 main(void)
 {
+   glsl_type_singleton_init_or_ref();
+
    check_push_const(0, 4, true,
                     "vec4 push load at slot start fits one constant slot");
    check_push_const(4, 3, true,
@@ -129,7 +185,9 @@ main(void)
    check_push_const(12, 2, false,
                     "vec2 push load at final slot component is rejected");
    check_straddle_flag_is_explicit();
+   check_block0_ubo_declaration();
    check_vertex_texture_gate();
 
+   glsl_type_singleton_decref();
    return failures ? 1 : 0;
 }
