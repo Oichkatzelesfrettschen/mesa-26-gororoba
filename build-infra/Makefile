@@ -477,12 +477,12 @@ install-1_r300_full_release_x86_64v1-clang22-distcc-cache:
 # Canonical full-feature r300 DEBUG build: same surface, assertions live (-O2 -g),
 # installs to the -debug prefix (profile 2_).
 rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) -j1 clean PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
-	$(MAKE) -j1 configure PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
-	$(MAKE) build PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) -j1 clean PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-26-gororoba-debug
+	$(MAKE) -j1 configure PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-26-gororoba-debug
+	$(MAKE) build PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-26-gororoba-debug
 
 install-2_r300_full_debug_x86_64v1-clang22-distcc-cache:
-	$(MAKE) install PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+	$(MAKE) install PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-26-gororoba-debug
 
 # Canonical r600/terakan RELEASE build: maximal terakan stack (r600, zink,
 # softpipe, llvmpipe, amd_terascale) plus Rusticl in one artifact (profile 3_).
