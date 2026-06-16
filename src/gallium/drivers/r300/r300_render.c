@@ -987,6 +987,20 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
             }
         }
     }
+    /* Viewport/VTE: the SWTCL path leaves vte_control = VTX_XY_FMT (no HW
+     * transform) for gallivm's window-space output; the route needs the HW
+     * viewport transform for clip-space app verts.  Report both the bound
+     * vte_control and r300->viewport scale/offset the route would program. */
+    {
+        struct r300_viewport_state *vps =
+            (struct r300_viewport_state *)r300->viewport_state.state;
+        const struct pipe_viewport_state *vp = &r300->viewport;
+        fprintf(stderr,
+                "r2vb_inspect bound_vte_control=0x%08x vp_scale=%.3f,%.3f,%.3f "
+                "vp_translate=%.3f,%.3f,%.3f\n",
+                vps ? vps->vte_control : 0u, vp->scale[0], vp->scale[1], vp->scale[2],
+                vp->translate[0], vp->translate[1], vp->translate[2]);
+    }
     if (rs) {
         fprintf(stderr,
                 "r2vb_inspect vap_out_vtx_fmt0=0x%08x pos=%u ptsize=%u fmt1=0x%08x "
@@ -1142,15 +1156,39 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
             r300->velems->vertex_size_dwords += fs / 4;
             vap_vtx_size += fs / 4;
         }
-        /* +2 dwords over the 9 emit_draw_arrays spares for this register write. */
+        /* Viewport transform.  gallivm's draw module applies the viewport on the
+         * CPU and emits window-space vertices, so the SWTCL path sets VAP_VTE_CNTL
+         * to VTX_XY_FMT|VTX_Z_FMT (pre-divided, no HW transform) and returns
+         * early without populating the viewport scale/offset
+         * (r300_set_viewport_states, the if(r300->draw) branch).  The direct-VB
+         * route instead feeds the application's clip-space vertices, so the VAP
+         * must run the hardware viewport transform: VTX_W0_FMT does the perspective
+         * divide, and the VPORT scale/offset map NDC to window.  Emit the transform
+         * for this draw from r300->viewport (the same values the has_tcl branch
+         * would program), then restore VTX_XY_FMT after the draw so the next gallivm
+         * draw -- whose vertices are already window-space -- is not transformed
+         * twice.  Reserve covers VAP_VTX_SIZE(2) + VPORT seq(7) + VTE(2) + the
+         * restore(2) + emit_draw_arrays. */
+        const struct pipe_viewport_state *vp = &r300->viewport;
+        float vport6[6] = {vp->scale[0], vp->translate[0], vp->scale[1],
+                           vp->translate[1], vp->scale[2], vp->translate[2]};
         if (r300_prepare_for_rendering(r300,
                                        PREP_EMIT_STATES | PREP_VALIDATE_VBOS | PREP_EMIT_VARRAYS,
-                                       NULL, 11, draw->start, 0, -1)) {
+                                       NULL, 24, draw->start, 0, -1)) {
             CS_LOCALS(r300);
-            BEGIN_CS(2);
+            BEGIN_CS(2 + 7 + 2);
             OUT_CS_REG(R300_VAP_VTX_SIZE, vap_vtx_size);
+            OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6);
+            OUT_CS_TABLE(vport6, 6);
+            OUT_CS_REG(R300_VAP_VTE_CNTL,
+                       R300_VTX_W0_FMT | R300_VPORT_X_SCALE_ENA | R300_VPORT_X_OFFSET_ENA |
+                           R300_VPORT_Y_SCALE_ENA | R300_VPORT_Y_OFFSET_ENA |
+                           R300_VPORT_Z_SCALE_ENA | R300_VPORT_Z_OFFSET_ENA);
             END_CS;
             r300_emit_draw_arrays(r300, info->mode, draw->count);
+            BEGIN_CS(2);
+            OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+            END_CS;
         }
         if (getenv("R300_R2VB_ROUTE_DEBUG")) {
             static bool once = false;
