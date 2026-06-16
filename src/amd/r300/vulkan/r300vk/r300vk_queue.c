@@ -2357,10 +2357,9 @@ r300vk_replay_clear_attachments(struct r300vk_device *device,
 }
 
 /* Executes one host-side transfer/event command (buffer fill, buffer copy,
- * inline update, image copy/clear, host event signal).  Defined alongside the
- * post-fence CPU pass; forward-declared so the in-submission-order replay can
- * share the exact same execution and stay byte-for-byte consistent with the
- * deferred path. */
+ * inline update, image copy/clear, host event signal).  The replay walker calls
+ * this only outside render-pass segments and drains pending GPU work first, so
+ * host-visible writes stay ordered ahead of later GPU reads. */
 static void r300vk_replay_host_entry(struct r300vk_device *device,
                                      const struct r300vk_cmd_entry *e);
 
@@ -2386,15 +2385,57 @@ r300vk_drain_gpu(struct r300vk_device *device, bool *gpu_pending)
    *gpu_pending = false;
 }
 
-/* Replays one command buffer's GPU work.  When inorder_host is set, the submit
- * has no multi-tile render pass (every cmd buffer is tile_pass_count == 1), so
- * host transfers run here in submission order -- draining gpu_pending first --
- * instead of in the post-fence CPU pass.  That ordering lets a later in-submit
- * dispatch/draw observe a prior vkCmdFillBuffer/CopyBuffer/UpdateBuffer.  When
- * inorder_host is clear, a multi-tile render pass re-walks this entry list per
- * tile, so host transfers must stay in the post-fence pass and are skipped
- * here.  gpu_pending is threaded across the whole submit so a host transfer in
- * a later cmd buffer drains GPU work emitted by an earlier one. */
+struct r300vk_replay_state {
+   struct pipe_vertex_buffer vb_cache[R300VK_MAX_VERTEX_BINDINGS];
+   VkDeviceSize vb_sizes[R300VK_MAX_VERTEX_BINDINGS];
+   VkDeviceSize vb_strides[R300VK_MAX_VERTEX_BINDINGS];
+   uint32_t vb_strides_mask;
+   uint32_t vb_max_used;
+   bool vb_dirty;
+   uint8_t replay_pc[128];
+   const struct r300vk_pipeline *bound_pipeline;
+   struct r300vk_dyn_overlay dyn_ov;
+   const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets;
+   const struct r300vk_cmd_entry *last_viewport;
+   const struct r300vk_cmd_entry *last_scissor;
+   struct pipe_query *active_oq;
+};
+
+static void
+r300vk_replay_state_cleanup(struct r300vk_device *device,
+                            struct r300vk_replay_state *state)
+{
+   struct pipe_context *pipe = device->pipe;
+
+   /* A vkCmdBeginQuery with no matching end before submit is invalid usage; end
+    * and destroy the dangling query so the pipe handle is not leaked. */
+   if (state->active_oq) {
+      pipe->end_query(pipe, state->active_oq);
+      pipe->destroy_query(pipe, state->active_oq);
+      state->active_oq = NULL;
+   }
+   r300vk_dyn_overlay_cleanup(device, &state->dyn_ov);
+}
+
+static void
+r300vk_replay_state_rebind(struct r300vk_device *device,
+                           struct r300vk_replay_state *state)
+{
+   if (!state->bound_pipeline)
+      return;
+
+   struct pipe_context *pipe = device->pipe;
+   const struct r300vk_pipeline *pl = state->bound_pipeline;
+   pipe->bind_blend_state(pipe, pl->blend_cso);
+   pipe->bind_rasterizer_state(pipe, pl->rasterizer_cso);
+   pipe->bind_depth_stencil_alpha_state(pipe, pl->dsa_cso);
+   pipe->bind_vs_state(pipe, pl->vs_cso);
+   pipe->bind_fs_state(pipe, pl->fs_cso);
+   pipe->bind_vertex_elements_state(pipe, pl->velems_cso);
+   state->vb_dirty = true;
+   state->dyn_ov.dirty = true;
+}
+
 /* Sample the colour attachment after the pass's GPU work flushes: a grid of
  * 16 texels plus a count of texels differing from the corner.  Distinguishes
  * "geometry never landed" (uniform clear colour) from "present path loses
@@ -2458,440 +2499,512 @@ r300vk_dbg_log_attachment_pixels(struct r300vk_device *device,
            samples[0], samples[5], samples[10], samples[15]);
 }
 
+static bool
+r300vk_entry_begins_render_pass(const struct r300vk_cmd_entry *entry)
+{
+   return entry->type == R300VK_CMD_BEGIN_RENDER_PASS;
+}
+
+static uint32_t
+r300vk_render_pass_segment_end(const struct r300vk_cmd_buffer *cmd,
+                               uint32_t begin_entry)
+{
+   for (uint32_t i = begin_entry; i < cmd->entry_count; i++)
+      if (cmd->entries[i].type == R300VK_CMD_END_RENDER_PASS)
+         return i + 1;
+
+   return cmd->entry_count;
+}
+
+static uint32_t
+r300vk_render_pass_segment_tile_pass_count(const struct r300vk_cmd_buffer *cmd,
+                                           uint32_t begin_entry,
+                                           uint32_t end_entry)
+{
+   uint32_t pass_count = 1;
+
+   for (uint32_t i = begin_entry; i < end_entry; i++) {
+      const struct r300vk_cmd_entry *entry = &cmd->entries[i];
+      if (entry->type != R300VK_CMD_BEGIN_RENDER_PASS &&
+          entry->type != R300VK_CMD_NEXT_SUBPASS)
+         continue;
+
+      pass_count = MAX2(pass_count,
+                        r300vk_begin_rp_tile_pass_count(&entry->begin_rp));
+   }
+
+   return pass_count;
+}
+
+static VkResult
+r300vk_replay_gpu_range(struct r300vk_device *device,
+                        const struct r300vk_cmd_buffer *cmd,
+                        uint32_t first_entry,
+                        uint32_t end_entry,
+                        uint32_t tile_pass,
+                        uint32_t cmd_tile_pass_count,
+                        struct r300vk_replay_state *state,
+                        struct util_dynarray *transient_vbs,
+                        bool *gpu_pending)
+{
+   struct pipe_context *pipe = device->pipe;
+   uint32_t tile_origin_x = 0;
+   uint32_t tile_origin_y = 0;
+   uint32_t tile_width = 0;
+   uint32_t tile_height = 0;
+   bool skip_render_pass = false;
+   const struct r300vk_cmd_entry *current_render_pass = NULL;
+
+   for (uint32_t i = first_entry; i < end_entry; i++) {
+      const struct r300vk_cmd_entry *e = &cmd->entries[i];
+
+      switch (e->type) {
+      case R300VK_CMD_BEGIN_RENDER_PASS:
+         r300vk_replay_begin_render_pass(device, e, tile_pass,
+                                         &tile_origin_x, &tile_origin_y,
+                                         &tile_width, &tile_height,
+                                         &skip_render_pass);
+         current_render_pass = e;
+         /* The pass boundary can change zsbuf presence, which feeds the
+          * depth/stencil clamp; re-overlay at the next draw. */
+         state->dyn_ov.dirty = true;
+         /* Re-apply state recorded before the pass began: its tile
+          * translation ran against zero tile dimensions (empty scissor). */
+         if (!skip_render_pass) {
+            if (state->last_viewport)
+               r300vk_replay_set_viewport(device, state->last_viewport,
+                                          tile_origin_x, tile_origin_y);
+            if (state->last_scissor)
+               r300vk_replay_set_scissor(device, state->last_scissor,
+                                         tile_origin_x, tile_origin_y,
+                                         tile_width, tile_height);
+         }
+         /* Only loadOp == CLEAR emits a GPU write at begin (a color-image
+          * clear on any attachment) that a later host copy-image-to-buffer
+          * could read; a LOAD pass emits nothing here, and its draws set
+          * gpu_pending themselves.  Gating avoids a needless drain before an
+          * in-order host transfer. */
+         for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
+            if (e->begin_rp.load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+               *gpu_pending = true;
+               break;
+            }
+         break;
+
+      case R300VK_CMD_NEXT_SUBPASS:
+         /* Render-to-texture barrier so this subpass samples the prior
+          * subpass's output coherently as an input attachment.
+          * PIPE_TEXTURE_BARRIER_SAMPLER marks r300's gpu_flush and
+          * texture_cache_inval atoms dirty (r300_texture_barrier); the
+          * gpu_flush atom flushes the RB3D color cache to memory and the
+          * texcache-invalidate atom drops stale texture lines, both emitted
+          * before this subpass's first draw -- so the sample reads the prior
+          * subpass's writes.  The RB3D cache is physical, not framebuffer-
+          * scoped, so the flush resolves the prior color writes even though
+          * the framebuffer is rebound below.  Then bind this subpass's
+          * framebuffer at the same pass origin and re-apply the in-flight
+          * viewport/scissor, mirroring the begin path. */
+         device->pipe->texture_barrier(device->pipe,
+                                       PIPE_TEXTURE_BARRIER_SAMPLER);
+         r300vk_replay_begin_render_pass(device, e, tile_pass,
+                                         &tile_origin_x, &tile_origin_y,
+                                         &tile_width, &tile_height,
+                                         &skip_render_pass);
+         current_render_pass = e;
+         state->dyn_ov.dirty = true;
+         if (!skip_render_pass) {
+            if (state->last_viewport)
+               r300vk_replay_set_viewport(device, state->last_viewport,
+                                          tile_origin_x, tile_origin_y);
+            if (state->last_scissor)
+               r300vk_replay_set_scissor(device, state->last_scissor,
+                                         tile_origin_x, tile_origin_y,
+                                         tile_width, tile_height);
+         }
+         for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
+            if (e->begin_rp.load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
+               *gpu_pending = true;
+               break;
+            }
+         break;
+
+      case R300VK_CMD_BIND_PIPELINE:
+         if (skip_render_pass) break;
+         r300vk_replay_bind_pipeline(device, e, &state->bound_pipeline,
+                                     &state->vb_dirty);
+         /* The bind installed the pipeline's fixed CSOs; re-overlay the
+          * merged shadow (and the static stencil ref / blend color) at
+          * the next draw. */
+         state->dyn_ov.dirty = true;
+         break;
+
+      case R300VK_CMD_SET_DYNAMIC_STATE:
+         /* Pure state, not gated by skip_render_pass: the shadow must be
+          * current when a later tile pass or render pass draws. */
+         r300vk_dyn_overlay_merge(&state->dyn_ov, &e->set_dyn);
+         break;
+
+      case R300VK_CMD_SET_VIEWPORT:
+         state->last_viewport = e;
+         if (skip_render_pass) break;
+         r300vk_replay_set_viewport(device, e, tile_origin_x, tile_origin_y);
+         break;
+
+      case R300VK_CMD_SET_SCISSOR:
+         state->last_scissor = e;
+         if (skip_render_pass) break;
+         r300vk_replay_set_scissor(device, e, tile_origin_x, tile_origin_y,
+                                   tile_width, tile_height);
+         break;
+
+      case R300VK_CMD_BIND_VERTEX_BUFFERS:
+         if (skip_render_pass) break;
+         r300vk_replay_bind_vertex_buffers(device, e, state->vb_cache,
+                                           state->vb_sizes, state->vb_strides,
+                                           &state->vb_strides_mask,
+                                           &state->vb_max_used,
+                                           &state->vb_dirty);
+         break;
+
+      case R300VK_CMD_DRAW:
+      case R300VK_CMD_DRAW_INDEXED:
+         if (skip_render_pass) break;
+         r300vk_replay_draw(device, e, state->bound_pipeline,
+                            state->last_bind_dsets, state->replay_pc,
+                            state->vb_cache, state->vb_sizes,
+                            state->vb_max_used, &state->vb_dirty,
+                            tile_origin_x, tile_origin_y, tile_width,
+                            tile_height, transient_vbs, &state->dyn_ov,
+                            current_render_pass &&
+                            current_render_pass->begin_rp.ds_image,
+                            state->vb_strides, state->vb_strides_mask);
+         *gpu_pending = true;
+         break;
+
+      case R300VK_CMD_PUSH_CONSTANTS: {
+         /* Apply the window update unconditionally (pure state, not gated by
+          * skip_render_pass) so a later tile pass or draw sees it. */
+         const struct r300vk_cmd_push_constants *pc = &e->push_constants;
+         if ((uint64_t)pc->offset + pc->size <= sizeof(state->replay_pc))
+            memcpy(state->replay_pc + pc->offset, pc->data, pc->size);
+         break;
+      }
+
+      case R300VK_CMD_DRAW_INDIRECT: {
+         if (skip_render_pass) break;
+         const struct r300vk_cmd_draw_indirect *di = &e->draw_indirect;
+         if (!di->buffer || !di->buffer->resource || di->draw_count == 0)
+            break;
+         /* CPU-read the VkDrawIndirectCommand array (r300vk buffers are
+          * host-visible) and run the normal draw path per command. */
+         const unsigned stride =
+            di->stride ? di->stride : (unsigned)sizeof(VkDrawIndirectCommand);
+         /* Bound the mapped extent against the buffer before the unsigned
+          * cast: an app may record an offset/draw_count that runs past the
+          * BO, and pipe_buffer_map_range would otherwise map past the
+          * resource (the kernel CS validator rejects the same overflow in
+          * evergreen_cs.c evergreen_packet3_check PACKET3_DRAW_INDIRECT).
+          * Compute span in 64-bit; the subtract form avoids add overflow. */
+         const uint64_t span64 = (uint64_t)(di->draw_count - 1u) * stride +
+                                 sizeof(VkDrawIndirectCommand);
+         if (di->offset > UINT_MAX || span64 > di->buffer->size ||
+             di->offset > di->buffer->size - span64)
+            break;
+         const unsigned span = (unsigned)span64;
+         struct pipe_transfer *ixfer = NULL;
+         const uint8_t *imap =
+            pipe_buffer_map_range(pipe, di->buffer->resource,
+                                  (unsigned)di->offset, span,
+                                  PIPE_MAP_READ, &ixfer);
+         if (!imap) break;
+         for (uint32_t d = 0; d < di->draw_count; d++) {
+            const VkDrawIndirectCommand *args =
+               (const VkDrawIndirectCommand *)(imap + (size_t)d * stride);
+            struct r300vk_cmd_entry synth;
+            synth.type                = R300VK_CMD_DRAW;
+            synth.draw.count          = args->vertexCount;
+            synth.draw.instances      = args->instanceCount;
+            synth.draw.first          = args->firstVertex;
+            synth.draw.first_instance = args->firstInstance;
+            synth.draw.topology       = di->topology;
+            r300vk_replay_draw(device, &synth, state->bound_pipeline,
+                               state->last_bind_dsets, state->replay_pc,
+                               state->vb_cache, state->vb_sizes,
+                               state->vb_max_used, &state->vb_dirty,
+                               tile_origin_x, tile_origin_y, tile_width,
+                               tile_height, transient_vbs, &state->dyn_ov,
+                               current_render_pass &&
+                               current_render_pass->begin_rp.ds_image,
+                               state->vb_strides, state->vb_strides_mask);
+         }
+         pipe_buffer_unmap(pipe, ixfer);
+         *gpu_pending = true;
+         break;
+      }
+
+      case R300VK_CMD_DRAW_INDEXED_INDIRECT: {
+         if (skip_render_pass) break;
+         const struct r300vk_cmd_draw_indexed_indirect *di =
+            &e->draw_indexed_indirect;
+         if (!di->buffer || !di->buffer->resource || di->draw_count == 0)
+            break;
+         /* CPU-read the VkDrawIndexedIndirectCommand array (r300vk buffers are
+          * host-visible) and run the indexed draw path per command, exactly as
+          * R300VK_CMD_DRAW_INDIRECT does for the non-indexed form. */
+         const unsigned stride =
+            di->stride ? di->stride
+                       : (unsigned)sizeof(VkDrawIndexedIndirectCommand);
+         /* Bound the mapped extent against the buffer before the unsigned cast;
+          * the kernel CS validator rejects the same overrun in evergreen_cs.c
+          * evergreen_packet3_check.  Compute span in 64-bit; the subtract form
+          * avoids add overflow. */
+         const uint64_t span64 =
+            (uint64_t)(di->draw_count - 1u) * stride +
+            sizeof(VkDrawIndexedIndirectCommand);
+         if (di->offset > UINT_MAX || span64 > di->buffer->size ||
+             di->offset > di->buffer->size - span64)
+            break;
+         const unsigned span = (unsigned)span64;
+         struct pipe_transfer *ixfer = NULL;
+         const uint8_t *imap =
+            pipe_buffer_map_range(pipe, di->buffer->resource,
+                                  (unsigned)di->offset, span,
+                                  PIPE_MAP_READ, &ixfer);
+         if (!imap) break;
+         for (uint32_t d = 0; d < di->draw_count; d++) {
+            const VkDrawIndexedIndirectCommand *args =
+               (const VkDrawIndexedIndirectCommand *)(imap +
+                                                      (size_t)d * stride);
+            struct r300vk_cmd_entry synth;
+            synth.type                        = R300VK_CMD_DRAW_INDEXED;
+            synth.draw_indexed.index_buffer   = di->index_buffer;
+            synth.draw_indexed.index_offset   = di->index_offset;
+            synth.draw_indexed.index_range    = di->index_range;
+            synth.draw_indexed.index_size     = di->index_size;
+            synth.draw_indexed.index_count    = args->indexCount;
+            synth.draw_indexed.first_index    = args->firstIndex;
+            synth.draw_indexed.vertex_offset  = args->vertexOffset;
+            synth.draw_indexed.instances      = args->instanceCount;
+            synth.draw_indexed.first_instance = args->firstInstance;
+            synth.draw_indexed.topology       = di->topology;
+            r300vk_replay_draw(device, &synth, state->bound_pipeline,
+                               state->last_bind_dsets, state->replay_pc,
+                               state->vb_cache, state->vb_sizes,
+                               state->vb_max_used, &state->vb_dirty,
+                               tile_origin_x, tile_origin_y, tile_width,
+                               tile_height, transient_vbs, &state->dyn_ov,
+                               current_render_pass &&
+                               current_render_pass->begin_rp.ds_image,
+                               state->vb_strides, state->vb_strides_mask);
+         }
+         pipe_buffer_unmap(pipe, ixfer);
+         *gpu_pending = true;
+         break;
+      }
+
+      case R300VK_CMD_END_RENDER_PASS:
+         if (device->dbg_log_pixels && !skip_render_pass &&
+             current_render_pass &&
+             r300vk_begin_rp_ref_image(&current_render_pass->begin_rp))
+            r300vk_dbg_log_attachment_pixels(device,
+                                             current_render_pass,
+                                             tile_pass,
+                                             tile_origin_x,
+                                             tile_origin_y,
+                                             tile_width, tile_height);
+         r300vk_replay_end_render_pass(device, &skip_render_pass,
+                                       &tile_origin_x, &tile_origin_y,
+                                       &tile_width, &tile_height);
+         current_render_pass = NULL;
+         break;
+
+      case R300VK_CMD_CLEAR_ATTACHMENTS:
+         if (skip_render_pass) break;
+         r300vk_replay_clear_attachments(device, current_render_pass,
+                                         &e->clear_attachments,
+                                         tile_origin_x, tile_origin_y,
+                                         tile_width, tile_height);
+         *gpu_pending = true;
+         break;
+
+      case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
+      case R300VK_CMD_COPY_BUFFER_TO_IMAGE:
+      case R300VK_CMD_COPY_IMAGE:
+      case R300VK_CMD_CLEAR_COLOR_IMAGE:
+      case R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE:
+      case R300VK_CMD_FILL_BUFFER:
+      case R300VK_CMD_COPY_BUFFER:
+      case R300VK_CMD_UPDATE_BUFFER:
+      case R300VK_CMD_COPY_QUERY_POOL_RESULTS:
+      case R300VK_CMD_SET_EVENT:
+      case R300VK_CMD_RESET_EVENT:
+         if (current_render_pass)
+            break;
+         r300vk_drain_gpu(device, gpu_pending);
+         r300vk_replay_host_entry(device, e);
+         break;
+
+      case R300VK_CMD_PIPELINE_BARRIER:
+         r300vk_replay_pipeline_barrier(device, e, skip_render_pass);
+         break;
+
+      case R300VK_CMD_BIND_DESCRIPTOR_SETS:
+         r300vk_replay_bind_descriptor_sets(device, e, &state->last_bind_dsets);
+         break;
+
+      case R300VK_CMD_DISPATCH: {
+         if (current_render_pass)
+            break;
+         VkResult result =
+            r300vk_replay_dispatch(device, e, state->last_bind_dsets,
+                                   state->replay_pc);
+         if (result != VK_SUCCESS)
+            return result;
+         pipe->flush(pipe, NULL, 0);
+         *gpu_pending = true;
+         break;
+      }
+
+      case R300VK_CMD_BLIT_IMAGE:
+         if (current_render_pass)
+            break;
+         r300vk_replay_blit(device, e);
+         pipe->flush(pipe, NULL, 0);
+         *gpu_pending = true;
+         break;
+
+      case R300VK_CMD_BEGIN_QUERY:
+         /* Occlusion only, single-tile command buffers only: a multi-tile render
+          * pass would re-walk the query entries, but r300 allows one query at a
+          * time.  Map the Vulkan occlusion type to the r300 ZPASS counter and
+          * bracket the draws that follow. */
+         if (cmd_tile_pass_count != 1 || state->active_oq != NULL ||
+             e->query.pool->vk.query_type != VK_QUERY_TYPE_OCCLUSION)
+            break;
+         state->active_oq =
+            pipe->create_query(pipe, PIPE_QUERY_OCCLUSION_COUNTER, 0);
+         if (state->active_oq)
+            pipe->begin_query(pipe, state->active_oq);
+         break;
+
+      case R300VK_CMD_END_QUERY: {
+         if (!state->active_oq)
+            break;
+         pipe->end_query(pipe, state->active_oq);
+         /* wait=true flushes and fences, so the sample count is ready to
+          * store into the pool slot the host later reads. */
+         union pipe_query_result qres;
+         memset(&qres, 0, sizeof(qres));
+         if (pipe->get_query_result(pipe, state->active_oq, true, &qres) &&
+             e->query.query < e->query.pool->vk.query_count) {
+            struct r300vk_query *slot =
+               &e->query.pool->queries[e->query.query];
+            slot->result    = qres.u64;
+            slot->available = true;
+         }
+         pipe->destroy_query(pipe, state->active_oq);
+         state->active_oq = NULL;
+         break;
+      }
+
+      case R300VK_CMD_RESET_QUERY_POOL: {
+         /* Host bookkeeping, applied once per submit (tile-independent):
+          * clear availability and result over the reset range. */
+         if (current_render_pass)
+            break;
+         struct r300vk_query_pool *qp = e->reset_query_pool.pool;
+         const uint32_t first = e->reset_query_pool.first_query;
+         uint32_t n = e->reset_query_pool.query_count;
+         if (first < qp->vk.query_count) {
+            if (n > qp->vk.query_count - first)
+               n = qp->vk.query_count - first;
+            for (uint32_t k = 0; k < n; k++) {
+               qp->queries[first + k].result    = 0;
+               qp->queries[first + k].available = false;
+            }
+         }
+         break;
+      }
+
+      default: break;
+      }
+   }
+
+   return VK_SUCCESS;
+}
+
+/* Replays one command buffer's GPU work.  Host transfers run in submission order
+ * by splitting the stream around render-pass segments: outside-pass commands run
+ * once when reached, while each render-pass segment alone is re-walked per tile.
+ * gpu_pending is threaded across the whole submit so a host transfer in a later
+ * command buffer drains GPU work emitted by an earlier one. */
 static VkResult
 r300vk_replay_gpu(struct r300vk_device *device,
                   const struct r300vk_cmd_buffer *cmd,
                   struct util_dynarray *transient_vbs,
-                  bool inorder_host,
                   bool *gpu_pending)
 {
-   struct pipe_context *pipe = device->pipe;
-   const uint32_t tile_pass_count = r300vk_cmd_tile_pass_count(cmd);
    VkResult result = VK_SUCCESS;
+   const uint32_t cmd_tile_pass_count = r300vk_cmd_tile_pass_count(cmd);
+   struct r300vk_replay_state state;
+   memset(&state, 0, sizeof(state));
 
-   for (uint32_t tile_pass = 0; tile_pass < tile_pass_count; tile_pass++) {
-      uint32_t tile_origin_x = 0;
-      uint32_t tile_origin_y = 0;
-      uint32_t tile_width = 0;
-      uint32_t tile_height = 0;
-      bool skip_render_pass = false;
+   for (uint32_t i = 0; i < cmd->entry_count;) {
+      const uint32_t outside_begin = i;
+      while (i < cmd->entry_count &&
+             !r300vk_entry_begins_render_pass(&cmd->entries[i]))
+         i++;
 
-      struct pipe_vertex_buffer vb_cache[R300VK_MAX_VERTEX_BINDINGS];
-      VkDeviceSize vb_sizes[R300VK_MAX_VERTEX_BINDINGS];
-      VkDeviceSize vb_strides[R300VK_MAX_VERTEX_BINDINGS];
-      uint32_t vb_strides_mask = 0;
-      uint32_t vb_max_used = 0;
-      bool vb_dirty = false;
-      /* Running push-constant window, applied by R300VK_CMD_PUSH_CONSTANTS entries
-       * in stream order and bound at CONST[0] for a push-constants-only pipeline.
-       * Re-accumulated each tile pass since the entry list is re-walked per tile. */
-      uint8_t replay_pc[128] = {0};
-      const struct r300vk_pipeline *bound_pipeline = NULL;
-      /* Merged vkCmdSet* shadow, re-accumulated each tile pass since the
-       * entry list is re-walked per tile. */
-      struct r300vk_dyn_overlay dyn_ov = {0};
-      const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets = NULL;
-      const struct r300vk_cmd_entry *current_render_pass = NULL;
-      /* Viewport/scissor recorded BEFORE the render pass begins translate
-       * against zero tile dimensions (the scissor clamps to empty), so the
-       * last-seen entries re-apply at pass begin once tile geometry is
-       * known.  zink legally records both ahead of CmdBeginRendering. */
-      const struct r300vk_cmd_entry *last_viewport = NULL;
-      const struct r300vk_cmd_entry *last_scissor = NULL;
-      /* The single active r300 occlusion query, if a vkCmdBeginQuery is open.
-       * r300 supports one query at a time, and occlusion handling is confined to
-       * single-tile submits (tile_pass_count == 1, so this loop runs once). */
-      struct pipe_query *active_oq = NULL;
-      memset(vb_cache, 0, sizeof(vb_cache));
-      memset(vb_sizes, 0, sizeof(vb_sizes));
-      memset(vb_strides, 0, sizeof(vb_strides));
-
-      for (uint32_t i = 0; i < cmd->entry_count; i++) {
-         const struct r300vk_cmd_entry *e = &cmd->entries[i];
-
-         switch (e->type) {
-         case R300VK_CMD_BEGIN_RENDER_PASS:
-            r300vk_replay_begin_render_pass(device, e, tile_pass,
-                                            &tile_origin_x, &tile_origin_y,
-                                            &tile_width, &tile_height,
-                                            &skip_render_pass);
-            current_render_pass = e;
-            /* The pass boundary can change zsbuf presence, which feeds the
-             * depth/stencil clamp; re-overlay at the next draw. */
-            dyn_ov.dirty = true;
-            /* Re-apply state recorded before the pass began: its tile
-             * translation ran against zero tile dimensions (empty scissor). */
-            if (!skip_render_pass) {
-               if (last_viewport)
-                  r300vk_replay_set_viewport(device, last_viewport,
-                                             tile_origin_x, tile_origin_y);
-               if (last_scissor)
-                  r300vk_replay_set_scissor(device, last_scissor,
-                                            tile_origin_x, tile_origin_y,
-                                            tile_width, tile_height);
-            }
-            /* Only loadOp == CLEAR emits a GPU write at begin (a colour-image
-             * clear on any attachment) that a later host copy-image-to-buffer
-             * could read; a LOAD pass emits nothing here, and its draws set
-             * gpu_pending themselves.  Gating avoids a needless drain before an
-             * in-order host transfer. */
-            for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
-               if (e->begin_rp.load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-                  *gpu_pending = true;
-                  break;
-               }
+      if (outside_begin < i) {
+         result = r300vk_replay_gpu_range(device, cmd, outside_begin, i, 0,
+                                          cmd_tile_pass_count, &state,
+                                          transient_vbs, gpu_pending);
+         r300vk_dyn_overlay_cleanup(device, &state.dyn_ov);
+         if (result != VK_SUCCESS)
             break;
-
-         case R300VK_CMD_NEXT_SUBPASS:
-            /* Render-to-texture barrier so this subpass samples the prior
-             * subpass's output coherently as an input attachment.
-             * PIPE_TEXTURE_BARRIER_SAMPLER marks r300's gpu_flush and
-             * texture_cache_inval atoms dirty (r300_texture_barrier); the
-             * gpu_flush atom flushes the RB3D colour cache to memory and the
-             * texcache-invalidate atom drops stale texture lines, both emitted
-             * before this subpass's first draw -- so the sample reads the prior
-             * subpass's writes.  The RB3D cache is physical, not framebuffer-
-             * scoped, so the flush resolves the prior colour writes even though
-             * the framebuffer is rebound below.  Then bind this subpass's
-             * framebuffer at the same pass origin and re-apply the in-flight
-             * viewport/scissor, mirroring the begin path. */
-            device->pipe->texture_barrier(device->pipe,
-                                          PIPE_TEXTURE_BARRIER_SAMPLER);
-            r300vk_replay_begin_render_pass(device, e, tile_pass,
-                                            &tile_origin_x, &tile_origin_y,
-                                            &tile_width, &tile_height,
-                                            &skip_render_pass);
-            current_render_pass = e;
-            dyn_ov.dirty = true;
-            if (!skip_render_pass) {
-               if (last_viewport)
-                  r300vk_replay_set_viewport(device, last_viewport,
-                                             tile_origin_x, tile_origin_y);
-               if (last_scissor)
-                  r300vk_replay_set_scissor(device, last_scissor,
-                                            tile_origin_x, tile_origin_y,
-                                            tile_width, tile_height);
-            }
-            for (uint32_t slot = 0; slot < e->begin_rp.color_count; slot++)
-               if (e->begin_rp.load_op[slot] == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-                  *gpu_pending = true;
-                  break;
-               }
-            break;
-
-         case R300VK_CMD_BIND_PIPELINE:
-            if (skip_render_pass) break;
-            r300vk_replay_bind_pipeline(device, e, &bound_pipeline, &vb_dirty);
-            /* The bind installed the pipeline's fixed CSOs; re-overlay the
-             * merged shadow (and the static stencil ref / blend colour) at
-             * the next draw. */
-            dyn_ov.dirty = true;
-            break;
-
-         case R300VK_CMD_SET_DYNAMIC_STATE:
-            /* Pure state, not gated by skip_render_pass: the shadow must be
-             * current when a later tile pass or render pass draws. */
-            r300vk_dyn_overlay_merge(&dyn_ov, &e->set_dyn);
-            break;
-
-         case R300VK_CMD_SET_VIEWPORT:
-            last_viewport = e;
-            if (skip_render_pass) break;
-            r300vk_replay_set_viewport(device, e, tile_origin_x, tile_origin_y);
-            break;
-
-         case R300VK_CMD_SET_SCISSOR:
-            last_scissor = e;
-            if (skip_render_pass) break;
-            r300vk_replay_set_scissor(device, e, tile_origin_x, tile_origin_y,
-                                      tile_width, tile_height);
-            break;
-
-         case R300VK_CMD_BIND_VERTEX_BUFFERS:
-            if (skip_render_pass) break;
-            r300vk_replay_bind_vertex_buffers(device, e, vb_cache, vb_sizes,
-                                              vb_strides, &vb_strides_mask,
-                                              &vb_max_used, &vb_dirty);
-            break;
-
-         case R300VK_CMD_DRAW:
-         case R300VK_CMD_DRAW_INDEXED:
-            if (skip_render_pass) break;
-            r300vk_replay_draw(device, e, bound_pipeline, last_bind_dsets,
-                               replay_pc, vb_cache, vb_sizes,
-                               vb_max_used, &vb_dirty, tile_origin_x,
-                               tile_origin_y, tile_width, tile_height,
-                               transient_vbs, &dyn_ov, current_render_pass &&
-                               current_render_pass->begin_rp.ds_image,
-                               vb_strides, vb_strides_mask);
-            *gpu_pending = true;
-            break;
-
-         case R300VK_CMD_PUSH_CONSTANTS: {
-            /* Apply the window update unconditionally (pure state, not gated by
-             * skip_render_pass) so a later tile pass or draw sees it. */
-            const struct r300vk_cmd_push_constants *pc = &e->push_constants;
-            if ((uint64_t)pc->offset + pc->size <= sizeof(replay_pc))
-               memcpy(replay_pc + pc->offset, pc->data, pc->size);
-            break;
-         }
-
-         case R300VK_CMD_DRAW_INDIRECT: {
-            if (skip_render_pass) break;
-            const struct r300vk_cmd_draw_indirect *di = &e->draw_indirect;
-            if (!di->buffer || !di->buffer->resource || di->draw_count == 0)
-               break;
-            /* CPU-read the VkDrawIndirectCommand array (r300vk buffers are
-             * host-visible) and run the normal draw path per command. */
-            const unsigned stride =
-               di->stride ? di->stride : (unsigned)sizeof(VkDrawIndirectCommand);
-            /* Bound the mapped extent against the buffer before the unsigned
-             * cast: an app may record an offset/draw_count that runs past the
-             * BO, and pipe_buffer_map_range would otherwise map past the
-             * resource (the kernel CS validator rejects the same overflow in
-             * evergreen_cs.c evergreen_packet3_check PACKET3_DRAW_INDIRECT).
-             * Compute span in 64-bit; the subtract form avoids add overflow. */
-            const uint64_t span64 = (uint64_t)(di->draw_count - 1u) * stride +
-                                    sizeof(VkDrawIndirectCommand);
-            if (di->offset > UINT_MAX || span64 > di->buffer->size ||
-                di->offset > di->buffer->size - span64)
-               break;
-            const unsigned span = (unsigned)span64;
-            struct pipe_transfer *ixfer = NULL;
-            const uint8_t *imap =
-               pipe_buffer_map_range(pipe, di->buffer->resource,
-                                     (unsigned)di->offset, span,
-                                     PIPE_MAP_READ, &ixfer);
-            if (!imap) break;
-            for (uint32_t d = 0; d < di->draw_count; d++) {
-               const VkDrawIndirectCommand *args =
-                  (const VkDrawIndirectCommand *)(imap + (size_t)d * stride);
-               struct r300vk_cmd_entry synth;
-               synth.type                = R300VK_CMD_DRAW;
-               synth.draw.count          = args->vertexCount;
-               synth.draw.instances      = args->instanceCount;
-               synth.draw.first          = args->firstVertex;
-               synth.draw.first_instance = args->firstInstance;
-               synth.draw.topology       = di->topology;
-               r300vk_replay_draw(device, &synth, bound_pipeline,
-                                  last_bind_dsets, replay_pc, vb_cache,
-                                  vb_sizes, vb_max_used, &vb_dirty,
-                                  tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, transient_vbs, &dyn_ov,
-                                  current_render_pass &&
-                                  current_render_pass->begin_rp.ds_image,
-                                  vb_strides, vb_strides_mask);
-            }
-            pipe_buffer_unmap(pipe, ixfer);
-            *gpu_pending = true;
-            break;
-         }
-
-         case R300VK_CMD_DRAW_INDEXED_INDIRECT: {
-            if (skip_render_pass) break;
-            const struct r300vk_cmd_draw_indexed_indirect *di =
-               &e->draw_indexed_indirect;
-            if (!di->buffer || !di->buffer->resource || di->draw_count == 0)
-               break;
-            /* CPU-read the VkDrawIndexedIndirectCommand array (r300vk buffers are
-             * host-visible) and run the indexed draw path per command, exactly as
-             * R300VK_CMD_DRAW_INDIRECT does for the non-indexed form. */
-            const unsigned stride =
-               di->stride ? di->stride
-                          : (unsigned)sizeof(VkDrawIndexedIndirectCommand);
-            /* Bound the mapped extent against the buffer before the unsigned cast;
-             * the kernel CS validator rejects the same overrun in evergreen_cs.c
-             * evergreen_packet3_check.  Compute span in 64-bit; the subtract form
-             * avoids add overflow. */
-            const uint64_t span64 =
-               (uint64_t)(di->draw_count - 1u) * stride +
-               sizeof(VkDrawIndexedIndirectCommand);
-            if (di->offset > UINT_MAX || span64 > di->buffer->size ||
-                di->offset > di->buffer->size - span64)
-               break;
-            const unsigned span = (unsigned)span64;
-            struct pipe_transfer *ixfer = NULL;
-            const uint8_t *imap =
-               pipe_buffer_map_range(pipe, di->buffer->resource,
-                                     (unsigned)di->offset, span,
-                                     PIPE_MAP_READ, &ixfer);
-            if (!imap) break;
-            for (uint32_t d = 0; d < di->draw_count; d++) {
-               const VkDrawIndexedIndirectCommand *args =
-                  (const VkDrawIndexedIndirectCommand *)(imap +
-                                                         (size_t)d * stride);
-               struct r300vk_cmd_entry synth;
-               synth.type                        = R300VK_CMD_DRAW_INDEXED;
-               synth.draw_indexed.index_buffer   = di->index_buffer;
-               synth.draw_indexed.index_offset   = di->index_offset;
-               synth.draw_indexed.index_range    = di->index_range;
-               synth.draw_indexed.index_size     = di->index_size;
-               synth.draw_indexed.index_count    = args->indexCount;
-               synth.draw_indexed.first_index    = args->firstIndex;
-               synth.draw_indexed.vertex_offset  = args->vertexOffset;
-               synth.draw_indexed.instances      = args->instanceCount;
-               synth.draw_indexed.first_instance = args->firstInstance;
-               synth.draw_indexed.topology       = di->topology;
-               r300vk_replay_draw(device, &synth, bound_pipeline,
-                                  last_bind_dsets, replay_pc, vb_cache,
-                                  vb_sizes, vb_max_used, &vb_dirty,
-                                  tile_origin_x, tile_origin_y, tile_width,
-                                  tile_height, transient_vbs, &dyn_ov,
-                                  current_render_pass &&
-                                  current_render_pass->begin_rp.ds_image,
-                                  vb_strides, vb_strides_mask);
-            }
-            pipe_buffer_unmap(pipe, ixfer);
-            *gpu_pending = true;
-            break;
-         }
-
-         case R300VK_CMD_END_RENDER_PASS:
-            if (device->dbg_log_pixels && !skip_render_pass &&
-                current_render_pass &&
-                r300vk_begin_rp_ref_image(&current_render_pass->begin_rp))
-               r300vk_dbg_log_attachment_pixels(device,
-                                                current_render_pass,
-                                                tile_pass,
-                                                tile_origin_x,
-                                                tile_origin_y,
-                                                tile_width, tile_height);
-            r300vk_replay_end_render_pass(device, &skip_render_pass,
-                                          &tile_origin_x, &tile_origin_y,
-                                          &tile_width, &tile_height);
-            current_render_pass = NULL;
-            break;
-
-         case R300VK_CMD_CLEAR_ATTACHMENTS:
-            if (skip_render_pass) break;
-            r300vk_replay_clear_attachments(device, current_render_pass,
-                                            &e->clear_attachments,
-                                            tile_origin_x, tile_origin_y,
-                                            tile_width, tile_height);
-            *gpu_pending = true;
-            break;
-
-         case R300VK_CMD_COPY_IMAGE_TO_BUFFER:
-         case R300VK_CMD_COPY_BUFFER_TO_IMAGE:
-         case R300VK_CMD_COPY_IMAGE:
-         case R300VK_CMD_CLEAR_COLOR_IMAGE:
-         case R300VK_CMD_CLEAR_DEPTH_STENCIL_IMAGE:
-         case R300VK_CMD_FILL_BUFFER:
-         case R300VK_CMD_COPY_BUFFER:
-         case R300VK_CMD_UPDATE_BUFFER:
-         case R300VK_CMD_COPY_QUERY_POOL_RESULTS:
-         case R300VK_CMD_SET_EVENT:
-         case R300VK_CMD_RESET_EVENT:
-            /* Without a multi-tile render pass in the submit, run host
-             * transfers and event signals in submission order so a later
-             * dispatch/draw observes a prior fill/copy/update, draining GPU
-             * work first.  With a multi-tile render pass present the entry list
-             * is re-walked per tile, so they stay in the post-fence CPU pass. */
-            if (!inorder_host)
-               break;
-            r300vk_drain_gpu(device, gpu_pending);
-            r300vk_replay_host_entry(device, e);
-            break;
-
-         case R300VK_CMD_PIPELINE_BARRIER:
-            r300vk_replay_pipeline_barrier(device, e, skip_render_pass);
-            break;
-
-         case R300VK_CMD_BIND_DESCRIPTOR_SETS:
-            r300vk_replay_bind_descriptor_sets(device, e, &last_bind_dsets);
-            break;
-
-         case R300VK_CMD_DISPATCH:
-            result = r300vk_replay_dispatch(device, e, last_bind_dsets,
-                                            replay_pc);
-            if (result != VK_SUCCESS) {
-               r300vk_dyn_overlay_cleanup(device, &dyn_ov);
-               return result;
-            }
-            pipe->flush(pipe, NULL, 0);
-            *gpu_pending = true;
-            break;
-
-         case R300VK_CMD_BLIT_IMAGE:
-            /* A blit is a standalone GPU op outside any render pass.  The entry
-             * list is re-walked once per tile pass, so run it only in the
-             * single-tile-pass case (every CTS blit and every real single-submit
-             * blit); a cmd buffer that also carried a multi-tile render pass
-             * would otherwise replay the blit once per pass.  This mirrors the
-             * single-tile guard on the occlusion-query path below. */
-            if (tile_pass_count != 1)
-               break;
-            r300vk_replay_blit(device, e);
-            pipe->flush(pipe, NULL, 0);
-            *gpu_pending = true;
-            break;
-
-         case R300VK_CMD_BEGIN_QUERY:
-            /* Occlusion only, single-tile only: a multi-tile render pass would
-             * re-walk this entry and re-begin, but r300 allows one query at a
-             * time.  Map the Vulkan occlusion type to the r300 ZPASS counter and
-             * bracket the draws that follow. */
-            if (tile_pass_count != 1 || active_oq != NULL ||
-                e->query.pool->vk.query_type != VK_QUERY_TYPE_OCCLUSION)
-               break;
-            active_oq = pipe->create_query(pipe, PIPE_QUERY_OCCLUSION_COUNTER, 0);
-            if (active_oq)
-               pipe->begin_query(pipe, active_oq);
-            break;
-
-         case R300VK_CMD_END_QUERY: {
-            if (!active_oq)
-               break;
-            pipe->end_query(pipe, active_oq);
-            /* wait=true flushes and fences, so the sample count is ready to
-             * store into the pool slot the host later reads. */
-            union pipe_query_result qres;
-            memset(&qres, 0, sizeof(qres));
-            if (pipe->get_query_result(pipe, active_oq, true, &qres) &&
-                e->query.query < e->query.pool->vk.query_count) {
-               struct r300vk_query *slot =
-                  &e->query.pool->queries[e->query.query];
-               slot->result    = qres.u64;
-               slot->available = true;
-            }
-            pipe->destroy_query(pipe, active_oq);
-            active_oq = NULL;
-            break;
-         }
-
-         case R300VK_CMD_RESET_QUERY_POOL: {
-            /* Host bookkeeping, applied once per submit (tile-independent):
-             * clear availability and result over the reset range. */
-            if (tile_pass != 0)
-               break;
-            struct r300vk_query_pool *qp = e->reset_query_pool.pool;
-            const uint32_t first = e->reset_query_pool.first_query;
-            uint32_t n = e->reset_query_pool.query_count;
-            if (first < qp->vk.query_count) {
-               if (n > qp->vk.query_count - first)
-                  n = qp->vk.query_count - first;
-               for (uint32_t k = 0; k < n; k++) {
-                  qp->queries[first + k].result    = 0;
-                  qp->queries[first + k].available = false;
-               }
-            }
-            break;
-         }
-
-         default: break;
-         }
       }
-      /* A vkCmdBeginQuery with no matching end before submit is invalid usage;
-       * end and destroy the dangling query so the pipe handle is not leaked. */
-      if (active_oq) {
-         pipe->end_query(pipe, active_oq);
-         pipe->destroy_query(pipe, active_oq);
-         active_oq = NULL;
-      }
-      r300vk_dyn_overlay_cleanup(device, &dyn_ov);
-      if (result != VK_SUCCESS)
+
+      if (i >= cmd->entry_count)
          break;
+
+      const uint32_t segment_begin = i;
+      const uint32_t segment_end =
+         r300vk_render_pass_segment_end(cmd, segment_begin);
+      const uint32_t segment_tile_pass_count =
+         r300vk_render_pass_segment_tile_pass_count(cmd, segment_begin,
+                                                    segment_end);
+
+      if (segment_tile_pass_count == 1) {
+         r300vk_replay_state_rebind(device, &state);
+         result = r300vk_replay_gpu_range(device, cmd, segment_begin,
+                                          segment_end, 0, cmd_tile_pass_count,
+                                          &state,
+                                          transient_vbs, gpu_pending);
+         r300vk_dyn_overlay_cleanup(device, &state.dyn_ov);
+         if (result != VK_SUCCESS)
+            break;
+      } else {
+         for (uint32_t tile_pass = 0; tile_pass < segment_tile_pass_count;
+              tile_pass++) {
+            struct r300vk_replay_state tile_state = state;
+            r300vk_replay_state_rebind(device, &tile_state);
+            result = r300vk_replay_gpu_range(device, cmd, segment_begin,
+                                             segment_end, tile_pass,
+                                             cmd_tile_pass_count, &tile_state,
+                                             transient_vbs, gpu_pending);
+            r300vk_dyn_overlay_cleanup(device, &tile_state.dyn_ov);
+            if (result != VK_SUCCESS)
+               break;
+            if (tile_pass + 1 == segment_tile_pass_count)
+               state = tile_state;
+         }
+         if (result != VK_SUCCESS)
+            break;
+      }
+
+      i = segment_end;
    }
+   r300vk_replay_state_cleanup(device, &state);
    return result;
 }
 
@@ -3664,10 +3777,9 @@ r300vk_copy_query_pool_results(struct r300vk_device *device,
    }
 }
 
-/* Executes one host-side transfer/event command on the CPU.  Shared by the
- * post-fence readback pass and the in-submission-order replay, so both run the
- * exact same code; the caller is responsible for fencing prior GPU work before
- * a transfer that reads GPU output. */
+/* Executes one host-side transfer/event command on the CPU.  The caller is
+ * responsible for fencing prior GPU work before a transfer that reads GPU
+ * output. */
 static void
 r300vk_replay_host_entry(struct r300vk_device *device,
                          const struct r300vk_cmd_entry *e)
@@ -3713,17 +3825,6 @@ r300vk_replay_host_entry(struct r300vk_device *device,
    }
 }
 
-/* CPU-side buffer/image transfers executed after the GPU fence completes.  Used
- * only when a multi-tile render pass forces the deferred two-pass model; the
- * single-tile path runs these in submission order during r300vk_replay_gpu. */
-static void
-r300vk_replay_cpu_readback(struct r300vk_device *device,
-                            const struct r300vk_cmd_buffer *cmd)
-{
-   for (uint32_t i = 0; i < cmd->entry_count; i++)
-      r300vk_replay_host_entry(device, &cmd->entries[i]);
-}
-
 VkResult
 r300vk_queue_driver_submit(struct vk_queue *vkq,
                             struct vk_queue_submit *submit)
@@ -3746,24 +3847,8 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
    struct util_dynarray transient_vbs;
    util_dynarray_init(&transient_vbs, NULL);
 
-   /* A multi-tile render pass re-walks its command buffer's entry list once per
-    * tile, so host transfers in such a submit must stay in the post-fence CPU
-    * pass (running them inside the tiled walk would repeat them per tile).  When
-    * no command buffer in the submit needs more than one tile, host transfers
-    * run in submission order during replay so a later in-submit dispatch/draw
-    * observes a prior fill/copy/update.  gpu_pending is threaded across all
-    * command buffers so a host transfer drains GPU work emitted by an earlier
-    * one. */
-   bool inorder_host = true;
-   for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
-      struct r300vk_cmd_buffer *cmd =
-         container_of(submit->command_buffers[ci],
-                      struct r300vk_cmd_buffer, base);
-      if (r300vk_cmd_tile_pass_count(cmd) > 1) {
-         inorder_host = false;
-         break;
-      }
-   }
+   /* gpu_pending is threaded across all command buffers so a host transfer in a
+    * later command buffer drains GPU work emitted by an earlier one. */
    bool gpu_pending = false;
 
    for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
@@ -3785,8 +3870,7 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
          mesa_logw_once("r300vk: cs-direct-emit backend requested via "
                         "R300VK_CS_DIRECT_BACKEND_HAZARD_ACCEPTED but not "
                         "implemented; using pipe_context replay backend");
-      result = r300vk_replay_gpu(device, cmd, &transient_vbs, inorder_host,
-                                 &gpu_pending);
+      result = r300vk_replay_gpu(device, cmd, &transient_vbs, &gpu_pending);
       if (result != VK_SUCCESS)
          break;
    }
@@ -3808,17 +3892,6 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
 
    if (result != VK_SUCCESS)
       return result;
-
-   /* Deferred host transfers for the tiled path only; the single-tile path
-    * already ran them in submission order during replay. */
-   if (!inorder_host) {
-      for (uint32_t ci = 0; ci < submit->command_buffer_count; ci++) {
-         struct r300vk_cmd_buffer *cmd =
-            container_of(submit->command_buffers[ci],
-                         struct r300vk_cmd_buffer, base);
-         r300vk_replay_cpu_readback(device, cmd);
-      }
-   }
 
    /* Submit-boundary coherence, exit half: the GPU fence retired above, so
     * pull every bound resource back into its owns_buffer host map -- a
