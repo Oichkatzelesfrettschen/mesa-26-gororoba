@@ -176,6 +176,13 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
     out->data.location = FRAG_RESULT_COLOR;
     nir_store_var(&b, out, o, 0xf);
 
+    /* Declare UBO[0] so nir_to_rc resolves the four matrix load_ubo's to const-
+     * file EXTERNALS (read from the bound FS constant buffer at emit) rather than
+     * baking them as immediates -- without this the shader has externals_count=0
+     * and set_constant_buffer(FRAGMENT, 0) is silently ignored (the FS dots its
+     * input against baked garbage). */
+    b.shader->info.num_ubos = 1;
+
     if (getenv("R300_R2VB_VS_DUMP"))
         nir_print_shader(b.shader, stderr);
 
@@ -184,6 +191,42 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
     st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
     r300->r2vb_transform_fs = r300->context.create_fs_state(&r300->context, &st);
     return r300->r2vb_transform_fs;
+}
+
+/* Build a transform-FS with the MVP baked in as immediates: out = M * in_attr,
+ * where the four rows (already transposed so DP4(row_i, v) = (M*v)_i) are
+ * nir_imm_vec4 constants.  Hand-built load_ubo on r300 folds to immediate
+ * garbage (externals_count=0, so set_constant_buffer is ignored), so the matrix
+ * must travel in the program; the FS is therefore matrix-specific and rebuilt
+ * per draw (the caller deletes it).  Returns a pipe FS CSO or NULL. */
+static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const float rows[16])
+{
+    const nir_shader_compiler_options *options =
+        r300->screen->screen.nir_options[MESA_SHADER_FRAGMENT];
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options,
+                                                   "r300 r2vb mvp baked transform FS");
+    nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                           glsl_vec4_type(), "in_vtx");
+    in->data.location = VARYING_SLOT_VAR0;
+    in->data.interpolation = INTERP_MODE_FLAT;
+    nir_def *v = nir_load_var(&b, in);
+
+    nir_def *comp[4];
+    for (unsigned r = 0; r < 4; r++) {
+        nir_def *row = nir_imm_vec4(&b, rows[r * 4 + 0], rows[r * 4 + 1],
+                                    rows[r * 4 + 2], rows[r * 4 + 3]);
+        comp[r] = nir_fdot(&b, row, v);
+    }
+    nir_def *o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
+    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "out_color");
+    out->data.location = FRAG_RESULT_COLOR;
+    nir_store_var(&b, out, o, 0xf);
+
+    struct pipe_shader_state st = {0};
+    st.type = PIPE_SHADER_IR_NIR;
+    st.ir.nir = b.shader;
+    return r300->context.create_fs_state(&r300->context, &st);
 }
 
 /* Data-independent producer position stream: one window-space point per output
@@ -1417,24 +1460,29 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         return false;
     }
 
-    void *xfs = r300_r2vb_get_transform_fs(r300);
+    /* Transpose the column-major MVP into DP4 rows (row_i = (col0[i]..col3[i])),
+     * then bake those rows into the transform-FS as immediates. */
+    float rows[16];
+    for (unsigned i = 0; i < 4; i++)
+        for (unsigned j = 0; j < 4; j++)
+            rows[i * 4 + j] = cols[j * 4 + i];
+    void *xfs = r300_r2vb_build_baked_transform_fs(r300, rows);
     if (!xfs) {
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
     }
 
-    /* Bind the transform-FS, load the transposed MVP into FS const file 0,
-     * recompute derived (RS) state for its single input, then emit that state
-     * and the producer under the normal draw flow. */
+    /* Bind the baked transform-FS, recompute derived (RS) state for its single
+     * input, then emit that state and the producer under the normal draw flow. */
     void *saved_fs = r300->fs.state;
     r300->context.bind_fs_state(&r300->context, xfs);
-    r300_r2vb_set_transform_consts(r300, cols);
     r300_update_derived_state(r300);
     if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
         r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, true);
     r300->context.bind_fs_state(&r300->context, saved_fs);
     r300_update_derived_state(r300);
+    r300->context.delete_fs_state(&r300->context, xfs);
 
     if (getenv("R300_R2VB_XFORM_VERIFY")) {
         r300->context.flush(&r300->context, NULL, 0);
