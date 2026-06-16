@@ -107,8 +107,9 @@ struct r300_carrier_policy {
  *   so the A byte is always zero for admitted exact-domain results.
  *
  * r300_carrier_dp4_u8_boundary: DP4 with U8 operands (precision boundary).
- *   Same formats as dp4_u7.  Results above 64516 are FP24-approximate
- *   (4*(2^8-1)^2 = 260100 > 2^17); hardware-confirmed as boundary behavior.
+ *   Same formats as dp4_u7.  Results inside the FP24 exact-integer window
+ *   (<= 2^17) are exact; larger U8 dot values are the hardware-confirmed
+ *   boundary behavior (4*(2^8-1)^2 = 260100 > 2^17).
  *
  * r300_carrier_blend_acc: blend-add accumulation (histogram).
  *   Input: element-typed SSBO; format from descriptor.
@@ -127,9 +128,10 @@ extern const struct r300_carrier_policy r300_carrier_ieee16_mul;
 extern const struct r300_carrier_policy r300_carrier_ieee16_result;
 extern const struct r300_carrier_policy r300_carrier_ieee16_debug;
 
-/* Select the appropriate DP4 carrier policy given the maximum operand
+/* Select the appropriate unsigned DP4 carrier policy given the maximum operand
  * magnitude.  Returns r300_carrier_dp4_u7 (exact) when max_operand_magnitude
- * <= 127; returns r300_carrier_dp4_u8_boundary (precision-boundary) otherwise.
+ * <= 127, r300_carrier_dp4_u8_boundary (precision-boundary) for 128..255, and
+ * NULL outside the unsigned-byte carrier domain.
  * The operand magnitude is not visible at NIR classify time; callers that know
  * the runtime bound use this helper to select the right policy before dispatch.
  */

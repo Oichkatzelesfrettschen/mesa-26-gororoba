@@ -51,11 +51,10 @@ const struct r300_carrier_policy r300_carrier_dp4_u7 = {
    .requires_fp32_rt    = false,
 };
 
-/* DP4 with U8 operands: same formats as dp4_u7, but results above 64516 are
- * FP24-approximate (4*(2^8-1)^2 = 260100 > 2^17).  Hardware-confirmed as
- * DP4_UINT8_OFFGRID_ROUNDS.  max_exact_result still records 64516 because
- * that is the boundary below which exact behavior holds; above that the
- * policy documents approximate behavior. */
+/* DP4 with U8 operands: same formats as dp4_u7, but only results inside the
+ * FP24 exact-integer window are exact.  The full U8 dot range is
+ * 4*(2^8-1)^2 = 260100, so values above 2^17 remain the hardware-confirmed
+ * DP4_UINT8_OFFGRID_ROUNDS boundary behavior. */
 const struct r300_carrier_policy r300_carrier_dp4_u8_boundary = {
    .name                = "dp4-u8-boundary",
    .domain              = R300_NUM_DOMAIN_U8_OFFGRID,
@@ -64,7 +63,7 @@ const struct r300_carrier_policy r300_carrier_dp4_u8_boundary = {
    .bit_format          = PIPE_FORMAT_R8G8B8A8_UNORM,
    .input_stride        = 16,
    .output_stride       = 4,
-   .max_exact_result    = 64516,  /* exact below this; FP24-approximate above */
+   .max_exact_result    = 131072,  /* FP24 exact integer window */
    .encodes_full_uint32 = false,
    .requires_fp32_rt    = false,
 };

@@ -60,6 +60,7 @@ enum r300_vop_status {
    R300_VOP_NUMERIC_DERIVED,  /* theorem proven; silicon not yet measured */
    R300_VOP_HW_CONFIRMED,     /* silicon measurement matches theorem */
    R300_VOP_BOUNDARY,         /* confirmed with documented precision limit */
+   R300_VOP_CARRIER_PENDING,  /* arithmetic known; Mesa carrier contract absent */
    R300_VOP_REJECTED,         /* falsified by silicon measurement */
 };
 
@@ -214,7 +215,6 @@ struct r300_virtual_op_info {
    enum r300_vop_status        status;
    const char                 *theorem;          /* bound proof or NULL */
    const char                 *mesa_hook;        /* NIR detector function name or NULL */
-   const char                 *retained_bundle;  /* reserved; checked-in Mesa rows use NULL */
 };
 
 /* The known virtual op catalog.  Terminated by a row with op_name == NULL.
