@@ -275,6 +275,39 @@ static void r300_r2vb_set_transform_consts(struct r300_context *r300, const floa
     r300->context.set_constant_buffer(&r300->context, MESA_SHADER_FRAGMENT, 0, &cb);
 }
 
+/* No-submit decode of the producer's VAP-stream routing against the bound FS's
+ * RS routing.  The producer reuses the inherited VAP_PROG_STREAM_CNTL (which
+ * vector each fetched element lands in, DST_VEC_LOC), while the bound transform-
+ * FS's rs_block decides which VAP output vector feeds each FS input (rs ip).
+ * The attribute reaches the FS iff the stream-1 DST_VEC_LOC equals the vector
+ * the FS input[0] reads. */
+static void r300_r2vb_dump_xform_routing(struct r300_context *r300)
+{
+    struct r300_vertex_stream_state *vs =
+        (struct r300_vertex_stream_state *)r300->vertex_stream_state.state;
+    struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
+    if (vs) {
+        fprintf(stderr, "r2vb_xform_route psc_count=%u\n", vs->count);
+        for (unsigned i = 0; i < vs->count && i < 4; i++) {
+            uint32_t c = vs->vap_prog_stream_cntl[i];
+            for (unsigned e = 0; e < 2; e++) {
+                uint32_t f = c >> (e * 16);
+                fprintf(stderr, "  psc[%u].e%u data_type=%u dst_vec_loc=%u last=%u\n", i, e,
+                        f & 0xf, (f >> 8) & 0x1f, (f >> 13) & 1);
+            }
+        }
+    }
+    if (rs) {
+        fprintf(stderr,
+                "r2vb_xform_route vap_out_vtx_fmt0=0x%08x fmt1=0x%08x rs_count=0x%08x "
+                "inst_count=0x%08x\n",
+                rs->vap_out_vtx_fmt[0], rs->vap_out_vtx_fmt[1], rs->count, rs->inst_count);
+        for (unsigned i = 0; i < 8; i++)
+            if (rs->ip[i] || rs->inst[i])
+                fprintf(stderr, "  rs[%u] ip=0x%08x inst=0x%08x\n", i, rs->ip[i], rs->inst[i]);
+    }
+}
+
 /* Read back the producer output BO and compare each slot to the CPU column-major
  * M*model_vert.  FP24 fragment ALU, so a small tolerance, not bit-exactness. */
 static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_resource *res,
@@ -985,6 +1018,7 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
             bool prepared = r300_r2vb_prepare_states(r300, 1024);
             fprintf(stderr, "r2vb_xform bound transform-FS + transposed test MVP prepared=%d\n",
                     prepared);
+            r300_r2vb_dump_xform_routing(r300);
         }
     }
 
