@@ -31,8 +31,8 @@ struct lower_vs_sysval_state {
 };
 
 /* Classify an intrinsic as a VS system-value read, tolerant of both forms.
- * Returns the gl_system_value it reads, or SYSTEM_VALUE_MAX when it is not one
- * of the two the synthetic-attribute path handles.
+ * Returns the normalized gl_system_value consumed by this pass, or
+ * SYSTEM_VALUE_MAX when it is not one of the two synthetic-attribute paths.
  *
  * spirv_to_nir emits gl_VertexIndex / gl_InstanceIndex as a load_deref of a
  * nir_var_system_value variable (vtn_variables.c maps gl_VertexIndex to
