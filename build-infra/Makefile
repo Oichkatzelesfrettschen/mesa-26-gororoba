@@ -300,7 +300,7 @@ configure: vostro-prefix-check
 					detected="$$(version_major "$$candidate" || true)"; \
 					[ "$$detected" = "$$version" ] || continue; \
 				fi; \
-				printf '%s\n' "$$candidate"; return 0; \
+				command -v "$$candidate"; return 0; \
 			fi; \
 		done; \
 		return 1; \
