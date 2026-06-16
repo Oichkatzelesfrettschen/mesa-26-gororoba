@@ -853,6 +853,24 @@ r300vk_replay_pipeline_barrier(struct r300vk_device *device,
       e->barrier.image->resource_state.layout = e->barrier.new_layout;
 }
 
+static const uint8_t
+r300vk_zero_ubo[R300VK_VK10_MIN_UNIFORM_BUFFER_RANGE];
+
+/* r300g's set_constant_buffer hook ignores NULL, so a missing descriptor must
+ * bind a valid buffer to replace stale CONST[0] state from an earlier draw.  The
+ * zero buffer is sized to the advertised Vulkan UBO range; the compiler already
+ * rejects offsets the r300 constant file cannot represent. */
+static void
+r300vk_bind_missing_stage_ubo_zero(struct r300vk_device *device,
+                                   mesa_shader_stage stage)
+{
+   struct pipe_constant_buffer cb;
+   memset(&cb, 0, sizeof(cb));
+   cb.user_buffer = r300vk_zero_ubo;
+   cb.buffer_size = sizeof(r300vk_zero_ubo);
+   device->pipe->set_constant_buffer(device->pipe, stage, 0, &cb);
+}
+
 /* Bind one stage's selected uniform buffer to its r300 constant file at
  * CONST[0], so that stage's load_ubo(0, ...) reads it.  Match the exact
  * (ubo_set, ubo_binding) the shader read: a set may declare several UBO bindings
@@ -862,11 +880,11 @@ r300vk_replay_pipeline_barrier(struct r300vk_device *device,
  * first_set + s.  r300vk buffers are host-visible Gallium PIPE_BUFFERs, so
  * cb.buffer feeds r300_set_constant_buffer directly (it reads malloced_buffer
  * with no GPU upload), matching the compute identity-map path. */
-static void
-r300vk_bind_one_stage_ubo(struct r300vk_device *device,
-                          const struct r300vk_cmd_bind_descriptor_sets *binds,
-                          mesa_shader_stage stage,
-                          uint32_t ubo_set, uint32_t ubo_binding)
+static bool
+r300vk_try_bind_one_stage_ubo(struct r300vk_device *device,
+                              const struct r300vk_cmd_bind_descriptor_sets *binds,
+                              mesa_shader_stage stage,
+                              uint32_t ubo_set, uint32_t ubo_binding)
 {
    struct pipe_context *pipe = device->pipe;
    for (uint32_t s = 0; s < binds->set_count; s++) {
@@ -883,7 +901,7 @@ r300vk_bind_one_stage_ubo(struct r300vk_device *device,
          const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
          VK_FROM_HANDLE(r300vk_buffer, buf, desc->buf.buffer);
          if (!buf || !buf->resource)
-            return;
+            return false;
 
          struct pipe_constant_buffer cb;
          memset(&cb, 0, sizeof(cb));
@@ -908,9 +926,22 @@ r300vk_bind_one_stage_ubo(struct r300vk_device *device,
             }
          }
          pipe->set_constant_buffer(pipe, stage, 0, &cb);
-         return;
+         return true;
       }
    }
+
+   return false;
+}
+
+static void
+r300vk_bind_one_stage_ubo(struct r300vk_device *device,
+                          const struct r300vk_cmd_bind_descriptor_sets *binds,
+                          mesa_shader_stage stage,
+                          uint32_t ubo_set, uint32_t ubo_binding)
+{
+   if (!r300vk_try_bind_one_stage_ubo(device, binds, stage,
+                                      ubo_set, ubo_binding))
+      r300vk_bind_missing_stage_ubo_zero(device, stage);
 }
 
 /* r300 has separate vertex and fragment constant files, so bind each stage's
