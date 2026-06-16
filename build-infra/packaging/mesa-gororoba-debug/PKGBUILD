@@ -188,7 +188,7 @@ package() {
   # swap rewrites the path to the installed variant and the .install scriptlet
   # re-runs ldconfig, so reboots stay safe regardless of which variant is in.
   install -dm755 "${pkgdir}/etc/ld.so.conf.d"
-  printf '%s\n' '/opt/local/mesa-26-gororoba-debug/lib' \
+  printf '%s\n' '/opt/mesa-26-gororoba-debug/lib' \
     > "${pkgdir}/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf"
 
   # Boot-safety guard.  The ld.so.conf drop-in above and the _link_into_usr
