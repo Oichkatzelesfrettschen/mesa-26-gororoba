@@ -182,23 +182,46 @@ audit: vostro-prefix-check
 		done; \
 		return 1; \
 	}; \
+	find_versioned_llvm_tool() { \
+		tool="$$1"; version="$$2"; \
+		for candidate in "$$tool-$$version" "$$tool$$version"; do \
+			if command -v "$$candidate" >/dev/null 2>&1; then \
+				printf '%s\n' "$$candidate"; return 0; \
+			fi; \
+		done; \
+		return 1; \
+	}; \
+	find_audit_compiler_tool() { \
+		case "$(COMPILER_CHAIN)" in \
+			ccache|distcc) find_versioned_llvm_tool "$$1" "$$2" ;; \
+			direct) find_llvm_tool "$$1" "$$2" ;; \
+			*) return 1 ;; \
+		esac; \
+	}; \
+	llvm_compiler_requirement() { \
+		case "$(COMPILER_CHAIN)" in \
+			ccache|distcc) printf '%s\n' "version-suffixed clang/clang++" ;; \
+			*) printf '%s\n' "clang/clang++" ;; \
+		esac; \
+	}; \
 	llvm_has_core() { \
 		version="$$1"; \
 		need_config="$${2:-1}"; \
-		find_llvm_tool clang "$$version" >/dev/null 2>&1 && \
-		find_llvm_tool clang++ "$$version" >/dev/null 2>&1 && \
+		find_audit_compiler_tool clang "$$version" >/dev/null 2>&1 && \
+		find_audit_compiler_tool clang++ "$$version" >/dev/null 2>&1 && \
 		{ [ "$$need_config" -eq 0 ] || find_llvm_tool llvm-config "$$version" >/dev/null 2>&1; }; \
 	}; \
 	need_llvm_family() { \
 		need_config="$${1:-1}"; \
 		requested="$${MESA_LLVM_VERSION:-$${GOROROBA_LLVM_VERSION:-}}"; selected=""; \
+		compiler_requirement="$$(llvm_compiler_requirement)"; \
 		if [ -n "$$requested" ]; then \
 			if llvm_has_core "$$requested" "$$need_config"; then selected="$$requested"; \
 			else \
 				if [ "$$need_config" = "1" ]; then \
-					fail "requested LLVM major $$requested lacks required clang/clang++/llvm-config tools on PATH"; \
+					fail "requested LLVM major $$requested lacks required $$compiler_requirement/llvm-config tools on PATH"; \
 				else \
-					fail "requested LLVM major $$requested lacks required clang/clang++ tools on PATH"; \
+					fail "requested LLVM major $$requested lacks required $$compiler_requirement tools on PATH"; \
 				fi; \
 				return; \
 			fi; \
@@ -213,7 +236,7 @@ audit: vostro-prefix-check
 			done; \
 		fi; \
 		if [ -n "$$selected" ]; then \
-			if [ "$$need_config" -eq 1 ]; then ok "LLVM family $$selected with clang/clang++/llvm-config"; else ok "LLVM compiler family $$selected"; fi; \
+			if [ "$$need_config" -eq 1 ]; then ok "LLVM family $$selected with $$compiler_requirement/llvm-config"; else ok "LLVM compiler family $$selected with $$compiler_requirement"; fi; \
 		else fail "missing coherent LLVM compiler family"; fi; \
 	}; \
 	need_pkg_config() { if pkg-config --exists "$$1" 2>/dev/null; then ok "pkg-config $$1"; else fail "missing pkg-config dependency $$1"; fi; }; \
