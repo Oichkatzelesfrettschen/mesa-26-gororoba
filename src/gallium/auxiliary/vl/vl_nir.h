@@ -50,7 +50,8 @@ void vl_nir_fs_begin(struct vl_nir_fs *fs, struct pipe_context *pipe,
                      unsigned num_tc, const char *name);
 
 /* Declare a combined sampler at binding s with dimensionality dim
- * (GLSL_SAMPLER_DIM_2D, _3D, ...); the deref is stored in fs->samp[s]. */
+ * (GLSL_SAMPLER_DIM_2D, _3D, ...); the deref is stored in fs->samp[s] and
+ * shader info records the matching texture/sampler binding. */
 void vl_nir_sampler(struct vl_nir_fs *fs, unsigned s,
                     enum glsl_sampler_dim dim);
 

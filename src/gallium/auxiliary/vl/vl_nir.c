@@ -94,6 +94,8 @@ vl_nir_sampler(struct vl_nir_fs *fs, unsigned s, enum glsl_sampler_dim dim)
    nir_variable *samp = nir_variable_create(fs->b.shader, nir_var_uniform,
                                            sampler_type, "samp");
    samp->data.binding = s;
+   BITSET_SET(fs->b.shader->info.textures_used, s);
+   BITSET_SET(fs->b.shader->info.samplers_used, s);
    fs->samp[s] = nir_build_deref_var(&fs->b, samp);
 }
 
@@ -109,10 +111,10 @@ vl_nir_fs_finish(struct vl_nir_fs *fs, struct pipe_context *pipe,
                  nir_def *color)
 {
    nir_store_var(&fs->b, fs->out_color, color, 0xf);
-   /* Lower the deref-combined samplers to indexed tex so nir_shader_gather_info
-    * records textures_used/samplers_used.  nir_to_rc tolerates raw sampler derefs,
-    * but a SoA NIR backend (llvmpipe) keys its sampler static state on
-    * BITSET_LAST_BIT(info.textures_used) and snapshots nothing when it is empty. */
+   /* Lower deref-combined samplers to indexed tex.  vl_nir_sampler marks
+    * textures_used/samplers_used when declaring each binding: nir_lower_samplers
+    * only writes tex instruction indices, while SoA NIR backends such as
+    * llvmpipe key sampler static state on BITSET_LAST_BIT(info.textures_used). */
    NIR_PASS(_, fs->b.shader, nir_lower_samplers);
    nir_shader_gather_info(fs->b.shader, nir_shader_get_entrypoint(fs->b.shader));
    nir_assign_io_var_locations(fs->b.shader, nir_var_shader_in);
