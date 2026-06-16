@@ -317,14 +317,11 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     OUT_CS_REG(R300_SU_CULL_MODE, 0);
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
     /* Pin the fixed point size to one pixel (both registers pack 1/6-pixel units,
-     * so size 1 = 6).  GA_POINT_SIZE is the fallback size used when the vertex
-     * carries no per-vertex point size, and GA_POINT_MINMAX MIN = MAX = 1 clamps
-     * any size to one pixel.  This is the fallback the stage-3 re-ingest relies on
-     * once VAP_VTX_SIZE is reset to a position-only vertex (see stage 3): with no
-     * trailing point-size component, GA takes this fixed value and a POINTS
-     * re-ingest rasterizes one texel per vertex.  It also pins the stage-1
-     * producer's own points to one pixel, keeping the slot-to-pixel mapping exact.
-     * Both are don't-cares for the line and triangle topologies. */
+     * so size 1 = 6).  This keeps the stage-1 producer's own PRIM_POINTS a
+     * deterministic one pixel instead of the size inherited from the trigger draw,
+     * so the slot-to-pixel mapping stays exact.  It does NOT fix the stage-3
+     * POINTS re-ingest (that remains an open item; see the VAP_VTX_SIZE note in
+     * stage 3).  Both are don't-cares for the line and triangle topologies. */
     OUT_CS_REG(R300_GA_POINT_SIZE, (6 << R300_POINTSIZE_Y_SHIFT) |
                                        (6 << R300_POINTSIZE_X_SHIFT));
     OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
@@ -434,14 +431,21 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
            (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) | (0xf << R300_WRITE_ENA_SHIFT));
     /* Reset the output vertex size to one FP32x4 stream.  Stage 1's producer set
      * VAP_VTX_SIZE = 8 for its two streams (position + attribute); the re-ingest
-     * declares a single FP32x4 stream, so an inherited size of 8 makes the VAP
-     * emit eight-dword output vertices -- the four real position dwords plus four
-     * dwords read from the next vertex as trailing outputs.  Position (the first
-     * four dwords) still reads correctly, so the filled and line topologies are
-     * unaffected, but a POINTS draw consumes its per-vertex point size from that
-     * trailing garbage and smears each point across the framebuffer.  Size 4 emits
-     * position only, so point size falls back to the fixed GA_POINT_SIZE (pinned
-     * to one pixel above) and each point rasterizes to one texel. */
+     * declares a single FP32x4 stream, so the correct size is 4.  The inherited 8
+     * is a latent stride mismatch -- it makes the VAP treat each vertex as eight
+     * dwords (four real position dwords plus four read past the vertex).  The
+     * filled and line topologies consume only position (the first four dwords) and
+     * were pixel-exact even with the stale 8, so this is correctness hygiene that
+     * does not change their footprint.
+     *
+     * It does NOT fix the POINTS re-ingest, which still smears (measured: a
+     * 16-point readback stays at ~110 texels with the bounding box reaching the
+     * origin, not 16 single texels). Three register hypotheses have near-zero
+     * effect on it -- GA_POINT_SIZE, GA_POINT_MINMAX, and this VAP_VTX_SIZE -- so
+     * the r300 point-rasterization path in TCL_BYPASS sizes/places these points by
+     * a mechanism not yet identified. The stage-1 producer's own PRIM_POINTS
+     * rasterize correctly, so the fault is specific to the re-ingest draw. Left as
+     * a separate investigation; POINTS is off the mesh-draw critical path. */
     OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
     /* Re-assert the vertex-index bound for the re-ingest draw.  VAP_VF_MAX_VTX_
      * INDX clamps every fetched index; a stale lower bound (from an inherited
@@ -603,7 +607,8 @@ static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r
         for (uint32_t i = 0; i < n; i++)
             r2vb_set_vert(s->attrs[i], x0 + step * (float)i, y0 + step * (float)i);
         snprintf(s->expect, sizeof s->expect,
-                 "expect %u 1-px points on diagonal: written~%u bbox~10,10,53,53", n, n);
+                 "%u points on diagonal; stage-1 BO exact, stage-3 POINTS raster "
+                 "OPEN (3 register hypotheses falsified)", n);
         return true;
     }
     return false;
