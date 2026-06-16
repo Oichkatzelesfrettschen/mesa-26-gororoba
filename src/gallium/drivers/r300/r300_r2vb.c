@@ -904,6 +904,159 @@ static bool r300_vs_is_passthrough(struct r300_context *r300)
     return true;
 }
 
+/* No-submit shape probe for the de-TGSI vertex transform: dump the bound VS's
+ * NIR instruction profile so the MVP-shape matcher (r300_vs_is_mvp) is written
+ * against the real nir_to_tgsi output rather than an assumed shape (falsifier
+ * F2 in the MVP-transform finding).  Reports a histogram of ALU ops and
+ * intrinsics plus the total instruction count, then the full nir_print_shader.
+ * Fires once, gated by R300_R2VB_VS_DUMP; pure CPU, no CS emit. */
+static void r300_vs_dump_nir_shape(struct r300_context *r300)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir) {
+        fprintf(stderr, "r2vb_vs_dump: no NIR (type=%d)\n", vs ? vs->state.type : -1);
+        return;
+    }
+    nir_shader *nir = vs->state.ir.nir;
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    if (!impl)
+        return;
+
+    unsigned alu_hist[nir_num_opcodes] = {0};
+    unsigned intr_hist[nir_num_intrinsics] = {0};
+    unsigned n_alu = 0, n_intr = 0, n_tex = 0, n_const = 0, n_deref = 0, n_other = 0;
+    unsigned n_load_input = 0, n_store_output = 0, n_load_ubo = 0,
+             n_load_push = 0, n_load_const_intr = 0;
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            switch (instr->type) {
+            case nir_instr_type_alu:
+                alu_hist[nir_instr_as_alu(instr)->op]++; n_alu++; break;
+            case nir_instr_type_intrinsic: {
+                n_intr++;
+                intr_hist[nir_instr_as_intrinsic(instr)->intrinsic]++;
+                switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+                case nir_intrinsic_load_input: n_load_input++; break;
+                case nir_intrinsic_store_output: n_store_output++; break;
+                case nir_intrinsic_load_ubo: n_load_ubo++; break;
+                case nir_intrinsic_load_push_constant: n_load_push++; break;
+                case nir_intrinsic_load_constant: n_load_const_intr++; break;
+                default: break;
+                }
+                break;
+            }
+            case nir_instr_type_tex: n_tex++; break;
+            case nir_instr_type_load_const: n_const++; break;
+            case nir_instr_type_deref: n_deref++; break;
+            default: n_other++; break;
+            }
+        }
+    }
+    unsigned n_var_in = 0, n_var_out = 0, n_var_uniform = 0;
+    nir_foreach_variable_in_shader(var, nir) {
+        if (var->data.mode & nir_var_shader_in) n_var_in++;
+        if (var->data.mode & nir_var_shader_out) n_var_out++;
+        if (var->data.mode &
+            (nir_var_mem_ubo | nir_var_mem_push_const | nir_var_uniform))
+            n_var_uniform++;
+    }
+    fprintf(stderr,
+            "r2vb_vs_dump name=%s alu=%u intr=%u tex=%u const=%u deref=%u other=%u "
+            "| load_input=%u store_output=%u load_ubo=%u load_push=%u load_const=%u "
+            "| var_in=%u var_out=%u var_uniform=%u\n",
+            nir->info.name ? nir->info.name : "?", n_alu, n_intr, n_tex, n_const,
+            n_deref, n_other, n_load_input, n_store_output, n_load_ubo, n_load_push,
+            n_load_const_intr, n_var_in, n_var_out, n_var_uniform);
+    for (unsigned op = 0; op < nir_num_opcodes; op++)
+        if (alu_hist[op])
+            fprintf(stderr, "  alu_op %-16s x%u\n", nir_op_infos[op].name, alu_hist[op]);
+    for (unsigned in = 0; in < nir_num_intrinsics; in++)
+        if (intr_hist[in])
+            fprintf(stderr, "  intr   %-28s x%u\n", nir_intrinsic_infos[in].name, intr_hist[in]);
+    nir_print_shader(nir, stderr);
+}
+
+/* MVP-only matcher: a VS whose position output is exactly mat4 * input, the
+ * matrix from a uniform/push-constant, plus pass-through of the other inputs.
+ * The NIR reaching r300_vs is in DEREF form (R300_R2VB_VS_DUMP, 2026-06-16):
+ * IO and the matrix load are load_deref/store_deref through deref chains, NOT
+ * load_input/load_ubo intrinsics, and mat4*vec4 lowers to 4 fmul + 3 fadd
+ * (vectorized column-MAD), NOT fdot4.  So key the in/out/uniform existence on
+ * variable MODES (present in both deref and lowered form) and the transform on
+ * the ALU histogram; reject any op or intrinsic outside the transform set. */
+static bool r300_vs_is_mvp(struct r300_context *r300)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
+        return false;
+    nir_shader *nir = vs->state.ir.nir;
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    if (!impl)
+        return false;
+
+    /* A matrix source, an input vertex, and a position output must all exist as
+     * declared variables. */
+    bool has_in = false, has_out = false, has_uniform = false;
+    nir_foreach_variable_in_shader(var, nir) {
+        if (var->data.mode & nir_var_shader_in) has_in = true;
+        if (var->data.mode & nir_var_shader_out) has_out = true;
+        if (var->data.mode &
+            (nir_var_mem_ubo | nir_var_mem_push_const | nir_var_uniform))
+            has_uniform = true;
+    }
+    if (!has_in || !has_out || !has_uniform)
+        return false;
+
+    /* Allowed ALU: the column-MAD transform (fmul/fadd), the dot/fma variants in
+     * case a later nir pass vectorizes differently, and pure data movement.  Any
+     * other arithmetic (trig, div, comparisons, ...) is outside an MVP. */
+    unsigned n_dot4 = 0, n_ffma = 0, n_fmul = 0, n_fadd = 0;
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            switch (instr->type) {
+            case nir_instr_type_load_const:
+            case nir_instr_type_deref:
+                break;
+            case nir_instr_type_alu:
+                switch (nir_instr_as_alu(instr)->op) {
+                case nir_op_fdot4: n_dot4++; break;
+                case nir_op_ffma: n_ffma++; break;
+                case nir_op_fmul: n_fmul++; break;
+                case nir_op_fadd: n_fadd++; break;
+                case nir_op_mov:
+                case nir_op_vec4:
+                case nir_op_vec3:
+                case nir_op_vec2: break; /* pure data movement, allowed */
+                default:
+                    return false; /* arithmetic outside an MVP transform */
+                }
+                break;
+            case nir_instr_type_intrinsic:
+                switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+                case nir_intrinsic_load_deref:
+                case nir_intrinsic_store_deref:
+                case nir_intrinsic_load_input:
+                case nir_intrinsic_store_output:
+                case nir_intrinsic_load_ubo:
+                case nir_intrinsic_load_ubo_vec4: /* the matrix: one per row */
+                case nir_intrinsic_load_push_constant:
+                case nir_intrinsic_load_constant:
+                    break;
+                default:
+                    return false; /* texturing, atomics, ... not an MVP */
+                }
+                break;
+            default:
+                return false;
+            }
+        }
+    }
+    /* mat4 * vec4 == c0*x + c1*y + c2*z + c3*w: 4 fmul + 3 fadd in the observed
+     * column-MAD form; accept the fdot4 or ffma-chain forms too. */
+    bool has_transform = (n_fmul >= 4 && n_fadd >= 3) || (n_dot4 >= 4) || (n_ffma >= 3);
+    return has_transform;
+}
+
 enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
                                                const struct pipe_draw_info *info,
                                                const struct pipe_draw_start_count_bias *draw)
@@ -976,8 +1129,23 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                                  : "?";
         static const char *vname[R2VB_VERDICT_COUNT] = {
             "passthrough", "candidate", "hw_tcl", "indexed", "instanced", "count", "prim"};
-        fprintf(stderr, "r2vb_route_draw #%u verdict=%s vs=%s count=%u mode=%u\n",
-                total, vname[v], vsname, draw->count, info->mode);
+        fprintf(stderr, "r2vb_route_draw #%u verdict=%s is_mvp=%d vs=%s count=%u mode=%u\n",
+                total, vname[v], r300_vs_is_mvp(r300), vsname, draw->count, info->mode);
+    }
+
+    /* R300_R2VB_VS_DUMP: one-shot NIR-shape dump of the bound VS so the MVP
+     * matcher is pinned to the real nir_to_tgsi output (finding F2).  No submit. */
+    static int vsdump = -1;
+    if (vsdump < 0) {
+        const char *e = getenv("R300_R2VB_VS_DUMP");
+        vsdump = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (vsdump && v == R2VB_ROUTE_CANDIDATE) {
+        static bool dumped = false;
+        if (!dumped) {
+            dumped = true;
+            r300_vs_dump_nir_shape(r300);
+        }
     }
     /* Periodic verdict distribution so a real workload shows how much of its draw
      * stream is route-eligible without per-draw log spam. */
