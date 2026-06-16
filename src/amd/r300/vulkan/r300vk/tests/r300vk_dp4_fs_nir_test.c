@@ -110,20 +110,46 @@ find_color_store_vec4(nir_shader *s)
    return store_count == 1 ? store_vec : NULL;
 }
 
-int
-main(void)
+static bool
+has_single_tex0_input(nir_shader *s)
 {
-   glsl_type_singleton_init_or_ref();
+   unsigned tex0 = 0, other = 0;
 
-   /* A zero-initialized options block is enough to build this shader; the FS
-    * uses only always-available builder primitives. */
-   static const nir_shader_compiler_options options = { 0 };
+   nir_foreach_shader_in_variable(var, s) {
+      if (var->data.location == VARYING_SLOT_TEX0)
+         tex0++;
+      else
+         other++;
+   }
 
+   return tex0 == 1 && other == 0;
+}
+
+static void
+check_texcoord_shape(nir_shader *s, const char *label, unsigned expected_tex)
+{
+   char name[96];
+
+   snprintf(name, sizeof(name), "%s: texcoord input uses TEX0 for generic0",
+            label);
+   CHECK(has_single_tex0_input(s), name);
+
+   unsigned tex = 0, bad = 0;
+   count_tex(s, &tex, &bad);
+   snprintf(name, sizeof(name),
+            "%s: %u 2D tex ops, each a 2-component coord",
+            label, expected_tex);
+   CHECK(tex == expected_tex && bad == 0, name);
+}
+
+static void
+check_dp4_widths(const nir_shader_compiler_options *options)
+{
    /* The kernel dot widths the dispatch admits: 0 means full vec4. */
    const unsigned widths[] = { 0, 2, 3, 4 };
    for (unsigned i = 0; i < ARRAY_SIZE(widths); i++) {
       char name[80];
-      nir_shader *s = r300vk_build_dp4_fs_nir(&options, widths[i]);
+      nir_shader *s = r300vk_build_dp4_fs_nir(options, widths[i]);
 
       snprintf(name, sizeof(name), "components=%u builds a shader", widths[i]);
       CHECK(s != NULL, name);
@@ -132,12 +158,9 @@ main(void)
 
       nir_validate_shader(s, "r300vk dp4 fs"); /* general well-formedness, not the coord-shape check */
 
-      unsigned tex = 0, bad = 0;
-      count_tex(s, &tex, &bad);
       snprintf(name, sizeof(name),
-               "components=%u: two 2D tex ops, each a 2-component coord",
-               widths[i]);
-      CHECK(tex == 2 && bad == 0, name);
+               "components=%u", widths[i]);
+      check_texcoord_shape(s, name, 2);
 
       snprintf(name, sizeof(name),
                "components=%u: dot is truncated before byte-pack",
@@ -152,107 +175,69 @@ main(void)
 
       ralloc_free(s);
    }
+}
 
-   /* The Hamilton-product FS: two quaternion samplers (2-component coords, the
-    * same coord-shape invariant as the DP4 FS) and exactly four DP4s -- one
-    * fdot4 per output lane of q1*q2.  A regression that drops a lane or adds a
-    * fifth dot (for example from a botched sign-permutation rewrite) trips the
-    * fdot4 count. */
-   {
-      nir_shader *s = r300vk_build_qmul_fs_nir(&options);
-      CHECK(s != NULL, "qmul builds a shader");
-      if (s) {
-         nir_validate_shader(s, "r300vk qmul fs");
+typedef nir_shader *
+(*fs_builder)(const nir_shader_compiler_options *options);
 
-         unsigned tex = 0, bad = 0;
-         count_tex(s, &tex, &bad);
-         CHECK(tex == 2 && bad == 0,
-               "qmul: two 2D tex ops, each a 2-component coord");
+static void
+check_hamilton_fs(const nir_shader_compiler_options *options,
+                  const char *label, fs_builder builder,
+                  unsigned expected_tex, unsigned expected_dp4)
+{
+   char name[96];
+   nir_shader *s = builder(options);
 
-         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
-         CHECK(dp4 == 4, "qmul: exactly four DP4s (one per quaternion lane)");
+   snprintf(name, sizeof(name), "%s builds a shader", label);
+   CHECK(s != NULL, name);
+   if (!s)
+      return;
 
-         ralloc_free(s);
-      }
-   }
+   snprintf(name, sizeof(name), "r300vk %s fs", label);
+   nir_validate_shader(s, name);
+   check_texcoord_shape(s, label, expected_tex);
 
-   /* The rotation FS is the sandwich q*embed(v)*conj(q) = two Hamilton products,
-    * so it samples two inputs (q, v) with 2-component coords and contains
-    * exactly eight DP4s.  A drop to four would mean only one product emitted. */
-   {
-      nir_shader *s = r300vk_build_qrotate_fs_nir(&options);
-      CHECK(s != NULL, "qrotate builds a shader");
-      if (s) {
-         nir_validate_shader(s, "r300vk qrotate fs");
+   snprintf(name, sizeof(name), "%s: exactly %u DP4s",
+            label, expected_dp4);
+   CHECK(count_alu_op(s, nir_op_fdot4) == expected_dp4, name);
+   ralloc_free(s);
+}
 
-         unsigned tex = 0, bad = 0;
-         count_tex(s, &tex, &bad);
-         CHECK(tex == 2 && bad == 0,
-               "qrotate: two 2D tex ops, each a 2-component coord");
+static void
+check_omul_mrt_fs(const nir_shader_compiler_options *options)
+{
+   nir_shader *s = r300vk_build_omul_mrt_fs_nir(options);
+   CHECK(s != NULL, "omul_mrt builds a shader");
+   if (!s)
+      return;
 
-         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
-         CHECK(dp4 == 8, "qrotate: exactly eight DP4s (two Hamilton products)");
+   nir_validate_shader(s, "r300vk omul_mrt fs");
+   check_texcoord_shape(s, "omul_mrt", 4);
+   CHECK(count_alu_op(s, nir_op_fdot4) == 16,
+         "omul_mrt: exactly sixteen DP4s");
 
-         ralloc_free(s);
-      }
-   }
+   unsigned outs = 0;
+   nir_foreach_shader_out_variable(var, s)
+      outs++;
+   CHECK(outs == 2, "omul_mrt: two color outputs (DATA0 + DATA1)");
+   ralloc_free(s);
+}
 
-   /* Each octonion-product pass is two Hamilton products over the four sampled
-    * quaternion halves a,b,c,d (bindings 0..3): the lower half a*c - conj(d)*b
-    * and the upper half d*a + b*conj(c).  So each pass samples four 2-component-
-    * coord inputs and contains exactly eight DP4s; a dropped product would halve
-    * the fdot4 count.  Two passes fill the eight-wide octonion result. */
-   {
-      nir_shader *s = r300vk_build_omul_lo_fs_nir(&options);
-      CHECK(s != NULL, "omul_lo builds a shader");
-      if (s) {
-         nir_validate_shader(s, "r300vk omul_lo fs");
-         unsigned tex = 0, bad = 0;
-         count_tex(s, &tex, &bad);
-         CHECK(tex == 4 && bad == 0,
-               "omul_lo: four 2D tex ops, each a 2-component coord");
-         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
-         CHECK(dp4 == 8, "omul_lo: exactly eight DP4s (two Hamilton products)");
-         ralloc_free(s);
-      }
-   }
-   {
-      nir_shader *s = r300vk_build_omul_hi_fs_nir(&options);
-      CHECK(s != NULL, "omul_hi builds a shader");
-      if (s) {
-         nir_validate_shader(s, "r300vk omul_hi fs");
-         unsigned tex = 0, bad = 0;
-         count_tex(s, &tex, &bad);
-         CHECK(tex == 4 && bad == 0,
-               "omul_hi: four 2D tex ops, each a 2-component coord");
-         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
-         CHECK(dp4 == 8, "omul_hi: exactly eight DP4s (two Hamilton products)");
-         ralloc_free(s);
-      }
-   }
+int
+main(void)
+{
+   glsl_type_singleton_init_or_ref();
 
-   /* The MRT octonion FS does both halves in one draw: four sampled inputs, all
-    * sixteen DP4s (four Hamilton products), and two color outputs (DATA0 = lower
-    * half, DATA1 = upper half).  A regression that dropped a product or an output
-    * trips the fdot4 or output count. */
-   {
-      nir_shader *s = r300vk_build_omul_mrt_fs_nir(&options);
-      CHECK(s != NULL, "omul_mrt builds a shader");
-      if (s) {
-         nir_validate_shader(s, "r300vk omul_mrt fs");
-         unsigned tex = 0, bad = 0;
-         count_tex(s, &tex, &bad);
-         CHECK(tex == 4 && bad == 0,
-               "omul_mrt: four 2D tex ops, each a 2-component coord");
-         unsigned dp4 = count_alu_op(s, nir_op_fdot4);
-         CHECK(dp4 == 16, "omul_mrt: exactly sixteen DP4s (four Hamilton products)");
-         unsigned outs = 0;
-         nir_foreach_shader_out_variable(var, s)
-            outs++;
-         CHECK(outs == 2, "omul_mrt: two color outputs (DATA0 + DATA1)");
-         ralloc_free(s);
-      }
-   }
+   /* A zero-initialized options block is enough to build this shader; the FS
+    * uses only always-available builder primitives. */
+   static const nir_shader_compiler_options options = { 0 };
+
+   check_dp4_widths(&options);
+   check_hamilton_fs(&options, "qmul", r300vk_build_qmul_fs_nir, 2, 4);
+   check_hamilton_fs(&options, "qrotate", r300vk_build_qrotate_fs_nir, 2, 8);
+   check_hamilton_fs(&options, "omul_lo", r300vk_build_omul_lo_fs_nir, 4, 8);
+   check_hamilton_fs(&options, "omul_hi", r300vk_build_omul_hi_fs_nir, 4, 8);
+   check_omul_mrt_fs(&options);
 
    glsl_type_singleton_decref();
 
