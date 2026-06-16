@@ -209,21 +209,20 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         }
     }
 
-    /* 64 dwords for the single-BO loop: stage 1 = 43, stage 2 = 6, stage 3 = 15.
+    /* 66 dwords for the single-BO loop: stage 1 = 45, stage 2 = 6, stage 3 = 15.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
      * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
      * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
-     * vertices (twelve dwords); SU_CULL_MODE and SC_CLIP_RULE add four dwords;
-     * the stage-3 VF_MAX_VTX_INDX re-assert adds two.  The stage-3 color-target
-     * switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 + the
-     * SC_SCISSORS pair).  The identity-wpos override adds five dwords per
+     * vertices (twelve dwords); SU_CULL_MODE, SC_CLIP_RULE, and GA_POINT_SIZE add
+     * six dwords; the stage-3 VF_MAX_VTX_INDX re-assert adds two.  The stage-3
+     * color-target switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 +
+     * the SC_SCISSORS pair).  The identity-wpos override adds five dwords per
      * viewport state constant the bound FS carries (zero for a passthrough FS).
-     * Mechanism A drops the one-stream PSC override (-4 dwords, reusing the
-     * trigger draw's PSC) and embeds num_vertices two-float4 points
-     * (num_vertices*8 dwords) where the base counts assumed three one-float4
-     * triangle vertices (twelve dwords) plus that PSC override: net
-     * (num_vertices*8 - 16). */
-    BEGIN_CS((stage3_color_bo ? 73 : 64) + r2vb_vp_override_dwords +
+     * The producer reuses the trigger draw's PSC (no one-stream override) and
+     * embeds num_vertices two-float4 points (num_vertices*8 dwords) where the base
+     * counts assumed three one-float4 triangle vertices (twelve dwords) plus a
+     * four-dword PSC override: net (num_vertices*8 - 16). */
+    BEGIN_CS((stage3_color_bo ? 75 : 66) + r2vb_vp_override_dwords +
              (int)num_vertices * 8 - 16);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
@@ -316,6 +315,17 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * rasterizer never runs, and the GTT color BO reads back all zero. */
     OUT_CS_REG(R300_SU_CULL_MODE, 0);
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
+    /* Pin the point size to one pixel (GA_POINT_SIZE packs 1/6-pixel units, so
+     * size 1 = 6 in both X and Y).  The stage-1 producer rasterizes one point per
+     * slot, and a POINTS re-ingest (stage 3) rasterizes the GTT vertices as
+     * points; either inherits the caller's last GA_POINT_SIZE otherwise, which on
+     * a triangle trigger draw is an arbitrary value that smears each point across
+     * several pixels (and, for the re-ingest, off the intended position).  One
+     * pixel keeps the producer's slot-to-pixel mapping exact and makes a POINTS
+     * topology rasterize one texel per vertex; it is a don't-care for the line
+     * and triangle topologies. */
+    OUT_CS_REG(R300_GA_POINT_SIZE, (6 << R300_POINTSIZE_Y_SHIFT) |
+                                       (6 << R300_POINTSIZE_X_SHIFT));
     /* Self-supplied producer geometry: one POINT per output slot.  Declare one
      * FP32x4 position stream with pre-divided window coordinates (VTX_XY_FMT),
      * then emit num_vertices points at (slot+0.5, 0.5) in-IB via 3D_DRAW_IMMD.
@@ -517,7 +527,11 @@ static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r
         return true;
     }
     if (strcmp(prim_name, "triangle_fan") == 0) {
-        /* centre + 4 ring corners -> fan tiling the same quad. */
+        /* centre + 4 ring corners.  A 5-vertex fan assembles n-2 = 3 triangles
+         * (centre,c1,c2), (centre,c2,c3), (centre,c3,c4) -- it does NOT close back
+         * to c1, so it fills three of the four centre-anchored quadrants and
+         * leaves the c4->c1 wedge open.  That is correct fan topology, not a
+         * defect; the footprint is ~3/4 of the 44x44 quad. */
         s->vf_prim = R300_VAP_VF_CNTL__PRIM_TRIANGLE_FAN;
         s->num_vertices = 5;
         r2vb_set_vert(s->attrs[0], 32.0f, 32.0f);
@@ -526,7 +540,7 @@ static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r
         r2vb_set_vert(s->attrs[3], x1, y1);
         r2vb_set_vert(s->attrs[4], x0, y1);
         snprintf(s->expect, sizeof s->expect,
-                 "expect filled quad via fan: written~1936 bbox~10,10,53,53");
+                 "expect open 3-triangle fan (left wedge open): written~1452 bbox~10,10,53,53");
         return true;
     }
     if (strcmp(prim_name, "line_loop") == 0) {
