@@ -44,6 +44,16 @@ static const char* r300_get_device_vendor(struct pipe_screen* pscreen)
     return "ATI";
 }
 
+static bool r300_experimental_ati2n_enabled(void)
+{
+    const char *ati2n = getenv("R300_EXPERIMENTAL_ATI2N");
+
+    /* Literal 1 is required because this gate exposes unvalidated R300-class
+     * RGTC2 sampler behavior; unset, empty, 0, and boolean aliases stay off.
+     */
+    return ati2n && strcmp(ati2n, "1") == 0;
+}
+
 static const char* chip_families[] = {
     "unknown",
     "ATI R300",
@@ -337,13 +347,13 @@ static bool r300_is_format_supported(struct pipe_screen* screen,
 	 * Therefore disable both on r400 for now. Additionally, some online source
 	 * claim r300 can also do ATI2N.
 	 *
-	 * The R300_EXPERIMENTAL_ATI2N opt-in advertises ATI2N (RGTC2) sampler
-	 * support on R300-class parts so the silicon claim above can be tested:
+	 * R300_EXPERIMENTAL_ATI2N=1 advertises ATI2N (RGTC2) sampler support on
+	 * R300-class parts so the silicon claim above can be tested:
 	 * r300_translate_texformat already emits R400_TX_FORMAT_ATI2N
-	 * unconditionally, so only this gate stands between an RGTC2 texture and
-	 * the R300-class TMU. ATI1N stays r5xx-only to avoid the ATI1N-fallback
-	 * crash the comment describes. Unset (the default) keeps R300-class ATI2N
-	 * disabled, so default behavior is unchanged.
+	 * unconditionally, so only this exact-value gate stands between an RGTC2
+	 * texture and the R300-class TMU. ATI1N stays r5xx-only to avoid the
+	 * ATI1N-fallback crash the comment describes. Unset (the default), empty,
+	 * and 0 keep R300-class ATI2N disabled, so default behavior is unchanged.
 	 */
         (is_r500 ||
          (!is_r400 && is_ati2n && r300_screen(screen)->experimental_ati2n) ||
@@ -750,7 +760,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
 
     /* Read the experimental ATI2N opt-in once here rather than on every
      * r300_is_format_supported query for an RGTC2/LATC2 format. */
-    r300screen->experimental_ati2n = getenv("R300_EXPERIMENTAL_ATI2N") != NULL;
+    r300screen->experimental_ati2n = r300_experimental_ati2n_enabled();
 
     r300_hb_tcl_init(r300screen);
     r300_hb_r400_us_init(r300screen);
