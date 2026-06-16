@@ -35,7 +35,7 @@
 #include "util/u_inlines.h"
 
 
-/*XXX also in Xrender.h but the including it here breaks compilition */
+/*XXX also in Xrender.h but the including it here breaks compilation */
 #define XFixedToDouble(f)    (((double) (f)) / 65536.)
 
 struct xa_composite_blend {

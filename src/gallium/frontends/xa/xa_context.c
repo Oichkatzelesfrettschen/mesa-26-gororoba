@@ -331,7 +331,7 @@ xa_solid_prepare(struct xa_context *ctx, struct xa_surface *dst,
 #endif
 
     vs_traits = VS_SRC_SRC | VS_COMPOSITE;
-    fs_traits = FS_SRC_SRC | VS_COMPOSITE;
+    fs_traits = FS_SRC_SRC | FS_COMPOSITE;
 
     renderer_bind_destination(ctx, &ctx->srf);
     bind_solid_blend_state(ctx);
