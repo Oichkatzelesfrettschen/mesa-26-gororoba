@@ -956,16 +956,18 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * util_blitter), which scales, filters, and format-casts a region.
     * r300_is_blit_supported gates the resource layouts r300's blitter accepts
     * (plain, S3TC, RGTC).  A blit source is sampled, so BLIT_SRC needs
-    * PIPE_BIND_SAMPLER_VIEW; a blit destination is rendered, so BLIT_DST needs
-    * PIPE_BIND_RENDER_TARGET.  Pairing each bit with its bind keeps a
-    * sample-only format (a compressed layout, which r300 cannot render to)
-    * BLIT_SRC without falsely advertising BLIT_DST.  The replay samples the
-    * source as a texture, and r300vk tiles every optimal image at the sampler
-    * cap, so r300vk_replay_blit blits a source past the cap one in-cap tile at a
-    * time and honors the advertised maxImageDimension2D up to the 4096 floor. */
+    * PIPE_BIND_SAMPLER_VIEW; a blit destination is rendered and must also be
+    * creatable with VK_IMAGE_USAGE_TRANSFER_DST_BIT, because vkCmdBlitImage2
+    * requires that usage on the destination image.  Pairing each bit with the
+    * usage path keeps sample-only or CPU-transfer-limited formats out of
+    * unreachable BLIT_DST advertisements.  The replay samples the source as a
+    * texture, and r300vk tiles every optimal image at the sampler cap, so
+    * r300vk_replay_blit blits a source past the cap one in-cap tile at a time
+    * and honors the advertised maxImageDimension2D up to the 4096 floor. */
    if (supports_sampler_view && r300vk_format_blit_supported(pipe_format))
       image_features |= VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
-   if (supports_render_target && r300vk_format_blit_supported(pipe_format))
+   if (supports_render_target && r300vk_format_blit_supported(pipe_format) &&
+       r300vk_format_supports_transfer_dst(pipe_format))
       image_features |= VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
 
    /* Depth/stencil formats carry no buffer features: a VkBuffer cannot hold a

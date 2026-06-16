@@ -646,6 +646,21 @@ r300vk_blit_build_axis(int32_t d_lo, int32_t d_hi,
    }
 }
 
+static unsigned
+r300vk_blit_aspect_mask(VkImageAspectFlags aspect)
+{
+   unsigned mask = 0;
+
+   if (aspect & VK_IMAGE_ASPECT_COLOR_BIT)
+      mask |= PIPE_MASK_RGBA;
+   if (aspect & VK_IMAGE_ASPECT_DEPTH_BIT)
+      mask |= PIPE_MASK_Z;
+   if (aspect & VK_IMAGE_ASPECT_STENCIL_BIT)
+      mask |= PIPE_MASK_S;
+
+   return mask;
+}
+
 /* Replay one vkCmdBlitImage2 region on the GPU through pipe->blit.  A blit
  * scales and filters, which the CPU tile-copy paths do not, so r300_blit ->
  * util_blitter does the work; r300_blit saves and restores its own pipe state.
@@ -681,8 +696,10 @@ r300vk_replay_blit(struct r300vk_device *device,
 
    const enum pipe_format src_fmt = src->resource->format;
    const enum pipe_format dst_fmt = dst->resource->format;
-   const unsigned mask = util_format_is_depth_or_stencil(src_fmt) ? PIPE_MASK_ZS
-                                                                  : PIPE_MASK_RGBA;
+   const unsigned mask =
+      r300vk_blit_aspect_mask(b->region.srcSubresource.aspectMask);
+   if (!mask)
+      return;
    const enum pipe_tex_filter filter =
       b->filter == VK_FILTER_NEAREST ? PIPE_TEX_FILTER_NEAREST
                                      : PIPE_TEX_FILTER_LINEAR;
