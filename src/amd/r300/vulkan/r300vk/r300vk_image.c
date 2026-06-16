@@ -150,15 +150,15 @@ r300vk_image_create_tile_resources(struct r300vk_device *device,
     * keying the no-split shortcut on the linear bit collapsed every image
     * into one tile once the bit became universal, and a 4096 single tile is
     * unbindable as a framebuffer (r300_set_framebuffer_state refuses past
-    * 2560) -- zink's surfaceless backbuffer then renders into nothing.
-    * API-linear images stay effectively single-tile because their accept
-    * gate bounds the extent within one tile. */
+    * 2560) -- zink's surfaceless backbuffer then renders into nothing.  Linear
+    * and optimal images share the same spatial cuts, so render-pass replay sees
+    * one tile-origin grid across mixed tiling modes. */
    const bool is_linear = info->tiling == VK_IMAGE_TILING_LINEAR;
    {
       /* Bound a tile by the smaller of the sampler cap and the render limit so
        * every optimal tile can be both a blit source (sampled) and a render
        * target.  On r300-class the sampler cap (2048) is the smaller; on r500
-       * both are 4096. */
+       * the render limit can be the smaller. */
       const uint32_t max_tile =
          MIN2(device->screen->caps.max_texture_2d_size,
               R300VK_R3XX_MAX_RENDER_DIMENSION);

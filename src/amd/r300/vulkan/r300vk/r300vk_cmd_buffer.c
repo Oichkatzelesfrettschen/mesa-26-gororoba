@@ -191,6 +191,8 @@ r300vk_record_subpass_framebuffer(struct r300vk_cmd_buffer *cmd,
    const struct r300vk_subpass *sp = &rp->subpasses[subpass_idx];
 
    memset(&e->begin_rp, 0, sizeof(e->begin_rp));
+   e->begin_rp.render_area_offset_x = cmd->current_rp_offset_x;
+   e->begin_rp.render_area_offset_y = cmd->current_rp_offset_y;
    e->begin_rp.width  = cmd->current_rp_width;
    e->begin_rp.height = cmd->current_rp_height;
 
@@ -256,6 +258,8 @@ r300vk_record_begin_render_pass(struct r300vk_cmd_buffer *cmd,
 
    cmd->current_render_pass = rp;
    cmd->current_subpass     = 0;
+   cmd->current_rp_offset_x = pRenderPassBegin->renderArea.offset.x;
+   cmd->current_rp_offset_y = pRenderPassBegin->renderArea.offset.y;
    cmd->current_rp_width =
       pRenderPassBegin->renderArea.offset.x +
       pRenderPassBegin->renderArea.extent.width;
@@ -305,6 +309,10 @@ r300vk_record_end_render_pass(struct r300vk_cmd_buffer *cmd)
    e->type = R300VK_CMD_END_RENDER_PASS;
    cmd->current_color_image = NULL;
    cmd->current_render_pass = NULL;
+   cmd->current_rp_offset_x = 0;
+   cmd->current_rp_offset_y = 0;
+   cmd->current_rp_width = 0;
+   cmd->current_rp_height = 0;
 }
 
 void
@@ -456,6 +464,8 @@ r300vk_CmdBeginRendering(VkCommandBuffer commandBuffer,
       e->begin_rp.load_op[slot]      = load_op[slot];
       e->begin_rp.clear_color[slot]  = clear_color[slot];
    }
+   e->begin_rp.render_area_offset_x = area->offset.x;
+   e->begin_rp.render_area_offset_y = area->offset.y;
    e->begin_rp.width        = area->offset.x + area->extent.width;
    e->begin_rp.height       = area->offset.y + area->extent.height;
    e->begin_rp.ds_image      = ds_image;

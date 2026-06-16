@@ -1810,16 +1810,59 @@ r300vk_replay_bind_pipeline(struct r300vk_device *device,
    *vb_dirty = true;
 }
 
+static bool
+r300vk_begin_rp_clip_render_area(const struct r300vk_cmd_begin_render_pass *brp,
+                                 uint32_t tile_origin_x,
+                                 uint32_t tile_origin_y,
+                                 uint32_t tile_width,
+                                 uint32_t tile_height,
+                                 int64_t *clip_min_x,
+                                 int64_t *clip_min_y,
+                                 int64_t *clip_max_x,
+                                 int64_t *clip_max_y)
+{
+   const int64_t req_min_x = brp->render_area_offset_x;
+   const int64_t req_min_y = brp->render_area_offset_y;
+   const int64_t req_max_x = brp->width;
+   const int64_t req_max_y = brp->height;
+   const int64_t tile_min_x = tile_origin_x;
+   const int64_t tile_min_y = tile_origin_y;
+   const int64_t tile_max_x = tile_min_x + tile_width;
+   const int64_t tile_max_y = tile_min_y + tile_height;
+
+   *clip_min_x = MAX2(req_min_x, tile_min_x);
+   *clip_min_y = MAX2(req_min_y, tile_min_y);
+   *clip_max_x = MIN2(req_max_x, tile_max_x);
+   *clip_max_y = MIN2(req_max_y, tile_max_y);
+
+   return *clip_max_x > *clip_min_x && *clip_max_y > *clip_min_y;
+}
+
 /* Apply the begin load-op clears for a freshly bound render pass.  pipe->clear
  * paints one colour across every bound cbuf, so distinct per-attachment clear
  * colours go through clear_render_target per slot; depth/stencil uses
- * pipe->clear.  The common single-attachment case keeps the original combined
- * colour+ds clear so its CMASK fast-fill path is unchanged. */
+ * clear_depth_stencil for clipped rectangles.  The common single-attachment
+ * full-cell case keeps the combined colour+ds clear so its CMASK fast-fill path
+ * is unchanged. */
 static void
 r300vk_replay_begin_clears(struct pipe_context *pipe,
                            struct pipe_framebuffer_state *fb,
-                           const struct r300vk_cmd_begin_render_pass *brp)
+                           const struct r300vk_cmd_begin_render_pass *brp,
+                           uint32_t tile_origin_x,
+                           uint32_t tile_origin_y,
+                           uint32_t tile_width,
+                           uint32_t tile_height)
 {
+   int64_t clip_min_x = 0;
+   int64_t clip_min_y = 0;
+   int64_t clip_max_x = 0;
+   int64_t clip_max_y = 0;
+   if (!r300vk_begin_rp_clip_render_area(brp, tile_origin_x, tile_origin_y,
+                                         tile_width, tile_height,
+                                         &clip_min_x, &clip_min_y,
+                                         &clip_max_x, &clip_max_y))
+      return;
+
    unsigned ds_bits = 0;
    if (fb->zsbuf.texture && brp->ds_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
       ds_bits |= PIPE_CLEAR_DEPTH;
@@ -1830,8 +1873,13 @@ r300vk_replay_begin_clears(struct pipe_context *pipe,
    const bool single_color =
       fb->nr_cbufs == 1 && fb->cbufs[0].texture &&
       brp->load_op[0] == VK_ATTACHMENT_LOAD_OP_CLEAR;
+   const bool full_framebuffer =
+      clip_min_x == (int64_t)tile_origin_x &&
+      clip_min_y == (int64_t)tile_origin_y &&
+      clip_max_x == (int64_t)tile_origin_x + fb->width &&
+      clip_max_y == (int64_t)tile_origin_y + fb->height;
 
-   if (single_color) {
+   if (single_color && full_framebuffer) {
       union pipe_color_union cv;
       memcpy(cv.f, brp->clear_color[0].float32, sizeof(cv.f));
       pipe->clear(pipe, PIPE_CLEAR_COLOR0 | ds_bits, 0xF, 0, NULL, &cv,
@@ -1840,19 +1888,61 @@ r300vk_replay_begin_clears(struct pipe_context *pipe,
    }
 
    for (uint32_t slot = 0; slot < brp->color_count; slot++) {
-      if (!fb->cbufs[slot].texture ||
+      const struct r300vk_image *img = brp->color_image[slot];
+      if (!img || !fb->cbufs[slot].texture ||
           brp->load_op[slot] != VK_ATTACHMENT_LOAD_OP_CLEAR)
          continue;
+
+      uint32_t attachment_tile_origin_x = 0;
+      uint32_t attachment_tile_origin_y = 0;
+      uint32_t attachment_remaining_width = 0;
+      uint32_t attachment_remaining_height = 0;
+      struct pipe_resource *tile_resource =
+         r300vk_image_tile_resource_for_origin(img, tile_origin_x,
+                                               tile_origin_y,
+                                               &attachment_tile_origin_x,
+                                               &attachment_tile_origin_y,
+                                               &attachment_remaining_width,
+                                               &attachment_remaining_height);
+      if (!tile_resource || tile_resource != fb->cbufs[slot].texture ||
+          clip_min_x < (int64_t)attachment_tile_origin_x ||
+          clip_min_y < (int64_t)attachment_tile_origin_y)
+         continue;
+
       union pipe_color_union cv;
       memcpy(cv.f, brp->clear_color[slot].float32, sizeof(cv.f));
       pipe->clear_render_target(pipe, &fb->cbufs[slot], &cv,
-                                0, 0, fb->width, fb->height, false);
+                                (unsigned)(clip_min_x -
+                                           attachment_tile_origin_x),
+                                (unsigned)(clip_min_y -
+                                           attachment_tile_origin_y),
+                                (unsigned)(clip_max_x - clip_min_x),
+                                (unsigned)(clip_max_y - clip_min_y),
+                                false);
    }
-   if (ds_bits) {
-      union pipe_color_union cv;
-      memset(&cv, 0, sizeof(cv));
-      pipe->clear(pipe, ds_bits, 0xF, 0, NULL, &cv,
-                  brp->clear_depth, brp->clear_stencil);
+   if (ds_bits && brp->ds_image) {
+      uint32_t ds_tile_origin_x = 0;
+      uint32_t ds_tile_origin_y = 0;
+      uint32_t ds_remaining_width = 0;
+      uint32_t ds_remaining_height = 0;
+      struct pipe_resource *ds_resource =
+         r300vk_image_tile_resource_for_origin(brp->ds_image, tile_origin_x,
+                                               tile_origin_y,
+                                               &ds_tile_origin_x,
+                                               &ds_tile_origin_y,
+                                               &ds_remaining_width,
+                                               &ds_remaining_height);
+      if (ds_resource && ds_resource == fb->zsbuf.texture &&
+          clip_min_x >= (int64_t)ds_tile_origin_x &&
+          clip_min_y >= (int64_t)ds_tile_origin_y) {
+         pipe->clear_depth_stencil(pipe, &fb->zsbuf, ds_bits,
+                                   brp->clear_depth, brp->clear_stencil,
+                                   (unsigned)(clip_min_x - ds_tile_origin_x),
+                                   (unsigned)(clip_min_y - ds_tile_origin_y),
+                                   (unsigned)(clip_max_x - clip_min_x),
+                                   (unsigned)(clip_max_y - clip_min_y),
+                                   false);
+      }
    }
 }
 
@@ -1906,6 +1996,14 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
          *skip_render_pass = true;
          return;
       }
+      /* One replay cell has one viewport and scissor translation.  Binding an
+       * attachment tile with a different local origin would route writes to the
+       * wrong pixels inside that attachment. */
+      if (attachment_tile_origin_x != *tile_origin_x ||
+          attachment_tile_origin_y != *tile_origin_y) {
+         *skip_render_pass = true;
+         return;
+      }
       *tile_width = MIN2(*tile_width, attachment_remaining_width);
       *tile_height = MIN2(*tile_height, attachment_remaining_height);
    }
@@ -1922,6 +2020,11 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
                                         &ds_tile_origin_y,
                                         &ds_remaining_width,
                                         &ds_remaining_height)) {
+         *skip_render_pass = true;
+         return;
+      }
+      if (ds_tile_origin_x != *tile_origin_x ||
+          ds_tile_origin_y != *tile_origin_y) {
          *skip_render_pass = true;
          return;
       }
@@ -1994,6 +2097,11 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
          *skip_render_pass = true;
          goto out_release_dummy_cbufs;
       }
+      if (attachment_tile_origin_x != *tile_origin_x ||
+          attachment_tile_origin_y != *tile_origin_y) {
+         *skip_render_pass = true;
+         goto out_release_dummy_cbufs;
+      }
       fb.cbufs[slot].format      = e->begin_rp.color_format[slot];
       fb.cbufs[slot].level       = 0;
       fb.cbufs[slot].first_layer = 0;
@@ -2015,6 +2123,11 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
                                                &ds_remaining_width,
                                                &ds_remaining_height);
       if (fb.zsbuf.texture) {
+         if (ds_tile_origin_x != *tile_origin_x ||
+             ds_tile_origin_y != *tile_origin_y) {
+            *skip_render_pass = true;
+            goto out_release_dummy_cbufs;
+         }
          fb.zsbuf.format      = e->begin_rp.ds_format;
          fb.zsbuf.level       = 0;
          fb.zsbuf.first_layer = 0;
@@ -2022,7 +2135,9 @@ r300vk_replay_begin_render_pass(struct r300vk_device *device,
       }
    }
    pipe->set_framebuffer_state(pipe, &fb);
-   r300vk_replay_begin_clears(pipe, &fb, &e->begin_rp);
+   r300vk_replay_begin_clears(pipe, &fb, &e->begin_rp,
+                              *tile_origin_x, *tile_origin_y,
+                              *tile_width, *tile_height);
 
 out_release_dummy_cbufs:
    for (uint32_t slot = 0; slot < ARRAY_SIZE(dummy_cbufs); slot++)
