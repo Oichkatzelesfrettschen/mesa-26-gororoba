@@ -337,7 +337,7 @@ xa_src_in_mask(float src[4], const float mask[4])
  * \param src_pict[in]: Pointer to the union xa_source_pict to consider.
  * \param is_mask[in]: Whether we're considering a mask picture.
  *
- * \returns true if succesful, false otherwise.
+ * \returns true if successful, false otherwise.
  *
  * This function computes some xa_context state used to determine whether
  * to upload the solid color and also the solid color itself used as an input
