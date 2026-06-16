@@ -684,15 +684,18 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
      * degenerate triangles to minimise rasterisation, isolating the transform +
      * fetch + submit cost) and skips the stage-3 readback, so the timer reflects
      * the direct-VAP path at scale rather than a readable picture.  The producer
-     * embeds vertices in a 3D_DRAW_IMMD packet whose PKT3 size field is 14 bits,
-     * so num_vertices * 8 must stay under 0x3FFF -- cap throughput N at 2047.
-     * Otherwise build a canonical shape; an unknown prim is a hard error. */
+     * embeds vertices in a 3D_DRAW_IMMD packet, so the whole loop -- base
+     * registers plus num_vertices * 8 vertex dwords -- must fit one IB.  Near the
+     * 14-bit PKT3 size limit the IB overflows (a 2047-vertex run faulted), so cap
+     * throughput N at 1024; reaching larger N is the vertex-array-producer
+     * increment, not embedded IMMD.  Otherwise build a canonical shape; an unknown
+     * prim is a hard error. */
     const float (*attrs)[4];
     uint32_t vf_prim, nverts;
     float (*heap_attrs)[4] = NULL;
     struct r2vb_shape shape;
     if (strcmp(cfg.prim_name, "throughput") == 0) {
-        nverts = cfg.num_vertices > 2047 ? 2047 : cfg.num_vertices;
+        nverts = cfg.num_vertices > 1024 ? 1024 : cfg.num_vertices;
         heap_attrs = malloc((size_t)nverts * sizeof(*heap_attrs));
         if (!heap_attrs)
             return false;
