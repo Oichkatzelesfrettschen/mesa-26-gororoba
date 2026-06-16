@@ -982,7 +982,7 @@ r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data,
    struct pipe_context *pipe = device->pipe;
    const uint8_t *bind_data = data;
    if (int_word_mask) {
-      memcpy(scratch, data, 128);
+      memcpy(scratch, data, R300VK_MAX_PUSH_CONSTANTS_SIZE);
       for (unsigned w = 0; w < 32; w++) {
          if (!(int_word_mask & (1u << w)))
             continue;
@@ -996,7 +996,7 @@ r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data,
    struct pipe_constant_buffer cb;
    memset(&cb, 0, sizeof(cb));
    cb.user_buffer = bind_data;
-   cb.buffer_size = 128;
+   cb.buffer_size = R300VK_MAX_PUSH_CONSTANTS_SIZE;
    pipe->set_constant_buffer(pipe, MESA_SHADER_VERTEX, 0, &cb);
    pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
 }
@@ -1785,7 +1785,7 @@ r300vk_replay_draw(struct r300vk_device *device,
        * the shader-chosen (set, binding) rather than the first UBO in layout. */
       /* pc_scratch holds the int->float-converted push window; it must outlive
        * the draw_vbo below (set_constant_buffer reads user_buffer directly). */
-      uint8_t pc_scratch[128];
+      uint8_t pc_scratch[R300VK_MAX_PUSH_CONSTANTS_SIZE];
       if (bound_pipeline && bound_pipeline->uses_push_constants)
          r300vk_bind_push_constants(device, push_const,
                                     bound_pipeline->push_const_int_word_mask,

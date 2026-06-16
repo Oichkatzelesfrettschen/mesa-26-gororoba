@@ -20,12 +20,34 @@
 #include "vk_format.h"
 #include "vk_log.h"
 #include "vk_object.h"
+#include "vk_pipeline_layout.h"
 #include "vk_util.h"
 
 #include <string.h>
 #include <stdlib.h>
 
 #define R300VK_CMD_INITIAL_CAP 64
+
+static bool
+r300vk_push_constants_stage_range_supported(const struct vk_pipeline_layout *layout,
+                                            VkShaderStageFlags stage_flags,
+                                            uint32_t offset,
+                                            uint32_t size)
+{
+   if (!layout || layout->push_range_count != 1)
+      return false;
+
+   const VkPushConstantRange *range = &layout->push_ranges[0];
+   const uint64_t update_start = offset;
+   const uint64_t update_end = update_start + size;
+   const uint64_t range_start = range->offset;
+   const uint64_t range_end = range_start + range->size;
+
+   if (update_start < range_start || update_end > range_end)
+      return false;
+
+   return stage_flags == range->stageFlags;
+}
 
 static struct r300vk_cmd_entry *
 r300vk_cmd_append(struct r300vk_cmd_buffer *cmd)
@@ -942,11 +964,12 @@ r300vk_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
 /* Record a push-constant window update into the entry stream.  vk_common forwards
  * CmdPushConstants to this driver base entrypoint, so leaving it unimplemented
  * makes the call jump to a NULL dispatch slot (SIGSEGV).  Replay applies these in
- * order into a running 128-byte buffer that a push-constants-only pipeline binds
- * at CONST[0] (r300vk_bind_push_constants); a pipeline that reads both push
- * constants and a UBO is rejected at compile, since r300's single constant file
- * cannot host both.  Stage flags do not separate storage -- r300 has one constant
- * file per stage fed from the same window. */
+ * order into the running maxPushConstantsSize buffer that a push-constants-only
+ * pipeline binds at CONST[0] (r300vk_bind_push_constants); a pipeline that reads
+ * both push constants and a UBO is rejected at compile, since r300's single
+ * constant file cannot host both.  r300vk accepts one push-constant range and
+ * records only updates whose stage flags match that range, so replay never
+ * broadens a subset-stage update across the shared window. */
 void
 r300vk_CmdPushConstants(VkCommandBuffer commandBuffer,
                         VkPipelineLayout layout,
@@ -956,18 +979,19 @@ r300vk_CmdPushConstants(VkCommandBuffer commandBuffer,
                         const void *pValues)
 {
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
-   /* layout/stageFlags do not separate storage: r300 has one constant file per
-    * stage fed from the same window, so the bytes land in one buffer. */
-   (void)layout;
-   (void)stageFlags;
-   struct r300vk_cmd_push_constants tmp;
    /* A zero-size update may pass pValues == NULL, and memcpy(dst, NULL, 0) is
-    * undefined behavior; guard it.  128 == advertised maxPushConstantsSize; ignore
-    * an out-of-window write rather than overflow the fixed entry payload. */
+    * undefined behavior; guard it.  Ignore an out-of-window write rather than
+    * overflow the fixed entry payload. */
    if (size == 0 || pValues == NULL)
       return;
-   if ((uint64_t)offset + size > sizeof(tmp.data))
+   if ((uint64_t)offset + size > R300VK_MAX_PUSH_CONSTANTS_SIZE)
       return;
+
+   VK_FROM_HANDLE(vk_pipeline_layout, pc_layout, layout);
+   if (!r300vk_push_constants_stage_range_supported(pc_layout, stageFlags,
+                                                    offset, size))
+      return;
+
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
    e->type                  = R300VK_CMD_PUSH_CONSTANTS;
