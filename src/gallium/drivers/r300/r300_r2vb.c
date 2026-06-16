@@ -135,17 +135,19 @@ static void r2vb_report_bo_a_diagnostic(struct r300_context *r300, struct pipe_r
 void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        struct r300_resource *output_gart_bo,
                                        uint32_t output_gart_bo_offset, uint32_t num_vertices,
+                                       const float (*vertex_attrs)[4], uint32_t reingest_vf_prim,
                                        struct r300_resource *stage3_color_bo, uint32_t stage3_width,
                                        uint32_t stage3_height)
 {
     CS_LOCALS(r300);
 
     assert(num_vertices > 0 && num_vertices <= 65535);
+    assert(vertex_attrs != NULL);
     assert(r300->screen->caps.num_vert_fpus == 0);
     assert(!r300->screen->caps.has_tcl);
     assert(!stage3_color_bo || (stage3_width > 0 && stage3_height > 0));
 
-    if (num_vertices == 0 || num_vertices > 65535)
+    if (num_vertices == 0 || num_vertices > 65535 || !vertex_attrs)
         return;
     if (r300->screen->caps.has_tcl || r300->screen->caps.num_vert_fpus != 0)
         return;
@@ -193,7 +195,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     struct r300_fragment_shader *r2vb_fs = r300_fs(r300);
     struct rc_constant_list *r2vb_consts =
         r2vb_fs && r2vb_fs->shader ? &r2vb_fs->shader->code.constants : NULL;
-    unsigned r2vb_vp_override_dwords = 0;
+    /* Consumed only by the BEGIN_CS size assert (MESA_DEBUG builds); marked
+     * UNUSED so a no-assert build does not warn on the dead accumulator. */
+    UNUSED unsigned r2vb_vp_override_dwords = 0;
     if (r2vb_consts) {
         for (unsigned i = 0; i < r2vb_consts->Count; i++) {
             unsigned t = r2vb_consts->Constants[i].Type;
@@ -348,26 +352,25 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
            R300_VAP_VF_CNTL__PRIM_POINTS);
     for (uint32_t pv = 0; pv < num_vertices; pv++) {
-        /* Stream 0: position = slot pv's pixel centre (window coords, w = 1). */
+        /* Stream 0: position = slot pv's pixel centre (window coords, w = 1).
+         * One producer point per output slot indexes one BO row, regardless of
+         * the topology the re-ingest draw later assembles from those rows. */
         OUT_CS_32F((float)pv + 0.5f);
         OUT_CS_32F(0.5f);
         OUT_CS_32F(0.0f);
         OUT_CS_32F(1.0f);
-        /* Stream 1: the synthesized vertex this slot carries (flat attribute).
-         * For the probe this is a triangle in window coords; the passthrough
-         * fragment program writes it to the BO slot.  The US_OUT_FMT C4_32_FP
-         * BGRA channel-select stores the fragment as memory=(o.b,o.g,o.r,o.a),
-         * and stage 2 re-ingests memory order as the vertex (x,y,z,w).  So the
-         * attribute must be pre-swizzled to (z,y,x,w): o.r=z, o.g=y, o.b=x,
-         * o.a=w -> memory=(x,y,z,w).  Emitting (x,y,z,w) instead would store the
-         * vertex x in memory[2] and put z(=0.5) in memory[0], collapsing every
-         * re-ingested vertex's X to 0.5 (a degenerate vertical line). */
-        float a = pv >= 1 ? 1.0f : 0.0f;
-        float b = pv >= 2 ? 1.0f : 0.0f;
-        OUT_CS_32F(0.5f);                            /* o.r = z */
-        OUT_CS_32F(10.0f + b * 44.0f);               /* o.g = y */
-        OUT_CS_32F(10.0f + a * 44.0f - b * 22.0f);   /* o.b = x */
-        OUT_CS_32F(1.0f);                            /* o.a = w */
+        /* Stream 1: the caller's window-space vertex for this slot (flat
+         * attribute).  The passthrough fragment program writes it to the BO row.
+         * The US_OUT_FMT C4_32_FP BGRA channel-select stores the fragment as
+         * memory=(o.b,o.g,o.r,o.a), and stage 2 re-ingests memory order as the
+         * vertex (x,y,z,w).  So the attribute is pre-swizzled to (z,y,x,w):
+         * o.r=z, o.g=y, o.b=x, o.a=w -> memory=(x,y,z,w).  Emitting (x,y,z,w)
+         * directly would store x in memory[2] and z in memory[0], collapsing
+         * every re-ingested vertex's X to z. */
+        OUT_CS_32F(vertex_attrs[pv][2]);   /* o.r = z */
+        OUT_CS_32F(vertex_attrs[pv][1]);   /* o.g = y */
+        OUT_CS_32F(vertex_attrs[pv][0]);   /* o.b = x */
+        OUT_CS_32F(vertex_attrs[pv][3]);   /* o.a = w */
     }
 
     /* Stage 2 -- the full cb_flush_clean barrier (r300_context.c / r300_emit_
@@ -416,11 +419,11 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
            (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
            (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
            (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) | (0xf << R300_WRITE_ENA_SHIFT));
-    /* Re-assert the vertex-index bound for the re-ingest draw.  Stage 1 set
-     * VAP_VF_MAX_VTX_INDX to 2 for its three-vertex covering triangle; stage 3
-     * draws num_vertices vertices from the GTT array, so an inherited bound of 2
-     * clamps every index above 2 and the DRAW_VBUF fetches a degenerate vertex
-     * set that rasterizes nothing.  Bound it to the actual highest index. */
+    /* Re-assert the vertex-index bound for the re-ingest draw.  VAP_VF_MAX_VTX_
+     * INDX clamps every fetched index; a stale lower bound (from an inherited
+     * draw or a smaller producer) would fold high-index vertices onto a low one
+     * and rasterize a degenerate set.  The re-ingest draws all num_vertices GTT
+     * rows, so bound it to the actual highest index. */
     OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
     OUT_CS_PKT3(R300_PACKET3_3D_LOAD_VBPNTR, 3);
     OUT_CS(1 | R300_VC_FORCE_PREFETCH);
@@ -430,8 +433,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     OUT_CS(0xc0001000); /* PKT3_NOP -- the relocation form LOAD_VBPNTR expects */
     OUT_CS(r300->rws->cs_lookup_buffer(&r300->cs, output_gart_bo->buf) * 4);
     OUT_CS_PKT3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
-    OUT_CS((num_vertices << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) |
-           R300_VAP_VF_CNTL__PRIM_TRIANGLES | R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
+    OUT_CS((num_vertices << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) | reingest_vf_prim |
+           R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
 
     END_CS;
 }
@@ -454,14 +457,137 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
  * append the loop to an empty CS with no shader bound.  The capture and the
  * submit therefore decode and time the same composed IB.  It fires once per
  * process and returns true when it consumed the CS, so the caller skips its own
- * flush.  R300_R2VB_NVERTS sets the count, clamped below 2^16 (the SWTCL VAP
- * NUM_VERTICES field width). */
+ * flush.  R300_R2VB_PRIM selects the re-ingest topology and its canonical shape
+ * (points|lines|line_strip|line_loop|triangles|triangle_strip|triangle_fan;
+ * default triangles); R300_R2VB_NVERTS scales the POINTS shape's count, clamped
+ * below 2^16 (the SWTCL VAP NUM_VERTICES field width). */
+/* A canonical re-ingest shape: the window-space vertices the producer writes and
+ * the topology the stage-3 draw assembles from them, with a predicted footprint
+ * the framebuffer oracle confirms.  Every shape lives in the [10,54] window-coord
+ * box so a 64-wide stage-3 readback captures it whole.  This exercises the
+ * generalized producer -- arbitrary vertex data and arbitrary topology -- rather
+ * than the single baked triangle the proof started from. */
+#define R2VB_MAX_SHAPE_VERTS 64
+struct r2vb_shape {
+    uint32_t num_vertices;
+    uint32_t vf_prim; /* R300_VAP_VF_CNTL__PRIM_* */
+    float attrs[R2VB_MAX_SHAPE_VERTS][4];
+    const char *prim_name;
+    char expect[160];
+};
+
+/* Fill one window-space vertex row (x, y in pixels; z = 0.5, w = 1). */
+static void r2vb_set_vert(float row[4], float x, float y)
+{
+    row[0] = x;
+    row[1] = y;
+    row[2] = 0.5f;
+    row[3] = 1.0f;
+}
+
+/* Build the shape for prim_name (default "triangles"); pts_count sizes the only
+ * count-scalable topology, POINTS.  The corners of a 44x44 box at (10,10) anchor
+ * every filled/outline shape so the predicted footprint is a clean function of
+ * the topology.  Returns false for an unknown primitive name. */
+static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r2vb_shape *s)
+{
+    const float x0 = 10.0f, y0 = 10.0f, x1 = 54.0f, y1 = 54.0f; /* 44x44 box */
+    s->prim_name = prim_name;
+
+    if (strcmp(prim_name, "triangles") == 0) {
+        s->vf_prim = R300_VAP_VF_CNTL__PRIM_TRIANGLES;
+        s->num_vertices = 3;
+        r2vb_set_vert(s->attrs[0], x0, y0);
+        r2vb_set_vert(s->attrs[1], x1, y0);
+        r2vb_set_vert(s->attrs[2], 32.0f, y1);
+        snprintf(s->expect, sizeof s->expect,
+                 "expect filled triangle: written~968 (0.5*44*44) bbox~10,10,53,52");
+        return true;
+    }
+    if (strcmp(prim_name, "triangle_strip") == 0) {
+        /* TL,TR,BL,BR -> two triangles tiling the full 44x44 quad. */
+        s->vf_prim = R300_VAP_VF_CNTL__PRIM_TRIANGLE_STRIP;
+        s->num_vertices = 4;
+        r2vb_set_vert(s->attrs[0], x0, y0);
+        r2vb_set_vert(s->attrs[1], x1, y0);
+        r2vb_set_vert(s->attrs[2], x0, y1);
+        r2vb_set_vert(s->attrs[3], x1, y1);
+        snprintf(s->expect, sizeof s->expect,
+                 "expect filled quad: written~1936 (44*44) bbox~10,10,53,53");
+        return true;
+    }
+    if (strcmp(prim_name, "triangle_fan") == 0) {
+        /* centre + 4 ring corners -> fan tiling the same quad. */
+        s->vf_prim = R300_VAP_VF_CNTL__PRIM_TRIANGLE_FAN;
+        s->num_vertices = 5;
+        r2vb_set_vert(s->attrs[0], 32.0f, 32.0f);
+        r2vb_set_vert(s->attrs[1], x0, y0);
+        r2vb_set_vert(s->attrs[2], x1, y0);
+        r2vb_set_vert(s->attrs[3], x1, y1);
+        r2vb_set_vert(s->attrs[4], x0, y1);
+        snprintf(s->expect, sizeof s->expect,
+                 "expect filled quad via fan: written~1936 bbox~10,10,53,53");
+        return true;
+    }
+    if (strcmp(prim_name, "line_loop") == 0) {
+        s->vf_prim = R300_VAP_VF_CNTL__PRIM_LINE_LOOP;
+        s->num_vertices = 4;
+        r2vb_set_vert(s->attrs[0], x0, y0);
+        r2vb_set_vert(s->attrs[1], x1, y0);
+        r2vb_set_vert(s->attrs[2], x1, y1);
+        r2vb_set_vert(s->attrs[3], x0, y1);
+        snprintf(s->expect, sizeof s->expect,
+                 "expect rect outline: written~176 (perimeter 4*44) bbox~10,10,53,53");
+        return true;
+    }
+    if (strcmp(prim_name, "line_strip") == 0) {
+        s->vf_prim = R300_VAP_VF_CNTL__PRIM_LINE_STRIP;
+        s->num_vertices = 4;
+        r2vb_set_vert(s->attrs[0], x0, y0);
+        r2vb_set_vert(s->attrs[1], x1, y0);
+        r2vb_set_vert(s->attrs[2], x1, y1);
+        r2vb_set_vert(s->attrs[3], x0, y1);
+        snprintf(s->expect, sizeof s->expect,
+                 "expect open polyline (3 segments) bbox~10,10,53,53");
+        return true;
+    }
+    if (strcmp(prim_name, "lines") == 0) {
+        /* two independent horizontal segments. */
+        s->vf_prim = R300_VAP_VF_CNTL__PRIM_LINES;
+        s->num_vertices = 4;
+        r2vb_set_vert(s->attrs[0], x0, y0);
+        r2vb_set_vert(s->attrs[1], x1, y0);
+        r2vb_set_vert(s->attrs[2], x0, y1);
+        r2vb_set_vert(s->attrs[3], x1, y1);
+        snprintf(s->expect, sizeof s->expect,
+                 "expect 2 horizontal segments (top+bottom) bbox~10,10,53,53");
+        return true;
+    }
+    if (strcmp(prim_name, "points") == 0) {
+        /* N points spaced along the box diagonal; the count-scalable case.  Keep
+         * adjacent points >= 1 px apart so each lands on its own texel. */
+        uint32_t n = pts_count < 2 ? 2 : pts_count;
+        if (n > 45)
+            n = 45; /* 44/(45-1)=1.0 px spacing floor */
+        s->vf_prim = R300_VAP_VF_CNTL__PRIM_POINTS;
+        s->num_vertices = n;
+        float step = (x1 - x0) / (float)(n - 1);
+        for (uint32_t i = 0; i < n; i++)
+            r2vb_set_vert(s->attrs[i], x0 + step * (float)i, y0 + step * (float)i);
+        snprintf(s->expect, sizeof s->expect,
+                 "expect %u points on diagonal: written~%u bbox~10,10,53,53", n, n);
+        return true;
+    }
+    return false;
+}
+
 struct r2vb_selftest_config {
     bool enabled;
     bool do_submit;
     bool observe;
     uint32_t num_vertices;
     uint32_t s3dim;
+    const char *prim_name;
 };
 
 static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
@@ -474,7 +600,14 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
 
     cfg->do_submit = (mode && strcmp(mode, "submit") == 0);
 
-    cfg->num_vertices = 64;
+    /* R300_R2VB_PRIM selects the re-ingest topology and its canonical shape
+     * (default triangles -- the proven baseline).  R300_R2VB_NVERTS scales only
+     * the POINTS shape; the filled/outline shapes fix their own vertex count. */
+    cfg->prim_name = getenv("R300_R2VB_PRIM");
+    if (!cfg->prim_name)
+        cfg->prim_name = "triangles";
+
+    cfg->num_vertices = 16;
     const char *nv = getenv("R300_R2VB_NVERTS");
     if (nv) {
         long v = strtol(nv, NULL, 0);
@@ -513,6 +646,20 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         }
     }
 
+    /* Build the canonical shape for the chosen topology; its vertex count drives
+     * the BO size and the producer.  An unknown R300_R2VB_PRIM is a hard error,
+     * not a silent fall back to triangles. */
+    struct r2vb_shape shape;
+    if (!r2vb_build_shape(cfg.prim_name, cfg.num_vertices, &shape)) {
+        fprintf(stderr, "r2vb selftest: unknown R300_R2VB_PRIM=%s (want points|lines|"
+                        "line_strip|line_loop|triangles|triangle_strip|triangle_fan)\n",
+                cfg.prim_name);
+        return false;
+    }
+    cfg.num_vertices = shape.num_vertices;
+    fprintf(stderr, "r2vb_shape prim=%s nverts=%u %s\n", shape.prim_name, shape.num_vertices,
+            shape.expect);
+
     struct pipe_resource *res = r2vb_create_selftest_bo(r300, align(cfg.num_vertices, 2) * 16, 0);
     if (!res)
         return false;
@@ -527,8 +674,9 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
     }
 
     fired = true;
-    r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, cfg.num_vertices,
-                                      stage3 ? r300_resource(stage3) : NULL, cfg.s3dim, cfg.s3dim);
+    r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, cfg.num_vertices, shape.attrs,
+                                      shape.vf_prim, stage3 ? r300_resource(stage3) : NULL,
+                                      cfg.s3dim, cfg.s3dim);
 
     r300_emit_hyperz_end(r300);
     r300_emit_query_end(r300);

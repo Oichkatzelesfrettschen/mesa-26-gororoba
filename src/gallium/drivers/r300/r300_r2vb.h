@@ -24,6 +24,16 @@ struct r300_resource;
  * A PVS-bank proof route would only replace that stage-1 producer; the barrier
  * and re-ingest half stay the same.
  *
+ * vertex_attrs is the per-slot window-space vertex the producer writes: one
+ * (x, y, z, w) row per output slot, num_vertices rows.  x and y are pre-divided
+ * window coordinates (the re-ingest draws under VTX_XY_FMT), z in [0,1], w = 1.
+ * The producer stores each row through the BGRA C4_32_FP color path, so it
+ * pre-swizzles the row to (z, y, x, w) on emit; the caller passes natural
+ * (x, y, z, w).  reingest_vf_prim is the raw VAP_VF_CNTL primitive field for the
+ * stage-3 draw (R300_VAP_VF_CNTL__PRIM_*), so the same producer drives any
+ * topology -- points, lines, line strips/loops, triangles, strips, and fans --
+ * the count and the topology are caller data, not baked into the loop.
+ *
  * stage3_color_bo is an optional separate 2D target: when non-NULL the stage-3
  * re-ingested draw renders into it (stage3_width x stage3_height) instead of
  * overwriting output_gart_bo, so a CPU readback of stage3_color_bo evidences the
@@ -38,6 +48,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        struct r300_resource *output_gart_bo,
                                        uint32_t output_gart_bo_offset,
                                        uint32_t num_vertices,
+                                       const float (*vertex_attrs)[4],
+                                       uint32_t reingest_vf_prim,
                                        struct r300_resource *stage3_color_bo,
                                        uint32_t stage3_width,
                                        uint32_t stage3_height);
