@@ -472,7 +472,8 @@ bind_samplers(struct xa_context *ctx,
 	src_sampler.min_mip_filter = PIPE_TEX_MIPFILTER_NEAREST;
 	samplers[0] = &src_sampler;
 	u_sampler_view_default_template(&view_templ,
-					src_pic->srf->tex,+					src_pic->srf->tex->format);
+					src_pic->srf->tex,
+					src_pic->srf->tex->format);
 	src_view = pipe->create_sampler_view(pipe, src_pic->srf->tex,
 					     &view_templ);
 	ctx->bound_sampler_views[0] = src_view;
@@ -480,7 +481,7 @@ bind_samplers(struct xa_context *ctx,
     }
 
     if (mask_pic && !ctx->has_solid_mask) {
-        unsigned mask_wrap = xa_repeat_to_gallium(mask_pic->wrap);
+	unsigned mask_wrap = xa_repeat_to_gallium(mask_pic->wrap);
 	int filter;
 
 	(void) xa_filter_to_gallium(mask_pic->filter, &filter);
@@ -489,15 +490,15 @@ bind_samplers(struct xa_context *ctx,
 	mask_sampler.wrap_t = mask_wrap;
 	mask_sampler.min_img_filter = filter;
 	mask_sampler.mag_img_filter = filter;
-	src_sampler.min_mip_filter = PIPE_TEX_MIPFILTER_NEAREST;
-        samplers[num_samplers] = &mask_sampler;
+	mask_sampler.min_mip_filter = PIPE_TEX_MIPFILTER_NEAREST;
+	samplers[num_samplers] = &mask_sampler;
 	u_sampler_view_default_template(&view_templ,
 					mask_pic->srf->tex,
 					mask_pic->srf->tex->format);
 	src_view = pipe->create_sampler_view(pipe, mask_pic->srf->tex,
 					     &view_templ);
-        ctx->bound_sampler_views[num_samplers] = src_view;
-        num_samplers++;
+	ctx->bound_sampler_views[num_samplers] = src_view;
+	num_samplers++;
     }
 
     cso_set_samplers(ctx->cso, MESA_SHADER_FRAGMENT, num_samplers,
