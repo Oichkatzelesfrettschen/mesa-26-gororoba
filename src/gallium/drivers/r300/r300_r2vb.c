@@ -213,8 +213,11 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * the stage-3 VF_MAX_VTX_INDX re-assert adds two.  The stage-3 color-target
      * switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 + the
      * SC_SCISSORS pair).  The identity-wpos override adds five dwords per
-     * viewport state constant the bound FS carries. */
-    BEGIN_CS((stage3_color_bo ? 73 : 64) + r2vb_vp_override_dwords);
+     * viewport state constant the bound FS carries.  The stage-1 producer draw
+     * now embeds num_vertices points (num_vertices*4 dwords) where the base
+     * counts assumed three triangle vertices (twelve dwords). */
+    BEGIN_CS((stage3_color_bo ? 73 : 64) + r2vb_vp_override_dwords +
+             (int)num_vertices * 4 - 12);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -306,14 +309,18 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * rasterizer never runs, and the GTT color BO reads back all zero. */
     OUT_CS_REG(R300_SU_CULL_MODE, 0);
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
-    /* Self-supplied covering geometry.  Declare one FP32x4 position stream with
-     * pre-divided window coordinates (VTX_XY_FMT), then emit a single covering
-     * triangle (0,0),(2*num_vertices,0),(0,2) in-IB via 3D_DRAW_IMMD.  At the
-     * num_vertices x 1 scissor that triangle rasterizes every slot exactly, so
-     * the bound wpos fragment program writes its synthesized vertex into each
-     * BO slot from gl_FragCoord regardless of what the caller last drew.  The
-     * embedded vertices need no relocation -- they travel in the command stream
-     * -- so this draw is independent of any vertex-array BO.
+    /* Self-supplied producer geometry: one POINT per output slot.  Declare one
+     * FP32x4 position stream with pre-divided window coordinates (VTX_XY_FMT),
+     * then emit num_vertices points at (slot+0.5, 0.5) in-IB via 3D_DRAW_IMMD.
+     * A covering triangle was the first attempt, but the bound FS's gl_FragCoord
+     * (reconstructed wpos) interpolates FLAT across a triangle, collapsing every
+     * fragment to one vertex's window position, so every BO slot received the
+     * same synthesized vertex.  One point per slot makes each fragment its own
+     * primitive at its own pixel: gl_FragCoord = that point's window position
+     * (slot+0.5) even under flat shading, so the wpos producer writes a distinct
+     * synthesized vertex per slot.  The embedded vertices need no relocation --
+     * they travel in the command stream -- so this draw is independent of any
+     * vertex-array BO.
      *
      * Disable clipping (R300_CLIP_DISABLE), as r300_blitter_draw_rectangle does
      * for its immediate-mode draw: with VTX_XY_FMT the vertices are pre-divided
@@ -329,22 +336,16 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
            (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
            (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
            (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) | (0xf << R300_WRITE_ENA_SHIFT));
-    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, 2);
-    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, 3 * 4);
-    OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (3 << 16) |
-           R300_VAP_VF_CNTL__PRIM_TRIANGLES);
-    OUT_CS_32F(0.0f);
-    OUT_CS_32F(0.0f);
-    OUT_CS_32F(0.0f);
-    OUT_CS_32F(1.0f);
-    OUT_CS_32F((float)(2 * num_vertices));
-    OUT_CS_32F(0.0f);
-    OUT_CS_32F(0.0f);
-    OUT_CS_32F(1.0f);
-    OUT_CS_32F(0.0f);
-    OUT_CS_32F(2.0f);
-    OUT_CS_32F(0.0f);
-    OUT_CS_32F(1.0f);
+    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
+    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * 4);
+    OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
+           R300_VAP_VF_CNTL__PRIM_POINTS);
+    for (uint32_t pv = 0; pv < num_vertices; pv++) {
+        OUT_CS_32F((float)pv + 0.5f); /* window x = centre of slot pv's pixel */
+        OUT_CS_32F(0.5f);             /* window y = row 0 centre */
+        OUT_CS_32F(0.0f);             /* z */
+        OUT_CS_32F(1.0f);             /* w (VTX_XY_FMT pre-divided, w = 1) */
+    }
 
     /* Stage 2 -- the full cb_flush_clean barrier (r300_context.c / r300_emit_
      * gpu_flush).  Flush+free the ZB zcache and the RB3D dstcache tags, then halt
