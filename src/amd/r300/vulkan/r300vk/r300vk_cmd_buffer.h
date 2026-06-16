@@ -78,6 +78,8 @@ struct r300vk_cmd_begin_render_pass {
    VkAttachmentLoadOp    load_op[PIPE_MAX_COLOR_BUFS];
    VkClearColorValue     clear_color[PIPE_MAX_COLOR_BUFS];
    enum pipe_format      color_format[PIPE_MAX_COLOR_BUFS];
+   int32_t               render_area_offset_x;
+   int32_t               render_area_offset_y;
    uint32_t              width;
    uint32_t              height;
    /* Depth/stencil attachment; NULL when the pass has none, in which case
@@ -478,6 +480,8 @@ struct r300vk_cmd_buffer {
     * CmdEndRenderPass; drives binding each subpass's own framebuffer. */
    const struct r300vk_render_pass  *current_render_pass;
    uint32_t                          current_subpass;
+   int32_t                           current_rp_offset_x;
+   int32_t                           current_rp_offset_y;
    uint32_t                          current_rp_width;
    uint32_t                          current_rp_height;
    struct r300vk_resolved_attachment current_attachments[PIPE_MAX_COLOR_BUFS + 1];
