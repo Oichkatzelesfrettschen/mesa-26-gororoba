@@ -944,28 +944,45 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
     if (!r300->velems || r300->velems->count == 0)
         return false;
 
-    /* Neutralise EVERY user-buffer slot, not just the referenced ones:
-     * r300_emit_buffer_validate (reached via PREP_VALIDATE_VBOS) iterates all
-     * vertex_buffer[0..nr_vertex_buffers] and adds buffer.resource, but for a
-     * user buffer the union aliases a CPU pointer, so an unreferenced stale user
-     * slot would feed a garbage resource to cs_add_buffer.  Upload referenced
-     * user buffers to a BO; NULL out unreferenced user slots so the validate
-     * loop skips them.  Real-BO slots are left as-is. */
-    for (unsigned vbi = 0; vbi < nvb; vbi++) {
+    /* r300_emit_buffer_validate (reached via PREP_VALIDATE_VBOS) iterates ALL of
+     * vertex_buffer[0..nr_vertex_buffers] and adds buffer.resource.  In the SWTCL
+     * context that array carries user buffers (the union aliases a CPU pointer)
+     * and stale slots from earlier binds (a dangling resource whose ->buf is
+     * NULL), either of which faults cs_add_buffer.  So normalise every slot the
+     * loop will touch: a velem-referenced user buffer is uploaded to a BO; every
+     * UNREFERENCED slot is NULLed so the validate loop skips it.  Velem-referenced
+     * real-BO slots are left as-is (they carry a valid ->buf).  Restored after. */
+    bool referenced[PIPE_MAX_ATTRIBS] = {0};
+    unsigned ref_stride[PIPE_MAX_ATTRIBS] = {0};
+    for (unsigned i = 0; i < r300->velems->count; i++) {
+        unsigned vbi = r300->velems->velem[i].vertex_buffer_index;
+        if (vbi >= nvb)
+            return false; /* element points outside the bound buffers */
+        referenced[vbi] = true;
+        ref_stride[vbi] = MAX2(ref_stride[vbi], r300->velems->velem[i].src_stride);
+    }
+
+    for (unsigned vbi = 0; vbi < nvb && ok; vbi++) {
         struct pipe_vertex_buffer *vb = &r300->vertex_buffer[vbi];
-        if (!vb->is_user_buffer)
-            continue; /* real BO or empty slot */
-        unsigned stride = 0;
-        for (unsigned i = 0; i < r300->velems->count; i++)
-            if (r300->velems->velem[i].vertex_buffer_index == vbi)
-                stride = MAX2(stride, r300->velems->velem[i].src_stride);
 
-        saved[vbi] = *vb;
-        swapped[vbi] = true;
-        any_swap = true;
+        if (!referenced[vbi]) {
+            if (vb->is_user_buffer || vb->buffer.resource) {
+                saved[vbi] = *vb;
+                swapped[vbi] = true;
+                any_swap = true;
+                vb->is_user_buffer = false;
+                vb->buffer_offset = 0;
+                vb->buffer.resource = NULL;
+            }
+            continue;
+        }
 
-        if (stride && vb->buffer.user) {
-            unsigned size = vb->buffer_offset + (draw->start + draw->count) * stride;
+        if (vb->is_user_buffer) {
+            if (!vb->buffer.user || !ref_stride[vbi]) {
+                ok = false;
+                break;
+            }
+            unsigned size = vb->buffer_offset + (draw->start + draw->count) * ref_stride[vbi];
             unsigned out_off = 0;
             struct pipe_resource *out_res = NULL;
             /* _ref so out_res gains a reference we own; the CS keeps its own via
@@ -975,15 +992,17 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                 ok = false;
                 break;
             }
+            saved[vbi] = *vb;
+            swapped[vbi] = true;
+            any_swap = true;
             uploaded[vbi] = out_res;
             vb->is_user_buffer = false;
             vb->buffer_offset = out_off + saved[vbi].buffer_offset;
             vb->buffer.resource = out_res;
-        } else {
-            /* Unreferenced (or empty) user slot: make the validate loop skip it. */
-            vb->is_user_buffer = false;
-            vb->buffer_offset = 0;
-            vb->buffer.resource = NULL;
+        } else if (!vb->buffer.resource || !r300_resource(vb->buffer.resource)->buf) {
+            /* Referenced slot with no real BO -- cannot re-ingest; fall back. */
+            ok = false;
+            break;
         }
     }
 
