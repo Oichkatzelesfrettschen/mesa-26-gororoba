@@ -261,12 +261,91 @@ r300vk_DestroyQueryPool(VkDevice _device,
    vk_query_pool_destroy(&device->vk, pAllocator, pool);
 }
 
+static bool
+r300vk_query_result_host_slot_in_bounds(uint32_t query_index,
+                                        VkDeviceSize stride,
+                                        unsigned result_size,
+                                        unsigned per_query,
+                                        bool write_availability,
+                                        size_t data_size,
+                                        size_t *byte_offset)
+{
+   if (stride > SIZE_MAX)
+      return false;
+   if (stride && query_index > SIZE_MAX / (size_t)stride)
+      return false;
+
+   const size_t offset = (size_t)query_index * (size_t)stride;
+   const size_t mapped_span = write_availability ? per_query : result_size;
+   if (mapped_span > data_size || offset > data_size - mapped_span)
+      return false;
+
+   *byte_offset = offset;
+   return true;
+}
+
+static void
+r300vk_store_query_result_word(uint8_t *dst, unsigned result_size,
+                               uint64_t value)
+{
+   if (result_size == sizeof(uint64_t)) {
+      const uint64_t v = value;
+      memcpy(dst, &v, sizeof(v));
+   } else {
+      const uint32_t v = (uint32_t)value;
+      memcpy(dst, &v, sizeof(v));
+   }
+}
+
+static bool
+r300vk_get_query_pool_result_one(uint8_t *data,
+                                 size_t data_size,
+                                 VkDeviceSize stride,
+                                 uint32_t dst_index,
+                                 const struct r300vk_query *query,
+                                 unsigned result_size,
+                                 unsigned per_query,
+                                 bool write_availability,
+                                 bool force_result,
+                                 bool wait,
+                                 VkResult *slot_result)
+{
+   const bool available = query->available;
+   const bool write_result = available || force_result;
+   *slot_result = (!available && !wait) ? VK_NOT_READY : VK_SUCCESS;
+
+   if (!write_result && !write_availability)
+      return true;
+
+   size_t byte_off;
+   if (!data ||
+       !r300vk_query_result_host_slot_in_bounds(dst_index, stride,
+                                                result_size, per_query,
+                                                write_availability,
+                                                data_size, &byte_off)) {
+      *slot_result = VK_NOT_READY;
+      return false;
+   }
+
+   uint8_t *slot = data + byte_off;
+   if (write_result)
+      r300vk_store_query_result_word(slot, result_size,
+                                     available ? query->result : 0);
+   if (write_availability)
+      r300vk_store_query_result_word(slot + result_size, result_size,
+                                     available ? 1 : 0);
+
+   return true;
+}
+
 /* Copy occlusion results recorded by the replay into the caller's buffer.  Each
  * query writes a result word (32- or 64-bit per VK_QUERY_RESULT_64_BIT) at
  * pData + i*stride, optionally followed by an availability word
- * (VK_QUERY_RESULT_WITH_AVAILABILITY_BIT).  The serialized CPU-replay queue
- * retires every submitted query before the host returns, so VK_QUERY_RESULT_WAIT
- * never blocks; an unavailable slot is one reset but never ended. */
+ * (VK_QUERY_RESULT_WITH_AVAILABILITY_BIT).  The range and host-buffer layout
+ * are clamped defensively before indexing either side.  The serialized
+ * CPU-replay queue retires every submitted query before the host returns, so
+ * VK_QUERY_RESULT_WAIT never blocks; an unavailable slot is one reset but never
+ * ended. */
 VkResult
 r300vk_GetQueryPoolResults(VkDevice _device,
                            VkQueryPool _pool,
@@ -282,40 +361,31 @@ r300vk_GetQueryPoolResults(VkDevice _device,
    struct r300vk_query_pool *pool = r300vk_query_pool(vk_pool);
    const bool b64        = (flags & VK_QUERY_RESULT_64_BIT) != 0;
    const bool want_avail = (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != 0;
+   const bool force_result = (flags & (VK_QUERY_RESULT_PARTIAL_BIT |
+                                       VK_QUERY_RESULT_WAIT_BIT)) != 0;
+   const bool wait = (flags & VK_QUERY_RESULT_WAIT_BIT) != 0;
    const unsigned rsize  = b64 ? sizeof(uint64_t) : sizeof(uint32_t);
+   const unsigned per_query = rsize * (want_avail ? 2u : 1u);
    VkResult result = VK_SUCCESS;
    (void)device;
-   (void)dataSize;
+
+   if (firstQuery >= vk_pool->query_count || queryCount == 0)
+      return VK_SUCCESS;
+   if (queryCount > vk_pool->query_count - firstQuery)
+      queryCount = vk_pool->query_count - firstQuery;
 
    for (uint32_t i = 0; i < queryCount; i++) {
       const struct r300vk_query *q = &pool->queries[firstQuery + i];
-      const bool available = q->available;
-      uint8_t *slot = (uint8_t *)pData + (size_t)i * stride;
-
-      /* Write the result word when the query is available, when the caller
-       * accepts a partial result, or when it asked to wait (never blocks here). */
-      if (available || (flags & (VK_QUERY_RESULT_PARTIAL_BIT |
-                                 VK_QUERY_RESULT_WAIT_BIT))) {
-         const uint64_t value = available ? q->result : 0;
-         if (b64) {
-            const uint64_t v = value;
-            memcpy(slot, &v, sizeof(v));
-         } else {
-            const uint32_t v = (uint32_t)value;
-            memcpy(slot, &v, sizeof(v));
-         }
+      VkResult slot_result = VK_SUCCESS;
+      if (!r300vk_get_query_pool_result_one(pData, dataSize, stride, i, q,
+                                            rsize, per_query, want_avail,
+                                            force_result, wait,
+                                            &slot_result)) {
+         result = slot_result;
+         break;
       }
-      if (want_avail) {
-         if (b64) {
-            const uint64_t v = available ? 1 : 0;
-            memcpy(slot + rsize, &v, sizeof(v));
-         } else {
-            const uint32_t v = available ? 1u : 0u;
-            memcpy(slot + rsize, &v, sizeof(v));
-         }
-      }
-      if (!available && !(flags & VK_QUERY_RESULT_WAIT_BIT))
-         result = VK_NOT_READY;
+      if (slot_result != VK_SUCCESS)
+         result = slot_result;
    }
    return result;
 }
