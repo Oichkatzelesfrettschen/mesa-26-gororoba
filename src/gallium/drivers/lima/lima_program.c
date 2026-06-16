@@ -182,10 +182,14 @@ lima_alu_to_scalar_filter_cb(const nir_instr *instr, const void *data)
    case nir_op_bany_inequal3:
    case nir_op_bany_inequal4:
    case nir_op_frcp:
-   /* nir_op_idiv is lowered to frcp by lower_int_to_floats which
-    * will be run later, so lower idiv here
+   /* Integer division and remainder ops lower to fdiv/frcp by
+    * nir_lower_int_to_float, so scalarize them before that pass runs.
     */
    case nir_op_idiv:
+   case nir_op_udiv:
+   case nir_op_irem:
+   case nir_op_imod:
+   case nir_op_umod:
    case nir_op_frsq:
    case nir_op_flog2:
    case nir_op_fexp2:
