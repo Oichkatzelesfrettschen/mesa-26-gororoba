@@ -981,33 +981,54 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
             continue;
         }
 
+        /* Determine the vertex data source for this referenced slot:
+         *  - a user buffer: the CPU pointer directly;
+         *  - a real-BO resource (->buf set): used as-is, no upload;
+         *  - a CPU-only resource (malloced_buffer, ->buf NULL): r300's SWTCL path
+         *    keeps real-resource vertex buffers as a CPU shadow with no winsys BO
+         *    (r300_set_vertex_buffers_swtcl), which is what r300vk binds; upload
+         *    that shadow.
+         * Anything else cannot be re-ingested -> fall back. */
+        const void *cpu_src = NULL;
+        bool real_bo = false;
         if (vb->is_user_buffer) {
-            if (!vb->buffer.user || !ref_stride[vbi]) {
-                if (getenv("R300_R2VB_ROUTE_DEBUG")) fprintf(stderr,"r2vb_passthrough_fallback reason=user_no_data vbi=%u\n",vbi);
-                ok = false; break;
-            }
-            unsigned size = vb->buffer_offset + (draw->start + draw->count) * ref_stride[vbi];
-            unsigned out_off = 0;
-            struct pipe_resource *out_res = NULL;
-            /* _ref so out_res gains a reference we own; the CS keeps its own via
-             * cs_add_buffer during the emit, so dropping ours afterward is safe. */
-            u_upload_data_ref(r300->uploader, 0, size, 4, vb->buffer.user, &out_off, &out_res);
-            if (!out_res) {
-                ok = false;
-                break;
-            }
-            saved[vbi] = *vb;
-            swapped[vbi] = true;
-            any_swap = true;
-            uploaded[vbi] = out_res;
-            vb->is_user_buffer = false;
-            vb->buffer_offset = out_off + saved[vbi].buffer_offset;
-            vb->buffer.resource = out_res;
-        } else if (!vb->buffer.resource || !r300_resource(vb->buffer.resource)->buf) {
-            /* Referenced slot with no real BO -- cannot re-ingest; fall back. */
-            if (getenv("R300_R2VB_ROUTE_DEBUG")) fprintf(stderr,"r2vb_passthrough_fallback reason=ref_no_bo vbi=%u res=%p user=%d nvb=%u\n",vbi,(void*)vb->buffer.resource,vb->is_user_buffer,nvb);
-            ok = false; break;
+            cpu_src = vb->buffer.user;
+        } else if (vb->buffer.resource) {
+            struct r300_resource *rr = r300_resource(vb->buffer.resource);
+            if (rr->buf)
+                real_bo = true;
+            else
+                cpu_src = rr->malloced_buffer;
         }
+
+        if (real_bo)
+            continue; /* already a BO; the validate loop will add it */
+
+        if (!cpu_src || !ref_stride[vbi]) {
+            if (getenv("R300_R2VB_ROUTE_DEBUG"))
+                fprintf(stderr, "r2vb_passthrough_fallback reason=no_cpu_src vbi=%u res=%p user=%d\n",
+                        vbi, (void *)vb->buffer.resource, vb->is_user_buffer);
+            ok = false;
+            break;
+        }
+
+        unsigned size = vb->buffer_offset + (draw->start + draw->count) * ref_stride[vbi];
+        unsigned out_off = 0;
+        struct pipe_resource *out_res = NULL;
+        /* _ref so out_res gains a reference we own; the CS keeps its own via
+         * cs_add_buffer during the emit, so dropping ours afterward is safe. */
+        u_upload_data_ref(r300->uploader, 0, size, 4, cpu_src, &out_off, &out_res);
+        if (!out_res) {
+            ok = false;
+            break;
+        }
+        saved[vbi] = *vb;
+        swapped[vbi] = true;
+        any_swap = true;
+        uploaded[vbi] = out_res;
+        vb->is_user_buffer = false;
+        vb->buffer_offset = out_off + saved[vbi].buffer_offset;
+        vb->buffer.resource = out_res;
     }
 
     if (ok) {
