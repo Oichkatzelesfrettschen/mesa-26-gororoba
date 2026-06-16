@@ -1,3 +1,4 @@
+# Maintainer: mesa-26-gororoba maintainers
 # mesa-gororoba: a system Mesa replacement build from the mesa-26-gororoba fork.
 # It installs the r300 Gallium GL driver, the zink GL-on-Vulkan Gallium
 # driver, the XA/Xv 2D-acceleration state tracker (libxatracker), and the
@@ -40,7 +41,7 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=12
+pkgrel=13
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
@@ -56,10 +57,8 @@ depends=(
   wayland zlib zstd vulkan-icd-loader
 )
 makedepends=(
-  clang llvm meson ninja glslang spirv-tools python-mako python-ply
-  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
-  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
-  git
+  clang llvm meson ninja glslang python-mako python-ply wayland-protocols
+  libxrandr xorgproto libxml2 lld git
 )
 provides=(
   "mesa=${epoch}:${pkgver}-${pkgrel}"
@@ -176,7 +175,7 @@ package() {
   # Compatibility aliases for older build-infra and local scripts.  Release
   # artifacts live in the system Mesa prefix; debug artifacts keep their own
   # opt prefix.  /usr/share/mesa-26-gororoba is NOT aliased to /usr: it is a real
-  # directory holding the staged xorg.conf.d sample (see below), and a symlink
+  # directory holding the staged xorg.conf.d sample installed above; a symlink
   # there would land the sample at /usr/xorg through the link and drop the
   # directory.
   install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share"
