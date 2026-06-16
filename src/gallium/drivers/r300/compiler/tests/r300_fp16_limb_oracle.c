@@ -77,6 +77,8 @@ test_domain_catalog(void)
       r300_numeric_domain_info(R300_NUM_DOMAIN_U7_DOT);
    const struct r300_numeric_domain_info *u7_conv5 =
       r300_numeric_domain_info(R300_NUM_DOMAIN_U7_CONV5);
+   const struct r300_numeric_domain_info *u8_offgrid =
+      r300_numeric_domain_info(R300_NUM_DOMAIN_U8_OFFGRID);
 
    CHECK(u7_dot->exact_int_bound == 64516,
          "catalog: U7 dot exact bound covers four terms");
@@ -84,25 +86,29 @@ test_domain_catalog(void)
          "catalog: U7 conv5 exact bound covers five terms");
    CHECK(u7_conv5->rounding == R300_ROUND_EXACT,
          "catalog: U7 conv5 is exact");
+   CHECK(u8_offgrid->exact_int_bound == 131072,
+         "catalog: U8 offgrid exact subset covers the FP24 integer window");
 
    const struct r300_virtual_op_info *multilimb = NULL;
-   unsigned non_null_retained_bundles = 0;
+   const struct r300_virtual_op_info *signed_dp4 = NULL;
    for (unsigned op_index = 0; r300_virtual_op_catalog[op_index].op_name; op_index++) {
       const struct r300_virtual_op_info *op = &r300_virtual_op_catalog[op_index];
       if (strcmp(op->op_name, "MULTILIMB7_U32_MUL") == 0)
          multilimb = op;
-      if (op->retained_bundle != NULL) {
-         printf("FAIL catalog: %s retained_bundle must be NULL\n", op->op_name);
-         non_null_retained_bundles++;
-      }
+      if (strcmp(op->op_name, "DP4_INT8_SIGNED_CARRIER_PENDING") == 0)
+         signed_dp4 = op;
    }
 
    CHECK(multilimb != NULL,
          "catalog: MULTILIMB7_U32_MUL row exists");
    CHECK(multilimb != NULL && multilimb->domain == R300_NUM_DOMAIN_U7_CONV5,
          "catalog: MULTILIMB7_U32_MUL uses five-term U7 domain");
-   CHECK(non_null_retained_bundles == 0,
-         "catalog: retained external evidence identifiers are not shipped");
+   CHECK(signed_dp4 != NULL,
+         "catalog: signed DP4 carrier-pending row exists");
+   CHECK(signed_dp4 != NULL && signed_dp4->status == R300_VOP_CARRIER_PENDING,
+         "catalog: signed DP4 does not advertise a dispatch carrier");
+   CHECK(signed_dp4 != NULL && signed_dp4->mesa_hook == NULL,
+         "catalog: signed DP4 has no Mesa dispatch hook until its carrier exists");
 }
 
 /* -------------------------------------------------------------------------
