@@ -33,6 +33,7 @@
 #include "r300_context.h"
 #include "r300_cs.h"
 #include "r300_emit.h"
+#include "r300_fs.h"
 #include "r300_r2vb.h"
 #include "r300_reg.h"
 
@@ -176,6 +177,34 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                      RADEON_PRIO_COLOR_BUFFER,
                                  RADEON_DOMAIN_GTT);
 
+    /* Identity wpos for the window-coord covering triangle.  Stage 1 rasterizes
+     * a VTX_XY_FMT (pre-divided window-coord) covering triangle, but the bound
+     * fragment program's gl_FragCoord reconstruction (rc_transform_fragment_wpos)
+     * computes window = clip.xy/clip.w * VIEWPORT_SCALE + VIEWPORT_OFFSET,
+     * re-applying the trigger draw's viewport.  That collapses gl_FragCoord to a
+     * constant across the few covered pixels, so every BO slot receives the same
+     * synthesized vertex.  Override the two viewport state constants with
+     * scale = 1, offset = 0 so the reconstruction is identity and gl_FragCoord
+     * is the true window position, indexing one BO slot per pixel.  Immediates
+     * precede the state constants, so the physical slots are not fixed: scan the
+     * bound FS's constant list for them (the same list r300_emit_fs_rc_constant_
+     * state walks).  A wpos-free producer has none and the loop emits no
+     * override. */
+    struct r300_fragment_shader *r2vb_fs = r300_fs(r300);
+    struct rc_constant_list *r2vb_consts =
+        r2vb_fs && r2vb_fs->shader ? &r2vb_fs->shader->code.constants : NULL;
+    unsigned r2vb_vp_override_dwords = 0;
+    if (r2vb_consts) {
+        for (unsigned i = 0; i < r2vb_consts->Count; i++) {
+            unsigned t = r2vb_consts->Constants[i].Type;
+            unsigned s = r2vb_consts->Constants[i].u.State[0];
+            if (t == RC_CONSTANT_STATE &&
+                (s == RC_STATE_R300_VIEWPORT_SCALE ||
+                 s == RC_STATE_R300_VIEWPORT_OFFSET))
+                r2vb_vp_override_dwords += 5; /* OUT_CS_REG_SEQ(reg,4) = 5 dwords */
+        }
+    }
+
     /* 64 dwords for the single-BO loop: stage 1 = 43, stage 2 = 6, stage 3 = 15.
      * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
      * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
@@ -183,8 +212,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * vertices (twelve dwords); SU_CULL_MODE and SC_CLIP_RULE add four dwords;
      * the stage-3 VF_MAX_VTX_INDX re-assert adds two.  The stage-3 color-target
      * switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 + the
-     * SC_SCISSORS pair). */
-    BEGIN_CS(stage3_color_bo ? 73 : 64);
+     * SC_SCISSORS pair).  The identity-wpos override adds five dwords per
+     * viewport state constant the bound FS carries. */
+    BEGIN_CS((stage3_color_bo ? 73 : 64) + r2vb_vp_override_dwords);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -240,6 +270,31 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * vertex (x,y,z,w) from memory order (b,g,r,a).  Stage 3 inherits this. */
     OUT_CS_REG(R300_US_OUT_FMT_0, R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
                                       R300_C2_SEL_R | R300_C3_SEL_A);
+    /* Identity wpos: override the bound FS's VIEWPORT_SCALE (-> 1) and
+     * VIEWPORT_OFFSET (-> 0) state constants at their physical slots so
+     * gl_FragCoord = the window position the covering triangle rasterizes, one
+     * BO slot per pixel.  Non-r500 FS constants are FP24 PFS_PARAM registers at
+     * R300_PFS_PARAM_0_X + slot*16; the wpos MAD reads .xyz0 so the w lane is
+     * a don't-care. */
+    if (r2vb_consts) {
+        for (unsigned i = 0; i < r2vb_consts->Count; i++) {
+            const struct rc_constant *c = &r2vb_consts->Constants[i];
+            float v;
+            if (c->Type != RC_CONSTANT_STATE)
+                continue;
+            if (c->u.State[0] == RC_STATE_R300_VIEWPORT_SCALE)
+                v = 1.0f;
+            else if (c->u.State[0] == RC_STATE_R300_VIEWPORT_OFFSET)
+                v = 0.0f;
+            else
+                continue;
+            OUT_CS_REG_SEQ(R300_PFS_PARAM_0_X + i * 16, 4);
+            OUT_CS(pack_float24(v));
+            OUT_CS(pack_float24(v));
+            OUT_CS(pack_float24(v));
+            OUT_CS(pack_float24(v));
+        }
+    }
     /* Re-assert the two GA->RE primitive-reject gates the caller's last draw
      * leaves in an unknown state.  SU_CULL_MODE (0x42B8) is cleared so neither
      * winding is culled -- the covering triangle's winding is fixed here, not by
