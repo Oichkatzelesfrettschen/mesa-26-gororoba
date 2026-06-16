@@ -167,7 +167,10 @@ declare_const_ubo(nir_shader *s, unsigned num_slots)
  * the sampler region of the shader variant key.  A zero count leaves the key
  * region un-zeroed on the stack, giving garbage format values and an assertion
  * failure in lp_build_sample_soa.  Populate the bitsets here for every sampler
- * uniform variable, mirroring gl_nir_lower_samplers_as_deref. */
+ * uniform variable, mirroring gl_nir_lower_samplers_as_deref.  Then lower the
+ * sampler derefs so llvmpipe sees the binding through instr->texture_index and
+ * instr->sampler_index instead of defaulting every deref-backed texture op to
+ * unit 0. */
 static void
 finalize(struct pipe_context *pipe, nir_builder *b, unsigned num_const_slots)
 {
@@ -184,6 +187,8 @@ finalize(struct pipe_context *pipe, nir_builder *b, unsigned num_const_slots)
             BITSET_SET_COUNT(b->shader->info.samplers_used, var->data.binding, count);
         }
     }
+
+    NIR_PASS(_, b->shader, nir_lower_samplers);
 
     if (pipe->screen->finalize_nir)
         pipe->screen->finalize_nir(pipe->screen, b->shader, true);
