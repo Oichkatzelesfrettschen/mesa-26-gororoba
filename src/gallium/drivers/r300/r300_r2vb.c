@@ -1523,6 +1523,12 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     r300_mark_atom_dirty(r300, &r300->scissor_state);
     r300_mark_atom_dirty(r300, &r300->viewport_state);
     r300_mark_atom_dirty(r300, &r300->dsa_state);
+    /* rs_state carries VAP_CLIP_CNTL, SU_CULL_MODE, and SC_CLIP_RULE, which the
+     * producer hand-rolled to CLIP_DISABLE / no-cull / pass-all.  Re-emit the
+     * application rasterizer state so those do not pollute the re-ingest in the
+     * same command stream (without this the triangle rasterizes far too large --
+     * a flush between the passes masks it, but that defeats the route). */
+    r300_mark_atom_dirty(r300, &r300->rs_state);
     r300->vertex_arrays_dirty = true;
     if (r300_r2vb_prepare_states(r300, 32)) {
         CS_LOCALS(r300);
