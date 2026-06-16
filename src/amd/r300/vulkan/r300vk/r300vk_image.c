@@ -368,7 +368,7 @@ r300vk_CreateImage(VkDevice _device,
    if (result != VK_SUCCESS)
       return result;
 
-   enum pipe_format pipe_fmt;
+   enum pipe_format pipe_fmt = PIPE_FORMAT_NONE;
    VkImageUsageFlags supported_usage;
    result = r300vk_image_resolve_format_usage(device, pCreateInfo, is_linear,
                                               &pipe_fmt, &supported_usage);

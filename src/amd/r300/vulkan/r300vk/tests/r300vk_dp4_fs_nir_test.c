@@ -80,6 +80,36 @@ count_alu_op(nir_shader *s, nir_op op)
    return n;
 }
 
+static const nir_alu_instr *
+find_color_store_vec4(nir_shader *s)
+{
+   const nir_alu_instr *store_vec = NULL;
+   unsigned store_count = 0;
+
+   nir_foreach_function_impl(impl, s) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref ||
+                !intr->src[1].ssa)
+               continue;
+
+            const nir_alu_instr *alu =
+               nir_def_as_alu_or_null(intr->src[1].ssa);
+            if (alu && alu->op == nir_op_vec4) {
+               store_vec = alu;
+               store_count++;
+            }
+         }
+      }
+   }
+
+   return store_count == 1 ? store_vec : NULL;
+}
+
 int
 main(void)
 {
@@ -108,6 +138,17 @@ main(void)
                "components=%u: two 2D tex ops, each a 2-component coord",
                widths[i]);
       CHECK(tex == 2 && bad == 0, name);
+
+      snprintf(name, sizeof(name),
+               "components=%u: dot is truncated before byte-pack",
+               widths[i]);
+      CHECK(count_alu_op(s, nir_op_ftrunc) == 1, name);
+
+      const nir_alu_instr *color = find_color_store_vec4(s);
+      snprintf(name, sizeof(name),
+               "components=%u: RGBA8 output carries four computed bytes",
+               widths[i]);
+      CHECK(color && !nir_src_is_const(color->src[3].src), name);
 
       ralloc_free(s);
    }
