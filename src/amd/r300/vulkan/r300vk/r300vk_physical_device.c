@@ -91,10 +91,10 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    props->maxTexelBufferElements = 65536;
 
    /* PS constant store: R300_PFS_PARAM_0..31 yields 32 vec4 slots, or
-    * 512 bytes.  The Vulkan minimum maxUniformBufferRange is 16384,
+    * 512 bytes.  The Vulkan minimum maxUniformBufferRange is 16 KiB,
     * so we round up to that bound; the descriptor binding still maps
     * down to the hardware 32 slots. */
-   props->maxUniformBufferRange = 16384;
+   props->maxUniformBufferRange = R300VK_VK10_MIN_UNIFORM_BUFFER_RANGE;
 
    /* SSBO size advertise.  R3xx has no native SSBO; the compute-as-raster
     * substrate maps stores to RB3D color export backed by the radeon GART.
