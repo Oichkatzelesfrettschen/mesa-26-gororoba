@@ -33,6 +33,7 @@
 #include "util/format/u_formats.h"
 #include "pipe-loader/pipe_loader.h"
 #include "frontend/drm_driver.h"
+#include "util/macros.h"
 #include "util/u_inlines.h"
 
 /*
@@ -81,15 +82,52 @@ static const unsigned int stype_bind[XA_LAST_SURFACE_TYPE] = { 0,
     PIPE_BIND_SAMPLER_VIEW
 };
 
+static const struct xa_format_descriptor fixed_pipe_formats[] = {
+    { .format = PIPE_FORMAT_B8G8R8A8_UNORM,
+      .xa_format = xa_format_a8r8g8b8 },
+    { .format = PIPE_FORMAT_B8G8R8X8_UNORM,
+      .xa_format = xa_format_x8r8g8b8 },
+    { .format = PIPE_FORMAT_B5G6R5_UNORM,
+      .xa_format = xa_format_r5g6b5 },
+    { .format = PIPE_FORMAT_B5G5R5A1_UNORM,
+      .xa_format = xa_format_x1r5g5b5 },
+    { .format = PIPE_FORMAT_B4G4R4A4_UNORM,
+      .xa_format = xa_format_a4r4g4b4 },
+    { .format = PIPE_FORMAT_R10G10B10A2_UNORM,
+      .xa_format = xa_format_a2b10g10r10 },
+    { .format = PIPE_FORMAT_R10G10B10X2_UNORM,
+      .xa_format = xa_format_x2b10g10r10 },
+    { .format = PIPE_FORMAT_A8R8G8B8_UNORM,
+      .xa_format = xa_format_b8g8r8a8 },
+    { .format = PIPE_FORMAT_X8R8G8B8_UNORM,
+      .xa_format = xa_format_b8g8r8x8 },
+    { .format = PIPE_FORMAT_Z24X8_UNORM,
+      .xa_format = xa_format_z24 },
+    { .format = PIPE_FORMAT_Z16_UNORM,
+      .xa_format = xa_format_z16 },
+    { .format = PIPE_FORMAT_Z32_UNORM,
+      .xa_format = xa_format_z32 },
+    { .format = PIPE_FORMAT_Z24X8_UNORM,
+      .xa_format = xa_format_x8z24 },
+    { .format = PIPE_FORMAT_X8Z24_UNORM,
+      .xa_format = xa_format_z24x8 },
+    { .format = PIPE_FORMAT_Z24_UNORM_S8_UINT,
+      .xa_format = xa_format_s8z24 },
+    { .format = PIPE_FORMAT_S8_UINT_Z24_UNORM,
+      .xa_format = xa_format_z24s8 },
+};
+
 static struct xa_format_descriptor
 xa_get_pipe_format(struct xa_tracker *xa, enum xa_formats xa_format)
 {
-    struct xa_format_descriptor fdesc;
+    struct xa_format_descriptor fdesc = {
+        .format = PIPE_FORMAT_NONE,
+        .xa_format = xa_format_unknown,
+    };
 
     fdesc.xa_format = xa_format;
 
-    switch (xa_format) {
-    case xa_format_a8:
+    if (xa_format == xa_format_a8) {
         if (xa->screen->is_format_supported(xa->screen, PIPE_FORMAT_R8_UNORM,
                                             PIPE_TEXTURE_2D, 0, 0,
                                             stype_bind[xa_type_a] |
@@ -97,73 +135,35 @@ xa_get_pipe_format(struct xa_tracker *xa, enum xa_formats xa_format)
             fdesc.format = PIPE_FORMAT_R8_UNORM;
         else
             fdesc.format = PIPE_FORMAT_L8_UNORM;
-	break;
-    case xa_format_a8r8g8b8:
-	fdesc.format = PIPE_FORMAT_B8G8R8A8_UNORM;
-	break;
-    case xa_format_x8r8g8b8:
-	fdesc.format = PIPE_FORMAT_B8G8R8X8_UNORM;
-	break;
-    case xa_format_r5g6b5:
-	fdesc.format = PIPE_FORMAT_B5G6R5_UNORM;
-	break;
-    case xa_format_x1r5g5b5:
-	fdesc.format = PIPE_FORMAT_B5G5R5A1_UNORM;
-	break;
-    case xa_format_a4r4g4b4:
-        fdesc.format = PIPE_FORMAT_B4G4R4A4_UNORM;
-        break;
-    case xa_format_a2b10g10r10:
-        fdesc.format = PIPE_FORMAT_R10G10B10A2_UNORM;
-        break;
-    case xa_format_x2b10g10r10:
-        fdesc.format = PIPE_FORMAT_R10G10B10X2_UNORM;
-        break;
-    case xa_format_b8g8r8a8:
-        fdesc.format = PIPE_FORMAT_A8R8G8B8_UNORM;
-        break;
-    case xa_format_b8g8r8x8:
-        fdesc.format = PIPE_FORMAT_X8R8G8B8_UNORM;
-        break;
-    case xa_format_z24:
-	fdesc.format = PIPE_FORMAT_Z24X8_UNORM;
-	break;
-    case xa_format_z16:
-	fdesc.format = PIPE_FORMAT_Z16_UNORM;
-	break;
-    case xa_format_z32:
-	fdesc.format = PIPE_FORMAT_Z32_UNORM;
-	break;
-    case xa_format_x8z24:
-	fdesc.format = PIPE_FORMAT_Z24X8_UNORM;
-	break;
-    case xa_format_z24x8:
-	fdesc.format = PIPE_FORMAT_X8Z24_UNORM;
-	break;
-    case xa_format_s8z24:
-	fdesc.format = PIPE_FORMAT_Z24_UNORM_S8_UINT;
-	break;
-    case xa_format_z24s8:
-	fdesc.format = PIPE_FORMAT_S8_UINT_Z24_UNORM;
-	break;
-    case xa_format_yuv8:
+        return fdesc;
+    }
+
+    if (xa_format == xa_format_yuv8) {
         if (xa->screen->is_format_supported(xa->screen, PIPE_FORMAT_R8_UNORM,
                                             PIPE_TEXTURE_2D, 0, 0,
                                             stype_bind[xa_type_yuv_component]))
             fdesc.format = PIPE_FORMAT_R8_UNORM;
         else
             fdesc.format = PIPE_FORMAT_L8_UNORM;
-	break;
-    default:
-	UNREACHABLE("Unexpected format");
-	break;
+        return fdesc;
     }
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(fixed_pipe_formats); i++) {
+        if (fixed_pipe_formats[i].xa_format == xa_format)
+            return fixed_pipe_formats[i];
+    }
+
+    UNREACHABLE("Unexpected format");
     return fdesc;
 }
 
 XA_EXPORT struct xa_tracker *
 xa_tracker_create(int drm_fd)
 {
+#ifndef HAVE_LIBDRM
+    (void)drm_fd;
+    return NULL;
+#else
     struct xa_tracker *xa = calloc(1, sizeof(struct xa_tracker));
     enum xa_surface_type stype;
     unsigned int num_formats;
@@ -226,6 +226,7 @@ xa_tracker_create(int drm_fd)
 
     free(xa);
     return NULL;
+#endif
 }
 
 XA_EXPORT struct xa_tracker *
@@ -342,7 +343,10 @@ xa_get_format_stype_depth(struct xa_tracker *xa,
 			  enum xa_surface_type stype, unsigned int depth)
 {
     unsigned int i;
-    struct xa_format_descriptor fdesc;
+    struct xa_format_descriptor fdesc = {
+        .format = PIPE_FORMAT_NONE,
+        .xa_format = xa_format_unknown,
+    };
     int found = 0;
 
     for (i = xa->format_map[stype][0]; i <= xa->format_map[stype][1]; ++i) {
