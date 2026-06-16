@@ -30,6 +30,7 @@
 #include "r300vk_device.h"
 #include "r300vk_buffer.h"
 #include "r300vk_entrypoints.h"
+#include "r300vk_format.h"
 #include "r300vk_object.h"
 
 #include "vk_alloc.h"
@@ -110,6 +111,7 @@ r300vk_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
    ss->lod_bias = ci->mipLodBias;
    ss->min_lod  = ci->minLod;
    ss->max_lod  = ci->maxLod;
+   ss->max_anisotropy = 1;
    if (ci->anisotropyEnable && ci->maxAnisotropy > 1.0f)
       ss->max_anisotropy = (unsigned)ci->maxAnisotropy;
    if (ci->compareEnable) {
@@ -117,40 +119,14 @@ r300vk_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
       ss->compare_func = vk_compare_op_to_pipe(ci->compareOp);
    }
 
-   /* Border colour: the standard VkBorderColor palette maps to constant
-    * float/int values; VK_EXT_custom_border_color supplies the value in a
-    * chained VkSamplerCustomBorderColorCreateInfoEXT.  r300 stores a full
-    * per-sampler border colour (TX_BORDER_COLOR), so both pass through. */
-   switch (ci->borderColor) {
-   case VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK:
-      ss->border_color.f[3] = 1.0f;
-      break;
-   case VK_BORDER_COLOR_INT_OPAQUE_BLACK:
-      ss->border_color.i[3] = 1;
-      break;
-   case VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE:
-      ss->border_color.f[0] = ss->border_color.f[1] = 1.0f;
-      ss->border_color.f[2] = ss->border_color.f[3] = 1.0f;
-      break;
-   case VK_BORDER_COLOR_INT_OPAQUE_WHITE:
-      ss->border_color.i[0] = ss->border_color.i[1] = 1;
-      ss->border_color.i[2] = ss->border_color.i[3] = 1;
-      break;
-   case VK_BORDER_COLOR_FLOAT_CUSTOM_EXT:
-   case VK_BORDER_COLOR_INT_CUSTOM_EXT: {
-      const VkSamplerCustomBorderColorCreateInfoEXT *custom =
-         vk_find_struct_const(ci->pNext,
-                              SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT);
-      if (custom)
-         memcpy(&ss->border_color, &custom->customBorderColor,
-                sizeof(ss->border_color));
-      break;
-   }
-   case VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
-   case VK_BORDER_COLOR_INT_TRANSPARENT_BLACK:
-   default:
-      break;
-   }
+   VkFormat border_format;
+   VkClearColorValue border_color =
+      vk_sampler_border_color_value(ci, &border_format);
+   memcpy(&ss->border_color, &border_color, sizeof(ss->border_color));
+   ss->border_color_is_integer = vk_border_color_is_int(ci->borderColor);
+   ss->border_color_format = border_format == VK_FORMAT_UNDEFINED
+                              ? PIPE_FORMAT_NONE
+                              : r300vk_vk_format_to_pipe_format(border_format);
 }
 
 VkResult
@@ -175,6 +151,10 @@ r300vk_CreateSampler(VkDevice _device,
    struct pipe_sampler_state ss;
    r300vk_sampler_state_from_vk(pCreateInfo, &ss);
    sampler->pipe_cso = device->pipe->create_sampler_state(device->pipe, &ss);
+   if (!sampler->pipe_cso) {
+      vk_sampler_destroy(&device->vk, pAllocator, vks);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
 
    *pSampler = vk_sampler_to_handle(vks);
    return VK_SUCCESS;

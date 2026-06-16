@@ -985,13 +985,72 @@ struct r300vk_bound_textures {
    unsigned                  count;
 };
 
-/* Bind every fragment combined-image-sampler in the bound descriptor sets to its
- * Gallium texture unit, so an app fragment shader's texture()/texelFetch reads
- * the descriptor's image instead of the unbound-sampler default.  nir_lower_samplers
+static struct pipe_sampler_view *
+r300vk_create_descriptor_sampler_view(struct pipe_context *pipe,
+                                      const struct r300vk_descriptor *desc,
+                                      void **sampler_state)
+{
+   *sampler_state = NULL;
+   if (desc->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+      return NULL;
+
+   VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
+   if (!iv || !iv->vk.image)
+      return NULL;
+
+   /* The sampler view below is built as PIPE_TEXTURE_2D, so only a plain 2D
+    * view is correct here.  A cube / array / 1D view would alias the wrong
+    * target; leave it unbound rather than sample the wrong texels. */
+   if (iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
+      return NULL;
+
+   struct r300vk_image *img =
+      container_of(iv->vk.image, struct r300vk_image, vk);
+   if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
+      return NULL;
+
+   struct vk_sampler *vks = vk_sampler_from_handle(desc->img.sampler);
+   void *samp_cso = vks ? r300vk_sampler_from_vk(vks)->pipe_cso : NULL;
+   if (!samp_cso)
+      return NULL;
+
+   const enum pipe_format fmt =
+      r300vk_vk_format_to_pipe_format(iv->vk.view_format);
+   if (fmt == PIPE_FORMAT_NONE)
+      return NULL;
+
+   struct pipe_sampler_view sv_templ;
+   memset(&sv_templ, 0, sizeof(sv_templ));
+   sv_templ.format    = fmt;
+   sv_templ.target    = PIPE_TEXTURE_2D;
+   sv_templ.swizzle_r = vk_swizzle_to_pipe(iv->vk.swizzle.r);
+   sv_templ.swizzle_g = vk_swizzle_to_pipe(iv->vk.swizzle.g);
+   sv_templ.swizzle_b = vk_swizzle_to_pipe(iv->vk.swizzle.b);
+   sv_templ.swizzle_a = vk_swizzle_to_pipe(iv->vk.swizzle.a);
+   sv_templ.u.tex.first_level = iv->vk.base_mip_level;
+   sv_templ.u.tex.last_level  = iv->vk.base_mip_level + iv->vk.level_count - 1;
+
+   struct pipe_sampler_view *view =
+      pipe->create_sampler_view(pipe, img->resource, &sv_templ);
+   if (view)
+      *sampler_state = samp_cso;
+   return view;
+}
+
+/* Bind every fragment combined-image-sampler in descriptor set 0 to its Gallium
+ * texture unit, so an app fragment shader's texture()/texelFetch reads the
+ * descriptor's image instead of the unbound-sampler default.  nir_lower_samplers
  * (run inside r300g's nir_to_rc) assigns each sampler the Gallium unit
- * deref->var->data.binding, so the unit IS the descriptor's binding number.  Only
- * the fragment stage is bound: the RS480 SW-TCL vertex path has no sampler and a
- * vertex texture fetch is rejected at pipeline compile.
+ * deref->var->data.binding plus a constant array index, so the unit is
+ * descriptor binding + array element.  r300g's sampler callbacks require
+ * updates to start at unit zero, so this replay gathers all touched units and
+ * commits one contiguous [0, max_unit] sampler array.
+ *
+ * Descriptor sets above zero are skipped until r300vk lowers sampler variables
+ * onto a flattened set+binding namespace.  Binding them by binding number alone
+ * would alias set 1 binding 0 over set 0 binding 0 and render the wrong image.
+ * Only the fragment stage is bound: the RS480 SW-TCL vertex path has no sampler
+ * and a vertex texture fetch is rejected at pipeline compile.
  *
  * Single-tile images only.  An image wider than the 2048 sampler cap is split
  * into tiles[] (the oversize-blit partition), and a sampler view over either the
@@ -1010,7 +1069,15 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
    if (!binds || !pipeline)
       return;
 
+   void *sampler_states[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
+   struct pipe_sampler_view *views[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
+   unsigned max_unit_plus_one = 0;
+
    for (uint32_t s = 0; s < binds->set_count; s++) {
+      const uint32_t descriptor_set = binds->first_set + s;
+      if (descriptor_set != 0)
+         continue;
+
       const struct r300vk_descriptor_set *set = binds->sets[s];
       if (!set || !set->layout)
          continue;
@@ -1018,58 +1085,45 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
          const struct r300vk_dsl_binding *bnd = &set->layout->bindings[b];
          if (bnd->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
             continue;
-         const unsigned unit = bnd->binding;
-         if (unit >= R300VK_MAX_FS_SAMPLER_UNITS ||
-             bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
-            continue;
 
-         const struct r300vk_descriptor *desc = &set->descriptors[bnd->offset];
-         VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
-         if (!iv || !iv->vk.image)
+         if (bnd->binding >= R300VK_MAX_FS_SAMPLER_UNITS)
             continue;
-         /* The sampler view below is built as PIPE_TEXTURE_2D, so only a plain 2D
-          * view is correct here.  A cube / array / 1D view would alias the wrong
-          * target; leave it unbound (its prior unsampled behavior) rather than
-          * sample the wrong texels. */
-         if (iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
-            continue;
-         struct r300vk_image *img =
-            container_of(iv->vk.image, struct r300vk_image, vk);
-         if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
-            continue;
+         const uint32_t count =
+            MIN2(bnd->count, R300VK_MAX_FS_SAMPLER_UNITS - bnd->binding);
+         for (uint32_t elem = 0; elem < count; elem++) {
+            const unsigned unit = bnd->binding + elem;
+            if (bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
+               break;
 
-         struct vk_sampler *vks = vk_sampler_from_handle(desc->img.sampler);
-         void *samp_cso = vks ? r300vk_sampler_from_vk(vks)->pipe_cso : NULL;
-         if (!samp_cso)
-            continue;
+            const struct r300vk_descriptor *desc =
+               &set->descriptors[bnd->offset + elem];
+            void *samp_cso = NULL;
+            struct pipe_sampler_view *view =
+               r300vk_create_descriptor_sampler_view(pipe, desc, &samp_cso);
+            if (!view)
+               continue;
 
-         const enum pipe_format fmt = r300vk_vk_format_to_pipe_format(iv->vk.format);
-         if (fmt == PIPE_FORMAT_NONE)
-            continue;
+            if (views[unit]) {
+               pipe_sampler_view_reference(&view, NULL);
+               continue;
+            }
 
-         struct pipe_sampler_view sv_templ;
-         memset(&sv_templ, 0, sizeof(sv_templ));
-         sv_templ.format    = fmt;
-         sv_templ.target    = PIPE_TEXTURE_2D;
-         sv_templ.swizzle_r = vk_swizzle_to_pipe(iv->vk.swizzle.r);
-         sv_templ.swizzle_g = vk_swizzle_to_pipe(iv->vk.swizzle.g);
-         sv_templ.swizzle_b = vk_swizzle_to_pipe(iv->vk.swizzle.b);
-         sv_templ.swizzle_a = vk_swizzle_to_pipe(iv->vk.swizzle.a);
-         sv_templ.u.tex.first_level = iv->vk.base_mip_level;
-         sv_templ.u.tex.last_level  = iv->vk.base_mip_level +
-                                      iv->vk.level_count - 1;
-         struct pipe_sampler_view *view =
-            pipe->create_sampler_view(pipe, img->resource, &sv_templ);
-         if (!view)
-            continue;
+            sampler_states[unit] = samp_cso;
+            views[unit] = view;
+            max_unit_plus_one = MAX2(max_unit_plus_one, unit + 1);
 
-         pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, unit, 1, &samp_cso);
-         pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, unit, 1, 0, &view);
-
-         bound->units[bound->count] = unit;
-         bound->views[bound->count] = view;
-         bound->count++;
+            bound->units[bound->count] = unit;
+            bound->views[bound->count] = view;
+            bound->count++;
+         }
       }
+   }
+
+   if (max_unit_plus_one) {
+      pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0,
+                                max_unit_plus_one, sampler_states);
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, max_unit_plus_one,
+                              0, views);
    }
 }
 
@@ -1150,7 +1204,8 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
          if (!input_resource || input_width == 0 || input_height == 0)
             return;
 
-         const enum pipe_format fmt = r300vk_vk_format_to_pipe_format(iv->vk.format);
+         const enum pipe_format fmt =
+            r300vk_vk_format_to_pipe_format(iv->vk.view_format);
          if (fmt == PIPE_FORMAT_NONE)
             return;
 
@@ -1198,12 +1253,22 @@ r300vk_unbind_descriptor_textures(struct r300vk_device *device,
                                   struct r300vk_bound_textures *bound)
 {
    struct pipe_context *pipe = device->pipe;
-   struct pipe_sampler_view *no_view = NULL;
-   for (unsigned i = 0; i < bound->count; i++) {
-      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, bound->units[i],
-                              0, 1, &no_view);
+   if (!bound->count)
+      return;
+
+   void *sampler_states[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
+   struct pipe_sampler_view *views[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
+   unsigned max_unit_plus_one = 0;
+   for (unsigned i = 0; i < bound->count; i++)
+      max_unit_plus_one = MAX2(max_unit_plus_one, bound->units[i] + 1);
+
+   pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, max_unit_plus_one,
+                             sampler_states);
+   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0,
+                           max_unit_plus_one, views);
+
+   for (unsigned i = 0; i < bound->count; i++)
       pipe_sampler_view_reference(&bound->views[i], NULL);
-   }
    bound->count = 0;
 }
 
@@ -1702,7 +1767,7 @@ r300vk_replay_draw(struct r300vk_device *device,
          fprintf(stderr,
                  "r300vk draw: mode=%u count=%u start=%u inst=%u topo=%d "
                  "dyn_topo=%d dyn_mask=0x%x dyn_flags=0x%x zs=%d\n",
-                 info.mode, draw.count, draw.start, draw_instances,
+                 (unsigned)info.mode, draw.count, draw.start, draw_instances,
                  (int)draw_topology, dyn_topology ? 1 : 0,
                  bound_pipeline ? bound_pipeline->dyn_mask : 0,
                  dyn ? dyn->flags : 0, render_pass_has_zs ? 1 : 0);

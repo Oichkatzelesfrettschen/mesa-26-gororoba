@@ -573,6 +573,24 @@ r300vk_nir_uses_texture(nir_shader *nir)
    return false;
 }
 
+static bool
+r300vk_nir_uses_sampler_set_above_zero(nir_shader *nir, uint32_t *out_set,
+                                       uint32_t *out_binding)
+{
+   nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
+      if (!glsl_type_is_sampler(glsl_without_array(var->type)))
+         continue;
+      if (var->data.descriptor_set == 0)
+         continue;
+
+      *out_set = var->data.descriptor_set;
+      *out_binding = var->data.binding;
+      return true;
+   }
+
+   return false;
+}
+
 /* Declare a block-0 nir_var_mem_ubo variable sized to size_bytes.  nir_to_rc
  * sizes the constant file from nir_var_mem_ubo VARIABLES (glsl_get_explicit_size
  * of the interface type), not from the load_ubo accesses a lowering pass emits.
@@ -884,6 +902,19 @@ r300vk_compile_shader(struct r300vk_device *device,
    const bool stage_had_texture =
       stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
       r300vk_nir_uses_texture(nir);
+   uint32_t sampler_set = 0;
+   uint32_t sampler_binding = 0;
+   if (stage_had_texture &&
+       r300vk_nir_uses_sampler_set_above_zero(nir, &sampler_set,
+                                              &sampler_binding)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: fragment sampler at descriptor set %u binding "
+                       "%u is unsupported; r300vk flattens sampled images from "
+                       "descriptor set 0 only",
+                       sampler_set, sampler_binding);
+   }
+
    bool stage_has_input = false;
    uint32_t stage_input_set = 0;
    uint32_t stage_input_binding = 0;
