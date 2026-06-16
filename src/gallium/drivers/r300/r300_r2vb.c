@@ -679,36 +679,66 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
         }
     }
 
-    /* Build the canonical shape for the chosen topology; its vertex count drives
-     * the BO size and the producer.  An unknown R300_R2VB_PRIM is a hard error,
-     * not a silent fall back to triangles. */
+    /* Select the producer vertices and re-ingest topology.  prim=throughput is a
+     * timing path: it generates num_vertices clustered vertices on the heap (tiny
+     * degenerate triangles to minimise rasterisation, isolating the transform +
+     * fetch + submit cost) and skips the stage-3 readback, so the timer reflects
+     * the direct-VAP path at scale rather than a readable picture.  The producer
+     * embeds vertices in a 3D_DRAW_IMMD packet whose PKT3 size field is 14 bits,
+     * so num_vertices * 8 must stay under 0x3FFF -- cap throughput N at 2047.
+     * Otherwise build a canonical shape; an unknown prim is a hard error. */
+    const float (*attrs)[4];
+    uint32_t vf_prim, nverts;
+    float (*heap_attrs)[4] = NULL;
     struct r2vb_shape shape;
-    if (!r2vb_build_shape(cfg.prim_name, cfg.num_vertices, &shape)) {
-        fprintf(stderr, "r2vb selftest: unknown R300_R2VB_PRIM=%s (want points|lines|"
-                        "line_strip|line_loop|triangles|triangle_strip|triangle_fan)\n",
-                cfg.prim_name);
-        return false;
+    if (strcmp(cfg.prim_name, "throughput") == 0) {
+        nverts = cfg.num_vertices > 2047 ? 2047 : cfg.num_vertices;
+        heap_attrs = malloc((size_t)nverts * sizeof(*heap_attrs));
+        if (!heap_attrs)
+            return false;
+        for (uint32_t i = 0; i < nverts; i++) {
+            heap_attrs[i][0] = 10.0f + (float)(i & 3);
+            heap_attrs[i][1] = 10.0f + (float)(i & 3);
+            heap_attrs[i][2] = 0.5f;
+            heap_attrs[i][3] = 1.0f;
+        }
+        attrs = heap_attrs;
+        vf_prim = R300_VAP_VF_CNTL__PRIM_TRIANGLES;
+        cfg.observe = false;
+        fprintf(stderr, "r2vb_shape prim=throughput nverts=%u (tiny tris, no stage3)\n", nverts);
+    } else {
+        if (!r2vb_build_shape(cfg.prim_name, cfg.num_vertices, &shape)) {
+            fprintf(stderr, "r2vb selftest: unknown R300_R2VB_PRIM=%s (want points|lines|line_strip|"
+                            "line_loop|triangles|triangle_strip|triangle_fan|throughput)\n",
+                    cfg.prim_name);
+            return false;
+        }
+        nverts = shape.num_vertices;
+        attrs = shape.attrs;
+        vf_prim = shape.vf_prim;
+        fprintf(stderr, "r2vb_shape prim=%s nverts=%u %s\n", shape.prim_name, nverts, shape.expect);
     }
-    cfg.num_vertices = shape.num_vertices;
-    fprintf(stderr, "r2vb_shape prim=%s nverts=%u %s\n", shape.prim_name, shape.num_vertices,
-            shape.expect);
+    cfg.num_vertices = nverts;
 
     struct pipe_resource *res = r2vb_create_selftest_bo(r300, align(cfg.num_vertices, 2) * 16, 0);
-    if (!res)
+    if (!res) {
+        free(heap_attrs);
         return false;
+    }
 
     struct pipe_resource *stage3 = NULL;
     if (cfg.observe) {
         stage3 = r2vb_create_selftest_bo(r300, cfg.s3dim * cfg.s3dim * 16, 0xff);
         if (!stage3) {
             pipe_resource_reference(&res, NULL);
+            free(heap_attrs);
             return false;
         }
     }
 
     fired = true;
-    r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, cfg.num_vertices, shape.attrs,
-                                      shape.vf_prim, stage3 ? r300_resource(stage3) : NULL,
+    r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, cfg.num_vertices, attrs,
+                                      vf_prim, stage3 ? r300_resource(stage3) : NULL,
                                       cfg.s3dim, cfg.s3dim);
 
     r300_emit_hyperz_end(r300);
@@ -724,20 +754,34 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
 
     if (cfg.do_submit) {
         struct pipe_fence_handle *fence = NULL;
-        struct timespec t0, t1;
+        struct timespec t0, t1, t2, t3;
         bool signalled = false;
+        /* Three-way split to localise the per-submit cost.  cs_flush only ENQUEUES
+         * the IB to the radeon threaded-submit queue and returns; cs_sync_flush
+         * blocks until that worker has issued the DRM_RADEON_CS ioctl; fence_wait
+         * blocks until the GPU retires the fence BO.  So enqueue_ms is CPU-side
+         * bookkeeping, submit_ms is the kernel submit + BO pin, and gpu_ms is the
+         * actual GPU execution -- the number that should scale with vertex work. */
         clock_gettime(CLOCK_MONOTONIC, &t0);
         int flush_rc = r300->rws->cs_flush(&r300->cs, 0, &fence);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        r300->rws->cs_sync_flush(&r300->cs);
+        clock_gettime(CLOCK_MONOTONIC, &t2);
         if (fence) {
             signalled = r300->rws->fence_wait(r300->rws, fence, (uint64_t)5 * 1000 * 1000 * 1000);
             r300->rws->fence_reference(r300->rws, &fence, NULL);
         }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+        clock_gettime(CLOCK_MONOTONIC, &t3);
+        double enqueue_ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+        double submit_ms = (double)(t2.tv_sec - t1.tv_sec) * 1e3 + (double)(t2.tv_nsec - t1.tv_nsec) / 1e6;
+        double gpu_ms = (double)(t3.tv_sec - t2.tv_sec) * 1e3 + (double)(t3.tv_nsec - t2.tv_nsec) / 1e6;
+        double total_ms = enqueue_ms + submit_ms + gpu_ms;
+        double mvps = gpu_ms > 0.0 ? (double)cfg.num_vertices / (gpu_ms * 1e3) : 0.0;
         fprintf(stderr,
-                "r2vb_direct_vap_timing nverts=%u submit_ms=%.4f "
-                "flush_rc=%d signalled=%d hb_tcl=1 hb_vert_fpu=%u\n",
-                cfg.num_vertices, ms, flush_rc, signalled, r300->screen->caps.num_vert_fpus);
+                "r2vb_direct_vap_timing nverts=%u total_ms=%.4f enqueue_ms=%.4f submit_ms=%.4f "
+                "gpu_ms=%.4f gpu_Mvps=%.3f flush_rc=%d signalled=%d hb_vert_fpu=%u\n",
+                cfg.num_vertices, total_ms, enqueue_ms, submit_ms, gpu_ms, mvps, flush_rc,
+                signalled, r300->screen->caps.num_vert_fpus);
     } else {
         r300->rws->cs_flush(&r300->cs, RADEON_FLUSH_NOOP, NULL);
         fprintf(stderr,
@@ -754,5 +798,6 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
 
     pipe_resource_reference(&stage3, NULL);
     pipe_resource_reference(&res, NULL);
+    free(heap_attrs);
     return true;
 }
