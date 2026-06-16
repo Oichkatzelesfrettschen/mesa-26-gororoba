@@ -56,7 +56,7 @@ functionality:
 
 The first user will be the vmwgfx xorg driver. When there are more users,
 we need to be able to load the appropriate gallium pipe driver, and we
-should investigate sharing the loadig mechanism with the EGL gallium frontend.
+should investigate sharing the loading mechanism with the EGL gallium frontend.
 
 IMPORTANT:
 Version compatibilities:

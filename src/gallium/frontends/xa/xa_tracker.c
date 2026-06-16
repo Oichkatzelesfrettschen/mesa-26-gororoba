@@ -487,8 +487,7 @@ xa_surface_from_handle(struct xa_tracker *xa,
 		  uint32_t handle, uint32_t stride)
 {
     return xa_surface_from_handle2(xa, width, height, depth, stype, xa_format,
-                                   WINSYS_HANDLE_TYPE_SHARED, flags, handle,
-                                   stride);
+                                   flags, xa_handle_type_shared, handle, stride);
 }
 
 XA_EXPORT struct xa_surface *
