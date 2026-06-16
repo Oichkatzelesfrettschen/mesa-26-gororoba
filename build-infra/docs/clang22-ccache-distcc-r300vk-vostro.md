@@ -5,10 +5,13 @@
 r300 validation on the Vostro (full GL/GLES plus the amd_r300 ICD) needs a
 repeatable fast lane that uses clang 22,
 keeps ccache warm on the slow RS482 host, and sends cache misses to LAN distcc
-volunteers.  The ccache and distcc manuals agree on the safe shape:
-`ccache clang-22` in Meson, with `CCACHE_PREFIX=distcc` in the environment.
-Do not configure Meson as `ccache distcc clang-22`, and do not combine this
-incremental lane with distcc-pump.
+volunteers.  The default lane uses `ccache clang-22` in Meson, with
+`CCACHE_PREFIX=distcc` in the environment.  ccache resolves the compiler on the
+Vostro before invoking distcc, so volunteers for this lane need the same
+versioned compiler path that the Vostro ccache process resolves.  Use
+`COMPILER_CHAIN=distcc` when the volunteers must resolve `clang-22` through
+their own PATH.  Do not configure Meson as `ccache distcc clang-22`, and do not
+combine this incremental lane with distcc-pump.
 
 ## What
 
@@ -49,21 +52,26 @@ login-shell defaults cannot silently route this lane to stale workers.  The
 environment pins `PATH` and `CCACHE_PATH` to `/usr/bin` first so ccache resolves
 the packaged Clang 22 tools on the Vostro.  The generated Meson toolchain
 overlay keeps compiler entries as versioned command names for the ccache and
-distcc lanes, so distcc volunteers search their own PATH for `clang-22` and
-`clang++-22` instead of receiving a client-absolute path.  The local `direct`
-lane uses absolute compiler paths, and the generated LLVM utility entries use
-resolved local tool paths.  The Makefile passes the sourced cache/distcc
-environment explicitly through `flock` to compiler-bearing Ninja recipes so the
-compiler search path used by ccache matches the configured lane.
+distcc lanes.  In the direct distcc lane, volunteers search their own PATH for
+`clang-22` and `clang++-22`.  In the ccache lane, ccache resolves those command
+names on the Vostro and prefixes cache misses with distcc, so volunteers must
+provide the same resolved compiler path.  The local `direct` lane uses absolute
+compiler paths, and the generated LLVM utility entries use resolved local tool
+paths.  The Makefile passes the sourced cache/distcc environment explicitly
+through `flock` to compiler-bearing Ninja recipes so the compiler search path
+used by ccache matches the configured lane.
 
 Mode matrix:
 
-- Default incremental lane: Meson uses `['ccache', clang]` and
-  `CCACHE_PREFIX=distcc`.  ccache hashes on the Vostro client; cache misses go
-  to the live `DISTCC_HOSTS` mesh.
-- Direct distcc fallback: Meson uses `['distcc', clang]` with `CCACHE_PREFIX`
-  unset.  This is for clean builds where cache hashing is not the limiting
-  cost.
+- Default incremental lane: Meson uses `['ccache', 'clang-22']` and
+  `['ccache', 'clang++-22']`, with `CCACHE_PREFIX=distcc`.  ccache hashes on the
+  Vostro client; cache misses go to the live `DISTCC_HOSTS` mesh with the
+  compiler path ccache resolved on the client.
+- Direct distcc fallback: Meson uses `['distcc', 'clang-22']` and
+  `['distcc', 'clang++-22']`, with `CCACHE_PREFIX` unset.  Volunteers resolve
+  the versioned compiler name through their own PATH.  This is for clean builds
+  where cache hashing is not the limiting cost or for mixed hosts where
+  `/usr/bin/clang-22` is not a stable path.
 - Local tertiary fallback: the Vostro env appends `localhost/2,lzo` unless the
   host file already names a local fallback; if the host file is absent or empty,
   the env emits only `localhost/2,lzo`.
