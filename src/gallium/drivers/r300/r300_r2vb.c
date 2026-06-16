@@ -316,18 +316,23 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * rasterizer never runs, and the GTT color BO reads back all zero. */
     OUT_CS_REG(R300_SU_CULL_MODE, 0);
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
-    /* Pin the point size to one pixel.  r300 cannot disable the per-vertex
-     * point-size output, so GA takes each point's size from a vertex component
-     * and clamps it to [GA_POINT_MINMAX.MIN, .MAX] (r300_state.c, the non-per-
-     * vertex branch sets MIN = MAX = the fixed size).  The re-ingested GTT
-     * vertices carry no point-size component, so without the clamp GA reads an
-     * undefined size and smears each point across many pixels, off-position.
-     * Both registers pack 1/6-pixel units, so size 1 = 6.  GA_POINT_SIZE sets the
-     * nominal size and GA_POINT_MINMAX MIN = MAX = 1 forces every rasterized
-     * point to exactly one pixel regardless of the vertex value.  This keeps the
-     * stage-1 producer's slot-to-pixel mapping exact and makes a POINTS re-ingest
-     * rasterize one texel per vertex; both are don't-cares for the line and
-     * triangle topologies. */
+    /* Pin the fixed point size to one pixel (both registers pack 1/6-pixel units,
+     * so size 1 = 6).  This makes the stage-1 producer's own points -- one per
+     * output slot -- a deterministic one pixel rather than the size inherited
+     * from the trigger draw, keeping the slot-to-pixel mapping exact.
+     *
+     * It does NOT by itself fix a POINTS re-ingest (stage 3).  r300 cannot disable
+     * the per-vertex point-size output (r300_state.c notes this and clamps via
+     * GA_POINT_MINMAX), so for a primitive whose *_VTX_FMT_0 advertises
+     * PT_SIZE_PRESENT, GA reads each point's size from a vertex component.  The
+     * re-ingested GTT vertices carry no point-size component, and in TCL_BYPASS
+     * neither GA_POINT_SIZE nor the GA_POINT_MINMAX clamp takes effect on that
+     * path (measured: pinning both moved a 16-point readback only 104 -> 110
+     * texels, far from 16).  A correct POINTS re-ingest needs PT_SIZE_PRESENT
+     * cleared in the GA raster vertex format (GB_VAP_RASTER_VTX_FMT_0 / VAP_
+     * OUTPUT_VTX_FMT_0, 0x4000 / 0x2090), which is derived from the bound FS
+     * inputs -- left as a separate step.  The line and triangle topologies do not
+     * consume point size and rasterize pixel-exact already. */
     OUT_CS_REG(R300_GA_POINT_SIZE, (6 << R300_POINTSIZE_Y_SHIFT) |
                                        (6 << R300_POINTSIZE_X_SHIFT));
     OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
@@ -595,7 +600,8 @@ static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r
         for (uint32_t i = 0; i < n; i++)
             r2vb_set_vert(s->attrs[i], x0 + step * (float)i, y0 + step * (float)i);
         snprintf(s->expect, sizeof s->expect,
-                 "expect %u points on diagonal: written~%u bbox~10,10,53,53", n, n);
+                 "%u points on diagonal; stage-1 BO is exact, but stage-3 POINTS "
+                 "size is OPEN (PT_SIZE_PRESENT in TCL_BYPASS)", n);
         return true;
     }
     return false;
