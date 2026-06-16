@@ -383,10 +383,11 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
 static const struct vk_device_extension_table r300vk_device_extensions_supported = {
    /* Host-side query reset is a CPU clear of the per-slot query storage
     * (r300vk_ResetQueryPool); it needs no GPU-side encoding, so the
-    * always-available host queue model supports it directly.  Advertising it
-    * also exposes the core vkResetQueryPool entrypoint on this Vulkan 1.0
-    * device.  WSI (VK_KHR_swapchain) and the external-memory family stay
-    * withheld until the device layer brings them up. */
+    * always-available host queue model supports it directly.
+    * r300vk_GetDeviceProcAddr maps the promoted core spelling to the same
+    * implementation when the extension is enabled on this Vulkan 1.0 device.
+    * WSI (VK_KHR_swapchain) and the external-memory family stay withheld until
+    * the device layer brings them up. */
    .EXT_host_query_reset = true,
    /* VK_EXT_physical_device_drm: exposes the render/primary node major/minor in
     * VkPhysicalDeviceDrmPropertiesEXT.  Zink's display-device selection matches
