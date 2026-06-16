@@ -53,17 +53,16 @@ r300vk_dispatch_index_exact(const struct r300vk_pipeline *pl,
 
 /* Wrap the contents of a PIPE_BUFFER pipe_resource as a transient
  * PIPE_TEXTURE_2D + a pipe_sampler_view configured for NEAREST sampling.
- * The texture is allocated linear-tiled, populated by
- * pipe->resource_copy_region (which falls through to util_resource_copy_region
- * for the buffer-to-texture target combination per r300_blit.c:593), and
- * referenced by the returned sampler view.  The caller releases the view
- * with pipe_sampler_view_reference(&view, NULL); dropping the view's last
- * reference also drops the texture's last reference, so the transient
- * resource is freed automatically.
+ * The texture is allocated linear-tiled, populated by a bounded CPU map/copy
+ * from the buffer, and referenced by the returned sampler view.  The caller
+ * releases the view with pipe_sampler_view_reference(&view, NULL); dropping
+ * the view's last reference also drops the texture's last reference, so the
+ * transient resource is freed automatically.
  *
- * width * height * util_format_get_blocksize(format) MUST equal the byte
- * count the caller intends to read out of src_buf; the helper does not
- * verify the buffer's actual size.
+ * total_elements * util_format_get_blocksize(format) MUST equal the byte
+ * count the caller intends to read out of src_buf.  width * height is the
+ * raster extent and may include padding texels introduced by grid folding.
+ * The helper does not verify the buffer's actual size.
  *
  * Returns NULL on resource_create / create_sampler_view failure. */
 struct pipe_sampler_view *
@@ -72,6 +71,7 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
                                                unsigned byte_offset,
                                                unsigned width,
                                                unsigned height,
+                                               uint64_t total_elements,
                                                enum pipe_format format);
 
 /* The dispatch-replay orchestrator: lowers one R300VK_CMD_DISPATCH of an

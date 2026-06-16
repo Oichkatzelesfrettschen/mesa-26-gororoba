@@ -161,9 +161,42 @@ r300vk_idm_total_invocations(const struct r300vk_cmd_dispatch *dispatch,
    const uint64_t lsx = pl->local_size_x ? pl->local_size_x : 1u;
    const uint64_t lsy = pl->local_size_y ? pl->local_size_y : 1u;
    const uint64_t lsz = pl->local_size_z ? pl->local_size_z : 1u;
-   return (uint64_t)dispatch->group_count_x * lsx *
-          (uint64_t)dispatch->group_count_y * lsy *
-          (uint64_t)dispatch->group_count_z * lsz;
+   const uint64_t factors[6] = {
+      dispatch->group_count_x, lsx,
+      dispatch->group_count_y, lsy,
+      dispatch->group_count_z, lsz,
+   };
+   uint64_t total = 1;
+
+   for (unsigned i = 0; i < ARRAY_SIZE(factors); i++) {
+      if (factors[i] != 0 && total > UINT64_MAX / factors[i])
+         return 0;
+      total *= factors[i];
+   }
+
+   return total;
+}
+
+static bool
+r300vk_idm_element_byte_count(uint64_t total_elements, unsigned blocksize,
+                              uint64_t *out_bytes)
+{
+   if (blocksize != 0 && total_elements > UINT64_MAX / blocksize)
+      return false;
+   const uint64_t total_bytes = total_elements * blocksize;
+   if (total_bytes > INT_MAX)
+      return false;
+   *out_bytes = total_bytes;
+   return true;
+}
+
+static unsigned
+r300vk_idm_buffer_write_flags(unsigned byte_offset, uint64_t total_bytes,
+                              const struct pipe_resource *buffer)
+{
+   if (byte_offset == 0 && total_bytes >= buffer->width0)
+      return PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE;
+   return PIPE_MAP_WRITE | PIPE_MAP_DISCARD_RANGE;
 }
 
 static void
@@ -641,14 +674,18 @@ r300vk_identity_map_readback_rt(struct pipe_context *pipe,
       struct pipe_transfer *out_xfer = NULL;
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
-      const uint64_t total_bytes =
-         total_elements * util_format_get_blocksize(fmt);
+      uint64_t total_bytes = 0;
+      if (!r300vk_idm_element_byte_count(total_elements,
+                                         util_format_get_blocksize(fmt),
+                                         &total_bytes)) {
+         pipe->texture_unmap(pipe, rt_xfer);
+         return false;
+      }
       out_box.x      = out_offset;
       out_box.width  = (int)total_bytes;
       out_box.height = 1; out_box.depth = 1;
-      unsigned map_flags = PIPE_MAP_WRITE | PIPE_MAP_DISCARD_RANGE;
-      if (out_offset == 0 && total_bytes >= out_buf->width0)
-         map_flags = PIPE_MAP_WRITE | PIPE_MAP_DISCARD_WHOLE_RESOURCE;
+      unsigned map_flags =
+         r300vk_idm_buffer_write_flags(out_offset, total_bytes, out_buf);
       void *out_bytes = pipe->buffer_map(pipe, out_buf, 0,
                                          map_flags,
                                          &out_box, &out_xfer);
@@ -691,6 +728,7 @@ r300vk_idm_seed_texture_from_buffer(struct pipe_context *pipe,
                                     unsigned in_offset,
                                     unsigned width, unsigned height,
                                     enum pipe_format fmt,
+                                    uint64_t total_elements,
                                     struct pipe_resource **out_tex,
                                     struct pipe_sampler_view **out_sv)
 {
@@ -712,32 +750,46 @@ r300vk_idm_seed_texture_from_buffer(struct pipe_context *pipe,
    struct pipe_transfer *in_xfer = NULL;
    struct pipe_box in_box;
    memset(&in_box, 0, sizeof(in_box));
+   uint64_t total_bytes = 0;
+   if (!r300vk_idm_element_byte_count(total_elements,
+                                      util_format_get_blocksize(fmt),
+                                      &total_bytes)) {
+      pipe_resource_reference(&tex, NULL);
+      return false;
+   }
    in_box.x      = in_offset;
-   in_box.width  = width * height * util_format_get_blocksize(fmt);
+   in_box.width  = (int)total_bytes;
    in_box.height = 1; in_box.depth = 1;
    const void *in_map = pipe->buffer_map(pipe, in_buf, 0,
                                          PIPE_MAP_READ, &in_box, &in_xfer);
-   if (in_map) {
-      struct pipe_transfer *tex_xfer = NULL;
-      struct pipe_box tex_box;
-      memset(&tex_box, 0, sizeof(tex_box));
-      tex_box.width  = width;
-      tex_box.height = height;
-      tex_box.depth  = 1;
-      void *tex_map = pipe->texture_map(pipe, tex, 0,
-                                        PIPE_MAP_WRITE |
-                                        PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                        &tex_box, &tex_xfer);
-      if (tex_map) {
-         r300vk_identity_map_copy_rows(tex_map, tex_xfer->stride,
-                                       in_map, width * util_format_get_blocksize(fmt),
-                                       width, height,
-                                       util_format_get_blocksize(fmt),
-                                       width * util_format_get_blocksize(fmt));
-         pipe->texture_unmap(pipe, tex_xfer);
-      }
-      pipe->buffer_unmap(pipe, in_xfer);
+   if (!in_map) {
+      pipe_resource_reference(&tex, NULL);
+      return false;
    }
+
+   struct pipe_transfer *tex_xfer = NULL;
+   struct pipe_box tex_box;
+   memset(&tex_box, 0, sizeof(tex_box));
+   tex_box.width  = width;
+   tex_box.height = height;
+   tex_box.depth  = 1;
+   void *tex_map = pipe->texture_map(pipe, tex, 0,
+                                     PIPE_MAP_WRITE |
+                                     PIPE_MAP_DISCARD_WHOLE_RESOURCE,
+                                     &tex_box, &tex_xfer);
+   if (!tex_map) {
+      pipe->buffer_unmap(pipe, in_xfer);
+      pipe_resource_reference(&tex, NULL);
+      return false;
+   }
+
+   r300vk_identity_map_copy_rows(tex_map, tex_xfer->stride,
+                                 in_map, width * util_format_get_blocksize(fmt),
+                                 width, height,
+                                 util_format_get_blocksize(fmt),
+                                 total_elements);
+   pipe->texture_unmap(pipe, tex_xfer);
+   pipe->buffer_unmap(pipe, in_xfer);
 
    struct pipe_sampler_view sv_templ;
    memset(&sv_templ, 0, sizeof(sv_templ));
@@ -748,6 +800,10 @@ r300vk_idm_seed_texture_from_buffer(struct pipe_context *pipe,
    sv_templ.swizzle_b          = PIPE_SWIZZLE_Z;
    sv_templ.swizzle_a          = PIPE_SWIZZLE_W;
    *out_sv = pipe->create_sampler_view(pipe, tex, &sv_templ);
+   if (!*out_sv) {
+      pipe_resource_reference(&tex, NULL);
+      return false;
+   }
    *out_tex = tex;
    return true;
 }
@@ -797,18 +853,19 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
                                                unsigned byte_offset,
                                                unsigned width,
                                                unsigned height,
+                                               uint64_t total_elements,
                                                enum pipe_format format)
 {
    struct pipe_context *pipe   = device->pipe;
    struct pipe_screen  *screen = device->screen;
-   if (!pipe || !screen || !src_buf || width == 0 || height == 0)
+   if (!pipe || !screen || !src_buf || width == 0 || height == 0 ||
+       total_elements == 0)
       return NULL;
 
    /* Allocate a transient linear-tiled 2D texture matching the dispatch
-    * shape.  PIPE_USAGE_DEFAULT so the GPU can both write (the
-    * resource_copy_region below) and read (sampler view at draw time).
-    * The texture is freed automatically when the returned sampler view's
-    * last reference is dropped. */
+    * shape.  PIPE_USAGE_DEFAULT so the GPU can read it through a sampler view
+    * at draw time.  The texture is freed automatically when the returned
+    * sampler view's last reference is dropped. */
    struct pipe_resource templ;
    memset(&templ, 0, sizeof(templ));
    templ.target     = PIPE_TEXTURE_2D;
@@ -834,11 +891,19 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
     * + memcpy ourselves: read the buffer as a flat byte stream, write
     * each texel-row of the texture from the matching byte range.
     * Linear-tiled texture so the dst pitch is W * blocksize plus any
-    * driver-imposed alignment, captured by the transfer's stride. */
+    * driver-imposed alignment, captured by the transfer's stride.  The raster
+    * extent may include padding texels, but the source map is bounded by the
+    * real invocation count so folded grids never read past the valid Vulkan
+    * buffer range. */
    const unsigned bpp = util_format_get_blocksize(format);
+   uint64_t total_bytes = 0;
+   if (!r300vk_idm_element_byte_count(total_elements, bpp, &total_bytes)) {
+      pipe_resource_reference(&tex, NULL);
+      return NULL;
+   }
    struct pipe_transfer *src_xfer = NULL;
    struct pipe_box src_box;
-   u_box_1d(byte_offset, width * height * bpp, &src_box);
+   u_box_1d(byte_offset, (int)total_bytes, &src_box);
    const void *src_map = pipe->buffer_map(pipe, src_buf, 0, PIPE_MAP_READ,
                                           &src_box, &src_xfer);
    if (!src_map) {
@@ -863,7 +928,7 @@ r300vk_identity_map_wrap_input_as_sampler_view(struct r300vk_device *device,
    r300vk_identity_map_copy_rows(dst_map, dst_xfer->stride,
                                  src_map, width * bpp,
                                  width, height, bpp,
-                                 (uint64_t)width * height);
+                                 total_elements);
    pipe->texture_unmap(pipe, dst_xfer);
    pipe->buffer_unmap(pipe, src_xfer);
 
@@ -1124,15 +1189,10 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
       return false;
    }
 
-   /* The total work-item count is the grid-size product.  The kernel's
-    * local_size is folded into the per-invocation index space already (the
-    * compute-grid-to-raster-grid mapping takes the full group count).  The
-    * readback oracle accepts local_size = 1; local_size > 1 requires
-    * index-domain validation before this replay path can accept it. */
-   /* 64-bit product so 2^32-wrapping group counts cannot smuggle a
-    * small non-zero total past the zero-check.  The 2048*2048 axis cap
-    * is enforced after derive_raster_extent below; here we only need to
-    * keep the multiplication exact. */
+   /* The replay grid emits one fragment for each real invocation:
+    * group_count_x/y/z multiplied by local_size_x/y/z.  The checked helper
+    * returns zero on overflow so wrapped products cannot smuggle a small
+    * non-zero total past the admission gate. */
    const uint64_t total_invocations =
       r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
@@ -1179,7 +1239,8 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *in_sv =
       r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
                                                      (unsigned)in_desc->buf.offset,
-                                                     width, height, fmt);
+                                                     width, height,
+                                                     total_invocations, fmt);
    IDM_LOG("wrap in_sv=%p", (const void *)in_sv);
    if (!in_sv) {
       IDM_LOG("early-return wrap-input-failed");
@@ -1288,22 +1349,28 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         const unsigned blocksize = util_format_get_blocksize(fmt);
+         uint64_t out_byte_count = 0;
          out_box.x      = (unsigned)out_desc->buf.offset;
-         out_box.width  = width * height * util_format_get_blocksize(fmt);
-         out_box.height = 1;
-         out_box.depth  = 1;
-         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
-                                            PIPE_MAP_WRITE |
-                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                            &out_box, &out_xfer);
-         if (out_bytes) {
-            r300vk_identity_map_copy_rows(out_bytes, width * util_format_get_blocksize(fmt),
-                                          rt_map, rt_xfer->stride,
-                                          width, height,
-                                          util_format_get_blocksize(fmt),
-                                          total_invocations);
-            pipe->buffer_unmap(pipe, out_xfer);
-            copy_ok = true;
+         if (r300vk_idm_element_byte_count(total_invocations, blocksize,
+                                           &out_byte_count)) {
+            out_box.width  = (int)out_byte_count;
+            out_box.height = 1;
+            out_box.depth  = 1;
+            void *out_bytes = pipe->buffer_map(
+               pipe, out_buf->resource, 0,
+               r300vk_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
+                                             out_byte_count,
+                                             out_buf->resource),
+               &out_box, &out_xfer);
+            if (out_bytes) {
+               r300vk_identity_map_copy_rows(out_bytes, width * blocksize,
+                                             rt_map, rt_xfer->stride,
+                                             width, height, blocksize,
+                                             total_invocations);
+               pipe->buffer_unmap(pipe, out_xfer);
+               copy_ok = true;
+            }
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -1556,7 +1623,8 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *sv_a =
       r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
                                                      (unsigned)desc_in_a->buf.offset,
-                                                     width, height, input_fmt);
+                                                     width, height,
+                                                     total_invocations, input_fmt);
    if (!sv_a) {
       IDM_LOG("bin_map early-return wrap-input-a-failed");
       return false;
@@ -1564,7 +1632,8 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *sv_b =
       r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_b->resource,
                                                      (unsigned)desc_in_b->buf.offset,
-                                                     width, height, input_fmt);
+                                                     width, height,
+                                                     total_invocations, input_fmt);
    if (!sv_b) {
       pipe_sampler_view_reference(&sv_a, NULL);
       IDM_LOG("bin_map early-return wrap-input-b-failed");
@@ -1657,37 +1726,43 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
          const enum pipe_format buf_fmt =
             output_buffer_fmt == PIPE_FORMAT_NONE ? fmt : output_buffer_fmt;
          const unsigned buf_bs = util_format_get_blocksize(buf_fmt);
-         out_box.width  = width * height * buf_bs;
-         out_box.height = 1;
-         out_box.depth  = 1;
-         void *out_bytes = pipe->buffer_map(pipe, buf_out->resource, 0,
-                                            PIPE_MAP_WRITE |
-                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                            &out_box, &out_xfer);
-         if (out_bytes) {
-            if (buf_fmt == fmt) {
-               r300vk_identity_map_copy_rows(out_bytes, width * buf_bs,
-                                             rt_map, rt_xfer->stride,
-                                             width, height, buf_bs,
-                                             total_invocations);
-            } else {
-               /* util_format_unpack_rgba unpacks each RT row to RGBA32_FLOAT, so
-                * output_buffer_fmt must be R32G32B32A32_FLOAT.  Clamp to
-                * total_invocations so the trailing padding lanes of the last
-                * raster row never overrun the output buffer. */
-               uint8_t *dst = out_bytes;
-               const uint8_t *src = rt_map;
-               uint64_t remaining = total_invocations;
-               for (unsigned r = 0; r < height && remaining; r++) {
-                  unsigned n = remaining < width ? (unsigned)remaining : width;
-                  util_format_unpack_rgba(fmt, dst, src, n);
-                  dst += (size_t)n * buf_bs;
-                  src += rt_xfer->stride;
-                  remaining -= n;
+         uint64_t out_byte_count = 0;
+         if (r300vk_idm_element_byte_count(total_invocations, buf_bs,
+                                           &out_byte_count)) {
+            out_box.width  = (int)out_byte_count;
+            out_box.height = 1;
+            out_box.depth  = 1;
+            void *out_bytes = pipe->buffer_map(
+               pipe, buf_out->resource, 0,
+               r300vk_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
+                                             out_byte_count,
+                                             buf_out->resource),
+               &out_box, &out_xfer);
+            if (out_bytes) {
+               if (buf_fmt == fmt) {
+                  r300vk_identity_map_copy_rows(out_bytes, width * buf_bs,
+                                                rt_map, rt_xfer->stride,
+                                                width, height, buf_bs,
+                                                total_invocations);
+               } else {
+                  /* util_format_unpack_rgba unpacks each RT row to RGBA32_FLOAT, so
+                   * output_buffer_fmt must be R32G32B32A32_FLOAT.  Clamp to
+                   * total_invocations so the trailing padding lanes of the last
+                   * raster row never overrun the output buffer. */
+                  uint8_t *dst = out_bytes;
+                  const uint8_t *src = rt_map;
+                  uint64_t remaining = total_invocations;
+                  for (unsigned r = 0; r < height && remaining; r++) {
+                     unsigned n = remaining < width ? (unsigned)remaining : width;
+                     util_format_unpack_rgba(fmt, dst, src, n);
+                     dst += (size_t)n * buf_bs;
+                     src += rt_xfer->stride;
+                     remaining -= n;
+                  }
                }
+               pipe->buffer_unmap(pipe, out_xfer);
+               copy_ok = true;
             }
-            pipe->buffer_unmap(pipe, out_xfer);
-            copy_ok = true;
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -1975,7 +2050,8 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *sv =
       r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in->resource,
                                                      (unsigned)desc_in->buf.offset,
-                                                     width, height, input_fmt);
+                                                     width, height,
+                                                     total_invocations, input_fmt);
    if (!sv) {
       IDM_LOG("1in1out early-return wrap-input-failed");
       return false;
@@ -2057,55 +2133,62 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
          const enum pipe_format buf_fmt =
             output_buffer_fmt == PIPE_FORMAT_NONE ? fmt : output_buffer_fmt;
          const unsigned buf_bs = util_format_get_blocksize(buf_fmt);
-         out_box.width  = width * height * buf_bs;
-         out_box.height = 1;
-         out_box.depth  = 1;
-         void *out_bytes = pipe->buffer_map(pipe, buf_out->resource, 0,
-                                            PIPE_MAP_WRITE |
-                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                            &out_box, &out_xfer);
-         if (out_bytes) {
-            if (buf_fmt == fmt) {
-               r300vk_identity_map_copy_rows(out_bytes, width * buf_bs,
-                                             rt_map, rt_xfer->stride,
-                                             width, height, buf_bs,
-                                             total_invocations);
-               copy_ok = true;
-            } else if (buf_fmt == PIPE_FORMAT_R32_FLOAT) {
-               /* Scalar carrier: util_format_unpack_rgba always yields four
-                * floats per pixel, so unpack each row to a staging buffer and
-                * gather the X lane at the 4-byte output stride. */
-               float *row_rgba = malloc((size_t)width * 4 * sizeof(float));
-               if (row_rgba) {
-                  float *dst = out_bytes;
+         uint64_t out_byte_count = 0;
+         if (r300vk_idm_element_byte_count(total_invocations, buf_bs,
+                                           &out_byte_count)) {
+            out_box.width  = (int)out_byte_count;
+            out_box.height = 1;
+            out_box.depth  = 1;
+            void *out_bytes = pipe->buffer_map(
+               pipe, buf_out->resource, 0,
+               r300vk_idm_buffer_write_flags((unsigned)desc_out->buf.offset,
+                                             out_byte_count,
+                                             buf_out->resource),
+               &out_box, &out_xfer);
+            if (out_bytes) {
+               if (buf_fmt == fmt) {
+                  r300vk_identity_map_copy_rows(out_bytes, width * buf_bs,
+                                                rt_map, rt_xfer->stride,
+                                                width, height, buf_bs,
+                                                total_invocations);
+                  copy_ok = true;
+               } else if (buf_fmt == PIPE_FORMAT_R32_FLOAT) {
+                  /* Scalar carrier: util_format_unpack_rgba always yields four
+                   * floats per pixel, so unpack each row to a staging buffer and
+                   * gather the X lane at the 4-byte output stride. */
+                  float *row_rgba = malloc((size_t)width * 4 * sizeof(float));
+                  if (row_rgba) {
+                     float *dst = out_bytes;
+                     const uint8_t *src = rt_map;
+                     uint64_t remaining = total_invocations;
+                     for (unsigned r = 0; r < height && remaining; r++) {
+                        unsigned n =
+                           remaining < width ? (unsigned)remaining : width;
+                        util_format_unpack_rgba(fmt, row_rgba, src, n);
+                        for (unsigned i = 0; i < n; i++)
+                           dst[i] = row_rgba[4 * i];
+                        dst += n;
+                        src += rt_xfer->stride;
+                        remaining -= n;
+                     }
+                     free(row_rgba);
+                     copy_ok = true;
+                  }
+               } else {
+                  uint8_t *dst = out_bytes;
                   const uint8_t *src = rt_map;
                   uint64_t remaining = total_invocations;
                   for (unsigned r = 0; r < height && remaining; r++) {
                      unsigned n = remaining < width ? (unsigned)remaining : width;
-                     util_format_unpack_rgba(fmt, row_rgba, src, n);
-                     for (unsigned i = 0; i < n; i++)
-                        dst[i] = row_rgba[4 * i];
-                     dst += n;
+                     util_format_unpack_rgba(fmt, dst, src, n);
+                     dst += (size_t)n * buf_bs;
                      src += rt_xfer->stride;
                      remaining -= n;
                   }
-                  free(row_rgba);
                   copy_ok = true;
                }
-            } else {
-               uint8_t *dst = out_bytes;
-               const uint8_t *src = rt_map;
-               uint64_t remaining = total_invocations;
-               for (unsigned r = 0; r < height && remaining; r++) {
-                  unsigned n = remaining < width ? (unsigned)remaining : width;
-                  util_format_unpack_rgba(fmt, dst, src, n);
-                  dst += (size_t)n * buf_bs;
-                  src += rt_xfer->stride;
-                  remaining -= n;
-               }
-               copy_ok = true;
+               pipe->buffer_unmap(pipe, out_xfer);
             }
-            pipe->buffer_unmap(pipe, out_xfer);
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -2277,27 +2360,31 @@ omul_copy_fp16_rt_to_buffer(struct pipe_context *pipe, struct pipe_resource *rt,
       memset(&out_box, 0, sizeof(out_box));
       const unsigned buf_bs =
          util_format_get_blocksize(PIPE_FORMAT_R32G32B32A32_FLOAT);
+      uint64_t out_byte_count = 0;
       out_box.x      = out_offset;
-      out_box.width  = width * height * buf_bs;
-      out_box.height = 1;
-      out_box.depth  = 1;
-      void *out_bytes = pipe->buffer_map(pipe, out_res, 0,
-                                         PIPE_MAP_WRITE |
-                                         PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                         &out_box, &out_xfer);
-      if (out_bytes) {
-         uint8_t *dst = out_bytes;
-         const uint8_t *src = rt_map;
-         uint64_t remaining = total;
-         for (unsigned r = 0; r < height && remaining; r++) {
-            unsigned n = remaining < width ? (unsigned)remaining : width;
-            util_format_unpack_rgba(PIPE_FORMAT_R16G16B16A16_FLOAT, dst, src, n);
-            dst += (size_t)n * buf_bs;
-            src += rt_xfer->stride;
-            remaining -= n;
+      if (r300vk_idm_element_byte_count(total, buf_bs, &out_byte_count)) {
+         out_box.width  = (int)out_byte_count;
+         out_box.height = 1;
+         out_box.depth  = 1;
+         void *out_bytes = pipe->buffer_map(
+            pipe, out_res, 0,
+            r300vk_idm_buffer_write_flags(out_offset, out_byte_count, out_res),
+            &out_box, &out_xfer);
+         if (out_bytes) {
+            uint8_t *dst = out_bytes;
+            const uint8_t *src = rt_map;
+            uint64_t remaining = total;
+            for (unsigned r = 0; r < height && remaining; r++) {
+               unsigned n = remaining < width ? (unsigned)remaining : width;
+               util_format_unpack_rgba(PIPE_FORMAT_R16G16B16A16_FLOAT,
+                                       dst, src, n);
+               dst += (size_t)n * buf_bs;
+               src += rt_xfer->stride;
+               remaining -= n;
+            }
+            pipe->buffer_unmap(pipe, out_xfer);
+            copy_ok = true;
          }
-         pipe->buffer_unmap(pipe, out_xfer);
-         copy_ok = true;
       }
       pipe->texture_unmap(pipe, rt_xfer);
    }
@@ -2587,7 +2674,7 @@ r300vk_omul_dispatch_replay(struct r300vk_device *device,
    for (unsigned i = 0; i < 4; i++) {
       views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
-         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+         width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
          for (unsigned k = 0; k < i; k++)
             pipe_sampler_view_reference(&views[k], NULL);
@@ -2729,7 +2816,7 @@ r300vk_mat4vec_dispatch_replay(struct r300vk_device *device,
    /* views[0] = the per-element vertices at the dispatch extent. */
    views[0] = r300vk_identity_map_wrap_input_as_sampler_view(
       device, buf[1]->resource, (unsigned)desc[1]->buf.offset,
-      width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
    if (!views[0])
       return false;
 
@@ -2838,7 +2925,7 @@ r300vk_qfmul_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *views[4] = { NULL, NULL, NULL, NULL };
    views[0] = r300vk_identity_map_wrap_input_as_sampler_view(
       device, buf[1]->resource, (unsigned)desc[1]->buf.offset,
-      width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+      width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
    if (!views[0])
       return false;
 
@@ -2958,7 +3045,7 @@ r300vk_oconj_dispatch_replay(struct r300vk_device *device,
    for (unsigned i = 0; i < 2; i++) {
       views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
-         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+         width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
          for (unsigned k = 0; k < i; k++)
             pipe_sampler_view_reference(&views[k], NULL);
@@ -3037,7 +3124,7 @@ r300vk_oaddsub_dispatch_replay(struct r300vk_device *device,
    for (unsigned i = 0; i < 4; i++) {
       views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[src[i]]->resource, (unsigned)desc[src[i]]->buf.offset,
-         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+         width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
          for (unsigned k = 0; k < i; k++)
             pipe_sampler_view_reference(&views[k], NULL);
@@ -3114,7 +3201,7 @@ r300vk_odiv_dispatch_replay(struct r300vk_device *device,
    for (unsigned i = 0; i < 4; i++) {
       views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
-         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+         width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
          for (unsigned k = 0; k < i; k++)
             pipe_sampler_view_reference(&views[k], NULL);
@@ -3219,7 +3306,7 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
    for (unsigned i = 0; i < 4; i++) {
       xv[i] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
-         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+         width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!xv[i]) {
          for (unsigned k = 0; k < i; k++)
             pipe_sampler_view_reference(&xv[k], NULL);
@@ -3245,15 +3332,17 @@ r300vk_otrans_dispatch_replay(struct r300vk_device *device,
    if (ok) {
       struct pipe_sampler_view *tx[4] = { NULL, NULL, NULL, NULL };
       tx[0] = r300vk_identity_map_wrap_input_as_sampler_view(
-         device, t_lo, 0, width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+         device, t_lo, 0, width, height, total,
+         PIPE_FORMAT_R32G32B32A32_FLOAT);
       tx[1] = r300vk_identity_map_wrap_input_as_sampler_view(
-         device, t_hi, 0, width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+         device, t_hi, 0, width, height, total,
+         PIPE_FORMAT_R32G32B32A32_FLOAT);
       tx[2] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[0]->resource, (unsigned)desc[0]->buf.offset, width, height,
-         PIPE_FORMAT_R32G32B32A32_FLOAT);
+         total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       tx[3] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[1]->resource, (unsigned)desc[1]->buf.offset, width, height,
-         PIPE_FORMAT_R32G32B32A32_FLOAT);
+         total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       ok = tx[0] && tx[1] && tx[2] && tx[3] &&
            omul_run_pass(pipe, screen, device, tx, pl->fs_cso3, pl->vs_cso, vb,
                          velems_cso, buf[4]->resource,
@@ -3320,7 +3409,7 @@ r300vk_qfm3_run(struct r300vk_device *device, const struct r300vk_pipeline *pl,
    for (unsigned i = 0; i < 3; i++) {
       views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
-         width, height, PIPE_FORMAT_R32G32B32A32_FLOAT);
+         width, height, total, PIPE_FORMAT_R32G32B32A32_FLOAT);
       if (!views[i]) {
          for (unsigned k = 0; k < i; k++)
             pipe_sampler_view_reference(&views[k], NULL);
@@ -3448,7 +3537,8 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *in_sv =
       r300vk_identity_map_wrap_input_as_sampler_view(device, in_buf->resource,
                                                      (unsigned)in_desc->buf.offset,
-                                                     width, height, fmt);
+                                                     width, height,
+                                                     total_invocations, fmt);
    if (!in_sv) {
       IDM_LOG("gather early-return wrap-input-failed");
       return false;
@@ -3569,22 +3659,28 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         const unsigned blocksize = util_format_get_blocksize(fmt);
+         uint64_t out_byte_count = 0;
          out_box.x      = (unsigned)out_desc->buf.offset;
-         out_box.width  = width * height * util_format_get_blocksize(fmt);
-         out_box.height = 1;
-         out_box.depth  = 1;
-         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
-                                            PIPE_MAP_WRITE |
-                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                            &out_box, &out_xfer);
-         if (out_bytes) {
-            r300vk_identity_map_copy_rows(out_bytes, width * util_format_get_blocksize(fmt),
-                                          rt_map, rt_xfer->stride,
-                                          width, height,
-                                          util_format_get_blocksize(fmt),
-                                          total_invocations);
-            pipe->buffer_unmap(pipe, out_xfer);
-            copy_ok = true;
+         if (r300vk_idm_element_byte_count(total_invocations, blocksize,
+                                           &out_byte_count)) {
+            out_box.width  = (int)out_byte_count;
+            out_box.height = 1;
+            out_box.depth  = 1;
+            void *out_bytes = pipe->buffer_map(
+               pipe, out_buf->resource, 0,
+               r300vk_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
+                                             out_byte_count,
+                                             out_buf->resource),
+               &out_box, &out_xfer);
+            if (out_bytes) {
+               r300vk_identity_map_copy_rows(out_bytes, width * blocksize,
+                                             rt_map, rt_xfer->stride,
+                                             width, height, blocksize,
+                                             total_invocations);
+               pipe->buffer_unmap(pipe, out_xfer);
+               copy_ok = true;
+            }
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -3701,7 +3797,8 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *sv_pred =
       r300vk_identity_map_wrap_input_as_sampler_view(device, pred_buf->resource,
                                                      (unsigned)pred_desc->buf.offset,
-                                                     width, height, fmt);
+                                                     width, height,
+                                                     total_invocations, fmt);
    if (!sv_pred) {
       IDM_LOG("predstore early-return pred-wrap-failed");
       return false;
@@ -3709,7 +3806,8 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *sv_val =
       r300vk_identity_map_wrap_input_as_sampler_view(device, val_buf->resource,
                                                      (unsigned)val_desc->buf.offset,
-                                                     width, height, fmt);
+                                                     width, height,
+                                                     total_invocations, fmt);
    if (!sv_val) {
       pipe_sampler_view_reference(&sv_pred, NULL);
       IDM_LOG("predstore early-return val-wrap-failed");
@@ -3745,7 +3843,17 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
       struct pipe_transfer *out_xfer = NULL;
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
-      out_box.width  = width * height * bpp;
+      uint64_t out_byte_count = 0;
+      if (!r300vk_idm_element_byte_count(total_invocations, bpp,
+                                         &out_byte_count)) {
+         pipe_resource_reference(&rt, NULL);
+         pipe_sampler_view_reference(&sv_val, NULL);
+         pipe_sampler_view_reference(&sv_pred, NULL);
+         IDM_LOG("predstore early-return out-seed-map-range-overflow");
+         return false;
+      }
+      out_box.x      = (unsigned)out_desc->buf.offset;
+      out_box.width  = (int)out_byte_count;
       out_box.height = 1; out_box.depth = 1;
       const void *out_map = pipe->buffer_map(pipe, out_buf->resource, 0,
                                              PIPE_MAP_READ, &out_box, &out_xfer);
@@ -3868,20 +3976,26 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
          struct pipe_transfer *out_xfer = NULL;
          struct pipe_box out_box;
          memset(&out_box, 0, sizeof(out_box));
+         uint64_t out_byte_count = 0;
          out_box.x      = (unsigned)out_desc->buf.offset;
-         out_box.width  = width * height * bpp;
-         out_box.height = 1; out_box.depth = 1;
-         void *out_bytes = pipe->buffer_map(pipe, out_buf->resource, 0,
-                                            PIPE_MAP_WRITE |
-                                            PIPE_MAP_DISCARD_WHOLE_RESOURCE,
-                                            &out_box, &out_xfer);
-         if (out_bytes) {
-            r300vk_identity_map_copy_rows(out_bytes, width * bpp,
-                                          rt_map, rt_xfer->stride,
-                                          width, height, bpp,
-                                          total_invocations);
-            pipe->buffer_unmap(pipe, out_xfer);
-            copy_ok = true;
+         if (r300vk_idm_element_byte_count(total_invocations, bpp,
+                                           &out_byte_count)) {
+            out_box.width  = (int)out_byte_count;
+            out_box.height = 1; out_box.depth = 1;
+            void *out_bytes = pipe->buffer_map(
+               pipe, out_buf->resource, 0,
+               r300vk_idm_buffer_write_flags((unsigned)out_desc->buf.offset,
+                                             out_byte_count,
+                                             out_buf->resource),
+               &out_box, &out_xfer);
+            if (out_bytes) {
+               r300vk_identity_map_copy_rows(out_bytes, width * bpp,
+                                             rt_map, rt_xfer->stride,
+                                             width, height, bpp,
+                                             total_invocations);
+               pipe->buffer_unmap(pipe, out_xfer);
+               copy_ok = true;
+            }
          }
          pipe->texture_unmap(pipe, rt_xfer);
       }
@@ -4198,16 +4312,23 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    }
    uint64_t total_invocations = 0;
    unsigned width = 0, height = 0;
-   if (!r300vk_idm_compute_raster_grid(dispatch, pl, &total_invocations, &width, &height))
+   if (!r300vk_idm_compute_raster_grid(dispatch, pl, &total_invocations,
+                                       &width, &height))
       return false;
+   if (total_invocations > 2048u) {
+      IDM_LOG("zpass early-return total_invocations=%llu exceeds-1d-axis-cap",
+              (unsigned long long)total_invocations);
+      return false;
+   }
    const uint32_t N = (uint32_t)total_invocations;
    IDM_LOG("dispatch N=%u", N);
 
    const enum pipe_format fmt = PIPE_FORMAT_R8G8B8A8_UNORM;
 
-   /* 1 x N RT: one rasterization slot per gid so distinct (x, 0) point
+   /* N x 1 RT: one rasterization slot per gid so distinct (x, 0) point
     * fragments do not collapse under per-pixel deduplication.  RT
-    * contents are unused; only the ZPASS counter matters. */
+    * contents are unused; only the ZPASS counter matters.  This untiled
+    * point form is bounded by the 2048-wide R300 render-target axis cap. */
    struct pipe_resource rt_templ;
    memset(&rt_templ, 0, sizeof(rt_templ));
    rt_templ.target     = PIPE_TEXTURE_2D;
@@ -4503,8 +4624,16 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
       struct pipe_transfer *in_xfer = NULL;
       struct pipe_box in_box;
       memset(&in_box, 0, sizeof(in_box));
+      uint64_t in_byte_count = 0;
+      if (!r300vk_idm_element_byte_count(total_invocations, bpp,
+                                         &in_byte_count)) {
+         pipe_resource_reference(&tex[0], NULL);
+         pipe_resource_reference(&tex[1], NULL);
+         IDM_LOG("multipass early-return in-map-range-overflow");
+         return false;
+      }
       in_box.x      = (unsigned)in_desc->buf.offset;
-      in_box.width  = width * height * bpp;
+      in_box.width  = (int)in_byte_count;
       in_box.height = 1; in_box.depth = 1;
       const void *in_map = pipe->buffer_map(pipe, in_buf->resource, 0,
                                             PIPE_MAP_READ, &in_box, &in_xfer);
@@ -5103,7 +5232,7 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
    for (unsigned i = 0; i < 2; i++) {
       views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
-         width, height, PIPE_FORMAT_R8G8B8A8_UNORM);
+         width, height, total, PIPE_FORMAT_R8G8B8A8_UNORM);
       if (!views[i]) {
          pipe_sampler_view_reference(&views[0], NULL);
          return false;
@@ -5306,7 +5435,7 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *view =
       r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[0]->resource, (unsigned)desc[0]->buf.offset,
-         width, height, PIPE_FORMAT_R8G8B8A8_UNORM);
+         width, height, total, PIPE_FORMAT_R8G8B8A8_UNORM);
    if (!view)
       return false;
 
@@ -5505,7 +5634,7 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
    struct pipe_sampler_view *view =
       r300vk_identity_map_wrap_input_as_sampler_view(
          device, buf[0]->resource, (unsigned)desc[0]->buf.offset,
-         in_w, in_h, PIPE_FORMAT_R8G8B8A8_UNORM);
+         in_w, in_h, in_total, PIPE_FORMAT_R8G8B8A8_UNORM);
    if (!view)
       return false;
 
