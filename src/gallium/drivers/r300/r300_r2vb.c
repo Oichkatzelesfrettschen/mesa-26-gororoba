@@ -1390,6 +1390,21 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
     return (exec || inspect) && v == R2VB_ROUTE_PASSTHROUGH;
 }
 
+/* MESA primitive -> R300_VAP_VF_CNTL__PRIM (only the classifier-admitted set). */
+static uint32_t r2vb_mesa_to_vf_prim(unsigned mode)
+{
+    switch (mode) {
+    case MESA_PRIM_POINTS: return R300_VAP_VF_CNTL__PRIM_POINTS;
+    case MESA_PRIM_LINES: return R300_VAP_VF_CNTL__PRIM_LINES;
+    case MESA_PRIM_LINE_STRIP: return R300_VAP_VF_CNTL__PRIM_LINE_STRIP;
+    case MESA_PRIM_LINE_LOOP: return R300_VAP_VF_CNTL__PRIM_LINE_LOOP;
+    case MESA_PRIM_TRIANGLES: return R300_VAP_VF_CNTL__PRIM_TRIANGLES;
+    case MESA_PRIM_TRIANGLE_STRIP: return R300_VAP_VF_CNTL__PRIM_TRIANGLE_STRIP;
+    case MESA_PRIM_TRIANGLE_FAN: return R300_VAP_VF_CNTL__PRIM_TRIANGLE_FAN;
+    default: return R300_VAP_VF_CNTL__PRIM_TRIANGLES;
+    }
+}
+
 /* Gate the MVP route on its own opt-in so the passthrough exec stays unaffected.
  * Returns true only for an MVP-shape candidate draw under R300_R2VB_MVP_EXEC. */
 bool r300_r2vb_route_mvp(struct r300_context *r300,
@@ -1489,11 +1504,68 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
     }
 
-    /* TODO re-ingest: draw the transformed positions in clip (plus the model's
-     * passthrough attributes from the application buffers) with the application
-     * fragment shader and the hardware viewport transform.  Until then fall back
-     * to gallivm so the rendered image is correct. */
+    /* Re-ingest: draw the transformed clip-space positions with the application
+     * fragment shader and the hardware viewport transform.  The producer
+     * redirected the color buffer to clip and clamped the scissor to one row, so
+     * mark the framebuffer, scissor, viewport, and ZB state dirty to restore the
+     * application's render target through prepare_for_rendering; then override the
+     * VTE for clip-space input (the SWTCL viewport state is VTX_XY_FMT) and emit a
+     * single FP32x4 position stream from clip at TCL_BYPASS.
+     *
+     * This feeds only position; an application FS that reads other varyings would
+     * see them undefined (the producer transforms position only).  The first
+     * milestone pairs it with a position-only FS; multi-stream passthrough of the
+     * model's other attributes is the follow-on. */
+    const struct pipe_viewport_state *vp = &r300->viewport;
+    float vport6[6] = {vp->scale[0], vp->translate[0], vp->scale[1],
+                       vp->translate[1], vp->scale[2], vp->translate[2]};
+    r300_mark_atom_dirty(r300, &r300->fb_state);
+    r300_mark_atom_dirty(r300, &r300->scissor_state);
+    r300_mark_atom_dirty(r300, &r300->viewport_state);
+    r300_mark_atom_dirty(r300, &r300->dsa_state);
+    r300->vertex_arrays_dirty = true;
+    if (r300_r2vb_prepare_states(r300, 32)) {
+        CS_LOCALS(r300);
+        struct r300_resource *cb = r300_resource(clip);
+        r300->rws->cs_add_buffer(&r300->cs, cb->buf,
+                                 RADEON_USAGE_READ | RADEON_USAGE_SYNCHRONIZED |
+                                     RADEON_PRIO_VERTEX_BUFFER,
+                                 RADEON_DOMAIN_GTT);
+        BEGIN_CS(28);
+        /* Hardware viewport transform for clip-space vertices (the #90 fix). */
+        OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6);
+        OUT_CS_TABLE(vport6, 6);
+        OUT_CS_REG(R300_VAP_VTE_CNTL,
+                   R300_VTX_W0_FMT | R300_VPORT_X_SCALE_ENA | R300_VPORT_X_OFFSET_ENA |
+                       R300_VPORT_Y_SCALE_ENA | R300_VPORT_Y_OFFSET_ENA |
+                       R300_VPORT_Z_SCALE_ENA | R300_VPORT_Z_OFFSET_ENA);
+        /* One FP32x4 position stream from clip, explicit identity swizzle. */
+        OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_0, 1);
+        OUT_CS(R300_DATA_TYPE_FLOAT_4 | R300_LAST_VEC);
+        OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_EXT_0, 1);
+        OUT_CS((R300_SWIZZLE_SELECT_X << R300_SWIZZLE_SELECT_X_SHIFT) |
+               (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
+               (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
+               (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) |
+               (0xf << R300_WRITE_ENA_SHIFT));
+        OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
+        OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, count - 1);
+        OUT_CS_PKT3(R300_PACKET3_3D_LOAD_VBPNTR, 3);
+        OUT_CS(1 | R300_VC_FORCE_PREFETCH);
+        OUT_CS(4 | (4 << 8));
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0xc0001000); /* PKT3_NOP -- the relocation form LOAD_VBPNTR expects */
+        OUT_CS(r300->rws->cs_lookup_buffer(&r300->cs, cb->buf) * 4);
+        OUT_CS_PKT3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
+        OUT_CS((count << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) |
+               r2vb_mesa_to_vf_prim(info->mode) | R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
+        /* Restore the SWTCL VTE for the next gallivm draw. */
+        OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+        END_CS;
+    }
+
     pipe_resource_reference(&clip, NULL);
     free(model);
-    return false;
+    return true;
 }
