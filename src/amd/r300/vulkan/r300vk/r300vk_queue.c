@@ -918,14 +918,36 @@ r300vk_bind_descriptor_ubo(struct r300vk_device *device,
 /* Bind the running push-constant window at CONST[0] for both stages -- the slot a
  * push-constants-only pipeline's lowered load_ubo(0, ...) reads.
  * r300_set_constant_buffer reads cb.user_buffer directly, so the bytes need no
- * GPU upload. */
+ * GPU upload.
+ *
+ * r300's constant file is float-only: nir_lower_int_to_float represents an
+ * integer by its float value, so each push-constant word the shader reads as an
+ * integer (int_word_mask, classified at compile) is converted from its raw int
+ * bits to (float)value here.  The conversion is exact for |value| < 2^24, the
+ * FP24 integer-exact envelope; int and uint coincide in that range.  Convert
+ * into the caller's scratch (valid through draw_vbo) so the recorded window is
+ * left intact for the next draw. */
 static void
-r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data)
+r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data,
+                           uint32_t int_word_mask, uint8_t *scratch)
 {
    struct pipe_context *pipe = device->pipe;
+   const uint8_t *bind_data = data;
+   if (int_word_mask) {
+      memcpy(scratch, data, 128);
+      for (unsigned w = 0; w < 32; w++) {
+         if (!(int_word_mask & (1u << w)))
+            continue;
+         int32_t iv;
+         memcpy(&iv, scratch + w * 4, sizeof(iv));
+         float fv = (float)iv;
+         memcpy(scratch + w * 4, &fv, sizeof(fv));
+      }
+      bind_data = scratch;
+   }
    struct pipe_constant_buffer cb;
    memset(&cb, 0, sizeof(cb));
-   cb.user_buffer = data;
+   cb.user_buffer = bind_data;
    cb.buffer_size = 128;
    pipe->set_constant_buffer(pipe, MESA_SHADER_VERTEX, 0, &cb);
    pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
@@ -1648,8 +1670,13 @@ r300vk_replay_draw(struct r300vk_device *device,
        * collision is rejected at compile); bind whichever this pipeline uses at
        * CONST[0].  The descriptor UBO bind takes the pipeline so it can select
        * the shader-chosen (set, binding) rather than the first UBO in layout. */
+      /* pc_scratch holds the int->float-converted push window; it must outlive
+       * the draw_vbo below (set_constant_buffer reads user_buffer directly). */
+      uint8_t pc_scratch[128];
       if (bound_pipeline && bound_pipeline->uses_push_constants)
-         r300vk_bind_push_constants(device, push_const);
+         r300vk_bind_push_constants(device, push_const,
+                                    bound_pipeline->push_const_int_word_mask,
+                                    pc_scratch);
       else
          r300vk_bind_descriptor_ubo(device, bound_pipeline, last_bind_dsets);
 
