@@ -18,7 +18,10 @@ struct pipe_draw_start_count_bias;
 /* Verdict from the simple-draw-class classifier: whether a draw is a candidate
  * for the fragment-ALU R2VB vertex route, or the reason it is not. */
 enum r300_r2vb_verdict {
-    R2VB_ROUTE_CANDIDATE = 0, /* structurally eligible (vertex transform still TODO) */
+    R2VB_ROUTE_PASSTHROUGH = 0, /* simple class AND identity VS: re-ingest the app
+                                 * vertex buffer directly at TCL_BYPASS, no transform */
+    R2VB_ROUTE_CANDIDATE,     /* simple class, non-identity VS: needs the fragment-ALU
+                               * transform producer before it can execute */
     R2VB_REJECT_HW_TCL,       /* has_tcl / num_vert_fpus != 0: not the SWTCL part */
     R2VB_REJECT_INDEXED,      /* indexed draw: producer indexes one slot per vertex */
     R2VB_REJECT_INSTANCED,    /* instance_count != 1 */

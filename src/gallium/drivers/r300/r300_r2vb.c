@@ -29,6 +29,7 @@
 #include <time.h>
 
 #include "util/u_inlines.h"
+#include "compiler/nir/nir.h"
 
 #include "r300_context.h"
 #include "r300_cs.h"
@@ -36,6 +37,7 @@
 #include "r300_fs.h"
 #include "r300_r2vb.h"
 #include "r300_reg.h"
+#include "r300_vs.h"
 
 static struct pipe_resource *r2vb_create_selftest_bo(struct r300_context *r300,
                                                      uint32_t width_bytes, uint32_t fill_val)
@@ -853,6 +855,55 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
  * structural gate; the vertex transform itself (compiling the bound VS onto the
  * fragment ALU) is the open follow-on, so a CANDIDATE verdict means "structurally
  * eligible", not "executable yet". */
+/* A bound vertex shader is a passthrough when every output is a verbatim copy of
+ * an input with no arithmetic, so the re-ingest can feed the application's vertex
+ * array straight to the VAP under TCL_BYPASS with no transform.  r300 keeps the
+ * VS in NIR live across both routes (r300_create_vs_state), so inspect it: allow
+ * only copies (mov), constants, and the input/output IO intrinsics; any real ALU,
+ * texture, or control flow means a transform the fragment-ALU producer must run.
+ * Conservative -- it flags only direct copies, so a vec4(in.xyz, 1.0) style VS is
+ * treated as non-passthrough and falls to the producer path rather than risking a
+ * mis-routed direct re-ingest. */
+static bool r300_vs_is_passthrough(struct r300_context *r300)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
+        return false;
+
+    nir_shader *nir = vs->state.ir.nir;
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    if (!impl)
+        return false;
+
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            switch (instr->type) {
+            case nir_instr_type_load_const:
+            case nir_instr_type_deref:
+                break;
+            case nir_instr_type_alu:
+                if (nir_instr_as_alu(instr)->op != nir_op_mov)
+                    return false;
+                break;
+            case nir_instr_type_intrinsic:
+                switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+                case nir_intrinsic_load_input:
+                case nir_intrinsic_load_deref:
+                case nir_intrinsic_store_output:
+                case nir_intrinsic_store_deref:
+                    break;
+                default:
+                    return false;
+                }
+                break;
+            default:
+                return false; /* tex, jump, phi, ... */
+            }
+        }
+    }
+    return true;
+}
+
 enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
                                                const struct pipe_draw_info *info,
                                                const struct pipe_draw_start_count_bias *draw)
@@ -884,7 +935,10 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
     default:
         return R2VB_REJECT_PRIM;
     }
-    return R2VB_ROUTE_CANDIDATE;
+    /* Structurally eligible.  An identity VS needs no transform -- the app vertex
+     * buffer can re-ingest directly (PASSTHROUGH); anything else needs the
+     * fragment-ALU transform producer first (CANDIDATE). */
+    return r300_vs_is_passthrough(r300) ? R2VB_ROUTE_PASSTHROUGH : R2VB_ROUTE_CANDIDATE;
 }
 
 bool r300_r2vb_route_draw(struct r300_context *r300,
@@ -909,11 +963,12 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
      * stream is route-eligible without per-draw log spam. */
     if (total == 1 || (total & 511u) == 0)
         fprintf(stderr,
-                "r2vb_route_tally total=%u candidate=%u hw_tcl=%u indexed=%u "
-                "instanced=%u count=%u prim=%u\n",
-                total, tally[R2VB_ROUTE_CANDIDATE], tally[R2VB_REJECT_HW_TCL],
-                tally[R2VB_REJECT_INDEXED], tally[R2VB_REJECT_INSTANCED],
-                tally[R2VB_REJECT_COUNT], tally[R2VB_REJECT_PRIM]);
+                "r2vb_route_tally total=%u passthrough=%u candidate=%u hw_tcl=%u "
+                "indexed=%u instanced=%u count=%u prim=%u\n",
+                total, tally[R2VB_ROUTE_PASSTHROUGH], tally[R2VB_ROUTE_CANDIDATE],
+                tally[R2VB_REJECT_HW_TCL], tally[R2VB_REJECT_INDEXED],
+                tally[R2VB_REJECT_INSTANCED], tally[R2VB_REJECT_COUNT],
+                tally[R2VB_REJECT_PRIM]);
 
     /* Route EXECUTION is the deferred increment (the fragment-ALU producer that
      * turns this draw's VS + vertex arrays into the GART vertex buffer).  Until it
