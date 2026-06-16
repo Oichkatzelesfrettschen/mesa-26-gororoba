@@ -30,6 +30,7 @@
 #include <time.h>
 
 #include "util/u_inlines.h"
+#include "util/format/u_format.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
@@ -175,6 +176,13 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
     out->data.location = FRAG_RESULT_COLOR;
     nir_store_var(&b, out, o, 0xf);
 
+    /* Declare UBO[0] so nir_to_rc resolves the four matrix load_ubo's to const-
+     * file EXTERNALS (read from the bound FS constant buffer at emit) rather than
+     * baking them as immediates -- without this the shader has externals_count=0
+     * and set_constant_buffer(FRAGMENT, 0) is silently ignored (the FS dots its
+     * input against baked garbage). */
+    b.shader->info.num_ubos = 1;
+
     if (getenv("R300_R2VB_VS_DUMP"))
         nir_print_shader(b.shader, stderr);
 
@@ -183,6 +191,42 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
     st.ir.nir = b.shader; /* create_fs_state takes ownership and precompiles */
     r300->r2vb_transform_fs = r300->context.create_fs_state(&r300->context, &st);
     return r300->r2vb_transform_fs;
+}
+
+/* Build a transform-FS with the MVP baked in as immediates: out = M * in_attr,
+ * where the four rows (already transposed so DP4(row_i, v) = (M*v)_i) are
+ * nir_imm_vec4 constants.  Hand-built load_ubo on r300 folds to immediate
+ * garbage (externals_count=0, so set_constant_buffer is ignored), so the matrix
+ * must travel in the program; the FS is therefore matrix-specific and rebuilt
+ * per draw (the caller deletes it).  Returns a pipe FS CSO or NULL. */
+static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const float rows[16])
+{
+    const nir_shader_compiler_options *options =
+        r300->screen->screen.nir_options[MESA_SHADER_FRAGMENT];
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options,
+                                                   "r300 r2vb mvp baked transform FS");
+    nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                           glsl_vec4_type(), "in_vtx");
+    in->data.location = VARYING_SLOT_VAR0;
+    in->data.interpolation = INTERP_MODE_FLAT;
+    nir_def *v = nir_load_var(&b, in);
+
+    nir_def *comp[4];
+    for (unsigned r = 0; r < 4; r++) {
+        nir_def *row = nir_imm_vec4(&b, rows[r * 4 + 0], rows[r * 4 + 1],
+                                    rows[r * 4 + 2], rows[r * 4 + 3]);
+        comp[r] = nir_fdot(&b, row, v);
+    }
+    nir_def *o = nir_vec4(&b, comp[0], comp[1], comp[2], comp[3]);
+    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                            glsl_vec4_type(), "out_color");
+    out->data.location = FRAG_RESULT_COLOR;
+    nir_store_var(&b, out, o, 0xf);
+
+    struct pipe_shader_state st = {0};
+    st.type = PIPE_SHADER_IR_NIR;
+    st.ir.nir = b.shader;
+    return r300->context.create_fs_state(&r300->context, &st);
 }
 
 /* Data-independent producer position stream: one window-space point per output
@@ -1344,4 +1388,196 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
         inspect = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
     return (exec || inspect) && v == R2VB_ROUTE_PASSTHROUGH;
+}
+
+/* MESA primitive -> R300_VAP_VF_CNTL__PRIM (only the classifier-admitted set). */
+static uint32_t r2vb_mesa_to_vf_prim(unsigned mode)
+{
+    switch (mode) {
+    case MESA_PRIM_POINTS: return R300_VAP_VF_CNTL__PRIM_POINTS;
+    case MESA_PRIM_LINES: return R300_VAP_VF_CNTL__PRIM_LINES;
+    case MESA_PRIM_LINE_STRIP: return R300_VAP_VF_CNTL__PRIM_LINE_STRIP;
+    case MESA_PRIM_LINE_LOOP: return R300_VAP_VF_CNTL__PRIM_LINE_LOOP;
+    case MESA_PRIM_TRIANGLES: return R300_VAP_VF_CNTL__PRIM_TRIANGLES;
+    case MESA_PRIM_TRIANGLE_STRIP: return R300_VAP_VF_CNTL__PRIM_TRIANGLE_STRIP;
+    case MESA_PRIM_TRIANGLE_FAN: return R300_VAP_VF_CNTL__PRIM_TRIANGLE_FAN;
+    default: return R300_VAP_VF_CNTL__PRIM_TRIANGLES;
+    }
+}
+
+/* Gate the MVP route on its own opt-in so the passthrough exec stays unaffected.
+ * Returns true only for an MVP-shape candidate draw under R300_R2VB_MVP_EXEC. */
+bool r300_r2vb_route_mvp(struct r300_context *r300,
+                         const struct pipe_draw_info *info,
+                         const struct pipe_draw_start_count_bias *draw)
+{
+    static int gate = -1;
+    if (gate < 0) {
+        const char *e = getenv("R300_R2VB_MVP_EXEC");
+        gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (!gate)
+        return false;
+    return r300_r2vb_classify_draw(r300, info, draw) == R2VB_ROUTE_CANDIDATE &&
+           r300_vs_is_mvp(r300);
+}
+
+/* Route-exec MVP path: run gl_Position = M * in_pos on the fragment ALU.  The
+ * producer transforms the application's model-space positions into a clip-space
+ * BO through the 4-DP4 transform-FS, emitted under the normal draw flow (where
+ * prepare_for_rendering carries the FS/RS/const atoms) -- not the r300_flush
+ * self-test, which is reentrant.  R300_R2VB_XFORM_VERIFY flushes and checks the
+ * BO holds M*model.  The re-ingest (draw the transformed positions with the
+ * application FS) is the remaining step; until then this returns false so the
+ * draw falls back to gallivm and the screen stays correct. */
+bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
+                             const struct pipe_draw_info *info,
+                             const struct pipe_draw_start_count_bias *draw)
+{
+    if (!r300->swtcl_vs_const0_ptr || r300->swtcl_vs_const0_size < 64)
+        return false;
+    if (!r300->velems || r300->velems->count == 0)
+        return false;
+    unsigned count = draw->count;
+    if (count == 0 || count > 4096)
+        return false;
+    const float *cols = (const float *)r300->swtcl_vs_const0_ptr;
+
+    /* Read the model-space positions.  in_pos is velem[0] (location 0) for an
+     * MVP VS; honor its buffer, offset, stride, and component count (a vec3
+     * position gets w = 1). */
+    struct pipe_vertex_element *pe = &r300->velems->velem[0];
+    struct pipe_vertex_buffer *vb = &r300->vertex_buffer[pe->vertex_buffer_index];
+    const uint8_t *base = NULL;
+    if (vb->is_user_buffer)
+        base = vb->buffer.user;
+    else if (vb->buffer.resource)
+        base = r300_resource(vb->buffer.resource)->malloced_buffer;
+    if (!base || !pe->src_stride)
+        return false;
+    base += vb->buffer_offset + pe->src_offset;
+    unsigned comps = util_format_get_nr_components(pe->src_format);
+
+    float (*model)[4] = malloc((size_t)count * sizeof(*model));
+    if (!model)
+        return false;
+    for (unsigned i = 0; i < count; i++) {
+        const float *v = (const float *)(base + (size_t)(draw->start + i) * pe->src_stride);
+        model[i][0] = v[0];
+        model[i][1] = comps > 1 ? v[1] : 0.0f;
+        model[i][2] = comps > 2 ? v[2] : 0.0f;
+        model[i][3] = comps > 3 ? v[3] : 1.0f;
+    }
+
+    struct pipe_resource *clip = r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
+    if (!clip) {
+        free(model);
+        return false;
+    }
+
+    /* Transpose the column-major MVP into DP4 rows (row_i = (col0[i]..col3[i])),
+     * then bake those rows into the transform-FS as immediates. */
+    float rows[16];
+    for (unsigned i = 0; i < 4; i++)
+        for (unsigned j = 0; j < 4; j++)
+            rows[i * 4 + j] = cols[j * 4 + i];
+    void *xfs = r300_r2vb_build_baked_transform_fs(r300, rows);
+    if (!xfs) {
+        pipe_resource_reference(&clip, NULL);
+        free(model);
+        return false;
+    }
+
+    /* Bind the baked transform-FS, recompute derived (RS) state for its single
+     * input, then emit that state and the producer under the normal draw flow. */
+    void *saved_fs = r300->fs.state;
+    r300->context.bind_fs_state(&r300->context, xfs);
+    r300_update_derived_state(r300);
+    if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
+        r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, true);
+    r300->context.bind_fs_state(&r300->context, saved_fs);
+    r300_update_derived_state(r300);
+    r300->context.delete_fs_state(&r300->context, xfs);
+
+    if (getenv("R300_R2VB_XFORM_VERIFY")) {
+        r300->context.flush(&r300->context, NULL, 0);
+        r2vb_verify_xform_readback(r300, clip, model, count, cols);
+    }
+
+    /* Re-ingest: draw the transformed clip-space positions with the application
+     * fragment shader and the hardware viewport transform.  The producer
+     * redirected the color buffer to clip and clamped the scissor to one row, so
+     * mark the framebuffer, scissor, viewport, and ZB state dirty to restore the
+     * application's render target through prepare_for_rendering; then override the
+     * VTE for clip-space input (the SWTCL viewport state is VTX_XY_FMT) and emit a
+     * single FP32x4 position stream from clip at TCL_BYPASS.
+     *
+     * This feeds only position; an application FS that reads other varyings would
+     * see them undefined (the producer transforms position only).  The first
+     * milestone pairs it with a position-only FS; multi-stream passthrough of the
+     * model's other attributes is the follow-on. */
+    const struct pipe_viewport_state *vp = &r300->viewport;
+    float vport6[6] = {vp->scale[0], vp->translate[0], vp->scale[1],
+                       vp->translate[1], vp->scale[2], vp->translate[2]};
+    r300_mark_atom_dirty(r300, &r300->fb_state);
+    r300_mark_atom_dirty(r300, &r300->scissor_state);
+    r300_mark_atom_dirty(r300, &r300->viewport_state);
+    r300_mark_atom_dirty(r300, &r300->dsa_state);
+    /* rs_state carries VAP_CLIP_CNTL, SU_CULL_MODE, and SC_CLIP_RULE, which the
+     * producer hand-rolled to CLIP_DISABLE / no-cull / pass-all.  Re-emit the
+     * application rasterizer state so those do not pollute the re-ingest in the
+     * same command stream (without this the triangle rasterizes far too large --
+     * a flush between the passes masks it, but that defeats the route). */
+    r300_mark_atom_dirty(r300, &r300->rs_state);
+    r300->vertex_arrays_dirty = true;
+    if (r300_r2vb_prepare_states(r300, 32)) {
+        CS_LOCALS(r300);
+        struct r300_resource *cb = r300_resource(clip);
+        /* Add clip with the SAME usage the producer used (READWRITE color), not a
+         * second READ/vertex add.  One synchronized read-write entry lets the
+         * single command stream order the producer's color write before the
+         * re-ingest's vertex fetch -- a second entry with a different usage made
+         * the fetch read stale (untransformed) data, which a flush masked.  This
+         * mirrors the proven synthetic loop, which adds its dual-use BO once. */
+        r300->rws->cs_add_buffer(&r300->cs, cb->buf,
+                                 RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
+                                     RADEON_PRIO_COLOR_BUFFER,
+                                 RADEON_DOMAIN_GTT);
+        BEGIN_CS(28);
+        /* Hardware viewport transform for clip-space vertices (the #90 fix). */
+        OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6);
+        OUT_CS_TABLE(vport6, 6);
+        OUT_CS_REG(R300_VAP_VTE_CNTL,
+                   R300_VTX_W0_FMT | R300_VPORT_X_SCALE_ENA | R300_VPORT_X_OFFSET_ENA |
+                       R300_VPORT_Y_SCALE_ENA | R300_VPORT_Y_OFFSET_ENA |
+                       R300_VPORT_Z_SCALE_ENA | R300_VPORT_Z_OFFSET_ENA);
+        /* One FP32x4 position stream from clip, explicit identity swizzle. */
+        OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_0, 1);
+        OUT_CS(R300_DATA_TYPE_FLOAT_4 | R300_LAST_VEC);
+        OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_EXT_0, 1);
+        OUT_CS((R300_SWIZZLE_SELECT_X << R300_SWIZZLE_SELECT_X_SHIFT) |
+               (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
+               (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
+               (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) |
+               (0xf << R300_WRITE_ENA_SHIFT));
+        OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
+        OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, count - 1);
+        OUT_CS_PKT3(R300_PACKET3_3D_LOAD_VBPNTR, 3);
+        OUT_CS(1 | R300_VC_FORCE_PREFETCH);
+        OUT_CS(4 | (4 << 8));
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0xc0001000); /* PKT3_NOP -- the relocation form LOAD_VBPNTR expects */
+        OUT_CS(r300->rws->cs_lookup_buffer(&r300->cs, cb->buf) * 4);
+        OUT_CS_PKT3(R300_PACKET3_3D_DRAW_VBUF_2, 0);
+        OUT_CS((count << R300_VAP_VF_CNTL__NUM_VERTICES__SHIFT) |
+               r2vb_mesa_to_vf_prim(info->mode) | R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_LIST);
+        /* Restore the SWTCL VTE for the next gallivm draw. */
+        OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+        END_CS;
+    }
+
+    pipe_resource_reference(&clip, NULL);
+    free(model);
+    return true;
 }

@@ -47,6 +47,17 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                           const struct pipe_draw_info *info,
                           const struct pipe_draw_start_count_bias *draw);
 
+/* MVP route: gate (R300_R2VB_MVP_EXEC) + exec.  route_mvp returns true for an
+ * MVP-shape candidate draw under the opt-in; exec_mvp_draw runs the fragment-ALU
+ * MVP transform producer (gl_Position = M * in_pos) under the normal draw flow
+ * and returns false (gallivm fallback) until the re-ingest half is built. */
+bool r300_r2vb_route_mvp(struct r300_context *r300,
+                         const struct pipe_draw_info *info,
+                         const struct pipe_draw_start_count_bias *draw);
+bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
+                             const struct pipe_draw_info *info,
+                             const struct pipe_draw_start_count_bias *draw);
+
 /* Emit the RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop into the
  * current command stream.  The caller binds the r300 fragment-shader state (the
  * "vertex compute" program) and the pass-1 geometry through the normal r300

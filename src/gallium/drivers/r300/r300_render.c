@@ -1279,6 +1279,13 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
         r300_r2vb_exec_passthrough_draw(r300, info, &draw))
         return;
 
+    /* MVP route (gl_Position = M * in_pos on the fragment ALU), separately gated
+     * by R300_R2VB_MVP_EXEC.  Returns false until the re-ingest half is built, so
+     * this falls through to gallivm with no behaviour change. */
+    if (r300_r2vb_route_mvp(r300, info, &draw) &&
+        r300_r2vb_exec_mvp_draw(r300, info, &draw))
+        return;
+
     draw_vbo(r300->draw, info, drawid_offset, NULL, &draw, 1, 0);
     draw_flush(r300->draw);
 }
