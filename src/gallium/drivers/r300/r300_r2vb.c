@@ -36,6 +36,7 @@
 #include "r300_fs.h"
 #include "r300_r2vb.h"
 #include "r300_reg.h"
+#include "r300_state_inlines.h"
 
 static struct pipe_resource *r2vb_create_selftest_bo(struct r300_context *r300,
                                                      uint32_t width_bytes, uint32_t fill_val)
@@ -217,7 +218,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * now embeds num_vertices points (num_vertices*4 dwords) where the base
      * counts assumed three triangle vertices (twelve dwords). */
     BEGIN_CS((stage3_color_bo ? 73 : 64) + r2vb_vp_override_dwords +
-             (int)num_vertices * 4 - 12);
+             (int)num_vertices * 4 - 12 + 2 /* GA_POINT_SIZE */);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -309,6 +310,15 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * rasterizer never runs, and the GTT color BO reads back all zero. */
     OUT_CS_REG(R300_SU_CULL_MODE, 0);
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
+    /* One-pixel points.  The loop reuses the caller's GA_POINT_SIZE, which is
+     * undefined for a caller that drew no points, so an oversized point would
+     * spill onto neighbouring slots' pixels and two producer points would
+     * collide on a shared pixel (the later point winning, leaving a slot with
+     * the wrong synthesized vertex).  Pin size 1.0 so point pv covers exactly
+     * pixel pv. */
+    OUT_CS_REG(R300_GA_POINT_SIZE,
+               (pack_float_16_6x(1.0f) << R300_POINTSIZE_X_SHIFT) |
+               (pack_float_16_6x(1.0f) << R300_POINTSIZE_Y_SHIFT));
     /* Self-supplied producer geometry: one POINT per output slot.  Declare one
      * FP32x4 position stream with pre-divided window coordinates (VTX_XY_FMT),
      * then emit num_vertices points at (slot+0.5, 0.5) in-IB via 3D_DRAW_IMMD.
