@@ -846,3 +846,78 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
     free(heap_attrs);
     return true;
 }
+
+/* Simple-draw-class classifier for the fragment-ALU R2VB vertex route.  The
+ * route replaces the gallivm CPU vertex transform on RS482 (num_vert_fpus == 0)
+ * for draws the proven producer + TCL_BYPASS re-ingest can express.  This is the
+ * structural gate; the vertex transform itself (compiling the bound VS onto the
+ * fragment ALU) is the open follow-on, so a CANDIDATE verdict means "structurally
+ * eligible", not "executable yet". */
+enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
+                                               const struct pipe_draw_info *info,
+                                               const struct pipe_draw_start_count_bias *draw)
+{
+    /* The route is the no-hardware-vertex-shader path: it only makes sense where
+     * the part has no VAP vertex FPUs and runs SWTCL. */
+    if (r300->screen->caps.has_tcl || r300->screen->caps.num_vert_fpus != 0)
+        return R2VB_REJECT_HW_TCL;
+    /* The producer rasterizes one point per output slot and the re-ingest draws a
+     * linear vertex list; an index buffer would need an index-aware producer. */
+    if (info->index_size != 0)
+        return R2VB_REJECT_INDEXED;
+    if (info->instance_count != 1)
+        return R2VB_REJECT_INSTANCED;
+    /* VAP_VF_MAX_VTX_INDX is 16-bit, so the re-ingest tops out below 2^16. */
+    if (draw->count == 0 || draw->count >= 65536)
+        return R2VB_REJECT_COUNT;
+    /* Only the topologies proven pixel-exact through the re-ingest (POINTS is in
+     * the set structurally; its rasterization is a separate open item). */
+    switch (info->mode) {
+    case MESA_PRIM_POINTS:
+    case MESA_PRIM_LINES:
+    case MESA_PRIM_LINE_STRIP:
+    case MESA_PRIM_LINE_LOOP:
+    case MESA_PRIM_TRIANGLES:
+    case MESA_PRIM_TRIANGLE_STRIP:
+    case MESA_PRIM_TRIANGLE_FAN:
+        break;
+    default:
+        return R2VB_REJECT_PRIM;
+    }
+    return R2VB_ROUTE_CANDIDATE;
+}
+
+bool r300_r2vb_route_draw(struct r300_context *r300,
+                          const struct pipe_draw_info *info,
+                          const struct pipe_draw_start_count_bias *draw)
+{
+    /* Gate read once: this runs on every draw, so do not getenv per call. */
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("R300_R2VB_ROUTE");
+        enabled = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (!enabled)
+        return false;
+
+    static unsigned tally[R2VB_VERDICT_COUNT];
+    static unsigned total;
+    enum r300_r2vb_verdict v = r300_r2vb_classify_draw(r300, info, draw);
+    tally[v]++;
+    total++;
+    /* Periodic verdict distribution so a real workload shows how much of its draw
+     * stream is route-eligible without per-draw log spam. */
+    if (total == 1 || (total & 511u) == 0)
+        fprintf(stderr,
+                "r2vb_route_tally total=%u candidate=%u hw_tcl=%u indexed=%u "
+                "instanced=%u count=%u prim=%u\n",
+                total, tally[R2VB_ROUTE_CANDIDATE], tally[R2VB_REJECT_HW_TCL],
+                tally[R2VB_REJECT_INDEXED], tally[R2VB_REJECT_INSTANCED],
+                tally[R2VB_REJECT_COUNT], tally[R2VB_REJECT_PRIM]);
+
+    /* Route EXECUTION is the deferred increment (the fragment-ALU producer that
+     * turns this draw's VS + vertex arrays into the GART vertex buffer).  Until it
+     * exists, every draw -- candidate or not -- falls back to gallivm, so the gate
+     * is a zero-risk classifier. */
+    return false;
+}

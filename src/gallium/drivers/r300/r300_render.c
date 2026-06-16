@@ -20,6 +20,7 @@
 
 #include "r300_cs.h"
 #include "r300_context.h"
+#include "r300_r2vb.h"
 #include "r300_screen_buffer.h"
 #include "r300_emit.h"
 #include "r300_reg.h"
@@ -955,8 +956,19 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
 
     r300_update_derived_state(r300);
 
-    draw_vbo(r300->draw, info, drawid_offset, NULL, &draw, 1, 0);
-    draw_flush(r300->draw);
+    /* RS482 fragment-ALU R2VB vertex route (experiment-gated by R300_R2VB_ROUTE).
+     * Classifies the draw against the simple-draw class and, once the producer is
+     * built, would transform + re-ingest it instead of running the gallivm CPU
+     * draw module.  Returns false today (classifier only), so this falls through
+     * to gallivm with zero behaviour change.  This is the single choke point for
+     * both GL and r300vk-Vulkan draws -- r300vk replays through this same gallium
+     * draw_vbo, so no separate Vulkan-side wiring is needed. */
+    if (r300_r2vb_route_draw(r300, info, &draw)) {
+        /* route execution: deferred increment (fragment-ALU producer). */
+    } else {
+        draw_vbo(r300->draw, info, drawid_offset, NULL, &draw, 1, 0);
+        draw_flush(r300->draw);
+    }
 }
 
 /* Object for rendering using Draw. */

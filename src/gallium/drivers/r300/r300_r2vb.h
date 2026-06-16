@@ -12,6 +12,37 @@
 struct r300_context;
 struct r300_resource;
 struct pipe_fence_handle;
+struct pipe_draw_info;
+struct pipe_draw_start_count_bias;
+
+/* Verdict from the simple-draw-class classifier: whether a draw is a candidate
+ * for the fragment-ALU R2VB vertex route, or the reason it is not. */
+enum r300_r2vb_verdict {
+    R2VB_ROUTE_CANDIDATE = 0, /* structurally eligible (vertex transform still TODO) */
+    R2VB_REJECT_HW_TCL,       /* has_tcl / num_vert_fpus != 0: not the SWTCL part */
+    R2VB_REJECT_INDEXED,      /* indexed draw: producer indexes one slot per vertex */
+    R2VB_REJECT_INSTANCED,    /* instance_count != 1 */
+    R2VB_REJECT_COUNT,        /* 0 or >= 65536 (VAP_VF_MAX_VTX_INDX is 16-bit) */
+    R2VB_REJECT_PRIM,         /* topology outside the proven set */
+    R2VB_VERDICT_COUNT
+};
+
+/* Classify one draw for the R2VB route. Pure inspection of info + draw + caps;
+ * no side effects. */
+enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
+                                               const struct pipe_draw_info *info,
+                                               const struct pipe_draw_start_count_bias *draw);
+
+/* Gated routing decision for r300_swtcl_draw_vbo.  Returns true only if the draw
+ * should be executed via the R2VB route instead of the gallivm draw module.
+ * Enabled by R300_R2VB_ROUTE=1; classifies + tallies each draw and logs the
+ * verdict distribution.  Route EXECUTION (the fragment-ALU producer that turns a
+ * real VS + vertex arrays into the GART vertex buffer) is a later increment, so
+ * this currently returns false even for candidates -- a zero-risk classifier with
+ * a gallivm fallback. */
+bool r300_r2vb_route_draw(struct r300_context *r300,
+                          const struct pipe_draw_info *info,
+                          const struct pipe_draw_start_count_bias *draw);
 
 /* Emit the RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop into the
  * current command stream.  The caller binds the r300 fragment-shader state (the
