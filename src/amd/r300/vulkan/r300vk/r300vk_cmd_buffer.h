@@ -176,12 +176,12 @@ struct r300vk_cmd_draw_indexed_indirect {
 
 /* One vkCmdPushConstants.  Recorded into the entry stream so replay applies the
  * window updates in order before each draw; the replay loop keeps a running
- * 128-byte (maxPushConstantsSize) buffer that a push-constants-only pipeline
- * binds at CONST[0].  data carries the size bytes written at offset. */
+ * maxPushConstantsSize buffer that a push-constants-only pipeline binds at
+ * CONST[0].  data carries the size bytes written at offset. */
 struct r300vk_cmd_push_constants {
    uint32_t              offset;
    uint32_t              size;
-   uint8_t               data[128];
+   uint8_t               data[R300VK_MAX_PUSH_CONSTANTS_SIZE];
 };
 
 struct r300vk_cmd_copy_image_to_buf {

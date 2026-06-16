@@ -121,7 +121,7 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
     *       tracking -- VkPhysicalDeviceMaintenance4Properties .maxBufferSize
     *       (header vulkan_core.h field, lock-step elevation lands with the
     *       r300vk maintenance4 advertise). */
-   props->maxPushConstantsSize = 128;
+   props->maxPushConstantsSize = R300VK_MAX_PUSH_CONSTANTS_SIZE;
 
    props->maxMemoryAllocationCount = 4096;
    props->maxSamplerAllocationCount = 4000;
