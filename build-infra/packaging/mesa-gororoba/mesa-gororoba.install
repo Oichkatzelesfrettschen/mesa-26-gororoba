@@ -40,10 +40,34 @@ Consequences to know:
 EOF
 }
 
+_ld_conf=/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf
+
+pre_install() {
+  # Drop an unowned pre-packaging conf so this package can own the file without
+  # a filesystem conflict; package() reinstalls it pointing at /usr/lib.
+  if [ -e "${_ld_conf}" ] && ! pacman -Qqo "${_ld_conf}" >/dev/null 2>&1; then
+    rm -f "${_ld_conf}"
+  fi
+}
+
+pre_upgrade() {
+  pre_install
+}
+
 post_install() {
+  # Re-index the linker path for this variant so GL/Vulkan (and X modesetting's
+  # libgbm dlopen) resolve before the next reboot.
+  ldconfig
   _notes
 }
 
 post_upgrade() {
+  ldconfig
   _notes
+}
+
+post_remove() {
+  # Re-index after removing this variant's owned conf so the linker cache no
+  # longer references it; the next system Mesa's post_install re-points.
+  ldconfig
 }
