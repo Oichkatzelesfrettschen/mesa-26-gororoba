@@ -953,8 +953,11 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
         (struct r300_vertex_stream_state *)r300->vertex_stream_state.state;
     struct r300_rs_block *rs = (struct r300_rs_block *)r300->rs_block_state.state;
 
-    fprintf(stderr, "r2vb_inspect velems_count=%u nvb=%u\n",
-            r300->velems ? r300->velems->count : 0, r300->nr_vertex_buffers);
+    unsigned vap_vtx_size = 0;
+    for (unsigned i = 0; r300->velems && i < r300->velems->count; i++)
+        vap_vtx_size += r300->velems->format_size[i] / 4;
+    fprintf(stderr, "r2vb_inspect velems_count=%u nvb=%u would_emit_vap_vtx_size=%u\n",
+            r300->velems ? r300->velems->count : 0, r300->nr_vertex_buffers, vap_vtx_size);
     if (vs) {
         fprintf(stderr, "r2vb_inspect vap_stream count=%u\n", vs->count);
         for (unsigned i = 0; i < vs->count && i < 8; i++) {
@@ -1099,10 +1102,25 @@ static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
         /* Force the vertex-array validate + emit to pick up the swapped buffers
          * (r300_emit_buffer_validate adds the BOs only when this is set). */
         r300->vertex_arrays_dirty = true;
+        /* VAP_VTX_SIZE: the per-vertex dword count the VAP fetches under
+         * TCL_BYPASS = the sum of the bound element sizes (the input vertex), as
+         * Mechanism A set it for its re-ingest.  Neither r300_emit_states (no
+         * vs_state when !has_tcl) nor r300_emit_draw_arrays emits it, and the
+         * inherited value is the gallivm draw-module output size -- the stale
+         * stride that is the suspected VAP/GA stall.  Set it explicitly. */
+        unsigned vap_vtx_size = 0;
+        for (unsigned i = 0; i < r300->velems->count; i++)
+            vap_vtx_size += r300->velems->format_size[i] / 4;
+        /* +2 dwords over the 9 emit_draw_arrays spares for this register write. */
         if (r300_prepare_for_rendering(r300,
                                        PREP_EMIT_STATES | PREP_VALIDATE_VBOS | PREP_EMIT_VARRAYS,
-                                       NULL, 9, draw->start, 0, -1))
+                                       NULL, 11, draw->start, 0, -1)) {
+            CS_LOCALS(r300);
+            BEGIN_CS(2);
+            OUT_CS_REG(R300_VAP_VTX_SIZE, vap_vtx_size);
+            END_CS;
             r300_emit_draw_arrays(r300, info->mode, draw->count);
+        }
         if (getenv("R300_R2VB_ROUTE_DEBUG")) {
             static bool once = false;
             if (!once) {
