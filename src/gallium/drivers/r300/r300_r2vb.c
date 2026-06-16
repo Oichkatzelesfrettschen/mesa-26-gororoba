@@ -978,8 +978,13 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
             r300->context.bind_fs_state(&r300->context, xfs);
             r300_r2vb_set_transform_consts(r300, r2vb_test_mvp_cols);
             r300_update_derived_state(r300);
-            r300_emit_dirty_state(r300);
-            fprintf(stderr, "r2vb_xform bound transform-FS + transposed test MVP\n");
+            /* Reserve CS space and emit the transform-FS US code + const file +
+             * RS routing through the real prepare path (not raw emit_dirty_state,
+             * which left an empty IB -> RS4xx zero_ib).  Reserve generously for
+             * the producer the compute loop emits next. */
+            bool prepared = r300_r2vb_prepare_states(r300, 1024);
+            fprintf(stderr, "r2vb_xform bound transform-FS + transposed test MVP prepared=%d\n",
+                    prepared);
         }
     }
 

@@ -90,6 +90,11 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        uint32_t stage3_height,
                                        bool transform_mode);
 
+/* Reserve CS space + emit dirty state via the real prepare_for_rendering path
+ * (defined in r300_render.c).  Used by the MVP producer to land a freshly bound
+ * transform-FS + its const file in the IB. */
+bool r300_r2vb_prepare_states(struct r300_context *r300, unsigned cs_dwords);
+
 /* Gated self-test for the RS482 HB_TCL umbrella, fired once from r300_flush with
  * from_flush=true so the loop appends to a CS a real draw has populated.
  * R300_HB_TCL=1 enables the umbrella; R300_R2VB_TIMING=capture|submit selects

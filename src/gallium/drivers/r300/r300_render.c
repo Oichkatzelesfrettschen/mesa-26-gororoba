@@ -314,6 +314,18 @@ static bool immd_is_good_idea(struct r300_context *r300,
     return true;
 }
 
+/* Reserve CS space and emit dirty state for the R2VB MVP producer.  That code
+ * lives in r300_r2vb.c and cannot see the static prepare_for_rendering or its
+ * flags enum; this thin wrapper runs the real reserve + emit_dirty_state path
+ * (proper space accounting and validation) so a freshly bound transform-FS and
+ * its const file reach the IB -- the raw r300_emit_dirty_state route left an
+ * empty IB (RS4xx zero_ib).  cs_dwords reserves room for the producer the caller
+ * emits next. */
+bool r300_r2vb_prepare_states(struct r300_context *r300, unsigned cs_dwords)
+{
+    return r300_prepare_for_rendering(r300, PREP_EMIT_STATES, NULL, cs_dwords, 0, 0, -1);
+}
+
 /*****************************************************************************
  * The HWTCL draw functions.                                                 *
  ****************************************************************************/
