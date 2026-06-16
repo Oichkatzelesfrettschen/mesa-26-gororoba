@@ -195,6 +195,23 @@ package() {
   printf '%s\n' '/usr/lib' \
     > "${pkgdir}/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf"
 
+  # Boot-safety guard.  The release variant installs the gbm/glvnd runtime as
+  # real /usr/lib files, but nothing fails the build if a meson option ever
+  # drops gbm -- the package would still install and black-screen the console on
+  # the next reboot (X modesetting dlopens libgbm.so.1 by SONAME; glvnd resolves
+  # libGLX_mesa.so.0 / libEGL_mesa.so.0).  Refuse to ship a system Mesa missing
+  # any of them.
+  local _need _missing=""
+  for _need in libgbm.so.1 libGLX_mesa.so.0 libEGL_mesa.so.0; do
+    [ -e "${pkgdir}/usr/lib/${_need}" ] || _missing="${_missing} /usr/lib/${_need}"
+  done
+  if [ -n "${_missing}" ]; then
+    echo "ERROR: boot-critical loader objects missing from the staged package:${_missing}" >&2
+    echo "       the gbm/glvnd runtime did not build or stage; refusing to ship a system" >&2
+    echo "       Mesa that black-screens X (modesetting dlopen libgbm.so.1) on reboot." >&2
+    return 1
+  fi
+
   # Mesa ships its license summary as docs/license.rst (Arch/CachyOS practice).
   # A missing license is a packaging defect, not something to swallow silently.
   if [ -f "${pkgname}/docs/license.rst" ]; then
