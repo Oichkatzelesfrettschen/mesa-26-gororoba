@@ -607,34 +607,72 @@ r300vk_nir_uses_sampler_set_above_zero(nir_shader *nir, uint32_t *out_set,
    return false;
 }
 
-/* Declare a block-0 nir_var_mem_ubo variable sized to size_bytes.  nir_to_rc
- * sizes the constant file from nir_var_mem_ubo VARIABLES (glsl_get_explicit_size
- * of the interface type), not from the load_ubo accesses a lowering pass emits.
- * A shader that reaches nir_to_rc with a load_ubo(block 0) but no backing UBO
- * variable makes ntr_setup_uniforms count zero externals (externals_count == 0),
- * so the wpos viewport-transform STATE constants rc_transform_fragment_wpos adds
- * (RC_STATE_R300_VIEWPORT_SCALE/OFFSET) take hardware constant registers c0/c1 --
- * the very registers a CONST[0] load_ubo reads.  The replay's CONST[0] upload then
- * overwrites the viewport scale and gl_FragCoord reconstructs to garbage.  One
- * declared external vec4 pushes those state constants above c0. */
-static void
-r300vk_declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
+static const struct glsl_type *
+r300vk_block0_ubo_type(unsigned size_bytes)
 {
-   const struct glsl_type *ubo_type =
-      glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(size_bytes, 16), 16);
-   nir_variable *ubo =
-      nir_variable_create(nir, nir_var_mem_ubo, ubo_type, "r300vk_block0_ubo");
-   ubo->data.driver_location = 0;
-   ubo->data.binding = 0;
-   ubo->data.explicit_binding = 1;
+   return glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(size_bytes, 16), 16);
+}
+
+static const struct glsl_type *
+r300vk_block0_ubo_interface_type(const struct glsl_type *ubo_type)
+{
    struct glsl_struct_field field = {
       .type = ubo_type,
       .name = "data",
       .location = -1,
    };
-   ubo->interface_type =
-      glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false,
-                          "__r300vk_block0_ubo");
+   return glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false,
+                              "__r300vk_block0_ubo");
+}
+
+static unsigned
+r300vk_ubo_interface_size(const nir_variable *ubo)
+{
+   return ubo->interface_type
+          ? glsl_get_explicit_size(ubo->interface_type, false) : 0;
+}
+
+static nir_variable *
+r300vk_find_block0_ubo(nir_shader *nir)
+{
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
+      if (var->data.driver_location == 0)
+         return var;
+   }
+
+   return NULL;
+}
+
+static void
+r300vk_shape_block0_ubo(nir_variable *ubo, unsigned size_bytes)
+{
+   const struct glsl_type *ubo_type = r300vk_block0_ubo_type(size_bytes);
+
+   ubo->type = ubo_type;
+   ubo->data.driver_location = 0;
+   ubo->data.binding = 0;
+   ubo->data.explicit_binding = 1;
+   ubo->interface_type = r300vk_block0_ubo_interface_type(ubo_type);
+}
+
+/* Ensure block 0 has a sized UBO declaration before r300g constant-file setup.
+ * The compiler sizes RC constants from nir_var_mem_ubo interface declarations;
+ * load_ubo instructions alone do not carry the declaration size.  Reusing a
+ * prior UBO0 declaration prevents an unused application block at index 0 from
+ * colliding with a second synthetic UBO0 variable of a different interface
+ * size. */
+static void
+r300vk_declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
+{
+   nir_variable *ubo = r300vk_find_block0_ubo(nir);
+   if (!ubo) {
+      ubo = nir_variable_create(nir, nir_var_mem_ubo,
+                                r300vk_block0_ubo_type(size_bytes),
+                                "r300vk_block0_ubo");
+   }
+   if (r300vk_ubo_interface_size(ubo) < size_bytes)
+      r300vk_shape_block0_ubo(ubo, size_bytes);
+
    nir->info.num_ubos = MAX2(nir->info.num_ubos, 1);
    nir->info.first_ubo_is_default_ubo = true;
 }
