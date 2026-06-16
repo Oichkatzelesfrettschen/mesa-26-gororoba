@@ -1077,7 +1077,9 @@ r300vk_compile_shader(struct r300vk_device *device,
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                        "r300vk: %s shader uses a descriptor resource r300's "
                        "single read-only constant file cannot represent "
-                       "(storage buffer, multiple UBOs, or a dynamic UBO index)",
+                       "(only one static UBO descriptor is supported; storage "
+                       "buffers, sampled resources, multiple UBOs, and dynamic "
+                       "descriptor indices are rejected)",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
    }

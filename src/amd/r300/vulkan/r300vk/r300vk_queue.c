@@ -179,6 +179,39 @@ r300vk_index_value_load(const uint8_t *ptr, uint32_t index_size)
    }
 }
 
+static bool
+r300vk_indexed_draw_map_indices(struct pipe_context *pipe,
+                                const struct r300vk_cmd_draw_indexed *draw,
+                                uint32_t start_elem,
+                                uint32_t count,
+                                const uint8_t **indices,
+                                struct pipe_transfer **index_xfer)
+{
+   *indices = NULL;
+   *index_xfer = NULL;
+
+   if (count == 0)
+      return true;
+
+   if (!draw->index_buffer || !draw->index_buffer->resource ||
+       draw->index_size == 0)
+      return false;
+
+   const uint64_t index_offset64 = (uint64_t)start_elem * draw->index_size;
+   const uint64_t index_span64 =
+      (uint64_t)(count - 1u) * draw->index_size + draw->index_size;
+   if (index_offset64 > UINT_MAX || index_span64 > UINT_MAX ||
+       index_span64 > draw->index_buffer->size ||
+       index_offset64 > draw->index_buffer->size - index_span64)
+      return false;
+
+   *indices = pipe_buffer_map_range(pipe, draw->index_buffer->resource,
+                                    (unsigned)index_offset64,
+                                    (unsigned)index_span64, PIPE_MAP_READ,
+                                    index_xfer);
+   return *indices != NULL;
+}
+
 /* Indexed SW-TCL fetches the synthetic VertexIndex attribute through the same
  * index buffer as app vertex attributes, so the stream must be an identity
  * table over the fetched index + vertexOffset domain. */
@@ -199,21 +232,10 @@ r300vk_indexed_vertex_index_stream_count(
        draw->index_size == 0)
       return false;
 
-   const uint64_t index_offset64 = (uint64_t)start_elem * draw->index_size;
-   const uint64_t index_span64 =
-      (uint64_t)(count - 1u) * draw->index_size + draw->index_size;
-   if (index_offset64 > UINT_MAX || index_span64 > UINT_MAX ||
-       index_span64 > draw->index_buffer->size ||
-       index_offset64 > draw->index_buffer->size - index_span64)
-      return false;
-
    struct pipe_transfer *index_xfer = NULL;
-   const uint8_t *indices =
-      pipe_buffer_map_range(pipe, draw->index_buffer->resource,
-                            (unsigned)index_offset64,
-                            (unsigned)index_span64, PIPE_MAP_READ,
-                            &index_xfer);
-   if (!indices)
+   const uint8_t *indices = NULL;
+   if (!r300vk_indexed_draw_map_indices(pipe, draw, start_elem, count,
+                                        &indices, &index_xfer))
       return false;
 
    int64_t max_vertex_index = -1;
@@ -235,6 +257,89 @@ r300vk_indexed_vertex_index_stream_count(
 
    *total_count = (uint32_t)max_vertex_index + 1u;
    return true;
+}
+
+static bool
+r300vk_vertex_index_inside_bindings(const struct r300vk_pipeline *pl,
+                                    const struct pipe_vertex_buffer *vb_cache,
+                                    const VkDeviceSize *vb_sizes,
+                                    const VkDeviceSize *vb_strides,
+                                    uint32_t vb_strides_mask,
+                                    int64_t vertex_index)
+{
+   if (!pl || pl->vertex_binding_mask == 0)
+      return true;
+   if (vertex_index < 0)
+      return false;
+
+   const uint64_t vertex = (uint64_t)vertex_index;
+   for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
+      if (!(pl->vertex_binding_mask & BITFIELD_BIT(b)))
+         continue;
+
+      const VkDeviceSize stride64 = (vb_strides_mask & BITFIELD_BIT(b))
+                                    ? vb_strides[b] : pl->vertex_stride[b];
+      if (stride64 > UINT32_MAX)
+         return false;
+
+      const uint32_t stride = (uint32_t)stride64;
+      const uint32_t extent = pl->vertex_binding_extent[b];
+      if (extent == 0 || !vb_cache[b].buffer.resource)
+         return false;
+
+      const VkDeviceSize offset = vb_cache[b].buffer_offset;
+      const VkDeviceSize size = vb_sizes[b];
+      const VkDeviceSize bytes = size > offset ? size - offset : 0;
+      if (bytes < extent)
+         return false;
+
+      if (stride == 0)
+         continue;
+
+      const VkDeviceSize vertices = 1 + (bytes - extent) / stride;
+      if (vertex >= vertices)
+         return false;
+   }
+
+   return true;
+}
+
+static uint32_t
+r300vk_robust_indexed_vertex_count(struct pipe_context *pipe,
+                                   const struct r300vk_pipeline *pl,
+                                   const struct pipe_vertex_buffer *vb_cache,
+                                   const VkDeviceSize *vb_sizes,
+                                   const VkDeviceSize *vb_strides,
+                                   uint32_t vb_strides_mask,
+                                   const struct r300vk_cmd_draw_indexed *draw,
+                                   uint32_t start_elem,
+                                   uint32_t count)
+{
+   if (!pl || pl->vertex_binding_mask == 0 || count == 0)
+      return count;
+
+   struct pipe_transfer *index_xfer = NULL;
+   const uint8_t *indices = NULL;
+   if (!r300vk_indexed_draw_map_indices(pipe, draw, start_elem, count,
+                                        &indices, &index_xfer))
+      return 0;
+
+   uint32_t clamped_count = count;
+   for (uint32_t i = 0; i < count; i++) {
+      const uint32_t index =
+         r300vk_index_value_load(indices + (uint64_t)i * draw->index_size,
+                                 draw->index_size);
+      const int64_t vertex_index = (int64_t)index + draw->vertex_offset;
+      if (!r300vk_vertex_index_inside_bindings(pl, vb_cache, vb_sizes,
+                                               vb_strides, vb_strides_mask,
+                                               vertex_index)) {
+         clamped_count = i;
+         break;
+      }
+   }
+
+   pipe_buffer_unmap(pipe, index_xfer);
+   return clamped_count;
 }
 
 static bool
@@ -1884,6 +1989,9 @@ r300vk_replay_draw(struct r300vk_device *device,
                                                : (unsigned)usable)
                    : 0;
       draw.index_bias = di->vertex_offset;
+      draw.count = r300vk_robust_indexed_vertex_count(
+         pipe, bound_pipeline, vb_cache, vb_sizes, vb_strides, vb_strides_mask,
+         di, draw.start, draw.count);
       if (synthetic_streams_ready && bound_pipeline &&
           bound_pipeline->needs_vertex_id_stream) {
          synthetic_streams_ready =
