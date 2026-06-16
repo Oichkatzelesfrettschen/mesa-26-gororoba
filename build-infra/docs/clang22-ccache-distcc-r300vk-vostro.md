@@ -47,12 +47,14 @@ this host environment so Ninja has enough work to keep the reachable distcc
 volunteers busy.  The environment owns `DISTCC_HOSTS` at source time so
 login-shell defaults cannot silently route this lane to stale workers.  The
 environment pins `PATH` and `CCACHE_PATH` to `/usr/bin` first so ccache resolves
-the packaged Clang 22 tools.  The generated Meson toolchain overlay resolves
-clang, clang++, llvm-config, and llvm binutils to absolute paths, then pairs
-them with `['ccache', compiler]` for the default ccache-first lane.  The
-Makefile passes the sourced cache/distcc environment explicitly through `flock`
-to compiler-bearing Ninja recipes so the compiler search path used by ccache
-matches the configured lane.
+the packaged Clang 22 tools on the Vostro.  The generated Meson toolchain
+overlay keeps compiler entries as versioned command names for the ccache and
+distcc lanes, so distcc volunteers search their own PATH for `clang-22` and
+`clang++-22` instead of receiving a client-absolute path.  The local `direct`
+lane uses absolute compiler paths, and the generated LLVM utility entries use
+resolved local tool paths.  The Makefile passes the sourced cache/distcc
+environment explicitly through `flock` to compiler-bearing Ninja recipes so the
+compiler search path used by ccache matches the configured lane.
 
 Mode matrix:
 
