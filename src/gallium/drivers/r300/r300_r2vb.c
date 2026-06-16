@@ -355,13 +355,19 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS_32F(1.0f);
         /* Stream 1: the synthesized vertex this slot carries (flat attribute).
          * For the probe this is a triangle in window coords; the passthrough
-         * fragment program writes it to the BO slot verbatim. */
+         * fragment program writes it to the BO slot.  The US_OUT_FMT C4_32_FP
+         * BGRA channel-select stores the fragment as memory=(o.b,o.g,o.r,o.a),
+         * and stage 2 re-ingests memory order as the vertex (x,y,z,w).  So the
+         * attribute must be pre-swizzled to (z,y,x,w): o.r=z, o.g=y, o.b=x,
+         * o.a=w -> memory=(x,y,z,w).  Emitting (x,y,z,w) instead would store the
+         * vertex x in memory[2] and put z(=0.5) in memory[0], collapsing every
+         * re-ingested vertex's X to 0.5 (a degenerate vertical line). */
         float a = pv >= 1 ? 1.0f : 0.0f;
         float b = pv >= 2 ? 1.0f : 0.0f;
-        OUT_CS_32F(10.0f + a * 44.0f - b * 22.0f);
-        OUT_CS_32F(10.0f + b * 44.0f);
-        OUT_CS_32F(0.5f);
-        OUT_CS_32F(1.0f);
+        OUT_CS_32F(0.5f);                            /* o.r = z */
+        OUT_CS_32F(10.0f + b * 44.0f);               /* o.g = y */
+        OUT_CS_32F(10.0f + a * 44.0f - b * 22.0f);   /* o.b = x */
+        OUT_CS_32F(1.0f);                            /* o.a = w */
     }
 
     /* Stage 2 -- the full cb_flush_clean barrier (r300_context.c / r300_emit_
