@@ -87,7 +87,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        uint32_t reingest_vf_prim,
                                        struct r300_resource *stage3_color_bo,
                                        uint32_t stage3_width,
-                                       uint32_t stage3_height);
+                                       uint32_t stage3_height,
+                                       bool transform_mode);
 
 /* Gated self-test for the RS482 HB_TCL umbrella, fired once from r300_flush with
  * from_flush=true so the loop appends to a CS a real draw has populated.

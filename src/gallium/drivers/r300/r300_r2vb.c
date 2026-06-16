@@ -23,6 +23,7 @@
  */
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -251,12 +252,66 @@ static void r300_r2vb_mvp_init_selftest(struct r300_context *r300, unsigned coun
     }
 }
 
+/* Fixed test matrix for the R2VB transform self-check (column-major): a
+ * scale-by-2 + translate-by-5 in x and y, so M*v = (2x+5w, 2y+5w, 2z, w).
+ * Distinct enough that a transpose or routing error is visible in the readback. */
+static const float r2vb_test_mvp_cols[16] = {
+    2, 0, 0, 0,  0, 2, 0, 0,  0, 0, 2, 0,  5, 5, 0, 1,
+};
+/* set_constant_buffer keeps the pointer, not a copy, so the transposed rows need
+ * process-lifetime storage. */
+static float r2vb_mvp_rows[16];
+
+/* Load FS const file 0 with the transpose of a column-major MVP so each DP4 row
+ * is a matrix row: DP4(row_i, v) = (M*v)_i, row_i = (col0[i],col1[i],col2[i],col3[i]). */
+static void r300_r2vb_set_transform_consts(struct r300_context *r300, const float *cols)
+{
+    for (unsigned i = 0; i < 4; i++)
+        for (unsigned j = 0; j < 4; j++)
+            r2vb_mvp_rows[i * 4 + j] = cols[j * 4 + i];
+    struct pipe_constant_buffer cb = {0};
+    cb.buffer_size = 64;
+    cb.user_buffer = r2vb_mvp_rows;
+    r300->context.set_constant_buffer(&r300->context, MESA_SHADER_FRAGMENT, 0, &cb);
+}
+
+/* Read back the producer output BO and compare each slot to the CPU column-major
+ * M*model_vert.  FP24 fragment ALU, so a small tolerance, not bit-exactness. */
+static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_resource *res,
+                                       const float (*model)[4], uint32_t count, const float *cols)
+{
+    struct pipe_transfer *xfer = NULL;
+    struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
+    const float *got =
+        r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
+    if (!got)
+        return;
+    uint32_t pass = 0;
+    for (uint32_t s = 0; s < count; s++) {
+        float exp[4] = {0, 0, 0, 0};
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < 4; j++)
+                exp[i] += cols[j * 4 + i] * model[s][j];
+        const float *g = &got[s * 4];
+        bool ok = fabsf(g[0] - exp[0]) <= 0.05f && fabsf(g[1] - exp[1]) <= 0.05f &&
+                  fabsf(g[2] - exp[2]) <= 0.05f && fabsf(g[3] - exp[3]) <= 0.05f;
+        if (ok)
+            pass++;
+        if (s < 4)
+            fprintf(stderr,
+                    "  xform[%u] got=%.3f,%.3f,%.3f,%.3f exp=%.3f,%.3f,%.3f,%.3f %s\n", s,
+                    g[0], g[1], g[2], g[3], exp[0], exp[1], exp[2], exp[3], ok ? "OK" : "MISMATCH");
+    }
+    fprintf(stderr, "r2vb_xform_verify pass=%u/%u\n", pass, count);
+    r300->context.buffer_unmap(&r300->context, xfer);
+}
+
 void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        struct r300_resource *output_gart_bo,
                                        uint32_t output_gart_bo_offset, uint32_t num_vertices,
                                        const float (*vertex_attrs)[4], uint32_t reingest_vf_prim,
                                        struct r300_resource *stage3_color_bo, uint32_t stage3_width,
-                                       uint32_t stage3_height)
+                                       uint32_t stage3_height, bool transform_mode)
 {
     CS_LOCALS(r300);
 
@@ -397,8 +452,17 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * channel select (matching the ARGB32323232 memory order) stores each
      * fragment as four 32-bit floats, so the re-ingest reads the synthesized
      * vertex (x,y,z,w) from memory order (b,g,r,a).  Stage 3 inherits this. */
-    OUT_CS_REG(R300_US_OUT_FMT_0, R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
-                                      R300_C2_SEL_R | R300_C3_SEL_A);
+    /* Channel select decides how the FS output lands in the FP32x4 BO.  The
+     * passthrough producer copies a pre-swizzled (z,y,x,w) attribute through a
+     * BGRA select so memory comes out (x,y,z,w).  The transform producer's FS
+     * instead computes M*v and outputs (x,y,z,w) directly, so it uses the RGBA
+     * identity select -- memory = (o.r,o.g,o.b,o.a) = (x,y,z,w) -- and emits the
+     * attribute verbatim (below).  Both target the ARGB32323232 BO. */
+    OUT_CS_REG(R300_US_OUT_FMT_0, transform_mode
+                   ? (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_R | R300_C1_SEL_G |
+                      R300_C2_SEL_B | R300_C3_SEL_A)
+                   : (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
+                      R300_C2_SEL_R | R300_C3_SEL_A));
     /* Identity wpos: override the bound FS's VIEWPORT_SCALE (-> 1) and
      * VIEWPORT_OFFSET (-> 0) state constants at their physical slots so
      * gl_FragCoord = the window position the covering triangle rasterizes, one
@@ -488,18 +552,27 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS_32F(0.5f);
         OUT_CS_32F(0.0f);
         OUT_CS_32F(1.0f);
-        /* Stream 1: the caller's window-space vertex for this slot (flat
-         * attribute).  The passthrough fragment program writes it to the BO row.
-         * The US_OUT_FMT C4_32_FP BGRA channel-select stores the fragment as
-         * memory=(o.b,o.g,o.r,o.a), and stage 2 re-ingests memory order as the
-         * vertex (x,y,z,w).  So the attribute is pre-swizzled to (z,y,x,w):
-         * o.r=z, o.g=y, o.b=x, o.a=w -> memory=(x,y,z,w).  Emitting (x,y,z,w)
-         * directly would store x in memory[2] and z in memory[0], collapsing
-         * every re-ingested vertex's X to z. */
-        OUT_CS_32F(vertex_attrs[pv][2]);   /* o.r = z */
-        OUT_CS_32F(vertex_attrs[pv][1]);   /* o.g = y */
-        OUT_CS_32F(vertex_attrs[pv][0]);   /* o.b = x */
-        OUT_CS_32F(vertex_attrs[pv][3]);   /* o.a = w */
+        /* Stream 1: this slot's vertex, delivered to the FS as a flat attribute.
+         *
+         * Passthrough (transform_mode=false): the FS copies the attribute
+         * verbatim and the BGRA output select stores memory=(o.b,o.g,o.r,o.a),
+         * so the attribute is pre-swizzled to (z,y,x,w) to land memory=(x,y,z,w).
+         *
+         * Transform (transform_mode=true): the FS reads the model-space vertex as
+         * input[0], computes M*v, and the RGBA output select stores
+         * memory=(o.r,o.g,o.b,o.a)=(x,y,z,w) directly, so the attribute is the
+         * model-space vertex emitted verbatim (x,y,z,w) -- no pre-swizzle. */
+        if (transform_mode) {
+            OUT_CS_32F(vertex_attrs[pv][0]);
+            OUT_CS_32F(vertex_attrs[pv][1]);
+            OUT_CS_32F(vertex_attrs[pv][2]);
+            OUT_CS_32F(vertex_attrs[pv][3]);
+        } else {
+            OUT_CS_32F(vertex_attrs[pv][2]);   /* o.r = z */
+            OUT_CS_32F(vertex_attrs[pv][1]);   /* o.g = y */
+            OUT_CS_32F(vertex_attrs[pv][0]);   /* o.b = x */
+            OUT_CS_32F(vertex_attrs[pv][3]);   /* o.a = w */
+        }
     }
 
     /* Stage 2 -- the full cb_flush_clean barrier (r300_context.c / r300_emit_
@@ -753,6 +826,7 @@ struct r2vb_selftest_config {
     bool do_submit;
     bool nowait;
     bool observe;
+    bool xform;
     uint32_t num_vertices;
     uint32_t s3dim;
     const char *prim_name;
@@ -787,6 +861,13 @@ static void r2vb_get_selftest_config(struct r2vb_selftest_config *cfg)
         if (v > 0 && v < 65536)
             cfg->num_vertices = (uint32_t)v;
     }
+
+    /* R300_R2VB_XFORM=1: run the producer through the 4-DP4 MVP transform-FS
+     * (the shape verts are model-space input; a fixed test matrix transforms
+     * them) and verify the output BO holds M*v, rather than copying the
+     * attribute through a passthrough FS. */
+    const char *xf = getenv("R300_R2VB_XFORM");
+    cfg->xform = (xf && strcmp(xf, "1") == 0);
 
     const char *obs = getenv("R300_R2VB_STAGE3_OBSERVE");
     cfg->observe = (obs && strcmp(obs, "1") == 0);
@@ -882,9 +963,29 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
     }
 
     fired = true;
+
+    /* Transform mode: run the producer through the 4-DP4 MVP transform-FS instead
+     * of the trigger draw's passthrough FS.  Bind it, load the transposed test
+     * matrix into FS const file 0, recompute derived (RS) state for its single
+     * input, and emit that state into the IB -- the hand-rolled loop inherits FS
+     * state from the trigger draw, which here is the wrong (app) FS.  Restored
+     * after. */
+    void *saved_fs = NULL;
+    if (cfg.xform) {
+        void *xfs = r300_r2vb_get_transform_fs(r300);
+        if (xfs) {
+            saved_fs = r300->fs.state;
+            r300->context.bind_fs_state(&r300->context, xfs);
+            r300_r2vb_set_transform_consts(r300, r2vb_test_mvp_cols);
+            r300_update_derived_state(r300);
+            r300_emit_dirty_state(r300);
+            fprintf(stderr, "r2vb_xform bound transform-FS + transposed test MVP\n");
+        }
+    }
+
     r300_emit_rs482_r2vb_compute_loop(r300, r300_resource(res), 0, cfg.num_vertices, attrs,
                                       vf_prim, stage3 ? r300_resource(stage3) : NULL,
-                                      cfg.s3dim, cfg.s3dim);
+                                      cfg.s3dim, cfg.s3dim, cfg.xform);
 
     r300_emit_hyperz_end(r300);
     r300_emit_query_end(r300);
@@ -959,6 +1060,19 @@ bool r300_emit_rs482_r2vb_capture_selftest(struct r300_context *r300, bool from_
 
     if (cfg.observe)
         r2vb_report_bo_a_diagnostic(r300, res, cfg.num_vertices);
+
+    /* Transform verify: the producer output BO should hold M*model for each slot.
+     * res keeps the stage-1 data when stage 3 rendered into the separate observe
+     * BO; without observe, stage 3 has overwritten res, so the comparison is only
+     * meaningful with R300_R2VB_STAGE3_OBSERVE=1. */
+    if (cfg.xform && cfg.do_submit)
+        r2vb_verify_xform_readback(r300, res, attrs, cfg.num_vertices, r2vb_test_mvp_cols);
+
+    /* Restore the application fragment shader the transform producer displaced. */
+    if (cfg.xform && saved_fs) {
+        r300->context.bind_fs_state(&r300->context, saved_fs);
+        r300_update_derived_state(r300);
+    }
 
     pipe_resource_reference(&stage3, NULL);
     pipe_resource_reference(&res, NULL);
