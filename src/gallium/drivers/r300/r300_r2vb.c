@@ -1499,16 +1499,10 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     r300_update_derived_state(r300);
     r300->context.delete_fs_state(&r300->context, xfs);
 
-    /* Submit the producer so its clip-buffer writes are visible to the re-ingest
-     * VAP fetch.  The producer's in-stream cb_flush_clean barrier should make the
-     * writes coherent without a full flush, but in this configuration the
-     * re-ingest reads stale data when the two passes share a command stream (it
-     * draws the untransformed vertices); a flush between them renders byte-exact.
-     * The single-command-stream path is a follow-on optimization. */
-    r300->context.flush(&r300->context, NULL, 0);
-
-    if (getenv("R300_R2VB_XFORM_VERIFY"))
+    if (getenv("R300_R2VB_XFORM_VERIFY")) {
+        r300->context.flush(&r300->context, NULL, 0);
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
+    }
 
     /* Re-ingest: draw the transformed clip-space positions with the application
      * fragment shader and the hardware viewport transform.  The producer
@@ -1539,9 +1533,15 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     if (r300_r2vb_prepare_states(r300, 32)) {
         CS_LOCALS(r300);
         struct r300_resource *cb = r300_resource(clip);
+        /* Add clip with the SAME usage the producer used (READWRITE color), not a
+         * second READ/vertex add.  One synchronized read-write entry lets the
+         * single command stream order the producer's color write before the
+         * re-ingest's vertex fetch -- a second entry with a different usage made
+         * the fetch read stale (untransformed) data, which a flush masked.  This
+         * mirrors the proven synthetic loop, which adds its dual-use BO once. */
         r300->rws->cs_add_buffer(&r300->cs, cb->buf,
-                                 RADEON_USAGE_READ | RADEON_USAGE_SYNCHRONIZED |
-                                     RADEON_PRIO_VERTEX_BUFFER,
+                                 RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
+                                     RADEON_PRIO_COLOR_BUFFER,
                                  RADEON_DOMAIN_GTT);
         BEGIN_CS(28);
         /* Hardware viewport transform for clip-space vertices (the #90 fix). */
