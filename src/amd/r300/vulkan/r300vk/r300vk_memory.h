@@ -60,8 +60,10 @@ struct r300vk_bound_buffer_slice {
 
 /*
  *
- * memory_offset records the VkBindBufferMemoryInfo/VkBindImageMemoryInfo
- * memoryOffset.  For a borrowed bound resource (owns_buffer == false) the
+ * memory_offset records the most recent VkBindBufferMemoryInfo or
+ * VkBindImageMemoryInfo memoryOffset.  Linear image sync keeps its own image
+ * slice because later buffer binds can legitimately change memory_offset.  For
+ * a borrowed bound resource (owns_buffer == false) the
  * pipe_resource starts at the buffer, so MapMemory uses
  * resource_offset = MapMemory.offset - memory_offset.  For an owns_buffer
  * allocation the resource IS the whole VkDeviceMemory; the sync copies the
@@ -77,13 +79,18 @@ struct r300vk_device_memory {
                                            * VkBuffer, each synced with the host map at
                                            * Flush/Invalidate and the submit boundary */
    struct pipe_resource  *bound_image_tile; /* owns_buffer + linear image: the bound image's single
-                                             * row-major tile, pulled into the host map at Invalidate */
+                                             * row-major tile, pulled into the host map at
+                                             * Invalidate and the submit boundary */
+   VkDeviceSize           bound_image_offset; /* VkBindImageMemoryInfo::memoryOffset for bound_image_tile */
+   VkDeviceSize           bound_image_size; /* byte span occupied by bound_image_tile */
    uint32_t               bound_image_row_pitch; /* linear-image row stride; 0 when the binding is a
                                                   * buffer or an optimal image (no host-linear layout) */
    struct pipe_resource  *mapped_resource; /* holds a ref on the resource currently mapped,
                                             * keeping it alive if mem->resource is rebound */
    struct pipe_transfer  *transfer;  /* non-NULL while mapped */
    void                  *map_ptr;
+   VkDeviceSize           map_offset;  /* byte offset of map_ptr inside VkDeviceMemory */
+   VkDeviceSize           map_size;    /* live vkMapMemory byte range */
    bool                   owns_buffer;  /* true when MapMemory lazily created the
                                          * memory's own host pipe_buffer for the
                                          * map-before-bind case (vs borrowing a
