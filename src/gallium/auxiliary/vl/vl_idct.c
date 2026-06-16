@@ -128,6 +128,20 @@ fetch_four(nir_builder *b, nir_def *m[2], nir_def *addr[2],
    m[1] = nir_tex(b, addr[1], .texture_deref = sampler, .sampler_deref = sampler);
 }
 
+static nir_deref_instr *
+idct_combined_sampler(nir_builder *b, enum glsl_sampler_dim dim,
+                      unsigned binding, const char *name)
+{
+   const struct glsl_type *sampler_type =
+      glsl_sampler_type(dim, false, false, GLSL_TYPE_FLOAT);
+   nir_variable *sampler =
+      nir_variable_create(b->shader, nir_var_uniform, sampler_type, name);
+   sampler->data.binding = binding;
+   BITSET_SET(b->shader->info.textures_used, binding);
+   BITSET_SET(b->shader->info.samplers_used, binding);
+   return nir_build_deref_var(b, sampler);
+}
+
 /* One output coefficient: dot4 of the matrix row with the even coefficients
  * plus dot4 with the odd coefficients -- the separable DCT-III row sum. */
 static nir_def *
@@ -154,8 +168,9 @@ idct_pad4(nir_builder *b, nir_def *v)
 static void *
 idct_create_fs(struct vl_idct *idct, nir_builder *b)
 {
-   /* Lower deref-combined samplers to indexed tex so gather_info records the
-    * textures a SoA NIR backend (llvmpipe) needs; nir_to_rc tolerates raw derefs. */
+   /* Lower deref-combined samplers to indexed tex.  The IDCT builders mark
+    * textures_used/samplers_used when declaring each sampler; nir_lower_samplers
+    * does not update those SoA backend masks. */
    NIR_PASS(_, b->shader, nir_lower_samplers);
    nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
    nir_assign_io_var_locations(b->shader, nir_var_shader_in);
@@ -227,11 +242,8 @@ create_mismatch_frag_shader(struct vl_idct *idct)
       addr[k] = nir_trim_vector(&b, nir_load_var(&b, in), 2);
    }
 
-   const struct glsl_type *st =
-      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
-   nir_variable *sv = nir_variable_create(b.shader, nir_var_uniform, st, "src");
-   sv->data.binding = 0;
-   nir_deref_instr *samp = nir_build_deref_var(&b, sv);
+   nir_deref_instr *samp =
+      idct_combined_sampler(&b, GLSL_SAMPLER_DIM_2D, 0, "src");
 
    /* Fetch all eight matrix rows (even/odd texel each, 64 coefficients). */
    nir_def *m[8][2];
@@ -365,14 +377,10 @@ create_stage1_frag_shader(struct vl_idct *idct)
       r_addr[k] = nir_trim_vector(&b, nir_load_var(&b, in), 2);
    }
 
-   const struct glsl_type *st =
-      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
-   nir_variable *sv_src = nir_variable_create(b.shader, nir_var_uniform, st, "src");
-   sv_src->data.binding = 0;
-   nir_deref_instr *samp_src = nir_build_deref_var(&b, sv_src);
-   nir_variable *sv_mat = nir_variable_create(b.shader, nir_var_uniform, st, "matrix");
-   sv_mat->data.binding = 1;
-   nir_deref_instr *samp_mat = nir_build_deref_var(&b, sv_mat);
+   nir_deref_instr *samp_src =
+      idct_combined_sampler(&b, GLSL_SAMPLER_DIM_2D, 0, "src");
+   nir_deref_instr *samp_mat =
+      idct_combined_sampler(&b, GLSL_SAMPLER_DIM_2D, 1, "matrix");
 
    /* Four source rows around the output row (offsets -2..+1). */
    nir_def *l[4][2];
@@ -491,18 +499,10 @@ vl_idct_stage2_frag_shader(struct vl_idct *idct, nir_builder *b,
 
    /* sampler 0 = the first-pass intermediate (3D, sliced by the address z),
     * sampler 1 = the transpose DCT matrix (2D). */
-   const struct glsl_type *st3 =
-      glsl_sampler_type(GLSL_SAMPLER_DIM_3D, false, false, GLSL_TYPE_FLOAT);
-   const struct glsl_type *st2 =
-      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
-   nir_variable *sv0 = nir_variable_create(b->shader, nir_var_uniform, st3,
-                                           "intermediate");
-   sv0->data.binding = 0;
-   nir_variable *sv1 = nir_variable_create(b->shader, nir_var_uniform, st2,
-                                           "transpose");
-   sv1->data.binding = 1;
-   nir_deref_instr *samp0 = nir_build_deref_var(b, sv0);
-   nir_deref_instr *samp1 = nir_build_deref_var(b, sv1);
+   nir_deref_instr *samp0 =
+      idct_combined_sampler(b, GLSL_SAMPLER_DIM_3D, 0, "intermediate");
+   nir_deref_instr *samp1 =
+      idct_combined_sampler(b, GLSL_SAMPLER_DIM_2D, 1, "transpose");
 
    nir_def *l[2], *r[2];
    fetch_four(b, l, l_addr, samp1);   /* 2D transpose */
@@ -904,4 +904,3 @@ vl_idct_prepare_stage2(struct vl_idct *idct, struct vl_idct_buffer *buffer)
    idct->pipe->set_sampler_views(idct->pipe, MESA_SHADER_FRAGMENT,
                                  0, 2, 0, buffer->sampler_views.stage[1]);
 }
-
