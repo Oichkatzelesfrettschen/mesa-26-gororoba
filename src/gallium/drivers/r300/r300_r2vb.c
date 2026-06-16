@@ -30,6 +30,7 @@
 #include <time.h>
 
 #include "util/u_inlines.h"
+#include "util/format/u_format.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
@@ -1344,4 +1345,107 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
         inspect = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
     return (exec || inspect) && v == R2VB_ROUTE_PASSTHROUGH;
+}
+
+/* Gate the MVP route on its own opt-in so the passthrough exec stays unaffected.
+ * Returns true only for an MVP-shape candidate draw under R300_R2VB_MVP_EXEC. */
+bool r300_r2vb_route_mvp(struct r300_context *r300,
+                         const struct pipe_draw_info *info,
+                         const struct pipe_draw_start_count_bias *draw)
+{
+    static int gate = -1;
+    if (gate < 0) {
+        const char *e = getenv("R300_R2VB_MVP_EXEC");
+        gate = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (!gate)
+        return false;
+    return r300_r2vb_classify_draw(r300, info, draw) == R2VB_ROUTE_CANDIDATE &&
+           r300_vs_is_mvp(r300);
+}
+
+/* Route-exec MVP path: run gl_Position = M * in_pos on the fragment ALU.  The
+ * producer transforms the application's model-space positions into a clip-space
+ * BO through the 4-DP4 transform-FS, emitted under the normal draw flow (where
+ * prepare_for_rendering carries the FS/RS/const atoms) -- not the r300_flush
+ * self-test, which is reentrant.  R300_R2VB_XFORM_VERIFY flushes and checks the
+ * BO holds M*model.  The re-ingest (draw the transformed positions with the
+ * application FS) is the remaining step; until then this returns false so the
+ * draw falls back to gallivm and the screen stays correct. */
+bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
+                             const struct pipe_draw_info *info,
+                             const struct pipe_draw_start_count_bias *draw)
+{
+    if (!r300->swtcl_vs_const0_ptr || r300->swtcl_vs_const0_size < 64)
+        return false;
+    if (!r300->velems || r300->velems->count == 0)
+        return false;
+    unsigned count = draw->count;
+    if (count == 0 || count > 4096)
+        return false;
+    const float *cols = (const float *)r300->swtcl_vs_const0_ptr;
+
+    /* Read the model-space positions.  in_pos is velem[0] (location 0) for an
+     * MVP VS; honor its buffer, offset, stride, and component count (a vec3
+     * position gets w = 1). */
+    struct pipe_vertex_element *pe = &r300->velems->velem[0];
+    struct pipe_vertex_buffer *vb = &r300->vertex_buffer[pe->vertex_buffer_index];
+    const uint8_t *base = NULL;
+    if (vb->is_user_buffer)
+        base = vb->buffer.user;
+    else if (vb->buffer.resource)
+        base = r300_resource(vb->buffer.resource)->malloced_buffer;
+    if (!base || !pe->src_stride)
+        return false;
+    base += vb->buffer_offset + pe->src_offset;
+    unsigned comps = util_format_get_nr_components(pe->src_format);
+
+    float (*model)[4] = malloc((size_t)count * sizeof(*model));
+    if (!model)
+        return false;
+    for (unsigned i = 0; i < count; i++) {
+        const float *v = (const float *)(base + (size_t)(draw->start + i) * pe->src_stride);
+        model[i][0] = v[0];
+        model[i][1] = comps > 1 ? v[1] : 0.0f;
+        model[i][2] = comps > 2 ? v[2] : 0.0f;
+        model[i][3] = comps > 3 ? v[3] : 1.0f;
+    }
+
+    struct pipe_resource *clip = r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
+    if (!clip) {
+        free(model);
+        return false;
+    }
+
+    void *xfs = r300_r2vb_get_transform_fs(r300);
+    if (!xfs) {
+        pipe_resource_reference(&clip, NULL);
+        free(model);
+        return false;
+    }
+
+    /* Bind the transform-FS, load the transposed MVP into FS const file 0,
+     * recompute derived (RS) state for its single input, then emit that state
+     * and the producer under the normal draw flow. */
+    void *saved_fs = r300->fs.state;
+    r300->context.bind_fs_state(&r300->context, xfs);
+    r300_r2vb_set_transform_consts(r300, cols);
+    r300_update_derived_state(r300);
+    if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
+        r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, true);
+    r300->context.bind_fs_state(&r300->context, saved_fs);
+    r300_update_derived_state(r300);
+
+    if (getenv("R300_R2VB_XFORM_VERIFY")) {
+        r300->context.flush(&r300->context, NULL, 0);
+        r2vb_verify_xform_readback(r300, clip, model, count, cols);
+    }
+
+    /* TODO re-ingest: draw the transformed positions in clip (plus the model's
+     * passthrough attributes from the application buffers) with the application
+     * fragment shader and the hardware viewport transform.  Until then fall back
+     * to gallivm so the rendered image is correct. */
+    pipe_resource_reference(&clip, NULL);
+    free(model);
+    return false;
 }
