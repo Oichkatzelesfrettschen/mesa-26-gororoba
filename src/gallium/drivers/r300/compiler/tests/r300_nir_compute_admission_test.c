@@ -448,13 +448,45 @@ dp4_index_offset(nir_builder *b, unsigned element_bytes, unsigned stride_scale,
    return off;
 }
 
+static nir_op
+dp4_dot_op(unsigned components, bool replicated)
+{
+   switch (components) {
+   case 2:
+      return replicated ? nir_op_fdot2_replicated : nir_op_fdot2;
+   case 3:
+      return replicated ? nir_op_fdot3_replicated : nir_op_fdot3;
+   default:
+      return replicated ? nir_op_fdot4_replicated : nir_op_fdot4;
+   }
+}
+
+static nir_def *
+dp4_dot(nir_builder *b, unsigned components, bool replicated,
+        nir_def *a, nir_def *c)
+{
+   nir_op op = dp4_dot_op(components, replicated);
+
+   if (!replicated)
+      return nir_build_alu2(b, op, a, c);
+
+   nir_alu_instr *dot = nir_alu_instr_create(b->shader, op);
+   nir_def_init(&dot->instr, &dot->def, components, 32);
+   dot->fp_math_ctrl = nir_op_valid_fp_math_ctrl(dot->op, b->fp_math_ctrl);
+   dot->src[0].src = nir_src_for_ssa(a);
+   dot->src[1].src = nir_src_for_ssa(c);
+   nir_builder_instr_insert(b, &dot->instr);
+   return &dot->def;
+}
+
 /* Scalar DP4 dispatch shape: out_uint[gid] = f2u32(dot(a[gid], b[gid])).
  * fdot2 input records are 8 bytes.  fdot3 and fdot4 use the 16-byte FP32x4
- * replay carrier because R300 has no R32G32B32_FLOAT sampler target. */
+ * replay carrier because R300 has no R32G32B32_FLOAT sampler target.  The
+ * replicated opcode form models r300's fdot_replicates NIR option. */
 static nir_shader *
 build_dp4_u32(unsigned components, unsigned input_b_stride_scale,
               unsigned input_b_element_bias, unsigned output_stride_scale,
-              bool cast_to_uint)
+              bool cast_to_uint, bool replicated_dot, unsigned write_mask)
 {
    nir_builder b = cs_builder("cs_dp4_u32");
    const unsigned input_bytes = components == 2 ? 8 : 16;
@@ -466,11 +498,11 @@ build_dp4_u32(unsigned components, unsigned input_b_stride_scale,
                                                input_b_stride_scale,
                                                input_b_element_bias),
                               .align_mul = input_bytes, .align_offset = 0);
-   nir_def *dot = nir_fdot(&b, a, c);
+   nir_def *dot = dp4_dot(&b, components, replicated_dot, a, c);
    nir_store_ssbo(&b, cast_to_uint ? nir_f2u32(&b, dot) : dot,
                   nir_imm_int(&b, 2),
                   dp4_index_offset(&b, 4, output_stride_scale, 0),
-                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+                  .write_mask = write_mask, .align_mul = 4, .align_offset = 0);
    return b.shader;
 }
 
@@ -479,7 +511,7 @@ case_dp4_metadata(void)
 {
    printf("dp4 detector\n");
 
-   nir_shader *dp4 = build_dp4_u32(4, 1, 0, 1, true);
+   nir_shader *dp4 = build_dp4_u32(4, 1, 0, 1, true, false, 0x1);
    struct r300_compute_dp4_pattern p = {0};
    prepare_detect_shader(dp4);
    r300_nir_detect_dp4_pattern(dp4, &p);
@@ -491,7 +523,7 @@ case_dp4_metadata(void)
          "fdot4 metadata records three bindings");
    ralloc_free(dp4);
 
-   nir_shader *dp2 = build_dp4_u32(2, 1, 0, 1, true);
+   nir_shader *dp2 = build_dp4_u32(2, 1, 0, 1, true, false, 0x1);
    memset(&p, 0, sizeof(p));
    prepare_detect_shader(dp2);
    r300_nir_detect_dp4_pattern(dp2, &p);
@@ -499,7 +531,7 @@ case_dp4_metadata(void)
          "fdot2 shape detects with 8-byte input stride");
    ralloc_free(dp2);
 
-   nir_shader *dp3 = build_dp4_u32(3, 1, 0, 1, true);
+   nir_shader *dp3 = build_dp4_u32(3, 1, 0, 1, true, false, 0x1);
    memset(&p, 0, sizeof(p));
    prepare_detect_shader(dp3);
    r300_nir_detect_dp4_pattern(dp3, &p);
@@ -507,21 +539,52 @@ case_dp4_metadata(void)
          "fdot3 shape detects with 16-byte input carrier");
    ralloc_free(dp3);
 
-   nir_shader *shifted = build_dp4_u32(4, 1, 1, 1, true);
+   nir_shader *rep4 = build_dp4_u32(4, 1, 0, 1, true, true, 0x1);
+   memset(&p, 0, sizeof(p));
+   prepare_detect_shader(rep4);
+   r300_nir_detect_dp4_pattern(rep4, &p);
+   CHECK(p.is_dp4 && p.components == 4 && p.dot_op == nir_op_fdot4_replicated,
+         "fdot4_replicated shape detects DP4");
+   ralloc_free(rep4);
+
+   nir_shader *rep2 = build_dp4_u32(2, 1, 0, 1, true, true, 0x1);
+   memset(&p, 0, sizeof(p));
+   prepare_detect_shader(rep2);
+   r300_nir_detect_dp4_pattern(rep2, &p);
+   CHECK(p.is_dp4 && p.components == 2 && p.dot_op == nir_op_fdot2_replicated,
+         "fdot2_replicated shape detects DP4");
+   ralloc_free(rep2);
+
+   nir_shader *rep3 = build_dp4_u32(3, 1, 0, 1, true, true, 0x1);
+   memset(&p, 0, sizeof(p));
+   prepare_detect_shader(rep3);
+   r300_nir_detect_dp4_pattern(rep3, &p);
+   CHECK(p.is_dp4 && p.components == 3 && p.dot_op == nir_op_fdot3_replicated,
+         "fdot3_replicated shape detects DP4");
+   ralloc_free(rep3);
+
+   nir_shader *masked = build_dp4_u32(4, 1, 0, 1, true, true, 0x7);
+   memset(&p, 0, sizeof(p));
+   prepare_detect_shader(masked);
+   r300_nir_detect_dp4_pattern(masked, &p);
+   CHECK(!p.is_dp4, "partial write mask rejects DP4 replay");
+   ralloc_free(masked);
+
+   nir_shader *shifted = build_dp4_u32(4, 1, 1, 1, true, false, 0x1);
    memset(&p, 0, sizeof(p));
    prepare_detect_shader(shifted);
    r300_nir_detect_dp4_pattern(shifted, &p);
    CHECK(!p.is_dp4, "shifted input offset rejects DP4 replay");
    ralloc_free(shifted);
 
-   nir_shader *strided = build_dp4_u32(4, 1, 0, 2, true);
+   nir_shader *strided = build_dp4_u32(4, 1, 0, 2, true, false, 0x1);
    memset(&p, 0, sizeof(p));
    prepare_detect_shader(strided);
    r300_nir_detect_dp4_pattern(strided, &p);
    CHECK(!p.is_dp4, "strided output offset rejects DP4 replay");
    ralloc_free(strided);
 
-   nir_shader *plain_float = build_dp4_u32(4, 1, 0, 1, false);
+   nir_shader *plain_float = build_dp4_u32(4, 1, 0, 1, false, false, 0x1);
    memset(&p, 0, sizeof(p));
    prepare_detect_shader(plain_float);
    r300_nir_detect_dp4_pattern(plain_float, &p);

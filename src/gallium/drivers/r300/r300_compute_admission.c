@@ -1392,6 +1392,9 @@ dp4_op_admitted(uint16_t op, uint8_t *components)
    case nir_op_fdot2: *components = 2; return true;
    case nir_op_fdot3: *components = 3; return true;
    case nir_op_fdot4: *components = 4; return true;
+   case nir_op_fdot2_replicated: *components = 2; return true;
+   case nir_op_fdot3_replicated: *components = 3; return true;
+   case nir_op_fdot4_replicated: *components = 4; return true;
    default:
       return false;
    }
@@ -1595,6 +1598,18 @@ dp4_offsets_match_replay_stream(const nir_intrinsic_instr *load_a,
           a.ax == out.ax && a.ay == out.ay && a.az == out.az && a.b == out.b;
 }
 
+static bool
+dp4_store_writes_scalar_output(const nir_intrinsic_instr *store)
+{
+   if (!store->src[0].ssa)
+      return false;
+
+   /* The replay writes one complete scalar uint output element per invocation.
+    * Wider store masks describe lanes the DP4 replay does not transport. */
+   return !nir_intrinsic_has_write_mask(store) ||
+          nir_intrinsic_write_mask(store) == 0x1;
+}
+
 void
 r300_nir_detect_dp4_pattern(const nir_shader *s,
                             struct r300_compute_dp4_pattern *out)
@@ -1643,7 +1658,7 @@ r300_nir_detect_dp4_pattern(const nir_shader *s,
    if (store_count != 1 || load_count != 2 || atomic_count != 0 ||
        has_loop || in_if)
       return;
-   if (!store->src[0].ssa)
+   if (!dp4_store_writes_scalar_output(store))
       return;
 
    /* The dot result is carried back as an RGBA8 integer-encode: R300 has no FP32
