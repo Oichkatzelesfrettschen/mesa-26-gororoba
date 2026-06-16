@@ -339,6 +339,132 @@ static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_re
     r300->context.buffer_unmap(&r300->context, xfer);
 }
 
+/* Producer half (stage 1 + the cb_flush_clean barrier): render one synthesized
+ * vertex per output slot into output_gart_bo through the bound fragment program,
+ * then make the writes visible to the VAP.  Factored out of the combined loop so
+ * the route-exec MVP path can run it under the normal draw flow (where
+ * prepare_for_rendering has emitted the transform-FS state) and then re-ingest
+ * with a different (application) FS, rather than the single-FS combined loop. */
+static void r300_r2vb_emit_producer(struct r300_context *r300,
+                                    struct r300_resource *output_gart_bo,
+                                    uint32_t output_gart_bo_offset, uint32_t num_vertices,
+                                    const float (*vertex_attrs)[4], bool transform_mode)
+{
+    CS_LOCALS(r300);
+    uint32_t output_pitch = align(num_vertices, 2);
+
+    r300->rws->cs_add_buffer(&r300->cs, output_gart_bo->buf,
+                             RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
+                                 RADEON_PRIO_COLOR_BUFFER,
+                             RADEON_DOMAIN_GTT);
+
+    struct r300_fragment_shader *r2vb_fs = r300_fs(r300);
+    struct rc_constant_list *r2vb_consts =
+        r2vb_fs && r2vb_fs->shader ? &r2vb_fs->shader->code.constants : NULL;
+    UNUSED unsigned r2vb_vp_override_dwords = 0;
+    if (r2vb_consts) {
+        for (unsigned i = 0; i < r2vb_consts->Count; i++) {
+            unsigned t = r2vb_consts->Constants[i].Type;
+            unsigned s = r2vb_consts->Constants[i].u.State[0];
+            if (t == RC_CONSTANT_STATE &&
+                (s == RC_STATE_R300_VIEWPORT_SCALE ||
+                 s == RC_STATE_R300_VIEWPORT_OFFSET))
+                r2vb_vp_override_dwords += 5;
+        }
+    }
+
+    /* Stage 1 = 47 dwords + stage 2 (barrier) = 6, minus the 16-dword
+     * triangle-vs-two-float4-points geometry delta, plus num_vertices*8 embedded
+     * vertex dwords and the per-viewport-constant wpos override. */
+    BEGIN_CS(53 + r2vb_vp_override_dwords + (int)num_vertices * 8 - 16);
+
+    OUT_CS_REG(R300_ZB_CNTL, 0);
+    OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
+    OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
+    OUT_CS(((num_vertices + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
+           ((1 + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+    OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
+    OUT_CS_RELOC(output_gart_bo);
+    OUT_CS_REG(R300_RB3D_COLORPITCH0, output_pitch | R300_COLOR_FORMAT_ARGB32323232);
+    /* RGBA identity select for the transform producer (FS outputs (x,y,z,w)
+     * directly); BGRA for the passthrough producer (copies a pre-swizzled
+     * (z,y,x,w) attribute).  Both target the ARGB32323232 BO. */
+    OUT_CS_REG(R300_US_OUT_FMT_0, transform_mode
+                   ? (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_R | R300_C1_SEL_G |
+                      R300_C2_SEL_B | R300_C3_SEL_A)
+                   : (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
+                      R300_C2_SEL_R | R300_C3_SEL_A));
+    /* Identity wpos for a gl_FragCoord-based passthrough FS (no-op for a
+     * transform FS, whose constants are matrix externals, not viewport state). */
+    if (r2vb_consts) {
+        for (unsigned i = 0; i < r2vb_consts->Count; i++) {
+            const struct rc_constant *c = &r2vb_consts->Constants[i];
+            float v;
+            if (c->Type != RC_CONSTANT_STATE)
+                continue;
+            if (c->u.State[0] == RC_STATE_R300_VIEWPORT_SCALE)
+                v = 1.0f;
+            else if (c->u.State[0] == RC_STATE_R300_VIEWPORT_OFFSET)
+                v = 0.0f;
+            else
+                continue;
+            OUT_CS_REG_SEQ(R300_PFS_PARAM_0_X + i * 16, 4);
+            OUT_CS(pack_float24(v));
+            OUT_CS(pack_float24(v));
+            OUT_CS(pack_float24(v));
+            OUT_CS(pack_float24(v));
+        }
+    }
+    OUT_CS_REG(R300_SU_CULL_MODE, 0);
+    OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
+    OUT_CS_REG(R300_GA_POINT_SIZE, (6 << R300_POINTSIZE_Y_SHIFT) |
+                                       (6 << R300_POINTSIZE_X_SHIFT));
+    OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
+                                         (6 << R300_GA_POINT_MINMAX_MAX_SHIFT));
+    OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
+    OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
+    OUT_CS_REG(R300_VAP_VTX_SIZE, 8);
+    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
+    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * 8);
+    OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
+           R300_VAP_VF_CNTL__PRIM_POINTS);
+    for (uint32_t pv = 0; pv < num_vertices; pv++) {
+        OUT_CS_32F((float)pv + 0.5f);
+        OUT_CS_32F(0.5f);
+        OUT_CS_32F(0.0f);
+        OUT_CS_32F(1.0f);
+        if (transform_mode) {
+            OUT_CS_32F(vertex_attrs[pv][0]);
+            OUT_CS_32F(vertex_attrs[pv][1]);
+            OUT_CS_32F(vertex_attrs[pv][2]);
+            OUT_CS_32F(vertex_attrs[pv][3]);
+        } else {
+            OUT_CS_32F(vertex_attrs[pv][2]);
+            OUT_CS_32F(vertex_attrs[pv][1]);
+            OUT_CS_32F(vertex_attrs[pv][0]);
+            OUT_CS_32F(vertex_attrs[pv][3]);
+        }
+    }
+
+    /* Stage 2 -- cb_flush_clean barrier (R300_R2VB_BARRIER neuters parts for
+     * timing bisection). */
+    const char *r2vb_bar = getenv("R300_R2VB_BARRIER");
+    uint32_t r2vb_zb = (r2vb_bar && strstr(r2vb_bar, "nozb"))
+                           ? 0
+                           : (R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                              R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+    uint32_t r2vb_rb = (r2vb_bar && strstr(r2vb_bar, "norb"))
+                           ? 0
+                           : (R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                              R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+    uint32_t r2vb_wait = (r2vb_bar && strstr(r2vb_bar, "nowait")) ? 0 : RADEON_WAIT_3D_IDLECLEAN;
+    OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT, r2vb_zb);
+    OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT, r2vb_rb);
+    OUT_CS_REG(RADEON_WAIT_UNTIL, r2vb_wait);
+
+    END_CS;
+}
+
 void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                                        struct r300_resource *output_gart_bo,
                                        uint32_t output_gart_bo_offset, uint32_t num_vertices,
@@ -363,277 +489,25 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
 
     /* FP32x4 linear color targets need an even-pixel pitch; the scissor remains
      * the logical vertex count so the padding pixel is not rendered. */
-    uint32_t output_pitch = align(num_vertices, 2);
     uint32_t stage3_pitch = align(stage3_width, 2);
 
-    /* The output BO is both the pass-1 color target and the pass-2 vertex array,
-     * so register it in the command stream once, read+write, before any
-     * relocation or lookup -- the radeon winsys returns -1 from cs_lookup_buffer
-     * for a BO that was never added, which would emit an invalid relocation. */
-    r300->rws->cs_add_buffer(&r300->cs, output_gart_bo->buf,
-                             RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
-                                 RADEON_PRIO_COLOR_BUFFER,
-                             RADEON_DOMAIN_GTT);
-
-    /* Stage-3 observation target (optional).  When present, the stage-3 draw
-     * renders into this separate 2D BO instead of overwriting the stage-1 vertex
-     * data in output_gart_bo, so a CPU readback of stage3_color_bo shows where
-     * the re-ingested vertices rasterized -- evidence of the VAP fetch (stage 3),
-     * not just the stage-1 render.  NULL keeps the legacy single-BO loop. */
+    /* Stage-3 observation target (optional): a separate 2D BO so the re-ingest
+     * draw renders there, leaving the stage-1 vertex data in output_gart_bo
+     * intact for readback.  NULL keeps the single-BO loop. */
     if (stage3_color_bo)
         r300->rws->cs_add_buffer(&r300->cs, stage3_color_bo->buf,
                                  RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
                                      RADEON_PRIO_COLOR_BUFFER,
                                  RADEON_DOMAIN_GTT);
 
-    /* Identity wpos for the window-coord covering triangle.  Stage 1 rasterizes
-     * a VTX_XY_FMT (pre-divided window-coord) covering triangle, but the bound
-     * fragment program's gl_FragCoord reconstruction (rc_transform_fragment_wpos)
-     * computes window = clip.xy/clip.w * VIEWPORT_SCALE + VIEWPORT_OFFSET,
-     * re-applying the trigger draw's viewport.  That collapses gl_FragCoord to a
-     * constant across the few covered pixels, so every BO slot receives the same
-     * synthesized vertex.  Override the two viewport state constants with
-     * scale = 1, offset = 0 so the reconstruction is identity and gl_FragCoord
-     * is the true window position, indexing one BO slot per pixel.  Immediates
-     * precede the state constants, so the physical slots are not fixed: scan the
-     * bound FS's constant list for them (the same list r300_emit_fs_rc_constant_
-     * state walks).  A wpos-free producer has none and the loop emits no
-     * override. */
-    struct r300_fragment_shader *r2vb_fs = r300_fs(r300);
-    struct rc_constant_list *r2vb_consts =
-        r2vb_fs && r2vb_fs->shader ? &r2vb_fs->shader->code.constants : NULL;
-    /* Consumed only by the BEGIN_CS size assert (MESA_DEBUG builds); marked
-     * UNUSED so a no-assert build does not warn on the dead accumulator. */
-    UNUSED unsigned r2vb_vp_override_dwords = 0;
-    if (r2vb_consts) {
-        for (unsigned i = 0; i < r2vb_consts->Count; i++) {
-            unsigned t = r2vb_consts->Constants[i].Type;
-            unsigned s = r2vb_consts->Constants[i].u.State[0];
-            if (t == RC_CONSTANT_STATE &&
-                (s == RC_STATE_R300_VIEWPORT_SCALE ||
-                 s == RC_STATE_R300_VIEWPORT_OFFSET))
-                r2vb_vp_override_dwords += 5; /* OUT_CS_REG_SEQ(reg,4) = 5 dwords */
-        }
-    }
+    /* Producer: stage 1 (render one synthesized vertex per slot through the
+     * bound fragment program) + the cb_flush_clean barrier, into output_gart_bo. */
+    r300_r2vb_emit_producer(r300, output_gart_bo, output_gart_bo_offset, num_vertices,
+                            vertex_attrs, transform_mode);
 
-    /* 70 dwords for the single-BO loop: stage 1 = 47, stage 2 = 6, stage 3 = 17.
-     * OUT_CS_REG and OUT_CS_RELOC each emit two dwords; OUT_CS_REG_SEQ(reg,N)
-     * emits one header plus its N values; the LOAD_VBPNTR body is seven dwords;
-     * the stage-1 3D_DRAW_IMMD body is one VF_CNTL dword plus three FP32x4
-     * vertices (twelve dwords); SU_CULL_MODE, SC_CLIP_RULE, GA_POINT_SIZE, and
-     * GA_POINT_MINMAX add eight dwords; the stage-3 VAP_VTX_SIZE reset and
-     * VF_MAX_VTX_INDX re-assert add four.  The stage-3
-     * color-target switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 +
-     * the SC_SCISSORS pair).  The identity-wpos override adds five dwords per
-     * viewport state constant the bound FS carries (zero for a passthrough FS).
-     * The producer reuses the trigger draw's PSC (no one-stream override) and
-     * embeds num_vertices two-float4 points (num_vertices*8 dwords) where the base
-     * counts assumed three one-float4 triangle vertices (twelve dwords) plus a
-     * four-dword PSC override: net (num_vertices*8 - 16). */
-    BEGIN_CS((stage3_color_bo ? 79 : 70) + r2vb_vp_override_dwords +
-             (int)num_vertices * 8 - 16);
-
-    /* Stage 1 -- render the transformed vertices into the GTT buffer.
-     *
-     * Point the color buffer at the GTT output BO with an FP32x4 color format so
-     * each "pixel" the bound fragment program writes is one vec4 vertex, then
-     * rasterize the whole num_vertices x 1 target with a self-supplied covering
-     * triangle (below).  Stage 1 owns its geometry: an inherited DRAW_VBUF_2
-     * against the caller's vertex array produced zero fragments after the
-     * caller's flush, leaving the BO unwritten, so the loop no longer depends on
-     * the caller's post-flush vertex-array state.
-     *
-     * Contract (the build-out boundary, not a stub): the caller still binds the
-     * "vertex compute" fragment program through the normal r300 pipe state path,
-     * so r300_emit_dirty_state has emitted the US instruction state, the RS
-     * interpolator state, and the GA/SU setup into this same IB.  The US microcode
-     * lives in the US instruction registers (r300_emit_fs in r300_emit.c), never
-     * as a relocatable BO; this function deliberately does not hand-roll the
-     * compiler's fragment-shader emit, and the covering triangle's vertex values
-     * are ignored by a wpos-only program that writes from gl_FragCoord.
-     *
-     * A hazard-gated RS482 PVS-bank proof would replace only this producer half.
-     * Stages 2 and 3 only consume a clip-space FP32x4 vertex buffer, so the
-     * barrier and re-ingest/oracle half stay valid whether stage 1 was
-     * fragment-generated or produced by an explicit PVS experiment. */
-    /* Disable depth: this color-only vertex render needs no Z test, and the
-     * radeon CS validator (r300_cs_track_check) defaults z_enabled true with a
-     * NULL z buffer, so a draw with ZB_CNTL R300_Z_ENABLE still set but no depth
-     * BO bound is rejected ("No buffer for z buffer").  Clearing R300_Z_ENABLE
-     * makes the loop pass the validator regardless of the preceding draw's depth
-     * state. */
-    OUT_CS_REG(R300_ZB_CNTL, 0);
-    /* Scissor to the num_vertices x 1 GTT target.  The CS validator derives the
-     * color-buffer bound from SC_SCISSORS_BR (r300_cs_track_check:
-     * maxy = (BR_Y >> 13) + 1, less the 1440 R300_SCISSORS_OFFSET on pre-RV515),
-     * then rejects the draw if pitch * cpp * maxy exceeds the BO.  The GTT BO is
-     * one row of num_vertices FP32x4 texels, so height 1 yields maxy = 1 and the
-     * exact-fit bound passes; inheriting the caller's full-height scissor would
-     * fail ("Buffer too small for color buffer").  Encoded like
-     * r300_emit_scissor_state for the non-r500 path. */
-    OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
-    OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
-    OUT_CS(((num_vertices + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
-           ((1 + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
-    OUT_CS_REG(R300_RB3D_COLOROFFSET0, output_gart_bo_offset);
-    OUT_CS_RELOC(output_gart_bo);
-    OUT_CS_REG(R300_RB3D_COLORPITCH0, output_pitch | R300_COLOR_FORMAT_ARGB32323232);
-    /* Write the fragment output as FP32x4, not the caller's 8-bit format.  The
-     * fragment program's gl_FragColor is cast to the color buffer per
-     * US_OUT_FMT_0; inheriting the caller's C4_8 (ARGB8888) format truncates each
-     * channel to 8 bits, so an FP32x4 BO reads back ~0.  C4_32_FP with the BGRA
-     * channel select (matching the ARGB32323232 memory order) stores each
-     * fragment as four 32-bit floats, so the re-ingest reads the synthesized
-     * vertex (x,y,z,w) from memory order (b,g,r,a).  Stage 3 inherits this. */
-    /* Channel select decides how the FS output lands in the FP32x4 BO.  The
-     * passthrough producer copies a pre-swizzled (z,y,x,w) attribute through a
-     * BGRA select so memory comes out (x,y,z,w).  The transform producer's FS
-     * instead computes M*v and outputs (x,y,z,w) directly, so it uses the RGBA
-     * identity select -- memory = (o.r,o.g,o.b,o.a) = (x,y,z,w) -- and emits the
-     * attribute verbatim (below).  Both target the ARGB32323232 BO. */
-    OUT_CS_REG(R300_US_OUT_FMT_0, transform_mode
-                   ? (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_R | R300_C1_SEL_G |
-                      R300_C2_SEL_B | R300_C3_SEL_A)
-                   : (R300_US_OUT_FMT_C4_32_FP | R300_C0_SEL_B | R300_C1_SEL_G |
-                      R300_C2_SEL_R | R300_C3_SEL_A));
-    /* Identity wpos: override the bound FS's VIEWPORT_SCALE (-> 1) and
-     * VIEWPORT_OFFSET (-> 0) state constants at their physical slots so
-     * gl_FragCoord = the window position the covering triangle rasterizes, one
-     * BO slot per pixel.  Non-r500 FS constants are FP24 PFS_PARAM registers at
-     * R300_PFS_PARAM_0_X + slot*16; the wpos MAD reads .xyz0 so the w lane is
-     * a don't-care. */
-    if (r2vb_consts) {
-        for (unsigned i = 0; i < r2vb_consts->Count; i++) {
-            const struct rc_constant *c = &r2vb_consts->Constants[i];
-            float v;
-            if (c->Type != RC_CONSTANT_STATE)
-                continue;
-            if (c->u.State[0] == RC_STATE_R300_VIEWPORT_SCALE)
-                v = 1.0f;
-            else if (c->u.State[0] == RC_STATE_R300_VIEWPORT_OFFSET)
-                v = 0.0f;
-            else
-                continue;
-            OUT_CS_REG_SEQ(R300_PFS_PARAM_0_X + i * 16, 4);
-            OUT_CS(pack_float24(v));
-            OUT_CS(pack_float24(v));
-            OUT_CS(pack_float24(v));
-            OUT_CS(pack_float24(v));
-        }
-    }
-    /* Re-assert the two GA->RE primitive-reject gates the caller's last draw
-     * leaves in an unknown state.  SU_CULL_MODE (0x42B8) is cleared so neither
-     * winding is culled -- the covering triangle's winding is fixed here, not by
-     * the caller -- and SC_CLIP_RULE (0x43D0) is set to 0xFFFF so every clip
-     * combination passes, matching r300_blitter_draw_rectangle, which writes
-     * SC_CLIP_RULE on every immediate draw.  Without these, RBBM_STATUS reads
-     * VAP_BUSY and GA_BUSY (the vertices transform and the primitive assembles)
-     * but RE_BUSY and RB3D_BUSY stay zero: the triangle is rejected at setup, the
-     * rasterizer never runs, and the GTT color BO reads back all zero. */
-    OUT_CS_REG(R300_SU_CULL_MODE, 0);
-    OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
-    /* Pin the fixed point size to one pixel (both registers pack 1/6-pixel units,
-     * so size 1 = 6).  This keeps the stage-1 producer's own PRIM_POINTS a
-     * deterministic one pixel instead of the size inherited from the trigger draw,
-     * so the slot-to-pixel mapping stays exact.  It does NOT fix the stage-3
-     * POINTS re-ingest (that remains an open item; see the VAP_VTX_SIZE note in
-     * stage 3).  Both are don't-cares for the line and triangle topologies. */
-    OUT_CS_REG(R300_GA_POINT_SIZE, (6 << R300_POINTSIZE_Y_SHIFT) |
-                                       (6 << R300_POINTSIZE_X_SHIFT));
-    OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
-                                         (6 << R300_GA_POINT_MINMAX_MAX_SHIFT));
-    /* Self-supplied producer geometry: one POINT per output slot.  Declare one
-     * FP32x4 position stream with pre-divided window coordinates (VTX_XY_FMT),
-     * then emit num_vertices points at (slot+0.5, 0.5) in-IB via 3D_DRAW_IMMD.
-     * A covering triangle was the first attempt, but the bound FS's gl_FragCoord
-     * (reconstructed wpos) interpolates FLAT across a triangle, collapsing every
-     * fragment to one vertex's window position, so every BO slot received the
-     * same synthesized vertex.  One point per slot makes each fragment its own
-     * primitive at its own pixel: gl_FragCoord = that point's window position
-     * (slot+0.5) even under flat shading, so the wpos producer writes a distinct
-     * synthesized vertex per slot.  The embedded vertices need no relocation --
-     * they travel in the command stream -- so this draw is independent of any
-     * vertex-array BO.
-     *
-     * Disable clipping (R300_CLIP_DISABLE), as r300_blitter_draw_rectangle does
-     * for its immediate-mode draw: with VTX_XY_FMT the vertices are pre-divided
-     * window coordinates, so the clipper -- which expects clip space -- would
-     * otherwise reject the whole triangle and produce no fragments. */
-    OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
-    OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
-    /* Mechanism A -- flat per-point attribute producer.  Each point carries TWO
-     * FP32x4 streams: stream 0 = position (the slot's pixel, window coords);
-     * stream 1 = the synthesized vertex, delivered to the fragment program as a
-     * FLAT generic attribute.  The bound fragment program is a passthrough that
-     * writes that attribute, so each slot's pixel gets its own vertex with no
-     * gl_FragCoord dependency (gl_FragCoord was non-deterministic across point
-     * size in the raw stage-1).  Do NOT override VAP_PROG_STREAM_CNTL: its
-     * DST_VEC_LOC routing derives from the bound VS's output map
-     * (r300_state_derived.c), so reusing the trigger draw's stream state is what
-     * lands stream 1 on the FS generic input the passthrough reads.  Only the
-     * vertex size grows to eight dwords (two float4). */
-    OUT_CS_REG(R300_VAP_VTX_SIZE, 8);
-    OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
-    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * 8);
-    OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
-           R300_VAP_VF_CNTL__PRIM_POINTS);
-    for (uint32_t pv = 0; pv < num_vertices; pv++) {
-        /* Stream 0: position = slot pv's pixel centre (window coords, w = 1).
-         * One producer point per output slot indexes one BO row, regardless of
-         * the topology the re-ingest draw later assembles from those rows. */
-        OUT_CS_32F((float)pv + 0.5f);
-        OUT_CS_32F(0.5f);
-        OUT_CS_32F(0.0f);
-        OUT_CS_32F(1.0f);
-        /* Stream 1: this slot's vertex, delivered to the FS as a flat attribute.
-         *
-         * Passthrough (transform_mode=false): the FS copies the attribute
-         * verbatim and the BGRA output select stores memory=(o.b,o.g,o.r,o.a),
-         * so the attribute is pre-swizzled to (z,y,x,w) to land memory=(x,y,z,w).
-         *
-         * Transform (transform_mode=true): the FS reads the model-space vertex as
-         * input[0], computes M*v, and the RGBA output select stores
-         * memory=(o.r,o.g,o.b,o.a)=(x,y,z,w) directly, so the attribute is the
-         * model-space vertex emitted verbatim (x,y,z,w) -- no pre-swizzle. */
-        if (transform_mode) {
-            OUT_CS_32F(vertex_attrs[pv][0]);
-            OUT_CS_32F(vertex_attrs[pv][1]);
-            OUT_CS_32F(vertex_attrs[pv][2]);
-            OUT_CS_32F(vertex_attrs[pv][3]);
-        } else {
-            OUT_CS_32F(vertex_attrs[pv][2]);   /* o.r = z */
-            OUT_CS_32F(vertex_attrs[pv][1]);   /* o.g = y */
-            OUT_CS_32F(vertex_attrs[pv][0]);   /* o.b = x */
-            OUT_CS_32F(vertex_attrs[pv][3]);   /* o.a = w */
-        }
-    }
-
-    /* Stage 2 -- the full cb_flush_clean barrier (r300_context.c / r300_emit_
-     * gpu_flush).  Flush+free the ZB zcache and the RB3D dstcache tags, then halt
-     * the CP microengine until the 3D engine is idle and the caches are evicted,
-     * so the VAP reads the freshly written GTT data and not stale memory.  Both
-     * the ZB and RB3D flushes are part of the verified sequence; emitting only
-     * the RB3D half would be a subset, not the driver's full barrier.
-     *
-     * R300_R2VB_BARRIER neuters individual components for timing bisection (the
-     * dword count is unchanged -- a neutered register just gets a no-op value).
-     * Substrings "nozb", "norb", "nowait" zero the ZB flush, RB3D flush, and the
-     * WAIT_UNTIL idle-clean respectively.  This breaks CB->VAP coherency, so it is
-     * valid ONLY for the no-readback throughput shape, to find which part of the
-     * barrier carries the fixed per-submit GPU cost. */
-    const char *r2vb_bar = getenv("R300_R2VB_BARRIER");
-    uint32_t r2vb_zb = (r2vb_bar && strstr(r2vb_bar, "nozb"))
-                           ? 0
-                           : (R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
-                              R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
-    uint32_t r2vb_rb = (r2vb_bar && strstr(r2vb_bar, "norb"))
-                           ? 0
-                           : (R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
-                              R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
-    uint32_t r2vb_wait = (r2vb_bar && strstr(r2vb_bar, "nowait")) ? 0 : RADEON_WAIT_3D_IDLECLEAN;
-    OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT, r2vb_zb);
-    OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT, r2vb_rb);
-    OUT_CS_REG(RADEON_WAIT_UNTIL, r2vb_wait);
+    /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
+     * optional observe redirect (stage3_color_bo) adds nine dwords. */
+    BEGIN_CS(stage3_color_bo ? 26 : 17);
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
