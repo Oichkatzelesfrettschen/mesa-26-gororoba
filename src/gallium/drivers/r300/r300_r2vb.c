@@ -1499,10 +1499,16 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     r300_update_derived_state(r300);
     r300->context.delete_fs_state(&r300->context, xfs);
 
-    if (getenv("R300_R2VB_XFORM_VERIFY")) {
-        r300->context.flush(&r300->context, NULL, 0);
+    /* Submit the producer so its clip-buffer writes are visible to the re-ingest
+     * VAP fetch.  The producer's in-stream cb_flush_clean barrier should make the
+     * writes coherent without a full flush, but in this configuration the
+     * re-ingest reads stale data when the two passes share a command stream (it
+     * draws the untransformed vertices); a flush between them renders byte-exact.
+     * The single-command-stream path is a follow-on optimization. */
+    r300->context.flush(&r300->context, NULL, 0);
+
+    if (getenv("R300_R2VB_XFORM_VERIFY"))
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
-    }
 
     /* Re-ingest: draw the transformed clip-space positions with the application
      * fragment shader and the hardware viewport transform.  The producer
