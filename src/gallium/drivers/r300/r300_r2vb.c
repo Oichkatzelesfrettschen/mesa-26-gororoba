@@ -213,11 +213,14 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * the stage-3 VF_MAX_VTX_INDX re-assert adds two.  The stage-3 color-target
      * switch adds nine dwords (COLOROFFSET0 + reloc + COLORPITCH0 + the
      * SC_SCISSORS pair).  The identity-wpos override adds five dwords per
-     * viewport state constant the bound FS carries.  The stage-1 producer draw
-     * now embeds num_vertices points (num_vertices*4 dwords) where the base
-     * counts assumed three triangle vertices (twelve dwords). */
+     * viewport state constant the bound FS carries (zero for a passthrough FS).
+     * Mechanism A drops the one-stream PSC override (-4 dwords, reusing the
+     * trigger draw's PSC) and embeds num_vertices two-float4 points
+     * (num_vertices*8 dwords) where the base counts assumed three one-float4
+     * triangle vertices (twelve dwords) plus that PSC override: net
+     * (num_vertices*8 - 16). */
     BEGIN_CS((stage3_color_bo ? 73 : 64) + r2vb_vp_override_dwords +
-             (int)num_vertices * 4 - 12);
+             (int)num_vertices * 8 - 16);
 
     /* Stage 1 -- render the transformed vertices into the GTT buffer.
      *
@@ -328,23 +331,37 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * otherwise reject the whole triangle and produce no fragments. */
     OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
     OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
-    OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
-    OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_0, 1);
-    OUT_CS(R300_DATA_TYPE_FLOAT_4 | R300_LAST_VEC);
-    OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_EXT_0, 1);
-    OUT_CS((R300_SWIZZLE_SELECT_X << R300_SWIZZLE_SELECT_X_SHIFT) |
-           (R300_SWIZZLE_SELECT_Y << R300_SWIZZLE_SELECT_Y_SHIFT) |
-           (R300_SWIZZLE_SELECT_Z << R300_SWIZZLE_SELECT_Z_SHIFT) |
-           (R300_SWIZZLE_SELECT_W << R300_SWIZZLE_SELECT_W_SHIFT) | (0xf << R300_WRITE_ENA_SHIFT));
+    /* Mechanism A -- flat per-point attribute producer.  Each point carries TWO
+     * FP32x4 streams: stream 0 = position (the slot's pixel, window coords);
+     * stream 1 = the synthesized vertex, delivered to the fragment program as a
+     * FLAT generic attribute.  The bound fragment program is a passthrough that
+     * writes that attribute, so each slot's pixel gets its own vertex with no
+     * gl_FragCoord dependency (gl_FragCoord was non-deterministic across point
+     * size in the raw stage-1).  Do NOT override VAP_PROG_STREAM_CNTL: its
+     * DST_VEC_LOC routing derives from the bound VS's output map
+     * (r300_state_derived.c), so reusing the trigger draw's stream state is what
+     * lands stream 1 on the FS generic input the passthrough reads.  Only the
+     * vertex size grows to eight dwords (two float4). */
+    OUT_CS_REG(R300_VAP_VTX_SIZE, 8);
     OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
-    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * 4);
+    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * 8);
     OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
            R300_VAP_VF_CNTL__PRIM_POINTS);
     for (uint32_t pv = 0; pv < num_vertices; pv++) {
-        OUT_CS_32F((float)pv + 0.5f); /* window x = centre of slot pv's pixel */
-        OUT_CS_32F(0.5f);             /* window y = row 0 centre */
-        OUT_CS_32F(0.0f);             /* z */
-        OUT_CS_32F(1.0f);             /* w (VTX_XY_FMT pre-divided, w = 1) */
+        /* Stream 0: position = slot pv's pixel centre (window coords, w = 1). */
+        OUT_CS_32F((float)pv + 0.5f);
+        OUT_CS_32F(0.5f);
+        OUT_CS_32F(0.0f);
+        OUT_CS_32F(1.0f);
+        /* Stream 1: the synthesized vertex this slot carries (flat attribute).
+         * For the probe this is a triangle in window coords; the passthrough
+         * fragment program writes it to the BO slot verbatim. */
+        float a = pv >= 1 ? 1.0f : 0.0f;
+        float b = pv >= 2 ? 1.0f : 0.0f;
+        OUT_CS_32F(10.0f + a * 44.0f - b * 22.0f);
+        OUT_CS_32F(10.0f + b * 44.0f);
+        OUT_CS_32F(0.5f);
+        OUT_CS_32F(1.0f);
     }
 
     /* Stage 2 -- the full cb_flush_clean barrier (r300_context.c / r300_emit_
