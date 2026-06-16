@@ -60,7 +60,9 @@ The following rules are enforceable. Later sections may explain mechanism or rat
 
 ### Build orchestration
 
-- MUST preserve Meson plus Make. Meson owns configuration and Ninja generation. Make and build-infra own host selection, audit checks, generated native overlays, clean, build, install, and distcc-pump sequencing.
+- MUST preserve Meson plus Make. Meson owns configuration and Ninja generation.
+  Make and build-infra own host selection, audit checks, generated native
+  overlays, clean, build, and install.
 - MUST model Meson defaults in build audits. When an option is omitted or set to `auto`, audit the dependencies Meson will enable on the target host.
 - MUST NOT treat absent or `auto` Meson options as disabled.
 - MUST require exact opt-in values for hazard gates, such as `R300_TRACE_HAZARD_ACCEPTED=1`.
@@ -68,7 +70,8 @@ The following rules are enforceable. Later sections may explain mechanism or rat
 - MUST NOT use `getenv()` presence as hazardous-path consent.
 - MUST use Meson `[binaries]` plus `CCACHE_PREFIX=distcc` for distcc/ccache integration.
 - MUST NOT chain `ccache distcc compiler` through a shell wrapper.
-- MUST NOT put `ccache` or `sccache` before the C or C++ distcc-pump chain.
+- MUST NOT revive a C or C++ distcc-pump lane that puts `ccache` or
+  `sccache` before distcc-pump.
 - MUST NOT assume `RUSTC_WRAPPER` affects Meson Rust.
 - MUST NOT hardcode `~/.rustup/toolchains/.../bin/rustc` in a Meson native file.
 - MUST NOT add standalone build helper scripts for compiler selection, audit policy, clean, build, install, or hazard consent.
@@ -371,7 +374,11 @@ Use `breakthrough` only for a discontinuous result that changes the evidence gra
 
 ## Standalone build
 
-Mesa MUST build from this repository alone. Use reproducible native files and environment variables. Meson owns configuration and Ninja generation. Make and build-infra own host selection, audit checks, generated native overlays, clean, build, install, and distcc-pump sequencing. Change that split only with explicit approval for a build-system architecture change.
+Mesa MUST build from this repository alone. Use reproducible native files and
+environment variables. Meson owns configuration and Ninja generation. Make and
+build-infra own host selection, audit checks, generated native overlays, clean,
+build, and install. Change that split only with explicit approval for a
+build-system architecture change.
 
 Baseline standalone build:
 
@@ -430,7 +437,14 @@ profile by basename regardless of which directory holds it.
 - `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): same as profile 3 without Rusticl; release; x130e fallback.
 - `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson` (`configs/alternates/`): same as profile 4 without Rusticl; debug; x130e fallback.
 
-Host envs live in `build-infra/env/`: `btver1-ccache-no-pump.env`, `btver1-distcc-pump.env`, `sapphire.env`, and `zen4.env`. They set lane-specific distcc/cache policy, host CFLAGS, `-fno-emulated-tls`, and centralized `CCACHE_DIR`/`SCCACHE_DIR`. The validated clang lane on Linux x86_64 requires `-fno-emulated-tls` to avoid a libglapi link failure.
+Active host envs live in `build-infra/env/`:
+`vostro1000-x86-64-v1-clang22-ccache-distcc.env` for the numbered profiles,
+and `generic-x86-64-os.env` for ad hoc portable builds. Historical btver1,
+sapphire, zen4, and distcc-pump envs live under `build-infra/env/Archive/` and
+are not active Make `HOSTENV` values. Active envs set lane-specific
+distcc/cache policy, host CFLAGS, `-fno-emulated-tls`, and centralized
+`CCACHE_DIR`/`SCCACHE_DIR`. The validated clang lane on Linux x86_64 requires
+`-fno-emulated-tls` to avoid a libglapi link failure.
 
 ### Build directories and install prefixes
 
@@ -467,10 +481,14 @@ Make writes version-coupled LLVM helper tools into `$BUILDDIR/gororoba-toolchain
 
 C/C++ cache lanes:
 
-- Warm incremental: `ccache -> distcc -> clang`, no pump. Rust: `sccache -> rustc`. Use `CCACHE_PREFIX=distcc`; expect hits after a populated build.
-- Cold clean or maximum remote preprocessing: `distcc-pump -> distcc -> clang`, no ccache. Rust: `sccache -> rustc`. Pump needs the original compiler and source command visible to distcc.
+- Warm incremental: `ccache -> distcc -> clang`, no pump. Rust:
+  `sccache -> rustc`. Use `CCACHE_PREFIX=distcc`; expect hits after a
+  populated build.
+- Historical distcc-pump envs are archived and have no active Make target. Do
+  not revive pump without a new build-system design review because upstream
+  removed the supported pump lane during profile consolidation.
 
-Warm/no-pump configure writes:
+Active configure writes:
 
 ```ini
 [binaries]
@@ -480,7 +498,7 @@ rust = ['sccache', 'rustc']
 llvm-config = '<selected-llvm-config>'
 ```
 
-Cold/pump configure writes:
+Historical pump configure wrote:
 
 ```ini
 [binaries]

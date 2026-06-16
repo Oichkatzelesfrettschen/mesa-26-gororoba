@@ -32,11 +32,11 @@ PROFILE  ?= 2_r300_full_debug_x86_64v1-clang22-distcc-cache
 # Default HOSTENV must match the default PROFILE's lane.  The default profile is
 # the maximal r300 vostro debug build (clang22, asserts live plus valgrind,
 # libunwind, and perfetto), so the default env is the vostro clang22 env, not
-# the x130e btver1 env -- otherwise a bare `make configure` builds the r300
-# vostro profile with -march=btver1 and no LLVM-22 pin.  The release sibling
-# (1_r300_full_release, the conformance-baseline profile) and the x130e terakan
-# lanes live under configs/alternates/ and pass their PROFILE (and
-# HOSTENV=btver1* for terakan) explicitly.
+# an archived btver1 env -- otherwise a bare `make configure` builds the r300
+# vostro profile with Bobcat flags and no LLVM-22 pin.  The release sibling
+# (1_r300_full_release, the conformance-baseline profile) and the x130e Terakan
+# lanes live under configs/alternates/ and inherit this clang22 ccache/distcc
+# host env unless the caller passes a different HOSTENV explicitly.
 HOSTENV  ?= vostro1000-x86-64-v1-clang22-ccache-distcc
 BUILDDIR ?= $(abspath $(CURDIR)/../build/mesa-$(PROFILE))
 INSTALL_NAMESPACE ?= mesa
@@ -55,9 +55,7 @@ PAIR_BUILDDIR  = $(word 3,$1)
 PAIR_PREFIX    = $(word 4,$1)
 PAIR_NAMESPACE = $(word 5,$1)
 
-ifneq (,$(filter $(HOSTENV),btver1 btver1-ccache-no-pump))
-JOBS     ?= 8
-else ifneq (,$(filter $(HOSTENV),vostro1000-x86-64-v1-clang22-ccache-distcc))
+ifneq (,$(filter $(HOSTENV),vostro1000-x86-64-v1-clang22-ccache-distcc))
 JOBS     ?= 36
 else
 JOBS     ?= $(shell nproc)
@@ -66,11 +64,6 @@ endif
 # concurrent builds from different agents stomping each other.  Any process
 # that respects this lock will serialize automatically.
 BUILD_LOCK ?= $(HOME)/.cache/mesa-26-gororoba/mesa-build.lock
-
-# Generated source/header targets to prebuild outside distcc-pump.  Keep this
-# to known compiler, Vulkan, and Terascale codegen surfaces so the helper does
-# not accidentally run unrelated custom commands.
-GENERATED_TARGET_REGEX ?= ^(src/git_sha1[.]h|src/(compiler|vulkan|amd/terascale)/.*|src/util/(driconf_static[.]h|shader_stats[.]h|format_srgb[.]c|format/.*))$$
 
 # --- internal paths ---------------------------------------------------------
 TOPSRC   := $(abspath $(CURDIR)/..)
@@ -110,7 +103,7 @@ LOCKED_TOOL_ENV := \
     DISTCC_HOSTS="$${DISTCC_HOSTS:-}" \
     SCCACHE_DIR="$${SCCACHE_DIR:-}"
 
-.PHONY: list vostro-prefix-check audit configure build build-generated build-pump clean clean-all distclean install \
+.PHONY: list vostro-prefix-check audit configure build clean clean-all distclean install \
         artifact-check test \
         rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache \
         install-1_r300_full_release_x86_64v1-clang22-distcc-cache \
@@ -266,14 +259,16 @@ audit: vostro-prefix-check
 			else ok "distcc hosts use hostname policy"; fi; \
 		else warn "~/.distcc/hosts is missing; distcc builds may run locally only"; fi; \
 	else ok "distcc not in active compiler chain; skipping host policy check"; fi; \
-	if [ "$(HOSTENV)" = "btver1-ccache-no-pump" ]; then \
-		if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then ok "warm lane defaults CCACHE_PREFIX to distcc"; else fail "warm lane must default CCACHE_PREFIX to distcc"; fi; \
-		if grep -q 'unset DISTCC_PUMP' "$(ENVFILE)"; then ok "warm lane clears distcc-pump state"; else fail "warm lane must clear distcc-pump state"; fi; \
-	fi; \
-	if [ "$(HOSTENV)" = "btver1-distcc-pump" ]; then \
-		if grep -q 'unset CCACHE_PREFIX' "$(ENVFILE)"; then ok "pump lane removes ccache prefix"; else fail "pump lane must unset CCACHE_PREFIX"; fi; \
-		if grep -q ',cpp' "$(ENVFILE)"; then ok "pump lane derives cpp host options"; else fail "pump lane must derive ,cpp host options"; fi; \
-	fi; \
+		if grep -Eq 'export CCACHE_PREFIX=.*distcc' "$(ENVFILE)"; then \
+			ok "active lane defaults CCACHE_PREFIX to distcc"; \
+		else \
+			warn "active lane does not default CCACHE_PREFIX to distcc"; \
+		fi; \
+		if grep -q 'unset DISTCC_PUMP' "$(ENVFILE)"; then \
+			ok "active lane clears distcc-pump state"; \
+		else \
+			warn "active lane does not clear distcc-pump state"; \
+		fi; \
 	if [ "$$rusticl_enabled" -eq 1 ]; then \
 		echo; echo "Rusticl recovery lane checks"; need_command bindgen; need_command rustfmt; \
 	else ok "profile disables Rusticl for Terakan daily lane"; fi; \
@@ -390,26 +385,6 @@ build:
 	mkdir -p "$(dir $(BUILD_LOCK))"; \
 	env $(LOCKED_TOOL_ENV) \
 	    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)}
-
-build-generated:
-	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
-	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	mkdir -p "$(dir $(BUILD_LOCK))"; \
-	mapfile -t targets < <(ninja -C $(BUILDDIR) -t targets all | awk -v re='$(GENERATED_TARGET_REGEX)' '$$2 == "CUSTOM_COMMAND" { sub(/:$$/, "", $$1); if ($$1 ~ re) print $$1 }'); \
-	if [ "$${#targets[@]}" -gt 0 ]; then \
-		echo "prebuilding $${#targets[@]} selected generated Meson/Ninja targets outside distcc-pump"; \
-		env $(LOCKED_TOOL_ENV) \
-		    flock -x -w 7200 $(BUILD_LOCK) ninja -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)} "$${targets[@]}"; \
-	else \
-		echo "no selected generated targets found"; \
-	fi
-
-build-pump:
-	@test -d $(BUILDDIR) || { echo "configure first: make configure PROFILE=$(PROFILE)"; exit 1; }
-	@test -f $(ENVFILE) && . $(ENVFILE) || true; \
-	mkdir -p "$(dir $(BUILD_LOCK))"; \
-	env $(LOCKED_TOOL_ENV) \
-	    flock -x -w 7200 $(BUILD_LOCK) distcc-pump ninja -C $(BUILDDIR) -j$${GOROROBA_DISTCC_JOBS:-$(JOBS)}
 
 clean:
 	rm -rf $(BUILDDIR)
