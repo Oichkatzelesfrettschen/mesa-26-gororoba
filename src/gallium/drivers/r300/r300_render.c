@@ -916,7 +916,19 @@ static void r300_draw_vbo(struct pipe_context* pipe,
  ***************************************************************************/
 
 /* SW TCL elements, using Draw. */
-/* Execute a PASSTHROUGH-classified draw via the direct-VB route: re-ingest the
+/* WARNING -- R300_R2VB_EXEC is experimental and SUSPECTED to hang the GPU.  On
+ * the first silicon run where this actually executed (vertex data uploaded from
+ * the SWTCL malloced_buffer shadow), the reset-less RS482 went unresponsive
+ * during the route-on draw.  The likely cause: r300_update_derived_state set the
+ * RS interpolators and VAP_OUTPUT_VTX_FMT for the gallivm draw-module OUTPUT
+ * vertex layout, which is not guaranteed to match the application vertex-element
+ * layout this path feeds straight to the VAP; a mismatch can stall the VAP/GA.
+ * Correctly executing the route needs the RS / VAP-output-format state rebuilt
+ * for the app velems (or a proof the passthrough layouts coincide) before it is
+ * safe to enable.  Gated off by default (R300_R2VB_EXEC), so ordinary drawing is
+ * unaffected.
+ *
+ * Execute a PASSTHROUGH-classified draw via the direct-VB route: re-ingest the
  * application vertex arrays at TCL_BYPASS, skipping the gallivm draw module.
  * r300vk feeds the SWTCL path USER vertex buffers (CPU pointers, no winsys BO);
  * a LOAD_VBPNTR relocation needs a BO, so upload each used user buffer's range to
