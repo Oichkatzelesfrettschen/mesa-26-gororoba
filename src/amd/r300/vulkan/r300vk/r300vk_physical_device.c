@@ -91,10 +91,10 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
    props->maxTexelBufferElements = 65536;
 
    /* PS constant store: R300_PFS_PARAM_0..31 yields 32 vec4 slots, or
-    * 512 bytes.  The Vulkan minimum maxUniformBufferRange is 16384,
+    * 512 bytes.  The Vulkan minimum maxUniformBufferRange is 16 KiB,
     * so we round up to that bound; the descriptor binding still maps
     * down to the hardware 32 slots. */
-   props->maxUniformBufferRange = 16384;
+   props->maxUniformBufferRange = R300VK_VK10_MIN_UNIFORM_BUFFER_RANGE;
 
    /* SSBO size advertise.  R3xx has no native SSBO; the compute-as-raster
     * substrate maps stores to RB3D color export backed by the radeon GART.
@@ -121,7 +121,7 @@ r300vk_physical_device_init_limits(struct vk_properties *const props,
     *       tracking -- VkPhysicalDeviceMaintenance4Properties .maxBufferSize
     *       (header vulkan_core.h field, lock-step elevation lands with the
     *       r300vk maintenance4 advertise). */
-   props->maxPushConstantsSize = 128;
+   props->maxPushConstantsSize = R300VK_MAX_PUSH_CONSTANTS_SIZE;
 
    props->maxMemoryAllocationCount = 4096;
    props->maxSamplerAllocationCount = 4000;
@@ -383,10 +383,11 @@ r300vk_physical_device_init_properties(struct vk_properties *const props,
 static const struct vk_device_extension_table r300vk_device_extensions_supported = {
    /* Host-side query reset is a CPU clear of the per-slot query storage
     * (r300vk_ResetQueryPool); it needs no GPU-side encoding, so the
-    * always-available host queue model supports it directly.  Advertising it
-    * also exposes the core vkResetQueryPool entrypoint on this Vulkan 1.0
-    * device.  WSI (VK_KHR_swapchain) and the external-memory family stay
-    * withheld until the device layer brings them up. */
+    * always-available host queue model supports it directly.
+    * r300vk_GetDeviceProcAddr maps the promoted core spelling to the same
+    * implementation when the extension is enabled on this Vulkan 1.0 device.
+    * WSI (VK_KHR_swapchain) and the external-memory family stay withheld until
+    * the device layer brings them up. */
    .EXT_host_query_reset = true,
    /* VK_EXT_physical_device_drm: exposes the render/primary node major/minor in
     * VkPhysicalDeviceDrmPropertiesEXT.  Zink's display-device selection matches
@@ -956,16 +957,18 @@ r300vk_get_format_properties(const struct r300vk_physical_device *const device,
     * util_blitter), which scales, filters, and format-casts a region.
     * r300_is_blit_supported gates the resource layouts r300's blitter accepts
     * (plain, S3TC, RGTC).  A blit source is sampled, so BLIT_SRC needs
-    * PIPE_BIND_SAMPLER_VIEW; a blit destination is rendered, so BLIT_DST needs
-    * PIPE_BIND_RENDER_TARGET.  Pairing each bit with its bind keeps a
-    * sample-only format (a compressed layout, which r300 cannot render to)
-    * BLIT_SRC without falsely advertising BLIT_DST.  The replay samples the
-    * source as a texture, and r300vk tiles every optimal image at the sampler
-    * cap, so r300vk_replay_blit blits a source past the cap one in-cap tile at a
-    * time and honors the advertised maxImageDimension2D up to the 4096 floor. */
+    * PIPE_BIND_SAMPLER_VIEW; a blit destination is rendered and must also be
+    * creatable with VK_IMAGE_USAGE_TRANSFER_DST_BIT, because vkCmdBlitImage2
+    * requires that usage on the destination image.  Pairing each bit with the
+    * usage path keeps sample-only or CPU-transfer-limited formats out of
+    * unreachable BLIT_DST advertisements.  The replay samples the source as a
+    * texture, and r300vk tiles every optimal image at the sampler cap, so
+    * r300vk_replay_blit blits a source past the cap one in-cap tile at a time
+    * and honors the advertised maxImageDimension2D up to the 4096 floor. */
    if (supports_sampler_view && r300vk_format_blit_supported(pipe_format))
       image_features |= VK_FORMAT_FEATURE_2_BLIT_SRC_BIT;
-   if (supports_render_target && r300vk_format_blit_supported(pipe_format))
+   if (supports_render_target && r300vk_format_blit_supported(pipe_format) &&
+       r300vk_format_supports_transfer_dst(pipe_format))
       image_features |= VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
 
    /* Depth/stencil formats carry no buffer features: a VkBuffer cannot hold a

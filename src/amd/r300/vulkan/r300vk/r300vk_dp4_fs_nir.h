@@ -14,8 +14,9 @@ extern "C" {
 
 /* Build the DP4 compute-as-raster fragment program as standalone NIR: sample
  * two 2D-sampler inputs at the fullscreen texcoord, dot the first `components`
- * channels (2, 3, or 4; 0 means 4), and encode the integer dot into RGBA8 as a
- * 3-byte little-endian value.  The caller runs screen->finalize_nir and
+ * channels (2, 3, or 4; 0 means 4), truncate the dot as the admitted
+ * f2u32(fdot(...)) compute store does, and encode the integer dot into RGBA8
+ * as a 4-byte little-endian value.  The caller runs screen->finalize_nir and
  * create_fs_state.
  *
  * Split out of r300vk_synthesize_dp4_fs so a build-time test can validate the

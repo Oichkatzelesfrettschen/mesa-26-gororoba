@@ -54,6 +54,8 @@ static void r300_release_referenced_objects(struct r300_context *r300)
 
     r300->context.delete_depth_stencil_alpha_state(&r300->context,
                                                    r300->dsa_decompress_zmask);
+    r300->context.delete_depth_stencil_alpha_state(&r300->context,
+                                                   r300->null_dsa_state);
 }
 
 static void r300_destroy_context(struct pipe_context* context)
@@ -521,6 +523,11 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
     {
         struct pipe_depth_stencil_alpha_state dsa;
         memset(&dsa, 0, sizeof(dsa));
+        r300->null_dsa_state =
+            r300->context.create_depth_stencil_alpha_state(&r300->context,
+                                                           &dsa);
+        r300->context.bind_depth_stencil_alpha_state(&r300->context, NULL);
+
         dsa.depth_writemask = 1;
 
         r300->dsa_decompress_zmask =

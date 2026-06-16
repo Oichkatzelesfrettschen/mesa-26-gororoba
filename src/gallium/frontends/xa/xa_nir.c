@@ -89,9 +89,15 @@ load_const(nir_builder *b, unsigned slot)
 static nir_variable *
 decl_io(nir_builder *b, nir_variable_mode mode, int location, const char *name)
 {
-    nir_variable *v = nir_variable_create(b->shader, mode, glsl_vec4_type(), name);
-    v->data.location = location;
-    return v;
+    nir_foreach_variable_with_modes(var, b->shader, mode) {
+        if (var->data.location == location)
+            return var;
+    }
+
+    nir_variable *var =
+        nir_variable_create(b->shader, mode, glsl_vec4_type(), name);
+    var->data.location = location;
+    return var;
 }
 
 /* A GENERIC[idx] fragment-shader texcoord input, trimmed to the xy used for 2D
@@ -108,9 +114,18 @@ decl_sampler(nir_builder *b, unsigned binding)
 {
     const struct glsl_type *t =
         glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
-    nir_variable *s = nir_variable_create(b->shader, nir_var_uniform, t, "samp");
-    s->data.binding = binding;
-    return nir_build_deref_var(b, s);
+
+    nir_foreach_uniform_variable(var, b->shader) {
+        if (var->data.binding == binding &&
+            glsl_type_is_sampler(glsl_without_array(var->type)))
+            return nir_build_deref_var(b, var);
+    }
+
+    nir_variable *sampler =
+        nir_variable_create(b->shader, nir_var_uniform, t, "samp");
+    sampler->data.binding = binding;
+    sampler->data.explicit_binding = 1;
+    return nir_build_deref_var(b, sampler);
 }
 
 static nir_def *
@@ -124,11 +139,12 @@ tex2d(nir_builder *b, nir_deref_instr *samp, nir_def *coord)
  * glsl_get_explicit_size(var->interface_type)), not from load_ubo usage.  The
  * builder reads constants by raw vec4 slot, so without this declaration ubo_size
  * is 0, ntr_add_constants allocates no RC_CONSTANT_EXTERNAL, r300's
- * externals_count stays 0, and the driver binds zero constants -- the fragment
- * shader reads the solid colour and the YUV->RGB matrix as 0.  Declare the
- * default UBO sized to the slots the shader reads, mirroring
- * nir_lower_uniforms_to_ubo.  The vertex shader does not need this: nir_to_tgsi
- * feeds the SW-TCL draw module, which reads the bound constant buffer directly. */
+ * externals_count stays 0, and r300_emit_vs_constants() or
+ * r300_emit_fs_constants() uploads no default-constant data.  Declare the
+ * default UBO sized to the slots each shader reads, mirroring
+ * nir_lower_uniforms_to_ubo.  The declaration is required for HW-TCL vertex
+ * shaders through r300_translate_vertex_shader() and for fragment shaders;
+ * SW-TCL remains compatible because nir_to_tgsi accepts the same declaration. */
 static void
 declare_const_ubo(nir_shader *s, unsigned num_slots)
 {
@@ -166,7 +182,10 @@ declare_const_ubo(nir_shader *s, unsigned num_slots)
  * the sampler region of the shader variant key.  A zero count leaves the key
  * region un-zeroed on the stack, giving garbage format values and an assertion
  * failure in lp_build_sample_soa.  Populate the bitsets here for every sampler
- * uniform variable, mirroring gl_nir_lower_samplers_as_deref. */
+ * uniform variable, mirroring gl_nir_lower_samplers_as_deref.  Then lower the
+ * sampler derefs so llvmpipe sees the binding through instr->texture_index and
+ * instr->sampler_index instead of defaulting every deref-backed texture op to
+ * unit 0. */
 static void
 finalize(struct pipe_context *pipe, nir_builder *b, unsigned num_const_slots)
 {
@@ -183,6 +202,8 @@ finalize(struct pipe_context *pipe, nir_builder *b, unsigned num_const_slots)
             BITSET_SET_COUNT(b->shader->info.samplers_used, var->data.binding, count);
         }
     }
+
+    NIR_PASS(_, b->shader, nir_lower_samplers);
 
     if (pipe->screen->finalize_nir)
         pipe->screen->finalize_nir(pipe->screen, b->shader, true);
@@ -228,7 +249,7 @@ create_vs(struct pipe_context *pipe, unsigned vs_traits)
         }
     }
 
-    finalize(pipe, &b, 0);
+    finalize(pipe, &b, 2);
     struct pipe_shader_state state = {0};
     state.type = PIPE_SHADER_IR_NIR;
     state.ir.nir = b.shader;
@@ -377,6 +398,8 @@ struct xa_shaders *
 xa_shaders_create(struct xa_context *r)
 {
     struct xa_shaders *sc = CALLOC_STRUCT(xa_shaders);
+    if (!sc)
+        return NULL;
 
     sc->r = r;
     cso_hash_init(&sc->vs_hash);

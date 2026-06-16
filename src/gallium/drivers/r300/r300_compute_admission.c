@@ -1392,9 +1392,222 @@ dp4_op_admitted(uint16_t op, uint8_t *components)
    case nir_op_fdot2: *components = 2; return true;
    case nir_op_fdot3: *components = 3; return true;
    case nir_op_fdot4: *components = 4; return true;
+   case nir_op_fdot2_replicated: *components = 2; return true;
+   case nir_op_fdot3_replicated: *components = 3; return true;
+   case nir_op_fdot4_replicated: *components = 4; return true;
    default:
       return false;
    }
+}
+
+struct dp4_offset_affine {
+   uint64_t ax, ay, az, b;
+   bool has_base;
+};
+
+static bool dp4_offset_resolve(const nir_def *def, unsigned channel,
+                               unsigned depth,
+                               struct dp4_offset_affine *out);
+
+static bool
+dp4_offset_in_range(const struct dp4_offset_affine *e)
+{
+   return e->ax <= UINT32_MAX && e->ay <= UINT32_MAX &&
+          e->az <= UINT32_MAX && e->b <= UINT32_MAX;
+}
+
+static bool
+dp4_offset_resolve_intrinsic(const nir_intrinsic_instr *intr, unsigned channel,
+                             struct dp4_offset_affine *out)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_base_global_invocation_id:
+   case nir_intrinsic_load_base_workgroup_id:
+      return true;
+   case nir_intrinsic_load_global_invocation_id:
+   case nir_intrinsic_load_global_invocation_index:
+      out->ax = channel == 0;
+      out->ay = channel == 1;
+      out->az = channel >= 2;
+      return true;
+   case nir_intrinsic_load_vulkan_descriptor:
+      out->has_base = true;
+      return true;
+   default:
+      return false;
+   }
+}
+
+static bool
+dp4_offset_resolve_add(const nir_alu_instr *alu, unsigned channel,
+                       unsigned depth, struct dp4_offset_affine *out)
+{
+   struct dp4_offset_affine a, b;
+
+   if (!dp4_offset_resolve(alu->src[0].src.ssa,
+                           alu->src[0].swizzle[channel], depth + 1, &a) ||
+       !dp4_offset_resolve(alu->src[1].src.ssa,
+                           alu->src[1].swizzle[channel], depth + 1, &b) ||
+       (a.has_base && b.has_base))
+      return false;
+
+   out->ax = a.ax + b.ax;
+   out->ay = a.ay + b.ay;
+   out->az = a.az + b.az;
+   out->b = a.b + b.b;
+   out->has_base = a.has_base || b.has_base;
+   return dp4_offset_in_range(out);
+}
+
+static bool
+dp4_offset_resolve_mul(const nir_alu_instr *alu, unsigned channel,
+                       unsigned depth, struct dp4_offset_affine *out)
+{
+   struct dp4_offset_affine a;
+   unsigned ci = 2;
+
+   if (nir_src_is_const(alu->src[1].src))
+      ci = 1;
+   else if (nir_src_is_const(alu->src[0].src))
+      ci = 0;
+   if (ci == 2)
+      return false;
+
+   const int64_t cv = nir_src_as_int(alu->src[ci].src);
+   if (cv < 0 ||
+       !dp4_offset_resolve(alu->src[ci ^ 1].src.ssa,
+                           alu->src[ci ^ 1].swizzle[channel], depth + 1,
+                           &a) ||
+       a.has_base)
+      return false;
+
+   out->ax = a.ax * (uint64_t)cv;
+   out->ay = a.ay * (uint64_t)cv;
+   out->az = a.az * (uint64_t)cv;
+   out->b = a.b * (uint64_t)cv;
+   return dp4_offset_in_range(out);
+}
+
+static bool
+dp4_offset_resolve_shift(const nir_alu_instr *alu, unsigned channel,
+                         unsigned depth, struct dp4_offset_affine *out)
+{
+   struct dp4_offset_affine a;
+
+   if (!nir_src_is_const(alu->src[1].src))
+      return false;
+   const uint64_t shift = nir_src_as_uint(alu->src[1].src);
+   if (shift >= 32 ||
+       !dp4_offset_resolve(alu->src[0].src.ssa,
+                           alu->src[0].swizzle[channel], depth + 1, &a) ||
+       a.has_base)
+      return false;
+
+   out->ax = a.ax << shift;
+   out->ay = a.ay << shift;
+   out->az = a.az << shift;
+   out->b = a.b << shift;
+   return dp4_offset_in_range(out);
+}
+
+static bool
+dp4_offset_resolve(const nir_def *def, unsigned channel, unsigned depth,
+                   struct dp4_offset_affine *out)
+{
+   if (depth > 12 || channel > 3)
+      return false;
+   memset(out, 0, sizeof(*out));
+
+   const nir_instr *instr = nir_def_instr(def);
+   if (instr->type == nir_instr_type_load_const) {
+      const nir_load_const_instr *lc = nir_def_as_load_const((nir_def *)def);
+      out->b = lc->value[channel].u32;
+      return true;
+   }
+   if (instr->type == nir_instr_type_intrinsic)
+      return dp4_offset_resolve_intrinsic(nir_instr_as_intrinsic(instr),
+                                          channel, out);
+   if (instr->type != nir_instr_type_alu)
+      return false;
+
+   const nir_alu_instr *alu = nir_instr_as_alu(instr);
+   switch (alu->op) {
+   case nir_op_mov:
+   case nir_op_u2u32:
+   case nir_op_i2i32:
+      return dp4_offset_resolve(alu->src[0].src.ssa,
+                                alu->src[0].swizzle[channel], depth + 1, out);
+   case nir_op_iadd:
+      return dp4_offset_resolve_add(alu, channel, depth, out);
+   case nir_op_imul:
+   case nir_op_amul:
+      return dp4_offset_resolve_mul(alu, channel, depth, out);
+   case nir_op_ishl:
+      return dp4_offset_resolve_shift(alu, channel, depth, out);
+   default:
+      return false;
+   }
+}
+
+static bool
+dp4_offset_to_element_index(const nir_def *def, unsigned element_stride,
+                            struct dp4_offset_affine *out)
+{
+   struct dp4_offset_affine byte_offset;
+   if (!element_stride ||
+       !dp4_offset_resolve(def, 0, 0, &byte_offset))
+      return false;
+   if (byte_offset.ax % element_stride || byte_offset.ay % element_stride ||
+       byte_offset.az % element_stride || byte_offset.b % element_stride)
+      return false;
+
+   out->ax = byte_offset.ax / element_stride;
+   out->ay = byte_offset.ay / element_stride;
+   out->az = byte_offset.az / element_stride;
+   out->b = byte_offset.b / element_stride;
+   out->has_base = false;
+   return true;
+}
+
+static bool
+dp4_offset_is_contiguous_invocation_stream(const struct dp4_offset_affine *e)
+{
+   return e->ax == 1 && e->ay == 0 && e->az == 0 && e->b == 0;
+}
+
+static bool
+dp4_offsets_match_replay_stream(const nir_intrinsic_instr *load_a,
+                                const nir_intrinsic_instr *load_b,
+                                const nir_intrinsic_instr *store,
+                                uint8_t components)
+{
+   const unsigned input_stride = components == 2 ? 8 : 16;
+   const unsigned output_stride = 4;
+   struct dp4_offset_affine a, b, out;
+
+   if (!dp4_offset_to_element_index(load_a->src[1].ssa, input_stride, &a) ||
+       !dp4_offset_to_element_index(load_b->src[1].ssa, input_stride, &b) ||
+       !dp4_offset_to_element_index(store->src[2].ssa, output_stride, &out))
+      return false;
+   if (!dp4_offset_is_contiguous_invocation_stream(&a) ||
+       !dp4_offset_is_contiguous_invocation_stream(&b) ||
+       !dp4_offset_is_contiguous_invocation_stream(&out))
+      return false;
+
+   return a.ax == b.ax && a.ay == b.ay && a.az == b.az && a.b == b.b &&
+          a.ax == out.ax && a.ay == out.ay && a.az == out.az && a.b == out.b;
+}
+
+static bool
+dp4_store_writes_scalar_output(const nir_intrinsic_instr *store)
+{
+   if (!store->src[0].ssa)
+      return false;
+
+   /* The replay writes one complete scalar uint output element per invocation.
+    * Wider store masks describe lanes the DP4 replay does not transport. */
+   return !nir_intrinsic_has_write_mask(store) ||
+          nir_intrinsic_write_mask(store) == 0x1;
 }
 
 void
@@ -1445,7 +1658,7 @@ r300_nir_detect_dp4_pattern(const nir_shader *s,
    if (store_count != 1 || load_count != 2 || atomic_count != 0 ||
        has_loop || in_if)
       return;
-   if (!store->src[0].ssa)
+   if (!dp4_store_writes_scalar_output(store))
       return;
 
    /* The dot result is carried back as an RGBA8 integer-encode: R300 has no FP32
@@ -1473,6 +1686,15 @@ r300_nir_detect_dp4_pattern(const nir_shader *s,
    const nir_def *s1 = alu->src[1].src.ssa;
    if (!((s0 == &load_a->def && s1 == &load_b->def) ||
          (s0 == &load_b->def && s1 == &load_a->def)))
+      return;
+
+   /* The replay samples texel i from both input buffers and copies texel i back
+    * to the output buffer.  Normalize each byte offset by its carrier stride
+    * before admitting the pattern: fdot2 input records are 8 bytes, fdot3/fdot4
+    * input records use the 16-byte FP32x4 carrier, and the uint output record is
+    * 4 bytes.  Any shifted, strided, or non-contiguous address would make the
+    * replay compute a different element stream than the compute shader. */
+   if (!dp4_offsets_match_replay_stream(load_a, load_b, store, comps))
       return;
 
    out->dot_op     = (uint16_t)alu->op;

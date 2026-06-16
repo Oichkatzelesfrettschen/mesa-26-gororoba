@@ -111,11 +111,11 @@ build_vs(enum vs_sysval sysval)
 
 /* Build a VS that reads a system value as a load_deref of a nir_var_system_value
  * variable -- the form spirv_to_nir emits (vtn maps gl_VertexIndex /
- * gl_InstanceIndex to SYSTEM_VALUE_VERTEX_ID / SYSTEM_VALUE_INSTANCE_ID), before
- * any nir_lower_system_values runs.  build_vs emits the post-lowering intrinsic
- * form; this pins the pre-lowering deref form the real R300VK SPIR-V path
- * produces, which reaches nir_to_rc as "Unknown intrinsic: load_deref" when
- * detection misses it. */
+ * gl_InstanceIndex to SYSTEM_VALUE_VERTEX_ID / SYSTEM_VALUE_INSTANCE_INDEX),
+ * before any nir_lower_system_values runs.  build_vs emits the post-lowering
+ * intrinsic form; this pins the pre-lowering deref form the real R300VK
+ * SPIR-V path produces, which reaches nir_to_rc as "Unknown intrinsic:
+ * load_deref" when detection misses it. */
 static nir_shader *
 build_vs_sysval_deref(gl_system_value sysval)
 {

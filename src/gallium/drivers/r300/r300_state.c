@@ -947,7 +947,7 @@ static void r300_dsa_inject_stencilref(struct r300_context *r300)
     struct r300_dsa_state *dsa =
             (struct r300_dsa_state*)r300->dsa_state.state;
 
-    if (!dsa)
+    if (!dsa || dsa == r300->null_dsa_state)
         return;
 
     dsa->stencil_ref_mask =
@@ -964,9 +964,10 @@ static void r300_bind_dsa_state(struct pipe_context* pipe,
 {
     struct r300_context* r300 = r300_context(pipe);
 
-    if (!state) {
+    if (!state)
+        state = r300->null_dsa_state;
+    if (!state)
         return;
-    }
 
     UPDATE_STATE(state, r300->dsa_state);
 
@@ -980,11 +981,24 @@ static void r300_delete_dsa_state(struct pipe_context* pipe,
 {
     struct r300_context* r300 = r300_context(pipe);
 
+    if (!state)
+        return;
+
     /* util_blitter_save_depth_stencil_alpha() snapshots r300->dsa_state.state and
-     * restores it on the next clear; drop the reference so the restore cannot rebind a
-     * freed state.  Inert on the GL path, which unbinds before delete. */
-    if (r300->dsa_state.state == state)
-        r300->dsa_state.state = NULL;
+     * restores it on the next clear.  Replace a deleted live state with the
+     * retained no-DSA CSO so bind_depth_stencil_alpha_state(NULL) remains an
+     * emitting state change instead of a no-op. */
+    if (r300->dsa_state.state == state) {
+        if (state == r300->null_dsa_state)
+            r300->dsa_state.state = NULL;
+        else {
+            r300_bind_dsa_state(pipe, NULL);
+            if (r300->dsa_state.state == state)
+                r300->dsa_state.state = NULL;
+        }
+    }
+    if (state == r300->null_dsa_state)
+        r300->null_dsa_state = NULL;
 
     FREE(state);
 }

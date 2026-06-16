@@ -54,14 +54,33 @@ XA_EXPORT struct xa_context *
 xa_context_create(struct xa_tracker *xa)
 {
     struct xa_context *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx)
+	return NULL;
 
     ctx->xa = xa;
     ctx->pipe = xa->screen->context_create(xa->screen, NULL, 0);
+    if (!ctx->pipe)
+	goto fail;
+
     ctx->cso = cso_create_context(ctx->pipe, 0);
+    if (!ctx->cso)
+	goto fail;
+
     ctx->shaders = xa_shaders_create(ctx);
+    if (!ctx->shaders)
+	goto fail;
+
     renderer_init_state(ctx);
 
     return ctx;
+
+fail:
+    if (ctx->cso)
+	cso_destroy_context(ctx->cso);
+    if (ctx->pipe)
+	ctx->pipe->destroy(ctx->pipe);
+    free(ctx);
+    return NULL;
 }
 
 XA_EXPORT void
@@ -312,7 +331,7 @@ xa_solid_prepare(struct xa_context *ctx, struct xa_surface *dst,
 #endif
 
     vs_traits = VS_SRC_SRC | VS_COMPOSITE;
-    fs_traits = FS_SRC_SRC | VS_COMPOSITE;
+    fs_traits = FS_SRC_SRC | FS_COMPOSITE;
 
     renderer_bind_destination(ctx, &ctx->srf);
     bind_solid_blend_state(ctx);

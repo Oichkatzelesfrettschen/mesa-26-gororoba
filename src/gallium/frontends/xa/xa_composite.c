@@ -35,7 +35,7 @@
 #include "util/u_inlines.h"
 
 
-/*XXX also in Xrender.h but the including it here breaks compilition */
+/*XXX also in Xrender.h but the including it here breaks compilation */
 #define XFixedToDouble(f)    (((double) (f)) / 65536.)
 
 struct xa_composite_blend {
@@ -337,7 +337,7 @@ xa_src_in_mask(float src[4], const float mask[4])
  * \param src_pict[in]: Pointer to the union xa_source_pict to consider.
  * \param is_mask[in]: Whether we're considering a mask picture.
  *
- * \returns true if succesful, false otherwise.
+ * \returns true if successful, false otherwise.
  *
  * This function computes some xa_context state used to determine whether
  * to upload the solid color and also the solid color itself used as an input
@@ -472,7 +472,8 @@ bind_samplers(struct xa_context *ctx,
 	src_sampler.min_mip_filter = PIPE_TEX_MIPFILTER_NEAREST;
 	samplers[0] = &src_sampler;
 	u_sampler_view_default_template(&view_templ,
-					src_pic->srf->tex,+					src_pic->srf->tex->format);
+					src_pic->srf->tex,
+					src_pic->srf->tex->format);
 	src_view = pipe->create_sampler_view(pipe, src_pic->srf->tex,
 					     &view_templ);
 	ctx->bound_sampler_views[0] = src_view;
@@ -480,7 +481,7 @@ bind_samplers(struct xa_context *ctx,
     }
 
     if (mask_pic && !ctx->has_solid_mask) {
-        unsigned mask_wrap = xa_repeat_to_gallium(mask_pic->wrap);
+	unsigned mask_wrap = xa_repeat_to_gallium(mask_pic->wrap);
 	int filter;
 
 	(void) xa_filter_to_gallium(mask_pic->filter, &filter);
@@ -489,15 +490,15 @@ bind_samplers(struct xa_context *ctx,
 	mask_sampler.wrap_t = mask_wrap;
 	mask_sampler.min_img_filter = filter;
 	mask_sampler.mag_img_filter = filter;
-	src_sampler.min_mip_filter = PIPE_TEX_MIPFILTER_NEAREST;
-        samplers[num_samplers] = &mask_sampler;
+	mask_sampler.min_mip_filter = PIPE_TEX_MIPFILTER_NEAREST;
+	samplers[num_samplers] = &mask_sampler;
 	u_sampler_view_default_template(&view_templ,
 					mask_pic->srf->tex,
 					mask_pic->srf->tex->format);
 	src_view = pipe->create_sampler_view(pipe, mask_pic->srf->tex,
 					     &view_templ);
-        ctx->bound_sampler_views[num_samplers] = src_view;
-        num_samplers++;
+	ctx->bound_sampler_views[num_samplers] = src_view;
+	num_samplers++;
     }
 
     cso_set_samplers(ctx->cso, MESA_SHADER_FRAGMENT, num_samplers,

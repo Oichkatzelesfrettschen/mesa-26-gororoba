@@ -30,6 +30,7 @@
 #include "r300vk_device.h"
 #include "r300vk_buffer.h"
 #include "r300vk_entrypoints.h"
+#include "r300vk_format.h"
 #include "r300vk_object.h"
 
 #include "vk_alloc.h"
@@ -110,6 +111,7 @@ r300vk_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
    ss->lod_bias = ci->mipLodBias;
    ss->min_lod  = ci->minLod;
    ss->max_lod  = ci->maxLod;
+   ss->max_anisotropy = 1;
    if (ci->anisotropyEnable && ci->maxAnisotropy > 1.0f)
       ss->max_anisotropy = (unsigned)ci->maxAnisotropy;
    if (ci->compareEnable) {
@@ -117,40 +119,14 @@ r300vk_sampler_state_from_vk(const VkSamplerCreateInfo *ci,
       ss->compare_func = vk_compare_op_to_pipe(ci->compareOp);
    }
 
-   /* Border colour: the standard VkBorderColor palette maps to constant
-    * float/int values; VK_EXT_custom_border_color supplies the value in a
-    * chained VkSamplerCustomBorderColorCreateInfoEXT.  r300 stores a full
-    * per-sampler border colour (TX_BORDER_COLOR), so both pass through. */
-   switch (ci->borderColor) {
-   case VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK:
-      ss->border_color.f[3] = 1.0f;
-      break;
-   case VK_BORDER_COLOR_INT_OPAQUE_BLACK:
-      ss->border_color.i[3] = 1;
-      break;
-   case VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE:
-      ss->border_color.f[0] = ss->border_color.f[1] = 1.0f;
-      ss->border_color.f[2] = ss->border_color.f[3] = 1.0f;
-      break;
-   case VK_BORDER_COLOR_INT_OPAQUE_WHITE:
-      ss->border_color.i[0] = ss->border_color.i[1] = 1;
-      ss->border_color.i[2] = ss->border_color.i[3] = 1;
-      break;
-   case VK_BORDER_COLOR_FLOAT_CUSTOM_EXT:
-   case VK_BORDER_COLOR_INT_CUSTOM_EXT: {
-      const VkSamplerCustomBorderColorCreateInfoEXT *custom =
-         vk_find_struct_const(ci->pNext,
-                              SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT);
-      if (custom)
-         memcpy(&ss->border_color, &custom->customBorderColor,
-                sizeof(ss->border_color));
-      break;
-   }
-   case VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
-   case VK_BORDER_COLOR_INT_TRANSPARENT_BLACK:
-   default:
-      break;
-   }
+   VkFormat border_format;
+   VkClearColorValue border_color =
+      vk_sampler_border_color_value(ci, &border_format);
+   memcpy(&ss->border_color, &border_color, sizeof(ss->border_color));
+   ss->border_color_is_integer = vk_border_color_is_int(ci->borderColor);
+   ss->border_color_format = border_format == VK_FORMAT_UNDEFINED
+                              ? PIPE_FORMAT_NONE
+                              : r300vk_vk_format_to_pipe_format(border_format);
 }
 
 VkResult
@@ -175,6 +151,10 @@ r300vk_CreateSampler(VkDevice _device,
    struct pipe_sampler_state ss;
    r300vk_sampler_state_from_vk(pCreateInfo, &ss);
    sampler->pipe_cso = device->pipe->create_sampler_state(device->pipe, &ss);
+   if (!sampler->pipe_cso) {
+      vk_sampler_destroy(&device->vk, pAllocator, vks);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
 
    *pSampler = vk_sampler_to_handle(vks);
    return VK_SUCCESS;
@@ -252,11 +232,13 @@ r300vk_CreateQueryPool(VkDevice _device,
 
    /* Allocate the vk_query_pool base plus one r300vk_query per query, so the
     * replay and GetQueryPoolResults have per-slot result + availability storage.
-    * vk_query_pool_create zero-initializes the allocation.  queryCount is a
-    * uint32_t and r300vk_query is a few bytes, so on the 64-bit target the
-    * array is at most ~2^36 bytes and cannot overflow the size_t allocation. */
-   const size_t size = sizeof(struct r300vk_query_pool) +
-                       (size_t)pCreateInfo->queryCount * sizeof(struct r300vk_query);
+    * vk_query_pool_create zero-initializes the allocation. */
+   const size_t pool_size = sizeof(struct r300vk_query_pool);
+   const size_t query_size = sizeof(struct r300vk_query);
+   if (pCreateInfo->queryCount > (SIZE_MAX - pool_size) / query_size)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   const size_t size = pool_size + (size_t)pCreateInfo->queryCount * query_size;
    struct vk_query_pool *pool =
       vk_query_pool_create(&device->vk, pCreateInfo, pAllocator, size);
    if (!pool)
@@ -279,12 +261,91 @@ r300vk_DestroyQueryPool(VkDevice _device,
    vk_query_pool_destroy(&device->vk, pAllocator, pool);
 }
 
+static bool
+r300vk_query_result_host_slot_in_bounds(uint32_t query_index,
+                                        VkDeviceSize stride,
+                                        unsigned result_size,
+                                        unsigned per_query,
+                                        bool write_availability,
+                                        size_t data_size,
+                                        size_t *byte_offset)
+{
+   if (stride > SIZE_MAX)
+      return false;
+   if (stride && query_index > SIZE_MAX / (size_t)stride)
+      return false;
+
+   const size_t offset = (size_t)query_index * (size_t)stride;
+   const size_t mapped_span = write_availability ? per_query : result_size;
+   if (mapped_span > data_size || offset > data_size - mapped_span)
+      return false;
+
+   *byte_offset = offset;
+   return true;
+}
+
+static void
+r300vk_store_query_result_word(uint8_t *dst, unsigned result_size,
+                               uint64_t value)
+{
+   if (result_size == sizeof(uint64_t)) {
+      const uint64_t v = value;
+      memcpy(dst, &v, sizeof(v));
+   } else {
+      const uint32_t v = (uint32_t)value;
+      memcpy(dst, &v, sizeof(v));
+   }
+}
+
+static bool
+r300vk_get_query_pool_result_one(uint8_t *data,
+                                 size_t data_size,
+                                 VkDeviceSize stride,
+                                 uint32_t dst_index,
+                                 const struct r300vk_query *query,
+                                 unsigned result_size,
+                                 unsigned per_query,
+                                 bool write_availability,
+                                 bool force_result,
+                                 bool wait,
+                                 VkResult *slot_result)
+{
+   const bool available = query->available;
+   const bool write_result = available || force_result;
+   *slot_result = (!available && !wait) ? VK_NOT_READY : VK_SUCCESS;
+
+   if (!write_result && !write_availability)
+      return true;
+
+   size_t byte_off;
+   if (!data ||
+       !r300vk_query_result_host_slot_in_bounds(dst_index, stride,
+                                                result_size, per_query,
+                                                write_availability,
+                                                data_size, &byte_off)) {
+      *slot_result = VK_NOT_READY;
+      return false;
+   }
+
+   uint8_t *slot = data + byte_off;
+   if (write_result)
+      r300vk_store_query_result_word(slot, result_size,
+                                     available ? query->result : 0);
+   if (write_availability)
+      r300vk_store_query_result_word(slot + result_size, result_size,
+                                     available ? 1 : 0);
+
+   return true;
+}
+
 /* Copy occlusion results recorded by the replay into the caller's buffer.  Each
  * query writes a result word (32- or 64-bit per VK_QUERY_RESULT_64_BIT) at
  * pData + i*stride, optionally followed by an availability word
- * (VK_QUERY_RESULT_WITH_AVAILABILITY_BIT).  The serialized CPU-replay queue
- * retires every submitted query before the host returns, so VK_QUERY_RESULT_WAIT
- * never blocks; an unavailable slot is one reset but never ended. */
+ * (VK_QUERY_RESULT_WITH_AVAILABILITY_BIT).  The range and host-buffer layout
+ * are clamped defensively before indexing either side.  The serialized
+ * CPU-replay queue retires every submitted query before the host returns, so
+ * VK_QUERY_RESULT_WAIT never blocks; an unavailable slot is one reset but never
+ * ended. */
 VkResult
 r300vk_GetQueryPoolResults(VkDevice _device,
                            VkQueryPool _pool,
@@ -300,40 +361,31 @@ r300vk_GetQueryPoolResults(VkDevice _device,
    struct r300vk_query_pool *pool = r300vk_query_pool(vk_pool);
    const bool b64        = (flags & VK_QUERY_RESULT_64_BIT) != 0;
    const bool want_avail = (flags & VK_QUERY_RESULT_WITH_AVAILABILITY_BIT) != 0;
+   const bool force_result = (flags & (VK_QUERY_RESULT_PARTIAL_BIT |
+                                       VK_QUERY_RESULT_WAIT_BIT)) != 0;
+   const bool wait = (flags & VK_QUERY_RESULT_WAIT_BIT) != 0;
    const unsigned rsize  = b64 ? sizeof(uint64_t) : sizeof(uint32_t);
+   const unsigned per_query = rsize * (want_avail ? 2u : 1u);
    VkResult result = VK_SUCCESS;
    (void)device;
-   (void)dataSize;
+
+   if (firstQuery >= vk_pool->query_count || queryCount == 0)
+      return VK_SUCCESS;
+   if (queryCount > vk_pool->query_count - firstQuery)
+      queryCount = vk_pool->query_count - firstQuery;
 
    for (uint32_t i = 0; i < queryCount; i++) {
       const struct r300vk_query *q = &pool->queries[firstQuery + i];
-      const bool available = q->available;
-      uint8_t *slot = (uint8_t *)pData + (size_t)i * stride;
-
-      /* Write the result word when the query is available, when the caller
-       * accepts a partial result, or when it asked to wait (never blocks here). */
-      if (available || (flags & (VK_QUERY_RESULT_PARTIAL_BIT |
-                                 VK_QUERY_RESULT_WAIT_BIT))) {
-         const uint64_t value = available ? q->result : 0;
-         if (b64) {
-            const uint64_t v = value;
-            memcpy(slot, &v, sizeof(v));
-         } else {
-            const uint32_t v = (uint32_t)value;
-            memcpy(slot, &v, sizeof(v));
-         }
+      VkResult slot_result = VK_SUCCESS;
+      if (!r300vk_get_query_pool_result_one(pData, dataSize, stride, i, q,
+                                            rsize, per_query, want_avail,
+                                            force_result, wait,
+                                            &slot_result)) {
+         result = slot_result;
+         break;
       }
-      if (want_avail) {
-         if (b64) {
-            const uint64_t v = available ? 1 : 0;
-            memcpy(slot + rsize, &v, sizeof(v));
-         } else {
-            const uint32_t v = available ? 1u : 0u;
-            memcpy(slot + rsize, &v, sizeof(v));
-         }
-      }
-      if (!available && !(flags & VK_QUERY_RESULT_WAIT_BIT))
-         result = VK_NOT_READY;
+      if (slot_result != VK_SUCCESS)
+         result = slot_result;
    }
    return result;
 }

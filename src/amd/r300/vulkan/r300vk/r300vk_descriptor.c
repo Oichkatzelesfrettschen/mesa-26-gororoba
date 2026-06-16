@@ -49,8 +49,17 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
 {
    VK_FROM_HANDLE(r300vk_device, device, _device);
    const uint32_t n = pCreateInfo->bindingCount;
+   uint32_t immutable_sampler_count = 0;
+
+   for (uint32_t i = 0; i < n; i++) {
+      const VkDescriptorSetLayoutBinding *src = &pCreateInfo->pBindings[i];
+      if (src->pImmutableSamplers)
+         immutable_sampler_count += src->descriptorCount;
+   }
+
    const size_t size = sizeof(struct r300vk_descriptor_set_layout) +
-                       n * sizeof(struct r300vk_dsl_binding);
+                       n * sizeof(struct r300vk_dsl_binding) +
+                       immutable_sampler_count * sizeof(VkSampler);
 
    struct r300vk_descriptor_set_layout *layout =
       vk_descriptor_set_layout_zalloc(&device->vk, size, pCreateInfo);
@@ -59,6 +68,7 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
 
    layout->binding_count = n;
    uint32_t dynamic_count = 0;
+   VkSampler *immutable_samplers = (VkSampler *)&layout->bindings[n];
    for (uint32_t i = 0; i < n; i++) {
       const VkDescriptorSetLayoutBinding *src = &pCreateInfo->pBindings[i];
       layout->bindings[i] = (struct r300vk_dsl_binding){
@@ -67,6 +77,12 @@ r300vk_CreateDescriptorSetLayout(VkDevice _device,
          .count        = src->descriptorCount,
          .stage_flags  = src->stageFlags,
       };
+      if (src->pImmutableSamplers) {
+         layout->bindings[i].immutable_samplers = immutable_samplers;
+         memcpy(immutable_samplers, src->pImmutableSamplers,
+                src->descriptorCount * sizeof(*immutable_samplers));
+         immutable_samplers += src->descriptorCount;
+      }
       if (descriptor_type_is_dynamic(src->descriptorType))
          dynamic_count += src->descriptorCount;
    }
@@ -269,6 +285,52 @@ find_binding(const struct r300vk_descriptor_set_layout *layout, uint32_t dst_bin
    return NULL;
 }
 
+static const struct r300vk_dsl_binding *
+find_binding_for_slot(const struct r300vk_descriptor_set_layout *layout,
+                      uint32_t slot, uint32_t *array_index)
+{
+   for (uint32_t i = 0; i < layout->binding_count; i++) {
+      const struct r300vk_dsl_binding *b = &layout->bindings[i];
+      if (slot >= b->offset && slot < b->offset + b->count) {
+         *array_index = slot - b->offset;
+         return b;
+      }
+   }
+   return NULL;
+}
+
+static VkSampler
+descriptor_slot_sampler(const struct r300vk_descriptor_set_layout *layout,
+                        uint32_t slot, VkSampler written_sampler)
+{
+   uint32_t array_index = 0;
+   const struct r300vk_dsl_binding *b =
+      find_binding_for_slot(layout, slot, &array_index);
+
+   if (b && b->immutable_samplers && array_index < b->count)
+      return b->immutable_samplers[array_index];
+
+   return written_sampler;
+}
+
+static void
+copy_descriptors_preserving_immutable_samplers(
+   struct r300vk_descriptor_set *dst_set, uint32_t dst_base,
+   const struct r300vk_descriptor_set *src_set, uint32_t src_base,
+   uint32_t count)
+{
+   for (uint32_t d = 0; d < count; d++) {
+      struct r300vk_descriptor *dst = &dst_set->descriptors[dst_base + d];
+      *dst = src_set->descriptors[src_base + d];
+      if (dst->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+          dst->type == VK_DESCRIPTOR_TYPE_SAMPLER) {
+         dst->img.sampler =
+            descriptor_slot_sampler(dst_set->layout, dst_base + d,
+                                    dst->img.sampler);
+      }
+   }
+}
+
 void
 r300vk_UpdateDescriptorSets(VkDevice _device,
                             uint32_t descriptorWriteCount,
@@ -360,18 +422,27 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
          }
          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
          case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
             const VkDescriptorImageInfo *ii = &write->pImageInfo[d];
             slot->img.image_view = ii->imageView;
             slot->img.layout     = ii->imageLayout;
-            slot->img.sampler    = ii->sampler;
+            slot->img.sampler    = VK_NULL_HANDLE;
+            slot->type = write->descriptorType;
+            break;
+         }
+         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
+            const VkDescriptorImageInfo *ii = &write->pImageInfo[d];
+            slot->img.image_view = ii->imageView;
+            slot->img.layout     = ii->imageLayout;
+            slot->img.sampler    =
+               descriptor_slot_sampler(set->layout, base + d, ii->sampler);
             slot->type = write->descriptorType;
             break;
          }
          case VK_DESCRIPTOR_TYPE_SAMPLER: {
             const VkDescriptorImageInfo *ii = &write->pImageInfo[d];
-            slot->img.sampler = ii->sampler;
+            slot->img.sampler =
+               descriptor_slot_sampler(set->layout, base + d, ii->sampler);
             slot->type = write->descriptorType;
             break;
          }
@@ -409,9 +480,8 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
       uint32_t span = cp->descriptorCount;
       if (src_base + span > src_total) span = src_total - src_base;
       if (dst_base + span > dst_total) span = dst_total - dst_base;
-      memcpy(&dst_set->descriptors[dst_base],
-             &src_set->descriptors[src_base],
-             span * sizeof(struct r300vk_descriptor));
+      copy_descriptors_preserving_immutable_samplers(dst_set, dst_base, src_set,
+                                                     src_base, span);
    }
 }
 

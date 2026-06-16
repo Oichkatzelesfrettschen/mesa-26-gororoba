@@ -180,6 +180,39 @@ package() {
   ln -s /opt/mesa-26-gororoba-debug \
     "${pkgdir}/usr/share/mesa-26-gororoba-debug"
 
+  # Own the runtime linker-path drop-in and point it at THIS variant's live lib
+  # dir.  The debug /opt tree carries its own bundled dependency libs; without
+  # this on the linker path, ldconfig cannot resolve the 64-bit libgbm.so.1 the
+  # X modesetting driver dlopens, and the console black-screens on reboot.
+  # Packaging it (vs an unowned, variant-specific conf) means a debug<->release
+  # swap rewrites the path to the installed variant and the .install scriptlet
+  # re-runs ldconfig, so reboots stay safe regardless of which variant is in.
+  install -dm755 "${pkgdir}/etc/ld.so.conf.d"
+  printf '%s\n' '/opt/mesa-26-gororoba-debug/lib' \
+    > "${pkgdir}/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf"
+
+  # Boot-safety guard.  The ld.so.conf drop-in above and the _link_into_usr
+  # activation both assume the gbm/glvnd runtime actually built; neither checks
+  # it.  If a meson option ever drops gbm, this package would still install a
+  # drop-in pointing at a libgbm-less lib dir and black-screen the console on
+  # the next reboot, with no build-time signal.  The X modesetting driver
+  # dlopens libgbm.so.1 by SONAME and glvnd resolves libGLX_mesa.so.0 /
+  # libEGL_mesa.so.0; fail the build if any is absent from the staged /opt tree,
+  # and confirm the /usr activation mirrored libgbm rather than only indexing it.
+  local _need _missing=""
+  for _need in libgbm.so.1 libGLX_mesa.so.0 libEGL_mesa.so.0; do
+    [ -e "${pkgdir}${_prefix}/lib/${_need}" ] \
+      || _missing="${_missing} ${_prefix}/lib/${_need}"
+  done
+  [ -e "${pkgdir}/usr/lib/libgbm.so.1" ] || [ -L "${pkgdir}/usr/lib/libgbm.so.1" ] \
+    || _missing="${_missing} /usr/lib/libgbm.so.1(activation)"
+  if [ -n "${_missing}" ]; then
+    echo "ERROR: boot-critical loader objects missing from the staged package:${_missing}" >&2
+    echo "       the gbm/glvnd runtime did not build or stage; refusing to ship a system" >&2
+    echo "       Mesa that black-screens X (modesetting dlopen libgbm.so.1) on reboot." >&2
+    return 1
+  fi
+
   if [ -f "${_srcroot}/docs/license.rst" ]; then
     install -Dm644 "${_srcroot}/docs/license.rst" \
       "${pkgdir}/usr/share/licenses/${pkgname}/license.rst"

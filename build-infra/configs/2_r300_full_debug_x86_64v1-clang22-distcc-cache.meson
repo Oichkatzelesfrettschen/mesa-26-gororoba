@@ -19,7 +19,7 @@
 # address.  Conformance and silicon evidence use the release profile instead, so
 # the assertion instrumentation never contaminates a pass/fail baseline.
 #
-# Install this to the -debug prefix (/opt/local/mesa-26-gororoba-debug) so the
+# Install this to the -debug prefix (/opt/mesa-26-gororoba-debug) so the
 # release and debug artifacts never share object files or install paths.
 #
 # Feature set, exclusions, and HOSTENV pairing are identical to profile 1_; see

@@ -1375,7 +1375,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+   IDM_LOG("rt->buffer copy issued (out=%p, src=%p, box w=%d h=%d)",
            (const void *)out_buf->resource, (const void *)rt,
            copy_box.width, copy_box.height);
 
@@ -1492,13 +1492,6 @@ r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
    return ok;
 }
 
-/* Binary-map orchestrator: same shape as r300vk_identity_map_dispatch_replay
- * above but with two input ssbos wrapped as separate sampler views and bound
- * at fragment-stage sampler stages 0 + 1.  The synthesised FS
- * (r300vk_synthesize_binary_map_fs in r300vk_pipeline.c) reads both samplers,
- * applies the detected ALU op, and writes via RB3D color export -- the rest of
- * the pipeline state (blend / raster / dsa / sampler / VBO / framebuffer /
- * viewport / scissor) is identical to the identity-map path. */
 /* Shared 2-in / 1-out compute-as-raster replay core.  Wraps two input SSBOs as
  * sampler views at fragment stages 0 + 1, draws the fullscreen quad with the
  * pipeline's synthesized VS + FS (pl->fs_cso -- the binary-map ALU FS or the
@@ -1527,35 +1520,30 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
            dispatch ? dispatch->group_count_y : 0,
            dispatch ? dispatch->group_count_z : 0);
    if (!pipe || !screen || !pl || !dispatch || !binds || binds->set_count == 0) {
-      IDM_LOG("bin_map early-return null-or-empty-binds");
+      IDM_LOG("2in1out early-return null-or-empty-binds");
       return false;
    }
    if (!pl->vs_cso || !pl->fs_cso) {
-      IDM_LOG("bin_map early-return no-vs-or-fs-cso");
+      IDM_LOG("2in1out early-return no-vs-or-fs-cso");
       return false;
    }
    if (binds->first_set != 0) {
-      IDM_LOG("bin_map early-return first_set=%u (only slot 0)",
+      IDM_LOG("2in1out early-return first_set=%u (only slot 0)",
               binds->first_set);
       return false;
    }
    const struct r300vk_descriptor_set *set = binds->sets[0];
    if (!set || !set->layout) {
-      IDM_LOG("bin_map early-return no-set-or-layout");
+      IDM_LOG("2in1out early-return no-set-or-layout");
       return false;
    }
 
    /* Binding-index resolution.  Two sources, in priority order:
-    *  (1) The binary-map detector reads the constant binding sources from
-    *      the kernel's load_ssbo / store_ssbo intrinsics
-    *      (r300_nir_detect_binary_map sets
-    *      binmap->{input_a,input_b,output}_ssbo_binding when nir_src_is_const
-    *      returns true for each binding source).  When the kernel's NIR
-    *      retains constant binding sources -- the common case for a GLSL
-    *      kernel with explicit layout(binding=N) qualifiers -- the captured
-    *      indices are authoritative and the orchestrator uses them so a
-    *      non-commutative ALU op (isub / fsub) gets its operand order right
-    *      for any binding declaration order.
+    *  (1) The caller's detector reads constant binding sources from the
+    *      kernel's load_ssbo / store_ssbo intrinsics.  When the kernel's NIR
+    *      retains constant binding sources, the captured indices are
+    *      authoritative and preserve the detector's operand order for any
+    *      binding declaration order.
     *  (2) When all three captured indices are zero (Vulkan forbids duplicate
     *      bindings within a set, so all-zero means the detector saw opaque
     *      post-explicit_io handles instead of constants), fall back to
@@ -1570,11 +1558,11 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
       if (!nth_storage_buffer_binding(set, 0, &in_a_binding) ||
           !nth_storage_buffer_binding(set, 1, &in_b_binding) ||
           !nth_storage_buffer_binding(set, 2, &out_binding)) {
-         IDM_LOG("bin_map early-return layout-has-fewer-than-three-storage-buffers");
+         IDM_LOG("2in1out early-return layout-has-fewer-than-three-storage-buffers");
          return false;
       }
    }
-   IDM_LOG("bin_map bindings: in_a=%u in_b=%u out=%u source=%s",
+   IDM_LOG("2in1out bindings: in_a=%u in_b=%u out=%u source=%s",
            in_a_binding, in_b_binding, out_binding,
            detector_captured ? "detector" : "positional");
 
@@ -1585,12 +1573,12 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    const struct r300vk_descriptor *desc_out =
       find_descriptor_by_binding(set, out_binding);
    if (!desc_in_a || !desc_in_b || !desc_out) {
-      IDM_LOG("bin_map early-return descriptor-walk-miss");
+      IDM_LOG("2in1out early-return descriptor-walk-miss");
       return false;
    }
    if (!desc_in_a->buf.buffer || !desc_in_b->buf.buffer ||
        !desc_out->buf.buffer) {
-      IDM_LOG("bin_map early-return null-vkbuffer-handle");
+      IDM_LOG("2in1out early-return null-vkbuffer-handle");
       return false;
    }
    VK_FROM_HANDLE(r300vk_buffer, buf_in_a, desc_in_a->buf.buffer);
@@ -1598,27 +1586,28 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    VK_FROM_HANDLE(r300vk_buffer, buf_out,  desc_out->buf.buffer);
    if (!buf_in_a || !buf_in_b || !buf_out ||
        !buf_in_a->resource || !buf_in_b->resource || !buf_out->resource) {
-      IDM_LOG("bin_map early-return null-pipe-resource");
+      IDM_LOG("2in1out early-return null-pipe-resource");
       return false;
    }
 
    const uint64_t total_invocations =
       r300vk_idm_total_invocations(dispatch, pl);
    if (total_invocations == 0 || total_invocations > 2048u * 2048u) {
-      IDM_LOG("bin_map early-return total_invocations=%llu out-of-bounds",
+      IDM_LOG("2in1out early-return total_invocations=%llu out-of-bounds",
               (unsigned long long)total_invocations);
       return false;
    }
    unsigned width = 0, height = 0;
    derive_raster_extent((uint32_t)total_invocations, &width, &height);
    if (width > 2048 || height > 2048) {
-      IDM_LOG("bin_map early-return extent-exceeds-2048-cap");
+      IDM_LOG("2in1out early-return extent-exceeds-2048-cap");
       return false;
    }
 
    /* input_fmt is the per-element sampler-view format (UNORM8 4B for binary-map,
-    * R32G32B32A32_FLOAT 16B for the dp4 vec4 inputs); fmt = output_fmt is the RT
-    * and copy-back element format (UNORM8 for both). */
+    * R32G32B32A32_FLOAT 16B for the dp4 vec4 inputs); fmt = output_fmt is the
+    * RT format.  PIPE_FORMAT_NONE in output_buffer_fmt means the copy-back uses
+    * the RT bytes directly. */
    const enum pipe_format fmt = output_fmt;
    struct pipe_sampler_view *sv_a =
       r300vk_identity_map_wrap_input_as_sampler_view(device, buf_in_a->resource,
@@ -1626,7 +1615,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
                                                      width, height,
                                                      total_invocations, input_fmt);
    if (!sv_a) {
-      IDM_LOG("bin_map early-return wrap-input-a-failed");
+      IDM_LOG("2in1out early-return wrap-input-a-failed");
       return false;
    }
    struct pipe_sampler_view *sv_b =
@@ -1636,10 +1625,10 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
                                                      total_invocations, input_fmt);
    if (!sv_b) {
       pipe_sampler_view_reference(&sv_a, NULL);
-      IDM_LOG("bin_map early-return wrap-input-b-failed");
+      IDM_LOG("2in1out early-return wrap-input-b-failed");
       return false;
    }
-   IDM_LOG("bin_map wrap sv_a=%p sv_b=%p", (const void *)sv_a, (const void *)sv_b);
+   IDM_LOG("2in1out wrap sv_a=%p sv_b=%p", (const void *)sv_a, (const void *)sv_b);
 
    /* Output RT: identical to identity-map. */
    struct pipe_resource rt_templ;
@@ -1654,7 +1643,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
    struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
    if (!rt) {
-      IDM_LOG("bin_map early-return rt-create-failed");
+      IDM_LOG("2in1out early-return rt-create-failed");
       pipe_sampler_view_reference(&sv_b, NULL);
       pipe_sampler_view_reference(&sv_a, NULL);
       return false;
@@ -1681,7 +1670,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
                                         device->identity_map_dsa_cso,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
 
-   /* Bind two sampler stages -- this is the binary-map-specific change. */
+   /* Bind the two input buffers as the replay core's sampler stages. */
    void *samplers[2] = { device->identity_map_sampler_cso,
                          device->identity_map_sampler_cso };
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
@@ -1699,10 +1688,10 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    info.instance_count = 1;
    info.max_index      = 3;
    struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
-   IDM_LOG("bin_map draw_vbo mode=triangle_strip count=4");
+   IDM_LOG("2in1out draw_vbo mode=triangle_strip count=4");
    pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
    pipe->flush(pipe, NULL, 0);
-   IDM_LOG("bin_map post-flush, beginning rt->buffer copy");
+   IDM_LOG("2in1out post-flush, beginning rt->buffer copy");
 
    struct pipe_box copy_box;
    memset(&copy_box, 0, sizeof(copy_box));
@@ -1767,7 +1756,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("bin_map rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+   IDM_LOG("2in1out rt->buffer copy issued (out=%p, src=%p, box w=%d h=%d)",
            (const void *)buf_out->resource, (const void *)rt,
            copy_box.width, copy_box.height);
 
@@ -1784,7 +1773,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    pipe_sampler_view_reference(&sv_a, NULL);
    pipe_resource_reference(&vb, NULL);
    pipe_resource_reference(&rt, NULL);
-   IDM_LOG("bin_map orchestrator done copy_ok=%d", (int)copy_ok);
+   IDM_LOG("2in1out orchestrator done copy_ok=%d", (int)copy_ok);
    return copy_ok;
 }
 
@@ -1837,12 +1826,19 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
                            const struct r300vk_cmd_dispatch *dispatch,
                            const struct r300vk_cmd_bind_descriptor_sets *binds)
 {
-   /* The dp4 vec4 inputs are sampled as R32G32B32A32_FLOAT.  R300 supports FP32
-    * texture sampling but NOT FP32 render targets (so the dot output is RGBA8
-    * integer-encoded by the FS, not an FP32 RT).  Bail if this variant lacks
-    * FP32 sampler support rather than mis-sample the inputs as bytes. */
+   /* The dot inputs are copied from the SSBO with the same per-invocation
+    * stride the compute load uses.  R32G32_FLOAT preserves fdot2's 8-byte
+    * vec2 records; fdot3 and fdot4 stay on the 16-byte carrier because this
+    * R300 format table has no R32G32B32_FLOAT sampler target. */
+   const enum pipe_format input_fmt = pl->dp4.components == 2
+      ? PIPE_FORMAT_R32G32_FLOAT : PIPE_FORMAT_R32G32B32A32_FLOAT;
+
+   /* R300 supports FP32 texture sampling but NOT FP32 render targets, so the
+    * dot output is RGBA8 integer-encoded by the FS, not an FP32 RT.  Bail if
+    * this variant lacks the required FP32 sampler carrier rather than
+    * mis-sample the inputs as bytes. */
    if (!device->screen->is_format_supported(device->screen,
-          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          input_fmt, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_SAMPLER_VIEW))
       return false;
    return r300vk_two_in_one_out_dispatch_replay(
@@ -1850,7 +1846,7 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
       pl->dp4.input_a_ssbo_binding,
       pl->dp4.input_b_ssbo_binding,
       pl->dp4.output_ssbo_binding,
-      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R8G8B8A8_UNORM,
+      input_fmt, PIPE_FORMAT_R8G8B8A8_UNORM,
       PIPE_FORMAT_NONE);
 }
 
@@ -2193,7 +2189,7 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("1in1out rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+   IDM_LOG("1in1out rt->buffer copy issued (out=%p, src=%p, box w=%d h=%d)",
            (const void *)buf_out->resource, (const void *)rt,
            copy_box.width, copy_box.height);
 
@@ -3685,7 +3681,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("gather rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+   IDM_LOG("gather rt->buffer copy issued (out=%p, src=%p, box w=%d h=%d)",
            (const void *)out_buf->resource, (const void *)rt,
            copy_box.width, copy_box.height);
 

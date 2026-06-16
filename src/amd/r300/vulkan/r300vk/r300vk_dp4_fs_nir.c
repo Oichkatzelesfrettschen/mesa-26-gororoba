@@ -7,6 +7,40 @@
 
 #include "compiler/nir/nir_builder.h"
 
+static nir_def *
+r300vk_dp4_pack_uint32_to_rgba8(nir_builder *b, nir_def *value)
+{
+   nir_def *fl256 = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 256.0));
+   nir_def *enc_r = nir_fsub(b, value, nir_fmul_imm(b, fl256, 256.0));
+   nir_def *enc_g = nir_fsub(b, fl256,
+      nir_fmul_imm(b, nir_ffloor(b, nir_fmul_imm(b, fl256, 1.0 / 256.0)), 256.0));
+   nir_def *flh = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 65536.0));
+   nir_def *enc_b = nir_fsub(b, flh,
+      nir_fmul_imm(b, nir_ffloor(b, nir_fmul_imm(b, flh, 1.0 / 256.0)), 256.0));
+   nir_def *fla = nir_ffloor(b, nir_fmul_imm(b, value, 1.0 / 16777216.0));
+   nir_def *enc_a = nir_fsub(b, fla,
+      nir_fmul_imm(b, nir_ffloor(b, nir_fmul_imm(b, fla, 1.0 / 256.0)), 256.0));
+
+   return nir_vec4(b,
+      nir_fmul_imm(b, enc_r, 1.0 / 255.0),
+      nir_fmul_imm(b, enc_g, 1.0 / 255.0),
+      nir_fmul_imm(b, enc_b, 1.0 / 255.0),
+      nir_fmul_imm(b, enc_a, 1.0 / 255.0));
+}
+
+static nir_def *
+r300vk_load_fs_texcoord(nir_builder *b)
+{
+   nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
+                                             glsl_vec4_type(), "tc");
+   /* The paired TGSI passthrough VS writes GENERIC[0].  nir_to_rc maps
+    * VARYING_SLOT_TEX0 to generic0, while VARYING_SLOT_VAR0 is shifted to
+    * generic9 during varying-slot fixup, so synthesized NIR replay fragment
+    * shaders must name the interpolant as TEX0 before backend lowering. */
+   in_tc->data.location = VARYING_SLOT_TEX0;
+   return nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+}
+
 /* Pure-NIR DP4 fragment program.  Samples in_a and in_b at the fullscreen
  * texcoord and writes dot(a,b) to the RB3D color export.  The dot result remains
  * exact for <=7-bit quantized operands because 4*127^2 fits below 2^17 and the
@@ -20,14 +54,7 @@ r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
    nir_builder b =
       nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_dp4");
 
-   nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
-                                             glsl_vec4_type(), "tc");
-   in_tc->data.location = VARYING_SLOT_VAR0;
-   /* The varying is a vec4, but a 2D sampler takes a 2-component (s,t)
-    * coordinate.  nir_tex asserts coord_components equals the sampler
-    * dimension's coordinate count, so trim the load to xy before building
-    * the texture instruction. */
-   nir_def *coord = nir_trim_vector(&b, nir_load_var(&b, in_tc), 2);
+   nir_def *coord = r300vk_load_fs_texcoord(&b);
 
    nir_def *tex[2];
    for (unsigned s = 0; s < 2; s++) {
@@ -53,23 +80,11 @@ r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
    nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
                                            glsl_vec4_type(), "color");
    out->data.location = FRAG_RESULT_COLOR;
-   /* R300 has no FP32 render target, so the scalar dot cannot be written as an
-    * IEEE-754 float.
-    * Carry it as a 3-byte little-endian integer in RGBA8: r=dot%256,
-    * g=(dot/256)%256, b=(dot/65536)%256.  The dot is an integer <= 2^17 for
-    * <=7-bit (quantized) operands and stays exact through this FP24 encode
-    * (every intermediate <= 2^24).  The dispatch-replay's UNORM8 RT round-trips
-    * each byte and copies them to the kernel's uint output SSBO. */
-   nir_def *fl256 = nir_ffloor(&b, nir_fmul_imm(&b, dot, 1.0 / 256.0));
-   nir_def *enc_r = nir_fsub(&b, dot, nir_fmul_imm(&b, fl256, 256.0));
-   nir_def *enc_g = nir_fsub(&b, fl256,
-      nir_fmul_imm(&b, nir_ffloor(&b, nir_fmul_imm(&b, fl256, 1.0 / 256.0)), 256.0));
-   nir_def *flh = nir_ffloor(&b, nir_fmul_imm(&b, dot, 1.0 / 65536.0));
-   nir_def *enc_b = nir_fsub(&b, flh,
-      nir_fmul_imm(&b, nir_ffloor(&b, nir_fmul_imm(&b, flh, 1.0 / 256.0)), 256.0));
-   nir_def *enc = nir_vec4(&b,
-      nir_fmul_imm(&b, enc_r, 1.0 / 255.0), nir_fmul_imm(&b, enc_g, 1.0 / 255.0),
-      nir_fmul_imm(&b, enc_b, 1.0 / 255.0), nir_imm_float(&b, 0.0));
+   /* The admitted compute value is f2u32(fdot(a,b)).  Mirror that conversion by
+    * truncating toward zero before the byte split, then carry all four
+    * little-endian bytes through RGBA8.  R300 has no FP32 render target, so the
+    * replay copies these RT bytes directly into the uint output SSBO. */
+   nir_def *enc = r300vk_dp4_pack_uint32_to_rgba8(&b, nir_ftrunc(&b, dot));
    nir_store_var(&b, out, enc, 0xf);
 
    nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
@@ -111,12 +126,7 @@ r300vk_build_qmul_fs_nir(const nir_shader_compiler_options *opts)
    nir_builder b =
       nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qmul");
 
-   nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
-                                             glsl_vec4_type(), "tc");
-   in_tc->data.location = VARYING_SLOT_VAR0;
-   /* 2D sampler takes a 2-component coordinate; nir_tex asserts coord_components
-    * matches the sampler dimension, so trim the vec4 varying to xy. */
-   nir_def *coord = nir_trim_vector(&b, nir_load_var(&b, in_tc), 2);
+   nir_def *coord = r300vk_load_fs_texcoord(&b);
 
    nir_def *q[2];
    for (unsigned s = 0; s < 2; s++) {
@@ -160,10 +170,7 @@ r300vk_build_qrotate_fs_nir(const nir_shader_compiler_options *opts)
    nir_builder b =
       nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts, "r300vk_qrotate");
 
-   nir_variable *in_tc = nir_variable_create(b.shader, nir_var_shader_in,
-                                             glsl_vec4_type(), "tc");
-   in_tc->data.location = VARYING_SLOT_VAR0;
-   nir_def *coord = nir_trim_vector(&b, nir_load_var(&b, in_tc), 2);
+   nir_def *coord = r300vk_load_fs_texcoord(&b);
 
    nir_def *tex[2];
    for (unsigned s = 0; s < 2; s++) {
@@ -207,10 +214,7 @@ r300vk_build_qrotate_fs_nir(const nir_shader_compiler_options *opts)
 static nir_def *
 sample_single_quaternion(nir_builder *b)
 {
-   nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
-                                             glsl_vec4_type(), "tc");
-   in_tc->data.location = VARYING_SLOT_VAR0;
-   nir_def *coord = nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+   nir_def *coord = r300vk_load_fs_texcoord(b);
 
    nir_variable *samp = nir_variable_create(
       b->shader, nir_var_uniform,
@@ -315,10 +319,7 @@ static void
 sample_octonion_halves(nir_builder *b, nir_def **a, nir_def **bb,
                        nir_def **c, nir_def **d)
 {
-   nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
-                                             glsl_vec4_type(), "tc");
-   in_tc->data.location = VARYING_SLOT_VAR0;
-   nir_def *coord = nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+   nir_def *coord = r300vk_load_fs_texcoord(b);
 
    nir_def *t[4];
    for (unsigned s = 0; s < 4; s++) {
@@ -427,10 +428,7 @@ r300vk_build_omul_mrt_fs_nir(const nir_shader_compiler_options *opts)
 static nir_def *
 make_fs_coord(nir_builder *b)
 {
-   nir_variable *in_tc = nir_variable_create(b->shader, nir_var_shader_in,
-                                             glsl_vec4_type(), "tc");
-   in_tc->data.location = VARYING_SLOT_VAR0;
-   return nir_trim_vector(b, nir_load_var(b, in_tc), 2);
+   return r300vk_load_fs_texcoord(b);
 }
 
 /* Sample the 2D input at sampler binding `stage`. */

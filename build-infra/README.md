@@ -19,9 +19,10 @@ prefix.
 | `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 3_ without Rusticl | release | `configs/alternates/` |
 | `6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 4_ without Rusticl | debug | `configs/alternates/` |
 
-The r300 profiles use `HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` and
-`COMPILER_CHAIN=ccache`; the x130e terakan lanes pass `HOSTENV=btver1*`
-explicitly.  Conformance and silicon-evidence runs use the release profile
+All six numbered profiles use
+`HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` and
+`COMPILER_CHAIN=ccache`.  Conformance and silicon-evidence runs use the release
+profile
 (`1_r300_full_release`, now under `alternates/`) because an asserts-live debug
 build can abort a CTS/Piglit case that release would pass.  `make install
 PROFILE=...` lands in the isolated per-profile prefix `/opt/local/mesa-<profile>`
@@ -44,11 +45,9 @@ build-infra/
 |       |-- 5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson
 |       +-- 6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache.meson
 +-- env/
-    |-- vostro1000-x86-64-v1-clang22-ccache-distcc.env  # primary vostro + x130e lane
-    |-- btver1.env                 # x130e (Bobcat) LLVM-family + distcc
-    |-- btver1-ccache-no-pump.env  # x130e ccache-first distcc, no pump
-    |-- btver1-distcc-pump.env     # x130e direct distcc-pump, no ccache
-    +-- ...                        # additional host envs
+    |-- vostro1000-x86-64-v1-clang22-ccache-distcc.env  # numbered profiles
+    |-- generic-x86-64-os.env       # portable ad hoc lane
+    +-- Archive/                    # removed host envs retained for provenance
 ```
 
 Build outputs land in the gitignored repo-local `build/mesa-<profile>/` tree, so
@@ -125,8 +124,8 @@ vulkaninfo --summary
 ## Cache discipline
 
 Warm incremental: `ccache -> distcc -> clang` (use `COMPILER_CHAIN=ccache`).
-Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump needs
-distcc to see the original source and compiler command.
+The distcc-pump profiles and Make targets were removed with the lane
+consolidation; remaining pump notes live only in archived provenance docs.
 
 ## Adding a profile
 

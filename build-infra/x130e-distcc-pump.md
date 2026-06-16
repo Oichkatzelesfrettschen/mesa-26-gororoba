@@ -58,7 +58,7 @@ rust = ['sccache', 'rustc']
 llvm-config = '<selected-llvm-config>'
 ```
 
-Cold/pump compiler wiring is generated at configure time:
+Historical cold/pump compiler wiring was generated at configure time:
 
 ```ini
 [binaries]
@@ -81,18 +81,19 @@ export LDFLAGS=""
 ```
 
 `-fno-emulated-tls` is required for the validated clang lane on this host;
-without it, the Mesa link can fail when generated emulated-TLS symbols do not match the ELF-TLS
-references used by Mesa objects.
+without it, the Mesa link can fail when generated emulated-TLS symbols do not
+match the ELF-TLS references used by Mesa objects.
 
-Do not put `ccache` or `sccache` in front of C/C++ distcc-pump.  Pump
-needs distcc to see the original source and compiler command.  `sccache`
-is still correct for Rust because it wraps rustc separately from the
-C/C++ include-server path.
+Do not revive the historical C/C++ pump lane by putting `ccache` or `sccache`
+in front of distcc-pump.  If the archived workflow is studied, remember that
+pump needed distcc to see the original source and compiler command.  `sccache`
+remained correct for Rust because it wrapped rustc separately from the C/C++
+include-server path.
 
-The Ubuntu WSL worker participates in the pump lane by default.  Operators
-opt out per-build by exporting `TERAKAN_PUMP_ALLOW_WSL=0` before
-sourcing the env; absent or `=1` keeps the WSL worker in the pump lane.
-distcc-pump's three-step include-fingerprint safety ladder handles
+The Ubuntu WSL worker participated in the pump lane by default.  Operators
+opted out per-build by exporting `TERAKAN_PUMP_ALLOW_WSL=0` before
+sourcing the env; absent or `=1` kept the WSL worker in the pump lane.
+distcc-pump's three-step include-fingerprint safety ladder handled
 the residual class of translation units whose preprocessed hash is
 not stable across the LAN crossing:
 
@@ -100,8 +101,8 @@ not stable across the LAN crossing:
   2. classic distcc preprocess on the client + remote compile
   3. fully local compile on the client
 
-Step 3 is the safety net.  Translation units that fall back to step 3
-build locally without breaking the rest of the build.
+Step 3 was the safety net.  Translation units that fell back to step 3 built
+locally without breaking the rest of the build.
 
 ## How
 

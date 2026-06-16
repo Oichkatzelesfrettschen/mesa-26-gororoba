@@ -78,17 +78,55 @@ check_for_lowered_ffloor(nir_alu_instr *fadd)
    return false;
 }
 
+static nir_def *
+lower_int_to_float_zero(nir_builder *b, nir_def *value)
+{
+   return nir_imm_zero(b, value->num_components, value->bit_size);
+}
+
+static nir_def *
+lower_int_to_float_one(nir_builder *b, nir_def *value)
+{
+   return nir_imm_floatN_t(b, 1.0, value->bit_size);
+}
+
+static nir_def *
+lower_int_to_float_is_zero(nir_builder *b, nir_def *value)
+{
+   return nir_feq(b, value, lower_int_to_float_zero(b, value));
+}
+
+static nir_def *
+lower_int_to_float_signed_div_overflows(nir_builder *b, nir_def *x, nir_def *y)
+{
+   nir_def *int_min =
+      nir_imm_floatN_t(b, u_intN_min(x->bit_size), x->bit_size);
+   nir_def *minus_one = nir_imm_floatN_t(b, -1.0, y->bit_size);
+
+   return nir_iand(b, nir_feq(b, x, int_min), nir_feq(b, y, minus_one));
+}
+
 /* Truncating integer quotient evaluated in floating point.  Signed and
  * unsigned division both truncate toward zero in the no-integer float model.
  * nir_lower_int_to_float runs after nir_opt_algebraic, so fdiv is hand-lowered
  * here when the target lowers it (frcp + fmul instead of fdiv).
  */
 static nir_def *
-lower_int_to_float_trunc_quotient(nir_builder *b, nir_def *x, nir_def *y)
+lower_int_to_float_trunc_quotient(nir_builder *b, nir_def *x, nir_def *y,
+                                  nir_def *invalid_divisor)
 {
+   y = nir_bcsel(b, invalid_divisor, lower_int_to_float_one(b, y), y);
+
    if (b->shader->options->lower_fdiv)
       return nir_ftrunc(b, nir_fmul(b, x, nir_frcp(b, y)));
    return nir_ftrunc(b, nir_fdiv(b, x, y));
+}
+
+static nir_def *
+lower_int_to_float_valid_or_zero(nir_builder *b, nir_def *value,
+                                 nir_def *invalid)
+{
+   return nir_bcsel(b, invalid, lower_int_to_float_zero(b, value), value);
 }
 
 static bool
@@ -190,15 +228,39 @@ lower_alu_instr(nir_builder *b, nir_alu_instr *alu)
       alu->op = nir_op_fmul;
       break;
 
-   case nir_op_idiv:
-   case nir_op_udiv: {
+   case nir_op_idiv: {
       nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
       nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
-      rep = lower_int_to_float_trunc_quotient(b, x, y);
+      nir_def *invalid =
+         nir_ior(b, lower_int_to_float_is_zero(b, y),
+                 lower_int_to_float_signed_div_overflows(b, x, y));
+      rep = lower_int_to_float_valid_or_zero(
+         b, lower_int_to_float_trunc_quotient(b, x, y, invalid), invalid);
       break;
    }
 
-   case nir_op_irem:
+   case nir_op_udiv: {
+      nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
+      nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
+      nir_def *invalid = lower_int_to_float_is_zero(b, y);
+      rep = lower_int_to_float_valid_or_zero(
+         b, lower_int_to_float_trunc_quotient(b, x, y, invalid), invalid);
+      break;
+   }
+
+   case nir_op_irem: {
+      /* Truncated remainder r = x - y * trunc(x / y). */
+      nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
+      nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
+      nir_def *invalid =
+         nir_ior(b, lower_int_to_float_is_zero(b, y),
+                 lower_int_to_float_signed_div_overflows(b, x, y));
+      nir_def *q = lower_int_to_float_trunc_quotient(b, x, y, invalid);
+      rep = lower_int_to_float_valid_or_zero(
+         b, nir_fsub(b, x, nir_fmul(b, y, q)), invalid);
+      break;
+   }
+
    case nir_op_umod: {
       /* Truncated remainder r = x - y * trunc(x / y).  This is C-style '%',
        * carrying the sign of the dividend.  Unsigned umod coincides because
@@ -206,8 +268,10 @@ lower_alu_instr(nir_builder *b, nir_alu_instr *alu)
        */
       nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
       nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
-      nir_def *q = lower_int_to_float_trunc_quotient(b, x, y);
-      rep = nir_fsub(b, x, nir_fmul(b, y, q));
+      nir_def *invalid = lower_int_to_float_is_zero(b, y);
+      nir_def *q = lower_int_to_float_trunc_quotient(b, x, y, invalid);
+      rep = lower_int_to_float_valid_or_zero(
+         b, nir_fsub(b, x, nir_fmul(b, y, q)), invalid);
       break;
    }
 
@@ -221,11 +285,15 @@ lower_alu_instr(nir_builder *b, nir_alu_instr *alu)
        */
       nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
       nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
-      nir_def *q = lower_int_to_float_trunc_quotient(b, x, y);
+      nir_def *invalid =
+         nir_ior(b, lower_int_to_float_is_zero(b, y),
+                 lower_int_to_float_signed_div_overflows(b, x, y));
+      nir_def *q = lower_int_to_float_trunc_quotient(b, x, y, invalid);
       nir_def *r = nir_fsub(b, x, nir_fmul(b, y, q));
-      nir_def *zero = nir_imm_float(b, 0.0);
+      nir_def *zero = lower_int_to_float_zero(b, r);
       rep = nir_fadd(b, r,
                      nir_bcsel(b, nir_flt(b, nir_fmul(b, r, y), zero), y, zero));
+      rep = lower_int_to_float_valid_or_zero(b, rep, invalid);
       break;
    }
 
@@ -316,8 +384,13 @@ nir_lower_int_to_float_impl(nir_function_impl *impl)
          case nir_instr_type_load_const: {
             nir_load_const_instr *load = nir_instr_as_load_const(instr);
             if (load->def.bit_size != 1 && BITSET_TEST(int_types, load->def.index)) {
-               for (unsigned i = 0; i < load->def.num_components; i++)
-                  load->value[i].f32 = load->value[i].i32;
+               for (unsigned i = 0; i < load->def.num_components; i++) {
+                  load->value[i] =
+                     nir_const_value_for_float(
+                        nir_const_value_as_int(load->value[i],
+                                               load->def.bit_size),
+                        load->def.bit_size);
+               }
             }
             break;
          }

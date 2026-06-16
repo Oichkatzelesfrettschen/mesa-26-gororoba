@@ -24,9 +24,23 @@
    } while (0)
 
 #define POINT(i0)                             gs_point(gs,i0)
-#define LINE(flags,i0,i1)                     gs_line(gs,i0,i1)
-#define TRIANGLE(flags,i0,i1,i2)              gs_tri(gs,i0,i1,i2)
-#define LINE_ADJ(flags,i0,i1,i2,i3)           gs_line_adj(gs,i0,i1,i2,i3)
-#define TRIANGLE_ADJ(flags,i0,i1,i2,i3,i4,i5) gs_tri_adj(gs,i0,i1,i2,i3,i4,i5)
-#define QUAD(flags,i0,i1,i2,i3)
+#define LINE(flags,i0,i1) do { \
+   (void)(flags); \
+   gs_line(gs,i0,i1); \
+} while (0)
+#define TRIANGLE(flags,i0,i1,i2) do { \
+   (void)(flags); \
+   gs_tri(gs,i0,i1,i2); \
+} while (0)
+#define LINE_ADJ(flags,i0,i1,i2,i3) do { \
+   (void)(flags); \
+   gs_line_adj(gs,i0,i1,i2,i3); \
+} while (0)
+#define TRIANGLE_ADJ(flags,i0,i1,i2,i3,i4,i5) do { \
+   (void)(flags); \
+   gs_tri_adj(gs,i0,i1,i2,i3,i4,i5); \
+} while (0)
+#define QUAD(flags,i0,i1,i2,i3) do { \
+   (void)(flags); \
+} while (0)
 #include "draw_decompose_tmp.h"

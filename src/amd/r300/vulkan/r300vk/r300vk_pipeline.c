@@ -573,34 +573,106 @@ r300vk_nir_uses_texture(nir_shader *nir)
    return false;
 }
 
-/* Declare a block-0 nir_var_mem_ubo variable sized to size_bytes.  nir_to_rc
- * sizes the constant file from nir_var_mem_ubo VARIABLES (glsl_get_explicit_size
- * of the interface type), not from the load_ubo accesses a lowering pass emits.
- * A shader that reaches nir_to_rc with a load_ubo(block 0) but no backing UBO
- * variable makes ntr_setup_uniforms count zero externals (externals_count == 0),
- * so the wpos viewport-transform STATE constants rc_transform_fragment_wpos adds
- * (RC_STATE_R300_VIEWPORT_SCALE/OFFSET) take hardware constant registers c0/c1 --
- * the very registers a CONST[0] load_ubo reads.  The replay's CONST[0] upload then
- * overwrites the viewport scale and gl_FragCoord reconstructs to garbage.  One
- * declared external vec4 pushes those state constants above c0. */
-static void
-r300vk_declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
+/* Match r300_create_vs_state's NIR optimization point before deciding whether
+ * a vertex texture instruction can reach the SW-TCL draw module. */
+static bool
+r300vk_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
+                                            nir_shader *nir)
 {
-   const struct glsl_type *ubo_type =
-      glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(size_bytes, 16), 16);
-   nir_variable *ubo =
-      nir_variable_create(nir, nir_var_mem_ubo, ubo_type, "r300vk_block0_ubo");
-   ubo->data.driver_location = 0;
-   ubo->data.binding = 0;
-   ubo->data.explicit_binding = 1;
+   if (!r300vk_nir_uses_texture(nir))
+      return false;
+
+   nir_shader *check = nir_shader_clone(NULL, nir);
+   r300_optimize_nir(check, r300_screen(pscreen));
+   bool uses_texture = r300vk_nir_uses_texture(check);
+   ralloc_free(check);
+   return uses_texture;
+}
+
+static bool
+r300vk_nir_uses_sampler_set_above_zero(nir_shader *nir, uint32_t *out_set,
+                                       uint32_t *out_binding)
+{
+   nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
+      if (!glsl_type_is_sampler(glsl_without_array(var->type)))
+         continue;
+      if (var->data.descriptor_set == 0)
+         continue;
+
+      *out_set = var->data.descriptor_set;
+      *out_binding = var->data.binding;
+      return true;
+   }
+
+   return false;
+}
+
+static const struct glsl_type *
+r300vk_block0_ubo_type(unsigned size_bytes)
+{
+   return glsl_array_type(glsl_vec4_type(), DIV_ROUND_UP(size_bytes, 16), 16);
+}
+
+static const struct glsl_type *
+r300vk_block0_ubo_interface_type(const struct glsl_type *ubo_type)
+{
    struct glsl_struct_field field = {
       .type = ubo_type,
       .name = "data",
       .location = -1,
    };
-   ubo->interface_type =
-      glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false,
-                          "__r300vk_block0_ubo");
+   return glsl_interface_type(&field, 1, GLSL_INTERFACE_PACKING_STD430, false,
+                              "__r300vk_block0_ubo");
+}
+
+static unsigned
+r300vk_ubo_interface_size(const nir_variable *ubo)
+{
+   return ubo->interface_type
+          ? glsl_get_explicit_size(ubo->interface_type, false) : 0;
+}
+
+static nir_variable *
+r300vk_find_block0_ubo(nir_shader *nir)
+{
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_ubo) {
+      if (var->data.driver_location == 0)
+         return var;
+   }
+
+   return NULL;
+}
+
+static void
+r300vk_shape_block0_ubo(nir_variable *ubo, unsigned size_bytes)
+{
+   const struct glsl_type *ubo_type = r300vk_block0_ubo_type(size_bytes);
+
+   ubo->type = ubo_type;
+   ubo->data.driver_location = 0;
+   ubo->data.binding = 0;
+   ubo->data.explicit_binding = 1;
+   ubo->interface_type = r300vk_block0_ubo_interface_type(ubo_type);
+}
+
+/* Ensure block 0 has a sized UBO declaration before r300g constant-file setup.
+ * The compiler sizes RC constants from nir_var_mem_ubo interface declarations;
+ * load_ubo instructions alone do not carry the declaration size.  Reusing a
+ * prior UBO0 declaration prevents an unused application block at index 0 from
+ * colliding with a second synthetic UBO0 variable of a different interface
+ * size. */
+static void
+r300vk_declare_block0_ubo(nir_shader *nir, unsigned size_bytes)
+{
+   nir_variable *ubo = r300vk_find_block0_ubo(nir);
+   if (!ubo) {
+      ubo = nir_variable_create(nir, nir_var_mem_ubo,
+                                r300vk_block0_ubo_type(size_bytes),
+                                "r300vk_block0_ubo");
+   }
+   if (r300vk_ubo_interface_size(ubo) < size_bytes)
+      r300vk_shape_block0_ubo(ubo, size_bytes);
+
    nir->info.num_ubos = MAX2(nir->info.num_ubos, 1);
    nir->info.first_ubo_is_default_ubo = true;
 }
@@ -715,7 +787,7 @@ r300vk_classify_push_const_ints(nir_shader *nir)
 /* r300's constant file is addressed by a compile-time vec4 slot plus component,
  * so a runtime (dynamically-indexed) offset cannot be represented.  Two distinct
  * shader shapes trip this: a push-constant offset and a UBO byte offset.  After
- * nir_lower_ubo_vec4 a non-constant offset becomes a runtime vector_extract the
+ * nir_lower_ubo_vec4 a non-constant offset becomes a runtime vector_extract; the
  * SW-TCL nir_to_tgsi float-ARL path (no native integers) cannot map to a static
  * constant fetch -- it floors a non-zero integer index's float bit pattern to
  * slot 0 -- and nir_lower_int_to_float (which nir_to_rc runs next, r300 having no
@@ -727,8 +799,8 @@ r300vk_classify_push_const_ints(nir_shader *nir)
  * boundary becomes a two-load bcsel with runtime component selection).  A
  * loop-bounded constant access (color[i] in a statically-bounded loop) carries a
  * non-constant offset until the loop unrolls, so a cheap pre-pass first checks
- * whether any offset is even non-constant and returns early otherwise; only then
- * pay for a clone + r300_optimize_nir (the same optimization pass used by
+ * whether every constant access fits and whether any offset is non-constant; only
+ * then pay for a clone + r300_optimize_nir (the same optimization pass used by
  * r300_create_*_state) to fold the loop-bounded case before judging it dynamic
  * (dynamic_index_vert indexes by a gl_Position-derived value that never folds).
  *
@@ -738,29 +810,30 @@ r300vk_classify_push_const_ints(nir_shader *nir)
  * index selects which UBO, the offset selects where within it) they form the
  * complete "r300 constant-file representability" gate. */
 static bool
-r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
-                          nir_intrinsic_op op, unsigned off_src, bool straddle)
+r300vk_nir_static_offset_ok(nir_intrinsic_instr *intr, unsigned off_src,
+                            bool straddle, bool *maybe_dynamic)
 {
-   bool maybe_dynamic = false;
-   nir_foreach_function_impl(impl, nir) {
-      nir_foreach_block(block, impl) {
-         nir_foreach_instr(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic == op && !nir_src_is_const(intr->src[off_src]))
-               maybe_dynamic = true;
-         }
-      }
+   if (!nir_src_is_const(intr->src[off_src])) {
+      *maybe_dynamic = true;
+      return true;
    }
-   if (!maybe_dynamic)
+
+   if (!straddle)
       return true;
 
-   nir_shader *check = nir_shader_clone(NULL, nir);
-   r300_optimize_nir(check, r300_screen(pscreen));
+   uint32_t off = (uint32_t)nir_src_as_uint(intr->src[off_src]);
+   unsigned byte_width = intr->def.num_components * (intr->def.bit_size / 8u);
+   return (off & 15u) + byte_width <= 16u;
+}
 
-   bool ok = true;
-   nir_foreach_function_impl(impl, check) {
+static bool
+r300vk_nir_scan_static_offsets(nir_shader *nir, nir_intrinsic_op op,
+                               unsigned off_src, bool straddle,
+                               bool *maybe_dynamic)
+{
+   *maybe_dynamic = false;
+
+   nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
             if (instr->type != nir_instr_type_intrinsic)
@@ -768,22 +841,36 @@ r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
             if (intr->intrinsic != op)
                continue;
-            if (!nir_src_is_const(intr->src[off_src])) {
-               ok = false;
-               continue;
-            }
-            if (straddle) {
-               uint32_t off = (uint32_t)nir_src_as_uint(intr->src[off_src]);
-               unsigned byte_width =
-                  intr->def.num_components * (intr->def.bit_size / 8u);
-               if ((off & 15u) + byte_width > 16u)
-                  ok = false;
-            }
+            if (!r300vk_nir_static_offset_ok(intr, off_src, straddle,
+                                             maybe_dynamic))
+               return false;
+            if (*maybe_dynamic)
+               return true;
          }
       }
    }
+
+   return true;
+}
+
+static bool
+r300vk_nir_offsets_static(struct pipe_screen *pscreen, nir_shader *nir,
+                          nir_intrinsic_op op, unsigned off_src, bool straddle)
+{
+   bool maybe_dynamic = false;
+   if (!r300vk_nir_scan_static_offsets(nir, op, off_src, straddle,
+                                       &maybe_dynamic))
+      return false;
+   if (!maybe_dynamic)
+      return true;
+
+   nir_shader *check = nir_shader_clone(NULL, nir);
+   r300_optimize_nir(check, r300_screen(pscreen));
+
+   bool ok = r300vk_nir_scan_static_offsets(check, op, off_src, straddle,
+                                            &maybe_dynamic);
    ralloc_free(check);
-   return ok;
+   return ok && !maybe_dynamic;
 }
 
 /* BASE is 0 for push constants (after nir_lower_explicit_io), so src[0] is the
@@ -869,6 +956,19 @@ r300vk_compile_shader(struct r300vk_device *device,
    const bool stage_had_texture =
       stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
       r300vk_nir_uses_texture(nir);
+   uint32_t sampler_set = 0;
+   uint32_t sampler_binding = 0;
+   if (stage_had_texture &&
+       r300vk_nir_uses_sampler_set_above_zero(nir, &sampler_set,
+                                              &sampler_binding)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: fragment sampler at descriptor set %u binding "
+                       "%u is unsupported; r300vk flattens sampled images from "
+                       "descriptor set 0 only",
+                       sampler_set, sampler_binding);
+   }
+
    bool stage_has_input = false;
    uint32_t stage_input_set = 0;
    uint32_t stage_input_binding = 0;
@@ -977,7 +1077,9 @@ r300vk_compile_shader(struct r300vk_device *device,
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                        "r300vk: %s shader uses a descriptor resource r300's "
                        "single read-only constant file cannot represent "
-                       "(storage buffer, multiple UBOs, or a dynamic UBO index)",
+                       "(only one static UBO descriptor is supported; storage "
+                       "buffers, sampled resources, multiple UBOs, and dynamic "
+                       "descriptor indices are rejected)",
                        stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
                        ? "vertex" : "fragment");
    }
@@ -1074,7 +1176,7 @@ r300vk_compile_shader(struct r300vk_device *device,
        * conformant vertex-texturing path must bind the draw module's
        * PIPE_SHADER_VERTEX sampler views and sampler state before this gate can
        * be removed. */
-      if (r300vk_nir_uses_texture(nir)) {
+      if (r300vk_nir_uses_live_texture_after_r300_opt(device->screen, nir)) {
          ralloc_free(nir);
          return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                           "r300vk: vertex shader samples a texture; the RS480 "

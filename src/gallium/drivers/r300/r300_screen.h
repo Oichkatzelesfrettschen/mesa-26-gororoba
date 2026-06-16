@@ -47,8 +47,8 @@ struct r300_screen {
      * TCL_BYPASS VAP_CNTL setup reads it through r300_hb_tcl_vap_cntl. */
     struct r300_hb_tcl_config hb_tcl;
 
-    /* R300_EXPERIMENTAL_ATI2N opt-in, read once at screen create.  Gates ATI2N
-     * (RGTC2) sampler advertisement on R300-class parts; see
+    /* R300_EXPERIMENTAL_ATI2N=1 opt-in, read once at screen create.  Gates
+     * ATI2N (RGTC2) sampler advertisement on R300-class parts; see
      * r300_is_format_supported. */
     bool experimental_ati2n;
 };

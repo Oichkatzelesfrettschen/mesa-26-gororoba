@@ -1,3 +1,4 @@
+# Maintainer: mesa-26-gororoba maintainers
 # mesa-gororoba: a system Mesa replacement build from the mesa-26-gororoba fork.
 # It installs the r300 Gallium GL driver, the zink GL-on-Vulkan Gallium
 # driver, the XA/Xv 2D-acceleration state tracker (libxatracker), and the
@@ -40,7 +41,7 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=12
+pkgrel=13
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
@@ -56,10 +57,8 @@ depends=(
   wayland zlib zstd vulkan-icd-loader
 )
 makedepends=(
-  clang llvm meson ninja glslang spirv-tools python-mako python-ply
-  wayland-protocols libdrm libglvnd libxext libxdamage libxshmfence libxxf86vm
-  libxrandr xorgproto libxml2 expat zstd libelf lm_sensors vulkan-icd-loader lld
-  git
+  clang llvm meson ninja glslang python-mako python-ply wayland-protocols
+  libxrandr xorgproto libxml2 lld git
 )
 provides=(
   "mesa=${epoch}:${pkgver}-${pkgrel}"
@@ -176,7 +175,7 @@ package() {
   # Compatibility aliases for older build-infra and local scripts.  Release
   # artifacts live in the system Mesa prefix; debug artifacts keep their own
   # opt prefix.  /usr/share/mesa-26-gororoba is NOT aliased to /usr: it is a real
-  # directory holding the staged xorg.conf.d sample (see below), and a symlink
+  # directory holding the staged xorg.conf.d sample installed above; a symlink
   # there would land the sample at /usr/xorg through the link and drop the
   # directory.
   install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share"
@@ -184,6 +183,33 @@ package() {
     "${pkgdir}/opt/local/mesa-26-gororoba"
   ln -s /usr \
     "${pkgdir}/opt/share/mesa-26-gororoba"
+
+  # Own the runtime linker-path drop-in (same file the debug variant owns) and
+  # point it at this /usr drop-in's lib dir.  /usr/lib is already a standard
+  # ldconfig path so the entry is a no-op for the release, but owning the file
+  # means a swap from the debug variant rewrites the path away from the debug
+  # /opt tree (whose lib dir the swap deletes) instead of orphaning it -- which
+  # is what black-screened the console on reboot.  The .install re-runs ldconfig.
+  install -dm755 "${pkgdir}/etc/ld.so.conf.d"
+  printf '%s\n' '/usr/lib' \
+    > "${pkgdir}/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf"
+
+  # Boot-safety guard.  The release variant installs the gbm/glvnd runtime as
+  # real /usr/lib files, but nothing fails the build if a meson option ever
+  # drops gbm -- the package would still install and black-screen the console on
+  # the next reboot (X modesetting dlopens libgbm.so.1 by SONAME; glvnd resolves
+  # libGLX_mesa.so.0 / libEGL_mesa.so.0).  Refuse to ship a system Mesa missing
+  # any of them.
+  local _need _missing=""
+  for _need in libgbm.so.1 libGLX_mesa.so.0 libEGL_mesa.so.0; do
+    [ -e "${pkgdir}/usr/lib/${_need}" ] || _missing="${_missing} /usr/lib/${_need}"
+  done
+  if [ -n "${_missing}" ]; then
+    echo "ERROR: boot-critical loader objects missing from the staged package:${_missing}" >&2
+    echo "       the gbm/glvnd runtime did not build or stage; refusing to ship a system" >&2
+    echo "       Mesa that black-screens X (modesetting dlopen libgbm.so.1) on reboot." >&2
+    return 1
+  fi
 
   # Mesa ships its license summary as docs/license.rst (Arch/CachyOS practice).
   # A missing license is a packaging defect, not something to swallow silently.

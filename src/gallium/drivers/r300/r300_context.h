@@ -490,6 +490,8 @@ struct r300_context {
 
     PIPE_FB_SURFACES; //STOP USING THIS
 
+    void *null_dsa_state;
+
     /* Various CSO state objects. */
 
     /* Each atom is emitted in the order it appears here, which can affect
