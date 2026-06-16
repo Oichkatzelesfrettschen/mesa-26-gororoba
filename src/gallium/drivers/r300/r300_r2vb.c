@@ -959,6 +959,26 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
     enum r300_r2vb_verdict v = r300_r2vb_classify_draw(r300, info, draw);
     tally[v]++;
     total++;
+
+    /* Per-draw trace (R300_R2VB_ROUTE_DEBUG=1): one line per draw with the bound
+     * VS name, vertex count, and verdict, so the application's draw is visible
+     * rather than only the first (often an internal setup/clear) draw. */
+    static int dbg = -1;
+    if (dbg < 0) {
+        const char *e = getenv("R300_R2VB_ROUTE_DEBUG");
+        dbg = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (dbg) {
+        struct r300_vertex_shader *vs = r300_vs(r300);
+        const char *vsname = (vs && vs->state.type == PIPE_SHADER_IR_NIR &&
+                              vs->state.ir.nir && vs->state.ir.nir->info.name)
+                                 ? vs->state.ir.nir->info.name
+                                 : "?";
+        static const char *vname[R2VB_VERDICT_COUNT] = {
+            "passthrough", "candidate", "hw_tcl", "indexed", "instanced", "count", "prim"};
+        fprintf(stderr, "r2vb_route_draw #%u verdict=%s vs=%s count=%u mode=%u\n",
+                total, vname[v], vsname, draw->count, info->mode);
+    }
     /* Periodic verdict distribution so a real workload shows how much of its draw
      * stream is route-eligible without per-draw log spam. */
     if (total == 1 || (total & 511u) == 0)
