@@ -25,7 +25,13 @@
    } while (0)
 
 #define POINT(i0)                so_point(so,i0)
-#define LINE(flags,i0,i1)        so_line(so,i0,i1)
-#define TRIANGLE(flags,i0,i1,i2) so_tri(so,i0,i1,i2)
+#define LINE(flags,i0,i1) do { \
+   (void)(flags); \
+   so_line(so,i0,i1); \
+} while (0)
+#define TRIANGLE(flags,i0,i1,i2) do { \
+   (void)(flags); \
+   so_tri(so,i0,i1,i2); \
+} while (0)
 
 #include "draw_decompose_tmp.h"

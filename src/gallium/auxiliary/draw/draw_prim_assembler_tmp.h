@@ -21,8 +21,17 @@
 
 #define PASS_QUADS
 #define POINT(i0)                             prim_point(asmblr, i0)
-#define LINE(flags, i0, i1)                   prim_line(asmblr, i0, i1)
-#define TRIANGLE(flags, i0, i1, i2)           prim_tri(asmblr, i0, i1, i2)
-#define QUAD(flags, i0, i1, i2, i3)           prim_quad(asmblr, i0, i1, i2, i3)
+#define LINE(flags, i0, i1) do { \
+   (void)(flags); \
+   prim_line(asmblr, i0, i1); \
+} while (0)
+#define TRIANGLE(flags, i0, i1, i2) do { \
+   (void)(flags); \
+   prim_tri(asmblr, i0, i1, i2); \
+} while (0)
+#define QUAD(flags, i0, i1, i2, i3) do { \
+   (void)(flags); \
+   prim_quad(asmblr, i0, i1, i2, i3); \
+} while (0)
 
 #include "draw_decompose_tmp.h"

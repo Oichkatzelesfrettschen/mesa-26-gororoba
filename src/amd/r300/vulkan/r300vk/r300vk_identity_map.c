@@ -1375,7 +1375,7 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+   IDM_LOG("rt->buffer copy issued (out=%p, src=%p, box w=%d h=%d)",
            (const void *)out_buf->resource, (const void *)rt,
            copy_box.width, copy_box.height);
 
@@ -1767,7 +1767,7 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("bin_map rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+   IDM_LOG("bin_map rt->buffer copy issued (out=%p, src=%p, box w=%d h=%d)",
            (const void *)buf_out->resource, (const void *)rt,
            copy_box.width, copy_box.height);
 
@@ -1837,12 +1837,19 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
                            const struct r300vk_cmd_dispatch *dispatch,
                            const struct r300vk_cmd_bind_descriptor_sets *binds)
 {
-   /* The dp4 vec4 inputs are sampled as R32G32B32A32_FLOAT.  R300 supports FP32
-    * texture sampling but NOT FP32 render targets (so the dot output is RGBA8
-    * integer-encoded by the FS, not an FP32 RT).  Bail if this variant lacks
-    * FP32 sampler support rather than mis-sample the inputs as bytes. */
+   /* The dot inputs are copied from the SSBO with the same per-invocation
+    * stride the compute load uses.  R32G32_FLOAT preserves fdot2's 8-byte
+    * vec2 records; fdot3 and fdot4 stay on the 16-byte carrier because this
+    * R300 format table has no R32G32B32_FLOAT sampler target. */
+   const enum pipe_format input_fmt = pl->dp4.components == 2
+      ? PIPE_FORMAT_R32G32_FLOAT : PIPE_FORMAT_R32G32B32A32_FLOAT;
+
+   /* R300 supports FP32 texture sampling but NOT FP32 render targets, so the
+    * dot output is RGBA8 integer-encoded by the FS, not an FP32 RT.  Bail if
+    * this variant lacks the required FP32 sampler carrier rather than
+    * mis-sample the inputs as bytes. */
    if (!device->screen->is_format_supported(device->screen,
-          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          input_fmt, PIPE_TEXTURE_2D, 0, 0,
           PIPE_BIND_SAMPLER_VIEW))
       return false;
    return r300vk_two_in_one_out_dispatch_replay(
@@ -1850,7 +1857,7 @@ r300vk_dp4_dispatch_replay(struct r300vk_device *device,
       pl->dp4.input_a_ssbo_binding,
       pl->dp4.input_b_ssbo_binding,
       pl->dp4.output_ssbo_binding,
-      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R8G8B8A8_UNORM,
+      input_fmt, PIPE_FORMAT_R8G8B8A8_UNORM,
       PIPE_FORMAT_NONE);
 }
 
@@ -2193,7 +2200,7 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("1in1out rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+   IDM_LOG("1in1out rt->buffer copy issued (out=%p, src=%p, box w=%d h=%d)",
            (const void *)buf_out->resource, (const void *)rt,
            copy_box.width, copy_box.height);
 
@@ -3685,7 +3692,7 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
          pipe->texture_unmap(pipe, rt_xfer);
       }
    }
-   IDM_LOG("gather rt->buffer copy issued (out=%p, src=%p, box w=%u h=%u)",
+   IDM_LOG("gather rt->buffer copy issued (out=%p, src=%p, box w=%d h=%d)",
            (const void *)out_buf->resource, (const void *)rt,
            copy_box.width, copy_box.height);
 
