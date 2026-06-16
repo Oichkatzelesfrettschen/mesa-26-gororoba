@@ -990,9 +990,17 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                 tally[R2VB_REJECT_INSTANCED], tally[R2VB_REJECT_COUNT],
                 tally[R2VB_REJECT_PRIM]);
 
-    /* Route EXECUTION is the deferred increment (the fragment-ALU producer that
-     * turns this draw's VS + vertex arrays into the GART vertex buffer).  Until it
-     * exists, every draw -- candidate or not -- falls back to gallivm, so the gate
-     * is a zero-risk classifier. */
-    return false;
+    /* Execute only the PASSTHROUGH class, and only under a second opt-in
+     * (R300_R2VB_EXEC=1) so classification can run without changing rendering.
+     * A passthrough draw's vertices reach r300 already in clip space (the VS is
+     * identity), so the caller re-ingests the app vertex buffer directly at
+     * TCL_BYPASS, skipping the gallivm draw module.  CANDIDATE (needs the
+     * fragment-ALU transform producer) and every reject still fall back to
+     * gallivm. */
+    static int exec = -1;
+    if (exec < 0) {
+        const char *e = getenv("R300_R2VB_EXEC");
+        exec = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return exec && v == R2VB_ROUTE_PASSTHROUGH;
 }

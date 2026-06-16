@@ -964,7 +964,20 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
      * both GL and r300vk-Vulkan draws -- r300vk replays through this same gallium
      * draw_vbo, so no separate Vulkan-side wiring is needed. */
     if (r300_r2vb_route_draw(r300, info, &draw)) {
-        /* route execution: deferred increment (fragment-ALU producer). */
+        /* Passthrough direct-VB execution.  The classifier guaranteed the simple
+         * class (non-indexed, single-instance, count < 2^16, proven topology) and
+         * an identity VS, so the application's vertices are already clip-space.
+         * Re-ingest the app vertex arrays and draw at TCL_BYPASS, skipping the
+         * gallivm draw module entirely.  This mirrors the HW-TCL r300_draw_arrays
+         * path; on RS482 PREP_EMIT_STATES emits no PVS (vs_state is never dirtied
+         * when !has_tcl), so the emitted state is SWTCL-correct.  Nine spare
+         * dwords for r300_emit_draw_arrays, as in r300_draw_arrays. */
+        if (r300_vs(r300)->shader->dummy)
+            return;
+        if (r300_prepare_for_rendering(r300,
+                                       PREP_EMIT_STATES | PREP_VALIDATE_VBOS | PREP_EMIT_VARRAYS,
+                                       NULL, 9, draw.start, 0, -1))
+            r300_emit_draw_arrays(r300, info->mode, draw.count);
     } else {
         draw_vbo(r300->draw, info, drawid_offset, NULL, &draw, 1, 0);
         draw_flush(r300->draw);
