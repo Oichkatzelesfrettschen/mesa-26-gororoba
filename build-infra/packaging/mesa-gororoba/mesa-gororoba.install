@@ -35,8 +35,8 @@ Consequences to know:
   * compatibility aliases are package-managed:
       /opt/local/mesa-26-gororoba -> /usr
       /opt/share/mesa-26-gororoba -> /usr
-    /usr/share/mesa-26-gororoba is a real directory holding the xorg.conf.d
-    sample above, not an alias.
+      /usr/share/mesa-26-gororoba is a real directory holding the xorg.conf.d
+      sample above, not an alias.
 EOF
 }
 
