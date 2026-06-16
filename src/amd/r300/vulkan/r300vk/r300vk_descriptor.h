@@ -16,15 +16,17 @@ extern "C" {
 #endif
 
 /* One binding declaration in a descriptor-set layout: which type, how many
- * descriptors in the array, which shader stages may read it, and the linear
- * offset where this binding's descriptors start within the set's
- * descriptors[] array.  Sorted by descriptorBinding index. */
+ * descriptors in the array, which shader stages may read it, the immutable
+ * samplers owned by the layout allocation, and the linear offset where this
+ * binding's descriptors start within the set's descriptors[] array.  Sorted by
+ * descriptorBinding index. */
 struct r300vk_dsl_binding {
    uint32_t           binding;
    VkDescriptorType   type;
    uint32_t           count;
    VkShaderStageFlags stage_flags;
    uint32_t           offset;
+   const VkSampler   *immutable_samplers;
 };
 
 /* The driver's descriptor-set layout extends the runtime's vk_descriptor_set_layout
