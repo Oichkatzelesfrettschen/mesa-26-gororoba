@@ -22,6 +22,15 @@ static unsigned failures;
       }                                   \
    } while (0)
 
+static struct pipe_screen *
+fake_r300_screen(struct r300_screen *screen)
+{
+   screen->caps.has_tcl = false;
+   screen->caps.is_r500 = false;
+   screen->caps.is_r400 = false;
+   return &screen->screen;
+}
+
 static nir_shader *
 push_const_load_shader(unsigned offset, unsigned components)
 {
@@ -58,6 +67,54 @@ check_straddle_flag_is_explicit(void)
    ralloc_free(shader);
 }
 
+static nir_shader *
+vertex_texture_shader(bool live_texture)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &options,
+                                     "r300vk vertex texture gate");
+
+   nir_variable *sampler = nir_variable_create(
+      b.shader, nir_var_uniform,
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+      "samp");
+   nir_deref_instr *sampler_deref = nir_build_deref_var(&b, sampler);
+   nir_def *coord = nir_imm_vec2(&b, 0.0f, 0.0f);
+   nir_def *tex =
+      nir_tex(&b, coord, .texture_deref = sampler_deref,
+              .sampler_deref = sampler_deref);
+
+   nir_variable *pos =
+      nir_variable_create(b.shader, nir_var_shader_out, glsl_vec4_type(),
+                          "gl_Position");
+   pos->data.location = VARYING_SLOT_POS;
+   pos->data.driver_location = 0;
+
+   nir_store_var(&b, pos,
+                 live_texture ? tex : nir_imm_vec4(&b, 0.0f, 0.0f, 0.0f, 1.0f),
+                 0xf);
+
+   return b.shader;
+}
+
+static void
+check_vertex_texture_gate(void)
+{
+   struct r300_screen screen = {0};
+   struct pipe_screen *pscreen = fake_r300_screen(&screen);
+
+   nir_shader *dead_tex = vertex_texture_shader(false);
+   CHECK(!r300vk_nir_uses_live_texture_after_r300_opt(pscreen, dead_tex),
+         "dead vertex texture is accepted after r300 NIR DCE");
+   ralloc_free(dead_tex);
+
+   nir_shader *live_tex = vertex_texture_shader(true);
+   CHECK(r300vk_nir_uses_live_texture_after_r300_opt(pscreen, live_tex),
+         "live vertex texture remains rejected after r300 NIR DCE");
+   ralloc_free(live_tex);
+}
+
 int
 main(void)
 {
@@ -72,6 +129,7 @@ main(void)
    check_push_const(12, 2, false,
                     "vec2 push load at final slot component is rejected");
    check_straddle_flag_is_explicit();
+   check_vertex_texture_gate();
 
    return failures ? 1 : 0;
 }
