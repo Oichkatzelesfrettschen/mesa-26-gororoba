@@ -30,7 +30,20 @@
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 r300vk_GetDeviceProcAddr(VkDevice _device, const char *pName)
 {
+   if (_device == VK_NULL_HANDLE || pName == NULL)
+      return NULL;
+
    VK_FROM_HANDLE(vk_device, device, _device);
+
+   /* vkResetQueryPool is core 1.2; VK_EXT_host_query_reset exposes the same
+    * command through the EXT alias.  r300vk exposes Vulkan 1.0, so Mesa's
+    * common device-proc gate rejects the promoted core spelling by API version
+    * even when the extension is enabled.  Return the same host-side reset
+    * implementation for the promoted spelling when the extension is enabled. */
+   if (device->enabled_extensions.EXT_host_query_reset &&
+       strcmp(pName, "vkResetQueryPool") == 0)
+      return (PFN_vkVoidFunction)r300vk_ResetQueryPool;
+
    return vk_device_get_proc_addr(device, pName);
 }
 
