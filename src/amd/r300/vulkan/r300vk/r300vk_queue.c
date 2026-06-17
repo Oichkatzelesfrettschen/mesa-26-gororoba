@@ -4179,7 +4179,11 @@ r300vk_queue_driver_submit(struct vk_queue *vkq,
    struct r300vk_device *device = container_of(queue->vk.base.device,
                                                struct r300vk_device, vk);
    struct pipe_context  *pipe   = device->pipe;
-   VkResult result = VK_SUCCESS;
+   VkResult result =
+      vk_sync_wait_many(&device->vk, submit->wait_count, submit->waits,
+                        VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+   if (result != VK_SUCCESS)
+      return result;
 
    /* Submit-boundary coherence, entry half: push every owns_buffer host map
     * into its bound resource so the replay reads the app's latest writes.
