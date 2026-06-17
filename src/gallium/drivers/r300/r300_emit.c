@@ -1072,6 +1072,17 @@ void r300_emit_vertex_arrays(struct r300_context* r300, int offset,
             buf = r300_resource(vbuf[velem[i].vertex_buffer_index].buffer.resource);
             OUT_CS_RELOC(buf);
         }
+        if (getenv("R300_R2VB_VA_DUMP"))
+            for (i = 0; i < vertex_array_count; i++) {
+                struct pipe_vertex_buffer *vbx = &vbuf[velem[i].vertex_buffer_index];
+                struct r300_resource *rr =
+                    vbx->buffer.resource ? r300_resource(vbx->buffer.resource) : NULL;
+                fprintf(stderr,
+                        "r2vb_va[%u] vbi=%u res=%p buf=%p off=%u+%u stride=%u fmtsz=%u\n",
+                        i, velem[i].vertex_buffer_index, (void *)vbx->buffer.resource,
+                        (void *)(rr ? rr->buf : NULL), vbx->buffer_offset,
+                        velem[i].src_offset, velem[i].src_stride, hw_format_size[i]);
+            }
     } else {
         /* Instanced arrays. */
         for (i = 0; i < vertex_array_count - 1; i += 2) {

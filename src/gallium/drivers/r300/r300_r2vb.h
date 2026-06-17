@@ -58,6 +58,14 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                              const struct pipe_draw_info *info,
                              const struct pipe_draw_start_count_bias *draw);
 
+/* The passthrough direct-VB re-ingest (defined in r300_render.c): re-ingest the
+ * bound velems/vertex_buffers at TCL_BYPASS with the application FS and the HW
+ * viewport transform.  The MVP route reuses it for the re-ingest by redirecting
+ * only the position element to the producer's clip-space BO. */
+bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
+                                     const struct pipe_draw_info *info,
+                                     const struct pipe_draw_start_count_bias *draw);
+
 /* Emit the RS482 render-to-vertex-buffer (R2VB) synthesized-vertex loop into the
  * current command stream.  The caller binds the r300 fragment-shader state (the
  * "vertex compute" program) and the pass-1 geometry through the normal r300

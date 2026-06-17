@@ -1026,7 +1026,7 @@ static void r300_r2vb_inspect_passthrough(struct r300_context *r300)
     }
 }
 
-static bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
+bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                                             const struct pipe_draw_info *info,
                                             const struct pipe_draw_start_count_bias *draw)
 {
