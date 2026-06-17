@@ -21,7 +21,7 @@ struct nir_shader;
  * on an arbitrary address, no arbitrary read-write storage, and no FP64.
  *
  * Three storage-class rejects capture distinct surface areas:
- *   RW_STORAGE       -- store_deref into global/pointer memory (not an indexed SSBO)
+ *   RW_STORAGE       -- store_ssbo with a non-canonical address or store_deref global
  *   ARBITRARY_SCATTER -- store_global / store_global_2x32 (raw pointer scatter)
  *   IMAGE_STORE       -- image_store / image_deref_store / bindless_image_store
  *
@@ -33,7 +33,7 @@ enum r300_compute_reject {
    R300_COMPUTE_REJECT_SHARED_MEMORY,     /* no LDS on R3xx */
    R300_COMPUTE_REJECT_BARRIER,           /* fragments are not a synchronized workgroup */
    R300_COMPUTE_REJECT_GENERAL_ATOMIC,    /* only blend-add/min/max/sub, stencil, ZPASS exist */
-   R300_COMPUTE_REJECT_RW_STORAGE,        /* store_deref to global pointer; no scatter store */
+   R300_COMPUTE_REJECT_RW_STORAGE,        /* unsupported store_ssbo address or global deref */
    R300_COMPUTE_REJECT_FP64,              /* ALU is FP24; no double precision */
    R300_COMPUTE_REJECT_FP16,              /* no native FP16 RT or arithmetic; virtual-FP16 only */
    R300_COMPUTE_REJECT_ARBITRARY_SCATTER, /* store_global / store_global_2x32 */
@@ -102,10 +102,9 @@ struct r300_compute_identity_pattern {
 
 /* Detect the identity-map pattern in a classify-admitted kernel.  Pure
  * read-only analysis.  Sets out->is_identity_map = true when exactly one
- * store_ssbo's value is the result of exactly one load_ssbo; the bindings are
- * the canonical (binding=0) form r300_nir_classify_compute already enforces
- * for store_ssbo, but load_ssbo's binding is read off the load's src[0]
- * descriptor. */
+ * store_ssbo's value is the result of exactly one load_ssbo.  Constant
+ * bindings are recorded here; descriptor-lowered Vulkan kernels carry opaque
+ * handles that dispatch resolves through the descriptor-set layout. */
 void r300_nir_detect_identity_map(const struct nir_shader *s,
                                   struct r300_compute_identity_pattern *out);
 
