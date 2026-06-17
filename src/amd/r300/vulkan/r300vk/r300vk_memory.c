@@ -330,14 +330,19 @@ static VkResult
 r300vk_memory_map_texture_resource(struct r300vk_device *device,
                                    struct r300vk_device_memory *mem,
                                    VkDeviceSize offset,
+                                   VkDeviceSize map_range_size,
                                    void **ptr)
 {
    /* Texture resources map as full mip-level surfaces.  The only valid Vulkan
     * byte offset is the image's bind offset; sub-ranges that need byte-granular
-    * access must use a buffer resource instead. */
-   VkDeviceSize effective_offset =
-      offset >= mem->memory_offset ? offset - mem->memory_offset : 1;
-   if (effective_offset != 0)
+    * access must use a buffer resource instead.  The explicit map range still
+    * has to fit inside the bound image's byte span because texture_map returns
+    * a pointer to the whole surface rather than a byte-windowed view. */
+   if (offset < mem->bound_image_offset)
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+
+   const VkDeviceSize image_offset = offset - mem->bound_image_offset;
+   if (image_offset != 0 || map_range_size > mem->bound_image_size)
       return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
 
    struct pipe_box box;
@@ -358,7 +363,8 @@ r300vk_memory_map_resource(struct r300vk_device *device,
       return r300vk_memory_map_buffer_resource(device, mem, offset,
                                                map_range_size, ptr);
 
-   return r300vk_memory_map_texture_resource(device, mem, offset, ptr);
+   return r300vk_memory_map_texture_resource(device, mem, offset,
+                                             map_range_size, ptr);
 }
 
 VkResult
@@ -800,6 +806,9 @@ r300vk_BindImageMemory2(VkDevice _device,
          return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
       mem->memory_offset = pBindInfos[i].memoryOffset;
+      r300vk_clear_bound_image(mem);
+      mem->bound_image_offset = pBindInfos[i].memoryOffset;
+      mem->bound_image_size = image_size;
 
       if (mem->owns_buffer && img->vk.tiling == VK_IMAGE_TILING_LINEAR) {
          /* Map-before-bind linear image: vkMapMemory already created the
@@ -811,14 +820,11 @@ r300vk_BindImageMemory2(VkDevice _device,
           * Invalidate so HOST_COHERENT readers observe the GPU-filled tile
           * through the mapped pointer without an explicit invalidate. */
          pipe_resource_reference(&mem->bound_image_tile, img->resource);
-         mem->bound_image_offset = pBindInfos[i].memoryOffset;
-         mem->bound_image_size = image_size;
          mem->bound_image_row_pitch = img->linear_row_pitch;
       } else {
          /* Map-after-bind (or optimal tiling): borrow the image's tiled
           * resource as mem->resource so a later vkMapMemory maps the texture
           * directly through the texture branch. */
-         r300vk_clear_bound_image(mem);
          pipe_resource_reference(&mem->resource, img->resource);
          mem->owns_buffer = false;
       }

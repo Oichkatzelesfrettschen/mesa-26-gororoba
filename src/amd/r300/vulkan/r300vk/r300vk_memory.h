@@ -61,9 +61,11 @@ struct r300vk_bound_buffer_slice {
 /*
  *
  * memory_offset records the most recent VkBindBufferMemoryInfo or
- * VkBindImageMemoryInfo memoryOffset.  Linear image sync keeps its own image
- * slice because later buffer binds can legitimately change memory_offset.  For
- * a borrowed bound resource (owns_buffer == false) the
+ * VkBindImageMemoryInfo memoryOffset.  Image bind metadata keeps its own byte
+ * slice because later buffer binds can legitimately change memory_offset.
+ * bound_image_tile is present only for owns_buffer linear-image sync; the
+ * offset and size still constrain texture-backed maps to the image byte span.
+ * For a borrowed bound resource (owns_buffer == false) the
  * pipe_resource starts at the buffer, so MapMemory uses
  * resource_offset = MapMemory.offset - memory_offset.  For an owns_buffer
  * allocation the resource IS the whole VkDeviceMemory; the sync copies the
@@ -81,8 +83,8 @@ struct r300vk_device_memory {
    struct pipe_resource  *bound_image_tile; /* owns_buffer + linear image: the bound image's single
                                              * row-major tile, pulled into the host map at
                                              * Invalidate and the submit boundary */
-   VkDeviceSize           bound_image_offset; /* VkBindImageMemoryInfo::memoryOffset for bound_image_tile */
-   VkDeviceSize           bound_image_size; /* byte span occupied by bound_image_tile */
+   VkDeviceSize           bound_image_offset; /* VkBindImageMemoryInfo::memoryOffset for the image */
+   VkDeviceSize           bound_image_size; /* byte span occupied by the image binding */
    uint32_t               bound_image_row_pitch; /* linear-image row stride; 0 when the binding is a
                                                   * buffer or an optimal image (no host-linear layout) */
    struct pipe_resource  *mapped_resource; /* holds a ref on the resource currently mapped,
