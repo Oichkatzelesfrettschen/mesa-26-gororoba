@@ -65,6 +65,7 @@ r300vk_CreateDevice(VkPhysicalDevice physicalDevice,
 
    list_inithead(&device->memory_list);
    simple_mtx_init(&device->memory_list_lock, mtx_plain);
+   simple_mtx_init(&device->identity_map_cso_lock, mtx_plain);
 
    /* Four-table dispatch, highest precedence first.  Secondary command buffer
     * support is implemented by recording into r300vk_cmd_buffer (vk_cmd_enqueue
@@ -230,6 +231,7 @@ r300vk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    device->pipe->destroy(device->pipe);
    device->screen->destroy(device->screen);
 
+   simple_mtx_destroy(&device->identity_map_cso_lock);
    simple_mtx_destroy(&device->memory_list_lock);
 
    vk_device_finish(&device->vk);
