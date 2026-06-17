@@ -299,6 +299,45 @@ find_binding_for_slot(const struct r300vk_descriptor_set_layout *layout,
    return NULL;
 }
 
+static uint32_t
+descriptor_update_span(const struct r300vk_descriptor_set_layout *layout,
+                       const struct r300vk_dsl_binding *binding,
+                       uint32_t array_element,
+                       VkDescriptorType descriptor_type,
+                       uint32_t descriptor_count)
+{
+   if (binding->type != descriptor_type ||
+       array_element >= binding->count ||
+       descriptor_count == 0)
+      return 0;
+
+   uint32_t span = binding->count - array_element;
+   if (span >= descriptor_count)
+      return descriptor_count;
+
+   const uint32_t binding_index =
+      (uint32_t)(binding - layout->bindings);
+   uint32_t next_binding_number = binding->binding;
+
+   for (uint32_t i = binding_index + 1;
+        i < layout->binding_count && span < descriptor_count; i++) {
+      if (next_binding_number == UINT32_MAX)
+         break;
+      next_binding_number++;
+
+      const struct r300vk_dsl_binding *next = &layout->bindings[i];
+      if (next->binding != next_binding_number ||
+          next->type != descriptor_type)
+         break;
+
+      if (next->count >= descriptor_count - span)
+         return descriptor_count;
+      span += next->count;
+   }
+
+   return span;
+}
+
 static VkSampler
 descriptor_slot_sampler(const struct r300vk_descriptor_set_layout *layout,
                         uint32_t slot, VkSampler written_sampler)
@@ -348,23 +387,17 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
                                                         write->dstBinding);
       if (!b)
          continue;
-      /* Walk dstArrayElement..dstArrayElement+descriptorCount-1.  The Vulkan
-       * spec allows the write to spill into adjacent bindings of identical
-       * type (VUID-VkWriteDescriptorSet-dstArrayElement-00321); this impl
-       * spans the linear set->descriptors[] array without checking adjacent
-       * binding-type identity, which is correct for r300vk's compute kernels
-       * (single binding per set) and over-permissive for multi-binding layouts
-       * that mix descriptor types -- the slot->type field still records the
-       * actual type written, so the consumer can detect a mismatch at replay
-       * time.  Cap the write to the set's total_descriptors to keep the index
-       * inside the allocated array. */
+      /* Vulkan descriptor writes may spill only through consecutive bindings
+       * of the same descriptor type.  Keep the linear descriptors[] walk inside
+       * that allowed run so mixed-type layouts cannot be overwritten by a write
+       * that started in an earlier binding. */
       uint32_t base = b->offset + write->dstArrayElement;
-      uint32_t total = set->layout->total_descriptors;
-      uint32_t span = write->descriptorCount;
-      if (base >= total)
+      uint32_t span = descriptor_update_span(set->layout, b,
+                                             write->dstArrayElement,
+                                             write->descriptorType,
+                                             write->descriptorCount);
+      if (span == 0)
          continue;
-      if (base + span > total)
-         span = total - base;
       for (uint32_t d = 0; d < span; d++) {
          struct r300vk_descriptor *slot = &set->descriptors[base + d];
          /* Defer the slot->type stamp until the per-type case body has
@@ -467,19 +500,22 @@ r300vk_UpdateDescriptorSets(VkDevice _device,
          find_binding(dst_set->layout, cp->dstBinding);
       if (!src_b || !dst_b)
          continue;
-      /* The spec permits a copy to span adjacent bindings of identical type;
-       * cap descriptorCount to whichever side has fewer remaining slots in
-       * the linear array so a malformed call cannot memcpy past the
-       * descriptors allocation. */
-      uint32_t src_total = src_set->layout->total_descriptors;
-      uint32_t dst_total = dst_set->layout->total_descriptors;
+      if (src_b->type != dst_b->type)
+         continue;
+
       uint32_t src_base = src_b->offset + cp->srcArrayElement;
       uint32_t dst_base = dst_b->offset + cp->dstArrayElement;
-      if (src_base >= src_total || dst_base >= dst_total)
+      uint32_t src_span = descriptor_update_span(src_set->layout, src_b,
+                                                 cp->srcArrayElement,
+                                                 src_b->type,
+                                                 cp->descriptorCount);
+      uint32_t dst_span = descriptor_update_span(dst_set->layout, dst_b,
+                                                 cp->dstArrayElement,
+                                                 dst_b->type,
+                                                 cp->descriptorCount);
+      uint32_t span = src_span < dst_span ? src_span : dst_span;
+      if (span == 0)
          continue;
-      uint32_t span = cp->descriptorCount;
-      if (src_base + span > src_total) span = src_total - src_base;
-      if (dst_base + span > dst_total) span = dst_total - dst_base;
       copy_descriptors_preserving_immutable_samplers(dst_set, dst_base, src_set,
                                                      src_base, span);
    }
