@@ -269,8 +269,8 @@ r300vk_nir_remap_single_ubo_to_index0(nir_shader *nir)
  * post-explicit-I/O remap then sees only block 0 and is a no-op safety net.
  *
  * Reject every descriptor shape r300's single read-only constant file cannot
- * represent, so the pipeline fails create with VK_ERROR_FEATURE_NOT_PRESENT
- * rather than aliasing distinct buffers onto CONST[0] and rendering garbage:
+ * represent, so pipeline creation fails instead of aliasing distinct buffers
+ * onto CONST[0] and rendering garbage:
  *   - a storage-buffer descriptor (the constant file is read-only),
  *   - a vulkan_resource_reindex (a dynamically indexed descriptor array),
  *   - a non-constant or non-zero resource array index,
@@ -1770,6 +1770,23 @@ r300vk_capture_dynamic_state(struct r300vk_pipeline *pl,
 }
 
 static VkResult
+r300vk_graphics_pipeline_create_result(VkResult result)
+{
+   switch (result) {
+   case VK_SUCCESS:
+   case VK_ERROR_OUT_OF_HOST_MEMORY:
+   case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+   case VK_ERROR_UNKNOWN:
+   case VK_ERROR_VALIDATION_FAILED:
+   case VK_ERROR_INVALID_SHADER_NV:
+   case VK_PIPELINE_COMPILE_REQUIRED:
+      return result;
+   default:
+      return VK_ERROR_UNKNOWN;
+   }
+}
+
+static VkResult
 r300vk_create_one_pipeline(struct r300vk_device *device,
                              const VkGraphicsPipelineCreateInfo *info,
                              const VkAllocationCallbacks *pAllocator,
@@ -1787,9 +1804,10 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
 
 #define FAIL_PIPELINE(r) \
    do { \
+      VkResult fail_result = r300vk_graphics_pipeline_create_result(r); \
       r300vk_DestroyPipeline(r300vk_device_to_handle(device), \
                              r300vk_pipeline_to_handle(pl), pAllocator); \
-      return (r); \
+      return fail_result; \
    } while (0)
 
    /* r300 exposes a single constant-buffer slot (max_const_buffers = 1) and binds
