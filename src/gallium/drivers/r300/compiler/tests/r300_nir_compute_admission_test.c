@@ -4,11 +4,11 @@
  * Classify-only admission harness for r300_nir_classify_compute.  Builds tiny
  * MESA_SHADER_COMPUTE nir_shaders and asserts the verdict against the RS482
  * compute-as-raster substrate: a kernel that only loads, does FP24-range
- * arithmetic, and writes its buffer output is admissible (the output write
- * lowers to RB3D export); workgroup shared memory, a barrier, a general atomic,
- * a storage-image / global scatter, or FP64 arithmetic each reject
- * deterministically.  The classifier never mutates, lowers, or executes the
- * shader.
+ * arithmetic, and writes its buffer output is admissible only when the SSBO
+ * write uses a canonical buffer handle and coordinate offset.  Workgroup shared
+ * memory, a barrier, a general atomic, arbitrary storage writes, or FP64
+ * arithmetic each reject deterministically.  The classifier never mutates,
+ * lowers, or executes the shader.
  */
 
 #include <math.h>
@@ -108,10 +108,75 @@ build_fp64(void)
 }
 
 static nir_shader *
+build_fp64_operand_conversion(void)
+{
+   nir_builder b = cs_builder("cs_fp64_operand_conversion");
+   nir_def *d = nir_imm_double(&b, 1.0);
+   nir_store_ssbo(&b, nir_f2f32(&b, d), nir_imm_int(&b, 0),
+                  nir_imm_int(&b, 0), .write_mask = 0x1, .align_mul = 4,
+                  .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
 build_global_scatter(void)
 {
    nir_builder b = cs_builder("cs_global_scatter");
    nir_store_global(&b, nir_imm_int(&b, 5), nir_imm_int64(&b, 0),
+                    .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_global_scatter_2x32(void)
+{
+   nir_builder b = cs_builder("cs_global_scatter_2x32");
+   nir_store_global_2x32(&b, nir_imm_int(&b, 5), nir_imm_ivec2(&b, 0, 0),
+                         .write_mask = 0x1, .align_mul = 4,
+                         .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_dynamic_store_binding(void)
+{
+   nir_builder b = cs_builder("cs_dynamic_store_binding");
+   nir_def *binding = nir_load_ubo(&b, 1, 32, nir_imm_int(&b, 0),
+                                   nir_imm_int(&b, 0), .align_mul = 4,
+                                   .align_offset = 0, .range = 4);
+   nir_store_ssbo(&b, nir_imm_int(&b, 5), binding, nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_data_dependent_store_offset(void)
+{
+   nir_builder b = cs_builder("cs_data_dependent_store_offset");
+   nir_def *offset = nir_load_ubo(&b, 1, 32, nir_imm_int(&b, 0),
+                                  nir_imm_int(&b, 0), .align_mul = 4,
+                                  .align_offset = 0, .range = 4);
+   nir_store_ssbo(&b, nir_imm_int(&b, 5), nir_imm_int(&b, 0), offset,
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_lowered_shared_load(void)
+{
+   nir_builder b = cs_builder("cs_lowered_shared_load");
+   nir_def *v = nir_load_shared(&b, 1, 32, nir_imm_int(&b, 0),
+                                .align_mul = 4, .align_offset = 0);
+   nir_store_ssbo(&b, v, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static nir_shader *
+build_lowered_shared_store(void)
+{
+   nir_builder b = cs_builder("cs_lowered_shared_store");
+   nir_store_shared(&b, nir_imm_int(&b, 5), nir_imm_int(&b, 0),
                     .align_mul = 4, .align_offset = 0);
    return b.shader;
 }
@@ -2441,8 +2506,25 @@ main(void)
                 R300_COMPUTE_REJECT_GENERAL_ATOMIC, "ssbo atomic rejects");
    case_verdict(build_global_scatter(), false, R300_COMPUTE_REJECT_ARBITRARY_SCATTER,
                 "global scatter rejects");
+   case_verdict(build_global_scatter_2x32(), false,
+                R300_COMPUTE_REJECT_ARBITRARY_SCATTER,
+                "2x32 global scatter rejects");
+   case_verdict(build_dynamic_store_binding(), false,
+                R300_COMPUTE_REJECT_RW_STORAGE,
+                "dynamic store_ssbo binding rejects");
+   case_verdict(build_data_dependent_store_offset(), false,
+                R300_COMPUTE_REJECT_RW_STORAGE,
+                "data-dependent store_ssbo offset rejects");
+   case_verdict(build_lowered_shared_load(), false,
+                R300_COMPUTE_REJECT_SHARED_MEMORY,
+                "lowered shared load rejects");
+   case_verdict(build_lowered_shared_store(), false,
+                R300_COMPUTE_REJECT_SHARED_MEMORY,
+                "lowered shared store rejects");
    case_verdict(build_fp64(), false, R300_COMPUTE_REJECT_FP64,
                 "fp64 arithmetic rejects");
+   case_verdict(build_fp64_operand_conversion(), false, R300_COMPUTE_REJECT_FP64,
+                "fp64 source operand rejects");
    case_identity_metadata();
    case_binary_metadata();
    case_qfmul_metadata();

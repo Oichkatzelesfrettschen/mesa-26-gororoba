@@ -26,6 +26,7 @@
  * detectors actually match, so the bound never truncates a real match.  It
  * exists only to keep the walk total on adversarial or malformed NIR. */
 #define R300_COMPUTE_DETECT_MAX_DEPTH 8u
+#define R300_COMPUTE_STORE_ADDR_MAX_DEPTH 8u
 
 static bool
 identity_map_debug_enabled(void)
@@ -55,11 +56,108 @@ reject(struct r300_compute_admission *out, enum r300_compute_reject reason,
    out->detail = detail;
 }
 
+static bool store_ssbo_addr_def_is_supported(const nir_def *def,
+                                             unsigned depth);
+
+static bool
+store_ssbo_addr_src_is_supported(nir_src src, unsigned depth)
+{
+   if (!src.ssa)
+      return false;
+   if (nir_src_is_const(src))
+      return true;
+   return store_ssbo_addr_def_is_supported(src.ssa, depth + 1);
+}
+
+static bool
+store_ssbo_addr_alu_input_is_const(const nir_alu_instr *alu, unsigned input)
+{
+   return input < nir_op_infos[alu->op].num_inputs &&
+          nir_src_is_const(alu->src[input].src);
+}
+
+static bool
+store_ssbo_addr_def_is_supported(const nir_def *def, unsigned depth)
+{
+   if (!def || depth > R300_COMPUTE_STORE_ADDR_MAX_DEPTH)
+      return false;
+   if (nir_def_is_const(def))
+      return true;
+
+   const nir_instr *instr = nir_def_instr(def);
+   if (instr->type == nir_instr_type_intrinsic) {
+      const nir_intrinsic_instr *intr =
+         nir_instr_as_intrinsic((nir_instr *)instr);
+      switch (intr->intrinsic) {
+      case nir_intrinsic_load_global_invocation_id:
+      case nir_intrinsic_load_global_invocation_index:
+      case nir_intrinsic_load_base_global_invocation_id:
+      case nir_intrinsic_load_vulkan_descriptor:
+         return true;
+      default:
+         return false;
+      }
+   }
+
+   if (instr->type != nir_instr_type_alu)
+      return false;
+
+   const nir_alu_instr *alu = nir_instr_as_alu((nir_instr *)instr);
+   const unsigned num_inputs = nir_op_infos[alu->op].num_inputs;
+
+   if (nir_op_is_vec_or_mov(alu->op)) {
+      for (unsigned i = 0; i < num_inputs; i++) {
+         if (!store_ssbo_addr_src_is_supported(alu->src[i].src, depth + 1))
+            return false;
+      }
+      return true;
+   }
+
+   switch (alu->op) {
+   case nir_op_iadd:
+   case nir_op_isub:
+   case nir_op_u2u32:
+   case nir_op_u2u64:
+   case nir_op_i2i32:
+   case nir_op_i2i64:
+      for (unsigned i = 0; i < num_inputs; i++) {
+         if (!store_ssbo_addr_src_is_supported(alu->src[i].src, depth + 1))
+            return false;
+      }
+      return true;
+   case nir_op_imul:
+      return (store_ssbo_addr_alu_input_is_const(alu, 0) &&
+              store_ssbo_addr_src_is_supported(alu->src[1].src, depth + 1)) ||
+             (store_ssbo_addr_alu_input_is_const(alu, 1) &&
+              store_ssbo_addr_src_is_supported(alu->src[0].src, depth + 1));
+   case nir_op_ishl:
+      return store_ssbo_addr_src_is_supported(alu->src[0].src, depth + 1) &&
+             store_ssbo_addr_alu_input_is_const(alu, 1);
+   default:
+      return false;
+   }
+}
+
+static bool
+store_ssbo_address_is_supported(const nir_intrinsic_instr *intr,
+                                const char **detail)
+{
+   if (!store_ssbo_addr_src_is_supported(intr->src[1], 0)) {
+      *detail = "store_ssbo buffer index";
+      return false;
+   }
+   if (!store_ssbo_addr_src_is_supported(intr->src[2], 0)) {
+      *detail = "store_ssbo byte offset";
+      return false;
+   }
+   return true;
+}
+
 /* Walk the kernel and detect the identity-map structural pattern:
  * exactly one store_ssbo whose value source is the SSA def of exactly one
- * load_ssbo.  The store's binding is the canonical 0 the classifier already
- * enforces; the load's binding is read off its first source so the dispatch
- * lowering knows which descriptor maps to the input sampler view.
+ * load_ssbo.  The load and store binding sources are recorded when they are
+ * compile-time constants; descriptor-lowered Vulkan kernels carry opaque
+ * handles that the dispatch resolves through the descriptor-set layout.
  *
  * The index-equivalence between the load and the store (both indexed by
  * gl_GlobalInvocationID.xy) is not asserted here; the readback oracle catches
@@ -3577,15 +3675,19 @@ r300_nir_classify_compute(const nir_shader *s,
                   reject(out, R300_COMPUTE_REJECT_SHARED_MEMORY, name);
                   return;
                }
-               /* store_ssbo is the coordinate-indexed RB3D export the
-                * ComputeGrid->RasterGrid functor maps onto.  Every
-                * store_ssbo admits at the classifier level; the
-                * orchestrator at dispatch time decides whether the
-                * specific shape (identity-map, in-place ALU, future
-                * texture-pair binary-map) lowers to a real draw or falls
-                * through to the no-op compute lifecycle.  Arbitrary
-                * SCATTER -- a store_global / image_store / store_deref to
-                * mem_global -- still rejects below. */
+               if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+                  const char *store_detail = NULL;
+                  if (!store_ssbo_address_is_supported(intr, &store_detail)) {
+                     reject(out, R300_COMPUTE_REJECT_RW_STORAGE, store_detail);
+                     return;
+                  }
+               }
+               /* store_ssbo can lower only when its buffer handle is a
+                * constant/test binding or the Vulkan descriptor handle, and
+                * its byte offset is constant or derived from the global
+                * invocation coordinates.  Data-dependent storage-buffer
+                * addressing is arbitrary scatter on this substrate even
+                * though the NIR opcode is still store_ssbo. */
                if (is_arbitrary_scatter(intr->intrinsic)) {
                   reject(out, R300_COMPUTE_REJECT_ARBITRARY_SCATTER, name);
                   return;
@@ -3651,7 +3753,7 @@ static const struct r300_compute_reject_row r300_compute_reject_registry[] = {
    { R300_COMPUTE_REJECT_GENERAL_ATOMIC, "general-atomic",
      "the only atomics are blend ADD/MIN/MAX/SUB, the stencil increment, and the ZPASS reduction; no arbitrary-address atomic exists" },
    { R300_COMPUTE_REJECT_RW_STORAGE, "rw-storage",
-     "the substrate has texture-load input and one RB3D color export; no scatter or arbitrary read-write storage exists" },
+     "the substrate has texture-load input and one RB3D color export; store_ssbo requires a canonical buffer handle and coordinate offset" },
    { R300_COMPUTE_REJECT_FP64, "fp64",
      "the fragment ALU is FP24 (s1e7m16); no double-precision path exists" },
    { R300_COMPUTE_REJECT_FP16, "fp16",
