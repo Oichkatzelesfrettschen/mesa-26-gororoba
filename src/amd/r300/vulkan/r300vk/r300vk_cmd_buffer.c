@@ -23,8 +23,8 @@
 #include "vk_pipeline_layout.h"
 #include "vk_util.h"
 
+#include <stdint.h>
 #include <string.h>
-#include <stdlib.h>
 
 #define R300VK_CMD_INITIAL_CAP 64
 
@@ -53,9 +53,25 @@ static struct r300vk_cmd_entry *
 r300vk_cmd_append(struct r300vk_cmd_buffer *cmd)
 {
    if (cmd->entry_count >= cmd->entry_cap) {
-      uint32_t new_cap = cmd->entry_cap ? cmd->entry_cap * 2 : R300VK_CMD_INITIAL_CAP;
+      uint32_t new_cap = R300VK_CMD_INITIAL_CAP;
+      if (cmd->entry_cap) {
+         if (cmd->entry_cap > UINT32_MAX / 2) {
+            vk_command_buffer_set_error(&cmd->base,
+                                        VK_ERROR_OUT_OF_HOST_MEMORY);
+            return NULL;
+         }
+         new_cap = cmd->entry_cap * 2;
+      }
+#if SIZE_MAX <= UINT32_MAX
+      if ((size_t)new_cap > SIZE_MAX / sizeof(*cmd->entries)) {
+         vk_command_buffer_set_error(&cmd->base, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return NULL;
+      }
+#endif
       struct r300vk_cmd_entry *new_entries =
-         realloc(cmd->entries, new_cap * sizeof(*cmd->entries));
+         vk_realloc(&cmd->base.pool->alloc, cmd->entries,
+                    new_cap * sizeof(*cmd->entries), 8,
+                    VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
       if (!new_entries) {
          vk_command_buffer_set_error(&cmd->base, VK_ERROR_OUT_OF_HOST_MEMORY);
          return NULL;
@@ -73,7 +89,7 @@ r300vk_cmd_buffer_free_entry_data(struct r300vk_cmd_buffer *cmd)
 {
    for (uint32_t i = 0; i < cmd->entry_count; i++) {
       if (cmd->entries[i].type == R300VK_CMD_UPDATE_BUFFER)
-         free(cmd->entries[i].update_buffer.data);
+         vk_free(&cmd->base.pool->alloc, cmd->entries[i].update_buffer.data);
    }
 }
 
@@ -127,6 +143,11 @@ r300vk_cmd_buffer_reset(struct vk_command_buffer *base,
    struct r300vk_cmd_buffer *cmd =
       container_of(base, struct r300vk_cmd_buffer, base);
    r300vk_cmd_buffer_reset_recording_state(cmd);
+   if (flags & VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT) {
+      vk_free(&cmd->base.pool->alloc, cmd->entries);
+      cmd->entries = NULL;
+      cmd->entry_cap = 0;
+   }
    vk_command_buffer_reset(base);
 }
 
@@ -136,7 +157,7 @@ r300vk_cmd_buffer_destroy(struct vk_command_buffer *base)
    struct r300vk_cmd_buffer *cmd =
       container_of(base, struct r300vk_cmd_buffer, base);
    r300vk_cmd_buffer_free_entry_data(cmd);
-   free(cmd->entries);
+   vk_free(&cmd->base.pool->alloc, cmd->entries);
    vk_command_buffer_finish(base);
    vk_free(&cmd->base.pool->alloc, cmd);
 }
@@ -1391,9 +1412,15 @@ r300vk_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
    if (dataSize == 0)
       return;
 
-   /* pData is caller-owned only for this call, so copy it now; the cmd buffer
-    * frees the copy at reset/destroy. */
-   void *copy = malloc(dataSize);
+   if (dataSize > SIZE_MAX) {
+      vk_command_buffer_set_error(&cmd->base, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return;
+   }
+
+   /* pData is caller-owned only for this call, so copy it now; the command-pool
+    * allocator owns the copy until reset/destroy. */
+   void *copy = vk_alloc(&cmd->base.pool->alloc, (size_t)dataSize, 8,
+                         VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
    if (!copy) {
       vk_command_buffer_set_error(&cmd->base, VK_ERROR_OUT_OF_HOST_MEMORY);
       return;
@@ -1402,7 +1429,7 @@ r300vk_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
 
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) {
-      free(copy);
+      vk_free(&cmd->base.pool->alloc, copy);
       return;
    }
    e->type                 = R300VK_CMD_UPDATE_BUFFER;
