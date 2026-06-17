@@ -36,16 +36,6 @@
 
 #include <string.h>
 
-/* Defined in the r300 driver (compiler/r300_nir_lower_vs_system_values.c).
- * Declared locally because its header r300_nir.h includes r300_screen.h, which
- * is not on the r300vk include path. */
-extern bool r300_nir_lower_vs_system_values_to_inputs(nir_shader *s,
-                                                      int vertex_id_slot,
-                                                      int instance_id_slot);
-extern void r300_nir_vs_reads_system_values(nir_shader *s,
-                                            bool *reads_vertex_id,
-                                            bool *reads_instance_id);
-
 static const VkVertexInputBindingDescription *
 r300vk_find_vertex_binding_desc(const VkPipelineVertexInputStateCreateInfo *vi,
                                 uint32_t binding)
