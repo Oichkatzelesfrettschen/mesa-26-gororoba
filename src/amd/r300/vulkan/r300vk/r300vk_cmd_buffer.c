@@ -1057,6 +1057,13 @@ r300vk_CmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer,
    VK_FROM_HANDLE(r300vk_cmd_buffer, cmd, commandBuffer);
    if (!info || info->descriptorSetCount == 0)
       return;
+
+   if (info->descriptorSetCount > R300VK_MAX_BOUND_DESCRIPTOR_SETS ||
+       info->dynamicOffsetCount > R300VK_MAX_DYNAMIC_OFFSETS) {
+      vk_command_buffer_set_error(&cmd->base, VK_ERROR_FEATURE_NOT_PRESENT);
+      return;
+   }
+
    struct r300vk_cmd_entry *e = r300vk_cmd_append(cmd);
    if (!e) return;
 
@@ -1070,11 +1077,7 @@ r300vk_CmdBindDescriptorSets2KHR(VkCommandBuffer commandBuffer,
       bp = VK_PIPELINE_BIND_POINT_COMPUTE;
 
    uint32_t sets_n = info->descriptorSetCount;
-   if (sets_n > R300VK_MAX_BOUND_DESCRIPTOR_SETS)
-      sets_n = R300VK_MAX_BOUND_DESCRIPTOR_SETS;
    uint32_t doff_n = info->dynamicOffsetCount;
-   if (doff_n > R300VK_MAX_DYNAMIC_OFFSETS)
-      doff_n = R300VK_MAX_DYNAMIC_OFFSETS;
 
    e->type                          = R300VK_CMD_BIND_DESCRIPTOR_SETS;
    e->bind_dsets.bind_point         = bp;
