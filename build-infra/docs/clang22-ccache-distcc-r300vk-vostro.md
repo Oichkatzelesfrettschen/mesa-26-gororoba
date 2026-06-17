@@ -44,10 +44,11 @@ canonical lane deliberately avoids `-pipe`, LTO, `-fno-plt`, `-march=native`,
 and host-specific tuning so artifacts remain portable from K8 through modern
 CachyOS and Debian hosts.  `env/vostro1000-x86-64-v1-clang22-ccache-distcc.env` pins LLVM 22,
 sets `CCACHE_PREFIX=distcc`, flattens `~/.distcc/hosts` into `DISTCC_HOSTS`,
-strips the pump-only `,cpp` flag, and appends `localhost/2,lzo` when the host
-file does not already name a local fallback.  The Makefile sets `JOBS=36` for
-this host environment so Ninja has enough work to keep the reachable distcc
-volunteers busy.  The environment owns `DISTCC_HOSTS` at source time so
+strips the pump-only `,cpp` flag, normalizes local fallback entries to distcc's
+`localhost[/LIMIT]` grammar, and appends `localhost/2` when the host file does
+not already name a local fallback.  The Makefile sets `JOBS=36` for this host
+environment so Ninja has enough work to keep the reachable distcc volunteers
+busy.  The environment owns `DISTCC_HOSTS` at source time so
 login-shell defaults cannot silently route this lane to stale workers.  The
 environment pins `PATH` and `CCACHE_PATH` to `/usr/bin` first so ccache resolves
 the packaged Clang 22 tools on the Vostro.  The generated Meson toolchain
@@ -72,9 +73,9 @@ Mode matrix:
   the versioned compiler name through their own PATH.  This is for clean builds
   where cache hashing is not the limiting cost or for mixed hosts where
   `/usr/bin/clang-22` is not a stable path.
-- Local tertiary fallback: the Vostro env appends `localhost/2,lzo` unless the
-  host file already names a local fallback; if the host file is absent or empty,
-  the env emits only `localhost/2,lzo`.
+- Local tertiary fallback: the Vostro env appends `localhost/2` unless the host
+  file already names a local fallback; if the host file is absent or empty, the
+  env emits only `localhost/2`.
 - Pump lane: pump mode is a no-cache lane.  Use the pump-specific envs that
   unset `CCACHE_PREFIX` and invoke `distcc-pump`; do not combine pump with
   ccache.
