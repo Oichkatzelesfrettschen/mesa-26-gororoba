@@ -1290,12 +1290,12 @@ r300vk_identity_map_dispatch_replay(struct r300vk_device *device,
    }
 
    r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
-                             &device->identity_map_sampler_cso);
+                             &device->identity_map_cso.sampler);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &in_sv);
 
    struct pipe_vertex_buffer vb_state;
@@ -1665,14 +1665,14 @@ r300vk_two_in_one_out_dispatch_replay(struct r300vk_device *device,
    }
 
    r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
 
    /* Bind the two input buffers as the replay core's sampler stages. */
-   void *samplers[2] = { device->identity_map_sampler_cso,
-                         device->identity_map_sampler_cso };
+   void *samplers[2] = { device->identity_map_cso.sampler,
+                         device->identity_map_cso.sampler };
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
    struct pipe_sampler_view *views[2] = { sv_a, sv_b };
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 2, 0, views);
@@ -2084,12 +2084,12 @@ r300vk_one_in_one_out_dispatch_replay(struct r300vk_device *device,
    }
 
    r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
-                             &device->identity_map_sampler_cso);
+                             &device->identity_map_cso.sampler);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &sv);
 
    struct pipe_vertex_buffer vb_state;
@@ -2423,15 +2423,15 @@ omul_run_pass_cb(struct pipe_context *pipe, struct pipe_screen *screen,
    surf_templ.texture = rt;
 
    r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         vs_cso, pass_fs, velems_cso);
 
-   void *samplers[4] = { device->identity_map_sampler_cso,
-                         device->identity_map_sampler_cso,
-                         device->identity_map_sampler_cso,
-                         device->identity_map_sampler_cso };
+   void *samplers[4] = { device->identity_map_cso.sampler,
+                         device->identity_map_cso.sampler,
+                         device->identity_map_cso.sampler,
+                         device->identity_map_cso.sampler };
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 4, samplers);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 4, 0, views);
 
@@ -2554,17 +2554,17 @@ omul_run_mrt_pass(struct pipe_context *pipe, struct pipe_screen *screen,
    sc.maxy = height;
    pipe->set_scissor_states(pipe, 0, 1, &sc);
 
-   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
-   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
-   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_blend_state(pipe, device->identity_map_cso.blend);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_cso.rasterizer);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_cso.dsa);
    pipe->bind_vs_state(pipe, vs_cso);
    pipe->bind_fs_state(pipe, mrt_fs);
    pipe->bind_vertex_elements_state(pipe, velems_cso);
 
-   void *samplers[4] = { device->identity_map_sampler_cso,
-                         device->identity_map_sampler_cso,
-                         device->identity_map_sampler_cso,
-                         device->identity_map_sampler_cso };
+   void *samplers[4] = { device->identity_map_cso.sampler,
+                         device->identity_map_cso.sampler,
+                         device->identity_map_cso.sampler,
+                         device->identity_map_cso.sampler };
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, nviews, samplers);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, nviews, 0, views);
 
@@ -3603,13 +3603,13 @@ r300vk_multitap_gather_dispatch_replay(struct r300vk_device *device,
    }
 
    r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
 
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
-                             &device->identity_map_sampler_cso);
+                             &device->identity_map_cso.sampler);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &in_sv);
 
    /* The neighbor texel displacement is 1/width in normalized texcoord X.
@@ -3934,12 +3934,12 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
    }
 
    r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
-   void *samplers[2] = { device->identity_map_sampler_cso,
-                         device->identity_map_sampler_cso };
+   void *samplers[2] = { device->identity_map_cso.sampler,
+                         device->identity_map_cso.sampler };
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
    struct pipe_sampler_view *views[2] = { sv_pred, sv_val };
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 2, 0, views);
@@ -4030,7 +4030,7 @@ r300vk_predicated_store_dispatch_replay(struct r300vk_device *device,
  *      TRIANGLE_STRIP.
  *   3. Blend state is the device-cached
  *      blend_acc_reduction_blend_cso (ADD / ONE / ONE) instead of the
- *      blend-disabled identity_map_blend_cso.
+ *      blend-disabled identity_map_cso.blend.
  *
  * Other surfaces (rasterizer / dsa / sampler CSOs, framebuffer + viewport
  * + scissor setup, copy-back path) reuse the identity-map orchestrator's
@@ -4147,8 +4147,8 @@ r300vk_blend_acc_reduction_dispatch_replay(struct r300vk_device *device,
 
    r300vk_identity_map_setup_draw_state(pipe, M, 1, &surf_templ,
                                         device->blend_acc_reduction_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
 
    /* Clear the 1xM RT to 0 before the blend-add draw. */
@@ -4354,9 +4354,9 @@ r300vk_zpass_reduction_dispatch_replay(struct r300vk_device *device,
    surf_templ.texture = rt;
 
    r300vk_identity_map_setup_draw_state(pipe, N, 1, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
 
    struct pipe_vertex_buffer vb_state;
@@ -4674,14 +4674,14 @@ r300vk_multipass_scan_dispatch_replay(struct r300vk_device *device,
    /* State that is constant across all passes: blend off, no cull, depth
     * off, NEAREST sampler, the doubling FS + passthrough VS, the velems,
     * the fullscreen VB, viewport, scissor. */
-   pipe->bind_blend_state(pipe, device->identity_map_blend_cso);
-   pipe->bind_rasterizer_state(pipe, device->identity_map_rasterizer_cso);
-   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_dsa_cso);
+   pipe->bind_blend_state(pipe, device->identity_map_cso.blend);
+   pipe->bind_rasterizer_state(pipe, device->identity_map_cso.rasterizer);
+   pipe->bind_depth_stencil_alpha_state(pipe, device->identity_map_cso.dsa);
    pipe->bind_vs_state(pipe, pl->vs_cso);
    pipe->bind_fs_state(pipe, pl->fs_cso);
    pipe->bind_vertex_elements_state(pipe, velems_cso);
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1,
-                             &device->identity_map_sampler_cso);
+                             &device->identity_map_cso.sampler);
    struct pipe_vertex_buffer vb_state;
    memset(&vb_state, 0, sizeof(vb_state));
    vb_state.buffer.resource = vb;
@@ -5103,9 +5103,9 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
    surf_templ.format  = rtfmt;
    surf_templ.texture = rt;
    r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
 
    /* CONST[0] = (width, stride, offset, 0): the dispatch-known scalars the
@@ -5274,13 +5274,13 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
       surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
       surf_templ.texture = rt;
       r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                           device->identity_map_blend_cso,
-                                           device->identity_map_rasterizer_cso,
-                                           device->identity_map_dsa_cso,
+                                           device->identity_map_cso.blend,
+                                           device->identity_map_cso.rasterizer,
+                                           device->identity_map_cso.dsa,
                                            pl->vs_cso, pl->multilimb_fs[k],
                                            velems_cso);
-      void *samplers[2] = { device->identity_map_sampler_cso,
-                            device->identity_map_sampler_cso };
+      void *samplers[2] = { device->identity_map_cso.sampler,
+                            device->identity_map_cso.sampler };
       pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
       pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 2, 0, views);
 
@@ -5465,11 +5465,11 @@ r300vk_cas_dispatch_replay(struct r300vk_device *device,
    surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
    surf_templ.texture = rt;
    r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
-                                        device->identity_map_blend_cso,
-                                        device->identity_map_rasterizer_cso,
-                                        device->identity_map_dsa_cso,
+                                        device->identity_map_cso.blend,
+                                        device->identity_map_cso.rasterizer,
+                                        device->identity_map_cso.dsa,
                                         pl->vs_cso, pl->fs_cso, velems_cso);
-   void *samplers[1] = { device->identity_map_sampler_cso };
+   void *samplers[1] = { device->identity_map_cso.sampler };
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, samplers);
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &view);
 
@@ -5677,9 +5677,9 @@ r300vk_log4_pool_dispatch_replay(struct r300vk_device *device,
       surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
       surf_templ.texture = rt;
       r300vk_identity_map_setup_draw_state(pipe, out_w, out_h, &surf_templ,
-                                           device->identity_map_blend_cso,
-                                           device->identity_map_rasterizer_cso,
-                                           device->identity_map_dsa_cso,
+                                           device->identity_map_cso.blend,
+                                           device->identity_map_cso.rasterizer,
+                                           device->identity_map_cso.dsa,
                                            pl->vs_cso, pl->fs_cso, velems_cso);
       void *samplers[1] = { linear_cso };
       pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, samplers);

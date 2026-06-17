@@ -1580,7 +1580,7 @@ r300vk_bind_input_attachment(struct r300vk_device *device,
          pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
 
          pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, unit, 1,
-                                   &device->identity_map_sampler_cso);
+                                   &device->identity_map_cso.sampler);
          pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, unit, 1, 0, &view);
 
          bound->units[bound->count] = unit;

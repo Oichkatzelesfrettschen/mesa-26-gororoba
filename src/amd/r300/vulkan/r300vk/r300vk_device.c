@@ -210,18 +210,18 @@ r300vk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    /* Identity-map cached CSOs were created via pipe->create_*_state at lazy
     * init time; the matching delete_*_state must run before the pipe_context
     * itself is destroyed. */
-   if (device->identity_map_blend_cso)
+   if (device->identity_map_cso.blend)
       device->pipe->delete_blend_state(device->pipe,
-                                       device->identity_map_blend_cso);
-   if (device->identity_map_rasterizer_cso)
+                                       device->identity_map_cso.blend);
+   if (device->identity_map_cso.rasterizer)
       device->pipe->delete_rasterizer_state(device->pipe,
-                                            device->identity_map_rasterizer_cso);
-   if (device->identity_map_dsa_cso)
+                                            device->identity_map_cso.rasterizer);
+   if (device->identity_map_cso.dsa)
       device->pipe->delete_depth_stencil_alpha_state(device->pipe,
-                                                     device->identity_map_dsa_cso);
-   if (device->identity_map_sampler_cso)
+                                                     device->identity_map_cso.dsa);
+   if (device->identity_map_cso.sampler)
       device->pipe->delete_sampler_state(device->pipe,
-                                         device->identity_map_sampler_cso);
+                                         device->identity_map_cso.sampler);
    if (device->blend_acc_reduction_blend_cso)
       device->pipe->delete_blend_state(device->pipe,
                                        device->blend_acc_reduction_blend_cso);

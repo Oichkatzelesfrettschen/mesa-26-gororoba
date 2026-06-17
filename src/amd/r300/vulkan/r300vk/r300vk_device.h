@@ -91,10 +91,12 @@ struct r300vk_device {
     * first identity-map pipeline-create, freed in r300vk_DestroyDevice.  NULL
     * means uninitialized; r300vk_device_init_identity_map_state populates
     * them on demand under identity_map_cso_lock. */
-   void                  *identity_map_blend_cso;
-   void                  *identity_map_rasterizer_cso;
-   void                  *identity_map_dsa_cso;
-   void                  *identity_map_sampler_cso;
+   struct {
+      void *blend;
+      void *rasterizer;
+      void *dsa;
+      void *sampler;
+   } identity_map_cso;
 
    /* M-G blend-acc-reduction blend state CSO -- the one CSO that differs
     * from the identity-map state set: blend enabled, ADD function,
