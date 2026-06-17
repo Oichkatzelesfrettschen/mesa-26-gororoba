@@ -79,12 +79,18 @@ struct r300vk_device {
    struct list_head       memory_list;
    simple_mtx_t           memory_list_lock;
 
+   /* pipe_context state creation is not thread-safe, but pipeline creation may
+    * run concurrently on one VkDevice.  identity_map_cso_lock serializes lazy
+    * creation of the cached identity-map state and the per-pipeline shader
+    * CSOs synthesized from the same pipe_context. */
+   simple_mtx_t           identity_map_cso_lock;
+
    /* Cached gallium state CSOs every identity-map compute dispatch reuses
     * (blend = passthrough, rasterizer = no-cull / fill-solid, dsa = depth+
     * stencil off, sampler = NEAREST + CLAMP_TO_EDGE).  Lazily created on the
     * first identity-map pipeline-create, freed in r300vk_DestroyDevice.  NULL
     * means uninitialized; r300vk_device_init_identity_map_state populates
-    * them on demand. */
+    * them on demand under identity_map_cso_lock. */
    void                  *identity_map_blend_cso;
    void                  *identity_map_rasterizer_cso;
    void                  *identity_map_dsa_cso;

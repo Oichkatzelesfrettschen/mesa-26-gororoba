@@ -2053,7 +2053,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
  * skip recreation.  The matching delete_*_state runs in r300vk_DestroyDevice
  * before the pipe_context itself is destroyed. */
 static bool
-r300vk_device_init_identity_map_state(struct r300vk_device *device)
+r300vk_device_init_identity_map_state_locked(struct r300vk_device *device)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
@@ -2112,6 +2112,15 @@ r300vk_device_init_identity_map_state(struct r300vk_device *device)
    }
 
    return true;
+}
+
+static bool
+r300vk_device_init_identity_map_state(struct r300vk_device *device)
+{
+   simple_mtx_lock(&device->identity_map_cso_lock);
+   bool ok = r300vk_device_init_identity_map_state_locked(device);
+   simple_mtx_unlock(&device->identity_map_cso_lock);
+   return ok;
 }
 
 /* Emit the binary ALU op into a ureg fragment program.  Maps the detected
@@ -3410,40 +3419,48 @@ r300vk_qfmmul_synthesize_shaders(struct r300vk_device *device,
  * to the bound color RT.  Both CSOs are cached on the pipeline; the existing
  * destroy path frees vs_cso / fs_cso conditionally.
  *
- * util_make_fragment_tex_shader is the Mesa-canonical helper in
- * src/gallium/auxiliary/util/u_simple_shaders.c (TGSI-based).  Returning false
- * signals a synthesis failure that demotes the pipeline back to a no-op
- * compute object so vkCreateComputePipelines still succeeds with the kernel
- * admitted, just without the identity-map lowering. */
-static bool
+ * util_make_fragment_tex_shader is the Mesa-canonical TGSI helper for this
+ * sampler FS.  Synthesis failure is an allocation failure: return the VkResult
+ * from pipeline creation instead of hiding it behind a no-op dispatch path. */
+static VkResult
 r300vk_identity_map_synthesize_shaders(struct r300vk_device *device,
                                         struct r300vk_pipeline *pl)
 {
    struct pipe_context *pipe = device->pipe;
    if (!pipe)
-      return false;
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r300vk: identity-map shader synthesis has no "
+                       "pipe_context");
 
-   /* Cached gallium state CSOs live on the device so every identity-map
-    * pipeline reuses them.  Initialize on demand from the first identity-map
-    * synthesis; subsequent calls find them populated. */
-   if (!r300vk_device_init_identity_map_state(device))
-      return false;
+   simple_mtx_lock(&device->identity_map_cso_lock);
+
+   if (!r300vk_device_init_identity_map_state_locked(device)) {
+      simple_mtx_unlock(&device->identity_map_cso_lock);
+      return vk_errorf(device, VK_ERROR_OUT_OF_HOST_MEMORY,
+                       "r300vk: failed to create identity-map Gallium state");
+   }
 
    pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
-   if (!pl->vs_cso)
-      return false;
+   if (!pl->vs_cso) {
+      simple_mtx_unlock(&device->identity_map_cso_lock);
+      return vk_errorf(device, VK_ERROR_OUT_OF_HOST_MEMORY,
+                       "r300vk: failed to synthesize identity-map VS");
+   }
 
    pl->fs_cso = util_make_fragment_tex_shader(
                     pipe, TGSI_TEXTURE_2D,
                     TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
-                    false /* use_txf: NEAREST sample, not integer fetch */,
+                    false /* use_txf: emit TEX; sampler state chooses NEAREST */,
                     true  /* use_persp: perspective-correct interpolation */);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
-      return false;
+      simple_mtx_unlock(&device->identity_map_cso_lock);
+      return vk_errorf(device, VK_ERROR_OUT_OF_HOST_MEMORY,
+                       "r300vk: failed to synthesize identity-map FS");
    }
-   return true;
+   simple_mtx_unlock(&device->identity_map_cso_lock);
+   return VK_SUCCESS;
 }
 
 /* Synthesise the VS + FS pair for the blend-add reduction lowering.  The
@@ -4013,174 +4030,175 @@ r300vk_ieee16_mul_synthesize_shaders(struct r300vk_device *device,
 
 
 
-static bool
+static VkResult
 r300vk_synthesize_compute_shaders(struct r300vk_device *device,
                                   struct r300vk_pipeline *pl)
 {
    if (!pl->admission.admissible)
-      return true;
+      return VK_SUCCESS;
 
    /* CONSTFILL lowers to a framebuffer clear: no vs/fs CSO to synthesize, the
     * dispatch is self-contained.  Report success so the pipeline stays valid. */
    if (pl->const_fill.is_const_fill)
-      return true;
+      return VK_SUCCESS;
    if (pl->identity_map.is_identity_map) {
-      if (!r300vk_identity_map_synthesize_shaders(device, pl))
-         pl->identity_map.is_identity_map = false;
-      return true;
+      VkResult result = r300vk_identity_map_synthesize_shaders(device, pl);
+      if (result != VK_SUCCESS)
+         return result;
+      return VK_SUCCESS;
    }
    if (pl->multilimb_mul.is_multilimb_mul) {
       if (!r300vk_multilimb_synthesize_shaders(device, pl))
          pl->multilimb_mul.is_multilimb_mul = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->cas.is_cas) {
       if (!r300vk_cas_synthesize_shaders(device, pl))
          pl->cas.is_cas = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->log4_pool.is_log4_pool) {
       if (!r300vk_log4_synthesize_shaders(device, pl))
          pl->log4_pool.is_log4_pool = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->binary_map.is_binary_map) {
       if (!r300vk_binary_map_synthesize_shaders(device, pl))
          pl->binary_map.is_binary_map = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->unary_map.is_unary_map) {
       if (!r300vk_unary_map_synthesize_shaders(device, pl))
          pl->unary_map.is_unary_map = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->affine_iota.is_affine_iota) {
       if (!r300vk_affine_iota_synthesize_shaders(device, pl))
          pl->affine_iota.is_affine_iota = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->dp4.is_dp4) {
       if (!r300vk_dp4_synthesize_shaders(device, pl))
          pl->dp4.is_dp4 = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qmul.is_qmul) {
       if (!r300vk_qmul_synthesize_shaders(device, pl))
          pl->qmul.is_qmul = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qdiv.is_qdiv) {
       if (!r300vk_qdiv_synthesize_shaders(device, pl))
          pl->qdiv.is_qdiv = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->mat4vec.is_mat4vec) {
       if (!r300vk_mat4vec_synthesize_shaders(device, pl))
          pl->mat4vec.is_mat4vec = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qfmul.is_qfmul) {
       if (!r300vk_qfmul_synthesize_shaders(device, pl))
          pl->qfmul.is_qfmul = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qrotate.is_qrotate) {
       if (!r300vk_qrotate_synthesize_shaders(device, pl))
          pl->qrotate.is_qrotate = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qconj.is_qconj) {
       if (!r300vk_qconj_synthesize_shaders(device, pl))
          pl->qconj.is_qconj = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qnorm.is_qnorm) {
       if (!r300vk_qnorm_synthesize_shaders(device, pl))
          pl->qnorm.is_qnorm = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qnormalize.is_qnormalize) {
       if (!r300vk_qnormalize_synthesize_shaders(device, pl))
          pl->qnormalize.is_qnormalize = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->omul.is_omul) {
       if (!r300vk_omul_synthesize_shaders(device, pl))
          pl->omul.is_omul = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->oaddsub.is_oaddsub) {
       if (!r300vk_oaddsub_synthesize_shaders(device, pl))
          pl->oaddsub.is_oaddsub = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->oconj.is_oconj) {
       if (!r300vk_oconj_synthesize_shaders(device, pl))
          pl->oconj.is_oconj = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->onorm.is_onorm) {
       if (!r300vk_onorm_synthesize_shaders(device, pl))
          pl->onorm.is_onorm = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->odiv.is_odiv) {
       if (!r300vk_odiv_synthesize_shaders(device, pl))
          pl->odiv.is_odiv = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->otrans.is_otrans) {
       if (!r300vk_otrans_synthesize_shaders(device, pl))
          pl->otrans.is_otrans = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qfmadd.is_qfmadd) {
       if (!r300vk_qfmadd_synthesize_shaders(device, pl))
          pl->qfmadd.is_qfmadd = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->qfmmul.is_qfmmul) {
       if (!r300vk_qfmmul_synthesize_shaders(device, pl))
          pl->qfmmul.is_qfmmul = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->blend_acc_reduction.is_blend_acc_reduction) {
       if (!r300vk_blend_acc_reduction_synthesize_shaders(device, pl))
          pl->blend_acc_reduction.is_blend_acc_reduction = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->zpass_reduction.is_zpass_reduction) {
       if (!r300vk_zpass_reduction_synthesize_shaders(device, pl))
          pl->zpass_reduction.is_zpass_reduction = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->multipass_scan.is_multipass_scan) {
       if (!r300vk_multipass_scan_synthesize_shaders(device, pl))
          pl->multipass_scan.is_multipass_scan = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->predicated_store.is_predicated_store) {
       if (!r300vk_predicated_store_synthesize_shaders(device, pl))
          pl->predicated_store.is_predicated_store = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->multitap_gather.is_multitap_gather) {
       if (!r300vk_multitap_gather_synthesize_shaders(device, pl))
          pl->multitap_gather.is_multitap_gather = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->ieee16_classify.is_ieee16_classify) {
       if (!r300vk_ieee16_classify_synthesize_shaders(device, pl))
          pl->ieee16_classify.is_ieee16_classify = false;
-      return true;
+      return VK_SUCCESS;
    }
    if (pl->ieee16_mul.is_ieee16_mul) {
       if (!r300vk_ieee16_mul_synthesize_shaders(device, pl))
          pl->ieee16_mul.is_ieee16_mul = false;
-      return true;
+      return VK_SUCCESS;
    }
 
-   return true;
+   return VK_SUCCESS;
 }
 
 static VkResult
@@ -4312,7 +4330,12 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->local_size_y = local_size[1];
    pl->local_size_z = local_size[2];
 
-   r300vk_synthesize_compute_shaders(device, pl);
+   VkResult synth_result = r300vk_synthesize_compute_shaders(device, pl);
+   if (synth_result != VK_SUCCESS) {
+      r300vk_DestroyPipeline(r300vk_device_to_handle(device),
+                             r300vk_pipeline_to_handle(pl), pAllocator);
+      return synth_result;
+   }
 
    *out_pipeline = pl;
    return VK_SUCCESS;
