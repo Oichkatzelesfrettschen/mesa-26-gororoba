@@ -348,6 +348,9 @@ struct r300vk_pipeline {
    uint32_t                vertex_stride[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_extent[R300VK_MAX_VERTEX_BINDINGS];
    uint32_t                vertex_binding_mask;
+   /* Subset of vertex_binding_mask whose Vulkan binding inputRate advances per
+    * instance; replay bounds these against firstInstance/instanceCount. */
+   uint32_t                vertex_instance_binding_mask;
 
    /* Pipeline-static viewport/scissor, captured at create time when the
     * matching VK_DYNAMIC_STATE_VIEWPORT/SCISSOR is not enabled.  Static

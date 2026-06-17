@@ -260,6 +260,39 @@ r300vk_indexed_vertex_index_stream_count(
 }
 
 static bool
+r300vk_binding_index_inside(const struct r300vk_pipeline *pl,
+                            const struct pipe_vertex_buffer *vb_cache,
+                            const VkDeviceSize *vb_sizes,
+                            const VkDeviceSize *vb_strides,
+                            uint32_t vb_strides_mask,
+                            uint32_t binding,
+                            uint64_t index)
+{
+   const VkDeviceSize stride64 = (vb_strides_mask & BITFIELD_BIT(binding))
+                                 ? vb_strides[binding]
+                                 : pl->vertex_stride[binding];
+   if (stride64 > UINT32_MAX)
+      return false;
+
+   const uint32_t stride = (uint32_t)stride64;
+   const uint32_t extent = pl->vertex_binding_extent[binding];
+   if (extent == 0 || !vb_cache[binding].buffer.resource)
+      return false;
+
+   const VkDeviceSize offset = vb_cache[binding].buffer_offset;
+   const VkDeviceSize size = vb_sizes[binding];
+   const VkDeviceSize bytes = size > offset ? size - offset : 0;
+   if (bytes < extent)
+      return false;
+
+   if (stride == 0)
+      return true;
+
+   const VkDeviceSize available = 1 + (bytes - extent) / stride;
+   return index < available;
+}
+
+static bool
 r300vk_vertex_index_inside_bindings(const struct r300vk_pipeline *pl,
                                     const struct pipe_vertex_buffer *vb_cache,
                                     const VkDeviceSize *vb_sizes,
@@ -272,32 +305,15 @@ r300vk_vertex_index_inside_bindings(const struct r300vk_pipeline *pl,
    if (vertex_index < 0)
       return false;
 
+   const uint32_t per_vertex_mask =
+      pl->vertex_binding_mask & ~pl->vertex_instance_binding_mask;
    const uint64_t vertex = (uint64_t)vertex_index;
    for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
-      if (!(pl->vertex_binding_mask & BITFIELD_BIT(b)))
+      if (!(per_vertex_mask & BITFIELD_BIT(b)))
          continue;
 
-      const VkDeviceSize stride64 = (vb_strides_mask & BITFIELD_BIT(b))
-                                    ? vb_strides[b] : pl->vertex_stride[b];
-      if (stride64 > UINT32_MAX)
-         return false;
-
-      const uint32_t stride = (uint32_t)stride64;
-      const uint32_t extent = pl->vertex_binding_extent[b];
-      if (extent == 0 || !vb_cache[b].buffer.resource)
-         return false;
-
-      const VkDeviceSize offset = vb_cache[b].buffer_offset;
-      const VkDeviceSize size = vb_sizes[b];
-      const VkDeviceSize bytes = size > offset ? size - offset : 0;
-      if (bytes < extent)
-         return false;
-
-      if (stride == 0)
-         continue;
-
-      const VkDeviceSize vertices = 1 + (bytes - extent) / stride;
-      if (vertex >= vertices)
+      if (!r300vk_binding_index_inside(pl, vb_cache, vb_sizes, vb_strides,
+                                       vb_strides_mask, b, vertex))
          return false;
    }
 
@@ -635,14 +651,22 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
    if (!pl || pl->vertex_binding_mask == 0)
       return vertex_count;
 
+   const uint32_t per_vertex_mask =
+      pl->vertex_binding_mask & ~pl->vertex_instance_binding_mask;
+   if (per_vertex_mask == 0)
+      return vertex_count;
+
    uint32_t max_count = vertex_count;
    for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
-      if (!(pl->vertex_binding_mask & BITFIELD_BIT(b)))
+      if (!(per_vertex_mask & BITFIELD_BIT(b)))
          continue;
 
-      const uint32_t stride = (vb_strides_mask & BITFIELD_BIT(b))
-                              ? (uint32_t)vb_strides[b]
-                              : pl->vertex_stride[b];
+      const VkDeviceSize stride64 = (vb_strides_mask & BITFIELD_BIT(b))
+                                    ? vb_strides[b] : pl->vertex_stride[b];
+      if (stride64 > UINT32_MAX)
+         return 0;
+
+      const uint32_t stride = (uint32_t)stride64;
       const uint32_t extent = pl->vertex_binding_extent[b];
       if (extent == 0 || !vb_cache[b].buffer.resource)
          return 0;
@@ -663,6 +687,47 @@ r300vk_robust_vertex_count(const struct r300vk_pipeline *pl,
       const VkDeviceSize available_vertices = vertices - first_vertex;
       if (available_vertices < max_count)
          max_count = (uint32_t)available_vertices;
+   }
+
+   return max_count;
+}
+
+static uint32_t
+r300vk_robust_instance_count(const struct r300vk_pipeline *pl,
+                             const struct pipe_vertex_buffer *vb_cache,
+                             const VkDeviceSize *vb_sizes,
+                             const VkDeviceSize *vb_strides,
+                             uint32_t vb_strides_mask,
+                             uint32_t first_instance,
+                             uint32_t instance_count)
+{
+   if (!pl || pl->vertex_instance_binding_mask == 0)
+      return instance_count;
+
+   uint32_t max_count = instance_count;
+   for (uint32_t b = 0; b < R300VK_MAX_VERTEX_BINDINGS; b++) {
+      if (!(pl->vertex_instance_binding_mask & BITFIELD_BIT(b)))
+         continue;
+
+      const uint64_t first = first_instance;
+      if (!r300vk_binding_index_inside(pl, vb_cache, vb_sizes, vb_strides,
+                                       vb_strides_mask, b, first))
+         return 0;
+
+      const VkDeviceSize stride64 = (vb_strides_mask & BITFIELD_BIT(b))
+                                    ? vb_strides[b] : pl->vertex_stride[b];
+      const uint32_t stride = (uint32_t)stride64;
+      if (stride == 0)
+         continue;
+
+      const uint32_t extent = pl->vertex_binding_extent[b];
+      const VkDeviceSize offset = vb_cache[b].buffer_offset;
+      const VkDeviceSize size = vb_sizes[b];
+      const VkDeviceSize bytes = size > offset ? size - offset : 0;
+      const VkDeviceSize available = 1 + (bytes - extent) / stride;
+      const VkDeviceSize remaining = available - first;
+      if (remaining < max_count)
+         max_count = (uint32_t)remaining;
    }
 
    return max_count;
@@ -1921,6 +1986,11 @@ r300vk_replay_draw(struct r300vk_device *device,
       pipe->set_scissor_states(pipe, 0, 1, &sc);
    }
 
+   const uint32_t robust_instances =
+      r300vk_robust_instance_count(bound_pipeline, vb_cache, vb_sizes,
+                                   vb_strides, vb_strides_mask,
+                                   draw_first_inst, draw_instances);
+
    struct pipe_vertex_buffer draw_vb_cache[R300VK_MAX_VERTEX_BINDINGS];
    memcpy(draw_vb_cache, vb_cache, sizeof(draw_vb_cache));
    uint32_t draw_vb_max_used = vb_max_used;
@@ -1946,7 +2016,7 @@ r300vk_replay_draw(struct r300vk_device *device,
          r300vk_bind_synthetic_index_stream(
             device, pipe, draw_vb_cache,
             bound_pipeline->instance_id_vb_binding,
-            draw_first_inst, draw_instances, transient_vbs);
+            draw_first_inst, robust_instances, transient_vbs);
       if (synthetic_streams_ready) {
          if (bound_pipeline->instance_id_vb_binding + 1u >
              draw_vb_max_used)
@@ -1958,7 +2028,7 @@ r300vk_replay_draw(struct r300vk_device *device,
    struct pipe_draw_info info;
    memset(&info, 0, sizeof(info));
    info.mode           = vk_topology_to_mesa(draw_topology);
-   info.instance_count = draw_instances;
+   info.instance_count = robust_instances;
    info.start_instance = draw_first_inst;
    struct pipe_draw_start_count_bias draw = { .index_bias = 0 };
 

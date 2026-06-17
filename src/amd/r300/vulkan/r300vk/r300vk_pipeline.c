@@ -1317,11 +1317,15 @@ r300vk_populate_vertex_element(struct r300vk_device *device,
                        "matching binding description", attr->binding);
 
    elem->src_stride = binding_desc->stride;
+   elem->instance_divisor =
+      binding_desc->inputRate == VK_VERTEX_INPUT_RATE_INSTANCE ? 1 : 0;
    pl->vertex_stride[attr->binding] = binding_desc->stride;
    pl->vertex_binding_extent[attr->binding] =
       MAX2(pl->vertex_binding_extent[attr->binding],
            attr->offset + attr_size);
    pl->vertex_binding_mask |= BITFIELD_BIT(attr->binding);
+   if (binding_desc->inputRate == VK_VERTEX_INPUT_RATE_INSTANCE)
+      pl->vertex_instance_binding_mask |= BITFIELD_BIT(attr->binding);
 
    return VK_SUCCESS;
 }
