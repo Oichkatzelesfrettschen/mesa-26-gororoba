@@ -2,7 +2,8 @@
 
 Canonical checklist for "clean", "clean and merge", "prune", or "assess for
 deletion" requests.  `AGENTS.md` links here; apply every applicable condition
-before any deletion, and never treat a repo as disposable until they hold.
+before any deletion, and never treat a repo as disposable until all applicable
+conditions hold.
 
 A repository is deletion-ready only when all applicable conditions are true:
 

@@ -55,7 +55,7 @@ The following rules are enforceable. Later sections may explain mechanism or rat
 - MUST keep C++ backends at C++11 or newer, never below the configured standard.
 - MUST treat C11 and C++11 as floors, not ceilings.
 - MUST NOT mix C and C++ in one translation unit.
-- MUST write Python tooling for CPython 3.12 through 3.14+: nothing removed before 3.12, nothing that breaks on 3.14.
+- MUST write Python tooling for CPython 3.12 through 3.14 inclusive. Avoid APIs deprecated for removal after 3.14 where practical.
 - MUST write shell scripts as POSIX `sh` unless a script explicitly requires and declares `bash`.
 
 ### Build orchestration
@@ -411,11 +411,14 @@ Silicon evidence and conformance work use `buildtype=release`. `debugoptimized` 
 
 Driver RCA and shader disassembly use a separate `buildtype=debug` build at its own prefix.
 
-Run probes against one build by pointing the loader at that build prefix:
+Run probes against one build by pointing the loader at that build prefix and
+Meson-configured library directory:
 
 ```bash
-LIBGL_DRIVERS_PATH=<prefix>/lib/dri \
-LD_LIBRARY_PATH=<prefix>/lib \
+mesa_prefix=$(meson introspect <builddir> --buildoptions | jq -r '.[] | select(.name == "prefix").value')
+mesa_libdir=$(meson introspect <builddir> --buildoptions | jq -r '.[] | select(.name == "libdir").value')
+LIBGL_DRIVERS_PATH="$mesa_prefix/$mesa_libdir/dri" \
+LD_LIBRARY_PATH="$mesa_prefix/$mesa_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
   ./probe_binary
 ```
 
@@ -448,14 +451,26 @@ distcc/cache policy, host CFLAGS, `-fno-emulated-tls`, and centralized
 
 ### Build directories and install prefixes
 
-Each build directory maps to one install prefix. Do not share object files or install paths between directories.
+Each build directory maps to one install prefix. Do not share object files or
+install paths between directories.
 
-- `builddir`: full-stack debug daily driver. Prefix: `/opt/local/mesa-26-gororoba-debug`. Options: `-Dbuildtype=debugoptimized -Dgallium-drivers=r300,r600,softpipe -Dvulkan-drivers=amd_terascale -Dllvm=enabled`.
-- `builddir-release`: silicon evidence and conformance. Prefix: `/opt/local/mesa-26-gororoba`. Options: `-Dbuildtype=release` plus the same driver set.
-- `builddir-r300vk-gallium`: r300vk Gallium-backed ICD for vostro/dev. Prefix: `/opt/local/mesa-26-gororoba-debug`. Options: `-Dbuildtype=debugoptimized -Dr300vk-gallium-backend=true -Dgallium-drivers=r300 -Dvulkan-drivers=amd_r300 -Dllvm=enabled`.
-- `builddir-r300tools`: r300 analysis and clangd index, no Vulkan. Prefix: `/opt/local/mesa-26-gororoba-debug`. Options: `-Dbuildtype=debugoptimized -Dgallium-drivers=r300 -Dllvm=enabled`.
+The Makefile derives the canonical build directory from the profile:
+`build/mesa-<profile>/`. A plain `make install PROFILE=<profile>` installs to
+the isolated default prefix `/opt/local/mesa-<profile>`, which keeps profile
+artifacts separate for review, bisect, and evidence work.
 
-Debug-class directories install to `/opt/local/mesa-26-gororoba-debug`. Release builds install to `/opt/local/mesa-26-gororoba`. Neither prefix is inside the repository tree. Do not use in-repo `install/` directories or suffixed variants such as `install-gallium`; they pollute the worktree and require separate `LIBGL_DRIVERS_PATH` or `VK_ICD_FILENAMES` overrides. Project builds MUST NOT disturb system Mesa under `/usr/lib/`.
+The shared active prefixes are only for intentional operator-selected installs:
+
+- release active tree: `/opt/local/mesa-26-gororoba`;
+- debug active tree: `/opt/local/mesa-26-gororoba-debug`.
+
+Use the `install-<profile>` targets, or pass `PREFIX=` explicitly, only when the
+goal is to replace one of those active trees. Do not install unrelated profile
+builds into the same active prefix during evidence collection. Neither prefix is
+inside the repository tree. Do not use in-repo `install/` directories or
+suffixed variants such as `install-gallium`; they pollute the worktree and
+require separate `LIBGL_DRIVERS_PATH` or `VK_ICD_FILENAMES` overrides. Project
+builds MUST NOT disturb system Mesa under `/usr/lib/`.
 
 ### Clean and reconfigure
 
@@ -975,20 +990,9 @@ When a reviewer finds a defect, fix the class, not only the instance. Add the ru
 
 ## Strict clean and deletion readiness
 
-When asked to clean, clean-and-merge, prune, or assess a repository for deletion, apply `docs/strict-clean-definition.md` before deleting anything.
-
-A repository is deletion-ready only when all applicable conditions hold:
-
-- working tree is clean;
-- checkout is on the synced primary branch;
-- primary branch has no unreviewed ahead or behind commits;
-- local and remote owned branches are reviewed and reconciled;
-- unique branch content is represented on primary or explicitly discardable;
-- owned PRs are merged or explicitly closed;
-- linked, hidden, and nested worktrees are inventoried;
-- unique worktree content is reconciled;
-- meaningful build or validation gate passed, with warnings as errors where supported, or absence is recorded;
-- removal uses reversible trash movement unless permanent deletion is explicitly requested.
+When asked to clean, clean-and-merge, prune, or assess a repository for
+deletion, apply `docs/strict-clean-definition.md` before deleting anything. That
+file is the authoritative checklist; this section is only the pointer to it.
 
 ## Multi-CLI loaders
 
