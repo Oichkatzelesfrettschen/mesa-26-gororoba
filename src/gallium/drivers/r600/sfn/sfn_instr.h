@@ -241,18 +241,18 @@ public:
     * rejects a candidate. BlockScheduler::schedule_alu clears the signal at
     * the top of each scheduling attempt, so it cannot leak into a later ALU
     * group fill. */
-   bool readport_exhaustion_failed() const { return m_readport_exhaustion_failed; }
-   void mark_readport_exhaustion_failed() { m_readport_exhaustion_failed = true; }
-   void clear_readport_exhaustion_failed() { m_readport_exhaustion_failed = false; }
+   bool local_group_constraint_failed() const { return m_local_group_constraint_failed; }
+   void mark_local_group_constraint_failed() { m_local_group_constraint_failed = true; }
+   void clear_local_group_constraint_failed() { m_local_group_constraint_failed = false; }
 
    KCacheState kcache_snapshot() const { return m_kcache; }
    void kcache_rollback(const KCacheState& s) {
       m_kcache = s;
       m_kcache_alloc_failed = false;
       m_kcache_preflight_failed = false;
-      /* m_readport_exhaustion_failed is scoped by schedule_alu, not by KCACHE
-       * rollback, so speculative caller rollbacks cannot erase the signal
-       * before the group-fill failure handler can split the clause. */
+      /* m_local_group_constraint_failed is scoped by schedule_alu, not by
+       * KCACHE rollback, so speculative caller rollbacks cannot erase the
+       * signal before the group-fill failure handler can split the clause. */
    }
 
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
@@ -285,7 +285,7 @@ private:
    std::array<KCacheLine, 4> m_kcache;
    bool m_kcache_alloc_failed{false};
    bool m_kcache_preflight_failed{false};
-   bool m_readport_exhaustion_failed{false};
+   bool m_local_group_constraint_failed{false};
 
    Instr *m_last_lds_instr{nullptr};
 

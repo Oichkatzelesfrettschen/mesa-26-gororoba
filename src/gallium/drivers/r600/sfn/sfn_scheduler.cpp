@@ -872,7 +872,7 @@ bool
 BlockScheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
 {
    bool scheduled = false;
-   m_current_block->clear_readport_exhaustion_failed();
+   m_current_block->clear_local_group_constraint_failed();
    auto alu_ctx = prepare_schedule_alu(out_blocks);
    AluGroup *group = schedule_prebuilt_alu_group_first(out_blocks, scheduled, alu_ctx);
 
@@ -976,14 +976,14 @@ BlockScheduler::handle_alu_group_fill_failure(Shader::ShaderBlocks& out_blocks,
                                               const AluScheduleContext& alu_ctx)
 {
    if (alu_ctx.had_kcache_failure_in_fill ||
-       m_current_block->readport_exhaustion_failed()) {
-      const bool readport_failed = m_current_block->readport_exhaustion_failed();
+       m_current_block->local_group_constraint_failed()) {
+      const bool local_group_failed = m_current_block->local_group_constraint_failed();
       const bool preflight_failed = m_current_block->kcache_preflight_failed();
-      const char *failure = readport_failed
-                               ? "readport exhaustion"
+      const char *failure = local_group_failed
+                               ? "local group constraint"
                                : preflight_failed
-                                  ? "KCACHE preflight failed"
-                                  : "KCACHE reservation failed";
+                                    ? "KCACHE preflight failed"
+                                    : "KCACHE reservation failed";
 
       /* LDS read groups should not lead to impossible kcache constellations. */
       assert(!m_current_block->lds_group_active());
@@ -1165,13 +1165,11 @@ BlockScheduler::finalize_schedule_alu_group(Shader::ShaderBlocks& out_blocks,
    }
    group.update_readport_reserver();
 
-   /* A partial group can schedule one slot, then reject a later vector
-    * candidate for a local group constraint.  The fill loop returns the
-    * scheduled group before handle_alu_group_fill_failure can split the
-    * clause, so split here after committing the group to the old block and
-    * recording its readport reservation.  The next schedule_alu attempt then
-    * starts with fresh per-clause readport accounting. */
-   if (m_current_block->readport_exhaustion_failed() &&
+   /* A partial group can commit one slot and then reject a later vector
+    * candidate for a local group constraint. A CF_ALU boundary after the
+    * committed group resets per-clause readport accounting before the
+    * remaining candidates are retried. */
+   if (m_current_block->local_group_constraint_failed() &&
        !m_current_block->lds_group_active() &&
        expected_ar_uses == 0) {
       start_new_block(out_blocks, Block::alu);
@@ -1456,7 +1454,7 @@ BlockScheduler::try_schedule_vec_candidate(AluGroup& group,
        * local group rejection. */
       if (!m_current_block->lds_group_active() &&
           m_current_block->expected_ar_uses() == 0) {
-         m_current_block->mark_readport_exhaustion_failed();
+         m_current_block->mark_local_group_constraint_failed();
       }
       sfn_log << SfnLog::schedule << " failed (local group constraint)\n";
       ++it;
