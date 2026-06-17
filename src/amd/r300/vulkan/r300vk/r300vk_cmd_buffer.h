@@ -278,8 +278,9 @@ struct r300vk_cmd_copy_buffer {
 };
 
 /* One vkCmdUpdateBuffer.  The inline source bytes are caller-owned only for the
- * call, so the recorder copies them into a malloc'd block (data); the cmd buffer
- * frees it at reset and destroy because the buffer may be submitted repeatedly. */
+ * call, so the recorder copies them into command-pool storage (data); the cmd
+ * buffer frees it at reset and destroy because the buffer may be submitted
+ * repeatedly. */
 struct r300vk_cmd_update_buffer {
    struct r300vk_buffer *buffer;
    VkDeviceSize          offset;
