@@ -417,10 +417,11 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
         }
     }
 
-    /* Stage 1 = 47 dwords + stage 2 (barrier) = 6, minus the 16-dword
+    /* Stage 1 = 47 dwords + stage 2 (barrier) = 8, minus the 16-dword
      * triangle-vs-two-float4-points geometry delta, plus num_vertices*8 embedded
-     * vertex dwords and the per-viewport-constant wpos override. */
-    BEGIN_CS(53 + r2vb_vp_override_dwords + (int)num_vertices * 8 - 16);
+     * vertex dwords and the per-viewport-constant wpos override.  The barrier is
+     * 8 (not 6) dwords because it includes the VAP_PVS_STATE_FLUSH engine sync. */
+    BEGIN_CS(55 + r2vb_vp_override_dwords + (int)num_vertices * 8 - 16);
 
     OUT_CS_REG(R300_ZB_CNTL, 0);
     OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
@@ -505,6 +506,17 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT, r2vb_zb);
     OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT, r2vb_rb);
     OUT_CS_REG(RADEON_WAIT_UNTIL, r2vb_wait);
+    /* Sync the VAP/vertex-fetch engine.  The cache flushes above push the
+     * producer's colour write out of the RB3D/Z caches to memory, but they do
+     * NOT touch the vertex cache: the R2VB re-ingest fetches this same BO as a
+     * vertex stream, and the VAP can return STALE vertices the vertex cache kept
+     * from an earlier fetch of the recycled GART page.  Observed as a
+     * non-deterministic stale read -- the producer's transform is correct in the
+     * BO (XFORM_VERIFY reads it back exact), yet ~50% of re-ingest draws
+     * rasterize the previous draw's vertices.  Writing zero to
+     * VAP_PVS_STATE_FLUSH_REG synchronizes the engine and clears that stale state
+     * before the re-ingest's LOAD_VBPNTR, making the route deterministic. */
+    OUT_CS_REG(R300_VAP_PVS_STATE_FLUSH_REG, 0x0);
 
     END_CS;
 }
