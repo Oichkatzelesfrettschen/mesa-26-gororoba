@@ -1040,7 +1040,7 @@ r300vk_compile_shader(struct r300vk_device *device,
        * A subpass input combined with an app UBO or push constants was rejected
        * above, so this is the only block-0 UBO. */
       r300vk_declare_block0_ubo(nir, 16);
-      /* r300vk_bind_input_attachment binds device->identity_map_sampler_cso
+      /* r300vk_bind_input_attachment binds device->identity_map_cso.sampler
        * (NEAREST, CLAMP_TO_EDGE) as the input-attachment sampler at draw time.
        * That CSO is created lazily and otherwise only by the compute identity-map
        * paths, so a graphics-only input-attachment pipeline would bind a NULL
@@ -2059,16 +2059,16 @@ r300vk_device_init_identity_map_state_locked(struct r300vk_device *device)
    if (!pipe)
       return false;
 
-   if (!device->identity_map_blend_cso) {
+   if (!device->identity_map_cso.blend) {
       struct pipe_blend_state blend = {0};
       blend.rt[0].colormask = PIPE_MASK_RGBA;
-      device->identity_map_blend_cso =
+      device->identity_map_cso.blend =
          pipe->create_blend_state(pipe, &blend);
-      if (!device->identity_map_blend_cso)
+      if (!device->identity_map_cso.blend)
          return false;
    }
 
-   if (!device->identity_map_rasterizer_cso) {
+   if (!device->identity_map_cso.rasterizer) {
       struct pipe_rasterizer_state raster = {0};
       raster.cull_face       = PIPE_FACE_NONE;
       raster.fill_front      = PIPE_POLYGON_MODE_FILL;
@@ -2079,22 +2079,22 @@ r300vk_device_init_identity_map_state_locked(struct r300vk_device *device)
       raster.depth_clip_far  = 1;
       raster.half_pixel_center = 1;
       raster.bottom_edge_rule  = 1;
-      device->identity_map_rasterizer_cso =
+      device->identity_map_cso.rasterizer =
          pipe->create_rasterizer_state(pipe, &raster);
-      if (!device->identity_map_rasterizer_cso)
+      if (!device->identity_map_cso.rasterizer)
          return false;
    }
 
-   if (!device->identity_map_dsa_cso) {
+   if (!device->identity_map_cso.dsa) {
       struct pipe_depth_stencil_alpha_state dsa = {0};
       /* All zero: depth test off, stencil off, alpha test off. */
-      device->identity_map_dsa_cso =
+      device->identity_map_cso.dsa =
          pipe->create_depth_stencil_alpha_state(pipe, &dsa);
-      if (!device->identity_map_dsa_cso)
+      if (!device->identity_map_cso.dsa)
          return false;
    }
 
-   if (!device->identity_map_sampler_cso) {
+   if (!device->identity_map_cso.sampler) {
       struct pipe_sampler_state samp = {0};
       samp.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
       samp.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
@@ -2105,9 +2105,9 @@ r300vk_device_init_identity_map_state_locked(struct r300vk_device *device)
       samp.max_lod  = 0.0f;
       /* unnormalized_coords stays 0 (default = normalized [0,1] coords);
        * the fullscreen-quad texcoords land in that range exactly. */
-      device->identity_map_sampler_cso =
+      device->identity_map_cso.sampler =
          pipe->create_sampler_state(pipe, &samp);
-      if (!device->identity_map_sampler_cso)
+      if (!device->identity_map_cso.sampler)
          return false;
    }
 
