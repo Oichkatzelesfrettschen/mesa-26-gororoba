@@ -30,6 +30,11 @@
 #define			STRMOUT_OFFSET_FROM_MEM			2
 #define			STRMOUT_OFFSET_NONE			3
 #define		STRMOUT_SELECT_BUFFER(x)	(((unsigned)(x) & 0x3) << 8)
+#define PKT3_COPY_DW                           0x3B
+#define		COPY_DW_SRC_IS_REG		(0 << 0)
+#define		COPY_DW_SRC_IS_MEM		(1 << 0)
+#define		COPY_DW_DST_IS_REG		(0 << 1)
+#define		COPY_DW_DST_IS_MEM		(1 << 1)
 #define PKT3_WAIT_REG_MEM                      0x3C
 #define		WAIT_REG_MEM_EQUAL		3
 #define		WAIT_REG_MEM_GEQUAL		5

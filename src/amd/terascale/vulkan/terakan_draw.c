@@ -33,6 +33,7 @@
 #include "terakan_pipeline_graphics.h"
 
 #include "amd/terascale/common/terascale_evergreend.h"
+#include "amd/terascale/common/terascale_wddm.h"
 #include "gallium/drivers/r600/r600d_common.h"
 #include "util/macros.h"
 #include "util/u_debug.h"
@@ -266,7 +267,7 @@ terakan_before_draw(struct terakan_gfx_command_writer * const command_writer)
 
    /* Bind robustness metadata to KCACHE bank 14 if the current graphics
     * pipeline emitted any shader stages that need it (write guards or
-    * robustness reads).  Evergreen ISA §4.6.4: banks >= 14 are NOT
+    * robustness reads).  Evergreen ISA section 4.6.4: banks >= 14 are NOT
     * dynamically indexed, so a single binding serves all stages. */
    if (command_writer->graphics_kcache_needed &
        ((uint16_t)1 << TERAKAN_KCACHE_BUFFER_ROBUSTNESS_METADATA)) {
@@ -475,12 +476,12 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
  *
  * CRITICAL: A SURFACE_SYNC barrier must be emitted between any compute shader that
  * populates the indirect buffer and the indirect draw/dispatch that consumes it.
- * Without this, the CP may read stale cache data → GPU hang with garbage parameters.
+ * Without this, the CP may read stale cache data, causing a GPU hang with garbage parameters.
  *
- * Barrier flags for compute → indirect handover:
- *   TC_ACTION_ENA (flush texture cache — compute UAV writes go through TC)
+ * Barrier flags for compute to indirect handover:
+ *   TC_ACTION_ENA (flush texture cache - compute UAV writes go through TC)
  *   SH_ACTION_ENA (flush shader export cache)
- *   VC_ACTION_ENA (invalidate vertex cache — CP reads indirect params via VC)
+ *   VC_ACTION_ENA (invalidate vertex cache - CP reads indirect params via VC)
  */
 
 /* Emit drawCount PKT3_DRAW_{,INDEX_}INDIRECT packets against an indirect
@@ -495,6 +496,31 @@ terakan_CmdDrawIndexed(VkCommandBuffer const commandBuffer, uint32_t const index
  * VkDrawIndexedIndirectCommand layout (20 bytes):
  *   uint32_t indexCount, instanceCount, firstIndex, vertexOffset, firstInstance
  */
+static uint32_t *
+terakan_emit_copy_dw_mem_to_register(struct terakan_gfx_command_writer * const command_writer,
+                                     uint32_t * packet, struct terakan_bo * const bo,
+                                     uint64_t const source_va, uint32_t const dst_register)
+{
+   *packet++ = PKT3(PKT3_COPY_DW, 4, 0);
+   *packet++ = COPY_DW_SRC_IS_MEM | COPY_DW_DST_IS_REG;
+   uint32_t const * const packet_addr_lo = packet;
+   *packet++ = (uint32_t)source_va;
+   uint32_t const * const packet_addr_hi = packet;
+   *packet++ = (uint32_t)((source_va >> 32) & 0xFF);
+   *packet++ = dst_register >> 2;
+   *packet++ = 0;
+
+   /* COPY_DW uses the same 40-bit memory source operand shape as CP DMA. */
+   terakan_gfx_command_writer_add_relocation_for_40_bits(
+      command_writer, &packet, packet_addr_lo, packet_addr_hi,
+      TERASCALE_WDDM_PATCH_IDS_CP_DMA_SRC_LO, TERASCALE_WDDM_PATCH_IDS_CP_DMA_SRC_HI,
+      terakan_bo_reference_writer_add_reference(&command_writer->base.bo_reference_writer,
+                                                bo, true, false,
+                                                TERAKAN_BO_PRIORITY_DRAW_INDIRECT));
+
+   return packet;
+}
+
 static void
 terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const command_writer,
                                  uint64_t const buffer_offset,
@@ -514,20 +540,11 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
     * buffer (Evergreen/Northern Islands 3D register reference
     * R_008970_VGT_INDEX_TYPE, PACKET3_DRAW_INDIRECT DW layout).  It does
     * NOT auto-load firstVertex into VGT_INDX_OFFSET (R_028408) or
-    * firstInstance into SQ_VTX_START_INST_LOC (R_03CFF4).  Read both
-    * fields from the CPU-mapped BO per-draw and emit the context/control
-    * register writes before each DRAW packet.
-    *
-    * CPU mapping is safe on PALM/Wrestler unified-memory APUs where all
-    * device memory is system RAM.  This approach matches r600g's
-    * r600_buffer_map_sync_with_rings + lds_constant_buffer.vertexid_base
-    * pattern (r600_state_common.c).  Compute-driven indirect draws
-    * (VkDrawIndirectCommand filled by a compute dispatch) are a separate
-    * unresolved failure and are not the target of this read. */
-   uint8_t const * const bo_map = (uint8_t const *)terakan_bo_map(bo);
-
-   uint32_t last_vertex_offset   = command_writer->hw_state_draw.vgt_index_offset;
-   uint32_t last_instance_offset = command_writer->hw_state_draw.sq_vtx_start_inst_loc;
+    * firstInstance into SQ_VTX_START_INST_LOC (R_03CFF4).  COPY_DW loads
+    * the two register values from the indirect BO at execution time so
+    * compute, transfer, or host writes after command recording are visible
+    * to the draw when the Vulkan synchronization chain makes them visible
+    * to the command processor. */
 
    for (uint32_t i = 0; i < drawCount; i++) {
       uint64_t const draw_data_offset = buffer_offset + (uint64_t)i * stride;
@@ -542,45 +559,33 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
          continue;
       }
 
-      /* Per-draw vertex/instance offset from the indirect buffer.
-       * VkDrawIndirectCommand[2] = firstVertex; [3] = firstInstance.
-       * VkDrawIndexedIndirectCommand[3] = vertexOffset; [4] = firstInstance. */
-      uint32_t vertex_offset   = 0;
-      uint32_t instance_offset = 0;
-      if (likely(bo_map != NULL)) {
-         uint32_t const * const cmd = (uint32_t const *)(bo_map + draw_data_offset);
-         vertex_offset   = cmd[indexed ? 3u : 2u];
-         instance_offset = cmd[indexed ? 4u : 3u];
-      }
+      uint64_t const vertex_offset_field_offset =
+         draw_data_offset + sizeof(uint32_t) * (indexed ? 3u : 2u);
+      uint64_t const instance_offset_field_offset =
+         draw_data_offset + sizeof(uint32_t) * (indexed ? 4u : 3u);
 
-      /* IB layout per draw (13 dwords):
-       *   SET_CONTEXT_REG VGT_INDX_OFFSET   : 3 dwords
-       *   SET_CTL_CONST SQ_VTX_START_INST   : 3 dwords
-       *   SET_BASE (+ reloc NOP inline)      : 4 dwords + 2 reloc dwords
-       *   DRAW_*_INDIRECT                   : 3 dwords
+      /* PM4 payload per draw before relocation records (19 dwords):
+       *   COPY_DW indirect vertex offset -> VGT_INDX_OFFSET     : 6 dwords
+       *   COPY_DW indirect instance offset -> SQ_VTX_START_INST : 6 dwords
+       *   SET_BASE                                              : 4 dwords
+       *   DRAW_*_INDIRECT                                       : 3 dwords
        *
        * PKT3 count field = (total packet DWs) - 2.
        * Reloc dwords are allocated by emit_with_bo via
        * relocation_for_40_bits_count; they are NOT included in
        * packet_dwords. */
       uint32_t * packet = terakan_gfx_command_writer_emit_with_bo(
-         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 3 + 3 + 4 + 3, 1, 0, 1);
+         command_writer, TERAKAN_GFX_COMMAND_WRITER_EMIT_CONTENTS_DRAW, 6 + 6 + 4 + 3, 1, 0, 3);
       if (unlikely(packet == NULL)) {
          return;
       }
 
-      /* VGT_INDX_OFFSET: base vertex index added to the vertex sequence
-       * number before buffer fetch and gl_VertexIndex.
-       * Evergreen 3D registers R_028408_VGT_INDX_OFFSET. */
-      *packet++ = PKT3(PKT3_SET_CONTEXT_REG, 1, 0);
-      *packet++ = TERAKAN_CONTEXT_REG_OFFSET(R_028408_VGT_INDX_OFFSET);
-      *packet++ = vertex_offset;
-
-      /* SQ_VTX_START_INST_LOC: firstInstance base for instance fetching.
-       * Evergreen 3D registers R_03CFF4_SQ_VTX_START_INST_LOC. */
-      *packet++ = PKT3(PKT3_SET_CTL_CONST, 1, 0);
-      *packet++ = TERAKAN_CTL_CONST_OFFSET(R_03CFF4_SQ_VTX_START_INST_LOC);
-      *packet++ = instance_offset;
+      packet = terakan_emit_copy_dw_mem_to_register(
+         command_writer, packet, bo, bo->va + vertex_offset_field_offset,
+         R_028408_VGT_INDX_OFFSET);
+      packet = terakan_emit_copy_dw_mem_to_register(
+         command_writer, packet, bo, bo->va + instance_offset_field_offset,
+         R_03CFF4_SQ_VTX_START_INST_LOC);
 
       *packet++ = PKT3(EG_PKT3_SET_BASE, 2, 0);
       *packet++ = 1; /* BASE_INDEX = DX11 Draw_Index_Indirect Patch Table */
@@ -605,22 +610,17 @@ terakan_emit_draw_indirect_batch(struct terakan_gfx_command_writer * const comma
       *packet++ = S_0287F0_SOURCE_SELECT(source_select);
 
       terakan_gfx_command_writer_emit_done(command_writer, packet);
-
-      last_vertex_offset   = vertex_offset;
-      last_instance_offset = instance_offset;
    }
 
-   /* Synchronise hw_state_draw with the register values left in hardware
-    * after the last draw.  The next direct draw will skip re-emitting
-    * VGT_INDX_OFFSET and SQ_VTX_START_INST_LOC only when they match; an
-    * incorrect cached value here would silently produce wrong geometry. */
-   command_writer->hw_state_draw.vgt_index_offset = last_vertex_offset;
-   bool const sq_inst_modified =
-      command_writer->hw_state_draw.sq_vtx_start_inst_loc != last_instance_offset;
-   command_writer->hw_state_draw.sq_vtx_start_inst_loc = last_instance_offset;
+   /* COPY_DW makes the CP write these registers from the indirect BO.
+    * Re-emit the tracked CPU-side values before the next draw that relies
+    * on terakan_hw_state_draw rather than this indirect-load sequence. */
+   terakan_hw_state_draw_written(&command_writer->hw_state_draw,
+                                 TERAKAN_HW_STATE_DRAW_INDEX_VGT_INDEX_OFFSET,
+                                 true);
    terakan_hw_state_draw_written(&command_writer->hw_state_draw,
                                  TERAKAN_HW_STATE_DRAW_INDEX_SQ_VTX_START_INST_LOC,
-                                 sq_inst_modified);
+                                 true);
 }
 
 /* --- vkCmdDrawIndirect --- */
