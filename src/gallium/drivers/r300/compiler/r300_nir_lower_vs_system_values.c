@@ -100,21 +100,20 @@ r300_nir_vs_reads_system_values(nir_shader *s, bool *reads_vertex_id,
    if (s->info.stage != MESA_SHADER_VERTEX)
       return;
 
-   nir_foreach_function_impl (impl, s) {
-      nir_foreach_block (block, impl) {
-         nir_foreach_instr (instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-            switch (vs_sysval_of_intrinsic(nir_instr_as_intrinsic(instr))) {
-            case SYSTEM_VALUE_VERTEX_ID:
-               *reads_vertex_id = true;
-               break;
-            case SYSTEM_VALUE_INSTANCE_ID:
-               *reads_instance_id = true;
-               break;
-            default:
-               break;
-            }
+   nir_function_impl *entrypoint = nir_shader_get_entrypoint(s);
+   nir_foreach_block (block, entrypoint) {
+      nir_foreach_instr (instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         switch (vs_sysval_of_intrinsic(nir_instr_as_intrinsic(instr))) {
+         case SYSTEM_VALUE_VERTEX_ID:
+            *reads_vertex_id = true;
+            break;
+         case SYSTEM_VALUE_INSTANCE_ID:
+            *reads_instance_id = true;
+            break;
+         default:
+            break;
          }
       }
    }
