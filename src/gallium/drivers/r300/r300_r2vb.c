@@ -1832,6 +1832,42 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         model[i][3] = comps > 3 ? v[3] : 1.0f;
     }
 
+    /* No-submit diagnostic (R300_R2VB_DIAG): dump the matrix this draw reads as
+     * cols[] and re-stage both producer targets on the CPU (R300_R2VB_VS_DUMP
+     * prints the NIR), then return false so gallivm renders the frame.  Every
+     * fact that discriminates a producer-correctness bug is computed before any
+     * CS submit, so this path emits no GPU work and cannot wedge the part. */
+    if (getenv("R300_R2VB_DIAG")) {
+        fprintf(stderr, "r2vb_diag swtcl_vs_const0_size=%u cols=", r300->swtcl_vs_const0_size);
+        for (int i = 0; i < 16; i++)
+            fprintf(stderr, "%.4f%s", cols[i], i == 15 ? "\n" : ",");
+        int dv = r300_r2vb_first_computed_varying(r300_vs(r300)->state.ir.nir);
+        fprintf(stderr, "r2vb_diag first_computed_varying=%d\n", dv);
+        void *pf = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
+                                              VARYING_SLOT_POS);
+        if (pf) {
+            /* Capture the derived VAP/RS state the producer would inherit for this
+             * bound VS, up to (not including) emit_producer -- no CS submit.  The
+             * field that differs between the working 2-output VS and the broken
+             * 3-output VS is the producer's fix target. */
+            void *saved_fs = r300->fs.state;
+            r300->context.bind_fs_state(&r300->context, pf);
+            r300_update_derived_state(r300);
+            r300_r2vb_dump_xform_routing(r300);
+            r300->context.bind_fs_state(&r300->context, saved_fs);
+            r300_update_derived_state(r300);
+            r300->context.delete_fs_state(&r300->context, pf);
+        }
+        if (dv >= 0) {
+            void *vf = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
+                                                  (gl_varying_slot)dv);
+            if (vf)
+                r300->context.delete_fs_state(&r300->context, vf);
+        }
+        free(model);
+        return false;
+    }
+
     struct pipe_resource *clip = r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
     if (!clip) {
         free(model);
@@ -1943,9 +1979,15 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * pass uses, fed the same velem[0] attribute.  R300_R2VB_VARYING_VERIFY=<k>
      * reads the BO back against model*k -- an FP24-exact input through an exact op
      * (k a power of two) stays bit-exact, so the tight readback, not the 8-bit
-     * colour, is the proof.  The re-ingest below still feeds varyings from the
-     * application buffers, so this pass does not yet correct the framebuffer
-     * colour; it isolates the production + oracle from the re-ingest rewiring. */
+     * colour, is the proof.
+     *
+     * When a computed varying is produced, RETURN before the re-ingest below.
+     * That re-ingest is the unmodified passthrough path: it feeds varyings from
+     * the application buffers, which cannot carry a computed varying, and a VS
+     * with a computed-varying output mismatches its PSC/VAP setup and hangs the
+     * draw (the timeout-kill then poisons the ring).  Skipping it isolates the
+     * production + oracle, exactly the #1a scope; wiring the producer BO into the
+     * re-ingest is the next increment. */
     static int varying = -1;
     if (varying < 0) {
         const char *e = getenv("R300_R2VB_VARYING");
@@ -1983,6 +2025,9 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         if (vfs)
             r300->context.delete_fs_state(&r300->context, vfs);
         pipe_resource_reference(&vbo, NULL);
+        pipe_resource_reference(&clip, NULL);
+        free(model);
+        return true;
     }
 
     /* Multi-stream re-ingest.  Draw the transformed positions (from clip) plus the
