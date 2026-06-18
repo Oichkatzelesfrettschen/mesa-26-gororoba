@@ -91,12 +91,15 @@ test_domain_catalog(void)
 
    const struct r300_virtual_op_info *multilimb = NULL;
    const struct r300_virtual_op_info *signed_dp4 = NULL;
+   const struct r300_virtual_op_info *quad_disc = NULL;
    for (unsigned op_index = 0; r300_virtual_op_catalog[op_index].op_name; op_index++) {
       const struct r300_virtual_op_info *op = &r300_virtual_op_catalog[op_index];
       if (strcmp(op->op_name, "MULTILIMB7_U32_MUL") == 0)
          multilimb = op;
       if (strcmp(op->op_name, "DP4_INT8_SIGNED_CARRIER_PENDING") == 0)
          signed_dp4 = op;
+      if (strcmp(op->op_name, "QUADRATIC_DISCRIMINANT_OFFGRID") == 0)
+         quad_disc = op;
    }
 
    CHECK(multilimb != NULL,
@@ -109,6 +112,14 @@ test_domain_catalog(void)
          "catalog: signed DP4 does not advertise a dispatch carrier");
    CHECK(signed_dp4 != NULL && signed_dp4->mesa_hook == NULL,
          "catalog: signed DP4 has no Mesa dispatch hook until its carrier exists");
+   CHECK(quad_disc != NULL,
+         "catalog: QUADRATIC_DISCRIMINANT_OFFGRID row exists");
+   CHECK(quad_disc != NULL && quad_disc->status == R300_VOP_BOUNDARY,
+         "catalog: quadratic discriminant is a documented precision boundary");
+   CHECK(quad_disc != NULL && quad_disc->domain == R300_NUM_DOMAIN_FP24_RTZ,
+         "catalog: quadratic discriminant lives in the FP24 RTZ root domain");
+   CHECK(quad_disc != NULL && quad_disc->mesa_hook == NULL,
+         "catalog: quadratic discriminant has no Mesa hook (glamor-emitted, not a Mesa pass)");
 }
 
 /* -------------------------------------------------------------------------
