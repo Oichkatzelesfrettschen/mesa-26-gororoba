@@ -558,13 +558,16 @@ r300vk_GetImageMemoryRequirements2(VkDevice _device,
 
    /* VK_KHR_dedicated_allocation: an external image is backed by a single
     * SHARED|SCANOUT BO that the PRIME export path (r300vk_GetMemoryFdKHR)
-    * reaches through the memory's dedicated_image, so it must own its
-    * allocation; an ordinary image suballocates and does not. */
+    * reaches through the memory's dedicated_image, so a dedicated allocation
+    * is preferred for it.  It is deliberately not reported as *required*:
+    * requiresDedicatedAllocation is a hard constraint on the caller, and
+    * suballocation is not proven to break export, so the honest report is the
+    * preference only. */
    VkMemoryDedicatedRequirements *dedicated =
       vk_find_struct(pMemoryRequirements->pNext, MEMORY_DEDICATED_REQUIREMENTS);
    if (dedicated) {
       dedicated->prefersDedicatedAllocation  = img->external;
-      dedicated->requiresDedicatedAllocation = img->external;
+      dedicated->requiresDedicatedAllocation = VK_FALSE;
    }
 }
 
