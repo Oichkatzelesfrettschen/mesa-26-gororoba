@@ -176,12 +176,29 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
     out->data.location = FRAG_RESULT_COLOR;
     nir_store_var(&b, out, o, 0xf);
 
-    /* Declare UBO[0] so nir_to_rc resolves the four matrix load_ubo's to const-
-     * file EXTERNALS (read from the bound FS constant buffer at emit) rather than
-     * baking them as immediates -- without this the shader has externals_count=0
-     * and set_constant_buffer(FRAGMENT, 0) is silently ignored (the FS dots its
-     * input against baked garbage). */
+    /* Declare a sized block-0 UBO variable so nir_to_rc's ntr_setup_uniforms
+     * counts the four matrix rows as RC_CONSTANT_EXTERNAL.  The compiler sizes
+     * the const file from the nir_var_mem_ubo interface declaration; a raw
+     * load_ubo with only info.num_ubos set carries no size, so externals_count
+     * stays 0 and set_constant_buffer(FRAGMENT, 0) is silently ignored (the FS
+     * dots its input against garbage).  Same shape r300vk_shape_block0_ubo uses
+     * for the push-constant UBO: glsl_array_type(vec4, n, 16) under a one-field
+     * std430 interface (4 vec4 rows = 64 bytes). */
     b.shader->info.num_ubos = 1;
+    const struct glsl_type *ubo_type = glsl_array_type(glsl_vec4_type(), 4, 16);
+    nir_variable *ubo = nir_variable_create(b.shader, nir_var_mem_ubo, ubo_type,
+                                            "r2vb_mvp_ubo");
+    ubo->data.driver_location = 0;
+    ubo->data.binding = 0;
+    ubo->data.explicit_binding = 1;
+    struct glsl_struct_field ubo_field = {
+        .type = ubo_type,
+        .name = "data",
+        .location = -1,
+    };
+    ubo->interface_type = glsl_interface_type(&ubo_field, 1,
+                                              GLSL_INTERFACE_PACKING_STD430, false,
+                                              "__r300_r2vb_mvp_ubo");
 
     if (getenv("R300_R2VB_VS_DUMP"))
         nir_print_shader(b.shader, stderr);
@@ -1472,21 +1489,47 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         return false;
     }
 
-    /* Transpose the column-major MVP into DP4 rows (row_i = (col0[i]..col3[i])),
-     * then bake those rows into the transform-FS as immediates. */
-    float rows[16];
-    for (unsigned i = 0; i < 4; i++)
-        for (unsigned j = 0; j < 4; j++)
-            rows[i * 4 + j] = cols[j * 4 + i];
-    void *xfs = r300_r2vb_build_baked_transform_fs(r300, rows);
+    /* Transform FS.  Default: bake the transposed matrix as immediates -- a
+     * matrix-specific FS rebuilt and deleted per draw.  R300_R2VB_MVP_EXTERNALS
+     * opts into the cached FS (r300_r2vb_get_transform_fs) that reads the matrix
+     * rows from FS constant buffer 0 (now a sized block-0 UBO declaration so
+     * nir_to_rc emits the externals), set per draw by r300_r2vb_set_transform_consts
+     * (which transposes the column-major cols into DP4 rows).  Externals drops the
+     * per-draw recompile and is the const-file form a general VS needs; it stays
+     * opt-in behind the proven baked path until the framebuffer oracle confirms
+     * it byte-exact.
+     *
+     * TODO: r300_r2vb_set_transform_consts overwrites FS constant buffer 0, which
+     *       the multi-stream re-ingest's application FS also reads.  Restore the
+     *       application's bound FS constant buffer before the re-ingest when the
+     *       app FS reads uniforms (the validation FS fs_solid reads none, so the
+     *       overwrite is invisible to the oracle).  Grounded in
+     *       r300_set_constant_buffer and r300->fs_constants. */
+    static int externals = -1;
+    if (externals < 0) {
+        const char *e = getenv("R300_R2VB_MVP_EXTERNALS");
+        externals = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    void *xfs;
+    if (externals) {
+        xfs = r300_r2vb_get_transform_fs(r300);
+        if (xfs)
+            r300_r2vb_set_transform_consts(r300, cols);
+    } else {
+        float rows[16];
+        for (unsigned i = 0; i < 4; i++)
+            for (unsigned j = 0; j < 4; j++)
+                rows[i * 4 + j] = cols[j * 4 + i];
+        xfs = r300_r2vb_build_baked_transform_fs(r300, rows);
+    }
     if (!xfs) {
         pipe_resource_reference(&clip, NULL);
         free(model);
         return false;
     }
 
-    /* Bind the baked transform-FS, recompute derived (RS) state for its single
-     * input, then emit that state and the producer under the normal draw flow. */
+    /* Bind the transform-FS, recompute derived (RS) state for its single input,
+     * then emit that state and the producer under the normal draw flow. */
     void *saved_fs = r300->fs.state;
     r300->context.bind_fs_state(&r300->context, xfs);
     r300_update_derived_state(r300);
@@ -1494,7 +1537,8 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, true);
     r300->context.bind_fs_state(&r300->context, saved_fs);
     r300_update_derived_state(r300);
-    r300->context.delete_fs_state(&r300->context, xfs);
+    if (!externals)
+        r300->context.delete_fs_state(&r300->context, xfs);
 
     /* Submit the producer so clip is on the GPU before the re-ingest fetches it.
      * The re-ingest reuses exec_passthrough_draw, whose vertex-buffer validate
