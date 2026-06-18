@@ -1387,6 +1387,169 @@ static bool r300_vs_is_mvp(struct r300_context *r300)
     return has_transform;
 }
 
+/* The float-ALU op set nir_to_rc emits after r300 lowering (compiler_isa.tsv
+ * nir_to_rc_direct rows + the dot/fma vector forms a later NIR pass may leave).
+ * An op outside this set cannot run on the fragment ALU, so a VS using it stays
+ * on gallivm. */
+static bool r300_nir_op_is_fragment_aluable(nir_op op)
+{
+    switch (op) {
+    case nir_op_mov:
+    case nir_op_vec2: case nir_op_vec3: case nir_op_vec4:
+    case nir_op_fadd: case nir_op_fsub: case nir_op_fmul:
+    case nir_op_fmad: case nir_op_ffma:
+    case nir_op_fdot2: case nir_op_fdot3: case nir_op_fdot4:
+    case nir_op_fdot2_replicated: case nir_op_fdot3_replicated:
+    case nir_op_fdot4_replicated:
+    case nir_op_fmin: case nir_op_fmax:
+    case nir_op_ffract: case nir_op_fround_even:
+    case nir_op_frcp: case nir_op_frsq:
+    case nir_op_fexp2: case nir_op_flog2: case nir_op_fpow:
+    case nir_op_fsin: case nir_op_fcos:
+    case nir_op_fabs: case nir_op_fneg: case nir_op_fsat:
+    case nir_op_slt: case nir_op_sge: case nir_op_seq: case nir_op_sne:
+    case nir_op_fcsel: case nir_op_fcsel_gt: case nir_op_fcsel_ge:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Generalize r300_vs_is_mvp to any straight-line vertex shader the position-only
+ * re-staging route (R300_R2VB_RESTAGE) can run on the fragment ALU.  Accept iff:
+ * the shader is a single basic block (R300/R400 have no fragment control flow);
+ * every ALU op is fragment-aluable and the count stays within the 64-instruction
+ * ceiling; every intrinsic is plain I/O or a uniform/UBO load; a gl_Position
+ * output exists; every non-position output is a straight passthrough of a vertex
+ * input (the multi-stream re-ingest supplies those varyings from the application
+ * buffers); and at most one vertex attribute feeds computation.  The producer
+ * feeds one attribute per output slot and the re-stager maps inputs in
+ * declaration order, so that single computation input is the first attribute
+ * (velem[0]) for the MVP-class shapes this targets; a computed varying, a second
+ * computed attribute, or a non-leading position attribute needs the multi-RT /
+ * multi-input producer and is rejected here (the draw falls back to gallivm). */
+static bool r300_vs_is_fragment_aluable(struct r300_context *r300)
+{
+    struct r300_vertex_shader *vs = r300_vs(r300);
+    if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
+        return false;
+    nir_shader *nir = vs->state.ir.nir;
+    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+    if (!impl)
+        return false;
+
+    /* Straight-line only: a single basic block, no if/loop. */
+    if (!exec_list_is_singular(&impl->body))
+        return false;
+
+    bool has_uniform = false, has_pos_out = false;
+    nir_foreach_variable_in_shader(var, nir) {
+        if (var->data.mode &
+            (nir_var_mem_ubo | nir_var_mem_push_const | nir_var_uniform))
+            has_uniform = true;
+        if ((var->data.mode & nir_var_shader_out) &&
+            var->data.location == VARYING_SLOT_POS)
+            has_pos_out = true;
+    }
+    if (!has_uniform || !has_pos_out)
+        return false;
+
+    unsigned alu_count = 0;
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            switch (instr->type) {
+            case nir_instr_type_load_const:
+            case nir_instr_type_deref:
+                break;
+            case nir_instr_type_alu:
+                if (!r300_nir_op_is_fragment_aluable(nir_instr_as_alu(instr)->op))
+                    return false;
+                if (++alu_count > 64)
+                    return false;
+                break;
+            case nir_instr_type_intrinsic:
+                switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+                case nir_intrinsic_load_deref:
+                case nir_intrinsic_store_deref:
+                case nir_intrinsic_load_input:
+                case nir_intrinsic_store_output:
+                case nir_intrinsic_load_ubo:
+                case nir_intrinsic_load_ubo_vec4:
+                case nir_intrinsic_load_push_constant:
+                case nir_intrinsic_load_constant:
+                    break;
+                default:
+                    return false;
+                }
+                break;
+            default:
+                return false; /* texturing, jumps, ... */
+            }
+        }
+    }
+
+    /* Every non-position output must be a direct passthrough of a vertex input. */
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref)
+                continue;
+            nir_variable *out = nir_intrinsic_get_var(intr, 0);
+            if (!out || !(out->data.mode & nir_var_shader_out) ||
+                out->data.location == VARYING_SLOT_POS)
+                continue;
+            nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
+            if (!val || val->intrinsic != nir_intrinsic_load_deref)
+                return false; /* computed varying -> needs the multi-RT producer */
+            nir_variable *src = nir_intrinsic_get_var(val, 0);
+            if (!src || !(src->data.mode & nir_var_shader_in))
+                return false;
+        }
+    }
+
+    /* The producer feeds velem[0] to the re-staged FS's VAR0, and the re-stager
+     * assigns VAR0 to the first-declared input.  So only that first input may
+     * feed computation; every other input must appear solely as a passthrough
+     * varying source.  (velem[0] == the first input holds for the position-first
+     * shapes this targets; arbitrary input ordering and a second computed
+     * attribute need the multi-input producer and are rejected here.) */
+    nir_variable *first_in = NULL;
+    nir_foreach_variable_with_modes(v, nir, nir_var_shader_in) {
+        first_in = v;
+        break;
+    }
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_deref)
+                continue;
+            nir_variable *in = nir_intrinsic_get_var(intr, 0);
+            if (!in || !(in->data.mode & nir_var_shader_in) || in == first_in)
+                continue;
+            /* A non-first input: its every use must be a passthrough varying store. */
+            nir_foreach_use(use, &intr->def) {
+                if (nir_src_is_if(use))
+                    return false;
+                nir_instr *cons = nir_src_use_instr(use);
+                if (cons->type != nir_instr_type_intrinsic)
+                    return false;
+                nir_intrinsic_instr *ci = nir_instr_as_intrinsic(cons);
+                if (ci->intrinsic != nir_intrinsic_store_deref)
+                    return false;
+                nir_variable *o = nir_intrinsic_get_var(ci, 0);
+                if (!o || !(o->data.mode & nir_var_shader_out) ||
+                    o->data.location == VARYING_SLOT_POS)
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
 enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
                                                const struct pipe_draw_info *info,
                                                const struct pipe_draw_start_count_bias *draw)
@@ -1529,8 +1692,17 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
     }
     if (!gate)
         return false;
-    return r300_r2vb_classify_draw(r300, info, draw) == R2VB_ROUTE_CANDIDATE &&
-           r300_vs_is_mvp(r300);
+    if (r300_r2vb_classify_draw(r300, info, draw) != R2VB_ROUTE_CANDIDATE)
+        return false;
+    /* The re-staging route (R300_R2VB_RESTAGE) derives the producer from the VS,
+     * so it runs any fragment-aluable straight-line VS; the hand-built and
+     * externals producers only express the exact MVP shape. */
+    static int restage = -1;
+    if (restage < 0) {
+        const char *e = getenv("R300_R2VB_RESTAGE");
+        restage = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return restage ? r300_vs_is_fragment_aluable(r300) : r300_vs_is_mvp(r300);
 }
 
 /* Route-exec MVP path: run gl_Position = M * in_pos on the fragment ALU.  The
