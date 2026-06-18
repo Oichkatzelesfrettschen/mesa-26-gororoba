@@ -246,6 +246,86 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const
     return r300->context.create_fs_state(&r300->context, &st);
 }
 
+/* Re-stage the bound vertex shader as the producer fragment shader (position
+ * only): clone the VS NIR, keep its arithmetic verbatim, and remap only the I/O
+ * semantics so the fragment ALU runs it.  Each VS attribute input becomes a flat
+ * fragment input at VARYING_SLOT_VAR0+i (the producer feeds one attribute per
+ * output slot, flat); gl_Position (VARYING_SLOT_POS) becomes FRAG_RESULT_DATA0
+ * (the clip BO).  Stores to any other (varying) output are dropped -- an
+ * MVP-class VS passes its varyings through unchanged, so the multi-stream
+ * re-ingest reads them from the application buffers -- and the inputs that fed
+ * only those stores die in DCE.  The VS reads its matrix from UBO[0]; nir_to_rc
+ * sizes the const file from that block-0 interface (the same externals path
+ * r300_r2vb_get_transform_fs relies on), so the caller loads FS const file 0
+ * with the matrix the VS expects (untransposed -- the VS body is column-MAD,
+ * reading the matrix columns via load_ubo_vec4, not the DP4-transposed rows).
+ *
+ * This derives the producer from the real shader instead of hand-building the
+ * 4-DP4 transform: the arithmetic, the constant reads, and the output count all
+ * come from the VS, and nir_to_rc's stage-aware compile (it lowers I/O and emits
+ * both VS and FS varyings) does the rest.  Returns a pipe FS CSO or NULL. */
+static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *vs_nir)
+{
+    nir_shader *fs = nir_shader_clone(NULL, vs_nir);
+    if (!fs)
+        return NULL;
+    fs->info.stage = MESA_SHADER_FRAGMENT;
+
+    /* VS vertex attributes -> flat fragment inputs at VAR0+i. */
+    unsigned in_idx = 0;
+    nir_foreach_variable_with_modes(var, fs, nir_var_shader_in) {
+        var->data.location = VARYING_SLOT_VAR0 + in_idx++;
+        var->data.location_frac = 0;
+        var->data.interpolation = INTERP_MODE_FLAT;
+    }
+
+    /* Drop every store to a non-position output; the multi-stream re-ingest
+     * supplies those varyings from the application buffers. */
+    nir_function_impl *impl = nir_shader_get_entrypoint(fs);
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref)
+                continue;
+            nir_variable *out = nir_intrinsic_get_var(intr, 0);
+            if (out && (out->data.mode & nir_var_shader_out) &&
+                out->data.location != VARYING_SLOT_POS)
+                nir_instr_remove(instr);
+        }
+    }
+
+    /* Position output -> colour0 (the clip BO target). */
+    nir_foreach_variable_with_modes(var, fs, nir_var_shader_out) {
+        if (var->data.location == VARYING_SLOT_POS) {
+            var->data.location = FRAG_RESULT_DATA0;
+            var->data.location_frac = 0;
+        }
+    }
+
+    /* DCE first, THEN drop dead variables.  Removing a store leaves its
+     * deref_var (and the load feeding it) as dead instructions;
+     * nir_remove_dead_variables counts a deref as a use, so running it before DCE
+     * would keep the orphaned varying output -- which then reaches nir_to_rc as a
+     * shader_out at a VARYING_SLOT location and trips its
+     * `location < FRAG_RESULT_MAX` assert.  DCE clears the dead derefs, then the
+     * unreferenced varying outputs, their inputs, and push-constants drop, and a
+     * re-gather keeps num_ubos/inputs/outputs consistent for nir_to_rc. */
+    nir_opt_dce(fs);
+    nir_remove_dead_variables(fs, nir_var_shader_in | nir_var_shader_out |
+                                      nir_var_mem_push_const, NULL);
+    nir_shader_gather_info(fs, nir_shader_get_entrypoint(fs));
+
+    if (getenv("R300_R2VB_VS_DUMP"))
+        nir_print_shader(fs, stderr);
+
+    struct pipe_shader_state st = {0};
+    st.type = PIPE_SHADER_IR_NIR;
+    st.ir.nir = fs; /* create_fs_state takes ownership and precompiles */
+    return r300->context.create_fs_state(&r300->context, &st);
+}
+
 /* Data-independent producer position stream: one window-space point per output
  * slot at pixel (slot+0.5, 0.5, 0, 1), FP32x4.  Reused across draws, grown when
  * a draw needs more slots.  PIPE_BIND_CUSTOM forces a real winsys BO (the SWTCL
@@ -333,6 +413,23 @@ static void r300_r2vb_set_transform_consts(struct r300_context *r300, const floa
     struct pipe_constant_buffer cb = {0};
     cb.buffer_size = 64;
     cb.user_buffer = r2vb_mvp_rows;
+    r300->context.set_constant_buffer(&r300->context, MESA_SHADER_FRAGMENT, 0, &cb);
+}
+
+/* Process-lifetime copy for the re-staged producer: set_constant_buffer keeps the
+ * pointer, not a copy. */
+static float r2vb_mvp_cols[16];
+
+/* Load FS const file 0 with the matrix in the layout the re-staged VS expects --
+ * the column-major columns verbatim, not the DP4 transpose -- because the
+ * re-staged body reads load_ubo_vec4 base=i (column i) and forms
+ * col0*x + col1*y + col2*z + col3*w. */
+static void r300_r2vb_set_transform_consts_raw(struct r300_context *r300, const float *cols)
+{
+    memcpy(r2vb_mvp_cols, cols, sizeof(r2vb_mvp_cols));
+    struct pipe_constant_buffer cb = {0};
+    cb.buffer_size = 64;
+    cb.user_buffer = r2vb_mvp_cols;
     r300->context.set_constant_buffer(&r300->context, MESA_SHADER_FRAGMENT, 0, &cb);
 }
 
@@ -1505,16 +1602,31 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      *       app FS reads uniforms (the validation FS fs_solid reads none, so the
      *       overwrite is invisible to the oracle).  Grounded in
      *       r300_set_constant_buffer and r300->fs_constants. */
-    static int externals = -1;
+    static int externals = -1, restage = -1;
     if (externals < 0) {
         const char *e = getenv("R300_R2VB_MVP_EXTERNALS");
         externals = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
+    if (restage < 0) {
+        const char *e = getenv("R300_R2VB_RESTAGE");
+        restage = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
     void *xfs;
-    if (externals) {
+    bool xfs_cached = false;
+    if (restage) {
+        /* Derive the producer from the bound VS itself -- the general fragment-ALU
+         * vertex route.  Re-stage its NIR as the FS (position only) and load the
+         * matrix it reads from UBO[0] into FS const file 0 untransposed (the VS
+         * body is column-MAD).  Built per draw and deleted after, like the baked
+         * path, since the FS tracks whatever VS is bound. */
+        xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir);
+        if (xfs)
+            r300_r2vb_set_transform_consts_raw(r300, cols);
+    } else if (externals) {
         xfs = r300_r2vb_get_transform_fs(r300);
         if (xfs)
             r300_r2vb_set_transform_consts(r300, cols);
+        xfs_cached = true;
     } else {
         float rows[16];
         for (unsigned i = 0; i < 4; i++)
@@ -1537,7 +1649,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, true);
     r300->context.bind_fs_state(&r300->context, saved_fs);
     r300_update_derived_state(r300);
-    if (!externals)
+    if (!xfs_cached)
         r300->context.delete_fs_state(&r300->context, xfs);
 
     /* Order the producer's transform write before the re-ingest vertex fetch.
