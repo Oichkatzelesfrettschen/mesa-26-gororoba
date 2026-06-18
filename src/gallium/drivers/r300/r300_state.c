@@ -1298,6 +1298,14 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
     /* Copy state directly into shader. */
     fs->state = *shader;
 
+    /* SWTCL chips run the gallium draw module; give it a copy of this shader so
+     * the wide-point stage can find the gl_PointCoord input and generate sprite
+     * texcoords for SW-expanded points. Built from the original shader (standard
+     * NIR/TGSI from the state tracker) rather than the r300-lowered fs->state.ir,
+     * so the draw module gets a form it can compile. NULL on HW-TCL chips. */
+    fs->draw_fs = r300->draw ? draw_create_fragment_shader(r300->draw, shader)
+                             : NULL;
+
     /* Always convert TGSI input to NIR up front, the same as
      * r300_create_vs_state.  Driver-synthesized TGSI fragment programs
      * (u_blitter, the compute-as-raster KILL_IF shaders) must then run the same
@@ -1397,11 +1405,18 @@ static void r300_bind_fs_state(struct pipe_context* pipe, void* shader)
 
     if (!fs) {
         r300->fs.state = NULL;
+        if (r300->draw)
+            draw_bind_fragment_shader(r300->draw, NULL);
         return;
     }
 
     r300->fs.state = fs;
     r300->fs_status = FRAGMENT_SHADER_DIRTY;
+
+    /* Keep the draw module's bound FS in sync so the wide-point stage can read
+     * the gl_PointCoord input for SW-expanded points. */
+    if (r300->draw)
+        draw_bind_fragment_shader(r300->draw, fs->draw_fs);
 
     r300_mark_atom_dirty(r300, &r300->rs_block_state); /* Will be updated before the emission. */
 }
@@ -1418,6 +1433,9 @@ static void r300_delete_fs_state(struct pipe_context* pipe, void* shader)
      * shader.  Inert on the GL path, where the state tracker unbinds before delete. */
     if (r300->fs.state == fs)
         r300->fs.state = NULL;
+
+    if (r300->draw && fs->draw_fs)
+        draw_delete_fragment_shader(r300->draw, fs->draw_fs);
 
     while (ptr) {
         tmp = ptr;

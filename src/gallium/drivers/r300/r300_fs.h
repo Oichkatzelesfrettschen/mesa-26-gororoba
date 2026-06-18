@@ -55,6 +55,11 @@ struct r300_fragment_shader {
     /* List of the same shaders compiled with different texture-compare
      * states. */
     struct r300_fragment_shader_code* first;
+
+    /* SWTCL (!has_tcl) only: the gallium draw module's copy of this shader.
+     * The wide-point stage reads it to find the gl_PointCoord input and
+     * generate sprite texcoords for SW-expanded points. NULL on HW-TCL chips. */
+    void* draw_fs;
 };
 
 /* Return TRUE if the shader was switched and should be re-emitted. */
