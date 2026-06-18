@@ -10,6 +10,7 @@
 #include "vk_alloc.h"
 #include "vk_log.h"
 #include "vk_object.h"
+#include "vk_util.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
@@ -97,4 +98,13 @@ r300vk_GetBufferMemoryRequirements2(VkDevice _device,
        * memoryTypeBits aborts zink_resource's allocate_bo. */
       .memoryTypeBits = 0x3,
    };
+
+   /* VK_KHR_dedicated_allocation: a buffer suballocates from the shared GART
+    * pool, so nothing forces it to own its VkDeviceMemory. */
+   VkMemoryDedicatedRequirements *dedicated =
+      vk_find_struct(pMemoryRequirements->pNext, MEMORY_DEDICATED_REQUIREMENTS);
+   if (dedicated) {
+      dedicated->prefersDedicatedAllocation  = VK_FALSE;
+      dedicated->requiresDedicatedAllocation = VK_FALSE;
+   }
 }
