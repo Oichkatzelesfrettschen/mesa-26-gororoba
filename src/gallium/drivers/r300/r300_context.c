@@ -430,9 +430,21 @@ struct pipe_context* r300_create_context(struct pipe_screen* screen,
             goto fail;
         /* Enable our renderer. */
         draw_set_rasterize_stage(r300->draw, r300_draw_stage(r300));
-        /* Disable converting points/lines to triangles. */
+        /* Hardware GA rasterizes wide lines directly from the width packed into
+         * GA_LINE_CNTL, so the wide-line threshold stays effectively infinite
+         * and lines never convert to triangles. */
         draw_wide_line_threshold(r300->draw, 10000000.f);
-        draw_wide_point_threshold(r300->draw, 10000000.f);
+        /* Points must convert to triangles. The draw fast-path emit
+         * (draw_pt_emit) sources EMIT_1F_PSIZE from rasterizer->point_size at
+         * stride 0, broadcasting one fixed size to every vertex, so a
+         * per-vertex gl_PointSize from the vertex shader never reaches the GA
+         * point rasterizer. GLES2 sizes points only through gl_PointSize, so
+         * the hardware point path cannot honor any GLES2 point size. A zero
+         * threshold routes every point through the wide-point stage
+         * (draw_pipe_wide_point.c widepoint_point), which reads the real
+         * per-vertex size from the pipeline vertex and expands the point into a
+         * quad. */
+        draw_wide_point_threshold(r300->draw, 0.0f);
         draw_wide_point_sprites(r300->draw, false);
         draw_enable_line_stipple(r300->draw, true);
         draw_enable_point_sprites(r300->draw, false);
