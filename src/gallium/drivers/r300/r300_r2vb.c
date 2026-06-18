@@ -675,9 +675,28 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     r300_r2vb_emit_producer(r300, output_gart_bo, output_gart_bo_offset, num_vertices,
                             vertex_attrs, transform_mode);
 
+    /* C0 baseline gate (R300_PTSIZE_C0=1): write VAP_OUTPUT_VTX_FMT_0/1 explicitly
+     * on the re-ingest so PT_SIZE_PRESENT (bit 16 of 0x2090) does not inherit
+     * from the upstream real SWTCL draw.  Gate-off keeps the path byte-identical.
+     * The only 0x2090 write site in r300 otherwise is r300_emit_vap_output_state
+     * (r300_emit.c), so PT_SIZE_PRESENT on the re-ingest is whatever the trigger
+     * draw left in the register.  When the trigger left it set, the GA expects a
+     * per-vertex psize output vector that the single-FLOAT_4 re-ingest does not
+     * produce; output-vector layout the GA reads no longer matches what the
+     * producer wrote, position moves, and a 16-point readback bbox spills to the
+     * origin (~110 texels, not 16 single texels).  C0 holds position-only output
+     * with PT_SIZE_PRESENT cleared and no texcoord components; the GA falls back
+     * to GA_POINT_SIZE for the rasterized size. */
+    static int ptsize_c0 = -1;
+    if (ptsize_c0 < 0) {
+        const char *e = getenv("R300_PTSIZE_C0");
+        ptsize_c0 = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
-     * optional observe redirect (stage3_color_bo) adds nine dwords. */
-    BEGIN_CS(stage3_color_bo ? 26 : 17);
+     * optional observe redirect (stage3_color_bo) adds nine dwords; the C0
+     * baseline gate adds three. */
+    BEGIN_CS((stage3_color_bo ? 26 : 17) + (ptsize_c0 ? 3 : 0));
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
@@ -693,6 +712,16 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
         OUT_CS(((stage3_width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
                ((stage3_height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+    }
+
+    if (ptsize_c0) {
+        /* Explicit position-only output vector format.  POS_PRESENT (bit 0) set;
+         * PT_SIZE_PRESENT (bit 16) and every COLOR_*_PRESENT bit cleared in 0x2090.
+         * VAP_OUTPUT_VTX_FMT_1 (0x2094) cleared so no texcoord components either.
+         * The SWTCL emit at r300_emit.c uses the same SEQ-of-2 form. */
+        OUT_CS_REG_SEQ(R300_VAP_OUTPUT_VTX_FMT_0, 2);
+        OUT_CS(R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
+        OUT_CS(0);
     }
 
     /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.
