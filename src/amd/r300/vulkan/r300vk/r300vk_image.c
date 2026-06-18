@@ -18,6 +18,7 @@
 #include "vk_alloc.h"
 #include "vk_format.h"
 #include "vk_log.h"
+#include "vk_util.h"
 
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
@@ -554,6 +555,33 @@ r300vk_GetImageMemoryRequirements2(VkDevice _device,
        * rejected a conformant device-local color-image allocation. */
       .memoryTypeBits = 0x3,
    };
+
+   /* VK_KHR_dedicated_allocation: an external image is backed by a single
+    * SHARED|SCANOUT BO that the PRIME export path (r300vk_GetMemoryFdKHR)
+    * reaches through the memory's dedicated_image, so a dedicated allocation
+    * is preferred for it.  It is deliberately not reported as *required*:
+    * requiresDedicatedAllocation is a hard constraint on the caller, and
+    * suballocation is not proven to break export, so the honest report is the
+    * preference only. */
+   VkMemoryDedicatedRequirements *dedicated =
+      vk_find_struct(pMemoryRequirements->pNext, MEMORY_DEDICATED_REQUIREMENTS);
+   if (dedicated) {
+      dedicated->prefersDedicatedAllocation  = img->external;
+      dedicated->requiresDedicatedAllocation = VK_FALSE;
+   }
+}
+
+/* VK_KHR_get_memory_requirements2: the device exposes no sparse residency
+ * (sparseAddressSpaceSize == 0 and r300vk_CreateImage rejects every sparse
+ * VkImage), so an image has no sparse memory requirements -- report a zero
+ * count and leave the caller's array untouched. */
+void
+r300vk_GetImageSparseMemoryRequirements2(VkDevice _device,
+   const VkImageSparseMemoryRequirementsInfo2 *pInfo,
+   uint32_t *pSparseMemoryRequirementCount,
+   VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements)
+{
+   *pSparseMemoryRequirementCount = 0;
 }
 
 VkResult

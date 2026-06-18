@@ -494,6 +494,46 @@ static const struct vk_device_extension_table r300vk_device_extensions_supported
    .KHR_external_memory = true,
    .KHR_external_memory_fd = true,
    .EXT_external_memory_dma_buf = true,
+   /* VK_KHR_bind_memory2: r300vk_BindBufferMemory2 / r300vk_BindImageMemory2
+    * already back the batched bind as the same per-resource pipe_resource bind
+    * the 1.0 single-bind entry points perform, in a loop. */
+   .KHR_bind_memory2 = true,
+   /* VK_KHR_get_memory_requirements2: r300vk_GetBufferMemoryRequirements2 and
+    * r300vk_GetImageMemoryRequirements2 return the size/alignment the 1.0
+    * getters compute, and r300vk_GetImageSparseMemoryRequirements2 reports a
+    * zero count because the device exposes no sparse residency. */
+   .KHR_get_memory_requirements2 = true,
+   /* VK_KHR_dedicated_allocation: VkMemoryDedicatedAllocateInfo is already
+    * honoured at allocation time (r300vk_AllocateMemory records dedicated_image
+    * for the PRIME export path); the requirements getters now report dedication
+    * as required only for an external image whose single SHARED|SCANOUT BO is
+    * exported, and never for a suballocatable resource. */
+   .KHR_dedicated_allocation = true,
+   /* VK_KHR_driver_properties: VkPhysicalDeviceDriverProperties (driverName
+    * "r300vk", driverInfo, conformanceVersion) is already populated in
+    * r300vk_physical_device_init_properties, so the query reaches real data. */
+   .KHR_driver_properties = true,
+   /* VK_KHR_format_feature_flags2: r300vk_GetPhysicalDeviceFormatProperties2
+    * already fills the chained VkFormatProperties3, the 64-bit-flag form of the
+    * same capabilities, so the extension exposes data the driver computes. */
+   .KHR_format_feature_flags2 = true,
+   /* VK_KHR_uniform_buffer_standard_layout: a std430-style UBO layout is a
+    * subset of what the already-advertised EXT_scalar_block_layout accepts; the
+    * keystone CONST[0] byte-offset lowering computes the same offsets. */
+   .KHR_uniform_buffer_standard_layout = true,
+   /* VK_KHR_relaxed_block_layout: a relaxation of std140 alignment that
+    * scalarBlockLayout subsumes, so the compiler's offsets are unchanged -- a
+    * no-op capability advertisement. */
+   .KHR_relaxed_block_layout = true,
+   /* VK_KHR_storage_buffer_storage_class: the SPIR-V StorageBuffer storage
+    * class the descriptor path already lowers (vulkan_resource_index into the
+    * RC_FILE_CONSTANT loads); advertising it adds no new lowering. */
+   .KHR_storage_buffer_storage_class = true,
+   /* VK_KHR_sampler_mirror_clamp_to_edge: vk_address_mode_to_pipe maps
+    * VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE to
+    * PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE, which r300_state programs into TX_WRAP;
+    * gated by the samplerMirrorClampToEdge feature below. */
+   .KHR_sampler_mirror_clamp_to_edge = true,
 };
 
 static void
@@ -553,6 +593,12 @@ r300vk_physical_device_init_features(struct vk_features *features)
     * template only when the feature reports true, and the vkCmdSet* family
     * records R300VK_CMD_SET_DYNAMIC_STATE replay entries. */
    features->extendedDynamicState = true;
+   /* VK_KHR_uniform_buffer_standard_layout: a UBO laid out std430-style is a
+    * subset of what the already-true scalarBlockLayout accepts. */
+   features->uniformBufferStandardLayout = true;
+   /* VK_KHR_sampler_mirror_clamp_to_edge: vk_address_mode_to_pipe maps the wrap
+    * mode to PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE, which r300 programs in TX_WRAP. */
+   features->samplerMirrorClampToEdge = true;
 }
 
 static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
