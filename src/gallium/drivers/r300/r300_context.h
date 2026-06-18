@@ -595,6 +595,11 @@ struct r300_context {
      * triangles, so HW GA point-stuffing no longer applies) rather than
      * GB_POINT_STUFF. */
     bool point_sprite_via_draw;
+    /* Snapshot of sprite_coord_enable taken at draw entry, before the draw
+     * module's mid-draw no-cull rasterizer rebind zeroes the live field. The
+     * run-time gl_PointCoord layout rebuild reads this instead of the clobbered
+     * r300->sprite_coord_enable / r300->is_point. */
+    int point_sprite_sce;
     /* Re-entrancy guard for the run-time SWTCL vertex-layout rebuild in
      * r300_render_get_vertex_info. */
     bool in_swtcl_layout_rebuild;

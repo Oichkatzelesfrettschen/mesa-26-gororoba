@@ -89,12 +89,13 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
             (!(r300->sprite_coord_enable & (1U << i)) || !r300->is_point)) {
             r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, i);
             gen_count++;
-        } else if (pcoord_via_draw &&
-                   (r300->sprite_coord_enable & (1U << i)) && r300->is_point) {
-            /* gl_PointCoord sprite for a SW-expanded point. Emit the PCOORD
-             * vertex output at the same generic position r300_update_rs_block
-             * routes it, so vertex_info and the RS stream stay index-aligned
-             * for r300_swtcl_vertex_psc. */
+        } else if (pcoord_via_draw && (r300->point_sprite_sce & (1U << i))) {
+            /* gl_PointCoord sprite for a SW-expanded point. The live
+             * sprite_coord_enable / is_point are zeroed mid-draw, so detect the
+             * sprite from the draw-entry snapshot. Emit the PCOORD vertex output
+             * at the same generic position r300_update_rs_block routes it, so
+             * vertex_info and the RS stream stay index-aligned for
+             * r300_swtcl_vertex_psc. */
             r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_PCOORD, 0);
             gen_count++;
         }
@@ -496,12 +497,14 @@ static void r300_update_rs_block(struct r300_context *r300)
 
 	if (fs_inputs->generic[i] != ATTR_UNUSED) {
 	    sprite_coord = !!(r300->sprite_coord_enable & (1 << i)) && r300->is_point;
-	    /* SW-expanded point sprite: deliver the draw-generated PCOORD output
-	     * as a real vertex texcoord instead of HW point-stuffing. */
-	    sw_pcoord = sprite_coord && pcoord_via_draw;
+	    /* SW-expanded point sprite: the live sprite_coord_enable / is_point are
+	     * zeroed by the draw module's mid-draw no-cull rasterizer rebind, so
+	     * detect the sprite from the draw-entry snapshot and route the
+	     * draw-generated PCOORD output as a real vertex texcoord. */
+	    sw_pcoord = pcoord_via_draw && !!(r300->point_sprite_sce & (1 << i));
 	}
 
-        if (vs_outputs->generic[i] != ATTR_UNUSED || sprite_coord) {
+        if (vs_outputs->generic[i] != ATTR_UNUSED || sprite_coord || sw_pcoord) {
             if (!sprite_coord || sw_pcoord) {
                 /* Set up the texture coordinates in VAP. A SW-expanded
                  * gl_PointCoord (sw_pcoord) is a real per-vertex texcoord, not

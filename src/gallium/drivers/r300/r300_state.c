@@ -1298,11 +1298,15 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
     /* Copy state directly into shader. */
     fs->state = *shader;
 
-    /* SWTCL chips run the gallium draw module; give it a copy of this shader so
-     * the wide-point stage can find the gl_PointCoord input and generate sprite
-     * texcoords for SW-expanded points. Built from the original shader (standard
-     * NIR/TGSI from the state tracker) rather than the r300-lowered fs->state.ir,
-     * so the draw module gets a form it can compile. NULL on HW-TCL chips. */
+    /* SWTCL chips run the gallium draw module; give it the same fragment shader
+     * so the wide-point stage can find the gl_PointCoord (PCOORD) input and
+     * generate sprite texcoords for SW-expanded points.  gl_PointCoord arrives
+     * here as a PNTC varying input -- r300 leaves fs_point_is_sysval at its
+     * false default, so the GLSL builtin is add_input(VARYING_SLOT_PNTC) rather
+     * than a system value -- which is exactly the form the wide-point stage
+     * scans for.  The unmodified state-tracker shader is handed straight to the
+     * draw module, the same path i915g takes.  NULL on HW-TCL chips, which never
+     * run the draw module. */
     fs->draw_fs = r300->draw ? draw_create_fragment_shader(r300->draw, shader)
                              : NULL;
 

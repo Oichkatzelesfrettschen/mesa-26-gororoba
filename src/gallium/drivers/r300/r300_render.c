@@ -1256,6 +1256,7 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
     }
 
     r300->point_sprite_via_draw = false;
+    r300->point_sprite_sce = 0;
     if (r300->sprite_coord_enable != 0) {
         bool is_point = r300_rasterizer_emits_points(r300, info->mode);
         if (is_point != r300->is_point) {
@@ -1264,11 +1265,15 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
         }
         /* gl_PointCoord on a SW-expanded point reaches the FS as a
          * draw-generated sprite texcoord, not HW GA point-stuffing (inert once
-         * the point is a triangle pair). Flag it and force an RS-block rebuild;
-         * the PCOORD draw output exists only at draw run time, so the layout is
-         * finalized in r300_render_get_vertex_info. */
+         * the point is a triangle pair). Snapshot the sprite-coord state now,
+         * while it is correct -- the draw module rebinds a no-cull rasterizer
+         * mid-draw and zeroes the live sprite_coord_enable / is_point -- so the
+         * run-time rebuild in r300_render_get_vertex_info can still route the
+         * PCOORD varying. The PCOORD draw output exists only at draw run time,
+         * so the layout is finalized there. */
         if (is_point) {
             r300->point_sprite_via_draw = true;
+            r300->point_sprite_sce = r300->sprite_coord_enable;
             r300_mark_atom_dirty(r300, &r300->rs_block_state);
         }
     }
