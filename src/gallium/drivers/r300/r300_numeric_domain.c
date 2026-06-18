@@ -316,6 +316,16 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .mesa_hook       = "r300_nir_detect_dp4_pattern",
    },
    {
+      .op_name         = "QUADRATIC_DISCRIMINANT_OFFGRID",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_BOUNDARY,
+      .theorem         = "two-circle gradient t = (B +/- sqrt(B^2 - A*C))/A: the intermediates "
+                         "B^2, A*C, B^2-A*C reach ~10^8 (180x-1600x the 2^17 = 131072 exact "
+                         "window), so FP24 RTZ rounds them off-grid and perturbs t by ~1e-4, "
+                         "enough to cross the [0,1) repeat boundary",
+      .mesa_hook       = NULL,  /* no NIR detector: the quadratic is emitted by glamor GLSL, not a Mesa pass */
+   },
+   {
       .op_name         = "Q16_16_ADD",
       .domain          = R300_NUM_DOMAIN_Q16_16,
       .status          = R300_VOP_NUMERIC_DERIVED,
