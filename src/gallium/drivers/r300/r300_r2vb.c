@@ -264,7 +264,8 @@ static void *r300_r2vb_build_baked_transform_fs(struct r300_context *r300, const
  * 4-DP4 transform: the arithmetic, the constant reads, and the output count all
  * come from the VS, and nir_to_rc's stage-aware compile (it lowers I/O and emits
  * both VS and FS varyings) does the rest.  Returns a pipe FS CSO or NULL. */
-static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *vs_nir)
+static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *vs_nir,
+                                        gl_varying_slot target)
 {
     nir_shader *fs = nir_shader_clone(NULL, vs_nir);
     if (!fs)
@@ -279,8 +280,11 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
         var->data.interpolation = INTERP_MODE_FLAT;
     }
 
-    /* Drop every store to a non-position output; the multi-stream re-ingest
-     * supplies those varyings from the application buffers. */
+    /* The producer renders one output per pass, so keep only the store to the
+     * target output and drop the rest.  Position pass: target = VARYING_SLOT_POS
+     * (the dropped varyings come from the application buffers in the re-ingest).
+     * Computed-varying pass: target = that varying's slot, and the now-unstored
+     * position transform drops in DCE below, leaving just the varying arithmetic. */
     nir_function_impl *impl = nir_shader_get_entrypoint(fs);
     nir_foreach_block(block, impl) {
         nir_foreach_instr_safe(instr, block) {
@@ -291,14 +295,14 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
                 continue;
             nir_variable *out = nir_intrinsic_get_var(intr, 0);
             if (out && (out->data.mode & nir_var_shader_out) &&
-                out->data.location != VARYING_SLOT_POS)
+                out->data.location != target)
                 nir_instr_remove(instr);
         }
     }
 
-    /* Position output -> colour0 (the clip BO target). */
+    /* Target output -> colour0 (the producer BO this pass writes). */
     nir_foreach_variable_with_modes(var, fs, nir_var_shader_out) {
-        if (var->data.location == VARYING_SLOT_POS) {
+        if (var->data.location == target) {
             var->data.location = FRAG_RESULT_DATA0;
             var->data.location_frac = 0;
         }
@@ -324,6 +328,38 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
     st.type = PIPE_SHADER_IR_NIR;
     st.ir.nir = fs; /* create_fs_state takes ownership and precompiles */
     return r300->context.create_fs_state(&r300->context, &st);
+}
+
+/* Find the bound VS's first computed-varying output: a non-position output whose
+ * store value is not a straight load of a vertex input.  The multi-pass producer
+ * renders such a varying on the fragment ALU.  Returns its gl_varying_slot, or -1
+ * when every non-position output is a plain passthrough (nothing to produce). */
+static int r300_r2vb_first_computed_varying(nir_shader *vs_nir)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(vs_nir);
+    if (!impl)
+        return -1;
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref)
+                continue;
+            nir_variable *out = nir_intrinsic_get_var(intr, 0);
+            if (!out || !(out->data.mode & nir_var_shader_out) ||
+                out->data.location == VARYING_SLOT_POS)
+                continue;
+            nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
+            if (val && val->intrinsic == nir_intrinsic_load_deref) {
+                nir_variable *src = nir_intrinsic_get_var(val, 0);
+                if (src && (src->data.mode & nir_var_shader_in))
+                    continue; /* passthrough -- the re-ingest reads the app buffer */
+            }
+            return out->data.location;
+        }
+    }
+    return -1;
 }
 
 /* Data-independent producer position stream: one window-space point per output
@@ -466,35 +502,57 @@ static void r300_r2vb_dump_xform_routing(struct r300_context *r300)
     }
 }
 
-/* Read back the producer output BO and compare each slot to the CPU column-major
- * M*model_vert.  FP24 fragment ALU, so a small tolerance, not bit-exactness. */
-static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_resource *res,
-                                       const float (*model)[4], uint32_t count, const float *cols)
+/* Read back a producer output BO and compare each slot to a caller-supplied
+ * expected value with a per-channel tolerance.  The producer runs on the FP24
+ * fragment ALU, so a transform accumulates rounding and wants a loose tolerance;
+ * an FP24-exact input through an exact op (e.g. *2.0) stays bit-exact and admits
+ * a near-zero tolerance, where any deviation is a plumbing bug, not rounding.
+ * tag names the stream in the per-slot dump and the pass line.  Returns the
+ * number of slots within tolerance. */
+static uint32_t r2vb_verify_bo_readback(struct r300_context *r300, struct pipe_resource *res,
+                                        const float (*expected)[4], uint32_t count, float tol,
+                                        const char *tag)
 {
     struct pipe_transfer *xfer = NULL;
     struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
     const float *got =
         r300->context.buffer_map(&r300->context, res, 0, PIPE_MAP_READ, &box, &xfer);
     if (!got)
-        return;
+        return 0;
     uint32_t pass = 0;
     for (uint32_t s = 0; s < count; s++) {
-        float exp[4] = {0, 0, 0, 0};
-        for (int i = 0; i < 4; i++)
-            for (int j = 0; j < 4; j++)
-                exp[i] += cols[j * 4 + i] * model[s][j];
+        const float *e = expected[s];
         const float *g = &got[s * 4];
-        bool ok = fabsf(g[0] - exp[0]) <= 0.05f && fabsf(g[1] - exp[1]) <= 0.05f &&
-                  fabsf(g[2] - exp[2]) <= 0.05f && fabsf(g[3] - exp[3]) <= 0.05f;
+        bool ok = fabsf(g[0] - e[0]) <= tol && fabsf(g[1] - e[1]) <= tol &&
+                  fabsf(g[2] - e[2]) <= tol && fabsf(g[3] - e[3]) <= tol;
         if (ok)
             pass++;
         if (s < 4)
             fprintf(stderr,
-                    "  xform[%u] got=%.3f,%.3f,%.3f,%.3f exp=%.3f,%.3f,%.3f,%.3f %s\n", s,
-                    g[0], g[1], g[2], g[3], exp[0], exp[1], exp[2], exp[3], ok ? "OK" : "MISMATCH");
+                    "  %s[%u] got=%.6f,%.6f,%.6f,%.6f exp=%.6f,%.6f,%.6f,%.6f %s\n", tag, s,
+                    g[0], g[1], g[2], g[3], e[0], e[1], e[2], e[3], ok ? "OK" : "MISMATCH");
     }
-    fprintf(stderr, "r2vb_xform_verify pass=%u/%u\n", pass, count);
+    fprintf(stderr, "r2vb_%s_verify pass=%u/%u tol=%g\n", tag, pass, count, tol);
     r300->context.buffer_unmap(&r300->context, xfer);
+    return pass;
+}
+
+/* Verify the producer transform BO against the CPU column-major M*model_vert.
+ * FP24 fragment ALU, so a loose tolerance, not bit-exactness. */
+static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_resource *res,
+                                       const float (*model)[4], uint32_t count, const float *cols)
+{
+    float (*exp)[4] = malloc((size_t)count * sizeof(*exp));
+    if (!exp)
+        return;
+    for (uint32_t s = 0; s < count; s++)
+        for (int i = 0; i < 4; i++) {
+            exp[s][i] = 0.0f;
+            for (int j = 0; j < 4; j++)
+                exp[s][i] += cols[j * 4 + i] * model[s][j];
+        }
+    r2vb_verify_bo_readback(r300, res, exp, count, 0.05f, "xform");
+    free(exp);
 }
 
 /* Producer half (stage 1 + the cb_flush_clean barrier): render one synthesized
@@ -1415,20 +1473,26 @@ static bool r300_nir_op_is_fragment_aluable(nir_op op)
     }
 }
 
-/* Generalize r300_vs_is_mvp to any straight-line vertex shader the position-only
- * re-staging route (R300_R2VB_RESTAGE) can run on the fragment ALU.  Accept iff:
- * the shader is a single basic block (R300/R400 have no fragment control flow);
- * every ALU op is fragment-aluable and the count stays within the 64-instruction
- * ceiling; every intrinsic is plain I/O or a uniform/UBO load; a gl_Position
- * output exists; every non-position output is a straight passthrough of a vertex
- * input (the multi-stream re-ingest supplies those varyings from the application
- * buffers); and at most one vertex attribute feeds computation.  The producer
- * feeds one attribute per output slot and the re-stager maps inputs in
- * declaration order, so that single computation input is the first attribute
- * (velem[0]) for the MVP-class shapes this targets; a computed varying, a second
- * computed attribute, or a non-leading position attribute needs the multi-RT /
- * multi-input producer and is rejected here (the draw falls back to gallivm). */
-static bool r300_vs_is_fragment_aluable(struct r300_context *r300)
+/* Generalize r300_vs_is_mvp to any straight-line vertex shader the re-staging
+ * route (R300_R2VB_RESTAGE) can run on the fragment ALU.  Accept iff: the shader
+ * is a single basic block (R300/R400 have no fragment control flow); every ALU op
+ * is fragment-aluable and the count stays within the 64-instruction ceiling;
+ * every intrinsic is plain I/O or a uniform/UBO load; a gl_Position output
+ * exists; and at most one vertex attribute feeds computation -- the first one
+ * (velem[0]), since the producer feeds one attribute per output slot and the
+ * re-stager maps inputs in declaration order.
+ *
+ * A non-position output is a straight passthrough of a vertex input (the
+ * re-ingest supplies it from the application buffer), or -- when
+ * allow_computed_varying -- a fragment-aluable function the multi-pass producer
+ * renders into its own BO.  Either way the non-first-input scan below rejects a
+ * varying computed from any input but the first (the producer feeds velem[0]
+ * only): such an input feeds an ALU op, whose consumer is not a passthrough
+ * store, so the scan fails.  A second computed attribute or a non-leading
+ * position attribute still needs the multi-input producer and is rejected here
+ * (the draw falls back to gallivm). */
+static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
+                                        bool allow_computed_varying)
 {
     struct r300_vertex_shader *vs = r300_vs(r300);
     if (!vs || vs->state.type != PIPE_SHADER_IR_NIR || !vs->state.ir.nir)
@@ -1488,7 +1552,10 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300)
         }
     }
 
-    /* Every non-position output must be a direct passthrough of a vertex input. */
+    /* Every non-position output is a direct passthrough of a vertex input, or --
+     * under allow_computed_varying -- a value the producer computes.  A computed
+     * varying has a store value that is not a straight input load; the multi-pass
+     * producer renders it on the fragment ALU into its own BO. */
     nir_foreach_block(block, impl) {
         nir_foreach_instr(instr, block) {
             if (instr->type != nir_instr_type_intrinsic)
@@ -1501,8 +1568,11 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300)
                 out->data.location == VARYING_SLOT_POS)
                 continue;
             nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
-            if (!val || val->intrinsic != nir_intrinsic_load_deref)
-                return false; /* computed varying -> needs the multi-RT producer */
+            if (!val || val->intrinsic != nir_intrinsic_load_deref) {
+                if (allow_computed_varying)
+                    continue; /* the multi-pass producer renders this varying */
+                return false;
+            }
             nir_variable *src = nir_intrinsic_get_var(val, 0);
             if (!src || !(src->data.mode & nir_var_shader_in))
                 return false;
@@ -1702,7 +1772,17 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_RESTAGE");
         restage = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    return restage ? r300_vs_is_fragment_aluable(r300) : r300_vs_is_mvp(r300);
+    /* Computed varyings (a fragment-aluable function of the position input, not a
+     * straight passthrough) ride a further opt-in: the route then runs a producer
+     * pass per varying into its own BO.  Off by default so the proven
+     * passthrough-varying route is unchanged (a computed-varying VS falls back to
+     * gallivm rather than rendering the wrong colour from the application buffer). */
+    static int varying = -1;
+    if (varying < 0) {
+        const char *e = getenv("R300_R2VB_VARYING");
+        varying = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return restage ? r300_vs_is_fragment_aluable(r300, varying) : r300_vs_is_mvp(r300);
 }
 
 /* Route-exec MVP path: run gl_Position = M * in_pos on the fragment ALU.  The
@@ -1791,7 +1871,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
          * matrix it reads from UBO[0] into FS const file 0 untransposed (the VS
          * body is column-MAD).  Built per draw and deleted after, like the baked
          * path, since the FS tracks whatever VS is bound. */
-        xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir);
+        xfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir, VARYING_SLOT_POS);
         if (xfs)
             r300_r2vb_set_transform_consts_raw(r300, cols);
     } else if (externals) {
@@ -1856,6 +1936,54 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     }
     if (getenv("R300_R2VB_XFORM_VERIFY"))
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
+
+    /* Computed-varying producer pass (R300_R2VB_VARYING): re-stage the bound VS
+     * targeting its first computed varying and render that value on the fragment
+     * ALU into a dedicated BO, the same proven single-RT producer the position
+     * pass uses, fed the same velem[0] attribute.  R300_R2VB_VARYING_VERIFY=<k>
+     * reads the BO back against model*k -- an FP24-exact input through an exact op
+     * (k a power of two) stays bit-exact, so the tight readback, not the 8-bit
+     * colour, is the proof.  The re-ingest below still feeds varyings from the
+     * application buffers, so this pass does not yet correct the framebuffer
+     * colour; it isolates the production + oracle from the re-ingest rewiring. */
+    static int varying = -1;
+    if (varying < 0) {
+        const char *e = getenv("R300_R2VB_VARYING");
+        varying = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    int vslot = varying ? r300_r2vb_first_computed_varying(r300_vs(r300)->state.ir.nir) : -1;
+    if (vslot >= 0) {
+        void *vfs = r300_r2vb_restage_vs_as_fs(r300, r300_vs(r300)->state.ir.nir,
+                                               (gl_varying_slot)vslot);
+        struct pipe_resource *vbo = r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
+        if (vfs && vbo) {
+            void *saved = r300->fs.state;
+            r300->context.bind_fs_state(&r300->context, vfs);
+            r300_update_derived_state(r300);
+            if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
+                r300_r2vb_emit_producer(r300, r300_resource(vbo), 0, count, model, true);
+            r300->context.bind_fs_state(&r300->context, saved);
+            r300_update_derived_state(r300);
+            r300->context.flush(&r300->context, NULL, 0);
+            const char *vv = getenv("R300_R2VB_VARYING_VERIFY");
+            if (vv) {
+                float factor = (float)atof(vv);
+                if (factor == 0.0f)
+                    factor = 1.0f;
+                float (*vexp)[4] = malloc((size_t)count * sizeof(*vexp));
+                if (vexp) {
+                    for (unsigned s = 0; s < count; s++)
+                        for (int i = 0; i < 4; i++)
+                            vexp[s][i] = model[s][i] * factor;
+                    r2vb_verify_bo_readback(r300, vbo, vexp, count, 1e-4f, "varying");
+                    free(vexp);
+                }
+            }
+        }
+        if (vfs)
+            r300->context.delete_fs_state(&r300->context, vfs);
+        pipe_resource_reference(&vbo, NULL);
+    }
 
     /* Multi-stream re-ingest.  Draw the transformed positions (from clip) plus the
      * model's pass-through attributes (from the application buffers, unchanged by
