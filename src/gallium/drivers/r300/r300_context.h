@@ -590,6 +590,14 @@ struct r300_context {
     int sprite_coord_enable;
     /* Whether we are drawing points, to disable sprite coord if not */
     bool is_point;
+    /* SWTCL gl_PointCoord delivery: route the PCOORD sprite as a
+     * draw-generated vertex texcoord (the wide-point stage expands the point to
+     * triangles, so HW GA point-stuffing no longer applies) rather than
+     * GB_POINT_STUFF. */
+    bool point_sprite_via_draw;
+    /* Re-entrancy guard for the run-time SWTCL vertex-layout rebuild in
+     * r300_render_get_vertex_info. */
+    bool in_swtcl_layout_rebuild;
     bool scissor_enabled;
     /* Whether two-sided color selection is enabled (AKA light_twoside). */
     bool two_sided_color;
@@ -836,6 +844,7 @@ r300_framebuffer_init(struct pipe_context *pctx, const struct pipe_framebuffer_s
 
 /* r300_state_derived.c */
 void r300_update_derived_state(struct r300_context* r300);
+void r300_swtcl_rebuild_vertex_layout(struct r300_context* r300);
 
 /* r300_debug.c */
 void r500_dump_rs_block(struct r300_rs_block *rs);

@@ -1497,16 +1497,15 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
 
     /* Override some states for Draw. */
     rs->rs_draw.sprite_coord_enable = 0; /* We can do this in HW. */
-    /* The wide-point stage expands a point to a size-correct quad, but when
-     * point_quad_rasterization is set it also generates gl_PointCoord sprite
-     * texcoords, reading draw->fs.fragment_shader (widepoint_first_point).
-     * SWTCL never binds a fragment shader to the draw module -- r300 shades in
-     * hardware -- so that path dereferences NULL. r300 already declines draw
-     * sprite coords above and rasterizes point coords in hardware, so clear
-     * point_quad_rasterization for the draw rasterizer as well. The point-size
-     * expansion reads the per-vertex size through psize_slot independently of
-     * this flag, so size handling is unaffected. */
-    rs->rs_draw.point_quad_rasterization = 0;
+    /* Keep point_quad_rasterization from the gallium rasterizer state. When
+     * set, the wide-point stage generates gl_PointCoord sprite texcoords from
+     * draw->fs.fragment_shader, which r300_bind_fs_state keeps bound through
+     * draw_bind_fragment_shader. Once the point is expanded to a triangle pair
+     * the HW GA point-stuffing no longer fires, so the PCOORD varying is routed
+     * as a draw-generated vertex texcoord (point_sprite_via_draw) in
+     * r300_update_rs_block, which depends on this flag reaching the draw
+     * rasterizer. The per-vertex point size is read through psize_slot
+     * independently of this flag. */
     rs->rs_draw.offset_point = 0;
     rs->rs_draw.offset_line = 0;
     rs->rs_draw.offset_tri = 0;

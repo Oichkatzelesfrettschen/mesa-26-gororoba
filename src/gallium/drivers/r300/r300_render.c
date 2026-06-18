@@ -1255,10 +1255,20 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
                          info->index_size, ~0);
     }
 
+    r300->point_sprite_via_draw = false;
     if (r300->sprite_coord_enable != 0) {
         bool is_point = r300_rasterizer_emits_points(r300, info->mode);
         if (is_point != r300->is_point) {
             r300->is_point = is_point;
+            r300_mark_atom_dirty(r300, &r300->rs_block_state);
+        }
+        /* gl_PointCoord on a SW-expanded point reaches the FS as a
+         * draw-generated sprite texcoord, not HW GA point-stuffing (inert once
+         * the point is a triangle pair). Flag it and force an RS-block rebuild;
+         * the PCOORD draw output exists only at draw run time, so the layout is
+         * finalized in r300_render_get_vertex_info. */
+        if (is_point) {
+            r300->point_sprite_via_draw = true;
             r300_mark_atom_dirty(r300, &r300->rs_block_state);
         }
     }
@@ -1319,6 +1329,21 @@ r300_render_get_vertex_info(struct vbuf_render* render)
 {
     struct r300_render* r300render = r300_render(render);
     struct r300_context* r300 = r300render->r300;
+
+    /* The wide-point stage allocates the gl_PointCoord (PCOORD) sprite vertex
+     * output during the pipeline run, after r300_update_derived_state already
+     * built the layout at draw prepare with no such output. The vbuf stage
+     * (draw_pipe_vbuf.c vbuf_start_prim) calls this once the extra exists, so
+     * rebuild the layout to fold gl_PointCoord into the HW vertex and RS
+     * routing, then re-dirty the RS block so the run-time version is emitted.
+     * in_swtcl_layout_rebuild guards against re-entry from the atom dirtying. */
+    if (r300->point_sprite_via_draw && !r300->in_swtcl_layout_rebuild &&
+        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0) {
+        r300->in_swtcl_layout_rebuild = true;
+        r300_swtcl_rebuild_vertex_layout(r300);
+        r300_mark_atom_dirty(r300, &r300->rs_block_state);
+        r300->in_swtcl_layout_rebuild = false;
+    }
 
     return &r300->vertex_info;
 }
@@ -1619,6 +1644,11 @@ void r300_blitter_draw_rectangle(struct blitter_context *blitter,
         r300->is_point = true;
     }
 
+    /* SW point-sprite gl_PointCoord routing is a property of the gallium draw
+     * path; the blitter emits its own HW point with GA point-stuffing, so clear
+     * any value left over from a prior point draw before the derived-state
+     * rebuild so it does not divert this RS block. */
+    r300->point_sprite_via_draw = false;
     r300_update_derived_state(r300);
 
     /* Mark some states we don't care about as non-dirty. */
