@@ -666,6 +666,14 @@ struct r300_context {
     struct pipe_resource *r2vb_slot_pos_bo;
     unsigned r2vb_slot_pos_count;
 
+    /* Minimal vertex shader (position + one varying) bound during a producer pass
+     * so update_derived_state sizes the VAP output / PSC / RS-block to the
+     * producer's two-vec4 DRAW_IMMD vertex, not the application VS's varying
+     * count.  An application VS with more than one varying would otherwise leave
+     * the VAP fetching past the embedded vertex.  Built lazily, owned by the
+     * context. */
+    void *r2vb_producer_vs;
+
     /* Set for the single-command-stream R2VB MVP re-ingest so
      * r300_r2vb_exec_passthrough_draw re-asserts the producer cache barrier
      * (RB3D/ZB flush + WAIT_3D_IDLECLEAN + VAP_PVS_STATE_FLUSH) immediately

@@ -210,6 +210,49 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
     return r300->r2vb_transform_fs;
 }
 
+/* Minimal pass-through VS bound for a producer pass: one position input and one
+ * generic attribute, two outputs (gl_Position + a single VAR0 varying).  The
+ * producer renders points through PRIM_WALK_VERTEX_EMBEDDED at TCL_BYPASS, so this
+ * VS never runs -- only its output signature is read by update_derived_state,
+ * which sizes VAP_OUT_VTX_FMT, the PSC stream count, and the RS block.  Binding it
+ * pins those to the producer's two-vec4 embedded vertex regardless of how many
+ * varyings the application VS declares; an application VS with two or more
+ * varyings otherwise inflates the PSC and the VAP fetches past the embedded
+ * vertex.  Cached on the context. */
+static void *r300_r2vb_get_producer_vs(struct r300_context *r300)
+{
+    if (r300->r2vb_producer_vs)
+        return r300->r2vb_producer_vs;
+
+    const nir_shader_compiler_options *options =
+        r300->screen->screen.nir_options[MESA_SHADER_VERTEX];
+    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, options,
+                                                   "r300 r2vb producer VS");
+
+    nir_variable *in_pos = nir_variable_create(b.shader, nir_var_shader_in,
+                                               glsl_vec4_type(), "in_pos");
+    in_pos->data.location = VERT_ATTRIB_GENERIC0;
+    nir_variable *in_attr = nir_variable_create(b.shader, nir_var_shader_in,
+                                                glsl_vec4_type(), "in_attr");
+    in_attr->data.location = VERT_ATTRIB_GENERIC1;
+
+    nir_variable *out_pos = nir_variable_create(b.shader, nir_var_shader_out,
+                                                glsl_vec4_type(), "gl_Position");
+    out_pos->data.location = VARYING_SLOT_POS;
+    nir_variable *out_var = nir_variable_create(b.shader, nir_var_shader_out,
+                                                glsl_vec4_type(), "var0");
+    out_var->data.location = VARYING_SLOT_VAR0;
+
+    nir_store_var(&b, out_pos, nir_load_var(&b, in_pos), 0xf);
+    nir_store_var(&b, out_var, nir_load_var(&b, in_attr), 0xf);
+
+    struct pipe_shader_state st = {0};
+    st.type = PIPE_SHADER_IR_NIR;
+    st.ir.nir = b.shader; /* create_vs_state takes ownership and precompiles */
+    r300->r2vb_producer_vs = r300->context.create_vs_state(&r300->context, &st);
+    return r300->r2vb_producer_vs;
+}
+
 /* Build a transform-FS with the MVP baked in as immediates: out = M * in_attr,
  * where the four rows (already transposed so DP4(row_i, v) = (M*v)_i) are
  * nir_imm_vec4 constants.  Hand-built load_ubo on r300 folds to immediate
@@ -1847,14 +1890,21 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                                               VARYING_SLOT_POS);
         if (pf) {
             /* Capture the derived VAP/RS state the producer would inherit for this
-             * bound VS, up to (not including) emit_producer -- no CS submit.  The
-             * field that differs between the working 2-output VS and the broken
-             * 3-output VS is the producer's fix target. */
+             * bound VS, up to (not including) emit_producer -- no CS submit.  Bind
+             * the producer VS too (the fix), so the dump shows the routing the
+             * producer actually emits; after the fix the 3-output VS's dump must
+             * match the 2-output VS's. */
             void *saved_fs = r300->fs.state;
+            void *saved_vs = r300->vs_state.state;
+            void *pvs = r300_r2vb_get_producer_vs(r300);
             r300->context.bind_fs_state(&r300->context, pf);
+            if (pvs)
+                r300->context.bind_vs_state(&r300->context, pvs);
             r300_update_derived_state(r300);
             r300_r2vb_dump_xform_routing(r300);
             r300->context.bind_fs_state(&r300->context, saved_fs);
+            if (pvs)
+                r300->context.bind_vs_state(&r300->context, saved_vs);
             r300_update_derived_state(r300);
             r300->context.delete_fs_state(&r300->context, pf);
         }
@@ -1928,14 +1978,23 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         return false;
     }
 
-    /* Bind the transform-FS, recompute derived (RS) state for its single input,
-     * then emit that state and the producer under the normal draw flow. */
+    /* Bind the transform-FS and the minimal producer VS, recompute derived (RS)
+     * state for the producer's two-vec4 vertex (not the application VS's varying
+     * count), then emit that state and the producer under the normal draw flow.
+     * The producer VS pins VAP_OUT_VTX_FMT / PSC / RS to the embedded vertex so
+     * the VAP does not fetch past it for an application VS with extra varyings. */
     void *saved_fs = r300->fs.state;
+    void *saved_vs = r300->vs_state.state;
+    void *pvs = r300_r2vb_get_producer_vs(r300);
     r300->context.bind_fs_state(&r300->context, xfs);
+    if (pvs)
+        r300->context.bind_vs_state(&r300->context, pvs);
     r300_update_derived_state(r300);
     if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
         r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, true);
     r300->context.bind_fs_state(&r300->context, saved_fs);
+    if (pvs)
+        r300->context.bind_vs_state(&r300->context, saved_vs);
     r300_update_derived_state(r300);
     if (!xfs_cached)
         r300->context.delete_fs_state(&r300->context, xfs);
@@ -2000,11 +2059,17 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         struct pipe_resource *vbo = r2vb_create_selftest_bo(r300, align(count, 2) * 16, 0);
         if (vfs && vbo) {
             void *saved = r300->fs.state;
+            void *saved_vs = r300->vs_state.state;
+            void *pvs = r300_r2vb_get_producer_vs(r300);
             r300->context.bind_fs_state(&r300->context, vfs);
+            if (pvs)
+                r300->context.bind_vs_state(&r300->context, pvs);
             r300_update_derived_state(r300);
             if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
                 r300_r2vb_emit_producer(r300, r300_resource(vbo), 0, count, model, true);
             r300->context.bind_fs_state(&r300->context, saved);
+            if (pvs)
+                r300->context.bind_vs_state(&r300->context, saved_vs);
             r300_update_derived_state(r300);
             r300->context.flush(&r300->context, NULL, 0);
             const char *vv = getenv("R300_R2VB_VARYING_VERIFY");
