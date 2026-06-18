@@ -1,0 +1,42 @@
+# r300 SWTCL point/line/sprite conformance regression domain (deqp-GLES2).
+# One --deqp-case glob per line; '#' comments and blank lines ignored.
+# Covers every group the point/line/sprite fixes touch, plus regression
+# sentinels that must stay clean (they exercise the shared draw/VS path the
+# point fixes also run through, so collateral damage shows up here).
+
+# --- rasterization: points (size), lines (incl. wide), triangles ---
+dEQP-GLES2.functional.rasterization.primitives.points
+dEQP-GLES2.functional.rasterization.primitives.lines
+dEQP-GLES2.functional.rasterization.primitives.line_strip
+dEQP-GLES2.functional.rasterization.primitives.line_loop
+dEQP-GLES2.functional.rasterization.primitives.lines_wide
+dEQP-GLES2.functional.rasterization.primitives.line_strip_wide
+dEQP-GLES2.functional.rasterization.primitives.line_loop_wide
+dEQP-GLES2.functional.rasterization.primitives.triangles
+dEQP-GLES2.functional.rasterization.primitives.triangle_strip
+dEQP-GLES2.functional.rasterization.primitives.triangle_fan
+dEQP-GLES2.functional.rasterization.limits.points
+dEQP-GLES2.functional.rasterization.interpolation.basic.lines_wide
+dEQP-GLES2.functional.rasterization.interpolation.basic.line_strip_wide
+dEQP-GLES2.functional.rasterization.interpolation.basic.line_loop_wide
+dEQP-GLES2.functional.rasterization.interpolation.projected.lines_wide
+dEQP-GLES2.functional.rasterization.interpolation.projected.line_strip_wide
+dEQP-GLES2.functional.rasterization.interpolation.projected.line_loop_wide
+
+# --- clipping: point + line clipping is where wide points/lines regress ---
+dEQP-GLES2.functional.clipping.point.*
+dEQP-GLES2.functional.clipping.line.*
+
+# --- draw: points, lines, and the random mix that issues GL_POINTS ---
+dEQP-GLES2.functional.draw.draw_arrays.points.*
+dEQP-GLES2.functional.draw.draw_arrays.line_strip.*
+dEQP-GLES2.functional.draw.draw_arrays_instanced.points.*
+dEQP-GLES2.functional.draw.draw_elements.points.*
+dEQP-GLES2.functional.draw.random.*
+
+# --- gl_PointCoord (the entire GLES2 sprite-coord surface is this one case) ---
+dEQP-GLES2.functional.shaders.builtin_variable.pointcoord
+
+# --- regression sentinels: must stay 100% (validated clean on -22) ---
+dEQP-GLES2.functional.vertex_arrays.single_attribute.first.*
+dEQP-GLES2.functional.shaders.matrix.mul.dynamic_*
