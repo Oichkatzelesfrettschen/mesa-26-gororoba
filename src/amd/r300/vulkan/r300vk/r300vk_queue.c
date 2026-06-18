@@ -2252,6 +2252,17 @@ r300vk_replay_bind_pipeline(struct r300vk_device *device,
    struct pipe_context *pipe = device->pipe;
    const struct r300vk_pipeline *pl = e->bind_pipeline.pipeline;
    *bound_pipeline = pl;
+   /* The spec requires a non-null pipeline handle
+    * (VUID-vkCmdBindPipeline-pipeline-parameter), but an application that
+    * ignores a failed vkCreateGraphicsPipelines and binds VK_NULL_HANDLE must
+    * not crash the GPU replay.  Record the null binding and bind no CSOs; the
+    * draw replay already skips any draw whose bound pipeline (or its vs_cso /
+    * fs_cso) is null, so the offending draw is dropped instead of dereferencing
+    * a null pipeline here. */
+   if (!pl) {
+      *vb_dirty = true;
+      return;
+   }
    pipe->bind_blend_state(pipe, pl->blend_cso);
    pipe->bind_rasterizer_state(pipe, pl->rasterizer_cso);
    pipe->bind_depth_stencil_alpha_state(pipe, pl->dsa_cso);
