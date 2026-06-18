@@ -613,6 +613,17 @@ static void r300_init_screen_caps(struct r300_screen* r300screen)
        * rendering limits. 2048 pixels should be enough for anybody. */
       r300screen->caps.is_r500 ? 4096.0f :
       (r300screen->caps.is_r400 ? 4021.0f : 2560.0f);
+
+   /* The GA expands a wide line into a quad whose end-cap coverage drifts from
+    * the reference rasterizer as the width grows: a width-4 line matches, but a
+    * width-5 line already misses interpolated-coverage pixels along the cap, and
+    * the error scales with width up to the framebuffer-sized default.  The
+    * default keeps the full range so applications get the hardware's wide lines;
+    * r300_clamp_max_line_width opts a coverage-strict workload down to the
+    * largest width that still matches the reference (the aliased line range
+    * only, not point size -- point rasterization diverges by a separate path). */
+   if (r300screen->options.clamp_max_line_width)
+      caps->max_line_width = caps->max_line_width_aa = 4.0f;
    caps->max_texture_anisotropy = 16.0f;
    caps->max_texture_lod_bias = 16.0f;
 }
