@@ -70,6 +70,11 @@ void r300vk_GetImageMemoryRequirements2(VkDevice device,
                                          const VkImageMemoryRequirementsInfo2 *pInfo,
                                          VkMemoryRequirements2 *pMemoryRequirements);
 
+void r300vk_GetImageSparseMemoryRequirements2(VkDevice device,
+   const VkImageSparseMemoryRequirementsInfo2 *pInfo,
+   uint32_t *pSparseMemoryRequirementCount,
+   VkSparseImageMemoryRequirements2 *pSparseMemoryRequirements);
+
 /* vkGetImageSubresourceLayout is what deqp calls to learn a linear staging
  * image's rowPitch before mapping it.  The runtime vk_common base forwards the
  * v1 call to the dispatch table's GetImageSubresourceLayout2KHR slot.  That

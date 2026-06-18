@@ -55,8 +55,9 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_buffer_view, base, VkBufferView,
                                VK_OBJECT_TYPE_BUFFER_VIEW)
 
 /* VkSamplerAddressMode -> PIPE_TEX_WRAP_x.  r300 honors every Vulkan 1.0 wrap
- * mode; MIRROR_CLAMP_TO_EDGE needs the maintenance1/1.2 promotion the loader
- * already validated before the call reaches here. */
+ * mode; MIRROR_CLAMP_TO_EDGE is gated by the samplerMirrorClampToEdge feature
+ * (VK_KHR_sampler_mirror_clamp_to_edge), which the loader validates before the
+ * call reaches here. */
 static unsigned
 vk_address_mode_to_pipe(VkSamplerAddressMode mode)
 {
