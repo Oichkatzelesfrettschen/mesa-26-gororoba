@@ -666,6 +666,15 @@ struct r300_context {
     struct pipe_resource *r2vb_slot_pos_bo;
     unsigned r2vb_slot_pos_count;
 
+    /* Set for the single-command-stream R2VB MVP re-ingest so
+     * r300_r2vb_exec_passthrough_draw re-asserts the producer cache barrier
+     * (RB3D/ZB flush + WAIT_3D_IDLECLEAN + VAP_PVS_STATE_FLUSH) immediately
+     * before the re-ingest draw.  The producer writes the transformed positions
+     * through the RB3D colour cache earlier in the same stream; without the
+     * barrier adjacent to the vertex fetch the VAP returns stale data.  The
+     * two-submit default leaves this false and orders the passes with a flush. */
+    bool r2vb_reingest_barrier;
+
     /* Vertex array state info */
     bool vertex_arrays_dirty;
     bool vertex_arrays_indexed;
