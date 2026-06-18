@@ -1540,23 +1540,30 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     if (!externals)
         r300->context.delete_fs_state(&r300->context, xfs);
 
-    /* Submit the producer so clip is on the GPU before the re-ingest fetches it.
-     * The re-ingest reuses exec_passthrough_draw, whose vertex-buffer validate
-     * re-adds clip with a vertex usage that conflicts with the producer's
-     * color-write add in a shared command stream, so split the passes here.
-     * (The position-only hand-rolled re-ingest shared one stream by adding clip
-     * once; reconciling that with the multi-stream validate is a follow-on.) */
-    r300->context.flush(&r300->context, NULL, 0);
-    /* Sync clip into coherent memory before the re-ingest fetches it.  The radeon
-     * winsys pools BOs, so clip's buffer can be recycled from a prior VBO; without
-     * waiting for the producer submit, the re-ingest VAP fetch reads that stale
-     * (untransformed) content even though the LOAD_VBPNTR correctly points at clip
-     * (confirmed by R300_R2VB_VA_DUMP: identical array wiring, wrong vs right
-     * pixels).  A map-for-read waits for the producer and makes clip coherent.
-     * This is a per-draw CPU stall; a single-command-stream re-ingest (one clip
-     * add, the producer's cb_flush_clean barrier for ordering) is the perf
-     * follow-on that removes it. */
-    {
+    /* Order the producer's transform write before the re-ingest vertex fetch.
+     * Default (two-submit, proven byte-exact): submit the producer, then a
+     * map-for-read waits for that submit and makes clip coherent.  The radeon
+     * winsys pools BOs, so clip can be recycled from a prior VBO; without the
+     * wait the VAP fetch reads stale (untransformed) content even though
+     * LOAD_VBPNTR points at clip (R300_R2VB_VA_DUMP shows identical array wiring,
+     * wrong vs right pixels).  The map is a per-draw CPU stall.
+     *
+     * R300_R2VB_MVP_SINGLECS runs the producer and re-ingest in one command
+     * stream with no flush and no map.  radeon_drm_cs_add_buffer deduplicates:
+     * the producer's RADEON_USAGE_READWRITE|COLOR_BUFFER add and the re-ingest's
+     * vertex add for clip merge into one relocation, so there is no usage
+     * conflict.  The ordering is carried instead by re-asserting the
+     * cb_flush_clean + VAP_PVS_STATE_FLUSH barrier adjacent to the re-ingest
+     * draw (r2vb_reingest_barrier, emitted in r300_r2vb_exec_passthrough_draw):
+     * emit_producer's own barrier precedes prepare_for_rendering's dirty-state
+     * re-emit, so it is no longer adjacent to the fetch in the shared stream. */
+    static int single_cs = -1;
+    if (single_cs < 0) {
+        const char *e = getenv("R300_R2VB_MVP_SINGLECS");
+        single_cs = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (!single_cs) {
+        r300->context.flush(&r300->context, NULL, 0);
         struct pipe_transfer *sxfer = NULL;
         struct pipe_box sbox = { .width = (count ? count : 1) * 16, .height = 1, .depth = 1 };
         void *sm = r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ, &sbox, &sxfer);
@@ -1610,7 +1617,9 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         fprintf(stderr, "r2vb_mvp_reingest clip=%p buf=%p clip_slot=%u velem0_vbi=%u nvb=%u\n",
                 (void *)clip, (void *)r300_resource(clip)->buf, clip_slot,
                 r300->velems->velem[0].vertex_buffer_index, r300->nr_vertex_buffers);
+    r300->r2vb_reingest_barrier = single_cs;
     bool ok2 = r300_r2vb_exec_passthrough_draw(r300, info, draw);
+    r300->r2vb_reingest_barrier = false;
 
     r300->velems->velem[0] = saved_pe;
     r300->velems->format_size[0] = saved_fmtsz;

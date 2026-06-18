@@ -1186,7 +1186,8 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                            vp->translate[1], vp->scale[2], vp->translate[2]};
         if (r300_prepare_for_rendering(r300,
                                        PREP_EMIT_STATES | PREP_VALIDATE_VBOS | PREP_EMIT_VARRAYS,
-                                       NULL, 24, draw->start, 0, -1)) {
+                                       NULL, 24 + (r300->r2vb_reingest_barrier ? 8 : 0),
+                                       draw->start, 0, -1)) {
             CS_LOCALS(r300);
             BEGIN_CS(2 + 7 + 2);
             OUT_CS_REG(R300_VAP_VTX_SIZE, vap_vtx_size);
@@ -1197,6 +1198,26 @@ bool r300_r2vb_exec_passthrough_draw(struct r300_context *r300,
                            R300_VPORT_Y_SCALE_ENA | R300_VPORT_Y_OFFSET_ENA |
                            R300_VPORT_Z_SCALE_ENA | R300_VPORT_Z_OFFSET_ENA);
             END_CS;
+            /* Single-CS R2VB MVP re-ingest: the producer wrote the transformed
+             * positions into this vertex buffer through the RB3D colour cache
+             * earlier in the same command stream, and prepare_for_rendering's
+             * dirty-state re-emit (above) sits between emit_producer's barrier
+             * and this draw.  Re-assert that barrier here, adjacent to the fetch:
+             * flush the colour cache to memory, drain the 3D pipe, and sync the
+             * VAP vertex-fetch engine so it reads the transform instead of stale
+             * vertex-cache content.  Mirrors the sequence in r300_r2vb_emit_producer. */
+            if (r300->r2vb_reingest_barrier) {
+                BEGIN_CS(8);
+                OUT_CS_REG(R300_ZB_ZCACHE_CTLSTAT,
+                           R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                               R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+                OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT,
+                           R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
+                               R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
+                OUT_CS_REG(RADEON_WAIT_UNTIL, RADEON_WAIT_3D_IDLECLEAN);
+                OUT_CS_REG(R300_VAP_PVS_STATE_FLUSH_REG, 0x0);
+                END_CS;
+            }
             r300_emit_draw_arrays(r300, info->mode, draw->count);
             BEGIN_CS(2);
             OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
