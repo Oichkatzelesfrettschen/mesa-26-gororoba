@@ -47,6 +47,12 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
     struct r300_vertex_shader_code* vs = r300_vs(r300)->shader;
     struct r300_shader_semantics* vs_outputs = &vs->outputs;
     int i, gen_count;
+    /* gl_PointCoord is delivered as a draw-generated PCOORD vertex output for
+     * SW-expanded point sprites. The wide-point stage allocates that output
+     * only during the pipeline run, so a -1 slot (draw prepare) means skip it;
+     * the run-time r300_render_get_vertex_info rebuild emits it. */
+    const bool pcoord_via_draw = r300->point_sprite_via_draw &&
+        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0;
 
     /* Position. */
     if (vs_outputs->pos != ATTR_UNUSED) {
@@ -82,6 +88,15 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
         if (vs_outputs->generic[i] != ATTR_UNUSED &&
             (!(r300->sprite_coord_enable & (1U << i)) || !r300->is_point)) {
             r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, i);
+            gen_count++;
+        } else if (pcoord_via_draw && (r300->point_sprite_sce & (1U << i))) {
+            /* gl_PointCoord sprite for a SW-expanded point. The live
+             * sprite_coord_enable / is_point are zeroed mid-draw, so detect the
+             * sprite from the draw-entry snapshot. Emit the PCOORD vertex output
+             * at the same generic position r300_update_rs_block routes it, so
+             * vertex_info and the RS stream stay index-aligned for
+             * r300_swtcl_vertex_psc. */
+            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_PCOORD, 0);
             gen_count++;
         }
     }
@@ -304,6 +319,14 @@ static void r300_update_rs_block(struct r300_context *r300)
                            vs_outputs->bcolor[1] != ATTR_UNUSED;
     int *stream_loc_notcl = r300->stream_loc_notcl;
     uint32_t stuffing_enable = 0;
+    /* gl_PointCoord for SW-expanded point sprites is routed as a
+     * draw-generated vertex texcoord rather than HW GA point-stuffing, which no
+     * longer fires once the point is a triangle pair. Gated on the PCOORD draw
+     * output existing (valid only at draw run time, see
+     * r300_render_get_vertex_info) so the draw-prepare pass stays consistent
+     * with r300_draw_emit_all_attribs. */
+    const bool pcoord_via_draw = r300->point_sprite_via_draw &&
+        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0;
 
     if (r300->screen->caps.is_r500) {
         rX00_rs_col       = r500_rs_col;
@@ -470,14 +493,22 @@ static void r300_update_rs_block(struct r300_context *r300)
     /* Rasterize texture coordinates. */
     for (i = gen_offset; i < ATTR_GENERIC_COUNT && tex_count < 8; i++) {
 	bool sprite_coord = false;
+	bool sw_pcoord = false;
 
 	if (fs_inputs->generic[i] != ATTR_UNUSED) {
 	    sprite_coord = !!(r300->sprite_coord_enable & (1 << i)) && r300->is_point;
+	    /* SW-expanded point sprite: the live sprite_coord_enable / is_point are
+	     * zeroed by the draw module's mid-draw no-cull rasterizer rebind, so
+	     * detect the sprite from the draw-entry snapshot and route the
+	     * draw-generated PCOORD output as a real vertex texcoord. */
+	    sw_pcoord = pcoord_via_draw && !!(r300->point_sprite_sce & (1 << i));
 	}
 
-        if (vs_outputs->generic[i] != ATTR_UNUSED || sprite_coord) {
-            if (!sprite_coord) {
-                /* Set up the texture coordinates in VAP. */
+        if (vs_outputs->generic[i] != ATTR_UNUSED || sprite_coord || sw_pcoord) {
+            if (!sprite_coord || sw_pcoord) {
+                /* Set up the texture coordinates in VAP. A SW-expanded
+                 * gl_PointCoord (sw_pcoord) is a real per-vertex texcoord, not
+                 * HW point-stuffing. */
                 rs.vap_vsm_vtx_assm |= (R300_INPUT_CNTL_TC0 << tex_count);
                 rs.vap_out_vtx_fmt[1] |= (4 << (3 * tex_count));
                 stream_loc_notcl[loc++] = 6 + tex_count;
@@ -485,9 +516,11 @@ static void r300_update_rs_block(struct r300_context *r300)
                 stuffing_enable |=
                     R300_GB_TEX_ST << (R300_GB_TEX0_SOURCE_SHIFT + (tex_count*2));
 
-            /* Rasterize it. */
+            /* Rasterize it. The draw-generated PCOORD output carries (s,t,0,1)
+             * per vertex, so it uses the full XYZW texcoord swizzle; HW
+             * point-stuffing supplies only (s,t). */
             rX00_rs_tex(&rs, tex_count, tex_ptr,
-			sprite_coord ? SWIZ_XY01 : SWIZ_XYZW);
+			(sprite_coord && !sw_pcoord) ? SWIZ_XY01 : SWIZ_XYZW);
 
             /* Write it to the FS input register if it's needed by the FS. */
             if (fs_inputs->generic[i] != ATTR_UNUSED) {
@@ -503,7 +536,7 @@ static void r300_update_rs_block(struct r300_context *r300)
                     i, sprite_coord ? " (sprite coord)" : "");
             }
             tex_count++;
-            tex_ptr += sprite_coord ? 2 : 4;
+            tex_ptr += (sprite_coord && !sw_pcoord) ? 2 : 4;
         } else {
             /* Skip the FS input register, leave it uninitialized. */
             /* If we try to set it to (0,0,0,1), it will lock up. */
@@ -611,7 +644,7 @@ static void r300_update_rs_block(struct r300_context *r300)
     rs.inst_count = count - 1;
 
     /* set the GB enable flags */
-    if (r300->sprite_coord_enable && r300->is_point)
+    if (r300->sprite_coord_enable && r300->is_point && !pcoord_via_draw)
 	stuffing_enable |= R300_GB_POINT_STUFF_ENABLE;
 
     rs.gb_enable = stuffing_enable;
@@ -1088,6 +1121,24 @@ static void r300_pick_vertex_shader(struct r300_context *r300)
     }
 }
 
+/* Rebuild the SWTCL hardware vertex layout, its PSC routing, and the RS block
+ * as one unit. The three must stay index-consistent: r300_update_rs_block
+ * fills stream_loc_notcl[], r300_draw_emit_all_attribs fills vertex_info[], and
+ * r300_swtcl_vertex_psc zips them. r300_render_get_vertex_info reruns this at
+ * draw run time to fold in the gl_PointCoord (PCOORD) draw output, which the
+ * wide-point stage allocates only once the pipeline runs. */
+void r300_swtcl_rebuild_vertex_layout(struct r300_context *r300)
+{
+    r300_update_rs_block(r300);
+
+    if (r300->draw) {
+        memset(&r300->vertex_info, 0, sizeof(struct vertex_info));
+        r300_draw_emit_all_attribs(r300);
+        draw_compute_vertex_size(&r300->vertex_info);
+        r300_swtcl_vertex_psc(r300);
+    }
+}
+
 void r300_update_derived_state(struct r300_context* r300)
 {
     if (r300->textures_state.dirty) {
@@ -1100,14 +1151,7 @@ void r300_update_derived_state(struct r300_context* r300)
         r300_pick_vertex_shader(r300);
 
     if (r300->rs_block_state.dirty) {
-        r300_update_rs_block(r300);
-
-        if (r300->draw) {
-            memset(&r300->vertex_info, 0, sizeof(struct vertex_info));
-            r300_draw_emit_all_attribs(r300);
-            draw_compute_vertex_size(&r300->vertex_info);
-            r300_swtcl_vertex_psc(r300);
-        }
+        r300_swtcl_rebuild_vertex_layout(r300);
     }
 
     r300_update_hyperz_state(r300);

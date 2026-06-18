@@ -374,8 +374,6 @@ if draw_with_llvm
     'tessellator/tessellator.hpp',
     'tessellator/p_tessellator.cpp',
     'tessellator/p_tessellator.h',
-    'nir/nir_to_tgsi_info.c',
-    'nir/nir_to_tgsi_info.h',
   )
   if llvm_with_orcjit
     files_libgallium += files('gallivm/lp_bld_init_orc.cpp',)
@@ -383,6 +381,18 @@ if draw_with_llvm
     files_libgallium += files('gallivm/lp_bld_init.c',)
   endif
 endif
+
+# nir_tgsi_scan_shader (nir_to_tgsi_info.c) feeds the draw module's fragment,
+# geometry, tessellation and mesh stages, which build unconditionally.  Inside
+# the draw_with_llvm block a draw-use-llvm=false build (the C draw interpreter)
+# never compiles it, so callers inline the no-op stub nir_to_tgsi_info.h gives
+# them and the fragment-shader input scan reports zero inputs -- the wide-point
+# stage then cannot find the gl_PointCoord sprite input.  The file pulls in nir
+# and tgsi headers only, no gallivm, so it is safe to build with or without LLVM.
+files_libgallium += files(
+  'nir/nir_to_tgsi_info.c',
+  'nir/nir_to_tgsi_info.h',
+)
 
 files_libgalliumvl = files(
   'vl/vl_codec.c',

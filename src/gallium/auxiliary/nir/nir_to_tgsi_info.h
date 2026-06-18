@@ -28,15 +28,14 @@
 struct nir_shader;
 struct tgsi_shader_info;
 
-/* only llvmpipe uses this path, so handle draw not using llvm */
-#if DRAW_LLVM_AVAILABLE
+/* The draw module's generic wide-point and clip stages read this scanned input
+ * info to place sprite texcoords (gl_PointCoord) and interpolate varyings, so
+ * the scan must run for the plain C draw path too, not only the llvmpipe path.
+ * A no-op stub for the non-LLVM build left fs->info.num_inputs at zero, which
+ * starved the wide-point stage of the PCOORD input.  nir_to_tgsi_info.c is
+ * built unconditionally to match. */
 void nir_tgsi_scan_shader(const struct nir_shader *nir,
                           struct tgsi_shader_info *info,
                           bool need_texcoord);
-#else
-static inline void nir_tgsi_scan_shader(const struct nir_shader *nir,
-                                        struct tgsi_shader_info *info,
-                                        bool need_texcoord) {}
-#endif
 
 #endif
