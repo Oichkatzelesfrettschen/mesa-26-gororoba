@@ -863,9 +863,33 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     r300_r2vb_emit_producer(r300, output_gart_bo, output_gart_bo_offset, num_vertices,
                             vertex_attrs, 1, transform_mode);
 
+    /* C1a cell gate (R300_PTSIZE_C1A=1): write identity values to
+     * SE_VPORT_X/Y/ZSCALE/OFFSET (0x1d98..0x1dac) on the re-ingest so the
+     * VAP viewport state does not inherit non-identity values from previous
+     * IBs.  The Stage 0.5 capture-class decode established that NEITHER the
+     * SE_VPORT_*SCALE/OFFSET (0x1d98..0x1dac) NOR the VAP_VPORT_*SCALE/OFFSET
+     * (0x2098..0x20ac) registers are ever written in the canonical Vulkan
+     * trigger's selftest IB -- their value at DRAW_VBUF_2 is whatever the
+     * GPU register file held before the IB started.  The producer's
+     * VAP_VTE_CNTL = R300_VTX_XY_FMT | R300_VTX_Z_FMT clears VPORT_*_ENA at
+     * the BITS level, but the VAP's perspective-divide and pre-raster
+     * pipeline picks up a residual viewport bias on W and Y regardless,
+     * producing the bbox-to-origin smear we observed in pre-cold-cycle
+     * runs.  Defensive hygiene: write identity values unconditionally on
+     * the re-ingest so the smear cannot reappear regardless of prior IB
+     * state.  Mirrors the proven precedent at r300_render.c:1190-1196 (the
+     * existing R2VB MVP re-ingest path's identity-viewport setup).
+     * Gate-off keeps the path byte-identical. */
+    static int ptsize_c1a = -1;
+    if (ptsize_c1a < 0) {
+        const char *e = getenv("R300_PTSIZE_C1A");
+        ptsize_c1a = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
-     * optional observe redirect (stage3_color_bo) adds nine dwords. */
-    BEGIN_CS(stage3_color_bo ? 26 : 17);
+     * optional observe redirect (stage3_color_bo) adds nine dwords; the C1a
+     * gate adds seven. */
+    BEGIN_CS((stage3_color_bo ? 26 : 17) + (ptsize_c1a ? 7 : 0));
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
@@ -881,6 +905,19 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
         OUT_CS(((stage3_width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
                ((stage3_height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+    }
+
+    if (ptsize_c1a) {
+        /* Identity viewport: scale = 1.0, offset = 0.0 on X, Y, Z.  Mirrors
+         * the existing R2VB MVP re-ingest path at r300_render.c:1194 which
+         * uses the SE_VPORT_XSCALE..ZOFFSET register set (0x1d98..0x1dac). */
+        OUT_CS_REG_SEQ(R300_SE_VPORT_XSCALE, 6);
+        OUT_CS_32F(1.0f);
+        OUT_CS_32F(0.0f);
+        OUT_CS_32F(1.0f);
+        OUT_CS_32F(0.0f);
+        OUT_CS_32F(1.0f);
+        OUT_CS_32F(0.0f);
     }
 
     /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.
