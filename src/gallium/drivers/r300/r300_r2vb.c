@@ -2073,16 +2073,42 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             r300_update_derived_state(r300);
             r300->context.flush(&r300->context, NULL, 0);
             const char *vv = getenv("R300_R2VB_VARYING_VERIFY");
-            if (vv) {
-                float factor = (float)atof(vv);
+            const char *vmat = getenv("R300_R2VB_VARYING_MAT");
+            const char *vtolenv = getenv("R300_R2VB_VARYING_TOL");
+            if (vv || vmat) {
+                /* Expected = M * inPos (row-major R300_R2VB_VARYING_MAT, 16
+                 * floats) for a matrix computed varying, else inPos * factor.  The
+                 * matrix case is the lossier check: FP24 error accumulates across
+                 * the four mul-adds per row, so the BO readback (not the 8-bit
+                 * colour) is the proof, and R300_R2VB_VARYING_TOL sets the FP24
+                 * window. */
+                float vtol = vtolenv ? (float)atof(vtolenv) : 1e-4f;
+                if (vtol <= 0.0f)
+                    vtol = 1e-4f;
+                float mat[4][4];
+                bool have_mat = false;
+                if (vmat) {
+                    char *p = (char *)vmat;
+                    int n = 0;
+                    for (; n < 16 && p && *p; n++) {
+                        mat[n / 4][n % 4] = (float)strtod(p, &p);
+                        while (*p == ',' || *p == ' ')
+                            p++;
+                    }
+                    have_mat = (n == 16);
+                }
+                float factor = vv ? (float)atof(vv) : 1.0f;
                 if (factor == 0.0f)
                     factor = 1.0f;
                 float (*vexp)[4] = malloc((size_t)count * sizeof(*vexp));
                 if (vexp) {
                     for (unsigned s = 0; s < count; s++)
                         for (int i = 0; i < 4; i++)
-                            vexp[s][i] = model[s][i] * factor;
-                    r2vb_verify_bo_readback(r300, vbo, vexp, count, 1e-4f, "varying");
+                            vexp[s][i] = have_mat
+                                ? (mat[i][0] * model[s][0] + mat[i][1] * model[s][1] +
+                                   mat[i][2] * model[s][2] + mat[i][3] * model[s][3])
+                                : model[s][i] * factor;
+                    r2vb_verify_bo_readback(r300, vbo, vexp, count, vtol, "varying");
                     free(vexp);
                 }
             }
