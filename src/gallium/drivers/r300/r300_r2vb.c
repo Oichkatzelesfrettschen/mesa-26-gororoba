@@ -909,10 +909,64 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c1b = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
+    /* C1c cell gate (R300_PTSIZE_C1C=1): re-emit the VAP_VTX_STATE_CNTL +
+     * VAP_VSM_VTX_ASSM atom (0x2180..0x2184) with values that match the
+     * re-ingest's single-FLOAT_4 position-only input stream, instead of
+     * inheriting from the application's prior VS state-emit at
+     * r300_emit.c:903-905.  Stage 0.5 observed VTX_STATE_CNTL = 0x00005555
+     * and VSM_VTX_ASSM = 0x00000401 (POS | TC0) inherited from the
+     * application's "position + tex0" layout; the re-ingest has no tex0,
+     * so the inherited TC0 bit causes the GA to expect a texcoord output
+     * vector that the FLOAT_4-only PSC does not produce.  C1c writes:
+     *   VTX_STATE_CNTL = 0 (default)
+     *   VSM_VTX_ASSM   = R300_INPUT_CNTL_POS (POS only)
+     * Gate-off keeps the path byte-identical. */
+    static int ptsize_c1c = -1;
+    if (ptsize_c1c < 0) {
+        const char *e = getenv("R300_PTSIZE_C1C");
+        ptsize_c1c = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+
+    /* C2/C3/C4 cells from the SUPER GIGA never-written register survey
+     * (steinmarder finding 2026-06-19-rs482-super-giga-never-written-
+     * register-survey.md).  Each is independently gated; each writes a
+     * known-good identity / zero to a register class that the canonical
+     * Vulkan trigger's IB leaves unwritten.
+     *   C2: SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET (0x42A4..0x42B0) = 0
+     *       (clear inherited polygon-offset that shifts Z and indirectly XY)
+     *   C3: VAP_PROG_STREAM_CNTL_1..7 (0x2154..0x216C) = 0
+     *       (clear inherited multi-stream config that confuses the VAP)
+     *   C4: GA_FOG_SCALE (0x4294), GA_FOG_OFFSET (0x4298),
+     *       GA_TRIANGLE_STIPPLE (0x4214) = 0
+     *       (clear inherited fog state and stipple bias) */
+    static int ptsize_c2 = -1;
+    if (ptsize_c2 < 0) {
+        const char *e = getenv("R300_PTSIZE_C2");
+        ptsize_c2 = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    static int ptsize_c3 = -1;
+    if (ptsize_c3 < 0) {
+        const char *e = getenv("R300_PTSIZE_C3");
+        ptsize_c3 = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    static int ptsize_c4 = -1;
+    if (ptsize_c4 < 0) {
+        const char *e = getenv("R300_PTSIZE_C4");
+        ptsize_c4 = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
-     * optional observe redirect (stage3_color_bo) adds nine dwords; the C1a
-     * gate adds seven; the C1b gate adds two. */
-    BEGIN_CS((stage3_color_bo ? 26 : 17) + (ptsize_c1a ? 7 : 0) + (ptsize_c1b ? 2 : 0));
+     * optional observe redirect (stage3_color_bo) adds nine dwords.  Each C1/C
+     * cell adds an independently-gated count: C1a 7, C1b 2, C1c 3, C2 5
+     * (SEQ-of-4 + header), C3 8 (SEQ-of-7 + header), C4 6 (3 single writes,
+     * non-contiguous). */
+    BEGIN_CS((stage3_color_bo ? 26 : 17)
+             + (ptsize_c1a ? 7 : 0)
+             + (ptsize_c1b ? 2 : 0)
+             + (ptsize_c1c ? 3 : 0)
+             + (ptsize_c2  ? 5 : 0)
+             + (ptsize_c3  ? 8 : 0)
+             + (ptsize_c4  ? 6 : 0));
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
@@ -951,6 +1005,43 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
                    R300_VTX_XY_FMT | R300_VTX_Z_FMT | R300_VTX_W0_FMT);
     }
 
+    if (ptsize_c1c) {
+        /* Clean VAP_VTX_STATE_CNTL + VAP_VSM_VTX_ASSM for a position-only
+         * single-stream re-ingest.  Same SEQ-of-2 form as r300_emit.c:903. */
+        OUT_CS_REG_SEQ(R300_VAP_VTX_STATE_CNTL, 2);
+        OUT_CS(0);
+        OUT_CS(R300_INPUT_CNTL_POS);
+    }
+
+    if (ptsize_c2) {
+        /* C2: SU_POLY_OFFSET_FRONT/BACK_SCALE/OFFSET cleared.  SEQ-of-4
+         * starting at 0x42A4. */
+        OUT_CS_REG_SEQ(R300_SU_POLY_OFFSET_FRONT_SCALE, 4);
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0);
+    }
+
+    if (ptsize_c3) {
+        /* C3: VAP_PROG_STREAM_CNTL_1..7 cleared.  SEQ-of-7 starting at 0x2154. */
+        OUT_CS_REG_SEQ(R300_VAP_PROG_STREAM_CNTL_1, 7);
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0);
+        OUT_CS(0);
+    }
+
+    if (ptsize_c4) {
+        /* C4: GA_TRIANGLE_STIPPLE + GA_FOG_SCALE + GA_FOG_OFFSET cleared.
+         * Three separate writes because the registers are not contiguous. */
+        OUT_CS_REG(R300_GA_TRIANGLE_STIPPLE, 0);
+        OUT_CS_REG(R300_GA_FOG_SCALE, 0);
+        OUT_CS_REG(R300_GA_FOG_OFFSET, 0);
+    }
 
     /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.
      *
