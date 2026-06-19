@@ -220,11 +220,15 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
  * varyings otherwise inflates the PSC and the VAP fetches past the embedded
  * vertex.  Cached on the context. */
 /* Cap on producer model-attribute inputs (application VS inputs feeding the
- * producer FS).  The producer VS emits gl_Position plus this many varyings and the
- * embedded vertex is (1 + N) vec4 at VAP_VTX_SIZE = 4*(1+N); eight keeps both well
- * under the VAP output-vector count and the embedded-vertex size, while covering
- * the multi-attribute position shapes this targets. */
-#define R300_R2VB_MAX_PRODUCER_INPUTS 8
+ * producer FS), set to the validated ceiling.  N = 2 (gl_Position from two inputs)
+ * is proven on RS482; the no-submit classifier dump (R300_R2VB_VS_DUMP) reports
+ * count_position_inputs = 3 and the route declined for a three-input position.
+ * N >= 3 would route an unvalidated producer VAP output-vector packing, so
+ * r300_vs_is_fragment_aluable rejects a position reading more inputs and the draw
+ * falls back to gallivm rather than risking a malformed fetch.  Raising this
+ * requires validating the producer VAP_OUT_VTX_FMT / PSC packing for the larger
+ * input count. */
+#define R300_R2VB_MAX_PRODUCER_INPUTS 2
 
 /* Build (and cache) the producer vertex shader for num_inputs model attributes: it
  * passes the embedded slot position (GENERIC0) through to gl_Position and each
@@ -1845,6 +1849,21 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
         if (!dumped) {
             dumped = true;
             r300_vs_dump_nir_shape(r300);
+            /* Classifier decision + intermediates for the bound VS, no submit, so a
+             * route that engages on hardware can be predicted from the safe dump
+             * path instead of a hanging draw. */
+            {
+                nir_shader *dn = r300_vs(r300)->state.ir.nir;
+                const char *vev = getenv("R300_R2VB_VARYING");
+                bool av = vev && strcmp(vev, "1") == 0;
+                fprintf(stderr,
+                        "r2vb_classify_diag first_computed_varying=%d count_pos_inputs=%u "
+                        "aluable[varying=%d]=%d aluable[no_varying]=%d\n",
+                        r300_r2vb_first_computed_varying(dn),
+                        r300_r2vb_count_position_inputs(dn),
+                        av, r300_vs_is_fragment_aluable(r300, av),
+                        r300_vs_is_fragment_aluable(r300, false));
+            }
             /* For an MVP candidate, also build the transform-FS + slot-pixel BO
              * (no submit) so RADEON_DEBUG=fp prints the 4-DP4 program and the BO
              * positions are confirmed before the producer pass is wired. */
