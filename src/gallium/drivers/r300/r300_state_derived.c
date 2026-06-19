@@ -80,6 +80,16 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
         }
     }
 
+    /* gl_FrontFacing. The unfilled stage emits a per-triangle FACE output;
+     * allocate_hardware_inputs places the FS face register right after the
+     * colors and r300_update_rs_block routes the FACE texcoord in the same slot,
+     * so emit it here -- after the (b)colors, before the generics -- to keep
+     * vertex_info index-aligned with the RS stream. */
+    if (r300->frontface_via_draw &&
+        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0) {
+        r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_FACE, 0);
+    }
+
     /* Texture coordinates. */
     /* Only 8 generic vertex attributes can be used. If there are more,
      * they won't be rasterized. */
@@ -327,6 +337,11 @@ static void r300_update_rs_block(struct r300_context *r300)
      * with r300_draw_emit_all_attribs. */
     const bool pcoord_via_draw = r300->point_sprite_via_draw &&
         draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0;
+    /* gl_FrontFacing on an R300-class part: the draw module computed the face
+     * and emitted it as a FACE vertex output (the RS WRITE_BACKFACE encoding is
+     * an R500 addition). Gated on the FACE draw output existing, like PCOORD. */
+    const bool frontface_via_draw = r300->frontface_via_draw &&
+        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0;
 
     if (r300->screen->caps.is_r500) {
         rX00_rs_col       = r500_rs_col;
@@ -435,7 +450,29 @@ static void r300_update_rs_block(struct r300_context *r300)
         fp_offset++;
         col_count++;
         DBG(r300, DBG_RS, "r300: Rasterized FACE written to FS.\n");
-    } else if (fs_inputs->face != ATTR_UNUSED) {
+    } else if (frontface_via_draw && fs_inputs->face != ATTR_UNUSED &&
+               tex_count < 8) {
+        /* R300-class: the draw module computed the face per filled triangle and
+         * emitted it as a FACE vertex output. Route it as a texcoord into the FS
+         * face input. allocate_hardware_inputs places the face register
+         * immediately after the colors, so it must take this fp_offset here --
+         * before the generic loop -- to stay register-aligned, and a matching
+         * FACE attribute is emitted right after the (b)colors in
+         * r300_draw_emit_all_attribs to keep the GA stream aligned. */
+        rs.vap_vsm_vtx_assm |= (R300_INPUT_CNTL_TC0 << tex_count);
+        rs.vap_out_vtx_fmt[1] |= (4 << (3 * tex_count));
+        stream_loc_notcl[loc++] = 6 + tex_count;
+        rX00_rs_tex(&rs, tex_count, tex_ptr, SWIZ_XYZW);
+        rX00_rs_tex_write(&rs, tex_count, fp_offset);
+        fp_offset++;
+        tex_count++;
+        tex_ptr += 4;
+        DBG(r300, DBG_RS, "r300: Draw-injected FACE written to FS in texcoord.\n");
+    } else if (fs_inputs->face != ATTR_UNUSED && !r300->frontface_via_draw) {
+        /* When frontface_via_draw is set, the draw-generated FACE output does
+         * not exist yet at this draw-prepare build; r300_render_get_vertex_info
+         * rebuilds the layout once the unfilled stage has allocated it, so this
+         * is not an error in that case. */
         fprintf(stderr, "r300: ERROR: FS input FACE unassigned.\n");
     }
 

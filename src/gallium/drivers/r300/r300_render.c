@@ -1299,6 +1299,30 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
         }
     }
 
+    /* gl_FrontFacing on an R300-class SWTCL part. The rasterizer cannot route a
+     * face bit to the FS (the RS WRITE_BACKFACE encoding is an R500 addition),
+     * so ask the draw module to compute the face per filled triangle; the RS
+     * block then routes it as a vertex texcoord into the FS face input.
+     * Restricted to triangle draws (the only primitives with a meaningful
+     * winding) and to non-r500 parts (r500 uses the native HW WRITE_FACE path in
+     * r300_update_rs_block). On by default; R300_FRONTFACE_VIA_DRAW=0 is the
+     * escape hatch. The fragment shader is not picked until
+     * r300_update_derived_state below, so the actual gl_FrontFacing use is gated
+     * downstream: the draw module checks its own FS copy (uses_frontface) before
+     * forcing the stage, and r300_update_rs_block checks the validated FS face
+     * input before routing. */
+    r300->frontface_via_draw = false;
+    if (!r300->screen->caps.is_r500 &&
+        u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES) {
+        static int gate = -1;
+        if (gate < 0) {
+            const char *e = getenv("R300_FRONTFACE_VIA_DRAW");
+            gate = (e && strcmp(e, "0") == 0) ? 0 : 1;
+        }
+        r300->frontface_via_draw = gate != 0;
+    }
+    draw_enable_frontface_injection(r300->draw, r300->frontface_via_draw);
+
     r300_update_derived_state(r300);
 
     /* RS482 fragment-ALU R2VB vertex route (experiment-gated by R300_R2VB_ROUTE).
@@ -1358,13 +1382,17 @@ r300_render_get_vertex_info(struct vbuf_render* render)
 
     /* The wide-point stage allocates the gl_PointCoord (PCOORD) sprite vertex
      * output during the pipeline run, after r300_update_derived_state already
-     * built the layout at draw prepare with no such output. The vbuf stage
+     * built the layout at draw prepare with no such output. The unfilled stage
+     * allocates the gl_FrontFacing (FACE) output the same way. The vbuf stage
      * (draw_pipe_vbuf.c vbuf_start_prim) calls this once the extra exists, so
-     * rebuild the layout to fold gl_PointCoord into the HW vertex and RS
-     * routing, then re-dirty the RS block so the run-time version is emitted.
-     * in_swtcl_layout_rebuild guards against re-entry from the atom dirtying. */
-    if (r300->point_sprite_via_draw && !r300->in_swtcl_layout_rebuild &&
-        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0) {
+     * rebuild the layout to fold the draw-generated output into the HW vertex
+     * and RS routing, then re-dirty the RS block so the run-time version is
+     * emitted. in_swtcl_layout_rebuild guards re-entry from the atom dirtying. */
+    if (!r300->in_swtcl_layout_rebuild &&
+        ((r300->point_sprite_via_draw &&
+          draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0) ||
+         (r300->frontface_via_draw &&
+          draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0))) {
         r300->in_swtcl_layout_rebuild = true;
         r300_swtcl_rebuild_vertex_layout(r300);
         r300_mark_atom_dirty(r300, &r300->rs_block_state);

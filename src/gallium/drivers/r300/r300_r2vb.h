@@ -27,6 +27,9 @@ enum r300_r2vb_verdict {
     R2VB_REJECT_INSTANCED,    /* instance_count != 1 */
     R2VB_REJECT_COUNT,        /* 0 or >= 65536 (VAP_VF_MAX_VTX_INDX is 16-bit) */
     R2VB_REJECT_PRIM,         /* topology outside the proven set */
+    R2VB_REJECT_FRONTFACE,    /* FS reads gl_FrontFacing: the TCL_BYPASS re-ingest
+                               * skips the draw module, so the CPU face-injection
+                               * stage never runs -- the two paths are exclusive */
     R2VB_VERDICT_COUNT
 };
 

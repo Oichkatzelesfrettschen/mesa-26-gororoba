@@ -549,6 +549,22 @@ draw_enable_point_sprites(struct draw_context *draw, bool enable)
 
 
 /**
+ * Tells the draw module to inject gl_FrontFacing as a per-vertex attribute for
+ * filled triangles. A hardware rasterizer that cannot route a face bit into a
+ * fragment-shader input (R300-class: the RS WRITE_BACKFACE encoding is an R500
+ * addition) sets this so the unfilled stage computes the face on the CPU and
+ * hands it to the backend as an ordinary interpolated varying. Default off,
+ * so backends that get facing from their rasterizer are untouched.
+ */
+void
+draw_enable_frontface_injection(struct draw_context *draw, bool enable)
+{
+   draw_do_flush(draw, DRAW_FLUSH_STATE_CHANGE);
+   draw->pipeline.frontface_inject = enable;
+}
+
+
+/**
  * Allocate an extra vertex/geometry shader vertex attribute, if it doesn't
  * exist already.
  *
