@@ -815,6 +815,17 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
          vl_idct_flush(i ? &dec->idct_c : &dec->idct_y, &buf->idct[i], buf->num_ycbcr_blocks[i]);
    }
 
+   /* The loop above renders the IDCT intermediate plane (and the zscan source);
+    * the motion-comp loop below samples it.  That render-to-texture then sample
+    * is a producer/consumer hazard within one command stream, and nothing here
+    * orders it -- so a driver that does not implicitly flush and invalidate its
+    * texture cache between the passes samples stale intermediate texels
+    * non-deterministically.  Mark the boundary with the explicit sampler
+    * texture_barrier, the same way the compute video paths memory_barrier
+    * between passes; on r300 it emits the GPU flush + texture-cache invalidate
+    * the second pass needs. */
+   dec->context->texture_barrier(dec->context, PIPE_TEXTURE_BARRIER_SAMPLER);
+
    plane_order = vl_video_buffer_plane_order(target->buffer_format);
    mc_source_sv = dec->mc_source->get_sampler_view_planes(dec->mc_source);
    for (i = 0, component = 0; component < VL_NUM_COMPONENTS; ++i) {
