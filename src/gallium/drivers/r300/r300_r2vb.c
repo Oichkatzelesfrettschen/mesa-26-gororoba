@@ -2457,6 +2457,24 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         return true;
     }
 
+    /* Multi-input position (num_in >= 2) re-ingest is the deferred VAP-fetch cold
+     * hazard -- the wedge-prone submit -- so skip it by default like the
+     * computed-varying path: the producer pass and the clip BO oracle above stand
+     * as the proof without the re-ingest draw.  The framebuffer delivery rides the
+     * same R300_R2VB_REINGEST opt-in as the computed-varying delivery half, off by
+     * default so a multi-input draw cannot submit the wedge-prone re-ingest.  The
+     * single-input MVP re-ingest keeps its proven framebuffer path. */
+    static int mvp_reingest = -1;
+    if (mvp_reingest < 0) {
+        const char *e = getenv("R300_R2VB_REINGEST");
+        mvp_reingest = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    if (num_in >= 2 && !mvp_reingest) {
+        pipe_resource_reference(&clip, NULL);
+        free(model);
+        return true;
+    }
+
     /* Multi-stream re-ingest.  Draw the transformed positions (from clip) plus the
      * model's pass-through attributes (from the application buffers, unchanged by
      * an MVP VS) with the application fragment shader.  Redirect ONLY the position
