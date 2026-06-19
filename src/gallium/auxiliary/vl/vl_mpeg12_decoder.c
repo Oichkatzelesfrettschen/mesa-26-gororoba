@@ -811,8 +811,18 @@ vl_mpeg12_end_frame(struct pipe_video_codec *decoder,
 
       vl_zscan_render(i ? &dec->zscan_c : & dec->zscan_y, &buf->zscan[i] , buf->num_ycbcr_blocks[i]);
 
-      if (dec->base.entrypoint <= PIPE_VIDEO_ENTRYPOINT_IDCT)
+      if (dec->base.entrypoint <= PIPE_VIDEO_ENTRYPOINT_IDCT) {
+         /* vl_zscan_render writes this component's idct_source plane; the
+          * stage-1 IDCT flush below samples it.  That render-to-texture then
+          * sample is the same producer/consumer hazard as the idct-to-mc
+          * boundary further down, so order it with the explicit sampler
+          * texture_barrier; on r300 it emits the GPU flush and texture-cache
+          * invalidate the stage-1 read needs, which a driver without an
+          * implicit flush between the passes otherwise misses
+          * non-deterministically. */
+         dec->context->texture_barrier(dec->context, PIPE_TEXTURE_BARRIER_SAMPLER);
          vl_idct_flush(i ? &dec->idct_c : &dec->idct_y, &buf->idct[i], buf->num_ycbcr_blocks[i]);
+      }
    }
 
    /* The loop above renders the IDCT intermediate plane (and the zscan source);
