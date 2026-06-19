@@ -886,10 +886,54 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c1a = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
+    /* C1b cell gate (R300_PTSIZE_C1B=1): write VAP_VTE_CNTL explicitly on the
+     * re-ingest with R300_VTX_W0_FMT (bit 10) set, in addition to the
+     * R300_VTX_XY_FMT and R300_VTX_Z_FMT bits the producer already sets
+     * (r300_r2vb.c r300_r2vb_emit_producer's "R300_VTX_XY_FMT | R300_VTX_Z_FMT"
+     * write).  The producer's value (0x300) tells the VAP that X, Y, and Z
+     * arrive in window-coordinate space and bypass the viewport transform; W
+     * still flows through perspective divide.  The re-ingest reads vertices
+     * the producer wrote in window space with W = 1.0, so the divide-by-W path
+     * should be a no-op when applied -- but the inherited W viewport bias from
+     * upstream draws is then applied AFTER the divide on a near-1 W, producing
+     * a Y-channel collapse that matches the asymmetric crushing signature
+     * (X centroid 28.3 ~ predicted 32; Y centroid 6.2 << predicted 32).
+     * Setting R300_VTX_W0_FMT (giving VAP_VTE_CNTL = 0x700) tells the VAP that
+     * W is also in window space and bypasses the divide entirely; the existing
+     * R2VB MVP re-ingest path at r300_render.c:1196-1199 already uses this bit
+     * for its own re-ingest draws and is the proven precedent.  Gate-off keeps
+     * the path byte-identical. */
+    static int ptsize_c1b = -1;
+    if (ptsize_c1b < 0) {
+        const char *e = getenv("R300_PTSIZE_C1B");
+        ptsize_c1b = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+
+    /* C1c cell gate (R300_PTSIZE_C1C=1): re-emit the VAP_VTX_STATE_CNTL +
+     * VAP_VSM_VTX_ASSM atom (0x2180..0x2184) with values that match the
+     * re-ingest's single-FLOAT_4 position-only input stream, instead of
+     * inheriting from the application's prior VS state-emit at
+     * r300_emit.c:903-905.  Stage 0.5 observed VTX_STATE_CNTL = 0x00005555
+     * and VSM_VTX_ASSM = 0x00000401 (POS | TC0) inherited from the
+     * application's "position + tex0" layout; the re-ingest has no tex0,
+     * so the inherited TC0 bit causes the GA to expect a texcoord output
+     * vector that the FLOAT_4-only PSC does not produce.  C1c writes:
+     *   VTX_STATE_CNTL = 0 (default)
+     *   VSM_VTX_ASSM   = R300_INPUT_CNTL_POS (POS only)
+     * Gate-off keeps the path byte-identical. */
+    static int ptsize_c1c = -1;
+    if (ptsize_c1c < 0) {
+        const char *e = getenv("R300_PTSIZE_C1C");
+        ptsize_c1c = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
      * optional observe redirect (stage3_color_bo) adds nine dwords; the C1a
-     * gate adds seven. */
-    BEGIN_CS((stage3_color_bo ? 26 : 17) + (ptsize_c1a ? 7 : 0));
+     * gate adds seven; the C1b gate adds two; the C1c gate adds three. */
+    BEGIN_CS((stage3_color_bo ? 26 : 17)
+             + (ptsize_c1a ? 7 : 0)
+             + (ptsize_c1b ? 2 : 0)
+             + (ptsize_c1c ? 3 : 0));
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
@@ -918,6 +962,22 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS_32F(0.0f);
         OUT_CS_32F(1.0f);
         OUT_CS_32F(0.0f);
+    }
+
+    if (ptsize_c1b) {
+        /* Re-write VAP_VTE_CNTL with W0_FMT in addition to XY_FMT and Z_FMT
+         * so the VAP treats W as already in window space and does NOT apply a
+         * perspective divide on the re-ingest path. */
+        OUT_CS_REG(R300_VAP_VTE_CNTL,
+                   R300_VTX_XY_FMT | R300_VTX_Z_FMT | R300_VTX_W0_FMT);
+    }
+
+    if (ptsize_c1c) {
+        /* Clean VAP_VTX_STATE_CNTL + VAP_VSM_VTX_ASSM for a position-only
+         * single-stream re-ingest.  Same SEQ-of-2 form as r300_emit.c:903. */
+        OUT_CS_REG_SEQ(R300_VAP_VTX_STATE_CNTL, 2);
+        OUT_CS(0);
+        OUT_CS(R300_INPUT_CNTL_POS);
     }
 
     /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.
