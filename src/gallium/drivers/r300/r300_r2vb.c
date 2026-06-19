@@ -776,9 +776,33 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     r300_r2vb_emit_producer(r300, output_gart_bo, output_gart_bo_offset, num_vertices,
                             vertex_attrs, transform_mode);
 
+    /* C1b cell gate (R300_PTSIZE_C1B=1): write VAP_VTE_CNTL explicitly on the
+     * re-ingest with R300_VTX_W0_FMT (bit 10) set, in addition to the
+     * R300_VTX_XY_FMT and R300_VTX_Z_FMT bits the producer already sets
+     * (r300_r2vb.c r300_r2vb_emit_producer's "R300_VTX_XY_FMT | R300_VTX_Z_FMT"
+     * write).  The producer's value (0x300) tells the VAP that X, Y, and Z
+     * arrive in window-coordinate space and bypass the viewport transform; W
+     * still flows through perspective divide.  The re-ingest reads vertices
+     * the producer wrote in window space with W = 1.0, so the divide-by-W path
+     * should be a no-op when applied -- but the inherited W viewport bias from
+     * upstream draws is then applied AFTER the divide on a near-1 W, producing
+     * a Y-channel collapse that matches the asymmetric crushing signature
+     * (X centroid 28.3 ~ predicted 32; Y centroid 6.2 << predicted 32).
+     * Setting R300_VTX_W0_FMT (giving VAP_VTE_CNTL = 0x700) tells the VAP that
+     * W is also in window space and bypasses the divide entirely; the existing
+     * R2VB MVP re-ingest path at r300_render.c:1196-1199 already uses this bit
+     * for its own re-ingest draws and is the proven precedent.  Gate-off keeps
+     * the path byte-identical. */
+    static int ptsize_c1b = -1;
+    if (ptsize_c1b < 0) {
+        const char *e = getenv("R300_PTSIZE_C1B");
+        ptsize_c1b = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
-     * optional observe redirect (stage3_color_bo) adds nine dwords. */
-    BEGIN_CS(stage3_color_bo ? 26 : 17);
+     * optional observe redirect (stage3_color_bo) adds nine dwords; the C1b
+     * gate adds two. */
+    BEGIN_CS((stage3_color_bo ? 26 : 17) + (ptsize_c1b ? 2 : 0));
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
@@ -794,6 +818,14 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
         OUT_CS(((stage3_width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
                ((stage3_height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+    }
+
+    if (ptsize_c1b) {
+        /* Re-write VAP_VTE_CNTL with W0_FMT in addition to XY_FMT and Z_FMT
+         * so the VAP treats W as already in window space and does NOT apply a
+         * perspective divide on the re-ingest path. */
+        OUT_CS_REG(R300_VAP_VTE_CNTL,
+                   R300_VTX_XY_FMT | R300_VTX_Z_FMT | R300_VTX_W0_FMT);
     }
 
     /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.
