@@ -219,10 +219,32 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
  * varyings the application VS declares; an application VS with two or more
  * varyings otherwise inflates the PSC and the VAP fetches past the embedded
  * vertex.  Cached on the context. */
-static void *r300_r2vb_get_producer_vs(struct r300_context *r300)
+/* Cap on producer model-attribute inputs (application VS inputs feeding the
+ * producer FS).  The producer VS emits gl_Position plus this many varyings and the
+ * embedded vertex is (1 + N) vec4 at VAP_VTX_SIZE = 4*(1+N); eight keeps both well
+ * under the VAP output-vector count and the embedded-vertex size, while covering
+ * the multi-attribute position shapes this targets. */
+#define R300_R2VB_MAX_PRODUCER_INPUTS 8
+
+/* Build (and cache) the producer vertex shader for num_inputs model attributes: it
+ * passes the embedded slot position (GENERIC0) through to gl_Position and each
+ * model attribute (GENERIC1+a) through to VARYING_SLOT_VAR0+a, so the re-staged
+ * producer FS reads the application's a-th input at VAR0+a.  The slot position pins
+ * VAP_OUT_VTX_FMT / PSC / RS to the embedded vertex regardless of the application
+ * VS, and the varying count matches the inputs the FS reads.  Rebuilt when the
+ * count changes; num_inputs is clamped to [1, R300_R2VB_MAX_PRODUCER_INPUTS]. */
+static void *r300_r2vb_get_producer_vs(struct r300_context *r300, unsigned num_inputs)
 {
-    if (r300->r2vb_producer_vs)
+    if (num_inputs < 1)
+        num_inputs = 1;
+    if (num_inputs > R300_R2VB_MAX_PRODUCER_INPUTS)
+        num_inputs = R300_R2VB_MAX_PRODUCER_INPUTS;
+    if (r300->r2vb_producer_vs && r300->r2vb_producer_vs_inputs == num_inputs)
         return r300->r2vb_producer_vs;
+    if (r300->r2vb_producer_vs) {
+        r300->context.delete_vs_state(&r300->context, r300->r2vb_producer_vs);
+        r300->r2vb_producer_vs = NULL;
+    }
 
     const nir_shader_compiler_options *options =
         r300->screen->screen.nir_options[MESA_SHADER_VERTEX];
@@ -232,24 +254,31 @@ static void *r300_r2vb_get_producer_vs(struct r300_context *r300)
     nir_variable *in_pos = nir_variable_create(b.shader, nir_var_shader_in,
                                                glsl_vec4_type(), "in_pos");
     in_pos->data.location = VERT_ATTRIB_GENERIC0;
-    nir_variable *in_attr = nir_variable_create(b.shader, nir_var_shader_in,
-                                                glsl_vec4_type(), "in_attr");
-    in_attr->data.location = VERT_ATTRIB_GENERIC1;
-
     nir_variable *out_pos = nir_variable_create(b.shader, nir_var_shader_out,
                                                 glsl_vec4_type(), "gl_Position");
     out_pos->data.location = VARYING_SLOT_POS;
-    nir_variable *out_var = nir_variable_create(b.shader, nir_var_shader_out,
-                                                glsl_vec4_type(), "var0");
-    out_var->data.location = VARYING_SLOT_VAR0;
-
     nir_store_var(&b, out_pos, nir_load_var(&b, in_pos), 0xf);
-    nir_store_var(&b, out_var, nir_load_var(&b, in_attr), 0xf);
+
+    /* One passthrough varying per model attribute, in input order: GENERIC1+a feeds
+     * VAR0+a, the slot that the re-staged FS reads as the application's input a. */
+    for (unsigned a = 0; a < num_inputs; a++) {
+        char name[16];
+        snprintf(name, sizeof(name), "in_attr%u", a);
+        nir_variable *in_a = nir_variable_create(b.shader, nir_var_shader_in,
+                                                 glsl_vec4_type(), name);
+        in_a->data.location = VERT_ATTRIB_GENERIC1 + a;
+        snprintf(name, sizeof(name), "var%u", a);
+        nir_variable *out_a = nir_variable_create(b.shader, nir_var_shader_out,
+                                                  glsl_vec4_type(), name);
+        out_a->data.location = VARYING_SLOT_VAR0 + a;
+        nir_store_var(&b, out_a, nir_load_var(&b, in_a), 0xf);
+    }
 
     struct pipe_shader_state st = {0};
     st.type = PIPE_SHADER_IR_NIR;
     st.ir.nir = b.shader; /* create_vs_state takes ownership and precompiles */
     r300->r2vb_producer_vs = r300->context.create_vs_state(&r300->context, &st);
+    r300->r2vb_producer_vs_inputs = num_inputs;
     return r300->r2vb_producer_vs;
 }
 
@@ -403,6 +432,40 @@ static int r300_r2vb_first_computed_varying(nir_shader *vs_nir)
         }
     }
     return -1;
+}
+
+/* Count the application VS inputs that feed gl_Position -- the number of model
+ * attributes the position producer must carry.  Mirror the position re-stage
+ * (drop every non-position output store, DCE, then drop the now-dead inputs) on a
+ * throwaway clone and count what survives, so the count matches the inputs the
+ * re-staged position FS actually reads at VAR0+i.  An MVP or single-input-position
+ * VS returns 1 even when the application declares extra (varying-only) inputs. */
+static unsigned r300_r2vb_count_position_inputs(nir_shader *vs_nir)
+{
+    nir_shader *tmp = nir_shader_clone(NULL, vs_nir);
+    if (!tmp)
+        return 1;
+    nir_function_impl *impl = nir_shader_get_entrypoint(tmp);
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref)
+                continue;
+            nir_variable *out = nir_intrinsic_get_var(intr, 0);
+            if (out && (out->data.mode & nir_var_shader_out) &&
+                out->data.location != VARYING_SLOT_POS)
+                nir_instr_remove(instr);
+        }
+    }
+    nir_opt_dce(tmp);
+    nir_remove_dead_variables(tmp, nir_var_shader_in, NULL);
+    unsigned n = 0;
+    nir_foreach_variable_with_modes(var, tmp, nir_var_shader_in)
+        n++;
+    ralloc_free(tmp);
+    return n < 1 ? 1 : n;
 }
 
 /* Data-independent producer position stream: one window-space point per output
@@ -607,10 +670,23 @@ static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_re
 static void r300_r2vb_emit_producer(struct r300_context *r300,
                                     struct r300_resource *output_gart_bo,
                                     uint32_t output_gart_bo_offset, uint32_t num_vertices,
-                                    const float (*vertex_attrs)[4], bool transform_mode)
+                                    const float (*vertex_attrs)[4], unsigned num_attrs,
+                                    bool transform_mode)
 {
     CS_LOCALS(r300);
     uint32_t output_pitch = align(num_vertices, 2);
+
+    /* Embedded vertex = slot position + num_attrs model attributes, each FP32x4, so
+     * VAP_VTX_SIZE and the DRAW_IMMD body are 4*(1+num_attrs) dwords per vertex.
+     * The passthrough producer (transform_mode == false) copies one attribute, so
+     * it always feeds a single attribute. */
+    if (num_attrs < 1)
+        num_attrs = 1;
+    if (num_attrs > R300_R2VB_MAX_PRODUCER_INPUTS)
+        num_attrs = R300_R2VB_MAX_PRODUCER_INPUTS;
+    if (!transform_mode)
+        num_attrs = 1;
+    uint32_t vtx_dwords = 4 * (1 + num_attrs);
 
     r300->rws->cs_add_buffer(&r300->cs, output_gart_bo->buf,
                              RADEON_USAGE_READWRITE | RADEON_USAGE_SYNCHRONIZED |
@@ -633,10 +709,10 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     }
 
     /* Stage 1 = 47 dwords + stage 2 (barrier) = 8, minus the 16-dword
-     * triangle-vs-two-float4-points geometry delta, plus num_vertices*8 embedded
-     * vertex dwords and the per-viewport-constant wpos override.  The barrier is
-     * 8 (not 6) dwords because it includes the VAP_PVS_STATE_FLUSH engine sync. */
-    BEGIN_CS(55 + r2vb_vp_override_dwords + (int)num_vertices * 8 - 16);
+     * triangle-vs-two-float4-points geometry delta, plus num_vertices * vtx_dwords
+     * embedded vertex dwords and the per-viewport-constant wpos override.  The
+     * barrier is 8 (not 6) dwords because it includes the VAP_PVS_STATE_FLUSH sync. */
+    BEGIN_CS(55 + r2vb_vp_override_dwords + (int)num_vertices * (int)vtx_dwords - 16);
 
     OUT_CS_REG(R300_ZB_CNTL, 0);
     OUT_CS_REG_SEQ(R300_SC_SCISSORS_TL, 2);
@@ -683,9 +759,9 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
                                          (6 << R300_GA_POINT_MINMAX_MAX_SHIFT));
     OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
     OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
-    OUT_CS_REG(R300_VAP_VTX_SIZE, 8);
+    OUT_CS_REG(R300_VAP_VTX_SIZE, vtx_dwords);
     OUT_CS_REG(R300_VAP_VF_MAX_VTX_INDX, num_vertices - 1);
-    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * 8);
+    OUT_CS_PKT3(R300_PACKET3_3D_DRAW_IMMD_2, num_vertices * vtx_dwords);
     OUT_CS(R300_VAP_VF_CNTL__PRIM_WALK_VERTEX_EMBEDDED | (num_vertices << 16) |
            R300_VAP_VF_CNTL__PRIM_POINTS);
     for (uint32_t pv = 0; pv < num_vertices; pv++) {
@@ -694,10 +770,17 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
         OUT_CS_32F(0.0f);
         OUT_CS_32F(1.0f);
         if (transform_mode) {
-            OUT_CS_32F(vertex_attrs[pv][0]);
-            OUT_CS_32F(vertex_attrs[pv][1]);
-            OUT_CS_32F(vertex_attrs[pv][2]);
-            OUT_CS_32F(vertex_attrs[pv][3]);
+            /* One straight FP32x4 per model attribute, in input order: the producer
+             * VS routes embedded attribute a to VAR0+a, the re-staged FS's input a.
+             * vertex_attrs is laid out num_attrs per vertex (vertex_attrs[pv*num_attrs+a]),
+             * which collapses to vertex_attrs[pv] for the single-attribute callers. */
+            for (uint32_t a = 0; a < num_attrs; a++) {
+                const float *att = vertex_attrs[pv * num_attrs + a];
+                OUT_CS_32F(att[0]);
+                OUT_CS_32F(att[1]);
+                OUT_CS_32F(att[2]);
+                OUT_CS_32F(att[3]);
+            }
         } else {
             OUT_CS_32F(vertex_attrs[pv][2]);
             OUT_CS_32F(vertex_attrs[pv][1]);
@@ -774,7 +857,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     /* Producer: stage 1 (render one synthesized vertex per slot through the
      * bound fragment program) + the cb_flush_clean barrier, into output_gart_bo. */
     r300_r2vb_emit_producer(r300, output_gart_bo, output_gart_bo_offset, num_vertices,
-                            vertex_attrs, transform_mode);
+                            vertex_attrs, 1, transform_mode);
 
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
      * optional observe redirect (stage3_color_bo) adds nine dwords. */
@@ -1622,44 +1705,55 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
         }
     }
 
-    /* The producer feeds velem[0] to the re-staged FS's VAR0, and the re-stager
-     * assigns VAR0 to the first-declared input.  So only that first input may
-     * feed computation; every other input must appear solely as a passthrough
-     * varying source.  (velem[0] == the first input holds for the position-first
-     * shapes this targets; arbitrary input ordering and a second computed
-     * attribute need the multi-input producer and are rejected here.) */
-    nir_variable *first_in = NULL;
-    nir_foreach_variable_with_modes(v, nir, nir_var_shader_in) {
-        first_in = v;
-        break;
-    }
-    nir_foreach_block(block, impl) {
-        nir_foreach_instr(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-                continue;
-            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            if (intr->intrinsic != nir_intrinsic_load_deref)
-                continue;
-            nir_variable *in = nir_intrinsic_get_var(intr, 0);
-            if (!in || !(in->data.mode & nir_var_shader_in) || in == first_in)
-                continue;
-            /* A non-first input: its every use must be a passthrough varying store. */
-            nir_foreach_use(use, &intr->def) {
-                if (nir_src_is_if(use))
-                    return false;
-                nir_instr *cons = nir_src_use_instr(use);
-                if (cons->type != nir_instr_type_intrinsic)
-                    return false;
-                nir_intrinsic_instr *ci = nir_instr_as_intrinsic(cons);
-                if (ci->intrinsic != nir_intrinsic_store_deref)
-                    return false;
-                nir_variable *o = nir_intrinsic_get_var(ci, 0);
-                if (!o || !(o->data.mode & nir_var_shader_out) ||
-                    o->data.location == VARYING_SLOT_POS)
-                    return false;
+    /* Position-input arity.  A computed varying is produced from the first input
+     * only (the varying producer feeds a single attribute), so a shader that
+     * produces a computed varying stays single-input position and keeps the
+     * original restriction: every non-first input must appear solely as a
+     * passthrough varying source, leaving velem[0] (the first input) as the only one
+     * feeding computation.  Without a computed varying, position may read up to
+     * R300_R2VB_MAX_PRODUCER_INPUTS inputs -- the multi-input position path -- which
+     * the producer feeds at VAR0+a in input order.  The two are kept orthogonal so a
+     * failure localizes to one mechanism. */
+    if (allow_computed_varying && r300_r2vb_first_computed_varying(nir) >= 0) {
+        nir_variable *first_in = NULL;
+        nir_foreach_variable_with_modes(v, nir, nir_var_shader_in) {
+            first_in = v;
+            break;
+        }
+        nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+                if (instr->type != nir_instr_type_intrinsic)
+                    continue;
+                nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+                if (intr->intrinsic != nir_intrinsic_load_deref)
+                    continue;
+                nir_variable *in = nir_intrinsic_get_var(intr, 0);
+                if (!in || !(in->data.mode & nir_var_shader_in) || in == first_in)
+                    continue;
+                /* A non-first input: its every use must be a passthrough varying store. */
+                nir_foreach_use(use, &intr->def) {
+                    if (nir_src_is_if(use))
+                        return false;
+                    nir_instr *cons = nir_src_use_instr(use);
+                    if (cons->type != nir_instr_type_intrinsic)
+                        return false;
+                    nir_intrinsic_instr *ci = nir_instr_as_intrinsic(cons);
+                    if (ci->intrinsic != nir_intrinsic_store_deref)
+                        return false;
+                    nir_variable *o = nir_intrinsic_get_var(ci, 0);
+                    if (!o || !(o->data.mode & nir_var_shader_out) ||
+                        o->data.location == VARYING_SLOT_POS)
+                        return false;
+                }
             }
         }
+        return true;
     }
+
+    /* Multi-input position (no computed varying): bound the inputs feeding position
+     * to what the producer's embedded vertex and the VAP output vectors carry. */
+    if (r300_r2vb_count_position_inputs(nir) > R300_R2VB_MAX_PRODUCER_INPUTS)
+        return false;
     return true;
 }
 
@@ -2004,30 +2098,44 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         return false;
     const float *cols = (const float *)r300->swtcl_vs_const0_ptr;
 
-    /* Read the model-space positions.  in_pos is velem[0] (location 0) for an
-     * MVP VS; honor its buffer, offset, stride, and component count (a vec3
-     * position gets w = 1). */
-    struct pipe_vertex_element *pe = &r300->velems->velem[0];
-    struct pipe_vertex_buffer *vb = &r300->vertex_buffer[pe->vertex_buffer_index];
-    const uint8_t *base = NULL;
-    if (vb->is_user_buffer)
-        base = vb->buffer.user;
-    else if (vb->buffer.resource)
-        base = r300_resource(vb->buffer.resource)->malloced_buffer;
-    if (!base || !pe->src_stride)
-        return false;
-    base += vb->buffer_offset + pe->src_offset;
-    unsigned comps = util_format_get_nr_components(pe->src_format);
+    /* Read the model-space inputs feeding gl_Position.  num_in is the count of VS
+     * inputs the position depends on (an MVP VS reads only velem[0]); a multi-input
+     * position VS reads velem[0..num_in-1] in input order.  The producer feeds each
+     * input a at VAR0+a, so the re-staged position FS reads input a there.  model is
+     * laid out num_in per vertex -- model[i*num_in + a] is vertex i's input a -- and
+     * each element honors its buffer/offset/stride and component count (a vec3 gets
+     * w = 1).  num_in == 1 reduces to the MVP single-attribute read. */
+    unsigned num_in = r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir);
+    if (num_in > R300_R2VB_MAX_PRODUCER_INPUTS)
+        num_in = R300_R2VB_MAX_PRODUCER_INPUTS;
+    if (num_in > r300->velems->count)
+        num_in = r300->velems->count;
 
-    float (*model)[4] = malloc((size_t)count * sizeof(*model));
+    float (*model)[4] = malloc((size_t)count * num_in * sizeof(*model));
     if (!model)
         return false;
-    for (unsigned i = 0; i < count; i++) {
-        const float *v = (const float *)(base + (size_t)(draw->start + i) * pe->src_stride);
-        model[i][0] = v[0];
-        model[i][1] = comps > 1 ? v[1] : 0.0f;
-        model[i][2] = comps > 2 ? v[2] : 0.0f;
-        model[i][3] = comps > 3 ? v[3] : 1.0f;
+    for (unsigned a = 0; a < num_in; a++) {
+        struct pipe_vertex_element *pe = &r300->velems->velem[a];
+        struct pipe_vertex_buffer *vb = &r300->vertex_buffer[pe->vertex_buffer_index];
+        const uint8_t *base = NULL;
+        if (vb->is_user_buffer)
+            base = vb->buffer.user;
+        else if (vb->buffer.resource)
+            base = r300_resource(vb->buffer.resource)->malloced_buffer;
+        if (!base || !pe->src_stride) {
+            free(model);
+            return false;
+        }
+        base += vb->buffer_offset + pe->src_offset;
+        unsigned comps = util_format_get_nr_components(pe->src_format);
+        for (unsigned i = 0; i < count; i++) {
+            const float *v =
+                (const float *)(base + (size_t)(draw->start + i) * pe->src_stride);
+            model[i * num_in + a][0] = v[0];
+            model[i * num_in + a][1] = comps > 1 ? v[1] : 0.0f;
+            model[i * num_in + a][2] = comps > 2 ? v[2] : 0.0f;
+            model[i * num_in + a][3] = comps > 3 ? v[3] : 1.0f;
+        }
     }
 
     /* No-submit diagnostic (R300_R2VB_DIAG): dump the matrix this draw reads as
@@ -2051,7 +2159,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
              * match the 2-output VS's. */
             void *saved_fs = r300->fs.state;
             void *saved_vs = r300->vs_state.state;
-            void *pvs = r300_r2vb_get_producer_vs(r300);
+            void *pvs = r300_r2vb_get_producer_vs(r300, num_in);
             r300->context.bind_fs_state(&r300->context, pf);
             if (pvs)
                 r300->context.bind_vs_state(&r300->context, pvs);
@@ -2140,13 +2248,13 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * the VAP does not fetch past it for an application VS with extra varyings. */
     void *saved_fs = r300->fs.state;
     void *saved_vs = r300->vs_state.state;
-    void *pvs = r300_r2vb_get_producer_vs(r300);
+    void *pvs = r300_r2vb_get_producer_vs(r300, num_in);
     r300->context.bind_fs_state(&r300->context, xfs);
     if (pvs)
         r300->context.bind_vs_state(&r300->context, pvs);
     r300_update_derived_state(r300);
-    if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
-        r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, true);
+    if (r300_r2vb_prepare_states(r300, 64 + (int)count * 4 * (1 + (int)num_in) + 64))
+        r300_r2vb_emit_producer(r300, r300_resource(clip), 0, count, model, num_in, true);
     r300->context.bind_fs_state(&r300->context, saved_fs);
     if (pvs)
         r300->context.bind_vs_state(&r300->context, saved_vs);
@@ -2184,8 +2292,44 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         if (sm)
             r300->context.buffer_unmap(&r300->context, sxfer);
     }
-    if (getenv("R300_R2VB_XFORM_VERIFY"))
+    if (getenv("R300_R2VB_XFORM_VERIFY") && num_in == 1)
         r2vb_verify_xform_readback(r300, clip, model, count, cols);
+
+    /* Multi-input position oracle (R300_R2VB_POS_WEIGHTS="w0,w1,...").  The producer
+     * feeds input a at VAR0+a, so for a VS whose position is M * sum_a(w_a * input_a)
+     * the clip BO must hold that value.  Distinct weights make the check
+     * non-commutative: a producer-feed swap of two inputs changes the result and
+     * fails the readback, where a symmetric function (e.g. inA+inB) could not.  The
+     * FP32 BO readback, not the 8-bit colour, is the proof. */
+    const char *posw = getenv("R300_R2VB_POS_WEIGHTS");
+    if (posw) {
+        float w[R300_R2VB_MAX_PRODUCER_INPUTS];
+        unsigned nw = 0;
+        char *p = (char *)posw;
+        for (; *p && nw < num_in; nw++) {
+            w[nw] = strtof(p, &p);
+            while (*p == ',' || *p == ' ')
+                p++;
+        }
+        for (; nw < num_in; nw++)
+            w[nw] = 1.0f;
+        float (*pexp)[4] = malloc((size_t)count * sizeof(*pexp));
+        if (pexp) {
+            for (unsigned s = 0; s < count; s++) {
+                float acc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                for (unsigned a = 0; a < num_in; a++)
+                    for (int k = 0; k < 4; k++)
+                        acc[k] += w[a] * model[s * num_in + a][k];
+                for (int i = 0; i < 4; i++) {
+                    pexp[s][i] = 0.0f;
+                    for (int j = 0; j < 4; j++)
+                        pexp[s][i] += cols[j * 4 + i] * acc[j];
+                }
+            }
+            r2vb_verify_bo_readback(r300, clip, pexp, count, 0.05f, "pos");
+            free(pexp);
+        }
+    }
 
     /* Computed-varying producer pass (R300_R2VB_VARYING): re-stage the bound VS
      * targeting its first computed varying and render that value on the fragment
@@ -2215,13 +2359,17 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         if (vfs && vbo) {
             void *saved = r300->fs.state;
             void *saved_vs = r300->vs_state.state;
-            void *pvs = r300_r2vb_get_producer_vs(r300);
+            /* The computed varying depends only on the first input, and a
+             * computed-varying VS is kept single-input position (orthogonal to
+             * multi-input position), so num_in == 1 and the producer feeds the one
+             * attribute model holds at stride 1. */
+            void *pvs = r300_r2vb_get_producer_vs(r300, 1);
             r300->context.bind_fs_state(&r300->context, vfs);
             if (pvs)
                 r300->context.bind_vs_state(&r300->context, pvs);
             r300_update_derived_state(r300);
             if (r300_r2vb_prepare_states(r300, 64 + (int)count * 8 + 64))
-                r300_r2vb_emit_producer(r300, r300_resource(vbo), 0, count, model, true);
+                r300_r2vb_emit_producer(r300, r300_resource(vbo), 0, count, model, 1, true);
             r300->context.bind_fs_state(&r300->context, saved);
             if (pvs)
                 r300->context.bind_vs_state(&r300->context, saved_vs);

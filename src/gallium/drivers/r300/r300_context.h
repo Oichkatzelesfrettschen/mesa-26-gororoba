@@ -673,6 +673,10 @@ struct r300_context {
      * the VAP fetching past the embedded vertex.  Built lazily, owned by the
      * context. */
     void *r2vb_producer_vs;
+    /* Number of model-attribute inputs the cached producer VS carries (one per
+     * application VS input feeding the producer FS, plus the slot position).
+     * Multi-input position rebuilds the producer VS when this count changes. */
+    unsigned r2vb_producer_vs_inputs;
 
     /* Set for the single-command-stream R2VB MVP re-ingest so
      * r300_r2vb_exec_passthrough_draw re-asserts the producer cache barrier
