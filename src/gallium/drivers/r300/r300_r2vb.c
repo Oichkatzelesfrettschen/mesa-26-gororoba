@@ -348,12 +348,31 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
         return NULL;
     fs->info.stage = MESA_SHADER_FRAGMENT;
 
-    /* VS vertex attributes -> flat fragment inputs at VAR0+i. */
-    unsigned in_idx = 0;
-    nir_foreach_variable_with_modes(var, fs, nir_var_shader_in) {
-        var->data.location = VARYING_SLOT_VAR0 + in_idx++;
-        var->data.location_frac = 0;
-        var->data.interpolation = INTERP_MODE_FLAT;
+    /* VS vertex attributes -> flat fragment inputs at VAR0 + location-rank.  The
+     * producer feeds model attribute a (velem[a], the a-th input in location order)
+     * to VAR0 + a, so the re-staged FS must read input a there.  Rank by location,
+     * NOT NIR list order: a multi-input VS whose variable list is not in location
+     * order (e.g. the quaternion declared before the position) would otherwise read
+     * its inputs swapped -- the producer feeds inPos to VAR0 but the FS, indexed by
+     * list order, reads VAR0 as the other input.  Single-input shapes are unaffected
+     * (rank 0 either way).  Compute every rank from the original locations before
+     * remapping any, so a remap does not perturb a later rank. */
+    nir_variable *ins[PIPE_MAX_ATTRIBS];
+    unsigned n_in = 0;
+    nir_foreach_variable_with_modes(var, fs, nir_var_shader_in)
+        if (n_in < PIPE_MAX_ATTRIBS)
+            ins[n_in++] = var;
+    unsigned rank[PIPE_MAX_ATTRIBS];
+    for (unsigned i = 0; i < n_in; i++) {
+        rank[i] = 0;
+        for (unsigned j = 0; j < n_in; j++)
+            if (j != i && ins[j]->data.location < ins[i]->data.location)
+                rank[i]++;
+    }
+    for (unsigned i = 0; i < n_in; i++) {
+        ins[i]->data.location = VARYING_SLOT_VAR0 + rank[i];
+        ins[i]->data.location_frac = 0;
+        ins[i]->data.interpolation = INTERP_MODE_FLAT;
     }
 
     /* The producer renders one output per pass, so keep only the store to the
@@ -663,6 +682,47 @@ static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_re
         }
     r2vb_verify_bo_readback(r300, res, exp, count, 0.05f, "xform");
     free(exp);
+}
+
+/* Rotate a 3-vector by a UNIT quaternion q = (x, y, z, w), the Cayley-Dickson
+ * product v' = q v q* expanded to its rotation-matrix form.  The doubling product
+ * (a,b)(c,d) = (ac - d*b, da + bc*) with gamma = -1 gives the Hamilton quaternion
+ * algebra; carrying the sandwich q (0,v) q* through and collecting terms yields the
+ * standard orthogonal matrix below, which is pure multiply-add -- no normalize, no
+ * reciprocal-sqrt -- so it maps cleanly onto the FP24 fragment ALU.  q must already
+ * be unit; a non-unit q gives a scaled (non-orthogonal) map, so the caller feeds a
+ * pre-normalised quaternion and the shader matches term for term. */
+static void r2vb_quat_rotate_unit(const float q[4], const float v[3], float out[3])
+{
+    float x = q[0], y = q[1], z = q[2], w = q[3];
+    out[0] = (1.0f - 2.0f * (y * y + z * z)) * v[0] + 2.0f * (x * y - w * z) * v[1] +
+             2.0f * (x * z + w * y) * v[2];
+    out[1] = 2.0f * (x * y + w * z) * v[0] + (1.0f - 2.0f * (x * x + z * z)) * v[1] +
+             2.0f * (y * z - w * x) * v[2];
+    out[2] = 2.0f * (x * z - w * y) * v[0] + 2.0f * (y * z + w * x) * v[1] +
+             (1.0f - 2.0f * (x * x + y * y)) * v[2];
+}
+
+/* Known-answer self-test: anchor the oracle on rotations whose result is fixed by
+ * the convention, NOT by agreeing with the shader, so a shared sign/transpose bug
+ * cannot pass green.  Identity (0,0,0,1) must leave (1,0,0) put; a +90 deg rotation
+ * about +z, q = (0, 0, sin45, cos45), must send (1,0,0) -> (0,1,0) (a transpose or
+ * conjugate-sign error sends it to (0,-1,0)).  Returns true iff both hold. */
+static bool r2vb_quat_oracle_selftest(void)
+{
+    const float s = 0.70710678f; /* sin(45 deg) = cos(45 deg) */
+    const float idq[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    const float zq[4] = { 0.0f, 0.0f, s, s };
+    const float ex[3] = { 1.0f, 0.0f, 0.0f };
+    float o1[3], o2[3];
+    r2vb_quat_rotate_unit(idq, ex, o1); /* expect (1,0,0) */
+    r2vb_quat_rotate_unit(zq, ex, o2);  /* expect (0,1,0) */
+    bool ok = fabsf(o1[0] - 1.0f) < 1e-5f && fabsf(o1[1]) < 1e-5f && fabsf(o1[2]) < 1e-5f &&
+              fabsf(o2[0]) < 1e-5f && fabsf(o2[1] - 1.0f) < 1e-5f && fabsf(o2[2]) < 1e-5f;
+    fprintf(stderr,
+            "r2vb_quat_oracle_selftest=%s identity->(%.3f,%.3f,%.3f) z90*(1,0,0)->(%.3f,%.3f,%.3f)\n",
+            ok ? "PASS" : "FAIL", o1[0], o1[1], o1[2], o2[0], o2[1], o2[2]);
+    return ok;
 }
 
 /* Producer half (stage 1 + the cb_flush_clean barrier): render one synthesized
@@ -2739,6 +2799,35 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             }
             r2vb_verify_bo_readback(r300, clip, pexp, count, 0.05f, "pos");
             free(pexp);
+        }
+    }
+
+    /* Cayley-Dickson multi-input position oracle (R300_R2VB_POS_QUAT=1).  The VS
+     * computes gl_Position = M * quat_rotate(q, inPos) from TWO inputs -- inPos at
+     * velem[0], a unit quaternion q at velem[1] -- a genuinely bilinear transform
+     * (products of q's components against inPos), unlike the linear POS_WEIGHTS sum.
+     * The producer feeds input a at VAR0+a, so the re-staged FS reads inPos at VAR0
+     * and q at VAR1.  The oracle is trusted by construction: a known-answer self-test
+     * anchors the rotation convention, then the clip BO must hold M * quat_rotate(q,
+     * inPos) per vertex (the FP32 readback, not the 8-bit colour, is the proof). */
+    if (getenv("R300_R2VB_POS_QUAT") && num_in == 2) {
+        bool oracle_ok = r2vb_quat_oracle_selftest();
+        float (*qexp)[4] = oracle_ok ? malloc((size_t)count * sizeof(*qexp)) : NULL;
+        if (qexp) {
+            for (unsigned s = 0; s < count; s++) {
+                const float *vin = model[s * num_in + 0]; /* inPos (xyz, w) */
+                const float *q = model[s * num_in + 1];   /* unit quaternion (x,y,z,w) */
+                float rotated[3];
+                r2vb_quat_rotate_unit(q, vin, rotated);
+                float pos4[4] = { rotated[0], rotated[1], rotated[2], vin[3] };
+                for (int i = 0; i < 4; i++) {
+                    qexp[s][i] = 0.0f;
+                    for (int j = 0; j < 4; j++)
+                        qexp[s][i] += cols[j * 4 + i] * pos4[j];
+                }
+            }
+            r2vb_verify_bo_readback(r300, clip, qexp, count, 0.05f, "posquat");
+            free(qexp);
         }
     }
 
