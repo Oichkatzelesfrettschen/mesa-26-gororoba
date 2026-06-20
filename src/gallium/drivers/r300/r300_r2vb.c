@@ -955,18 +955,45 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c4 = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
 
+    /* C1d cell gate (R300_PTSIZE_C1D=1): re-assert the rasterizer interpolator
+     * block (GB_ENABLE + RS_IP/RS_COUNT/RS_INST) on the re-ingest so the
+     * fragment-input routing does not inherit a stale routing from the trigger
+     * draw.  Stage 0.5 observed the RS_IP/RS_INST/RS_COUNT atoms in the trigger
+     * region of the IB -- the re-ingest changes the VAP output layout (single
+     * FLOAT_4 position) but does not re-emit the RS routing, so the GA samples
+     * the trigger FS's expected inputs from VAP outputs the re-ingest does not
+     * produce.  This is a COLOR-routing concern, orthogonal to the bbox-to-
+     * origin position smear (a GPU-register-file Heisenbug); the readback
+     * oracle counts coverage, so a wrong-routed color still counts.  The
+     * re-emit is the genuinely-rs-specific subset of r300_emit_rs_block_state;
+     * the VAP_OUTPUT_VTX_FMT subset is owned by C0 and the VAP_VTX_STATE_CNTL/
+     * VSM_VTX_ASSM subset by C1c.  Gate-off keeps the path byte-identical. */
+    static int ptsize_c1d = -1;
+    if (ptsize_c1d < 0) {
+        const char *e = getenv("R300_PTSIZE_C1D");
+        ptsize_c1d = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    struct r300_rs_block *c1d_rs =
+        ptsize_c1d ? (struct r300_rs_block *)r300->rs_block_state.state : NULL;
+    /* RS_IP and RS_INST tables share the same length (inst_count + 1). */
+    unsigned c1d_rs_count = c1d_rs ? (c1d_rs->inst_count & R300_RS_INST_COUNT_MASK) + 1 : 0;
+    /* GB_ENABLE(2) + RS_IP SEQ(1 header + count) + RS_COUNT(3) + RS_INST SEQ
+     * (1 header + count) = 7 + 2 * count. */
+    unsigned c1d_dwords = c1d_rs ? 7 + 2 * c1d_rs_count : 0;
+
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
      * optional observe redirect (stage3_color_bo) adds nine dwords.  Each C1/C
      * cell adds an independently-gated count: C1a 7, C1b 2, C1c 3, C2 5
      * (SEQ-of-4 + header), C3 8 (SEQ-of-7 + header), C4 6 (3 single writes,
-     * non-contiguous). */
+     * non-contiguous), C1d 7 + 2*rs_count (the rasterizer block, variable). */
     BEGIN_CS((stage3_color_bo ? 26 : 17)
              + (ptsize_c1a ? 7 : 0)
              + (ptsize_c1b ? 2 : 0)
              + (ptsize_c1c ? 3 : 0)
              + (ptsize_c2  ? 5 : 0)
              + (ptsize_c3  ? 8 : 0)
-             + (ptsize_c4  ? 6 : 0));
+             + (ptsize_c4  ? 6 : 0)
+             + c1d_dwords);
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
@@ -1041,6 +1068,24 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS_REG(R300_GA_TRIANGLE_STIPPLE, 0);
         OUT_CS_REG(R300_GA_FOG_SCALE, 0);
         OUT_CS_REG(R300_GA_FOG_OFFSET, 0);
+    }
+
+    if (c1d_rs) {
+        /* C1d: re-assert GB_ENABLE + RS_IP/RS_COUNT/RS_INST from the derived
+         * rs_block_state, mirroring r300_emit_rs_block_state's rs-specific tail.
+         * RS482/RS480 is not r500, so the R300_RS_* register set applies.  The
+         * VAP_OUTPUT_VTX_FMT (C0) and VAP_VTX_STATE_CNTL/VSM_VTX_ASSM (C1c)
+         * subsets of the atom are deliberately NOT re-emitted here to keep the
+         * cells non-overlapping. */
+        OUT_CS_REG_SEQ(R300_GB_ENABLE, 1);
+        OUT_CS(c1d_rs->gb_enable);
+        OUT_CS_REG_SEQ(R300_RS_IP_0, c1d_rs_count);
+        OUT_CS_TABLE(c1d_rs->ip, c1d_rs_count);
+        OUT_CS_REG_SEQ(R300_RS_COUNT, 2);
+        OUT_CS(c1d_rs->count);
+        OUT_CS(c1d_rs->inst_count);
+        OUT_CS_REG_SEQ(R300_RS_INST_0, c1d_rs_count);
+        OUT_CS_TABLE(c1d_rs->inst, c1d_rs_count);
     }
 
     /* Stage 3 -- re-ingest the GTT buffer as the vertex array and draw it.
