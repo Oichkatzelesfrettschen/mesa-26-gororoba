@@ -191,6 +191,18 @@ r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
       }
    }
 
+   if (s->info.stage == MESA_SHADER_VERTEX) {
+      /* The HW clamps gl_PointSize to the advertised aliased point-size range
+       * through GA_POINT_MINMAX, but the SWTCL draw wide-point expansion reads
+       * the raw per-vertex size unclamped (draw_pipe_wide_point.c), so a shader
+       * writing a size past max_point_size renders an oversized point.  dEQP
+       * rasterization.limits.points draws the point at the far edge and checks
+       * it stays within the advertised max, so clamp the PSIZE output to the
+       * same [1, max_point_size] range the screen advertises and both paths
+       * agree. */
+      NIR_PASS(_, s, nir_lower_point_size, 1.0f, screen->screen.caps.max_point_size);
+   }
+
    bool progress;
    do {
       progress = false;
