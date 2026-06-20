@@ -605,25 +605,27 @@ static void r300_init_screen_caps(struct r300_screen* r300screen)
    caps->min_point_size_aa = 1;
    caps->point_size_granularity =
    caps->line_width_granularity = 0.1;
-   caps->max_line_width =
-   caps->max_line_width_aa =
+   /* Point and line SIZE are a rasterization-coverage property, not the
+    * colorbuffer dimension.  The old rationale -- "the colorbuffer dimensions
+    * are our practical rendering limits" -- conflated two distinct quantities:
+    * the render-target dimension (the colorbuffer size, 2560 native on r3xx)
+    * and the largest point/line the rasterizer covers like the reference.  The
+    * r300vk Vulkan driver proves the split on the same silicon: it advertises
+    * VkPhysicalDeviceLimits::maxImageDimension2D = 4096 (composed from a 2560
+    * hardware span plus tiled residual blits) for the render target, but
+    * pointSizeRange = [1, 64] and lineWidthRange = [1, 8] for the rasterizer
+    * (VkPhysicalDeviceLimits::pointSizeRange / lineWidthRange).  Advertising the
+    * colorbuffer dimension as the point/line max handed back sizes the GA
+    * quad-expansion cannot cover conformantly (dEQP rasterization.limits.points
+    * renders the advertised max-size point and the coverage misses), so mirror
+    * the r300vk conformant point limit.  Lines stay at the coverage-strict 4 the
+    * GA end-cap quad matches -- a width-5 line already misses interpolated cap
+    * pixels -- below the r300vk HW-line 8, because the gallium SWTCL path
+    * expands lines through the GA into quads. */
    caps->max_point_size =
-   caps->max_point_size_aa =
-      /* The maximum dimensions of the colorbuffer are our practical
-       * rendering limits. 2048 pixels should be enough for anybody. */
-      r300screen->caps.is_r500 ? 4096.0f :
-      (r300screen->caps.is_r400 ? 4021.0f : 2560.0f);
-
-   /* The GA expands a wide line into a quad whose end-cap coverage drifts from
-    * the reference rasterizer as the width grows: a width-4 line matches, but a
-    * width-5 line already misses interpolated-coverage pixels along the cap, and
-    * the error scales with width up to the framebuffer-sized default.  The
-    * default keeps the full range so applications get the hardware's wide lines;
-    * r300_clamp_max_line_width opts a coverage-strict workload down to the
-    * largest width that still matches the reference (the aliased line range
-    * only, not point size -- point rasterization diverges by a separate path). */
-   if (r300screen->options.clamp_max_line_width)
-      caps->max_line_width = caps->max_line_width_aa = 4.0f;
+   caps->max_point_size_aa = 64.0f;
+   caps->max_line_width =
+   caps->max_line_width_aa = 4.0f;
    caps->max_texture_anisotropy = 16.0f;
    caps->max_texture_lod_bias = 16.0f;
 }
