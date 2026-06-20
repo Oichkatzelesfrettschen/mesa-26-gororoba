@@ -917,6 +917,8 @@ radeon_drm_cs_create(struct radeon_cmdbuf *rcs,
    cs->csc_fill_idx = 0;
    cs->csc_cur = &cs->csc[0];
    cs->cst = &cs->csc[1];
+   for (int i = 0; i < 3; i++)
+      cs->csc[i].owner = cs;
    cs->ip_type = ip_type;
 
    memset(rcs, 0, sizeof(*rcs));
@@ -1195,8 +1197,14 @@ static unsigned radeon_drm_cs_get_buffer_list(struct radeon_cmdbuf *rcs,
 
 void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
 {
-   struct radeon_drm_cs *cs = (struct radeon_drm_cs*)job;
-   struct radeon_cs_context *csc = cs->cst;
+   /* The async worker submits the context it was queued with, not the
+    * producer's live cs->cst: by the time this runs the next flush has often
+    * advanced cst to another triple-buffer slot (or one just cleared to
+    * length_dw=0 by radeon_cs_context_cleanup), so reading cs->cst here would
+    * submit a stale or empty IB the kernel rejects (zero_ib).  The flush hands
+    * this job the csc directly; reach the cmdbuf through csc->owner. */
+   struct radeon_cs_context *csc = (struct radeon_cs_context *)job;
+   struct radeon_drm_cs *cs = csc->owner;
    struct r300_trace trace;
    unsigned i;
    int r;
@@ -1462,13 +1470,15 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
          break;
       }
 
+      /* Hand the worker the exact csc being submitted (cst == &csc[submit_idx]
+       * here), so it does not race the producer's later reassignment of cst. */
       if (util_queue_is_initialized(&cs->ws->cs_queue)) {
-         util_queue_add_job(&cs->ws->cs_queue, cs, &cs->flush_completed[submit_idx],
+         util_queue_add_job(&cs->ws->cs_queue, cs->cst, &cs->flush_completed[submit_idx],
                             radeon_drm_cs_emit_ioctl_oneshot, NULL, 0);
          if (!(flags & PIPE_FLUSH_ASYNC))
             radeon_drm_cs_sync_flush(rcs);
       } else {
-         radeon_drm_cs_emit_ioctl_oneshot(cs, NULL, 0);
+         radeon_drm_cs_emit_ioctl_oneshot(cs->cst, NULL, 0);
       }
    } else {
       /* No-submit path: an empty, overflowed, RADEON_NOOP, or
