@@ -266,9 +266,22 @@ r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen)
    NIR_PASS(_, s, nir_lower_var_copies);
    NIR_PASS(_, s, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
-   NIR_PASS(_, s, r300_nir_lower_ieee16_classify);
-   NIR_PASS(_, s, r300_nir_lower_ieee16_mul);
-   NIR_PASS(_, s, r300_nir_lower_ieee16_mul_normal_rne);
+   /* These passes lower the r300vk virtual IEEE-FP16 machine, which overloads
+    * real NIR opcodes (fldexp/fpow/fsin) as 4-component placeholders for the
+    * classify and significand-multiply steps.  They must run ONLY on the
+    * shaders that build those placeholders -- the r300vk compute-as-raster
+    * helpers, which name themselves "r300vk_*" (r300vk_dp4, r300vk_qmul, ...).
+    * A real GL shader's vectorized sin()/pow()/ldexp() also emits a
+    * 4-component fldexp/fpow/fsin, so running these on the GL path would hijack
+    * the real transcendental -- wrong results, and a crash when the lowering
+    * reads channels 2/3 of a source that is not the packed placeholder.  The
+    * r300vk virtual-FP shaders reach here as NIR (PIPE_SHADER_IR_NIR), so the
+    * builder name survives; real GL shaders never carry the r300vk_ prefix. */
+   if (s->info.name && strncmp(s->info.name, "r300vk_", 7) == 0) {
+      NIR_PASS(_, s, r300_nir_lower_ieee16_classify);
+      NIR_PASS(_, s, r300_nir_lower_ieee16_mul);
+      NIR_PASS(_, s, r300_nir_lower_ieee16_mul_normal_rne);
+   }
 
    /* FIXME: this could be probably moved earlier... */
    if (s->info.stage == MESA_SHADER_FRAGMENT) {
