@@ -863,6 +863,26 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
     r300_r2vb_emit_producer(r300, output_gart_bo, output_gart_bo_offset, num_vertices,
                             vertex_attrs, 1, transform_mode);
 
+    /* C0 baseline cell gate (R300_PTSIZE_C0=1): write VAP_OUTPUT_VTX_FMT_0/1
+     * (0x2090/0x2094) explicitly on the re-ingest so PT_SIZE_PRESENT (bit 16 of
+     * 0x2090) does not inherit from the upstream real SWTCL draw.  The only other
+     * 0x2090 write site in the driver is r300_emit_vap_output_state, so without
+     * this cell the re-ingest runs with whatever PT_SIZE_PRESENT the trigger draw
+     * last left set.  When it is left set the GA expects a per-vertex psize output
+     * vector that the single-FLOAT_4 re-ingest never produces; the output-vector
+     * layout the GA reads stops matching what the producer wrote, position moves,
+     * and a 16-point readback bbox spills to the origin (~110 texels, not 16
+     * single texels).  C0 holds position-only output with PT_SIZE_PRESENT and the
+     * colour/texcoord components cleared, so the GA falls back to GA_POINT_SIZE for
+     * the rasterized size.  C0 owns the VAP_OUTPUT_VTX_FMT subset that C1c and C1d
+     * deliberately leave alone, keeping the cells non-overlapping.  Gate-off keeps
+     * the path byte-identical. */
+    static int ptsize_c0 = -1;
+    if (ptsize_c0 < 0) {
+        const char *e = getenv("R300_PTSIZE_C0");
+        ptsize_c0 = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+
     /* C1a cell gate (R300_PTSIZE_C1A=1): write identity values to
      * SE_VPORT_X/Y/ZSCALE/OFFSET (0x1d98..0x1dac) on the re-ingest so the
      * VAP viewport state does not inherit non-identity values from previous
@@ -980,10 +1000,12 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
 
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
      * optional observe redirect (stage3_color_bo) adds nine dwords.  Each C1/C
-     * cell adds an independently-gated count: C1a 7, C1b 2, C1c 3, C2 5
-     * (SEQ-of-4 + header), C3 8 (SEQ-of-7 + header), C4 6 (3 single writes,
-     * non-contiguous), C1d 7 + 2*rs_count (the rasterizer block, variable). */
+     * cell adds an independently-gated count: C0 3 (SEQ-of-2 + header), C1a 7,
+     * C1b 2, C1c 3, C2 5 (SEQ-of-4 + header), C3 8 (SEQ-of-7 + header), C4 6 (3
+     * single writes, non-contiguous), C1d 7 + 2*rs_count (the rasterizer block,
+     * variable). */
     BEGIN_CS((stage3_color_bo ? 26 : 17)
+             + (ptsize_c0  ? 3 : 0)
              + (ptsize_c1a ? 7 : 0)
              + (ptsize_c1b ? 2 : 0)
              + (ptsize_c1c ? 3 : 0)
@@ -1008,6 +1030,16 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         OUT_CS((1440 << R300_SCISSORS_X_SHIFT) | (1440 << R300_SCISSORS_Y_SHIFT));
         OUT_CS(((stage3_width + 1440 - 1) << R300_SCISSORS_X_SHIFT) |
                ((stage3_height + 1440 - 1) << R300_SCISSORS_Y_SHIFT));
+    }
+
+    if (ptsize_c0) {
+        /* Explicit position-only output vector format.  POS_PRESENT (bit 0) set;
+         * PT_SIZE_PRESENT (bit 16) and every COLOR_*_PRESENT bit cleared in 0x2090;
+         * VAP_OUTPUT_VTX_FMT_1 (0x2094) cleared so no texcoord components either.
+         * Same SEQ-of-2 form r300_emit_vap_output_state uses. */
+        OUT_CS_REG_SEQ(R300_VAP_OUTPUT_VTX_FMT_0, 2);
+        OUT_CS(R300_VAP_OUTPUT_VTX_FMT_0__POS_PRESENT);
+        OUT_CS(0);
     }
 
     if (ptsize_c1a) {
