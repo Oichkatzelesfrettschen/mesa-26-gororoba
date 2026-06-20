@@ -26,8 +26,16 @@ struct radeon_bo_item {
    } u;
 };
 
+struct radeon_drm_cs;
+
 struct radeon_cs_context {
    uint32_t                    buf[16 * 1024];
+
+   /* Owning cmdbuf, set once at init.  The async submit job is handed this
+    * context directly, so the worker reaches the cmdbuf through here rather
+    * than reading the producer's live cs->cst, which the next flush has
+    * usually already advanced to another triple-buffer slot. */
+   struct radeon_drm_cs        *owner;
 
    int                         fd;
    struct drm_radeon_cs        cs;
