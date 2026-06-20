@@ -102,8 +102,17 @@ create_vert_shader(struct vl_zscan *zscan)
    nir_def *floor_bn = nir_ffloor(&b, bn);
 
    for (i = 0; i < zscan->num_channels; ++i) {
+      /* The layout (scan-permutation) plane is fetched NEAREST through this
+       * interpolated per-channel varying.  At high vertical frequency the column
+       * coordinate resolves a hair below the texel edge, so floor() reads the
+       * neighbouring channel's scan entry and the u=1 fetch collapses onto u=0,
+       * duplicating the coefficient.  Bias the column to the texel center
+       * (+0.5/(blocks_per_line * VL_BLOCK_WIDTH)); floor(c + 0.5) == c keeps a
+       * driver whose NEAREST is already exact unchanged, the same centering the
+       * IDCT first pass applies to its source reads. */
       float chan_off = 1.0f / (zscan->blocks_per_line * VL_BLOCK_WIDTH)
-         * ((signed)i - (signed)zscan->num_channels / 2);
+         * ((signed)i - (signed)zscan->num_channels / 2)
+         + 0.5f / (zscan->blocks_per_line * VL_BLOCK_WIDTH);
       nir_def *tx = nir_fadd(&b, frac_bn, nir_imm_float(&b, chan_off));
 
       nir_def *ox = nir_fmad(&b, nir_channel(&b, vrect, 0),
