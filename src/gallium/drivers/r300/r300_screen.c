@@ -611,9 +611,10 @@ static void r300_init_screen_caps(struct r300_screen* r300screen)
     * the render-target dimension (the colorbuffer size, 2560 native on r3xx)
     * and the largest point/line the rasterizer covers like the reference.  The
     * r300vk Vulkan driver proves the split on the same silicon: it advertises
-    * maxImageDimension2D = 4096 (composed from a 2560 hardware span plus tiled
-    * residual blits, r300vk_image.c) for the render target, but pointSizeRange
-    * = [1, 64] and lineWidthRange = [1, 8] for the rasterizer.  Advertising the
+    * VkPhysicalDeviceLimits::maxImageDimension2D = 4096 (composed from a 2560
+    * hardware span plus tiled residual blits) for the render target, but
+    * pointSizeRange = [1, 64] and lineWidthRange = [1, 8] for the rasterizer
+    * (VkPhysicalDeviceLimits::pointSizeRange / lineWidthRange).  Advertising the
     * colorbuffer dimension as the point/line max handed back sizes the GA
     * quad-expansion cannot cover conformantly (dEQP rasterization.limits.points
     * renders the advertised max-size point and the coverage misses), so mirror
