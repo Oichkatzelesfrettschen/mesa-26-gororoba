@@ -977,9 +977,6 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
         ptsize_c1d ? (struct r300_rs_block *)r300->rs_block_state.state : NULL;
     /* RS_IP and RS_INST tables share the same length (inst_count + 1). */
     unsigned c1d_rs_count = c1d_rs ? (c1d_rs->inst_count & R300_RS_INST_COUNT_MASK) + 1 : 0;
-    /* GB_ENABLE(2) + RS_IP SEQ(1 header + count) + RS_COUNT(3) + RS_INST SEQ
-     * (1 header + count) = 7 + 2 * count. */
-    unsigned c1d_dwords = c1d_rs ? 7 + 2 * c1d_rs_count : 0;
 
     /* Stage 3 -- re-ingest output_gart_bo as the vertex array and draw it.  The
      * optional observe redirect (stage3_color_bo) adds nine dwords.  Each C1/C
@@ -993,7 +990,9 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
              + (ptsize_c2  ? 5 : 0)
              + (ptsize_c3  ? 8 : 0)
              + (ptsize_c4  ? 6 : 0)
-             + c1d_dwords);
+             /* C1d rasterizer block: GB_ENABLE(2) + RS_IP SEQ(1 header + count) +
+              * RS_COUNT(3) + RS_INST SEQ(1 header + count) = 7 + 2 * count. */
+             + (c1d_rs ? 7 + 2 * c1d_rs_count : 0));
 
     /* Stage-3 observation redirect.  Point the color buffer at the separate 2D
      * target and scissor to its extent so the re-ingested draw rasterizes there,
