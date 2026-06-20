@@ -49,11 +49,12 @@ silently.
 
 ## Baseline provenance
 
-The committed baseline is recorded on the validated build (mesa-gororoba-debug
-`2:26.2.0-22`, the per-vertex-point-size fix): point size correct, no point
-crashes, `clipping.point` and the point/random draws clean. Known-fail entries
-in the baseline are the conformance gaps tracked separately: the `*_wide` lines
-(addressed opt-in by `r300_clamp_max_line_width`), `limits.points`
-(`clamp_max_point_size`, pending), and `shaders.builtin_variable.pointcoord`
-(gl_PointCoord draw-module buildout, pending). Re-`--record` only when a fix
-intentionally moves one of those, and note which case changed.
+The committed baseline is recorded on the validated build with the conformant
+point/line rasterization limit (`max_point_size` = 64, `max_line_width` = 4) and
+the `gl_PointSize` clamp (`nir_lower_point_size`): point size correct and clamped,
+no point crashes, `clipping.point` and the point/random draws clean. There are no
+`Fail` entries -- `limits.points` and `shaders.builtin_variable.pointcoord` now
+`Pass`, and the `*_wide` line cases (interpolation, primitives, clipping) report
+`NotSupported` because the driver advertises only the width-4 aliased line range
+the GA quad-expansion covers conformantly rather than a wide range it cannot.
+Re-`--record` only when a fix intentionally moves a case, and note which changed.
