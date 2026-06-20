@@ -910,6 +910,7 @@ radeon_drm_cs_create(struct radeon_cmdbuf *rcs,
          FREE(cs);
          return false;
       }
+      cs->csc[i].owner = cs;
    }
 
    /* Triple-buffer: start filling csc[0], cst points to csc[1].
@@ -1195,8 +1196,13 @@ static unsigned radeon_drm_cs_get_buffer_list(struct radeon_cmdbuf *rcs,
 
 void radeon_drm_cs_emit_ioctl_oneshot(void *job, void *gdata, int thread_index)
 {
-   struct radeon_drm_cs *cs = (struct radeon_drm_cs*)job;
-   struct radeon_cs_context *csc = cs->cst;
+   /* The job carries the exact context to submit.  Reading the shared
+    * cs->cst here would race the main thread, which rotates cs->cst on every
+    * flush: a later (possibly empty, no-submit) flush could repoint cs->cst at
+    * a freshly-cleaned context, and this job would then submit length_dw=0 --
+    * the zero_ib CS-parser rejection -- while the real IB is dropped. */
+   struct radeon_cs_context *csc = (struct radeon_cs_context*)job;
+   struct radeon_drm_cs *cs = csc->owner;
    struct r300_trace trace;
    unsigned i;
    int r;
@@ -1463,12 +1469,12 @@ static int radeon_drm_cs_flush(struct radeon_cmdbuf *rcs,
       }
 
       if (util_queue_is_initialized(&cs->ws->cs_queue)) {
-         util_queue_add_job(&cs->ws->cs_queue, cs, &cs->flush_completed[submit_idx],
+         util_queue_add_job(&cs->ws->cs_queue, cs->cst, &cs->flush_completed[submit_idx],
                             radeon_drm_cs_emit_ioctl_oneshot, NULL, 0);
          if (!(flags & PIPE_FLUSH_ASYNC))
             radeon_drm_cs_sync_flush(rcs);
       } else {
-         radeon_drm_cs_emit_ioctl_oneshot(cs, NULL, 0);
+         radeon_drm_cs_emit_ioctl_oneshot(cs->cst, NULL, 0);
       }
    } else {
       /* No-submit path: an empty, overflowed, RADEON_NOOP, or

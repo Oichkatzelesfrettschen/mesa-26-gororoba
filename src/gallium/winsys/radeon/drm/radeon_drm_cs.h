@@ -30,6 +30,10 @@ struct radeon_cs_context {
    uint32_t                    buf[16 * 1024];
 
    int                         fd;
+   /* Owning cs.  A queued submit job carries its own context through this
+    * back-pointer instead of reading the shared cs->cst, which the main
+    * thread rotates on every flush. */
+   struct radeon_drm_cs        *owner;
    struct drm_radeon_cs        cs;
    struct drm_radeon_cs_chunk  chunks[3];
    uint64_t                    chunk_array[3];
