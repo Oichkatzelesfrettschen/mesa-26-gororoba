@@ -2211,6 +2211,94 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
  * from vbo) and the BO oracle (vbo holds the right values) prove different halves;
  * together they establish the re-ingest fetches correct computed-varying data
  * without depending on the raster. */
+/* One re-ingest vertex stream: a VS output and where TCL_BYPASS fetches its data.
+ * Streams are ordered position first then varyings by ascending gl_varying_slot --
+ * VARYING_SLOT_POS is 0, so an ascending-slot sort is exactly the output-vector
+ * order the VAP packs -- so stream i drives velem i / PSC stream i / output vec i. */
+enum r2vb_reingest_kind { R2VB_STREAM_POS, R2VB_STREAM_COMPUTED, R2VB_STREAM_PASSTHROUGH };
+struct r2vb_reingest_stream {
+    gl_varying_slot slot;
+    enum r2vb_reingest_kind kind;
+    int src_velem;   /* passthrough: app velem index of the source input; else -1 */
+};
+
+/* The app velem index feeding input var IN: its rank among the VS inputs in
+ * ascending location order, because r300 binds velem[k] to the k-th input in that
+ * order.  Location rank, not driver_location, because the bound VS arrives in
+ * deref/variable form (r300_optimize_nir does not run nir_lower_io). */
+static int r300_r2vb_input_velem_index(nir_shader *vs, const nir_variable *in)
+{
+    int rank = 0;
+    nir_foreach_variable_with_modes(v, vs, nir_var_shader_in)
+        if (v != in && v->data.location < in->data.location)
+            rank++;
+    return rank;
+}
+
+/* Enumerate the bound VS's outputs into output-vector order and classify each:
+ * position, the one computed varying (slot == computed_slot, fetched from the
+ * producer BO), or a passthrough (the store value is a straight load of an input
+ * var, fetched from that input's application buffer).  A passthrough records the
+ * app velem its source maps to.  Returns the stream count, or -1 if a varying is
+ * neither the computed one nor a mappable passthrough -- the caller then refuses
+ * the submit, the hard gate that declines an unhandled shape rather than draw a
+ * mismatched layout. */
+static int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
+                                            struct r2vb_reingest_stream *out, unsigned max)
+{
+    nir_function_impl *impl = nir_shader_get_entrypoint(vs);
+    if (!impl)
+        return -1;
+    unsigned n = 0;
+    nir_foreach_block(block, impl) {
+        nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_deref)
+                continue;
+            nir_variable *o = nir_intrinsic_get_var(intr, 0);
+            if (!o || !(o->data.mode & nir_var_shader_out))
+                continue;
+            if (n >= max)
+                return -1;
+            struct r2vb_reingest_stream *s = &out[n++];
+            s->slot = (gl_varying_slot)o->data.location;
+            s->src_velem = -1;
+            if (o->data.location == VARYING_SLOT_POS) {
+                s->kind = R2VB_STREAM_POS;
+            } else if ((int)o->data.location == computed_slot) {
+                s->kind = R2VB_STREAM_COMPUTED;
+            } else {
+                nir_intrinsic_instr *val = nir_src_as_intrinsic(intr->src[1]);
+                nir_variable *src = (val && val->intrinsic == nir_intrinsic_load_deref)
+                                        ? nir_intrinsic_get_var(val, 0) : NULL;
+                if (!src || !(src->data.mode & nir_var_shader_in))
+                    return -1; /* neither computed nor a clean input passthrough */
+                s->kind = R2VB_STREAM_PASSTHROUGH;
+                s->src_velem = r300_r2vb_input_velem_index(vs, src);
+            }
+        }
+    }
+    /* Sort ascending by slot (position first); insertion sort, n is tiny. */
+    for (unsigned i = 1; i < n; i++) {
+        struct r2vb_reingest_stream key = out[i];
+        int j = (int)i - 1;
+        while (j >= 0 && out[j].slot > key.slot) { out[j + 1] = out[j]; j--; }
+        out[j + 1] = key;
+    }
+    return (int)n;
+}
+
+/* Re-ingest the producer output as a draw whose vertex streams are routed per VS
+ * output at TCL_BYPASS: position from the clip BO, the computed varying from vbo,
+ * and every passthrough varying from its own application buffer.  The producer has
+ * no BO for a passthrough (the application supplies it), so the proof here is
+ * routing-correctness, not value-correctness: the no-submit R300_R2VB_INSPECT pass
+ * verifies every stream by resource pointer, and the gated submit's CS-decode adds
+ * the matching LOAD_VBPNTR relocation per stream.  The framebuffer raster is
+ * cold-non-deterministic (the VAP-fetch cold hazard), so it is never the gate.
+ * The full velem set and the two new buffer slots are saved and restored. */
 static bool r300_r2vb_reingest_computed_varying(struct r300_context *r300,
                                                 const struct pipe_draw_info *info,
                                                 const struct pipe_draw_start_count_bias *draw,
@@ -2223,46 +2311,94 @@ static bool r300_r2vb_reingest_computed_varying(struct r300_context *r300,
 
     unsigned n_out = r300->vertex_info.num_attribs;
 
-    /* Pre-reconstruction snapshot: the app VS+FS routing the producer-pass restore
-     * left in the derived state.  num_attribs is the PSC stream count the rebuilt
-     * velem set must match.  r300 has no per-BO GPU virtual address -- the command
-     * stream binds buffers by relocation index -- so BO identity here is the
-     * resource pointer, and in the emitted IB the relocation index, not a VA. */
+    /* r300 has no per-BO GPU virtual address -- the command stream binds buffers by
+     * relocation index -- so BO identity here is the resource pointer, and in the
+     * emitted IB the relocation index, not a VA. */
     fprintf(stderr,
             "r2vb_reingest pre vinfo_num_attribs=%u app_velems_count=%u nvb=%u vslot=%d "
             "clip=%p vbo=%p\n",
             n_out, ve->count, r300->nr_vertex_buffers, vslot, (void *)clip, (void *)vbo);
 
+    /* Single-input position is the proven-safe submit class (the MVP multi-stream
+     * re-ingest), not the wedge-prone num_in>=2 multi-input-position path.  A
+     * computed-varying VS is kept single-input position upstream; re-confirm here
+     * before any submit so the safe class is explicit. */
+    if (r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir) != 1) {
+        fprintf(stderr, "r2vb_reingest refusing submit (position is multi-input, not the safe class)\n");
+        return false;
+    }
+
+    struct r2vb_reingest_stream streams[PIPE_MAX_ATTRIBS];
+    int n_stream = r300_r2vb_reingest_stream_layout(r300_vs(r300)->state.ir.nir, vslot,
+                                                    streams, PIPE_MAX_ATTRIBS);
+
     unsigned clip_slot = r300->nr_vertex_buffers;
     unsigned vbo_slot = clip_slot + 1;
-    if (vbo_slot >= PIPE_MAX_ATTRIBS)
+    if (vbo_slot >= PIPE_MAX_ATTRIBS || n_stream < 1 ||
+        (unsigned)n_stream != n_out || n_out > PIPE_MAX_ATTRIBS) {
+        fprintf(stderr,
+                "r2vb_reingest invariant=FAIL (stream_layout=%d vs num_attribs=%u; unmapped or count mismatch)\n",
+                n_stream, n_out);
         return false;
+    }
 
-    /* Save the full velem set + the two buffer slots: the passthrough emit rewrites
-     * format_size[] and vertex_size_dwords, and the count/element grow must not leak. */
+    /* Snapshot the velems the rebuild overwrites (the n_out output slots) plus the
+     * two new buffer slots: the passthrough emit rewrites format_size[] and
+     * vertex_size_dwords, and the count/element grow must not leak.  A passthrough
+     * stream's source is an existing application velem (saved here, read for its
+     * buffer/offset/stride/format) whose buffer slot stays bound and is not
+     * overwritten. */
     unsigned saved_count = ve->count;
-    struct pipe_vertex_element saved_velem[2] = { ve->velem[0], ve->velem[1] };
-    unsigned saved_fmtsz[2] = { ve->format_size[0], ve->format_size[1] };
     unsigned saved_vsd = ve->vertex_size_dwords;
+    unsigned saved_nvb = r300->nr_vertex_buffers;
+    unsigned saved_n = MAX2((unsigned)n_out, saved_count);
+    struct pipe_vertex_element saved_velem[PIPE_MAX_ATTRIBS];
+    unsigned saved_fmtsz[PIPE_MAX_ATTRIBS];
+    for (unsigned i = 0; i < saved_n && i < PIPE_MAX_ATTRIBS; i++) {
+        saved_velem[i] = ve->velem[i];
+        saved_fmtsz[i] = ve->format_size[i];
+    }
     struct pipe_vertex_buffer saved_vb[2] = { r300->vertex_buffer[clip_slot],
                                               r300->vertex_buffer[vbo_slot] };
-    unsigned saved_nvb = r300->nr_vertex_buffers;
 
-    /* Reconstruct one vertex element per VS output, in PSC order (position first,
-     * then the single generic varying): velem[0] -> clip, velem[1] -> vbo, FP32x4. */
-    ve->count = 2;
-    ve->velem[0] = (struct pipe_vertex_element){ .vertex_buffer_index = clip_slot,
-                                                 .src_offset = 0, .src_stride = 16,
-                                                 .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT };
-    ve->velem[1] = (struct pipe_vertex_element){ .vertex_buffer_index = vbo_slot,
-                                                 .src_offset = 0, .src_stride = 16,
-                                                 .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT };
-    ve->format_size[0] = ve->format_size[1] = 16;
+    /* Capture each stream's expected source resource BEFORE the rebuild: position
+     * -> clip, computed -> vbo, passthrough -> the app buffer its source velem
+     * binds.  The invariant checks the rebuilt velem points at exactly this. */
+    struct pipe_resource *expect[PIPE_MAX_ATTRIBS];
+    for (int i = 0; i < n_stream; i++) {
+        if (streams[i].kind == R2VB_STREAM_POS)
+            expect[i] = clip;
+        else if (streams[i].kind == R2VB_STREAM_COMPUTED)
+            expect[i] = vbo;
+        else
+            expect[i] = r300->vertex_buffer[saved_velem[streams[i].src_velem].vertex_buffer_index]
+                            .buffer.resource;
+    }
+
+    /* Reconstruct one velem per VS output, in output-vector order.  Position and
+     * the computed varying get the two fresh FP32x4 slots (clip, vbo); each
+     * passthrough reuses its application velem verbatim so it fetches the original
+     * attribute from the application buffer the source input was bound to. */
+    ve->count = n_out;
     memset(&r300->vertex_buffer[clip_slot], 0, sizeof(struct pipe_vertex_buffer));
     memset(&r300->vertex_buffer[vbo_slot], 0, sizeof(struct pipe_vertex_buffer));
     r300->vertex_buffer[clip_slot].buffer.resource = clip;
     r300->vertex_buffer[vbo_slot].buffer.resource = vbo;
     r300->nr_vertex_buffers = vbo_slot + 1;
+    for (int i = 0; i < n_stream; i++) {
+        if (streams[i].kind == R2VB_STREAM_POS) {
+            ve->velem[i] = (struct pipe_vertex_element){ .vertex_buffer_index = clip_slot,
+                .src_offset = 0, .src_stride = 16, .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT };
+            ve->format_size[i] = 16;
+        } else if (streams[i].kind == R2VB_STREAM_COMPUTED) {
+            ve->velem[i] = (struct pipe_vertex_element){ .vertex_buffer_index = vbo_slot,
+                .src_offset = 0, .src_stride = 16, .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT };
+            ve->format_size[i] = 16;
+        } else {
+            ve->velem[i] = saved_velem[streams[i].src_velem];
+            ve->format_size[i] = saved_fmtsz[streams[i].src_velem];
+        }
+    }
 
     /* The producer hand-rolled rasterizer/framebuffer/scissor/viewport/ZB registers
      * outside the atom system; mark the owners dirty so the re-ingest prepare
@@ -2274,27 +2410,27 @@ static bool r300_r2vb_reingest_computed_varying(struct r300_context *r300,
     r300_mark_atom_dirty(r300, &r300->dsa_state);
     r300_mark_atom_dirty(r300, &r300->rs_state);
 
-    /* Post-reconstruction routing dump: each velem's bound resource against the
-     * producer BOs, plus the PSC stream/dst_vec_loc.  The varying array (velem[1])
-     * must be vbo. */
-    struct pipe_resource *r0 = r300->vertex_buffer[ve->velem[0].vertex_buffer_index].buffer.resource;
-    struct pipe_resource *r1 = r300->vertex_buffer[ve->velem[1].vertex_buffer_index].buffer.resource;
-    fprintf(stderr,
-            "r2vb_reingest post velems_count=%u velem0_vbi=%u res=%p velem1_vbi=%u res=%p\n",
-            ve->count, ve->velem[0].vertex_buffer_index, (void *)r0,
-            ve->velem[1].vertex_buffer_index, (void *)r1);
+    /* Post-reconstruction routing dump + the resource-pointer invariant: every
+     * stream's rebuilt velem must point at its expected source.  position -> clip
+     * and computed -> vbo prove the producer feeds those two; each passthrough ->
+     * its application buffer proves the original attribute still flows from the app
+     * (no producer BO supplies it). */
+    bool invariant = (ve->count == n_out);
+    for (int i = 0; i < n_stream; i++) {
+        struct pipe_resource *res =
+            r300->vertex_buffer[ve->velem[i].vertex_buffer_index].buffer.resource;
+        const char *tag = streams[i].kind == R2VB_STREAM_POS ? "pos" :
+                          streams[i].kind == R2VB_STREAM_COMPUTED ? "computed" : "passthrough";
+        fprintf(stderr, "r2vb_reingest post stream%d slot=%u kind=%s vbi=%u res=%p expect=%p%s\n",
+                i, streams[i].slot, tag, ve->velem[i].vertex_buffer_index,
+                (void *)res, (void *)expect[i], res == expect[i] ? "" : " MISMATCH");
+        if (res != expect[i])
+            invariant = false;
+    }
     r300_r2vb_dump_xform_routing(r300);
-
-    /* HARD submit gate.  The count check is the load-bearing safety: velems->count
-     * must equal vinfo->num_attribs so the LOAD_VBPNTR arrays map one-to-one onto
-     * the PSC streams (a 3-output app shader would leave num_attribs=3 != 2 and the
-     * submit is refused, not hung).  The resource-pointer checks assert the rebuilt
-     * wiring: the position stream fetches from clip, the varying stream (velem[1],
-     * feeding PSC stream 1 -> the varying's output vector) from vbo, not the
-     * application buffer. */
-    bool invariant = (ve->count == n_out) && (n_out == 2) && (r0 == clip) && (r1 == vbo);
-    fprintf(stderr, "r2vb_reingest invariant=%s (count==num_attribs==2 && pos->clip && var->vbo)\n",
-            invariant ? "HOLD" : "FAIL");
+    fprintf(stderr,
+            "r2vb_reingest invariant=%s (count==num_attribs==%u && pos->clip && computed->vbo && passthrough->app)\n",
+            invariant ? "HOLD" : "FAIL", n_out);
 
     bool ok = false;
     if (!invariant) {
@@ -2306,25 +2442,45 @@ static bool r300_r2vb_reingest_computed_varying(struct r300_context *r300,
          * adjacent single-CS barrier is needed for ordering. */
         r300->r2vb_reingest_barrier = false;
         ok = r300_r2vb_exec_passthrough_draw(r300, info, draw);
-        /* CS-decode correlation: after the emit the producer BOs are in the command
-         * stream, so print their relocation indices.  The captured IB's LOAD_VBPNTR
-         * array 1 (the varying stream) must reference reloc_vbo -- the r300-native
-         * form of "the fetch addresses vbo", since the IB carries reloc indices, not
-         * virtual addresses.  This holds whether or not the draw's raster cold-fails. */
+        /* CS-decode correlation: after the emit the producer/app buffers are in the
+         * command stream, so print their relocation indices.  The captured IB's
+         * LOAD_VBPNTR array i must reference the matching buffer -- the r300-native
+         * form of "stream i fetches from its source", since the IB carries reloc
+         * indices, not VAs.  Holds whether or not the draw's raster cold-fails. */
         if (ok) {
             int reloc_clip = r300->rws->cs_lookup_buffer(&r300->cs, r300_resource(clip)->buf);
             int reloc_vbo = r300->rws->cs_lookup_buffer(&r300->cs, r300_resource(vbo)->buf);
             fprintf(stderr,
                     "r2vb_reingest warm reloc_clip=%d reloc_vbo=%d (IB LOAD_VBPNTR array1 must ref reloc_vbo)\n",
                     reloc_clip, reloc_vbo);
+            for (int i = 0; i < n_stream; i++) {
+                if (streams[i].kind != R2VB_STREAM_PASSTHROUGH)
+                    continue;
+                /* A passthrough source is the application vertex buffer, which in
+                 * the r300vk SWTCL context is a CPU-shadow (or user) buffer with no
+                 * winsys BO.  r300_r2vb_exec_passthrough_draw uploads it to a fresh
+                 * BO and fetches from that, so a lookup of the ORIGINAL resource is
+                 * expected to miss (orig_reloc=-1) -- the routing to the app source
+                 * is proven by the INSPECT invariant, and the upload is the same
+                 * proven path the MVP multi-stream re-ingest already uses for its
+                 * passthrough varyings.  A real-BO app buffer would instead be
+                 * referenced directly and lookup would find it. */
+                struct pipe_resource *pr = expect[i];
+                int orig_reloc = pr && r300_resource(pr)->buf
+                                     ? r300->rws->cs_lookup_buffer(&r300->cs, r300_resource(pr)->buf)
+                                     : -1;
+                fprintf(stderr,
+                        "r2vb_reingest warm passthrough stream%d orig_reloc=%d (CPU-shadow source uploaded to a BO; -1 on the original is expected, routing proven by INSPECT)\n",
+                        i, orig_reloc);
+            }
         }
     }
 
     ve->count = saved_count;
-    ve->velem[0] = saved_velem[0];
-    ve->velem[1] = saved_velem[1];
-    ve->format_size[0] = saved_fmtsz[0];
-    ve->format_size[1] = saved_fmtsz[1];
+    for (unsigned i = 0; i < saved_n && i < PIPE_MAX_ATTRIBS; i++) {
+        ve->velem[i] = saved_velem[i];
+        ve->format_size[i] = saved_fmtsz[i];
+    }
     ve->vertex_size_dwords = saved_vsd;
     r300->vertex_buffer[clip_slot] = saved_vb[0];
     r300->vertex_buffer[vbo_slot] = saved_vb[1];
