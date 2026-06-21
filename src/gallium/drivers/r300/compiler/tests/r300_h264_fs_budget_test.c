@@ -36,6 +36,7 @@
 #include "radeon_program.h"
 #include "radeon_regalloc.h"
 
+#include "vl/vl_h264_chroma.h"
 #include "vl/vl_h264_idct.h"
 #include "vl/vl_h264_mc.h"
 
@@ -176,6 +177,7 @@ main(void)
    gate_one("h264_idct_col", vl_h264_idct_col_nir);
    gate_one("h264_mc_halfpel_h", vl_h264_mc_halfpel_h_nir);
    gate_one("h264_mc_halfpel_v", vl_h264_mc_halfpel_v_nir);
+   gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir);
 
    printf("r300-h264-fs-budget: %s\n", g_failures ? "FAIL" : "PASS");
    return g_failures ? 1 : 0;

@@ -425,6 +425,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_idct.h',
   'vl/vl_h264_mc.c',
   'vl/vl_h264_mc.h',
+  'vl/vl_h264_chroma.c',
+  'vl/vl_h264_chroma.h',
   'vl/vl_h264_replay_provider.c',
   'vl/vl_h264_vld_provider.c',
   'vl/vl_h264_vld_provider.h',
