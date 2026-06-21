@@ -776,6 +776,17 @@ deblock_qp_index(int qp, int offset)
    return i < 0 ? 0 : (i > 51 ? 51 : i);
 }
 
+/* Average QP across a block edge for the deblock thresholds (ITU-T H.264 sec
+ * 8.7.2.2): qPav = (qPp + qPq + 1) >> 1.  An internal edge's two sides share the
+ * macroblock QP, so qPav is that QP; a macroblock-boundary edge averages the two
+ * macroblocks, which differ whenever the stream varies QP per macroblock -- the
+ * common case, since adaptive quantization is on by default in most encoders. */
+static int
+deblock_qp_avg(int qp_p, int qp_q)
+{
+   return (qp_p + qp_q + 1) >> 1;
+}
+
 /* Whether a 4x4 luma block carries a nonzero coefficient, which raises the
  * boundary strength of its edges to 2.  An 8x8-transformed macroblock keeps its
  * luma levels in coeff8x8, so the block's coded state is its containing 8x8
@@ -1025,8 +1036,9 @@ vl_h264_emit_deblock_luma(struct vl_h264_emit *emit, struct pipe_resource *recon
 
             const int alpha_off = (int)mb->slice_alpha_c0_offset_div2 * 2;
             const int beta_off = (int)mb->slice_beta_offset_div2 * 2;
-            const int ia = deblock_qp_index(mb->qp_y, alpha_off);
-            const int ib = deblock_qp_index(mb->qp_y, beta_off);
+            const int qp_av = deblock_qp_avg(mb_p->qp_y, mb->qp_y);
+            const int ia = deblock_qp_index(qp_av, alpha_off);
+            const int ib = deblock_qp_index(qp_av, beta_off);
             const float alpha = (float)deblock_alpha[ia];
             const float beta = (float)deblock_beta[ib];
             const int col = r / BLOCK;            /* q-side block column/row 0..3 */
