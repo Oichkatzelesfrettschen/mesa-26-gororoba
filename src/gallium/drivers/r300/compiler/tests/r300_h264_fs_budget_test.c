@@ -227,6 +227,8 @@ main(void)
     * backend, not the raw nir_to_rc count, is the decisive fit verdict. */
    gate_one("h264_idct_row", vl_h264_idct_row_nir);
    gate_one("h264_idct_col", vl_h264_idct_col_nir);
+   gate_one("h264_idct_plane_row", vl_h264_idct_plane_row_nir);
+   gate_one("h264_idct_plane_col", vl_h264_idct_plane_col_nir);
    gate_one("h264_mc_halfpel_h", vl_h264_mc_halfpel_h_nir);
    gate_one("h264_mc_halfpel_v", vl_h264_mc_halfpel_v_nir);
    gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir);
