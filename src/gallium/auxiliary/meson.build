@@ -423,6 +423,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_decoder.h',
   'vl/vl_h264_idct.c',
   'vl/vl_h264_idct.h',
+  'vl/vl_h264_mc.c',
+  'vl/vl_h264_mc.h',
   'vl/vl_h264_replay_provider.c',
   'vl/vl_h264_vld_provider.c',
   'vl/vl_h264_vld_provider.h',
