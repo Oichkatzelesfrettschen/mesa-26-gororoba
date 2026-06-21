@@ -236,11 +236,6 @@ deblock_reference(int *pic, int w, int h,
          const struct vl_h264_mb_contract *mb = grid[mby * mbw + mbx];
          if (!mb || mb->disable_deblock_idc == 1)
             continue;
-         int ia = deblock_ref_qp_index(mb->qp_y, mb->slice_alpha_c0_offset_div2 * 2);
-         int ib = deblock_ref_qp_index(mb->qp_y, mb->slice_beta_offset_div2 * 2);
-         int alpha = deblock_ref_alpha[ia];
-         int beta = deblock_ref_beta[ib];
-         int strong_thr = (alpha >> 2) + 2;
 
          for (int pass = 0; pass < 8; ++pass) {
             bool vertical = pass < 4;
@@ -261,6 +256,14 @@ deblock_reference(int *pic, int w, int h,
                                : grid[(mby - 1) * mbw + mbx];
             if (!mb_p)
                continue;
+            /* Thresholds index by qPav = (qPp + qPq + 1) >> 1 (sec 8.7.2.2); for an
+             * internal edge mb_p == mb so qPav is the macroblock QP. */
+            int qp_av = (mb_p->qp_y + mb->qp_y + 1) >> 1;
+            int ia = deblock_ref_qp_index(qp_av, mb->slice_alpha_c0_offset_div2 * 2);
+            int ib = deblock_ref_qp_index(qp_av, mb->slice_beta_offset_div2 * 2);
+            int alpha = deblock_ref_alpha[ia];
+            int beta = deblock_ref_beta[ib];
+            int strong_thr = (alpha >> 2) + 2;
             int col = r / 4;
 
             for (int seg = 0; seg < 4; ++seg) {

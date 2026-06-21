@@ -348,12 +348,27 @@ main(void)
    pass = run_frame(emit, ctx, screen, "intra_quad_8x8_edge_skip", intra8x8_pic, 2,
                     2, intra8x8, 4) && pass;
 
+   /* Two intra macroblocks with a large QP difference across the shared vertical
+    * boundary: the boundary thresholds index by qPav = (28 + 44 + 1) >> 1 = 36,
+    * different from either side, so a model that used only the q-side QP would
+    * filter the boundary with the wrong alpha/beta and diverge here. */
+   const unsigned dw = 2 * MB, dh = MB;
+   int *qpav_pic = malloc((size_t)dw * dh * sizeof(int));
+   fill_blocky(qpav_pic, dw, dh, 0, 0);
+   const struct mb_spec qpav[] = {
+      {0, 0, 28, true, false, false, true},
+      {1, 0, 44, true, false, false, true},
+   };
+   pass = run_frame(emit, ctx, screen, "qpav_boundary_average", qpav_pic, 2, 1,
+                    qpav, 2) && pass;
+
    vl_h264_emit_destroy(emit);
    free(blocky);
    free(stepped);
    free(quad_pic);
    free(intra_pic);
    free(intra8x8_pic);
+   free(qpav_pic);
    ctx->destroy(ctx);
    screen->destroy(screen);
    winsys->destroy(winsys);
