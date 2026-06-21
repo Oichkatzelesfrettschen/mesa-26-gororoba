@@ -882,7 +882,7 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     OUT_CS_REG(R300_RB3D_DSTCACHE_CTLSTAT, r2vb_rb);
     OUT_CS_REG(RADEON_WAIT_UNTIL, r2vb_wait);
     /* Sync the VAP/vertex-fetch engine.  The cache flushes above push the
-     * producer's colour write out of the RB3D/Z caches to memory, but they do
+     * producer's color write out of the RB3D/Z caches to memory, but they do
      * NOT touch the vertex cache: the R2VB re-ingest fetches this same BO as a
      * vertex stream, and the VAP can return STALE vertices the vertex cache kept
      * from an earlier fetch of the recycled GART page.  Observed as a
@@ -1332,9 +1332,9 @@ static bool r2vb_build_shape(const char *prim_name, uint32_t pts_count, struct r
         return true;
     }
     if (strcmp(prim_name, "triangle_fan") == 0) {
-        /* centre + 4 ring corners.  A 5-vertex fan assembles n-2 = 3 triangles
-         * (centre,c1,c2), (centre,c2,c3), (centre,c3,c4) -- it does NOT close back
-         * to c1, so it fills three of the four centre-anchored quadrants and
+        /* center + 4 ring corners.  A 5-vertex fan assembles n-2 = 3 triangles
+         * (center,c1,c2), (center,c2,c3), (center,c3,c4) -- it does NOT close back
+         * to c1, so it fills three of the four center-anchored quadrants and
          * leaves the c4->c1 wedge open.  That is correct fan topology, not a
          * defect; the footprint is ~3/4 of the 44x44 quad. */
         s->vf_prim = R300_VAP_VF_CNTL__PRIM_TRIANGLE_FAN;
@@ -2247,7 +2247,7 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
      * straight passthrough) ride a further opt-in: the route then runs a producer
      * pass per varying into its own BO.  Off by default so the proven
      * passthrough-varying route is unchanged (a computed-varying VS falls back to
-     * gallivm rather than rendering the wrong colour from the application buffer). */
+     * gallivm rather than rendering the wrong color from the application buffer). */
     static int varying = -1;
     if (varying < 0) {
         const char *e = getenv("R300_R2VB_VARYING");
@@ -2809,7 +2809,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * the clip BO must hold that value.  Distinct weights make the check
      * non-commutative: a producer-feed swap of two inputs changes the result and
      * fails the readback, where a symmetric function (e.g. inA+inB) could not.  The
-     * FP32 BO readback, not the 8-bit colour, is the proof. */
+     * FP32 BO readback, not the 8-bit color, is the proof. */
     const char *posw = getenv("R300_R2VB_POS_WEIGHTS");
     if (posw) {
         float w[R300_R2VB_MAX_PRODUCER_INPUTS];
@@ -2847,7 +2847,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * The producer feeds input a at VAR0+a, so the re-staged FS reads inPos at VAR0
      * and q at VAR1.  The oracle is trusted by construction: a known-answer self-test
      * anchors the rotation convention, then the clip BO must hold M * quat_rotate(q,
-     * inPos) per vertex (the FP32 readback, not the 8-bit colour, is the proof). */
+     * inPos) per vertex (the FP32 readback, not the 8-bit color, is the proof). */
     if (getenv("R300_R2VB_POS_QUAT") && num_in == 2) {
         /* A failed self-test means the oracle itself is wrong, so it cannot vouch
          * for the producer.  Fail loudly rather than silently skip the readback,
@@ -2883,7 +2883,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * pass uses, fed the same velem[0] attribute.  R300_R2VB_VARYING_VERIFY=<k>
      * reads the BO back against model*k -- an FP24-exact input through an exact op
      * (k a power of two) stays bit-exact, so the tight readback, not the 8-bit
-     * colour, is the proof.
+     * color, is the proof.
      *
      * When a computed varying is produced, RETURN before the re-ingest below.
      * That re-ingest is the unmodified passthrough path: it feeds varyings from
@@ -2929,7 +2929,7 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                  * floats) for a matrix computed varying, else inPos * factor.  The
                  * matrix case is the lossier check: FP24 error accumulates across
                  * the four mul-adds per row, so the BO readback (not the 8-bit
-                 * colour) is the proof, and R300_R2VB_VARYING_TOL sets the FP24
+                 * color) is the proof, and R300_R2VB_VARYING_TOL sets the FP24
                  * window. */
                 float vtol = vtolenv ? (float)atof(vtolenv) : 1e-4f;
                 if (vtol <= 0.0f)
