@@ -107,6 +107,23 @@ if with_tests and with_gallium_softpipe
     ),
     suite: 'gallium',
   )
+
+  # Render-to-texture verification of the H.264 chroma eighth-pel bilinear
+  # motion-compensation fragment program (vl_h264_chroma.c): renders the
+  # interpolated plane per fraction and checks each against the integer spec.
+  test('vl-h264-chroma',
+    executable(
+      'vl_h264_chroma_test',
+      'auxiliary/vl/tests/vl_h264_chroma_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 if with_gallium_asahi
