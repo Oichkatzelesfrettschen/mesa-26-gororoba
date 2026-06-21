@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "util/macros.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -16,12 +17,14 @@
 
 #include "vl_defines.h"
 #include "vl_h264_decoder.h"
+#include "vl_h264_emit.h"
 #include "vl_h264_vld_provider.h"
 
 struct vl_h264_decoder {
    struct pipe_video_codec base;
    struct pipe_context *context;
    struct vl_h264_vld_provider *provider;
+   struct vl_h264_emit *emit;
 
    unsigned width_in_mbs;
    unsigned height_in_mbs;
@@ -79,23 +82,42 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
                   struct pipe_picture_desc *picture)
 {
    struct vl_h264_decoder *dec = (struct vl_h264_decoder *)codec;
+   const struct pipe_h264_picture_desc *h264 =
+      (const struct pipe_h264_picture_desc *)picture;
+   struct pipe_sampler_view **ref_planes = NULL;
+   struct pipe_surface *target_surfaces;
+   struct pipe_sampler_view *ref_luma;
 
-   (void) dec;
-   (void) target;
-   (void) picture;
+   /* This rung reconstructs inter macroblocks, so it needs a reference frame: an
+    * intra-only frame with no decoded reference in the DPB is left to the
+    * intra-prediction rung and produces nothing here.  The first available
+    * reference is the prediction source -- multiple references per frame are a
+    * separate rung. */
+   for (unsigned i = 0; i < ARRAY_SIZE(h264->ref) && !ref_planes; ++i)
+      if (h264->ref[i])
+         ref_planes = h264->ref[i]->get_sampler_view_planes(h264->ref[i]);
+   if (!ref_planes || !ref_planes[0])
+      return 0;
+   ref_luma = ref_planes[0];
 
-   /* TODO: emit the FP24 back half from dec->frame.macroblocks.  For each
-    *       macroblock dispatch the inverse-transform fragment program (the 4x4
-    *       idct, or the 8x8 idct when transform_8x8 is set), then luma and
-    *       chroma motion compensation and the deblock filter, into target, then
-    *       texture_barrier and flush like vl_mpeg12_end_frame.  The contract
-    *       coefficients are canonical raster pixel-natural
-    *       (vl_h264_mb_contract.h), validated bit-exact against ffmpeg, so the
-    *       fragment program runs a plain transform with no transpose.
-    *       reason -- the per-stage fragment programs are the next bring-up rung,
-    *       Constrained Baseline luma-only I-frame first, then chroma, then P
-    *       frames, then High-profile 8x8.  tracking -- vl_h264_decoder back-half
-    *       emission against vl_h264_mb_contract. */
+   target_surfaces = target->get_surfaces(target);
+   if (!target_surfaces)
+      return 0;
+
+   if (!dec->emit) {
+      dec->emit = vl_h264_emit_create(dec->context);
+      if (!dec->emit)
+         return 0;
+   }
+
+   /* Luma reconstruction over the whole frame: the orchestrator
+    * motion-compensates each macroblock from the reference, adds the inverse
+    * transform of its residual, and writes Clip1(prediction + residual) into the
+    * target Y plane.  Chroma and the deblock filter are separate rungs. */
+   vl_h264_emit_luma_inter_unorm(dec->emit, &target_surfaces[0], dec->frame.width,
+                                 dec->frame.height, ref_luma,
+                                 ref_luma->texture->width0,
+                                 ref_luma->texture->height0, &dec->frame);
    return 0;
 }
 
@@ -111,6 +133,8 @@ vl_h264_destroy(struct pipe_video_codec *codec)
 {
    struct vl_h264_decoder *dec = (struct vl_h264_decoder *)codec;
 
+   if (dec->emit)
+      vl_h264_emit_destroy(dec->emit);
    if (dec->provider)
       dec->provider->destroy(dec->provider);
    FREE(dec->frame.macroblocks);
@@ -131,8 +155,10 @@ vl_create_h264_decoder(struct pipe_context *context,
 
    /* No entropy provider means no decoder: returning NULL keeps the decode
     * fail-closed, and the VA frontend's NULL check turns it into a clean error
-    * rather than a half-built codec. */
-   provider = vl_h264_vld_provider_create(VL_H264_VLD_PROVIDER_MESA_CAVLC);
+    * rather than a half-built codec.  The most preferred available provider is
+    * chosen, so a clean-room front end supersedes the bring-up replay without a
+    * change here. */
+   provider = vl_h264_vld_provider_create_available();
    if (!provider)
       return NULL;
 

@@ -37,6 +37,7 @@ struct vl_h264_emit {
    void *fs_idct_row;   /* whole-plane inverse-transform row pass */
    void *fs_idct_col;   /* whole-plane inverse-transform column pass */
    void *fs_recon;      /* Clip1(prediction + residual) */
+   void *fs_scale;      /* UNORM <-> integer luma domain scale at the boundary */
    void *sampler;       /* NEAREST, clamp-to-edge, shared by every pass */
 };
 
@@ -61,6 +62,31 @@ create_copy_fs(struct pipe_context *pipe)
    vl_nir_fs_begin(&fs, pipe, 1, "vl:h264_mc_copy_fs");
    vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
    return vl_nir_fs_finish(&fs, pipe, build_copy_color(&fs));
+}
+
+/* Format-boundary scale kernel: sample the source and multiply by the scale the
+ * draw passes in the second varying's first lane.  The orchestrator works in the
+ * integer 0..255 luma domain; a video surface plane is R8_UNORM in [0,1], so the
+ * reference is scaled up by 255 on the way in and the reconstructed luma down by
+ * 1/255 on the way out, both exact since the values are integers in 0..255. */
+static nir_def *
+build_scale_color(struct vl_nir_fs *fs)
+{
+   nir_builder *b = &fs->b;
+   nir_def *tc = fs->texcoord[0];
+   nir_def *uv = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
+   nir_def *sample = nir_channel(b, vl_nir_tex(fs, 0, uv), 0);
+   nir_def *scaled = nir_fmul(b, sample, nir_channel(b, fs->texcoord[1], 0));
+   return nir_replicate(b, scaled, 4);
+}
+
+static void *
+create_scale_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_scale_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_scale_color(&fs));
 }
 
 struct vl_h264_emit *
@@ -90,6 +116,7 @@ vl_h264_emit_create(struct pipe_context *pipe)
    emit->fs_idct_row = vl_h264_idct_create_plane_row_fs(pipe);
    emit->fs_idct_col = vl_h264_idct_create_plane_col_fs(pipe);
    emit->fs_recon = vl_h264_reconstruct_create_fs(pipe);
+   emit->fs_scale = create_scale_fs(pipe);
 
    /* NEAREST with clamp-to-edge matches the H.264 reference-picture edge
     * extension and the integer-sample reads every kernel makes. */
@@ -117,6 +144,8 @@ vl_h264_emit_destroy(struct vl_h264_emit *emit)
       cso_destroy_context(emit->cso);
    if (emit->sampler)
       pipe->delete_sampler_state(pipe, emit->sampler);
+   if (emit->fs_scale)
+      pipe->delete_fs_state(pipe, emit->fs_scale);
    if (emit->fs_recon)
       pipe->delete_fs_state(pipe, emit->fs_recon);
    if (emit->fs_idct_col)
@@ -292,6 +321,24 @@ mc_predict_mb(struct vl_h264_emit *emit, struct pipe_surface *pred,
              inv_rw, inv_rh, (float)ref_w, (float)ref_h, &ref, 1);
 }
 
+/* The fixed pipeline state every pass shares: opaque write, no depth/stencil,
+ * and the pixel-center and edge rules the per-stage rungs validated under. */
+static void
+set_pipeline_state(struct vl_h264_emit *emit)
+{
+   struct pipe_blend_state blend = {0};
+   blend.rt[0].colormask = PIPE_MASK_RGBA;
+   cso_set_blend(emit->cso, &blend);
+   struct pipe_depth_stencil_alpha_state dsa = {{{0}}};
+   cso_set_depth_stencil_alpha(emit->cso, &dsa);
+   struct pipe_rasterizer_state rs = {0};
+   rs.half_pixel_center = 1;
+   rs.bottom_edge_rule = 1;
+   rs.depth_clip_near = 1;
+   rs.depth_clip_far = 1;
+   cso_set_rasterizer(emit->cso, &rs);
+}
+
 void
 vl_h264_emit_luma_inter(struct vl_h264_emit *emit, struct pipe_surface *dst_luma,
                         unsigned width, unsigned height,
@@ -326,17 +373,7 @@ vl_h264_emit_luma_inter(struct vl_h264_emit *emit, struct pipe_surface *dst_luma
    residual_surf.format = residual->format;
    residual_surf.texture = residual;
 
-   struct pipe_blend_state blend = {0};
-   blend.rt[0].colormask = PIPE_MASK_RGBA;
-   cso_set_blend(emit->cso, &blend);
-   struct pipe_depth_stencil_alpha_state dsa = {{{0}}};
-   cso_set_depth_stencil_alpha(emit->cso, &dsa);
-   struct pipe_rasterizer_state rs = {0};
-   rs.half_pixel_center = 1;
-   rs.bottom_edge_rule = 1;
-   rs.depth_clip_near = 1;
-   rs.depth_clip_far = 1;
-   cso_set_rasterizer(emit->cso, &rs);
+   set_pipeline_state(emit);
 
    scatter_luma_coeff(pipe, coeff, width, height, slice);
 
@@ -376,4 +413,60 @@ vl_h264_emit_luma_inter(struct vl_h264_emit *emit, struct pipe_surface *dst_luma
    pipe_resource_reference(&pred, NULL);
    pipe_resource_reference(&inter, NULL);
    pipe_resource_reference(&residual, NULL);
+}
+
+/* One full-target scale copy: sample src across the whole dst and multiply by
+ * scale.  The scale rides in the second varying's first lane, which the scale
+ * kernel reads. */
+static void
+scale_copy(struct vl_h264_emit *emit, struct pipe_surface *dst, unsigned width,
+           unsigned height, struct pipe_sampler_view *src, float scale)
+{
+   draw_pass(emit, emit->fs_scale, dst, width, height, 0, 0, width, height, 0, 0,
+             1, 1, 1.0f / (float)width, 1.0f / (float)height, scale, 0, &src, 1);
+}
+
+void
+vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
+                              struct pipe_surface *dst_luma, unsigned width,
+                              unsigned height,
+                              struct pipe_sampler_view *ref_luma,
+                              unsigned ref_width, unsigned ref_height,
+                              const struct vl_h264_slice_contract *slice)
+{
+   struct pipe_context *pipe = emit->pipe;
+   struct pipe_screen *screen = pipe->screen;
+
+   set_pipeline_state(emit);
+
+   /* The reference plane and the target are R8_UNORM in [0,1]; the orchestrator
+    * works in the integer 0..255 luma domain.  Scale the reference up into an
+    * R32_FLOAT working plane, reconstruct into another, then scale the result
+    * down into the target. */
+   struct pipe_resource *ref_scaled = make_plane(screen, ref_width, ref_height);
+   struct pipe_resource *recon = make_plane(screen, width, height);
+   struct pipe_sampler_view *ref_scaled_view = make_view(pipe, ref_scaled);
+   struct pipe_sampler_view *recon_view = make_view(pipe, recon);
+
+   struct pipe_surface ref_scaled_surf = {{0}};
+   ref_scaled_surf.format = ref_scaled->format;
+   ref_scaled_surf.texture = ref_scaled;
+   struct pipe_surface recon_surf = {{0}};
+   recon_surf.format = recon->format;
+   recon_surf.texture = recon;
+
+   scale_copy(emit, &ref_scaled_surf, ref_width, ref_height, ref_luma, 255.0f);
+   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
+   vl_h264_emit_luma_inter(emit, &recon_surf, width, height, ref_scaled_view,
+                           ref_width, ref_height, slice);
+   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
+   scale_copy(emit, dst_luma, width, height, recon_view, 1.0f / 255.0f);
+   pipe->flush(pipe, NULL, 0);
+
+   pipe_sampler_view_reference(&ref_scaled_view, NULL);
+   pipe_sampler_view_reference(&recon_view, NULL);
+   pipe_resource_reference(&ref_scaled, NULL);
+   pipe_resource_reference(&recon, NULL);
 }

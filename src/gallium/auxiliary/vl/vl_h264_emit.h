@@ -68,6 +68,21 @@ void vl_h264_emit_luma_inter(struct vl_h264_emit *emit,
                              unsigned ref_width, unsigned ref_height,
                              const struct vl_h264_slice_contract *slice);
 
+/*
+ * The same reconstruction with the video-surface format boundary handled: the
+ * reference sampler view and the destination surface are R8_UNORM video planes
+ * in [0,1], and this scales into and out of the orchestrator's integer 0..255
+ * luma domain.  vl_h264_end_frame calls this with the planes the video buffers
+ * expose; the bare vl_h264_emit_luma_inter is the R32_FLOAT core the per-stage
+ * harness drives directly.
+ */
+void vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
+                                   struct pipe_surface *dst_luma,
+                                   unsigned width, unsigned height,
+                                   struct pipe_sampler_view *ref_luma,
+                                   unsigned ref_width, unsigned ref_height,
+                                   const struct vl_h264_slice_contract *slice);
+
 #ifdef __cplusplus
 }
 #endif

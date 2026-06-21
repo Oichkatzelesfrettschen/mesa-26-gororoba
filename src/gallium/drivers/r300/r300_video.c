@@ -38,7 +38,7 @@ r300_h264_decode_available(enum pipe_video_profile profile)
    if (profile != PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE &&
        profile != PIPE_VIDEO_PROFILE_MPEG4_AVC_BASELINE)
       return false;
-   return vl_h264_vld_provider_available(VL_H264_VLD_PROVIDER_MESA_CAVLC);
+   return vl_h264_vld_provider_any_available();
 }
 #endif
 
