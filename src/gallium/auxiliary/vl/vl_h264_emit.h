@@ -102,6 +102,21 @@ void vl_h264_emit_chroma_inter(struct vl_h264_emit *emit,
                                const struct vl_h264_slice_contract *slice,
                                unsigned block_base);
 
+/*
+ * Reconstruct both chroma components of an inter frame into one NV12 interleaved
+ * R8G8 chroma surface (Cb in the R lane, Cr in the G lane), handling the video-
+ * surface format boundary.  ref_chroma is the reference's interleaved chroma
+ * view; this de-interleaves and scales it into the integer 0..255 domain,
+ * reconstructs Cb and Cr, and recombines the results into dst_chroma.
+ * vl_h264_end_frame calls this with the chroma planes the video buffers expose.
+ */
+void vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
+                                     struct pipe_surface *dst_chroma,
+                                     unsigned width, unsigned height,
+                                     struct pipe_sampler_view *ref_chroma,
+                                     unsigned ref_width, unsigned ref_height,
+                                     const struct vl_h264_slice_contract *slice);
+
 #ifdef __cplusplus
 }
 #endif

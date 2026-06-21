@@ -46,7 +46,9 @@ struct vl_h264_emit {
    void *fs_idct_row;   /* whole-plane inverse-transform row pass */
    void *fs_idct_col;   /* whole-plane inverse-transform column pass */
    void *fs_recon;      /* Clip1(prediction + residual) */
-   void *fs_scale;      /* UNORM <-> integer luma domain scale at the boundary */
+   void *fs_scale;      /* UNORM <-> integer domain scale, channel 0 (luma, Cb) */
+   void *fs_scale_cr;   /* UNORM scale, channel 1 (Cr lane of NV12 chroma) */
+   void *fs_interleave; /* recombine Cb + Cr into an NV12 interleaved plane */
    void *sampler;       /* NEAREST, clamp-to-edge, shared by every pass */
 };
 
@@ -73,29 +75,57 @@ create_copy_fs(struct pipe_context *pipe)
    return vl_nir_fs_finish(&fs, pipe, build_copy_color(&fs));
 }
 
-/* Format-boundary scale kernel: sample the source and multiply by the scale the
- * draw passes in the second varying's first lane.  The orchestrator works in the
- * integer 0..255 luma domain; a video surface plane is R8_UNORM in [0,1], so the
- * reference is scaled up by 255 on the way in and the reconstructed luma down by
- * 1/255 on the way out, both exact since the values are integers in 0..255. */
+/* Format-boundary scale kernel: sample one channel of the source and multiply by
+ * the scale the draw passes in the second varying's first lane.  The orchestrator
+ * works in the integer 0..255 sample domain; a video surface plane is UNORM in
+ * [0,1], so values are scaled up by 255 on the way in and down by 1/255 on the
+ * way out, both exact since the values are integers in 0..255.  channel 0 reads
+ * the luma plane or the Cb lane of an interleaved NV12 chroma plane; channel 1
+ * reads the Cr lane. */
 static nir_def *
-build_scale_color(struct vl_nir_fs *fs)
+build_scale_channel(struct vl_nir_fs *fs, unsigned channel)
 {
    nir_builder *b = &fs->b;
    nir_def *tc = fs->texcoord[0];
    nir_def *uv = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
-   nir_def *sample = nir_channel(b, vl_nir_tex(fs, 0, uv), 0);
+   nir_def *sample = nir_channel(b, vl_nir_tex(fs, 0, uv), channel);
    nir_def *scaled = nir_fmul(b, sample, nir_channel(b, fs->texcoord[1], 0));
    return nir_replicate(b, scaled, 4);
 }
 
 static void *
-create_scale_fs(struct pipe_context *pipe)
+create_scale_fs(struct pipe_context *pipe, unsigned channel)
 {
    struct vl_nir_fs fs;
    vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_scale_fs");
    vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
-   return vl_nir_fs_finish(&fs, pipe, build_scale_color(&fs));
+   return vl_nir_fs_finish(&fs, pipe, build_scale_channel(&fs, channel));
+}
+
+/* Re-interleave kernel: sample the reconstructed Cb (binding 0) and Cr (binding
+ * 1), scale each by the second varying's first lane, and write them to the R and
+ * G lanes of an NV12 interleaved chroma plane. */
+static nir_def *
+build_interleave_color(struct vl_nir_fs *fs)
+{
+   nir_builder *b = &fs->b;
+   nir_def *tc = fs->texcoord[0];
+   nir_def *uv = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
+   nir_def *scale = nir_channel(b, fs->texcoord[1], 0);
+   nir_def *cb = nir_fmul(b, nir_channel(b, vl_nir_tex(fs, 0, uv), 0), scale);
+   nir_def *cr = nir_fmul(b, nir_channel(b, vl_nir_tex(fs, 1, uv), 0), scale);
+   nir_def *zero = nir_imm_float(b, 0.0f);
+   return nir_vec4(b, cb, cr, zero, zero);
+}
+
+static void *
+create_interleave_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_chroma_interleave_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   vl_nir_sampler(&fs, 1, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_interleave_color(&fs));
 }
 
 struct vl_h264_emit *
@@ -126,7 +156,9 @@ vl_h264_emit_create(struct pipe_context *pipe)
    emit->fs_idct_row = vl_h264_idct_create_plane_row_fs(pipe);
    emit->fs_idct_col = vl_h264_idct_create_plane_col_fs(pipe);
    emit->fs_recon = vl_h264_reconstruct_create_fs(pipe);
-   emit->fs_scale = create_scale_fs(pipe);
+   emit->fs_scale = create_scale_fs(pipe, 0);
+   emit->fs_scale_cr = create_scale_fs(pipe, 1);
+   emit->fs_interleave = create_interleave_fs(pipe);
 
    /* NEAREST with clamp-to-edge matches the H.264 reference-picture edge
     * extension and the integer-sample reads every kernel makes. */
@@ -154,6 +186,10 @@ vl_h264_emit_destroy(struct vl_h264_emit *emit)
       cso_destroy_context(emit->cso);
    if (emit->sampler)
       pipe->delete_sampler_state(pipe, emit->sampler);
+   if (emit->fs_interleave)
+      pipe->delete_fs_state(pipe, emit->fs_interleave);
+   if (emit->fs_scale_cr)
+      pipe->delete_fs_state(pipe, emit->fs_scale_cr);
    if (emit->fs_scale)
       pipe->delete_fs_state(pipe, emit->fs_scale);
    if (emit->fs_recon)
@@ -564,16 +600,30 @@ vl_h264_emit_chroma_inter(struct vl_h264_emit *emit,
    pipe_resource_reference(&pred, NULL);
 }
 
-/* One full-target scale copy: sample src across the whole dst and multiply by
- * scale.  The scale rides in the second varying's first lane, which the scale
- * kernel reads. */
+/* One full-target scale copy with the given scale kernel: sample src across the
+ * whole dst and multiply by scale, which rides in the second varying's first
+ * lane.  fs selects which source channel is read (luma/Cb on channel 0, Cr on
+ * channel 1). */
 static void
-scale_copy(struct vl_h264_emit *emit, struct pipe_surface *dst, unsigned width,
-           unsigned height, struct pipe_sampler_view *src, float scale)
+scale_copy(struct vl_h264_emit *emit, void *fs, struct pipe_surface *dst,
+           unsigned width, unsigned height, struct pipe_sampler_view *src,
+           float scale)
 {
-   draw_pass(emit, emit->fs_scale, dst, width, height, 0, 0, width, height, 0, 0,
-             1, 1, 1.0f / (float)width, 1.0f / (float)height, scale, 0, 0, 0,
-             &src, 1);
+   draw_pass(emit, fs, dst, width, height, 0, 0, width, height, 0, 0, 1, 1,
+             1.0f / (float)width, 1.0f / (float)height, scale, 0, 0, 0, &src, 1);
+}
+
+/* Recombine the reconstructed Cb and Cr planes into an interleaved NV12 chroma
+ * surface, scaling each by scale on the way to the UNORM target. */
+static void
+interleave_copy(struct vl_h264_emit *emit, struct pipe_surface *dst,
+                unsigned width, unsigned height, struct pipe_sampler_view *cb,
+                struct pipe_sampler_view *cr, float scale)
+{
+   struct pipe_sampler_view *views[2] = {cb, cr};
+   draw_pass(emit, emit->fs_interleave, dst, width, height, 0, 0, width, height,
+             0, 0, 1, 1, 1.0f / (float)width, 1.0f / (float)height, scale, 0, 0,
+             0, views, 2);
 }
 
 void
@@ -605,18 +655,87 @@ vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
    recon_surf.format = recon->format;
    recon_surf.texture = recon;
 
-   scale_copy(emit, &ref_scaled_surf, ref_width, ref_height, ref_luma, 255.0f);
+   scale_copy(emit, emit->fs_scale, &ref_scaled_surf, ref_width, ref_height,
+              ref_luma, 255.0f);
    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
    vl_h264_emit_luma_inter(emit, &recon_surf, width, height, ref_scaled_view,
                            ref_width, ref_height, slice);
    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
-   scale_copy(emit, dst_luma, width, height, recon_view, 1.0f / 255.0f);
+   scale_copy(emit, emit->fs_scale, dst_luma, width, height, recon_view,
+              1.0f / 255.0f);
    pipe->flush(pipe, NULL, 0);
 
    pipe_sampler_view_reference(&ref_scaled_view, NULL);
    pipe_sampler_view_reference(&recon_view, NULL);
    pipe_resource_reference(&ref_scaled, NULL);
    pipe_resource_reference(&recon, NULL);
+}
+
+void
+vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
+                                struct pipe_surface *dst_chroma, unsigned width,
+                                unsigned height,
+                                struct pipe_sampler_view *ref_chroma,
+                                unsigned ref_width, unsigned ref_height,
+                                const struct vl_h264_slice_contract *slice)
+{
+   struct pipe_context *pipe = emit->pipe;
+   struct pipe_screen *screen = pipe->screen;
+
+   set_pipeline_state(emit);
+
+   /* NV12 chroma is one R8G8 plane with Cb in the R lane and Cr in the G lane.
+    * De-interleave the reference into two R32_FLOAT working planes scaled to the
+    * integer 0..255 domain, reconstruct each component, then recombine the two
+    * results into the interleaved target. */
+   struct pipe_resource *ref_cb = make_plane(screen, ref_width, ref_height);
+   struct pipe_resource *ref_cr = make_plane(screen, ref_width, ref_height);
+   struct pipe_resource *recon_cb = make_plane(screen, width, height);
+   struct pipe_resource *recon_cr = make_plane(screen, width, height);
+   struct pipe_sampler_view *ref_cb_view = make_view(pipe, ref_cb);
+   struct pipe_sampler_view *ref_cr_view = make_view(pipe, ref_cr);
+   struct pipe_sampler_view *recon_cb_view = make_view(pipe, recon_cb);
+   struct pipe_sampler_view *recon_cr_view = make_view(pipe, recon_cr);
+
+   struct pipe_surface ref_cb_surf = {{0}};
+   ref_cb_surf.format = ref_cb->format;
+   ref_cb_surf.texture = ref_cb;
+   struct pipe_surface ref_cr_surf = {{0}};
+   ref_cr_surf.format = ref_cr->format;
+   ref_cr_surf.texture = ref_cr;
+   struct pipe_surface recon_cb_surf = {{0}};
+   recon_cb_surf.format = recon_cb->format;
+   recon_cb_surf.texture = recon_cb;
+   struct pipe_surface recon_cr_surf = {{0}};
+   recon_cr_surf.format = recon_cr->format;
+   recon_cr_surf.texture = recon_cr;
+
+   scale_copy(emit, emit->fs_scale, &ref_cb_surf, ref_width, ref_height,
+              ref_chroma, 255.0f);
+   scale_copy(emit, emit->fs_scale_cr, &ref_cr_surf, ref_width, ref_height,
+              ref_chroma, 255.0f);
+   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
+   vl_h264_emit_chroma_inter(emit, &recon_cb_surf, width, height, ref_cb_view,
+                             ref_width, ref_height, slice,
+                             VL_H264_LUMA_4X4_BLOCKS);
+   vl_h264_emit_chroma_inter(emit, &recon_cr_surf, width, height, ref_cr_view,
+                             ref_width, ref_height, slice,
+                             VL_H264_LUMA_4X4_BLOCKS + CHROMA_BLOCKS_PER_COMPONENT);
+   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
+   interleave_copy(emit, dst_chroma, width, height, recon_cb_view, recon_cr_view,
+                   1.0f / 255.0f);
+   pipe->flush(pipe, NULL, 0);
+
+   pipe_sampler_view_reference(&ref_cb_view, NULL);
+   pipe_sampler_view_reference(&ref_cr_view, NULL);
+   pipe_sampler_view_reference(&recon_cb_view, NULL);
+   pipe_sampler_view_reference(&recon_cr_view, NULL);
+   pipe_resource_reference(&ref_cb, NULL);
+   pipe_resource_reference(&ref_cr, NULL);
+   pipe_resource_reference(&recon_cb, NULL);
+   pipe_resource_reference(&recon_cr, NULL);
 }

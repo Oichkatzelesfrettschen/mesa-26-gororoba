@@ -113,11 +113,22 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
    /* Luma reconstruction over the whole frame: the orchestrator
     * motion-compensates each macroblock from the reference, adds the inverse
     * transform of its residual, and writes Clip1(prediction + residual) into the
-    * target Y plane.  Chroma and the deblock filter are separate rungs. */
+    * target Y plane.  The deblock filter is a separate rung. */
    vl_h264_emit_luma_inter_unorm(dec->emit, &target_surfaces[0], dec->frame.width,
                                  dec->frame.height, ref_luma,
                                  ref_luma->texture->width0,
                                  ref_luma->texture->height0, &dec->frame);
+
+   /* Chroma reconstruction into the interleaved NV12 chroma plane.  The chroma
+    * planes are half resolution, so their dimensions come from the chroma plane
+    * resource rather than the luma frame size. */
+   struct pipe_sampler_view *ref_chroma = ref_planes[1];
+   if (ref_chroma)
+      vl_h264_emit_chroma_inter_unorm(dec->emit, &target_surfaces[1],
+                                      ref_chroma->texture->width0,
+                                      ref_chroma->texture->height0, ref_chroma,
+                                      ref_chroma->texture->width0,
+                                      ref_chroma->texture->height0, &dec->frame);
    return 0;
 }
 

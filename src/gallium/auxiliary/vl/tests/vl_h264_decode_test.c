@@ -183,6 +183,71 @@ readback_luma(struct pipe_context *ctx, struct pipe_video_buffer *vb,
    pipe_texture_unmap(ctx, xfer);
 }
 
+/* 4:2:0 chroma is half resolution and interleaved in NV12 plane 1 (R8G8), Cb in
+ * the R lane and Cr in the G lane. */
+#define CHROMA (MB / 2)
+
+static struct pipe_resource *
+chroma_resource(struct pipe_video_buffer *vb)
+{
+   struct pipe_resource *res[VL_NUM_COMPONENTS] = {0};
+   vb->get_resources(vb, res);
+   return res[1];
+}
+
+static void
+upload_chroma(struct pipe_context *ctx, struct pipe_video_buffer *vb,
+              const uint8_t *cb, const uint8_t *cr)
+{
+   struct pipe_resource *uv = chroma_resource(vb);
+   struct pipe_transfer *xfer;
+   uint8_t *map = pipe_texture_map(ctx, uv, 0, 0, PIPE_MAP_WRITE, 0, 0, CHROMA,
+                                   CHROMA, &xfer);
+   for (int row = 0; row < CHROMA; ++row) {
+      uint8_t *dst = map + row * xfer->stride;
+      for (int col = 0; col < CHROMA; ++col) {
+         dst[col * 2 + 0] = cb[row * CHROMA + col];
+         dst[col * 2 + 1] = cr[row * CHROMA + col];
+      }
+   }
+   pipe_texture_unmap(ctx, xfer);
+}
+
+static void
+readback_chroma(struct pipe_context *ctx, struct pipe_video_buffer *vb,
+                uint8_t *cb_out, uint8_t *cr_out)
+{
+   struct pipe_resource *uv = chroma_resource(vb);
+   struct pipe_transfer *xfer;
+   const uint8_t *map = pipe_texture_map(ctx, uv, 0, 0, PIPE_MAP_READ, 0, 0,
+                                         CHROMA, CHROMA, &xfer);
+   for (int row = 0; row < CHROMA; ++row) {
+      const uint8_t *src = map + row * xfer->stride;
+      for (int col = 0; col < CHROMA; ++col) {
+         cb_out[row * CHROMA + col] = src[col * 2 + 0];
+         cr_out[row * CHROMA + col] = src[col * 2 + 1];
+      }
+   }
+   pipe_texture_unmap(ctx, xfer);
+}
+
+/* Eighth-pel chroma bilinear prediction for the macroblock at the origin: the
+ * chroma vector is the luma vector in eighth-chroma units (integer >> 3,
+ * fraction & 7). */
+static int
+predict_chroma(const uint8_t *ref, int mvx, int mvy, int lx, int ly)
+{
+   const int xF = mvx & 7, yF = mvy & 7;
+   const int x = lx + (mvx >> 3), y = ly + (mvy >> 3);
+   const int a = ref[clampi(y, 0, CHROMA - 1) * CHROMA + clampi(x, 0, CHROMA - 1)];
+   const int b = ref[clampi(y, 0, CHROMA - 1) * CHROMA + clampi(x + 1, 0, CHROMA - 1)];
+   const int c = ref[clampi(y + 1, 0, CHROMA - 1) * CHROMA + clampi(x, 0, CHROMA - 1)];
+   const int d = ref[clampi(y + 1, 0, CHROMA - 1) * CHROMA + clampi(x + 1, 0, CHROMA - 1)];
+   const int acc = (8 - xF) * (8 - yF) * a + xF * (8 - yF) * b
+                 + (8 - xF) * yF * c + xF * yF * d;
+   return (acc + 32) >> 6;
+}
+
 int
 main(void)
 {
@@ -206,8 +271,16 @@ main(void)
       for (int x = 0; x < MB; ++x)
          ref[y * MB + x] = (uint8_t)((x * 9 + y * 5 + 30) % 256);
 
-   /* One inter macroblock at the origin: a half-pel-horizontal vector and a
-    * non-trivial residual. */
+   /* Reference Cb and Cr planes with their own structure. */
+   uint8_t cb_ref[CHROMA * CHROMA], cr_ref[CHROMA * CHROMA];
+   for (int y = 0; y < CHROMA; ++y)
+      for (int x = 0; x < CHROMA; ++x) {
+         cb_ref[y * CHROMA + x] = (uint8_t)((x * 13 + y * 7 + 50) % 256);
+         cr_ref[y * CHROMA + x] = (uint8_t)((x * 5 + y * 17 + 90) % 256);
+      }
+
+   /* One inter macroblock at the origin: a half-pel-horizontal luma vector (an
+    * eighth-pel chroma vector) and non-trivial luma and chroma residuals. */
    const int16_t mvx = 2, mvy = 0;
    struct vl_h264_mb_contract mb;
    memset(&mb, 0, sizeof(mb));
@@ -223,6 +296,11 @@ main(void)
    for (int blk = 0; blk < VL_H264_LUMA_4X4_BLOCKS; ++blk)
       for (int k = 0; k < 16; ++k)
          mb.coeff4x4[blk][k] = (int16_t)(((blk * 7 + k * 13 + 5) % 61) - 30);
+   /* Chroma blocks: four Cb then four Cr after the sixteen luma blocks. */
+   for (int blk = 0; blk < VL_H264_CHROMA_4X4_BLOCKS; ++blk)
+      for (int k = 0; k < 16; ++k)
+         mb.coeff4x4[VL_H264_LUMA_4X4_BLOCKS + blk][k] =
+            (int16_t)(((blk * 5 + k * 11 + 3) % 41) - 20);
 
    struct vl_h264_slice_contract slice = {0};
    slice.version = VL_H264_MB_CONTRACT_VERSION;
@@ -265,6 +343,7 @@ main(void)
    struct pipe_video_buffer *target = make_video_buffer(ctx);
    struct pipe_video_buffer *reference = make_video_buffer(ctx);
    upload_luma(ctx, reference, ref);
+   upload_chroma(ctx, reference, cb_ref, cr_ref);
 
    struct pipe_h264_picture_desc pic = {0};
    pic.base.profile = templat.profile;
@@ -293,7 +372,33 @@ main(void)
          idct4_int(mb.coeff4x4[blk], res);
          int want = clampi(pred + (int)res[(y % 4) * 4 + (x % 4)], 0, 255);
          if (got[y * MB + x] != want) {
-            printf("FAIL (%d,%d) got %d want %d\n", x, y, got[y * MB + x], want);
+            printf("FAIL luma (%d,%d) got %d want %d\n", x, y, got[y * MB + x],
+                   want);
+            pass = false;
+            break;
+         }
+      }
+   }
+
+   /* Chroma: the reconstructed Cb and Cr in the interleaved target plane against
+    * the eighth-pel prediction plus the inverse-transformed chroma residual. */
+   uint8_t got_cb[CHROMA * CHROMA], got_cr[CHROMA * CHROMA];
+   readback_chroma(ctx, target, got_cb, got_cr);
+   for (int y = 0; y < CHROMA && pass; ++y) {
+      for (int x = 0; x < CHROMA; ++x) {
+         int blk = (y / 4) * 2 + (x / 4);
+         int64_t res_cb[16], res_cr[16];
+         idct4_int(mb.coeff4x4[VL_H264_LUMA_4X4_BLOCKS + blk], res_cb);
+         idct4_int(mb.coeff4x4[VL_H264_LUMA_4X4_BLOCKS + 4 + blk], res_cr);
+         int want_cb = clampi(predict_chroma(cb_ref, mvx, mvy, x, y)
+                              + (int)res_cb[(y % 4) * 4 + (x % 4)], 0, 255);
+         int want_cr = clampi(predict_chroma(cr_ref, mvx, mvy, x, y)
+                              + (int)res_cr[(y % 4) * 4 + (x % 4)], 0, 255);
+         if (got_cb[y * CHROMA + x] != want_cb
+             || got_cr[y * CHROMA + x] != want_cr) {
+            printf("FAIL chroma (%d,%d) Cb got %d want %d, Cr got %d want %d\n",
+                   x, y, got_cb[y * CHROMA + x], want_cb,
+                   got_cr[y * CHROMA + x], want_cr);
             pass = false;
             break;
          }
