@@ -358,15 +358,28 @@ static void *r300_r2vb_restage_vs_as_fs(struct r300_context *r300, nir_shader *v
      * (rank 0 either way).  Compute every rank from the original locations before
      * remapping any, so a remap does not perturb a later rank. */
     nir_variable *ins[PIPE_MAX_ATTRIBS];
+    unsigned orig_loc[PIPE_MAX_ATTRIBS], orig_frac[PIPE_MAX_ATTRIBS];
     unsigned n_in = 0;
     nir_foreach_variable_with_modes(var, fs, nir_var_shader_in)
-        if (n_in < PIPE_MAX_ATTRIBS)
+        if (n_in < PIPE_MAX_ATTRIBS) {
+            orig_loc[n_in] = var->data.location;
+            orig_frac[n_in] = var->data.location_frac;
             ins[n_in++] = var;
+        }
+    /* Rank by a TOTAL order -- location, then location_frac, then array index --
+     * so two inputs that share a location (a packed/component-split attribute)
+     * still get distinct ranks and distinct VAR slots, rather than aliasing onto
+     * the same slot.  Use the snapshot, not ins[]->data.location, since the remap
+     * loop below overwrites it. */
     unsigned rank[PIPE_MAX_ATTRIBS];
     for (unsigned i = 0; i < n_in; i++) {
         rank[i] = 0;
         for (unsigned j = 0; j < n_in; j++)
-            if (j != i && ins[j]->data.location < ins[i]->data.location)
+            if (j != i &&
+                (orig_loc[j] < orig_loc[i] ||
+                 (orig_loc[j] == orig_loc[i] &&
+                  (orig_frac[j] < orig_frac[i] ||
+                   (orig_frac[j] == orig_frac[i] && j < i)))))
                 rank[i]++;
     }
     for (unsigned i = 0; i < n_in; i++) {
@@ -691,7 +704,7 @@ static void r2vb_verify_xform_readback(struct r300_context *r300, struct pipe_re
  * standard orthogonal matrix below, which is pure multiply-add -- no normalize, no
  * reciprocal-sqrt -- so it maps cleanly onto the FP24 fragment ALU.  q must already
  * be unit; a non-unit q gives a scaled (non-orthogonal) map, so the caller feeds a
- * pre-normalised quaternion and the shader matches term for term. */
+ * pre-normalized quaternion and the shader matches term for term. */
 static void r2vb_quat_rotate_unit(const float q[4], const float v[3], float out[3])
 {
     float x = q[0], y = q[1], z = q[2], w = q[3];
@@ -933,7 +946,7 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * layout the GA reads stops matching what the producer wrote, position moves,
      * and a 16-point readback bbox spills to the origin (~110 texels, not 16
      * single texels).  C0 holds position-only output with PT_SIZE_PRESENT and the
-     * colour/texcoord components cleared, so the GA falls back to GA_POINT_SIZE for
+     * color/texcoord components cleared, so the GA falls back to GA_POINT_SIZE for
      * the rasterized size.  C0 owns the VAP_OUTPUT_VTX_FMT subset that C1c and C1d
      * deliberately leave alone, keeping the cells non-overlapping.  Gate-off keeps
      * the path byte-identical. */
@@ -2427,6 +2440,20 @@ static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
     /* Capture each stream's expected source resource BEFORE the rebuild: position
      * -> clip, computed -> vbo, passthrough -> the app buffer its source velem
      * binds.  The invariant checks the rebuilt velem points at exactly this. */
+    /* Bounds-gate every passthrough source before indexing saved_velem[].  A
+     * passthrough's src_velem is the source input's location rank; if the VS
+     * declares more inputs than the application bound velems for, it can exceed
+     * the velem set and the lookup would read past the valid region.  Refuse with
+     * a diagnostic rather than fetch garbage. */
+    for (int i = 0; i < n_stream; i++)
+        if (streams[i].kind == R2VB_STREAM_PASSTHROUGH &&
+            (streams[i].src_velem < 0 || (unsigned)streams[i].src_velem >= saved_count)) {
+            fprintf(stderr,
+                    "r2vb_reingest invariant=FAIL (passthrough stream%d src_velem=%d out of bounds, app_velems=%u)\n",
+                    i, streams[i].src_velem, saved_count);
+            return false;
+        }
+
     struct pipe_resource *expect[PIPE_MAX_ATTRIBS];
     for (int i = 0; i < n_stream; i++) {
         if (streams[i].kind == R2VB_STREAM_POS)
@@ -2816,8 +2843,16 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
      * anchors the rotation convention, then the clip BO must hold M * quat_rotate(q,
      * inPos) per vertex (the FP32 readback, not the 8-bit colour, is the proof). */
     if (getenv("R300_R2VB_POS_QUAT") && num_in == 2) {
-        bool oracle_ok = r2vb_quat_oracle_selftest();
-        float (*qexp)[4] = oracle_ok ? malloc((size_t)count * sizeof(*qexp)) : NULL;
+        /* A failed self-test means the oracle itself is wrong, so it cannot vouch
+         * for the producer.  Fail loudly rather than silently skip the readback,
+         * which would turn an explicit validation mode into a non-verifying pass. */
+        if (!r2vb_quat_oracle_selftest()) {
+            fprintf(stderr, "r2vb_posquat_verify ABORT (quaternion oracle self-test failed)\n");
+            pipe_resource_reference(&clip, NULL);
+            free(model);
+            return false;
+        }
+        float (*qexp)[4] = malloc((size_t)count * sizeof(*qexp));
         if (qexp) {
             for (unsigned s = 0; s < count; s++) {
                 const float *vin = model[s * num_in + 0]; /* inPos (xyz, w) */
