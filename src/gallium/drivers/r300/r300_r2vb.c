@@ -952,12 +952,14 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * trigger's selftest IB -- their value at DRAW_VBUF_2 is whatever the
      * GPU register file held before the IB started.  The producer's
      * VAP_VTE_CNTL = R300_VTX_XY_FMT | R300_VTX_Z_FMT clears VPORT_*_ENA at
-     * the BITS level, but the VAP's perspective-divide and pre-raster
-     * pipeline picks up a residual viewport bias on W and Y regardless,
-     * producing the bbox-to-origin smear we observed in pre-cold-cycle
-     * runs.  Defensive hygiene: write identity values unconditionally on
-     * the re-ingest so the smear cannot reappear regardless of prior IB
-     * state.  Mirrors the proven precedent at r300_render.c:1190-1196 (the
+     * the BITS level.  Inherited non-identity viewport state was the leading
+     * register hypothesis for the bbox-to-origin POINTS smear, but silicon
+     * measurement falsified it: cross-process pollution of these registers
+     * does not reproduce the smear, and the carrier is a cold-cycle-clearable
+     * transient GPU state, not a register a normal render can write.  This
+     * write is therefore hygiene -- it makes the re-ingest's viewport state
+     * explicit rather than inherited -- not a proven smear fix.
+     * Mirrors the proven precedent at r300_render.c:1190-1196 (the
      * existing R2VB MVP re-ingest path's identity-viewport setup).
      * Gate-off keeps the path byte-identical. */
     static int ptsize_c1a = -1;
@@ -1043,7 +1045,8 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * FLOAT_4 position) but does not re-emit the RS routing, so the GA samples
      * the trigger FS's expected inputs from VAP outputs the re-ingest does not
      * produce.  This is a COLOR-routing concern, orthogonal to the bbox-to-
-     * origin position smear (a GPU-register-file Heisenbug); the readback
+     * origin position smear (a cold-cycle-clearable transient-GPU-state
+     * Heisenbug, carrier not a writable register -- silicon-measured); the readback
      * oracle counts coverage, so a wrong-routed color still counts.  The
      * re-emit is the genuinely-rs-specific subset of r300_emit_rs_block_state;
      * the VAP_OUTPUT_VTX_FMT subset is owned by C0 and the VAP_VTX_STATE_CNTL/
@@ -1206,14 +1209,17 @@ void r300_emit_rs482_r2vb_compute_loop(struct r300_context *r300,
      * were pixel-exact even with the stale 8, so this is correctness hygiene that
      * does not change their footprint.
      *
-     * It does NOT fix the POINTS re-ingest, which still smears (measured: a
-     * 16-point readback stays at ~110 texels with the bounding box reaching the
-     * origin, not 16 single texels). Three register hypotheses have near-zero
-     * effect on it -- GA_POINT_SIZE, GA_POINT_MINMAX, and this VAP_VTX_SIZE -- so
-     * the r300 point-rasterization path in TCL_BYPASS sizes/places these points by
-     * a mechanism not yet identified. The stage-1 producer's own PRIM_POINTS
-     * rasterize correctly, so the fault is specific to the re-ingest draw. Left as
-     * a separate investigation; POINTS is off the mesh-draw critical path. */
+     * It does NOT address the POINTS re-ingest bbox-to-origin smear.  That
+     * smear is a Heisenbug: it appears only on a register-polluted GPU and
+     * clears on a cold power cycle, and silicon measurement shows the carrier
+     * is a cold-cycle-clearable transient GPU state, not a writable register
+     * (cross-process register pollution and a power_profile clock sweep are
+     * clean negatives, and the only remaining induction vector wedges the
+     * northbridge).  Three register hypotheses had near-zero effect on it --
+     * GA_POINT_SIZE, GA_POINT_MINMAX, and this VAP_VTX_SIZE -- consistent with
+     * the carrier not being a register.  The stage-1 producer's own PRIM_POINTS
+     * rasterize correctly, so the smear is specific to the re-ingest draw on a
+     * polluted GPU; POINTS is off the mesh-draw critical path. */
     OUT_CS_REG(R300_VAP_VTX_SIZE, 4);
     /* Re-assert the vertex-index bound for the re-ingest draw.  VAP_VF_MAX_VTX_
      * INDX clamps every fetched index; a stale lower bound (from an inherited
