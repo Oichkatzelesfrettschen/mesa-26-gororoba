@@ -52,7 +52,7 @@ extern "C" {
 
 /* Which front end produced the record.  The GPU back half is identical across
  * all of them; only the entropy decode differs. */
-enum vl_h264_vld_provider {
+enum vl_h264_vld_provider_kind {
    VL_H264_VLD_PROVIDER_FFMPEG_ORACLE = 0, /* libavcodec instrumentation; not for upstream */
    VL_H264_VLD_PROVIDER_MESA_CAVLC = 1,    /* clean-room Mesa-native CAVLC */
    VL_H264_VLD_PROVIDER_MESA_CABAC = 2,    /* clean-room Mesa-native CABAC */
@@ -128,7 +128,7 @@ struct vl_h264_slice_contract {
    int32_t width;
    int32_t height;
    int32_t slice_type;       /* enum vl_h264_slice_type */
-   int32_t provider;         /* enum vl_h264_vld_provider */
+   int32_t provider;         /* enum vl_h264_vld_provider_kind */
    int32_t coeff_contract;   /* enum vl_h264_coeff_contract */
    uint32_t num_macroblocks;
    struct vl_h264_mb_contract *macroblocks;
