@@ -67,12 +67,21 @@ vl_h264_vld_provider_available(enum vl_h264_vld_provider_kind kind);
 
 /*
  * Create the provider for kind, or NULL when none is available in this build.
- * No kind is implemented yet -- the Mesa-native CAVLC/CABAC providers and the
- * libavcodec oracle are separate follow-ups -- so this returns NULL today and
- * H.264 stays unadvertised.
+ * The Mesa-native CAVLC/CABAC providers are not implemented yet; the FFMPEG
+ * oracle kind is backed by the replay provider, which exists only when
+ * R300_H264_CONTRACT_REPLAY names a serialized contract.
  */
 struct vl_h264_vld_provider *
 vl_h264_vld_provider_create(enum vl_h264_vld_provider_kind kind);
+
+/*
+ * Replay provider constructor: reads the serialized contract named by
+ * R300_H264_CONTRACT_REPLAY and replays it instead of decoding the bitstream.
+ * Returns NULL when the environment is unset or the file is missing or malformed.
+ * Bring-up only -- it feeds the back half real contracts with no entropy decoder.
+ */
+struct vl_h264_vld_provider *
+vl_h264_replay_provider_create(void);
 
 #ifdef __cplusplus
 }

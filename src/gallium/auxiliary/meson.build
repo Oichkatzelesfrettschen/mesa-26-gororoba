@@ -417,8 +417,11 @@ files_libgalliumvl = files(
   'vl/vl_nir.c',
   'vl/vl_nir.h',
   'vl/vl_h264_mb_contract.h',
+  'vl/vl_h264_contract_wire.c',
+  'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
   'vl/vl_h264_decoder.h',
+  'vl/vl_h264_replay_provider.c',
   'vl/vl_h264_vld_provider.c',
   'vl/vl_h264_vld_provider.h',
   'vl/vl_mc.c',
@@ -546,6 +549,23 @@ if with_tests
     ),
     suite: 'gallium',
     protocol : 'gtest',
+  )
+
+  # The wire serde only uses the CALLOC/FREE macros, so compile it straight into
+  # the test rather than linking the whole video library.  The golden argument
+  # is the byte-for-byte oracle the steinmarder Python serializer emits from the
+  # same fixture; passing it exercises the cross-language equality check.
+  test('vl-h264-contract-wire',
+    executable(
+      'vl_h264_contract_wire_test',
+      ['vl/vl_h264_contract_wire.c', 'vl/tests/vl_h264_contract_wire_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_contract_golden.bin')],
+    suite: 'gallium',
   )
 endif
 
