@@ -60,7 +60,11 @@ parse() {
 }
 
 echo "=== r300 point/line/sprite conformance run  $(date -u +%FT%TZ) ==="
-echo "driver: $(readlink -f "${LIBGL_DRIVERS_PATH:-/usr/lib/dri}/r300_dri.so" 2>/dev/null || echo '?')${LIBGL_DRIVERS_PATH:+  (override)}"
+# LIBGL_DRIVERS_PATH may be colon-separated; the loader scans each entry, so the
+# diagnostic resolves r300_dri.so from the first that has it (default /usr/lib/dri).
+_gl_dir="${LIBGL_DRIVERS_PATH:-/usr/lib/dri}"
+for _d in ${_gl_dir//:/ }; do [ -e "$_d/r300_dri.so" ] && { _gl_dir="$_d"; break; }; done
+echo "driver: $(readlink -f "$_gl_dir/r300_dri.so" 2>/dev/null || echo '?')${LIBGL_DRIVERS_PATH:+  (override)}"
 pacman -Q mesa-gororoba-debug mesa-gororoba 2>/dev/null | head -2 || true
 
 RESULTS="$OUT/results.tsv"
