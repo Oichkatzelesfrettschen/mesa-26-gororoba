@@ -43,29 +43,15 @@ fp24_floor_shift(nir_builder *b, nir_def *value, unsigned shift)
    return nir_fadd(b, scaled, nir_fneg(b, nir_ffract(b, scaled)));
 }
 
-/* The normal luma deblock filter (ITU-T H.264 sec 8.7.2.3).  Six edge samples
- * p2..q2 are read across the edge; the four modified samples p1', p0', q0', q1'
- * are written to RGBA.  Every gate is a predicated select and every clip is a
- * saturating min/max, so the kernel is one straight-line pass. */
+/* The normal luma deblock filter (ITU-T H.264 sec 8.7.2.3) over six edge samples
+ * s = p2,p1,p0,q0,q1,q2, returning the four possibly-modified samples
+ * p1',p0',q0',q1' in RGBA.  Every gate is a predicated select and every clip is a
+ * saturating min/max, so the filter is one straight-line pass.  The boundary-
+ * strength gate is the caller's: a segment with strength zero is not filtered. */
 static nir_def *
-build_deblock_color(struct vl_nir_fs *fs)
+deblock_filter(nir_builder *b, nir_def *const s[6], nir_def *alpha,
+               nir_def *beta, nir_def *tc0)
 {
-   nir_builder *b = &fs->b;
-   nir_def *coord = fs->texcoord[0];
-   nir_def *par = fs->texcoord[1];
-   nir_def *base = nir_vec2(b, nir_channel(b, coord, 0),
-                            nir_channel(b, coord, 1));
-   nir_def *step = nir_vec2(b, nir_channel(b, coord, 2),
-                            nir_channel(b, coord, 3));
-   nir_def *alpha = nir_channel(b, par, 0);
-   nir_def *beta = nir_channel(b, par, 1);
-   nir_def *tc0 = nir_channel(b, par, 2);
-
-   nir_def *s[6];
-   for (unsigned k = 0; k < 6; ++k) {
-      nir_def *off = nir_fmul(b, step, nir_imm_float(b, (float)k - 2.0f));
-      s[k] = nir_channel(b, vl_nir_tex(fs, 0, nir_fadd(b, base, off)), 0);
-   }
    nir_def *p2 = s[0], *p1 = s[1], *p0 = s[2];
    nir_def *q0 = s[3], *q1 = s[4], *q2 = s[5];
 
@@ -113,6 +99,71 @@ build_deblock_color(struct vl_nir_fs *fs)
                    nir_bcsel(b, on, q1n, q1));
 }
 
+/* Packed-output deblock kernel: read the six samples across the edge from the
+ * fragment's position (texcoord.xy walked by texcoord.zw) and write all four
+ * modified samples to RGBA.  The strength gate is the caller's. */
+static nir_def *
+build_deblock_color(struct vl_nir_fs *fs)
+{
+   nir_builder *b = &fs->b;
+   nir_def *coord = fs->texcoord[0];
+   nir_def *par = fs->texcoord[1];
+   nir_def *base = nir_vec2(b, nir_channel(b, coord, 0),
+                            nir_channel(b, coord, 1));
+   nir_def *step = nir_vec2(b, nir_channel(b, coord, 2),
+                            nir_channel(b, coord, 3));
+
+   nir_def *s[6];
+   for (unsigned k = 0; k < 6; ++k) {
+      nir_def *off = nir_fmul(b, step, nir_imm_float(b, (float)k - 2.0f));
+      s[k] = nir_channel(b, vl_nir_tex(fs, 0, nir_fadd(b, base, off)), 0);
+   }
+   return deblock_filter(b, s, nir_channel(b, par, 0), nir_channel(b, par, 1),
+                         nir_channel(b, par, 2));
+}
+
+/* In-place apply kernel: each fragment of a four-sample-wide edge strip writes
+ * its own filtered sample.  The strip's [0,1) local coordinate (second varying
+ * .x) places the fragment as p1/p0/q0/q1 -- rel = floor(local*4) - 2 -- so the
+ * six edge neighbours sit at offsets j - 3 - rel from the fragment along the
+ * edge axis, read relative to the fragment's own position so the addressing is
+ * exact at any plane width.  alpha, beta, and tc0 ride in the rest of the second
+ * varying; the strip is only drawn where the boundary strength is nonzero. */
+static nir_def *
+build_deblock_apply_color(struct vl_nir_fs *fs, bool is_vertical)
+{
+   nir_builder *b = &fs->b;
+   nir_def *tc = fs->texcoord[0];
+   nir_def *par = fs->texcoord[1];
+   nir_def *self = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
+   nir_def *axis = is_vertical
+      ? nir_vec2(b, nir_channel(b, tc, 2), nir_imm_float(b, 0.0f))
+      : nir_vec2(b, nir_imm_float(b, 0.0f), nir_channel(b, tc, 3));
+
+   nir_def *local4 = nir_fmul(b, nir_channel(b, par, 0), nir_imm_float(b, 4.0f));
+   nir_def *rel = nir_fadd(b, fp24_floor_shift(b, local4, 0),
+                           nir_imm_float(b, -2.0f));
+
+   nir_def *s[6];
+   for (unsigned k = 0; k < 6; ++k) {
+      nir_def *scale = nir_fadd(b, nir_imm_float(b, (float)k - 3.0f),
+                                nir_fneg(b, rel));
+      nir_def *coord = nir_fadd(b, self, nir_fmul(b, axis, scale));
+      s[k] = nir_channel(b, vl_nir_tex(fs, 0, coord), 0);
+   }
+
+   nir_def *out = deblock_filter(b, s, nir_channel(b, par, 1),
+                                 nir_channel(b, par, 2), nir_channel(b, par, 3));
+   /* Pick this fragment's lane: rel -2,-1,0,1 -> p1',p0',q0',q1'. */
+   nir_def *sel = nir_bcsel(b, nir_flt(b, rel, nir_imm_float(b, -1.5f)),
+      nir_channel(b, out, 0),
+      nir_bcsel(b, nir_flt(b, rel, nir_imm_float(b, -0.5f)),
+         nir_channel(b, out, 1),
+         nir_bcsel(b, nir_flt(b, rel, nir_imm_float(b, 0.5f)),
+            nir_channel(b, out, 2), nir_channel(b, out, 3))));
+   return nir_replicate(b, sel, 4);
+}
+
 void *
 vl_h264_deblock_create_luma_fs(struct pipe_context *pipe)
 {
@@ -122,6 +173,24 @@ vl_h264_deblock_create_luma_fs(struct pipe_context *pipe)
    return vl_nir_fs_finish(&fs, pipe, build_deblock_color(&fs));
 }
 
+void *
+vl_h264_deblock_create_apply_v_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_deblock_apply_v_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_deblock_apply_color(&fs, true));
+}
+
+void *
+vl_h264_deblock_create_apply_h_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_deblock_apply_h_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_deblock_apply_color(&fs, false));
+}
+
 nir_shader *
 vl_h264_deblock_luma_nir(const nir_shader_compiler_options *options)
 {
@@ -129,4 +198,22 @@ vl_h264_deblock_luma_nir(const nir_shader_compiler_options *options)
    vl_nir_fs_begin_opts(&fs, options, 2, "vl:h264_deblock_luma_fs");
    vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
    return vl_nir_fs_finish_nir(&fs, build_deblock_color(&fs));
+}
+
+nir_shader *
+vl_h264_deblock_apply_v_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 2, "vl:h264_deblock_apply_v_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_deblock_apply_color(&fs, true));
+}
+
+nir_shader *
+vl_h264_deblock_apply_h_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 2, "vl:h264_deblock_apply_h_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_deblock_apply_color(&fs, false));
 }

@@ -231,6 +231,25 @@ if with_tests and with_gallium_softpipe
     ),
     suite: 'gallium',
   )
+
+  # Verification of the H.264 luma in-loop deblock orchestrator
+  # (vl_h264_emit_deblock_luma): the three vertical then three horizontal internal
+  # block edges of every macroblock, normal filter, boundary strength derived from
+  # the contract, run as a six-pass ping-pong; checked sample-for-sample against an
+  # independent integer reimplementation of the same internal-edge filter.
+  test('vl-h264-emit-deblock',
+    executable(
+      'vl_h264_emit_deblock_test',
+      'auxiliary/vl/tests/vl_h264_emit_deblock_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 if with_gallium_asahi

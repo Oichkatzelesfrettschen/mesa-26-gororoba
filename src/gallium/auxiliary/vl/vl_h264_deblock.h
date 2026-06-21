@@ -44,9 +44,23 @@ struct nir_shader_compiler_options;
  */
 void *vl_h264_deblock_create_luma_fs(struct pipe_context *pipe);
 
-/* The same kernel as raw NIR for the r300 compile-budget gate. */
+/* In-place apply kernels: each fragment of a four-sample-wide edge strip writes
+ * its own filtered sample (p1', p0', q0', q1' by its strip position), so a strip
+ * draw filters an edge segment directly into the picture without a separate
+ * scatter.  The strip's [0,1) local coordinate rides in VAR1.x with alpha, beta,
+ * tc0 in .yzw; the six edge neighbours are read at offsets relative to the
+ * fragment's own position, exact at any plane width.  The vertical kernel walks
+ * the edge normal in x, the horizontal kernel in y. */
+void *vl_h264_deblock_create_apply_v_fs(struct pipe_context *pipe);
+void *vl_h264_deblock_create_apply_h_fs(struct pipe_context *pipe);
+
+/* The same kernels as raw NIR for the r300 compile-budget gate. */
 struct nir_shader *
 vl_h264_deblock_luma_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_apply_v_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_apply_h_nir(const struct nir_shader_compiler_options *options);
 
 #ifdef __cplusplus
 }

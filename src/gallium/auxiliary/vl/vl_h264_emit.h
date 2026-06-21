@@ -84,6 +84,25 @@ void vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
                                    const struct vl_h264_slice_contract *slice);
 
 /*
+ * In-loop deblock of the reconstructed luma plane, internal block edges only
+ * (ITU-T H.264 sec 8.7): the three vertical then three horizontal internal edges
+ * of every macroblock, normal filter, boundary strength derived per edge from the
+ * contract's coding and motion.  recon holds the integer-domain reconstruction
+ * and is also the result target; scratch is an equally sized working plane for
+ * the ping-pong, since the filter is sequential across the edge sets.  The edge
+ * sets sweep in macroblock-raster order and each set reads the prior set's whole
+ * output, so the six even passes leave the deblocked picture back in recon.  The
+ * macroblock-boundary edges (and chroma deblock) are a separate later pass.
+ */
+void vl_h264_emit_deblock_luma(struct vl_h264_emit *emit,
+                               struct pipe_resource *recon,
+                               struct pipe_sampler_view *recon_view,
+                               struct pipe_resource *scratch,
+                               struct pipe_sampler_view *scratch_view,
+                               unsigned width, unsigned height,
+                               const struct vl_h264_slice_contract *slice);
+
+/*
  * Reconstruct one chroma component plane (Cb or Cr) of an inter frame.  block_base
  * selects the component's four 4x4 blocks in the contract (16 for Cb, 20 for Cr).
  * Each macroblock's 8x8 prediction is motion-compensated from ref_chroma with the
