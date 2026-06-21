@@ -158,6 +158,24 @@ if with_tests and with_gallium_softpipe
     ),
     suite: 'gallium',
   )
+
+  # Render-to-texture verification of the whole-plane H.264 inverse-transform
+  # fragment programs (vl_h264_idct_create_plane_row_fs / _plane_col_fs):
+  # transforms a plane of tiled 4x4 blocks in two draws and checks every block
+  # against the integer spec, for both the 16x16 luma and 8x8 chroma layouts.
+  test('vl-h264-idct-plane',
+    executable(
+      'vl_h264_idct_plane_test',
+      'auxiliary/vl/tests/vl_h264_idct_plane_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 if with_gallium_asahi
