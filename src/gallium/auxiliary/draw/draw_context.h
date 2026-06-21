@@ -145,6 +145,8 @@ void draw_enable_line_stipple(struct draw_context *draw, bool enable);
 
 void draw_enable_point_sprites(struct draw_context *draw, bool enable);
 
+void draw_enable_frontface_injection(struct draw_context *draw, bool enable);
+
 void draw_set_zs_format(struct draw_context *draw, enum pipe_format format);
 
 /* for TGSI constants are 4 * sizeof(float), but for NIR they need to be sizeof(float); */

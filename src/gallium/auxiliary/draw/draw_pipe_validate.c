@@ -35,6 +35,7 @@
 #include "draw_private.h"
 #include "draw_pipe.h"
 #include "draw_context.h"
+#include "draw_fs.h"
 #include "draw_vbuf.h"
 
 
@@ -106,6 +107,12 @@ draw_need_pipeline(const struct draw_context *draw,
       /* unfilled polygons */
       if (rasterizer->fill_front != PIPE_POLYGON_MODE_FILL ||
           rasterizer->fill_back != PIPE_POLYGON_MODE_FILL)
+         return true;
+
+      /* CPU-injected gl_FrontFacing for filled triangles */
+      if (draw->pipeline.frontface_inject &&
+          draw->fs.fragment_shader &&
+          draw->fs.fragment_shader->info.uses_frontface)
          return true;
 
       /* polygon offset */
@@ -213,7 +220,10 @@ validate_pipeline(struct draw_stage *stage)
    }
 
    if (rast->fill_front != PIPE_POLYGON_MODE_FILL ||
-       rast->fill_back != PIPE_POLYGON_MODE_FILL) {
+       rast->fill_back != PIPE_POLYGON_MODE_FILL ||
+       (draw->pipeline.frontface_inject &&
+        draw->fs.fragment_shader &&
+        draw->fs.fragment_shader->info.uses_frontface)) {
       draw->pipeline.unfilled->next = next;
       next = draw->pipeline.unfilled;
       precalc_flat = true;		/* only needed for triangles really */

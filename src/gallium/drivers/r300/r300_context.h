@@ -603,6 +603,11 @@ struct r300_context {
     /* Re-entrancy guard for the run-time SWTCL vertex-layout rebuild in
      * r300_render_get_vertex_info. */
     bool in_swtcl_layout_rebuild;
+    /* SWTCL gl_FrontFacing delivery on R300-class parts: the rasterizer has no
+     * RS WRITE_BACKFACE encoding (an R500 addition), so the draw module computes
+     * the face per filled triangle and the RS routes it as a vertex texcoord
+     * into the FS face input. Set per draw at draw entry. */
+    bool frontface_via_draw;
     bool scissor_enabled;
     /* Whether two-sided color selection is enabled (AKA light_twoside). */
     bool two_sided_color;

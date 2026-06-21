@@ -163,6 +163,9 @@ struct draw_context
       bool wide_point_sprites; /**< convert points to tris for sprite mode */
       bool line_stipple;       /**< do line stipple? */
       bool point_sprite;       /**< convert points to quads for sprites? */
+      bool frontface_inject;   /**< inject gl_FrontFacing as a vertex attrib for
+                                    filled triangles (drivers whose rasterizer
+                                    cannot route a HW face bit to the FS) */
 
       /* Temporary storage while the pipeline is being run:
        */

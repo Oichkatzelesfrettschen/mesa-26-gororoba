@@ -2107,6 +2107,12 @@ enum r300_r2vb_verdict r300_r2vb_classify_draw(struct r300_context *r300,
     default:
         return R2VB_REJECT_PRIM;
     }
+    /* gl_FrontFacing is delivered by a CPU draw-module stage (the unfilled stage
+     * computes the per-triangle face). The re-ingest runs at TCL_BYPASS and skips
+     * the draw module entirely, so it cannot carry the face -- decline and let
+     * the draw fall back to gallivm. */
+    if (r300_fs(r300)->shader->inputs.face != ATTR_UNUSED)
+        return R2VB_REJECT_FRONTFACE;
     /* Structurally eligible.  An identity VS needs no transform -- the app vertex
      * buffer can re-ingest directly (PASSTHROUGH); anything else needs the
      * fragment-ALU transform producer first (CANDIDATE). */
@@ -2147,7 +2153,8 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
                                  ? vs->state.ir.nir->info.name
                                  : "?";
         static const char *vname[R2VB_VERDICT_COUNT] = {
-            "passthrough", "candidate", "hw_tcl", "indexed", "instanced", "count", "prim"};
+            "passthrough", "candidate", "hw_tcl", "indexed", "instanced", "count",
+            "prim", "frontface"};
         fprintf(stderr, "r2vb_route_draw #%u verdict=%s is_mvp=%d vs=%s count=%u mode=%u\n",
                 total, vname[v], r300_vs_is_mvp(r300), vsname, draw->count, info->mode);
     }
@@ -2191,11 +2198,11 @@ bool r300_r2vb_route_draw(struct r300_context *r300,
     if (total == 1 || (total & 511u) == 0)
         fprintf(stderr,
                 "r2vb_route_tally total=%u passthrough=%u candidate=%u hw_tcl=%u "
-                "indexed=%u instanced=%u count=%u prim=%u\n",
+                "indexed=%u instanced=%u count=%u prim=%u frontface=%u\n",
                 total, tally[R2VB_ROUTE_PASSTHROUGH], tally[R2VB_ROUTE_CANDIDATE],
                 tally[R2VB_REJECT_HW_TCL], tally[R2VB_REJECT_INDEXED],
                 tally[R2VB_REJECT_INSTANCED], tally[R2VB_REJECT_COUNT],
-                tally[R2VB_REJECT_PRIM]);
+                tally[R2VB_REJECT_PRIM], tally[R2VB_REJECT_FRONTFACE]);
 
     /* Execute only the PASSTHROUGH class, and only under a second opt-in
      * (R300_R2VB_EXEC=1) so classification can run without changing rendering.

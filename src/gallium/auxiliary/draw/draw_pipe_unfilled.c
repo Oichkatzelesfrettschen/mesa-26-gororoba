@@ -65,9 +65,6 @@ inject_front_face_info(struct draw_stage *stage,
                        struct prim_header *header)
 {
    struct unfilled_stage *unfilled = unfilled_stage(stage);
-   bool is_front_face = (
-      (stage->draw->rasterizer->front_ccw && header->det < 0.0f) ||
-      (!stage->draw->rasterizer->front_ccw && header->det > 0.0f));
    int slot = unfilled->face_slot;
 
    /* In case the backend doesn't care about it */
@@ -75,12 +72,40 @@ inject_front_face_info(struct draw_stage *stage,
       return;
    }
 
+   /* The signed area lives in header->det, but draw_pipe_cull is the only stage
+    * that computes it and it runs only when face culling is enabled. Filled-
+    * triangle face injection forces this stage with no cull stage ahead of it,
+    * so recompute the signed area from the position-output slot exactly as
+    * draw_pipe_cull does rather than read a possibly-uninitialized header->det.
+    * The formula is identical, so the unfilled line/point callers are
+    * unaffected. */
+   const unsigned pos = draw_current_shader_position_output(stage->draw);
+   const float *p0 = header->v[0]->data[pos];
+   const float *p1 = header->v[1]->data[pos];
+   const float *p2 = header->v[2]->data[pos];
+   const float ex = p0[0] - p2[0];
+   const float ey = p0[1] - p2[1];
+   const float fx = p1[0] - p2[0];
+   const float fy = p1[1] - p2[1];
+   const float det = ex * fy - ey * fx;
+   const bool is_front_face = (
+      (stage->draw->rasterizer->front_ccw && det < 0.0f) ||
+      (!stage->draw->rasterizer->front_ccw && det > 0.0f));
+
+   /* The generic TGSI FACE semantic (and llvmpipe) reads 1.0 as front-facing.
+    * A driver that requested filled-triangle injection (R300) feeds the value
+    * into an FS input whose compiler applies the hardware backface convention
+    * (rc_transform_fragment_face: temp = 1.0 - face, so 1.0 means back-facing),
+    * so hand that consumer the complement. */
+   const float face_value =
+      stage->draw->pipeline.frontface_inject ? !is_front_face : is_front_face;
+
    for (unsigned i = 0; i < 3; ++i) {
       struct vertex_header *v = header->v[i];
-      v->data[slot][0] = is_front_face;
-      v->data[slot][1] = is_front_face;
-      v->data[slot][2] = is_front_face;
-      v->data[slot][3] = is_front_face;
+      v->data[slot][0] = face_value;
+      v->data[slot][1] = face_value;
+      v->data[slot][2] = face_value;
+      v->data[slot][3] = face_value;
       v->vertex_id = UNDEFINED_VERTEX_ID;
    }
 }
@@ -201,6 +226,11 @@ unfilled_tri(struct draw_stage *stage,
 
    switch (mode) {
    case PIPE_POLYGON_MODE_FILL:
+      /* A filled triangle keeps its winding, so the backend could derive the
+       * face itself -- except an R300-class rasterizer cannot route that bit to
+       * the FS. When the driver asked for injection (face_slot >= 0), stamp the
+       * computed face onto the vertices before passing the triangle through. */
+      inject_front_face_info(stage, header);
       stage->next->tri(stage->next, header);
       break;
    case PIPE_POLYGON_MODE_LINE:
@@ -220,10 +250,23 @@ unfilled_first_tri(struct draw_stage *stage,
                    struct prim_header *header)
 {
    struct unfilled_stage *unfilled = unfilled_stage(stage);
-   const struct pipe_rasterizer_state *rast = stage->draw->rasterizer;
+   struct draw_context *draw = stage->draw;
+   const struct pipe_rasterizer_state *rast = draw->rasterizer;
 
    unfilled->mode[0] = rast->front_ccw ? rast->fill_front : rast->fill_back;
    unfilled->mode[1] = rast->front_ccw ? rast->fill_back : rast->fill_front;
+
+   /* draw_unfilled_prepare_outputs allocates the FACE output for backends that
+    * call draw_prepare_shader_outputs. A backend that drives the draw module
+    * directly without that call (r300) requests injection via frontface_inject;
+    * allocate the FACE output here during the pipeline run, the same way the
+    * wide-point stage allocates gl_PointCoord. draw_alloc_extra_vertex_attrib is
+    * idempotent, so repeated draws reuse the slot. */
+   const struct draw_fragment_shader *fs = draw->fs.fragment_shader;
+   if (draw->pipeline.frontface_inject && fs && fs->info.uses_frontface) {
+      unfilled->face_slot =
+         draw_alloc_extra_vertex_attrib(draw, TGSI_SEMANTIC_FACE, 0);
+   }
 
    stage->tri = unfilled_tri;
    stage->tri(stage, header);
@@ -270,7 +313,12 @@ draw_unfilled_prepare_outputs(struct draw_context *draw,
                         rast->fill_back != PIPE_POLYGON_MODE_FILL));
    const struct draw_fragment_shader *fs = draw ? draw->fs.fragment_shader : NULL;
 
-   if (is_unfilled && fs && fs->info.uses_frontface)  {
+   /* A driver whose rasterizer cannot route a hardware face bit to the FS
+    * (frontface_inject) needs the face delivered as a vertex attribute for
+    * filled triangles too, not just for the line/point decomposition. */
+   bool want_face = is_unfilled || (draw && draw->pipeline.frontface_inject);
+
+   if (want_face && fs && fs->info.uses_frontface)  {
       unfilled->face_slot = draw_alloc_extra_vertex_attrib(
          stage->draw, TGSI_SEMANTIC_FACE, 0);
    } else {
