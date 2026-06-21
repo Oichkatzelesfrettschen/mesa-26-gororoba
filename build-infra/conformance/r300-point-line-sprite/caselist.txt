@@ -37,6 +37,15 @@ dEQP-GLES2.functional.draw.random.*
 # --- gl_PointCoord (the entire GLES2 sprite-coord surface is this one case) ---
 dEQP-GLES2.functional.shaders.builtin_variable.pointcoord
 
+# --- blitter HW point-sprite (TEXCOORD_XY): glGenerateMipmap draws a single HW
+# point covering the rect with GA point-stuffing (r300_draw_rectangle, the
+# UTIL_BLITTER_ATTRIB_TEXCOORD_XY branch emitting GB_POINT_STUFF + GA_POINT_S0..3).
+# This is the HW point-sprite path the gl_PointCoord draw-varying work must NOT
+# divert: r300_draw_rectangle clears point_sprite_via_draw before its derived-
+# state rebuild, so a leak of that flag into the blitter surfaces as a mipmap
+# regression here rather than only as mass clear-path collateral. ---
+dEQP-GLES2.functional.texture.mipmap.2d.generate.*
+
 # --- regression sentinels: must stay 100% (validated clean on -22) ---
 dEQP-GLES2.functional.vertex_arrays.single_attribute.first.*
 dEQP-GLES2.functional.shaders.matrix.mul.dynamic_*

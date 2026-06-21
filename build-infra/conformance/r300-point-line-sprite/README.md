@@ -32,9 +32,17 @@ r300 (RGB565 alpha mismatch / GLES3 depth-stencil enum), so do not change them.
 
 `caselist.txt` is the domain: rasterization point/line/triangle (incl. wide and
 `limits.points`), point + line clipping, point/line/random draws, the single
-GLES2 `gl_PointCoord` case, and two regression sentinels
-(`vertex_arrays.single_attribute.first`, `shaders.matrix.mul.dynamic`) that share
-the draw/VS path and must stay clean.
+GLES2 `gl_PointCoord` case, the blitter HW point-sprite
+(`texture.mipmap.2d.generate`, which drives `glGenerateMipmap` through the
+`r300_draw_rectangle` `UTIL_BLITTER_ATTRIB_TEXCOORD_XY` point-sprite path), and two
+regression sentinels (`vertex_arrays.single_attribute.first`,
+`shaders.matrix.mul.dynamic`) that share the draw/VS path and must stay clean.
+
+The blitter mipmap group gates the other half of the `gl_PointCoord` work: the
+draw-varying sprite path sets `point_sprite_via_draw`, and `r300_draw_rectangle`
+clears that flag before its derived-state rebuild so the blitter keeps emitting its
+own HW point sprite -- a leak of the flag into the blitter surfaces as a mipmap
+regression here rather than only as mass clear-path collateral.
 
 `baseline.tsv` is `STATUS<TAB>case`, sorted by case. `--check` diffs the live run
 against it and classifies:
@@ -56,5 +64,14 @@ no point crashes, `clipping.point` and the point/random draws clean. There are n
 `Fail` entries -- `limits.points` and `shaders.builtin_variable.pointcoord` now
 `Pass`, and the `*_wide` line cases (interpolation, primitives, clipping) report
 `NotSupported` because the driver advertises only the width-4 aliased line range
-the GA quad-expansion covers conformantly rather than a wide range it cannot.
-Re-`--record` only when a fix intentionally moves a case, and note which changed.
+the GA quad-expansion covers conformantly rather than a wide range it cannot. The
+32 `texture.mipmap.2d.generate` blitter cases all `Pass` (260 cases total: 243
+`Pass`, 17 `NotSupported`, no `Fail`).
+
+Recorded against the validated current-main build in the meson builddir via the
+`LIBGL_DRIVERS_PATH` override, not the installed system driver -- the system
+driver on a host can lag current main (e.g. before the `max_line_width` clamp the
+`*_wide` cases `Pass`/`Fail` instead of `NotSupported`, and `limits.points`
+regresses), which would record a stale baseline. Re-`--record` against the build
+under test (override or freshly installed), and re-`--record` only when a fix
+intentionally moves a case; note which changed.
