@@ -231,6 +231,8 @@ main(void)
    gate_one("h264_idct_plane_col", vl_h264_idct_plane_col_nir);
    gate_one("h264_mc_halfpel_h", vl_h264_mc_halfpel_h_nir);
    gate_one("h264_mc_halfpel_v", vl_h264_mc_halfpel_v_nir);
+   gate_one("h264_mc_qpel_axis", vl_h264_mc_qpel_axis_nir);
+   gate_one("h264_mc_qpel_diag", vl_h264_mc_qpel_diag_nir);
    gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir);
    gate_one("h264_deblock_luma", vl_h264_deblock_luma_nir);
    gate_one("h264_reconstruct", vl_h264_reconstruct_nir);

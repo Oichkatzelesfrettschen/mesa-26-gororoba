@@ -121,23 +121,47 @@ halfpel_v_ref(const uint8_t *ref, int rw, int rh, int x, int y)
    return clampi((acc + 16) >> 5, 0, 255);
 }
 
-/* Reference prediction at frame sample (fx_px, fy_px) for a macroblock at
- * (mb_x, mb_y) with quarter-pel vector (mvx, mvy): integer part shifts the
- * reference read origin, the fractional part picks the position.  Matches
- * mc_predict_mb in the orchestrator. */
 static int
-predict_ref(const uint8_t *ref, int rw, int rh, int mb_x, int mb_y, int mvx,
-            int mvy, int x, int y)
+integer_ref(const uint8_t *ref, int rw, int rh, int x, int y)
 {
-   const int frac_x = mvx & 3, frac_y = mvy & 3;
-   const int ox = mb_x * MB + (mvx >> 2) + x;
-   const int oy = mb_y * MB + (mvy >> 2) + y;
+   return ref[clampi(y, 0, rh - 1) * rw + clampi(x, 0, rw - 1)];
+}
 
-   if (frac_x == 2 && frac_y == 0)
-      return halfpel_h_ref(ref, rw, rh, ox, oy);
-   if (frac_x == 0 && frac_y == 2)
-      return halfpel_v_ref(ref, rw, rh, ox, oy);
-   return ref[clampi(oy, 0, rh - 1) * rw + clampi(ox, 0, rw - 1)];
+/* Full H.264 luma prediction (ITU-T sec 8.4.2.2.1) for the FP24-feasible
+ * positions: the integer position, the two half-pel positions, and the eight
+ * quarter positions that average an integer or half-pel sample with an adjacent
+ * one.  The five positions whose value needs the 2D half-pel-diagonal (j)
+ * overflow FP24 and are not exercised here.  The vector's integer part shifts
+ * the reference origin; the fraction selects the position. */
+static int
+predict_qpel(const uint8_t *ref, int rw, int rh, int mb_x, int mb_y, int mvx,
+             int mvy, int lx, int ly)
+{
+   const int xF = mvx & 3, yF = mvy & 3;
+   const int X = mb_x * MB + (mvx >> 2) + lx;
+   const int Y = mb_y * MB + (mvy >> 2) + ly;
+   const int g = integer_ref(ref, rw, rh, X, Y);
+   const int g_right = integer_ref(ref, rw, rh, X + 1, Y);
+   const int g_down = integer_ref(ref, rw, rh, X, Y + 1);
+   const int b = halfpel_h_ref(ref, rw, rh, X, Y);
+   const int h = halfpel_v_ref(ref, rw, rh, X, Y);
+   const int m = halfpel_v_ref(ref, rw, rh, X + 1, Y);
+   const int s = halfpel_h_ref(ref, rw, rh, X, Y + 1);
+
+   switch (yF * 4 + xF) {
+   case 0:  return g;                      /* (0,0) integer */
+   case 1:  return (g + b + 1) >> 1;       /* (1,0) a */
+   case 2:  return b;                      /* (2,0) half-pel b */
+   case 3:  return (b + g_right + 1) >> 1; /* (3,0) c */
+   case 4:  return (g + h + 1) >> 1;       /* (0,1) d */
+   case 5:  return (b + h + 1) >> 1;       /* (1,1) e */
+   case 7:  return (b + m + 1) >> 1;       /* (3,1) g */
+   case 8:  return h;                      /* (0,2) half-pel h */
+   case 12: return (h + g_down + 1) >> 1;  /* (0,3) n */
+   case 13: return (h + s + 1) >> 1;       /* (1,3) p */
+   case 15: return (m + s + 1) >> 1;       /* (3,3) r */
+   default: return g;                      /* j-dependent positions: unsupported */
+   }
 }
 
 static struct pipe_resource *
@@ -264,7 +288,7 @@ run_frame(struct vl_h264_emit *emit, struct pipe_context *ctx,
          for (int lx = 0; lx < MB; ++lx) {
             int px = s->mb_x * MB + lx;
             int py = s->mb_y * MB + ly;
-            int pred = predict_ref(ref, rw, rh, s->mb_x, s->mb_y, s->mvx, s->mvy,
+            int pred = predict_qpel(ref, rw, rh, s->mb_x, s->mb_y, s->mvx, s->mvy,
                                    lx, ly);
             int blk = (ly / 4) * 4 + (lx / 4);
             int64_t res[16];
@@ -342,6 +366,17 @@ main(void)
       { "halfpel_h_shift_resid", 10,  0, true  },
       { "halfpel_v_resid",        0,  2, true  },
       { "neg_mv_resid",          -8, -4, true  },
+      /* The eight FP24-feasible quarter-pel positions: the axis quarters and the
+       * four corner (diagonal) quarters, with an integer offset on a few. */
+      { "qpel_a_resid",           5,  0, true  },   /* (1,0) a, +1 int x */
+      { "qpel_c_resid",           3,  0, true  },   /* (3,0) c */
+      { "qpel_d_resid",           0,  5, true  },   /* (0,1) d, +1 int y */
+      { "qpel_e_resid",           1,  1, true  },   /* (1,1) e corner */
+      { "qpel_g_resid",           3,  1, true  },   /* (3,1) g corner */
+      { "qpel_n_resid",           0,  3, true  },   /* (0,3) n */
+      { "qpel_p_resid",           1,  3, true  },   /* (1,3) p corner */
+      { "qpel_r_resid",           3,  3, true  },   /* (3,3) r corner */
+      { "qpel_neg_corner_resid", -7, -7, true  },   /* (1,1) e, negative floor */
    };
    for (unsigned f = 0; f < ARRAY_SIZE(single); ++f) {
       struct mb_spec mb = { 0, 0, single[f].mvx, single[f].mvy,
@@ -354,10 +389,10 @@ main(void)
     * different origins, so the scatter offset and the per-macroblock prediction
     * placement are exercised, not just the (0,0) macroblock. */
    const struct mb_spec quad[] = {
-      { 0, 0,   4,  0, true, 11 },   /* integer +1 px horizontal */
-      { 1, 0,   2,  0, true, 22 },   /* half-pel horizontal */
-      { 0, 1,   0,  2, true, 33 },   /* half-pel vertical */
-      { 1, 1,  -4, -8, true, 44 },   /* negative integer motion */
+      { 0, 0,   5,  1, true, 11 },   /* (1,1) e corner quarter-pel, +1 int x */
+      { 1, 0,   3,  0, true, 22 },   /* (3,0) c quarter-pel */
+      { 0, 1,   1,  3, true, 33 },   /* (1,3) p corner quarter-pel */
+      { 1, 1,  -7, -5, true, 44 },   /* (1,3) p, negative floor */
    };
    pass = run_frame(emit, ctx, screen, "quad_mb_frame", ref, rw, rh, quad,
                     ARRAY_SIZE(quad), 2, 2) && pass;
