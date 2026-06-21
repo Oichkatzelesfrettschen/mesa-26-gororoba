@@ -840,7 +840,11 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
         static int r2vb_point_px = -1;
         if (r2vb_point_px < 0) {
             const char *e = getenv("R300_R2VB_POINT_SIZE");
-            r2vb_point_px = (e && atoi(e) > 0) ? atoi(e) : 1;
+            long px = e ? strtol(e, NULL, 0) : 1;
+            /* ps6 = px*6 is packed into a 16-bit GA_POINT_SIZE field per axis, so
+             * cap px at 65535/6 to keep the encoding from wrapping; this mirrors
+             * the bounded strtol the other R300_R2VB_* env parses use. */
+            r2vb_point_px = (px > 0 && px <= 65535 / 6) ? (int)px : 1;
         }
         uint32_t ps6 = (uint32_t)r2vb_point_px * 6;
         OUT_CS_REG(R300_GA_POINT_SIZE, (ps6 << R300_POINTSIZE_Y_SHIFT) |
