@@ -290,6 +290,7 @@ main(void)
                                     PIPE_BIND_SAMPLER_VIEW)) {
       fprintf(stderr, "vl-h264-idct: R32_FLOAT not renderable; skipping\n");
       screen->destroy(screen);
+      winsys->destroy(winsys);
       return 77;
    }
 
@@ -409,6 +410,7 @@ main(void)
    pipe_resource_reference(&p.final, NULL);
    ctx->destroy(ctx);
    screen->destroy(screen);
+   winsys->destroy(winsys);
 
    printf("vl-h264-idct: %s\n", pass ? "PASS" : "FAIL");
    return pass ? 0 : 1;
