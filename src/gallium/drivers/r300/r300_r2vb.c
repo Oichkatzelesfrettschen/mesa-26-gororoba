@@ -2359,14 +2359,26 @@ static int r300_r2vb_reingest_stream_layout(nir_shader *vs, int computed_slot,
  * the matching LOAD_VBPNTR relocation per stream.  The framebuffer raster is
  * cold-non-deterministic (the VAP-fetch cold hazard), so it is never the gate.
  * The full velem set and the two new buffer slots are saved and restored. */
-static bool r300_r2vb_reingest_computed_varying(struct r300_context *r300,
-                                                const struct pipe_draw_info *info,
-                                                const struct pipe_draw_start_count_bias *draw,
-                                                struct pipe_resource *clip,
-                                                struct pipe_resource *vbo, int vslot)
+/* Re-ingest a producer draw by rebuilding one vertex element per VS OUTPUT, in
+ * output-vector order: position from the clip BO, the one computed varying (slot
+ * vslot, vbo) if any, and each passthrough varying from its application buffer.
+ * vslot < 0 (and vbo NULL) means there is no computed varying -- the position-only
+ * and multi-input-position cases, where the extra position INPUTS the producer
+ * consumed are simply not outputs and so never appear in the velem set.  Because
+ * the velem set is built from outputs, not inputs, velems->count == num_attribs by
+ * construction, and the hard invariant refuses anything else -- which is exactly
+ * what makes the multi-input-position submit safe: the old path kept the extra
+ * input velems as phantom streams (velems > outputs), the malformed fetch that
+ * wedged the ring.  The caller decides which classes may submit; this routine only
+ * builds the wiring and gates on the invariant. */
+static bool r300_r2vb_reingest_outputs(struct r300_context *r300,
+                                       const struct pipe_draw_info *info,
+                                       const struct pipe_draw_start_count_bias *draw,
+                                       struct pipe_resource *clip,
+                                       struct pipe_resource *vbo, int vslot)
 {
     struct r300_vertex_element_state *ve = r300->velems;
-    if (!ve || !r300_resource(clip)->buf || !r300_resource(vbo)->buf)
+    if (!ve || !r300_resource(clip)->buf || (vslot >= 0 && (!vbo || !r300_resource(vbo)->buf)))
         return false;
 
     unsigned n_out = r300->vertex_info.num_attribs;
@@ -2378,15 +2390,6 @@ static bool r300_r2vb_reingest_computed_varying(struct r300_context *r300,
             "r2vb_reingest pre vinfo_num_attribs=%u app_velems_count=%u nvb=%u vslot=%d "
             "clip=%p vbo=%p\n",
             n_out, ve->count, r300->nr_vertex_buffers, vslot, (void *)clip, (void *)vbo);
-
-    /* Single-input position is the proven-safe submit class (the MVP multi-stream
-     * re-ingest), not the wedge-prone num_in>=2 multi-input-position path.  A
-     * computed-varying VS is kept single-input position upstream; re-confirm here
-     * before any submit so the safe class is explicit. */
-    if (r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir) != 1) {
-        fprintf(stderr, "r2vb_reingest refusing submit (position is multi-input, not the safe class)\n");
-        return false;
-    }
 
     struct r2vb_reingest_stream streams[PIPE_MAX_ATTRIBS];
     int n_stream = r300_r2vb_reingest_stream_layout(r300_vs(r300)->state.ir.nir, vslot,
@@ -2509,9 +2512,11 @@ static bool r300_r2vb_reingest_computed_varying(struct r300_context *r300,
          * indices, not VAs.  Holds whether or not the draw's raster cold-fails. */
         if (ok) {
             int reloc_clip = r300->rws->cs_lookup_buffer(&r300->cs, r300_resource(clip)->buf);
-            int reloc_vbo = r300->rws->cs_lookup_buffer(&r300->cs, r300_resource(vbo)->buf);
+            int reloc_vbo = (vslot >= 0 && vbo)
+                                ? r300->rws->cs_lookup_buffer(&r300->cs, r300_resource(vbo)->buf)
+                                : -1;
             fprintf(stderr,
-                    "r2vb_reingest warm reloc_clip=%d reloc_vbo=%d (IB LOAD_VBPNTR array1 must ref reloc_vbo)\n",
+                    "r2vb_reingest warm reloc_clip=%d reloc_vbo=%d (computed-varying array must ref reloc_vbo; -1 when no computed varying)\n",
                     reloc_clip, reloc_vbo);
             for (int i = 0; i < n_stream; i++) {
                 if (streams[i].kind != R2VB_STREAM_PASSTHROUGH)
@@ -2927,8 +2932,15 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                 const char *e = getenv("R300_R2VB_REINGEST");
                 reingest = (e && strcmp(e, "1") == 0) ? 1 : 0;
             }
-            if (reingest)
-                r300_r2vb_reingest_computed_varying(r300, info, draw, clip, vbo, vslot);
+            /* Single-input position is the proven-safe submit class; a
+             * computed-varying VS is kept single-input position upstream, so
+             * re-confirm before this delivery submit.  The multi-input-position
+             * re-ingest is a separate, explicitly-gated caller below. */
+            if (reingest &&
+                r300_r2vb_count_position_inputs(r300_vs(r300)->state.ir.nir) == 1)
+                r300_r2vb_reingest_outputs(r300, info, draw, clip, vbo, vslot);
+            else if (reingest)
+                fprintf(stderr, "r2vb_reingest skip (computed-varying path is single-input position only)\n");
         }
         if (vfs)
             r300->context.delete_fs_state(&r300->context, vfs);
@@ -2938,22 +2950,39 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         return true;
     }
 
-    /* Multi-input position (num_in >= 2) re-ingest is the deferred VAP-fetch cold
-     * hazard -- the wedge-prone submit -- so skip it by default like the
-     * computed-varying path: the producer pass and the clip BO oracle above stand
-     * as the proof without the re-ingest draw.  The framebuffer delivery rides the
-     * same R300_R2VB_REINGEST opt-in as the computed-varying delivery half, off by
-     * default so a multi-input draw cannot submit the wedge-prone re-ingest.  The
-     * single-input MVP re-ingest keeps its proven framebuffer path. */
+    /* Multi-input position (num_in >= 2) re-ingest rides the R300_R2VB_REINGEST
+     * opt-in, off by default: the producer pass and the clip BO oracle above stand
+     * as the proof without a re-ingest draw.  When opted in it routes through the
+     * per-output reconstruction below, which the earlier wedge made necessary --
+     * the old multi-stream path kept the extra position-input velems as phantom
+     * streams (velems > outputs) and that malformed fetch wedged the ring; the
+     * reconstruction builds velems from outputs, so velems == outputs and the hard
+     * invariant holds.  On RS482 the gated submit then completes and rasterizes,
+     * boot-stable. */
     static int mvp_reingest = -1;
     if (mvp_reingest < 0) {
         const char *e = getenv("R300_R2VB_REINGEST");
         mvp_reingest = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    if (num_in >= 2 && !mvp_reingest) {
+    if (num_in >= 2) {
+        if (!mvp_reingest) {
+            pipe_resource_reference(&clip, NULL);
+            free(model);
+            return true;
+        }
+        /* Multi-input-position re-ingest, R300_R2VB_REINGEST opt-in.  Route through
+         * the per-output reconstruction with no computed varying (vslot=-1, vbo
+         * NULL): the producer already consumed the multiple position inputs, so the
+         * VS outputs are position (+ any passthrough varyings) -- the extra inputs
+         * are not outputs and do not appear in the velem set.  velems == outputs by
+         * construction, so the hard invariant holds where the old multi-stream path,
+         * which kept the extra input velems as phantom streams, submitted a
+         * velem > output mismatch and wedged the ring.  R300_R2VB_INSPECT dumps the
+         * wiring and skips the draw; without it one gated submit runs. */
+        bool ok = r300_r2vb_reingest_outputs(r300, info, draw, clip, NULL, -1);
         pipe_resource_reference(&clip, NULL);
         free(model);
-        return true;
+        return ok;
     }
 
     /* Multi-stream re-ingest.  Draw the transformed positions (from clip) plus the
