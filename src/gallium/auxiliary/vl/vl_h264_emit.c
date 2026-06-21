@@ -42,6 +42,8 @@ struct vl_h264_emit {
    void *fs_copy;       /* integer-pel prediction: sample the reference as is */
    void *fs_mc_h;       /* half-pel horizontal six-tap */
    void *fs_mc_v;       /* half-pel vertical six-tap */
+   void *fs_qpel_axis;  /* quarter-pel: half-pel along one axis plus an integer */
+   void *fs_qpel_diag;  /* quarter-pel: half-pel-horizontal plus -vertical */
    void *fs_chroma;     /* eighth-pel chroma bilinear prediction */
    void *fs_idct_row;   /* whole-plane inverse-transform row pass */
    void *fs_idct_col;   /* whole-plane inverse-transform column pass */
@@ -53,9 +55,9 @@ struct vl_h264_emit {
 };
 
 /* Integer-pel prediction kernel: sample the reference at the fragment's
- * texcoord and pass it through.  The half-pel positions use the six-tap kernels;
- * this covers the integer position, where the prediction is the reference
- * sample unchanged. */
+ * texcoord and pass it through.  The half-pel and quarter-pel positions use the
+ * six-tap kernels; this covers the integer position, where the prediction is the
+ * reference sample unchanged. */
 static nir_def *
 build_copy_color(struct vl_nir_fs *fs)
 {
@@ -152,6 +154,8 @@ vl_h264_emit_create(struct pipe_context *pipe)
    emit->fs_copy = create_copy_fs(pipe);
    emit->fs_mc_h = vl_h264_mc_create_halfpel_h_fs(pipe);
    emit->fs_mc_v = vl_h264_mc_create_halfpel_v_fs(pipe);
+   emit->fs_qpel_axis = vl_h264_mc_create_qpel_axis_fs(pipe);
+   emit->fs_qpel_diag = vl_h264_mc_create_qpel_diag_fs(pipe);
    emit->fs_chroma = vl_h264_chroma_create_bilinear_fs(pipe);
    emit->fs_idct_row = vl_h264_idct_create_plane_row_fs(pipe);
    emit->fs_idct_col = vl_h264_idct_create_plane_col_fs(pipe);
@@ -200,6 +204,10 @@ vl_h264_emit_destroy(struct vl_h264_emit *emit)
       pipe->delete_fs_state(pipe, emit->fs_idct_row);
    if (emit->fs_chroma)
       pipe->delete_fs_state(pipe, emit->fs_chroma);
+   if (emit->fs_qpel_diag)
+      pipe->delete_fs_state(pipe, emit->fs_qpel_diag);
+   if (emit->fs_qpel_axis)
+      pipe->delete_fs_state(pipe, emit->fs_qpel_axis);
    if (emit->fs_mc_v)
       pipe->delete_fs_state(pipe, emit->fs_mc_v);
    if (emit->fs_mc_h)
@@ -333,12 +341,52 @@ scatter_luma_coeff(struct pipe_context *ctx, struct pipe_resource *coeff,
    pipe_texture_unmap(ctx, xfer);
 }
 
-/* Motion-compensate one macroblock's 16x16 luma prediction from ref into the
- * macroblock's region of the pred plane.  The list-0 vector is quarter-pel; its
- * integer part shifts the reference read origin and its fractional part selects
- * the kernel.  This rung handles the integer position and the axis-aligned
- * half-pel positions; other fractions fall back to the integer position until
- * the quarter-pel rung lands. */
+/* Which kernel and second-varying parameters a luma fraction needs, indexed
+ * [yFrac][xFrac] (ITU-T H.264 sec 8.4.2.2.1).  The integer (copy), half-pel
+ * (mc_h, mc_v), and quarter-pel (axis, diag) kernels each read the reference
+ * inline so their six-taps clamp at the picture edge.  The four parameter lanes
+ * are: for the axis kernel, the tap direction (.xy) and the integer offset (.zw);
+ * for the diagonal kernel, the half-pel-horizontal offset (.xy) and the half-pel-
+ * vertical offset (.zw); the integer and half-pel kernels ignore them.  The five
+ * positions whose value needs the 2D half-pel-diagonal (position j) overflow FP24
+ * at their achievable peak of 475320, far above the integer-exact ceiling 2^17,
+ * so they have no GPU kernel and fall back to the integer position pending a CPU
+ * motion-compensation path. */
+enum qpel_kernel { K_COPY, K_MC_H, K_MC_V, K_AXIS, K_DIAG };
+
+struct qpel_dispatch {
+   uint8_t kernel;
+   int8_t v0, v1, v2, v3;
+};
+
+static const struct qpel_dispatch qpel_dispatch[4][4] = {
+   /* yFrac = 0 */
+   { {K_COPY, 0, 0, 0, 0},    /* (0,0) integer */
+     {K_AXIS, 1, 0, 0, 0},    /* (1,0) a: H tap, integer at (0,0) */
+     {K_MC_H, 0, 0, 0, 0},    /* (2,0) half-pel b */
+     {K_AXIS, 1, 0, 1, 0} },  /* (3,0) c: H tap, integer at (1,0) */
+   /* yFrac = 1 */
+   { {K_AXIS, 0, 1, 0, 0},    /* (0,1) d: V tap, integer at (0,0) */
+     {K_DIAG, 0, 0, 0, 0},    /* (1,1) e: H at (0,0), V at (0,0) */
+     {K_COPY, 0, 0, 0, 0},    /* (2,1) f -> needs j */
+     {K_DIAG, 0, 0, 1, 0} },  /* (3,1) g: H at (0,0), V at (1,0) */
+   /* yFrac = 2 */
+   { {K_MC_V, 0, 0, 0, 0},    /* (0,2) half-pel h */
+     {K_COPY, 0, 0, 0, 0},    /* (1,2) i -> needs j */
+     {K_COPY, 0, 0, 0, 0},    /* (2,2) j */
+     {K_COPY, 0, 0, 0, 0} },  /* (3,2) k -> needs j */
+   /* yFrac = 3 */
+   { {K_AXIS, 0, 1, 0, 1},    /* (0,3) n: V tap, integer at (0,1) */
+     {K_DIAG, 0, 1, 0, 0},    /* (1,3) p: H at (0,1), V at (0,0) */
+     {K_COPY, 0, 0, 0, 0},    /* (2,3) q -> needs j */
+     {K_DIAG, 0, 1, 1, 0} },  /* (3,3) r: H at (0,1), V at (1,0) */
+};
+
+/* Motion-compensate one macroblock's 16x16 luma prediction into the
+ * macroblock's region of the pred plane.  The list-0 vector is quarter-pel: its
+ * integer part shifts the reference read origin, and its fraction selects the
+ * kernel and the per-position offsets.  Every kernel samples the reference at
+ * binding 0; the quarter-pel kernels build their half-pels inline. */
 static void
 mc_predict_mb(struct vl_h264_emit *emit, struct pipe_surface *pred,
               unsigned width, unsigned height, struct pipe_sampler_view *ref,
@@ -357,18 +405,17 @@ mc_predict_mb(struct vl_h264_emit *emit, struct pipe_surface *pred,
    const float inv_rw = 1.0f / (float)ref_w;
    const float inv_rh = 1.0f / (float)ref_h;
 
-   void *fs = emit->fs_copy;
-   if (frac_x == 2 && frac_y == 0)
-      fs = emit->fs_mc_h;
-   else if (frac_x == 0 && frac_y == 2)
-      fs = emit->fs_mc_v;
+   const struct qpel_dispatch *d = &qpel_dispatch[frac_y][frac_x];
+   void *kernels[5] = {emit->fs_copy, emit->fs_mc_h, emit->fs_mc_v,
+                       emit->fs_qpel_axis, emit->fs_qpel_diag};
 
-   draw_pass(emit, fs, pred, width, height,
+   draw_pass(emit, kernels[d->kernel], pred, width, height,
              (float)((int)mb->mb_x * MB_SIZE), (float)((int)mb->mb_y * MB_SIZE),
              MB_SIZE, MB_SIZE,
              ox * inv_rw, oy * inv_rh,
              (ox + MB_SIZE) * inv_rw, (oy + MB_SIZE) * inv_rh,
-             inv_rw, inv_rh, 0, 0, 0, 0, &ref, 1);
+             inv_rw, inv_rh, (float)d->v0, (float)d->v1, (float)d->v2,
+             (float)d->v3, &ref, 1);
 }
 
 /* Scatter one chroma component's coefficients into a width x height plane.  The
@@ -532,8 +579,8 @@ vl_h264_emit_luma_inter(struct vl_h264_emit *emit, struct pipe_surface *dst_luma
    /* TODO: cache the scratch planes on the emit across frames keyed by frame
     *       size instead of allocating per call -- four R32_FLOAT frame planes
     *       per frame is wasteful.  reason -- the per-frame lifetime keeps this
-    *       first reconstruction rung simple; sizing is the frame, not the
-    *       macroblock.  tracking -- vl_h264_emit scratch-plane cache. */
+    *       rung simple; sizing is the frame, not the macroblock.  tracking --
+    *       vl_h264_emit scratch-plane cache. */
    struct pipe_resource *coeff = make_plane(screen, width, height);
    struct pipe_resource *pred = make_plane(screen, width, height);
    struct pipe_sampler_view *coeff_view = make_view(pipe, coeff);
@@ -547,7 +594,9 @@ vl_h264_emit_luma_inter(struct vl_h264_emit *emit, struct pipe_surface *dst_luma
 
    scatter_luma_coeff(pipe, coeff, width, height, slice);
 
-   /* Prediction: one motion-compensated draw per macroblock into its region. */
+   /* Prediction: one motion-compensated draw per macroblock into its region.
+    * The quarter-pel kernels compute their half-pels inline from the reference,
+    * so the six-taps clamp at the picture edge for any motion vector. */
    for (unsigned m = 0; m < slice->num_macroblocks; ++m)
       mc_predict_mb(emit, &pred_surf, width, height, ref_luma, ref_width,
                     ref_height, &slice->macroblocks[m]);
