@@ -54,6 +54,20 @@ void *vl_h264_deblock_create_luma_fs(struct pipe_context *pipe);
 void *vl_h264_deblock_create_apply_v_fs(struct pipe_context *pipe);
 void *vl_h264_deblock_create_apply_h_fs(struct pipe_context *pipe);
 
+/* In-place strong-filter apply kernels for boundary strength 4 (ITU-T H.264 sec
+ * 8.7.2.4), the macroblock-boundary case of an intra edge.  The full six-output
+ * strong filter schedules to 77 r300 ALU, over the non-HB 64-instruction budget,
+ * so the p side (writing p2',p1',p0') and the q side (writing q0',q1',q2') are
+ * separate kernels, each a three-sample-wide strip; a boundary edge is drawn as a
+ * p strip then a q strip.  Each fragment reads the eight inputs p3..q3 relative to
+ * its own position.  VAR1.x carries the strip's [0,1) local coordinate, with
+ * alpha, beta, and the precomputed strong threshold (alpha/4 + 2) in .yzw so the
+ * shader needs no divide. */
+void *vl_h264_deblock_create_strong_vp_fs(struct pipe_context *pipe);
+void *vl_h264_deblock_create_strong_vq_fs(struct pipe_context *pipe);
+void *vl_h264_deblock_create_strong_hp_fs(struct pipe_context *pipe);
+void *vl_h264_deblock_create_strong_hq_fs(struct pipe_context *pipe);
+
 /* The same kernels as raw NIR for the r300 compile-budget gate. */
 struct nir_shader *
 vl_h264_deblock_luma_nir(const struct nir_shader_compiler_options *options);
@@ -61,6 +75,14 @@ struct nir_shader *
 vl_h264_deblock_apply_v_nir(const struct nir_shader_compiler_options *options);
 struct nir_shader *
 vl_h264_deblock_apply_h_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_strong_vp_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_strong_vq_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_strong_hp_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_strong_hq_nir(const struct nir_shader_compiler_options *options);
 
 #ifdef __cplusplus
 }

@@ -7,28 +7,34 @@
  * End-to-end verification of the H.264 luma in-loop deblock orchestrator
  * (vl_h264_emit_deblock_luma) on a software (softpipe) screen.
  *
- * The orchestrator filters the three vertical then three horizontal internal
- * block edges of every macroblock (ITU-T H.264 sec 8.7), deriving the boundary
- * strength per edge from the contract's coding and motion and the alpha/beta/tc0
- * thresholds from the slice QP.  The edge sets sweep sequentially -- each set
- * reads the prior set's whole output -- so the filter is realised as a six-pass
- * ping-pong between the reconstruction plane and a scratch plane.
+ * The orchestrator filters every macroblock completely in raster order (ITU-T
+ * H.264 sec 8.7) -- the four vertical edges left to right, then the four
+ * horizontal edges top to bottom, the macroblock-boundary edges included --
+ * deriving the boundary strength per edge from the contract's coding, motion, and
+ * intra state and the alpha/beta/tc0 thresholds from the slice QP.  The edges
+ * sweep on an anti-diagonal wavefront so each reads the prior edge's whole output,
+ * with the normal filter (strength 1..3, sec 8.7.2.3) on internal and inter
+ * boundary edges and the strong filter (strength 4, sec 8.7.2.4) on intra
+ * macroblock-boundary edges.
  *
- * This harness builds an integer-domain luma plane and an inter slice contract,
- * runs the orchestrator, and checks every sample against an independent integer
- * implementation of the same internal-edge ping-pong: the same boundary-strength
- * derivation, the same Table 8-16/8-17 thresholds, and the normal filter of sec
- * 8.7.2.3.  Softpipe computes in f32, but every deblock intermediate is an exact
- * integer well under 2^24 (the largest, |((q0-p0)<<2)+(p1-q1)+4|, is at most
- * 1279), so the f32 result is bit-identical to the integer spec and an exact
- * comparison is valid -- the FP24 s1e7m16 truncation the r300 silicon applies is
- * the per-stage budget gate's concern, not this orchestration rung's.
+ * This harness builds an integer-domain luma plane and a slice contract, runs the
+ * orchestrator, and checks every sample against an independent integer
+ * implementation of the same per-macroblock order: the same boundary-strength
+ * derivation, the same Table 8-16/8-17 thresholds, and the normal and strong
+ * filters.  Softpipe computes in f32, but every deblock intermediate is an exact
+ * integer well under 2^24 (the largest, the strong filter's 2*p3+3*p2+p1+p0+q0+4,
+ * is at most 2044), so the f32 result is bit-identical to the integer spec and an
+ * exact comparison is valid -- the FP24 s1e7m16 truncation the r300 silicon
+ * applies is the per-stage budget gate's concern, not this orchestration rung's.
  *
- * Coverage is non-vacuous: a coded-macroblock fixture filters every internal
- * edge over smooth content so the normal filter fires broadly and the sequential
+ * Coverage is non-vacuous: a coded-macroblock fixture filters every internal edge
+ * over smooth content so the normal filter fires broadly and the sequential
  * ordering is observable (the r=8 edge reads the column the r=4 edge rewrote); a
  * sharp internal step gates the activity test off at one edge; a motion-only
- * fixture exercises boundary strength 1 (vector delta) and 0 (skip); and a
+ * fixture exercises boundary strength 1 (vector delta) and 0 (skip); an all-intra
+ * multi-macroblock fixture exercises the strength-4 strong filter on the
+ * macroblock-boundary edges (and the cross-macroblock dependency, where one
+ * macroblock's boundary edge reads its already-filtered neighbour); and a
  * multi-macroblock frame exercises raster placement and the disable_deblock_idc
  * skip.  Each fixture asserts the filter changed at least one sample, so a
  * silently-disabled filter would fail rather than trivially pass.
@@ -126,6 +132,8 @@ struct mb_spec {
    bool coded;             /* every block coded: internal edges strength 2 */
    bool per_block_mv;      /* distinct vector per block: strength 1 vs 0 edges */
    bool disable;           /* disable_deblock_idc == 1: skip the macroblock */
+   bool intra;             /* no list reference: internal edges 3, boundary 4 */
+   bool transform8x8;      /* 8x8 transform: interior edges 4 and 12 not filtered */
 };
 
 static bool
@@ -149,13 +157,16 @@ run_frame(struct vl_h264_emit *emit, struct pipe_context *ctx,
       contract[m].slice_type = VL_H264_SLICE_P;
       contract[m].qp_y = mbs[m].qp;
       contract[m].disable_deblock_idc = mbs[m].disable ? 1 : 0;
+      contract[m].transform_8x8 = mbs[m].transform8x8 ? 1 : 0;
       for (int i = 0; i < 16; ++i) {
          /* A per-block walk that crosses the four-quarter-pel full-sample
           * threshold so adjacent blocks alternate between strength-1 and
           * strength-0 internal edges; a single shared vector when not. */
          contract[m].mv_l0[i][0] = mbs[m].per_block_mv ? (int16_t)((i % 2) * 6) : 0;
          contract[m].mv_l0[i][1] = 0;
-         contract[m].ref_l0[i] = 0;
+         /* An intra macroblock leaves every list reference unused, so its
+          * internal edges are strength 3 and its macroblock boundaries 4. */
+         contract[m].ref_l0[i] = mbs[m].intra ? -1 : 0;
          contract[m].ref_l1[i] = -1;
       }
       if (mbs[m].coded)
@@ -306,10 +317,43 @@ main(void)
    pass = run_frame(emit, ctx, screen, "quad_mb_frame_with_disable", quad_pic, 2,
                     2, quad, 4) && pass;
 
+   /* All-intra 2x2 frame: every internal luma edge is strength 3 and every
+    * macroblock-boundary edge strength 4, so the strong filter (sec 8.7.2.4)
+    * fires on the shared vertical and horizontal boundaries, and a macroblock's
+    * boundary edge reads its already-filtered neighbour (the cross-macroblock
+    * dependency the wavefront preserves). */
+   int *intra_pic = malloc((size_t)qw * qh * sizeof(int));
+   fill_blocky(intra_pic, qw, qh, 0, 0);
+   const struct mb_spec intra_quad[] = {
+      {0, 0, 40, true, false, false, true},
+      {1, 0, 40, true, false, false, true},
+      {0, 1, 40, true, false, false, true},
+      {1, 1, 40, true, false, false, true},
+   };
+   pass = run_frame(emit, ctx, screen, "intra_quad_strong_boundary", intra_pic, 2,
+                    2, intra_quad, 4) && pass;
+
+   /* All-intra 2x2 frame on the 8x8 transform: the interior 4x4 edges at offsets
+    * 4 and 12 lie inside an 8x8 transform block and are skipped, so only the 8x8
+    * block edge at 8 (strength 3) and the macroblock boundaries (strength 4,
+    * strong) are filtered.  A model that filtered 4 and 12 would diverge here. */
+   int *intra8x8_pic = malloc((size_t)qw * qh * sizeof(int));
+   fill_blocky(intra8x8_pic, qw, qh, 0, 0);
+   const struct mb_spec intra8x8[] = {
+      {0, 0, 40, false, false, false, true, true},
+      {1, 0, 40, false, false, false, true, true},
+      {0, 1, 40, false, false, false, true, true},
+      {1, 1, 40, false, false, false, true, true},
+   };
+   pass = run_frame(emit, ctx, screen, "intra_quad_8x8_edge_skip", intra8x8_pic, 2,
+                    2, intra8x8, 4) && pass;
+
    vl_h264_emit_destroy(emit);
    free(blocky);
    free(stepped);
    free(quad_pic);
+   free(intra_pic);
+   free(intra8x8_pic);
    ctx->destroy(ctx);
    screen->destroy(screen);
    winsys->destroy(winsys);

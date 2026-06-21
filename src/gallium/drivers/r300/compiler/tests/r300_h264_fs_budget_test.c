@@ -237,6 +237,10 @@ main(void)
    gate_one("h264_deblock_luma", vl_h264_deblock_luma_nir);
    gate_one("h264_deblock_apply_v", vl_h264_deblock_apply_v_nir);
    gate_one("h264_deblock_apply_h", vl_h264_deblock_apply_h_nir);
+   gate_one("h264_deblock_strong_vp", vl_h264_deblock_strong_vp_nir);
+   gate_one("h264_deblock_strong_vq", vl_h264_deblock_strong_vq_nir);
+   gate_one("h264_deblock_strong_hp", vl_h264_deblock_strong_hp_nir);
+   gate_one("h264_deblock_strong_hq", vl_h264_deblock_strong_hq_nir);
    gate_one("h264_reconstruct", vl_h264_reconstruct_nir);
 
    printf("r300-h264-fs-budget: %s\n", g_failures ? "FAIL" : "PASS");
