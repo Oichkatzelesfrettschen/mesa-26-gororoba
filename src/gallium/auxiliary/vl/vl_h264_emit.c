@@ -40,6 +40,11 @@
  * fragment. */
 #define DEBLOCK_STRONG_HALF 3
 
+/* Chroma writes only p0 and q0, so a chroma edge segment is a two-by-two strip:
+ * the two modified samples across the edge by the two-chroma-row sub-segment that
+ * inherits one luma block's boundary strength. */
+#define DEBLOCK_CHROMA_STRIP 2
+
 /* 4:2:0 chroma: each component plane is half resolution, so a macroblock covers
  * an 8x8 region of two by two 4x4 blocks per component. */
 #define CHROMA_MB_SIZE 8
@@ -72,6 +77,10 @@ struct vl_h264_emit {
    void *fs_strong_vq;  /* bS=4 strong filter, vertical edge, q side (q0',q1',q2') */
    void *fs_strong_hp;  /* bS=4 strong filter, horizontal edge, p side */
    void *fs_strong_hq;  /* bS=4 strong filter, horizontal edge, q side */
+   void *fs_chroma_v;   /* chroma normal deblock (p0',q0'), vertical edge */
+   void *fs_chroma_h;   /* chroma normal deblock, horizontal edge */
+   void *fs_chroma_strong_v; /* chroma bS=4 two-tap deblock, vertical edge */
+   void *fs_chroma_strong_h; /* chroma bS=4 two-tap deblock, horizontal edge */
    void *sampler;       /* NEAREST, clamp-to-edge, shared by every pass */
 };
 
@@ -190,6 +199,10 @@ vl_h264_emit_create(struct pipe_context *pipe)
    emit->fs_strong_vq = vl_h264_deblock_create_strong_vq_fs(pipe);
    emit->fs_strong_hp = vl_h264_deblock_create_strong_hp_fs(pipe);
    emit->fs_strong_hq = vl_h264_deblock_create_strong_hq_fs(pipe);
+   emit->fs_chroma_v = vl_h264_deblock_create_chroma_v_fs(pipe);
+   emit->fs_chroma_h = vl_h264_deblock_create_chroma_h_fs(pipe);
+   emit->fs_chroma_strong_v = vl_h264_deblock_create_chroma_strong_v_fs(pipe);
+   emit->fs_chroma_strong_h = vl_h264_deblock_create_chroma_strong_h_fs(pipe);
 
    /* NEAREST with clamp-to-edge matches the H.264 reference-picture edge
     * extension and the integer-sample reads every kernel makes. */
@@ -217,6 +230,14 @@ vl_h264_emit_destroy(struct vl_h264_emit *emit)
       cso_destroy_context(emit->cso);
    if (emit->sampler)
       pipe->delete_sampler_state(pipe, emit->sampler);
+   if (emit->fs_chroma_strong_h)
+      pipe->delete_fs_state(pipe, emit->fs_chroma_strong_h);
+   if (emit->fs_chroma_strong_v)
+      pipe->delete_fs_state(pipe, emit->fs_chroma_strong_v);
+   if (emit->fs_chroma_h)
+      pipe->delete_fs_state(pipe, emit->fs_chroma_h);
+   if (emit->fs_chroma_v)
+      pipe->delete_fs_state(pipe, emit->fs_chroma_v);
    if (emit->fs_strong_hq)
       pipe->delete_fs_state(pipe, emit->fs_strong_hq);
    if (emit->fs_strong_hp)
@@ -1081,6 +1102,154 @@ vl_h264_emit_deblock_luma(struct vl_h264_emit *emit, struct pipe_resource *recon
    FREE(grid);
 }
 
+/* Filter one chroma edge segment in place: the bS=4 strong two-tap or the normal
+ * filter (tC = tC0 + 1, passed in the strip's fourth varying lane), drawn as a
+ * two-by-two strip starting one sample before the edge. */
+static void
+chroma_deblock_segment(struct vl_h264_emit *emit, struct pipe_surface *nxt_surf,
+                       unsigned width, unsigned height,
+                       struct pipe_sampler_view *cur_view, bool vertical, int ed,
+                       int base, int bs, int ia, float alpha, float beta)
+{
+   void *fs;
+   float par3;
+   if (bs == 4) {
+      fs = vertical ? emit->fs_chroma_strong_v : emit->fs_chroma_strong_h;
+      par3 = 0.0f;
+   } else {
+      fs = vertical ? emit->fs_chroma_v : emit->fs_chroma_h;
+      par3 = (float)(deblock_tc0[bs - 1][ia] + 1);   /* tC = tC0 + 1 */
+   }
+   const int ex = vertical ? ed - 1 : base;
+   const int ey = vertical ? base : ed - 1;
+   deblock_strip(emit, fs, nxt_surf, width, height, cur_view, ex, ey,
+                 DEBLOCK_CHROMA_STRIP, DEBLOCK_CHROMA_STRIP, vertical, alpha, beta,
+                 par3);
+}
+
+void
+vl_h264_emit_deblock_chroma(struct vl_h264_emit *emit, struct pipe_resource *recon,
+                            struct pipe_sampler_view *recon_view,
+                            struct pipe_resource *scratch,
+                            struct pipe_sampler_view *scratch_view, unsigned width,
+                            unsigned height,
+                            const struct vl_h264_slice_contract *slice,
+                            bool use_cr)
+{
+   struct pipe_context *pipe = emit->pipe;
+
+   set_pipeline_state(emit);
+
+   struct pipe_surface recon_surf = {{0}};
+   recon_surf.format = recon->format;
+   recon_surf.texture = recon;
+   struct pipe_surface scratch_surf = {{0}};
+   scratch_surf.format = scratch->format;
+   scratch_surf.texture = scratch;
+
+   const unsigned mbw = (width + CHROMA_MB_SIZE - 1) / CHROMA_MB_SIZE;
+   const unsigned mbh = (height + CHROMA_MB_SIZE - 1) / CHROMA_MB_SIZE;
+
+   const struct vl_h264_mb_contract **grid =
+      CALLOC((size_t)mbw * mbh, sizeof(*grid));
+   if (!grid)
+      return;
+   for (unsigned m = 0; m < slice->num_macroblocks; ++m) {
+      const struct vl_h264_mb_contract *mb = &slice->macroblocks[m];
+      if ((unsigned)mb->mb_x < mbw && (unsigned)mb->mb_y < mbh)
+         grid[(unsigned)mb->mb_y * mbw + (unsigned)mb->mb_x] = mb;
+   }
+
+   struct pipe_sampler_view *cur_view = recon_view, *nxt_view = scratch_view;
+   struct pipe_surface *cur_surf = &recon_surf, *nxt_surf = &scratch_surf;
+   const float inv_w = 1.0f / (float)width, inv_h = 1.0f / (float)height;
+
+   /* The same anti-diagonal wavefront as luma, on the half-resolution chroma plane.
+    * Each 8x8 chroma macroblock filters the two vertical edges (chroma offsets 0
+    * and 4, co-located with luma offsets 0 and 8) then the two horizontal edges --
+    * four sub-passes per diagonal, an even count, so the result lands back in
+    * recon.  The boundary strength is inherited from the co-located luma edge:
+    * chroma rows 2*sub..2*sub+1 sit over luma block row sub, so each two-chroma-row
+    * sub-segment takes that luma block's strength.  Chroma always uses the 4x4
+    * transform, so there is no 8x8 interior-edge skip. */
+   for (unsigned diag = 0; diag < mbw + mbh - 1; ++diag) {
+      for (unsigned sub = 0; sub < 4; ++sub) {
+         const bool vertical = sub < 2;
+         const int co = 4 * (int)(vertical ? sub : sub - 2);   /* 0 or 4 */
+
+         draw_pass(emit, emit->fs_copy, nxt_surf, width, height, 0, 0, width,
+                   height, 0, 0, 1, 1, inv_w, inv_h, 0, 0, 0, 0, &cur_view, 1);
+
+         for (unsigned mby = 0; mby <= diag && mby < mbh; ++mby) {
+            const unsigned mbx = diag - mby;
+            if (mbx >= mbw)
+               continue;
+            const struct vl_h264_mb_contract *mb = grid[mby * mbw + mbx];
+            if (!mb || mb->disable_deblock_idc == 1)
+               continue;
+            const bool mb_boundary = (co == 0);
+            if (mb_boundary && vertical && mbx == 0)
+               continue;
+            if (mb_boundary && !vertical && mby == 0)
+               continue;
+
+            const struct vl_h264_mb_contract *mb_p = mb;
+            if (mb_boundary)
+               mb_p = vertical ? grid[mby * mbw + (mbx - 1)]
+                               : grid[(mby - 1) * mbw + mbx];
+            if (!mb_p)
+               continue;
+
+            const int qp_q = use_cr ? mb->qp_cr : mb->qp_cb;
+            const int qp_p = use_cr ? mb_p->qp_cr : mb_p->qp_cb;
+            const int alpha_off = (int)mb->slice_alpha_c0_offset_div2 * 2;
+            const int beta_off = (int)mb->slice_beta_offset_div2 * 2;
+            const int qp_av = deblock_qp_avg(qp_p, qp_q);
+            const int ia = deblock_qp_index(qp_av, alpha_off);
+            const int ib = deblock_qp_index(qp_av, beta_off);
+            const float alpha = (float)deblock_alpha[ia];
+            const float beta = (float)deblock_beta[ib];
+            const int luma_col = co / 2;          /* co 0 -> luma col 0, co 4 -> 2 */
+
+            for (int seg = 0; seg < LUMA_BLOCKS_PER_ROW; ++seg) {
+               unsigned blk_q, blk_p;
+               if (vertical) {
+                  blk_q = seg * LUMA_BLOCKS_PER_ROW + luma_col;
+                  blk_p = mb_boundary
+                     ? seg * LUMA_BLOCKS_PER_ROW + (LUMA_BLOCKS_PER_ROW - 1)
+                     : seg * LUMA_BLOCKS_PER_ROW + (luma_col - 1);
+               } else {
+                  blk_q = luma_col * LUMA_BLOCKS_PER_ROW + seg;
+                  blk_p = mb_boundary
+                     ? (LUMA_BLOCKS_PER_ROW - 1) * LUMA_BLOCKS_PER_ROW + seg
+                     : (luma_col - 1) * LUMA_BLOCKS_PER_ROW + seg;
+               }
+               int bs = deblock_strength(mb_p, blk_p, mb, blk_q, mb_boundary);
+               if (bs == 0)
+                  continue;
+
+               const int ed = (int)(vertical ? mbx : mby) * CHROMA_MB_SIZE + co;
+               const int base = (int)(vertical ? mby : mbx) * CHROMA_MB_SIZE
+                              + seg * (CHROMA_MB_SIZE / LUMA_BLOCKS_PER_ROW);
+               chroma_deblock_segment(emit, nxt_surf, width, height, cur_view,
+                                      vertical, ed, base, bs, ia, alpha, beta);
+            }
+         }
+
+         pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
+         struct pipe_sampler_view *tv = cur_view;
+         cur_view = nxt_view;
+         nxt_view = tv;
+         struct pipe_surface *ts = cur_surf;
+         cur_surf = nxt_surf;
+         nxt_surf = ts;
+      }
+   }
+
+   FREE(grid);
+}
+
 /* One full-target scale copy with the given scale kernel: sample src across the
  * whole dst and multiply by scale, which rides in the second varying's first
  * lane.  fs selects which source channel is read (luma/Cb on channel 0, Cr on
@@ -1218,6 +1387,18 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
                              VL_H264_LUMA_4X4_BLOCKS + CHROMA_BLOCKS_PER_COMPONENT);
    pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
 
+   /* In-loop chroma deblock on the integer Cb and Cr planes before the NV12 scale
+    * out, sharing one scratch plane for the ping-pong.  Cb uses qp_cb, Cr uses
+    * qp_cr; the boundary strength is inherited from the co-located luma edge. */
+   struct pipe_resource *scratch = make_plane(screen, width, height);
+   struct pipe_sampler_view *scratch_view = make_view(pipe, scratch);
+   vl_h264_emit_deblock_chroma(emit, recon_cb, recon_cb_view, scratch,
+                               scratch_view, width, height, slice, false);
+   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+   vl_h264_emit_deblock_chroma(emit, recon_cr, recon_cr_view, scratch,
+                               scratch_view, width, height, slice, true);
+   pipe->texture_barrier(pipe, PIPE_TEXTURE_BARRIER_SAMPLER);
+
    interleave_copy(emit, dst_chroma, width, height, recon_cb_view, recon_cr_view,
                    1.0f / 255.0f);
    pipe->flush(pipe, NULL, 0);
@@ -1226,8 +1407,10 @@ vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
    pipe_sampler_view_reference(&ref_cr_view, NULL);
    pipe_sampler_view_reference(&recon_cb_view, NULL);
    pipe_sampler_view_reference(&recon_cr_view, NULL);
+   pipe_sampler_view_reference(&scratch_view, NULL);
    pipe_resource_reference(&ref_cb, NULL);
    pipe_resource_reference(&ref_cr, NULL);
    pipe_resource_reference(&recon_cb, NULL);
    pipe_resource_reference(&recon_cr, NULL);
+   pipe_resource_reference(&scratch, NULL);
 }

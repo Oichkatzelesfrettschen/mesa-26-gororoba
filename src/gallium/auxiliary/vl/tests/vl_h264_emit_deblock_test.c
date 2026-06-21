@@ -224,6 +224,94 @@ run_frame(struct vl_h264_emit *emit, struct pipe_context *ctx,
    return ok;
 }
 
+#define CHROMA_MB 8
+
+/* Run the chroma deblock orchestrator on one component plane (Cb or Cr per use_cr)
+ * and check every sample against the integer chroma reference.  The plane is the
+ * half-resolution 8x8-per-macroblock chroma grid; the contract sets qp_cb and
+ * qp_cr to the fixture QP and the luma block fields decide the inherited boundary
+ * strength. */
+static bool
+run_chroma_frame(struct vl_h264_emit *emit, struct pipe_context *ctx,
+                 struct pipe_screen *screen, const char *name, const int *pic_in,
+                 unsigned fcols, unsigned frows, const struct mb_spec *mbs,
+                 unsigned n_mbs, bool use_cr)
+{
+   const unsigned w = fcols * CHROMA_MB, h = frows * CHROMA_MB;
+
+   struct pipe_resource *recon = make_plane(screen, w, h);
+   struct pipe_resource *scratch = make_plane(screen, w, h);
+   struct pipe_sampler_view *recon_view = make_view(ctx, recon);
+   struct pipe_sampler_view *scratch_view = make_view(ctx, scratch);
+   upload_pic(ctx, recon, pic_in, w, h);
+
+   struct vl_h264_mb_contract *contract = calloc(n_mbs, sizeof(*contract));
+   for (unsigned m = 0; m < n_mbs; ++m) {
+      contract[m].mb_x = mbs[m].mb_x;
+      contract[m].mb_y = mbs[m].mb_y;
+      contract[m].slice_type = VL_H264_SLICE_P;
+      contract[m].qp_cb = mbs[m].qp;
+      contract[m].qp_cr = mbs[m].qp;
+      contract[m].disable_deblock_idc = mbs[m].disable ? 1 : 0;
+      for (int i = 0; i < 16; ++i) {
+         contract[m].mv_l0[i][0] = mbs[m].per_block_mv ? (int16_t)((i % 2) * 6) : 0;
+         contract[m].mv_l0[i][1] = 0;
+         contract[m].ref_l0[i] = mbs[m].intra ? -1 : 0;
+         contract[m].ref_l1[i] = -1;
+      }
+      if (mbs[m].coded)
+         for (int blk = 0; blk < 16; ++blk)
+            for (int k = 0; k < 16; ++k)
+               contract[m].coeff4x4[blk][k] = (int16_t)(((blk + k) % 3) - 1);
+   }
+
+   struct vl_h264_slice_contract slice = {0};
+   slice.version = VL_H264_MB_CONTRACT_VERSION;
+   slice.width = w * 2;
+   slice.height = h * 2;
+   slice.slice_type = VL_H264_SLICE_P;
+   slice.num_macroblocks = n_mbs;
+   slice.macroblocks = contract;
+
+   vl_h264_emit_deblock_chroma(emit, recon, recon_view, scratch, scratch_view, w, h,
+                               &slice, use_cr);
+
+   float *out = malloc((size_t)w * h * sizeof(float));
+   readback(ctx, recon, out, w, h);
+
+   int *want = malloc((size_t)w * h * sizeof(int));
+   memcpy(want, pic_in, (size_t)w * h * sizeof(int));
+   unsigned changed = deblock_chroma_reference(want, w, h, &slice, use_cr);
+
+   bool ok = true;
+   for (unsigned y = 0; y < h && ok; ++y) {
+      for (unsigned x = 0; x < w; ++x) {
+         if ((int)lroundf(out[y * w + x]) != want[y * w + x]) {
+            printf("FAIL %s: (%u,%u) got %.3f want %d (in %d)\n", name, x, y,
+                   out[y * w + x], want[y * w + x], pic_in[y * w + x]);
+            ok = false;
+            break;
+         }
+      }
+   }
+   if (ok && changed == 0) {
+      printf("FAIL %s: filter changed no samples (vacuous)\n", name);
+      ok = false;
+   }
+
+   free(out);
+   free(want);
+   free(contract);
+   pipe_sampler_view_reference(&recon_view, NULL);
+   pipe_sampler_view_reference(&scratch_view, NULL);
+   pipe_resource_reference(&recon, NULL);
+   pipe_resource_reference(&scratch, NULL);
+
+   printf("Test(vl-h264-emit-deblock: %s) = %s (%u samples filtered)\n", name,
+          ok ? "pass" : "fail", changed);
+   return ok;
+}
+
 /* Block-structured content: each 4x4 block carries a small distinct DC level so
  * adjacent blocks meet at a step -- a blocking artifact the deblock filter is
  * meant to smooth -- plus a gentle intra-block gradient.  The steps stay under
@@ -362,6 +450,24 @@ main(void)
    pass = run_frame(emit, ctx, screen, "qpav_boundary_average", qpav_pic, 2, 1,
                     qpav, 2) && pass;
 
+   /* All-intra 2x2 chroma frame: each 8x8 chroma macroblock filters the edges
+    * co-located with luma offsets 0 and 8 (chroma offsets 0 and 4) -- the bS=4
+    * two-tap on the macroblock boundary and the normal tC0+1 filter on the
+    * internal edge -- inheriting the geometric intra strength from the luma blocks.
+    * Run both components so the Cb (qp_cb) and Cr (qp_cr) plumbing is exercised. */
+   int *chroma_pic = malloc((size_t)(2 * CHROMA_MB) * (2 * CHROMA_MB) * sizeof(int));
+   fill_blocky(chroma_pic, 2 * CHROMA_MB, 2 * CHROMA_MB, 0, 0);
+   const struct mb_spec chroma_quad[] = {
+      {0, 0, 30, true, false, false, true},
+      {1, 0, 30, true, false, false, true},
+      {0, 1, 30, true, false, false, true},
+      {1, 1, 30, true, false, false, true},
+   };
+   pass = run_chroma_frame(emit, ctx, screen, "chroma_quad_cb", chroma_pic, 2, 2,
+                           chroma_quad, 4, false) && pass;
+   pass = run_chroma_frame(emit, ctx, screen, "chroma_quad_cr", chroma_pic, 2, 2,
+                           chroma_quad, 4, true) && pass;
+
    vl_h264_emit_destroy(emit);
    free(blocky);
    free(stepped);
@@ -369,6 +475,7 @@ main(void)
    free(intra_pic);
    free(intra8x8_pic);
    free(qpav_pic);
+   free(chroma_pic);
    ctx->destroy(ctx);
    screen->destroy(screen);
    winsys->destroy(winsys);

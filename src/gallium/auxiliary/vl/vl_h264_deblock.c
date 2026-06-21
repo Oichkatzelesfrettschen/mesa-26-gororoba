@@ -278,6 +278,70 @@ build_deblock_strong_side(struct vl_nir_fs *fs, bool is_vertical, bool p_side)
    return nir_replicate(b, sel, 4);
 }
 
+/* In-place chroma deblock apply kernel (ITU-T H.264 sec 8.7.2.3/4,
+ * chromaEdgeFlag=1).  Each fragment of a two-sample-wide strip writes its own
+ * filtered output -- p0' at rel 0, q0' at rel 1 -- reading the four inputs
+ * p1,p0,q0,q1 relative to its own position.  Chroma writes only p0 and q0: the
+ * normal filter (bS 1..3) uses the same delta as luma but with tC = tC0 + 1 and no
+ * p1/q1 update, and the bS=4 filter is the unconditional two-tap average
+ * p0'=(2p1+p0+q1+2)>>2, with no strong/weak split.  par = (local, alpha, beta,
+ * tC); for the strong kernel the fourth lane is unused.  The activity gate is the
+ * luma gate.  The largest intermediate, the normal delta numerator
+ * |((q0-p0)<<2)+(p1-q1)+4| <= 1279, stays under the FP24 ceiling 2^17. */
+static nir_def *
+build_chroma_deblock_apply(struct vl_nir_fs *fs, bool is_vertical, bool is_strong)
+{
+   nir_builder *b = &fs->b;
+   nir_def *tc = fs->texcoord[0];
+   nir_def *par = fs->texcoord[1];
+   nir_def *self = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
+   nir_def *axis = is_vertical
+      ? nir_vec2(b, nir_channel(b, tc, 2), nir_imm_float(b, 0.0f))
+      : nir_vec2(b, nir_imm_float(b, 0.0f), nir_channel(b, tc, 3));
+
+   nir_def *local2 = nir_fmul(b, nir_channel(b, par, 0), nir_imm_float(b, 2.0f));
+   nir_def *rel = fp24_floor_shift(b, local2, 0);   /* 0 -> p0, 1 -> q0 */
+
+   nir_def *s[4];
+   for (unsigned i = 0; i < 4; ++i) {
+      nir_def *scale = nir_fadd(b, nir_imm_float(b, (float)i - 1.0f),
+                                nir_fneg(b, rel));
+      nir_def *coord = nir_fadd(b, self, nir_fmul(b, axis, scale));
+      s[i] = nir_channel(b, vl_nir_tex(fs, 0, coord), 0);
+   }
+   nir_def *p1 = s[0], *p0 = s[1], *q0 = s[2], *q1 = s[3];
+   nir_def *alpha = nir_channel(b, par, 1), *beta = nir_channel(b, par, 2);
+
+   nir_def *on = nir_iand(b,
+      nir_iand(b, nir_flt(b, absdiff(b, p0, q0), alpha),
+               nir_flt(b, absdiff(b, p1, p0), beta)),
+      nir_flt(b, absdiff(b, q1, q0), beta));
+
+   nir_def *p0n, *q0n;
+   if (is_strong) {
+      p0n = fp24_floor_shift(b, nir_fadd(b, nir_fadd(b, fmul_imm(b, p1, 2.0f), p0),
+                                         nir_fadd(b, q1, nir_imm_float(b, 2.0f))), 2);
+      q0n = fp24_floor_shift(b, nir_fadd(b, nir_fadd(b, fmul_imm(b, q1, 2.0f), q0),
+                                         nir_fadd(b, p1, nir_imm_float(b, 2.0f))), 2);
+   } else {
+      nir_def *tc_v = nir_channel(b, par, 3);    /* tC = tC0 + 1 (caller-precomputed) */
+      nir_def *raw = fp24_floor_shift(b,
+         nir_fadd(b, nir_fadd(b,
+                              nir_fmul(b, vsub(b, q0, p0), nir_imm_float(b, 4.0f)),
+                              vsub(b, p1, q1)),
+                  nir_imm_float(b, 4.0f)), 3);
+      nir_def *delta = clip3(b, raw, nir_fneg(b, tc_v), tc_v);
+      nir_def *zero = nir_imm_float(b, 0.0f), *c255 = nir_imm_float(b, 255.0f);
+      p0n = clip3(b, nir_fadd(b, p0, delta), zero, c255);
+      q0n = clip3(b, vsub(b, q0, delta), zero, c255);
+   }
+
+   nir_def *p0o = nir_bcsel(b, on, p0n, p0);
+   nir_def *q0o = nir_bcsel(b, on, q0n, q0);
+   nir_def *sel = nir_bcsel(b, nir_flt(b, rel, nir_imm_float(b, 0.5f)), p0o, q0o);
+   return nir_replicate(b, sel, 4);
+}
+
 void *
 vl_h264_deblock_create_luma_fs(struct pipe_context *pipe)
 {
@@ -341,6 +405,42 @@ vl_h264_deblock_create_strong_hq_fs(struct pipe_context *pipe)
    return vl_nir_fs_finish(&fs, pipe, build_deblock_strong_side(&fs, false, false));
 }
 
+void *
+vl_h264_deblock_create_chroma_v_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_deblock_chroma_v_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_chroma_deblock_apply(&fs, true, false));
+}
+
+void *
+vl_h264_deblock_create_chroma_h_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_deblock_chroma_h_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_chroma_deblock_apply(&fs, false, false));
+}
+
+void *
+vl_h264_deblock_create_chroma_strong_v_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_deblock_chroma_strong_v_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_chroma_deblock_apply(&fs, true, true));
+}
+
+void *
+vl_h264_deblock_create_chroma_strong_h_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 2, "vl:h264_deblock_chroma_strong_h_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_chroma_deblock_apply(&fs, false, true));
+}
+
 nir_shader *
 vl_h264_deblock_luma_nir(const nir_shader_compiler_options *options)
 {
@@ -402,4 +502,40 @@ vl_h264_deblock_strong_hq_nir(const nir_shader_compiler_options *options)
    vl_nir_fs_begin_opts(&fs, options, 2, "vl:h264_deblock_strong_hq_fs");
    vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
    return vl_nir_fs_finish_nir(&fs, build_deblock_strong_side(&fs, false, false));
+}
+
+nir_shader *
+vl_h264_deblock_chroma_v_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 2, "vl:h264_deblock_chroma_v_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_chroma_deblock_apply(&fs, true, false));
+}
+
+nir_shader *
+vl_h264_deblock_chroma_h_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 2, "vl:h264_deblock_chroma_h_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_chroma_deblock_apply(&fs, false, false));
+}
+
+nir_shader *
+vl_h264_deblock_chroma_strong_v_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 2, "vl:h264_deblock_chroma_strong_v_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_chroma_deblock_apply(&fs, true, true));
+}
+
+nir_shader *
+vl_h264_deblock_chroma_strong_h_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 2, "vl:h264_deblock_chroma_strong_h_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_chroma_deblock_apply(&fs, false, true));
 }

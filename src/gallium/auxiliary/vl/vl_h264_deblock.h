@@ -68,6 +68,19 @@ void *vl_h264_deblock_create_strong_vq_fs(struct pipe_context *pipe);
 void *vl_h264_deblock_create_strong_hp_fs(struct pipe_context *pipe);
 void *vl_h264_deblock_create_strong_hq_fs(struct pipe_context *pipe);
 
+/* In-place chroma deblock apply kernels (ITU-T H.264 sec 8.7.2.3/4,
+ * chromaEdgeFlag=1).  Each fragment of a two-sample-wide strip writes p0' or q0'
+ * (the only samples chroma modifies), reading p1,p0,q0,q1 relative to its own
+ * position.  The normal kernel uses the luma delta with tC = tC0 + 1 (passed in
+ * VAR1.w); the strong kernel (bS=4) is the unconditional two-tap average and
+ * ignores VAR1.w.  VAR1.x carries the strip's [0,1) local coordinate, alpha and
+ * beta in .yz.  Boundary strength is the caller's, inherited from the co-located
+ * luma edge. */
+void *vl_h264_deblock_create_chroma_v_fs(struct pipe_context *pipe);
+void *vl_h264_deblock_create_chroma_h_fs(struct pipe_context *pipe);
+void *vl_h264_deblock_create_chroma_strong_v_fs(struct pipe_context *pipe);
+void *vl_h264_deblock_create_chroma_strong_h_fs(struct pipe_context *pipe);
+
 /* The same kernels as raw NIR for the r300 compile-budget gate. */
 struct nir_shader *
 vl_h264_deblock_luma_nir(const struct nir_shader_compiler_options *options);
@@ -83,6 +96,14 @@ struct nir_shader *
 vl_h264_deblock_strong_hp_nir(const struct nir_shader_compiler_options *options);
 struct nir_shader *
 vl_h264_deblock_strong_hq_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_chroma_v_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_chroma_h_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_chroma_strong_v_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_deblock_chroma_strong_h_nir(const struct nir_shader_compiler_options *options);
 
 #ifdef __cplusplus
 }
