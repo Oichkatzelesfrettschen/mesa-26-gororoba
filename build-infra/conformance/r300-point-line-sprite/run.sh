@@ -35,10 +35,16 @@ MODE="${1:---check}"
 [ -f "$CASELIST" ] || { echo "FATAL: caselist not found at $CASELIST" >&2; exit 2; }
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-# Reproducible loader + surface config. Clear stale overrides so the SYSTEM
-# driver is exercised; pbuffer + rgba8888d24s8 is mandatory on r300 (auto-config
-# and fbo surface types produce 100% false fails).
-unset LIBGL_DRIVERS_PATH LD_LIBRARY_PATH VK_ICD_FILENAMES VK_DRIVER_FILES MESA_LOADER_DRIVER_OVERRIDE
+# Reproducible loader + surface config. Always clear stale Vulkan/loader-override
+# vars. For the GL driver, honor a caller-exported LIBGL_DRIVERS_PATH (with its
+# LD_LIBRARY_PATH) so a scoped /opt or builddir prefix can be the subject; when it
+# is unset, clear both so the SYSTEM driver (/usr/lib/dri) is the default subject.
+# pbuffer + rgba8888d24s8 is mandatory on r300 (auto-config and fbo surface types
+# produce 100% false fails).
+unset VK_ICD_FILENAMES VK_DRIVER_FILES MESA_LOADER_DRIVER_OVERRIDE
+if [ -z "${LIBGL_DRIVERS_PATH:-}" ]; then
+  unset LIBGL_DRIVERS_PATH LD_LIBRARY_PATH
+fi
 export EGL_PLATFORM=surfaceless
 DEQP_ARGS=(--deqp-surface-type=pbuffer --deqp-gl-config-name=rgba8888d24s8
            --deqp-surface-width=256 --deqp-surface-height=256)
@@ -54,7 +60,7 @@ parse() {
 }
 
 echo "=== r300 point/line/sprite conformance run  $(date -u +%FT%TZ) ==="
-echo "driver: $(readlink -f /usr/lib/dri/r300_dri.so 2>/dev/null || echo '?')"
+echo "driver: $(readlink -f "${LIBGL_DRIVERS_PATH:-/usr/lib/dri}/r300_dri.so" 2>/dev/null || echo '?')${LIBGL_DRIVERS_PATH:+  (override)}"
 pacman -Q mesa-gororoba-debug mesa-gororoba 2>/dev/null | head -2 || true
 
 RESULTS="$OUT/results.tsv"
