@@ -1,0 +1,48 @@
+/*
+ * Copyright (c) 2026 Terascale Functionalists
+ * SPDX-License-Identifier: MIT
+ */
+
+#ifndef vl_h264_idct_h
+#define vl_h264_idct_h
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct pipe_context;
+
+/* H.264 4x4 inverse integer transform (ITU-T H.264 sec 8.5.12.2) as a two-pass
+ * separable FP24 fragment program for the R300-class back half.  The transform
+ * is the H.264 inverse butterfly -- adds, subtracts, and arithmetic right shifts
+ * -- not the MPEG-2 DCT matrix multiply vl_idct.c emits, so it carries its own
+ * shaders.  Each pass is one separable 1-D butterfly: the row pass runs ~17 ALU
+ * and the column-plus-normalize pass ~23, both well inside the R300 non-HB
+ * fragment limits (64 ALU, 32 TEX, 32 temp), where a single-pass whole-block
+ * shader would run all four row butterflies per fragment and crowd the ceiling.
+ *
+ * Contract these fragment programs assume from the caller's draw state:
+ *   - input is a per-texel R32_FLOAT 4x4 texture, texel (col,row) = the
+ *     dequantized coefficient in canonical pixel-natural order coeff[row][col]
+ *     (the provider has already transposed the entropy decoder's scan order);
+ *   - sampler binding 0 filters NEAREST, normalized coordinates (R300 has no
+ *     texelFetch: nir_to_rc rejects nir_texop_txf);
+ *   - a varying at VARYING_SLOT_VAR0 carries the block's [0,1] texcoord, so the
+ *     row pass reads along the fixed texcoord.y and selects its output column
+ *     from texcoord.x, and the column pass reads along texcoord.x and selects
+ *     its output row from texcoord.y.  The cross-axis reads use the four fixed
+ *     texel centers (k + 0.5)/4.
+ *
+ * Run the row pass into a 4x4 R32_FLOAT intermediate, then the column pass into
+ * the 4x4 R32_FLOAT residual.  The two write/read addressings absorb the spec's
+ * row-then-column-then-transpose so no explicit transpose op is emitted:
+ * residual[i][c] = ((column_butterfly(row_butterfly over column c)[i]) + 32)>>6.
+ */
+void *vl_h264_idct_create_row_fs(struct pipe_context *pipe);
+void *vl_h264_idct_create_col_fs(struct pipe_context *pipe);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* vl_h264_idct_h */
