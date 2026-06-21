@@ -34,6 +34,9 @@
 #define CHROMA_BLOCKS_PER_ROW (CHROMA_MB_SIZE / BLOCK)   /* 2 */
 #define CHROMA_BLOCKS_PER_COMPONENT \
    (CHROMA_BLOCKS_PER_ROW * CHROMA_BLOCKS_PER_ROW)       /* 4 */
+/* The 2x2 chroma region co-located with one 4x4 luma block (the 16 luma blocks
+ * tile the 8x8 chroma macroblock four by four). */
+#define CHROMA_SUBBLOCK (CHROMA_MB_SIZE / LUMA_BLOCKS_PER_ROW)   /* 2 */
 
 struct vl_h264_emit {
    struct pipe_context *pipe;
@@ -382,26 +385,36 @@ static const struct qpel_dispatch qpel_dispatch[4][4] = {
      {K_DIAG, 0, 1, 1, 0} },  /* (3,3) r: H at (0,1), V at (1,0) */
 };
 
-/* Motion-compensate one macroblock's 16x16 luma prediction into the
- * macroblock's region of the pred plane.  The list-0 vector is quarter-pel: its
- * integer part shifts the reference read origin, and its fraction selects the
- * kernel and the per-position offsets.  Every kernel samples the reference at
- * binding 0; the quarter-pel kernels build their half-pels inline. */
-static void
-mc_predict_mb(struct vl_h264_emit *emit, struct pipe_surface *pred,
-              unsigned width, unsigned height, struct pipe_sampler_view *ref,
-              unsigned ref_w, unsigned ref_h,
-              const struct vl_h264_mb_contract *mb)
+/* Whether every 4x4 luma block of the macroblock shares one list-0 vector, i.e.
+ * the macroblock is a single 16x16 partition.  Sub-macroblock partitions
+ * replicate each partition's vector across the 4x4 blocks it covers, so a
+ * per-block walk reconstructs every shape; this fast path coalesces the common
+ * single-partition case back into one draw. */
+static bool
+mb_single_partition(const struct vl_h264_mb_contract *mb)
 {
-   const int mvx = mb->mv_l0[0][0];
-   const int mvy = mb->mv_l0[0][1];
+   for (unsigned i = 1; i < VL_H264_LUMA_4X4_BLOCKS; ++i)
+      if (mb->mv_l0[i][0] != mb->mv_l0[0][0] ||
+          mb->mv_l0[i][1] != mb->mv_l0[0][1])
+         return false;
+   return true;
+}
+
+/* Motion-compensate one luma region -- the whole macroblock or one 4x4
+ * sub-block -- from ref into the pred plane.  out_x/out_y is the region's
+ * top-left luma sample, size its edge; the region's quarter-pel vector shifts
+ * the reference read origin and selects the kernel.  Every kernel samples the
+ * reference at binding 0; the quarter-pel kernels build their half-pels inline. */
+static void
+mc_luma_region(struct vl_h264_emit *emit, struct pipe_surface *pred,
+               unsigned width, unsigned height, struct pipe_sampler_view *ref,
+               unsigned ref_w, unsigned ref_h, int mvx, int mvy, int out_x,
+               int out_y, int size)
+{
    const int frac_x = mvx & 3;
    const int frac_y = mvy & 3;
-   const int int_x = mvx >> 2;   /* arithmetic shift: floor for negatives */
-   const int int_y = mvy >> 2;
-
-   const float ox = (float)((int)mb->mb_x * MB_SIZE + int_x);
-   const float oy = (float)((int)mb->mb_y * MB_SIZE + int_y);
+   const float ox = (float)(out_x + (mvx >> 2));   /* arithmetic shift: floor */
+   const float oy = (float)(out_y + (mvy >> 2));
    const float inv_rw = 1.0f / (float)ref_w;
    const float inv_rh = 1.0f / (float)ref_h;
 
@@ -409,13 +422,41 @@ mc_predict_mb(struct vl_h264_emit *emit, struct pipe_surface *pred,
    void *kernels[5] = {emit->fs_copy, emit->fs_mc_h, emit->fs_mc_v,
                        emit->fs_qpel_axis, emit->fs_qpel_diag};
 
-   draw_pass(emit, kernels[d->kernel], pred, width, height,
-             (float)((int)mb->mb_x * MB_SIZE), (float)((int)mb->mb_y * MB_SIZE),
-             MB_SIZE, MB_SIZE,
-             ox * inv_rw, oy * inv_rh,
-             (ox + MB_SIZE) * inv_rw, (oy + MB_SIZE) * inv_rh,
-             inv_rw, inv_rh, (float)d->v0, (float)d->v1, (float)d->v2,
-             (float)d->v3, &ref, 1);
+   draw_pass(emit, kernels[d->kernel], pred, width, height, (float)out_x,
+             (float)out_y, (float)size, (float)size, ox * inv_rw, oy * inv_rh,
+             (ox + (float)size) * inv_rw, (oy + (float)size) * inv_rh, inv_rw,
+             inv_rh, (float)d->v0, (float)d->v1, (float)d->v2, (float)d->v3,
+             &ref, 1);
+}
+
+/* Motion-compensate a macroblock's 16x16 luma prediction.  A single-partition
+ * macroblock is one draw; otherwise each 4x4 luma block (raster index
+ * by*4 + bx) is motion-compensated with its own list-0 vector, which
+ * reconstructs every H.264 partition shape since the provider replicates a
+ * partition's vector across the 4x4 blocks it covers. */
+static void
+mc_predict_mb(struct vl_h264_emit *emit, struct pipe_surface *pred,
+              unsigned width, unsigned height, struct pipe_sampler_view *ref,
+              unsigned ref_w, unsigned ref_h,
+              const struct vl_h264_mb_contract *mb)
+{
+   const int origin_x = (int)mb->mb_x * MB_SIZE;
+   const int origin_y = (int)mb->mb_y * MB_SIZE;
+
+   if (mb_single_partition(mb)) {
+      mc_luma_region(emit, pred, width, height, ref, ref_w, ref_h,
+                     mb->mv_l0[0][0], mb->mv_l0[0][1], origin_x, origin_y,
+                     MB_SIZE);
+      return;
+   }
+
+   for (unsigned blk = 0; blk < VL_H264_LUMA_4X4_BLOCKS; ++blk) {
+      const int bx = blk % LUMA_BLOCKS_PER_ROW;
+      const int by = blk / LUMA_BLOCKS_PER_ROW;
+      mc_luma_region(emit, pred, width, height, ref, ref_w, ref_h,
+                     mb->mv_l0[blk][0], mb->mv_l0[blk][1], origin_x + bx * BLOCK,
+                     origin_y + by * BLOCK, BLOCK);
+   }
 }
 
 /* Scatter one chroma component's coefficients into a width x height plane.  The
@@ -459,43 +500,63 @@ scatter_chroma_coeff(struct pipe_context *ctx, struct pipe_resource *coeff,
    pipe_texture_unmap(ctx, xfer);
 }
 
-/* Motion-compensate one macroblock's 8x8 chroma prediction from ref into the
- * macroblock's region of the pred plane.  For 4:2:0 the chroma vector equals the
- * luma list-0 vector but in eighth-chroma-sample units (the quarter-luma vector
- * divided by the 2x chroma subsampling): the integer part >> 3 shifts the read
- * origin, the fraction & 7 selects the bilinear weights (8-xF)(8-yF), xF(8-yF),
- * (8-xF)yF, xF*yF.  Every fraction uses one kernel, so unlike luma there is no
- * position fallback. */
+/* Motion-compensate one chroma region -- the whole 8x8 macroblock chroma or one
+ * 2x2 sub-block co-located with a luma 4x4 block -- from ref into the pred plane.
+ * For 4:2:0 the chroma vector equals the luma list-0 vector in eighth-chroma-
+ * sample units (the quarter-luma vector over the 2x subsampling): the integer
+ * part >> 3 shifts the read origin, the fraction & 7 selects the bilinear weights
+ * (8-xF)(8-yF), xF(8-yF), (8-xF)yF, xF*yF. */
+static void
+mc_chroma_region(struct vl_h264_emit *emit, struct pipe_surface *pred,
+                 unsigned width, unsigned height, struct pipe_sampler_view *ref,
+                 unsigned ref_w, unsigned ref_h, int mvx, int mvy, int out_x,
+                 int out_y, int size)
+{
+   const int frac_x = mvx & 7;
+   const int frac_y = mvy & 7;
+   const float w0 = (float)((8 - frac_x) * (8 - frac_y));
+   const float w1 = (float)(frac_x * (8 - frac_y));
+   const float w2 = (float)((8 - frac_x) * frac_y);
+   const float w3 = (float)(frac_x * frac_y);
+
+   const float ox = (float)(out_x + (mvx >> 3));   /* arithmetic shift: floor */
+   const float oy = (float)(out_y + (mvy >> 3));
+   const float inv_rw = 1.0f / (float)ref_w;
+   const float inv_rh = 1.0f / (float)ref_h;
+
+   draw_pass(emit, emit->fs_chroma, pred, width, height, (float)out_x,
+             (float)out_y, (float)size, (float)size, ox * inv_rw, oy * inv_rh,
+             (ox + (float)size) * inv_rw, (oy + (float)size) * inv_rh, inv_rw,
+             inv_rh, w0, w1, w2, w3, &ref, 1);
+}
+
+/* Motion-compensate a macroblock's 8x8 chroma prediction.  A single-partition
+ * macroblock is one draw; otherwise each luma 4x4 block's co-located 2x2 chroma
+ * region is motion-compensated with that block's list-0 vector. */
 static void
 mc_predict_chroma_mb(struct vl_h264_emit *emit, struct pipe_surface *pred,
                      unsigned width, unsigned height,
                      struct pipe_sampler_view *ref, unsigned ref_w,
                      unsigned ref_h, const struct vl_h264_mb_contract *mb)
 {
-   const int mvx = mb->mv_l0[0][0];
-   const int mvy = mb->mv_l0[0][1];
-   const int frac_x = mvx & 7;
-   const int frac_y = mvy & 7;
-   const int int_x = mvx >> 3;   /* arithmetic shift: floor for negatives */
-   const int int_y = mvy >> 3;
+   const int origin_x = (int)mb->mb_x * CHROMA_MB_SIZE;
+   const int origin_y = (int)mb->mb_y * CHROMA_MB_SIZE;
 
-   const float w0 = (float)((8 - frac_x) * (8 - frac_y));
-   const float w1 = (float)(frac_x * (8 - frac_y));
-   const float w2 = (float)((8 - frac_x) * frac_y);
-   const float w3 = (float)(frac_x * frac_y);
+   if (mb_single_partition(mb)) {
+      mc_chroma_region(emit, pred, width, height, ref, ref_w, ref_h,
+                       mb->mv_l0[0][0], mb->mv_l0[0][1], origin_x, origin_y,
+                       CHROMA_MB_SIZE);
+      return;
+   }
 
-   const float ox = (float)((int)mb->mb_x * CHROMA_MB_SIZE + int_x);
-   const float oy = (float)((int)mb->mb_y * CHROMA_MB_SIZE + int_y);
-   const float inv_rw = 1.0f / (float)ref_w;
-   const float inv_rh = 1.0f / (float)ref_h;
-
-   draw_pass(emit, emit->fs_chroma, pred, width, height,
-             (float)((int)mb->mb_x * CHROMA_MB_SIZE),
-             (float)((int)mb->mb_y * CHROMA_MB_SIZE),
-             CHROMA_MB_SIZE, CHROMA_MB_SIZE,
-             ox * inv_rw, oy * inv_rh,
-             (ox + CHROMA_MB_SIZE) * inv_rw, (oy + CHROMA_MB_SIZE) * inv_rh,
-             inv_rw, inv_rh, w0, w1, w2, w3, &ref, 1);
+   for (unsigned blk = 0; blk < VL_H264_LUMA_4X4_BLOCKS; ++blk) {
+      const int bx = blk % LUMA_BLOCKS_PER_ROW;
+      const int by = blk / LUMA_BLOCKS_PER_ROW;
+      mc_chroma_region(emit, pred, width, height, ref, ref_w, ref_h,
+                       mb->mv_l0[blk][0], mb->mv_l0[blk][1],
+                       origin_x + bx * CHROMA_SUBBLOCK,
+                       origin_y + by * CHROMA_SUBBLOCK, CHROMA_SUBBLOCK);
+   }
 }
 
 /* The fixed pipeline state every pass shares: opaque write, no depth/stencil,
