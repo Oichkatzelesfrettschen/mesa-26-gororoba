@@ -37,10 +37,12 @@
 #include "radeon_regalloc.h"
 
 #include "vl/vl_h264_chroma.h"
+#include "vl/vl_h264_deblock.h"
 #include "vl/vl_h264_idct.h"
 #include "vl/vl_h264_mc.h"
 
-#define R300_FS_MAX_ALU 64
+#define R300_FS_MAX_ALU 64  /* proven non-HB R300 fragment ALU envelope */
+#define R300_FS_HB_ALU 512  /* HB / R400-US route (RS48x, experimental) */
 #define R300_FS_MAX_TEX 32
 
 static unsigned g_failures;
@@ -139,7 +141,8 @@ count_insts(struct radeon_compiler *c, unsigned *alu, unsigned *tex)
 
 static void
 gate_one(const char *name,
-         nir_shader *(*build)(const nir_shader_compiler_options *))
+         nir_shader *(*build)(const nir_shader_compiler_options *),
+         unsigned alu_budget)
 {
    struct r300_fragment_program_compiler c;
    struct rc_regalloc_state rs;
@@ -155,12 +158,10 @@ gate_one(const char *name,
    if (!c.Base.Error) {
       unsigned alu = 0, tex = 0;
       count_insts(&c.Base, &alu, &tex);
-      printf("    %s: %u ALU / %u (<= %u) , %u TEX / %u (<= %u)\n",
-             name, alu, R300_FS_MAX_ALU, R300_FS_MAX_ALU,
-             tex, R300_FS_MAX_TEX, R300_FS_MAX_TEX);
-      snprintf(label, sizeof(label), "%s: ALU %u <= %u", name, alu,
-               R300_FS_MAX_ALU);
-      CHECK(alu <= R300_FS_MAX_ALU, label);
+      printf("    %s: %u ALU / %u , %u TEX / %u\n", name, alu, alu_budget,
+             tex, R300_FS_MAX_TEX);
+      snprintf(label, sizeof(label), "%s: ALU %u <= %u", name, alu, alu_budget);
+      CHECK(alu <= alu_budget, label);
       snprintf(label, sizeof(label), "%s: TEX %u <= %u", name, tex,
                R300_FS_MAX_TEX);
       CHECK(tex <= R300_FS_MAX_TEX, label);
@@ -173,11 +174,22 @@ int
 main(void)
 {
    printf("r300-h264-fs-budget\n");
-   gate_one("h264_idct_row", vl_h264_idct_row_nir);
-   gate_one("h264_idct_col", vl_h264_idct_col_nir);
-   gate_one("h264_mc_halfpel_h", vl_h264_mc_halfpel_h_nir);
-   gate_one("h264_mc_halfpel_v", vl_h264_mc_halfpel_v_nir);
-   gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir);
+   /* The transform and motion-compensation kernels fit the proven non-HB R300
+    * fragment ALU envelope. */
+   gate_one("h264_idct_row", vl_h264_idct_row_nir, R300_FS_MAX_ALU);
+   gate_one("h264_idct_col", vl_h264_idct_col_nir, R300_FS_MAX_ALU);
+   gate_one("h264_mc_halfpel_h", vl_h264_mc_halfpel_h_nir, R300_FS_MAX_ALU);
+   gate_one("h264_mc_halfpel_v", vl_h264_mc_halfpel_v_nir, R300_FS_MAX_ALU);
+   gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir, R300_FS_MAX_ALU);
+
+   /* The deblock kernel does not fit the non-HB 64-ALU envelope as a single
+    * pass; it translates and fits only the HB / R400-US route (512 ALU), which
+    * on RS48x is the env-gated, silicon-unproven R300_HB_R400_US probe.  A
+    * production non-HB deblock needs a two-pass split; this gate records the
+    * single-pass cost against the HB budget so the constraint is explicit. */
+   printf("  note: deblock exceeds the non-HB 64-ALU envelope; gated against the"
+          " HB 512-ALU route (RS48x R300_HB_R400_US, experimental)\n");
+   gate_one("h264_deblock_luma", vl_h264_deblock_luma_nir, R300_FS_HB_ALU);
 
    printf("r300-h264-fs-budget: %s\n", g_failures ? "FAIL" : "PASS");
    return g_failures ? 1 : 0;
