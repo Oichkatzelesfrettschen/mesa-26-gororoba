@@ -468,6 +468,13 @@ static void r300_update_rs_block(struct r300_context *r300)
         tex_count++;
         tex_ptr += 4;
         DBG(r300, DBG_RS, "r300: Draw-injected FACE written to FS in texcoord.\n");
+    } else if (frontface_via_draw && fs_inputs->face != ATTR_UNUSED) {
+        /* frontface_via_draw is on and FACE is used, but the prior branch needed a
+         * free texcoord slot (tex_count < 8); reaching here means all eight are
+         * taken, so the draw-injected FACE has nowhere to land and the FS face
+         * input stays unassigned -- report it rather than fail silently. */
+        fprintf(stderr, "r300: ERROR: FS input FACE unassigned, "
+                "no free texcoord slot.\n");
     } else if (fs_inputs->face != ATTR_UNUSED && !r300->frontface_via_draw) {
         /* When frontface_via_draw is set, the draw-generated FACE output does
          * not exist yet at this draw-prepare build; r300_render_get_vertex_info

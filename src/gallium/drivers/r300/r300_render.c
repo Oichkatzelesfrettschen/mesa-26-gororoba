@@ -1311,7 +1311,7 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
      * downstream: the draw module checks its own FS copy (uses_frontface) before
      * forcing the stage, and r300_update_rs_block checks the validated FS face
      * input before routing. */
-    r300->frontface_via_draw = false;
+    bool frontface_via_draw = false;
     if (!r300->screen->caps.is_r500 &&
         u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES) {
         static int gate = -1;
@@ -1319,9 +1319,14 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
             const char *e = getenv("R300_FRONTFACE_VIA_DRAW");
             gate = (e && strcmp(e, "0") == 0) ? 0 : 1;
         }
-        r300->frontface_via_draw = gate != 0;
+        frontface_via_draw = gate != 0;
     }
-    draw_enable_frontface_injection(r300->draw, r300->frontface_via_draw);
+    /* draw_enable_frontface_injection flushes the draw module, so only call it on
+     * a transition -- otherwise every triangle draw pays an unconditional flush in
+     * the SWTCL hot path. */
+    if (frontface_via_draw != r300->frontface_via_draw)
+        draw_enable_frontface_injection(r300->draw, frontface_via_draw);
+    r300->frontface_via_draw = frontface_via_draw;
 
     r300_update_derived_state(r300);
 
