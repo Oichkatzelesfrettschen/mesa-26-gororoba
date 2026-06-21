@@ -17,9 +17,13 @@
  * the residual, and reconstructs the target Y plane.
  *
  * The target Y is read back and checked against an independent integer
- * motion-compensation + inverse-transform + Clip1 reference, the same oracle the
- * orchestrator's own harness uses.  This proves the vtable wiring and the
- * R8_UNORM video-surface boundary, not FP24 truncation (softpipe is f32).
+ * motion-compensation + inverse-transform + Clip1 + in-loop deblock reference,
+ * the same oracle the orchestrator's own harness uses.  The contract carries a
+ * nonzero QP so the deblock filter fires, which proves end_frame actually runs
+ * the deblock the unorm luma path now wires in and that the contract's QP
+ * reaches it through the wire format -- a zero-QP frame would leave the filter a
+ * no-op and hide both.  This proves the vtable wiring, the QP round-trip, and
+ * the R8_UNORM video-surface boundary, not FP24 truncation (softpipe is f32).
  */
 
 #include <math.h>
@@ -47,6 +51,8 @@
 #include "vl_h264_decoder.h"
 #include "vl_h264_contract_wire.h"
 #include "vl_h264_mb_contract.h"
+
+#include "vl_h264_deblock_ref.h"
 
 #define MB 16
 
@@ -264,12 +270,14 @@ main(void)
    }
    struct pipe_context *ctx = screen->context_create(screen, NULL, 0);
 
-   /* Reference luma with both-axis structure so motion and the half-pel filter
-    * are observable. */
+   /* Reference luma with asymmetric both-axis structure so motion and the
+    * half-pel filter are observable (a half-pel-vertical transpose would read a
+    * different slope), and smooth enough that the per-block residual is what
+    * creates the block-edge steps the deblock filter then smooths. */
    uint8_t ref[MB * MB];
    for (int y = 0; y < MB; ++y)
       for (int x = 0; x < MB; ++x)
-         ref[y * MB + x] = (uint8_t)((x * 9 + y * 5 + 30) % 256);
+         ref[y * MB + x] = (uint8_t)clampi(40 + x * 2 + y * 5, 0, 255);
 
    /* Reference Cb and Cr planes with their own structure. */
    uint8_t cb_ref[CHROMA * CHROMA], cr_ref[CHROMA * CHROMA];
@@ -287,6 +295,10 @@ main(void)
    mb.mb_x = 0;
    mb.mb_y = 0;
    mb.slice_type = VL_H264_SLICE_P;
+   /* A nonzero QP so the deblock thresholds (alpha 63, beta 12 at QP 37) are
+    * nonzero and the in-loop filter the unorm luma path wires in actually runs;
+    * QP reaches the back half only through the serialized contract. */
+   mb.qp_y = 37;
    for (int i = 0; i < 16; ++i) {
       mb.mv_l0[i][0] = mvx;
       mb.mv_l0[i][1] = mvy;
@@ -364,20 +376,34 @@ main(void)
    readback_luma(ctx, target, got);
 
    bool pass = true;
-   for (int y = 0; y < MB && pass; ++y) {
+   /* Reconstruct the pre-deblock luma (motion compensation plus the inverse-
+    * transformed residual, Clip1), then apply the same internal-edge deblock the
+    * back half runs; the target Y must match the deblocked reconstruction. */
+   int recon[MB * MB];
+   for (int y = 0; y < MB; ++y)
       for (int x = 0; x < MB; ++x) {
          int pred = predict_ref(ref, MB, MB, mvx, mvy, x, y);
          int blk = (y / 4) * 4 + (x / 4);
          int64_t res[16];
          idct4_int(mb.coeff4x4[blk], res);
-         int want = clampi(pred + (int)res[(y % 4) * 4 + (x % 4)], 0, 255);
-         if (got[y * MB + x] != want) {
+         recon[y * MB + x] = clampi(pred + (int)res[(y % 4) * 4 + (x % 4)], 0, 255);
+      }
+   unsigned deblock_changed = deblock_reference(recon, MB, MB, &slice);
+   for (int y = 0; y < MB && pass; ++y) {
+      for (int x = 0; x < MB; ++x) {
+         if (got[y * MB + x] != recon[y * MB + x]) {
             printf("FAIL luma (%d,%d) got %d want %d\n", x, y, got[y * MB + x],
-                   want);
+                   recon[y * MB + x]);
             pass = false;
             break;
          }
       }
+   }
+   /* A zero-QP frame (or unwired deblock) would leave the filter a no-op and the
+    * end-to-end deblock effect untested; require it to have changed a sample. */
+   if (pass && deblock_changed == 0) {
+      printf("FAIL luma: deblock changed no samples (vacuous)\n");
+      pass = false;
    }
 
    /* Chroma: the reconstructed Cb and Cr in the interleaved target plane against
@@ -413,6 +439,7 @@ main(void)
    screen->destroy(screen);
    winsys->destroy(winsys);
 
-   printf("vl-h264-decode: %s\n", pass ? "PASS" : "FAIL");
+   printf("vl-h264-decode: %s (deblock filtered %u luma samples)\n",
+          pass ? "PASS" : "FAIL", deblock_changed);
    return pass ? 0 : 1;
 }

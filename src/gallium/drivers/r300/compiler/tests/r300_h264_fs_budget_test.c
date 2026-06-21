@@ -235,6 +235,8 @@ main(void)
    gate_one("h264_mc_qpel_diag", vl_h264_mc_qpel_diag_nir);
    gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir);
    gate_one("h264_deblock_luma", vl_h264_deblock_luma_nir);
+   gate_one("h264_deblock_apply_v", vl_h264_deblock_apply_v_nir);
+   gate_one("h264_deblock_apply_h", vl_h264_deblock_apply_h_nir);
    gate_one("h264_reconstruct", vl_h264_reconstruct_nir);
 
    printf("r300-h264-fs-budget: %s\n", g_failures ? "FAIL" : "PASS");
