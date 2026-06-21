@@ -32,6 +32,7 @@
 #include "r300_fs.h"
 #include "r300_nir.h"
 #include "r300_screen.h"
+#include "r300_shader_semantics.h"
 #include "radeon_compiler.h"
 #include "radeon_program.h"
 #include "radeon_regalloc.h"
@@ -42,7 +43,6 @@
 #include "vl/vl_h264_mc.h"
 
 #define R300_FS_MAX_ALU 64  /* proven non-HB R300 fragment ALU envelope */
-#define R300_FS_HB_ALU 512  /* HB / R400-US route (RS48x, experimental) */
 #define R300_FS_MAX_TEX 32
 
 static unsigned g_failures;
@@ -71,6 +71,8 @@ static const nir_shader_compiler_options fs_options = {
    .lower_ftrunc = true,
 };
 
+static void count_insts(struct radeon_compiler *c, unsigned *alu, unsigned *tex);
+
 /* An is_r500=false screen so the lowering takes the R300-class fragment path. */
 static struct pipe_screen *
 fake_r300_screen(struct r300_screen *s)
@@ -82,11 +84,41 @@ fake_r300_screen(struct r300_screen *s)
    return (struct pipe_screen *)s;
 }
 
-/* Run the production NIR optimization and the NIR-to-RC translation for a
- * fragment program against the R300-class limits. */
+/* Assign the fragment inputs nir_to_rc recorded to sequential hardware
+ * registers, the same order r300_fs.c's allocate_hardware_inputs uses. */
+static void
+gate_allocate_inputs(struct r300_fragment_program_compiler *c,
+                     void (*allocate)(void *data, unsigned input,
+                                      unsigned hwreg),
+                     void *mydata)
+{
+   const struct r300_shader_semantics *inputs = c->UserData;
+   int reg = 0;
+   for (int i = 0; i < ATTR_COLOR_COUNT; i++)
+      if (inputs->color[i] != ATTR_UNUSED)
+         allocate(mydata, inputs->color[i], reg++);
+   if (inputs->face != ATTR_UNUSED)
+      allocate(mydata, inputs->face, reg++);
+   for (int i = 0; i < ATTR_GENERIC_COUNT; i++)
+      if (inputs->generic[i] != ATTR_UNUSED)
+         allocate(mydata, inputs->generic[i], reg++);
+   if (inputs->fog != ATTR_UNUSED)
+      allocate(mydata, inputs->fog, reg++);
+   if (inputs->wpos != ATTR_UNUSED)
+      allocate(mydata, inputs->wpos, reg++);
+}
+
+/* Run the production NIR optimization, the NIR-to-RC translation, and -- since
+ * the R300 budget is enforced by the RC backend's scheduling, not by nir_to_rc
+ * -- the full r3xx_compile_fragment_program against max_alu.  c->Base.Error
+ * after the full compile is the decisive fit verdict.  raw_alu/raw_tex report
+ * the pre-scheduling instruction count (an upper bound) for context.  The
+ * kernels use no wpos or face input, so the wpos/face transforms r300_fs.c runs
+ * between nir_to_rc and the compile are skipped. */
 static void
 run_fs(struct r300_fragment_program_compiler *c, struct rc_regalloc_state *rs,
-       nir_shader *nir)
+       nir_shader *nir, unsigned max_alu, unsigned *raw_alu, unsigned *raw_tex,
+       unsigned *sched_alu)
 {
    struct r300_screen screen = {0};
    struct pipe_screen *ps = fake_r300_screen(&screen);
@@ -95,6 +127,10 @@ run_fs(struct r300_fragment_program_compiler *c, struct rc_regalloc_state *rs,
    union r300_shader_code code = {
       .f = &fs_code,
    };
+   /* nir_to_rc records the used fragment inputs into fs_code.inputs; the full
+    * compile's AllocateHwInputs callback reads them back, so reset them to
+    * ATTR_UNUSED (the zero-init is the valid attr index 0, not "unused"). */
+   r300_shader_semantics_reset(&fs_code.inputs);
 
    rc_init_regalloc_state(rs, RC_FRAGMENT_PROGRAM);
    memset(c, 0, sizeof(*c));
@@ -107,11 +143,25 @@ run_fs(struct r300_fragment_program_compiler *c, struct rc_regalloc_state *rs,
    c->Base.has_omod = true;
    c->Base.max_temp_regs = 32;
    c->Base.max_constants = 32;
-   c->Base.max_alu_insts = R300_FS_MAX_ALU;
+   c->Base.max_alu_insts = max_alu;
    c->Base.max_tex_insts = R300_FS_MAX_TEX;
+   c->code = &fs_code.code;
+   c->AllocateHwInputs = gate_allocate_inputs;
+   c->UserData = &fs_code.inputs;
+
+   *raw_alu = 0;
+   *raw_tex = 0;
+   *sched_alu = 0;
 
    r300_optimize_nir(nir, r300_screen(ps));
    nir_to_rc(nir, ps, ext, code, &c->Base);
+   if (!c->Base.Error) {
+      count_insts(&c->Base, raw_alu, raw_tex);
+      c->Base.remove_unused_constants = true;
+      r3xx_compile_fragment_program(c);
+      if (!c->Base.Error)
+         *sched_alu = fs_code.code.code.r300.alu.length;
+   }
 }
 
 static void
@@ -141,31 +191,28 @@ count_insts(struct radeon_compiler *c, unsigned *alu, unsigned *tex)
 
 static void
 gate_one(const char *name,
-         nir_shader *(*build)(const nir_shader_compiler_options *),
-         unsigned alu_budget)
+         nir_shader *(*build)(const nir_shader_compiler_options *))
 {
    struct r300_fragment_program_compiler c;
    struct rc_regalloc_state rs;
+   unsigned raw_alu = 0, raw_tex = 0, sched_alu = 0;
 
-   run_fs(&c, &rs, build(&fs_options));
+   run_fs(&c, &rs, build(&fs_options), R300_FS_MAX_ALU, &raw_alu, &raw_tex,
+          &sched_alu);
 
-   char label[128];
-   snprintf(label, sizeof(label), "%s: nir_to_rc reports no error", name);
+   char label[160];
+   printf("    %s: %u scheduled ALU / %u (%u raw), %u TEX / %u -> %s\n", name,
+          sched_alu, R300_FS_MAX_ALU, raw_alu, raw_tex, R300_FS_MAX_TEX,
+          c.Base.Error ? "DOES NOT FIT" : "fits");
+   if (c.Base.Error && c.Base.ErrorMsg)
+      printf("      %s\n", c.Base.ErrorMsg);
+   snprintf(label, sizeof(label),
+            "%s: translates and schedules within %u ALU / %u TEX", name,
+            R300_FS_MAX_ALU, R300_FS_MAX_TEX);
    CHECK(!c.Base.Error, label);
-   if (c.Base.Error)
-      printf("    error: %s\n", c.Base.ErrorMsg ? c.Base.ErrorMsg : "(none)");
-
-   if (!c.Base.Error) {
-      unsigned alu = 0, tex = 0;
-      count_insts(&c.Base, &alu, &tex);
-      printf("    %s: %u ALU / %u , %u TEX / %u\n", name, alu, alu_budget,
-             tex, R300_FS_MAX_TEX);
-      snprintf(label, sizeof(label), "%s: ALU %u <= %u", name, alu, alu_budget);
-      CHECK(alu <= alu_budget, label);
-      snprintf(label, sizeof(label), "%s: TEX %u <= %u", name, tex,
-               R300_FS_MAX_TEX);
-      CHECK(tex <= R300_FS_MAX_TEX, label);
-   }
+   snprintf(label, sizeof(label), "%s: TEX %u <= %u", name, raw_tex,
+            R300_FS_MAX_TEX);
+   CHECK(raw_tex <= R300_FS_MAX_TEX, label);
 
    teardown_fs(&c, &rs);
 }
@@ -174,22 +221,15 @@ int
 main(void)
 {
    printf("r300-h264-fs-budget\n");
-   /* The transform and motion-compensation kernels fit the proven non-HB R300
-    * fragment ALU envelope. */
-   gate_one("h264_idct_row", vl_h264_idct_row_nir, R300_FS_MAX_ALU);
-   gate_one("h264_idct_col", vl_h264_idct_col_nir, R300_FS_MAX_ALU);
-   gate_one("h264_mc_halfpel_h", vl_h264_mc_halfpel_h_nir, R300_FS_MAX_ALU);
-   gate_one("h264_mc_halfpel_v", vl_h264_mc_halfpel_v_nir, R300_FS_MAX_ALU);
-   gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir, R300_FS_MAX_ALU);
-
-   /* The deblock kernel does not fit the non-HB 64-ALU envelope as a single
-    * pass; it translates and fits only the HB / R400-US route (512 ALU), which
-    * on RS48x is the env-gated, silicon-unproven R300_HB_R400_US probe.  A
-    * production non-HB deblock needs a two-pass split; this gate records the
-    * single-pass cost against the HB budget so the constraint is explicit. */
-   printf("  note: deblock exceeds the non-HB 64-ALU envelope; gated against the"
-          " HB 512-ALU route (RS48x R300_HB_R400_US, experimental)\n");
-   gate_one("h264_deblock_luma", vl_h264_deblock_luma_nir, R300_FS_HB_ALU);
+   /* Each kernel must translate through nir_to_rc and schedule within the
+    * proven non-HB R300 fragment envelope (64 ALU / 32 TEX); the full RC
+    * backend, not the raw nir_to_rc count, is the decisive fit verdict. */
+   gate_one("h264_idct_row", vl_h264_idct_row_nir);
+   gate_one("h264_idct_col", vl_h264_idct_col_nir);
+   gate_one("h264_mc_halfpel_h", vl_h264_mc_halfpel_h_nir);
+   gate_one("h264_mc_halfpel_v", vl_h264_mc_halfpel_v_nir);
+   gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir);
+   gate_one("h264_deblock_luma", vl_h264_deblock_luma_nir);
 
    printf("r300-h264-fs-budget: %s\n", g_failures ? "FAIL" : "PASS");
    return g_failures ? 1 : 0;
