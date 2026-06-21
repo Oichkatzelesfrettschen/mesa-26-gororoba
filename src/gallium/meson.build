@@ -141,6 +141,23 @@ if with_tests and with_gallium_softpipe
     ),
     suite: 'gallium',
   )
+
+  # Render-to-texture verification of the H.264 sample-reconstruction fragment
+  # program (vl_h264_reconstruct.c): Clip1(prediction + residual) over both
+  # planes, checked against the integer spec including the clip on both ends.
+  test('vl-h264-reconstruct',
+    executable(
+      'vl_h264_reconstruct_test',
+      'auxiliary/vl/tests/vl_h264_reconstruct_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 if with_gallium_asahi
