@@ -1,0 +1,313 @@
+/*
+ * Copyright (c) 2026 Terascale Functionalists
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * End-to-end verification of the r300-class H.264 decoder through its
+ * pipe_video_codec vtable on a software (softpipe) screen.
+ *
+ * This drives the whole decode path the way a video frontend would: it builds a
+ * one-macroblock inter slice contract, serializes it to the wire format the
+ * replay provider reads, creates the decoder (which selects the replay provider
+ * because R300_H264_CONTRACT_REPLAY is set), and calls begin_frame,
+ * decode_bitstream, and end_frame against real video buffers.  The replay
+ * provider feeds the serialized contract to the back half in place of an entropy
+ * decoder, so end_frame motion-compensates from the reference, inverse-transforms
+ * the residual, and reconstructs the target Y plane.
+ *
+ * The target Y is read back and checked against an independent integer
+ * motion-compensation + inverse-transform + Clip1 reference, the same oracle the
+ * orchestrator's own harness uses.  This proves the vtable wiring and the
+ * R8_UNORM video-surface boundary, not FP24 truncation (softpipe is f32).
+ */
+
+#include <math.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "pipe/p_context.h"
+#include "pipe/p_defines.h"
+#include "pipe/p_screen.h"
+#include "pipe/p_state.h"
+#include "pipe/p_video_codec.h"
+#include "pipe/p_video_state.h"
+#include "util/format/u_formats.h"
+#include "util/u_inlines.h"
+
+#include "frontend/sw_winsys.h"
+#include "softpipe/sp_public.h"
+#include "sw/null/null_sw_winsys.h"
+
+#include "vl_video_buffer.h"
+#include "vl_h264_decoder.h"
+#include "vl_h264_contract_wire.h"
+#include "vl_h264_mb_contract.h"
+
+#define MB 16
+
+static const int luma_6tap[6] = { 1, -5, 20, 20, -5, 1 };
+
+static int
+clampi(int v, int lo, int hi)
+{
+   return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static void
+idct4_1d_int(const int64_t z[4], int64_t out[4])
+{
+   int64_t a = z[0] + z[2];
+   int64_t b = z[0] - z[2];
+   int64_t c = (z[1] >> 1) - z[3];
+   int64_t d = z[1] + (z[3] >> 1);
+   out[0] = a + d;
+   out[1] = b + c;
+   out[2] = b - c;
+   out[3] = a - d;
+}
+
+static void
+idct4_int(const int16_t coeff[16], int64_t residual[16])
+{
+   int64_t rows[16];
+   for (int r = 0; r < 4; ++r) {
+      int64_t z[4], o[4];
+      for (int c = 0; c < 4; ++c)
+         z[c] = coeff[r * 4 + c];
+      idct4_1d_int(z, o);
+      for (int c = 0; c < 4; ++c)
+         rows[r * 4 + c] = o[c];
+   }
+   for (int c = 0; c < 4; ++c) {
+      int64_t z[4], o[4];
+      for (int r = 0; r < 4; ++r)
+         z[r] = rows[r * 4 + c];
+      idct4_1d_int(z, o);
+      for (int i = 0; i < 4; ++i)
+         residual[i * 4 + c] = (o[i] + 32) >> 6;
+   }
+}
+
+static int
+halfpel_h_ref(const uint8_t *ref, int rw, int rh, int x, int y)
+{
+   int acc = 0;
+   for (int tap = 0; tap < 6; ++tap)
+      acc += ref[clampi(y, 0, rh - 1) * rw + clampi(x - 2 + tap, 0, rw - 1)]
+             * luma_6tap[tap];
+   return clampi((acc + 16) >> 5, 0, 255);
+}
+
+static int
+predict_ref(const uint8_t *ref, int rw, int rh, int mvx, int mvy, int x, int y)
+{
+   const int frac_x = mvx & 3, frac_y = mvy & 3;
+   const int ox = (mvx >> 2) + x, oy = (mvy >> 2) + y;
+   if (frac_x == 2 && frac_y == 0)
+      return halfpel_h_ref(ref, rw, rh, ox, oy);
+   return ref[clampi(oy, 0, rh - 1) * rw + clampi(ox, 0, rw - 1)];
+}
+
+/* Write the slice contract to a temporary file in the serialized wire format the
+ * replay provider reads.  Returns the path on success (a static buffer) or NULL. */
+static const char *
+write_replay_file(const struct vl_h264_slice_contract *slice)
+{
+   static char path[] = "h264_decode_replay_contract.bin";
+   size_t size = vl_h264_contract_wire_size(slice->num_macroblocks);
+   uint8_t *buf = malloc(size);
+   if (!buf)
+      return NULL;
+   if (vl_h264_contract_serialize(slice, buf, size) != size) {
+      free(buf);
+      return NULL;
+   }
+   FILE *f = fopen(path, "wb");
+   if (!f) {
+      free(buf);
+      return NULL;
+   }
+   size_t wrote = fwrite(buf, 1, size, f);
+   fclose(f);
+   free(buf);
+   return wrote == size ? path : NULL;
+}
+
+static struct pipe_video_buffer *
+make_video_buffer(struct pipe_context *ctx)
+{
+   struct pipe_video_buffer tmpl = {0};
+   tmpl.buffer_format = PIPE_FORMAT_NV12;
+   tmpl.width = MB;
+   tmpl.height = MB;
+   tmpl.interlaced = false;
+   return vl_video_buffer_create(ctx, &tmpl);
+}
+
+static struct pipe_resource *
+luma_resource(struct pipe_video_buffer *vb)
+{
+   struct pipe_resource *res[VL_NUM_COMPONENTS] = {0};
+   vb->get_resources(vb, res);
+   return res[0];
+}
+
+static void
+upload_luma(struct pipe_context *ctx, struct pipe_video_buffer *vb,
+            const uint8_t *luma)
+{
+   struct pipe_resource *y = luma_resource(vb);
+   struct pipe_transfer *xfer;
+   void *map = pipe_texture_map(ctx, y, 0, 0, PIPE_MAP_WRITE, 0, 0, MB, MB,
+                               &xfer);
+   for (int row = 0; row < MB; ++row)
+      memcpy((char *)map + row * xfer->stride, luma + row * MB, MB);
+   pipe_texture_unmap(ctx, xfer);
+}
+
+static void
+readback_luma(struct pipe_context *ctx, struct pipe_video_buffer *vb,
+              uint8_t *out)
+{
+   struct pipe_resource *y = luma_resource(vb);
+   struct pipe_transfer *xfer;
+   void *map = pipe_texture_map(ctx, y, 0, 0, PIPE_MAP_READ, 0, 0, MB, MB,
+                               &xfer);
+   for (int row = 0; row < MB; ++row)
+      memcpy(out + row * MB, (const char *)map + row * xfer->stride, MB);
+   pipe_texture_unmap(ctx, xfer);
+}
+
+int
+main(void)
+{
+   struct sw_winsys *winsys = null_sw_create();
+   if (!winsys) {
+      fprintf(stderr, "vl-h264-decode: no software winsys; skipping\n");
+      return 77;
+   }
+   struct pipe_screen *screen = softpipe_create_screen(winsys);
+   if (!screen) {
+      fprintf(stderr, "vl-h264-decode: no software screen; skipping\n");
+      winsys->destroy(winsys);
+      return 77;
+   }
+   struct pipe_context *ctx = screen->context_create(screen, NULL, 0);
+
+   /* Reference luma with both-axis structure so motion and the half-pel filter
+    * are observable. */
+   uint8_t ref[MB * MB];
+   for (int y = 0; y < MB; ++y)
+      for (int x = 0; x < MB; ++x)
+         ref[y * MB + x] = (uint8_t)((x * 9 + y * 5 + 30) % 256);
+
+   /* One inter macroblock at the origin: a half-pel-horizontal vector and a
+    * non-trivial residual. */
+   const int16_t mvx = 2, mvy = 0;
+   struct vl_h264_mb_contract mb;
+   memset(&mb, 0, sizeof(mb));
+   mb.mb_x = 0;
+   mb.mb_y = 0;
+   mb.slice_type = VL_H264_SLICE_P;
+   for (int i = 0; i < 16; ++i) {
+      mb.mv_l0[i][0] = mvx;
+      mb.mv_l0[i][1] = mvy;
+      mb.ref_l0[i] = 0;
+      mb.ref_l1[i] = -1;
+   }
+   for (int blk = 0; blk < VL_H264_LUMA_4X4_BLOCKS; ++blk)
+      for (int k = 0; k < 16; ++k)
+         mb.coeff4x4[blk][k] = (int16_t)(((blk * 7 + k * 13 + 5) % 61) - 30);
+
+   struct vl_h264_slice_contract slice = {0};
+   slice.version = VL_H264_MB_CONTRACT_VERSION;
+   slice.width = MB;
+   slice.height = MB;
+   slice.slice_type = VL_H264_SLICE_P;
+   slice.provider = VL_H264_VLD_PROVIDER_FFMPEG_ORACLE;
+   slice.coeff_contract = VL_H264_COEFF_DEQUANTIZED;
+   slice.num_macroblocks = 1;
+   slice.macroblocks = &mb;
+
+   const char *path = write_replay_file(&slice);
+   if (!path) {
+      fprintf(stderr, "vl-h264-decode: could not write replay file; skipping\n");
+      ctx->destroy(ctx);
+      screen->destroy(screen);
+      winsys->destroy(winsys);
+      return 77;
+   }
+   setenv("R300_H264_CONTRACT_REPLAY", path, 1);
+
+   struct pipe_video_codec templat = {0};
+   templat.profile = PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE;
+   templat.entrypoint = PIPE_VIDEO_ENTRYPOINT_BITSTREAM;
+   templat.chroma_format = PIPE_VIDEO_CHROMA_FORMAT_420;
+   templat.width = MB;
+   templat.height = MB;
+   templat.max_references = 1;
+
+   struct pipe_video_codec *dec = vl_create_h264_decoder(ctx, &templat);
+   if (!dec) {
+      fprintf(stderr, "vl-h264-decode: decoder create failed; skipping\n");
+      unlink(path);
+      ctx->destroy(ctx);
+      screen->destroy(screen);
+      winsys->destroy(winsys);
+      return 77;
+   }
+
+   struct pipe_video_buffer *target = make_video_buffer(ctx);
+   struct pipe_video_buffer *reference = make_video_buffer(ctx);
+   upload_luma(ctx, reference, ref);
+
+   struct pipe_h264_picture_desc pic = {0};
+   pic.base.profile = templat.profile;
+   pic.base.entry_point = PIPE_VIDEO_ENTRYPOINT_BITSTREAM;
+   pic.num_ref_frames = 1;
+   pic.ref[0] = reference;
+
+   const uint8_t dummy_nal[1] = {0};
+   const void *buffers[1] = { dummy_nal };
+   const unsigned sizes[1] = { 1 };
+
+   dec->begin_frame(dec, target, &pic.base);
+   dec->decode_bitstream(dec, target, &pic.base, 1, buffers, sizes);
+   dec->end_frame(dec, target, &pic.base);
+   ctx->flush(ctx, NULL, 0);
+
+   uint8_t got[MB * MB];
+   readback_luma(ctx, target, got);
+
+   bool pass = true;
+   for (int y = 0; y < MB && pass; ++y) {
+      for (int x = 0; x < MB; ++x) {
+         int pred = predict_ref(ref, MB, MB, mvx, mvy, x, y);
+         int blk = (y / 4) * 4 + (x / 4);
+         int64_t res[16];
+         idct4_int(mb.coeff4x4[blk], res);
+         int want = clampi(pred + (int)res[(y % 4) * 4 + (x % 4)], 0, 255);
+         if (got[y * MB + x] != want) {
+            printf("FAIL (%d,%d) got %d want %d\n", x, y, got[y * MB + x], want);
+            pass = false;
+            break;
+         }
+      }
+   }
+
+   target->destroy(target);
+   reference->destroy(reference);
+   dec->destroy(dec);
+   unlink(path);
+   ctx->destroy(ctx);
+   screen->destroy(screen);
+   winsys->destroy(winsys);
+
+   printf("vl-h264-decode: %s\n", pass ? "PASS" : "FAIL");
+   return pass ? 0 : 1;
+}

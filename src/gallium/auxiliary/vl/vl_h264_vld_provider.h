@@ -83,6 +83,24 @@ vl_h264_vld_provider_create(enum vl_h264_vld_provider_kind kind);
 struct vl_h264_vld_provider *
 vl_h264_replay_provider_create(void);
 
+/*
+ * Whether any provider is available, in preference order (clean-room CAVLC, then
+ * CABAC, then the bring-up replay).  The driver advertises H.264 when this is
+ * true, so the decoder never reports a codec it cannot create; today only the
+ * replay is available, and only when R300_H264_CONTRACT_REPLAY is set.
+ */
+bool
+vl_h264_vld_provider_any_available(void);
+
+/*
+ * Create the most preferred available provider (clean-room CAVLC, then CABAC,
+ * then the bring-up replay), or NULL when none is available in this build.  The
+ * decoder uses this rather than naming one kind, so a clean-room front end takes
+ * over from the replay automatically once it lands.
+ */
+struct vl_h264_vld_provider *
+vl_h264_vld_provider_create_available(void);
+
 #ifdef __cplusplus
 }
 #endif
