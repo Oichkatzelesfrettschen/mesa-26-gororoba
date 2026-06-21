@@ -301,4 +301,126 @@ deblock_reference(int *pic, int w, int h,
    return changed;
 }
 
+/* Chroma edge filter (sec 8.7.2.3/4, chromaEdgeFlag=1); mirrors
+ * build_chroma_deblock_apply.  Only p0 and q0 change: bS=4 is the unconditional
+ * two-tap, bS 1..3 the normal delta with tC = tC0 + 1. */
+static inline void
+deblock_chroma_ref_filter(int p1, int p0, int q0, int q1, int alpha, int beta,
+                          int tc0, int bs, int *p0n, int *q0n)
+{
+   if (!(abs(p0 - q0) < alpha && abs(p1 - p0) < beta && abs(q1 - q0) < beta)) {
+      *p0n = p0;
+      *q0n = q0;
+      return;
+   }
+   if (bs == 4) {
+      *p0n = (2 * p1 + p0 + q1 + 2) >> 2;
+      *q0n = (2 * q1 + q0 + p1 + 2) >> 2;
+   } else {
+      int tc = tc0 + 1;
+      int delta = deblock_ref_clamp((((q0 - p0) << 2) + (p1 - q1) + 4) >> 3, -tc, tc);
+      *p0n = deblock_ref_clamp(p0 + delta, 0, 255);
+      *q0n = deblock_ref_clamp(q0 - delta, 0, 255);
+   }
+}
+
+/* Apply the in-loop chroma deblock to one integer component plane in place, the
+ * same per-macroblock order vl_h264_emit_deblock_chroma runs: each 8x8 chroma
+ * macroblock filters the two vertical edges (chroma offsets 0,4) then the two
+ * horizontal, boundary strength inherited from the co-located luma edge, two-row
+ * sub-segments, thresholds at the component's chroma QP averaged across the edge.
+ * use_cr picks qp_cr over qp_cb.  Returns the number of samples changed. */
+static inline unsigned
+deblock_chroma_reference(int *pic, int w, int h,
+                         const struct vl_h264_slice_contract *slice, bool use_cr)
+{
+   const int MBSZ = 8;
+   int mbw = (w + MBSZ - 1) / MBSZ, mbh = (h + MBSZ - 1) / MBSZ;
+   const struct vl_h264_mb_contract **grid =
+      calloc((size_t)mbw * mbh, sizeof(*grid));
+   for (unsigned m = 0; m < slice->num_macroblocks; ++m) {
+      const struct vl_h264_mb_contract *mb = &slice->macroblocks[m];
+      if (mb->mb_x >= 0 && mb->mb_x < mbw && mb->mb_y >= 0 && mb->mb_y < mbh)
+         grid[mb->mb_y * mbw + mb->mb_x] = mb;
+   }
+   int *orig = malloc((size_t)w * h * sizeof(int));
+   memcpy(orig, pic, (size_t)w * h * sizeof(int));
+
+   for (int mby = 0; mby < mbh; ++mby) {
+      for (int mbx = 0; mbx < mbw; ++mbx) {
+         const struct vl_h264_mb_contract *mb = grid[mby * mbw + mbx];
+         if (!mb || mb->disable_deblock_idc == 1)
+            continue;
+
+         for (int pass = 0; pass < 4; ++pass) {
+            bool vertical = pass < 2;
+            int co = 4 * (vertical ? pass : pass - 2);
+            bool mb_boundary = (co == 0);
+            if (mb_boundary && vertical && mbx == 0)
+               continue;
+            if (mb_boundary && !vertical && mby == 0)
+               continue;
+            const struct vl_h264_mb_contract *mb_p = mb;
+            if (mb_boundary)
+               mb_p = vertical ? grid[mby * mbw + (mbx - 1)]
+                               : grid[(mby - 1) * mbw + mbx];
+            if (!mb_p)
+               continue;
+
+            int qp_q = use_cr ? mb->qp_cr : mb->qp_cb;
+            int qp_p = use_cr ? mb_p->qp_cr : mb_p->qp_cb;
+            int qp_av = (qp_p + qp_q + 1) >> 1;
+            int ia = deblock_ref_qp_index(qp_av, mb->slice_alpha_c0_offset_div2 * 2);
+            int ib = deblock_ref_qp_index(qp_av, mb->slice_beta_offset_div2 * 2);
+            int alpha = deblock_ref_alpha[ia];
+            int beta = deblock_ref_beta[ib];
+            int luma_col = co / 2;
+
+            for (int seg = 0; seg < 4; ++seg) {
+               int blk_q, blk_p;
+               if (vertical) {
+                  blk_q = seg * 4 + luma_col;
+                  blk_p = mb_boundary ? seg * 4 + 3 : seg * 4 + (luma_col - 1);
+               } else {
+                  blk_q = luma_col * 4 + seg;
+                  blk_p = mb_boundary ? 12 + seg : (luma_col - 1) * 4 + seg;
+               }
+               int bs = deblock_ref_strength(mb_p, blk_p, mb, blk_q, mb_boundary);
+               if (bs == 0)
+                  continue;
+               int tc0 = bs <= 3 ? deblock_ref_tc0[bs - 1][ia] : 0;
+
+               int ed = (vertical ? mbx : mby) * MBSZ + co;
+               int base = (vertical ? mby : mbx) * MBSZ + seg * 2;
+               for (int t = 0; t < 2; ++t) {
+                  int along = base + t;
+                  int p0n, q0n;
+                  if (vertical) {
+                     deblock_chroma_ref_filter(pic[along * w + ed - 2],
+                        pic[along * w + ed - 1], pic[along * w + ed],
+                        pic[along * w + ed + 1], alpha, beta, tc0, bs, &p0n, &q0n);
+                     pic[along * w + ed - 1] = p0n;
+                     pic[along * w + ed] = q0n;
+                  } else {
+                     deblock_chroma_ref_filter(pic[(ed - 2) * w + along],
+                        pic[(ed - 1) * w + along], pic[ed * w + along],
+                        pic[(ed + 1) * w + along], alpha, beta, tc0, bs, &p0n, &q0n);
+                     pic[(ed - 1) * w + along] = p0n;
+                     pic[ed * w + along] = q0n;
+                  }
+               }
+            }
+         }
+      }
+   }
+
+   unsigned changed = 0;
+   for (int i = 0; i < w * h; ++i)
+      if (pic[i] != orig[i])
+         ++changed;
+   free(orig);
+   free(grid);
+   return changed;
+}
+
 #endif /* vl_h264_deblock_ref_h */
