@@ -83,6 +83,25 @@ void vl_h264_emit_luma_inter_unorm(struct vl_h264_emit *emit,
                                    unsigned ref_width, unsigned ref_height,
                                    const struct vl_h264_slice_contract *slice);
 
+/*
+ * Reconstruct one chroma component plane (Cb or Cr) of an inter frame.  block_base
+ * selects the component's four 4x4 blocks in the contract (16 for Cb, 20 for Cr).
+ * Each macroblock's 8x8 prediction is motion-compensated from ref_chroma with the
+ * eighth-pel bilinear kernel, the chroma vector being the luma list-0 vector
+ * interpreted in eighth-chroma-sample units; the residual is inverse-transformed
+ * and Clip1(prediction + residual) is written to dst_chroma.  Planes are
+ * half-resolution (the frame chroma dimensions); like vl_h264_emit_luma_inter
+ * this is the R32_FLOAT core, and the UNORM video-surface boundary (including the
+ * NV12 interleave) is the caller's.
+ */
+void vl_h264_emit_chroma_inter(struct vl_h264_emit *emit,
+                               struct pipe_surface *dst_chroma,
+                               unsigned width, unsigned height,
+                               struct pipe_sampler_view *ref_chroma,
+                               unsigned ref_width, unsigned ref_height,
+                               const struct vl_h264_slice_contract *slice,
+                               unsigned block_base);
+
 #ifdef __cplusplus
 }
 #endif
