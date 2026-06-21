@@ -176,7 +176,17 @@ struct mb_spec {
    int16_t mvx, mvy;
    bool residual;
    int seed;
+   bool submb;   /* give each 4x4 luma block a distinct vector */
 };
+
+/* A distinct per-block luma vector for the sub-macroblock case; its eighth-pel
+ * chroma derivation differs block to block. */
+static void
+submb_vector(int blk, int16_t *mvx, int16_t *mvy)
+{
+   *mvx = (int16_t)(blk * 3 - 8);
+   *mvy = (int16_t)(blk * 2 - 6);
+}
 
 static bool
 run_frame(struct vl_h264_emit *emit, struct pipe_context *ctx,
@@ -206,8 +216,12 @@ run_frame(struct vl_h264_emit *emit, struct pipe_context *ctx,
       contract[m].mb_y = mbs[m].mb_y;
       contract[m].slice_type = VL_H264_SLICE_P;
       for (int i = 0; i < 16; ++i) {
-         contract[m].mv_l0[i][0] = mbs[m].mvx;
-         contract[m].mv_l0[i][1] = mbs[m].mvy;
+         if (mbs[m].submb)
+            submb_vector(i, &contract[m].mv_l0[i][0], &contract[m].mv_l0[i][1]);
+         else {
+            contract[m].mv_l0[i][0] = mbs[m].mvx;
+            contract[m].mv_l0[i][1] = mbs[m].mvy;
+         }
          contract[m].ref_l0[i] = 0;
          contract[m].ref_l1[i] = -1;
       }
@@ -235,8 +249,12 @@ run_frame(struct vl_h264_emit *emit, struct pipe_context *ctx,
          for (int lx = 0; lx < CHROMA_MB; ++lx) {
             int px = s->mb_x * CHROMA_MB + lx;
             int py = s->mb_y * CHROMA_MB + ly;
-            int pred = predict_chroma(ref, rw, rh, s->mb_x, s->mb_y, s->mvx,
-                                      s->mvy, lx, ly);
+            /* The chroma sample at (lx,ly) is co-located with luma block
+             * (ly/2)*4 + (lx/2) and uses that block's vector. */
+            int mv_blk = (ly / 2) * 4 + (lx / 2);
+            int pred = predict_chroma(ref, rw, rh, s->mb_x, s->mb_y,
+                                      contract[m].mv_l0[mv_blk][0],
+                                      contract[m].mv_l0[mv_blk][1], lx, ly);
             int blk = (ly / 4) * 2 + (lx / 4);
             int64_t res[16];
             idct4_int(contract[m].coeff4x4[CB_BLOCK_BASE + blk], res);
@@ -328,6 +346,23 @@ main(void)
    };
    pass = run_frame(emit, ctx, screen, "quad_mb_frame", ref, rw, rh, quad,
                     ARRAY_SIZE(quad), 2, 2) && pass;
+
+   /* Sub-macroblock partition: each luma 4x4 block's co-located 2x2 chroma
+    * region is motion-compensated with that block's vector. */
+   const struct mb_spec submb_single[] = {
+      { 0, 0, 0, 0, true, 55, true },
+   };
+   pass = run_frame(emit, ctx, screen, "submb_per_block_mv", ref, rw, rh,
+                    submb_single, 1, 1, 1) && pass;
+
+   const struct mb_spec submb_quad[] = {
+      { 0, 0, 0, 0, true, 61, true },
+      { 1, 0, 0, 0, true, 62, true },
+      { 0, 1, 0, 0, true, 63, true },
+      { 1, 1, 0, 0, true, 64, true },
+   };
+   pass = run_frame(emit, ctx, screen, "submb_quad_frame", ref, rw, rh,
+                    submb_quad, ARRAY_SIZE(submb_quad), 2, 2) && pass;
 
    vl_h264_emit_destroy(emit);
    free(ref);
