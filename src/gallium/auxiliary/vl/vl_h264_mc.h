@@ -11,6 +11,8 @@ extern "C" {
 #endif
 
 struct pipe_context;
+struct nir_shader;
+struct nir_shader_compiler_options;
 
 /* H.264 luma half-pel motion compensation (ITU-T H.264 sec 8.4.2.2.1) as FP24
  * fragment programs for the R300-class back half.  A half-pel sample is the
@@ -33,6 +35,12 @@ struct pipe_context;
  * program (position h) walks .y by the .w step. */
 void *vl_h264_mc_create_halfpel_h_fs(struct pipe_context *pipe);
 void *vl_h264_mc_create_halfpel_v_fs(struct pipe_context *pipe);
+
+/* The same two kernels as raw NIR for the r300 compile-budget gate. */
+struct nir_shader *
+vl_h264_mc_halfpel_h_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_mc_halfpel_v_nir(const struct nir_shader_compiler_options *options);
 
 #ifdef __cplusplus
 }

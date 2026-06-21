@@ -72,29 +72,23 @@ texel_center(nir_builder *b, unsigned k)
  * coefficients along texcoord.y and writes rows[r][c]; the column c is selected
  * from texcoord.x.  The write address (c, r) is already the spec's first
  * transpose, so no transpose op is emitted. */
-void *
-vl_h264_idct_create_row_fs(struct pipe_context *pipe)
+static nir_def *
+build_row_color(struct vl_nir_fs *fs)
 {
-   struct vl_nir_fs fs;
-   vl_nir_fs_begin(&fs, pipe, 1, "vl:h264_idct_row_fs");
-   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
-   nir_builder *b = &fs.b;
-
-   nir_def *tc = fs.texcoord[0];
+   nir_builder *b = &fs->b;
+   nir_def *tc = fs->texcoord[0];
    nir_def *tcx = nir_channel(b, tc, 0);
    nir_def *tcy = nir_channel(b, tc, 1);
 
    nir_def *z[4];
    for (unsigned k = 0; k < 4; ++k) {
       nir_def *coord = nir_vec2(b, texel_center(b, k), tcy);
-      z[k] = nir_channel(b, vl_nir_tex(&fs, 0, coord), 0);
+      z[k] = nir_channel(b, vl_nir_tex(fs, 0, coord), 0);
    }
 
    nir_def *out[4];
    idct4_butterfly(b, z, out);
-
-   nir_def *row = select_by_axis(b, tcx, out);
-   return vl_nir_fs_finish(&fs, pipe, nir_replicate(b, row, 4));
+   return nir_replicate(b, select_by_axis(b, tcx, out), 4);
 }
 
 /* Pass 2: column butterfly plus the final (h + 32) >> 6 normalize.  Fragment
@@ -102,29 +96,62 @@ vl_h264_idct_create_row_fs(struct pipe_context *pipe)
  * the residual residual[i][c]; the row i is selected from texcoord.y.  The read
  * gathers column c and the select picks i, completing the spec's second
  * transpose in addressing. */
-void *
-vl_h264_idct_create_col_fs(struct pipe_context *pipe)
+static nir_def *
+build_col_color(struct vl_nir_fs *fs)
 {
-   struct vl_nir_fs fs;
-   vl_nir_fs_begin(&fs, pipe, 1, "vl:h264_idct_col_fs");
-   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
-   nir_builder *b = &fs.b;
-
-   nir_def *tc = fs.texcoord[0];
+   nir_builder *b = &fs->b;
+   nir_def *tc = fs->texcoord[0];
    nir_def *tcx = nir_channel(b, tc, 0);
    nir_def *tcy = nir_channel(b, tc, 1);
 
    nir_def *z[4];
    for (unsigned k = 0; k < 4; ++k) {
       nir_def *coord = nir_vec2(b, tcx, texel_center(b, k));
-      z[k] = nir_channel(b, vl_nir_tex(&fs, 0, coord), 0);
+      z[k] = nir_channel(b, vl_nir_tex(fs, 0, coord), 0);
    }
 
    nir_def *out[4];
    idct4_butterfly(b, z, out);
-
    nir_def *col = select_by_axis(b, tcy, out);
    nir_def *residual =
       fp24_floor_shift(b, nir_fadd(b, col, nir_imm_float(b, 32.0f)), 6);
-   return vl_nir_fs_finish(&fs, pipe, nir_replicate(b, residual, 4));
+   return nir_replicate(b, residual, 4);
+}
+
+void *
+vl_h264_idct_create_row_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 1, "vl:h264_idct_row_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_row_color(&fs));
+}
+
+void *
+vl_h264_idct_create_col_fs(struct pipe_context *pipe)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin(&fs, pipe, 1, "vl:h264_idct_col_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish(&fs, pipe, build_col_color(&fs));
+}
+
+/* NIR-only entry points for the r300 compile-budget gate: the same row and
+ * column kernels built with explicit options and no live screen. */
+nir_shader *
+vl_h264_idct_row_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 1, "vl:h264_idct_row_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_row_color(&fs));
+}
+
+nir_shader *
+vl_h264_idct_col_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 1, "vl:h264_idct_col_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_col_color(&fs));
 }

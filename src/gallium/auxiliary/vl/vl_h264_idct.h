@@ -11,6 +11,8 @@ extern "C" {
 #endif
 
 struct pipe_context;
+struct nir_shader;
+struct nir_shader_compiler_options;
 
 /* H.264 4x4 inverse integer transform (ITU-T H.264 sec 8.5.12.2) as a two-pass
  * separable FP24 fragment program for the R300-class back half.  The transform
@@ -40,6 +42,12 @@ struct pipe_context;
  */
 void *vl_h264_idct_create_row_fs(struct pipe_context *pipe);
 void *vl_h264_idct_create_col_fs(struct pipe_context *pipe);
+
+/* The same two kernels as raw NIR for the r300 compile-budget gate. */
+struct nir_shader *
+vl_h264_idct_row_nir(const struct nir_shader_compiler_options *options);
+struct nir_shader *
+vl_h264_idct_col_nir(const struct nir_shader_compiler_options *options);
 
 #ifdef __cplusplus
 }

@@ -217,6 +217,27 @@ if with_tests
     suite : ['r300'],
   )
 
+  # Compile-budget gate for the H.264 back-half fragment programs: builds the
+  # vl_h264_idct and vl_h264_mc kernels as raw NIR and runs them through
+  # r300_optimize_nir + nir_to_rc against an is_r500=false screen, proving every
+  # op lowers for R300 and the emitted instruction counts fit the fragment
+  # limits.  Links libgalliumvl for the kernel builders.
+  test(
+    'r300-h264-fs-budget',
+    executable(
+      'r300_h264_fs_budget_test',
+      files('compiler/tests/r300_h264_fs_budget_test.c'),
+      include_directories : [
+        inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,
+        include_directories('compiler'),
+      ],
+      link_with : [libr300, libgalliumvl, libgallium],
+      dependencies : [dep_llvm, idep_mesautil, idep_nir, idep_xmlconfig],
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+
   test(
     'r300-nir-to-rc',
     executable(
