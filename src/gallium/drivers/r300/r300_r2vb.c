@@ -830,10 +830,28 @@ static void r300_r2vb_emit_producer(struct r300_context *r300,
     }
     OUT_CS_REG(R300_SU_CULL_MODE, 0);
     OUT_CS_REG(R300_SC_CLIP_RULE, 0xFFFF);
-    OUT_CS_REG(R300_GA_POINT_SIZE, (6 << R300_POINTSIZE_Y_SHIFT) |
-                                       (6 << R300_POINTSIZE_X_SHIFT));
-    OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
-                                         (6 << R300_GA_POINT_MINMAX_MAX_SHIFT));
+    /* GA point size is in sixths of a pixel (the blitter encodes dimension*6 into
+     * R300_GA_POINT_SIZE, see r300_render.c), so 6 == 1 px.  R300_R2VB_POINT_SIZE
+     * overrides the rasterized size in whole pixels to probe whether the GA point
+     * block honors a larger per-draw point size on silicon; GA_POINT_MINMAX_MAX is
+     * raised to the same value so the GA does not clamp the requested size back to
+     * the 1 px default.  Unset (default 1) reproduces the original 6/6 emit. */
+    {
+        static int r2vb_point_px = -1;
+        if (r2vb_point_px < 0) {
+            const char *e = getenv("R300_R2VB_POINT_SIZE");
+            long px = e ? strtol(e, NULL, 0) : 1;
+            /* ps6 = px*6 is packed into a 16-bit GA_POINT_SIZE field per axis, so
+             * cap px at 65535/6 to keep the encoding from wrapping; this mirrors
+             * the bounded strtol the other R300_R2VB_* env parses use. */
+            r2vb_point_px = (px > 0 && px <= 65535 / 6) ? (int)px : 1;
+        }
+        uint32_t ps6 = (uint32_t)r2vb_point_px * 6;
+        OUT_CS_REG(R300_GA_POINT_SIZE, (ps6 << R300_POINTSIZE_Y_SHIFT) |
+                                           (ps6 << R300_POINTSIZE_X_SHIFT));
+        OUT_CS_REG(R300_GA_POINT_MINMAX, (6 << R300_GA_POINT_MINMAX_MIN_SHIFT) |
+                                             (ps6 << R300_GA_POINT_MINMAX_MAX_SHIFT));
+    }
     OUT_CS_REG(R300_VAP_CLIP_CNTL, R300_CLIP_DISABLE);
     OUT_CS_REG(R300_VAP_VTE_CNTL, R300_VTX_XY_FMT | R300_VTX_Z_FMT);
     OUT_CS_REG(R300_VAP_VTX_SIZE, vtx_dwords);
