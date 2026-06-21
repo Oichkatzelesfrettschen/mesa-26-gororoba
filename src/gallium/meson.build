@@ -213,6 +213,24 @@ if with_tests and with_gallium_softpipe
     ),
     suite: 'gallium',
   )
+
+  # Verification of the H.264 chroma inter-reconstruction core
+  # (vl_h264_emit_chroma_inter): scatter, eighth-pel bilinear motion
+  # compensation, inverse transform, and Clip1 reconstruction over half-resolution
+  # chroma planes, checked against the integer spec.
+  test('vl-h264-emit-chroma',
+    executable(
+      'vl_h264_emit_chroma_test',
+      'auxiliary/vl/tests/vl_h264_emit_chroma_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 if with_gallium_asahi
