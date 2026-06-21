@@ -41,6 +41,7 @@
 #include "vl/vl_h264_deblock.h"
 #include "vl/vl_h264_idct.h"
 #include "vl/vl_h264_mc.h"
+#include "vl/vl_h264_reconstruct.h"
 
 #define R300_FS_MAX_ALU 64  /* proven non-HB R300 fragment ALU envelope */
 #define R300_FS_MAX_TEX 32
@@ -230,6 +231,7 @@ main(void)
    gate_one("h264_mc_halfpel_v", vl_h264_mc_halfpel_v_nir);
    gate_one("h264_chroma_bilinear", vl_h264_chroma_bilinear_nir);
    gate_one("h264_deblock_luma", vl_h264_deblock_luma_nir);
+   gate_one("h264_reconstruct", vl_h264_reconstruct_nir);
 
    printf("r300-h264-fs-budget: %s\n", g_failures ? "FAIL" : "PASS");
    return g_failures ? 1 : 0;
