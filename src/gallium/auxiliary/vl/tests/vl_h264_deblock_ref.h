@@ -245,6 +245,11 @@ deblock_reference(int *pic, int w, int h,
          for (int pass = 0; pass < 8; ++pass) {
             bool vertical = pass < 4;
             int r = 4 * (vertical ? pass : pass - 4);   /* 0, 4, 8, 12 */
+            /* An 8x8-transform macroblock skips the interior 4x4 edges at 4 and
+             * 12 (ITU-T H.264 sec 8.7.2); only the boundary at 0 and the 8x8-block
+             * edge at 8 are filtered. */
+            if (mb->transform_8x8 && (r == 4 || r == 12))
+               continue;
             bool mb_boundary = (r == 0);
             if (mb_boundary && vertical && mbx == 0)
                continue;

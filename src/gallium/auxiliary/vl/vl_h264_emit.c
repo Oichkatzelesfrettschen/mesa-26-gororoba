@@ -1004,6 +1004,12 @@ vl_h264_emit_deblock_luma(struct vl_h264_emit *emit, struct pipe_resource *recon
             const struct vl_h264_mb_contract *mb = grid[mby * mbw + mbx];
             if (!mb || mb->disable_deblock_idc == 1)
                continue;
+            /* An 8x8-transform macroblock filters only its 8x8-block grid: the
+             * boundary at 0 and the block edge at 8.  The interior 4x4 edges at 4
+             * and 12 lie inside an 8x8 transform block and are not filtered (ITU-T
+             * H.264 sec 8.7.2). */
+            if (mb->transform_8x8 && (r == 4 || r == 12))
+               continue;
             const bool mb_boundary = (r == 0);
             if (mb_boundary && vertical && mbx == 0)
                continue;                          /* frame left edge: none */

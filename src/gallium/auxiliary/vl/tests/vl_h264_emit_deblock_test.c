@@ -133,6 +133,7 @@ struct mb_spec {
    bool per_block_mv;      /* distinct vector per block: strength 1 vs 0 edges */
    bool disable;           /* disable_deblock_idc == 1: skip the macroblock */
    bool intra;             /* no list reference: internal edges 3, boundary 4 */
+   bool transform8x8;      /* 8x8 transform: interior edges 4 and 12 not filtered */
 };
 
 static bool
@@ -156,6 +157,7 @@ run_frame(struct vl_h264_emit *emit, struct pipe_context *ctx,
       contract[m].slice_type = VL_H264_SLICE_P;
       contract[m].qp_y = mbs[m].qp;
       contract[m].disable_deblock_idc = mbs[m].disable ? 1 : 0;
+      contract[m].transform_8x8 = mbs[m].transform8x8 ? 1 : 0;
       for (int i = 0; i < 16; ++i) {
          /* A per-block walk that crosses the four-quarter-pel full-sample
           * threshold so adjacent blocks alternate between strength-1 and
@@ -331,11 +333,27 @@ main(void)
    pass = run_frame(emit, ctx, screen, "intra_quad_strong_boundary", intra_pic, 2,
                     2, intra_quad, 4) && pass;
 
+   /* All-intra 2x2 frame on the 8x8 transform: the interior 4x4 edges at offsets
+    * 4 and 12 lie inside an 8x8 transform block and are skipped, so only the 8x8
+    * block edge at 8 (strength 3) and the macroblock boundaries (strength 4,
+    * strong) are filtered.  A model that filtered 4 and 12 would diverge here. */
+   int *intra8x8_pic = malloc((size_t)qw * qh * sizeof(int));
+   fill_blocky(intra8x8_pic, qw, qh, 0, 0);
+   const struct mb_spec intra8x8[] = {
+      {0, 0, 40, false, false, false, true, true},
+      {1, 0, 40, false, false, false, true, true},
+      {0, 1, 40, false, false, false, true, true},
+      {1, 1, 40, false, false, false, true, true},
+   };
+   pass = run_frame(emit, ctx, screen, "intra_quad_8x8_edge_skip", intra8x8_pic, 2,
+                    2, intra8x8, 4) && pass;
+
    vl_h264_emit_destroy(emit);
    free(blocky);
    free(stepped);
    free(quad_pic);
    free(intra_pic);
+   free(intra8x8_pic);
    ctx->destroy(ctx);
    screen->destroy(screen);
    winsys->destroy(winsys);
