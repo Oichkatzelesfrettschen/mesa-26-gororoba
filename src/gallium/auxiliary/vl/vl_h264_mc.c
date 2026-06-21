@@ -59,38 +59,55 @@ halfpel_filter(struct vl_nir_fs *fs, nir_def *base, nir_def *step_vec)
    return nir_replicate(b, clipped, 4);
 }
 
-/* Position b: the six taps walk the horizontal texel step (.z); the vertical
- * lane of the stride is zero so every tap stays on the fragment's own row. */
+/* The sample base is texcoord.xy; the per-tap stride is the horizontal texel
+ * step (.z) for position b and the vertical step (.w) for position h, with the
+ * other lane zero so every tap stays on the fragment's own row or column. */
+static nir_def *
+build_halfpel_color(struct vl_nir_fs *fs, bool horizontal)
+{
+   nir_builder *b = &fs->b;
+   nir_def *tc = fs->texcoord[0];
+   nir_def *base = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
+   nir_def *step_vec = horizontal
+      ? nir_vec2(b, nir_channel(b, tc, 2), nir_imm_float(b, 0.0f))
+      : nir_vec2(b, nir_imm_float(b, 0.0f), nir_channel(b, tc, 3));
+   return halfpel_filter(fs, base, step_vec);
+}
+
 void *
 vl_h264_mc_create_halfpel_h_fs(struct pipe_context *pipe)
 {
    struct vl_nir_fs fs;
    vl_nir_fs_begin(&fs, pipe, 1, "vl:h264_mc_halfpel_h_fs");
    vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
-   nir_builder *b = &fs.b;
-
-   nir_def *tc = fs.texcoord[0];
-   nir_def *base = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
-   nir_def *step_vec =
-      nir_vec2(b, nir_channel(b, tc, 2), nir_imm_float(b, 0.0f));
-
-   return vl_nir_fs_finish(&fs, pipe, halfpel_filter(&fs, base, step_vec));
+   return vl_nir_fs_finish(&fs, pipe, build_halfpel_color(&fs, true));
 }
 
-/* Position h: the six taps walk the vertical texel step (.w); the horizontal
- * lane of the stride is zero so every tap stays on the fragment's own column. */
 void *
 vl_h264_mc_create_halfpel_v_fs(struct pipe_context *pipe)
 {
    struct vl_nir_fs fs;
    vl_nir_fs_begin(&fs, pipe, 1, "vl:h264_mc_halfpel_v_fs");
    vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
-   nir_builder *b = &fs.b;
+   return vl_nir_fs_finish(&fs, pipe, build_halfpel_color(&fs, false));
+}
 
-   nir_def *tc = fs.texcoord[0];
-   nir_def *base = nir_vec2(b, nir_channel(b, tc, 0), nir_channel(b, tc, 1));
-   nir_def *step_vec =
-      nir_vec2(b, nir_imm_float(b, 0.0f), nir_channel(b, tc, 3));
+/* NIR-only entry points for the r300 compile-budget gate: the same half-pel
+ * kernels built with explicit options and no live screen. */
+nir_shader *
+vl_h264_mc_halfpel_h_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 1, "vl:h264_mc_halfpel_h_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_halfpel_color(&fs, true));
+}
 
-   return vl_nir_fs_finish(&fs, pipe, halfpel_filter(&fs, base, step_vec));
+nir_shader *
+vl_h264_mc_halfpel_v_nir(const nir_shader_compiler_options *options)
+{
+   struct vl_nir_fs fs;
+   vl_nir_fs_begin_opts(&fs, options, 1, "vl:h264_mc_halfpel_v_fs");
+   vl_nir_sampler(&fs, 0, GLSL_SAMPLER_DIM_2D);
+   return vl_nir_fs_finish_nir(&fs, build_halfpel_color(&fs, false));
 }

@@ -65,11 +65,10 @@ vl_nir_vs_passthrough(struct pipe_context *pipe, unsigned num_tc,
 }
 
 void
-vl_nir_fs_begin(struct vl_nir_fs *fs, struct pipe_context *pipe,
-                unsigned num_tc, const char *name)
+vl_nir_fs_begin_opts(struct vl_nir_fs *fs,
+                     const nir_shader_compiler_options *options,
+                     unsigned num_tc, const char *name)
 {
-   const nir_shader_compiler_options *options =
-      pipe->screen->nir_options[MESA_SHADER_FRAGMENT];
    fs->b =
       nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, options, "%s", name);
    nir_builder *b = &fs->b;
@@ -84,6 +83,14 @@ vl_nir_fs_begin(struct vl_nir_fs *fs, struct pipe_context *pipe,
    fs->out_color = nir_variable_create(b->shader, nir_var_shader_out,
                                        glsl_vec4_type(), "color");
    fs->out_color->data.location = FRAG_RESULT_COLOR;
+}
+
+void
+vl_nir_fs_begin(struct vl_nir_fs *fs, struct pipe_context *pipe,
+                unsigned num_tc, const char *name)
+{
+   vl_nir_fs_begin_opts(fs, pipe->screen->nir_options[MESA_SHADER_FRAGMENT],
+                        num_tc, name);
 }
 
 void
@@ -106,9 +113,8 @@ vl_nir_tex(struct vl_nir_fs *fs, unsigned s, nir_def *coord)
                   .texture_deref = fs->samp[s], .sampler_deref = fs->samp[s]);
 }
 
-void *
-vl_nir_fs_finish(struct vl_nir_fs *fs, struct pipe_context *pipe,
-                 nir_def *color)
+nir_shader *
+vl_nir_fs_finish_nir(struct vl_nir_fs *fs, nir_def *color)
 {
    nir_store_var(&fs->b, fs->out_color, color, 0xf);
    /* Lower deref-combined samplers to indexed tex.  vl_nir_sampler marks
@@ -119,11 +125,19 @@ vl_nir_fs_finish(struct vl_nir_fs *fs, struct pipe_context *pipe,
    nir_shader_gather_info(fs->b.shader, nir_shader_get_entrypoint(fs->b.shader));
    nir_assign_io_var_locations(fs->b.shader, nir_var_shader_in);
    nir_assign_io_var_locations(fs->b.shader, nir_var_shader_out);
+   return fs->b.shader;
+}
+
+void *
+vl_nir_fs_finish(struct vl_nir_fs *fs, struct pipe_context *pipe,
+                 nir_def *color)
+{
+   nir_shader *shader = vl_nir_fs_finish_nir(fs, color);
    if (pipe->screen->finalize_nir)
-      pipe->screen->finalize_nir(pipe->screen, fs->b.shader, true);
+      pipe->screen->finalize_nir(pipe->screen, shader, true);
 
    struct pipe_shader_state state = {0};
    state.type = PIPE_SHADER_IR_NIR;
-   state.ir.nir = fs->b.shader;
+   state.ir.nir = shader;
    return pipe->create_fs_state(pipe, &state);
 }

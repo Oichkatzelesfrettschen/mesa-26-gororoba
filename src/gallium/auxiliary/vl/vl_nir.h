@@ -49,6 +49,14 @@ void *vl_nir_vs_finish(nir_builder *b, struct pipe_context *pipe);
 void vl_nir_fs_begin(struct vl_nir_fs *fs, struct pipe_context *pipe,
                      unsigned num_tc, const char *name);
 
+/* Same as vl_nir_fs_begin but takes the NIR options directly instead of reading
+ * them from a pipe context, so a fragment kernel can be built with no live
+ * driver: the r300 compile-budget gate builds the back-half kernels this way and
+ * runs them through nir_to_rc against a stack-allocated screen. */
+void vl_nir_fs_begin_opts(struct vl_nir_fs *fs,
+                          const nir_shader_compiler_options *options,
+                          unsigned num_tc, const char *name);
+
 /* Declare a combined sampler at binding s with dimensionality dim
  * (GLSL_SAMPLER_DIM_2D, _3D, ...); the deref is stored in fs->samp[s] and
  * shader info records the matching texture/sampler binding. */
@@ -63,6 +71,12 @@ nir_def *vl_nir_tex(struct vl_nir_fs *fs, unsigned s, nir_def *coord);
  * the driver shader handle. */
 void *vl_nir_fs_finish(struct vl_nir_fs *fs, struct pipe_context *pipe,
                        nir_def *color);
+
+/* Store color, lower samplers, gather info, and assign IO locations, returning
+ * the finalized nir_shader without finalize_nir or create_fs_state (both of
+ * which need a live screen).  vl_nir_fs_finish wraps this for the live path; the
+ * compile-budget gate consumes the raw shader. */
+nir_shader *vl_nir_fs_finish_nir(struct vl_nir_fs *fs, nir_def *color);
 
 #ifdef __cplusplus
 }
