@@ -95,7 +95,11 @@ gallium-va = 'enabled'
 # path.  Built into libxatracker.so.
 gallium-xa = true
 
-vulkan-layers = []
+# Mesa overlay (on-screen HUD) and device-select layers, matching the debug
+# 2_r300 lane.  device-select is the implicit layer that vulkan-mesa-implicit-layers
+# ships and that lib32-vulkan-mesa-implicit-layers depends on by name, so the
+# release package owns and provides that slot the same way the debug build does.
+vulkan-layers = ['overlay', 'device-select']
 perfetto = false
 valgrind = 'disabled'
 libunwind = 'disabled'
