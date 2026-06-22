@@ -338,31 +338,6 @@ lower_alu_instr(nir_builder *b, nir_alu_instr *alu)
    case nir_op_i32csel_gt:
       alu->op = nir_op_fcsel_gt;
       break;
-   case nir_op_ishl: {
-      /* x << y  ==  x * 2^y.  Exact while the result stays within the float
-       * mantissa, which covers the small constant-buffer indices that reach a
-       * float-only path (e.g. the byte offset i*stride that nir_lower_ubo_vec4
-       * feeds for a dynamically indexed UBO).  Without this the op trips the
-       * int/uint assert below. */
-      nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
-      nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
-      rep = nir_fmul(b, x, nir_fexp2(b, y));
-      break;
-   }
-
-   case nir_op_ushr: {
-      /* x >> y  ==  trunc(x * 2^-y) for non-negative x.  This is the byte->vec4
-       * index divide (ushr by 4) nir_lower_ubo_vec4 emits for a dynamically
-       * indexed UBO; the float-only SW-TCL vertex path needs it to address the
-       * constant file by a runtime index.  ftrunc (not ffloor) is used so the
-       * r300 fragment path's nir_to_rc, which lowers ftrunc but not ffloor, can
-       * still consume the result; trunc equals floor for non-negative x. */
-      nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
-      nir_def *y = nir_ssa_for_alu_src(b, alu, 1);
-      rep = nir_ftrunc(b, nir_fmul(b, x, nir_fexp2(b, nir_fneg(b, y))));
-      break;
-   }
-
    case nir_op_i32csel_ge:
       alu->op = nir_op_fcsel_ge;
       break;
