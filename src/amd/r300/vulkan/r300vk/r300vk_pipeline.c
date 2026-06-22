@@ -1138,24 +1138,19 @@ r300vk_compile_shader(struct r300vk_device *device,
     * block index to a literal 0 for ntr_emit_load_ubo's index-0 assert. */
    r300vk_nir_remap_single_ubo_to_index0(nir);
 
-   /* Reject a dynamic UBO offset (ubo.arr[i], a runtime-indexed member) for the
-    * FRAGMENT stage only.  The fragment shader is compiled by nir_to_rc onto the
-    * R300 PFS, whose constant file (PFS_PARAM) has no relative address-register
-    * addressing, so a runtime load_ubo_vec4 offset cannot be emitted there.  The
-    * vertex shader runs on the SW-TCL draw module (nir_to_tgsi -> tgsi_exec),
-    * which addresses the constant file by a plain CPU array index, so a dynamic
-    * UBO offset is representable for the VS.  This is what lets vkcube run: it
-    * stores its geometry in the UBO and reads ubuf.position[gl_VertexIndex], a
-    * runtime offset the SW-TCL vertex path can serve.  (The dynamic-UBO-index
-    * reject above still gates which UBO is selected at runtime.) */
-   if (stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
-       !r300vk_nir_offsets_static(device->screen, nir,
+   /* Reject a dynamic UBO offset (ubo.arr[i], a runtime-indexed member) the same
+    * way push constants are gated: r300's static vec4-slot constant file cannot
+    * address load_ubo_vec4's src[1] offset at runtime.  Complements the
+    * dynamic-UBO-index reject above -- the index selects which UBO, the offset
+    * selects where within it; r300 can represent neither dynamically. */
+   if (!r300vk_nir_offsets_static(device->screen, nir,
                                   nir_intrinsic_load_ubo_vec4, 1, false)) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: fragment shader uses a dynamic uniform-buffer "
-                       "offset; the R300 PFS constant file has no relative "
-                       "addressing");
+                       "r300vk: %s shader uses a dynamic uniform-buffer offset; "
+                       "r300's constant file is addressed by a static vec4 slot",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
    }
 
    /* vk_spirv_to_nir sets data.location for VS inputs (VERT_ATTRIB_GENERIC0+n)
