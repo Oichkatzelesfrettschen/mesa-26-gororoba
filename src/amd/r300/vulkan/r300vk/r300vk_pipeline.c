@@ -1138,12 +1138,14 @@ r300vk_compile_shader(struct r300vk_device *device,
     * block index to a literal 0 for ntr_emit_load_ubo's index-0 assert. */
    r300vk_nir_remap_single_ubo_to_index0(nir);
 
-   /* Reject a dynamic UBO offset (ubo.arr[i], a runtime-indexed member) the same
-    * way push constants are gated: r300's static vec4-slot constant file cannot
-    * address load_ubo_vec4's src[1] offset at runtime.  Complements the
-    * dynamic-UBO-index reject above -- the index selects which UBO, the offset
-    * selects where within it; r300 can represent neither dynamically. */
-   if (!r300vk_nir_offsets_static(device->screen, nir,
+   /* Reject a dynamic UBO offset for the FRAGMENT stage only.  The PFS constant
+    * file is addressed by a static vec4 slot with no relative addressing, so a
+    * runtime load_ubo_vec4 offset cannot be emitted there.  The vertex shader
+    * runs on the SW-TCL draw module (tgsi_exec), which the r300 screen now
+    * advertises as integer- and indirect-const-capable, so a runtime UBO offset
+    * (ubuf.arr[gl_VertexIndex]) is representable for the vertex stage. */
+   if (stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
+       !r300vk_nir_offsets_static(device->screen, nir,
                                   nir_intrinsic_load_ubo_vec4, 1, false)) {
       ralloc_free(nir);
       return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,

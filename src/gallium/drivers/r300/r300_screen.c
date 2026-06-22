@@ -450,10 +450,14 @@ static void r300_init_shader_caps(struct r300_screen* r300screen)
       caps->subroutines = false;
       caps->max_shader_buffers = 0;
       caps->max_shader_images = 0;
-      /* mesa/st requires that this cap is the same across stages, and the FS
-       * can't do ints.
-       */
-      caps->integers = false;
+      /* SW-TCL runs the vertex shader on the draw module's tgsi_exec, a CPU
+       * interpreter that executes native integer ops and relative constant
+       * addressing.  Expose both for the vertex stage so a shader that indexes a
+       * UBO by a runtime value (e.g. ubuf.arr[gl_VertexIndex]) compiles instead
+       * of tripping nir_lower_int_to_float on the integer address math.  The
+       * fragment stage keeps integers off -- the PFS is float-only. */
+      caps->integers = true;
+      caps->indirect_const_addr = true;
       /* Even if gallivm NIR can do this, right now it calls nir_to_tgsi
        * manually and TGSI can't.
        */
