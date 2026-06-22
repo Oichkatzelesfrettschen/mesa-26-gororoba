@@ -1351,28 +1351,23 @@ struct r300vk_bound_textures {
    unsigned                  count;
 };
 
+/* Build a combined-image-sampler view over a specific backing resource using the
+ * descriptor's format, swizzle, mip range, and sampler CSO.  The single-resource
+ * bind passes the whole-image resource; the tile-stitch path passes one tile
+ * resource of a split image.  Built as PIPE_TEXTURE_2D, so only a plain 2D view
+ * is correct. */
 static struct pipe_sampler_view *
-r300vk_create_descriptor_sampler_view(struct pipe_context *pipe,
-                                      const struct r300vk_descriptor *desc,
-                                      void **sampler_state)
+r300vk_create_resource_sampler_view(struct pipe_context *pipe,
+                                    const struct r300vk_descriptor *desc,
+                                    struct pipe_resource *res,
+                                    void **sampler_state)
 {
    *sampler_state = NULL;
-   if (desc->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+   if (desc->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || !res)
       return NULL;
 
    VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
-   if (!iv || !iv->vk.image)
-      return NULL;
-
-   /* The sampler view below is built as PIPE_TEXTURE_2D, so only a plain 2D
-    * view is correct here.  A cube / array / 1D view would alias the wrong
-    * target; leave it unbound rather than sample the wrong texels. */
-   if (iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
-      return NULL;
-
-   struct r300vk_image *img =
-      container_of(iv->vk.image, struct r300vk_image, vk);
-   if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
+   if (!iv || !iv->vk.image || iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
       return NULL;
 
    struct vk_sampler *vks = vk_sampler_from_handle(desc->img.sampler);
@@ -1397,10 +1392,92 @@ r300vk_create_descriptor_sampler_view(struct pipe_context *pipe,
    sv_templ.u.tex.last_level  = iv->vk.base_mip_level + iv->vk.level_count - 1;
 
    struct pipe_sampler_view *view =
-      pipe->create_sampler_view(pipe, img->resource, &sv_templ);
+      pipe->create_sampler_view(pipe, res, &sv_templ);
    if (view)
       *sampler_state = samp_cso;
    return view;
+}
+
+/* The single-resource path samples the whole image (tile 0).  A split image
+ * (tile_cols/tile_rows > 1) wraps past the 2048 sampler cap as one resource and
+ * gives wrong texels outside one tile, so it is left unbound here unless the
+ * experimental tile-stitch path handles it per tile. */
+static struct pipe_sampler_view *
+r300vk_create_descriptor_sampler_view(struct pipe_context *pipe,
+                                      const struct r300vk_descriptor *desc,
+                                      void **sampler_state)
+{
+   *sampler_state = NULL;
+   if (desc->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+      return NULL;
+   VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
+   if (!iv || !iv->vk.image)
+      return NULL;
+   struct r300vk_image *img =
+      container_of(iv->vk.image, struct r300vk_image, vk);
+   if (img->tile_cols > 1 || img->tile_rows > 1 || !img->resource)
+      return NULL;
+   return r300vk_create_resource_sampler_view(pipe, desc, img->resource,
+                                              sampler_state);
+}
+
+/* Bind the four tile views of a stitched combined-image-sampler to base_unit+0..3
+ * and write the per-image affine/split geometry the NIR stitch pass reads from
+ * CONST[0]: cu = {W/w0, W/w1, -w0/w1, w0/W}, cv likewise for the rows.  A single-
+ * tile or single-axis image fills the missing tiles with the nearest existing
+ * tile and sets that axis' threshold to 2.0 so the select collapses to it. */
+static void
+r300vk_stitch_bind_one(struct pipe_context *pipe,
+                       const struct r300vk_descriptor *desc, unsigned base_unit,
+                       struct pipe_sampler_view **views, void **sampler_states,
+                       unsigned *max_unit_plus_one,
+                       struct r300vk_bound_textures *bound, float geom[8])
+{
+   VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
+   struct r300vk_image *img =
+      (iv && iv->vk.image) ? container_of(iv->vk.image, struct r300vk_image, vk)
+                           : NULL;
+   if (!img || !img->tile_cols || !img->tile_rows)
+      return;
+
+   const unsigned cols = img->tile_cols, rows = img->tile_rows;
+   const float w0 = (float)img->tile_width[0];
+   const float w1 = (cols > 1) ? (float)img->tile_width[1] : 0.0f;
+   const float h0 = (float)img->tile_height[0];
+   const float h1 = (rows > 1) ? (float)img->tile_height[1] : 0.0f;
+   const float W = w0 + w1, H = h0 + h1;
+   geom[0] = W / w0;
+   geom[1] = (cols > 1) ? W / w1 : 1.0f;
+   geom[2] = (cols > 1) ? -(w0 / w1) : 0.0f;
+   geom[3] = (cols > 1) ? (w0 / W) : 2.0f;
+   geom[4] = H / h0;
+   geom[5] = (rows > 1) ? H / h1 : 1.0f;
+   geom[6] = (rows > 1) ? -(h0 / h1) : 0.0f;
+   geom[7] = (rows > 1) ? (h0 / H) : 2.0f;
+
+   for (unsigned ti = 0; ti < R300VK_NEAREST_STITCH_TILE_UNITS; ti++) {
+      const unsigned unit = base_unit + ti;
+      if (unit >= R300VK_MAX_FS_SAMPLER_UNITS ||
+          bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
+         break;
+      const unsigned trow = MIN2(ti / 2, rows - 1);
+      const unsigned tcol = MIN2(ti % 2, cols - 1);
+      struct pipe_resource *res = img->tiles[trow * cols + tcol];
+      void *samp_cso = NULL;
+      struct pipe_sampler_view *view =
+         r300vk_create_resource_sampler_view(pipe, desc, res, &samp_cso);
+      if (!view || views[unit]) {
+         if (view)
+            pipe_sampler_view_reference(&view, NULL);
+         continue;
+      }
+      sampler_states[unit] = samp_cso;
+      views[unit] = view;
+      *max_unit_plus_one = MAX2(*max_unit_plus_one, unit + 1);
+      bound->units[bound->count] = unit;
+      bound->views[bound->count] = view;
+      bound->count++;
+   }
 }
 
 /* Bind every fragment combined-image-sampler in descriptor set 0 to its Gallium
@@ -1428,7 +1505,8 @@ static void
 r300vk_bind_descriptor_textures(struct r300vk_device *device,
                                 const struct r300vk_pipeline *pipeline,
                                 const struct r300vk_cmd_bind_descriptor_sets *binds,
-                                struct r300vk_bound_textures *bound)
+                                struct r300vk_bound_textures *bound,
+                                float *stitch_geom)
 {
    struct pipe_context *pipe = device->pipe;
    bound->count = 0;
@@ -1438,6 +1516,7 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
    void *sampler_states[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
    struct pipe_sampler_view *views[R300VK_MAX_FS_SAMPLER_UNITS] = {0};
    unsigned max_unit_plus_one = 0;
+   bool stitched = false;
 
    for (uint32_t s = 0; s < binds->set_count; s++) {
       const uint32_t descriptor_set = binds->first_set + s;
@@ -1463,6 +1542,18 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
          }
          if (base_unit < 0)
             continue;
+
+         /* Under the stitch gate this sampler reserved a 2x2 tile-unit grid; bind
+          * the four tile views and fill the per-image geometry rather than one
+          * whole-image view (which would wrap past the 2048 sampler cap). */
+         if (pipeline->fs_nearest_stitch && stitch_geom) {
+            r300vk_stitch_bind_one(pipe, &set->descriptors[bnd->offset], base_unit,
+                                   views, sampler_states, &max_unit_plus_one,
+                                   bound, stitch_geom);
+            stitched = true;
+            continue;
+         }
+
          const uint32_t count =
             MIN2(bnd->count, R300VK_MAX_FS_SAMPLER_UNITS - base_unit);
          for (uint32_t elem = 0; elem < count; elem++) {
@@ -1499,6 +1590,17 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
                                 max_unit_plus_one, sampler_states);
       pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, max_unit_plus_one,
                               0, views);
+   }
+
+   /* Bind the per-image tile geometry the NIR stitch pass reads from fragment
+    * CONST[0].  The stitch + UBO/push/subpass collision is rejected at create, so
+    * CONST[0] is free; stitch_geom outlives the draw_vbo in the caller's frame. */
+   if (stitched) {
+      struct pipe_constant_buffer cb;
+      memset(&cb, 0, sizeof(cb));
+      cb.user_buffer = stitch_geom;
+      cb.buffer_size = R300VK_NEAREST_STITCH_CONST_VEC4S * 16;
+      pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
    }
 }
 
@@ -2138,10 +2240,14 @@ r300vk_replay_draw(struct r300vk_device *device,
 
       /* Bind fragment textures for this draw, then release them after: the
        * sampler views are transient (created over the descriptor's image at
-       * draw time), so they must not outlive the draw that referenced them. */
+       * draw time), so they must not outlive the draw that referenced them.
+       * stitch_geom holds the per-image tile geometry a stitched sampler binds to
+       * FS CONST[0]; it lives in this frame, valid through the draw_vbo below (the
+       * same user_buffer lifetime contract as ia_inv_extent). */
       struct r300vk_bound_textures bound_tex;
+      float stitch_geom[8] = {0};
       r300vk_bind_descriptor_textures(device, bound_pipeline, last_bind_dsets,
-                                      &bound_tex);
+                                      &bound_tex, stitch_geom);
 
       /* Input attachment: override FS CONST[0] with inv_extent and bind the
        * subpass color image.  Done after r300vk_bind_descriptor_textures so
