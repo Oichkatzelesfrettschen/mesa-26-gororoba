@@ -43,6 +43,10 @@ vl_h264_replay_decode_slice(struct vl_h264_vld_provider *provider,
    (void) nal;
    (void) nal_size;
 
+   /* The provider owns the slice type: carry it from the serialized contract so
+    * the frame records P/I rather than the picture's profile. */
+   out->slice_type = priv->slice.slice_type;
+
    /* Copy the replayed macroblocks into the frame contract at their raster
     * index, ignoring any that fall outside the frame the decoder sized. */
    count = priv->slice.num_macroblocks;

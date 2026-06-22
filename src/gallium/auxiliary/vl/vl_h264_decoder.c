@@ -40,16 +40,16 @@ vl_h264_begin_frame(struct pipe_video_codec *codec,
                     struct pipe_picture_desc *picture)
 {
    struct vl_h264_decoder *dec = (struct vl_h264_decoder *)codec;
-   const struct pipe_h264_picture_desc *h264 =
-      (const struct pipe_h264_picture_desc *)picture;
 
    (void) target;
+   (void) picture;
 
    /* Clear the per-frame contract; the provider repopulates the macroblocks it
-    * decodes, leaving skipped macroblocks zeroed. */
+    * decodes, leaving skipped macroblocks zeroed.  The slice type is the
+    * provider's to set from the slice header (the replay provider from the
+    * serialized contract), not the picture's profile. */
    memset(dec->frame.macroblocks, 0,
           dec->frame.num_macroblocks * sizeof(*dec->frame.macroblocks));
-   dec->frame.slice_type = h264->base.profile;
 }
 
 static void
