@@ -607,6 +607,117 @@ r300vk_nir_remap_sampler_units(nir_shader *nir, const struct r300vk_pipeline *pl
    }
 }
 
+/* One per-tile NEAREST fetch for the stitch expansion: sample the tile sampler
+ * at unit base_unit+tile_index at a local coordinate, cloning the source tex's
+ * sampler dimension and result type.  The tile sampler variables are created
+ * once per function and cached in tile_var. */
+static nir_def *
+r300vk_stitch_tile_sample(nir_builder *b, nir_shader *nir,
+                          nir_variable **tile_var, uint32_t base_unit,
+                          unsigned tile_index, const nir_tex_instr *src,
+                          nir_def *coord)
+{
+   static const char *const tile_names[R300VK_NEAREST_STITCH_TILE_UNITS] = {
+      "r300vk_stitch_t00", "r300vk_stitch_t10",
+      "r300vk_stitch_t01", "r300vk_stitch_t11",
+   };
+   if (!tile_var[tile_index]) {
+      nir_variable *v = nir_variable_create(
+         nir, nir_var_uniform,
+         glsl_sampler_type(src->sampler_dim, false, false, GLSL_TYPE_FLOAT),
+         tile_names[tile_index]);
+      v->data.binding = base_unit + tile_index;
+      v->data.descriptor_set = 0;
+      tile_var[tile_index] = v;
+   }
+   nir_deref_instr *deref = nir_build_deref_var(b, tile_var[tile_index]);
+   nir_tex_instr *tex = nir_tex_instr_create(nir, 3);
+   tex->op = nir_texop_tex;
+   tex->sampler_dim = src->sampler_dim;
+   tex->coord_components = 2;
+   tex->is_array = false;
+   tex->is_shadow = false;
+   tex->dest_type = src->dest_type;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_texture_deref, &deref->def);
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_sampler_deref, &deref->def);
+   tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
+   nir_def_init(&tex->instr, &tex->def, nir_tex_instr_dest_size(tex),
+                src->def.bit_size);
+   nir_builder_instr_insert(b, &tex->instr);
+   return &tex->def;
+}
+
+/* Expand each fragment combined-image-sampler texture() into r300's tiled
+ * sampler form under the experimental NEAREST-stitch gate: four per-tile NEAREST
+ * fetches at piecewise-affine local coordinates plus a branchless tile select.
+ * Two block-0 CONST vec4s carry the per-image geometry the replay uploads --
+ * cu = {scale_u0, scale_u1, bias_u1, sx}, cv = {scale_v0, scale_v1, bias_v1, sy}
+ * -- so a column-0 sample is u*scale_u0 and a column-1 sample is u*scale_u1+bias_u1,
+ * and the select picks the tile whose threshold the coordinate crosses.  For a
+ * single-tile image the thresholds are 2.0, so right/bottom are always false and
+ * the expansion collapses to tile 0.  Phase 1 stitches one sampler at base_unit
+ * with its geometry at const_byte_offset. */
+static bool
+r300vk_nir_stitch_samplers(nir_shader *nir, uint32_t base_unit,
+                           unsigned const_byte_offset)
+{
+   bool progress = false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_variable *tile_var[R300VK_NEAREST_STITCH_TILE_UNITS] = {0};
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block_safe(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+               continue;
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            if (tex->op != nir_texop_tex || tex->coord_components != 2)
+               continue;
+            const int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+            if (ci < 0)
+               continue;
+            nir_def *coord = tex->src[ci].src.ssa;
+
+            b.cursor = nir_after_instr(instr);
+            nir_def *cu = nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0),
+                                       nir_imm_int(&b, const_byte_offset),
+                                       .align_mul = 16,
+                                       .range_base = const_byte_offset, .range = 32);
+            nir_def *cv = nir_load_ubo(&b, 4, 32, nir_imm_int(&b, 0),
+                                       nir_imm_int(&b, const_byte_offset + 16),
+                                       .align_mul = 16,
+                                       .range_base = const_byte_offset, .range = 32);
+            nir_def *u = nir_channel(&b, coord, 0);
+            nir_def *v = nir_channel(&b, coord, 1);
+            nir_def *uc[2] = {
+               nir_fmul(&b, u, nir_channel(&b, cu, 0)),
+               nir_ffma(&b, u, nir_channel(&b, cu, 1), nir_channel(&b, cu, 2)),
+            };
+            nir_def *vc[2] = {
+               nir_fmul(&b, v, nir_channel(&b, cv, 0)),
+               nir_ffma(&b, v, nir_channel(&b, cv, 1), nir_channel(&b, cv, 2)),
+            };
+            nir_def *s[R300VK_NEAREST_STITCH_TILE_UNITS];
+            for (unsigned row = 0; row < 2; row++)
+               for (unsigned col = 0; col < 2; col++) {
+                  nir_def *tc = nir_vec2(&b, uc[col], vc[row]);
+                  s[row * 2 + col] = r300vk_stitch_tile_sample(
+                     &b, nir, tile_var, base_unit, row * 2 + col, tex, tc);
+               }
+            nir_def *right  = nir_fge(&b, u, nir_channel(&b, cu, 3));
+            nir_def *bottom = nir_fge(&b, v, nir_channel(&b, cv, 3));
+            nir_def *top = nir_bcsel(&b, right, s[1], s[0]);
+            nir_def *bot = nir_bcsel(&b, right, s[3], s[2]);
+            nir_def *res = nir_bcsel(&b, bottom, bot, top);
+            nir_def_rewrite_uses(&tex->def, res);
+            nir_instr_remove(instr);
+            progress = true;
+         }
+      }
+      nir_progress(progress, impl, nir_metadata_control_flow);
+   }
+   return progress;
+}
+
 static const struct glsl_type *
 r300vk_block0_ubo_type(unsigned size_bytes)
 {
@@ -963,6 +1074,17 @@ r300vk_compile_shader(struct r300vk_device *device,
     * time, so a layout that overflows the units is already rejected there. */
    if (stage_had_texture)
       r300vk_nir_remap_sampler_units(nir, pl);
+
+   /* Experimental NEAREST tile-stitch: expand each fragment texture() into the
+    * tiled-sampler form so a >2048 (multi-tile) sampled image samples the correct
+    * tile instead of only the first.  Phase 1 wires one stitched sampler at unit 0
+    * with its per-image affine/split geometry in the first two block-0 CONST vec4s
+    * (declared here so externals_count covers them); the replay binds the four
+    * tile views and uploads the geometry.  Off unless the gate is set. */
+   if (stage_had_texture && r300vk_experimental_nearest_stitch_enabled()) {
+      if (r300vk_nir_stitch_samplers(nir, 0, 0))
+         r300vk_declare_block0_ubo(nir, R300VK_NEAREST_STITCH_CONST_VEC4S * 16);
+   }
 
    bool stage_has_input = false;
    uint32_t stage_input_set = 0;
