@@ -688,13 +688,17 @@ r300vk_nir_stitch_samplers(nir_shader *nir, uint32_t base_unit,
                                        .range_base = const_byte_offset, .range = 32);
             nir_def *u = nir_channel(&b, coord, 0);
             nir_def *v = nir_channel(&b, coord, 1);
+            /* r300's nir_to_rc has no ffma opcode (it fuses fmul+fadd into a MAD
+             * itself), so emit the multiply and add separately. */
             nir_def *uc[2] = {
                nir_fmul(&b, u, nir_channel(&b, cu, 0)),
-               nir_ffma(&b, u, nir_channel(&b, cu, 1), nir_channel(&b, cu, 2)),
+               nir_fadd(&b, nir_fmul(&b, u, nir_channel(&b, cu, 1)),
+                        nir_channel(&b, cu, 2)),
             };
             nir_def *vc[2] = {
                nir_fmul(&b, v, nir_channel(&b, cv, 0)),
-               nir_ffma(&b, v, nir_channel(&b, cv, 1), nir_channel(&b, cv, 2)),
+               nir_fadd(&b, nir_fmul(&b, v, nir_channel(&b, cv, 1)),
+                        nir_channel(&b, cv, 2)),
             };
             nir_def *s[R300VK_NEAREST_STITCH_TILE_UNITS];
             for (unsigned row = 0; row < 2; row++)
