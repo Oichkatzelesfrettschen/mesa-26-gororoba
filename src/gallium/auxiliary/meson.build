@@ -417,6 +417,8 @@ files_libgalliumvl = files(
   'vl/vl_nir.c',
   'vl/vl_nir.h',
   'vl/vl_h264_mb_contract.h',
+  'vl/vl_h264_bitstream.c',
+  'vl/vl_h264_bitstream.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -577,6 +579,21 @@ if with_tests
     ),
     args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
                        'h264_contract_golden.bin')],
+    suite: 'gallium',
+  )
+
+  # The CAVLC bitstream reader only depends on vl_vlc and util, so compile it
+  # straight into its unit test.  The test builds its Exp-Golomb vectors with an
+  # independent bit writer and checks the de-escape and rbsp end test, so it
+  # needs no fixture argument.
+  test('vl-h264-bitstream',
+    executable(
+      'vl_h264_bitstream_test',
+      ['vl/vl_h264_bitstream.c', 'vl/tests/vl_h264_bitstream_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
     suite: 'gallium',
   )
 endif
