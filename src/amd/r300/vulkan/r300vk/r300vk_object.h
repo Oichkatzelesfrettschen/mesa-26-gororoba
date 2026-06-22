@@ -71,6 +71,12 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_event, base, VkEvent,
 struct r300vk_sampler {
    struct vk_sampler vk;
    void             *pipe_cso;
+   /* The runtime vk_sampler drops the filter/mipmap/compare fields, so cache at
+    * create time whether this sampler is eligible for experimental NEAREST tile
+    * stitching: NEAREST mag/min/mip, CLAMP_TO_EDGE on every axis, normalized
+    * coordinates, and no compare.  A split (multi-tile) sampled image may only
+    * stitch through an eligible sampler. */
+   bool              nearest_stitch_eligible;
 };
 
 static inline struct r300vk_sampler *

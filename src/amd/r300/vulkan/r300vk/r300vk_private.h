@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,6 +89,27 @@ extern "C" {
  * pipeline (which flattens combined-image-sampler descriptors from every
  * descriptor set into this unit space) and the replay (which binds them). */
 #define R300VK_MAX_FS_SAMPLER_UNITS 16
+
+/* Experimental NEAREST tile-stitching.  r300 cannot address a texture wider or
+ * taller than the sampler cap (2048 on r300-class), so r300vk stores a larger
+ * logical image as a grid of up to 2x2 hardware tiles and normally refuses to
+ * bind such a split image as a sampled view.  Under this gate a logical sampled
+ * image is compiled into a static family of per-tile samplers plus a piecewise-
+ * affine coordinate transform: one texture() becomes up to four hardware fetches
+ * and a branchless tile select.  Exact ONLY for NEAREST / CLAMP_TO_EDGE /
+ * normalized-coordinate / 2D / single-mip / single-layer sampling; it makes no
+ * conformance claim and does not solve LINEAR seams, mip chains, wrap modes, or
+ * the texture-fetch precision the deqp texture-lookup tests check.  Off by
+ * default. */
+#define R300VK_NEAREST_STITCH_TILE_UNITS  4u  /* up to a 2x2 tile grid */
+#define R300VK_NEAREST_STITCH_CONST_VEC4S 2u  /* per-tile affine + split thresholds */
+
+static inline bool
+r300vk_experimental_nearest_stitch_enabled(void)
+{
+   const char *e = getenv("R300VK_EXPERIMENTAL_NEAREST_STITCH");
+   return e && e[0] == '1' && e[1] == '\0';
+}
 
 static inline bool
 r300vk_pci_device_id_is_supported(uint32_t pci_device_id)

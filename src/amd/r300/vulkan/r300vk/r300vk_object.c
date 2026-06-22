@@ -157,6 +157,22 @@ r300vk_CreateSampler(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
+   /* A split (multi-tile) sampled image may stitch only through a sampler whose
+    * footprint is a single point in one tile: NEAREST on every filter, every
+    * address mode CLAMP_TO_EDGE (out-of-tile samples clamp to the edge and are
+    * masked out by the tile select), normalized coordinates, and no compare.
+    * Anything else (LINEAR straddles the seam, REPEAT wraps across tiles) is left
+    * ineligible so the split-image bind keeps refusing it. */
+   sampler->nearest_stitch_eligible =
+      pCreateInfo->magFilter == VK_FILTER_NEAREST &&
+      pCreateInfo->minFilter == VK_FILTER_NEAREST &&
+      pCreateInfo->mipmapMode == VK_SAMPLER_MIPMAP_MODE_NEAREST &&
+      pCreateInfo->addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE &&
+      pCreateInfo->addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE &&
+      pCreateInfo->addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE &&
+      !pCreateInfo->unnormalizedCoordinates &&
+      !pCreateInfo->compareEnable;
+
    *pSampler = vk_sampler_to_handle(vks);
    return VK_SUCCESS;
 }
