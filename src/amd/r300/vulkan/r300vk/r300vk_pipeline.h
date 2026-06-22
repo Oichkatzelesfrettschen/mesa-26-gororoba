@@ -71,6 +71,23 @@ struct r300vk_pipeline {
    uint32_t                fs_input_attachment_set;
    uint32_t                fs_input_attachment_binding;
 
+   /* Flattens every combined-image-sampler in the pipeline layout into r300's one
+    * fragment texture-unit space.  nir_lower_samplers keys the Gallium unit on the
+    * sampler variable's binding (ignoring the descriptor set), and the replay binds
+    * each descriptor to a unit; without a shared map a sampler in set 1 and one in
+    * set 0 at the same binding would alias.  Units are assigned in (set, binding)
+    * order across the whole layout, so samplers in any descriptor set -- not just
+    * set 0 -- resolve to a distinct unit on both the compile and replay sides.
+    * r300vk_compile_shader rewrites each FS sampler's binding to fs_sampler_map[].unit
+    * before nir_lower_samplers; r300vk_bind_descriptor_textures looks up the same
+    * unit per (set, binding). */
+   struct {
+      uint16_t             set;
+      uint16_t             binding;
+      uint16_t             unit;
+   }                       fs_sampler_map[R300VK_MAX_FS_SAMPLER_UNITS];
+   uint16_t                fs_sampler_map_count;
+
    /* A compute pipeline created under the experimental hybrid-compute gate.
     * The no-op kernel carries no graphics CSOs; lowering the kernel onto the
     * compute-as-raster substrate is a later stage. */
