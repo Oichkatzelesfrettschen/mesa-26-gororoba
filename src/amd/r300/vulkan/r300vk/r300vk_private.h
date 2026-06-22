@@ -84,6 +84,11 @@ extern "C" {
 #define R300VK_FRAGMENT_EXEC_LOCUS "r300_rc_hardware_program"
 #define R300VK_MEMORY_MODEL_LABEL  "experimental_resource_backed"
 
+/* The number of fragment Gallium texture units r300 exposes.  Shared between the
+ * pipeline (which flattens combined-image-sampler descriptors from every
+ * descriptor set into this unit space) and the replay (which binds them). */
+#define R300VK_MAX_FS_SAMPLER_UNITS 16
+
 static inline bool
 r300vk_pci_device_id_is_supported(uint32_t pci_device_id)
 {

@@ -4,6 +4,7 @@
 
 #include "r300vk_pipeline.h"
 #include "r300vk_cmd_buffer.h"
+#include "r300vk_descriptor.h"
 #include "r300vk_format.h"
 #include "util/u_simple_shaders.h"
 #include "pipe/p_shader_tokens.h"
@@ -579,22 +580,31 @@ r300vk_nir_uses_live_texture_after_r300_opt(struct pipe_screen *pscreen,
    return uses_texture;
 }
 
-static bool
-r300vk_nir_uses_sampler_set_above_zero(nir_shader *nir, uint32_t *out_set,
-                                       uint32_t *out_binding)
+/* Rewrite each fragment sampler variable's binding to the flat Gallium unit the
+ * pipeline assigned its (descriptor set, binding) in fs_sampler_map, and clear the
+ * descriptor set.  nir_lower_samplers (run later in nir_to_rc) keys the texture
+ * unit on data.binding, so after this rewrite a sampler in any descriptor set
+ * lands on the same unit the replay binds it to.  A sampler the map does not cover
+ * (none should remain for a combined-image-sampler layout) keeps its binding. */
+static void
+r300vk_nir_remap_sampler_units(nir_shader *nir, const struct r300vk_pipeline *pl)
 {
    nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
       if (!glsl_type_is_sampler(glsl_without_array(var->type)))
          continue;
-      if (var->data.descriptor_set == 0)
-         continue;
-
-      *out_set = var->data.descriptor_set;
-      *out_binding = var->data.binding;
-      return true;
+      for (uint16_t i = 0; i < pl->fs_sampler_map_count; i++) {
+         if (pl->fs_sampler_map[i].set == var->data.descriptor_set &&
+             pl->fs_sampler_map[i].binding == var->data.binding) {
+            /* Rewrite only the binding to the flat unit nir_lower_samplers keys on.
+             * The descriptor set is left intact: zeroing it would alias the sampler
+             * onto a set-0 UBO variable at the same binding and break that UBO's
+             * lowering (the lowered sampler unit is what the replay matches, not the
+             * set). */
+            var->data.binding = pl->fs_sampler_map[i].unit;
+            break;
+         }
+      }
    }
-
-   return false;
 }
 
 static const struct glsl_type *
@@ -946,18 +956,13 @@ r300vk_compile_shader(struct r300vk_device *device,
    const bool stage_had_texture =
       stage_info->stage == VK_SHADER_STAGE_FRAGMENT_BIT &&
       r300vk_nir_uses_texture(nir);
-   uint32_t sampler_set = 0;
-   uint32_t sampler_binding = 0;
-   if (stage_had_texture &&
-       r300vk_nir_uses_sampler_set_above_zero(nir, &sampler_set,
-                                              &sampler_binding)) {
-      ralloc_free(nir);
-      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
-                       "r300vk: fragment sampler at descriptor set %u binding "
-                       "%u is unsupported; r300vk flattens sampled images from "
-                       "descriptor set 0 only",
-                       sampler_set, sampler_binding);
-   }
+   /* Flatten fragment sampler descriptors from every set into r300's one texture-
+    * unit space using the map create_one_pipeline built from the pipeline layout,
+    * so nir_lower_samplers and the replay agree on the unit for a sampler in any
+    * descriptor set.  The map is bounded by R300VK_MAX_FS_SAMPLER_UNITS at create
+    * time, so a layout that overflows the units is already rejected there. */
+   if (stage_had_texture)
+      r300vk_nir_remap_sampler_units(nir, pl);
 
    bool stage_has_input = false;
    uint32_t stage_input_set = 0;
@@ -1817,6 +1822,39 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
                               "r300vk: %u push-constant ranges; r300's single "
                               "constant slot supports at most one",
                               pc_layout->push_range_count));
+
+   /* Assign every combined-image-sampler in the pipeline layout a flat fragment
+    * texture unit, in (set, binding) order across all sets, so a sampler in any
+    * descriptor set gets a unit the shader rewrite (r300vk_nir_remap_sampler_units)
+    * and the replay (r300vk_bind_descriptor_textures) both honour.  A layout that
+    * needs more units than r300 has is rejected here rather than aliasing them. */
+   pl->fs_sampler_map_count = 0;
+   if (pc_layout) {
+      uint32_t next_unit = 0;
+      for (uint32_t set = 0; set < pc_layout->set_count; set++) {
+         struct vk_descriptor_set_layout *vk_dsl = pc_layout->set_layouts[set];
+         if (!vk_dsl)
+            continue;
+         const struct r300vk_descriptor_set_layout *dsl =
+            container_of(vk_dsl, struct r300vk_descriptor_set_layout, base);
+         for (uint32_t b = 0; b < dsl->binding_count; b++) {
+            const struct r300vk_dsl_binding *bnd = &dsl->bindings[b];
+            if (bnd->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+               continue;
+            if (pl->fs_sampler_map_count >= R300VK_MAX_FS_SAMPLER_UNITS ||
+                next_unit + bnd->count > R300VK_MAX_FS_SAMPLER_UNITS)
+               FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                             "r300vk: pipeline layout declares more combined image "
+                             "samplers than r300's %u fragment texture units",
+                             R300VK_MAX_FS_SAMPLER_UNITS));
+            pl->fs_sampler_map[pl->fs_sampler_map_count].set = set;
+            pl->fs_sampler_map[pl->fs_sampler_map_count].binding = bnd->binding;
+            pl->fs_sampler_map[pl->fs_sampler_map_count].unit = next_unit;
+            pl->fs_sampler_map_count++;
+            next_unit += bnd->count;
+         }
+      }
+   }
 
    for (uint32_t i = 0; i < info->stageCount; i++) {
       VkResult r = r300vk_compile_shader(device, &info->pStages[i], pl,

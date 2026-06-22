@@ -736,11 +736,32 @@ r300vk_robust_instance_count(const struct r300vk_pipeline *pl,
 /* CCN is proportional to the number of command types dispatched; one case
  * per r300vk_cmd_type is the minimum correct structure. */
 static void
-r300vk_replay_bind_descriptor_sets(struct r300vk_device *device,
-                                    const struct r300vk_cmd_entry *e,
-                                    const struct r300vk_cmd_bind_descriptor_sets **last_bind_dsets)
+r300vk_replay_bind_descriptor_sets(struct r300vk_cmd_bind_descriptor_sets *accum,
+                                    const struct r300vk_cmd_entry *e)
 {
-   *last_bind_dsets = &e->bind_dsets;
+   /* Descriptor-set bindings persist across vkCmdBindDescriptorSets calls: each
+    * call replaces only sets [firstSet, firstSet+count), leaving the rest bound.
+    * Accumulate per absolute set index so a draw sees every set bound so far --
+    * e.g. a UBO in set 0 and a combined image sampler in set 1 bound by two
+    * separate calls -- instead of only the most recent call's sets. */
+   const struct r300vk_cmd_bind_descriptor_sets *b = &e->bind_dsets;
+   accum->bind_point      = b->bind_point;
+   accum->pipeline_layout = b->pipeline_layout;
+   for (uint32_t i = 0; i < b->set_count; i++) {
+      const uint32_t abs_set = b->first_set + i;
+      if (abs_set >= R300VK_MAX_BOUND_DESCRIPTOR_SETS)
+         continue;
+      accum->sets[abs_set] = b->sets[i];
+      if (abs_set + 1 > accum->set_count)
+         accum->set_count = abs_set + 1;
+   }
+   accum->first_set = 0;
+   /* Dynamic offsets apply to the dynamic descriptors of the sets in this call;
+    * r300vk binds only static uniform buffers, so carry the latest call's offsets
+    * rather than tracking them per set. */
+   accum->dynamic_offset_count = b->dynamic_offset_count;
+   for (uint32_t i = 0; i < b->dynamic_offset_count; i++)
+      accum->dynamic_offsets[i] = b->dynamic_offsets[i];
 }
 
 static VkResult
@@ -1299,10 +1320,9 @@ r300vk_bind_push_constants(struct r300vk_device *device, const uint8_t *data,
    pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
 }
 
-/* r300 exposes a small fixed number of fragment texture units; a sampler unit a
- * shader can name is always inside this bound, so the array sizes the per-draw
- * bookkeeping without a heap allocation. */
-#define R300VK_MAX_FS_SAMPLER_UNITS 16
+/* R300VK_MAX_FS_SAMPLER_UNITS (the fixed fragment texture-unit count) is shared
+ * with the pipeline via r300vk_private.h, which sizes the per-draw bookkeeping
+ * arrays here and the (set,binding)->unit map there from the same bound. */
 
 /* Map one resolved VkComponentSwizzle to a Gallium PIPE_SWIZZLE.  vk_image_view
  * pre-resolves VK_COMPONENT_SWIZZLE_IDENTITY to the explicit R/G/B/A, so only the
@@ -1421,9 +1441,6 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
 
    for (uint32_t s = 0; s < binds->set_count; s++) {
       const uint32_t descriptor_set = binds->first_set + s;
-      if (descriptor_set != 0)
-         continue;
-
       const struct r300vk_descriptor_set *set = binds->sets[s];
       if (!set || !set->layout)
          continue;
@@ -1432,12 +1449,24 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
          if (bnd->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
             continue;
 
-         if (bnd->binding >= R300VK_MAX_FS_SAMPLER_UNITS)
+         /* The flat unit the pipeline assigned this (set, binding) is the unit the
+          * fragment shader samples (r300vk_nir_remap_sampler_units rewrote the
+          * sampler binding to it).  A binding absent from the map is one the
+          * pipeline does not sample; skip it. */
+         int base_unit = -1;
+         for (uint16_t m = 0; m < pipeline->fs_sampler_map_count; m++) {
+            if (pipeline->fs_sampler_map[m].set == descriptor_set &&
+                pipeline->fs_sampler_map[m].binding == bnd->binding) {
+               base_unit = pipeline->fs_sampler_map[m].unit;
+               break;
+            }
+         }
+         if (base_unit < 0)
             continue;
          const uint32_t count =
-            MIN2(bnd->count, R300VK_MAX_FS_SAMPLER_UNITS - bnd->binding);
+            MIN2(bnd->count, R300VK_MAX_FS_SAMPLER_UNITS - base_unit);
          for (uint32_t elem = 0; elem < count; elem++) {
-            const unsigned unit = bnd->binding + elem;
+            const unsigned unit = base_unit + elem;
             if (bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
                break;
 
@@ -2769,6 +2798,10 @@ struct r300vk_replay_state {
    const struct r300vk_pipeline *bound_pipeline;
    struct r300vk_dyn_overlay dyn_ov;
    const struct r300vk_cmd_bind_descriptor_sets *last_bind_dsets;
+   /* Per-set accumulation of the descriptor sets bound so far, so a draw sees
+    * every set even when separate vkCmdBindDescriptorSets calls bind different
+    * sets.  last_bind_dsets points here once any set is bound. */
+   struct r300vk_cmd_bind_descriptor_sets accum_dsets;
    const struct r300vk_cmd_entry *last_viewport;
    const struct r300vk_cmd_entry *last_scissor;
    struct pipe_query *active_oq;
@@ -2794,6 +2827,13 @@ static void
 r300vk_replay_state_rebind(struct r300vk_device *device,
                            struct r300vk_replay_state *state)
 {
+   /* last_bind_dsets references this state's own accum_dsets.  A per-tile replay
+    * copies the whole state by value, which leaves the pointer aimed at the
+    * source state's accum_dsets; repoint it here, where every segment and tile
+    * re-enters, so a draw reads the descriptor sets accumulated in this state. */
+   if (state->last_bind_dsets)
+      state->last_bind_dsets = &state->accum_dsets;
+
    if (!state->bound_pipeline)
       return;
 
@@ -3224,7 +3264,8 @@ r300vk_replay_gpu_range(struct r300vk_device *device,
          break;
 
       case R300VK_CMD_BIND_DESCRIPTOR_SETS:
-         r300vk_replay_bind_descriptor_sets(device, e, &state->last_bind_dsets);
+         r300vk_replay_bind_descriptor_sets(&state->accum_dsets, e);
+         state->last_bind_dsets = &state->accum_dsets;
          break;
 
       case R300VK_CMD_DISPATCH: {
