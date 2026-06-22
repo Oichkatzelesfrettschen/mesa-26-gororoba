@@ -421,6 +421,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_bitstream.h',
   'vl/vl_h264_slice_parser.c',
   'vl/vl_h264_slice_parser.h',
+  'vl/vl_h264_mb_decode.c',
+  'vl/vl_h264_mb_decode.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -607,6 +609,23 @@ if with_tests
       'vl_h264_slice_parser_test',
       ['vl/vl_h264_bitstream.c', 'vl/vl_h264_slice_parser.c',
        'vl/tests/vl_h264_slice_parser_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin')],
+    suite: 'gallium',
+  )
+
+  # The macroblock-layer decoder builds on the bitstream reader and the slice
+  # parser.  The test decodes the first macroblock header of the IDR slice and
+  # asserts the type/QP/cbp against the oracle dump for that frame.
+  test('vl-h264-mb-decode',
+    executable(
+      'vl_h264_mb_decode_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/tests/vl_h264_mb_decode_test.c'],
       include_directories : [inc_include, inc_src, inc_gallium,
                              include_directories('vl')],
       dependencies : [idep_mesautil],
