@@ -112,9 +112,13 @@ build-tests = true
 vulkan-layers = ['overlay', 'device-select']
 
 # The restored r300 feature surface this debug lane must instrument: gallium-va
-# MPEG-2 decode (the pure-NIR g3dvl kernels) and the gallium-xa 2D/Xv frontend
-# (xa_nir.c).  Both are the "built back up" extras; the debug profile carries
-# them with assertions live so an RC or xa fault lands on its true site.
-video-codecs = ['mpeg12dec']
+# MPEG-2 decode (the pure-NIR g3dvl kernels), the H.264 decode back half on the
+# same g3dvl path (h264dec sets VIDEO_CODEC_H264DEC so the gated r300_video.c
+# H.264 path compiles; it stays fail-closed at runtime behind
+# R300_H264_EXPERIMENTAL and an entropy provider), and the gallium-xa 2D/Xv
+# frontend (xa_nir.c).  These are the "built back up" extras; the debug profile
+# carries them with assertions live so an RC, H.264, or xa fault lands on its
+# true site.
+video-codecs = ['mpeg12dec', 'h264dec']
 gallium-va = 'enabled'
 gallium-xa = true
