@@ -1370,6 +1370,15 @@ r300vk_create_resource_sampler_view(struct pipe_context *pipe,
    if (!iv || !iv->vk.image || iv->vk.view_type != VK_IMAGE_VIEW_TYPE_2D)
       return NULL;
 
+   /* r300 has no stencil texture format: a stencil-aspect view keeps the parent
+    * depth/stencil VkFormat (which the per-format query reports sampled for its
+    * depth aspect), but r300_create_sampler_view has no hardware mapping for the
+    * stencil aspect and asserts hwformat != ~0.  The depth aspect samples fine,
+    * so leave only a stencil-aspect (or pure-stencil) view unbound rather than
+    * aborting the process. */
+   if (iv->vk.aspects == VK_IMAGE_ASPECT_STENCIL_BIT)
+      return NULL;
+
    struct vk_sampler *vks = vk_sampler_from_handle(desc->img.sampler);
    void *samp_cso = vks ? r300vk_sampler_from_vk(vks)->pipe_cso : NULL;
    if (!samp_cso)
