@@ -419,6 +419,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_mb_contract.h',
   'vl/vl_h264_bitstream.c',
   'vl/vl_h264_bitstream.h',
+  'vl/vl_h264_slice_parser.c',
+  'vl/vl_h264_slice_parser.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -594,6 +596,23 @@ if with_tests
                              include_directories('vl')],
       dependencies : [idep_mesautil],
     ),
+    suite: 'gallium',
+  )
+
+  # The slice-header parser builds on the bitstream reader.  The asset is the
+  # clip's first IDR NAL (one-byte NAL header plus EBSP); the test asserts the
+  # parsed header against the ffmpeg trace_headers ground truth for that NAL.
+  test('vl-h264-slice-parser',
+    executable(
+      'vl_h264_slice_parser_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_slice_parser.c',
+       'vl/tests/vl_h264_slice_parser_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin')],
     suite: 'gallium',
   )
 endif
