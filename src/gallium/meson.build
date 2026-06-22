@@ -214,6 +214,25 @@ if with_tests and with_gallium_softpipe
     suite: 'gallium',
   )
 
+  # File-driven whole-frame H.264 inter reconstruction: reads a serialized slice
+  # contract built from the libavcodec inter oracle and an MB-aligned reference
+  # frame, runs the decode vtable through the replay provider, and writes the
+  # reconstructed frame for an external diff against the ffmpeg decode.  Skips
+  # (exit 77) unless its R300_H264_FRAME_* environment is set.
+  test('vl-h264-decode-frame',
+    executable(
+      'vl_h264_decode_frame_test',
+      'auxiliary/vl/tests/vl_h264_decode_frame_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    suite: 'gallium',
+  )
+
   # Verification of the H.264 chroma inter-reconstruction core
   # (vl_h264_emit_chroma_inter): scatter, eighth-pel bilinear motion
   # compensation, inverse transform, and Clip1 reconstruction over half-resolution
