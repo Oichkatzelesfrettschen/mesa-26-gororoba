@@ -88,6 +88,14 @@ struct r300vk_pipeline {
    }                       fs_sampler_map[R300VK_MAX_FS_SAMPLER_UNITS];
    uint16_t                fs_sampler_map_count;
 
+   /* Set when the experimental NEAREST tile-stitch gate is on and the fragment
+    * shader samples: each combined-image-sampler then reserves a 2x2 tile-unit
+    * grid (so its four per-tile fetches get distinct units), the replay binds the
+    * tile views and uploads the per-image affine/split geometry to CONST[0], and
+    * an app UBO / push constant / subpass input is rejected (the geometry needs
+    * CONST[0]). */
+   bool                    fs_nearest_stitch;
+
    /* A compute pipeline created under the experimental hybrid-compute gate.
     * The no-op kernel carries no graphics CSOs; lowering the kernel onto the
     * compute-as-raster substrate is a later stage. */

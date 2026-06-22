@@ -1951,6 +1951,7 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
     * and the replay (r300vk_bind_descriptor_textures) both honour.  A layout that
     * needs more units than r300 has is rejected here rather than aliasing them. */
    pl->fs_sampler_map_count = 0;
+   const bool nearest_stitch = r300vk_experimental_nearest_stitch_enabled();
    if (pc_layout) {
       uint32_t next_unit = 0;
       for (uint32_t set = 0; set < pc_layout->set_count; set++) {
@@ -1963,8 +1964,13 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
             const struct r300vk_dsl_binding *bnd = &dsl->bindings[b];
             if (bnd->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                continue;
+            /* Under the stitch gate each sampler reserves a 2x2 tile-unit grid so
+             * its four per-tile fetches land on distinct units. */
+            const uint32_t span = nearest_stitch
+               ? MAX2(bnd->count, R300VK_NEAREST_STITCH_TILE_UNITS)
+               : bnd->count;
             if (pl->fs_sampler_map_count >= R300VK_MAX_FS_SAMPLER_UNITS ||
-                next_unit + bnd->count > R300VK_MAX_FS_SAMPLER_UNITS)
+                next_unit + span > R300VK_MAX_FS_SAMPLER_UNITS)
                FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
                              "r300vk: pipeline layout declares more combined image "
                              "samplers than r300's %u fragment texture units",
@@ -1973,7 +1979,9 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
             pl->fs_sampler_map[pl->fs_sampler_map_count].binding = bnd->binding;
             pl->fs_sampler_map[pl->fs_sampler_map_count].unit = next_unit;
             pl->fs_sampler_map_count++;
-            next_unit += bnd->count;
+            next_unit += span;
+            if (nearest_stitch)
+               pl->fs_nearest_stitch = true;
          }
       }
    }
@@ -2000,6 +2008,17 @@ r300vk_create_one_pipeline(struct r300vk_device *device,
                               "and a uniform buffer in another; the replay binds "
                               "the push-constant window to both stages' CONST[0] "
                               "and cannot also bind a per-stage UBO"));
+
+   /* The stitch geometry occupies fragment CONST[0], so an app fragment UBO,
+    * push constants, or a subpass input -- all of which also resolve to CONST[0]
+    * -- cannot coexist with it.  Reject rather than overwrite the geometry. */
+   if (pl->fs_nearest_stitch &&
+       (pl->fs_has_ubo || pl->uses_push_constants || pl->fs_has_input_attachment))
+      FAIL_PIPELINE(vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                              "r300vk: experimental NEAREST tile-stitch needs "
+                              "fragment CONST[0] for the per-image tile geometry, "
+                              "so a fragment UBO, push constants, or a subpass "
+                              "input cannot be combined with it"));
 
    VkResult cso_res = r300vk_init_graphics_pipeline_cso_state(device, pl, info);
    if (cso_res != VK_SUCCESS)
