@@ -63,6 +63,10 @@ struct r300vk_image {
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_image, vk.base, VkImage,
                                 VK_OBJECT_TYPE_IMAGE)
 
+struct r300vk_device;
+bool r300vk_image_ensure_sampler_atlas(struct r300vk_device *device,
+                                       struct r300vk_image *img);
+
 struct r300vk_image_view {
    struct vk_image_view  vk;  /* must be first */
 };
