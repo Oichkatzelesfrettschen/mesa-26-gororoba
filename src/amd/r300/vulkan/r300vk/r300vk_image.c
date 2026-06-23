@@ -102,8 +102,13 @@ r300vk_image_build_sampler_atlas(struct r300vk_device *device,
     * texel-granular copy below cannot honour).  Refuse otherwise -- the caller
     * then leaves the split image unbound rather than sampling a coverage hole or
     * a mis-strided compressed copy. */
+   /* Two charts span an axis only up to 2*cap, and a bilinear tap at the logical
+    * seam needs one texel of overlap on each side, so the cover is correct only
+    * for W <= 2*cap - 2 (overlap = 2*cap - W >= 2).  W in (2*cap-2, 2*cap] (e.g.
+    * 4095/4096 on r3xx) has sub-texel margin and is deferred to a future 3-chart
+    * cover; refuse it here. */
    if (img->tile_width[0] > cap || img->tile_height[0] > cap ||
-       W > 2 * cap || H > 2 * cap ||
+       W + 2 > 2 * cap || H + 2 > 2 * cap ||
        util_format_get_blockwidth(fmt) != 1 ||
        util_format_get_blockheight(fmt) != 1)
       return false;

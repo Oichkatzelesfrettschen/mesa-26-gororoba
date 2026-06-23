@@ -67,6 +67,15 @@ struct r300vk_device;
 bool r300vk_image_ensure_sampler_atlas(struct r300vk_device *device,
                                        struct r300vk_image *img);
 
+/* Mark an image's content changed so a stale sampler atlas is rebuilt before the
+ * next stitched sample.  content_serial is CPU-side invalidation bookkeeping, not
+ * image content, so the const image the write replays carry can advance it. */
+static inline void
+r300vk_image_mark_written(const struct r300vk_image *img)
+{
+   ((struct r300vk_image *)img)->content_serial++;
+}
+
 struct r300vk_image_view {
    struct vk_image_view  vk;  /* must be first */
 };
