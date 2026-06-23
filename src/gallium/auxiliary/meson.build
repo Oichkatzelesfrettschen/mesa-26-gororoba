@@ -428,6 +428,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_cavlc_tables.h',
   'vl/vl_h264_cavlc_residual.c',
   'vl/vl_h264_cavlc_residual.h',
+  'vl/vl_h264_dequant.c',
+  'vl/vl_h264_dequant.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -694,6 +696,25 @@ if with_tests
       ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
        'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
        'vl/tests/vl_h264_cavlc_slice_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_oracle_mb.bin')],
+    suite: 'gallium',
+  )
+
+  # The one-macroblock bit-exact dequant gate: decode and dequantize MB0 and
+  # match the oracle coefficients.
+  test('vl-h264-dequant',
+    executable(
+      'vl_h264_dequant_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/vl_h264_dequant.c', 'vl/tests/vl_h264_dequant_test.c'],
       include_directories : [inc_include, inc_src, inc_gallium,
                              include_directories('vl')],
       dependencies : [idep_mesautil],
