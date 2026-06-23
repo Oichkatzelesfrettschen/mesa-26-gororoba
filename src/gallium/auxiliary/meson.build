@@ -684,6 +684,26 @@ if with_tests
                        'h264_cb_idr_slice.bin')],
     suite: 'gallium',
   )
+
+  # The whole IDR slice decoded in sync with the oracle: the NAL plus the oracle
+  # macroblock dump.  Exercises I_16x16 luma, chroma DC and AC, and cross-
+  # macroblock neighbour context through end-of-slice bit exactness.
+  test('vl-h264-cavlc-slice',
+    executable(
+      'vl_h264_cavlc_slice_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/tests/vl_h264_cavlc_slice_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_oracle_mb.bin')],
+    suite: 'gallium',
+  )
 endif
 
 _libgalliumvl_stub = static_library(

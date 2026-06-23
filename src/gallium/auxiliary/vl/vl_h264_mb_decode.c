@@ -171,7 +171,8 @@ vl_h264_mb_decoder_init(struct vl_h264_mb_decoder *dec,
 
    dec->intra4x4_modes = MALLOC(dec->num_mbs * 16 * sizeof(*dec->intra4x4_modes));
    dec->nz_luma = CALLOC(dec->num_mbs * 16, sizeof(*dec->nz_luma));
-   if (!dec->intra4x4_modes || !dec->nz_luma) {
+   dec->nz_chroma_ac = CALLOC(dec->num_mbs * 2 * 4, sizeof(*dec->nz_chroma_ac));
+   if (!dec->intra4x4_modes || !dec->nz_luma || !dec->nz_chroma_ac) {
       vl_h264_mb_decoder_fini(dec);
       return false;
    }
@@ -188,6 +189,8 @@ vl_h264_mb_decoder_fini(struct vl_h264_mb_decoder *dec)
    dec->intra4x4_modes = NULL;
    FREE(dec->nz_luma);
    dec->nz_luma = NULL;
+   FREE(dec->nz_chroma_ac);
+   dec->nz_chroma_ac = NULL;
 }
 
 void

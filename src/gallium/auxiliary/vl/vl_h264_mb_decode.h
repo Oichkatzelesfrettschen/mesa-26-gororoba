@@ -56,6 +56,11 @@ struct vl_h264_mb_decoder {
     * mb_raster * 16 + block_scan; the CAVLC nC neighbour context reads it
     * (sec 9.2.1).  Only meaningful for an already decoded macroblock. */
    uint8_t *nz_luma;
+
+   /* Per-chroma-AC-block TotalCoeff across the frame, indexed
+    * (mb_raster * 2 + component) * 4 + chroma_block, for the chroma AC nC
+    * neighbour context (sec 9.2.1). */
+   uint8_t *nz_chroma_ac;
 };
 
 /* Initialise the decoder for one frame.  Allocates the neighbour-state arrays;
