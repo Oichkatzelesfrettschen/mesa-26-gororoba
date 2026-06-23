@@ -41,10 +41,40 @@ struct r300vk_image {
     * reported verbatim by GetImageSubresourceLayout.  Zero for optimal tiling. */
    uint32_t                      linear_row_pitch;
    struct r300vk_resource_state  resource_state;
+
+   /* Tier-2 LINEAR tile-stitch: a lazy sampler-only atlas of up to four
+    * OVERLAPPING charts, each <= the 2048 sampler cap, with seam texels
+    * duplicated so a bilinear footprint stays inside one chart (the render/copy
+    * tiles[] above stay a disjoint partition).  content_serial advances on every
+    * write into the image (render/clear/copy/transfer); the atlas is (re)built
+    * when sampler_atlas.serial trails it.  origin/width are logical-x charts,
+    * origin/height logical-y. */
+   uint64_t                      content_serial;
+   struct {
+      struct pipe_resource      *tiles[4];
+      uint32_t                   cols, rows;
+      uint32_t                   origin_x[2], origin_y[2];
+      uint32_t                   width[2], height[2];
+      uint64_t                   serial;
+      bool                       valid;
+   }                             sampler_atlas;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_image, vk.base, VkImage,
                                 VK_OBJECT_TYPE_IMAGE)
+
+struct r300vk_device;
+bool r300vk_image_ensure_sampler_atlas(struct r300vk_device *device,
+                                       struct r300vk_image *img);
+
+/* Mark an image's content changed so a stale sampler atlas is rebuilt before the
+ * next stitched sample.  content_serial is CPU-side invalidation bookkeeping, not
+ * image content, so the const image the write replays carry can advance it. */
+static inline void
+r300vk_image_mark_written(const struct r300vk_image *img)
+{
+   ((struct r300vk_image *)img)->content_serial++;
+}
 
 struct r300vk_image_view {
    struct vk_image_view  vk;  /* must be first */

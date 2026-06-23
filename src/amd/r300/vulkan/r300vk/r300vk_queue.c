@@ -1436,12 +1436,13 @@ r300vk_create_descriptor_sampler_view(struct pipe_context *pipe,
  * tile or single-axis image fills the missing tiles with the nearest existing
  * tile and sets that axis' threshold to 2.0 so the select collapses to it. */
 static void
-r300vk_stitch_bind_one(struct pipe_context *pipe,
+r300vk_stitch_bind_one(struct r300vk_device *device,
                        const struct r300vk_descriptor *desc, unsigned base_unit,
                        struct pipe_sampler_view **views, void **sampler_states,
                        unsigned *max_unit_plus_one,
                        struct r300vk_bound_textures *bound, float geom[8])
 {
+   struct pipe_context *pipe = device->pipe;
    VK_FROM_HANDLE(r300vk_image_view, iv, desc->img.image_view);
    struct r300vk_image *img =
       (iv && iv->vk.image) ? container_of(iv->vk.image, struct r300vk_image, vk)
@@ -1449,29 +1450,69 @@ r300vk_stitch_bind_one(struct pipe_context *pipe,
    if (!img || !img->tile_cols || !img->tile_rows)
       return;
 
-   const unsigned cols = img->tile_cols, rows = img->tile_rows;
-   const float w0 = (float)img->tile_width[0];
-   const float w1 = (cols > 1) ? (float)img->tile_width[1] : 0.0f;
-   const float h0 = (float)img->tile_height[0];
-   const float h1 = (rows > 1) ? (float)img->tile_height[1] : 0.0f;
-   const float W = w0 + w1, H = h0 + h1;
-   geom[0] = W / w0;
-   geom[1] = (cols > 1) ? W / w1 : 1.0f;
-   geom[2] = (cols > 1) ? -(w0 / w1) : 0.0f;
-   geom[3] = (cols > 1) ? (w0 / W) : 2.0f;
-   geom[4] = H / h0;
-   geom[5] = (rows > 1) ? H / h1 : 1.0f;
-   geom[6] = (rows > 1) ? -(h0 / h1) : 0.0f;
-   geom[7] = (rows > 1) ? (h0 / H) : 2.0f;
+   const float W = (float)(img->tile_width[0] +
+                           (img->tile_cols > 1 ? img->tile_width[1] : 0));
+   const float H = (float)(img->tile_height[0] +
+                           (img->tile_rows > 1 ? img->tile_height[1] : 0));
+   const bool multitile = (img->tile_cols > 1 || img->tile_rows > 1);
+
+   struct vk_sampler *vks = vk_sampler_from_handle(desc->img.sampler);
+   const struct r300vk_sampler *s =
+      vks ? r300vk_sampler_from_vk(vks) : NULL;
+
+   /* Pick the charts and the per-chart affine/select geometry.  A single-tile
+    * image collapses to tile 0 (threshold 2.0) for any sampler.  A split image
+    * needs an eligible sampler: a NEAREST point sample uses the disjoint render
+    * tiles directly; a LINEAR sample uses the overlapped halo atlas (decision at
+    * the logical centre, 0.5) whose duplicated seam keeps the bilinear footprint
+    * in one chart; an ineligible sampler is refused (left unbound). */
+   struct pipe_resource *const *src = img->tiles;
+   unsigned acols = img->tile_cols, arows = img->tile_rows;
+
+   if (multitile && s && s->linear_stitch_eligible) {
+      if (!r300vk_image_ensure_sampler_atlas(device, img))
+         return;
+      src = img->sampler_atlas.tiles;
+      acols = img->sampler_atlas.cols;
+      arows = img->sampler_atlas.rows;
+      geom[0] = W / (float)img->sampler_atlas.width[0];
+      geom[1] = (acols > 1) ? W / (float)img->sampler_atlas.width[1] : 1.0f;
+      geom[2] = (acols > 1)
+                ? -((float)img->sampler_atlas.origin_x[1] /
+                    (float)img->sampler_atlas.width[1]) : 0.0f;
+      geom[3] = (acols > 1) ? 0.5f : 2.0f;
+      geom[4] = H / (float)img->sampler_atlas.height[0];
+      geom[5] = (arows > 1) ? H / (float)img->sampler_atlas.height[1] : 1.0f;
+      geom[6] = (arows > 1)
+                ? -((float)img->sampler_atlas.origin_y[1] /
+                    (float)img->sampler_atlas.height[1]) : 0.0f;
+      geom[7] = (arows > 1) ? 0.5f : 2.0f;
+   } else if (multitile && (!s || !s->nearest_stitch_eligible)) {
+      return;  /* split image + a sampler the stitch cannot honour exactly */
+   } else {
+      /* single-tile, or split image + NEAREST: disjoint render-tile partition */
+      const float w0 = (float)img->tile_width[0];
+      const float w1 = (img->tile_cols > 1) ? (float)img->tile_width[1] : 0.0f;
+      const float h0 = (float)img->tile_height[0];
+      const float h1 = (img->tile_rows > 1) ? (float)img->tile_height[1] : 0.0f;
+      geom[0] = W / w0;
+      geom[1] = (img->tile_cols > 1) ? W / w1 : 1.0f;
+      geom[2] = (img->tile_cols > 1) ? -(w0 / w1) : 0.0f;
+      geom[3] = (img->tile_cols > 1) ? (w0 / W) : 2.0f;
+      geom[4] = H / h0;
+      geom[5] = (img->tile_rows > 1) ? H / h1 : 1.0f;
+      geom[6] = (img->tile_rows > 1) ? -(h0 / h1) : 0.0f;
+      geom[7] = (img->tile_rows > 1) ? (h0 / H) : 2.0f;
+   }
 
    for (unsigned ti = 0; ti < R300VK_NEAREST_STITCH_TILE_UNITS; ti++) {
       const unsigned unit = base_unit + ti;
       if (unit >= R300VK_MAX_FS_SAMPLER_UNITS ||
           bound->count >= R300VK_MAX_FS_SAMPLER_UNITS)
          break;
-      const unsigned trow = MIN2(ti / 2, rows - 1);
-      const unsigned tcol = MIN2(ti % 2, cols - 1);
-      struct pipe_resource *res = img->tiles[trow * cols + tcol];
+      const unsigned trow = MIN2(ti / 2, arows - 1);
+      const unsigned tcol = MIN2(ti % 2, acols - 1);
+      struct pipe_resource *res = src[trow * acols + tcol];
       void *samp_cso = NULL;
       struct pipe_sampler_view *view =
          r300vk_create_resource_sampler_view(pipe, desc, res, &samp_cso);
@@ -1556,7 +1597,7 @@ r300vk_bind_descriptor_textures(struct r300vk_device *device,
           * the four tile views and fill the per-image geometry rather than one
           * whole-image view (which would wrap past the 2048 sampler cap). */
          if (pipeline->fs_nearest_stitch && stitch_geom) {
-            r300vk_stitch_bind_one(pipe, &set->descriptors[bnd->offset], base_unit,
+            r300vk_stitch_bind_one(device, &set->descriptors[bnd->offset], base_unit,
                                    views, sampler_states, &max_unit_plus_one,
                                    bound, stitch_geom);
             stitched = true;
@@ -3789,6 +3830,7 @@ r300vk_copy_buffer_region_to_image(struct r300vk_device *device,
                                    const VkBufferImageCopy2 *region)
 {
    struct pipe_context *pipe = device->pipe;
+   r300vk_image_mark_written(dst_img);
 
    /* Depth/stencil aspect uploads repack per texel (see r300vk_zs_copy_for) and
     * are read-modify-write so the aspect not being copied keeps its bits; the
@@ -3916,6 +3958,7 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
                                   const VkImageCopy2 *region)
 {
    struct pipe_context *pipe = device->pipe;
+   r300vk_image_mark_written(dst_img);
    const unsigned src_bpp = util_format_get_blocksize(src_img->resource->format);
    const unsigned dst_bpp = util_format_get_blocksize(dst_img->resource->format);
    const unsigned src_bw = util_format_get_blockwidth(src_img->resource->format);
@@ -3998,6 +4041,7 @@ r300vk_clear_color_image(struct r300vk_device *device,
                          const VkImageSubresourceRange *range)
 {
    struct pipe_context *pipe = device->pipe;
+   r300vk_image_mark_written(img);
    const enum pipe_format fmt = img->resource->format;
    const unsigned bpp = util_format_get_blocksize(fmt);
 
@@ -4059,6 +4103,7 @@ r300vk_clear_depth_stencil_image(struct r300vk_device *device,
                                  const VkImageSubresourceRange *range)
 {
    struct pipe_context *pipe = device->pipe;
+   r300vk_image_mark_written(img);
    const enum pipe_format fmt = img->resource->format;
    const unsigned bpp = util_format_get_blocksize(fmt);
    if (bpp == 0 || bpp > 4)

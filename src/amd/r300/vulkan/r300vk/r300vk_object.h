@@ -77,6 +77,10 @@ struct r300vk_sampler {
     * coordinates, and no compare.  A split (multi-tile) sampled image may only
     * stitch through an eligible sampler. */
    bool              nearest_stitch_eligible;
+   /* LINEAR variant: a split image samples through the overlapped halo atlas with
+    * a LINEAR/CLAMP_TO_EDGE/normalized/no-compare/no-aniso sampler, where the
+    * duplicated seam texels keep the bilinear footprint inside one chart. */
+   bool              linear_stitch_eligible;
 };
 
 static inline struct r300vk_sampler *

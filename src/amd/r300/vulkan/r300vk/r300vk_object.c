@@ -173,6 +173,20 @@ r300vk_CreateSampler(VkDevice _device,
       !pCreateInfo->unnormalizedCoordinates &&
       !pCreateInfo->compareEnable;
 
+   /* LINEAR variant: the overlapped halo atlas duplicates seam texels so a
+    * bilinear footprint stays inside one chart, so LINEAR min/mag is eligible
+    * under the same CLAMP_TO_EDGE / normalized / no-compare / no-anisotropy
+    * constraints; the mipmap mode is unconstrained because phase 1 has one mip. */
+   sampler->linear_stitch_eligible =
+      pCreateInfo->magFilter == VK_FILTER_LINEAR &&
+      pCreateInfo->minFilter == VK_FILTER_LINEAR &&
+      pCreateInfo->addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE &&
+      pCreateInfo->addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE &&
+      pCreateInfo->addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE &&
+      !pCreateInfo->unnormalizedCoordinates &&
+      !pCreateInfo->compareEnable &&
+      !(pCreateInfo->anisotropyEnable && pCreateInfo->maxAnisotropy > 1.0f);
+
    *pSampler = vk_sampler_to_handle(vks);
    return VK_SUCCESS;
 }

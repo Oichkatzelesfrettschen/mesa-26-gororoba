@@ -59,7 +59,162 @@ r300vk_image_release_resources(struct r300vk_image *img)
 {
    for (uint32_t i = 0; i < ARRAY_SIZE(img->tiles); i++)
       pipe_resource_reference(&img->tiles[i], NULL);
+   for (uint32_t i = 0; i < ARRAY_SIZE(img->sampler_atlas.tiles); i++)
+      pipe_resource_reference(&img->sampler_atlas.tiles[i], NULL);
+   img->sampler_atlas.valid = false;
    img->resource = NULL;
+}
+
+/* Build the lazy overlapped sampler atlas for a split image (Tier-2 LINEAR
+ * tile-stitch).  The render/copy tiles[] stay a disjoint partition; here each of
+ * up to four sampler charts is at most the 2048 sampler cap and the seam region
+ * is duplicated into both neighbouring charts, so a bilinear footprint near the
+ * logical seam stays inside one chart.  Two-chart cover charts span only in-image
+ * logical coordinates (origins >= 0, extents within W/H), so no edge clamp is
+ * needed; W==4096 (zero overlap) is excluded by the eligibility gate.  Returns
+ * false (atlas left invalid) on any failure so the caller refuses the split
+ * sampled image rather than sampling wrong. */
+static bool
+r300vk_image_build_sampler_atlas(struct r300vk_device *device,
+                                 struct r300vk_image *img)
+{
+   struct pipe_screen *screen = device->screen;
+   struct pipe_context *pipe = device->pipe;
+   if (!img->resource || !img->tile_cols || !img->tile_rows)
+      return false;
+   const enum pipe_format fmt = img->resource->format;
+   const unsigned bpp = util_format_get_blocksize(fmt);
+
+   const uint32_t W = img->tile_width[0] +
+                      (img->tile_cols > 1 ? img->tile_width[1] : 0);
+   const uint32_t H = img->tile_height[0] +
+                      (img->tile_rows > 1 ? img->tile_height[1] : 0);
+   /* A chart must fit the hardware sampler cap, which is the real
+    * max_texture_2d_size (2048 on r3xx, 4096 on r500) -- not the r3xx constant.
+    * On r500 the render split uses a 2560 tile, so deriving the cap from the
+    * sampler limit keeps charts sampleable and the cover consistent with the
+    * render split that produced tiles[]. */
+   const uint32_t cap = device->screen->caps.max_texture_2d_size;
+
+   /* The overlapped two-chart cover and the 1x1-block texel copy are correct only
+    * when each source render tile and each axis fit within two cap-sized charts
+    * and the format is not block-compressed (DXT walks rows in 4x4 blocks the
+    * texel-granular copy below cannot honour).  Refuse otherwise -- the caller
+    * then leaves the split image unbound rather than sampling a coverage hole or
+    * a mis-strided compressed copy. */
+   /* Two charts span an axis only up to 2*cap, and a bilinear tap at the logical
+    * seam needs one texel of overlap on each side, so the cover is correct only
+    * for W <= 2*cap - 2 (overlap = 2*cap - W >= 2).  W in (2*cap-2, 2*cap] (e.g.
+    * 4095/4096 on r3xx) has sub-texel margin and is deferred to a future 3-chart
+    * cover; refuse it here. */
+   if (img->tile_width[0] > cap || img->tile_height[0] > cap ||
+       W + 2 > 2 * cap || H + 2 > 2 * cap ||
+       util_format_get_blockwidth(fmt) != 1 ||
+       util_format_get_blockheight(fmt) != 1)
+      return false;
+
+   const uint32_t cols = (W > cap) ? 2u : 1u;
+   const uint32_t rows = (H > cap) ? 2u : 1u;
+
+   for (uint32_t i = 0; i < ARRAY_SIZE(img->sampler_atlas.tiles); i++)
+      pipe_resource_reference(&img->sampler_atlas.tiles[i], NULL);
+
+   img->sampler_atlas.cols = cols;
+   img->sampler_atlas.rows = rows;
+   img->sampler_atlas.origin_x[0] = 0;
+   img->sampler_atlas.width[0]    = (cols > 1) ? cap : W;
+   img->sampler_atlas.origin_x[1] = (cols > 1) ? (W - cap) : 0;
+   img->sampler_atlas.width[1]    = (cols > 1) ? cap : 0;
+   img->sampler_atlas.origin_y[0] = 0;
+   img->sampler_atlas.height[0]   = (rows > 1) ? cap : H;
+   img->sampler_atlas.origin_y[1] = (rows > 1) ? (H - cap) : 0;
+   img->sampler_atlas.height[1]   = (rows > 1) ? cap : 0;
+
+   for (uint32_t cy = 0; cy < rows; cy++) {
+      for (uint32_t cx = 0; cx < cols; cx++) {
+         const uint32_t cw  = img->sampler_atlas.width[cx];
+         const uint32_t ch  = img->sampler_atlas.height[cy];
+         const uint32_t cox = img->sampler_atlas.origin_x[cx];
+         const uint32_t coy = img->sampler_atlas.origin_y[cy];
+
+         struct pipe_resource tmpl = {
+            .target = PIPE_TEXTURE_2D, .format = fmt,
+            .bind = PIPE_BIND_SAMPLER_VIEW, .usage = PIPE_USAGE_DEFAULT,
+            .width0 = cw, .height0 = ch, .depth0 = 1, .array_size = 1,
+            .last_level = 0, .nr_samples = 1,
+         };
+         struct pipe_resource *chart = screen->resource_create(screen, &tmpl);
+         if (!chart)
+            goto fail;
+         img->sampler_atlas.tiles[cy * cols + cx] = chart;
+
+         struct pipe_box dbox = { .x = 0, .y = 0, .z = 0,
+                                  .width = (int)cw, .height = (int)ch, .depth = 1 };
+         struct pipe_transfer *dxfer = NULL;
+         uint8_t *dmap = pipe->texture_map(pipe, chart, 0, PIPE_MAP_WRITE,
+                                           &dbox, &dxfer);
+         if (!dmap)
+            goto fail;
+
+         /* Fill the chart from each overlapping source render tile.  The chart's
+          * logical region [cox,cox+cw) x [coy,coy+ch) intersects up to four source
+          * tiles at the seam corner; copy each intersection. */
+         for (uint32_t sr = 0; sr < img->tile_rows; sr++) {
+            for (uint32_t sc = 0; sc < img->tile_cols; sc++) {
+               const uint32_t sox = sc ? img->tile_width[0] : 0;
+               const uint32_t soy = sr ? img->tile_height[0] : 0;
+               const uint32_t ix0 = MAX2(cox, sox);
+               const uint32_t ix1 = MIN2(cox + cw, sox + img->tile_width[sc]);
+               const uint32_t iy0 = MAX2(coy, soy);
+               const uint32_t iy1 = MIN2(coy + ch, soy + img->tile_height[sr]);
+               if (ix0 >= ix1 || iy0 >= iy1)
+                  continue;
+               struct pipe_box sbox = { .x = (int)(ix0 - sox), .y = (int)(iy0 - soy),
+                                        .z = 0, .width = (int)(ix1 - ix0),
+                                        .height = (int)(iy1 - iy0), .depth = 1 };
+               struct pipe_transfer *sxfer = NULL;
+               const uint8_t *smap = pipe->texture_map(
+                  pipe, img->tiles[sr * img->tile_cols + sc], 0, PIPE_MAP_READ,
+                  &sbox, &sxfer);
+               if (!smap) {
+                  pipe->texture_unmap(pipe, dxfer);
+                  goto fail;
+               }
+               uint8_t *drow = dmap + (size_t)(iy0 - coy) * dxfer->stride +
+                               (size_t)(ix0 - cox) * bpp;
+               const unsigned wbytes = (ix1 - ix0) * bpp;
+               for (uint32_t r = 0; r < (iy1 - iy0); r++)
+                  memcpy(drow + (size_t)r * dxfer->stride,
+                         smap + (size_t)r * sxfer->stride, wbytes);
+               pipe->texture_unmap(pipe, sxfer);
+            }
+         }
+         pipe->texture_unmap(pipe, dxfer);
+      }
+   }
+
+   img->sampler_atlas.serial = img->content_serial;
+   img->sampler_atlas.valid = true;
+   return true;
+
+fail:
+   for (uint32_t i = 0; i < ARRAY_SIZE(img->sampler_atlas.tiles); i++)
+      pipe_resource_reference(&img->sampler_atlas.tiles[i], NULL);
+   img->sampler_atlas.valid = false;
+   return false;
+}
+
+/* Ensure the split image's sampler atlas reflects its current content, rebuilding
+ * it when the content serial has advanced past the atlas build serial.  Returns
+ * false if no valid atlas could be built (caller then refuses the split sample). */
+bool
+r300vk_image_ensure_sampler_atlas(struct r300vk_device *device,
+                                  struct r300vk_image *img)
+{
+   if (img->sampler_atlas.valid &&
+       img->sampler_atlas.serial == img->content_serial)
+      return true;
+   return r300vk_image_build_sampler_atlas(device, img);
 }
 
 static bool
