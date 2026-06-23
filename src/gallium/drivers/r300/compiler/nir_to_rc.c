@@ -1074,6 +1074,19 @@ ntr_emit_alu_special(struct ntr_compile *c, nir_alu_instr *instr, struct ntr_alu
       ntr_emit_alu_op3(c, RC_OPCODE_CMP, dst, src[0], src[2], src[1]);
       break;
 
+   case nir_op_ffloor: {
+      /* R300 has no floor opcode.  FRC is exactly src - floor(src), so
+       * floor(x) = x - FRC(x).  The early lower_ffloor pass handles ffloor in
+       * the incoming shader, but nir_lower_int_to_float re-introduces it from
+       * f2u (uint(float)) after that pass has run, so it reaches here unlowered;
+       * emit x - FRC(x) directly rather than failing into a dummy shader. */
+      struct rc_dst_register tmp = ntr_temp(c);
+      ntr_emit_alu_op1(c, RC_OPCODE_FRC, ntr_alu_dst(tmp, RC_SATURATE_NONE), src[0]);
+      ntr_emit_alu_op2(c, RC_OPCODE_ADD, dst, src[0],
+                       ntr_negate(ntr_src_register(c, RC_FILE_TEMPORARY, tmp.Index)));
+      break;
+   }
+
    default:
       ntr_fail_unsupported_op(c, "NIR ALU opcode",
                               nir_op_infos[instr->op].name);
