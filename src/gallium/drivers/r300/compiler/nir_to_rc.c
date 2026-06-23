@@ -1389,6 +1389,15 @@ ntr_emit_texture(struct ntr_compile *c, nir_tex_instr *instr)
 {
    struct rc_dst_register dst = ntr_get_dest(c, &instr->def);
    assert(!instr->is_shadow);
+   /* r300 has no array textures.  An array sampler can pair with a supported op
+    * (a filtered sample on a sampler2DArray), unlike a buffer/MS dim which only
+    * reaches the op switch's reject path, so reject it here -- the same clean
+    * rc_error + dummy-shader fallback -- rather than aborting in
+    * rc_texture_target_from_sampler_dim or silently dropping the array index. */
+   if (instr->is_array) {
+      rc_error(c->compiler, "r300: unsupported array texture in nir_to_rc\n");
+      return;
+   }
    rc_texture_target target =
       rc_texture_target_from_sampler_dim(instr->sampler_dim, instr->is_array);
    unsigned tex_opcode;
