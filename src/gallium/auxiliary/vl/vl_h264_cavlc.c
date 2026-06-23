@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <string.h>
+
 #include "util/macros.h"
 #include "util/vl_vlc.h"
 
@@ -119,5 +121,115 @@ vl_h264_cavlc_run_before(struct vl_h264_reader *reader, unsigned zeros_left,
    if (!cavlc_match(reader, table, &value))
       return false;
    *run_before = (unsigned)value;
+   return true;
+}
+
+/* Decode one non-trailing level and advance suffix_length (sec 9.2.2).
+ * first_level biases the magnitude up by one, applied to the first non-trailing
+ * level when there were fewer than three trailing ones. */
+static int16_t
+decode_one_level(struct vl_h264_reader *reader, unsigned *suffix_length,
+                 bool first_level)
+{
+   unsigned level_prefix = vl_h264_leading_zeros(reader);
+
+   unsigned suffix_size = *suffix_length;
+   if (level_prefix == 14 && *suffix_length == 0)
+      suffix_size = 4;
+   else if (level_prefix == 15)
+      suffix_size = 12;
+
+   unsigned level_suffix = suffix_size > 0 ? vl_h264_u(reader, suffix_size) : 0;
+   int level_code = (int)(level_prefix << *suffix_length) + (int)level_suffix;
+   if (level_prefix == 15 && *suffix_length == 0)
+      level_code += 15;
+   if (first_level)
+      level_code += 2;
+
+   /* Even level_code is a positive level, odd is negative; the shifts stay on
+    * non-negative operands. */
+   int16_t level = ((level_code & 1) == 0)
+                 ? (int16_t)((level_code + 2) >> 1)
+                 : (int16_t)(-((level_code + 1) >> 1));
+
+   if (*suffix_length == 0)
+      *suffix_length = 1;
+   int magnitude = level < 0 ? -level : level;
+   if (magnitude > (3 << (*suffix_length - 1)) && *suffix_length < 6)
+      (*suffix_length)++;
+   return level;
+}
+
+bool
+vl_h264_cavlc_decode_levels(struct vl_h264_reader *reader, unsigned total_coeff,
+                            unsigned trailing_ones, int16_t level[16])
+{
+   unsigned i = 0;
+
+   /* The trailing ones are a single sign bit each (sec 9.2.2). */
+   for (; i < trailing_ones; i++)
+      level[i] = vl_h264_u(reader, 1) ? -1 : 1;
+
+   /* suffixLength seeds high for a long run of large levels, low otherwise. */
+   unsigned suffix_length = (total_coeff > 10 && trailing_ones < 3) ? 1 : 0;
+
+   for (; i < total_coeff; i++)
+      level[i] = decode_one_level(reader, &suffix_length,
+                                  i == trailing_ones && trailing_ones < 3);
+   return true;
+}
+
+bool
+vl_h264_cavlc_residual_block(struct vl_h264_reader *reader,
+                             unsigned max_num_coeff, int nc,
+                             struct vl_h264_cavlc_block *out)
+{
+   memset(out, 0, sizeof(*out));
+
+   if (!vl_h264_cavlc_coeff_token(reader, nc, &out->total_coeff,
+                                  &out->trailing_ones))
+      return false;
+   if (out->total_coeff == 0)
+      return true;                 /* a coded-but-empty block is valid */
+   if (out->total_coeff > max_num_coeff)
+      return false;
+
+   if (!vl_h264_cavlc_decode_levels(reader, out->total_coeff,
+                                    out->trailing_ones, out->level))
+      return false;
+
+   unsigned zeros_left;
+   if (out->total_coeff < max_num_coeff) {
+      if (!vl_h264_cavlc_total_zeros(reader, out->total_coeff, max_num_coeff,
+                                     &out->total_zeros))
+         return false;
+      zeros_left = out->total_zeros;
+   } else {
+      zeros_left = 0;
+   }
+
+   /* Each level but the last carries the run of zeros before it; the last takes
+    * whatever zeros remain (sec 7.3.5.3.1). */
+   for (unsigned i = 0; i + 1 < out->total_coeff; i++) {
+      unsigned run = 0;
+      if (zeros_left > 0) {
+         if (!vl_h264_cavlc_run_before(reader, zeros_left, &run))
+            return false;
+      }
+      if (run > zeros_left)
+         return false;
+      out->run[i] = (uint8_t)run;
+      zeros_left -= run;
+   }
+   out->run[out->total_coeff - 1] = (uint8_t)zeros_left;
+
+   /* Combine runs and levels into scan order (sec 9.2.4). */
+   int coeff_num = -1;
+   for (unsigned i = out->total_coeff; i-- > 0;) {
+      coeff_num += out->run[i] + 1;
+      if (coeff_num < 0 || coeff_num >= (int)max_num_coeff)
+         return false;
+      out->coeff[coeff_num] = out->level[i];
+   }
    return true;
 }

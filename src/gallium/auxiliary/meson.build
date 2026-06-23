@@ -651,6 +651,20 @@ if with_tests
     ),
     suite: 'gallium',
   )
+
+  # The residual block decoder round-trips bitstreams an independent encoder
+  # produced, so it needs no fixture argument.
+  test('vl-h264-cavlc-block',
+    executable(
+      'vl_h264_cavlc_block_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c',
+       'vl/tests/vl_h264_cavlc_block_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
 endif
 
 _libgalliumvl_stub = static_library(
