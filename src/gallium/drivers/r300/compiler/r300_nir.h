@@ -160,6 +160,9 @@ extern bool r300_nir_opt_algebraic_late(struct nir_shader *shader);
 
 extern bool r300_nir_post_integer_lowering(struct nir_shader *shader);
 
+extern bool r300_nir_lower_bitwise_to_arith(struct nir_shader *shader,
+                                            bool *out_unsupported);
+
 extern bool r300_nir_lower_fcsel_r500(nir_shader *shader);
 
 extern bool r300_nir_lower_fcsel_r300(nir_shader *shader);

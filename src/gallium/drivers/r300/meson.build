@@ -69,6 +69,7 @@ files_r300 = files(
   'compiler/r500_fragprog.h',
   'compiler/r300_nir.c',
   'compiler/r300_nir.h',
+  'compiler/r300_nir_lower_bitwise_to_arith.c',
   'compiler/r300_nir_lower_ieee16.c',
   'compiler/r300_nir_lower_vs_system_values.c',
   'compiler/r500_nir_lower_fcsel.c',
