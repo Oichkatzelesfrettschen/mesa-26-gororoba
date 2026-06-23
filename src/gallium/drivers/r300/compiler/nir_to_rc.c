@@ -621,7 +621,14 @@ rc_texture_target_from_sampler_dim(enum glsl_sampler_dim dim, bool is_array)
    case GLSL_SAMPLER_DIM_RECT:
       return RC_TEXTURE_RECT;
    default:
-      UNREACHABLE("unknown sampler dim");
+      /* r300 has no buffer / multisample / subpass textures.  A shader that uses
+       * one reaches here only through an unsupported texture op (e.g. texelFetch
+       * on a samplerBuffer), which ntr_emit_texture's op switch rejects with
+       * rc_error and routes to the dummy-shader fallback -- but only if the
+       * translation does not abort first.  Return a benign 2D target instead of
+       * UNREACHABLE so the reject path runs and the crash becomes a clean compile
+       * failure (the 2D target is discarded when the op is rejected). */
+      return RC_TEXTURE_2D;
    }
 }
 
