@@ -426,6 +426,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_cavlc.c',
   'vl/vl_h264_cavlc.h',
   'vl/vl_h264_cavlc_tables.h',
+  'vl/vl_h264_cavlc_residual.c',
+  'vl/vl_h264_cavlc_residual.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -663,6 +665,23 @@ if with_tests
                              include_directories('vl')],
       dependencies : [idep_mesautil],
     ),
+    suite: 'gallium',
+  )
+
+  # The luma residual traversal over a real IDR macroblock; the asset is the same
+  # IDR NAL, the expected block counts are the oracle dump's.
+  test('vl-h264-cavlc-residual',
+    executable(
+      'vl_h264_cavlc_residual_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/tests/vl_h264_cavlc_residual_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin')],
     suite: 'gallium',
   )
 endif

@@ -51,6 +51,11 @@ struct vl_h264_mb_decoder {
     * mb_raster * 16 + block_scan; -1 marks a block whose macroblock is not
     * Intra_4x4 (treated as DC-predicting for a neighbour, sec 8.3.1.1). */
    int8_t *intra4x4_modes;
+
+   /* Per-4x4-block luma TotalCoeff across the frame, indexed
+    * mb_raster * 16 + block_scan; the CAVLC nC neighbour context reads it
+    * (sec 9.2.1).  Only meaningful for an already decoded macroblock. */
+   uint8_t *nz_luma;
 };
 
 /* Initialise the decoder for one frame.  Allocates the neighbour-state arrays;
