@@ -3958,6 +3958,12 @@ r300vk_copy_image_region_to_image(struct r300vk_device *device,
                                   const VkImageCopy2 *region)
 {
    struct pipe_context *pipe = device->pipe;
+   /* zink can translate glCopyPixels on an unacquired swapchain into a copy whose
+    * source is a VK_NULL_HANDLE image (the swapchain image was never acquired, so
+    * its backing resource is null).  A null VkImage in vkCmdCopyImage is invalid
+    * per the spec; skip the copy rather than dereferencing the null image. */
+   if (!src_img || !dst_img || !src_img->resource || !dst_img->resource)
+      return false;
    r300vk_image_mark_written(dst_img);
    const unsigned src_bpp = util_format_get_blocksize(src_img->resource->format);
    const unsigned dst_bpp = util_format_get_blocksize(dst_img->resource->format);

@@ -186,9 +186,18 @@ zink_batch_resource_usage_set(struct zink_batch_state *bs, struct zink_resource 
 {
    if (!is_buffer) {
       if (res->obj->dt) {
-         VkSemaphore acquire = zink_kopper_acquire_submit(zink_screen(bs->ctx->base.screen), res);
-         if (acquire)
-            util_dynarray_append(&bs->acquires, acquire);
+         /* A swapchain resource referenced in a batch without an acquired image
+          * (dt_idx == UINT32_MAX) -- e.g. glCopyPixels reading the default
+          * framebuffer before any draw acquired it -- has no acquire semaphore to
+          * wait on, and zink_kopper_acquire_submit would assert and then index
+          * images[UINT32_MAX] in a release build.  Mirror the present path's
+          * last_dt_idx guard and skip the acquire; the resource stays in the
+          * swapchain branch (it must not fall through to the exportable path). */
+         if (res->obj->dt_idx != UINT32_MAX) {
+            VkSemaphore acquire = zink_kopper_acquire_submit(zink_screen(bs->ctx->base.screen), res);
+            if (acquire)
+               util_dynarray_append(&bs->acquires, acquire);
+         }
       } else if (res->obj->exportable) {
          struct pipe_resource *pres = NULL;
          bool found = false;
