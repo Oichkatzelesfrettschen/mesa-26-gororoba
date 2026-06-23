@@ -423,6 +423,9 @@ files_libgalliumvl = files(
   'vl/vl_h264_slice_parser.h',
   'vl/vl_h264_mb_decode.c',
   'vl/vl_h264_mb_decode.h',
+  'vl/vl_h264_cavlc.c',
+  'vl/vl_h264_cavlc.h',
+  'vl/vl_h264_cavlc_tables.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -632,6 +635,20 @@ if with_tests
     ),
     args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
                        'h264_cb_idr_slice.bin')],
+    suite: 'gallium',
+  )
+
+  # The CAVLC codeword decoders over the generated tables.  The test round-trips
+  # every table entry, so it needs no fixture argument.
+  test('vl-h264-cavlc-tables',
+    executable(
+      'vl_h264_cavlc_tables_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c',
+       'vl/tests/vl_h264_cavlc_tables_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
     suite: 'gallium',
   )
 endif
