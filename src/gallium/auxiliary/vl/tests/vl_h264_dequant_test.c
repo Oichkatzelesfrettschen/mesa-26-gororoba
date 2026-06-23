@@ -108,7 +108,12 @@ main(int argc, char **argv)
    CHECK(vl_h264_mb_decoder_init(&dec, &pic, WIDTH_IN_MBS, HEIGHT_IN_MBS));
    vl_h264_mb_decoder_begin_slice(&dec, &sh);
 
-   unsigned checked_i_nxn = 0;
+   /* 4x4 luma block scan index to raster grid position (sec 6.4.3). */
+   static const uint8_t blk_x[16] = { 0, 1, 0, 1, 2, 3, 2, 3,
+                                      0, 1, 0, 1, 2, 3, 2, 3 };
+   static const uint8_t blk_y[16] = { 0, 0, 1, 1, 0, 0, 1, 1,
+                                      2, 2, 3, 3, 2, 2, 3, 3 };
+   unsigned i16x16 = 0;
    for (unsigned addr = 0; addr < NUM_MBS; addr++) {
       unsigned mb_x = addr % WIDTH_IN_MBS, mb_y = addr / WIDTH_IN_MBS;
       struct vl_h264_mb_contract mb;
@@ -119,39 +124,43 @@ main(int argc, char **argv)
       CHECK(vl_h264_decode_mb_luma_residual(&dec, &reader, mb_x, mb_y, &mb, &res));
       CHECK(vl_h264_decode_mb_chroma_residual(&dec, &reader, mb_x, mb_y, &mb,
                                               &res));
+      vl_h264_dequant_fill_contract(&res, &mb);
+      i16x16 += mb.mb_type != 0;
 
-      /* I_16x16 codes a separate luma DC Hadamard, validated elsewhere. */
-      if (mb.mb_type != 0)
-         continue;
-
+      /* The oracle stores luma blocks in scan order; the contract in raster
+       * order, transposed within each block.  For Intra_16x16 the oracle dump
+       * captures the AC only: ffmpeg scatters the Hadamard DC into sl->mb[0]
+       * after the dump point, so its DC position is zero there.  The DC Hadamard
+       * itself is checked by the standalone vl-h264-dc-hadamard test. */
+      bool intra_16x16 = mb.mb_type != 0;
       const int16_t *oracle_coeff =
          (const int16_t *)(oracle + addr * ORACLE_RECORD_BYTES + 16);
-      for (unsigned blk = 0; blk < 16; blk++) {
-         int16_t dq[16];
-         vl_h264_dequant_4x4(res.luma4x4[blk], mb.qp_y, dq);
+      for (unsigned s = 0; s < 16; s++) {
+         const int16_t *block = mb.coeff4x4[blk_y[s] * 4 + blk_x[s]];
          for (unsigned r = 0; r < 4; r++) {
             for (unsigned c = 0; c < 4; c++) {
-               int16_t mine = dq[r * 4 + c];
-               int16_t theirs = oracle_coeff[blk * 16 + c * 4 + r]; /* transposed */
+               if (intra_16x16 && r == 0 && c == 0)
+                  continue; /* oracle dump has no Intra_16x16 DC */
+               int16_t mine = block[r * 4 + c];
+               int16_t theirs = oracle_coeff[s * 16 + c * 4 + r]; /* transposed */
                if (mine != theirs) {
-                  fprintf(stderr, "FAIL mb %u block %u (%u,%u): %d != oracle %d\n",
-                          addr, blk, r, c, mine, theirs);
+                  fprintf(stderr, "FAIL mb %u (type %d) block %u (%u,%u): %d != "
+                          "oracle %d\n", addr, mb.mb_type, s, r, c, mine, theirs);
                   return 1;
                }
             }
          }
       }
-      checked_i_nxn++;
    }
 
    CHECK(!vl_h264_more_rbsp_data(&reader));
-   CHECK(checked_i_nxn > 0);
 
    vl_h264_mb_decoder_fini(&dec);
    vl_h264_reader_fini(&reader);
    free(nal);
    free(oracle);
-   printf("vl_h264_dequant: %u I_NxN macroblocks dequantize bit-exact with the "
-          "oracle across both qP branches PASS\n", checked_i_nxn);
+   printf("vl_h264_dequant: all %d luma macroblocks (%u Intra_16x16 with DC "
+          "Hadamard) dequantize bit-exact with the oracle PASS\n", NUM_MBS,
+          i16x16);
    return 0;
 }

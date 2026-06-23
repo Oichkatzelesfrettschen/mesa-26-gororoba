@@ -707,8 +707,21 @@ if with_tests
     suite: 'gallium',
   )
 
-  # The one-macroblock bit-exact dequant gate: decode and dequantize MB0 and
-  # match the oracle coefficients.
+  # The DC Hadamard for Intra_16x16 luma and 4:2:0 chroma, against a spec
+  # reference (the oracle dump captures the Intra_16x16 AC only).
+  test('vl-h264-dc-hadamard',
+    executable(
+      'vl_h264_dc_hadamard_test',
+      ['vl/vl_h264_dequant.c', 'vl/tests/vl_h264_dc_hadamard_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
+
+  # The bit-exact dequant gate: decode and dequantize the whole slice and match
+  # the oracle coefficients.
   test('vl-h264-dequant',
     executable(
       'vl_h264_dequant_test',
