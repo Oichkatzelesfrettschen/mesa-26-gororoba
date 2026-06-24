@@ -1369,6 +1369,11 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
                 want ? fscode->deriv_ddy_generic : -1);
             r300->draw_deriv_src = want_src;
         }
+        if (getenv("R300_DERIV_DEBUG"))
+            fprintf(stderr, "r300 deriv: draw_vbo enable: via_draw=%d fs=%p "
+                    "deriv_src_generic=%d want=%d\n",
+                    derivative_via_draw, (void *)fscode,
+                    fscode ? fscode->deriv_src_generic : -2, want);
     }
 
     /* RS482 fragment-ALU R2VB vertex route (experiment-gated by R300_R2VB_ROUTE).
@@ -1437,6 +1442,11 @@ r300_render_get_vertex_info(struct vbuf_render* render)
     struct r300_fragment_shader_code *deriv_fs = r300_fs(r300)->shader;
     const int deriv_ddx_g =
         deriv_fs ? deriv_fs->deriv_ddx_generic : -1;
+    if (getenv("R300_DERIV_DEBUG") && r300->derivative_via_draw && deriv_ddx_g >= 0)
+        fprintf(stderr, "r300 deriv: get_vertex_info: ddx_generic=%d "
+                "draw_output=%d\n", deriv_ddx_g,
+                draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
+                                        deriv_ddx_g));
     if (!r300->in_swtcl_layout_rebuild &&
         ((r300->point_sprite_via_draw &&
           draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0) ||

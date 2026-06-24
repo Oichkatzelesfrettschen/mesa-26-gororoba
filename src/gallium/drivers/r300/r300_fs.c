@@ -494,6 +494,9 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     ddx_var->data.driver_location = max_drv;
     ddy_var->data.driver_location = max_drv + 1;
 
+    const unsigned num_derivs =
+        util_dynarray_num_elements(&derivs, nir_intrinsic_instr *);
+
     nir_builder b = nir_builder_create(impl);
     util_dynarray_foreach (&derivs, nir_intrinsic_instr *, intrp) {
         nir_intrinsic_instr *intr = *intrp;
@@ -514,6 +517,11 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     shader->deriv_src_generic = src_generic;
     shader->deriv_ddx_generic = ddx_generic;
     shader->deriv_ddy_generic = ddy_generic;
+
+    if (getenv("R300_DERIV_DEBUG"))
+        fprintf(stderr, "r300 deriv: NIR lowered %u derivative(s); "
+                "src_generic=%d ddx_generic=%d ddy_generic=%d\n",
+                num_derivs, src_generic, ddx_generic, ddy_generic);
     return true;
 }
 

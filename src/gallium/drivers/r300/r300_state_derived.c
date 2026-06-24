@@ -604,6 +604,10 @@ static void r300_update_rs_block(struct r300_context *r300)
                 rX00_rs_tex_write(&rs, tex_count, fp_offset);
                 fp_offset++;
 
+                if (deriv_gen && getenv("R300_DERIV_DEBUG"))
+                    fprintf(stderr, "r300 deriv: RS routed gradient generic %d "
+                            "to texcoord %d (fp_offset %d)\n", i, tex_count,
+                            fp_offset - 1);
                 DBG(r300, DBG_RS,
                     "r300: Rasterized generic %i written to FS%s in texcoord %d.\n",
                     i, sprite_coord ? " (sprite coord)" : "", tex_count);
