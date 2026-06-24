@@ -166,6 +166,14 @@ struct draw_context
       bool frontface_inject;   /**< inject gl_FrontFacing as a vertex attrib for
                                     filled triangles (drivers whose rasterizer
                                     cannot route a HW face bit to the FS) */
+      bool derivative_inject;  /**< inject per-triangle screen-space gradients of
+                                    one varying as two vertex attribs, for a
+                                    backend whose FS has no dFdx/dFdy hardware
+                                    (R300-class). */
+      int derivative_src_generic;  /**< GENERIC index of the differentiated VS
+                                        output read for the 2x2 solve */
+      int derivative_ddx_generic;  /**< GENERIC index the dFdx gradient rides */
+      int derivative_ddy_generic;  /**< GENERIC index the dFdy gradient rides */
 
       /* Temporary storage while the pipeline is being run:
        */

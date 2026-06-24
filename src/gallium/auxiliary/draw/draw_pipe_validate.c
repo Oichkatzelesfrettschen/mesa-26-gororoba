@@ -115,6 +115,12 @@ draw_need_pipeline(const struct draw_context *draw,
           draw->fs.fragment_shader->info.uses_frontface)
          return true;
 
+      /* CPU-injected screen-space derivatives for filled triangles */
+      if (draw->pipeline.derivative_inject &&
+          draw->fs.fragment_shader &&
+          draw->fs.fragment_shader->info.uses_derivatives)
+         return true;
+
       /* polygon offset */
       if (rasterizer->offset_point ||
           rasterizer->offset_line ||
@@ -223,7 +229,10 @@ validate_pipeline(struct draw_stage *stage)
        rast->fill_back != PIPE_POLYGON_MODE_FILL ||
        (draw->pipeline.frontface_inject &&
         draw->fs.fragment_shader &&
-        draw->fs.fragment_shader->info.uses_frontface)) {
+        draw->fs.fragment_shader->info.uses_frontface) ||
+       (draw->pipeline.derivative_inject &&
+        draw->fs.fragment_shader &&
+        draw->fs.fragment_shader->info.uses_derivatives)) {
       draw->pipeline.unfilled->next = next;
       next = draw->pipeline.unfilled;
       precalc_flat = true;		/* only needed for triangles really */

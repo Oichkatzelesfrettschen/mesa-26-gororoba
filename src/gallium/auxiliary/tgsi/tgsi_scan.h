@@ -96,6 +96,7 @@ struct tgsi_shader_info
    bool uses_basevertex;
    bool uses_primid;
    bool uses_frontface;
+   bool uses_derivatives; /**< reads a screen-space derivative (dFdx/dFdy) */
    bool uses_invocationid;
    bool uses_grid_size;
    bool writes_position;

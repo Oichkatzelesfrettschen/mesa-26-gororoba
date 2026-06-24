@@ -50,6 +50,13 @@ struct unfilled_stage {
    unsigned mode[2];
 
    int face_slot;
+
+   /* Derivative injection: the two extra output slots the per-triangle dFdx and
+    * dFdy gradients are written to, and the VS-output slot of the varying being
+    * differentiated. -1 when the backend did not request injection. */
+   int ddx_slot;
+   int ddy_slot;
+   int deriv_src_slot;
 };
 
 
@@ -112,6 +119,66 @@ inject_front_face_info(struct draw_stage *stage,
 
 
 static void
+inject_screen_gradient_info(struct draw_stage *stage,
+                            struct prim_header *header)
+{
+   struct unfilled_stage *unfilled = unfilled_stage(stage);
+   const int ddx_slot = unfilled->ddx_slot;
+   const int ddy_slot = unfilled->ddy_slot;
+   const int src_slot = unfilled->deriv_src_slot;
+
+   /* In case the backend didn't ask for it, or the differentiated varying is
+    * not actually a VS output. */
+   if (ddx_slot < 0 || ddy_slot < 0 || src_slot < 0) {
+      return;
+   }
+
+   /* A varying's screen-space derivatives are constant across a triangle and
+    * equal its analytic per-primitive gradient. Solve the 2x2 system mapping
+    * the two edge vectors in screen xy to the varying's differences along
+    * them; that yields d(varying)/dx and d(varying)/dy. For a position varying,
+    * cross(dFdx, dFdy) is along the geometric face normal, so a shader building
+    * its normal as normalize(cross(dFdx(pos), dFdy(pos))) recovers the exact
+    * normal that R500 quad-difference hardware computes. Clip-space xy (the
+    * same coordinates draw_pipe_cull reads for the signed area) is an affine
+    * image of window space, so it keeps the gradient direction correct for the
+    * normalize(cross()) consumer; only the absolute magnitude differs, and only
+    * for perspective-interpolated varyings. */
+   const unsigned pos = draw_current_shader_position_output(stage->draw);
+   const float *p0 = header->v[0]->data[pos];
+   const float *p1 = header->v[1]->data[pos];
+   const float *p2 = header->v[2]->data[pos];
+   const float ex = p1[0] - p0[0];
+   const float ey = p1[1] - p0[1];
+   const float fx = p2[0] - p0[0];
+   const float fy = p2[1] - p0[1];
+   const float det = ex * fy - ey * fx;
+   const float inv = det != 0.0f ? 1.0f / det : 0.0f;
+
+   const float *v0 = header->v[0]->data[src_slot];
+   const float *v1 = header->v[1]->data[src_slot];
+   const float *v2 = header->v[2]->data[src_slot];
+
+   float ddx[4], ddy[4];
+   for (unsigned c = 0; c < 4; ++c) {
+      const float d1 = v1[c] - v0[c];
+      const float d2 = v2[c] - v0[c];
+      ddx[c] = (d1 * fy - d2 * ey) * inv;
+      ddy[c] = (d2 * ex - d1 * fx) * inv;
+   }
+
+   for (unsigned i = 0; i < 3; ++i) {
+      struct vertex_header *v = header->v[i];
+      for (unsigned c = 0; c < 4; ++c) {
+         v->data[ddx_slot][c] = ddx[c];
+         v->data[ddy_slot][c] = ddy[c];
+      }
+      v->vertex_id = UNDEFINED_VERTEX_ID;
+   }
+}
+
+
+static void
 point(struct draw_stage *stage,
       struct prim_header *header,
       struct vertex_header *v0)
@@ -148,6 +215,7 @@ points(struct draw_stage *stage,
    struct vertex_header *v2 = header->v[2];
 
    inject_front_face_info(stage, header);
+   inject_screen_gradient_info(stage, header);
 
    if ((header->flags & DRAW_PIPE_EDGE_FLAG_0) && v0->edgeflag)
       point(stage, header, v0);
@@ -178,6 +246,7 @@ lines(struct draw_stage *stage,
       stage->next->reset_stipple_counter(stage->next);
 
    inject_front_face_info(stage, header);
+   inject_screen_gradient_info(stage, header);
 
    if ((header->flags & DRAW_PIPE_EDGE_FLAG_2) && v2->edgeflag)
       line(stage, header, v2, v0);
@@ -231,6 +300,7 @@ unfilled_tri(struct draw_stage *stage,
        * the FS. When the driver asked for injection (face_slot >= 0), stamp the
        * computed face onto the vertices before passing the triangle through. */
       inject_front_face_info(stage, header);
+      inject_screen_gradient_info(stage, header);
       stage->next->tri(stage->next, header);
       break;
    case PIPE_POLYGON_MODE_LINE:
@@ -266,6 +336,18 @@ unfilled_first_tri(struct draw_stage *stage,
    if (draw->pipeline.frontface_inject && fs && fs->info.uses_frontface) {
       unfilled->face_slot =
          draw_alloc_extra_vertex_attrib(draw, TGSI_SEMANTIC_FACE, 0);
+   }
+
+   /* Same idea for the per-triangle screen-space gradients: allocate the two
+    * extra outputs during the pipeline run and locate the differentiated VS
+    * output. draw_alloc_extra_vertex_attrib is idempotent. */
+   if (draw->pipeline.derivative_inject && fs && fs->info.uses_derivatives) {
+      unfilled->ddx_slot = draw_alloc_extra_vertex_attrib(
+         draw, TGSI_SEMANTIC_GENERIC, draw->pipeline.derivative_ddx_generic);
+      unfilled->ddy_slot = draw_alloc_extra_vertex_attrib(
+         draw, TGSI_SEMANTIC_GENERIC, draw->pipeline.derivative_ddy_generic);
+      unfilled->deriv_src_slot = draw_find_shader_output(
+         draw, TGSI_SEMANTIC_GENERIC, draw->pipeline.derivative_src_generic);
    }
 
    stage->tri = unfilled_tri;
@@ -324,6 +406,20 @@ draw_unfilled_prepare_outputs(struct draw_context *draw,
    } else {
       unfilled->face_slot = -1;
    }
+
+   if (draw && draw->pipeline.derivative_inject && fs &&
+       fs->info.uses_derivatives) {
+      unfilled->ddx_slot = draw_alloc_extra_vertex_attrib(
+         stage->draw, TGSI_SEMANTIC_GENERIC, draw->pipeline.derivative_ddx_generic);
+      unfilled->ddy_slot = draw_alloc_extra_vertex_attrib(
+         stage->draw, TGSI_SEMANTIC_GENERIC, draw->pipeline.derivative_ddy_generic);
+      unfilled->deriv_src_slot = draw_find_shader_output(
+         stage->draw, TGSI_SEMANTIC_GENERIC, draw->pipeline.derivative_src_generic);
+   } else {
+      unfilled->ddx_slot = -1;
+      unfilled->ddy_slot = -1;
+      unfilled->deriv_src_slot = -1;
+   }
 }
 
 
@@ -349,6 +445,9 @@ draw_unfilled_stage(struct draw_context *draw)
    unfilled->stage.destroy = unfilled_destroy;
 
    unfilled->face_slot = -1;
+   unfilled->ddx_slot = -1;
+   unfilled->ddy_slot = -1;
+   unfilled->deriv_src_slot = -1;
 
    if (!draw_alloc_temp_verts(&unfilled->stage, 0))
       goto fail;

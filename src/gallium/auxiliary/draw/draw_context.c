@@ -565,6 +565,29 @@ draw_enable_frontface_injection(struct draw_context *draw, bool enable)
 
 
 /**
+ * Tell the draw module to synthesize per-triangle screen-space derivatives of
+ * one varying. A backend whose fragment shader has no dFdx/dFdy hardware
+ * (R300-class) sets this; the unfilled stage then solves the analytic 2x2
+ * gradient of the GENERIC[src_generic] varying across each filled triangle and
+ * hands the dFdx and dFdy vectors to the backend as two ordinary interpolated
+ * varyings (GENERIC[ddx_generic], GENERIC[ddy_generic]). The value is constant
+ * per primitive, so the interpolation mode does not matter. Default off, so
+ * backends with real derivative hardware are untouched.
+ */
+void
+draw_enable_derivative_injection(struct draw_context *draw, bool enable,
+                                 int src_generic, int ddx_generic,
+                                 int ddy_generic)
+{
+   draw_do_flush(draw, DRAW_FLUSH_STATE_CHANGE);
+   draw->pipeline.derivative_inject = enable;
+   draw->pipeline.derivative_src_generic = src_generic;
+   draw->pipeline.derivative_ddx_generic = ddx_generic;
+   draw->pipeline.derivative_ddy_generic = ddy_generic;
+}
+
+
+/**
  * Allocate an extra vertex/geometry shader vertex attribute, if it doesn't
  * exist already.
  *
