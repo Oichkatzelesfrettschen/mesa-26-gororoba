@@ -417,6 +417,19 @@ files_libgalliumvl = files(
   'vl/vl_nir.c',
   'vl/vl_nir.h',
   'vl/vl_h264_mb_contract.h',
+  'vl/vl_h264_bitstream.c',
+  'vl/vl_h264_bitstream.h',
+  'vl/vl_h264_slice_parser.c',
+  'vl/vl_h264_slice_parser.h',
+  'vl/vl_h264_mb_decode.c',
+  'vl/vl_h264_mb_decode.h',
+  'vl/vl_h264_cavlc.c',
+  'vl/vl_h264_cavlc.h',
+  'vl/vl_h264_cavlc_tables.h',
+  'vl/vl_h264_cavlc_residual.c',
+  'vl/vl_h264_cavlc_residual.h',
+  'vl/vl_h264_dequant.c',
+  'vl/vl_h264_dequant.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -577,6 +590,152 @@ if with_tests
     ),
     args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
                        'h264_contract_golden.bin')],
+    suite: 'gallium',
+  )
+
+  # The CAVLC bitstream reader only depends on vl_vlc and util, so compile it
+  # straight into its unit test.  The test builds its Exp-Golomb vectors with an
+  # independent bit writer and checks the de-escape and rbsp end test, so it
+  # needs no fixture argument.
+  test('vl-h264-bitstream',
+    executable(
+      'vl_h264_bitstream_test',
+      ['vl/vl_h264_bitstream.c', 'vl/tests/vl_h264_bitstream_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
+
+  # The slice-header parser builds on the bitstream reader.  The asset is the
+  # clip's first IDR NAL (one-byte NAL header plus EBSP); the test asserts the
+  # parsed header against the ffmpeg trace_headers ground truth for that NAL.
+  test('vl-h264-slice-parser',
+    executable(
+      'vl_h264_slice_parser_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_slice_parser.c',
+       'vl/tests/vl_h264_slice_parser_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin')],
+    suite: 'gallium',
+  )
+
+  # The macroblock-layer decoder builds on the bitstream reader and the slice
+  # parser.  The test decodes the first macroblock header of the IDR slice and
+  # asserts the type/QP/cbp against the oracle dump for that frame.
+  test('vl-h264-mb-decode',
+    executable(
+      'vl_h264_mb_decode_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/tests/vl_h264_mb_decode_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin')],
+    suite: 'gallium',
+  )
+
+  # The CAVLC codeword decoders over the generated tables.  The test round-trips
+  # every table entry, so it needs no fixture argument.
+  test('vl-h264-cavlc-tables',
+    executable(
+      'vl_h264_cavlc_tables_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c',
+       'vl/tests/vl_h264_cavlc_tables_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
+
+  # The residual block decoder round-trips bitstreams an independent encoder
+  # produced, so it needs no fixture argument.
+  test('vl-h264-cavlc-block',
+    executable(
+      'vl_h264_cavlc_block_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c',
+       'vl/tests/vl_h264_cavlc_block_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
+
+  # The luma residual traversal over a real IDR macroblock; the asset is the same
+  # IDR NAL, the expected block counts are the oracle dump's.
+  test('vl-h264-cavlc-residual',
+    executable(
+      'vl_h264_cavlc_residual_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/tests/vl_h264_cavlc_residual_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin')],
+    suite: 'gallium',
+  )
+
+  # The whole IDR slice decoded in sync with the oracle: the NAL plus the oracle
+  # macroblock dump.  Exercises I_16x16 luma, chroma DC and AC, and cross-
+  # macroblock neighbour context through end-of-slice bit exactness.
+  test('vl-h264-cavlc-slice',
+    executable(
+      'vl_h264_cavlc_slice_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/tests/vl_h264_cavlc_slice_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_oracle_mb.bin')],
+    suite: 'gallium',
+  )
+
+  # The DC Hadamard for Intra_16x16 luma and 4:2:0 chroma, against a spec
+  # reference (the oracle dump captures the Intra_16x16 AC only).
+  test('vl-h264-dc-hadamard',
+    executable(
+      'vl_h264_dc_hadamard_test',
+      ['vl/vl_h264_dequant.c', 'vl/tests/vl_h264_dc_hadamard_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    suite: 'gallium',
+  )
+
+  # The bit-exact dequant gate: decode and dequantize the whole slice and match
+  # the oracle coefficients.
+  test('vl-h264-dequant',
+    executable(
+      'vl_h264_dequant_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/vl_h264_dequant.c', 'vl/tests/vl_h264_dequant_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_oracle_mb.bin')],
     suite: 'gallium',
   )
 endif
