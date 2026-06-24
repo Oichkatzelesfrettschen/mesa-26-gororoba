@@ -1,0 +1,22 @@
+First UBSan findings from the maximal ASan+UBSan r300 driver (profile 7_), surfaced
+running `vkcube --c 40` under mesa-26-gororoba-asan-run on RS482 (boot stable, driver
+selected GPU and rendered).  These are latent undefined-behaviour sites the release/
+debug drivers execute silently; UBSan flags them.  Most are the common mesa "pointer
+arithmetic / member access computed before a null check" idiom (technically UB, often
+benign), but each is a real site worth auditing.  6 unique (16 occurrences):
+
+  src/gallium/drivers/r300/compiler/memory_pool.c:65:22
+    applying non-zero offset 104 to null pointer (bump-allocator pointer math)
+  src/gallium/drivers/r300/compiler/radeon_code.c:53:23
+    null pointer passed as argument 2, declared never-null
+  src/gallium/drivers/r300/compiler/radeon_dataflow.c:432:318
+    null pointer passed as argument 2, declared never-null
+  src/gallium/include/winsys/radeon_winsys.h:853:32 and :49
+    member access within null pointer of 'struct pb_buffer_lean'
+  src/gallium/winsys/radeon/drm/radeon_drm_bo.h:73:49
+    member access within null pointer of 'struct radeon_bo'
+
+Reproduce: mesa-26-gororoba-asan-run vkcube  (UBSAN_OPTIONS=print_stacktrace=1 for the
+call stack of each).  These are the deliverable intelligence of the maximal tier --
+fix or annotate (__attribute__((no_sanitize("undefined"))) for confirmed-benign math)
+as a follow-up; they do not block the driver, which runs.
