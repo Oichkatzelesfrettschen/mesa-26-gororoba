@@ -3056,6 +3056,27 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
         }
     }
 
+    /* Generic per-vertex producer-output dump (R300_R2VB_DUMP=<tag>).  The bound VS
+     * is any fragment-aluable straight-line kernel; this reads the producer clip BO
+     * (gl_Position per vertex, computed on the FP24 ALU) and prints the four
+     * components per vertex BEFORE any re-ingest.  The host harness recombines /
+     * compares against the kernel's CPU oracle.  num_in-agnostic, so the nearest-
+     * codeword (num_in 1), D8 lattice (num_in 2, lo/hi quarters), and any other
+     * substrate-fit kernel reuse it without a bespoke gate. */
+    const char *dump = getenv("R300_R2VB_DUMP");
+    if (dump && dump[0]) {
+        struct pipe_transfer *dxfer = NULL;
+        struct pipe_box dbox = { .width = count * 16, .height = 1, .depth = 1 };
+        const float *dg =
+            r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ, &dbox, &dxfer);
+        if (dg) {
+            for (unsigned s = 0; s < count; s++)
+                fprintf(stderr, "r2vb_dump tag=%s vtx=%u v=%.4f,%.4f,%.4f,%.4f\n",
+                        dump, s, dg[s * 4 + 0], dg[s * 4 + 1], dg[s * 4 + 2], dg[s * 4 + 3]);
+            r300->context.buffer_unmap(&r300->context, dxfer);
+        }
+    }
+
     /* Computed-varying producer pass (R300_R2VB_VARYING): re-stage the bound VS
      * targeting its first computed varying and render that value on the fragment
      * ALU into a dedicated BO, the same proven single-RT producer the position
