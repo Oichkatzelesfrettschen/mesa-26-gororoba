@@ -41,6 +41,16 @@ struct r300_fragment_shader_code {
     bool write_all;
     bool uses_discard;
 
+    /* SWTCL analytic-derivative emulation (R300-class has no dFdx/dFdy
+     * hardware). When the FS reads a screen-space derivative, the NIR lowering
+     * pass rewrites dFdx/dFdy of one varying to read two synthesized GENERIC
+     * inputs the draw module fills per triangle. These hold the differentiated
+     * varying's GENERIC index and the two gradient GENERIC indices, or -1 when
+     * the shader uses no derivatives / the part has native derivative HW. */
+    int deriv_src_generic;
+    int deriv_ddx_generic;
+    int deriv_ddy_generic;
+
     /* Error message in case compilation failed. */
     char *error;
 };

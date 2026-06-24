@@ -147,6 +147,10 @@ void draw_enable_point_sprites(struct draw_context *draw, bool enable);
 
 void draw_enable_frontface_injection(struct draw_context *draw, bool enable);
 
+void draw_enable_derivative_injection(struct draw_context *draw, bool enable,
+                                      int src_generic, int ddx_generic,
+                                      int ddy_generic);
+
 void draw_set_zs_format(struct draw_context *draw, enum pipe_format format);
 
 /* for TGSI constants are 4 * sizeof(float), but for NIR they need to be sizeof(float); */

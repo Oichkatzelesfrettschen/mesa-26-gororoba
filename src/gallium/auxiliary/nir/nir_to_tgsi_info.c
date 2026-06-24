@@ -181,6 +181,14 @@ static void scan_instruction(const struct nir_shader *nir,
       case nir_intrinsic_load_front_face:
          info->uses_frontface = 1;
          break;
+      case nir_intrinsic_ddx:
+      case nir_intrinsic_ddx_fine:
+      case nir_intrinsic_ddx_coarse:
+      case nir_intrinsic_ddy:
+      case nir_intrinsic_ddy_fine:
+      case nir_intrinsic_ddy_coarse:
+         info->uses_derivatives = true;
+         break;
       case nir_intrinsic_load_instance_id:
          info->uses_instanceid = 1;
          break;
