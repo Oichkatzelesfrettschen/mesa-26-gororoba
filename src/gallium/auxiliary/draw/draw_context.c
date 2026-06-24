@@ -573,6 +573,15 @@ draw_enable_frontface_injection(struct draw_context *draw, bool enable)
  * varyings (GENERIC[ddx_generic], GENERIC[ddy_generic]). The value is constant
  * per primitive, so the interpolation mode does not matter. Default off, so
  * backends with real derivative hardware are untouched.
+ *
+ * The two gradient outputs are allocated here, before the next draw_vbo sizes
+ * the pipeline vertices. The fetch/shade middle end sizes each vertex from
+ * draw_total_vs_outputs() (which counts extra_shader_outputs) at its prepare,
+ * and that size is cached; if the unfilled stage allocated the extras later, on
+ * the first triangle, the stage's per-vertex gradient write would land past the
+ * vertex stride and corrupt the next vertex. (A backend that calls
+ * draw_prepare_shader_outputs gets this for free; r300 drives the draw module
+ * directly, so allocate up front.)
  */
 void
 draw_enable_derivative_injection(struct draw_context *draw, bool enable,
@@ -584,6 +593,12 @@ draw_enable_derivative_injection(struct draw_context *draw, bool enable,
    draw->pipeline.derivative_src_generic = src_generic;
    draw->pipeline.derivative_ddx_generic = ddx_generic;
    draw->pipeline.derivative_ddy_generic = ddy_generic;
+
+   if (enable && draw->vs.vertex_shader && ddx_generic >= 0 &&
+       ddy_generic >= 0) {
+      draw_alloc_extra_vertex_attrib(draw, TGSI_SEMANTIC_GENERIC, ddx_generic);
+      draw_alloc_extra_vertex_attrib(draw, TGSI_SEMANTIC_GENERIC, ddy_generic);
+   }
 }
 
 
