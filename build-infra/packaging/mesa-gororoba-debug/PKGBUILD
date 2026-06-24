@@ -32,7 +32,7 @@
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug
 pkgver=26.2.0
-pkgrel=10
+pkgrel=11
 epoch=2
 pkgdesc='Mesa r300 system driver (default debug install): r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD + overlay/device-select Vulkan layers, assertions live, files under /opt'
 arch=('x86_64')
