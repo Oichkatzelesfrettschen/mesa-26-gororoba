@@ -6,6 +6,7 @@
  */
 
 #include "util/format/u_format.h"
+#include "util/u_dynarray.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
@@ -372,6 +373,150 @@ static void r300_emit_fs_code_to_buffer(
     END_CB;
 }
 
+/* Trace a derivative intrinsic's source back to the fragment-shader input
+ * variable it differentiates. The chain is short (the shader reads a varying
+ * and takes its dFdx/dFdy, sometimes through a swizzle/mov), so walk through ALU
+ * sources until a load_deref of a shader_in variable is found. */
+static nir_variable *
+r300_deriv_source_input_var(nir_def *def)
+{
+    nir_instr *parent = nir_def_instr(def);
+
+    if (parent->type == nir_instr_type_intrinsic) {
+        nir_intrinsic_instr *load = nir_instr_as_intrinsic(parent);
+        if (load->intrinsic == nir_intrinsic_load_deref) {
+            nir_deref_instr *deref = nir_src_as_deref(load->src[0]);
+            nir_variable *var =
+                deref ? nir_deref_instr_get_variable(deref) : NULL;
+            if (var && var->data.mode == nir_var_shader_in)
+                return var;
+        }
+    } else if (parent->type == nir_instr_type_alu) {
+        nir_alu_instr *alu = nir_instr_as_alu(parent);
+        for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+            nir_variable *var = r300_deriv_source_input_var(alu->src[i].src.ssa);
+            if (var)
+                return var;
+        }
+    }
+    return NULL;
+}
+
+/* SWTCL analytic-derivative lowering for R300-class parts, which have no
+ * dFdx/dFdy hardware (radeonStubDeriv otherwise turns them into MOV 0, zeroing
+ * any normal built as normalize(cross(dFdx(pos), dFdy(pos)))). Rewrite the
+ * derivatives of one varying to read two synthesized GENERIC inputs that the
+ * draw module fills with the per-triangle analytic gradient
+ * (draw_enable_derivative_injection -> inject_screen_gradient_info). Records the
+ * differentiated varying's generic index and the two gradient generic indices
+ * on the shader (post-fixup numbering, since ntr_fixup_varying_slots and the
+ * draw module's nir_to_tgsi apply the same VARn += 9 shift). Returns true when a
+ * single differentiated varying was lowered; leaves multi-varying or non-VARn
+ * cases to the stub. */
+static bool
+r300_nir_lower_derivatives_swtcl(nir_shader *s,
+                                 struct r300_fragment_shader_code *shader)
+{
+    if (s->info.stage != MESA_SHADER_FRAGMENT)
+        return false;
+
+    nir_function_impl *impl = nir_shader_get_entrypoint(s);
+
+    /* Collect the derivative intrinsics and confirm they all differentiate the
+     * same input varying. */
+    struct util_dynarray derivs;
+    util_dynarray_init(&derivs, NULL);
+    nir_variable *src_var = NULL;
+    bool bail = false;
+
+    nir_foreach_block (block, impl) {
+        nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            switch (intr->intrinsic) {
+            case nir_intrinsic_ddx:
+            case nir_intrinsic_ddx_fine:
+            case nir_intrinsic_ddx_coarse:
+            case nir_intrinsic_ddy:
+            case nir_intrinsic_ddy_fine:
+            case nir_intrinsic_ddy_coarse:
+                break;
+            default:
+                continue;
+            }
+
+            nir_variable *var = r300_deriv_source_input_var(intr->src[0].ssa);
+            if (!var || (src_var && src_var != var)) {
+                bail = true;
+                break;
+            }
+            src_var = var;
+            util_dynarray_append(&derivs, intr);
+        }
+        if (bail)
+            break;
+    }
+
+    /* Only the VARn user-varying range maps cleanly onto a spare generic slot
+     * the draw module can fill; the position/face/texcoord ranges do not. */
+    if (bail || !src_var || util_dynarray_num_elements(&derivs, nir_intrinsic_instr *) == 0 ||
+        src_var->data.location < VARYING_SLOT_VAR0 ||
+        src_var->data.location > VARYING_SLOT_VAR31) {
+        util_dynarray_fini(&derivs);
+        return false;
+    }
+
+    /* Post-fixup r300 generic indices: VARn -> n + 9. Reserve the two highest
+     * generic slots (30, 31) for the gradients; their pre-fixup VARn locations
+     * are 21 and 22. */
+    const int src_generic = (src_var->data.location - VARYING_SLOT_VAR0) + 9;
+    const int ddx_generic = 30;
+    const int ddy_generic = 31;
+
+    nir_variable *ddx_var = nir_variable_create(
+        s, nir_var_shader_in, glsl_vec4_type(), "r300_deriv_ddx");
+    nir_variable *ddy_var = nir_variable_create(
+        s, nir_var_shader_in, glsl_vec4_type(), "r300_deriv_ddy");
+    ddx_var->data.location = VARYING_SLOT_VAR0 + (ddx_generic - 9);
+    ddy_var->data.location = VARYING_SLOT_VAR0 + (ddy_generic - 9);
+
+    /* nir_lower_io (run later inside nir_to_rc) bases each load_input on the
+     * variable's driver_location, so give the new inputs unique slots past the
+     * existing ones. */
+    unsigned max_drv = 0;
+    nir_foreach_shader_in_variable (var, s) {
+        if (var == ddx_var || var == ddy_var)
+            continue;
+        max_drv = MAX2(max_drv, var->data.driver_location +
+                                    glsl_count_attribute_slots(var->type, false));
+    }
+    ddx_var->data.driver_location = max_drv;
+    ddy_var->data.driver_location = max_drv + 1;
+
+    nir_builder b = nir_builder_create(impl);
+    util_dynarray_foreach (&derivs, nir_intrinsic_instr *, intrp) {
+        nir_intrinsic_instr *intr = *intrp;
+        bool is_ddx = intr->intrinsic == nir_intrinsic_ddx ||
+                      intr->intrinsic == nir_intrinsic_ddx_fine ||
+                      intr->intrinsic == nir_intrinsic_ddx_coarse;
+
+        b.cursor = nir_before_instr(&intr->instr);
+        nir_def *grad = nir_load_var(&b, is_ddx ? ddx_var : ddy_var);
+        nir_def *res = nir_trim_vector(&b, grad, intr->def.num_components);
+        nir_def_rewrite_uses(&intr->def, res);
+        nir_instr_remove(&intr->instr);
+    }
+    util_dynarray_fini(&derivs);
+
+    nir_progress(true, impl, nir_metadata_control_flow);
+
+    shader->deriv_src_generic = src_generic;
+    shader->deriv_ddx_generic = ddx_generic;
+    shader->deriv_ddy_generic = ddy_generic;
+    return true;
+}
+
 static void r300_translate_fragment_shader(
     struct r300_context* r300,
     struct r300_fragment_shader_code* shader,
@@ -384,6 +529,10 @@ static void r300_translate_fragment_shader(
     code.f = shader;
 
     r300_shader_semantics_reset(&shader->inputs);
+
+    shader->deriv_src_generic = -1;
+    shader->deriv_ddx_generic = -1;
+    shader->deriv_ddy_generic = -1;
 
     /* gl_FragColor (vs. gl_FragData[0]) makes the FS write the same value
      * to all bound color buffers. */
@@ -433,6 +582,22 @@ static void r300_translate_fragment_shader(
     compiler.UserData = &shader->inputs;
 
     nir_shader *clone = nir_shader_clone(NULL, state.ir.nir);
+
+    /* R300-class parts have no fragment dFdx/dFdy hardware. Rewrite a varying's
+     * derivatives to read draw-module-supplied per-triangle gradients instead of
+     * letting them lower to MOV 0. Skipped on r500 (native derivatives) and when
+     * R300_DERIV_VIA_DRAW=0. The draw injection is enabled per draw in
+     * r300_draw_vbo once the shader's recorded generic indices are known. */
+    if (!r300->screen->caps.is_r500) {
+        static int deriv_gate = -1;
+        if (deriv_gate < 0) {
+            const char *e = getenv("R300_DERIV_VIA_DRAW");
+            deriv_gate = (e && strcmp(e, "0") == 0) ? 0 : 1;
+        }
+        if (deriv_gate)
+            r300_nir_lower_derivatives_swtcl(clone, shader);
+    }
+
     nir_to_rc(clone, (struct pipe_screen *)r300->screen, shader->compare_state,
               code, &compiler.Base);
 
