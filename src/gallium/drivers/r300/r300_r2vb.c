@@ -2040,6 +2040,23 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
     if (!has_uniform || !has_pos_out)
         return false;
 
+    /* Scalar-NIR ALU ceiling, a conservative proxy for the r300 64-slot vec4 ALU
+     * limit (one vec4 op counts as up to 4 scalar NIR ALU here, so the proxy
+     * over-rejects).  R300_R2VB_ALU_CEILING raises it to probe whether a denser
+     * kernel -- the CD-4 sedenion product quarter -- whose scalar count exceeds 64
+     * still compiles within the real r300 ALU budget after vectorisation; the FS
+     * compile link-fails cleanly ("max: 64") if it genuinely overflows, so the
+     * probe is safe.  Default 64. */
+    unsigned alu_ceiling = 64;
+    {
+        const char *e = getenv("R300_R2VB_ALU_CEILING");
+        if (e) {
+            long v = strtol(e, NULL, 0);
+            if (v >= 64 && v <= 100000)
+                alu_ceiling = (unsigned)v;
+        }
+    }
+
     unsigned alu_count = 0;
     nir_foreach_block(block, impl) {
         nir_foreach_instr(instr, block) {
@@ -2050,7 +2067,7 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
             case nir_instr_type_alu:
                 if (!r300_nir_op_is_fragment_aluable(nir_instr_as_alu(instr)->op))
                     return false;
-                if (++alu_count > 64)
+                if (++alu_count > alu_ceiling)
                     return false;
                 break;
             case nir_instr_type_intrinsic:
