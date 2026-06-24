@@ -179,6 +179,14 @@ inject_screen_gradient_info(struct draw_stage *stage,
       ddy[c] = (d2 * ex - d1 * fx) * inv;
    }
 
+   /* Isolation probe: skip the gradient write but keep routing/layout, to tell a
+    * vertex-storage overflow from a layout/stride mismatch. */
+   static int nowrite = -1;
+   if (nowrite < 0)
+      nowrite = getenv("R300_DERIV_NOWRITE") ? 1 : 0;
+   if (nowrite)
+      return;
+
    for (unsigned i = 0; i < 3; ++i) {
       struct vertex_header *v = header->v[i];
       for (unsigned c = 0; c < 4; ++c) {
