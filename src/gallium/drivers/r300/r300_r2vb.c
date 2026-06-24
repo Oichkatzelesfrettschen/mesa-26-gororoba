@@ -220,20 +220,15 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
  * varyings otherwise inflates the PSC and the VAP fetches past the embedded
  * vertex.  Cached on the context. */
 /* Cap on producer model-attribute inputs (application VS inputs feeding the
- * producer FS), set to the validated ceiling.  N = 2 (gl_Position from two inputs)
- * is proven on RS482; the no-submit classifier dump (R300_R2VB_VS_DUMP) reports
- * count_position_inputs = 3 and the route declined for a three-input position.
- * N >= 3 would route an unvalidated producer VAP output-vector packing, so
- * r300_vs_is_fragment_aluable rejects a position reading more inputs and the draw
- * falls back to gallivm rather than risking a malformed fetch.  Raising this
- * requires validating the producer VAP_OUT_VTX_FMT / PSC packing for the larger
- * input count. */
-/* Producer input cap.  A quaternion rotation and an octonion square need 2
- * inputs; the sedenion (CD-4) product of two distinct elements needs 8 (two
- * 16-component sedenions = 8 FP32x4 velems), which also feeds 8 generic
- * interpolators -- exactly the R300 RS texcoord-unit count, the binding limit.
- * Raising the cap only widens the gated MVP-route experiments; the default
- * passthrough/transform paths use 1-2 inputs unchanged. */
+ * producer FS).  A quaternion rotation and an octonion square need 2 inputs and
+ * are HW-confirmed on RS482; the sedenion (CD-4) product of two distinct elements
+ * needs 8 (two 16-component sedenions = 8 FP32x4 velems), which also feeds 8
+ * generic interpolators -- exactly the R300 RS texcoord-unit count, the binding
+ * limit -- and is HW-confirmed per quarter (each quarter compiles to 41 r300 ALU,
+ * inside the 64-slot budget).  The producer VAP_OUT_VTX_FMT / PSC packing and the
+ * per-input passthrough varyings all scale with the input count.  Raising the cap
+ * only widens the gated MVP-route experiments; the default passthrough/transform
+ * paths use 1-2 inputs unchanged. */
 #define R300_R2VB_MAX_PRODUCER_INPUTS 8
 
 /* Build (and cache) the producer vertex shader for num_inputs model attributes: it
@@ -2042,11 +2037,12 @@ static bool r300_vs_is_fragment_aluable(struct r300_context *r300,
 
     /* Scalar-NIR ALU ceiling, a conservative proxy for the r300 64-slot vec4 ALU
      * limit (one vec4 op counts as up to 4 scalar NIR ALU here, so the proxy
-     * over-rejects).  R300_R2VB_ALU_CEILING raises it to probe whether a denser
-     * kernel -- the CD-4 sedenion product quarter -- whose scalar count exceeds 64
-     * still compiles within the real r300 ALU budget after vectorisation; the FS
-     * compile link-fails cleanly ("max: 64") if it genuinely overflows, so the
-     * probe is safe.  Default 64. */
+     * over-rejects dense kernels).  R300_R2VB_ALU_CEILING raises the proxy to admit
+     * a kernel whose scalar count exceeds 64 but whose real program fits after
+     * vectorisation: the CD-4 sedenion product quarter has scalar NIR > 64 yet
+     * compiles to 41 r300 ALU (RADEON_DEBUG=fp alu_end), inside the budget, and
+     * runs correctly.  The FS compile link-fails cleanly if a kernel genuinely
+     * overflows, so the probe is safe.  Default 64. */
     unsigned alu_ceiling = 64;
     {
         const char *e = getenv("R300_R2VB_ALU_CEILING");
