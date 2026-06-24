@@ -228,7 +228,13 @@ static void *r300_r2vb_get_transform_fs(struct r300_context *r300)
  * falls back to gallivm rather than risking a malformed fetch.  Raising this
  * requires validating the producer VAP_OUT_VTX_FMT / PSC packing for the larger
  * input count. */
-#define R300_R2VB_MAX_PRODUCER_INPUTS 2
+/* Producer input cap.  A quaternion rotation and an octonion square need 2
+ * inputs; the sedenion (CD-4) product of two distinct elements needs 8 (two
+ * 16-component sedenions = 8 FP32x4 velems), which also feeds 8 generic
+ * interpolators -- exactly the R300 RS texcoord-unit count, the binding limit.
+ * Raising the cap only widens the gated MVP-route experiments; the default
+ * passthrough/transform paths use 1-2 inputs unchanged. */
+#define R300_R2VB_MAX_PRODUCER_INPUTS 8
 
 /* Build (and cache) the producer vertex shader for num_inputs model attributes: it
  * passes the embedded slot position (GENERIC0) through to gl_Position and each
@@ -735,6 +741,59 @@ static bool r2vb_quat_oracle_selftest(void)
     fprintf(stderr,
             "r2vb_quat_oracle_selftest=%s identity->(%.3f,%.3f,%.3f) z90*(1,0,0)->(%.3f,%.3f,%.3f)\n",
             ok ? "PASS" : "FAIL", o1[0], o1[1], o1[2], o2[0], o2[1], o2[2]);
+    return ok;
+}
+
+/* Cayley-Dickson product of two n-dim elements (n a power of two), scalar-first:
+ * (a,b)(c,d) = (a c - conj(d) b, d a + b conj(c)); base n==1 is real mult.  Used
+ * at n=16 for the sedenion (CD-4) product oracle.  conj negates all but [0]. */
+static void r2vb_cd_mul(const float *a, const float *b, float *o, int n)
+{
+    if (n == 1) { o[0] = a[0] * b[0]; return; }
+    int h = n / 2;
+    const float *A = a, *B = a + h, *C = b, *D = b + h;
+    float ac[16], db[16], da[16], bc[16], cj[16];
+    r2vb_cd_mul(A, C, ac, h);
+    for (int i = 0; i < h; i++) cj[i] = (i == 0) ? D[i] : -D[i]; /* conj(D) */
+    r2vb_cd_mul(cj, B, db, h);
+    r2vb_cd_mul(D, A, da, h);
+    for (int i = 0; i < h; i++) cj[i] = (i == 0) ? C[i] : -C[i]; /* conj(C) */
+    r2vb_cd_mul(B, cj, bc, h);
+    for (int i = 0; i < h; i++) { o[i] = ac[i] - db[i]; o[i + h] = da[i] + bc[i]; }
+}
+
+/* Sedenion (CD-4) product a*b, the first non-division-algebra level: it has zero
+ * divisors (nonzero a, b with a*b = 0).  The CPU reference for the genuine
+ * frontier product the fragment ALU computes from two 16-component inputs. */
+static void r2vb_sedenion_mul(const float a[16], const float b[16], float out[16])
+{
+    r2vb_cd_mul(a, b, out, 16);
+}
+
+/* Known-answer self-test anchored on the algebra: every imaginary unit squares to
+ * -1, and the explicit zero divisor (e1 + e10)(e5 + e14) = 0 -- two nonzero
+ * sedenions whose product is exactly zero, impossible in CD <= 3 (composition is
+ * |a b| = |a| |b|, so a, b != 0 would force a*b != 0 there). */
+static bool r2vb_sed_oracle_selftest(void)
+{
+    bool ok = true;
+    for (int k = 1; k < 16 && ok; k++) {
+        float e[16] = { 0 }, sq[16];
+        e[k] = 1.0f;
+        r2vb_sedenion_mul(e, e, sq);
+        ok = ok && fabsf(sq[0] + 1.0f) < 1e-5f;
+        for (int i = 1; i < 16; i++)
+            ok = ok && fabsf(sq[i]) < 1e-5f;
+    }
+    float a[16] = { 0 }, b[16] = { 0 }, p[16];
+    a[1] = 1.0f; a[10] = 1.0f;
+    b[5] = 1.0f; b[14] = 1.0f;
+    r2vb_sedenion_mul(a, b, p);
+    float pn = 0.0f;
+    for (int i = 0; i < 16; i++) pn += p[i] * p[i];
+    ok = ok && pn < 1e-8f; /* zero divisor: |a*b| = 0 with |a|,|b| != 0 */
+    fprintf(stderr, "r2vb_sed_oracle_selftest=%s zero_divisor|ab|^2=%.3e\n",
+            ok ? "PASS" : "FAIL", pn);
     return ok;
 }
 
@@ -2899,6 +2958,52 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             }
             r2vb_verify_bo_readback(r300, clip, qexp, count, 0.05f, "posquat");
             free(qexp);
+        }
+    }
+
+    /* Sedenion (CD-4) product oracle (R300_R2VB_SED=q0|q1|q2|q3).  The bound VS
+     * computes one quarter of the 16-component product a*b for two sedenions a =
+     * velem[0..3], b = velem[4..7] (num_in == 8 -- one octonion product per CD
+     * level), and writes gl_Position = M * (that quarter).  This is the frontier:
+     * CD-4 is the first level with zero divisors (two nonzero elements whose
+     * product is zero), the signature the square cannot show (the square stays
+     * composition-multiplicative).  Two distinct sedenions need 8 generic
+     * interpolators -- exactly the R300 RS texcoord-unit count.  The oracle is
+     * anchored by a known-answer self-test (e_i^2=-1 and the explicit zero divisor
+     * (e1+e10)(e5+e14)=0), and the FP32 clip readback is the proof; feeding the
+     * zero-divisor pair as a vertex makes that quarter read exact zero on silicon. */
+    const char *sed = getenv("R300_R2VB_SED");
+    if (sed && num_in == 8) {
+        if (!r2vb_sed_oracle_selftest()) {
+            fprintf(stderr, "r2vb_sed_verify ABORT (sedenion oracle self-test failed)\n");
+            pipe_resource_reference(&clip, NULL);
+            free(model);
+            return false;
+        }
+        int quarter = 0;
+        if (sed[0] == 'q' && sed[1] >= '0' && sed[1] <= '3')
+            quarter = sed[1] - '0';
+        const char *tag = quarter == 0 ? "sed_q0" : quarter == 1 ? "sed_q1"
+                        : quarter == 2 ? "sed_q2" : "sed_q3";
+        float (*sexp)[4] = malloc((size_t)count * sizeof(*sexp));
+        if (sexp) {
+            for (unsigned s = 0; s < count; s++) {
+                float a16[16], b16[16], prod[16];
+                for (int v = 0; v < 4; v++)
+                    for (int j = 0; j < 4; j++) {
+                        a16[v * 4 + j] = model[s * num_in + v][j];
+                        b16[v * 4 + j] = model[s * num_in + 4 + v][j];
+                    }
+                r2vb_sedenion_mul(a16, b16, prod);
+                /* clip holds M * (selected quarter of a*b); cols is column-major M. */
+                for (int i = 0; i < 4; i++) {
+                    sexp[s][i] = 0.0f;
+                    for (int j = 0; j < 4; j++)
+                        sexp[s][i] += cols[j * 4 + i] * prod[quarter * 4 + j];
+                }
+            }
+            r2vb_verify_bo_readback(r300, clip, sexp, count, 0.05f, tag);
+            free(sexp);
         }
     }
 
