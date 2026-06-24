@@ -2350,7 +2350,11 @@ bool r300_r2vb_route_mvp(struct r300_context *r300,
         const char *e = getenv("R300_R2VB_VARYING");
         varying = (e && strcmp(e, "1") == 0) ? 1 : 0;
     }
-    return restage ? r300_vs_is_fragment_aluable(r300, varying) : r300_vs_is_mvp(r300);
+    bool al = restage ? r300_vs_is_fragment_aluable(r300, varying) : r300_vs_is_mvp(r300);
+    if (getenv("R300_R2VB_EXEC_DEBUG"))
+        fprintf(stderr, "r2vb_route_mvp gate=%d restage=%d varying=%d aluable=%d count=%u\n",
+                gate, restage, varying, al, draw->count);
+    return al;
 }
 
 /* Re-ingest a computed-varying draw by pointing each VS output's vertex stream at
@@ -2695,6 +2699,10 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
                              const struct pipe_draw_info *info,
                              const struct pipe_draw_start_count_bias *draw)
 {
+    if (getenv("R300_R2VB_EXEC_DEBUG"))
+        fprintf(stderr, "r2vb_exec_entry const0=%p size=%u velems=%p vcount=%u draw_count=%u\n",
+                r300->swtcl_vs_const0_ptr, r300->swtcl_vs_const0_size,
+                (void *)r300->velems, r300->velems ? r300->velems->count : 0, draw->count);
     if (!r300->swtcl_vs_const0_ptr || r300->swtcl_vs_const0_size < 64)
         return false;
     if (!r300->velems || r300->velems->count == 0)
@@ -3021,18 +3029,20 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
     }
 
     /* Q16.16 multi-limb MAC dump (R300_R2VB_QMAC=lo|hi).  The bound VS is the lean
-     * MAC kernel: it reads two Q16.16 operands a, b and an addend c as base-2^4
-     * limbs (a = velem[0..1], b = velem[2..3], c = velem[4..5], num_in == 6),
-     * computes the convolution + the >>16 truncation-carry + the +c add on the FP24
-     * ALU, and emits the UN-NORMALISED result columns (cols 0..3 for the lo VS, 4..7
-     * for the hi VS) as gl_Position (the probe pushes an identity matrix, so clip
-     * holds the columns verbatim).  The carry chain is NOT on the GPU -- the trivial
+     * MAC kernel: it reads two Q16.16 operands a, b and the relevant quarter of the
+     * addend c as base-2^4 limbs (a = velem[0..1], b = velem[2..3], c-quarter =
+     * velem[4], num_in == 5; the probe feeds c[0..3] for the lo pass and c[4..7] for
+     * the hi pass so each half reads 5 contiguous velems), computes the convolution
+     * + the >>16 truncation-carry + the +c add on the FP24 ALU, and emits the
+     * UN-NORMALISED result columns (cols 0..3 for the lo VS, 4..7 for the hi VS) as
+     * gl_Position (the probe pushes an identity matrix, so clip holds the columns
+     * verbatim).  The carry chain is NOT on the GPU -- the trivial
      * positional recombine is the inherent limb->integer readback step, done by the
      * host harness, which reassembles value = sum col*16^i across the lo and hi
      * dumps, masks to 32 bits, and compares bit-exact to the int64 oracle TSV.  The
      * columns are small integers (< 2^17), printed exactly. */
     const char *qmac = getenv("R300_R2VB_QMAC");
-    if (qmac && num_in == 6) {
+    if (qmac && num_in == 5) {
         const char *half = (qmac[0] == 'h') ? "hi" : "lo";
         struct pipe_transfer *xfer = NULL;
         struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
