@@ -23,6 +23,7 @@
 #include "r300_r2vb.h"
 #include "r300_screen_buffer.h"
 #include "r300_emit.h"
+#include "r300_fs.h"
 #include "r300_reg.h"
 #include "r300_vs.h"
 
@@ -1328,7 +1329,47 @@ static void r300_swtcl_draw_vbo(struct pipe_context* pipe,
         draw_enable_frontface_injection(r300->draw, frontface_via_draw);
     r300->frontface_via_draw = frontface_via_draw;
 
+    /* SWTCL analytic derivatives on an R300-class part. dFdx/dFdy have no
+     * hardware here, so a shader that builds a normal as
+     * normalize(cross(dFdx(pos), dFdy(pos))) renders unlit unless the draw
+     * module supplies the per-triangle gradient. Same gating shape as
+     * frontface: triangle draws, non-r500, default on with R300_DERIV_VIA_DRAW=0
+     * as the escape hatch. The RS block reads this flag; the actual draw
+     * injection is enabled after the FS is picked (its recorded generic indices
+     * name the differentiated varying). */
+    bool derivative_via_draw = false;
+    if (!r300->screen->caps.is_r500 &&
+        u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES) {
+        static int gate = -1;
+        if (gate < 0) {
+            const char *e = getenv("R300_DERIV_VIA_DRAW");
+            gate = (e && strcmp(e, "0") == 0) ? 0 : 1;
+        }
+        derivative_via_draw = gate != 0;
+    }
+    r300->derivative_via_draw = derivative_via_draw;
+
     r300_update_derived_state(r300);
+
+    /* With the FS now picked, enable (or update) the draw-module derivative
+     * injection for shaders that actually read a derivative. deriv_src_generic
+     * is -1 for shaders without one; the gradient generics (ddx/ddy) are fixed,
+     * so a change of the differentiated varying is the only re-enable trigger.
+     * draw_enable flushes the draw module, so only call it on a transition. */
+    {
+        struct r300_fragment_shader_code *fscode = r300_fs(r300)->shader;
+        bool want = derivative_via_draw && fscode &&
+                    fscode->deriv_src_generic >= 0;
+        int want_src = want ? fscode->deriv_src_generic : 0;
+        if (want_src != r300->draw_deriv_src) {
+            draw_enable_derivative_injection(
+                r300->draw, want,
+                want ? fscode->deriv_src_generic : -1,
+                want ? fscode->deriv_ddx_generic : -1,
+                want ? fscode->deriv_ddy_generic : -1);
+            r300->draw_deriv_src = want_src;
+        }
+    }
 
     /* RS482 fragment-ALU R2VB vertex route (experiment-gated by R300_R2VB_ROUTE).
      * Classifies the draw against the simple-draw class and, once the producer is
@@ -1393,11 +1434,17 @@ r300_render_get_vertex_info(struct vbuf_render* render)
      * rebuild the layout to fold the draw-generated output into the HW vertex
      * and RS routing, then re-dirty the RS block so the run-time version is
      * emitted. in_swtcl_layout_rebuild guards re-entry from the atom dirtying. */
+    struct r300_fragment_shader_code *deriv_fs = r300_fs(r300)->shader;
+    const int deriv_ddx_g =
+        deriv_fs ? deriv_fs->deriv_ddx_generic : -1;
     if (!r300->in_swtcl_layout_rebuild &&
         ((r300->point_sprite_via_draw &&
           draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0) ||
          (r300->frontface_via_draw &&
-          draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0))) {
+          draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0) ||
+         (r300->derivative_via_draw && deriv_ddx_g >= 0 &&
+          draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
+                                  deriv_ddx_g) >= 0))) {
         r300->in_swtcl_layout_rebuild = true;
         r300_swtcl_rebuild_vertex_layout(r300);
         r300_mark_atom_dirty(r300, &r300->rs_block_state);

@@ -608,6 +608,16 @@ struct r300_context {
      * the face per filled triangle and the RS routes it as a vertex texcoord
      * into the FS face input. Set per draw at draw entry. */
     bool frontface_via_draw;
+    /* SWTCL analytic-derivative delivery on R300-class parts: the FS has no
+     * dFdx/dFdy hardware, so the draw module solves the per-triangle gradient of
+     * one varying and the RS routes the two gradient vectors as vertex texcoords
+     * into the rewritten FS inputs. Set per draw at draw entry. */
+    bool derivative_via_draw;
+    /* Differentiated varying's generic index last applied to the draw module's
+     * derivative injection (0 = injection off; real indices are >= 9). Tracks
+     * transitions so draw_enable_derivative_injection's flush fires only when the
+     * shader's differentiated varying actually changes. */
+    int draw_deriv_src;
     bool scissor_enabled;
     /* Whether two-sided color selection is enabled (AKA light_twoside). */
     bool two_sided_color;

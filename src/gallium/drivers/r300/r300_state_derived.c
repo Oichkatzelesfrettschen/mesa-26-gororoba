@@ -53,6 +53,16 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
      * the run-time r300_render_get_vertex_info rebuild emits it. */
     const bool pcoord_via_draw = r300->point_sprite_via_draw &&
         draw_find_shader_output(r300->draw, TGSI_SEMANTIC_PCOORD, 0) >= 0;
+    /* SWTCL analytic derivatives: the draw module supplies the two per-triangle
+     * gradient vectors as generic vertex outputs at deriv_ddx/ddy_generic. Valid
+     * only once those outputs exist (draw run time), matching FACE/PCOORD. */
+    const struct r300_fragment_shader_code *fscode = r300_fs(r300)->shader;
+    const bool deriv_via_draw = r300->derivative_via_draw && fscode &&
+        fscode->deriv_ddx_generic >= 0 &&
+        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
+                                fscode->deriv_ddx_generic) >= 0;
+    const int deriv_ddx_g = deriv_via_draw ? fscode->deriv_ddx_generic : -1;
+    const int deriv_ddy_g = deriv_via_draw ? fscode->deriv_ddy_generic : -1;
 
     /* Position. */
     if (vs_outputs->pos != ATTR_UNUSED) {
@@ -107,6 +117,13 @@ static void r300_draw_emit_all_attribs(struct r300_context* r300)
              * vertex_info and the RS stream stay index-aligned for
              * r300_swtcl_vertex_psc. */
             r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_PCOORD, 0);
+            gen_count++;
+        } else if (i == deriv_ddx_g || i == deriv_ddy_g) {
+            /* Draw-injected per-triangle screen-space gradient. Emit it as a
+             * generic vertex output at the same index r300_update_rs_block routes
+             * it, after the real generics, so vertex_info and the RS stream stay
+             * index-aligned for r300_swtcl_vertex_psc. */
+            r300_draw_emit_attrib(r300, EMIT_4F, TGSI_SEMANTIC_GENERIC, i);
             gen_count++;
         }
     }
@@ -342,6 +359,16 @@ static void r300_update_rs_block(struct r300_context *r300)
      * an R500 addition). Gated on the FACE draw output existing, like PCOORD. */
     const bool frontface_via_draw = r300->frontface_via_draw &&
         draw_find_shader_output(r300->draw, TGSI_SEMANTIC_FACE, 0) >= 0;
+    /* SWTCL analytic derivatives: route the draw-injected gradient generics into
+     * the rewritten FS inputs. Gated on the gradient draw output existing, like
+     * FACE/PCOORD; the indices come from the bound FS's NIR derivative pass. */
+    const struct r300_fragment_shader_code *deriv_fs = r300_fs(r300)->shader;
+    const bool derivative_via_draw = r300->derivative_via_draw && deriv_fs &&
+        deriv_fs->deriv_ddx_generic >= 0 &&
+        draw_find_shader_output(r300->draw, TGSI_SEMANTIC_GENERIC,
+                                deriv_fs->deriv_ddx_generic) >= 0;
+    const int deriv_ddx_g = derivative_via_draw ? deriv_fs->deriv_ddx_generic : -1;
+    const int deriv_ddy_g = derivative_via_draw ? deriv_fs->deriv_ddy_generic : -1;
 
     if (r300->screen->caps.is_r500) {
         rX00_rs_col       = r500_rs_col;
@@ -548,7 +575,13 @@ static void r300_update_rs_block(struct r300_context *r300)
 	    sw_pcoord = pcoord_via_draw && !!(r300->point_sprite_sce & (1 << i));
 	}
 
-        if (vs_outputs->generic[i] != ATTR_UNUSED || sprite_coord || sw_pcoord) {
+	/* A draw-injected gradient generic has no VS output, so route it like a
+	 * real per-vertex texcoord here (it falls past the actual generics, so
+	 * fp_offset stays aligned with allocate_hardware_inputs). */
+	const bool deriv_gen = (i == deriv_ddx_g || i == deriv_ddy_g);
+
+        if (vs_outputs->generic[i] != ATTR_UNUSED || sprite_coord || sw_pcoord ||
+            deriv_gen) {
             if (!sprite_coord || sw_pcoord) {
                 /* Set up the texture coordinates in VAP. A SW-expanded
                  * gl_PointCoord (sw_pcoord) is a real per-vertex texcoord, not
