@@ -1,0 +1,44 @@
+# umr-gororoba: the gororoba fork of AMD's umr (User Mode Register debugger) for
+# RS480/RS482 GPU register, ring, and IP-block inspection.  The fork carries the
+# RS480/RS482 ip_discovery-absent skip (umr PR #84 / database .asic load without
+# the discovery sysfs node) so umr drives the radeon-KMD RS482 without the navi-era
+# discovery path.
+#
+# Build model: REPACK of the prebuilt CMake build/ in the umr-gororoba working
+# tree (the same repack model as mesa-gororoba-debug), so the packaged umr is
+# exactly the fork built+tested in tree -- not a tarball rebuild.  Refresh the
+# build first:
+#   cmake -S ~/workspaces/mesa/umr-gororoba -B ~/workspaces/mesa/umr-gororoba/build && cmake --build ~/workspaces/mesa/umr-gororoba/build
+pkgname=umr-gororoba
+pkgver=1.0.9
+pkgrel=1
+epoch=1
+pkgdesc='gororoba umr (AMD User Mode Register debugger) for RS480/RS482: register/ring/IP-block inspection over the radeon KMD, with the RS482 ip_discovery-absent skip'
+arch=('x86_64')
+url='https://github.com/Oichkatzelesfrettschen/umr-gororoba'
+license=('MIT')
+depends=('libpciaccess' 'ncurses' 'llvm-libs' 'sdl2' 'libdrm')
+makedepends=('cmake')
+provides=('umr')
+conflicts=('umr')
+options=('!strip' 'debug')
+
+_umrbuild="${GOROROBA_UMR_BUILD:-/home/eirikr/workspaces/mesa/umr-gororoba/build}"
+_umrsrc="${GOROROBA_UMR_SRC:-/home/eirikr/workspaces/mesa/umr-gororoba}"
+
+package() {
+  if [ ! -d "${_umrbuild}" ] || [ ! -e "${_umrbuild}/CMakeCache.txt" ]; then
+    echo "ERROR: umr-gororoba build dir not found at ${_umrbuild}" >&2
+    echo "       cmake -S ${_umrsrc} -B ${_umrbuild} && cmake --build ${_umrbuild}" >&2
+    return 1
+  fi
+  DESTDIR="${pkgdir}" cmake --install "${_umrbuild}"
+  # The umr binary is the load-bearing artifact; fail if it did not stage.
+  if [ ! -e "${pkgdir}/usr/bin/umr" ] && [ ! -e "${pkgdir}/usr/local/bin/umr" ]; then
+    echo "ERROR: umr binary not staged from ${_umrbuild}" >&2
+    return 1
+  fi
+  if [ -f "${_umrsrc}/LICENSE" ]; then
+    install -Dm644 "${_umrsrc}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  fi
+}

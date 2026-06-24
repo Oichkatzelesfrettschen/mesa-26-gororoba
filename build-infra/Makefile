@@ -117,6 +117,9 @@ LOCKED_TOOL_ENV := \
         install-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
         rebuild-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache \
         install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache \
+        rebuild-7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache \
+        install-7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache \
+        rebuild-gpu-debug-stack \
         pkg-mesa-gororoba deploy-mesa-gororoba \
         help
 
@@ -569,6 +572,33 @@ rebuild-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
 
 install-6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache:
 	$(MAKE) install PROFILE=6_terakan_norusticl_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+
+# Maximal-instrumentation ASan+UBSan r300 driver (profile 7_).  SCOPED install to
+# /opt/mesa-26-gororoba-asan -- NOT the system Mesa (an ASan libGL/libvulkan as the
+# default Mesa aborts every GL/VK client).  The prefix must equal the
+# mesa-gororoba-asan PKGBUILD _prefix so the repack stages to the right tree; it is
+# reached only through mesa-26-gororoba-asan-run.
+rebuild-7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache:
+	$(MAKE) -j1 clean PROFILE=7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-26-gororoba-asan
+	$(MAKE) -j1 configure PROFILE=7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-26-gororoba-asan
+	$(MAKE) build PROFILE=7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-26-gororoba-asan
+
+install-7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache:
+	$(MAKE) install PROFILE=7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/mesa-26-gororoba-asan
+
+# Coherent GPU debug stack ("if one is updated they are all updated"): rebuild the
+# three r300 driver tiers (release 1_, debug 2_, asan-max 7_) from the current tree
+# so they share the source-of-truth pkgver and stay in lockstep.  The per-package
+# PKGBUILDs (mesa-gororoba, mesa-gororoba-debug, mesa-gororoba-asan) then repack
+# those builddirs, umr-gororoba repacks its CMake build, and the
+# mesa-gororoba-gpu-debug-stack meta-package pins them together.  Pacman has no
+# atomic "update all"; this target + the meta-package pin are the idiom.
+rebuild-gpu-debug-stack: \
+	rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache \
+	rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache \
+	rebuild-7_r300_full_asanubsan_max_debug_x86_64v1-clang22-distcc-cache
+	@echo "rebuilt the three r300 driver tiers (release + debug + asan-max) from the current tree."
+	@echo "package: for p in mesa-gororoba mesa-gororoba-debug mesa-gororoba-asan umr-gororoba mesa-gororoba-gpu-debug-stack; do (cd packaging/\$$p && makepkg -f --noconfirm); done"
 
 # mesa-gororoba CachyOS-style /usr drop-in package (r300 GL + llvmpipe +
 # amd_r300/r300vk Vulkan ICD), built -march=x86-64 so it runs on the K8 Vostro.
