@@ -402,6 +402,53 @@ r300_deriv_source_input_var(nir_def *def)
     return NULL;
 }
 
+/* The six fragment derivative intrinsics the SWTCL lowering rewrites, split by
+ * screen axis (ddx vs ddy, each in coarse/fine/plain forms). */
+static bool
+r300_is_ddx_intrinsic(nir_intrinsic_op op)
+{
+    return op == nir_intrinsic_ddx || op == nir_intrinsic_ddx_fine ||
+           op == nir_intrinsic_ddx_coarse;
+}
+
+static bool
+r300_is_ddy_intrinsic(nir_intrinsic_op op)
+{
+    return op == nir_intrinsic_ddy || op == nir_intrinsic_ddy_fine ||
+           op == nir_intrinsic_ddy_coarse;
+}
+
+static bool
+r300_is_deriv_intrinsic(nir_intrinsic_op op)
+{
+    return r300_is_ddx_intrinsic(op) || r300_is_ddy_intrinsic(op);
+}
+
+/* Collect every derivative intrinsic in impl into derivs and confirm they all
+ * differentiate the same shader-input varying.  Returns that common source
+ * variable, or NULL if there are none, one is not traceable to an input, or two
+ * differentiate different inputs -- all cases the caller leaves to the stub. */
+static nir_variable *
+r300_collect_swtcl_derivatives(nir_function_impl *impl, struct util_dynarray *derivs)
+{
+    nir_variable *src_var = NULL;
+    nir_foreach_block (block, impl) {
+        nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+                continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (!r300_is_deriv_intrinsic(intr->intrinsic))
+                continue;
+            nir_variable *var = r300_deriv_source_input_var(intr->src[0].ssa);
+            if (!var || (src_var && src_var != var))
+                return NULL;
+            src_var = var;
+            util_dynarray_append(derivs, intr);
+        }
+    }
+    return src_var;
+}
+
 /* SWTCL analytic-derivative lowering for R300-class parts, which have no
  * dFdx/dFdy hardware (radeonStubDeriv otherwise turns them into MOV 0, zeroing
  * any normal built as normalize(cross(dFdx(pos), dFdy(pos)))). Rewrite the
@@ -426,41 +473,11 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
      * same input varying. */
     struct util_dynarray derivs;
     util_dynarray_init(&derivs, NULL);
-    nir_variable *src_var = NULL;
-    bool bail = false;
-
-    nir_foreach_block (block, impl) {
-        nir_foreach_instr (instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-                continue;
-            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-            switch (intr->intrinsic) {
-            case nir_intrinsic_ddx:
-            case nir_intrinsic_ddx_fine:
-            case nir_intrinsic_ddx_coarse:
-            case nir_intrinsic_ddy:
-            case nir_intrinsic_ddy_fine:
-            case nir_intrinsic_ddy_coarse:
-                break;
-            default:
-                continue;
-            }
-
-            nir_variable *var = r300_deriv_source_input_var(intr->src[0].ssa);
-            if (!var || (src_var && src_var != var)) {
-                bail = true;
-                break;
-            }
-            src_var = var;
-            util_dynarray_append(&derivs, intr);
-        }
-        if (bail)
-            break;
-    }
+    nir_variable *src_var = r300_collect_swtcl_derivatives(impl, &derivs);
 
     /* Only the VARn user-varying range maps cleanly onto a spare generic slot
      * the draw module can fill; the position/face/texcoord ranges do not. */
-    if (bail || !src_var || util_dynarray_num_elements(&derivs, nir_intrinsic_instr *) == 0 ||
+    if (!src_var || util_dynarray_num_elements(&derivs, nir_intrinsic_instr *) == 0 ||
         src_var->data.location < VARYING_SLOT_VAR0 ||
         src_var->data.location > VARYING_SLOT_VAR31) {
         util_dynarray_fini(&derivs);
@@ -500,9 +517,7 @@ r300_nir_lower_derivatives_swtcl(nir_shader *s,
     nir_builder b = nir_builder_create(impl);
     util_dynarray_foreach (&derivs, nir_intrinsic_instr *, intrp) {
         nir_intrinsic_instr *intr = *intrp;
-        bool is_ddx = intr->intrinsic == nir_intrinsic_ddx ||
-                      intr->intrinsic == nir_intrinsic_ddx_fine ||
-                      intr->intrinsic == nir_intrinsic_ddx_coarse;
+        bool is_ddx = r300_is_ddx_intrinsic(intr->intrinsic);
 
         b.cursor = nir_before_instr(&intr->instr);
         nir_def *grad = nir_load_var(&b, is_ddx ? ddx_var : ddy_var);
