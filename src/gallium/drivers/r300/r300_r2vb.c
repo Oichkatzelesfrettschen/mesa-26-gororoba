@@ -1977,7 +1977,7 @@ static bool r300_nir_op_is_fragment_aluable(nir_op op)
     case nir_op_fdot2_replicated: case nir_op_fdot3_replicated:
     case nir_op_fdot4_replicated:
     case nir_op_fmin: case nir_op_fmax:
-    case nir_op_ffract: case nir_op_fround_even:
+    case nir_op_ffract: case nir_op_ffloor: case nir_op_fround_even:
     case nir_op_frcp: case nir_op_frsq:
     case nir_op_fexp2: case nir_op_flog2: case nir_op_fpow:
     case nir_op_fsin: case nir_op_fcos:
@@ -3017,6 +3017,32 @@ bool r300_r2vb_exec_mvp_draw(struct r300_context *r300,
             }
             r2vb_verify_bo_readback(r300, clip, sexp, count, 0.05f, tag);
             free(sexp);
+        }
+    }
+
+    /* Q16.16 multi-limb MAC dump (R300_R2VB_QMAC=lo|hi).  The bound VS is the lean
+     * MAC kernel: it reads two Q16.16 operands a, b and an addend c as base-2^4
+     * limbs (a = velem[0..1], b = velem[2..3], c = velem[4..5], num_in == 6),
+     * computes the convolution + the >>16 truncation-carry + the +c add on the FP24
+     * ALU, and emits the UN-NORMALISED result columns (cols 0..3 for the lo VS, 4..7
+     * for the hi VS) as gl_Position (the probe pushes an identity matrix, so clip
+     * holds the columns verbatim).  The carry chain is NOT on the GPU -- the trivial
+     * positional recombine is the inherent limb->integer readback step, done by the
+     * host harness, which reassembles value = sum col*16^i across the lo and hi
+     * dumps, masks to 32 bits, and compares bit-exact to the int64 oracle TSV.  The
+     * columns are small integers (< 2^17), printed exactly. */
+    const char *qmac = getenv("R300_R2VB_QMAC");
+    if (qmac && num_in == 6) {
+        const char *half = (qmac[0] == 'h') ? "hi" : "lo";
+        struct pipe_transfer *xfer = NULL;
+        struct pipe_box box = { .width = count * 16, .height = 1, .depth = 1 };
+        const float *got =
+            r300->context.buffer_map(&r300->context, clip, 0, PIPE_MAP_READ, &box, &xfer);
+        if (got) {
+            for (unsigned s = 0; s < count; s++)
+                fprintf(stderr, "r2vb_qmac_dump half=%s vtx=%u cols=%.1f,%.1f,%.1f,%.1f\n",
+                        half, s, got[s * 4 + 0], got[s * 4 + 1], got[s * 4 + 2], got[s * 4 + 3]);
+            r300->context.buffer_unmap(&r300->context, xfer);
         }
     }
 
