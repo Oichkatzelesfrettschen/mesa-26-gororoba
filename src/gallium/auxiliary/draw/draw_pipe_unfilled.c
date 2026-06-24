@@ -145,6 +145,18 @@ inject_screen_gradient_info(struct draw_stage *stage,
     * normalize(cross()) consumer; only the absolute magnitude differs, and only
     * for perspective-interpolated varyings. */
    const unsigned pos = draw_current_shader_position_output(stage->draw);
+
+   if (getenv("R300_DERIV_DEBUG")) {
+      static int once = 0;
+      if (!once) {
+         once = 1;
+         fprintf(stderr, "r300 deriv inject: pos_slot=%u src_slot=%d "
+                 "ddx_slot=%d ddy_slot=%d num_outputs=%u\n",
+                 pos, src_slot, ddx_slot, ddy_slot,
+                 draw_current_shader_outputs(stage->draw));
+      }
+   }
+
    const float *p0 = header->v[0]->data[pos];
    const float *p1 = header->v[1]->data[pos];
    const float *p2 = header->v[2]->data[pos];
