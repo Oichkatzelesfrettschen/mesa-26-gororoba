@@ -124,7 +124,8 @@ create_vert_shader(struct vl_compositor *c)
 }
 
 static void
-create_frag_shader_weave(struct ureg_program *shader, struct ureg_dst fragment)
+create_frag_shader_weave(struct ureg_program *shader, struct ureg_dst fragment,
+                         unsigned tex_target)
 {
    struct ureg_src i_tc[2];
    struct ureg_src sampler[3];
@@ -137,7 +138,7 @@ create_frag_shader_weave(struct ureg_program *shader, struct ureg_dst fragment)
 
    for (i = 0; i < 3; ++i) {
       sampler[i] = ureg_DECL_sampler(shader, i);
-      ureg_DECL_sampler_view(shader, i, TGSI_TEXTURE_2D_ARRAY,
+      ureg_DECL_sampler_view(shader, i, tex_target,
                              TGSI_RETURN_TYPE_FLOAT,
                              TGSI_RETURN_TYPE_FLOAT,
                              TGSI_RETURN_TYPE_FLOAT,
@@ -179,7 +180,7 @@ create_frag_shader_weave(struct ureg_program *shader, struct ureg_dst fragment)
             TGSI_SWIZZLE_X, j ? TGSI_SWIZZLE_Z : TGSI_SWIZZLE_Y, TGSI_SWIZZLE_W, TGSI_SWIZZLE_W);
 
          ureg_TEX(shader, ureg_writemask(t_texel[i], TGSI_WRITEMASK_X << j),
-                  TGSI_TEXTURE_2D_ARRAY, src, sampler[j]);
+                  tex_target, src, sampler[j]);
       }
 
    /* calculate linear interpolation factor
@@ -238,7 +239,8 @@ create_frag_shader_csc(struct ureg_program *shader, struct ureg_dst texel,
 }
 
 static void
-create_frag_shader_yuv(struct ureg_program *shader, struct ureg_dst texel)
+create_frag_shader_yuv(struct ureg_program *shader, struct ureg_dst texel,
+                       unsigned tex_target)
 {
    struct ureg_src tc;
    struct ureg_src sampler[3];
@@ -247,7 +249,7 @@ create_frag_shader_yuv(struct ureg_program *shader, struct ureg_dst texel)
    tc = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_GENERIC, VS_O_VTEX, TGSI_INTERPOLATE_LINEAR);
    for (i = 0; i < 3; ++i) {
       sampler[i] = ureg_DECL_sampler(shader, i);
-      ureg_DECL_sampler_view(shader, i, TGSI_TEXTURE_2D_ARRAY,
+      ureg_DECL_sampler_view(shader, i, tex_target,
                              TGSI_RETURN_TYPE_FLOAT,
                              TGSI_RETURN_TYPE_FLOAT,
                              TGSI_RETURN_TYPE_FLOAT,
@@ -258,7 +260,19 @@ create_frag_shader_yuv(struct ureg_program *shader, struct ureg_dst texel)
     * texel.xyz = tex(tc, sampler[i])
     */
    for (i = 0; i < 3; ++i)
-      ureg_TEX(shader, ureg_writemask(texel, TGSI_WRITEMASK_X << i), TGSI_TEXTURE_2D_ARRAY, tc, sampler[i]);
+      ureg_TEX(shader, ureg_writemask(texel, TGSI_WRITEMASK_X << i), tex_target, tc, sampler[i]);
+}
+
+/* Hardware without array textures (max_texture_array_layers < 2, e.g. r300)
+ * cannot compile a TGSI_TEXTURE_2D_ARRAY sampler.  Progressive video buffers
+ * are single-layer PIPE_TEXTURE_2D, so plain 2D samples are exact there; the
+ * array layer the weave path encodes in coord.w is only meaningful for
+ * interlaced two-layer buffers, which such hardware cannot sample regardless. */
+static unsigned
+compositor_sampler_target(struct vl_compositor *c)
+{
+   return c->pipe->screen->caps.max_texture_array_layers > 1 ?
+             TGSI_TEXTURE_2D_ARRAY : TGSI_TEXTURE_2D;
 }
 
 void *
@@ -267,6 +281,7 @@ create_frag_shader_video_buffer(struct vl_compositor *c)
    struct ureg_program *shader;
    struct ureg_dst texel;
    struct ureg_dst fragment;
+   unsigned tex_target = compositor_sampler_target(c);
 
    shader = ureg_create(MESA_SHADER_FRAGMENT);
    if (!shader)
@@ -275,7 +290,7 @@ create_frag_shader_video_buffer(struct vl_compositor *c)
    texel = ureg_DECL_temporary(shader);
    fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
 
-   create_frag_shader_yuv(shader, texel);
+   create_frag_shader_yuv(shader, texel, tex_target);
    create_frag_shader_csc(shader, texel, fragment);
 
    ureg_release_temporary(shader, texel);
@@ -297,7 +312,7 @@ create_frag_shader_weave_rgb(struct vl_compositor *c)
    texel = ureg_DECL_temporary(shader);
    fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
 
-   create_frag_shader_weave(shader, texel);
+   create_frag_shader_weave(shader, texel, compositor_sampler_target(c));
    create_frag_shader_csc(shader, texel, fragment);
 
    ureg_release_temporary(shader, texel);
@@ -312,6 +327,7 @@ create_frag_shader_deint_yuv(struct vl_compositor *c, bool y, bool w)
 {
    struct ureg_program *shader;
    struct ureg_dst texel, fragment;
+   unsigned tex_target = compositor_sampler_target(c);
 
    shader = ureg_create(MESA_SHADER_FRAGMENT);
    if (!shader)
@@ -321,9 +337,9 @@ create_frag_shader_deint_yuv(struct vl_compositor *c, bool y, bool w)
    fragment = ureg_DECL_output(shader, TGSI_SEMANTIC_COLOR, 0);
 
    if (w)
-      create_frag_shader_weave(shader, texel);
+      create_frag_shader_weave(shader, texel, tex_target);
    else
-      create_frag_shader_yuv(shader, texel);
+      create_frag_shader_yuv(shader, texel, tex_target);
 
    if (y)
       ureg_MOV(shader, ureg_writemask(fragment, TGSI_WRITEMASK_X), ureg_src(texel));
