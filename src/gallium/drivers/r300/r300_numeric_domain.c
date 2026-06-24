@@ -340,6 +340,31 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .mesa_hook       = NULL,  /* no detector yet; requires 4x6-bit limb-multiply NIR pattern */
    },
    {
+      .op_name         = "Q16_16_MAC",
+      .domain          = R300_NUM_DOMAIN_Q16_16,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "out = a*b + c in Q16.16, carried multi-limb at base 2^4 / 8 limbs.  "
+                         "Base 2^4 (not the Q16_16_MUL entry's base 2^6) makes the Q16.16 "
+                         "recovery from the Q32.32 product a >>16 = drop-exactly-4-limbs "
+                         "limb-boundary realign (16 = 4*4); the partial product is (2^4-1)^2 = "
+                         "225 and a convolution column sums at most 8 partials = 1800 << 2^17, "
+                         "FP24-exact with wide margin.  The multi-limb MUL principle is "
+                         "HW-confirmed at five 7-bit limbs (MULTILIMB7_U32_MUL).  HW-confirmed "
+                         "10/10 bit-exact on RS482 (R300_R2VB_QMAC, 31 r300 ALU, boot-stable) "
+                         "across the edge-case set (zero, +-1.0, mixed sign, fractional carry, "
+                         "near-overflow +/-, accumulate): the conv + >>16 truncation-carry + "
+                         "add c run on the fragment ALU, the inherent limb->integer recombine on "
+                         "the host.  Two FP24 constraints made explicit by silicon: the >>16 "
+                         "truncation carry must be a PER-LIMB base-2^4 chain (a one-shot "
+                         "floor((p0+16p1+256p2+4096p3)/65536) overflows 2^17); and signed Q16.16 "
+                         "needs the two's-complement sign correction (unsigned limb product "
+                         "matches signed in its low 48 bits, but >>16 pulls in bits 32-47 "
+                         "differing by (a*sb + b*sa)*2^32 -- subtract the other operand's low "
+                         "limbs when negative).  Host oracle r300_q16_16_mac_multilimb_oracle.c "
+                         "bit-exact (tol 0) over 2,000,000 random triples",
+      .mesa_hook       = NULL,  /* R300_R2VB_QMAC dump gate; detector (limb MAC NIR pattern) pending */
+   },
+   {
       .op_name         = "IEEE16_CLASSIFY_LUT",
       .domain          = R300_NUM_DOMAIN_IEEE_FP16_VIRTUAL,
       .status          = R300_VOP_HW_CONFIRMED,
