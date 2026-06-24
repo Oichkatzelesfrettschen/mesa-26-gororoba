@@ -543,6 +543,28 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .mesa_hook       = "r300_nir_detect_otrans_pattern",
    },
    {
+      .op_name         = "SED_DIV_DOWNCAST_ADMIT",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_NUMERIC_DERIVED,
+      .theorem         = "dim-16 sedenion division is admissible IFF both operands lie in the "
+                         "octonion downcast lane (hi half = components 8..15 all zero); "
+                         "otherwise it must reject.  A hi-half-zero sedenion is exactly an "
+                         "octonion downcast and the lane is CLOSED under the product (the "
+                         "product's hi half stays zero) -- ROCQ ground open_gororoba "
+                         "C1630_SedenionOctonionDowncast -- and has NO zero divisors "
+                         "(C1638_OctonionDowncastNoZeroDivisors), so on the lane conj/N is a "
+                         "true inverse and division reduces to the HW-confirmed octonion ODIV "
+                         "of the low halves.  Off the lane dim-16 has zero divisors: "
+                         "C1635_SedenionDriverSemantics proves a nonzero zero-divisor pair "
+                         "cannot both be hi-half-zero, and the R300 witness "
+                         "C1637_R300SedenionZeroDivisor proves (e1+e10)(e5+e14)=0 with both "
+                         "operands nonzero and NOT downcast (HW-confirmed reading exact zero "
+                         "on RS482, r2vb_sed_q0_verify).  So the admission predicate is a "
+                         "two-operand hi-half-zero test feeding the octonion ODIV lane; the "
+                         "general dim-16 division stays REJECTED (Hurwitz wall, see ODIV)",
+      .mesa_hook       = NULL,  /* admission predicate; reuses the octonion ODIV detector on the downcast lane */
+   },
+   {
       .op_name         = "QADD",
       .domain          = R300_NUM_DOMAIN_FP24_RTZ,
       .status          = R300_VOP_HW_CONFIRMED,
