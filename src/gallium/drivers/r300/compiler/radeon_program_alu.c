@@ -66,6 +66,9 @@ dstregtmpmask(int index, int mask)
 static const struct rc_src_register builtin_one = {
    .File = RC_FILE_NONE, .Index = 0, .Swizzle = RC_SWIZZLE_1111};
 
+static const struct rc_src_register builtin_half = {
+   .File = RC_FILE_NONE, .Index = 0, .Swizzle = RC_SWIZZLE_HHHH};
+
 static const struct rc_src_register srcreg_undefined = {
    .File = RC_FILE_NONE, .Index = 0, .Swizzle = RC_SWIZZLE_XYZW};
 
@@ -140,6 +143,28 @@ transform_KILP(struct radeon_compiler *c, struct rc_instruction *inst)
    inst->U.I.Opcode = RC_OPCODE_KIL;
 }
 
+/* round(x) = floor(x + 0.5) = (x + 0.5) - frac(x + 0.5).  The R300/R500
+ * fragment ALU has FRC but no FLR or ROUND, and 0.5 is a native inline source
+ * (R300_ALU_ARGC_HALF), so this lowers in three ALU ops with no constant slot.
+ * Ties round up rather than to even; the integer texel and field coordinates
+ * the video compositor rounds never land on a half-integer, so the difference
+ * is unobservable there. */
+static void
+transform_ROUND(struct radeon_compiler *c, struct rc_instruction *inst)
+{
+   struct rc_dst_register sum = new_dst_reg(c, inst);
+   emit2(c, inst->Prev, RC_OPCODE_ADD, NULL, sum, inst->U.I.SrcReg[0], builtin_half);
+   struct rc_src_register sum_src = srcreg(sum.File, sum.Index);
+
+   struct rc_dst_register frac = new_dst_reg(c, inst);
+   emit1(c, inst->Prev, RC_OPCODE_FRC, NULL, frac, sum_src);
+   struct rc_src_register frac_src = srcreg(frac.File, frac.Index);
+
+   emit2(c, inst->Prev, RC_OPCODE_ADD, &inst->U.I, inst->U.I.DstReg, sum_src,
+         negate(frac_src));
+   rc_remove_instruction(inst);
+}
+
 /**
  * Can be used as a transformation for @ref radeonClauseLocalTransform,
  * no userData necessary.
@@ -155,6 +180,7 @@ radeonTransformALU(struct radeon_compiler *c, struct rc_instruction *inst, void 
    switch (inst->U.I.Opcode) {
    case RC_OPCODE_DP2: transform_DP2(c, inst); return 1;
    case RC_OPCODE_KILP: transform_KILP(c, inst); return 1;
+   case RC_OPCODE_ROUND: transform_ROUND(c, inst); return 1;
    case RC_OPCODE_RSQ: transform_RSQ(c, inst); return 1;
    case RC_OPCODE_SEQ: UNREACHABLE("");
    case RC_OPCODE_SGE: UNREACHABLE("");
