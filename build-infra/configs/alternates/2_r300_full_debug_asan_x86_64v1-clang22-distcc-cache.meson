@@ -85,43 +85,16 @@ draw-use-llvm = false
 gallium-rusticl = false
 
 # Maximal debug instrumentation (debug profile only; 1_ release stays lean).
-# valgrind builds the VALGRIND_* client-request annotations so memcheck can see
-# BO/transfer lifetimes; libunwind gives reliable symbolized stack traces for
-# u_debug_stack and gdb.  Both deps are present on the Vostro.
 valgrind = 'enabled'
 libunwind = 'enabled'
-
-# Perfetto track-event timeline.  r300/radeon is not a perfetto GPU datasource
-# (only panfrost/intel/freedreno are), so this captures the CPU-side driver
-# timeline, not GPU counters; datasources stays 'auto'.  If Meson aborts configure
-# on the perfetto subproject install-data tagging, drop perfetto back to false --
-# that is a toolchain blocker, not an r300 one.
 perfetto = true
 datasources = ['auto']
-
-# Standalone compiler RCA tools: nir and glsl build the offline NIR/GLSL
-# compilers (so an r300 RC fault can be reproduced off the X server), and
-# dlclose-skip keeps dlopened drivers resident so a gdb backtrace through the
-# pipe-loaded r300 driver keeps its symbols.
 tools = ['nir', 'glsl', 'dlclose-skip']
-
-# Build the in-tree unit tests (the r300 compiler and NIR tests), so a compiler
-# fault can be reproduced by a deterministic test instead of only through the
-# live driver.
 build-tests = true
-
-# r300vk debug layers: overlay (the on-screen HUD) and device-select.  These are
-# the mesa-shipped layers; Khronos validation is a separate package.
 vulkan-layers = ['overlay', 'device-select']
-
-# The restored r300 feature surface this debug lane must instrument: gallium-va
-# MPEG-2 decode (the pure-NIR g3dvl kernels), the H.264 decode back half on the
-# same g3dvl path (h264dec sets VIDEO_CODEC_H264DEC so the gated r300_video.c
-# H.264 path compiles; it stays fail-closed at runtime behind
-# R300_H264_EXPERIMENTAL and an entropy provider), and the gallium-xa 2D/Xv
-# frontend (xa_nir.c).  These are the "built back up" extras; the debug profile
-# carries them with assertions live so an RC, H.264, or xa fault lands on its
-# true site.
 video-codecs = ['mpeg12dec', 'h264dec']
 gallium-va = 'enabled'
 gallium-xa = true
+
+# Warnings are defects in every configured lane.
+werror = true
