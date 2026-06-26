@@ -1492,6 +1492,40 @@ r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
    return ok;
 }
 
+/* Unary-transcendental replay: out[gid] = f(in[gid]).  The same scalar carrier
+ * as the unary_map scalar path -- R32_FLOAT sampler -> FP16x4 RT -> X-lane
+ * gather -- with pl->fs_cso holding the synthesized 1-TEX-1-scalar transcendental
+ * FS (r300vk_build_unary_transcendental_fs_nir) instead of the affine MAD FS.
+ * Scalar float32 only; no push window (the op carries no runtime constant).
+ * PRECISION: the FP16 render-target carrier bounds the result to ~10-bit
+ * mantissa, looser than the fp24 ALU; the readback is approximate, not exact. */
+bool
+r300vk_unary_transcendental_dispatch_replay(
+   struct r300vk_device *device,
+   const struct r300vk_pipeline *pl,
+   const struct r300vk_cmd_dispatch *dispatch,
+   const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (pl->unary_transcendental.value_bit_size != 32 ||
+       pl->unary_transcendental.value_components != 1)
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW) ||
+       !device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_one_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->unary_transcendental.input_ssbo_binding,
+      pl->unary_transcendental.output_ssbo_binding,
+      pl->unary_transcendental.input_ssbo_binding_valid &&
+      pl->unary_transcendental.output_ssbo_binding_valid,
+      PIPE_FORMAT_R32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32_FLOAT);
+}
+
 /* Shared 2-in / 1-out compute-as-raster replay core.  Wraps two input SSBOs as
  * sampler views at fragment stages 0 + 1, draws the fullscreen quad with the
  * pipeline's synthesized VS + FS (pl->fs_cso -- the binary-map ALU FS or the
