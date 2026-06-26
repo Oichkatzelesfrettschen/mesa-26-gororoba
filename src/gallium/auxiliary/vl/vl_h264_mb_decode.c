@@ -172,7 +172,10 @@ vl_h264_mb_decoder_init(struct vl_h264_mb_decoder *dec,
    dec->intra4x4_modes = MALLOC(dec->num_mbs * 16 * sizeof(*dec->intra4x4_modes));
    dec->nz_luma = CALLOC(dec->num_mbs * 16, sizeof(*dec->nz_luma));
    dec->nz_chroma_ac = CALLOC(dec->num_mbs * 2 * 4, sizeof(*dec->nz_chroma_ac));
-   if (!dec->intra4x4_modes || !dec->nz_luma || !dec->nz_chroma_ac) {
+   dec->mv_l0_frame = MALLOC(dec->num_mbs * 16 * 2 * sizeof(*dec->mv_l0_frame));
+   dec->ref_l0_frame = MALLOC(dec->num_mbs * 16 * sizeof(*dec->ref_l0_frame));
+   if (!dec->intra4x4_modes || !dec->nz_luma || !dec->nz_chroma_ac ||
+       !dec->mv_l0_frame || !dec->ref_l0_frame) {
       vl_h264_mb_decoder_fini(dec);
       return false;
    }
@@ -191,6 +194,10 @@ vl_h264_mb_decoder_fini(struct vl_h264_mb_decoder *dec)
    dec->nz_luma = NULL;
    FREE(dec->nz_chroma_ac);
    dec->nz_chroma_ac = NULL;
+   FREE(dec->mv_l0_frame);
+   dec->mv_l0_frame = NULL;
+   FREE(dec->ref_l0_frame);
+   dec->ref_l0_frame = NULL;
 }
 
 void
@@ -200,6 +207,9 @@ vl_h264_mb_decoder_begin_slice(struct vl_h264_mb_decoder *dec,
    dec->slice = slice;
    dec->qp_y = slice->slice_qp;
    dec->skip_run = -1;
+   /* Every block starts with no list-0 reference; a decoded inter block sets it,
+    * and the motion vector prediction treats ref -1 as a non-matching neighbour. */
+   memset(dec->ref_l0_frame, -1, dec->num_mbs * 16 * sizeof(*dec->ref_l0_frame));
 }
 
 bool

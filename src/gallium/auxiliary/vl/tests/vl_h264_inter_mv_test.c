@@ -136,13 +136,23 @@ main(int argc, char **argv)
       for (unsigned blk = 0; blk < 16; blk++)
          CHECK(mb.ref_l0[blk] == want_ref);
 
+      /* Every inter block's predicted motion vector matches the oracle.  The
+       * dump's vectors for an intra macroblock are libavcodec's internal cache,
+       * not real motion, so the inter blocks are selected by the decoded ref. */
       if (mvref) {
          const int16_t *omv = (const int16_t *)(mvref + addr * MV_RECORD + 8);
          for (unsigned n = 0; n < 16; n++) {
             unsigned raster = blk_y[n] * 4u + blk_x[n];
-            if (mb.mv_l0[raster][0] == omv[n * 2] &&
-                mb.mv_l0[raster][1] == omv[n * 2 + 1])
-               mv_match++;
+            if (mb.ref_l0[raster] != 0)
+               continue;
+            if (mb.mv_l0[raster][0] != omv[n * 2] ||
+                mb.mv_l0[raster][1] != omv[n * 2 + 1]) {
+               fprintf(stderr, "FAIL mb %u block %u: mv (%d,%d) != oracle "
+                       "(%d,%d)\n", addr, n, mb.mv_l0[raster][0],
+                       mb.mv_l0[raster][1], omv[n * 2], omv[n * 2 + 1]);
+               return 1;
+            }
+            mv_match++;
          }
       }
    }
@@ -158,7 +168,7 @@ main(int argc, char **argv)
    free(bitpos);
    free(mvref);
    printf("vl_h264_inter_mv: P slice decodes in full bitstream sync with the "
-          "oracle (skip, inter, intra), ref structure matches; %u/%u motion "
-          "vectors already match (mvp pending) PASS\n", mv_match, NUM_MBS * 16);
+          "oracle (skip, inter, intra); ref structure and all %u inter motion "
+          "vectors match (median, directional, P_Skip) PASS\n", mv_match);
    return 0;
 }

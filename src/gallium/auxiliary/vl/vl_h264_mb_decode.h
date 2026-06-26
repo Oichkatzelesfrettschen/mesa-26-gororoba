@@ -66,6 +66,13 @@ struct vl_h264_mb_decoder {
     * (mb_raster * 2 + component) * 4 + chroma_block, for the chroma AC nC
     * neighbour context (sec 9.2.1). */
    uint8_t *nz_chroma_ac;
+
+   /* Per-4x4-block list-0 motion vector (quarter-pel) and reference index
+    * across the frame, indexed mb_raster * 16 + raster_block.  The motion
+    * vector prediction (sec 8.4.1.3) reads its neighbours from here; ref -1
+    * marks an intra or not-yet-decoded block. */
+   int16_t *mv_l0_frame;
+   int8_t *ref_l0_frame;
 };
 
 /* Initialise the decoder for one frame.  Allocates the neighbour-state arrays;
