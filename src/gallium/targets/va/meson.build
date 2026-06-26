@@ -77,8 +77,8 @@ else
     link_whole : [libva_st],
     link_with : link_with_libva_gallium,
     dependencies : [
-      dep_libdrm, driver_r600, driver_radeonsi, driver_nouveau, driver_d3d12, driver_virgl,
-      idep_mesautil,
+      dep_libdrm, driver_r300, driver_r600, driver_radeonsi, driver_nouveau,
+      driver_d3d12, driver_virgl, idep_mesautil,
     ],
     link_depends : va_link_depends,
     install : true,
@@ -86,7 +86,8 @@ else
     name_suffix : libname_suffix,
   )
 
-  foreach d : [[with_gallium_r600, 'r600'],
+  foreach d : [[with_gallium_r300, 'r300'],
+              [with_gallium_r600, 'r600'],
               [with_gallium_radeonsi, 'radeonsi'],
               [with_gallium_nouveau, 'nouveau'],
               [with_gallium_virgl, 'virtio_gpu'],
