@@ -274,6 +274,22 @@ build_unary_transcendental(nir_op op)
    return b.shader;
 }
 
+/* Reciprocal as GLSL spells it: out[gid] = numer / in[gid], reaching the
+ * detector as fdiv(numer, x) (the classify clone does not lower fdiv).  A unit
+ * numerator is the reciprocal arm (recorded as frcp); a non-unit numerator is a
+ * scaled reciprocal the detector must reject. */
+static nir_shader *
+build_unary_reciprocal(float numer)
+{
+   nir_builder b = cs_builder("cs_unary_reciprocal");
+   nir_def *x = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *y = nir_fdiv(&b, nir_imm_float(&b, numer), x);
+   nir_store_ssbo(&b, y, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* Push-derived affine unary map: out[gid] = in[gid] * pc.c0 + pc.c1, the
  * post-explicit_io shape of a kernel reading its scale/bias from a
  * push_constant block.  c0 reads at byte offset c0_off, c1 at c1_off; a
@@ -1097,6 +1113,27 @@ case_unary_transcendental_metadata(void)
       CHECK(!um.is_unary_map, "transcendental is not an affine unary-map");
       ralloc_free(nir);
    }
+
+   /* The reciprocal arm: GLSL 1.0/x reaches the detector as fdiv(1.0, x) and is
+    * recorded as frcp; a non-unit numerator (2.0/x, a scaled reciprocal) must
+    * NOT match. */
+   nir_shader *rcp = build_unary_reciprocal(1.0f);
+   struct r300_compute_unary_transcendental_pattern rcp_tr = {0};
+   prepare_detect_shader(rcp);
+   r300_nir_detect_unary_transcendental(rcp, &rcp_tr);
+   CHECK(rcp_tr.is_unary_transcendental, "reciprocal 1.0/x admits");
+   CHECK(rcp_tr.alu_op == nir_op_frcp, "reciprocal records frcp");
+   CHECK(rcp_tr.input_ssbo_binding == 0 && rcp_tr.output_ssbo_binding == 1,
+         "reciprocal records bindings 0 -> 1");
+   ralloc_free(rcp);
+
+   nir_shader *scaled = build_unary_reciprocal(2.0f);
+   struct r300_compute_unary_transcendental_pattern scaled_tr = {0};
+   prepare_detect_shader(scaled);
+   r300_nir_detect_unary_transcendental(scaled, &scaled_tr);
+   CHECK(!scaled_tr.is_unary_transcendental,
+         "scaled reciprocal 2.0/x rejected (non-unit numerator)");
+   ralloc_free(scaled);
 
    /* The affine map (fmul/fadd) must NOT be mistaken for a transcendental --
     * the two detectors are disjoint by op set. */
