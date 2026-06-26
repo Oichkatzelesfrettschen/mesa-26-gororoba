@@ -45,6 +45,7 @@ vl_h264_reader_init(struct vl_h264_reader *reader,
    }
    reader->rbsp_size = out;
    reader->total_bits = out * 8;
+   reader->overrun = false;
 
    /* The rbsp_stop_one_bit is the last set bit in the RBSP; coded data ends
     * there and the remaining bits are alignment padding (sec 7.2). */
@@ -82,7 +83,20 @@ vl_h264_u(struct vl_h264_reader *reader, unsigned num_bits)
       return 0;
 
    vl_vlc_fillbits(&reader->vlc);
+   /* A truncated or malformed stream can ask for more bits than remain; reading
+    * them would assert in vl_vlc or return trailing zeros as data.  Flag the
+    * overrun and return zero so callers can reject the stream. */
+   if (vl_vlc_valid_bits(&reader->vlc) < num_bits) {
+      reader->overrun = true;
+      return 0;
+   }
    return vl_vlc_get_uimsbf(&reader->vlc, num_bits);
+}
+
+bool
+vl_h264_overrun(const struct vl_h264_reader *reader)
+{
+   return reader->overrun;
 }
 
 unsigned
