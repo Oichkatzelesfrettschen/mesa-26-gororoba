@@ -223,6 +223,32 @@ if with_tests and with_gallium_softpipe
     suite: 'gallium',
   )
 
+  # End-to-end I+P chroma decode on softpipe: the chroma companion to the luma
+  # end-to-end test (bilinear motion compensation, so no FP24 gap).
+  test('vl-h264-inter-chroma-e2e',
+    executable(
+      'vl_h264_inter_chroma_e2e_test',
+      'auxiliary/vl/tests/vl_h264_inter_chroma_e2e_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_idr_slice.bin'),
+            join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_pframe1_slice.bin'),
+            join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_sps.bin'),
+            join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_pps.bin'),
+            join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_pframe1_ref.yuv')],
+    suite: 'gallium',
+  )
+
   # End-to-end verification of the H.264 decoder through its pipe_video_codec
   # vtable: drives begin_frame / decode_bitstream / end_frame with the replay
   # provider feeding a serialized inter-macroblock contract, reconstructs into a

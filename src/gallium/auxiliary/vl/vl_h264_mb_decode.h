@@ -111,6 +111,10 @@ bool vl_h264_decode_intra_mb_body(struct vl_h264_mb_decoder *dec,
                                   unsigned mb_y, struct vl_h264_mb_contract *mb,
                                   unsigned mb_type);
 
+/* Chroma QP from luma QP and the picture chroma QP offset (sec 8.5.8, Table
+ * 8-15), shared by the intra and inter macroblock paths. */
+int vl_h264_chroma_qp_from_luma(int qp_y, int offset);
+
 #ifdef __cplusplus
 }
 #endif

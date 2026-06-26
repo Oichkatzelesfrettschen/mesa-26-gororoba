@@ -58,8 +58,8 @@ chroma_array_type(const struct pipe_h264_sps *sps)
    return sps->separate_colour_plane_flag ? 0 : sps->chroma_format_idc;
 }
 
-static int
-chroma_qp_from_luma(int qp_y, int offset)
+int
+vl_h264_chroma_qp_from_luma(int qp_y, int offset)
 {
    int qpi = qp_y + offset;
    if (qpi < 0)
@@ -272,8 +272,8 @@ vl_h264_decode_intra_mb_body(struct vl_h264_mb_decoder *dec,
    }
 
    mb->qp_y = dec->qp_y;
-   mb->qp_cb = chroma_qp_from_luma(dec->qp_y, dec->pps->chroma_qp_index_offset);
-   mb->qp_cr = chroma_qp_from_luma(dec->qp_y,
+   mb->qp_cb = vl_h264_chroma_qp_from_luma(dec->qp_y, dec->pps->chroma_qp_index_offset);
+   mb->qp_cr = vl_h264_chroma_qp_from_luma(dec->qp_y,
                                    dec->pps->second_chroma_qp_index_offset);
    /* Reject a header that ran past the end of the RBSP. */
    return !vl_h264_overrun(reader);
