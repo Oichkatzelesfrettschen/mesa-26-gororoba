@@ -452,6 +452,7 @@ files_libgalliumvl = files(
   'vl/vl_h264_reconstruct.h',
   'vl/vl_h264_emit.c',
   'vl/vl_h264_emit.h',
+  'vl/vl_h264_cavlc_provider.c',
   'vl/vl_h264_replay_provider.c',
   'vl/vl_h264_vld_provider.c',
   'vl/vl_h264_vld_provider.h',
@@ -728,6 +729,30 @@ if with_tests
                        'h264_cb_sps.bin'),
             join_paths(meson.current_source_dir(), 'vl', 'tests',
                        'h264_cb_pps.bin')],
+    suite: 'gallium',
+  )
+
+  # The Mesa CAVLC provider wiring: the clean-room front end as the active
+  # VL_H264_VLD provider, reproducing the direct front-end contracts.
+  test('vl-h264-cavlc-provider',
+    executable(
+      'vl_h264_cavlc_provider_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/vl_h264_dequant.c', 'vl/vl_h264_inter.c', 'vl/vl_h264_param_parser.c',
+       'vl/vl_h264_cavlc_provider.c', 'vl/vl_h264_replay_provider.c',
+       'vl/vl_h264_vld_provider.c', 'vl/vl_h264_contract_wire.c',
+       'vl/tests/vl_h264_cavlc_provider_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_pframe1_slice.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests', 'h264_cb_sps.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests', 'h264_cb_pps.bin')],
     suite: 'gallium',
   )
 

@@ -1,0 +1,179 @@
+/*
+ * Copyright (c) 2026 Terascale Functionalists
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * The clean-room Mesa-native CAVLC entropy provider: the active VL_H264_VLD
+ * provider that turns a slice's raw NAL bytes directly into the per-macroblock
+ * contract the GPU back half consumes.  It drives the front-end components --
+ * the bitstream reader, the slice-header parse, the
+ * macroblock-layer decode (intra and the inter motion vector prediction), the
+ * CAVLC residual, and the dequantizer -- over the picture parameters the VA
+ * frontend already populated, and fills out->macroblocks at each raster index.
+ *
+ * One slice is decoded against a fresh macroblock decoder: a Constrained
+ * Baseline frame is a single slice covering the whole frame, and the
+ * neighbour-availability rules make a macroblock in another slice unavailable
+ * anyway, so per-slice decoder state is correct without carrying it across
+ * slices.  Profiles out of scope -- anything but an I or P slice, or a feature
+ * the front end rejects -- fail the slice rather than misdecode it.
+ */
+
+#include <stddef.h>
+#include <string.h>
+
+#include "pipe/p_video_state.h"
+
+#include "util/u_memory.h"
+
+#include "vl_h264_cavlc_residual.h"
+#include "vl_h264_dequant.h"
+#include "vl_h264_inter.h"
+#include "vl_h264_mb_decode.h"
+#include "vl_h264_slice_parser.h"
+#include "vl_h264_vld_provider.h"
+
+/* Offset of the NAL header byte past an Annex B start code (00 00 01 or
+ * 00 00 00 01); the byte count when no start code is found, so the caller treats
+ * the buffer as already pointing at the NAL header. */
+static unsigned
+annexb_header_offset(const uint8_t *nal, unsigned size)
+{
+   for (unsigned i = 0; i + 2 < size; i++)
+      if (nal[i] == 0 && nal[i + 1] == 0 && nal[i + 2] == 1)
+         return i + 3;
+   return 0;
+}
+
+static bool
+decode_one_macroblock(struct vl_h264_mb_decoder *dec,
+                      struct vl_h264_reader *reader, bool p_slice,
+                      unsigned mb_x, unsigned mb_y,
+                      struct vl_h264_mb_contract *mb)
+{
+   struct vl_h264_mb_residual res;
+   bool coded = true;
+
+   if (p_slice) {
+      enum vl_h264_p_mb_kind kind =
+         vl_h264_decode_p_mb(dec, reader, mb_x, mb_y, mb);
+      if (kind == VL_H264_P_MB_ERROR)
+         return false;
+      coded = kind != VL_H264_P_MB_SKIP;
+   } else if (!vl_h264_decode_mb_header(dec, reader, mb_x, mb_y, mb)) {
+      return false;
+   }
+
+   if (coded) {
+      if (!vl_h264_decode_mb_luma_residual(dec, reader, mb_x, mb_y, mb, &res) ||
+          !vl_h264_decode_mb_chroma_residual(dec, reader, mb_x, mb_y, mb, &res))
+         return false;
+      vl_h264_dequant_fill_contract(&res, mb);
+   } else {
+      memset(mb->coeff4x4, 0, sizeof(mb->coeff4x4));
+   }
+   return true;
+}
+
+static bool
+vl_h264_cavlc_decode_slice(struct vl_h264_vld_provider *provider,
+                           const struct pipe_h264_picture_desc *picture,
+                           const uint8_t *nal, unsigned nal_size,
+                           struct vl_h264_slice_contract *out)
+{
+   (void) provider;
+
+   if (!picture || !picture->pps || !picture->pps->sps || !nal)
+      return false;
+   const struct pipe_h264_sps *sps = picture->pps->sps;
+
+   unsigned off = annexb_header_offset(nal, nal_size);
+   if (off >= nal_size)
+      return false;
+   uint8_t header = nal[off];
+   unsigned nal_ref_idc = (header >> 5) & 3;
+   unsigned nal_unit_type = header & 0x1f;
+   /* Only coded slice NAL units (type 1 and 5) carry macroblocks. */
+   if (nal_unit_type != 1 && nal_unit_type != 5)
+      return true;
+
+   struct vl_h264_reader reader;
+   if (!vl_h264_reader_init(&reader, nal + off + 1, nal_size - off - 1))
+      return false;
+
+   struct vl_h264_slice_header sh;
+   if (!vl_h264_parse_slice_header(&reader, picture, nal_ref_idc, nal_unit_type,
+                                   &sh)) {
+      vl_h264_reader_fini(&reader);
+      return false;
+   }
+   /* Constrained Baseline is I and P only; reject B/SP/SI rather than misdecode. */
+   if (sh.slice_type != VL_H264_SLICE_I && sh.slice_type != VL_H264_SLICE_P) {
+      vl_h264_reader_fini(&reader);
+      return false;
+   }
+
+   unsigned width_in_mbs = sps->pic_width_in_mbs_minus1 + 1;
+   unsigned height_in_mbs = sps->pic_height_in_mbs_minus1 + 1;
+   unsigned num_mbs = width_in_mbs * height_in_mbs;
+
+   /* A slice header that ran past the end of the NAL, or whose first macroblock
+    * lies outside the frame, is malformed; fail rather than skip the slice with a
+    * silent success. */
+   if (vl_h264_overrun(&reader) || sh.first_mb_in_slice >= num_mbs) {
+      vl_h264_reader_fini(&reader);
+      return false;
+   }
+
+   struct vl_h264_mb_decoder dec;
+   if (!vl_h264_mb_decoder_init(&dec, picture, width_in_mbs, height_in_mbs)) {
+      vl_h264_reader_fini(&reader);
+      return false;
+   }
+   vl_h264_mb_decoder_begin_slice(&dec, &sh);
+
+   /* A Constrained Baseline frame is a single slice covering it from
+    * first_mb_in_slice to the end, so decode that many macroblocks and let an
+    * end-of-bitstream overrun stop a malformed slice.  more_rbsp_data is not used
+    * as the loop bound: a P slice's skip-run bit pattern can make it read a false
+    * end mid-slice, while the overrun flag is exact. */
+   bool p_slice = sh.slice_type == VL_H264_SLICE_P;
+   bool ok = true;
+   for (unsigned addr = sh.first_mb_in_slice; addr < num_mbs; addr++) {
+      if (addr >= out->num_macroblocks) {
+         ok = false;
+         break;
+      }
+      if (!decode_one_macroblock(&dec, &reader, p_slice, addr % width_in_mbs,
+                                 addr / width_in_mbs, &out->macroblocks[addr])) {
+         ok = false;
+         break;
+      }
+   }
+
+   if (ok)
+      out->slice_type = sh.slice_type;
+   vl_h264_mb_decoder_fini(&dec);
+   vl_h264_reader_fini(&reader);
+   return ok;
+}
+
+static void
+vl_h264_cavlc_destroy(struct vl_h264_vld_provider *provider)
+{
+   FREE(provider);
+}
+
+struct vl_h264_vld_provider *
+vl_h264_cavlc_provider_create(void)
+{
+   struct vl_h264_vld_provider *provider = CALLOC_STRUCT(vl_h264_vld_provider);
+   if (!provider)
+      return NULL;
+   provider->kind = VL_H264_VLD_PROVIDER_MESA_CAVLC;
+   provider->priv = NULL;
+   provider->decode_slice = vl_h264_cavlc_decode_slice;
+   provider->destroy = vl_h264_cavlc_destroy;
+   return provider;
+}
