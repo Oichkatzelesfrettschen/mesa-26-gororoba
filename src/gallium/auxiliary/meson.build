@@ -430,6 +430,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_cavlc_residual.h',
   'vl/vl_h264_dequant.c',
   'vl/vl_h264_dequant.h',
+  'vl/vl_h264_intra_reconstruct.c',
+  'vl/vl_h264_intra_reconstruct.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -704,6 +706,18 @@ if with_tests
                        'h264_cb_idr_slice.bin'),
             join_paths(meson.current_source_dir(), 'vl', 'tests',
                        'h264_cb_idr_oracle_mb.bin')],
+    suite: 'gallium',
+  )
+
+  # The 4x4 inverse transform against an independent spec reference.
+  test('vl-h264-idct4',
+    executable(
+      'vl_h264_idct4_test',
+      ['vl/vl_h264_intra_reconstruct.c', 'vl/tests/vl_h264_idct4_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
     suite: 'gallium',
   )
 
