@@ -1,29 +1,43 @@
-# 7_r300_full_asanubsan_max_debug: MAXIMAL-instrumentation r300 build, the
-# basis for the installable mesa-gororoba-asan scoped debug driver. Adds the
-# UndefinedBehaviorSanitizer to AddressSanitizer (address,undefined) on top of
-# the debug profile's live asserts, frame pointers, and full -g3 debug info.
-# Optimization stays -O1 because ASan's own debugging guidance prefers -O1 or
-# higher for reasonable performance and stack quality. The O0 microscope lane is
-# separate so source-level single-stepping never mutates the default sanitizer
-# artifact. b_lundef=false (the sanitizer runtimes need undefined symbols at
-# link); _FORTIFY_SOURCE is dropped because it conflicts with ASan. NOT a system
-# driver: it installs to /opt/mesa-26-gororoba-asan with NO /usr activation (an
-# ASan .so as the system Mesa aborts every GL/VK app -- 'ASan runtime does not
-# come first'); invoke it through the run-wrapper.
+# 1_r300_full_debug_prime_asan_o0: the PRIME r300 tier -- the highest-information
+# RCA build, never a system Mesa.  AddressSanitizer + UndefinedBehaviorSanitizer
+# with the extended sanitizer set, at -O0 so every source line keeps its own
+# machine code (no inlining or optimizer folding) and an ASan/UBSan report or a
+# gdb step lands on the source exactly as written.  -g3 macro-aware debug info,
+# live asserts, frame pointers, sibling-call folding off, report-merging off.
 #
-# The explicit extra sanitizer flags below cover checks outside Clang's
-# undefined group: pointer pair validation, unsigned/suspicious integer behavior,
-# implicit conversions, local-bounds, nullability, and floating divide-by-zero.
-# TSAN is mutually exclusive with ASAN and MSAN needs every dependent library
-# instrumented, so those remain separate lanes rather than additions here.
+# Tier map (renumbered by priority; all build the same full r300 surface):
+#   1_ (THIS) debug-prime   -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   2_ debug-o0             -- -O0 max-debug, no sanitizer, /opt + wrapper.
+#   3_ debug-optimized      -- -O2 -g3 asserts, the only debug tier allowed /usr.
+#   4_ release              -- optimized, no asserts, no sanitizer, /usr.
+#
+# LOCKED SAFETY INVARIANT: this profile and its mesa-gororoba-debug-prime package
+# must NEVER become the system Mesa.  An ASan-instrumented libGL/libvulkan as the
+# /usr default aborts every GL/VK client ('ASan runtime does not come first') and
+# can black-screen the login session.  The package installs ONLY to
+# /opt/mesa-26-gororoba-debug-prime, never symlinks into /usr, never
+# provides/conflicts/replaces mesa, drops no ld.so.conf.d activation, and is
+# reached only through mesa-26-gororoba-debug-prime-run.  -O0 over -O1 is the
+# deliberate "microscope" choice: stepping fidelity beats runtime speed because
+# this tier is single-case forensic RCA, never broad conformance or a desktop
+# driver (use 3_/4_ for those).
+#
+# b_lundef=false (the sanitizer runtimes need undefined symbols at link);
+# _FORTIFY_SOURCE is dropped because it conflicts with ASan.  The explicit extra
+# sanitizer flags below cover checks outside Clang's undefined group: pointer-pair
+# validation, integer (signed+unsigned/shift), implicit conversions, local-bounds,
+# nullability, and float divide-by-zero (detect_invalid_pointer_pairs=2 at runtime
+# activates the pointer-pair checks).  TSAN is mutually exclusive with ASAN and
+# MSAN needs every dependent library instrumented, so those remain separate lanes.
 
 [built-in options]
-buildtype = 'debugoptimized'
+buildtype = 'debug'
 b_sanitize = 'address,undefined'
 b_lundef = 'false'
-optimization = '1'
+optimization = '0'
 b_ndebug = 'false'
-# -fno-emulated-tls matches profile 1_ (the GL stack's libglapi needs native
+werror = true
+# -fno-emulated-tls matches profiles 3_/4_ (the GL stack's libglapi needs native
 # TLS under clang).  The sanitizer lane forces frame pointers, disables sibling
 # call optimization and sanitizer report merging, and emits -g3 macro-aware debug
 # information so UBSan/ASan reports and gdb line up with the source under RCA.

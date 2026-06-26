@@ -1,0 +1,231 @@
+# mesa-gororoba-debug-optimized: the PRIMARY/default r300 Mesa installation for
+# the Vostro 1000 (RS482, AMD Turion 64 X2).  This is the canonical daily-driver
+# install target: debugoptimized -O2 -g3, assertions live, full debug info, frame
+# pointers, and the complete r300 feature surface (desktop GL 2.1 + GLES1/2,
+# GLVND, EGL/GBM, GLX-DRI, gallium-va MPEG-2 decode, gallium-xa XA tracker /
+# libxatracker.so, amd_r300/r300vk Vulkan ICD, overlay + device-select Vulkan
+# layers, nir/glsl offline compiler tools, valgrind annotations, libunwind
+# backtraces, perfetto CPU timeline, no LLVM).
+#
+# Tier map (all build the same full r300 surface; this package is the default):
+#   * mesa-gororoba (profile 1_)  -- TRUE RELEASE, no asserts, /usr, RESERVED.
+#   * THIS (profile 2_)           -- debugoptimized, asserts, /usr, the DEFAULT.
+#   * mesa-gororoba-debug-o0 (3_) -- -O0 normal debug, /opt + run-wrapper.
+#   * mesa-gororoba-asan (7_)     -- ASan+UBSan, /opt + run-wrapper.
+# Only one package owns the /usr Mesa paths at a time; the -o0 and asan tiers are
+# /opt-scoped and co-install, reached through their run-wrappers.
+#
+# Renamed from mesa-gororoba-debug: the package label is now -debug-optimized to
+# distinguish it from the new -o0 normal-debug tier.  The /opt prefix and the
+# run-wrapper keep the mesa-26-gororoba-debug name (the 2_ builddir's install
+# prefix), so the rename is a pure repack -- no recompile.  provides/replaces the
+# old mesa-gororoba-debug name so pacman migrates an installed one in place.
+#
+# Build model: REPACK, not from-git.  The build-infra meson builddir is the only
+# build infrastructure -- build/refresh it with
+#   make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache
+# (or `make build ... PREFIX=/opt/mesa-26-gororoba-debug`), then this PKGBUILD
+# packages that exact builddir.  It deliberately does NOT clone+build from a
+# pinned git commit: the in-development r300vk compute kernels live only in the
+# working tree the builddir was compiled from, so a hermetic git build would
+# ship a different binary than the one under test.  _builddir/_srcroot select the
+# canonical Vostro builddir + source root and are overridable from the make env.
+#
+# Packaging model (mesa-git): when installed, this debug build BECOMES the active
+# system Mesa, exactly like the release mesa-gororoba and upstream mesa-git.  It
+# differs only in where the real files live: because it is debugoptimized (-O2
+# -g3, assertions, frame pointers), the artifacts stay in /opt/mesa-26-gororoba-debug
+# instead of the stock /usr tree, and the stock /usr loader paths (libGL/EGL/GLX/
+# GBM, lib/dri, libxatracker, the Vulkan ICD + layers, the glvnd EGL vendor json)
+# are symlinked into that /opt tree by package().  provides/conflicts/replaces
+# therefore mirror the release package and also supersede it, so exactly one
+# gororoba Mesa owns the /usr paths at a time.  Revert with
+# `pacman -U mesa-gororoba` (release) or `pacman -S mesa` (stock).
+# mesa-26-gororoba-debug-run still pins the loader to the /opt tree for a scoped
+# probe without changing the system default.
+pkgname=mesa-gororoba-debug-optimized
+pkgver=26.2.0
+pkgrel=12
+epoch=2
+pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD + overlay/device-select Vulkan layers, files under /opt'
+arch=('x86_64')
+url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
+license=('MIT')
+depends=(
+  expat glibc libdrm libelf libgcc libglvnd libstdc++ libx11 libxcb libxext
+  libxdamage libxshmfence libxxf86vm libva lm_sensors spirv-tools
+  wayland zlib zstd vulkan-icd-loader libunwind valgrind
+)
+# No toolchain makedepends: the build-infra builddir is already compiled; this
+# package only stages and symlinks it with meson install --no-rebuild.
+makedepends=(meson ninja)
+# System-driver metadata, mirroring the release mesa-gororoba package and
+# additionally superseding it: installing the debug package takes over the
+# system /usr Mesa from stock mesa OR the release build.  conflicts blocks
+# co-installation (the /usr symlinks would clash with stock mesa's real files);
+# replaces makes `pacman -U` migrate cleanly off whichever Mesa is present.
+#
+# Vulkan layers: the 2_ profile builds the generic mesa overlay + device-select
+# layers (VkLayer_MESA_overlay, VkLayer_MESA_device_select).  The device-select
+# layer is the implicit layer that vulkan-mesa-implicit-layers ships, and
+# lib32-vulkan-mesa-implicit-layers depends on that package by name.  Own the
+# layer /usr paths and provide vulkan-mesa-implicit-layers so pacman -U takes the
+# implicit-layer slot over cleanly while the by-name lib32 dependency stays
+# satisfied by this package.  Provide the implicit-layers virtual specifically
+# (not the broader vulkan-mesa-layers / vulkan-mesa-device-select names): the
+# implicit-layers package is the only one with a by-name dependent, so dropping
+# its provide while replacing it is what breaks lib32-vulkan-mesa-implicit-layers
+# ("failed to prepare transaction").  The explicit overlay layer has no such
+# dependent; its files are simply owned here without a provide.
+provides=(
+  "mesa=${epoch}:${pkgver}-${pkgrel}"
+  "mesa-gororoba-debug=${epoch}:${pkgver}-${pkgrel}"
+  "libva-mesa-driver=${epoch}:${pkgver}-${pkgrel}"
+  "mesa-libgl=${epoch}:${pkgver}-${pkgrel}"
+  "vulkan-mesa-implicit-layers=${epoch}:${pkgver}-${pkgrel}"
+  libva-driver
+  opengl-driver
+  vulkan-driver
+)
+conflicts=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+replaces=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+# Keep debug symbols; no strip, no LTO.  !buildflags: this package compiles
+# nothing (repack only), so makepkg's CFLAGS/LDFLAGS injection is irrelevant.
+# The .a archives the builddir produced land in /opt for gdb work but are NOT
+# mirrored into /usr (the system driver needs only the runtime .so and json).
+options=('!strip' '!lto' 'debug' 'staticlibs' '!buildflags')
+install="${pkgname}.install"
+# Only the loader-helper scripts are package sources; the binaries come from the
+# prebuilt build-infra builddir (see _builddir), not from a git checkout.
+source=('mesa-26-gororoba-debug-env.sh'
+        'mesa-26-gororoba-debug-run')
+sha256sums=('40688a33a6dad2c92f44212bb8dce8c0bad80678248ba7b719a83e999c2271fc'
+            'e2a1785277b814e1d1ffcff8aca1a11029fe632502180e5d1c6074cdee286aa9')
+
+_prefix=/opt/mesa-26-gororoba-debug
+# The canonical build-infra builddir to repack, and the source root for the
+# license file.  Override from the make/env (GOROROBA_DEBUG_BUILDDIR /
+# GOROROBA_DEBUG_SRCROOT) when packaging on a different host.
+_builddir="${GOROROBA_DEBUG_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-2_r300_full_debug_x86_64v1-clang22-distcc-cache}"
+_srcroot="${GOROROBA_DEBUG_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
+
+# Link every entry of ${_prefix}/<rel> into ${pkgdir}/usr/<rel> as a symlink
+# back to the absolute /opt path, so the stock GL/EGL/GLX/GBM/Vulkan/VA loaders
+# resolve the debug build with no environment override.  Only files and symlinks
+# are linked (real subdirectories are handled by their own explicit pass, so a
+# directory is never turned into a symlink and never collides with a dir another
+# package owns, e.g. /usr/share/vulkan/icd.d).  Static archives are skipped --
+# the system driver needs only the runtime objects and loader json.
+_link_into_usr() {
+  local rel="$1" src dst entry base
+  src="${pkgdir}${_prefix}/${rel}"
+  [ -d "${src}" ] || return 0
+  dst="${pkgdir}/usr/${rel}"
+  install -dm755 "${dst}"
+  for entry in "${src}"/*; do
+    [ -e "${entry}" ] || [ -L "${entry}" ] || continue
+    if [ -d "${entry}" ] && [ ! -L "${entry}" ]; then
+      continue
+    fi
+    base="$(basename "${entry}")"
+    case "${base}" in
+      *.a) continue ;;
+    esac
+    ln -sfn "${_prefix}/${rel}/${base}" "${dst}/${base}"
+  done
+}
+
+package() {
+  if [ ! -f "${_builddir}/build.ninja" ]; then
+    echo "ERROR: build-infra builddir not found at ${_builddir}" >&2
+    echo "       build it first: make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache" >&2
+    return 1
+  fi
+
+  # Stage the prebuilt /opt tree.  --no-rebuild: never recompile here; the
+  # build-infra builddir is authoritative and already carries the in-dev kernels.
+  meson install -C "${_builddir}" --no-rebuild --destdir "${pkgdir}"
+
+  install -Dm755 "${srcdir}/mesa-26-gororoba-debug-run" \
+    "${pkgdir}/usr/bin/mesa-26-gororoba-debug-run"
+  install -Dm644 "${srcdir}/mesa-26-gororoba-debug-env.sh" \
+    "${pkgdir}/etc/opt/mesa-26-gororoba-debug/mesa-26-gororoba-debug-env.sh"
+
+  # System-driver activation: mirror the loadable artifacts from the /opt tree
+  # into the stock /usr loader paths as symlinks.  These links are what make the
+  # debug build the system Mesa and what conflicts with stock mesa's real files.
+  _link_into_usr lib                          # libGL/EGL/GLX/GBM/gallium/libvulkan_r300/libxatracker
+
+  # Indirect GLX vendor link (mesa-git package() convention): glvnd resolves
+  # libGLX_indirect.so.0 for indirect rendering to the mesa GLX vendor.  The
+  # libGLX_mesa.so.0 it targets is itself a /usr symlink into the /opt tree from
+  # the lib pass above; point the indirect link straight at the /opt object so
+  # it resolves regardless of link-walk order.
+  if [ -e "${pkgdir}${_prefix}/lib/libGLX_mesa.so.0" ]; then
+    ln -sfn "${_prefix}/lib/libGLX_mesa.so.0" \
+      "${pkgdir}/usr/lib/libGLX_indirect.so.0"
+  fi
+  _link_into_usr lib/dri                       # r300_dri.so, zink_dri.so, r300_drv_video.so (VA)
+  _link_into_usr lib/gbm                       # gbm backends, if built
+  # pkg-config surface: the glvnd build emits only gbm.pc and dri.pc (the
+  # egl/gl family belongs to libglvnd), and both slots are mesa-owned files
+  # this package already conflicts/replaces.  The .pc contents carry the
+  # /opt prefix, so linking them is the whole developer-surface fix --
+  # pkg-config --cflags gbm resolves the /opt include with no header
+  # symlinks (the GL/EGL include directories stay libglvnd's).
+  _link_into_usr lib/pkgconfig                 # gbm.pc, dri.pc
+  _link_into_usr share/vulkan/icd.d            # r300 Vulkan ICD manifest
+  _link_into_usr share/vulkan/implicit_layer.d # VkLayer_MESA_device_select (lib32-vulkan-mesa-implicit-layers dep)
+  _link_into_usr share/vulkan/explicit_layer.d # VkLayer_MESA_overlay
+  _link_into_usr share/glvnd/egl_vendor.d      # glvnd EGL vendor selection
+  _link_into_usr share/drirc.d                 # driver config quirks
+
+  # Compatibility aliases (probes and build-infra scripts target /opt/local).
+  install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share" "${pkgdir}/usr/share"
+  ln -s /opt/mesa-26-gororoba-debug \
+    "${pkgdir}/opt/local/mesa-26-gororoba-debug"
+  ln -s /opt/mesa-26-gororoba-debug \
+    "${pkgdir}/opt/share/mesa-26-gororoba-debug"
+  ln -s /opt/mesa-26-gororoba-debug \
+    "${pkgdir}/usr/share/mesa-26-gororoba-debug"
+
+  # Own the runtime linker-path drop-in and point it at THIS variant's live lib
+  # dir.  The debug /opt tree carries its own bundled dependency libs; without
+  # this on the linker path, ldconfig cannot resolve the 64-bit libgbm.so.1 the
+  # X modesetting driver dlopens, and the console black-screens on reboot.
+  # Packaging it (vs an unowned, variant-specific conf) means a debug<->release
+  # swap rewrites the path to the installed variant and the .install scriptlet
+  # re-runs ldconfig, so reboots stay safe regardless of which variant is in.
+  install -dm755 "${pkgdir}/etc/ld.so.conf.d"
+  printf '%s\n' '/opt/mesa-26-gororoba-debug/lib' \
+    > "${pkgdir}/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf"
+
+  # Boot-safety guard.  The ld.so.conf drop-in above and the _link_into_usr
+  # activation both assume the gbm/glvnd runtime actually built; neither checks
+  # it.  If a meson option ever drops gbm, this package would still install a
+  # drop-in pointing at a libgbm-less lib dir and black-screen the console on
+  # the next reboot, with no build-time signal.  The X modesetting driver
+  # dlopens libgbm.so.1 by SONAME and glvnd resolves libGLX_mesa.so.0 /
+  # libEGL_mesa.so.0; fail the build if any is absent from the staged /opt tree,
+  # and confirm the /usr activation mirrored libgbm rather than only indexing it.
+  local _need _missing=""
+  for _need in libgbm.so.1 libGLX_mesa.so.0 libEGL_mesa.so.0; do
+    [ -e "${pkgdir}${_prefix}/lib/${_need}" ] \
+      || _missing="${_missing} ${_prefix}/lib/${_need}"
+  done
+  [ -e "${pkgdir}/usr/lib/libgbm.so.1" ] || [ -L "${pkgdir}/usr/lib/libgbm.so.1" ] \
+    || _missing="${_missing} /usr/lib/libgbm.so.1(activation)"
+  if [ -n "${_missing}" ]; then
+    echo "ERROR: boot-critical loader objects missing from the staged package:${_missing}" >&2
+    echo "       the gbm/glvnd runtime did not build or stage; refusing to ship a system" >&2
+    echo "       Mesa that black-screens X (modesetting dlopen libgbm.so.1) on reboot." >&2
+    return 1
+  fi
+
+  if [ -f "${_srcroot}/docs/license.rst" ]; then
+    install -Dm644 "${_srcroot}/docs/license.rst" \
+      "${pkgdir}/usr/share/licenses/${pkgname}/license.rst"
+  else
+    echo "WARNING: ${_srcroot}/docs/license.rst not found; license not installed"
+  fi
+}

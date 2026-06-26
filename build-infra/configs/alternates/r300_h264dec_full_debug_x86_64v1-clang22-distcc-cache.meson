@@ -1,6 +1,6 @@
 # r300 full debug profile with the experimental H.264 decoder built in.
 #
-# Identical to 2_r300_full_debug_x86_64v1-clang22-distcc-cache except
+# Identical to 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache except
 # video-codecs adds h264dec, so VIDEO_CODEC_H264DEC=1 and the gated H.264
 # decode skeleton (vl_h264_decoder, vl_h264_vld_provider, the r300_video.c
 # advertisement) compiles and lands in compile_commands.json.  The runtime path
