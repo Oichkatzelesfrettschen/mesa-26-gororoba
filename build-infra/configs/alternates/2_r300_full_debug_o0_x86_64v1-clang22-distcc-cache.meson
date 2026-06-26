@@ -36,8 +36,8 @@ werror = true
 # keep -fno-omit-frame-pointer (clang omits the frame pointer even at -O0 under
 # some configs) so gdb/libunwind backtraces stay reliable.  -fno-emulated-tls
 # matches profiles 1_/2_ (the GL stack's libglapi needs native TLS under clang).
-c_args = ['-march=x86-64', '-mtune=generic', '-O0', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
-cpp_args = ['-march=x86-64', '-mtune=generic', '-O0', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_args = ['-march=x86-64', '-mtune=generic', '-O0', '-U_FORTIFY_SOURCE', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-O0', '-U_FORTIFY_SOURCE', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
 c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 

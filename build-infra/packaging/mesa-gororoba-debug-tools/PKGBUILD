@@ -10,6 +10,9 @@ pkgname=mesa-gororoba-debug-tools
 pkgver=26.2.0
 pkgrel=2
 epoch=2
+replaces=('mesa-gororoba-gpu-debug-stack')
+conflicts=('mesa-gororoba-gpu-debug-stack')
+provides=("mesa-gororoba-gpu-debug-stack=${epoch}:${pkgver}-${pkgrel}")
 pkgdesc='Meta-package: the RS482/r300 GPU debug stack -- prime ASan+UBSan -O0 driver + umr-gororoba + radeon-KMD instrumentation tools (bpftrace/valgrind/gdb/radeontop/perf) + docs'
 arch=('any')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
