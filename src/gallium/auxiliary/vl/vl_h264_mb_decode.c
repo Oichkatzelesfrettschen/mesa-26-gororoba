@@ -199,23 +199,19 @@ vl_h264_mb_decoder_begin_slice(struct vl_h264_mb_decoder *dec,
 {
    dec->slice = slice;
    dec->qp_y = slice->slice_qp;
+   dec->skip_run = -1;
 }
 
 bool
-vl_h264_decode_mb_header(struct vl_h264_mb_decoder *dec,
-                         struct vl_h264_reader *reader, unsigned mb_x,
-                         unsigned mb_y, struct vl_h264_mb_contract *mb)
+vl_h264_decode_intra_mb_body(struct vl_h264_mb_decoder *dec,
+                             struct vl_h264_reader *reader, unsigned mb_x,
+                             unsigned mb_y, struct vl_h264_mb_contract *mb,
+                             unsigned mb_type)
 {
-   mb->mb_x = (int32_t)mb_x;
-   mb->mb_y = (int32_t)mb_y;
-   mb->slice_type = dec->slice->slice_type;
-   mb->transform_8x8 = 0;
-
-   unsigned mb_type = vl_h264_ue(reader);
-
-   /* The inter path and I_PCM are later stages; reject rather than misdecode. */
-   if (dec->slice->slice_type != VL_H264_SLICE_I || mb_type == I_PCM_MB_TYPE ||
-       mb_type > I_PCM_MB_TYPE)
+   /* I_PCM and anything past it are out of scope; reject rather than misdecode.
+    * The caller has already set the contract's position and slice type and, for
+    * an intra macroblock inside a P slice, the intra reference markers. */
+   if (mb_type >= I_PCM_MB_TYPE)
       return false;
 
    bool has_cbp_field;
@@ -263,4 +259,23 @@ vl_h264_decode_mb_header(struct vl_h264_mb_decoder *dec,
                                    dec->pps->second_chroma_qp_index_offset);
    /* Reject a header that ran past the end of the RBSP. */
    return !vl_h264_overrun(reader);
+}
+
+bool
+vl_h264_decode_mb_header(struct vl_h264_mb_decoder *dec,
+                         struct vl_h264_reader *reader, unsigned mb_x,
+                         unsigned mb_y, struct vl_h264_mb_contract *mb)
+{
+   mb->mb_x = (int32_t)mb_x;
+   mb->mb_y = (int32_t)mb_y;
+   mb->slice_type = dec->slice->slice_type;
+   mb->transform_8x8 = 0;
+
+   /* The P-slice macroblock layer (skip run, inter types, intra-in-P) is owned
+    * by vl_h264_decode_p_mb; this entry point handles an I slice. */
+   if (dec->slice->slice_type != VL_H264_SLICE_I)
+      return false;
+
+   return vl_h264_decode_intra_mb_body(dec, reader, mb_x, mb_y, mb,
+                                       vl_h264_ue(reader));
 }
