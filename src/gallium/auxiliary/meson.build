@@ -430,6 +430,8 @@ files_libgalliumvl = files(
   'vl/vl_h264_cavlc_residual.h',
   'vl/vl_h264_dequant.c',
   'vl/vl_h264_dequant.h',
+  'vl/vl_h264_cpu_mc.c',
+  'vl/vl_h264_cpu_mc.h',
   'vl/vl_h264_intra_reconstruct.c',
   'vl/vl_h264_intra_reconstruct.h',
   'vl/vl_h264_inter.c',

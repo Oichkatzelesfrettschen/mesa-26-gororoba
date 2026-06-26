@@ -45,6 +45,7 @@
 #include "pipe/p_video_state.h"
 
 #include "vl_h264_cavlc_residual.h"
+#include "vl_h264_cpu_mc.h"
 #include "vl_h264_dequant.h"
 #include "vl_h264_emit.h"
 #include "vl_h264_inter.h"
@@ -67,17 +68,6 @@
    }                                                                         \
 } while (0)
 
-static const uint8_t blk_x[16] = { 0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3 };
-static const uint8_t blk_y[16] = { 0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3 };
-
-/* The quarter-pel positions the back half does not implement (they need the 2D
- * half-pel j, which overflows FP24): f (6), i (9), j (10), k (11), q (14). */
-static bool
-qpel_gap(int mvx, int mvy)
-{
-   int p = (mvy & 3) * 4 + (mvx & 3);
-   return p == 6 || p == 9 || p == 10 || p == 11 || p == 14;
-}
 
 static uint8_t *
 read_file(const char *path, long *size)
@@ -300,35 +290,26 @@ main(int argc, char **argv)
    CHECK(out != NULL);
    readback_plane(ctx, dst, out, LUMA_W, LUMA_H);
 
+   /* The back half cannot produce the diagonal-center quarter-pel positions (the
+    * 2D half-pel j overflows FP24); reconstruct those inter luma blocks on the
+    * CPU, overwriting the back half's placeholder. */
+   vl_h264_cpu_luma_diag_fallback(p_mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS,
+                                  ref_luma, LUMA_W, LUMA_H, LUMA_W, out, LUMA_W);
+
    /* The intra macroblocks read their reconstructed inter neighbors from the
     * plane, so they fill after the back half. */
    vl_h264_intra_reconstruct_luma(p_mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS,
                                   out, LUMA_W);
 
-   /* Compare to ffmpeg, excluding the diagonal-center quarter-pel blocks the back
-    * half does not implement. */
-   unsigned matched = 0, gap_blocks = 0, gap_marked[NUM_MBS * 16];
-   memset(gap_marked, 0, sizeof(gap_marked));
-   for (unsigned a = 0; a < NUM_MBS; a++) {
-      if (p_mbs[a].ref_l0[0] < 0)
-         continue;
-      for (unsigned n = 0; n < 16; n++) {
-         unsigned ras = blk_y[n] * 4u + blk_x[n];
-         if (qpel_gap(p_mbs[a].mv_l0[ras][0], p_mbs[a].mv_l0[ras][1])) {
-            gap_marked[a * 16 + ras] = 1;
-            gap_blocks++;
-         }
-      }
-   }
-
+   /* Every luma sample now matches ffmpeg: the back half did the FP24-feasible
+    * inter blocks, the CPU fallback the diagonal-center ones, the CPU intra path
+    * the intra macroblocks. */
+   unsigned matched = 0;
    int fail = 0;
    for (unsigned a = 0; a < NUM_MBS && !fail; a++) {
       unsigned mb_x = a % WIDTH_IN_MBS, mb_y = a / WIDTH_IN_MBS;
       for (int ly = 0; ly < 16 && !fail; ly++)
          for (int lx = 0; lx < 16; lx++) {
-            unsigned ras = (ly / 4) * 4 + (lx / 4);
-            if (p_mbs[a].ref_l0[0] >= 0 && gap_marked[a * 16 + ras])
-               continue;
             int px = mb_x * 16 + lx, py = mb_y * 16 + ly;
             if (out[py * LUMA_W + px] != ref[py * LUMA_W + px]) {
                fprintf(stderr, "FAIL mb %u (%d,%d): %d != ffmpeg %d\n", a, lx, ly,
@@ -353,7 +334,7 @@ main(int argc, char **argv)
    if (fail)
       return 1;
    printf("vl_h264_inter_e2e: I+P luma decode on softpipe matches ffmpeg "
-          "(%u samples, %u inter macroblocks; %u diagonal-qpel blocks are the "
-          "known FP24 back-half gap) PASS\n", matched, n_inter, gap_blocks);
+          "(%u samples, %u inter macroblocks, every quarter-pel position, no "
+          "exclusions) PASS\n", matched, n_inter);
    return 0;
 }
