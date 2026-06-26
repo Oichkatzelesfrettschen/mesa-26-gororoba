@@ -47,6 +47,11 @@ struct vl_h264_mb_decoder {
 
    int qp_y;                  /* running luma QP, seeded from the slice header */
 
+   /* P-slice skip-run accounting (sec 7.3.4): -1 means the next mb_skip_run is
+    * unread; a non-negative value is the count of P_Skip macroblocks still
+    * pending before the next coded macroblock. */
+   int skip_run;
+
    /* Per-4x4-block actual intra mode across the frame, indexed
     * mb_raster * 16 + block_scan; -1 marks a block whose macroblock is not
     * Intra_4x4 (treated as DC-predicting for a neighbour, sec 8.3.1.1). */
@@ -86,6 +91,18 @@ bool vl_h264_decode_mb_header(struct vl_h264_mb_decoder *dec,
                               struct vl_h264_reader *reader,
                               unsigned mb_x, unsigned mb_y,
                               struct vl_h264_mb_contract *mb);
+
+/*
+ * Decode the intra macroblock body (sec 7.3.5) for the already-positioned mb:
+ * the I_NxN / I_16x16 prediction modes, coded block pattern, and mb_qp_delta for
+ * the given intra mb_type.  Shared by the I-slice header and the P-slice
+ * intra-macroblock path (which passes mb_type after subtracting the five P
+ * types).  Returns false for I_PCM or a truncated stream.
+ */
+bool vl_h264_decode_intra_mb_body(struct vl_h264_mb_decoder *dec,
+                                  struct vl_h264_reader *reader, unsigned mb_x,
+                                  unsigned mb_y, struct vl_h264_mb_contract *mb,
+                                  unsigned mb_type);
 
 #ifdef __cplusplus
 }

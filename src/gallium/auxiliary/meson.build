@@ -432,6 +432,10 @@ files_libgalliumvl = files(
   'vl/vl_h264_dequant.h',
   'vl/vl_h264_intra_reconstruct.c',
   'vl/vl_h264_intra_reconstruct.h',
+  'vl/vl_h264_inter.c',
+  'vl/vl_h264_inter.h',
+  'vl/vl_h264_param_parser.c',
+  'vl/vl_h264_param_parser.h',
   'vl/vl_h264_contract_wire.c',
   'vl/vl_h264_contract_wire.h',
   'vl/vl_h264_decoder.c',
@@ -706,6 +710,48 @@ if with_tests
                        'h264_cb_idr_slice.bin'),
             join_paths(meson.current_source_dir(), 'vl', 'tests',
                        'h264_cb_idr_oracle_mb.bin')],
+    suite: 'gallium',
+  )
+
+  # Header autodetection: parse the clip's own SPS and PPS and match the decoder
+  # parameters the bitstream carries, instead of hand-setting them.
+  test('vl-h264-param-parser',
+    executable(
+      'vl_h264_param_parser_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_param_parser.c',
+       'vl/tests/vl_h264_param_parser_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_sps.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_pps.bin')],
+    suite: 'gallium',
+  )
+
+  # The P-slice macroblock layer: decode a real P slice (skip, inter, intra) and
+  # stay in per-macroblock bitstream sync with the libavcodec bit-position dump.
+  test('vl-h264-inter-mv',
+    executable(
+      'vl_h264_inter_mv_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/vl_h264_dequant.c', 'vl/vl_h264_inter.c', 'vl/vl_h264_param_parser.c',
+       'vl/tests/vl_h264_inter_mv_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_pframe1_slice.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests', 'h264_cb_sps.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests', 'h264_cb_pps.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_pframe1_bitpos.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_pframe1_mv.bin')],
     suite: 'gallium',
   )
 
