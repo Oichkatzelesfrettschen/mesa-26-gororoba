@@ -126,6 +126,18 @@ r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
                                  const struct r300vk_cmd_bind_descriptor_sets *binds,
                                  const uint8_t *push_data);
 
+/* Unary-transcendental dispatch replay: out[i] = f(in[i]) for a single native
+ * US scalar transcendental.  Same scalar carrier as the unary_map scalar path;
+ * pl->fs_cso holds the 1-TEX-1-scalar transcendental FS.  No push window.  The
+ * FP16 RT carrier bounds the result to ~10-bit mantissa (approximate, not
+ * exact). */
+bool
+r300vk_unary_transcendental_dispatch_replay(
+   struct r300vk_device *device,
+   const struct r300vk_pipeline *pl,
+   const struct r300vk_cmd_dispatch *dispatch,
+   const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* DP4 (quantized-dot) orchestrator entry: shares the 2-in / 1-out replay core
  * with binary-map; pl->fs_cso holds the pure-NIR DP4 FS. */
 bool

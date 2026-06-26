@@ -2086,6 +2086,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_identity_pattern *ident,
                                struct r300_compute_binary_map_pattern *binmap,
                                struct r300_compute_unary_map_pattern *unary,
+                               struct r300_compute_unary_transcendental_pattern *transc,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
                                struct r300_compute_zpass_reduction_pattern *zpass,
                                struct r300_compute_multipass_scan_pattern *multiscan,
@@ -2192,6 +2193,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_identity_map(nir, ident);
    r300_nir_detect_binary_map(nir, binmap);
    r300_nir_detect_unary_map(nir, unary);
+   r300_nir_detect_unary_transcendental(nir, transc);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
@@ -2550,6 +2552,56 @@ r300vk_dp4_synthesize_shaders(struct r300vk_device *device,
       return false;
 
    pl->fs_cso = r300vk_synthesize_dp4_fs(pipe, pl->dp4.components);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+/* Unary-transcendental FS: the 1-TEX-1-scalar transcendental program built by
+ * r300vk_build_unary_transcendental_fs_nir, parameterized by the detector's
+ * recorded nir_op.  Finalize for the screen and create the gallium state, as the
+ * DP4 FS does. */
+static void *
+r300vk_synthesize_unary_transcendental_fs(struct pipe_context *pipe,
+                                          uint16_t alu_op)
+{
+   nir_shader *s = r300vk_build_unary_transcendental_fs_nir(
+      pipe->screen->nir_options[MESA_SHADER_FRAGMENT], alu_op);
+   if (!s)
+      return NULL;
+   if (pipe->screen->finalize_nir)
+      pipe->screen->finalize_nir(pipe->screen, s, true);
+
+   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
+                                      .ir.nir = s };
+   void *fs_cso = pipe->create_fs_state(pipe, &state);
+   if (!fs_cso)
+      ralloc_free(s);
+   return fs_cso;
+}
+
+/* Unary-transcendental VS+FS synthesis: the passthrough VS plus the
+ * transcendental FS.  Reuses the device-cached identity-map state CSOs and the
+ * scalar 1-in/1-out replay core. */
+static bool
+r300vk_unary_transcendental_synthesize_shaders(struct r300vk_device *device,
+                                               struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_unary_transcendental_fs(
+      pipe, pl->unary_transcendental.alu_op);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4257,6 +4309,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->unary_map.is_unary_map = false;
       return VK_SUCCESS;
    }
+   if (pl->unary_transcendental.is_unary_transcendental) {
+      if (!r300vk_unary_transcendental_synthesize_shaders(device, pl))
+         pl->unary_transcendental.is_unary_transcendental = false;
+      return VK_SUCCESS;
+   }
    if (pl->affine_iota.is_affine_iota) {
       if (!r300vk_affine_iota_synthesize_shaders(device, pl))
          pl->affine_iota.is_affine_iota = false;
@@ -4397,6 +4454,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_identity_pattern ident = {0};
    struct r300_compute_binary_map_pattern binmap = {0};
    struct r300_compute_unary_map_pattern unary_pat = {0};
+   struct r300_compute_unary_transcendental_pattern transc_pat = {0};
    struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
    struct r300_compute_zpass_reduction_pattern zpass = {0};
    struct r300_compute_multipass_scan_pattern multiscan = {0};
@@ -4431,6 +4489,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &unary_pat,
+                                       &transc_pat,
                                        &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
                                        &qmul_pat, &qdiv_pat, &mat4vec_pat, &qfmul_pat,
@@ -4476,6 +4535,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->identity_map = ident;
    pl->binary_map = binmap;
    pl->unary_map = unary_pat;
+   pl->unary_transcendental = transc_pat;
    pl->dp4 = dp4_pat;
    pl->qmul = qmul_pat;
    pl->qdiv = qdiv_pat;

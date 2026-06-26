@@ -175,6 +175,38 @@ struct r300_compute_unary_map_pattern {
 void r300_nir_detect_unary_map(const struct nir_shader *s,
                                struct r300_compute_unary_map_pattern *out);
 
+/* Single-input transcendental map: out[gid] = f(in[gid]) where f is one native
+ * r300 US scalar transcendental -- the store value is a single-source ALU op of
+ * exactly one load_ssbo def, and the op is one nir_to_rc.c lowers to an r300 ALU
+ * verb: frcp(RCP), frsq(RSQ), fsqrt, fexp2(EX2), flog2(LG2), fsin(SIN),
+ * fcos(COS), ffract(FRC), ffloor, fround_even(ROUND).  This is the gap above
+ * unary_map (affine a*x+b via MAD): a non-affine single-input map the fragment
+ * ALU computes natively but no verb exposed.  Distinct from unary_map by the op
+ * set (a transcendental, never fmul/fadd/ffma) so the two detectors never both
+ * fire.  PRECISION TIER: the result is FP24-approximate (~15-16 bit ALU) and is
+ * carried through an FP16 render target (~10-bit mantissa), so the realized
+ * output is FP16-bounded -- never bit-exact.  rsq/rcp/sqrt are Newton-refinable;
+ * sin/cos/exp2/log2 are sampled/bounded against a host oracle. */
+struct r300_compute_unary_transcendental_pattern {
+   bool       is_unary_transcendental;
+   uint16_t   alu_op;             /* nir_op of the transcendental */
+   uint32_t   input_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+   bool       input_ssbo_binding_valid;
+   bool       output_ssbo_binding_valid;
+   uint8_t    value_components;   /* store_ssbo value vector width (1 supported) */
+   uint8_t    value_bit_size;     /* store_ssbo value component width (32) */
+};
+
+void r300_nir_detect_unary_transcendental(
+   const struct nir_shader *s,
+   struct r300_compute_unary_transcendental_pattern *out);
+
+/* True when op is one of the single-input transcendentals the unary-transcendental
+ * verb covers -- shared by the detector and the r300vk FS synthesis so both agree
+ * on the admitted op set. */
+bool r300_nir_is_unary_transcendental_op(uint16_t nir_op);
+
 /* Blend-add-reduction kernel pattern: a kernel whose store value is an
  * atomicAdd of a load_ssbo result, where the atomic's target buffer is a
  * small output histogram and the atomic's offset folds the dispatch grid into

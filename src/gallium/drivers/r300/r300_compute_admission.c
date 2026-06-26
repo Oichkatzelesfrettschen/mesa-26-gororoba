@@ -691,6 +691,114 @@ r300_nir_detect_unary_map(const nir_shader *s,
    out->is_unary_map = true;
 }
 
+/* The single-input transcendentals the unary-transcendental verb admits.  Each
+ * is a native r300 US scalar ALU op (nir_to_rc.c lowers them to
+ * RCP/RSQ/EX2/LG2/SIN/COS/FRC/ROUND); fsqrt is lowered to an RSQ/RCP form by the
+ * backend.  fmul/fadd/ffma are deliberately absent -- those are the affine
+ * unary_map, keeping the two detectors disjoint. */
+bool
+r300_nir_is_unary_transcendental_op(uint16_t op)
+{
+   switch ((nir_op)op) {
+   case nir_op_frcp:
+   case nir_op_frsq:
+   case nir_op_fsqrt:
+   case nir_op_fexp2:
+   case nir_op_flog2:
+   case nir_op_fsin:
+   case nir_op_fcos:
+   case nir_op_ffract:
+   case nir_op_ffloor:
+   case nir_op_fround_even:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* Single-input transcendental-map detector.  out[gid] = f(in[gid]): exactly one
+ * store_ssbo whose value is a single-source transcendental ALU op of exactly one
+ * load_ssbo def.  Mirrors the unary_map walk (one load + one store) but the ALU
+ * op is a transcendental rather than the affine MAD chain, so the op set keeps
+ * it disjoint from unary_map.  Pure read-only NIR walk. */
+void
+r300_nir_detect_unary_transcendental(
+   const nir_shader *s,
+   struct r300_compute_unary_transcendental_pattern *out)
+{
+   out->is_unary_transcendental   = false;
+   out->alu_op                    = 0;
+   out->input_ssbo_binding        = 0;
+   out->output_ssbo_binding       = 0;
+   out->input_ssbo_binding_valid  = false;
+   out->output_ssbo_binding_valid = false;
+   out->value_components          = 0;
+   out->value_bit_size            = 0;
+
+   const nir_intrinsic_instr *store = NULL;
+   const nir_intrinsic_instr *load  = NULL;
+   unsigned store_count = 0;
+   unsigned load_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               load = intr;
+               load_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 1)
+      return;
+   if (!store->src[0].ssa)
+      return;
+
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!alu || !r300_nir_is_unary_transcendental_op(alu->op))
+      return;
+   if (nir_op_infos[alu->op].num_inputs != 1)
+      return;
+
+   const unsigned components = store->num_components;
+   if (!unary_alu_src_is_identity_load(alu, 0, &load->def, components))
+      return;
+
+   /* Full write mask: the carrier copies whole elements. */
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return;
+
+   /* Scalar float32 only: the FP16x4 RT carrier and the X-lane gather readback
+    * (the same scalar carrier the unary_map verb uses) transport one float per
+    * element.  Wider transcendental maps need their own carrier audit. */
+   if (store->num_components != 1 ||
+       store->src[0].ssa->bit_size != 32 ||
+       !intrinsic_base_type_is_float(store, nir_op_infos[alu->op].output_type))
+      return;
+
+   if (nir_src_is_const(load->src[0])) {
+      out->input_ssbo_binding = nir_src_as_uint(load->src[0]);
+      out->input_ssbo_binding_valid = true;
+   }
+   if (nir_src_is_const(store->src[1])) {
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+      out->output_ssbo_binding_valid = true;
+   }
+   out->alu_op = (uint16_t)alu->op;
+   out->value_components = store->num_components;
+   out->value_bit_size = store->src[0].ssa->bit_size;
+   out->is_unary_transcendental = true;
+}
+
 /* Blend-add reduction detector.  Recognises the histogram / accumulator shape
  * that lowers to RB3D COMB_FCN_ADD blend accumulation:
  *

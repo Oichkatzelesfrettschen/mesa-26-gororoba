@@ -260,6 +260,20 @@ build_unary_map_scalar(void)
    return b.shader;
 }
 
+/* Single-input transcendental map: out[gid] = f(in[gid]) for one transcendental
+ * nir_op (one load, the op, store). */
+static nir_shader *
+build_unary_transcendental(nir_op op)
+{
+   nir_builder b = cs_builder("cs_unary_transcendental");
+   nir_def *x = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *y = nir_build_alu1(&b, op, x);
+   nir_store_ssbo(&b, y, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* Push-derived affine unary map: out[gid] = in[gid] * pc.c0 + pc.c1, the
  * post-explicit_io shape of a kernel reading its scale/bias from a
  * push_constant block.  c0 reads at byte offset c0_off, c1 at c1_off; a
@@ -1053,6 +1067,46 @@ case_unary_push_metadata(void)
          "vec4 splat records push offsets 0 and 4");
    CHECK(vec_map.value_components == 4, "vec4 splat records vector width");
    ralloc_free(vec);
+}
+
+static void
+case_unary_transcendental_metadata(void)
+{
+   /* Each admitted transcendental op detects, records its op, admits, and is
+    * NOT mistaken for the affine unary-map. */
+   const nir_op ops[] = { nir_op_fsqrt, nir_op_frsq, nir_op_frcp, nir_op_fexp2,
+                          nir_op_flog2, nir_op_fsin, nir_op_fcos, nir_op_ffract,
+                          nir_op_ffloor, nir_op_fround_even };
+   for (unsigned i = 0; i < ARRAY_SIZE(ops); i++) {
+      nir_shader *nir = build_unary_transcendental(ops[i]);
+      struct r300_compute_admission adm;
+      struct r300_compute_unary_transcendental_pattern tr = {0};
+      struct r300_compute_unary_map_pattern um = {0};
+      prepare_detect_shader(nir);
+      r300_nir_classify_compute(nir, &adm);
+      CHECK(adm.admissible, "transcendental kernel admits");
+      r300_nir_detect_unary_transcendental(nir, &tr);
+      CHECK(tr.is_unary_transcendental, "transcendental op detected");
+      CHECK(tr.alu_op == ops[i], "transcendental records its nir_op");
+      CHECK(tr.value_components == 1 && tr.value_bit_size == 32,
+            "transcendental records scalar 32-bit");
+      CHECK(tr.input_ssbo_binding == 0 && tr.output_ssbo_binding == 1,
+            "transcendental records bindings 0 -> 1");
+      /* The affine unary-map detector must NOT fire on a transcendental. */
+      r300_nir_detect_unary_map(nir, &um);
+      CHECK(!um.is_unary_map, "transcendental is not an affine unary-map");
+      ralloc_free(nir);
+   }
+
+   /* The affine map (fmul/fadd) must NOT be mistaken for a transcendental --
+    * the two detectors are disjoint by op set. */
+   nir_shader *aff = build_unary_map_scalar();
+   struct r300_compute_unary_transcendental_pattern aff_tr = {0};
+   prepare_detect_shader(aff);
+   r300_nir_detect_unary_transcendental(aff, &aff_tr);
+   CHECK(!aff_tr.is_unary_transcendental,
+         "affine unary-map rejected by transcendental detector");
+   ralloc_free(aff);
 }
 
 static void
@@ -2530,6 +2584,7 @@ main(void)
    case_qfmul_metadata();
    case_unary_metadata();
    case_unary_push_metadata();
+   case_unary_transcendental_metadata();
    case_multitap_metadata();
    case_qmul_metadata();
    case_qrotate_metadata();

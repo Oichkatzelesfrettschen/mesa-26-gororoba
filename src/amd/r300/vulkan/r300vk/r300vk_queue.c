@@ -818,6 +818,9 @@ r300vk_replay_dispatch(struct r300vk_device *device,
    else if (pl->unary_map.is_unary_map)
       ok = r300vk_unary_map_dispatch_replay(device, pl, d, last_bind_dsets,
                                             push_data);
+   else if (pl->unary_transcendental.is_unary_transcendental)
+      ok = r300vk_unary_transcendental_dispatch_replay(device, pl, d,
+                                                       last_bind_dsets);
    else if (pl->dp4.is_dp4)
       ok = r300vk_dp4_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qmul.is_qmul)

@@ -94,6 +94,44 @@ r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
    return b.shader;
 }
 
+/* Single-input transcendental fragment program: samples the input at the
+ * fullscreen texcoord, applies one transcendental nir_op to the scalar value in
+ * channel 0, and broadcasts the result to the FP16x4 color export so the scalar
+ * carrier's X-lane readback gathers it.  alu_op is the detector's recorded
+ * nir_op (frcp/frsq/fsqrt/fexp2/flog2/fsin/fcos/ffract/ffloor/fround_even);
+ * nir_to_rc lowers each to the matching r300 US scalar ALU op.  One TEX + one
+ * scalar op: the cheapest non-affine unary map the silicon computes natively. */
+nir_shader *
+r300vk_build_unary_transcendental_fs_nir(const nir_shader_compiler_options *opts,
+                                         uint16_t alu_op)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, opts,
+                                                  "r300vk_unary_transcendental");
+
+   nir_def *coord = r300vk_load_fs_texcoord(&b);
+   nir_variable *samp = nir_variable_create(
+      b.shader, nir_var_uniform,
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT),
+      "samp");
+   samp->data.binding = 0;
+   nir_deref_instr *d = nir_build_deref_var(&b, samp);
+   nir_def *tex = nir_tex(&b, coord, .texture_deref = d, .sampler_deref = d);
+
+   nir_def *val = nir_channel(&b, tex, 0);
+   nir_def *r = nir_build_alu1(&b, (nir_op)alu_op, val);
+
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                           glsl_vec4_type(), "color");
+   out->data.location = FRAG_RESULT_COLOR;
+   nir_store_var(&b, out, nir_vec4(&b, r, r, r, r), 0xf);
+
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   nir_assign_io_var_locations(b.shader, nir_var_shader_in);
+   nir_assign_io_var_locations(b.shader, nir_var_shader_out);
+
+   return b.shader;
+}
+
 /* The quaternion Hamilton product q1*q2 as four sign-permuted DP4s -- the
  * Cayley-Dickson dim-4 multiply.  Each output lane is one DP4 of q1 against a
  * sign-permuted swizzle of q2; the four permutations are the Hamilton-matrix
