@@ -22,14 +22,14 @@ make -C build-infra -j1 configure PROFILE=4_r300_full_release_x86_64v1-clang22-d
 make -C build-infra build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 make -C build-infra install PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
-make -C build-infra -j1 configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
-make -C build-infra build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
-make -C build-infra install PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra -j1 configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-gororoba-debug-optimized
+make -C build-infra build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-gororoba-debug-optimized
+make -C build-infra install PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-gororoba-debug-optimized
 ```
 
 The build-infra install prefix is `/opt/local/mesa-26-gororoba`.  The debug
-prefix is `/opt/local/mesa-26-gororoba-debug`.  The package-managed install uses
-the FHS-style `/opt/mesa-26-gororoba` and `/opt/mesa-26-gororoba-debug`
+prefix is `/opt/local/mesa-gororoba-debug-optimized`.  The package-managed install uses
+the FHS-style `/opt/mesa-gororoba` and `/opt/mesa-gororoba-debug-optimized`
 prefixes, with `/opt/local/...` compatibility aliases.  The `rebuild-*`
 convenience targets first run `clean`; use them only when the builddir itself
 needs regeneration.

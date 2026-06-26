@@ -65,16 +65,16 @@ Builds land out-of-tree.  The `build-infra/Makefile` resolves
 `~/workspaces/mesa/build/mesa-<profile>/` -- outside the repository working
 tree -- so a build can never appear in `git status`.  Each profile maps to one
 install prefix: release builds to `/opt/local/mesa-26-gororoba`, debug builds to
-`/opt/local/mesa-26-gororoba-debug`; neither prefix is inside the repo and
+`/opt/local/mesa-gororoba-debug-optimized`; neither prefix is inside the repo and
 system Mesa at `/usr/lib` is left untouched by these `/opt/local` profiles.
 
-The package-managed release PKGBUILD uses `/opt/mesa-26-gororoba` as the FHS
+The package-managed release PKGBUILD uses `/opt/mesa-gororoba` as the FHS
 canonical add-on prefix and ships compatibility aliases for older local scripts:
 `/opt/local/mesa-26-gororoba` and `/opt/share/mesa-26-gororoba` both point at
 that prefix, while `/usr/share/mesa-26-gororoba` points at the same canonical
 prefix for older script compatibility.  The debug package follows the same
-pattern at `/opt/mesa-26-gororoba-debug`.  Use
-`mesa-26-gororoba-run <probe>` or `mesa-26-gororoba-debug-run <probe>` to select
+pattern at `/opt/mesa-gororoba-debug-optimized`.  Use
+`mesa-gororoba-run <probe>` or `mesa-gororoba-debug-optimized-run <probe>` to select
 the side-by-side driver for one command without replacing stock Mesa.
 
 Concurrent builds serialize through a lock: the Makefile wraps `ninja` in

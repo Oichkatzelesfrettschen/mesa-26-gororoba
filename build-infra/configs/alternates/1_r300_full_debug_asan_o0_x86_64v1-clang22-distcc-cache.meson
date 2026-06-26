@@ -15,9 +15,9 @@
 # must NEVER become the system Mesa.  An ASan-instrumented libGL/libvulkan as the
 # /usr default aborts every GL/VK client ('ASan runtime does not come first') and
 # can black-screen the login session.  The package installs ONLY to
-# /opt/mesa-26-gororoba-debug-asan, never symlinks into /usr, never
+# /opt/mesa-gororoba-debug-asan, never symlinks into /usr, never
 # provides/conflicts/replaces mesa, drops no ld.so.conf.d activation, and is
-# reached only through mesa-26-gororoba-debug-asan-run.  -O0 over -O1 is the
+# reached only through mesa-gororoba-debug-asan-run.  -O0 over -O1 is the
 # deliberate "microscope" choice: stepping fidelity beats runtime speed because
 # this tier is single-case forensic RCA, never broad conformance or a desktop
 # driver (use 3_/4_ for those).

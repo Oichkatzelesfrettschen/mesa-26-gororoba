@@ -1,20 +1,20 @@
 #!/bin/sh
 # Run a command against the -O0 normal-debug r300 driver staged in
-# /opt/mesa-26-gororoba-debug-o0, WITHOUT making it the system Mesa.  The system
+# /opt/mesa-gororoba-debug-o0, WITHOUT making it the system Mesa.  The system
 # /usr driver stays the debug-optimized (-O2 -g3) build; this wrapper points the
 # GL + Vulkan loaders at the /opt -O0 tree for the wrapped process only.  Reach
 # for it when an -O2 backtrace folds the frame you need: at -O0 every source line
 # keeps its own machine code, so a gdb step or a single-frame backtrace lands on
 # the source exactly as written.
 #
-# Usage:  mesa-26-gororoba-debug-o0-run gdb --args vkcube
-#         mesa-26-gororoba-debug-o0-run glxgears
-#         mesa-26-gororoba-debug-o0-run vulkaninfo --summary
+# Usage:  mesa-gororoba-debug-o0-run gdb --args vkcube
+#         mesa-gororoba-debug-o0-run glxgears
+#         mesa-gororoba-debug-o0-run vulkaninfo --summary
 set -eu
-PREFIX=/opt/mesa-26-gororoba-debug-o0
+PREFIX=/opt/mesa-gororoba-debug-o0
 
 if [ ! -d "$PREFIX/lib" ]; then
-  echo "mesa-26-gororoba-debug-o0-run: $PREFIX not installed; build+install the -O0 tier:" >&2
+  echo "mesa-gororoba-debug-o0-run: $PREFIX not installed; build+install the -O0 tier:" >&2
   echo "  make rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache && makepkg (mesa-gororoba-debug-o0)" >&2
   exit 1
 fi

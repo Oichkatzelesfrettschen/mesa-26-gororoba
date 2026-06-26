@@ -25,7 +25,7 @@
 # Mesa on the Vostro; the 1_/2_ sanitizer/-O0 tiers stay /opt-scoped, and the 4_
 # release stays the reserved promotion target.
 #
-# Install this to the -debug prefix (/opt/local/mesa-26-gororoba-debug) so the
+# Install this to the -debug prefix (/opt/local/mesa-gororoba-debug-optimized) so the
 # release and debug artifacts never share object files or install paths.
 #
 # Feature set, exclusions, and HOSTENV pairing are identical to profile 4_; see

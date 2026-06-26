@@ -22,7 +22,7 @@
 # instrumentation never contaminates a pass/fail baseline.
 #
 # Scope: like 1_ debug-asan, this is /opt-scoped + wrapper-only
-# (/opt/mesa-26-gororoba-debug-o0); it never becomes the system Mesa.  Only the
+# (/opt/mesa-gororoba-debug-o0); it never becomes the system Mesa.  Only the
 # 3_ debug-optimized and 4_ release tiers may own /usr.
 #
 # Feature set, exclusions, and HOSTENV pairing are identical to profiles 3_/4_;
