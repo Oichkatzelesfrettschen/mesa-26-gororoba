@@ -1,15 +1,21 @@
 # 7_r300_full_asanubsan_max_debug: MAXIMAL-instrumentation r300 build, the
 # basis for the installable mesa-gororoba-asan scoped debug driver. Adds the
 # UndefinedBehaviorSanitizer to AddressSanitizer (address,undefined) on top of
-# the debug profile's live asserts, frame pointers, and full -g debug info.
-# Optimization stays -O1 (ASan/UBSan target; -O0 on the 2-core K8 is needlessly
-# slow to build AND run for no extra coverage). b_lundef=false (the sanitizer
-# runtimes need undefined symbols at link); _FORTIFY_SOURCE dropped (conflicts
-# with ASan). NOT a system driver: it installs to /opt/mesa-26-gororoba-asan
-# with NO /usr activation (an ASan .so as the system Mesa aborts every GL/VK
-# app -- 'ASan runtime does not come first'); invoke it through the run-wrapper.
-# TSAN is mutually exclusive with ASAN and MSAN needs every lib instrumented,
-# so maximal tops out at address+undefined.
+# the debug profile's live asserts, frame pointers, and full -g3 debug info.
+# Optimization stays -O1 because ASan's own debugging guidance prefers -O1 or
+# higher for reasonable performance and stack quality. The O0 microscope lane is
+# separate so source-level single-stepping never mutates the default sanitizer
+# artifact. b_lundef=false (the sanitizer runtimes need undefined symbols at
+# link); _FORTIFY_SOURCE is dropped because it conflicts with ASan. NOT a system
+# driver: it installs to /opt/mesa-26-gororoba-asan with NO /usr activation (an
+# ASan .so as the system Mesa aborts every GL/VK app -- 'ASan runtime does not
+# come first'); invoke it through the run-wrapper.
+#
+# The explicit extra sanitizer flags below cover checks outside Clang's
+# undefined group: pointer pair validation, unsigned/suspicious integer behavior,
+# implicit conversions, local-bounds, nullability, and floating divide-by-zero.
+# TSAN is mutually exclusive with ASAN and MSAN needs every dependent library
+# instrumented, so those remain separate lanes rather than additions here.
 
 [built-in options]
 buildtype = 'debugoptimized'
@@ -18,11 +24,11 @@ b_lundef = 'false'
 optimization = '1'
 b_ndebug = 'false'
 # -fno-emulated-tls matches profile 1_ (the GL stack's libglapi needs native
-# TLS under clang).  The debug profile forces -fno-omit-frame-pointer: clang at
-# -O2 (debugoptimized) drops the frame pointer by default, which breaks
-# gdb/libunwind RCA backtraces, so pin it on.
-c_args = ['-march=x86-64', '-mtune=generic', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
-cpp_args = ['-march=x86-64', '-mtune=generic', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+# TLS under clang).  The sanitizer lane forces frame pointers, disables sibling
+# call optimization and sanitizer report merging, and emits -g3 macro-aware debug
+# information so UBSan/ASan reports and gdb line up with the source under RCA.
+c_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fno-sanitize-merge', '-fsanitize-address-use-after-scope', '-fsanitize-address-use-after-return=runtime', '-fsanitize=pointer-compare,pointer-subtract,integer,implicit-conversion,local-bounds,nullability,float-divide-by-zero', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fno-sanitize-merge', '-fsanitize-address-use-after-scope', '-fsanitize-address-use-after-return=runtime', '-fsanitize=pointer-compare,pointer-subtract,integer,implicit-conversion,local-bounds,nullability,float-divide-by-zero', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
 c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
@@ -111,3 +117,6 @@ vulkan-layers = ['overlay', 'device-select']
 video-codecs = ['mpeg12dec', 'h264dec']
 gallium-va = 'enabled'
 gallium-xa = true
+
+# Warnings are defects in every configured lane.
+werror = true
