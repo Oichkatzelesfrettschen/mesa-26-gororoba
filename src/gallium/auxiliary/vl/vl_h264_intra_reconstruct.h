@@ -60,6 +60,19 @@ void vl_h264_intra_predict_4x4(const uint8_t *luma, unsigned stride,
                                unsigned mb_x, unsigned mb_y, unsigned s, int mode,
                                int16_t pred[16]);
 
+/*
+ * Reconstruct the two 4:2:0 chroma planes of an intra frame from its
+ * per-macroblock contracts (sec 8.3.3).  cb and cr are the width_in_mbs*8 by
+ * height_in_mbs*8 planes, stride bytes per row.  Both components of a macroblock
+ * share intra_chroma_pred_mode; each predicts from its neighbour row and column,
+ * adds the inverse-transformed residual (chroma DC Hadamard plus AC), and writes
+ * Clip1.
+ */
+void vl_h264_intra_reconstruct_chroma(const struct vl_h264_mb_contract *mbs,
+                                      unsigned num_mbs, unsigned width_in_mbs,
+                                      unsigned height_in_mbs, uint8_t *cb,
+                                      uint8_t *cr, unsigned stride);
+
 #ifdef __cplusplus
 }
 #endif

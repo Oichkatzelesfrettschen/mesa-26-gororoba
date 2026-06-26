@@ -390,3 +390,143 @@ vl_h264_idct4(const int16_t coeff[16], int16_t residual[16])
    for (int i = 0; i < 16; i++)
       residual[i] = (int16_t)((cols[i] + 32) >> 6);
 }
+
+/* The 4:2:0 chroma neighbours: top is p[0..7,-1], left is p[-1,0..7], tl is
+ * p[-1,-1], each from one earlier macroblock so a flag per side suffices. */
+struct neighbors_c {
+   int top[8];
+   int left[8];
+   int tl;
+   bool top_av;
+   bool left_av;
+};
+
+static int cctop(const struct neighbors_c *n, int k) { return k < 0 ? n->tl : n->top[k]; }
+static int ccleft(const struct neighbors_c *n, int k) { return k < 0 ? n->tl : n->left[k]; }
+
+/* A chroma DC quadrant value (sec 8.3.3.1): the average of both candidate sums
+ * when allowed and available, else the first available, else 128. */
+static int
+chroma_dc_avg(int sum_a, bool av_a, int sum_b, bool av_b, bool allow_both)
+{
+   if (allow_both && av_a && av_b)
+      return (sum_a + sum_b + 4) >> 3;
+   if (av_a)
+      return (sum_a + 2) >> 2;
+   if (av_b)
+      return (sum_b + 2) >> 2;
+   return 128;
+}
+
+static void
+predict_chroma_dc(const struct neighbors_c *n, int pred[64])
+{
+   int t04 = n->top[0] + n->top[1] + n->top[2] + n->top[3];
+   int t47 = n->top[4] + n->top[5] + n->top[6] + n->top[7];
+   int l04 = n->left[0] + n->left[1] + n->left[2] + n->left[3];
+   int l47 = n->left[4] + n->left[5] + n->left[6] + n->left[7];
+
+   /* Each 4x4 quadrant has its own source preference (sec 8.3.3.1). */
+   int q[2][2];
+   q[0][0] = chroma_dc_avg(t04, n->top_av, l04, n->left_av, true);
+   q[1][0] = chroma_dc_avg(t47, n->top_av, l04, n->left_av, false);
+   q[0][1] = chroma_dc_avg(l47, n->left_av, t04, n->top_av, false);
+   q[1][1] = chroma_dc_avg(t47, n->top_av, l47, n->left_av, true);
+
+   for (int y = 0; y < 8; y++)
+      for (int x = 0; x < 8; x++)
+         pred[y * 8 + x] = q[x / 4][y / 4];
+}
+
+static void
+predict_chroma_plane(const struct neighbors_c *n, int pred[64])
+{
+   int h = 0, v = 0;
+   for (int i = 0; i < 4; i++) {
+      h += (i + 1) * (n->top[4 + i] - cctop(n, 2 - i));
+      v += (i + 1) * (n->left[4 + i] - ccleft(n, 2 - i));
+   }
+   int a = 16 * (n->left[7] + n->top[7]);
+   int b = (17 * h + 16) >> 5;
+   int c = (17 * v + 16) >> 5;
+   for (int y = 0; y < 8; y++)
+      for (int x = 0; x < 8; x++)
+         pred[y * 8 + x] = clip1((a + b * (x - 3) + c * (y - 3) + 16) >> 5);
+}
+
+static void
+predict_chroma(const struct neighbors_c *n, int mode, int pred[64])
+{
+   switch (mode) {
+   case 0:
+      predict_chroma_dc(n, pred);
+      break;
+   case 1: /* Horizontal */
+      for (int y = 0; y < 8; y++)
+         for (int x = 0; x < 8; x++)
+            pred[y * 8 + x] = n->left[y];
+      break;
+   case 2: /* Vertical */
+      for (int y = 0; y < 8; y++)
+         for (int x = 0; x < 8; x++)
+            pred[y * 8 + x] = n->top[x];
+      break;
+   default: /* 3: Plane */
+      predict_chroma_plane(n, pred);
+      break;
+   }
+}
+
+static void
+build_chroma_neighbors(const uint8_t *plane, unsigned stride, unsigned mb_x,
+                       unsigned mb_y, struct neighbors_c *n)
+{
+   int x0 = mb_x * 8, y0 = mb_y * 8;
+   n->top_av = mb_y > 0;
+   n->left_av = mb_x > 0;
+   for (int k = 0; k < 8; k++) {
+      n->top[k] = n->top_av ? plane[(y0 - 1) * (int)stride + x0 + k] : 0;
+      n->left[k] = n->left_av ? plane[(y0 + k) * (int)stride + x0 - 1] : 0;
+   }
+   n->tl = (n->top_av && n->left_av) ? plane[(y0 - 1) * (int)stride + x0 - 1] : 0;
+}
+
+/* Reconstruct one chroma component's plane (sec 8.3.3): predict each macroblock's
+ * 8x8 from the neighbours, then add the four 4x4 residual blocks. */
+static void
+reconstruct_chroma_plane(const struct vl_h264_mb_contract *mbs, unsigned num_mbs,
+                         uint8_t *plane, unsigned stride, unsigned comp)
+{
+   for (unsigned addr = 0; addr < num_mbs; addr++) {
+      const struct vl_h264_mb_contract *mb = &mbs[addr];
+      unsigned mb_x = (unsigned)mb->mb_x, mb_y = (unsigned)mb->mb_y;
+      struct neighbors_c n;
+      int pred[64];
+
+      build_chroma_neighbors(plane, stride, mb_x, mb_y, &n);
+      predict_chroma(&n, mb->intra_chroma_pred_mode, pred);
+
+      for (unsigned blk = 0; blk < 4; blk++) {
+         int16_t residual[16];
+         vl_h264_idct4(mb->coeff4x4[VL_H264_LUMA_4X4_BLOCKS + comp * 4 + blk],
+                       residual);
+         int qx = (blk % 2) * 4, qy = (blk / 2) * 4;
+         for (int y = 0; y < 4; y++)
+            for (int x = 0; x < 4; x++)
+               plane[(mb_y * 8 + qy + y) * stride + mb_x * 8 + qx + x] =
+                  (uint8_t)clip1(pred[(qy + y) * 8 + qx + x] + residual[y * 4 + x]);
+      }
+   }
+}
+
+void
+vl_h264_intra_reconstruct_chroma(const struct vl_h264_mb_contract *mbs,
+                                 unsigned num_mbs, unsigned width_in_mbs,
+                                 unsigned height_in_mbs, uint8_t *cb, uint8_t *cr,
+                                 unsigned stride)
+{
+   (void)width_in_mbs;
+   (void)height_in_mbs;
+   reconstruct_chroma_plane(mbs, num_mbs, cb, stride, 0);
+   reconstruct_chroma_plane(mbs, num_mbs, cr, stride, 1);
+}
