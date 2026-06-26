@@ -207,6 +207,30 @@ void r300_nir_detect_unary_transcendental(
  * on the admitted op set. */
 bool r300_nir_is_unary_transcendental_op(uint16_t nir_op);
 
+/* Two-input transcendental map: out[gid] = f(a[gid], b[gid]) where f is fpow or
+ * fdiv -- the gap above binary_map (commutative fadd/fmul/fmin/fmax) for the two
+ * non-commutative transcendental binaries the fragment ALU computes natively:
+ * pow as EX2(LG2(a)*b), and a/b as a*RCP(b).  Operand order is preserved
+ * (input_a feeds the op's first source, input_b the second), since neither op is
+ * commutative.  The op set keeps it disjoint from binary_map; a unit-numerator
+ * fdiv(1.0, x) is the unary reciprocal arm, not this verb (its numerator is a
+ * load, not a constant).  Vec4 componentwise only -- the proven R32G32B32A32 ->
+ * FP16 RT carrier the binary_map float path uses.  PRECISION TIER: FP24-ALU +
+ * FP16-carrier bounded, never bit-exact. */
+struct r300_compute_binary_transcendental_pattern {
+   bool       is_binary_transcendental;
+   uint16_t   alu_op;                 /* nir_op: fpow or fdiv */
+   uint32_t   input_a_ssbo_binding;   /* feeds the op's first source */
+   uint32_t   input_b_ssbo_binding;   /* feeds the op's second source */
+   uint32_t   output_ssbo_binding;
+   uint8_t    value_components;       /* store_ssbo value vector width (4 supported) */
+   uint8_t    value_bit_size;         /* store_ssbo value component width (32) */
+};
+
+void r300_nir_detect_binary_transcendental(
+   const struct nir_shader *s,
+   struct r300_compute_binary_transcendental_pattern *out);
+
 /* Blend-add-reduction kernel pattern: a kernel whose store value is an
  * atomicAdd of a load_ssbo result, where the atomic's target buffer is a
  * small output histogram and the atomic's offset folds the dispatch grid into

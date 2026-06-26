@@ -2087,6 +2087,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_binary_map_pattern *binmap,
                                struct r300_compute_unary_map_pattern *unary,
                                struct r300_compute_unary_transcendental_pattern *transc,
+                               struct r300_compute_binary_transcendental_pattern *btransc,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
                                struct r300_compute_zpass_reduction_pattern *zpass,
                                struct r300_compute_multipass_scan_pattern *multiscan,
@@ -2194,6 +2195,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_binary_map(nir, binmap);
    r300_nir_detect_unary_map(nir, unary);
    r300_nir_detect_unary_transcendental(nir, transc);
+   r300_nir_detect_binary_transcendental(nir, btransc);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
@@ -2631,6 +2633,83 @@ r300vk_unary_transcendental_synthesize_shaders(struct r300vk_device *device,
 
    pl->fs_cso = r300vk_synthesize_unary_transcendental_fs(
       pipe, pl->unary_transcendental.alu_op);
+   if (!pl->fs_cso) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+   return true;
+}
+
+/* Binary-transcendental FS: 2 TEX + a componentwise non-commutative binary,
+ * built in ureg like the binary_map FS (GENERIC[0] PERSPECTIVE, two samplers).
+ * POW and RCP are scalar r300 ALU ops, so each of the four lanes is computed
+ * separately: out.c = pow(a.c, b.c) for fpow, out.c = a.c * rcp(b.c) for fdiv.
+ * Returns NULL for an op outside {fpow, fdiv}. */
+static void *
+r300vk_synthesize_binary_transcendental_fs(struct pipe_context *pipe,
+                                           uint16_t alu_op)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp_a = ureg_DECL_sampler(ureg, 0);
+   struct ureg_src samp_b = ureg_DECL_sampler(ureg, 1);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                            TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst a = ureg_DECL_temporary(ureg);
+   struct ureg_dst b = ureg_DECL_temporary(ureg);
+
+   ureg_TEX(ureg, ureg_writemask(a, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp_a);
+   ureg_TEX(ureg, ureg_writemask(b, TGSI_WRITEMASK_XYZW),
+            TGSI_TEXTURE_2D, tex, samp_b);
+
+   if ((nir_op)alu_op == nir_op_fdiv) {
+      struct ureg_dst rb = ureg_DECL_temporary(ureg);
+      for (unsigned c = 0; c < 4; c++)
+         ureg_RCP(ureg, ureg_writemask(rb, 1u << c),
+                  ureg_scalar(ureg_src(b), c));
+      ureg_MUL(ureg, out, ureg_src(a), ureg_src(rb));
+   } else if ((nir_op)alu_op == nir_op_fpow) {
+      for (unsigned c = 0; c < 4; c++)
+         ureg_POW(ureg, ureg_writemask(out, 1u << c),
+                  ureg_scalar(ureg_src(a), c), ureg_scalar(ureg_src(b), c));
+   } else {
+      ureg_destroy(ureg);
+      return NULL;
+   }
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+/* Binary-transcendental VS+FS synthesis: the passthrough VS plus the two-input
+ * transcendental FS.  Reuses the device-cached identity-map state CSOs and the
+ * two-in/one-out replay core the binary_map float path uses. */
+static bool
+r300vk_binary_transcendental_synthesize_shaders(struct r300vk_device *device,
+                                                struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->fs_cso = r300vk_synthesize_binary_transcendental_fs(
+      pipe, pl->binary_transcendental.alu_op);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;
@@ -4343,6 +4422,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->unary_transcendental.is_unary_transcendental = false;
       return VK_SUCCESS;
    }
+   if (pl->binary_transcendental.is_binary_transcendental) {
+      if (!r300vk_binary_transcendental_synthesize_shaders(device, pl))
+         pl->binary_transcendental.is_binary_transcendental = false;
+      return VK_SUCCESS;
+   }
    if (pl->affine_iota.is_affine_iota) {
       if (!r300vk_affine_iota_synthesize_shaders(device, pl))
          pl->affine_iota.is_affine_iota = false;
@@ -4484,6 +4568,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_binary_map_pattern binmap = {0};
    struct r300_compute_unary_map_pattern unary_pat = {0};
    struct r300_compute_unary_transcendental_pattern transc_pat = {0};
+   struct r300_compute_binary_transcendental_pattern btransc_pat = {0};
    struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
    struct r300_compute_zpass_reduction_pattern zpass = {0};
    struct r300_compute_multipass_scan_pattern multiscan = {0};
@@ -4518,7 +4603,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
 
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &unary_pat,
-                                       &transc_pat,
+                                       &transc_pat, &btransc_pat,
                                        &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
                                        &qmul_pat, &qdiv_pat, &mat4vec_pat, &qfmul_pat,
@@ -4565,6 +4650,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->binary_map = binmap;
    pl->unary_map = unary_pat;
    pl->unary_transcendental = transc_pat;
+   pl->binary_transcendental = btransc_pat;
    pl->dp4 = dp4_pat;
    pl->qmul = qmul_pat;
    pl->qdiv = qdiv_pat;

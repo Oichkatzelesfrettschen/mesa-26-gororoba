@@ -111,6 +111,16 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
                                   const struct r300vk_cmd_dispatch *dispatch,
                                   const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* Binary-transcendental dispatch replay: out[i] = f(a[i], b[i]) for f in
+ * {fpow, fdiv}, vec4 componentwise.  Shares the two-in/one-out vec4 carrier with
+ * binary_map's float path; pl->fs_cso holds the componentwise transcendental FS. */
+bool
+r300vk_binary_transcendental_dispatch_replay(
+   struct r300vk_device *device,
+   const struct r300vk_pipeline *pl,
+   const struct r300vk_cmd_dispatch *dispatch,
+   const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* Unary affine-map dispatch replay: out[i] = in[i]*c0 + c1.  Reuses the
  * identity 1-in/1-out replay core -- r300vk_unary_map_synthesize_shaders
  * mirrored the bindings + value format into pl->identity_map and bound the MAD
