@@ -1075,12 +1075,15 @@ ntr_emit_alu_special(struct ntr_compile *c, nir_alu_instr *instr, struct ntr_alu
       break;
 
    case nir_op_ffloor: {
-      /* R300 has no floor opcode.  FRC is exactly src - floor(src), so
-       * floor(x) = x - FRC(x).  The early lower_ffloor pass handles ffloor in
-       * the incoming shader, but nir_lower_int_to_float re-introduces it from
-       * f2u (uint(float)) after that pass has run, so it reaches here unlowered;
-       * emit x - FRC(x) directly rather than failing into a dummy shader. */
+      /* R300 has no general floor opcode (RC has ROUND and the address-register
+       * ARL/ARR, but no RC_OPCODE_FLR for an FP temp/output).  FRC is exactly
+       * src - floor(src), so floor(x) = x - FRC(x).  The early lower_ffloor pass
+       * handles ffloor in the incoming shader, but nir_lower_int_to_float
+       * re-introduces it from f2u (uint(float)) after that pass has run, so it
+       * reaches here unlowered; emit x - FRC(x) directly rather than failing into
+       * a dummy shader. */
       struct rc_dst_register tmp = ntr_temp(c);
+      tmp.WriteMask = dst.reg.WriteMask;
       ntr_emit_alu_op1(c, RC_OPCODE_FRC, ntr_alu_dst(tmp, RC_SATURATE_NONE), src[0]);
       ntr_emit_alu_op2(c, RC_OPCODE_ADD, dst, src[0],
                        ntr_negate(ntr_src_register(c, RC_FILE_TEMPORARY, tmp.Index)));
