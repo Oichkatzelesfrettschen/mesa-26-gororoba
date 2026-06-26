@@ -412,6 +412,51 @@ struct r300vk_pipeline {
    uint8_t                 instance_id_vb_binding;
 };
 
+/* True when one of the compute-as-raster verb detectors fired, i.e. a dispatch
+ * of this pipeline reaches a real replay path instead of the unknown-shape
+ * no-op.  This OR MUST list exactly the verbs r300vk_replay_dispatch routes;
+ * adding a verb means updating both.  index_consumption is deliberately absent
+ * -- it is a classify-time guard signal, not a dispatch verb, so a kernel that
+ * only sets it still no-ops.  Used at pipeline-create to warn for an
+ * admitted-but-unmatched kernel (the UNKNOWN_SHAPE reject that the classifier's
+ * reject-reason path cannot see, because the kernel passed admission). */
+static inline bool
+r300vk_pipeline_matched_raster_verb(const struct r300vk_pipeline *pl)
+{
+   return pl->identity_map.is_identity_map ||
+          pl->const_fill.is_const_fill ||
+          pl->affine_iota.is_affine_iota ||
+          pl->multilimb_mul.is_multilimb_mul ||
+          pl->cas.is_cas ||
+          pl->log4_pool.is_log4_pool ||
+          pl->binary_map.is_binary_map ||
+          pl->unary_map.is_unary_map ||
+          pl->dp4.is_dp4 ||
+          pl->qmul.is_qmul ||
+          pl->qdiv.is_qdiv ||
+          pl->mat4vec.is_mat4vec ||
+          pl->qfmul.is_qfmul ||
+          pl->qrotate.is_qrotate ||
+          pl->qconj.is_qconj ||
+          pl->qnorm.is_qnorm ||
+          pl->qnormalize.is_qnormalize ||
+          pl->omul.is_omul ||
+          pl->oaddsub.is_oaddsub ||
+          pl->oconj.is_oconj ||
+          pl->onorm.is_onorm ||
+          pl->odiv.is_odiv ||
+          pl->otrans.is_otrans ||
+          pl->qfmadd.is_qfmadd ||
+          pl->qfmmul.is_qfmmul ||
+          pl->blend_acc_reduction.is_blend_acc_reduction ||
+          pl->zpass_reduction.is_zpass_reduction ||
+          pl->multipass_scan.is_multipass_scan ||
+          pl->predicated_store.is_predicated_store ||
+          pl->multitap_gather.is_multitap_gather ||
+          pl->ieee16_classify.is_ieee16_classify ||
+          pl->ieee16_mul.is_ieee16_mul;
+}
+
 VK_DEFINE_NONDISP_HANDLE_CASTS(r300vk_pipeline, base, VkPipeline,
                                 VK_OBJECT_TYPE_PIPELINE)
 

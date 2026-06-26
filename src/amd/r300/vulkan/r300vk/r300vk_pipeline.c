@@ -4515,6 +4515,19 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->local_size_y = local_size[1];
    pl->local_size_z = local_size[2];
 
+   /* An admitted kernel that matched no raster verb dispatches as a silent
+    * no-op (R300_COMPUTE_REJECT_UNKNOWN_SHAPE in r300vk_replay_dispatch).  The
+    * reject-reason warning above only fires for kernels the classifier
+    * rejected; this one passed admission yet no detector recognized its shape,
+    * so surface it here too -- an app (or probe harness) then learns the
+    * dispatch will not write its output at create time instead of discovering
+    * a silently-unwritten buffer after submit. */
+   if (adm.admissible && !r300vk_pipeline_matched_raster_verb(pl)) {
+      vk_logw(VK_LOG_OBJS(&device->vk.base),
+              "r300vk: compute kernel %u passed admission but matches no raster "
+              "verb; dispatches will no-op (UNKNOWN_SHAPE)", i);
+   }
+
    VkResult synth_result = r300vk_synthesize_compute_shaders(device, pl);
    if (synth_result != VK_SUCCESS) {
       r300vk_DestroyPipeline(r300vk_device_to_handle(device),
