@@ -120,6 +120,68 @@ build_fs(enum fs_mad_form form)
    return b.shader;
 }
 
+/* The H.264 deblock edge-strength gate: iand(flt, iand(flt, flt)) over a varying.
+ * This is a 1-bit boolean conjunction of comparison results, the shape
+ * nir_lower_bool_to_float lowers to fmul/fmin downstream.  b2f the gate so the
+ * iand cannot fold away. */
+static nir_shader *
+build_fs_boolean_iand(void)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
+                                                  "r300_nir_fs_bool_iand");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+
+   nir_variable *in0 =
+      nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_edge");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out =
+      nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *x = nir_channel(&b, nir_load_var(&b, in0), 0);
+   nir_def *c1 = nir_flt(&b, x, nir_imm_float(&b, 1.0f));
+   nir_def *c2 = nir_flt(&b, x, nir_imm_float(&b, 2.0f));
+   nir_def *c3 = nir_flt(&b, x, nir_imm_float(&b, 3.0f));
+   nir_def *gate = nir_iand(&b, c1, nir_iand(&b, c2, c3));
+   nir_def *f = nir_b2f32(&b, gate);
+   nir_store_var(&b, out, nir_vec4(&b, f, f, f, f), 0xf);
+   return b.shader;
+}
+
+/* A 32-bit data ixor of two varying-derived integers: a genuine integer bit op
+ * with no FP24-exact form, which the lowering MUST still reject to a dummy
+ * shader.  Calibrates the boolean skip so it does not over-broaden to real
+ * integer bit math. */
+static nir_shader *
+build_fs_data_ixor(void)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
+                                                  "r300_nir_fs_data_ixor");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+
+   nir_variable *in0 =
+      nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_data");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out =
+      nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in0);
+   nir_def *a = nir_f2u32(&b, nir_channel(&b, v, 0));
+   nir_def *c = nir_f2u32(&b, nir_channel(&b, v, 1));
+   nir_def *f = nir_u2f32(&b, nir_ixor(&b, a, c));
+   nir_store_var(&b, out, nir_vec4(&b, f, f, f, f), 0xf);
+   return b.shader;
+}
+
 /* Build a fragment shader that reproduces st_nir_lower_fog's output blend:
  *
  *   f   = fsat(ffma_weak(fogc, params.x, params.y))          (FOG_LINEAR)
@@ -509,6 +571,27 @@ case_textureproj_bias_lowers_to_fp24_rcp(void)
    teardown_fs(&c, &rs);
 }
 
+/* r300_nir_lower_bitwise_to_arith rejects integer bitwise/shift ops with no
+ * FP24-exact form to a dummy shader, but must NOT reject 1-bit boolean
+ * iand/ior/ixor -- the logical connectives nir_lower_bool_to_float lowers to
+ * fmul/fmin.  The H.264 deblock filter's edge-strength gate is boolean iand;
+ * rejecting it substitutes a dummy deblock shader that corrupts reconstructed
+ * inter macroblocks.  The data ixor confirms the reject still fires for real
+ * integer bit math, so the boolean skip does not over-broaden. */
+static void
+case_boolean_logic_not_dummy_shaded(void)
+{
+   bool unsupported = false;
+   r300_nir_lower_bitwise_to_arith(build_fs_boolean_iand(), &unsupported);
+   CHECK(!unsupported, "boolean iand(flt, iand(flt, flt)) is left for "
+                       "bool_to_float, not rejected to a dummy shader");
+
+   unsupported = false;
+   r300_nir_lower_bitwise_to_arith(build_fs_data_ixor(), &unsupported);
+   CHECK(unsupported,
+         "32-bit data ixor with no FP24 form is still rejected to a dummy shader");
+}
+
 int
 main(void)
 {
@@ -518,6 +601,7 @@ main(void)
    case_fog_packing_well_formed();
    case_textureproj_uses_hw_txp();
    case_textureproj_bias_lowers_to_fp24_rcp();
+   case_boolean_logic_not_dummy_shaded();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

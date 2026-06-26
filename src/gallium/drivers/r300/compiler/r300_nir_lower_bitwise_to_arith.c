@@ -69,6 +69,16 @@ lower_bitwise_instr(nir_builder *b, nir_instr *instr, void *data)
    nir_alu_instr *alu = nir_instr_as_alu(instr);
    b->cursor = nir_before_instr(instr);
 
+   /* Boolean iand/ior/ixor/inot are logical connectives over comparison results
+    * (nir_flt and friends), carried as 1-bit ops until nir_lower_bool_to_float
+    * rewrites them to fmul/fmin/fmax.  They are not integer bitfield math, so
+    * leave them for that pass rather than rejecting them to a dummy shader.  The
+    * H.264 deblock filter's edge-strength gate -- iand(flt, iand(flt, flt)) -- is
+    * exactly this shape; rejecting it substitutes a dummy deblock shader that
+    * corrupts reconstructed inter macroblocks. */
+   if (alu->def.bit_size == 1)
+      return false;
+
    switch (alu->op) {
    case nir_op_iand: {
       uint32_t mask;
