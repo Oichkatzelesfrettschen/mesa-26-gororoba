@@ -267,6 +267,31 @@ if with_tests and with_gallium_softpipe
     suite: 'gallium',
   )
 
+  # The real decoder path for an IDR: drive begin_frame / decode_bitstream /
+  # end_frame through the vtable with the Mesa CAVLC provider and no reference, so
+  # end_frame reconstructs the whole intra frame on the CPU; match ffmpeg.
+  test('vl-h264-decode-idr',
+    executable(
+      'vl_h264_decode_idr_test',
+      'auxiliary/vl/tests/vl_h264_decode_idr_test.c',
+      include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux,
+                             include_directories('winsys'),
+                             include_directories('drivers'),
+                             include_directories('auxiliary/vl')],
+      link_with : [libgalliumvl, libgallium, libws_null],
+      dependencies : [driver_softpipe, idep_nir, idep_mesautil, dep_thread],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_idr_slice.bin'),
+            join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_sps.bin'),
+            join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_pps.bin'),
+            join_paths(meson.current_source_dir(), 'auxiliary/vl/tests',
+                       'h264_cb_idr_ref.yuv')],
+    suite: 'gallium',
+  )
+
   # File-driven whole-frame H.264 inter reconstruction: reads a serialized slice
   # contract built from the libavcodec inter oracle and an MB-aligned reference
   # frame, runs the decode vtable through the replay provider, and writes the
