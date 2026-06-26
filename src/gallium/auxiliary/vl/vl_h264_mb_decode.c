@@ -79,8 +79,8 @@ stored_block_mode(struct vl_h264_mb_decoder *dec, unsigned mb_raster,
    return mode >= 0 ? mode : 2;
 }
 
-/* The Intra_4x4 mode contributed by a neighbour macroblock's block, or
- * MODE_UNAVAILABLE when that neighbour is outside the frame or the slice. */
+/* The Intra_4x4 mode contributed by a neighbor macroblock's block, or
+ * MODE_UNAVAILABLE when that neighbor is outside the frame or the slice. */
 static int
 neighbour_block_mode(struct vl_h264_mb_decoder *dec, unsigned cur_mb_addr,
                      int nb_mb_x, int nb_mb_y, unsigned bx, unsigned by)
@@ -98,7 +98,7 @@ neighbour_block_mode(struct vl_h264_mb_decoder *dec, unsigned cur_mb_addr,
 }
 
 /* predIntra4x4PredMode for one block (sec 8.3.1.1): the minimum of the left and
- * top neighbour modes, or DC when either neighbour is unavailable. */
+ * top neighbor modes, or DC when either neighbor is unavailable. */
 static int
 predict_intra4x4_mode(struct vl_h264_mb_decoder *dec, unsigned mb_x,
                       unsigned mb_y, unsigned bx, unsigned by)
@@ -115,7 +115,7 @@ predict_intra4x4_mode(struct vl_h264_mb_decoder *dec, unsigned mb_x,
 }
 
 /* mb_pred for an Intra_4x4 macroblock (sec 7.3.5.1): the 16 luma modes (with the
- * neighbour-predicted derivation) then the chroma mode. */
+ * neighbor-predicted derivation) then the chroma mode. */
 static void
 decode_intra4x4_pred(struct vl_h264_mb_decoder *dec,
                      struct vl_h264_reader *reader, unsigned mb_x,
@@ -141,7 +141,7 @@ decode_intra4x4_pred(struct vl_h264_mb_decoder *dec,
 }
 
 /* Mark every 4x4 block of a macroblock as not Intra_4x4 (DC-predicting for a
- * neighbour), used for I_16x16 and, later, inter macroblocks. */
+ * neighbor), used for I_16x16 and, later, inter macroblocks. */
 static void
 clear_intra4x4_modes(struct vl_h264_mb_decoder *dec, unsigned mb_x,
                      unsigned mb_y)
@@ -208,7 +208,7 @@ vl_h264_mb_decoder_begin_slice(struct vl_h264_mb_decoder *dec,
    dec->qp_y = slice->slice_qp;
    dec->skip_run = -1;
    /* Every block starts with no list-0 reference; a decoded inter block sets it,
-    * and the motion vector prediction treats ref -1 as a non-matching neighbour. */
+    * and the motion vector prediction treats ref -1 as a non-matching neighbor. */
    memset(dec->ref_l0_frame, -1, dec->num_mbs * 16 * sizeof(*dec->ref_l0_frame));
 }
 

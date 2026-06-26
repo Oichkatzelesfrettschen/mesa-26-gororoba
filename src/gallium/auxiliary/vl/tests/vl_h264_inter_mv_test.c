@@ -14,7 +14,7 @@
  * when the oracle does.  The reference index structure is checked from the
  * decoded macroblock kind (inter blocks reference list 0, intra blocks do not).
  * Motion vector prediction is a later change, so the motion vectors that already
- * match (those with no inter neighbour) are reported, not asserted.  Arguments:
+ * match (those with no inter neighbor) are reported, not asserted.  Arguments:
  * the P-slice NAL, the per-macroblock bit-position dump, and the mv/ref dump.
  */
 

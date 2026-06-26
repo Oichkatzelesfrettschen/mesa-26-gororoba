@@ -104,7 +104,7 @@ The following rules are enforceable. Later sections may explain mechanism or rat
 
 - MUST write source comments so a Mesa maintainer six months later can understand them without this project's task tracker.
 - MUST NOT cite internal GitHub or GitLab fork issue numbers, private PR chronology, wave labels, task numbers, author tags, local paths, private hosts, or deictic time in source comments.
-- MUST use American English spelling in new or modified source comments, commit messages, and documentation authored by this project's contributors.
+- MUST use American (United States) English spelling in new or modified source comments, commit messages, and documentation authored by this project's contributors.
 - MUST NOT mass-reformat code, churn upstream comment spelling when the patch is about behavior, produce stubs, placeholders, dead code, or `TODO: finish later` prose without explicit tracked rationale and user agreement.
 - MUST report results and decisions without padding responses with narration of internal deliberation.
 - MUST stop normal feature work for a critical security or unsafe hardware-access defect, then contain and report before resuming.
@@ -604,7 +604,7 @@ Do not strip or rewrite an upstream header when refactoring, splitting, or movin
 
 Follow local style first: `.editorconfig`, `.clang-format`, adjacent code, and repo-local build rules override generic taste. Mesa-shaped C/C++ uses 3-space indentation, no tabs, 78-column code where practical, short Doxygen-shaped function comments when useful, and comments that name the spec or source rule when that rule controls the code. Do not mass-reformat code when the patch is about behavior.
 
-Use American English spelling in new or modified source comments, commit messages, and project-authored documentation: `honor`, `behavior`, `initialize`. This rule applies only to new or modified text. Do not edit upstream comments solely for spelling; churn-only spelling edits create unnecessary merge conflicts. Quoted spec text, kernel symbol names, diagnostics, and hardware identifiers stay verbatim. When a substantive edit already changes a comment line, the touched line may be aligned to American English; otherwise leave existing spelling alone.
+Use American (United States) English spelling in new or modified source comments, commit messages, and project-authored documentation: `honor`, `behavior`, `initialize`. This rule applies only to new or modified text. Do not edit upstream comments solely for spelling; churn-only spelling edits create unnecessary merge conflicts. Quoted spec text, kernel symbol names, diagnostics, and hardware identifiers stay verbatim. When a substantive edit already changes a comment line, the touched line may be aligned to American English; otherwise leave existing spelling alone.
 
 Source comments MUST NOT contain unstable or private references: task numbers, private issue numbers, PR numbers, companion-PR breadcrumbs, wave/phase/mission/session labels, worktree names, agent names, author tags, local absolute paths, private host FQDNs, raw private IPs, deictic time, dated claim/LI/Q tags, deictic chip names, internal-repo source paths, or internal evidence paths as authority.
 
