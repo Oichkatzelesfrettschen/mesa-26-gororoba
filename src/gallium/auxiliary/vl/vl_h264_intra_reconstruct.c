@@ -55,7 +55,7 @@ sample_available(int ax, int ay, unsigned width, unsigned height,
    return xy_to_blk(((unsigned)ax % 16) / 4, ((unsigned)ay % 16) / 4) < cur_blk;
 }
 
-/* The Intra_4x4 neighbour samples: A is p[0..7,-1] (top and top-right), L is
+/* The Intra_4x4 neighbor samples: A is p[0..7,-1] (top and top-right), L is
  * p[-1,0..3] (left), tl is p[-1,-1]. */
 struct neighbors4 {
    int a[8];
@@ -397,7 +397,7 @@ vl_h264_idct4(const int16_t coeff[16], int16_t residual[16])
       residual[i] = (int16_t)((cols[i] + 32) >> 6);
 }
 
-/* The 4:2:0 chroma neighbours: top is p[0..7,-1], left is p[-1,0..7], tl is
+/* The 4:2:0 chroma neighbors: top is p[0..7,-1], left is p[-1,0..7], tl is
  * p[-1,-1], each from one earlier macroblock so a flag per side suffices. */
 struct neighbors_c {
    int top[8];
@@ -498,7 +498,7 @@ build_chroma_neighbors(const uint8_t *plane, unsigned stride, unsigned mb_x,
 }
 
 /* Reconstruct one chroma component's plane (sec 8.3.3): predict each macroblock's
- * 8x8 from the neighbours, then add the four 4x4 residual blocks. */
+ * 8x8 from the neighbors, then add the four 4x4 residual blocks. */
 static void
 reconstruct_chroma_plane(const struct vl_h264_mb_contract *mbs, unsigned num_mbs,
                          uint8_t *plane, unsigned stride, unsigned comp)

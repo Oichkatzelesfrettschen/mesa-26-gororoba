@@ -301,7 +301,7 @@ main(int argc, char **argv)
    reconstruct_component(emit, ctx, screen, back, ref_cr,
                          VL_H264_LUMA_4X4_BLOCKS + 4, cr);
 
-   /* The intra macroblocks, reading their reconstructed inter neighbours. */
+   /* The intra macroblocks, reading their reconstructed inter neighbors. */
    vl_h264_intra_reconstruct_chroma(p_mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS,
                                     cb, cr, CHROMA_W);
 

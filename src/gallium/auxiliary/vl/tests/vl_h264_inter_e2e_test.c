@@ -15,7 +15,7 @@
  * frame 1 (-skip_loop_filter all).
  *
  * The back half implements the FP24-feasible luma fractions; the five
- * diagonal-centre quarter-pel positions that need the 2D half-pel (j) overflow
+ * diagonal-center quarter-pel positions that need the 2D half-pel (j) overflow
  * FP24 and are not in the kernel set, so blocks whose vector lands there are a
  * known back-half gap (a real-silicon concern, not a decode error).  The test
  * asserts every other block bit-exact and reports the gap blocks.
@@ -300,12 +300,12 @@ main(int argc, char **argv)
    CHECK(out != NULL);
    readback_plane(ctx, dst, out, LUMA_W, LUMA_H);
 
-   /* The intra macroblocks read their reconstructed inter neighbours from the
+   /* The intra macroblocks read their reconstructed inter neighbors from the
     * plane, so they fill after the back half. */
    vl_h264_intra_reconstruct_luma(p_mbs, NUM_MBS, WIDTH_IN_MBS, HEIGHT_IN_MBS,
                                   out, LUMA_W);
 
-   /* Compare to ffmpeg, excluding the diagonal-centre quarter-pel blocks the back
+   /* Compare to ffmpeg, excluding the diagonal-center quarter-pel blocks the back
     * half does not implement. */
    unsigned matched = 0, gap_blocks = 0, gap_marked[NUM_MBS * 16];
    memset(gap_marked, 0, sizeof(gap_marked));

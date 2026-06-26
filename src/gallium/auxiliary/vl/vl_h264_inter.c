@@ -34,13 +34,13 @@ median3(int a, int b, int c)
    return a + b + c - lo - hi;
 }
 
-/* Read a neighbour 4x4 block's list-0 motion vector and reference from the frame
+/* Read a neighbor 4x4 block's list-0 motion vector and reference from the frame
  * store.  (bx, by) is the within-macroblock 4x4 position and may be -1 or 4 for a
- * neighbouring macroblock.  Returns false when the block is outside the frame or
+ * neighboring macroblock.  Returns false when the block is outside the frame or
  * not yet decoded; an available intra block returns reference -1 and a zero
  * vector (sec 8.4.1.3.2). */
 static bool
-neighbour_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
+neighbor_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
              unsigned mb_y, int bx, int by, int *mvx, int *mvy, int *ref)
 {
    int abx = (int)mb_x * 4 + bx, aby = (int)mb_y * 4 + by;
@@ -63,25 +63,25 @@ neighbour_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
    return true;
 }
 
-/* The neighbour a 16x8 or 8x16 partition takes directly when its reference
+/* The neighbor a 16x8 or 8x16 partition takes directly when its reference
  * matches (the directional segmentation prediction of sec 8.4.1.3). */
 enum mvp_pref { PREF_NONE, PREF_A, PREF_B, PREF_C };
 
-/* Motion vector prediction for one partition (sec 8.4.1.3): neighbours A (left),
+/* Motion vector prediction for one partition (sec 8.4.1.3): neighbors A (left),
  * B (above), and C (above-right, falling back to D above-left), then the
  * directional special case or the median (sec 8.4.1.3.1).  The reference is
- * always 0 (single reference), so an intra or absent neighbour never matches. */
+ * always 0 (single reference), so an intra or absent neighbor never matches. */
 static void
 predict_mv(const struct vl_h264_mb_decoder *dec, unsigned cur, unsigned mb_x,
            unsigned mb_y, int px, int py, int pw, enum mvp_pref pref,
            int *mvp_x, int *mvp_y)
 {
    int ax, ay, aref, bx, by, bref, cx, cy, cref;
-   bool av_a = neighbour_mv(dec, cur, mb_x, mb_y, px - 1, py, &ax, &ay, &aref);
-   bool av_b = neighbour_mv(dec, cur, mb_x, mb_y, px, py - 1, &bx, &by, &bref);
-   bool av_c = neighbour_mv(dec, cur, mb_x, mb_y, px + pw, py - 1, &cx, &cy, &cref);
+   bool av_a = neighbor_mv(dec, cur, mb_x, mb_y, px - 1, py, &ax, &ay, &aref);
+   bool av_b = neighbor_mv(dec, cur, mb_x, mb_y, px, py - 1, &bx, &by, &bref);
+   bool av_c = neighbor_mv(dec, cur, mb_x, mb_y, px + pw, py - 1, &cx, &cy, &cref);
    if (!av_c)
-      av_c = neighbour_mv(dec, cur, mb_x, mb_y, px - 1, py - 1, &cx, &cy, &cref);
+      av_c = neighbor_mv(dec, cur, mb_x, mb_y, px - 1, py - 1, &cx, &cy, &cref);
 
    /* When B and C are both unavailable but A is, A stands in for them (8-160). */
    if (!av_b && !av_c && av_a) {
@@ -193,12 +193,12 @@ vl_h264_decode_p_mb(struct vl_h264_mb_decoder *dec, struct vl_h264_reader *reade
 
    if (dec->skip_run > 0) {
       dec->skip_run--;
-      /* P_Skip motion vector (sec 8.4.1.1): zero when the left or top neighbour
+      /* P_Skip motion vector (sec 8.4.1.1): zero when the left or top neighbor
        * is unavailable or is a zero-vector reference-0 block, otherwise the
        * ordinary 16x16 prediction. */
       int ax, ay, aref, bx, by, bref, mvx = 0, mvy = 0;
-      bool av_a = neighbour_mv(dec, cur, mb_x, mb_y, -1, 0, &ax, &ay, &aref);
-      bool av_b = neighbour_mv(dec, cur, mb_x, mb_y, 0, -1, &bx, &by, &bref);
+      bool av_a = neighbor_mv(dec, cur, mb_x, mb_y, -1, 0, &ax, &ay, &aref);
+      bool av_b = neighbor_mv(dec, cur, mb_x, mb_y, 0, -1, &bx, &by, &bref);
       if (av_a && av_b && !(aref == 0 && ax == 0 && ay == 0) &&
           !(bref == 0 && bx == 0 && by == 0))
          predict_mv(dec, cur, mb_x, mb_y, 0, 0, 4, PREF_NONE, &mvx, &mvy);

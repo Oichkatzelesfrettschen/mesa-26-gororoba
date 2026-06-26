@@ -9,11 +9,11 @@
  * The slice parser hands per-slice state; this layer walks the macroblock syntax
  * (ITU-T H.264 sec 7.3.5) and fills the non-residual fields of one
  * vl_h264_mb_contract: the macroblock type, the intra prediction modes (with the
- * sec 8.3.1.1 neighbour-predicted mode derivation), the coded block pattern (sec
+ * sec 8.3.1.1 neighbor-predicted mode derivation), the coded block pattern (sec
  * 9.1.2), and the running luma/chroma QP.  The CAVLC residual is a separate
  * stage that fills the coefficients after this header is parsed.
  *
- * A decoder object carries the slice-spanning neighbour state: the running QP
+ * A decoder object carries the slice-spanning neighbor state: the running QP
  * and the per-4x4-block intra mode array the mode prediction reads.  Scope is the
  * intra path (I_NxN, I_16x16) needed for the I-frame milestone; the inter
  * macroblock syntax is a later stage.
@@ -54,28 +54,28 @@ struct vl_h264_mb_decoder {
 
    /* Per-4x4-block actual intra mode across the frame, indexed
     * mb_raster * 16 + block_scan; -1 marks a block whose macroblock is not
-    * Intra_4x4 (treated as DC-predicting for a neighbour, sec 8.3.1.1). */
+    * Intra_4x4 (treated as DC-predicting for a neighbor, sec 8.3.1.1). */
    int8_t *intra4x4_modes;
 
    /* Per-4x4-block luma TotalCoeff across the frame, indexed
-    * mb_raster * 16 + block_scan; the CAVLC nC neighbour context reads it
+    * mb_raster * 16 + block_scan; the CAVLC nC neighbor context reads it
     * (sec 9.2.1).  Only meaningful for an already decoded macroblock. */
    uint8_t *nz_luma;
 
    /* Per-chroma-AC-block TotalCoeff across the frame, indexed
     * (mb_raster * 2 + component) * 4 + chroma_block, for the chroma AC nC
-    * neighbour context (sec 9.2.1). */
+    * neighbor context (sec 9.2.1). */
    uint8_t *nz_chroma_ac;
 
    /* Per-4x4-block list-0 motion vector (quarter-pel) and reference index
     * across the frame, indexed mb_raster * 16 + raster_block.  The motion
-    * vector prediction (sec 8.4.1.3) reads its neighbours from here; ref -1
+    * vector prediction (sec 8.4.1.3) reads its neighbors from here; ref -1
     * marks an intra or not-yet-decoded block. */
    int16_t *mv_l0_frame;
    int8_t *ref_l0_frame;
 };
 
-/* Initialise the decoder for one frame.  Allocates the neighbour-state arrays;
+/* Initialise the decoder for one frame.  Allocates the neighbor-state arrays;
  * returns false on bad parameters or allocation failure. */
 bool vl_h264_mb_decoder_init(struct vl_h264_mb_decoder *dec,
                              const struct pipe_h264_picture_desc *picture,

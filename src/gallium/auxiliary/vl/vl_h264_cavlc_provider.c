@@ -14,7 +14,7 @@
  *
  * One slice is decoded against a fresh macroblock decoder: a Constrained
  * Baseline frame is a single slice covering the whole frame, and the
- * neighbour-availability rules make a macroblock in another slice unavailable
+ * neighbor-availability rules make a macroblock in another slice unavailable
  * anyway, so per-slice decoder state is correct without carrying it across
  * slices.  Profiles out of scope -- anything but an I or P slice, or a feature
  * the front end rejects -- fail the slice rather than misdecode it.
@@ -134,10 +134,12 @@ vl_h264_cavlc_decode_slice(struct vl_h264_vld_provider *provider,
    vl_h264_mb_decoder_begin_slice(&dec, &sh);
 
    /* A Constrained Baseline frame is a single slice covering it from
-    * first_mb_in_slice to the end, so decode that many macroblocks and let an
-    * end-of-bitstream overrun stop a malformed slice.  more_rbsp_data is not used
-    * as the loop bound: a P slice's skip-run bit pattern can make it read a false
-    * end mid-slice, while the overrun flag is exact. */
+    * first_mb_in_slice to the end, so decode that many macroblocks; the frame
+    * macroblock count is the loop bound, not more_rbsp_data.  A P slice can end
+    * with one mb_skip_run that infers the trailing skipped macroblocks (sec
+    * 7.3.4), so the bitstream reaches its end while skip macroblocks remain to
+    * emit -- more_rbsp_data turns false there but the loop must continue.  An
+    * end-of-bitstream overrun stops a truncated slice. */
    bool p_slice = sh.slice_type == VL_H264_SLICE_P;
    bool ok = true;
    for (unsigned addr = sh.first_mb_in_slice; addr < num_mbs; addr++) {

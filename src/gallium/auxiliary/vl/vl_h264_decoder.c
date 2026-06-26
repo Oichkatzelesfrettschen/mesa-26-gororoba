@@ -18,6 +18,7 @@
 #include "vl_defines.h"
 #include "vl_h264_decoder.h"
 #include "vl_h264_emit.h"
+#include "vl_h264_intra_reconstruct.h"
 #include "vl_h264_vld_provider.h"
 
 struct vl_h264_decoder {
@@ -76,6 +77,55 @@ vl_h264_decode_bitstream(struct pipe_video_codec *codec,
                                   &dec->frame);
 }
 
+/* Reconstruct the intra macroblocks on the CPU into the target planes (sec 8.3).
+ * Every macroblock of an I frame is intra; the inter macroblocks of a P frame
+ * carry a reference index of 0 and are skipped, so this fills the intra ones,
+ * reading the inter neighbors the back half wrote.  The chroma plane is
+ * interleaved NV12, so it is de-interleaved per component and re-interleaved. */
+static void
+reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
+{
+   struct pipe_context *ctx = dec->context;
+   unsigned w = dec->width_in_mbs, h = dec->height_in_mbs;
+   unsigned chroma_w = w * 8, chroma_h = h * 8;
+   unsigned num_mbs = dec->frame.num_macroblocks;
+
+   struct pipe_transfer *yx;
+   uint8_t *y = pipe_texture_map(ctx, surfaces[0].texture, 0, 0,
+                                 PIPE_MAP_READ_WRITE, 0, 0, w * 16, h * 16, &yx);
+   if (y) {
+      vl_h264_intra_reconstruct_luma(dec->frame.macroblocks, num_mbs, w, h, y,
+                                     yx->stride);
+      pipe_texture_unmap(ctx, yx);
+   }
+
+   struct pipe_transfer *cx;
+   uint8_t *c = pipe_texture_map(ctx, surfaces[1].texture, 0, 0,
+                                 PIPE_MAP_READ_WRITE, 0, 0, chroma_w, chroma_h,
+                                 &cx);
+   if (!c)
+      return;
+   uint8_t *cb = MALLOC(chroma_w * chroma_h);
+   uint8_t *cr = MALLOC(chroma_w * chroma_h);
+   if (cb && cr) {
+      for (unsigned r = 0; r < chroma_h; r++)
+         for (unsigned col = 0; col < chroma_w; col++) {
+            cb[r * chroma_w + col] = c[r * cx->stride + col * 2];
+            cr[r * chroma_w + col] = c[r * cx->stride + col * 2 + 1];
+         }
+      vl_h264_intra_reconstruct_chroma(dec->frame.macroblocks, num_mbs, w, h, cb,
+                                       cr, chroma_w);
+      for (unsigned r = 0; r < chroma_h; r++)
+         for (unsigned col = 0; col < chroma_w; col++) {
+            c[r * cx->stride + col * 2] = cb[r * chroma_w + col];
+            c[r * cx->stride + col * 2 + 1] = cr[r * chroma_w + col];
+         }
+   }
+   FREE(cb);
+   FREE(cr);
+   pipe_texture_unmap(ctx, cx);
+}
+
 static int
 vl_h264_end_frame(struct pipe_video_codec *codec,
                   struct pipe_video_buffer *target,
@@ -84,51 +134,45 @@ vl_h264_end_frame(struct pipe_video_codec *codec,
    struct vl_h264_decoder *dec = (struct vl_h264_decoder *)codec;
    const struct pipe_h264_picture_desc *h264 =
       (const struct pipe_h264_picture_desc *)picture;
-   struct pipe_sampler_view **ref_planes = NULL;
-   struct pipe_surface *target_surfaces;
-   struct pipe_sampler_view *ref_luma;
 
-   /* This rung reconstructs inter macroblocks, so it needs a reference frame: an
-    * intra-only frame with no decoded reference in the DPB is left to the
-    * intra-prediction rung and produces nothing here.  The first available
-    * reference is the prediction source -- multiple references per frame are a
-    * separate rung. */
-   for (unsigned i = 0; i < ARRAY_SIZE(h264->ref) && !ref_planes; ++i)
-      if (h264->ref[i])
-         ref_planes = h264->ref[i]->get_sampler_view_planes(h264->ref[i]);
-   if (!ref_planes || !ref_planes[0])
-      return 0;
-   ref_luma = ref_planes[0];
-
-   target_surfaces = target->get_surfaces(target);
+   struct pipe_surface *target_surfaces = target->get_surfaces(target);
    if (!target_surfaces)
       return 0;
 
-   if (!dec->emit) {
-      dec->emit = vl_h264_emit_create(dec->context);
-      if (!dec->emit)
-         return 0;
+   /* Inter macroblocks predict from a reference, so the back half reconstructs
+    * them when one is in the DPB.  An I frame has no reference and is left
+    * entirely to the CPU intra pass below.  The first reference is the
+    * prediction source; multiple references per frame are a separate rung. */
+   struct pipe_sampler_view **ref_planes = NULL;
+   for (unsigned i = 0; i < ARRAY_SIZE(h264->ref) && !ref_planes; ++i)
+      if (h264->ref[i])
+         ref_planes = h264->ref[i]->get_sampler_view_planes(h264->ref[i]);
+
+   if (ref_planes && ref_planes[0]) {
+      if (!dec->emit) {
+         dec->emit = vl_h264_emit_create(dec->context);
+         if (!dec->emit)
+            return 0;
+      }
+      struct pipe_sampler_view *ref_luma = ref_planes[0];
+      vl_h264_emit_luma_inter_unorm(dec->emit, &target_surfaces[0],
+                                    dec->frame.width, dec->frame.height, ref_luma,
+                                    ref_luma->texture->width0,
+                                    ref_luma->texture->height0, &dec->frame);
+
+      struct pipe_sampler_view *ref_chroma = ref_planes[1];
+      if (ref_chroma)
+         vl_h264_emit_chroma_inter_unorm(dec->emit, &target_surfaces[1],
+                                         ref_chroma->texture->width0,
+                                         ref_chroma->texture->height0, ref_chroma,
+                                         ref_chroma->texture->width0,
+                                         ref_chroma->texture->height0,
+                                         &dec->frame);
    }
 
-   /* Luma reconstruction over the whole frame: the orchestrator
-    * motion-compensates each macroblock from the reference, adds the inverse
-    * transform of its residual, and writes Clip1(prediction + residual) into the
-    * target Y plane.  The deblock filter is a separate rung. */
-   vl_h264_emit_luma_inter_unorm(dec->emit, &target_surfaces[0], dec->frame.width,
-                                 dec->frame.height, ref_luma,
-                                 ref_luma->texture->width0,
-                                 ref_luma->texture->height0, &dec->frame);
-
-   /* Chroma reconstruction into the interleaved NV12 chroma plane.  The chroma
-    * planes are half resolution, so their dimensions come from the chroma plane
-    * resource rather than the luma frame size. */
-   struct pipe_sampler_view *ref_chroma = ref_planes[1];
-   if (ref_chroma)
-      vl_h264_emit_chroma_inter_unorm(dec->emit, &target_surfaces[1],
-                                      ref_chroma->texture->width0,
-                                      ref_chroma->texture->height0, ref_chroma,
-                                      ref_chroma->texture->width0,
-                                      ref_chroma->texture->height0, &dec->frame);
+   /* The intra macroblocks reconstruct on the CPU after the back half, so they
+    * read any inter neighbors from the written planes. */
+   reconstruct_intra(dec, target_surfaces);
    return 0;
 }
 
