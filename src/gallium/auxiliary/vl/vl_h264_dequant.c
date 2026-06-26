@@ -95,15 +95,17 @@ vl_h264_dequant_luma_dc(const int16_t scan[16], int qp, int16_t dc[16])
          f[i][j] = tmp[i][0] * hadamard_4x4[j][0] + tmp[i][1] * hadamard_4x4[j][1]
                  + tmp[i][2] * hadamard_4x4[j][2] + tmp[i][3] * hadamard_4x4[j][3];
 
-   /* Scale with the DC LevelScale at position (0,0), class 0 (sec 8.5.6). */
+   /* Scale with the DC LevelScale at position (0,0), class 0.  This is the
+    * final-edition scaling that conforming decoders use; the 2002 draft's
+    * << (qP/6 - 2) overflows the dynamic range and is not what ffmpeg applies. */
    int scale = 16 * norm_adjust[qp % 6][0];
    for (unsigned i = 0; i < 4; i++) {
       for (unsigned j = 0; j < 4; j++) {
          int val;
-         if (qp >= 12)
-            val = (f[i][j] * scale) << (qp / 6 - 2);
+         if (qp >= 36)
+            val = (f[i][j] * scale) << (qp / 6 - 6);
          else
-            val = (f[i][j] * scale + (1 << (1 - qp / 6))) >> (2 - qp / 6);
+            val = (f[i][j] * scale + (1 << (5 - qp / 6))) >> (6 - qp / 6);
          dc[i * 4 + j] = (int16_t)val;
       }
    }
@@ -112,7 +114,7 @@ vl_h264_dequant_luma_dc(const int16_t scan[16], int qp, int16_t dc[16])
 void
 vl_h264_dequant_chroma_dc(const int16_t level[4], int qp, int16_t dc[4])
 {
-   /* 2x2 inverse Hadamard f = H2 c H2 (sec 8.5.7), c in raster order. */
+   /* 2x2 inverse Hadamard f = H2 c H2, c in raster order. */
    int c00 = level[0], c01 = level[1], c10 = level[2], c11 = level[3];
    const int f[4] = {
       c00 + c01 + c10 + c11,
@@ -121,15 +123,10 @@ vl_h264_dequant_chroma_dc(const int16_t level[4], int qp, int16_t dc[4])
       c00 - c01 - c10 + c11,
    };
 
+   /* Final-edition 4:2:0 chroma DC scaling, the form conforming decoders use. */
    int scale = 16 * norm_adjust[qp % 6][0];
-   for (unsigned i = 0; i < 4; i++) {
-      int val;
-      if (qp >= 6)
-         val = (f[i] * scale) << (qp / 6 - 1);
-      else
-         val = (f[i] * scale) >> 1;
-      dc[i] = (int16_t)val;
-   }
+   for (unsigned i = 0; i < 4; i++)
+      dc[i] = (int16_t)(((f[i] * scale) << (qp / 6)) >> 5);
 }
 
 /* 4x4 luma block scan to raster grid position (sec 6.4.3); the residual stores

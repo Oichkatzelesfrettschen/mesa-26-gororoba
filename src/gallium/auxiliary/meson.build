@@ -721,6 +721,28 @@ if with_tests
     suite: 'gallium',
   )
 
+  # The CPU intra luma reconstruction: reconstruct the IDR luma plane and match
+  # ffmpeg, with the per-block prediction checked against the sub-prediction dump.
+  test('vl-h264-intra-luma',
+    executable(
+      'vl_h264_intra_luma_test',
+      ['vl/vl_h264_bitstream.c', 'vl/vl_h264_cavlc.c', 'vl/vl_h264_slice_parser.c',
+       'vl/vl_h264_mb_decode.c', 'vl/vl_h264_cavlc_residual.c',
+       'vl/vl_h264_dequant.c', 'vl/vl_h264_intra_reconstruct.c',
+       'vl/tests/vl_h264_intra_luma_test.c'],
+      include_directories : [inc_include, inc_src, inc_gallium,
+                             include_directories('vl')],
+      dependencies : [idep_mesautil],
+    ),
+    args : [join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_slice.bin'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_ref.yuv'),
+            join_paths(meson.current_source_dir(), 'vl', 'tests',
+                       'h264_cb_idr_subpred.bin')],
+    suite: 'gallium',
+  )
+
   # The DC Hadamard for Intra_16x16 luma and 4:2:0 chroma, against a spec
   # reference (the oracle dump captures the Intra_16x16 AC only).
   test('vl-h264-dc-hadamard',

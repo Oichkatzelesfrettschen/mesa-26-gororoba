@@ -21,6 +21,8 @@
 
 #include <stdint.h>
 
+#include "vl_h264_mb_contract.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -33,6 +35,30 @@ extern "C" {
  * (h + 32) >> 6 normalization.
  */
 void vl_h264_idct4(const int16_t coeff[16], int16_t residual[16]);
+
+/*
+ * Reconstruct the luma plane of an intra frame from its per-macroblock contracts
+ * (sec 8.3).  mbs holds num_mbs contracts in raster order; luma is the
+ * width_in_mbs*16 by height_in_mbs*16 plane, stride bytes per row.  Each
+ * macroblock predicts from already reconstructed neighbours -- Intra_4x4 as a
+ * sub-block wavefront, Intra_16x16 whole-block -- adds the inverse-transformed
+ * residual, and writes Clip1 back so later blocks read it.
+ */
+void vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
+                                    unsigned num_mbs, unsigned width_in_mbs,
+                                    unsigned height_in_mbs, uint8_t *luma,
+                                    unsigned stride);
+
+/*
+ * The Intra_4x4 prediction for one block (sec 8.3.1.2), exposed for validation:
+ * build the neighbour samples from the reconstructed luma plane for block s of
+ * the macroblock at (mb_x, mb_y), run prediction mode, and write the 4x4
+ * prediction in raster order (pred[y*4 + x]).
+ */
+void vl_h264_intra_predict_4x4(const uint8_t *luma, unsigned stride,
+                               unsigned width_in_mbs, unsigned height_in_mbs,
+                               unsigned mb_x, unsigned mb_y, unsigned s, int mode,
+                               int16_t pred[16]);
 
 #ifdef __cplusplus
 }
