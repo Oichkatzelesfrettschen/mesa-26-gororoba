@@ -2110,6 +2110,16 @@ r300 driver environment variables
       Force FF versions of VS math opcodes where applicable
       and 0 * anything = 0 rules in FS
 
+.. envvar:: R300_H264_EXPERIMENTAL
+
+   Set to ``true`` to expose experimental H.264 Constrained Baseline video
+   decode on r300-class hardware through the Gallium VA-API state tracker.  The
+   decode path is a clean-room CAVLC entropy front end with CPU intra
+   reconstruction and an FP24 fragment-shader back half.  It is gated off by
+   default because it is incomplete and not yet validated on silicon for general
+   bitstreams, and it requires a build whose ``video-codecs`` option includes
+   ``h264dec``.  Default ``false``.
+
 
 Asahi driver environment variables
 ----------------------------------
