@@ -84,19 +84,25 @@ struct vl_h264_vld_provider *
 vl_h264_replay_provider_create(void);
 
 /*
- * Whether any provider is available, in preference order (clean-room CAVLC, then
- * CABAC, then the bring-up replay).  The driver advertises H.264 when this is
- * true, so the decoder never reports a codec it cannot create; today only the
- * replay is available, and only when R300_H264_CONTRACT_REPLAY is set.
+ * Whether any provider is available.  The clean-room CAVLC front end is always
+ * available, so this is true whenever H.264 is built; the screen gates H.264 on
+ * it.
  */
 bool
 vl_h264_vld_provider_any_available(void);
 
 /*
- * Create the most preferred available provider (clean-room CAVLC, then CABAC,
- * then the bring-up replay), or NULL when none is available in this build.  The
- * decoder uses this rather than naming one kind, so a clean-room front end takes
- * over from the replay automatically once it lands.
+ * Clean-room Mesa-native CAVLC provider constructor: decodes a slice's NAL bytes
+ * into the macroblock contract directly.  It carries no external state and is the
+ * default provider when no replay override is set.
+ */
+struct vl_h264_vld_provider *
+vl_h264_cavlc_provider_create(void);
+
+/*
+ * Create the most preferred available provider: the R300_H264_CONTRACT_REPLAY
+ * override when it names a contract, otherwise the clean-room CAVLC front end, or
+ * NULL when none is available.  The decoder uses this rather than naming a kind.
  */
 struct vl_h264_vld_provider *
 vl_h264_vld_provider_create_available(void);
