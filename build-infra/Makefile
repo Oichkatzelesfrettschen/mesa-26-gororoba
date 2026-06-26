@@ -487,6 +487,10 @@ install: vostro-prefix-check
 	    meson setup $(SETUP_ARGS) --prefix=$(PREFIX) $(BUILDDIR) $(TOPSRC); \
 	    echo "[install] running meson install --no-rebuild --only-changed -C $(BUILDDIR)"; \
 	    sudo meson install --no-rebuild --only-changed -C $(BUILDDIR); \
+	    : "sudo meson install writes meson-logs/install-log.txt as root; restore"; \
+	    : "ownership so a later non-sudo makepkg of the same builddir can rewrite"; \
+	    : "it instead of failing package() with a PermissionError under fakeroot"; \
+	    sudo chown -R "$$(id -un):$$(id -gn)" $(BUILDDIR)/meson-logs; \
 	    echo "[install] complete; releasing flock"'
 
 artifact-check: vostro-prefix-check
