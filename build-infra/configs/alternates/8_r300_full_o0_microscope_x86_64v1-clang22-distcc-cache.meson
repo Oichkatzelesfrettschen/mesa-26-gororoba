@@ -1,0 +1,73 @@
+# 8_r300_full_o0_microscope_x86_64v1-clang22-distcc-cache: scoped O0
+# microscope lane for r300/r300vk RCA.  This is deliberately NOT the default
+# debug profile and NOT a system Mesa.  Use it when source-level single stepping,
+# macro-expanded debug information, and maximal sanitizer report fidelity matter
+# more than runtime performance.
+#
+# Relationship to the other r300 lanes:
+#   1_ release: conformance/silicon baseline, assertions off, optimized.
+#   2_ debug: default system-debug candidate, assertions live, debugoptimized.
+#   7_ asanubsan_max_debug: default scoped sanitizer lane, -O1 for usable ASan.
+#   8_ o0_microscope: scoped single-case microscope, -O0 plus the same sanitizer
+#      expansion as 7_, expected to be very slow on the K8 Vostro.
+#
+# Keep this prefix-scoped (/opt/mesa-26-gororoba-o0-microscope).  Do not add
+# provides/conflicts/replaces, /usr symlinks, or ld.so.conf activation for this
+# lane without physical console access and an explicit rollback plan.
+
+[built-in options]
+buildtype = 'debug'
+b_sanitize = 'address,undefined'
+b_lundef = 'false'
+optimization = '0'
+b_ndebug = 'false'
+
+# O0 microscope instrumentation: retain macro debug info, frame pointers, no
+# sibling-call folding, no sanitizer report merging, ASan use-after-scope and
+# use-after-return instrumentation, strict integer/conversion/nullability/local
+# bounds checks outside the plain undefined group, and full stack protector.
+c_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fno-sanitize-merge', '-fsanitize-address-use-after-scope', '-fsanitize-address-use-after-return=runtime', '-fsanitize=pointer-compare,pointer-subtract,integer,implicit-conversion,local-bounds,nullability,float-divide-by-zero', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fno-sanitize-merge', '-fsanitize-address-use-after-scope', '-fsanitize-address-use-after-return=runtime', '-fsanitize=pointer-compare,pointer-subtract,integer,implicit-conversion,local-bounds,nullability,float-divide-by-zero', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+
+[project options]
+platforms = ['x11', 'wayland']
+gallium-drivers = ['r300', 'zink']
+vulkan-drivers = ['amd_r300']
+r300vk-gallium-backend = true
+
+opengl = true
+gles1 = 'enabled'
+gles2 = 'enabled'
+glvnd = 'enabled'
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'drm'
+gbm = 'enabled'
+
+shader-cache = 'enabled'
+gallium-extra-hud = true
+lmsensors = 'enabled'
+
+# RS482 has no hardware TCL; keep SW-TCL in the C draw interpreter.  Do not pull
+# in llvmpipe or gallivm here, because this lane is meant to inspect the r300
+# path, not silently escape to software rendering.
+llvm = 'disabled'
+draw-use-llvm = false
+gallium-rusticl = false
+
+valgrind = 'enabled'
+libunwind = 'enabled'
+perfetto = true
+datasources = ['auto']
+tools = ['nir', 'glsl', 'dlclose-skip']
+build-tests = true
+vulkan-layers = ['overlay', 'device-select']
+
+video-codecs = ['mpeg12dec', 'h264dec']
+gallium-va = 'enabled'
+gallium-xa = true
+
+# Warnings are defects in every configured lane.
+werror = true
