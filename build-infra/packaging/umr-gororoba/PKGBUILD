@@ -1,14 +1,22 @@
 # umr-gororoba: the gororoba fork of AMD's umr (User Mode Register debugger) for
 # RS480/RS482 GPU register, ring, and IP-block inspection.  The fork carries the
-# RS480/RS482 ip_discovery-absent skip (umr PR #84 / database .asic load without
-# the discovery sysfs node) so umr drives the radeon-KMD RS482 without the navi-era
+# RS480/RS482 ip_discovery-absent skip (umr PR #84 / database .asic load without the
+# discovery sysfs node) so umr drives the radeon-KMD RS482 without the navi-era
 # discovery path.
 #
-# Build model: REPACK of the prebuilt CMake build/ in the umr-gororoba working
-# tree (the same repack model as mesa-gororoba-debug), so the packaged umr is
-# exactly the fork built+tested in tree -- not a tarball rebuild.  Refresh the
-# build first:
-#   cmake -S ~/workspaces/mesa/umr-gororoba -B ~/workspaces/mesa/umr-gororoba/build && cmake --build ~/workspaces/mesa/umr-gororoba/build
+# Build model: from-source CMake build of the umr-gororoba working tree (NOT a
+# repack of the in-tree build/: cmake --install bakes CMAKE_BINARY_DIR absolute and
+# writes install_manifest.txt back there, which fails + mutates the source under
+# makepkg's fakeroot).  Building into $srcdir keeps the manifest in a writable dir
+# and the source tree untouched.  Point GOROROBA_UMR_SRC at the fork checkout.
+#
+# CLI-only: UMR_NO_GUI=ON drops the umr --gui app (umrapp).  The GUI pulls
+# gbm/EGL/OpenGL (commands_bo.c includes <gbm.h>), a circular Mesa-devel build
+# dependency that does not belong in a register-debugger package -- and the header
+# is unresolved under makepkg's pkg-config-vs-include split.  The CLI umr is the
+# whole deliverable here: RS480/RS482 register / ring / IP-block inspection
+# (sudo umr -O bits -r ...), with LLVM shader disasm retained.  UMR_NO_GUI cascades
+# to UMR_NO_SERVER via umr's cmake_dependent_option, so the --server app drops too.
 pkgname=umr-gororoba
 pkgver=1.0.9
 pkgrel=1
@@ -17,25 +25,34 @@ pkgdesc='gororoba umr (AMD User Mode Register debugger) for RS480/RS482: registe
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/umr-gororoba'
 license=('MIT')
-depends=('libpciaccess' 'ncurses' 'llvm-libs' 'sdl2' 'libdrm')
-makedepends=('cmake')
+# CLI-only runtime libs (no sdl2/gbm/egl -- GUI is built off).
+depends=('libpciaccess' 'ncurses' 'llvm-libs' 'libdrm')
+makedepends=('cmake' 'llvm' 'libdrm')
 provides=('umr')
 conflicts=('umr')
-options=('!strip' 'debug')
+options=('!debug')
 
-_umrbuild="${GOROROBA_UMR_BUILD:-/home/eirikr/workspaces/mesa/umr-gororoba/build}"
 _umrsrc="${GOROROBA_UMR_SRC:-/home/eirikr/workspaces/mesa/umr-gororoba}"
 
-package() {
-  if [ ! -d "${_umrbuild}" ] || [ ! -e "${_umrbuild}/CMakeCache.txt" ]; then
-    echo "ERROR: umr-gororoba build dir not found at ${_umrbuild}" >&2
-    echo "       cmake -S ${_umrsrc} -B ${_umrbuild} && cmake --build ${_umrbuild}" >&2
+build() {
+  if [ ! -f "${_umrsrc}/CMakeLists.txt" ]; then
+    echo "ERROR: umr-gororoba source not found at ${_umrsrc} (set GOROROBA_UMR_SRC)" >&2
     return 1
   fi
-  DESTDIR="${pkgdir}" cmake --install "${_umrbuild}"
-  # The umr binary is the load-bearing artifact; fail if it did not stage.
-  if [ ! -e "${pkgdir}/usr/bin/umr" ] && [ ! -e "${pkgdir}/usr/local/bin/umr" ]; then
-    echo "ERROR: umr binary not staged from ${_umrbuild}" >&2
+  cmake -S "${_umrsrc}" -B "${srcdir}/build" \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DUMR_NO_GUI=ON \
+    -DUMR_INSTALL_DEV=ON \
+    -DUMR_INSTALL_TEST=ON
+  cmake --build "${srcdir}/build"
+}
+
+package() {
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/build"
+  if [ ! -e "${pkgdir}/usr/bin/umr" ]; then
+    echo "ERROR: umr binary not staged to /usr/bin from ${srcdir}/build" >&2
     return 1
   fi
   if [ -f "${_umrsrc}/LICENSE" ]; then
