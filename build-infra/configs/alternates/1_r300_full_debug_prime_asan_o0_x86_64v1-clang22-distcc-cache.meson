@@ -1,42 +1,48 @@
-# 2_r300_full_debug_x86_64v1-clang22-distcc-cache: the maximal-feature r300
-# DEBUG sibling of 1_r300_full_release_x86_64v1-clang22-distcc-cache.  Same r300
-# API/loader surface and same x86-64-v1/clang22/distcc-cache lane.  Beyond the
-# release profile it carries debug-only instrumentation surfaces: debugoptimized
-# buildtype with live assertions, frame pointers, valgrind + libunwind
-# annotations, the perfetto track-event timeline, the standalone nir/glsl
-# compiler tools plus dlclose-skip, the in-tree unit tests, the overlay and
-# device-select vulkan layers, and the full platform set.  It carries the whole
-# restored r300 surface -- the r300 gallium driver and amd_r300 Vulkan ICD, the
-# gallium-va MPEG-2 decode, and the gallium-xa 2D/Xv frontend -- with assertions
-# live.  It deliberately keeps r300's SW-TCL on the C draw interpreter (no
-# llvmpipe, draw-use-llvm=false) so the vertex path stays instrumentable.
-# Conformance and silicon evidence use the release profile.
+# 1_r300_full_debug_prime_asan_o0: the PRIME r300 tier -- the highest-information
+# RCA build, never a system Mesa.  AddressSanitizer + UndefinedBehaviorSanitizer
+# with the extended sanitizer set, at -O0 so every source line keeps its own
+# machine code (no inlining or optimizer folding) and an ASan/UBSan report or a
+# gdb step lands on the source exactly as written.  -g3 macro-aware debug info,
+# live asserts, frame pointers, sibling-call folding off, report-merging off.
 #
-# Why a separate debug profile: driver RCA and shader disassembly need assertions
-# live (b_ndebug='false') and a debugoptimized build (-O2 -g, real frame
-# pointers, intact error paths) so a gdb backtrace through r300_emit, the blitter,
-# and the r300vk queue lands on the true fault site instead of an optimizer-folded
-# address.  Conformance and silicon evidence use the release profile instead, so
-# the assertion instrumentation never contaminates a pass/fail baseline.
+# Tier map (renumbered by priority; all build the same full r300 surface):
+#   1_ (THIS) debug-prime   -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   2_ debug-o0             -- -O0 max-debug, no sanitizer, /opt + wrapper.
+#   3_ debug-optimized      -- -O2 -g3 asserts, the only debug tier allowed /usr.
+#   4_ release              -- optimized, no asserts, no sanitizer, /usr.
 #
-# Install this to the -debug prefix (/opt/local/mesa-26-gororoba-debug) so the
-# release and debug artifacts never share object files or install paths.
+# LOCKED SAFETY INVARIANT: this profile and its mesa-gororoba-debug-prime package
+# must NEVER become the system Mesa.  An ASan-instrumented libGL/libvulkan as the
+# /usr default aborts every GL/VK client ('ASan runtime does not come first') and
+# can black-screen the login session.  The package installs ONLY to
+# /opt/mesa-26-gororoba-debug-prime, never symlinks into /usr, never
+# provides/conflicts/replaces mesa, drops no ld.so.conf.d activation, and is
+# reached only through mesa-26-gororoba-debug-prime-run.  -O0 over -O1 is the
+# deliberate "microscope" choice: stepping fidelity beats runtime speed because
+# this tier is single-case forensic RCA, never broad conformance or a desktop
+# driver (use 3_/4_ for those).
 #
-# Feature set, exclusions, and HOSTENV pairing are identical to profile 1_; see
-# that file's header for the full rationale.
+# b_lundef=false (the sanitizer runtimes need undefined symbols at link);
+# _FORTIFY_SOURCE is dropped because it conflicts with ASan.  The explicit extra
+# sanitizer flags below cover checks outside Clang's undefined group: pointer-pair
+# validation, integer (signed+unsigned/shift), implicit conversions, local-bounds,
+# nullability, and float divide-by-zero (detect_invalid_pointer_pairs=2 at runtime
+# activates the pointer-pair checks).  TSAN is mutually exclusive with ASAN and
+# MSAN needs every dependent library instrumented, so those remain separate lanes.
 
 [built-in options]
-buildtype = 'debugoptimized'
-b_sanitize = 'address'
+buildtype = 'debug'
+b_sanitize = 'address,undefined'
 b_lundef = 'false'
-optimization = '1'
+optimization = '0'
 b_ndebug = 'false'
-# -fno-emulated-tls matches profile 1_ (the GL stack's libglapi needs native
-# TLS under clang).  The debug profile forces -fno-omit-frame-pointer: clang at
-# -O2 (debugoptimized) drops the frame pointer by default, which breaks
-# gdb/libunwind RCA backtraces, so pin it on.
-c_args = ['-march=x86-64', '-mtune=generic', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
-cpp_args = ['-march=x86-64', '-mtune=generic', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+werror = true
+# -fno-emulated-tls matches profiles 3_/4_ (the GL stack's libglapi needs native
+# TLS under clang).  The sanitizer lane forces frame pointers, disables sibling
+# call optimization and sanitizer report merging, and emits -g3 macro-aware debug
+# information so UBSan/ASan reports and gdb line up with the source under RCA.
+c_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fno-sanitize-merge', '-fsanitize-address-use-after-scope', '-fsanitize-address-use-after-return=runtime', '-fsanitize=pointer-compare,pointer-subtract,integer,implicit-conversion,local-bounds,nullability,float-divide-by-zero', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fno-sanitize-merge', '-fsanitize-address-use-after-scope', '-fsanitize-address-use-after-return=runtime', '-fsanitize=pointer-compare,pointer-subtract,integer,implicit-conversion,local-bounds,nullability,float-divide-by-zero', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
 c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
@@ -125,3 +131,6 @@ vulkan-layers = ['overlay', 'device-select']
 video-codecs = ['mpeg12dec', 'h264dec']
 gallium-va = 'enabled'
 gallium-xa = true
+
+# Warnings are defects in every configured lane.
+werror = true

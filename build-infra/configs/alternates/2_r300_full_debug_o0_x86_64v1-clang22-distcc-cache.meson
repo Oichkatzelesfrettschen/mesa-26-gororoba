@@ -1,0 +1,108 @@
+# 2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache: the -O0 normal-debug r300
+# tier (no sanitizer).  Same maximal-feature r300 API/loader surface and the same
+# x86-64-v1/clang22/distcc-cache lane as the 3_ debugoptimized profile, but built
+# unoptimized: buildtype='debug' (-O0 -g, assertions live, frame pointers).  This
+# is the deepest-stepping non-sanitizer debug build -- every source line keeps its
+# own machine code, no inlining or optimizer folding, so a gdb step through
+# r300_emit, the blitter, the draw module, or the r300vk queue visits the source
+# exactly as written.  It trades runtime speed for that fidelity, so it is NOT the
+# default install; it is the /opt-scoped alternate reached through its run-wrapper
+# when an -O2 backtrace folds the frame you need and you do not want ASan overhead.
+#
+# Tier map (renumbered by priority; all build the same full r300 surface):
+#   1_ debug-prime      -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   2_ (THIS) debug-o0  -- -O0 -g asserts, NO sanitizer, /opt + run-wrapper.
+#   3_ debug-optimized  -- -O2 -g3 asserts, the only debug tier allowed /usr.
+#   4_ release          -- optimized, no asserts, /usr.
+#
+# Why -O0 over the 3_ -O2 debug: at -O2 clang still inlines, folds, and reorders,
+# so a backtrace or a single-step can land on a synthesized address with no clean
+# source line.  -O0 keeps the 1:1 source-to-instruction mapping a hard RCA needs.
+# Conformance and silicon evidence still use the 4_ release profile so assertion
+# instrumentation never contaminates a pass/fail baseline.
+#
+# Scope: like 1_ debug-prime, this is /opt-scoped + wrapper-only
+# (/opt/mesa-26-gororoba-debug-o0); it never becomes the system Mesa.  Only the
+# 3_ debug-optimized and 4_ release tiers may own /usr.
+#
+# Feature set, exclusions, and HOSTENV pairing are identical to profiles 3_/4_;
+# see the 4_ release header for the full rationale.
+
+[built-in options]
+buildtype = 'debug'
+b_ndebug = 'false'
+werror = true
+# Force -O0 explicitly so it wins over any host-injected optimization flag, and
+# keep -fno-omit-frame-pointer (clang omits the frame pointer even at -O0 under
+# some configs) so gdb/libunwind backtraces stay reliable.  -fno-emulated-tls
+# matches profiles 1_/2_ (the GL stack's libglapi needs native TLS under clang).
+c_args = ['-march=x86-64', '-mtune=generic', '-O0', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-O0', '-D_FORTIFY_SOURCE=2', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fexceptions', '-fstack-protector-strong', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
+
+[project options]
+# Window-system platforms only (matches profiles 1_/2_).
+platforms = ['x11', 'wayland']
+# r300 plus zink: zink rides the amd_r300 (r300vk) Vulkan ICD to expose GL atop
+# Vulkan on RS482.  No llvmpipe -- building it would force draw-use-llvm=true and
+# route r300's SW-TCL through the gallivm JIT instead of the C draw interpreter
+# this profile keeps steppable; zink itself needs no llvm.
+gallium-drivers = ['r300', 'zink']
+vulkan-drivers = ['amd_r300']
+r300vk-gallium-backend = true
+
+# Maximal OpenGL/GLES surface (desktop GL, GLES1, GLES2).
+opengl = true
+gles1 = 'enabled'
+gles2 = 'enabled'
+
+# Loader and window-system surfaces (GLVND, GLX-DRI, EGL, GBM).
+glvnd = 'enabled'
+glx = 'dri'
+egl = 'enabled'
+egl-native-platform = 'drm'
+gbm = 'enabled'
+
+# r300 tooling, on-disk shader cache, and the Gallium HUD with lm-sensors.
+shader-cache = 'enabled'
+gallium-extra-hud = true
+lmsensors = 'enabled'
+
+# RS482 has caps.has_tcl=false, so r300 routes all vertex work through the
+# Gallium draw module (SW-TCL).  Keep draw-use-llvm=false so that path stays the
+# C interpreter -- gdb/valgrind step-through and the surface for the hybrid TCL.
+# With no llvmpipe, llvm is otherwise unused here, so leave it disabled to stay
+# lean.
+llvm = 'disabled'
+draw-use-llvm = false
+gallium-rusticl = false
+
+# Maximal debug instrumentation, same as profile 3_: valgrind client-request
+# annotations for memcheck BO/transfer lifetimes, libunwind for symbolized stacks.
+valgrind = 'enabled'
+libunwind = 'enabled'
+
+# Perfetto track-event timeline (CPU-side driver timeline; r300/radeon is not a
+# perfetto GPU datasource).  Drop to false if Meson aborts on the perfetto
+# subproject install-data tagging -- a toolchain blocker, not an r300 one.
+perfetto = true
+datasources = ['auto']
+
+# Standalone compiler RCA tools and dlclose-skip (keep dlopened drivers resident
+# so a gdb backtrace through the pipe-loaded r300 driver keeps its symbols).
+tools = ['nir', 'glsl', 'dlclose-skip']
+
+# Build the in-tree unit tests so a compiler fault can be reproduced
+# deterministically, not only through the live driver.
+build-tests = true
+
+# r300vk debug layers: overlay (on-screen HUD) and device-select.
+vulkan-layers = ['overlay', 'device-select']
+
+# The full restored r300 feature surface: gallium-va MPEG-2 decode (pure-NIR
+# g3dvl kernels), the H.264 decode back half on the same g3dvl path (fail-closed
+# behind R300_H264_EXPERIMENTAL), and the gallium-xa 2D/Xv frontend (xa_nir.c).
+video-codecs = ['mpeg12dec', 'h264dec']
+gallium-va = 'enabled'
+gallium-xa = true

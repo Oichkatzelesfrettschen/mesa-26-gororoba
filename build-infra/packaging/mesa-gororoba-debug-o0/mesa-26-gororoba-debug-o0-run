@@ -1,0 +1,31 @@
+#!/bin/sh
+# Run a command against the -O0 normal-debug r300 driver staged in
+# /opt/mesa-26-gororoba-debug-o0, WITHOUT making it the system Mesa.  The system
+# /usr driver stays the debug-optimized (-O2 -g3) build; this wrapper points the
+# GL + Vulkan loaders at the /opt -O0 tree for the wrapped process only.  Reach
+# for it when an -O2 backtrace folds the frame you need: at -O0 every source line
+# keeps its own machine code, so a gdb step or a single-frame backtrace lands on
+# the source exactly as written.
+#
+# Usage:  mesa-26-gororoba-debug-o0-run gdb --args vkcube
+#         mesa-26-gororoba-debug-o0-run glxgears
+#         mesa-26-gororoba-debug-o0-run vulkaninfo --summary
+set -eu
+PREFIX=/opt/mesa-26-gororoba-debug-o0
+
+if [ ! -d "$PREFIX/lib" ]; then
+  echo "mesa-26-gororoba-debug-o0-run: $PREFIX not installed; build+install the -O0 tier:" >&2
+  echo "  make rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache && makepkg (mesa-gororoba-debug-o0)" >&2
+  exit 1
+fi
+
+ICD="$(ls "$PREFIX"/share/vulkan/icd.d/*.json 2>/dev/null | head -1 || true)"
+
+# Point the GL + Vulkan loaders at the /opt -O0 tree for this process only.  No
+# LD_PRELOAD (unlike the ASan wrapper): the -O0 driver is an ordinary build, so a
+# plain loader override is all it needs.
+export LD_LIBRARY_PATH="$PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LIBGL_DRIVERS_PATH="$PREFIX/lib/dri"
+[ -n "$ICD" ] && export VK_ICD_FILENAMES="$ICD"
+
+exec "$@"

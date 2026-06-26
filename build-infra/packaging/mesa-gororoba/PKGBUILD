@@ -18,14 +18,15 @@
 #   * DEV / rapid iteration: build the devenv tree (ninja -C <builddir>) and run
 #     via VK_DRIVER_FILES (Vulkan) or LIBGL_DRIVERS_PATH+LD_LIBRARY_PATH (GL).
 #     Incremental, seconds per file.  This package is NOT for per-file iteration.
-# Build profile: debugoptimized (-O2 -g) with assertions live (b_ndebug=false)
-# and valgrind, libunwind, and perfetto/gpuvis tracing enabled.  This is the
-# deliberate current default: the installed /usr stack stays debuggable so a
-# crash on the daily driver gives symbols, a firing assertion, and valgrind
-# locality without a separate build.  It is -O2, so not a performance cliff,
-# but assertions can abort a CTS case that a pure release build would pass --
-# the canonical 1_r300 measurement profile stays buildtype=release for clean
-# conformance baselines; this package is the debuggable daily driver.
+# Build profile: a TRUE RELEASE matching the canonical 4_r300_full_release
+# measurement profile -- buildtype=release, assertions OFF (b_ndebug=true), -O2,
+# no -g, and the perfetto/valgrind/libunwind debug-trace surfaces disabled.  No
+# firing assertion can abort a CTS/Piglit case, so this is the clean conformance
+# and silicon-evidence baseline as well as the performance-representative desktop
+# build.  The debuggable daily driver is the separate mesa-gororoba-debug-optimized
+# package (debugoptimized -O2 -g3, assertions live); the -O0 normal-debug and the
+# ASan+UBSan tiers live in /opt under their run-wrappers.  This release package is
+# the reserved /usr promotion target, not the day-to-day install.
 #
 #   * RELEASE / system install: this PKGBUILD -> /usr, replacing stock mesa.
 #     Promote here once a change is stable enough for normal desktop and
@@ -41,12 +42,12 @@
 
 pkgname=mesa-gororoba
 pkgver=26.2.0
-pkgrel=14
+pkgrel=15
 epoch=2
 # Tracks the latest main HEAD via #branch=main in source below; the source is
 # the public fork, not a local path.  To pin a reproducible build instead,
 # replace #branch=main with #commit=<sha>.
-pkgdesc='Mesa system replacement: r300 GL + zink + XA/Xv + VA MPEG-2 + amd_r300/r300vk Vulkan ICD + overlay/device-select Vulkan layers, no LLVM, debugoptimized+asserts+valgrind/libunwind/perfetto, x86-64 baseline'
+pkgdesc='Mesa system replacement (TRUE RELEASE, reserved): r300 GL + zink + XA/Xv + VA MPEG-2 + amd_r300/r300vk Vulkan ICD + overlay/device-select Vulkan layers, no LLVM, buildtype=release + no asserts + -O2, x86-64 baseline'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -122,7 +123,7 @@ build() {
   # native tune.  target-cpu=x86-64 guards any Rust translation unit from
   # emitting K8-incompatible code.
   export CPPFLAGS='-D_FORTIFY_SOURCE=2'
-  export CFLAGS='-march=x86-64 -mtune=generic -O2 -g -fexceptions -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security'
+  export CFLAGS='-march=x86-64 -mtune=generic -O2 -fexceptions -fstack-protector-strong -fstack-clash-protection -fcf-protection -Wformat -Werror=format-security'
   export CXXFLAGS="${CFLAGS} -Wp,-D_GLIBCXX_ASSERTIONS"
   export LDFLAGS='-Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro'
   export RUSTFLAGS='-C target-cpu=x86-64'
@@ -134,10 +135,10 @@ build() {
   meson setup build "${pkgname}" \
     --prefix="${_prefix}" \
     --sysconfdir=/etc \
-    --buildtype=debugoptimized \
+    --buildtype=release \
     --wrap-mode=default \
     -D optimization=2 \
-    -D b_ndebug=false \
+    -D b_ndebug=true \
     -D b_lto=false \
     -D platforms=x11,wayland \
     -D gallium-drivers=r300,zink \
@@ -157,11 +158,10 @@ build() {
     -D gallium-va=enabled \
     -D video-codecs=mpeg12dec \
     -D gallium-xa=true \
-    -D valgrind=enabled \
-    -D libunwind=enabled \
-    -D perfetto=true \
-    -D gpuvis=true \
-    -D allow-fallback-for=perfetto
+    -D valgrind=disabled \
+    -D libunwind=disabled \
+    -D perfetto=false \
+    -D gpuvis=false
 
   # Fan out across the distcc workers: meson compile defaults ninja to
   # local-cores+2 (4 on the K8), which starves the remote slots.

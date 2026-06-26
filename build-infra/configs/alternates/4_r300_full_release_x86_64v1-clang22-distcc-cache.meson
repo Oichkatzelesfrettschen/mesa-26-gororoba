@@ -1,10 +1,17 @@
-# 1_r300_full_release_x86_64v1-clang22-distcc-cache: the maximal-feature r300
+# 4_r300_full_release_x86_64v1-clang22-distcc-cache: the maximal-feature r300
 # RELEASE profile for the CachyOS Vostro 1000 (AMD Turion 64 X2 TL-66,
 # RS482/RS485 radeon).  This is the canonical full r300 build: it enables every
 # r300-reachable API and loader surface in one artifact, so a single install
 # serves desktop GL, GLES, EGL/GBM headless conformance, and the amd_r300 Vulkan
-# ICD.  Pair with 2_r300_full_debug_x86_64v1-clang22-distcc-cache for the
+# ICD.  buildtype=release, assertions OFF, no sanitizer -- the clean conformance
+# and silicon-evidence baseline.  Pair with 3_r300_full_debug_optimized for the
 # assertions-live RCA sibling.
+#
+# Tier map (renumbered by priority; all build the same full r300 surface):
+#   1_ debug-prime      -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   2_ debug-o0         -- -O0 -g asserts, no sanitizer, /opt + run-wrapper.
+#   3_ debug-optimized  -- -O2 -g3 asserts, the default debug, /usr-capable.
+#   4_ (THIS) release   -- optimized, no asserts, no sanitizer, /usr.
 #
 # Why maximal-r300 but no software rasterizer: the r300 surface (desktop GL,
 # GLES1, GLES2, GLVND, GLX-DRI, EGL, GBM, shader cache, HUD/lm-sensors, r300
@@ -44,7 +51,7 @@ c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro'
 cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
 [project options]
-# Window-system platforms only (matches profile 2_).  Current Mesa's platforms
+# Window-system platforms only (matches profile 3_).  Current Mesa's platforms
 # option lists only window systems; the DRM-native and surfaceless EGL platforms
 # build unconditionally with egl=enabled and the default is egl-native-platform
 # ('drm', set below) for headless deqp/piglit and renderD128-only Vulkan.
@@ -88,18 +95,7 @@ gallium-rusticl = false
 # MPEG-4 (the h264_legacy compute-as-raster path) lands as a later codec addition.
 video-codecs = ['mpeg12dec']
 gallium-va = 'enabled'
-
-# gallium-xa: the restored 2D-acceleration / Xv frontend (xa_nir.c, pure NIR).
-# RS482 has no 2D engine, so XA runs EXA solid/copy/composite and the Xv
-# yuv_planar_blit on the 3D pipe; it is the on-screen end of the gallium-va decode
-# path.  Built into libxatracker.so.
 gallium-xa = true
 
-# Mesa overlay (on-screen HUD) and device-select layers, matching the debug
-# 2_r300 lane.  device-select is the implicit layer that vulkan-mesa-implicit-layers
-# ships and that lib32-vulkan-mesa-implicit-layers depends on by name, so the
-# release package owns and provides that slot the same way the debug build does.
-vulkan-layers = ['overlay', 'device-select']
-perfetto = false
-valgrind = 'disabled'
-libunwind = 'disabled'
+# Warnings are defects in every configured lane.
+werror = true

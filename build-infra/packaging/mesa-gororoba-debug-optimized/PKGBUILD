@@ -1,16 +1,29 @@
-# mesa-gororoba-debug: the DEFAULT r300 Mesa installation for the Vostro 1000
-# (RS482, AMD Turion 64 X2).  This is the canonical install target: assertions
-# live, full debug info, frame pointers, and the complete r300 feature surface
-# (desktop GL 2.1 + GLES1/2, GLVND, EGL/GBM, GLX-DRI, gallium-va MPEG-2
-# decode, gallium-xa XA tracker / libxatracker.so, amd_r300/r300vk Vulkan ICD,
-# overlay + device-select Vulkan layers, nir/glsl offline compiler tools,
-# valgrind annotations, libunwind backtraces, perfetto CPU timeline, no LLVM).
-# The release sibling (mesa-gororoba, profile 1_) is the conformance-baseline
-# build; it lives in configs/alternates/ and is NOT the default install target.
+# mesa-gororoba-debug-optimized: the PRIMARY/default r300 Mesa installation for
+# the Vostro 1000 (RS482, AMD Turion 64 X2).  This is the canonical daily-driver
+# install target: debugoptimized -O2 -g3, assertions live, full debug info, frame
+# pointers, and the complete r300 feature surface (desktop GL 2.1 + GLES1/2,
+# GLVND, EGL/GBM, GLX-DRI, gallium-va MPEG-2 decode, gallium-xa XA tracker /
+# libxatracker.so, amd_r300/r300vk Vulkan ICD, overlay + device-select Vulkan
+# layers, nir/glsl offline compiler tools, valgrind annotations, libunwind
+# backtraces, perfetto CPU timeline, no LLVM).
+#
+# Tier map (all build the same full r300 surface; this package is the default):
+#   * mesa-gororoba (profile 1_)  -- TRUE RELEASE, no asserts, /usr, RESERVED.
+#   * THIS (profile 2_)           -- debugoptimized, asserts, /usr, the DEFAULT.
+#   * mesa-gororoba-debug-o0 (3_) -- -O0 normal debug, /opt + run-wrapper.
+#   * mesa-gororoba-asan (7_)     -- ASan+UBSan, /opt + run-wrapper.
+# Only one package owns the /usr Mesa paths at a time; the -o0 and asan tiers are
+# /opt-scoped and co-install, reached through their run-wrappers.
+#
+# Renamed from mesa-gororoba-debug: the package label is now -debug-optimized to
+# distinguish it from the new -o0 normal-debug tier.  The /opt prefix and the
+# run-wrapper keep the mesa-26-gororoba-debug name (the 2_ builddir's install
+# prefix), so the rename is a pure repack -- no recompile.  provides/replaces the
+# old mesa-gororoba-debug name so pacman migrates an installed one in place.
 #
 # Build model: REPACK, not from-git.  The build-infra meson builddir is the only
 # build infrastructure -- build/refresh it with
-#   make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache
+#   make rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 # (or `make build ... PREFIX=/opt/mesa-26-gororoba-debug`), then this PKGBUILD
 # packages that exact builddir.  It deliberately does NOT clone+build from a
 # pinned git commit: the in-development r300vk compute kernels live only in the
@@ -30,11 +43,11 @@
 # `pacman -U mesa-gororoba` (release) or `pacman -S mesa` (stock).
 # mesa-26-gororoba-debug-run still pins the loader to the /opt tree for a scoped
 # probe without changing the system default.
-pkgname=mesa-gororoba-debug
+pkgname=mesa-gororoba-debug-optimized
 pkgver=26.2.0
-pkgrel=11
+pkgrel=12
 epoch=2
-pkgdesc='Mesa r300 system driver (default debug install): r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD + overlay/device-select Vulkan layers, assertions live, files under /opt'
+pkgdesc='Mesa r300 system driver (PRIMARY/default install): debugoptimized -O2 -g3, assertions live, frame pointers; r300 GL + zink GL-on-Vulkan, GLES+EGL+GBM, gallium-xa XA tracker, gallium-va MPEG-2, amd_r300/r300vk ICD + overlay/device-select Vulkan layers, files under /opt'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -66,6 +79,7 @@ makedepends=(meson ninja)
 # dependent; its files are simply owned here without a provide.
 provides=(
   "mesa=${epoch}:${pkgver}-${pkgrel}"
+  "mesa-gororoba-debug=${epoch}:${pkgver}-${pkgrel}"
   "libva-mesa-driver=${epoch}:${pkgver}-${pkgrel}"
   "mesa-libgl=${epoch}:${pkgver}-${pkgrel}"
   "vulkan-mesa-implicit-layers=${epoch}:${pkgver}-${pkgrel}"
@@ -73,8 +87,8 @@ provides=(
   opengl-driver
   vulkan-driver
 )
-conflicts=(mesa mesa-gororoba vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
-replaces=(mesa mesa-gororoba vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+conflicts=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
+replaces=(mesa mesa-gororoba mesa-gororoba-debug vulkan-mesa-implicit-layers vulkan-radeon lib32-vulkan-radeon 'libva-mesa-driver<1:24.2.7-1' 'mesa-libgl<17.0.1-2')
 # Keep debug symbols; no strip, no LTO.  !buildflags: this package compiles
 # nothing (repack only), so makepkg's CFLAGS/LDFLAGS injection is irrelevant.
 # The .a archives the builddir produced land in /opt for gdb work but are NOT
@@ -92,7 +106,7 @@ _prefix=/opt/mesa-26-gororoba-debug
 # The canonical build-infra builddir to repack, and the source root for the
 # license file.  Override from the make/env (GOROROBA_DEBUG_BUILDDIR /
 # GOROROBA_DEBUG_SRCROOT) when packaging on a different host.
-_builddir="${GOROROBA_DEBUG_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-2_r300_full_debug_x86_64v1-clang22-distcc-cache}"
+_builddir="${GOROROBA_DEBUG_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache}"
 _srcroot="${GOROROBA_DEBUG_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
 
 # Link every entry of ${_prefix}/<rel> into ${pkgdir}/usr/<rel> as a symlink
@@ -124,7 +138,7 @@ _link_into_usr() {
 package() {
   if [ ! -f "${_builddir}/build.ninja" ]; then
     echo "ERROR: build-infra builddir not found at ${_builddir}" >&2
-    echo "       build it first: make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache" >&2
+    echo "       build it first: make rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache" >&2
     return 1
   fi
 

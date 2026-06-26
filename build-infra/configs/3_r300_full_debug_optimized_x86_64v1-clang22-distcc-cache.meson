@@ -1,34 +1,40 @@
-# 2_r300_full_debug_x86_64v1-clang22-distcc-cache: the maximal-feature r300
-# DEBUG sibling of 1_r300_full_release_x86_64v1-clang22-distcc-cache.  Same r300
-# API/loader surface and same x86-64-v1/clang22/distcc-cache lane.  Beyond the
-# release profile it carries debug-only instrumentation surfaces: debugoptimized
-# buildtype with live assertions, frame pointers, valgrind + libunwind
-# annotations, the perfetto track-event timeline, the standalone nir/glsl
-# compiler tools plus dlclose-skip, the in-tree unit tests, the overlay and
-# device-select vulkan layers, and the full platform set.  It carries the whole
-# restored r300 surface -- the r300 gallium driver and amd_r300 Vulkan ICD, the
-# gallium-va MPEG-2 decode, and the gallium-xa 2D/Xv frontend -- with assertions
-# live.  It deliberately keeps r300's SW-TCL on the C draw interpreter (no
-# llvmpipe, draw-use-llvm=false) so the vertex path stays instrumentable.
-# Conformance and silicon evidence use the release profile.
+# 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache: the DEFAULT debug
+# tier and the ONLY debug tier allowed to own the system /usr Mesa.  Same
+# maximal-feature r300 API/loader surface and the same x86-64-v1/clang22/
+# distcc-cache lane as the 4_ release profile.  Beyond release it carries
+# debug-only instrumentation: debugoptimized buildtype with live assertions, frame
+# pointers, -g3, valgrind + libunwind annotations, the perfetto track-event
+# timeline, the standalone nir/glsl compiler tools plus dlclose-skip, the in-tree
+# unit tests, the overlay and device-select vulkan layers, and the full platform
+# set.  It carries the whole restored r300 surface -- the r300 gallium driver and
+# amd_r300 Vulkan ICD, the gallium-va MPEG-2 decode, and the gallium-xa 2D/Xv
+# frontend -- with assertions live.  It deliberately keeps r300's SW-TCL on the C
+# draw interpreter (no llvmpipe, draw-use-llvm=false) so the vertex path stays
+# instrumentable.  Conformance and silicon evidence use the 4_ release profile.
 #
-# Why a separate debug profile: driver RCA and shader disassembly need assertions
-# live (b_ndebug='false') and a debugoptimized build (-O2 -g, real frame
-# pointers, intact error paths) so a gdb backtrace through r300_emit, the blitter,
-# and the r300vk queue lands on the true fault site instead of an optimizer-folded
-# address.  Conformance and silicon evidence use the release profile instead, so
-# the assertion instrumentation never contaminates a pass/fail baseline.
+# Tier map (renumbered by priority; all build the same full r300 surface):
+#   1_ debug-prime      -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   2_ debug-o0         -- -O0 -g asserts, no sanitizer, /opt + run-wrapper.
+#   3_ (THIS) debug-opt -- -O2 -g3 asserts; the DEFAULT debug, /usr-capable.
+#   4_ release          -- optimized, no asserts, /usr.
+#
+# Why -O2 debugoptimized is the right daily-driver debug: at -O2 the control flow
+# stays close enough to a real build to expose optimizer-sensitive driver bugs,
+# while -g3 + frame pointers keep gdb backtraces landing on the true fault site.
+# It is the package (mesa-gororoba-debug-optimized) that BECOMES the system /usr
+# Mesa on the Vostro; the 1_/2_ sanitizer/-O0 tiers stay /opt-scoped, and the 4_
+# release stays the reserved promotion target.
 #
 # Install this to the -debug prefix (/opt/local/mesa-26-gororoba-debug) so the
 # release and debug artifacts never share object files or install paths.
 #
-# Feature set, exclusions, and HOSTENV pairing are identical to profile 1_; see
+# Feature set, exclusions, and HOSTENV pairing are identical to profile 4_; see
 # that file's header for the full rationale.
 
 [built-in options]
 buildtype = 'debugoptimized'
 b_ndebug = 'false'
-# -fno-emulated-tls matches profile 1_ (the GL stack's libglapi needs native
+# -fno-emulated-tls matches profile 4_ (the GL stack's libglapi needs native
 # TLS under clang).  The debug profile forces -fno-omit-frame-pointer: clang at
 # -O2 (debugoptimized) drops the frame pointer by default, which breaks
 # gdb/libunwind RCA backtraces, so pin it on.
@@ -122,3 +128,6 @@ vulkan-layers = ['overlay', 'device-select']
 video-codecs = ['mpeg12dec', 'h264dec']
 gallium-va = 'enabled'
 gallium-xa = true
+
+# Warnings are defects in every configured lane.
+werror = true
