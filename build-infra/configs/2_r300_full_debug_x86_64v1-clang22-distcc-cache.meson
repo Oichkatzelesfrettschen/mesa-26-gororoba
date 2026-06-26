@@ -122,3 +122,6 @@ vulkan-layers = ['overlay', 'device-select']
 video-codecs = ['mpeg12dec', 'h264dec']
 gallium-va = 'enabled'
 gallium-xa = true
+
+# Warnings are defects in every configured lane.
+werror = true
