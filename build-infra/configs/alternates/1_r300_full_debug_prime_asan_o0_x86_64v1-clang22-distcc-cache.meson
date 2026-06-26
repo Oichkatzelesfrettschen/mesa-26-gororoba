@@ -32,17 +32,28 @@
 
 [built-in options]
 buildtype = 'debug'
-b_sanitize = 'address,undefined'
+# The full sanitizer set as a free-form array (Meson >= 1.8; this host is 1.11).
+# Meson joins these into one -fsanitize=... on BOTH compile and link, so the
+# address-dependent checks (pointer-compare/subtract) always see -fsanitize=address
+# -- unlike putting them in c_args, where the compiler sanity check sees them
+# without address and rejects them ("only allowed with -fsanitize=address").
+# address pulls in use-after-scope and use-after-return by default on clang.
+# undefined plus the extra members cover the checks outside Clang's undefined
+# group: integer (signed+unsigned overflow/shift), implicit-conversion,
+# local-bounds, nullability, float divide-by-zero, and the pointer-pair checks
+# (detect_invalid_pointer_pairs=2 activates the latter at runtime).
+b_sanitize = ['address', 'undefined', 'pointer-compare', 'pointer-subtract', 'integer', 'implicit-conversion', 'local-bounds', 'nullability', 'float-divide-by-zero']
 b_lundef = 'false'
-optimization = '0'
 b_ndebug = 'false'
 werror = true
+# buildtype='debug' already gives -O0 -g; -g3 upgrades to macro-aware debug info.
 # -fno-emulated-tls matches profiles 3_/4_ (the GL stack's libglapi needs native
-# TLS under clang).  The sanitizer lane forces frame pointers, disables sibling
-# call optimization and sanitizer report merging, and emits -g3 macro-aware debug
-# information so UBSan/ASan reports and gdb line up with the source under RCA.
-c_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fno-sanitize-merge', '-fsanitize-address-use-after-scope', '-fsanitize-address-use-after-return=runtime', '-fsanitize=pointer-compare,pointer-subtract,integer,implicit-conversion,local-bounds,nullability,float-divide-by-zero', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
-cpp_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fno-sanitize-merge', '-fsanitize-address-use-after-scope', '-fsanitize-address-use-after-return=runtime', '-fsanitize=pointer-compare,pointer-subtract,integer,implicit-conversion,local-bounds,nullability,float-divide-by-zero', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
+# TLS under clang).  Frame pointers on, sibling-call folding off so ASan/UBSan
+# reports and gdb line up with the source under RCA.  The -fsanitize flags live in
+# b_sanitize above, NOT here, so the compiler sanity check (which sees only c_args)
+# stays sanitizer-free and the address dependency is never violated.
+c_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security']
+cpp_args = ['-march=x86-64', '-mtune=generic', '-g3', '-fno-emulated-tls', '-fno-omit-frame-pointer', '-fno-optimize-sibling-calls', '-fexceptions', '-fstack-protector-all', '-fstack-clash-protection', '-fcf-protection', '-Wformat', '-Werror=format-security', '-Wp,-D_GLIBCXX_ASSERTIONS']
 c_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 cpp_link_args = ['-Wl,-O1', '-Wl,--sort-common', '-Wl,--as-needed', '-Wl,-z,relro']
 
