@@ -287,7 +287,7 @@ predict_16x16(const uint8_t *luma, unsigned stride, unsigned mb_x,
 {
    int x0 = mb_x * 16, y0 = mb_y * 16;
    bool top_av = mb_y > 0, left_av = mb_x > 0;
-   int top[16], left[16];
+   int top[16] = { 0 }, left[16] = { 0 };
 
    for (int k = 0; k < 16; k++) {
       top[k] = top_av ? luma[(y0 - 1) * (int)stride + x0 + k] : 0;
@@ -368,7 +368,7 @@ idct4_1d(const int z[4], int out[4])
 void
 vl_h264_idct4(const int16_t coeff[16], int16_t residual[16])
 {
-   int rows[16], cols[16];
+   int rows[16] = { 0 }, cols[16] = { 0 };
 
    for (int r = 0; r < 4; r++) {
       int z[4] = { coeff[r * 4], coeff[r * 4 + 1], coeff[r * 4 + 2],

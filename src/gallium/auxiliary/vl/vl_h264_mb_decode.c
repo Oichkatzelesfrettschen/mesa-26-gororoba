@@ -249,6 +249,11 @@ vl_h264_decode_mb_header(struct vl_h264_mb_decoder *dec,
     * (sec 7.3.5).  QPY wraps modulo 52 for 8-bit (sec 7.4.5). */
    if (mb->cbp_luma || mb->cbp_chroma || mb_type != I_NXN_MB_TYPE) {
       int delta = vl_h264_se(reader);
+      /* mb_qp_delta is constrained to [-26, 25] for 8-bit (sec 7.4.5); a value
+       * outside that is a malformed stream and would drive QPY out of [0, 51],
+       * past the dequant scaling tables.  Reject it. */
+      if (delta < -26 || delta > 25)
+         return false;
       dec->qp_y = (dec->qp_y + delta + 52) % 52;
    }
 
@@ -256,5 +261,6 @@ vl_h264_decode_mb_header(struct vl_h264_mb_decoder *dec,
    mb->qp_cb = chroma_qp_from_luma(dec->qp_y, dec->pps->chroma_qp_index_offset);
    mb->qp_cr = chroma_qp_from_luma(dec->qp_y,
                                    dec->pps->second_chroma_qp_index_offset);
-   return true;
+   /* Reject a header that ran past the end of the RBSP. */
+   return !vl_h264_overrun(reader);
 }

@@ -42,6 +42,11 @@ struct vl_h264_reader {
     * more_rbsp_data can tell coded data from the trailing bits (sec 7.2). */
    unsigned total_bits;
    unsigned stop_bit_pos;
+
+   /* Set once a read asks for more bits than the RBSP holds, i.e. the stream is
+    * truncated or malformed.  Callers check it to reject the stream instead of
+    * decoding trailing zeros as data. */
+   bool overrun;
 };
 
 /*
@@ -74,6 +79,10 @@ unsigned vl_h264_te(struct vl_h264_reader *reader, unsigned range);
  * rbsp_stop_one_bit.  The per-macroblock loop ends when this turns false.
  */
 bool vl_h264_more_rbsp_data(struct vl_h264_reader *reader);
+
+/* Whether a read has run past the end of the RBSP (a truncated or malformed
+ * stream).  Once set it stays set for the reader's lifetime. */
+bool vl_h264_overrun(const struct vl_h264_reader *reader);
 
 /* Bits consumed from the RBSP so far; pairs with total_bits for diagnostics. */
 unsigned vl_h264_bits_consumed(struct vl_h264_reader *reader);

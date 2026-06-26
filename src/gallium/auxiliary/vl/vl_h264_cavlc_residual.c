@@ -128,7 +128,8 @@ vl_h264_decode_mb_luma_residual(struct vl_h264_mb_decoder *dec,
       res->nz_luma[blk] = (uint8_t)block.total_coeff;
       memcpy(res->luma4x4[blk], block.coeff, sizeof(block.coeff));
    }
-   return true;
+   /* A read past the end of the RBSP means the stream was truncated mid-block. */
+   return !vl_h264_overrun(reader);
 }
 
 /* nC for a 4:2:0 chroma AC block (sec 9.2.1): the chroma blocks form a 2x2 grid
@@ -214,5 +215,5 @@ vl_h264_decode_mb_chroma_residual(struct vl_h264_mb_decoder *dec,
          memcpy(res->chroma_ac[comp][blk], block.coeff, sizeof(block.coeff));
       }
    }
-   return true;
+   return !vl_h264_overrun(reader);
 }
