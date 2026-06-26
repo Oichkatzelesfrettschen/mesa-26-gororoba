@@ -763,14 +763,30 @@ r300_nir_detect_unary_transcendental(
       return;
 
    const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
-   if (!alu || !r300_nir_is_unary_transcendental_op(alu->op))
-      return;
-   if (nir_op_infos[alu->op].num_inputs != 1)
+   if (!alu)
       return;
 
    const unsigned components = store->num_components;
-   if (!unary_alu_src_is_identity_load(alu, 0, &load->def, components))
-      return;
+   nir_op effective_op;
+
+   if (alu->op == nir_op_fdiv) {
+      /* The reciprocal arm: GLSL 1.0/x reaches the classifier as fdiv(1.0, x),
+       * not a bare frcp -- the classify clone folds constants but does not lower
+       * fdiv.  A unit numerator over the identity load is the frcp the FS already
+       * builds; a non-unit numerator is a scaled reciprocal, outside this verb. */
+      struct unary_const_operand num = {0};
+      if (!unary_alu_src_const_operand(alu, 0, components, &num) ||
+          num.from_push || num.literal != 1.0f ||
+          !unary_alu_src_is_identity_load(alu, 1, &load->def, components))
+         return;
+      effective_op = nir_op_frcp;
+   } else {
+      if (!r300_nir_is_unary_transcendental_op(alu->op) ||
+          nir_op_infos[alu->op].num_inputs != 1 ||
+          !unary_alu_src_is_identity_load(alu, 0, &load->def, components))
+         return;
+      effective_op = alu->op;
+   }
 
    /* Full write mask: the carrier copies whole elements. */
    if (nir_intrinsic_has_write_mask(store) &&
@@ -793,7 +809,7 @@ r300_nir_detect_unary_transcendental(
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
       out->output_ssbo_binding_valid = true;
    }
-   out->alu_op = (uint16_t)alu->op;
+   out->alu_op = (uint16_t)effective_op;
    out->value_components = store->num_components;
    out->value_bit_size = store->src[0].ssa->bit_size;
    out->is_unary_transcendental = true;
