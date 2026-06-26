@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+env_file=${GOROROBA_MESA_ENV:-/etc/opt/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh}
+
+if [ "$#" -eq 0 ]; then
+  cat >&2 <<'EOF'
+usage: mesa-gororoba-debug-optimized-run <command> [args...]
+
+Examples:
+  mesa-gororoba-debug-optimized-run glxinfo -B
+  mesa-gororoba-debug-optimized-run eglinfo
+  mesa-gororoba-debug-optimized-run glesinfo
+  mesa-gororoba-debug-optimized-run vainfo
+  mesa-gororoba-debug-optimized-run vulkaninfo --summary
+  mesa-gororoba-debug-optimized-run gdb --args vulkaninfo --summary
+EOF
+  exit 2
+fi
+
+# shellcheck disable=SC1090
+. "$env_file"
+exec "$@"

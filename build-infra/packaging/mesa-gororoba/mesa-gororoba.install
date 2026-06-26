@@ -8,7 +8,7 @@ mesa-gororoba installed an RS482-scoped fork build into the system Mesa prefix:
   * Vulkan: amd_r300 (r300vk) ICD under /usr/share/vulkan/icd.d.
   * VA-API: r300 MPEG-1/2 decode through the normal libva DRI path.
   * Loader policy: profile.d and environment.d entries prefer r300 for shells
-    and user sessions; mesa-26-gororoba-run scopes the same variables to one
+    and user sessions; mesa-gororoba-run scopes the same variables to one
     command.
 Consequences to know:
   * llvm coupling: llvmpipe links libLLVM.so of the build host's llvm major.
@@ -18,15 +18,15 @@ Consequences to know:
     reinstall the distro mesa and vulkan-radeon packages, then reboot the
     display stack.
   * r300-focused probes:
-      mesa-26-gororoba-run glxinfo -B
-      mesa-26-gororoba-run eglinfo -B -p surfaceless
-      mesa-26-gororoba-run vainfo --display drm --device /dev/dri/renderD128
-      mesa-26-gororoba-run vulkaninfo --summary
+      mesa-gororoba-run glxinfo -B
+      mesa-gororoba-run eglinfo -B -p surfaceless
+      mesa-gororoba-run vainfo --display drm --device /dev/dri/renderD128
+      mesa-gororoba-run vulkaninfo --summary
   * GLX on Mesa 26 needs an X server with DRI3 for hardware clients.  On RS482,
     xf86-video-ati radeon EXA exposes server-side DRI2 and can make glxinfo
     fall back to llvmpipe even when Xorg logs "AIGLX: Loaded and initialized
     r300".  For RS482 hosts, install the sample modesetting+glamor policy from:
-      /usr/share/mesa-26-gororoba/xorg/20-rs482-modesetting-glamor.conf
+      /usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf
     to the host's /etc/X11/xorg.conf.d policy path, then restart the display
     manager and verify glxinfo reports "ATI RS480".
   * Remove stale display-manager wrappers that point Xorg at old opt prefixes,
@@ -34,13 +34,13 @@ Consequences to know:
     /usr/local/sbin/xorg-mesa-gororoba with /opt/local/mesa-26-gororoba paths.
   * compatibility aliases are package-managed:
       /opt/local/mesa-26-gororoba -> /usr
-      /opt/share/mesa-26-gororoba -> /usr
-      /usr/share/mesa-26-gororoba is a real directory holding the xorg.conf.d
+      /opt/share/mesa-gororoba -> /usr
+      /usr/share/mesa-gororoba is a real directory holding the xorg.conf.d
       sample above, not an alias.
 EOF
 }
 
-_ld_conf=/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf
+_ld_conf=/etc/ld.so.conf.d/00-mesa-gororoba-deps.conf
 
 pre_install() {
   # Drop an unowned pre-packaging conf so this package can own the file without

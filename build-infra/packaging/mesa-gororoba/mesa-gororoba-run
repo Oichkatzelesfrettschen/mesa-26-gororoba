@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+env_file=${GOROROBA_MESA_ENV:-/etc/opt/mesa-gororoba/mesa-gororoba-env.sh}
+
+if [ "$#" -eq 0 ]; then
+  cat >&2 <<'EOF'
+usage: mesa-gororoba-run <command> [args...]
+
+Examples:
+  mesa-gororoba-run glxinfo -B
+  mesa-gororoba-run eglinfo
+  mesa-gororoba-run glesinfo
+  mesa-gororoba-run vainfo
+  mesa-gororoba-run vulkaninfo --summary
+EOF
+  exit 2
+fi
+
+# shellcheck disable=SC1090
+. "$env_file"
+exec "$@"

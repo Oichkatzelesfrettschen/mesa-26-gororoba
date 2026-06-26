@@ -1,4 +1,4 @@
-# 1_r300_full_debug_prime_asan_o0: the PRIME r300 tier -- the highest-information
+# 1_r300_full_debug_asan_o0: the PRIME r300 tier -- the highest-information
 # RCA build, never a system Mesa.  AddressSanitizer + UndefinedBehaviorSanitizer
 # with the extended sanitizer set, at -O0 so every source line keeps its own
 # machine code (no inlining or optimizer folding) and an ASan/UBSan report or a
@@ -6,18 +6,18 @@
 # live asserts, frame pointers, sibling-call folding off, report-merging off.
 #
 # Tier map (renumbered by priority; all build the same full r300 surface):
-#   1_ (THIS) debug-prime   -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   1_ (THIS) debug-asan   -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
 #   2_ debug-o0             -- -O0 max-debug, no sanitizer, /opt + wrapper.
 #   3_ debug-optimized      -- -O2 -g3 asserts, the only debug tier allowed /usr.
 #   4_ release              -- optimized, no asserts, no sanitizer, /usr.
 #
-# LOCKED SAFETY INVARIANT: this profile and its mesa-gororoba-debug-prime package
+# LOCKED SAFETY INVARIANT: this profile and its mesa-gororoba-debug-asan package
 # must NEVER become the system Mesa.  An ASan-instrumented libGL/libvulkan as the
 # /usr default aborts every GL/VK client ('ASan runtime does not come first') and
 # can black-screen the login session.  The package installs ONLY to
-# /opt/mesa-26-gororoba-debug-prime, never symlinks into /usr, never
+# /opt/mesa-gororoba-debug-asan, never symlinks into /usr, never
 # provides/conflicts/replaces mesa, drops no ld.so.conf.d activation, and is
-# reached only through mesa-26-gororoba-debug-prime-run.  -O0 over -O1 is the
+# reached only through mesa-gororoba-debug-asan-run.  -O0 over -O1 is the
 # deliberate "microscope" choice: stepping fidelity beats runtime speed because
 # this tier is single-case forensic RCA, never broad conformance or a desktop
 # driver (use 3_/4_ for those).

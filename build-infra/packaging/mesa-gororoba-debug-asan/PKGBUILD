@@ -1,28 +1,28 @@
-# mesa-gororoba-debug-prime: the PRIME r300 tier -- the highest-information RCA
+# mesa-gororoba-debug-asan: the PRIME r300 tier -- the highest-information RCA
 # driver.  Maximal compile-time instrumentation (AddressSanitizer +
 # UndefinedBehaviorSanitizer + the extended sanitizer set, live asserts, -g3,
 # frame pointers, sibling-call folding off) at -O0, repacked from the build-infra
-# prime profile 1_r300_full_debug_prime_asan_o0.
+# prime profile 1_r300_full_debug_asan_o0.
 #
 # LOCKED SAFETY INVARIANT -- this is NEVER the system Mesa.  It installs ONLY to
-# /opt/mesa-26-gororoba-debug-prime plus one /usr/bin wrapper; it does NOT symlink
+# /opt/mesa-gororoba-debug-asan plus one /usr/bin wrapper; it does NOT symlink
 # into /usr, does NOT provide/conflict/replace mesa, and drops no ld.so.conf path.
 # An ASan-instrumented libGL/libvulkan as the system Mesa aborts every GL/VK client
 # ("ASan runtime does not come first in initial library list") and can black-screen
 # the login session.  package() enforces this mechanically: it fails the build if
 # anything staged a /usr loader object or an ld.so.conf.d activation.  Reached only
-# through mesa-26-gororoba-debug-prime-run (LD_PRELOAD the ASan runtime, point the
+# through mesa-gororoba-debug-asan-run (LD_PRELOAD the ASan runtime, point the
 # loaders at /opt).  The system /usr Mesa is mesa-gororoba-debug-optimized (or the
 # reserved mesa-gororoba release) -- never this.
 #
 # Build model: REPACK.  Build/refresh the prime builddir, then this PKGBUILD
 # stages it:
-#   make rebuild-1_r300_full_debug_prime_asan_o0_x86_64v1-clang22-distcc-cache
-pkgname=mesa-gororoba-debug-prime
+#   make rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache
+pkgname=mesa-gororoba-debug-asan
 pkgver=26.2.0
 pkgrel=1
 epoch=2
-pkgdesc='PRIME r300 debug driver (NEVER system Mesa): ASan+UBSan+extended sanitizers, -O0 -g3, r300 GL + r300vk ICD under /opt, run via mesa-26-gororoba-debug-prime-run; the highest-information GPU RCA tier alongside the debug-optimized/release system drivers'
+pkgdesc='PRIME r300 debug driver (NEVER system Mesa): ASan+UBSan+extended sanitizers, -O0 -g3, r300 GL + r300vk ICD under /opt, run via mesa-gororoba-debug-asan-run; the highest-information GPU RCA tier alongside the debug-optimized/release system drivers'
 arch=('x86_64')
 url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
 license=('MIT')
@@ -37,34 +37,34 @@ depends=(
 makedepends=(meson ninja)
 # No system-driver metadata: NO provides/conflicts/replaces of mesa (the locked
 # invariant).  It only replaces the former mesa-gororoba-asan name so an installed
-# one migrates to this rename.  It owns only /opt/mesa-26-gororoba-debug-prime + the
+# one migrates to this rename.  It owns only /opt/mesa-gororoba-debug-asan + the
 # wrapper; it never touches /usr, so it co-installs with every system driver.
 replaces=('mesa-gororoba-asan')
 conflicts=('mesa-gororoba-asan')
 provides=("mesa-gororoba-asan=${epoch}:${pkgver}-${pkgrel}")
 options=('!strip' '!lto' 'debug' 'staticlibs' '!buildflags')
-source=('mesa-26-gororoba-debug-prime-run')
+source=('mesa-gororoba-debug-asan-run')
 sha256sums=('SKIP')
 
-_prefix=/opt/mesa-26-gororoba-debug-prime
-_builddir="${GOROROBA_DEBUG_PRIME_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-1_r300_full_debug_prime_asan_o0_x86_64v1-clang22-distcc-cache}"
-_srcroot="${GOROROBA_DEBUG_PRIME_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
+_prefix=/opt/mesa-gororoba-debug-asan
+_builddir="${GOROROBA_DEBUG_ASAN_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache}"
+_srcroot="${GOROROBA_DEBUG_ASAN_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
 
 package() {
   if [ ! -f "${_builddir}/build.ninja" ]; then
     echo "ERROR: prime asan+ubsan builddir not found at ${_builddir}" >&2
-    echo "       build it: make rebuild-1_r300_full_debug_prime_asan_o0_x86_64v1-clang22-distcc-cache" >&2
+    echo "       build it: make rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache" >&2
     return 1
   fi
   # Stage the prebuilt /opt tree ONLY.  --no-rebuild: never recompile here.  The
-  # builddir prefix is /opt/mesa-26-gororoba-debug-prime (set by the profile
+  # builddir prefix is /opt/mesa-gororoba-debug-asan (set by the profile
   # install prefix), so meson install lands the whole instrumented driver there.
   meson install -C "${_builddir}" --no-rebuild --destdir "${pkgdir}"
 
   # The only /usr file: the run-wrapper.  Everything else stays under /opt so the
   # system Mesa is untouched.
-  install -Dm755 "${srcdir}/mesa-26-gororoba-debug-prime-run" \
-    "${pkgdir}/usr/bin/mesa-26-gororoba-debug-prime-run"
+  install -Dm755 "${srcdir}/mesa-gororoba-debug-asan-run" \
+    "${pkgdir}/usr/bin/mesa-gororoba-debug-asan-run"
 
   # Sanity: confirm the instrumented driver objects actually staged (the wrapper
   # is useless without them), but do NOT do any /usr activation.

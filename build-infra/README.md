@@ -27,7 +27,7 @@ profile
 build can abort a CTS/Piglit case that release would pass.  `make install
 PROFILE=...` lands in the isolated per-profile prefix `/opt/local/mesa-<profile>`
 by default; the shared active trees `/opt/local/mesa-26-gororoba` (release) and
-`/opt/local/mesa-26-gororoba-debug` (debug) are used only by the
+`/opt/local/mesa-gororoba-debug-optimized` (debug) are used only by the
 `install-<profile>` targets or when an explicit `PREFIX=` is passed.
 
 ## Layout

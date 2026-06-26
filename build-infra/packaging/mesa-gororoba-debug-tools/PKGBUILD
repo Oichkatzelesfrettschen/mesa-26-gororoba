@@ -1,12 +1,12 @@
-# mesa-gororoba-gpu-debug-stack: the full RS482/r300 GPU debug stack in one
+# mesa-gororoba-debug-tools: the full RS482/r300 GPU debug stack in one
 # install.  A depends-only meta-package -- it ships no driver of its own; it pulls
-# the PRIME sanitizer driver (mesa-gororoba-debug-prime), the gororoba umr fork,
+# the PRIME sanitizer driver (mesa-gororoba-debug-asan), the gororoba umr fork,
 # and the radeon-KMD instrumentation tool set, and installs the stack
 # documentation.  Installing this gives you everything needed for sanitizer-backed
 # GPU RCA on RS482 alongside the system driver (debug-optimized or release).  See
-# /usr/share/doc/mesa-gororoba-gpu-debug-stack/ for the 4-tier table and the
+# /usr/share/doc/mesa-gororoba-debug-tools/ for the 4-tier table and the
 # per-tool invocations against the prime driver.
-pkgname=mesa-gororoba-gpu-debug-stack
+pkgname=mesa-gororoba-debug-tools
 pkgver=26.2.0
 pkgrel=2
 epoch=2
@@ -18,7 +18,7 @@ license=('MIT')
 # pkgver so a stack bump tracks it; the tools are by-name (their own versions).
 # bpftrace/perf target the radeon KMD, not amdgpu.
 depends=(
-  "mesa-gororoba-debug-prime>=${epoch}:${pkgver}"
+  "mesa-gororoba-debug-asan>=${epoch}:${pkgver}"
   umr-gororoba
   bpftrace valgrind gdb strace radeontop perf lm_sensors
 )
@@ -31,10 +31,10 @@ optdepends=(
   'pwndbg: nicer gdb for driver state inspection'
   'heaptrack: allocation profiling in the draw path'
 )
-source=('r300-gpu-debug-stack.md')
+source=('r300-debug-tiers.md')
 sha256sums=('SKIP')
 
 package() {
-  install -Dm644 "${srcdir}/r300-gpu-debug-stack.md" \
-    "${pkgdir}/usr/share/doc/${pkgname}/r300-gpu-debug-stack.md"
+  install -Dm644 "${srcdir}/r300-debug-tiers.md" \
+    "${pkgdir}/usr/share/doc/${pkgname}/r300-debug-tiers.md"
 }

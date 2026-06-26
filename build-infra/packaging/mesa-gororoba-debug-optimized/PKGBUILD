@@ -17,14 +17,14 @@
 #
 # Renamed from mesa-gororoba-debug: the package label is now -debug-optimized to
 # distinguish it from the new -o0 normal-debug tier.  The /opt prefix and the
-# run-wrapper keep the mesa-26-gororoba-debug name (the 2_ builddir's install
+# run-wrapper keep the mesa-gororoba-debug-optimized name (the 2_ builddir's install
 # prefix), so the rename is a pure repack -- no recompile.  provides/replaces the
 # old mesa-gororoba-debug name so pacman migrates an installed one in place.
 #
 # Build model: REPACK, not from-git.  The build-infra meson builddir is the only
 # build infrastructure -- build/refresh it with
 #   make rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
-# (or `make build ... PREFIX=/opt/mesa-26-gororoba-debug`), then this PKGBUILD
+# (or `make build ... PREFIX=/opt/mesa-gororoba-debug-optimized`), then this PKGBUILD
 # packages that exact builddir.  It deliberately does NOT clone+build from a
 # pinned git commit: the in-development r300vk compute kernels live only in the
 # working tree the builddir was compiled from, so a hermetic git build would
@@ -34,14 +34,14 @@
 # Packaging model (mesa-git): when installed, this debug build BECOMES the active
 # system Mesa, exactly like the release mesa-gororoba and upstream mesa-git.  It
 # differs only in where the real files live: because it is debugoptimized (-O2
-# -g3, assertions, frame pointers), the artifacts stay in /opt/mesa-26-gororoba-debug
+# -g3, assertions, frame pointers), the artifacts stay in /opt/mesa-gororoba-debug-optimized
 # instead of the stock /usr tree, and the stock /usr loader paths (libGL/EGL/GLX/
 # GBM, lib/dri, libxatracker, the Vulkan ICD + layers, the glvnd EGL vendor json)
 # are symlinked into that /opt tree by package().  provides/conflicts/replaces
 # therefore mirror the release package and also supersede it, so exactly one
 # gororoba Mesa owns the /usr paths at a time.  Revert with
 # `pacman -U mesa-gororoba` (release) or `pacman -S mesa` (stock).
-# mesa-26-gororoba-debug-run still pins the loader to the /opt tree for a scoped
+# mesa-gororoba-debug-optimized-run still pins the loader to the /opt tree for a scoped
 # probe without changing the system default.
 pkgname=mesa-gororoba-debug-optimized
 pkgver=26.2.0
@@ -97,12 +97,12 @@ options=('!strip' '!lto' 'debug' 'staticlibs' '!buildflags')
 install="${pkgname}.install"
 # Only the loader-helper scripts are package sources; the binaries come from the
 # prebuilt build-infra builddir (see _builddir), not from a git checkout.
-source=('mesa-26-gororoba-debug-env.sh'
-        'mesa-26-gororoba-debug-run')
+source=('mesa-gororoba-debug-optimized-env.sh'
+        'mesa-gororoba-debug-optimized-run')
 sha256sums=('40688a33a6dad2c92f44212bb8dce8c0bad80678248ba7b719a83e999c2271fc'
             'e2a1785277b814e1d1ffcff8aca1a11029fe632502180e5d1c6074cdee286aa9')
 
-_prefix=/opt/mesa-26-gororoba-debug
+_prefix=/opt/mesa-gororoba-debug-optimized
 # The canonical build-infra builddir to repack, and the source root for the
 # license file.  Override from the make/env (GOROROBA_DEBUG_BUILDDIR /
 # GOROROBA_DEBUG_SRCROOT) when packaging on a different host.
@@ -146,10 +146,10 @@ package() {
   # build-infra builddir is authoritative and already carries the in-dev kernels.
   meson install -C "${_builddir}" --no-rebuild --destdir "${pkgdir}"
 
-  install -Dm755 "${srcdir}/mesa-26-gororoba-debug-run" \
-    "${pkgdir}/usr/bin/mesa-26-gororoba-debug-run"
-  install -Dm644 "${srcdir}/mesa-26-gororoba-debug-env.sh" \
-    "${pkgdir}/etc/opt/mesa-26-gororoba-debug/mesa-26-gororoba-debug-env.sh"
+  install -Dm755 "${srcdir}/mesa-gororoba-debug-optimized-run" \
+    "${pkgdir}/usr/bin/mesa-gororoba-debug-optimized-run"
+  install -Dm644 "${srcdir}/mesa-gororoba-debug-optimized-env.sh" \
+    "${pkgdir}/etc/opt/mesa-gororoba-debug-optimized/mesa-gororoba-debug-optimized-env.sh"
 
   # System-driver activation: mirror the loadable artifacts from the /opt tree
   # into the stock /usr loader paths as symlinks.  These links are what make the
@@ -182,12 +182,12 @@ package() {
 
   # Compatibility aliases (probes and build-infra scripts target /opt/local).
   install -dm755 "${pkgdir}/opt/local" "${pkgdir}/opt/share" "${pkgdir}/usr/share"
-  ln -s /opt/mesa-26-gororoba-debug \
-    "${pkgdir}/opt/local/mesa-26-gororoba-debug"
-  ln -s /opt/mesa-26-gororoba-debug \
-    "${pkgdir}/opt/share/mesa-26-gororoba-debug"
-  ln -s /opt/mesa-26-gororoba-debug \
-    "${pkgdir}/usr/share/mesa-26-gororoba-debug"
+  ln -s /opt/mesa-gororoba-debug-optimized \
+    "${pkgdir}/opt/local/mesa-gororoba-debug-optimized"
+  ln -s /opt/mesa-gororoba-debug-optimized \
+    "${pkgdir}/opt/share/mesa-gororoba-debug-optimized"
+  ln -s /opt/mesa-gororoba-debug-optimized \
+    "${pkgdir}/usr/share/mesa-gororoba-debug-optimized"
 
   # Own the runtime linker-path drop-in and point it at THIS variant's live lib
   # dir.  The debug /opt tree carries its own bundled dependency libs; without
@@ -197,8 +197,8 @@ package() {
   # swap rewrites the path to the installed variant and the .install scriptlet
   # re-runs ldconfig, so reboots stay safe regardless of which variant is in.
   install -dm755 "${pkgdir}/etc/ld.so.conf.d"
-  printf '%s\n' '/opt/mesa-26-gororoba-debug/lib' \
-    > "${pkgdir}/etc/ld.so.conf.d/00-mesa-26-gororoba-deps.conf"
+  printf '%s\n' '/opt/mesa-gororoba-debug-optimized/lib' \
+    > "${pkgdir}/etc/ld.so.conf.d/00-mesa-gororoba-deps.conf"
 
   # Boot-safety guard.  The ld.so.conf drop-in above and the _link_into_usr
   # activation both assume the gbm/glvnd runtime actually built; neither checks

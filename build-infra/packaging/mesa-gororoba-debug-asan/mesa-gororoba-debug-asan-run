@@ -1,21 +1,21 @@
 #!/bin/sh
 # Run a command against the PRIME r300 driver (ASan+UBSan+extended sanitizers,
-# -O0) staged in /opt/mesa-26-gororoba-debug-prime, WITHOUT making it the system
+# -O0) staged in /opt/mesa-gororoba-debug-asan, WITHOUT making it the system
 # Mesa.  An ASan/UBSan .so cannot be the default /usr Mesa (every GL/VK app would
 # abort with "ASan runtime does not come first in initial library list"), so this
 # driver is only ever reached through this wrapper, which preloads the sanitizer
 # runtime first and points the GL + Vulkan loaders at the /opt tree for the
 # wrapped process.  The system /usr Mesa stays mesa-gororoba-debug-optimized.
 #
-# Usage:  mesa-26-gororoba-debug-prime-run vkcube
-#         mesa-26-gororoba-debug-prime-run gdb --args vulkaninfo --summary
-#         ASAN_OPTIONS=detect_leaks=1 mesa-26-gororoba-debug-prime-run <app>
+# Usage:  mesa-gororoba-debug-asan-run vkcube
+#         mesa-gororoba-debug-asan-run gdb --args vulkaninfo --summary
+#         ASAN_OPTIONS=detect_leaks=1 mesa-gororoba-debug-asan-run <app>
 set -eu
-PREFIX=/opt/mesa-26-gororoba-debug-prime
+PREFIX=/opt/mesa-gororoba-debug-asan
 
 if [ ! -d "$PREFIX/lib" ]; then
-  echo "mesa-26-gororoba-debug-prime-run: $PREFIX not installed; build+install the prime tier:" >&2
-  echo "  make rebuild-1_r300_full_debug_prime_asan_o0_x86_64v1-clang22-distcc-cache && makepkg (mesa-gororoba-debug-prime)" >&2
+  echo "mesa-gororoba-debug-asan-run: $PREFIX not installed; build+install the prime tier:" >&2
+  echo "  make rebuild-1_r300_full_debug_asan_o0_x86_64v1-clang22-distcc-cache && makepkg (mesa-gororoba-debug-asan)" >&2
   exit 1
 fi
 
@@ -25,7 +25,7 @@ fi
 ASAN_RT="$(clang -print-file-name=libclang_rt.asan-x86_64.so 2>/dev/null || true)"
 [ -e "${ASAN_RT:-}" ] || ASAN_RT=/usr/lib/clang/22/lib/linux/libclang_rt.asan-x86_64.so
 if [ ! -e "$ASAN_RT" ]; then
-  echo "mesa-26-gororoba-debug-prime-run: ASan runtime not found ($ASAN_RT); install clang." >&2
+  echo "mesa-gororoba-debug-asan-run: ASan runtime not found ($ASAN_RT); install clang." >&2
   exit 1
 fi
 
