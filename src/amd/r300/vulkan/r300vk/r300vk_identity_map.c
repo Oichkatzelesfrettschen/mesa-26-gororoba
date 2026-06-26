@@ -1854,6 +1854,36 @@ r300vk_binary_map_dispatch_replay(struct r300vk_device *device,
       PIPE_FORMAT_NONE);
 }
 
+/* Binary-transcendental dispatch replay: out[gid] = f(a[gid], b[gid]) for f in
+ * {fpow, fdiv}, vec4 componentwise.  Reuses the two-in/one-out vec4 carrier the
+ * binary_map float path uses -- R32G32B32A32 samplers -> FP16 RT -> RGBA32
+ * unpack -- with pl->fs_cso holding the componentwise transcendental FS. */
+bool
+r300vk_binary_transcendental_dispatch_replay(
+   struct r300vk_device *device,
+   const struct r300vk_pipeline *pl,
+   const struct r300vk_cmd_dispatch *dispatch,
+   const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   if (!device || !device->screen)
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!device->screen->is_format_supported(device->screen,
+          PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_TEXTURE_2D, 0, 0,
+          PIPE_BIND_RENDER_TARGET))
+      return false;
+   return r300vk_two_in_one_out_dispatch_replay(
+      device, pl, dispatch, binds,
+      pl->binary_transcendental.input_a_ssbo_binding,
+      pl->binary_transcendental.input_b_ssbo_binding,
+      pl->binary_transcendental.output_ssbo_binding,
+      PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R16G16B16A16_FLOAT,
+      PIPE_FORMAT_R32G32B32A32_FLOAT);
+}
+
 bool
 r300vk_dp4_dispatch_replay(struct r300vk_device *device,
                            const struct r300vk_pipeline *pl,

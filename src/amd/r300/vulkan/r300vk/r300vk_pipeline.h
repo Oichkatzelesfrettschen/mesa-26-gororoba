@@ -130,6 +130,12 @@ struct r300vk_pipeline {
     * Precision is FP16-RT-carrier bounded (~10-bit), not bit-exact. */
    struct r300_compute_unary_transcendental_pattern unary_transcendental;
 
+   /* Two-input transcendental map out[gid] = f(a[gid], b[gid]) detected at
+    * pipeline-create time, f a non-commutative binary (pow or a/b).  Reuses the
+    * vec4 two-in/one-out carrier the binary_map float path uses; pl->fs_cso is
+    * the 2-TEX componentwise FS.  Precision is FP16-RT-carrier bounded. */
+   struct r300_compute_binary_transcendental_pattern binary_transcendental;
+
    /* Quantized dot-product (DP4) kernel detected at pipeline-create time:
     * out[gid] = dot(in_a[gid], in_b[gid]).  Lowered to a fullscreen draw whose
     * pure-NIR FS samples in_a + in_b and writes their FP24 DP4 to the RT. */
@@ -439,6 +445,7 @@ r300vk_pipeline_matched_raster_verb(const struct r300vk_pipeline *pl)
           pl->binary_map.is_binary_map ||
           pl->unary_map.is_unary_map ||
           pl->unary_transcendental.is_unary_transcendental ||
+          pl->binary_transcendental.is_binary_transcendental ||
           pl->dp4.is_dp4 ||
           pl->qmul.is_qmul ||
           pl->qdiv.is_qdiv ||
