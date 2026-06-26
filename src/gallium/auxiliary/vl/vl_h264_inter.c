@@ -5,6 +5,8 @@
 
 #include <stdbool.h>
 
+#include "pipe/p_video_state.h"
+
 #include "vl_h264_inter.h"
 
 /*
@@ -266,6 +268,10 @@ vl_h264_decode_p_mb(struct vl_h264_mb_decoder *dec, struct vl_h264_reader *reade
       dec->qp_y = (dec->qp_y + delta + 52) % 52;
    }
    mb->qp_y = dec->qp_y;
+   mb->qp_cb = vl_h264_chroma_qp_from_luma(dec->qp_y,
+                                           dec->pps->chroma_qp_index_offset);
+   mb->qp_cr = vl_h264_chroma_qp_from_luma(dec->qp_y,
+                                           dec->pps->second_chroma_qp_index_offset);
 
    if (vl_h264_overrun(reader))
       return VL_H264_P_MB_ERROR;
