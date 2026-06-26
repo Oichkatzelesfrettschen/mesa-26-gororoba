@@ -224,6 +224,14 @@ vl_h264_decode_intra_mb_body(struct vl_h264_mb_decoder *dec,
    if (mb_type >= I_PCM_MB_TYPE)
       return false;
 
+   /* An intra macroblock has no reference; the marker lets the reconstruction
+    * tell it from an inter macroblock in a P frame, and matches the I-slice
+    * harnesses that do not otherwise set it. */
+   for (int i = 0; i < 16; i++) {
+      mb->ref_l0[i] = -1;
+      mb->ref_l1[i] = -1;
+   }
+
    bool has_cbp_field;
    if (mb_type == I_NXN_MB_TYPE) {
       mb->mb_type = I_NXN_MB_TYPE;

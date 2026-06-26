@@ -325,6 +325,12 @@ vl_h264_intra_reconstruct_luma(const struct vl_h264_mb_contract *mbs,
       const struct vl_h264_mb_contract *mb = &mbs[addr];
       unsigned mb_x = (unsigned)mb->mb_x, mb_y = (unsigned)mb->mb_y;
 
+      /* In a P frame the inter macroblocks are reconstructed by the GPU back
+       * half from the reference; this pass fills only the intra macroblocks,
+       * which a reference index of -1 marks.  An I frame is all intra. */
+      if (mb->ref_l0[0] >= 0)
+         continue;
+
       if (mb->mb_type == 0) {
          /* Intra_4x4: each block reads the plane the previous block wrote. */
          for (unsigned s = 0; s < 16; s++)
@@ -502,6 +508,10 @@ reconstruct_chroma_plane(const struct vl_h264_mb_contract *mbs, unsigned num_mbs
       unsigned mb_x = (unsigned)mb->mb_x, mb_y = (unsigned)mb->mb_y;
       struct neighbors_c n;
       int pred[64];
+
+      /* Only the intra macroblocks; the inter ones are the GPU back half's. */
+      if (mb->ref_l0[0] >= 0)
+         continue;
 
       build_chroma_neighbors(plane, stride, mb_x, mb_y, &n);
       predict_chroma(&n, mb->intra_chroma_pred_mode, pred);
