@@ -2561,14 +2561,12 @@ r300vk_dp4_synthesize_shaders(struct r300vk_device *device,
 }
 
 /* Unary-transcendental FS: 1 TEX + one native US scalar transcendental,
- * parameterized by the detector's recorded nir_op.  Built in ureg/TGSI -- NOT
- * standalone NIR -- because the NIR fragment program reading VARYING_SLOT_TEX0
- * in the scalar 1-in/1-out carrier sampled (nearly) the same texel for every
- * fragment (RS482-falsified bundle 20260626T203210Z), while the affine ureg FS
- * reading GENERIC[0] in the identical carrier reads per-fragment correctly.
- * This mirrors r300vk_synthesize_unary_map_fs's proven sampler + GENERIC[0]
- * PERSPECTIVE input + sampler-view setup, swapping the affine MUL+ADD for the
- * transcendental op.  fsqrt is composed as RCP(RSQ(x)) (R300 has no SQRT op).
+ * parameterized by the detector's recorded nir_op.  Built in ureg/TGSI, like
+ * the affine map FS, declaring its texcoord as GENERIC[0] PERSPECTIVE.  A
+ * standalone NIR FS naming the interpolant VARYING_SLOT_TEX0 does not link to
+ * the passthrough VS's GENERIC[0] output in the scalar 1-in/1-out carrier, so
+ * every fragment samples the same texel; declaring GENERIC[0] directly reads
+ * per-fragment.  fsqrt composes as RCP(RSQ(x)) (the US ALU has no SQRT).
  * Returns NULL for an op outside the admitted set. */
 static void *
 r300vk_synthesize_unary_transcendental_fs(struct pipe_context *pipe,

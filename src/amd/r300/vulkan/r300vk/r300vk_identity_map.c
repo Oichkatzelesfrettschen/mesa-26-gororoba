@@ -1495,7 +1495,7 @@ r300vk_unary_map_dispatch_replay(struct r300vk_device *device,
 /* Unary-transcendental replay: out[gid] = f(in[gid]).  The same scalar carrier
  * as the unary_map scalar path -- R32_FLOAT sampler -> FP16x4 RT -> X-lane
  * gather -- with pl->fs_cso holding the synthesized 1-TEX-1-scalar transcendental
- * FS (r300vk_build_unary_transcendental_fs_nir) instead of the affine MAD FS.
+ * FS instead of the affine MAD FS.
  * Scalar float32 only; no push window (the op carries no runtime constant).
  * PRECISION: the FP16 render-target carrier bounds the result to ~10-bit
  * mantissa, looser than the fp24 ALU; the readback is approximate, not exact. */
