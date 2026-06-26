@@ -2560,27 +2560,58 @@ r300vk_dp4_synthesize_shaders(struct r300vk_device *device,
    return true;
 }
 
-/* Unary-transcendental FS: the 1-TEX-1-scalar transcendental program built by
- * r300vk_build_unary_transcendental_fs_nir, parameterized by the detector's
- * recorded nir_op.  Finalize for the screen and create the gallium state, as the
- * DP4 FS does. */
+/* Unary-transcendental FS: 1 TEX + one native US scalar transcendental,
+ * parameterized by the detector's recorded nir_op.  Built in ureg/TGSI -- NOT
+ * standalone NIR -- because the NIR fragment program reading VARYING_SLOT_TEX0
+ * in the scalar 1-in/1-out carrier sampled (nearly) the same texel for every
+ * fragment (RS482-falsified bundle 20260626T203210Z), while the affine ureg FS
+ * reading GENERIC[0] in the identical carrier reads per-fragment correctly.
+ * This mirrors r300vk_synthesize_unary_map_fs's proven sampler + GENERIC[0]
+ * PERSPECTIVE input + sampler-view setup, swapping the affine MUL+ADD for the
+ * transcendental op.  fsqrt is composed as RCP(RSQ(x)) (R300 has no SQRT op).
+ * Returns NULL for an op outside the admitted set. */
 static void *
 r300vk_synthesize_unary_transcendental_fs(struct pipe_context *pipe,
                                           uint16_t alu_op)
 {
-   nir_shader *s = r300vk_build_unary_transcendental_fs_nir(
-      pipe->screen->nir_options[MESA_SHADER_FRAGMENT], alu_op);
-   if (!s)
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
       return NULL;
-   if (pipe->screen->finalize_nir)
-      pipe->screen->finalize_nir(pipe->screen, s, true);
 
-   struct pipe_shader_state state = { .type = PIPE_SHADER_IR_NIR,
-                                      .ir.nir = s };
-   void *fs_cso = pipe->create_fs_state(pipe, &state);
-   if (!fs_cso)
-      ralloc_free(s);
-   return fs_cso;
+   struct ureg_src samp = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT);
+   struct ureg_src tex = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                            TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst tmp = ureg_DECL_temporary(ureg);
+   const unsigned wm = TGSI_WRITEMASK_XYZW;
+
+   ureg_TEX(ureg, ureg_writemask(tmp, wm), TGSI_TEXTURE_2D, tex, samp);
+
+   switch ((nir_op)alu_op) {
+   case nir_op_fsqrt: {
+      struct ureg_dst rs = ureg_DECL_temporary(ureg);
+      ureg_RSQ(ureg, ureg_writemask(rs, wm), ureg_src(tmp));
+      ureg_RCP(ureg, out, ureg_src(rs));
+      break;
+   }
+   case nir_op_frsq:        ureg_RSQ(ureg, out, ureg_src(tmp)); break;
+   case nir_op_frcp:        ureg_RCP(ureg, out, ureg_src(tmp)); break;
+   case nir_op_fexp2:       ureg_EX2(ureg, out, ureg_src(tmp)); break;
+   case nir_op_flog2:       ureg_LG2(ureg, out, ureg_src(tmp)); break;
+   case nir_op_fsin:        ureg_SIN(ureg, out, ureg_src(tmp)); break;
+   case nir_op_fcos:        ureg_COS(ureg, out, ureg_src(tmp)); break;
+   case nir_op_ffract:      ureg_FRC(ureg, out, ureg_src(tmp)); break;
+   case nir_op_ffloor:      ureg_FLR(ureg, out, ureg_src(tmp)); break;
+   case nir_op_fround_even: ureg_ROUND(ureg, out, ureg_src(tmp)); break;
+   default:
+      ureg_destroy(ureg);
+      return NULL;
+   }
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
 }
 
 /* Unary-transcendental VS+FS synthesis: the passthrough VS plus the

@@ -27,12 +27,6 @@ extern "C" {
 nir_shader *r300vk_build_dp4_fs_nir(const nir_shader_compiler_options *opts,
                                     unsigned components);
 
-/* Build the single-input transcendental fragment program: TEX sample -> one
- * scalar transcendental nir_op (alu_op) on channel 0 -> broadcast to the FP16x4
- * color export.  Backs the unary-transcendental verb (out[gid] = f(in[gid])). */
-nir_shader *r300vk_build_unary_transcendental_fs_nir(
-   const nir_shader_compiler_options *opts, uint16_t alu_op);
-
 /* Build the quaternion Hamilton-product fragment program as standalone NIR.
  * Samples two input quaternions (q1 = sampler binding 0, q2 = binding 1) at the
  * fullscreen texcoord and writes q1*q2 to the color export as four DP4s -- the
