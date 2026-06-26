@@ -13,7 +13,7 @@
 # instrumentable.  Conformance and silicon evidence use the 4_ release profile.
 #
 # Tier map (renumbered by priority; all build the same full r300 surface):
-#   1_ debug-prime      -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   1_ debug-asan      -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
 #   2_ debug-o0         -- -O0 -g asserts, no sanitizer, /opt + run-wrapper.
 #   3_ (THIS) debug-opt -- -O2 -g3 asserts; the DEFAULT debug, /usr-capable.
 #   4_ release          -- optimized, no asserts, /usr.

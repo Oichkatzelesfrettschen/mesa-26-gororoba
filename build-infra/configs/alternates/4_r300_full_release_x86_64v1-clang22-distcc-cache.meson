@@ -8,7 +8,7 @@
 # assertions-live RCA sibling.
 #
 # Tier map (renumbered by priority; all build the same full r300 surface):
-#   1_ debug-prime      -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
+#   1_ debug-asan      -- ASan+UBSan+extended, -O0, /opt + wrapper ONLY.
 #   2_ debug-o0         -- -O0 -g asserts, no sanitizer, /opt + run-wrapper.
 #   3_ debug-optimized  -- -O2 -g3 asserts, the default debug, /usr-capable.
 #   4_ (THIS) release   -- optimized, no asserts, no sanitizer, /usr.
