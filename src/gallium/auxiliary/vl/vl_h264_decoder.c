@@ -16,6 +16,7 @@
 #include "pipe/p_video_state.h"
 
 #include "vl_defines.h"
+#include "vl_h264_cpu_mc.h"
 #include "vl_h264_decoder.h"
 #include "vl_h264_emit.h"
 #include "vl_h264_intra_reconstruct.h"
@@ -75,6 +76,32 @@ vl_h264_decode_bitstream(struct pipe_video_codec *codec,
       dec->provider->decode_slice(dec->provider, h264,
                                   (const uint8_t *)buffers[i], sizes[i],
                                   &dec->frame);
+}
+
+/* Reconstruct on the CPU the inter luma blocks the back half could not produce:
+ * the diagonal-center quarter-pel positions whose 2D half-pel overflows FP24.
+ * Maps the reference and target luma planes and overwrites those blocks. */
+static void
+luma_diag_fallback(struct vl_h264_decoder *dec, struct pipe_surface *surfaces,
+                   struct pipe_sampler_view *ref_luma)
+{
+   struct pipe_context *ctx = dec->context;
+   unsigned w = dec->width_in_mbs, h = dec->height_in_mbs;
+   int rw = ref_luma->texture->width0, rh = ref_luma->texture->height0;
+
+   struct pipe_transfer *rx, *tx;
+   const uint8_t *r = pipe_texture_map(ctx, ref_luma->texture, 0, 0,
+                                       PIPE_MAP_READ, 0, 0, rw, rh, &rx);
+   uint8_t *t = pipe_texture_map(ctx, surfaces[0].texture, 0, 0,
+                                 PIPE_MAP_READ_WRITE, 0, 0, w * 16, h * 16, &tx);
+   if (r && t)
+      vl_h264_cpu_luma_diag_fallback(dec->frame.macroblocks,
+                                     dec->frame.num_macroblocks, w, h, r, rw, rh,
+                                     rx->stride, t, tx->stride);
+   if (t)
+      pipe_texture_unmap(ctx, tx);
+   if (r)
+      pipe_texture_unmap(ctx, rx);
 }
 
 /* Reconstruct the intra macroblocks on the CPU into the target planes (sec 8.3).

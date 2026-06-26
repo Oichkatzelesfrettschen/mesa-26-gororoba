@@ -1,0 +1,51 @@
+/*
+ * Copyright (c) 2026 Terascale Functionalists
+ * SPDX-License-Identifier: MIT
+ */
+
+/*
+ * CPU luma motion compensation for the quarter-pel positions the FP24 back half
+ * cannot produce.  The five diagonal-center fractions (f, i, j, k, q) need the
+ * 2D half-pel j, whose intermediate six-tap sum exceeds the FP24 integer-exact
+ * range, so the GPU kernel set omits them.  This reconstructs the inter blocks
+ * whose vector lands there on the CPU -- full six-tap interpolation (ITU-T H.264
+ * sec 8.4.2.2.1) plus the block's residual and Clip1 -- overwriting the back
+ * half's placeholder, so a reconstructed frame has no excluded blocks.
+ */
+
+#ifndef vl_h264_cpu_mc_h
+#define vl_h264_cpu_mc_h
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "vl_h264_mb_contract.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Whether a quarter-pel luma vector lands on a diagonal-center fraction that
+ * needs the 2D half-pel j (positions 6, 9, 10, 11, 14 of yFrac*4 + xFrac). */
+bool vl_h264_luma_mv_needs_j(int mvx, int mvy);
+
+/*
+ * Reconstruct on the CPU the luma blocks whose vector needs the 2D half-pel j,
+ * writing Clip1(prediction + residual) into the luma plane.  mbs is the frame's
+ * per-macroblock contract; reference is the previous frame's luma plane
+ * (ref_w by ref_h, ref_stride bytes per row); luma is the target plane being
+ * reconstructed (stride bytes per row).  Only the diagonal-center inter blocks
+ * are touched; every other block is the back half's.
+ */
+void vl_h264_cpu_luma_diag_fallback(const struct vl_h264_mb_contract *mbs,
+                                    unsigned num_mbs, unsigned width_in_mbs,
+                                    unsigned height_in_mbs,
+                                    const uint8_t *reference, int ref_w,
+                                    int ref_h, unsigned ref_stride,
+                                    uint8_t *luma, unsigned stride);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* vl_h264_cpu_mc_h */
