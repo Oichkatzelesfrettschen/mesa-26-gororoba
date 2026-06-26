@@ -12,8 +12,8 @@ prefix.
 
 | Profile | Target | Surface | Type | Location |
 |---|---|---|---|---|
-| `2_r300_full_debug_x86_64v1-clang22-distcc-cache` (default) | vostro (RS482, r300) | maximal r300 + amd_r300 ICD | debug | `configs/` |
-| `1_r300_full_release_x86_64v1-clang22-distcc-cache` | vostro (RS482, r300) | maximal r300 + amd_r300 ICD | release (conformance baseline) | `configs/alternates/` |
+| `3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache` (default) | vostro (RS482, r300) | maximal r300 + amd_r300 ICD | debug | `configs/` |
+| `4_r300_full_release_x86_64v1-clang22-distcc-cache` | vostro (RS482, r300) | maximal r300 + amd_r300 ICD | release (conformance baseline) | `configs/alternates/` |
 | `3_terakan_full_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | r600+zink+soft+llvm+amd_terascale + Rusticl | release | `configs/alternates/` |
 | `4_terakan_full_debug_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | r600+zink+soft+llvm+amd_terascale + Rusticl | debug | `configs/alternates/` |
 | `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache` | x130e (PALM, r600) | same as 3_ without Rusticl | release | `configs/alternates/` |
@@ -23,7 +23,7 @@ All six numbered profiles use
 `HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` and
 `COMPILER_CHAIN=ccache`.  Conformance and silicon-evidence runs use the release
 profile
-(`1_r300_full_release`, now under `alternates/`) because an asserts-live debug
+(`4_r300_full_release`, now under `alternates/`) because an asserts-live debug
 build can abort a CTS/Piglit case that release would pass.  `make install
 PROFILE=...` lands in the isolated per-profile prefix `/opt/local/mesa-<profile>`
 by default; the shared active trees `/opt/local/mesa-26-gororoba` (release) and
@@ -37,9 +37,9 @@ build-infra/
 |-- Makefile                       # entry point
 |-- README.md                      # this file
 |-- configs/
-|   |-- 2_r300_full_debug_x86_64v1-clang22-distcc-cache.meson   # default profile
+|   |-- 3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache.meson   # default profile
 |   +-- alternates/                # non-default profiles; pass PROFILE= explicitly
-|       |-- 1_r300_full_release_x86_64v1-clang22-distcc-cache.meson
+|       |-- 4_r300_full_release_x86_64v1-clang22-distcc-cache.meson
 |       |-- 3_terakan_full_release_x86_64v1-clang22-distcc-cache.meson
 |       |-- 4_terakan_full_debug_x86_64v1-clang22-distcc-cache.meson
 |       |-- 5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache.meson
@@ -78,7 +78,7 @@ make audit PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache \
 r300 DEBUG build (vostro, **default install target** -- assertions live,
 gallium-xa XA tracker, valgrind/libunwind/perfetto instrumentation):
 ```bash
-make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache
+make rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 # Package and install as the system Mesa (replaces stock mesa or release build):
 cd build-infra/packaging/mesa-gororoba-debug && makepkg --noconfirm && yes | sudo pacman -U mesa-gororoba-debug-*.pkg.tar.zst
 ```
@@ -86,9 +86,9 @@ cd build-infra/packaging/mesa-gororoba-debug && makepkg --noconfirm && yes | sud
 r300 RELEASE build (vostro, conformance-baseline -- use only for CTS/Piglit/deqp runs
 where assertions-live behavior would contaminate pass/fail):
 ```bash
-make rebuild-1_r300_full_release_x86_64v1-clang22-distcc-cache
-make install-1_r300_full_release_x86_64v1-clang22-distcc-cache
-make artifact-check PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache PREFIX=/opt/local/mesa-26-gororoba
+make rebuild-4_r300_full_release_x86_64v1-clang22-distcc-cache
+make install-4_r300_full_release_x86_64v1-clang22-distcc-cache
+make artifact-check PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache PREFIX=/opt/local/mesa-26-gororoba
 ```
 
 r600/terakan RELEASE build (x130e, Rusticl enabled):

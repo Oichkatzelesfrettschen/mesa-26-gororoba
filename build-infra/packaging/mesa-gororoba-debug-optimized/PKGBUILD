@@ -23,7 +23,7 @@
 #
 # Build model: REPACK, not from-git.  The build-infra meson builddir is the only
 # build infrastructure -- build/refresh it with
-#   make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache
+#   make rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache
 # (or `make build ... PREFIX=/opt/mesa-26-gororoba-debug`), then this PKGBUILD
 # packages that exact builddir.  It deliberately does NOT clone+build from a
 # pinned git commit: the in-development r300vk compute kernels live only in the
@@ -106,7 +106,7 @@ _prefix=/opt/mesa-26-gororoba-debug
 # The canonical build-infra builddir to repack, and the source root for the
 # license file.  Override from the make/env (GOROROBA_DEBUG_BUILDDIR /
 # GOROROBA_DEBUG_SRCROOT) when packaging on a different host.
-_builddir="${GOROROBA_DEBUG_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-2_r300_full_debug_x86_64v1-clang22-distcc-cache}"
+_builddir="${GOROROBA_DEBUG_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache}"
 _srcroot="${GOROROBA_DEBUG_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
 
 # Link every entry of ${_prefix}/<rel> into ${pkgdir}/usr/<rel> as a symlink
@@ -138,7 +138,7 @@ _link_into_usr() {
 package() {
   if [ ! -f "${_builddir}/build.ninja" ]; then
     echo "ERROR: build-infra builddir not found at ${_builddir}" >&2
-    echo "       build it first: make rebuild-2_r300_full_debug_x86_64v1-clang22-distcc-cache" >&2
+    echo "       build it first: make rebuild-3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache" >&2
     return 1
   fi
 

@@ -18,13 +18,13 @@ combine this incremental lane with distcc-pump.
 The canonical incremental release and debug paths are:
 
 ```sh
-make -C build-infra -j1 configure PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-make -C build-infra build PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
-make -C build-infra install PROFILE=1_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra -j1 configure PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra build PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
+make -C build-infra install PROFILE=4_r300_full_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba
 
-make -C build-infra -j1 configure PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
-make -C build-infra build PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
-make -C build-infra install PROFILE=2_r300_full_debug_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra -j1 configure PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra build PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
+make -C build-infra install PROFILE=3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc COMPILER_CHAIN=ccache PREFIX=/opt/local/mesa-26-gororoba-debug
 ```
 
 The build-infra install prefix is `/opt/local/mesa-26-gororoba`.  The debug
@@ -36,7 +36,7 @@ needs regeneration.
 
 ## How
 
-`configs/alternates/1_r300_full_release_x86_64v1-clang22-distcc-cache.meson` and its `2_`
+`configs/alternates/4_r300_full_release_x86_64v1-clang22-distcc-cache.meson` and its `2_`
 debug sibling pin the maximal r300 component set, x86-64-v1 code generation,
 `-O2` release codegen, `-fno-emulated-tls` for the libglapi clang link, stack
 hardening, format-security warnings as errors, and relro link hardening.  The

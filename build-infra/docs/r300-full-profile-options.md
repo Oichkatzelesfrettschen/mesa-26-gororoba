@@ -2,8 +2,8 @@
 
 The active full r300 profiles are:
 
-- `1_r300_full_release_x86_64v1-clang22-distcc-cache`
-- `2_r300_full_debug_x86_64v1-clang22-distcc-cache`
+- `4_r300_full_release_x86_64v1-clang22-distcc-cache`
+- `3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache`
 
 Both profiles build the same API surface:
 

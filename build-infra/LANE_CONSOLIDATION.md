@@ -9,8 +9,8 @@ All prior ad-hoc configs are removed.  The canonical set is:
 
 | Profile | Target | Type |
 |---|---|---|
-| `1_r300_full_release_x86_64v1-clang22-distcc-cache` | vostro (r300) | release |
-| `2_r300_full_debug_x86_64v1-clang22-distcc-cache` | vostro (r300) | debug |
+| `4_r300_full_release_x86_64v1-clang22-distcc-cache` | vostro (r300) | release |
+| `3_r300_full_debug_optimized_x86_64v1-clang22-distcc-cache` | vostro (r300) | debug |
 | `3_terakan_full_release_x86_64v1-clang22-distcc-cache` | x130e (r600) | release + Rusticl |
 | `4_terakan_full_debug_x86_64v1-clang22-distcc-cache` | x130e (r600) | debug + Rusticl |
 | `5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache` | x130e (r600) | release, no Rusticl |

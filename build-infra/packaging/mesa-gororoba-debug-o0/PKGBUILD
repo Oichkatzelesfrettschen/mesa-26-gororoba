@@ -1,0 +1,74 @@
+# mesa-gororoba-debug-o0: the -O0 normal-debug r300 tier.  Same maximal r300
+# feature surface as the default debug-optimized driver, built unoptimized
+# (profile 2_r300_full_debug_o0: buildtype=debug, -O0 -g, assertions live, frame
+# pointers) for the deepest-stepping gdb/valgrind RCA -- every source line keeps
+# its own machine code, no inlining or optimizer folding.
+#
+# Like mesa-gororoba-asan and UNLIKE the release / debug-optimized system drivers,
+# this is NOT a system Mesa: it installs ONLY to /opt/mesa-26-gororoba-debug-o0
+# plus one /usr/bin run-wrapper, and does NOT symlink into /usr, does NOT
+# provide/conflict/replace mesa, and drops no ld.so.conf path.  It co-installs
+# alongside the debug-optimized /usr driver and the ASan /opt tree, and is reached
+# only through mesa-26-gororoba-debug-o0-run (which points the GL + Vulkan loaders
+# at the /opt -O0 tree for one process).  This keeps debug-optimized the system
+# default while the -O0 tree is one wrapper away.
+#
+# Build model: REPACK (same as mesa-gororoba-debug-optimized and -asan).  Build
+# the -O0 builddir, then this PKGBUILD stages it:
+#   make rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache
+pkgname=mesa-gororoba-debug-o0
+pkgver=26.2.0
+pkgrel=1
+epoch=2
+pkgdesc='Scoped -O0 normal-debug r300 driver (NOT system Mesa): full r300 GL + r300vk ICD at -O0 -g with assertions, under /opt, run via mesa-26-gororoba-debug-o0-run; deepest-stepping gdb/valgrind RCA alongside the debug-optimized system driver'
+arch=('x86_64')
+url='https://github.com/Oichkatzelesfrettschen/mesa-26-gororoba'
+license=('MIT')
+# Runtime libs the -O0 driver links.  The 3_ profile enables valgrind client
+# annotations + libunwind, so both are runtime deps, same as the debug builds.
+depends=(
+  expat glibc libdrm libelf libgcc libglvnd libstdc++ libx11 libxcb libxext
+  libxdamage libxshmfence libxxf86vm libva lm_sensors spirv-tools
+  wayland zlib zstd vulkan-icd-loader libunwind valgrind
+)
+makedepends=(meson ninja)
+# No system-driver metadata: no provides/conflicts/replaces.  This package owns
+# only /opt/mesa-26-gororoba-debug-o0 + the run-wrapper; it never touches /usr, so
+# it co-installs with stock mesa, the release, and the debug-optimized drivers.
+options=('!strip' '!lto' 'debug' 'staticlibs' '!buildflags')
+source=('mesa-26-gororoba-debug-o0-run')
+sha256sums=('SKIP')
+
+_prefix=/opt/mesa-26-gororoba-debug-o0
+_builddir="${GOROROBA_DEBUG_O0_BUILDDIR:-/home/eirikr/workspaces/mesa/mesa-26-gororoba/build/mesa-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache}"
+_srcroot="${GOROROBA_DEBUG_O0_SRCROOT:-/home/eirikr/workspaces/mesa/mesa-26-gororoba}"
+
+package() {
+  if [ ! -f "${_builddir}/build.ninja" ]; then
+    echo "ERROR: -O0 normal-debug builddir not found at ${_builddir}" >&2
+    echo "       build it: make rebuild-2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache" >&2
+    return 1
+  fi
+  # Stage the prebuilt /opt tree ONLY.  --no-rebuild: never recompile here.  The
+  # builddir prefix is /opt/mesa-26-gororoba-debug-o0 (set by the profile install
+  # prefix), so meson install lands the whole -O0 driver there.
+  meson install -C "${_builddir}" --no-rebuild --destdir "${pkgdir}"
+
+  # The only /usr file: the run-wrapper.  Everything else stays under /opt so the
+  # system Mesa is untouched.
+  install -Dm755 "${srcdir}/mesa-26-gororoba-debug-o0-run" \
+    "${pkgdir}/usr/bin/mesa-26-gororoba-debug-o0-run"
+
+  # Sanity: confirm the -O0 driver objects actually staged (the wrapper is useless
+  # without them), but do NOT do any /usr activation.
+  if [ ! -e "${pkgdir}${_prefix}/lib/libvulkan_r300.so" ] && \
+     [ ! -e "${pkgdir}${_prefix}/lib/libgallium"*.so ] 2>/dev/null; then
+    echo "ERROR: no staged driver .so under ${_prefix}/lib; the -O0 builddir did not install." >&2
+    return 1
+  fi
+
+  if [ -f "${_srcroot}/docs/license.rst" ]; then
+    install -Dm644 "${_srcroot}/docs/license.rst" \
+      "${pkgdir}/usr/share/licenses/${pkgname}/license.rst"
+  fi
+}
