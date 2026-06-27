@@ -43,7 +43,13 @@ struct bitwise_state {
 static bool
 alu_src_const_u32(nir_alu_instr *alu, unsigned src, uint32_t *out)
 {
-   if (!nir_src_is_const(alu->src[src].src))
+   /* This lowering reads a scalar mask or shift constant.  A vector iand whose mask is
+    * a constant vector reaches here before scalarization with a multi-component
+    * constant operand, so the check requires a single component as well as a constant
+    * value; a multi-component constant returns false and the op flows to the
+    * unsupported reject path. */
+   if (!nir_src_is_const(alu->src[src].src) ||
+       nir_src_num_components(alu->src[src].src) != 1)
       return false;
    *out = nir_src_as_uint(alu->src[src].src);
    return true;
