@@ -2090,6 +2090,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
                                struct r300_compute_binary_transcendental_pattern *btransc,
                                struct r300_compute_bitwise_logicop_pattern *bitwise,
                                struct r300_compute_shift_logical_pattern *shift,
+                               struct r300_compute_shift_variable_pattern *shiftvar,
                                struct r300_compute_blend_acc_reduction_pattern *blendacc,
                                struct r300_compute_zpass_reduction_pattern *zpass,
                                struct r300_compute_multipass_scan_pattern *multiscan,
@@ -2200,6 +2201,7 @@ r300vk_classify_compute_kernel(struct r300vk_device *device,
    r300_nir_detect_binary_transcendental(nir, btransc);
    r300_nir_detect_bitwise_logicop(nir, bitwise);
    r300_nir_detect_shift_logical(nir, shift);
+   r300_nir_detect_shift_variable(nir, shiftvar);
    r300_nir_detect_blend_acc_reduction(nir, blendacc);
    r300_nir_detect_zpass_reduction(nir, zpass);
    r300_nir_detect_multipass_scan_pattern(nir, multiscan);
@@ -2314,6 +2316,73 @@ r300vk_device_init_identity_map_state(struct r300vk_device *device)
    bool ok = r300vk_device_init_identity_map_state_locked(device);
    simple_mtx_unlock(&device->identity_map_cso_lock);
    return ok;
+}
+
+/* Build the 32x1 RGBA8 power-of-two lookup the variable-shift gather samples.
+ * Texel j carries the little-endian bytes of 2^j, matching the RGBA8 byte order
+ * the convolution decodes (R = byte 0 = LSB).  The gather indexes it at b (left)
+ * or 31-b (right) so a per-element shift amount becomes the exact 2^M multiplier
+ * the convolution multiplies by.  Device-global and read-only, so it is created
+ * once; the caller holds identity_map_cso_lock.  Freed in r300vk_DestroyDevice. */
+static bool
+r300vk_device_ensure_shift_variable_lut_locked(struct r300vk_device *device)
+{
+   if (device->shift_variable_lut_view)
+      return true;
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen)
+      return false;
+
+   uint8_t texels[32][4];
+   for (unsigned j = 0; j < 32; j++) {
+      const uint32_t v = 1u << j;
+      texels[j][0] = (uint8_t)(v & 0xFF);
+      texels[j][1] = (uint8_t)((v >> 8) & 0xFF);
+      texels[j][2] = (uint8_t)((v >> 16) & 0xFF);
+      texels[j][3] = (uint8_t)((v >> 24) & 0xFF);
+   }
+
+   struct pipe_resource templ;
+   memset(&templ, 0, sizeof(templ));
+   templ.target     = PIPE_TEXTURE_2D;
+   templ.format     = PIPE_FORMAT_R8G8B8A8_UNORM;
+   templ.width0     = 32;
+   templ.height0    = 1;
+   templ.depth0     = 1;
+   templ.array_size = 1;
+   templ.usage      = PIPE_USAGE_DEFAULT;
+   templ.bind       = PIPE_BIND_SAMPLER_VIEW;
+   struct pipe_resource *lut = screen->resource_create(screen, &templ);
+   if (!lut)
+      return false;
+
+   struct pipe_box box;
+   memset(&box, 0, sizeof(box));
+   box.width = 32; box.height = 1; box.depth = 1;
+   pipe->texture_subdata(pipe, lut, 0, PIPE_MAP_WRITE, &box,
+                         texels, sizeof(texels[0]) * 32, 0);
+
+   struct pipe_sampler_view sv_templ;
+   memset(&sv_templ, 0, sizeof(sv_templ));
+   sv_templ.format            = PIPE_FORMAT_R8G8B8A8_UNORM;
+   sv_templ.target            = PIPE_TEXTURE_2D;
+   sv_templ.u.tex.first_level = 0;
+   sv_templ.u.tex.last_level  = 0;
+   sv_templ.swizzle_r = PIPE_SWIZZLE_X;
+   sv_templ.swizzle_g = PIPE_SWIZZLE_Y;
+   sv_templ.swizzle_b = PIPE_SWIZZLE_Z;
+   sv_templ.swizzle_a = PIPE_SWIZZLE_W;
+   struct pipe_sampler_view *view =
+      pipe->create_sampler_view(pipe, lut, &sv_templ);
+   if (!view) {
+      pipe_resource_reference(&lut, NULL);
+      return false;
+   }
+
+   device->shift_variable_lut      = lut;
+   device->shift_variable_lut_view = view;
+   return true;
 }
 
 /* Emit the binary ALU op into a ureg fragment program.  Maps the detected
@@ -3168,6 +3237,109 @@ r300vk_multilimb_synthesize_shaders(struct r300vk_device *device,
    }
    /* The dispatch validation prologue requires a non-NULL fs_cso; the
     * column draws bind multilimb_fs[k] explicitly. */
+   pl->fs_cso = pl->multilimb_fs[0];
+   return true;
+}
+
+/* Variable-shift gather FS: turn a per-element shift amount into the 2^M
+ * multiplier the convolution needs.  Sample b through sampler 0 (RGBA8, the
+ * amount in byte 0), recover the integer amount with the exact UNORM8 round-trip
+ * round(b.x * 255), form the lookup index (b for left, 31-b for right), then do
+ * a NEAREST dependent read of the 2^j texture through sampler 1 at
+ * (index + 0.5)/32.  The sampled texel IS 2^M as RGBA8, copied to the color
+ * export; the transient it renders becomes the convolution's second operand. */
+static void *
+r300vk_synthesize_shift_variable_gather_fs(struct pipe_context *pipe,
+                                           bool is_left)
+{
+   struct ureg_program *ureg = ureg_create(MESA_SHADER_FRAGMENT);
+   if (!ureg)
+      return NULL;
+
+   struct ureg_src samp_b = ureg_DECL_sampler(ureg, 0);
+   ureg_DECL_sampler_view(ureg, 0, TGSI_TEXTURE_2D, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT);
+   struct ureg_src samp_lut = ureg_DECL_sampler(ureg, 1);
+   ureg_DECL_sampler_view(ureg, 1, TGSI_TEXTURE_2D, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT, TGSI_RETURN_TYPE_FLOAT,
+                          TGSI_RETURN_TYPE_FLOAT);
+   struct ureg_src tc = ureg_DECL_fs_input(ureg, TGSI_SEMANTIC_GENERIC, 0,
+                                           TGSI_INTERPOLATE_PERSPECTIVE);
+   struct ureg_dst out   = ureg_DECL_output(ureg, TGSI_SEMANTIC_COLOR, 0);
+   struct ureg_dst b     = ureg_DECL_temporary(ureg);
+   struct ureg_dst idx   = ureg_DECL_temporary(ureg);
+   struct ureg_dst coord = ureg_DECL_temporary(ureg);
+   struct ureg_dst c     = ureg_DECL_temporary(ureg);
+
+   /* idx.x = round(b.x * 255): the exact integer amount in byte 0. */
+   ureg_TEX(ureg, b, TGSI_TEXTURE_2D, tc, samp_b);
+   ureg_MUL(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X),
+            ureg_scalar(ureg_src(b), TGSI_SWIZZLE_X),
+            ureg_imm1f(ureg, 255.0f));
+   ureg_ADD(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X), ureg_src(idx),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_FLR(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X), ureg_src(idx));
+   if (!is_left)
+      ureg_ADD(ureg, ureg_writemask(idx, TGSI_WRITEMASK_X),
+               ureg_imm1f(ureg, 31.0f), ureg_negate(ureg_src(idx)));
+
+   /* coord.x = (idx + 0.5)/32 lands NEAREST on texel idx; coord.y = 0.5 picks
+    * the single row of the 32x1 lookup. */
+   ureg_MAD(ureg, ureg_writemask(coord, TGSI_WRITEMASK_X), ureg_src(idx),
+            ureg_imm1f(ureg, 1.0f / 32.0f), ureg_imm1f(ureg, 0.5f / 32.0f));
+   ureg_MOV(ureg, ureg_writemask(coord, TGSI_WRITEMASK_Y),
+            ureg_imm1f(ureg, 0.5f));
+   ureg_TEX(ureg, c, TGSI_TEXTURE_2D, ureg_src(coord), samp_lut);
+   ureg_MOV(ureg, out, ureg_src(c));
+   ureg_END(ureg);
+   return ureg_create_shader_and_destroy(ureg, pipe);
+}
+
+static bool
+r300vk_shift_variable_synthesize_shaders(struct r300vk_device *device,
+                                         struct r300vk_pipeline *pl)
+{
+   struct pipe_context *pipe = device->pipe;
+   if (!pipe)
+      return false;
+   if (!r300vk_device_init_identity_map_state(device))
+      return false;
+
+   simple_mtx_lock(&device->identity_map_cso_lock);
+   bool lut_ok = r300vk_device_ensure_shift_variable_lut_locked(device);
+   simple_mtx_unlock(&device->identity_map_cso_lock);
+   if (!lut_ok)
+      return false;
+
+   pl->vs_cso = r300vk_synthesize_passthrough_vs(pipe);
+   if (!pl->vs_cso)
+      return false;
+
+   pl->shift_variable_gather_fs = r300vk_synthesize_shift_variable_gather_fs(
+      pipe, pl->shift_variable.is_left);
+   if (!pl->shift_variable_gather_fs) {
+      pipe->delete_vs_state(pipe, pl->vs_cso);
+      pl->vs_cso = NULL;
+      return false;
+   }
+
+   for (unsigned k = 0; k < 9; k++) {
+      pl->multilimb_fs[k] = r300vk_synthesize_multilimb_fs(pipe, k);
+      if (!pl->multilimb_fs[k]) {
+         for (unsigned j = 0; j < k; j++) {
+            pipe->delete_fs_state(pipe, pl->multilimb_fs[j]);
+            pl->multilimb_fs[j] = NULL;
+         }
+         pipe->delete_fs_state(pipe, pl->shift_variable_gather_fs);
+         pl->shift_variable_gather_fs = NULL;
+         pipe->delete_vs_state(pipe, pl->vs_cso);
+         pl->vs_cso = NULL;
+         return false;
+      }
+   }
+   /* The dispatch validation prologue requires a non-NULL fs_cso; the gather and
+    * column draws bind their own shaders explicitly. */
    pl->fs_cso = pl->multilimb_fs[0];
    return true;
 }
@@ -4613,6 +4785,11 @@ r300vk_synthesize_compute_shaders(struct r300vk_device *device,
          pl->shift_logical.is_shift_logical = false;
       return VK_SUCCESS;
    }
+   if (pl->shift_variable.is_shift_variable) {
+      if (!r300vk_shift_variable_synthesize_shaders(device, pl))
+         pl->shift_variable.is_shift_variable = false;
+      return VK_SUCCESS;
+   }
    if (pl->affine_iota.is_affine_iota) {
       if (!r300vk_affine_iota_synthesize_shaders(device, pl))
          pl->affine_iota.is_affine_iota = false;
@@ -4757,6 +4934,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    struct r300_compute_binary_transcendental_pattern btransc_pat = {0};
    struct r300_compute_bitwise_logicop_pattern bitwise_pat = {0};
    struct r300_compute_shift_logical_pattern shift_pat = {0};
+   struct r300_compute_shift_variable_pattern shiftvar_pat = {0};
    struct r300_compute_blend_acc_reduction_pattern blendacc = {0};
    struct r300_compute_zpass_reduction_pattern zpass = {0};
    struct r300_compute_multipass_scan_pattern multiscan = {0};
@@ -4792,7 +4970,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    if (!r300vk_classify_compute_kernel(device, &pCreateInfo->stage,
                                        &adm, &ident, &binmap, &unary_pat,
                                        &transc_pat, &btransc_pat, &bitwise_pat,
-                                       &shift_pat,
+                                       &shift_pat, &shiftvar_pat,
                                        &blendacc, &zpass,
                                        &multiscan, &predstore, &gather, &dp4_pat,
                                        &qmul_pat, &qdiv_pat, &mat4vec_pat, &qfmul_pat,
@@ -4842,6 +5020,7 @@ r300vk_create_one_compute_pipeline(struct r300vk_device *device,
    pl->binary_transcendental = btransc_pat;
    pl->bitwise_logicop = bitwise_pat;
    pl->shift_logical = shift_pat;
+   pl->shift_variable = shiftvar_pat;
    pl->dp4 = dp4_pat;
    pl->qmul = qmul_pat;
    pl->qdiv = qdiv_pat;
@@ -4966,6 +5145,8 @@ r300vk_DestroyPipeline(VkDevice _device,
    for (unsigned k = 0; k < 9; k++)
       if (pl->multilimb_fs[k] && pl->multilimb_fs[k] != pl->fs_cso)
          device->pipe->delete_fs_state(device->pipe, pl->multilimb_fs[k]);
+   if (pl->shift_variable_gather_fs)
+      device->pipe->delete_fs_state(device->pipe, pl->shift_variable_gather_fs);
    if (pl->blend_cso)
       device->pipe->delete_blend_state(device->pipe, pl->blend_cso);
    if (pl->rasterizer_cso)

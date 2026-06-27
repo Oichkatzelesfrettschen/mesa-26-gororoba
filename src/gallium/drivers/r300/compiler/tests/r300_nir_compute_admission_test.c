@@ -1381,6 +1381,7 @@ case_shift_variable_metadata(void)
       struct r300_compute_shift_variable_pattern sv = {0};
       struct r300_compute_shift_logical_pattern sl = {0};
       struct r300_compute_binary_map_pattern bm = {0};
+      struct r300_compute_multilimb_mul_pattern mm = {0};
       prepare_detect_shader(nir);
       r300_nir_classify_compute(nir, &adm);
       CHECK(adm.admissible, "variable shift admits");
@@ -1392,11 +1393,14 @@ case_shift_variable_metadata(void)
             "variable shift records bindings a=0 b=1 out=2");
       CHECK(sv.value_components == 1 && sv.value_bit_size == 32,
             "variable shift records scalar 32-bit");
-      /* The constant-shift detector requires one load; a two-load variable shift
-       * must not also match it. */
+      /* Disjointness from the verbs the dispatcher tries before it.  The
+       * constant-shift detector needs one load; multilimb needs imul; binary_map
+       * needs a commutative arithmetic op.  A two-load ishl/ushr matches none, so
+       * the first-match router reaches shift_variable. */
       r300_nir_detect_shift_logical(nir, &sl);
       CHECK(!sl.is_shift_logical, "variable shift is not a constant shift");
-      /* Nor the commutative binary map (the op set is disjoint). */
+      r300_nir_detect_multilimb_mul_pattern(nir, &mm);
+      CHECK(!mm.is_multilimb_mul, "variable shift is not a multilimb multiply");
       r300_nir_detect_binary_map(nir, &bm);
       CHECK(!bm.is_binary_map, "variable shift is not a binary_map");
       ralloc_free(nir);
