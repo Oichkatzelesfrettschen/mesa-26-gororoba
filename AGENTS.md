@@ -210,7 +210,9 @@ Use these checks during RCA, conformance, and hardware-facing changes.
 
 The code is the primary text. Comments explain mechanisms that are not obvious from the next line of code. A useful comment records a silicon constraint, spec rule, kernel validation rule, command-stream invariant, measured quirk, ABI boundary, synchronization rule, or the reason a workaround preserves conformance.
 
-Comment shape: mechanism first, authority second, ordered constraint third, testable consequence last. Remove ceremonial prose. Add the missing invariant when terse prose hides the mechanism. Move phase names, sessions, PR chronology, reviewers, agents, local paths, and private artifacts to commit messages or findings, not source comments. Mark unfalsifiable claims as conjecture or remove them.
+Comment shape: mechanism first, authority second, ordered constraint third, testable consequence last. Remove ceremonial prose. Add the missing invariant when terse prose hides the mechanism. Move phase names, sessions, PR chronology, reviewers, agents, local paths, and private artifacts to commit messages or findings, not source comments. Mark unfalsifiable claims as conjecture or remove them. Prefer third-person present tense (`the kernel reads WORD0`, `the TX unit ignores NEAREST for integer formats`) over first person. Impersonal `we` for the code path (`we do not have to wait at the end of an IB`) matches Mesa upstream and is fine; deictic `we`/`our` for the project or team (`our driver`, `our approach`) is not. For a silicon bug or workaround, name the affected chip or register, state the observable failure in one sentence, cite a bug URL or ISA section when public, and mark empirical-only knowledge with `seems to`/`appears to` versus the plain indicative for known silicon behavior.
+
+State a thing by what it is and does, in positive declarative form. Do not define it by what it is not or contrast it with the path not taken (`a flag, not a false return`; `X, not Y`; `a dropped draw, not a host OOM`): name the mechanism directly and let the binding constraint stand as a plain fact (`the vbuf stage maps the vertex buffer after every allocate_vertices, so the draw is dropped at submission`). Do not assert correctness (`this is correct`, `is required`, `the right answer`, `must`): the reviewer assumes the code is correct, so the comment carries only the mechanism and the constraint that makes it hold, and correctness follows from them. Keep "this is the right approach" reasoning out of the source; why an alternative was not taken belongs in the commit message. A named project posture (`correct-or-reject`) is fine as a term.
 
 Leave each final artifact more accurate, reproducible, navigable, and source-grounded than its inputs.
 
@@ -627,13 +629,17 @@ Bad shape:
 Phase 8 workaround from the agent branch.
 ```
 
-Use short labels for obvious local sections. Use compact multi-sentence blocks only when the code depends on hardware behavior, API rules, kernel validation, empirical evidence, or non-local invariants. Mechanism controls comment length.
+Use short labels for obvious local sections. Use compact multi-sentence blocks only when the code depends on hardware behavior, API rules, kernel validation, empirical evidence, or non-local invariants. Mechanism controls comment length. Default to the shortest form that preserves the load-bearing constraint: a single sentence trailing the code, a two-to-four sentence block for a constraint with interacting parts, and a five-line-or-longer paragraph only for a verbatim spec quote, a multi-step silicon-bug explanation, or workaround rationale that will not compress. If removing a sentence leaves the constraint unchanged, remove it; a block that could be halved without losing a load-bearing fact should be halved. Mesa-upstream blocks for a single constraint (see `si_buffer.c`, `evergreen_state.c`) are typically four to five lines -- our r300vk blocks that run past eight lines for one constraint are over-written and should be trimmed.
 
 Do not frame comments with decorative delimiter lines, banner boxes, ASCII art, or long punctuation runs. Avoid wrappers such as `/* ----- */`, `// =====`, and `/* --- label --- */`. Start with the first useful sentence and stop after the last useful sentence.
 
 When extending Triang3l-authored Terakan files, match the file cadence: shorter line lengths, fewer subclauses, and comments only when they carry silicon, spec, or test information.
 
-Commit messages and PR titles are mechanism-named and component-prefixed when project style expects it. The body makes the invariant, change, evidence, and tests reviewable. `Fixes:`, backport notes, AI disclosure, and review trailers stay where Mesa expects them. Do not mix formatting churn with logic changes. Each commit should be buildable, reviewable, and bisectable unless a stated migration plan says otherwise.
+Commit messages and PR titles are mechanism-named and component-prefixed when project style expects it. The body makes the invariant, change, and evidence reviewable in one to five sentences: name the root cause or constraint, name the fix, cite the spec section, register macro, or kernel function when load-bearing, and state any test movement plainly. `Fixes:`, backport notes, AI disclosure, and review trailers stay where Mesa expects them.
+
+Keep the commit body to mechanism, matching the Mesa-upstream norm (e.g. `radeonsi: fix conformance window emission in the SPS` -- two sentences of cause and one example). Do NOT paste build invocations, profile names, tool output, host names, or a `Validation:` checklist into the body; that process evidence lives in the PR description, never in `git log`. Do NOT add `Note:` paragraphs about pre-existing CI noise the patch did not cause. Do NOT embed a PR or MR number in the subject (no `(#NNN)` suffix); use a `Part-of:` trailer. A body that reads like a worklog -- nested `*` bullets from a coarse squash, several sub-components -- means the commits were not granular enough: split them or compress to the aggregate mechanism.
+
+Do not mix formatting churn with logic changes. Each commit should be buildable, reviewable, and bisectable unless a stated migration plan says otherwise.
 
 ### Source comment shape
 
@@ -832,6 +838,19 @@ Fuzzing and input mutation:
 C unit and integration support:
 
 - Check, shellcheck where applicable, project-native test runners, calibrated probes.
+
+Probe and harness storage: calibrated probes, one-off harnesses, and experiment
+artifacts live in the `steinmarder` reverse-engineering tree (`../steinmarder`), never in
+this Mesa source repo. Keep this repo to driver code, build infrastructure, and committed
+tests; a probe that must persist goes to `steinmarder/src/re/r300` with its evidence
+bundle.
+
+Local invocation notes (cachyos/Arch): `spatch` is `/usr/bin/spatch` (coccinelle-bin);
+BCC ships as the wrapped tools `/usr/bin/opensnoop` and `/usr/bin/execsnoop`; `ast-grep`,
+`lizard`, and `weggli` are under `~/.local/bin`. MSAN is not usable for Mesa: MemorySanitizer
+needs the entire dependency closure (libc++, LLVM, libdrm) instrumented or it reports
+false uninitialized reads on every uninstrumented frame, so use ASan+UBSan for memory
+errors and Valgrind/memcheck or DRD for uninitialized-read and race detection instead.
 
 Heavy code intelligence and graph tooling:
 
