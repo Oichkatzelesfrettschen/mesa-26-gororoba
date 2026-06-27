@@ -143,6 +143,13 @@ struct r300vk_pipeline {
     * pl->fs_cso are the identity-map passthrough VS + copy FS. */
    struct r300_compute_bitwise_logicop_pattern bitwise_logicop;
 
+   /* Logical shift out[gid] = a[gid] << k or >> k (constant k) detected at
+    * pipeline-create time.  The FP24 ALU has no shift, so the dispatch reuses
+    * the UNORM8 1-in/1-out carrier with a byte-recombination FS (uint32 as RGBA8,
+    * each output byte gathers bits from its source byte and neighbour).  Bit-
+    * exact.  pl->fs_cso is the synthesized shift FS. */
+   struct r300_compute_shift_logical_pattern shift_logical;
+
    /* Quantized dot-product (DP4) kernel detected at pipeline-create time:
     * out[gid] = dot(in_a[gid], in_b[gid]).  Lowered to a fullscreen draw whose
     * pure-NIR FS samples in_a + in_b and writes their FP24 DP4 to the RT. */
@@ -454,6 +461,7 @@ r300vk_pipeline_matched_raster_verb(const struct r300vk_pipeline *pl)
           pl->unary_transcendental.is_unary_transcendental ||
           pl->binary_transcendental.is_binary_transcendental ||
           pl->bitwise_logicop.is_bitwise_logicop ||
+          pl->shift_logical.is_shift_logical ||
           pl->dp4.is_dp4 ||
           pl->qmul.is_qmul ||
           pl->qdiv.is_qdiv ||

@@ -158,6 +158,16 @@ r300vk_unary_transcendental_dispatch_replay(
    const struct r300vk_cmd_dispatch *dispatch,
    const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* Logical-shift dispatch replay: out[i] = a[i] << k or >> k (logical, constant
+ * k).  Reuses the 1-in/1-out replay core over the UNORM8 carrier with the
+ * byte-recombination FS; bit-exact. */
+bool
+r300vk_shift_logical_dispatch_replay(
+   struct r300vk_device *device,
+   const struct r300vk_pipeline *pl,
+   const struct r300vk_cmd_dispatch *dispatch,
+   const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* DP4 (quantized-dot) orchestrator entry: shares the 2-in / 1-out replay core
  * with binary-map; pl->fs_cso holds the pure-NIR DP4 FS. */
 bool
