@@ -2017,9 +2017,15 @@ nir_to_rc(struct nir_shader *s, struct pipe_screen *screen,
    }
 
    c->s = s;
-   /* Emit the main function */
-   nir_function_impl *impl = nir_shader_get_entrypoint(c->s);
-   ntr_emit_impl(c, impl);
+   /* Emit the main function for a shader that compiled cleanly.  When an earlier pass
+    * set compiler->Error -- r300_nir_lower_bitwise_to_arith flags an integer bit op
+    * with no FP24-exact form -- the r300 fragment translator substitutes a dummy
+    * shader, and skipping the emit keeps the unrepresentable NIR out of ntt's
+    * ureg_swizzle (TGSI_FILE_NULL). */
+   if (!compiler->Error) {
+      nir_function_impl *impl = nir_shader_get_entrypoint(c->s);
+      ntr_emit_impl(c, impl);
+   }
 
    if (!compiler->Error) {
       /* For FS, populate the FS-specific compiler outputs. */
