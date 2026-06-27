@@ -33,10 +33,8 @@
 #include "vl_h264_param_parser.h"
 #include "vl_video_buffer.h"
 
-#define W 176
-#define H 144
-#define CW (W / 2)
-#define CH (H / 2)
+/* Default QCIF; overridable by argv[5]/argv[6] for other-resolution clips. */
+static int W = 176, H = 144, CW = 88, CH = 72;
 
 #define CHECK(cond) do {                                                     \
    if (!(cond)) {                                                            \
@@ -107,6 +105,12 @@ main(int argc, char **argv)
    struct vl_h264_reader reader;
 
    CHECK(argc > 4);
+   if (argc > 6) {
+      W = atoi(argv[5]);
+      H = atoi(argv[6]);
+      CW = W / 2;
+      CH = H / 2;
+   }
    long idr_n, sps_n, pps_n, ref_n;
    uint8_t *idr = read_file(argv[1], &idr_n);
    uint8_t *sps_nal = read_file(argv[2], &sps_n);
