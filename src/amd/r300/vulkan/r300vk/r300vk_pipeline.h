@@ -159,6 +159,10 @@ struct r300vk_pipeline {
     * shader.  Bit-exact.  pl->fs_cso aliases multilimb_fs[0] for the prologue. */
    struct r300_compute_shift_variable_pattern shift_variable;
    void *shift_variable_gather_fs;
+   /* Sign-extension fill FS for variable ishr: after gather+convolve produce the
+    * logical ushr result in a transient, this pass adds sign(a)*fill[b].  NULL
+    * for ishl/ushr (no sign extension). */
+   void *shift_variable_signfill_fs;
 
    /* Quantized dot-product (DP4) kernel detected at pipeline-create time:
     * out[gid] = dot(in_a[gid], in_b[gid]).  Lowered to a fullscreen draw whose

@@ -1370,11 +1370,13 @@ case_shift_logical_metadata(void)
 static void
 case_shift_variable_metadata(void)
 {
-   /* out[gid] = a[gid] << b[gid] / >> b[gid]: the variable detector claims it and
-    * records the value/amount/output bindings; the constant-shift detector (one
-    * load) leaves it alone. */
-   const struct { nir_op op; bool is_left; } variants[] = {
-      { nir_op_ishl, true }, { nir_op_ushr, false } };
+   /* out[gid] = a[gid] << b[gid] / >> b[gid] (unsigned or signed): the variable
+    * detector claims it and records the value/amount/output bindings and the
+    * signedness; the constant-shift detector (one load) leaves it alone. */
+   const struct { nir_op op; bool is_left; bool is_arith; } variants[] = {
+      { nir_op_ishl, true,  false },
+      { nir_op_ushr, false, false },
+      { nir_op_ishr, false, true  } };
    for (unsigned v = 0; v < ARRAY_SIZE(variants); v++) {
       nir_shader *nir = build_shift_variable(variants[v].op);
       struct r300_compute_admission adm;
@@ -1388,6 +1390,8 @@ case_shift_variable_metadata(void)
       r300_nir_detect_shift_variable(nir, &sv);
       CHECK(sv.is_shift_variable, "variable shift detected");
       CHECK(sv.is_left == variants[v].is_left, "variable shift records direction");
+      CHECK(sv.is_arithmetic == variants[v].is_arith,
+            "variable shift records signedness");
       CHECK(sv.input_a_ssbo_binding == 0 && sv.input_b_ssbo_binding == 1 &&
             sv.output_ssbo_binding == 2,
             "variable shift records bindings a=0 b=1 out=2");

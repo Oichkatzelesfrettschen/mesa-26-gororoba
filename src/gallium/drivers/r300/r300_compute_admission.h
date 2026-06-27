@@ -283,18 +283,21 @@ void r300_nir_detect_shift_logical(
    const struct nir_shader *s,
    struct r300_compute_shift_logical_pattern *out);
 
-/* Variable-amount logical shift: out[gid] = a[gid] << b[gid] (ishl) or a[gid] >>
- * b[gid] (ushr, unsigned), where the shift amount b is a per-element load, not a
- * constant -- the shape the constant-shift detector cannot serve.  The exact
- * realisation is a per-element power-of-two multiply: a << b = low 32 bits of
- * a * 2^b, and a >> b = bits [31,62] of a * 2^(31-b).  Both 2^M (M = b or 31-b)
- * are <= 2^31, so they fit a uint32 and there is no 2^32 corner; the dispatch
- * looks up 2^M per element from a 2^j texture, then runs the multilimb-multiply
- * convolution and reads back the windowed 32 bits of the exact 64-bit product.
- * Bit-exact.  Signed ishr (a variable sign-extension mask) is NOT recognised. */
+/* Variable-amount shift: out[gid] = a[gid] << b[gid] (ishl), >> b[gid] unsigned
+ * (ushr), or >> b[gid] signed (ishr), where the shift amount b is a per-element
+ * load, not a constant -- the shape the constant-shift detector cannot serve.
+ * The exact realisation is a per-element power-of-two multiply: a << b = low 32
+ * bits of a * 2^b, and a >> b = bits [31,62] of a * 2^(31-b).  Both 2^M (M = b or
+ * 31-b) are <= 2^31, so they fit a uint32 and there is no 2^32 corner; the
+ * dispatch looks up 2^M per element from a 2^j texture, then runs the
+ * multilimb-multiply convolution and reads back the windowed 32 bits.  Signed
+ * ishr adds the sign extension: ishr = ushr + sign(a) * (0xFFFFFFFF << (32-b)),
+ * disjoint from the logical bits so an exact per-byte add, with the fill looked
+ * up per element from a second texture.  Bit-exact for every amount in [0,31]. */
 struct r300_compute_shift_variable_pattern {
    bool       is_shift_variable;
-   bool       is_left;                /* ishl (true) vs ushr (false) */
+   bool       is_left;                /* ishl (true) vs ushr/ishr (false) */
+   bool       is_arithmetic;          /* ishr: sign-extend the right shift */
    uint32_t   input_a_ssbo_binding;   /* the value being shifted */
    uint32_t   input_b_ssbo_binding;   /* the per-element shift amount */
    uint32_t   output_ssbo_binding;
