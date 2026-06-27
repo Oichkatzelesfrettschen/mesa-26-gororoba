@@ -914,10 +914,10 @@ r300_nir_detect_binary_transcendental(
        nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
       return;
 
-   /* Vec4 float32 only: the R32G32B32A32 -> FP16 RT carrier the binary_map float
-    * path uses.  The scalar two-input carrier would need an X-lane gather the
-    * two-in core does not yet do. */
-   if (store->num_components != 4 ||
+   /* Float32, scalar or vec4: the dispatch carries a 1-component kernel through
+    * the R32_FLOAT scalar path and a 4-component one through the R32G32B32A32
+    * vec4 path.  Intermediate widths (2, 3) have no carrier and are rejected. */
+   if ((store->num_components != 1 && store->num_components != 4) ||
        store->src[0].ssa->bit_size != 32 ||
        !intrinsic_base_type_is_float(store, nir_op_infos[alu->op].output_type))
       return;

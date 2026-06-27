@@ -207,21 +207,24 @@ build_binary_map_f32vec4(void)
 }
 
 /* Two-input transcendental map: out[gid] = f(a[gid], b[gid]) for one of the
- * non-commutative binaries (fpow / fdiv), vec4.  a is binding 0 (the op's first
+ * non-commutative binaries (fpow / fdiv).  a is binding 0 (the op's first
  * source), b binding 1 (second), output binding 2 -- the swap flag reverses the
- * operand order so the order-preserving binding capture is exercised. */
+ * operand order so the order-preserving binding capture is exercised.  comps is
+ * 1 (scalar carrier) or 4 (vec4 carrier). */
 static nir_shader *
-build_binary_transcendental(nir_op op, bool swap)
+build_binary_transcendental(nir_op op, bool swap, unsigned comps)
 {
    nir_builder b = cs_builder("cs_binary_transcendental");
-   nir_def *a = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
-                              .align_mul = 16, .align_offset = 0);
-   nir_def *c = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
-                              .align_mul = 16, .align_offset = 0);
+   const unsigned align = comps * 4;
+   nir_def *a = nir_load_ssbo(&b, comps, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = align, .align_offset = 0);
+   nir_def *c = nir_load_ssbo(&b, comps, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                              .align_mul = align, .align_offset = 0);
    nir_def *y = swap ? nir_build_alu2(&b, op, c, a)
                      : nir_build_alu2(&b, op, a, c);
    nir_store_ssbo(&b, y, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
-                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+                  .write_mask = BITFIELD_MASK(comps),
+                  .align_mul = align, .align_offset = 0);
    return b.shader;
 }
 
@@ -1168,34 +1171,38 @@ case_unary_transcendental_metadata(void)
 static void
 case_binary_transcendental_metadata(void)
 {
-   /* fpow / fdiv (vec4) detect, record their op + order-preserving bindings,
-    * admit, and are NOT mistaken for the commutative binary_map. */
+   /* fpow / fdiv at both carriers (scalar + vec4) detect, record their op,
+    * width, and order-preserving bindings, admit, and are NOT mistaken for the
+    * commutative binary_map. */
    const nir_op ops[] = { nir_op_fpow, nir_op_fdiv };
-   for (unsigned i = 0; i < ARRAY_SIZE(ops); i++) {
-      nir_shader *nir = build_binary_transcendental(ops[i], false);
-      struct r300_compute_admission adm;
-      struct r300_compute_binary_transcendental_pattern bt = {0};
-      struct r300_compute_binary_map_pattern bm = {0};
-      prepare_detect_shader(nir);
-      r300_nir_classify_compute(nir, &adm);
-      CHECK(adm.admissible, "binary transcendental admits");
-      r300_nir_detect_binary_transcendental(nir, &bt);
-      CHECK(bt.is_binary_transcendental, "binary transcendental detected");
-      CHECK(bt.alu_op == ops[i], "binary transcendental records its nir_op");
-      CHECK(bt.input_a_ssbo_binding == 0 && bt.input_b_ssbo_binding == 1 &&
-            bt.output_ssbo_binding == 2,
-            "binary transcendental records bindings a=0 b=1 out=2");
-      CHECK(bt.value_components == 4 && bt.value_bit_size == 32,
-            "binary transcendental records vec4 32-bit");
-      /* The commutative binary-map detector must NOT fire on fpow/fdiv. */
-      r300_nir_detect_binary_map(nir, &bm);
-      CHECK(!bm.is_binary_map, "binary transcendental is not a binary_map");
-      ralloc_free(nir);
+   const unsigned widths[] = { 1, 4 };
+   for (unsigned w = 0; w < ARRAY_SIZE(widths); w++) {
+      for (unsigned i = 0; i < ARRAY_SIZE(ops); i++) {
+         nir_shader *nir = build_binary_transcendental(ops[i], false, widths[w]);
+         struct r300_compute_admission adm;
+         struct r300_compute_binary_transcendental_pattern bt = {0};
+         struct r300_compute_binary_map_pattern bm = {0};
+         prepare_detect_shader(nir);
+         r300_nir_classify_compute(nir, &adm);
+         CHECK(adm.admissible, "binary transcendental admits");
+         r300_nir_detect_binary_transcendental(nir, &bt);
+         CHECK(bt.is_binary_transcendental, "binary transcendental detected");
+         CHECK(bt.alu_op == ops[i], "binary transcendental records its nir_op");
+         CHECK(bt.input_a_ssbo_binding == 0 && bt.input_b_ssbo_binding == 1 &&
+               bt.output_ssbo_binding == 2,
+               "binary transcendental records bindings a=0 b=1 out=2");
+         CHECK(bt.value_components == widths[w] && bt.value_bit_size == 32,
+               "binary transcendental records its width (1 or 4) 32-bit");
+         /* The commutative binary-map detector must NOT fire on fpow/fdiv. */
+         r300_nir_detect_binary_map(nir, &bm);
+         CHECK(!bm.is_binary_map, "binary transcendental is not a binary_map");
+         ralloc_free(nir);
+      }
    }
 
    /* Operand order is preserved: swapping the sources swaps input_a / input_b,
     * so a/b is never silently transposed to b/a. */
-   nir_shader *swapped = build_binary_transcendental(nir_op_fdiv, true);
+   nir_shader *swapped = build_binary_transcendental(nir_op_fdiv, true, 4);
    struct r300_compute_binary_transcendental_pattern sw = {0};
    prepare_detect_shader(swapped);
    r300_nir_detect_binary_transcendental(swapped, &sw);
