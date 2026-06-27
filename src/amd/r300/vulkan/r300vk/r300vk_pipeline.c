@@ -564,6 +564,25 @@ r300vk_nir_uses_texture(nir_shader *nir)
    return false;
 }
 
+/* True if the shader declares a buffer texture or buffer image: a uniform or storage
+ * texel buffer reaches NIR as a GLSL_SAMPLER_DIM_BUF sampler, texture, or image
+ * variable.  r300 has no buffer-resource unit and no storage path, so the fragment
+ * translator lowers such a shader to a dummy and the SW-TCL vertex shader reaches
+ * nir_to_tgsi's unassigned-source assert at draw.  r300vk_compile_shader rejects the
+ * pipeline at compile so neither shader runs. */
+static bool
+r300vk_nir_uses_buffer_resource(nir_shader *nir)
+{
+   nir_foreach_variable_in_shader(var, nir) {
+      const struct glsl_type *type = glsl_without_array(var->type);
+      if ((glsl_type_is_image(type) || glsl_type_is_texture(type) ||
+           glsl_type_is_sampler(type)) &&
+          glsl_get_sampler_dim(type) == GLSL_SAMPLER_DIM_BUF)
+         return true;
+   }
+   return false;
+}
+
 /* Match r300_create_vs_state's NIR optimization point before deciding whether
  * a vertex texture instruction can reach the SW-TCL draw module. */
 static bool
@@ -1061,6 +1080,19 @@ r300vk_compile_shader(struct r300vk_device *device,
     * select chain sees the original loads. */
    NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
             nir_var_function_temp | nir_var_shader_out, UINT32_MAX);
+
+   /* r300 has no buffer-texture unit and no storage path.  A shader that reads a
+    * uniform or storage texel buffer lowers to a dummy in the fragment translator and
+    * asserts in the SW-TCL draw module's nir_to_tgsi for the vertex stage, so reject
+    * the pipeline at compile. */
+   if (r300vk_nir_uses_buffer_resource(nir)) {
+      ralloc_free(nir);
+      return vk_errorf(device, VK_ERROR_FEATURE_NOT_PRESENT,
+                       "r300vk: %s shader uses a uniform or storage texel buffer; "
+                       "r300 has no buffer-resource unit",
+                       stage_info->stage == VK_SHADER_STAGE_VERTEX_BIT
+                       ? "vertex" : "fragment");
+   }
 
    /* Lower a fragment subpassLoad to a normalized texture() (r300 has no
     * texelFetch) before the constant/UBO lowering below.  It injects inv_extent
