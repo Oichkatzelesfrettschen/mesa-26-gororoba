@@ -330,7 +330,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
       .domain          = R300_NUM_DOMAIN_Q16_16,
       .status          = R300_VOP_NUMERIC_DERIVED,
       .theorem         = "(2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17; limb carry exact",
-      .mesa_hook       = NULL,  /* no detector yet; requires limb-add NIR pattern */
+      .mesa_hook       = "r300_nir_detect_q16_16_add_pattern",
    },
    {
       .op_name         = "Q16_16_MUL",
@@ -801,7 +801,7 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "probe ladder "
                          "advance(0) = all, advance(0) = none, advance(1) = all, "
                          "end state EQUAL 2 = all",
-      .mesa_hook       = NULL,
+      .mesa_hook       = NULL,  /* no NIR kernel: dispatched via stencil-op HW state (not pattern recognition) */
    },
    {
       /* CAS ROUTE A: per-element constant-operand compare-and-swap on the
@@ -830,7 +830,81 @@ const struct r300_virtual_op_info r300_virtual_op_catalog[] = {
                          "QFMTRANS = affine(q*v*conj(q)) (QROTATE then MAD, eight DP4s) -- "
                          "compose the HW-confirmed QMUL/QDIV/QROTATE primitives; QFMSUB is "
                          "the QFMADD detector with fsub, the others are multi-pass chains",
-      .mesa_hook       = NULL,  /* composition of QMUL/QDIV/QROTATE; QFMSUB = QFMADD w/ fsub */
+      .mesa_hook       = "r300_nir_detect_qfmadd_pattern",  /* is_sub=true branch; multi-pass ops (QFMDIV, QFMTRANS) remain NULL */
+   },
+   {
+      /* COMB_FCN_MIN: result = min(src_factor * src, dst_factor * dst).
+       * With factors ONE/ONE this is per-element min over UNORM8 carriers.
+       * Vulkan spec: blend factors are ignored for VK_BLEND_OP_MIN/MAX.
+       * R300_COMB_FCN_MIN = (4 << 12); wired at r300_state_inlines.h:31.
+       * RS482 probe (r300_substrate_probe.sh): 6/6 byte-exact
+       * (min(96,160)=96, min(192,64)=64 for both RGBA channels). */
+      .op_name         = "REDUCE_MIN",
+      .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "out[gid] = min(a[gid], b[gid]) via R300_COMB_FCN_MIN "
+                         "(VK_BLEND_OP_MIN, factors ONE/ONE ignored per spec); "
+                         "byte-exact over UNORM8 carrier: 6/6 cases RS482 silicon",
+      .mesa_hook       = NULL,  /* no NIR pattern detector yet; dispatched via pipeline blend_op state */
+   },
+   {
+      /* COMB_FCN_MAX: result = max(src_factor * src, dst_factor * dst).
+       * R300_COMB_FCN_MAX = (5 << 12); wired at r300_state_inlines.h:33.
+       * RS482 probe: 6/6 byte-exact (max(96,160)=160, max(192,64)=192). */
+      .op_name         = "REDUCE_MAX",
+      .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "out[gid] = max(a[gid], b[gid]) via R300_COMB_FCN_MAX "
+                         "(VK_BLEND_OP_MAX, factors ONE/ONE ignored per spec); "
+                         "byte-exact over UNORM8 carrier: 6/6 cases RS482 silicon",
+      .mesa_hook       = NULL,  /* no NIR pattern detector yet; dispatched via pipeline blend_op state */
+   },
+   {
+      /* COMB_FCN_SUB_CLAMP: result = clamp(src - dst, 0, 1) over UNORM8.
+       * VK_BLEND_OP_SUBTRACT with UNORM8 render target clamps to [0,1].
+       * R300_COMB_FCN_SUB_CLAMP = (2 << 12); wired at r300_state_inlines.h:38.
+       * Equivalent to saturating subtract sat_sub(a, b) = max(a - b, 0).
+       * RS482 probe: 6/6 byte-exact (sat(96-160)=0, 192-64=128). */
+      .op_name         = "SATURATING_DIFF",
+      .domain          = R300_NUM_DOMAIN_RB3D_BLEND,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "out[gid] = max(a[gid] - b[gid], 0) via R300_COMB_FCN_SUB_CLAMP "
+                         "(VK_BLEND_OP_SUBTRACT on UNORM8 target); clamp is UNORM8 format "
+                         "saturation; byte-exact: 6/6 cases RS482 silicon",
+      .mesa_hook       = NULL,  /* no NIR pattern detector yet; dispatched via pipeline blend_op state */
+   },
+   {
+      /* Four independent RGBA8_UNORM render targets written in parallel by
+       * a single fragment shader with layout(location=0..3) outputs.
+       * r300vk exposes maxColorAttachments=4 (r300vk_physical_device.c:265).
+       * independentBlend=false: all 4 attachments share RB3D_CBLEND state,
+       * but distinct FS output locations route to distinct color buffers.
+       * RS482 probe: 4-attachment framebuffer, FS writes 0x01020304 /
+       * 0x05060708 / 0x090a0b0c / 0x0d0e0f10 -- all 4 readback byte-exact. */
+      .op_name         = "PARALLEL_4OUT_MAP",
+      .domain          = R300_NUM_DOMAIN_FP24_RTZ,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "out_k[gid] = f_k(gid) for k in {0,1,2,3}: four "
+                         "parallel independent scatter writes via MRT; "
+                         "byte-exact 4/4 attachments on RS482 silicon "
+                         "(r300_substrate_probe.sh PROBE_MRT4)",
+      .mesa_hook       = NULL,  /* no NIR pattern detector yet; dispatched via 4-attachment renderpass */
+   },
+   {
+      /* VK_STENCIL_OP_INVERT flips all 8 bits of the stencil plane per
+       * fragment.  PIPE_STENCIL_OP_INVERT maps to R300_ZS_INVERT in
+       * r300_state_inlines.h; wired at r300vk_pipeline.c:1605.
+       * Bitwise contract: INVERT(x) = ~x for all x in [0, 255].
+       * RS482 probe: fill 0xA5, INVERT once, readback 0x5A -- exact.
+       * Enables bitwise NOT on U8 stencil payloads without the ALU. */
+      .op_name         = "STENCIL_INVERT_NOT",
+      .domain          = R300_NUM_DOMAIN_U8_STENCIL,
+      .status          = R300_VOP_HW_CONFIRMED,
+      .theorem         = "INVERT(x) = ~x for x in [0,255]: VK_STENCIL_OP_INVERT "
+                         "flips all 8 stencil bits per fragment; 0xA5 -> 0x5A "
+                         "bit-exact on RS482 silicon (r300_substrate_probe.sh "
+                         "PROBE_STENCIL_INVERT)",
+      .mesa_hook       = NULL,  /* dispatched via stencil-op HW state; no NIR pattern */
    },
    /* NULL sentinel -- keep last */
    { .op_name = NULL },

@@ -792,6 +792,7 @@ void r300_nir_detect_otrans_pattern(const struct nir_shader *s,
  * are not constants (positional fallback: a=0, b=1, c=2, out=3). */
 struct r300_compute_qfmadd_pattern {
    bool       is_qfmadd;
+   bool       is_sub;   /* true when the final vec4 combine is fsub (QFMSUB) */
    uint32_t   input_a_ssbo_binding;
    uint32_t   input_b_ssbo_binding;
    uint32_t   input_c_ssbo_binding;
@@ -814,6 +815,24 @@ struct r300_compute_qfmmul_pattern {
 
 void r300_nir_detect_qfmmul_pattern(const struct nir_shader *s,
                                     struct r300_compute_qfmmul_pattern *out);
+
+/* Q16.16 fixed-point addition (Q16_16_ADD): out = a + b where a, b, out are
+ * u32 values encoding Q16.16.  The canonical 2-limb carry shape:
+ *   lo_sum  = iadd(iand(a, 0xFFFF), iand(b, 0xFFFF))
+ *   carry   = ushr(lo_sum, 16)
+ *   hi_sum  = iadd(iadd(ushr(a, 16), ushr(b, 16)), carry)
+ *   out     = ior(ishl(hi_sum, 16), iand(lo_sum, 0xFFFF))
+ * The max sum is (2^16-1)+(2^16-1)+1 = 2^17-1 < 2^17, so every intermediate
+ * stays within the FP24 exact-integer window. */
+struct r300_compute_q16_16_add_pattern {
+   bool       is_q16_16_add;
+   uint32_t   input_a_ssbo_binding;
+   uint32_t   input_b_ssbo_binding;
+   uint32_t   output_ssbo_binding;
+};
+
+void r300_nir_detect_q16_16_add_pattern(const struct nir_shader *s,
+                                        struct r300_compute_q16_16_add_pattern *out);
 
 /* Constant-fill (CONSTFILL) pattern: out[gid] = C for every element, where C is a
  * compile-time constant with zero loads.  The degenerate SSBO-store is the limiting

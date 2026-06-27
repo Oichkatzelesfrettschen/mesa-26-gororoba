@@ -1602,6 +1602,205 @@ case_qnorm_metadata(void)
    ralloc_free(conj);
 }
 
+/* Quaternion normalize: out = q * rsqrt(dot(q, q)), a one-load one-store kernel.
+ * rsqrt is a scalar; nir_fmul broadcasts it to the vec4 via the .xxxx swizzle on
+ * the rsqrt src operand -- the shape the qnormalize detector requires. */
+static nir_shader *
+build_qnormalize_form(void)
+{
+   nir_builder b = cs_builder("cs_qnormalize_f32vec4");
+   nir_def *q = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 16, .align_offset = 0);
+   nir_def *norm_sq = nir_fdot4(&b, q, q);
+   nir_def *rsqrt   = nir_frsq(&b, norm_sq);
+   nir_def *out     = nir_fmul(&b, q, rsqrt);
+   nir_store_ssbo(&b, out, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_qnormalize_metadata(void)
+{
+   nir_shader *nir = build_qnormalize_form();
+   struct r300_compute_qnormalize_pattern qn = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_detect_qnormalize_pattern(nir, &qn);
+   CHECK(qn.is_qnormalize, "qnormalize: shape detected");
+   CHECK(qn.input_ssbo_binding  == 0, "qnormalize: input binding 0");
+   CHECK(qn.output_ssbo_binding == 1, "qnormalize: output binding 1");
+   ralloc_free(nir);
+
+   /* A two-input kernel is not a unary normalize; the qnormalize detector
+    * must reject the binary-map form. */
+   nir_shader *bin = build_binary_map_f32vec4();
+   struct r300_compute_qnormalize_pattern bin_qn = {0};
+   prepare_detect_shader(bin);
+   r300_nir_detect_qnormalize_pattern(bin, &bin_qn);
+   CHECK(!bin_qn.is_qnormalize, "qnormalize rejects a two-input kernel");
+   ralloc_free(bin);
+}
+
+/* Quaternion fused multiply-add: out = q1*q2 + q3 (Hamilton product then vec4 add). */
+static nir_shader *
+build_qfmadd_form(void)
+{
+   nir_builder b = cs_builder("cs_qfmadd_f32vec4");
+   nir_def *q1 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *q2 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *q3 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *x = nir_channel(&b, q2, 0), *y = nir_channel(&b, q2, 1);
+   nir_def *z = nir_channel(&b, q2, 2), *w = nir_channel(&b, q2, 3);
+   nir_def *nx = nir_fneg(&b, x), *ny = nir_fneg(&b, y);
+   nir_def *nz = nir_fneg(&b, z), *nw = nir_fneg(&b, w);
+   nir_def *pw = nir_vec4(&b, x, ny, nz, nw);
+   nir_def *px = nir_vec4(&b, y, x, w, nz);
+   nir_def *py = nir_vec4(&b, z, nw, x, y);
+   nir_def *pz = nir_vec4(&b, w, z, ny, x);
+   (void)nx;
+   nir_def *prod = nir_vec4(&b, nir_fdot(&b, q1, pw), nir_fdot(&b, q1, px),
+                            nir_fdot(&b, q1, py), nir_fdot(&b, q1, pz));
+   nir_def *out = nir_fadd(&b, prod, q3);
+   nir_store_ssbo(&b, out, nir_imm_int(&b, 3), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+/* Quaternion fused multiply-sub: out = q1*q2 - q3 (Hamilton product then vec4 sub). */
+static nir_shader *
+build_qfmsub_form(void)
+{
+   nir_builder b = cs_builder("cs_qfmsub_f32vec4");
+   nir_def *q1 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *q2 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *q3 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *x = nir_channel(&b, q2, 0), *y = nir_channel(&b, q2, 1);
+   nir_def *z = nir_channel(&b, q2, 2), *w = nir_channel(&b, q2, 3);
+   nir_def *nx = nir_fneg(&b, x), *ny = nir_fneg(&b, y);
+   nir_def *nz = nir_fneg(&b, z), *nw = nir_fneg(&b, w);
+   nir_def *pw = nir_vec4(&b, x, ny, nz, nw);
+   nir_def *px = nir_vec4(&b, y, x, w, nz);
+   nir_def *py = nir_vec4(&b, z, nw, x, y);
+   nir_def *pz = nir_vec4(&b, w, z, ny, x);
+   (void)nx;
+   nir_def *prod = nir_vec4(&b, nir_fdot(&b, q1, pw), nir_fdot(&b, q1, px),
+                            nir_fdot(&b, q1, py), nir_fdot(&b, q1, pz));
+   nir_def *out = nir_fsub(&b, prod, q3);
+   nir_store_ssbo(&b, out, nir_imm_int(&b, 3), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+/* Quaternion fused triple product: out = (q1*q2)*q3 (two chained Hamilton products). */
+static nir_shader *
+build_qfmmul_form(void)
+{
+   nir_builder b = cs_builder("cs_qfmmul_f32vec4");
+   nir_def *q1 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *q2 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   nir_def *q3 = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                               .align_mul = 16, .align_offset = 0);
+   /* Inner product t = q1*q2 (eight-DP4 Hamilton product). */
+   nir_def *x2 = nir_channel(&b, q2, 0), *y2 = nir_channel(&b, q2, 1);
+   nir_def *z2 = nir_channel(&b, q2, 2), *w2 = nir_channel(&b, q2, 3);
+   nir_def *ny2 = nir_fneg(&b, y2), *nz2 = nir_fneg(&b, z2), *nw2 = nir_fneg(&b, w2);
+   nir_def *pw2 = nir_vec4(&b, x2, ny2, nz2, nw2);
+   nir_def *px2 = nir_vec4(&b, y2, x2, w2, nz2);
+   nir_def *py2 = nir_vec4(&b, z2, nw2, x2, y2);
+   nir_def *pz2 = nir_vec4(&b, w2, z2, ny2, x2);
+   nir_def *t = nir_vec4(&b, nir_fdot(&b, q1, pw2), nir_fdot(&b, q1, px2),
+                         nir_fdot(&b, q1, py2), nir_fdot(&b, q1, pz2));
+   /* Outer product out = t*q3 (second Hamilton product). */
+   nir_def *x3 = nir_channel(&b, q3, 0), *y3 = nir_channel(&b, q3, 1);
+   nir_def *z3 = nir_channel(&b, q3, 2), *w3 = nir_channel(&b, q3, 3);
+   nir_def *ny3 = nir_fneg(&b, y3), *nz3 = nir_fneg(&b, z3), *nw3 = nir_fneg(&b, w3);
+   nir_def *pw3 = nir_vec4(&b, x3, ny3, nz3, nw3);
+   nir_def *px3 = nir_vec4(&b, y3, x3, w3, nz3);
+   nir_def *py3 = nir_vec4(&b, z3, nw3, x3, y3);
+   nir_def *pz3 = nir_vec4(&b, w3, z3, ny3, x3);
+   nir_def *out = nir_vec4(&b, nir_fdot(&b, t, pw3), nir_fdot(&b, t, px3),
+                           nir_fdot(&b, t, py3), nir_fdot(&b, t, pz3));
+   nir_store_ssbo(&b, out, nir_imm_int(&b, 3), nir_imm_int(&b, 0),
+                  .write_mask = 0xf, .align_mul = 16, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_qfmadd_metadata(void)
+{
+   nir_shader *nir = build_qfmadd_form();
+   struct r300_compute_qfmadd_pattern qfm = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_detect_qfmadd_pattern(nir, &qfm);
+   CHECK(qfm.is_qfmadd, "qfmadd: shape detected");
+   CHECK(!qfm.is_sub,   "qfmadd: is_sub is false");
+   CHECK(qfm.input_a_ssbo_binding == 0, "qfmadd: input_a binding 0");
+   CHECK(qfm.input_b_ssbo_binding == 1, "qfmadd: input_b binding 1");
+   CHECK(qfm.input_c_ssbo_binding == 2, "qfmadd: input_c binding 2");
+   CHECK(qfm.output_ssbo_binding  == 3, "qfmadd: output binding 3");
+   ralloc_free(nir);
+}
+
+static void
+case_qfmsub_metadata(void)
+{
+   nir_shader *nir = build_qfmsub_form();
+   struct r300_compute_qfmadd_pattern qfm = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_detect_qfmadd_pattern(nir, &qfm);
+   CHECK(qfm.is_qfmadd, "qfmsub: shape detected via qfmadd detector");
+   CHECK(qfm.is_sub,    "qfmsub: is_sub is true");
+   CHECK(qfm.input_a_ssbo_binding == 0, "qfmsub: input_a binding 0");
+   CHECK(qfm.input_b_ssbo_binding == 1, "qfmsub: input_b binding 1");
+   CHECK(qfm.input_c_ssbo_binding == 2, "qfmsub: input_c binding 2");
+   CHECK(qfm.output_ssbo_binding  == 3, "qfmsub: output binding 3");
+
+   /* QFMADD (fadd) must not fire the is_sub flag. */
+   nir_shader *add = build_qfmadd_form();
+   struct r300_compute_qfmadd_pattern add_qfm = {0};
+   prepare_detect_shader(add);
+   r300_nir_detect_qfmadd_pattern(add, &add_qfm);
+   CHECK(add_qfm.is_qfmadd, "qfmsub: QFMADD form still admits");
+   CHECK(!add_qfm.is_sub,   "qfmsub: QFMADD form has is_sub=false");
+   ralloc_free(add);
+   ralloc_free(nir);
+}
+
+static void
+case_qfmmul_metadata(void)
+{
+   nir_shader *nir = build_qfmmul_form();
+   struct r300_compute_qfmmul_pattern qfmm = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_detect_qfmmul_pattern(nir, &qfmm);
+   CHECK(qfmm.is_qfmmul, "qfmmul: shape detected");
+   CHECK(qfmm.input_a_ssbo_binding == 0, "qfmmul: input_a binding 0");
+   CHECK(qfmm.input_b_ssbo_binding == 1, "qfmmul: input_b binding 1");
+   CHECK(qfmm.input_c_ssbo_binding == 2, "qfmmul: input_c binding 2");
+   CHECK(qfmm.output_ssbo_binding  == 3, "qfmmul: output binding 3");
+
+   /* QFMADD (product + addend) must not match as triple product. */
+   nir_shader *add = build_qfmadd_form();
+   struct r300_compute_qfmmul_pattern add_qfmm = {0};
+   prepare_detect_shader(add);
+   r300_nir_detect_qfmmul_pattern(add, &add_qfmm);
+   CHECK(!add_qfmm.is_qfmmul, "qfmmul rejects QFMADD (no inner product to find)");
+   ralloc_free(add);
+   ralloc_free(nir);
+}
+
 /* Constant-fill kernel: out_buffer[gid] = 0x42424242u (no loads). */
 static nir_def *
 const_fill_store_offset(nir_builder *b, unsigned element_bytes)
@@ -2670,6 +2869,75 @@ case_affine_iota(void)
    ralloc_free(zero_workgroup);
 }
 
+/* Q16.16 fixed-point addition: out = a + b in 2-limb carry form.
+ *   lo_sum = iadd(iand(a, 0xFFFF), iand(b, 0xFFFF))
+ *   carry  = ushr(lo_sum, 16)
+ *   hi_sum = iadd(iadd(ushr(a, 16), ushr(b, 16)), carry)
+ *   out    = ior(ishl(hi_sum, 16), iand(lo_sum, 0xFFFF))
+ * All intermediates <= 2^17 - 1 (FP24 exact-integer range). */
+static nir_shader *
+build_q16_16_add_u32(void)
+{
+   nir_builder b = cs_builder("cs_q16_16_add_u32");
+   nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                              .align_mul = 4, .align_offset = 0);
+   nir_def *bv = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                               .align_mul = 4, .align_offset = 0);
+   nir_def *lo_a    = nir_iand_imm(&b, a, 0xFFFF);
+   nir_def *lo_b    = nir_iand_imm(&b, bv, 0xFFFF);
+   nir_def *lo_sum  = nir_iadd(&b, lo_a, lo_b);
+   nir_def *carry   = nir_ushr_imm(&b, lo_sum, 16);
+   nir_def *lo_out  = nir_iand_imm(&b, lo_sum, 0xFFFF);
+   nir_def *hi_a    = nir_ushr_imm(&b, a, 16);
+   nir_def *hi_b    = nir_ushr_imm(&b, bv, 16);
+   nir_def *hi_pair = nir_iadd(&b, hi_a, hi_b);
+   nir_def *hi_sum  = nir_iadd(&b, hi_pair, carry);
+   nir_def *hi_out  = nir_ishl_imm(&b, hi_sum, 16);
+   nir_def *out     = nir_ior(&b, hi_out, lo_out);
+   nir_store_ssbo(&b, out, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
+static void
+case_q16_16_add(void)
+{
+   printf("Q16_16_ADD detector\n");
+
+   nir_shader *nir = build_q16_16_add_u32();
+   struct r300_compute_q16_16_add_pattern qa = {0};
+   r300_nir_detect_q16_16_add_pattern(nir, &qa);
+   CHECK(qa.is_q16_16_add, "q16_16_add: 2-limb carry shape detected");
+   CHECK(qa.input_a_ssbo_binding == 0, "q16_16_add: input_a binding 0");
+   CHECK(qa.input_b_ssbo_binding == 1, "q16_16_add: input_b binding 1");
+   CHECK(qa.output_ssbo_binding  == 2, "q16_16_add: output binding 2");
+   ralloc_free(nir);
+
+   /* A plain iadd (BINARY_MAP shape) must not fire the Q16_16_ADD detector.
+    * Distinguishes the carry form from a bare elementwise add. */
+   nir_shader *plain = build_binary_map_f32vec4();
+   struct r300_compute_q16_16_add_pattern plain_qa = {0};
+   r300_nir_detect_q16_16_add_pattern(plain, &plain_qa);
+   CHECK(!plain_qa.is_q16_16_add, "q16_16_add: plain iadd rejects (no carry chain)");
+   ralloc_free(plain);
+
+   /* A plain u32 imul must not fire: it has no iand/ushr/ior carry structure. */
+   {
+      nir_builder nb = cs_builder("cs_q16_16_add_reject_imul");
+      nir_def *ra = nir_load_ssbo(&nb, 1, 32, nir_imm_int(&nb, 0), nir_imm_int(&nb, 0),
+                                  .align_mul = 4, .align_offset = 0);
+      nir_def *rb = nir_load_ssbo(&nb, 1, 32, nir_imm_int(&nb, 1), nir_imm_int(&nb, 0),
+                                  .align_mul = 4, .align_offset = 0);
+      nir_def *rprod = nir_imul(&nb, ra, rb);
+      nir_store_ssbo(&nb, rprod, nir_imm_int(&nb, 2), nir_imm_int(&nb, 0),
+                     .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+      struct r300_compute_q16_16_add_pattern mul_qa = {0};
+      r300_nir_detect_q16_16_add_pattern(nb.shader, &mul_qa);
+      CHECK(!mul_qa.is_q16_16_add, "q16_16_add: imul kernel rejects (no carry chain)");
+      ralloc_free(nb.shader);
+   }
+}
+
 /* out[gid] = a[gid] * b[gid] for u32: the multilimb-multiply shape. */
 static nir_shader *
 build_multilimb_mul_u32(void)
@@ -2942,6 +3210,10 @@ main(void)
    case_qrotate_metadata();
    case_qconj_metadata();
    case_qnorm_metadata();
+   case_qnormalize_metadata();
+   case_qfmadd_metadata();
+   case_qfmsub_metadata();
+   case_qfmmul_metadata();
    case_dp4_metadata();
    case_omul_metadata();
    case_octonion_algebra_metadata();
@@ -2950,6 +3222,7 @@ main(void)
    case_index_consumption();
    case_compute_global_id_system_value_lowering();
    case_affine_iota();
+   case_q16_16_add();
    case_multilimb_mul();
    case_log4_pool();
    case_cas();
