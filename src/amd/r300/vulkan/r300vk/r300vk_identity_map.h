@@ -469,6 +469,18 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
                                      const struct r300vk_cmd_dispatch *dispatch,
                                      const struct r300vk_cmd_bind_descriptor_sets *binds);
 
+/* Variable-amount shift dispatch replay: out[gid] = a[gid] << b[gid] (left) or
+ * a[gid] >> b[gid] (right, unsigned), per-element amount b.  A gather pass reads
+ * 2^M (M = b for left, 31-b for right) from the device 2^j lookup into a
+ * transient buffer, then the multilimb convolution multiplies a by 2^M and the
+ * readback keeps the 32-bit window of the exact product (low 32 for left,
+ * bits[31,62] for right).  Bit-exact for every amount in [0,31]. */
+bool
+r300vk_shift_variable_dispatch_replay(struct r300vk_device *device,
+                                      const struct r300vk_pipeline *pl,
+                                      const struct r300vk_cmd_dispatch *dispatch,
+                                      const struct r300vk_cmd_bind_descriptor_sets *binds);
+
 /* CAS dispatch replay: old = atomicCompSwap(guard[gid], C_expect, C_new);
  * result[gid] = old.  Copies the guard pre-image to the result buffer (the
  * returned old values), draws the bytewise-SEQ select into a guard render

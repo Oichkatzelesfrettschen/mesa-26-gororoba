@@ -104,6 +104,16 @@ struct r300vk_device {
     * Created on demand at the first blend-acc-reduction pipeline-create,
     * freed in r300vk_DestroyDevice alongside the identity-map CSOs. */
    void                  *blend_acc_reduction_blend_cso;
+
+   /* Variable-shift power-of-two lookup: a 32x1 RGBA8 texture whose texel j
+    * holds the four little-endian bytes of 2^j (j in [0,31]).  The variable
+    * shift gather FS reads it with the NEAREST identity-map sampler -- left at
+    * index b, right at index 31-b -- to turn a per-element shift amount into the
+    * 2^M multiplier the convolution then multiplies by.  Created once on the
+    * first variable-shift pipeline-create under identity_map_cso_lock, freed in
+    * r300vk_DestroyDevice. */
+   struct pipe_resource      *shift_variable_lut;
+   struct pipe_sampler_view  *shift_variable_lut_view;
 };
 
 VK_DEFINE_HANDLE_CASTS(r300vk_device, vk.base, VkDevice, VK_OBJECT_TYPE_DEVICE)

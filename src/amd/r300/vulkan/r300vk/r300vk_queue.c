@@ -828,6 +828,8 @@ r300vk_replay_dispatch(struct r300vk_device *device,
       ok = r300vk_bitwise_logicop_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->shift_logical.is_shift_logical)
       ok = r300vk_shift_logical_dispatch_replay(device, pl, d, last_bind_dsets);
+   else if (pl->shift_variable.is_shift_variable)
+      ok = r300vk_shift_variable_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->dp4.is_dp4)
       ok = r300vk_dp4_dispatch_replay(device, pl, d, last_bind_dsets);
    else if (pl->qmul.is_qmul)

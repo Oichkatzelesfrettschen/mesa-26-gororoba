@@ -1144,6 +1144,118 @@ r300_nir_detect_shift_logical(
    out->is_shift_logical = true;
 }
 
+/* The logical shifts the variable-amount carrier admits.  Both lower onto the
+ * per-element 2^b lookup + multilimb multiply; signed ishr is absent (its
+ * sign-extension mask varies with the per-element amount). */
+static bool
+shift_variable_op_admitted(uint16_t op)
+{
+   switch ((nir_op)op) {
+   case nir_op_ishl:
+   case nir_op_ushr:
+      return true;
+   default:
+      return false;
+   }
+}
+
+/* Variable-amount shift detector.  out[gid] = a[gid] << b[gid] (ishl) or
+ * a[gid] >> b[gid] (ushr): one store_ssbo whose value is a 2-input shift ALU op
+ * of two distinct load_ssbo defs -- src[0] the value a, src[1] the per-element
+ * amount b, order-preserving since the operands are not interchangeable.  Scalar
+ * uint32 only.  load_count == 2 separates this from the constant-shift detector
+ * (one load + a literal amount); the op set separates it from binary_map.  Pure
+ * read-only NIR walk. */
+void
+r300_nir_detect_shift_variable(
+   const nir_shader *s,
+   struct r300_compute_shift_variable_pattern *out)
+{
+   out->is_shift_variable   = false;
+   out->is_left             = false;
+   out->input_a_ssbo_binding = 0;
+   out->input_b_ssbo_binding = 0;
+   out->output_ssbo_binding  = 0;
+   out->value_components     = 0;
+   out->value_bit_size       = 0;
+
+   const nir_intrinsic_instr *store = NULL;
+   const nir_intrinsic_instr *load0 = NULL;
+   const nir_intrinsic_instr *load1 = NULL;
+   unsigned store_count = 0;
+   unsigned load_count  = 0;
+
+   nir_foreach_function_impl (impl, s) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_ssbo) {
+               store = intr;
+               store_count++;
+            } else if (intr->intrinsic == nir_intrinsic_load_ssbo) {
+               if (load_count == 0)
+                  load0 = intr;
+               else if (load_count == 1)
+                  load1 = intr;
+               load_count++;
+            }
+         }
+      }
+   }
+
+   if (store_count != 1 || load_count != 2)
+      return;
+   if (!store->src[0].ssa)
+      return;
+
+   const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
+   if (!alu || !shift_variable_op_admitted(alu->op))
+      return;
+   if (nir_op_infos[alu->op].num_inputs != 2)
+      return;
+   const bool is_left = (alu->op == nir_op_ishl);
+
+   const unsigned components = store->num_components;
+   const nir_def *s0 = alu->src[0].src.ssa;   /* value a */
+   const nir_def *s1 = alu->src[1].src.ssa;   /* amount b */
+   const nir_intrinsic_instr *a_load;
+   const nir_intrinsic_instr *b_load;
+   if (s0 == &load0->def && s1 == &load1->def) {
+      a_load = load0;
+      b_load = load1;
+   } else if (s0 == &load1->def && s1 == &load0->def) {
+      a_load = load1;
+      b_load = load0;
+   } else {
+      return;
+   }
+   if (!unary_alu_src_is_identity_load(alu, 0, &a_load->def, components) ||
+       !unary_alu_src_is_identity_load(alu, 1, &b_load->def, components))
+      return;
+
+   if (load0->def.num_components != load1->def.num_components)
+      return;
+   if (nir_intrinsic_has_write_mask(store) &&
+       nir_intrinsic_write_mask(store) != BITFIELD_MASK(store->num_components))
+      return;
+
+   if (store->num_components != 1 || store->src[0].ssa->bit_size != 32)
+      return;
+
+   if (nir_src_is_const(a_load->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(a_load->src[0]);
+   if (nir_src_is_const(b_load->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(b_load->src[0]);
+   if (nir_src_is_const(store->src[1]))
+      out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
+   out->is_left = is_left;
+   out->value_components = store->num_components;
+   out->value_bit_size = store->src[0].ssa->bit_size;
+   out->is_shift_variable = true;
+}
+
 /* Blend-add reduction detector.  Recognises the histogram / accumulator shape
  * that lowers to RB3D COMB_FCN_ADD blend accumulation:
  *

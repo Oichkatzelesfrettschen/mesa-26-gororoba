@@ -150,6 +150,16 @@ struct r300vk_pipeline {
     * exact.  pl->fs_cso is the synthesized shift FS. */
    struct r300_compute_shift_logical_pattern shift_logical;
 
+   /* Variable-amount shift out[gid] = a[gid] << b[gid] or >> b[gid] (per-element
+    * b) detected at pipeline-create time.  Two passes: a gather FS reads 2^M from
+    * the device 2^j lookup (M = b for left, 31-b for right) into a transient
+    * buffer, then the multilimb convolution multiplies a by 2^M and the readback
+    * keeps the 32-bit window (low 32 for left, bits[31,62] for right).  Reuses
+    * multilimb_fs[] for the convolution; shift_variable_gather_fs is the lookup
+    * shader.  Bit-exact.  pl->fs_cso aliases multilimb_fs[0] for the prologue. */
+   struct r300_compute_shift_variable_pattern shift_variable;
+   void *shift_variable_gather_fs;
+
    /* Quantized dot-product (DP4) kernel detected at pipeline-create time:
     * out[gid] = dot(in_a[gid], in_b[gid]).  Lowered to a fullscreen draw whose
     * pure-NIR FS samples in_a + in_b and writes their FP24 DP4 to the RT. */

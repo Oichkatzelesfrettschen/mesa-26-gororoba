@@ -5503,16 +5503,26 @@ r300vk_affine_iota_dispatch_replay(struct r300vk_device *device,
    return copy_ok;
 }
 
-bool
-r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
-                                     const struct r300vk_pipeline *pl,
-                                     const struct r300vk_cmd_dispatch *dispatch,
-                                     const struct r300vk_cmd_bind_descriptor_sets *binds)
+/* Convolution core shared by the exact-u32-multiply verb and the variable-shift
+ * verb.  Multiplies a_res * c_res as 5x7-bit-limb columns on the FP24 ALU (nine
+ * column draws accumulated into a full uint64 per element), then stores the
+ * 32-bit window (acc >> out_shift) of the exact product.  The multiply verb and
+ * the variable LEFT shift keep out_shift = 0 (a*b mod 2^32, and a<<b = low32 of
+ * a*2^b); the variable RIGHT shift keeps out_shift = 31 (a>>b = bits[31,62] of
+ * a*2^(31-b), the window that fits a uint32 multiplier without a 2^32 corner).
+ * a_res/c_res/out_res are the resolved gallium resources at their byte offsets;
+ * the caller owns descriptor resolution and any transient c buffer. */
+static bool
+r300vk_multilimb_convolve(struct r300vk_device *device,
+                          const struct r300vk_pipeline *pl,
+                          struct pipe_resource *a_res, unsigned a_off,
+                          struct pipe_resource *c_res, unsigned c_off,
+                          struct pipe_resource *out_res, unsigned out_off,
+                          uint64_t total, unsigned out_shift)
 {
    struct pipe_context *pipe   = device ? device->pipe : NULL;
    struct pipe_screen  *screen = device ? device->screen : NULL;
-   const struct r300vk_descriptor_set *set = NULL;
-   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+   if (!pipe || !screen || !a_res || !c_res || !out_res)
       return false;
    for (unsigned k = 0; k < 9; k++)
       if (!pl->multilimb_fs[k])
@@ -5522,39 +5532,18 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
                                     PIPE_BIND_RENDER_TARGET))
       return false;
 
-   /* Three bindings: a, b, out.  Captured constants win when all three were
-    * constant sources; otherwise the first three compute-visible
-    * STORAGE_BUFFERs in declaration order carry the roles. */
-   uint32_t bind[3] = { pl->multilimb_mul.input_a_ssbo_binding,
-                        pl->multilimb_mul.input_b_ssbo_binding,
-                        pl->multilimb_mul.output_ssbo_binding };
-   if (bind[0] == bind[1]) {
-      for (unsigned i = 0; i < 3; i++)
-         if (!nth_storage_buffer_binding(set, i, &bind[i]))
-            return false;
-   }
-   const struct r300vk_descriptor *desc[3];
-   struct r300vk_buffer *buf[3];
-   for (unsigned i = 0; i < 3; i++) {
-      desc[i] = find_descriptor_by_binding(set, bind[i]);
-      if (!desc[i] || !desc[i]->buf.buffer)
-         return false;
-      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
-      if (!buf[i] || !buf[i]->resource)
-         return false;
-   }
-
-   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
    struct r300_grid_fold fold;
    if (!r300_grid_fold_1d(total, &fold))
       return false;
    const unsigned width = fold.width, height = fold.height;
 
    /* Each u32 element is one RGBA8 texel of factor bytes. */
+   struct pipe_resource *src_res[2] = { a_res, c_res };
+   unsigned src_off[2] = { a_off, c_off };
    struct pipe_sampler_view *views[2] = { NULL, NULL };
    for (unsigned i = 0; i < 2; i++) {
       views[i] = r300vk_identity_map_wrap_input_as_sampler_view(
-         device, buf[i]->resource, (unsigned)desc[i]->buf.offset,
+         device, src_res[i], src_off[i],
          width, height, total, PIPE_FORMAT_R8G8B8A8_UNORM);
       if (!views[i]) {
          pipe_sampler_view_reference(&views[0], NULL);
@@ -5652,18 +5641,20 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
       struct pipe_transfer *out_xfer = NULL;
       struct pipe_box out_box;
       memset(&out_box, 0, sizeof(out_box));
-      out_box.x      = (unsigned)desc[2]->buf.offset;
+      out_box.x      = out_off;
       out_box.width  = (unsigned)(total * 4u);
       out_box.height = 1; out_box.depth = 1;
-      uint32_t *out_bytes = pipe->buffer_map(pipe, buf[2]->resource, 0,
+      uint32_t *out_bytes = pipe->buffer_map(pipe, out_res, 0,
                                              PIPE_MAP_WRITE |
                                              PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                              &out_box, &out_xfer);
       if (out_bytes) {
-         /* The kernel's u32 store keeps the low 32 bits of the exact
-          * product, matching SPIR-V OpIMul wraparound semantics. */
+         /* out_shift = 0 stores the low 32 bits of the exact product (the
+          * multiply verb and the variable left shift); out_shift = 31 stores
+          * bits [31,62] (the variable right shift).  acc is uint64, so the
+          * shift then truncates to the windowed 32 bits. */
          for (uint64_t i = 0; i < total; i++)
-            out_bytes[i] = (uint32_t)acc[i];
+            out_bytes[i] = (uint32_t)(acc[i] >> out_shift);
          pipe->buffer_unmap(pipe, out_xfer);
       } else {
          ok = false;
@@ -5679,8 +5670,225 @@ r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
    pipe_sampler_view_reference(&views[0], NULL);
    pipe_sampler_view_reference(&views[1], NULL);
    pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
+bool
+r300vk_multilimb_mul_dispatch_replay(struct r300vk_device *device,
+                                     const struct r300vk_pipeline *pl,
+                                     const struct r300vk_cmd_dispatch *dispatch,
+                                     const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   const struct r300vk_descriptor_set *set = NULL;
+   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+      return false;
+
+   /* Three bindings: a, b, out.  Captured constants win when all three were
+    * constant sources; otherwise the first three compute-visible
+    * STORAGE_BUFFERs in declaration order carry the roles. */
+   uint32_t bind[3] = { pl->multilimb_mul.input_a_ssbo_binding,
+                        pl->multilimb_mul.input_b_ssbo_binding,
+                        pl->multilimb_mul.output_ssbo_binding };
+   if (bind[0] == bind[1]) {
+      for (unsigned i = 0; i < 3; i++)
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+   }
+   const struct r300vk_descriptor *desc[3];
+   struct r300vk_buffer *buf[3];
+   for (unsigned i = 0; i < 3; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer)
+         return false;
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   const bool ok = r300vk_multilimb_convolve(device, pl,
+      buf[0]->resource, (unsigned)desc[0]->buf.offset,
+      buf[1]->resource, (unsigned)desc[1]->buf.offset,
+      buf[2]->resource, (unsigned)desc[2]->buf.offset,
+      total, 0);
    IDM_LOG("multilimb done total=%llu ok=%d",
            (unsigned long long)total, (int)ok);
+   return ok;
+}
+
+/* Gather pass for the variable-amount shift: render 2^M per element into c_res.
+ * The gather FS samples the per-element amount b, indexes the device 2^j lookup
+ * (b for left, 31-b for right) with a dependent read, and exports the four bytes
+ * of 2^M; the RT is then copied into the transient c buffer the convolution
+ * multiplies by.  One draw, no host arithmetic on the amount. */
+static bool
+r300vk_shift_variable_gather(struct r300vk_device *device,
+                             const struct r300vk_pipeline *pl,
+                             struct pipe_resource *b_res, unsigned b_off,
+                             struct pipe_resource *c_res, uint64_t total)
+{
+   struct pipe_context *pipe   = device->pipe;
+   struct pipe_screen  *screen = device->screen;
+   if (!pipe || !screen || !pl->shift_variable_gather_fs ||
+       !device->shift_variable_lut_view)
+      return false;
+   if (!screen->is_format_supported(screen, PIPE_FORMAT_R8G8B8A8_UNORM,
+                                    PIPE_TEXTURE_2D, 0, 0,
+                                    PIPE_BIND_RENDER_TARGET))
+      return false;
+
+   struct r300_grid_fold fold;
+   if (!r300_grid_fold_1d(total, &fold))
+      return false;
+   const unsigned width = fold.width, height = fold.height;
+
+   struct pipe_sampler_view *b_view =
+      r300vk_identity_map_wrap_input_as_sampler_view(
+         device, b_res, b_off, width, height, total,
+         PIPE_FORMAT_R8G8B8A8_UNORM);
+   if (!b_view)
+      return false;
+
+   struct pipe_resource *vb = NULL;
+   void *velems_cso = NULL;
+   if (!r300vk_idm_create_fullscreen_vbo(pipe, &vb, &velems_cso)) {
+      pipe_sampler_view_reference(&b_view, NULL);
+      return false;
+   }
+
+   bool ok = false;
+   struct pipe_resource rt_templ;
+   memset(&rt_templ, 0, sizeof(rt_templ));
+   rt_templ.target     = PIPE_TEXTURE_2D;
+   rt_templ.format     = PIPE_FORMAT_R8G8B8A8_UNORM;
+   rt_templ.width0     = width;
+   rt_templ.height0    = height;
+   rt_templ.depth0     = 1;
+   rt_templ.array_size = 1;
+   rt_templ.usage      = PIPE_USAGE_DEFAULT;
+   rt_templ.bind       = PIPE_BIND_RENDER_TARGET;
+   struct pipe_resource *rt = screen->resource_create(screen, &rt_templ);
+   if (rt) {
+      struct pipe_surface surf_templ;
+      memset(&surf_templ, 0, sizeof(surf_templ));
+      surf_templ.format  = PIPE_FORMAT_R8G8B8A8_UNORM;
+      surf_templ.texture = rt;
+      r300vk_identity_map_setup_draw_state(pipe, width, height, &surf_templ,
+                                           device->identity_map_cso.blend,
+                                           device->identity_map_cso.rasterizer,
+                                           device->identity_map_cso.dsa,
+                                           pl->vs_cso,
+                                           pl->shift_variable_gather_fs,
+                                           velems_cso);
+      void *samplers[2] = { device->identity_map_cso.sampler,
+                            device->identity_map_cso.sampler };
+      struct pipe_sampler_view *views[2] = { b_view,
+                                             device->shift_variable_lut_view };
+      pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 2, samplers);
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 2, 0, views);
+
+      struct pipe_vertex_buffer vb_state;
+      memset(&vb_state, 0, sizeof(vb_state));
+      vb_state.buffer.resource = vb;
+      pipe->set_vertex_buffers(pipe, 1, &vb_state);
+      struct pipe_draw_info info;
+      memset(&info, 0, sizeof(info));
+      info.mode           = MESA_PRIM_TRIANGLE_STRIP;
+      info.instance_count = 1;
+      info.max_index      = 3;
+      struct pipe_draw_start_count_bias draw = { .start = 0, .count = 4 };
+      pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      pipe->flush(pipe, NULL, 0);
+
+      ok = r300vk_identity_map_readback_rt(pipe, rt, c_res, 0, width, height,
+                                           PIPE_FORMAT_R8G8B8A8_UNORM,
+                                           width * 4u, total);
+      pipe_resource_reference(&rt, NULL);
+   }
+
+   pipe->set_vertex_buffers(pipe, 0, NULL);
+   struct pipe_framebuffer_state empty_fb;
+   memset(&empty_fb, 0, sizeof(empty_fb));
+   pipe->set_framebuffer_state(pipe, &empty_fb);
+   pipe->delete_vertex_elements_state(pipe, velems_cso);
+   pipe_sampler_view_reference(&b_view, NULL);
+   pipe_resource_reference(&vb, NULL);
+   return ok;
+}
+
+bool
+r300vk_shift_variable_dispatch_replay(struct r300vk_device *device,
+                                      const struct r300vk_pipeline *pl,
+                                      const struct r300vk_cmd_dispatch *dispatch,
+                                      const struct r300vk_cmd_bind_descriptor_sets *binds)
+{
+   struct pipe_screen *screen = device ? device->screen : NULL;
+   const struct r300vk_descriptor_set *set = NULL;
+   if (!r300vk_idm_validate_prologue(device, pl, dispatch, binds, &set))
+      return false;
+   if (!screen)
+      return false;
+
+   /* Bindings: a (value), b (per-element amount), out.  Captured constants win;
+    * otherwise the first three compute-visible STORAGE_BUFFERs in declaration
+    * order carry the roles. */
+   uint32_t bind[3] = { pl->shift_variable.input_a_ssbo_binding,
+                        pl->shift_variable.input_b_ssbo_binding,
+                        pl->shift_variable.output_ssbo_binding };
+   if (bind[0] == bind[1]) {
+      for (unsigned i = 0; i < 3; i++)
+         if (!nth_storage_buffer_binding(set, i, &bind[i]))
+            return false;
+   }
+   const struct r300vk_descriptor *desc[3];
+   struct r300vk_buffer *buf[3];
+   for (unsigned i = 0; i < 3; i++) {
+      desc[i] = find_descriptor_by_binding(set, bind[i]);
+      if (!desc[i] || !desc[i]->buf.buffer)
+         return false;
+      buf[i] = r300vk_buffer_from_handle(desc[i]->buf.buffer);
+      if (!buf[i] || !buf[i]->resource)
+         return false;
+   }
+
+   const uint64_t total = r300vk_idm_total_invocations(dispatch, pl);
+   if (total == 0)
+      return true;
+   /* Both passes fold total into a 2D raster extent; rejecting an unfoldable
+    * total here keeps the transient width0 = total*4 inside a uint32 and avoids
+    * a doomed multi-gigabyte allocation before the gather's own fold check. */
+   struct r300_grid_fold fold_check;
+   if (!r300_grid_fold_1d(total, &fold_check))
+      return false;
+
+   /* Transient 2^M buffer the gather fills and the convolution multiplies by. */
+   struct pipe_resource c_templ;
+   memset(&c_templ, 0, sizeof(c_templ));
+   c_templ.target     = PIPE_BUFFER;
+   c_templ.format     = PIPE_FORMAT_R8_UNORM;
+   c_templ.width0     = (unsigned)(total * 4u);
+   c_templ.height0    = 1;
+   c_templ.depth0     = 1;
+   c_templ.array_size = 1;
+   c_templ.usage      = PIPE_USAGE_DEFAULT;
+   c_templ.bind       = PIPE_BIND_SAMPLER_VIEW;
+   struct pipe_resource *c_res = screen->resource_create(screen, &c_templ);
+   if (!c_res)
+      return false;
+
+   bool ok = r300vk_shift_variable_gather(device, pl, buf[1]->resource,
+                                          (unsigned)desc[1]->buf.offset,
+                                          c_res, total);
+   if (ok)
+      ok = r300vk_multilimb_convolve(device, pl,
+              buf[0]->resource, (unsigned)desc[0]->buf.offset,
+              c_res, 0,
+              buf[2]->resource, (unsigned)desc[2]->buf.offset,
+              total, pl->shift_variable.is_left ? 0u : 31u);
+
+   pipe_resource_reference(&c_res, NULL);
+   IDM_LOG("shift_variable done total=%llu left=%d ok=%d",
+           (unsigned long long)total, (int)pl->shift_variable.is_left, (int)ok);
    return ok;
 }
 
