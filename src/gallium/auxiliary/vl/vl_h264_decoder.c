@@ -126,6 +126,30 @@ reconstruct_intra(struct vl_h264_decoder *dec, struct pipe_surface *surfaces)
       pipe_texture_unmap(ctx, yx);
    }
 
+   /* The decode target on this path is planar Y8_U8_V8_420: separate R8 Cb and
+    * Cr planes (surfaces[1] and surfaces[2]), not packed NV12.  Reconstruct each
+    * component directly in its own plane.  A packed NV12 target (no third plane)
+    * is de-interleaved into scratch Cb/Cr and re-interleaved. */
+   if (surfaces[2].texture) {
+      struct pipe_transfer *cbx, *crx;
+      uint8_t *cb = pipe_texture_map(ctx, surfaces[1].texture, 0, 0,
+                                     PIPE_MAP_READ_WRITE, 0, 0, chroma_w,
+                                     chroma_h, &cbx);
+      uint8_t *cr = pipe_texture_map(ctx, surfaces[2].texture, 0, 0,
+                                     PIPE_MAP_READ_WRITE, 0, 0, chroma_w,
+                                     chroma_h, &crx);
+      /* The Cb and Cr planes are identical R8 allocations, so they share a
+       * stride; reconstruct both with it. */
+      if (cb && cr && cbx->stride == crx->stride)
+         vl_h264_intra_reconstruct_chroma(dec->frame.macroblocks, num_mbs, w, h,
+                                          cb, cr, cbx->stride);
+      if (cb)
+         pipe_texture_unmap(ctx, cbx);
+      if (cr)
+         pipe_texture_unmap(ctx, crx);
+      return;
+   }
+
    struct pipe_transfer *cx;
    uint8_t *c = pipe_texture_map(ctx, surfaces[1].texture, 0, 0,
                                  PIPE_MAP_READ_WRITE, 0, 0, chroma_w, chroma_h,
