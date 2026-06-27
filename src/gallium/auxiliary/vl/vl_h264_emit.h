@@ -144,10 +144,15 @@ void vl_h264_emit_chroma_inter(struct vl_h264_emit *emit,
  * reconstructs Cb and Cr, and recombines the results into dst_chroma.
  * vl_h264_end_frame calls this with the chroma planes the video buffers expose.
  */
+/* dst_cr and ref_cr are the planar Y8_U8_V8_420 Cr surface and reference; pass
+ * both NULL for a packed NV12 target, where dst_cb is the R8G8 plane and ref_cb
+ * the R8G8 reference (Cb in the R lane, Cr in the G lane). */
 void vl_h264_emit_chroma_inter_unorm(struct vl_h264_emit *emit,
-                                     struct pipe_surface *dst_chroma,
+                                     struct pipe_surface *dst_cb,
+                                     struct pipe_surface *dst_cr,
                                      unsigned width, unsigned height,
-                                     struct pipe_sampler_view *ref_chroma,
+                                     struct pipe_sampler_view *ref_chroma_cb,
+                                     struct pipe_sampler_view *ref_chroma_cr,
                                      unsigned ref_width, unsigned ref_height,
                                      const struct vl_h264_slice_contract *slice);
 
