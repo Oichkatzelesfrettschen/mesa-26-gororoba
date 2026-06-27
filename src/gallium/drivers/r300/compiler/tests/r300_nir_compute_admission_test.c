@@ -206,6 +206,27 @@ build_binary_map_f32vec4(void)
    return b.shader;
 }
 
+/* isub with loads emitted in program order (binding 0 first = load_a,
+ * binding 1 second = load_b) but the op's left operand is load_b and right is
+ * load_a: isub(load_b, load_a).  This is the ba case in r300_nir_detect_binary_map.
+ * The binding assignment must follow operand order (input_a = 1, input_b = 0) not
+ * load-emission order (which would wrongly give input_a = 0, input_b = 1 and
+ * synthesise binding_0 - binding_1 instead of binding_1 - binding_0). */
+static nir_shader *
+build_binary_map_isub_ba(void)
+{
+   nir_builder b = cs_builder("cs_binary_map_isub_ba");
+   nir_def *load0 = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                                  .align_mul = 4, .align_offset = 0);
+   nir_def *load1 = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
+                                  .align_mul = 4, .align_offset = 0);
+   /* ba operand order: left = load1 (binding 1), right = load0 (binding 0) */
+   nir_def *diff = nir_isub(&b, load1, load0);
+   nir_store_ssbo(&b, diff, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
+                  .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
+   return b.shader;
+}
+
 /* Two-input transcendental map: out[gid] = f(a[gid], b[gid]) for one of the
  * non-commutative binaries (fpow / fdiv).  a is binding 0 (the op's first
  * source), b binding 1 (second), output binding 2 -- the swap flag reverses the
@@ -945,6 +966,30 @@ case_binary_metadata(void)
    CHECK(binmap.value_components == 4, "binary-map metadata records vec4 width");
    CHECK(binmap.value_bit_size == 32, "binary-map metadata records 32-bit lanes");
    CHECK(binmap.value_is_float, "binary-map metadata records float result");
+   ralloc_free(nir);
+}
+
+/* Verify that r300_nir_detect_binary_map normalises binding capture to
+ * operand order rather than load-emission order when the ba case fires.
+ * build_binary_map_isub_ba emits load(0) then load(1) but the op is
+ * isub(load1, load0): the left operand (src[0]) is load1=binding 1 and the
+ * right operand (src[1]) is load0=binding 0.  input_a must capture binding 1
+ * and input_b must capture binding 0 so the synthesised FS computes
+ * binding_1 - binding_0, which matches the kernel's semantics. */
+static void
+case_binary_map_isub_ba_operand_order(void)
+{
+   nir_shader *nir = build_binary_map_isub_ba();
+   struct r300_compute_binary_map_pattern binmap = {0};
+
+   prepare_detect_shader(nir);
+   r300_nir_detect_binary_map(nir, &binmap);
+   CHECK(binmap.is_binary_map, "isub ba: shape detected");
+   CHECK(binmap.alu_op == nir_op_isub, "isub ba: opcode is isub");
+   CHECK(binmap.input_a_ssbo_binding == 1,
+         "isub ba: input_a captures left-operand binding (1)");
+   CHECK(binmap.input_b_ssbo_binding == 0,
+         "isub ba: input_b captures right-operand binding (0)");
    ralloc_free(nir);
 }
 
@@ -2883,6 +2928,7 @@ main(void)
                 "fp64 source operand rejects");
    case_identity_metadata();
    case_binary_metadata();
+   case_binary_map_isub_ba_operand_order();
    case_qfmul_metadata();
    case_unary_metadata();
    case_unary_push_metadata();

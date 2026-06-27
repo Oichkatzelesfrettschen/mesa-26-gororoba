@@ -402,13 +402,20 @@ r300_nir_detect_binary_map(const nir_shader *s,
 
    out->is_binary_map = true;
    out->alu_op = (uint16_t)alu->op;
+   /* Normalize to operand order: input_a is the op's left operand (src[0]),
+    * input_b is the right operand (src[1]).  For commutative ops the order
+    * does not affect correctness; for isub/fsub it must match the op.  When
+    * the ba case fires the compiler emitted the loads in the reverse of the
+    * operand order, so remap before capturing binding indices. */
+   const nir_intrinsic_instr *op_lhs = ab ? load_a : load_b;
+   const nir_intrinsic_instr *op_rhs = ab ? load_b : load_a;
    /* Capture constant binding indices when present; the orchestrator's
     * descriptor-set layout fallback picks the first three compute-visible
     * STORAGE_BUFFER bindings when these stay at the defaults. */
-   if (nir_src_is_const(load_a->src[0]))
-      out->input_a_ssbo_binding = nir_src_as_uint(load_a->src[0]);
-   if (nir_src_is_const(load_b->src[0]))
-      out->input_b_ssbo_binding = nir_src_as_uint(load_b->src[0]);
+   if (nir_src_is_const(op_lhs->src[0]))
+      out->input_a_ssbo_binding = nir_src_as_uint(op_lhs->src[0]);
+   if (nir_src_is_const(op_rhs->src[0]))
+      out->input_b_ssbo_binding = nir_src_as_uint(op_rhs->src[0]);
    if (nir_src_is_const(store->src[1]))
       out->output_ssbo_binding  = nir_src_as_uint(store->src[1]);
    out->value_components = store->num_components;
@@ -4495,7 +4502,9 @@ r300_nir_detect_const_fill_pattern(const nir_shader *s,
 
    const nir_intrinsic_instr *store[1] = {0};
    /* A single-slot dummy array; collect_loads_stores will not write to it
-    * because the discriminator gate nload != 0 catches any load_ssbo, but a
+    * because max_loads=0 makes the write guard `if (*nload < max_loads)`
+    * permanently false -- *nload still increments as a counter so the
+    * post-call `nload != 0` discriminator rejects any load_ssbo.  A
     * non-NULL pointer avoids pointer-arithmetic UB in the collector. */
    const nir_intrinsic_instr *dummy_load[1] = {0};
    unsigned nload, nstore, natomic;
