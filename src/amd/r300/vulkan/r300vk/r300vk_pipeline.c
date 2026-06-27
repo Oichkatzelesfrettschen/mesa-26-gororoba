@@ -2771,8 +2771,13 @@ shift_emit_gather(struct ureg_program *ureg, struct ureg_dst dst,
  * bit-exact.  The carry term vanishes for r = 0 (pure byte shift). */
 static void *
 r300vk_synthesize_shift_logical_fs(struct pipe_context *pipe, bool is_left,
-                                   unsigned shift_amount)
+                                   bool is_arithmetic, unsigned shift_amount)
 {
+   /* The detector admits only k in [1,31]; the power-of-two and sign-fill
+    * constants below shift by 8-r and 32-k, which are defined exactly in that
+    * range.  Assert the contract locally so a future miscall traps instead of
+    * reaching a >= width shift (C11 6.5.7p3 undefined behaviour). */
+   assert(shift_amount >= 1 && shift_amount <= 31);
    const unsigned q = shift_amount / 8;
    const unsigned r = shift_amount % 8;
    const float pow2_r        = (float)(1u << r);
@@ -2834,8 +2839,25 @@ r300vk_synthesize_shift_logical_fs(struct pipe_context *pipe, bool is_left,
       ureg_MAD(ureg, term2, ureg_src(f), ureg_imm1f(ureg, -256.0f), ureg_src(t));
    }
 
-   /* out_byte = term1 + term2; pack back to UNORM8 as out_byte / 255. */
+   /* out_byte = term1 + term2 (the logical-shift result so far). */
    ureg_ADD(ureg, term1, ureg_src(term1), ureg_src(term2));
+
+   /* Arithmetic right shift fills the top k bits -- the ones ushr zeroed -- with
+    * the sign bit (bit 31 = high bit of byte 3).  Those bits are disjoint from
+    * the logical result, so adding sign * fill recovers ishr exactly.  fill is the
+    * byte decomposition of (0xFFFFFFFF << (32-k)), baked per amount. */
+   if (is_arithmetic) {
+      const uint32_t fill = 0xFFFFFFFFu << (32 - shift_amount);
+      ureg_MUL(ureg, f, ureg_scalar(ureg_src(B), TGSI_SWIZZLE_W),
+               ureg_imm1f(ureg, 1.0f / 128.0f));
+      ureg_FLR(ureg, f, ureg_src(f));               /* f = sign (0 or 1) */
+      ureg_MAD(ureg, term1, ureg_scalar(ureg_src(f), TGSI_SWIZZLE_X),
+               ureg_imm4f(ureg, (float)(fill & 0xFF), (float)((fill >> 8) & 0xFF),
+                          (float)((fill >> 16) & 0xFF), (float)((fill >> 24) & 0xFF)),
+               ureg_src(term1));
+   }
+
+   /* Pack back to UNORM8 as out_byte / 255. */
    ureg_MUL(ureg, out, ureg_src(term1), ureg_imm1f(ureg, 1.0f / 255.0f));
    ureg_END(ureg);
    return ureg_create_shader_and_destroy(ureg, pipe);
@@ -2859,7 +2881,8 @@ r300vk_shift_logical_synthesize_shaders(struct r300vk_device *device,
       return false;
 
    pl->fs_cso = r300vk_synthesize_shift_logical_fs(
-      pipe, pl->shift_logical.is_left, pl->shift_logical.shift_amount);
+      pipe, pl->shift_logical.is_left, pl->shift_logical.is_arithmetic,
+      pl->shift_logical.shift_amount);
    if (!pl->fs_cso) {
       pipe->delete_vs_state(pipe, pl->vs_cso);
       pl->vs_cso = NULL;

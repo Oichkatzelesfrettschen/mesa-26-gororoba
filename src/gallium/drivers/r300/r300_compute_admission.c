@@ -1048,15 +1048,16 @@ r300_nir_detect_bitwise_logicop(
    out->is_bitwise_logicop = true;
 }
 
-/* Logical-shift-by-constant detector.  out[gid] = a[gid] << k  (ishl) or
- * a[gid] >> k  (ushr): exactly one store_ssbo whose value is a 2-input shift ALU
- * op whose first source is the identity load and whose second source is a scalar
- * compile-time constant k in [1, 31].  Scalar uint32 only -- one element per
- * RGBA8 texel for the byte-recombination carrier.  A variable shift amount (the
- * second source is a load, not a constant), a constant outside [1, 31] (k = 0 is
- * the identity, k >= 32 is GLSL-undefined), and signed ishr (op not matched) all
- * leave is_shift_logical false, so they stay UNKNOWN_SHAPE rather than produce a
- * wrong logical-fill result.  Pure read-only NIR walk. */
+/* Constant-shift detector.  out[gid] = a[gid] << k (ishl), >> k unsigned (ushr),
+ * or >> k signed (ishr): exactly one store_ssbo whose value is a 2-input shift
+ * ALU op whose first source is the identity load and whose second source is a
+ * scalar compile-time constant k in [1, 31].  ishr records is_arithmetic so the
+ * carrier sign-extends; ishl/ushr record is_arithmetic false.  Scalar uint32 only
+ * -- one element per RGBA8 texel for the byte-recombination carrier.  A variable
+ * shift amount (the second source is a load, not a constant) and a constant
+ * outside [1, 31] (k = 0 is the identity, k >= 32 is GLSL-undefined) leave
+ * is_shift_logical false, so they stay UNKNOWN_SHAPE rather than produce a wrong
+ * result.  Pure read-only NIR walk. */
 void
 r300_nir_detect_shift_logical(
    const nir_shader *s,
@@ -1064,6 +1065,7 @@ r300_nir_detect_shift_logical(
 {
    out->is_shift_logical    = false;
    out->is_left             = false;
+   out->is_arithmetic       = false;
    out->shift_amount        = 0;
    out->input_ssbo_binding  = 0;
    out->output_ssbo_binding = 0;
@@ -1100,11 +1102,13 @@ r300_nir_detect_shift_logical(
    const nir_alu_instr *alu = nir_def_as_alu_or_null(store->src[0].ssa);
    if (!alu)
       return;
-   bool is_left;
+   bool is_left = false, is_arithmetic = false;
    if (alu->op == nir_op_ishl)
       is_left = true;
    else if (alu->op == nir_op_ushr)
       is_left = false;
+   else if (alu->op == nir_op_ishr)
+      is_arithmetic = true;   /* right shift, sign-extending */
    else
       return;
    if (nir_op_infos[alu->op].num_inputs != 2)
@@ -1133,6 +1137,7 @@ r300_nir_detect_shift_logical(
    if (nir_src_is_const(store->src[1]))
       out->output_ssbo_binding = nir_src_as_uint(store->src[1]);
    out->is_left = is_left;
+   out->is_arithmetic = is_arithmetic;
    out->shift_amount = (uint8_t)k;
    out->value_components = store->num_components;
    out->value_bit_size = store->src[0].ssa->bit_size;

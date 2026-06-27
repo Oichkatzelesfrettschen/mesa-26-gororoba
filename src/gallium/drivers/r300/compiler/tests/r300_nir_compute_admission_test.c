@@ -1313,10 +1313,14 @@ case_bitwise_logicop_metadata(void)
 static void
 case_shift_logical_metadata(void)
 {
-   /* ishl / ushr by a constant k in [1,31] detect, record direction + amount +
-    * bindings, admit, and are not mistaken for any other verb. */
-   const struct { nir_op op; bool is_left; } variants[] = {
-      { nir_op_ishl, true }, { nir_op_ushr, false } };
+   /* ishl / ushr / ishr by a constant k in [1,31] admit and record their
+    * direction, signedness, amount, and bindings.  The unary-transcendental
+    * detector consumes the same one-load/one-store shape, so a single-input
+    * integer shift is the case it could read as a single-input float op; the
+    * test confirms it stays silent on every variant here. */
+   const struct { nir_op op; bool is_left; bool is_arith; } variants[] = {
+      { nir_op_ishl, true,  false }, { nir_op_ushr, false, false },
+      { nir_op_ishr, false, true } };
    const uint32_t amounts[] = { 1, 8, 31 };
    for (unsigned v = 0; v < ARRAY_SIZE(variants); v++) {
       for (unsigned a = 0; a < ARRAY_SIZE(amounts); a++) {
@@ -1326,31 +1330,31 @@ case_shift_logical_metadata(void)
          struct r300_compute_unary_transcendental_pattern tr = {0};
          prepare_detect_shader(nir);
          r300_nir_classify_compute(nir, &adm);
-         CHECK(adm.admissible, "shift logical admits");
+         CHECK(adm.admissible, "shift admits");
          r300_nir_detect_shift_logical(nir, &sh);
-         CHECK(sh.is_shift_logical, "shift logical detected");
-         CHECK(sh.is_left == variants[v].is_left,
-               "shift logical records direction");
-         CHECK(sh.shift_amount == amounts[a], "shift logical records amount");
+         CHECK(sh.is_shift_logical, "shift detected");
+         CHECK(sh.is_left == variants[v].is_left, "shift records direction");
+         CHECK(sh.is_arithmetic == variants[v].is_arith,
+               "shift records signedness");
+         CHECK(sh.shift_amount == amounts[a], "shift records amount");
          CHECK(sh.input_ssbo_binding == 0 && sh.output_ssbo_binding == 1,
-               "shift logical records bindings 0 -> 1");
+               "shift records bindings 0 -> 1");
          CHECK(sh.value_components == 1 && sh.value_bit_size == 32,
-               "shift logical records scalar 32-bit");
+               "shift records scalar 32-bit");
          /* A unary integer shift must not look like the float transcendental. */
          r300_nir_detect_unary_transcendental(nir, &tr);
-         CHECK(!tr.is_unary_transcendental, "shift logical is not transcendental");
+         CHECK(!tr.is_unary_transcendental, "shift is not transcendental");
          ralloc_free(nir);
       }
    }
 
-   /* The four shapes that MUST stay unmatched (so they no-op as UNKNOWN_SHAPE
+   /* The three shapes that MUST stay unmatched (so they no-op as UNKNOWN_SHAPE
     * rather than produce a wrong result): k = 0 (identity), k = 32 (GLSL-
-    * undefined), a variable amount, and signed ishr (sign-extension). */
+    * undefined), and a variable amount (needing an exact per-element 2^b). */
    const struct { nir_shader *(*build)(void); nir_shader *(*build_k)(nir_op, uint32_t);
                   nir_op op; uint32_t k; const char *msg; } negs[] = {
       { NULL, build_shift_logical, nir_op_ishl, 0,  "k=0 stays unmatched (identity)" },
       { NULL, build_shift_logical, nir_op_ishl, 32, "k=32 stays unmatched (undefined)" },
-      { NULL, build_shift_logical, nir_op_ishr, 4,  "signed ishr stays unmatched" },
       { build_shift_variable, NULL, nir_op_ishl, 0, "variable shift stays unmatched" },
    };
    for (unsigned i = 0; i < ARRAY_SIZE(negs); i++) {
