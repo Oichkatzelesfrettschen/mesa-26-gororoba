@@ -283,6 +283,29 @@ void r300_nir_detect_shift_logical(
    const struct nir_shader *s,
    struct r300_compute_shift_logical_pattern *out);
 
+/* Variable-amount logical shift: out[gid] = a[gid] << b[gid] (ishl) or a[gid] >>
+ * b[gid] (ushr, unsigned), where the shift amount b is a per-element load, not a
+ * constant -- the shape the constant-shift detector cannot serve.  The exact
+ * realisation is a per-element power-of-two multiply: a << b = low 32 bits of
+ * a * 2^b, and a >> b = bits [31,62] of a * 2^(31-b).  Both 2^M (M = b or 31-b)
+ * are <= 2^31, so they fit a uint32 and there is no 2^32 corner; the dispatch
+ * looks up 2^M per element from a 2^j texture, then runs the multilimb-multiply
+ * convolution and reads back the windowed 32 bits of the exact 64-bit product.
+ * Bit-exact.  Signed ishr (a variable sign-extension mask) is NOT recognised. */
+struct r300_compute_shift_variable_pattern {
+   bool       is_shift_variable;
+   bool       is_left;                /* ishl (true) vs ushr (false) */
+   uint32_t   input_a_ssbo_binding;   /* the value being shifted */
+   uint32_t   input_b_ssbo_binding;   /* the per-element shift amount */
+   uint32_t   output_ssbo_binding;
+   uint8_t    value_components;       /* scalar uint32 (1) */
+   uint8_t    value_bit_size;         /* 32 */
+};
+
+void r300_nir_detect_shift_variable(
+   const struct nir_shader *s,
+   struct r300_compute_shift_variable_pattern *out);
+
 /* Blend-add-reduction kernel pattern: a kernel whose store value is an
  * atomicAdd of a load_ssbo result, where the atomic's target buffer is a
  * small output histogram and the atomic's offset folds the dispatch grid into

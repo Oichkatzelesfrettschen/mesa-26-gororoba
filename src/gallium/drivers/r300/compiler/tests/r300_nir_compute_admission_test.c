@@ -259,17 +259,19 @@ build_shift_logical(nir_op op, uint32_t k)
    return b.shader;
 }
 
-/* Variable shift: out[gid] = a[gid] << b[gid] -- the amount is a second load,
- * not a constant.  Must stay unmatched (no exact per-element 2^b carrier). */
+/* Variable shift: out[gid] = a[gid] OP b[gid] for OP in {ishl, ushr} -- the
+ * amount is a second load (binding 1), not a constant.  The constant-shift
+ * detector (one load) leaves it unmatched; the variable-shift detector claims it
+ * and routes it to the per-element 2^b lookup carrier. */
 static nir_shader *
-build_shift_variable(void)
+build_shift_variable(nir_op op)
 {
    nir_builder b = cs_builder("cs_shift_variable");
    nir_def *a = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
                               .align_mul = 4, .align_offset = 0);
    nir_def *amt = nir_load_ssbo(&b, 1, 32, nir_imm_int(&b, 1), nir_imm_int(&b, 0),
                                 .align_mul = 4, .align_offset = 0);
-   nir_def *y = nir_build_alu2(&b, nir_op_ishl, a, amt);
+   nir_def *y = nir_build_alu2(&b, op, a, amt);
    nir_store_ssbo(&b, y, nir_imm_int(&b, 2), nir_imm_int(&b, 0),
                   .write_mask = 0x1, .align_mul = 4, .align_offset = 0);
    return b.shader;
@@ -1348,22 +1350,55 @@ case_shift_logical_metadata(void)
       }
    }
 
-   /* The three shapes that MUST stay unmatched (so they no-op as UNKNOWN_SHAPE
-    * rather than produce a wrong result): k = 0 (identity), k = 32 (GLSL-
-    * undefined), and a variable amount (needing an exact per-element 2^b). */
-   const struct { nir_shader *(*build)(void); nir_shader *(*build_k)(nir_op, uint32_t);
-                  nir_op op; uint32_t k; const char *msg; } negs[] = {
-      { NULL, build_shift_logical, nir_op_ishl, 0,  "k=0 stays unmatched (identity)" },
-      { NULL, build_shift_logical, nir_op_ishl, 32, "k=32 stays unmatched (undefined)" },
-      { build_shift_variable, NULL, nir_op_ishl, 0, "variable shift stays unmatched" },
+   /* Constants the constant-shift detector MUST leave unmatched (so they no-op as
+    * UNKNOWN_SHAPE rather than produce a wrong result): k = 0 (identity) and
+    * k = 32 (GLSL-undefined).  The variable-amount shape is covered below. */
+   const struct { nir_op op; uint32_t k; const char *msg; } negs[] = {
+      { nir_op_ishl, 0,  "k=0 stays unmatched (identity)" },
+      { nir_op_ishl, 32, "k=32 stays unmatched (undefined)" },
    };
    for (unsigned i = 0; i < ARRAY_SIZE(negs); i++) {
-      nir_shader *nir = negs[i].build ? negs[i].build()
-                                      : negs[i].build_k(negs[i].op, negs[i].k);
+      nir_shader *nir = build_shift_logical(negs[i].op, negs[i].k);
       struct r300_compute_shift_logical_pattern sh = {0};
       prepare_detect_shader(nir);
       r300_nir_detect_shift_logical(nir, &sh);
       CHECK(!sh.is_shift_logical, negs[i].msg);
+      ralloc_free(nir);
+   }
+}
+
+static void
+case_shift_variable_metadata(void)
+{
+   /* out[gid] = a[gid] << b[gid] / >> b[gid]: the variable detector claims it and
+    * records the value/amount/output bindings; the constant-shift detector (one
+    * load) leaves it alone. */
+   const struct { nir_op op; bool is_left; } variants[] = {
+      { nir_op_ishl, true }, { nir_op_ushr, false } };
+   for (unsigned v = 0; v < ARRAY_SIZE(variants); v++) {
+      nir_shader *nir = build_shift_variable(variants[v].op);
+      struct r300_compute_admission adm;
+      struct r300_compute_shift_variable_pattern sv = {0};
+      struct r300_compute_shift_logical_pattern sl = {0};
+      struct r300_compute_binary_map_pattern bm = {0};
+      prepare_detect_shader(nir);
+      r300_nir_classify_compute(nir, &adm);
+      CHECK(adm.admissible, "variable shift admits");
+      r300_nir_detect_shift_variable(nir, &sv);
+      CHECK(sv.is_shift_variable, "variable shift detected");
+      CHECK(sv.is_left == variants[v].is_left, "variable shift records direction");
+      CHECK(sv.input_a_ssbo_binding == 0 && sv.input_b_ssbo_binding == 1 &&
+            sv.output_ssbo_binding == 2,
+            "variable shift records bindings a=0 b=1 out=2");
+      CHECK(sv.value_components == 1 && sv.value_bit_size == 32,
+            "variable shift records scalar 32-bit");
+      /* The constant-shift detector requires one load; a two-load variable shift
+       * must not also match it. */
+      r300_nir_detect_shift_logical(nir, &sl);
+      CHECK(!sl.is_shift_logical, "variable shift is not a constant shift");
+      /* Nor the commutative binary map (the op set is disjoint). */
+      r300_nir_detect_binary_map(nir, &bm);
+      CHECK(!bm.is_binary_map, "variable shift is not a binary_map");
       ralloc_free(nir);
    }
 }
@@ -2847,6 +2882,7 @@ main(void)
    case_binary_transcendental_metadata();
    case_bitwise_logicop_metadata();
    case_shift_logical_metadata();
+   case_shift_variable_metadata();
    case_multitap_metadata();
    case_qmul_metadata();
    case_qrotate_metadata();
