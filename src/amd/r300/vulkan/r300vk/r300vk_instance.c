@@ -18,6 +18,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* R300VK_DEBUG carries two kinds of token.  The flags below parse through
+ * parse_debug_string into instance->debug_flags.  Several call sites also take
+ * the raw string and test it with strstr, so those tokens are matched as
+ * substrings independently of this table:
+ *   classify_nir  r300vk_pipeline.c -- dump the detector-eye NIR at pipeline
+ *                 create (the first thing to read when a kernel that should
+ *                 match a raster verb dispatches as an UNKNOWN_SHAPE no-op);
+ *   log_draws     r300vk_device.c (dbg_log_draws) -- emit a per-draw state line;
+ *   log_pixels    r300vk_device.c (dbg_log_pixels) -- sample the attachment at
+ *                 end-of-pass;
+ *   no_overlay    r300vk_device.c (dbg_no_dyn_overlay) -- static CSOs only, no
+ *                 dynamic-state overlay;
+ *   no_topo       r300vk_device.c (dbg_no_topo_override) -- use the recorded
+ *                 topology only, no override.
+ * A substring token composes freely with the flags (e.g. "startup,classify_nir"). */
 static const struct debug_control r300vk_debug_options[] = {
    {"startup", R300VK_DEBUG_STARTUP},
    {NULL, 0},
